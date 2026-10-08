@@ -124,6 +124,5 @@ pub fn process_sync_aggregate(
         }
     }
     balances.add_at(proposer_index, proposer_reward_sum as i64);
-    balances.rehash_unsorted();
     Ok(proposer_reward_sum)
 }

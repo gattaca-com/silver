@@ -276,8 +276,6 @@ impl<'a> BlockAttestations<'a> {
         }
     }
 
-    /// Participation leaves are rehashed once for the whole body: every
-    /// attestation dirties a large share of the tree's upper levels.
     #[timed]
     pub fn process_body(
         &self,
@@ -307,8 +305,6 @@ impl<'a> BlockAttestations<'a> {
             },
         )?;
 
-        view.current_participation.rehash_unsorted();
-        view.previous_participation.rehash_unsorted();
         let balance = view.balances.get(proposer_index as usize);
         view.balances.set(proposer_index, balance.saturating_add(proposer_reward));
         Ok(proposer_reward)
@@ -517,7 +513,7 @@ impl<'a> BlockAttestations<'a> {
             if prev == 0 {
                 applied.first_participation_eb += effective_balance;
             }
-            participation.set_deferred(vi, prev | gained);
+            participation.set(vi, prev | gained);
         }
         applied
     }

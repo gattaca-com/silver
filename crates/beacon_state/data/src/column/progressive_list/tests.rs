@@ -28,7 +28,7 @@ fn progressive_u8_root(vals: &[u8]) -> B256 {
     mix_in_length(&hasher.finalize(), vals.len())
 }
 
-fn assert_progressive(wv: &BalancesWriteView<'_>, expected: &[u64]) {
+fn assert_progressive(wv: &mut BalancesWriteView<'_>, expected: &[u64]) {
     assert_eq!(wv.iter().collect::<Vec<_>>(), expected);
     assert_eq!(wv.hash_root(), progressive_u64_root(expected));
 }
@@ -44,7 +44,7 @@ fn migrate_across_counts() {
 
         assert_eq!(wv.hash_root(), fixed_u64_root(&values));
         wv.migrate_to_progressive();
-        assert_progressive(&wv, &values);
+        assert_progressive(&mut wv, &values);
         assert_eq!(wv.get(n - 1), values[n - 1]);
     }
 }
@@ -59,20 +59,21 @@ fn rehash_matches_full_rebuild() {
     // Sparse set_many landing in every segment: chunk-0 root-leaf (seg 0),
     // seg 1 (idx 17), seg 2 (idx 50), seg 3 (idx 100/332).
     let edits = [(0u32, 1_000u64), (3, 42), (17, 5), (50, 8), (100, 9), (332, 77)];
-    wv.set_many(&edits);
+    for &(i, v) in &edits {
+        wv.set(i, v);
+    }
     for &(i, v) in &edits {
         values[i as usize] = v;
     }
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 
     // add_at deltas across segments need an explicit rehash.
     wv.add_at(2, 123);
     wv.add_at(2, -3);
     wv.add_at(200, 55);
-    wv.rehash();
     values[2] += 123 - 3;
     values[200] += 55;
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 }
 
 #[test]
@@ -83,19 +84,18 @@ fn rehash_unsorted_scrambled_add_at() {
     wv.migrate_to_progressive();
 
     // Deltas out of index order across segments, with a repeated leaf (idx 3);
-    // rehash_unsorted sorts the dirty ids before the per-segment rehash.
+    // rehash sorts the dirty ids before the per-segment rehash.
     wv.add_at(200, 5); // seg 3
     wv.add_at(3, 100); // seg 0
     wv.add_at(60, -1); // seg 2
     wv.add_at(3, 3); // second hit on the same leaf
     wv.add_at(17, 7); // seg 1
-    wv.rehash_unsorted();
 
     values[200] += 5;
     values[3] += 103;
     values[60] -= 1;
     values[17] += 7;
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 }
 
 #[test]
@@ -112,8 +112,7 @@ fn contiguous_range_straddles_segments() {
         wv.add_at(i as u32, 3);
         *v += 3;
     }
-    wv.rehash();
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 
     // A range starting mid-segment and ending mid-segment (chunks 3..26,
     // segments 1..=3) splits on both sides.
@@ -121,8 +120,7 @@ fn contiguous_range_straddles_segments() {
         wv.add_at(i, 1);
         values[i as usize] += 1;
     }
-    wv.rehash();
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 }
 
 #[test]
@@ -136,7 +134,7 @@ fn random_batches_match_reference() {
         let mut g = group(&values);
         let mut wv = g.roll_fresh();
         wv.migrate_to_progressive();
-        assert_progressive(&wv, &values);
+        assert_progressive(&mut wv, &values);
 
         for _ in 0..8 {
             let count = rng.gen_range(1..=n);
@@ -149,8 +147,10 @@ fn random_batches_match_reference() {
             for &(i, v) in &batch {
                 values[i as usize] = v;
             }
-            wv.set_many(&batch);
-            assert_progressive(&wv, &values);
+            for &(i, v) in &batch {
+                wv.set(i, v);
+            }
+            assert_progressive(&mut wv, &values);
         }
     }
 }
@@ -167,7 +167,7 @@ fn append_grows_segments() {
         let idx = wv.append_empty();
         wv.set(idx, i);
     }
-    assert_progressive(&wv, &(0..120).collect::<Vec<_>>());
+    assert_progressive(&mut wv, &(0..120).collect::<Vec<_>>());
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn direct_progressive_construction() {
     .unwrap();
 
     let mut wv = g.roll_fresh();
-    assert_progressive(&wv, &values);
+    assert_progressive(&mut wv, &values);
 
     wv.set(3, 999);
     let id = wv.commit();
@@ -254,12 +254,12 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
     }
     wv.set(0, 1_000);
     a_vals[0] = 1_000;
-    assert_progressive(&wv, &a_vals);
+    assert_progressive(&mut wv, &a_vals);
     let a = wv.commit();
 
     // Reorg onto B's chain: shrink rebuild, then a child edit.
     let mut wv = g.roll_from(b);
-    assert_progressive(&wv, &b_vals);
+    assert_progressive(&mut wv, &b_vals);
     wv.set(29, 9_999);
     let mut c_vals = b_vals.clone();
     c_vals[29] = 9_999;
@@ -267,7 +267,7 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
 
     // Reorg back onto A: regrow rebuild, then extend further.
     let mut wv = g.roll_from(a);
-    assert_progressive(&wv, &a_vals);
+    assert_progressive(&mut wv, &a_vals);
     let idx = wv.append_empty();
     wv.set(idx, 555);
     let mut d_vals = a_vals.clone();
@@ -315,9 +315,8 @@ fn rejected_add_at_batch_dont_leak() {
     // Reorg roll onto the small fork: the rebuilt scratch has no segment 3.
     let mut wv = g.roll_from(b);
     wv.add_at(0, 100);
-    wv.rehash();
     b_vals[0] += 100;
-    assert_progressive(&wv, &b_vals);
+    assert_progressive(&mut wv, &b_vals);
 }
 
 #[test]
@@ -350,7 +349,7 @@ fn clear_to_zero() {
     let mut wv = g.roll_fresh();
     wv.migrate_to_progressive();
     wv.clear_to_zero();
-    assert_progressive(&wv, &vec![0; values.len()]);
+    assert_progressive(&mut wv, &vec![0; values.len()]);
 }
 
 #[test]
@@ -363,7 +362,9 @@ fn u8_column_migrate_and_rehash() {
     wv.migrate_to_progressive();
     assert_eq!(wv.hash_root(), progressive_u8_root(&values));
 
-    wv.set_many(&[(0, 7u8), (40, 9)]);
+    for (i, v) in [(0, 7u8), (40, 9)] {
+        wv.set(i, v);
+    }
     let mut updated = values.clone();
     updated[0] = 7;
     updated[40] = 9;

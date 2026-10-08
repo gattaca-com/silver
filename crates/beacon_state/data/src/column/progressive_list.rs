@@ -24,12 +24,7 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
     ) -> Self {
         let last_seg = progressive_last_seg_for_chunks(cap.div_ceil(C::VALS_PER_CHUNK).max(1));
         let format = TreeFormat::Progressive { last_seg };
-        let store = NodeStore::with_leaves(
-            format.num_nodes::<C>(),
-            count,
-            format.data_start::<C>(),
-            leaves,
-        );
+        let store = NodeStore::with_leaves(format, count, leaves);
         let mut tree = Self { store, last_seg };
         tree.rebuild_segments(count.div_ceil(C::VALS_PER_CHUNK));
         tree
@@ -44,7 +39,6 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
     }
 
     pub(super) fn from_list(list: &ListTree<C>) -> Self {
-        debug_assert!(list.store.dirty_chunks.is_empty(), "unhashed batch pending at migration",);
         let count = list.store.count;
         let chunks = count.div_ceil(C::VALS_PER_CHUNK);
         let leaves =
@@ -65,41 +59,40 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
 
     pub(super) fn rehash(&mut self) {
         let data_start = self.data_start();
-        let NodeStore { nodes, dirty_chunks, .. } = &mut self.store;
+        let (nodes, unhashed) = self.store.drain_unhashed();
         let (internals, data) = nodes.split_at_mut(data_start);
         let mut start = 0;
-        while start < dirty_chunks.len() {
-            let k = progressive_segment_of_chunk(dirty_chunks[start].start as usize) as usize;
+        while start < unhashed.len() {
+            let k = progressive_segment_of_chunk(unhashed[start].start as usize) as usize;
             let seg_start = PROGRESSIVE_SEGMENT_START[k];
             let seg_end = PROGRESSIVE_SEGMENT_START[k + 1] as u32;
-            let end = start + dirty_chunks[start..].partition_point(|r| r.start < seg_end);
+            let end = start + unhashed[start..].partition_point(|r| r.start < seg_end);
 
             // The last range may spill into the next segment, so cut it at the
             // boundary and hash only the head here. The tail goes back into the
             // head's slot afterwards, where the next pass picks it up as its
             // own first range.
-            let tail = (dirty_chunks[end - 1].end > seg_end).then(|| {
-                let tail = NodeRange { start: seg_end, end: dirty_chunks[end - 1].end };
-                dirty_chunks[end - 1].end = seg_end;
+            let tail = (unhashed[end - 1].end > seg_end).then(|| {
+                let tail = NodeRange { start: seg_end, end: unhashed[end - 1].end };
+                unhashed[end - 1].end = seg_end;
                 tail
             });
 
-            for r in &mut dirty_chunks[start..end] {
+            for r in &mut unhashed[start..end] {
                 r.start -= seg_start as u32;
                 r.end -= seg_start as u32;
             }
             rehash_subtree(
                 &mut internals[C::SEG_OFF[k]..C::SEG_OFF[k] + (1 << (2 * k))],
                 &data[seg_start..],
-                &mut dirty_chunks[start..end],
+                &mut unhashed[start..end],
             );
             start = end;
             if let Some(tail) = tail {
                 start -= 1;
-                dirty_chunks[start] = tail;
+                unhashed[start] = tail;
             }
         }
-        dirty_chunks.clear();
     }
 
     pub(super) fn fill_zero(&mut self) {
@@ -121,6 +114,7 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
 
         let (internals, data) = self.store.nodes.split_at_mut(new.data_start::<C>());
         build_segment::<C>(internals, data, self.last_seg as usize, 0);
+        self.store.unhashed.resize(new.data_capacity());
         self.store.mark_all_dirty();
     }
 }

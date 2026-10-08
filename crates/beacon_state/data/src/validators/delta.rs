@@ -556,8 +556,7 @@ impl<'a> ValidatorsWriteView<'a> {
     }
 
     #[inline]
-    pub fn commit(mut self) -> ValidatorsId {
-        self.hash.rehash_unsorted();
+    pub fn commit(self) -> ValidatorsId {
         ValidatorsId { data: self.fork.commit(), hash: self.hash.commit() }
     }
 
@@ -566,13 +565,9 @@ impl<'a> ValidatorsWriteView<'a> {
         ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
     }
 
-    /// Reader with pending deferred leaf writes folded in — required before
-    /// hashing the in-flight fork; plain [`reader`](Self::reader) suffices for
-    /// value reads.
     #[inline]
     pub fn hashed_reader(&mut self) -> ValidatorsView<'_> {
-        self.hash.rehash_unsorted();
-        self.reader()
+        ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.hashed_reader() }
     }
 
     // All reads delegate to the read view (`reader()` is a two-pointer `Copy`,
@@ -675,14 +670,12 @@ impl<'a> ValidatorsWriteView<'a> {
     /// so the hash column stays consistent with the field edits.
     fn refresh_leaf(&mut self, idx: u32) {
         let leaf = self.reader().recompute_leaf(idx);
-        self.hash.set_deferred(idx, leaf);
+        self.hash.set(idx, leaf);
     }
 
     /// The fork block's EIP-7688 hash migration: this fork's registry root
-    /// switches to the gloas `ProgressiveList` shape. Pending deferred writes
-    /// fold in first — the migration rebuilds from the leaf bytes.
+    /// switches to the gloas `ProgressiveList` shape.
     pub fn adopt_gloas(&mut self) {
-        self.hash.rehash_unsorted();
         self.hash.migrate_to_progressive();
     }
 
@@ -714,9 +707,6 @@ impl<'a> ValidatorsWriteView<'a> {
         self.refresh_leaf(ix);
     }
 
-    /// Batch effective-balance update: one merge into the field edits, then
-    /// per-leaf deferred hash writes (rehash stays batched at commit/read).
-    /// `changes` must be ascending and distinct.
     pub fn set_effective_balance_many(&mut self, changes: &[(u32, u64)]) {
         if changes.is_empty() {
             return;
@@ -727,8 +717,7 @@ impl<'a> ValidatorsWriteView<'a> {
         );
         self.fork.effective_balance_edits.merge_in_place(changes);
         for &(ix, _) in changes {
-            let leaf = self.reader().recompute_leaf(ix);
-            self.hash.set_deferred(ix, leaf);
+            self.refresh_leaf(ix);
         }
     }
 

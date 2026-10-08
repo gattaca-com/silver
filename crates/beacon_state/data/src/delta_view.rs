@@ -130,18 +130,18 @@ impl<'a> StateWriterView<'a> {
     ) -> StateReadView<'s> {
         StateReadView {
             imm: self.imm,
-            balances: self.balances.reader(),
+            balances: self.balances.hashed_reader(),
             eth1: self.eth1.reader(),
             epoch,
             longtail,
             pending: self.pending.reader(),
-            previous_participation: self.previous_participation.reader(),
-            current_participation: self.current_participation.reader(),
-            inactivity: self.inactivity.reader(),
-            slashings: self.slashings.reader(),
-            block_roots: self.block_roots.reader(),
-            state_roots: self.state_roots.reader(),
-            randao_mixes: self.randao_mixes.reader(),
+            previous_participation: self.previous_participation.hashed_reader(),
+            current_participation: self.current_participation.hashed_reader(),
+            inactivity: self.inactivity.hashed_reader(),
+            slashings: self.slashings.hashed_reader(),
+            block_roots: self.block_roots.hashed_reader(),
+            state_roots: self.state_roots.hashed_reader(),
+            randao_mixes: self.randao_mixes.hashed_reader(),
             slot: self.slot.reader(),
             validators: self.validators.hashed_reader(),
             builders: self.builders.hashed_reader(),
@@ -201,7 +201,11 @@ mod tests {
         }
 
         fn set_balances(&mut self, changes: &[(u32, u64)]) {
-            self.mutate(|v| v.balances.set_many(changes));
+            self.mutate(|v| {
+                for &(i, b) in changes {
+                    v.balances.set(i, b);
+                }
+            });
         }
 
         /// Cross-tier lockstep append via the free-fn helper, as production

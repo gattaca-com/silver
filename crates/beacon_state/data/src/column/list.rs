@@ -20,7 +20,7 @@ impl<C: ColumnSpec> Default for ListTree<C> {
 impl<C: ColumnSpec> ListTree<C> {
     pub(super) fn new(cap: usize, count: usize, leaves: impl Iterator<Item = B256>) -> Self {
         let max_elements = cap.div_ceil(C::VALS_PER_CHUNK).next_power_of_two().max(1);
-        let store = NodeStore::with_leaves(2 * max_elements, count, max_elements, leaves);
+        let store = NodeStore::with_leaves(TreeFormat::Fixed { max_elements }, count, leaves);
         let mut tree = Self { store, max_elements };
         tree.build(count.div_ceil(C::VALS_PER_CHUNK));
         tree
@@ -37,11 +37,9 @@ impl<C: ColumnSpec> ListTree<C> {
     }
 
     pub(super) fn rehash(&mut self) {
-        let max_elements = self.max_elements;
-        let NodeStore { nodes, dirty_chunks, .. } = &mut self.store;
-        let (internal, leaves) = nodes.split_at_mut(max_elements);
-        rehash_subtree(internal, leaves, dirty_chunks);
-        dirty_chunks.clear();
+        let (nodes, unhashed) = self.store.drain_unhashed();
+        let (internal, leaves) = nodes.split_at_mut(self.max_elements);
+        rehash_subtree(internal, leaves, unhashed);
     }
 
     pub(super) fn fill_zero(&mut self) {

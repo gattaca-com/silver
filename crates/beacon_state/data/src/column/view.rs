@@ -132,30 +132,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn set(&mut self, idx: u32, v: C::Val) {
-        self.set_many(&[(idx, v)]);
-    }
-
-    #[timed]
-    pub fn set_many(&mut self, changes: &[(u32, C::Val)]) {
-        self.group.scratch_mut().set_vals(changes);
-    }
-
-    /// Write without rehashing; the owner must call
-    /// [`rehash_unsorted`](Self::rehash_unsorted) before reading the root or
-    /// committing.
-    #[inline]
-    pub fn set_deferred(&mut self, idx: u32, v: C::Val) {
-        self.group.scratch_mut().set_val_deferred(idx, v);
-    }
-
-    #[timed]
-    pub fn rehash(&mut self) {
-        self.group.scratch_mut().rehash();
-    }
-
-    #[timed]
-    pub fn rehash_unsorted(&mut self) {
-        self.group.scratch_mut().rehash_unsorted();
+        self.group.scratch_mut().set_val(idx, v);
     }
 
     #[inline]
@@ -166,8 +143,9 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     pub fn copy_changed_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
         &mut self,
-        other: &ColumnWriteView<'_, D>,
+        other: &mut ColumnWriteView<'_, D>,
     ) {
+        other.group.scratch_mut().rehash();
         let src = other.group.scratch();
         self.group.scratch_mut().copy_changed_pages_from(src);
     }
@@ -188,6 +166,11 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         ColumnReader::flat(self.group.scratch())
     }
 
+    pub fn hashed_reader(&mut self) -> ColumnReader<'_, C> {
+        self.group.scratch_mut().rehash();
+        self.reader()
+    }
+
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
         self.reader().get(ix)
@@ -199,8 +182,8 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     }
 
     #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.reader().hash_root()
+    pub fn hash_root(&mut self) -> B256 {
+        self.hashed_reader().hash_root()
     }
 }
 

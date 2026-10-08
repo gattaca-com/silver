@@ -32,7 +32,7 @@ pub(super) fn group(values: &[u64]) -> BalancesGroup {
         .unwrap()
 }
 
-fn assert_root_matches(wv: &BalancesWriteView<'_>) {
+fn assert_root_matches(wv: &mut BalancesWriteView<'_>) {
     let vals: Vec<u64> = wv.iter().collect();
     let want = hash_uint64_list(
         MerkleStack::new(VALIDATOR_REGISTRY_LIMIT.div_ceil(4)),
@@ -80,7 +80,7 @@ fn set_inserts_then_updates() {
     wv.set(0, 1_000); // back to the base value — reads as the base value
     assert_eq!(wv.get(0), 1_000);
 
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -88,10 +88,12 @@ fn set_many_applies_sparse_changes() {
     let mut g = group(&[0, 10, 20, 30]);
     let mut wv = g.roll_fresh();
 
-    wv.set_many(&[(1, 1010), (3, 1030)]);
+    for (i, v) in [(1, 1010), (3, 1030)] {
+        wv.set(i, v);
+    }
     // only 1 and 3 change; 0 and 2 still read the base.
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![0, 1010, 20, 1030]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -106,7 +108,6 @@ fn add_at_batch_then_rehash() {
     wv.add_at(4, 0); // no-op, must not dirty
     wv.add_at(5, 1);
     wv.add_at(8, i64::MAX); // tail chunk
-    wv.rehash();
 
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![
         5,
@@ -119,18 +120,20 @@ fn add_at_batch_then_rehash() {
         70,
         80 + i64::MAX as u64
     ],);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 
     // A later set_many batch on the rehashed tree stays consistent.
-    wv.set_many(&[(3, 333)]);
+    for (i, v) in [(3, 333)] {
+        wv.set(i, v);
+    }
     assert_eq!(wv.get(3), 333);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
-fn add_at_unsorted_then_rehash_unsorted() {
+fn add_at_unsorted_then_rehash() {
     // Deltas applied out of index order, with a repeated index (7): the RMW is
-    // sequential in call order, and rehash_unsorted sorts the dirty leaves.
+    // sequential in call order, and rehash sorts the dirty leaves.
     let mut g = group(&[0, 10, 20, 30, 40, 50, 60, 70, 80]);
     let mut wv = g.roll_fresh();
 
@@ -139,10 +142,9 @@ fn add_at_unsorted_then_rehash_unsorted() {
     wv.add_at(7, -5); // 65
     wv.add_at(3, 2);
     wv.add_at(7, 3); // 65 + 3 = 68, second hit on the same leaf
-    wv.rehash_unsorted();
 
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![100, 10, 20, 32, 40, 50, 60, 68, 81],);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -155,10 +157,12 @@ fn set_many_keeps_prior_writes() {
     wv.append_empty();
     wv.append_empty();
     wv.set(0, 111);
-    wv.set_many(&[(1, 99), (5, 7)]);
+    for (i, v) in [(1, 99), (5, 7)] {
+        wv.set(i, v);
+    }
     // idx 0's earlier write survives; 1 and 5 applied; 2 reads base, 3/4 default.
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![111, 99, 30, 0, 0, 7]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -180,7 +184,7 @@ fn finalize_preserves_survivor_reads_and_root() {
     let survivor = g.roll_from(winner).commit(); // inherits the winner's state
     g.finalize(winner, &[winner, survivor], |&id| id); // ids stay valid unchanged
 
-    let wv = g.roll_from(survivor);
+    let mut wv = g.roll_from(survivor);
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![1_000, 5_000, 0, 7_000]);
     assert_eq!(wv.hash_root(), before);
 }
@@ -209,10 +213,10 @@ fn finalize_returns_survivor_ids_unchanged() {
 #[test]
 fn new_decodes_le_u64s() {
     let mut g = BalancesGroup::new(4, 3, &le_bytes(&[7, 8, 9]), HashFormat::Fixed).unwrap();
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
 
     assert_eq!([wv.get(0), wv.get(1), wv.get(2)], [7, 8, 9]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -226,7 +230,7 @@ fn root_matches_reference_across_counts() {
     for n in [0usize, 1, 3, 4, 5, 8, 13] {
         let values: Vec<u64> = (0..n as u64).map(|i| (i + 1) * 1_000).collect();
         let mut g = group(&values);
-        assert_root_matches(&g.roll_fresh());
+        assert_root_matches(&mut g.roll_fresh());
     }
 }
 
@@ -239,11 +243,11 @@ fn root_reflects_edits_and_appends() {
     wv.append_empty(); // idx 5
     let idx = wv.append_empty(); // idx 6 — appended validator, balance set to 7
     wv.set(idx, 7);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 
     // Setting an appended balance back to 0 (its default) re-collapses the leaf.
     wv.set(6, 0);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -261,9 +265,9 @@ fn promote_reproduces_root_over_new_base() {
 
     // A fresh fork over the promoted base reproduces the same root with zero SHA
     // work (cached-hash promote) and reads the promoted values.
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
     assert_eq!(wv.hash_root(), pre);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
     assert_eq!(wv.get(1), 999);
     assert_eq!(wv.get(4), 4_444);
 }
@@ -295,9 +299,9 @@ fn aba_finalize_keeps_reverted_value() {
 
     // Finalize D2 (winner s2): base[0] → B; D3's own tree still holds A.
     g.finalize(s2, &[s2, s3], |&id| id);
-    let wv3 = g.roll_from(s3);
+    let mut wv3 = g.roll_from(s3);
     assert_eq!(wv3.get(0), A, "D3 must not inherit B");
-    assert_root_matches(&wv3);
+    assert_root_matches(&mut wv3);
 }
 
 #[test]
@@ -311,7 +315,7 @@ fn append_within_cap_headroom() {
         wv.set(idx, v);
     }
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![5, 6, 7, 8, 9, 10]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -324,10 +328,14 @@ fn edits_across_commits_under_shared_parent() {
     let mut g = group(&values);
     let mut wv = g.roll_fresh();
 
-    wv.set_many(&[(0, 111)]); // chunk 0 only
-    wv.set_many(&[(4, 555)]); // chunk 1 only (chunk 0's sibling)
+    for (i, v) in [(0, 111)] {
+        wv.set(i, v);
+    } // chunk 0 only
+    for (i, v) in [(4, 555)] {
+        wv.set(i, v);
+    } // chunk 1 only (chunk 0's sibling)
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![111, 20, 30, 40, 555, 60, 70, 80]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
 }
 
 #[test]
@@ -350,8 +358,10 @@ fn root_matches_reference_random_batches() {
             idxs.sort_unstable();
             let batch: Vec<(u32, u64)> =
                 idxs.iter().map(|&i| (i, rng.gen_range(0..=u64::MAX))).collect();
-            wv.set_many(&batch);
-            assert_root_matches(&wv);
+            for &(i, v) in &batch {
+                wv.set(i, v);
+            }
+            assert_root_matches(&mut wv);
         }
     }
 }
@@ -373,12 +383,12 @@ fn rejected_writes_dont_leak() {
         let mut wv = g.roll_from(a);
         wv.set(0, 777);
         wv.set(4, 888);
-        wv.set_deferred(2, 999);
+        wv.set(2, 999);
     }
 
-    let wv = g.roll_from(a);
+    let mut wv = g.roll_from(a);
     assert_eq!(wv.iter().collect::<Vec<_>>(), vec![10, 2, 3, 4, 5]);
-    assert_root_matches(&wv);
+    assert_root_matches(&mut wv);
     assert_ne!(a, wv.commit());
 }
 
@@ -400,7 +410,7 @@ fn vector_root_omits_the_length_mix_in() {
 fn vector_root_pads_an_under_materialized_tree() {
     let values: Vec<u64> = (1..=1_024).collect();
     let g = &mut vector_group(&values);
-    let wv = g.roll_fresh();
+    let mut wv = g.roll_fresh();
 
     let mut full = values.clone();
     full.resize(U64Vector::SSZ_LIMIT, 0);

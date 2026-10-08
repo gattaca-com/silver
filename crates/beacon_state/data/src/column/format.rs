@@ -25,10 +25,10 @@ pub(super) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
     t
 }
 
-/// Node ids are `u32` (`dirty_chunks`), so the node array must fit `u32`. The
+/// Node ids are `u32` (`NodeRange`), so the node array must fit `u32`. The
 /// deepest segment dominates the sum, so this bounds every page size up to the
 /// one asserted here; a column wanting more than 4096 nodes per page has to
-/// widen `dirty_chunks` first.
+/// widen `NodeRange` first.
 const _: () = assert!(seg_off(4096)[MAX_SEGS] <= u32::MAX as usize);
 
 pub(super) fn progressive_last_seg_for_chunks(cap_chunks: usize) -> u32 {

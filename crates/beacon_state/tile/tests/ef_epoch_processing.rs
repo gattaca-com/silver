@@ -177,14 +177,14 @@ fn fulu_randao_mixes_reset() {
 fn fulu_historical_summaries_update() {
     epoch_handler("historical_summaries_update", move |s| {
         let sid = s.state_id;
-        let (view, _, longtail) = s.view();
+        let (mut view, _, longtail) = s.view();
         let current_epoch = view.slot.reader().current_epoch();
         // The hub's rotation gate: no-op vectors never roll the longtail.
         if !(current_epoch + 1).is_multiple_of(HISTORICAL_SUMMARY_PERIOD) {
             return;
         }
         let mut longtail_w = longtail.roll_inheriting(sid.longtail_idx);
-        stf::process_historical_summaries_update(&view, &mut longtail_w);
+        stf::process_historical_summaries_update(&mut view, &mut longtail_w);
         s.state_id = view.commit(sid.epoch_idx, Some(longtail_w.commit()));
     });
 }
