@@ -34,10 +34,11 @@ use crate::{
         bls_change_pool::BlsChangePool,
         exit_pool::ExitPool,
         fork_data_roots::ForkDataRoots,
-        gossip::{BatchedVote, ParkedEnvelope},
+        gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         payload_attestation_pool::PayloadAttestationPool,
         payload_execution_requests::PayloadExecutionRequests,
+        pending_envelopes::PendingEnvelopes,
         precomputed_epochs::PrecomputedEpochs,
         proposer_preparations::ProposerPreparations,
         seen_aggregates::SeenAggregates,
@@ -66,6 +67,7 @@ mod held_blocks;
 mod orphan_pool;
 mod payload_attestation_pool;
 mod payload_execution_requests;
+mod pending_envelopes;
 mod proposer_preparations;
 mod seen_aggregates;
 mod seen_proposer_preferences;
@@ -227,7 +229,7 @@ pub struct BeaconStateTile {
     sig_batch: bls::SigBatch,
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
-    pending_envelopes: FxHashMap<B256, ParkedEnvelope>,
+    pending_envelopes: PendingEnvelopes,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
     payload_execution_requests: PayloadExecutionRequests,
@@ -311,7 +313,7 @@ impl BeaconStateTile {
             stf_scratch: stf::StfScratch::new(val_cap),
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
-            pending_envelopes: root_map(),
+            pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
             payload_bids_pool: BidPool::default(),
             payload_execution_requests: PayloadExecutionRequests::default(),
             payload_attestation_pool: PayloadAttestationPool::default(),
@@ -610,10 +612,6 @@ impl BeaconStateTile {
     }
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
-        debug_assert!(
-            !self.pending_envelopes.contains_key(&head.observation.root),
-            "Status would describe a head whose envelope is still pending"
-        );
         let event = self.status_event(head);
         let moved = self.emitted_head.is_some_and(|emitted| emitted.root != head.observation.root);
         self.emitted_head = Some(head.observation);

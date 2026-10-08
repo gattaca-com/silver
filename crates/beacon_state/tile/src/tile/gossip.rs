@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
-    SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
+    TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -129,11 +129,6 @@ impl PreparedVote {
             Self::Ptc(p) => (2, p.validator, p.slot, 0),
         }
     }
-}
-
-pub(super) struct ParkedEnvelope {
-    pub(super) read: TRead,
-    from_disk: bool,
 }
 
 pub(super) enum EnvelopeCheck {
@@ -417,7 +412,7 @@ impl BeaconStateTile {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
                 Err(feedback @ Feedback::RequestEnvelope { block_root, att_slot }) => {
-                    producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
+                    self.pending_envelopes.request(block_root, att_slot, producers);
                     Self::local_verdict(&vote, feedback, producers);
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
@@ -1111,7 +1106,7 @@ impl BeaconStateTile {
         let (block_root, state_id) = match self.validate_execution_payload_envelope(ssz) {
             EnvelopeCheck::Ready { block_root, state_id } => (block_root, state_id),
             EnvelopeCheck::AwaitBlock(block_root) => {
-                self.buffer_pending_envelope(block_root, acquired, false);
+                self.pending_envelopes.park(block_root, acquired, false);
                 return Feedback::Ignore;
             }
             EnvelopeCheck::Ignore => return Feedback::Ignore,
@@ -1142,6 +1137,11 @@ impl BeaconStateTile {
             None => return Feedback::reject("envelope bid versioned hashes"),
         };
 
+        if hash_count > 0 && self.columns_pending(&block_root) {
+            self.pending_envelopes.park(block_root, acquired, false);
+            return Feedback::Accept;
+        }
+
         self.mark_envelope_verified(block_root, ssz);
         producers.produce(EngineReq::NewPayloadEnvelope(EngineNewPayloadEnvelopeReq {
             data: acquired.to_read(),
@@ -1159,32 +1159,13 @@ impl BeaconStateTile {
         Feedback::Accept
     }
 
-    pub(super) fn buffer_pending_envelope(
-        &mut self,
-        block_root: B256,
-        read: TRead,
-        from_disk: bool,
-    ) {
-        let has_room = self.pending_envelopes.len() < self.pending_bounds.max_dc ||
-            self.pending_envelopes.contains_key(&block_root);
-        if !has_room {
-            silver_log::warn!(
-                block = hex32(&block_root),
-                cap = self.pending_bounds.max_dc,
-                "pending-envelope buffer full; envelope dropped"
-            );
-            return;
-        }
-        self.pending_envelopes.insert(block_root, ParkedEnvelope { read, from_disk });
-    }
-
     pub(super) fn drain_pending_envelope(
         &mut self,
         block_root: B256,
         slot: Slot,
         producers: &mut Producers,
     ) {
-        let Some(parked) = self.pending_envelopes.remove(&block_root) else {
+        let Some(parked) = self.pending_envelopes.take(&block_root) else {
             return;
         };
 
@@ -1194,7 +1175,7 @@ impl BeaconStateTile {
                 slot,
                 "parked envelope lapped; refetching"
             );
-            producers.produce(SyncNeed::missing_envelope(block_root, slot));
+            self.pending_envelopes.request(block_root, slot, producers);
             return;
         };
 
@@ -1610,7 +1591,7 @@ impl BeaconStateTile {
                 );
             }
             Feedback::RequestEnvelope { block_root, att_slot } => {
-                producers.produce(SyncNeed::missing_envelope(block_root, att_slot));
+                self.pending_envelopes.request(block_root, att_slot, producers);
                 Self::local_verdict(&m, feedback, producers);
             }
             Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {

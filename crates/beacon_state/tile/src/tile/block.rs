@@ -288,8 +288,15 @@ impl BeaconStateTile {
         !matches!(self.sync_target, SyncUpdate::SyncingFinalized { .. })
     }
 
-    fn waits_for_columns(&self, parsed: &ParsedBlock) -> bool {
-        self.da_required() && parsed.has_data_columns && !self.held.is_available(&parsed.block_root)
+    /// Gloas checks data availability on the payload envelope, not the block.
+    pub(super) fn waits_for_columns(&self, parsed: &ParsedBlock) -> bool {
+        !parsed.fork.is_gloas() &&
+            parsed.has_data_columns &&
+            self.columns_pending(&parsed.block_root)
+    }
+
+    pub(super) fn columns_pending(&self, block_root: &B256) -> bool {
+        self.da_required() && !self.held.is_available(block_root)
     }
 
     pub(super) fn replay_block(&mut self, read: TCacheRead) {
@@ -351,7 +358,7 @@ impl BeaconStateTile {
                     block = hex32(&block_root),
                     "replayed envelope parked until its block imports"
                 );
-                self.buffer_pending_envelope(block_root, acquired, true);
+                self.pending_envelopes.park(block_root, acquired, true);
             }
             EnvelopeCheck::Ignore | EnvelopeCheck::Reject => {
                 silver_log::warn!("replayed on-disk envelope rejected")
@@ -441,6 +448,7 @@ impl BeaconStateTile {
     ) {
         let Some(staged) = self.held.mark_available(block_root, slot) else {
             silver_log::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
+            self.drain_pending_envelope(block_root, slot, producers);
             return;
         };
         let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;
@@ -607,8 +615,6 @@ impl BeaconStateTile {
             self.refresh_justified_balances();
             self.fork_choice.set_proposer_boost(parsed.block_root);
         }
-
-        self.held.discard_available(&parsed.block_root);
 
         // Adopt the new block before recompute so `lift_checkpoints` reads ITS
         // post-state checkpoints — an epoch-boundary block's justified advance
