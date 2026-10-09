@@ -1,6 +1,6 @@
 import LeanBlsSimd.Refines.Constants
 import LeanBlsSimd.Refines.Loop
-import LeanBlsSimd.Proofs.Vector
+import LeanBlsSimd.Proofs.Pow
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_bls_simd
@@ -19,6 +19,10 @@ model. `Lane.reduce_row_eq` restates the model in the Rust order, by commutativi
 `Fp8.mul_refines` chains the sixteen rows and the carry loop, each in the `fromLanes` form, so
 lane `l` of the generated `mul` is `Lane.mul` on lane `l` of its inputs. It needs no precondition:
 the model wraps modulo 2^64 as the intrinsics do, and no index depends on the inputs.
+
+The window loop of `pow_p_minus_3_over_4` counts down from 94 in the Rust and folds over
+`(List.range 94).reverse` in the model; `loop_countdown` bridges the two. Its table lookups stay in
+bounds because every window is below 16 (`windows_lt`).
 -/
 
 namespace LeanBlsSimd
@@ -619,5 +623,77 @@ theorem Fp8.is_larger_root_mask_refines (self : fp8.Fp8) :
   simp [fp8.Fp8.is_larger_root_mask, Fp8.to_plain_refines, Fp8.load_refines,
     HALF_P_MINUS_1_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines, Function.uncurry_def,
     Simd.borrowed_refines, Fp8.is_larger_root_mask, toFp8]
+
+theorem Fp8.pow_table_refines (self : fp8.Fp8) (T : Vector Fp8 16) :
+    fp8.Fp8.pow_p_minus_3_over_4_loop0 { start := 2#usize, «end» := 16#usize } self
+        (toArray toFp8 T) =
+      ok (toArray toFp8 (((List.finRange 16).drop 2).foldl
+        (fun table (k : Fin 16) => table.set k (table[k.val - 1].mul (ofFp8 self))) T)) := by
+  unfold fp8.Fp8.pow_p_minus_3_over_4_loop0
+  rw [loop_range_inv (n := 16) _ 16#usize rfl (toArray toFp8)
+    (fun table (k : Fin 16) => table.set k (table[k.val - 1].mul (ofFp8 self))) (toArray toFp8)
+    (fun j _ => 2 ≤ j) (fun _ _ h => by omega) ?_ ?_ 2#usize T (by decide)
+    (show 2 ≤ (2#usize).val by decide)]
+  · rfl
+  · intro r m he hs hinv hn
+    simp_body fp8.Fp8.pow_p_minus_3_over_4_loop0.body hn
+  · intro r r' m j he hs he' hs' hinv hn
+    have hj : r.start.val < 16 := by rw [hs]; exact j.isLt
+    simp_body fp8.Fp8.pow_p_minus_3_over_4_loop0.body hn
+    rw [sub_ok _ _ (by simp; omega)]
+    simp only [bind_tc_ok]
+    rw [index_usize_toArray _ _ _ _ (by simp; omega)]
+    simp only [bind_tc_ok, Fp8.mul_refines, ofFp8_toFp8, UScalar.ofNatCore_val_eq]
+    rw [update_eq _ _ _ hj]
+    refine congrArg (fun s => ok (cont (r', s))) ?_
+    exact toArray_set_of_eq _ _ _ _ _ j.isLt _ _ hs (by simp [hs])
+
+theorem Fp8.pow_windows_refines (T : Vector Fp8 16) (r : Fp8) (w : Usize) (n : ℕ)
+    (hwn : w.val = n) (hn : n ≤ 95) :
+    fp8.Fp8.pow_p_minus_3_over_4_loop1 (toArray toFp8 T) (toFp8 r) w =
+      ok (toFp8 ((List.range n).reverse.foldl (Fp8.windowStep T) r)) := by
+  unfold fp8.Fp8.pow_p_minus_3_over_4_loop1
+  refine loop_countdown _ (fun m c => (toFp8 m, c)) (Fp8.windowStep T) toFp8 n ?_ ?_ w r hwn
+  · intro m c hc
+    simp [fp8.Fp8.pow_p_minus_3_over_4_loop1.body, hc]
+  · intro m c c' hc hcn
+    simp only [fp8.Fp8.pow_p_minus_3_over_4_loop1.body]
+    rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
+    have hc'v : c'.val < 95 := by omega
+    have e : (UScalar.ofNatCore (c.val - (1#usize).val) (by have := c.hBounds; omega) : Usize) =
+        c' :=
+      UScalar.eq_of_val_eq (by simp; omega)
+    simp only [e, bind_tc_ok, Fp8.square_refines, ofFp8_toFp8,
+      P_MINUS_3_OVER_4_WINDOWS_index c' hc'v, lift]
+    have hd := windows_lt c'.val (List.mem_range.mpr hc'v)
+    simp only [Fp8.windowStep, cast_Usize_ofNatCore, usize_ofNatCore_bne_zero, decide_eq_true_eq]
+    split_ifs with hd0
+    · rw [index_usize_toArray _ _ _ _ (by rw [UScalar.ofNatCore_val_eq]; exact hd)]
+      simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, Fp8.mul_refines, ofFp8_toFp8,
+        getElem!_pos T P_MINUS_3_OVER_4_WINDOWS[c'.val]! hd]
+    · rfl
+
+theorem Fp8.pow_p_minus_3_over_4_refines (self : fp8.Fp8) :
+    fp8.Fp8.pow_p_minus_3_over_4 self = ok (toFp8 (ofFp8 self).pow_p_minus_3_over_4) := by
+  unfold fp8.Fp8.pow_p_minus_3_over_4
+  simp only [Fp8.one_refines, bind_tc_ok]
+  rw [← toArray_replicate toFp8 Fp8.one (show (16#usize).val = 16 from rfl),
+    update_eq _ _ _ (by decide),
+    toArray_set_of_eq toFp8 _ _ 1#usize 1 (by decide) (ofFp8 self) self rfl (by simp)]
+  simp only [bind_tc_ok, Fp8.pow_table_refines]
+  have h94 : P_MINUS_3_OVER_4_WINDOWS[94]! < 16 := windows_lt 94 (by simp)
+  simp only [bind_tc_ok, P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide), lift,
+    cast_Usize_ofNatCore]
+  rw [index_usize_toArray _ _ _ _ (by rw [UScalar.ofNatCore_val_eq]; exact h94)]
+  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  rw [Fp8.pow_windows_refines _ _ _ _ rfl (by decide),
+    ← getElem!_pos _ P_MINUS_3_OVER_4_WINDOWS[94]! h94]
+  unfold Fp8.windowStep
+  simp only [Fp8.pow_p_minus_3_over_4, UScalar.ofNatCore_val_eq]
+
+theorem Fp8.sqrt_candidate_refines (self : fp8.Fp8) :
+    fp8.Fp8.sqrt_candidate self = ok (toFp8 (ofFp8 self).sqrt_candidate) := by
+  simp [fp8.Fp8.sqrt_candidate, Fp8.pow_p_minus_3_over_4_refines, Fp8.mul_refines,
+    Fp8.sqrt_candidate]
 
 end LeanBlsSimd

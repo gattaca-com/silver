@@ -60,6 +60,34 @@ theorem P_MINUS_3_OVER_4_WINDOWS_refines :
 theorem Z_BITS_refines : constants.Z_BITS.val.map UScalar.val = Z_BITS := by
   rw [constants.Z_BITS]; rfl
 
+theorem P_MINUS_3_OVER_4_WINDOWS_lt (w : ℕ) (hw : w < 95) :
+    P_MINUS_3_OVER_4_WINDOWS[w]! < 2 ^ UScalarTy.U8.numBits := by
+  rw [← P_MINUS_3_OVER_4_WINDOWS_refines, getElem!_map_val _ _ hw]
+  exact UScalar.hBounds _
+
+theorem P_MINUS_3_OVER_4_WINDOWS_index (w : Usize) (hw : w.val < 95) :
+    Array.index_usize constants.P_MINUS_3_OVER_4_WINDOWS w =
+      ok (UScalar.ofNatCore P_MINUS_3_OVER_4_WINDOWS[w.val]!
+        (P_MINUS_3_OVER_4_WINDOWS_lt _ hw)) := by
+  rw [index_usize_eq _ _ hw]
+  congr 1
+  apply UScalar.eq_of_val_eq
+  simp only [UScalar.ofNatCore_val_eq]
+  rw [← P_MINUS_3_OVER_4_WINDOWS_refines, getElem!_map_val _ _ hw]
+
+theorem Z_BITS_lt (k : ℕ) (hk : k < 6) : Z_BITS[k]! < 2 ^ UScalarTy.U32.numBits := by
+  rw [← Z_BITS_refines, getElem!_map_val _ _ hk]
+  exact UScalar.hBounds _
+
+theorem Z_BITS_index (k : Usize) (hk : k.val < 6) :
+    Array.index_usize constants.Z_BITS k =
+      ok (UScalar.ofNatCore Z_BITS[k.val]! (Z_BITS_lt _ hk)) := by
+  rw [index_usize_eq _ _ hk]
+  congr 1
+  apply UScalar.eq_of_val_eq
+  simp only [UScalar.ofNatCore_val_eq]
+  rw [← Z_BITS_refines, getElem!_map_val _ _ hk]
+
 theorem LANES_refines : fp8.LANES = 8#usize := by rw [fp8.LANES]
 
 theorem U64_MAX_refines : core.num.U64.MAX = toU64 0xffffffffffffffff := rfl

@@ -161,6 +161,12 @@ theorem vector_set!_eq {α : Type} {m : ℕ} (v : Vector α m) (k : ℕ) (hk : k
   apply Vector.toArray_inj.mp
   simp [Vector.set!, Vector.set, Array.set!, Array.setIfInBounds, hk]
 
+theorem getElem!_map_val {ty : UScalarTy} {n : Usize} (a : Array (UScalar ty) n) (j : ℕ)
+    (hj : j < n.val) :
+    (a.val.map UScalar.val)[j]! = (a.val[j]'(by rw [a.property]; exact hj)).val := by
+  rw [getElem!_pos (a.val.map UScalar.val) j (by simp [a.property, hj])]
+  simp
+
 section Arith
 
 variable {ty : UScalarTy}
@@ -261,6 +267,18 @@ theorem two_pow_32_le_usize : 2 ^ 32 ≤ 2 ^ UScalarTy.Usize.numBits := by
 @[simp] theorem cast_Usize_val (x : U32) : (UScalar.cast .Usize x).val = x.val := by
   rw [UScalar.cast_val_eq]
   exact Nat.mod_eq_of_lt (lt_of_lt_of_le x.hBounds two_pow_32_le_usize)
+
+theorem cast_Usize_ofNatCore (d : ℕ) (h : d < 2 ^ UScalarTy.U8.numBits) :
+    UScalar.cast .Usize (UScalar.ofNatCore d h : U8) =
+      UScalar.ofNatCore d (lt_of_lt_of_le h (le_trans (by decide) two_pow_32_le_usize)) := by
+  apply UScalar.eq_of_val_eq
+  rw [UScalar.cast_val_eq, UScalar.ofNatCore_val_eq, UScalar.ofNatCore_val_eq]
+  exact Nat.mod_eq_of_lt (lt_of_lt_of_le h (le_trans (by decide) two_pow_32_le_usize))
+
+theorem usize_ofNatCore_bne_zero (d : ℕ) (h : d < 2 ^ UScalarTy.Usize.numBits) :
+    ((UScalar.ofNatCore d h : Usize) != 0#usize) = decide (d ≠ 0) := by
+  rw [Bool.eq_iff_iff]
+  simp [bne_iff_ne, UScalar.eq_equiv]
 
 theorem usize_add_ok (x y : Usize) (h : x.val + y.val < 2 ^ 32) :
     x + y = ok (UScalar.ofNatCore (x.val + y.val) (lt_of_lt_of_le h two_pow_32_le_usize)) :=

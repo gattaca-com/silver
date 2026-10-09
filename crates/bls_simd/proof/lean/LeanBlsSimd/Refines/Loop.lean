@@ -1,11 +1,15 @@
 import LeanBlsSimd.Extracted.Funs
 
 /-!
-# Range loops
+# Loops
 
 Aeneas translates `for j in 0..n` into a `loop` over a `Range Usize`. When each iteration of the
 body performs one step `g`, `loop_range` equates the loop with `(List.finRange n).foldl g`.
 `loop_range_inv` also threads an invariant `inv j` that holds before step `j`.
+
+A countdown `while c > 0 { c -= 1; ... }` keeps its counter in the loop state. When each
+iteration performs step `g` at the decremented counter, `loop_countdown` equates the loop with
+`(List.range n).reverse.foldl g`, where `n` is the counter's start.
 -/
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -109,5 +113,23 @@ theorem foldl_finRange_inv {M : Type} {n : ℕ} (g : M → Fin n → M) (inv : �
     rw [List.drop_eq_getElem_cons (by simp [hlt])]
     simp only [List.foldl_cons, List.getElem_finRange]
     exact ih (k + 1) (by omega) _ (by omega) (hinv m ⟨k, hlt⟩ hm)
+
+theorem loop_countdown {S β M : Type} {ty : UScalarTy}
+    (body : S → Result (ControlFlow S β)) (enc : M → UScalar ty → S) (g : M → ℕ → M)
+    (fin : M → β) (n : ℕ)
+    (hdone : ∀ m (c : UScalar ty), c.val = 0 → body (enc m c) = ok (done (fin m)))
+    (hcont : ∀ m (c c' : UScalar ty), c.val = c'.val + 1 → c.val ≤ n →
+      body (enc m c) = ok (cont (enc (g m c'.val) c')))
+    (c : UScalar ty) (m : M) (hc : c.val = n) :
+    loop body (enc m c) = ok (fin ((List.range n).reverse.foldl g m)) := by
+  induction n generalizing c m with
+  | zero => rw [loop.eq_1, hdone m c hc]; rfl
+  | succ n ih =>
+    let c' : UScalar ty := UScalar.ofNatCore n (by have := c.hBounds; omega)
+    have hc' : c'.val = n := UScalar.ofNatCore_val_eq _
+    rw [loop.eq_1, hcont m c c' (by omega) (by omega)]
+    simp only
+    rw [ih (fun m c c' h1 h2 => hcont m c c' h1 (by omega)) c' _ hc']
+    simp [List.range_succ, hc']
 
 end LeanBlsSimd
