@@ -567,4 +567,57 @@ theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
   -- in `t[8]` against `t[LIMBS]`.
   rfl
 
+theorem Fp8.square_refines (self : fp8.Fp8) :
+    fp8.Fp8.square self = ok (toFp8 (ofFp8 self).square) := by
+  simp [fp8.Fp8.square, Fp8.mul_refines, Fp8.square]
+
+theorem Fp8.half_refines (self : fp8.Fp8) :
+    fp8.Fp8.half self = ok (toFp8 (ofFp8 self).half) := by
+  simp [fp8.Fp8.half, HALF_MONT_refines, Fp8.splat_limbs_refines, Fp8.mul_refines, Fp8.half]
+
+theorem Fp8.from_plain_refines (values : Array (Array U64 8#usize) 8#usize) :
+    fp8.Fp8.from_plain values = ok (toFp8 (Fp8.from_plain (ofArray (ofArray ofU64) values))) := by
+  simp [fp8.Fp8.from_plain, Fp8.load_refines, R2_MOD_P_refines, Fp8.splat_limbs_refines,
+    Fp8.mul_refines, Fp8.from_plain]
+
+theorem Fp8.to_plain_refines (self : fp8.Fp8) :
+    fp8.Fp8.to_plain self = ok (toArray (toArray toU64) (ofFp8 self).to_plain) := by
+  simp [fp8.Fp8.to_plain, ONE_PLAIN_refines, Fp8.splat_limbs_refines, Fp8.mul_refines,
+    Fp8.canonical_refines, Fp8.store_refines, Fp8.to_plain]
+
+theorem Fp8.to_blst_limbs_loop_refines (t : Array (Array U64 8#usize) 8#usize) :
+    fp8.Fp8.to_blst_limbs_loop { start := 0#usize, «end» := fp8.LANES } t
+        (Array.repeat 8#usize (Array.repeat 6#usize 0#u64)) =
+      ok (toArray (toArray toU64) (.ofFn fun lane : Fin 8 =>
+        pack64 (ofArray (ofArray ofU64) t (m := 8))[lane])) := by
+  unfold fp8.Fp8.to_blst_limbs_loop
+  rw [LANES_refines, show Array.repeat 8#usize (Array.repeat 6#usize 0#u64) =
+    toArray (toArray toU64) (Vector.replicate 8 (Vector.replicate 6 0)) from
+    by simp [toArray_replicate]; rfl]
+  refine loop_range (n := 8) _ 8#usize rfl (toArray (toArray toU64))
+    (fun out lane => out.set lane (pack64 (ofArray (ofArray ofU64) t (m := 8))[lane]))
+    (toArray (toArray toU64)) (Vector.replicate 8 (Vector.replicate 6 0)) _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body fp8.Fp8.to_blst_limbs_loop.body hn
+  · intro r r' m lane he hs he' hs' hn
+    have hl : r.start.val < (8#usize).val := by rw [hs]; exact lane.isLt
+    simp_body fp8.Fp8.to_blst_limbs_loop.body hn
+    simp only [index_usize_eq _ _ hl, bind_tc_ok, pack64_refines, update_eq _ _ _ hl]
+    refine congrArg (fun s => ok (cont (r', s))) ?_
+    apply Subtype.ext
+    simp [hs, List.map_set, Vector.toList_set]
+  · simp [foldl_set_ofFn]
+
+theorem Fp8.to_blst_limbs_refines (self : fp8.Fp8) :
+    fp8.Fp8.to_blst_limbs self = ok (toArray (toArray toU64) (ofFp8 self).to_blst_limbs) := by
+  simp [fp8.Fp8.to_blst_limbs, TWO_POW_384_MOD_P_refines, Fp8.splat_limbs_refines,
+    Fp8.mul_refines, Fp8.canonical_refines, Fp8.store_refines, Fp8.to_blst_limbs_loop_refines,
+    Fp8.to_blst_limbs]
+
+theorem Fp8.is_larger_root_mask_refines (self : fp8.Fp8) :
+    fp8.Fp8.is_larger_root_mask self = ok (toU8 (ofFp8 self).is_larger_root_mask) := by
+  simp [fp8.Fp8.is_larger_root_mask, Fp8.to_plain_refines, Fp8.load_refines,
+    HALF_P_MINUS_1_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines, Function.uncurry_def,
+    Simd.borrowed_refines, Fp8.is_larger_root_mask, toFp8]
+
 end LeanBlsSimd
