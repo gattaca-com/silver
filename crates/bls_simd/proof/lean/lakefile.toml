@@ -1,0 +1,26 @@
+name = "lean_bls_simd"
+defaultTargets = ["LeanBlsSimd"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+# The tag that cryptography-specs pins.
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "v4.29.1"
+
+[[require]]
+name = "EthCryptographySpecs"
+git = "https://github.com/ethereum/cryptography-specs"
+rev = "d1331f02e308fe6d0aedda8601e4d5b0fc360318"
+
+[[lean_lib]]
+name = "LeanBlsSimd"
+
+# Not a default target: `lake build` does not need it. Run it with
+# `lake exe differential Test/decompress_g2_vectors.txt`.
+[[lean_exe]]
+name = "differential"
+root = "Test.Main"
