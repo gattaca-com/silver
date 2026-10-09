@@ -1,15 +1,20 @@
-import LeanBlsSimd.Refines.Fp8
-import LeanBlsSimd.Proofs.Decode
+import LeanBlsSimd.Refines.G2x8
+import LeanBlsSimd.Proofs.DecompressG2
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_bls_simd
 
 /-!
-# `decompress_g2.rs`, except `decompress`
+# `decompress_g2.rs`
 
 The blst and batch types convert field by field. `fp_words` reads a slice, so its theorem assumes
 the slice holds `FP_BYTES` bytes. `decode_refines` uses `decode_eq`, which states the model's
 `decode` as a fold of `decodeStep`.
+
+`decompress_refines` uses `decompress_eq`, which states the model's `decompress` through `xOf`,
+`rhsOf` and `tail`; generalising over their applications keeps the terms small. The model writes
+`points` in a fold over the batch, the generated loop over the points array alone. Both write
+every lane, so each ends in the `Vector.ofFn` of the lane's point.
 -/
 
 namespace LeanBlsSimd
@@ -302,6 +307,77 @@ theorem decode_refines (inputs : Array (Array U8 96#usize) 8#usize) :
 
 theorem default_refines :
     blst.blst_p2_affine.Insts.CoreDefaultDefault.default = ok (toBlstP2Affine default) := rfl
+
+theorem decompress_loop_refines (a : Array blst.blst_p2_affine 8#usize)
+    (x0 x1 y0 y1 : Array (Array U64 6#usize) 8#usize) :
+    decompress_g2.decompress_loop { start := 0#usize, «end» := fp8.LANES } a x0 x1 y0 y1 =
+      ok (toArray toBlstP2Affine (.ofFn fun lane : Fin 8 => {
+        x := { fp := #v[{ l := (ofArray (ofArray ofU64) x0 (m := 8))[lane] },
+          { l := (ofArray (ofArray ofU64) x1 (m := 8))[lane] }] },
+        y := { fp := #v[{ l := (ofArray (ofArray ofU64) y0 (m := 8))[lane] },
+          { l := (ofArray (ofArray ofU64) y1 (m := 8))[lane] }] } })) := by
+  obtain ⟨A, rfl⟩ : ∃ A : Vector BlstP2Affine 8, a = toArray toBlstP2Affine A :=
+    ⟨ofArray ofBlstP2Affine a, (toArray_ofArray (by simp) a _ _).symm⟩
+  unfold decompress_g2.decompress_loop
+  rw [LANES_refines]
+  refine loop_range (n := 8) _ 8#usize rfl (toArray toBlstP2Affine)
+    (fun v (lane : Fin 8) => v.set lane {
+      x := { fp := #v[{ l := (ofArray (ofArray ofU64) x0 (m := 8))[lane] },
+        { l := (ofArray (ofArray ofU64) x1 (m := 8))[lane] }] },
+      y := { fp := #v[{ l := (ofArray (ofArray ofU64) y0 (m := 8))[lane] },
+        { l := (ofArray (ofArray ofU64) y1 (m := 8))[lane] }] } })
+    (toArray toBlstP2Affine) A _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body decompress_g2.decompress_loop.body hn
+  · intro r r' m lane he hs he' hs' hn
+    have hl : r.start.val < (8#usize).val := by rw [hs]; exact lane.isLt
+    simp_body decompress_g2.decompress_loop.body hn
+    simp only [index_usize_eq _ _ hl, bind_tc_ok, point_refines, update_eq _ _ _ hl]
+    refine congrArg (fun s => ok (cont (r', s))) ?_
+    apply Subtype.ext
+    simp [hs, List.map_set, Vector.toList_set]
+  · simp [foldl_set_ofFn]
+
+theorem foldl_points (f : Fin 8 → BlstP2Affine) (ls : List (Fin 8)) (b : Batch) :
+    ls.foldl (fun batch (lane : Fin 8) => { batch with points := batch.points.set lane (f lane) })
+        b =
+      { b with points := ls.foldl (fun v (lane : Fin 8) => v.set lane (f lane)) b.points } := by
+  induction ls generalizing b with
+  | nil => rfl
+  | cons j ls ih => simp only [List.foldl_cons, ih]
+
+theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
+    decompress_g2.decompress inputs = ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
+  unfold decompress_g2.decompress
+  rw [decompress_eq]
+  simp only [decode_refines, default_refines, bind_tc_ok, lift]
+  generalize decode (ofArray (ofArray ofU8) inputs) = D
+  rw [← toArray_replicate toBlstP2Affine default (show (8#usize).val = 8 from rfl)]
+  simp only [toDecoded, toU8_or, toU8_not, show (0#u8) = toU8 0 from rfl, toU8_inj,
+    Fp8.from_plain_refines, Fp8.splat_limbs_refines, FOUR_MONT_refines, bind_tc_ok,
+    ofArray_toArray_ofU64, ofArray_toArray_ofArray_ofU64]
+  rw [show Fp8.from_plain D.x0 = (xOf D).c0 from rfl, show Fp8.from_plain D.x1 = (xOf D).c1 from rfl]
+  generalize xOf D = X
+  simp only [Fp2x8.square_refines, Fp2x8.mul_refines, Fp2x8.add_refines, bind_tc_ok, ofFp2x8_mk,
+    ofFp8_toFp8, ofFp2x8_toFp2x8]
+  rw [show (X.square.mul X).add ⟨Fp8.splat_limbs (.ofList FOUR_MONT),
+    Fp8.splat_limbs (.ofList FOUR_MONT)⟩ = rhsOf X from rfl]
+  simp only [Fp2x8.sqrt_refines, bind_tc_ok, ofFp2x8_toFp2x8, Function.uncurry_def, Prod.map_fst,
+    Prod.map_snd]
+  generalize (rhsOf X).sqrt = S
+  obtain ⟨root, has⟩ := S
+  simp only [toU8_and, toU8_inj]
+  unfold tail
+  by_cases h1 : ~~~(D.invalid ||| D.undecided) = 0
+  · simp only [h1, if_true, toBatch]
+  simp only [h1, if_false]
+  by_cases h2 : has &&& ~~~(D.invalid ||| D.undecided) = 0
+  · simp only [h2, if_true, toBatch]
+  simp only [h2, if_false, tailFull, foldl_points, foldl_set_ofFn,
+    Fp2x8.is_larger_root_mask_refines, Fp2x8.neg_refines, Fp2x8.select_refines,
+    G2x8.scott_membership_refines, Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8,
+    ofFp2x8_toFp2x8, bind_tc_ok, toU8_xor, ofU8_toU8, decompress_loop_refines, toMembership,
+    toU8_and, toU8_or, toU8_not, toBatch, ofArray_toArray_ofArray_ofU64, ofFp2x8_mk]
 
 end DecompressG2
 

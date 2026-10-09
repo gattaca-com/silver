@@ -35,6 +35,7 @@ abbrev toU8 (x : UInt8) : U8 := ⟨x.toBitVec⟩
 
 @[simp] theorem toU8_and (a b : UInt8) : toU8 a &&& toU8 b = toU8 (a &&& b) := rfl
 @[simp] theorem toU8_or (a b : UInt8) : toU8 a ||| toU8 b = toU8 (a ||| b) := rfl
+@[simp] theorem toU8_xor (a b : UInt8) : toU8 a ^^^ toU8 b = toU8 (a ^^^ b) := rfl
 @[simp] theorem toU8_inj (a b : UInt8) : toU8 a = toU8 b ↔ a = b :=
   ⟨fun h => by simpa using congrArg ofU8 h, fun h => h ▸ rfl⟩
 @[simp] theorem toU64_and (a b : UInt64) : toU64 a &&& toU64 b = toU64 (a &&& b) := rfl
@@ -92,6 +93,11 @@ variable {α β : Type} {n : Usize} {m : ℕ}
 @[simp] theorem ofArray_toArray_ofU64 (v : Vector UInt64 m) (h : n.val = m) (h' : n.val = m) :
     ofArray ofU64 (toArray toU64 v h) h' = v :=
   ofArray_toArray (fun _ => rfl) v h h'
+
+@[simp] theorem ofArray_toArray_ofArray_ofU64 {k : Usize} {j : ℕ} (v : Vector (Vector UInt64 j) m)
+    (hk : k.val = j) (hk' : k.val = j) (h : n.val = m) (h' : n.val = m) :
+    ofArray (fun a => ofArray ofU64 a hk) (toArray (fun w => toArray toU64 w hk') v h) h' = v :=
+  ofArray_toArray (fun _ => ofArray_toArray_ofU64 _ _ _) v h h'
 
 theorem index_usize_eq (a : Array α n) (j : Usize) (hj : j.val < n.val) :
     Array.index_usize a j = ok (a.val[j.val]'(by rw [a.property]; exact hj)) := by
