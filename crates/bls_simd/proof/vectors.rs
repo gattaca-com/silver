@@ -1,8 +1,9 @@
 //! `decompress` on fixed batches, with every value it returns, recorded in
 //! `decompress_g2_vectors.txt`. The Lean model in `lean/` is checked against
 //! the same file, so while `replay_vectors` passes, the model and this crate
-//! agree on those batches. `write_vectors` regenerates the file. The format is
-//! documented in `lean/Test/Main.lean`.
+//! agree on those batches. `recorded_matches_blst` checks the recording itself
+//! against blst, on every lane the kernel decides. `write_vectors` regenerates
+//! the file. The format is documented in `lean/Test/Main.lean`.
 #![cfg(target_arch = "x86_64")]
 
 // The crate's unit tests use the parts this file does not.
@@ -17,7 +18,7 @@ use g2_cases::{G2_INFINITY, G2_KINDS, G2Cases, G2Kind, compress_g2, uncompress_g
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use silver_bls_simd::{
-    G2_COMPRESSED_LEN,
+    G2_COMPRESSED_LEN, blst_p2_affine,
     constants::P_U64,
     decompress_g2::{self, Batch},
     fp8::LANES,
@@ -47,11 +48,21 @@ impl Output {
             on_curve: batch.on_curve,
             valid: batch.valid,
             undecided: batch.undecided,
-            points: batch.points.map(|p| {
-                let limbs = [p.x.fp[0].l, p.x.fp[1].l, p.y.fp[0].l, p.y.fp[1].l];
-                std::array::from_fn(|i| limbs[i / 6][i % 6])
-            }),
+            points: batch.points.map(|p| point_words(&p)),
         }
+    }
+
+    /// Decided lanes whose result, as `lib.rs` reads it, differs from blst's
+    /// verdict on the same input.
+    fn blst_disagreements(&self, inputs: &[Encoding; LANES]) -> Vec<usize> {
+        (0..LANES)
+            .filter(|&lane| self.undecided & (1 << lane) == 0)
+            .filter(|&lane| {
+                let kernel = (self.valid & (1 << lane) != 0).then_some(self.points[lane]);
+                let blst = uncompress_in_g2_blst(&inputs[lane]).map(|p| point_words(&p));
+                kernel != blst
+            })
+            .collect()
     }
 
     fn write(&self, out: &mut String) {
@@ -583,6 +594,11 @@ impl Cases {
     }
 }
 
+fn point_words(p: &blst_p2_affine) -> [u64; 24] {
+    let limbs = [p.x.fp[0].l, p.x.fp[1].l, p.y.fp[0].l, p.y.fp[1].l];
+    std::array::from_fn(|i| limbs[i / 6][i % 6])
+}
+
 fn generator() -> Encoding {
     compress_g2(unsafe { &*blst_p2_generator() })
 }
@@ -660,6 +676,27 @@ fn replay_vectors() {
     );
 }
 
+/// Needs no IFMA: it reads the recorded outputs, not the kernel's. With
+/// `replay_vectors`, it shows the current kernel agrees with blst on the file.
+#[test]
+fn recorded_matches_blst() {
+    let text = std::fs::read_to_string(VECTORS).expect(VECTORS);
+    let disagreements: Vec<String> = Recorded::parse_file(&text)
+        .iter()
+        .enumerate()
+        .filter_map(|(index, batch)| {
+            let lanes = batch.output.blst_disagreements(&batch.inputs);
+            (!lanes.is_empty()).then(|| format!("batch {index} ({}): lanes {lanes:?}", batch.kind))
+        })
+        .collect();
+    assert!(
+        disagreements.is_empty(),
+        "proof/decompress_g2_vectors.txt records kernel results that differ from blst on lanes the \
+         kernel decided, so it was written from a kernel with a bug:\n{}",
+        disagreements.join("\n")
+    );
+}
+
 #[test]
 #[ignore = "rewrites proof/decompress_g2_vectors.txt; needs AVX-512 IFMA"]
 fn write_vectors() {
@@ -674,6 +711,8 @@ fn write_vectors() {
     for (index, case) in cases.iter().enumerate() {
         let output = Output::of(&case.inputs);
         case.expect.check(&case.kind, &output);
+        let lanes = output.blst_disagreements(&case.inputs);
+        assert!(lanes.is_empty(), "{}: lanes {lanes:?} differ from blst", case.kind);
         writeln!(out, "batch {index} {}", case.kind).unwrap();
         if !case.note.is_empty() {
             writeln!(out, "# {}", case.note).unwrap();
