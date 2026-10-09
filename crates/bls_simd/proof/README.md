@@ -98,7 +98,7 @@ cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors 
 
 ## The Rust this proof covers
 
-`lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` are generated from these files of `crates/bls_simd/src`, and the model transcribes them. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
+`lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` are generated from the following Rust files in `crates/bls_simd/src`, which the model also transcribes. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
 
 | File | sha256 | git blob |
 |---|---|---|
@@ -134,7 +134,7 @@ AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 
 Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment. The comparison masks the line numbers of each such span and compares everything else exactly, comment delimiters included. A change to Rust comments or formatting therefore shows no drift, and leaves the proof valid. With `--check`, the script leaves the tree alone: it prints any other difference and exits 1, or exits 0 when there is none.
 
-If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean` and `Funs.lean`, and follow `lean/README.md`. Rebuild and fix the refinement proofs in `lean/LeanBlsSimd/Refines/` that break. Update the model and `Proofs/` only where the change alters behaviour. Then rerun the controls, the Lean differential test and the Rust vector tests, `replay_vectors` and `recorded_matches_blst`, and update the table above. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
+If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean` and `Funs.lean`, and follow `lean/README.md`. Rebuild and fix the refinement proofs in `lean/LeanBlsSimd/Refines/` that break. Update the model and `Proofs/` only where the change alters behaviour. Then rerun the controls, the Lean differential test and the Rust vector tests (`replay_vectors` and `recorded_matches_blst`), and update the table above. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
 ## Building and checking the proof
 
