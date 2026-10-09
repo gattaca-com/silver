@@ -121,6 +121,7 @@ impl Recorded {
 
         next("seed");
         let count: usize = next("batches")[0].parse().expect("batch count");
+        assert!(count > 0, "{VECTORS}: no batches");
         let recorded: Vec<Recorded> = (0..count)
             .map(|index| {
                 let batch = next("batch");
