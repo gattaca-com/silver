@@ -351,10 +351,10 @@ theorem pointsLoop_points (f : Fin 8 → BlstP2Affine) (l : Fin 8) : ∀ (ls : L
 def decompressFull (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
   let decoded := decode inputs
   let x := xOf decoded
-  let root := (rhsOf x).sqrt
-  tail decoded x root.1 {
+  let rootPair := (rhsOf x).sqrt
+  tail decoded x rootPair.1 {
     points := .replicate 8 default,
-    on_curve := root.2 &&& ~~~(decoded.invalid ||| decoded.undecided),
+    on_curve := rootPair.2 &&& ~~~(decoded.invalid ||| decoded.undecided),
     valid := 0,
     undecided := decoded.undecided }
 
