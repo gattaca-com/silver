@@ -2,17 +2,17 @@ import LeanBlsSimd.Model.DecompressG2
 import LeanBlsSimd.Extracted.Funs
 
 /-!
-# Differential test of `DecompressG2.decompress` against the Rust
+# Differential test of the Lean `decompress` functions against the Rust
 
 `lake exe differential <file>` runs the Lean model of `decompress_g2::decompress` on every batch
 of a vector file and compares its result with the one the Rust returned, field by field. The
-file is `../decompress_g2_vectors.txt`, written by `../vectors.rs`. The
-model is a hand transcription of the Rust. The proofs concern the model, so this test is the
-evidence that the model computes what the Rust computes, on the inputs in the file.
+file is `../decompress_g2_vectors.txt`, written by `../vectors.rs`. The model is a hand
+transcription of the Rust.
 
 It then compares `silver_bls_simd.decompress_g2.decompress` the same way. Aeneas generates that
-function from the Rust, over the hand-written externals in `LeanBlsSimd/Extracted/`. On the
-inputs in the file, this tests the externals and the translation.
+function from the Rust, over the hand-written externals in `LeanBlsSimd/Extracted/`. The proofs
+show it equal to the model on every input, and the headline theorem concerns it. On the inputs in
+the file, this tests the externals and the translation against the compiled Rust.
 
 The exit status is 0 when every batch matches, 1 when any value differs, and 2 when the file
 cannot be read or is malformed or incomplete: a missing header or `endfile` line, no batch, a

@@ -7,8 +7,11 @@ import LeanBlsSimd.Model.Fp2x8
 Points are Jacobian triples over `Fp2x8`, one per lane. `Membership` is the struct of `lib.rs`
 that `scott_membership` returns. Rust's `!` on a mask is `~~~`.
 
-`times_minus_z` loops over `(0..Z_BITS[0]).rev()` with a mutable point and mask; here the loop is
-a fold over `(List.range Z_BITS[0]!).reverse` whose state is that pair.
+`times_minus_z` counts `bit` down from `Z_BITS[0]` in a `while` loop with a mutable point and
+mask. After each decrement it doubles, and it adds where `bit` equals one of `Z_BITS[1]` to
+`Z_BITS[5]`. Here the loop is a fold over `(List.range Z_BITS[0]!).reverse`, the values `bit`
+takes after its decrement, and its state is that pair. The five comparisons are
+`Z_BITS.contains bit`: that also tests `Z_BITS[0]`, which `bit` stays below.
 -/
 
 namespace LeanBlsSimd
