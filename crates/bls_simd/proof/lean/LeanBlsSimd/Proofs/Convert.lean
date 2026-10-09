@@ -134,22 +134,6 @@ theorem unpack52_spec (x : Vector UInt64 6) :
 theorem set!_eq (xs : Vector UInt64 6) (i : ℕ) (x : UInt64) : xs.set! i x = xs.setIfInBounds i x :=
   rfl
 
-/-- The state of `pack64`'s loop: words, the `u128` accumulator, its bit count, the next word. -/
-abbrev PackState := Vector UInt64 6 × BitVec 128 × ℕ × ℕ
-
-/-- The loop body of `pack64`. -/
-def packStep (x : Limbs) : PackState → Fin LIMBS → PackState :=
-  fun (out, acc, acc_bits, word) (j : Fin LIMBS) =>
-    let acc := acc ||| x[j].toBitVec.setWidth 128 <<< acc_bits
-    let acc_bits := acc_bits + LIMB_BITS
-    if acc_bits ≥ 64 then
-      (out.set! word (.ofBitVec (acc.setWidth 64)), acc >>> 64, acc_bits - 64, word + 1)
-    else (out, acc, acc_bits, word)
-
-theorem pack64_eq (x : Limbs) : pack64 x =
-    let (out, acc, _, word) := (List.finRange LIMBS).foldl (packStep x) (.replicate 6 0, 0, 0, 0)
-    if h : word < 6 then out.set word (.ofBitVec (acc.setWidth 64)) h else out := rfl
-
 theorem limb_shift_lt (y : UInt64) {b : ℕ} (hb : b < 64) : y.toNat * 2 ^ b < 2 ^ 127 := by
   have hb2 : 2 ^ b ≤ 2 ^ 63 := Nat.pow_le_pow_right (by norm_num) (by omega)
   calc y.toNat * 2 ^ b < 2 ^ 64 * 2 ^ 63 :=
@@ -209,7 +193,7 @@ theorem pack64_spec {a : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52) :
     val64 (pack64 a) = val a % 2 ^ 384 := by
   have h0 := ha 0; have h1 := ha 1; have h2 := ha 2; have h3 := ha 3
   have h4 := ha 4; have h5 := ha 5; have h6 := ha 6; have h7 := ha 7
-  rw [pack64_eq, Lane.finRange_LIMBS, show (0 : BitVec 128) = BitVec.ofNat 128 0 from rfl]
+  rw [pack64, Lane.finRange_LIMBS, show (0 : BitVec 128) = BitVec.ofNat 128 0 from rfl]
   rw [foldl_pack_keep, foldl_pack_emit, foldl_pack_emit, foldl_pack_emit, foldl_pack_emit,
     foldl_pack_keep, foldl_pack_emit, foldl_pack_emit, List.foldl_nil]
   · dsimp only

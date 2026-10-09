@@ -8,7 +8,8 @@ import LeanBlsSimd.Model.G2x8
 
 Rust's control flow maps as follows:
 
-- The `for` loop of `decode` is a fold over the lanes; each `continue` ends that lane's step.
+- The `for` loop of `decode` is a fold of `decodeStep` over the lanes; each `continue` ends that
+  lane's step.
 - The two early `return`s of `decompress` are `if … then batch else …`.
 - `less_than_p` returns from inside its loop. Its fold carries `none` until a word differs, then
   the answer, which later words keep.
@@ -83,35 +84,42 @@ def fp_words (be : Vector UInt8 FP_BYTES) : Vector UInt64 6 :=
         have := w.isLt; have := i.isLt; simp only [FP_BYTES, G2_COMPRESSED_LEN] at *; omega)
     u64_from_be_bytes bytes
 
+/-- The body of `less_than_p`'s loop. -/
+def ltStep (x : Vector UInt64 6) (r : Option Bool) (w : ℕ) : Option Bool :=
+  match r with
+  | some b => some b
+  | none => if x[w]! ≠ P_U64v[w]! then some (x[w]! < P_U64v[w]!) else none
+
 def less_than_p (x : Vector UInt64 6) : Bool :=
-  let r := (List.range 6).reverse.foldl (init := (none : Option Bool)) fun r w =>
-    match r with
-    | some b => some b
-    | none => if x[w]! ≠ P_U64v[w]! then some (x[w]! < P_U64v[w]!) else none
-  r.getD false
+  ((List.range 6).reverse.foldl (ltStep x) none).getD false
+
+def decodeInit : Decoded := {
+  x0 := .replicate 8 (.replicate 8 0),
+  x1 := .replicate 8 (.replicate 8 0),
+  larger_root := 0,
+  invalid := 0,
+  undecided := 0 }
+
+/-- The body of `decode`'s loop. -/
+def decodeStep (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded) (lane : Fin 8) :
+    Decoded :=
+  let bytes := inputs[lane]
+  let bit : Mmask8 := 1 <<< lane.val.toUInt8
+  let flags := bytes[0]'(by simp [G2_COMPRESSED_LEN]) &&& 0xe0
+  if flags &&& FLAG_COMPRESSED = 0 then { d with invalid := d.invalid ||| bit }
+  else if flags &&& FLAG_INFINITY ≠ 0 then { d with undecided := d.undecided ||| bit }
+  else
+    let d := if flags &&& FLAG_LARGER_ROOT ≠ 0 then
+      { d with larger_root := d.larger_root ||| bit } else d
+    let (x1_bytes, x0_bytes) := split_at bytes
+    let x1 := fp_words x1_bytes
+    let x1 := x1.set 5 (x1[5] &&& 0x1fffffffffffffff)
+    let x0 := fp_words x0_bytes
+    if !less_than_p x1 || !less_than_p x0 then { d with invalid := d.invalid ||| bit }
+    else { d with x0 := d.x0.set lane (unpack52 x0), x1 := d.x1.set lane (unpack52 x1) }
 
 def decode (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Decoded :=
-  let d : Decoded := {
-    x0 := .replicate 8 (.replicate 8 0),
-    x1 := .replicate 8 (.replicate 8 0),
-    larger_root := 0,
-    invalid := 0,
-    undecided := 0 }
-  (List.finRange 8).foldl (init := d) fun d (lane : Fin 8) =>
-    let bytes := inputs[lane]
-    let bit : Mmask8 := 1 <<< lane.val.toUInt8
-    let flags := bytes[0]'(by simp [G2_COMPRESSED_LEN]) &&& 0xe0
-    if flags &&& FLAG_COMPRESSED = 0 then { d with invalid := d.invalid ||| bit }
-    else if flags &&& FLAG_INFINITY ≠ 0 then { d with undecided := d.undecided ||| bit }
-    else
-      let d := if flags &&& FLAG_LARGER_ROOT ≠ 0 then
-        { d with larger_root := d.larger_root ||| bit } else d
-      let (x1_bytes, x0_bytes) := split_at bytes
-      let x1 := fp_words x1_bytes
-      let x1 := x1.set 5 (x1[5] &&& 0x1fffffffffffffff)
-      let x0 := fp_words x0_bytes
-      if !less_than_p x1 || !less_than_p x0 then { d with invalid := d.invalid ||| bit }
-      else { d with x0 := d.x0.set lane (unpack52 x0), x1 := d.x1.set lane (unpack52 x1) }
+  (List.finRange 8).foldl (decodeStep inputs) decodeInit
 
 def decompress (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
   let decoded := decode inputs

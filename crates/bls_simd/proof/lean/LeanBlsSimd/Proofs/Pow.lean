@@ -97,12 +97,6 @@ theorem part_table_init {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
 theorem inv_square {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) : Fp8Inv (x.square.lane l) :=
   inv_mul hx hx
 
-/-- The body of `pow_p_minus_3_over_4`'s window loop. -/
-def windowStep (table : Vector Fp8 16) (r : Fp8) (w : ℕ) : Fp8 :=
-  let r := r.square.square.square.square
-  let digit := P_MINUS_3_OVER_4_WINDOWS[w]!
-  if digit ≠ 0 then r.mul table[digit]! else r
-
 theorem window_step {x : Fp8} {l : Fin 8} {table : Vector Fp8 16} (ht : PowTable x l table)
     {w e : ℕ} {r : Fp8} (hw : P_MINUS_3_OVER_4_WINDOWS[w]! < 16) (hr : Fp8Inv (r.lane l))
     (hd : decode (r.lane l) = decode (x.lane l) ^ e) :

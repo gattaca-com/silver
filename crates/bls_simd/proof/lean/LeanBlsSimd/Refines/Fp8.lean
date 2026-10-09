@@ -436,14 +436,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
   unfold fp8.pack64 fp8.pack64_loop
   simp only [LIMBS_refines]
   let X : Limbs := ofArray ofU64 x
-  let step := fun (s : Vector UInt64 6 × BitVec 128 × ℕ × ℕ) (j : Fin LIMBS) =>
-    match s with
-    | (out, acc, acc_bits, word) =>
-      let acc := acc ||| X[j].toBitVec.setWidth 128 <<< acc_bits
-      let acc_bits := acc_bits + LIMB_BITS
-      if acc_bits ≥ 64 then
-        (out.set! word (.ofBitVec (acc.setWidth 64)), acc >>> 64, acc_bits - 64, word + 1)
-      else (out, acc, acc_bits, word)
+  let step := packStep X
   let enc := fun (s : Vector UInt64 6 × BitVec 128 × ℕ × ℕ) =>
     ((toArray toU64 s.1 : Array U64 6#usize), (⟨s.2.1⟩ : U128), (⟨BitVec.ofNat 32 s.2.2.1⟩ : U32),
       (⟨BitVec.ofNat System.Platform.numBits s.2.2.2⟩ : Usize))
@@ -453,7 +446,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
     intro ⟨out, acc, bits, word⟩ j ⟨hb, hw⟩
     simp only at hb hw
     subst hb hw
-    fin_cases j <;> simp [step, inv, LIMB_BITS]
+    fin_cases j <;> simp [step, packStep, inv, LIMB_BITS]
   rw [show (Array.repeat 6#usize 0#u64, 0#u128, 0#u32, 0#usize) =
     enc (Vector.replicate 6 0, 0, 0, 0) from rfl]
   rw [loop_range_inv (n := LIMBS) _ 8#usize rfl enc step
@@ -485,7 +478,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
     subst hb hw
     simp_body fp8.pack64_loop.body hn
     rcases usize_lt_8 r.start hj with h | h | h | h | h | h | h | h <;>
-    · simp only [h, enc, step, UScalar.ofNatCore_val_eq, LIMB_BITS, Fin.getElem_fin, X,
+    · simp only [h, enc, step, packStep, UScalar.ofNatCore_val_eq, LIMB_BITS, Fin.getElem_fin, X,
         getElem_ofArray]
       simp (disch := decide) only [lift, bind_tc_ok, LIMB_BITS_refines, index_usize_eq,
         shiftLeft_ok, add_ok, sub_ok, UScalar.ofNatCore_val_eq, u32_ofNat_val, Nat.reduceAdd,
@@ -566,7 +559,7 @@ theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
   simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8, bind_tc_ok,
     ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
   refine congrArg (fun F => ok (toArray id (fromLanes F) rfl)) (funext fun l => ?_)
-  simp only [Lane.mul, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero, laneOf_replicate,
+  simp only [Lane.mul, Lane.mulAcc, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero, laneOf_replicate,
     Fin.getElem_fin, Simd.getElem_zero, Simd.getElem_splat, getElem_laneOf, getElem_ofArray, id_eq,
     UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes, Simd.laneOf_splat_limbs,
     ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]
@@ -688,7 +681,6 @@ theorem Fp8.pow_p_minus_3_over_4_refines (self : fp8.Fp8) :
   simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
   rw [Fp8.pow_windows_refines _ _ _ _ rfl (by decide),
     ← getElem!_pos _ P_MINUS_3_OVER_4_WINDOWS[94]! h94]
-  unfold Fp8.windowStep
   simp only [Fp8.pow_p_minus_3_over_4, UScalar.ofNatCore_val_eq]
 
 theorem Fp8.sqrt_candidate_refines (self : fp8.Fp8) :

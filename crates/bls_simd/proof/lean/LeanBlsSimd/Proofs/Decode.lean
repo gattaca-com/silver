@@ -222,15 +222,6 @@ theorem fp_words_clear_flags (h : Vector UInt8 FP_BYTES) :
 
 /-! ## `less_than_p` -/
 
-/-- The loop body of `less_than_p`. -/
-def ltStep (x : Vector UInt64 6) (r : Option Bool) (w : ℕ) : Option Bool :=
-  match r with
-  | some b => some b
-  | none => if x[w]! ≠ P_U64v[w]! then some (x[w]! < P_U64v[w]!) else none
-
-theorem less_than_p_eq (x : Vector UInt64 6) :
-    less_than_p x = ((List.range 6).reverse.foldl (ltStep x) none).getD false := rfl
-
 theorem foldl_ltStep_some (x : Vector UInt64 6) :
     ∀ (ws : List ℕ) (b : Bool), ws.foldl (ltStep x) (some b) = some b
   | [], _ => rfl
@@ -292,7 +283,7 @@ theorem lowVal_six (x : Vector UInt64 6) : lowVal x 6 = val64 x := by
 theorem lowVal_P : lowVal P_U64v 6 = Fp.modulus := by decide +kernel
 
 theorem less_than_p_iff (x : Vector UInt64 6) : less_than_p x = decide (val64 x < Fp.modulus) := by
-  rw [less_than_p_eq, foldl_ltStep, lowVal_six, lowVal_P]
+  rw [less_than_p, foldl_ltStep, lowVal_six, lowVal_P]
   by_cases h : val64 x = Fp.modulus
   · rw [if_pos h, h]
     exact (decide_eq_false (lt_irrefl _)).symm
@@ -344,34 +335,6 @@ theorem LaneDecode.Holds.of_lane {r : LaneDecode} {d d' : Decoded} {l : Fin 8} (
   obtain ⟨h0, h1, h2, h3, h4⟩ := he
   exact ⟨h0 ▸ h.inv0, h0 ▸ h.val0, h1 ▸ h.inv1, h1 ▸ h.val1, h2 ▸ h.largerRoot,
     h3 ▸ h.invalid, h4 ▸ h.undecided⟩
-
-def decodeInit : Decoded := {
-  x0 := .replicate 8 (.replicate 8 0),
-  x1 := .replicate 8 (.replicate 8 0),
-  larger_root := 0,
-  invalid := 0,
-  undecided := 0 }
-
-/-- The loop body of `decode`. -/
-def decodeStep (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded) (lane : Fin 8) :
-    Decoded :=
-  let bytes := inputs[lane]
-  let bit : Mmask8 := 1 <<< lane.val.toUInt8
-  let flags := bytes[0]'(by simp [G2_COMPRESSED_LEN]) &&& 0xe0
-  if flags &&& FLAG_COMPRESSED = 0 then { d with invalid := d.invalid ||| bit }
-  else if flags &&& FLAG_INFINITY ≠ 0 then { d with undecided := d.undecided ||| bit }
-  else
-    let d := if flags &&& FLAG_LARGER_ROOT ≠ 0 then
-      { d with larger_root := d.larger_root ||| bit } else d
-    let (x1_bytes, x0_bytes) := split_at bytes
-    let x1 := fp_words x1_bytes
-    let x1 := x1.set 5 (x1[5] &&& 0x1fffffffffffffff)
-    let x0 := fp_words x0_bytes
-    if !less_than_p x1 || !less_than_p x0 then { d with invalid := d.invalid ||| bit }
-    else { d with x0 := d.x0.set lane (unpack52 x0), x1 := d.x1.set lane (unpack52 x1) }
-
-theorem decode_eq (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) :
-    decode inputs = (List.finRange 8).foldl (decodeStep inputs) decodeInit := rfl
 
 theorem decodeStep_lane_ne (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded)
     {i l : Fin 8} (hl : l ≠ i) : (decodeStep inputs d i).lane l = d.lane l := by
@@ -470,7 +433,6 @@ theorem foldl_decodeStep (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) :
 /-- Each lane of `decode` records what its own bytes decode to. -/
 theorem decode_holds (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
     (decodeLane inputs[l]).Holds (decode inputs) l := by
-  rw [decode_eq]
   refine (foldl_decodeStep inputs _ decodeInit l (List.nodup_finRange 8)).2
     (List.mem_finRange l) ?_
   simp [Decoded.lane, decodeInit, initLane]

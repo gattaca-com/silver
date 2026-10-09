@@ -8,8 +8,7 @@ open silver_bls_simd
 # `decompress_g2.rs`
 
 The blst and batch types convert field by field. `fp_words` reads a slice, so its theorem assumes
-the slice holds `FP_BYTES` bytes. `decode_refines` uses `decode_eq`, which states the model's
-`decode` as a fold of `decodeStep`.
+the slice holds `FP_BYTES` bytes.
 
 `decompress_refines` uses `decompress_eq`, which states the model's `decompress` through `xOf`,
 `rhsOf` and `tail`; generalising over their applications keeps the terms small. The model writes
@@ -253,7 +252,7 @@ theorem decode_loop_refines (inputs : Array (Array U8 96#usize) 8#usize) :
       inputs = toArray (toArray toU8) IN :=
     ⟨ofArray (ofArray ofU8) inputs, (toArray_ofArray (by simp) inputs _ _).symm⟩
   unfold decompress_g2.decode_loop
-  rw [LANES_refines, decode_eq, ofArray_toArray (by simp)]
+  rw [LANES_refines, decode, ofArray_toArray (by simp)]
   refine loop_range (n := 8) _ 8#usize rfl decodeState (decodeStep IN) decodeState decodeInit _
     ?_ ?_ rfl
   · intro r m he hs hn

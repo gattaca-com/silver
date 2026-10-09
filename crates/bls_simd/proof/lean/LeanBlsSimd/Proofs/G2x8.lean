@@ -93,7 +93,7 @@ theorem holds_times_minus_z {px py : Fp2x8} {vx vy : Fp2Field} (hx : px.Holds l 
   rintro ⟨r, u⟩ ⟨σ, b⟩ bit ⟨hr, hu⟩
   obtain ⟨hd, hdu⟩ := hr.double
   obtain ⟨ha, hau⟩ := hd.add_affine hx hy
-  simp only [Kernel.chainStep]
+  simp only [chainStep, Kernel.chainStep]
   split
   · exact ⟨ha, by rw [Mmask8.testBit_or, Mmask8.testBit_or, hu, hdu, hau]⟩
   · exact ⟨hd, by rw [Mmask8.testBit_or, hu, hdu]⟩

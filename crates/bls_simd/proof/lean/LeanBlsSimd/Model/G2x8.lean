@@ -9,8 +9,8 @@ that `scott_membership` returns. Rust's `!` on a mask is `~~~`.
 
 `times_minus_z` counts `bit` down from `Z_BITS[0]` in a `while` loop with a mutable point and
 mask. After each decrement it doubles, and it adds where `bit` equals one of `Z_BITS[1]` to
-`Z_BITS[5]`. Here the loop is a fold over `(List.range Z_BITS[0]!).reverse`, the values `bit`
-takes after its decrement, and its state is that pair. The five comparisons are
+`Z_BITS[5]`. Here the loop is a fold of `chainStep` over `(List.range Z_BITS[0]!).reverse`, the
+values `bit` takes after its decrement, and its state is that pair. The five comparisons are
 `Z_BITS.contains bit`: that also tests `Z_BITS[0]`, which `bit` stays below.
 -/
 
@@ -60,11 +60,9 @@ def add_affine (self : G2x8) (qx qy : Fp2x8) : G2x8 × Mmask8 :=
   let undecided := h.is_zero_mask ||| self.z.is_zero_mask
   ({ x := x3, y := y3, z := z3 }, undecided)
 
-/-- `[-z] P = [|z|] P` for an affine P, by double-and-add over the six set bits of |z|. -/
-def times_minus_z (px py : Fp2x8) : G2x8 × Mmask8 :=
-  let undecided : Mmask8 := 0
-  let r : G2x8 := { x := px, y := py, z := Fp2x8.one }
-  (List.range Z_BITS[0]!).reverse.foldl (init := (r, undecided)) fun (r, undecided) bit =>
+/-- The body of `times_minus_z`'s loop. -/
+def chainStep (px py : Fp2x8) : G2x8 × Mmask8 → ℕ → G2x8 × Mmask8 :=
+  fun (r, undecided) bit =>
     let (d, u) := r.double
     let r := d
     let undecided := undecided ||| u
@@ -72,6 +70,12 @@ def times_minus_z (px py : Fp2x8) : G2x8 × Mmask8 :=
       let (a, u) := r.add_affine px py
       (a, undecided ||| u)
     else (r, undecided)
+
+/-- `[-z] P = [|z|] P` for an affine P, by double-and-add over the six set bits of |z|. -/
+def times_minus_z (px py : Fp2x8) : G2x8 × Mmask8 :=
+  let undecided : Mmask8 := 0
+  let r : G2x8 := { x := px, y := py, z := Fp2x8.one }
+  (List.range Z_BITS[0]!).reverse.foldl (chainStep px py) (r, undecided)
 
 /-- Scott's test: `psi(P) == [z] P`, which is `[-z] P` negated. -/
 def scott_membership (px py : Fp2x8) : Membership :=

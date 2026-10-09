@@ -331,29 +331,6 @@ theorem splat_MASK52 : (splat (.ofNat MASK52)).toNat = 2 ^ 52 - 1 := by decide
 
 /-! ## The sixteen rows -/
 
-/-- The accumulator `t` of `Fp8::mul` after its sixteen rows. `mul_spec` checks by `rfl` that
-`Lane.mul` computes the same. -/
-def mulAcc (a b : Limbs) : Acc :=
-  let p := splat_limbs (.ofList P)
-  let pinv := splat (.ofNat P_INV52)
-  let t : Acc := .replicate _ zero
-  let t := muladd_row t a b[0] 0
-  let t := muladd_row t a b[1] 1
-  let t := muladd_row t a b[2] 2
-  let t := muladd_row t a b[3] 3
-  let t := muladd_row t a b[4] 4
-  let t := muladd_row t a b[5] 5
-  let t := muladd_row t a b[6] 6
-  let t := muladd_row t a b[7] 7
-  let t := reduce_row t p pinv 0
-  let t := reduce_row t p pinv 1
-  let t := reduce_row t p pinv 2
-  let t := reduce_row t p pinv 3
-  let t := reduce_row t p pinv 4
-  let t := reduce_row t p pinv 5
-  let t := reduce_row t p pinv 6
-  reduce_row t p pinv 7
-
 set_option exponentiation.threshold 1000 in
 /-- Needs only normalised limbs: R · `val` of the top half is a · b plus a multiple of p. -/
 theorem mulAcc_spec {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ LIMB_BITS)
@@ -486,7 +463,7 @@ theorem mul_spec {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
       (val (Lane.mul a b) : ZMod Fp.modulus) = val a * val b * (R : ZMod Fp.modulus)⁻¹ := by
   obtain ⟨hacc, Q, hQ, hv⟩ := mulAcc_spec ha.normal hb.normal
   unfold Lane.mul
-  extract_lets p pinv t0 t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12 t13 t14 t15 t16 mask r0 r1
+  extract_lets t16 mask r0 r1
   have ht16 : t16 = mulAcc a b := rfl
   rw [← ht16] at hacc hv
   obtain ⟨hn, hval⟩ := normalize_spec t16 mask splat_MASK52 hacc

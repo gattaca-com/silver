@@ -10,9 +10,9 @@ open silver_bls_simd
 `ofG2x8` converts each coordinate with `ofFp2x8`, and `ofMembership` each mask with `ofU8`.
 
 The Rust `times_minus_z` counts down from `Z_BITS[0]` and compares the decremented counter with
-`Z_BITS[1]` to `Z_BITS[5]`. `times_minus_z_eq` restates the model's loop as a fold of `chainStep`
-over `(List.range Z_BITS[0]!).reverse`. `chainStep` tests `Z_BITS.contains`, which also lists
-`Z_BITS[0]`. The counter stays below `Z_BITS[0]`, so both add at the same bits.
+`Z_BITS[1]` to `Z_BITS[5]`. The model folds `chainStep` over `(List.range Z_BITS[0]!).reverse`.
+`chainStep` tests `Z_BITS.contains`, which also lists `Z_BITS[0]`. The counter stays below
+`Z_BITS[0]`, so both add at the same bits.
 -/
 
 namespace LeanBlsSimd
@@ -63,19 +63,6 @@ theorem add_affine_refines (self : g2x8.G2x8) (qx qy : fp2x8.Fp2x8) :
     Fp2x8.double_refines, Fp2x8.mul_refines, Fp2x8.is_zero_mask_refines, lift, G2x8.add_affine,
     toG2x8]
 
-/-- The body of the model's `times_minus_z` fold. -/
-def chainStep (px py : Fp2x8) (s : G2x8 × Mmask8) (bit : ℕ) : G2x8 × Mmask8 :=
-  let d := s.1.double
-  let s := (d.1, s.2 ||| d.2)
-  if Z_BITS.contains bit then
-    let a := s.1.add_affine px py
-    (a.1, s.2 ||| a.2)
-  else s
-
-theorem times_minus_z_eq (px py : Fp2x8) :
-    times_minus_z px py =
-      (List.range Z_BITS[0]!).reverse.foldl (chainStep px py) (⟨px, py, Fp2x8.one⟩, 0) := rfl
-
 theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c : U32) (n : ℕ)
     (hcn : c.val = n) (hn : n ≤ 63) :
     g2x8.G2x8.times_minus_z_loop px py (toU8 m.2) (toG2x8 m.1) c =
@@ -87,7 +74,9 @@ theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c
   · intro m c hc
     simp [g2x8.G2x8.times_minus_z_loop.body, hc]
     rfl
-  · intro m c c' hc hcn
+  · intro ⟨r, u⟩ c c' hc hcn
+    obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
+    obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add_affine (ofFp2x8 px) (ofFp2x8 py) = a := ⟨_, rfl⟩
     simp only [g2x8.G2x8.times_minus_z_loop.body]
     rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
@@ -99,7 +88,7 @@ theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c
       UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
     simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
       show Z_BITS[3]! = 57 from rfl, show Z_BITS[4]! = 48 from rfl, show Z_BITS[5]! = 16 from rfl]
-    unfold chainStep
+    simp only [chainStep, hd, ha]
     by_cases h : c'.val = 62 ∨ c'.val = 60 ∨ c'.val = 57 ∨ c'.val = 48 ∨ c'.val = 16
     · have hz : Z_BITS.contains c'.val := by simp [Z_BITS]; omega
       rw [if_pos hz]
@@ -116,7 +105,7 @@ theorem times_minus_z_refines (px py : fp2x8.Fp2x8) :
   have h := times_minus_z_loop_refines px py (⟨ofFp2x8 px, ofFp2x8 py, Fp2x8.one⟩, 0)
     (UScalar.ofNatCore Z_BITS[(0#usize).val]! (by decide)) Z_BITS[0]! (by simp) (by decide)
   simp only [toG2x8, toFp2x8_ofFp2x8] at h
-  rw [show (0#u8) = toU8 0 from rfl, h, times_minus_z_eq]
+  rw [show (0#u8) = toU8 0 from rfl, h, G2x8.times_minus_z]
 
 theorem scott_membership_refines (px py : fp2x8.Fp2x8) :
     g2x8.G2x8.scott_membership px py =

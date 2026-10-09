@@ -609,7 +609,7 @@ local macro "mul_proof" : tactic => `(tactic| (
   simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8, bind_tc_ok,
     ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
   refine congrArg (fun F => ok (toArray id (fromLanes F) rfl)) (funext fun l => ?_)
-  simp only [Lane.mul, Lane.mulWith, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero,
+  simp only [Lane.mul, Lane.mulAcc, Lane.mulWith, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero,
     laneOf_replicate, Fin.getElem_fin, Simd.getElem_zero, Simd.getElem_splat, getElem_laneOf,
     getElem_ofArray, id_eq, UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes,
     Simd.laneOf_splat_limbs, ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]))
@@ -679,10 +679,7 @@ def Fp8.powWith (n : ℕ) (self : Fp8) : Fp8 :=
   let table := ((List.finRange 16).drop 2).foldl (init := table) fun table (k : Fin 16) =>
     table.set k (table[k.val - 1].mul self)
   let r := table[P_MINUS_3_OVER_4_WINDOWS[94]!]!
-  (List.range n).reverse.foldl (init := r) fun r w =>
-    let r := r.square.square.square.square
-    let digit := P_MINUS_3_OVER_4_WINDOWS[w]!
-    if digit ≠ 0 then r.mul table[digit]! else r
+  (List.range n).reverse.foldl (windowStep table) r
 
 example : Fp8.powWith 94 = Fp8.pow_p_minus_3_over_4 := rfl
 
@@ -704,7 +701,6 @@ local macro "pow_proof" : tactic => `(tactic| (
   simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
   rw [Fp8.pow_windows_refines _ _ _ _ rfl (by decide),
     ← getElem!_pos _ P_MINUS_3_OVER_4_WINDOWS[94]! h94]
-  unfold Fp8.windowStep
   simp only [Fp8.pow_p_minus_3_over_4, Fp8.powWith, UScalar.ofNatCore_val_eq]))
 
 example : ∀ self : fp8.Fp8,
@@ -858,7 +854,9 @@ local macro "times_minus_z_loop_proof" : tactic => `(tactic| (
   · intro m c hc
     simp [timesMinusZBodyWith, hc]
     rfl
-  · intro m c c' hc hcn
+  · intro ⟨r, u⟩ c c' hc hcn
+    obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
+    obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add_affine (ofFp2x8 px) (ofFp2x8 py) = a := ⟨_, rfl⟩
     simp only [timesMinusZBodyWith]
     rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
@@ -870,7 +868,7 @@ local macro "times_minus_z_loop_proof" : tactic => `(tactic| (
       G2x8.add_affine_refines, UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
     simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
       show Z_BITS[3]! = 57 from rfl, show Z_BITS[4]! = 48 from rfl, show Z_BITS[5]! = 16 from rfl]
-    unfold G2x8.chainStep
+    simp only [G2x8.chainStep, hd, ha]
     by_cases h : c'.val = 62 ∨ c'.val = 60 ∨ c'.val = 57 ∨ c'.val = 48 ∨ c'.val = 16
     · have hz : Z_BITS.contains c'.val := by simp [Z_BITS]; omega
       rw [if_pos hz]

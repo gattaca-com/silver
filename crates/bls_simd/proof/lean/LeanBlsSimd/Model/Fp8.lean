@@ -55,7 +55,8 @@ def reduce_row (t : Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) : Acc :=
     t.set (i.val + j.val + 1) (madd52hi t[i.val + j.val + 1] q p[j])
   t.set (i.val + 1) (t[i.val + 1] + srli 52 t[i.val])
 
-def mul (self rhs : Limbs) : Limbs :=
+/-- The accumulator `t` of `Fp8::mul` after its sixteen rows. -/
+def mulAcc (self rhs : Limbs) : Acc :=
   let p := splat_limbs (.ofList P)
   let pinv := splat (.ofNat P_INV52)
   let t : Acc := .replicate _ zero
@@ -74,8 +75,10 @@ def mul (self rhs : Limbs) : Limbs :=
   let t := reduce_row t p pinv 4
   let t := reduce_row t p pinv 5
   let t := reduce_row t p pinv 6
-  let t := reduce_row t p pinv 7
+  reduce_row t p pinv 7
 
+def mul (self rhs : Limbs) : Limbs :=
+  let t := mulAcc self rhs
   let mask := splat (.ofNat MASK52)
   let r : Limbs := .replicate _ zero
   let r := r.set 0 t[LIMBS]
@@ -142,16 +145,21 @@ def unpack52 (x : Vector UInt64 6) : Limbs :=
       else v
     v &&& .ofNat MASK52
 
-/-- `u128` is `BitVec 128`; `as u128` zero-extends and `as u64` truncates. -/
+/-- The state of `pack64`'s loop: words, the `u128` accumulator, its bit count, the next word. -/
+abbrev PackState := Vector UInt64 6 × BitVec 128 × ℕ × ℕ
+
+/-- The body of `pack64`'s loop. `u128` is `BitVec 128`; `as u128` zero-extends and `as u64`
+truncates. -/
+def packStep (x : Limbs) : PackState → Fin LIMBS → PackState :=
+  fun (out, acc, acc_bits, word) (j : Fin LIMBS) =>
+    let acc := acc ||| x[j].toBitVec.setWidth 128 <<< acc_bits
+    let acc_bits := acc_bits + LIMB_BITS
+    if acc_bits ≥ 64 then
+      (out.set! word (.ofBitVec (acc.setWidth 64)), acc >>> 64, acc_bits - 64, word + 1)
+    else (out, acc, acc_bits, word)
+
 def pack64 (x : Limbs) : Vector UInt64 6 :=
-  let (out, acc, _, word) := (List.finRange LIMBS).foldl
-    (init := (Vector.replicate 6 (0 : UInt64), (0 : BitVec 128), (0 : ℕ), (0 : ℕ)))
-    fun (out, acc, acc_bits, word) (j : Fin LIMBS) =>
-      let acc := acc ||| x[j].toBitVec.setWidth 128 <<< acc_bits
-      let acc_bits := acc_bits + LIMB_BITS
-      if acc_bits ≥ 64 then
-        (out.set! word (.ofBitVec (acc.setWidth 64)), acc >>> 64, acc_bits - 64, word + 1)
-      else (out, acc, acc_bits, word)
+  let (out, acc, _, word) := (List.finRange LIMBS).foldl (packStep x) (.replicate 6 0, 0, 0, 0)
   if h : word < 6 then out.set word (.ofBitVec (acc.setWidth 64)) h else out
 
 /-- `Fp8` of `fp8.rs`. -/
@@ -227,16 +235,19 @@ def is_zero_mask (self : Fp8) : Mmask8 :=
 
 def select (k : Mmask8) (a b : Fp8) : Fp8 := ⟨Simd.blend k a.limbs b.limbs⟩
 
+/-- The body of `pow_p_minus_3_over_4`'s window loop. -/
+def windowStep (table : Vector Fp8 16) (r : Fp8) (w : ℕ) : Fp8 :=
+  let r := r.square.square.square.square
+  let digit := P_MINUS_3_OVER_4_WINDOWS[w]!
+  if digit ≠ 0 then r.mul table[digit]! else r
+
 def pow_p_minus_3_over_4 (self : Fp8) : Fp8 :=
   let table : Vector Fp8 16 := .replicate 16 one
   let table := table.set 1 self
   let table := ((List.finRange 16).drop 2).foldl (init := table) fun table (k : Fin 16) =>
     table.set k (table[k.val - 1].mul self)
   let r := table[P_MINUS_3_OVER_4_WINDOWS[94]!]!
-  (List.range 94).reverse.foldl (init := r) fun r w =>
-    let r := r.square.square.square.square
-    let digit := P_MINUS_3_OVER_4_WINDOWS[w]!
-    if digit ≠ 0 then r.mul table[digit]! else r
+  (List.range 94).reverse.foldl (windowStep table) r
 
 def sqrt_candidate (self : Fp8) : Fp8 := self.pow_p_minus_3_over_4.mul self
 
