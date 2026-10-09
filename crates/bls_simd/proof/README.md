@@ -59,12 +59,13 @@ The theorem proves the Lean model correct; it does not prove that the Rust imple
 
 `decompress_g2_vectors.txt` holds 105 batches of eight encodings, 840 lanes, with all three masks and every lane's `points` as `decompress` returned them. The batches mix seeded cases from `src/tests/g2_cases.rs`, the generator the crate's own tests use, with hand-picked edge cases: flag combinations, infinity encodings, coordinates at and around p in every word, x with no square root, points outside G2 and of small order, and both early returns, taken and not taken.
 
-Two tests read the file:
+Three tests read the file:
 
 - `replay_vectors`, in `vectors.rs`, runs the current kernel on the recorded inputs and fails if any output differs. It runs with the crate's other tests, in about 10 ms. On x86_64 it skips when the `simd` feature or AVX-512F/IFMA support is unavailable; setting `SILVER_REQUIRE_IFMA` to any value makes that a failure. On other architectures this test target contains no tests, even with that variable set.
+- `recorded_matches_blst`, also in `vectors.rs`, checks the recorded outputs against blst. For each lane marked decided in the recording, 716 of the 840, it compares acceptance and any accepted point's limbs with `uncompress_in_g2_blst` on the recorded input. It uses recorded outputs instead of running the kernel, so it needs no IFMA and never skips on x86_64.
 - `lake exe differential`, in `lean/Test/Main.lean`, runs the model on the same inputs and fails if any output differs. It needs the Lean toolchain and about 75 s.
 
-When the Rust test actually runs and both tests pass, the Rust and the model agree on every recorded batch. Rerun the Lean side when its code, toolchain, dependencies or vector file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model transcribes those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
+When `replay_vectors` actually runs and all three pass, the Rust and the model agree on every recorded batch, and both agree with blst on acceptance and accepted points for every decided lane in those batches. Rerun the Lean side when its code, toolchain, dependencies or vector file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model transcribes those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
 
 When `replay_vectors` fails, `lean/README.md` explains what to do. To regenerate the file, run this from the silver repository root on an x86_64 host with AVX-512F and AVX-512 IFMA:
 
@@ -72,7 +73,7 @@ When `replay_vectors` fails, `lean/README.md` explains what to do. To regenerate
 cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors -- --ignored write_vectors
 ```
 
-`write_vectors` checks the mask expectations attached to each edge batch before writing the file. Some expectations constrain only selected lanes or masks.
+`write_vectors` checks the mask expectations attached to each edge batch before writing the file. Some expectations constrain only selected lanes or masks. It also checks acceptance and accepted points against blst on every lane the new kernel marks decided, leaving the file untouched if any check fails.
 
 ## The Rust this proof covers
 
