@@ -347,7 +347,8 @@ theorem foldl_points (f : Fin 8 → BlstP2Affine) (ls : List (Fin 8)) (b : Batch
   | cons j ls ih => simp only [List.foldl_cons, ih]
 
 theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
-    decompress_g2.decompress inputs = ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
+    decompress_g2.decompress inputs =
+      ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
   unfold decompress_g2.decompress
   rw [decompress_eq]
   simp only [decode_refines, default_refines, bind_tc_ok, lift]
@@ -356,7 +357,8 @@ theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
   simp only [toDecoded, toU8_or, toU8_not, show (0#u8) = toU8 0 from rfl, toU8_inj,
     Fp8.from_plain_refines, Fp8.splat_limbs_refines, FOUR_MONT_refines, bind_tc_ok,
     ofArray_toArray_ofU64, ofArray_toArray_ofArray_ofU64]
-  rw [show Fp8.from_plain D.x0 = (xOf D).c0 from rfl, show Fp8.from_plain D.x1 = (xOf D).c1 from rfl]
+  rw [show Fp8.from_plain D.x0 = (xOf D).c0 from rfl,
+    show Fp8.from_plain D.x1 = (xOf D).c1 from rfl]
   generalize xOf D = X
   simp only [Fp2x8.square_refines, Fp2x8.mul_refines, Fp2x8.add_refines, bind_tc_ok, ofFp2x8_mk,
     ofFp8_toFp8, ofFp2x8_toFp2x8]
