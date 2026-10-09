@@ -24,6 +24,7 @@ pub struct G2x8 {
 impl G2x8 {
     /// dbl-2009-l. Undecided when y = 0 or z = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn double(&self) -> (Self, __mmask8) {
         let a = self.x.square();
         let b = self.y.square();
@@ -40,6 +41,7 @@ impl G2x8 {
 
     /// madd-2007-bl with Z2 = 1. Undecided when the points coincide or z = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn add_affine(&self, qx: &Fp2x8, qy: &Fp2x8) -> (Self, __mmask8) {
         let z1z1 = self.z.square();
         let u2 = qx.mul(&z1z1);
@@ -60,14 +62,22 @@ impl G2x8 {
     /// `[-z] P = [|z|] P` for an affine P, by double-and-add over the six set
     /// bits of |z|.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     fn times_minus_z(px: &Fp2x8, py: &Fp2x8) -> (Self, __mmask8) {
         let mut undecided = 0;
         let mut r = Self { x: *px, y: *py, z: Fp2x8::one() };
-        for bit in (0..Z_BITS[0]).rev() {
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
             let (d, u) = r.double();
             r = d;
             undecided |= u;
-            if Z_BITS.contains(&bit) {
+            if bit == Z_BITS[1] ||
+                bit == Z_BITS[2] ||
+                bit == Z_BITS[3] ||
+                bit == Z_BITS[4] ||
+                bit == Z_BITS[5]
+            {
                 let (a, u) = r.add_affine(px, py);
                 r = a;
                 undecided |= u;

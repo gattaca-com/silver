@@ -12,11 +12,13 @@ pub struct Fp2x8 {
 
 impl Fp2x8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn splat(limbs: &[Limbs; 2]) -> Self {
         Self { c0: Fp8::splat_limbs(&limbs[0]), c1: Fp8::splat_limbs(&limbs[1]) }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn one() -> Self {
         Self { c0: Fp8::one(), c1: Fp8::zero() }
     }
@@ -39,37 +41,44 @@ impl Fp2x8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn add(&self, rhs: &Self) -> Self {
         Self { c0: self.c0.add(&rhs.c0), c1: self.c1.add(&rhs.c1) }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn sub(&self, rhs: &Self) -> Self {
         Self { c0: self.c0.sub(&rhs.c0), c1: self.c1.sub(&rhs.c1) }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn double(&self) -> Self {
         self.add(self)
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn neg(&self) -> Self {
         Self { c0: self.c0.neg(), c1: self.c1.neg() }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn conjugate(&self) -> Self {
         Self { c0: self.c0, c1: self.c1.neg() }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn mul_by_i(&self) -> Self {
         Self { c0: self.c1.neg(), c1: self.c0 }
     }
 
     /// Lanes of `k` take `b`, the rest `a`.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn select(k: __mmask8, a: &Self, b: &Self) -> Self {
         Self { c0: Fp8::select(k, &a.c0, &b.c0), c1: Fp8::select(k, &a.c1, &b.c1) }
     }
@@ -79,6 +88,7 @@ impl Fp2x8 {
     /// covers blst's four alignments. The mask marks the lanes that have a
     /// root.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn sqrt(&self) -> (Self, __mmask8) {
         let n = self.c0.square().add(&self.c1.square()).sqrt_candidate();
         let plus = self.c0.add(&n);
@@ -95,6 +105,7 @@ impl Fp2x8 {
     /// Lanes holding the lexicographically larger of two square roots: c1
     /// decides, and c0 only where c1 = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn is_larger_root_mask(&self) -> __mmask8 {
         self.c1.is_larger_root_mask() | (self.c0.is_larger_root_mask() & self.c1.is_zero_mask())
     }
@@ -105,6 +116,7 @@ impl Fp2x8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn is_zero_mask(&self) -> __mmask8 {
         self.c0.is_zero_mask() & self.c1.is_zero_mask()
     }

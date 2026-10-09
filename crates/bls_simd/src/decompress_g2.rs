@@ -42,6 +42,7 @@ struct Decoded {
     undecided: __mmask8,
 }
 
+#[inline]
 fn decode(inputs: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> Decoded {
     let mut d = Decoded {
         x0: [[0; 8]; LANES],
@@ -50,7 +51,8 @@ fn decode(inputs: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> Decoded {
         invalid: 0,
         undecided: 0,
     };
-    for (lane, bytes) in inputs.iter().enumerate() {
+    for lane in 0..LANES {
+        let bytes = &inputs[lane];
         let bit = 1u8 << lane;
         let flags = bytes[0] & 0xe0;
         if flags & FLAG_COMPRESSED == 0 {
@@ -78,19 +80,31 @@ fn decode(inputs: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> Decoded {
     d
 }
 
+#[inline]
+fn point(x0: [u64; 6], x1: [u64; 6], y0: [u64; 6], y1: [u64; 6]) -> blst_p2_affine {
+    blst_p2_affine {
+        x: blst_fp2 { fp: [blst_fp { l: x0 }, blst_fp { l: x1 }] },
+        y: blst_fp2 { fp: [blst_fp { l: y0 }, blst_fp { l: y1 }] },
+    }
+}
+
 /// A 48-byte big-endian coordinate as little-endian 64-bit words.
+#[inline]
 fn fp_words(be: &[u8]) -> [u64; 6] {
     let mut words = [0u64; 6];
-    for (w, word) in words.iter_mut().enumerate() {
+    for w in 0..6 {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&be[FP_BYTES - 8 * (w + 1)..FP_BYTES - 8 * w]);
-        *word = u64::from_be_bytes(bytes);
+        words[w] = u64::from_be_bytes(bytes);
     }
     words
 }
 
+#[inline]
 fn less_than_p(x: &[u64; 6]) -> bool {
-    for w in (0..6).rev() {
+    let mut w = 6;
+    while w > 0 {
+        w -= 1;
         if x[w] != P_U64[w] {
             return x[w] < P_U64[w];
         }
@@ -131,10 +145,7 @@ pub fn decompress(inputs: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> Batch {
     let (x0, x1) = (x.c0.to_blst_limbs(), x.c1.to_blst_limbs());
     let (y0, y1) = (y.c0.to_blst_limbs(), y.c1.to_blst_limbs());
     for lane in 0..LANES {
-        batch.points[lane] = blst_p2_affine {
-            x: blst_fp2 { fp: [blst_fp { l: x0[lane] }, blst_fp { l: x1[lane] }] },
-            y: blst_fp2 { fp: [blst_fp { l: y0[lane] }, blst_fp { l: y1[lane] }] },
-        };
+        batch.points[lane] = point(x0[lane], x1[lane], y0[lane], y1[lane]);
     }
     batch
 }
