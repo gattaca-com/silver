@@ -496,10 +496,12 @@ impl Tile<SilverSpine> for Controller {
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.loop_start();
         }
+
         let now = Instant::now();
         self.advance_gossip_domains(now, &mut adapter.producers);
         self.refresh_announced_subscriptions();
         self.reader.free();
+
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
             if let Some(exchange) = &mut self.partial_exchange {
@@ -563,6 +565,7 @@ impl Tile<SilverSpine> for Controller {
 
         let wall_slot =
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
+            
         adapter.consume(|request: BeaconApiRequest, producers| match request {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
                 self.on_local_gossip(request_id, topic, ssz, now, producers)

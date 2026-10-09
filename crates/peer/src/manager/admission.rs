@@ -128,6 +128,7 @@ impl PeerManager {
     /// database up to `target_peers`, or `max_priority_peers` for candidates
     /// covering a subnet/custody column we need. Discovery only feeds the
     /// database; this loop dials on the next tick.
+    #[timed]
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let mut connected = self.peers.len() + self.dialing.len();
         let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;

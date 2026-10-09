@@ -1,5 +1,6 @@
 use std::{collections::HashMap, mem, time::Instant};
 
+use flux_profiler::timed;
 use silver_common::{
     GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic, P2pSend, PeerControl, PeerScores, RpcOutbound,
     RpcRequest, RpcRequestOutbound, StreamProtocol, ssz_view::MetadataView,
@@ -112,6 +113,7 @@ impl Census {
 impl PeerManager {
     /// Runs the per-peer work recorded since the last call in one pass over
     /// the live peers. A no-op when nothing was recorded.
+    #[timed]
     pub fn sweep(&mut self, now: Instant, out: &mut impl FnMut(SweepOutput)) {
         if self.sweep_work.is_empty() {
             return;

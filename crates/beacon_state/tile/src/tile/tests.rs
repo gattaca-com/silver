@@ -1381,6 +1381,7 @@ fn sanity_fixture(name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     sanity_fixture_of("fulu", name)
 }
 
+#[cfg(feature = "ef_tests")]
 fn sanity_fixture_of(fork: &str, name: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("consensus-spec-tests/tests/mainnet")
