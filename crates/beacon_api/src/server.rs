@@ -2844,38 +2844,50 @@ mod tests {
         assert_eq!(body(&response), spliced, "the payload goes before the bls changes");
     }
 
-    /// A block without a payload, as Gloas produces, is the whole SSZ
-    /// `BeaconBlock`. This server's spec is pre-Gloas, so the version header
-    /// names `fulu`; the slot's fork is what it reports.
+    /// A block without a payload is the whole SSZ block: blinded on Fulu, a
+    /// bid-committing `BeaconBlock` from Gloas. The slot's fork picks the
+    /// header that says which.
     #[test]
-    fn produced_block_without_a_payload_is_served_whole_with_the_v4_headers() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let client = connect(tcp_addr(&server));
-        let request_id = get_produced_block(&mut server, &client);
+    fn produced_block_without_a_payload_is_served_whole() {
+        for (gloas_fork_epoch, fork, payload_header) in [
+            (u64::MAX, "fulu", "Eth-Execution-Payload-Blinded: true"),
+            (0, "gloas", "Eth-Execution-Payload-Included: false"),
+        ] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            let client = connect(tcp_addr(&server));
+            let request_id = get_produced_block(&mut server, &client);
+            server.api.ctx.spec.gloas_fork_epoch = gloas_fork_epoch;
 
-        let beacon_block = b"a whole beacon block";
-        let header = server.serve_bytes(beacon_block);
-        let mut execution_payload_value = [0; 32];
-        execution_payload_value[0] = 7;
-        let mut consensus_block_value = [0; 32];
-        consensus_block_value[0] = 9;
-        server.answer(BeaconApiResponse::ProducedBlock {
-            request_id,
-            block: Ok(ProducedBlock {
-                header,
-                payload_at: beacon_block.len() as u32,
-                payload: None,
-                execution_payload_value,
-                consensus_block_value,
-            }),
-        });
-        let reader = std::thread::spawn(move || read_to_eof(client));
-        let response = serve(&mut server, reader, "produced block");
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
-                    Eth-Consensus-Version: fulu\r\nEth-Execution-Payload-Included: false\r\n\
-                    Eth-Execution-Payload-Value: 7\r\nEth-Consensus-Block-Value: 9\r\n";
-        assert!(response.starts_with(head.as_bytes()), "{}", String::from_utf8_lossy(&response));
-        assert_eq!(body(&response), beacon_block);
+            let beacon_block = b"a whole beacon block";
+            let header = server.serve_bytes(beacon_block);
+            let mut execution_payload_value = [0; 32];
+            execution_payload_value[0] = 7;
+            let mut consensus_block_value = [0; 32];
+            consensus_block_value[0] = 9;
+            server.answer(BeaconApiResponse::ProducedBlock {
+                request_id,
+                block: Ok(ProducedBlock {
+                    header,
+                    payload_at: beacon_block.len() as u32,
+                    payload: None,
+                    execution_payload_value,
+                    consensus_block_value,
+                }),
+            });
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = serve(&mut server, reader, "produced block");
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                 Eth-Consensus-Version: {fork}\r\n{payload_header}\r\n\
+                 Eth-Execution-Payload-Value: 7\r\nEth-Consensus-Block-Value: 9\r\n"
+            );
+            assert!(
+                response.starts_with(head.as_bytes()),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            assert_eq!(body(&response), beacon_block);
+        }
     }
 
     #[test]

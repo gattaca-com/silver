@@ -431,7 +431,7 @@ pub fn ef_tile_with_spec(
     use silver_beacon_state::{BeaconStateTile, SlotTicker};
     use silver_beacon_state_data::CheckpointState;
     use silver_common::{TCache, TCacheProducer, TCacheTable};
-    use silver_config::SyncingConfig;
+    use silver_config::{EngineConfig, SyncingConfig};
 
     let ticker =
         SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
@@ -454,6 +454,7 @@ pub fn ef_tile_with_spec(
         false,
         CheckpointState::Trusted(state),
         None,
+        EngineConfig::default().get_payload_timeout(),
     );
     tile.open_tcaches().unwrap();
     tile

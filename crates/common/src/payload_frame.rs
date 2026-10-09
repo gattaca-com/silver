@@ -17,6 +17,7 @@ pub struct PayloadFrame<'a> {
     pub execution_requests: &'a [u8],
     pub cell_proofs: &'a [u8],
     pub blobs: &'a [u8],
+    pub should_override_builder: bool,
     pub block_value: [u8; 32],
 }
 
@@ -61,6 +62,7 @@ impl<'a> PayloadFrame<'a> {
             execution_requests,
             cell_proofs,
             blobs,
+            should_override_builder: header[9] != 0,
             block_value: header[10..].try_into().expect("32 bytes"),
         })
     }

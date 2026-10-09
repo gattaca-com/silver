@@ -26,7 +26,7 @@ use silver_common::{
     test_util::ShmemDir,
     ticker::SlotTicker,
 };
-use silver_config::SyncingConfig;
+use silver_config::{EngineConfig, SyncingConfig};
 
 fn null_stream_id() -> P2pStreamId {
     P2pStreamId::new(0, 0, StreamProtocol::Unset, false)
@@ -245,6 +245,7 @@ impl Harness {
                 true,
                 CheckpointState::trusted(checkpoint_ssz, &spec, &[]),
                 None,
+                EngineConfig::default().get_payload_timeout(),
             )
         });
         h.gloas = gloas;

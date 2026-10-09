@@ -20,7 +20,7 @@ use silver_common::{
     test_util::ShmemDir,
     ticker::SlotTicker,
 };
-use silver_config::{ScoreParams, SyncingConfig};
+use silver_config::{EngineConfig, ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_gossip::GossipHandler;
 use silver_peer::PeerManager;
@@ -153,6 +153,7 @@ impl PmBsHarness {
             false,
             CheckpointState::trusted(checkpoint, &SpecConfig::mainnet(), pubkeys),
             None,
+            EngineConfig::default().get_payload_timeout(),
         );
         bs.open_tcaches().expect("bs tcaches");
         let mut bs_a = SpineAdapter::connect_tile(&bs, &mut *spine);

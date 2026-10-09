@@ -26,7 +26,14 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     let Some((randao_reveal, graffiti)) = proposal_query(req, resp) else {
         return;
     };
-    let bid_policy = BidPolicy::default();
+    let builder_boost_factor = match req.query_value("builder_boost_factor") {
+        None => BidPolicy::default().builder_boost_factor,
+        Some(text) => match parse_uint64(&text) {
+            Some(factor) => factor,
+            None => return resp.error(400, "builder_boost_factor is a uint64 query parameter"),
+        },
+    };
+    let bid_policy = BidPolicy { builder_boost_factor, ..BidPolicy::default() };
     resp.defer(Outcome::AwaitingProducedBlock(ProduceBlockRequest {
         slot,
         randao_reveal,
@@ -228,8 +235,8 @@ impl ProduceBlockRequest {
 }
 
 impl ProduceBlockRequest {
-    /// A Gloas `BeaconBlock`: the bid commits to the payload, which is not
-    /// included.
+    /// A Fulu `BlindedBeaconBlock` or a Gloas `BeaconBlock`: a bid commits to
+    /// the payload, which is not included.
     fn respond_without_payload(
         self,
         resp: &mut Response<'_>,
@@ -244,9 +251,14 @@ impl ProduceBlockRequest {
         };
         let payload_value = wei_decimal(&block.execution_payload_value);
         let block_value = wei_decimal(&block.consensus_block_value);
+        let payload_header = if spec.is_gloas_at_slot(self.slot) {
+            ("Eth-Execution-Payload-Included", "false")
+        } else {
+            ("Eth-Execution-Payload-Blinded", "true")
+        };
         let headers = [
             ("Eth-Consensus-Version", spec.fork_at_slot(self.slot).name()),
-            ("Eth-Execution-Payload-Included", "false"),
+            payload_header,
             ("Eth-Execution-Payload-Value", payload_value.as_str()),
             ("Eth-Consensus-Block-Value", block_value.as_str()),
         ];
@@ -319,6 +331,19 @@ mod tests {
                 bid_policy: BidPolicy::default(),
             })
         );
+    }
+
+    #[test]
+    fn builder_boost_factor_weights_the_bid() {
+        let (outcome, _) =
+            get(&format!("{}&builder_boost_factor=0", randao()), Some(SSZ_MEDIA_TYPE));
+        let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
+        assert_eq!(request.bid_policy, BidPolicy { builder_boost_factor: 0, min_bid: 0 });
+
+        let (outcome, out) =
+            get(&format!("{}&builder_boost_factor=-1", randao()), Some(SSZ_MEDIA_TYPE));
+        assert_eq!(outcome, Outcome::Response(None));
+        assert_eq!(status_code(&out), "400");
     }
 
     #[test]

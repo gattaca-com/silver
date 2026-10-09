@@ -326,6 +326,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         !config.disable_weak_subjectivity_check(),
         checkpoint,
         config.suggested_fee_recipient(),
+        config.engine_config().get_payload_timeout(),
     );
     let state_reader = beacon_state_tile.reader();
 

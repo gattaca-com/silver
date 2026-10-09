@@ -250,7 +250,8 @@ pub struct ProducedBlock {
     pub header: TCacheRead,
     /// Where the payload goes in `header`; its end when there is none.
     pub payload_at: u32,
-    /// `None` for a Gloas block, which commits to a bid and carries no payload.
+    /// `None` for a block that commits to a bid and carries no payload: a
+    /// blinded Fulu block or a Gloas block.
     pub payload: Option<TCacheRead>,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],

@@ -1,8 +1,8 @@
 use core::cmp::min;
 
 use silver_beacon_state_data::{
-    ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, PayloadWithdrawals, SLOTS_PER_EPOCH, Slot,
-    SpecConfig, StateWriterView, Withdrawal,
+    B256, ExecutionPayloadHeader, FAR_FUTURE_EPOCH, Payload, PayloadWithdrawals, SLOTS_PER_EPOCH,
+    Slot, SpecConfig, StateWriterView, Withdrawal,
 };
 use silver_common::ssz_view::{
     BYTES_PER_KZG_COMMITMENT, ExecutionPayloadHeaderFuluView, ExecutionPayloadView,
@@ -258,6 +258,15 @@ pub(crate) struct ExpectedWithdrawals {
     pub(crate) processed_partials: usize,
 }
 
+impl ExpectedWithdrawals {
+    pub(crate) fn root(&self) -> B256 {
+        hash_list(
+            MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD),
+            self.withdrawals.iter().map(hash_withdrawal),
+        )
+    }
+}
+
 pub(crate) fn get_expected_withdrawals(view: &StateWriterView) -> ExpectedWithdrawals {
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
     let mut withdrawals = PayloadWithdrawals::new();
@@ -321,17 +330,13 @@ pub fn process_withdrawals_fulu_blinded(
     view: &mut StateWriterView,
     header: &[u8],
 ) -> Result<(), WithdrawalsError> {
-    let ExpectedWithdrawals { withdrawals: expected, processed_partials } =
-        get_expected_withdrawals(view);
-    let expected_root = hash_list(
-        MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD),
-        expected.iter().map(hash_withdrawal),
-    );
+    let expected = get_expected_withdrawals(view);
+    let expected_root = expected.root();
     let got = *ExecutionPayloadHeaderFuluView::withdrawals_root(header);
     if got != expected_root {
         return Err(WithdrawalsError::RootMismatch { expected: expected_root, got });
     }
-    apply_withdrawals(view, &expected, processed_partials);
+    apply_withdrawals(view, &expected.withdrawals, expected.processed_partials);
     Ok(())
 }
 

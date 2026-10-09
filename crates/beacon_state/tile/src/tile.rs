@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use flux::{
     spine::{FluxSpine, SpineAdapter, SpineProducers},
@@ -13,9 +13,9 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
-    ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SilverSpine, SyncUpdate,
-    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer,
-    TReadMode, TileId, hex32,
+    ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SidecarBidResponse,
+    SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+    TCacheTable, TProducer, TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -283,6 +283,7 @@ impl BeaconStateTile {
         verify_weak_subjectivity: bool,
         checkpoint: CheckpointState,
         default_fee_recipient: Option<ExecutionAddress>,
+        payload_timeout: Duration,
     ) -> Self {
         let (state, expected_root) = match checkpoint {
             CheckpointState::Trusted(state) => (state, None),
@@ -308,7 +309,7 @@ impl BeaconStateTile {
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),
             default_fee_recipient,
-            block_production: BlockProduction::default(),
+            block_production: BlockProduction::new(payload_timeout),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
             seen_exits: SeenIndices::new(val_cap),
@@ -883,6 +884,7 @@ impl BeaconStateTile {
             }
             TickEvent::None => {}
         }
+        self.expire_payload_waits(&mut adapter.producers);
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
             BeaconApiRequest::AggregateAttestation {
@@ -958,6 +960,10 @@ impl BeaconStateTile {
 
         adapter.consume(|eng_resp: EngineResp, producers| {
             self.handle_engine_response(eng_resp, producers);
+        });
+
+        adapter.consume(|answer: SidecarBidResponse, producers| {
+            self.on_sidecar_bid(answer, producers);
         });
 
         adapter.consume(|m: ReplayBlock, producers| self.on_replay(m, producers));
