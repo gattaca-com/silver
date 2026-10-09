@@ -31,8 +31,18 @@ struct ContributionEntry {
     signature: AggregateSignature,
 }
 
+/// A gossiped contribution, already verified. The signature stays compressed
+/// until a block packs it.
+struct ReceivedContribution {
+    aggregation_bits: [u64; SYNC_SUBCOMMITTEE_MASK_WORDS],
+    signature: [u8; 96],
+}
+
 pub(super) struct SyncContributionPool {
+    /// Aggregated from single messages.
     entries: FxHashMap<ContributionKey, ContributionEntry>,
+    /// The widest contribution received per key.
+    received: FxHashMap<ContributionKey, ReceivedContribution>,
     floor: Slot,
 }
 
@@ -40,6 +50,7 @@ impl SyncContributionPool {
     pub(super) fn new() -> Self {
         Self {
             entries: FxHashMap::with_capacity_and_hasher(MAX_ENTRIES, Default::default()),
+            received: FxHashMap::with_capacity_and_hasher(MAX_ENTRIES, Default::default()),
             floor: 0,
         }
     }
@@ -78,6 +89,39 @@ impl SyncContributionPool {
         InsertOutcome::Inserted
     }
 
+    /// Keeps a verified gossip contribution when it covers more positions
+    /// than the one held for its key.
+    #[timed]
+    pub(super) fn insert_received(
+        &mut self,
+        slot: Slot,
+        subcommittee_index: u64,
+        beacon_block_root: B256,
+        aggregation_bits: &[u8; AGGREGATION_BITS_BYTES],
+        signature: &[u8; 96],
+    ) -> InsertOutcome {
+        if subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
+            return InsertOutcome::Inconsistent;
+        }
+        if slot < self.floor {
+            return InsertOutcome::Stale;
+        }
+
+        let key = ContributionKey { slot, subcommittee_index, beacon_block_root };
+        let aggregation_bits = bit_words(aggregation_bits);
+        let held = self.received.get(&key);
+        if held.is_some_and(|held| popcount(&held.aggregation_bits) >= popcount(&aggregation_bits))
+        {
+            return InsertOutcome::Duplicate;
+        }
+        if held.is_none() && self.received.len() >= MAX_ENTRIES {
+            return InsertOutcome::Full;
+        }
+
+        self.received.insert(key, ReceivedContribution { aggregation_bits, signature: *signature });
+        InsertOutcome::Inserted
+    }
+
     pub(super) fn contribution(
         &self,
         slot: Slot,
@@ -88,7 +132,10 @@ impl SyncContributionPool {
         self.entries.get(&key).map(|entry| PooledContribution { key, entry })
     }
 
-    /// The `SyncAggregate` of the messages for `beacon_block_root` at `slot`.
+    /// The `SyncAggregate` for `beacon_block_root` at `slot`. Per
+    /// subcommittee, the message aggregate and the received contribution are
+    /// joined when disjoint; otherwise the wider is taken, as overlapping
+    /// signatures cannot be separated.
     #[timed]
     pub(super) fn write_sync_aggregate(
         &self,
@@ -104,16 +151,18 @@ impl SyncContributionPool {
                 subcommittee_index: subcommittee_index as u64,
                 beacon_block_root,
             };
-            let Some(entry) = self.entries.get(&key) else {
+            let Some((aggregation_bits, subcommittee_signature)) =
+                self.subcommittee_aggregate(&key)
+            else {
                 continue;
             };
             let bits = &mut out[subcommittee_index * AGGREGATION_BITS_BYTES..];
-            for (word, bytes) in entry.aggregation_bits.iter().zip(bits.as_chunks_mut().0) {
+            for (word, bytes) in aggregation_bits.iter().zip(bits.as_chunks_mut().0) {
                 *bytes = word.to_le_bytes();
             }
             match &mut signature {
-                Some(signature) => signature.add_aggregate(&entry.signature),
-                None => signature = Some(entry.signature),
+                Some(signature) => signature.add_aggregate(&subcommittee_signature),
+                None => signature = Some(subcommittee_signature),
             }
         }
         if let Some(signature) = signature {
@@ -121,11 +170,62 @@ impl SyncContributionPool {
         }
     }
 
+    fn subcommittee_aggregate(
+        &self,
+        key: &ContributionKey,
+    ) -> Option<([u64; SYNC_SUBCOMMITTEE_MASK_WORDS], AggregateSignature)> {
+        let messages = self.entries.get(key);
+        let received = self.received.get(key).and_then(|received| {
+            // Verified on receipt, so the subgroup check is not repeated.
+            let signature = Signature::from_bytes(&received.signature).ok()?;
+            Some((received.aggregation_bits, signature))
+        });
+        let (messages, (received_bits, received_signature)) = match (messages, received) {
+            (None, None) => return None,
+            (Some(messages), None) => return Some((messages.aggregation_bits, messages.signature)),
+            (None, Some((bits, signature))) => {
+                return Some((bits, AggregateSignature::from_signature(&signature)));
+            }
+            (Some(messages), Some(received)) => (messages, received),
+        };
+
+        let disjoint =
+            messages.aggregation_bits.iter().zip(&received_bits).all(|(held, new)| held & new == 0);
+        if disjoint {
+            let mut signature = messages.signature;
+            signature
+                .add_signature(&received_signature, false)
+                .expect("infallible without groupcheck");
+            let mut bits = messages.aggregation_bits;
+            for (bits, received) in bits.iter_mut().zip(received_bits) {
+                *bits |= received;
+            }
+            return Some((bits, signature));
+        }
+        if popcount(&received_bits) > popcount(&messages.aggregation_bits) {
+            return Some((received_bits, AggregateSignature::from_signature(&received_signature)));
+        }
+        Some((messages.aggregation_bits, messages.signature))
+    }
+
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.floor = floor;
         self.entries.retain(|key, _| key.slot >= floor);
+        self.received.retain(|key, _| key.slot >= floor);
     }
+}
+
+fn bit_words(bytes: &[u8; AGGREGATION_BITS_BYTES]) -> [u64; SYNC_SUBCOMMITTEE_MASK_WORDS] {
+    let mut words = [0; SYNC_SUBCOMMITTEE_MASK_WORDS];
+    for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*chunk);
+    }
+    words
+}
+
+fn popcount(words: &[u64; SYNC_SUBCOMMITTEE_MASK_WORDS]) -> u32 {
+    words.iter().map(|word| word.count_ones()).sum()
 }
 
 pub(super) struct PooledContribution<'a> {
@@ -324,6 +424,132 @@ mod tests {
         assert_eq!(
             sig.fast_aggregate_verify(true, &SIGNING_ROOT, bls::DST, &pks),
             BLST_ERROR::BLST_SUCCESS
+        );
+    }
+
+    /// A gossiped contribution signed by `(position, secret key)` pairs.
+    fn insert_received(
+        pool: &mut SyncContributionPool,
+        subcommittee_index: u64,
+        beacon_block_root: B256,
+        signers: &[(usize, usize)],
+    ) -> InsertOutcome {
+        let bits = bits_of(&signers.iter().map(|&(position, _)| position).collect::<Vec<_>>());
+        let mut aggregate = AggregateSignature::from_signature(&signature(signers[0].1));
+        for &(_, sk_idx) in &signers[1..] {
+            aggregate.add_signature(&signature(sk_idx), false).unwrap();
+        }
+        let aggregate = aggregate.to_signature().to_bytes();
+        pool.insert_received(SLOT, subcommittee_index, beacon_block_root, &bits, &aggregate)
+    }
+
+    /// Bits of subcommittee `index` in the aggregate, and whether its signature
+    /// verifies against `signers`.
+    fn aggregate_bits_and_verifies(
+        pool: &SyncContributionPool,
+        index: usize,
+        signers: &[usize],
+    ) -> ([u8; AGGREGATION_BITS_BYTES], bool) {
+        let out = pool_aggregate(pool);
+        let start = index * AGGREGATION_BITS_BYTES;
+        let bits = out[start..start + AGGREGATION_BITS_BYTES].try_into().unwrap();
+        let sig = Signature::from_bytes(&out[SYNC_COMMITTEE_SIZE / 8..]).unwrap();
+        let pks: Vec<_> = signers.iter().map(|&i| test_signing::pubkey_pk(i)).collect();
+        let pks: Vec<_> = pks.iter().collect();
+        let verifies = sig.fast_aggregate_verify(true, &SIGNING_ROOT, bls::DST, &pks) ==
+            BLST_ERROR::BLST_SUCCESS;
+        (bits, verifies)
+    }
+
+    fn bits_of(positions: &[usize]) -> [u8; AGGREGATION_BITS_BYTES] {
+        let mut bits = [0u8; AGGREGATION_BITS_BYTES];
+        for &position in positions {
+            bits[position / 8] |= 1 << (position % 8);
+        }
+        bits
+    }
+
+    /// A proposer outside a subnet holds no messages for it; the gossiped
+    /// contribution alone fills its bits.
+    #[test]
+    fn received_contribution_fills_a_subcommittee_without_messages() {
+        let mut pool = SyncContributionPool::new();
+        let outcome = insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(3, 0), (90, 1)]);
+        assert_eq!(outcome, InsertOutcome::Inserted);
+
+        let (bits, verifies) = aggregate_bits_and_verifies(&pool, SUBCOMMITTEE as usize, &[0, 1]);
+        assert_eq!(bits, bits_of(&[3, 90]));
+        assert!(verifies);
+    }
+
+    #[test]
+    fn disjoint_messages_and_contribution_are_joined() {
+        let mut pool = SyncContributionPool::new();
+        pool.insert_verified(SLOT, SUBCOMMITTEE, BLOCK_ROOT, &positions(&[1]), &signature(0));
+        insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(2, 1), (100, 2)]);
+
+        let (bits, verifies) =
+            aggregate_bits_and_verifies(&pool, SUBCOMMITTEE as usize, &[0, 1, 2]);
+        assert_eq!(bits, bits_of(&[1, 2, 100]));
+        assert!(verifies);
+    }
+
+    #[test]
+    fn overlapping_messages_and_contribution_yield_the_wider() {
+        let mut pool = SyncContributionPool::new();
+        pool.insert_verified(SLOT, SUBCOMMITTEE, BLOCK_ROOT, &positions(&[1]), &signature(0));
+        pool.insert_verified(SLOT, SUBCOMMITTEE, BLOCK_ROOT, &positions(&[2]), &signature(1));
+        insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(2, 1), (3, 2), (4, 0)]);
+        let (bits, verifies) =
+            aggregate_bits_and_verifies(&pool, SUBCOMMITTEE as usize, &[1, 2, 0]);
+        assert_eq!(bits, bits_of(&[2, 3, 4]), "the contribution is wider");
+        assert!(verifies);
+
+        let mut pool = SyncContributionPool::new();
+        for (position, sk_idx) in [(1, 0), (2, 1), (5, 2)] {
+            let mask = positions(&[position]);
+            pool.insert_verified(SLOT, SUBCOMMITTEE, BLOCK_ROOT, &mask, &signature(sk_idx));
+        }
+        insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(2, 1), (3, 2)]);
+        let (bits, verifies) =
+            aggregate_bits_and_verifies(&pool, SUBCOMMITTEE as usize, &[0, 1, 2]);
+        assert_eq!(bits, bits_of(&[1, 2, 5]), "the messages are wider");
+        assert!(verifies);
+    }
+
+    #[test]
+    fn only_a_wider_contribution_replaces_the_held_one() {
+        let mut pool = SyncContributionPool::new();
+        let wide = [(1, 0), (2, 1)];
+        assert_eq!(insert_received(&mut pool, 0, BLOCK_ROOT, &wide), InsertOutcome::Inserted);
+        assert_eq!(insert_received(&mut pool, 0, BLOCK_ROOT, &[(3, 2)]), InsertOutcome::Duplicate);
+        assert_eq!(
+            insert_received(&mut pool, 0, BLOCK_ROOT, &[(3, 2), (4, 0)]),
+            InsertOutcome::Duplicate,
+            "equal width keeps the first"
+        );
+        assert_eq!(
+            insert_received(&mut pool, 0, BLOCK_ROOT, &[(3, 2), (4, 0), (5, 1)]),
+            InsertOutcome::Inserted
+        );
+        let (bits, verifies) = aggregate_bits_and_verifies(&pool, 0, &[2, 0, 1]);
+        assert_eq!(bits, bits_of(&[3, 4, 5]));
+        assert!(verifies);
+    }
+
+    #[test]
+    fn received_contributions_are_kept_per_root_and_pruned() {
+        let mut pool = SyncContributionPool::new();
+        insert_received(&mut pool, SUBCOMMITTEE, [0xBC; 32], &[(1, 0)]);
+        assert_eq!(pool_aggregate(&pool), EMPTY_SYNC_AGGREGATE, "another root");
+
+        insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(1, 0)]);
+        assert_ne!(pool_aggregate(&pool), EMPTY_SYNC_AGGREGATE);
+        pool.prune_before(SLOT + 1);
+        assert_eq!(pool_aggregate(&pool), EMPTY_SYNC_AGGREGATE);
+        assert_eq!(
+            insert_received(&mut pool, SUBCOMMITTEE, BLOCK_ROOT, &[(1, 0)]),
+            InsertOutcome::Stale
         );
     }
 
