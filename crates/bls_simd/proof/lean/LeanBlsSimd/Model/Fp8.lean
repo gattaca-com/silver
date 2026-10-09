@@ -6,6 +6,10 @@ import LeanBlsSimd.Model.Intrinsics
 
 `crates/bls_simd/src/fp8.rs`, transcribed one statement per Rust statement.
 
+Some stages carry names that Rust does not give them, so that proofs can treat each result as a
+variable. `mulAcc` is `Fp8::mul` up to its carry loop. The loops of `mul`, `pack64` and
+`pow_p_minus_3_over_4` are folds of `carryStep`, `packStep` and `windowStep`.
+
 `Fp8::mul` and the operations built only from it are lifted from `Lane`: every intrinsic `mul`
 calls is lane-wise, so lane `l` of its result is one computation on lane `l` of its inputs.
 `Lane` holds that computation, with each `__m512i` replaced by its lane and each intrinsic by its
