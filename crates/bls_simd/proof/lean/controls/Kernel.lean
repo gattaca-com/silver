@@ -1,18 +1,20 @@
 import LeanBlsSimd.Proofs.Kernel
+import LeanBlsSimd.Refines.Kernel
 
 /-! Controls for `LeanBlsSimd.Proofs.Kernel`: the input-dependent premises of its theorems hold
 on concrete inputs. Scott completeness stays assumed. Each `example` must pass.
 
 - Eight lanes holding the compressed encoding of the spec's generator G: every lane is decided
   and valid, `G2.uncompress` returns G, and both sides of `decompress_eq_spec` are
-  `some (blstLimbs G)`.
+  `some (blstLimbs G)`. Through `decompress_refines`, the generated `decompress` returns a batch
+  whose lanes are decided and valid too, so the premise of `decompress_extracted_eq_spec` holds.
 - Eight lanes of 96 zero bytes, whose compression flag is clear: every lane is decided and not
   valid, `G2.uncompress` fails, and both sides of `decompress_eq_spec` are `none`.
 
 Lean's kernel cannot evaluate `decompress` in practice, so both go through `decompress_lane` and
 the lane functions. `decide +kernel` evaluates the bytes and the Scott test on G. The square root,
 whose exponents have about 380 bits, follows from `Kernel.sqrt_snd_iff` and `selectRoot_eq`
-instead. Neither example needs `ScottComplete`. -/
+instead. None of the examples needs `ScottComplete`. -/
 
 namespace LeanBlsSimd
 
@@ -80,6 +82,17 @@ example (l : Fin 8) : (decompress genInputs).undecided.toNat.testBit l = false �
     (decompress genInputs).valid.toNat.testBit l = true :=
   ⟨(genInputs_lane l).undecided.trans laneUndecided_genBytes,
     (genInputs_lane l).valid.trans laneValid_genBytes⟩
+
+/-- The generated `decompress` returns a batch whose lanes are all decided and valid, so the
+premise of `decompress_extracted_eq_spec` holds. -/
+example : ∃ batch,
+    silver_bls_simd.decompress_g2.decompress (toArray (toArray toU8) genInputs) = .ok batch ∧
+      ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false ∧
+        (ofBatch batch).valid.toNat.testBit l = true :=
+  ⟨_, decompress_refines _, fun l => by
+    rw [ofBatch_toBatch, ofArray_toArray (by simp)]
+    exact ⟨(genInputs_lane l).undecided.trans laneUndecided_genBytes,
+      (genInputs_lane l).valid.trans laneValid_genBytes⟩⟩
 
 theorem uncompress_genBytes : G2.uncompress (toBytes genBytes) = .ok G2.generator := by
   obtain ⟨hon, hpt⟩ := laneOnCurve_iff laneUndecided_genBytes
