@@ -4,8 +4,7 @@ import LeanBlsSimd.Model.Fp2x8
 open Aeneas Aeneas.Std Result
 open silver_bls_simd
 
-/-! The functions of `fp2x8.rs` that do not multiply. `ofFp2x8` converts each coordinate with
-`ofFp8`. -/
+/-! The functions of `fp2x8.rs`. `ofFp2x8` converts each coordinate with `ofFp8`. -/
 
 namespace LeanBlsSimd
 
@@ -23,6 +22,9 @@ def toFp2x8 (x : Fp2x8) : fp2x8.Fp2x8 := ⟨toFp8 x.c0, toFp8 x.c1⟩
 
 @[simp] theorem toFp2x8_ofFp2x8 (a : fp2x8.Fp2x8) : toFp2x8 (ofFp2x8 a) = a := by
   simp [ofFp2x8, toFp2x8]
+
+@[simp] theorem ofFp2x8_mk (a b : fp8.Fp8) :
+    ofFp2x8 { c0 := a, c1 := b } = { c0 := ofFp8 a, c1 := ofFp8 b } := rfl
 
 namespace Fp2x8
 
@@ -69,6 +71,27 @@ theorem eq_mask_refines (self rhs : fp2x8.Fp2x8) :
 theorem is_zero_mask_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.is_zero_mask self = ok (toU8 (ofFp2x8 self).is_zero_mask) := by
   simp [fp2x8.Fp2x8.is_zero_mask, Fp8.is_zero_mask_refines, Fp2x8.is_zero_mask]
+
+theorem mul_refines (self rhs : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.mul self rhs = ok (toFp2x8 ((ofFp2x8 self).mul (ofFp2x8 rhs))) := by
+  simp [fp2x8.Fp2x8.mul, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines, Fp2x8.mul, toFp2x8]
+
+theorem square_refines (self : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.square self = ok (toFp2x8 (ofFp2x8 self).square) := by
+  simp [fp2x8.Fp2x8.square, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines,
+    Fp8.double_refines, Fp2x8.square, toFp2x8]
+
+theorem sqrt_refines (self : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.sqrt self = ok (Prod.map toFp2x8 toU8 (ofFp2x8 self).sqrt) := by
+  simp [fp2x8.Fp2x8.sqrt, Fp8.square_refines, Fp8.add_refines, Fp8.sub_refines,
+    Fp8.sqrt_candidate_refines, Fp8.is_zero_mask_refines, Fp8.select_refines, Fp8.half_refines,
+    Fp8.pow_p_minus_3_over_4_refines, Fp8.mul_refines, square_refines, eq_mask_refines,
+    neg_refines, mul_by_i_refines, select_refines, lift, Fp2x8.sqrt, toFp2x8]
+
+theorem is_larger_root_mask_refines (self : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.is_larger_root_mask self = ok (toU8 (ofFp2x8 self).is_larger_root_mask) := by
+  simp [fp2x8.Fp2x8.is_larger_root_mask, Fp8.is_larger_root_mask_refines,
+    Fp8.is_zero_mask_refines, Fp2x8.is_larger_root_mask, lift]
 
 end Fp2x8
 
