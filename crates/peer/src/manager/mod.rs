@@ -3,12 +3,12 @@
 //! mesh decisions live in `tick` and the `sweep` it schedules.
 
 use std::{
-    collections::HashMap,
     net::IpAddr,
     time::{Duration, Instant},
 };
 
 use flux_profiler::timed;
+use fxhash::FxHashMap;
 use silver_common::{
     AgentString, Enr, ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId,
     RpcOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
@@ -79,16 +79,16 @@ pub struct PeerManager {
     /// Live-connection index: `PeerId` → connection handle. Mirrors `peers`
     /// exactly (unlike the database's `by_peer_id`, which maps to persistent
     /// records that outlive the connection).
-    peers_by_id: HashMap<PeerId, usize>,
+    peers_by_id: FxHashMap<PeerId, usize>,
 
     /// In-progress dials, mapping PeerId to when the dial was initiated.
-    dialing: HashMap<PeerId, Instant>,
+    dialing: FxHashMap<PeerId, Instant>,
 
     /// Counters persisted across reconnect by PeerId. GC'd on tick.
-    archived: HashMap<PeerId, ArchivedState>,
+    archived: FxHashMap<PeerId, ArchivedState>,
 
     /// IP colocation index for P6. Prefix → list of live connection handles.
-    ip_colocations: HashMap<IpPrefix, Vec<usize>>,
+    ip_colocations: FxHashMap<IpPrefix, Vec<usize>>,
 
     /// Topics we subscribe to ourselves. Drives SUBSCRIBE emission on new
     /// peers and mesh-management decisions.
@@ -99,7 +99,7 @@ pub struct PeerManager {
     /// Our mesh per topic: connections we've grafted onto. May exceed d_high
     /// between heartbeats; trimmed back to d by `ensure_mesh_capped`. Split
     /// by fork digest during a transition (see `mesh::TopicMeshes`).
-    mesh: HashMap<GossipTopic, mesh::TopicMeshes>,
+    mesh: FxHashMap<GossipTopic, mesh::TopicMeshes>,
 
     /// Outstanding IHAVE→IWANT promises, keyed by `MessageId`. Each entry
     /// holds every (conn, deadline) that has promised that id. Any one
@@ -162,21 +162,21 @@ pub struct PeerManager {
     /// expire after `params.banned_ip_ttl` — IP-level bans have higher
     /// false-positive blast radius than PeerId-level archive entries
     /// (NAT/CGN) so this TTL is tuned independently of `archived_ttl`.
-    banned_ips: HashMap<IpAddr, Instant>,
+    banned_ips: FxHashMap<IpAddr, Instant>,
 
     /// Per-IP count of recent peer-level evictions, plus the time of the
     /// most recent bump. When the count crosses `params.ip_ban_threshold`
     /// the IP gets promoted into `banned_ips`. Counts age out with the
     /// same TTL as `banned_ips` (sliding-window).
-    ip_eviction_counts: HashMap<IpAddr, (u32, Instant)>,
+    ip_eviction_counts: FxHashMap<IpAddr, (u32, Instant)>,
 
     /// PeerIds we've graylist-banned, keyed by ban time. Drives discovery
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
-    banned_peers: HashMap<PeerId, Instant>,
+    banned_peers: FxHashMap<PeerId, Instant>,
 
     /// Dial backoff from a received Goodbye, keyed to the expiry instant;
     /// tier per code via `goodbye_dial_backoff`. Their inbound stays welcome.
-    remote_banned_peers: HashMap<PeerId, Instant>,
+    remote_banned_peers: FxHashMap<PeerId, Instant>,
 
     params: ScoreParams,
 
@@ -257,10 +257,10 @@ impl PeerManager {
             // covers trusted inbound, dials and draining connections.
             peers: peer_slots::PeerSlots::new(2 * params.max_connections()),
             subscribers: subscribers::TopicSubscribers::default(),
-            peers_by_id: HashMap::with_capacity(PEERS_CAP),
-            dialing: HashMap::with_capacity(64),
-            archived: HashMap::with_capacity(ARCHIVE_CAP),
-            ip_colocations: HashMap::with_capacity(IP_COLOC_CAP),
+            peers_by_id: FxHashMap::with_capacity_and_hasher(PEERS_CAP, Default::default()),
+            dialing: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            archived: FxHashMap::with_capacity_and_hasher(ARCHIVE_CAP, Default::default()),
+            ip_colocations: FxHashMap::with_capacity_and_hasher(IP_COLOC_CAP, Default::default()),
             local_peer_id,
             our_topics,
             subscriptions_generation: 0,
@@ -268,10 +268,10 @@ impl PeerManager {
             promises: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             recent_deliveries: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             column_deliveries: partial::ColumnDeliveries::new(),
-            banned_ips: HashMap::with_capacity(64),
-            ip_eviction_counts: HashMap::with_capacity(64),
-            banned_peers: HashMap::with_capacity(128),
-            remote_banned_peers: HashMap::with_capacity(128),
+            banned_ips: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            ip_eviction_counts: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            remote_banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
             our_fork_digest: Some(fork_digest),
             active_gossip_digests: [Some(fork_digest), None],
             active_gossip_domains: [Some(GossipDomain::new(fork_digest, ForkName::Fulu)), None],

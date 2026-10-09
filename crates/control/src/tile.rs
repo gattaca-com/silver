@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -58,6 +59,9 @@ pub struct Controller {
     slashing_protection: SlashingProtectionHandler,
     local_gossip: LocalGossipHandler,
     last_tick: Instant,
+    /// Set by a tick, so the redial runs on the next loop instead of beside
+    /// the tick's sweep, and sees the deficits and evictions it leaves.
+    redial_due: bool,
     last_ping: Instant,
     last_status: Instant,
     last_peer_persist: Instant,
@@ -118,6 +122,7 @@ impl Controller {
             slashing_protection,
             local_gossip: LocalGossipHandler::default(),
             last_tick: now,
+            redial_due: false,
             last_ping: now,
             last_status: now,
             last_peer_persist: now,
@@ -727,10 +732,7 @@ impl Tile<SilverSpine> for Controller {
             })
         });
 
-        if self.last_tick.elapsed() > Duration::from_millis(700) {
-            self.last_tick = now;
-            // Before tick: redials shrink the peer deficit so tick's
-            // discovery request only backfills what the database can't.
+        if mem::take(&mut self.redial_due) {
             self.peer_manager.redial_known_peers(now, &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
@@ -739,10 +741,12 @@ impl Tile<SilverSpine> for Controller {
                     &mut adapter.producers,
                 )
             });
+        }
+
+        if self.last_tick.elapsed() > Duration::from_millis(700) {
+            self.last_tick = now;
+            self.redial_due = true;
             self.peer_manager.tick(now);
-            self.peer_manager.peer_topic_scores(now, &mut |topic_scores| {
-                adapter.produce(PeerStats::Topic(topic_scores));
-            });
 
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {
                 self.last_ping = now;
@@ -772,6 +776,7 @@ impl Tile<SilverSpine> for Controller {
                 handle_peer_control(gossip_handler, rpc_producer, evt, &mut adapter.producers)
             }
             SweepOutput::Scores(scores) => adapter.produce(PeerStats::Scores(scores)),
+            SweepOutput::TopicScores(scores) => adapter.produce(PeerStats::Topic(scores)),
         });
 
         if self.gossip_handler.spin_columns(adapter, self.cell_ingress.as_mut()) {

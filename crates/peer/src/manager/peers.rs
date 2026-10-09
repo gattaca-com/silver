@@ -3,7 +3,6 @@
 //! decides which peers the mesh keeps.
 
 use std::{
-    collections::HashMap,
     net::{IpAddr, SocketAddr},
     time::{Duration, Instant},
 };
@@ -12,8 +11,7 @@ use flux_profiler::timed;
 use rand::seq::SliceRandom;
 use silver_common::{
     ATTESTATION_SUBNETS, GossipDomain, GossipTopic, IpBytes, P2pSend, PeerControl, PeerId,
-    PeerTopicScores, RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit,
-    ssz_view::MetadataView,
+    RpcRequestOutbound, StreamProtocol, rpc_rate_limit::RpcRateLimit, ssz_view::MetadataView,
 };
 
 use super::{
@@ -304,44 +302,6 @@ impl PeerManager {
                 "P7 behaviour penalty"
             );
         }
-    }
-
-    /// Raw per-topic gossipsub counters for every meshed (peer, topic) pair.
-    #[timed]
-    pub fn peer_topic_scores(&self, now: Instant, emit: &mut impl FnMut(PeerTopicScores)) {
-        for (topic, meshes) in &self.mesh {
-            for conn in meshes.iter().flat_map(|m| &m.peers) {
-                let Some(peer) = self.peers.get(conn) else { continue };
-                let Some(t) = peer.topic_stats.get(topic) else { continue };
-                emit(PeerTopicScores {
-                    id: peer.peer_id,
-                    topic: *topic,
-                    meshed_secs: t
-                        .meshed_since
-                        .map(|s| now.saturating_duration_since(s).as_secs())
-                        .unwrap_or(0),
-                    first_deliveries: t.first_deliveries,
-                    mesh_deliveries: t.mesh_deliveries,
-                    p3_scored: scoring::p3_scored(topic),
-                    mesh_active: t.mesh_active,
-                    fanout_total: t.fanout_total,
-                    fanout_sent: t.fanout_sent,
-                    mesh_failure_penalty: t.mesh_failure_penalty,
-                    invalid_deliveries: t.invalid_deliveries,
-                });
-            }
-        }
-    }
-
-    /// Meshes each live peer is grafted in, across topics and digests.
-    pub(super) fn mesh_counts(&self) -> HashMap<usize, u32> {
-        let mut mesh_counts = HashMap::with_capacity(self.peers.len());
-        for meshes in self.mesh.values() {
-            for conn in meshes.iter().flat_map(|m| &m.peers) {
-                *mesh_counts.entry(*conn).or_insert(0) += 1;
-            }
-        }
-        mesh_counts
     }
 
     pub(super) fn gc_archived(&mut self, now: Instant) {

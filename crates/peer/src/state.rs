@@ -15,11 +15,11 @@ use std::{
 use fxhash::FxHashMap;
 use silver_common::{
     AgentString, CountingWitherFilter, GossipTopic, MessageId, MessageIdHasher, PeerId, PeerScores,
-    StreamProtocol,
+    PeerTopicScores, StreamProtocol,
     rpc_rate_limit::{N_STREAM_PROTOCOLS, RpcRateLimit, RpcRateLimitSet},
 };
 
-use crate::scoring::ScoreBreakdown;
+use crate::scoring::{self, ScoreBreakdown};
 
 /// Initial capacity hint; peers with larger custody sets may grow beyond it.
 pub(crate) const TOPICS_PER_PEER_CAP: usize = 96;
@@ -340,6 +340,27 @@ pub(crate) struct TopicScore {
     // Not decayed; zeroed on reconnect so the ratio is per-connection.
     pub fanout_total: u64,
     pub fanout_sent: u64,
+}
+
+impl TopicScore {
+    pub(crate) fn report(&self, id: PeerId, topic: GossipTopic, now: Instant) -> PeerTopicScores {
+        PeerTopicScores {
+            id,
+            topic,
+            meshed_secs: self
+                .meshed_since
+                .map(|s| now.saturating_duration_since(s).as_secs())
+                .unwrap_or(0),
+            first_deliveries: self.first_deliveries,
+            mesh_deliveries: self.mesh_deliveries,
+            p3_scored: scoring::p3_scored(&topic),
+            mesh_active: self.mesh_active,
+            fanout_total: self.fanout_total,
+            fanout_sent: self.fanout_sent,
+            mesh_failure_penalty: self.mesh_failure_penalty,
+            invalid_deliveries: self.invalid_deliveries,
+        }
+    }
 }
 
 /// Archived counters kept for `archived_ttl` after a peer disconnects. Lets

@@ -2,8 +2,8 @@ use std::{collections::HashMap, mem, time::Instant};
 
 use flux_profiler::timed;
 use silver_common::{
-    GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic, P2pSend, PeerControl, PeerScores, RpcOutbound,
-    RpcRequest, RpcRequestOutbound, StreamProtocol, ssz_view::MetadataView,
+    GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic, P2pSend, PeerControl, PeerScores, PeerTopicScores,
+    RpcOutbound, RpcRequest, RpcRequestOutbound, StreamProtocol, ssz_view::MetadataView,
 };
 
 use super::{
@@ -59,6 +59,7 @@ pub(super) struct SubscriptionChange {
 pub enum SweepOutput {
     Control(PeerControl),
     Scores(PeerScores),
+    TopicScores(PeerTopicScores),
 }
 
 /// What the rescore leaves for the population management after the pass.
@@ -145,7 +146,6 @@ impl PeerManager {
         } else {
             HashMap::new()
         };
-        let mesh_counts = if work.rescore { self.mesh_counts() } else { HashMap::new() };
         let ping = work.ping.then(|| {
             let seq = MetadataView::seq_number(self.metadata());
             RpcRequest::Ping(seq.to_le_bytes())
@@ -199,7 +199,16 @@ impl PeerManager {
                     peer.evict_spared = false;
                 }
                 census.count(conn, peer, params.graylist_threshold, now);
-                out(SweepOutput::Scores(peer.scores(mesh_counts.get(&conn).copied().unwrap_or(0))));
+                // `meshed_since` is set while the peer sits in any of the
+                // topic's meshes, across digests.
+                let mut mesh_count = 0;
+                for (&topic, stats) in
+                    peer.topic_stats.iter().filter(|(_, s)| s.meshed_since.is_some())
+                {
+                    mesh_count += 1;
+                    out(SweepOutput::TopicScores(stats.report(peer.peer_id, topic, now)));
+                }
+                out(SweepOutput::Scores(peer.scores(mesh_count)));
             }
             if let Some(ping) = ping &&
                 peer.outbound_has_capacity(
@@ -263,4 +272,95 @@ fn rpc_request(peer: usize, request: RpcRequest) -> PeerControl {
         peer,
         request,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use silver_common::{GossipTopic, PeerEvent};
+    use silver_config::ScoreParams;
+
+    use super::SweepOutput;
+    use crate::manager::{PeerManager, fixture::*};
+
+    const OLD: [u8; 4] = [0; 4];
+    const NEW: [u8; 4] = [1; 4];
+    const BLOCKS: GossipTopic = GossipTopic::BeaconBlock;
+    const EXITS: GossipTopic = GossipTopic::VoluntaryExit;
+
+    /// The sweep reads mesh membership from `meshed_since`: set while the
+    /// peer is in any of the topic's meshes, across digests.
+    fn assert_meshed_since_tracks_meshes(mgr: &PeerManager) {
+        for (conn, peer) in mgr.peers.iter() {
+            for (topic, stats) in &peer.topic_stats {
+                let meshed = mgr.mesh.get(topic).is_some_and(|meshes| meshes.contains(conn));
+                assert_eq!(stats.meshed_since.is_some(), meshed, "{conn} {topic:?}");
+            }
+        }
+        for (topic, meshes) in &mgr.mesh {
+            for &conn in meshes.iter().flat_map(|mesh| &mesh.peers) {
+                let stats = mgr.peers.get(&conn).and_then(|peer| peer.topic_stats.get(topic));
+                assert!(stats.is_some_and(|s| s.meshed_since.is_some()), "{conn} {topic:?}");
+            }
+        }
+    }
+
+    /// Sorted `(peer seed, topic)` topic reports and `(peer seed, mesh_count)`
+    /// score reports.
+    fn reports(mgr: &mut PeerManager, now: Instant) -> (Vec<(u8, GossipTopic)>, Vec<(u8, u32)>) {
+        let seed = |id| (1..=3).find(|&seed| peer_id(seed) == id).expect("a fixture peer");
+        let (mut topics, mut scores) = (Vec::new(), Vec::new());
+        mgr.tick(now);
+        mgr.sweep(now, &mut |output| match output {
+            SweepOutput::TopicScores(t) => topics.push((seed(t.id), t.topic)),
+            SweepOutput::Scores(s) => scores.push((seed(s.id), s.mesh_count)),
+            SweepOutput::Control(_) => {}
+        });
+        topics.sort_by_key(|&(seed, topic)| (seed, topic.counter_slot()));
+        scores.sort_unstable();
+        (topics, scores)
+    }
+
+    #[test]
+    fn meshed_topics_are_reported_once_across_digests() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![BLOCKS, EXITS], ScoreParams::default());
+        mgr.set_active_domains(OLD, Some(NEW), &mut |_| {});
+        mgr.run_sweep(now, &mut |_| {});
+        for conn in 1..=3 {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+            mgr.on_subscribe(conn, BLOCKS, OLD, now, &mut |_| {});
+            mgr.on_subscribe(conn, BLOCKS, NEW, now, &mut |_| {});
+        }
+        mgr.on_subscribe(1, EXITS, OLD, now, &mut |_| {});
+        assert_meshed_since_tracks_meshes(&mgr);
+
+        // Pruned on one digest, still meshed on the other.
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 2,
+                topic: BLOCKS,
+                digest: OLD,
+                backoff_seconds: None,
+            },
+            now,
+            &mut |_| {},
+        );
+        assert_meshed_since_tracks_meshes(&mgr);
+
+        let (topics, scores) = reports(&mut mgr, now);
+        assert_eq!(topics, [(1, BLOCKS), (1, EXITS), (2, BLOCKS), (3, BLOCKS)]);
+        assert_eq!(scores, [(1, 2), (2, 1), (3, 1)]);
+
+        mgr.on_disconnected(3, now, "test", &mut |_| {});
+        mgr.deactivate_topics([EXITS], now, &mut |_| {});
+        assert_meshed_since_tracks_meshes(&mgr);
+        mgr.set_active_domains(NEW, None, &mut |_| {});
+        mgr.run_sweep(now, &mut |_| {});
+        assert_meshed_since_tracks_meshes(&mgr);
+
+        let (topics, _) = reports(&mut mgr, now);
+        assert_eq!(topics.len(), 2, "peers 1 and 2 on blocks only: {topics:?}");
+    }
 }
