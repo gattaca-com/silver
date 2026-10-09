@@ -5176,7 +5176,6 @@ dependencies = [
  "buffa",
  "criterion",
  "flux",
- "flux-profiler",
  "fxhash",
  "hdrhistogram",
  "hex",

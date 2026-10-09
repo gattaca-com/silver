@@ -7,7 +7,7 @@ use silver_common::{
     LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
     SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer,
     TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
-    cell_store::PartialColumnsMode, metrics::timed, msg_id_valid_snappy,
+    cell_store::PartialColumnsMode, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -442,7 +442,6 @@ impl GossipHandler {
         did_work
     }
 
-    #[timed]
     fn spin_inner<I: ColumnIngress>(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,
