@@ -31,4 +31,5 @@ import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Refines.Constants
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Refines.Fp2x8
+import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Axioms

@@ -9,6 +9,7 @@ import LeanBlsSimd.Proofs.Convert
 import LeanBlsSimd.Proofs.Kernel
 import LeanBlsSimd.Extracted.Funs
 import LeanBlsSimd.Refines.Fp2x8
+import LeanBlsSimd.Refines.DecompressG2
 
 /-!
 Fails the build if any theorem under `LeanBlsSimd`, or any of `checkedDefinitions`, uses an axiom
