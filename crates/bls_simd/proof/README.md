@@ -13,18 +13,17 @@ This folder holds a Lean 4 proof about `decompress_g2::decompress` in `../src`, 
 `lib.rs` reads three parts of a `Batch`: `undecided`, `valid`, and `points` on valid lanes. The headline theorem, in `lean/LeanBlsSimd/Refines/Kernel.lean`, covers exactly those, lane by lane. It is about `silver_bls_simd.decompress_g2.decompress`, the Lean function that Aeneas generates from the Rust:
 
 ```lean
-theorem decompress_extracted_eq_spec (hC : ScottComplete)
-    (inputs : Array (Array U8 96#usize) 8#usize) :
+theorem decompress_extracted_eq_spec (inputs : Array (Array U8 96#usize) 8#usize) :
     ∃ batch, silver_bls_simd.decompress_g2.decompress inputs = ok batch ∧
-      ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false →
+      (ScottComplete → ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false →
         (if (ofBatch batch).valid.toNat.testBit l then some (ofBatch batch).points[l]
           else none) =
         (match G2.uncompress (toBytes (ofArray (ofArray ofU8) inputs (m := 8))[l]) with
           | .error _ => none
-          | .ok P => if G2.inSubgroup P then some (blstLimbs P) else none)
+          | .ok P => if G2.inSubgroup P then some (blstLimbs P) else none))
 ```
 
-For every input batch, the generated `decompress` returns a batch, and each lane it decides gives the specification's answer. Returning `ok` rules out Aeneas's other two outcomes: a panic, such as an out-of-bounds index or an overflow, and a loop that never ends. Here `l : Fin 8` selects a lane; `some` and `none` correspond to Rust's `Some` and `None`. The specification is [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs). It decodes with `G2.uncompress` and checks membership with `G2.inSubgroup`. That is the signature-checking stage of its `coreVerify`. Full verification also validates the public key, hashes the message to G2, and checks a pairing.
+For every input batch, the generated `decompress` returns a batch; that part needs no hypothesis. Given `ScottComplete`, each lane it decides gives the specification's answer. Returning `ok` rules out Aeneas's other two outcomes: a panic, such as an out-of-bounds index or an overflow, and a loop that never ends. Here `l : Fin 8` selects a lane; `some` and `none` correspond to Rust's `Some` and `None`. The specification is [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs). It decodes with `G2.uncompress` and checks membership with `G2.inSubgroup`. That is the signature-checking stage of its `coreVerify`. Full verification also validates the public key, hashes the message to G2, and checks a pairing.
 
 The conversions read Aeneas's values as plain Lean values. `ofArray (ofArray ofU8)` reads the input arrays as `Vector`s of bytes. `ofBatch` reads the returned `Batch` field by field: each mask through `ofU8`, each point through `ofBlstP2Affine`. `toBytes` passes the lane's 96 bytes unchanged. `blstLimbs P` lays out P's coordinates as blst's `blst_p2_affine` holds them.
 
@@ -127,13 +126,13 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 
 ### Regenerating the extraction
 
-`lean/extract.sh` reruns Charon and Aeneas on `crates/bls_simd/src` and compares the result with `lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`. It needs `AENEAS_DIR`, a checkout of [Aeneas](https://github.com/AeneasVerif/aeneas) at the commit that `lean/lake-manifest.json` pins for `aeneas`. In that checkout, `make setup-charon` builds Charon at the commit in `charon-pin`, and `make` builds Aeneas. Charon also needs rustup, which installs its nightly. The script refuses to run if either checkout or either binary differs from its pin. From `lean/`:
+`lean/extract.sh` reruns Charon and Aeneas on `crates/bls_simd/src` and compares the result with `lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`. It needs `AENEAS_DIR`, a checkout of [Aeneas](https://github.com/AeneasVerif/aeneas) at the commit that `lean/lake-manifest.json` pins for `aeneas`. In that checkout, `make setup-charon` builds Charon at the commit in `charon-pin`, and `make` builds Aeneas. Charon also needs rustup, which installs its nightly. The script refuses to run if either checkout differs from its pin. It also checks the binaries: Aeneas reports the commit it was built from, but Charon reports only its crate version, so a Charon binary built from another commit with the same version would pass. From `lean/`:
 
 ```sh
 AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 ```
 
-Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment. The comparison ignores lines that hold only such a location. A change to Rust comments or formatting therefore shows no drift, and leaves the proof valid. With `--check`, the script leaves the tree alone: it prints any other difference and exits 1, or exits 0 when there is none.
+Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment. The comparison masks the line numbers of each such span and compares everything else exactly, comment delimiters included. A change to Rust comments or formatting therefore shows no drift, and leaves the proof valid. With `--check`, the script leaves the tree alone: it prints any other difference and exits 1, or exits 0 when there is none.
 
 On drift, run `./extract.sh` without `--check`, which replaces `Types.lean` and `Funs.lean`, and follow `lean/README.md`. In short: rebuild, and fix the refinement proofs in `lean/LeanBlsSimd/Refines/` that break. Update the model and `Proofs/` only where the change alters behaviour. Then rerun the controls and both vector tests, and update the table above. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
@@ -146,7 +145,7 @@ lake exe cache get
 lake build
 ```
 
-`lake exe cache get` fetches Mathlib's prebuilt files; it must run from `lean/`. `lake build` compiles Aeneas's Lean library and every proof, then runs the axiom guard. Building the library prints five `declaration uses 'sorry'` warnings; the guard shows that nothing it checks uses them. The build's last lines report the theorem count, the checked `silver_bls_simd.decompress_g2.decompress`, and `axioms used: [propext, Quot.sound, Classical.choice]`. The first build takes about three minutes on 24 cores, and `.lake/` grows to about 8 GB.
+`lake exe cache get` fetches Mathlib's prebuilt files; it must run from `lean/`. Lean imports those files without rechecking Mathlib's proofs; building Mathlib from source instead removes that reliance. `lake build` compiles Aeneas's Lean library and every proof, then runs the axiom guard. Building the library prints five `declaration uses 'sorry'` warnings; the guard shows that nothing it checks uses them. The build's last lines report the theorem count, the checked `silver_bls_simd.decompress_g2.decompress`, and `axioms used: [propext, Quot.sound, Classical.choice]`. The first build takes about three minutes on 24 cores, and `.lake/` grows to about 8 GB.
 
 Negative controls check that selected mutations are rejected. Other controls check concrete inputs and the axiom list. Every file must exit 0:
 
@@ -164,7 +163,7 @@ Negative controls check that selected mutations are rejected. Other controls che
 | `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `Kernel.lean` | The input premises of `decompress_eq_spec` hold on concrete batches, and on the generator's batch so does the headline's. Scott completeness stays assumed. |
-| `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For six of the eight mutants, a kernel-checked proof shows the mutated claim false; for `times_minus_z`, the claim about one loop step. |
+| `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a kernel-checked proof shows the mutated claim false; for `times_minus_z`, it refutes the claim about one loop step instead. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
 
 The Lean side of the vector test, also from `lean/`:

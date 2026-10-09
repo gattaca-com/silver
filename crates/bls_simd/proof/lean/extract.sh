@@ -8,9 +8,9 @@
 # FunsExternal.lean are never touched.
 #
 # Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment.
-# Changing a Rust comment or formatting moves those spans, so the comparison ignores lines that
-# hold only such a location: a change that only moves Rust code shows no drift. It needs git 2.30
-# or later for `git diff -I`.
+# Changing a Rust comment or formatting moves those spans, so both sides are compared after
+# replacing each span's numbers with `L`; the rest of every line, comment delimiters included,
+# must match exactly. A change that only moves Rust code therefore shows no drift.
 #
 # AENEAS_DIR must be an Aeneas checkout at the revision lake-manifest.json pins for `aeneas`,
 # with Aeneas built (`make`) and Charon built at its pin (`make setup-charon`). Charon needs
@@ -75,12 +75,28 @@ trap 'rm -rf "$work"' EXIT
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_bls_simd.llbc"
 
-source_line="^ *Source: '[^']*', lines [0-9]+:[0-9]+-[0-9]+:[0-9]+( -/)?$"
+for f in Types.lean Funs.lean; do
+  for side in "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f"; do
+    if [[ ! -f $side ]]; then
+      echo "missing $side" >&2
+      exit 2
+    fi
+  done
+done
+
+# Only the numbers of a `lines <start>-<end>` span are masked, wherever the span sits on the line.
+mask_spans() {
+  sed -E "s/(Source: '[^']*', lines )[0-9]+:[0-9]+-[0-9]+:[0-9]+/\1L/" "$1"
+}
+
 drift=false
 for f in Types.lean Funs.lean; do
+  mkdir -p "$work/committed" "$work/regenerated"
+  mask_spans "$lean_dir/LeanBlsSimd/Extracted/$f" >"$work/committed/$f"
+  mask_spans "$work/lean/LeanBlsSimd/Extracted/$f" >"$work/regenerated/$f"
   status=0
-  git --no-pager diff --no-index --exit-code -I"$source_line" \
-    "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f" || status=$?
+  git --no-pager diff --no-index --exit-code "$work/committed/$f" "$work/regenerated/$f" ||
+    status=$?
   case $status in
     0) ;;
     1) drift=true ;;
@@ -89,9 +105,9 @@ for f in Types.lean Funs.lean; do
 done
 
 if $drift; then
-  echo "The extraction drifted from LeanBlsSimd/Extracted/ beyond its Source lines." >&2
+  echo "The extraction drifted from LeanBlsSimd/Extracted/ beyond its Source spans." >&2
 else
-  echo "No drift from LeanBlsSimd/Extracted/ beyond its Source lines."
+  echo "No drift from LeanBlsSimd/Extracted/ beyond its Source spans."
 fi
 
 if $check; then
