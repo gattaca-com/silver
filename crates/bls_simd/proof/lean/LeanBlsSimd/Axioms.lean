@@ -8,7 +8,7 @@ import LeanBlsSimd.Proofs.Pow
 import LeanBlsSimd.Proofs.Convert
 import LeanBlsSimd.Proofs.Kernel
 import LeanBlsSimd.Extracted.Funs
-import LeanBlsSimd.Refines.Fp2x8
+import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Refines.DecompressG2
 
 /-!
