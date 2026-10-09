@@ -16,5 +16,9 @@ blst.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 
+[[test]]
+name = "proof_vectors"
+path = "proof/vectors.rs"
+
 [lints]
 workspace = true
