@@ -2476,7 +2476,7 @@ mod tests {
         let mut sidecar_body = Vec::new();
         let answer = answer.map(|(status, body)| {
             sidecar_body.extend_from_slice(body.as_bytes());
-            ClientResponse { status, body: &mut sidecar_body }
+            ClientResponse { status, headers: &[], body: &mut sidecar_body }
         });
         server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
         let reader = std::thread::spawn(move || read_to_eof(client));
@@ -2487,6 +2487,8 @@ mod tests {
     fn registrations_answer_with_the_sidecar_verdict() {
         for (answer, line, message) in [
             (Ok((200, "")), "HTTP/1.1 200 OK\r\n", ""),
+            (Ok((202, "")), "HTTP/1.1 200 OK\r\n", ""),
+            (Ok((204, "")), "HTTP/1.1 200 OK\r\n", ""),
             (
                 Ok((400, r#"{"code":400,"message":"invalid signature"}"#)),
                 "HTTP/1.1 400 Bad Request\r\n",

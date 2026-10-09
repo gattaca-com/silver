@@ -5,6 +5,7 @@ use silver_common::{
     BeaconApiRequest, GossipTopic, LocalGossipFailure, TCacheProducer, TCacheRead, TProducer,
 };
 use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_headers};
+use silver_pbs::is_success;
 
 use crate::{
     events::ChannelSet,
@@ -93,7 +94,7 @@ impl<'a> Response<'a> {
 
     pub(crate) fn sidecar_response(&mut self, answer: Result<ClientResponse<'_>, &str>) {
         match answer {
-            Ok(response) if response.status == 200 => self.ok(),
+            Ok(response) if is_success(response.status) => self.ok(),
             Ok(response) => {
                 let code = if response.status == 400 { 400 } else { 500 };
                 let message =

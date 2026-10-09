@@ -355,6 +355,7 @@ mod tests {
             path: "/",
             body,
             authorization: Some("Bearer t.t.t"),
+            accept: None,
         };
         frame_request(conn.begin_request(), "localhost", &post, true);
         while !conn.pending_write().is_empty() {

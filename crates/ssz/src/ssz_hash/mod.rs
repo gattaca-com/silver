@@ -6,6 +6,7 @@
 
 mod attestation;
 mod block_body;
+mod builder_bid;
 mod execution_payload;
 mod execution_requests;
 mod operations;
@@ -20,7 +21,10 @@ pub use block_body::{
     hash_tree_root_body, hash_tree_root_body_fulu, hash_tree_root_body_fulu_with_roots,
     kzg_commitments_inclusion_proof,
 };
-pub use execution_payload::{PayloadRoots, hash_execution_payload_with_roots};
+pub use builder_bid::hash_builder_bid_fulu;
+pub use execution_payload::{
+    PayloadRoots, hash_execution_payload_header_fulu, hash_execution_payload_with_roots,
+};
 pub use execution_requests::hash_execution_requests_fulu;
 pub use operations::{
     hash_beacon_block_header_bytes, hash_signed_beacon_block_header, hash_tree_root_deposit_data,

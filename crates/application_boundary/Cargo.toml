@@ -13,6 +13,7 @@ silver_common.workspace = true
 silver_config.workspace = true
 silver_engine_api.workspace = true
 silver_httpcore.workspace = true
+silver_log.workspace = true
 silver_pbs.workspace = true
 
 [dev-dependencies]

@@ -4884,6 +4884,7 @@ dependencies = [
  "silver_config",
  "silver_engine_api",
  "silver_httpcore",
+ "silver_log",
  "silver_pbs",
  "ureq",
 ]
@@ -4902,6 +4903,7 @@ dependencies = [
  "silver_common",
  "silver_httpcore",
  "silver_log",
+ "silver_pbs",
  "smallvec",
  "tempfile",
  "toml",
@@ -5275,9 +5277,18 @@ version = "0.1.0-alpha.1"
 name = "silver_pbs"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "blst",
+ "hex",
  "mio",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "silver_beacon_state_data",
+ "silver_common",
+ "silver_config",
  "silver_httpcore",
  "silver_log",
+ "silver_ssz",
 ]
 
 [[package]]

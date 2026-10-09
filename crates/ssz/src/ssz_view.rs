@@ -2884,3 +2884,139 @@ impl ExecutionPayloadView {
         u64_le(buf, 520)
     }
 }
+
+// -- ExecutionPayloadHeader (Electra / Fulu) ----------------------------
+//
+// Fixed part `EXECUTION_PAYLOAD_HEADER_FIXED`; extra_data follows it.
+// `ExecutionPayload`'s layout up to [504), then:
+//   [504..536) transactions_root
+//   [536..568) withdrawals_root
+//   [568..576) blob_gas_used
+//   [576..584) excess_blob_gas
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct ExecutionPayloadHeaderFuluView;
+
+impl ExecutionPayloadHeaderFuluView {
+    #[inline]
+    pub fn parent_hash(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 0)
+    }
+    #[inline]
+    pub fn fee_recipient(buf: &[u8]) -> &[u8; 20] {
+        fixed(buf, 32)
+    }
+    #[inline]
+    pub fn prev_randao(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 372)
+    }
+    #[inline]
+    pub fn block_number(buf: &[u8]) -> u64 {
+        u64_le(buf, 404)
+    }
+    #[inline]
+    pub fn gas_limit(buf: &[u8]) -> u64 {
+        u64_le(buf, 412)
+    }
+    #[inline]
+    pub fn timestamp(buf: &[u8]) -> u64 {
+        u64_le(buf, 428)
+    }
+    #[inline]
+    pub fn block_hash(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 472)
+    }
+    #[inline]
+    pub fn withdrawals_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 536)
+    }
+    #[inline]
+    pub fn extra_data(buf: &[u8]) -> &[u8] {
+        &buf[EXECUTION_PAYLOAD_HEADER_FIXED..]
+    }
+
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        buf.len() >= EXECUTION_PAYLOAD_HEADER_FIXED &&
+            buf.len() <= EXECUTION_PAYLOAD_HEADER_FIXED + MAX_EXTRA_DATA_BYTES &&
+            offsets_ok(buf, &[436], EXECUTION_PAYLOAD_HEADER_FIXED)
+    }
+}
+
+// -- BuilderBid (builder-specs, Electra / Fulu) -------------------------
+//
+// Fixed part 92B:
+//   [0..4)    offset: header
+//   [4..8)    offset: blob_kzg_commitments
+//   [8..12)   offset: execution_requests
+//   [12..44)  value (uint256)
+//   [44..92)  pubkey
+
+pub const BUILDER_BID_FULU_FIXED: usize = 92;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct BuilderBidFuluView;
+
+impl BuilderBidFuluView {
+    const OFFSETS: [usize; 3] = [0, 4, 8];
+
+    #[inline]
+    pub fn header(buf: &[u8]) -> &[u8] {
+        variable_field(buf, &Self::OFFSETS, 0)
+    }
+    #[inline]
+    pub fn blob_kzg_commitments(buf: &[u8]) -> &[u8] {
+        variable_field(buf, &Self::OFFSETS, 1)
+    }
+    #[inline]
+    pub fn execution_requests(buf: &[u8]) -> &[u8] {
+        variable_field(buf, &Self::OFFSETS, 2)
+    }
+    #[inline]
+    pub fn value(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 12)
+    }
+    #[inline]
+    pub fn pubkey(buf: &[u8]) -> &[u8; 48] {
+        fixed(buf, 44)
+    }
+
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        buf.len() >= BUILDER_BID_FULU_FIXED &&
+            offsets_ok(buf, &Self::OFFSETS, BUILDER_BID_FULU_FIXED) &&
+            ExecutionPayloadHeaderFuluView::check_canonical(Self::header(buf)) &&
+            fixed_list_ok(
+                Self::blob_kzg_commitments(buf),
+                BYTES_PER_KZG_COMMITMENT,
+                MAX_BLOB_COMMITMENTS_PER_BLOCK,
+            ) &&
+            ExecutionRequestsFuluView::check_canonical(Self::execution_requests(buf))
+    }
+}
+
+// -- SignedBuilderBid -------------------------------------------------
+//
+// Variable. { message: BuilderBid(var), signature(96) }.
+// Fixed part 100B: offset(4) + signature(96); message body at [100..).
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[repr(C)]
+pub struct SignedBuilderBidFuluView;
+
+impl SignedBuilderBidFuluView {
+    #[inline]
+    pub fn signature(buf: &[u8]) -> &[u8; 96] {
+        fixed(buf, 4)
+    }
+    #[inline]
+    pub fn message(buf: &[u8]) -> &[u8] {
+        &buf[100..]
+    }
+
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        buf.len() >= 100 &&
+            u32_le(buf, 0) as usize == 100 &&
+            BuilderBidFuluView::check_canonical(Self::message(buf))
+    }
+}

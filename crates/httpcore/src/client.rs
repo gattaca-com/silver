@@ -21,7 +21,19 @@ pub struct ClientConnection {
 
 pub struct ClientResponse<'a> {
     pub status: u16,
+    /// The status line and headers, as received.
+    pub headers: &'a [u8],
     pub body: &'a mut [u8],
+}
+
+impl<'a> ClientResponse<'a> {
+    /// The first value of header `name`, trimmed.
+    pub fn header(&self, name: &str) -> Option<&'a [u8]> {
+        self.headers.split(|byte| *byte == b'\n').skip(1).find_map(|line| {
+            let (key, value) = line.split_at(line.iter().position(|byte| *byte == b':')?);
+            key.eq_ignore_ascii_case(name.as_bytes()).then(|| value[1..].trim_ascii())
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +48,7 @@ pub struct ClientRequest<'a> {
     pub path: &'a str,
     pub body: &'a [u8],
     pub authorization: Option<&'a str>,
+    pub accept: Option<&'a str>,
 }
 
 enum Framing {
@@ -131,11 +144,13 @@ impl ClientConnection {
 
     pub fn take_response(&mut self) -> Option<ClientResponse<'_>> {
         let (body, consumed) = self.framing.complete_body(self.read_end - self.read_offset)?;
-        let start = self.read_offset + body.start;
+        let headers_start = self.read_offset;
         let end = self.read_offset + body.end;
         self.read_offset += consumed;
         self.framing = Framing::Head;
-        Some(ClientResponse { status: self.status, body: &mut self.read_buf[start..end] })
+        // The headers end where the body starts, whatever the framing.
+        let (headers, body) = self.read_buf[headers_start..end].split_at_mut(body.start);
+        Some(ClientResponse { status: self.status, headers, body })
     }
 
     pub fn reset(&mut self) {
@@ -174,6 +189,10 @@ fn parse_response_head(buf: &[u8]) -> io::Result<Option<(u16, Framing)>> {
         }
     }
 
+    // RFC 9112 6.3: these never carry a body, whatever the headers say.
+    if status == 204 || status == 304 || (100..200).contains(&status) {
+        return Ok(Some((status, Framing::Length { body_start: header_end, total: header_end })));
+    }
     // RFC 9112 6.1: Transfer-Encoding overrides any Content-Length.
     if chunked {
         return Ok(Some((status, Framing::Chunked(ChunkedDecoder::new(header_end)))));
@@ -203,6 +222,9 @@ pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>,
     if let Some(bearer) = request.authorization {
         write!(out, "Authorization: {bearer}\r\n").unwrap();
     }
+    if let Some(accept) = request.accept {
+        write!(out, "Accept: {accept}\r\n").unwrap();
+    }
     let connection = if keep_alive { "keep-alive" } else { "close" };
     write!(out, "Connection: {connection}\r\n\r\n").unwrap();
     out.extend_from_slice(request.body);
@@ -216,7 +238,7 @@ mod tests {
     const BEARER: &str = "Bearer aGVhZGVy.cGF5bG9hZA.c2ln";
 
     fn post<'a>(body: &'a [u8], authorization: Option<&'a str>) -> ClientRequest<'a> {
-        ClientRequest { method: Method::Post, path: "/", body, authorization }
+        ClientRequest { method: Method::Post, path: "/", body, authorization, accept: None }
     }
 
     fn machine() -> ClientConnection {
@@ -316,12 +338,13 @@ mod tests {
             path: "/eth/v1/builder/status",
             body: b"",
             authorization: None,
+            accept: Some("application/octet-stream"),
         };
         frame_request(&mut out, "localhost:18550", &request, true);
         assert_eq!(
             out,
             b"GET /eth/v1/builder/status HTTP/1.1\r\nHost: localhost:18550\r\n\
-              Connection: keep-alive\r\n\r\n"
+              Accept: application/octet-stream\r\nConnection: keep-alive\r\n\r\n"
         );
     }
 
@@ -333,6 +356,7 @@ mod tests {
             path: "/eth/v1/builder/validators",
             body: b"[]",
             authorization: None,
+            accept: None,
         };
         frame_request(&mut out, "h", &request, true);
         assert!(out.starts_with(b"POST /eth/v1/builder/validators HTTP/1.1\r\n"));
@@ -392,6 +416,20 @@ mod tests {
         let mut conn = machine();
         feed(&mut conn, b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n").unwrap();
         assert!(conn.take_response().is_none());
+    }
+
+    #[test]
+    fn headers_are_read_from_the_response() {
+        let mut conn = machine();
+        feed(
+            &mut conn,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\neth-consensus-version:  fulu \r\n\r\n{}",
+        )
+        .unwrap();
+        let response = conn.take_response().unwrap();
+        assert_eq!(response.header("Eth-Consensus-Version"), Some(b"fulu".as_ref()));
+        assert_eq!(response.header("Content-Type"), None);
+        assert_eq!(&*response.body, b"{}");
     }
 
     #[test]

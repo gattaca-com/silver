@@ -370,7 +370,7 @@ mod tests {
     const CAPACITY: BufferCapacity = BufferCapacity { read: 4096, write: 4096 };
 
     fn post(body: &[u8]) -> ClientRequest<'_> {
-        ClientRequest { method: Method::Post, path: "/", body, authorization: None }
+        ClientRequest { method: Method::Post, path: "/", body, authorization: None, accept: None }
     }
 
     /// A server that accepts and reads, and answers only when told to.

@@ -16,6 +16,7 @@ silver_httpcore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 silver_log.workspace = true
+silver_pbs.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]

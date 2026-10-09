@@ -6,7 +6,7 @@ use std::{
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    B256, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
+    B256, BLSPubkey, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
     ShufflingId,
 };
 
@@ -1284,6 +1284,29 @@ pub enum ReplayBlock {
 #[repr(C)]
 pub struct LockedProposal {
     pub contents: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct SidecarBidRequest {
+    pub slot: u64,
+    pub parent_hash: B256,
+    pub prev_randao: B256,
+    pub withdrawals_root: B256,
+    pub block_number: u64,
+    pub parent_gas_limit: u64,
+    pub proposer_pubkey: BLSPubkey,
+}
+
+/// Every [`SidecarBidRequest`] is answered; `signed_bid` is `None` when the
+/// sidecar offered no bid that passed verification.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct SidecarBidResponse {
+    pub slot: u64,
+    pub parent_hash: B256,
+    /// `SignedBuilderBid` in the `boundary_processing` tcache.
+    pub signed_bid: Option<TCacheRead>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

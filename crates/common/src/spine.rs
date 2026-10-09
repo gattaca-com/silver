@@ -74,6 +74,11 @@ pub struct SilverSpine {
     #[queue(size(2usize.pow(8)))]
     pub engine_health: SpineQueue<EngineHealthEvent>,
 
+    #[queue(size(2usize.pow(6)))]
+    pub sidecar_bid_requests: SpineQueue<SidecarBidRequest>,
+    #[queue(size(2usize.pow(6)))]
+    pub sidecar_bid_answers: SpineQueue<SidecarBidResponse>,
+
     #[queue(size(2usize.pow(12)))]
     pub peer_stats: SpineQueue<PeerStats>,
 }

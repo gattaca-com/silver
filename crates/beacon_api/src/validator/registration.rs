@@ -1,6 +1,7 @@
 use serde::Deserialize;
-use silver_beacon_state_data::{BLSPubkey, BLSSignature, ExecutionAddress};
+use silver_beacon_state_data::ExecutionAddress;
 use silver_common::{BeaconApiRequest, ProposerPreparation as PreparationRecord};
+use silver_pbs::REGISTER_VALIDATORS;
 
 use crate::{
     ctx::ApiCtx,
@@ -10,8 +11,6 @@ use crate::{
         router::Request,
     },
 };
-
-const SIDECAR_REGISTER_VALIDATORS: &str = "/eth/v1/builder/validators";
 
 /// The phrase `UnsupportedMediaType` carries in `types/http.yaml`.
 const UNSUPPORTED_MEDIA_TYPE: &str = "Cannot read the supplied content type.";
@@ -23,14 +22,13 @@ pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mu
         resp.error(415, UNSUPPORTED_MEDIA_TYPE);
         return;
     }
-    let Some(registrations) = received(req.body, resp, Registration::well_formed) else {
-        return;
-    };
-    silver_log::debug!(count = registrations.len(), "validator registrations received");
-    if registrations.is_empty() || !ctx.has_sidecar {
+    if ctx.spec.is_gloas_at_slot(ctx.node_status.wall_slot) {
+        return resp.error(400, "validator registrations are served through Fulu");
+    }
+    if !ctx.has_sidecar {
         return resp.ok();
     }
-    resp.await_sidecar(SIDECAR_REGISTER_VALIDATORS);
+    resp.await_sidecar(REGISTER_VALIDATORS);
 }
 
 pub(crate) fn post_prepare_beacon_proposer(
@@ -74,32 +72,6 @@ fn received<'a, T: Deserialize<'a>>(
     Some(entries)
 }
 
-/// `SignedValidatorRegistration` (`types/registration.yaml`).
-#[derive(Deserialize)]
-struct Registration<'a> {
-    #[serde(borrow)]
-    message: ValidatorRegistration<'a>,
-    signature: &'a str,
-}
-
-#[derive(Deserialize)]
-struct ValidatorRegistration<'a> {
-    fee_recipient: &'a str,
-    gas_limit: &'a str,
-    timestamp: &'a str,
-    pubkey: &'a str,
-}
-
-impl Registration<'_> {
-    fn well_formed(&self) -> bool {
-        is_hex_bytes(self.message.fee_recipient, size_of::<ExecutionAddress>()) &&
-            parse_uint64(self.message.gas_limit).is_some() &&
-            parse_uint64(self.message.timestamp).is_some() &&
-            is_hex_bytes(self.message.pubkey, size_of::<BLSPubkey>()) &&
-            is_hex_bytes(self.signature, size_of::<BLSSignature>())
-    }
-}
-
 /// One entry of `prepareBeaconProposer`'s body. An index the registry does not
 /// hold is well formed: the schema has it "may become active at a later
 /// epoch".
@@ -126,6 +98,7 @@ impl ProposerPreparation<'_> {
 
 #[cfg(test)]
 mod tests {
+    use silver_beacon_state_data::SLOTS_PER_EPOCH;
     use silver_common::TCacheProducer;
     use silver_httpcore::ParsedRequest;
 
@@ -201,10 +174,8 @@ mod tests {
 
     #[test]
     fn body_that_is_not_the_schema_s_array_is_a_400() {
-        for path in [REGISTER, PREPARE] {
-            for body in ["", "not json", "{}", "null", "[[]]", "[1]"] {
-                assert_bad_request(&json_post(path, body), "invalid request body");
-            }
+        for body in ["", "not json", "{}", "null", "[[]]", "[1]"] {
+            assert_bad_request(&json_post(PREPARE, body), "invalid request body");
         }
     }
 
@@ -214,31 +185,13 @@ mod tests {
     /// there is no response left to say so through.
     #[test]
     fn entry_whose_fields_the_schema_s_patterns_reject_is_a_400() {
-        let pubkey = format!("0x{}", hex::encode([0xcd; 48]));
-        let short_pubkey = format!("0x{}", hex::encode([0xcd; 47]));
-        for (path, entry) in [
-            (REGISTER, registration().replace(&pubkey, &short_pubkey)),
-            (REGISTER, registration().replace("0xabab", "abab")),
-            (REGISTER, registration().replace("\"30000000\"", "\"0x1c9c380\"")),
-            (PREPARE, preparation().replace("\"1\"", "\"-1\"")),
-            (PREPARE, preparation().replace("\"1\"", "\"+1\"")),
-            (PREPARE, preparation().replace("0xabab", "0xzzzz")),
+        for entry in [
+            preparation().replace("\"1\"", "\"-1\""),
+            preparation().replace("\"1\"", "\"+1\""),
+            preparation().replace("0xabab", "0xzzzz"),
         ] {
-            let response = json_post(path, &format!("[{entry}]"));
+            let response = json_post(PREPARE, &format!("[{entry}]"));
             assert_bad_request(&response, "invalid entry in request body");
-        }
-    }
-
-    /// A field of the wrong JSON type, or under a name the schema does not
-    /// declare, never reaches those checks: the array does not parse.
-    #[test]
-    fn entry_missing_a_field_the_schema_requires_is_a_400() {
-        for (path, entry) in [
-            (REGISTER, registration().replace("\"30000000\"", "30000000")),
-            (REGISTER, registration().replace("\"gas_limit\"", "\"gasLimit\"")),
-        ] {
-            let response = json_post(path, &format!("[{entry}]"));
-            assert_bad_request(&response, "invalid request body");
         }
     }
 
@@ -313,7 +266,7 @@ mod tests {
         let body = format!("[{}]", registration());
         let (outcome, response) = dispatch(&ctx, &json_posting(REGISTER, &body));
         assert!(response.is_empty(), "answered once the sidecar has");
-        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: SIDECAR_REGISTER_VALIDATORS });
+        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: REGISTER_VALIDATORS });
     }
 
     #[test]
@@ -325,8 +278,16 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_array_is_not_handed_on() {
-        let (outcome, _) = dispatch(&anchor_ctx(), &json_posting(REGISTER, "[]"));
-        assert_eq!(outcome, Outcome::Response(None));
+    fn registrations_are_refused_on_gloas_slots() {
+        for has_sidecar in [false, true] {
+            let mut ctx = anchor_ctx();
+            ctx.has_sidecar = has_sidecar;
+            ctx.spec.gloas_fork_epoch = 10;
+            ctx.node_status.wall_slot = 10 * SLOTS_PER_EPOCH;
+            let body = format!("[{}]", registration());
+            let (outcome, response) = dispatch(&ctx, &json_posting(REGISTER, &body));
+            assert_bad_request(&response, "validator registrations are served through Fulu");
+            assert_eq!(outcome, Outcome::Response(None));
+        }
     }
 }

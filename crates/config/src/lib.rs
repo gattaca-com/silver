@@ -9,6 +9,7 @@ pub use discovery_config::DiscoveryConfig;
 pub use engine_config::EngineConfig;
 pub use genesis::Genesis;
 pub use network::Network;
+pub use pbs_config::PbsConfig;
 pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
@@ -24,6 +25,7 @@ mod discovery_config;
 mod engine_config;
 mod genesis;
 mod network;
+mod pbs_config;
 mod peer_score_params;
 mod syncing_config;
 
@@ -199,7 +201,7 @@ pub struct Config {
     #[serde(default, deserialize_with = "optional_address::deserialize")]
     suggested_fee_recipient: Option<[u8; 20]>,
     #[serde(default)]
-    pbs_endpoint: Option<String>,
+    pbs: Option<PbsConfig>,
 }
 
 impl Config {
@@ -214,8 +216,11 @@ impl Config {
             self.engine_config.jwt_secret = path;
         }
         self.engine_config.unsafe_no_el |= overrides.unsafe_no_el;
-        if let Some(url) = overrides.pbs_endpoint {
-            self.pbs_endpoint = Some(url);
+        if let Some(endpoint) = overrides.pbs_endpoint {
+            match &mut self.pbs {
+                Some(pbs) => pbs.endpoint = endpoint,
+                None => self.pbs = Some(PbsConfig::new(endpoint)),
+            }
         }
     }
 }
@@ -284,8 +289,8 @@ impl Config {
         self.suggested_fee_recipient
     }
 
-    pub fn pbs_endpoint(&self) -> Option<&str> {
-        self.pbs_endpoint.as_deref()
+    pub fn pbs(&self) -> Option<&PbsConfig> {
+        self.pbs.as_ref()
     }
 
     pub fn enr(&self, keypair: &Keypair, enr_fork_id: [u8; 16]) -> Result<Enr, Error> {
@@ -471,6 +476,26 @@ mod tests {
         assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
+    }
+
+    #[test]
+    fn pbs_table_and_flag_set_the_endpoint() {
+        assert!(Config::from_toml("", Overrides::default()).unwrap().pbs().is_none());
+
+        let toml = "[pbs]\nendpoint = \"http://cb:18550\"\nget_header_timeout_ms = 900\n";
+        let cfg = Config::from_toml(toml, Overrides::default()).unwrap();
+        let pbs = cfg.pbs().unwrap();
+        assert_eq!(pbs.endpoint, "http://cb:18550");
+        assert_eq!(pbs.get_header_timeout(), Duration::from_millis(900));
+
+        let flag = Overrides { pbs_endpoint: Some("http://flag:1".into()), ..Overrides::default() };
+        let cfg = Config::from_toml(toml, flag).unwrap();
+        assert_eq!(cfg.pbs().unwrap().endpoint, "http://flag:1");
+        assert_eq!(cfg.pbs().unwrap().get_header_timeout(), Duration::from_millis(900));
+
+        let flag = Overrides { pbs_endpoint: Some("http://flag:1".into()), ..Overrides::default() };
+        let cfg = Config::from_toml("", flag).unwrap();
+        assert_eq!(cfg.pbs().unwrap().get_header_timeout(), Duration::from_millis(1200));
     }
 
     #[test]

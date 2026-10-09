@@ -13,7 +13,7 @@ pub use crate::{
         AcquiredRead as TRead, Consumer as TConsumer, Error as TCacheError, Producer as TProducer,
         ReadMode as TReadMode, Reservation as TReservation, *,
     },
-    util::{create_self_signed_certificate, decode_varint, encode_varint, hex32},
+    util::{create_self_signed_certificate, decode_varint, encode_varint, hex32, wei_saturating},
     wheel::Wheel,
     wither::{CountingWitherFilter, WitherFilter},
 };

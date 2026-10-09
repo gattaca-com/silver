@@ -18,6 +18,14 @@ pub fn hex32(b: &[u8; 32]) -> String {
     s
 }
 
+/// Saturates a little-endian uint256 at `u128::MAX`.
+pub fn wei_saturating(little_endian: &[u8; 32]) -> u128 {
+    if little_endian[16..].iter().any(|byte| *byte != 0) {
+        return u128::MAX;
+    }
+    u128::from_le_bytes(little_endian[..16].try_into().expect("16 bytes"))
+}
+
 /// Encode a varint into `buf`. Returns the number of bytes written.
 pub fn encode_varint(mut val: u64, buf: &mut [u8]) -> Result<usize, Error> {
     let mut i = 0;

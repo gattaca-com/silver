@@ -157,6 +157,7 @@ impl EngineClient {
             path: "/",
             body: &self.scratch,
             authorization: Some(self.jwt.bearer_token()),
+            accept: None,
         };
         self.pool.enqueue(rpc_id, &request, &self.registry);
     }

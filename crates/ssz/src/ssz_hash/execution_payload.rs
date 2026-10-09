@@ -7,8 +7,8 @@ use crate::{
         merkleize_bytes, mix_in_length, uint64_chunk,
     },
     ssz_view::{
-        ExecutionPayloadView, MAX_BYTES_PER_TRANSACTION, MAX_TRANSACTIONS_PER_PAYLOAD,
-        MAX_WITHDRAWALS_PER_PAYLOAD, WITHDRAWAL_SIZE, WithdrawalView,
+        ExecutionPayloadHeaderFuluView, ExecutionPayloadView, MAX_BYTES_PER_TRANSACTION,
+        MAX_TRANSACTIONS_PER_PAYLOAD, MAX_WITHDRAWALS_PER_PAYLOAD, WITHDRAWAL_SIZE, WithdrawalView,
     },
 };
 
@@ -85,6 +85,38 @@ pub fn hash_execution_payload_with_roots(payload: Payload<'_>) -> (B256, Payload
         uint64_chunk(u64le(520)),
     ];
     (merkleize(&fields), roots)
+}
+
+#[timed]
+pub fn hash_execution_payload_header_fulu(data: &[u8]) -> B256 {
+    let b256 = |off: usize| -> B256 { data[off..off + 32].try_into().unwrap() };
+    let u64le = |off: usize| -> u64 { u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) };
+
+    let mut fee_recipient = ZERO_HASH;
+    fee_recipient[..20].copy_from_slice(ExecutionPayloadHeaderFuluView::fee_recipient(data));
+
+    let extra_data = ExecutionPayloadHeaderFuluView::extra_data(data);
+
+    let fields: [B256; 17] = [
+        b256(0),
+        fee_recipient,
+        b256(52),
+        b256(84),
+        hash_fixed_bytes(&data[116..372]),
+        b256(372),
+        uint64_chunk(u64le(404)),
+        uint64_chunk(u64le(412)),
+        uint64_chunk(u64le(420)),
+        uint64_chunk(u64le(428)),
+        mix_in_length(&merkleize_bytes(extra_data, 1), extra_data.len()),
+        b256(440),
+        b256(472),
+        b256(504),
+        b256(536),
+        uint64_chunk(u64le(568)),
+        uint64_chunk(u64le(576)),
+    ];
+    merkleize(&fields)
 }
 
 /// hash_tree_root for List[Transaction, MAX_TRANSACTIONS_PER_PAYLOAD].

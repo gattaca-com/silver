@@ -6,9 +6,18 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+blst.workspace = true
+hex.workspace = true
 mio.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+silver_beacon_state_data.workspace = true
+silver_common.workspace = true
+silver_config.workspace = true
 silver_httpcore.workspace = true
 silver_log.workspace = true
+silver_ssz.workspace = true
 
 [lints]
 workspace = true
