@@ -115,35 +115,35 @@ fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m51
 #[inline]
 fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], p: &[__m512i; LIMBS], pinv: __m512i, i: usize) {
     let q = _mm512_madd52lo_epu64(zero(), t[i], pinv);
-    for j in 0..LIMBS {
-        t[i + j] = _mm512_madd52lo_epu64(t[i + j], q, p[j]);
-        t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], q, p[j]);
-    }
+    muladd_row(t, p, q, i);
     t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
 }
 
 /// Little-endian 64-bit limbs of a 381-bit value to 52-bit limbs.
+#[inline]
 pub fn unpack52(x: &[u64; 6]) -> Limbs {
     let mut out = [0u64; LIMBS];
-    for (j, limb) in out.iter_mut().enumerate() {
+    for j in 0..LIMBS {
         let bit = j as u32 * LIMB_BITS;
         let (word, shift) = ((bit / 64) as usize, bit % 64);
         let mut v = x[word] >> shift;
         if shift > 12 && word + 1 < 6 {
             v |= x[word + 1] << (64 - shift);
         }
-        *limb = v & MASK52;
+        out[j] = v & MASK52;
     }
     out
 }
 
 /// Inverse of `unpack52`.
+#[inline]
 pub fn pack64(x: &Limbs) -> [u64; 6] {
     let mut out = [0u64; 6];
     let mut acc: u128 = 0;
     let mut acc_bits = 0u32;
     let mut word = 0;
-    for &limb in x {
+    for j in 0..LIMBS {
+        let limb = x[j];
         acc |= (limb as u128) << acc_bits;
         acc_bits += LIMB_BITS;
         if acc_bits >= 64 {
@@ -161,22 +161,26 @@ pub fn pack64(x: &Limbs) -> [u64; 6] {
 
 impl Fp8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn splat_limbs(limbs: &Limbs) -> Self {
         Self(splat_limbs(limbs))
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn zero() -> Self {
         Self([zero(); LIMBS])
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn one() -> Self {
         Self::splat_limbs(&R_MOD_P)
     }
 
     /// Lane `l` takes `values[l]` as raw limbs, no conversion.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn load(values: &[Limbs; LANES]) -> Self {
         let mut v = [zero(); LIMBS];
         for j in 0..LIMBS {
@@ -194,10 +198,11 @@ impl Fp8 {
         Self(v)
     }
 
+    #[inline]
     fn store(&self) -> [Limbs; LANES] {
         let mut out = [[0u64; LIMBS]; LANES];
-        for (j, limb) in self.0.iter().enumerate() {
-            let l = lanes(*limb);
+        for j in 0..LIMBS {
+            let l = lanes(self.0[j]);
             for lane in 0..LANES {
                 out[lane][j] = l[lane];
             }
@@ -207,11 +212,13 @@ impl Fp8 {
 
     /// Plain integers (< p) per lane into Montgomery form.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn from_plain(values: &[Limbs; LANES]) -> Self {
         Self::load(values).mul(&Self::splat_limbs(&R2_MOD_P))
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn to_plain(self) -> [Limbs; LANES] {
         self.mul(&Self::splat_limbs(&ONE_PLAIN)).canonical().store()
     }
@@ -264,12 +271,14 @@ impl Fp8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn square(&self) -> Self {
         self.mul(self)
     }
 
     /// Down from [0, 2p) to [0, p).
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn canonical(self) -> Self {
         let (d, borrow) = sub_limbs(&self.0, &splat_limbs(&P));
         Self(blend(borrowed(borrow), &d, &self.0))
@@ -277,6 +286,7 @@ impl Fp8 {
 
     /// Sum below 4p, brought back under 2p.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn add(&self, rhs: &Self) -> Self {
         let s = add_limbs(&self.0, &rhs.0);
         let (d, borrow) = sub_limbs(&s, &two_p());
@@ -284,6 +294,7 @@ impl Fp8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn sub(&self, rhs: &Self) -> Self {
         let (d, borrow) = sub_limbs(&self.0, &rhs.0);
         let wrapped = add_limbs(&d, &two_p());
@@ -291,21 +302,25 @@ impl Fp8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn neg(&self) -> Self {
         Self::zero().sub(self)
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn double(&self) -> Self {
         self.add(self)
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn half(&self) -> Self {
         self.mul(&Self::splat_limbs(&HALF_MONT))
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn eq_mask(&self, rhs: &Self) -> __mmask8 {
         let (a, b) = (self.canonical(), rhs.canonical());
         let mut k: __mmask8 = 0xff;
@@ -316,6 +331,7 @@ impl Fp8 {
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn is_zero_mask(&self) -> __mmask8 {
         let a = self.canonical();
         let mut k: __mmask8 = 0xff;
@@ -327,6 +343,7 @@ impl Fp8 {
 
     /// Lanes of `k` take `b`, the rest `a`.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn select(k: __mmask8, a: &Self, b: &Self) -> Self {
         Self(blend(k, &a.0, &b.0))
     }
@@ -342,7 +359,9 @@ impl Fp8 {
             table[k] = table[k - 1].mul(self);
         }
         let mut r = table[P_MINUS_3_OVER_4_WINDOWS[94] as usize];
-        for w in (0..94).rev() {
+        let mut w = 94;
+        while w > 0 {
+            w -= 1;
             r = r.square().square().square().square();
             let digit = P_MINUS_3_OVER_4_WINDOWS[w] as usize;
             if digit != 0 {
@@ -354,6 +373,7 @@ impl Fp8 {
 
     /// `self^((p+1)/4)`: the square root when `self` is a quadratic residue.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn sqrt_candidate(&self) -> Self {
         self.pow_p_minus_3_over_4().mul(self)
     }
@@ -361,6 +381,7 @@ impl Fp8 {
     /// Lanes whose plain value exceeds (p - 1) / 2: the lexicographically
     /// larger of the two square roots.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
     pub fn is_larger_root_mask(&self) -> __mmask8 {
         let plain = Self::load(&self.to_plain());
         let (_, borrow) = sub_limbs(&splat_limbs(&HALF_P_MINUS_1), &plain.0);

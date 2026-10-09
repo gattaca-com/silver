@@ -9,6 +9,10 @@
 //! and Zen 5, and on Intel Xeon Ice Lake-SP, Sapphire Rapids, Emerald Rapids
 //! and Granite Rapids. Intel laptop and desktop CPUs from Alder Lake on do not
 //! support the required instructions.
+#![allow(
+    clippy::needless_range_loop,
+    reason = "Aeneas translates index loops into Lean, but not iterator adaptors"
+)]
 
 // The kernels are `#[target_feature]` functions: every one of them is unsafe to
 // call for the same single reason, that `simd_available` must have been checked
