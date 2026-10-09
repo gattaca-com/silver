@@ -1,6 +1,6 @@
 # Formal proof of the G2 decompression kernel
 
-This folder holds a Lean 4 proof about `decompress_g2::decompress` in `../src`, the AVX-512 IFMA kernel that decodes and subgroup-checks eight compressed G2 points at once. Charon and Aeneas translate the Rust into Lean, and the proof is about that generated code. A hand-written Lean model of the Rust sits between the generated code and the specification. Lean proves the generated code equal to the model, function by function, and the model correct. A recorded set of batches ties both to the compiled Rust. A Rust test checks that the kernel still produces them; a Lean test checks that the model and the generated code do.
+This folder holds a Lean 4 proof about `decompress_g2::decompress` in `../src`, the AVX-512 IFMA kernel that decodes and subgroup-checks eight compressed G2 points at once. Charon and Aeneas translate the Rust into Lean, and the proof is about that generated code. A hand-written Lean model of the Rust connects the generated code to the specification. Lean proves that the generated code equals the model, function by function, and that the model is correct. Recorded input batches and their outputs connect both to the compiled Rust. A Rust test checks that the kernel still produces the recorded outputs; a Lean test checks that the model and the generated code do too.
 
 | Path | Content |
 |---|---|
@@ -23,15 +23,15 @@ theorem decompress_extracted_eq_spec (inputs : Array (Array U8 96#usize) 8#usize
           | .ok P => if G2.inSubgroup P then some (blstLimbs P) else none))
 ```
 
-For every input batch, the generated `decompress` returns a batch; that part needs no hypothesis. Given `ScottComplete`, each lane it decides gives the specification's answer. Returning `ok` rules out Aeneas's other two outcomes: a panic, such as an out-of-bounds index or an overflow, and a loop that never ends. Here `l : Fin 8` selects a lane; `some` and `none` correspond to Rust's `Some` and `None`. The specification is [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs). It decodes with `G2.uncompress` and checks membership with `G2.inSubgroup`. That is the signature-checking stage of its `coreVerify`. Full verification also validates the public key, hashes the message to G2, and checks a pairing.
+For every input batch, the generated `decompress` returns a batch without requiring a hypothesis. Given `ScottComplete`, each lane it decides gives the specification's answer. Returning `ok` rules out Aeneas's other two outcomes: a panic, such as an out-of-bounds index or an overflow, and a loop that never ends. Here `l : Fin 8` selects a lane; `some` and `none` correspond to Rust's `Some` and `None`. The specification is [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs). It decodes with `G2.uncompress` and checks membership with `G2.inSubgroup`. That is the signature-checking stage of its `coreVerify`. Full verification also validates the public key, hashes the message to G2, and checks a pairing.
 
-The conversions read Aeneas's values as plain Lean values. `ofArray (ofArray ofU8)` reads the input arrays as `Vector`s of bytes. `ofBatch` reads the returned `Batch` field by field: each mask through `ofU8`, each point through `ofBlstP2Affine`. `toBytes` passes the lane's 96 bytes unchanged. `blstLimbs P` lays out P's coordinates as blst's `blst_p2_affine` holds them.
+The conversions express Aeneas's values as plain Lean values. `ofArray (ofArray ofU8)` reads the input arrays as `Vector`s of bytes. `ofBatch` reads the returned `Batch` field by field: each mask through `ofU8`, each point through `ofBlstP2Affine`. `toBytes` passes the lane's 96 bytes unchanged. `blstLimbs P` lays out P's coordinates as blst's `blst_p2_affine` holds them.
 
 The left side is how `decompress_g2_chunk` in `lib.rs` reads one lane. `Mmask8.and_one_shiftLeft_ne_zero` shows that its test `mask & (1 << lane) != 0` is `testBit`.
 
-The theorem joins two others:
+The theorem combines two results:
 
-- `decompress_refines`, in `lean/LeanBlsSimd/Refines/DecompressG2.lean`: on every input, the generated `decompress` returns `ok` of the model's result, converted back by `toBatch`. It has no hypothesis. The other files of `Refines/` prove the same for the Rust functions that `decompress` calls, directly or through others, each against its counterpart in the model.
+- `decompress_refines`, in `lean/LeanBlsSimd/Refines/DecompressG2.lean`: on every input, the generated `decompress` returns `ok` of the model's result, converted back by `toBatch`. It has no hypothesis. The other files of `Refines/` prove the same for the Rust functions called directly or indirectly by `decompress`, each against its counterpart in the model.
 - `decompress_eq_spec`, in `lean/LeanBlsSimd/Proofs/Kernel.lean`: the same claim about the model's `decompress`, over `Vector`s.
 
 ```lean
@@ -52,7 +52,7 @@ Two hypotheses remain:
 - The undecided bit is clear (`hu` in `decompress_eq_spec`): the kernel decides the lane. `lib.rs` sends undecided lanes to blst, and the proof says nothing about them. The canonical infinity encoding is one such lane.
 - `hC : ScottComplete`: every point P of E′ with [r]P = O satisfies ψ(P) = [z]P. This is assumed, not proved. `scottComplete_of_cyclic` derives it from a premise without ψ or z: every P on E′ with [r]P = O is a multiple of the generator G.
 
-The supporting theorems below that mention `decompress` are stated for the model's, in `lean/LeanBlsSimd/Proofs/Kernel.lean`. Through `decompress_refines`, they apply equally to the generated `decompress` read through `ofBatch`.
+The supporting theorems that mention `decompress` refer to the model function and are stated in `lean/LeanBlsSimd/Proofs/Kernel.lean`. Through `decompress_refines`, they also apply to the generated `decompress`, with its result converted by `ofBatch`.
 
 | Theorem | Statement |
 |---|---|
@@ -65,7 +65,7 @@ A false `ScottComplete` hypothesis would make `valid_complete` vacuous. `psi_gen
 
 ## What a reader must trust
 
-1. Lean's kernel, v4.29.1, and the axioms `propext`, `Classical.choice` and `Quot.sound`. `lean/LeanBlsSimd/Axioms.lean` checks the library's theorems, the generated `decompress` and their dependencies, failing the build if they use another axiom. No library proof uses `native_decide` or `bv_decide`. Aeneas's Lean library contains `sorry`s, which Lean records as the axiom `sorryAx`. The same check shows that neither the headline nor the generated `decompress` reaches one.
+1. Lean's kernel, v4.29.1, and the axioms `propext`, `Classical.choice` and `Quot.sound`. `lean/LeanBlsSimd/Axioms.lean` checks the library's theorems, the generated `decompress` and their dependencies, failing the build if they use another axiom. No library proof uses `native_decide` or `bv_decide`. Aeneas's Lean library contains `sorry`s, which Lean records as the axiom `sorryAx`. The same check shows that neither the headline theorem nor the generated `decompress` depends on one.
 2. The definitions the statement uses: Mathlib v4.29.1 for the curve's group law, and [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs) at `d1331f02` for `G2.uncompress`, `G2.inSubgroup` and the field.
 3. The statement's interfaces. `ofArray`, `ofU8`, `ofBatch` and `ofBlstP2Affine` read Aeneas's arrays, integers and structures element by element and field by field; integers convert through their bit-vectors. `toBytes` reads a lane's bytes as the spec's `ByteArray`. `blstLimbs` reads decoded coordinates through `Fp2.toField` and lays them out as blst 0.3.16's `blst_p2_affine`. Each Fp uses Montgomery form with R = 2^384 and six little-endian `u64` words. The order is c0 before c1, x before y.
 4. The extraction: Charon's reading of the crate's MIR, and Aeneas's translation of it into `lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`. Charon compiles the crate with its own pinned nightly, nightly-2026-02-07, not the workspace's Rust 1.91.0. `lean/extract.sh` runs both tools at the Aeneas commit that `lean/lake-manifest.json` pins, `d9733413`, with Charon at the commit that Aeneas pins, `ed22146b`.
@@ -74,7 +74,7 @@ A false `ScottComplete` hypothesis would make `valid_complete` vacuous. `psi_gen
 7. Two readings by eye: the headline's left side against `decompress_g2_chunk` in `lib.rs`, and its right side against `coreVerify`. Neither `lib.rs` nor `coreVerify` is modelled.
 8. Scott completeness, as the hypothesis `hC`.
 
-The theorem proves the generated Lean code correct. That this code behaves as the compiled Rust does rests on items 4 to 6. The vector test checks them on the recorded batches, and on no others. End-to-end correctness also requires blst for undecided lanes, short chunks and hosts without SIMD support. The proof does not cover Rust compilation, linking, ABI, CPU feature detection or hardware.
+The theorem proves the generated Lean code correct. Its agreement with the compiled Rust rests on items 4 to 6. The vector test checks them on the recorded batches, and on no others. End-to-end correctness also requires blst for undecided lanes, short chunks and hosts without SIMD support. The proof does not cover Rust compilation, linking, ABI, CPU feature detection or hardware.
 
 ## The vector test
 
@@ -84,9 +84,9 @@ Three tests read the file:
 
 - `replay_vectors`, in `vectors.rs`, runs the current kernel on the recorded inputs and fails if any output differs. It runs with the crate's other tests, in about 10 ms. On x86_64 it skips when the `simd` feature or AVX-512F/IFMA support is unavailable; setting `SILVER_REQUIRE_IFMA` to any value makes that a failure. On other architectures this test target contains no tests, even with that variable set.
 - `recorded_matches_blst`, also in `vectors.rs`, checks the recorded outputs against blst. For each lane marked decided in the recording, 716 of the 840, it compares acceptance and any accepted point's limbs with `uncompress_in_g2_blst` on the recorded input. It uses recorded outputs instead of running the kernel, so it needs no IFMA and never skips on x86_64.
-- `lake exe differential`, in `lean/Test/Main.lean`, runs the model and the generated `decompress` on the same inputs through Lean's compiler. It fails if either output differs. It needs the Lean toolchain and about 3 minutes, of which the generated code takes about 100 s.
+- `lake exe differential`, in `lean/Test/Main.lean`, runs the model and the generated `decompress` on the same inputs through Lean's compiler. It fails if either output differs from the recording. It needs the Lean toolchain and about 3 minutes, of which the generated code takes about 100 s.
 
-When `replay_vectors` actually runs and all three pass, the Rust, the model and the generated code agree on every recorded batch. All of them agree with blst on acceptance and accepted points for every decided lane in those batches. The proof covers the generated code. So the vector test mainly checks items 4 to 6 above against the compiled Rust: the extraction, Aeneas's library and the externals. Rerun the Lean side when its code, toolchain, dependencies or vector file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model and the generated code compute those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
+When `replay_vectors` actually runs and all three pass, the Rust, the model and the generated code agree on every recorded batch. All of them agree with blst on acceptance and accepted points for every decided lane in those batches. Since the proof covers the generated code, the vector test mainly checks items 4 to 6 above against the compiled Rust: the extraction, Aeneas's library and the externals. Rerun the Lean side when its code, toolchain, dependencies or vector file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model and the generated code compute those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
 
 When `replay_vectors` fails, `lean/README.md` explains what to do. To regenerate the file, run this from the silver repository root on an x86_64 host with AVX-512F and AVX-512 IFMA:
 
@@ -98,7 +98,7 @@ cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors 
 
 ## The Rust this proof covers
 
-`lean/LeanBlsSimd/Extracted/` is generated from these files of `crates/bls_simd/src`, and the model transcribes them. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
+`lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` are generated from these files of `crates/bls_simd/src`, and the model transcribes them. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
 
 | File | sha256 | git blob |
 |---|---|---|
@@ -122,7 +122,7 @@ af44730b948e574b0945d4b647f28ff065ddb963d2a4e111b00c384bf9ed566f  decompress_g2.
 EOF
 ```
 
-If a file fails, find its proved version with `git log --all --find-object=<blob>` and diff the two, then check the extraction for drift.
+If a file fails, find its proved version with `git log --all --find-object=<blob>` and diff the two, then check the generated code for drift.
 
 ### Regenerating the extraction
 
@@ -134,7 +134,7 @@ AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 
 Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment. The comparison masks the line numbers of each such span and compares everything else exactly, comment delimiters included. A change to Rust comments or formatting therefore shows no drift, and leaves the proof valid. With `--check`, the script leaves the tree alone: it prints any other difference and exits 1, or exits 0 when there is none.
 
-On drift, run `./extract.sh` without `--check`, which replaces `Types.lean` and `Funs.lean`, and follow `lean/README.md`. In short: rebuild, and fix the refinement proofs in `lean/LeanBlsSimd/Refines/` that break. Update the model and `Proofs/` only where the change alters behaviour. Then rerun the controls and both vector tests, and update the table above. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
+If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean` and `Funs.lean`, and follow `lean/README.md`. Rebuild and fix the refinement proofs in `lean/LeanBlsSimd/Refines/` that break. Update the model and `Proofs/` only where the change alters behaviour. Then rerun the controls, the Lean differential test and the Rust vector tests, `replay_vectors` and `recorded_matches_blst`, and update the table above. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
 ## Building and checking the proof
 
@@ -162,8 +162,8 @@ Negative controls check that selected mutations are rejected. Other controls che
 | `Guard.lean` | The axiom guard rejects `native_decide`, `bv_decide` and `Lean.ofReduceBool`. |
 | `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
-| `Kernel.lean` | The input premises of `decompress_eq_spec` hold on concrete batches, and on the generator's batch so does the headline's. Scott completeness stays assumed. |
-| `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a kernel-checked proof shows the mutated claim false; for `times_minus_z`, it refutes the claim about one loop step instead. |
+| `Kernel.lean` | The input premises of `decompress_eq_spec` hold on concrete batches; the headline theorem's input premise also holds on the generator's batch. Scott completeness stays assumed. |
+| `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a proof checked by Lean's kernel shows that the mutated claim is false; for `times_minus_z`, it refutes the claim about one loop step instead. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
 
 The Lean side of the vector test, also from `lean/`:
