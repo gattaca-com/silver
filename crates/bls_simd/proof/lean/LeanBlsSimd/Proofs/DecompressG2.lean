@@ -382,16 +382,14 @@ theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
   have honc : (has &&& ~~~(D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve b := by
     rw [Mmask8.testBit_and, hhas, Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided,
       laneOnCurve]
-  have hmasks := pointsLoop_masks (fun lane => {
-      x := { fp := #v[{ l := X.c0.to_blst_limbs[lane] }, { l := X.c1.to_blst_limbs[lane] }] },
-      y := { fp := #v[{ l := Y.c0.to_blst_limbs[lane] }, { l := Y.c1.to_blst_limbs[lane] }] } })
+  have hmasks := pointsLoop_masks (fun lane => point X.c0.to_blst_limbs[lane]
+      X.c1.to_blst_limbs[lane] Y.c0.to_blst_limbs[lane] Y.c1.to_blst_limbs[lane])
     (List.finRange 8) (Batch.mk (Vector.replicate 8 default) (has &&& ~~~(D.invalid ||| D.undecided))
       (M.members &&& (has &&& ~~~(D.invalid ||| D.undecided)) &&&
         ~~~(D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
       (D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
-  have hpts := pointsLoop_points (fun lane => {
-      x := { fp := #v[{ l := X.c0.to_blst_limbs[lane] }, { l := X.c1.to_blst_limbs[lane] }] },
-      y := { fp := #v[{ l := Y.c0.to_blst_limbs[lane] }, { l := Y.c1.to_blst_limbs[lane] }] } })
+  have hpts := pointsLoop_points (fun lane => point X.c0.to_blst_limbs[lane]
+      X.c1.to_blst_limbs[lane] Y.c0.to_blst_limbs[lane] Y.c1.to_blst_limbs[lane])
     l (List.finRange 8) (Batch.mk (Vector.replicate 8 default) (has &&& ~~~(D.invalid ||| D.undecided))
       (M.members &&& (has &&& ~~~(D.invalid ||| D.undecided)) &&&
         ~~~(D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
@@ -407,7 +405,7 @@ theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
   · rw [hmasks.2.1, Mmask8.testBit_and, Mmask8.testBit_and, Mmask8.testBit_not, hund, hmm, honc,
       laneValid]
   · rw [hpts]
-    simp only [blstPoint]
+    simp only [point, blstPoint]
     rw [← blstFp_eq hx.re.val64_to_blst_limbs, ← blstFp_eq hx.im.val64_to_blst_limbs,
       ← blstFp_eq hy.re.val64_to_blst_limbs, ← blstFp_eq hy.im.val64_to_blst_limbs]
 

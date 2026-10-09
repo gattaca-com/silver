@@ -103,11 +103,10 @@ theorem FLAG_LARGER_ROOT_refines : decompress_g2.FLAG_LARGER_ROOT = toU8 FLAG_LA
   rw [decompress_g2.FLAG_LARGER_ROOT]; rfl
 
 theorem point_refines (x0 x1 y0 y1 : Array U64 6#usize) :
-    decompress_g2.point x0 x1 y0 y1 = ok (toBlstP2Affine {
-      x := { fp := #v[{ l := ofArray ofU64 x0 }, { l := ofArray ofU64 x1 }] },
-      y := { fp := #v[{ l := ofArray ofU64 y0 }, { l := ofArray ofU64 y1 }] } }) := by
-  simp only [decompress_g2.point, toBlstP2Affine, toBlstFp2, ok.injEq, blst.blst_p2_affine.mk.injEq,
-    blst.blst_fp2.mk.injEq]
+    decompress_g2.point x0 x1 y0 y1 = ok (toBlstP2Affine
+      (point (ofArray ofU64 x0) (ofArray ofU64 x1) (ofArray ofU64 y0) (ofArray ofU64 y1))) := by
+  simp only [decompress_g2.point, point, toBlstP2Affine, toBlstFp2, ok.injEq,
+    blst.blst_p2_affine.mk.injEq, blst.blst_fp2.mk.injEq]
   constructor <;> (apply Subtype.ext; simp [toBlstFp, Array.make])
 
 theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6) :
@@ -310,21 +309,18 @@ theorem default_refines :
 theorem decompress_loop_refines (a : Array blst.blst_p2_affine 8#usize)
     (x0 x1 y0 y1 : Array (Array U64 6#usize) 8#usize) :
     decompress_g2.decompress_loop { start := 0#usize, «end» := fp8.LANES } a x0 x1 y0 y1 =
-      ok (toArray toBlstP2Affine (.ofFn fun lane : Fin 8 => {
-        x := { fp := #v[{ l := (ofArray (ofArray ofU64) x0 (m := 8))[lane] },
-          { l := (ofArray (ofArray ofU64) x1 (m := 8))[lane] }] },
-        y := { fp := #v[{ l := (ofArray (ofArray ofU64) y0 (m := 8))[lane] },
-          { l := (ofArray (ofArray ofU64) y1 (m := 8))[lane] }] } })) := by
+      ok (toArray toBlstP2Affine (.ofFn fun lane : Fin 8 =>
+        point (ofArray (ofArray ofU64) x0 (m := 8))[lane]
+          (ofArray (ofArray ofU64) x1 (m := 8))[lane] (ofArray (ofArray ofU64) y0 (m := 8))[lane]
+          (ofArray (ofArray ofU64) y1 (m := 8))[lane])) := by
   obtain ⟨A, rfl⟩ : ∃ A : Vector BlstP2Affine 8, a = toArray toBlstP2Affine A :=
     ⟨ofArray ofBlstP2Affine a, (toArray_ofArray (by simp) a _ _).symm⟩
   unfold decompress_g2.decompress_loop
   rw [LANES_refines]
   refine loop_range (n := 8) _ 8#usize rfl (toArray toBlstP2Affine)
-    (fun v (lane : Fin 8) => v.set lane {
-      x := { fp := #v[{ l := (ofArray (ofArray ofU64) x0 (m := 8))[lane] },
-        { l := (ofArray (ofArray ofU64) x1 (m := 8))[lane] }] },
-      y := { fp := #v[{ l := (ofArray (ofArray ofU64) y0 (m := 8))[lane] },
-        { l := (ofArray (ofArray ofU64) y1 (m := 8))[lane] }] } })
+    (fun v (lane : Fin 8) => v.set lane
+      (point (ofArray (ofArray ofU64) x0 (m := 8))[lane] (ofArray (ofArray ofU64) x1 (m := 8))[lane]
+        (ofArray (ofArray ofU64) y0 (m := 8))[lane] (ofArray (ofArray ofU64) y1 (m := 8))[lane]))
     (toArray toBlstP2Affine) A _ ?_ ?_ ?_
   · intro r m he hs hn
     simp_body decompress_g2.decompress_loop.body hn

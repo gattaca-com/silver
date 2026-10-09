@@ -123,6 +123,10 @@ def decodeStep (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded
 def decode (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Decoded :=
   (List.finRange 8).foldl (decodeStep inputs) decodeInit
 
+def point (x0 x1 y0 y1 : Vector UInt64 6) : BlstP2Affine := {
+  x := { fp := #v[{ l := x0 }, { l := x1 }] },
+  y := { fp := #v[{ l := y0 }, { l := y1 }] } }
+
 def xOf (decoded : Decoded) : Fp2x8 :=
   { c0 := Fp8.from_plain decoded.x0, c1 := Fp8.from_plain decoded.x1 }
 
@@ -142,9 +146,7 @@ def tail (decoded : Decoded) (x root : Fp2x8) (batch : Batch) : Batch :=
   let (x0, x1) := (x.c0.to_blst_limbs, x.c1.to_blst_limbs)
   let (y0, y1) := (y.c0.to_blst_limbs, y.c1.to_blst_limbs)
   (List.finRange 8).foldl (init := batch) fun batch (lane : Fin 8) =>
-    { batch with points := batch.points.set lane {
-        x := { fp := #v[{ l := x0[lane] }, { l := x1[lane] }] },
-        y := { fp := #v[{ l := y0[lane] }, { l := y1[lane] }] } } }
+    { batch with points := batch.points.set lane (point x0[lane] x1[lane] y0[lane] y1[lane]) }
 
 def decompress (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
   let decoded := decode inputs
