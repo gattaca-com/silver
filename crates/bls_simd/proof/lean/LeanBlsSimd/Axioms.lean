@@ -7,21 +7,22 @@ import LeanBlsSimd.Spec.G2Group
 import LeanBlsSimd.Proofs.Pow
 import LeanBlsSimd.Proofs.Convert
 import LeanBlsSimd.Proofs.Kernel
+import LeanBlsSimd.Extracted.Funs
 
 /-!
-Fails the build if any theorem under `LeanBlsSimd` uses an axiom outside `propext`,
-`Classical.choice`, `Quot.sound` and `acceptedAxioms`. `controls/AxiomLog.lean` lists each
-theorem's axioms; it is the source of `axioms.txt`.
+Fails the build if any theorem under `LeanBlsSimd`, or any of `checkedDefinitions`, uses an axiom
+outside `propext`, `Classical.choice`, `Quot.sound` and `acceptedAxioms`. `controls/AxiomLog.lean`
+lists each one's axioms; it is the source of `axioms.txt`.
 
 An allow-list, because native evaluation enters a proof under more than one name. On Lean v4.29.1
 and v4.31.0, `native_decide` and `bv_decide` each add a fresh axiom per use. Their names are
 `<theorem>._native.native_decide.ax_…` and `<theorem>._native.bv_decide.ax_…`. A direct
 `Lean.ofReduceBool` adds `Lean.ofReduceBool` and `Lean.trustCompiler`.
 
-The check runs Lean's own `CollectAxioms.collect` over all theorems with one shared visited set,
+The check runs Lean's own `CollectAxioms.collect` over all of them with one shared visited set,
 which gives the exact union of their axioms and walks Mathlib's shared dependencies once. A union
 holding a disallowed axiom fails the check. To name the offenders, it walks that closure's edges
-backwards from the disallowed axioms, then collects each theorem reached separately.
+backwards from the disallowed axioms, then collects each one reached separately.
 -/
 
 open Lean Elab Command
@@ -32,10 +33,14 @@ namespace LeanBlsSimd
 trust one evaluation, so it belongs next to a note saying why. -/
 def acceptedAxioms : List Name := []
 
+/-- Definitions checked with the theorems. Aeneas's library holds `sorry`s, and the generated
+`decompress` must reach none of them. -/
+def checkedDefinitions : Array Name := #[``silver_bls_simd.decompress_g2.decompress]
+
 def libraryTheorems : CommandElabM (Array Name) := do
-  let theorems := (← getEnv).constants.fold (init := #[]) fun found name info =>
-    if (`LeanBlsSimd).isPrefixOf name && !name.isInternal && info matches .thmInfo _ then
-      found.push name
+  let theorems := (← getEnv).constants.fold (init := #[]) fun found c info =>
+    if (`LeanBlsSimd).isPrefixOf c && !c.isInternal && info matches .thmInfo _ then
+      found.push c
     else found
   if theorems.isEmpty then throwError "no theorems under LeanBlsSimd"
   return theorems.qsort (·.toString < ·.toString)
@@ -70,28 +75,30 @@ def reaching (env : Environment) (visited : NameSet) (targets : Array Name) : Na
       todo := todo ++ (users.get? c).getD #[]
   return found
 
-/-- Fails unless every theorem under `LeanBlsSimd` uses only the standard axioms and `accepted`. -/
+/-- Fails unless every checked constant uses only the standard axioms and `accepted`. -/
 def checkAxioms (accepted : List Name) : CommandElabM Unit := do
   let allowed := [``propext, ``Classical.choice, ``Quot.sound] ++ accepted
   let theorems ← libraryTheorems
+  let checked := theorems ++ checkedDefinitions
   let env ← getEnv
-  let (_, union) := ((theorems.forM CollectAxioms.collect).run env).run {}
+  let (_, union) := ((checked.forM CollectAxioms.collect).run env).run {}
   if union.axioms.all allowed.contains then
-    logInfo m!"{theorems.size} theorems; axioms used: {union.axioms.toList}"
+    logInfo m!"{theorems.size} theorems and {checkedDefinitions.toList}; \
+      axioms used: {union.axioms.toList}"
     return
   let disallowed := union.axioms.filter (!allowed.contains ·)
   let suspects := reaching env union.visited disallowed
   let mut offenders := #[]
-  for name in theorems.filter suspects.contains do
-    let extra := (← collectAxioms name).filter (!allowed.contains ·)
-    unless extra.isEmpty do offenders := offenders.push m!"{name} depends on {extra.toList}"
+  for c in checked.filter suspects.contains do
+    let extra := (← collectAxioms c).filter (!allowed.contains ·)
+    unless extra.isEmpty do offenders := offenders.push m!"{c} depends on {extra.toList}"
   if offenders.isEmpty then
-    throwError m!"no theorem found to reach the disallowed axioms {disallowed.toList}"
+    throwError m!"no checked constant found to reach the disallowed axioms {disallowed.toList}"
   throwError MessageData.joinSep offenders.toList "\n"
 
 def logAxioms : CommandElabM Unit := do
-  for name in ← libraryTheorems do
-    logInfo m!"{name}: {(← collectAxioms name).toList}"
+  for c in (← libraryTheorems) ++ checkedDefinitions do
+    logInfo m!"{c}: {(← collectAxioms c).toList}"
 
 elab "#assert_standard_axioms" : command => checkAxioms acceptedAxioms
 

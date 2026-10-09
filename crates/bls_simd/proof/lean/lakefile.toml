@@ -16,6 +16,13 @@ name = "EthCryptographySpecs"
 git = "https://github.com/ethereum/cryptography-specs"
 rev = "d1331f02e308fe6d0aedda8601e4d5b0fc360318"
 
+# The Aeneas release whose Charon and Aeneas generate `LeanBlsSimd/Extracted/`.
+[[require]]
+name = "aeneas"
+git = "https://github.com/AeneasVerif/aeneas"
+rev = "d973341320c1d5c947a95992db2aa6f70b658ea2"
+subDir = "backends/lean"
+
 [[lean_lib]]
 name = "LeanBlsSimd"
 

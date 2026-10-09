@@ -22,4 +22,8 @@ import LeanBlsSimd.Proofs.G2x8
 import LeanBlsSimd.Proofs.Decode
 import LeanBlsSimd.Proofs.DecompressG2
 import LeanBlsSimd.Proofs.Kernel
+import LeanBlsSimd.Extracted.TypesExternal
+import LeanBlsSimd.Extracted.Types
+import LeanBlsSimd.Extracted.FunsExternal
+import LeanBlsSimd.Extracted.Funs
 import LeanBlsSimd.Axioms

@@ -1,4 +1,5 @@
 import LeanBlsSimd.Model.DecompressG2
+import LeanBlsSimd.Extracted.Funs
 
 /-!
 # Differential test of `DecompressG2.decompress` against the Rust
@@ -9,11 +10,15 @@ file is `../decompress_g2_vectors.txt`, written by `../vectors.rs`. The
 model is a hand transcription of the Rust. The proofs concern the model, so this test is the
 evidence that the model computes what the Rust computes, on the inputs in the file.
 
+It then compares `silver_bls_simd.decompress_g2.decompress` the same way. Aeneas generates that
+function from the Rust, over the hand-written externals in `LeanBlsSimd/Extracted/`. On the
+inputs in the file, this tests the externals and the translation.
+
 The exit status is 0 when every batch matches, 1 when any value differs, and 2 when the file
 cannot be read or is malformed or incomplete: a missing header or `endfile` line, no batch, a
 batch count that differs from the header's, batch indices that are not 0, 1, 2, ... in order, or
-any line that breaks the format. A mismatch prints the batch, its kind, the lane, the field and
-both values.
+any line that breaks the format. A mismatch prints the batch, its kind, the lane, the field, the
+Lean side and both values.
 
 ## File format
 
@@ -47,6 +52,8 @@ on the curve, where the Rust leaves the zero point or the coordinates it compute
 -/
 
 open LeanBlsSimd LeanBlsSimd.DecompressG2
+open Aeneas
+open Aeneas.Std (U8)
 
 namespace DifferentialTest
 
@@ -54,14 +61,18 @@ structure Header where
   seed : String
   count : Nat
 
-structure Expected where
-  index : Nat
-  kind : String
-  inputs : Array (Array UInt8)
+/-- What `decompress` returns, as the file records it: each lane's point is 24 words. -/
+structure Outputs where
   onCurve : UInt8
   valid : UInt8
   undecided : UInt8
   points : Array (Array UInt64)
+
+structure Expected where
+  index : Nat
+  kind : String
+  inputs : Array (Array UInt8)
+  outputs : Outputs
 
 def hexDigit? (c : Char) : Option Nat :=
   if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
@@ -108,11 +119,11 @@ def peek : Parser (Nat × String) := do
   | none => throw "unexpected end of file"
   | some l => pure l
 
-def headerLine (name : String) : Parser String := do
+def headerLine (key : String) : Parser String := do
   let (n, l) ← next
   match words l with
-  | [k, v] => if k = name then pure v else throw s!"line {n}: expected `{name} <value>`"
-  | _ => throw s!"line {n}: expected `{name} <value>`"
+  | [k, v] => if k = key then pure v else throw s!"line {n}: expected `{key} <value>`"
+  | _ => throw s!"line {n}: expected `{key} <value>`"
 
 def header : Parser Header := do
   let seed ← headerLine "seed"
@@ -121,19 +132,19 @@ def header : Parser Header := do
   | some count => pure { seed, count }
   | none => throw s!"bad batch count `{countText}`"
 
-def field (name : String) (digits : Nat) : Parser (Nat × String) := do
+def field (key : String) (digits : Nat) : Parser (Nat × String) := do
   let (n, l) ← next
   match words l with
   | [k, v] =>
-    if k = name && v.length = digits then pure (n, v)
-    else throw s!"line {n}: expected `{name}` with {digits} hex digits"
-  | _ => throw s!"line {n}: expected `{name}` with {digits} hex digits"
+    if k = key && v.length = digits then pure (n, v)
+    else throw s!"line {n}: expected `{key}` with {digits} hex digits"
+  | _ => throw s!"line {n}: expected `{key}` with {digits} hex digits"
 
-def maskField (name : String) : Parser UInt8 := do
-  let (n, v) ← field name 2
+def maskField (key : String) : Parser UInt8 := do
+  let (n, v) ← field key 2
   match hexNat? v with
   | some m => pure (UInt8.ofNat m)
-  | none => throw s!"line {n}: bad hex in `{name}`"
+  | none => throw s!"line {n}: bad hex in `{key}`"
 
 def inputLine : Parser (Array UInt8) := do
   let (n, v) ← field "in" 192
@@ -167,7 +178,7 @@ def batch : Parser Expected := do
   let points ← (Array.range 8).mapM pointLine
   let (n, l) ← next
   if l ≠ "end" then throw s!"line {n}: expected `end`"
-  pure { index, kind, inputs, onCurve, valid, undecided, points }
+  pure { index, kind, inputs, outputs := { onCurve, valid, undecided, points } }
 
 partial def batches : Parser (Array Expected) := do
   let (_, l) ← peek
@@ -198,11 +209,47 @@ def parse (text : String) : Except String (Header × Array Expected) :=
 def modelInputs (inputs : Array (Array UInt8)) : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8 :=
   .ofFn fun l => .ofFn fun j => (inputs[l.val]!)[j.val]!
 
+/-- The extraction's `[[u8; 96]; 8]`, holding the same bytes as the model's input. -/
+def extractedInputs (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) :
+    Std.Array (Std.Array U8 96#usize) 8#usize :=
+  ⟨inputs.toList.map fun bytes =>
+    ⟨bytes.toList.map fun b => ⟨b.toBitVec⟩, by simp [G2_COMPRESSED_LEN]⟩, by simp⟩
+
 def fpLimbs (fp : BlstFp) : List UInt64 := fp.l.toList
 
 /-- The 24 limbs of a point in the file's order. -/
 def pointWords (p : BlstP2Affine) : Array UInt64 :=
   (fpLimbs p.x.fp[0] ++ fpLimbs p.x.fp[1] ++ fpLimbs p.y.fp[0] ++ fpLimbs p.y.fp[1]).toArray
+
+def modelOutputs (b : Batch) : Outputs :=
+  { onCurve := b.on_curve, valid := b.valid, undecided := b.undecided,
+    points := b.points.toArray.map pointWords }
+
+/-- The 12 limbs of an extracted `blst_fp2`, `fp[0]` before `fp[1]`. -/
+def extractedFp2Limbs (c : silver_bls_simd.blst.blst_fp2) : List UInt64 :=
+  c.fp.val.flatMap fun fp => fp.l.val.map fun w => UInt64.ofBitVec w.bv
+
+def extractedOutputs (b : silver_bls_simd.decompress_g2.Batch) : Outputs :=
+  { onCurve := UInt8.ofBitVec b.on_curve.bv, valid := UInt8.ofBitVec b.valid.bv,
+    undecided := UInt8.ofBitVec b.undecided.bv,
+    points := b.points.val.toArray.map fun p =>
+      (extractedFp2Limbs p.x ++ extractedFp2Limbs p.y).toArray }
+
+/-- A Lean `decompress` under test. `run` fails when it returns no batch. -/
+structure Side where
+  label : String
+  run : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8 → Except String Outputs
+
+def model : Side where
+  label := "model"
+  run inputs := .ok (modelOutputs (decompress inputs))
+
+def extraction : Side where
+  label := "extraction"
+  run inputs := match silver_bls_simd.decompress_g2.decompress (extractedInputs inputs) with
+    | .ok b => .ok (extractedOutputs b)
+    | .fail e => .error s!"fail {repr e}"
+    | .div => .error "div"
 
 def fpName (w : Nat) : String :=
   s!"{if w / 12 = 0 then "x" else "y"}.fp[{w / 6 % 2}].l[{w % 6}]"
@@ -216,34 +263,49 @@ structure Tally where
 
 def maxPrinted : Nat := 40
 
-def report (t : Tally) (e : Expected) (lane : Option Nat) (field : String) (rust lean : String) :
-    IO Tally := do
+def report (t : Tally) (side : Side) (e : Expected) (lane : Option Nat) (field : String)
+    (rust lean : String) : IO Tally := do
   if t.mismatches < maxPrinted then
     let where_ := match lane with | some l => s!"lane {l}, " | none => ""
-    IO.println s!"MISMATCH batch {e.index} ({e.kind}), {where_}{field}: Rust {rust}, Lean {lean}"
+    IO.println s!"MISMATCH batch {e.index} ({e.kind}), {where_}{field}: Rust {rust}, \
+      Lean {side.label} {lean}"
   pure { t with mismatches := t.mismatches + 1 }
 
-def compareMask (t : Tally) (e : Expected) (name : String) (rust lean : UInt8) : IO Tally := do
+def compareMask (t : Tally) (side : Side) (e : Expected) (field : String) (rust lean : UInt8) :
+    IO Tally := do
   let t := { t with masks := t.masks + 1 }
   if rust = lean then pure t
   else
     let diff := (List.range 8).filter fun l => (rust ^^^ lean).toNat.testBit l
-    report t e none s!"{name} (lanes {diff})" (showMask rust) (showMask lean)
+    report t side e none s!"{field} (lanes {diff})" (showMask rust) (showMask lean)
 
-def compareBatch (t : Tally) (e : Expected) : IO Tally := do
-  let got := decompress (modelInputs e.inputs)
+def compareBatch (t : Tally) (side : Side) (e : Expected) : IO Tally := do
   let mut t := { t with batches := t.batches + 1, lanes := t.lanes + 8 }
-  t ← compareMask t e "on_curve" e.onCurve got.on_curve
-  t ← compareMask t e "valid" e.valid got.valid
-  t ← compareMask t e "undecided" e.undecided got.undecided
-  for l in List.range 8 do
-    let want := e.points[l]!
-    let have_ := pointWords got.points[l]!
-    for w in List.range 24 do
-      t := { t with limbs := t.limbs + 1 }
-      if want[w]! ≠ have_[w]! then
-        t ← report t e (some l) s!"points[{l}].{fpName w}" (showHex want[w]!.toNat)
-          (showHex have_[w]!.toNat)
+  let want := e.outputs
+  match side.run (modelInputs e.inputs) with
+  | .error msg => report t side e none "decompress" "a batch" msg
+  | .ok got =>
+    t ← compareMask t side e "on_curve" want.onCurve got.onCurve
+    t ← compareMask t side e "valid" want.valid got.valid
+    t ← compareMask t side e "undecided" want.undecided got.undecided
+    for l in List.range 8 do
+      let wantWords := want.points[l]!
+      let gotWords := got.points[l]!
+      for w in List.range 24 do
+        t := { t with limbs := t.limbs + 1 }
+        if wantWords[w]! ≠ gotWords[w]! then
+          t ← report t side e (some l) s!"points[{l}].{fpName w}" (showHex wantWords[w]!.toNat)
+            (showHex gotWords[w]!.toNat)
+    pure t
+
+def compareAll (side : Side) (expected : Array Expected) : IO Tally := do
+  let start ← IO.monoMsNow
+  let mut t : Tally := {}
+  for e in expected do
+    t ← compareBatch t side e
+  let elapsed := (← IO.monoMsNow) - start
+  IO.println s!"{side.label}: compared {t.batches} batches, {t.lanes} lanes, {t.masks} masks, \
+    {t.limbs} point limbs in {elapsed} ms"
   pure t
 
 def run (path : String) : IO UInt32 := do
@@ -257,18 +319,14 @@ def run (path : String) : IO UInt32 := do
     pure 2
   | .ok (h, expected) =>
     IO.println s!"vectors: seed {h.seed}, {h.count} batches"
-    let start ← IO.monoMsNow
-    let mut t : Tally := {}
-    for e in expected do
-      t ← compareBatch t e
-    let elapsed := (← IO.monoMsNow) - start
-    IO.println s!"compared {t.batches} batches, {t.lanes} lanes, {t.masks} masks, \
-      {t.limbs} point limbs in {elapsed} ms"
-    if t.mismatches = 0 then
+    let modelTally ← compareAll model expected
+    let extractionTally ← compareAll extraction expected
+    let mismatches := modelTally.mismatches + extractionTally.mismatches
+    if mismatches = 0 then
       IO.println "all values match"
       pure 0
     else
-      IO.println s!"{t.mismatches} mismatches"
+      IO.println s!"{mismatches} mismatches"
       pure 1
 
 end DifferentialTest
