@@ -166,6 +166,7 @@ impl PeerManager {
                 usize::MAX
             } else if enr_matches_subnets(
                 enr,
+                record.custody_groups(),
                 self.deficit_attnets,
                 self.deficit_syncnets,
                 self.deficit_columns,
@@ -173,6 +174,7 @@ impl PeerManager {
                 deficit_cap
             } else if enr_matches_subnets(
                 enr,
+                record.custody_groups(),
                 self.required_attnets,
                 self.required_syncnets,
                 self.custody_columns,
@@ -520,8 +522,11 @@ impl PeerManager {
 /// True iff the ENR advertises subscription to at least one attnet/syncnet
 /// we also subscribe to. Both bitfields are SSZ Bitvectors so a bytewise
 /// AND is sufficient — any non-zero result means at least one shared bit.
+/// `custody_groups` is the record's cached mask: deriving it from the node id
+/// costs a sha256 per custody group.
 fn enr_matches_subnets(
     enr: &Enr,
+    custody_groups: u128,
     attnets_mask: [u8; 8],
     syncnets_mask: u8,
     custody_columns: u128,
@@ -538,10 +543,7 @@ fn enr_matches_subnets(
     {
         return true;
     }
-    if let Some(cgc) = enr.cgc() {
-        return enr.node_id().custody_groups(cgc as u8) & custody_columns != 0;
-    }
-    false
+    custody_groups & custody_columns != 0
 }
 
 #[cfg(test)]

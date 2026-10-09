@@ -278,6 +278,10 @@ pub struct PeerRecord {
 }
 
 impl PeerRecord {
+    pub(crate) fn custody_groups(&self) -> u128 {
+        self.custody_groups
+    }
+
     /// The count is the larger of the ENR `cgc` and the MetaData v3
     /// `custody_group_count`: a node promoted to supernode (e.g. by validator
     /// count) bumps its MetaData cgc immediately but can carry a stale lower
