@@ -46,7 +46,7 @@ A false `ScottComplete` hypothesis would make `valid_complete` vacuous. `psi_gen
 ## What a reader must trust
 
 1. Lean's kernel, v4.29.1, and the axioms `propext`, `Classical.choice` and `Quot.sound`. `lean/LeanBlsSimd/Axioms.lean` checks the library's theorems and their dependencies, failing the build if they use another axiom. No library proof uses `native_decide` or `bv_decide`.
-2. The definitions the statement uses: Mathlib v4.29.1 for the curve's group law, and cryptography-specs at `d1331f02` for `G2.uncompress`, `G2.inSubgroup` and the field.
+2. The definitions the statement uses: Mathlib v4.29.1 for the curve's group law, and [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs) at `d1331f02` for `G2.uncompress`, `G2.inSubgroup` and the field.
 3. The statement's two interfaces. `toBytes` reads a lane's bytes as the spec's `ByteArray`. `blstLimbs` reads decoded coordinates through `Fp2.toField` and lays them out as blst 0.3.16's `blst_p2_affine`. Each Fp uses Montgomery form with R = 2^384 and six little-endian `u64` words. The order is c0 before c1, x before y.
 4. `lean/LeanBlsSimd/Model/Intrinsics.lean`: the semantics of the 12 AVX-512 intrinsics, written by hand.
 5. The transcription. `lean/LeanBlsSimd/Constants.lean` and `lean/LeanBlsSimd/Model/` transcribe the Rust files below by hand. `Fp8::mul` is modelled per lane, not as its vector code. The vector test checks the model against the Rust on the recorded batches, and on no others; its Lean side runs through Lean's compiler.
