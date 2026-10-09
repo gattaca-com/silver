@@ -2,10 +2,10 @@ use crate::{
     ssz_hash_gloas::{ExecutionRequestsView, RequestCountOutOfBounds},
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE,
-        EXECUTION_PAYLOAD_FIXED, MAX_ATTESTATIONS_ELECTRA, MAX_ATTESTER_SLASHINGS_ELECTRA,
-        MAX_BLS_TO_EXECUTION_CHANGES, MAX_PAYLOAD_ATTESTATIONS, MAX_PROPOSER_SLASHINGS,
-        MAX_VOLUNTARY_EXITS, PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+        EXECUTION_PAYLOAD_FIXED, EXECUTION_PAYLOAD_HEADER_FIXED, MAX_ATTESTATIONS_ELECTRA,
+        MAX_ATTESTER_SLASHINGS_ELECTRA, MAX_BLS_TO_EXECUTION_CHANGES, MAX_PAYLOAD_ATTESTATIONS,
+        MAX_PROPOSER_SLASHINGS, MAX_VOLUNTARY_EXITS, PAYLOAD_ATTESTATION_SIZE,
+        PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
     },
 };
 
@@ -41,6 +41,8 @@ pub enum BlockBodyError {
     BodyTooShort { len: usize, min: usize },
     #[error("execution payload too short: len={len} min={min}")]
     PayloadTooShort { len: usize, min: usize },
+    #[error("execution payload header too short: len={len} min={min}")]
+    PayloadHeaderTooShort { len: usize, min: usize },
     #[error("{op} count {count} exceeds max {max}")]
     OperationCountOutOfBounds { op: OperationKind, count: usize, max: usize },
     #[error("parent {kind} request count {count} exceeds max {max}")]
@@ -60,6 +62,7 @@ pub enum BlockBodyError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyFork {
     Fulu,
+    FuluBlinded,
     Gloas,
 }
 
@@ -121,9 +124,7 @@ impl<'a> BodyOffsets<'a> {
             (start <= end && end <= body.len()).then(|| &body[start..end])
         });
         let offsets = Self { fork, fixed, fields, len: body.len(), serialized: Some(body) };
-        if fork == BodyFork::Fulu {
-            Payload::new(offsets.payload_bytes())?;
-        }
+        offsets.check_execution_field()?;
         Ok(offsets)
     }
 
@@ -132,13 +133,29 @@ impl<'a> BodyOffsets<'a> {
     pub(crate) fn from_parts(
         fixed: &'a [u8],
         fields: [&'a [u8]; 9],
+        fork: BodyFork,
     ) -> Result<Self, BlockBodyError> {
         assert_eq!(fixed.len(), BEACON_BLOCK_BODY_FIXED, "the fixed part is exactly fixed-size");
+        assert_ne!(fork, BodyFork::Gloas, "a Gloas body is parsed whole");
         let len = BEACON_BLOCK_BODY_FIXED + fields.iter().map(|field| field.len()).sum::<usize>();
-        let offsets =
-            Self { fork: BodyFork::Fulu, fixed, fields: fields.map(Some), len, serialized: None };
-        Payload::new(offsets.payload_bytes())?;
+        let offsets = Self { fork, fixed, fields: fields.map(Some), len, serialized: None };
+        offsets.check_execution_field()?;
         Ok(offsets)
+    }
+
+    /// Bounds every fixed-offset accessor of field 5's view.
+    fn check_execution_field(&self) -> Result<(), BlockBodyError> {
+        let len = self.execution_field().len();
+        match self.fork {
+            BodyFork::Fulu => Payload::new(self.execution_field()).map(|_| ()),
+            BodyFork::FuluBlinded if len < EXECUTION_PAYLOAD_HEADER_FIXED => {
+                Err(BlockBodyError::PayloadHeaderTooShort {
+                    len,
+                    min: EXECUTION_PAYLOAD_HEADER_FIXED,
+                })
+            }
+            BodyFork::FuluBlinded | BodyFork::Gloas => Ok(()),
+        }
     }
 
     pub fn validated(body: &'a [u8], fork: BodyFork) -> Result<Self, BlockBodyError> {
@@ -188,7 +205,7 @@ impl<'a> BodyOffsets<'a> {
     #[inline]
     pub fn bls_changes(&self) -> Option<&'a [u8]> {
         match self.fork {
-            BodyFork::Fulu => self.fields[6],
+            BodyFork::Fulu | BodyFork::FuluBlinded => self.fields[6],
             BodyFork::Gloas => self.fields[5],
         }
     }
@@ -200,10 +217,16 @@ impl<'a> BodyOffsets<'a> {
     #[inline]
     pub fn payload(&self) -> Payload<'a> {
         debug_assert_eq!(self.fork, BodyFork::Fulu);
-        Payload(self.payload_bytes())
+        Payload(self.execution_field())
     }
 
-    fn payload_bytes(&self) -> &'a [u8] {
+    #[inline]
+    pub fn payload_header(&self) -> &'a [u8] {
+        debug_assert_eq!(self.fork, BodyFork::FuluBlinded);
+        self.execution_field()
+    }
+
+    fn execution_field(&self) -> &'a [u8] {
         self.fields[5].unwrap_or(&[])
     }
 
@@ -236,14 +259,19 @@ impl<'a> BodyOffsets<'a> {
     fn variable_offsets(&self) -> [(&'static str, usize); 9] {
         let b = self.fixed;
         let f = |name, off: u32| (name, off as usize);
+        let execution = if self.fork == BodyFork::FuluBlinded {
+            "execution_payload_header"
+        } else {
+            "execution_payload"
+        };
         match self.fork {
-            BodyFork::Fulu => [
+            BodyFork::Fulu | BodyFork::FuluBlinded => [
                 f("proposer_slashings", BeaconBlockBodyFuluView::proposer_slashings_offset(b)),
                 f("attester_slashings", BeaconBlockBodyFuluView::attester_slashings_offset(b)),
                 f("attestations", BeaconBlockBodyFuluView::attestations_offset(b)),
                 f("deposits", BeaconBlockBodyFuluView::deposits_offset(b)),
                 f("voluntary_exits", BeaconBlockBodyFuluView::voluntary_exits_offset(b)),
-                f("execution_payload", BeaconBlockBodyFuluView::execution_payload_offset(b)),
+                f(execution, BeaconBlockBodyFuluView::execution_payload_offset(b)),
                 f(
                     "bls_to_execution_changes",
                     BeaconBlockBodyFuluView::bls_to_execution_changes_offset(b),

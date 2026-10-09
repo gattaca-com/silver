@@ -2928,6 +2928,10 @@ impl ExecutionPayloadHeaderFuluView {
         fixed(buf, 472)
     }
     #[inline]
+    pub fn transactions_root(buf: &[u8]) -> &[u8; 32] {
+        fixed(buf, 504)
+    }
+    #[inline]
     pub fn withdrawals_root(buf: &[u8]) -> &[u8; 32] {
         fixed(buf, 536)
     }

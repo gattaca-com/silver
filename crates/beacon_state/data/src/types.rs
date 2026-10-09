@@ -337,7 +337,7 @@ impl Default for ExecutionPayloadHeader {
 }
 
 impl ExecutionPayloadHeader {
-    pub(crate) fn from_ssz(eph: &[u8]) -> Result<Self, DecomposeError> {
+    pub fn from_ssz(eph: &[u8]) -> Result<Self, DecomposeError> {
         if eph.len() < EPH_FIXED_PART {
             return Err(DecomposeError::EphTruncated { len: eph.len(), need: EPH_FIXED_PART });
         }

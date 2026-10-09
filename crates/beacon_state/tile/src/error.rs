@@ -462,6 +462,8 @@ pub enum WithdrawalsError {
     Mismatch { payload_index: usize, expected: WithdrawalRecord, got: WithdrawalRecord },
     #[error("withdrawal count mismatch: expected={expected} got={actual}")]
     CountMismatch { expected: usize, actual: usize },
+    #[error("withdrawals_root mismatch: expected=0x{} got=0x{}", b256_hex(expected), b256_hex(got))]
+    RootMismatch { expected: B256, got: B256 },
 }
 
 #[derive(Debug, Error)]

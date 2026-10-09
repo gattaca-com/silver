@@ -11,7 +11,10 @@ use silver_common::{
     EnginePreparePayloadReq, EnginePreparePayloadResp, EngineReq, PayloadFrame,
     ProduceBlockFailure, ProducedBlock, TCacheProducer, TCacheRead, TRead,
     ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
-    ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
+    ssz_view::{
+        BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE, BuilderBidFuluView,
+        SignedBuilderBidFuluView,
+    },
 };
 use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, BeaconBlockBodyGloas, EMPTY_SYNC_AGGREGATE};
@@ -590,21 +593,47 @@ impl BeaconStateTile {
         &mut self,
         proposal: Proposal,
     ) -> Result<ProducedBlock, ProduceBlockFailure> {
+        let parent = self.verified_parent(&proposal)?;
+        let commitment = self.bid_commitment(&proposal, parent)?;
+        self.build_packed(proposal, commitment.builds_on_full_parent, |tile, operations| {
+            tile.build_gloas_block(proposal, &commitment, operations)
+        })
+    }
+
+    /// `signed_bid` is a `SignedBuilderBid` the PBS client verified.
+    #[timed]
+    pub(super) fn produce_blinded_block(
+        &mut self,
+        proposal: Proposal,
+        signed_bid: &[u8],
+    ) -> Result<ProducedBlock, ProduceBlockFailure> {
+        self.verified_parent(&proposal)?;
+        self.build_packed(proposal, false, |tile, operations| {
+            tile.build_blinded_block(proposal, signed_bid, operations)
+        })
+    }
+
+    fn verified_parent(&mut self, proposal: &Proposal) -> Result<StateId, ProduceBlockFailure> {
         let slot = proposal.slot;
         if slot <= self.last_applied_block_slot() || slot > self.ticker.current_slot() + 1 {
             return Err(ProduceBlockFailure::SlotNotProposable);
         }
-        let (parent, proposer) = self.proposal_parent(&proposal)?;
-        if !self.randao_reveal_verifies(parent, proposer, &proposal) {
+        let (parent, proposer) = self.proposal_parent(proposal)?;
+        if !self.randao_reveal_verifies(parent, proposer, proposal) {
             return Err(ProduceBlockFailure::InvalidRandaoReveal);
         }
-        let commitment = self.bid_commitment(&proposal, parent)?;
+        Ok(parent)
+    }
 
+    fn build_packed(
+        &mut self,
+        proposal: Proposal,
+        builds_on_full_parent: bool,
+        build: impl FnMut(&mut Self, Operations<'_>) -> Result<BuiltBlock, ProduceBlockFailure>,
+    ) -> Result<ProducedBlock, ProduceBlockFailure> {
         let mut packed = mem::take(&mut self.block_production.packed);
-        self.pack_operations(&proposal, commitment.builds_on_full_parent, &mut packed);
-        let block = self.build_with_fallbacks(proposal, packed.operations(), |tile, operations| {
-            tile.build_gloas_block(proposal, &commitment, operations)
-        });
+        self.pack_operations(&proposal, builds_on_full_parent, &mut packed);
+        let block = self.build_with_fallbacks(proposal, packed.operations(), build);
         self.block_production.packed = packed;
         block
     }
@@ -789,7 +818,7 @@ impl BeaconStateTile {
             body_root,
         };
         let (block_root, post_state) = self.seal(&mut header, parent, offsets, block_fork)?;
-        let block = self.write_block(&header, &encoded)?;
+        let block = self.write_block(&header, &[&encoded])?;
 
         silver_log::info!(slot, bid_value = commitment.value, "block assembled on a p2p bid");
         Ok(BuiltBlock {
@@ -809,13 +838,80 @@ impl BeaconStateTile {
         })
     }
 
-    /// SSZ `BeaconBlock`.
+    #[timed]
+    fn build_blinded_block(
+        &mut self,
+        proposal: Proposal,
+        signed_bid: &[u8],
+        operations: Operations<'_>,
+    ) -> Result<BuiltBlock, ProduceBlockFailure> {
+        let slot = proposal.slot;
+        let bid = SignedBuilderBidFuluView::message(signed_bid);
+        let (parent, proposer_index) = self.proposal_parent(&proposal)?;
+        let eth1_data = self.state.read_view(parent).slot.state().eth1_data.to_ssz();
+        let body = BeaconBlockBodyFulu {
+            randao_reveal: &proposal.randao_reveal,
+            eth1_data: &eth1_data,
+            graffiti: &proposal.graffiti,
+            proposer_slashings: operations.proposer_slashings,
+            attester_slashings: operations.attester_slashings,
+            attestations: operations.attestations,
+            deposits: &[],
+            voluntary_exits: operations.voluntary_exits,
+            sync_aggregate: operations.sync_aggregate,
+            execution_payload: BuilderBidFuluView::header(bid),
+            bls_to_execution_changes: operations.bls_to_execution_changes,
+            blob_kzg_commitments: BuilderBidFuluView::blob_kzg_commitments(bid),
+            execution_requests: BuilderBidFuluView::execution_requests(bid),
+        };
+        let mut body_fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let offsets = body.write_fixed_blinded(&mut body_fixed).map_err(|e| {
+            silver_log::warn!(?e, slot, "assembled blinded body is not canonical");
+            ProduceBlockFailure::Invalid
+        })?;
+        offsets.validate().map_err(|e| {
+            silver_log::warn!(?e, slot, "assembled blinded body is over its limits");
+            ProduceBlockFailure::Invalid
+        })?;
+        let (body_root, block_fork) = stf::hash_body(&offsets);
+        let mut header = BeaconBlockHeader {
+            slot,
+            proposer_index,
+            parent_root: proposal.parent_root,
+            state_root: [0; 32],
+            body_root,
+        };
+        let (block_root, post_state) = self.seal(&mut header, parent, offsets, block_fork)?;
+        let mut body_parts: [&[u8]; 10] = [&[]; 10];
+        body_parts[0] = offsets.fixed();
+        body_parts[1..].copy_from_slice(&body.variable_fields());
+        let block = self.write_block(&header, &body_parts)?;
+
+        silver_log::info!(slot, "blinded block assembled on a sidecar bid");
+        Ok(BuiltBlock {
+            proposal,
+            block: ProducedBlock {
+                header: block,
+                payload_at: (BEACON_BLOCK_FIXED + body.ssz_len()) as u32,
+                payload: None,
+                execution_payload_value: *BuilderBidFuluView::value(bid),
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
+            },
+            payload: None,
+            body_root,
+            block_fork,
+            block_root,
+            post_state: Some(post_state),
+        })
+    }
+
+    /// SSZ `BeaconBlock` with its body in `body` parts.
     fn write_block(
         &mut self,
         header: &BeaconBlockHeader,
-        body: &[u8],
+        body: &[&[u8]],
     ) -> Result<TCacheRead, ProduceBlockFailure> {
-        let len = BEACON_BLOCK_FIXED + body.len();
+        let len = BEACON_BLOCK_FIXED + body.iter().map(|part| part.len()).sum::<usize>();
         let block = self.events_producer.write_with(len, |mut out| {
             for part in [
                 &header.slot.to_le_bytes()[..],
@@ -823,8 +919,10 @@ impl BeaconStateTile {
                 &header.parent_root,
                 &header.state_root,
                 &(BEACON_BLOCK_FIXED as u32).to_le_bytes(),
-                body,
-            ] {
+            ]
+            .into_iter()
+            .chain(body.iter().copied())
+            {
                 out.write_all(part).expect("sized to its parts");
             }
         });

@@ -5,12 +5,15 @@ use silver_beacon_state_data::{
     SpecConfig, StateWriterView, Withdrawal,
 };
 use silver_common::ssz_view::{
-    BYTES_PER_KZG_COMMITMENT, ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView,
+    BYTES_PER_KZG_COMMITMENT, ExecutionPayloadHeaderFuluView, ExecutionPayloadView,
+    WITHDRAWAL_SIZE, WithdrawalView,
 };
 
 use crate::{
     error::{ExecutionPayloadError, Result, WithdrawalRecord, WithdrawalsError},
+    merkle::{MerkleStack, hash_list},
     ssz_hash::PayloadRoots,
+    ssz_hash_gloas::hash_withdrawal,
     stf::MIN_ACTIVATION_BALANCE,
     validate,
 };
@@ -30,13 +33,16 @@ pub fn process_execution_payload(
     roots: PayloadRoots,
 ) -> Result<(), ExecutionPayloadError> {
     debug_assert_eq!(roots, PayloadRoots::of(payload));
-    let max = cfg.blob_params_at(block_slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
-    let got = blob_commitments.len() / BYTES_PER_KZG_COMMITMENT;
-    if got > max {
-        return Err(ExecutionPayloadError::TooManyBlobCommitments { got, max });
-    }
-    validate::validate_execution_payload(cfg, view, payload, block_slot)?;
+    check_blob_commitments(cfg, blob_commitments, block_slot)?;
     let payload_bytes = payload.bytes();
+    validate::validate_execution_payload(
+        cfg,
+        view,
+        ExecutionPayloadView::parent_hash(payload_bytes),
+        ExecutionPayloadView::prev_randao(payload_bytes),
+        ExecutionPayloadView::timestamp(payload_bytes),
+        block_slot,
+    )?;
 
     let slot = &mut view.slot;
 
@@ -75,6 +81,40 @@ pub fn process_execution_payload(
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };
 
+    Ok(())
+}
+
+pub fn process_execution_payload_header(
+    view: &mut StateWriterView,
+    cfg: &SpecConfig,
+    header: &[u8],
+    blob_commitments: &[u8],
+    block_slot: Slot,
+) -> Result<(), ExecutionPayloadError> {
+    check_blob_commitments(cfg, blob_commitments, block_slot)?;
+    validate::validate_execution_payload(
+        cfg,
+        view,
+        ExecutionPayloadHeaderFuluView::parent_hash(header),
+        ExecutionPayloadHeaderFuluView::prev_randao(header),
+        ExecutionPayloadHeaderFuluView::timestamp(header),
+        block_slot,
+    )?;
+    view.slot.state_mut().latest_execution_payload_header =
+        ExecutionPayloadHeader::from_ssz(header).expect("checked by the body's offsets");
+    Ok(())
+}
+
+fn check_blob_commitments(
+    cfg: &SpecConfig,
+    blob_commitments: &[u8],
+    block_slot: Slot,
+) -> Result<(), ExecutionPayloadError> {
+    let max = cfg.blob_params_at(block_slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
+    let got = blob_commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    if got > max {
+        return Err(ExecutionPayloadError::TooManyBlobCommitments { got, max });
+    }
     Ok(())
 }
 
@@ -273,14 +313,40 @@ pub fn process_withdrawals_fulu(
         }
     }
 
-    for w in expected.iter() {
+    apply_withdrawals(view, &expected, processed_partials);
+    Ok(())
+}
+
+pub fn process_withdrawals_fulu_blinded(
+    view: &mut StateWriterView,
+    header: &[u8],
+) -> Result<(), WithdrawalsError> {
+    let ExpectedWithdrawals { withdrawals: expected, processed_partials } =
+        get_expected_withdrawals(view);
+    let expected_root = hash_list(
+        MerkleStack::new(MAX_WITHDRAWALS_PER_PAYLOAD),
+        expected.iter().map(hash_withdrawal),
+    );
+    let got = *ExecutionPayloadHeaderFuluView::withdrawals_root(header);
+    if got != expected_root {
+        return Err(WithdrawalsError::RootMismatch { expected: expected_root, got });
+    }
+    apply_withdrawals(view, &expected, processed_partials);
+    Ok(())
+}
+
+fn apply_withdrawals(
+    view: &mut StateWriterView,
+    expected: &[Withdrawal],
+    processed_partials: usize,
+) {
+    for w in expected {
         let balance = view.balances.get(w.validator_index as usize);
         view.balances.set(w.validator_index as u32, balance.saturating_sub(w.amount));
     }
-    update_next_withdrawal_index(view, &expected);
+    update_next_withdrawal_index(view, expected);
     if processed_partials > 0 {
         view.pending.partial_withdrawals.drain(processed_partials);
     }
-    update_next_withdrawal_validator_index(view, &expected);
-    Ok(())
+    update_next_withdrawal_validator_index(view, expected);
 }

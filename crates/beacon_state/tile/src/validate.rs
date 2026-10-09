@@ -1,9 +1,9 @@
 use silver_beacon_state_data::{
-    Epoch, Payload, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
+    B256, Epoch, SLOTS_PER_EPOCH, Slot, SpecConfig, StateWriterView, ValidatorsView,
 };
 use silver_common::ssz_view::{
-    ATTESTATION_FIXED, AttestationDataView, AttestationView, ExecutionPayloadView,
-    PROPOSER_SLASHING_SIZE, ProposerSlashingView,
+    ATTESTATION_FIXED, AttestationDataView, AttestationView, PROPOSER_SLASHING_SIZE,
+    ProposerSlashingView,
 };
 
 use crate::{
@@ -179,37 +179,35 @@ pub fn validate_bls_to_execution_change(
 pub fn validate_execution_payload(
     cfg: &SpecConfig,
     view: &StateWriterView,
-    payload: Payload<'_>,
+    parent_hash: &B256,
+    prev_randao: &B256,
+    timestamp: u64,
     block_slot: Slot,
 ) -> Result<(), ExecutionPayloadError> {
-    let payload = payload.bytes();
     let slot = view.slot.reader();
     let header = &slot.state().latest_execution_payload_header;
     let expected_randao = view.randao_mixes.reader().at_epoch(block_slot / SLOTS_PER_EPOCH);
 
-    let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;
-    if got_parent != expected_parent && header.block_number > 0 {
+    if *parent_hash != expected_parent && header.block_number > 0 {
         return Err(ExecutionPayloadError::ParentHashMismatch {
             expected: expected_parent,
-            got: got_parent,
+            got: *parent_hash,
         });
     }
 
     let expected_timestamp = view.imm.genesis_time + block_slot * cfg.seconds_per_slot();
-    let got_timestamp = ExecutionPayloadView::timestamp(payload);
-    if got_timestamp != expected_timestamp {
+    if timestamp != expected_timestamp {
         return Err(ExecutionPayloadError::TimestampMismatch {
             expected: expected_timestamp,
-            got: got_timestamp,
+            got: timestamp,
         });
     }
 
-    let got_randao = *ExecutionPayloadView::prev_randao(payload);
-    if got_randao != expected_randao {
+    if *prev_randao != expected_randao {
         return Err(ExecutionPayloadError::RandaoMismatch {
             expected: expected_randao,
-            got: got_randao,
+            got: *prev_randao,
         });
     }
 

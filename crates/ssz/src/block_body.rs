@@ -1,5 +1,5 @@
 use crate::{
-    body_offsets::{BlockBodyError, BodyOffsets},
+    body_offsets::{BlockBodyError, BodyFork, BodyOffsets},
     ssz_view::{BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE},
 };
 
@@ -60,7 +60,16 @@ impl<'a> BeaconBlockBodyFulu<'a> {
 
     pub fn write_fixed(&self, fixed: &'a mut [u8]) -> Result<BodyOffsets<'a>, BlockBodyError> {
         self.encode_fixed(fixed);
-        BodyOffsets::from_parts(fixed, self.variable_fields())
+        BodyOffsets::from_parts(fixed, self.variable_fields(), BodyFork::Fulu)
+    }
+
+    /// `execution_payload` holds an `ExecutionPayloadHeader`.
+    pub fn write_fixed_blinded(
+        &self,
+        fixed: &'a mut [u8],
+    ) -> Result<BodyOffsets<'a>, BlockBodyError> {
+        self.encode_fixed(fixed);
+        BodyOffsets::from_parts(fixed, self.variable_fields(), BodyFork::FuluBlinded)
     }
 
     fn encode_fixed(&self, fixed: &mut [u8]) {
@@ -173,7 +182,13 @@ fn encode_fixed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ssz_view::{BeaconBlockBodyFuluView, EXECUTION_PAYLOAD_FIXED};
+    use crate::{
+        body_offsets::Payload,
+        ssz_hash::{PayloadRoots, hash_tree_root_body_fulu_with_roots},
+        ssz_view::{
+            BeaconBlockBodyFuluView, EXECUTION_PAYLOAD_FIXED, EXECUTION_PAYLOAD_HEADER_FIXED,
+        },
+    };
 
     /// Extra data, transactions and withdrawals all empty.
     fn empty_payload() -> [u8; EXECUTION_PAYLOAD_FIXED] {
@@ -208,5 +223,74 @@ mod tests {
         assert_eq!(BeaconBlockBodyFuluView::graffiti(&out), &[3; 32]);
         assert_eq!(BeaconBlockBodyFuluView::sync_aggregate(&out), &EMPTY_SYNC_AGGREGATE);
         assert!(BeaconBlockBodyFuluView::check_canonical(&out));
+    }
+
+    /// Extra data `[7; 5]`, one transaction `[1, 2, 3]`, one withdrawal.
+    fn payload() -> Vec<u8> {
+        let mut payload: Vec<u8> = (0..EXECUTION_PAYLOAD_FIXED).map(|i| i as u8).collect();
+        let extra_at = EXECUTION_PAYLOAD_FIXED as u32;
+        for (at, offset) in [(436, extra_at), (504, extra_at + 5), (508, extra_at + 5 + 7)] {
+            payload[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+        }
+        payload.extend_from_slice(&[7; 5]);
+        payload.extend_from_slice(&[4, 0, 0, 0, 1, 2, 3]);
+        payload.extend_from_slice(&[9; 44]);
+        payload
+    }
+
+    fn header_of(payload: &[u8]) -> Vec<u8> {
+        let roots = PayloadRoots::of(Payload::new(payload).unwrap());
+        let mut header = payload[..504].to_vec();
+        header[436..440].copy_from_slice(&(EXECUTION_PAYLOAD_HEADER_FIXED as u32).to_le_bytes());
+        header.extend_from_slice(&roots.transactions);
+        header.extend_from_slice(&roots.withdrawals);
+        header.extend_from_slice(&payload[512..528]);
+        header.extend_from_slice(&[7; 5]);
+        header
+    }
+
+    fn body(execution_payload: &[u8]) -> BeaconBlockBodyFulu<'_> {
+        BeaconBlockBodyFulu {
+            randao_reveal: &[1; 96],
+            eth1_data: &[2; 72],
+            graffiti: &[3; 32],
+            proposer_slashings: &[],
+            attester_slashings: &[],
+            attestations: &[],
+            deposits: &[],
+            voluntary_exits: &[],
+            sync_aggregate: &EMPTY_SYNC_AGGREGATE,
+            execution_payload,
+            bls_to_execution_changes: &[],
+            blob_kzg_commitments: &[4; 48],
+            execution_requests: &[12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0],
+        }
+    }
+
+    #[test]
+    fn blinded_body_hashes_like_its_full_body() {
+        let payload = payload();
+        let header = header_of(&payload);
+        let mut full_fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let mut blinded_fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let full = body(&payload).write_fixed(&mut full_fixed).unwrap();
+        let blinded = body(&header).write_fixed_blinded(&mut blinded_fixed).unwrap();
+        blinded.validate().unwrap();
+
+        let (full_root, full_roots) = hash_tree_root_body_fulu_with_roots(&full);
+        let (blinded_root, blinded_roots) = hash_tree_root_body_fulu_with_roots(&blinded);
+        assert_eq!(blinded_root, full_root);
+        assert_eq!(blinded_roots, full_roots);
+        assert_eq!(blinded.payload_header(), &header[..]);
+    }
+
+    #[test]
+    fn blinded_body_refuses_a_header_shorter_than_its_fixed_part() {
+        let mut fixed = [0; BEACON_BLOCK_BODY_FIXED];
+        let short = [0; EXECUTION_PAYLOAD_HEADER_FIXED - 1];
+        assert!(matches!(
+            body(&short).write_fixed_blinded(&mut fixed),
+            Err(BlockBodyError::PayloadHeaderTooShort { .. })
+        ));
     }
 }

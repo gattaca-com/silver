@@ -56,4 +56,7 @@ pub(crate) use withdrawals::{
     get_validators_sweep_withdrawals, update_next_withdrawal_index,
     update_next_withdrawal_validator_index,
 };
-pub use withdrawals::{process_execution_payload, process_withdrawals_fulu};
+pub use withdrawals::{
+    process_execution_payload, process_execution_payload_header, process_withdrawals_fulu,
+    process_withdrawals_fulu_blinded,
+};

@@ -5831,6 +5831,108 @@ fn a_gloas_block_commits_to_the_pooled_bid() {
     assert_eq!(refused, Some(ProduceBlockFailure::NoAcceptableBid));
 }
 
+/// A blinded block on a bid carrying the fixture payload's header is the full
+/// block with the payload swapped for its header: same body root, same state
+/// root, so the same block root and signature.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn blinded_block_on_a_bid_matches_the_full_block() {
+    use silver_beacon_state_data::{BodyFork, BodyOffsets};
+    use silver_common::PayloadFrame;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let (full, _) = produce_fixture_block(&mut tile, &mut gp, &mut spine, &mut adapter, &block_ssz);
+    let frame_bytes = fixture_payload_frame(&block_ssz);
+    let frame = PayloadFrame::parse(&frame_bytes).unwrap();
+    let contents = tile.events_producer.read_buffer(full.header).unwrap();
+    let (before_payload, bls_changes) = contents.split_at(full.payload_at as usize);
+    let requests_end = frame.commitments.len() + frame.execution_requests.len();
+    let full_message = [
+        &before_payload[12..],
+        frame.execution_payload,
+        bls_changes,
+        &frame.after_payload[..requests_end],
+    ]
+    .concat();
+    tile.block_production.drop_outdated(|_| false);
+
+    let header = payload_header_of(frame.execution_payload);
+    let signed_bid = signed_builder_bid(&header, frame.commitments, frame.execution_requests);
+    let proposal = fixture_proposal(&tile, &block_ssz);
+    let blinded = tile.produce_blinded_block(proposal, &signed_bid).expect("built on the bid");
+    assert!(blinded.payload.is_none());
+    assert_eq!(blinded.execution_payload_value, [5; 32]);
+
+    let message = tile.events_producer.read_buffer(blinded.header).unwrap();
+    assert_eq!(&message[..80], &full_message[..80], "slot, proposer, parent and state root");
+    let offsets = BodyOffsets::validated(&message[84..], BodyFork::FuluBlinded).unwrap();
+    assert_eq!(offsets.payload_header(), &header[..]);
+    assert_eq!(offsets.blob_commitments_fulu(), frame.commitments);
+    let (body_root, _) = stf::hash_body(&offsets);
+    assert_eq!(body_root, ssz_hash::hash_tree_root_body_fulu(&full_message[84..]));
+}
+
+#[cfg(feature = "ef_tests")]
+#[test]
+fn blinded_block_whose_header_misstates_the_withdrawals_is_refused() {
+    use silver_common::PayloadFrame;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
+    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, _gp, _rp, _spine, _adapter) =
+        tile_with_producers_on(slot, state, SpecConfig::mainnet());
+
+    let frame_bytes = fixture_payload_frame(&block_ssz);
+    let frame = PayloadFrame::parse(&frame_bytes).unwrap();
+    let mut header = payload_header_of(frame.execution_payload);
+    header[536] ^= 1;
+    let signed_bid = signed_builder_bid(&header, frame.commitments, frame.execution_requests);
+    let proposal = fixture_proposal(&tile, &block_ssz);
+    let refused = tile.produce_blinded_block(proposal, &signed_bid).err();
+    assert_eq!(refused, Some(ProduceBlockFailure::Invalid));
+}
+
+#[cfg(feature = "ef_tests")]
+fn payload_header_of(payload: &[u8]) -> Vec<u8> {
+    use silver_beacon_state_data::Payload;
+    use silver_common::ssz_view::{EXECUTION_PAYLOAD_HEADER_FIXED, ExecutionPayloadView};
+
+    let roots = ssz_hash::PayloadRoots::of(Payload::new(payload).unwrap());
+    let mut header = payload[..504].to_vec();
+    header[436..440].copy_from_slice(&(EXECUTION_PAYLOAD_HEADER_FIXED as u32).to_le_bytes());
+    header.extend_from_slice(&roots.transactions);
+    header.extend_from_slice(&roots.withdrawals);
+    header.extend_from_slice(&payload[512..528]);
+    header.extend_from_slice(ExecutionPayloadView::extra_data(payload));
+    header
+}
+
+/// Value `[5; 32]`; the tile does not check the signature.
+#[cfg(feature = "ef_tests")]
+fn signed_builder_bid(header: &[u8], commitments: &[u8], requests: &[u8]) -> Vec<u8> {
+    use silver_common::ssz_view::BUILDER_BID_FULU_FIXED;
+
+    let commitments_at = BUILDER_BID_FULU_FIXED + header.len();
+    let requests_at = commitments_at + commitments.len();
+    let mut signed = 100u32.to_le_bytes().to_vec();
+    signed.extend_from_slice(&[0; 96]);
+    for offset in [BUILDER_BID_FULU_FIXED, commitments_at, requests_at] {
+        signed.extend_from_slice(&(offset as u32).to_le_bytes());
+    }
+    signed.extend_from_slice(&[5; 32]);
+    signed.extend_from_slice(&[0; 48]);
+    for part in [header, commitments, requests] {
+        signed.extend_from_slice(part);
+    }
+    signed
+}
+
 /// The `PayloadFrame` the EL would answer with for `block_ssz`'s payload,
 /// with placeholder cell proofs and blobs.
 #[cfg(feature = "ef_tests")]

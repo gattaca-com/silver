@@ -1,8 +1,8 @@
 use flux_profiler::timed;
 
 use super::{
-    PayloadRoots, hash_attestation, hash_attester_slashing, hash_execution_payload_with_roots,
-    hash_execution_requests_fulu,
+    PayloadRoots, hash_attestation, hash_attester_slashing, hash_execution_payload_header_fulu,
+    hash_execution_payload_with_roots, hash_execution_requests_fulu,
 };
 use crate::{
     body_offsets::{BodyFork, BodyOffsets},
@@ -11,8 +11,8 @@ use crate::{
         hash_variable_list, merkleize, uint64_chunk,
     },
     ssz_view::{
-        BeaconBlockBodyGloasView, DepositView, ProposerSlashingView,
-        SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
+        BeaconBlockBodyGloasView, DepositView, ExecutionPayloadHeaderFuluView,
+        ProposerSlashingView, SignedBlsToExecutionChangeView, SignedVoluntaryExitView,
     },
 };
 
@@ -104,7 +104,7 @@ struct BodyFieldRoots {
 }
 
 fn field_roots(body_offsets: &BodyOffsets<'_>) -> BodyFieldRoots {
-    debug_assert_eq!(body_offsets.fork(), BodyFork::Fulu);
+    debug_assert_ne!(body_offsets.fork(), BodyFork::Gloas);
     let fixed = body_offsets.fixed();
 
     let randao = hash_fixed_bytes(&fixed[0..96]);
@@ -134,7 +134,17 @@ fn field_roots(body_offsets: &BodyOffsets<'_>) -> BodyFieldRoots {
         MerkleStack::new(16),
         or_empty(body_offsets.voluntary_exits()),
     );
-    let (execution_payload, payload) = hash_execution_payload_with_roots(body_offsets.payload());
+    let (execution_payload, payload) = match body_offsets.fork() {
+        BodyFork::FuluBlinded => {
+            let header = body_offsets.payload_header();
+            let roots = PayloadRoots {
+                transactions: *ExecutionPayloadHeaderFuluView::transactions_root(header),
+                withdrawals: *ExecutionPayloadHeaderFuluView::withdrawals_root(header),
+            };
+            (hash_execution_payload_header_fulu(header), roots)
+        }
+        _ => hash_execution_payload_with_roots(body_offsets.payload()),
+    };
     let bls_changes = SignedBlsToExecutionChangeView::hash_list(
         MerkleStack::new(16),
         or_empty(body_offsets.bls_changes()),

@@ -24,16 +24,18 @@ use crate::{
         collect_sigs_proposer_slashings, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
         gloas::collect_sigs_payload_attestations, process_attester_slashings,
         process_bls_to_execution_changes, process_epoch, process_execution_payload,
-        process_execution_payload_bid, process_execution_requests,
-        process_parent_execution_payload, process_payload_attestations, process_proposer_slashings,
-        process_sync_aggregate, process_voluntary_exits, process_withdrawals_fulu,
-        process_withdrawals_gloas, upgrade_to_gloas,
+        process_execution_payload_bid, process_execution_payload_header,
+        process_execution_requests, process_parent_execution_payload, process_payload_attestations,
+        process_proposer_slashings, process_sync_aggregate, process_voluntary_exits,
+        process_withdrawals_fulu, process_withdrawals_fulu_blinded, process_withdrawals_gloas,
+        upgrade_to_gloas,
     },
 };
 
 #[derive(Clone, Copy)]
 pub enum BlockFork {
     Fulu { payload_roots: PayloadRoots },
+    FuluBlinded,
     Gloas,
 }
 
@@ -45,6 +47,7 @@ impl BlockFork {
     pub(crate) fn body_fork(self) -> BodyFork {
         match self {
             Self::Fulu { .. } => BodyFork::Fulu,
+            Self::FuluBlinded => BodyFork::FuluBlinded,
             Self::Gloas => BodyFork::Gloas,
         }
     }
@@ -77,6 +80,9 @@ pub fn hash_body(offsets: &BodyOffsets<'_>) -> (B256, BlockFork) {
         BodyFork::Fulu => {
             let (root, payload_roots) = ssz_hash::hash_tree_root_body_fulu_with_roots(offsets);
             (root, BlockFork::Fulu { payload_roots })
+        }
+        BodyFork::FuluBlinded => {
+            (ssz_hash::hash_tree_root_body_fulu_with_roots(offsets).0, BlockFork::FuluBlinded)
         }
     }
 }
@@ -547,6 +553,12 @@ fn apply_block_body(
                 block_slot,
                 payload_roots,
             )?;
+        }
+        BlockFork::FuluBlinded => {
+            let header = offsets.payload_header();
+            process_withdrawals_fulu_blinded(&mut *view, header)?;
+            let commitments = offsets.blob_commitments_fulu();
+            process_execution_payload_header(&mut *view, cfg, header, commitments, block_slot)?;
         }
     }
 

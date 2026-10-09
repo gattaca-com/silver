@@ -81,7 +81,7 @@ fn hash_builder_pending_payment(p: &BuilderPendingPayment) -> B256 {
     ])
 }
 
-fn hash_withdrawal(w: &Withdrawal) -> B256 {
+pub(crate) fn hash_withdrawal(w: &Withdrawal) -> B256 {
     merkleize(&[
         uint64_chunk(w.index),
         uint64_chunk(w.validator_index),
