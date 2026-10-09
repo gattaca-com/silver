@@ -61,18 +61,18 @@ The theorem proves the Lean model correct; it does not prove that the Rust imple
 
 Two tests read the file:
 
-- `replay_vectors`, in `vectors.rs`, runs the current kernel on the recorded inputs and fails if any output differs. It runs with the crate's other tests, in about 10 ms. Without AVX-512 IFMA it skips, unless `SILVER_REQUIRE_IFMA=1` is set, which makes it fail instead.
+- `replay_vectors`, in `vectors.rs`, runs the current kernel on the recorded inputs and fails if any output differs. It runs with the crate's other tests, in about 10 ms. On x86_64 it skips when the `simd` feature or AVX-512F/IFMA support is unavailable; setting `SILVER_REQUIRE_IFMA` to any value makes that a failure. On other architectures this test target contains no tests, even with that variable set.
 - `lake exe differential`, in `lean/Test/Main.lean`, runs the model on the same inputs and fails if any output differs. It needs the Lean toolchain and about 75 s.
 
-While both pass, the Rust and the model agree on every recorded batch. The Lean side needs rerunning only when the model or the file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model transcribes those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
+When the Rust test actually runs and both tests pass, the Rust and the model agree on every recorded batch. Rerun the Lean side when its code, toolchain, dependencies or vector file changes; `replay_vectors` catches a change to the kernel's behaviour as it happens. It ignores changes to comments and formatting, which the hashes below do not. It does compare `points` on lanes `lib.rs` never reads, since the model transcribes those too. The batches do not isolate every part of the kernel: for example, Scott's two coordinate comparisons always agree on them, so a change to only one of them can pass.
 
-When `replay_vectors` fails, `lean/README.md` explains what to do. To regenerate the file, on a host with AVX-512 IFMA:
+When `replay_vectors` fails, `lean/README.md` explains what to do. To regenerate the file, run this from the silver repository root on an x86_64 host with AVX-512F and AVX-512 IFMA:
 
 ```sh
 cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors -- --ignored write_vectors
 ```
 
-`write_vectors` checks each edge batch against the masks it was built to produce, so a batch's name cannot drift from its content.
+`write_vectors` checks the mask expectations attached to each edge batch before writing the file. Some expectations constrain only selected lanes or masks.
 
 ## The Rust this proof covers
 
@@ -100,7 +100,7 @@ ed9fe69eafbb055b35e9754ec2cace49aeac45df13e4e1a97de7092f3c4fc2b0  constants.rs
 EOF
 ```
 
-If a file fails, find its proved version with `git log --all --find-object=<blob>` and diff the two. A change to comments or formatting leaves the proof valid. Any other change needs the model updated and everything below rerun.
+If a file fails, find its proved version with `git log --all --find-object=<blob>` and diff the two. A change to comments or formatting leaves the proof valid. For other changes, review the transcription and update it where needed, then rerun the proof, controls and both vector tests. A passing vector test alone cannot establish that the model still matches the Rust on unrecorded inputs.
 
 ## Building and checking the proof
 
