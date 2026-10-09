@@ -269,13 +269,11 @@ impl PeerManager {
         let mesh_for_topic = self.mesh.get(&topic).and_then(|meshes| meshes.get(digest));
         let cap = self.params.d_lazy as usize;
         let mut emitted = 0usize;
-        for (conn, peer) in &self.peers {
+        for conn in self.subscribers.of(digest, topic) {
             if emitted >= cap {
                 break;
             }
-            if !peer.subscriptions.contains_key(&(digest, topic)) {
-                continue;
-            }
+            let Some(peer) = self.peers.get(conn) else { continue };
             if mesh_for_topic.is_some_and(|m| m.peers.contains(conn)) {
                 continue; // mesh peers get full-body forwards, not IHAVE
             }
@@ -376,13 +374,13 @@ impl PeerManager {
         let meshed =
             self.mesh.get(&topic).and_then(|m| m.get(digest)).map_or(&[][..], |m| &m.peers);
         let publish_threshold = self.params.publish_threshold;
-        let subscribers = self.peers.iter().filter(|&(conn, peer)| {
+        let subscribers = self.subscribers.of(digest, topic).iter().filter(|&conn| {
             !meshed.contains(conn) &&
-                peer.subscriptions.contains_key(&(digest, topic)) &&
-                peer.cached_score >= publish_threshold &&
-                !peer.msg_cache_contains(&msg_hash)
+                self.peers.get(conn).is_some_and(|peer| {
+                    peer.cached_score >= publish_threshold && !peer.msg_cache_contains(&msg_hash)
+                })
         });
-        for (&peer_id, _) in subscribers.take(count) {
+        for &peer_id in subscribers.take(count) {
             crate::counters::GossipTopicCounters::sent(topic);
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { peer_id, tcache })));
         }
@@ -390,11 +388,6 @@ impl PeerManager {
 
     pub(super) fn heartbeat(&mut self, now: Instant) {
         self.column_deliveries.expire(now);
-        // Reset per-heartbeat rate-limit counters on every live peer.
-        for peer in self.peers.values_mut() {
-            peer.ihaves_received = 0;
-            peer.iwant_ids_sent = 0;
-        }
 
         let recv_now = Nanos::now();
         self.recent_deliveries.retain(|_, delivery| {
@@ -575,7 +568,7 @@ mod tests {
         );
 
         now += Duration::from_secs(4);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
 
         let s = mgr.score(1).unwrap();
         assert!(s <= 0.0, "expected non-positive score after broken promise, got {s}");
@@ -605,7 +598,7 @@ mod tests {
                 &mut |c| cap.0.push(c),
             );
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         let s = mgr.score(1).unwrap();
         assert!(s >= 0.0, "expected no penalty for over-cap IHAVEs, got {s}");
     }
@@ -632,7 +625,7 @@ mod tests {
         );
 
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let s = mgr.score(1).unwrap();
         assert_eq!(s, 0.0, "no IWANT was issued → no promise → no broken-promise penalty, got {s}");
     }
@@ -736,7 +729,7 @@ mod tests {
         );
 
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let score_delivered = mgr.score(1).unwrap();
 
         connect(&mut mgr, &mut cap, 2, 2, now);
@@ -752,7 +745,7 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let score_broken = mgr.score(2).unwrap();
 
         assert!(
@@ -810,7 +803,7 @@ mod tests {
         );
 
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
 
         connect(&mut mgr, &mut cap, 3, 3, now);
         let other = silver_common::MessageId { id: [99u8; 20] };
@@ -825,7 +818,7 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
 
         let s1 = mgr.score(1).unwrap();
         let s2 = mgr.score(2).unwrap();
@@ -916,7 +909,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).unwrap() < -1.0);
 
         cap.0.clear();
@@ -983,7 +976,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
         assert!(mgr.score(1).unwrap() < -1.0);
 
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
@@ -1106,7 +1099,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(10), &mut |c| cap.0.push(c));
         assert!(mgr.score(2).unwrap() < -1.0);
         cap.0.clear();
 

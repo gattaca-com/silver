@@ -268,7 +268,9 @@ mod tests {
     fn mk_state(now: Instant) -> PeerState {
         let kp = Keypair::from_secret(&[1u8; 32]).unwrap();
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 4242);
-        PeerState::new(kp.peer_id(), addr, now)
+        let mut state = PeerState::default();
+        state.connect(kp.peer_id(), addr, now);
+        state
     }
 
     #[test]

@@ -47,6 +47,7 @@ impl PeerDatabase {
                 record.node_id.replace(enr.node_id());
                 record.peer_id.replace(peer_id);
                 record.enr.replace(enr);
+                record.refresh_custody();
                 false
             }
             None => {
@@ -56,6 +57,7 @@ impl PeerDatabase {
                 record.node_id.replace(node_id);
                 record.peer_id.replace(peer_id);
                 record.is_trusted = trusted;
+                record.refresh_custody();
 
                 let index = self.peers.insert(record);
                 self.by_node_id.insert(node_id, index);
@@ -81,10 +83,16 @@ impl PeerDatabase {
             record.peer_id.replace(peer_id);
             record.node_id.replace(node_id);
             record.dial_backoff_until = None;
+            record.refresh_custody();
         };
         self.by_node_id.insert(node_id, index);
         self.by_peer_id.insert(peer_id, index);
-        self.by_p2p_id.insert(p2p_id, index);
+        if let Some(replaced) = self.by_p2p_id.insert(p2p_id, index) {
+            self.release_connection(replaced);
+        }
+        if let Some(record) = self.peers.get_mut(index) {
+            record.live_connections += 1;
+        }
 
         new_record
     }
@@ -111,7 +119,16 @@ impl PeerDatabase {
     }
 
     pub fn peer_disconnected(&mut self, p2p_id: usize) -> Option<&PeerRecord> {
-        self.by_p2p_id.remove(&p2p_id).and_then(|idx| self.peers.get(idx))
+        let index = self.by_p2p_id.remove(&p2p_id)?;
+        self.release_connection(index);
+        self.peers.get(index)
+    }
+
+    fn release_connection(&mut self, index: usize) {
+        if let Some(record) = self.peers.get_mut(index) {
+            debug_assert!(record.live_connections > 0, "record {index} was not live");
+            record.live_connections = record.live_connections.saturating_sub(1);
+        }
     }
 
     pub fn dial_backoff_active(&self, peer_id: &PeerId, now: Instant) -> bool {
@@ -135,7 +152,7 @@ impl PeerDatabase {
     /// an ENR with a QUIC endpoint, no live connection, dial backoff expired.
     /// The caller applies its own gates (bans, in-flight dials, fork digest).
     pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
-        self.peers.iter().filter_map(move |(idx, record)| {
+        self.peers.iter().filter_map(move |(_, record)| {
             record.peer_id.as_ref()?;
             let enr = record.enr.as_ref()?;
             if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
@@ -144,7 +161,7 @@ impl PeerDatabase {
             if record.dial_backoff_until.is_some_and(|t| t > now) {
                 return None;
             }
-            if self.by_p2p_id.values().any(|i| *i == idx) {
+            if record.live_connections > 0 {
                 return None;
             }
             Some(record)
@@ -177,6 +194,7 @@ impl PeerDatabase {
     pub fn p2p_metadata(&mut self, p2p_id: usize, metadata: [u8; METADATA_SIZE]) {
         if let Some(record) = self.by_p2p_id.get(&p2p_id).and_then(|idx| self.peers.get_mut(*idx)) {
             record.metadata.replace(metadata);
+            record.refresh_custody();
         }
     }
 
@@ -196,24 +214,10 @@ impl PeerDatabase {
     }
 
     pub fn data_column_custody_groups_intersection(&self, peer: usize, columns: u128) -> u128 {
-        let Some(record) = self.by_p2p_id.get(&peer).and_then(|idx| self.peers.get(*idx)) else {
-            return 0;
-        };
-
-        let Some(node_id) = record.node_id else {
-            return 0;
-        };
-        // Count: take the larger of the ENR `cgc` and the MetaData v3
-        // `custody_group_count`. A node promoted to supernode (e.g. by validator
-        // count) bumps its MetaData cgc immediately but can carry a stale lower
-        // `cgc` in its ENR.
-        let enr_cgc = record.enr.as_ref().and_then(|enr| enr.cgc()).unwrap_or(0);
-        let meta_cgc = record.metadata.as_ref().map(MetadataView::custody_group_count).unwrap_or(0);
-        let count = enr_cgc.max(meta_cgc).min(NUMBER_OF_CUSTODY_GROUPS as u64) as u8;
-        if count == 0 {
-            return 0;
-        }
-        node_id.custody_groups(count) & columns
+        self.by_p2p_id
+            .get(&peer)
+            .and_then(|idx| self.peers.get(*idx))
+            .map_or(0, |record| record.custody_groups & columns)
     }
 
     /// Live connection ids whose identify advertises `protocol`. A peer is
@@ -228,14 +232,6 @@ impl PeerDatabase {
         self.by_p2p_id
             .iter()
             .filter_map(move |(p2p_id, idx)| proto?.contains(idx).then_some(*p2p_id))
-    }
-
-    /// Live peers with a valid status.
-    pub fn live_peers_with_status(&self) -> impl Iterator<Item = &PeerRecord> {
-        self.by_p2p_id
-            .iter()
-            .filter_map(|(_, idx)| self.peers.get(*idx))
-            .filter(|record| record.status.is_some())
     }
 
     pub fn by_p2p_id(&self, p2p: usize) -> Option<&PeerRecord> {
@@ -273,4 +269,67 @@ pub struct PeerRecord {
     pub dial_backoff_until: Option<Instant>,
     /// Trusted peer
     pub is_trusted: bool,
+    /// Connections in `by_p2p_id` naming this record; more than one while a
+    /// duplicate connection is open.
+    pub(crate) live_connections: u32,
+    /// Hashed out of the node id, so derived once per `custody_inputs`.
+    custody_groups: u128,
+    custody_inputs: Option<(NodeId, u8)>,
+}
+
+impl PeerRecord {
+    pub(crate) fn custody_groups(&self) -> u128 {
+        self.custody_groups
+    }
+
+    /// The count is the larger of the ENR `cgc` and the MetaData v3
+    /// `custody_group_count`: a node promoted to supernode (e.g. by validator
+    /// count) bumps its MetaData cgc immediately but can carry a stale lower
+    /// `cgc` in its ENR.
+    fn refresh_custody(&mut self) {
+        let Some(node_id) = self.node_id else { return };
+        let enr_cgc = self.enr.as_ref().and_then(|enr| enr.cgc()).unwrap_or(0);
+        let meta_cgc = self.metadata.as_ref().map(MetadataView::custody_group_count).unwrap_or(0);
+        let count = enr_cgc.max(meta_cgc).min(NUMBER_OF_CUSTODY_GROUPS as u64) as u8;
+        if self.custody_inputs == Some((node_id, count)) {
+            return;
+        }
+        self.custody_inputs = Some((node_id, count));
+        self.custody_groups = node_id.custody_groups(count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use silver_common::{Enr, Keypair};
+
+    use super::*;
+
+    /// The cached mask tracks the larger of the ENR and MetaData counts.
+    #[test]
+    fn custody_follows_enr_and_metadata_counts() {
+        let mut database = PeerDatabase::default();
+        let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
+        let enr = Enr::builder().cgc(4).build(keypair.secret_key()).unwrap();
+        let node_id = enr.node_id();
+        database.add_enr(enr);
+        database.add_peer_id(keypair.peer_id(), 1);
+        let custody = |database: &PeerDatabase| {
+            database.data_column_custody_groups_intersection(1, u128::MAX)
+        };
+        assert_eq!(custody(&database), node_id.custody_groups(4));
+
+        let mut metadata = [0u8; METADATA_SIZE];
+        metadata[17..25].copy_from_slice(&64u64.to_le_bytes());
+        database.p2p_metadata(1, metadata);
+        assert_eq!(custody(&database), node_id.custody_groups(64));
+
+        metadata[17..25].copy_from_slice(&2u64.to_le_bytes());
+        database.p2p_metadata(1, metadata);
+        assert_eq!(custody(&database), node_id.custody_groups(4), "the ENR count is larger");
+        assert_eq!(
+            database.data_column_custody_groups_intersection(1, 0b1111),
+            custody(&database) & 0b1111
+        );
+    }
 }

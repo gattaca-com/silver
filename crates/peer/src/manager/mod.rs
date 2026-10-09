@@ -1,13 +1,14 @@
 //! Peer manager: consumes `PeerEvent`, maintains per-peer state + scoring,
 //! emits `PeerControl`. Counters-only on the hot path; all score math +
-//! mesh decisions live in `tick`.
+//! mesh decisions live in `tick` and the `sweep` it schedules.
 
 use std::{
-    collections::HashMap,
     net::IpAddr,
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
+use fxhash::FxHashMap;
 use silver_common::{
     AgentString, Enr, ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId,
     RpcOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
@@ -16,9 +17,8 @@ use silver_common::{
 use silver_config::{ScoreParams, SyncingConfig};
 
 use crate::{
-    database::{PeerDatabase, PeerRecord},
-    scoring,
-    state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities, PeerState},
+    database::PeerDatabase,
+    state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities},
 };
 
 pub(crate) mod admission;
@@ -28,7 +28,11 @@ mod partial;
 pub(crate) mod peers;
 pub(crate) mod promises;
 pub use partial::PartialPeer;
+mod peer_slots;
 pub(crate) mod rpc;
+mod subscribers;
+mod sweep;
+pub use sweep::SweepOutput;
 pub(crate) mod sync;
 
 #[cfg(test)]
@@ -68,31 +72,34 @@ const IDLE_PEER_MAX_SCORE: f64 = 0.1;
 pub struct PeerManager {
     local_peer_id: PeerId,
 
-    /// Live peers keyed by connection handle.
-    peers: HashMap<usize, PeerState>,
+    peers: peer_slots::PeerSlots,
+
+    subscribers: subscribers::TopicSubscribers,
 
     /// Live-connection index: `PeerId` → connection handle. Mirrors `peers`
     /// exactly (unlike the database's `by_peer_id`, which maps to persistent
     /// records that outlive the connection).
-    peers_by_id: HashMap<PeerId, usize>,
+    peers_by_id: FxHashMap<PeerId, usize>,
 
     /// In-progress dials, mapping PeerId to when the dial was initiated.
-    dialing: HashMap<PeerId, Instant>,
+    dialing: FxHashMap<PeerId, Instant>,
 
     /// Counters persisted across reconnect by PeerId. GC'd on tick.
-    archived: HashMap<PeerId, ArchivedState>,
+    archived: FxHashMap<PeerId, ArchivedState>,
 
     /// IP colocation index for P6. Prefix → list of live connection handles.
-    ip_colocations: HashMap<IpPrefix, Vec<usize>>,
+    ip_colocations: FxHashMap<IpPrefix, Vec<usize>>,
 
     /// Topics we subscribe to ourselves. Drives SUBSCRIBE emission on new
     /// peers and mesh-management decisions.
     our_topics: Vec<GossipTopic>,
+    /// Bumped whenever `our_subscriptions` changes.
+    subscriptions_generation: u64,
 
     /// Our mesh per topic: connections we've grafted onto. May exceed d_high
     /// between heartbeats; trimmed back to d by `ensure_mesh_capped`. Split
     /// by fork digest during a transition (see `mesh::TopicMeshes`).
-    mesh: HashMap<GossipTopic, mesh::TopicMeshes>,
+    mesh: FxHashMap<GossipTopic, mesh::TopicMeshes>,
 
     /// Outstanding IHAVE→IWANT promises, keyed by `MessageId`. Each entry
     /// holds every (conn, deadline) that has promised that id. Any one
@@ -155,21 +162,21 @@ pub struct PeerManager {
     /// expire after `params.banned_ip_ttl` — IP-level bans have higher
     /// false-positive blast radius than PeerId-level archive entries
     /// (NAT/CGN) so this TTL is tuned independently of `archived_ttl`.
-    banned_ips: HashMap<IpAddr, Instant>,
+    banned_ips: FxHashMap<IpAddr, Instant>,
 
     /// Per-IP count of recent peer-level evictions, plus the time of the
     /// most recent bump. When the count crosses `params.ip_ban_threshold`
     /// the IP gets promoted into `banned_ips`. Counts age out with the
     /// same TTL as `banned_ips` (sliding-window).
-    ip_eviction_counts: HashMap<IpAddr, (u32, Instant)>,
+    ip_eviction_counts: FxHashMap<IpAddr, (u32, Instant)>,
 
     /// PeerIds we've graylist-banned, keyed by ban time. Drives discovery
     /// filtering and the `Unban` emission once `banned_peer_ttl` elapses.
-    banned_peers: HashMap<PeerId, Instant>,
+    banned_peers: FxHashMap<PeerId, Instant>,
 
     /// Dial backoff from a received Goodbye, keyed to the expiry instant;
     /// tier per code via `goodbye_dial_backoff`. Their inbound stays welcome.
-    remote_banned_peers: HashMap<PeerId, Instant>,
+    remote_banned_peers: FxHashMap<PeerId, Instant>,
 
     params: ScoreParams,
 
@@ -206,15 +213,16 @@ pub struct PeerManager {
 
     /// Slot of the highest block BS has imported (`last_applied`), from the
     /// `latest_block_slot` on the Status event. Used by the data-column peer
-    /// picker (`best_peer_for_data_columns`) for earliest-available gating.
+    /// picker (`collect_column_candidates`) for earliest-available gating.
     pub(crate) local_head_imported_slot: u64,
 
     pub(crate) outbound_attempts: Vec<attempts::OutboundAttempt>,
     /// `(request_id, peer, delivered)` per *logical* request that has ended —
     /// drained by the control tile into the sync engine.
     pub(crate) finished_requests: Vec<(u64, usize, bool)>,
-    /// Peers already served from during one column fan-out.
-    column_fanout_tried: Vec<usize>,
+    /// Reused across column fan-outs.
+    column_candidates: Vec<rpc::ColumnCandidate>,
+    sweep_work: sweep::SweepWork,
 }
 
 impl PeerManager {
@@ -244,21 +252,26 @@ impl PeerManager {
         });
 
         Self {
-            peers: HashMap::with_capacity(PEERS_CAP),
-            peers_by_id: HashMap::with_capacity(PEERS_CAP),
-            dialing: HashMap::with_capacity(64),
-            archived: HashMap::with_capacity(ARCHIVE_CAP),
-            ip_colocations: HashMap::with_capacity(IP_COLOC_CAP),
+            // Connection ids are recycled quinn-proto slab indices, and the
+            // transport refuses inbound past `max_connections`; the factor 2
+            // covers trusted inbound, dials and draining connections.
+            peers: peer_slots::PeerSlots::new(2 * params.max_connections()),
+            subscribers: subscribers::TopicSubscribers::default(),
+            peers_by_id: FxHashMap::with_capacity_and_hasher(PEERS_CAP, Default::default()),
+            dialing: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            archived: FxHashMap::with_capacity_and_hasher(ARCHIVE_CAP, Default::default()),
+            ip_colocations: FxHashMap::with_capacity_and_hasher(IP_COLOC_CAP, Default::default()),
             local_peer_id,
             our_topics,
+            subscriptions_generation: 0,
             mesh,
             promises: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             recent_deliveries: MsgIdMap::with_capacity_and_hasher(4096, Default::default()),
             column_deliveries: partial::ColumnDeliveries::new(),
-            banned_ips: HashMap::with_capacity(64),
-            ip_eviction_counts: HashMap::with_capacity(64),
-            banned_peers: HashMap::with_capacity(128),
-            remote_banned_peers: HashMap::with_capacity(128),
+            banned_ips: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            ip_eviction_counts: FxHashMap::with_capacity_and_hasher(64, Default::default()),
+            banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            remote_banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
             our_fork_digest: Some(fork_digest),
             active_gossip_digests: [Some(fork_digest), None],
             active_gossip_domains: [Some(GossipDomain::new(fork_digest, ForkName::Fulu)), None],
@@ -286,21 +299,13 @@ impl PeerManager {
             local_head_imported_slot: 0,
             outbound_attempts: Vec::with_capacity(PEERS_CAP),
             finished_requests: Vec::with_capacity(PEERS_CAP),
-            column_fanout_tried: Vec::with_capacity(PEERS_CAP),
+            column_candidates: Vec::with_capacity(PEERS_CAP),
+            sweep_work: sweep::SweepWork::default(),
         }
     }
 
     pub fn peer_metadata_seq(&self, p2p_peer: usize) -> Option<u64> {
         self.database.p2p_metadata_seq(p2p_peer)
-    }
-
-    /// Iterator over live peer connection handles (for tests/introspection).
-    pub fn live_peers(&self) -> impl Iterator<Item = usize> + '_ {
-        self.peers.keys().copied()
-    }
-
-    pub fn live_peers_with_status(&self) -> impl Iterator<Item = &PeerRecord> {
-        self.database.live_peers_with_status()
     }
 
     pub fn handle_event(
@@ -312,6 +317,7 @@ impl PeerManager {
         self.handle_event_with_partial(event, now, false, emit);
     }
 
+    #[timed]
     pub fn handle_event_with_partial(
         &mut self,
         event: PeerEvent,
@@ -544,104 +550,46 @@ impl PeerManager {
         }
     }
 
-    /// The periodic sweep: gauges, scoring decay, redials, stalled attempts.
-    /// Off the per-event path, so walking every peer is affordable here.
-    pub fn tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
-        // Mesh-size gauges refreshed here rather than at each mutation site —
-        // mesh entries persist (empty vecs stay), so this is exact.
+    /// The periodic sweep: heartbeat rollover and score decay when due, then
+    /// rescore and population management. Its per-peer work runs at the
+    /// next `sweep`.
+    pub fn tick(&mut self, now: Instant) {
+        // Mesh entries persist (empty vecs stay), so refreshing the gauges
+        // here rather than at each mutation is exact.
         for (topic, meshes) in &self.mesh {
             crate::counters::GossipTopicCounters::mesh(*topic, meshes.total());
         }
-        // 1) Heartbeat rollover: reset per-heartbeat counters, sweep broken promises.
         if now.saturating_duration_since(self.last_heartbeat) >= self.params.heartbeat_interval {
             self.heartbeat(now);
+            self.sweep_work.reset_heartbeat = true;
             self.last_heartbeat = now;
         }
-
-        // 2) Decay all counters — gated to `score_decay_interval` (one slot), the
-        //    cadence the `*_decay` constants are calibrated for.
+        // `score_decay_interval` is one slot, the cadence the `*_decay`
+        // constants are calibrated for.
         if now.saturating_duration_since(self.last_decay) >= self.params.score_decay_interval {
-            for p in self.peers.values_mut() {
-                scoring::decay(p, &self.params);
-            }
+            self.sweep_work.decay = true;
             self.last_decay = now;
         }
+        self.sweep_work.rescore = true;
+    }
 
-        // 3) One walk of the population doing everything that needs a per-peer (and
-        //    per-topic) visit: the subscriber census, the score recompute — which also
-        //    flips P3 activation, see `scoring::score_breakdown` — and collection of
-        //    deadweight to shed. Peers announce SUBSCRIBE for all their subnets; only
-        //    count subscribers on topics we participate in ourselves.
-        let mut ours = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
-        for topic in &self.our_topics {
-            ours[topic.counter_slot()] = true;
-        }
-        let mut subs = [0u16; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
-        let peers_by_prefix: HashMap<IpPrefix, usize> =
-            self.ip_colocations.iter().map(|(k, v)| (*k, v.len())).collect();
+    pub fn schedule_ping(&mut self) {
+        self.sweep_work.ping = true;
+    }
 
-        let mut idle = [0usize; MAX_IDLE_GOODBYES];
-        let mut idle_len = 0;
-        let mut negative = [(0usize, 0.0f64); 256];
-        let mut negative_len = 0;
-        let mut pending_goodbyes = 0;
+    /// Runs while syncing too: peers use our advancing finalized and head to
+    /// score us, and suppressing it would let their view rot.
+    pub fn schedule_status(&mut self) {
+        self.sweep_work.status = true;
+    }
 
-        for (&conn, peer) in self.peers.iter_mut() {
-            let mut counted = [false; silver_common::GOSSIP_TOPIC_COUNTER_SLOTS];
-            for (_, topic) in peer.subscriptions.keys() {
-                let slot = topic.counter_slot();
-                if ours[slot] && !counted[slot] {
-                    subs[slot] = subs[slot].saturating_add(1);
-                    counted[slot] = true;
-                }
-            }
+    pub fn schedule_persist(&mut self) {
+        self.sweep_work.persist = true;
+    }
 
-            let coloc = *peers_by_prefix.get(&peer.ip_prefix).unwrap_or(&1);
-            peer.last_breakdown = scoring::score_breakdown(peer, &self.params, coloc, now);
-            peer.cached_score = peer.last_breakdown.total;
-            peer.score_valid_at = now;
-
-            // Deadweight: long-connected, in no mesh, nothing scored either
-            // way — it has had every chance to be grafted. Negative scorers
-            // are `manage_peers`' business.
-            if peer.goodbye_sent {
-                pending_goodbyes += 1;
-                continue;
-            }
-            if !peer.is_trusted && peer.cached_score < 0.0 && negative_len < negative.len() {
-                negative[negative_len] = (conn, peer.cached_score);
-                negative_len += 1;
-            } else if !peer.is_trusted &&
-                peer.cached_score <= IDLE_PEER_MAX_SCORE &&
-                idle_len < idle.len() &&
-                now.saturating_duration_since(peer.connected_at) > IDLE_PEER_MIN_AGE &&
-                peer.topic_stats.values().all(|s| s.meshed_since.is_none())
-            {
-                idle[idle_len] = conn;
-                idle_len += 1;
-            }
-        }
-        crate::counters::GossipTopicCounters::subscribed(&subs);
-
-        // 5) Evict peers below the graylist threshold.
-        self.evict_graylisted(now, emit);
-
-        // 6) Mesh management: graft under-filled topics, prune over-filled ones.
-        self.manage_mesh(now, emit);
-
-        // 7) GC archived state past TTL.
-        self.gc_archived(now);
-        self.gc_banned_ips(now, emit);
-        self.gc_banned_peers(now, emit);
-
-        // 8) Trigger discovery if we're under target.
-        self.maybe_request_discovery(now, emit);
-
-        self.sweep_stalled_attempts(now);
-
-        // 9) Prune stale dials (older than 15 seconds); an entry expiring here means
-        //    the dial failed or timed out (successful connects leave `dialing` in
-        //    `on_connected`) — back the peer off.
+    /// An entry expiring here is a dial that failed or timed out: a connect
+    /// leaves `dialing` in `on_connected`.
+    fn expire_dials(&mut self, now: Instant) {
         let database = &mut self.database;
         self.dialing.retain(|peer_id, &mut time| {
             if now.saturating_duration_since(time) < std::time::Duration::from_secs(15) {
@@ -651,11 +599,6 @@ impl PeerManager {
                 false
             }
         });
-
-        // 10) manage over population
-        self.manage_peers(now, negative, negative_len, idle, idle_len, pending_goodbyes, emit);
-
-        crate::PeerCounters::PeersConnected.set(self.peers.len() as u64);
     }
 
     // ── Lifecycle ───────────────────────────────────────────────────────
@@ -800,5 +743,21 @@ pub(crate) mod fixture {
     pub(crate) fn set_local(mgr: &mut PeerManager, ssz: [u8; STATUS_V2_SIZE]) {
         mgr.set_local_head_imported(StatusView::head_slot(&ssz));
         mgr.set_status(ssz);
+    }
+
+    impl PeerManager {
+        /// The control loop's order: record the periodic work, then run it.
+        pub(crate) fn run_tick(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+            self.tick(now);
+            self.run_sweep(now, emit);
+        }
+
+        pub(crate) fn run_sweep(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+            self.sweep(now, &mut |output| {
+                if let SweepOutput::Control(control) = output {
+                    emit(control);
+                }
+            });
+        }
     }
 }

@@ -363,54 +363,81 @@ fn encode_sub_opts(
     subscribe: bool,
     mode: PartialColumnsMode,
 ) -> Result<TCacheRead, Error> {
-    let supports_partial = mode.supports_sending();
-    // RPC.subscriptions = field 1 (LD, repeated SubOpts).
-    // SubOpts.subscribe = field 1 (varint), topic_id = field 2 (string).
-    // All field numbers ≤ 15 → 1-byte tags. Bool encodes as 1-byte varint.
-    const TAG_LEN: usize = 1;
-    const BOOL_LEN: usize = 1;
-
-    let total: usize = topics
-        .iter()
-        .map(|t| {
-            let inner = TAG_LEN +
-                BOOL_LEN +
-                TAG_LEN +
-                string_encoded_len(t) +
-                usize::from(supports_partial) * 4;
-            TAG_LEN + varint_len(inner as u64) + inner
-        })
-        .sum();
+    let partial = mode.supports_sending().then_some(mode);
+    let total: usize = topics.iter().map(|topic| sub_opts_len(topic, partial)).sum();
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
-
     for topic in topics {
-        let inner = TAG_LEN +
-            BOOL_LEN +
-            TAG_LEN +
-            string_encoded_len(topic) +
-            usize::from(supports_partial) * 4;
-        // RPC.subscriptions (field 1, LD) — one wrap per entry.
-        Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
-        encode_varint(inner as u64, &mut cursor);
-        // SubOpts.subscribe (field 1, varint).
-        Tag::new(1, WireType::Varint).encode(&mut cursor);
-        encode_varint(subscribe as u64, &mut cursor);
-        // SubOpts.topic_id (field 2, string).
-        Tag::new(2, WireType::LengthDelimited).encode(&mut cursor);
-        encode_string(topic, &mut cursor);
-        if supports_partial {
-            Tag::new(3, WireType::Varint).encode(&mut cursor);
-            encode_varint(u64::from(mode.requests()), &mut cursor);
-            Tag::new(4, WireType::Varint).encode(&mut cursor);
-            encode_varint(1, &mut cursor);
-        }
+        write_sub_opts(&mut cursor, topic, subscribe, partial);
     }
 
     reservation.increment_offset(total);
     Ok(reservation.read())
+}
+
+/// Appends one `RPC.subscriptions` entry subscribing to `topic`, carrying the
+/// partial-columns options of `partial` when given.
+pub(crate) fn append_subscription(
+    out: &mut Vec<u8>,
+    topic: &str,
+    partial: Option<PartialColumnsMode>,
+) {
+    let start = out.len();
+    out.resize(start + sub_opts_len(topic, partial), 0);
+    let mut cursor: &mut [u8] = &mut out[start..];
+    write_sub_opts(&mut cursor, topic, true, partial);
+}
+
+/// Copies an already encoded RPC frame into the publish tcache.
+pub(crate) fn copy_encoded(producer: &mut TProducer, frame: &[u8]) -> Result<TCacheRead, Error> {
+    let mut reservation = producer.reserve(frame.len(), true).ok_or(Error::BufferTooSmall)?;
+    producer.reservation_buffer(&mut reservation)?[..frame.len()].copy_from_slice(frame);
+    reservation.increment_offset(frame.len());
+    Ok(reservation.read())
+}
+
+// RPC.subscriptions = field 1 (LD, repeated SubOpts).
+// SubOpts.subscribe = field 1 (varint), topic_id = field 2 (string).
+// All field numbers ≤ 15 → 1-byte tags. Bool encodes as 1-byte varint.
+const SUB_OPTS_TAG_LEN: usize = 1;
+const SUB_OPTS_BOOL_LEN: usize = 1;
+
+fn sub_opts_inner_len(topic: &str, partial: Option<PartialColumnsMode>) -> usize {
+    SUB_OPTS_TAG_LEN +
+        SUB_OPTS_BOOL_LEN +
+        SUB_OPTS_TAG_LEN +
+        string_encoded_len(topic) +
+        usize::from(partial.is_some()) * 4
+}
+
+fn sub_opts_len(topic: &str, partial: Option<PartialColumnsMode>) -> usize {
+    let inner = sub_opts_inner_len(topic, partial);
+    SUB_OPTS_TAG_LEN + varint_len(inner as u64) + inner
+}
+
+fn write_sub_opts(
+    cursor: &mut &mut [u8],
+    topic: &str,
+    subscribe: bool,
+    partial: Option<PartialColumnsMode>,
+) {
+    // RPC.subscriptions (field 1, LD) — one wrap per entry.
+    Tag::new(1, WireType::LengthDelimited).encode(cursor);
+    encode_varint(sub_opts_inner_len(topic, partial) as u64, cursor);
+    // SubOpts.subscribe (field 1, varint).
+    Tag::new(1, WireType::Varint).encode(cursor);
+    encode_varint(subscribe as u64, cursor);
+    // SubOpts.topic_id (field 2, string).
+    Tag::new(2, WireType::LengthDelimited).encode(cursor);
+    encode_string(topic, cursor);
+    if let Some(mode) = partial {
+        Tag::new(3, WireType::Varint).encode(cursor);
+        encode_varint(u64::from(mode.requests()), cursor);
+        Tag::new(4, WireType::Varint).encode(cursor);
+        encode_varint(1, cursor);
+    }
 }
 
 /// Encode `RPC { control: ControlMessage { graft: [ControlGraft { topic_id }*]
@@ -637,6 +664,30 @@ mod tests {
         let subscription = rpc.subscriptions.iter().next().unwrap();
         assert_eq!(subscription.requests_partial, Some(true));
         assert_eq!(subscription.supports_sending_partial, Some(true));
+    }
+
+    /// The cached frame is the per-call encoding, concatenated, with partial
+    /// options only where asked for; copying it out yields the same bytes.
+    #[test]
+    fn appended_subscriptions_match_the_tcache_encoding() {
+        const BLOCK: &str = "/eth2/00000000/beacon_block/ssz_snappy";
+        const COLUMN: &str = "/eth2/00000000/data_column_sidecar_3/ssz_snappy";
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
+        let mode = PartialColumnsMode::Enabled;
+        let block = copy_subscriptions(&mut producer, &[BLOCK], PartialColumnsMode::Off).unwrap();
+        let block = read_bytes(block, &producer);
+        let column = copy_subscriptions(&mut producer, &[COLUMN], mode).unwrap();
+        let column = read_bytes(column, &producer);
+
+        let mut frame = Vec::new();
+        append_subscription(&mut frame, BLOCK, None);
+        append_subscription(&mut frame, COLUMN, Some(mode));
+        assert_eq!(frame, [block, column].concat());
+
+        let copied = copy_encoded(&mut producer, &frame).unwrap();
+        assert_eq!(read_bytes(copied, &producer), frame);
+        let rpc = RPCView::decode_view(&frame).unwrap();
+        assert_eq!(rpc.subscriptions.iter().count(), 2);
     }
 
     #[test]

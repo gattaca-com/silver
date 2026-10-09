@@ -4,4 +4,4 @@ mod schema;
 
 pub use counter_map::CounterMap;
 pub use discovery::{CounterFile, DiscoveredSources, TileMetricsFile, TimingFile, discover};
-pub use schema::{hide_zero, names_for, sort_key};
+pub use schema::{in_counters_pane, names_for, sort_key};

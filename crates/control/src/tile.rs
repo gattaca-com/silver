@@ -1,4 +1,5 @@
 use std::{
+    mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -22,7 +23,7 @@ use silver_common::{
     ticker::SlotTicker,
 };
 use silver_gossip::{GossipHandler, GossipHandlerEvent};
-use silver_peer::PeerManager;
+use silver_peer::{PeerManager, SweepOutput};
 
 use self::{
     gossip_schedule::GossipSchedule,
@@ -58,9 +59,15 @@ pub struct Controller {
     slashing_protection: SlashingProtectionHandler,
     local_gossip: LocalGossipHandler,
     last_tick: Instant,
+    /// Set by a tick, so the redial runs on the next loop instead of beside
+    /// the tick's sweep, and sees the deficits and evictions it leaves.
+    redial_due: bool,
     last_ping: Instant,
     last_status: Instant,
     last_peer_persist: Instant,
+    /// The peer manager's subscriptions generation the gossip handler's
+    /// frame was encoded from.
+    announced_subscriptions: Option<u64>,
 
     /// When false, the 17000ms heartbeat skips the per-peer Ping fan-out.
     /// Tests use this to keep the peer-state machine ticking without
@@ -115,9 +122,11 @@ impl Controller {
             slashing_protection,
             local_gossip: LocalGossipHandler::default(),
             last_tick: now,
+            redial_due: false,
             last_ping: now,
             last_status: now,
             last_peer_persist: now,
+            announced_subscriptions: None,
             auto_ping: true,
             long_lived_pending: true,
             subnet_duties: SubnetDuties::new(Subnets {
@@ -320,6 +329,17 @@ impl Controller {
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
     }
 
+    /// A change after this point reaches connections made before the next
+    /// refresh through the sweep's per-peer subscription changes.
+    fn refresh_announced_subscriptions(&mut self) {
+        let generation = self.peer_manager.subscriptions_generation();
+        if self.announced_subscriptions == Some(generation) {
+            return;
+        }
+        self.announced_subscriptions = Some(generation);
+        self.gossip_handler.set_subscriptions(self.peer_manager.our_subscriptions());
+    }
+
     fn advance_gossip_domains(&mut self, now: Instant, producers: &mut SilverSpineProducers) {
         let Some(update) = self.gossip_schedule.as_mut().and_then(GossipSchedule::advance) else {
             return;
@@ -481,9 +501,12 @@ impl Tile<SilverSpine> for Controller {
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.loop_start();
         }
+
         let now = Instant::now();
         self.advance_gossip_domains(now, &mut adapter.producers);
+        self.refresh_announced_subscriptions();
         self.reader.free();
+
         if let Some(ingress) = &mut self.cell_ingress {
             ingress.spin(now, &adapter.producers);
             if let Some(exchange) = &mut self.partial_exchange {
@@ -547,6 +570,7 @@ impl Tile<SilverSpine> for Controller {
 
         let wall_slot =
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
+
         adapter.consume(|request: BeaconApiRequest, producers| match request {
             BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
                 self.on_local_gossip(request_id, topic, ssz, now, producers)
@@ -686,22 +710,8 @@ impl Tile<SilverSpine> for Controller {
         // run on the periodic 300s heartbeat.
         if self.sync_engine.take_just_synced() {
             self.last_status = now;
-            self.peer_manager.fan_out_status(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
-            self.peer_manager.fan_out_subscriptions(&mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
+            self.peer_manager.schedule_status();
+            self.peer_manager.fan_out_subscriptions();
         }
 
         let sync_engine = &mut self.sync_engine;
@@ -722,10 +732,7 @@ impl Tile<SilverSpine> for Controller {
             })
         });
 
-        if self.last_tick.elapsed() > Duration::from_millis(700) {
-            self.last_tick = now;
-            // Before tick: redials shrink the peer deficit so tick's
-            // discovery request only backfills what the database can't.
+        if mem::take(&mut self.redial_due) {
             self.peer_manager.redial_known_peers(now, &mut |evt| {
                 handle_peer_control(
                     &mut self.gossip_handler,
@@ -734,47 +741,22 @@ impl Tile<SilverSpine> for Controller {
                     &mut adapter.producers,
                 )
             });
-            self.peer_manager.tick(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
+        }
 
-            self.peer_manager.peer_scores(&mut |scores| {
-                adapter.produce(PeerStats::Scores(scores));
-            });
-            self.peer_manager.peer_topic_scores(now, &mut |topic_scores| {
-                adapter.produce(PeerStats::Topic(topic_scores));
-            });
+        if self.last_tick.elapsed() > Duration::from_millis(700) {
+            self.last_tick = now;
+            self.redial_due = true;
+            self.peer_manager.tick(now);
 
             if self.auto_ping && self.last_ping.elapsed() > Duration::from_secs(17) {
                 self.last_ping = now;
-                self.peer_manager.fan_out_ping(now, &mut |evt| {
-                    handle_peer_control(
-                        &mut self.gossip_handler,
-                        &mut self.rpc_producer,
-                        evt,
-                        &mut adapter.producers,
-                    )
-                });
+                self.peer_manager.schedule_ping();
             }
         }
 
         if self.last_peer_persist.elapsed() > PEER_PERSIST_INTERVAL {
             self.last_peer_persist = now;
-            for peer in self.peer_manager.live_peers_with_status() {
-                if let Some(enr) = peer.enr.as_ref() {
-                    handle_peer_control(
-                        &mut self.gossip_handler,
-                        &mut self.rpc_producer,
-                        PeerControl::PersistPeer { enr: *enr },
-                        &mut adapter.producers,
-                    );
-                }
-            }
+            self.peer_manager.schedule_persist();
         }
 
         // Off-schedule Status fan-out on a silent fall-behind. Tight 1 s
@@ -785,15 +767,17 @@ impl Tile<SilverSpine> for Controller {
             self.sync_engine.fell_behind() && self.last_status.elapsed() > Duration::from_secs(1);
         if fell_behind || self.last_status.elapsed() > Duration::from_secs(30) {
             self.last_status = now;
-            self.peer_manager.fan_out_status(now, &mut |evt| {
-                handle_peer_control(
-                    &mut self.gossip_handler,
-                    &mut self.rpc_producer,
-                    evt,
-                    &mut adapter.producers,
-                )
-            });
+            self.peer_manager.schedule_status();
         }
+
+        let Self { peer_manager, gossip_handler, rpc_producer, .. } = self;
+        peer_manager.sweep(now, &mut |output| match output {
+            SweepOutput::Control(evt) => {
+                handle_peer_control(gossip_handler, rpc_producer, evt, &mut adapter.producers)
+            }
+            SweepOutput::Scores(scores) => adapter.produce(PeerStats::Scores(scores)),
+            SweepOutput::TopicScores(scores) => adapter.produce(PeerStats::Topic(scores)),
+        });
 
         if self.gossip_handler.spin_columns(adapter, self.cell_ingress.as_mut()) {
             adapter.mark_work();

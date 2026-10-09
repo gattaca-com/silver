@@ -128,6 +128,7 @@ impl PeerManager {
     /// database up to `target_peers`, or `max_priority_peers` for candidates
     /// covering a subnet/custody column we need. Discovery only feeds the
     /// database; this loop dials on the next tick.
+    #[timed]
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let mut connected = self.peers.len() + self.dialing.len();
         let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
@@ -165,6 +166,7 @@ impl PeerManager {
                 usize::MAX
             } else if enr_matches_subnets(
                 enr,
+                record.custody_groups(),
                 self.deficit_attnets,
                 self.deficit_syncnets,
                 self.deficit_columns,
@@ -172,6 +174,7 @@ impl PeerManager {
                 deficit_cap
             } else if enr_matches_subnets(
                 enr,
+                record.custody_groups(),
                 self.required_attnets,
                 self.required_syncnets,
                 self.custody_columns,
@@ -333,7 +336,7 @@ impl PeerManager {
                 self.remote_banned_peers.insert(peer_id, now + backoff);
             }
         }
-        self.peers.remove(&p2p_peer);
+        self.remove_live_peer(p2p_peer);
     }
 
     /// Translate RPC misbehaviour severity into a P5 application-score
@@ -369,25 +372,25 @@ impl PeerManager {
 
     // ── Internal helpers ────────────────────────────────────────────────
 
-    pub(super) fn evict_graylisted(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
+    /// `graylisted` are the live peers scored below the graylist threshold.
+    pub(super) fn evict_graylisted(
+        &mut self,
+        graylisted: &[usize],
+        now: Instant,
+        emit: &mut impl FnMut(PeerControl),
+    ) {
         let threshold = self.params.graylist_threshold;
         // Two-phase: identify + remove (can't mutate self.peers while
         // iterating it); emit is inline in phase 2.
         let mut evict: Vec<(usize, PeerId, IpAddr)> = Vec::new();
         let mut spared: Vec<usize> = Vec::new();
-        let mut recovered: Vec<usize> = Vec::new();
-        for (conn, peer) in &self.peers {
-            if peer.is_trusted || peer.cached_score >= threshold {
-                if peer.evict_spared {
-                    recovered.push(*conn);
-                }
-                continue;
-            }
-            let (dc_subscribed, dc_advertised) = self.data_column_overlap(*conn, peer);
+        for &conn in graylisted {
+            let Some(peer) = self.peers.get(&conn) else { continue };
+            let (dc_subscribed, dc_advertised) = self.data_column_overlap(conn, peer);
             if (dc_subscribed > 0 || dc_advertised > 0) &&
-                self.data_column_peer_count(*conn) < self.params.d_low as usize
+                self.data_column_peer_count(conn) < self.params.d_low as usize
             {
-                spared.push(*conn);
+                spared.push(conn);
                 continue;
             }
             let b = peer.last_breakdown;
@@ -409,12 +412,7 @@ impl PeerManager {
                 p7_behaviour = b.p7_behaviour,
                 "evicting greylisted peer: {conn}"
             );
-            evict.push((*conn, peer.peer_id, peer.addr.ip()));
-        }
-        for conn in recovered {
-            if let Some(peer) = self.peers.get_mut(&conn) {
-                peer.evict_spared = false;
-            }
+            evict.push((conn, peer.peer_id, peer.addr.ip()));
         }
         for conn in spared {
             if let Some(peer) = self.peers.get_mut(&conn) &&
@@ -524,8 +522,11 @@ impl PeerManager {
 /// True iff the ENR advertises subscription to at least one attnet/syncnet
 /// we also subscribe to. Both bitfields are SSZ Bitvectors so a bytewise
 /// AND is sufficient — any non-zero result means at least one shared bit.
+/// `custody_groups` is the record's cached mask: deriving it from the node id
+/// costs a sha256 per custody group.
 fn enr_matches_subnets(
     enr: &Enr,
+    custody_groups: u128,
     attnets_mask: [u8; 8],
     syncnets_mask: u8,
     custody_columns: u128,
@@ -542,10 +543,7 @@ fn enr_matches_subnets(
     {
         return true;
     }
-    if let Some(cgc) = enr.cgc() {
-        return enr.node_id().custody_groups(cgc as u8) & custody_columns != 0;
-    }
-    false
+    custody_groups & custody_columns != 0
 }
 
 #[cfg(test)]
@@ -638,7 +636,7 @@ mod tests {
 
         // Dial times out via the stale-dial sweep -> 1h backoff.
         let after_sweep = t_drop + Duration::from_secs(16);
-        mgr.tick(after_sweep, &mut |c| cap.0.push(c));
+        mgr.run_tick(after_sweep, &mut |c| cap.0.push(c));
         cap.0.clear();
         mgr.redial_known_peers(after_sweep, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 0, "failed dial must back off");
@@ -648,6 +646,27 @@ mod tests {
         cap.0.clear();
         mgr.redial_known_peers(after_backoff, &mut |c| cap.0.push(c));
         assert_eq!(dials(&cap), 1, "peer should be redialed after backoff expiry");
+    }
+
+    /// Two connections can name one record; it stays live until the last
+    /// one closes, and re-registering a connection does not count it twice.
+    #[test]
+    fn record_is_not_redialed_while_any_connection_to_it_is_open() {
+        let now = Instant::now();
+        let (mut mgr, _) = fixture(vec![], ScoreParams::default());
+        let enr =
+            test_enr_with(5, std::net::Ipv4Addr::new(10, 0, 0, 5), Some([0u8; 16]), None, None);
+        mgr.database.add_enr(enr);
+        let candidates = |mgr: &PeerManager| mgr.database.redial_candidates(now).count();
+        assert_eq!(candidates(&mgr), 1);
+
+        mgr.database.add_peer_id(peer_id(5), 1);
+        mgr.database.add_peer_id(peer_id(5), 1);
+        mgr.database.add_peer_id(peer_id(5), 2);
+        mgr.database.peer_disconnected(1);
+        assert_eq!(candidates(&mgr), 0, "connection 2 is still open");
+        mgr.database.peer_disconnected(2);
+        assert_eq!(candidates(&mgr), 1);
     }
 
     #[test]
@@ -808,7 +827,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })));
         cap.0.clear();
 
@@ -851,7 +870,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })));
 
         // Pre-TTL: discovery hit on banned IP is dropped.
@@ -867,7 +886,7 @@ mod tests {
 
         // Advance past banned_ip_ttl + tick to GC the ban entry.
         now += Duration::from_secs(11);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
 
         // Same IP via discovery now dials.
         cap.0.clear();
@@ -919,7 +938,7 @@ mod tests {
                 );
             }
             cap.0.clear();
-            mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+            mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
             let banned = cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. }));
             let banned_peer = cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. }));
@@ -963,13 +982,13 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })));
         cap.0.clear();
 
         // Past the TTL — gc clears the eviction-count entry.
         now += Duration::from_secs(11);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
 
         // Fresh eviction post-TTL: count starts at 0 again, single eviction
         // bumps to 1 (still under threshold=2) → no BanIp.
@@ -990,7 +1009,7 @@ mod tests {
             });
         }
         cap.0.clear();
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })),
             "post-TTL fresh count must not BanIp on first eviction, got {:?}",
@@ -1017,25 +1036,25 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(cap.0.iter().any(|e| matches!(e, PeerControl::BanIp { .. })));
         cap.0.clear();
 
         // Pre-TTL: no UnbanIp.
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::UnbanIp { .. })));
 
         // Past TTL: gc fires → UnbanIp emitted exactly once.
         now += Duration::from_secs(6);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let unban_count = cap.0.iter().filter(|e| matches!(e, PeerControl::UnbanIp { .. })).count();
         assert_eq!(unban_count, 1, "expected one UnbanIp after TTL, got {:?}", cap.0);
 
         // Subsequent tick: nothing more — entry already gc'd.
         cap.0.clear();
         now += Duration::from_secs(1);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::UnbanIp { .. })));
     }
 
@@ -1062,16 +1081,16 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         assert!(cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })));
         cap.0.clear();
 
         now += Duration::from_secs(5);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         assert!(!cap.0.iter().any(|e| matches!(e, PeerControl::Unban { .. })));
 
         now += Duration::from_secs(6);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let unban_count = cap.0.iter().filter(|e| matches!(e, PeerControl::Unban { .. })).count();
         assert_eq!(unban_count, 1, "expected one Unban after TTL, got {:?}", cap.0);
     }
@@ -1098,7 +1117,7 @@ mod tests {
                 cap.0.push(c)
             });
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
         cap.0.clear();
 
         // ENR re-presents the same PeerId (same seed → same secp256k1 key).
@@ -1128,14 +1147,14 @@ mod tests {
         // First tick after construction: under target, throttle has elapsed
         // (last_discovery was set to construction time, query_interval=5s).
         now += Duration::from_secs(6);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         let first_count = cap.0.iter().filter(|e| matches!(e, PeerControl::DiscoverNodes)).count();
         assert_eq!(first_count, 1, "first tick should fire one DiscoverNodes, got {:?}", cap.0);
 
         // Immediate second tick should be throttled.
         cap.0.clear();
         now += Duration::from_millis(50);
-        mgr.tick(now, &mut |c| cap.0.push(c));
+        mgr.run_tick(now, &mut |c| cap.0.push(c));
         assert!(
             !cap.0.iter().any(|e| matches!(e, PeerControl::DiscoverNodes)),
             "throttle should suppress second emission, got {:?}",
@@ -1328,7 +1347,7 @@ mod tests {
             Some(aged);
         cap.0.clear();
 
-        mgr.tick(aged, &mut |c| cap.0.push(c));
+        mgr.run_tick(aged, &mut |c| cap.0.push(c));
         let goodbyes = |cap: &Captured| -> Vec<usize> {
             cap.0
                 .iter()
@@ -1352,7 +1371,7 @@ mod tests {
         // The pending departure counts against the excess, so another peer
         // is not selected while the first Goodbye drains.
         cap.0.clear();
-        mgr.tick(aged + Duration::from_secs(1), &mut |c| cap.0.push(c));
+        mgr.run_tick(aged + Duration::from_secs(1), &mut |c| cap.0.push(c));
         assert!(goodbyes(&cap).is_empty(), "goodbye must not repeat");
 
         // Under the cap the same peers are left alone.
@@ -1361,7 +1380,7 @@ mod tests {
             connect(&mut mgr, &mut cap, conn, conn as u8, now);
         }
         cap.0.clear();
-        mgr.tick(aged, &mut |c| cap.0.push(c));
+        mgr.run_tick(aged, &mut |c| cap.0.push(c));
         assert!(goodbyes(&cap).is_empty(), "under cap, idle peers are kept");
     }
 
@@ -1376,7 +1395,9 @@ mod tests {
         }
         cap.0.clear();
 
-        mgr.tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| cap.0.push(event));
+        mgr.run_tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| {
+            cap.0.push(event)
+        });
 
         let goodbyes =
             cap.0
@@ -1408,10 +1429,13 @@ mod tests {
                 .unwrap()
                 .subscriptions
                 .insert(([0; 4], topic), Default::default());
+            mgr.subscribers.add(([0; 4], topic), conn);
         }
         cap.0.clear();
 
-        mgr.tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| cap.0.push(event));
+        mgr.run_tick(now + IDLE_PEER_MIN_AGE + Duration::from_secs(1), &mut |event| {
+            cap.0.push(event)
+        });
 
         let meshed = mgr.test_mesh(topic)[0];
         let goodbyes: Vec<_> =
@@ -1492,7 +1516,7 @@ mod tests {
         mgr.peers.get_mut(&3).unwrap().application_score = IDLE_PEER_MAX_SCORE + 0.001;
         cap.0.clear();
 
-        mgr.tick(aged, &mut |c| cap.0.push(c));
+        mgr.run_tick(aged, &mut |c| cap.0.push(c));
 
         let goodbyes: Vec<usize> = cap
             .0
@@ -1590,7 +1614,7 @@ mod tests {
             &mut |c| cap.0.push(c),
         );
         // Score is recomputed in tick — only then does the eviction fire.
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),
@@ -1616,7 +1640,7 @@ mod tests {
             now,
             &mut |c| cap.0.push(c),
         );
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         let s = mgr.score(1).expect("peer still alive after a single Low report");
         assert!(s < 0.0 && s > -80.0, "expected mild negative score in (-80, 0), got {s}");
@@ -1646,7 +1670,7 @@ mod tests {
                 &mut |c| cap.0.push(c),
             );
         }
-        mgr.tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
+        mgr.run_tick(now + Duration::from_millis(100), &mut |c| cap.0.push(c));
 
         assert!(
             cap.0.iter().any(|e| matches!(e, PeerControl::Ban { .. })),

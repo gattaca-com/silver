@@ -124,6 +124,16 @@ pub struct ScoreParams {
     pub banned_peer_ttl: Duration,
 }
 
+impl ScoreParams {
+    /// Hard cap on transport connections — inbound accepts are refused at
+    /// the QUIC layer beyond it. Sits above the peer manager's trim band
+    /// (`max_priority_peers` + 10%) so score-based trimming has room to
+    /// work inside it.
+    pub fn max_connections(&self) -> usize {
+        self.max_priority_peers * 12 / 10
+    }
+}
+
 impl Default for ScoreParams {
     fn default() -> Self {
         Self {

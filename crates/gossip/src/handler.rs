@@ -50,6 +50,11 @@ pub struct GossipHandler {
     extensions: ExtensionTracker,
     partial_columns: PartialColumnsMode,
 
+    /// Our `(topic, digest)` subscriptions, and the SUBSCRIBE frame announcing
+    /// them, encoded once per change rather than per connection.
+    subscriptions: Vec<(GossipTopic, [u8; 4])>,
+    subscriptions_frame: Vec<u8>,
+
     events: VecDeque<GossipHandlerEvent>,
 
     // Last: the mcache's acquired reads point into it.
@@ -73,6 +78,8 @@ impl GossipHandler {
             mcache,
             extensions: ExtensionTracker::default(),
             partial_columns: PartialColumnsMode::Off,
+            subscriptions: Vec::new(),
+            subscriptions_frame: Vec::new(),
             iwant_buffer: Vec::with_capacity(256),
             snap_encoder: snap::raw::Encoder::new(),
             snap_scratch: Vec::new(),
@@ -298,7 +305,30 @@ impl GossipHandler {
     }
 
     pub fn set_partial_columns_mode(&mut self, mode: PartialColumnsMode) {
-        self.partial_columns = mode;
+        if self.partial_columns != mode {
+            self.partial_columns = mode;
+            self.encode_subscriptions_frame();
+        }
+    }
+
+    pub fn set_subscriptions(
+        &mut self,
+        subscriptions: impl IntoIterator<Item = (GossipTopic, [u8; 4])>,
+    ) {
+        self.subscriptions.clear();
+        self.subscriptions.extend(subscriptions);
+        self.encode_subscriptions_frame();
+    }
+
+    fn encode_subscriptions_frame(&mut self) {
+        self.subscriptions_frame.clear();
+        for &(topic, digest) in &self.subscriptions {
+            let partial = (matches!(topic, GossipTopic::DataColumnSidecar(_)) &&
+                self.partial_columns.supports_sending())
+            .then_some(self.partial_columns);
+            let wire = topic.to_wire(&hex::encode(digest));
+            control::append_subscription(&mut self.subscriptions_frame, &wire, partial);
+        }
     }
 
     fn handle_peer_control_inner(
@@ -322,6 +352,25 @@ impl GossipHandler {
                         peer_id: p2p_connection,
                         tcache,
                     }));
+                }
+            }
+            PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection } => {
+                if self.subscriptions_frame.is_empty() {
+                    return;
+                }
+                match control::copy_encoded(&mut self.mcache_publish, &self.subscriptions_frame) {
+                    Ok(tcache) => {
+                        silver_log::debug!(
+                            p2p_connection,
+                            subscriptions = self.subscriptions.len(),
+                            "Emit gossip subscriptions"
+                        );
+                        emit(GossipHandlerEvent::SendGossip(GossipMsgOut {
+                            peer_id: p2p_connection,
+                            tcache,
+                        }));
+                    }
+                    Err(e) => silver_log::warn!(p2p_connection, ?e, "subscriptions frame not sent"),
                 }
             }
             PeerControl::P2pGossipUnsubscribe { p2p: _, p2p_connection, topic, digest } => {
@@ -665,6 +714,55 @@ mod tests {
             assert_eq!(published.topic, topic.to_wire("01010101"));
             assert_eq!(built.msg_id, msg_id_valid_snappy(&topic.to_wire("01010101"), &bytes));
         }
+    }
+
+    /// One frame per connection carries every subscription; the partial
+    /// options follow the mode, re-encoded when it changes.
+    #[test]
+    fn a_new_connection_gets_every_subscription_in_one_frame() {
+        let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
+        let mut output =
+            Box::new(TCacheReader::single(protobuf.cache_ref(), "", TReadMode::Sliding).unwrap());
+        let mut handler = GossipHandler::new(
+            TCacheTable::from_iter([incoming.cache_ref(), protobuf.cache_ref()]),
+            TCache::producer(TCacheId::ControlProcessing, 1 << 16),
+            protobuf,
+            None,
+        )
+        .unwrap();
+        handler.open_tcaches().unwrap();
+        let announce = PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection: 7 };
+        handler.handle_peer_control(announce);
+        assert!(handler.pop_event().is_none(), "nothing to announce");
+
+        let column = GossipTopic::DataColumnSidecar(3);
+        handler.set_subscriptions([
+            (GossipTopic::BeaconBlock, [0; 4]),
+            (column, [0; 4]),
+            (column, [1; 4]),
+        ]);
+        handler.set_partial_columns_mode(PartialColumnsMode::Enabled);
+        handler.handle_peer_control(announce);
+        let Some(GossipHandlerEvent::SendGossip(GossipMsgOut { peer_id: 7, tcache })) =
+            handler.pop_event()
+        else {
+            panic!("one frame to connection 7")
+        };
+        assert!(handler.pop_event().is_none());
+
+        let read = output.acquire(tcache);
+        let rpc = RPCView::decode_view(read.buffer().unwrap().0).unwrap();
+        let subscriptions: Vec<_> = rpc
+            .subscriptions
+            .iter()
+            .map(|sub| (sub.topic_id.unwrap_or_default().to_owned(), sub.requests_partial))
+            .collect();
+        assert_eq!(subscriptions, [
+            (GossipTopic::BeaconBlock.to_wire("00000000"), None),
+            (column.to_wire("00000000"), Some(true)),
+            (column.to_wire("01010101"), Some(true)),
+        ]);
     }
 
     /// Extensions are stream-scoped: only the first RPC counts, a
