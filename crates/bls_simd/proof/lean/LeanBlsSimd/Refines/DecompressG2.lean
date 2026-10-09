@@ -10,8 +10,8 @@ open silver_bls_simd
 The blst and batch types convert field by field. `fp_words` reads a slice, so its theorem assumes
 the slice holds `FP_BYTES` bytes.
 
-`decompress_refines` uses `decompress_eq`, which states the model's `decompress` through `xOf`,
-`rhsOf` and `tail`; generalising over their applications keeps the terms small. The model writes
+`decompress_refines` generalises over the model's `decode`, `xOf` and `(rhsOf X).sqrt`, which
+keeps the terms small. The model writes
 `points` in a fold over the batch, the generated loop over the points array alone. Both write
 every lane, so each ends in the `Vector.ofFn` of the lane's point.
 -/
@@ -348,8 +348,7 @@ theorem foldl_points (f : Fin 8 → BlstP2Affine) (ls : List (Fin 8)) (b : Batch
 theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     decompress_g2.decompress inputs =
       ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
-  unfold decompress_g2.decompress
-  rw [decompress_eq]
+  unfold decompress_g2.decompress decompress
   simp only [decode_refines, default_refines, bind_tc_ok, lift]
   generalize decode (ofArray (ofArray ofU8) inputs) = D
   rw [← toArray_replicate toBlstP2Affine default (show (8#usize).val = 8 from rfl)]
@@ -368,13 +367,12 @@ theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
   generalize (rhsOf X).sqrt = S
   obtain ⟨root, has⟩ := S
   simp only [toU8_and, toU8_inj]
-  unfold tail
   by_cases h1 : ~~~(D.invalid ||| D.undecided) = 0
   · simp only [h1, if_true, toBatch]
   simp only [h1, if_false]
   by_cases h2 : has &&& ~~~(D.invalid ||| D.undecided) = 0
   · simp only [h2, if_true, toBatch]
-  simp only [h2, if_false, tailFull, foldl_points, foldl_set_ofFn,
+  simp only [h2, if_false, tail, foldl_points, foldl_set_ofFn,
     Fp2x8.is_larger_root_mask_refines, Fp2x8.neg_refines, Fp2x8.select_refines,
     G2x8.scott_membership_refines, Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8,
     ofFp2x8_toFp2x8, bind_tc_ok, toU8_xor, ofU8_toU8, decompress_loop_refines, toMembership,

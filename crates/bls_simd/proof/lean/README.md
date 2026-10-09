@@ -57,7 +57,7 @@ Proof-writing pitfalls:
 - Never unfold the spec's `Fp2.sqrt` or `Fp.inverse`. Lean's kernel evaluates their large powers and stops with "deep recursion". Obtain `h : Fp2.sqrt a = .ok y` or `.error e` with `cases h : Fp2.sqrt a`, then use `Kernel.sqrt_agrees` or `Kernel.sqrt_fails`; rewrite `Fp2.inverse` with `Fp2.toField_inverse` before anything unfolds it.
 - `decide +kernel` exhausted memory when evaluating `decompress` directly; Mathlib's `dblXYZ` also proved impractical to evaluate through `MvPolynomial`. Go through `decompress_lane` and the lane functions, or `Kernel.dblXYZ_eq_dblFormula`.
 - `rfl`, `show` or `unfold` across a structure whose fields mention `Kernel.sqrt` can send the elaborator into the same powers. Separate definitions rewritten by their equations, such as `laneX` and `laneY`, avoid it.
-- `generalize` on a large `Fp2x8` term can time out on structure eta. `decompress_eq := rfl` restates `decompress` on small arguments that generalise cheaply; `decompress_refines` relies on it.
+- `generalize` on a large `Fp2x8` term can time out on structure eta. The model's `decompress` computes x and x³ + b′ in `xOf` and `rhsOf`, whose applications generalise cheaply; `decompress_lane` and `decompress_refines` rely on that.
 - `split` followed by `rfl` on `decide (val64 x < p)` hits deep recursion in Lean's kernel; `by_cases` with `if_pos` and `if_neg` does not.
 - `get_elem_tactic` can time out in large contexts; give index bounds explicitly.
 - `(x.c0 : ZMod p)` keeps the type `Fp`. State helpers over `ZMod` binders and apply them with `exact`.

@@ -313,13 +313,6 @@ theorem blstFp_eq {w : Vector UInt64 6} {a : ZMod Fp.modulus} (h : val64 w = (a 
 
 /-! ## The stages of `decompress` on one lane -/
 
-/-- The x that `decompress` computes from its decoded lanes. -/
-def xOf (D : Decoded) : Fp2x8 := ⟨Fp8.from_plain D.x0, Fp8.from_plain D.x1⟩
-
-/-- x³ + b′ as `decompress` computes it. -/
-def rhsOf (X : Fp2x8) : Fp2x8 :=
-  (X.square.mul X).add ⟨Fp8.splat_limbs (.ofList FOUR_MONT), Fp8.splat_limbs (.ofList FOUR_MONT)⟩
-
 theorem lane_x (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
     (xOf (decode inputs)).Holds l (laneX inputs[l]) := by
   have hd := decode_holds inputs l
@@ -354,45 +347,16 @@ theorem pointsLoop_points (f : Fin 8 → BlstP2Affine) (l : Fin 8) : ∀ (ls : L
       · have : (i : ℕ) ≠ l := fun h => hli (Fin.ext h).symm
         simp [hlr, hli, Vector.getElem_set_ne _ _ this]
 
-/-- `decompress` after its root, without the two early returns: the decoded lanes `D`, x `X` and
-the root `(root, has)` of x³ + b′ given. -/
-def tailFull (D : Decoded) (X root : Fp2x8) (has : Mmask8) : Batch :=
-  let batch : Batch := {
-    points := .replicate 8 default,
-    on_curve := 0,
-    valid := 0,
-    undecided := D.undecided }
-  let decodable := ~~~(D.invalid ||| D.undecided)
-  let batch := { batch with on_curve := has &&& decodable }
-  let flip := root.is_larger_root_mask ^^^ D.larger_root
-  let y := Fp2x8.select flip root root.neg
-  let membership := G2x8.scott_membership X y
-  let batch := { batch with undecided := batch.undecided ||| (membership.undecided &&& batch.on_curve) }
-  let batch := { batch with valid := membership.members &&& batch.on_curve &&& ~~~batch.undecided }
-  let (x0, x1) := (X.c0.to_blst_limbs, X.c1.to_blst_limbs)
-  let (y0, y1) := (y.c0.to_blst_limbs, y.c1.to_blst_limbs)
-  (List.finRange 8).foldl (init := batch) fun batch (lane : Fin 8) =>
-    { batch with points := batch.points.set lane {
-        x := { fp := #v[{ l := x0[lane] }, { l := x1[lane] }] },
-        y := { fp := #v[{ l := y0[lane] }, { l := y1[lane] }] } } }
-
-/-- `decompress` after its root, with its two early returns. -/
-def tail (D : Decoded) (X root : Fp2x8) (has : Mmask8) : Batch :=
-  let batch : Batch := {
-    points := .replicate 8 default,
-    on_curve := 0,
-    valid := 0,
-    undecided := D.undecided }
-  let decodable := ~~~(D.invalid ||| D.undecided)
-  if decodable = 0 then batch else
-  let batch := { batch with on_curve := has &&& decodable }
-  if batch.on_curve = 0 then batch else
-  tailFull D X root has
-
 /-- `decompress` without its two early returns. -/
 def decompressFull (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
-  tailFull (decode inputs) (xOf (decode inputs)) (rhsOf (xOf (decode inputs))).sqrt.1
-    (rhsOf (xOf (decode inputs))).sqrt.2
+  let decoded := decode inputs
+  let x := xOf decoded
+  let root := (rhsOf x).sqrt
+  tail decoded x root.1 {
+    points := .replicate 8 default,
+    on_curve := root.2 &&& ~~~(decoded.invalid ||| decoded.undecided),
+    valid := 0,
+    undecided := decoded.undecided }
 
 /-- The verdicts and points of one lane, as `Kernel`'s lane functions give them. -/
 structure LaneVerdicts (batch : Batch) (b : Vector UInt8 G2_COMPRESSED_LEN) (l : Fin 8) : Prop where
@@ -401,12 +365,13 @@ structure LaneVerdicts (batch : Batch) (b : Vector UInt8 G2_COMPRESSED_LEN) (l :
   valid : batch.valid.toNat.testBit l = laneValid b
   points : laneOnCurve b = true → batch.points[l] = blstPoint (laneX b) (laneY b)
 
-theorem tailFull_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
+theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
     {b : Vector UInt8 G2_COMPRESSED_LEN} {l : Fin 8} (hd : (decodeLane b).Holds D l)
     (hx : X.Holds l (laneX b)) (hroot : root.Holds l (sqrt (rhs (laneX b))).1)
     (hhas : has.toNat.testBit l = (sqrt (rhs (laneX b))).2) :
-    LaneVerdicts (tailFull D X root has) b l := by
-  unfold tailFull
+    LaneVerdicts (tail D X root ⟨.replicate 8 default, has &&& ~~~(D.invalid ||| D.undecided), 0,
+      D.undecided⟩) b l := by
+  unfold tail
   dsimp only
   have hy := (hroot.select (root.is_larger_root_mask ^^^ D.larger_root) hroot.neg).of_eq
     (w := laneY b) (by
@@ -446,52 +411,47 @@ theorem tailFull_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
     rw [← blstFp_eq hx.re.val64_to_blst_limbs, ← blstFp_eq hx.im.val64_to_blst_limbs,
       ← blstFp_eq hy.re.val64_to_blst_limbs, ← blstFp_eq hy.im.val64_to_blst_limbs]
 
-theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
-    {b : Vector UInt8 G2_COMPRESSED_LEN} {l : Fin 8} (hd : (decodeLane b).Holds D l)
-    (hx : X.Holds l (laneX b)) (hroot : root.Holds l (sqrt (rhs (laneX b))).1)
-    (hhas : has.toNat.testBit l = (sqrt (rhs (laneX b))).2) :
-    LaneVerdicts (tail D X root has) b l := by
+/-- Each lane of `decompress` gives the verdicts and the point of `Kernel`'s
+lane functions on that lane's bytes. -/
+theorem decompress_lane (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
+    LaneVerdicts (decompress inputs) inputs[l] l := by
+  have hd := decode_holds inputs l
+  have hx := lane_x inputs l
+  obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
+  unfold decompress
+  dsimp only
+  generalize decode inputs = D at hd hx hroot hhas ⊢
+  generalize xOf D = X at hx hroot hhas ⊢
+  generalize (rhsOf X).sqrt = S at hroot hhas ⊢
+  obtain ⟨root, has⟩ := S
   have hdec : (~~~(D.invalid ||| D.undecided)).toNat.testBit l =
-      !((decodeLane b).invalid || (decodeLane b).undecided) := by
+      !((decodeLane inputs[l]).invalid || (decodeLane inputs[l]).undecided) := by
     rw [Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided]
-  have honc : (has &&& ~~~(D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve b := by
+  have honc : (has &&& ~~~(D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve inputs[l] := by
     rw [Mmask8.testBit_and, hhas, hdec, laneOnCurve]
-  unfold tail
   dsimp only
   split_ifs with h1 h2
-  · have hon : laneOnCurve b = false := by
+  · have hon : laneOnCurve inputs[l] = false := by
       rw [laneOnCurve, ← hdec, Mmask8.testBit_of_eq_zero h1, Bool.and_false]
     refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
     · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
     · rw [hon, Mmask8.testBit_zero]
     · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-  · have hon : laneOnCurve b = false := by
+  · have hon : laneOnCurve inputs[l] = false := by
       rw [← honc, Mmask8.testBit_of_eq_zero h2]
     refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
     · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
     · exact honc
     · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-  · exact tailFull_lane hd hx hroot hhas
-
-theorem decompress_eq (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) :
-    decompress inputs = tail (decode inputs) (xOf (decode inputs)) (rhsOf (xOf (decode inputs))).sqrt.1
-      (rhsOf (xOf (decode inputs))).sqrt.2 := rfl
-
-/-- Each lane of `decompress` gives the verdicts and the point of `Kernel`'s
-lane functions on that lane's bytes. -/
-theorem decompress_lane (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
-    LaneVerdicts (decompress inputs) inputs[l] l := by
-  have hx := lane_x inputs l
-  obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
-  rw [decompress_eq]
-  exact tail_lane (decode_holds inputs l) hx hroot hhas
+  · exact tail_lane hd hx hroot hhas
 
 /-- The same for `decompress` without its early returns. -/
 theorem decompressFull_lane (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
     LaneVerdicts (decompressFull inputs) inputs[l] l := by
   have hx := lane_x inputs l
   obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
-  exact tailFull_lane (decode_holds inputs l) hx hroot hhas
+  unfold decompressFull
+  exact tail_lane (decode_holds inputs l) hx hroot hhas
 
 /-! ## The per-lane theorems -/
 

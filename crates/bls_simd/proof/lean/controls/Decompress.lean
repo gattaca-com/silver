@@ -101,49 +101,58 @@ example : val (.ofList PSI_Y_MONT[1]!) ≠ psiY.1 * R % Fp.modulus := by decide 
 `decompress` marks a lane decodable when it is neither invalid nor undecided. Without the `~~~`,
 an invalid lane is decodable, and the proof that `on_curve` is `laneOnCurve` fails. -/
 
-def tailWith (decodableOf : Mmask8 → Mmask8 → Mmask8) (D : Decoded) (X root : Fp2x8)
-    (has : Mmask8) : Batch :=
+/-- `decompress` with its `decodable` and the mask its first early return tests as parameters. -/
+def decompressWith (decodableOf : Mmask8 → Mmask8 → Mmask8) (tested : Mmask8 → Mmask8)
+    (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
+  let decoded := DecompressG2.decode inputs
   let batch : Batch := {
     points := .replicate 8 default,
     on_curve := 0,
     valid := 0,
-    undecided := D.undecided }
-  let decodable := decodableOf D.invalid D.undecided
-  if decodable = 0 then batch else
-  let batch := { batch with on_curve := has &&& decodable }
+    undecided := decoded.undecided }
+  let decodable := decodableOf decoded.invalid decoded.undecided
+  if tested decodable = 0 then batch else
+  let x := xOf decoded
+  let (root, has_root) := (rhsOf x).sqrt
+  let batch := { batch with on_curve := has_root &&& decodable }
   if batch.on_curve = 0 then batch else
-  tailFull D X root has
+  tail decoded x root batch
 
-example : tailWith (fun i u => ~~~(i ||| u)) = tail := rfl
+example : decompressWith (fun i u => ~~~(i ||| u)) (fun d => d) = decompress := rfl
 
 example : True := by
   fail_if_success
-    have : ∀ {D : Decoded} {X root : Fp2x8} {has : Mmask8} {b : Vector UInt8 G2_COMPRESSED_LEN}
-        {l : Fin 8}, (decodeLane b).Holds D l → X.Holds l (laneX b) →
-        root.Holds l (sqrt (rhs (laneX b))).1 → has.toNat.testBit l = (sqrt (rhs (laneX b))).2 →
-        LaneVerdicts (tailWith (fun i u => i ||| u) D X root has) b l := by
-      intro D X root has b l hd hx hroot hhas
-      have hdec : (D.invalid ||| D.undecided).toNat.testBit l =
-          !((decodeLane b).invalid || (decodeLane b).undecided) := by
-        simp only [Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided]
-      have honc : (has &&& (D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve b := by
-        rw [Mmask8.testBit_and, hhas, hdec, laneOnCurve]
-      unfold tailWith
+    have : ∀ (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8),
+        LaneVerdicts (decompressWith (fun i u => i ||| u) (fun d => d) inputs) inputs[l] l := by
+      intro inputs l
+      have hd := decode_holds inputs l
+      have hx := lane_x inputs l
+      obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
+      unfold decompressWith
       dsimp only
+      generalize DecompressG2.decode inputs = D at hd hx hroot hhas ⊢
+      generalize xOf D = X at hx hroot hhas ⊢
+      generalize (rhsOf X).sqrt = S at hroot hhas ⊢
+      obtain ⟨root, has⟩ := S
+      have hdec : (D.invalid ||| D.undecided).toNat.testBit l =
+          !((decodeLane inputs[l]).invalid || (decodeLane inputs[l]).undecided) := by
+        simp only [Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided]
+      have honc : (has &&& (D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve inputs[l] := by
+        rw [Mmask8.testBit_and, hhas, hdec, laneOnCurve]
       split_ifs with h1 h2
-      · have hon : laneOnCurve b = false := by
+      · have hon : laneOnCurve inputs[l] = false := by
           rw [laneOnCurve, ← hdec, Mmask8.testBit_of_eq_zero h1, Bool.and_false]
         refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
         · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
         · rw [hon, Mmask8.testBit_zero]
         · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-      · have hon : laneOnCurve b = false := by
+      · have hon : laneOnCurve inputs[l] = false := by
           rw [← honc, Mmask8.testBit_of_eq_zero h2]
         refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
         · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
         · exact honc
         · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-      · exact tailFull_lane hd hx hroot hhas
+      · exact tail_lane hd hx hroot hhas
   trivial
 
 /-- An invalid lane 0 is not decodable with the negation, and is decodable without it. -/
@@ -156,46 +165,40 @@ example : (~~~((1 : Mmask8) ||| 0)).toNat.testBit 0 = false ∧
 returns early when lane 7 alone is decodable, and drops that lane's verdicts. The proof that the
 early return keeps every lane's verdict fails. -/
 
-def tailDrop (D : Decoded) (X root : Fp2x8) (has : Mmask8) : Batch :=
-  let batch : Batch := {
-    points := .replicate 8 default,
-    on_curve := 0,
-    valid := 0,
-    undecided := D.undecided }
-  let decodable := ~~~(D.invalid ||| D.undecided)
-  if decodable &&& 0x7f = 0 then batch else
-  let batch := { batch with on_curve := has &&& decodable }
-  if batch.on_curve = 0 then batch else
-  tailFull D X root has
-
 example : True := by
   fail_if_success
-    have : ∀ {D : Decoded} {X root : Fp2x8} {has : Mmask8} {b : Vector UInt8 G2_COMPRESSED_LEN}
-        {l : Fin 8}, (decodeLane b).Holds D l → X.Holds l (laneX b) →
-        root.Holds l (sqrt (rhs (laneX b))).1 → has.toNat.testBit l = (sqrt (rhs (laneX b))).2 →
-        LaneVerdicts (tailDrop D X root has) b l := by
-      intro D X root has b l hd hx hroot hhas
-      have hdec : (~~~(D.invalid ||| D.undecided)).toNat.testBit l =
-          !((decodeLane b).invalid || (decodeLane b).undecided) := by
-        rw [Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided]
-      have honc : (has &&& ~~~(D.invalid ||| D.undecided)).toNat.testBit l = laneOnCurve b := by
-        rw [Mmask8.testBit_and, hhas, hdec, laneOnCurve]
-      unfold tailDrop
+    have : ∀ (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8),
+        LaneVerdicts (decompressWith (fun i u => ~~~(i ||| u)) (· &&& 0x7f) inputs) inputs[l] l := by
+      intro inputs l
+      have hd := decode_holds inputs l
+      have hx := lane_x inputs l
+      obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
+      unfold decompressWith
       dsimp only
+      generalize DecompressG2.decode inputs = D at hd hx hroot hhas ⊢
+      generalize xOf D = X at hx hroot hhas ⊢
+      generalize (rhsOf X).sqrt = S at hroot hhas ⊢
+      obtain ⟨root, has⟩ := S
+      have hdec : (~~~(D.invalid ||| D.undecided)).toNat.testBit l =
+          !((decodeLane inputs[l]).invalid || (decodeLane inputs[l]).undecided) := by
+        rw [Mmask8.testBit_not, Mmask8.testBit_or, hd.invalid, hd.undecided]
+      have honc : (has &&& ~~~(D.invalid ||| D.undecided)).toNat.testBit l =
+          laneOnCurve inputs[l] := by
+        rw [Mmask8.testBit_and, hhas, hdec, laneOnCurve]
       split_ifs with h1 h2
-      · have hon : laneOnCurve b = false := by
+      · have hon : laneOnCurve inputs[l] = false := by
           rw [laneOnCurve, ← hdec, Mmask8.testBit_of_eq_zero h1, Bool.and_false]
         refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
         · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
         · rw [hon, Mmask8.testBit_zero]
         · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-      · have hon : laneOnCurve b = false := by
+      · have hon : laneOnCurve inputs[l] = false := by
           rw [← honc, Mmask8.testBit_of_eq_zero h2]
         refine ⟨?_, ?_, ?_, fun h => absurd h (by rw [hon]; decide)⟩
         · rw [laneUndecided, hon, Bool.and_false, Bool.or_false, hd.undecided]
         · exact honc
         · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
-      · exact tailFull_lane hd hx hroot hhas
+      · exact tail_lane hd hx hroot hhas
   trivial
 
 /-- Lane 7 alone decodable: the mutant's test sees no decodable lane. -/

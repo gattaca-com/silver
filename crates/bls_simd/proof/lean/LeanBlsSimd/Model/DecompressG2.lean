@@ -11,6 +11,8 @@ Rust's control flow maps as follows:
 - The `for` loop of `decode` is a fold of `decodeStep` over the lanes; each `continue` ends that
   lane's step.
 - The two early `return`s of `decompress` are `if … then batch else …`.
+- `decompress` builds x in `xOf` and x³ + b′ in `rhsOf`, and leaves everything after its second
+  early return to `tail`, so that proofs can treat each result as a variable.
 - `less_than_p` returns from inside its loop. Its fold carries `none` until a word differs, then
   the answer, which later words keep.
 - `split_at`, `copy_from_slice` and `u64::from_be_bytes` are modelled by `split_at`, the index
@@ -121,23 +123,16 @@ def decodeStep (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded
 def decode (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Decoded :=
   (List.finRange 8).foldl (decodeStep inputs) decodeInit
 
-def decompress (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
-  let decoded := decode inputs
-  let batch : Batch := {
-    points := .replicate 8 default,
-    on_curve := 0,
-    valid := 0,
-    undecided := decoded.undecided }
-  let decodable := ~~~(decoded.invalid ||| decoded.undecided)
-  if decodable = 0 then batch else
+def xOf (decoded : Decoded) : Fp2x8 :=
+  { c0 := Fp8.from_plain decoded.x0, c1 := Fp8.from_plain decoded.x1 }
 
-  let x : Fp2x8 := { c0 := Fp8.from_plain decoded.x0, c1 := Fp8.from_plain decoded.x1 }
+/-- x³ + b′. -/
+def rhsOf (x : Fp2x8) : Fp2x8 :=
   let four := Fp8.splat_limbs (.ofList FOUR_MONT)
-  let rhs := (x.square.mul x).add { c0 := four, c1 := four }
-  let (root, has_root) := rhs.sqrt
-  let batch := { batch with on_curve := has_root &&& decodable }
-  if batch.on_curve = 0 then batch else
+  (x.square.mul x).add { c0 := four, c1 := four }
 
+/-- `decompress` after its second early return. -/
+def tail (decoded : Decoded) (x root : Fp2x8) (batch : Batch) : Batch :=
   let flip := root.is_larger_root_mask ^^^ decoded.larger_root
   let y := Fp2x8.select flip root root.neg
   let membership := G2x8.scott_membership x y
@@ -150,6 +145,23 @@ def decompress (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
     { batch with points := batch.points.set lane {
         x := { fp := #v[{ l := x0[lane] }, { l := x1[lane] }] },
         y := { fp := #v[{ l := y0[lane] }, { l := y1[lane] }] } } }
+
+def decompress (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
+  let decoded := decode inputs
+  let batch : Batch := {
+    points := .replicate 8 default,
+    on_curve := 0,
+    valid := 0,
+    undecided := decoded.undecided }
+  let decodable := ~~~(decoded.invalid ||| decoded.undecided)
+  if decodable = 0 then batch else
+
+  let x := xOf decoded
+  let (root, has_root) := (rhsOf x).sqrt
+  let batch := { batch with on_curve := has_root &&& decodable }
+  if batch.on_curve = 0 then batch else
+
+  tail decoded x root batch
 
 end DecompressG2
 
