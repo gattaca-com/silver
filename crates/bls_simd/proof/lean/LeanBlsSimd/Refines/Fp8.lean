@@ -554,7 +554,8 @@ theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
     repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   simp (disch := decide) only [index_usize_eq rhs, Lane.muladd_row_refines,
     Lane.reduce_row_refines, bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
-  simp (disch := decide) only [index_usize_toArray, bind_tc_ok, update_eq, set_toArray, sub_ok]
+  simp (disch := decide) only [index_usize_toArray, bind_tc_ok, update_eq, set_toArray, sub_ok,
+    show (8#usize).val = LIMBS from rfl]
   rw [Fp8.mul_loop_refines _ _ _ _ rfl]
   simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8, bind_tc_ok,
     ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
@@ -562,10 +563,7 @@ theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
   simp only [Lane.mul, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero, laneOf_replicate,
     Fin.getElem_fin, Simd.getElem_zero, Simd.getElem_splat, getElem_laneOf, getElem_ofArray, id_eq,
     UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes, Simd.laneOf_splat_limbs,
-    ofArray_toArray_ofU64]
-  -- What remains differs only in the row indices, `⟨k, _⟩` against the model's literal `k`, and
-  -- in `t[8]` against `t[LIMBS]`.
-  rfl
+    ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]
 
 theorem Fp8.square_refines (self : fp8.Fp8) :
     fp8.Fp8.square self = ok (toFp8 (ofFp8 self).square) := by

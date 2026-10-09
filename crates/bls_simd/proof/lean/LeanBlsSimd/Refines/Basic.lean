@@ -293,6 +293,16 @@ theorem update_ofNat {α : Type} {n : Usize} (a : Array α n) (k : ℕ) (x : α)
       ok (a.set ⟨BitVec.ofNat System.Platform.numBits k⟩ x) :=
   update_eq a _ x (by rw [usize_ofNat_val k hk32]; exact hk)
 
+theorem fin_mk_zero {n : ℕ} [NeZero n] (h : 0 < n) : (⟨0, h⟩ : Fin n) = 0 := by
+  ext; simp
+
+theorem fin_mk_one {n : ℕ} [NeZero n] (h : 1 < n) : (⟨1, h⟩ : Fin n) = 1 := by
+  ext; exact (Nat.mod_eq_of_lt h).symm
+
+theorem fin_mk_ofNat {n : ℕ} [NeZero n] (k : ℕ) [k.AtLeastTwo] (h : OfNat.ofNat k < n) :
+    (⟨no_index (OfNat.ofNat k), h⟩ : Fin n) = OfNat.ofNat k := by
+  ext; exact (Nat.mod_eq_of_lt h).symm
+
 theorem usize_lt_8 (x : Usize) (h : x.val < 8) :
     x = 0#usize ∨ x = 1#usize ∨ x = 2#usize ∨ x = 3#usize ∨ x = 4#usize ∨ x = 5#usize ∨
       x = 6#usize ∨ x = 7#usize := by
