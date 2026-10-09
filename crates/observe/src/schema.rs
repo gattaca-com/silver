@@ -7,10 +7,9 @@ pub fn sort_key(file_name: &str) -> (u8, &str) {
     (rank, file_name)
 }
 
-/// Groups whose zero-valued slots are hidden in the counters pane —
-/// dense pre-allocated layouts where only touched slots are interesting.
-pub fn hide_zero(file_name: &str) -> bool {
-    file_name == "gossip_topics"
+/// Log counts and per-topic gossip counters have their own panes.
+pub fn in_counters_pane(file_name: &str) -> bool {
+    !matches!(file_name, "log" | "gossip_topics")
 }
 
 /// `lookup` with a positional fallback. Returns `(names, registered)`

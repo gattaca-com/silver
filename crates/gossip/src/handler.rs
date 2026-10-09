@@ -3,11 +3,7 @@ use std::{collections::VecDeque, io::Write, str, time::Instant};
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
-    LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent,
-    SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer,
-    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
-    cell_store::PartialColumnsMode, msg_id_valid_snappy,
+    cell_store::PartialColumnsMode, metrics::timed, msg_id_valid_snappy, Error, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic, MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent, SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, GOSSIP_TOPIC_COUNTER_SLOTS, LOCAL_GOSSIP_STREAM_ID
 };
 
 use crate::{
@@ -442,6 +438,7 @@ impl GossipHandler {
         did_work
     }
 
+    #[timed]
     fn spin_inner<I: ColumnIngress>(
         &mut self,
         adapter: &mut SpineAdapter<SilverSpine>,

@@ -307,6 +307,7 @@ impl PeerManager {
     }
 
     /// Raw per-topic gossipsub counters for every meshed (peer, topic) pair.
+    #[timed]
     pub fn peer_topic_scores(&self, now: Instant, emit: &mut impl FnMut(PeerTopicScores)) {
         for (topic, meshes) in &self.mesh {
             for conn in meshes.iter().flat_map(|m| &m.peers) {

@@ -5,7 +5,7 @@
 
 use std::{collections::VecDeque, io};
 
-use silver_observe::{CounterFile, CounterMap, hide_zero, names_for};
+use silver_observe::{CounterFile, CounterMap, in_counters_pane, names_for};
 
 /// Bucket-roll cadence, in seconds. 1 s gives sub-slot resolution on
 /// counter rates; trade-off is shorter retention at fixed depth.
@@ -22,9 +22,7 @@ pub struct CounterSet {
     /// are positional fallbacks because no schema was wired up
     /// (`false`).
     pub schema_registered: bool,
-    /// Zero-valued slots are hidden (dense pre-allocated layouts where
-    /// only touched slots carry signal).
-    hide_zero: bool,
+    pub in_counters_pane: bool,
     pub map: CounterMap,
     /// Last sampled values, one per slot.
     pub current: Vec<u64>,
@@ -54,13 +52,12 @@ impl CounterSet {
         let map = CounterMap::open(file)?;
         let slot_count = map.slot_count();
         let (slot_names, schema_registered) = names_for(&file.name, slot_count);
-        let hide_zero = hide_zero(&file.name);
 
         Ok(Self {
             name: file.name.clone(),
             slot_names,
             schema_registered,
-            hide_zero,
+            in_counters_pane: in_counters_pane(&file.name),
             map,
             current: vec![0; slot_count],
             max_length: 0,
@@ -134,17 +131,6 @@ impl CounterSet {
 
     /// Traffic counters are monotonic so rows appear and stay; gauge
     /// slots (mesh size) can drop back to zero and re-hide.
-    pub fn slot_visible(&self, i: usize) -> bool {
-        !self.hide_zero || self.current.get(i).copied().unwrap_or(0) != 0
-    }
-
-    pub fn visible_slots(&self) -> usize {
-        if !self.hide_zero {
-            return self.current.len();
-        }
-        self.current.iter().filter(|&&v| v != 0).count()
-    }
-
     /// Close the current bucket: for each slot, compute
     /// `current - bucket_start` and push to the per-slot history ring
     /// (drop oldest when full). Then snapshot `current` into

@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     DataColumnsEvent, ForkName, GossipTopic, P2pSend, PeerEvent, SyncNeed, TProducer,
@@ -342,6 +343,7 @@ impl PartialExchange {
         }
     }
 
+    #[timed]
     pub fn spin(
         &mut self,
         ingress: &CellIngress,

@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux_profiler::timed;
 use silver_common::{
     AgentString, Enr, ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId,
     RpcOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
@@ -316,6 +317,7 @@ impl PeerManager {
         self.handle_event_with_partial(event, now, false, emit);
     }
 
+    #[timed]
     pub fn handle_event_with_partial(
         &mut self,
         event: PeerEvent,

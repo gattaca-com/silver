@@ -56,7 +56,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     let (sel_set, sel_slot) = app.counters_selection;
     let mut rows: Vec<Row> = Vec::new();
 
-    for (set_idx, set) in app.counters.iter().enumerate() {
+    for (set_idx, set) in app.counters.iter().enumerate().filter(|(_, set)| set.in_counters_pane) {
         let mut header_spans = vec![Span::styled(
             format!("[{}]", set.name),
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -78,9 +78,6 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
 
         for (slot_idx, slot_name) in set.slot_names.iter().enumerate() {
             let selected = set_idx == sel_set && slot_idx == sel_slot;
-            if !set.slot_visible(slot_idx) && !selected {
-                continue;
-            }
             let cur = *set.current.get(slot_idx).unwrap_or(&0);
             let prev = *set.previous.get(slot_idx).unwrap_or(&0);
             let tick_delta = cur as i64 - prev as i64;
@@ -117,8 +114,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &mut App) {
     // Group-header rows aren't selectable, so scrolling up stops one short
     // of them: when the selection is its group's first row, pull the offset
     // back to keep the `[source]` header in view.
-    let first_of_group =
-        app.counters.get(sel_set).is_some_and(|set| (0..sel_slot).all(|s| !set.slot_visible(s)));
+    let first_of_group = sel_slot == 0;
     if first_of_group && flat_idx > 0 && app.counters_table_state.offset() >= flat_idx {
         *app.counters_table_state.offset_mut() = flat_idx - 1;
     }

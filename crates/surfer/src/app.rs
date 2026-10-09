@@ -179,12 +179,11 @@ impl App {
     pub fn counters_flat_idx(&self) -> usize {
         let (sel_set, sel_slot) = self.counters_selection;
         let mut idx = 0;
-        for (i, set) in self.counters.iter().enumerate() {
+        for (i, set) in self.counters.iter().enumerate().filter(|(_, set)| set.in_counters_pane) {
             if i == sel_set {
-                let visible_before = (0..sel_slot).filter(|&s| set.slot_visible(s)).count();
-                return idx + 1 + visible_before;
+                return idx + 1 + sel_slot;
             }
-            idx += 1 + set.visible_slots();
+            idx += 1 + set.slot_count();
         }
         idx
     }
@@ -221,6 +220,9 @@ impl App {
             if let Some(idx) = self.counters.iter().position(|c| c.name == n) {
                 self.counters_selection.0 = idx;
             }
+        }
+        if self.counters.get(self.counters_selection.0).is_some_and(|c| !c.in_counters_pane) {
+            self.move_counter_selection(1);
         }
 
         // TCaches.
@@ -409,9 +411,8 @@ impl App {
         self.counters
             .iter()
             .enumerate()
-            .flat_map(|(set_idx, set)| {
-                (0..set.slot_count()).filter(|&s| set.slot_visible(s)).map(move |s| (set_idx, s))
-            })
+            .filter(|(_, set)| set.in_counters_pane)
+            .flat_map(|(set_idx, set)| (0..set.slot_count()).map(move |s| (set_idx, s)))
             .collect()
     }
 
@@ -475,8 +476,8 @@ impl App {
         let (mut set, mut slot) = self.counters_selection;
         let n_sets = self.counters.len();
         let total: usize = self.counters.iter().map(|s| s.slot_count()).sum();
-        // Step one slot at a time (wrapping across sets), skipping hidden
-        // zero-valued slots; bounded by the total slot count.
+        // Step one slot at a time (wrapping across sets), skipping sets the
+        // pane hides; bounded by the total slot count.
         for _ in 0..total {
             if dir > 0 {
                 slot += 1;
@@ -490,7 +491,7 @@ impl App {
             } else {
                 slot -= 1;
             }
-            if self.counters[set].slot_visible(slot) {
+            if self.counters[set].in_counters_pane && slot < self.counters[set].slot_count() {
                 self.counters_selection = (set, slot);
                 return;
             }

@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 buffa.workspace = true
 flux.workspace = true
+flux-profiler.workspace = true
 fxhash.workspace = true
 hex.workspace = true
 silver_common.workspace = true
