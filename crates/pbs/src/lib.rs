@@ -8,9 +8,12 @@ use silver_httpcore::{
     BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
 };
 
-use crate::{header_fetch::HeaderFetch, registrations::Registrations};
+use crate::{
+    block_submission::BlockSubmission, header_fetch::HeaderFetch, registrations::Registrations,
+};
 
 mod bid;
+mod block_submission;
 mod header_fetch;
 mod registrations;
 
@@ -48,6 +51,7 @@ pub struct PbsClient {
     bodies: Vec<u8>,
     registrations: Registrations,
     header_fetch: HeaderFetch,
+    block_submission: BlockSubmission,
 }
 
 struct Request {
@@ -57,12 +61,13 @@ struct Request {
 }
 
 impl PbsClient {
-    pub const MAX_SOCKETS: usize = 2;
+    pub const MAX_SOCKETS: usize = 3;
 
     pub fn new(
         registry: &Registry,
         tokens: TokenRange,
         header_tokens: TokenRange,
+        submission_tokens: TokenRange,
         config: &PbsConfig,
         spec: &SpecConfig,
         genesis_time: u64,
@@ -85,6 +90,7 @@ impl PbsClient {
             bodies: Vec::new(),
             registrations: Registrations::default(),
             header_fetch: HeaderFetch::new(header_tokens, config, spec, genesis_time),
+            block_submission: BlockSubmission::new(submission_tokens, config),
         }
     }
 
@@ -92,6 +98,9 @@ impl PbsClient {
     /// else after the requests ahead of it. `spin` reports the answer under
     /// `id`.
     pub fn send(&mut self, id: u64, path: &'static str, body: &[u8]) {
+        if path == SUBMIT_BLINDED_BLOCK {
+            return self.block_submission.send(id, body, &self.registry);
+        }
         let start = self.bodies.len();
         self.bodies.extend_from_slice(body);
         self.requests.push_back(Request { id, path, body: start..self.bodies.len() });
@@ -116,24 +125,17 @@ impl PbsClient {
             })
         });
 
+        self.block_submission.spin(events, &self.registry, &mut |id, response| {
+            sidecar_accepted(SUBMIT_BLINDED_BLOCK, &response);
+            on_event(SidecarEvent::Response { request_id: id, response });
+        });
+
         let Self { pool, registry, requests, bodies, registrations, .. } = self;
         pool.dispatch_events(events, registry, &mut |id, response| {
             let request = requests.pop_front().expect("an answer follows a sent request");
             debug_assert_eq!(request.id, id);
-            match &response {
-                Ok(response) if is_success(response.status) => {
-                    if request.path == REGISTER_VALIDATORS {
-                        registrations.store(&bodies[request.body]);
-                    }
-                }
-                Ok(response) => silver_log::warn!(
-                    path = request.path,
-                    status = response.status,
-                    "sidecar refused request"
-                ),
-                Err(error) => {
-                    silver_log::warn!(path = request.path, error, "request did not reach sidecar")
-                }
+            if sidecar_accepted(request.path, &response) && request.path == REGISTER_VALIDATORS {
+                registrations.store(&bodies[request.body]);
             }
             on_event(SidecarEvent::Response { request_id: id, response });
         });
@@ -153,19 +155,26 @@ impl PbsClient {
     }
 }
 
+/// Logs a refusal.
+fn sidecar_accepted(path: &str, response: &Result<ClientResponse<'_>, &str>) -> bool {
+    match response {
+        Ok(response) if is_success(response.status) => return true,
+        Ok(response) => {
+            silver_log::warn!(path, status = response.status, "sidecar refused request")
+        }
+        Err(error) => silver_log::warn!(path, error, "request did not reach sidecar"),
+    }
+    false
+}
+
 fn post<'a>(path: &'a str, body: &'a [u8]) -> ClientRequest<'a> {
-    let (content_type, headers): (_, &[_]) = if path == SUBMIT_BLINDED_BLOCK {
-        ("application/octet-stream", &[("Eth-Consensus-Version", "fulu")])
-    } else {
-        ("application/json", &[])
-    };
     ClientRequest {
         method: Method::Post,
         path,
         body,
         authorization: None,
         accept: None,
-        content_type: Some(content_type),
-        headers,
+        content_type: Some("application/json"),
+        headers: &[],
     }
 }

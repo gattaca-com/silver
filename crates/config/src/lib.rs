@@ -482,11 +482,13 @@ mod tests {
     fn pbs_table_and_flag_set_the_endpoint() {
         assert!(Config::from_toml("", Overrides::default()).unwrap().pbs().is_none());
 
-        let toml = "[pbs]\nendpoint = \"http://cb:18550\"\nget_header_timeout_ms = 900\n";
+        let toml = "[pbs]\nendpoint = \"http://cb:18550\"\nget_header_timeout_ms = 900\n\
+                    submit_blinded_block_timeout_ms = 4500\n";
         let cfg = Config::from_toml(toml, Overrides::default()).unwrap();
         let pbs = cfg.pbs().unwrap();
         assert_eq!(pbs.endpoint, "http://cb:18550");
         assert_eq!(pbs.get_header_timeout(), Duration::from_millis(900));
+        assert_eq!(pbs.submit_blinded_block_timeout(), Duration::from_millis(4500));
 
         let flag = Overrides { pbs_endpoint: Some("http://flag:1".into()), ..Overrides::default() };
         let cfg = Config::from_toml(toml, flag).unwrap();
@@ -496,6 +498,7 @@ mod tests {
         let flag = Overrides { pbs_endpoint: Some("http://flag:1".into()), ..Overrides::default() };
         let cfg = Config::from_toml("", flag).unwrap();
         assert_eq!(cfg.pbs().unwrap().get_header_timeout(), Duration::from_millis(1200));
+        assert_eq!(cfg.pbs().unwrap().submit_blinded_block_timeout(), Duration::from_millis(5000));
     }
 
     #[test]

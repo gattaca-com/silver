@@ -18,11 +18,12 @@ use silver_pbs::{PbsClient, SidecarEvent};
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
-const TENANTS: usize = 4;
+const TENANTS: usize = 5;
 const BEACON_TOKENS: TokenRange = TokenRange::share(0, TENANTS);
 const ENGINE_TOKENS: TokenRange = TokenRange::share(1, TENANTS);
 const PBS_TOKENS: TokenRange = TokenRange::share(2, TENANTS);
 const PBS_HEADER_TOKENS: TokenRange = TokenRange::share(3, TENANTS);
+const PBS_SUBMISSION_TOKENS: TokenRange = TokenRange::share(4, TENANTS);
 
 pub struct ApplicationBoundaryTile {
     readiness: Readiness,
@@ -122,6 +123,7 @@ impl ApplicationBoundaryTile {
                 readiness.registry(),
                 PBS_TOKENS,
                 PBS_HEADER_TOKENS,
+                PBS_SUBMISSION_TOKENS,
                 pbs,
                 spec,
                 state.read(|view| view.imm.genesis_time).expect("the anchor state is published"),
