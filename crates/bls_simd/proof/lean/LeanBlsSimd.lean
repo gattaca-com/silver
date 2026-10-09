@@ -29,4 +29,5 @@ import LeanBlsSimd.Extracted.Funs
 import LeanBlsSimd.Refines.Basic
 import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Refines.Constants
+import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Axioms
