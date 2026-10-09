@@ -33,4 +33,5 @@ import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Refines.Fp2x8
 import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Refines.DecompressG2
+import LeanBlsSimd.Refines.Kernel
 import LeanBlsSimd.Axioms
