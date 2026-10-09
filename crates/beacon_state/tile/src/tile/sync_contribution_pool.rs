@@ -101,7 +101,7 @@ impl SyncContributionPool {
         signature: &[u8; 96],
     ) -> InsertOutcome {
         if subcommittee_index >= SYNC_COMMITTEE_SUBNETS as u64 {
-            return InsertOutcome::Inconsistent;
+            return InsertOutcome::Invalid;
         }
         if slot < self.floor {
             return InsertOutcome::Stale;
