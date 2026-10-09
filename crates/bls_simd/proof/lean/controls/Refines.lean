@@ -114,6 +114,145 @@ example : True := by
       decode_loop_proof
   trivial
 
+/-! ## `fp_words`: the order of the words
+
+The coordinate is big-endian, so word 0 holds its last eight bytes. A generated `fp_words` that
+writes word `w` at `5 - w` must not refine the model's. The mutant takes the index of the write
+as a parameter. A separate proof shows that the mutant writes each word at `5 - w`. On
+`byteIndices` words 0 and 5 differ, so the mutated claim is false, not only unproved. -/
+
+def fpWordsBodyWith (word : Usize → Result Usize) (be : Slice U8)
+    (iter : core.ops.range.Range Usize) (words : Array U64 6#usize) :
+    Result (ControlFlow (core.ops.range.Range Usize × Array U64 6#usize) (Array U64 6#usize)) := do
+  let (o, iter1) ← core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done words)
+  | some w =>
+    let bytes := Array.repeat 8#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i ← w + 1#usize
+    let i1 ← 8#usize * i
+    let i2 ← decompress_g2.FP_BYTES
+    let i3 ← i2 - i1
+    let i4 ← 8#usize * w
+    let i5 ← i2 - i4
+    let s1 ← core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8) be
+      { start := i3, «end» := i5 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let bytes1 := to_slice_mut_back s2
+    let i6 ← lift (core.num.U64.from_be_bytes bytes1)
+    let w1 ← word w
+    let a ← Array.update words w1 i6
+    ok (cont (iter1, a))
+
+def fpWordsWith (word : Usize → Result Usize) (be : Slice U8) : Result (Array U64 6#usize) := do
+  let words := Array.repeat 6#usize 0#u64
+  loop (fun (iter1, words1) => fpWordsBodyWith word be iter1 words1)
+    ({ start := 0#usize, «end» := 6#usize }, words)
+
+example : fpWordsWith ok = decompress_g2.fp_words := rfl
+
+set_option hygiene false in
+/-- The proof of `fp_words_refines`, over `fpWordsWith`. -/
+local macro "fp_words_proof" : tactic => `(tactic| (
+  intro be h
+  unfold fpWordsWith
+  refine loop_range (n := 6) _ 6#usize rfl (toArray toU64)
+    (fun v w => v.set w (fp_words (ofSlice ofU8 be h))[w]) (toArray toU64) (Vector.replicate 6 0)
+    _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body fpWordsBodyWith hn
+  · intro r r' m w he hs he' hs' hn
+    have hw6 : r.start.val < 6 := by rw [hs]; exact w.isLt
+    have hw : r.start.val < 8 := by omega
+    obtain rfl : w = ⟨r.start.val, hw6⟩ := Fin.ext hs.symm
+    have hlen : be.val.length = 48 := h
+    simp_body fpWordsBodyWith hn
+    simp only [lift, bind_tc_ok, Function.uncurry_apply_pair, Array.to_slice_mut, FP_BYTES_refines]
+    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_add_ok,
+      usize_mul_ok, sub_ok, slice_index_ok, copy_from_slice_ok, update_eq, bind_tc_ok,
+      UScalar.ofNatCore_val_eq]
+    refine congrArg (fun s => ok (cont (r', s))) (toArray_set_of_eq _ _ _ _ _ _ _ _ rfl ?_)
+    rw [eq_toU64_iff, from_be_bytes_refines]
+    simp only [fp_words, Fin.getElem_fin, Vector.getElem_ofFn]
+    refine congrArg u64_from_be_bytes ?_
+    have hsl : (be.val.slice (48 - 8 * (r.start.val + 1)) (48 - 8 * r.start.val)).length = 8 := by
+      rw [List.slice_length, hlen]; omega
+    rw [Array.from_slice, dif_pos (by simpa using hsl)]
+    ext i hi
+    simp [List.slice, FP_BYTES, G2_COMPRESSED_LEN]
+  · simp only [foldl_set_ofFn]
+    rfl))
+
+example : ∀ (be : Slice U8) (h : be.val.length = FP_BYTES),
+    fpWordsWith ok be = ok (toArray toU64 (fp_words (ofSlice ofU8 be h))) := by
+  fp_words_proof
+
+example : True := by
+  fail_if_success
+    have : ∀ (be : Slice U8) (h : be.val.length = FP_BYTES),
+        fpWordsWith (5#usize - ·) be = ok (toArray toU64 (fp_words (ofSlice ofU8 be h))) := by
+      fp_words_proof
+  trivial
+
+/-- The mutant writes word `w` at `5 - w`. -/
+theorem fpWordsWith_rev_refines (be : Slice U8) (h : be.val.length = FP_BYTES) :
+    fpWordsWith (5#usize - ·) be = ok (toArray toU64 ((List.finRange 6).foldl
+      (fun v (w : Fin 6) => v.set (5 - w.val) (fp_words (ofSlice ofU8 be h))[w])
+      (Vector.replicate 6 0))) := by
+  unfold fpWordsWith
+  refine loop_range (n := 6) _ 6#usize rfl (toArray toU64)
+    (fun v (w : Fin 6) => v.set (5 - w.val) (fp_words (ofSlice ofU8 be h))[w]) (toArray toU64)
+    (Vector.replicate 6 0) _ ?_ ?_ rfl
+  · intro r m he hs hn
+    simp_body fpWordsBodyWith hn
+  · intro r r' m w he hs he' hs' hn
+    have hw6 : r.start.val < 6 := by rw [hs]; exact w.isLt
+    have hw : r.start.val < 8 := by omega
+    obtain rfl : w = ⟨r.start.val, hw6⟩ := Fin.ext hs.symm
+    have hlen : be.val.length = 48 := h
+    simp_body fpWordsBodyWith hn
+    simp only [lift, bind_tc_ok, Function.uncurry_apply_pair, Array.to_slice_mut, FP_BYTES_refines]
+    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_add_ok,
+      usize_mul_ok, sub_ok, slice_index_ok, copy_from_slice_ok, update_eq, bind_tc_ok,
+      UScalar.ofNatCore_val_eq]
+    refine congrArg (fun s => ok (cont (r', s)))
+      (toArray_set_of_eq _ _ _ _ _ (by omega) _ _ (by simp) ?_)
+    rw [eq_toU64_iff, from_be_bytes_refines]
+    simp only [fp_words, Fin.getElem_fin, Vector.getElem_ofFn]
+    refine congrArg u64_from_be_bytes ?_
+    have hsl : (be.val.slice (48 - 8 * (r.start.val + 1)) (48 - 8 * r.start.val)).length = 8 := by
+      rw [List.slice_length, hlen]; omega
+    rw [Array.from_slice, dif_pos (by simpa using hsl)]
+    ext i hi
+    simp [List.slice, FP_BYTES, G2_COMPRESSED_LEN]
+
+/-- Bytes 0 to 47, so that every word differs. -/
+def byteIndices : Vector UInt8 FP_BYTES := .ofFn fun i => i.val.toUInt8
+
+def byteIndicesSlice : Slice U8 :=
+  ⟨byteIndices.toList.map toU8, by
+    rcases Usize.bounds_eq with h | h <;>
+      simp [h, U32.max_eq, U64.max_eq, FP_BYTES, G2_COMPRESSED_LEN]⟩
+
+theorem byteIndicesSlice_length : byteIndicesSlice.val.length = FP_BYTES := by
+  simp [byteIndicesSlice]
+
+example : ¬ ∀ (be : Slice U8) (h : be.val.length = FP_BYTES),
+    fpWordsWith (5#usize - ·) be = ok (toArray toU64 (fp_words (ofSlice ofU8 be h))) := by
+  intro h
+  have e := congrArg (ofArray ofU64 (m := 6) (h := rfl)) (Result.ok.inj
+    ((fpWordsWith_rev_refines _ byteIndicesSlice_length).symm.trans
+      (h _ byteIndicesSlice_length)))
+  simp only [ofArray_toArray_ofU64] at e
+  have hb : ofSlice ofU8 byteIndicesSlice byteIndicesSlice_length = byteIndices := by
+    ext i hi
+    simp [byteIndicesSlice]
+  rw [hb] at e
+  have e0 := congrArg (fun x : Vector UInt64 6 => x[0]) e
+  revert e0
+  decide +kernel
+
 end DecompressG2
 
 /-! ## `Fp8::select`: the order of the operands
@@ -142,6 +281,237 @@ example : True := by
         selectWith true k a b = ok (toFp8 (Fp8.select (ofU8 k) (ofFp8 a) (ofFp8 b))) := by
       select_proof
   trivial
+
+/-! ## `Fp8::load` and `Fp8::store`: the lane order
+
+`load` passes the limbs of lanes 7 down to 0 to `_mm512_set_epi64`, whose last argument is lane 0.
+`store` writes element `l` of `lanes(v)` to `out[l]`. A generated `load` that passes the limbs in
+the opposite order, or a `store` whose `lanes` reverses the vector, must not refine the model's.
+Each mutant takes the intrinsic or `lanes` as a parameter, and each script takes the model's
+counterpart as its argument. The same scripts prove that each mutant refines a model with the same
+mutation. On `laneIndices` that model differs from the original in lane 0, so the mutated claims
+are false, not only unproved. -/
+
+section LoadStore
+
+open core.core_arch.x86
+
+abbrev SetEpi64 := I64 → I64 → I64 → I64 → I64 → I64 → I64 → I64 → Result __m512i
+
+def loadBodyWith (set : SetEpi64) (values : Array (Array U64 8#usize) 8#usize)
+    (iter : core.ops.range.Range Usize) (v : Array __m512i 8#usize) :
+    Result (ControlFlow (core.ops.range.Range Usize × Array __m512i 8#usize)
+      (Array __m512i 8#usize)) := do
+  let (o, iter1) ← core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v)
+  | some j =>
+    let a ← Array.index_usize values 7#usize
+    let i ← Array.index_usize a j
+    let i1 ← lift (UScalar.hcast .I64 i)
+    let a1 ← Array.index_usize values 6#usize
+    let i2 ← Array.index_usize a1 j
+    let i3 ← lift (UScalar.hcast .I64 i2)
+    let a2 ← Array.index_usize values 5#usize
+    let i4 ← Array.index_usize a2 j
+    let i5 ← lift (UScalar.hcast .I64 i4)
+    let a3 ← Array.index_usize values 4#usize
+    let i6 ← Array.index_usize a3 j
+    let i7 ← lift (UScalar.hcast .I64 i6)
+    let a4 ← Array.index_usize values 3#usize
+    let i8 ← Array.index_usize a4 j
+    let i9 ← lift (UScalar.hcast .I64 i8)
+    let a5 ← Array.index_usize values 2#usize
+    let i10 ← Array.index_usize a5 j
+    let i11 ← lift (UScalar.hcast .I64 i10)
+    let a6 ← Array.index_usize values 1#usize
+    let i12 ← Array.index_usize a6 j
+    let i13 ← lift (UScalar.hcast .I64 i12)
+    let a7 ← Array.index_usize values 0#usize
+    let i14 ← Array.index_usize a7 j
+    let i15 ← lift (UScalar.hcast .I64 i14)
+    let mi ← set i1 i3 i5 i7 i9 i11 i13 i15
+    let a8 ← Array.update v j mi
+    ok (cont (iter1, a8))
+
+def loadLoopWith (set : SetEpi64) (iter : core.ops.range.Range Usize)
+    (values : Array (Array U64 8#usize) 8#usize) (v : Array __m512i 8#usize) :
+    Result (Array __m512i 8#usize) :=
+  loop (fun (iter1, v1) => loadBodyWith set values iter1 v1) (iter, v)
+
+def loadWith (set : SetEpi64) (values : Array (Array U64 8#usize) 8#usize) : Result fp8.Fp8 := do
+  let mi ← fp8.zero
+  let v := Array.repeat 8#usize mi
+  let v1 ← loadLoopWith set { start := 0#usize, «end» := constants.LIMBS } values v
+  ok v1
+
+example : loadWith avx512f._mm512_set_epi64 = fp8.Fp8.load := rfl
+
+/-- `_mm512_set_epi64` with its arguments in the opposite order, which is `_mm512_setr_epi64`. -/
+def setrGen : SetEpi64 := fun e7 e6 e5 e4 e3 e2 e1 e0 =>
+  avx512f._mm512_set_epi64 e0 e1 e2 e3 e4 e5 e6 e7
+
+def Fp8.loadWith (set : Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → M512)
+    (values : Vector Limbs 8) : Fp8 :=
+  ⟨.ofFn fun j => set values[7][j].toInt64 values[6][j].toInt64
+    values[5][j].toInt64 values[4][j].toInt64 values[3][j].toInt64 values[2][j].toInt64
+    values[1][j].toInt64 values[0][j].toInt64⟩
+
+example : Fp8.loadWith _mm512_set_epi64 = Fp8.load := rfl
+
+def setrModel : Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → Int64 → M512 :=
+  fun e7 e6 e5 e4 e3 e2 e1 e0 => _mm512_set_epi64 e0 e1 e2 e3 e4 e5 e6 e7
+
+set_option hygiene false in
+/-- The proof of `Fp8.load_refines`, over `loadWith`, against `Fp8.loadWith set`. -/
+local macro "load_proof" set:term : tactic => `(tactic| (
+  intro values
+  unfold loadWith loadLoopWith
+  simp only [Simd.zero_refines, bind_tc_ok, LIMBS_refines, bind_ok_eq]
+  rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
+  refine loop_range (n := LIMBS) _ 8#usize rfl (toArray id)
+    (fun v j => v.set j (Fp8.loadWith $set (ofArray (ofArray ofU64) values)).limbs[j]) (toArray id)
+    (Vector.replicate LIMBS Simd.zero) _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body loadBodyWith hn
+  · intro r r' m j he hs he' hs' hn
+    have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
+    simp_body loadBodyWith hn
+    simp only [index_usize_eq values 7#usize (by decide), index_usize_eq values 6#usize (by decide),
+      index_usize_eq values 5#usize (by decide), index_usize_eq values 4#usize (by decide),
+      index_usize_eq values 3#usize (by decide), index_usize_eq values 2#usize (by decide),
+      index_usize_eq values 1#usize (by decide), index_usize_eq values 0#usize (by decide),
+      index_usize_eq _ _ hj, bind_tc_ok, lift, update_eq _ _ _ hj, setrGen,
+      avx512f._mm512_set_epi64, ofBitVec_hcast_I64]
+    refine congrArg (fun s => ok (cont (r', s))) ?_
+    apply Subtype.ext
+    simp [hs, List.map_set, Vector.toList_set, Fp8.loadWith, setrModel]
+  · simp [Fp8.loadWith, foldl_set_ofFn, toFp8]))
+
+example : ∀ values : Array (Array U64 8#usize) 8#usize,
+    loadWith avx512f._mm512_set_epi64 values =
+      ok (toFp8 (Fp8.loadWith _mm512_set_epi64 (ofArray (ofArray ofU64) values))) := by
+  load_proof _mm512_set_epi64
+
+example : True := by
+  fail_if_success
+    have : ∀ values : Array (Array U64 8#usize) 8#usize,
+        loadWith setrGen values =
+          ok (toFp8 (Fp8.loadWith _mm512_set_epi64 (ofArray (ofArray ofU64) values))) := by
+      load_proof _mm512_set_epi64
+  trivial
+
+theorem loadWith_setr_refines : ∀ values : Array (Array U64 8#usize) 8#usize,
+    loadWith setrGen values =
+      ok (toFp8 (Fp8.loadWith setrModel (ofArray (ofArray ofU64) values))) := by
+  load_proof setrModel
+
+/-- Eight lanes whose limbs all hold the lane's index. -/
+def laneIndices : Vector Limbs 8 := .ofFn fun l => .replicate LIMBS l.val.toUInt64
+
+example : ¬ ∀ values : Array (Array U64 8#usize) 8#usize,
+    loadWith setrGen values = ok (toFp8 (Fp8.load (ofArray (ofArray ofU64) values))) := by
+  intro h
+  have e := congrArg ofFp8 (Result.ok.inj
+    ((loadWith_setr_refines (toArray (toArray toU64) laneIndices)).symm.trans
+      (h (toArray (toArray toU64) laneIndices))))
+  simp only [ofFp8_toFp8, ofArray_toArray_ofArray_ofU64] at e
+  have e0 := congrArg (fun x : Fp8 => x.limbs[0][0]) e
+  revert e0
+  decide +kernel
+
+def storeBodyWith (lanes : __m512i → Result (Array U64 8#usize))
+    (iter : core.ops.range.Range Usize) (self : fp8.Fp8) (out : Array (Array U64 8#usize) 8#usize) :
+    Result (ControlFlow (core.ops.range.Range Usize × fp8.Fp8 × Array (Array U64 8#usize) 8#usize)
+      (Array (Array U64 8#usize) 8#usize)) := do
+  let (o, iter1) ← core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some j =>
+    let mi ← Array.index_usize self j
+    let l ← lanes mi
+    let out1 ← fp8.Fp8.store_loop0_loop0 { start := 0#usize, «end» := fp8.LANES } out j l
+    ok (cont (iter1, self, out1))
+
+def storeLoopWith (lanes : __m512i → Result (Array U64 8#usize))
+    (iter : core.ops.range.Range Usize) (self : fp8.Fp8) (out : Array (Array U64 8#usize) 8#usize) :
+    Result (Array (Array U64 8#usize) 8#usize) :=
+  loop (fun (iter1, self1, out1) => storeBodyWith lanes iter1 self1 out1) (iter, self, out)
+
+def storeWith (lanes : __m512i → Result (Array U64 8#usize)) (self : fp8.Fp8) :
+    Result (Array (Array U64 8#usize) 8#usize) := do
+  let a := Array.repeat 8#usize 0#u64
+  let out := Array.repeat 8#usize a
+  storeLoopWith lanes { start := 0#usize, «end» := constants.LIMBS } self out
+
+example : storeWith fp8.lanes = fp8.Fp8.store := rfl
+
+/-- `fp8::lanes` reading the lanes in the opposite order. -/
+def lanesRevGen (v : __m512i) : Result (Array U64 8#usize) := fp8.lanes v.reverse
+
+def Fp8.storeWith (lanes : M512 → Vector UInt64 8) (self : Fp8) : Vector Limbs 8 :=
+  (List.finRange LIMBS).foldl (init := .replicate 8 (.replicate LIMBS 0)) fun out (j : Fin LIMBS) =>
+    let l := lanes self.limbs[j]
+    (List.finRange 8).foldl (init := out) fun out (lane : Fin 8) =>
+      out.set lane (out[lane].set j l[lane])
+
+example : Fp8.storeWith Simd.lanes = Fp8.store := rfl
+
+def lanesRevModel (v : M512) : Vector UInt64 8 := Simd.lanes v.reverse
+
+set_option hygiene false in
+/-- The proof of `Fp8.store_refines`, over `storeWith`, against `Fp8.storeWith lanes`. -/
+local macro "store_proof" lanes:term : tactic => `(tactic| (
+  intro self
+  unfold storeWith storeLoopWith
+  simp only [LIMBS_refines]
+  rw [show Array.repeat 8#usize (Array.repeat 8#usize 0#u64) =
+    toArray (toArray toU64) (Vector.replicate 8 (Vector.replicate LIMBS 0)) from
+    by simp [toArray_replicate]; rfl]
+  refine loop_range (n := LIMBS) _ 8#usize rfl (fun out => (self, toArray (toArray toU64) out))
+    (fun out (j : Fin LIMBS) =>
+      (List.finRange 8).foldl (fun out (lane : Fin 8) =>
+        out.set lane (out[lane].set j ($lanes (ofFp8 self).limbs[j])[lane])) out)
+    (toArray (toArray toU64)) (Vector.replicate 8 (Vector.replicate LIMBS 0)) _ ?_ ?_ rfl
+  · intro r m he hs hn
+    simp_body storeBodyWith hn
+  · intro r r' m j he hs he' hs' hn
+    have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
+    simp_body storeBodyWith hn
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, lanesRevGen, Simd.lanes_refines]
+    rw [Fp8.store_inner_refines _ _ (by rw [hs]; exact j.isLt)]
+    simp [hs, lanesRevModel]))
+
+example : ∀ self : fp8.Fp8,
+    storeWith fp8.lanes self =
+      ok (toArray (toArray toU64) (Fp8.storeWith Simd.lanes (ofFp8 self))) := by
+  store_proof Simd.lanes
+
+example : True := by
+  fail_if_success
+    have : ∀ self : fp8.Fp8,
+        storeWith lanesRevGen self =
+          ok (toArray (toArray toU64) (Fp8.storeWith Simd.lanes (ofFp8 self))) := by
+      store_proof Simd.lanes
+  trivial
+
+theorem storeWith_rev_refines : ∀ self : fp8.Fp8,
+    storeWith lanesRevGen self =
+      ok (toArray (toArray toU64) (Fp8.storeWith lanesRevModel (ofFp8 self))) := by
+  store_proof lanesRevModel
+
+example : ¬ ∀ self : fp8.Fp8,
+    storeWith lanesRevGen self = ok (toArray (toArray toU64) (ofFp8 self).store) := by
+  intro h
+  have e := congrArg (ofArray (ofArray ofU64) (m := 8) (h := rfl)) (Result.ok.inj
+    ((storeWith_rev_refines (toFp8 (Fp8.load laneIndices))).symm.trans
+      (h (toFp8 (Fp8.load laneIndices)))))
+  simp only [ofFp8_toFp8, ofArray_toArray_ofArray_ofU64] at e
+  have e0 := congrArg (fun x : Vector Limbs 8 => x[0][0]) e
+  revert e0
+  decide +kernel
+
+end LoadStore
 
 /-! ## `Fp8::mul`: the row indices
 
@@ -418,9 +788,14 @@ end Pow
 
 The countdown compares the counter with `Z_BITS[1]` to `Z_BITS[5]` and adds the point at each. A
 generated loop whose last comparison reads `Z_BITS[4]` again never adds at bit 16, and must not
-refine the model's loop. This control shows only that the script fails on the mutant. Refuting
-the mutated claim means evaluating both chains past bit 16 on a concrete point: over 2000 lane
-multiplications, at about 0.1 s each in Lean's kernel. -/
+refine the model's loop. The script fails on the mutant. Refuting the loop-level claim means
+evaluating both chains past bit 16 on a concrete point: over 2000 lane multiplications, at about
+0.1 s each in Lean's kernel.
+
+The step that `loop_countdown` needs at each iteration is cheaper to refute. At counter 17, from
+the point (0, 1, 1) with the affine point (0, 0) and mask 0, the mutant body returns mask 0 and
+`chainStep` returns 255. Doubling (0, 1, 1) gives x = 0, so the addition's H = 0 · Z² − 0 is zero
+on every lane. Lean's kernel evaluates the two masks in about 45 s. -/
 
 def timesMinusZBodyWith (k : Usize) (px py : fp2x8.Fp2x8) (undecided : U8) (r : g2x8.G2x8)
     (bit : U32) : Result (ControlFlow (U8 × g2x8.G2x8 × U32) (g2x8.G2x8 × U8)) := do
@@ -520,5 +895,37 @@ example : True := by
             ((List.range n).reverse.foldl (G2x8.chainStep (ofFp2x8 px) (ofFp2x8 py)) m)) := by
       times_minus_z_loop_proof
   trivial
+
+/-- The point (0, 1, 1) in Jacobian coordinates, on every lane. -/
+def zeroOneOne : G2x8 := ⟨⟨Fp8.zero, Fp8.zero⟩, Fp2x8.one, Fp2x8.one⟩
+
+theorem double_zeroOneOne_mask : (zeroOneOne.double).2 = 0 := by
+  decide +kernel
+
+theorem add_affine_zero_mask :
+    (zeroOneOne.double.1.add_affine ⟨Fp8.zero, Fp8.zero⟩ ⟨Fp8.zero, Fp8.zero⟩).2 = 255 := by
+  decide +kernel
+
+example : ¬ ∀ (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c c' : U32),
+    c.val = c'.val + 1 → c.val ≤ 63 →
+    timesMinusZBodyWith 4#usize px py (toU8 m.2) (toG2x8 m.1) c =
+      ok (cont (toU8 (G2x8.chainStep (ofFp2x8 px) (ofFp2x8 py) m c'.val).2,
+        toG2x8 (G2x8.chainStep (ofFp2x8 px) (ofFp2x8 py) m c'.val).1, c')) := by
+  intro h
+  have e := h (toFp2x8 ⟨Fp8.zero, Fp8.zero⟩) (toFp2x8 ⟨Fp8.zero, Fp8.zero⟩) (zeroOneOne, 0) 17#u32
+    16#u32 (by decide) (by decide)
+  simp only [timesMinusZBodyWith] at e
+  rw [if_pos (by decide), sub_ok _ _ (by decide)] at e
+  simp (disch := decide) only [bind_tc_ok, G2x8.double_refines, Function.uncurry_def,
+    Prod.map_fst, Prod.map_snd, ofG2x8_toG2x8, lift, Z_BITS_index, toU8_or,
+    UScalar.eq_equiv, UScalar.ofNatCore_val_eq] at e
+  simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
+    show Z_BITS[3]! = 57 from rfl, show Z_BITS[4]! = 48 from rfl] at e
+  rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide),
+    if_neg (by decide)] at e
+  have hz : Z_BITS.contains 16 = true := by decide
+  simp only [G2x8.chainStep, hz, if_true, ofFp2x8_toFp2x8, double_zeroOneOne_mask,
+    add_affine_zero_mask, ok.injEq, cont.injEq, Prod.mk.injEq] at e
+  exact absurd e.1 (by decide)
 
 end LeanBlsSimd
