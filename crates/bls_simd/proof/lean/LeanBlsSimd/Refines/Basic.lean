@@ -85,6 +85,14 @@ variable {α β : Type} {n : Usize} {m : ℕ}
   apply Subtype.ext
   simp [Function.comp_def, hgf]
 
+@[simp] theorem ofArray_toArray_id (v : Vector α m) (h : n.val = m) (h' : n.val = m) :
+    ofArray id (toArray id v h) h' = v :=
+  ofArray_toArray (fun _ => rfl) v h h'
+
+@[simp] theorem ofArray_toArray_ofU64 (v : Vector UInt64 m) (h : n.val = m) (h' : n.val = m) :
+    ofArray ofU64 (toArray toU64 v h) h' = v :=
+  ofArray_toArray (fun _ => rfl) v h h'
+
 theorem index_usize_eq (a : Array α n) (j : Usize) (hj : j.val < n.val) :
     Array.index_usize a j = ok (a.val[j.val]'(by rw [a.property]; exact hj)) := by
   simp [Array.index_usize, a.property, hj]
