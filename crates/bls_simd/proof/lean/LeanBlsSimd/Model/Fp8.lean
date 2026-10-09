@@ -50,9 +50,7 @@ def muladd_row (t : Acc) (a : Limbs) (b_i : UInt64) (i : Fin LIMBS) : Acc :=
 
 def reduce_row (t : Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) : Acc :=
   let q := madd52lo zero t[i.val] pinv
-  let t := (List.finRange LIMBS).foldl (init := t) fun t (j : Fin LIMBS) =>
-    let t := t.set (i.val + j.val) (madd52lo t[i.val + j.val] q p[j])
-    t.set (i.val + j.val + 1) (madd52hi t[i.val + j.val + 1] q p[j])
+  let t := muladd_row t p q i
   t.set (i.val + 1) (t[i.val + 1] + srli 52 t[i.val])
 
 /-- The accumulator `t` of `Fp8::mul` after its sixteen rows. -/
@@ -77,14 +75,17 @@ def mulAcc (self rhs : Limbs) : Acc :=
   let t := reduce_row t p pinv 6
   reduce_row t p pinv 7
 
+/-- The body of the carry loop that ends `Fp8::mul`. -/
+def carryStep (t : Acc) (mask : UInt64) (r : Limbs) (j : Fin (LIMBS - 1)) : Limbs :=
+  let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
+  r.set j.val (r[j.val] &&& mask)
+
 def mul (self rhs : Limbs) : Limbs :=
   let t := mulAcc self rhs
   let mask := splat (.ofNat MASK52)
   let r : Limbs := .replicate _ zero
   let r := r.set 0 t[LIMBS]
-  (List.finRange (LIMBS - 1)).foldl (init := r) fun r (j : Fin (LIMBS - 1)) =>
-    let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
-    r.set j.val (r[j.val] &&& mask)
+  (List.finRange (LIMBS - 1)).foldl (carryStep t mask) r
 
 end Lane
 

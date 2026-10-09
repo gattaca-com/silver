@@ -48,7 +48,8 @@ Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are re
 - `lake env lean <file>` checks one file, against the built versions of its imports. After changing a file others import, run `lake build` first.
 - Never edit `Extracted/Types.lean` or `Extracted/Funs.lean`; regenerate them. Importing Aeneas makes `name` a keyword.
 - A refinement theorem has the form `gen args = ok (toX (model (ofX args)))`, so it rewrites a generated call on any arguments. The round-trip lemmas in `Refines/Basic.lean` then cancel the nested conversions. Close goals with `simp` rather than a high-transparency `rfl`, so that a mutated control fails fast.
-- Keep each proof well inside the default of 200000 heartbeats, or set explicit headroom with a comment saying why, as `Fp8.mul_refines` does. `#count_heartbeats` under-reports unless `set_option Elab.async false in` precedes it.
+- Keep each proof well inside the default of 200000 heartbeats, or set explicit headroom with a comment saying why. `#count_heartbeats` under-reports unless `set_option Elab.async false in` precedes it.
+- When two sides hold the same large model term with arguments in different forms, unification can unfold the model function and evaluate it. `Fp8.mul_refines` makes `Lane.reduce_row` locally irreducible for this reason.
 - `#eval` runs the model on one batch in about 2.5 s; the compiled `differential` is faster for many.
 - Overflow: the model's `UInt64` arithmetic wraps modulo 2^64 exactly as the hardware does, and `Proofs/Limbs.lean` proves that the wrap never fires in `mul` for inputs satisfying `Fp8Inv`. A change to the limb layout, the number of rows or the carry handling requires proving those headroom bounds again.
 

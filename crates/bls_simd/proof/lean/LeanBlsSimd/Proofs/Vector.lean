@@ -97,21 +97,23 @@ theorem testBit_foldl_cmpeq (u w : Fin LIMBS → M512) (l : Fin 8) :
 
 namespace Lane
 
+/-- The body of `sub_limbs`'s loop. -/
+def subStep (a b : Limbs) (st : Limbs × UInt64) (j : Fin LIMBS) : Limbs × UInt64 :=
+  let s := a[j] - b[j] + st.2
+  (st.1.set j (s &&& splat (.ofNat MASK52)), srai 63 s)
+
 /-- Lane `l` of `Simd.sub_limbs`. -/
 def sub_limbs (a b : Limbs) : Limbs × UInt64 :=
-  let mask := splat (.ofNat MASK52)
-  (List.finRange LIMBS).foldl (init := (.replicate _ zero, zero)) fun (d, borrow) (j : Fin LIMBS) =>
-    let s := a[j] - b[j] + borrow
-    let borrow := srai 63 s
-    (d.set j (s &&& mask), borrow)
+  (List.finRange LIMBS).foldl (subStep a b) (.replicate _ zero, zero)
+
+/-- The body of `add_limbs`'s loop. -/
+def addStep (a b : Limbs) (st : Limbs × UInt64) (j : Fin LIMBS) : Limbs × UInt64 :=
+  let t := a[j] + b[j] + st.2
+  (st.1.set j (t &&& splat (.ofNat MASK52)), srli 52 t)
 
 /-- Lane `l` of `Simd.add_limbs`, with the carry out of the top limb, which `add_limbs` drops. -/
 def add_limbs (a b : Limbs) : Limbs × UInt64 :=
-  let mask := splat (.ofNat MASK52)
-  (List.finRange LIMBS).foldl (init := (.replicate _ zero, zero)) fun (s, carry) (j : Fin LIMBS) =>
-    let t := a[j] + b[j] + carry
-    let carry := srli 52 t
-    (s.set j (t &&& mask), carry)
+  (List.finRange LIMBS).foldl (addStep a b) (.replicate _ zero, zero)
 
 end Lane
 
@@ -146,7 +148,8 @@ theorem sub_limbs_lane (a b : Vector M512 LIMBS) (l : Fin 8) :
   simp only [sub_limbs, Lane.sub_limbs]
   rw [← laneOf_replicate_zero l, show Lane.zero = zero[l] by simp [Lane.zero]]
   exact (List.foldl_hom (fun st : Vector M512 LIMBS × M512 => (laneOf st.1 l, st.2[l]))
-    (init := (.replicate _ zero, zero)) fun ⟨d, borrow⟩ j => by simp [laneOf_set, Lane.splat]).symm
+    (init := (.replicate _ zero, zero)) fun ⟨d, borrow⟩ j => by
+      simp [laneOf_set, Lane.subStep, Lane.splat]).symm
 
 theorem add_limbs_lane (a b : Vector M512 LIMBS) (l : Fin 8) :
     laneOf (add_limbs a b) l = (Lane.add_limbs (laneOf a l) (laneOf b l)).1 := by
@@ -154,7 +157,8 @@ theorem add_limbs_lane (a b : Vector M512 LIMBS) (l : Fin 8) :
   rw [← laneOf_replicate_zero l, show Lane.zero = zero[l] by simp [Lane.zero]]
   exact congrArg Prod.fst
     (List.foldl_hom (fun st : Vector M512 LIMBS × M512 => (laneOf st.1 l, st.2[l]))
-      (init := (.replicate _ zero, zero)) fun ⟨d, carry⟩ j => by simp [laneOf_set, Lane.splat]).symm
+      (init := (.replicate _ zero, zero)) fun ⟨d, carry⟩ j => by
+        simp [laneOf_set, Lane.addStep, Lane.splat]).symm
 
 end Simd
 

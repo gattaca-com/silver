@@ -12,10 +12,6 @@ open silver_bls_simd
 SIMD values need no conversion. `muladd_row` and `reduce_row` refine the model's per-lane
 functions, joined by `fromLanes`.
 
-The Rust `reduce_row` calls `muladd_row` with the operands `p[j]` and `q` swapped against the
-model. `Lane.reduce_row_eq` restates the model in the Rust order, by commutativity of the
-52-bit multiply-add.
-
 `Fp8.mul_refines` chains the sixteen rows and the carry loop, each in the `fromLanes` form, so
 lane `l` of the generated `mul` is `Lane.mul` on lane `l` of its inputs. It needs no precondition:
 the model wraps modulo 2^64 as the intrinsics do, and no index depends on the inputs.
@@ -227,19 +223,6 @@ theorem Lane.muladd_row_refines (t : Array M512 17#usize) (a : Array M512 8#usiz
     simp only [step, laneOf_set, getElem_laneOf]
     simp [A]
 
-theorem madd52lo_comm (a b c : UInt64) : madd52lo a b c = madd52lo a c b := by
-  simp only [madd52lo, Nat.mul_comm]
-
-theorem madd52hi_comm (a b c : UInt64) : madd52hi a b c = madd52hi a c b := by
-  simp only [madd52hi, Nat.mul_comm]
-
-theorem Lane.reduce_row_eq (t : Lane.Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) :
-    Lane.reduce_row t p pinv i =
-      let t := Lane.muladd_row t p (madd52lo Lane.zero t[i.val] pinv) i
-      t.set (i.val + 1) (t[i.val + 1] + srli 52 t[i.val]) := by
-  simp only [Lane.reduce_row, Lane.muladd_row, madd52lo_comm _ (madd52lo Lane.zero t[i.val] pinv),
-    madd52hi_comm _ (madd52lo Lane.zero t[i.val] pinv)]
-
 theorem Lane.reduce_row_refines (t : Array M512 17#usize) (p : Array M512 8#usize) (pinv : M512)
     (i : Usize) (hi : i.val < LIMBS) :
     fp8.reduce_row t p pinv i = ok (toArray id (fromLanes fun l =>
@@ -261,7 +244,7 @@ theorem Lane.reduce_row_refines (t : Array M512 17#usize) (p : Array M512 8#usiz
   intro l
   rw [laneOf_set]
   simp only [laneOf_fromLanes]
-  simp [Lane.reduce_row_eq, Lane.zero]
+  simp [Lane.reduce_row, Lane.zero]
 
 theorem Lane.splat_eq (x : UInt64) : Lane.splat x = x := UInt64.toUInt64_toInt64 x
 
@@ -502,11 +485,9 @@ theorem Fp8.mul_loop_refines (t : Array M512 17#usize) (mask : M512) (r : Array 
     (stop : Usize) (hstop : stop.val = LIMBS - 1) :
     fp8.Fp8.mul_loop { start := 0#usize, «end» := stop } t mask r =
       ok (toArray id (fromLanes (n := LIMBS) fun l =>
-        (List.finRange (LIMBS - 1)).foldl (init := laneOf (ofArray id r (m := LIMBS)) l)
-          fun (r : Limbs) (j : Fin (LIMBS - 1)) =>
-            let r := r.set (j.val + 1)
-              ((laneOf (ofArray id t (m := 2 * LIMBS + 1)) l)[LIMBS + j.val + 1] + srli 52 r[j.val])
-            r.set j.val (r[j.val] &&& mask[l]))) := by
+        (List.finRange (LIMBS - 1)).foldl
+          (Lane.carryStep (laneOf (ofArray id t (m := 2 * LIMBS + 1)) l) mask[l])
+          (laneOf (ofArray id r (m := LIMBS)) l))) := by
   unfold fp8.Fp8.mul_loop
   let T : Vector M512 (2 * LIMBS + 1) := ofArray id t
   have hj1 : ∀ j : Fin (LIMBS - 1), j.val + 1 < LIMBS := by
@@ -539,11 +520,12 @@ theorem Fp8.mul_loop_refines (t : Array M512 17#usize) (mask : M512) (r : Array 
     intro l
     refine List.foldl_hom (fun R => laneOf R l) ?_
     intro R j
-    simp only [step, laneOf_set, getElem_laneOf]
-    simp [T]
+    simp only [step, laneOf_set]
+    simp [T, Lane.carryStep]
 
--- Needs 150k-200k heartbeats; the 200k default leaves no margin across toolchain bumps.
-set_option maxHeartbeats 400000 in
+-- Both sides hold the same `Lane.reduce_row` applications once simplified. Unfolding them while
+-- unifying the sides would evaluate the rows instead.
+attribute [local irreducible] Lane.reduce_row in
 theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.mul self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   unfold fp8.Fp8.mul

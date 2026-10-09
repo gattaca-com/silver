@@ -584,16 +584,14 @@ def Lane.mulWith (k : Fin LIMBS) (self rhs : Limbs) : Limbs :=
   let mask := splat (.ofNat MASK52)
   let r : Limbs := .replicate _ zero
   let r := r.set 0 t[LIMBS]
-  (List.finRange (LIMBS - 1)).foldl (init := r) fun r (j : Fin (LIMBS - 1)) =>
-    let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
-    r.set j.val (r[j.val] &&& mask)
+  (List.finRange (LIMBS - 1)).foldl (carryStep t mask) r
 
 example : Lane.mulWith 7 = Lane.mul := rfl
 
 set_option hygiene false in
 /-- The proof of `Fp8.mul_refines`, over `mulWith`, and over `Lane.mulWith` where the claim
 names it. -/
--- Each use needs the headroom `Fp8.mul_refines` has: 150k-200k heartbeats.
+-- Each use keeps `Lane.reduce_row` folded, as `Fp8.mul_refines` does.
 local macro "mul_proof" : tactic => `(tactic| (
   intro self rhs
   unfold mulWith
@@ -614,12 +612,12 @@ local macro "mul_proof" : tactic => `(tactic| (
     getElem_ofArray, id_eq, UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes,
     Simd.laneOf_splat_limbs, ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]))
 
-set_option maxHeartbeats 400000 in
+attribute [local irreducible] Lane.reduce_row in
 example : ∀ self rhs : fp8.Fp8,
     mulWith 7#usize self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   mul_proof
 
-set_option maxHeartbeats 400000 in
+attribute [local irreducible] Lane.reduce_row in
 example : True := by
   fail_if_success
     have : ∀ self rhs : fp8.Fp8,
@@ -627,7 +625,7 @@ example : True := by
       mul_proof
   trivial
 
-set_option maxHeartbeats 400000 in
+attribute [local irreducible] Lane.reduce_row in
 theorem mulWith_six_refines : ∀ self rhs : fp8.Fp8,
     mulWith 6#usize self rhs = ok (toFp8 (Fp8.ofLanes (.ofFn fun l =>
       Lane.mulWith 6 ((ofFp8 self).lane l) ((ofFp8 rhs).lane l)))) := by

@@ -249,18 +249,18 @@ theorem reduce_row_spec (t : Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) (B
       valFrom (reduce_row t p pinv i) (i.val + 1) = valFrom t i + q * val p * 2 ^ (52 * i.val) := by
   unfold reduce_row
   extract_lets q t'
-  have ht' : t' = (List.finRange LIMBS).foldl (maddStep (fun _ => q) (p[·]) i) t := rfl
+  have ht' : t' = (List.finRange LIMBS).foldl (maddStep (p[·]) (fun _ => q) i) t := rfl
   have hlen : (List.finRange LIMBS).length * 2 ^ 52 = 2 ^ 55 := by simp [LIMBS]
   have hq : q.toNat = lo52 t[i.val] * pinv.toNat % 2 ^ 52 := by
     rw [show q = madd52lo zero t[i.val] pinv from rfl, toNat_madd52lo _ _ _ (by simp [zero]),
       lo52_of_lt hpinv]
     simp [zero]
   have hqlt : q.toNat < 2 ^ 52 := hq ▸ Nat.mod_lt _ (by norm_num)
-  obtain ⟨hb', hv⟩ := foldl_maddStep (fun _ => q) (p[·]) i i le_rfl (List.finRange LIMBS) t B ht
+  obtain ⟨hb', hv⟩ := foldl_maddStep (p[·]) (fun _ => q) i i le_rfl (List.finRange LIMBS) t B ht
     (by rw [hlen]; omega)
   rw [← ht'] at hb' hv
   rw [hlen] at hb'
-  have hsum : (List.map (fun j => lo52 q * lo52 p[j] * 2 ^ (52 * (i.val + j.val)))
+  have hsum : (List.map (fun j => lo52 p[j] * lo52 q * 2 ^ (52 * (i.val + j.val)))
       (List.finRange LIMBS)).sum = q.toNat * val p * 2 ^ (52 * i.val) := by
     rw [← Fin.sum_univ_def]
     unfold val
@@ -271,7 +271,7 @@ theorem reduce_row_spec (t : Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) (B
   rw [hsum] at hv
   have hi : i.val < 2 * LIMBS + 1 := by omega
   have hi1 : i.val + 1 < 2 * LIMBS + 1 := by omega
-  have hti : t'[i.val].toNat = t[i.val].toNat + q.toNat * p[0].toNat % 2 ^ 52 := by
+  have hti : t'[i.val].toNat = t[i.val].toNat + p[0].toNat * q.toNat % 2 ^ 52 := by
     have hfirst : ∀ j ∈ ([1, 2, 3, 4, 5, 6, 7] : List (Fin LIMBS)), 1 ≤ j.val := by decide
     rw [ht', finRange_LIMBS, List.foldl_cons,
       foldl_maddStep_getElem_of_lt _ _ i i.val hi _ _ fun j hj => by have := hfirst j hj; omega]
@@ -279,7 +279,7 @@ theorem reduce_row_spec (t : Acc) (p : Limbs) (pinv : UInt64) (i : Fin LIMBS) (B
     simp only [Fin.getElem_fin] at hti0
     simp only [maddStep, val_fin_LIMBS, add_zero]
     rw [Vector.getElem_set_ne _ _ (by omega), Vector.getElem_set_self,
-      toNat_madd52lo _ _ _ (by omega), lo52_of_lt hqlt, lo52_of_lt (hp 0)]
+      toNat_madd52lo _ _ _ (by omega), lo52_of_lt (hp 0), lo52_of_lt hqlt]
     rfl
   have hmod : t'[i.val].toNat % 2 ^ 52 = 0 := by
     rw [hti, hq]
@@ -399,12 +399,11 @@ theorem mulAcc_spec {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ LIMB
 
 theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 1)
     (ht : ∀ k : Fin (2 * LIMBS + 1), t[k].toNat ≤ 2 ^ 60) :
-    let r := (List.finRange (LIMBS - 1)).foldl
-      (init := (Vector.replicate LIMBS zero).set 0 t[LIMBS]) fun r (j : Fin (LIMBS - 1)) =>
-        let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
-        r.set j.val (r[j.val] &&& mask)
+    let r := (List.finRange (LIMBS - 1)).foldl (carryStep t mask)
+      ((Vector.replicate LIMBS zero).set 0 t[LIMBS])
     (∀ j : Fin LIMBS, j.val < LIMBS - 1 → r[j].toNat < 2 ^ 52) ∧
       val r = ∑ k : Fin LIMBS, t[LIMBS + k.val].toNat * 2 ^ (52 * k.val) := by
+  unfold carryStep
   intro r
   have hfin : List.finRange (LIMBS - 1) = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
       ⟨3, by decide⟩, ⟨4, by decide⟩, ⟨5, by decide⟩, ⟨6, by decide⟩] := by decide

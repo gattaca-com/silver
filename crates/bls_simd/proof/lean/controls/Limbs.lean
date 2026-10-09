@@ -24,9 +24,7 @@ def muladd_rowWith (lo hi : UInt64 → UInt64 → UInt64 → UInt64) (t : Acc) (
 def reduce_rowWith (lo hi : UInt64 → UInt64 → UInt64 → UInt64) (shift : ℕ) (t : Acc) (p : Limbs)
     (pinv : UInt64) (i : Fin LIMBS) : Acc :=
   let q := lo zero t[i.val] pinv
-  let t := (List.finRange LIMBS).foldl (init := t) fun t (j : Fin LIMBS) =>
-    let t := t.set (i.val + j.val) (lo t[i.val + j.val] q p[j])
-    t.set (i.val + j.val + 1) (hi t[i.val + j.val + 1] q p[j])
+  let t := muladd_rowWith lo hi t p q i
   t.set (i.val + 1) (t[i.val + 1] + srli shift t[i.val])
 
 def mulWith (lo hi : UInt64 → UInt64 → UInt64 → UInt64) (shift : ℕ) (self rhs : Limbs) :
@@ -53,9 +51,7 @@ def mulWith (lo hi : UInt64 → UInt64 → UInt64 → UInt64) (shift : ℕ) (sel
   let mask := splat (.ofNat MASK52)
   let r : Limbs := .replicate _ zero
   let r := r.set 0 t[LIMBS]
-  (List.finRange (LIMBS - 1)).foldl (init := r) fun r (j : Fin (LIMBS - 1)) =>
-    let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
-    r.set j.val (r[j.val] &&& mask)
+  (List.finRange (LIMBS - 1)).foldl (carryStep t mask) r
 
 example : mulWith madd52lo madd52hi 52 = Lane.mul := rfl
 

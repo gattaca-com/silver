@@ -69,15 +69,6 @@ theorem srai63_eq (x : UInt64) : srai 63 x = borrowOf (decide (2 ^ 63 ≤ x.toNa
   simp only [UInt64.toNat_toBitVec, decide_eq_true_eq, Nat.reduceSub]
   split_ifs <;> simp <;> omega
 
-/-- The loop body of `sub_limbs`. -/
-def subStep (a b : Limbs) (st : Limbs × UInt64) (j : Fin LIMBS) : Limbs × UInt64 :=
-  let s := a[j] - b[j] + st.2
-  (st.1.set j (s &&& splat (.ofNat MASK52)), srai 63 s)
-
-theorem sub_limbs_eq (a b : Limbs) :
-    sub_limbs a b = (List.finRange LIMBS).foldl (subStep a b) (.replicate _ 0, borrowOf false) :=
-  rfl
-
 /-- One limb of `sub_limbs`. The difference wraps modulo 2^64 when it is negative, that is when
 `a < b + c`; bit 63 then marks it, and `srai 63` spreads that bit into the next borrow. -/
 theorem subStep_spec (a b : Limbs) (st : Limbs × UInt64) (c : Bool) (hc : st.2 = borrowOf c)
@@ -112,9 +103,9 @@ theorem sub_limbs_chain {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 
     (hb : ∀ j : Fin LIMBS, b[j].toNat < 2 ^ 52) :
     ∃ d c, sub_limbs a b = (d, borrowOf c) ∧ (∀ j : Fin LIMBS, d[j].toNat < 2 ^ 52) ∧
       val d + val b = val a + c.toNat * R := by
-  simp only [sub_limbs_eq, finRange_LIMBS, List.foldl_cons, List.foldl_nil]
-  obtain ⟨x0, c1, e0, h0, v0⟩ := subStep_spec a b (.replicate _ 0, borrowOf false) false rfl 0 (ha 0) (hb 0)
-  set s1 := subStep a b (.replicate _ 0, borrowOf false) 0
+  simp only [sub_limbs, finRange_LIMBS, List.foldl_cons, List.foldl_nil]
+  obtain ⟨x0, c1, e0, h0, v0⟩ := subStep_spec a b (.replicate _ zero, zero) false rfl 0 (ha 0) (hb 0)
+  set s1 := subStep a b (.replicate _ zero, zero) 0
   obtain ⟨x1, c2, e1, h1, v1⟩ := subStep_spec a b s1 c1 (by rw [e0]) 1 (ha 1) (hb 1)
   set s2 := subStep a b s1 1
   obtain ⟨x2, c3, e2, h2, v2⟩ := subStep_spec a b s2 c2 (by rw [e1]) 2 (ha 2) (hb 2)
@@ -167,15 +158,6 @@ theorem sub_limbs_spec {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 5
 /-- A carry of `add_limbs`. -/
 def carryOf (c : Bool) : UInt64 := if c then 1 else 0
 
-/-- The loop body of `add_limbs`. -/
-def addStep (a b : Limbs) (st : Limbs × UInt64) (j : Fin LIMBS) : Limbs × UInt64 :=
-  let t := a[j] + b[j] + st.2
-  (st.1.set j (t &&& splat (.ofNat MASK52)), srli 52 t)
-
-theorem add_limbs_eq (a b : Limbs) :
-    add_limbs a b = (List.finRange LIMBS).foldl (addStep a b) (.replicate _ 0, carryOf false) :=
-  rfl
-
 /-- One limb of `add_limbs`: the sum stays below 2^53 + 1, so it never wraps. -/
 theorem addStep_spec (a b : Limbs) (st : Limbs × UInt64) (c : Bool) (hc : st.2 = carryOf c)
     (j : Fin LIMBS) (ha : a[j].toNat < 2 ^ 52) (hb : b[j].toNat < 2 ^ 52) :
@@ -215,9 +197,9 @@ theorem add_limbs_chain {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 
     (hb : ∀ j : Fin LIMBS, b[j].toNat < 2 ^ 52) :
     ∃ s c, add_limbs a b = (s, carryOf c) ∧ (∀ j : Fin LIMBS, s[j].toNat < 2 ^ 52) ∧
       val s + c.toNat * R = val a + val b := by
-  simp only [add_limbs_eq, finRange_LIMBS, List.foldl_cons, List.foldl_nil]
-  obtain ⟨x0, c1, e0, h0, v0⟩ := addStep_spec a b (.replicate _ 0, carryOf false) false rfl 0 (ha 0) (hb 0)
-  set s1 := addStep a b (.replicate _ 0, carryOf false) 0
+  simp only [add_limbs, finRange_LIMBS, List.foldl_cons, List.foldl_nil]
+  obtain ⟨x0, c1, e0, h0, v0⟩ := addStep_spec a b (.replicate _ zero, zero) false rfl 0 (ha 0) (hb 0)
+  set s1 := addStep a b (.replicate _ zero, zero) 0
   obtain ⟨x1, c2, e1, h1, v1⟩ := addStep_spec a b s1 c1 (by rw [e0]) 1 (ha 1) (hb 1)
   set s2 := addStep a b s1 1
   obtain ⟨x2, c3, e2, h2, v2⟩ := addStep_spec a b s2 c2 (by rw [e1]) 2 (ha 2) (hb 2)
