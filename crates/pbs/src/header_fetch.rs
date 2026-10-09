@@ -69,6 +69,8 @@ impl HeaderFetch {
             body: &[],
             authorization: None,
             accept: Some("application/octet-stream"),
+            content_type: None,
+            headers: &[],
         };
         self.pool.enqueue(slot, &get, registry);
         self.pending = Some(BidRequest::new(request, registration, &self.spec, self.genesis_time));

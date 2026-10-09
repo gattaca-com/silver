@@ -1,6 +1,6 @@
 use crate::{
     beacon::{
-        block_submission::post_block_v2,
+        block_submission::{post_blinded_block_v2, post_block_v2},
         blocks::{block, block_header, block_root},
         committees::get_epoch_committees,
         operations::{
@@ -113,6 +113,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
         post_sync_committee_subscriptions,
     ),
     (Method::Get, "/eth/v2/beacon/blocks/{block_id}", block),
+    (Method::Post, "/eth/v2/beacon/blinded_blocks", post_blinded_block_v2),
     (Method::Post, "/eth/v2/beacon/blocks", post_block_v2),
     (Method::Post, "/eth/v2/beacon/pool/attestations", post_attestations),
     (Method::Get, "/eth/v2/beacon/pool/attester_slashings", get_attester_slashings),

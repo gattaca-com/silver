@@ -18,6 +18,9 @@ pub const REGISTER_VALIDATORS: &str = "/eth/v1/builder/validators";
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";
 /// The only fork whose bids this client handles.
 const FULU: &str = "fulu";
+/// Takes a Fulu `SignedBlindedBeaconBlock` as SSZ; the sidecar answers 202
+/// with no body once a relay publishes the block.
+pub const SUBMIT_BLINDED_BLOCK: &str = "/eth/v2/builder/blinded_blocks";
 
 /// 200, 202 and 204 all succeed, as Lighthouse's builder client counts them.
 pub fn is_success(status: u16) -> bool {
@@ -151,5 +154,18 @@ impl PbsClient {
 }
 
 fn post<'a>(path: &'a str, body: &'a [u8]) -> ClientRequest<'a> {
-    ClientRequest { method: Method::Post, path, body, authorization: None, accept: None }
+    let (content_type, headers): (_, &[_]) = if path == SUBMIT_BLINDED_BLOCK {
+        ("application/octet-stream", &[("Eth-Consensus-Version", "fulu")])
+    } else {
+        ("application/json", &[])
+    };
+    ClientRequest {
+        method: Method::Post,
+        path,
+        body,
+        authorization: None,
+        accept: None,
+        content_type: Some(content_type),
+        headers,
+    }
 }

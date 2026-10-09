@@ -356,6 +356,8 @@ mod tests {
             body,
             authorization: Some("Bearer t.t.t"),
             accept: None,
+            content_type: Some("application/json"),
+            headers: &[],
         };
         frame_request(conn.begin_request(), "localhost", &post, true);
         while !conn.pending_write().is_empty() {

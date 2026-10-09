@@ -158,6 +158,8 @@ impl EngineClient {
             body: &self.scratch,
             authorization: Some(self.jwt.bearer_token()),
             accept: None,
+            content_type: Some("application/json"),
+            headers: &[],
         };
         self.pool.enqueue(rpc_id, &request, &self.registry);
     }

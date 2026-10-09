@@ -49,6 +49,9 @@ pub struct ClientRequest<'a> {
     pub body: &'a [u8],
     pub authorization: Option<&'a str>,
     pub accept: Option<&'a str>,
+    /// Required on a POST.
+    pub content_type: Option<&'a str>,
+    pub headers: &'a [(&'a str, &'a str)],
 }
 
 enum Framing {
@@ -214,7 +217,8 @@ pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>,
     };
     write!(out, "{method} {} HTTP/1.1\r\nHost: {host}\r\n", request.path).unwrap();
     if request.method == Method::Post {
-        write!(out, "Content-Type: application/json\r\nContent-Length: {}\r\n", request.body.len())
+        let content_type = request.content_type.expect("a POST names its content type");
+        write!(out, "Content-Type: {content_type}\r\nContent-Length: {}\r\n", request.body.len())
             .unwrap();
     } else {
         debug_assert!(request.body.is_empty(), "a GET carries no body");
@@ -224,6 +228,9 @@ pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>,
     }
     if let Some(accept) = request.accept {
         write!(out, "Accept: {accept}\r\n").unwrap();
+    }
+    for (name, value) in request.headers {
+        write!(out, "{name}: {value}\r\n").unwrap();
     }
     let connection = if keep_alive { "keep-alive" } else { "close" };
     write!(out, "Connection: {connection}\r\n\r\n").unwrap();
@@ -238,7 +245,15 @@ mod tests {
     const BEARER: &str = "Bearer aGVhZGVy.cGF5bG9hZA.c2ln";
 
     fn post<'a>(body: &'a [u8], authorization: Option<&'a str>) -> ClientRequest<'a> {
-        ClientRequest { method: Method::Post, path: "/", body, authorization, accept: None }
+        ClientRequest {
+            method: Method::Post,
+            path: "/",
+            body,
+            authorization,
+            accept: None,
+            content_type: Some("application/json"),
+            headers: &[],
+        }
     }
 
     fn machine() -> ClientConnection {
@@ -339,6 +354,8 @@ mod tests {
             body: b"",
             authorization: None,
             accept: Some("application/octet-stream"),
+            content_type: None,
+            headers: &[],
         };
         frame_request(&mut out, "localhost:18550", &request, true);
         assert_eq!(
@@ -357,10 +374,33 @@ mod tests {
             body: b"[]",
             authorization: None,
             accept: None,
+            content_type: Some("application/json"),
+            headers: &[],
         };
         frame_request(&mut out, "h", &request, true);
         assert!(out.starts_with(b"POST /eth/v1/builder/validators HTTP/1.1\r\n"));
         assert!(out.ends_with(b"Content-Length: 2\r\nConnection: keep-alive\r\n\r\n[]"));
+    }
+
+    #[test]
+    fn post_names_its_content_type_and_extra_headers() {
+        let mut out = Vec::new();
+        let request = ClientRequest {
+            method: Method::Post,
+            path: "/eth/v2/builder/blinded_blocks",
+            body: b"ssz",
+            authorization: None,
+            accept: None,
+            content_type: Some("application/octet-stream"),
+            headers: &[("Eth-Consensus-Version", "fulu")],
+        };
+        frame_request(&mut out, "h", &request, true);
+        assert_eq!(
+            out,
+            b"POST /eth/v2/builder/blinded_blocks HTTP/1.1\r\nHost: h\r\n\
+              Content-Type: application/octet-stream\r\nContent-Length: 3\r\n\
+              Eth-Consensus-Version: fulu\r\nConnection: keep-alive\r\n\r\nssz"
+        );
     }
 
     #[test]

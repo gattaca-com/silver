@@ -1,6 +1,10 @@
+use silver_beacon_state_data::{BodyFork, BodyOffsets};
 use silver_common::{
-    GossipTopic, block_contents::SignedBlockContents, ssz_view::SignedBeaconBlockView,
+    GossipTopic,
+    block_contents::SignedBlockContents,
+    ssz_view::{ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
 };
+use silver_pbs::SUBMIT_BLINDED_BLOCK;
 
 use crate::{
     ctx::ApiCtx,
@@ -25,18 +29,47 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
     resp.await_verdicts(0, [GossipTopic::BeaconBlock], body.len(), |out| out.copy_from_slice(body));
 }
 
+pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
+    if !ctx.has_sidecar {
+        return resp.error(500, "no sidecar is configured to reveal the payload");
+    }
+    if !req.body_is_ssz() {
+        return resp.error(415, "only application/octet-stream bodies are read");
+    }
+    let block = req.body;
+    if !SignedBeaconBlockView::check_size(block) {
+        return resp.error(400, "invalid SignedBlindedBeaconBlock");
+    }
+    if ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(block)) {
+        return resp.error(400, "only Fulu blinded blocks are published");
+    }
+    let body = BodyOffsets::validated(SignedBeaconBlockView::body(block), BodyFork::FuluBlinded);
+    if !body
+        .is_ok_and(|body| ExecutionPayloadHeaderFuluView::check_canonical(body.payload_header()))
+    {
+        return resp.error(400, "invalid SignedBlindedBeaconBlock");
+    }
+    resp.await_sidecar(SUBMIT_BLINDED_BLOCK);
+}
+
 #[cfg(test)]
 mod tests {
     use silver_common::{
         TCache, TCacheId, TCacheProducer,
-        ssz_view::{BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT},
+        ssz_view::{
+            BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
+            EXECUTION_PAYLOAD_HEADER_FIXED,
+        },
     };
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
         http::router::{Outcome, SSZ_MEDIA_TYPE},
-        submission::tests::ctx,
+        submission::tests::{SLOT, ctx},
         testing::{dispatch, dispatch_into, posting, status_code},
     };
 
@@ -100,5 +133,68 @@ mod tests {
         let (outcome, out) = post(&body, SSZ_MEDIA_TYPE);
         assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&out), "400");
+    }
+
+    const BLINDED_PATH: &str = "/eth/v2/beacon/blinded_blocks";
+
+    /// A Fulu `SignedBlindedBeaconBlock` with no operations: the header and
+    /// three empty request lists.
+    fn blinded_block() -> Vec<u8> {
+        let header_end = BEACON_BLOCK_BODY_FIXED + EXECUTION_PAYLOAD_HEADER_FIXED;
+        let mut block = vec![0; 184 + header_end];
+        block[..4].copy_from_slice(&100u32.to_le_bytes());
+        block[100..108].copy_from_slice(&(SLOT + 1).to_le_bytes());
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
+        let body = &mut block[184..];
+        for at in [200, 204, 208, 212, 216, 380] {
+            body[at..at + 4].copy_from_slice(&(BEACON_BLOCK_BODY_FIXED as u32).to_le_bytes());
+        }
+        for at in [384, 388, 392] {
+            body[at..at + 4].copy_from_slice(&(header_end as u32).to_le_bytes());
+        }
+        let header = &mut body[BEACON_BLOCK_BODY_FIXED..];
+        header[436..440].copy_from_slice(&(EXECUTION_PAYLOAD_HEADER_FIXED as u32).to_le_bytes());
+        block.extend_from_slice(&[12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0]);
+        block
+    }
+
+    fn post_blinded(ctx: &ApiCtx, body: &[u8], content_type: &str) -> (Outcome, Vec<u8>) {
+        dispatch(ctx, &ParsedRequest {
+            body,
+            content_type: Some(content_type),
+            ..posting(BLINDED_PATH, "")
+        })
+    }
+
+    fn sidecar_ctx() -> ApiCtx {
+        let mut ctx = ctx();
+        ctx.has_sidecar = true;
+        ctx
+    }
+
+    #[test]
+    fn blinded_block_waits_on_the_sidecar() {
+        let (outcome, out) = post_blinded(&sidecar_ctx(), &blinded_block(), SSZ_MEDIA_TYPE);
+        assert!(out.is_empty(), "answered once the sidecar has");
+        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: SUBMIT_BLINDED_BLOCK });
+    }
+
+    #[test]
+    fn blinded_block_is_refused_where_it_cannot_be_revealed() {
+        let mut gloas = sidecar_ctx();
+        gloas.spec.gloas_fork_epoch = 0;
+        let mut short_header = blinded_block();
+        short_header.truncate(short_header.len() - 13);
+        for (ctx, body, content_type, code) in [
+            (sidecar_ctx(), blinded_block(), "application/json", "415"),
+            (ctx(), blinded_block(), SSZ_MEDIA_TYPE, "500"),
+            (gloas, blinded_block(), SSZ_MEDIA_TYPE, "400"),
+            (sidecar_ctx(), short_header, SSZ_MEDIA_TYPE, "400"),
+            (sidecar_ctx(), contents(), SSZ_MEDIA_TYPE, "400"),
+        ] {
+            let (outcome, out) = post_blinded(&ctx, &body, content_type);
+            assert_eq!(outcome, Outcome::Response(None), "{code}");
+            assert_eq!(status_code(&out), code);
+        }
     }
 }
