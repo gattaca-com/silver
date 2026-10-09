@@ -545,6 +545,8 @@ theorem Fp8.mul_loop_refines (t : Array M512 17#usize) (mask : M512) (r : Array 
     simp only [step, laneOf_set, getElem_laneOf]
     simp [T]
 
+-- Needs 150k-200k heartbeats; the 200k default leaves no margin across toolchain bumps.
+set_option maxHeartbeats 400000 in
 theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.mul self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   unfold fp8.Fp8.mul

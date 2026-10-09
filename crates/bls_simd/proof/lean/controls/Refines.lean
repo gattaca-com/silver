@@ -221,6 +221,7 @@ example : Lane.mulWith 7 = Lane.mul := rfl
 set_option hygiene false in
 /-- The proof of `Fp8.mul_refines`, over `mulWith`, and over `Lane.mulWith` where the claim
 names it. -/
+-- Each use needs the headroom `Fp8.mul_refines` has: 150k-200k heartbeats.
 local macro "mul_proof" : tactic => `(tactic| (
   intro self rhs
   unfold mulWith
@@ -241,10 +242,12 @@ local macro "mul_proof" : tactic => `(tactic| (
     getElem_ofArray, id_eq, UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes,
     Simd.laneOf_splat_limbs, ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]))
 
+set_option maxHeartbeats 400000 in
 example : ∀ self rhs : fp8.Fp8,
     mulWith 7#usize self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   mul_proof
 
+set_option maxHeartbeats 400000 in
 example : True := by
   fail_if_success
     have : ∀ self rhs : fp8.Fp8,
@@ -252,6 +255,7 @@ example : True := by
       mul_proof
   trivial
 
+set_option maxHeartbeats 400000 in
 theorem mulWith_six_refines : ∀ self rhs : fp8.Fp8,
     mulWith 6#usize self rhs = ok (toFp8 (Fp8.ofLanes (.ofFn fun l =>
       Lane.mulWith 6 ((ofFp8 self).lane l) ((ofFp8 rhs).lane l)))) := by
