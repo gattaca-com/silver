@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
+# Usage: extract.sh [--check]
+#
 # Regenerates LeanBlsSimd/Extracted/Types.lean and Funs.lean from crates/bls_simd/src with Charon
-# and Aeneas. The hand-written TypesExternal.lean and FunsExternal.lean are left alone, so
-# `git diff` shows how the extraction drifted from the committed one.
+# and Aeneas, and prints how they differ from the files in LeanBlsSimd/Extracted/. Without
+# --check, the regenerated files then replace those. With --check, the tree is left alone, and
+# the script exits 1 if the files differ. The hand-written TypesExternal.lean and
+# FunsExternal.lean are never touched.
+#
+# Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment.
+# Changing a Rust comment or formatting moves those spans, so the comparison ignores lines that
+# hold only such a location: a change that only moves Rust code shows no drift. It needs git 2.30
+# or later for `git diff -I`.
 #
 # AENEAS_DIR must be an Aeneas checkout at the revision lake-manifest.json pins for `aeneas`,
 # with Aeneas built (`make`) and Charon built at its pin (`make setup-charon`). Charon needs
 # rustup and the nightly in $AENEAS_DIR/charon/rust-toolchain.
 set -euo pipefail
+
+check=false
+case "${1-}" in
+  "") ;;
+  --check) check=true ;;
+  *)
+    echo "usage: $0 [--check]" >&2
+    exit 2
+    ;;
+esac
 
 : "${AENEAS_DIR:?set AENEAS_DIR to an Aeneas checkout with Charon and Aeneas built}"
 
@@ -55,6 +74,30 @@ trap 'rm -rf "$work"' EXIT
 
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_bls_simd.llbc"
+
+source_line="^ *Source: '[^']*', lines [0-9]+:[0-9]+-[0-9]+:[0-9]+( -/)?$"
+drift=false
+for f in Types.lean Funs.lean; do
+  status=0
+  git --no-pager diff --no-index --exit-code -I"$source_line" \
+    "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f" || status=$?
+  case $status in
+    0) ;;
+    1) drift=true ;;
+    *) exit "$status" ;;
+  esac
+done
+
+if $drift; then
+  echo "The extraction drifted from LeanBlsSimd/Extracted/ beyond its Source lines." >&2
+else
+  echo "No drift from LeanBlsSimd/Extracted/ beyond its Source lines."
+fi
+
+if $check; then
+  if $drift; then exit 1; fi
+  exit 0
+fi
 
 cp "$work/lean/LeanBlsSimd/Extracted/Types.lean" "$work/lean/LeanBlsSimd/Extracted/Funs.lean" \
   "$lean_dir/LeanBlsSimd/Extracted/"
