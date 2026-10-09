@@ -88,6 +88,13 @@ impl<'a> Response<'a> {
         }
     }
 
+    pub(crate) fn await_blinded_block_lock(&mut self, block: &[u8]) {
+        match self.submissions.write_with(block.len(), |out| out.copy_from_slice(block)) {
+            Some(ssz) => self.outcome = Outcome::AwaitingBlindedBlockLock { ssz },
+            None => self.error(500, "api submissions cache full"),
+        }
+    }
+
     pub(crate) fn await_sidecar(&mut self, path: &'static str) {
         self.outcome = Outcome::AwaitingSidecarResponse { path };
     }

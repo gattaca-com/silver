@@ -120,6 +120,10 @@ pub enum BeaconApiRequest {
         graffiti: [u8; 32],
         bid_policy: BidPolicy,
     },
+    LockBlindedBlock {
+        request_id: u64,
+        ssz: TCacheRead,
+    },
 }
 
 /// `produceBlockV4`'s terms for a p2p builder bid.

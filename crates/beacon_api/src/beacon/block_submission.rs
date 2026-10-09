@@ -4,7 +4,6 @@ use silver_common::{
     block_contents::SignedBlockContents,
     ssz_view::{ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
 };
-use silver_pbs::SUBMIT_BLINDED_BLOCK;
 
 use crate::{
     ctx::ApiCtx,
@@ -52,11 +51,11 @@ pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
     {
         return resp.error(400, "invalid SignedBlindedBeaconBlock");
     }
-    resp.await_sidecar(SUBMIT_BLINDED_BLOCK);
+    resp.await_blinded_block_lock(block);
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use silver_common::{
         TCache, TCacheId, TCacheProducer,
         ssz_view::{
@@ -70,7 +69,7 @@ mod tests {
     use crate::{
         http::router::{Outcome, SSZ_MEDIA_TYPE},
         submission::tests::{SLOT, ctx},
-        testing::{dispatch, dispatch_into, posting, status_code},
+        testing::{dispatch, dispatch_into, posting, status_code, submissions},
     };
 
     const PATH: &str = "/eth/v2/beacon/blocks";
@@ -139,7 +138,7 @@ mod tests {
 
     /// A Fulu `SignedBlindedBeaconBlock` with no operations: the header and
     /// three empty request lists.
-    fn blinded_block() -> Vec<u8> {
+    pub(crate) fn blinded_block() -> Vec<u8> {
         let header_end = BEACON_BLOCK_BODY_FIXED + EXECUTION_PAYLOAD_HEADER_FIXED;
         let mut block = vec![0; 184 + header_end];
         block[..4].copy_from_slice(&100u32.to_le_bytes());
@@ -173,10 +172,21 @@ mod tests {
     }
 
     #[test]
-    fn blinded_block_waits_on_the_sidecar() {
-        let (outcome, out) = post_blinded(&sidecar_ctx(), &blinded_block(), SSZ_MEDIA_TYPE);
+    fn blinded_block_waits_on_its_proposal_lock() {
+        let body = blinded_block();
+        let mut submissions = submissions();
+        let (outcome, out) = dispatch_into(
+            &sidecar_ctx(),
+            &ParsedRequest {
+                body: &body,
+                content_type: Some(SSZ_MEDIA_TYPE),
+                ..posting(BLINDED_PATH, "")
+            },
+            &mut submissions,
+        );
         assert!(out.is_empty(), "answered once the sidecar has");
-        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: SUBMIT_BLINDED_BLOCK });
+        let Outcome::AwaitingBlindedBlockLock { ssz } = outcome else { panic!("{outcome:?}") };
+        assert_eq!(submissions.read_buffer(ssz).unwrap(), body);
     }
 
     #[test]

@@ -166,8 +166,13 @@ impl ApplicationBoundaryTile {
         adapter.consume(|event: PeerEvent, _| beacon.handle_peer_event(event));
         adapter.consume(|event: DataColumnsEvent, _| beacon.handle_data_columns_event(event));
         adapter.consume(|update: SyncUpdate, _| beacon.handle_sync_update(update));
-        adapter
-            .consume(|response: BeaconApiResponse, _| beacon.handle_response(response, processing));
+        adapter.consume(|response: BeaconApiResponse, _| {
+            beacon.handle_response(response, processing, &mut |request_id, path, body| {
+                pbs.as_mut()
+                    .expect("a sidecar request needs a pbs.endpoint")
+                    .send(request_id, path, body)
+            })
+        });
 
         beacon.set_el_sync_status(engine.sync_status());
     }

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use silver_common::{BeaconApiRequest, TProducer};
+use silver_common::{BeaconApiRequest, TCacheRead, TProducer};
 use silver_httpcore::{ParsedRequest, Query, frame_response};
 
 use crate::{
@@ -49,6 +49,7 @@ pub(crate) enum Outcome {
     AwaitingProducedBlock(ProduceBlockRequest),
     AwaitingVerdicts(Submission),
     AwaitingSidecarResponse { path: &'static str },
+    AwaitingBlindedBlockLock { ssz: TCacheRead },
 }
 
 impl Default for Outcome {

@@ -38,13 +38,32 @@ impl PendingAttestation {
     }
 }
 
-/// A signed block waiting on its lock. Its `SignedBlockContents` stay pinned
-/// in the submissions tcache until the lock commits or times out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockReleaseResult {
+    /// `SignedBlockContents`, published by this node.
+    Publish,
+    /// A `SignedBlindedBeaconBlock`; the API has the sidecar reveal it once
+    /// told the lock is held.
+    Reveal,
+}
+
+impl BlockReleaseResult {
+    fn signed_block(self, submitted: &[u8]) -> Option<&[u8]> {
+        match self {
+            Self::Publish => SignedBlockContents::signed_block(submitted),
+            Self::Reveal => Some(submitted),
+        }
+    }
+}
+
+/// A signed block waiting on its lock. Its submission stays pinned in the
+/// submissions tcache until the lock commits or times out.
 #[derive(Debug)]
 struct PendingBlock {
     request_id: u64,
     key: BlockKey,
     contents: TRead,
+    release: BlockReleaseResult,
 }
 
 /// Slashing protection for local attestations and blocks: admission and a
@@ -187,6 +206,7 @@ impl SlashingProtectionHandler {
         &mut self,
         request_id: u64,
         contents: TRead,
+        release: BlockReleaseResult,
         now: Instant,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
@@ -195,7 +215,7 @@ impl SlashingProtectionHandler {
         let Some(block) = contents
             .buffer()
             .ok()
-            .and_then(|(bytes, _)| SignedBlockContents::signed_block(bytes))
+            .and_then(|(bytes, _)| release.signed_block(bytes))
             .filter(|block| block.len() >= SIGNED_BEACON_BLOCK_MIN)
         else {
             silver_log::error!(request_id, "submitted block is misframed");
@@ -229,10 +249,14 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
-            producers.produce(LockedProposal { contents: contents.to_read() });
-            return local_gossip.submit(
-                block_message(request_id, block, key.slot),
+            return release_block(
+                request_id,
+                &contents,
+                block,
+                key.slot,
+                release,
                 now,
+                local_gossip,
                 gossip_handler,
                 producers,
             );
@@ -244,6 +268,7 @@ impl SlashingProtectionHandler {
                     request_id,
                     key,
                     contents,
+                    release,
                 });
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
@@ -428,7 +453,7 @@ impl SlashingProtectionHandler {
                     .contents
                     .buffer()
                     .ok()
-                    .and_then(|(contents, _)| SignedBlockContents::signed_block(contents))
+                    .and_then(|(contents, _)| block.release.signed_block(contents))
                 else {
                     produce_response(
                         producers,
@@ -442,10 +467,14 @@ impl SlashingProtectionHandler {
                     );
                     return;
                 };
-                producers.produce(LockedProposal { contents: block.contents.to_read() });
-                local_gossip.submit(
-                    block_message(block.request_id, bytes, slot),
+                release_block(
+                    block.request_id,
+                    &block.contents,
+                    bytes,
+                    slot,
+                    block.release,
                     now,
+                    local_gossip,
                     gossip_handler,
                     producers,
                 );
@@ -549,16 +578,58 @@ mod tests {
         let blobs_at = (12 + block.len()) as u32;
         let mut contents = [12, blobs_at, blobs_at].map(u32::to_le_bytes).concat();
         contents.extend_from_slice(block);
-        let published = submissions.publish(&contents);
+        lock_block(
+            handler,
+            harness,
+            submissions,
+            request_id,
+            &contents,
+            BlockReleaseResult::Publish,
+            now,
+        );
+    }
+
+    fn lock_block(
+        handler: &mut SlashingProtectionHandler,
+        harness: &mut Harness,
+        submissions: &mut Submissions,
+        request_id: u64,
+        submitted: &[u8],
+        release: BlockReleaseResult,
+        now: Instant,
+    ) {
+        let published = submissions.publish(submitted);
         let contents = submissions.reader.acquire(published);
         let Harness { local_gossip, gossip, adapter, .. } = harness;
         handler.on_local_block(
             request_id,
             contents,
+            release,
             now,
             local_gossip,
             gossip,
             &mut adapter.producers,
+        );
+    }
+
+    /// A blinded block shares a full block's envelope, so the same bytes stand
+    /// in for one.
+    fn reveal_block(
+        handler: &mut SlashingProtectionHandler,
+        harness: &mut Harness,
+        submissions: &mut Submissions,
+        request_id: u64,
+        block: &[u8],
+        now: Instant,
+    ) {
+        lock_block(
+            handler,
+            harness,
+            submissions,
+            request_id,
+            block,
+            BlockReleaseResult::Reveal,
+            now,
         );
     }
 
@@ -598,6 +669,33 @@ mod tests {
     }
 
     #[test]
+    fn blinded_block_lock_answers_instead_of_publishing() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        let mut submissions = Submissions::new();
+        standalone.handler.on_status(10, 10);
+        standalone.handler.on_status(11, 11);
+        let Standalone { handler, harness } = &mut standalone;
+        assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
+
+        reveal_block(handler, harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+        assert_eq!(harness.responses(), [(1, Ok(()))]);
+        assert!(harness.gossip.pop_event().is_none(), "the sidecar publishes it");
+        assert_eq!(locked_proposals(harness), 0, "and its columns");
+
+        reveal_block(handler, harness, &mut submissions, 2, &block_bytes(11, 4, 1), now);
+        assert_eq!(harness.responses(), [(2, Ok(()))], "a resubmission is let through");
+
+        reveal_block(handler, harness, &mut submissions, 3, &block_bytes(11, 4, 2), now);
+        submit_block(handler, harness, &mut submissions, 4, &block_bytes(11, 4, 2), now);
+        assert_eq!(harness.responses(), [
+            (3, Err(LocalGossipFailure::ConflictingProposal)),
+            (4, Err(LocalGossipFailure::ConflictingProposal)),
+        ]);
+        assert!(harness.gossip.pop_event().is_none());
+    }
+
+    #[test]
     fn clustered_block_enters_validation_once_its_lock_commits() {
         let now = Instant::now();
         let mut config = SlashingProtectionConfig::new(
@@ -628,6 +726,36 @@ mod tests {
         harness.pop_gossip();
         assert_eq!(locked_proposals(&mut harness), 1, "the committed block's contents follow");
         assert!(harness.responses().is_empty());
+    }
+
+    #[test]
+    fn clustered_blinded_block_is_answered_once_its_lock_commits() {
+        let now = Instant::now();
+        let mut config = SlashingProtectionConfig::new(
+            1,
+            vec![1],
+            ClusterStorageConfig::Create("unused-test-journal".into()),
+        );
+        config.tick_interval = std::time::Duration::from_millis(1);
+        config.election_ticks = 5;
+        config.heartbeat_ticks = 1;
+        let mut handler = handler(now);
+        handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        handler.on_status(10, 10);
+        handler.on_status(11, 11);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+
+        reveal_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+        assert!(harness.responses().is_empty(), "nothing is answered before the lock commits");
+
+        let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+        handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+
+        assert_eq!(harness.responses(), [(1, Ok(()))]);
+        assert!(harness.gossip.pop_event().is_none());
+        assert_eq!(locked_proposals(&mut harness), 0);
     }
 
     fn handler(now: Instant) -> SlashingProtectionHandler {
@@ -953,6 +1081,32 @@ fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossi
         LockResult::Conflicting | LockResult::Surrounding => Err(conflict),
         LockResult::TooOld => Err(LocalGossipFailure::TooOld),
         LockResult::Invalid => Err(LocalGossipFailure::Invalid),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn release_block(
+    request_id: u64,
+    contents: &TRead,
+    block: &[u8],
+    slot: u64,
+    release: BlockReleaseResult,
+    now: Instant,
+    local_gossip: &mut LocalGossipHandler,
+    gossip_handler: &mut GossipHandler,
+    producers: &mut SilverSpineProducers,
+) {
+    match release {
+        BlockReleaseResult::Publish => {
+            producers.produce(LockedProposal { contents: contents.to_read() });
+            local_gossip.submit(
+                block_message(request_id, block, slot),
+                now,
+                gossip_handler,
+                producers,
+            );
+        }
+        BlockReleaseResult::Reveal => produce_response(producers, request_id, Ok(())),
     }
 }
 

@@ -9,9 +9,10 @@ use mio::{Events, Interest, Registry, Token, event::Event};
 use silver_beacon_state_data::{BeaconStateReader, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockStage, DataColumnsEvent,
-    ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair, LocalGossipResult,
-    PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
+    ELSyncStatus, EngineResp, Enr, GossipTopic, HeadChange, Identify, Keypair, LocalGossipFailure,
+    LocalGossipResult, PayloadValidationStatus, PeerEvent, SyncUpdate, TCacheError, TCacheId,
+    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    block_root,
     column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -19,6 +20,7 @@ use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, ClientResponse, Closed, Listener, ParsedRequest,
     ServerConnection, Stream, TokenRange,
 };
+use silver_pbs::SUBMIT_BLINDED_BLOCK;
 
 use crate::{
     HeadStatus, NodeStatus,
@@ -91,6 +93,7 @@ enum Pending {
     Contribution { request_id: u64, request: SyncCommitteeContributionRequest },
     ProducedBlock { request_id: u64, request: ProduceBlockRequest },
     Submission(PendingSubmission),
+    BlindedBlockLock { request_id: u64, ssz: TCacheRead },
     SidecarResponse { request_id: u64 },
 }
 
@@ -177,6 +180,10 @@ impl Pending {
             Outcome::AwaitingSidecarResponse { .. } => {
                 (Self::SidecarResponse { request_id: first_id }, 1)
             }
+            Outcome::AwaitingBlindedBlockLock { ssz } => {
+                emit(BeaconApiRequest::LockBlindedBlock { request_id: first_id, ssz });
+                (Self::BlindedBlockLock { request_id: first_id, ssz }, 1)
+            }
             Outcome::Response(_) | Outcome::Stream(_) => {
                 unreachable!("answered without deferring")
             }
@@ -189,6 +196,7 @@ impl Pending {
             Self::Aggregate { request_id: awaited, .. } |
             Self::Contribution { request_id: awaited, .. } |
             Self::ProducedBlock { request_id: awaited, .. } |
+            Self::BlindedBlockLock { request_id: awaited, .. } |
             Self::SidecarResponse { request_id: awaited } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
         }
@@ -835,17 +843,37 @@ impl BeaconApi {
     /// connection closed meanwhile.
     /// `submissions` is where handlers publish; framing a deferred answer
     /// publishes nothing.
-    pub fn handle_response(&mut self, response: BeaconApiResponse, submissions: &mut TProducer) {
+    /// A blinded block whose lock is held goes to the sidecar through
+    /// `to_sidecar`, and its request waits on the sidecar's answer.
+    pub fn handle_response(
+        &mut self,
+        response: BeaconApiResponse,
+        submissions: &mut TProducer,
+        to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
+    ) {
         let request_id = response.request_id();
         let Some(token) = self.token_awaiting(request_id) else {
             silver_log::debug!(request_id, "answer for a connection already closed");
             return;
         };
+
         let Self { connections, reader, ctx, .. } = self;
         let requests = connections
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
+
+        if let (
+            BeaconApiResponse::LocalGossipResponse { response: Ok(()), .. },
+            Some(Pending::BlindedBlockLock { ssz, .. }),
+        ) = (&response, &requests.pending) &&
+            let Ok(block) = submissions.read_buffer(*ssz)
+        {
+            to_sidecar(request_id, SUBMIT_BLINDED_BLOCK, block);
+            requests.pending = Some(Pending::SidecarResponse { request_id });
+            return;
+        }
+
         let mut resp = Response::new(requests.http.write_buf_mut(), submissions);
         let settled = match (response, requests.pending.as_mut().expect("found awaiting above")) {
             (BeaconApiResponse::Block { block, .. }, Pending::Block { kind, .. }) => {
@@ -871,6 +899,18 @@ impl BeaconApi {
                 Pending::ProducedBlock { request, .. },
             ) => {
                 request.respond(&mut resp, block, reader, &ctx.spec);
+                true
+            }
+            (
+                BeaconApiResponse::LocalGossipResponse { response, .. },
+                Pending::BlindedBlockLock { .. },
+            ) => {
+                match response {
+                    Ok(()) => resp.error(500, "the block could not be read"),
+                    Err(failure) => {
+                        resp.error(lock_failure_code(failure), failure_message(failure))
+                    }
+                }
                 true
             }
             (
@@ -1094,6 +1134,14 @@ fn interrupted(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Interrupted
 }
 
+fn lock_failure_code(failure: LocalGossipFailure) -> u16 {
+    match failure {
+        LocalGossipFailure::NotSynced => 503,
+        LocalGossipFailure::TimedOut | LocalGossipFailure::Internal => 500,
+        _ => 400,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1122,7 +1170,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        beacon::operations::tests::entry,
+        beacon::{block_submission::tests::blinded_block, operations::tests::entry},
         submission::{Submission, tests as submission},
         testing::submissions,
     };
@@ -1202,7 +1250,10 @@ mod tests {
         }
 
         fn answer(&mut self, response: BeaconApiResponse) {
-            self.api.handle_response(response, &mut self.submissions);
+            let Self { api, submissions, sidecar, .. } = self;
+            api.handle_response(response, submissions, &mut |request_id, path, body| {
+                sidecar.push((request_id, path, body.to_vec()))
+            });
         }
 
         fn serve_bytes(&mut self, bytes: &[u8]) -> TCacheRead {
@@ -2449,7 +2500,8 @@ mod tests {
             BeaconApiRequest::LocalGossip { request_id, .. } |
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } |
-            BeaconApiRequest::ProduceBlock { request_id, .. } => *request_id,
+            BeaconApiRequest::ProduceBlock { request_id, .. } |
+            BeaconApiRequest::LockBlindedBlock { request_id, .. } => *request_id,
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
             BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
             BeaconApiRequest::ProposerPreparations { .. } => unreachable!("never answered"),
@@ -2481,6 +2533,61 @@ mod tests {
         server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
         let reader = std::thread::spawn(move || read_to_eof(client));
         String::from_utf8(serve(server, reader, "registration answer")).unwrap()
+    }
+
+    /// The blinded block reaches the sidecar only once the control tile holds
+    /// its proposer's slot lock.
+    fn submit_blinded_block(server: &mut Server, lock: LocalGossipResult) -> TcpStream {
+        server.api.ctx = submission::ctx();
+        server.api.ctx.has_sidecar = true;
+        let block = blinded_block();
+        let mut client = connect(tcp_addr(server));
+        write!(
+            client,
+            "POST /eth/v2/beacon/blinded_blocks HTTP/1.1\r\nHost: x\r\n\
+             Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            block.len()
+        )
+        .unwrap();
+        client.write_all(&block).unwrap();
+        let BeaconApiRequest::LockBlindedBlock { request_id, ssz } = deferred_request(server)
+        else {
+            panic!("the block is locked first")
+        };
+        assert_eq!(server.submissions.read_buffer(ssz).unwrap(), block);
+        assert!(server.sidecar.is_empty(), "nothing reaches the sidecar before the lock");
+        server.answer(BeaconApiResponse::LocalGossipResponse { request_id, response: lock });
+        client
+    }
+
+    #[test]
+    fn locked_blinded_block_is_revealed_through_the_sidecar() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client = submit_blinded_block(&mut server, Ok(()));
+        let [(request_id, path, sent)] = &server.sidecar[..] else { panic!("one forward") };
+        assert_eq!(*path, SUBMIT_BLINDED_BLOCK);
+        assert_eq!(*sent, blinded_block());
+
+        let request_id = *request_id;
+        let mut accepted = Vec::new();
+        let answer = Ok(ClientResponse { status: 202, body: &mut accepted });
+        server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "reveal answer");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), "{response:?}");
+    }
+
+    #[test]
+    fn blinded_block_without_its_lock_never_reaches_the_sidecar() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let client =
+            submit_blinded_block(&mut server, Err(LocalGossipFailure::ConflictingProposal));
+        assert!(server.sidecar.is_empty());
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = String::from_utf8(serve(&mut server, reader, "refusal")).unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{response}");
+        assert!(response.contains("already proposed a block for the slot"), "{response}");
     }
 
     #[test]
