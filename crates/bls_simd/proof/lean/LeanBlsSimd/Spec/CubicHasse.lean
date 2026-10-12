@@ -1,8 +1,18 @@
 import LeanBlsSimd.Spec.PointCount
 import LeanBlsSimd.Spec.CharacterSum
+import LeanBlsSimd.Spec.JacobiNorm
+import LeanBlsSimd.Spec.CubeFiber
+import LeanBlsSimd.Spec.ScottCardinality
 import Mathlib.RingTheory.RootsOfUnity.Complex
 
-/-! Character choices and the conversion from a character-sum bound to the Hasse interval. -/
+/-!
+# Hasse bounds for E′ and Scott completeness
+
+The curve's point count is p² + 1 plus a quadratic-character sum. An order-three character
+expresses that sum as two Jacobi sums with coefficients of norm one. Each Jacobi sum has norm p,
+giving the Hasse interval. The interval excludes multiples of r², so the generator of order r
+generates all rational r-torsion and its Scott identity extends to every such point.
+-/
 
 namespace LeanBlsSimd
 open EthCryptographySpecs.Bls
@@ -11,7 +21,8 @@ variable (F : Type*) [Field F] [Fintype F] [DecidableEq F]
 noncomputable def quadraticCharComplex : MulChar F ℂ :=
   (quadraticChar F).ringHomComp (Int.castRingHom ℂ)
 
-theorem quadraticCharComplex_apply (a : F) : quadraticCharComplex F a = (quadraticChar F a : ℂ) := rfl
+theorem quadraticCharComplex_apply (a : F) :
+    quadraticCharComplex F a = (quadraticChar F a : ℂ) := rfl
 
 theorem quadraticCharComplex_ne_one (hF : ringChar F ≠ 2) : quadraticCharComplex F ≠ 1 := by
   apply MulChar.ringHomComp_ne_one_iff (Int.cast_injective (α := ℂ)) |>.mpr
@@ -61,5 +72,39 @@ theorem E'.hasse_bounds_of_character_sum_bound
     exact_mod_cast (show (((Fp.modulus - 1 : ℕ) : ℝ) ^ 2) ≤ (Nat.card E'.Point : ℝ) by
       rwa [Nat.cast_sub hp, Nat.cast_one])
   · exact_mod_cast hhi
+
+theorem E'.character_sum_bound :
+    ‖∑ x : Fp2Field, quadraticCharComplex Fp2Field (x ^ 3 + bTwist)‖ ≤
+      2 * (Fp.modulus : ℝ) := by
+  obtain ⟨χ, hχ⟩ := exists_cubicChar
+  let φ := quadraticCharComplex Fp2Field
+  have hφ : φ ≠ 1 := quadraticCharComplex_ne_one Fp2Field Fp2Field.char_ne_two
+  have hχne : χ ≠ 1 := by
+    intro h
+    rw [h, orderOf_one] at hχ
+    contradiction
+  have hinv : orderOf χ⁻¹ = 3 := by rw [orderOf_inv, hχ]
+  have hb : bTwist ≠ 0 := by decide +kernel
+  rw [sum_cube_eq_jacobiSum χ φ hφ (fun t => card_cube_fiber hχ t) hb]
+  calc
+    _ ≤ ‖χ (-bTwist) * φ bTwist * jacobiSum χ φ‖ +
+        ‖χ⁻¹ (-bTwist) * φ bTwist * jacobiSum χ⁻¹ φ‖ := norm_add_le _ _
+    _ = Real.sqrt (Fintype.card Fp2Field) + Real.sqrt (Fintype.card Fp2Field) := by
+      simp only [norm_mul, norm_mulChar_apply_eq_one _ (neg_ne_zero.mpr hb),
+        norm_mulChar_apply_eq_one _ hb, one_mul]
+      rw [norm_jacobiSum hχne hφ (cubic_mul_quadratic_ne_one Fp2Field hχ Fp2Field.char_ne_two),
+        norm_jacobiSum (inv_ne_one.mpr hχne) hφ
+          (cubic_mul_quadratic_ne_one Fp2Field hinv Fp2Field.char_ne_two)]
+    _ = 2 * (Fp.modulus : ℝ) := by
+      rw [Fp2Field.card_eq, Nat.cast_pow, Real.sqrt_sq (Nat.cast_nonneg _)]
+      ring
+
+theorem E'.hasse_bounds :
+    (Fp.modulus - 1) ^ 2 ≤ Nat.card E'.Point ∧
+      Nat.card E'.Point ≤ (Fp.modulus + 1) ^ 2 :=
+  E'.hasse_bounds_of_character_sum_bound E'.character_sum_bound
+
+theorem scott_complete : ScottComplete :=
+  scottComplete_of_hasse_bounds E'.hasse_bounds.1 E'.hasse_bounds.2
 
 end LeanBlsSimd

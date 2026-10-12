@@ -13,8 +13,8 @@ points. If ψ(P) = [z]P then [r]P = O, for every point P of E′ over Fp2:
    the line is the tangent at P.
 4. Hence [z⁴ − z² + 1]P = O, and z⁴ − z² + 1 = r.
 
-Only z² and z⁴ enter, so the theorem holds for −z as well. The converse, `ScottComplete`, is
-not proved here.
+Only z² and z⁴ enter, so the theorem holds for −z as well. `Spec/CubicHasse.lean` proves the
+converse, `ScottComplete`, using the generator identity and a character-sum point-count bound.
 -/
 
 namespace LeanBlsSimd
@@ -213,7 +213,7 @@ theorem scott_sound (P : E'.Point) (h : psi P = z • P) : Fr.modulus • P = 0 
   rw [← natCast_zsmul, r_eq]
   exact torsion_of_psi_eq_zsmul z P h
 
-/-- Scott completeness, unproved: it serves only as a hypothesis.
+/-- Scott completeness, proved by `scott_complete` in `Spec/CubicHasse.lean`.
 
 No theorem here fixes the sign of `cy`: `cy_sq` and `norm_cy` hold for −cy too, and flipping
 the signs of both `cy` and `z` keeps this statement true. `PSI_Y_MONT_eq` and `p_eq` pin each

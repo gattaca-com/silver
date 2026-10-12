@@ -27,7 +27,8 @@ These specification-agreement theorems give no specification result for a lane w
 `undecided` bit is set.
 
 `psi_generator` checks the chosen ψ constants and sign of z on the spec's generator.
-This establishes one instance of `ScottComplete`; the general statement remains a hypothesis.
+This establishes the generator case. `Spec/CubicHasse.lean` proves the general `ScottComplete`
+statement; this module retains it as an explicit parameter.
 -/
 
 namespace LeanBlsSimd

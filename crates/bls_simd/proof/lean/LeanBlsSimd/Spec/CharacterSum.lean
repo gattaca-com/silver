@@ -3,7 +3,6 @@ import Mathlib.NumberTheory.JacobiSum.Basic
 /-! Regroup a cubic character sum into two Jacobi sums, given the cube-fiber count. -/
 
 namespace LeanBlsSimd
-open scoped BigOperators
 variable {F : Type*} [Field F] [Fintype F]
 
 theorem sum_mulChar_shift (χ φ : MulChar F ℂ) {b : F} (hb : b ≠ 0) :

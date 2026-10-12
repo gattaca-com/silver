@@ -2,7 +2,7 @@
 
 This directory contains a Lean 4 correctness proof for the code that Charon and Aeneas generate from `decompress_g2::decompress` in `../src`. The Rust kernel uses AVX-512 IFMA to decode and subgroup-check eight compressed G2 points at a time.
 
-The proof has two parts: the generated code returns exactly the result of a hand-written model, and the model agrees with the specification on every lane the kernel decides, assuming Scott completeness. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
+The proof has two parts: the generated code returns exactly the result of a hand-written model, and the model agrees with the specification on every lane the kernel decides. Scott completeness is proved using a character-sum bound on the curve's point count. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
 
 | Path | Content |
 |---|---|
@@ -12,12 +12,12 @@ The proof has two parts: the generated code returns exactly the result of a hand
 
 ## What is proved
 
-`lib.rs` reads three parts of a `Batch`: `undecided`, `valid`, and `points` on valid lanes. The headline theorem, in `lean/LeanBlsSimd/Refines/Kernel.lean`, covers exactly those, lane by lane. It is about `silver_bls_simd.decompress_g2.decompress`, the Lean function that Aeneas generates from the Rust:
+`lib.rs` reads three parts of a `Batch`: `undecided`, `valid`, and `points` on valid lanes. The headline theorem, in `lean/LeanBlsSimd/Refines/Complete.lean`, covers exactly those, lane by lane. It is about `silver_bls_simd.decompress_g2.decompress`, the Lean function that Aeneas generates from the Rust:
 
 ```lean
-theorem decompress_extracted_eq_spec (inputs : Array (Array U8 96#usize) 8#usize) :
+theorem decompress_extracted_eq_spec_complete (inputs : Array (Array U8 96#usize) 8#usize) :
     ∃ batch, silver_bls_simd.decompress_g2.decompress inputs = ok batch ∧
-      (ScottComplete → ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false →
+      (∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false →
         (if (ofBatch batch).valid.toNat.testBit l then some (ofBatch batch).points[l]
           else none) =
         (match G2.uncompress (toBytes (ofArray (ofArray ofU8) inputs (m := 8))[l]) with
@@ -25,7 +25,7 @@ theorem decompress_extracted_eq_spec (inputs : Array (Array U8 96#usize) 8#usize
           | .ok P => if G2.inSubgroup P then some (blstLimbs P) else none))
 ```
 
-The generated `decompress` returns `ok batch` for every input, without assumptions. In Aeneas's semantics, this rules out both a panic and divergence. Agreement with the specification additionally requires `ScottComplete` and a clear `undecided` bit for the lane being checked.
+The generated `decompress` returns `ok batch` for every input. In Aeneas's semantics, this rules out both a panic and divergence. Agreement with the specification requires a clear `undecided` bit for the lane being checked. The conditional API `decompress_extracted_eq_spec` remains in `Refines/Kernel.lean`; the headline theorem supplies its `ScottComplete` argument using `scott_complete`.
 
 Here `l : Fin 8` selects one of the eight lanes. The expression returns `some point` for an accepted lane and `none` for a rejected lane. On the right, [ethereum/cryptography-specs](https://github.com/ethereum/cryptography-specs) decodes with `G2.uncompress` and checks subgroup membership with `G2.inSubgroup`. These are the signature decoding and subgroup checks used by `coreVerify`; the theorem does not cover the rest of signature verification, which also validates the public key, hashes the message to G2, and checks a pairing.
 
@@ -51,10 +51,10 @@ theorem decompress_eq_spec (hC : ScottComplete)
 
 The model's agreement with the generated code is therefore proved. Agreement between that generated code and Rust still depends on the extraction and external definitions described below.
 
-Two hypotheses remain:
+The model theorem takes two hypotheses; the headline theorem keeps only the first:
 
 - The undecided bit is clear (`hu` in `decompress_eq_spec`): the kernel decides the lane. `lib.rs` sends undecided lanes to blst. The theorem gives no specification result for those lanes, although unconditional refinement still covers their computed fields. The canonical infinity encoding is one such lane.
-- `hC : ScottComplete`: every point P of E′ with [r]P = O satisfies ψ(P) = [z]P. This is assumed, not proved. `scottComplete_of_cyclic` derives it from a premise without ψ or z: every P on E′ with [r]P = O is a multiple of the generator G.
+- `hC : ScottComplete`: every point P of E′ with [r]P = O satisfies ψ(P) = [z]P. The model theorem retains this parameter; `scott_complete` proves it and supplies it to the headline theorem.
 
 The supporting theorems that mention `decompress` refer to the model function and are stated in `lean/LeanBlsSimd/Proofs/Kernel.lean`. Through `decompress_refines`, they also apply to the generated `decompress`, with its result converted by `ofBatch`.
 
@@ -65,13 +65,11 @@ The supporting theorems that mention `decompress` refer to the model function an
 | `decode_lane` | On a decided lane, `on_curve` is set exactly when `G2.uncompress` succeeds. |
 | `psi_generator` | ψ(G) = [z]G for the specification's generator G, in `Spec/Generator.lean`. |
 
-The specification-agreement conclusions of `decompress_extracted_eq_spec` and `decompress_eq_spec`, and the completeness conclusion of `valid_complete`, are implications from `hC : ScottComplete`. If `ScottComplete` were false, those implications would be vacuous: the theorems would still type-check, but would not establish those conclusions. Unconditional refinement, the return of `ok` on every input and `valid_sound` do not depend on `ScottComplete`.
+`psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. `ScottCardinality.lean` and `CubicHasse.lean` extend this identity to every rational r-torsion point.
 
-`psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. This checks the identity and constants at the generator; it does not establish `ScottComplete` for every subgroup point.
+`Spec/ScottCardinality.lean` proves that G has exact order r, using the spec dependency's primality certificate for r. If r² does not divide the curve's point count, the quotient by G's cyclic subgroup has order coprime to r, so every rational r-torsion point is a multiple of G. The numerical Hasse interval `(p - 1)² ≤ Nat.card E'.Point ≤ (p + 1)²` contains no multiple of r²; both exclusions are checked in Lean's kernel.
 
-`Spec/ScottCardinality.lean` proves that G has exact order r, using the spec dependency's primality certificate for r. `scottComplete_of_card` derives completeness from `Nat.card E'.Point = Fr.modulus * h` and `h.Coprime Fr.modulus`. A weaker premise suffices: `scottComplete_of_card_not_dvd` needs only that r² does not divide the point count. `scottComplete_of_hasse_bounds` reduces that premise to `(p - 1)² ≤ Nat.card E'.Point ≤ (p + 1)²`, with both numerical exclusions checked in Lean's kernel. These Hasse bounds remain unproved here; none of these conditional results discharges the headline theorem's assumption.
-
-`Spec/PointCount.lean` expresses the twist's point count as p² + 1 plus a quadratic-character sum. `Spec/CharacterSum.lean` converts that sum into two Jacobi sums given a cubic-root counting identity. `Spec/CubicHasse.lean` supplies the character choices and derives the Hasse inequalities from a bound on that sum. The required sum bound remains a hypothesis.
+`Spec/CubicHasse.lean` proves these Hasse bounds and concludes `scott_complete : ScottComplete`. `PointCount.lean` expresses the count as p² + 1 plus a quadratic-character sum. `CubeFiber.lean` and `CharacterSum.lean` express that sum as two weighted Jacobi sums, each with a coefficient of norm one. `JacobiNorm.lean` proves that each Jacobi sum has norm √q over a field of size q; here q = p², so the triangle inequality gives the required bound of 2p. This proves the bounds for the existing twist; it does not compute its exact point count. The conditional cardinality and cyclicity APIs remain available.
 
 ## What a reader must trust
 
@@ -82,7 +80,6 @@ The specification-agreement conclusions of `decompress_extracted_eq_spec` and `d
 5. Aeneas's Lean library at the same commit. It models Rust's integers, arrays and slices, with their overflow and bounds checks, and defines `loop` as a `partial_fixpoint`.
 6. The 15 hand-written externals in `lean/LeanBlsSimd/Extracted/TypesExternal.lean` and `FunsExternal.lean`. They stand for the items that Aeneas does not translate: the type `__m512i`, defined as the model's `M512`; the 12 AVX-512 intrinsics; `fp8::lanes`, a `transmute`; and blst's `Default` for `blst_p2_affine`. Each intrinsic returns its definition in `lean/LeanBlsSimd/Model/Intrinsics.lean`, written by hand from the Intel SDM and the `core::arch` of Rust 1.91.0. `fp8::lanes` returns lane `l` as element `l`, and blst 0.3.16 derives a `Default` that sets every limb to 0.
 7. Manual review that the headline theorem's left side matches how `decompress_g2_chunk` in `lib.rs` consumes a lane, and that its right side matches the signature decoding and subgroup checks in `coreVerify`. Neither complete function is modelled here.
-8. Scott completeness, as the hypothesis `hC`.
 
 The theorem establishes the stated property of the generated Lean code. Transferring that result to Rust requires items 4 to 6; the vector test checks their combined effect on the recorded batches. Execution of the compiled Rust also depends on compilation, linking, ABI, CPU feature detection and hardware, none of which this proof covers. The caller additionally relies on blst for undecided lanes, short chunks and hosts without SIMD support.
 
@@ -177,7 +174,7 @@ Negative controls check that selected mutations are rejected. Other controls che
 | `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
-| `CharacterSums.lean` | The affine point count over F₅, and a counterexample to the Jacobi norm identity for trivial characters. |
+| `CharacterSums.lean` | Scott soundness and completeness together; zero, cube and noncube fibers over F₇; the affine point count over F₅; and a counterexample to the Jacobi norm identity for trivial characters. |
 | `Kernel.lean` | Checks the input premises and conclusions on concrete batches, including the generator's batch. These examples need no Scott completeness assumption, but do not prove completeness for arbitrary inputs. |
 | `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a proof checked by Lean's kernel shows that the mutated claim is false; for `times_minus_z`, it refutes the claim about one loop step instead. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
@@ -194,11 +191,11 @@ It exits 0 when every value matches, 1 on an output mismatch or an extracted com
 | Path under `lean/` | Content |
 |---|---|
 | `LeanBlsSimd/Constants.lean` | p, r, z, R, and the Rust's constant tables proved equal to their derivations. |
-| `LeanBlsSimd/Spec/` | Fp2 as a field, E′, ψ, Scott soundness, both square roots, the G2 group law, and the generator check. |
+| `LeanBlsSimd/Spec/` | Fp2 as a field, E′, ψ, Scott soundness and completeness, the character-sum point-count bound, both square roots, the G2 group law, and the generator check. |
 | `LeanBlsSimd/Extracted/` | The Lean code that Aeneas generates from the Rust, `Types.lean` and `Funs.lean`, never edited by hand; and the 15 hand-written externals, in `TypesExternal.lean` and `FunsExternal.lean`. |
 | `LeanBlsSimd/Model/` | The Rust, transcribed by hand: the proved intermediate step between the generated code and the specification. |
 | `LeanBlsSimd/Proofs/` | The model against the specification, ending in `Kernel.lean`. |
-| `LeanBlsSimd/Refines/` | The generated code against the model, function by function, ending in `Kernel.lean` with the headline theorem. |
+| `LeanBlsSimd/Refines/` | The generated code against the model, function by function, with the conditional correctness API in `Kernel.lean` and the headline theorem in `Complete.lean`. |
 | `LeanBlsSimd/Axioms.lean` | The axiom guard. |
 | `controls/` | Negative controls and the axiom log. |
 | `Test/Main.lean` | The Lean side of the vector test; its docstring gives the file format. |

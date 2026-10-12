@@ -8,7 +8,6 @@ import Mathlib.Logic.Equiv.Prod
 
 namespace LeanBlsSimd
 open EthCryptographySpecs.Bls WeierstrassCurve
-open scoped BigOperators
 
 noncomputable instance Fp2Field.instFintype : Fintype Fp2Field :=
   Fintype.ofEquiv (ZMod Fp.modulus × ZMod Fp.modulus)
@@ -17,11 +16,6 @@ noncomputable instance Fp2Field.instFintype : Fintype Fp2Field :=
 theorem Fp2Field.card_eq : Fintype.card Fp2Field = Fp.modulus ^ 2 := by
   rw [Fintype.card_congr (QuadraticAlgebra.equivProd (-1) 0), Fintype.card_prod]
   simp [ZMod.card, pow_two]
-
-noncomputable instance E'.instFintypePoint : Fintype E'.Point := by
-  classical
-  exact Fintype.ofEquiv (Option {xy : Fp2Field × Fp2Field // E'.Nonsingular xy.1 xy.2})
-    E'.nonsingularPointEquiv.symm
 
 theorem card_solution_pairs {F : Type*} [Field F] [Fintype F] [DecidableEq F]
     (hF : ringChar F ≠ 2) (b : F) :
@@ -51,9 +45,11 @@ theorem E'.card_eq_character_sum :
   classical
   have he : E'.Point ≃ Option {xy : Fp2Field × Fp2Field // xy.2 ^ 2 = xy.1 ^ 3 + bTwist} :=
     E'.nonsingularPointEquiv.trans
-      (Equiv.subtypeEquivRight (fun xy : Fp2Field × Fp2Field => E'.nonsingular_iff xy.1 xy.2)).optionCongr
+      (Equiv.subtypeEquivRight
+        (fun xy : Fp2Field × Fp2Field => E'.nonsingular_iff xy.1 xy.2)).optionCongr
   rw [Nat.card_congr he, Nat.card_eq_fintype_card, Fintype.card_option, Nat.cast_add,
-    Nat.cast_one, ← Nat.card_eq_fintype_card, card_solution_pairs Fp2Field.char_ne_two, Fp2Field.card_eq]
+    Nat.cast_one, ← Nat.card_eq_fintype_card,
+    card_solution_pairs Fp2Field.char_ne_two, Fp2Field.card_eq]
   push_cast
   ring
 end LeanBlsSimd

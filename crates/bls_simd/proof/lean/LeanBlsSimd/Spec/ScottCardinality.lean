@@ -12,8 +12,8 @@ r-torsion point in that cyclic subgroup, where `psi_generator` proves the Scott 
 
 It suffices that r² does not divide the point count. The numerical Hasse interval lies strictly
 between consecutive multiples of r², so `scottComplete_of_hasse_bounds` reduces completeness to
-the two Hasse bounds for E′. Those bounds remain hypotheses; this module does not prove
-`ScottComplete`.
+the two Hasse bounds for E′. `Spec/CubicHasse.lean` supplies those bounds and concludes
+`ScottComplete`; the reductions here retain their explicit hypotheses.
 -/
 
 namespace LeanBlsSimd
@@ -91,7 +91,7 @@ theorem r_sq_not_dvd_of_hasse_bounds (n : ℕ)
     exact lt_of_le_of_lt hhi hhigh
   omega
 
-/-- Conditional on the Hasse bounds, which are not proved here. -/
+/-- Reduce completeness to the Hasse bounds supplied by `Spec/CubicHasse.lean`. -/
 theorem scottComplete_of_hasse_bounds
     (hlo : (Fp.modulus - 1) ^ 2 ≤ Nat.card E'.Point)
     (hhi : Nat.card E'.Point ≤ (Fp.modulus + 1) ^ 2) : ScottComplete :=
