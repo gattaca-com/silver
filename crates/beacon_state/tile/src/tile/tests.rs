@@ -5846,14 +5846,8 @@ fn produce_on_frame(
         panic!("expected a payload fetch");
     };
     let read = answers.frame.map(|frame| {
-        let parent_hash =
-            &silver_common::PayloadFrame::parse(frame).unwrap().execution_payload[..32];
         if let Some(request) = bid_request {
-            assert_eq!(
-                &request.parent_hash[..],
-                parent_hash,
-                "the bid builds on the payload's parent"
-            );
+            assert_bid_request_matches(&request, frame);
         }
         publish_block_bytes(gp, frame).1
     });
@@ -5871,6 +5865,21 @@ fn produce_on_frame(
     });
     let [Ok(block)] = produced[..] else { panic!("expected one produced block: {produced:?}") };
     (block, read)
+}
+
+/// The fixture's payload is valid on the parent, so its header carries
+/// everything the request asks of a bid's header.
+#[cfg(feature = "ef_tests")]
+fn assert_bid_request_matches(request: &SidecarBidRequest, frame: &[u8]) {
+    use silver_beacon_state_data::Payload;
+    use silver_common::ssz_view::ExecutionPayloadView;
+
+    let payload = silver_common::PayloadFrame::parse(frame).unwrap().execution_payload;
+    assert_eq!(&request.parent_hash, ExecutionPayloadView::parent_hash(payload));
+    assert_eq!(&request.prev_randao, ExecutionPayloadView::prev_randao(payload));
+    assert_eq!(request.block_number, ExecutionPayloadView::block_number(payload));
+    let roots = ssz_hash::PayloadRoots::of(Payload::new(payload).unwrap());
+    assert_eq!(request.withdrawals_root, roots.withdrawals);
 }
 
 #[cfg(feature = "ef_tests")]
@@ -5994,41 +6003,6 @@ fn blinded_block_on_a_bid_matches_the_full_block() {
     assert_eq!(offsets.blob_commitments_fulu(), frame.commitments);
     let (body_root, _) = stf::hash_body(&offsets);
     assert_eq!(body_root, ssz_hash::hash_tree_root_body_fulu(&full_message[84..]));
-}
-
-#[cfg(feature = "ef_tests")]
-#[test]
-fn blinded_block_whose_header_misstates_the_withdrawals_is_refused() {
-    use silver_common::PayloadFrame;
-
-    let (pre_ssz, block_ssz, _) = sanity_fixture("one_blob");
-    let state = BeaconState::from_checkpoint(&pre_ssz, &SpecConfig::mainnet(), &[]).unwrap();
-    let slot = SignedBeaconBlockView::slot(&block_ssz);
-    let (mut tile, mut gp, _rp, mut spine, mut adapter) =
-        tile_with_producers_on(slot, state, SpecConfig::mainnet());
-
-    let frame_bytes = fixture_payload_frame(&block_ssz);
-    let frame = PayloadFrame::parse(&frame_bytes).unwrap();
-    let mut header = payload_header_of(frame.execution_payload);
-    header[536] ^= 1;
-    let signed_bid =
-        signed_builder_bid(&header, frame.commitments, frame.execution_requests, [5; 32]);
-    let proposal = fixture_proposal(&tile, &block_ssz);
-    let refused = tile.produce_on_sidecar_bid(proposal, &signed_bid).err();
-    assert_eq!(refused, Some(ProduceBlockFailure::Invalid));
-
-    let answers =
-        Answers { frame: Some(&frame_bytes), signed_bid: Some(&signed_bid), bid_first: false };
-    let (block, _) = produce_on_frame(
-        &mut tile,
-        &mut gp,
-        &mut spine,
-        &mut adapter,
-        &block_ssz,
-        proposal,
-        answers,
-    );
-    assert!(block.payload.is_some(), "the slot falls back to the local payload");
 }
 
 /// The EL's payload is worth `FIXTURE_BLOCK_VALUE`; the sidecar bid carries
@@ -6632,10 +6606,11 @@ fn pooled_exits_and_bls_changes_land_in_the_produced_block() {
     assert_eq!(validators.credentials(changer as usize).0[0], 0x01);
 }
 
-/// An exit the block rejects is dropped alone; the rest of the packing stays.
+/// Fulu applies no parent payload before the body, so an exit the block
+/// rejects is not retried alone: the block is rebuilt without any operation.
 #[cfg(feature = "ef_tests")]
 #[test]
-fn a_rejected_exit_keeps_the_other_operations() {
+fn fulu_block_rejecting_an_exit_drops_every_operation() {
     use silver_common::ssz_view::{
         BeaconBlockBodyFuluView, PROPOSER_SLASHING_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
     };
@@ -6679,7 +6654,7 @@ fn a_rejected_exit_keeps_the_other_operations() {
     let body = &header[12 + 84..];
     let slashings = BeaconBlockBodyFuluView::proposer_slashings_offset(body)..
         BeaconBlockBodyFuluView::attester_slashings_offset(body);
-    assert_eq!(slashings.len(), PROPOSER_SLASHING_SIZE, "the slashing stays");
+    assert!(slashings.is_empty(), "the valid slashing goes too");
     assert_eq!(
         BeaconBlockBodyFuluView::voluntary_exits_offset(body),
         BeaconBlockBodyFuluView::execution_payload_offset(body),

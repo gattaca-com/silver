@@ -797,8 +797,9 @@ impl BeaconStateTile {
         })
     }
 
-    /// Retries without the exits a parent payload's requests can invalidate,
-    /// then without any packed operation.
+    /// On Gloas, retries without exits first: the parent payload's withdrawal
+    /// requests apply before the body and can fail an exit the pool checked
+    /// on the parent state. Then retries without any packed operation.
     fn build_with_fallbacks(
         &mut self,
         proposal: Proposal,
@@ -810,9 +811,12 @@ impl BeaconStateTile {
         }
 
         let without_exits = Operations { voluntary_exits: &[], ..operations };
+        let retry_without_exits =
+            self.spec.is_gloas_at_slot(proposal.slot) && without_exits != operations;
+        let last_tried = if retry_without_exits { without_exits } else { operations };
         let built = build(self, operations)
             .or_else(|failure| match failure {
-                ProduceBlockFailure::Invalid if without_exits != operations => {
+                ProduceBlockFailure::Invalid if retry_without_exits => {
                     silver_log::warn!(
                         slot = proposal.slot,
                         "packed exits fail the block; built without them"
@@ -822,7 +826,7 @@ impl BeaconStateTile {
                 failure => Err(failure),
             })
             .or_else(|failure| match failure {
-                ProduceBlockFailure::Invalid if without_exits != Operations::NONE => {
+                ProduceBlockFailure::Invalid if last_tried != Operations::NONE => {
                     silver_log::warn!(
                         slot = proposal.slot,
                         "packed operations fail the block; built without them"

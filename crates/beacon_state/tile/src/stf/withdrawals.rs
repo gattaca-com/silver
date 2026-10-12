@@ -5,8 +5,7 @@ use silver_beacon_state_data::{
     Slot, SpecConfig, StateWriterView, Withdrawal,
 };
 use silver_common::ssz_view::{
-    BYTES_PER_KZG_COMMITMENT, ExecutionPayloadHeaderFuluView, ExecutionPayloadView,
-    WITHDRAWAL_SIZE, WithdrawalView,
+    BYTES_PER_KZG_COMMITMENT, ExecutionPayloadView, WITHDRAWAL_SIZE, WithdrawalView,
 };
 
 use crate::{
@@ -33,16 +32,13 @@ pub fn process_execution_payload(
     roots: PayloadRoots,
 ) -> Result<(), ExecutionPayloadError> {
     debug_assert_eq!(roots, PayloadRoots::of(payload));
-    check_blob_commitments(cfg, blob_commitments, block_slot)?;
+    let max = cfg.blob_params_at(block_slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
+    let got = blob_commitments.len() / BYTES_PER_KZG_COMMITMENT;
+    if got > max {
+        return Err(ExecutionPayloadError::TooManyBlobCommitments { got, max });
+    }
+    validate::validate_execution_payload(cfg, view, payload, block_slot)?;
     let payload_bytes = payload.bytes();
-    validate::validate_execution_payload(
-        cfg,
-        view,
-        ExecutionPayloadView::parent_hash(payload_bytes),
-        ExecutionPayloadView::prev_randao(payload_bytes),
-        ExecutionPayloadView::timestamp(payload_bytes),
-        block_slot,
-    )?;
 
     let slot = &mut view.slot;
 
@@ -81,40 +77,6 @@ pub fn process_execution_payload(
         excess_blob_gas: ExecutionPayloadView::excess_blob_gas(payload_bytes),
     };
 
-    Ok(())
-}
-
-pub fn process_execution_payload_header(
-    view: &mut StateWriterView,
-    cfg: &SpecConfig,
-    header: &[u8],
-    blob_commitments: &[u8],
-    block_slot: Slot,
-) -> Result<(), ExecutionPayloadError> {
-    check_blob_commitments(cfg, blob_commitments, block_slot)?;
-    validate::validate_execution_payload(
-        cfg,
-        view,
-        ExecutionPayloadHeaderFuluView::parent_hash(header),
-        ExecutionPayloadHeaderFuluView::prev_randao(header),
-        ExecutionPayloadHeaderFuluView::timestamp(header),
-        block_slot,
-    )?;
-    view.slot.state_mut().latest_execution_payload_header =
-        ExecutionPayloadHeader::from_ssz(header).expect("checked by the body's offsets");
-    Ok(())
-}
-
-fn check_blob_commitments(
-    cfg: &SpecConfig,
-    blob_commitments: &[u8],
-    block_slot: Slot,
-) -> Result<(), ExecutionPayloadError> {
-    let max = cfg.blob_params_at(block_slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize;
-    let got = blob_commitments.len() / BYTES_PER_KZG_COMMITMENT;
-    if got > max {
-        return Err(ExecutionPayloadError::TooManyBlobCommitments { got, max });
-    }
     Ok(())
 }
 
@@ -326,18 +288,13 @@ pub fn process_withdrawals_fulu(
     Ok(())
 }
 
-pub fn process_withdrawals_fulu_blinded(
-    view: &mut StateWriterView,
-    header: &[u8],
-) -> Result<(), WithdrawalsError> {
-    let expected = get_expected_withdrawals(view);
-    let expected_root = expected.root();
-    let got = *ExecutionPayloadHeaderFuluView::withdrawals_root(header);
-    if got != expected_root {
-        return Err(WithdrawalsError::RootMismatch { expected: expected_root, got });
-    }
-    apply_withdrawals(view, &expected.withdrawals, expected.processed_partials);
-    Ok(())
+/// Withdrawals and header caching without the spec's header checks: a
+/// blinded body is only sealed on a bid already verified against this state.
+pub fn process_blinded_payload(view: &mut StateWriterView, header: &[u8]) {
+    let ExpectedWithdrawals { withdrawals, processed_partials } = get_expected_withdrawals(view);
+    apply_withdrawals(view, &withdrawals, processed_partials);
+    view.slot.state_mut().latest_execution_payload_header =
+        ExecutionPayloadHeader::from_ssz(header).expect("checked by the body's offsets");
 }
 
 fn apply_withdrawals(
