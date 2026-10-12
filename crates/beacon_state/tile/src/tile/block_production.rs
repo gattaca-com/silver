@@ -20,6 +20,7 @@ use silver_common::{
         BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE, BuilderBidFuluView,
         SignedBuilderBidFuluView,
     },
+    wei_saturating,
 };
 use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, BeaconBlockBodyGloas, EMPTY_SYNC_AGGREGATE};
@@ -69,8 +70,8 @@ enum PayloadStage {
 }
 
 /// The one block being built, for `slot` on `parent_root`: the EL's payload
-/// and the sidecar's bid `engine_id` tags the EL's requests, so a stale answer
-/// finds nothing.
+/// and the sidecar's bid. `engine_id` tags the EL's requests, so a stale
+/// answer finds nothing.
 struct BlockBuild {
     slot: Slot,
     parent_root: B256,
@@ -667,7 +668,7 @@ impl BeaconStateTile {
         local: Option<LocalPayload>,
     ) -> bool {
         let bid = SignedBuilderBidFuluView::message(signed_bid);
-        let bid_wei = wei(BuilderBidFuluView::value(bid));
+        let bid_wei = wei_saturating(BuilderBidFuluView::value(bid));
         let bid_gwei = u64::try_from(bid_wei / 1_000_000_000).unwrap_or(u64::MAX);
         let wins = proposal.bid_policy.admits(bid_gwei) &&
             match local {
@@ -675,13 +676,13 @@ impl BeaconStateTile {
                 Some(local) if local.should_override_builder => false,
                 Some(local) => {
                     let boost = u128::from(proposal.bid_policy.builder_boost_factor);
-                    bid_wei.saturating_mul(boost) / 100 > wei(&local.value)
+                    bid_wei.saturating_mul(boost) / 100 > wei_saturating(&local.value)
                 }
             };
         silver_log::info!(
             slot = proposal.slot,
             bid_wei,
-            local_wei = local.map(|local| wei(&local.value)),
+            local_wei = local.map(|local| wei_saturating(&local.value)),
             should_override_builder = local.is_some_and(|local| local.should_override_builder),
             boost = proposal.bid_policy.builder_boost_factor,
             wins,
@@ -1298,14 +1299,6 @@ fn local_payload(payload: &TRead) -> Option<LocalPayload> {
         value: frame.block_value,
         should_override_builder: frame.should_override_builder,
     })
-}
-
-/// Saturates a little-endian uint256 at `u128::MAX`.
-fn wei(value: &[u8; 32]) -> u128 {
-    if value[16..].iter().any(|byte| *byte != 0) {
-        return u128::MAX;
-    }
-    u128::from_le_bytes(value[..16].try_into().expect("16 bytes"))
 }
 
 fn wei_from_gwei(gwei: u64) -> [u8; 32] {
