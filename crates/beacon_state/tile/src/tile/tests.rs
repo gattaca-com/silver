@@ -5634,6 +5634,17 @@ fn request_waits_for_the_el_until_the_payload_deadline() {
     }
 }
 
+/// A request the EL cannot build for still has its reveal checked before a
+/// bid is asked: the bid is built on that reveal.
+#[test]
+fn reveal_is_checked_when_the_el_builds_nothing() {
+    let (mut tile, _spine, mut adapter, mut sink) = production_rig();
+    let bid_policy = BidPolicy::default();
+    let proposal = Proposal { randao_reveal: [0; 96], bid_policy, ..proposal(&tile, 11) };
+    tile.produce_block(5, proposal, &mut adapter.producers);
+    assert_eq!(produced_blocks(&mut sink), [(5, Some(ProduceBlockFailure::InvalidRandaoReveal))]);
+}
+
 /// Only a waiting request starts the payload deadline, so a payload prepared
 /// ahead of its slot never expires.
 #[test]

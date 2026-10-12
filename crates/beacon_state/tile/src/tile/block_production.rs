@@ -415,18 +415,20 @@ impl BeaconStateTile {
             let block = self.produce_gloas_block(proposal);
             return answer(producers, request_id, block);
         }
-        let started = self.start_proposal(&proposal, producers);
-        if let Err(
-            failure @ (ProduceBlockFailure::SlotNotProposable |
-            ProduceBlockFailure::InvalidRandaoReveal),
-        ) = started
-        {
+        if let Err(failure) = self.check_slot_proposable(proposal.slot) {
             return answer(producers, request_id, Err(failure));
         }
-        let asked = self.ask_sidecar_bid(&proposal, producers);
+        let local = self.start_local_payload(&proposal, producers);
+
+        // Checked after the EL is asked, so it builds in the meantime.
+        let (parent, proposer) = match self.verified_parent(&proposal) {
+            Ok(verified) => verified,
+            Err(failure) => return answer(producers, request_id, Err(failure)),
+        };
+        let asked = self.ask_sidecar_bid(&proposal, parent, proposer, producers);
         let payload_deadline = Instant::now() + self.block_production.payload_timeout;
         let build = self.block_production.build(proposal.slot, proposal.parent_root, producers);
-        match started {
+        match local {
             Ok(()) => {
                 build.local = None;
                 build.payload_deadline = Some(payload_deadline);
@@ -440,7 +442,13 @@ impl BeaconStateTile {
 
     /// Asks the PBS client for a bid on the proposal's parent payload, unless
     /// the request weights the bid at zero. Returns whether a bid is coming.
-    fn ask_sidecar_bid(&mut self, proposal: &Proposal, producers: &mut Producers) -> bool {
+    fn ask_sidecar_bid(
+        &mut self,
+        proposal: &Proposal,
+        parent: StateId,
+        proposer: u64,
+        producers: &mut Producers,
+    ) -> bool {
         if proposal.bid_policy.builder_boost_factor == 0 {
             return false;
         }
@@ -448,9 +456,6 @@ impl BeaconStateTile {
         if !matches!(build.bid, SidecarBid::NotAsked) {
             return true;
         }
-        let Ok((parent, proposer)) = self.proposal_parent(proposal) else {
-            return false;
-        };
         // Never committed, as in `prepare_payload`.
         let fork = self.state.apply_block_view(parent);
         let parent_header = &fork.view.slot.state().latest_execution_payload_header;
@@ -470,30 +475,20 @@ impl BeaconStateTile {
         true
     }
 
-    /// The reveal is checked after the EL is asked, so it builds meanwhile.
-    fn start_proposal(
+    fn start_local_payload(
         &mut self,
         proposal: &Proposal,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
-        let slot = proposal.slot;
-        if slot <= self.last_applied_block_slot() || slot > self.ticker.current_slot() + 1 {
-            return Err(ProduceBlockFailure::SlotNotProposable);
-        }
-        match self.block_production.building_on(slot, proposal.parent_root) {
+        match self.block_production.building_on(proposal.slot, proposal.parent_root) {
             Some(build) if build.stage != PayloadStage::Idle => {
                 if let PayloadStage::Prepared { payload_id } = build.stage {
                     build.fetch(payload_id, producers);
                 }
+                Ok(())
             }
-            _ => self.prepare_payload(slot, self.default_fee_recipient, producers)?,
+            _ => self.prepare_payload(proposal.slot, self.default_fee_recipient, producers),
         }
-
-        let (parent, proposer) = self.proposal_parent(proposal)?;
-        if !self.randao_reveal_verifies(parent, proposer, proposal) {
-            return Err(ProduceBlockFailure::InvalidRandaoReveal);
-        }
-        Ok(())
     }
 
     /// Resolved on every use: a finalization while the EL builds re-bases
@@ -700,7 +695,6 @@ impl BeaconStateTile {
         proposal: Proposal,
         signed_bid: &[u8],
     ) -> Result<ProducedBlock, ProduceBlockFailure> {
-        self.verified_parent(&proposal)?;
         self.build_packed(proposal, false, |tile, operations| {
             tile.build_blinded_block(proposal, signed_bid, operations)
         })
@@ -848,23 +842,30 @@ impl BeaconStateTile {
         &mut self,
         proposal: Proposal,
     ) -> Result<ProducedBlock, ProduceBlockFailure> {
-        let parent = self.verified_parent(&proposal)?;
+        self.check_slot_proposable(proposal.slot)?;
+        let (parent, _) = self.verified_parent(&proposal)?;
         let commitment = self.bid_commitment(&proposal, parent)?;
         self.build_packed(proposal, commitment.builds_on_full_parent, |tile, operations| {
             tile.build_gloas_block(proposal, &commitment, operations)
         })
     }
 
-    fn verified_parent(&mut self, proposal: &Proposal) -> Result<StateId, ProduceBlockFailure> {
-        let slot = proposal.slot;
+    fn check_slot_proposable(&self, slot: Slot) -> Result<(), ProduceBlockFailure> {
         if slot <= self.last_applied_block_slot() || slot > self.ticker.current_slot() + 1 {
             return Err(ProduceBlockFailure::SlotNotProposable);
         }
+        Ok(())
+    }
+
+    fn verified_parent(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<(StateId, u64), ProduceBlockFailure> {
         let (parent, proposer) = self.proposal_parent(proposal)?;
         if !self.randao_reveal_verifies(parent, proposer, proposal) {
             return Err(ProduceBlockFailure::InvalidRandaoReveal);
         }
-        Ok(parent)
+        Ok((parent, proposer))
     }
 
     fn build_packed(
