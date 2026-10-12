@@ -2571,7 +2571,7 @@ mod tests {
 
         let request_id = *request_id;
         let mut accepted = Vec::new();
-        let answer = Ok(ClientResponse { status: 202, body: &mut accepted });
+        let answer = Ok(ClientResponse { status: 202, headers: &[], body: &mut accepted });
         server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
         let reader = std::thread::spawn(move || read_to_eof(client));
         let response = serve(&mut server, reader, "reveal answer");

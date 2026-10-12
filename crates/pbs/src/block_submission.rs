@@ -4,7 +4,7 @@ use silver_httpcore::{
     BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
 };
 
-use crate::SUBMIT_BLINDED_BLOCK;
+use crate::{CONSENSUS_VERSION, FULU, SUBMIT_BLINDED_BLOCK};
 
 /// A blinded block on a connection of its own, so it never waits behind a
 /// registration batch the sidecar is still forwarding.
@@ -41,7 +41,7 @@ impl BlockSubmission {
             authorization: None,
             accept: None,
             content_type: Some("application/octet-stream"),
-            headers: &[("Eth-Consensus-Version", "fulu")],
+            headers: &[(CONSENSUS_VERSION, FULU)],
         };
         self.pool.enqueue(id, &post, registry);
     }

@@ -19,7 +19,7 @@ mod registrations;
 
 pub const REGISTER_VALIDATORS: &str = "/eth/v1/builder/validators";
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";
-/// The only fork whose bids this client handles.
+/// The only fork whose bids and blinded blocks this client handles.
 const FULU: &str = "fulu";
 /// Takes a Fulu `SignedBlindedBeaconBlock` as SSZ; the sidecar answers 202
 /// with no body once a relay publishes the block.
