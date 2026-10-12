@@ -303,6 +303,9 @@ theorem decode_refines (inputs : Array (Array U8 96#usize) 8#usize) :
   rw [decode_loop_refines]
   rfl
 
+theorem toBlstP2Affine_default : toBlstP2Affine default =
+    { x := toBlstFp2 default, y := toBlstFp2 default } := rfl
+
 theorem default_refines :
     blst.blst_p2_affine.Insts.CoreDefaultDefault.default = ok (toBlstP2Affine default) := rfl
 
@@ -363,16 +366,24 @@ theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
   generalize (rhsOf X).sqrt = S
   obtain ⟨root, has⟩ := S
   simp only [toU8_and, toU8_inj]
-  by_cases h1 : ~~~(D.invalid ||| D.undecided) = 0
-  · simp only [h1, if_true, toBatch]
-  simp only [h1, if_false]
-  by_cases h2 : has &&& ~~~(D.invalid ||| D.undecided) = 0
-  · simp only [h2, if_true, toBatch]
-  simp only [h2, if_false, tail, foldl_points, foldl_set_ofFn,
-    Fp2x8.is_larger_root_mask_refines, Fp2x8.neg_refines, Fp2x8.select_refines,
-    G2x8.scott_membership_refines, Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8,
-    ofFp2x8_toFp2x8, bind_tc_ok, toU8_xor, ofU8_toU8, decompress_loop_refines, toMembership,
-    toU8_and, toU8_or, toU8_not, toBatch, ofArray_toArray_ofArray_ofU64, ofFp2x8_mk]
+  rw [apply_ite toBatch, apply_ite ok]
+  apply if_congr
+  · rfl
+  · simp only [toBatch, toArray_replicate, toBlstP2Affine_default]
+  · rw [apply_ite toBatch, apply_ite ok]
+    apply if_congr
+    · rfl
+    · simp only [toBatch, toArray_replicate, toBlstP2Affine_default]
+    · simp only [tail, foldl_points, foldl_set_ofFn,
+        Fp2x8.is_larger_root_mask_refines, Fp2x8.neg_refines, Fp2x8.select_refines,
+        ofFp2x8_toFp2x8, bind_tc_ok, toU8_xor, ofU8_toU8]
+      generalize Fp2x8.select (root.is_larger_root_mask ^^^ D.larger_root) root root.neg = Y
+      simp only [G2x8.scott_membership_refines, ofFp2x8_mk, ofFp8_toFp8,
+        ofFp2x8_toFp2x8, bind_tc_ok]
+      generalize G2x8.scott_membership X Y = M
+      simp only [Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8,
+        bind_tc_ok, decompress_loop_refines, toMembership, toU8_and, toU8_or, toU8_not,
+        toBatch, ofArray_toArray_ofArray_ofU64]
 
 end DecompressG2
 

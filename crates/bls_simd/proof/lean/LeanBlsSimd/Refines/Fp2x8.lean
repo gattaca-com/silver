@@ -1,5 +1,6 @@
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Model.Fp2x8
+import LeanBlsSimd.Proofs.MulComm
 
 open Aeneas Aeneas.Std Result
 open silver_bls_simd
@@ -72,9 +73,11 @@ theorem is_zero_mask_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.is_zero_mask self = ok (toU8 (ofFp2x8 self).is_zero_mask) := by
   simp [fp2x8.Fp2x8.is_zero_mask, Fp8.is_zero_mask_refines, Fp2x8.is_zero_mask]
 
+attribute [local simp] Fp8.mul_comm in
 theorem mul_refines (self rhs : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.mul self rhs = ok (toFp2x8 ((ofFp2x8 self).mul (ofFp2x8 rhs))) := by
-  simp [fp2x8.Fp2x8.mul, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines, Fp2x8.mul, toFp2x8]
+  simp [fp2x8.Fp2x8.mul, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines, Fp2x8.mul,
+    toFp2x8]
 
 theorem square_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.square self = ok (toFp2x8 (ofFp2x8 self).square) := by
@@ -83,10 +86,21 @@ theorem square_refines (self : fp2x8.Fp2x8) :
 
 theorem sqrt_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.sqrt self = ok (Prod.map toFp2x8 toU8 (ofFp2x8 self).sqrt) := by
-  simp [fp2x8.Fp2x8.sqrt, Fp8.square_refines, Fp8.add_refines, Fp8.sub_refines,
-    Fp8.sqrt_candidate_refines, Fp8.is_zero_mask_refines, Fp8.select_refines, Fp8.half_refines,
-    Fp8.pow_p_minus_3_over_4_refines, Fp8.mul_refines, square_refines, eq_mask_refines,
-    neg_refines, mul_by_i_refines, select_refines, lift, Fp2x8.sqrt, toFp2x8]
+  unfold fp2x8.Fp2x8.sqrt Fp2x8.sqrt
+  simp only [Fp8.square_refines, Fp8.add_refines, Fp8.sqrt_candidate_refines,
+    bind_tc_ok, ofFp8_toFp8, ofFp2x8]
+  generalize ((ofFp8 self.c0).square.add (ofFp8 self.c1).square).sqrt_candidate = n
+  simp only [Fp8.is_zero_mask_refines, Fp8.sub_refines, Fp8.select_refines, Fp8.half_refines,
+    bind_tc_ok, ofU8_toU8, ofFp8_toFp8]
+  generalize (Fp8.select ((ofFp8 self.c0).add n).is_zero_mask ((ofFp8 self.c0).add n)
+    ((ofFp8 self.c0).sub n)).half = t
+  simp only [Fp8.pow_p_minus_3_over_4_refines, bind_tc_ok, ofFp8_toFp8]
+  generalize t.pow_p_minus_3_over_4 = r
+  simp only [Fp8.mul_refines, bind_tc_ok, ofFp8_toFp8]
+  generalize t.mul r = real
+  generalize (ofFp8 self.c1).half.mul r = imag
+  simp [square_refines, eq_mask_refines, neg_refines, mul_by_i_refines, select_refines,
+    ofFp2x8, lift]
 
 theorem is_larger_root_mask_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.is_larger_root_mask self = ok (toU8 (ofFp2x8 self).is_larger_root_mask) := by
