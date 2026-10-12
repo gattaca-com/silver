@@ -5634,6 +5634,20 @@ fn request_waits_for_the_el_until_the_payload_deadline() {
     }
 }
 
+/// Only a waiting request starts the payload deadline, so a payload prepared
+/// ahead of its slot never expires.
+#[test]
+fn prepared_payload_without_a_request_never_expires() {
+    let (mut tile, _spine, mut adapter, _sink) = production_rig();
+    tile.block_production = BlockProduction::new(Duration::ZERO);
+    register_proposer(&mut tile, 0, [7; 20]);
+    tile.prepare_payload(11, None, &mut adapter.producers).unwrap();
+
+    tile.expire_payload_waits(&mut adapter.producers);
+    let head = tile.head_block_root();
+    assert!(tile.block_production.awaits_local_payload(11, head));
+}
+
 #[test]
 fn preparing_another_slot_fails_the_requests_on_the_replaced_build() {
     let (mut tile, _spine, mut adapter, mut sink) = production_rig();

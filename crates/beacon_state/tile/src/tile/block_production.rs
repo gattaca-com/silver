@@ -77,7 +77,7 @@ struct BlockBuild {
     engine_id: u64,
     stage: PayloadStage,
     local: Option<Result<TRead, ProduceBlockFailure>>,
-    payload_deadline: Instant,
+    payload_deadline: Option<Instant>,
     parent_hash: B256,
     bid: SidecarBid,
 }
@@ -238,6 +238,11 @@ impl BlockProduction {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn awaits_local_payload(&mut self, slot: Slot, parent_root: B256) -> bool {
+        self.building_on(slot, parent_root).is_some_and(|build| build.local.is_none())
+    }
+
     /// The build for `slot` on `parent_root`, replacing another one. Requests
     /// still waiting on the replaced build fail: its parent has been
     /// overtaken.
@@ -259,7 +264,7 @@ impl BlockProduction {
                 engine_id: 0,
                 stage: PayloadStage::Idle,
                 local: None,
-                payload_deadline: Instant::now(),
+                payload_deadline: None,
                 parent_hash: [0; 32],
                 bid: SidecarBid::NotAsked,
             });
@@ -424,7 +429,7 @@ impl BeaconStateTile {
         match started {
             Ok(()) => {
                 build.local = None;
-                build.payload_deadline = payload_deadline;
+                build.payload_deadline = Some(payload_deadline);
             }
             Err(failure) if asked => build.local = Some(Err(failure)),
             Err(failure) => return answer(producers, request_id, Err(failure)),
@@ -583,12 +588,10 @@ impl BeaconStateTile {
 
     /// Builds without the EL's payload once it is later than the timeout.
     pub(super) fn expire_payload_waits(&mut self, producers: &mut Producers) {
-        let Some(build) = self
-            .block_production
-            .building
-            .as_mut()
-            .filter(|build| build.local.is_none() && build.payload_deadline <= Instant::now())
-        else {
+        let Some(build) = self.block_production.building.as_mut().filter(|build| {
+            build.local.is_none() &&
+                build.payload_deadline.is_some_and(|deadline| deadline <= Instant::now())
+        }) else {
             return;
         };
         silver_log::warn!(slot = build.slot, "the EL's payload is late; built without it");
