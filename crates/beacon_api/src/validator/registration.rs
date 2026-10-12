@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use silver_beacon_state_data::ExecutionAddress;
 use silver_common::{BeaconApiRequest, ProposerPreparation as PreparationRecord};
-use silver_pbs::REGISTER_VALIDATORS;
+use silver_pbs::SidecarCall;
 
 use crate::{
     ctx::ApiCtx,
@@ -28,7 +28,7 @@ pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mu
     if !ctx.has_sidecar {
         return resp.ok();
     }
-    resp.await_sidecar(REGISTER_VALIDATORS);
+    resp.await_sidecar(SidecarCall::RegisterValidators);
 }
 
 pub(crate) fn post_prepare_beacon_proposer(
@@ -266,7 +266,7 @@ mod tests {
         let body = format!("[{}]", registration());
         let (outcome, response) = dispatch(&ctx, &json_posting(REGISTER, &body));
         assert!(response.is_empty(), "answered once the sidecar has");
-        assert_eq!(outcome, Outcome::AwaitingSidecarResponse { path: REGISTER_VALIDATORS });
+        assert_eq!(outcome, Outcome::AwaitingSidecarResponse(SidecarCall::RegisterValidators));
     }
 
     #[test]

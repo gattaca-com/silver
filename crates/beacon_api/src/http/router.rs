@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use silver_common::{BeaconApiRequest, TCacheRead, TProducer};
 use silver_httpcore::{ParsedRequest, Query, frame_response};
+use silver_pbs::SidecarCall;
 
 use crate::{
     beacon::blocks::BlockRequest,
@@ -48,7 +49,7 @@ pub(crate) enum Outcome {
     AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingProducedBlock(ProduceBlockRequest),
     AwaitingVerdicts(Submission),
-    AwaitingSidecarResponse { path: &'static str },
+    AwaitingSidecarResponse(SidecarCall),
     AwaitingBlindedBlockLock { ssz: TCacheRead },
 }
 

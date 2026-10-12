@@ -5,7 +5,7 @@ use silver_common::{
     BeaconApiRequest, GossipTopic, LocalGossipFailure, TCacheProducer, TCacheRead, TProducer,
 };
 use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_headers};
-use silver_pbs::is_success;
+use silver_pbs::SidecarCall;
 
 use crate::{
     events::ChannelSet,
@@ -95,13 +95,17 @@ impl<'a> Response<'a> {
         }
     }
 
-    pub(crate) fn await_sidecar(&mut self, path: &'static str) {
-        self.outcome = Outcome::AwaitingSidecarResponse { path };
+    pub(crate) fn await_sidecar(&mut self, call_path: SidecarCall) {
+        self.outcome = Outcome::AwaitingSidecarResponse(call_path);
     }
 
-    pub(crate) fn sidecar_response(&mut self, answer: Result<ClientResponse<'_>, &str>) {
+    pub(crate) fn sidecar_response(
+        &mut self,
+        call_path: SidecarCall,
+        answer: Result<ClientResponse<'_>, &str>,
+    ) {
         match answer {
-            Ok(response) if is_success(response.status) => self.ok(),
+            Ok(response) if call_path.is_success(response.status) => self.ok(),
             Ok(response) => {
                 let code = if response.status == 400 { 400 } else { 500 };
                 let message =

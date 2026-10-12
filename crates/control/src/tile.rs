@@ -27,7 +27,7 @@ use silver_peer::PeerManager;
 use self::{
     gossip_schedule::GossipSchedule,
     local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
-    slashing_protection::{BlockReleaseResult, PendingAttestation, SlashingProtectionHandler},
+    slashing_protection::{PendingAttestation, SlashingProtectionHandler, SubmittedBlock},
     subnet_duties::{SubnetDuties, Subnets},
 };
 use crate::{
@@ -226,7 +226,7 @@ impl Controller {
             GossipTopic::BeaconBlock => self.slashing_protection.on_local_block(
                 request_id,
                 acquired,
-                BlockReleaseResult::Publish,
+                SubmittedBlock::Full,
                 now,
                 &mut self.local_gossip,
                 &mut self.gossip_handler,
@@ -556,7 +556,7 @@ impl Tile<SilverSpine> for Controller {
                 self.slashing_protection.on_local_block(
                     request_id,
                     self.reader.acquire(ssz),
-                    BlockReleaseResult::Reveal,
+                    SubmittedBlock::Blinded,
                     now,
                     &mut self.local_gossip,
                     &mut self.gossip_handler,

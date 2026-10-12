@@ -17,17 +17,35 @@ mod block_submission;
 mod header_fetch;
 mod registrations;
 
-pub const REGISTER_VALIDATORS: &str = "/eth/v1/builder/validators";
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";
 /// The only fork whose bids and blinded blocks this client handles.
 const FULU: &str = "fulu";
-/// Takes a Fulu `SignedBlindedBeaconBlock` as SSZ; the sidecar answers 202
-/// with no body once a relay publishes the block.
-pub const SUBMIT_BLINDED_BLOCK: &str = "/eth/v2/builder/blinded_blocks";
 
-/// 200, 202 and 204 all succeed, as Lighthouse's builder client counts them.
-pub fn is_success(status: u16) -> bool {
-    matches!(status, 200 | 202 | 204)
+/// The builder-API calls the beacon API hands on to the sidecar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarCall {
+    /// The VC's JSON registrations, forwarded as received.
+    RegisterValidators,
+    /// A Fulu `SignedBlindedBeaconBlock` as SSZ; the sidecar answers 202 with
+    /// no body once a relay publishes the block.
+    SubmitBlindedBlock,
+}
+
+impl SidecarCall {
+    fn path(self) -> &'static str {
+        match self {
+            Self::RegisterValidators => "/eth/v1/builder/validators",
+            Self::SubmitBlindedBlock => "/eth/v2/builder/blinded_blocks",
+        }
+    }
+
+    /// A v2 blinded block is accepted with 202 only.
+    pub fn is_success(self, status: u16) -> bool {
+        match self {
+            Self::RegisterValidators => matches!(status, 200 | 202 | 204),
+            Self::SubmitBlindedBlock => status == 202,
+        }
+    }
 }
 
 pub enum SidecarEvent<'a> {
@@ -46,7 +64,8 @@ const CONNECTION_CAPACITY: BufferCapacity = BufferCapacity { read: 64 << 10, wri
 pub struct PbsClient {
     pool: HttpPool,
     registry: Registry,
-    /// The front request is in flight while the connection is busy.
+    /// Registrations; the front one is in flight while the connection is
+    /// busy.
     requests: VecDeque<Request>,
     bodies: Vec<u8>,
     registrations: Registrations,
@@ -56,7 +75,6 @@ pub struct PbsClient {
 
 struct Request {
     id: u64,
-    path: &'static str,
     body: Range<usize>,
 }
 
@@ -94,17 +112,18 @@ impl PbsClient {
         }
     }
 
-    /// POSTs the JSON `body` to `path` at once when the connection is free,
-    /// else after the requests ahead of it. `spin` reports the answer under
-    /// `id`.
-    pub fn send(&mut self, id: u64, path: &'static str, body: &[u8]) {
-        if path == SUBMIT_BLINDED_BLOCK {
-            return self.block_submission.send(id, body, &self.registry);
+    /// Registrations go out in order, one at a time; a blinded block takes
+    /// its own connection. `spin` reports the answer under `id`.
+    pub fn send(&mut self, id: u64, call_path: SidecarCall, body: &[u8]) {
+        match call_path {
+            SidecarCall::RegisterValidators => {
+                let start = self.bodies.len();
+                self.bodies.extend_from_slice(body);
+                self.requests.push_back(Request { id, body: start..self.bodies.len() });
+                self.post_next();
+            }
+            SidecarCall::SubmitBlindedBlock => self.block_submission.send(id, body, &self.registry),
         }
-        let start = self.bodies.len();
-        self.bodies.extend_from_slice(body);
-        self.requests.push_back(Request { id, path, body: start..self.bodies.len() });
-        self.post_next();
     }
 
     /// Returns whether a [`SidecarEvent::Bid`] will answer the request.
@@ -126,7 +145,7 @@ impl PbsClient {
         });
 
         self.block_submission.spin(events, &self.registry, &mut |id, response| {
-            sidecar_accepted(SUBMIT_BLINDED_BLOCK, &response);
+            sidecar_accepted(SidecarCall::SubmitBlindedBlock, &response);
             on_event(SidecarEvent::Response { request_id: id, response });
         });
 
@@ -134,7 +153,7 @@ impl PbsClient {
         pool.dispatch_events(events, registry, &mut |id, response| {
             let request = requests.pop_front().expect("an answer follows a sent request");
             debug_assert_eq!(request.id, id);
-            if sidecar_accepted(request.path, &response) && request.path == REGISTER_VALIDATORS {
+            if sidecar_accepted(SidecarCall::RegisterValidators, &response) {
                 registrations.store(&bodies[request.body]);
             }
             on_event(SidecarEvent::Response { request_id: id, response });
@@ -150,15 +169,17 @@ impl PbsClient {
         if !self.pool.has_capacity() {
             return;
         }
-        let Some(Request { id, path, body }) = self.requests.front() else { return };
-        self.pool.enqueue(*id, &post(path, &self.bodies[body.clone()]), &self.registry);
+        let Some(Request { id, body }) = self.requests.front() else { return };
+        let registrations = &self.bodies[body.clone()];
+        self.pool.enqueue(*id, &post_registrations(registrations), &self.registry);
     }
 }
 
 /// Logs a refusal.
-fn sidecar_accepted(path: &str, response: &Result<ClientResponse<'_>, &str>) -> bool {
+fn sidecar_accepted(call_path: SidecarCall, response: &Result<ClientResponse<'_>, &str>) -> bool {
+    let path = call_path.path();
     match response {
-        Ok(response) if is_success(response.status) => return true,
+        Ok(response) if call_path.is_success(response.status) => return true,
         Ok(response) => {
             silver_log::warn!(path, status = response.status, "sidecar refused request")
         }
@@ -167,10 +188,10 @@ fn sidecar_accepted(path: &str, response: &Result<ClientResponse<'_>, &str>) -> 
     false
 }
 
-fn post<'a>(path: &'a str, body: &'a [u8]) -> ClientRequest<'a> {
+fn post_registrations(body: &[u8]) -> ClientRequest<'_> {
     ClientRequest {
         method: Method::Post,
-        path,
+        path: SidecarCall::RegisterValidators.path(),
         body,
         authorization: None,
         accept: None,

@@ -4,7 +4,7 @@ use silver_httpcore::{
     BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, Method, TokenRange,
 };
 
-use crate::{CONSENSUS_VERSION, FULU, SUBMIT_BLINDED_BLOCK};
+use crate::{CONSENSUS_VERSION, FULU, SidecarCall};
 
 /// A blinded block on a connection of its own, so it never waits behind a
 /// registration batch the sidecar is still forwarding.
@@ -36,7 +36,7 @@ impl BlockSubmission {
         }
         let post = ClientRequest {
             method: Method::Post,
-            path: SUBMIT_BLINDED_BLOCK,
+            path: SidecarCall::SubmitBlindedBlock.path(),
             body: signed_blinded_block,
             authorization: None,
             accept: None,

@@ -81,10 +81,10 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
             readiness.events(),
             processing,
             &mut |request| adapter.produce(request),
-            &mut |request_id, path, body| {
+            &mut |request_id, call_path, body| {
                 pbs.as_mut()
                     .expect("a sidecar request needs a pbs.endpoint")
-                    .send(request_id, path, body)
+                    .send(request_id, call_path, body)
             },
         );
         if did_work {
@@ -167,10 +167,10 @@ impl ApplicationBoundaryTile {
         adapter.consume(|event: DataColumnsEvent, _| beacon.handle_data_columns_event(event));
         adapter.consume(|update: SyncUpdate, _| beacon.handle_sync_update(update));
         adapter.consume(|response: BeaconApiResponse, _| {
-            beacon.handle_response(response, processing, &mut |request_id, path, body| {
+            beacon.handle_response(response, processing, &mut |request_id, call_path, body| {
                 pbs.as_mut()
                     .expect("a sidecar request needs a pbs.endpoint")
-                    .send(request_id, path, body)
+                    .send(request_id, call_path, body)
             })
         });
 

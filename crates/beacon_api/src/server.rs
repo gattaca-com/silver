@@ -20,7 +20,7 @@ use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, ClientResponse, Closed, Listener, ParsedRequest,
     ServerConnection, Stream, TokenRange,
 };
-use silver_pbs::SUBMIT_BLINDED_BLOCK;
+use silver_pbs::SidecarCall;
 
 use crate::{
     HeadStatus, NodeStatus,
@@ -94,7 +94,7 @@ enum Pending {
     ProducedBlock { request_id: u64, request: ProduceBlockRequest },
     Submission(PendingSubmission),
     BlindedBlockLock { request_id: u64, ssz: TCacheRead },
-    SidecarResponse { request_id: u64 },
+    SidecarResponse { request_id: u64, call_path: SidecarCall },
 }
 
 /// Request ids span the whole body from `first_id`, one per entry, so an
@@ -177,8 +177,8 @@ impl Pending {
                 };
                 (Self::Submission(pending), body_len as u64)
             }
-            Outcome::AwaitingSidecarResponse { .. } => {
-                (Self::SidecarResponse { request_id: first_id }, 1)
+            Outcome::AwaitingSidecarResponse(call_path) => {
+                (Self::SidecarResponse { request_id: first_id, call_path }, 1)
             }
             Outcome::AwaitingBlindedBlockLock { ssz } => {
                 emit(BeaconApiRequest::LockBlindedBlock { request_id: first_id, ssz });
@@ -197,7 +197,7 @@ impl Pending {
             Self::Contribution { request_id: awaited, .. } |
             Self::ProducedBlock { request_id: awaited, .. } |
             Self::BlindedBlockLock { request_id: awaited, .. } |
-            Self::SidecarResponse { request_id: awaited } => *awaited == request_id,
+            Self::SidecarResponse { request_id: awaited, .. } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
         }
     }
@@ -849,7 +849,7 @@ impl BeaconApi {
         &mut self,
         response: BeaconApiResponse,
         submissions: &mut TProducer,
-        to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
+        to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
     ) {
         let request_id = response.request_id();
         let Some(token) = self.token_awaiting(request_id) else {
@@ -869,8 +869,11 @@ impl BeaconApi {
         ) = (&response, &requests.pending) &&
             let Ok(block) = submissions.read_buffer(*ssz)
         {
-            to_sidecar(request_id, SUBMIT_BLINDED_BLOCK, block);
-            requests.pending = Some(Pending::SidecarResponse { request_id });
+            to_sidecar(request_id, SidecarCall::SubmitBlindedBlock, block);
+            requests.pending = Some(Pending::SidecarResponse {
+                request_id,
+                call_path: SidecarCall::SubmitBlindedBlock,
+            });
             return;
         }
 
@@ -946,8 +949,11 @@ impl BeaconApi {
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
-        Response::new(requests.http.write_buf_mut(), submissions).sidecar_response(answer);
-        requests.pending = None;
+        let Some(Pending::SidecarResponse { call_path, .. }) = requests.pending.take() else {
+            unreachable!("found awaiting a sidecar answer above");
+        };
+        Response::new(requests.http.write_buf_mut(), submissions)
+            .sidecar_response(call_path, answer);
         self.resume_writing(token);
     }
 
@@ -969,7 +975,7 @@ impl BeaconApi {
         events: &Events,
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
-        to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
+        to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
     ) -> bool {
         self.reader.free();
         let now = Instant::now();
@@ -1033,7 +1039,7 @@ impl BeaconApi {
         now: Instant,
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
-        forward_to_sidecar: &mut impl FnMut(u64, &'static str, &[u8]),
+        forward_to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
     ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
@@ -1043,8 +1049,8 @@ impl BeaconApi {
             dispatched = router.dispatch(req, ctx, submissions, out);
             // The body is borrowed only here; `Pending::defer` below numbers
             // the wait with the same id.
-            if let Outcome::AwaitingSidecarResponse { path } = dispatched {
-                forward_to_sidecar(*next_request_id, path, req.body);
+            if let Outcome::AwaitingSidecarResponse(call_path) = dispatched {
+                forward_to_sidecar(*next_request_id, call_path, req.body);
             }
         });
         if let Outcome::Response(Some(request)) = dispatched {
@@ -1191,7 +1197,7 @@ mod tests {
         submissions: TProducer,
         /// Stands in for the PBS client: each request id, path and body
         /// handed to it.
-        sidecar: Vec<(u64, &'static str, Vec<u8>)>,
+        sidecar: Vec<(u64, SidecarCall, Vec<u8>)>,
     }
 
     impl Server {
@@ -1251,8 +1257,8 @@ mod tests {
 
         fn answer(&mut self, response: BeaconApiResponse) {
             let Self { api, submissions, sidecar, .. } = self;
-            api.handle_response(response, submissions, &mut |request_id, path, body| {
-                sidecar.push((request_id, path, body.to_vec()))
+            api.handle_response(response, submissions, &mut |request_id, call_path, body| {
+                sidecar.push((request_id, call_path, body.to_vec()))
             });
         }
 
@@ -1270,7 +1276,9 @@ mod tests {
                 readiness.events(),
                 submissions,
                 &mut |request| requests.push(request),
-                &mut |request_id, path, body| sidecar.push((request_id, path, body.to_vec())),
+                &mut |request_id, call_path, body| {
+                    sidecar.push((request_id, call_path, body.to_vec()))
+                },
             )
         }
     }
@@ -2521,8 +2529,8 @@ mod tests {
         let client = connect(tcp_addr(server));
         post(&client, "/eth/v1/validator/register_validator", &body);
         pump_until(server, "registration handed on", |server| !server.sidecar.is_empty());
-        let (request_id, path, sent) = server.sidecar.remove(0);
-        assert_eq!((path, sent), ("/eth/v1/builder/validators", body.into_bytes()));
+        let (request_id, call_path, sent) = server.sidecar.remove(0);
+        assert_eq!((call_path, sent), (SidecarCall::RegisterValidators, body.into_bytes()));
         assert!(server.requests.is_empty(), "nothing goes to the spine");
 
         let mut sidecar_body = Vec::new();
@@ -2561,21 +2569,28 @@ mod tests {
         client
     }
 
+    /// The v2 endpoint accepts with 202 only.
     #[test]
     fn locked_blinded_block_is_revealed_through_the_sidecar() {
-        let mut server = server_with(64, LONG_TIMEOUT);
-        let client = submit_blinded_block(&mut server, Ok(()));
-        let [(request_id, path, sent)] = &server.sidecar[..] else { panic!("one forward") };
-        assert_eq!(*path, SUBMIT_BLINDED_BLOCK);
-        assert_eq!(*sent, blinded_block());
+        for (status, line) in
+            [(202, "HTTP/1.1 200 OK\r\n"), (200, "HTTP/1.1 500 Internal Server Error\r\n")]
+        {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            let client = submit_blinded_block(&mut server, Ok(()));
+            let [(request_id, call_path, sent)] = &server.sidecar[..] else {
+                panic!("one forward")
+            };
+            assert_eq!(*call_path, SidecarCall::SubmitBlindedBlock);
+            assert_eq!(*sent, blinded_block());
 
-        let request_id = *request_id;
-        let mut accepted = Vec::new();
-        let answer = Ok(ClientResponse { status: 202, headers: &[], body: &mut accepted });
-        server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
-        let reader = std::thread::spawn(move || read_to_eof(client));
-        let response = serve(&mut server, reader, "reveal answer");
-        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), "{response:?}");
+            let request_id = *request_id;
+            let mut body = Vec::new();
+            let answer = Ok(ClientResponse { status, headers: &[], body: &mut body });
+            server.api.handle_sidecar_response(request_id, answer, &mut server.submissions);
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = String::from_utf8(serve(&mut server, reader, "reveal answer")).unwrap();
+            assert!(response.starts_with(line), "{status}: {response}");
+        }
     }
 
     #[test]
