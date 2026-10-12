@@ -30,8 +30,8 @@ pub(super) const GENESIS_EPOCH: Epoch = 0;
 
 pub const PROPOSER_SCORE_BOOST_PERCENT: u64 = 40;
 
-fn proposer_boost_score(total_active_balance: u64) -> u64 {
-    (total_active_balance / SLOTS_PER_EPOCH) * PROPOSER_SCORE_BOOST_PERCENT / 100
+fn proposer_boost_score(total_weight: u64) -> u64 {
+    (total_weight / SLOTS_PER_EPOCH) * PROPOSER_SCORE_BOOST_PERCENT / 100
 }
 
 #[derive(Default)]
@@ -302,7 +302,7 @@ impl ForkChoice {
 
     pub fn set_proposer_boost(&mut self, root: B256) {
         self.proposer_boost_root = root;
-        self.proposer_boost_score = proposer_boost_score(self.justified.total_active());
+        self.proposer_boost_score = proposer_boost_score(self.justified.total_weight());
         self.head_moved = true;
     }
 

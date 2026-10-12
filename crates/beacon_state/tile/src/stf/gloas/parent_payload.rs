@@ -68,6 +68,20 @@ fn apply_parent_execution_payload(
     let parent_epoch = parent_slot / SLOTS_PER_EPOCH;
     let finalized_epoch = epoch.state().finalized_checkpoint.epoch;
 
+    // Settled before the requests, so a builder exit sees the payment still
+    // pending. The window entry is used, or a direct withdrawal once it aged out.
+    if parent_epoch == current_epoch {
+        settle_builder_payment(view, SPE + (parent_slot % SLOTS_PER_EPOCH) as usize);
+    } else if current_epoch > 0 && parent_epoch == current_epoch - 1 {
+        settle_builder_payment(view, (parent_slot % SLOTS_PER_EPOCH) as usize);
+    } else if parent_value > 0 {
+        view.pending.builder_withdrawals.push(BuilderPendingWithdrawal {
+            fee_recipient: parent_fee_recipient,
+            amount: parent_value,
+            builder_index: parent_builder_index,
+        });
+    }
+
     // The parent's deferred execution requests apply at this (child) slot.
     let [deposits, withdrawals, consolidations, builder_deposits, builder_exits] =
         ExecutionRequestsView::sections(requests);
@@ -86,20 +100,6 @@ fn apply_parent_execution_payload(
             finalized_epoch,
             &builder_exits[i * BUILDER_EXIT_SSZ..][..BUILDER_EXIT_SSZ],
         );
-    }
-
-    // Settle the parent's builder payment from the two-epoch window, or directly
-    // if its window entry has already aged out.
-    if parent_epoch == current_epoch {
-        settle_builder_payment(view, SPE + (parent_slot % SLOTS_PER_EPOCH) as usize);
-    } else if current_epoch > 0 && parent_epoch == current_epoch - 1 {
-        settle_builder_payment(view, (parent_slot % SLOTS_PER_EPOCH) as usize);
-    } else if parent_value > 0 {
-        view.pending.builder_withdrawals.push(BuilderPendingWithdrawal {
-            fee_recipient: parent_fee_recipient,
-            amount: parent_value,
-            builder_index: parent_builder_index,
-        });
     }
 
     let slot = view.slot.state_mut();

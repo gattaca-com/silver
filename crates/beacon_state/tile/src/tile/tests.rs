@@ -4075,7 +4075,7 @@ fn justified_moves_between_recomputes_weigh_latest_snapshot() {
     tile.fork_choice.justified.install(cp2, tile.state.read_view(slashed).validators);
     tile.fork_choice.recompute_head();
     assert_eq!(node_weight(&tile, anchor), 7 * MAX_EFFECTIVE_BALANCE);
-    assert_eq!(tile.fork_choice.justified.total_active(), 8 * MAX_EFFECTIVE_BALANCE);
+    assert_eq!(tile.fork_choice.justified.total_weight(), 7 * MAX_EFFECTIVE_BALANCE);
 }
 
 #[test]

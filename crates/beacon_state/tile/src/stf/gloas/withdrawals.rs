@@ -99,19 +99,32 @@ fn get_builders_sweep_withdrawals(
             break;
         }
         let b = builders.get(bi as usize).unwrap();
-        if b.withdrawable_epoch <= current_epoch && b.balance > 0 {
-            out.push(Withdrawal {
-                index: *wi,
-                validator_index: convert_builder_index_to_validator_index(bi),
-                address: b.execution_address,
-                amount: b.balance,
-            });
-            *wi += 1;
+        if b.withdrawable_epoch <= current_epoch {
+            let validator_index = convert_builder_index_to_validator_index(bi);
+            let balance = balance_after_withdrawals(b.balance, validator_index, out);
+            if balance > 0 {
+                out.push(Withdrawal {
+                    index: *wi,
+                    validator_index,
+                    address: b.execution_address,
+                    amount: balance,
+                });
+                *wi += 1;
+            }
         }
         bi = (bi + 1) % n;
         processed += 1;
     }
     processed
+}
+
+fn balance_after_withdrawals(mut balance: u64, validator_index: u64, out: &[Withdrawal]) -> u64 {
+    for w in out {
+        if w.validator_index == validator_index {
+            balance = balance.saturating_sub(w.amount);
+        }
+    }
+    balance
 }
 
 fn apply_withdrawals(view: &mut StateWriterView, withdrawals: &[Withdrawal]) {

@@ -27,7 +27,7 @@ pub struct JustifiedBalances {
 struct Snapshot {
     checkpoint: Option<Checkpoint>,
     balances: Vec<u64>,
-    total_active: u64,
+    total_weight: u64,
     /// Indices whose balance differs from the applied one; empty once the
     /// weights carry this snapshot.
     unapplied: Vec<u32>,
@@ -46,8 +46,8 @@ impl JustifiedBalances {
         self.current.checkpoint != Some(justified)
     }
 
-    pub fn total_active(&self) -> u64 {
-        self.current.total_active
+    pub fn total_weight(&self) -> u64 {
+        self.current.total_weight
     }
 
     /// `(applied, current, unapplied)`: move each unapplied index's weight
@@ -109,7 +109,7 @@ impl Snapshot {
         let mut exit = validators.iter_exit_epochs();
         let mut eff = validators.iter_effective_balances();
         let mut slashed = validators.iter_slashed();
-        let mut total_active = 0u64;
+        let mut total_weight = 0u64;
         for weight in &mut self.balances {
             // Safety: validators fields all have the same size
             let a = act.next().unwrap();
@@ -117,12 +117,12 @@ impl Snapshot {
             let b = eff.next().unwrap();
             let s = slashed.next().unwrap();
             let active = (a <= cp.epoch) & (cp.epoch < x);
-            total_active += b * active as u64;
             *weight = b * (active & !s) as u64;
+            total_weight += *weight;
         }
 
         self.diff_against(applied);
-        self.total_active = total_active.max(EFFECTIVE_BALANCE_INCREMENT);
+        self.total_weight = total_weight.max(EFFECTIVE_BALANCE_INCREMENT);
         self.checkpoint = Some(cp);
     }
 

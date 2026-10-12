@@ -105,37 +105,17 @@ pub fn process_proposer_slashings(
                 epoch: current_epoch,
             });
         }
-        if is_gloas {
-            clear_builder_payment_on_slash(
-                &mut view.slot,
-                ProposerSlashingView::h1_slot(s),
-                vi,
-                current_epoch,
-            );
-        }
-        proposer_reward += slash_validator(cfg, view, vi, proposer_index);
+        proposer_reward += slash_validator(cfg, view, is_gloas, vi, proposer_index);
     }
     Ok(proposer_reward)
 }
 
-fn clear_builder_payment_on_slash(
-    slot: &mut SlotStateWriteView,
-    proposal_slot: u64,
-    proposer_index: u32,
-    current_epoch: u64,
-) {
-    let spe = SLOTS_PER_EPOCH as usize;
-    let proposal_epoch = proposal_slot / SLOTS_PER_EPOCH;
-    let slot_in_epoch = proposal_slot as usize % spe;
-    let ring = if proposal_epoch == current_epoch {
-        spe + slot_in_epoch
-    } else if current_epoch > 0 && proposal_epoch == current_epoch - 1 {
-        slot_in_epoch
-    } else {
-        return;
-    };
-    if slot.state().builder_pending_payments[ring].proposer_index == proposer_index as u64 {
-        slot.state_mut().builder_pending_payments[ring] = BuilderPendingPayment::default();
+fn clear_builder_payments_of(slot: &mut SlotStateWriteView, proposer_index: u32) {
+    let proposer_index = proposer_index as u64;
+    for ring in 0..slot.state().builder_pending_payments.len() {
+        if slot.state().builder_pending_payments[ring].proposer_index == proposer_index {
+            slot.state_mut().builder_pending_payments[ring] = BuilderPendingPayment::default();
+        }
     }
 }
 
@@ -248,6 +228,7 @@ pub fn process_attester_slashings(
     if data.is_empty() {
         return Ok(0);
     }
+    let is_gloas = epoch.is_gloas(view.imm.gloas_fork_version);
     let proposer_index = get_beacon_proposer_index(&view.slot, epoch);
     let n = view.validators.count();
     let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
@@ -283,7 +264,7 @@ pub fn process_attester_slashings(
                 return Err(AttesterSlashingError::NoSlashedIntersection);
             }
             for &vi in &slashed_sink[start..] {
-                proposer_reward += slash_validator(cfg, view, vi, proposer_index);
+                proposer_reward += slash_validator(cfg, view, is_gloas, vi, proposer_index);
             }
             Ok(())
         },
@@ -405,6 +386,7 @@ pub(crate) fn attesting_indices_bytes(data: &[u8], start: usize, end: usize) -> 
 fn slash_validator(
     cfg: &SpecConfig,
     view: &mut StateWriterView,
+    is_gloas: bool,
     vi: u32,
     proposer_index: u32,
 ) -> u64 {
@@ -447,6 +429,10 @@ fn slash_validator(
     let whistleblower_reward = effective_balance / WHISTLEBLOWER_REWARD_QUOTIENT;
     let bal_pi = view.balances.get(proposer_index as usize);
     view.balances.set(proposer_index, bal_pi.saturating_add(whistleblower_reward));
+
+    if is_gloas {
+        clear_builder_payments_of(&mut view.slot, vi);
+    }
     whistleblower_reward
 }
 
