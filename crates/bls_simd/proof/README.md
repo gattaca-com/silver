@@ -69,6 +69,8 @@ The specification-agreement conclusions of `decompress_extracted_eq_spec` and `d
 
 `psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. This checks the identity and constants at the generator; it does not establish `ScottComplete` for every subgroup point.
 
+`Spec/ScottCardinality.lean` proves that G has exact order r, using the spec dependency's primality certificate for r. `scottComplete_of_card` derives completeness from `Nat.card E'.Point = Fr.modulus * h` and `h.Coprime Fr.modulus`. A weaker premise suffices: `scottComplete_of_card_not_dvd` needs only that r² does not divide the point count. `scottComplete_of_hasse_bounds` reduces that premise to `(p - 1)² ≤ Nat.card E'.Point ≤ (p + 1)²`, with both numerical exclusions checked in Lean's kernel. These Hasse bounds remain unproved here; none of these conditional results discharges the headline theorem's assumption.
+
 ## What a reader must trust
 
 1. Lean's kernel, v4.29.1, and the axioms `propext`, `Classical.choice` and `Quot.sound`. `lean/LeanBlsSimd/Axioms.lean` checks the library's theorems, the generated `decompress` and their dependencies, failing the build if they use another axiom. No library proof uses `native_decide` or `bv_decide`. Aeneas's Lean library contains `sorry`s, which Lean records as the axiom `sorryAx`. The same check shows that neither the headline theorem nor the generated `decompress` depends on one.
@@ -172,6 +174,7 @@ Negative controls check that selected mutations are rejected. Other controls che
 | `Guard.lean` | The axiom guard rejects `native_decide`, `bv_decide` and `Lean.ofReduceBool`. |
 | `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
+| `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
 | `Kernel.lean` | Checks the input premises and conclusions on concrete batches, including the generator's batch. These examples need no Scott completeness assumption, but do not prove completeness for arbitrary inputs. |
 | `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a proof checked by Lean's kernel shows that the mutated claim is false; for `times_minus_z`, it refutes the claim about one loop step instead. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |

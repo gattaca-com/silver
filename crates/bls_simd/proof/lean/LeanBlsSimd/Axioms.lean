@@ -2,6 +2,7 @@ import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.G2Curve
 import LeanBlsSimd.Spec.Scott
+import LeanBlsSimd.Spec.ScottCardinality
 import LeanBlsSimd.Spec.Sqrt
 import LeanBlsSimd.Spec.G2Group
 import LeanBlsSimd.Proofs.Pow

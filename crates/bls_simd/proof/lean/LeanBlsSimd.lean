@@ -6,6 +6,7 @@ import LeanBlsSimd.Spec.Sqrt
 import LeanBlsSimd.Spec.G2Group
 import LeanBlsSimd.Spec.Membership
 import LeanBlsSimd.Spec.Generator
+import LeanBlsSimd.Spec.ScottCardinality
 import LeanBlsSimd.Model.Intrinsics
 import LeanBlsSimd.Model.Fp8
 import LeanBlsSimd.Model.Fp2x8
