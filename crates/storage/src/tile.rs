@@ -5,9 +5,9 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, DataColumnsEvent, DataKind, Origin,
-    P2pSend, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound, SilverSpine,
-    SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError, TCacheId,
-    TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
+    P2pSend, PayloadResolution, PeerControl, PeerEvent, ReplayBlock, RequestId, RpcInbound,
+    SilverSpine, SilverSpineProducers, SyncNeed, SyncUpdate, SyncingStrategy, TCacheError,
+    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
     ssz_view::{SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, StatusView},
 };
 
@@ -258,13 +258,14 @@ impl StorageTile {
 }
 
 impl StorageTile {
-    fn on_status(&mut self, ssz: &[u8; 92], wall_slot: u64) {
+    fn on_status(&mut self, ssz: &[u8; 92], wall_slot: u64, head_payload: PayloadResolution) {
         self.wall_slot = wall_slot;
         let head_slot = StatusView::head_slot(ssz);
         let finalized_epoch = StatusView::finalized_epoch(ssz);
         self.store.update_head(
             head_slot,
             *StatusView::head_root(ssz),
+            head_payload,
             finalized_epoch * SLOTS_PER_EPOCH,
             *StatusView::finalized_root(ssz),
         );
@@ -282,11 +283,11 @@ impl StorageTile {
         &mut self,
         event: BeaconStateEvent,
         needs: &mut impl FnMut(SyncNeed),
-    ) -> Option<([u8; 92], u64)> {
-        let mut latest_status_event: Option<([u8; 92], u64)> = None;
+    ) -> Option<BeaconStateEvent> {
+        let mut latest_status_event = None;
         match event {
-            BeaconStateEvent::Status { ssz, wall_slot, .. } => {
-                latest_status_event = Some((ssz, wall_slot));
+            BeaconStateEvent::Status { .. } => {
+                latest_status_event = Some(event);
             }
             BeaconStateEvent::PersistBlock { ssz, source, slot, block_root: announced_root } => {
                 let t_read = self.persist_reader.acquire(ssz);
@@ -416,7 +417,7 @@ impl Tile<SilverSpine> for StorageTile {
             }
         });
 
-        let mut latest_status_event: Option<([u8; 92], u64)> = None;
+        let mut latest_status_event = None;
 
         adapter.consume(|beacon_event: BeaconStateEvent, producers| {
             let mut needs = |need: SyncNeed| {
@@ -459,8 +460,10 @@ impl Tile<SilverSpine> for StorageTile {
             }
         });
 
-        if let Some((ssz, wall_slot)) = latest_status_event {
-            self.on_status(&ssz, wall_slot);
+        if let Some(BeaconStateEvent::Status { ssz, wall_slot, head_payload, .. }) =
+            latest_status_event
+        {
+            self.on_status(&ssz, wall_slot, head_payload);
         }
 
         adapter.consume(|sync_update: SyncUpdate, _| self.store.sync_update(sync_update));
@@ -655,20 +658,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&store_dir);
         let mut tile = empty_tile(&store_dir);
 
-        tile.on_status(&status_ssz(96, 2), 96 + CAUGHT_UP_SLACK_SLOTS + 1);
+        tile.on_status(&status_ssz(96, 2), 96 + CAUGHT_UP_SLACK_SLOTS + 1, PayloadResolution::Full);
         assert!(!tile.persist_pending, "checkpoint deferred while catching up");
 
-        tile.on_status(&status_ssz(96, 2), 96);
+        tile.on_status(&status_ssz(96, 2), 96, PayloadResolution::Full);
         assert!(
             tile.persist_pending,
             "caught up at the same finalization, the checkpoint is not lost"
         );
 
         tile.persist_pending = false;
-        tile.on_status(&status_ssz(96, 2), 96);
+        tile.on_status(&status_ssz(96, 2), 96, PayloadResolution::Full);
         assert!(!tile.persist_pending, "the same finalization was already scheduled");
 
-        tile.on_status(&status_ssz(128, 3), 128);
+        tile.on_status(&status_ssz(128, 3), 128, PayloadResolution::Full);
         assert!(tile.persist_pending, "an advanced finalization arms the next one");
 
         let _ = std::fs::remove_dir_all(&store_dir);

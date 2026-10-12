@@ -239,9 +239,6 @@ impl ForkChoice {
         n.full.weight >= n.empty.weight
     }
 
-    /// Spec `filter_node_tree` membership of the EMPTY/FULL variant of `idx`:
-    /// a childless variant is viable when its block is, otherwise it needs a
-    /// child leading to a viable head.
     #[inline]
     fn variant_is_viable(&self, idx: usize, full: bool) -> bool {
         let branch = self.nodes[idx].branch(full);

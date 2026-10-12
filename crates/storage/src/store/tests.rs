@@ -8,7 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::{Prefill, SyncNeed, SyncUpdate, TCacheId, TCacheReader, TReadMode};
+use silver_common::{
+    PayloadResolution, Prefill, SyncNeed, SyncUpdate, TCacheId, TCacheReader, TReadMode,
+};
 use tempfile::TempDir;
 
 use super::{column_path, envelope_path, slot_dir};
@@ -128,7 +130,7 @@ fn fork_tree_persist_serve_promote() {
     assert!(store.unfinalized.contains(&root_b));
 
     // Head selects A; not yet finalized.
-    store.update_head(slot, root_a, 0, [0u8; 32]);
+    store.update_head(slot, root_a, PayloadResolution::Full, 0, [0u8; 32]);
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
@@ -259,7 +261,7 @@ fn fork_tree_persist_serve_promote() {
     assert!(store.block_facts(BlockLookup::Root([0xEE; 32])).is_none(), "an unknown root");
 
     // Finalize at slot 42 on A: promote A, prune the orphan B.
-    store.update_head(slot, root_a, slot, root_a);
+    store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert_eq!(store.finalized.slot_of(&root_a), Some(slot));
     assert!(!store.unfinalized.contains(&root_a));
     assert!(!store.unfinalized.contains(&root_b));
@@ -342,7 +344,7 @@ fn envelope_persist_promote_prune() {
     assert_eq!(store.unfinalized_envelopes.slot_of(&root_b), Some(slot));
 
     // Head selects A; nothing finalized yet.
-    store.update_head(slot, root_a, 0, [0u8; 32]);
+    store.update_head(slot, root_a, PayloadResolution::Full, 0, [0u8; 32]);
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
@@ -373,7 +375,7 @@ fn envelope_persist_promote_prune() {
     );
 
     // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
-    store.update_head(slot, root_a, slot, root_a);
+    store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_envelopes.is_empty());
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
 
@@ -421,7 +423,7 @@ fn range_query_terminates_on_cycle() {
         TCacheReader::single(blocks.cache_ref(), "cycle_cons", TReadMode::Sliding).unwrap();
     let read = consumer.acquire(ssz);
     store.add_block(root_x, read, slot, root_x);
-    store.update_head(slot, root_x, 0, [0u8; 32]);
+    store.update_head(slot, root_x, PayloadResolution::Full, 0, [0u8; 32]);
 
     // Drain the staged write so the acquired read is released while its
     // consumer is still alive (`read` is parked in the write queue).
@@ -487,10 +489,62 @@ fn envelope_range_request_served_empty() {
     assert!(matches!(
         &responses[0],
         P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-            response: RpcResponse::Error { error: 3, .. },
+            response: RpcResponse::Complete,
             ..
         }))
     ));
+}
+
+/// A finalized range with no envelope at its middle slot (a skipped slot or an
+/// EMPTY payload) still serves the envelopes on both sides of the hole.
+#[test]
+fn envelope_range_request_serves_past_a_hole() {
+    use silver_common::{
+        P2pSend, P2pStreamId, RpcOutbound, RpcRequest, RpcRequestInbound, RpcResponse,
+        RpcResponseOutbound, StreamProtocol, TCache, TCacheProducer,
+        ssz_view::EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_gloas(store_path.clone());
+    store.head.finalized_slot = 20;
+    for slot in [10, 12] {
+        let path = envelope_path(&store_path, slot);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, [slot as u8; 64]).unwrap();
+    }
+
+    let req_producer = TCache::producer(TCacheId::NetworkIngress, 1024 * 1024);
+    let mut req_consumer =
+        TCacheReader::single(req_producer.cache_ref(), "env_req_cons", TReadMode::Sliding).unwrap();
+    let sid = P2pStreamId::new(9, 1, StreamProtocol::ExecutionPayloadEnvelopesByRange, false);
+    let mut req = [0u8; EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE];
+    req[0..8].copy_from_slice(&10u64.to_le_bytes());
+    req[8..16].copy_from_slice(&3u64.to_le_bytes());
+    store.rpc_request(&mut req_consumer, RpcRequestInbound {
+        stream_id: sid,
+        request: RpcRequest::ExecutionPayloadEnvelopesByRange(req),
+    });
+
+    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
+    let mut responses = vec![];
+    store
+        .file_io(|_| [1, 2, 3, 4], &mut producer, &mut |s| {
+            if let IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                response,
+                ..
+            }))) = s
+            {
+                responses.push(response);
+            }
+        })
+        .unwrap();
+
+    assert_eq!(responses.len(), 3, "two envelopes then Complete: {responses:?}");
+    assert!(matches!(responses[0], RpcResponse::ExecutionPayloadEnvelope { .. }));
+    assert!(matches!(responses[1], RpcResponse::ExecutionPayloadEnvelope { .. }));
+    assert!(matches!(responses[2], RpcResponse::Complete));
 }
 
 #[test]
@@ -538,7 +592,7 @@ fn column_fork_persist_serve_promote() {
     assert!(store.unfinalized_columns.contains(&root_a));
     assert!(store.unfinalized_columns.contains(&root_b));
 
-    store.update_head(slot, root_a, 0, [0u8; 32]);
+    store.update_head(slot, root_a, PayloadResolution::Full, 0, [0u8; 32]);
 
     let fork_digest = [9, 9, 9, 9];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
@@ -654,7 +708,7 @@ fn column_fork_persist_serve_promote() {
     ));
 
     // Finalize on A at slot 42: promote A's columns, prune B's.
-    store.update_head(slot, root_a, slot, root_a);
+    store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_columns.is_empty());
 
     store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
@@ -881,7 +935,7 @@ fn promoted_block_missing_its_envelope_becomes_backfill_work() {
     store.sync_update(SyncUpdate::Following);
     store.add_block(root, staged.consumer.acquire(staged.reads[0]), slot, [0x31; 32]);
     // Finality reaches the block; its envelope never arrived.
-    store.update_head(slot, root, slot, root);
+    store.update_head(slot, root, PayloadResolution::Full, slot, root);
 
     let prefill = prefills(&mut store).pop().expect("the promoted slot is missing");
     assert_eq!(prefill.start + 31, slot, "the window ends at it");
@@ -925,7 +979,7 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
         root_bottom,
     );
     store.add_block(root_top, staged_top.consumer.acquire(staged_top.reads[0]), 400, root_middle);
-    store.update_head(400, root_top, 400, root_top);
+    store.update_head(400, root_top, PayloadResolution::Full, 400, root_top);
     assert!(drain(&mut store).is_err(), "the finalized block's promote fails");
     assert_eq!(store.finalized.slot_of(&root_top), Some(400), "yet the root stays indexed");
     std::fs::remove_file(&dir).unwrap();
@@ -1003,8 +1057,8 @@ fn promotion_draining_under_a_later_finality_keeps_its_needs() {
     let ssz_second = staged_second.consumer.acquire(staged_second.reads[0]);
     store.add_block(root_first, ssz_first, 40, [0x31; 32]);
     store.add_block(root_second, ssz_second, 44, root_first);
-    store.update_head(40, root_first, 40, root_first);
-    store.update_head(44, root_second, 44, root_second);
+    store.update_head(40, root_first, PayloadResolution::Full, 40, root_first);
+    store.update_head(44, root_second, PayloadResolution::Full, 44, root_second);
     while !store.write_queue.is_empty() {
         drain(&mut store).unwrap();
     }
@@ -1204,7 +1258,7 @@ fn range_queries_interleave_fairly() {
         TCacheReader::single(blocks.cache_ref(), "fair_cons", TReadMode::Sliding).unwrap();
     store.add_block(root_10, consumer.acquire(ssz_10), 10, parent);
     store.add_block(root_11, consumer.acquire(ssz_11), 11, root_10);
-    store.update_head(11, root_11, 0, [0u8; 32]);
+    store.update_head(11, root_11, PayloadResolution::Full, 0, [0u8; 32]);
 
     let fork_digest = [0u8; 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
@@ -1311,7 +1365,7 @@ fn vanished_unfinalized_files_stay_missing_at_promotion() {
         .unwrap();
 
     store.sync_update(SyncUpdate::Following);
-    store.update_head(48, root_top, 48, root_top);
+    store.update_head(48, root_top, PayloadResolution::Full, 48, root_top);
     let mut published = Vec::new();
     while !store.write_queue.is_empty() {
         published.extend(prefills(&mut store));

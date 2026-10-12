@@ -9,9 +9,9 @@ use std::{
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
-    BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PeerEvent, RpcOutbound,
-    RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate, TCacheRead,
-    TCacheReader, TRead,
+    BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PayloadResolution, PeerEvent,
+    RpcOutbound, RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate,
+    TCacheRead, TCacheReader, TRead,
     merkle::B256,
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
@@ -252,6 +252,10 @@ impl QueryUnit {
             QueryUnit::UnfinalizedEnvelope { slot, .. } => *slot,
         }
     }
+
+    fn is_envelope(&self) -> bool {
+        matches!(self, QueryUnit::Envelope { .. } | QueryUnit::UnfinalizedEnvelope { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -397,6 +401,7 @@ pub(super) fn envelope_path(store_dir: &str, slot: u64) -> PathBuf {
 pub(super) struct Head {
     pub(super) slot: u64,
     pub(super) root: B256,
+    pub(super) payload_full: bool,
     pub(super) finalized_slot: u64,
     pub(super) finalized_root: B256,
 }
@@ -601,11 +606,13 @@ impl Store {
         &mut self,
         head_slot: u64,
         head_root: [u8; 32],
+        head_payload: PayloadResolution,
         finalized_slot: u64,
         finalized_root: [u8; 32],
     ) {
         self.head.slot = head_slot;
         self.head.root = head_root;
+        self.head.payload_full = head_payload == PayloadResolution::Full;
         silver_log::debug!(head_slot, head_root = hex::encode(head_root), "storage head update");
 
         if finalized_slot <= self.head.finalized_slot {
@@ -639,7 +646,9 @@ impl Store {
             let block = Block::new(facts, needs, finalized_slot, finalized_root);
             self.write_queue.push_back(PendingWrite::PromoteBlock { block });
             self.unfinalized_columns.promote(root, &mut self.write_queue);
-            self.unfinalized_envelopes.promote(root, &mut self.write_queue);
+            if needs.envelope {
+                self.unfinalized_envelopes.promote(root, &mut self.write_queue);
+            }
             child_payload = Some(payload.parent_payload_hash);
             root = parent_root;
         }
@@ -845,16 +854,15 @@ impl Store {
                 let count = ExecutionPayloadEnvelopesByRangeRequestView::count(&ssz)
                     .min(MAX_REQUEST_BLOCKS);
                 let end = start.saturating_add(count);
-                // One envelope per canonical block; `serve_file` skips a slot
-                // with no envelope (pre-Gloas or a missed slot).
-                self.resolve_canonical_range(start, end, |slot, canonical| {
-                    units.push_back(match canonical {
-                        Some((_parent_root, block_root)) => {
-                            QueryUnit::UnfinalizedEnvelope { slot, block_root }
-                        }
-                        None => QueryUnit::Envelope { slot },
+                let canonical =
+                    self.unfinalized.canonical_payloads_in_range(&self.head, start, end);
+                for slot in start..end {
+                    units.push_back(match canonical.get(&slot) {
+                        Some(&block_root) => QueryUnit::UnfinalizedEnvelope { slot, block_root },
+                        None if slot <= self.head.finalized_slot => QueryUnit::Envelope { slot },
+                        None => continue,
                     });
-                });
+                }
             }
             silver_common::RpcRequest::ExecutionPayloadEnvelopesByRoot(read) => {
                 with_root_request(

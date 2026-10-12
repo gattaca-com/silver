@@ -488,14 +488,18 @@ impl SpecConfig {
     }
 
     /// `(next_fork_version, next_fork_epoch)` for the ENR `eth2` field at
-    /// `epoch`: the scheduled Gloas activation until it passes, then
-    /// FAR_FUTURE.
+    /// `epoch`. BPO forks count as forks, so the version can stay the current
+    /// one while a later fork is planned.
     pub fn next_fork(&self, epoch: u64) -> ([u8; 4], u64) {
-        if self.gloas_fork_epoch != u64::MAX && epoch < self.gloas_fork_epoch {
-            (self.gloas_fork_version, self.gloas_fork_epoch)
-        } else {
-            (self.fork_version_at(epoch), u64::MAX)
-        }
+        let next_epoch = ForkName::ALL
+            .iter()
+            .map(|&fork| self.fork_epoch(fork))
+            .chain(self.blob_schedule.iter().map(|entry| entry.epoch))
+            .filter(|&fork_epoch| fork_epoch > epoch)
+            .min()
+            .unwrap_or(unscheduled());
+        let version_epoch = if next_epoch == unscheduled() { epoch } else { next_epoch };
+        (self.fork_version_at(version_epoch), next_epoch)
     }
 
     pub fn enr_fork_id(&self, epoch: u64, fork_digest: [u8; 4]) -> [u8; 16] {
@@ -944,11 +948,23 @@ mod tests {
         let scheduled = SpecConfig { gloas_fork_epoch: 500_000, ..SpecConfig::mainnet() };
         assert_eq!(scheduled.next_fork(499_999), (scheduled.gloas_fork_version, 500_000));
         assert_eq!(scheduled.next_fork(500_000), (scheduled.gloas_fork_version, u64::MAX));
+    }
 
+    #[test]
+    fn next_fork_counts_bpo_forks_at_the_current_version() {
         let mainnet = SpecConfig::mainnet();
+        let bpo1 = mainnet.blob_schedule[0].epoch;
+        let bpo2 = mainnet.blob_schedule[1].epoch;
+        assert!(mainnet.fulu_fork_epoch < bpo1);
+        assert_eq!(mainnet.next_fork(mainnet.fulu_fork_epoch), (mainnet.fulu_fork_version, bpo1));
+        assert_eq!(mainnet.next_fork(bpo1), (mainnet.fulu_fork_version, bpo2));
+        assert_eq!(mainnet.next_fork(bpo2), (mainnet.fulu_fork_version, u64::MAX));
+
+        let gloas_after_bpo = SpecConfig { gloas_fork_epoch: bpo2 + 10, ..SpecConfig::mainnet() };
+        assert_eq!(gloas_after_bpo.next_fork(bpo1), (gloas_after_bpo.fulu_fork_version, bpo2));
         assert_eq!(
-            mainnet.next_fork(mainnet.fulu_fork_epoch),
-            (mainnet.fulu_fork_version, u64::MAX)
+            gloas_after_bpo.next_fork(bpo2),
+            (gloas_after_bpo.gloas_fork_version, bpo2 + 10)
         );
     }
 

@@ -5,7 +5,7 @@ use silver_beacon_state_data::SpecConfig;
 use silver_common::{merkle::B256, ssz_view::SignedBeaconBlockView};
 
 use super::{PayloadKey, read_unfinalized_dir};
-use crate::store::{PendingWrite, WriteQueue, backfill::PayloadFacts, io};
+use crate::store::{Head, PendingWrite, WriteQueue, backfill::PayloadFacts, io};
 
 /// One node of the unfinalized fork tree. The edge (`parent_root`) is durable
 /// in the on-disk filename; this is the in-memory index rebuilt from `readdir`
@@ -140,6 +140,34 @@ impl UnfinalizedBlocks {
         chain
     }
 
+    pub(crate) fn canonical_payloads_in_range(
+        &self,
+        head: &Head,
+        start: u64,
+        end: u64,
+    ) -> FxHashMap<u64, [u8; 32]> {
+        let mut chain = FxHashMap::default();
+        let mut root = head.root;
+        let mut child_payload_parent = None;
+        let mut prev_slot = head.slot.saturating_add(1);
+        while let Some(block) = self.0.get(&root) {
+            if block.slot >= prev_slot || block.slot < start {
+                break;
+            }
+            let on_chain = match child_payload_parent {
+                Some(parent) => parent == block.payload_facts.payload_hash,
+                None => head.payload_full,
+            };
+            if block.slot < end && on_chain {
+                chain.insert(block.slot, root);
+            }
+            child_payload_parent = Some(block.payload_facts.parent_payload_hash);
+            prev_slot = block.slot;
+            root = block.parent_root;
+        }
+        chain
+    }
+
     /// Drop entries at or below `finalized_slot` (orphaned forks), queuing a
     /// prune write for each.
     pub(crate) fn prune_below(&mut self, finalized_slot: u64, write_queue: &mut WriteQueue) {
@@ -154,5 +182,39 @@ impl UnfinalizedBlocks {
                 true
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts(payload: u8, parent_payload: u8) -> PayloadFacts {
+        PayloadFacts {
+            has_blobs: false,
+            payload_hash: [payload; 32],
+            parent_payload_hash: [parent_payload; 32],
+        }
+    }
+
+    /// A ← B (builds on A's payload) ← C (builds on B's parent payload, so
+    /// B's own payload is orphaned).
+    #[test]
+    fn canonical_payloads_follow_the_child_bids_and_the_head_resolution() {
+        let mut blocks = UnfinalizedBlocks::default();
+        blocks.insert([1; 32], 1, [0; 32], facts(1, 0));
+        blocks.insert([2; 32], 2, [1; 32], facts(2, 1));
+        blocks.insert([3; 32], 3, [2; 32], facts(3, 1));
+
+        let mut head = Head { slot: 3, root: [3; 32], payload_full: true, ..Default::default() };
+        let full = blocks.canonical_payloads_in_range(&head, 1, 4);
+        assert_eq!(full.get(&1), Some(&[1; 32]));
+        assert_eq!(full.get(&2), None, "the child built on its parent's payload instead");
+        assert_eq!(full.get(&3), Some(&[3; 32]));
+
+        head.payload_full = false;
+        let empty = blocks.canonical_payloads_in_range(&head, 1, 4);
+        assert_eq!(empty.get(&3), None, "fork choice resolved the head EMPTY");
+        assert_eq!(empty.get(&1), Some(&[1; 32]));
     }
 }

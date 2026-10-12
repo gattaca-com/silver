@@ -204,6 +204,8 @@ impl Store {
                         self.query_queue.push_back(query);
                     }
                 }
+                // Skipped slots and EMPTY payloads leave holes in any envelope range.
+                ServeResult::Missing if unit.is_envelope() => self.query_queue.push_back(query),
                 ServeResult::Missing => query.finish(true, emit),
                 ServeResult::ProducerFull => {
                     // Tcache full — un-consume and retry this request first
