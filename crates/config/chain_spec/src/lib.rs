@@ -473,7 +473,9 @@ impl SpecConfig {
     #[inline]
     pub fn min_epochs_for_block_requests(&self, epoch: u64) -> u64 {
         let churn_limit_quotient = if self.is_gloas_at(epoch) {
-            self.churn_limit_quotient_gloas
+            let exit = self.churn_limit_quotient_gloas;
+            let consolidation = self.consolidation_churn_limit_quotient;
+            3 * exit * consolidation / (2 * consolidation + 3 * exit)
         } else {
             self.churn_limit_quotient
         };
@@ -1132,6 +1134,13 @@ mod tests {
             max_blobs_per_block: 21
         });
         assert_eq!(spec.fork_digest_at(419072, &MAINNET_GVR), [0x8c, 0x9f, 0x62, 0xfe]);
+    }
+
+    #[test]
+    fn min_epochs_for_block_requests_mainnet() {
+        let spec = SpecConfig { gloas_fork_epoch: 10, ..SpecConfig::mainnet() };
+        assert_eq!(spec.min_epochs_for_block_requests(9), 33_024);
+        assert_eq!(spec.min_epochs_for_block_requests(10), 14_299);
     }
 
     /// A range/root request spanning the Gloas boundary must tag pre- and

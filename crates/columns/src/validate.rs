@@ -8,7 +8,8 @@ use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     GossipDomain, IngestionTime, P2pStreamId, SszCache, TRead, Wheel, column_util as util,
     ssz_view::{
-        BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
+        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
+        DATA_COLUMN_SIDECAR_GLOAS_MIN, DataColumnSidecarFuluView, DataColumnSidecarGloasView,
         NUMBER_OF_COLUMNS, SidecarLayout, SignedBeaconBlockView,
     },
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker},
@@ -98,6 +99,7 @@ pub(crate) struct ColumnValidator {
     // fork.
     validated_block_roots: Wheel<BlockRoot, u64, 16>,
     partial_parents: partial::PartialParents,
+    max_gloas_sidecar_size: usize,
 }
 
 impl ColumnValidator {
@@ -109,11 +111,12 @@ impl ColumnValidator {
     ) -> Self {
         Self {
             beacon_state,
-            spec,
             ticker,
             gloas_commitments: Wheel::new(epoch_duration),
             validated_block_roots: Wheel::new(epoch_duration),
             partial_parents: partial::PartialParents::new(epoch_duration * 2),
+            max_gloas_sidecar_size: max_gloas_sidecar_size(&spec),
+            spec,
         }
     }
 
@@ -399,6 +402,16 @@ impl ColumnValidator {
     ) -> ColumnOutcome {
         let PendingColumn { stream_id, gossip_subnet, .. } = *column;
         let slot = DataColumnSidecarGloasView::slot(buffer);
+        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
+
+        if buffer.len() > self.max_gloas_sidecar_size {
+            silver_log::warn!(
+                ?stream_id,
+                len = buffer.len(),
+                "gloas data column sidecar too large"
+            );
+            return ColumnOutcome::Reject { block_root, slot, column: None };
+        }
 
         if self.is_future(slot, sync_state) {
             silver_log::debug!(
@@ -413,7 +426,6 @@ impl ColumnValidator {
             return ColumnOutcome::Skip;
         }
 
-        let block_root = *DataColumnSidecarGloasView::beacon_block_root(buffer);
         let column_index = DataColumnSidecarGloasView::index(buffer);
         if column_index >= NUMBER_OF_COLUMNS as u64 {
             silver_log::warn!(?stream_id, column_index, "sidecar column index out of range");
@@ -457,5 +469,20 @@ impl ColumnValidator {
         }
 
         ColumnOutcome::Record { block_root, column_index, slot, relay_eligible: true }
+    }
+}
+
+fn max_gloas_sidecar_size(spec: &SpecConfig) -> usize {
+    let max_blobs = spec.max_scheduled_blobs_per_block() as usize;
+    DATA_COLUMN_SIDECAR_GLOAS_MIN + max_blobs * (BYTES_PER_CELL + BYTES_PER_KZG_PROOF)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_gloas_sidecar_size_follows_blob_schedule() {
+        assert_eq!(max_gloas_sidecar_size(&SpecConfig::mainnet()), 56 + 21 * (2048 + 48));
     }
 }

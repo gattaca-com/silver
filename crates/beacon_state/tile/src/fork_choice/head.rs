@@ -222,6 +222,13 @@ impl ForkChoice {
         if !n.payload.verified || n.execution_status == ExecutionStatus::Invalid {
             return false;
         }
+        if n.payload.is_gloas {
+            match (self.variant_is_viable(idx, true), self.variant_is_viable(idx, false)) {
+                (false, _) => return false,
+                (true, false) => return true,
+                (true, true) => {}
+            }
+        }
         // [Gloas] spec `get_weight` forces 0 for the *previous-slot* payload
         // decision, so the empty/full choice for the just-passed slot is made
         // purely by `should_extend_payload`, independent of subtree weight.
@@ -230,6 +237,19 @@ impl ForkChoice {
         }
 
         n.full.weight >= n.empty.weight
+    }
+
+    /// Spec `filter_node_tree` membership of the EMPTY/FULL variant of `idx`:
+    /// a childless variant is viable when its block is, otherwise it needs a
+    /// child leading to a viable head.
+    #[inline]
+    fn variant_is_viable(&self, idx: usize, full: bool) -> bool {
+        let branch = self.nodes[idx].branch(full);
+        if branch.best_desc == idx {
+            self.node_is_viable_for_head(idx)
+        } else {
+            branch.best_child != NULL
+        }
     }
 
     #[inline]

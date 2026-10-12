@@ -883,6 +883,36 @@ fn gloas_resolves_heavier_payload_branch() {
     );
 }
 
+/// A FULL variant whose only child is filtered out of the viable tree is not a
+/// head candidate, however heavy: the head is the block's EMPTY variant.
+#[test]
+fn gloas_full_variant_with_no_viable_descendant_resolves_empty() {
+    let g = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        g,
+        g,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
+    fc.on_block(gloas_block(64, root(2), root(1), cp(2, 2), g, PayloadStatus::Full, true));
+    fc.justified_checkpoint = cp(2, 2);
+    fc.on_block(gloas_block(65, root(3), root(2), cp(1, 9), g, PayloadStatus::Full, true));
+    fc.on_tick(4 * SLOTS_PER_EPOCH);
+
+    let mut d = vec![WeightDelta::default(); fc.nodes.len()];
+    d[2].pending = 100;
+    fc.weight_deltas = d;
+    fc.apply_score_changes();
+
+    assert_eq!(fc.find_head(), root(2));
+    assert_eq!(fc.payload_resolution(head_idx(&fc)), PayloadResolution::Empty);
+}
+
 /// On an exactly-tied payload split, `should_extend_payload` decides: with
 /// no PTC votes and no conflicting proposer boost it extends (FULL); a
 /// boost on the EMPTY-extending child flips the resolution to EMPTY.
