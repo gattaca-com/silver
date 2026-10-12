@@ -6,8 +6,8 @@ use std::{
 
 use flux::tile::Tile;
 use silver_common::{
-    CacheFrameRef, CacheSegment, GossipMsgOut, P2pSend, P2pStreamId, PeerEvent, RpcOutbound,
-    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseOutbound, StreamProtocol,
+    CacheFrameRef, CacheSegment, GossipMsgOut, GossipTraffic, P2pSend, P2pStreamId, PeerEvent,
+    RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseOutbound, StreamProtocol,
     TCacheProducer, test_util::ShmemDir,
 };
 use silver_e2e::{PublisherStack, keypair_from_seed};
@@ -34,8 +34,17 @@ fn unknown_peer_reports_every_send_variant_as_dropped() {
     .expect("write segmented gossip frame");
     let peer = 123;
     for attempted in [
-        P2pSend::Gossip(GossipMsgOut { peer_id: peer, tcache: read }),
-        P2pSend::SegmentedGossip { peer_id: peer, frame, partial_cells: Some(0) },
+        P2pSend::Gossip(GossipMsgOut {
+            peer_id: peer,
+            tcache: read,
+            traffic: GossipTraffic::CONTROL,
+        }),
+        P2pSend::SegmentedGossip {
+            peer_id: peer,
+            frame,
+            traffic: GossipTraffic::CONTROL,
+            partial_cells: Some(0),
+        },
         P2pSend::Identify(peer),
         P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
             peer,

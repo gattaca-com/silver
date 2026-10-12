@@ -1,4 +1,9 @@
+use silver_common::{GossipTraffic, GossipTrafficBytes};
 use silver_stages::counter_names;
+
+fn is_gossip_traffic(file_name: &str) -> bool {
+    file_name == GossipTrafficBytes::SENT_FILE || file_name == GossipTrafficBytes::RECV_FILE
+}
 
 /// Counters-pane ordering: bulky per-topic groups sink below the compact
 /// process-wide ones.
@@ -9,7 +14,7 @@ pub fn sort_key(file_name: &str) -> (u8, &str) {
 
 /// Log counts and per-topic gossip counters have their own panes.
 pub fn in_counters_pane(file_name: &str) -> bool {
-    !matches!(file_name, "log" | "gossip_topics")
+    !matches!(file_name, "log" | "gossip_topics") && !is_gossip_traffic(file_name)
 }
 
 /// `lookup` with a positional fallback. Returns `(names, registered)`
@@ -37,6 +42,9 @@ pub fn names_for(file_name: &str, slot_count: usize) -> (Vec<String>, bool) {
             })
             .collect();
         return (names, true);
+    }
+    if is_gossip_traffic(file_name) {
+        return ((0..slot_count).map(GossipTraffic::label).collect(), true);
     }
     // TCache files have a fixed semantic layout decoded from slot count.
     if file_name.starts_with("tcache-") && slot_count >= 2 {

@@ -11,7 +11,7 @@ use std::{
 
 use flux::{tile::Tile, timing::Nanos};
 use silver_common::{
-    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, test_util::ShmemDir,
+    GossipMsgOut, GossipTopic, GossipTraffic, NewGossipMsg, P2pSend, PeerEvent, test_util::ShmemDir,
 };
 
 use crate::{
@@ -183,7 +183,7 @@ impl TwoStackHarness {
         let snappy = snappy_compress(ssz_payload);
         let tcache =
             build_publish_frame(&mut self.publisher.mcache_producer, &wire_topic, &snappy)?;
-        let msg = GossipMsgOut { peer_id: handle, tcache };
+        let msg = GossipMsgOut { peer_id: handle, tcache, traffic: GossipTraffic::of(topic) };
         self.publisher.injector_adapter.produce(P2pSend::Gossip(msg));
         self.last_msg = Some(msg);
         Ok(())

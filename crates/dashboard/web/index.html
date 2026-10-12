@@ -164,6 +164,12 @@
   .flow-charts .meta { margin: 0 0 2px; }
   /* Row gap and title height are mirrored by SLOT_ROW_GAP / SLOT_TITLE_H in
      slot_charts.js, which size the right chart to the left column. */
+  .gossip-traffic { display: grid; column-gap: 12px; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); align-items: start; }
+  .gossip-traffic .meta { margin: 0 0 2px; }
+  .gossip-traffic [data-traffic-topic] { cursor: pointer; }
+  .gossip-traffic [data-traffic-topic]:hover td { background: var(--hover); }
+  .gossip-traffic tr.picked td { color: var(--fg); font-weight: 600; }
+  .gossip-traffic .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: middle; border: 1px solid var(--line); }
   .slot-charts { display: grid; column-gap: 12px; row-gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-bottom: 14px; }
   .slot-charts .meta { margin: 0 0 2px; height: 14px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .slot-charts .left-1 { grid-column: 1; grid-row: 1; }

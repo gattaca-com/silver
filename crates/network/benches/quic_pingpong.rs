@@ -13,7 +13,8 @@ use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, SeedableRng};
 use silver_common::{
-    GossipMsgOut, Keypair, P2pStreamId, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    GossipMsgOut, GossipTraffic, Keypair, P2pStreamId, TCache, TCacheId, TCacheProducer,
+    TCacheReader, TCacheTable,
 };
 use silver_discovery::Discovery;
 use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
@@ -109,6 +110,7 @@ pub fn broadcast(c: &mut Criterion) {
                                             server_tile.enqueue_gossip(GossipMsgOut {
                                                 peer_id: id.peer(),
                                                 tcache: reservation.read(),
+                                                traffic: GossipTraffic::CONTROL,
                                             }),
                                             SendResult::Ok
                                         ) {
@@ -226,7 +228,11 @@ pub fn broadcast(c: &mut Criterion) {
                                     continue;
                                 }
                             };
-                            let msg = GossipMsgOut { peer_id: 0, tcache: reservation.read() };
+                            let msg = GossipMsgOut {
+                                peer_id: 0,
+                                tcache: reservation.read(),
+                                traffic: GossipTraffic::CONTROL,
+                            };
                             match client.enqueue_gossip(msg) {
                                 SendResult::Ok => {}
                                 other => {

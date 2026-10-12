@@ -11,6 +11,7 @@ use flux::{
     tile::metrics::TileSample,
 };
 use hdrhistogram::Histogram;
+use silver_common::GossipTrafficBytes;
 use silver_log::warn;
 use silver_observe::{CounterFile, CounterMap, discover, names_for};
 use silver_observe_wire::{Encoder, Source, SourceClass, TileUtil, TimingChannel, TimingStats};
@@ -20,15 +21,26 @@ const HIST_MAX_NS: u64 = 60_000_000_000;
 const TCACHE_FIXED_SLOTS: usize = 2;
 /// Counter slots also sampled at the fast cadence and published as source
 /// `fast:{source}`, for intra-slot resolution the 1 s bucket cannot give.
-const FAST: &[(&str, &[&str])] = &[
-    ("beacon_state", &["AttestationRootMemoHit", "AttestationRootMemoMiss"]),
-    ("network", &[
-        "P2pGossipBytesRecv",
-        "P2pGossipBytesSent",
-        "P2pRpcBytesRecv",
-        "P2pRpcBytesSent",
-    ]),
+const FAST: &[(&str, FastSlots)] = &[
+    ("beacon_state", FastSlots::Named(&["AttestationRootMemoHit", "AttestationRootMemoMiss"])),
+    (
+        "network",
+        FastSlots::Named(&[
+            "P2pGossipBytesRecv",
+            "P2pGossipBytesSent",
+            "P2pRpcBytesRecv",
+            "P2pRpcBytesSent",
+        ]),
+    ),
+    (GossipTrafficBytes::RECV_FILE, FastSlots::All),
+    (GossipTrafficBytes::SENT_FILE, FastSlots::All),
 ];
+
+enum FastSlots {
+    Named(&'static [&'static str]),
+    /// Per-topic files, stacked by topic in the dashboard.
+    All,
+}
 
 struct CounterSource {
     id: u16,
@@ -218,8 +230,12 @@ impl ExportSources {
         let c = &self.counters[parent];
         let Some((_, wanted)) = FAST.iter().find(|(name, _)| *name == c.name) else { return };
         let (names, _) = names_for(&c.name, c.values.len());
-        let slots: Vec<_> =
-            (0..names.len()).filter(|&i| wanted.contains(&names[i].as_str())).collect();
+        let slots: Vec<_> = (0..names.len())
+            .filter(|&i| match wanted {
+                FastSlots::Named(wanted) => wanted.contains(&names[i].as_str()),
+                FastSlots::All => true,
+            })
+            .collect();
         if slots.is_empty() {
             return;
         }
@@ -332,7 +348,9 @@ impl ExportSources {
 
 #[cfg(test)]
 mod tests {
-    use silver_common::declare_counters;
+    use std::sync::atomic::AtomicPtr;
+
+    use silver_common::{GossipTraffic, declare_counters, metrics::map_counters};
     use silver_observe_wire::{HEADER_LEN, Header, Kind};
     use tempfile::TempDir;
 
@@ -384,6 +402,28 @@ mod tests {
         let values = &dgrams[0][HEADER_LEN + 8..];
         assert_eq!(values[..8], 30u64.to_le_bytes());
         assert_eq!(values[8..], 12u64.to_le_bytes());
+    }
+
+    #[test]
+    fn gossip_traffic_is_fast_sampled_in_every_slot() {
+        let tmp = TempDir::new().unwrap();
+        let target = AtomicPtr::new(std::ptr::null_mut());
+        map_counters(
+            tmp.path(),
+            "traffic_test",
+            GossipTrafficBytes::RECV_FILE,
+            GossipTraffic::SLOTS * size_of::<u64>(),
+            &target,
+        )
+        .unwrap();
+
+        let mut sources = ExportSources::default();
+        sources.discover(tmp.path(), "traffic_test");
+        let [fast] = &sources.fast[..] else { panic!("one fast source") };
+        assert_eq!(fast.name, format!("fast:{}", GossipTrafficBytes::RECV_FILE));
+        assert_eq!(fast.slots.len(), GossipTraffic::SLOTS);
+        let tail = ["control", "ihave", "iwant", "idontwant"].map(String::from);
+        assert!(fast.slot_names.ends_with(&tail));
     }
 
     #[test]

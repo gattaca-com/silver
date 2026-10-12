@@ -25,10 +25,12 @@ use crate::{
 };
 
 mod hash;
+mod traffic;
 
 pub use hash::{
     MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
+pub use traffic::{GossipTraffic, GossipTrafficBytes};
 
 pub const MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
 pub const MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE: usize =

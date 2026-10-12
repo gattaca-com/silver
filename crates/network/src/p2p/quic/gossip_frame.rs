@@ -2,8 +2,8 @@ use std::{cell::Cell, ptr::NonNull, time::Instant};
 
 use bytes::Bytes;
 use silver_common::{
-    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipMsgOut, P2pSend,
-    TRead,
+    AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipMsgOut,
+    GossipTraffic, P2pSend, TRead,
 };
 
 use super::{Leased, leased::OutboundLeaseWheel};
@@ -14,19 +14,26 @@ const MAX_RETAINED_OWNERS: usize = 8 * 1024;
 
 #[derive(Debug)]
 pub(crate) enum OutboundGossip {
-    Contiguous(Leased<TRead>),
-    Segmented(SegmentedFrame),
+    Contiguous(Leased<TRead>, GossipTraffic),
+    Segmented(SegmentedFrame, GossipTraffic),
 }
 
 impl OutboundGossip {
+    pub(crate) fn traffic(&self) -> GossipTraffic {
+        match self {
+            Self::Contiguous(_, traffic) | Self::Segmented(_, traffic) => *traffic,
+        }
+    }
+
     pub(crate) fn into_message(self, peer_id: usize) -> P2pSend {
         match self {
-            Self::Contiguous(read) => {
-                P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.to_read() })
+            Self::Contiguous(read, traffic) => {
+                P2pSend::Gossip(GossipMsgOut { peer_id, tcache: read.to_read(), traffic })
             }
-            Self::Segmented(frame) => P2pSend::SegmentedGossip {
+            Self::Segmented(frame, traffic) => P2pSend::SegmentedGossip {
                 peer_id,
                 frame: frame.segments.reference(),
+                traffic,
                 partial_cells: frame.partial_cells,
             },
         }

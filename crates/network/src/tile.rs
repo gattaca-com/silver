@@ -230,10 +230,10 @@ impl NetworkTile {
                         silver_log::debug!(peer=gossip_msg_out.peer_id, "send gossip");
                         self.inner.enqueue_gossip(gossip_msg_out)
                     },
-                    P2pSend::SegmentedGossip { peer_id, frame, partial_cells } => {
+                    P2pSend::SegmentedGossip { peer_id, frame, traffic, partial_cells } => {
                         gossips += 1;
                         self.inner.p2p_endpoint.enqueue_segmented_gossip(
-                            peer_id, frame, partial_cells, &mut self.inner.context,
+                            peer_id, frame, traffic, partial_cells, &mut self.inner.context,
                         )
                     }
                     P2pSend::Identify(peer) => {

@@ -1,4 +1,8 @@
+import { LineCharts } from './chart.js';
+import * as traffic from './gossip_traffic.js';
 import { escape, fixed, fmtSecs, instanceTabs, shortId } from './view.js';
+
+const VIEWS = ['topics', 'traffic'];
 
 /** Slots per topic in `gossip_topics`: sent, recv, mesh, subs. */
 const PER_TOPIC = 4;
@@ -30,12 +34,29 @@ function memberRow(m) {
   </tr>`;
 }
 
+function viewSwitch(active) {
+  const buttons = VIEWS.map((v) => `<button class="${v === active ? 'active' : ''}" data-view="${v}">${v}</button>`).join('');
+  return `<div class="subtabs">${buttons}</div>`;
+}
+
 export function render(fleet, root, now, ui) {
   const { inst, html: tabs } = instanceTabs(fleet, ui.instance, now);
   if (!inst) {
     root.innerHTML = '<p class="empty">no instances yet</p>';
     return;
   }
+  ui.view ??= 'topics';
+  ui.charts ??= new LineCharts();
+  const specs = new Map();
+  if (ui.view === 'traffic') {
+    root.innerHTML = `${tabs}${viewSwitch(ui.view)}${traffic.render(inst, ui, Date.now() / 1000, specs)}`;
+  } else {
+    root.innerHTML = `${tabs}${viewSwitch(ui.view)}${topics(inst, ui)}`;
+  }
+  ui.charts.mount(root, specs);
+}
+
+function topics(inst, ui) {
   ui.expanded ??= new Set();
 
   const meshed = new Map();
@@ -95,8 +116,7 @@ export function render(fleet, root, now, ui) {
     })
     .join('');
 
-  root.innerHTML = `${tabs}
-    <section><table class="dense">
+  return `<section><table class="dense">
       <thead><tr>
         <th>topic</th><th class="num">mesh</th><th class="num">subs</th>
         <th class="num">rx/s</th><th class="num">tx/s</th><th>act</th>
@@ -108,6 +128,15 @@ export function render(fleet, root, now, ui) {
 }
 
 export function click(target, ui) {
+  const view = target.closest('[data-view]')?.dataset.view;
+  if (view && VIEWS.includes(view)) {
+    ui.view = view;
+    return;
+  }
+  if (ui.view === 'traffic') {
+    traffic.click(target, ui);
+    return;
+  }
   const row = target.closest('[data-topic]');
   if (!row) return;
   const slot = Number(row.dataset.topic);

@@ -441,8 +441,8 @@ impl PeerManager {
             PeerEvent::GossipDuplicate { p2p_peer, topic, hash, recv_ts } => {
                 self.on_gossip_duplicate(p2p_peer, topic, hash, recv_ts);
             }
-            PeerEvent::P2pGossipWant { p2p_peer, hash, tcache } => {
-                self.on_iwant_received(p2p_peer, hash, tcache, emit);
+            PeerEvent::P2pGossipWant { p2p_peer, hash, tcache, traffic } => {
+                self.on_iwant_received(p2p_peer, hash, tcache, traffic, emit);
             }
             PeerEvent::P2pGossipDontWant { p2p_peer, hash } => {
                 self.on_idontwant_received(p2p_peer, hash);

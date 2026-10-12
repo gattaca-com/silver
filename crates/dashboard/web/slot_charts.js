@@ -31,11 +31,22 @@ function slotAt(clock, unixS) {
   return Math.floor((unixS * 1e9 - Number(clock.genesisNs)) / clock.slotNs);
 }
 
+/** The current slot and its 100 ms bins so far, on a fixed x axis of the slot's
+ *  seconds. Without a clock, no slot and no bins. */
+export function slotWindow(clock, nowS) {
+  const slotS = clock ? clock.slotNs / 1e9 : DEFAULT_SLOT_S;
+  const slot = clock ? slotAt(clock, nowS) : null;
+  const startS = clock ? Number(clock.slotStart(slot)) / 1e9 : nowS;
+  const bins = clock ? Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S)) : 0;
+  const xs = Array.from({ length: bins }, (_, i) => Math.round(i * BIN_S * 10) / 10);
+  return { slot, slotS, startS, bins, xs };
+}
+
 /** Per bin of the slot starting at `startS`, the summed counters' growth: each
  *  sample's delta lands in the bin holding its timestamp. A bin with no sample
  *  is null; a counter reset breaks the delta. A client without samples keeps
  *  an all-null line, so the chart stays up. */
-function binnedSeries(inst, { source, counters }, slot, startS, bins) {
+export function binnedSeries(inst, { source, counters }, slot, startS, bins) {
   const ys = new Array(bins).fill(null);
   const block = inst.traces.find((t) => t.slot === slot && t.receivedAt !== null);
   const blockX = block ? (Number(block.base) + block.receivedAt) / 1e9 - startS : null;
@@ -61,17 +72,12 @@ function binnedSeries(inst, { source, counters }, slot, startS, bins) {
  *  marks when each client received a block this slot; the top-right totals
  *  sum each client's bins so far across all its lines. */
 function slotSpec(instances, nowS, lines, fmt, height) {
-  const clock = instances.find((i) => i.clock)?.clock;
-  const slotS = clock ? clock.slotNs / 1e9 : DEFAULT_SLOT_S;
-  const slot = clock ? slotAt(clock, nowS) : null;
-  const startS = clock ? Number(clock.slotStart(slot)) / 1e9 : nowS;
-  const bins = clock ? Math.min(Math.floor((nowS - startS) / BIN_S) + 1, Math.round(slotS / BIN_S)) : 0;
+  const { slot, slotS, startS, bins, xs } = slotWindow(instances.find((i) => i.clock)?.clock, nowS);
   // Line-major: series `l * clients + i` is line `l` of client `i`, so the
   // first line's series index is the client's, as markers and corner labels
   // expect.
   const perLine = lines.map(({ counter }) => instances.map((inst) => binnedSeries(inst, counter, slot, startS, bins)));
   const series = perLine[0];
-  const xs = Array.from({ length: bins }, (_, i) => Math.round(i * BIN_S * 10) / 10);
   const sum = (ys) => ys.reduce((total, v) => total + (v ?? 0), 0);
   const spec = {
     labels: perLine.flatMap((line, l) => line.map((s) => (lines[l].name ? `${s.label} ${lines[l].name}` : s.label))),

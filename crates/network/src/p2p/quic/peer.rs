@@ -13,7 +13,7 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    CacheFrameRef, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
+    CacheFrameRef, GossipTraffic, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
     rpc_rate_limit::RpcRateLimitSet,
 };
 
@@ -163,6 +163,7 @@ impl Peer {
     pub(crate) fn send_gossip(
         &mut self,
         msg: TRead,
+        traffic: GossipTraffic,
         rpc_codec_pool: &mut RpcCodecPool,
     ) -> SendResult<OutboundGossip> {
         if self.connection.is_closed() {
@@ -172,13 +173,14 @@ impl Peer {
         if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
-        let msg = OutboundGossip::Contiguous(self.outbound_lease_wheel.leased(msg, now));
+        let msg = OutboundGossip::Contiguous(self.outbound_lease_wheel.leased(msg, now), traffic);
         self.queue_gossip(msg)
     }
 
     pub(crate) fn send_segmented_gossip(
         &mut self,
         frame: CacheFrameRef,
+        traffic: GossipTraffic,
         partial_cells: Option<u8>,
         context: &mut Context,
         limits: &SegmentedGossipLimits,
@@ -200,7 +202,7 @@ impl Peer {
             return SendResult::Dropped(None);
         };
         acquired.partial_cells = partial_cells;
-        self.queue_gossip(OutboundGossip::Segmented(acquired))
+        self.queue_gossip(OutboundGossip::Segmented(acquired, traffic))
     }
 
     fn queue_gossip(&mut self, msg: OutboundGossip) -> SendResult<OutboundGossip> {
@@ -1494,7 +1496,7 @@ mod tests {
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
             let read = self.context.reader.acquire(res.read());
-            peer.send_gossip(read, &mut self.rpc_codec_pool);
+            peer.send_gossip(read, GossipTraffic::CONTROL, &mut self.rpc_codec_pool);
         }
 
         fn send_cluster(&mut self, payload: &[u8], peer: &mut Peer) -> SendResult {
@@ -2024,7 +2026,11 @@ mod tests {
         res.write_all(b"late").unwrap();
         let late = client_h.context.reader.acquire(res.read());
         assert!(matches!(
-            pair.client_peer.send_gossip(late, &mut client_h.rpc_codec_pool),
+            pair.client_peer.send_gossip(
+                late,
+                GossipTraffic::CONTROL,
+                &mut client_h.rpc_codec_pool
+            ),
             SendResult::ConnectionClosing
         ));
         assert!(pair.client_peer.streams.is_empty(), "refused send opens nothing");
@@ -2303,6 +2309,7 @@ mod tests {
         assert!(matches!(
             pair.client_peer.send_segmented_gossip(
                 frame,
+                GossipTraffic::CONTROL,
                 None,
                 &mut client_h.context,
                 &limits,
@@ -2349,7 +2356,14 @@ mod tests {
         .unwrap();
         let peer = &mut pair.client_peer;
         assert!(matches!(
-            peer.send_segmented_gossip(frame, None, &mut h.context, &limits, &mut h.rpc_codec_pool),
+            peer.send_segmented_gossip(
+                frame,
+                GossipTraffic::CONTROL,
+                None,
+                &mut h.context,
+                &limits,
+                &mut h.rpc_codec_pool
+            ),
             SendResult::Ok
         ));
         let id = peer.outbound_gossip.unwrap();
@@ -2366,6 +2380,7 @@ mod tests {
             .unwrap();
             let result = peer.send_segmented_gossip(
                 frame,
+                GossipTraffic::CONTROL,
                 None,
                 &mut h.context,
                 &limits,
@@ -2406,7 +2421,11 @@ mod tests {
 
         let mut reservation = h.gossip_out_producer.reserve(5, true).unwrap();
         reservation.write_all(b"first").unwrap();
-        let first = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        let first = GossipMsgOut {
+            peer_id: handle.0,
+            tcache: reservation.read(),
+            traffic: GossipTraffic::CONTROL,
+        };
         assert!(matches!(endpoint.enqueue_gossip(first, &mut h.context), SendResult::Ok));
 
         let expires = Instant::now() + Duration::from_secs(1);
@@ -2417,8 +2436,14 @@ mod tests {
             [CacheSegment::Framing { offset: 0, length: 6 }].into_iter(),
         )
         .unwrap();
-        let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
-            endpoint.enqueue_segmented_gossip(handle.0, frame, Some(7), &mut h.context)
+        let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) = endpoint
+            .enqueue_segmented_gossip(
+                handle.0,
+                frame,
+                GossipTraffic::CONTROL,
+                Some(7),
+                &mut h.context,
+            )
         else {
             panic!("expected the evicted contiguous message");
         };
@@ -2427,11 +2452,16 @@ mod tests {
 
         let mut reservation = h.gossip_out_producer.reserve(5, true).unwrap();
         reservation.write_all(b"third").unwrap();
-        let third = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        let third = GossipMsgOut {
+            peer_id: handle.0,
+            tcache: reservation.read(),
+            traffic: GossipTraffic::CONTROL,
+        };
         let SendResult::Dropped(Some(P2pSend::SegmentedGossip {
             peer_id,
             frame: dropped,
             partial_cells,
+            ..
         })) = endpoint.enqueue_gossip(third, &mut h.context)
         else {
             panic!("expected the evicted segmented message");
@@ -2468,7 +2498,11 @@ mod tests {
 
         let mut reservation = h.gossip_out_producer.reserve(5, false).unwrap();
         reservation.write_all(b"first").unwrap();
-        let msg = GossipMsgOut { peer_id: handle.0, tcache: reservation.read() };
+        let msg = GossipMsgOut {
+            peer_id: handle.0,
+            tcache: reservation.read(),
+            traffic: GossipTraffic::CONTROL,
+        };
         let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
             endpoint.enqueue_gossip(msg, &mut h.context)
         else {
@@ -2488,7 +2522,14 @@ mod tests {
             peer_id,
             frame: dropped,
             partial_cells,
-        })) = endpoint.enqueue_segmented_gossip(handle.0, frame, Some(3), &mut h.context)
+            ..
+        })) = endpoint.enqueue_segmented_gossip(
+            handle.0,
+            frame,
+            GossipTraffic::CONTROL,
+            Some(3),
+            &mut h.context,
+        )
         else {
             panic!("expected rejection of the expired frame");
         };

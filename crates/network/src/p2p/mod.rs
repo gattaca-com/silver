@@ -18,9 +18,9 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
 use silver_common::{
-    CacheFrameRef, ClusterMsgOut, GossipMsgOut, Identify, Keypair, P2pConnectionStats, P2pSend,
-    P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView, RpcOutbound, RpcRequestOutbound,
-    TCacheRead,
+    CacheFrameRef, ClusterMsgOut, GossipMsgOut, GossipTraffic, Identify, Keypair,
+    P2pConnectionStats, P2pSend, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
+    RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
 
 use crate::{
@@ -372,7 +372,7 @@ impl P2p {
     pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
         let result = match context.reader.acquire_strict(msg.into()) {
             Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
-                Some(peer) => peer.send_gossip(acquired, &mut self.rpc_codec_pool),
+                Some(peer) => peer.send_gossip(acquired, msg.traffic, &mut self.rpc_codec_pool),
                 None => SendResult::UnknownPeer,
             },
             None => SendResult::Dropped(None),
@@ -386,12 +386,14 @@ impl P2p {
         &mut self,
         peer_id: usize,
         frame: CacheFrameRef,
+        traffic: GossipTraffic,
         partial_cells: Option<u8>,
         context: &mut Context,
     ) -> SendResult {
         let result = match self.peers.get_mut(&ConnectionHandle(peer_id)) {
             Some(peer) => peer.send_segmented_gossip(
                 frame,
+                traffic,
                 partial_cells,
                 context,
                 self.segmented_limits.get_or_insert_with(Box::default),
@@ -400,9 +402,10 @@ impl P2p {
             None => SendResult::UnknownPeer,
         };
         result.map_dropped(|dropped| {
-            dropped.map_or(P2pSend::SegmentedGossip { peer_id, frame, partial_cells }, |old| {
-                old.into_message(peer_id)
-            })
+            dropped.map_or(
+                P2pSend::SegmentedGossip { peer_id, frame, traffic, partial_cells },
+                |old| old.into_message(peer_id),
+            )
         })
     }
 

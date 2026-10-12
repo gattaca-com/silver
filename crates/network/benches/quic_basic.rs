@@ -13,7 +13,8 @@ use pprof::criterion::{Output, PProfProfiler};
 use quinn_proto::{Endpoint, EndpointConfig};
 use rand::{Rng, RngCore, SeedableRng};
 use silver_common::{
-    GossipMsgOut, Keypair, P2pStreamId, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable,
+    GossipMsgOut, GossipTraffic, Keypair, P2pStreamId, TCache, TCacheId, TCacheProducer,
+    TCacheReader, TCacheTable,
 };
 use silver_discovery::Discovery;
 use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
@@ -176,7 +177,11 @@ pub fn broadcast(c: &mut Criterion) {
                                     go_producer.reserve(datum.len(), true).unwrap();
                                 reservation.write_all(datum.as_slice()).unwrap();
 
-                                msgs.push(GossipMsgOut { peer_id: 0, tcache: reservation.read() });
+                                msgs.push(GossipMsgOut {
+                                    peer_id: 0,
+                                    tcache: reservation.read(),
+                                    traffic: GossipTraffic::CONTROL,
+                                });
                             }
                             msgs.reverse();
 

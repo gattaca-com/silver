@@ -2,10 +2,10 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, HeadChange, IpBytes, Keypair, MessageId,
-    Nanos, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache, TCacheId,
-    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
-    test_util::ShmemDir,
+    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, GossipTraffic, GossipTrafficBytes,
+    HeadChange, IpBytes, Keypair, MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId,
+    SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+    TCacheTable, TProducer, TReadMode, test_util::ShmemDir,
 };
 use silver_peer::SyncingConfig;
 
@@ -161,7 +161,7 @@ impl GossipPublications {
     fn sent(&mut self) -> Vec<(usize, Vec<u8>)> {
         let mut frames = Vec::new();
         self.observer.consume(|event: P2pSend, _| {
-            if let P2pSend::Gossip(GossipMsgOut { peer_id, tcache }) = event {
+            if let P2pSend::Gossip(GossipMsgOut { peer_id, tcache, .. }) = event {
                 let read = self.outbound.acquire(tcache);
                 frames.push((peer_id, read.buffer().unwrap().0.to_vec()));
             }
@@ -187,6 +187,54 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     reservation.write_all(bytes).unwrap();
     reservation.flush().unwrap();
     reservation.read()
+}
+
+/// A published payload counts toward its topic, IHAVE, IWANT and IDONTWANT
+/// entries toward their own slots, and the rest of the frame toward control,
+/// whether or not any of it then decodes. All but the topic are shared with
+/// concurrently running tests, so only their lower bounds are checked.
+#[test]
+fn received_gossip_bytes_split_by_topic_control_kinds_and_control() {
+    let mut capture = GossipPublications::new(GossipTopic::BeaconBlock, &[]);
+    let topic = GossipTopic::SyncCommittee(3);
+    let data = [0x5a; 40];
+    let wire = topic.to_wire("00000000");
+    let id = [0x77; 20];
+    let field = |tag: u8, body: &[u8]| [&[tag, body.len() as u8][..], body].concat();
+    // RPC.publish → Message { data = 2, topic = 4 }.
+    let message = [field(0x12, &data), field(0x22, wire.as_bytes())].concat();
+    // ControlMessage { ihave = 1 { topic_id = 1, message_ids = 2 }, iwant = 2 {
+    // message_ids = 1 }, idontwant = 5 { message_ids = 1 } }.
+    let ihave = field(0x0a, &[field(0x0a, wire.as_bytes()), field(0x12, &id)].concat());
+    let iwant = field(0x12, &field(0x0a, &id));
+    let idontwant = field(0x2a, &field(0x0a, &id));
+    let control = [ihave.clone(), iwant.clone(), idontwant.clone()].concat();
+    let rpc = [field(0x12, &message), field(0x1a, &control)].concat();
+
+    let read = |traffic| GossipTrafficBytes::Recv.get(traffic);
+    let slots = [
+        GossipTraffic::of(topic),
+        GossipTraffic::IHAVE,
+        GossipTraffic::IWANT,
+        GossipTraffic::IDONTWANT,
+        GossipTraffic::CONTROL,
+    ];
+    let before = slots.map(read);
+    let stream = P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true);
+    let mut frame = stream.as_ref().to_vec();
+    frame.extend_from_slice(&rpc);
+    let tcache = write_bytes(&mut capture.incoming, &frame);
+    capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
+    capture.crank();
+
+    let [payload, ihave_bytes, iwant_bytes, idontwant_bytes, control_bytes] =
+        [0, 1, 2, 3, 4].map(|i| read(slots[i]) - before[i]);
+    assert_eq!(payload, data.len() as u64);
+    assert!(ihave_bytes >= ihave.len() as u64, "{ihave_bytes}");
+    assert!(iwant_bytes >= iwant.len() as u64, "{iwant_bytes}");
+    assert!(idontwant_bytes >= idontwant.len() as u64, "{idontwant_bytes}");
+    let rest = rpc.len() - data.len() - control.len();
+    assert!(control_bytes >= rest as u64, "{control_bytes}");
 }
 
 /// Beacon state publishes its first status as soon as its thread runs, which

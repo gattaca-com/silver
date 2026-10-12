@@ -43,7 +43,8 @@ use rand::{Rng, RngCore};
 #[cfg(feature = "alloc-profile")]
 use silver_common::metrics::CountingAllocator;
 use silver_common::{
-    GossipMsgOut, GossipTopic, NewGossipMsg, P2pSend, PeerEvent, TCacheReader, test_util::ShmemDir,
+    GossipMsgOut, GossipTopic, GossipTraffic, NewGossipMsg, P2pSend, PeerEvent, TCacheReader,
+    test_util::ShmemDir,
 };
 use silver_e2e::{
     EchoCompressionHalf, EchoNetworkHalf, EchoStack, PublisherStack, Stats,
@@ -161,7 +162,7 @@ fn main() {
             let snappy = snappy_compress(&payload);
             let tcache = build_publish_frame(&mut publisher.mcache_producer, &wire_topic, &snappy)
                 .expect("publish frame");
-            let msg = GossipMsgOut { peer_id: handle, tcache };
+            let msg = GossipMsgOut { peer_id: handle, tcache, traffic: GossipTraffic::of(TOPIC) };
             last_msg = Some(msg);
             sent_new += 1;
             msg

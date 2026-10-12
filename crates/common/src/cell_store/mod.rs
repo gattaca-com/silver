@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use silver_beacon_state_data::ForkName;
 
 use crate::{
-    AcquiredRange, GossipDomain, GossipTopic, Nanos, P2pStreamId, PendingSubReservation,
-    SubReservationError, SubReservationList, SubReservationRef, TCacheRead, TCacheReader,
+    AcquiredRange, GossipDomain, GossipTopic, GossipTraffic, Nanos, P2pStreamId,
+    PendingSubReservation, SubReservationError, SubReservationList, SubReservationRef, TCacheRead,
+    TCacheReader,
     ssz_view::{
         BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF,
         partial_column::PARTIAL_HEADER_FIXED,
@@ -203,6 +204,12 @@ pub struct ColumnGroupKey {
     pub domain: GossipDomain,
     pub block_root: [u8; 32],
     pub column: u64,
+}
+
+impl ColumnGroupKey {
+    pub fn traffic(&self) -> GossipTraffic {
+        GossipTraffic::of(GossipTopic::DataColumnSidecar(self.column))
+    }
 }
 
 impl From<ColumnAvailability> for ColumnGroupKey {

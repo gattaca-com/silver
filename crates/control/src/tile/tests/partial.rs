@@ -168,7 +168,7 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
     capture.crank();
     let mut sent = None;
     capture.observer.consume(|event: P2pSend, _| {
-        if let P2pSend::SegmentedGossip { peer_id, frame, partial_cells } = event {
+        if let P2pSend::SegmentedGossip { peer_id, frame, partial_cells, .. } = event {
             assert_eq!(peer_id, 1);
             assert_eq!(partial_cells, Some(1));
             assert!(sent.replace(frame).is_none());

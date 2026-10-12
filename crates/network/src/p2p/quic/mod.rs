@@ -1,8 +1,7 @@
-use std::{io::Error, sync::Arc};
+use std::{io::Error, sync::Arc, time::Duration};
 
 use quinn_proto::{
-    ClientConfig, Endpoint, EndpointConfig, ServerConfig,
-    crypto::rustls::{QuicClientConfig, QuicServerConfig},
+    crypto::rustls::{QuicClientConfig, QuicServerConfig}, AckFrequencyConfig, ClientConfig, Endpoint, EndpointConfig, ServerConfig, VarInt
 };
 use silver_common::{Keypair, P2pSend, PeerId};
 
@@ -36,6 +35,13 @@ fn transport_config() -> Arc<quinn_proto::TransportConfig> {
     let mut tc = quinn_proto::TransportConfig::default();
     tc.max_idle_timeout(Some(quinn_proto::IdleTimeout::try_from(IDLE_TIMEOUT).unwrap()));
     tc.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
+
+    let mut ack_config = AckFrequencyConfig::default();
+    ack_config.ack_eliciting_threshold(VarInt::from_u32(16));
+    ack_config.max_ack_delay(Some(Duration::from_millis(4)));
+    ack_config.reordering_threshold(VarInt::from_u32(2));
+    tc.ack_frequency_config(Some(ack_config));
+
     Arc::new(tc)
 }
 

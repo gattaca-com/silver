@@ -81,7 +81,8 @@ function cornerLabels(colours, holder) {
  *  `fmtRight`; `stepped`; `spanGaps`; `endLabel(i, v)` for a label at each
  *  series' last point; `markers`; `cornerLabels`; `colourOf[i]`, the colour
  *  slot of series `i` (default `i`); `dashed`, series indexes drawn dashed;
- *  `legend: false` hides the per-series legend. `holder.spec` is the latest
+ *  `fill`, each series filled down to zero in its colour, for stacked data
+ *  given largest first; `legend: false` hides the per-series legend. `holder.spec` is the latest
  *  spec. */
 function options(spec, width, holder) {
   const muted = cssVar('--muted');
@@ -112,6 +113,8 @@ function options(spec, width, holder) {
         stroke: colours[i],
         width: 2,
         ...(spec.dashed?.includes(i) ? { dash: [6, 4] } : {}),
+        // Opaque enough that a later, lower layer hides the one it covers.
+        ...(spec.fill ? { fill: `${colours[i]}d9` } : {}),
         points: { show: false },
         spanGaps: spec.spanGaps ?? false,
         ...(spec.stepped ? { paths: uPlot.paths.stepped({ align: 1 }) } : {}),
@@ -147,7 +150,7 @@ export class LineCharts {
       const width = Math.max(slot.clientWidth, 200);
       // Series identity, layout and theme are baked into the plot; a change
       // rebuilds it.
-      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels, spec.colourOf, spec.dashed, spec.legend];
+      const layout = [spec.height, spec.right, spec.stepped, spec.spanGaps, !!spec.xSeconds, !!spec.xRange, !!spec.yRange, !!spec.endLabel, !!spec.markers, !!spec.cornerLabels, spec.colourOf, spec.dashed, spec.legend, !!spec.fill];
       const shape = `${spec.labels.join('\u0000')}|${JSON.stringify(layout)}|${cssVar('--series-1')}`;
       let chart = this.charts.get(key);
       if (chart && chart.shape !== shape) {

@@ -6,7 +6,8 @@ use std::{
 };
 
 use silver_common::{
-    GossipDomain, GossipTopic, MessageId, MessageIdHasher, TCacheRead, TCacheReader, TRead, Wheel,
+    GossipDomain, GossipTopic, GossipTraffic, MessageId, MessageIdHasher, TCacheRead, TCacheReader,
+    TRead, Wheel,
 };
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
@@ -20,7 +21,7 @@ const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(700);
 
 #[derive(Clone)]
 struct Bucket {
-    messages: HashMap<MessageId, TRead, BuildHasherDefault<MessageIdHasher>>,
+    messages: HashMap<MessageId, (TRead, GossipTraffic), BuildHasherDefault<MessageIdHasher>>,
     ihaves: HashMap<(GossipTopic, GossipDomain), Vec<MessageId>>,
     tcache_min_seq: u64,
 }
@@ -64,7 +65,7 @@ impl MessageCache {
         // TODO could have a preallocated ring of max ihaves per gossip topic.
         bucket.ihaves.entry((topic, domain)).and_modify(|v| v.push(id)).or_insert_with(|| vec![id]);
         bucket.tcache_min_seq = bucket.tcache_min_seq.min(acquired.seq());
-        bucket.messages.insert(id, acquired);
+        bucket.messages.insert(id, (acquired, GossipTraffic::of(topic)));
         self.history.insert(id, Instant::now());
     }
 
@@ -72,8 +73,11 @@ impl MessageCache {
         self.buckets.iter().any(|b| b.messages.contains_key(id))
     }
 
-    pub(crate) fn get(&self, id: &MessageId) -> Option<TCacheRead> {
-        self.buckets.iter().find_map(|b| b.messages.get(id)).map(|a| a.to_read())
+    pub(crate) fn get(&self, id: &MessageId) -> Option<(TCacheRead, GossipTraffic)> {
+        self.buckets
+            .iter()
+            .find_map(|b| b.messages.get(id))
+            .map(|(read, traffic)| (read.to_read(), *traffic))
     }
 
     pub(crate) fn history(&self, id: &MessageId) -> Option<&Instant> {

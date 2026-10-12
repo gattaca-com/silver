@@ -242,7 +242,7 @@ impl PartialExchange {
     pub fn peer_event(&mut self, event: &PeerEvent, now: Instant) {
         match *event {
             PeerEvent::P2pOutboundMessageDropped {
-                msg: P2pSend::SegmentedGossip { peer_id, frame, partial_cells },
+                msg: P2pSend::SegmentedGossip { peer_id, frame, partial_cells, .. },
                 ..
             } => {
                 if partial_cells.is_some() {
@@ -445,6 +445,7 @@ impl PartialExchange {
             emit(P2pSend::SegmentedGossip {
                 peer_id: key.peer,
                 frame,
+                traffic: key.group.traffic(),
                 partial_cells: Some(rows.count_ones() as u8),
             });
             did_work = true;
@@ -538,7 +539,12 @@ impl PartialExchange {
                 response.write(producer, now + RETRY, budget.remaining_bytes())
             {
                 budget.record(frame.read().seq(), bytes);
-                emit(P2pSend::SegmentedGossip { peer_id: key.peer, frame, partial_cells: None });
+                emit(P2pSend::SegmentedGossip {
+                    peer_id: key.peer,
+                    frame,
+                    traffic: key.group.traffic(),
+                    partial_cells: None,
+                });
                 ControlCounters::PartialWithdrawals.inc();
             }
         }

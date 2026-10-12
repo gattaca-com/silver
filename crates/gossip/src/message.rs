@@ -6,24 +6,21 @@ use buffa::{
 };
 use flux::timing::Nanos;
 use silver_common::{
-    Error, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE, MessageId,
-    NewGossipMsg, P2pStreamId, PeerEvent, SszCache, TCacheProducer, TCacheRead, TProducer,
-    TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    Error, GossipDomain, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
+    MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SszCache, TCacheProducer, TCacheRead,
+    TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 
-use crate::{
-    GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache,
-    handler::ActiveDomains,
-};
+use crate::{GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache};
 
 const IDONTWANT_MESSAGE_LEN_THRESHOLD: usize = 1000;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_incoming(
     topic_string: &str,
+    parsed: Result<(GossipTopic, GossipDomain), Error>,
     snappy_data: &[u8],
     stream_id: &P2pStreamId,
-    domains: &ActiveDomains,
     recv_ts: Nanos,
     dedup_cache: &mut DedupCache,
     incoming_gossip_publish: &mut TProducer,
@@ -42,7 +39,7 @@ pub(super) fn handle_incoming(
     let fast_id = match dedup_cache.contains_fast(topic_string, snappy_data) {
         Ok(fast_hash) => fast_hash,
         Err(msg_id) => {
-            let (topic, _) = domains.parse(topic_string)?;
+            let (topic, _) = parsed?;
             emit(GossipHandlerEvent::PeerEvent(PeerEvent::GossipDuplicate {
                 p2p_peer: stream_id.peer(),
                 topic,
@@ -53,7 +50,7 @@ pub(super) fn handle_incoming(
         }
     };
 
-    let (topic, domain) = domains.parse(topic_string)?;
+    let (topic, domain) = parsed?;
     silver_log::trace!(?stream_id, ?topic, "Gossip message received");
 
     // Decompress: block snappy.
@@ -244,11 +241,11 @@ fn read_message_length(msg: &[u8], gossip_topic: &GossipTopic) -> Result<usize, 
 #[cfg(test)]
 mod tests {
     use silver_common::{
-        ForkName, GossipDomain, StreamProtocol, TCache, TCacheId, TCacheReader, TReadMode,
-        encode_varint,
+        ForkName, StreamProtocol, TCache, TCacheId, TCacheReader, TReadMode, encode_varint,
     };
 
     use super::*;
+    use crate::handler::ActiveDomains;
 
     fn snappy_length_prefix(len: usize) -> Vec<u8> {
         let mut buf = [0; 10];
@@ -306,11 +303,12 @@ mod tests {
         let stream = P2pStreamId::new(1, 3, StreamProtocol::GossipSubV13, true);
         let domains = ActiveDomains::new(Some(GossipDomain::new([0; 4], ForkName::Fulu)));
         let mut message = None;
+        let wire = topic.to_wire("00000000");
         handle_incoming(
-            &topic.to_wire("00000000"),
+            &wire,
+            domains.parse(&wire),
             &compressed,
             &stream,
-            &domains,
             Nanos::now(),
             &mut DedupCache::default(),
             &mut ssz,

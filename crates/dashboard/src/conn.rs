@@ -30,6 +30,7 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
     ("/tcaches.js", "text/javascript", include_bytes!("../web/tcaches.js")),
     ("/peers.js", "text/javascript", include_bytes!("../web/peers.js")),
     ("/gossip.js", "text/javascript", include_bytes!("../web/gossip.js")),
+    ("/gossip_traffic.js", "text/javascript", include_bytes!("../web/gossip_traffic.js")),
     ("/events.js", "text/javascript", include_bytes!("../web/events.js")),
     ("/slot_charts.js", "text/javascript", include_bytes!("../web/slot_charts.js")),
     ("/trace.js", "text/javascript", include_bytes!("../web/trace.js")),

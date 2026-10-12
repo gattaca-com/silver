@@ -8,8 +8,9 @@ use std::{
 
 use quinn_proto::StreamId;
 use silver_common::{
-    AcquiredWithOffset, CacheFrameRef, CacheSegment, P2pStreamId, StreamProtocol, SubLayout,
-    SubReservationRef, TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer,
+    AcquiredWithOffset, CacheFrameRef, CacheSegment, GossipTopic, GossipTraffic,
+    GossipTrafficBytes, P2pStreamId, StreamProtocol, SubLayout, SubReservationRef, TCache,
+    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer,
     test_util::follow_producer_floor,
 };
 
@@ -59,6 +60,7 @@ impl Harness {
         // Counter files initialise lazily on first touch; warm them so the
         // zero-allocation baselines below measure only the frame path.
         NetworkCounters::CacheSegmentedAdmitted.inc();
+        GossipTrafficBytes::Sent.add(GossipTraffic::CONTROL, 0);
         let gossip = TCache::producer(TCacheId::ControlGossip, 1 << 18);
         let columns = TCache::producer(TCacheId::ControlSlot, 1 << 18);
         let rpc_out = TCache::producer(TCacheId::StorageDelivery, 1 << 16);
@@ -257,11 +259,11 @@ fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     let cell_ptr =
         assembly.acquire(&mut h.context.reader).unwrap().ranges(0).unwrap()[0].as_ref().as_ptr();
-    let mut io = MockIo::new(OutboundGossip::Segmented(frame), 7);
+    let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 7);
     let before = ALLOCATIONS.with(Cell::get);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 2);
-    assert!(matches!(state, GossipWriteState::WritingSegments(_)));
+    assert!(matches!(state, GossipWriteState::WritingSegments(..)));
     assert_eq!(io.written[0], 76);
     io.budget = 0;
     let before = ALLOCATIONS.with(Cell::get);
@@ -315,10 +317,10 @@ fn mid_frame_error_never_starts_the_next_frame() {
     let (reference, _) = h.assembly(true);
     let first = h.acquire(reference).unwrap();
     let second = h.acquire(reference).unwrap();
-    let mut io = MockIo::new(OutboundGossip::Segmented(first), 5);
+    let mut io = MockIo::new(OutboundGossip::Segmented(first, GossipTraffic::CONTROL), 5);
     let state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert_eq!(io.written.len(), 10);
-    io.pending = Some(OutboundGossip::Segmented(second));
+    io.pending = Some(OutboundGossip::Segmented(second, GossipTraffic::CONTROL));
     io.fail = true;
     assert!(state.spin(&mut io, &stream()).is_err());
     assert_eq!(io.written.len(), 10);
@@ -450,7 +452,7 @@ fn dropping_before_the_prefix_allocates_no_owners_and_releases_the_lease() {
     let (reference, _) = h.assembly(true);
     let frame = h.acquire(reference).unwrap();
     assert_eq!(h.wheel.active_count(), 1);
-    let mut io = MockIo::new(OutboundGossip::Segmented(frame), 0);
+    let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 0);
     let before = ALLOCATIONS.with(Cell::get);
     let state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert!(matches!(state, GossipWriteState::WritingLength { written: 0, .. }));
@@ -474,14 +476,15 @@ fn partial_length_prefix_and_mixed_frames_preserve_boundaries() {
     )
     .unwrap();
     let frame = h.acquire(reference).unwrap();
-    let mut io = MockIo::new(OutboundGossip::Segmented(frame), 1);
+    let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 1);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert_eq!(io.written, [0xac]);
     assert!(matches!(state, GossipWriteState::WritingLength { written: 1, .. }));
     let mut write = h.gossip.reserve(3, true).unwrap();
     write.write_all(b"end").unwrap();
     let read = h.context.reader.acquire_strict(write.read()).unwrap();
-    io.pending = Some(OutboundGossip::Contiguous(h.wheel.leased(read, h.now)));
+    io.pending =
+        Some(OutboundGossip::Contiguous(h.wheel.leased(read, h.now), GossipTraffic::CONTROL));
     io.budget = 0;
     state = state.spin(&mut io, &stream()).unwrap();
     assert_eq!(io.written, [0xac]);
@@ -498,13 +501,37 @@ fn partial_length_prefix_and_mixed_frames_preserve_boundaries() {
     assert_eq!(&io.written[302..], b"\x03end");
 }
 
+/// Partial writes count as they land, the length prefix included.
+#[test]
+fn written_bytes_count_toward_the_frame_traffic() {
+    let mut h = Harness::new();
+    let traffic = GossipTraffic::of(GossipTopic::DataColumnSidecar(77));
+    let before = GossipTrafficBytes::Sent.get(traffic);
+    let mut reservation = h.gossip.reserve(300, true).unwrap();
+    reservation.write_all(&[0xab; 300]).unwrap();
+    let read = h.context.reader.acquire_strict(reservation.read()).unwrap();
+    let mut io = MockIo::new(OutboundGossip::Contiguous(h.wheel.leased(read, h.now), traffic), 7);
+    let mut state = GossipWriteState::Idle;
+    for _ in 0..100 {
+        state = state.spin(&mut io, &stream()).unwrap();
+        if matches!(state, GossipWriteState::Idle) && io.pending.is_none() {
+            break;
+        }
+    }
+    assert_eq!(io.written.len(), 2 + 300);
+    assert_eq!(GossipTrafficBytes::Sent.get(traffic) - before, 2 + 300);
+}
+
 #[test]
 fn contiguous_baseline_uses_one_owner_per_write_attempt() {
     let mut h = Harness::new();
     let mut reservation = h.gossip.reserve(64, true).unwrap();
     reservation.write_all(&[0xab; 64]).unwrap();
     let read = h.context.reader.acquire_strict(reservation.read()).unwrap();
-    let mut io = MockIo::new(OutboundGossip::Contiguous(h.wheel.leased(read, h.now)), 7);
+    let mut io = MockIo::new(
+        OutboundGossip::Contiguous(h.wheel.leased(read, h.now), GossipTraffic::CONTROL),
+        7,
+    );
     let before = ALLOCATIONS.with(Cell::get);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert_eq!(ALLOCATIONS.with(Cell::get) - before, 1);

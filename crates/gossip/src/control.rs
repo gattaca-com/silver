@@ -1,7 +1,7 @@
 use buffa::{
     RepeatedView,
     encoding::{Tag, WireType, encode_varint, varint_len},
-    types::{encode_bytes, encode_string, string_encoded_len},
+    types::{bytes_encoded_len, encode_bytes, encode_string, string_encoded_len},
 };
 use silver_common::{
     Error, GossipTopic, MESSAGE_ID_LEN, MessageId, P2pStreamId, PeerEvent, TCacheProducer,
@@ -18,6 +18,36 @@ use crate::{
     handler::ActiveDomains,
     mcache::MessageCache,
 };
+
+/// Encoded bytes of the IHAVE entries in a `ControlMessage`: each its field
+/// tag, length prefix and body.
+pub(super) fn ihave_entries_len<'a>(haves: &RepeatedView<'a, ControlIHaveView<'a>>) -> usize {
+    haves
+        .into_iter()
+        .map(|ihave| {
+            let topic = ihave.topic_id.map_or(0, |topic| 1 + string_encoded_len(topic));
+            entry_len(topic + message_ids_len(&ihave.message_ids))
+        })
+        .sum()
+}
+
+pub(super) fn iwant_entries_len<'a>(wants: &RepeatedView<'a, ControlIWantView<'a>>) -> usize {
+    wants.into_iter().map(|iwant| entry_len(message_ids_len(&iwant.message_ids))).sum()
+}
+
+pub(super) fn idontwant_entries_len<'a>(
+    dontwants: &RepeatedView<'a, ControlIDontWantView<'a>>,
+) -> usize {
+    dontwants.into_iter().map(|idontwant| entry_len(message_ids_len(&idontwant.message_ids))).sum()
+}
+
+fn message_ids_len(ids: &RepeatedView<'_, &[u8]>) -> usize {
+    ids.into_iter().map(|id| 1 + bytes_encoded_len(id)).sum()
+}
+
+fn entry_len(body: usize) -> usize {
+    1 + varint_len(body as u64) + body
+}
 
 pub(super) fn handle_subscriptions<'a>(
     stream_id: &P2pStreamId,
@@ -119,11 +149,12 @@ pub(super) fn handle_iwants<'a>(
                 continue;
             };
 
-            if let Some(tcache) = mcache.get(&hash) {
+            if let Some((tcache, traffic)) = mcache.get(&hash) {
                 emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipWant {
                     p2p_peer: stream_id.peer(),
                     hash,
                     tcache,
+                    traffic,
                 }));
             } else {
                 match mcache.history(&hash) {
@@ -554,6 +585,41 @@ mod tests {
         let read = consumer.acquire(tc);
         let (bytes, _) = read.buffer().unwrap();
         bytes.to_vec()
+    }
+
+    /// A control message of only IHAVE (or only IWANT) entries encodes to
+    /// exactly their computed length; 40 ids push the length prefixes past
+    /// one byte.
+    #[test]
+    fn ihave_and_iwant_lengths_match_their_encoding() {
+        use buffa::Message;
+
+        use crate::generated::{ControlIHave, ControlIWant, ControlMessage, ControlMessageView};
+
+        let ids = |n: usize| (0..n).map(|i| vec![i as u8; MESSAGE_ID_LEN]).collect::<Vec<_>>();
+        let ihaves = ControlMessage {
+            ihave: vec![
+                ControlIHave {
+                    topic_id: Some("/eth2/00000000/beacon_block/ssz_snappy".into()),
+                    message_ids: ids(40),
+                    ..Default::default()
+                },
+                ControlIHave { topic_id: None, message_ids: ids(1), ..Default::default() },
+            ],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let view = ControlMessageView::decode_view(&ihaves).unwrap();
+        assert_eq!(ihave_entries_len(&view.ihave), ihaves.len());
+        assert_eq!(iwant_entries_len(&view.iwant), 0);
+
+        let iwants = ControlMessage {
+            iwant: vec![ControlIWant { message_ids: ids(40), ..Default::default() }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let view = ControlMessageView::decode_view(&iwants).unwrap();
+        assert_eq!(iwant_entries_len(&view.iwant), iwants.len());
     }
 
     /// Data-column subscriptions carry partial capability flags with the

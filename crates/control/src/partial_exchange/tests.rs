@@ -4,8 +4,8 @@ use buffa::MessageView;
 use silver_chain_spec::SpecConfig;
 use silver_columns::cell_store::CellStore;
 use silver_common::{
-    CacheFrameRef, GossipDomain, Keypair, P2pStreamId, PeerId, StreamProtocol, TCache, TCacheId,
-    TCacheProducer, TCacheReader, TCacheTable, TReadMode,
+    CacheFrameRef, GossipDomain, GossipTraffic, Keypair, P2pStreamId, PeerId, StreamProtocol,
+    TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TReadMode,
     cell_store::{AssemblyRequest, CommitmentContext, ContextData},
     column_util::{columns_of, data_column_sidecar_prefix_fulu},
     ssz_view::{
@@ -263,7 +263,12 @@ impl Rig {
             &PeerEvent::P2pOutboundMessageDropped {
                 p2p_peer: peer,
                 protocol: StreamProtocol::GossipSub,
-                msg: P2pSend::SegmentedGossip { peer_id: peer, frame, partial_cells: Some(0) },
+                msg: P2pSend::SegmentedGossip {
+                    peer_id: peer,
+                    frame,
+                    traffic: GossipTraffic::CONTROL,
+                    partial_cells: Some(0),
+                },
             },
             self.now,
         );

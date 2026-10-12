@@ -11,8 +11,8 @@ use silver_beacon_state_data::{
 };
 
 use crate::{
-    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, Identify, MessageId, Origin,
-    P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
+    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify, MessageId,
+    Origin, P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
     column_util::columns_of,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
@@ -29,6 +29,7 @@ use crate::{
 pub struct GossipMsgOut {
     pub peer_id: usize,
     pub tcache: TCacheRead,
+    pub traffic: GossipTraffic,
 }
 
 /// A gossip message this node built rather than received from the mesh, after
@@ -626,6 +627,7 @@ pub enum PeerEvent {
         p2p_peer: usize,
         hash: MessageId,
         tcache: TCacheRead,
+        traffic: GossipTraffic,
     },
     P2pGossipDontWant {
         p2p_peer: usize,
@@ -981,6 +983,7 @@ pub enum P2pSend {
     SegmentedGossip {
         peer_id: usize,
         frame: CacheFrameRef,
+        traffic: GossipTraffic,
         /// Count cells when Network finishes writing a partial response.
         /// None for generic frames and best-effort availability withdrawals.
         partial_cells: Option<u8>,

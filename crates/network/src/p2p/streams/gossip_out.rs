@@ -2,7 +2,7 @@ use std::slice;
 
 use silver_common::{
     GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
-    MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
+    GossipTraffic, GossipTrafficBytes, MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
 };
 
 use crate::{
@@ -36,8 +36,9 @@ pub(crate) enum GossipWriteState {
         offset: usize,
         length: usize,
         message: Leased<TRead>,
+        traffic: GossipTraffic,
     },
-    WritingSegments(SegmentedWriter),
+    WritingSegments(SegmentedWriter, GossipTraffic),
 }
 
 enum Spin {
@@ -73,6 +74,7 @@ impl GossipWriteState {
                     GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME
                 };
                 let n = io.write_to_stream(p2p_id.stream_id(), &announcement[written..])?;
+                GossipTrafficBytes::Sent.add(GossipTraffic::CONTROL, n);
                 written += n;
                 if written == announcement.len() {
                     Ok(Spin::Next(Self::Idle))
@@ -84,8 +86,8 @@ impl GossipWriteState {
                 Some(message) => {
                     let mut buffer = [0u8; 10];
                     let len = match &message {
-                        OutboundGossip::Contiguous(message) => message.len()?,
-                        OutboundGossip::Segmented(frame) => frame.wire_len(),
+                        OutboundGossip::Contiguous(message, _) => message.len()?,
+                        OutboundGossip::Segmented(frame, _) => frame.wire_len(),
                     };
                     if len > MAX_GOSSIP_FRAME_SIZE {
                         return Err(StreamError::GossipFrameTooLarge);
@@ -101,20 +103,21 @@ impl GossipWriteState {
             },
             Self::WritingLength { buffer, limit, mut written, message } => {
                 let n = io.write_to_stream(p2p_id.stream_id(), &buffer[written..limit])?;
+                GossipTrafficBytes::Sent.add(message.traffic(), n);
                 written += n;
                 if written == limit {
                     return Ok(Spin::Next(match message {
-                        OutboundGossip::Contiguous(message) => {
-                            Self::Writing { offset: 0, length: message.len()?, message }
+                        OutboundGossip::Contiguous(message, traffic) => {
+                            Self::Writing { offset: 0, length: message.len()?, message, traffic }
                         }
-                        OutboundGossip::Segmented(frame) => {
-                            Self::WritingSegments(frame.into_writer())
+                        OutboundGossip::Segmented(frame, traffic) => {
+                            Self::WritingSegments(frame.into_writer(), traffic)
                         }
                     }));
                 }
                 Ok(Spin::Ok(Self::WritingLength { buffer, limit, written, message }))
             }
-            Self::Writing { mut offset, length, message } => {
+            Self::Writing { mut offset, length, message, traffic } => {
                 let Some(r_offset) = message.with_offset(offset) else {
                     silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
                     NetworkCounters::GossipMsgSkipped.inc();
@@ -122,23 +125,25 @@ impl GossipWriteState {
                 };
 
                 let n = io.write_leased_to_stream(p2p_id.stream_id(), message.child(r_offset))?;
+                GossipTrafficBytes::Sent.add(traffic, n);
                 offset += n;
                 if offset == length {
                     return Ok(Spin::Next(Self::Idle));
                 }
-                Ok(Spin::Ok(Self::Writing { offset, length, message }))
+                Ok(Spin::Ok(Self::Writing { offset, length, message, traffic }))
             }
-            Self::WritingSegments(mut frame) => {
+            Self::WritingSegments(mut frame, traffic) => {
                 let chunk = frame.chunk().ok_or(StreamError::InvalidGossipFrame)?;
                 let n = io.write_chunks(p2p_id.stream_id(), slice::from_mut(chunk))?;
+                GossipTrafficBytes::Sent.add(traffic, n);
                 let chunk_complete = chunk.is_empty();
                 if frame.written(n) {
                     frame.complete();
                     Ok(Spin::Next(Self::Idle))
                 } else if chunk_complete {
-                    Ok(Spin::Next(Self::WritingSegments(frame)))
+                    Ok(Spin::Next(Self::WritingSegments(frame, traffic)))
                 } else {
-                    Ok(Spin::Ok(Self::WritingSegments(frame)))
+                    Ok(Spin::Ok(Self::WritingSegments(frame, traffic)))
                 }
             }
         }
@@ -203,7 +208,7 @@ mod tests {
         }
 
         fn gossip_next(&mut self) -> Option<OutboundGossip> {
-            self.pending.take().map(OutboundGossip::Contiguous)
+            self.pending.take().map(|read| OutboundGossip::Contiguous(read, GossipTraffic::CONTROL))
         }
 
         fn remote_addr(&self) -> SocketAddr {
