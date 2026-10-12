@@ -61,6 +61,7 @@ Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are re
 
 Proof-writing pitfalls:
 
+- Avoid `decide` on universal statements over `Fp2Field`. `Spec/PointCount.lean` declares a global noncomputable `Fintype Fp2Field` instance, so importers can obtain `Fintype.decidableForallFintype` instead of a missing-instance error. Evaluating that decision procedure in Lean's kernel would attempt to enumerate p² field elements. Use a mathematical proof instead.
 - Avoid unfolding the spec's `Fp2.sqrt` or `Fp.inverse` in proofs: evaluating their large powers can produce a "deep recursion" error. Use `cases h : Fp2.sqrt a` to obtain an equation for the result, then apply `Kernel.sqrt_agrees` or `Kernel.sqrt_fails`. Rewrite `Fp2.inverse` with `Fp2.toField_inverse` before its definition unfolds.
 - `decide +kernel` exhausted memory when evaluating `decompress` directly; Mathlib's `dblXYZ` also proved impractical to evaluate through `MvPolynomial`. Go through `decompress_lane` and the lane functions, or `Kernel.dblXYZ_eq_dblFormula`.
 - `rfl`, `show` or `unfold` across a structure whose fields mention `Kernel.sqrt` can send the elaborator into the same powers. Separate definitions rewritten by their equations, such as `laneX` and `laneY`, avoid it.

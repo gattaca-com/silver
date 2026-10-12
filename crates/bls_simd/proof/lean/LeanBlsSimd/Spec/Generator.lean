@@ -3,12 +3,12 @@ import LeanBlsSimd.Spec.Membership
 /-!
 # ψ(G) = [z]G for the spec's generator
 
-`ScottComplete` claims ψ(P) = [z]P for every point P with [r]P = O.
-A wrong ψ constant or the opposite sign of z could make that hypothesis false.
-If it were false, every theorem assuming it would be vacuous: the proofs would still type-check,
-but would not establish their conclusions.
-`psi_generator` proves the claim for the spec's generator G, and `generator_torsion` shows that
-[r]G = O, so G is one of the points the claim covers.
+`ScottComplete` states ψ(P) = [z]P for every point P with [r]P = O.
+`psi_generator` proves the generator case, and `generator_torsion` shows that [r]G = O.
+`scottComplete_of_cyclic` and `Spec/ScottCardinality.lean` extend the identity to all rational
+r-torsion points once the cardinality bounds are established in `Spec/CubicHasse.lean`.
+A wrong ψ constant or the opposite sign of z would break the proof of `psi_generator`,
+and hence the proof of `scott_complete`.
 
 The proof runs `Kernel.scottMembership` on G in Lean's kernel (`decide +kernel`), then applies
 `scottMembership_spec`. To avoid repeatedly evaluating Mathlib's polynomial representation
