@@ -4,7 +4,7 @@ import LeanBlsSimd.Model.Intrinsics
 /-!
 # `fp8.rs`
 
-`crates/bls_simd/src/fp8.rs`, transcribed one statement per Rust statement.
+Model of `crates/bls_simd/src/fp8.rs`, connected to the Aeneas output by `Refines/Fp8.lean`.
 
 Some stages carry names that Rust does not give them, so that proofs can treat each result as a
 variable. `mulAcc` is `Fp8::mul` up to its carry loop. The loops of `mul`, `pack64` and
@@ -19,9 +19,9 @@ The operations that compare, mask or blend are transcribed on whole vectors inst
 `_mm512_*` definitions of `Model/Intrinsics.lean`, so that the lane order, the mask bits and the
 blend polarity enter their proofs. `Simd` holds the free functions of `fp8.rs` on `__m512i`.
 
-Rust's arrays are `Vector`s, whose index bounds Lean checks statically where Rust checks them at
-run time. The exceptions are `pack64`'s `out[word]` and the window and table lookups of
-`pow_p_minus_3_over_4`, whose indices are run-time values in Rust too; they use `!`.
+Rust's arrays become `Vector`s. Ordinary indexing requires a bound proof; `pack64`'s
+`out[word]` and the window and table lookups of `pow_p_minus_3_over_4` use `!` instead.
+The refinement proofs establish that the corresponding generated accesses stay in bounds.
 -/
 
 namespace LeanBlsSimd

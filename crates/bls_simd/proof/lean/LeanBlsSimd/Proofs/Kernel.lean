@@ -23,10 +23,10 @@ On a lane whose `undecided` bit is clear:
 - `decompress_eq_spec`: the lane's result in `decompress_g2_chunk` is the spec's, mapped through
   `blstLimbs`, given Scott completeness.
 
-Nothing is claimed about a lane whose `undecided` bit is set.
+These specification-agreement theorems do not cover the blst fallback for undecided lanes.
 
-`psi_generator` proves `ScottComplete`'s claim for the spec's generator. So the constants of ψ and
-the sign of z do not make that hypothesis false.
+`psi_generator` checks the chosen ψ constants and sign of z on the spec's generator.
+This establishes one instance of `ScottComplete`; the general statement remains a hypothesis.
 -/
 
 namespace LeanBlsSimd

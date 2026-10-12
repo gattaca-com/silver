@@ -1,13 +1,12 @@
 import LeanBlsSimd.Proofs.DecompressG2
 
 /-! Negative controls for `Proofs/Fp2x8.lean`, `Spec/Membership.lean`, `Proofs/G2x8.lean`,
-`Proofs/Decode.lean` and `Proofs/DecompressG2.lean`. Each `fail_if_success` wraps a claim that
-must fail; each plain `example` must pass.
+`Proofs/Decode.lean` and `Proofs/DecompressG2.lean`. Each `fail_if_success` checks that a proof
+script rejects a mutation; each plain `example` must pass.
 
-Each control runs a library proof against a mutant. A mutant is a copy of a model or `Kernel`
-definition, or of a constant's index. Where the copy takes the mutated part as a parameter, `rfl`
-pins its unmutated instance to the original. A plain example shows the mutation on concrete
-values. -/
+The mutations change a model or `Kernel` definition, or an index into a constant table. Where
+the changed part is a parameter, an `rfl` check identifies the unmutated instance with the
+original. Concrete examples show the effects of the mutations. -/
 
 namespace LeanBlsSimd
 

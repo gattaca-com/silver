@@ -10,9 +10,8 @@ E′ to itself, so each gives a statement of the same shape:
   previous one;
 - ζ·c_x in place of c_x, another cube root of i. That ψ is φ ∘ ψ.
 
-The first examples show each mutated statement false. The last run the step of `psi_generator`'s
-proof that decides, the evaluation of `scottMembership`'s comparison, on each mutant, and show it
-rejects G. -/
+The first examples refute each mutated statement. The final examples evaluate the
+`scottMembership` comparison used in `psi_generator`'s proof and show that each mutant rejects G. -/
 
 namespace LeanBlsSimd
 

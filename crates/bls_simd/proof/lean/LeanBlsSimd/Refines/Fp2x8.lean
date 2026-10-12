@@ -5,7 +5,11 @@ import LeanBlsSimd.Proofs.MulComm
 open Aeneas Aeneas.Std Result
 open silver_bls_simd
 
-/-! The functions of `fp2x8.rs`. `ofFp2x8` converts each coordinate with `ofFp8`. -/
+/-!
+Exact refinement of the functions in `fp2x8.rs`. `ofFp2x8` converts each coordinate with
+`ofFp8`. Multiplication uses exact limb-level commutativity to accept swapped operands.
+The square-root proof names shared intermediate values to keep later mismatch goals small.
+-/
 
 namespace LeanBlsSimd
 

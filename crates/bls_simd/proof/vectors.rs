@@ -1,9 +1,11 @@
-//! `decompress` on fixed batches, with every value it returns, recorded in
-//! `decompress_g2_vectors.txt`. The Lean model in `lean/` is checked against
-//! the same file, so while `replay_vectors` passes, the model and this crate
-//! agree on those batches. `recorded_matches_blst` checks the recording itself
-//! against blst, on every lane the kernel decides. `write_vectors` regenerates
-//! the file. The format is documented in `lean/Test/Main.lean`.
+//! Record and replay fixed batches of `decompress` inputs and outputs.
+//!
+//! `replay_vectors` compares the Rust kernel with `decompress_g2_vectors.txt`
+//! when IFMA is available. The Lean differential test checks both the handwritten
+//! model and the extracted function against that recording. Together, successful
+//! executions establish agreement on these batches. `recorded_matches_blst`
+//! checks the recorded results on decided lanes without requiring IFMA.
+//! `write_vectors` regenerates the file; `lean/Test/Main.lean` documents its format.
 #![cfg(target_arch = "x86_64")]
 
 // The crate's unit tests use the parts this file does not.
@@ -78,8 +80,9 @@ impl Output {
         }
     }
 
-    /// What changed from `self` to `now`. `lib.rs` reads `points` only on
-    /// `valid` lanes; the model transcribes the others too, so they count.
+    /// Differences between the recorded and new outputs, including coordinates
+    /// on invalid lanes. The Lean refinement covers the whole batch, although
+    /// `lib.rs` reads coordinates only on valid lanes.
     fn changes(&self, now: &Output) -> String {
         let mut changes = Vec::new();
         for (name, was, is) in [
@@ -113,8 +116,8 @@ struct Recorded {
 }
 
 impl Recorded {
-    /// Panics on any departure from the format, so a damaged file cannot pass
-    /// by holding fewer batches.
+    /// Read the declared number of batches in order and require an `endfile`
+    /// marker. A truncated recording panics instead of checking fewer batches.
     fn parse_file(text: &str) -> Vec<Recorded> {
         let mut lines = text
             .lines()
@@ -164,9 +167,9 @@ impl Recorded {
     }
 }
 
-/// What a batch must produce, checked against the Rust's output so that a
-/// batch's name cannot drift from its content. `on` lanes must be on the
-/// curve and `off` lanes must not; `valid` and `undecided` are exact masks.
+/// Expected verdicts for a named test case, checked before recording its output.
+/// `on` lanes must be on the curve and `off` lanes must not. When specified,
+/// `valid` and `undecided` must match the entire mask.
 #[derive(Clone, Copy)]
 struct Expect {
     on: u8,
@@ -198,8 +201,7 @@ impl Expect {
     }
 }
 
-/// A batch to record: its name, a comment for the file, its inputs and what
-/// it must produce.
+/// A batch's inputs, expected verdicts, and description for the recording.
 struct Case {
     kind: String,
     note: String,
@@ -676,8 +678,9 @@ fn replay_vectors() {
     );
 }
 
-/// Needs no IFMA: it reads the recorded outputs, not the kernel's. With
-/// `replay_vectors`, it shows the current kernel agrees with blst on the file.
+/// Check recorded outputs against blst on decided lanes; no IFMA is required.
+/// Combined with an executed `replay_vectors` check, this establishes agreement
+/// between the Rust kernel and blst on those lanes.
 #[test]
 fn recorded_matches_blst() {
     let text = std::fs::read_to_string(VECTORS).expect(VECTORS);

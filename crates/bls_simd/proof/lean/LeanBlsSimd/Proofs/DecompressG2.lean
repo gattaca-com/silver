@@ -15,9 +15,9 @@ Against the spec, on a lane that is not undecided: `on_curve` is set exactly whe
 succeeds, and then `points` holds the decoded point in blst's limbs (`decompress_onCurve`);
 `valid` is set exactly when the decoded point P satisfies ψ(P) = [z]P (`decompress_valid`).
 
-No proof unfolds `Fp2.sqrt`. `uncompress_eq` abstracts it before unfolding `G2.uncompress`, and
-the root step goes through `Kernel.sqrt_agrees` and `Kernel.sqrt_fails`. Lean's kernel would
-otherwise evaluate the large-exponent powers inside it.
+The proofs in this file keep `Fp2.sqrt` folded. `uncompress_eq` abstracts it before unfolding
+`G2.uncompress`, and the root step uses `Kernel.sqrt_agrees` and `Kernel.sqrt_fails`. This avoids
+expanding the large-exponent powers during kernel checking.
 -/
 
 namespace LeanBlsSimd
@@ -165,7 +165,7 @@ These restate one lane of `decompress` without its early returns, from that lane
 noncomputable def laneX (b : Vector UInt8 G2_COMPRESSED_LEN) : Fp2Field :=
   ⟨(decodeLane b).x0, (decodeLane b).x1⟩
 
-/-- The lane's y: the root of x³ + b′ that the sign flag names. -/
+/-- The lane's candidate y, with the sign flag applied. It is a root when `laneOnCurve` is true. -/
 noncomputable def laneY (b : Vector UInt8 G2_COMPRESSED_LEN) : Fp2Field :=
   selectRoot (sqrt (rhs (laneX b))).1 (decodeLane b).largerRoot
 

@@ -8,9 +8,9 @@ import LeanBlsSimd.Proofs.Fp8
 `pack64` convert between six 64-bit words and eight 52-bit limbs, exactly on values below 2^384;
 `to_blst_limbs` gives each lane as the six words of blst's Montgomery form, with R = 2^384.
 
-`pack64` relies on `u128` holding every intermediate: before each limb its accumulator holds
-fewer than 64 bits, so the shifted limb lands on bits the accumulator does not use, and the sum
-stays below 2^116.
+For normalised limbs, every intermediate of `pack64` fits in `u128`. Before each limb, the
+accumulator has fewer than 64 bits. The new limb starts above those bits, and the combined
+value stays below 2^116.
 -/
 
 namespace LeanBlsSimd
@@ -140,7 +140,7 @@ theorem limb_shift_lt (y : UInt64) {b : ℕ} (hb : b < 64) : y.toNat * 2 ^ b < 2
         Nat.mul_lt_mul_of_lt_of_le y.toNat_lt hb2 (by positivity)
     _ = 2 ^ 127 := by norm_num
 
-/-- The accumulator holds below `2 ^ b` bits, so the new limb's bits are disjoint from it. -/
+/-- The accumulator is below `2 ^ b`, so its bits are disjoint from the limb shifted by `b`. -/
 theorem or_limb (N b : ℕ) (y : UInt64) (hN : N < 2 ^ b) (hb : b < 64) :
     BitVec.ofNat 128 N ||| y.toBitVec.setWidth 128 <<< b = BitVec.ofNat 128 (N + y.toNat * 2 ^ b) := by
   have hyb := limb_shift_lt y hb

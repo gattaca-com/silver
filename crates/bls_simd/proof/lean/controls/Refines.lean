@@ -2,12 +2,12 @@ import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Proofs.Convert
 
-/-! Negative controls for `LeanBlsSimd/Refines/`. Each `fail_if_success` wraps a claim that must
-fail; each plain `example` must pass.
+/-! Mutation controls for `LeanBlsSimd/Refines/`. Each `fail_if_success` checks that a proof script
+rejects a mutation; each plain `example` must pass.
 
-Each control runs a library proof script against a mutant. The mutant takes the mutated part as a
-parameter, and `rfl` pins its unmutated instance to the original. The same script proves the
-unmutated claim, so the mutation alone makes it fail. -/
+Each mutated definition takes the changed part as a parameter. An `rfl` check identifies its
+unmutated instance with the original, and the same proof script succeeds on that instance.
+Separate concrete examples refute the mutated claims where described below. -/
 
 namespace LeanBlsSimd
 
@@ -782,14 +782,13 @@ end Pow
 
 The countdown compares the counter with `Z_BITS[1]` to `Z_BITS[5]` and adds the point at each. A
 generated loop whose last comparison reads `Z_BITS[4]` again never adds at bit 16, and must not
-refine the model's loop. The script fails on the mutant. Refuting the loop-level claim means
-evaluating both chains past bit 16 on a concrete point: over 2000 lane multiplications, at about
-0.1 s each in Lean's kernel.
+refine the model's loop. The script fails on the mutant. A concrete refutation of the entire
+loop would require evaluating both chains past bit 16, with thousands of lane multiplications.
 
-The step that `loop_countdown` needs at each iteration is cheaper to refute. At counter 17, from
+The concrete check instead refutes the step required by `loop_countdown`. At counter 17, from
 the point (0, 1, 1) with the affine point (0, 0) and mask 0, the mutant body returns mask 0 and
 `chainStep` returns 255. Doubling (0, 1, 1) gives x = 0, so the addition's H = 0 · Z² − 0 is zero
-on every lane. Lean's kernel evaluates the two masks in about 45 s. -/
+on every lane. -/
 
 def timesMinusZBodyWith (k : Usize) (px py : fp2x8.Fp2x8) (undecided : U8) (r : g2x8.G2x8)
     (bit : U32) : Result (ControlFlow (U8 × g2x8.G2x8 × U32) (g2x8.G2x8 × U8)) := do

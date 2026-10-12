@@ -2,8 +2,9 @@
 # The AVX-512 intrinsics of `fp8.rs`
 
 The trusted model of the twelve intrinsics that `crates/bls_simd/src/fp8.rs` calls.
-Each acts on every 64-bit lane alike, so each is a function on one `UInt64` lane, lifted to the
-eight lanes of `M512`. Lane numbering matters only in the constructors and the masks.
+Arithmetic and bitwise operations act independently on each 64-bit lane. Their definitions
+lift `UInt64` operations to the eight lanes of `M512`; constructors and masks also specify
+the lane order.
 
 Sources: the Intel SDM operation sections for `VPMADD52LUQ`, `VPMADD52HUQ`, `VPSRLQ` and `VPSRAQ`,
 as mirrored at felixcloutier.com/x86, and Rust's `core::arch` at 1.91.0, the toolchain `silver`
@@ -12,7 +13,7 @@ conventions below.
 
 | Rust intrinsic | Lane `l` of the result |
 |---|---|
-| `_mm512_madd52lo_epu64(a, b, c)` | `madd52lo`: `a + (lo52 b · lo52 c) mod 2^52`, modulo 2^64 |
+| `_mm512_madd52lo_epu64(a, b, c)` | `madd52lo`: `a + ((lo52 b · lo52 c) mod 2^52)`, modulo 2^64 |
 | `_mm512_madd52hi_epu64(a, b, c)` | `madd52hi`: `a + ⌊lo52 b · lo52 c / 2^52⌋`, modulo 2^64 |
 | `_mm512_add_epi64(a, b)`, `_mm512_sub_epi64(a, b)` | `a + b`, `a - b`, modulo 2^64 |
 | `_mm512_and_si512(a, b)` | `a &&& b` |

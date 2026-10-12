@@ -2,12 +2,12 @@ import LeanBlsSimd.Proofs.Convert
 import LeanBlsSimd.Proofs.Pow
 
 /-! Negative controls for `Proofs/Vector.lean`, `Proofs/Carries.lean`, `Proofs/Fp8.lean`,
-`Proofs/Pow.lean` and `Proofs/Convert.lean`. Each
-`fail_if_success` wraps a claim that must fail; each plain `example` must pass.
+`Proofs/Pow.lean` and `Proofs/Convert.lean`. Each `fail_if_success` checks that a proof script
+rejects a mutation; each plain `example` must pass.
 
-Each mutant runs through a copy of the model that takes the mutated part as a parameter; an
-`example` pins the copy to the model by `rfl`. A mutant is shown wrong on concrete inputs that
-satisfy the lemma's hypotheses, by `decide +kernel`, beside the model passing the same check. -/
+Each model copy takes the changed part as a parameter; an `rfl` check identifies its unmutated
+instance with the original. For mutations that change the result, `decide +kernel` checks a
+counterexample satisfying the lemma's hypotheses and verifies the model on the same input. -/
 
 namespace LeanBlsSimd
 
@@ -246,7 +246,8 @@ example : (val ((oneFp8.sub Fp8.zero).lane 0) + val (oneFp8.lane 0)) % Fp.modulu
 /-! ## `half` multiplies by `HALF_MONT`
 
 `decode_lane_half` says 2 · `half x` ≡ x. `HALF_P_MINUS_1`, the plain (p − 1)/2 that
-`is_larger_root_mask` uses, is the table a slip would pick; with it the doubling fails. -/
+`is_larger_root_mask` uses, would be an incorrect replacement: doubling the result no longer
+recovers x modulo p. -/
 
 def halfWith (table : List ℕ) (self : Fp8) : Fp8 := self.mul (.splat_limbs (.ofList table))
 

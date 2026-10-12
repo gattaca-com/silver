@@ -10,10 +10,12 @@ open silver_bls_simd
 The blst and batch types convert field by field. `fp_words` reads a slice, so its theorem assumes
 the slice holds `FP_BYTES` bytes.
 
-`decompress_refines` generalises over the model's `decode`, `xOf` and `(rhsOf X).sqrt`, which
-keeps the terms small. The model writes
-`points` in a fold over the batch, the generated loop over the points array alone. Both write
-every lane, so each ends in the `Vector.ofFn` of the lane's point.
+`decompress_refines` names the shared decoding, root, sign-selection and membership results
+instead of expanding them through later stages. It compares each early-return condition
+before proving the branch results equal, so a changed mask can fail at that comparison.
+
+The model updates `points` by folding over a batch; the generated loop updates the points
+array alone. Both write every lane, so both produce the same `Vector.ofFn` of lane points.
 -/
 
 namespace LeanBlsSimd

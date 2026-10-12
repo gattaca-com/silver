@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.Limbs
 /-!
 # The vector layer: lanes, mask bits, blends, `load` and `store`
 
-Lane `l` of each `_mm512_*` intrinsic is its lane function on lane `l` (`getElem_*`). Bit `l` of
+The arithmetic and bitwise `_mm512_*` models operate independently on each lane (`getElem_*`). Bit `l` of
 `_mm512_cmpeq_epi64_mask` is the equality of lane `l` (`testBit_cmpeq_epi64_mask`); the blend
 takes its second vector where the bit is set (`getElem_mask_blend_epi64`); `_mm512_set_epi64`
 puts its last argument in lane 0 (`getElem_set_epi64`). `Fp8.lane_load` and `Fp8.getElem_store`

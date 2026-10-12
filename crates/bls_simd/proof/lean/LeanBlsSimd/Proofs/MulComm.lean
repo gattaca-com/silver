@@ -1,5 +1,12 @@
 import LeanBlsSimd.Proofs.Limbs
 
+/-!
+Exact commutativity of the multiplication model, without `Fp8Inv` assumptions. The product
+rows form a symmetric convolution under wrapping `UInt64` addition; reduction and carries
+then receive identical accumulators. This permits operand swaps in exact refinement proofs,
+where equality of the represented field elements alone would not suffice.
+-/
+
 namespace LeanBlsSimd.Lane
 
 private theorem add_left_comm64 (a b c : UInt64) : a + (b + c) = b + (a + c) := by

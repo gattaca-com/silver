@@ -3,14 +3,14 @@ import LeanBlsSimd.Spec.Membership
 /-!
 # ψ(G) = [z]G for the spec's generator
 
-`ScottComplete` claims ψ(P) = [z]P for every point P with [r]P = O. A wrong ψ constant or the
-opposite sign of z would make that claim false, and every theorem that assumes it vacuous.
+`ScottComplete` claims ψ(P) = [z]P for every point P with [r]P = O. A mismatch between the
+ψ constants and the sign of z could make that hypothesis false.
 `psi_generator` proves the claim for the spec's generator G, and `generator_torsion` shows that
 [r]G = O, so G is one of the points the claim covers.
 
 The proof runs `Kernel.scottMembership` on G in Lean's kernel (`decide +kernel`), then applies
-`scottMembership_spec`. Mathlib's `dblXYZ` evaluates a polynomial, which Lean's kernel cannot do
-in practice, so `timesMinusZ_eq_formula` first restates the chain with dbl-2009-l spelled out
+`scottMembership_spec`. To avoid repeatedly evaluating Mathlib's polynomial representation
+of `dblXYZ`, `timesMinusZ_eq_formula` rewrites the chain using the explicit dbl-2009-l formula
 (`dblFormula`).
 -/
 
@@ -74,8 +74,7 @@ theorem psi_generator : psi (G2.toPoint G2.generator) = z • G2.toPoint G2.gene
 theorem generator_torsion : Fr.modulus • G2.toPoint G2.generator = 0 :=
   scott_sound _ psi_generator
 
-/-- `ScottComplete` without ψ or z in its premise: it holds if every point of order r on E′ is a
-multiple of G. -/
+/-- `ScottComplete` follows if every point P with [r]P = O is a multiple of G. -/
 theorem scottComplete_of_cyclic
     (h : ∀ P : E'.Point, Fr.modulus • P = 0 → ∃ k : ℤ, P = k • G2.toPoint G2.generator) :
     ScottComplete := by

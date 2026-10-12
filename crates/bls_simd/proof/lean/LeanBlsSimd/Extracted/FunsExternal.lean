@@ -5,11 +5,11 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_bls_simd
 
 /-!
-The external functions of the extraction. Written by hand from the `FunsExternal_Template.lean`
-that Aeneas generates beside `Funs.lean`; regeneration leaves this file alone.
+Handwritten definitions for functions that Aeneas leaves external. The starting template is
+`FunsExternal_Template.lean`, generated beside `Funs.lean`; `extract.sh` preserves this file.
 
-Each intrinsic returns `ok` of its definition in `Model/Intrinsics.lean`. Aeneas's integers and
-Lean's fixed-width integers convert through their bit-vectors.
+Each intrinsic wraps the corresponding `Model/Intrinsics.lean` operation in `ok`. Conversions
+between Aeneas integers and Lean's fixed-width integers preserve their bit vectors.
 -/
 
 /-- [core::core_arch::x86::avx512f::_mm512_add_epi64]:

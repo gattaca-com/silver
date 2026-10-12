@@ -4,8 +4,9 @@ import LeanBlsSimd.Spec.Scott
 import LeanBlsSimd.Spec.Sqrt
 
 /-! Negative controls for `LeanBlsSimd.Constants`, `LeanBlsSimd.Spec.Fp2`, `LeanBlsSimd.Spec.Scott`
-and `LeanBlsSimd.Spec.Sqrt`. Each `fail_if_success` wraps a mutated claim or proof, which must
-fail; each plain `example` must pass. -/
+and `LeanBlsSimd.Spec.Sqrt`. Each `fail_if_success` checks that a proof script rejects a changed
+claim or definition; each plain `example` must pass. Script failure alone does not establish that
+the changed claim is false; concrete refutations and equivalent mutations are identified below. -/
 
 namespace LeanBlsSimd
 

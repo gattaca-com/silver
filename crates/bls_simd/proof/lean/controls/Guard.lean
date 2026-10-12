@@ -1,8 +1,9 @@
 import Std.Tactic.BVDecide
 import LeanBlsSimd.Axioms
 
-/-! Controls for `#assert_standard_axioms`: one theorem per form of native evaluation. The
-unlisted forms must fail; `#assert_accepting` runs the same check with a chosen accepted list. -/
+/-! Controls for `#assert_standard_axioms`, using three forms of native evaluation. The guard
+must reject their nonstandard axioms. `#assert_accepting` checks the same declarations with an
+explicit list of permitted axioms. -/
 
 open Lean Elab Command in
 elab "#assert_accepting " names:ident* : command =>
@@ -31,7 +32,7 @@ LeanBlsSimd.reduceBoolControl depends on [Lean.ofReduceBool, Lean.trustCompiler]
 #assert_accepting LeanBlsSimd.bvControl._native.bv_decide.ax_1_5
   LeanBlsSimd.nativeControl._native.native_decide.ax_1_1 Lean.ofReduceBool Lean.trustCompiler
 
--- Listing one control's axiom excuses that control only.
+-- Permitting one control's axiom leaves the other controls rejected.
 /--
 error: LeanBlsSimd.bvControl depends on [LeanBlsSimd.bvControl._native.bv_decide.ax_1_5]
 LeanBlsSimd.reduceBoolControl depends on [Lean.ofReduceBool, Lean.trustCompiler]
@@ -39,7 +40,7 @@ LeanBlsSimd.reduceBoolControl depends on [Lean.ofReduceBool, Lean.trustCompiler]
 #guard_msgs (error, drop info) in
 #assert_accepting LeanBlsSimd.nativeControl._native.native_decide.ax_1_1
 
--- A partial list for one theorem leaves its other axioms offending.
+-- Permitting only some of a theorem's axioms still rejects its remaining dependencies.
 /--
 error: LeanBlsSimd.bvControl depends on [LeanBlsSimd.bvControl._native.bv_decide.ax_1_5]
 LeanBlsSimd.nativeControl depends on [LeanBlsSimd.nativeControl._native.native_decide.ax_1_1]

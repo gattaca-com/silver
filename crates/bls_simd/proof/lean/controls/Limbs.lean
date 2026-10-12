@@ -1,7 +1,7 @@
 import LeanBlsSimd.Proofs.Limbs
 
-/-! Negative controls for `LeanBlsSimd.Proofs.Limbs`. Each `fail_if_success` wraps a claim that
-must fail; each plain `example` must pass.
+/-! Mutation controls for `LeanBlsSimd.Proofs.Limbs`. Each `fail_if_success` checks that a proof
+script rejects a mutation; each plain `example` must pass.
 
 The mutants run through `mulWith`, a copy of `Lane.mul` that takes its IFMA pair and its
 reduction carry shift as parameters. The first example pins the copy to the model. Whole-product
@@ -145,7 +145,7 @@ example : val (Lane.mul allMax allMax) * R % Fp.modulus = val allMax * val allMa
 /-! ## An equivalent mutant: the low half needs no operand truncation
 
 The low 52 bits of a product depend only on the low 52 bits of its factors, so dropping
-`madd52lo`'s operand truncation changes nothing. No lemma can catch that mutant. -/
+`madd52lo`'s operand truncation preserves its result. This mutation should pass an equality proof. -/
 
 example (a b c : UInt64) : madd52lo a b c = madd52loWide a b c := by
   simp only [madd52lo, madd52loWide, lo52, ← Nat.mul_mod]

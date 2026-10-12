@@ -3,25 +3,23 @@ import LeanBlsSimd.Model.Fp8
 /-!
 # `Fp8::mul` is a Montgomery product
 
-`mul_spec`: on a lane that keeps `Fp8Inv`, `Lane.mul` keeps `Fp8Inv`, and its value is
-a · b · R⁻¹ modulo p. `Fp8.mul_spec` lifts it to all eight lanes.
+For inputs satisfying `Fp8Inv`, `mul_spec` proves that `Lane.mul` preserves that invariant
+and computes a · b · R⁻¹ modulo p. `Fp8.mul_spec` lifts this result to eight lanes.
 
-No addition in `Lane.mul` overflows: every intermediate sum stays below 2^64, so the hardware's
-wrapping modulo 2^64 never takes effect. The lemmas below show this step by step, each giving its
+Under these input bounds, no addition in `Lane.mul` overflows: every intermediate sum stays
+below 2^64. The lemmas below show this step by step, each giving its
 result as an exact sum over ℕ under a headroom bound. `muladd_row_spec` and `reduce_row_spec`
 take a row whose entries start at most `B`, with `B + 2^56 ≤ 2^64`; the entries stay at most
 `B + 2^56`. `mulAcc_spec` runs the sixteen rows from zero, so no entry exceeds 2^60, and
 `normalize_spec` keeps the value exact through the closing carries.
 
-`mul_spec` itself states only the result. Its model wraps exactly as the hardware does, so a wrap
-that changed the result would make `mul_spec` unprovable.
+`Refines/Fp8.lean` proves that Aeneas's generated multiplication equals this model on every
+input, including inputs outside `Fp8Inv`. The hardware semantics in `Model/Intrinsics.lean`
+and the Rust-to-Lean extraction remain trusted. `Test/Main.lean` provides a separate check
+against Rust on its test vectors.
 
-The theorem rests on assumptions it cannot check:
-- `Model/Intrinsics.lean` matches the hardware, lane for lane; it is the trusted model.
-- `Lane.mul` transcribes the Rust `Fp8::mul` operation for operation; the differential test of
-  `Test/Main.lean` checks that on its vectors.
-- Callers supply inputs that satisfy `Fp8Inv`. `Proofs/Fp8.lean`, `Proofs/Fp2x8.lean` and
-  `Proofs/Decode.lean` establish it for every operand of `decompress`.
+`Fp8Inv` is a premise of the arithmetic theorem. `Proofs/Fp8.lean`, `Proofs/Fp2x8.lean` and
+`Proofs/Decode.lean` establish the required bounds along the decompression path.
 -/
 
 namespace LeanBlsSimd

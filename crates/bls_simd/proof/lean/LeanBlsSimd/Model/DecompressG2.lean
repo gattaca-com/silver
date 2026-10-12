@@ -3,8 +3,9 @@ import LeanBlsSimd.Model.G2x8
 /-!
 # `decompress_g2.rs`
 
-`crates/bls_simd/src/decompress_g2.rs`, transcribed one statement per Rust statement. Each
-96-byte encoding is a `Vector UInt8 96`, as Rust's `[u8; 96]`.
+Model of `crates/bls_simd/src/decompress_g2.rs`, connected to the Aeneas output by
+`Refines/DecompressG2.lean`. Each 96-byte encoding is a `Vector UInt8 96`, matching Rust's
+`[u8; 96]`.
 
 Rust's control flow maps as follows:
 

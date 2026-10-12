@@ -12,8 +12,9 @@ the triple is a nonsingular Jacobian point.
 
 The spec's dbl-2009-l doubling is Mathlib's `dblXYZ` as polynomials. Its add-2007-bl sum,
 `addBL` over the field, is Mathlib's `addXYZ` scaled by −2·Z₁·Z₂, given both curve equations.
-That factor is a unit, so the two triples name the same point. `toAffine_dblXYZ` and
-`toAffine_addBL` state both formulas on field triples, for any code that computes them.
+When Z₁ and Z₂ are nonzero, that factor is a unit, so the two triples name the same point.
+`toAffine_dblXYZ` and `toAffine_addBL` state the resulting group-law identities; the addition
+theorem also requires distinct affine x coordinates.
 -/
 
 namespace LeanBlsSimd

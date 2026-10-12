@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Usage: extract.sh [--check]
 #
-# Regenerates LeanBlsSimd/Extracted/Types.lean and Funs.lean from crates/bls_simd/src with Charon
-# and Aeneas, and prints how they differ from the files in LeanBlsSimd/Extracted/. Without
-# --check, the regenerated files then replace those. With --check, the tree is left alone, and
-# the script exits 1 if the files differ. The hand-written TypesExternal.lean and
-# FunsExternal.lean are never touched.
+# Regenerate LeanBlsSimd/Extracted/{Types,Funs}.lean from crates/bls_simd/src using Charon
+# and Aeneas, then print the diff. By default, replace the checked-in files with the result.
+# With --check, leave them unchanged and exit 1 if the comparison finds a difference.
+# The handwritten TypesExternal.lean and FunsExternal.lean are left unchanged.
 #
 # Aeneas records where each item comes from in a `Source: '<file>', lines <span>` comment.
-# Changing a Rust comment or formatting moves those spans, so both sides are compared after
-# replacing each span's numbers with `L`; the rest of every line, comment delimiters included,
-# must match exactly. A change that only moves Rust code therefore shows no drift.
+# To ignore changes in source locations, replace each span's numbers with `L` before comparing.
+# Everything else, including comment delimiters, must match exactly. Rust formatting or comment
+# changes are therefore ignored only when their sole effect on the extraction is a moved span.
 #
 # AENEAS_DIR must be an Aeneas checkout at the revision lake-manifest.json pins for `aeneas`,
 # with Aeneas built (`make`) and Charon built at its pin (`make setup-charon`). Charon needs

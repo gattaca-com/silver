@@ -1,7 +1,7 @@
 import LeanBlsSimd.Spec.G2Group
 
-/-! Negative controls for `LeanBlsSimd.Spec.G2Group`. Each `fail_if_success` wraps a claim that
-must fail; each plain `example` must pass.
+/-! Mutation controls for `LeanBlsSimd.Spec.G2Group`. Each `fail_if_success` checks that a proof
+script rejects a mutation; each plain `example` must pass.
 
 `doubleBad`, `addBad` and `mulNatBad` are copies of the spec's `G2.double`, `G2.add` and
 `G2.mulNat`, each with one mutation. The library's proof, run against a mutant, must fail; a plain

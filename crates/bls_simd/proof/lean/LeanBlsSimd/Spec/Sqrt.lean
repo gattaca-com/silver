@@ -95,10 +95,8 @@ private theorem c1_eq (a1 c : ZMod Fp.modulus) :
 theorem sqrt_sound {a y : Fp2} (h : Fp2.sqrt a = .ok y) : toField y ^ 2 = toField a := by
   revert h
   unfold Fp2.sqrt
-  -- `Fp.sqrt` stays a variable in the proof term: `id` blocks the beta-reduction that would put
-  -- it back. Otherwise Lean's kernel stops with "deep recursion detected" when it compares two
-  -- forms of a `match` on `Fp.sqrt x`. It apparently evaluates `Fp.sqrt x`, a power whose
-  -- exponent has about 380 bits.
+  -- The `id` wrapper keeps `Fp.sqrt` abstract in the proof term. Substituting it back makes
+  -- kernel checking compare matches containing large-exponent computations.
   generalize hsq : Fp.sqrt = sq
   revert sq
   refine id ?_
@@ -319,7 +317,7 @@ def rootCandidate (x : Fp2Field) : Fp2Field :=
   let r := powPMinus3Over4 t
   ⟨t * r, half x.im * r⟩
 
-/-- `Fp2x8::sqrt`: the root, and whether the lane has one. -/
+/-- `Fp2x8::sqrt`: a candidate, and a Boolean that is true exactly when the candidate is a root. -/
 def sqrt (x : Fp2Field) : Fp2Field × Bool :=
   let candidate := rootCandidate x
   let square := candidate ^ 2

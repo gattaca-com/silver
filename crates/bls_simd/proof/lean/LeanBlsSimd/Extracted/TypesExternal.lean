@@ -3,8 +3,8 @@ import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 
 /-!
-The external type of the extraction. Written by hand from the `TypesExternal_Template.lean` that
-Aeneas generates beside `Types.lean`; regeneration leaves this file alone.
+Handwritten representation of the external `__m512i` type. The starting template is
+`TypesExternal_Template.lean`, generated beside `Types.lean`; `extract.sh` preserves this file.
 -/
 
 set_option linter.style.nameCheck false in

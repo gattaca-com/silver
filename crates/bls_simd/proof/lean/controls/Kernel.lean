@@ -1,8 +1,9 @@
 import LeanBlsSimd.Proofs.Kernel
 import LeanBlsSimd.Refines.Kernel
 
-/-! Controls for `LeanBlsSimd.Proofs.Kernel`: the input-dependent premises of its theorems hold
-on concrete inputs. Scott completeness stays assumed. Each `example` must pass.
+/-! Concrete checks of the premises and conclusions used by `LeanBlsSimd.Proofs.Kernel`.
+These examples require no `ScottComplete` assumption; they do not establish completeness for
+arbitrary inputs. Each `example` must pass.
 
 - Eight lanes holding the compressed encoding of the spec's generator G: every lane is decided
   and valid, `G2.uncompress` returns G, and both sides of `decompress_eq_spec` are
@@ -11,10 +12,10 @@ on concrete inputs. Scott completeness stays assumed. Each `example` must pass.
 - Eight lanes of 96 zero bytes, whose compression flag is clear: every lane is decided and not
   valid, `G2.uncompress` fails, and both sides of `decompress_eq_spec` are `none`.
 
-Lean's kernel cannot evaluate `decompress` in practice, so both go through `decompress_lane` and
-the lane functions. `decide +kernel` evaluates the bytes and the Scott test on G. The square root,
-whose exponents have about 380 bits, follows from `Kernel.sqrt_snd_iff` and `selectRoot_eq`
-instead. None of the examples needs `ScottComplete`. -/
+To avoid evaluating the full `decompress` computation in Lean's kernel, the examples use
+`decompress_lane` and the lane functions. `decide +kernel` evaluates the bytes and the Scott test
+on G. The square root, whose computation uses exponents of about 380 bits, is handled by
+`Kernel.sqrt_snd_iff` and `selectRoot_eq`. -/
 
 namespace LeanBlsSimd
 

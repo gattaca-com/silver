@@ -3,7 +3,7 @@ import LeanBlsSimd.Model.Fp8
 /-!
 # `fp2x8.rs`
 
-`crates/bls_simd/src/fp2x8.rs`, transcribed one statement per Rust statement.
+Model of `crates/bls_simd/src/fp2x8.rs`, connected to the Aeneas output by `Refines/Fp2x8.lean`.
 Fp2 = Fp[i]/(i² + 1); `c0` is the real part and `c1` the coefficient of i, in every lane.
 A Rust tuple `(Self, __mmask8)` is a Lean pair, and the `|`, `&` of two masks are `|||`, `&&&`.
 -/
@@ -54,7 +54,7 @@ def eq_mask (self rhs : Fp2x8) : Mmask8 := self.c0.eq_mask rhs.c0 &&& self.c1.eq
 
 def is_zero_mask (self : Fp2x8) : Mmask8 := self.c0.is_zero_mask &&& self.c1.is_zero_mask
 
-/-- blst's `sqrt_fp2` with two alignments: the root, and the lanes that have one. -/
+/-- The two-alignment `sqrt_fp2` algorithm: a candidate, and the mask of lanes where it is a root. -/
 def sqrt (self : Fp2x8) : Fp2x8 × Mmask8 :=
   let n := (self.c0.square.add self.c1.square).sqrt_candidate
   let plus := self.c0.add n

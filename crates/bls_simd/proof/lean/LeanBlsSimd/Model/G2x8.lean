@@ -3,7 +3,7 @@ import LeanBlsSimd.Model.Fp2x8
 /-!
 # `g2x8.rs`
 
-`crates/bls_simd/src/g2x8.rs`, transcribed one statement per Rust statement.
+Model of `crates/bls_simd/src/g2x8.rs`, connected to the Aeneas output by `Refines/G2x8.lean`.
 Points are Jacobian triples over `Fp2x8`, one per lane. `Membership` is the struct of `lib.rs`
 that `scott_membership` returns. Rust's `!` on a mask is `~~~`.
 
