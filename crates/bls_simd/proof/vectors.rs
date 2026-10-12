@@ -1,11 +1,12 @@
 //! Record and replay fixed batches of `decompress` inputs and outputs.
 //!
 //! `replay_vectors` compares the Rust kernel with `decompress_g2_vectors.txt`
-//! when IFMA is available. The Lean differential test checks both the handwritten
-//! model and the extracted function against that recording. Together, successful
-//! executions establish agreement on these batches. `recorded_matches_blst`
-//! checks the recorded results on decided lanes without requiring IFMA.
-//! `write_vectors` regenerates the file; `lean/Test/Main.lean` documents its format.
+//! when IFMA is available. The Lean differential test checks both the
+//! handwritten model and the extracted function against that recording.
+//! Together, successful executions establish agreement on these batches.
+//! `recorded_matches_blst` checks the recorded results on decided lanes without
+//! requiring IFMA. `write_vectors` regenerates the file; `lean/Test/Main.lean`
+//! documents its format.
 #![cfg(target_arch = "x86_64")]
 
 // The crate's unit tests use the parts this file does not.
@@ -167,9 +168,9 @@ impl Recorded {
     }
 }
 
-/// Expected verdicts for a named test case, checked before recording its output.
-/// `on` lanes must be on the curve and `off` lanes must not. When specified,
-/// `valid` and `undecided` must match the entire mask.
+/// Expected verdicts for a named test case, checked before recording its
+/// output. `on` lanes must be on the curve and `off` lanes must not. When
+/// specified, `valid` and `undecided` must match the entire mask.
 #[derive(Clone, Copy)]
 struct Expect {
     on: u8,

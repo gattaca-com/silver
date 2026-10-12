@@ -23,7 +23,8 @@ On a lane whose `undecided` bit is clear:
 - `decompress_eq_spec`: the lane's result in `decompress_g2_chunk` is the spec's, mapped through
   `blstLimbs`, given Scott completeness.
 
-These specification-agreement theorems do not cover the blst fallback for undecided lanes.
+These specification-agreement theorems give no specification result for a lane whose
+`undecided` bit is set.
 
 `psi_generator` checks the chosen ψ constants and sign of z on the spec's generator.
 This establishes one instance of `ScottComplete`; the general statement remains a hypothesis.

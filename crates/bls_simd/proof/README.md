@@ -65,6 +65,8 @@ The supporting theorems that mention `decompress` refer to the model function an
 | `decode_lane` | On a decided lane, `on_curve` is set exactly when `G2.uncompress` succeeds. |
 | `psi_generator` | ψ(G) = [z]G for the specification's generator G, in `Spec/Generator.lean`. |
 
+The specification-agreement conclusions of `decompress_extracted_eq_spec` and `decompress_eq_spec`, and the completeness conclusion of `valid_complete`, are implications from `hC : ScottComplete`. If `ScottComplete` were false, those implications would be vacuous: the theorems would still type-check, but would not establish those conclusions. Unconditional refinement, the return of `ok` on every input and `valid_sound` do not depend on `ScottComplete`.
+
 `psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. This checks the identity and constants at the generator; it does not establish `ScottComplete` for every subgroup point.
 
 ## What a reader must trust

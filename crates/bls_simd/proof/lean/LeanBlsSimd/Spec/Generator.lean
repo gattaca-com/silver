@@ -3,8 +3,10 @@ import LeanBlsSimd.Spec.Membership
 /-!
 # ψ(G) = [z]G for the spec's generator
 
-`ScottComplete` claims ψ(P) = [z]P for every point P with [r]P = O. A mismatch between the
-ψ constants and the sign of z could make that hypothesis false.
+`ScottComplete` claims ψ(P) = [z]P for every point P with [r]P = O.
+A wrong ψ constant or the opposite sign of z could make that hypothesis false.
+If it were false, every theorem assuming it would be vacuous: the proofs would still type-check,
+but would not establish their conclusions.
 `psi_generator` proves the claim for the spec's generator G, and `generator_torsion` shows that
 [r]G = O, so G is one of the points the claim covers.
 
