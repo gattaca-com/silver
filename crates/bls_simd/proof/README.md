@@ -107,22 +107,24 @@ cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors 
 
 ## The Rust this proof covers
 
-`lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` are generated from the following Rust files in `crates/bls_simd/src`, which the model also transcribes. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
+`lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` contain items generated from the following Rust files in `crates/bls_simd/src`; the model transcribes those items. They come from `main` at commit `017cc38c`, the squash merge of #383, whose commit date is 2026-10-09T16:20:32+01:00.
 
 | File | sha256 | git blob |
 |---|---|---|
+| `lib.rs` | `de8a59bf67aea7a413e916d19a65e93a3ecb53ef538829ab63d069f2a1c67d31` | `6174d1cabd2dd6fef926bbb4e46e816e51f8a93e` |
 | `constants.rs` | `ed9fe69eafbb055b35e9754ec2cace49aeac45df13e4e1a97de7092f3c4fc2b0` | `975320c4667ced6bb2d87f8a7689e7e1a212d691` |
 | `fp8.rs` | `bc900b65daf13d1e4b45e025f57eb3ebb5a2fc0a495986d1cbe3a769ed7e7434` | `dddf760e7b44139f9164ec067d3778d4cb09282a` |
 | `fp2x8.rs` | `85affbafedca3bf15a85146bdcfe51a072ecde5a151c19fdd0d1ba95d7dd4b01` | `fe9cd24d01e624bad40f68b87bc59285c5c8f113` |
 | `g2x8.rs` | `13ff8a6afb7e1f701843fb4da53ae698a5033db38e567fccf00e30be0ee84d00` | `684629e2239fe98f65c64101725cf7f9573548ca` |
 | `decompress_g2.rs` | `af44730b948e574b0945d4b647f28ff065ddb963d2a4e111b00c384bf9ed566f` | `b16bb0e2e32ff77f547222a745a5d331e2b8776d` |
 
-The headline's left side was read against `lib.rs` with sha256 `de8a59bf67aea7a413e916d19a65e93a3ecb53ef538829ab63d069f2a1c67d31`, git blob `6174d1cabd2dd6fef926bbb4e46e816e51f8a93e`. `lib.rs` is neither extracted nor modelled, so the check below leaves it out.
+Only `Membership` and `G2_COMPRESSED_LEN` from `lib.rs` are extracted and modelled. The rest of `lib.rs`, including how `decompress_g2_chunk` consumes a lane, remains outside the proof and requires manual review (trust item 7). The extraction also includes `blst_fp`, `blst_fp2` and `blst_p2_affine` from blst 0.3.16's `src/bindings.rs` in the Cargo registry.
 
 To check for changes since the proof, run this from `crates/bls_simd/src`:
 
 ```sh
 sha256sum -c <<'EOF'
+de8a59bf67aea7a413e916d19a65e93a3ecb53ef538829ab63d069f2a1c67d31  lib.rs
 ed9fe69eafbb055b35e9754ec2cace49aeac45df13e4e1a97de7092f3c4fc2b0  constants.rs
 bc900b65daf13d1e4b45e025f57eb3ebb5a2fc0a495986d1cbe3a769ed7e7434  fp8.rs
 85affbafedca3bf15a85146bdcfe51a072ecde5a151c19fdd0d1ba95d7dd4b01  fp2x8.rs
@@ -190,6 +192,7 @@ It exits 0 when every value matches, 1 on an output mismatch or an extracted com
 
 | Path under `lean/` | Content |
 |---|---|
+| `lean-toolchain`, `lakefile.toml`, `lake-manifest.json` | Lean and dependency pins: Lean v4.29.1, Mathlib v4.29.1, ethereum/cryptography-specs at `d1331f02` and Aeneas at `d973341320c1` (`backends/lean`). `lakefile.toml` also sets `autoImplicit` and `relaxedAutoImplicit` to `false`. The manifest records exact resolved revisions; `extract.sh` reads the Aeneas pin from it. |
 | `LeanBlsSimd/Constants.lean` | p, r, z, R, and the Rust's constant tables proved equal to their derivations. |
 | `LeanBlsSimd/Spec/` | Fp2 as a field, E′, ψ, Scott soundness and completeness, the character-sum point-count bound, both square roots, the G2 group law, and the generator check. |
 | `LeanBlsSimd/Extracted/` | The Lean code that Aeneas generates from the Rust, `Types.lean` and `Funs.lean`, never edited by hand; and the 15 hand-written externals, in `TypesExternal.lean` and `FunsExternal.lean`. |
