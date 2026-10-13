@@ -1,12 +1,14 @@
 use serde::Deserialize;
 use silver_beacon_state_data::ExecutionAddress;
-use silver_common::{BeaconApiRequest, ProposerPreparation as PreparationRecord};
+use silver_common::{
+    BeaconApiRequest, ProposerPreparation as PreparationRecord, json_fields::parse_uint64,
+};
 use silver_pbs::SidecarCall;
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{body_entries, is_hex_bytes, parse_execution_address, parse_uint64},
+        ids::{body_entries, is_hex_bytes, parse_execution_address},
         response::Response,
         router::Request,
     },

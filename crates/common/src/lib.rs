@@ -35,6 +35,7 @@ mod generated;
 mod gossip;
 mod id;
 mod identity;
+pub mod json_fields;
 mod node_chain;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};

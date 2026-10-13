@@ -1,15 +1,13 @@
 use serde::Deserialize;
 use silver_common::{
-    GossipTopic, SYNC_COMMITTEE_SUBNETS, ssz_view::SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
+    GossipTopic, SYNC_COMMITTEE_SUBNETS,
+    json_fields::{bytes, uint64},
+    ssz_view::SIGNED_CONTRIBUTION_AND_PROOF_SIZE,
 };
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{bytes, uint64},
-        response::Response,
-        router::Request,
-    },
+    http::{response::Response, router::Request},
     submission::{SubmittedEntry, post_submission},
 };
 

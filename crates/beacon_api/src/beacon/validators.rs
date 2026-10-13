@@ -2,12 +2,13 @@ use serde::Deserialize;
 use silver_beacon_state_data::{
     BLSPubkey, Epoch, FAR_FUTURE_EPOCH, StateReadView, ValidatorsView, Withdrawals,
 };
+use silver_common::json_fields::parse_uint64;
 use silver_httpcore::Query;
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{each_body_entry, parse_pubkey, parse_uint64},
+        ids::{each_body_entry, parse_pubkey},
         json::Json,
         response::Response,
         router::Request,

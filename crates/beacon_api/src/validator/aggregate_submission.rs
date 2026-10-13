@@ -1,16 +1,13 @@
 use serde::Deserialize;
 use silver_common::{
     GossipTopic,
+    json_fields::{BoundedHex, bytes, uint64},
     ssz_view::{ATTESTATION_FIXED, MAX_VALIDATORS_PER_COMMITTEE, SIGNED_AGG_PROOF_MIN},
 };
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{BoundedHex, bytes, uint64},
-        response::Response,
-        router::Request,
-    },
+    http::{response::Response, router::Request},
     submission::{SubmittedEntry, post_submission},
     validator::attestation_data::AttestationData,
 };

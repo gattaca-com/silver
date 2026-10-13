@@ -15,6 +15,7 @@ use crate::{
 mod bid;
 mod block_submission;
 mod header_fetch;
+mod json_bid;
 mod registrations;
 
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";

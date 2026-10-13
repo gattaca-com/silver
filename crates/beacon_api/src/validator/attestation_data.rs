@@ -2,16 +2,13 @@ use serde::Deserialize;
 use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, StateReadView};
 use silver_common::{
     PayloadResolution,
+    json_fields::{bytes, parse_uint64, uint64},
     ssz_view::{ATTESTATION_DATA_SIZE, AttestationDataView},
 };
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{bytes, parse_uint64, uint64},
-        response::Response,
-        router::Request,
-    },
+    http::{response::Response, router::Request},
 };
 
 #[derive(Deserialize)]

@@ -1,13 +1,13 @@
 use serde::Deserialize;
-use silver_common::{GossipTopic, ssz_view::SIGNED_PROPOSER_PREFERENCES_SIZE};
+use silver_common::{
+    GossipTopic,
+    json_fields::{bytes, uint64},
+    ssz_view::SIGNED_PROPOSER_PREFERENCES_SIZE,
+};
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{bytes, uint64},
-        response::Response,
-        router::Request,
-    },
+    http::{response::Response, router::Request},
     submission::{SubmittedEntry, post_submission},
 };
 

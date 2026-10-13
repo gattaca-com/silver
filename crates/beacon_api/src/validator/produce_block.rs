@@ -2,12 +2,12 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{Slot, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BidPolicy, PayloadFrame, ProduceBlockFailure, ProducedBlock, TCacheReader,
+    json_fields::{parse_hex, parse_uint64},
 };
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{parse_hex, parse_uint64},
         response::Response,
         router::{Outcome, Request, SSZ_MEDIA_TYPE},
     },

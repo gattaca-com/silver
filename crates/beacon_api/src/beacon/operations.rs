@@ -2,6 +2,7 @@ use serde::Deserialize;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{
     GossipTopic, compute_subnet_for_attestation,
+    json_fields::{bytes, uint64},
     ssz_view::{
         ATTESTATION_DATA_SIZE, MAX_ATTESTING_INDICES, PROPOSER_SLASHING_SIZE,
         SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
@@ -10,11 +11,7 @@ use silver_common::{
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{bytes, uint64, uint64_list},
-        response::Response,
-        router::Request,
-    },
+    http::{ids::uint64_list, response::Response, router::Request},
     submission::{SubmittedEntry, post_single_submission, post_submission},
     validator::attestation_data::AttestationData,
 };

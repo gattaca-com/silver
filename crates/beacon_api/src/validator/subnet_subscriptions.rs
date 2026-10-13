@@ -9,16 +9,12 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconApiRequest, SYNC_COMMITTEE_SUBNETS, SlotSubnets, SubnetsBySlot,
-    compute_subnet_for_attestation, ssz_view::MAX_COMMITTEES_PER_SLOT,
+    compute_subnet_for_attestation, json_fields::uint64, ssz_view::MAX_COMMITTEES_PER_SLOT,
 };
 
 use crate::{
     ctx::ApiCtx,
-    http::{
-        ids::{each_body_entry, uint64},
-        response::Response,
-        router::Request,
-    },
+    http::{ids::each_body_entry, response::Response, router::Request},
 };
 
 pub(crate) fn post_beacon_committee_subscriptions(

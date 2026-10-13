@@ -1,9 +1,10 @@
 use silver_beacon_state_data::{Epoch, SLOTS_PER_EPOCH, ShufflingId, Slot, StateReadView};
+use silver_common::json_fields::parse_uint64;
 use silver_httpcore::Query;
 
 use crate::{
     ctx::ApiCtx,
-    http::{ids::parse_uint64, json::Json, response::Response, router::Request},
+    http::{json::Json, response::Response, router::Request},
     validator::shufflings::PostedShufflings,
 };
 

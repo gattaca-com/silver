@@ -6,6 +6,7 @@ use serde::{
     de::{Error, SeqAccess, Visitor},
 };
 use silver_beacon_state_data::{BLSPubkey, ExecutionAddress};
+use silver_common::json_fields::parse_hex;
 
 #[derive(Default)]
 pub(crate) struct Registrations {
@@ -43,8 +44,8 @@ impl<'de> Visitor<'de> for RegistrationsVisitor<'_> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         while let Some(SignedRegistration { message }) = seq.next_element()? {
             let (Some(pubkey), Some(fee_recipient), Ok(gas_limit)) = (
-                from_hex(message.pubkey),
-                from_hex(message.fee_recipient),
+                parse_hex(message.pubkey),
+                parse_hex(message.fee_recipient),
                 message.gas_limit.parse(),
             ) else {
                 return Err(A::Error::custom("invalid field in registration"));
@@ -66,12 +67,6 @@ struct RegistrationMessage<'a> {
     fee_recipient: &'a str,
     gas_limit: &'a str,
     pubkey: &'a str,
-}
-
-fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let mut bytes = [0; N];
-    hex::decode_to_slice(text.strip_prefix("0x")?, &mut bytes).ok()?;
-    Some(bytes)
 }
 
 #[cfg(test)]

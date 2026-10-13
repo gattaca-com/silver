@@ -12,6 +12,7 @@ use silver_ssz::ssz_view::{
 use crate::{
     CONSENSUS_VERSION,
     bid::{BidRefusal, BidRequest, builder_domain},
+    json_bid::JsonBid,
     registrations::Registration,
 };
 
@@ -22,6 +23,7 @@ pub(crate) struct HeaderFetch {
     builder_domain: B256,
     path: String,
     pending: Option<BidRequest>,
+    json_bid: JsonBid,
 }
 
 impl HeaderFetch {
@@ -44,6 +46,7 @@ impl HeaderFetch {
             builder_domain: builder_domain(spec.genesis_fork_version),
             path: String::new(),
             pending: None,
+            json_bid: JsonBid::new(),
         }
     }
 
@@ -83,17 +86,15 @@ impl HeaderFetch {
         registry: &Registry,
         on_response: &mut impl FnMut(&BidRequest, Option<&[u8]>),
     ) {
-        let Self { pool, pending, builder_domain, .. } = self;
+        let Self { pool, pending, builder_domain, json_bid, .. } = self;
         pool.dispatch_events(events, registry, &mut |slot, response| {
             let request = pending.take().expect("a response answers the pending request");
             let signed_bid = match response {
                 Ok(response) if response.status == 200 => {
-                    let checked = request.check(
-                        response.body,
-                        response.header(CONSENSUS_VERSION),
-                        builder_domain,
-                    );
-                    bid_passes(&request, checked, response.body).then_some(&*response.body)
+                    let version = response.header(CONSENSUS_VERSION);
+                    let signed_bid = json_bid.ssz_bid(response);
+                    let checked = request.check(signed_bid, version, builder_domain);
+                    bid_passes(&request, checked, signed_bid).then_some(signed_bid)
                 }
                 Ok(response) if response.status == 204 => {
                     silver_log::debug!(slot, "sidecar has no bid");

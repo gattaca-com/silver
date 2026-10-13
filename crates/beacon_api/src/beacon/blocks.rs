@@ -1,13 +1,13 @@
 use silver_beacon_state_data::BeaconBlockHeader;
 use silver_common::{
     BeaconApiRequest, BlockLookup, ServedBlock, TCacheReader, body_root_at,
-    ssz_view::SignedBeaconBlockView,
+    json_fields::parse_uint64, ssz_view::SignedBeaconBlockView,
 };
 
 use crate::{
     ctx::ApiCtx,
     http::{
-        ids::{parse_root, parse_uint64},
+        ids::parse_root,
         json::{ReadFlags, SignedHeader},
         response::Response,
         router::{Outcome, Request, SSZ_MEDIA_TYPE},

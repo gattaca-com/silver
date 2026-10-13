@@ -1,10 +1,7 @@
 use silver_beacon_state_data::Epoch;
+use silver_common::json_fields::parse_uint64;
 
-use crate::http::{
-    ids::{body_entries, parse_uint64},
-    response::Response,
-    router::Request,
-};
+use crate::http::{ids::body_entries, response::Response, router::Request};
 
 pub(crate) fn epoch_param(req: &Request<'_>, resp: &mut Response<'_>) -> Option<Epoch> {
     let epoch = req.params.get("epoch").expect("{epoch} in the route pattern");

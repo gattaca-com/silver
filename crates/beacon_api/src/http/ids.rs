@@ -5,6 +5,7 @@ use serde::{
     de::{self, SeqAccess, Visitor},
 };
 use silver_beacon_state_data::{B256, BLSPubkey, ExecutionAddress};
+use silver_common::json_fields::{parse_hex, parse_uint64, uint64};
 
 use crate::http::response::Response;
 
@@ -75,12 +76,6 @@ impl<'de, F: FnMut(usize, T), T: Deserialize<'de>> Visitor<'de> for Entries<'_, 
     }
 }
 
-/// The schemas' `Uint64`: a decimal inside a JSON string.
-pub(crate) fn uint64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-    let text = <&str>::deserialize(deserializer)?;
-    parse_uint64(text).ok_or_else(|| de::Error::custom("not a Uint64"))
-}
-
 /// A JSON array of quoted `Uint64`s.
 pub(crate) fn uint64_list<'de, D: Deserializer<'de>>(
     deserializer: D,
@@ -89,46 +84,6 @@ pub(crate) fn uint64_list<'de, D: Deserializer<'de>>(
     struct Quoted(#[serde(deserialize_with = "uint64")] u64);
     let quoted = Vec::<Quoted>::deserialize(deserializer)?;
     Ok(quoted.into_iter().map(|Quoted(value)| value).collect())
-}
-
-/// The schemas' `Bytes`: `0x`-prefixed hex spelling exactly `N` bytes.
-pub(crate) fn bytes<'de, D: Deserializer<'de>, const N: usize>(
-    deserializer: D,
-) -> Result<[u8; N], D::Error> {
-    let text = <&str>::deserialize(deserializer)?;
-    parse_hex(text).ok_or_else(|| de::Error::custom("not a byte string"))
-}
-
-/// The schemas' variable-length `Bytes`: `0x`-prefixed hex of at most `N`
-/// bytes.
-pub(crate) struct BoundedHex<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-}
-
-impl<const N: usize> BoundedHex<N> {
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-
-impl<'de, const N: usize> Deserialize<'de> for BoundedHex<N> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <&str>::deserialize(deserializer)?;
-        let hex = text.strip_prefix("0x").filter(|hex| hex.len() <= 2 * N);
-        let mut bytes = [0u8; N];
-        let len = hex.map_or(0, |hex| hex.len() / 2);
-        match hex.map(|hex| hex::decode_to_slice(hex, &mut bytes[..len])) {
-            Some(Ok(())) => Ok(Self { bytes, len }),
-            _ => Err(de::Error::custom("not a byte string of the allowed length")),
-        }
-    }
-}
-
-/// `u64::from_str` alone also accepts a leading `+`, which the schemas call an
-/// invalid identifier rather than a number.
-pub(crate) fn parse_uint64(text: &str) -> Option<u64> {
-    text.bytes().all(|byte| byte.is_ascii_digit()).then(|| text.parse().ok()).flatten()
 }
 
 pub(crate) fn parse_root(text: &str) -> Option<B256> {
@@ -141,12 +96,6 @@ pub(crate) fn parse_pubkey(text: &str) -> Option<BLSPubkey> {
 
 pub(crate) fn parse_execution_address(text: &str) -> Option<ExecutionAddress> {
     parse_hex(text)
-}
-
-pub(crate) fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let mut bytes = [0u8; N];
-    hex::decode_to_slice(text.strip_prefix("0x")?, &mut bytes).ok()?;
-    Some(bytes)
 }
 
 pub(crate) fn is_recognized_id(id: &str) -> bool {
