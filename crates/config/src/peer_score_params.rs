@@ -88,6 +88,7 @@ pub struct ScoreParams {
     pub d_low: u8,
     pub d_high: u8,
     pub d_lazy: u8,
+    pub gossip_factor: f64,
 
     /// Backoff applied after a PRUNE before re-grafting the same peer.
     pub prune_backoff: Duration,
@@ -202,6 +203,7 @@ impl Default for ScoreParams {
             d_low: 6,
             d_high: 12,
             d_lazy: 6,
+            gossip_factor: 0.1,
 
             prune_backoff: Duration::from_secs(60),
             unsubscribe_backoff: Duration::from_secs(10),

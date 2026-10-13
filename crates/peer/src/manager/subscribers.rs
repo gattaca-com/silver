@@ -14,6 +14,15 @@ impl TopicSubscribers {
         self.0.get(&(digest, topic)).map_or(&[], Vec::as_slice)
     }
 
+    pub(super) fn rotate_left(&mut self, digest: [u8; 4], topic: GossipTopic, mid: usize) {
+        if let Some(subscribers) = self.0.get_mut(&(digest, topic)) {
+            let len = subscribers.len();
+            if len > 0 {
+                subscribers.rotate_left(mid % len);
+            }
+        }
+    }
+
     pub(super) fn add(&mut self, key: TopicKey, conn: usize) {
         let subscribers = self.0.entry(key).or_default();
         debug_assert!(!subscribers.contains(&conn), "{conn} subscribed twice to {key:?}");

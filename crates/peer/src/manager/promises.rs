@@ -257,7 +257,8 @@ impl PeerManager {
 
     /// Compression tile has prepared a batched IHAVE frame for `topic`.
     /// Fan it out: one `P2pGossipSend` per non-mesh subscriber whose score
-    /// clears `gossip_threshold`, capped at `d_lazy`.
+    /// clears `gossip_threshold`, capped at `max(d_lazy, gossip_factor *
+    /// eligible)`.
     #[timed]
     pub(super) fn on_outbound_ihave(
         &mut self,
@@ -268,23 +269,34 @@ impl PeerManager {
         emit: &mut impl FnMut(PeerControl),
     ) {
         let mesh_for_topic = self.mesh.get(&topic).and_then(|meshes| meshes.get(digest));
-        let cap = self.params.d_lazy as usize;
+        let eligible = |conn: &usize| {
+            let Some(peer) = self.peers.get(conn) else { return false };
+            // Mesh peers get full-body forwards, not IHAVE.
+            !mesh_for_topic.is_some_and(|m| m.peers.contains(conn)) &&
+                peer.gossip_gate_score() >= self.params.gossip_threshold &&
+                !(partial_serving &&
+                    peer.partial_extensions &&
+                    peer.subscriptions
+                        .get(&(digest, topic))
+                        .is_some_and(|caps| caps.requests))
+        };
+        let subscribers = self.subscribers.of(digest, topic);
+        let d_lazy = self.params.d_lazy as usize;
+        let factor_cap = (self.params.gossip_factor * subscribers.len() as f64) as usize;
+        let cap = if factor_cap <= d_lazy {
+            d_lazy
+        } else {
+            d_lazy.max(factor_cap)
+        };
+
         let mut emitted = 0usize;
-        for conn in self.subscribers.of(digest, topic) {
+        let mut visited = 0;
+        for conn in subscribers {
             if emitted >= cap {
                 break;
             }
-            let Some(peer) = self.peers.get(conn) else { continue };
-            if mesh_for_topic.is_some_and(|m| m.peers.contains(conn)) {
-                continue; // mesh peers get full-body forwards, not IHAVE
-            }
-            if peer.gossip_gate_score() < self.params.gossip_threshold {
-                continue;
-            }
-            if partial_serving &&
-                peer.partial_extensions &&
-                peer.subscriptions.get(&(digest, topic)).is_some_and(|caps| caps.requests)
-            {
+            visited += 1;
+            if !eligible(conn) {
                 continue;
             }
             emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
@@ -293,6 +305,7 @@ impl PeerManager {
             })));
             emitted += 1;
         }
+        self.subscribers.rotate_left(digest, topic, visited);
     }
 
     /// Compression tile has prepared an IWANT frame for a peer that just
