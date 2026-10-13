@@ -726,7 +726,7 @@ mod tests {
         .unwrap();
         handler.open_tcaches().unwrap();
         handler.set_partial_columns_mode(PartialColumnsMode::Enabled);
-        
+
         let announce = PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection: 7 };
         handler.handle_peer_control(announce);
         assert!(handler.pop_event().is_none(), "nothing to announce");
@@ -737,7 +737,7 @@ mod tests {
             (column, [0; 4]),
             (column, [1; 4]),
         ]);
-        
+
         handler.handle_peer_control(announce);
         let Some(GossipHandlerEvent::SendGossip(GossipMsgOut { peer_id: 7, tcache })) =
             handler.pop_event()
