@@ -98,7 +98,7 @@ mod tests {
     /// A recycled slot starts the next connection from defaults, apart from
     /// the msg cache and the archived counters of a returning peer.
     #[test]
-    fn a_recycled_slot_holds_only_the_new_connection() {
+    fn recycled_slot_holds_only_the_new_connection() {
         let now = Instant::now();
         let topic = GossipTopic::BeaconBlock;
         let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_id_beyond_the_table_is_refused() {
+    fn connection_id_beyond_the_table_is_refused() {
         let now = Instant::now();
         let params = ScoreParams::default();
         let beyond = 2 * params.max_connections();

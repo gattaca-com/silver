@@ -307,7 +307,6 @@ impl GossipHandler {
     pub fn set_partial_columns_mode(&mut self, mode: PartialColumnsMode) {
         if self.partial_columns != mode {
             self.partial_columns = mode;
-            self.encode_subscriptions_frame();
         }
     }
 
@@ -315,14 +314,8 @@ impl GossipHandler {
         &mut self,
         subscriptions: impl IntoIterator<Item = (GossipTopic, [u8; 4])>,
     ) {
-        self.subscriptions.clear();
-        self.subscriptions.extend(subscriptions);
-        self.encode_subscriptions_frame();
-    }
-
-    fn encode_subscriptions_frame(&mut self) {
         self.subscriptions_frame.clear();
-        for &(topic, digest) in &self.subscriptions {
+        for (topic, digest) in subscriptions {
             let partial = (matches!(topic, GossipTopic::DataColumnSidecar(_)) &&
                 self.partial_columns.supports_sending())
             .then_some(self.partial_columns);
@@ -719,7 +712,7 @@ mod tests {
     /// One frame per connection carries every subscription; the partial
     /// options follow the mode, re-encoded when it changes.
     #[test]
-    fn a_new_connection_gets_every_subscription_in_one_frame() {
+    fn new_connection_gets_every_subscription_in_one_frame() {
         let incoming = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let protobuf = TCache::producer(TCacheId::ControlGossip, 1 << 16);
         let mut output =
@@ -732,6 +725,8 @@ mod tests {
         )
         .unwrap();
         handler.open_tcaches().unwrap();
+        handler.set_partial_columns_mode(PartialColumnsMode::Enabled);
+        
         let announce = PeerControl::P2pGossipAnnounceSubscriptions { p2p_connection: 7 };
         handler.handle_peer_control(announce);
         assert!(handler.pop_event().is_none(), "nothing to announce");
@@ -742,7 +737,7 @@ mod tests {
             (column, [0; 4]),
             (column, [1; 4]),
         ]);
-        handler.set_partial_columns_mode(PartialColumnsMode::Enabled);
+        
         handler.handle_peer_control(announce);
         let Some(GossipHandlerEvent::SendGossip(GossipMsgOut { peer_id: 7, tcache })) =
             handler.pop_event()
