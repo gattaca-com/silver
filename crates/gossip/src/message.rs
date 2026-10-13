@@ -16,6 +16,8 @@ use crate::{
     handler::ActiveDomains,
 };
 
+const IDONTWANT_MESSAGE_LEN_THRESHOLD: usize = 1000;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_incoming(
     topic_string: &str,
@@ -152,7 +154,12 @@ pub(super) fn handle_incoming(
     // Pre-encode an IDONTWANT control frame carrying this single id; the
     // peer manager fans it out to mesh peers (except the sender) as a
     // `P2pGossipSendDontWant` control.
-    let idontwant = copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?;
+    let message_len = 1 + bytes_encoded_len(snappy_data) + 1 + string_encoded_len(topic_string);
+    let idontwant = if message_len > IDONTWANT_MESSAGE_LEN_THRESHOLD {
+        Some(copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?)
+    } else {
+        None
+    };
     emit(GossipHandlerEvent::PeerEvent(PeerEvent::NewGossip {
         p2p_peer: stream_id.peer(),
         topic,

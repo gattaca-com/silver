@@ -179,7 +179,7 @@ impl PeerManager {
         topic: GossipTopic,
         msg_hash: MessageId,
         recv_ts: Nanos,
-        idontwant: TCacheRead,
+        idontwant: Option<TCacheRead>,
         emit: &mut impl FnMut(PeerControl),
     ) {
         crate::counters::GossipTopicCounters::recv(topic);
@@ -204,12 +204,14 @@ impl PeerManager {
             }
         }
 
-        self.fan_out_idontwant(topic, sender_conn, idontwant, emit);
+        if let Some(idontwant) = idontwant {
+            self.fan_out_idontwant(topic, sender_conn, idontwant, emit);
+        }
     }
 
     /// A message this node built itself, from RPC or EL bytes: it goes to
-    /// the topic mesh like a forwarded one, and the mesh is told not to send
-    /// it back. A syncing node publishes nothing; its peers are ahead of it.
+    /// the topic mesh like a forwarded one. A syncing node publishes nothing;
+    /// its peers are ahead of it.
     pub fn publish_local(
         &mut self,
         topic: GossipTopic,
@@ -220,9 +222,8 @@ impl PeerManager {
             return;
         }
         let local = LOCAL_GOSSIP_STREAM_ID.peer();
-        let SelfBuiltGossip { msg_id, domain, protobuf, idontwant } = built;
+        let SelfBuiltGossip { msg_id, domain, protobuf } = built;
         self.on_send_gossip(local, msg_id, topic, domain.digest(), protobuf, false, emit);
-        self.fan_out_idontwant(topic, local, idontwant, emit);
     }
 
     /// Mesh members on every digest of `topic`, except `sender`, whose score
@@ -451,17 +452,13 @@ mod tests {
         );
 
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 14);
-        let payloads = [b"column".as_slice(), b"idontwant".as_slice()];
-        let [protobuf, idontwant] = payloads.map(|bytes| {
-            let mut reservation = producer.reserve(bytes.len(), true).unwrap();
-            reservation.write_all(bytes).unwrap();
-            reservation.read()
-        });
+        let payload = b"column".as_slice();
+        let mut reservation = producer.reserve(payload.len(), true).unwrap();
+        reservation.write_all(payload).unwrap();
         let built = SelfBuiltGossip {
             msg_id: MessageId { id: [7; 20] },
             domain: test_domain(),
-            protobuf,
-            idontwant,
+            protobuf: reservation.read(),
         };
 
         for (target, should_publish) in [
@@ -482,9 +479,7 @@ mod tests {
                 })
                 .collect();
             if should_publish {
-                for payload in payloads {
-                    assert!(sent.contains(&payload), "missing {payload:?} while {target:?}");
-                }
+                assert_eq!(sent, [payload], "while {target:?}");
             } else {
                 assert!(sent.is_empty());
             }
@@ -653,7 +648,7 @@ mod tests {
                 topic,
                 msg_hash: hash,
                 recv_ts: first_seen,
-                idontwant: mk_tcache_read(),
+                idontwant: Some(mk_tcache_read()),
             },
             now,
             &mut |event| cap.0.push(event),
@@ -722,7 +717,7 @@ mod tests {
                 topic: GossipTopic::BeaconBlock,
                 msg_hash: hash,
                 recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
+                idontwant: Some(mk_tcache_read()),
             },
             now,
             &mut |c| cap.0.push(c),
@@ -796,7 +791,7 @@ mod tests {
                 topic: GossipTopic::BeaconBlock,
                 msg_hash: hash,
                 recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
+                idontwant: Some(mk_tcache_read()),
             },
             now,
             &mut |c| cap.0.push(c),
@@ -1035,7 +1030,7 @@ mod tests {
                 topic: GossipTopic::BeaconBlock,
                 msg_hash: hash,
                 recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
+                idontwant: Some(mk_tcache_read()),
             },
             now,
             &mut |c| cap.0.push(c),
@@ -1110,7 +1105,7 @@ mod tests {
                 topic: GossipTopic::BeaconBlock,
                 msg_hash: hash,
                 recv_ts: Nanos::now(),
-                idontwant: mk_tcache_read(),
+                idontwant: Some(mk_tcache_read()),
             },
             now + Duration::from_millis(20),
             &mut |c| cap.0.push(c),

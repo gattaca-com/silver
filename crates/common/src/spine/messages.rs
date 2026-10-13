@@ -32,14 +32,12 @@ pub struct GossipMsgOut {
 }
 
 /// A gossip message this node built rather than received from the mesh, after
-/// encoding: the frame for the mesh and the IDONTWANT that stops the mesh
-/// sending it back. The payload may be self-built, EL-built or RPC-fetched.
+/// encoding. The payload may be self-built, EL-built or RPC-fetched.
 #[derive(Clone, Copy, Debug)]
 pub struct SelfBuiltGossip {
     pub msg_id: MessageId,
     pub domain: GossipDomain,
     pub protobuf: TCacheRead,
-    pub idontwant: TCacheRead,
 }
 
 // Consumed by controller tile.
@@ -671,15 +669,16 @@ pub enum PeerEvent {
         seq: u64,
     },
     /// A fully-validated inbound gossip message arrived (post-dedup). Carries
-    /// the sending peer, topic, msg id (for promise/score accounting) and a
-    /// pre-encoded IDONTWANT protobuf frame the peer manager can fan out to
-    /// mesh peers without re-encoding per target.
+    /// the sending peer, topic, msg id (for promise/score accounting) and,
+    /// above the IDONTWANT size threshold, a pre-encoded IDONTWANT protobuf
+    /// frame the peer manager can fan out to mesh peers without re-encoding
+    /// per target.
     NewGossip {
         p2p_peer: usize,
         topic: GossipTopic,
         msg_hash: MessageId,
         recv_ts: Nanos,
-        idontwant: TCacheRead,
+        idontwant: Option<TCacheRead>,
     },
     /// Compression tile has prepared a batched IHAVE frame for `topic`.
     /// Peer manager fans it out to non-mesh subscribers with acceptable score.

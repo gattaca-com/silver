@@ -144,7 +144,7 @@ mod tests {
             topic,
             MessageId { id: [0; 20] },
             Nanos(3),
-            idontwant,
+            Some(idontwant),
             &mut |_| {},
         );
         assert_eq!(manager.peers[&1].topic_stats[&topic].first_deliveries, 1.0);

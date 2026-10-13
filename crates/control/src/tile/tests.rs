@@ -418,7 +418,7 @@ fn assert_column_publication(origin: ColumnOrigin) {
         frames
     };
     assert_eq!(frames_to(1), frames_to(2), "a local origin excludes no mesh peer");
-    assert_eq!(frames_to(2).len(), 2, "the message and one control frame: {sent:?}");
+    assert_eq!(frames_to(2).len(), 1, "the message alone: {sent:?}");
 
     // Decode what peer 2 received as peer 2 would.
     let decoded = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
@@ -438,7 +438,6 @@ fn assert_column_publication(origin: ColumnOrigin) {
     receiver.spin(&mut receiver_adapter, None);
     let stream = P2pStreamId::new(2, 0, StreamProtocol::GossipSub, true);
     let mut message = None;
-    let mut dontwant = None;
     let mut encoded = Vec::new();
     for frame in frames_to(2) {
         let mut packet = stream.as_ref().to_vec();
@@ -452,9 +451,6 @@ fn assert_column_publication(origin: ColumnOrigin) {
                     encoded = frame.clone();
                     message = Some(received);
                 }
-                GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipDontWant { hash, .. }) => {
-                    dontwant = Some(hash);
-                }
                 // The first RPC on a peer stream reports its (absent) extension
                 // state; a decoded message also notifies the peer manager.
                 GossipHandlerEvent::PeerEvent(
@@ -467,7 +463,6 @@ fn assert_column_publication(origin: ColumnOrigin) {
     let message = message.expect("publication must decode as a gossip message");
     assert_eq!(message.topic, topic);
     assert_eq!(decoded_reader.acquire(message.ssz).buffer().unwrap().0, bytes);
-    assert_eq!(dontwant, Some(message.msg_hash), "the mesh is told not to send it back");
 
     capture.iwant(1, message.msg_hash);
     assert_eq!(capture.sent(), [(1, encoded)], "the publication populated the message cache");

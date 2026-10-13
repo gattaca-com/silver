@@ -13,8 +13,8 @@ use silver_common::{
 use crate::{
     ColumnIngress, GossipHandlerEvent, PartialInbound, PartialMetadataReceived,
     control::{
-        self, copy_idontwants_to_protobuf_output, copy_ihaves_to_protobuf_output, handle_grafts,
-        handle_idontwants, handle_ihaves, handle_iwants, handle_prunes, handle_subscriptions,
+        self, copy_ihaves_to_protobuf_output, handle_grafts, handle_idontwants, handle_ihaves,
+        handle_iwants, handle_prunes, handle_subscriptions,
     },
     dedup::DedupCache,
     generated::RPCView,
@@ -179,11 +179,7 @@ impl GossipHandler {
         .inspect_err(|e| silver_log::error!(?e, ?topic, "publish protobuf write failed"))
         .ok()?;
         self.mcache.insert(msg_id, topic, domain, read, &mut self.reader);
-        let idontwant =
-            copy_idontwants_to_protobuf_output(&mut self.mcache_publish, std::iter::once(&msg_id))
-                .inspect_err(|e| silver_log::error!(?e, ?topic, "publish idontwant write failed"))
-                .ok()?;
-        Some(SelfBuiltGossip { msg_id, domain, protobuf: read, idontwant })
+        Some(SelfBuiltGossip { msg_id, domain, protobuf: read })
     }
 
     /// Inject a locally-originated, not-yet-validated SSZ message at the same
