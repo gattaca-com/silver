@@ -26,6 +26,10 @@ subDir = "backends/lean"
 [[lean_lib]]
 name = "LeanBlsSimd"
 
+[[lean_lib]]
+name = "Differential"
+srcDir = "Test"
+
 # Not a default target: `lake build` does not need it. Run it with
 # `lake exe differential ../decompress_g2_vectors.txt`.
 [[lean_exe]]

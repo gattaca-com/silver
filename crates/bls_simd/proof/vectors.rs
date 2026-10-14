@@ -1,12 +1,15 @@
-//! Record and replay fixed batches of `decompress` inputs and outputs.
+//! Record and replay fixed batches of G1 and G2 decompression inputs and
+//! outputs.
 //!
 //! `replay_vectors` compares the Rust kernel with `decompress_g2_vectors.txt`
 //! when IFMA is available. The Lean differential test checks both the
 //! handwritten model and the extracted function against that recording.
 //! Together, successful executions establish agreement on these batches.
 //! `recorded_matches_blst` checks the recorded results on decided lanes without
-//! requiring IFMA. `write_vectors` regenerates the file; `lean/Test/Main.lean`
-//! documents its format.
+//! requiring IFMA. The G1 recording also contains every scalar blst verdict and
+//! public-wrapper outputs. Lean checks those scalar verdicts against the spec,
+//! including invalid and undecided lanes. Each `write_vectors` regenerates its
+//! group's file; `lean/Test/Differential/{G1,G2}.lean` documents the formats.
 #![cfg(target_arch = "x86_64")]
 
 // The crate's unit tests use the parts this file does not.
@@ -735,4 +738,468 @@ fn write_vectors() {
         eprintln!("{n:3} {kind}");
     }
     eprintln!("{} batches, {} bytes, in {VECTORS}", cases.len(), out.len());
+}
+
+mod g1 {
+    use std::fmt::Write as _;
+
+    use blst::{
+        BLST_ERROR, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double, blst_p1_affine,
+        blst_p1_affine_in_g1, blst_p1_compress, blst_p1_from_affine, blst_p1_generator,
+        blst_p1_is_inf, blst_p1_mult, blst_p1_uncompress,
+    };
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+    use silver_bls_simd::{decompress, simd_available, uncompress_in_g1, uncompress_in_g1_blst};
+
+    use super::{LANES, SEED, g2_cases, p_plus, p_word, small};
+
+    const VECTORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proof/decompress_g1_vectors.txt");
+    type Encoding = [u8; 48];
+    type Point = [u64; 12];
+
+    fn point_words(p: &blst_p1_affine) -> Point {
+        std::array::from_fn(|i| if i < 6 { p.x.l[i] } else { p.y.l[i - 6] })
+    }
+
+    fn scalar(bytes: &Encoding) -> Option<Point> {
+        uncompress_in_g1_blst(bytes).as_ref().map(point_words)
+    }
+
+    fn sentinel() -> blst_p1_affine {
+        let mut p = blst_p1_affine::default();
+        p.x.l = [0xfeed; 6];
+        p.y.l = [0xbeef; 6];
+        p
+    }
+
+    fn compress(p: &blst_p1) -> Encoding {
+        let mut bytes = [0; 48];
+        unsafe { blst_p1_compress(bytes.as_mut_ptr(), p) };
+        bytes
+    }
+
+    fn times<const N: usize>(p: &blst_p1, scalar: &[u64; N]) -> blst_p1 {
+        let mut out = blst_p1::default();
+        unsafe { blst_p1_mult(&mut out, p, scalar.as_ptr().cast(), 64 * N) };
+        out
+    }
+
+    fn with_flags(mut bytes: Encoding, flags: u8) -> Encoding {
+        bytes[0] = (bytes[0] & 0x1f) | flags;
+        bytes
+    }
+
+    fn random_x(rng: &mut ChaCha8Rng) -> Encoding {
+        let mut bytes = [0; 48];
+        rng.fill(&mut bytes[..]);
+        with_flags(bytes, 0x80 | (bytes[0] & 0x20))
+    }
+
+    fn curve_point(rng: &mut ChaCha8Rng) -> blst_p1 {
+        loop {
+            let mut affine = blst_p1_affine::default();
+            if unsafe { blst_p1_uncompress(&mut affine, random_x(rng).as_ptr()) } ==
+                BLST_ERROR::BLST_SUCCESS &&
+                !unsafe { blst_p1_affine_in_g1(&affine) }
+            {
+                let mut p = blst_p1::default();
+                unsafe { blst_p1_from_affine(&mut p, &affine) };
+                return p;
+            }
+        }
+    }
+
+    // #E(Fp) = r * h1. Divide out a prime power before projecting to torsion.
+    fn order_div(q: u64) -> [u64; 6] {
+        let h = [0x8c00aaab0000aaab_u64, 0x396c8c005555e156];
+        let mut order = [0_u64; 6];
+        for (i, a) in g2_cases::R_LIMBS.iter().enumerate() {
+            let mut carry = 0_u128;
+            for (j, b) in h.iter().enumerate() {
+                let v = u128::from(*a) * u128::from(*b) + u128::from(order[i + j]) + carry;
+                order[i + j] = v as u64;
+                carry = v >> 64;
+            }
+            order[i + 2] = carry as u64;
+        }
+        let mut rem = 0_u128;
+        for limb in order.iter_mut().rev() {
+            let n = (rem << 64) | u128::from(*limb);
+            *limb = (n / u128::from(q)) as u64;
+            rem = n % u128::from(q);
+        }
+        assert_eq!(rem, 0);
+        order
+    }
+
+    struct Case {
+        kind: String,
+        inputs: [Encoding; LANES],
+    }
+
+    fn cases() -> Vec<Case> {
+        let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 1);
+        let generator = unsafe { &*blst_p1_generator() };
+        let g = compress(generator);
+        let mut cases = Vec::new();
+        let mut push = |kind: &str, inputs| cases.push(Case { kind: kind.into(), inputs });
+        push("generator", [g; LANES]);
+        push("multiples", std::array::from_fn(|i| compress(&times(generator, &[i as u64 + 1]))));
+        push("generator-flags", std::array::from_fn(|i| with_flags(g, (i as u8) << 5)));
+        push("zero-body-flags", std::array::from_fn(|i| with_flags([0; 48], (i as u8) << 5)));
+        push(
+            "infinity",
+            std::array::from_fn(|i| {
+                let mut b = with_flags([0; 48], 0xc0);
+                match i {
+                    0 => (),
+                    1 => b[0] = 0xe0,
+                    2 => b[47] = 1,
+                    3 => b[0] = 0x40,
+                    4 => b[1] = 1,
+                    5 => b[0] = 0x60,
+                    6 => b[0] = 0xc1,
+                    _ => b = [0xff; 48],
+                }
+                b
+            }),
+        );
+        push(
+            "x-near-p",
+            std::array::from_fn(|i| {
+                with_flags(
+                    p_plus([-1, -1, 0, 0, 1, 1, 1 << 20, 1 << 20][i]),
+                    if i % 2 == 0 { 0x80 } else { 0xa0 },
+                )
+            }),
+        );
+        for word in 1..=4 {
+            push(
+                &format!("p-word-{word}"),
+                std::array::from_fn(|i| {
+                    with_flags(p_word(word, i % 2 == 1), if i % 4 < 2 { 0x80 } else { 0xa0 })
+                }),
+            );
+        }
+        for start in [0, 8] {
+            push(
+                &format!("small-x-{start}"),
+                std::array::from_fn(|i| {
+                    with_flags(small(start + (i / 2) as u64), if i % 2 == 0 { 0x80 } else { 0xa0 })
+                }),
+            );
+        }
+        // x=0 has y=±2 and order 3; verify the fixture's order independently.
+        let mut affine = blst_p1_affine::default();
+        unsafe { blst_fp_from_uint64(&mut affine.y, [2, 0, 0, 0, 0, 0].as_ptr()) };
+        let mut order_three = blst_p1::default();
+        unsafe { blst_p1_from_affine(&mut order_three, &affine) };
+        assert_eq!(compress(&order_three), with_flags([0; 48], 0x80));
+        assert!(!unsafe { blst_p1_is_inf(&order_three) });
+        assert!(unsafe { blst_p1_is_inf(&times(&order_three, &[3])) });
+        push("nonmembers", std::array::from_fn(|_| compress(&curve_point(&mut rng))));
+        push(
+            "nonresidues",
+            std::array::from_fn(|_| {
+                loop {
+                    let bytes = random_x(&mut rng);
+                    let mut body = bytes;
+                    body[0] &= 0x1f;
+                    let mut p = blst_p1_affine::default();
+                    if body < p_plus(0) &&
+                        unsafe { blst_p1_uncompress(&mut p, bytes.as_ptr()) } ==
+                            BLST_ERROR::BLST_POINT_NOT_ON_CURVE
+                    {
+                        break bytes;
+                    }
+                }
+            }),
+        );
+        for q in [3, 11, 10177, 859267, 52437899] {
+            let scalar = order_div(if q == 3 { q } else { q * q });
+            let torsion = loop {
+                let mut p = times(&curve_point(&mut rng), &scalar);
+                let next = times(&p, &[q]);
+                if !unsafe { blst_p1_is_inf(&next) } {
+                    p = next;
+                }
+                if !unsafe { blst_p1_is_inf(&p) } {
+                    assert!(unsafe { blst_p1_is_inf(&times(&p, &[q])) });
+                    break p;
+                }
+            };
+            let mut sum = blst_p1::default();
+            unsafe { blst_p1_add_or_double(&mut sum, generator, &torsion) };
+            let t = compress(&torsion);
+            let sum = compress(&sum);
+            push(
+                &format!("order-{q}"),
+                std::array::from_fn(|i| {
+                    let mut bytes = if i % 4 < 2 { t } else { sum };
+                    if i % 2 == 1 {
+                        bytes[0] ^= 0x20;
+                    }
+                    bytes
+                }),
+            );
+        }
+        for _ in 0..24 {
+            push(
+                "seeded-mixed",
+                std::array::from_fn(|i| match i {
+                    0 | 1 => compress(&times(generator, &[rng.r#gen::<u64>() | 1])),
+                    2 => compress(&curve_point(&mut rng)),
+                    3 => with_flags([0; 48], 0xc0),
+                    4 => with_flags(g, (rng.r#gen::<u8>() & 7) << 5),
+                    _ => random_x(&mut rng),
+                }),
+            );
+        }
+        for _ in 0..4 {
+            push(
+                "random-bytes",
+                std::array::from_fn(|_| {
+                    let mut bytes = [0; 48];
+                    rng.fill(&mut bytes[..]);
+                    bytes
+                }),
+            );
+        }
+        cases
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Output {
+        valid: u8,
+        undecided: u8,
+        points: [Point; LANES],
+    }
+
+    impl Output {
+        fn of(inputs: &[Encoding; LANES]) -> Self {
+            assert!(simd_available(), "G1 recording/replay requires AVX-512 IFMA");
+            let b = unsafe { decompress::decompress(inputs) };
+            Self {
+                valid: b.valid,
+                undecided: b.undecided,
+                points: b.points.map(|p| point_words(&p)),
+            }
+        }
+
+        fn check_blst(&self, expected: &[Option<Point>; LANES]) {
+            for (lane, scalar) in expected.iter().enumerate() {
+                if self.undecided & (1 << lane) == 0 {
+                    assert_eq!(
+                        (self.valid & (1 << lane) != 0).then_some(self.points[lane]),
+                        *scalar,
+                        "decided G1 lane {lane} differs from blst"
+                    );
+                }
+            }
+        }
+    }
+
+    struct Recorded {
+        inputs: [Encoding; LANES],
+        output: Output,
+        blst: [Option<Point>; LANES],
+    }
+    struct Wrapper {
+        refs: Vec<(usize, usize)>,
+        output: Vec<Option<Point>>,
+    }
+
+    fn parse(text: &str) -> (Vec<Recorded>, Vec<Wrapper>) {
+        let mut lines =
+            text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'));
+        let mut next = |key: &str| -> Vec<String> {
+            let words: Vec<_> =
+                lines.next().expect("truncated G1 fixture").split_whitespace().collect();
+            assert_eq!(words[0], key);
+            words[1..].iter().map(|s| (*s).into()).collect()
+        };
+        let hex = |s: &str| u64::from_str_radix(s, 16).unwrap();
+        let point = |words: &[String]| -> Point {
+            assert_eq!(words.len(), 12);
+            std::array::from_fn(|i| hex(&words[i]))
+        };
+        let verdict = |words: &[String], lane: usize| -> Option<Point> {
+            assert_eq!(words[0], lane.to_string());
+            if words[1] == "none" {
+                assert_eq!(words.len(), 2);
+                None
+            } else {
+                Some(point(&words[1..]))
+            }
+        };
+        assert_eq!(next("seed").len(), 1);
+        let count: usize = next("batches")[0].parse().unwrap();
+        assert!(count > 0);
+        let mut batches = Vec::new();
+        for index in 0..count {
+            assert_eq!(next("batch")[0], index.to_string());
+            let inputs = std::array::from_fn(|_| {
+                let digits = &next("in")[0];
+                assert_eq!(digits.len(), 96);
+                std::array::from_fn(|i| u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap())
+            });
+            let valid = u8::try_from(hex(&next("valid")[0])).unwrap();
+            let undecided = u8::try_from(hex(&next("undecided")[0])).unwrap();
+            let points = std::array::from_fn(|lane| {
+                let words = next("pt");
+                assert_eq!(words[0], lane.to_string());
+                point(&words[1..])
+            });
+            let blst = std::array::from_fn(|lane| verdict(&next("blst"), lane));
+            assert!(next("end").is_empty());
+            batches.push(Recorded { inputs, output: Output { valid, undecided, points }, blst });
+        }
+        let count: usize = next("wrappers")[0].parse().unwrap();
+        assert!(count > 0);
+        let mut wrappers = Vec::new();
+        for index in 0..count {
+            let header = next("wrapper");
+            assert_eq!(header[0], index.to_string());
+            let n: usize = header[2].parse().unwrap();
+            let refs = (0..n)
+                .map(|_| {
+                    let r = next("ref");
+                    let (b, l): (usize, usize) = (r[0].parse().unwrap(), r[1].parse().unwrap());
+                    assert!(b < batches.len() && l < LANES);
+                    (b, l)
+                })
+                .collect();
+            let output = (0..n).map(|lane| verdict(&next("out"), lane)).collect();
+            assert!(next("end").is_empty());
+            wrappers.push(Wrapper { refs, output });
+        }
+        assert!(next("endfile").is_empty());
+        assert!(lines.next().is_none(), "text after endfile");
+        (batches, wrappers)
+    }
+
+    fn write_point(out: &mut String, key: &str, lane: usize, p: Option<Point>) {
+        write!(out, "{key} {lane}").unwrap();
+        if let Some(words) = p {
+            for w in words {
+                write!(out, " {w:x}").unwrap();
+            }
+        } else {
+            out.push_str(" none");
+        }
+        out.push('\n');
+    }
+
+    #[test]
+    fn recorded_matches_blst() {
+        let (batches, wrappers) = parse(&std::fs::read_to_string(VECTORS).unwrap());
+        for batch in &batches {
+            assert_eq!(batch.blst, batch.inputs.map(|b| scalar(&b)));
+            batch.output.check_blst(&batch.blst);
+        }
+        for w in wrappers {
+            let expected: Vec<_> = w.refs.iter().map(|&(b, l)| batches[b].blst[l]).collect();
+            assert_eq!(w.output, expected);
+        }
+    }
+
+    #[test]
+    fn replay_vectors() {
+        assert!(
+            simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
+            "SILVER_REQUIRE_IFMA is set, but IFMA is unavailable"
+        );
+        let (batches, wrappers) = parse(&std::fs::read_to_string(VECTORS).unwrap());
+        if simd_available() {
+            for (index, b) in batches.iter().enumerate() {
+                assert_eq!(Output::of(&b.inputs), b.output, "G1 batch {index}");
+            }
+        }
+        for (index, w) in wrappers.iter().enumerate() {
+            let inputs: Vec<_> = w.refs.iter().map(|&(b, l)| batches[b].inputs[l]).collect();
+            let mut out = vec![Some(sentinel()); inputs.len()];
+            uncompress_in_g1(&inputs, &mut out);
+            assert_eq!(
+                out.iter().map(|p| p.as_ref().map(point_words)).collect::<Vec<_>>(),
+                w.output,
+                "G1 wrapper {index}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "rewrites proof/decompress_g1_vectors.txt; needs AVX-512 IFMA"]
+    fn write_vectors() {
+        let cases = cases();
+        let mut out = format!(
+            "# Recorded by proof/vectors.rs; G1 kernel, scalar oracle, public wrapper.\nseed {:#x}\nbatches {}\n",
+            SEED ^ 1,
+            cases.len()
+        );
+        for (index, c) in cases.iter().enumerate() {
+            let got = Output::of(&c.inputs);
+            let blst = c.inputs.map(|b| scalar(&b));
+            got.check_blst(&blst);
+            writeln!(out, "batch {index} {}", c.kind).unwrap();
+            for bytes in c.inputs {
+                writeln!(
+                    out,
+                    "in {}",
+                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                )
+                .unwrap();
+            }
+            writeln!(out, "valid {:02x}\nundecided {:02x}", got.valid, got.undecided).unwrap();
+            for (lane, p) in got.points.into_iter().enumerate() {
+                write_point(&mut out, "pt", lane, Some(p));
+            }
+            for (lane, p) in blst.into_iter().enumerate() {
+                write_point(&mut out, "blst", lane, p);
+            }
+            out.push_str("end\n");
+        }
+        let lengths = [0, 1, 7, 8, 9, 15, 16, 17];
+        writeln!(out, "wrappers {}", lengths.len() * 3).unwrap();
+        let mut index = 0;
+        for kind in ["members", "mixed", "rejected"] {
+            for len in lengths {
+                let refs: Vec<_> = (0..len)
+                    .map(|i| match kind {
+                        "members" => (1, i % 8),
+                        "rejected" => (5, 2 + i % 6),
+                        _ => match i % 5 {
+                            0 => (1, i % 8),
+                            1 => (4, 0),
+                            2 => (4, 1),
+                            3 => (12, i % 8),
+                            _ => (5, 2),
+                        },
+                    })
+                    .collect();
+                let inputs: Vec<_> = refs.iter().map(|&(b, l)| cases[b].inputs[l]).collect();
+                let mut result = vec![Some(sentinel()); len];
+                uncompress_in_g1(&inputs, &mut result);
+                let result: Vec<_> = result.iter().map(|p| p.as_ref().map(point_words)).collect();
+                assert_eq!(result, inputs.iter().map(scalar).collect::<Vec<_>>());
+                writeln!(out, "wrapper {index} {kind} {len}").unwrap();
+                for (b, l) in refs {
+                    writeln!(out, "ref {b} {l}").unwrap();
+                }
+                for (lane, p) in result.into_iter().enumerate() {
+                    write_point(&mut out, "out", lane, p);
+                }
+                out.push_str("end\n");
+                index += 1;
+            }
+        }
+        out.push_str("endfile\n");
+        std::fs::write(VECTORS, &out).unwrap();
+        eprintln!(
+            "G1: {} batches, {} lanes, {index} wrappers, {} bytes",
+            cases.len(),
+            cases.len() * 8,
+            out.len()
+        );
+    }
 }
