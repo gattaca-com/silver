@@ -1164,6 +1164,7 @@ impl BeaconStateTile {
 
         let rv = self.state.read_view(state_id);
         let slot = rv.slot.slot_number();
+        self.envelope_arrivals.record(block_root, slot, self.ticker.millis_since_genesis());
         if !stf::envelope_withdrawals_match_expected(&rv, ssz) {
             silver_log::error!(
                 block = hex32(&block_root),

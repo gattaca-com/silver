@@ -1197,6 +1197,15 @@ impl PayloadResolution {
     }
 }
 
+/// What a PTC member attests for the head block at `slot`: an envelope seen
+/// by the payload deadline, and its blob data available now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PtcObservation {
+    pub slot: u64,
+    pub payload_present: bool,
+    pub blob_data_available: bool,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -1215,6 +1224,7 @@ pub enum BeaconStateEvent {
         /// `None` when checkpoint history has overwritten a dependent root.
         head_roots: Option<HeadRoots>,
         head_payload: PayloadResolution,
+        head_ptc: PtcObservation,
         head_change: HeadChange,
         epoch_transition: bool,
     },

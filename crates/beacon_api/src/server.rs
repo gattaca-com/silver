@@ -586,6 +586,7 @@ impl BeaconApi {
                 head_optimistic,
                 head_roots,
                 head_payload,
+                head_ptc,
                 head_change,
                 epoch_transition,
                 ..
@@ -601,6 +602,7 @@ impl BeaconApi {
                 self.ctx.node_status.head = HeadStatus { slot: latest_block_slot, optimistic };
                 self.ctx.node_status.head_root = block_root;
                 self.ctx.node_status.head_payload = head_payload;
+                self.ctx.node_status.head_ptc = head_ptc;
                 self.ctx.node_status.wall_slot = wall_slot;
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
@@ -1957,6 +1959,7 @@ mod tests {
             enr_fork_id: [0; 16],
             head_roots: Some(head.roots),
             head_payload: head.payload,
+            head_ptc: Default::default(),
             head_change: HeadChange::Head,
             epoch_transition: false,
         }

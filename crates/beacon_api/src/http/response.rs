@@ -260,6 +260,7 @@ fn status_line(code: u16) -> Option<&'static str> {
     Some(match code {
         200 => "200 OK",
         202 => "202 Accepted",
+        204 => "204 No Content",
         206 => "206 Partial Content",
         400 => "400 Bad Request",
         404 => "404 Not Found",

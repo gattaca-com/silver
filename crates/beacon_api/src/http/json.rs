@@ -12,10 +12,10 @@ use silver_common::{
     AGENT_VERSION,
     ssz_view::{
         AttestationView, BEACON_BLOCK_HEADER_SIZE, BYTES_PER_KZG_COMMITMENT, BeaconBlockHeaderView,
-        IndexedAttestationView, PROPOSER_SLASHING_SIZE, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
-        SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
-        SyncCommitteeContributionView,
+        IndexedAttestationView, PAYLOAD_ATTESTATION_DATA_SIZE, PROPOSER_SLASHING_SIZE,
+        PayloadAttestationDataView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+        SINGLE_ATT_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE, SignedBlsToExecutionChangeView,
+        SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeContributionView,
     },
 };
 
@@ -658,6 +658,19 @@ impl Json<'_> {
                 });
             }
         });
+    }
+    
+    pub(crate) fn payload_attestation_data(&mut self, ssz: &[u8; PAYLOAD_ATTESTATION_DATA_SIZE]) {
+        self.begin_object();
+        self.key("beacon_block_root");
+        self.hex(PayloadAttestationDataView::beacon_block_root(ssz));
+        self.key("slot");
+        self.quoted_u64(PayloadAttestationDataView::slot(ssz));
+        self.key("payload_present");
+        self.bool(PayloadAttestationDataView::payload_present(ssz));
+        self.key("blob_data_available");
+        self.bool(PayloadAttestationDataView::blob_data_available(ssz));
+        self.end_object();
     }
 
     pub(crate) fn sync_duties<'a>(

@@ -6724,6 +6724,25 @@ fn gloas_columns_available_releases_the_parked_envelope() {
 }
 
 #[test]
+fn status_carries_the_head_block_ptc_observation() {
+    let mut rig = HeadRig::new();
+    rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, false);
+    let _ = rig.crank();
+    let observed = |tile: &mut BeaconStateTile| match tile.status_event(tile.selected_head()) {
+        BeaconStateEvent::Status { ssz, head_ptc, .. } => {
+            assert_eq!(*StatusView::head_root(&ssz), A_ROOT);
+            head_ptc
+        }
+        ev => panic!("status_event produced {ev:?}"),
+    };
+    let blobless = PtcObservation { slot: 71, payload_present: false, blob_data_available: true };
+    assert_eq!(observed(&mut rig.tile), blobless);
+
+    rig.tile.envelope_arrivals.record(A_ROOT, 71, 71 * 12_000);
+    assert_eq!(observed(&mut rig.tile), PtcObservation { payload_present: true, ..blobless });
+}
+
+#[test]
 fn gloas_head_on_a_pending_full_parent_payload_is_optimistic_until_that_verdict() {
     let mut rig = HeadRig::new();
     let a = rig.import_gloas(A_ROOT, 71, A_PREVIOUS, A_CURRENT, true);

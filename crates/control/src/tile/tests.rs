@@ -205,6 +205,7 @@ fn status_published_before_the_first_loop_is_received() {
         enr_fork_id: [0; 16],
         head_roots: None,
         head_payload: PayloadResolution::Full,
+        head_ptc: Default::default(),
         head_change: HeadChange::None,
         epoch_transition: false,
     });
@@ -301,6 +302,7 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
         enr_fork_id: [0; 16],
         head_roots: None,
         head_payload: PayloadResolution::Full,
+        head_ptc: Default::default(),
         head_change: HeadChange::None,
         epoch_transition: false,
     });

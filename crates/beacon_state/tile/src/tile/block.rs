@@ -449,6 +449,7 @@ impl BeaconStateTile {
         let Some(staged) = self.held.mark_available(block_root, slot) else {
             silver_log::debug!(block = hex32(&block_root), slot, "DataColumnsAvailable received");
             self.drain_pending_envelope(block_root, slot, producers);
+            self.publish_status(producers);
             return;
         };
         let StagedBlock { parsed, applied, ssz, source, el_valid } = staged;

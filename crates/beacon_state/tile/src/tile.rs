@@ -13,9 +13,9 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
     EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
-    ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound, SidecarBidResponse,
-    SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
-    TCacheTable, TProducer, TReadMode, TileId, hex32,
+    PtcObservation, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
+    SidecarBidResponse, SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -32,6 +32,7 @@ use crate::{
         bid_pool::BidPool,
         block_production::{BlockProduction, Proposal},
         bls_change_pool::BlsChangePool,
+        envelope_arrivals::EnvelopeArrivals,
         exit_pool::ExitPool,
         fork_data_roots::ForkDataRoots,
         gossip::BatchedVote,
@@ -58,6 +59,7 @@ mod bid_pool;
 mod block;
 mod block_production;
 mod bls_change_pool;
+mod envelope_arrivals;
 mod exit_pool;
 mod finalize;
 mod fork_choice;
@@ -247,6 +249,7 @@ pub struct BeaconStateTile {
     held: HeldBlocks,
     /// Gloas: payload envelopes seen before their block entered fork choice.
     pending_envelopes: PendingEnvelopes,
+    envelope_arrivals: EnvelopeArrivals,
     /// Gload: payload bids for the current slot
     payload_bids_pool: BidPool,
     payload_execution_requests: PayloadExecutionRequests,
@@ -331,6 +334,7 @@ impl BeaconStateTile {
             sig_batch: bls::SigBatch::new(),
             held: HeldBlocks::new(&syncing.pending),
             pending_envelopes: PendingEnvelopes::new(syncing.pending.max_dc),
+            envelope_arrivals: EnvelopeArrivals::default(),
             payload_bids_pool: BidPool::default(),
             payload_execution_requests: PayloadExecutionRequests::default(),
             payload_attestation_pool: PayloadAttestationPool::default(),
@@ -605,6 +609,21 @@ impl BeaconStateTile {
         };
 
         let node = self.fork_choice.node(head.idx);
+        let blob_count = self
+            .state
+            .read_view(node.state_id)
+            .slot
+            .state()
+            .latest_execution_payload_bid
+            .blob_kzg_commitments
+            .len();
+        let head_ptc = PtcObservation {
+            slot: node.slot,
+            payload_present: self
+                .envelope_arrivals
+                .timely(&curr.root, self.ticker.slot_duration().as_millis() as u64),
+            blob_data_available: blob_count == 0 || !self.columns_pending(&curr.root),
+        };
         let epoch = node.slot / SLOTS_PER_EPOCH;
         let epoch_transition = self
             .fork_choice
@@ -619,6 +638,7 @@ impl BeaconStateTile {
             enr_fork_id: self.enr_fork_id(),
             head_roots: roots,
             head_payload: curr.payload,
+            head_ptc,
             head_change,
             epoch_transition,
         }
@@ -808,6 +828,7 @@ impl BeaconStateTile {
         self.attestation_root_memo.prune_before(floor);
         self.payload_bids_pool.on_slot(slot);
         self.seen_proposer_preferences.on_slot(slot);
+        self.envelope_arrivals.on_slot(slot);
         if slot.is_multiple_of(SLOTS_PER_EPOCH) {
             self.proposer_preparations.prune(slot / SLOTS_PER_EPOCH);
         }

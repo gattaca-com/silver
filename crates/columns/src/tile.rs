@@ -1553,6 +1553,7 @@ mod tests {
             enr_fork_id: [0u8; 16],
             head_roots: None,
             head_payload: PayloadResolution::Full,
+            head_ptc: Default::default(),
             head_change: HeadChange::None,
             epoch_transition: false,
         }

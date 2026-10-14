@@ -31,6 +31,7 @@ pub(crate) fn ready() -> NodeStatus {
         head: HeadStatus { slot: 100, optimistic: false },
         head_root: [0x11; 32],
         head_payload: PayloadResolution::Full,
+        head_ptc: Default::default(),
         wall_slot: 100,
         finalized_epoch: 12_343,
         target: Some(SyncUpdate::Following),
