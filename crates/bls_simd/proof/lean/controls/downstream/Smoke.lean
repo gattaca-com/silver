@@ -2,10 +2,9 @@ import LeanBlsSimd.Refines.UncompressG1
 
 open Aeneas Aeneas.Std Result
 
-/-! Two downstream interoperability witnesses, with copied blst structs. One threads
-the upstream instance; the other fixes it behind downstream-owned externals.
-The unmodified root external fails the permanent negative control below. These
-witnesses do not select a downstream extraction strategy. -/
+/-! The downstream facade uses the generated call spelling and a downstream-owned
+externals class. Its adapter fixes an explicit upstream instance and transports
+independently extracted blst structs. -/
 
 namespace silver_kzg
 
@@ -49,54 +48,34 @@ def fromUpstreamSlice (s : Slice (Option _root_.silver_bls_simd.blst.blst_p1_aff
     Slice (Option blst.blst_p1_affine) :=
   ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
 
-end Bridge
-
-section Threaded
-
-variable [_root_.silver_bls_simd.G1Externals]
-
-def silver_bls_simd.COMPRESSED_LEN : Result Std.Usize := ok 48#usize
-
-def silver_bls_simd.uncompress_in_g1
+def uncompress (upstream : _root_.silver_bls_simd.G1Externals)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
     Result (Slice (Option blst.blst_p1_affine)) := do
-  let result ← _root_.silver_bls_simd.uncompress_in_g1 inputs (Bridge.toUpstreamSlice out)
-  ok (Bridge.fromUpstreamSlice result)
+  let result ← @_root_.silver_bls_simd.uncompress_in_g1 upstream inputs (toUpstreamSlice out)
+  ok (fromUpstreamSlice result)
 
-/-- The generated call spelling resolves to the qualified bridge inside `silver_kzg`. -/
-def caller (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
-    Result (Slice (Option blst.blst_p1_affine)) := do
-  let _ ← silver_bls_simd.COMPRESSED_LEN
-  silver_bls_simd.uncompress_in_g1 inputs out
+end Bridge
 
 def specVerdict (bytes : Array Std.U8 48#usize) : Option blst.blst_p1_affine :=
   (LeanBlsSimd.UncompressG1.specVerdict bytes).map Bridge.fromUpstream
 
-theorem caller_eq_spec_list (hblst : LeanBlsSimd.UncompressG1.BlstMatchesSpec)
+theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_bls_simd.G1Externals)
+    (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, caller inputs out = ok result ∧ result.val = inputs.val.map specVerdict := by
-  obtain ⟨result, hr, hv⟩ := LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list
-    hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
+    ∃ result, Bridge.uncompress upstream inputs out = ok result ∧
+      result.val = inputs.val.map specVerdict := by
+  obtain ⟨result, hr, hv⟩ := @LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list
+    upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
-  · simp only [caller, silver_bls_simd.COMPRESSED_LEN, bind_tc_ok,
-      silver_bls_simd.uncompress_in_g1, hr]
+  · simp only [Bridge.uncompress, hr, bind_tc_ok]
   · simp [Bridge.fromUpstreamSlice, hv, List.map_map, specVerdict, Function.comp_def]
-
-end Threaded
-
-/-! An alternative keeps the upstream instance fixed behind a downstream-owned
-external function. The downstream caller requires only its own externals class. -/
 
 namespace Fixed
 
 class Externals where
   uncompress : Slice (Array Std.U8 48#usize) → Slice (Option blst.blst_p1_affine) →
     Result (Slice (Option blst.blst_p1_affine))
-
-def caller [Externals] (inputs : Slice (Array Std.U8 48#usize))
-    (out : Slice (Option blst.blst_p1_affine)) : Result (Slice (Option blst.blst_p1_affine)) :=
-  Externals.uncompress inputs out
 
 def UncompressMatchesSpec [Externals] : Prop :=
   ∀ (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)),
@@ -105,19 +84,12 @@ def UncompressMatchesSpec [Externals] : Prop :=
         result.val = inputs.val.map specVerdict
 
 @[reducible] def externalsOf (upstream : _root_.silver_bls_simd.G1Externals) : Externals :=
-  ⟨@silver_kzg.silver_bls_simd.uncompress_in_g1 upstream⟩
+  ⟨Bridge.uncompress upstream⟩
 
 theorem externalsOf_matches_spec (upstream : _root_.silver_bls_simd.G1Externals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream) :
-    @UncompressMatchesSpec (externalsOf upstream) := by
-  intro inputs out hlen
-  exact @silver_kzg.caller_eq_spec_list upstream hblst inputs out hlen
-
-theorem caller_eq_spec_list [Externals] (h : UncompressMatchesSpec)
-    (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
-    (hlen : out.val.length = inputs.val.length) :
-    ∃ result, caller inputs out = ok result ∧ result.val = inputs.val.map specVerdict :=
-  h inputs out hlen
+    @UncompressMatchesSpec (externalsOf upstream) :=
+  Bridge.uncompress_eq_spec_list upstream hblst
 
 @[reducible] def specUpstream : _root_.silver_bls_simd.G1Externals :=
   ⟨true, LeanBlsSimd.UncompressG1.specVerdict⟩
@@ -128,14 +100,50 @@ theorem specUpstream_matches : @LeanBlsSimd.UncompressG1.BlstMatchesSpec specUps
 example : @UncompressMatchesSpec (externalsOf specUpstream) :=
   externalsOf_matches_spec specUpstream specUpstream_matches
 
-example (external : Externals) (inputs : Slice (Array Std.U8 48#usize))
+end Fixed
+
+def silver_bls_simd.COMPRESSED_LEN : Result Std.Usize := ok 48#usize
+
+def silver_bls_simd.uncompress_in_g1 [Fixed.Externals]
+    (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
+    Result (Slice (Option blst.blst_p1_affine)) :=
+  Fixed.Externals.uncompress inputs out
+
+/-- The generated call spelling resolves to the downstream facade. -/
+def caller [Fixed.Externals] (inputs : Slice (Array Std.U8 48#usize))
+    (out : Slice (Option blst.blst_p1_affine)) : Result (Slice (Option blst.blst_p1_affine)) := do
+  let _ ← silver_bls_simd.COMPRESSED_LEN
+  silver_bls_simd.uncompress_in_g1 inputs out
+
+theorem caller_eq_spec_list [Fixed.Externals] (h : Fixed.UncompressMatchesSpec)
+    (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, caller inputs out = ok result ∧ result.val = inputs.val.map specVerdict :=
+  h inputs out hlen
+
+example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) :
     @caller external inputs out = external.uncompress inputs out := rfl
 
-end Fixed
+example (upstream : _root_.silver_bls_simd.G1Externals)
+    (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
+    (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, @caller (Fixed.externalsOf upstream) inputs out = ok result ∧
+      result.val = inputs.val.map specVerdict :=
+  @caller_eq_spec_list (Fixed.externalsOf upstream)
+    (Fixed.externalsOf_matches_spec upstream hblst) inputs out hlen
 
-#print axioms caller_eq_spec_list
+/-- info: 'silver_kzg.Bridge.uncompress_eq_spec_list' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms Bridge.uncompress_eq_spec_list
+
+/-- info: 'silver_kzg.Fixed.externalsOf_matches_spec' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
 #print axioms Fixed.externalsOf_matches_spec
-#print axioms Fixed.caller_eq_spec_list
+
+/-- info: 'silver_kzg.caller_eq_spec_list' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms caller_eq_spec_list
 
 end silver_kzg

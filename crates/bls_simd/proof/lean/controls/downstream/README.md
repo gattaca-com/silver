@@ -1,11 +1,12 @@
 This independent Lake package imports `lean_bls_simd` by path and inherits its dependency pins. `Smoke.lean` reproduces silver_kzg's generated blst structs and the rejected root external declaration. Its `#guard_msgs` control requires the name collision to remain visible.
 
-Two adapters prove the list result on the copied structs:
+The downstream facade follows silver_kzg's chosen external interface:
 
-- `silver_kzg.caller_eq_spec_list` uses a namespaced adapter and threads the upstream `G1Externals` instance.
-- `silver_kzg.Fixed.externalsOf_matches_spec` fixes an explicit upstream instance inside a downstream-owned external. The downstream caller takes only `Fixed.Externals`; its named assumption is `Fixed.UncompressMatchesSpec`.
+- `silver_kzg.silver_bls_simd.uncompress_in_g1` reads the function field of `Fixed.Externals`.
+- `silver_kzg.caller` calls `silver_bls_simd.uncompress_in_g1 inputs out` in the generated spelling. Its only instance parameter is `Fixed.Externals`.
+- `Fixed.externalsOf upstream` fixes an explicit upstream `G1Externals` instance inside the adapter. `Fixed.externalsOf_matches_spec` discharges the named downstream premise `Fixed.UncompressMatchesSpec` from `BlstMatchesSpec`.
 
-Both assumptions are discharged from `LeanBlsSimd.UncompressG1.BlstMatchesSpec`. A concrete instance implementing the spec witnesses consistency. These are interoperability demonstrations, not changes to silver_kzg's extraction.
+`Bridge.uncompress_eq_spec_list` transports the upstream result across the copied structs; `caller_eq_spec_list` proves the downstream caller's list result. A concrete instance implementing the spec witnesses consistency. These are interoperability demonstrations, not changes to silver_kzg's extraction.
 
 The normal package commands, run from this directory, are:
 
@@ -23,4 +24,4 @@ lake update
 lake env lean Smoke.lean
 ```
 
-Create the symlink only when `.lake/packages` does not already exist. The final command prints the axiom lists of both adapter proofs and the downstream caller theorem; each must contain only `propext`, `Classical.choice`, and `Quot.sound`.
+Create the symlink only when `.lake/packages` does not already exist. Each adapter and caller axiom check is wrapped in `#guard_msgs`; the build fails if its list differs from `propext`, `Classical.choice`, and `Quot.sound`.

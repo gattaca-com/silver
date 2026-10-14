@@ -30,7 +30,7 @@ theorem uncompress_in_g1_eq_spec_list [G1Externals]
 
 `BlstMatchesSpec` names the sole external-correctness premise: blst returns `specVerdict` on every 48-byte input. `specVerdict_some_iff` relates an accepted Aeneas point to `bytesToKzgProof` and the decoded point's exact limbs. The pointwise corollary and a model-type list variant are also available. The unconditional result is “specification or the scalar external” according to the characterized route. Equality with blst on every index additionally uses `BlstMatchesSpec`.
 
-`controls/G1Consumer.lean` imports only this public module and applies the theorem with arbitrary externals. The independent package in `controls/downstream/` reproduces silver_kzg's separate blst structs, proves the list result across those copies, and checks the root external's name collision. It demonstrates both a namespaced adapter with an upstream instance and a downstream-owned function field that fixes the upstream instance internally. The latter discharges the downstream hypothesis without adding `G1Externals` to its generated caller.
+`controls/G1Consumer.lean` imports only this public module and applies the theorem with arbitrary externals. The independent package in `controls/downstream/` reproduces silver_kzg's separate blst structs, proves the list result across those copies, and checks the root external's name collision. Its facade `silver_kzg.silver_bls_simd.uncompress_in_g1` reads a downstream-owned external function. A caller in the generated spelling requires only `Fixed.Externals`; the adapter fixes an explicit upstream `G1Externals` instance and discharges the downstream hypothesis from `BlstMatchesSpec`.
 
 The proof has two parts: the generated code returns exactly the result of a hand-written model, and the model agrees with the specification on every lane the kernel decides. G2's Scott completeness uses a character-sum bound on the curve's point count; G1 uses the elementary finite point-count bound above. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
 
@@ -212,15 +212,16 @@ Negative controls check that selected mutations are rejected. Other controls che
 | File | Shows |
 |---|---|
 | `Guard.lean` | The axiom guard rejects `native_decide`, `bv_decide` and `Lean.ofReduceBool`. |
-| `G1.lean` | Concrete G1 constant, flag, canonicality, sign and limb-order refutations, plus full-chunk, scalar, tail, empty-output and arbitrary-fallback controls. |
-| `downstream/` | A separate Lake package transports the list result across independently extracted structs and checks both externals adapters and the root-name collision. |
+| `G1.lean` | Concrete G1 constants, routing flags, signs and limb order; skipping canonicality makes the kernel accept a noncanonical encoding of 2G. Also covers full chunks, scalar tails, empty output and arbitrary fallback. |
+| `downstream/` | A separate Lake package transports the list result across independently extracted structs, checks a generated-spelling caller with only downstream externals, and guards the root-name collision and proof axiom lists. |
 | `G1Consumer.lean` | A downstream module imports only the G1 public theorem, applies it with arbitrary externals, and constructs an instance satisfying its blst hypothesis. |
-| `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
+| `Statements.lean` | Changed constants and formulas break their proof scripts, including G1's Scott-membership proof when the model drops the y negation. |
+| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
 | `CharacterSums.lean` | Scott soundness and completeness together; zero, cube and noncube fibers over F₇; the affine point count over F₅; and a counterexample to the Jacobi norm identity for trivial characters. |
 | `Kernel.lean` | Checks the input premises and conclusions on concrete batches, including the generator's batch. These examples need no Scott completeness assumption, but do not prove completeness for arbitrary inputs. |
-| `Refines.lean` | A mutated generated function fails its refinement proof: swapped coordinates or operands, a wrong row, lane order, word order or loop start, or a missing addition. For five of the eight mutants, a proof checked by Lean's kernel shows that the mutated claim is false; for `times_minus_z`, it refutes the claim about one loop step instead. |
+| `Refines.lean` | Mutated generated functions fail their refinement proofs, including G1's chunk fallback reading lane zero instead of the current lane. Concrete refutations cover five complete G2 refinements and the required loop steps for `times_minus_z` and G1's fallback. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
 
 Build the independent downstream package from its own root:
