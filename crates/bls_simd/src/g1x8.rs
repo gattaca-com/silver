@@ -82,18 +82,40 @@ impl G1x8 {
         (Self { x: x3, y: y3, z: z3 }, undecided)
     }
 
-    /// `[z] P` for the curve parameter z, by double-and-add over its six set
-    /// bits; `add_p` adds P to the accumulator.
+    /// `[|z|] P` for an affine P, by double-and-add over the six set bits of
+    /// |z|.
     #[target_feature(enable = "avx512f,avx512ifma")]
-    fn times_z(&self, add_p: impl Fn(&Self) -> (Self, __mmask8)) -> (Self, __mmask8) {
+    fn times_z_affine(px: &Fp8, py: &Fp8) -> (Self, __mmask8) {
         let mut undecided = 0;
-        let mut r = Self { x: self.x, y: self.y, z: self.z };
-        for bit in (0..Z_BITS[0]).rev() {
+        let mut r = Self::from_affine(px, py);
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
             let (d, u) = r.double();
             r = d;
             undecided |= u;
-            if Z_BITS.contains(&bit) {
-                let (a, u) = add_p(&r);
+            if is_lower_z_bit(bit) {
+                let (a, u) = r.add_affine(px, py);
+                r = a;
+                undecided |= u;
+            }
+        }
+        (r, undecided)
+    }
+
+    /// `[|z|] Q` for a Jacobian Q, by the same chain as `times_z_affine`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    fn times_z(&self) -> (Self, __mmask8) {
+        let mut undecided = 0;
+        let mut r = Self { x: self.x, y: self.y, z: self.z };
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
+            let (d, u) = r.double();
+            r = d;
+            undecided |= u;
+            if is_lower_z_bit(bit) {
+                let (a, u) = r.add(self);
                 r = a;
                 undecided |= u;
             }
@@ -105,9 +127,8 @@ impl G1x8 {
     /// sigma^2(P)`, where sigma scales x by a cube root of unity.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn scott_membership(px: &Fp8, py: &Fp8) -> Membership {
-        let p = Self::from_affine(px, py);
-        let (zp, u1) = p.times_z(|r| r.add_affine(px, py));
-        let (zzp, u2) = zp.times_z(|r| r.add(&zp));
+        let (zp, u1) = Self::times_z_affine(px, py);
+        let (zzp, u2) = zp.times_z();
         let undecided = u1 | u2 | zzp.z.is_zero_mask();
 
         let beta = Fp8::splat_limbs(&BETA_MONT);
@@ -118,4 +139,9 @@ impl G1x8 {
         let y_matches = zzp.y.neg().eq_mask(&py.mul(&zzz));
         Membership { members: x_matches & y_matches & !undecided, undecided }
     }
+}
+
+/// A set bit of |z| below the top one, where both chains start.
+fn is_lower_z_bit(bit: u32) -> bool {
+    bit == Z_BITS[1] || bit == Z_BITS[2] || bit == Z_BITS[3] || bit == Z_BITS[4] || bit == Z_BITS[5]
 }

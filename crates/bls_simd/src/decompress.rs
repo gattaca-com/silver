@@ -35,7 +35,8 @@ struct Decoded {
 
 fn decode(inputs: &[[u8; COMPRESSED_LEN]; LANES]) -> Decoded {
     let mut d = Decoded { x: [[0; 8]; LANES], larger_root: 0, invalid: 0, undecided: 0 };
-    for (lane, bytes) in inputs.iter().enumerate() {
+    for lane in 0..LANES {
+        let bytes = &inputs[lane];
         let bit = 1u8 << lane;
         let flags = bytes[0] & 0xe0;
         if flags & FLAG_COMPRESSED == 0 {
@@ -60,6 +61,10 @@ fn decode(inputs: &[[u8; COMPRESSED_LEN]; LANES]) -> Decoded {
     d
 }
 
+fn point(x: [u64; 6], y: [u64; 6]) -> blst_p1_affine {
+    blst_p1_affine { x: blst_fp { l: x }, y: blst_fp { l: y } }
+}
+
 #[target_feature(enable = "avx512f,avx512ifma")]
 pub fn decompress(inputs: &[[u8; COMPRESSED_LEN]; LANES]) -> Batch {
     let decoded = decode(inputs);
@@ -82,7 +87,7 @@ pub fn decompress(inputs: &[[u8; COMPRESSED_LEN]; LANES]) -> Batch {
     let ys = y.to_blst_limbs();
     let mut points = [blst_p1_affine::default(); LANES];
     for lane in 0..LANES {
-        points[lane] = blst_p1_affine { x: blst_fp { l: xs[lane] }, y: blst_fp { l: ys[lane] } };
+        points[lane] = point(xs[lane], ys[lane]);
     }
     Batch { points, valid, undecided }
 }
