@@ -659,7 +659,7 @@ impl Json<'_> {
             }
         });
     }
-    
+
     pub(crate) fn payload_attestation_data(&mut self, ssz: &[u8; PAYLOAD_ATTESTATION_DATA_SIZE]) {
         self.begin_object();
         self.key("beacon_block_root");
