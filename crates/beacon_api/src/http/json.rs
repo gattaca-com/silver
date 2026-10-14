@@ -26,7 +26,7 @@ use crate::{
     submission::SubmissionFailure,
     validator::{
         attestation_data::AttestationData, attester_duties::AttesterDuty,
-        proposer_duties::ProposerDuty, sync_duties::SyncDuty,
+        proposer_duties::ProposerDuty, ptc_duties::PtcDuty, sync_duties::SyncDuty,
     },
 };
 
@@ -637,6 +637,22 @@ impl Json<'_> {
                     json.quoted_u64(duty.committees_at_slot);
                     json.key("validator_committee_index");
                     json.quoted_u64(duty.validator_committee_index);
+                    json.key("slot");
+                    json.quoted_u64(duty.slot);
+                });
+            }
+        });
+    }
+
+    pub(crate) fn ptc_duties(
+        &mut self,
+        dependent_root: B256,
+        execution_optimistic: bool,
+        duties: impl Iterator<Item = PtcDuty>,
+    ) {
+        self.duties_envelope(Some(dependent_root), execution_optimistic, |json| {
+            for duty in duties {
+                json.duty(&duty.pubkey, duty.validator_index, |json| {
                     json.key("slot");
                     json.quoted_u64(duty.slot);
                 });

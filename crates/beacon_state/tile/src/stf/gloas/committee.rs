@@ -18,18 +18,10 @@ pub(crate) fn get_ptc<'a>(
     if target_epoch < gloas_fork_epoch {
         return None;
     }
-    let idx = if target_epoch < state_epoch {
-        if target_epoch + 1 != state_epoch {
-            return None;
-        }
-        slot % SLOTS_PER_EPOCH
-    } else {
-        if target_epoch > state_epoch + MIN_SEED_LOOKAHEAD {
-            return None;
-        }
-        (target_epoch - state_epoch + 1) * SLOTS_PER_EPOCH + slot % SLOTS_PER_EPOCH
-    };
-    epoch.ptc_window().committees().get(idx as usize)
+    epoch
+        .ptc_window()
+        .epoch_committees(state_epoch, target_epoch)
+        .map(|committees| &committees[(slot % SLOTS_PER_EPOCH) as usize])
 }
 
 pub(crate) fn fill_epoch_ptc(

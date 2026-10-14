@@ -40,6 +40,7 @@ use crate::{
         produce_block::{produce_block_v3, produce_block_v4},
         proposer_duties::{proposer_duties, proposer_duties_v2},
         proposer_preferences::post_proposer_preferences,
+        ptc_duties::post_ptc_duties,
         registration::{post_prepare_beacon_proposer, post_register_validator},
         subnet_subscriptions::{
             post_beacon_committee_subscriptions, post_sync_committee_subscriptions,
@@ -101,6 +102,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/validator/contribution_and_proofs", post_contribution_and_proofs),
     (Method::Post, "/eth/v1/validator/duties/attester/{epoch}", post_attester_duties),
     (Method::Get, "/eth/v1/validator/duties/proposer/{epoch}", proposer_duties),
+    (Method::Post, "/eth/v1/validator/duties/ptc/{epoch}", post_ptc_duties),
     (Method::Post, "/eth/v1/validator/duties/sync/{epoch}", post_sync_duties),
     (Method::Post, "/eth/v1/validator/liveness/{epoch}", post_liveness),
     (Method::Post, "/eth/v1/validator/prepare_beacon_proposer", post_prepare_beacon_proposer),

@@ -1,7 +1,7 @@
 use crate::{
     gloas::{PTC_SIZE, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window},
     merkle::{B256, MerkleStack, hash_uint64_vector, merkleize},
-    types::SLOTS_PER_EPOCH,
+    types::{Epoch, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH},
 };
 
 const SPE: usize = SLOTS_PER_EPOCH as usize;
@@ -50,6 +50,17 @@ impl PtcWindow {
     #[inline]
     pub fn committees(&self) -> &[PtcCommittee; PTC_WINDOW_LEN] {
         &self.committees
+    }
+
+    /// Spec `get_ptc` for every slot of `epoch`: the window holds the epoch
+    /// before `state_epoch` through `MIN_SEED_LOOKAHEAD` epochs after it.
+    pub fn epoch_committees(&self, state_epoch: Epoch, epoch: Epoch) -> Option<&[PtcCommittee]> {
+        let window_epoch = (epoch + 1).checked_sub(state_epoch)?;
+        if window_epoch > 1 + MIN_SEED_LOOKAHEAD {
+            return None;
+        }
+        let start = window_epoch as usize * SPE;
+        Some(&self.committees[start..start + SPE])
     }
 
     #[inline]
