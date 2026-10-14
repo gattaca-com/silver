@@ -54,9 +54,7 @@ pub(crate) fn post_ptc_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respon
             json.ptc_duties(
                 id.dependent_root,
                 optimistic,
-                indices.iter().filter_map(|&validator_index| {
-                    PtcDuty::read(&view, committees, epoch, validator_index)
-                }),
+                PtcDuty::read_epoch(&view, committees, epoch, &indices).into_iter(),
             );
             Ok(())
         })
@@ -73,23 +71,32 @@ pub(crate) struct PtcDuty {
 }
 
 impl PtcDuty {
-    /// Spec `get_ptc_assignment`: the first slot of the epoch whose PTC holds
-    /// the validator.
-    fn read(
+    /// One duty per slot whose PTC holds a requested validator, as Prysm and
+    /// Nimbus answer: balance-weighted selection can seat a validator in
+    /// several slots, and spec `get_ptc_assignment` names only the first.
+    /// `indices` is sorted.
+    fn read_epoch(
         view: &StateReadView<'_>,
         committees: &[PtcCommittee],
         epoch: Epoch,
-        validator_index: u64,
-    ) -> Option<Self> {
-        let index =
-            usize::try_from(validator_index).ok().filter(|&ix| ix < view.validators.count())?;
-        let slot_in_epoch =
-            committees.iter().position(|committee| committee.contains(&validator_index))?;
-        Some(Self {
-            pubkey: *view.validators.pubkey(index),
-            validator_index,
-            slot: epoch * SLOTS_PER_EPOCH + slot_in_epoch as u64,
-        })
+        indices: &[u64],
+    ) -> Vec<Self> {
+        let mut duties = Vec::new();
+        let mut members = Vec::new();
+        for (slot_in_epoch, committee) in committees.iter().enumerate() {
+            members.clear();
+            members.extend(committee.iter().filter(|ix| indices.binary_search(ix).is_ok()));
+            members.sort_unstable();
+            members.dedup();
+            let slot = epoch * SLOTS_PER_EPOCH + slot_in_epoch as u64;
+            duties.extend(members.iter().filter_map(|&validator_index| {
+                let ix = usize::try_from(validator_index)
+                    .ok()
+                    .filter(|&ix| ix < view.validators.count())?;
+                Some(Self { pubkey: *view.validators.pubkey(ix), validator_index, slot })
+            }));
+        }
+        duties
     }
 }
 
@@ -113,8 +120,9 @@ mod tests {
     const STATE_SLOT: u64 = STATE_EPOCH * SLOTS_PER_EPOCH + 5;
     const SPE: usize = SLOTS_PER_EPOCH as usize;
 
-    /// Validator 7 sits in slots 3 and 5 of the state's epoch, 42 in slot 0
-    /// of the next, and 9 only in the previous epoch's window.
+    /// Validator 7 sits twice in slot 3 and once in slot 5 of the state's
+    /// epoch, 42 in slot 0 of the next, and 9 only in the previous epoch's
+    /// window.
     fn ctx(gloas_fork_epoch: Epoch, head_is_gloas: bool) -> ApiCtx {
         let seeds: Vec<_> =
             (0..VALIDATORS).map(|i| ValSeed { pubkey: pubkey(i), ..ValSeed::default() }).collect();
@@ -134,6 +142,7 @@ mod tests {
 
         let mut window = zeroed_ptc_window();
         window[SPE + 3][10] = 7;
+        window[SPE + 3][11] = 7;
         window[SPE + 5][20] = 7;
         window[2 * SPE][0] = 42;
         window[4][0] = 9;
@@ -167,13 +176,13 @@ mod tests {
     }
 
     #[test]
-    fn duties_name_the_first_ptc_slot_of_the_requested_epoch() {
+    fn duties_name_every_ptc_slot_of_the_requested_epoch_once() {
         let ctx = ctx(0, true);
         let body = "[\"7\",\"9\",\"42\",\"9999\"]";
 
         let current = post(&ctx, STATE_EPOCH, body);
         let first_slot = STATE_EPOCH * SLOTS_PER_EPOCH;
-        assert_eq!(duty_slots(&current), [(7, first_slot + 3)]);
+        assert_eq!(duty_slots(&current), [(7, first_slot + 3), (7, first_slot + 5)]);
         let duty = &json(&current)["data"][0];
         assert_eq!(duty["pubkey"].as_str().unwrap(), format!("0x{}", hex::encode(pubkey(7))));
 
