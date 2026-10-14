@@ -11,13 +11,20 @@ pub struct NodeChain {
     pub genesis_unix_secs: u64,
     pub slot_ms: u64,
     pub network: String,
+    pub gloas_fork_epoch: u64,
 }
 
 impl NodeChain {
     pub fn publish(&self) -> io::Result<()> {
         let path = Self::path();
         fs::create_dir_all(path.parent().expect("queue dir has a parent"))?;
-        fs::write(path, format!("{} {} {}", self.genesis_unix_secs, self.slot_ms, self.network))
+        fs::write(
+            path,
+            format!(
+                "{} {} {} {}",
+                self.genesis_unix_secs, self.slot_ms, self.network, self.gloas_fork_epoch
+            ),
+        )
     }
 
     /// `None` until a node has published one.
@@ -28,6 +35,7 @@ impl NodeChain {
             genesis_unix_secs: fields.next()?.parse().ok()?,
             slot_ms: fields.next()?.parse().ok()?,
             network: fields.next()?.to_owned(),
+            gloas_fork_epoch: fields.next()?.parse().ok()?,
         })
     }
 

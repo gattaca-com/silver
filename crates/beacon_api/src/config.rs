@@ -18,7 +18,7 @@ use silver_common::{
         MAX_BLOB_COMMITMENTS_PER_BLOCK, MAX_COMMITTEES_PER_SLOT, MAX_PAYLOAD_SIZE,
         MAX_REQUEST_BLOCKS_DENEB, MAX_VALIDATORS_PER_COMMITTEE, NUMBER_OF_COLUMNS,
     },
-    ticker::MAXIMUM_GOSSIP_CLOCK_DISPARITY,
+    ticker::{ATTESTATION_DUE_BPS, ATTESTATION_DUE_BPS_GLOAS, MAXIMUM_GOSSIP_CLOCK_DISPARITY},
 };
 
 use crate::{
@@ -170,22 +170,23 @@ const SUPERSEDED_CONFIG: &[(&str, u64)] = &[
 
 /// Fork-choice, slot-timing and networking parameters. No config file silver
 /// has seen varies them, so the ones silver acts on live as constants of the
-/// tile that acts on them (`SlotTicker`'s attesting-interval divisors are the
-/// `*_DUE_BPS` deadlines) and the rest are published for clients only.
+/// code that acts on them (`ATTESTATION_DUE_BPS*` are `ticker` constants) and
+/// the rest are published for clients only.
 const NETWORK_CONFIG: &[(&str, u64)] = &[
     ("PROPOSER_SCORE_BOOST", 40),
     ("REORG_HEAD_WEIGHT_THRESHOLD", 20),
     ("REORG_PARENT_WEIGHT_THRESHOLD", 160),
     ("REORG_MAX_EPOCHS_SINCE_FINALIZATION", 2),
     ("PROPOSER_REORG_CUTOFF_BPS", 1667),
-    ("ATTESTATION_DUE_BPS", 3333),
+    ("ATTESTATION_DUE_BPS", ATTESTATION_DUE_BPS),
     ("AGGREGATE_DUE_BPS", 6667),
     ("SYNC_MESSAGE_DUE_BPS", 3333),
     ("CONTRIBUTION_DUE_BPS", 6667),
-    ("ATTESTATION_DUE_BPS_GLOAS", 2500),
+    ("ATTESTATION_DUE_BPS_GLOAS", ATTESTATION_DUE_BPS_GLOAS),
     ("AGGREGATE_DUE_BPS_GLOAS", 5000),
     ("SYNC_MESSAGE_DUE_BPS_GLOAS", 2500),
     ("CONTRIBUTION_DUE_BPS_GLOAS", 5000),
+    ("PAYLOAD_DUE_BPS", 5000),
     ("PAYLOAD_ATTESTATION_DUE_BPS", 7500),
     ("VIEW_FREEZE_CUTOFF_BPS", 7500),
     ("INCLUSION_LIST_SUBMISSION_DUE_BPS", 6667),
@@ -537,6 +538,7 @@ mod tests {
             ("AGGREGATE_DUE_BPS_GLOAS", "5000"),
             ("SYNC_MESSAGE_DUE_BPS_GLOAS", "2500"),
             ("CONTRIBUTION_DUE_BPS_GLOAS", "5000"),
+            ("PAYLOAD_DUE_BPS", "5000"),
             ("PAYLOAD_ATTESTATION_DUE_BPS", "7500"),
             ("VIEW_FREEZE_CUTOFF_BPS", "7500"),
             ("INCLUSION_LIST_SUBMISSION_DUE_BPS", "6667"),

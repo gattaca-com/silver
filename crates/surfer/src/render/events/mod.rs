@@ -41,9 +41,9 @@ pub struct EventsPane {
 }
 
 impl EventsPane {
-    pub fn open(base_dir: &Path, clock: SlotClock, theme: Theme) -> Self {
+    pub fn open(base_dir: &Path, clock: SlotClock, gloas_fork_epoch: u64, theme: Theme) -> Self {
         Self {
-            data: Events::open(base_dir, clock),
+            data: Events::open(base_dir, clock, gloas_fork_epoch),
             list: ListState::default(),
             expanded: Expanded::default(),
             theme,
@@ -134,14 +134,16 @@ impl EventsPane {
         }
 
         let clock = self.data.clock();
-        let deadline = self.data.attestation_deadline();
         let rows: Vec<_> = display
             .iter()
             .map(|d| {
                 let trace = self.trace(d.root).expect("display rows come from the ring");
+                let deadline = self.data.attestation_deadline(trace.slot);
                 RowCells::new(trace, d, clock, deadline, &self.theme)
             })
             .collect();
+        let newest_slot = self.data.traces().back().map_or(0, |trace| trace.slot);
+        let deadline = self.data.attestation_deadline(newest_slot);
         let grid = Grid::fit(rows.iter(), inner.width as usize, &self.theme);
         let axis = Axis::fit(
             grid.axis,

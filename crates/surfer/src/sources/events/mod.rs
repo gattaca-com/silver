@@ -5,7 +5,11 @@
 use std::{collections::VecDeque, ops::Deref, path::Path};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_common::{Nanos, SilverSpine};
+use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_common::{
+    Nanos, SilverSpine,
+    ticker::{BASIS_POINTS, attestation_due_bps},
+};
 use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 
 mod batch;
@@ -104,10 +108,11 @@ impl Tile<SilverSpine> for EventsTile {
 pub struct Events {
     tile: EventsTile,
     adapter: SpineAdapter<SilverSpine>,
+    gloas_fork_epoch: u64,
 }
 
 impl Events {
-    pub fn open(base_dir: &Path, clock: SlotClock) -> Self {
+    pub fn open(base_dir: &Path, clock: SlotClock, gloas_fork_epoch: u64) -> Self {
         let tile = EventsTile {
             clock,
             reader: StageReader::default(),
@@ -117,7 +122,7 @@ impl Events {
         // once the adapter has attached.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, None);
         let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
-        Self { tile, adapter }
+        Self { tile, adapter, gloas_fork_epoch }
     }
 
     pub fn sample(&mut self) {
@@ -132,10 +137,10 @@ impl Events {
         &self.tile.clock
     }
 
-    /// Offset into the slot by which validators are expected to have attested.
-    /// Assumes the pre-Gloas fraction.
-    pub fn attestation_deadline(&self) -> Nanos {
-        self.tile.clock.slot_duration() / 3u64
+    /// Offset into `slot` by which validators are expected to have attested.
+    pub fn attestation_deadline(&self, slot: u64) -> Nanos {
+        let is_gloas = slot / SLOTS_PER_EPOCH >= self.gloas_fork_epoch;
+        self.tile.clock.slot_duration() * attestation_due_bps(is_gloas) / BASIS_POINTS
     }
 }
 

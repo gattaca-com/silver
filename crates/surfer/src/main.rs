@@ -22,6 +22,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use silver_beacon_state_data::FAR_FUTURE_EPOCH;
 use silver_common::NodeChain;
 use silver_observe::discover;
 use silver_stages::SlotClock;
@@ -125,11 +126,13 @@ fn main() -> io::Result<()> {
 
     // Events pane reads the node's spine directly (app name baked in as
     // `silver`, so a custom APP_NAME only affects the file sources above).
-    let clock = match NodeChain::read() {
-        Some(chain) => SlotClock::new(chain.genesis_unix_secs, chain.slot_ms),
-        None => SlotClock::new(MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS),
+    let (clock, gloas_fork_epoch) = match NodeChain::read() {
+        Some(chain) => {
+            (SlotClock::new(chain.genesis_unix_secs, chain.slot_ms), chain.gloas_fork_epoch)
+        }
+        None => (SlotClock::new(MAINNET_GENESIS_UNIX_SECS, MAINNET_SLOT_MS), FAR_FUTURE_EPOCH),
     };
-    let events = EventsPane::open(&base_dir, clock, Theme::default());
+    let events = EventsPane::open(&base_dir, clock, gloas_fork_epoch, Theme::default());
 
     let peers = sources::peers::Peers::open(&base_dir);
 

@@ -104,6 +104,7 @@ impl ChainConfig {
             genesis_unix_secs: genesis.unix_secs,
             slot_ms: self.spec.slot_duration_ms(),
             network: self.spec.network_name(),
+            gloas_fork_epoch: self.spec.gloas_fork_epoch,
         }
     }
 

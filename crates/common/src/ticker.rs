@@ -5,6 +5,14 @@ type Slot = u64;
 /// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
 pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
 
+pub const BASIS_POINTS: u64 = 10_000;
+pub const ATTESTATION_DUE_BPS: u64 = 3333;
+pub const ATTESTATION_DUE_BPS_GLOAS: u64 = 2500;
+
+pub fn attestation_due_bps(is_gloas: bool) -> u64 {
+    if is_gloas { ATTESTATION_DUE_BPS_GLOAS } else { ATTESTATION_DUE_BPS }
+}
+
 // slot/24 before next slot = 500ms on mainnet.
 const FORK_CHOICE_LOOKAHEAD_DIVISOR: u64 = 24;
 // slot/4 before next slot = 3s on mainnet, state advance fires at 3/4.
@@ -173,8 +181,8 @@ impl SlotTicker {
     }
 
     pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
-        let fraction = if is_gloas { 4 } else { 3 };
-        self.millis_since_genesis() % self.slot_ms < self.slot_ms / fraction
+        let due_ms = self.slot_ms * attestation_due_bps(is_gloas) / BASIS_POINTS;
+        self.millis_since_genesis() % self.slot_ms < due_ms
     }
 
     #[cfg(any(test, feature = "test-util"))]
