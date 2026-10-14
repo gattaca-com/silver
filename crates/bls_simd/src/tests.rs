@@ -31,6 +31,12 @@ fn uncompress_all(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affi
     out
 }
 
+fn uncompress_all_g1(inputs: &[[u8; COMPRESSED_LEN]]) -> Vec<Option<blst_p1_affine>> {
+    let mut out = vec![None; inputs.len()];
+    uncompress_in_g1(inputs, &mut out);
+    out
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -371,7 +377,7 @@ fn verdicts_match_blst_on_members_non_members_and_garbage() {
         inputs.swap(i, j);
     }
 
-    let got = uncompress_in_g1(&inputs);
+    let got = uncompress_all_g1(&inputs);
     assert_eq!(got.len(), inputs.len());
     let mut members = 0;
     for (i, input) in inputs.iter().enumerate() {
@@ -465,7 +471,7 @@ fn verdicts_match_blst_on_small_order_components() {
     }
     assert_eq!(inputs.len() % LANES, 0, "every input goes through the vector path");
 
-    let got = uncompress_in_g1(&inputs);
+    let got = uncompress_all_g1(&inputs);
     for (i, input) in inputs.iter().enumerate() {
         assert_eq!(serialized(&got[i]), serialized(&uncompress_in_g1_blst(input)), "input {i}");
     }

@@ -59,7 +59,8 @@ fn main() {
         all.push(bad);
     }
 
-    let simd = uncompress_in_g1(&all);
+    let mut simd = vec![None; all.len()];
+    uncompress_in_g1(&all, &mut simd);
     let mut mismatches = 0;
     let mut accepted = 0;
     for (i, input) in all.iter().enumerate() {
@@ -107,8 +108,16 @@ fn main() {
     .len() /
         BYTES_PER_KZG_COMMITMENT;
     let n = proofs.len();
-    let scalar = best_of(|| proofs.iter().map(uncompress_in_g1_blst).collect::<Vec<_>>());
-    let vector = best_of(|| uncompress_in_g1(&proofs));
+    let scalar = best_of(|| {
+        for proof in &proofs {
+            black_box(uncompress_in_g1_blst(proof));
+        }
+    });
+    let mut out = vec![None; n];
+    let vector = best_of(|| {
+        uncompress_in_g1(&proofs, &mut out);
+        black_box(&out);
+    });
     println!(
         "slot {slot}: {blobs} blobs, {n} proofs (uncompress + subgroup check), best of {REPS}"
     );

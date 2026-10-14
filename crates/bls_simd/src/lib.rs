@@ -86,43 +86,52 @@ pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_aff
     ok.then_some(point)
 }
 
-/// One verdict per input, identical to `uncompress_in_g1_blst` on each.
-pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]]) -> Vec<Option<blst_p1_affine>> {
-    let mut out = Vec::with_capacity(inputs.len());
-    let mut chunks = inputs.chunks_exact(LANES);
-    if simd_available() {
-        for chunk in &mut chunks {
-            decompress_chunk(chunk, &mut out);
+/// Sets each `out[i]` to a verdict identical to
+/// `uncompress_in_g1_blst(&inputs[i])`.
+pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
+    assert!(out.len() == inputs.len(), "one verdict slot per input");
+    let simd = simd_available();
+    let full = inputs.len() / LANES * LANES;
+    let mut start = 0;
+    while start < full {
+        if simd {
+            let mut chunk = [[0u8; COMPRESSED_LEN]; LANES];
+            chunk.copy_from_slice(&inputs[start..start + LANES]);
+            decompress_g1_chunk(&chunk, &mut out[start..start + LANES]);
+        } else {
+            for lane in 0..LANES {
+                out[start + lane] = uncompress_in_g1_blst(&inputs[start + lane]);
+            }
         }
-    } else {
-        for chunk in &mut chunks {
-            out.extend(chunk.iter().map(uncompress_in_g1_blst));
-        }
+        start += LANES;
     }
-    out.extend(chunks.remainder().iter().map(uncompress_in_g1_blst));
-    out
+    while start < inputs.len() {
+        out[start] = uncompress_in_g1_blst(&inputs[start]);
+        start += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
-fn decompress_chunk(chunk: &[[u8; COMPRESSED_LEN]], out: &mut Vec<Option<blst_p1_affine>>) {
-    let inputs: &[[u8; COMPRESSED_LEN]; LANES] = chunk.try_into().expect("eight encodings");
+fn decompress_g1_chunk(chunk: &[[u8; COMPRESSED_LEN]; LANES], out: &mut [Option<blst_p1_affine>]) {
     // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
-    let batch = unsafe { decompress::decompress(inputs) };
-    for (lane, (input, point)) in inputs.iter().zip(&batch.points).enumerate() {
+    let batch = unsafe { decompress::decompress(chunk) };
+    for lane in 0..LANES {
         let bit = 1u8 << lane;
-        out.push(if batch.undecided & bit != 0 {
-            uncompress_in_g1_blst(input)
+        out[lane] = if batch.undecided & bit != 0 {
+            uncompress_in_g1_blst(&chunk[lane])
         } else if batch.valid & bit != 0 {
-            Some(*point)
+            Some(batch.points[lane])
         } else {
             None
-        });
+        };
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn decompress_chunk(chunk: &[[u8; COMPRESSED_LEN]], out: &mut Vec<Option<blst_p1_affine>>) {
-    out.extend(chunk.iter().map(uncompress_in_g1_blst));
+fn decompress_g1_chunk(chunk: &[[u8; COMPRESSED_LEN]; LANES], out: &mut [Option<blst_p1_affine>]) {
+    for lane in 0..LANES {
+        out[lane] = uncompress_in_g1_blst(&chunk[lane]);
+    }
 }
 
 /// `Some` iff blst accepts the encoding as a point of G2.
