@@ -15,6 +15,27 @@ pub fn hash_tree_root_fork_data(version: [u8; 4], genesis_validators_root: &B256
     hash_concat(&version_chunk, genesis_validators_root)
 }
 
+#[timed]
+pub fn compute_domain(
+    domain_type: u32,
+    fork_version: [u8; 4],
+    genesis_validators_root: &B256,
+) -> B256 {
+    let fork_data_root = hash_tree_root_fork_data(fork_version, genesis_validators_root);
+    domain_from_fork_data(domain_type, &fork_data_root)
+}
+
+pub fn domain_from_fork_data(domain_type: u32, fork_data_root: &B256) -> B256 {
+    let mut domain = [0u8; 32];
+    domain[0..4].copy_from_slice(&domain_type.to_le_bytes());
+    domain[4..32].copy_from_slice(&fork_data_root[..28]);
+    domain
+}
+
+pub fn compute_signing_root(object_root: &B256, domain: &B256) -> B256 {
+    hash_concat(object_root, domain)
+}
+
 /// SSZ root of `VoluntaryExit { epoch, validator_index }`. Two uint64 fields
 /// merkleized in order.
 #[timed]

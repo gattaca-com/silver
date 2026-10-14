@@ -2,9 +2,9 @@ use std::fmt::{self, Display};
 
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH,
-    SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView,
-    SyncSubcommittee, gloas::PTC_SIZE,
+    B256, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD,
+    ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE,
+    Slot, StateId, StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -34,15 +34,13 @@ use super::{
 use crate::{
     bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
-    error::ExecutionPayloadBidError as BidError,
     fork_choice::{
         ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
         compute_shuffling_lookahead_start_slot,
     },
     merkle, ssz_hash,
     stf::{
-        self, BuilderLedger, decode_bid, is_gas_limit_target_compatible, validate_bid_builder,
-        verify_execution_payload_bid_signature,
+        self, decode_bid, is_gas_limit_target_compatible, verify_execution_payload_bid_signature,
     },
     validate,
 };
@@ -719,9 +717,13 @@ impl BeaconStateTile {
         let view = self.state.read_view(at_bid);
 
         let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
-        match validate_bid_builder(&BuilderLedger::of_reader(&view), finalized_epoch, &bid) {
-            Ok(()) => {}
-            Err(e @ BidError::InsufficientBalance { .. }) => {
+        match BuilderRegistry::of_reader(&view).check_bid(
+            finalized_epoch,
+            bid.builder_index,
+            bid.value,
+        ) {
+            Ok(_) => {}
+            Err(e @ BidBuilderError::InsufficientBalance { .. }) => {
                 silver_log::debug!(?e, "execution payload bid ignored");
                 return Feedback::Ignore;
             }

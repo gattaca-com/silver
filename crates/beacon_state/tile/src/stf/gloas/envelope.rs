@@ -2,7 +2,7 @@
 //! asynchronously, not inline.
 
 use flux_profiler::timed;
-use silver_beacon_state_data::{SpecConfig, StateReadView};
+use silver_beacon_state_data::{BUILDER_INDEX_SELF_BUILD, SpecConfig, StateReadView};
 use silver_common::{
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
@@ -12,7 +12,6 @@ use silver_common::{
     },
 };
 
-use super::builders::BUILDER_INDEX_SELF_BUILD;
 use crate::{
     bls::{self, DOMAIN_BEACON_BUILDER},
     error::EnvelopeError as E,

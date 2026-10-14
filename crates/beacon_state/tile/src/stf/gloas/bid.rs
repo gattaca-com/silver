@@ -1,16 +1,14 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, BuilderPendingPayment, BuilderPendingWithdrawal, BuildersView, Epoch, EpochView,
-    ExecutionPayloadBid, Immutable, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
+    B256, BUILDER_INDEX_SELF_BUILD, BidBuilderError, BuilderPendingPayment,
+    BuilderPendingWithdrawal, BuilderRegistry, BuildersView, Epoch, EpochView, ExecutionPayloadBid,
+    Immutable, SLOTS_PER_EPOCH, SpecConfig, StateWriterView, bid_signing_root,
 };
 use silver_common::ssz_view::{ExecutionPayloadBidView, SignedExecutionPayloadBidView};
 
-use super::builders::{
-    BUILDER_INDEX_SELF_BUILD, BuilderLedger, PAYLOAD_BUILDER_VERSION, is_active_builder,
-};
 use crate::{
-    bls::{self, DOMAIN_BEACON_BUILDER, G2_POINT_AT_INFINITY, SigBatch},
+    bls::{self, G2_POINT_AT_INFINITY, SigBatch},
     error::ExecutionPayloadBidError as E,
     ssz_hash_gloas::hash_execution_payload_bid,
     stf::get_beacon_proposer_index,
@@ -65,7 +63,11 @@ fn validate_execution_payload_bid(
         }
     } else {
         let finalized_epoch = epoch.state().finalized_checkpoint.epoch;
-        validate_bid_builder(&BuilderLedger::of_writer(view), finalized_epoch, bid)?;
+        BuilderRegistry::of_writer(view).check_bid(
+            finalized_epoch,
+            bid.builder_index,
+            bid.value,
+        )?;
     }
 
     let max_blobs = cfg.blob_params_at(current_epoch).max_blobs_per_block as usize;
@@ -99,28 +101,6 @@ fn validate_execution_payload_bid(
     Ok(())
 }
 
-/// Index, version, activity and collateral of an external builder's bid.
-pub fn validate_bid_builder(
-    ledger: &BuilderLedger,
-    finalized_epoch: Epoch,
-    bid: &ExecutionPayloadBid,
-) -> Result<(), E> {
-    let builders = ledger.builders();
-    let builder = builders
-        .get(bid.builder_index as usize)
-        .ok_or(E::BuilderOutOfRange { index: bid.builder_index, count: builders.len() })?;
-    if !is_active_builder(builder, finalized_epoch) {
-        return Err(E::BuilderInactive { index: bid.builder_index });
-    }
-    if builder.version != PAYLOAD_BUILDER_VERSION {
-        return Err(E::BuilderVersion { index: bid.builder_index, version: builder.version });
-    }
-    if !ledger.can_cover_bid(bid.builder_index, bid.value) {
-        return Err(E::InsufficientBalance { index: bid.builder_index, value: bid.value });
-    }
-    Ok(())
-}
-
 /// Builder key and signing root of an external builder's bid
 /// (`DOMAIN_BEACON_BUILDER` at `fork_epoch`); `None` for a self-build, whose
 /// infinity signature [`validate_execution_payload_bid`] checks.
@@ -137,15 +117,12 @@ fn bid_signing_input(
     let pubkey_bytes = builders
         .get(bid.builder_index as usize)
         .map(|b| b.pubkey)
-        .ok_or(E::BuilderOutOfRange { index: bid.builder_index, count: builders.len() })?;
+        .ok_or(BidBuilderError::OutOfRange { index: bid.builder_index, count: builders.len() })?;
     let Ok(pubkey) = PublicKey::from_bytes(&pubkey_bytes) else {
         return Err(E::BadBuilderPubkey { index: bid.builder_index });
     };
 
-    let fork_version = epoch.fork_version_at(fork_epoch);
-    let domain =
-        bls::compute_domain(DOMAIN_BEACON_BUILDER, fork_version, &imm.genesis_validators_root);
-    let signing_root = bls::compute_signing_root(&hash_execution_payload_bid(bid), &domain);
+    let signing_root = bid_signing_root(imm, epoch, &hash_execution_payload_bid(bid), fork_epoch);
     Ok(Some((pubkey, signing_root)))
 }
 

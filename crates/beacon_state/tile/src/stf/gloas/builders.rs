@@ -1,6 +1,6 @@
 use silver_beacon_state_data::{
-    Builder, BuilderPendingPayment, BuildersView, Epoch, FAR_FUTURE_EPOCH, PendingView,
-    SLOTS_PER_EPOCH, SlotState, StateReadView, StateWriterView, Withdrawals,
+    Builder, BuilderPendingPayment, BuilderRegistry, Epoch, FAR_FUTURE_EPOCH,
+    PAYLOAD_BUILDER_VERSION, SLOTS_PER_EPOCH, StateWriterView, Withdrawals,
 };
 use silver_common::ssz_view::{
     BUILDER_DEPOSIT_REQUEST_SIZE, BUILDER_EXIT_REQUEST_SIZE, BuilderDepositRequestView,
@@ -11,12 +11,6 @@ use crate::stf::is_valid_builder_deposit_signature;
 
 /// Delay from exit initiation to a builder's balance becoming withdrawable.
 const MIN_BUILDER_WITHDRAWABILITY_DELAY: u64 = 1 << 6;
-/// `UINT64_MAX` — the proposer self-built the payload (no builder, no payment).
-pub(crate) const BUILDER_INDEX_SELF_BUILD: u64 = u64::MAX;
-/// `uint8(0)` — the only builder version permitted to submit bids.
-pub(crate) const PAYLOAD_BUILDER_VERSION: u8 = 0;
-/// 1 ETH — collateral floor a builder must keep above its pending obligations.
-const MIN_DEPOSIT_AMOUNT: u64 = 1_000_000_000;
 /// `2**40` — tags a `ValidatorIndex` as referring to the builder registry.
 const BUILDER_INDEX_FLAG: u64 = 1 << 40;
 
@@ -43,61 +37,6 @@ const SPE: usize = SLOTS_PER_EPOCH as usize;
 
 pub(crate) const BUILDER_DEPOSIT_SSZ: usize = BUILDER_DEPOSIT_REQUEST_SIZE;
 pub(crate) const BUILDER_EXIT_SSZ: usize = BUILDER_EXIT_REQUEST_SIZE;
-
-#[inline]
-pub(crate) fn is_active_builder(builder: &Builder, finalized_epoch: u64) -> bool {
-    builder.deposit_epoch < finalized_epoch && builder.withdrawable_epoch == FAR_FUTURE_EPOCH
-}
-
-/// The state a builder's obligations are read from; block import projects it
-/// from its writer, gossip from the parent post-state.
-#[derive(Clone, Copy)]
-pub struct BuilderLedger<'a> {
-    builders: BuildersView<'a>,
-    pending: PendingView<'a>,
-    slot: &'a SlotState,
-}
-
-impl<'a> BuilderLedger<'a> {
-    pub fn of_writer(view: &'a StateWriterView) -> Self {
-        Self {
-            builders: view.builders.reader(),
-            pending: view.pending.reader(),
-            slot: view.slot.state(),
-        }
-    }
-
-    pub fn of_reader(view: &StateReadView<'a>) -> Self {
-        Self { builders: view.builders, pending: view.pending, slot: view.slot.state() }
-    }
-
-    pub fn builders(&self) -> &BuildersView<'a> {
-        &self.builders
-    }
-
-    pub(crate) fn pending_balance_to_withdraw(&self, builder_index: u64) -> u64 {
-        let mut total = 0u64;
-        let withdrawals = self.pending.builder_withdrawals;
-        for i in 0..withdrawals.len() {
-            let w = withdrawals.get(i);
-            if w.builder_index == builder_index {
-                total += w.amount;
-            }
-        }
-        for payment in self.slot.builder_pending_payments.iter() {
-            if payment.withdrawal.builder_index == builder_index {
-                total += payment.withdrawal.amount;
-            }
-        }
-        total
-    }
-
-    pub(crate) fn can_cover_bid(&self, builder_index: u64, bid_amount: u64) -> bool {
-        let balance = self.builders.get(builder_index as usize).map_or(0, |b| b.balance);
-        let min_balance = MIN_DEPOSIT_AMOUNT + self.pending_balance_to_withdraw(builder_index);
-        balance >= min_balance && balance - min_balance >= bid_amount
-    }
-}
 
 pub fn get_builder_payment_quorum_threshold(view: &StateWriterView, current_epoch: Epoch) -> u64 {
     let per_slot = view.slot.total_active_balance(current_epoch) / SLOTS_PER_EPOCH;
@@ -213,13 +152,13 @@ pub fn process_builder_exit_request(
         return;
     };
     let builder = *view.builders.reader().get(builder_index).unwrap();
-    if !is_active_builder(&builder, finalized_epoch) {
+    if !builder.is_active(finalized_epoch) {
         return;
     }
     if builder.execution_address != source_address {
         return;
     }
-    if BuilderLedger::of_writer(view).pending_balance_to_withdraw(builder_index as u64) != 0 {
+    if BuilderRegistry::of_writer(view).pending_balance_to_withdraw(builder_index as u64) != 0 {
         return;
     }
     initiate_builder_exit(view, builder_index);
