@@ -1,3 +1,7 @@
+use std::marker::PhantomData;
+
+use bytesize::ByteSize;
+
 use super::snapshot::PageSnapshot;
 use crate::types::B256;
 
@@ -6,9 +10,11 @@ pub type PageId = u32;
 /// A column's page, carried as a type rather than a `const PAGE_NODES` because
 /// an associated const may not be an array length in a generic context
 /// (`error: generic parameters may not be used in const operations`).
-pub trait PageArray: AsRef<[B256]> + AsMut<[B256]> + 'static {
+pub trait PageArray: 'static {
     const LEN: usize;
-    fn zeroed() -> Box<Self>;
+    /// What a racing reader sees for an id the pool can't resolve yet; the
+    /// seqlock retry discards the read.
+    const UNRESOLVED: &'static [B256];
 }
 
 impl<const N: usize> PageArray for [B256; N] {
@@ -19,36 +25,45 @@ impl<const N: usize> PageArray for [B256; N] {
         assert!(N.is_power_of_two(), "PageArray: page size must be a power of two");
         N
     };
+    const UNRESOLVED: &'static [B256] = &[[0u8; 32]; N];
+}
 
-    fn zeroed() -> Box<Self> {
-        Box::new([[0u8; 32]; N])
-    }
+const SEGMENT_BYTES: usize = ByteSize::mib(1).as_u64() as usize;
+const MAX_POOL_BYTES: usize = ByteSize::gib(4).as_u64() as usize;
+
+/// Reserved up front, so the segment list a reader indexes never moves.
+const MAX_SEGMENTS: usize = MAX_POOL_BYTES / SEGMENT_BYTES;
+
+/// `SEGMENT_BYTES` of pages. Allocated zeroed at full size, so its buffer
+/// never moves under a reader.
+struct Segment {
+    nodes: Box<[B256]>,
+    used: usize,
 }
 
 pub(super) struct PagePool<P: PageArray> {
-    /// Boxed per page: a flat `Vec<Page>` would memcpy the whole arena on
-    /// every grow. (`clippy::vec_box` misses this once a page is small.)
-    #[allow(clippy::vec_box)]
-    pages: Vec<Box<P>>,
+    segments: Vec<Segment>,
     refs: Vec<u32>,
     free: Vec<PageId>,
+    _page: PhantomData<fn() -> P>,
 }
 
 impl<P: PageArray> PagePool<P> {
-    pub(super) fn new(hint: usize) -> Self {
-        Self { pages: Vec::with_capacity(hint), refs: Vec::with_capacity(hint), free: Vec::new() }
-    }
+    const SEGMENT_PAGES: usize = {
+        let page_bytes = P::LEN * size_of::<B256>();
+        assert!(page_bytes <= SEGMENT_BYTES, "PagePool: a page must fit in one segment");
+        let pages = SEGMENT_BYTES / page_bytes;
+        assert!(pages.is_power_of_two(), "PagePool: segment pages must be a power of two");
+        pages
+    };
 
-    #[inline]
-    pub(super) fn alloc(&mut self) -> PageId {
-        if let Some(id) = self.free.pop() {
-            self.refs[id as usize] = 1;
-            return id;
+    pub(super) fn new() -> Self {
+        Self {
+            segments: Vec::with_capacity(MAX_SEGMENTS),
+            refs: Vec::new(),
+            free: Vec::new(),
+            _page: PhantomData,
         }
-        let id = self.pages.len();
-        self.pages.push(P::zeroed());
-        self.refs.push(1);
-        id as PageId
     }
 
     #[inline]
@@ -106,8 +121,18 @@ impl<P: PageArray> PagePool<P> {
     }
 
     #[inline]
+    fn split(id: PageId) -> (usize, usize) {
+        let id = id as usize;
+        (id / Self::SEGMENT_PAGES, id % Self::SEGMENT_PAGES)
+    }
+
+    #[inline]
     pub(super) fn page(&self, id: PageId) -> &[B256] {
-        (*self.pages[id as usize]).as_ref()
+        let (segment, i) = Self::split(id);
+        self.segments
+            .get(segment)
+            .and_then(|s| s.nodes.get(i * P::LEN..(i + 1) * P::LEN))
+            .unwrap_or(P::UNRESOLVED)
     }
 
     /// Claim a fresh private page seeded from a flat node slice (the writable
@@ -116,11 +141,33 @@ impl<P: PageArray> PagePool<P> {
     #[inline]
     pub(super) fn alloc_from_slice(&mut self, src: &[B256]) -> PageId {
         debug_assert!(src.len() <= P::LEN);
-        let id = self.alloc();
-        let p: &mut [B256] = (*self.pages[id as usize]).as_mut();
-        p[..src.len()].copy_from_slice(src);
-        p[src.len()..].fill([0u8; 32]);
+        let id = match self.free.pop() {
+            Some(id) => {
+                self.refs[id as usize] = 1;
+                id
+            }
+            None => self.fresh_id(),
+        };
+        let (segment, i) = Self::split(id);
+        let page = &mut self.segments[segment].nodes[i * P::LEN..(i + 1) * P::LEN];
+        page[..src.len()].copy_from_slice(src);
+        page[src.len()..].fill([0u8; 32]);
         id
+    }
+
+    fn fresh_id(&mut self) -> PageId {
+        if self.segments.last().is_none_or(|s| s.used == Self::SEGMENT_PAGES) {
+            assert!(self.segments.len() < MAX_SEGMENTS, "PagePool: exceeds MAX_POOL_BYTES");
+            self.segments.push(Segment {
+                nodes: vec![[0u8; 32]; Self::SEGMENT_PAGES * P::LEN].into_boxed_slice(),
+                used: 0,
+            });
+        }
+        self.refs.push(1);
+        let segment = self.segments.len() - 1;
+        let used = &mut self.segments[segment].used;
+        *used += 1;
+        (segment * Self::SEGMENT_PAGES + *used - 1) as PageId
     }
 }
 
@@ -136,7 +183,7 @@ mod tests {
     /// new owner. The second release must not free it again.
     #[test]
     fn double_release_does_not_free_reallocated_page() {
-        let mut pool = PagePool::<[B256; 32]>::new(2);
+        let mut pool = PagePool::<[B256; 32]>::new();
 
         // Fork a owns one page, then loses and is released.
         let mut a = snapshot(vec![pool.alloc_from_slice(&[[1u8; 32]])]);
@@ -152,6 +199,6 @@ mod tests {
         pool.release(&mut a);
 
         // p belongs to b: a new alloc must not hand it out again.
-        assert_ne!(pool.alloc(), p, "second release freed a live page");
+        assert_ne!(pool.alloc_from_slice(&[]), p, "second release freed a live page");
     }
 }

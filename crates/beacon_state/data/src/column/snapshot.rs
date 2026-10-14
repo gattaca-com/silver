@@ -60,6 +60,7 @@ impl PageSnapshot {
         n: usize,
     ) -> &'a B256 {
         let p = C::PAGE_NODES;
-        &pool.page(self.pages[n / p])[n % p]
+        let id = self.pages.get(n / p).copied().unwrap_or(0);
+        &pool.page(id)[n % p]
     }
 }

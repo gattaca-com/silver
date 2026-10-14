@@ -70,8 +70,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         format: HashFormat,
     ) -> Self {
         let flat = ColumnTree::from_leaves(cap, count, leaves, format);
-        // Grow-hint for the base's pages; the pool grows lazily beyond it.
-        let mut pool = PagePool::new(flat.num_pages() * 2);
+        let mut pool = PagePool::new();
         let finalized = flat.to_snapshot(&mut pool);
         let mut scratch_snapshot = PageSnapshot::new_released();
         pool.share_into(&mut scratch_snapshot, &finalized);

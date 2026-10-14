@@ -12,6 +12,7 @@ silver_ssz.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 blst.workspace = true
+bytesize.workspace = true
 parking_lot.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true

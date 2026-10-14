@@ -84,11 +84,6 @@ impl<C: ColumnSpec> ColumnTree<C> {
     }
 
     #[inline]
-    pub(super) fn num_pages(&self) -> usize {
-        self.store().num_pages()
-    }
-
-    #[inline]
     pub(super) fn node(&self, n: usize) -> &B256 {
         self.store().node(n)
     }

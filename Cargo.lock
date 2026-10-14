@@ -4942,6 +4942,7 @@ name = "silver_beacon_state_data"
 version = "0.1.0-alpha.2"
 dependencies = [
  "blst",
+ "bytesize",
  "criterion",
  "flux",
  "flux-profiler",

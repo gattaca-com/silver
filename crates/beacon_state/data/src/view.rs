@@ -173,17 +173,13 @@ impl BeaconStateReader {
         self.inner.read_copy().ok().map(|(control, _)| control.finalize_version)
     }
 
-    /// Performs optimistic reads from the beacon state, this will loop if the
-    /// finalized state is updated during a read — concurrent publishes leave
-    /// the read standing (the bundle's data is append-only until the next
-    /// finalize). Returns `None` until the writer publishes its first real
-    /// snapshot.
+    /// Re-runs `reader` while a finalize overlaps it; a publish doesn't, as
+    /// fork data is append-only until the next finalize. Returns `None` until
+    /// the first publish.
     ///
-    /// Lock-free path: only the fixed-size bases (epoch/slot scalars, the
-    /// inline eth1 vote list, validators columns, balances/participation/
-    /// inactivity boxes) are safe to read optimistically. The pending /
-    /// longtail bases are realloc-prone `Vec`s — reading their CONTENT here
-    /// can race a finalize realloc; those reads need the lock-guarded path.
+    /// Columns and fixed-size bases are safe to read here. The pending and
+    /// longtail bases are `Vec`s a finalize can reallocate: read their
+    /// contents through the lock-guarded path.
     #[timed]
     pub fn read<F, R>(&self, mut reader: F) -> Option<R>
     where
