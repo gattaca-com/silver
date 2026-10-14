@@ -1,6 +1,6 @@
 import LeanBlsSimd.Refines.DecompressG1
 import LeanBlsSimd.Refines.G1WrapperModel
-import LeanBlsSimd.Proofs.Kernel
+import LeanBlsSimd.Proofs.Mmask8
 import LeanBlsSimd.Refines.G1WrapperScalar
 import LeanBlsSimd.Refines.G1WrapperSimd
 
@@ -8,7 +8,6 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_bls_simd
 
 namespace LeanBlsSimd
-
 
 namespace UncompressG1
 

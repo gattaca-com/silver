@@ -15,7 +15,7 @@ structure Holds (self : G1x8) (l : Fin 8) (P : G1) : Prop where
   z : self.z.Holds l P.z
 
 theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
-    (h : self.Holds l P) (hP : G1.Valid P)
+    (h : self.Holds l P) (_hP : G1.Valid P)
     (hu : self.double.2.toNat.testBit l = false) :
     self.double.1.Holds l (G1.double P) := by
   have ha := (Holds.x h).square
@@ -51,7 +51,7 @@ theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
 
 theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y : Fp)
     (h : self.Holds l P) (hx : qx.Holds l x) (hy : qy.Holds l y)
-    (hP : G1.Valid P) (hQ : G1.Valid ⟨x, y, Fp.one⟩)
+    (_hP : G1.Valid P) (_hQ : G1.Valid ⟨x, y, Fp.one⟩)
     (hu : (self.add_affine qx qy).2.toNat.testBit l = false) :
     (self.add_affine qx qy).1.Holds l (G1.add P ⟨x, y, Fp.one⟩) := by
   have hz1z1 := (Holds.z h).square
@@ -97,7 +97,7 @@ theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y
     ring
 
 theorem add_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
-    (h : self.Holds l P) (hq : q.Holds l Q) (hP : G1.Valid P) (hQ : G1.Valid Q)
+    (h : self.Holds l P) (hq : q.Holds l Q) (_hP : G1.Valid P) (_hQ : G1.Valid Q)
     (hu : (self.add q).2.toNat.testBit l = false) :
     (self.add q).1.Holds l (G1.add P Q) := by
   have hz1z1 := (Holds.z h).square

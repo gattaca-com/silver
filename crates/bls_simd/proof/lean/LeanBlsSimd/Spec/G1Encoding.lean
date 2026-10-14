@@ -96,6 +96,7 @@ theorem uncompress_infinity_only (b : ByteArray)
     · contradiction
     have hz := congrArg (fun p : G1 => p.z.val) (Except.ok.inj h)
     norm_num [G1.zero, Fp.one, Fp.zero, Fp.ofNat] at hz
+
 theorem uncompress_eq_zero_of_infinity {b : ByteArray} {P : G1}
     (hd : G1.uncompress b = .ok P) (hi : P.isInfinity = true) : P = G1.zero := by
   unfold G1.uncompress at hd

@@ -41,7 +41,6 @@ theorem nonsingular_iff (x y : ZMod Fp.modulus) : E.Nonsingular x y ↔ y ^ 2 = 
 @[simp] theorem negY_eq (x y : ZMod Fp.modulus) : E.negY x y = -y := by
   simp
 
-
 private theorem beta_ne_zero : (beta : ZMod Fp.modulus) ≠ 0 := by decide +kernel
 
 private theorem beta_polynomial : (beta : ZMod Fp.modulus) ^ 2 + beta + 1 = 0 := by
@@ -136,7 +135,6 @@ theorem sigma_polynomial (P : E.Point) : P + sigma P + sigma (sigma P) = 0 := by
       · trivial
     rw [hs, neg_add_cancel]
 
-
 theorem scott_sound (P : E.Point) (h : sigma (sigma P) = (-(z ^ 2)) • P) :
     Fr.modulus • P = 0 := by
   have hs3 : sigma (sigma (sigma P)) = P := by
@@ -195,6 +193,8 @@ theorem toPoint_generator :
   rw [G1.toPoint, Jacobian.Point.toAffine_of_Z_ne_zero G1.valid_generator (by decide +kernel)]
   congr 1
 
+-- Kernel evaluation of the 128-bit generator multiplication needs deeper recursion
+-- and more heartbeats than symbolic curve proofs.
 set_option maxRecDepth 10000 in
 set_option maxHeartbeats 2000000 in
 theorem sigma2_generator :

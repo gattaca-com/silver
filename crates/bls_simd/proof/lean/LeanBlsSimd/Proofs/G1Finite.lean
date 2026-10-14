@@ -1,8 +1,6 @@
 import LeanBlsSimd.Proofs.DecodeG1
 import LeanBlsSimd.Spec.G1Encoding
 
-set_option maxRecDepth 4000
-
 namespace LeanBlsSimd.DecompressG1
 
 open EthCryptographySpecs.Bls
