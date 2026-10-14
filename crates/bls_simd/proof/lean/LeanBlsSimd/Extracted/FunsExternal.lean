@@ -4,6 +4,22 @@ import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_bls_simd
 
+/-- Total external observations, supplied by the caller of the generated G1 API. -/
+class silver_bls_simd.G1Externals where
+  simdAvailable : Bool
+  uncompress : Array Std.U8 48#usize → Option blst.blst_p1_affine
+
+def silver_bls_simd.simd_available [G1Externals] : Result Bool :=
+  ok G1Externals.simdAvailable
+
+def silver_bls_simd.uncompress_in_g1_blst [G1Externals]
+    (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
+  ok (G1Externals.uncompress bytes)
+
+def blst.blst_p1_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p1_affine :=
+  let fp : blst.blst_fp := { l := Array.repeat 6#usize 0#u64 }
+  ok { x := fp, y := fp }
+
 /-!
 Handwritten definitions for functions that Aeneas leaves external. The starting template is
 `FunsExternal_Template.lean`, generated beside `Funs.lean`; `extract.sh` preserves this file.

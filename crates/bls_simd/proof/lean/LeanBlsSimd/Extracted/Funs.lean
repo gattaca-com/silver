@@ -16,6 +16,17 @@ noncomputable section
 
 namespace silver_bls_simd
 
+variable [G1Externals]
+
+/-- Trait implementation: [core::array::{core::marker::Copy for [T; N]}]
+    Source: '/rustc/library/core/src/array/mod.rs', lines 441:0-441:45
+    Name pattern: [core::marker::Copy<[@T; @N]>] -/
+@[reducible, rust_trait_impl "core::marker::Copy<[@T; @N]>"]
+def Array.Insts.CoreMarkerCopy {T : Type} (N : Std.Usize) (markerCopyInst :
+  core.marker.Copy T) : core.marker.Copy (Array T N) := {
+  cloneInst := core.clone.CloneArray N markerCopyInst.cloneInst
+}
+
 /-- [silver_bls_simd::constants::LIMBS]
     Source: 'crates/bls_simd/src/constants.rs', lines 4:0-4:27
     Visibility: public -/
@@ -112,8 +123,19 @@ def constants.FOUR_MONT : Array Std.U64 8#usize :=
     665273511532982#u64, 21000#u64
     ]
 
+/-- [silver_bls_simd::constants::BETA_MONT]
+    Source: 'crates/bls_simd/src/constants.rs', lines 77:0-86:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def constants.BETA_MONT : Array Std.U64 8#usize :=
+  Array.make 8#usize [
+    2887619656701512#u64, 3506825232770873#u64, 3194117024243938#u64,
+    3831735519717732#u64, 116464425319080#u64, 948437682199678#u64,
+    2304207272264489#u64, 95745#u64
+    ]
+
 /-- [silver_bls_simd::constants::HALF_P_MINUS_1]
-    Source: 'crates/bls_simd/src/constants.rs', lines 76:0-85:2
+    Source: 'crates/bls_simd/src/constants.rs', lines 88:0-97:2
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.HALF_P_MINUS_1 : Array Std.U64 8#usize :=
@@ -124,7 +146,7 @@ def constants.HALF_P_MINUS_1 : Array Std.U64 8#usize :=
     ]
 
 /-- [silver_bls_simd::constants::P_MINUS_3_OVER_4_WINDOWS]
-    Source: 'crates/bls_simd/src/constants.rs', lines 87:0-92:2
+    Source: 'crates/bls_simd/src/constants.rs', lines 99:0-104:2
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.P_MINUS_3_OVER_4_WINDOWS : Array Std.U8 95#usize :=
@@ -141,14 +163,14 @@ def constants.P_MINUS_3_OVER_4_WINDOWS : Array Std.U8 95#usize :=
     ]
 
 /-- [silver_bls_simd::constants::Z_BITS]
-    Source: 'crates/bls_simd/src/constants.rs', lines 95:0-95:54
+    Source: 'crates/bls_simd/src/constants.rs', lines 107:0-107:54
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.Z_BITS : Array Std.U32 6#usize :=
   Array.make 6#usize [ 63#u32, 62#u32, 60#u32, 57#u32, 48#u32, 16#u32 ]
 
 /-- [silver_bls_simd::constants::PSI_X_MONT]
-    Source: 'crates/bls_simd/src/constants.rs', lines 98:0-107:2
+    Source: 'crates/bls_simd/src/constants.rs', lines 110:0-119:2
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.PSI_X_MONT : Array Std.U64 8#usize :=
@@ -159,7 +181,7 @@ def constants.PSI_X_MONT : Array Std.U64 8#usize :=
     ]
 
 /-- [silver_bls_simd::constants::PSI_Y_MONT]
-    Source: 'crates/bls_simd/src/constants.rs', lines 110:0-131:2
+    Source: 'crates/bls_simd/src/constants.rs', lines 122:0-143:2
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.PSI_Y_MONT : Array (Array Std.U64 8#usize) 2#usize :=
@@ -177,7 +199,7 @@ def constants.PSI_Y_MONT : Array (Array Std.U64 8#usize) 2#usize :=
     ]
 
 /-- [silver_bls_simd::constants::HALF_MONT]
-    Source: 'crates/bls_simd/src/constants.rs', lines 133:0-142:2
+    Source: 'crates/bls_simd/src/constants.rs', lines 145:0-154:2
     Visibility: public -/
 @[global_simps, irreducible]
 def constants.HALF_MONT : Array Std.U64 8#usize :=
@@ -186,30 +208,6 @@ def constants.HALF_MONT : Array Std.U64 8#usize :=
     685487433875224#u64, 252671193436341#u64, 2490064903405183#u64,
     4495440562385464#u64, 95823#u64
     ]
-
-/-- [silver_bls_simd::G2_COMPRESSED_LEN]
-    Source: 'crates/bls_simd/src/lib.rs', lines 41:0-41:40
-    Visibility: public -/
-@[global_simps, irreducible] def G2_COMPRESSED_LEN : Std.Usize := 96#usize
-
-/-- [silver_bls_simd::decompress_g2::FP_BYTES]
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 17:0-17:46 -/
-@[global_simps, irreducible]
-def decompress_g2.FP_BYTES : Result Std.Usize := G2_COMPRESSED_LEN / 2#usize
-
-/-- [silver_bls_simd::decompress_g2::FLAG_COMPRESSED]
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 18:0-18:33 -/
-@[global_simps, irreducible]
-def decompress_g2.FLAG_COMPRESSED : Std.U8 := 128#u8
-
-/-- [silver_bls_simd::decompress_g2::FLAG_INFINITY]
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 19:0-19:31 -/
-@[global_simps, irreducible] def decompress_g2.FLAG_INFINITY : Std.U8 := 64#u8
-
-/-- [silver_bls_simd::decompress_g2::FLAG_LARGER_ROOT]
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 20:0-20:34 -/
-@[global_simps, irreducible]
-def decompress_g2.FLAG_LARGER_ROOT : Std.U8 := 32#u8
 
 /-- [silver_bls_simd::fp8::unpack52]: loop body 0:
     Source: 'crates/bls_simd/src/fp8.rs', lines 126:4-134:5
@@ -312,6 +310,16 @@ def decompress_g2.less_than_p_loop
 def decompress_g2.less_than_p (x : Array Std.U64 6#usize) : Result Bool := do
   decompress_g2.less_than_p_loop x 6#usize
 
+/-- [silver_bls_simd::G2_COMPRESSED_LEN]
+    Source: 'crates/bls_simd/src/lib.rs', lines 50:0-50:40
+    Visibility: public -/
+@[global_simps, irreducible] def G2_COMPRESSED_LEN : Std.Usize := 96#usize
+
+/-- [silver_bls_simd::decompress_g2::FP_BYTES]
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 17:0-17:46 -/
+@[global_simps, irreducible]
+def decompress_g2.FP_BYTES : Result Std.Usize := G2_COMPRESSED_LEN / 2#usize
+
 /-- [silver_bls_simd::decompress_g2::fp_words]: loop body 0:
     Source: 'crates/bls_simd/src/decompress_g2.rs', lines 95:4-99:5 -/
 @[rust_loop_body]
@@ -362,24 +370,36 @@ def decompress_g2.fp_words
   let words := Array.repeat 6#usize 0#u64
   decompress_g2.fp_words_loop { start := 0#usize, «end» := 6#usize } be words
 
-/-- [silver_bls_simd::decompress_g2::decode]: loop body 0:
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 54:4-79:5 -/
+/-- [silver_bls_simd::decompress_g2::FLAG_LARGER_ROOT]
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 20:0-20:45 -/
+@[global_simps, irreducible]
+def decompress_g2.FLAG_LARGER_ROOT : Std.U8 := 32#u8
+
+/-- [silver_bls_simd::decompress_g2::FLAG_INFINITY]
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 19:0-19:42 -/
+@[global_simps, irreducible] def decompress_g2.FLAG_INFINITY : Std.U8 := 64#u8
+
+/-- [silver_bls_simd::decompress_g2::FLAG_COMPRESSED]
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 18:0-18:44 -/
+@[global_simps, irreducible]
+def decompress_g2.FLAG_COMPRESSED : Std.U8 := 128#u8
+
+/-- [silver_bls_simd::decompress::decode]: loop body 0:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 38:4-60:5 -/
 @[rust_loop_body]
-def decompress_g2.decode_loop.body
-  (inputs : Array (Array Std.U8 96#usize) 8#usize)
+def decompress.decode_loop.body
+  (inputs : Array (Array Std.U8 48#usize) 8#usize)
   (iter : core.ops.range.Range Std.Usize)
-  (a : Array (Array Std.U64 8#usize) 8#usize)
-  (a1 : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
+  (a : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
   (i2 : Std.U8) :
   Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array
-    Std.U64 8#usize) 8#usize) × (Array (Array Std.U64 8#usize) 8#usize) ×
-    Std.U8 × Std.U8 × Std.U8) ((Array (Array Std.U64 8#usize) 8#usize) ×
-    (Array (Array Std.U64 8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8))
+    Std.U64 8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8) ((Array (Array
+    Std.U64 8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8))
   := do
   let (o, iter1) ←
     core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
   match o with
-  | none => ok (done (a, a1, i, i1, i2))
+  | none => ok (done (a, i, i1, i2))
   | some lane =>
     let bytes ← Array.index_usize inputs lane
     let bit ← 1#u8 <<< lane
@@ -388,87 +408,89 @@ def decompress_g2.decode_loop.body
     let i4 ← lift (flags &&& decompress_g2.FLAG_COMPRESSED)
     if i4 = 0#u8
     then let i5 ← lift (i1 ||| bit)
-         ok (cont (iter1, a, a1, i, i5, i2))
+         ok (cont (iter1, a, i, i5, i2))
     else
       let i5 ← lift (flags &&& decompress_g2.FLAG_INFINITY)
       if i5 != 0#u8
       then let i6 ← lift (i2 ||| bit)
-           ok (cont (iter1, a, a1, i, i1, i6))
+           ok (cont (iter1, a, i, i1, i6))
       else
         let i6 ← lift (flags &&& decompress_g2.FLAG_LARGER_ROOT)
         let i7 ← if i6 != 0#u8
                    then ok (i ||| bit)
                    else ok i
         let s ← lift (Array.to_slice bytes)
-        let i8 ← decompress_g2.FP_BYTES
-        let (x1_bytes, x0_bytes) ← core.slice.Slice.split_at s i8
-        let x1 ← decompress_g2.fp_words x1_bytes
-        let i9 ← Array.index_usize x1 5#usize
-        let i10 ← lift (i9 &&& 2305843009213693951#u64)
-        let x11 ← Array.update x1 5#usize i10
-        let x0 ← decompress_g2.fp_words x0_bytes
-        let b ← decompress_g2.less_than_p x11
+        let words ← decompress_g2.fp_words s
+        let i8 ← Array.index_usize words 5#usize
+        let i9 ← lift (i8 &&& 2305843009213693951#u64)
+        let words1 ← Array.update words 5#usize i9
+        let b ← decompress_g2.less_than_p words1
         if b
         then
-          let b1 ← decompress_g2.less_than_p x0
-          if b1
-          then
-            let a2 ← fp8.unpack52 x0
-            let a3 ← Array.update a lane a2
-            let a4 ← fp8.unpack52 x11
-            let a5 ← Array.update a1 lane a4
-            ok (cont (iter1, a3, a5, i7, i1, i2))
-          else
-            let i11 ← lift (i1 ||| bit)
-            ok (cont (iter1, a, a1, i7, i11, i2))
-        else
-          let i11 ← lift (i1 ||| bit)
-          ok (cont (iter1, a, a1, i7, i11, i2))
+          let a1 ← fp8.unpack52 words1
+          let a2 ← Array.update a lane a1
+          ok (cont (iter1, a2, i7, i1, i2))
+        else let i10 ← lift (i1 ||| bit)
+             ok (cont (iter1, a, i7, i10, i2))
 
-/-- [silver_bls_simd::decompress_g2::decode]: loop 0:
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 54:4-79:5 -/
+/-- [silver_bls_simd::decompress::decode]: loop 0:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 38:4-60:5 -/
 @[rust_loop]
-def decompress_g2.decode_loop
+def decompress.decode_loop
   (iter : core.ops.range.Range Std.Usize)
-  (inputs : Array (Array Std.U8 96#usize) 8#usize)
-  (a : Array (Array Std.U64 8#usize) 8#usize)
-  (a1 : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
+  (inputs : Array (Array Std.U8 48#usize) 8#usize)
+  (a : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
   (i2 : Std.U8) :
-  Result ((Array (Array Std.U64 8#usize) 8#usize) × (Array (Array Std.U64
-    8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8)
+  Result ((Array (Array Std.U64 8#usize) 8#usize) × Std.U8 × Std.U8 ×
+    Std.U8)
   := do
   loop
-    (fun (iter1, a2, a3, i3, i4, i5) => decompress_g2.decode_loop.body inputs
-      iter1 a2 a3 i3 i4 i5)
-    (iter, a, a1, i, i1, i2)
+    (fun (iter1, a1, i3, i4, i5) => decompress.decode_loop.body inputs iter1 a1
+      i3 i4 i5)
+    (iter, a, i, i1, i2)
 
-/-- [silver_bls_simd::decompress_g2::decode]:
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 46:0-81:1 -/
-def decompress_g2.decode
-  (inputs : Array (Array Std.U8 96#usize) 8#usize) :
-  Result decompress_g2.Decoded
+/-- [silver_bls_simd::decompress::decode]:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 36:0-62:1 -/
+def decompress.decode
+  (inputs : Array (Array Std.U8 48#usize) 8#usize) :
+  Result decompress.Decoded
   := do
   let a := Array.repeat 8#usize 0#u64
   let a1 := Array.repeat 8#usize a
-  let a2 := Array.repeat 8#usize 0#u64
-  let a3 := Array.repeat 8#usize a2
-  let (a4, a5, i, i1, i2) ←
-    decompress_g2.decode_loop { start := 0#usize, «end» := fp8.LANES } inputs
-      a1 a3 0#u8 0#u8 0#u8
-  ok { x0 := a4, x1 := a5, larger_root := i, invalid := i1, undecided := i2 }
+  let (a2, i, i1, i2) ←
+    decompress.decode_loop { start := 0#usize, «end» := fp8.LANES } inputs a1
+      0#u8 0#u8 0#u8
+  ok { x := a2, larger_root := i, invalid := i1, undecided := i2 }
 
-/-- [silver_bls_simd::decompress_g2::point]:
-    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 84:0-89:1 -/
-def decompress_g2.point
-  (x0 : Array Std.U64 6#usize) (x1 : Array Std.U64 6#usize)
-  (y0 : Array Std.U64 6#usize) (y1 : Array Std.U64 6#usize) :
-  Result blst.blst_p2_affine
+/-- [silver_bls_simd::decompress::point]:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 64:0-66:1 -/
+def decompress.point
+  (x : Array Std.U64 6#usize) (y : Array Std.U64 6#usize) :
+  Result blst.blst_p1_affine
   := do
-  ok
-    {
-      x := { fp := (Array.make 2#usize [ { l := x0 }, { l := x1 } ]) },
-      y := { fp := (Array.make 2#usize [ { l := y0 }, { l := y1 } ]) }
-    }
+  ok { x := { l := x }, y := { l := y } }
+
+/-- [silver_bls_simd::g1x8::is_lower_z_bit]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 145:0-147:1 -/
+def g1x8.is_lower_z_bit (bit : Std.U32) : Result Bool := do
+  let i ← Array.index_usize constants.Z_BITS 1#usize
+  if bit = i
+  then ok true
+  else
+    let i1 ← Array.index_usize constants.Z_BITS 2#usize
+    if bit = i1
+    then ok true
+    else
+      let i2 ← Array.index_usize constants.Z_BITS 3#usize
+      if bit = i2
+      then ok true
+      else
+        let i3 ← Array.index_usize constants.Z_BITS 4#usize
+        if bit = i3
+        then ok true
+        else
+          let i4 ← Array.index_usize constants.Z_BITS 5#usize
+          ok (bit = i4)
 
 /-- [silver_bls_simd::fp8::splat]:
     Source: 'crates/bls_simd/src/fp8.rs', lines 29:0-31:1 -/
@@ -687,14 +709,6 @@ def fp8.Fp8.is_zero_mask (self : fp8.Fp8) : Result Std.U8 := do
   fp8.Fp8.is_zero_mask_loop { start := 0#usize, «end» := constants.LIMBS } a
     255#u8
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::is_zero_mask]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 120:4-122:5
-    Visibility: public -/
-def fp2x8.Fp2x8.is_zero_mask (self : fp2x8.Fp2x8) : Result Std.U8 := do
-  let i ← fp8.Fp8.is_zero_mask self.c0
-  let i1 ← fp8.Fp8.is_zero_mask self.c1
-  ok (i &&& i1)
-
 /-- [silver_bls_simd::fp8::add_limbs]: loop body 0:
     Source: 'crates/bls_simd/src/fp8.rs', lines 78:4-82:5 -/
 @[rust_loop_body]
@@ -770,20 +784,11 @@ def fp8.Fp8.add (self : fp8.Fp8) (rhs : fp8.Fp8) : Result fp8.Fp8 := do
   let a1 ← fp8.blend i d s
   ok a1
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::add]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 45:4-47:5
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::double]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 312:4-314:5
     Visibility: public -/
-def fp2x8.Fp2x8.add
-  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let f ← fp8.Fp8.add self.c0 rhs.c0
-  let f1 ← fp8.Fp8.add self.c1 rhs.c1
-  ok { c0 := f, c1 := f1 }
-
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::double]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 57:4-59:5
-    Visibility: public -/
-def fp2x8.Fp2x8.double (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  fp2x8.Fp2x8.add self self
+def fp8.Fp8.double (self : fp8.Fp8) : Result fp8.Fp8 := do
+  fp8.Fp8.add self self
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::sub]:
     Source: 'crates/bls_simd/src/fp8.rs', lines 298:4-302:5
@@ -795,21 +800,6 @@ def fp8.Fp8.sub (self : fp8.Fp8) (rhs : fp8.Fp8) : Result fp8.Fp8 := do
   let i ← fp8.borrowed borrow
   let a1 ← fp8.blend i d wrapped
   ok a1
-
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::sub]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 51:4-53:5
-    Visibility: public -/
-def fp2x8.Fp2x8.sub
-  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let f ← fp8.Fp8.sub self.c0 rhs.c0
-  let f1 ← fp8.Fp8.sub self.c1 rhs.c1
-  ok { c0 := f, c1 := f1 }
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::double]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 312:4-314:5
-    Visibility: public -/
-def fp8.Fp8.double (self : fp8.Fp8) : Result fp8.Fp8 := do
-  fp8.Fp8.add self self
 
 /-- [silver_bls_simd::fp8::muladd_row]: loop body 0:
     Source: 'crates/bls_simd/src/fp8.rs', lines 107:4-110:5 -/
@@ -971,97 +961,159 @@ def fp8.Fp8.mul (self : fp8.Fp8) (rhs : fp8.Fp8) : Result fp8.Fp8 := do
   let r1 ← fp8.Fp8.mul_loop { start := 0#usize, «end» := i1 } t16 mask a
   ok r1
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::square]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 37:4-41:5
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::square]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 275:4-277:5
     Visibility: public -/
-def fp2x8.Fp2x8.square (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let f ← fp8.Fp8.add self.c0 self.c1
-  let f1 ← fp8.Fp8.sub self.c0 self.c1
-  let c0 ← fp8.Fp8.mul f f1
-  let f2 ← fp8.Fp8.mul self.c0 self.c1
-  let c1 ← fp8.Fp8.double f2
-  ok { c0, c1 }
+def fp8.Fp8.square (self : fp8.Fp8) : Result fp8.Fp8 := do
+  fp8.Fp8.mul self self
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::mul]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 28:4-33:5
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::add]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 66:4-83:5
     Visibility: public -/
-def fp2x8.Fp2x8.mul
-  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let v0 ← fp8.Fp8.mul self.c0 rhs.c0
-  let v1 ← fp8.Fp8.mul self.c1 rhs.c1
-  let f ← fp8.Fp8.add self.c0 self.c1
-  let f1 ← fp8.Fp8.add rhs.c0 rhs.c1
-  let s ← fp8.Fp8.mul f f1
-  let f2 ← fp8.Fp8.sub v0 v1
-  let f3 ← fp8.Fp8.sub s v0
-  let f4 ← fp8.Fp8.sub f3 v1
-  ok { c0 := f2, c1 := f4 }
-
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::add_affine]:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 45:4-60:5
-    Visibility: public -/
-def g2x8.G2x8.add_affine
-  (self : g2x8.G2x8) (qx : fp2x8.Fp2x8) (qy : fp2x8.Fp2x8) :
-  Result (g2x8.G2x8 × Std.U8)
-  := do
-  let z1z1 ← fp2x8.Fp2x8.square self.z
-  let u2 ← fp2x8.Fp2x8.mul qx z1z1
-  let fx ← fp2x8.Fp2x8.mul qy self.z
-  let s2 ← fp2x8.Fp2x8.mul fx z1z1
-  let h ← fp2x8.Fp2x8.sub u2 self.x
-  let hh ← fp2x8.Fp2x8.square h
-  let fx1 ← fp2x8.Fp2x8.double hh
-  let i ← fp2x8.Fp2x8.double fx1
-  let j ← fp2x8.Fp2x8.mul h i
-  let fx2 ← fp2x8.Fp2x8.sub s2 self.y
-  let r ← fp2x8.Fp2x8.double fx2
-  let v ← fp2x8.Fp2x8.mul self.x i
-  let fx3 ← fp2x8.Fp2x8.square r
-  let fx4 ← fp2x8.Fp2x8.sub fx3 j
-  let fx5 ← fp2x8.Fp2x8.double v
-  let x3 ← fp2x8.Fp2x8.sub fx4 fx5
-  let fx6 ← fp2x8.Fp2x8.sub v x3
-  let fx7 ← fp2x8.Fp2x8.mul r fx6
-  let fx8 ← fp2x8.Fp2x8.mul self.y j
-  let fx9 ← fp2x8.Fp2x8.double fx8
-  let y3 ← fp2x8.Fp2x8.sub fx7 fx9
-  let fx10 ← fp2x8.Fp2x8.add self.z h
-  let fx11 ← fp2x8.Fp2x8.square fx10
-  let fx12 ← fp2x8.Fp2x8.sub fx11 z1z1
-  let z3 ← fp2x8.Fp2x8.sub fx12 hh
-  let i1 ← fp2x8.Fp2x8.is_zero_mask h
-  let i2 ← fp2x8.Fp2x8.is_zero_mask self.z
-  let undecided ← lift (i1 ||| i2)
+def g1x8.G1x8.add
+  (self : g1x8.G1x8) (q : g1x8.G1x8) : Result (g1x8.G1x8 × Std.U8) := do
+  let z1z1 ← fp8.Fp8.square self.z
+  let z2z2 ← fp8.Fp8.square q.z
+  let u1 ← fp8.Fp8.mul self.x z2z2
+  let u2 ← fp8.Fp8.mul q.x z1z1
+  let f ← fp8.Fp8.mul self.y q.z
+  let s1 ← fp8.Fp8.mul f z2z2
+  let f1 ← fp8.Fp8.mul q.y self.z
+  let s2 ← fp8.Fp8.mul f1 z1z1
+  let h ← fp8.Fp8.sub u2 u1
+  let f2 ← fp8.Fp8.double h
+  let i ← fp8.Fp8.square f2
+  let j ← fp8.Fp8.mul h i
+  let f3 ← fp8.Fp8.sub s2 s1
+  let r ← fp8.Fp8.double f3
+  let v ← fp8.Fp8.mul u1 i
+  let f4 ← fp8.Fp8.square r
+  let f5 ← fp8.Fp8.sub f4 j
+  let f6 ← fp8.Fp8.double v
+  let x3 ← fp8.Fp8.sub f5 f6
+  let f7 ← fp8.Fp8.sub v x3
+  let f8 ← fp8.Fp8.mul r f7
+  let f9 ← fp8.Fp8.mul s1 j
+  let f10 ← fp8.Fp8.double f9
+  let y3 ← fp8.Fp8.sub f8 f10
+  let f11 ← fp8.Fp8.add self.z q.z
+  let f12 ← fp8.Fp8.square f11
+  let f13 ← fp8.Fp8.sub f12 z1z1
+  let f14 ← fp8.Fp8.sub f13 z2z2
+  let z3 ← fp8.Fp8.mul f14 h
+  let i1 ← fp8.Fp8.is_zero_mask h
+  let i2 ← fp8.Fp8.is_zero_mask self.z
+  let i3 ← lift (i1 ||| i2)
+  let i4 ← fp8.Fp8.is_zero_mask q.z
+  let undecided ← lift (i3 ||| i4)
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::double]:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 28:4-40:5
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::double]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 31:4-43:5
     Visibility: public -/
-def g2x8.G2x8.double (self : g2x8.G2x8) : Result (g2x8.G2x8 × Std.U8) := do
-  let a ← fp2x8.Fp2x8.square self.x
-  let b ← fp2x8.Fp2x8.square self.y
-  let c ← fp2x8.Fp2x8.square b
-  let fx ← fp2x8.Fp2x8.add self.x b
-  let fx1 ← fp2x8.Fp2x8.square fx
-  let fx2 ← fp2x8.Fp2x8.sub fx1 a
-  let fx3 ← fp2x8.Fp2x8.sub fx2 c
-  let d ← fp2x8.Fp2x8.double fx3
-  let fx4 ← fp2x8.Fp2x8.double a
-  let e ← fp2x8.Fp2x8.add fx4 a
-  let f ← fp2x8.Fp2x8.square e
-  let fx5 ← fp2x8.Fp2x8.double d
-  let x3 ← fp2x8.Fp2x8.sub f fx5
-  let fx6 ← fp2x8.Fp2x8.sub d x3
-  let fx7 ← fp2x8.Fp2x8.mul e fx6
-  let fx8 ← fp2x8.Fp2x8.double c
-  let fx9 ← fp2x8.Fp2x8.double fx8
-  let fx10 ← fp2x8.Fp2x8.double fx9
-  let y3 ← fp2x8.Fp2x8.sub fx7 fx10
-  let fx11 ← fp2x8.Fp2x8.mul self.y self.z
-  let z3 ← fp2x8.Fp2x8.double fx11
-  let i ← fp2x8.Fp2x8.is_zero_mask self.y
-  let i1 ← fp2x8.Fp2x8.is_zero_mask self.z
+def g1x8.G1x8.double (self : g1x8.G1x8) : Result (g1x8.G1x8 × Std.U8) := do
+  let a ← fp8.Fp8.square self.x
+  let b ← fp8.Fp8.square self.y
+  let c ← fp8.Fp8.square b
+  let f ← fp8.Fp8.add self.x b
+  let f1 ← fp8.Fp8.square f
+  let f2 ← fp8.Fp8.sub f1 a
+  let f3 ← fp8.Fp8.sub f2 c
+  let d ← fp8.Fp8.double f3
+  let f4 ← fp8.Fp8.double a
+  let e ← fp8.Fp8.add f4 a
+  let f5 ← fp8.Fp8.square e
+  let f6 ← fp8.Fp8.double d
+  let x3 ← fp8.Fp8.sub f5 f6
+  let f7 ← fp8.Fp8.sub d x3
+  let f8 ← fp8.Fp8.mul e f7
+  let f9 ← fp8.Fp8.double c
+  let f10 ← fp8.Fp8.double f9
+  let f11 ← fp8.Fp8.double f10
+  let y3 ← fp8.Fp8.sub f8 f11
+  let f12 ← fp8.Fp8.mul self.y self.z
+  let z3 ← fp8.Fp8.double f12
+  let i ← fp8.Fp8.is_zero_mask self.y
+  let i1 ← fp8.Fp8.is_zero_mask self.z
   let undecided ← lift (i ||| i1)
+  ok ({ x := x3, y := y3, z := z3 }, undecided)
+
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z]: loop body 0:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 112:8-122:9 -/
+@[rust_loop_body]
+def g1x8.G1x8.times_z_loop.body
+  (f : fp8.Fp8) (f1 : fp8.Fp8) (f2 : fp8.Fp8) (undecided : Std.U8)
+  (r : g1x8.G1x8) (bit : Std.U32) :
+  Result (ControlFlow (Std.U8 × g1x8.G1x8 × Std.U32) (g1x8.G1x8 × Std.U8))
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let (d, u) ← g1x8.G1x8.double r
+    let undecided1 ← lift (undecided ||| u)
+    let b ← g1x8.is_lower_z_bit bit1
+    if b
+    then
+      let (a, u1) ← g1x8.G1x8.add d { x := f, y := f1, z := f2 }
+      let undecided2 ← lift (undecided1 ||| u1)
+      ok (cont (undecided2, a, bit1))
+    else ok (cont (undecided1, d, bit1))
+  else ok (done (r, undecided))
+
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z]: loop 0:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 112:8-122:9 -/
+@[rust_loop]
+def g1x8.G1x8.times_z_loop
+  (f : fp8.Fp8) (f1 : fp8.Fp8) (f2 : fp8.Fp8) (undecided : Std.U8)
+  (r : g1x8.G1x8) (bit : Std.U32) :
+  Result (g1x8.G1x8 × Std.U8)
+  := do
+  loop
+    (fun (undecided1, r1, bit1) => g1x8.G1x8.times_z_loop.body f f1 f2
+      undecided1 r1 bit1)
+    (undecided, r, bit)
+
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 108:4-124:5 -/
+def g1x8.G1x8.times_z (self : g1x8.G1x8) : Result (g1x8.G1x8 × Std.U8) := do
+  let bit ← Array.index_usize constants.Z_BITS 0#usize
+  g1x8.G1x8.times_z_loop self.x self.y self.z 0#u8 self bit
+
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::add_affine]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 47:4-62:5
+    Visibility: public -/
+def g1x8.G1x8.add_affine
+  (self : g1x8.G1x8) (qx : fp8.Fp8) (qy : fp8.Fp8) :
+  Result (g1x8.G1x8 × Std.U8)
+  := do
+  let z1z1 ← fp8.Fp8.square self.z
+  let u2 ← fp8.Fp8.mul qx z1z1
+  let f ← fp8.Fp8.mul qy self.z
+  let s2 ← fp8.Fp8.mul f z1z1
+  let h ← fp8.Fp8.sub u2 self.x
+  let hh ← fp8.Fp8.square h
+  let f1 ← fp8.Fp8.double hh
+  let i ← fp8.Fp8.double f1
+  let j ← fp8.Fp8.mul h i
+  let f2 ← fp8.Fp8.sub s2 self.y
+  let r ← fp8.Fp8.double f2
+  let v ← fp8.Fp8.mul self.x i
+  let f3 ← fp8.Fp8.square r
+  let f4 ← fp8.Fp8.sub f3 j
+  let f5 ← fp8.Fp8.double v
+  let x3 ← fp8.Fp8.sub f4 f5
+  let f6 ← fp8.Fp8.sub v x3
+  let f7 ← fp8.Fp8.mul r f6
+  let f8 ← fp8.Fp8.mul self.y j
+  let f9 ← fp8.Fp8.double f8
+  let y3 ← fp8.Fp8.sub f7 f9
+  let f10 ← fp8.Fp8.add self.z h
+  let f11 ← fp8.Fp8.square f10
+  let f12 ← fp8.Fp8.sub f11 z1z1
+  let z3 ← fp8.Fp8.sub f12 hh
+  let i1 ← fp8.Fp8.is_zero_mask h
+  let i2 ← fp8.Fp8.is_zero_mask self.z
+  let undecided ← lift (i1 ||| i2)
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::splat_limbs]:
@@ -1077,92 +1129,55 @@ def fp8.Fp8.splat_limbs (limbs : Array Std.U64 8#usize) : Result fp8.Fp8 := do
 def fp8.Fp8.one : Result fp8.Fp8 := do
   fp8.Fp8.splat_limbs constants.R_MOD_P
 
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::zero]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 171:4-173:5
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::from_affine]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 25:4-27:5
     Visibility: public -/
-def fp8.Fp8.zero : Result fp8.Fp8 := do
-  let mi ← fp8.zero
-  let a := Array.repeat 8#usize mi
-  ok a
-
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::one]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 22:4-24:5
-    Visibility: public -/
-def fp2x8.Fp2x8.one : Result fp2x8.Fp2x8 := do
+def g1x8.G1x8.from_affine (x : fp8.Fp8) (y : fp8.Fp8) : Result g1x8.G1x8 := do
   let f ← fp8.Fp8.one
-  let f1 ← fp8.Fp8.zero
-  ok { c0 := f, c1 := f1 }
+  ok { x, y, z := f }
 
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]: loop body 0:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 70:8-85:9 -/
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z_affine]: loop body 0:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 92:8-102:9 -/
 @[rust_loop_body]
-def g2x8.G2x8.times_minus_z_loop.body
-  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) (undecided : Std.U8) (r : g2x8.G2x8)
+def g1x8.G1x8.times_z_affine_loop.body
+  (px : fp8.Fp8) (py : fp8.Fp8) (undecided : Std.U8) (r : g1x8.G1x8)
   (bit : Std.U32) :
-  Result (ControlFlow (Std.U8 × g2x8.G2x8 × Std.U32) (g2x8.G2x8 × Std.U8))
+  Result (ControlFlow (Std.U8 × g1x8.G1x8 × Std.U32) (g1x8.G1x8 × Std.U8))
   := do
   if bit > 0#u32
   then
     let bit1 ← bit - 1#u32
-    let (d, u) ← g2x8.G2x8.double r
+    let (d, u) ← g1x8.G1x8.double r
     let undecided1 ← lift (undecided ||| u)
-    let i ← Array.index_usize constants.Z_BITS 1#usize
-    if bit1 = i
+    let b ← g1x8.is_lower_z_bit bit1
+    if b
     then
-      let (a, u1) ← g2x8.G2x8.add_affine d px py
+      let (a, u1) ← g1x8.G1x8.add_affine d px py
       let undecided2 ← lift (undecided1 ||| u1)
       ok (cont (undecided2, a, bit1))
-    else
-      let i1 ← Array.index_usize constants.Z_BITS 2#usize
-      if bit1 = i1
-      then
-        let (a, u1) ← g2x8.G2x8.add_affine d px py
-        let undecided2 ← lift (undecided1 ||| u1)
-        ok (cont (undecided2, a, bit1))
-      else
-        let i2 ← Array.index_usize constants.Z_BITS 3#usize
-        if bit1 = i2
-        then
-          let (a, u1) ← g2x8.G2x8.add_affine d px py
-          let undecided2 ← lift (undecided1 ||| u1)
-          ok (cont (undecided2, a, bit1))
-        else
-          let i3 ← Array.index_usize constants.Z_BITS 4#usize
-          if bit1 = i3
-          then
-            let (a, u1) ← g2x8.G2x8.add_affine d px py
-            let undecided2 ← lift (undecided1 ||| u1)
-            ok (cont (undecided2, a, bit1))
-          else
-            let i4 ← Array.index_usize constants.Z_BITS 5#usize
-            if bit1 = i4
-            then
-              let (a, u1) ← g2x8.G2x8.add_affine d px py
-              let undecided2 ← lift (undecided1 ||| u1)
-              ok (cont (undecided2, a, bit1))
-            else ok (cont (undecided1, d, bit1))
+    else ok (cont (undecided1, d, bit1))
   else ok (done (r, undecided))
 
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]: loop 0:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 70:8-85:9 -/
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z_affine]: loop 0:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 92:8-102:9 -/
 @[rust_loop]
-def g2x8.G2x8.times_minus_z_loop
-  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) (undecided : Std.U8) (r : g2x8.G2x8)
+def g1x8.G1x8.times_z_affine_loop
+  (px : fp8.Fp8) (py : fp8.Fp8) (undecided : Std.U8) (r : g1x8.G1x8)
   (bit : Std.U32) :
-  Result (g2x8.G2x8 × Std.U8)
+  Result (g1x8.G1x8 × Std.U8)
   := do
   loop
-    (fun (undecided1, r1, bit1) => g2x8.G2x8.times_minus_z_loop.body px py
+    (fun (undecided1, r1, bit1) => g1x8.G1x8.times_z_affine_loop.body px py
       undecided1 r1 bit1)
     (undecided, r, bit)
 
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 66:4-87:5 -/
-def g2x8.G2x8.times_minus_z
-  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) : Result (g2x8.G2x8 × Std.U8) := do
-  let fx ← fp2x8.Fp2x8.one
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::times_z_affine]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 88:4-104:5 -/
+def g1x8.G1x8.times_z_affine
+  (px : fp8.Fp8) (py : fp8.Fp8) : Result (g1x8.G1x8 × Std.U8) := do
+  let r ← g1x8.G1x8.from_affine px py
   let bit ← Array.index_usize constants.Z_BITS 0#usize
-  g2x8.G2x8.times_minus_z_loop px py 0#u8 { x := px, y := py, z := fx } bit
+  g1x8.G1x8.times_z_affine_loop px py 0#u8 r bit
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::eq_mask]: loop body 0:
     Source: 'crates/bls_simd/src/fp8.rs', lines 327:8-329:9
@@ -1207,14 +1222,13 @@ def fp8.Fp8.eq_mask (self : fp8.Fp8) (rhs : fp8.Fp8) : Result Std.U8 := do
   fp8.Fp8.eq_mask_loop { start := 0#usize, «end» := constants.LIMBS } a b
     255#u8
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::eq_mask]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 114:4-116:5
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::zero]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 171:4-173:5
     Visibility: public -/
-def fp2x8.Fp2x8.eq_mask
-  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result Std.U8 := do
-  let i ← fp8.Fp8.eq_mask self.c0 rhs.c0
-  let i1 ← fp8.Fp8.eq_mask self.c1 rhs.c1
-  ok (i &&& i1)
+def fp8.Fp8.zero : Result fp8.Fp8 := do
+  let mi ← fp8.zero
+  let a := Array.repeat 8#usize mi
+  ok a
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::neg]:
     Source: 'crates/bls_simd/src/fp8.rs', lines 306:4-308:5
@@ -1223,57 +1237,30 @@ def fp8.Fp8.neg (self : fp8.Fp8) : Result fp8.Fp8 := do
   let f ← fp8.Fp8.zero
   fp8.Fp8.sub f self
 
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::conjugate]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 69:4-71:5
+/-- [silver_bls_simd::g1x8::{silver_bls_simd::g1x8::G1x8}::scott_membership]:
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 129:4-141:5
     Visibility: public -/
-def fp2x8.Fp2x8.conjugate (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let f ← fp8.Fp8.neg self.c1
-  ok { self with c1 := f }
-
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::neg]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 63:4-65:5
-    Visibility: public -/
-def fp2x8.Fp2x8.neg (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
-  let f ← fp8.Fp8.neg self.c0
-  let f1 ← fp8.Fp8.neg self.c1
-  ok { c0 := f, c1 := f1 }
-
-/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::splat]:
-    Source: 'crates/bls_simd/src/fp2x8.rs', lines 16:4-18:5
-    Visibility: public -/
-def fp2x8.Fp2x8.splat
-  (limbs : Array (Array Std.U64 8#usize) 2#usize) : Result fp2x8.Fp2x8 := do
-  let a ← Array.index_usize limbs 0#usize
-  let f ← fp8.Fp8.splat_limbs a
-  let a1 ← Array.index_usize limbs 1#usize
-  let f1 ← fp8.Fp8.splat_limbs a1
-  ok { c0 := f, c1 := f1 }
-
-/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::scott_membership]:
-    Source: 'crates/bls_simd/src/g2x8.rs', lines 92:4-104:5
-    Visibility: public -/
-def g2x8.G2x8.scott_membership
-  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) : Result Membership := do
-  let (mzp, chain_undecided) ← g2x8.G2x8.times_minus_z px py
-  let i ← fp2x8.Fp2x8.is_zero_mask mzp.z
-  let undecided ← lift (chain_undecided ||| i)
-  let psi_scale ← fp8.Fp8.splat_limbs constants.PSI_X_MONT
-  let f ← fp8.Fp8.mul px.c1 psi_scale
-  let f1 ← fp8.Fp8.mul px.c0 psi_scale
-  let fx ← fp2x8.Fp2x8.conjugate py
-  let fx1 ← fp2x8.Fp2x8.splat constants.PSI_Y_MONT
-  let psi_y ← fp2x8.Fp2x8.mul fx fx1
-  let zz ← fp2x8.Fp2x8.square mzp.z
-  let zzz ← fp2x8.Fp2x8.mul zz mzp.z
-  let fx2 ← fp2x8.Fp2x8.mul { c0 := f, c1 := f1 } zz
-  let x_matches ← fp2x8.Fp2x8.eq_mask mzp.x fx2
-  let fx3 ← fp2x8.Fp2x8.neg mzp.y
-  let fx4 ← fp2x8.Fp2x8.mul psi_y zzz
-  let y_matches ← fp2x8.Fp2x8.eq_mask fx3 fx4
-  let i1 ← lift (x_matches &&& y_matches)
-  let i2 ← lift (~~~ undecided)
-  let i3 ← lift (i1 &&& i2)
-  ok { members := i3, undecided }
+def g1x8.G1x8.scott_membership
+  (px : fp8.Fp8) (py : fp8.Fp8) : Result Membership := do
+  let (zp, u1) ← g1x8.G1x8.times_z_affine px py
+  let (zzp, u2) ← g1x8.G1x8.times_z zp
+  let i ← lift (u1 ||| u2)
+  let i1 ← fp8.Fp8.is_zero_mask zzp.z
+  let undecided ← lift (i ||| i1)
+  let beta ← fp8.Fp8.splat_limbs constants.BETA_MONT
+  let f ← fp8.Fp8.mul px beta
+  let sigma2_x ← fp8.Fp8.mul f beta
+  let zz ← fp8.Fp8.square zzp.z
+  let zzz ← fp8.Fp8.mul zz zzp.z
+  let f1 ← fp8.Fp8.mul sigma2_x zz
+  let x_matches ← fp8.Fp8.eq_mask zzp.x f1
+  let f2 ← fp8.Fp8.neg zzp.y
+  let f3 ← fp8.Fp8.mul py zzz
+  let y_matches ← fp8.Fp8.eq_mask f2 f3
+  let i2 ← lift (x_matches &&& y_matches)
+  let i3 ← lift (~~~ undecided)
+  let i4 ← lift (i2 &&& i3)
+  ok { members := i4, undecided }
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::store]: loop body 1:
     Source: 'crates/bls_simd/src/fp8.rs', lines 206:12-208:13 -/
@@ -1349,6 +1336,199 @@ def fp8.Fp8.store
   let a := Array.repeat 8#usize 0#u64
   let out := Array.repeat 8#usize a
   fp8.Fp8.store_loop0 { start := 0#usize, «end» := constants.LIMBS } self out
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::to_plain]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 222:4-224:5
+    Visibility: public -/
+def fp8.Fp8.to_plain
+  (self : fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
+  let f ← fp8.Fp8.splat_limbs constants.ONE_PLAIN
+  let f1 ← fp8.Fp8.mul self f
+  let f2 ← fp8.Fp8.canonical f1
+  fp8.Fp8.store f2
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]: loop body 0:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 186:8-197:9
+    Visibility: public -/
+@[rust_loop_body]
+def fp8.Fp8.load_loop.body
+  (values : Array (Array Std.U64 8#usize) 8#usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (v : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 8#usize)) (Array core.core_arch.x86.__m512i
+    8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v)
+  | some j =>
+    let a ← Array.index_usize values 7#usize
+    let i ← Array.index_usize a j
+    let i1 ← lift (UScalar.hcast .I64 i)
+    let a1 ← Array.index_usize values 6#usize
+    let i2 ← Array.index_usize a1 j
+    let i3 ← lift (UScalar.hcast .I64 i2)
+    let a2 ← Array.index_usize values 5#usize
+    let i4 ← Array.index_usize a2 j
+    let i5 ← lift (UScalar.hcast .I64 i4)
+    let a3 ← Array.index_usize values 4#usize
+    let i6 ← Array.index_usize a3 j
+    let i7 ← lift (UScalar.hcast .I64 i6)
+    let a4 ← Array.index_usize values 3#usize
+    let i8 ← Array.index_usize a4 j
+    let i9 ← lift (UScalar.hcast .I64 i8)
+    let a5 ← Array.index_usize values 2#usize
+    let i10 ← Array.index_usize a5 j
+    let i11 ← lift (UScalar.hcast .I64 i10)
+    let a6 ← Array.index_usize values 1#usize
+    let i12 ← Array.index_usize a6 j
+    let i13 ← lift (UScalar.hcast .I64 i12)
+    let a7 ← Array.index_usize values 0#usize
+    let i14 ← Array.index_usize a7 j
+    let i15 ← lift (UScalar.hcast .I64 i14)
+    let mi ←
+      core.core_arch.x86.avx512f._mm512_set_epi64 i1 i3 i5 i7 i9 i11 i13 i15
+    let a8 ← Array.update v j mi
+    ok (cont (iter1, a8))
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]: loop 0:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 186:8-197:9
+    Visibility: public -/
+@[rust_loop]
+def fp8.Fp8.load_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (values : Array (Array Std.U64 8#usize) 8#usize)
+  (v : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (iter1, v1) => fp8.Fp8.load_loop.body values iter1 v1)
+    (iter, v)
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 184:4-199:5
+    Visibility: public -/
+def fp8.Fp8.load
+  (values : Array (Array Std.U64 8#usize) 8#usize) : Result fp8.Fp8 := do
+  let mi ← fp8.zero
+  let v := Array.repeat 8#usize mi
+  let v1 ←
+    fp8.Fp8.load_loop { start := 0#usize, «end» := constants.LIMBS } values v
+  ok v1
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::is_larger_root_mask]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 385:4-389:5
+    Visibility: public -/
+def fp8.Fp8.is_larger_root_mask (self : fp8.Fp8) : Result Std.U8 := do
+  let a ← fp8.Fp8.to_plain self
+  let plain ← fp8.Fp8.load a
+  let a1 ← fp8.splat_limbs constants.HALF_P_MINUS_1
+  let (_, borrow) ← fp8.sub_limbs a1 plain
+  fp8.borrowed borrow
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 0:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 358:8-360:9
+    Visibility: public -/
+@[rust_loop_body]
+def fp8.Fp8.pow_p_minus_3_over_4_loop0.body
+  (self : fp8.Fp8) (iter : core.ops.range.Range Std.Usize)
+  (table : Array fp8.Fp8 16#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array fp8.Fp8
+    16#usize)) (Array fp8.Fp8 16#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done table)
+  | some k =>
+    let i ← k - 1#usize
+    let f ← Array.index_usize table i
+    let f1 ← fp8.Fp8.mul f self
+    let a ← Array.update table k f1
+    ok (cont (iter1, a))
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop 0:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 358:8-360:9
+    Visibility: public -/
+@[rust_loop]
+def fp8.Fp8.pow_p_minus_3_over_4_loop0
+  (iter : core.ops.range.Range Std.Usize) (self : fp8.Fp8)
+  (table : Array fp8.Fp8 16#usize) :
+  Result (Array fp8.Fp8 16#usize)
+  := do
+  loop
+    (fun (iter1, table1) => fp8.Fp8.pow_p_minus_3_over_4_loop0.body self iter1
+      table1)
+    (iter, table)
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 1:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 363:8-370:9
+    Visibility: public -/
+@[rust_loop_body]
+def fp8.Fp8.pow_p_minus_3_over_4_loop1.body
+  (table : Array fp8.Fp8 16#usize) (r : fp8.Fp8) (w : Std.Usize) :
+  Result (ControlFlow (fp8.Fp8 × Std.Usize) fp8.Fp8)
+  := do
+  if w > 0#usize
+  then
+    let w1 ← w - 1#usize
+    let f ← fp8.Fp8.square r
+    let f1 ← fp8.Fp8.square f
+    let f2 ← fp8.Fp8.square f1
+    let r1 ← fp8.Fp8.square f2
+    let i ← Array.index_usize constants.P_MINUS_3_OVER_4_WINDOWS w1
+    let digit ← lift (UScalar.cast .Usize i)
+    if digit != 0#usize
+    then
+      let f3 ← Array.index_usize table digit
+      let r2 ← fp8.Fp8.mul r1 f3
+      ok (cont (r2, w1))
+    else ok (cont (r1, w1))
+  else ok (done r)
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop 1:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 363:8-370:9
+    Visibility: public -/
+@[rust_loop]
+def fp8.Fp8.pow_p_minus_3_over_4_loop1
+  (table : Array fp8.Fp8 16#usize) (r : fp8.Fp8) (w : Std.Usize) :
+  Result fp8.Fp8
+  := do
+  loop
+    (fun (r1, w1) => fp8.Fp8.pow_p_minus_3_over_4_loop1.body table r1 w1)
+    (r, w)
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 355:4-372:5
+    Visibility: public -/
+def fp8.Fp8.pow_p_minus_3_over_4 (self : fp8.Fp8) : Result fp8.Fp8 := do
+  let f ← fp8.Fp8.one
+  let table := Array.repeat 16#usize f
+  let a ← Array.update table 1#usize self
+  let table1 ←
+    fp8.Fp8.pow_p_minus_3_over_4_loop0
+      { start := 2#usize, «end» := 16#usize } self a
+  let i ← Array.index_usize constants.P_MINUS_3_OVER_4_WINDOWS 94#usize
+  let i1 ← lift (UScalar.cast .Usize i)
+  let r ← Array.index_usize table1 i1
+  fp8.Fp8.pow_p_minus_3_over_4_loop1 table1 r 94#usize
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::sqrt_candidate]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 377:4-379:5
+    Visibility: public -/
+def fp8.Fp8.sqrt_candidate (self : fp8.Fp8) : Result fp8.Fp8 := do
+  let f ← fp8.Fp8.pow_p_minus_3_over_4 self
+  fp8.Fp8.mul f self
+
+/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::select]:
+    Source: 'crates/bls_simd/src/fp8.rs', lines 347:4-349:5
+    Visibility: public -/
+def fp8.Fp8.select
+  (k : Std.U8) (a : fp8.Fp8) (b : fp8.Fp8) : Result fp8.Fp8 := do
+  let a1 ← fp8.blend k a b
+  ok a1
 
 /-- [silver_bls_simd::fp8::pack64]: loop body 0:
     Source: 'crates/bls_simd/src/fp8.rs', lines 145:4-155:5
@@ -1459,77 +1639,6 @@ def fp8.Fp8.to_blst_limbs
   let out := Array.repeat 8#usize a
   fp8.Fp8.to_blst_limbs_loop { start := 0#usize, «end» := fp8.LANES } t out
 
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]: loop body 0:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 186:8-197:9
-    Visibility: public -/
-@[rust_loop_body]
-def fp8.Fp8.load_loop.body
-  (values : Array (Array Std.U64 8#usize) 8#usize)
-  (iter : core.ops.range.Range Std.Usize)
-  (v : Array core.core_arch.x86.__m512i 8#usize) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
-    core.core_arch.x86.__m512i 8#usize)) (Array core.core_arch.x86.__m512i
-    8#usize))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done v)
-  | some j =>
-    let a ← Array.index_usize values 7#usize
-    let i ← Array.index_usize a j
-    let i1 ← lift (UScalar.hcast .I64 i)
-    let a1 ← Array.index_usize values 6#usize
-    let i2 ← Array.index_usize a1 j
-    let i3 ← lift (UScalar.hcast .I64 i2)
-    let a2 ← Array.index_usize values 5#usize
-    let i4 ← Array.index_usize a2 j
-    let i5 ← lift (UScalar.hcast .I64 i4)
-    let a3 ← Array.index_usize values 4#usize
-    let i6 ← Array.index_usize a3 j
-    let i7 ← lift (UScalar.hcast .I64 i6)
-    let a4 ← Array.index_usize values 3#usize
-    let i8 ← Array.index_usize a4 j
-    let i9 ← lift (UScalar.hcast .I64 i8)
-    let a5 ← Array.index_usize values 2#usize
-    let i10 ← Array.index_usize a5 j
-    let i11 ← lift (UScalar.hcast .I64 i10)
-    let a6 ← Array.index_usize values 1#usize
-    let i12 ← Array.index_usize a6 j
-    let i13 ← lift (UScalar.hcast .I64 i12)
-    let a7 ← Array.index_usize values 0#usize
-    let i14 ← Array.index_usize a7 j
-    let i15 ← lift (UScalar.hcast .I64 i14)
-    let mi ←
-      core.core_arch.x86.avx512f._mm512_set_epi64 i1 i3 i5 i7 i9 i11 i13 i15
-    let a8 ← Array.update v j mi
-    ok (cont (iter1, a8))
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]: loop 0:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 186:8-197:9
-    Visibility: public -/
-@[rust_loop]
-def fp8.Fp8.load_loop
-  (iter : core.ops.range.Range Std.Usize)
-  (values : Array (Array Std.U64 8#usize) 8#usize)
-  (v : Array core.core_arch.x86.__m512i 8#usize) :
-  Result (Array core.core_arch.x86.__m512i 8#usize)
-  := do
-  loop
-    (fun (iter1, v1) => fp8.Fp8.load_loop.body values iter1 v1)
-    (iter, v)
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::load]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 184:4-199:5
-    Visibility: public -/
-def fp8.Fp8.load
-  (values : Array (Array Std.U64 8#usize) 8#usize) : Result fp8.Fp8 := do
-  let mi ← fp8.zero
-  let v := Array.repeat 8#usize mi
-  let v1 ←
-    fp8.Fp8.load_loop { start := 0#usize, «end» := constants.LIMBS } values v
-  ok v1
-
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::from_plain]:
     Source: 'crates/bls_simd/src/fp8.rs', lines 216:4-218:5
     Visibility: public -/
@@ -1539,25 +1648,457 @@ def fp8.Fp8.from_plain
   let f1 ← fp8.Fp8.splat_limbs constants.R2_MOD_P
   fp8.Fp8.mul f f1
 
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::to_plain]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 222:4-224:5
+/-- [silver_bls_simd::decompress::decompress]: loop body 0:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 89:4-91:5
     Visibility: public -/
-def fp8.Fp8.to_plain
-  (self : fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
-  let f ← fp8.Fp8.splat_limbs constants.ONE_PLAIN
-  let f1 ← fp8.Fp8.mul self f
-  let f2 ← fp8.Fp8.canonical f1
-  fp8.Fp8.store f2
+@[rust_loop_body]
+def decompress.decompress_loop.body
+  (xs : Array (Array Std.U64 6#usize) 8#usize)
+  (ys : Array (Array Std.U64 6#usize) 8#usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (points : Array blst.blst_p1_affine 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    blst.blst_p1_affine 8#usize)) (Array blst.blst_p1_affine 8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done points)
+  | some lane =>
+    let a ← Array.index_usize xs lane
+    let a1 ← Array.index_usize ys lane
+    let bpa ← decompress.point a a1
+    let a2 ← Array.update points lane bpa
+    ok (cont (iter1, a2))
 
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::is_larger_root_mask]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 385:4-389:5
+/-- [silver_bls_simd::decompress::decompress]: loop 0:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 89:4-91:5
     Visibility: public -/
-def fp8.Fp8.is_larger_root_mask (self : fp8.Fp8) : Result Std.U8 := do
-  let a ← fp8.Fp8.to_plain self
-  let plain ← fp8.Fp8.load a
-  let a1 ← fp8.splat_limbs constants.HALF_P_MINUS_1
-  let (_, borrow) ← fp8.sub_limbs a1 plain
-  fp8.borrowed borrow
+@[rust_loop]
+def decompress.decompress_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (xs : Array (Array Std.U64 6#usize) 8#usize)
+  (ys : Array (Array Std.U64 6#usize) 8#usize)
+  (points : Array blst.blst_p1_affine 8#usize) :
+  Result (Array blst.blst_p1_affine 8#usize)
+  := do
+  loop
+    (fun (iter1, points1) => decompress.decompress_loop.body xs ys iter1
+      points1)
+    (iter, points)
+
+/-- [silver_bls_simd::decompress::decompress]:
+    Source: 'crates/bls_simd/src/decompress.rs', lines 69:0-93:1
+    Visibility: public -/
+def decompress.decompress
+  (inputs : Array (Array Std.U8 48#usize) 8#usize) :
+  Result decompress.Batch
+  := do
+  let decoded ← decompress.decode inputs
+  let x ← fp8.Fp8.from_plain decoded.x
+  let f ← fp8.Fp8.square x
+  let f1 ← fp8.Fp8.mul f x
+  let f2 ← fp8.Fp8.splat_limbs constants.FOUR_MONT
+  let rhs ← fp8.Fp8.add f1 f2
+  let root ← fp8.Fp8.sqrt_candidate rhs
+  let f3 ← fp8.Fp8.square root
+  let on_curve ← fp8.Fp8.eq_mask f3 rhs
+  let i ← fp8.Fp8.is_larger_root_mask root
+  let flip ← lift (i ^^^ decoded.larger_root)
+  let f4 ← fp8.Fp8.neg root
+  let y ← fp8.Fp8.select flip root f4
+  let i1 ← fp8.Fp8.is_zero_mask y
+  let undecided ← lift (decoded.undecided ||| i1)
+  let membership ← g1x8.G1x8.scott_membership x y
+  let i2 ← lift (undecided ||| membership.undecided)
+  let i3 ← lift (~~~ decoded.invalid)
+  let undecided1 ← lift (i2 &&& i3)
+  let i4 ← lift (on_curve &&& membership.members)
+  let i5 ← lift (~~~ undecided1)
+  let i6 ← lift (i4 &&& i5)
+  let i7 ← lift (~~~ decoded.invalid)
+  let valid ← lift (i6 &&& i7)
+  let xs ← fp8.Fp8.to_blst_limbs x
+  let ys ← fp8.Fp8.to_blst_limbs y
+  let bpa ← blst.blst_p1_affine.Insts.CoreDefaultDefault.default
+  let points := Array.repeat 8#usize bpa
+  let points1 ←
+    decompress.decompress_loop { start := 0#usize, «end» := fp8.LANES } xs ys
+      points
+  ok { points := points1, valid, undecided := undecided1 }
+
+/-- [silver_bls_simd::decompress_g2::decode]: loop body 0:
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 54:4-79:5 -/
+@[rust_loop_body]
+def decompress_g2.decode_loop.body
+  (inputs : Array (Array Std.U8 96#usize) 8#usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (a : Array (Array Std.U64 8#usize) 8#usize)
+  (a1 : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
+  (i2 : Std.U8) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array
+    Std.U64 8#usize) 8#usize) × (Array (Array Std.U64 8#usize) 8#usize) ×
+    Std.U8 × Std.U8 × Std.U8) ((Array (Array Std.U64 8#usize) 8#usize) ×
+    (Array (Array Std.U64 8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (a, a1, i, i1, i2))
+  | some lane =>
+    let bytes ← Array.index_usize inputs lane
+    let bit ← 1#u8 <<< lane
+    let i3 ← Array.index_usize bytes 0#usize
+    let flags ← lift (i3 &&& 224#u8)
+    let i4 ← lift (flags &&& decompress_g2.FLAG_COMPRESSED)
+    if i4 = 0#u8
+    then let i5 ← lift (i1 ||| bit)
+         ok (cont (iter1, a, a1, i, i5, i2))
+    else
+      let i5 ← lift (flags &&& decompress_g2.FLAG_INFINITY)
+      if i5 != 0#u8
+      then let i6 ← lift (i2 ||| bit)
+           ok (cont (iter1, a, a1, i, i1, i6))
+      else
+        let i6 ← lift (flags &&& decompress_g2.FLAG_LARGER_ROOT)
+        let i7 ← if i6 != 0#u8
+                   then ok (i ||| bit)
+                   else ok i
+        let s ← lift (Array.to_slice bytes)
+        let i8 ← decompress_g2.FP_BYTES
+        let (x1_bytes, x0_bytes) ← core.slice.Slice.split_at s i8
+        let x1 ← decompress_g2.fp_words x1_bytes
+        let i9 ← Array.index_usize x1 5#usize
+        let i10 ← lift (i9 &&& 2305843009213693951#u64)
+        let x11 ← Array.update x1 5#usize i10
+        let x0 ← decompress_g2.fp_words x0_bytes
+        let b ← decompress_g2.less_than_p x11
+        if b
+        then
+          let b1 ← decompress_g2.less_than_p x0
+          if b1
+          then
+            let a2 ← fp8.unpack52 x0
+            let a3 ← Array.update a lane a2
+            let a4 ← fp8.unpack52 x11
+            let a5 ← Array.update a1 lane a4
+            ok (cont (iter1, a3, a5, i7, i1, i2))
+          else
+            let i11 ← lift (i1 ||| bit)
+            ok (cont (iter1, a, a1, i7, i11, i2))
+        else
+          let i11 ← lift (i1 ||| bit)
+          ok (cont (iter1, a, a1, i7, i11, i2))
+
+/-- [silver_bls_simd::decompress_g2::decode]: loop 0:
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 54:4-79:5 -/
+@[rust_loop]
+def decompress_g2.decode_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (inputs : Array (Array Std.U8 96#usize) 8#usize)
+  (a : Array (Array Std.U64 8#usize) 8#usize)
+  (a1 : Array (Array Std.U64 8#usize) 8#usize) (i : Std.U8) (i1 : Std.U8)
+  (i2 : Std.U8) :
+  Result ((Array (Array Std.U64 8#usize) 8#usize) × (Array (Array Std.U64
+    8#usize) 8#usize) × Std.U8 × Std.U8 × Std.U8)
+  := do
+  loop
+    (fun (iter1, a2, a3, i3, i4, i5) => decompress_g2.decode_loop.body inputs
+      iter1 a2 a3 i3 i4 i5)
+    (iter, a, a1, i, i1, i2)
+
+/-- [silver_bls_simd::decompress_g2::decode]:
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 46:0-81:1 -/
+def decompress_g2.decode
+  (inputs : Array (Array Std.U8 96#usize) 8#usize) :
+  Result decompress_g2.Decoded
+  := do
+  let a := Array.repeat 8#usize 0#u64
+  let a1 := Array.repeat 8#usize a
+  let a2 := Array.repeat 8#usize 0#u64
+  let a3 := Array.repeat 8#usize a2
+  let (a4, a5, i, i1, i2) ←
+    decompress_g2.decode_loop { start := 0#usize, «end» := fp8.LANES } inputs
+      a1 a3 0#u8 0#u8 0#u8
+  ok { x0 := a4, x1 := a5, larger_root := i, invalid := i1, undecided := i2 }
+
+/-- [silver_bls_simd::decompress_g2::point]:
+    Source: 'crates/bls_simd/src/decompress_g2.rs', lines 84:0-89:1 -/
+def decompress_g2.point
+  (x0 : Array Std.U64 6#usize) (x1 : Array Std.U64 6#usize)
+  (y0 : Array Std.U64 6#usize) (y1 : Array Std.U64 6#usize) :
+  Result blst.blst_p2_affine
+  := do
+  ok
+    {
+      x := { fp := (Array.make 2#usize [ { l := x0 }, { l := x1 } ]) },
+      y := { fp := (Array.make 2#usize [ { l := y0 }, { l := y1 } ]) }
+    }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::is_zero_mask]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 120:4-122:5
+    Visibility: public -/
+def fp2x8.Fp2x8.is_zero_mask (self : fp2x8.Fp2x8) : Result Std.U8 := do
+  let i ← fp8.Fp8.is_zero_mask self.c0
+  let i1 ← fp8.Fp8.is_zero_mask self.c1
+  ok (i &&& i1)
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::add]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 45:4-47:5
+    Visibility: public -/
+def fp2x8.Fp2x8.add
+  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.add self.c0 rhs.c0
+  let f1 ← fp8.Fp8.add self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::double]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 57:4-59:5
+    Visibility: public -/
+def fp2x8.Fp2x8.double (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  fp2x8.Fp2x8.add self self
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::sub]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 51:4-53:5
+    Visibility: public -/
+def fp2x8.Fp2x8.sub
+  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.sub self.c0 rhs.c0
+  let f1 ← fp8.Fp8.sub self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::square]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 37:4-41:5
+    Visibility: public -/
+def fp2x8.Fp2x8.square (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.add self.c0 self.c1
+  let f1 ← fp8.Fp8.sub self.c0 self.c1
+  let c0 ← fp8.Fp8.mul f f1
+  let f2 ← fp8.Fp8.mul self.c0 self.c1
+  let c1 ← fp8.Fp8.double f2
+  ok { c0, c1 }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::mul]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 28:4-33:5
+    Visibility: public -/
+def fp2x8.Fp2x8.mul
+  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let v0 ← fp8.Fp8.mul self.c0 rhs.c0
+  let v1 ← fp8.Fp8.mul self.c1 rhs.c1
+  let f ← fp8.Fp8.add self.c0 self.c1
+  let f1 ← fp8.Fp8.add rhs.c0 rhs.c1
+  let s ← fp8.Fp8.mul f f1
+  let f2 ← fp8.Fp8.sub v0 v1
+  let f3 ← fp8.Fp8.sub s v0
+  let f4 ← fp8.Fp8.sub f3 v1
+  ok { c0 := f2, c1 := f4 }
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::add_affine]:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 45:4-60:5
+    Visibility: public -/
+def g2x8.G2x8.add_affine
+  (self : g2x8.G2x8) (qx : fp2x8.Fp2x8) (qy : fp2x8.Fp2x8) :
+  Result (g2x8.G2x8 × Std.U8)
+  := do
+  let z1z1 ← fp2x8.Fp2x8.square self.z
+  let u2 ← fp2x8.Fp2x8.mul qx z1z1
+  let fx ← fp2x8.Fp2x8.mul qy self.z
+  let s2 ← fp2x8.Fp2x8.mul fx z1z1
+  let h ← fp2x8.Fp2x8.sub u2 self.x
+  let hh ← fp2x8.Fp2x8.square h
+  let fx1 ← fp2x8.Fp2x8.double hh
+  let i ← fp2x8.Fp2x8.double fx1
+  let j ← fp2x8.Fp2x8.mul h i
+  let fx2 ← fp2x8.Fp2x8.sub s2 self.y
+  let r ← fp2x8.Fp2x8.double fx2
+  let v ← fp2x8.Fp2x8.mul self.x i
+  let fx3 ← fp2x8.Fp2x8.square r
+  let fx4 ← fp2x8.Fp2x8.sub fx3 j
+  let fx5 ← fp2x8.Fp2x8.double v
+  let x3 ← fp2x8.Fp2x8.sub fx4 fx5
+  let fx6 ← fp2x8.Fp2x8.sub v x3
+  let fx7 ← fp2x8.Fp2x8.mul r fx6
+  let fx8 ← fp2x8.Fp2x8.mul self.y j
+  let fx9 ← fp2x8.Fp2x8.double fx8
+  let y3 ← fp2x8.Fp2x8.sub fx7 fx9
+  let fx10 ← fp2x8.Fp2x8.add self.z h
+  let fx11 ← fp2x8.Fp2x8.square fx10
+  let fx12 ← fp2x8.Fp2x8.sub fx11 z1z1
+  let z3 ← fp2x8.Fp2x8.sub fx12 hh
+  let i1 ← fp2x8.Fp2x8.is_zero_mask h
+  let i2 ← fp2x8.Fp2x8.is_zero_mask self.z
+  let undecided ← lift (i1 ||| i2)
+  ok ({ x := x3, y := y3, z := z3 }, undecided)
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::double]:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 28:4-40:5
+    Visibility: public -/
+def g2x8.G2x8.double (self : g2x8.G2x8) : Result (g2x8.G2x8 × Std.U8) := do
+  let a ← fp2x8.Fp2x8.square self.x
+  let b ← fp2x8.Fp2x8.square self.y
+  let c ← fp2x8.Fp2x8.square b
+  let fx ← fp2x8.Fp2x8.add self.x b
+  let fx1 ← fp2x8.Fp2x8.square fx
+  let fx2 ← fp2x8.Fp2x8.sub fx1 a
+  let fx3 ← fp2x8.Fp2x8.sub fx2 c
+  let d ← fp2x8.Fp2x8.double fx3
+  let fx4 ← fp2x8.Fp2x8.double a
+  let e ← fp2x8.Fp2x8.add fx4 a
+  let f ← fp2x8.Fp2x8.square e
+  let fx5 ← fp2x8.Fp2x8.double d
+  let x3 ← fp2x8.Fp2x8.sub f fx5
+  let fx6 ← fp2x8.Fp2x8.sub d x3
+  let fx7 ← fp2x8.Fp2x8.mul e fx6
+  let fx8 ← fp2x8.Fp2x8.double c
+  let fx9 ← fp2x8.Fp2x8.double fx8
+  let fx10 ← fp2x8.Fp2x8.double fx9
+  let y3 ← fp2x8.Fp2x8.sub fx7 fx10
+  let fx11 ← fp2x8.Fp2x8.mul self.y self.z
+  let z3 ← fp2x8.Fp2x8.double fx11
+  let i ← fp2x8.Fp2x8.is_zero_mask self.y
+  let i1 ← fp2x8.Fp2x8.is_zero_mask self.z
+  let undecided ← lift (i ||| i1)
+  ok ({ x := x3, y := y3, z := z3 }, undecided)
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::one]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 22:4-24:5
+    Visibility: public -/
+def fp2x8.Fp2x8.one : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.one
+  let f1 ← fp8.Fp8.zero
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]: loop body 0:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 70:8-85:9 -/
+@[rust_loop_body]
+def g2x8.G2x8.times_minus_z_loop.body
+  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) (undecided : Std.U8) (r : g2x8.G2x8)
+  (bit : Std.U32) :
+  Result (ControlFlow (Std.U8 × g2x8.G2x8 × Std.U32) (g2x8.G2x8 × Std.U8))
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let (d, u) ← g2x8.G2x8.double r
+    let undecided1 ← lift (undecided ||| u)
+    let i ← Array.index_usize constants.Z_BITS 1#usize
+    if bit1 = i
+    then
+      let (a, u1) ← g2x8.G2x8.add_affine d px py
+      let undecided2 ← lift (undecided1 ||| u1)
+      ok (cont (undecided2, a, bit1))
+    else
+      let i1 ← Array.index_usize constants.Z_BITS 2#usize
+      if bit1 = i1
+      then
+        let (a, u1) ← g2x8.G2x8.add_affine d px py
+        let undecided2 ← lift (undecided1 ||| u1)
+        ok (cont (undecided2, a, bit1))
+      else
+        let i2 ← Array.index_usize constants.Z_BITS 3#usize
+        if bit1 = i2
+        then
+          let (a, u1) ← g2x8.G2x8.add_affine d px py
+          let undecided2 ← lift (undecided1 ||| u1)
+          ok (cont (undecided2, a, bit1))
+        else
+          let i3 ← Array.index_usize constants.Z_BITS 4#usize
+          if bit1 = i3
+          then
+            let (a, u1) ← g2x8.G2x8.add_affine d px py
+            let undecided2 ← lift (undecided1 ||| u1)
+            ok (cont (undecided2, a, bit1))
+          else
+            let i4 ← Array.index_usize constants.Z_BITS 5#usize
+            if bit1 = i4
+            then
+              let (a, u1) ← g2x8.G2x8.add_affine d px py
+              let undecided2 ← lift (undecided1 ||| u1)
+              ok (cont (undecided2, a, bit1))
+            else ok (cont (undecided1, d, bit1))
+  else ok (done (r, undecided))
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]: loop 0:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 70:8-85:9 -/
+@[rust_loop]
+def g2x8.G2x8.times_minus_z_loop
+  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) (undecided : Std.U8) (r : g2x8.G2x8)
+  (bit : Std.U32) :
+  Result (g2x8.G2x8 × Std.U8)
+  := do
+  loop
+    (fun (undecided1, r1, bit1) => g2x8.G2x8.times_minus_z_loop.body px py
+      undecided1 r1 bit1)
+    (undecided, r, bit)
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::times_minus_z]:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 66:4-87:5 -/
+def g2x8.G2x8.times_minus_z
+  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) : Result (g2x8.G2x8 × Std.U8) := do
+  let fx ← fp2x8.Fp2x8.one
+  let bit ← Array.index_usize constants.Z_BITS 0#usize
+  g2x8.G2x8.times_minus_z_loop px py 0#u8 { x := px, y := py, z := fx } bit
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::eq_mask]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 114:4-116:5
+    Visibility: public -/
+def fp2x8.Fp2x8.eq_mask
+  (self : fp2x8.Fp2x8) (rhs : fp2x8.Fp2x8) : Result Std.U8 := do
+  let i ← fp8.Fp8.eq_mask self.c0 rhs.c0
+  let i1 ← fp8.Fp8.eq_mask self.c1 rhs.c1
+  ok (i &&& i1)
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::conjugate]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 69:4-71:5
+    Visibility: public -/
+def fp2x8.Fp2x8.conjugate (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.neg self.c1
+  ok { self with c1 := f }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::neg]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 63:4-65:5
+    Visibility: public -/
+def fp2x8.Fp2x8.neg (self : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
+  let f ← fp8.Fp8.neg self.c0
+  let f1 ← fp8.Fp8.neg self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::splat]:
+    Source: 'crates/bls_simd/src/fp2x8.rs', lines 16:4-18:5
+    Visibility: public -/
+def fp2x8.Fp2x8.splat
+  (limbs : Array (Array Std.U64 8#usize) 2#usize) : Result fp2x8.Fp2x8 := do
+  let a ← Array.index_usize limbs 0#usize
+  let f ← fp8.Fp8.splat_limbs a
+  let a1 ← Array.index_usize limbs 1#usize
+  let f1 ← fp8.Fp8.splat_limbs a1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_bls_simd::g2x8::{silver_bls_simd::g2x8::G2x8}::scott_membership]:
+    Source: 'crates/bls_simd/src/g2x8.rs', lines 92:4-104:5
+    Visibility: public -/
+def g2x8.G2x8.scott_membership
+  (px : fp2x8.Fp2x8) (py : fp2x8.Fp2x8) : Result Membership := do
+  let (mzp, chain_undecided) ← g2x8.G2x8.times_minus_z px py
+  let i ← fp2x8.Fp2x8.is_zero_mask mzp.z
+  let undecided ← lift (chain_undecided ||| i)
+  let psi_scale ← fp8.Fp8.splat_limbs constants.PSI_X_MONT
+  let f ← fp8.Fp8.mul px.c1 psi_scale
+  let f1 ← fp8.Fp8.mul px.c0 psi_scale
+  let fx ← fp2x8.Fp2x8.conjugate py
+  let fx1 ← fp2x8.Fp2x8.splat constants.PSI_Y_MONT
+  let psi_y ← fp2x8.Fp2x8.mul fx fx1
+  let zz ← fp2x8.Fp2x8.square mzp.z
+  let zzz ← fp2x8.Fp2x8.mul zz mzp.z
+  let fx2 ← fp2x8.Fp2x8.mul { c0 := f, c1 := f1 } zz
+  let x_matches ← fp2x8.Fp2x8.eq_mask mzp.x fx2
+  let fx3 ← fp2x8.Fp2x8.neg mzp.y
+  let fx4 ← fp2x8.Fp2x8.mul psi_y zzz
+  let y_matches ← fp2x8.Fp2x8.eq_mask fx3 fx4
+  let i1 ← lift (x_matches &&& y_matches)
+  let i2 ← lift (~~~ undecided)
+  let i3 ← lift (i1 &&& i2)
+  ok { members := i3, undecided }
 
 /-- [silver_bls_simd::fp2x8::{silver_bls_simd::fp2x8::Fp2x8}::is_larger_root_mask]:
     Source: 'crates/bls_simd/src/fp2x8.rs', lines 109:4-111:5
@@ -1568,114 +2109,6 @@ def fp2x8.Fp2x8.is_larger_root_mask (self : fp2x8.Fp2x8) : Result Std.U8 := do
   let i2 ← fp8.Fp8.is_zero_mask self.c1
   let i3 ← lift (i1 &&& i2)
   ok (i ||| i3)
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::square]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 275:4-277:5
-    Visibility: public -/
-def fp8.Fp8.square (self : fp8.Fp8) : Result fp8.Fp8 := do
-  fp8.Fp8.mul self self
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 0:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 358:8-360:9
-    Visibility: public -/
-@[rust_loop_body]
-def fp8.Fp8.pow_p_minus_3_over_4_loop0.body
-  (self : fp8.Fp8) (iter : core.ops.range.Range Std.Usize)
-  (table : Array fp8.Fp8 16#usize) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array fp8.Fp8
-    16#usize)) (Array fp8.Fp8 16#usize))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done table)
-  | some k =>
-    let i ← k - 1#usize
-    let f ← Array.index_usize table i
-    let f1 ← fp8.Fp8.mul f self
-    let a ← Array.update table k f1
-    ok (cont (iter1, a))
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop 0:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 358:8-360:9
-    Visibility: public -/
-@[rust_loop]
-def fp8.Fp8.pow_p_minus_3_over_4_loop0
-  (iter : core.ops.range.Range Std.Usize) (self : fp8.Fp8)
-  (table : Array fp8.Fp8 16#usize) :
-  Result (Array fp8.Fp8 16#usize)
-  := do
-  loop
-    (fun (iter1, table1) => fp8.Fp8.pow_p_minus_3_over_4_loop0.body self iter1
-      table1)
-    (iter, table)
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 1:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 363:8-370:9
-    Visibility: public -/
-@[rust_loop_body]
-def fp8.Fp8.pow_p_minus_3_over_4_loop1.body
-  (table : Array fp8.Fp8 16#usize) (r : fp8.Fp8) (w : Std.Usize) :
-  Result (ControlFlow (fp8.Fp8 × Std.Usize) fp8.Fp8)
-  := do
-  if w > 0#usize
-  then
-    let w1 ← w - 1#usize
-    let f ← fp8.Fp8.square r
-    let f1 ← fp8.Fp8.square f
-    let f2 ← fp8.Fp8.square f1
-    let r1 ← fp8.Fp8.square f2
-    let i ← Array.index_usize constants.P_MINUS_3_OVER_4_WINDOWS w1
-    let digit ← lift (UScalar.cast .Usize i)
-    if digit != 0#usize
-    then
-      let f3 ← Array.index_usize table digit
-      let r2 ← fp8.Fp8.mul r1 f3
-      ok (cont (r2, w1))
-    else ok (cont (r1, w1))
-  else ok (done r)
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]: loop 1:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 363:8-370:9
-    Visibility: public -/
-@[rust_loop]
-def fp8.Fp8.pow_p_minus_3_over_4_loop1
-  (table : Array fp8.Fp8 16#usize) (r : fp8.Fp8) (w : Std.Usize) :
-  Result fp8.Fp8
-  := do
-  loop
-    (fun (r1, w1) => fp8.Fp8.pow_p_minus_3_over_4_loop1.body table r1 w1)
-    (r, w)
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::pow_p_minus_3_over_4]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 355:4-372:5
-    Visibility: public -/
-def fp8.Fp8.pow_p_minus_3_over_4 (self : fp8.Fp8) : Result fp8.Fp8 := do
-  let f ← fp8.Fp8.one
-  let table := Array.repeat 16#usize f
-  let a ← Array.update table 1#usize self
-  let table1 ←
-    fp8.Fp8.pow_p_minus_3_over_4_loop0
-      { start := 2#usize, «end» := 16#usize } self a
-  let i ← Array.index_usize constants.P_MINUS_3_OVER_4_WINDOWS 94#usize
-  let i1 ← lift (UScalar.cast .Usize i)
-  let r ← Array.index_usize table1 i1
-  fp8.Fp8.pow_p_minus_3_over_4_loop1 table1 r 94#usize
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::sqrt_candidate]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 377:4-379:5
-    Visibility: public -/
-def fp8.Fp8.sqrt_candidate (self : fp8.Fp8) : Result fp8.Fp8 := do
-  let f ← fp8.Fp8.pow_p_minus_3_over_4 self
-  fp8.Fp8.mul f self
-
-/-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::select]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 347:4-349:5
-    Visibility: public -/
-def fp8.Fp8.select
-  (k : Std.U8) (a : fp8.Fp8) (b : fp8.Fp8) : Result fp8.Fp8 := do
-  let a1 ← fp8.blend k a b
-  ok a1
 
 /-- [silver_bls_simd::fp8::{silver_bls_simd::fp8::Fp8}::half]:
     Source: 'crates/bls_simd/src/fp8.rs', lines 318:4-320:5
@@ -1830,5 +2263,215 @@ def decompress_g2.decompress
         decompress_g2.decompress_loop
           { start := 0#usize, «end» := fp8.LANES } a x0 x1 y0 y1
       ok { points := a1, on_curve := i1, valid := i7, undecided := i4 }
+
+/-- [silver_bls_simd::LANES]
+    Source: 'crates/bls_simd/src/lib.rs', lines 51:0-51:23 -/
+@[global_simps, irreducible] def LANES : Std.Usize := 8#usize
+
+/-- [silver_bls_simd::decompress_g1_chunk]: loop body 0:
+    Source: 'crates/bls_simd/src/lib.rs', lines 118:4-127:5 -/
+@[rust_loop_body]
+def decompress_g1_chunk_loop.body
+  (chunk : Array (Array Std.U8 48#usize) 8#usize) (batch : decompress.Batch)
+  (iter : core.ops.range.Range Std.Usize)
+  (out : Slice (Option blst.blst_p1_affine)) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
+    blst.blst_p1_affine))) (Slice (Option blst.blst_p1_affine)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some lane =>
+    let bit ← 1#u8 <<< lane
+    let i ← lift (batch.undecided &&& bit)
+    let (iter2, o1) ←
+      if i != 0#u8
+      then
+        do
+        let a ← Array.index_usize chunk lane
+        let o2 ← uncompress_in_g1_blst a
+        ok (iter1, o2)
+      else
+        do
+        let i1 ← lift (batch.valid &&& bit)
+        let o2 ←
+          if i1 != 0#u8
+          then do
+               let bpa ← Array.index_usize batch.points lane
+               ok (some bpa)
+          else ok none
+        ok (iter1, o2)
+    let s ← Slice.update out lane o1
+    ok (cont (iter2, s))
+
+/-- [silver_bls_simd::decompress_g1_chunk]: loop 0:
+    Source: 'crates/bls_simd/src/lib.rs', lines 118:4-127:5 -/
+@[rust_loop]
+def decompress_g1_chunk_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (chunk : Array (Array Std.U8 48#usize) 8#usize)
+  (out : Slice (Option blst.blst_p1_affine)) (batch : decompress.Batch) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  loop
+    (fun (iter1, out1) => decompress_g1_chunk_loop.body chunk batch iter1 out1)
+    (iter, out)
+
+/-- [silver_bls_simd::decompress_g1_chunk]:
+    Source: 'crates/bls_simd/src/lib.rs', lines 115:0-128:1 -/
+def decompress_g1_chunk
+  (chunk : Array (Array Std.U8 48#usize) 8#usize)
+  (out : Slice (Option blst.blst_p1_affine)) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  let batch ← decompress.decompress chunk
+  decompress_g1_chunk_loop { start := 0#usize, «end» := LANES } chunk out
+    batch
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop body 1:
+    Source: 'crates/bls_simd/src/lib.rs', lines 102:12-104:13
+    Visibility: public -/
+@[rust_loop_body]
+def uncompress_in_g1_loop0_loop0.body
+  (inputs : Slice (Array Std.U8 48#usize)) (start : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (out : Slice (Option blst.blst_p1_affine)) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
+    blst.blst_p1_affine))) (Slice (Option blst.blst_p1_affine)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some lane =>
+    let i ← start + lane
+    let a ← Slice.index_usize inputs i
+    let o1 ← uncompress_in_g1_blst a
+    let s ← Slice.update out i o1
+    ok (cont (iter1, s))
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop 1:
+    Source: 'crates/bls_simd/src/lib.rs', lines 102:12-104:13
+    Visibility: public -/
+@[rust_loop]
+def uncompress_in_g1_loop0_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  loop
+    (fun (iter1, out1) => uncompress_in_g1_loop0_loop0.body inputs start iter1
+      out1)
+    (iter, out)
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop body 0:
+    Source: 'crates/bls_simd/src/lib.rs', lines 96:4-107:5
+    Visibility: public -/
+@[rust_loop_body]
+def uncompress_in_g1_loop0.body
+  (inputs : Slice (Array Std.U8 48#usize)) («full» : Std.Usize)
+  (out : Slice (Option blst.blst_p1_affine)) (simd : Bool) (start : Std.Usize)
+  :
+  Result (ControlFlow ((Slice (Option blst.blst_p1_affine)) × Bool ×
+    Std.Usize) ((Slice (Option blst.blst_p1_affine)) × Std.Usize))
+  := do
+  if start < «full»
+  then
+    if simd
+    then
+      let a := Array.repeat 48#usize 0#u8
+      let chunk := Array.repeat 8#usize a
+      let (s, to_slice_mut_back) ← lift (Array.to_slice_mut chunk)
+      let i ← start + LANES
+      let s1 ←
+        core.slice.index.Slice.index
+          (core.slice.index.SliceIndexRangeUsizeSlice (Array Std.U8 48#usize))
+          inputs { start, «end» := i }
+      let s2 ←
+        core.slice.Slice.copy_from_slice (Array.Insts.CoreMarkerCopy 48#usize
+          core.marker.CopyU8) s s1
+      let chunk1 := to_slice_mut_back s2
+      let (s3, index_mut_back) ←
+        core.slice.index.Slice.index_mut
+          (core.slice.index.SliceIndexRangeUsizeSlice (Option
+          blst.blst_p1_affine)) out { start, «end» := i }
+      let s4 ← decompress_g1_chunk chunk1 s3
+      let out1 := index_mut_back s4
+      ok (cont (out1, true, i))
+    else
+      let out1 ←
+        uncompress_in_g1_loop0_loop0 { start := 0#usize, «end» := LANES }
+          inputs out start
+      let start1 ← start + LANES
+      ok (cont (out1, false, start1))
+  else ok (done (out, start))
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop 0:
+    Source: 'crates/bls_simd/src/lib.rs', lines 96:4-107:5
+    Visibility: public -/
+@[rust_loop]
+def uncompress_in_g1_loop0
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) (simd : Bool) («full» : Std.Usize)
+  (start : Std.Usize) :
+  Result ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
+  := do
+  loop
+    (fun (out1, simd1, start1) => uncompress_in_g1_loop0.body inputs «full» out1
+      simd1 start1)
+    (out, simd, start)
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop body 2:
+    Source: 'crates/bls_simd/src/lib.rs', lines 108:4-111:5
+    Visibility: public -/
+@[rust_loop_body]
+def uncompress_in_g1_loop1.body
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
+  Result (ControlFlow ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
+    (Slice (Option blst.blst_p1_affine)))
+  := do
+  let i := Slice.len inputs
+  if start < i
+  then
+    let a ← Slice.index_usize inputs start
+    let o ← uncompress_in_g1_blst a
+    let s ← Slice.update out start o
+    let start1 ← start + 1#usize
+    ok (cont (s, start1))
+  else ok (done out)
+
+/-- [silver_bls_simd::uncompress_in_g1]: loop 2:
+    Source: 'crates/bls_simd/src/lib.rs', lines 108:4-111:5
+    Visibility: public -/
+@[rust_loop]
+def uncompress_in_g1_loop1
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  loop
+    (fun (out1, start1) => uncompress_in_g1_loop1.body inputs out1 start1)
+    (out, start)
+
+/-- [silver_bls_simd::uncompress_in_g1]:
+    Source: 'crates/bls_simd/src/lib.rs', lines 91:0-112:1
+    Visibility: public -/
+def uncompress_in_g1
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  let i := Slice.len out
+  let i1 := Slice.len inputs
+  massert (i = i1)
+  let simd ← simd_available
+  let i2 := Slice.len inputs
+  let i3 ← i2 / LANES
+  let «full» ← i3 * LANES
+  let (out1, start) ← uncompress_in_g1_loop0 inputs out simd «full» 0#usize
+  uncompress_in_g1_loop1 inputs out1 start
 
 end silver_bls_simd

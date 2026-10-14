@@ -28,6 +28,15 @@ structure blst.blst_fp where
 structure blst.blst_fp2 where
   fp : Array blst.blst_fp 2#usize
 
+/-- [blst::blst_p1_affine]
+    Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 481:0-481:25
+    Name pattern: [blst::blst_p1_affine]
+    Visibility: public -/
+@[rust_type "blst::blst_p1_affine"]
+structure blst.blst_p1_affine where
+  x : blst.blst_fp
+  y : blst.blst_fp
+
 /-- [blst::blst_p2_affine]
     Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 635:0-635:25
     Name pattern: [blst::blst_p2_affine]
@@ -36,6 +45,43 @@ structure blst.blst_fp2 where
 structure blst.blst_p2_affine where
   x : blst.blst_fp2
   y : blst.blst_fp2
+
+/-- [silver_bls_simd::decompress::Batch]
+    Source: 'crates/bls_simd/src/decompress.rs', lines 18:0-25:1
+    Visibility: public -/
+structure decompress.Batch where
+  points : Array blst.blst_p1_affine 8#usize
+  valid : Std.U8
+  undecided : Std.U8
+
+/-- [silver_bls_simd::decompress::Decoded]
+    Source: 'crates/bls_simd/src/decompress.rs', lines 27:0-34:1 -/
+structure decompress.Decoded where
+  x : Array (Array Std.U64 8#usize) 8#usize
+  larger_root : Std.U8
+  invalid : Std.U8
+  undecided : Std.U8
+
+/-- [silver_bls_simd::Membership]
+    Source: 'crates/bls_simd/src/lib.rs', lines 59:0-62:1
+    Visibility: public -/
+structure Membership where
+  members : Std.U8
+  undecided : Std.U8
+
+/-- [silver_bls_simd::fp8::Fp8]
+    Source: 'crates/bls_simd/src/fp8.rs', lines 25:0-25:37
+    Visibility: public -/
+@[reducible]
+def fp8.Fp8 := Array core.core_arch.x86.__m512i 8#usize
+
+/-- [silver_bls_simd::g1x8::G1x8]
+    Source: 'crates/bls_simd/src/g1x8.rs', lines 17:0-21:1
+    Visibility: public -/
+structure g1x8.G1x8 where
+  x : fp8.Fp8
+  y : fp8.Fp8
+  z : fp8.Fp8
 
 /-- [silver_bls_simd::decompress_g2::Batch]
     Source: 'crates/bls_simd/src/decompress_g2.rs', lines 23:0-33:1
@@ -54,19 +100,6 @@ structure decompress_g2.Decoded where
   larger_root : Std.U8
   invalid : Std.U8
   undecided : Std.U8
-
-/-- [silver_bls_simd::Membership]
-    Source: 'crates/bls_simd/src/lib.rs', lines 50:0-53:1
-    Visibility: public -/
-structure Membership where
-  members : Std.U8
-  undecided : Std.U8
-
-/-- [silver_bls_simd::fp8::Fp8]
-    Source: 'crates/bls_simd/src/fp8.rs', lines 25:0-25:37
-    Visibility: public -/
-@[reducible]
-def fp8.Fp8 := Array core.core_arch.x86.__m512i 8#usize
 
 /-- [silver_bls_simd::fp2x8::Fp2x8]
     Source: 'crates/bls_simd/src/fp2x8.rs', lines 8:0-11:1
