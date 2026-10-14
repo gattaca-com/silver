@@ -74,11 +74,12 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
                 start.wait();
 
                 // Honouring `stop` alone lets a loaded machine deschedule a
-                // reader for the writer's whole run and validate nothing. The
-                // last published state is stable and passes every check below,
-                // so waiting for one accepted read always converges.
-                let mut validated = false;
-                while !validated || !stop.load(Ordering::Acquire) {
+                // reader for the writer's whole run and validate nothing, or
+                // see only pre-finalize reads. The last published state is
+                // stable, promoted, and passes every check below, so waiting
+                // for one accepted promoted read always converges.
+                let mut validated_promoted = false;
+                while !validated_promoted || !stop.load(Ordering::Acquire) {
                     let Some((errs, has_delta, promoted)) = reader.read(|v| {
                         let fin_slot = v.slot.base_state().slot;
                         let head_slot = v.slot.slot_number();
@@ -101,7 +102,7 @@ fn fuzz_concurrent_reads_observe_consistent_state() {
 
                     accepted.fetch_add(1, Ordering::Relaxed);
                     bad.fetch_add(errs, Ordering::Relaxed);
-                    validated = true;
+                    validated_promoted |= promoted;
                     if has_delta {
                         saw_delta.store(true, Ordering::Relaxed);
                     }
