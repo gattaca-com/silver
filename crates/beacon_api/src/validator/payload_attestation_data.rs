@@ -17,6 +17,10 @@ pub(crate) fn payload_attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &m
     if !ctx.follows_chain(resp) {
         return;
     }
+    if ctx.node_status.execution_optimistic() {
+        resp.error(503, "the head is optimistic, and validators must not attest to it");
+        return;
+    }
     let Some(slot) = uint64_query(req, "slot") else {
         resp.error(400, "slot is a required Uint64 query parameter");
         return;
@@ -27,10 +31,6 @@ pub(crate) fn payload_attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &m
     }
     if slot > ctx.node_status.wall_slot {
         resp.error(400, "slot is past the current slot");
-        return;
-    }
-    if ctx.node_status.execution_optimistic() {
-        resp.error(503, "the head is optimistic, and validators must not attest to it");
         return;
     }
     let observed = ctx.node_status.head_ptc;

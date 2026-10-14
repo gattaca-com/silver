@@ -1,5 +1,6 @@
 use std::iter;
 
+use rustc_hash::FxHashSet;
 use silver_beacon_state_data::{
     BLSPubkey, Epoch, SLOTS_PER_EPOCH, ShufflingId, Slot, StateReadView, gloas::PtcCommittee,
 };
@@ -54,7 +55,7 @@ pub(crate) fn post_ptc_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respon
             json.ptc_duties(
                 id.dependent_root,
                 optimistic,
-                PtcDuty::read_epoch(&view, committees, epoch, &indices).into_iter(),
+                PtcDuty::read_epoch(&view, committees, epoch, &indices),
             );
             Ok(())
         })
@@ -75,28 +76,30 @@ impl PtcDuty {
     /// Nimbus answer: balance-weighted selection can seat a validator in
     /// several slots, and spec `get_ptc_assignment` names only the first.
     /// `indices` is sorted.
-    fn read_epoch(
-        view: &StateReadView<'_>,
-        committees: &[PtcCommittee],
+    fn read_epoch<'a>(
+        view: &'a StateReadView<'_>,
+        committees: &'a [PtcCommittee],
         epoch: Epoch,
-        indices: &[u64],
-    ) -> Vec<Self> {
-        let mut duties = Vec::new();
-        let mut members = Vec::new();
-        for (slot_in_epoch, committee) in committees.iter().enumerate() {
-            members.clear();
-            members.extend(committee.iter().filter(|ix| indices.binary_search(ix).is_ok()));
-            members.sort_unstable();
-            members.dedup();
+        indices: &'a [u64],
+    ) -> impl Iterator<Item = Self> + 'a {
+        committees.iter().enumerate().flat_map(move |(slot_in_epoch, committee)| {
             let slot = epoch * SLOTS_PER_EPOCH + slot_in_epoch as u64;
-            duties.extend(members.iter().filter_map(|&validator_index| {
-                let ix = usize::try_from(validator_index)
-                    .ok()
-                    .filter(|&ix| ix < view.validators.count())?;
-                Some(Self { pubkey: *view.validators.pubkey(ix), validator_index, slot })
-            }));
-        }
-        duties
+
+            // The committee may contain duplicates (a/c the spec) so we need top remove
+            // any.
+            let mut seen = FxHashSet::default();
+
+            committee
+                .iter()
+                .filter(|ix| indices.binary_search(ix).is_ok())
+                .filter(move |ix| seen.insert(*ix))
+                .filter_map(move |&validator_index| {
+                    let ix = usize::try_from(validator_index)
+                        .ok()
+                        .filter(move |&ix| ix < view.validators.count())?;
+                    Some(Self { pubkey: *view.validators.pubkey(ix), validator_index, slot })
+                })
+        })
     }
 }
 
