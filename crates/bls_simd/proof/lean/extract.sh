@@ -89,7 +89,9 @@ if source.count(anchor) != 1:
     raise SystemExit("expected exactly one silver_bls_simd namespace")
 source = source.replace(anchor, anchor + "\nvariable [G1Externals]\n", 1)
 # `full` is a keyword in the imported Lean environment. Quoting preserves its name.
-source = re.sub(r"\bfull\b", "«full»", source)
+source, full_count = re.subn(r"\bfull\b", "«full»", source)
+if full_count != 6:
+    raise SystemExit(f"expected six generated full identifiers, found {full_count}")
 path.write_text(source)
 PY
 

@@ -1,0 +1,13 @@
+name = "g1_downstream_smoke"
+defaultTargets = ["Smoke"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[require]]
+name = "lean_bls_simd"
+path = "../.."
+
+[[lean_lib]]
+name = "Smoke"
