@@ -1,16 +1,12 @@
 # Maintaining the G2 decompression proof
 
-## G1 refinement (M2)
+## G1 correctness (M3)
 
-The G1 extraction refinements are proved and covered by the default axiom guard. The specification proofs and public correctness theorem still contain `sorry` and are not part of the default library root. Check that API separately with:
+The G1 extraction refinements, model/spec proofs, Scott criterion, KZG bridges and public correctness theorem are proved and covered by the default axiom guard. `lake build` checks them together with G2. The public import is `LeanBlsSimd.Refines.UncompressG1`.
 
-```sh
-lake build LeanBlsSimd.Refines.UncompressG1
-```
+`Model/G1x8.lean`, `Model/DecompressG1.lean` and `Model/UncompressG1.lean` contain executable definitions. `Refines/G1.lean` imports exact extraction refinements for the group operations, decoder, kernel and public wrapper. `Spec/G1.lean` imports Scott's criterion and the KZG acceptance and layout bridges. `Proofs/G1.lean` imports decided-lane formula and kernel correctness. `Refines/UncompressG1.lean` contains the public pointwise and list-form results, with the named `BlstMatchesSpec` premise. Paths are relative to `LeanBlsSimd/`.
 
-`Model/G1x8.lean`, `Model/DecompressG1.lean` and `Model/UncompressG1.lean` contain executable definitions. `Refines/G1.lean` imports exact extraction refinements for the group operations, decoder, kernel and public wrapper. `Spec/G1.lean` states Scott's criterion and the KZG acceptance and layout bridges. `Proofs/G1.lean` states decided-lane formula and kernel correctness. `Refines/UncompressG1.lean` contains the proposed public theorem and corollary. Paths are relative to `LeanBlsSimd/`.
-
-Do not add `sorryAx` to `acceptedAxioms`. The unfinished G1 statements still print it at M2; the generated wrapper itself must use only `propext`, `Classical.choice` and `Quot.sound`. Continue to run `lake build` for the complete G2 proof, G1 refinements and their guard.
+`acceptedAxioms` remains empty: the complete G1 and G2 proof closures use only `propext`, `Classical.choice` and `Quot.sound`. M4 controls and differential validation are in progress.
 
 The extraction includes both G1's public wrapper and G2's kernel. `extract.sh` inserts a `G1Externals` instance parameter and quotes the identifier `full` after Aeneas runs. These deterministic adaptations are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`.
 

@@ -14,7 +14,7 @@ import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Refines.Kernel
 import LeanBlsSimd.Refines.Complete
-import LeanBlsSimd.Refines.G1
+import LeanBlsSimd.Refines.UncompressG1
 
 /-!
 Fails the build if any theorem under `LeanBlsSimd`, or any of `checkedDefinitions`, uses an axiom
