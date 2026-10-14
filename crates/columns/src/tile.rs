@@ -1547,6 +1547,7 @@ mod tests {
             head_roots: None,
             head_payload: PayloadResolution::Full,
             head_ptc: Default::default(),
+            build_on_full: true,
             head_change: HeadChange::None,
             epoch_transition: false,
         }

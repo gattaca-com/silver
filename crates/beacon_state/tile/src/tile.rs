@@ -631,6 +631,7 @@ impl BeaconStateTile {
             .fork_choice
             .parent(head.idx)
             .is_some_and(|parent| epoch > parent.slot / SLOTS_PER_EPOCH);
+        let build_on_full = self.fork_choice.should_build_on_full(head.idx, node.slot + 1);
 
         BeaconStateEvent::Status {
             ssz: self.status_payload(curr.root, head.idx),
@@ -641,6 +642,7 @@ impl BeaconStateTile {
             head_roots: roots,
             head_payload: curr.payload,
             head_ptc,
+            build_on_full,
             head_change,
             epoch_transition,
         }

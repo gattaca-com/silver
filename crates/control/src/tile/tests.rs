@@ -254,6 +254,7 @@ fn status_published_before_the_first_loop_is_received() {
         head_roots: None,
         head_payload: PayloadResolution::Full,
         head_ptc: Default::default(),
+        build_on_full: true,
         head_change: HeadChange::None,
         epoch_transition: false,
     });
@@ -351,6 +352,7 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
         head_roots: None,
         head_payload: PayloadResolution::Full,
         head_ptc: Default::default(),
+        build_on_full: true,
         head_change: HeadChange::None,
         epoch_transition: false,
     });

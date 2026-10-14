@@ -15,6 +15,7 @@ pub struct NodeStatus {
     pub head_root: B256,
     pub head_payload: PayloadResolution,
     pub head_ptc: PtcObservation,
+    pub build_on_full: bool,
     pub wall_slot: u64,
     pub finalized_epoch: u64,
     /// `None` until the control tile publishes its first target.
@@ -37,6 +38,7 @@ impl NodeStatus {
             head_root,
             head_payload: PayloadResolution::Empty,
             head_ptc: PtcObservation::default(),
+            build_on_full: false,
             wall_slot: 0,
             finalized_epoch: anchor_epoch,
             target: None,

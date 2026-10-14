@@ -501,6 +501,7 @@ fn status_event(head_slot: u64, wall_slot: u64, head_optimistic: bool) -> Beacon
         head_roots: None,
         head_payload: PayloadResolution::Full,
         head_ptc: Default::default(),
+        build_on_full: true,
         head_change: HeadChange::None,
         epoch_transition: false,
     }
@@ -533,6 +534,7 @@ fn head_status(
         head_roots: Some(head_roots()),
         head_payload: payload,
         head_ptc: Default::default(),
+        build_on_full: true,
         head_change,
         epoch_transition: false,
     }

@@ -1228,6 +1228,7 @@ pub enum BeaconStateEvent {
         head_roots: Option<HeadRoots>,
         head_payload: PayloadResolution,
         head_ptc: PtcObservation,
+        build_on_full: bool,
         head_change: HeadChange,
         epoch_transition: bool,
     },
