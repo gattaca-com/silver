@@ -2,10 +2,11 @@ import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.Scott
 import LeanBlsSimd.Spec.Sqrt
+import LeanBlsSimd.Proofs.G1x8
 
-/-! Negative controls for `LeanBlsSimd.Constants`, `LeanBlsSimd.Spec.Fp2`, `LeanBlsSimd.Spec.Scott`
-and `LeanBlsSimd.Spec.Sqrt`. Each `fail_if_success` checks that a proof script rejects a changed
-claim or definition; each plain `example` must pass. Script failure alone does not establish that
+/-! Negative controls for `LeanBlsSimd.Constants`, `LeanBlsSimd.Spec.Fp2`, `LeanBlsSimd.Spec.Scott`,
+`LeanBlsSimd.Spec.Sqrt` and `LeanBlsSimd.Proofs.G1x8`. Each `fail_if_success` checks that a proof
+script rejects a changed claim or definition; each plain `example` must pass. Script failure alone does not establish that
 the changed claim is false; concrete refutations and equivalent mutations are identified below. -/
 
 namespace LeanBlsSimd
@@ -312,5 +313,88 @@ example : True := by
   trivial
 
 example : selectRootSwapped 1 false ≠ Kernel.selectRoot 1 false := by decide +kernel
+
+/-! ## G1 Scott membership without the y negation
+
+The model copy is pinned below. Dropping the negation breaks `scott_membership_iff`'s
+coordinate comparison: the proof needs −T.y, while the mutation compares T.y. -/
+
+namespace G1x8
+
+def scottMembershipWith (negateY : Bool) (px py : Fp8) : Membership :=
+  let (zp, u1) := times_z_affine px py
+  let (zzp, u2) := zp.times_z
+  let undecided := u1 ||| u2 ||| zzp.z.is_zero_mask
+  let beta := Fp8.splat_limbs (.ofList BETA_MONT)
+  let sigma2_x := (px.mul beta).mul beta
+  let zz := zzp.z.square
+  let zzz := zz.mul zzp.z
+  let x_matches := zzp.x.eq_mask (sigma2_x.mul zz)
+  let y_matches := (if negateY then zzp.y.neg else zzp.y).eq_mask (py.mul zzz)
+  ⟨x_matches &&& y_matches &&& ~~~undecided, undecided⟩
+
+example : scottMembershipWith true = scott_membership := rfl
+
+-- The missing negation prevents the original proof from using its y-coordinate rewrite.
+set_option linter.unusedSimpArgs false in
+example : True := by
+  fail_if_success
+    have : ∀ (px py : Fp8) (l : Fin 8) (x y : Fp)
+        (hx : px.Holds l x) (hy : py.Holds l y) (hP : G1.Valid ⟨x, y, Fp.one⟩)
+        (hu : (scottMembershipWith false px py).undecided.toNat.testBit l = false),
+        (scottMembershipWith false px py).members.toNat.testBit l = true ↔
+          G1.inSubgroup ⟨x, y, Fp.one⟩ = true := by
+      intro px py l x y hx hy hP hu
+      have hu' := hu
+      simp only [scottMembershipWith, Bool.false_eq_true, ↓reduceIte,
+        Mmask8.testBit_or, Bool.or_eq_false_iff] at hu'
+      obtain ⟨Q, hQ, hQV, hQP⟩ := times_z_affine_correct px py l x y hx hy hP hu'.1.1
+      obtain ⟨T, hT, hTV, hTP⟩ := times_z_correct (times_z_affine px py).1 l Q hQ hQV hu'.1.2
+      have hz : (T.z : ZMod Fp.modulus) ≠ 0 := by
+        have h := (Holds.z hT).testBit_is_zero_mask
+        rw [h, decide_eq_false_iff_not] at hu'
+        exact hu'.2
+      have hbeta : (Fp8.splat_limbs (.ofList BETA_MONT)).Holds l (beta : ZMod Fp.modulus) :=
+        (Fp8.holds_splat_limbs (t := .ofList BETA_MONT)
+          ⟨by decide, by decide +kernel⟩ l).of_eq (decode_of_val BETA_MONT_eq)
+      have hxx := (Holds.x hT).testBit_eq_mask (((hx.mul hbeta).mul hbeta).mul (Holds.z hT).square)
+      have hyy := (Holds.y hT).neg.testBit_eq_mask (hy.mul ((Holds.z hT).square.mul (Holds.z hT)))
+      let vx : ZMod Fp.modulus := x
+      let vy : ZMod Fp.modulus := y
+      let tx : ZMod Fp.modulus := T.x
+      let ty : ZMod Fp.modulus := T.y
+      let tz : ZMod Fp.modulus := T.z
+      let b : ZMod Fp.modulus := beta
+      have hmember : (scottMembershipWith false px py).members.toNat.testBit l = true ↔
+          tx = (vx * b * b) * tz ^ 2 ∧ -ty = vy * (tz ^ 2 * tz) := by
+        simp only [scottMembershipWith, Bool.false_eq_true, ↓reduceIte,
+          Mmask8.testBit_and, Mmask8.testBit_not,
+          Mmask8.testBit_or, hxx, hyy, hu'.1.1, hu'.1.2, hu'.2]
+        simp
+        rfl
+      have hcompare :
+          (tx = (vx * b * b) * tz ^ 2 ∧ -ty = vy * (tz ^ 2 * tz)) ↔
+          G1Spec.sigma (G1Spec.sigma (G1.toPoint ⟨x, y, Fp.one⟩)) = -G1.toPoint T := by
+        have hbase : G1.toPoint ⟨x, y, Fp.one⟩ = WeierstrassCurve.Affine.Point.some vx vy
+            ((WeierstrassCurve.Jacobian.nonsingular_some vx vy).mp hP) :=
+          WeierstrassCurve.Jacobian.Point.toAffine_some hP
+        rw [hbase]
+        simp only [G1Spec.sigma]
+        rw [G1.toPoint, WeierstrassCurve.Jacobian.Point.toAffine_of_Z_ne_zero hTV hz,
+          WeierstrassCurve.Affine.Point.neg_some, WeierstrassCurve.Affine.Point.some.injEq]
+        change _ ↔ (b * (b * vx) = tx / tz ^ 2 ∧ vy = -(ty / tz ^ 3) - 0 * (tx / tz ^ 2) - 0)
+        rw [zero_mul, sub_zero, sub_zero, ← neg_div,
+          eq_div_iff (pow_ne_zero 2 hz), eq_div_iff (pow_ne_zero 3 hz), pow_succ _ 2]
+        have heq : b * (b * vx) = vx * b * b := by ring
+        rw [heq]
+        exact and_congr eq_comm eq_comm
+      rw [hmember, hcompare, G1Spec.inSubgroup_iff _ hP]
+      have hscalar : G1.toPoint T = (LeanBlsSimd.z ^ 2) • G1.toPoint ⟨x, y, Fp.one⟩ := by
+        rw [hTP, hQP, LeanBlsSimd.z, neg_sq, ← Nat.cast_pow, natCast_zsmul, pow_two, mul_nsmul]
+      rw [hscalar, ← neg_smul]
+      exact ⟨G1Spec.scott_sound _, G1Spec.scott_complete _⟩
+  trivial
+
+end G1x8
 
 end LeanBlsSimd

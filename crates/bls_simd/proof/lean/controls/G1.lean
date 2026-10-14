@@ -1,8 +1,10 @@
 import LeanBlsSimd.Refines.G1
 import LeanBlsSimd.Spec.G1Encoding
+import LeanBlsSimd.Proofs.G1Finite
 
-/-! Mutation and boundary controls for G1. Concrete arithmetic uses Lean's kernel.
-The scalar external remains arbitrary in the wrapper controls. -/
+/-! Mutation and boundary controls for G1. Arithmetic proofs use Lean's kernel; the full
+canonicality mutation has a checked evaluation. The scalar external remains arbitrary in
+the wrapper controls. -/
 
 namespace LeanBlsSimd.G1Controls
 
@@ -32,8 +34,8 @@ example : True := by
     have : val (.ofList (BETA_MONT.set 0 0)) = beta * R % Fp.modulus := by decide +kernel
   trivial
 
-/-! Changing the infinity flag confuses a finite larger-root encoding with infinity.
-Skipping the canonical-coordinate test accepts x = p. -/
+/-! The infinity-flag mutation marks a finite larger-root encoding undecided during decoding.
+That flag requests scalar fallback; the control establishes only this routing effect. -/
 
 def decodeStepWith (flagInf : UInt8) (canonical : Vector UInt64 6 → Bool)
     (inputs : Vector Encoding 8) (d : Decoded) (lane : Fin 8) : Decoded :=
@@ -54,30 +56,72 @@ example : decodeStepWith FLAG_INFINITY less_than_p = decodeStep := rfl
 
 def largerRootBytes : Encoding := (Vector.replicate 48 0).set 0 0xa0
 
-def modulusBytes : Encoding := ⟨#[
-  0x9a, 0x01, 0x11, 0xea, 0x39, 0x7f, 0xe6, 0x9a,
-  0x4b, 0x1b, 0xa7, 0xb6, 0x43, 0x4b, 0xac, 0xd7,
-  0x64, 0x77, 0x4b, 0x84, 0xf3, 0x85, 0x12, 0xbf,
-  0x67, 0x30, 0xd2, 0xa0, 0xf6, 0xb0, 0xf6, 0x24,
-  0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff,
-  0xb9, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xaa, 0xab], rfl⟩
-
-example : val64 ((fp_words modulusBytes).set 5
-    ((fp_words modulusBytes)[5] &&& 0x1fffffffffffffff)) = Fp.modulus := by decide +kernel
-
 example : (decodeStep (.replicate 8 largerRootBytes) decodeInit 0).undecided = 0 ∧
     (decodeStepWith FLAG_LARGER_ROOT less_than_p
       (.replicate 8 largerRootBytes) decodeInit 0).undecided = 1 := by decide +kernel
 
-example : (decodeStep (.replicate 8 modulusBytes) decodeInit 0).invalid = 1 ∧
+/-! Skipping canonicality accepts the noncanonical x + p encoding of 2G. Its x + p
+fits below 2^381, and the mutated kernel decides it valid rather than falling back. -/
+
+def twoGPlusP : Encoding := ⟨#[
+  0xbf, 0x73, 0xdd, 0xd4, 0xc9, 0xcd, 0x4d, 0xe0,
+  0xd3, 0x24, 0x70, 0xa1, 0x93, 0xf4, 0xf1, 0xe3,
+  0xfb, 0x99, 0x26, 0xb5, 0x84, 0xad, 0x13, 0xe4,
+  0xaa, 0xc0, 0xff, 0xab, 0xba, 0x09, 0x9c, 0x4f,
+  0x01, 0x3b, 0x75, 0xba, 0x40, 0x70, 0x7c, 0x42,
+  0x7d, 0x99, 0x8c, 0x55, 0x29, 0xbe, 0xb9, 0xf9], rfl⟩
+
+example :
+    let n := val64 ((fp_words twoGPlusP).set 5
+      ((fp_words twoGPlusP)[5] &&& 0x1fffffffffffffff))
+    Fp.modulus ≤ n ∧ n < 2 ^ 381 := by decide +kernel
+
+def decompressWith (dec : Vector Encoding 8 → Decoded) (inputs : Vector Encoding 8) : Batch :=
+  let decoded := dec inputs
+  let x := Fp8.from_plain decoded.x
+  let rhs := (x.square.mul x).add (Fp8.splat_limbs (.ofList FOUR_MONT))
+  let root := rhs.sqrt_candidate
+  let on_curve := root.square.eq_mask rhs
+  let flip := root.is_larger_root_mask ^^^ decoded.larger_root
+  let y := Fp8.select flip root root.neg
+  let undecided := decoded.undecided ||| y.is_zero_mask
+  let membership := G1x8.scott_membership x y
+  let undecided := (undecided ||| membership.undecided) &&& ~~~decoded.invalid
+  let valid := on_curve &&& membership.members &&& ~~~undecided &&& ~~~decoded.invalid
+  let xs := x.to_blst_limbs
+  let ys := y.to_blst_limbs
+  let points := (List.finRange 8).foldl
+    (fun points lane => points.set lane (point xs[lane] ys[lane])) (.replicate 8 default)
+  ⟨points, valid, undecided⟩
+
+example : decompressWith DecompressG1.decode = decompress := rfl
+
+def decodeWithoutCanonicality (inputs : Vector Encoding 8) : Decoded :=
+  (List.finRange 8).foldl (decodeStepWith FLAG_INFINITY (fun _ => true) inputs) decodeInit
+
+example : (decodeStep (.replicate 8 twoGPlusP) decodeInit 0).invalid = 1 ∧
     (decodeStepWith FLAG_INFINITY (fun _ => true)
-      (.replicate 8 modulusBytes) decodeInit 0).invalid = 0 := by decide +kernel
+      (.replicate 8 twoGPlusP) decodeInit 0).invalid = 0 := by decide +kernel
+
+example : G1Spec.verdict twoGPlusP = none := by
+  rw [G1Spec.verdict_eq_decode]
+  split
+  · rfl
+  · rename_i P hP
+    exact False.elim (DecompressG1.uncompress_of_invalid (by decide +kernel) (by decide +kernel) P hP)
+
+-- The full kernel runs the square root and both Scott multiplication chains.
+/-- info: (255, 0, false) -/
+#guard_msgs in
+#eval
+  let batch := decompressWith decodeWithoutCanonicality (.replicate 8 twoGPlusP)
+  (batch.valid.toNat, batch.undecided.toNat, (G1Spec.verdict twoGPlusP).isSome)
 
 example : True := by
   fail_if_success
     have : (decodeStepWith FLAG_INFINITY (fun _ => true)
-        (.replicate 8 modulusBytes) decodeInit 0).invalid =
-        (decodeStep (.replicate 8 modulusBytes) decodeInit 0).invalid := by decide +kernel
+        (.replicate 8 twoGPlusP) decodeInit 0).invalid =
+        (decodeStep (.replicate 8 twoGPlusP) decodeInit 0).invalid := by decide +kernel
   trivial
 
 /-! Affine output keeps x before y, including when either coordinate is zero. -/
