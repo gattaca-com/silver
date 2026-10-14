@@ -1,5 +1,19 @@
 # Maintaining the G2 decompression proof
 
+## G1 statement review (M1)
+
+The G1 proposal compiles with `sorry` and is not part of the default library root. Check it separately with:
+
+```sh
+lake build LeanBlsSimd.Refines.UncompressG1
+```
+
+`Model/G1x8.lean`, `Model/DecompressG1.lean` and `Model/UncompressG1.lean` contain executable definitions. `Refines/G1.lean` states exact extraction refinements. `Spec/G1.lean` states Scott's criterion and the KZG acceptance and layout bridges. `Proofs/G1.lean` states decided-lane formula and kernel correctness. `Refines/UncompressG1.lean` contains the proposed public theorem and corollary. Paths are relative to `LeanBlsSimd/`.
+
+Do not add `sorryAx` to `acceptedAxioms`. The G1 statements deliberately print it at M1; the generated wrapper itself must use only `propext`, `Classical.choice` and `Quot.sound`. Continue to run `lake build` for the complete G2 proof and its guard.
+
+The extraction includes both G1's public wrapper and G2's kernel. `extract.sh` inserts a `G1Externals` instance parameter and quotes the identifier `full` after Aeneas runs. These deterministic adaptations are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`.
+
 This guide explains how to update the proof after changing `crates/bls_simd/src`, starting with a `replay_vectors` failure. [The parent README](../README.md) describes the correctness claim, its assumptions, and the checks that connect the proof to Rust.
 
 ## Read the failure first
