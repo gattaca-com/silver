@@ -1,5 +1,5 @@
-//! BLS12-381 Fp in radix 2^52 with R = 2^416. Generated from the modulus with
-//! `scripts/kzg_libs_bench`-style Python; every array is little-endian limbs.
+//! BLS12-381 Fp in radix 2^52 with R = 2^416. Generated from the modulus in
+//! Python; every array is little-endian limbs.
 
 pub const LIMBS: usize = 8;
 pub const LIMB_BITS: u32 = 52;
