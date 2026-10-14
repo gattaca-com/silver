@@ -1,14 +1,14 @@
 # Formal proof of the G2 decompression kernel
 
-## G1 extension: statement review
+## G1 extension: refinement complete
 
-The G1 extension is at milestone M1: its extraction and executable models compile, and its proposed theorems compile with `sorry`. They are not proved. Import `LeanBlsSimd.Refines.UncompressG1` to inspect the proposed API; it is excluded from the default library root and the G2 axiom guard until its proofs are complete. The G2 results described below remain separately checked by `lake build`.
+The G1 extension is at milestone M2: every generated G1 function refines its executable model, including the public wrapper and its output writes. These proofs and the generated wrapper are covered by the default axiom guard. Model correctness against the specification and the public correctness theorems still contain `sorry`; import `LeanBlsSimd.Refines.UncompressG1` to inspect that API. Those unfinished proofs remain excluded from the default library root and guard. The G2 results described below remain checked by `lake build`.
 
 `UncompressG1.uncompress_in_g1_eq_spec_or_blst` covers the generated public wrapper, including output writes and all scalar fallbacks. An index uses the kernel's verdict exactly when SIMD is available, the index belongs to a complete eight-input chunk, and the kernel's undecided bit is clear. Every other index uses the scalar external's result. `UncompressG1.uncompress_in_g1_eq_spec` assumes only that the scalar external agrees with the specification on all 48-byte inputs, in addition to the API's equal-length precondition.
 
 The G1 specification verdict calls `bytesToKzgProof`, decodes its accepted bytes with `G1.uncompress`, and converts the point to blst's affine layout. The proposed bridge lemmas state that acceptance agrees with both `bytesToKzgProof` and `bytesToKzgCommitment`. The conversion first calls `G1.toAffine`, then represents each coordinate as six little-endian Montgomery words with R = 2^384. Infinity has both coordinates zero.
 
-The pinned specification and blst 0.3.16 agree on canonical compressed infinity: `0xc0` followed by 47 zero bytes is accepted; other infinity encodings are rejected. `validateKzgG1` explicitly allows this encoding, and `G1.uncompress` returns `G1.zero`. blst's `POINTonE1_Uncompress_Z` zeroes the affine output for it, and `blst_p1_affine_in_g1` accepts it. The kernel marks compressed infinity lanes undecided and delegates them to blst. This paragraph records source inspection; the proposed Lean infinity lemmas remain unproved at M1.
+The pinned specification and blst 0.3.16 agree on canonical compressed infinity: `0xc0` followed by 47 zero bytes is accepted; other infinity encodings are rejected. `validateKzgG1` explicitly allows this encoding, and `G1.uncompress` returns `G1.zero`. blst's `POINTonE1_Uncompress_Z` zeroes the affine output for it, and `blst_p1_affine_in_g1` accepts it. The kernel marks compressed infinity lanes undecided and delegates them to blst. This paragraph records source inspection; the proposed Lean infinity lemmas remain unproved at M2.
 
 The G1 externals are parameterized by `silver_bls_simd.G1Externals`: an arbitrary Boolean CPU observation and an arbitrary total function from 48 bytes to an optional affine point. Their Lean wrappers return `ok`, which trusts termination of feature detection and blst, but imposes no correctness assumption on blst in the first theorem. The corollary states that assumption explicitly. Shared intrinsic and `fp8::lanes` models retain their G2 meanings; the added `blst_p1_affine` default model zeroes every limb.
 
@@ -189,6 +189,7 @@ Negative controls check that selected mutations are rejected. Other controls che
 | File | Shows |
 |---|---|
 | `Guard.lean` | The axiom guard rejects `native_decide`, `bv_decide` and `Lean.ofReduceBool`. |
+| `G1Consumer.lean` | A downstream module imports only the G1 public theorem, applies it with arbitrary externals, and constructs an instance satisfying its blst hypothesis. |
 | `Statements.lean`, `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |

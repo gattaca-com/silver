@@ -14,6 +14,7 @@ import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Refines.Kernel
 import LeanBlsSimd.Refines.Complete
+import LeanBlsSimd.Refines.G1
 
 /-!
 Fails the build if any theorem under `LeanBlsSimd`, or any of `checkedDefinitions`, uses an axiom
@@ -40,8 +41,9 @@ trust one evaluation, so it belongs next to a note saying why. -/
 def acceptedAxioms : List Name := []
 
 /-- Definitions checked with the theorems. Aeneas's library holds `sorry`s, and the generated
-`decompress` must reach none of them. -/
-def checkedDefinitions : Array Name := #[``silver_bls_simd.decompress_g2.decompress]
+entry points must reach none of them. -/
+def checkedDefinitions : Array Name := #[``silver_bls_simd.decompress_g2.decompress,
+  ``silver_bls_simd.uncompress_in_g1]
 
 def libraryTheorems : CommandElabM (Array Name) := do
   let theorems := (← getEnv).constants.fold (init := #[]) fun found c info =>
