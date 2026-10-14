@@ -1,25 +1,27 @@
-# Maintaining the G2 decompression proof
+# Maintaining the G1 and G2 proofs
 
-## G1 correctness (M3)
+## G1 public API
 
 The G1 extraction refinements, model/spec proofs, Scott criterion, KZG bridges and public correctness theorem are proved and covered by the default axiom guard. `lake build` checks them together with G2. The public import is `LeanBlsSimd.Refines.UncompressG1`.
 
 `Model/G1x8.lean`, `Model/DecompressG1.lean` and `Model/UncompressG1.lean` contain executable definitions. `Refines/G1.lean` imports exact extraction refinements for the group operations, decoder, kernel and public wrapper. `Spec/G1.lean` imports Scott's criterion and the KZG acceptance and layout bridges. `Proofs/G1.lean` imports decided-lane formula and kernel correctness. `Refines/UncompressG1.lean` contains the public pointwise and list-form results, with the named `BlstMatchesSpec` premise. Paths are relative to `LeanBlsSimd/`.
 
-`acceptedAxioms` remains empty: the complete G1 and G2 proof closures use only `propext`, `Classical.choice` and `Quot.sound`. M4 controls and differential validation are in progress.
+`acceptedAxioms` remains empty: the complete G1 and G2 proof closures use only `propext`, `Classical.choice` and `Quot.sound`.
 
-The extraction includes both G1's public wrapper and G2's kernel. `extract.sh` inserts a `G1Externals` instance parameter and quotes the identifier `full` after Aeneas runs. These deterministic adaptations are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`.
+The extraction includes both G1's public wrapper and G2's kernel. `extract.sh` inserts a `G1Externals` instance parameter and quotes exactly six `full` identifiers after Aeneas runs, asserting both match counts. These deterministic adaptations are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`.
 
 This guide explains how to update the proof after changing `crates/bls_simd/src`, starting with a `replay_vectors` failure. [The parent README](../README.md) describes the correctness claim, its assumptions, and the checks that connect the proof to Rust.
 
 ## Read the failure first
 
-An output mismatch reports the number of changed batches and details the first 20. For each batch it lists changed masks and point lanes, distinguishing points the caller returns from points it never reads. A lane belongs to the first category if its `valid` bit is set in either the recorded or current output. Resolve IFMA availability or vector-file errors before investigating output differences.
+For G2, an output mismatch reports the number of changed batches and details the first 20. For each batch it lists changed masks and point lanes, distinguishing points the caller returns from points it never reads. A lane belongs to the first category if its `valid` bit is set in either the recorded or current output. Resolve IFMA availability or vector-file errors before investigating output differences.
 
 - **A mask or a `valid` lane's point changed.** The recorded behaviour changed, but the caller's result may not have: `on_curve` is not read by `lib.rs`, and `undecided` routes a lane to blst. Determine whether acceptance, a returned point or only the route to that result changed. If the change is unintended, fix the Rust. The blst comparison tests in `src/tests.rs` can help diagnose acceptance or point errors; they do not necessarily exercise this exact recorded batch.
 - **Only points on lanes `lib.rs` never reads changed.** The caller's acceptance decisions and returned points are unchanged on these batches, but the kernel computes different values on rejected or undecided lanes. This can happen when it skips work on rejected lanes or changes the arithmetic there. If the change is intended, update the model too: refinement requires exact agreement on every lane, even where the headline theorem does not inspect the point.
 
-Keep the original recording until you understand the difference. `write_vectors` checks the new kernel's acceptance and accepted points against blst before replacing the file; `recorded_matches_blst` checks the recorded results. Both skip lanes marked undecided in the outputs they examine. Regenerating the vectors can make `replay_vectors` pass while the Lean model or generated code still disagrees. Run the Lean differential check against the new recording as well.
+G1 compares its two masks and all twelve point limbs, recorded scalar verdicts and wrapper outputs. A specification/blst mismatch concerns the corollary premise or its representation; kernel refinement alone cannot resolve it. A wrapper mismatch may concern full-chunk routing, output writes, a tail or the scalar adapter. The Lean runner exercises both SIMD settings and starts with nonzero output sentinels.
+
+Keep the original recording until you understand the difference. `write_vectors` checks the new kernel's acceptance and accepted points against blst before replacing the file; `recorded_matches_blst` checks the recorded results. Kernel/blst comparisons skip undecided lanes. G1 also records the scalar result on every lane, and the Lean specification/blst check covers all of them. Regenerating the vectors can make `replay_vectors` pass while the Lean model or generated code still disagrees. Run the Lean differential check against the new recording as well.
 
 ## When the change in behaviour is intended
 
@@ -32,31 +34,36 @@ Set up the [toolchain and cache](../README.md#building-and-checking-the-proof) a
    SILVER_REQUIRE_IFMA=1 cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors -- --ignored write_vectors
    ```
 
-   `write_vectors` checks each edge batch's specified mask expectations before writing the file. If one fails, your change altered a case that batch exists to cover: make sure that is intended before changing its expectation in `../vectors.rs`.
-3. Run `lake build differential && lake exe differential ../decompress_g2_vectors.txt`. This compares the generated code and model with the new Rust outputs on the recorded batches. A mismatch identifies the batch, its kind, the lane, the field, both values, and the Lean implementation: `model` or `extraction`. For an `extraction` mismatch, investigate the translation, Aeneas's library and the externals. If the extraction agrees but the model differs, update the model.
+   G2's `write_vectors` checks each edge batch's specified mask expectations before writing the file. If one fails, your change altered a case that batch exists to cover: make sure that is intended before changing its expectation in `../vectors.rs`.
+3. Run `lake build differential && lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt`. This compares the generated code and model with the new Rust outputs on the recorded batches. A mismatch identifies the batch, its kind, the lane, the field, both values, and the Lean implementation: `model` or `extraction`. For an `extraction` mismatch, investigate the translation, Aeneas's library and the externals. If the extraction agrees but the model differs, update the model.
 4. Update each model function whose result changed (see the table below). Exact refinement cannot hold if the generated function and its model compute different results. Keep the model close to the Rust's operations, layout and names so they remain easy to compare. Preserve the per-lane treatment of `Fp8::mul` unless that modelling choice also needs to change. Edit named stages such as `decodeStep`, `chainStep` and `tail` in place; their proofs refer to those definitions. Repeat step 3 until both implementations match the recording.
 5. Run `lake build`. Repair the affected equalities in `LeanBlsSimd/Refines/`, then the correctness proofs in `LeanBlsSimd/Proofs/`. A change that preserves every computed result, such as reordering independent operations, can leave the model and its correctness proofs unchanged. If refinement still fails after the vector checks pass, determine whether the proof needs a new equality lemma or the implementations differ on an untested input. Do not weaken a theorem to close a goal. A necessary change to the claim requires updating and reviewing `../README.md` too.
 6. Run every control (command in `../README.md`). `controls/Refines.lean` holds hand-written copies of generated functions, pinned to the originals by `rfl`; if such an `rfl` fails after regeneration, copy the function again from the new `LeanBlsSimd/Extracted/Funs.lean` and reapply the mutation, rather than deleting the control. If a mutated proof now succeeds, investigate whether the mutation still tests the intended property; that result alone does not establish a lost dependency.
 7. From the silver repository root, run `SILVER_REQUIRE_IFMA=1 cargo test -p silver_bls_simd --profile release-with-debug --test proof_vectors replay_vectors` on the IFMA host. Review the vector diff alongside the changes to the Rust, generated code, model and proofs.
 8. From this folder, `AENEAS_DIR=/path/to/aeneas ./extract.sh --check` must report no drift.
-9. Update `../README.md`: the sha256, git blob, commit and commit date of each changed file, and any counts that changed. If `lib.rs` changed, check again that `decompress_g2_chunk` reads the batch as the headline's left side says.
+9. Update `../README.md`: the sha256 and git blob of each changed file, and any counts that changed. If `lib.rs` changed, check again that `decompress_g2_chunk` reads the batch as the G2 headline's left side says.
 
 ## Mapping Rust changes to Lean
 
 | Rust file | Model | Refinement | Proofs that read the model |
 |---|---|---|---|
-| `lib.rs` (`Membership` and `G2_COMPRESSED_LEN` only) | `Model/G2x8.lean` (`Membership`), `Model/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Refines/G2x8.lean` (`ofMembership`, `toMembership` and their uses), `Refines/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Proofs/G2x8.lean` and `Proofs/DecompressG2.lean` (`Membership`); `Proofs/Decode.lean`, `Proofs/DecompressG2.lean` and `Proofs/Kernel.lean` (`G2_COMPRESSED_LEN`) |
+| `lib.rs` (shared `Membership` and G2 length) | `Model/G2x8.lean` (`Membership`), `Model/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Refines/G2x8.lean` (`ofMembership`, `toMembership` and their uses), `Refines/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Proofs/G2x8.lean` and `Proofs/DecompressG2.lean` (`Membership`); `Proofs/Decode.lean`, `Proofs/DecompressG2.lean` and `Proofs/Kernel.lean` (`G2_COMPRESSED_LEN`) |
 | `constants.rs` | `LeanBlsSimd/Constants.lean`, which also proves each table equal to its derivation | `Refines/Constants.lean` | every file |
 | `fp8.rs` | `LeanBlsSimd/Model/Fp8.lean`, over the intrinsics in `Model/Intrinsics.lean` | `Refines/Fp8.lean` | `Proofs/Limbs.lean` (`mul`), `Proofs/Vector.lean`, `Proofs/Carries.lean`, `Proofs/Fp8.lean` (the other operations), `Proofs/Pow.lean`, `Proofs/Convert.lean` |
 | `fp2x8.rs` | `LeanBlsSimd/Model/Fp2x8.lean` | `Refines/Fp2x8.lean` | `Proofs/Fp2x8.lean`, which relates the computed square root to `Kernel.sqrt` in `Spec/Sqrt.lean` |
+| `g1x8.rs` | `Model/G1x8.lean` | `Refines/G1x8.lean` | `Proofs/G1x8.lean`, against `Spec/G1Curve.lean` |
+| `decompress.rs` | `Model/DecompressG1.lean` | `Refines/DecompressG1.lean` | `Proofs/DecodeG1.lean`, `G1Finite.lean`, `G1KernelFacts.lean`, `DecompressG1.lean` |
+| `lib.rs` (G1 chunk and wrapper) | `Model/UncompressG1.lean` | `Refines/G1Wrapper*.lean`, `Refines/UncompressG1.lean` | `Spec/G1Encoding.lean` and the G1 kernel proof |
 | `g2x8.rs` | `LeanBlsSimd/Model/G2x8.lean` | `Refines/G2x8.lean` | `Proofs/G2x8.lean`, against the field-level chain and Scott test in `Spec/Membership.lean` |
 | `decompress_g2.rs` | `LeanBlsSimd/Model/DecompressG2.lean` | `Refines/DecompressG2.lean`, then `Refines/Kernel.lean` and `Refines/Complete.lean` with the headline | `Proofs/Decode.lean` (bytes and flags), `Proofs/DecompressG2.lean` (lanes and early returns), `Proofs/Kernel.lean` |
 
-Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are relative to `LeanBlsSimd/`. `Refines/Basic.lean` contains conversions between Aeneas's values and the model's values, plus lemmas for evaluating Aeneas's primitives. `Refines/Loop.lean` equates Aeneas's loops with folds: `loop_range` for a `for` over a range, `loop_countdown` for a `while` that counts down. Changes to `Membership` or `G2_COMPRESSED_LEN` in `lib.rs` follow the extraction and refinement process described above. Other changes to `lib.rs`, notably to `decompress_g2_chunk`, need a separate review of the caller interpretation in the parent README; neither the extraction nor the vector tests verify how it consumes the batch.
+Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are relative to `LeanBlsSimd/`. `Refines/Basic.lean` contains conversions between Aeneas's values and the model's values, plus lemmas for evaluating Aeneas's primitives. `Refines/Loop.lean` equates Aeneas's loops with folds: `loop_range` for a `for` over a range, `loop_countdown` for a `while` that counts down. Changes to the G1 wrapper, `Membership` or `G2_COMPRESSED_LEN` in `lib.rs` follow the extraction and refinement process above. Changes to the unextracted G2 wrapper, notably `decompress_g2_chunk`, need a separate review of the caller interpretation in the parent README; neither the extraction nor the vector tests verify how it consumes the batch.
 
-`extract.sh` specifies the function to extract and the functions to keep opaque. Aeneas leaves calls to untranslated items; Lean then needs definitions for them. Add function definitions to `Extracted/FunsExternal.lean` and type definitions to `Extracted/TypesExternal.lean`. A new intrinsic needs a definition in `Model/Intrinsics.lean` and an external that returns `ok` of that definition. Their agreement with the actual intrinsic is trusted, so check its semantics against the Intel SDM and Rust's `core::arch`, including arithmetic, lane order, mask bit order and shifts of 64 or more.
+`extract.sh` specifies both entry points to extract and the functions to keep opaque. Aeneas leaves calls to untranslated items; Lean then needs definitions for them. Add function definitions to `Extracted/FunsExternal.lean` and type definitions to `Extracted/TypesExternal.lean`. A new intrinsic needs a definition in `Model/Intrinsics.lean` and an external that returns `ok` of that definition. Their agreement with the actual intrinsic is trusted, so check its semantics against the Intel SDM and Rust's `core::arch`, including arithmetic, lane order, mask bit order and shifts of 64 or more.
 
 ## Working in Lean
+
+G1 uses `Spec/G1Curve.lean` for the elementary finite point-count bound and Scott equivalence, `Spec/G1Encoding.lean` for KZG validation, and `Proofs/G1Finite.lean` for finite encoding and square-root selection. `Refines/UncompressG1.lean` composes those with the wrapper refinement. The downstream examples in `controls/downstream/` show how to discharge another extraction's named hypothesis without sharing its struct declarations.
 
 `Spec/CubicHasse.lean` proves the character-sum bound for E′, derives the Hasse bounds and concludes Scott completeness. `Refines/Complete.lean` supplies that proof to the conditional extracted correctness theorem. Changes to the field, curve, generator or subgroup constants must preserve this chain as well as the extraction refinements; a successful generator check alone does not establish completeness.
 
@@ -83,10 +90,13 @@ Proof-writing pitfalls:
 
 ## Controls and axioms
 
+- `python3 Test/check_g1_controls.py`, after `lake build differential`, checks the G1 differential runner's value comparisons, accepted formatting and parser failures.
 - In a control, close the mutated proof with `ring1` or `module`, never `ring`. `ring` can leave a goal open without throwing, so `fail_if_success` may treat the tactic as successful and reject the control. `ring1` throws when it cannot close the goal. `fail_if_success` accepts any failure, so after writing or changing a control, remove the wrapper once and check that the error is the one the control names.
 - The guard rejects dependencies on axioms other than `propext`, `Classical.choice` and `Quot.sound`. This includes the axioms introduced by `native_decide` and `bv_decide`. Extending `acceptedAxioms` in `LeanBlsSimd/Axioms.lean` changes the proof's trust assumptions; it requires a documented justification and a corresponding update to the parent README. Use `#print axioms <theorem>` to inspect one theorem or `controls/AxiomLog.lean` for the library's theorems.
-- Aeneas's library prints five `declaration uses 'sorry'` warnings while it builds. A `sorry` adds the axiom `sorryAx`, so the guard also shows that the generated `decompress` and every theorem avoid them.
+- Aeneas's library prints five `declaration uses 'sorry'` warnings while it builds. A `sorry` adds the axiom `sorryAx`, so the guard also shows that both generated entry points and every theorem avoid them.
 
 ## Adding a batch
 
-If your change needs a case the file lacks, add it to `Cases` in `../vectors.rs` with an `Expect`, and regenerate. Every batch drawn from the seeded generator depends on all draws before it, so add batches that use the generator at the end; a batch built only from fixed values can go anywhere.
+For G2, if your change needs a case the file lacks, add it to `Cases` in `../vectors.rs` with an `Expect`, and regenerate. Every batch drawn from the seeded generator depends on all draws before it, so add batches that use the generator at the end; a batch built only from fixed values can go anywhere.
+
+For G1, add cases to `g1::cases` in `../vectors.rs`. Record the scalar blst result even when the kernel leaves a lane undecided. Wrapper cases refer to recorded batch/lane inputs and must include the complete expected optional output. Regenerate with the ignored `write_vectors` tests, then run the combined Lean differential command and the Rust replay checks.
