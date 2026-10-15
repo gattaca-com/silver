@@ -1,7 +1,8 @@
 use std::{io::Error, sync::Arc, time::Duration};
 
 use quinn_proto::{
-    crypto::rustls::{QuicClientConfig, QuicServerConfig}, AckFrequencyConfig, ClientConfig, Endpoint, EndpointConfig, ServerConfig, VarInt
+    AckFrequencyConfig, ClientConfig, Endpoint, EndpointConfig, ServerConfig, VarInt,
+    crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
 use silver_common::{Keypair, P2pSend, PeerId};
 

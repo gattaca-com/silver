@@ -81,7 +81,7 @@ impl Args {
         if rate_hz == 0 || connections == 0 {
             fail("--rate and --connections must be nonzero");
         }
-        
+
         Self {
             role,
             listen,
