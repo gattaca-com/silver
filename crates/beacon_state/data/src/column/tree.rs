@@ -2,13 +2,8 @@ use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
-    ColumnSpec,
-    format::{TreeFormat, progressive_internal_parent},
-    list::ListTree,
-    pool::PagePool,
-    progressive_list::ProgressiveListTree,
-    snapshot::PageSnapshot,
-    store::NodeStore,
+    ColumnSpec, format::TreeFormat, list::ListTree, pool::PagePool,
+    progressive_list::ProgressiveListTree, snapshot::PageSnapshot, store::NodeStore,
 };
 use crate::types::{B256, HashFormat};
 
@@ -61,11 +56,6 @@ impl<C: ColumnSpec> ColumnTree<C> {
     }
 
     #[inline]
-    fn data_start(&self) -> usize {
-        self.format().data_start::<C>()
-    }
-
-    #[inline]
     fn leaf_pos(&self, chunk: usize) -> usize {
         self.format().leaf_pos::<C>(chunk)
     }
@@ -85,12 +75,12 @@ impl<C: ColumnSpec> ColumnTree<C> {
 
     #[inline]
     pub(super) fn node(&self, n: usize) -> &B256 {
-        self.store().node(n)
+        &self.store().nodes[n]
     }
 
     /// Load `target`'s content, switching tree variant if its format differs.
-    /// `loaded` is the table our content already matches, so only mismatched
-    /// or dirtied pages get copied. Clears the dirty mask.
+    /// `loaded` is the snapshot our content already matches, so only
+    /// mismatched or dirtied pages get copied.
     #[timed]
     pub(super) fn load(
         &mut self,
@@ -110,37 +100,35 @@ impl<C: ColumnSpec> ColumnTree<C> {
                 }
             };
         }
-        self.store_mut().load_diff(pool, loaded, target);
+        self.store_mut().load(pool, loaded, target);
     }
 
     #[timed]
-    pub(super) fn to_snapshot(&self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
-        self.store().to_snapshot(pool, self.format())
+    pub(super) fn to_snapshot(&mut self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
+        let mut snapshot = PageSnapshot::default();
+        self.commit(pool, &mut snapshot, None);
+        snapshot
     }
 
-    pub(super) fn commit_into(
-        &self,
+    pub(super) fn commit(
+        &mut self,
         pool: &mut PagePool<C::Page>,
         dst: &mut PageSnapshot,
-        parent: &PageSnapshot,
+        parent: Option<&PageSnapshot>,
     ) {
-        self.store().commit_into(pool, dst, parent, self.format());
+        let format = self.format();
+        self.store_mut().commit(format, pool, dst, parent);
     }
 
-    pub(super) fn reset_dirty_mask(&mut self) {
-        self.store_mut().reset_dirty_mask();
-    }
-
-    pub(super) fn mark_all_dirty(&mut self) {
-        self.store_mut().mark_all_dirty();
-    }
-
-    pub(super) fn copy_changed_pages_from<D>(&mut self, src: &ColumnTree<D>)
+    pub(super) fn copy_from<D>(&mut self, src: &ColumnTree<D>)
     where
         D: ColumnSpec<Val = C::Val, Page = C::Page>,
     {
         debug_assert_eq!(self.format(), src.format(), "rotate needs a same-format source");
-        self.store_mut().copy_changed_pages_from(src.store());
+        debug_assert_eq!(self.count(), src.count(), "rotate needs a same-length source");
+        let store = self.store_mut();
+        store.nodes.copy_from_slice(&src.store().nodes);
+        store.writes.mark_all_hashed();
     }
 
     pub fn fill_zero(&mut self) {
@@ -148,40 +136,21 @@ impl<C: ColumnSpec> ColumnTree<C> {
             ColumnTree::List(t) => t.fill_zero(),
             ColumnTree::ProgressiveList(t) => t.fill_zero(),
         }
-        self.store_mut().unhashed.clear();
-        self.mark_all_dirty();
+        let writes = &mut self.store_mut().writes;
+        writes.clear();
+        writes.mark_all_hashed();
     }
 
     pub fn iter_vals(&self) -> impl Iterator<Item = C::Val> + '_ {
         let sz = size_of::<C::Val>();
         let count = self.count();
-        let data_start = self.data_start();
+        let data_start = self.format().data_start::<C>();
         let bytes = &self.store().nodes[data_start..].as_flattened()[..count * sz];
         (0..count).map(move |i| {
             let mut out = [C::Val::default()];
             <C::Val>::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
             out[0]
         })
-    }
-
-    /// Record chunk `chunk` as dirty and mark the pages its rehash will touch.
-    /// A list's leaf is an in-tree node, so its page walk starts there; a
-    /// progressive list's leaf is flat data, so its data page is marked plus
-    /// the internal ancestors in its segment block (segment 0's lone leaf is
-    /// its own root — no internal pages).
-    fn seed_write(&mut self, chunk: usize, data_node: usize) {
-        let format = self.format();
-        let store = self.store_mut();
-        store.unhashed.mark(chunk);
-        match format {
-            TreeFormat::Fixed { .. } => store.mark_dirty_node(data_node, 0),
-            TreeFormat::Progressive { .. } => {
-                store.mark_dirty_page(data_node);
-                if let Some((parent, seg_off)) = progressive_internal_parent::<C>(chunk) {
-                    store.mark_dirty_node(parent, seg_off);
-                }
-            }
-        }
     }
 
     pub fn set_val(&mut self, idx: u32, v: C::Val) {
@@ -198,12 +167,12 @@ impl<C: ColumnSpec> ColumnTree<C> {
             }
             <C::Val>::set_lane(leaf, lane, v);
         }
-        self.seed_write(chunk, data_node);
+        self.store_mut().writes.mark(chunk);
     }
 
     #[inline]
     pub(super) fn has_pending_rehash(&self) -> bool {
-        !self.store().unhashed.is_empty()
+        self.store().writes.has_unhashed()
     }
 
     #[timed]
@@ -254,6 +223,6 @@ impl<C: ColumnSpec<Val = u64>> ColumnTree<C> {
             }
             u64::set_lane(leaf, lane, new);
         }
-        self.seed_write(chunk, data_node);
+        self.store_mut().writes.mark(chunk);
     }
 }

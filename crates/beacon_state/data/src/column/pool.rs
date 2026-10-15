@@ -2,7 +2,10 @@ use std::marker::PhantomData;
 
 use bytesize::ByteSize;
 
-use super::snapshot::PageSnapshot;
+use super::{
+    ColumnSpec,
+    page_format::{PagePos, Subtree},
+};
 use crate::types::B256;
 
 pub type PageId = u32;
@@ -34,17 +37,26 @@ const MAX_POOL_BYTES: usize = ByteSize::gib(4).as_u64() as usize;
 /// Reserved up front, so the segment list a reader indexes never moves.
 const MAX_SEGMENTS: usize = MAX_POOL_BYTES / SEGMENT_BYTES;
 
-/// `SEGMENT_BYTES` of pages. Allocated zeroed at full size, so its buffer
-/// never moves under a reader.
+/// `SEGMENT_BYTES` of pages of one kind, fixed when the segment is created:
+///
+/// - with children: pages above the bottom page level, each with `P::LEN` child
+///   ids in `children_pages`;
+/// - without children: bottom-level pages, which hold the leaves;
+///   `children_pages` stays empty.
+///
+/// Allocated zeroed at full size, so neither buffer moves under a reader.
 struct Segment {
-    nodes: Box<[B256]>,
+    page_data: Box<[B256]>,
+    children_pages: Box<[PageId]>,
     used: usize,
 }
 
 pub(super) struct PagePool<P: PageArray> {
     segments: Vec<Segment>,
-    refs: Vec<u32>,
-    free: Vec<PageId>,
+    /// Freed ids per segment kind: `[without children, with children]`.
+    free: [Vec<PageId>; 2],
+    /// The segment each kind takes fresh ids from, indexed as `free`.
+    filling: [Option<usize>; 2],
     _page: PhantomData<fn() -> P>,
 }
 
@@ -60,64 +72,76 @@ impl<P: PageArray> PagePool<P> {
     pub(super) fn new() -> Self {
         Self {
             segments: Vec::with_capacity(MAX_SEGMENTS),
-            refs: Vec::new(),
-            free: Vec::new(),
+            free: [Vec::new(), Vec::new()],
+            filling: [None, None],
             _page: PhantomData,
         }
     }
 
     #[inline]
-    pub(super) fn retain(&mut self, id: PageId) {
-        self.refs[id as usize] += 1;
+    pub(super) fn alloc<'a>(
+        &mut self,
+        children: usize,
+        rows: impl Iterator<Item = &'a [B256]>,
+    ) -> PageId {
+        let inner = children != 0;
+        let id = match self.free[inner as usize].pop() {
+            Some(id) => id,
+            None => self.fresh_id(inner),
+        };
+        let (segment, i) = Self::split(id);
+        let mut page = &mut self.segments[segment].page_data[i * P::LEN + 1..];
+        for row in rows {
+            page[..row.len()].copy_from_slice(row);
+            page = &mut page[row.len()..];
+        }
+        id
+    }
+
+    fn fresh_id(&mut self, inner: bool) -> PageId {
+        let segment = match self.filling[inner as usize] {
+            Some(s) if self.segments[s].used < Self::SEGMENT_PAGES => s,
+            _ => self.push_segment(inner),
+        };
+        let used = &mut self.segments[segment].used;
+        *used += 1;
+        (segment * Self::SEGMENT_PAGES + *used - 1) as PageId
+    }
+
+    fn push_segment(&mut self, inner: bool) -> usize {
+        assert!(self.segments.len() < MAX_SEGMENTS, "PagePool: exceeds MAX_POOL_BYTES");
+        let child_slots = if inner { Self::SEGMENT_PAGES * P::LEN } else { 0 };
+        self.segments.push(Segment {
+            page_data: vec![[0u8; 32]; Self::SEGMENT_PAGES * P::LEN].into_boxed_slice(),
+            children_pages: vec![0; child_slots].into_boxed_slice(),
+            used: 0,
+        });
+        self.filling[inner as usize] = Some(self.segments.len() - 1);
+        self.segments.len() - 1
     }
 
     #[inline]
-    fn release_page(&mut self, id: PageId) {
-        let r = &mut self.refs[id as usize];
-        *r -= 1;
-        if *r == 0 {
-            self.free.push(id);
-        }
+    pub(super) fn free(&mut self, id: PageId) {
+        let inner = !self.segments[Self::split(id).0].children_pages.is_empty();
+        self.free[inner as usize].push(id);
     }
 
-    /// Re-point `dst` at `src`'s pages, reusing `dst`'s page-table allocation:
-    /// release `dst`'s current pages, then adopt `src`'s (bumping their
-    /// refcounts). Identical entries — typically the bulk — cancel their
-    /// release+retain and cost only the compare. A released `dst` comes back
-    /// live: its refs are already gone, so its table counts as empty and
-    /// everything in `src` is retained.
-    pub(super) fn share_into(&mut self, dst: &mut PageSnapshot, src: &PageSnapshot) {
-        let owned = if dst.is_released { &[] } else { dst.pages.as_slice() };
-        for i in 0..owned.len().max(src.pages.len()) {
-            let (d, s) = (owned.get(i).copied(), src.pages.get(i).copied());
-            if d == s {
-                continue;
-            }
-            if let Some(d) = d {
-                self.release_page(d);
-            }
-            if let Some(s) = s {
-                self.retain(s);
-            }
-        }
-        dst.pages.clear();
-        dst.pages.extend_from_slice(&src.pages);
-        dst.format = src.format;
-        dst.count = src.count;
-        dst.is_released = false;
-    }
-
-    /// Free the snapshot's pages; does nothing if already released. The page
-    /// table is kept, so parallel readers stay in bounds and retry via
-    /// seqlock.
-    pub(super) fn release(&mut self, snapshot: &mut PageSnapshot) {
-        if snapshot.is_released {
+    /// Free `old`'s pages down to where they meet `new`'s.
+    pub(super) fn free_unshared<C: ColumnSpec<Page = P>>(
+        &mut self,
+        sub: Subtree,
+        at: PagePos,
+        old: PageId,
+        new: Option<PageId>,
+    ) {
+        if new == Some(old) {
             return;
         }
-        for &id in &snapshot.pages {
-            self.release_page(id);
+        self.free(old);
+        for j in 0..sub.child_count::<C>(at) {
+            let new = new.map(|new| self.child(new, j));
+            self.free_unshared::<C>(sub, sub.child::<C>(at, j), self.child(old, j), new);
         }
-        snapshot.is_released = true;
     }
 
     #[inline]
@@ -131,74 +155,23 @@ impl<P: PageArray> PagePool<P> {
         let (segment, i) = Self::split(id);
         self.segments
             .get(segment)
-            .and_then(|s| s.nodes.get(i * P::LEN..(i + 1) * P::LEN))
+            .and_then(|s| s.page_data.get(i * P::LEN..(i + 1) * P::LEN))
             .unwrap_or(P::UNRESOLVED)
     }
 
-    /// Claim a fresh private page seeded from a flat node slice (the writable
-    /// scratch's page). `src` may be shorter than a full page (the tail leaf
-    /// page of a small tree); the remainder is zeroed.
     #[inline]
-    pub(super) fn alloc_from_slice(&mut self, src: &[B256]) -> PageId {
-        debug_assert!(src.len() <= P::LEN);
-        let id = match self.free.pop() {
-            Some(id) => {
-                self.refs[id as usize] = 1;
-                id
-            }
-            None => self.fresh_id(),
-        };
+    pub(super) fn child(&self, id: PageId, j: usize) -> PageId {
         let (segment, i) = Self::split(id);
-        let page = &mut self.segments[segment].nodes[i * P::LEN..(i + 1) * P::LEN];
-        page[..src.len()].copy_from_slice(src);
-        page[src.len()..].fill([0u8; 32]);
-        id
+        self.segments
+            .get(segment)
+            .and_then(|s| s.children_pages.get(i * P::LEN + j))
+            .copied()
+            .unwrap_or(0)
     }
 
-    fn fresh_id(&mut self) -> PageId {
-        if self.segments.last().is_none_or(|s| s.used == Self::SEGMENT_PAGES) {
-            assert!(self.segments.len() < MAX_SEGMENTS, "PagePool: exceeds MAX_POOL_BYTES");
-            self.segments.push(Segment {
-                nodes: vec![[0u8; 32]; Self::SEGMENT_PAGES * P::LEN].into_boxed_slice(),
-                used: 0,
-            });
-        }
-        self.refs.push(1);
-        let segment = self.segments.len() - 1;
-        let used = &mut self.segments[segment].used;
-        *used += 1;
-        (segment * Self::SEGMENT_PAGES + *used - 1) as PageId
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{super::format::TreeFormat, B256, PagePool, PageSnapshot};
-
-    fn snapshot(pages: Vec<u32>) -> PageSnapshot {
-        PageSnapshot { pages, format: TreeFormat::default(), count: 1, is_released: false }
-    }
-
-    /// Release the same snapshot twice; between the two calls the page got a
-    /// new owner. The second release must not free it again.
-    #[test]
-    fn double_release_does_not_free_reallocated_page() {
-        let mut pool = PagePool::<[B256; 32]>::new();
-
-        // Fork a owns one page, then loses and is released.
-        let mut a = snapshot(vec![pool.alloc_from_slice(&[[1u8; 32]])]);
-        let p = a.pages[0];
-        pool.release(&mut a); // p is free now, but a still names it
-
-        // A new fork takes p.
-        let b = snapshot(vec![pool.alloc_from_slice(&[[2u8; 32]])]);
-        assert_eq!(b.pages[0], p, "free page should be reused");
-
-        // Later, finalize releases a's slot a second time (a dropped write
-        // view left it behind).
-        pool.release(&mut a);
-
-        // p belongs to b: a new alloc must not hand it out again.
-        assert_ne!(pool.alloc_from_slice(&[]), p, "second release freed a live page");
+    #[inline]
+    pub(super) fn set_child(&mut self, id: PageId, j: usize, child: PageId) {
+        let (segment, i) = Self::split(id);
+        self.segments[segment].children_pages[i * P::LEN + j] = child;
     }
 }

@@ -1,7 +1,12 @@
 use std::marker::PhantomData;
 
 use super::{
-    ColumnSpec, chunk_bits::ChunkBits, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
+    ColumnSpec,
+    chunk_writes::ChunkWrites,
+    format::TreeFormat,
+    page_format::{PagePos, Subtree},
+    pool::{PageId, PagePool},
+    snapshot::PageSnapshot,
     subtree::NodeRange,
 };
 use crate::types::B256;
@@ -9,22 +14,13 @@ use crate::types::B256;
 pub(super) struct NodeStore<C: ColumnSpec> {
     pub(super) nodes: Vec<B256>,
     pub(super) count: usize,
-    pub(super) dirty_pages: Vec<bool>,
-    pub(super) unhashed: ChunkBits,
-    unhashed_ranges: Vec<NodeRange>,
+    pub(super) writes: ChunkWrites,
     _marker: PhantomData<fn() -> C>,
 }
 
 impl<C: ColumnSpec> Default for NodeStore<C> {
     fn default() -> Self {
-        Self {
-            nodes: Vec::new(),
-            count: 0,
-            dirty_pages: Vec::new(),
-            unhashed: ChunkBits::default(),
-            unhashed_ranges: Vec::new(),
-            _marker: PhantomData,
-        }
+        Self { nodes: Vec::new(), count: 0, writes: ChunkWrites::default(), _marker: PhantomData }
     }
 }
 
@@ -34,171 +30,118 @@ impl<C: ColumnSpec> NodeStore<C> {
         count: usize,
         leaves: impl Iterator<Item = B256>,
     ) -> Self {
-        let num_nodes = format.num_nodes::<C>();
-        let mut store = Self {
-            nodes: vec![[0u8; 32]; num_nodes],
-            count,
-            dirty_pages: vec![false; num_pages_for::<C>(num_nodes)],
-            ..Self::default()
-        };
-        store.unhashed.resize(format.data_capacity());
+        let mut store =
+            Self { nodes: vec![[0u8; 32]; format.num_nodes::<C>()], count, ..Self::default() };
+        store.writes.resize(format.data_capacity());
         for (slot, leaf) in store.nodes[format.data_start::<C>()..].iter_mut().zip(leaves) {
             *slot = leaf;
         }
         store
     }
 
-    /// The nodes, and the chunks written since the last rehash as sorted
-    /// ranges.
-    pub(super) fn drain_unhashed(&mut self) -> (&mut [B256], &mut [NodeRange]) {
-        self.unhashed.drain(&mut self.unhashed_ranges);
-        (&mut self.nodes, &mut self.unhashed_ranges)
+    pub(super) fn take_unhashed(&mut self) -> (&mut [B256], &mut [NodeRange]) {
+        (&mut self.nodes, self.writes.take_unhashed())
     }
 
-    #[inline]
-    pub(super) fn num_pages(&self) -> usize {
-        num_pages_for::<C>(self.nodes.len())
-    }
-
-    #[inline]
-    pub(super) fn node(&self, n: usize) -> &B256 {
-        &self.nodes[n]
-    }
-
-    #[inline]
-    pub(super) fn page(&self, pi: usize) -> &[B256] {
-        let p = C::PAGE_NODES;
-        let end = ((pi + 1) * p).min(self.nodes.len());
-        &self.nodes[pi * p..end]
-    }
-
-    #[inline]
-    fn page_mut(&mut self, pi: usize) -> &mut [B256] {
-        let p = C::PAGE_NODES;
-        let end = ((pi + 1) * p).min(self.nodes.len());
-        &mut self.nodes[pi * p..end]
-    }
-
-    /// Copy in only the pages that differ from `target`. `loaded` is the
-    /// table our nodes already match: an equal page id with a clean dirty
-    /// bit means the bytes are already right (pool pages never change while
-    /// referenced). Everything else — mismatched, dirtied, or past the old
-    /// table after a resize — gets copied.
-    pub(super) fn load_diff(
+    /// Copy `target` into the flat tree, skipping what it already holds:
+    /// `loaded` is the snapshot it matches outside the written chunks.
+    /// A format change copies every page.
+    pub(super) fn load(
         &mut self,
         pool: &PagePool<C::Page>,
         loaded: &PageSnapshot,
         target: &PageSnapshot,
     ) {
-        let format = target.format();
+        let format = target.format;
         self.nodes.resize(format.num_nodes::<C>(), [0u8; 32]);
-        self.count = target.len();
-        for pi in 0..target.num_pages() {
-            let same = self.dirty_pages.get(pi).is_some_and(|&dirty| !dirty) &&
-                loaded.pages.get(pi) == Some(&target.pages[pi]);
-            if !same {
-                let dst = self.page_mut(pi);
-                dst.copy_from_slice(&target.page(pool, pi)[..dst.len()]);
-            }
+        let same_format = loaded.format == format;
+        for (s, sub) in format.subtrees::<C>().enumerate() {
+            let loaded = loaded.roots.get(s).copied().filter(|_| same_format);
+            self.load_page(pool, sub, sub.root::<C>(), loaded, target.roots[s]);
         }
-        self.reset_dirty_mask();
-        self.unhashed.resize(format.data_capacity());
+
+        self.count = target.count;
+        self.writes.clear();
+        self.writes.resize(format.data_capacity());
     }
 
-    pub(super) fn to_snapshot(
-        &self,
-        pool: &mut PagePool<C::Page>,
+    fn load_page(
+        &mut self,
+        pool: &PagePool<C::Page>,
+        sub: Subtree,
+        at: PagePos,
+        loaded: Option<PageId>,
+        target: PageId,
+    ) {
+        if loaded == Some(target) && !self.writes.touches(sub.chunks_under::<C>(at)) {
+            return;
+        }
+        let page = pool.page(target);
+        for (node, len) in sub.rows_of::<C>(at) {
+            self.nodes[node..node + len].copy_from_slice(&page[len..2 * len]);
+        }
+        for j in 0..sub.child_count::<C>(at) {
+            let loaded = loaded.map(|l| pool.child(l, j));
+            self.load_page(pool, sub, sub.child::<C>(at, j), loaded, pool.child(target, j));
+        }
+    }
+
+    /// Commit the flat tree into `dst`, reusing `dst`'s allocations: clean
+    /// pages are `parent`'s, dirty ones get fresh pages. A parent in another
+    /// format, or none, shares nothing.
+    pub(super) fn commit(
+        &mut self,
         format: TreeFormat,
-    ) -> PageSnapshot {
-        let pages = (0..self.num_pages()).map(|pi| pool.alloc_from_slice(self.page(pi))).collect();
-        PageSnapshot { pages, format, count: self.count, is_released: false }
-    }
-
-    /// Commit the scratch into `dst`, reusing `dst`'s page-table allocation: it
-    /// shares `parent`'s clean pages (bumping their refcounts) and claims fresh
-    /// pages for the ones this block dirtied — plus every page past `parent`'s
-    /// table when this block changed the format (migration or segment growth).
-    pub(super) fn commit_into(
-        &self,
         pool: &mut PagePool<C::Page>,
         dst: &mut PageSnapshot,
-        parent: &PageSnapshot,
-        format: TreeFormat,
+        parent: Option<&PageSnapshot>,
     ) {
-        dst.pages.clear();
-        dst.pages.extend((0..self.num_pages()).map(|pi| match parent.pages.get(pi) {
-            Some(&id) if !self.dirty_pages[pi] => {
-                pool.retain(id);
-                id
-            }
-            _ => pool.alloc_from_slice(self.page(pi)),
-        }));
+        debug_assert!(!self.writes.has_unhashed(), "commit before rehash");
+        let parent = parent.filter(|parent| parent.format == format);
+        dst.roots.clear();
+        dst.allocated.clear();
+        let mut committer = PageCommitter::<C> {
+            writes: &self.writes,
+            nodes: &self.nodes,
+            pool,
+            allocated: &mut dst.allocated,
+        };
+        for (s, sub) in format.subtrees::<C>().enumerate() {
+            let root =
+                committer.commit_page(sub, sub.root::<C>(), parent.map(|parent| parent.roots[s]));
+            dst.roots.push(root);
+        }
         dst.format = format;
         dst.count = self.count;
-        dst.is_released = false;
-    }
-
-    /// Start a fresh write session: no dirty pages, and no dirty chunks — an
-    /// abandoned fork can leave an unhashed batch behind, and its ids
-    /// may not even be in range of the tree loaded since.
-    pub(super) fn reset_dirty_mask(&mut self) {
-        let num_pages = self.num_pages();
-        self.dirty_pages.clear();
-        self.dirty_pages.resize(num_pages, false);
-        self.unhashed.clear();
-    }
-
-    pub(super) fn mark_all_dirty(&mut self) {
-        let num_pages = self.num_pages();
-        self.dirty_pages.clear();
-        self.dirty_pages.resize(num_pages, true);
-    }
-
-    pub(super) fn copy_changed_pages_from<D>(&mut self, src: &NodeStore<D>)
-    where
-        D: ColumnSpec<Val = C::Val, Page = C::Page>,
-    {
-        debug_assert_eq!(self.count, src.count, "rotate needs a same-length source");
-        let len = self.nodes.len();
-        let Self { nodes, dirty_pages, .. } = self;
-        for (pi, dirty) in dirty_pages.iter_mut().enumerate() {
-            let p = C::PAGE_NODES;
-            let range = pi * p..((pi + 1) * p).min(len);
-            if nodes[range.clone()].as_flattened() != src.nodes[range.clone()].as_flattened() {
-                nodes[range.clone()].copy_from_slice(&src.nodes[range]);
-                *dirty = true;
-            }
-        }
-    }
-
-    #[inline]
-    pub(super) fn mark_dirty_page(&mut self, node: usize) {
-        self.dirty_pages[node / C::PAGE_NODES] = true;
-    }
-
-    /// `seg_off` is the internal node's subtree block offset (0 for a list's
-    /// single tree); the walk is subtree-local.
-    #[inline]
-    pub(super) fn mark_dirty_node(&mut self, node: usize, seg_off: usize) {
-        let mut local = node - seg_off;
-        debug_assert!(
-            seg_off.is_multiple_of(C::PAGE_NODES),
-            "subtree regions must be page-aligned",
-        );
-        // We can skip already-marked pages: local top bits (the page) halve the
-        // same way for every node on a page, so a dirty page means every page
-        // above it is dirty too. Example (top bits | last PAGE_NODES bits):
-        // Node1 110|0101011 -> 11|0010101
-        // Node2 110|1010100 -> 11|0101010
-        // The page-aligned seg_off only shifts pages by a constant.
-        let p = C::PAGE_NODES;
-        while local >= 1 && !self.dirty_pages[(seg_off + local) / p] {
-            self.dirty_pages[(seg_off + local) / p] = true;
-            local >>= 1;
-        }
+        self.writes.clear();
     }
 }
 
-fn num_pages_for<C: ColumnSpec>(num_nodes: usize) -> usize {
-    num_nodes.div_ceil(C::PAGE_NODES).max(1)
+struct PageCommitter<'a, C: ColumnSpec> {
+    writes: &'a ChunkWrites,
+    nodes: &'a [B256],
+    pool: &'a mut PagePool<C::Page>,
+    allocated: &'a mut Vec<(u32, PageId)>,
+}
+
+impl<C: ColumnSpec> PageCommitter<'_, C> {
+    fn commit_page(&mut self, sub: Subtree, at: PagePos, parent: Option<PageId>) -> PageId {
+        let chunks = sub.chunks_under::<C>(at);
+        if let Some(parent) = parent &&
+            !self.writes.touches(chunks.clone())
+        {
+            return parent;
+        }
+        let nodes = self.nodes;
+        let rows = sub.rows_of::<C>(at).map(|(node, len)| &nodes[node..node + len]);
+        let id = self.pool.alloc(sub.child_count::<C>(at), rows);
+        for j in 0..sub.child_count::<C>(at) {
+            let parent = parent.map(|parent| self.pool.child(parent, j));
+            let child = self.commit_page(sub, sub.child::<C>(at, j), parent);
+            self.pool.set_child(id, j, child);
+        }
+
+        self.allocated.push((sub.top_node::<C>(at) as u32, id));
+        id
+    }
 }

@@ -37,7 +37,7 @@ impl<C: ColumnSpec> ListTree<C> {
     }
 
     pub(super) fn rehash(&mut self) {
-        let (nodes, unhashed) = self.store.drain_unhashed();
+        let (nodes, unhashed) = self.store.take_unhashed();
         let (internal, leaves) = nodes.split_at_mut(self.max_elements);
         rehash_subtree(internal, leaves, unhashed);
     }

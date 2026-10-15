@@ -1,36 +1,85 @@
 use super::{
     ColumnSpec,
     format::TreeFormat,
-    pool::{PageArray, PageId, PagePool},
+    page_format::Subtree,
+    pool::{PageId, PagePool},
 };
 use crate::types::B256;
 
-/// A committed fork's whole column tree as a page table: `pages[i]` is the pool
-/// id of node-page `i`.
+/// A committed fork's column tree: one root page per subtree. A page id names
+/// its whole subtree, so forks share every page they did not write.
+///
+/// Ownership: the base owns every page reachable from its roots, and a fork
+/// owns exactly its `allocated` pages.
+#[derive(Default)]
 pub struct PageSnapshot {
-    pub(super) pages: Vec<PageId>,
+    pub(super) roots: Vec<PageId>,
+    /// `(flat-tree node in slot 1, page)` per page this commit allocated.
+    pub(super) allocated: Vec<(u32, PageId)>,
     pub(super) format: TreeFormat,
     pub(super) count: usize,
-    pub(super) is_released: bool,
 }
 
 impl PageSnapshot {
-    #[inline]
-    pub(super) fn new_released() -> Self {
-        Self { pages: Vec::new(), format: TreeFormat::default(), count: 0, is_released: true }
+    /// Only correct during the ring's copy-grow: the original is retired and
+    /// never released, so ownership of its allocated pages moves to the copy.
+    pub(super) fn clone_for_grow(&self) -> Self {
+        Self { roots: self.roots.clone(), allocated: self.allocated.clone(), ..*self }
     }
 
-    /// Copy that points at the same pool pages without bumping their
-    /// refcounts. This is only correct during the ring's copy-grow: the
-    /// original is retired and never released again, so the pages' single
-    /// reference effectively moves over to the copy.
-    pub(super) fn clone_for_grow(&self) -> Self {
-        Self {
-            pages: self.pages.clone(),
-            format: self.format,
-            count: self.count,
-            is_released: self.is_released,
+    /// Take `src`'s content without taking ownership of any page.
+    pub(super) fn mirror(&mut self, src: &PageSnapshot) {
+        self.roots.clone_from(&src.roots);
+        self.format = src.format;
+        self.count = src.count;
+    }
+
+    /// Forget the mirrored content, so a load against this copies every page.
+    pub(super) fn unmirror(&mut self) {
+        self.roots.clear();
+    }
+
+    #[inline]
+    pub(super) fn same_pages(&self, other: &PageSnapshot) -> bool {
+        self.format == other.format && self.roots == other.roots
+    }
+
+    /// Make this base `winner`'s tree, freeing the base pages the winner does
+    /// not share. Returns the previous winner's page table.
+    pub(super) fn promote<C: ColumnSpec>(
+        &mut self,
+        pool: &mut PagePool<C::Page>,
+        winner: &PageSnapshot,
+    ) -> Vec<PageId> {
+        let same_format = self.format == winner.format;
+        for (s, sub) in self.format.subtrees::<C>().enumerate() {
+            let new = winner.roots.get(s).copied().filter(|_| same_format);
+            pool.free_unshared::<C>(sub, sub.root::<C>(), self.roots[s], new);
         }
+        let replaced = self.roots.clone();
+        self.mirror(winner);
+        replaced
+    }
+
+    /// Free this fork's allocated pages, except those `base` holds. The
+    /// previous winner's pages already belong to the base, so it frees
+    /// nothing. Idempotent, as it clears `allocated`; `roots` stay, so
+    /// racing readers stay in bounds.
+    pub(super) fn release<C: ColumnSpec>(
+        &mut self,
+        pool: &mut PagePool<C::Page>,
+        base: &PageSnapshot,
+        previous_winner_page_table: &[PageId],
+    ) {
+        if self.roots != previous_winner_page_table {
+            let same_format = self.format == base.format;
+            for &(n, id) in &self.allocated {
+                if !same_format || base.page_of::<C>(pool, n as usize).0 != id {
+                    pool.free(id);
+                }
+            }
+        }
+        self.allocated.clear();
     }
 
     #[inline]
@@ -44,23 +93,21 @@ impl PageSnapshot {
     }
 
     #[inline]
-    pub(super) fn num_pages(&self) -> usize {
-        self.pages.len()
-    }
-
-    #[inline]
-    pub(super) fn page<'a, P: PageArray>(&self, pool: &'a PagePool<P>, pi: usize) -> &'a [B256] {
-        pool.page(self.pages[pi])
-    }
-
-    #[inline]
     pub(super) fn node<'a, C: ColumnSpec>(
         &self,
         pool: &'a PagePool<C::Page>,
         n: usize,
     ) -> &'a B256 {
-        let p = C::PAGE_NODES;
-        let id = self.pages.get(n / p).copied().unwrap_or(0);
-        &pool.page(id)[n % p]
+        let (id, slot) = self.page_of::<C>(pool, n);
+        &pool.page(id)[slot]
+    }
+
+    /// The page holding flat-tree node `n`, and its slot there.
+    #[inline]
+    fn page_of<C: ColumnSpec>(&self, pool: &PagePool<C::Page>, n: usize) -> (PageId, usize) {
+        let (s, level, pos) = self.format.locate::<C>(n);
+        let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
+        let root = self.roots.get(s).copied().unwrap_or(0);
+        (children.fold(root, |id, j| pool.child(id, j)), slot)
     }
 }

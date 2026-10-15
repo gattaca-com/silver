@@ -11,8 +11,10 @@ fn marked(chunks: usize, marks: impl IntoIterator<Item = usize>) -> ChunkBits {
 }
 
 fn drain(dirty: &mut ChunkBits) -> Vec<NodeRange> {
+    let mut done = ChunkBits::default();
+    done.resize(dirty.words.len() * 64);
     let mut ranges = Vec::new();
-    dirty.drain(&mut ranges);
+    dirty.drain_into(&mut done, &mut ranges);
     ranges
 }
 

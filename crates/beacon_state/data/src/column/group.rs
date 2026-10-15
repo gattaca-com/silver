@@ -72,7 +72,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
             writer,
             pool,
             finalized,
-            ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
+            ring: Ring::filled(SLOTS_RING_N, PageSnapshot::default),
             _marker: PhantomData,
         }
     }
@@ -85,14 +85,14 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     #[timed]
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
         let Self { pool, finalized, writer, .. } = self;
-        writer.load(pool, finalized);
+        writer.load(pool, finalized, None);
         ColumnWriteView::new(self, None)
     }
 
     #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
         let Self { pool, ring, writer, .. } = self;
-        writer.load(pool, ring.get(parent));
+        writer.load(pool, ring.get(parent), Some(parent));
         ColumnWriteView::new(self, Some(parent))
     }
 
@@ -100,11 +100,11 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         let Self { pool, finalized, ring, writer, .. } = self;
         writer.tree_mut().rehash();
 
-        ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
+        ring.grow_if_full_with(PageSnapshot::default, |src, dst| *dst = src.clone_for_grow());
         let (id, dst, parent_snap) = ring.roll_deriving(parent);
 
-        debug_assert!(dst.is_released, "recycled slot not freed by finalize or clear");
-        writer.commit(pool, dst, parent_snap.unwrap_or(finalized));
+        debug_assert!(dst.allocated.is_empty(), "recycled slot still owns pages: not released");
+        writer.commit(pool, dst, parent_snap.unwrap_or(finalized), id);
         id
     }
 
@@ -126,9 +126,12 @@ impl<C: ColumnSpec> ColumnGroup<C> {
             survivors.iter().any(|s| idx(s) == winner),
             "winner must be among the survivors"
         );
-        let Self { pool, finalized, ring, .. } = self;
-        pool.share_into(finalized, ring.get(winner));
-        ring.free_outdated_with(survivors.iter().map(idx), |snapshot| pool.release(snapshot));
+        let Self { pool, finalized, ring, writer, .. } = self;
+        let previous_winner_page_table = finalized.promote::<C>(pool, ring.get(winner));
+        ring.free_outdated_with(survivors.iter().map(&idx), |snapshot| {
+            snapshot.release::<C>(pool, finalized, &previous_winner_page_table)
+        });
+        writer.unmirror_dead(finalized, |id| survivors.iter().any(|s| idx(s) == id));
     }
 
     #[inline]

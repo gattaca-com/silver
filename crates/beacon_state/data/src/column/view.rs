@@ -141,13 +141,12 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
         self.group.tree_mut().append_empty()
     }
 
-    pub fn copy_changed_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
+    pub fn copy_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
         &mut self,
         other: &mut ColumnWriteView<'_, D>,
     ) {
         other.group.tree_mut().rehash();
-        let src = other.group.tree();
-        self.group.tree_mut().copy_changed_pages_from(src);
+        self.group.tree_mut().copy_from(other.group.tree());
     }
 
     #[inline]
