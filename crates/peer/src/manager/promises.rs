@@ -283,11 +283,7 @@ impl PeerManager {
         let subscribers = self.subscribers.of(digest, topic);
         let d_lazy = self.params.d_lazy as usize;
         let factor_cap = (self.params.gossip_factor * subscribers.len() as f64) as usize;
-        let cap = if factor_cap <= d_lazy {
-            d_lazy
-        } else {
-            d_lazy.max(factor_cap)
-        };
+        let cap = if factor_cap <= d_lazy { d_lazy } else { d_lazy.max(factor_cap) };
 
         let mut emitted = 0usize;
         let mut visited = 0;
