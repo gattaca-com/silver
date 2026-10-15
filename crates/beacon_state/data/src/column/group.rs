@@ -6,8 +6,8 @@ use std::{
 use flux_profiler::timed;
 
 use super::{
-    ColumnReader, ColumnSpec, ColumnWriteView, pool::PagePool, snapshot::PageSnapshot,
-    tree::ColumnTree,
+    ColumnReader, ColumnSpec, ColumnWriteView, hashing_writer::HashingWriter, pool::PagePool,
+    snapshot::PageSnapshot, tree::ColumnTree,
 };
 use crate::{
     ring::{Id, Ring, RingGroup},
@@ -28,11 +28,7 @@ pub struct ColumnGroup<C: ColumnSpec> {
     ring: Ring<Self>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
-    scratch: ColumnTree<C>,
-    /// What `scratch` currently holds (up to its dirty mask), so a roll only
-    /// reloads the pages that differ. Keeps its own refcounts — finalize
-    /// releasing the fork it mirrors doesn't invalidate it.
-    scratch_snapshot: PageSnapshot,
+    writer: HashingWriter<C>,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -69,17 +65,14 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         leaves: impl Iterator<Item = B256>,
         format: HashFormat,
     ) -> Self {
-        let flat = ColumnTree::from_leaves(cap, count, leaves, format);
         let mut pool = PagePool::new();
-        let finalized = flat.to_snapshot(&mut pool);
-        let mut scratch_snapshot = PageSnapshot::new_released();
-        pool.share_into(&mut scratch_snapshot, &finalized);
+        let flat = ColumnTree::from_leaves(cap, count, leaves, format);
+        let (writer, finalized) = HashingWriter::new(flat, &mut pool);
         Self {
+            writer,
             pool,
             finalized,
             ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
-            scratch: flat,
-            scratch_snapshot,
             _marker: PhantomData,
         }
     }
@@ -91,45 +84,38 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     #[timed]
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let Self { pool, finalized, scratch, scratch_snapshot, .. } = self;
-        scratch.load(pool, scratch_snapshot, finalized);
-        pool.share_into(scratch_snapshot, finalized);
+        let Self { pool, finalized, writer, .. } = self;
+        writer.load(pool, finalized);
         ColumnWriteView::new(self, None)
     }
 
     #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { pool, ring, scratch, scratch_snapshot, .. } = self;
-        let target = ring.get(parent);
-        scratch.load(pool, scratch_snapshot, target);
-        pool.share_into(scratch_snapshot, target);
+        let Self { pool, ring, writer, .. } = self;
+        writer.load(pool, ring.get(parent));
         ColumnWriteView::new(self, Some(parent))
     }
 
-    pub(super) fn commit_scratch(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
-        let Self { pool, finalized, ring, scratch, scratch_snapshot, .. } = self;
-        scratch.rehash();
+    pub(super) fn commit_writer(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
+        let Self { pool, finalized, ring, writer, .. } = self;
+        writer.tree_mut().rehash();
 
         ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
         let (id, dst, parent_snap) = ring.roll_deriving(parent);
 
         debug_assert!(dst.is_released, "recycled slot not freed by finalize or clear");
-        scratch.commit_into(pool, dst, parent_snap.unwrap_or(finalized));
-        // Scratch now matches the committed fork: adopt its table for the
-        // next roll's diff.
-        pool.share_into(scratch_snapshot, dst);
-        scratch.reset_dirty_mask();
+        writer.commit(pool, dst, parent_snap.unwrap_or(finalized));
         id
     }
 
     #[inline]
     pub(super) fn tree(&self) -> &ColumnTree<C> {
-        &self.scratch
+        self.writer.tree()
     }
 
     #[inline]
     pub(super) fn tree_mut(&mut self) -> &mut ColumnTree<C> {
-        &mut self.scratch
+        self.writer.tree_mut()
     }
 
     /// Promote the winner into the base and free everything below the oldest

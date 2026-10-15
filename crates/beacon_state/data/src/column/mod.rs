@@ -1,6 +1,7 @@
 mod chunk_bits;
 mod format;
 mod group;
+mod hashing_writer;
 mod list;
 mod pool;
 mod progressive_list;

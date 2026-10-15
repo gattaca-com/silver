@@ -127,7 +127,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn commit(self) -> Id<ColumnGroup<C>> {
-        self.group.commit_scratch(self.parent)
+        self.group.commit_writer(self.parent)
     }
 
     #[inline]
