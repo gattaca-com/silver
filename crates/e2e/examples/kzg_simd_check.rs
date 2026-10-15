@@ -9,8 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_bls_simd::{COMPRESSED_LEN, simd_available, uncompress_in_g1, uncompress_in_g1_blst};
 use silver_common::ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView};
+use silver_crypto_simd::bls::{
+    COMPRESSED_LEN, simd_available, uncompress_in_g1, uncompress_in_g1_blst,
+};
 use silver_e2e::da_capture::ColumnFixtures;
 
 const REPS: usize = 5;
@@ -32,7 +34,7 @@ fn encodings(sidecar: &[u8]) -> impl Iterator<Item = [u8; COMPRESSED_LEN]> + '_ 
         .map(|c| c.try_into().expect("48 bytes"))
 }
 
-fn serialized(p: &Option<silver_bls_simd::blst_p1_affine>) -> Option<[u64; 12]> {
+fn serialized(p: &Option<silver_crypto_simd::bls::blst_p1_affine>) -> Option<[u64; 12]> {
     p.map(|p| {
         let mut out = [0u64; 12];
         out[..6].copy_from_slice(&p.x.l);

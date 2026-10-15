@@ -6,7 +6,7 @@ use std::arch::x86_64::__mmask8;
 
 use blst::{blst_fp, blst_fp2, blst_p2_affine};
 
-use crate::{
+use crate::bls::{
     G2_COMPRESSED_LEN,
     constants::{FOUR_MONT, P_U64},
     fp2x8::Fp2x8,

@@ -6,7 +6,7 @@ use std::arch::x86_64::__mmask8;
 
 use blst::{blst_fp, blst_p1_affine};
 
-use crate::{
+use crate::bls::{
     COMPRESSED_LEN,
     constants::FOUR_MONT,
     decompress_g2::{FLAG_COMPRESSED, FLAG_INFINITY, FLAG_LARGER_ROOT, fp_words, less_than_p},

@@ -10,14 +10,14 @@ use std::{
 };
 
 use blst::blst_uint64_from_fp;
-use silver_bls_simd::{
+use silver_common::ssz_view::DataColumnSidecarFuluView;
+use silver_crypto_simd::bls::{
     COMPRESSED_LEN,
     decompress::decompress,
     fp8::{Fp8, LANES, unpack52},
     g1x8::G1x8,
     simd_available, uncompress_in_g1_blst,
 };
-use silver_common::ssz_view::DataColumnSidecarFuluView;
 use silver_e2e::da_capture::ColumnFixtures;
 
 const REPS: usize = 7;

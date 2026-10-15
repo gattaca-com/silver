@@ -16,7 +16,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
-use crate::{
+use crate::bls::{
     constants::P_U64,
     fp8::{Fp8, LANES, Limbs, pack64, unpack52},
 };

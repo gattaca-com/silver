@@ -85,4 +85,4 @@ workspace = true
 
 [dev-dependencies]
 blst.workspace = true
-silver_bls_simd = { workspace = true, features = ["simd"] }
+silver_crypto_simd = { workspace = true, features = ["simd"] }

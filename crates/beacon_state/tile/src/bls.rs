@@ -2,10 +2,10 @@ pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
-use silver_bls_simd::uncompress_in_g2;
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
+use silver_crypto_simd::bls::uncompress_in_g2;
 
 use crate::{
     merkle,

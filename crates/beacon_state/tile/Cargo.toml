@@ -7,7 +7,7 @@ version.workspace = true
 
 [features]
 default = ["bls_simd"]
-bls_simd = ["silver_bls_simd/simd"]
+bls_simd = ["silver_crypto_simd/simd"]
 ef_tests = ["silver_common/test-util"]
 
 [dependencies]
@@ -21,7 +21,7 @@ flux.workspace = true
 flux-profiler.workspace = true
 ring.workspace = true
 blst.workspace = true
-silver_bls_simd.workspace = true
+silver_crypto_simd.workspace = true
 rustc-hash.workspace = true
 slab.workspace = true
 thiserror.workspace = true

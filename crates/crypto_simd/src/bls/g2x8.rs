@@ -8,7 +8,7 @@
 
 use std::arch::x86_64::__mmask8;
 
-use crate::{
+use crate::bls::{
     Membership,
     constants::{PSI_X_MONT, PSI_Y_MONT, Z_BITS},
     fp2x8::Fp2x8,

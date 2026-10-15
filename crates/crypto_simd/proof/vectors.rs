@@ -14,7 +14,7 @@
 
 // The crate's unit tests use the parts this file does not.
 #[allow(dead_code)]
-#[path = "../src/tests/g2_cases.rs"]
+#[path = "../src/bls/tests/g2_cases.rs"]
 mod g2_cases;
 
 use std::{collections::BTreeMap, fmt::Write as _};
@@ -23,7 +23,7 @@ use blst::{blst_p2, blst_p2_add_or_double, blst_p2_generator};
 use g2_cases::{G2_INFINITY, G2_KINDS, G2Cases, G2Kind, compress_g2, uncompress_g2};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use silver_bls_simd::{
+use silver_crypto_simd::bls::{
     G2_COMPRESSED_LEN, blst_p2_affine,
     constants::P_U64,
     decompress_g2::{self, Batch},
@@ -750,7 +750,9 @@ mod g1 {
     };
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
-    use silver_bls_simd::{decompress, simd_available, uncompress_in_g1, uncompress_in_g1_blst};
+    use silver_crypto_simd::bls::{
+        decompress, simd_available, uncompress_in_g1, uncompress_in_g1_blst,
+    };
 
     use super::{LANES, SEED, g2_cases, p_plus, p_word, small};
 

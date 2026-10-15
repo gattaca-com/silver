@@ -12,7 +12,7 @@ use std::arch::x86_64::{
     _mm512_sub_epi64,
 };
 
-use crate::constants::{
+use crate::bls::constants::{
     HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
     P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
 };
