@@ -19,9 +19,9 @@ end silver_kzg
 
 open silver_kzg
 
-/-- error: `silver_bls_simd.uncompress_in_g1` has already been declared -/
+/-- error: `silver_crypto_simd.bls.uncompress_in_g1` has already been declared -/
 #guard_msgs in
-axiom silver_bls_simd.uncompress_in_g1 :
+axiom silver_crypto_simd.bls.uncompress_in_g1 :
   Slice (Array Std.U8 48#usize) → Slice (Option blst.blst_p1_affine) →
     Result (Slice (Option blst.blst_p1_affine))
 
@@ -29,29 +29,29 @@ namespace silver_kzg
 
 namespace Bridge
 
-def toUpstream (p : blst.blst_p1_affine) : _root_.silver_bls_simd.blst.blst_p1_affine :=
+def toUpstream (p : blst.blst_p1_affine) : _root_.silver_crypto_simd.blst.blst_p1_affine :=
   ⟨⟨p.x.l⟩, ⟨p.y.l⟩⟩
 
-def fromUpstream (p : _root_.silver_bls_simd.blst.blst_p1_affine) : blst.blst_p1_affine :=
+def fromUpstream (p : _root_.silver_crypto_simd.blst.blst_p1_affine) : blst.blst_p1_affine :=
   ⟨⟨p.x.l⟩, ⟨p.y.l⟩⟩
 
 @[simp] theorem from_to (p : blst.blst_p1_affine) : fromUpstream (toUpstream p) = p := rfl
 
-@[simp] theorem to_from (p : _root_.silver_bls_simd.blst.blst_p1_affine) :
+@[simp] theorem to_from (p : _root_.silver_crypto_simd.blst.blst_p1_affine) :
     toUpstream (fromUpstream p) = p := rfl
 
 def toUpstreamSlice (s : Slice (Option blst.blst_p1_affine)) :
-    Slice (Option _root_.silver_bls_simd.blst.blst_p1_affine) :=
+    Slice (Option _root_.silver_crypto_simd.blst.blst_p1_affine) :=
   ⟨s.val.map (Option.map toUpstream), by simpa using s.property⟩
 
-def fromUpstreamSlice (s : Slice (Option _root_.silver_bls_simd.blst.blst_p1_affine)) :
+def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p1_affine)) :
     Slice (Option blst.blst_p1_affine) :=
   ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
 
-def uncompress (upstream : _root_.silver_bls_simd.G1Externals)
+def uncompress (upstream : _root_.silver_crypto_simd.bls.G1Externals)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
     Result (Slice (Option blst.blst_p1_affine)) := do
-  let result ← @_root_.silver_bls_simd.uncompress_in_g1 upstream inputs (toUpstreamSlice out)
+  let result ← @_root_.silver_crypto_simd.bls.uncompress_in_g1 upstream inputs (toUpstreamSlice out)
   ok (fromUpstreamSlice result)
 
 end Bridge
@@ -59,7 +59,7 @@ end Bridge
 def specVerdict (bytes : Array Std.U8 48#usize) : Option blst.blst_p1_affine :=
   (LeanBlsSimd.UncompressG1.specVerdict bytes).map Bridge.fromUpstream
 
-theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_bls_simd.G1Externals)
+theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.bls.G1Externals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -83,15 +83,15 @@ def UncompressMatchesSpec [Externals] : Prop :=
       ∃ result, Externals.uncompress inputs out = ok result ∧
         result.val = inputs.val.map specVerdict
 
-@[reducible] def externalsOf (upstream : _root_.silver_bls_simd.G1Externals) : Externals :=
+@[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.bls.G1Externals) : Externals :=
   ⟨Bridge.uncompress upstream⟩
 
-theorem externalsOf_matches_spec (upstream : _root_.silver_bls_simd.G1Externals)
+theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.bls.G1Externals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream) :
     @UncompressMatchesSpec (externalsOf upstream) :=
   Bridge.uncompress_eq_spec_list upstream hblst
 
-@[reducible] def specUpstream : _root_.silver_bls_simd.G1Externals :=
+@[reducible] def specUpstream : _root_.silver_crypto_simd.bls.G1Externals :=
   ⟨true, LeanBlsSimd.UncompressG1.specVerdict⟩
 
 theorem specUpstream_matches : @LeanBlsSimd.UncompressG1.BlstMatchesSpec specUpstream :=
@@ -102,9 +102,9 @@ example : @UncompressMatchesSpec (externalsOf specUpstream) :=
 
 end Fixed
 
-def silver_bls_simd.COMPRESSED_LEN : Result Std.Usize := ok 48#usize
+def silver_crypto_simd.bls.COMPRESSED_LEN : Result Std.Usize := ok 48#usize
 
-def silver_bls_simd.uncompress_in_g1 [Fixed.Externals]
+def silver_crypto_simd.bls.uncompress_in_g1 [Fixed.Externals]
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
     Result (Slice (Option blst.blst_p1_affine)) :=
   Fixed.Externals.uncompress inputs out
@@ -112,8 +112,8 @@ def silver_bls_simd.uncompress_in_g1 [Fixed.Externals]
 /-- The generated call spelling resolves to the downstream facade. -/
 def caller [Fixed.Externals] (inputs : Slice (Array Std.U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) : Result (Slice (Option blst.blst_p1_affine)) := do
-  let _ ← silver_bls_simd.COMPRESSED_LEN
-  silver_bls_simd.uncompress_in_g1 inputs out
+  let _ ← silver_crypto_simd.bls.COMPRESSED_LEN
+  silver_crypto_simd.bls.uncompress_in_g1 inputs out
 
 theorem caller_eq_spec_list [Fixed.Externals] (h : Fixed.UncompressMatchesSpec)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
@@ -125,7 +125,7 @@ example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) :
     @caller external inputs out = external.uncompress inputs out := rfl
 
-example (upstream : _root_.silver_bls_simd.G1Externals)
+example (upstream : _root_.silver_crypto_simd.bls.G1Externals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :

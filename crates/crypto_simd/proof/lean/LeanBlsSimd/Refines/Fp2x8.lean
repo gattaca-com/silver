@@ -3,7 +3,7 @@ import LeanBlsSimd.Model.Fp2x8
 import LeanBlsSimd.Proofs.MulComm
 
 open Aeneas Aeneas.Std Result
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 /-!
 Exact refinement of the functions in `fp2x8.rs`. `ofFp2x8` converts each coordinate with

@@ -2,7 +2,7 @@ import LeanBlsSimd.Refines.Fp2x8
 import LeanBlsSimd.Model.G2x8
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 /-!
 # `g2x8.rs`
@@ -34,16 +34,16 @@ def toG2x8 (x : G2x8) : g2x8.G2x8 := ⟨toFp2x8 x.x, toFp2x8 x.y, toFp2x8 x.z⟩
 @[simp] theorem toG2x8_ofG2x8 (a : g2x8.G2x8) : toG2x8 (ofG2x8 a) = a := by
   simp [ofG2x8, toG2x8]
 
-def ofMembership (a : silver_bls_simd.Membership) : LeanBlsSimd.Membership :=
+def ofMembership (a : silver_crypto_simd.bls.Membership) : LeanBlsSimd.Membership :=
   ⟨ofU8 a.members, ofU8 a.undecided⟩
 
-def toMembership (x : LeanBlsSimd.Membership) : silver_bls_simd.Membership :=
+def toMembership (x : LeanBlsSimd.Membership) : silver_crypto_simd.bls.Membership :=
   ⟨toU8 x.members, toU8 x.undecided⟩
 
 @[simp] theorem ofMembership_toMembership (x : LeanBlsSimd.Membership) :
     ofMembership (toMembership x) = x := rfl
 
-@[simp] theorem toMembership_ofMembership (a : silver_bls_simd.Membership) :
+@[simp] theorem toMembership_ofMembership (a : silver_crypto_simd.bls.Membership) :
     toMembership (ofMembership a) = a := rfl
 
 @[simp] theorem toU8_not (a : UInt8) : ~~~ toU8 a = toU8 (~~~ a) := rfl

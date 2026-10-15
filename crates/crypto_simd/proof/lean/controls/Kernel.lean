@@ -87,7 +87,7 @@ example (l : Fin 8) : (decompress genInputs).undecided.toNat.testBit l = false �
 /-- The generated `decompress` returns a batch whose lanes are all decided and valid, so the
 premise of `decompress_extracted_eq_spec` holds. -/
 example : ∃ batch,
-    silver_bls_simd.decompress_g2.decompress (toArray (toArray toU8) genInputs) = .ok batch ∧
+    silver_crypto_simd.bls.decompress_g2.decompress (toArray (toArray toU8) genInputs) = .ok batch ∧
       ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false ∧
         (ofBatch batch).valid.toNat.testBit l = true :=
   ⟨_, decompress_refines _, fun l => by

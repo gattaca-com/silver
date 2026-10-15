@@ -4,7 +4,7 @@ import LeanBlsSimd.Model.Intrinsics
 /-!
 # `fp8.rs`
 
-Model of `crates/bls_simd/src/fp8.rs`, connected to the Aeneas output by `Refines/Fp8.lean`.
+Model of `crates/crypto_simd/src/bls/fp8.rs`, connected to the Aeneas output by `Refines/Fp8.lean`.
 
 Some stages carry names that Rust does not give them, so that proofs can treat each result as a
 variable. `mulAcc` is `Fp8::mul` up to its carry loop. The loops of `mul`, `pack64` and

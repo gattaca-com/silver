@@ -3,8 +3,8 @@ import LeanBlsSimd.Model.Fp2x8
 /-!
 # `g2x8.rs`
 
-Model of `crates/bls_simd/src/g2x8.rs`, connected to the Aeneas output by `Refines/G2x8.lean`.
-Points are Jacobian triples over `Fp2x8`, one per lane. `Membership` is the struct of `lib.rs`
+Model of `crates/crypto_simd/src/bls/g2x8.rs`, connected to the Aeneas output by `Refines/G2x8.lean`.
+Points are Jacobian triples over `Fp2x8`, one per lane. `Membership` is the struct of `crates/crypto_simd/src/bls/mod.rs`
 that `scott_membership` returns. Rust's `!` on a mask is `~~~`.
 
 `times_minus_z` counts `bit` down from `Z_BITS[0]` in a `while` loop with a mutable point and
@@ -16,7 +16,7 @@ values `bit` takes after its decrement, and its state is that pair. The five com
 
 namespace LeanBlsSimd
 
-/-- `Membership` of `lib.rs`. -/
+/-- `Membership` of `crates/crypto_simd/src/bls/mod.rs`. -/
 structure Membership where
   members : Mmask8
   undecided : Mmask8

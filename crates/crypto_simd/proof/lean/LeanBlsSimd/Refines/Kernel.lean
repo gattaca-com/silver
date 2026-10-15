@@ -5,7 +5,7 @@ import LeanBlsSimd.Proofs.Kernel
 # The generated `decompress` against the spec's decoding and subgroup checks
 
 `decompress_extracted_eq_spec` is `decompress_eq_spec` for the generated
-`silver_bls_simd.decompress_g2.decompress`, which Aeneas translates from the Rust. It also states,
+`silver_crypto_simd.bls.decompress_g2.decompress`, which Aeneas translates from the Rust. It also states,
 with no hypothesis, that this function returns `ok` on every input: it neither panics nor
 diverges.
 
@@ -24,11 +24,11 @@ namespace DecompressG2
 
 /-- The generated `decompress` returns a batch on every input. Given Scott completeness, each lane
 of that batch that is not undecided gives the spec's result. The left side is
-`decompress_g2_chunk`'s reading of the returned batch in `lib.rs`, past its `undecided` test. The
+`decompress_g2_chunk`'s reading of the returned batch in `crates/crypto_simd/src/bls/mod.rs`, past its `undecided` test. The
 right side applies the signature decoding and subgroup checks used by `coreVerify`, as in
 `decompress_eq_spec`. It does not cover full signature verification. -/
 theorem decompress_extracted_eq_spec (inputs : Array (Array U8 96#usize) 8#usize) :
-    ∃ batch, silver_bls_simd.decompress_g2.decompress inputs = ok batch ∧
+    ∃ batch, silver_crypto_simd.bls.decompress_g2.decompress inputs = ok batch ∧
       (ScottComplete → ∀ l : Fin 8, (ofBatch batch).undecided.toNat.testBit l = false →
         (if (ofBatch batch).valid.toNat.testBit l then some (ofBatch batch).points[l]
           else none) =

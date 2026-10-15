@@ -1,7 +1,7 @@
 import LeanBlsSimd.Refines.DecompressG1
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.UncompressG1
 
@@ -14,9 +14,9 @@ theorem simd_body_runs [G1Externals]
     (hchunk : ∀ (c : Array (Array U8 48#usize) 8#usize)
       (s : Slice (Option blst.blst_p1_affine)),
       c.val = inputs.val.slice start.val next.val → s.val.length = 8 →
-      ∃ r, silver_bls_simd.decompress_g1_chunk c s = ok r ∧
+      ∃ r, silver_crypto_simd.bls.decompress_g1_chunk c s = ok r ∧
         r.val = target.slice start.val next.val) :
-    ∃ result, silver_bls_simd.uncompress_in_g1_loop0.body inputs stop out true start =
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1_loop0.body inputs stop out true start =
         ok (cont (result, true, next)) ∧
       result.val.length = out.val.length ∧
       ∀ i, i < out.val.length → result.val[i]! =
@@ -42,8 +42,8 @@ theorem simd_body_runs [G1Externals]
   obtain ⟨r, hr, hrv⟩ := hchunk c os hc hos
   let result := out.setSlice! start.val r.val
   refine ⟨result, ?_, ?_, ?_⟩
-  · have hadd : start + silver_bls_simd.LANES = ok next := by
-      rw [silver_bls_simd.LANES, add_ok start 8#usize
+  · have hadd : start + silver_crypto_simd.bls.LANES = ok next := by
+      rw [silver_crypto_simd.bls.LANES, add_ok start 8#usize
         (by have := next.hBounds; simpa [hnext] using this)]
       congr 1
       exact UScalar.eq_of_val_eq (by simp [hnext])
@@ -63,12 +63,12 @@ theorem simd_body_runs [G1Externals]
         core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
       rw [if_pos (by simp only [Slice.length]; constructor <;> omega)]
       rfl
-    simp only [silver_bls_simd.uncompress_in_g1_loop0.body, show start < stop from hlt,
+    simp only [silver_crypto_simd.bls.uncompress_in_g1_loop0.body, show start < stop from hlt,
       if_true, Array.to_slice_mut, lift, bind_tc_ok, hadd, hindex, hmut]
     simp only [Function.uncurry_apply_pair]
     rw [hcopy]
     simp only [bind_tc_ok]
-    change (do let r ← silver_bls_simd.decompress_g1_chunk c os
+    change (do let r ← silver_crypto_simd.bls.decompress_g1_chunk c os
                ok (cont (out.setSlice! start.val r.val, true, next))) = _
     rw [hr]
     rfl

@@ -122,7 +122,7 @@ def modelPoint (words : Words) : BlstP1Affine :=
 
 def wordsOfPoint (p : BlstP1Affine) : Words := (p.x.l.toList ++ p.y.l.toList).toArray
 
-def wordsOfExtracted (p : silver_bls_simd.blst.blst_p1_affine) : Words :=
+def wordsOfExtracted (p : silver_crypto_simd.blst.blst_p1_affine) : Words :=
   (p.x.l.val ++ p.y.l.val).toArray.map fun x => UInt64.ofBitVec x.bv
 
 structure Tally where
@@ -154,7 +154,7 @@ def compareBatch (t : Tally) (b : Batch) : IO Tally := do
   let model := DecompressG1.decompress inputs
   let mut t ← compareKernel t "model" b model.valid model.undecided
     (model.points.toArray.map wordsOfPoint)
-  match silver_bls_simd.decompress.decompress (toArray (toArray toU8) inputs) with
+  match silver_crypto_simd.bls.decompress.decompress (toArray (toArray toU8) inputs) with
   | .ok got =>
     t ← compareKernel t "extraction" b (UInt8.ofBitVec got.valid.bv)
       (UInt8.ofBitVec got.undecided.bv) (got.points.val.toArray.map wordsOfExtracted)
@@ -177,16 +177,16 @@ def compareWrapper (t : Tally) (batches : Array Batch) (w : Wrapper) (simd : Boo
   let want := w.outputs
   let model := (UncompressG1.uncompress simd oracle inputs).toArray.map (Option.map wordsOfPoint)
   let t ← check t s!"{context} model" want model
-  letI : silver_bls_simd.G1Externals := {
+  letI : silver_crypto_simd.bls.G1Externals := {
     simdAvailable := simd
     uncompress := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine }
   let extracted : List (Std.Array Std.U8 48#usize) := inputs.map (toArray toU8)
   if h : extracted.length ≤ Std.Usize.max then do
     let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := ⟨extracted, h⟩
     let sentinel := toBlstP1Affine (modelPoint ((Array.replicate 6 0xfeed) ++ Array.replicate 6 0xbeef))
-    let out : Aeneas.Std.Slice (Option silver_bls_simd.blst.blst_p1_affine) :=
+    let out : Aeneas.Std.Slice (Option silver_crypto_simd.blst.blst_p1_affine) :=
       ⟨List.replicate extracted.length (some sentinel), by simpa using h⟩
-    match silver_bls_simd.uncompress_in_g1 inputSlice out with
+    match silver_crypto_simd.bls.uncompress_in_g1 inputSlice out with
     | .ok got => check t s!"{context} extraction" want (got.val.toArray.map (Option.map wordsOfExtracted))
     | .fail e => failed t s!"{context} extraction" s!"fail {repr e}"
     | .div => failed t s!"{context} extraction" "div"

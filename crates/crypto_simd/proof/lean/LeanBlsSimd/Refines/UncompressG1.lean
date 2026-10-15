@@ -2,7 +2,7 @@ import LeanBlsSimd.Refines.G1
 import LeanBlsSimd.Proofs.G1
 
 open Aeneas Aeneas.Std Result
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.UncompressG1
 
@@ -43,7 +43,7 @@ kernel's actual undecided mask; the scalar external is otherwise unconstrained. 
 theorem uncompress_in_g1_eq_spec_or_blst [G1Externals]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
       ∀ i : Fin inputs.val.length,
         result.val[i.val]? = some
@@ -78,7 +78,7 @@ theorem uncompress_in_g1_eq_spec [G1Externals]
     (hblst : ∀ bytes : Array U8 48#usize, G1Externals.uncompress bytes = specVerdict bytes)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
       ∀ i : Fin inputs.val.length,
         result.val[i.val]? = some (specVerdict inputs.val[i.val]) := by
@@ -91,7 +91,7 @@ theorem uncompress_in_g1_eq_spec [G1Externals]
 theorem uncompress_in_g1_eq_spec_list [G1Externals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g1_eq_spec hblst inputs out hlen
   refine ⟨result, hr, List.ext_getElem (by simpa using hl) ?_⟩
@@ -103,7 +103,7 @@ theorem uncompress_in_g1_eq_spec_list [G1Externals] (hblst : BlstMatchesSpec)
 theorem uncompress_in_g1_eq_spec_model_list [G1Externals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.map (Option.map ofBlstP1Affine) =
         inputs.val.map (G1Spec.verdict ∘ ofArray ofU8) := by
   obtain ⟨result, hr, hv⟩ := uncompress_in_g1_eq_spec_list hblst inputs out hlen

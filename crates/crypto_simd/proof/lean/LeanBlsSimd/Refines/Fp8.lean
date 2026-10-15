@@ -3,7 +3,7 @@ import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Proofs.Pow
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 /-!
 # `fp8.rs`

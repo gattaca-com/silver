@@ -13,7 +13,7 @@ Separate concrete examples refute the mutated claims where described below. -/
 namespace LeanBlsSimd
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 -- A mutated proof stops at its first failing step, so the linters flag the steps after it.
 set_option linter.unreachableTactic false

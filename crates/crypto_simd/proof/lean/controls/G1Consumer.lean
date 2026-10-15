@@ -1,7 +1,7 @@
 import LeanBlsSimd.Refines.UncompressG1
 
 open Aeneas Aeneas.Std Result
-open silver_bls_simd LeanBlsSimd
+open silver_crypto_simd silver_crypto_simd.bls LeanBlsSimd
 
 example [G1Externals]
     (hblst : ∀ bytes : Aeneas.Std.Array U8 48#usize,
@@ -9,7 +9,7 @@ example [G1Externals]
     (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
       ∀ i : Fin inputs.val.length,
         result.val[i.val]? = some (UncompressG1.specVerdict inputs.val[i.val]) :=

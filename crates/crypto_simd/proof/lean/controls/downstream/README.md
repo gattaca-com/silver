@@ -2,11 +2,13 @@ This independent Lake package imports `lean_bls_simd` by path and inherits its d
 
 The downstream facade follows silver_kzg's chosen external interface:
 
-- `silver_kzg.silver_bls_simd.uncompress_in_g1` reads the function field of `Fixed.Externals`.
-- `silver_kzg.caller` calls `silver_bls_simd.uncompress_in_g1 inputs out` in the generated spelling. Its only instance parameter is `Fixed.Externals`.
+- `silver_kzg.silver_crypto_simd.bls.uncompress_in_g1` reads the function field of `Fixed.Externals`.
+- `silver_kzg.caller` calls `silver_crypto_simd.bls.uncompress_in_g1 inputs out` in the generated spelling. Its only instance parameter is `Fixed.Externals`.
 - `Fixed.externalsOf upstream` fixes an explicit upstream `G1Externals` instance inside the adapter. `Fixed.externalsOf_matches_spec` discharges the named downstream premise `Fixed.UncompressMatchesSpec` from `BlstMatchesSpec`.
 
 `Bridge.uncompress_eq_spec_list` transports the upstream result across the copied structs; `caller_eq_spec_list` proves the downstream caller's list result. A concrete instance implementing the spec witnesses consistency. These are interoperability demonstrations, not changes to silver_kzg's extraction.
+
+The package models a separately extracted consumer of `silver_crypto_simd::bls`. It remains useful for checking that boundary and the transport between independent struct declarations. It does not model calls between sibling `bls` and `kzg` modules extracted together in one crate, where the extraction can share the blst structs directly.
 
 The normal package commands, run from this directory, are:
 

@@ -1,7 +1,7 @@
 /-!
 # The AVX-512 intrinsics of `fp8.rs`
 
-The trusted model of the twelve intrinsics that `crates/bls_simd/src/fp8.rs` calls.
+The trusted model of the twelve intrinsics that `crates/crypto_simd/src/bls/fp8.rs` calls.
 Arithmetic and bitwise operations act independently on each 64-bit lane. Their definitions
 lift `UInt64` operations to the eight lanes of `M512`; constructors and masks also specify
 the lane order.

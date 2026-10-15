@@ -5,7 +5,7 @@ import LeanBlsSimd.Refines.G1WrapperScalar
 import LeanBlsSimd.Refines.G1WrapperSimd
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd
 
@@ -43,7 +43,7 @@ private theorem modelBlst_roundtrip [G1Externals] (a : Array U8 48#usize) :
 
 theorem chunk_refines [G1Externals] (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
-    ∃ result, silver_bls_simd.decompress_g1_chunk inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.decompress_g1_chunk inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
         (Option.map toBlstP1Affine)) := by
   let b := decompress (ofArray (ofArray ofU8) inputs)
@@ -54,7 +54,7 @@ theorem chunk_refines [G1Externals] (inputs : Array (Array U8 48#usize) 8#usize)
     apply Subtype.ext
     simp [enc, vectorSlice]
   refine ⟨enc target, ?_, by simp [enc, vectorSlice, target, Vector.toList_map]⟩
-  rw [silver_bls_simd.decompress_g1_chunk, decompress_refines]
+  rw [silver_crypto_simd.bls.decompress_g1_chunk, decompress_refines]
   simp only [bind_tc_ok, decompress_g1_chunk_loop]
   rw [← ho]
   apply loop_range (n := 8) _ LANES (by simp [LANES]) enc
@@ -191,7 +191,7 @@ private theorem stop_loop_of_step [G1Externals]
 
 theorem uncompress_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_bls_simd.uncompress_in_g1 inputs out = ok result ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = (uncompress G1Externals.simdAvailable modelBlst
         (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP1Affine) := by
   let simd := G1Externals.simdAvailable
@@ -244,7 +244,7 @@ theorem uncompress_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
     have hmul : q * LANES = ok stop := by
       rw [LANES, mul_ok q 8#usize (by simpa [q] using hstopbound)]
       rfl
-    simp only [silver_bls_simd.uncompress_in_g1, heq, massert, ↓reduceIte,
+    simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte,
       bind_tc_ok, simd_available]
     rw [show Slice.len inputs = n from rfl, hd]
     simp only [bind_tc_ok]

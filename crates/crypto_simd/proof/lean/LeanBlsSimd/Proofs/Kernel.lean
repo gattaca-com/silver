@@ -7,7 +7,7 @@ import LeanBlsSimd.Spec.Generator
 
 The spec reads a signature's 96 bytes with `G2.uncompress`, then tests the point with
 `G2.inSubgroup` (`coreVerify` in `EthCryptographySpecs/Bls/Signatures.lean`). The program reads
-lane `l` of a `Batch` in `decompress_g2_chunk` of `lib.rs`: an `undecided` lane goes to blst;
+lane `l` of a `Batch` in `decompress_g2_chunk` of `crates/crypto_simd/src/bls/mod.rs`: an `undecided` lane goes to blst;
 otherwise a `valid` lane gives `Some(points[l])`, and any other lane `None`. Bit `l` of a mask
 `m` is `m.toNat.testBit l`, which is Rust's `m & (1 << l) != 0`
 (`Mmask8.and_one_shiftLeft_ne_zero`).
@@ -85,7 +85,7 @@ theorem valid_complete (hC : ScottComplete) (inputs : Vector (Vector UInt8 G2_CO
     ⟨P, hP, hC _ ((G2.inSubgroup_iff (valid_of_uncompress hu hP)).mp hg)⟩
 
 /-- Given Scott completeness, a lane that is not undecided gives the spec's result. The left side
-is `decompress_g2_chunk`'s result for the lane in `lib.rs`, past its `undecided` test. The right
+is `decompress_g2_chunk`'s result for the lane in `crates/crypto_simd/src/bls/mod.rs`, past its `undecided` test. The right
 side is `coreVerify`'s reading of the bytes: `G2.uncompress`, then `G2.inSubgroup`, with `none` on
 either failure, and the point in blst's limbs. -/
 theorem decompress_eq_spec (hC : ScottComplete)

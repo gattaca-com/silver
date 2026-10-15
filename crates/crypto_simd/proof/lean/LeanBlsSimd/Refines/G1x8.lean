@@ -2,7 +2,7 @@ import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Model.G1x8
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd
 

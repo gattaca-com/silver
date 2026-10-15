@@ -3,7 +3,7 @@ import LeanBlsSimd.Model.Fp8
 /-!
 # `fp2x8.rs`
 
-Model of `crates/bls_simd/src/fp2x8.rs`, connected to the Aeneas output by `Refines/Fp2x8.lean`.
+Model of `crates/crypto_simd/src/bls/fp2x8.rs`, connected to the Aeneas output by `Refines/Fp2x8.lean`.
 Fp2 = Fp[i]/(i² + 1); `c0` is the real part and `c1` the coefficient of i, in every lane.
 A Rust tuple `(Self, __mmask8)` is a Lean pair, and the `|`, `&` of two masks are `|||`, `&&&`.
 -/

@@ -3,7 +3,7 @@ import LeanBlsSimd.Refines.Basic
 /-! The generated constants, as the model's constants under the conversions of `Refines.Basic`. -/
 
 open Aeneas Aeneas.Std Result
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd
 

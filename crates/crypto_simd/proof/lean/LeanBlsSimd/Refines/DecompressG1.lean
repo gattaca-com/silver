@@ -2,7 +2,7 @@ import LeanBlsSimd.Refines.G1x8
 import LeanBlsSimd.Model.DecompressG1
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd
 namespace DecompressG1
@@ -138,9 +138,9 @@ theorem decompress_loop_refines (xs ys : Array (Array U64 6#usize) 8#usize)
   · simp [foldl_set_ofFn]
 
 theorem decompress_refines (inputs : Array (Array U8 48#usize) 8#usize) :
-    silver_bls_simd.decompress.decompress inputs =
+    silver_crypto_simd.bls.decompress.decompress inputs =
       ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
-  unfold silver_bls_simd.decompress.decompress decompress
+  unfold silver_crypto_simd.bls.decompress.decompress decompress
   simp only [decode_refines, bind_tc_ok]
   generalize decode (ofArray (ofArray ofU8) inputs) = D
   simp only [toDecoded, Fp8.from_plain_refines, bind_tc_ok,

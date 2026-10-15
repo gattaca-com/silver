@@ -1,7 +1,7 @@
 import LeanBlsSimd.Refines.DecompressG1
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd core.ops.range core.iter.range
+open silver_crypto_simd silver_crypto_simd.bls core.ops.range core.iter.range
 
 namespace LeanBlsSimd.UncompressG1
 

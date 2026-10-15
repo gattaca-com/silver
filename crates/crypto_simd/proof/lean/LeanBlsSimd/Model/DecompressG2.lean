@@ -3,7 +3,7 @@ import LeanBlsSimd.Model.G2x8
 /-!
 # `decompress_g2.rs`
 
-Model of `crates/bls_simd/src/decompress_g2.rs`, connected to the Aeneas output by
+Model of `crates/crypto_simd/src/bls/decompress_g2.rs`, connected to the Aeneas output by
 `Refines/DecompressG2.lean`. Each 96-byte encoding is a `Vector UInt8 96`, matching Rust's
 `[u8; 96]`.
 

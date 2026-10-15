@@ -2,7 +2,7 @@ import LeanBlsSimd.Refines.G2x8
 import LeanBlsSimd.Proofs.DecompressG2
 
 open Aeneas Aeneas.Std Result ControlFlow
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 /-!
 # `decompress_g2.rs`
@@ -93,7 +93,7 @@ def toBatch (b : Batch) : decompress_g2.Batch where
   simp [ofBatch, toBatch]
 
 theorem FP_BYTES_refines : decompress_g2.FP_BYTES = ok 48#usize := by
-  rw [decompress_g2.FP_BYTES, silver_bls_simd.G2_COMPRESSED_LEN]; rfl
+  rw [decompress_g2.FP_BYTES, silver_crypto_simd.bls.G2_COMPRESSED_LEN]; rfl
 
 theorem FLAG_COMPRESSED_refines : decompress_g2.FLAG_COMPRESSED = toU8 FLAG_COMPRESSED := by
   rw [decompress_g2.FLAG_COMPRESSED]; rfl

@@ -2,17 +2,17 @@ import Aeneas
 import LeanBlsSimd.Extracted.Types
 import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
-open silver_bls_simd
+open silver_crypto_simd silver_crypto_simd.bls
 
 /-- Total external observations, supplied by the caller of the generated G1 API. -/
-class silver_bls_simd.G1Externals where
+class silver_crypto_simd.bls.G1Externals where
   simdAvailable : Bool
   uncompress : Array Std.U8 48#usize → Option blst.blst_p1_affine
 
-def silver_bls_simd.simd_available [G1Externals] : Result Bool :=
+def silver_crypto_simd.bls.simd_available [G1Externals] : Result Bool :=
   ok G1Externals.simdAvailable
 
-def silver_bls_simd.uncompress_in_g1_blst [G1Externals]
+def silver_crypto_simd.bls.uncompress_in_g1_blst [G1Externals]
     (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
   ok (G1Externals.uncompress bytes)
 
@@ -147,8 +147,8 @@ def blst.blst_p2_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p2_a
   let fp2 : blst.blst_fp2 := { fp := Array.repeat 2#usize { l := Array.repeat 6#usize 0#u64 } }
   ok { x := fp2, y := fp2 }
 
-/-- [silver_bls_simd::fp8::lanes]:
-    Source: 'crates/bls_simd/src/fp8.rs', lines 50:0-54:1 -/
-def fp8.lanes (v : core.core_arch.x86.__m512i) : Result (Array Std.U64 8#usize) :=
+/-- [silver_crypto_simd::bls::fp8::lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:0-54:1 -/
+def silver_crypto_simd.bls.fp8.lanes (v : core.core_arch.x86.__m512i) : Result (Array Std.U64 8#usize) :=
   -- A `transmute`: element `l` of the array is lane `l` of `v`.
   ok ⟨v.toList.map fun x => ⟨x.toBitVec⟩, by simp⟩

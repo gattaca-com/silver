@@ -4,9 +4,9 @@ import Mathlib.NumberTheory.LegendreSymbol.Basic
 import Mathlib.Tactic.LinearCombination
 
 /-!
-# Constants of `silver_bls_simd`
+# Constants of `silver_crypto_simd`
 
-The tables of `crates/bls_simd/src/constants.rs`, transcribed verbatim, and each proved equal to
+The tables of `crates/crypto_simd/src/bls/constants.rs`, transcribed verbatim, and each proved equal to
 its derivation from p, R = 2^416 and z.
 
 p, r and |z| are the definitions of `ethereum/cryptography-specs`: `Fp.modulus`, `Fr.modulus` and
