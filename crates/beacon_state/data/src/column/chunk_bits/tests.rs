@@ -80,3 +80,37 @@ fn clear_forgets_marks_and_resize_grows() {
     dirty.mark(8191);
     assert_eq!(ranges(&mut dirty), vec![(8191, 8192)]);
 }
+
+#[test]
+fn drain_moves_the_marks_into_done() {
+    let mut dirty = marked(8192, [3, 4000]);
+    let mut done = marked(8192, [5]);
+    dirty.drain_into(&mut done, &mut Vec::new());
+    assert!(dirty.is_empty());
+    assert_eq!(ranges(&mut done), vec![(3, 4), (5, 6), (4000, 4001)]);
+}
+
+#[test]
+fn any_in_matches_a_naive_scan() {
+    let chunks = 3 * 4096 + 17;
+    let marks = [0, 63, 64, 700, 4095, 4096, 9000, chunks - 1];
+    let dirty = marked(chunks, marks);
+    for start in (0..chunks).step_by(61) {
+        for len in [1, 2, 63, 64, 65, 128, 4096, 4097, 8192, chunks] {
+            let span = start..(start + len).min(chunks);
+            let want = marks.iter().any(|m| span.contains(m));
+            assert_eq!(dirty.any_in(span.clone()), want, "{span:?}");
+        }
+    }
+}
+
+#[test]
+fn mark_all_then_clear() {
+    let mut dirty = marked(5000, []);
+    dirty.mark_all();
+    assert!(dirty.any_in(4999..5000));
+    assert!(dirty.any_in(0..5000));
+    dirty.clear();
+    assert!(dirty.is_empty());
+    assert!(!dirty.any_in(0..5000));
+}

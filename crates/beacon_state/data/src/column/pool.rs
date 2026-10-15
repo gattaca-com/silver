@@ -175,3 +175,6 @@ impl<P: PageArray> PagePool<P> {
         self.segments[segment].children_pages[i * P::LEN + j] = child;
     }
 }
+
+#[cfg(test)]
+mod tests;

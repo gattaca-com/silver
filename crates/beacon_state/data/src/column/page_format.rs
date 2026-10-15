@@ -155,3 +155,6 @@ impl Subtree {
 const fn levels_per_page<C: ColumnSpec>() -> u32 {
     C::PAGE_NODES.trailing_zeros()
 }
+
+#[cfg(test)]
+mod tests;

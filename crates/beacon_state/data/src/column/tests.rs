@@ -601,3 +601,114 @@ fn randao_mixes_wrap_at_the_ring_length() {
     wv.mix_in_reveal(2, &[0xAB; 32]);
     assert_eq!(wv.at_epoch(2 + EPOCHS_PER_HISTORICAL_VECTOR as u64), [0xAB; 32]);
 }
+
+/// Random forks, dead leaves, full rewrites, appends and finalizations: every
+/// live fork keeps reading what it committed, after every step. A page freed
+/// too early is reallocated and overwritten by the next commits.
+#[test]
+fn page_lending_survives_random_forks_and_finalize() {
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    use super::BalancesId;
+
+    struct Fork {
+        id: BalancesId,
+        parent: Option<BalancesId>,
+        vals: Vec<u64>,
+    }
+
+    let mut rng = StdRng::seed_from_u64(0x5eed);
+    let base: Vec<u64> = (0..2048).collect();
+    let mut g = BalancesGroup::new(4096, base.len(), &le_bytes(&base), HashFormat::Fixed).unwrap();
+
+    let mut wv = g.roll_fresh();
+    wv.set(0, 1);
+    let mut vals = base.clone();
+    vals[0] = 1;
+    let mut forks = vec![Fork { id: wv.commit(), parent: None, vals }];
+
+    for step in 0..600 {
+        let parent = &forks[rng.gen_range(0..forks.len())];
+        let (parent_id, mut vals) = (parent.id, parent.vals.clone());
+        let mut wv = g.roll_from(parent_id);
+        if rng.gen_ratio(1, 20) {
+            for (i, v) in vals.iter_mut().enumerate() {
+                *v = step * 10_000 + i as u64;
+                wv.set(i as u32, *v);
+            }
+        } else {
+            for _ in 0..rng.gen_range(0..8) {
+                let (i, v) = (rng.gen_range(0..vals.len()), rng.r#gen());
+                vals[i] = v;
+                wv.set(i as u32, v);
+            }
+        }
+        if rng.gen_ratio(1, 30) && vals.len() < 4096 {
+            wv.append_empty();
+            vals.push(0);
+        }
+        forks.push(Fork { id: wv.commit(), parent: Some(parent_id), vals });
+
+        if rng.gen_ratio(1, 8) {
+            let winner = forks[rng.gen_range(0..forks.len())].id;
+            let descends = |mut id: BalancesId| loop {
+                if id == winner {
+                    return true;
+                }
+                match forks.iter().find(|f| f.id == id).and_then(|f| f.parent) {
+                    Some(parent) => id = parent,
+                    None => return false,
+                }
+            };
+            let keep: Vec<bool> = forks.iter().map(|f| descends(f.id)).collect();
+            let mut keep = keep.into_iter();
+            forks.retain(|_| keep.next().unwrap());
+
+            let survivors: Vec<_> = forks.iter().map(|f| f.id).collect();
+            g.finalize(winner, &survivors, |&id| id);
+        }
+
+        for fork in &forks {
+            let reader = g.view(fork.id);
+            let got: Vec<u64> = (0..fork.vals.len()).map(|i| reader.get(i)).collect();
+            assert_eq!(got, fork.vals, "step {step}: {:?} reads changed", fork.id);
+        }
+    }
+}
+
+/// A page is dirty iff an uncommitted chunk lies under it: after deferred
+/// writes, writes into padding pages past the old count and a rehash, the
+/// committed fork reads and hashes as the flat tree did, in both tree formats.
+#[test]
+fn commit_copies_every_page_over_an_uncommitted_chunk() {
+    for format in [HashFormat::Fixed, HashFormat::Progressive] {
+        let base: Vec<u64> = (1..=60).collect();
+        let mut g = BalancesGroup::new(4096, base.len(), &le_bytes(&base), format).unwrap();
+        let parent = g.roll_fresh().commit();
+
+        let mut wv = g.roll_from(parent);
+        for idx in [0, 17, 59] {
+            wv.add_at(idx, 3);
+        }
+        for v in 0..300 {
+            let idx = wv.append_empty();
+            if v % 50 == 0 {
+                wv.set(idx, v + 1);
+            }
+        }
+        let flat: Vec<u64> = wv.iter().collect();
+        let root = wv.hash_root();
+        let id = wv.commit();
+
+        let reader = g.view(id);
+        let committed: Vec<u64> = (0..flat.len()).map(|i| reader.get(i)).collect();
+        assert_eq!(committed, flat, "{format:?}");
+        assert_eq!(reader.get(110), 51, "{format:?}: padding page write");
+        assert_eq!(reader.hash_root(), root, "{format:?}");
+
+        g.roll_from(parent);
+        let mut wv = g.roll_from(id);
+        assert_eq!(wv.iter().collect::<Vec<_>>(), flat, "{format:?}: reload");
+        assert_eq!(wv.hash_root(), root, "{format:?}: reload");
+    }
+}
