@@ -7,8 +7,8 @@ use crate::{
     DecomposeError,
     decompose::common::{b256, u32_le, u64_le},
     types::{
-        B256, BLSPubkey, Epoch, ExecutionAddress, MIN_SEED_LOOKAHEAD, SLOTS_PER_EPOCH,
-        SLOTS_PER_HISTORICAL_ROOT, Slot, Version,
+        B256, BLSPubkey, Epoch, ExecutionAddress, FAR_FUTURE_EPOCH, MIN_SEED_LOOKAHEAD,
+        SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot, Version,
     },
 };
 
@@ -67,6 +67,12 @@ impl Default for Builder {
             deposit_epoch: 0,
             withdrawable_epoch: 0,
         }
+    }
+}
+
+impl Builder {
+    pub fn is_active(&self, finalized_epoch: Epoch) -> bool {
+        self.deposit_epoch < finalized_epoch && self.withdrawable_epoch == FAR_FUTURE_EPOCH
     }
 }
 

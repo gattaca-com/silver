@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, BLSPubkey, BlockBodyError, Slot};
+use silver_beacon_state_data::{B256, BLSPubkey, BidBuilderError, BlockBodyError, Slot};
 use silver_common::ssz_hash_gloas::RequestCountOutOfBounds;
 use thiserror::Error;
 
@@ -198,20 +198,14 @@ pub enum ExecutionPayloadBidError {
     SelfBuildNonZeroValue { value: u64 },
     #[error("self-build bid signature must be the infinity point")]
     SelfBuildSignature,
-    #[error("builder index {index} out of range (count {count})")]
-    BuilderOutOfRange { index: u64, count: usize },
+    #[error(transparent)]
+    Builder(#[from] BidBuilderError),
     #[error("builder {index} pubkey is not a valid BLS point")]
     BadBuilderPubkey { index: u64 },
     #[error("builder {index} bid signature is invalid")]
     BadSignature { index: u64 },
     #[error("self-build bid has no builder signature to verify")]
     SelfBuildUnsigned,
-    #[error("builder {index} is not active")]
-    BuilderInactive { index: u64 },
-    #[error("builder {index} version {version} != PAYLOAD_BUILDER_VERSION")]
-    BuilderVersion { index: u64, version: u8 },
-    #[error("builder {index} cannot cover bid value {value}")]
-    InsufficientBalance { index: u64, value: u64 },
     #[error("{got} blob commitments exceeds max {max}")]
     TooManyBlobCommitments { got: usize, max: usize },
     #[error("bid slot {bid} != state slot {state}")]

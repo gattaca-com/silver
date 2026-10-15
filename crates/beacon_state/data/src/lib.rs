@@ -1,3 +1,7 @@
+pub use builder_registry::{
+    BUILDER_INDEX_SELF_BUILD, BidBuilderError, BuilderRegistry, DOMAIN_BEACON_BUILDER,
+    PAYLOAD_BUILDER_VERSION, bid_signing_root,
+};
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use checkpoint_state::CheckpointState;
 pub use column::*;
@@ -41,6 +45,7 @@ pub use validators::{
 };
 pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
 
+mod builder_registry;
 mod builders;
 mod checkpoint_state;
 mod column;

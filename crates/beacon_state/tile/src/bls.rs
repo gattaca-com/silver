@@ -1,16 +1,15 @@
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
+pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
 use silver_bls_simd::uncompress_in_g2;
+pub use silver_common::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
 
-use crate::{
-    merkle,
-    ssz_hash::{self, hash_tree_root_block_header},
-};
+use crate::ssz_hash::hash_tree_root_block_header;
 
 mod aggregator;
 mod sig_batch;
@@ -45,31 +44,9 @@ pub const DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF: u32 = 0x0000_0008;
 pub const DOMAIN_CONTRIBUTION_AND_PROOF: u32 = 0x0000_0009;
 pub const DOMAIN_BLS_TO_EXECUTION_CHANGE: u32 = 0x0000_000a;
 // Gloas
-pub const DOMAIN_BEACON_BUILDER: u32 = 0x0000_000b;
 pub const DOMAIN_PTC_ATTESTER: u32 = 0x0000_000c;
 pub const DOMAIN_PROPOSER_PREFERENCES: u32 = 0x0000_000d;
 pub const DOMAIN_BUILDER_DEPOSIT: u32 = 0x0000_000e;
-
-#[timed]
-pub fn compute_domain(
-    domain_type: u32,
-    fork_version: [u8; 4],
-    genesis_validators_root: &B256,
-) -> B256 {
-    let fork_data_root = ssz_hash::hash_tree_root_fork_data(fork_version, genesis_validators_root);
-    domain_from_fork_data(domain_type, &fork_data_root)
-}
-
-pub fn domain_from_fork_data(domain_type: u32, fork_data_root: &B256) -> B256 {
-    let mut domain = [0u8; 32];
-    domain[0..4].copy_from_slice(&domain_type.to_le_bytes());
-    domain[4..32].copy_from_slice(&fork_data_root[..28]);
-    domain
-}
-
-pub fn compute_signing_root(object_root: &B256, domain: &B256) -> B256 {
-    merkle::hash_concat(object_root, domain)
-}
 
 #[inline]
 pub fn fork_version_at_epoch(

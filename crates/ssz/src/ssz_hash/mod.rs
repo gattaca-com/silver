@@ -30,5 +30,6 @@ pub use operations::{
     hash_beacon_block_header_bytes, hash_signed_beacon_block_header, hash_tree_root_deposit_data,
 };
 pub use signing::{
-    hash_tree_root_bls_change, hash_tree_root_fork_data, hash_tree_root_voluntary_exit,
+    compute_domain, compute_signing_root, domain_from_fork_data, hash_tree_root_bls_change,
+    hash_tree_root_fork_data, hash_tree_root_voluntary_exit,
 };

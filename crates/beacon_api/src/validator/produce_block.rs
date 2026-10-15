@@ -4,6 +4,7 @@ use silver_common::{
     BeaconApiRequest, BidPolicy, PayloadFrame, ProduceBlockFailure, ProducedBlock, TCacheReader,
     json_fields::{parse_hex, parse_uint64},
 };
+use silver_pbs::BuilderConfig;
 
 use crate::{
     ctx::ApiCtx,
@@ -66,8 +67,12 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     if !req.body_is_ssz() {
         return resp.error(415, "only an SSZ BuilderConfig body is read");
     }
-    let Some(bid_policy) = builder_config_bid_policy(req.body) else {
+    let Some(builder_config) = BuilderConfig::parse(req.body) else {
         return resp.error(400, "invalid BuilderConfig");
+    };
+    let bid_policy = BidPolicy {
+        min_bid: builder_config.min_bid(),
+        builder_boost_factor: builder_config.builder_boost_factor(),
     };
     resp.defer(Outcome::AwaitingProducedBlock(ProduceBlockRequest {
         slot,
@@ -107,49 +112,6 @@ fn proposal_query(req: &Request<'_>, resp: &mut Response<'_>) -> Option<([u8; 96
         },
     };
     Some((randao_reveal, graffiti))
-}
-
-/// `min_bid` and `builder_boost_factor`, then the offset of `builders`.
-const BUILDER_CONFIG_FIXED: usize = 8 + 8 + 4;
-const MAX_BUILDER_ENTRIES: usize = 64;
-
-/// The p2p terms of an SSZ `BuilderConfig`, or `None` when it does not decode.
-fn builder_config_bid_policy(body: &[u8]) -> Option<BidPolicy> {
-    let fixed = body.get(..BUILDER_CONFIG_FIXED)?;
-    let u64_at = |at: usize| u64::from_le_bytes(fixed[at..at + 8].try_into().expect("8 bytes"));
-    let builders_at = u32::from_le_bytes(fixed[16..20].try_into().expect("4 bytes")) as usize;
-    if builders_at != BUILDER_CONFIG_FIXED {
-        return None;
-    }
-    // TODO: request bids from `builders` over the builder API. Until then the
-    // list is only checked to be framed, so a body that does not decode is
-    // still refused.
-    if !variable_list_is_framed(&body[BUILDER_CONFIG_FIXED..], MAX_BUILDER_ENTRIES) {
-        return None;
-    }
-    Some(BidPolicy { min_bid: u64_at(0), builder_boost_factor: u64_at(8) })
-}
-
-/// An SSZ list of variable-size elements: an offset per element, each in
-/// bounds and none before the last.
-fn variable_list_is_framed(list: &[u8], max: usize) -> bool {
-    if list.is_empty() {
-        return true;
-    }
-    let offset_at = |at: usize| {
-        list.get(at..at + 4).map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
-    };
-    let Some(first) = offset_at(0) else { return false };
-    if first == 0 || !first.is_multiple_of(4) || first > list.len() || first / 4 > max {
-        return false;
-    }
-    let mut previous = first;
-    (1..first / 4).all(|i| {
-        let offset = offset_at(i * 4).expect("inside the offset table");
-        let ordered = previous <= offset && offset <= list.len();
-        previous = offset;
-        ordered
-    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,6 +352,16 @@ mod tests {
         ctx
     }
 
+    const BUILDER_CONFIG_FIXED: usize = 8 + 8 + 4;
+
+    /// A framed `BuilderEntry` with an empty URL and auth data.
+    fn builder_entry() -> Vec<u8> {
+        let message = [12u32.to_le_bytes().as_slice(), &(SLOT + 1).to_le_bytes()].concat();
+        let auth = [100u32.to_le_bytes().as_slice(), &[0; 96], &message].concat();
+        let offsets = [36u32, 36, 36 + auth.len() as u32].map(u32::to_le_bytes).concat();
+        [offsets, vec![0; 24], auth].concat()
+    }
+
     fn builder_config(min_bid: u64, boost: u64, builders: &[u8]) -> Vec<u8> {
         let mut ssz = min_bid.to_le_bytes().to_vec();
         ssz.extend_from_slice(&boost.to_le_bytes());
@@ -423,9 +395,9 @@ mod tests {
 
     #[test]
     fn v4_defers_with_the_p2p_terms_of_the_builder_config() {
-        // Two entries' worth of offsets and opaque bytes: framed, then ignored.
-        let builders = [8u32.to_le_bytes(), 10u32.to_le_bytes()].concat();
-        let body = builder_config(7, 150, &[builders.as_slice(), &[0xAB; 4]].concat());
+        let entry = builder_entry();
+        let offsets = [8u32, 8 + entry.len() as u32].map(u32::to_le_bytes).concat();
+        let body = builder_config(7, 150, &[offsets, entry.clone(), entry].concat());
         let ctx = gloas_ctx();
         let (outcome, _) = post_v4(&ctx, &v4_query(), Some("gloas"), Some(SSZ_MEDIA_TYPE), &body);
         let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
@@ -441,10 +413,12 @@ mod tests {
         let short = &body[..BUILDER_CONFIG_FIXED - 1];
         let misplaced = [&body[..16], &21u32.to_le_bytes()].concat();
         let unordered = builder_config(0, 100, &[8u32.to_le_bytes(), 4u32.to_le_bytes()].concat());
-        let cases: [(&str, Option<&str>, Option<&str>, &[u8], &str); 8] = [
+        let opaque_entry = builder_config(0, 100, &[&4u32.to_le_bytes()[..], &[0xAB; 4]].concat());
+        let cases: [(&str, Option<&str>, Option<&str>, &[u8], &str); 9] = [
             (&v4_query(), Some("gloas"), ssz, short, "400"),
             (&v4_query(), Some("gloas"), ssz, &misplaced, "400"),
             (&v4_query(), Some("gloas"), ssz, &unordered, "400"),
+            (&v4_query(), Some("gloas"), ssz, &opaque_entry, "400"),
             (&v4_query(), Some("gloas"), Some("application/json"), &body, "415"),
             (&v4_query(), None, ssz, &body, "400"),
             (&v4_query(), Some("fulu"), ssz, &body, "400"),

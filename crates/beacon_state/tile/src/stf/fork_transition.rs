@@ -1,16 +1,13 @@
 use silver_beacon_state_data::{
-    Builder, EpochWriteView, ExecutionPayloadBid, FAR_FUTURE_EPOCH, Fork, MIN_SEED_LOOKAHEAD,
-    PendingDeposit, SLOTS_PER_EPOCH, StateWriterView,
+    BUILDER_INDEX_SELF_BUILD, Builder, EpochWriteView, ExecutionPayloadBid, FAR_FUTURE_EPOCH, Fork,
+    MIN_SEED_LOOKAHEAD, PAYLOAD_BUILDER_VERSION, PendingDeposit, SLOTS_PER_EPOCH, StateWriterView,
     gloas::{
         EXECUTION_PAYLOAD_AVAILABILITY_BYTES, PTC_WINDOW_LEN, PtcCommittee, zeroed_ptc_window,
     },
 };
 use silver_common::ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS_ROOT;
 
-use super::{
-    epoch::is_valid_deposit_signature,
-    gloas::{BUILDER_INDEX_SELF_BUILD, PAYLOAD_BUILDER_VERSION, fill_epoch_ptc},
-};
+use super::{epoch::is_valid_deposit_signature, gloas::fill_epoch_ptc};
 
 /// Initialise the Gloas-only state on a fork view that has just advanced to the
 /// first slot of `GLOAS_FORK_EPOCH`.
