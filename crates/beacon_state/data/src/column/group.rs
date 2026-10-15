@@ -123,12 +123,12 @@ impl<C: ColumnSpec> ColumnGroup<C> {
     }
 
     #[inline]
-    pub(super) fn scratch(&self) -> &ColumnTree<C> {
+    pub(super) fn tree(&self) -> &ColumnTree<C> {
         &self.scratch
     }
 
     #[inline]
-    pub(super) fn scratch_mut(&mut self) -> &mut ColumnTree<C> {
+    pub(super) fn tree_mut(&mut self) -> &mut ColumnTree<C> {
         &mut self.scratch
     }
 
