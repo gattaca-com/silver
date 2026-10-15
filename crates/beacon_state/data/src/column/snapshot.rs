@@ -45,38 +45,32 @@ impl PageSnapshot {
     }
 
     /// Make this base `winner`'s tree, freeing the base pages the winner does
-    /// not share. Returns the previous winner's page table.
+    /// not share.
     pub(super) fn promote<C: ColumnSpec>(
         &mut self,
         pool: &mut PagePool<C::Page>,
         winner: &PageSnapshot,
-    ) -> Vec<PageId> {
+    ) {
         let same_format = self.format == winner.format;
         for (s, sub) in self.format.subtrees::<C>().enumerate() {
             let new = winner.roots.get(s).copied().filter(|_| same_format);
             pool.free_unshared::<C>(sub, sub.root::<C>(), self.roots[s], new);
         }
-        let replaced = self.roots.clone();
         self.mirror(winner);
-        replaced
     }
 
-    /// Free this fork's allocated pages, except those `base` holds. The
-    /// previous winner's pages already belong to the base, so it frees
-    /// nothing. Idempotent, as it clears `allocated`; `roots` stay, so
-    /// racing readers stay in bounds.
+    /// Free this fork's allocated pages, except those `base` holds. Idempotent,
+    /// as it clears `allocated`; `roots` stay, so racing readers stay in
+    /// bounds.
     pub(super) fn release<C: ColumnSpec>(
         &mut self,
         pool: &mut PagePool<C::Page>,
         base: &PageSnapshot,
-        previous_winner_page_table: &[PageId],
     ) {
-        if self.roots != previous_winner_page_table {
-            let same_format = self.format == base.format;
-            for &(n, id) in &self.allocated {
-                if !same_format || base.page_of::<C>(pool, n as usize).0 != id {
-                    pool.free(id);
-                }
+        let same_format = self.format == base.format;
+        for &(n, id) in &self.allocated {
+            if !same_format || base.page_of::<C>(pool, n as usize).0 != id {
+                pool.free(id);
             }
         }
         self.allocated.clear();

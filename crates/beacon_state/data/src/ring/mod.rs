@@ -206,22 +206,22 @@ impl<G: RingGroup> Ring<G> {
         (Id::new(new_head), new_head_pos)
     }
 
+    /// Advance the tail past everything older than the oldest live id.
     pub fn free_outdated(&mut self, live: &[Id<G>]) {
-        self.free_outdated_with(live.iter().copied(), |_| ());
+        if let Some(oldest) = live.iter().min() {
+            self.tail_seq = self.tail_seq.max(oldest.index());
+        }
     }
 
-    /// Advance the tail past everything older than the oldest live id,
-    /// handing each freed slot to `release` (for entries that own external
-    /// resources).
-    pub(crate) fn free_outdated_with(
+    /// Advance the tail past `last` itself, handing each freed slot to
+    /// `release` (for entries that own external resources).
+    pub(crate) fn free_through_with(
         &mut self,
-        live: impl IntoIterator<Item = Id<G>>,
+        last: Id<G>,
         mut release: impl FnMut(&mut G::Entry),
     ) {
         let old_tail = self.tail_seq;
-        if let Some(oldest) = live.into_iter().min() {
-            self.tail_seq = self.tail_seq.max(oldest.index());
-        }
+        self.tail_seq = self.tail_seq.max(last.index() + 1);
         for seq in old_tail..self.tail_seq {
             let pos = self.slot(seq);
             release(&mut self.buf_mut().entries[pos]);

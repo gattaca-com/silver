@@ -25,6 +25,9 @@ fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
 pub struct ColumnGroup<C: ColumnSpec> {
     pool: PagePool<C::Page>,
     finalized: PageSnapshot,
+    /// The last winner: its ring slot is freed, and its id now names
+    /// `finalized`.
+    finalized_id: Option<Id<Self>>,
     ring: Ring<Self>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
@@ -72,6 +75,7 @@ impl<C: ColumnSpec> ColumnGroup<C> {
             writer,
             pool,
             finalized,
+            finalized_id: None,
             ring: Ring::filled(SLOTS_RING_N, PageSnapshot::default),
             _marker: PhantomData,
         }
@@ -79,7 +83,9 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     #[inline]
     pub fn view(&self, id: Id<Self>) -> ColumnReader<'_, C> {
-        ColumnReader::paged(&self.pool, self.ring.get(id))
+        let snapshot =
+            if self.finalized_id == Some(id) { &self.finalized } else { self.ring.get(id) };
+        ColumnReader::paged(&self.pool, snapshot)
     }
 
     #[timed]
@@ -91,17 +97,22 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { pool, ring, writer, .. } = self;
-        writer.load(pool, ring.get(parent), Some(parent));
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
+        if *finalized_id == Some(parent) {
+            writer.load(pool, finalized, None);
+        } else {
+            writer.load(pool, ring.get(parent), Some(parent));
+        }
         ColumnWriteView::new(self, Some(parent))
     }
 
     pub(super) fn commit_writer(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
-        let Self { pool, finalized, ring, writer, .. } = self;
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
         writer.tree_mut().rehash();
 
         ring.grow_if_full_with(PageSnapshot::default, |src, dst| *dst = src.clone_for_grow());
-        let (id, dst, parent_snap) = ring.roll_deriving(parent);
+        let parent_in_ring = parent.filter(|&p| Some(p) != *finalized_id);
+        let (id, dst, parent_snap) = ring.roll_deriving(parent_in_ring);
 
         debug_assert!(dst.allocated.is_empty(), "recycled slot still owns pages: not released");
         writer.commit(pool, dst, parent_snap.unwrap_or(finalized), id);
@@ -118,19 +129,23 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         self.writer.tree_mut()
     }
 
-    /// Promote the winner into the base and free everything below the oldest
-    /// survivor. Survivor ids stay valid unchanged — columns never reanchor.
+    /// Promote the winner into the base and free its ring slot and everything
+    /// older. The winner's id then names the base; the other survivor ids stay
+    /// valid unchanged — columns never reanchor.
     #[timed]
     pub fn finalize<S>(&mut self, winner: Id<Self>, survivors: &[S], idx: impl Fn(&S) -> Id<Self>) {
         debug_assert!(
             survivors.iter().any(|s| idx(s) == winner),
             "winner must be among the survivors"
         );
-        let Self { pool, finalized, ring, writer, .. } = self;
-        let previous_winner_page_table = finalized.promote::<C>(pool, ring.get(winner));
-        ring.free_outdated_with(survivors.iter().map(&idx), |snapshot| {
-            snapshot.release::<C>(pool, finalized, &previous_winner_page_table)
-        });
+        debug_assert!(survivors.iter().all(|s| idx(s) >= winner), "a survivor predates the winner");
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
+        if *finalized_id == Some(winner) {
+            return;
+        }
+        finalized.promote::<C>(pool, ring.get(winner));
+        ring.free_through_with(winner, |snapshot| snapshot.release::<C>(pool, finalized));
+        *finalized_id = Some(winner);
         writer.unmirror_dead(finalized, |id| survivors.iter().any(|s| idx(s) == id));
     }
 
