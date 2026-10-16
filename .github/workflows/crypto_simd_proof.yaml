@@ -109,7 +109,9 @@ jobs:
 
       - name: Check the extraction for drift
         working-directory: ${{ env.PROOF_DIR }}
-        run: AENEAS_DIR="$HOME/aeneas" ./extract.sh --check
+        run: |
+          AENEAS_DIR="$HOME/aeneas" ./extract.sh --check
+          python3 -I controls/extraction-check.py
 
   lean:
     needs: changes
@@ -147,7 +149,7 @@ jobs:
           lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt
           python3 -I Test/check_g1_controls.py
 
-  ifma:
+  rust:
     needs: changes
     if: needs.changes.outputs.crypto_simd == 'true'
     runs-on: ubuntu-latest
@@ -163,31 +165,34 @@ jobs:
             echo "ifma=true" >>"$GITHUB_OUTPUT"
           else
             echo "ifma=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::No AVX-512 IFMA on this runner; the kernel replay was skipped."
+            echo "::notice::No AVX-512 IFMA; Rust tests will run with kernel replay skipped."
           fi
 
-      - if: steps.cpu.outputs.ifma == 'true'
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-15
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-15
         with:
           toolchain: nightly-2026-06-21
 
-      # With SILVER_REQUIRE_IFMA set, the tests fail rather than fall back to
-      # blst when the kernel is unavailable.
-      - name: Replay the recorded vectors through the kernel
-        if: steps.cpu.outputs.ifma == 'true'
-        run: SILVER_REQUIRE_IFMA=1 cargo test --locked -p silver_crypto_simd
+      # Run BLS and KZG tests on every runner. On IFMA hosts, require kernel replay
+      # so a missing kernel cannot silently fall back to blst.
+      - name: Run BLS replay and KZG tests
+        env:
+          IFMA: ${{ steps.cpu.outputs.ifma }}
+        run: |
+          make -C crates/crypto_simd
+          if [[ $IFMA == true ]]; then export SILVER_REQUIRE_IFMA=1; fi
+          cargo test --locked -p silver_crypto_simd --all-features
 
-  # The one required check. Skips pass only when `changes` ran and decided the
-  # proof is irrelevant; a failed or cancelled `changes` fails here.
+  # The required check covers extraction, Lean and Rust. Skips pass only when
+  # `changes` found no relevant edit; a failed or cancelled `changes` fails here.
   proof:
-    needs: [changes, extraction, lean, ifma]
+    needs: [changes, extraction, lean, rust]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
           CHANGES: ${{ needs.changes.result }}
           RELEVANT: ${{ needs.changes.outputs.crypto_simd }}
-          RESULTS: ${{ needs.extraction.result }} ${{ needs.lean.result }} ${{ needs.ifma.result }}
+          RESULTS: ${{ needs.extraction.result }} ${{ needs.lean.result }} ${{ needs.rust.result }}
         run: |
           echo "changes=$CHANGES relevant=$RELEVANT results=$RESULTS"
           [[ $CHANGES == success ]] || exit 1
