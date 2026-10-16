@@ -1,6 +1,6 @@
 import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.WrapperLengths
-import LeanBlsSimd.Model.UncompressG2
+import LeanBlsSimd.Refines.G2Wrapper
 import LeanBlsSimd.Proofs.UncompressG2
 
 open Aeneas Aeneas.Std Result
@@ -9,9 +9,6 @@ open silver_crypto_simd silver_crypto_simd.bls
 namespace LeanBlsSimd.UncompressG2
 
 open DecompressG2
-
-def modelBlst [BlsExternals] (bytes : Encoding) : Option BlstP2Affine :=
-  (BlsExternals.uncompressG2 (toArray toU8 bytes)).map ofBlstP2Affine
 
 def specVerdict (bytes : Array U8 96#usize) : Option blst.blst_p2_affine :=
   (G2Spec.verdict (ofArray ofU8 bytes)).map toBlstP2Affine
@@ -36,13 +33,6 @@ theorem usesKernelAt_iff [BlsExternals] (inputs : Slice (Array U8 96#usize)) (i 
       3 ≤ min 8 (inputs.val.length - i / 8 * 8) ∧
       (decompress (chunkAt (inputs.val.map (ofArray ofU8)) i)).undecided.toNat.testBit
         (i % 8) = false := by
-  sorry
-
-theorem uncompress_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
-    (out : Slice (Option blst.blst_p2_affine)) (hlen : out.val.length = inputs.val.length) :
-    ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
-      result.val = (uncompress BlsExternals.simdAvailable modelBlst
-        (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP2Affine) := by
   sorry
 
 /-- Every slot is overwritten. Decided kernel lanes use the specification; all other
