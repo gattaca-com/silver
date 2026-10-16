@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    marker::PhantomData,
-};
+use std::marker::PhantomData;
 
 use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
@@ -14,7 +11,7 @@ use crate::{ring::Id, types::B256};
 
 /// The node array a column read walks: the flat tree (the live, still-
 /// writable head — hot path) or a committed fork's paged snapshot. The read
-/// algorithms (`get`/`iter`/`hash_root`/`write_ssz`) are written once here over
+/// algorithms (`get`/`hash_root`) are written once here over
 /// [`node`](Self::node); only node addressing differs between backings.
 enum Nodes<'a, C: ColumnSpec> {
     Flat(&'a ColumnTree<C>),
@@ -95,19 +92,6 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
             debug_assert!(!t.has_pending_rehash(), "deferred writes not rehashed before root");
         }
         self.format.hash_root::<C>(self.nodes.count(), |n| *self.nodes.node(n))
-    }
-
-    #[inline]
-    pub(super) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let (k, size) = (C::VALS_PER_CHUNK, size_of::<C::Val>());
-        let (full, rem) = (self.nodes.count() / k, self.nodes.count() % k);
-        for chunk in 0..full {
-            w.write_all(self.nodes.node(self.leaf_pos(chunk)))?;
-        }
-        if rem > 0 {
-            w.write_all(&self.nodes.node(self.leaf_pos(full))[..rem * size])?;
-        }
-        Ok(())
     }
 }
 

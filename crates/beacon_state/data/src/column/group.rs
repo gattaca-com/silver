@@ -151,6 +151,6 @@ impl<C: ColumnSpec> ColumnGroup<C> {
 
     #[inline]
     pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        ColumnReader::<C>::paged(&self.pool, &self.finalized).write_ssz(w)
+        self.finalized.write_ssz::<C, W>(&self.pool, w)
     }
 }

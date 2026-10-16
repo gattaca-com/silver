@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use super::{
     ColumnSpec,
     format::TreeFormat,
@@ -84,6 +86,27 @@ impl PageSnapshot {
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
         self.format
+    }
+
+    /// One root-to-page walk per leaf row, not per chunk.
+    pub(super) fn write_ssz<C: ColumnSpec, W: Write>(
+        &self,
+        pool: &PagePool<C::Page>,
+        w: &mut W,
+    ) -> io::Result<()> {
+        let chunks = self.count.div_ceil(C::VALS_PER_CHUNK);
+        let mut bytes_left = self.count * size_of::<C::Val>();
+        let mut chunk = 0;
+        while chunk < chunks {
+            let (id, slot) = self.page_of::<C>(pool, self.format.leaf_pos::<C>(chunk));
+            let row = &pool.page(id)[slot..(2 << slot.ilog2()).min(slot + chunks - chunk)];
+            let bytes = row.as_flattened();
+            let bytes = &bytes[..bytes.len().min(bytes_left)];
+            w.write_all(bytes)?;
+            bytes_left -= bytes.len();
+            chunk += row.len();
+        }
+        Ok(())
     }
 
     #[inline]

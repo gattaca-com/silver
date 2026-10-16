@@ -746,3 +746,29 @@ fn commit_copies_every_page_over_an_uncommitted_chunk() {
         assert_eq!(wv.hash_root(), root, "{format:?}: reload");
     }
 }
+
+/// The finalized SSZ is the values' bytes, through partial leaf pages, zero
+/// padding pages and a partial tail chunk, in both tree formats.
+#[test]
+fn write_ssz_emits_finalized_values_across_pages() {
+    for format in [HashFormat::Fixed, HashFormat::Progressive] {
+        for n in [0usize, 1, 3, 31, 33, 257, 1_000] {
+            let values: Vec<u64> = (1..=n as u64).collect();
+            let mut g = BalancesGroup::new(4096, n, &le_bytes(&values), format).unwrap();
+            let mut ssz = Vec::new();
+            g.write_ssz(&mut ssz).unwrap();
+            assert_eq!(ssz, le_bytes(&values), "{format:?} n={n}");
+
+            let mut wv = g.roll_fresh();
+            let idx = wv.append_empty();
+            wv.set(idx, 7);
+            let id = wv.commit();
+            g.finalize(id, &[id], |&id| id);
+            let mut appended = values.clone();
+            appended.push(7);
+            let mut ssz = Vec::new();
+            g.write_ssz(&mut ssz).unwrap();
+            assert_eq!(ssz, le_bytes(&appended), "{format:?} n={n}: after finalize");
+        }
+    }
+}
