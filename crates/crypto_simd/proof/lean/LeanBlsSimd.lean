@@ -38,4 +38,5 @@ import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Refines.Kernel
 import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.UncompressG1
+import LeanBlsSimd.Refines.UncompressG2
 import LeanBlsSimd.Axioms

@@ -936,7 +936,7 @@ A concrete step refutes the mutant's agreement with the original body: with all 
 undecided and distinct scalar verdicts on inputs 0 and 1, lane 1 receives `none`
 instead of `some`. This checks the loop step without evaluating decompression. -/
 
-def chunkBodyWith [G1Externals] (fallbackLane : Usize → Usize)
+def chunkBodyWith [BlsExternals] (fallbackLane : Usize → Usize)
   (chunk : Array (Array Std.U8 48#usize) 8#usize) (batch : decompress.Batch)
   (iter : core.ops.range.Range Std.Usize)
   (out : Slice (Option blst.blst_p1_affine)) :
@@ -970,16 +970,16 @@ def chunkBodyWith [G1Externals] (fallbackLane : Usize → Usize)
     let s ← Slice.update out lane o1
     ok (cont (iter2, s))
 
-example [G1Externals] : chunkBodyWith id = decompress_g1_chunk_loop.body := rfl
+example [BlsExternals] : chunkBodyWith id = decompress_g1_chunk_loop.body := rfl
 
-def chunkWith [G1Externals] (fallbackLane : Usize → Usize)
+def chunkWith [BlsExternals] (fallbackLane : Usize → Usize)
     (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) : Result (Slice (Option blst.blst_p1_affine)) := do
   let batch ← decompress.decompress inputs
   loop (fun (iter, out) => chunkBodyWith fallbackLane inputs batch iter out)
     ({ start := 0#usize, «end» := LANES }, out)
 
-example [G1Externals] : chunkWith id = decompress_g1_chunk := rfl
+example [BlsExternals] : chunkWith id = decompress_g1_chunk := rfl
 
 private theorem mask_bit (m : UInt8) (l : Fin 8) :
     (toU8 m &&& toU8 (1 <<< l.val.toUInt8) != 0#u8) = m.toNat.testBit l := by
@@ -1002,8 +1002,8 @@ private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n �
   apply Subtype.ext
   simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
 
-private theorem modelBlst_roundtrip [G1Externals] (a : Array U8 48#usize) :
-    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = G1Externals.uncompress a := by
+private theorem modelBlst_roundtrip [BlsExternals] (a : Array U8 48#usize) :
+    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = BlsExternals.uncompressG1 a := by
   simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
 set_option hygiene false in
@@ -1032,7 +1032,7 @@ local macro "chunk_proof" : tactic => `(tactic| (
     simp only [lift, bind_tc_ok, toBatch]
     rw [show r.start.val = j.val from hs, mask_bit]
     have ht : target[j] =
-        if b.undecided.toNat.testBit j then G1Externals.uncompress (inputs.val[j.val]'(by simp [inputs.property]))
+        if b.undecided.toNat.testBit j then BlsExternals.uncompressG1 (inputs.val[j.val]'(by simp [inputs.property]))
         else if b.valid.toNat.testBit j then some (toBlstP1Affine b.points[j]) else none := by
       simp only [target, chunk, Fin.getElem_fin, Vector.getElem_map, Vector.getElem_ofFn, laneVerdict]
       split
@@ -1061,14 +1061,14 @@ local macro "chunk_proof" : tactic => `(tactic| (
     ext i hi
     simp))
 
-example [G1Externals] : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
+example [BlsExternals] : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)), out.val.length = 8 →
     ∃ result, chunkWith id inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
         (Option.map toBlstP1Affine)) := by
   chunk_proof
 
-example [G1Externals] : True := by
+example [BlsExternals] : True := by
   fail_if_success
     have : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
         (out : Slice (Option blst.blst_p1_affine)), out.val.length = 8 →
@@ -1079,9 +1079,9 @@ example [G1Externals] : True := by
   trivial
 
 /-- Distinct scalar verdicts expose a fallback read from the wrong lane. -/
-@[reducible] def distinguishingExternals : G1Externals :=
+@[reducible] def distinguishingExternals : BlsExternals :=
   ⟨true, fun bytes =>
-    if bytes.val[0]!.val = 0 then none else some (toBlstP1Affine default)⟩
+    if bytes.val[0]!.val = 0 then none else some (toBlstP1Affine default), fun _ => none⟩
 
 def distinctInputs : Array (Array U8 48#usize) 8#usize :=
   toArray (toArray toU8) (Vector.ofFn fun (lane : Fin 8) =>

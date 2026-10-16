@@ -3,8 +3,8 @@ mod g2_cases;
 use std::time::{Duration, Instant};
 
 use blst::{
-    blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_hash_to_g1,
-    blst_p1, blst_p1_add_or_double, blst_p1_affine_compress, blst_p1_affine_in_g1,
+    blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_fp2,
+    blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine_compress, blst_p1_affine_in_g1,
     blst_p1_affine_serialize, blst_p1_from_affine, blst_p1_is_inf, blst_p1_mult, blst_p1_to_affine,
     blst_p1_uncompress,
 };
@@ -25,9 +25,15 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
 }
 
+/// Limbs above p, which no verdict can hold, so a skipped write shows.
+const G2_SENTINEL: blst_p2_affine = {
+    let fp2 = blst_fp2 { fp: [blst_fp { l: [u64::MAX; 6] }; 2] };
+    blst_p2_affine { x: fp2, y: fp2 }
+};
+
 fn uncompress_all(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>> {
-    let mut out = Vec::new();
-    uncompress_in_g2(inputs, |p| out.push(p));
+    let mut out = vec![Some(G2_SENTINEL); inputs.len()];
+    uncompress_in_g2(inputs, &mut out);
     out
 }
 
@@ -171,6 +177,25 @@ fn uncompress_in_g2_matches_blst_on_every_kind() {
     );
     let kinds = assert_uncompress_in_g2_matches_blst(uncompress_all);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
+}
+
+/// Every length from empty to two full chunks and a tail, so each split
+/// around `MIN_KERNEL_LANES` and `LANES` is taken.
+#[test]
+fn uncompress_in_g2_matches_blst_at_every_length() {
+    let mut cases = G2Cases(ChaCha8Rng::seed_from_u64(2));
+    for len in 0..=2 * LANES + 1 {
+        let inputs: Vec<_> = (0..len).map(|_| cases.encoding().1).collect();
+        let got = uncompress_all(&inputs);
+        assert_eq!(got.len(), len);
+        for (lane, (bytes, got)) in inputs.iter().zip(&got).enumerate() {
+            assert_eq!(
+                g2_limbs(got),
+                g2_limbs(&uncompress_in_g2_blst(bytes)),
+                "len {len}, lane {lane}"
+            );
+        }
+    }
 }
 
 #[test]

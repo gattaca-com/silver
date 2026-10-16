@@ -69,15 +69,16 @@ trap 'rm -rf "$work"' EXIT
 (cd "$crate_dir" &&
   CARGO_TARGET_DIR="$work/target" "$charon" cargo --preset aeneas \
     --start-from crate::bls::decompress_g2::decompress --start-from crate::bls::uncompress_in_g1 \
+    --start-from crate::bls::uncompress_in_g2 \
     --opaque crate::bls::fp8::lanes --opaque crate::bls::simd_available \
-    --opaque crate::bls::uncompress_in_g1_blst \
+    --opaque crate::bls::uncompress_in_g1_blst --opaque crate::bls::uncompress_in_g2_blst \
     --dest-file "$work/silver_crypto_simd.llbc")
 
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_crypto_simd.llbc"
 
-# Abstract the two total G1 externals. Lean adds this instance parameter only to
-# generated definitions whose bodies use it; G2 and the shared arithmetic stay unchanged.
+# Abstract feature detection and both total scalar externals. Lean adds this instance
+# parameter only to generated definitions whose bodies use it; the kernels stay unchanged.
 python3 -I - "$work/lean/LeanBlsSimd/Extracted/Funs.lean" <<'PY'
 from pathlib import Path
 import re
@@ -87,7 +88,7 @@ source = path.read_text()
 anchor = "namespace silver_crypto_simd\n"
 if source.count(anchor) != 1:
     raise SystemExit("expected exactly one silver_crypto_simd namespace")
-source = source.replace(anchor, anchor + "\nvariable [bls.G1Externals]\n", 1)
+source = source.replace(anchor, anchor + "\nvariable [bls.BlsExternals]\n", 1)
 # `full` is a keyword in the imported Lean environment. Quoting preserves its name.
 source, full_count = re.subn(r"\bfull\b", "«full»", source)
 if full_count != 6:

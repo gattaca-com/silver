@@ -16,7 +16,7 @@ noncomputable section
 
 namespace silver_crypto_simd
 
-variable [bls.G1Externals]
+variable [bls.BlsExternals]
 
 /-- Trait implementation: [core::array::{core::marker::Copy for [T; N]}]
     Source: '/rustc/library/core/src/array/mod.rs', lines 441:0-441:45
@@ -2317,6 +2317,10 @@ def bls.decompress_g2.decompress
     Source: 'crates/crypto_simd/src/bls/mod.rs', lines 51:0-51:23 -/
 @[global_simps, irreducible] def bls.LANES : Std.Usize := 8#usize
 
+/-- [silver_crypto_simd::bls::MIN_KERNEL_LANES]
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 54:0-54:34 -/
+@[global_simps, irreducible] def bls.MIN_KERNEL_LANES : Std.Usize := 3#usize
+
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop body 0:
     Source: 'crates/crypto_simd/src/bls/mod.rs', lines 118:4-127:5 -/
 @[rust_loop_body]
@@ -2523,5 +2527,265 @@ def bls.uncompress_in_g1
   let «full» ← i3 * bls.LANES
   let (out1, start) ← bls.uncompress_in_g1_loop0 inputs out simd «full» 0#usize
   bls.uncompress_in_g1_loop1 inputs out1 start
+
+/-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 172:4-174:5 -/
+@[rust_loop_body]
+def bls.decompress_g2_chunk_loop0.body
+  (chunk : Slice (Array Std.U8 96#usize))
+  (iter : core.ops.range.Range Std.Usize)
+  (lanes : Array (Array Std.U8 96#usize) 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array Std.U8
+    96#usize) 8#usize)) (Array (Array Std.U8 96#usize) 8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done lanes)
+  | some lane =>
+    let i := Slice.len chunk
+    let lane1 ←
+      if lane < i
+      then ok lane
+      else let i1 := Slice.len chunk
+           i1 - 1#usize
+    let a ← Slice.index_usize chunk lane1
+    let a1 ← Array.update lanes lane a
+    ok (cont (iter1, a1))
+
+/-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 172:4-174:5 -/
+@[rust_loop]
+def bls.decompress_g2_chunk_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (chunk : Slice (Array Std.U8 96#usize))
+  (lanes : Array (Array Std.U8 96#usize) 8#usize) :
+  Result (Array (Array Std.U8 96#usize) 8#usize)
+  := do
+  loop
+    (fun (iter1, lanes1) => bls.decompress_g2_chunk_loop0.body chunk iter1
+      lanes1)
+    (iter, lanes)
+
+/-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 1:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 177:4-186:5 -/
+@[rust_loop_body]
+def bls.decompress_g2_chunk_loop1.body
+  (chunk : Slice (Array Std.U8 96#usize)) (batch : bls.decompress_g2.Batch)
+  (iter : core.ops.range.Range Std.Usize)
+  (out : Slice (Option blst.blst_p2_affine)) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
+    blst.blst_p2_affine))) (Slice (Option blst.blst_p2_affine)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some lane =>
+    let bit ← 1#u8 <<< lane
+    let i ← lift (batch.undecided &&& bit)
+    let (iter2, o1) ←
+      if i != 0#u8
+      then
+        do
+        let a ← Slice.index_usize chunk lane
+        let o2 ← bls.uncompress_in_g2_blst a
+        ok (iter1, o2)
+      else
+        do
+        let i1 ← lift (batch.valid &&& bit)
+        let o2 ←
+          if i1 != 0#u8
+          then do
+               let bpa ← Array.index_usize batch.points lane
+               ok (some bpa)
+          else ok none
+        ok (iter1, o2)
+    let s ← Slice.update out lane o1
+    ok (cont (iter2, s))
+
+/-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 1:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 177:4-186:5 -/
+@[rust_loop]
+def bls.decompress_g2_chunk_loop1
+  (iter : core.ops.range.Range Std.Usize)
+  (chunk : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) (batch : bls.decompress_g2.Batch)
+  :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  loop
+    (fun (iter1, out1) => bls.decompress_g2_chunk_loop1.body chunk batch iter1
+      out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::bls::decompress_g2_chunk]:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 170:0-187:1 -/
+def bls.decompress_g2_chunk
+  (chunk : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  let a := Array.repeat 96#usize 0#u8
+  let lanes := Array.repeat 8#usize a
+  let lanes1 ←
+    bls.decompress_g2_chunk_loop0 { start := 0#usize, «end» := bls.LANES }
+      chunk lanes
+  let batch ← bls.decompress_g2.decompress lanes1
+  let i := Slice.len chunk
+  bls.decompress_g2_chunk_loop1 { start := 0#usize, «end» := i } chunk out
+    batch
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 1:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Visibility: public -/
+@[rust_loop_body]
+def bls.uncompress_in_g2_loop0_loop0.body
+  (inputs : Slice (Array Std.U8 96#usize)) (start : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (out : Slice (Option blst.blst_p2_affine)) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
+    blst.blst_p2_affine))) (Slice (Option blst.blst_p2_affine)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some lane =>
+    let i ← start + lane
+    let a ← Slice.index_usize inputs i
+    let o1 ← bls.uncompress_in_g2_blst a
+    let s ← Slice.update out i o1
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 1:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Visibility: public -/
+@[rust_loop]
+def bls.uncompress_in_g2_loop0_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (inputs : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) (start : Std.Usize) :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  loop
+    (fun (iter1, out1) => bls.uncompress_in_g2_loop0_loop0.body inputs start
+      iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 2:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Visibility: public -/
+@[rust_loop_body]
+def bls.uncompress_in_g2_loop0_loop1.body
+  (inputs : Slice (Array Std.U8 96#usize)) (start : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize)
+  (out : Slice (Option blst.blst_p2_affine)) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
+    blst.blst_p2_affine))) (Slice (Option blst.blst_p2_affine)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some lane =>
+    let i ← start + lane
+    let a ← Slice.index_usize inputs i
+    let o1 ← bls.uncompress_in_g2_blst a
+    let s ← Slice.update out i o1
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 2:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Visibility: public -/
+@[rust_loop]
+def bls.uncompress_in_g2_loop0_loop1
+  (iter : core.ops.range.Range Std.Usize)
+  (inputs : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) (start : Std.Usize) :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  loop
+    (fun (iter1, out1) => bls.uncompress_in_g2_loop0_loop1.body inputs start
+      iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 154:4-165:5
+    Visibility: public -/
+@[rust_loop_body]
+def bls.uncompress_in_g2_loop0.body
+  (inputs : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) (simd : Bool) (start : Std.Usize)
+  :
+  Result (ControlFlow ((Slice (Option blst.blst_p2_affine)) × Bool ×
+    Std.Usize) (Slice (Option blst.blst_p2_affine)))
+  := do
+  let i := Slice.len inputs
+  if start < i
+  then
+    let i1 := Slice.len inputs
+    let rest ← i1 - start
+    let len ← if rest < bls.LANES
+                then ok rest
+                else ok bls.LANES
+    if simd
+    then
+      if len >= bls.MIN_KERNEL_LANES
+      then
+        let i2 ← start + len
+        let s ←
+          core.slice.index.Slice.index
+            (core.slice.index.SliceIndexRangeUsizeSlice (Array Std.U8
+            96#usize)) inputs { start, «end» := i2 }
+        let (s1, index_mut_back) ←
+          core.slice.index.Slice.index_mut
+            (core.slice.index.SliceIndexRangeUsizeSlice (Option
+            blst.blst_p2_affine)) out { start, «end» := i2 }
+        let s2 ← bls.decompress_g2_chunk s s1
+        let out1 := index_mut_back s2
+        ok (cont (out1, true, i2))
+      else
+        let out1 ←
+          bls.uncompress_in_g2_loop0_loop0 { start := 0#usize, «end» := len }
+            inputs out start
+        let start1 ← start + len
+        ok (cont (out1, true, start1))
+    else
+      let out1 ←
+        bls.uncompress_in_g2_loop0_loop1 { start := 0#usize, «end» := len }
+          inputs out start
+      let start1 ← start + len
+      ok (cont (out1, false, start1))
+  else ok (done out)
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 154:4-165:5
+    Visibility: public -/
+@[rust_loop]
+def bls.uncompress_in_g2_loop0
+  (inputs : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) (simd : Bool) (start : Std.Usize)
+  :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  loop
+    (fun (out1, simd1, start1) => bls.uncompress_in_g2_loop0.body inputs out1
+      simd1 start1)
+    (out, simd, start)
+
+/-- [silver_crypto_simd::bls::uncompress_in_g2]:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 150:0-166:1
+    Visibility: public -/
+def bls.uncompress_in_g2
+  (inputs : Slice (Array Std.U8 96#usize))
+  (out : Slice (Option blst.blst_p2_affine)) :
+  Result (Slice (Option blst.blst_p2_affine))
+  := do
+  let i := Slice.len out
+  let i1 := Slice.len inputs
+  massert (i = i1)
+  let simd ← bls.simd_available
+  bls.uncompress_in_g2_loop0 inputs out simd 0#usize
 
 end silver_crypto_simd

@@ -145,67 +145,51 @@ pub fn uncompress_in_g2_blst(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<blst_p2_
     ok.then_some(point)
 }
 
-/// Calls `emit` once per input, in input order, with a verdict identical to
-/// `uncompress_in_g2_blst` on that input.
-pub fn uncompress_in_g2<'a>(
-    inputs: impl IntoIterator<Item = &'a [u8; G2_COMPRESSED_LEN]>,
-    mut emit: impl FnMut(Option<blst_p2_affine>),
-) {
+/// Sets each `out[i]` to a verdict identical to
+/// `uncompress_in_g2_blst(&inputs[i])`.
+pub fn uncompress_in_g2(inputs: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst_p2_affine>]) {
+    assert!(out.len() == inputs.len(), "one verdict slot per input");
     let simd = simd_available();
-    let mut chunk = [[0u8; G2_COMPRESSED_LEN]; LANES];
-    let mut len = 0;
-    for input in inputs {
-        chunk[len] = *input;
-        len += 1;
-        if len == LANES {
-            uncompress_chunk(simd, &chunk, &mut emit);
-            len = 0;
+    let mut start = 0;
+    while start < inputs.len() {
+        let rest = inputs.len() - start;
+        let len = if rest < LANES { rest } else { LANES };
+        if simd && len >= MIN_KERNEL_LANES {
+            decompress_g2_chunk(&inputs[start..start + len], &mut out[start..start + len]);
+        } else {
+            for lane in 0..len {
+                out[start + lane] = uncompress_in_g2_blst(&inputs[start + lane]);
+            }
         }
-    }
-    uncompress_chunk(simd, &chunk[..len], &mut emit);
-}
-
-fn uncompress_chunk(
-    simd: bool,
-    chunk: &[[u8; G2_COMPRESSED_LEN]],
-    emit: &mut impl FnMut(Option<blst_p2_affine>),
-) {
-    if simd && chunk.len() >= MIN_KERNEL_LANES {
-        decompress_g2_chunk(chunk, emit);
-    } else {
-        for input in chunk {
-            emit(uncompress_in_g2_blst(input));
-        }
+        start += len;
     }
 }
 
+/// A short chunk repeats its last input in the unused lanes.
 #[cfg(target_arch = "x86_64")]
-fn decompress_g2_chunk(
-    chunk: &[[u8; G2_COMPRESSED_LEN]],
-    emit: &mut impl FnMut(Option<blst_p2_affine>),
-) {
-    let lanes = std::array::from_fn(|lane| chunk[lane.min(chunk.len() - 1)]);
+fn decompress_g2_chunk(chunk: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst_p2_affine>]) {
+    let mut lanes = [[0u8; G2_COMPRESSED_LEN]; LANES];
+    for lane in 0..LANES {
+        lanes[lane] = chunk[if lane < chunk.len() { lane } else { chunk.len() - 1 }];
+    }
     // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
     let batch = unsafe { decompress_g2::decompress(&lanes) };
-    for (lane, input) in chunk.iter().enumerate() {
+    for lane in 0..chunk.len() {
         let bit = 1u8 << lane;
-        emit(if batch.undecided & bit != 0 {
-            uncompress_in_g2_blst(input)
+        out[lane] = if batch.undecided & bit != 0 {
+            uncompress_in_g2_blst(&chunk[lane])
         } else if batch.valid & bit != 0 {
             Some(batch.points[lane])
         } else {
             None
-        });
+        };
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn decompress_g2_chunk(
-    chunk: &[[u8; G2_COMPRESSED_LEN]],
-    emit: &mut impl FnMut(Option<blst_p2_affine>),
-) {
-    for input in chunk {
-        emit(uncompress_in_g2_blst(input));
+fn decompress_g2_chunk(chunk: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst_p2_affine>]) {
+    for lane in 0..chunk.len() {
+        out[lane] = uncompress_in_g2_blst(&chunk[lane]);
     }
 }
 

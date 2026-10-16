@@ -5,23 +5,23 @@ open silver_crypto_simd silver_crypto_simd.bls core.ops.range core.iter.range
 
 namespace LeanBlsSimd.UncompressG1
 
-def ScalarWrites [G1Externals] (inputs : Slice (Array U8 48#usize))
+def ScalarWrites [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (original result : Slice (Option blst.blst_p1_affine)) (start stop : ℕ) : Prop :=
   result.val.length = original.val.length ∧
     ∀ j, j < original.val.length → result.val[j]! =
-      if start ≤ j ∧ j < stop then G1Externals.uncompress inputs.val[j]! else original.val[j]!
+      if start ≤ j ∧ j < stop then BlsExternals.uncompressG1 inputs.val[j]! else original.val[j]!
 
-private theorem scalarWrites_init [G1Externals] (inputs : Slice (Array U8 48#usize))
+private theorem scalarWrites_init [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (start : ℕ) :
     ScalarWrites inputs out out start start := by
   simp [ScalarWrites]
 
-private theorem scalarWrites_step [G1Externals] (inputs : Slice (Array U8 48#usize))
+private theorem scalarWrites_step [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (original out : Slice (Option blst.blst_p1_affine)) (start : ℕ) (i : Usize)
     (hi : i.val < original.val.length) (hstart : start ≤ i.val)
     (h : ScalarWrites inputs original out start i.val) :
     ScalarWrites inputs original
-      (out.set i (G1Externals.uncompress inputs.val[i.val]!)) start (i.val + 1) := by
+      (out.set i (BlsExternals.uncompressG1 inputs.val[i.val]!)) start (i.val + 1) := by
   refine ⟨by simpa [Slice.set, Slice.setAtNat] using h.1, ?_⟩
   intro j hj
   simp only [Slice.set, Slice.setAtNat]
@@ -33,12 +33,12 @@ private theorem scalarWrites_step [G1Externals] (inputs : Slice (Array U8 48#usi
     have hc : (start ≤ j ∧ j < i.val) ↔ (start ≤ j ∧ j < i.val + 1) := by omega
     simp only [hc]
 
-private theorem scalar_index [G1Externals] (inputs : Slice (Array U8 48#usize))
+private theorem scalar_index [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (i : Usize)
     (hi : i.val < inputs.val.length) (ho : i.val < out.val.length) :
     (do let a ← Slice.index_usize inputs i
         let v ← uncompress_in_g1_blst a
-        Slice.update out i v) = ok (out.set i (G1Externals.uncompress inputs.val[i.val]!)) := by
+        Slice.update out i v) = ok (out.set i (BlsExternals.uncompressG1 inputs.val[i.val]!)) := by
   simp [Slice.index_usize, hi, uncompress_in_g1_blst,
     Slice.update, ho, Slice.set, Slice.setAtNat]
 
@@ -64,7 +64,7 @@ private theorem range_runs {S : Type}
     obtain ⟨v, hv, hi''⟩ := ih r' s' (he'.trans he) (by omega) (hs' ▸ hi') (by omega)
     exact ⟨v, by rw [loop.eq_1, hb]; exact hv, hi''⟩
 
-theorem scalar_chunk_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
+theorem scalar_chunk_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (start : Usize)
     (hlen : out.val.length = inputs.val.length) (hfull : start.val + 8 ≤ inputs.val.length) :
     ∃ result, uncompress_in_g1_loop0_loop0 { start := 0#usize, «end» := LANES }
@@ -83,7 +83,7 @@ theorem scalar_chunk_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
       omega
     let i : Usize := UScalar.ofNatCore (start.val + r.start.val) hbound
     have hi : i.val = start.val + r.start.val := by simp [i]
-    refine ⟨s.set i (G1Externals.uncompress inputs.val[i.val]!), ?_, ?_⟩
+    refine ⟨s.set i (BlsExternals.uncompressG1 inputs.val[i.val]!), ?_, ?_⟩
     · simp only [uncompress_in_g1_loop0_loop0.body, hn, bind_tc_ok,
         Function.uncurry_apply_pair]
       rw [add_ok _ _ hbound]
@@ -96,7 +96,7 @@ theorem scalar_chunk_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
       simpa [hi, Nat.add_assoc] using h
   · simpa using scalarWrites_init inputs out start.val
 
-theorem scalar_tail_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
+theorem scalar_tail_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (start : Usize)
     (hlen : out.val.length = inputs.val.length) (hstart : start.val ≤ inputs.val.length) :
     ∃ result, uncompress_in_g1_loop1 inputs out start = ok result ∧
@@ -123,7 +123,7 @@ theorem scalar_tail_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
       omega
     let next : Usize := UScalar.ofNatCore (i.val + (1#usize).val) hb
     have hn : next.val = i.val + 1 := by simp [next]
-    let s' := s.set i (G1Externals.uncompress inputs.val[i.val]!)
+    let s' := s.set i (BlsExternals.uncompressG1 inputs.val[i.val]!)
     have hs' : ScalarWrites inputs out s' initial next.val := by
       rw [hn]
       exact scalarWrites_step inputs out s initial i (by omega) hlow hinv

@@ -4,17 +4,22 @@ import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 
-/-- Total external observations, supplied by the caller of the generated G1 API. -/
-class silver_crypto_simd.bls.G1Externals where
+/-- Total external observations, supplied by the caller of the generated BLS APIs. -/
+class silver_crypto_simd.bls.BlsExternals where
   simdAvailable : Bool
-  uncompress : Array Std.U8 48#usize → Option blst.blst_p1_affine
+  uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
+  uncompressG2 : Array Std.U8 96#usize → Option blst.blst_p2_affine
 
-def silver_crypto_simd.bls.simd_available [G1Externals] : Result Bool :=
-  ok G1Externals.simdAvailable
+def silver_crypto_simd.bls.simd_available [BlsExternals] : Result Bool :=
+  ok BlsExternals.simdAvailable
 
-def silver_crypto_simd.bls.uncompress_in_g1_blst [G1Externals]
+def silver_crypto_simd.bls.uncompress_in_g1_blst [BlsExternals]
     (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
-  ok (G1Externals.uncompress bytes)
+  ok (BlsExternals.uncompressG1 bytes)
+
+def silver_crypto_simd.bls.uncompress_in_g2_blst [BlsExternals]
+    (bytes : Array Std.U8 96#usize) : Result (Option blst.blst_p2_affine) :=
+  ok (BlsExternals.uncompressG2 bytes)
 
 def blst.blst_p1_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p1_affine :=
   let fp : blst.blst_fp := { l := Array.repeat 6#usize 0#u64 }

@@ -1,4 +1,5 @@
 import LeanBlsSimd.Refines.G1
+import LeanBlsSimd.Refines.WrapperLengths
 import LeanBlsSimd.Proofs.G1
 
 open Aeneas Aeneas.Std Result
@@ -12,8 +13,8 @@ def specVerdict (bytes : Array U8 48#usize) : Option blst.blst_p1_affine :=
   (G1Spec.verdict (ofArray ofU8 bytes)).map toBlstP1Affine
 
 /-- The scalar external returns the KZG verdict, including the exact affine limbs. -/
-def BlstMatchesSpec [G1Externals] : Prop :=
-  ∀ bytes : Array U8 48#usize, G1Externals.uncompress bytes = specVerdict bytes
+def BlstMatchesSpec [BlsExternals] : Prop :=
+  ∀ bytes : Array U8 48#usize, BlsExternals.uncompressG1 bytes = specVerdict bytes
 
 theorem specVerdict_some_iff (bytes : Array U8 48#usize) (p : blst.blst_p1_affine) :
     specVerdict bytes = some p ↔
@@ -28,19 +29,19 @@ theorem specVerdict_some_iff (bytes : Array U8 48#usize) (p : blst.blst_p1_affin
   · rintro ⟨hk, P, hP, rfl⟩
     exact ⟨G1Spec.blstLimbs P, (G1Spec.verdict_some_iff _ _).mpr ⟨hk, P, hP, rfl⟩, rfl⟩
 
-def usesKernelAt [G1Externals] (inputs : Slice (Array U8 48#usize)) (i : ℕ) : Bool :=
-  usesKernel G1Externals.simdAvailable (inputs.val.map (ofArray ofU8)) i
+def usesKernelAt [BlsExternals] (inputs : Slice (Array U8 48#usize)) (i : ℕ) : Bool :=
+  usesKernel BlsExternals.simdAvailable (inputs.val.map (ofArray ofU8)) i
 
-theorem usesKernelAt_iff [G1Externals] (inputs : Slice (Array U8 48#usize)) (i : ℕ) :
+theorem usesKernelAt_iff [BlsExternals] (inputs : Slice (Array U8 48#usize)) (i : ℕ) :
     usesKernelAt inputs i = true ↔
-      G1Externals.simdAvailable = true ∧ i < inputs.val.length / 8 * 8 ∧
+      BlsExternals.simdAvailable = true ∧ i < inputs.val.length / 8 * 8 ∧
       (decompress (chunkAt (inputs.val.map (ofArray ofU8)) i)).undecided.toNat.testBit
         (i % 8) = false := by
   simp [usesKernelAt, usesKernel, Bool.and_eq_true, and_assoc]
 
 /-- All slots are overwritten. The route is determined by SIMD, chunk size, and the
 kernel's actual undecided mask; the scalar external is otherwise unconstrained. -/
-theorem uncompress_in_g1_eq_spec_or_blst [G1Externals]
+theorem uncompress_in_g1_eq_spec_or_blst [BlsExternals]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -48,7 +49,7 @@ theorem uncompress_in_g1_eq_spec_or_blst [G1Externals]
       ∀ i : Fin inputs.val.length,
         result.val[i.val]? = some
           (if usesKernelAt inputs i.val then specVerdict inputs.val[i.val]
-           else G1Externals.uncompress inputs.val[i.val]) := by
+           else BlsExternals.uncompressG1 inputs.val[i.val]) := by
   obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out hlen
   refine ⟨result, hr, ?_, ?_⟩
   · rw [hv]
@@ -74,8 +75,8 @@ theorem uncompress_in_g1_eq_spec_or_blst [G1Externals]
 
 /-- The sole extra premise relates the total blst external to the KZG verdict on all
 48-byte inputs. No completeness, decided-lane, or CPU premise is required. -/
-theorem uncompress_in_g1_eq_spec [G1Externals]
-    (hblst : ∀ bytes : Array U8 48#usize, G1Externals.uncompress bytes = specVerdict bytes)
+theorem uncompress_in_g1_eq_spec [BlsExternals]
+    (hblst : ∀ bytes : Array U8 48#usize, BlsExternals.uncompressG1 bytes = specVerdict bytes)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -88,7 +89,7 @@ theorem uncompress_in_g1_eq_spec [G1Externals]
   simpa only [hblst, ite_self] using hv i
 
 /-- The list form transports directly across another extraction's copy of blst's structs. -/
-theorem uncompress_in_g1_eq_spec_list [G1Externals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g1_eq_spec_list [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -100,7 +101,7 @@ theorem uncompress_in_g1_eq_spec_list [G1Externals] (hblst : BlstMatchesSpec)
   have h := hv ⟨i, hi'⟩
   simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
-theorem uncompress_in_g1_eq_spec_model_list [G1Externals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g1_eq_spec_model_list [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧

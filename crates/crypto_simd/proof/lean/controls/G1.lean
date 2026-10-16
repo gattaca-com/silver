@@ -188,18 +188,18 @@ example (inputs : List Encoding) (hn : inputs.length = 9) : True := by
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 
-example [G1Externals] (hs : G1Externals.simdAvailable = false)
+example [BlsExternals] (hs : BlsExternals.simdAvailable = false)
     (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = inputs.val.map G1Externals.uncompress := by
+      result.val = inputs.val.map BlsExternals.uncompressG1 := by
   obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out hlen
   refine ⟨result, hr, ?_⟩
   rw [hv, hs, scalar_model]
   simp [modelBlst, List.map_map, Option.map_map, Function.comp_def, toArray_ofArray]
 
-example [G1Externals] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
+example [BlsExternals] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hi : inputs.val = []) (ho : out.val = []) :
     silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok out := by
   obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out (by simp [hi, ho])

@@ -23,7 +23,7 @@ use silver_config::{PendingBounds, SyncingConfig};
 use silver_slashing::SlashingPool;
 
 use crate::{
-    bls::{self, CheckedSignature},
+    bls::{self, CheckedSignature, SignatureChecker},
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
     ssz_hash, stf,
     tile::{
@@ -174,6 +174,7 @@ struct Votes {
     // Pinned: the tail moves as later reads in the same pass arrive.
     batch: Vec<BatchedVote>,
     prepared: Vec<(BatchedVote, gossip::PreparedVote)>,
+    checker: SignatureChecker,
     checked: Vec<Option<CheckedSignature>>,
     pending: Vec<(NewGossipMsg, gossip::PreparedVote, CheckedSignature)>,
 }
@@ -183,6 +184,7 @@ impl Votes {
         Self {
             batch: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             prepared: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
+            checker: SignatureChecker::with_capacity(gossip::VOTE_BATCH_CAP),
             checked: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
             pending: Vec::with_capacity(gossip::VOTE_BATCH_CAP),
         }
