@@ -9,7 +9,7 @@ use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey,
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
-    bls::{self, CheckedSignature, DOMAIN_BEACON_ATTESTER, DST, SigBatch},
+    bls::{self, CheckedSignature, DOMAIN_BEACON_ATTESTER, DST, SigBatch, SignatureChecker},
     ssz_hash::hash_attestation_data,
     stf::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
@@ -235,10 +235,11 @@ fn bench_g2_parse(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("blst", n), &sigs[..n], |b, sigs| {
             b.iter(|| sigs.iter().filter(|s| CheckedSignature::parse(s).is_some()).count())
         });
+        let mut checker = SignatureChecker::with_capacity(n);
         g.bench_with_input(BenchmarkId::new("simd", n), &sigs[..n], |b, sigs| {
             b.iter(|| {
                 let mut checked = 0;
-                CheckedSignature::check_all(sigs, |s| checked += s.is_some() as usize);
+                checker.check_all(sigs, |s| checked += s.is_some() as usize);
                 checked
             })
         });

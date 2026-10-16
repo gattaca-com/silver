@@ -5,7 +5,7 @@ use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTE
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
-use silver_crypto_simd::bls::uncompress_in_g2;
+use silver_crypto_simd::bls::{blst_p2_affine, uncompress_in_g2};
 
 use crate::{
     merkle,
@@ -148,28 +148,50 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 }
 
 /// A signature known to be in G2, so batch verify and downstream
-/// aggregation need no re-check. `check_all` is the only constructor.
+/// aggregation need no re-check. `parse` and `SignatureChecker::check_all`
+/// are the only constructors.
 #[derive(Clone, Copy)]
 pub struct CheckedSignature(Signature);
 
 impl CheckedSignature {
-    /// One decompression and subgroup check over every signature, emitted in
-    /// input order.
-    pub fn check_all<'a>(
-        sigs: impl IntoIterator<Item = &'a [u8; 96]>,
-        mut emit: impl FnMut(Option<Self>),
-    ) {
-        uncompress_in_g2(sigs, |p| emit(p.map(|p| Self(p.into()))));
-    }
-
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
-        let mut sig = None;
-        Self::check_all([bytes], |s| sig = s);
-        sig
+        let mut point = [None];
+        uncompress_in_g2(std::slice::from_ref(bytes), &mut point);
+        point[0].map(|p| Self(p.into()))
     }
 
     pub(crate) fn as_sig(&self) -> &Signature {
         &self.0
+    }
+}
+
+/// The contiguous buffers `uncompress_in_g2` reads and writes, kept across
+/// batches.
+pub struct SignatureChecker {
+    inputs: Vec<[u8; 96]>,
+    points: Vec<Option<blst_p2_affine>>,
+}
+
+impl SignatureChecker {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inputs: Vec::with_capacity(capacity), points: Vec::with_capacity(capacity) }
+    }
+
+    /// One decompression and subgroup check over every signature, emitted in
+    /// input order.
+    pub fn check_all<'a>(
+        &mut self,
+        sigs: impl IntoIterator<Item = &'a [u8; 96]>,
+        mut emit: impl FnMut(Option<CheckedSignature>),
+    ) {
+        self.inputs.clear();
+        self.inputs.extend(sigs.into_iter().copied());
+        self.points.clear();
+        self.points.resize(self.inputs.len(), None);
+        uncompress_in_g2(&self.inputs, &mut self.points);
+        for point in self.points.drain(..) {
+            emit(point.map(|p| CheckedSignature(p.into())));
+        }
     }
 }
 

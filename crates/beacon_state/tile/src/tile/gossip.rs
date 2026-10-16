@@ -430,9 +430,9 @@ impl BeaconStateTile {
 
         let mut prepared = std::mem::take(&mut self.votes.prepared);
         let mut checked = std::mem::take(&mut self.votes.checked);
-        CheckedSignature::check_all(prepared.iter().map(|(_, p)| p.signature()), |s| {
-            checked.push(s)
-        });
+        self.votes
+            .checker
+            .check_all(prepared.iter().map(|(_, p)| p.signature()), |s| checked.push(s));
         for ((BatchedVote { vote, pin }, p), sig) in prepared.drain(..).zip(checked.drain(..)) {
             let Some(sig) = sig else {
                 let data = pin.buffer().ok().map_or(&[][..], |(d, _)| d);

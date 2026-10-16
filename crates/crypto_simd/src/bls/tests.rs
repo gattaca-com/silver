@@ -26,8 +26,8 @@ fn env_u64(name: &str, default: u64) -> u64 {
 }
 
 fn uncompress_all(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>> {
-    let mut out = Vec::new();
-    uncompress_in_g2(inputs, |p| out.push(p));
+    let mut out = vec![None; inputs.len()];
+    uncompress_in_g2(inputs, &mut out);
     out
 }
 
@@ -171,6 +171,25 @@ fn uncompress_in_g2_matches_blst_on_every_kind() {
     );
     let kinds = assert_uncompress_in_g2_matches_blst(uncompress_all);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
+}
+
+/// Every length from empty to two full chunks and a tail, so each split
+/// around `MIN_KERNEL_LANES` and `LANES` is taken.
+#[test]
+fn uncompress_in_g2_matches_blst_at_every_length() {
+    let mut cases = G2Cases(ChaCha8Rng::seed_from_u64(2));
+    for len in 0..=2 * LANES + 1 {
+        let inputs: Vec<_> = (0..len).map(|_| cases.encoding().1).collect();
+        let got = uncompress_all(&inputs);
+        assert_eq!(got.len(), len);
+        for (lane, (bytes, got)) in inputs.iter().zip(&got).enumerate() {
+            assert_eq!(
+                g2_limbs(got),
+                g2_limbs(&uncompress_in_g2_blst(bytes)),
+                "len {len}, lane {lane}"
+            );
+        }
+    }
 }
 
 #[test]
