@@ -44,7 +44,7 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
         let leaves =
             list.store.nodes[list.max_elements..list.max_elements + chunks].iter().copied();
         let mut tree = Self::from_leaves(list.max_elements * C::VALS_PER_CHUNK, count, leaves);
-        tree.store.mark_all_dirty();
+        tree.store.writes.mark_all_hashed();
         tree
     }
 
@@ -59,7 +59,7 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
 
     pub(super) fn rehash(&mut self) {
         let data_start = self.data_start();
-        let (nodes, unhashed) = self.store.drain_unhashed();
+        let (nodes, unhashed) = self.store.take_unhashed();
         let (internals, data) = nodes.split_at_mut(data_start);
         let mut start = 0;
         while start < unhashed.len() {
@@ -114,8 +114,8 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
 
         let (internals, data) = self.store.nodes.split_at_mut(new.data_start::<C>());
         build_segment::<C>(internals, data, self.last_seg as usize, 0);
-        self.store.unhashed.resize(new.data_capacity());
-        self.store.mark_all_dirty();
+        self.store.writes.resize(new.data_capacity());
+        self.store.writes.mark_all_hashed();
     }
 }
 

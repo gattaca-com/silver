@@ -509,7 +509,7 @@ pub fn process_effective_balance_updates(
 
 #[timed]
 pub fn process_participation_flag_updates(view: &mut StateWriterView) {
-    view.previous_participation.copy_changed_from(&mut view.current_participation);
+    view.previous_participation.copy_from(&mut view.current_participation);
     view.current_participation.clear_to_zero();
 }
 

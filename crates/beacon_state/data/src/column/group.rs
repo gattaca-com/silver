@@ -6,8 +6,8 @@ use std::{
 use flux_profiler::timed;
 
 use super::{
-    ColumnReader, ColumnSpec, ColumnWriteView, pool::PagePool, snapshot::PageSnapshot,
-    tree::ColumnTree,
+    ColumnReader, ColumnSpec, ColumnWriteView, hashing_writer::HashingWriter, pool::PagePool,
+    snapshot::PageSnapshot, tree::ColumnTree,
 };
 use crate::{
     ring::{Id, Ring, RingGroup},
@@ -25,14 +25,13 @@ fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
 pub struct ColumnGroup<C: ColumnSpec> {
     pool: PagePool<C::Page>,
     finalized: PageSnapshot,
+    /// The last winner: its ring slot is freed, and its id now names
+    /// `finalized`.
+    finalized_id: Option<Id<Self>>,
     ring: Ring<Self>,
     /// Flat writable head — the hot write path stays flat; committed forks are
     /// paged.
-    scratch: ColumnTree<C>,
-    /// What `scratch` currently holds (up to its dirty mask), so a roll only
-    /// reloads the pages that differ. Keeps its own refcounts — finalize
-    /// releasing the fork it mirrors doesn't invalidate it.
-    scratch_snapshot: PageSnapshot,
+    writer: HashingWriter<C>,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -69,84 +68,89 @@ impl<C: ColumnSpec> ColumnGroup<C> {
         leaves: impl Iterator<Item = B256>,
         format: HashFormat,
     ) -> Self {
-        let flat = ColumnTree::from_leaves(cap, count, leaves, format);
         let mut pool = PagePool::new();
-        let finalized = flat.to_snapshot(&mut pool);
-        let mut scratch_snapshot = PageSnapshot::new_released();
-        pool.share_into(&mut scratch_snapshot, &finalized);
+        let flat = ColumnTree::from_leaves(cap, count, leaves, format);
+        let (writer, finalized) = HashingWriter::new(flat, &mut pool);
         Self {
+            writer,
             pool,
             finalized,
-            ring: Ring::filled(SLOTS_RING_N, PageSnapshot::new_released),
-            scratch: flat,
-            scratch_snapshot,
+            finalized_id: None,
+            ring: Ring::filled(SLOTS_RING_N, PageSnapshot::default),
             _marker: PhantomData,
         }
     }
 
     #[inline]
     pub fn view(&self, id: Id<Self>) -> ColumnReader<'_, C> {
-        ColumnReader::paged(&self.pool, self.ring.get(id))
+        let snapshot =
+            if self.finalized_id == Some(id) { &self.finalized } else { self.ring.get(id) };
+        ColumnReader::paged(&self.pool, snapshot)
     }
 
     #[timed]
     pub fn roll_fresh(&mut self) -> ColumnWriteView<'_, C> {
-        let Self { pool, finalized, scratch, scratch_snapshot, .. } = self;
-        scratch.load(pool, scratch_snapshot, finalized);
-        pool.share_into(scratch_snapshot, finalized);
+        let Self { pool, finalized, writer, .. } = self;
+        writer.load(pool, finalized, None);
         ColumnWriteView::new(self, None)
     }
 
     #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> ColumnWriteView<'_, C> {
-        let Self { pool, ring, scratch, scratch_snapshot, .. } = self;
-        let target = ring.get(parent);
-        scratch.load(pool, scratch_snapshot, target);
-        pool.share_into(scratch_snapshot, target);
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
+        if *finalized_id == Some(parent) {
+            writer.load(pool, finalized, None);
+        } else {
+            writer.load(pool, ring.get(parent), Some(parent));
+        }
         ColumnWriteView::new(self, Some(parent))
     }
 
-    pub(super) fn commit_scratch(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
-        let Self { pool, finalized, ring, scratch, scratch_snapshot, .. } = self;
-        scratch.rehash();
+    pub(super) fn commit_writer(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
+        writer.tree_mut().rehash();
 
-        ring.grow_if_full_with(PageSnapshot::new_released, |src, dst| *dst = src.clone_for_grow());
-        let (id, dst, parent_snap) = ring.roll_deriving(parent);
+        ring.grow_if_full_with(PageSnapshot::default, |src, dst| *dst = src.clone_for_grow());
+        let parent_in_ring = parent.filter(|&p| Some(p) != *finalized_id);
+        let (id, dst, parent_snap) = ring.roll_deriving(parent_in_ring);
 
-        debug_assert!(dst.is_released, "recycled slot not freed by finalize or clear");
-        scratch.commit_into(pool, dst, parent_snap.unwrap_or(finalized));
-        // Scratch now matches the committed fork: adopt its table for the
-        // next roll's diff.
-        pool.share_into(scratch_snapshot, dst);
-        scratch.reset_dirty_mask();
+        debug_assert!(dst.allocated.is_empty(), "recycled slot still owns pages: not released");
+        writer.commit(pool, dst, parent_snap.unwrap_or(finalized), id);
         id
     }
 
     #[inline]
-    pub(super) fn scratch(&self) -> &ColumnTree<C> {
-        &self.scratch
+    pub(super) fn tree(&self) -> &ColumnTree<C> {
+        self.writer.tree()
     }
 
     #[inline]
-    pub(super) fn scratch_mut(&mut self) -> &mut ColumnTree<C> {
-        &mut self.scratch
+    pub(super) fn tree_mut(&mut self) -> &mut ColumnTree<C> {
+        self.writer.tree_mut()
     }
 
-    /// Promote the winner into the base and free everything below the oldest
-    /// survivor. Survivor ids stay valid unchanged — columns never reanchor.
+    /// Promote the winner into the base and free its ring slot and everything
+    /// older. The winner's id then names the base; the other survivor ids stay
+    /// valid unchanged — columns never reanchor.
     #[timed]
     pub fn finalize<S>(&mut self, winner: Id<Self>, survivors: &[S], idx: impl Fn(&S) -> Id<Self>) {
         debug_assert!(
             survivors.iter().any(|s| idx(s) == winner),
             "winner must be among the survivors"
         );
-        let Self { pool, finalized, ring, .. } = self;
-        pool.share_into(finalized, ring.get(winner));
-        ring.free_outdated_with(survivors.iter().map(idx), |snapshot| pool.release(snapshot));
+        debug_assert!(survivors.iter().all(|s| idx(s) >= winner), "a survivor predates the winner");
+        let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
+        if *finalized_id == Some(winner) {
+            return;
+        }
+        finalized.promote::<C>(pool, ring.get(winner));
+        ring.free_through_with(winner, |snapshot| snapshot.release::<C>(pool, finalized));
+        *finalized_id = Some(winner);
+        writer.unmirror_dead(finalized, |id| survivors.iter().any(|s| idx(s) == id));
     }
 
     #[inline]
     pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        ColumnReader::<C>::paged(&self.pool, &self.finalized).write_ssz(w)
+        self.finalized.write_ssz::<C, W>(&self.pool, w)
     }
 }

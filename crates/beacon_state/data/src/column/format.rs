@@ -1,4 +1,4 @@
-use super::ColumnSpec;
+use super::{ColumnSpec, page_format::Subtree};
 use crate::{
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
@@ -104,17 +104,41 @@ impl TreeFormat {
         };
         if C::IS_LIST { mix_in_length(&root, count) } else { root }
     }
-}
 
-#[inline]
-pub(super) fn progressive_internal_parent<C: ColumnSpec>(chunk: usize) -> Option<(usize, usize)> {
-    let k = progressive_segment_of_chunk(chunk) as usize;
-    if k == 0 {
-        return None;
+    pub(super) fn subtrees<C: ColumnSpec>(self) -> impl Iterator<Item = Subtree> {
+        let count = match self {
+            TreeFormat::Fixed { .. } => 1,
+            TreeFormat::Progressive { last_seg } => last_seg as usize + 1,
+        };
+        (0..count).map(move |s| Subtree::of::<C>(self, s))
     }
-    let leaf_local = (1usize << (2 * k)) + (chunk - PROGRESSIVE_SEGMENT_START[k]);
-    let seg_off = C::SEG_OFF;
-    Some((seg_off[k] + (leaf_local >> 1), seg_off[k]))
+
+    /// Flat-tree node `n` as (subtree, level, pos), or `None` for padding and
+    /// ids past the tree: a racing reader may pair `n` with another format.
+    pub(super) fn locate<C: ColumnSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
+        let data_start = self.data_start::<C>();
+        match self {
+            TreeFormat::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {
+                let level = n.ilog2();
+                (0, level, n - (1 << level))
+            }),
+            TreeFormat::Progressive { .. } if n >= data_start => {
+                let chunk = n - data_start;
+                (chunk < self.data_capacity()).then(|| {
+                    let s = progressive_segment_of_chunk(chunk) as usize;
+                    (s, 2 * s as u32, chunk - PROGRESSIVE_SEGMENT_START[s])
+                })
+            }
+            TreeFormat::Progressive { last_seg } => {
+                let k = (1..=last_seg as usize).rev().find(|&k| C::SEG_OFF[k] <= n)?;
+                let local = n - C::SEG_OFF[k];
+                (1..1 << (2 * k)).contains(&local).then(|| {
+                    let level = local.ilog2();
+                    (k, level, local - (1 << level))
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -177,23 +201,6 @@ mod tests {
             assert!(format.leaf_pos::<P32>(chunk) < format.num_nodes::<P32>());
         }
         assert_eq!(data_start, P32::SEG_OFF[6], "data follows the last block");
-    }
-
-    #[test]
-    fn internal_parent_in_block() {
-        let format = TreeFormat::Progressive { last_seg: 5 };
-        assert_eq!(
-            progressive_internal_parent::<P32>(0),
-            None,
-            "segment 0 leaf has no internal parent",
-        );
-        for chunk in 1..format.data_capacity() {
-            let k = progressive_segment_of_chunk(chunk) as usize;
-            let (parent, off) = progressive_internal_parent::<P32>(chunk).unwrap();
-            assert_eq!(off, P32::SEG_OFF[k]);
-            let local = parent - off;
-            assert!((1 << (2 * k - 1)..1 << (2 * k)).contains(&local), "chunk {chunk} parent");
-        }
     }
 
     #[test]

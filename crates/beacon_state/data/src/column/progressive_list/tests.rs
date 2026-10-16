@@ -279,13 +279,14 @@ fn reorg_rebuilds_scratch_from_pages_across_growth() {
     assert_eq!(g.view(c).hash_root(), progressive_u64_root(&c_vals));
     assert_eq!(g.view(d).hash_root(), progressive_u64_root(&d_vals));
 
-    // The grown side wins. Freeing the non-survivors (a shares most of its
-    // pages with winner d) must not free pages d and c still reference.
-    g.finalize(d, &[d, c], |&id| id);
+    // The grown side wins; survivors descend from the winner, so B's chain
+    // dies. Freeing the non-survivors (a shares most of its pages with winner
+    // d) must not free pages d still references.
+    g.finalize(d, &[d], |&id| id);
     let mut ssz = Vec::new();
     g.write_ssz(&mut ssz).unwrap();
     assert_eq!(ssz, le_bytes(&d_vals));
-    assert_eq!(g.view(c).hash_root(), progressive_u64_root(&c_vals));
+    assert_eq!(g.view(d).hash_root(), progressive_u64_root(&d_vals));
 }
 
 #[test]

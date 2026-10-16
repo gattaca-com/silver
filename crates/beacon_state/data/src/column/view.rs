@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    marker::PhantomData,
-};
+use std::marker::PhantomData;
 
 use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
@@ -12,9 +9,9 @@ use super::{
 };
 use crate::{ring::Id, types::B256};
 
-/// The node array a column read walks: the flat scratch (the live, still-
+/// The node array a column read walks: the flat tree (the live, still-
 /// writable head — hot path) or a committed fork's paged snapshot. The read
-/// algorithms (`get`/`iter`/`hash_root`/`write_ssz`) are written once here over
+/// algorithms (`get`/`hash_root`) are written once here over
 /// [`node`](Self::node); only node addressing differs between backings.
 enum Nodes<'a, C: ColumnSpec> {
     Flat(&'a ColumnTree<C>),
@@ -96,22 +93,9 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
         }
         self.format.hash_root::<C>(self.nodes.count(), |n| *self.nodes.node(n))
     }
-
-    #[inline]
-    pub(super) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let (k, size) = (C::VALS_PER_CHUNK, size_of::<C::Val>());
-        let (full, rem) = (self.nodes.count() / k, self.nodes.count() % k);
-        for chunk in 0..full {
-            w.write_all(self.nodes.node(self.leaf_pos(chunk)))?;
-        }
-        if rem > 0 {
-            w.write_all(&self.nodes.node(self.leaf_pos(full))[..rem * size])?;
-        }
-        Ok(())
-    }
 }
 
-/// Write handle over the flat scratch head. Values are written flat (fast
+/// Write handle over the flat tree. Values are written flat (fast
 /// path); `commit` pages the result into the ring, sharing the parent's
 /// unchanged pages.
 pub struct ColumnWriteView<'a, C: ColumnSpec> {
@@ -127,47 +111,46 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn commit(self) -> Id<ColumnGroup<C>> {
-        self.group.commit_scratch(self.parent)
+        self.group.commit_writer(self.parent)
     }
 
     #[inline]
     pub fn set(&mut self, idx: u32, v: C::Val) {
-        self.group.scratch_mut().set_val(idx, v);
+        self.group.tree_mut().set_val(idx, v);
     }
 
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
         debug_assert!(C::IS_LIST, "a vector column has fixed length");
-        self.group.scratch_mut().append_empty()
+        self.group.tree_mut().append_empty()
     }
 
-    pub fn copy_changed_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
+    pub fn copy_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
         &mut self,
         other: &mut ColumnWriteView<'_, D>,
     ) {
-        other.group.scratch_mut().rehash();
-        let src = other.group.scratch();
-        self.group.scratch_mut().copy_changed_pages_from(src);
+        other.group.tree_mut().rehash();
+        self.group.tree_mut().copy_from(other.group.tree());
     }
 
     #[inline]
     pub fn clear_to_zero(&mut self) {
-        self.group.scratch_mut().fill_zero();
+        self.group.tree_mut().fill_zero();
     }
 
     #[timed]
     pub fn migrate_to_progressive(&mut self) {
         debug_assert!(C::IS_LIST, "vectors are fork-invariant under EIP-7688");
-        self.group.scratch_mut().migrate_to_progressive();
+        self.group.tree_mut().migrate_to_progressive();
     }
 
     #[inline]
     pub fn reader(&self) -> ColumnReader<'_, C> {
-        ColumnReader::flat(self.group.scratch())
+        ColumnReader::flat(self.group.tree())
     }
 
     pub fn hashed_reader(&mut self) -> ColumnReader<'_, C> {
-        self.group.scratch_mut().rehash();
+        self.group.tree_mut().rehash();
         self.reader()
     }
 
@@ -178,7 +161,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = C::Val> + '_ {
-        self.group.scratch().iter_vals()
+        self.group.tree().iter_vals()
     }
 
     #[inline]
@@ -190,6 +173,6 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 impl<C: ColumnSpec<Val = u64>> ColumnWriteView<'_, C> {
     #[inline]
     pub fn add_at(&mut self, idx: u32, delta: i64) {
-        self.group.scratch_mut().add_at(idx, delta);
+        self.group.tree_mut().add_at(idx, delta);
     }
 }

@@ -1,14 +1,53 @@
+use std::ops::{Deref, DerefMut, Range};
+
 use super::subtree::NodeRange;
 
 const WORD_BITS: usize = u64::BITS as usize;
 
+#[derive(Default)]
+struct Words(Vec<u64>);
+
+impl Words {
+    #[inline]
+    fn any_in(&self, bits: Range<usize>) -> bool {
+        if bits.is_empty() {
+            return false;
+        }
+        let (first, last) = (bits.start / WORD_BITS, (bits.end - 1) / WORD_BITS);
+        let head = !0 << (bits.start % WORD_BITS);
+        let tail = !0 >> (WORD_BITS - 1 - (bits.end - 1) % WORD_BITS);
+        if first == last {
+            return self[first] & head & tail != 0;
+        }
+        self[first] & head != 0 ||
+            self[last] & tail != 0 ||
+            self[first + 1..last].iter().any(|&w| w != 0)
+    }
+}
+
+impl Deref for Words {
+    type Target = Vec<u64>;
+
+    #[inline]
+    fn deref(&self) -> &Vec<u64> {
+        &self.0
+    }
+}
+
+impl DerefMut for Words {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Vec<u64> {
+        &mut self.0
+    }
+}
+
 /// A set of leaf chunks. Two levels so draining and clearing scan only the
-/// words that were touched.
+/// words that were touched, and a wide span tests summary words.
 #[derive(Default)]
 pub(super) struct ChunkBits {
-    words: Vec<u64>,
+    words: Words,
     /// Bit `i` is set iff `words[i] != 0`.
-    summary: Vec<u64>,
+    summary: Words,
 }
 
 impl ChunkBits {
@@ -24,8 +63,29 @@ impl ChunkBits {
     }
 
     #[inline]
+    pub(super) fn mark_all(&mut self) {
+        self.words.fill(!0);
+        self.summary.fill(!0);
+        let unused = self.summary.len() * WORD_BITS - self.words.len();
+        if let Some(last) = self.summary.last_mut() {
+            *last = !0 >> unused;
+        }
+    }
+
+    #[inline]
     pub(super) fn is_empty(&self) -> bool {
         self.summary.iter().all(|&s| s == 0)
+    }
+
+    #[inline]
+    pub(super) fn any_in(&self, chunks: Range<usize>) -> bool {
+        let whole_words = chunks.start.div_ceil(WORD_BITS)..chunks.end / WORD_BITS;
+        if whole_words.is_empty() {
+            return self.words.any_in(chunks);
+        }
+        self.words.any_in(chunks.start..whole_words.start * WORD_BITS) ||
+            self.summary.any_in(whole_words.clone()) ||
+            self.words.any_in(whole_words.end * WORD_BITS..chunks.end)
     }
 
     #[inline]
@@ -41,11 +101,13 @@ impl ChunkBits {
         self.take_words(|_, _| {});
     }
 
-    /// Clear the marks, emitting them as sorted, disjoint, maximal ranges.
+    /// Move the marks into `done`, emitting them as sorted, disjoint,
+    /// maximal ranges.
     #[inline]
-    pub(super) fn drain(&mut self, ranges: &mut Vec<NodeRange>) {
+    pub(super) fn drain_into(&mut self, done: &mut ChunkBits, ranges: &mut Vec<NodeRange>) {
         ranges.clear();
         self.take_words(|w, mut word| {
+            done.mark_word(w, word);
             let base = (w * WORD_BITS) as u32;
             while word != 0 {
                 // Each pass takes the lowest range of ones:

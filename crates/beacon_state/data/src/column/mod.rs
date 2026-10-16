@@ -1,7 +1,10 @@
 mod chunk_bits;
+mod chunk_writes;
 mod format;
 mod group;
+mod hashing_writer;
 mod list;
+mod page_format;
 mod pool;
 mod progressive_list;
 mod randao;
@@ -38,8 +41,8 @@ use crate::{
 pub trait ColumnSpec {
     type Val: SszScalar;
     /// This column's COW page. Tunable per column: pointwise-written trees want
-    /// fewer nodes per page (less copied per dirty leaf), densely swept ones
-    /// want more (smaller page tables to diff every roll).
+    /// fewer nodes per page (less copied per dirty leaf), densely written ones
+    /// want more (fewer pages to share and free per fork).
     type Page: PageArray;
     /// The SSZ type's capacity: `N` for `Vector[T, N]`, the limit for
     /// `List[T, N]`. Roots pad to its chunk depth regardless of how much the
@@ -63,19 +66,19 @@ pub trait ColumnSpec {
 pub struct Previous;
 impl ColumnSpec for Previous {
     type Val = u8;
-    type Page = [B256; 32];
+    type Page = [B256; 256];
 }
 
 pub struct Current;
 impl ColumnSpec for Current {
     type Val = u8;
-    type Page = [B256; 32];
+    type Page = [B256; 256];
 }
 
 pub struct Balances;
 impl ColumnSpec for Balances {
     type Val = u64;
-    type Page = [B256; 32];
+    type Page = [B256; 16];
 }
 
 pub type PreviousParticipationGroup = ColumnGroup<Previous>;
