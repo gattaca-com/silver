@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    iter,
+    time::{Duration, Instant},
+};
 
 use fxhash::FxHashMap;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
@@ -191,15 +194,9 @@ impl PendingBlock {
         })
     }
 
-    fn kzg_verify_single(&self, parked: &ParkedSidecar) -> bool {
-        let Ok((buf, _)) = parked.ssz.buffer() else { return false };
-        match &self.bid {
-            None => column_util::verify_data_column_sidecar_kzg_proofs_fulu(buf),
-            Some(bid) => column_util::verify_data_column_sidecar_kzg_proofs_gloas(
-                buf,
-                bid.commitments.as_slice(),
-            ),
-        }
+    fn kzg_verify_single(&self, parked: &ParkedSidecar, scratch: &mut KzgScratch) -> bool {
+        self.kzg_entry(parked)
+            .is_some_and(|entry| column_util::kzg_verify_batch_multi(iter::once(entry), scratch))
     }
 }
 
@@ -332,7 +329,7 @@ impl Pending {
         let mut rejected = Vec::new();
         let mut i = 0;
         while i < block.parked.len() {
-            if block.kzg_verify_single(&block.parked[i]) {
+            if block.kzg_verify_single(&block.parked[i], &mut self.kzg_scratch) {
                 i += 1;
                 continue;
             }

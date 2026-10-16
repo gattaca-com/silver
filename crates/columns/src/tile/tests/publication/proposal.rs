@@ -1,5 +1,6 @@
 use silver_common::column_util::{
-    verify_data_column_sidecar_inclusion_proof, verify_data_column_sidecar_kzg_proofs_fulu,
+    KzgScratch, verify_data_column_sidecar_inclusion_proof,
+    verify_data_column_sidecar_kzg_proofs_fulu,
 };
 
 use super::*;
@@ -49,6 +50,7 @@ fn assert_every_column_published(rig: &mut Rig, root: BlockRoot) {
     let out = rig.drain();
     assert_eq!(out.published_only, !CUSTODY_COLUMNS);
     assert_eq!(out.receipts.len(), CUSTODY_COLUMNS.count_ones() as usize);
+    let mut scratch = KzgScratch::default();
     for receipt in &out.receipts {
         let DataColumnsEvent::Persist { ssz, block_root, column_index, .. } = *receipt else {
             unreachable!()
@@ -56,7 +58,10 @@ fn assert_every_column_published(rig: &mut Rig, root: BlockRoot) {
         assert_eq!(block_root, root);
         assert!(CUSTODY_COLUMNS & (1 << column_index) != 0);
         let sidecar = rig.tile.proposed.producer.read_buffer(ssz).unwrap();
-        assert!(verify_data_column_sidecar_kzg_proofs_fulu(sidecar), "kzg, col {column_index}");
+        assert!(
+            verify_data_column_sidecar_kzg_proofs_fulu(sidecar, &mut scratch),
+            "kzg, col {column_index}"
+        );
         assert!(
             verify_data_column_sidecar_inclusion_proof(sidecar),
             "inclusion, col {column_index}"

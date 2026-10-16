@@ -1,5 +1,7 @@
 //! Utility helpers for data-column construction and verification.
 
+use std::iter;
+
 use blst::{BLST_ERROR, min_pk::PublicKey};
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
@@ -16,6 +18,7 @@ use silver_common::{
         SidecarLayout, SignedBeaconBlockView,
     },
 };
+use silver_crypto_simd::kzg::CellBatchVerifier;
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -181,40 +184,34 @@ pub fn verify_commitments_inclusion_proof(
 /// this function relies on the shape invariants (matching list
 /// lengths, element-size multiples) and skips re-validation.
 /// Empty-list sidecars (N = 0) trivially pass.
-///
-/// Uses the mainnet Ethereum trusted setup statically bundled by
-/// c-kzg's `ethereum_kzg_settings` feature. The settings *object* is
-/// lazily built on first use (~2s of point deserialisation + subgroup
-/// checks) — `warm_kzg_settings` pays that at tile init so no live
-/// sidecar absorbs it. `precompute = 0` — verification doesn't benefit
-/// from the precomputation table (only proof generation does).
 #[timed]
-pub fn verify_data_column_sidecar_kzg_proofs_fulu(sidecar: &[u8]) -> bool {
-    kzg_verify_batch(
-        DataColumnSidecarFuluView::column(sidecar),
-        DataColumnSidecarFuluView::kzg_commitments(sidecar),
-        DataColumnSidecarFuluView::kzg_proofs(sidecar),
-        DataColumnSidecarFuluView::index(sidecar),
-    )
+pub fn verify_data_column_sidecar_kzg_proofs_fulu(
+    sidecar: &[u8],
+    scratch: &mut KzgScratch,
+) -> bool {
+    let entry = KzgBatchEntry {
+        column: DataColumnSidecarFuluView::column(sidecar),
+        commitments: DataColumnSidecarFuluView::kzg_commitments(sidecar),
+        proofs: DataColumnSidecarFuluView::kzg_proofs(sidecar),
+        index: DataColumnSidecarFuluView::index(sidecar),
+    };
+    kzg_verify_batch_multi(iter::once(entry), scratch)
 }
 
-pub fn verify_data_column_sidecar_kzg_proofs_gloas(sidecar: &[u8], commitments: &[u8]) -> bool {
-    kzg_verify_batch(
-        DataColumnSidecarGloasView::column(sidecar),
+pub fn verify_data_column_sidecar_kzg_proofs_gloas(
+    sidecar: &[u8],
+    commitments: &[u8],
+    scratch: &mut KzgScratch,
+) -> bool {
+    let entry = KzgBatchEntry {
+        column: DataColumnSidecarGloasView::column(sidecar),
         commitments,
-        DataColumnSidecarGloasView::kzg_proofs(sidecar),
-        DataColumnSidecarGloasView::index(sidecar),
-    )
+        proofs: DataColumnSidecarGloasView::kzg_proofs(sidecar),
+        index: DataColumnSidecarGloasView::index(sidecar),
+    };
+    kzg_verify_batch_multi(iter::once(entry), scratch)
 }
 
-/// KZG cell-proof batch verify shared by Fulu + Gloas. Every cell shares the
-/// column `index`, so `cell_indices` is that index repeated `N` times. Uses the
-/// statically-bundled mainnet trusted setup (`precompute = 0` — only proof
-/// generation benefits). Empty (N = 0) trivially passes.
-///
-/// Preconditions (caller-verified via `verify_data_column_sidecar{,_gloas}`):
-/// `column`/`commitments`/`proofs` carry the same element count and are clean
-/// multiples of their element sizes — the raw-slice casts rely on it.
 /// Force c-kzg's lazy trusted-setup construction. Without this the first
 /// sidecar verified after boot absorbs the ~2s load inside its own
 /// validation, delaying that block's DA right after sync.
@@ -222,39 +219,9 @@ pub fn warm_kzg_settings() {
     c_kzg::ethereum_kzg_settings(0);
 }
 
-#[timed]
-fn kzg_verify_batch(column: &[u8], commits: &[u8], proofs: &[u8], index: u64) -> bool {
-    let n = column.len() / BYTES_PER_CELL;
-    if n == 0 {
-        return true;
-    }
-
-    let cells: &[c_kzg::Cell] =
-        unsafe { std::slice::from_raw_parts(column.as_ptr() as *const c_kzg::Cell, n) };
-    let commitments: &[c_kzg::Bytes48] =
-        unsafe { std::slice::from_raw_parts(commits.as_ptr() as *const c_kzg::Bytes48, n) };
-    let kzg_proofs: &[c_kzg::Bytes48] =
-        unsafe { std::slice::from_raw_parts(proofs.as_ptr() as *const c_kzg::Bytes48, n) };
-
-    // Stack-allocated indices array to avoid heap allocation on the hot path
-    let mut stack_indices = [0u64; 128];
-    let cell_indices: &[u64] = if n <= 128 {
-        stack_indices[..n].fill(index);
-        &stack_indices[..n]
-    } else {
-        &vec![index; n]
-    };
-
-    let settings = c_kzg::ethereum_kzg_settings(0);
-    matches!(
-        settings.verify_cell_kzg_proof_batch(commitments, cell_indices, cells, kzg_proofs),
-        Ok(true)
-    )
-}
-
-/// KZG inputs of one sidecar for `kzg_verify_batch_multi`. Same
-/// preconditions as `kzg_verify_batch`: slice lengths are caller-verified
-/// clean multiples carrying one commitment/proof per cell.
+/// KZG inputs of one sidecar for `kzg_verify_batch_multi`. Caller-verified
+/// via `verify_data_column_sidecar{,_gloas}`: one commitment and one proof per
+/// cell.
 pub struct KzgBatchEntry<'a> {
     pub column: &'a [u8],
     pub commitments: &'a [u8],
@@ -262,21 +229,22 @@ pub struct KzgBatchEntry<'a> {
     pub index: u64,
 }
 
-/// Staging buffers for `kzg_verify_batch_multi` — cells of distinct sidecars
-/// are not contiguous and the c-kzg FFI wants flat arrays. Capacity is
-/// retained across calls.
+/// The verifier and its staging buffers: cells of distinct sidecars are not
+/// contiguous, and `CellBatchVerifier` takes flat arrays. Capacity is retained
+/// across calls.
 #[derive(Default)]
 pub struct KzgScratch {
-    cells: Vec<u8>,
-    commitments: Vec<u8>,
-    proofs: Vec<u8>,
+    verifier: CellBatchVerifier,
+    cells: Vec<[u8; BYTES_PER_CELL]>,
+    commitments: Vec<[u8; BYTES_PER_KZG_COMMITMENT]>,
+    proofs: Vec<[u8; BYTES_PER_KZG_PROOF]>,
     indices: Vec<u64>,
 }
 
-/// Folds every entry's cells into a single `verify_cell_kzg_proof_batch`
-/// call: one pairing check for the whole batch, and same-block sidecars
-/// (identical commitment sets) amortise the per-commitment scalar work.
-/// An empty batch trivially passes.
+/// Folds every entry's cells into one `verify_cell_kzg_proof_batch`: one
+/// pairing check for the whole batch, and same-block sidecars (identical
+/// commitment sets) amortise the per-commitment scalar work. An empty batch
+/// trivially passes.
 #[timed]
 pub fn kzg_verify_batch_multi<'a>(
     entries: impl Iterator<Item = KzgBatchEntry<'a>>,
@@ -287,31 +255,15 @@ pub fn kzg_verify_batch_multi<'a>(
     scratch.proofs.clear();
     scratch.indices.clear();
     for e in entries {
-        scratch.cells.extend_from_slice(e.column);
-        scratch.commitments.extend_from_slice(e.commitments);
-        scratch.proofs.extend_from_slice(e.proofs);
-        scratch.indices.extend(std::iter::repeat_n(e.index, e.column.len() / BYTES_PER_CELL));
+        let (cells, _) = e.column.as_chunks();
+        let (commitments, _) = e.commitments.as_chunks();
+        let (proofs, _) = e.proofs.as_chunks();
+        scratch.cells.extend_from_slice(cells);
+        scratch.commitments.extend_from_slice(commitments);
+        scratch.proofs.extend_from_slice(proofs);
+        scratch.indices.extend(iter::repeat_n(e.index, cells.len()));
     }
-    let n = scratch.indices.len();
-    if n == 0 {
-        return true;
-    }
-
-    // Casts as in `kzg_verify_batch`: `Cell`/`Bytes48` are `#[repr(C)]` byte
-    // arrays (align 1) and each buffer holds exactly `n` elements.
-    let cells: &[c_kzg::Cell] =
-        unsafe { std::slice::from_raw_parts(scratch.cells.as_ptr() as *const c_kzg::Cell, n) };
-    let commitments: &[c_kzg::Bytes48] = unsafe {
-        std::slice::from_raw_parts(scratch.commitments.as_ptr() as *const c_kzg::Bytes48, n)
-    };
-    let proofs: &[c_kzg::Bytes48] =
-        unsafe { std::slice::from_raw_parts(scratch.proofs.as_ptr() as *const c_kzg::Bytes48, n) };
-
-    let settings = c_kzg::ethereum_kzg_settings(0);
-    matches!(
-        settings.verify_cell_kzg_proof_batch(commitments, &scratch.indices, cells, proofs),
-        Ok(true)
-    )
+    scratch.verifier.verify(&scratch.commitments, &scratch.indices, &scratch.cells, &scratch.proofs)
 }
 
 /// Spec `DOMAIN_BEACON_PROPOSER = bytes4(0x00000000)`.
@@ -639,11 +591,12 @@ mod tests {
 
     #[test]
     fn verify_kzg_proofs_empty_sidecar_trivially_passes() {
+        let mut scratch = KzgScratch::default();
         // N = 0 (no cells / commitments / proofs) → empty batch, KZG
         // verification is vacuously true. Also exercises the
         // static-init of the bundled mainnet trusted setup.
         let buf = synth_sidecar(0, 0, 0, 0);
-        assert!(verify_data_column_sidecar_kzg_proofs_fulu(&buf));
+        assert!(verify_data_column_sidecar_kzg_proofs_fulu(&buf, &mut scratch));
     }
 
     /// Gloas sidecar: index(8), col_off(4), proof_off(4), slot(8),
@@ -692,6 +645,7 @@ mod tests {
     /// pass both the shape check and the shared KZG batch.
     #[test]
     fn gloas_built_sidecar_passes_kzg() {
+        let mut scratch = KzgScratch::default();
         let settings = c_kzg::ethereum_kzg_settings(0);
         let n = 2usize;
         let blob = c_kzg::Blob::new([0u8; 131072]);
@@ -723,19 +677,23 @@ mod tests {
             buf.extend_from_slice(&col_proofs);
 
             assert!(verify_data_column_sidecar_gloas(&buf, &commitments, MAX_BLOBS), "shape j={j}");
-            assert!(verify_data_column_sidecar_kzg_proofs_gloas(&buf, &commitments), "kzg j={j}");
+            assert!(
+                verify_data_column_sidecar_kzg_proofs_gloas(&buf, &commitments, &mut scratch),
+                "kzg j={j}"
+            );
         }
     }
 
     #[test]
     fn verify_kzg_proofs_rejects_zero_cells() {
+        let mut scratch = KzgScratch::default();
         // A column of zero-cells with zero-commitments + zero-proofs
         // is NOT a valid KZG opening — the point-at-infinity
         // commitment (0xc000...) is reserved for "no blob" and zero
         // bytes are not a valid G1 encoding. c-kzg rejects with an
         // error; we map every non-Ok(true) result to false.
         let buf = synth_sidecar(0, 1, 1, 1);
-        assert!(!verify_data_column_sidecar_kzg_proofs_fulu(&buf));
+        assert!(!verify_data_column_sidecar_kzg_proofs_fulu(&buf, &mut scratch));
     }
 
     /// End-to-end: reconstruct sidecars from blobs exactly as the EL-blob path
@@ -743,6 +701,7 @@ mod tests {
     /// the body) and assert they pass all three sidecar verifications.
     #[test]
     fn el_built_sidecars_pass_all_verifications() {
+        let mut scratch = KzgScratch::default();
         use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
 
         let settings = c_kzg::ethereum_kzg_settings(0);
@@ -788,7 +747,7 @@ mod tests {
 
             assert!(verify_data_column_sidecar_fulu(&out, MAX_BLOBS), "shape, col {j}");
             assert_eq!(DataColumnSidecarFuluView::index(&out), j);
-            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
+            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out, &mut scratch), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }
     }
@@ -797,6 +756,7 @@ mod tests {
     /// them, header and inclusion proof off the signed block.
     #[test]
     fn sidecars_written_for_a_signed_block_pass_all_verifications() {
+        let mut scratch = KzgScratch::default();
         use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
 
         let settings = c_kzg::ethereum_kzg_settings(0);
@@ -826,7 +786,7 @@ mod tests {
 
             assert!(verify_data_column_sidecar_fulu(&out, MAX_BLOBS), "shape, col {j}");
             assert_eq!(DataColumnSidecarFuluView::index(&out), j as u64);
-            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "kzg, col {j}");
+            assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out, &mut scratch), "kzg, col {j}");
             assert!(verify_data_column_sidecar_inclusion_proof(&out), "inclusion, col {j}");
         }
     }
@@ -837,6 +797,7 @@ mod tests {
     /// is the only thing standing between that and a recorded column.
     #[test]
     fn zero_blob_sidecar_off_a_blobless_block_is_refused_by_shape_alone() {
+        let mut scratch = KzgScratch::default();
         use silver_common::ssz_hash::kzg_commitments_inclusion_proof;
 
         let block = SynthBlock::fulu(0, &[]);
@@ -855,7 +816,10 @@ mod tests {
 
         // Everything downstream of the shape check waves it through.
         assert!(verify_data_column_sidecar_inclusion_proof(&out), "the proof really does verify");
-        assert!(verify_data_column_sidecar_kzg_proofs_fulu(&out), "the empty batch really passes");
+        assert!(
+            verify_data_column_sidecar_kzg_proofs_fulu(&out, &mut scratch),
+            "the empty batch really passes"
+        );
 
         assert!(!verify_data_column_sidecar_fulu(&out, MAX_BLOBS));
     }

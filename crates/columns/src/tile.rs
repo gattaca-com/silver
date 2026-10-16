@@ -1,4 +1,5 @@
 use std::{
+    iter,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -654,8 +655,8 @@ impl DataColumnsTile {
         for pending in cells.iter_mut().filter_map(Option::take) {
             let Some(handler) = &mut self.cells else { continue };
             let Some(entry) = pending.entry(handler.store()) else { continue };
-            let valid = all_ok ||
-                util::kzg_verify_batch_multi(std::iter::once(entry), &mut self.kzg_scratch);
+            let valid =
+                all_ok || util::kzg_verify_batch_multi(iter::once(entry), &mut self.kzg_scratch);
             handler.resolve_cell(pending, valid, producers);
         }
 
@@ -667,22 +668,15 @@ impl DataColumnsTile {
                 silver_log::error!(stream_id = ?p.stream_id, "batched sidecar inputs unavailable at flush");
                 continue;
             }
-            if all_ok || self.reverify_single(&p) {
+            let valid = all_ok ||
+                batch::kzg_entry(&p, &self.validator).is_some_and(|entry| {
+                    util::kzg_verify_batch_multi(iter::once(entry), &mut self.kzg_scratch)
+                });
+            if valid {
                 self.resolve_validated(p, producers);
             } else {
                 self.resolve_rejected(&p, producers);
             }
-        }
-    }
-
-    fn reverify_single(&self, p: &PendingKzg) -> bool {
-        let Ok((buf, _)) = p.sidecar.buffer() else { return false };
-        if p.is_gloas {
-            self.validator
-                .gloas_commitments(&p.block_root)
-                .is_some_and(|c| util::verify_data_column_sidecar_kzg_proofs_gloas(buf, c))
-        } else {
-            util::verify_data_column_sidecar_kzg_proofs_fulu(buf)
         }
     }
 

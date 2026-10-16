@@ -1,5 +1,6 @@
-//! Times `silver_crypto_simd::kzg` against silver's c-kzg paths on the DA
-//! capture, after checking that both give the same verdicts and cells.
+//! Times silver's KZG paths, which use `silver_crypto_simd::kzg`, against
+//! c-kzg on the DA capture, after checking that both give the same verdicts
+//! and cells.
 //!
 //!   cargo run --release -p silver_e2e --example kzg_simd_vs_ckzg
 //!
@@ -11,21 +12,21 @@
 use std::{
     hint::black_box,
     iter::repeat_n,
+    slice,
     time::{Duration, Instant},
 };
 
+use c_kzg::{Bytes48, Cell, ethereum_kzg_settings};
 use silver_common::{
     column_util::{
         CellScratch, KzgBatchEntry, KzgScratch, cell_bytes, kzg_verify_batch_multi,
         warm_kzg_settings,
     },
-    ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, DataColumnSidecarFuluView,
-    },
+    ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 use silver_crypto_simd::{
     bls::simd_available,
-    kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB, CellBatchVerifier, CellExtender},
+    kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB, CellExtender},
 };
 use silver_e2e::da_capture::ColumnFixtures;
 use silver_metrics::table::{Column, Table};
@@ -46,7 +47,7 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
 }
 
-fn ckzg_verify(sidecars: &[&[u8]], scratch: &mut KzgScratch) -> bool {
+fn silver_verify(sidecars: &[&[u8]], scratch: &mut KzgScratch) -> bool {
     kzg_verify_batch_multi(
         sidecars.iter().map(|s| KzgBatchEntry {
             column: DataColumnSidecarFuluView::column(s),
@@ -58,38 +59,54 @@ fn ckzg_verify(sidecars: &[&[u8]], scratch: &mut KzgScratch) -> bool {
     )
 }
 
-/// A batch in `CellBatchVerifier`'s layout, one entry per cell.
+/// c-kzg's flat staging buffers, as silver gathered them before using
+/// `silver_crypto_simd::kzg`.
 #[derive(Default)]
-struct Gathered {
-    commitments: Vec<[u8; BYTES_PER_KZG_COMMITMENT]>,
-    cell_indices: Vec<u64>,
-    cells: Vec<[u8; BYTES_PER_CELL]>,
-    proofs: Vec<[u8; BYTES_PER_KZG_PROOF]>,
+struct CkzgScratch {
+    cells: Vec<u8>,
+    commitments: Vec<u8>,
+    proofs: Vec<u8>,
+    indices: Vec<u64>,
 }
 
-impl Gathered {
-    fn verify(&mut self, sidecars: &[&[u8]], verifier: &mut CellBatchVerifier) -> bool {
-        self.commitments.clear();
-        self.cell_indices.clear();
+impl CkzgScratch {
+    fn verify(&mut self, sidecars: &[&[u8]]) -> bool {
         self.cells.clear();
+        self.commitments.clear();
         self.proofs.clear();
+        self.indices.clear();
         for s in sidecars {
             let column = DataColumnSidecarFuluView::column(s);
-            let cells = column.chunks_exact(BYTES_PER_CELL);
-            self.cell_indices.extend(repeat_n(DataColumnSidecarFuluView::index(s), cells.len()));
-            self.cells.extend(cells.map(|c| <[u8; BYTES_PER_CELL]>::try_from(c).unwrap()));
-            self.commitments.extend(
-                DataColumnSidecarFuluView::kzg_commitments(s)
-                    .chunks_exact(BYTES_PER_KZG_COMMITMENT)
-                    .map(|c| <[u8; BYTES_PER_KZG_COMMITMENT]>::try_from(c).unwrap()),
-            );
-            self.proofs.extend(
-                DataColumnSidecarFuluView::kzg_proofs(s)
-                    .chunks_exact(BYTES_PER_KZG_PROOF)
-                    .map(|p| <[u8; BYTES_PER_KZG_PROOF]>::try_from(p).unwrap()),
-            );
+            self.cells.extend_from_slice(column);
+            self.commitments.extend_from_slice(DataColumnSidecarFuluView::kzg_commitments(s));
+            self.proofs.extend_from_slice(DataColumnSidecarFuluView::kzg_proofs(s));
+            self.indices.extend(repeat_n(
+                DataColumnSidecarFuluView::index(s),
+                column.len() / BYTES_PER_CELL,
+            ));
         }
-        verifier.verify(&self.commitments, &self.cell_indices, &self.cells, &self.proofs)
+        let n = self.indices.len();
+        if n == 0 {
+            return true;
+        }
+        // SAFETY: `Cell` and `Bytes48` are `#[repr(C)]` byte arrays (align 1),
+        // and each buffer holds exactly `n` of them.
+        let (cells, commitments, proofs) = unsafe {
+            (
+                slice::from_raw_parts(self.cells.as_ptr() as *const Cell, n),
+                slice::from_raw_parts(self.commitments.as_ptr() as *const Bytes48, n),
+                slice::from_raw_parts(self.proofs.as_ptr() as *const Bytes48, n),
+            )
+        };
+        matches!(
+            ethereum_kzg_settings(0).verify_cell_kzg_proof_batch(
+                commitments,
+                &self.indices,
+                cells,
+                proofs
+            ),
+            Ok(true)
+        )
     }
 }
 
@@ -112,7 +129,6 @@ fn main() {
     assert!(simd_available(), "this CPU has no avx512ifma; crypto_simd would not use its kernel");
     let capture = ColumnFixtures::da().load();
     warm_kzg_settings();
-    let mut verifier = CellBatchVerifier::new();
     let mut extender = CellExtender::new();
 
     let (slot, largest) = capture
@@ -132,13 +148,13 @@ fn main() {
     );
 
     let mut scratch = KzgScratch::default();
-    let mut gathered = Gathered::default();
+    let mut ckzg = CkzgScratch::default();
     let mut corrupted = by_arrival[0].to_vec();
     let first_cell = DataColumnSidecarFuluView::column(by_arrival[0]).as_ptr().addr() -
         by_arrival[0].as_ptr().addr();
     corrupted[first_cell + BYTES_PER_CELL - 1] ^= 1;
-    assert!(!ckzg_verify(&[&corrupted], &mut scratch), "c-kzg rejects a corrupted cell");
-    assert!(!gathered.verify(&[&corrupted], &mut verifier), "crypto_simd rejects it");
+    assert!(!ckzg.verify(&[&corrupted]), "c-kzg rejects a corrupted cell");
+    assert!(!silver_verify(&[&corrupted], &mut scratch), "crypto_simd rejects it");
 
     let mut table = Table::new(vec![
         Column::right("columns"),
@@ -149,16 +165,16 @@ fn main() {
     ]);
     for columns in [1usize, 2, 4, 8, 16, 32, 64, 128] {
         let batch = &by_arrival[..columns];
-        assert!(ckzg_verify(batch, &mut scratch), "c-kzg accepts {columns} columns");
-        assert!(gathered.verify(batch, &mut verifier), "crypto_simd accepts {columns} columns");
-        let ckzg = best_of(|| ckzg_verify(batch, &mut scratch));
-        let ours = best_of(|| gathered.verify(batch, &mut verifier));
+        assert!(ckzg.verify(batch), "c-kzg accepts {columns} columns");
+        assert!(silver_verify(batch, &mut scratch), "crypto_simd accepts {columns} columns");
+        let theirs = best_of(|| ckzg.verify(batch));
+        let ours = best_of(|| silver_verify(batch, &mut scratch));
         table.row(vec![
             columns.to_string(),
             (columns * blob_count).to_string(),
-            format!("{:.2}ms", ms(ckzg)),
+            format!("{:.2}ms", ms(theirs)),
             format!("{:.2}ms", ms(ours)),
-            format!("{:.2}x", ckzg.as_secs_f64() / ours.as_secs_f64()),
+            format!("{:.2}x", theirs.as_secs_f64() / ours.as_secs_f64()),
         ]);
     }
     print!("{}", table.render());

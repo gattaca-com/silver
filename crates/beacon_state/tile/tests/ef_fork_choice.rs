@@ -27,6 +27,7 @@ fn fork_choice_dir(fork: &str, handler: &str) -> PathBuf {
 /// (shape + inclusion proof + KZG, from the storage tile) over the columns the
 /// step provides. Available iff non-empty and every column verifies.
 fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig) -> bool {
+    let mut scratch = silver_common::column_util::KzgScratch::default();
     !cols.is_empty() &&
         cols.iter().all(|c| {
             let sc = case_file(dir, c.as_str().unwrap());
@@ -34,7 +35,10 @@ fn columns_available(dir: &Path, cols: &[Value], spec: &SpecConfig) -> bool {
             let max_blobs = spec.blob_params_at(epoch).max_blobs_per_block as usize;
             silver_common::column_util::verify_data_column_sidecar_fulu(&sc, max_blobs) &&
                 silver_common::column_util::verify_data_column_sidecar_inclusion_proof(&sc) &&
-                silver_common::column_util::verify_data_column_sidecar_kzg_proofs_fulu(&sc)
+                silver_common::column_util::verify_data_column_sidecar_kzg_proofs_fulu(
+                    &sc,
+                    &mut scratch,
+                )
         })
 }
 

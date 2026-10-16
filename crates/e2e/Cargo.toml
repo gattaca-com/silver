@@ -88,4 +88,5 @@ workspace = true
 
 [dev-dependencies]
 blst.workspace = true
+c-kzg.workspace = true
 silver_crypto_simd = { workspace = true, features = ["simd"] }

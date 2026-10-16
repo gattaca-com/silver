@@ -29,6 +29,7 @@ secp256k1.workspace = true
 simd-json.workspace = true
 silver_beacon_state_data.workspace = true
 silver_chain_spec.workspace = true
+silver_crypto_simd.workspace = true
 silver_log.workspace = true
 silver_metrics.workspace = true
 silver_ssz.workspace = true
