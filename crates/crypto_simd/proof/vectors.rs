@@ -6,7 +6,7 @@
 //! handwritten model and the extracted function against that recording.
 //! Together, successful executions establish agreement on these batches.
 //! `recorded_matches_blst` checks the recorded results on decided lanes without
-//! requiring IFMA. The G1 recording also contains every scalar blst verdict and
+//! requiring IFMA. Both recordings also contain every scalar blst verdict and
 //! public-wrapper outputs. Lean checks those scalar verdicts against the spec,
 //! including invalid and undecided lanes. Each `write_vectors` regenerates its
 //! group's file; `lean/Test/Differential/{G1,G2}.lean` documents the formats.
@@ -28,7 +28,7 @@ use silver_crypto_simd::bls::{
     constants::P_U64,
     decompress_g2::{self, Batch},
     fp8::LANES,
-    simd_available, uncompress_in_g2_blst,
+    simd_available, uncompress_in_g2, uncompress_in_g2_blst,
 };
 
 const VECTORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proof/decompress_g2_vectors.txt");
@@ -117,57 +117,90 @@ struct Recorded {
     kind: String,
     inputs: [Encoding; LANES],
     output: Output,
+    blst: [Option<[u64; 24]>; LANES],
+}
+
+struct Wrapper {
+    refs: Vec<(usize, usize)>,
+    output: Vec<Option<[u64; 24]>>,
 }
 
 impl Recorded {
-    /// Read the declared number of batches in order and require an `endfile`
-    /// marker. A truncated recording panics instead of checking fewer batches.
-    fn parse_file(text: &str) -> Vec<Recorded> {
-        let mut lines = text
-            .lines()
-            .enumerate()
-            .map(|(i, line)| (i + 1, line.trim()))
-            .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'));
+    fn parse_file(text: &str) -> (Vec<Recorded>, Vec<Wrapper>) {
+        let mut lines =
+            text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'));
         let mut next = |key: &str| -> Vec<String> {
-            let (n, line) =
-                lines.next().unwrap_or_else(|| panic!("{VECTORS}: ends before `{key}`"));
-            let mut words = line.split_whitespace();
-            assert_eq!(words.next(), Some(key), "{VECTORS}:{n}: expected `{key}`");
-            words.map(str::to_owned).collect()
+            let words: Vec<_> =
+                lines.next().expect("truncated G2 fixture").split_whitespace().collect();
+            assert_eq!(words[0], key);
+            words[1..].iter().map(|s| (*s).into()).collect()
         };
-        let hex = |word: &str| u64::from_str_radix(word, 16).expect(word);
-
-        next("seed");
-        let count: usize = next("batches")[0].parse().expect("batch count");
-        assert!(count > 0, "{VECTORS}: no batches");
-        let recorded: Vec<Recorded> = (0..count)
-            .map(|index| {
-                let batch = next("batch");
-                assert_eq!(batch[0], index.to_string(), "batch indices run 0, 1, 2, ...");
-                let inputs = std::array::from_fn(|_| {
-                    let digits = &next("in")[0];
-                    std::array::from_fn(|i| {
-                        u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap()
-                    })
-                });
-                let mut mask = |key| hex(&next(key)[0]) as u8;
-                let (on_curve, valid, undecided) =
-                    (mask("on_curve"), mask("valid"), mask("undecided"));
-                let points = std::array::from_fn(|lane| {
-                    let words = next("pt");
-                    assert_eq!(words[0], lane.to_string());
-                    std::array::from_fn(|i| hex(&words[i + 1]))
-                });
-                next("end");
-                Recorded {
-                    kind: batch[1].clone(),
-                    inputs,
-                    output: Output { on_curve, valid, undecided, points },
-                }
-            })
-            .collect();
-        next("endfile");
-        recorded
+        let hex = |s: &str| u64::from_str_radix(s, 16).unwrap();
+        let point = |words: &[String]| -> [u64; 24] {
+            assert_eq!(words.len(), 24);
+            std::array::from_fn(|i| hex(&words[i]))
+        };
+        let verdict = |words: &[String], lane: usize| -> Option<[u64; 24]> {
+            assert_eq!(words[0], lane.to_string());
+            if words[1] == "none" {
+                assert_eq!(words.len(), 2);
+                None
+            } else {
+                Some(point(&words[1..]))
+            }
+        };
+        assert_eq!(next("seed").len(), 1);
+        let count: usize = next("batches")[0].parse().unwrap();
+        assert!(count > 0);
+        let mut batches = Vec::new();
+        for index in 0..count {
+            let batch = next("batch");
+            assert_eq!(batch.len(), 2);
+            assert_eq!(batch[0], index.to_string());
+            let inputs = std::array::from_fn(|_| {
+                let digits = &next("in")[0];
+                assert_eq!(digits.len(), 192);
+                std::array::from_fn(|i| u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap())
+            });
+            let on_curve = u8::try_from(hex(&next("on_curve")[0])).unwrap();
+            let valid = u8::try_from(hex(&next("valid")[0])).unwrap();
+            let undecided = u8::try_from(hex(&next("undecided")[0])).unwrap();
+            let points = std::array::from_fn(|lane| {
+                let words = next("pt");
+                assert_eq!(words[0], lane.to_string());
+                point(&words[1..])
+            });
+            let blst = std::array::from_fn(|lane| verdict(&next("blst"), lane));
+            assert!(next("end").is_empty());
+            batches.push(Recorded {
+                kind: batch[1].clone(),
+                inputs,
+                output: Output { on_curve, valid, undecided, points },
+                blst,
+            });
+        }
+        let count: usize = next("wrappers")[0].parse().unwrap();
+        assert!(count > 0);
+        let mut wrappers = Vec::new();
+        for index in 0..count {
+            let header = next("wrapper");
+            assert_eq!(header[0], index.to_string());
+            let n: usize = header[2].parse().unwrap();
+            let refs = (0..n)
+                .map(|_| {
+                    let r = next("ref");
+                    let (b, l): (usize, usize) = (r[0].parse().unwrap(), r[1].parse().unwrap());
+                    assert!(b < batches.len() && l < LANES);
+                    (b, l)
+                })
+                .collect();
+            let output = (0..n).map(|lane| verdict(&next("out"), lane)).collect();
+            assert!(next("end").is_empty());
+            wrappers.push(Wrapper { refs, output });
+        }
+        assert!(next("endfile").is_empty());
+        assert!(lines.next().is_none(), "text after endfile");
+        (batches, wrappers)
     }
 }
 
@@ -605,6 +638,31 @@ fn point_words(p: &blst_p2_affine) -> [u64; 24] {
     std::array::from_fn(|i| limbs[i / 6][i % 6])
 }
 
+fn scalar(bytes: &Encoding) -> Option<[u64; 24]> {
+    uncompress_in_g2_blst(bytes).as_ref().map(point_words)
+}
+
+fn sentinel() -> blst_p2_affine {
+    let mut p = blst_p2_affine::default();
+    p.x.fp[0].l = [0xfeed; 6];
+    p.x.fp[1].l = [0xbeef; 6];
+    p.y.fp[0].l = [0xcafe; 6];
+    p.y.fp[1].l = [0xdead; 6];
+    p
+}
+
+fn write_point(out: &mut String, key: &str, lane: usize, p: Option<[u64; 24]>) {
+    write!(out, "{key} {lane}").unwrap();
+    if let Some(words) = p {
+        for w in words {
+            write!(out, " {w:x}").unwrap();
+        }
+    } else {
+        out.push_str(" none");
+    }
+    out.push('\n');
+}
+
 fn generator() -> Encoding {
     compress_g2(unsafe { &*blst_p2_generator() })
 }
@@ -661,7 +719,7 @@ fn replay_vectors() {
         return;
     }
     let text = std::fs::read_to_string(VECTORS).expect(VECTORS);
-    let recorded = Recorded::parse_file(&text);
+    let (recorded, wrappers) = Recorded::parse_file(&text);
     let changed: Vec<String> = recorded
         .iter()
         .enumerate()
@@ -680,15 +738,33 @@ fn replay_vectors() {
         recorded.len(),
         changed.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
     );
+    for (index, wrapper) in wrappers.iter().enumerate() {
+        let inputs: Vec<_> = wrapper.refs.iter().map(|&(b, l)| recorded[b].inputs[l]).collect();
+        let mut out = vec![Some(sentinel()); inputs.len()];
+        uncompress_in_g2(&inputs, &mut out);
+        assert_eq!(
+            out.iter().map(|p| p.as_ref().map(point_words)).collect::<Vec<_>>(),
+            wrapper.output,
+            "G2 wrapper {index}"
+        );
+    }
 }
 
-/// Check recorded outputs against blst on decided lanes; no IFMA is required.
-/// Combined with an executed `replay_vectors` check, this establishes agreement
-/// between the Rust kernel and blst on those lanes.
+/// Check every scalar verdict and decided kernel output against blst; no IFMA
+/// is required. Combined with an executed `replay_vectors` check, this
+/// establishes agreement between the Rust kernel and blst on those lanes.
 #[test]
 fn recorded_matches_blst() {
     let text = std::fs::read_to_string(VECTORS).expect(VECTORS);
-    let disagreements: Vec<String> = Recorded::parse_file(&text)
+    let (recorded, wrappers) = Recorded::parse_file(&text);
+    for batch in &recorded {
+        assert_eq!(batch.blst, batch.inputs.map(|b| scalar(&b)), "{} scalar verdicts", batch.kind);
+    }
+    for wrapper in wrappers {
+        let expected: Vec<_> = wrapper.refs.iter().map(|&(b, l)| recorded[b].blst[l]).collect();
+        assert_eq!(wrapper.output, expected);
+    }
+    let disagreements: Vec<String> = recorded
         .iter()
         .enumerate()
         .filter_map(|(index, batch)| {
@@ -729,15 +805,60 @@ fn write_vectors() {
             writeln!(out, "in {digits}").unwrap();
         }
         output.write(&mut out);
+        for (lane, input) in case.inputs.iter().enumerate() {
+            write_point(&mut out, "blst", lane, scalar(input));
+        }
         writeln!(out, "end").unwrap();
         *counts.entry(&case.kind).or_default() += 1;
+    }
+    let case_index = |name: &str| cases.iter().position(|case| case.kind == name).expect(name);
+    let members = case_index("edge-members");
+    let infinity = case_index("edge-infinity-canonical");
+    let malformed = case_index("edge-infinity-noncanonical");
+    let rejected = case_index("edge-return1-all-rejected");
+    assert!(cases[members].inputs.iter().all(|input| scalar(input).is_some()));
+    assert!(cases[infinity].inputs.iter().all(|input| scalar(input) == Some([0; 24])));
+    assert!(cases[malformed].inputs.iter().all(|input| scalar(input).is_none()));
+    assert!(cases[rejected].inputs.iter().all(|input| scalar(input).is_none()));
+    let lengths = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 15, 16, 17];
+    writeln!(out, "wrappers {}", lengths.len() * 3).unwrap();
+    let mut index = 0;
+    for kind in ["members", "mixed", "rejected"] {
+        for len in lengths {
+            let refs: Vec<_> = (0..len)
+                .map(|i| match kind {
+                    "members" => (members, i % LANES),
+                    "rejected" => (rejected, i % LANES),
+                    _ => match i % 4 {
+                        0 => (members, i % LANES),
+                        1 => (infinity, i % LANES),
+                        2 => (malformed, i % LANES),
+                        _ => (rejected, i % LANES),
+                    },
+                })
+                .collect();
+            let inputs: Vec<_> = refs.iter().map(|&(b, l)| cases[b].inputs[l]).collect();
+            let mut result = vec![Some(sentinel()); len];
+            uncompress_in_g2(&inputs, &mut result);
+            let result: Vec<_> = result.iter().map(|p| p.as_ref().map(point_words)).collect();
+            assert_eq!(result, inputs.iter().map(scalar).collect::<Vec<_>>());
+            writeln!(out, "wrapper {index} {kind} {len}").unwrap();
+            for (b, l) in refs {
+                writeln!(out, "ref {b} {l}").unwrap();
+            }
+            for (lane, p) in result.into_iter().enumerate() {
+                write_point(&mut out, "out", lane, p);
+            }
+            out.push_str("end\n");
+            index += 1;
+        }
     }
     out.push_str("endfile\n");
     std::fs::write(VECTORS, &out).expect(VECTORS);
     for (kind, n) in &counts {
         eprintln!("{n:3} {kind}");
     }
-    eprintln!("{} batches, {} bytes, in {VECTORS}", cases.len(), out.len());
+    eprintln!("{} batches, {index} wrappers, {} bytes, in {VECTORS}", cases.len(), out.len());
 }
 
 mod g1 {

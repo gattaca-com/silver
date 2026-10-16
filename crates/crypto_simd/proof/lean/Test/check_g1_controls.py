@@ -2,6 +2,7 @@
 """Check the differential CLI's value and parsing failure boundaries.
 
 Run after `lake build differential`: python3 Test/check_g1_controls.py.
+Also runs the G2 controls through the existing CI entry point.
 The positive control permits comments, blank lines, and surrounding whitespace.
 Negative controls require rejection of corrupt kernel/spec/wrapper values,
 truncated input, and out-of-range references.
@@ -10,6 +11,7 @@ truncated input, and out-of-range references.
 import argparse
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -64,7 +66,9 @@ def main() -> None:
             print(result.stdout, end="")
             if result.returncode != expected or any(marker not in result.stdout for marker in markers):
                 raise SystemExit(f"{name}: expected exit {expected} and diagnostics {markers!r}")
-    print("all G1 differential controls passed")
+    print("all G1 differential controls passed", flush=True)
+    subprocess.run([sys.executable, "-I", str(lean / "Test/check_g2_controls.py"),
+                    "--binary", str(args.binary.resolve())], check=True)
 
 
 if __name__ == "__main__":
