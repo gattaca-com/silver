@@ -1,5 +1,5 @@
-name = "g1_downstream_smoke"
-defaultTargets = ["Smoke"]
+name = "bls_downstream_smoke"
+defaultTargets = ["Smoke", "G2Smoke"]
 
 [leanOptions]
 autoImplicit = false
@@ -11,3 +11,6 @@ path = "../.."
 
 [[lean_lib]]
 name = "Smoke"
+
+[[lean_lib]]
+name = "G2Smoke"

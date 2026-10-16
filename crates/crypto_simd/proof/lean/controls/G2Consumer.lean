@@ -1,0 +1,30 @@
+import LeanBlsSimd.Refines.UncompressG2
+
+open Aeneas Aeneas.Std Result
+open silver_crypto_simd silver_crypto_simd.bls LeanBlsSimd
+
+example [BlsExternals] (hblst : UncompressG2.BlstMatchesSpec)
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
+      result.val = inputs.val.map UncompressG2.specVerdict :=
+  UncompressG2.uncompress_in_g2_eq_spec_list hblst inputs out hlen
+
+@[reducible] def g2SpecExternals (simd : Bool) (g1 : Array U8 48#usize → Option blst.blst_p1_affine) :
+    BlsExternals := ⟨simd, g1, UncompressG2.specVerdict⟩
+
+example (simd : Bool) (g1 : Array U8 48#usize → Option blst.blst_p1_affine) :
+    @UncompressG2.BlstMatchesSpec (g2SpecExternals simd g1) := fun _ => rfl
+
+example [BlsExternals] (hblst : UncompressG2.BlstMatchesSpec)
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
+      result.val.map (Option.map DecompressG2.ofBlstP2Affine) =
+        inputs.val.map (G2Spec.verdict ∘ ofArray ofU8) :=
+  UncompressG2.uncompress_in_g2_eq_spec_model_list hblst inputs out hlen
+
+example [BlsExternals] (inputs : Slice (Array U8 96#usize))
+    (out : Slice (Option blst.blst_p2_affine)) (hlen : out.val.length ≠ inputs.val.length) :
+    silver_crypto_simd.bls.uncompress_in_g2 inputs out = fail .assertionFailure :=
+  UncompressG2.uncompress_in_g2_length_mismatch inputs out hlen
