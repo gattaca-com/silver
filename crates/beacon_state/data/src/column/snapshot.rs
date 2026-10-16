@@ -96,10 +96,12 @@ impl PageSnapshot {
         &pool.page(id)[slot]
     }
 
-    /// The page holding flat-tree node `n`, and its slot there.
+    /// The page holding flat-tree node `n`, and its slot there. A node this
+    /// format can't place, as a racing reader may ask, resolves to the first
+    /// root slot.
     #[inline]
     fn page_of<C: ColumnSpec>(&self, pool: &PagePool<C::Page>, n: usize) -> (PageId, usize) {
-        let (s, level, pos) = self.format.locate::<C>(n);
+        let (s, level, pos) = self.format.locate::<C>(n).unwrap_or_default();
         let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
         let root = self.roots.get(s).copied().unwrap_or(0);
         (children.fold(root, |id, j| pool.child(id, j)), slot)

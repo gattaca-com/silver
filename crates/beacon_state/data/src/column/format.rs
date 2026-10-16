@@ -113,27 +113,29 @@ impl TreeFormat {
         (0..count).map(move |s| Subtree::of::<C>(self, s))
     }
 
-    /// Flat-tree node `n` as (subtree, level, pos).
-    pub(super) fn locate<C: ColumnSpec>(self, n: usize) -> (usize, u32, usize) {
+    /// Flat-tree node `n` as (subtree, level, pos), or `None` for padding and
+    /// ids past the tree: a racing reader may pair `n` with another format.
+    pub(super) fn locate<C: ColumnSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
         let data_start = self.data_start::<C>();
         match self {
-            TreeFormat::Fixed { .. } => {
+            TreeFormat::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {
                 let level = n.ilog2();
                 (0, level, n - (1 << level))
-            }
+            }),
             TreeFormat::Progressive { .. } if n >= data_start => {
                 let chunk = n - data_start;
-                let s = progressive_segment_of_chunk(chunk) as usize;
-                (s, 2 * s as u32, chunk - PROGRESSIVE_SEGMENT_START[s])
+                (chunk < self.data_capacity()).then(|| {
+                    let s = progressive_segment_of_chunk(chunk) as usize;
+                    (s, 2 * s as u32, chunk - PROGRESSIVE_SEGMENT_START[s])
+                })
             }
             TreeFormat::Progressive { last_seg } => {
-                let k = (1..=last_seg as usize)
-                    .rev()
-                    .find(|&k| C::SEG_OFF[k] <= n)
-                    .expect("segment 0 has no internal nodes");
+                let k = (1..=last_seg as usize).rev().find(|&k| C::SEG_OFF[k] <= n)?;
                 let local = n - C::SEG_OFF[k];
-                let level = local.ilog2();
-                (k, level, local - (1 << level))
+                (1..1 << (2 * k)).contains(&local).then(|| {
+                    let level = local.ilog2();
+                    (k, level, local - (1 << level))
+                })
             }
         }
     }

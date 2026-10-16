@@ -58,7 +58,7 @@ fn check<C: ColumnSpec>(format: TreeFormat) {
     assert_eq!(seen, expected.iter().copied().collect(), "{format:?}: nodes not covered");
 
     for &n in &expected {
-        let (s, level, pos) = format.locate::<C>(n);
+        let (s, level, pos) = format.locate::<C>(n).unwrap();
         let sub = Subtree::of::<C>(format, s);
         let (children, slot) = sub.path_to::<C>(level, pos);
         let mut at = sub.root::<C>();
@@ -95,5 +95,27 @@ fn progressive_pages_partition_every_segment() {
     for last_seg in 0..5 {
         check::<P4>(TreeFormat::Progressive { last_seg });
         check::<P32>(TreeFormat::Progressive { last_seg });
+    }
+}
+
+/// A reader can pair a node id with another fork's format, so `locate` resolves
+/// exactly the flat-tree nodes and refuses padding and ids past the tree.
+fn check_locate_is_total<C: ColumnSpec>(format: TreeFormat) {
+    let nodes: HashSet<_> = flat_nodes::<C>(format).into_iter().collect();
+    let end = nodes.iter().max().unwrap() + 2 * C::PAGE_NODES;
+    for n in 0..end {
+        assert_eq!(format.locate::<C>(n).is_some(), nodes.contains(&n), "{format:?}: node {n}");
+    }
+}
+
+#[test]
+fn locate_refuses_padding_and_ids_past_the_tree() {
+    for h in 0..8 {
+        check_locate_is_total::<P4>(TreeFormat::Fixed { max_elements: 1 << h });
+        check_locate_is_total::<P32>(TreeFormat::Fixed { max_elements: 1 << h });
+    }
+    for last_seg in 0..5 {
+        check_locate_is_total::<P4>(TreeFormat::Progressive { last_seg });
+        check_locate_is_total::<P32>(TreeFormat::Progressive { last_seg });
     }
 }
