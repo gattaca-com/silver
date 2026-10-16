@@ -107,6 +107,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
     pub(super) fn to_snapshot(&mut self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
         let mut snapshot = PageSnapshot::default();
         self.commit(pool, &mut snapshot, None);
+        snapshot.allocated.clear();
         snapshot
     }
 
