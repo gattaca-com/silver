@@ -1,3 +1,5 @@
+use std::slice;
+
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
@@ -156,7 +158,7 @@ pub struct CheckedSignature(Signature);
 impl CheckedSignature {
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
         let mut point = [None];
-        uncompress_in_g2(std::slice::from_ref(bytes), &mut point);
+        uncompress_in_g2(slice::from_ref(bytes), &mut point);
         point[0].map(|p| Self(p.into()))
     }
 

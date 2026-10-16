@@ -3,8 +3,8 @@ mod g2_cases;
 use std::time::{Duration, Instant};
 
 use blst::{
-    blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_hash_to_g1,
-    blst_p1, blst_p1_add_or_double, blst_p1_affine_compress, blst_p1_affine_in_g1,
+    blst_fp, blst_fp_add, blst_fp_mul, blst_fp_sqr, blst_fp_sqrt, blst_fp_sub, blst_fp2,
+    blst_hash_to_g1, blst_p1, blst_p1_add_or_double, blst_p1_affine_compress, blst_p1_affine_in_g1,
     blst_p1_affine_serialize, blst_p1_from_affine, blst_p1_is_inf, blst_p1_mult, blst_p1_to_affine,
     blst_p1_uncompress,
 };
@@ -25,8 +25,14 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect(name))
 }
 
+/// Limbs above p, which no verdict can hold, so a skipped write shows.
+const G2_SENTINEL: blst_p2_affine = {
+    let fp2 = blst_fp2 { fp: [blst_fp { l: [u64::MAX; 6] }; 2] };
+    blst_p2_affine { x: fp2, y: fp2 }
+};
+
 fn uncompress_all(inputs: &[[u8; G2_COMPRESSED_LEN]]) -> Vec<Option<blst_p2_affine>> {
-    let mut out = vec![None; inputs.len()];
+    let mut out = vec![Some(G2_SENTINEL); inputs.len()];
     uncompress_in_g2(inputs, &mut out);
     out
 }
