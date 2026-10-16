@@ -12,6 +12,14 @@ set_option maxHeartbeats 1000000
 
 namespace silver_crypto_simd
 
+/-- [blst::blst_fr]
+    Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 50:0-50:18
+    Name pattern: [blst::blst_fr]
+    Visibility: public -/
+@[rust_type "blst::blst_fr"]
+structure blst.blst_fr where
+  l : Array Std.U64 4#usize
+
 /-- [blst::blst_fp]
     Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 80:0-80:18
     Name pattern: [blst::blst_fp]
@@ -27,6 +35,16 @@ structure blst.blst_fp where
 @[rust_type "blst::blst_fp2"]
 structure blst.blst_fp2 where
   fp : Array blst.blst_fp 2#usize
+
+/-- [blst::blst_p1]
+    Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 429:0-429:18
+    Name pattern: [blst::blst_p1]
+    Visibility: public -/
+@[rust_type "blst::blst_p1"]
+structure blst.blst_p1 where
+  x : blst.blst_fp
+  y : blst.blst_fp
+  z : blst.blst_fp
 
 /-- [blst::blst_p1_affine]
     Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 481:0-481:25
@@ -115,5 +133,63 @@ structure bls.g2x8.G2x8 where
   x : bls.fp2x8.Fp2x8
   y : bls.fp2x8.Fp2x8
   z : bls.fp2x8.Fp2x8
+
+/-- [silver_crypto_simd::kzg::blst_ops::LincombScratch]
+    Source: 'crates/crypto_simd/src/kzg/blst_ops.rs', lines 137:0-142:1
+    Visibility: public -/
+structure kzg.blst_ops.LincombScratch where
+  points : alloc.vec.Vec blst.blst_p1_affine
+  scalars : alloc.vec.Vec (Array Std.U8 32#usize)
+  pippenger : alloc.vec.Vec Std.U64
+
+/-- [silver_crypto_simd::kzg::challenge::Preimage]
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 15:0-17:1
+    Visibility: public -/
+structure kzg.challenge.Preimage where
+  bytes : alloc.vec.Vec Std.U8
+
+/-- [silver_crypto_simd::kzg::cosets::Cosets]
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 18:0-27:1
+    Visibility: public -/
+structure kzg.cosets.Cosets where
+  inverse_roots : alloc.vec.Vec blst.blst_fr
+  inverse_size : blst.blst_fr
+  shift_inverse : alloc.vec.Vec blst.blst_fr
+  shift_pow_cell : alloc.vec.Vec blst.blst_fr
+
+/-- [silver_crypto_simd::kzg::setup::Setup]
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 12:0-19:1
+    Visibility: public -/
+structure kzg.setup.Setup where
+  g1_monomial : alloc.vec.Vec blst.blst_p1_affine
+  g2_s_pow_cell : blst.blst_p2_affine
+  g2_neg_generator : blst.blst_p2_affine
+
+/-- [silver_crypto_simd::kzg::verify::Deduplicated]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 233:0-236:1 -/
+structure kzg.verify.Deduplicated where
+  unique : alloc.vec.Vec (Array Std.U8 48#usize)
+  index_of_cell : alloc.vec.Vec Std.Usize
+
+/-- [silver_crypto_simd::kzg::verify::CellBatchVerifier]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 28:0-45:1
+    Visibility: public -/
+structure kzg.verify.CellBatchVerifier where
+  setup : kzg.setup.Setup
+  cosets : kzg.cosets.Cosets
+  commitments : kzg.verify.Deduplicated
+  decoded : alloc.vec.Vec (Option blst.blst_p1_affine)
+  commitment_points : alloc.vec.Vec blst.blst_p1_affine
+  proof_points : alloc.vec.Vec blst.blst_p1_affine
+  evaluations : alloc.vec.Vec blst.blst_fr
+  preimage : kzg.challenge.Preimage
+  r_powers : alloc.vec.Vec blst.blst_fr
+  scalars : alloc.vec.Vec blst.blst_fr
+  columns : alloc.vec.Vec blst.blst_fr
+  column_used : alloc.vec.Vec Bool
+  column : alloc.vec.Vec blst.blst_fr
+  coefficients : alloc.vec.Vec blst.blst_fr
+  interpolation : alloc.vec.Vec blst.blst_fr
+  lincomb : kzg.blst_ops.LincombScratch
 
 end silver_crypto_simd

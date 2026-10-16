@@ -1,8 +1,27 @@
-# Maintaining the G1 and G2 proofs
+# Maintaining the shared BLS and KZG proof
 
-This guide explains how to update the proof after changing `crates/crypto_simd/src/bls`, starting with a `replay_vectors` failure. Rust filenames below are relative to that directory unless stated otherwise. [The parent README](../README.md) describes the correctness claim, its assumptions, and the checks that connect the proof to Rust.
+One extraction and one Lake project cover BLS decoding and KZG cell batch verification. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. `CellExtender` is excluded. Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
 
-## Read the failure first
+## Common reproduction and extraction
+
+```sh
+lake exe cache get
+lake build
+AENEAS_DIR=/path/to/aeneas ./extract.sh --check
+python3 -I controls/extraction-check.py
+```
+
+Run one Lean job at a time. A cold build also compiles uncached Aeneas and specification modules. The default build checks all imported BLS and KZG theorems and the generated BLS wrappers/G2 kernel, KZG constructor, verifier and `Default`, allowing only `propext`, `Classical.choice` and `Quot.sound`. The theorem count is printed by the guard; imported declarations are checked through their dependencies.
+
+`extract.sh` checks tool pins and starts from the three BLS roots and `crate::kzg::verify`. Individual blst operation wrappers remain opaque. `prepare-extraction.py` scopes BLS definitions over `BlsExternals` and KZG definitions over its child `KzgExternals`; a KZG call inherits the same BLS observations. BLS-only callers need only the three-field parent. The script also quotes exactly six `full` identifiers, supplies structural `Array.make` length witnesses at BLS and KZG sites, and hoists exactly 64 G1 setup rows without changing terms, order or outer type. All adaptations run before `--check`, which compares both complete generated files after masking only numeric source spans. `COMPRESSED_LEN` is the shared generated pure constant.
+
+After changing any import, rebuild its artifacts before running controls. The parent README lists the control loop, downstream build, differential runner and Rust checks. `controls/extraction-check.py` uses deterministic extractor fixtures to test the drift boundary; the real-tool `--check` is a separate required check.
+
+## BLS decoding maintenance
+
+The following guide starts with a `replay_vectors` failure after changing `crates/crypto_simd/src/bls`. Rust filenames in this section are relative to that directory unless stated otherwise.
+
+### Read the failure first
 
 Resolve IFMA availability or vector-file errors before investigating output differences.
 
@@ -23,11 +42,11 @@ The recordings make the kernel and scalar verdicts agree, so a routing change al
 
 Keep the original recording until you understand the difference. `write_vectors` checks the new kernel's acceptance and accepted points against blst before replacing the file; `recorded_matches_blst` checks the recorded results. Kernel/blst comparisons skip undecided lanes. Both groups record the scalar result on every lane, and the Lean specification/blst check covers all of them. Regenerating the vectors can make `replay_vectors` pass while the Lean model or generated code still disagrees. Run the Lean differential check against the new recording as well.
 
-## When the change in behaviour is intended
+### When the change in behaviour is intended
 
-Set up the [toolchain and cache](../README.md#building-and-checking-the-proof) and [`AENEAS_DIR`](../README.md#regenerating-the-extraction) as described in the parent README. Run Cargo commands from the silver repository root; run Lake commands and `extract.sh` from this directory. Keep the original failure output so a reviewer can compare the old and new behaviour.
+Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) and [`AENEAS_DIR`](../README.md#reproducing-the-extraction) as described in the parent README. Run Cargo commands from the silver repository root; run Lake commands and `extract.sh` from this directory. Keep the original failure output so a reviewer can compare the old and new behaviour.
 
-1. Regenerate the extraction with `AENEAS_DIR=/path/to/aeneas ./extract.sh`. It replaces `LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`, and prints how they changed, with the line numbers of Aeneas's `Source:` locations masked. The extraction includes both public wrappers and their kernels. `extract.sh` inserts `variable [bls.BlsExternals]` and quotes exactly six `full` identifiers after Aeneas runs, asserting both match counts. These deterministic adaptations are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`. If the Rust now calls an item that Aeneas does not translate, such as a new intrinsic, add it to the externals (see below).
+1. Regenerate the extraction with `AENEAS_DIR=/path/to/aeneas ./extract.sh`. It replaces `LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`, and prints how they changed, with the line numbers of Aeneas's `Source:` locations masked. The shared extraction includes both public wrappers, their kernels and the KZG verifier. The common preparation steps above are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`. If the Rust now calls an item that Aeneas does not translate, such as a new intrinsic, add it to the externals (see below).
 2. Regenerate the vectors on a host with AVX-512 IFMA:
 
    ```sh
@@ -43,7 +62,7 @@ Set up the [toolchain and cache](../README.md#building-and-checking-the-proof) a
 8. From this folder, `AENEAS_DIR=/path/to/aeneas ./extract.sh --check` must report no drift.
 9. Update `../README.md`: the sha256 and git blob of each changed file, and any counts that changed. Changes to `mod.rs` must preserve or update the corresponding wrapper model, refinement and public theorem.
 
-## Mapping Rust changes to Lean
+### Mapping Rust changes to Lean
 
 | Rust file | Model | Refinement | Proofs that read the model |
 |---|---|---|---|
@@ -60,9 +79,9 @@ Set up the [toolchain and cache](../README.md#building-and-checking-the-proof) a
 
 Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are relative to `LeanBlsSimd/`. `Refines/Basic.lean` contains conversions between Aeneas's values and the model's values, plus lemmas for evaluating Aeneas's primitives. `Refines/Loop.lean` equates Aeneas's loops with folds: `loop_range` for a `for` over a range, `loop_countdown` for a `while` that counts down. Changes to either wrapper, `Membership` or `G2_COMPRESSED_LEN` in `mod.rs` follow the extraction and refinement process above. The public wrappers' length checks are proved in `Refines/WrapperLengths.lean`.
 
-`extract.sh` specifies the three entry points to extract and the functions to keep opaque. Aeneas leaves calls to untranslated items; Lean then needs definitions for them. Add function definitions to `Extracted/FunsExternal.lean` and type definitions to `Extracted/TypesExternal.lean`. A new intrinsic needs a definition in `Model/Intrinsics.lean` and an external that returns `ok` of that definition. Their agreement with the actual intrinsic is trusted, so check its semantics against the Intel SDM and Rust's `core::arch`, including arithmetic, lane order, mask bit order and shifts of 64 or more.
+`extract.sh` specifies the BLS and KZG roots to extract and the functions to keep opaque. Aeneas leaves calls to untranslated items; Lean then needs definitions for them. Add function definitions to `Extracted/FunsExternal.lean` and type definitions to `Extracted/TypesExternal.lean`. A new intrinsic needs a definition in `Model/Intrinsics.lean` and an external that returns `ok` of that definition. Their agreement with the actual intrinsic is trusted, so check its semantics against the Intel SDM and Rust's `core::arch`, including arithmetic, lane order, mask bit order and shifts of 64 or more.
 
-## Working in Lean
+### Working in Lean
 
 G1 uses `Spec/G1Curve.lean` for the elementary finite point-count bound and Scott equivalence, `Spec/G1Encoding.lean` for KZG validation, and `Proofs/G1Finite.lean` for finite encoding and square-root selection. `Spec/G1.lean` imports Scott's criterion and the KZG acceptance and layout bridges. `Proofs/G1.lean` imports decided-lane formula and kernel correctness. `Refines/UncompressG1.lean` composes those with the wrapper refinement. For G2, `Spec/CubicHasse.lean` proves the character-sum bound for E′, derives the Hasse bounds and concludes Scott completeness. `Refines/Complete.lean` supplies that proof to the conditional extracted correctness theorem. `Spec/G2Encoding.lean` defines the affine verdict and proves the unit-z conversion bridge and infinity verdict; `Proofs/UncompressG2.lean` bridges decided kernel lanes to that verdict. `Refines/UncompressG2.lean` composes these with the complete wrapper refinement and names the G2 `BlstMatchesSpec` premise.
 
@@ -91,17 +110,71 @@ Proof-writing pitfalls:
 - `get_elem_tactic` can time out in large contexts; give index bounds explicitly.
 - `(x.c0 : ZMod p)` keeps the type `Fp`. State helpers over `ZMod` binders and apply them with `exact`.
 
-## Controls and axioms
+### Controls and axioms
 
-`acceptedAxioms` remains empty: the complete G1 and G2 proof closures use only `propext`, `Classical.choice` and `Quot.sound`.
+`acceptedAxioms` remains empty: the complete BLS and KZG proof closures use only `propext`, `Classical.choice` and `Quot.sound`.
 
 - `python3 Test/check_g1_controls.py`, after `lake build differential`, checks both differential runners' value comparisons, accepted formatting and parser failures.
 - In a control, close the mutated proof with `ring1` or `module`, never `ring`. `ring` can leave a goal open without throwing, so `fail_if_success` may treat the tactic as successful and reject the control. `ring1` throws when it cannot close the goal. `fail_if_success` accepts any failure, so after writing or changing a control, remove the wrapper once and check that the error is the one the control names.
 - The guard rejects dependencies on axioms other than `propext`, `Classical.choice` and `Quot.sound`. This includes the axioms introduced by `native_decide` and `bv_decide`. Extending `acceptedAxioms` in `LeanBlsSimd/Axioms.lean` changes the proof's trust assumptions; it requires a documented justification and a corresponding update to the parent README. Use `#print axioms <theorem>` to inspect one theorem or `controls/AxiomLog.lean` for the library's theorems.
-- Aeneas's library prints five `declaration uses 'sorry'` warnings while it builds. A `sorry` adds the axiom `sorryAx`, so the guard also shows that all three generated entry points and every theorem avoid them.
+- Aeneas's library may print `declaration uses 'sorry'` warnings while it builds. A `sorry` adds the axiom `sorryAx`, so the guard also shows that the checked generated entry points and every imported theorem avoid them.
 
-## Adding a batch
+### Adding a batch
 
 For G2, if your change needs a case the file lacks, add it to `Cases` in `../vectors.rs` with an `Expect`, and regenerate. Every batch drawn from the seeded generator depends on all draws before it, so add batches that use the generator at the end; a batch built only from fixed values can go anywhere.
 
 For G1, add cases to `g1::cases` in `../vectors.rs`. For both groups, record the scalar blst result even when the kernel leaves a lane undecided. Wrapper cases refer to recorded batch/lane inputs and must include the complete expected optional output. Regenerate with the ignored `write_vectors` tests, then run the combined Lean differential command and the Rust replay checks.
+
+## KZG verifier maintenance
+
+Start with `LeanBlsSimd.Kzg.Statements`: `verify_eq_spec` uses the explicit
+`embeddedSetup`, while `verify_eq_upstream` additionally assumes the runtime
+loader returns it. Both take `BlstCorrect e` and the inherited G1
+`UncompressG1.BlstMatchesSpec`. Preserve these assumptions, the slice-byte bounds,
+successful construction, specification verdict and next-state invariant. The
+input theorem includes malformed or rejected batches and repeated calls.
+`Default` delegates to `new`; `CellExtender` has no correctness theorem here.
+
+The decoder boundary is `Kzg/Decoder.lean`.
+`g1DecoderCorrect_of_blstMatchesSpec` derives the generated batch-decoder contract
+from the BLS list theorem via equality of the KZG/BLS optional affine verdicts.
+Do not replace this theorem with an external slice-decoder assumption.
+`BlstCorrect.g2_decode` concerns only the two embedded G2 constants;
+`g2_decode_of_blstMatchesSpec` derives it from the full BLS G2 scalar contract
+when available. `Kzg/SpecExternals.lean` witnesses joint consistency of the KZG
+operation laws and both full scalar contracts.
+
+| Rust area under `src/kzg/` | Lean area under `LeanBlsSimd/Kzg/` |
+|---|---|
+| `verify.rs`, point/cell decoding, validation and challenge | `Refines/Verify.lean`, the other `Refines/` modules and `Statements.lean` |
+| `setup.rs`, `trusted_setup.rs`, `cosets.rs` | `Setup.lean`, `SetupPoints.lean`, `SetupArithmetic.lean`, `Refines/Setup.lean` and `Refines/Cosets.lean` |
+| IFFT, aggregation and interpolation | `Model.lean`, `InterpolationModel.lean`, polynomial modules, `InterpolationIdentity.lean`, `ModelSpec.lean` and the corresponding `Refines/` modules |
+| `blst_ops.rs` | `Externals.lean`, `Representation.lean`, `SpecExternals.lean` and the shared `Extracted/FunsExternal.lean` bindings |
+
+Regenerate through `extract.sh`, repair affected refinements, and rebuild the
+shared library before running controls. For changed mathematical code, check both
+the exact coefficient-array result and its interpretation: trailing zero
+coefficients and fixed array sizes are part of the refinement. Jacobian point
+results are compared by `G1Rep`, not by equality of their coordinate triples.
+Changes to setup constants require the kernel-checked point certificates and the
+connection to the pinned spec's embedded setup; the reference-loader hypothesis
+cannot stand in for those proofs.
+
+The top-level `controls/Kzg*.lean` files cover the concrete spec instance,
+representations, setup, mathematical mutations, each external law and scoped
+axiom lists. Run them through the common `controls/*.lean` loop. Their symbolic
+pairing control avoids attempting to kernel-evaluate the spec's opaque Miller
+loops. The retained generic `G1Bridge.lean` transport theorem remains available
+to independent extractions; the shared verifier uses the direct decoder bridge.
+
+After the Lean checks and extraction controls, run from the repository root:
+
+```sh
+make -C crates/crypto_simd
+SILVER_REQUIRE_IFMA=1 cargo test --locked -p silver_crypto_simd --all-features
+```
+
+Read the Rust test output to confirm the KZG specification-vector and c-kzg
+reference comparisons ran, and that BLS kernel replay did not skip. Finite tests
+provide evidence at the extraction and external boundaries; they do not discharge
+the universal blst laws.

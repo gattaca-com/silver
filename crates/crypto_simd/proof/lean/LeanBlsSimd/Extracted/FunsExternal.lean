@@ -4,11 +4,28 @@ import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 
-/-- Total external observations, supplied by the caller of the generated BLS APIs. -/
+/-- External observations supplied to the generated BLS APIs. -/
 class silver_crypto_simd.bls.BlsExternals where
   simdAvailable : Bool
   uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
   uncompressG2 : Array Std.U8 96#usize → Option blst.blst_p2_affine
+
+class silver_crypto_simd.kzg.KzgExternals extends BlsExternals where
+  frFromBytes : Array U8 32#usize → Result (Option blst.blst_fr)
+  frFromU64 : U64 → Result blst.blst_fr
+  frAdd : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
+  frSub : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
+  frMul : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
+  frInverse : blst.blst_fr → Result blst.blst_fr
+  hashToFr : Slice U8 → Result blst.blst_fr
+  g1ToAffine : blst.blst_p1 → Result blst.blst_p1_affine
+  g1Add : blst.blst_p1 → blst.blst_p1 → Result blst.blst_p1
+  g1Neg : blst.blst_p1 → Result blst.blst_p1
+  g2Neg : blst.blst_p2_affine → Result blst.blst_p2_affine
+  g1Lincomb : Slice blst.blst_p1_affine → Slice blst.blst_fr → kzg.blst_ops.LincombScratch →
+    Result (blst.blst_p1 × kzg.blst_ops.LincombScratch)
+  pairingCheck : blst.blst_p1_affine → blst.blst_p2_affine →
+    blst.blst_p1_affine → blst.blst_p2_affine → Result Bool
 
 def silver_crypto_simd.bls.simd_available [BlsExternals] : Result Bool :=
   ok BlsExternals.simdAvailable
@@ -157,3 +174,48 @@ def blst.blst_p2_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p2_a
 def silver_crypto_simd.bls.fp8.lanes (v : core.core_arch.x86.__m512i) : Result (Array Std.U64 8#usize) :=
   -- A `transmute`: element `l` of the array is lane `l` of `v`.
   ok ⟨v.toList.map fun x => ⟨x.toBitVec⟩, by simp⟩
+
+namespace silver_crypto_simd
+
+def kzg.blst_ops.fr_from_bytes [kzg.KzgExternals] := kzg.KzgExternals.frFromBytes
+def kzg.blst_ops.fr_from_u64 [kzg.KzgExternals] := kzg.KzgExternals.frFromU64
+def kzg.blst_ops.fr_add [kzg.KzgExternals] := kzg.KzgExternals.frAdd
+def kzg.blst_ops.fr_sub [kzg.KzgExternals] := kzg.KzgExternals.frSub
+def kzg.blst_ops.fr_mul [kzg.KzgExternals] := kzg.KzgExternals.frMul
+def kzg.blst_ops.fr_inverse [kzg.KzgExternals] := kzg.KzgExternals.frInverse
+def kzg.blst_ops.hash_to_fr [kzg.KzgExternals] := kzg.KzgExternals.hashToFr
+def kzg.blst_ops.g1_to_affine [kzg.KzgExternals] := kzg.KzgExternals.g1ToAffine
+def kzg.blst_ops.g1_add [kzg.KzgExternals] := kzg.KzgExternals.g1Add
+def kzg.blst_ops.g1_neg [kzg.KzgExternals] := kzg.KzgExternals.g1Neg
+def kzg.blst_ops.g2_neg [kzg.KzgExternals] := kzg.KzgExternals.g2Neg
+def kzg.blst_ops.g1_lincomb [kzg.KzgExternals] := kzg.KzgExternals.g1Lincomb
+def kzg.blst_ops.pairing_check [kzg.KzgExternals] := kzg.KzgExternals.pairingCheck
+
+def U32.Insts.CoreIterRangeStep.backward_checked (a : Std.U32) (n : Usize) :
+    Result (Option Std.U32) :=
+  ok (if n.val ≤ a.val then some ⟨BitVec.ofNat 32 (a.val - n.val)⟩ else none)
+
+def U32.Insts.CoreIterRangeStep.forward_checked (a : Std.U32) (n : Usize) :
+    Result (Option Std.U32) :=
+  ok (if a.val + n.val < 2^32 then some ⟨BitVec.ofNat 32 (a.val + n.val)⟩ else none)
+
+def U32.Insts.CoreIterRangeStep.steps_between (a b : Std.U32) :
+    Result (Usize × Option Usize) :=
+  ok (if a.val ≤ b.val then
+    (⟨BitVec.ofNat _ (b.val - a.val)⟩, some ⟨BitVec.ofNat _ (b.val - a.val)⟩)
+    else (0#usize, none))
+
+def core.option.Option.Insts.CoreCloneClone.clone {T : Type} (inst : core.clone.Clone T)
+    (x : Option T) : Result (Option T) :=
+  match x with
+  | none => ok none
+  | some a => inst.clone a >>= fun b => ok (some b)
+
+def alloc.vec.Vec.Insts.CoreDefaultDefault.default (T : Type) : Result (alloc.vec.Vec T) :=
+  ok (alloc.vec.Vec.new T)
+
+def blst.blst_fr.Insts.CoreCloneClone.clone (x : blst.blst_fr) : Result blst.blst_fr := ok x
+def blst.blst_p1_affine.Insts.CoreCloneClone.clone (x : blst.blst_p1_affine) :
+    Result blst.blst_p1_affine := ok x
+
+end silver_crypto_simd

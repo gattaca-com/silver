@@ -16,6 +16,8 @@ noncomputable section
 
 namespace silver_crypto_simd
 
+section BlsScope
+
 variable [bls.BlsExternals]
 
 /-- Trait implementation: [core::array::{core::marker::Copy for [T; N]}]
@@ -25,6 +27,44 @@ variable [bls.BlsExternals]
 def Array.Insts.CoreMarkerCopy {T : Type} (N : Std.Usize) (markerCopyInst :
   core.marker.Copy T) : core.marker.Copy (Array T N) := {
   cloneInst := core.clone.CloneArray N markerCopyInst.cloneInst
+}
+
+/-- Trait implementation: [core::iter::range::{core::iter::range::Step for u32}]
+    Source: '/rustc/library/core/src/iter/range.rs', lines 265:12-265:37
+    Name pattern: [core::iter::range::Step<u32>] -/
+@[reducible, rust_trait_impl "core::iter::range::Step<u32>"]
+def U32.Insts.CoreIterRangeStep : core.iter.range.Step Std.U32 := {
+  cloneInst := core.clone.CloneU32
+  partialOrdInst := core.cmp.PartialOrdU32
+  steps_between := U32.Insts.CoreIterRangeStep.steps_between
+  forward_checked := U32.Insts.CoreIterRangeStep.forward_checked
+  backward_checked := U32.Insts.CoreIterRangeStep.backward_checked
+}
+
+/-- Trait implementation: [core::option::{core::clone::Clone for core::option::Option<T>}]
+    Source: '/rustc/library/core/src/option.rs', lines 2254:0-2258:40
+    Name pattern: [core::clone::Clone<core::option::Option<@T>>] -/
+@[reducible, rust_trait_impl "core::clone::Clone<core::option::Option<@T>>"]
+def core.option.Option.Insts.CoreCloneClone {T : Type} (cloneCloneInst :
+  core.clone.Clone T) : core.clone.Clone (Option T) := {
+  clone := core.option.Option.Insts.CoreCloneClone.clone cloneCloneInst
+}
+
+/-- Trait implementation: [blst::{core::clone::Clone for blst::blst_fr}]
+    Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 49:31-49:36
+    Name pattern: [core::clone::Clone<blst::blst_fr>] -/
+@[reducible, rust_trait_impl "core::clone::Clone<blst::blst_fr>"]
+def blst.blst_fr.Insts.CoreCloneClone : core.clone.Clone blst.blst_fr := {
+  clone := blst.blst_fr.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [blst::{core::clone::Clone for blst::blst_p1_affine}]
+    Source: '/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/blst-0.3.16/src/bindings.rs', lines 480:31-480:36
+    Name pattern: [core::clone::Clone<blst::blst_p1_affine>] -/
+@[reducible, rust_trait_impl "core::clone::Clone<blst::blst_p1_affine>"]
+def blst.blst_p1_affine.Insts.CoreCloneClone : core.clone.Clone
+  blst.blst_p1_affine := {
+  clone := blst.blst_p1_affine.Insts.CoreCloneClone.clone
 }
 
 /-- [silver_crypto_simd::bls::constants::LIMBS]
@@ -54,7 +94,7 @@ def bls.constants.P : Array Std.U64 8#usize :=
     4222124650637995#u64, 4480601151241119#u64, 1883421074697215#u64,
     329812468902415#u64, 2080788367864709#u64, 486514101631693#u64,
     539007656565323#u64, 106513#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::P_U64]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 18:0-25:2
@@ -64,7 +104,7 @@ def bls.constants.P_U64 : Array Std.U64 6#usize :=
   Array.make 6#usize [
     13402431016077863595#u64, 2210141511517208575#u64, 7435674573564081700#u64,
     7239337960414712511#u64, 5412103778470702295#u64, 1873798617647539866#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::P_INV52]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 27:0-27:41
@@ -81,7 +121,7 @@ def bls.constants.R_MOD_P : Array Std.U64 8#usize :=
     1768077660895663#u64, 1784948830651471#u64, 2451090568736637#u64,
     1041162398848034#u64, 2928153646378469#u64, 4493615705178672#u64,
     3948273840835109#u64, 85134#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::R2_MOD_P]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 41:0-50:2
@@ -92,7 +132,7 @@ def bls.constants.R2_MOD_P : Array Std.U64 8#usize :=
     2915856712052561#u64, 1037645438923170#u64, 673319354135025#u64,
     2960808992987395#u64, 923633960125201#u64, 2689787822445045#u64,
     571047918203494#u64, 34630#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::TWO_POW_384_MOD_P]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 53:0-62:2
@@ -103,14 +143,14 @@ def bls.constants.TWO_POW_384_MOD_P : Array Std.U64 8#usize :=
     2533274790592509#u64, 206986285164384#u64, 1063608837207040#u64,
     1535287407248757#u64, 3790902826070098#u64, 124972712685254#u64,
     4156130345653084#u64, 89957#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::ONE_PLAIN]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 63:0-63:61
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.constants.ONE_PLAIN : Array Std.U64 8#usize :=
-  Array.make 8#usize [ 1#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64 ]
+  Array.make 8#usize [ 1#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64 ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::FOUR_MONT]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 65:0-74:2
@@ -121,7 +161,7 @@ def bls.constants.FOUR_MONT : Array Std.U64 8#usize :=
     3413135946409659#u64, 2705191123623517#u64, 4154099050854901#u64,
     3175212188684891#u64, 966649854549253#u64, 3004121633708122#u64,
     665273511532982#u64, 21000#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::BETA_MONT]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 77:0-86:2
@@ -132,7 +172,7 @@ def bls.constants.BETA_MONT : Array Std.U64 8#usize :=
     2887619656701512#u64, 3506825232770873#u64, 3194117024243938#u64,
     3831735519717732#u64, 116464425319080#u64, 948437682199678#u64,
     2304207272264489#u64, 95745#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::HALF_P_MINUS_1]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 88:0-97:2
@@ -143,7 +183,7 @@ def bls.constants.HALF_P_MINUS_1 : Array Std.U64 8#usize :=
     4362862139004245#u64, 4492100389305807#u64, 3193510351033855#u64,
     2416706048136455#u64, 3292193997617602#u64, 2495056864501094#u64,
     2521303641967909#u64, 53256#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::P_MINUS_3_OVER_4_WINDOWS]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 99:0-104:2
@@ -160,14 +200,14 @@ def bls.constants.P_MINUS_3_OVER_4_WINDOWS : Array Std.U8 95#usize :=
     3#u8, 11#u8, 14#u8, 2#u8, 13#u8, 0#u8, 9#u8, 13#u8, 14#u8, 9#u8, 14#u8,
     6#u8, 12#u8, 2#u8, 9#u8, 6#u8, 10#u8, 9#u8, 15#u8, 15#u8, 5#u8, 14#u8,
     8#u8, 10#u8, 7#u8, 4#u8, 4#u8, 0#u8, 8#u8, 6#u8
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::Z_BITS]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 107:0-107:54
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.constants.Z_BITS : Array Std.U32 6#usize :=
-  Array.make 6#usize [ 63#u32, 62#u32, 60#u32, 57#u32, 48#u32, 16#u32 ]
+  Array.make 6#usize [ 63#u32, 62#u32, 60#u32, 57#u32, 48#u32, 16#u32 ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::PSI_X_MONT]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 110:0-119:2
@@ -178,7 +218,7 @@ def bls.constants.PSI_X_MONT : Array Std.U64 8#usize :=
     433572666959180#u64, 811172912181225#u64, 3761786518283360#u64,
     39485822292855#u64, 963829703832841#u64, 451939658376161#u64,
     1209873829163780#u64, 74367#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::PSI_Y_MONT]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 122:0-143:2
@@ -190,13 +230,13 @@ def bls.constants.PSI_Y_MONT : Array (Array Std.U64 8#usize) 2#usize :=
       2746195508814177#u64, 4247174788402931#u64, 2614053771973606#u64,
       2822133295248135#u64, 3183804511882439#u64, 2327436260034179#u64,
       1111437060016571#u64, 37245#u64
-      ],
+      ] (by rfl),
     Array.make 8#usize [
       1475929141823818#u64, 233426362838188#u64, 3772966930094105#u64,
       2011278801024775#u64, 3400583483352765#u64, 2662677468968009#u64,
       3931170223919247#u64, 69267#u64
-      ]
-    ]
+      ] (by rfl)
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::HALF_MONT]
     Source: 'crates/crypto_simd/src/bls/constants.rs', lines 145:0-154:2
@@ -207,7 +247,7 @@ def bls.constants.HALF_MONT : Array Std.U64 8#usize :=
     2995101155766829#u64, 3132774990946295#u64, 4419055635402174#u64,
     685487433875224#u64, 252671193436341#u64, 2490064903405183#u64,
     4495440562385464#u64, 95823#u64
-    ]
+    ] (by rfl)
 
 /-- [silver_crypto_simd::bls::fp8::unpack52]: loop body 0:
     Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 126:4-134:5
@@ -1861,8 +1901,8 @@ def bls.decompress_g2.point
   := do
   ok
     {
-      x := { fp := (Array.make 2#usize [ { l := x0 }, { l := x1 } ]) },
-      y := { fp := (Array.make 2#usize [ { l := y0 }, { l := y1 } ]) }
+      x := { fp := (Array.make 2#usize [ { l := x0 }, { l := x1 } ] (by rfl)) },
+      y := { fp := (Array.make 2#usize [ { l := y0 }, { l := y1 } ] (by rfl)) }
     }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_zero_mask]:
@@ -2312,6 +2352,11 @@ def bls.decompress_g2.decompress
         bls.decompress_g2.decompress_loop
           { start := 0#usize, «end» := bls.fp8.LANES } a x0 x1 y0 y1
       ok { points := a1, on_curve := i1, valid := i7, undecided := i4 }
+
+/-- [silver_crypto_simd::bls::COMPRESSED_LEN]
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 49:0-49:37
+    Visibility: public -/
+@[global_simps, irreducible] def bls.COMPRESSED_LEN : Std.Usize := 48#usize
 
 /-- [silver_crypto_simd::bls::LANES]
     Source: 'crates/crypto_simd/src/bls/mod.rs', lines 51:0-51:23 -/
@@ -2787,5 +2832,2409 @@ def bls.uncompress_in_g2
   massert (i = i1)
   let simd ← bls.simd_available
   bls.uncompress_in_g2_loop0 inputs out simd 0#usize
+
+end BlsScope
+
+section KzgScope
+
+variable [kzg.KzgExternals]
+
+/-- [silver_crypto_simd::kzg::blst_ops::{silver_crypto_simd::kzg::blst_ops::LincombScratch}::new]:
+    Source: 'crates/crypto_simd/src/kzg/blst_ops.rs', lines 145:4-147:5
+    Visibility: public -/
+def kzg.blst_ops.LincombScratch.new : Result kzg.blst_ops.LincombScratch := do
+  ok
+    {
+      points := (alloc.vec.Vec.new blst.blst_p1_affine),
+      scalars := (alloc.vec.Vec.new (Array Std.U8 32#usize)),
+      pippenger := (alloc.vec.Vec.new Std.U64)
+    }
+
+/-- [silver_crypto_simd::kzg::challenge::DOMAIN]
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 12:0-12:46 -/
+@[global_simps, irreducible]
+def kzg.challenge.DOMAIN : Array Std.U8 16#usize :=
+  Array.make 16#usize [
+    82#u8, 67#u8, 75#u8, 90#u8, 71#u8, 67#u8, 66#u8, 65#u8, 84#u8, 67#u8,
+    72#u8, 95#u8, 95#u8, 86#u8, 49#u8, 95#u8
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::new]:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 20:4-22:5
+    Visibility: public -/
+def kzg.challenge.Preimage.new : Result kzg.challenge.Preimage := do
+  ok { bytes := (alloc.vec.Vec.new Std.U8) }
+
+/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_CELL]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 29:0-29:46
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.FIELD_ELEMENTS_PER_CELL : Std.Usize := 64#usize
+
+/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 28:0-28:48
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.FIELD_ELEMENTS_PER_BLOB : Std.Usize := 4096#usize
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 58:8-61:9 -/
+@[rust_loop_body]
+def kzg.challenge.Preimage.push_u64_loop.body
+  (value : Std.U64) (self : kzg.challenge.Preimage) (shift : Std.I32) :
+  Result (ControlFlow (kzg.challenge.Preimage × Std.I32)
+    kzg.challenge.Preimage)
+  := do
+  if shift > 0#i32
+  then
+    let shift1 ← shift - 8#i32
+    let i ← value >>> shift1
+    let i1 ← lift (UScalar.cast .U8 i)
+    let v ← alloc.vec.Vec.push self.bytes i1
+    ok (cont ({ bytes := v }, shift1))
+  else ok (done self)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 58:8-61:9 -/
+@[rust_loop]
+def kzg.challenge.Preimage.push_u64_loop
+  (self : kzg.challenge.Preimage) (value : Std.U64) (shift : Std.I32) :
+  Result kzg.challenge.Preimage
+  := do
+  loop
+    (fun (self1, shift1) => kzg.challenge.Preimage.push_u64_loop.body value
+      self1 shift1)
+    (self, shift)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 56:4-62:5 -/
+@[reducible]
+def kzg.challenge.Preimage.push_u64
+  (self : kzg.challenge.Preimage) (value : Std.U64) :
+  Result kzg.challenge.Preimage
+  := do
+  kzg.challenge.Preimage.push_u64_loop self value 64#i32
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 41:8-44:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.challenge.Preimage.challenge_loop0.body
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (self : kzg.challenge.Preimage) (i : Std.Usize) :
+  Result (ControlFlow (kzg.challenge.Preimage × Std.Usize)
+    kzg.challenge.Preimage)
+  := do
+  let i1 := Slice.len unique_commitments
+  if i < i1
+  then
+    let a ← Slice.index_usize unique_commitments i
+    let s ← lift (Array.to_slice a)
+    let v ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 self.bytes s
+    let i2 ← i + 1#usize
+    ok (cont ({ bytes := v }, i2))
+  else ok (done self)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 41:8-44:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.challenge.Preimage.challenge_loop0
+  (self : kzg.challenge.Preimage)
+  (unique_commitments : Slice (Array Std.U8 48#usize)) (i : Std.Usize) :
+  Result kzg.challenge.Preimage
+  := do
+  loop
+    (fun (self1, i1) => kzg.challenge.Preimage.challenge_loop0.body
+      unique_commitments self1 i1)
+    (self, i)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 46:8-52:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.challenge.Preimage.challenge_loop1.body
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) (self : kzg.challenge.Preimage)
+  (k : Std.Usize) :
+  Result (ControlFlow (kzg.challenge.Preimage × Std.Usize)
+    kzg.challenge.Preimage)
+  := do
+  let i := Slice.len cell_indices
+  if k < i
+  then
+    let i1 ← Slice.index_usize commitment_of_cell k
+    let i2 ← lift (UScalar.cast .U64 i1)
+    let self1 ← kzg.challenge.Preimage.push_u64 self i2
+    let i3 ← Slice.index_usize cell_indices k
+    let self2 ← kzg.challenge.Preimage.push_u64 self1 i3
+    let a ← Slice.index_usize cells k
+    let s ← lift (Array.to_slice a)
+    let v ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 self2.bytes s
+    let a1 ← Slice.index_usize proofs k
+    let s1 ← lift (Array.to_slice a1)
+    let v1 ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 v s1
+    let k1 ← k + 1#usize
+    ok (cont ({ bytes := v1 }, k1))
+  else ok (done self)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 46:8-52:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.challenge.Preimage.challenge_loop1
+  (self : kzg.challenge.Preimage) (commitment_of_cell : Slice Std.Usize)
+  (cell_indices : Slice Std.U64) (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) (k : Std.Usize) :
+  Result kzg.challenge.Preimage
+  := do
+  loop
+    (fun (self1, k1) => kzg.challenge.Preimage.challenge_loop1.body
+      commitment_of_cell cell_indices cells proofs self1 k1)
+    (self, k)
+
+/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 26:4-54:5
+    Visibility: public -/
+def kzg.challenge.Preimage.challenge
+  (self : kzg.challenge.Preimage)
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) :
+  Result (blst.blst_fr × kzg.challenge.Preimage)
+  := do
+  let v ← alloc.vec.Vec.resize core.clone.CloneU8 self.bytes 0#usize 0#u8
+  let s ← lift (Array.to_slice kzg.challenge.DOMAIN)
+  let v1 ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 v s
+  let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
+  let self1 ← kzg.challenge.Preimage.push_u64 { bytes := v1 } i
+  let i1 ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_CELL)
+  let self2 ← kzg.challenge.Preimage.push_u64 self1 i1
+  let i2 := Slice.len unique_commitments
+  let i3 ← lift (UScalar.cast .U64 i2)
+  let self3 ← kzg.challenge.Preimage.push_u64 self2 i3
+  let i4 := Slice.len cell_indices
+  let i5 ← lift (UScalar.cast .U64 i4)
+  let self4 ← kzg.challenge.Preimage.push_u64 self3 i5
+  let self5 ←
+    kzg.challenge.Preimage.challenge_loop0 self4 unique_commitments 0#usize
+  let self6 ←
+    kzg.challenge.Preimage.challenge_loop1 self5 commitment_of_cell
+      cell_indices cells proofs 0#usize
+  let s1 := alloc.vec.Vec.deref self6.bytes
+  let bf ← kzg.blst_ops.hash_to_fr s1
+  ok (bf, self6)
+
+/-- [silver_crypto_simd::kzg::cosets::LOG_CELL]
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 13:0-13:24 -/
+@[global_simps, irreducible] def kzg.cosets.LOG_CELL : Std.U32 := 6#u32
+
+/-- [silver_crypto_simd::kzg::cosets::LOG_EXT_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 14:0-14:29 -/
+@[global_simps, irreducible] def kzg.cosets.LOG_EXT_BLOB : Std.U32 := 13#u32
+
+/-- [silver_crypto_simd::kzg::CELLS_PER_EXT_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 30:0-30:92
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.CELLS_PER_EXT_BLOB : Result Std.Usize := do
+  let i ← 2#usize * kzg.FIELD_ELEMENTS_PER_BLOB
+  i / kzg.FIELD_ELEMENTS_PER_CELL
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.reverse_bits_loop.body
+  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
+  Result (ControlFlow (Std.Usize × Std.Usize × Std.U32) Std.Usize)
+  := do
+  if bit < bits
+  then
+    let i ← reversed <<< 1#i32
+    let i1 ← lift (rest &&& 1#usize)
+    let reversed1 ← lift (i ||| i1)
+    let rest1 ← rest >>> 1#i32
+    let bit1 ← bit + 1#u32
+    ok (cont (rest1, reversed1, bit1))
+  else ok (done reversed)
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.reverse_bits_loop
+  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
+  Result Std.Usize
+  := do
+  loop
+    (fun (rest1, reversed1, bit1) => kzg.domain.reverse_bits_loop.body bits
+      rest1 reversed1 bit1)
+    (rest, reversed, bit)
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 57:0-67:1
+    Visibility: public -/
+@[reducible]
+def kzg.domain.reverse_bits
+  (index : Std.Usize) (bits : Std.U32) : Result Std.Usize := do
+  kzg.domain.reverse_bits_loop bits index 0#usize 0#u32
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.inverse_roots_loop.body
+  (roots : Slice blst.blst_fr) (n : Std.Usize)
+  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec blst.blst_fr) × Std.Usize)
+    (alloc.vec.Vec blst.blst_fr))
+  := do
+  if i < n
+  then
+    let i1 ← n - i
+    let bf ← Slice.index_usize roots i1
+    let inverse1 ← alloc.vec.Vec.push inverse bf
+    let i2 ← i + 1#usize
+    ok (cont (inverse1, i2))
+  else ok (done inverse)
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.inverse_roots_loop
+  (roots : Slice blst.blst_fr) (n : Std.Usize)
+  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (inverse1, i1) => kzg.domain.inverse_roots_loop.body roots n inverse1
+      i1)
+    (inverse, i)
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 44:0-54:1
+    Visibility: public -/
+def kzg.domain.inverse_roots
+  (roots : Slice blst.blst_fr) : Result (alloc.vec.Vec blst.blst_fr) := do
+  let n := Slice.len roots
+  let inverse := alloc.vec.Vec.with_capacity blst.blst_fr n
+  let bf ← Slice.index_usize roots 0#usize
+  let inverse1 ← alloc.vec.Vec.push inverse bf
+  kzg.domain.inverse_roots_loop roots n inverse1 1#usize
+
+/-- [silver_crypto_simd::kzg::domain::R_MINUS_ONE]
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 10:0-11:97 -/
+@[global_simps, irreducible]
+def kzg.domain.R_MINUS_ONE : Array Std.U64 4#usize :=
+  Array.make 4#usize [
+    18446744069414584320#u64, 6034159408538082302#u64, 3691218898639771653#u64,
+    8353516859464449352#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::domain::PRIMITIVE_ROOT_OF_UNITY]
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 8:0-8:39 -/
+@[global_simps, irreducible]
+def kzg.domain.PRIMITIVE_ROOT_OF_UNITY : Std.U64 := 7#u64
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+@[rust_loop_body]
+def kzg.domain.primitive_root_loop.body
+  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
+  (bit : Std.U32) :
+  Result (ControlFlow (blst.blst_fr × Std.U32) blst.blst_fr)
+  := do
+  if bit > log_order
+  then
+    let bit1 ← bit - 1#u32
+    let root1 ← kzg.blst_ops.fr_mul root root
+    let i ← bit1 / 64#u32
+    let i1 ← lift (UScalar.cast .Usize i)
+    let i2 ← Array.index_usize kzg.domain.R_MINUS_ONE i1
+    let i3 ← bit1 % 64#u32
+    let i4 ← i2 >>> i3
+    let i5 ← lift (i4 &&& 1#u64)
+    if i5 = 1#u64
+    then let root2 ← kzg.blst_ops.fr_mul root1 base
+         ok (cont (root2, bit1))
+    else ok (cont (root1, bit1))
+  else ok (done root)
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+@[rust_loop]
+def kzg.domain.primitive_root_loop
+  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
+  (bit : Std.U32) :
+  Result blst.blst_fr
+  := do
+  loop
+    (fun (root1, bit1) => kzg.domain.primitive_root_loop.body log_order base
+      root1 bit1)
+    (root, bit)
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 15:0-27:1 -/
+def kzg.domain.primitive_root (log_order : Std.U32) : Result blst.blst_fr := do
+  let base ← kzg.blst_ops.fr_from_u64 kzg.domain.PRIMITIVE_ROOT_OF_UNITY
+  let root ← kzg.blst_ops.fr_from_u64 1#u64
+  kzg.domain.primitive_root_loop log_order base root 256#u32
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.roots_of_unity_loop.body
+  (root : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × blst.blst_fr) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done roots)
+  | some _ =>
+    let roots1 ← alloc.vec.Vec.push roots power
+    let power1 ← kzg.blst_ops.fr_mul power root
+    ok (cont (iter1, roots1, power1))
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.roots_of_unity_loop
+  (iter : core.ops.range.Range Std.Usize) (root : blst.blst_fr)
+  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, roots1, power1) => kzg.domain.roots_of_unity_loop.body root
+      iter1 roots1 power1)
+    (iter, roots, power)
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 30:0-40:1
+    Visibility: public -/
+def kzg.domain.roots_of_unity
+  (log_order : Std.U32) : Result (alloc.vec.Vec blst.blst_fr) := do
+  let order ← 1#usize <<< log_order
+  let root ← kzg.domain.primitive_root log_order
+  let roots := alloc.vec.Vec.with_capacity blst.blst_fr order
+  let power ← kzg.blst_ops.fr_from_u64 1#u64
+  kzg.domain.roots_of_unity_loop { start := 0#usize, «end» := order } root
+    roots power
+
+/-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 38:12-40:13
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.cosets.Cosets.new_loop0_loop0.body
+  (iter : core.ops.range.Range Std.U32) (power : blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.U32) × blst.blst_fr)
+    blst.blst_fr)
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next U32.Insts.CoreIterRangeStep iter
+  match o with
+  | none => ok (done power)
+  | some _ =>
+    let power1 ← kzg.blst_ops.fr_mul power power
+    ok (cont (iter1, power1))
+
+/-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 38:12-40:13
+    Visibility: public -/
+@[rust_loop]
+def kzg.cosets.Cosets.new_loop0_loop0
+  (iter : core.ops.range.Range Std.U32) (power : blst.blst_fr) :
+  Result blst.blst_fr
+  := do
+  loop
+    (fun (iter1, power1) => kzg.cosets.Cosets.new_loop0_loop0.body iter1
+      power1)
+    (iter, power)
+
+/-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 34:8-42:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.cosets.Cosets.new_loop0.body
+  (ext_roots : alloc.vec.Vec blst.blst_fr)
+  (iter : core.ops.range.Range Std.Usize)
+  (shift_inverse : alloc.vec.Vec blst.blst_fr)
+  (shift_pow_cell : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × (alloc.vec.Vec blst.blst_fr)) ((alloc.vec.Vec
+    blst.blst_fr) × (alloc.vec.Vec blst.blst_fr)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (shift_inverse, shift_pow_cell))
+  | some k =>
+    let i ← kzg.FIELD_ELEMENTS_PER_CELL * k
+    let i1 ← kzg.domain.reverse_bits i kzg.cosets.LOG_EXT_BLOB
+    let shift ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        ext_roots i1
+    let bf ← kzg.blst_ops.fr_inverse shift
+    let shift_inverse1 ← alloc.vec.Vec.push shift_inverse bf
+    let power ←
+      kzg.cosets.Cosets.new_loop0_loop0
+        { start := 0#u32, «end» := kzg.cosets.LOG_CELL } shift
+    let shift_pow_cell1 ← alloc.vec.Vec.push shift_pow_cell power
+    ok (cont (iter1, shift_inverse1, shift_pow_cell1))
+
+/-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 34:8-42:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.cosets.Cosets.new_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (ext_roots : alloc.vec.Vec blst.blst_fr)
+  (shift_inverse : alloc.vec.Vec blst.blst_fr)
+  (shift_pow_cell : alloc.vec.Vec blst.blst_fr) :
+  Result ((alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec blst.blst_fr))
+  := do
+  loop
+    (fun (iter1, shift_inverse1, shift_pow_cell1) =>
+      kzg.cosets.Cosets.new_loop0.body ext_roots iter1 shift_inverse1
+      shift_pow_cell1)
+    (iter, shift_inverse, shift_pow_cell)
+
+/-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]:
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 30:4-49:5
+    Visibility: public -/
+def kzg.cosets.Cosets.new : Result kzg.cosets.Cosets := do
+  let ext_roots ← kzg.domain.roots_of_unity kzg.cosets.LOG_EXT_BLOB
+  let i ← kzg.CELLS_PER_EXT_BLOB
+  let shift_inverse := alloc.vec.Vec.with_capacity blst.blst_fr i
+  let shift_pow_cell := alloc.vec.Vec.with_capacity blst.blst_fr i
+  let (shift_inverse1, shift_pow_cell1) ←
+    kzg.cosets.Cosets.new_loop0 { start := 0#usize, «end» := i } ext_roots
+      shift_inverse shift_pow_cell
+  let v ← kzg.domain.roots_of_unity kzg.cosets.LOG_CELL
+  let s := alloc.vec.Vec.deref v
+  let v1 ← kzg.domain.inverse_roots s
+  let i1 ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_CELL)
+  let bf ← kzg.blst_ops.fr_from_u64 i1
+  let bf1 ← kzg.blst_ops.fr_inverse bf
+  ok
+    {
+      inverse_roots := v1,
+      inverse_size := bf1,
+      shift_inverse := shift_inverse1,
+      shift_pow_cell := shift_pow_cell1
+    }
+
+/-- [silver_crypto_simd::kzg::fft::transform]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
+@[rust_loop_body]
+def kzg.fft.transform_loop.body
+  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
+    blst.blst_fr)) (Slice blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some i =>
+    let i1 ← half + i
+    let bf ← Slice.index_usize out i1
+    let i2 ← i * roots_stride
+    let bf1 ← Slice.index_usize roots i2
+    let odd ← kzg.blst_ops.fr_mul bf bf1
+    let bf2 ← Slice.index_usize out i
+    let bf3 ← kzg.blst_ops.fr_sub bf2 odd
+    let out1 ← Slice.update out i1 bf3
+    let bf4 ← Slice.index_usize out1 i
+    let bf5 ← kzg.blst_ops.fr_add bf4 odd
+    let s ← Slice.update out1 i bf5
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::kzg::fft::transform]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
+@[rust_loop]
+def kzg.fft.transform_loop
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
+  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize) :
+  Result (Slice blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, out1) => kzg.fft.transform_loop.body roots roots_stride half
+      iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::kzg::fft::transform]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 34:0-55:1 -/
+def kzg.fft.transform
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr) (start : Std.Usize)
+  (stride : Std.Usize) (roots : Slice blst.blst_fr) (roots_stride : Std.Usize)
+  :
+  Result (Slice blst.blst_fr)
+  := do
+  let n := Slice.len out
+  if n = 1#usize
+  then let bf ← Slice.index_usize input start
+       Slice.update out 0#usize bf
+  else
+    let half ← n / 2#usize
+    let (s, index_mut_back) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeToUsizeSlice blst.blst_fr) out
+        { «end» := half }
+    let i ← 2#usize * stride
+    let i1 ← 2#usize * roots_stride
+    let s1 ← kzg.fft.transform s input start i roots i1
+    let out1 := index_mut_back s1
+    let (s2, index_mut_back1) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeFromUsizeSlice blst.blst_fr) out1
+        { start := half }
+    let i2 ← start + stride
+    let s3 ← kzg.fft.transform s2 input i2 i roots i1
+    let out2 := index_mut_back1 s3
+    kzg.fft.transform_loop { start := 0#usize, «end» := half } out2 roots
+      roots_stride half
+partial_fixpoint
+
+/-- [silver_crypto_simd::kzg::fft::fft]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 13:0-18:1
+    Visibility: public -/
+def kzg.fft.fft
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
+  (roots : Slice blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  let n := Slice.len out
+  massert (n > 0#usize)
+  let i ← n - 1#usize
+  let i1 ← lift (n &&& i)
+  massert (i1 = 0#usize)
+  let i2 := Slice.len input
+  massert (i2 = n)
+  let i3 := Slice.len roots
+  let i4 ← i3 % n
+  massert (i4 = 0#usize)
+  let i5 := Slice.len roots
+  let i6 ← i5 / n
+  kzg.fft.transform out input 0#usize 1#usize roots i6
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.fft.inverse_fft_loop.body
+  (inverse_n : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (out : Slice blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
+    blst.blst_fr)) (Slice blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some i =>
+    let bf ← Slice.index_usize out i
+    let bf1 ← kzg.blst_ops.fr_mul bf inverse_n
+    let s ← Slice.update out i bf1
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.fft.inverse_fft_loop
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
+  (inverse_n : blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, out1) => kzg.fft.inverse_fft_loop.body inverse_n iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 22:0-32:1
+    Visibility: public -/
+def kzg.fft.inverse_fft
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
+  (inverse_roots : Slice blst.blst_fr) (inverse_n : blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  let out1 ← kzg.fft.fft out input inverse_roots
+  let i := Slice.len out1
+  kzg.fft.inverse_fft_loop { start := 0#usize, «end» := i } out1 inverse_n
+
+/-- [silver_crypto_simd::kzg::BYTES_PER_FIELD_ELEMENT]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 27:0-27:46
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
+
+/-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_64]
+    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 398:0-405:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.trusted_setup.G2_MONOMIAL_64 : Array Std.U8 96#usize :=
+  Array.make 96#usize [
+    146#u8, 220#u8, 197#u8, 161#u8, 200#u8, 195#u8, 225#u8, 178#u8, 139#u8,
+    21#u8, 36#u8, 227#u8, 221#u8, 109#u8, 190#u8, 205#u8, 99#u8, 1#u8, 124#u8,
+    146#u8, 1#u8, 218#u8, 157#u8, 190#u8, 7#u8, 127#u8, 27#u8, 130#u8, 173#u8,
+    192#u8, 140#u8, 80#u8, 22#u8, 159#u8, 86#u8, 252#u8, 123#u8, 90#u8, 59#u8,
+    40#u8, 236#u8, 107#u8, 137#u8, 37#u8, 77#u8, 227#u8, 226#u8, 253#u8, 18#u8,
+    131#u8, 138#u8, 118#u8, 16#u8, 83#u8, 67#u8, 120#u8, 131#u8, 195#u8,
+    224#u8, 27#u8, 166#u8, 22#u8, 103#u8, 12#u8, 234#u8, 132#u8, 55#u8, 84#u8,
+    84#u8, 142#u8, 248#u8, 75#u8, 204#u8, 57#u8, 125#u8, 226#u8, 54#u8, 154#u8,
+    220#u8, 202#u8, 42#u8, 181#u8, 76#u8, 215#u8, 60#u8, 85#u8, 220#u8, 104#u8,
+    216#u8, 122#u8, 236#u8, 63#u8, 194#u8, 254#u8, 79#u8, 16#u8
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_0]
+    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 390:0-397:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.trusted_setup.G2_MONOMIAL_0 : Array Std.U8 96#usize :=
+  Array.make 96#usize [
+    147#u8, 224#u8, 43#u8, 96#u8, 82#u8, 113#u8, 159#u8, 96#u8, 125#u8, 172#u8,
+    211#u8, 160#u8, 136#u8, 39#u8, 79#u8, 101#u8, 89#u8, 107#u8, 208#u8,
+    208#u8, 153#u8, 32#u8, 182#u8, 26#u8, 181#u8, 218#u8, 97#u8, 187#u8,
+    220#u8, 127#u8, 80#u8, 73#u8, 51#u8, 76#u8, 241#u8, 18#u8, 19#u8, 148#u8,
+    93#u8, 87#u8, 229#u8, 172#u8, 125#u8, 5#u8, 93#u8, 4#u8, 43#u8, 126#u8,
+    2#u8, 74#u8, 162#u8, 178#u8, 240#u8, 143#u8, 10#u8, 145#u8, 38#u8, 8#u8,
+    5#u8, 39#u8, 45#u8, 197#u8, 16#u8, 81#u8, 198#u8, 228#u8, 122#u8, 212#u8,
+    250#u8, 64#u8, 59#u8, 2#u8, 180#u8, 81#u8, 11#u8, 100#u8, 122#u8, 227#u8,
+    209#u8, 119#u8, 11#u8, 172#u8, 3#u8, 38#u8, 168#u8, 5#u8, 187#u8, 239#u8,
+    212#u8, 128#u8, 86#u8, 200#u8, 193#u8, 33#u8, 189#u8, 184#u8
+    ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_0 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      151#u8, 241#u8, 211#u8, 167#u8, 49#u8, 151#u8, 215#u8, 148#u8, 38#u8,
+      149#u8, 99#u8, 140#u8, 79#u8, 169#u8, 172#u8, 15#u8, 195#u8, 104#u8,
+      140#u8, 79#u8, 151#u8, 116#u8, 185#u8, 5#u8, 161#u8, 78#u8, 58#u8, 63#u8,
+      23#u8, 27#u8, 172#u8, 88#u8, 108#u8, 85#u8, 232#u8, 63#u8, 249#u8,
+      122#u8, 26#u8, 239#u8, 251#u8, 58#u8, 240#u8, 10#u8, 219#u8, 34#u8,
+      198#u8, 187#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_1 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      173#u8, 62#u8, 181#u8, 1#u8, 33#u8, 19#u8, 154#u8, 163#u8, 77#u8, 177#u8,
+      213#u8, 69#u8, 9#u8, 58#u8, 201#u8, 55#u8, 74#u8, 183#u8, 188#u8, 162#u8,
+      192#u8, 243#u8, 191#u8, 40#u8, 226#u8, 124#u8, 141#u8, 205#u8, 143#u8,
+      199#u8, 203#u8, 66#u8, 210#u8, 89#u8, 38#u8, 252#u8, 12#u8, 151#u8,
+      179#u8, 54#u8, 233#u8, 240#u8, 251#u8, 53#u8, 229#u8, 160#u8, 76#u8,
+      129#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_2 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      128#u8, 41#u8, 200#u8, 206#u8, 13#u8, 45#u8, 206#u8, 118#u8, 26#u8,
+      127#u8, 41#u8, 194#u8, 223#u8, 34#u8, 144#u8, 133#u8, 12#u8, 133#u8,
+      189#u8, 250#u8, 236#u8, 41#u8, 85#u8, 98#u8, 109#u8, 122#u8, 204#u8,
+      136#u8, 100#u8, 174#u8, 176#u8, 31#u8, 225#u8, 108#u8, 158#u8, 21#u8,
+      104#u8, 99#u8, 220#u8, 99#u8, 182#u8, 194#u8, 37#u8, 83#u8, 145#u8,
+      14#u8, 39#u8, 193#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_3 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      177#u8, 56#u8, 108#u8, 153#u8, 93#u8, 49#u8, 1#u8, 209#u8, 6#u8, 57#u8,
+      228#u8, 155#u8, 158#u8, 93#u8, 57#u8, 185#u8, 162#u8, 128#u8, 220#u8,
+      240#u8, 241#u8, 53#u8, 194#u8, 230#u8, 198#u8, 146#u8, 139#u8, 179#u8,
+      171#u8, 131#u8, 9#u8, 169#u8, 218#u8, 113#u8, 120#u8, 243#u8, 57#u8,
+      37#u8, 118#u8, 140#u8, 50#u8, 79#u8, 17#u8, 195#u8, 118#u8, 44#u8,
+      253#u8, 213#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_4 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      149#u8, 150#u8, 217#u8, 41#u8, 97#u8, 14#u8, 109#u8, 46#u8, 211#u8,
+      80#u8, 43#u8, 27#u8, 176#u8, 241#u8, 234#u8, 1#u8, 15#u8, 107#u8, 102#u8,
+      5#u8, 201#u8, 93#u8, 72#u8, 89#u8, 245#u8, 229#u8, 62#u8, 9#u8, 250#u8,
+      104#u8, 220#u8, 113#u8, 223#u8, 213#u8, 135#u8, 73#u8, 5#u8, 68#u8,
+      123#u8, 94#u8, 198#u8, 205#u8, 21#u8, 106#u8, 118#u8, 214#u8, 182#u8,
+      232#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_5 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      133#u8, 30#u8, 60#u8, 61#u8, 75#u8, 91#u8, 124#u8, 219#u8, 186#u8, 37#u8,
+      215#u8, 42#u8, 191#u8, 152#u8, 18#u8, 207#u8, 61#u8, 124#u8, 90#u8,
+      157#u8, 189#u8, 236#u8, 66#u8, 182#u8, 99#u8, 94#u8, 42#u8, 221#u8,
+      112#u8, 108#u8, 190#u8, 234#u8, 24#u8, 249#u8, 133#u8, 175#u8, 229#u8,
+      36#u8, 116#u8, 89#u8, 246#u8, 201#u8, 8#u8, 98#u8, 3#u8, 34#u8, 244#u8,
+      52#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_6 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      177#u8, 15#u8, 76#u8, 248#u8, 236#u8, 110#u8, 2#u8, 73#u8, 27#u8, 190#u8,
+      109#u8, 144#u8, 132#u8, 216#u8, 140#u8, 22#u8, 48#u8, 111#u8, 218#u8,
+      243#u8, 153#u8, 254#u8, 243#u8, 205#u8, 20#u8, 83#u8, 245#u8, 138#u8,
+      79#u8, 118#u8, 51#u8, 248#u8, 13#u8, 198#u8, 11#u8, 16#u8, 15#u8, 146#u8,
+      54#u8, 195#u8, 16#u8, 62#u8, 175#u8, 114#u8, 116#u8, 104#u8, 55#u8, 79#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_7 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      173#u8, 225#u8, 30#u8, 198#u8, 48#u8, 18#u8, 126#u8, 4#u8, 209#u8,
+      126#u8, 112#u8, 219#u8, 2#u8, 55#u8, 213#u8, 95#u8, 47#u8, 242#u8,
+      162#u8, 9#u8, 72#u8, 129#u8, 164#u8, 131#u8, 121#u8, 126#u8, 140#u8,
+      221#u8, 185#u8, 139#u8, 98#u8, 34#u8, 69#u8, 225#u8, 246#u8, 8#u8,
+      229#u8, 220#u8, 209#u8, 23#u8, 43#u8, 152#u8, 112#u8, 231#u8, 51#u8,
+      180#u8, 163#u8, 47#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_8 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      175#u8, 88#u8, 200#u8, 162#u8, 245#u8, 143#u8, 144#u8, 76#u8, 226#u8,
+      13#u8, 184#u8, 16#u8, 5#u8, 51#u8, 27#u8, 242#u8, 210#u8, 81#u8, 226#u8,
+      39#u8, 231#u8, 209#u8, 190#u8, 245#u8, 117#u8, 214#u8, 145#u8, 189#u8,
+      202#u8, 132#u8, 46#u8, 98#u8, 51#u8, 235#u8, 46#u8, 38#u8, 194#u8,
+      225#u8, 22#u8, 166#u8, 26#u8, 120#u8, 89#u8, 71#u8, 114#u8, 179#u8,
+      141#u8, 37#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_9 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      179#u8, 193#u8, 49#u8, 60#u8, 49#u8, 236#u8, 130#u8, 218#u8, 90#u8,
+      122#u8, 9#u8, 233#u8, 207#u8, 102#u8, 86#u8, 202#u8, 89#u8, 140#u8,
+      36#u8, 51#u8, 69#u8, 254#u8, 141#u8, 72#u8, 40#u8, 229#u8, 32#u8, 173#u8,
+      233#u8, 23#u8, 135#u8, 255#u8, 184#u8, 185#u8, 134#u8, 125#u8, 183#u8,
+      137#u8, 179#u8, 74#u8, 214#u8, 124#u8, 239#u8, 71#u8, 178#u8, 111#u8,
+      248#u8, 109#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_10 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      168#u8, 237#u8, 138#u8, 35#u8, 83#u8, 85#u8, 148#u8, 142#u8, 11#u8, 4#u8,
+      190#u8, 8#u8, 11#u8, 123#u8, 62#u8, 20#u8, 82#u8, 147#u8, 172#u8, 206#u8,
+      251#u8, 71#u8, 4#u8, 209#u8, 218#u8, 144#u8, 80#u8, 121#u8, 107#u8,
+      47#u8, 104#u8, 112#u8, 81#u8, 108#u8, 30#u8, 191#u8, 119#u8, 174#u8,
+      106#u8, 101#u8, 53#u8, 158#u8, 220#u8, 253#u8, 1#u8, 108#u8, 15#u8, 54#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_11 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      128#u8, 231#u8, 146#u8, 213#u8, 186#u8, 36#u8, 184#u8, 5#u8, 143#u8,
+      109#u8, 114#u8, 145#u8, 162#u8, 236#u8, 92#u8, 182#u8, 138#u8, 171#u8,
+      30#u8, 22#u8, 233#u8, 109#u8, 121#u8, 49#u8, 40#u8, 232#u8, 104#u8,
+      21#u8, 99#u8, 27#u8, 175#u8, 66#u8, 197#u8, 107#u8, 98#u8, 5#u8, 193#u8,
+      158#u8, 37#u8, 206#u8, 151#u8, 39#u8, 189#u8, 31#u8, 214#u8, 249#u8,
+      222#u8, 251#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_12 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      129#u8, 98#u8, 136#u8, 197#u8, 215#u8, 38#u8, 176#u8, 148#u8, 227#u8,
+      253#u8, 249#u8, 92#u8, 184#u8, 136#u8, 47#u8, 68#u8, 44#u8, 77#u8,
+      157#u8, 17#u8, 1#u8, 185#u8, 44#u8, 121#u8, 56#u8, 167#u8, 223#u8,
+      212#u8, 155#u8, 197#u8, 6#u8, 54#u8, 215#u8, 62#u8, 161#u8, 176#u8,
+      95#u8, 117#u8, 235#u8, 115#u8, 28#u8, 144#u8, 140#u8, 143#u8, 216#u8,
+      222#u8, 231#u8, 23#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_13 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      174#u8, 0#u8, 145#u8, 40#u8, 209#u8, 40#u8, 186#u8, 46#u8, 21#u8, 25#u8,
+      191#u8, 167#u8, 160#u8, 192#u8, 30#u8, 212#u8, 148#u8, 167#u8, 212#u8,
+      97#u8, 195#u8, 171#u8, 166#u8, 15#u8, 138#u8, 48#u8, 23#u8, 1#u8, 254#u8,
+      214#u8, 31#u8, 228#u8, 227#u8, 29#u8, 108#u8, 121#u8, 206#u8, 24#u8,
+      149#u8, 66#u8, 174#u8, 81#u8, 223#u8, 145#u8, 231#u8, 60#u8, 225#u8,
+      179#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_14 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      150#u8, 168#u8, 102#u8, 214#u8, 10#u8, 144#u8, 7#u8, 208#u8, 88#u8,
+      37#u8, 195#u8, 50#u8, 71#u8, 106#u8, 131#u8, 232#u8, 105#u8, 225#u8,
+      91#u8, 17#u8, 215#u8, 37#u8, 113#u8, 114#u8, 166#u8, 118#u8, 144#u8,
+      234#u8, 155#u8, 211#u8, 239#u8, 234#u8, 68#u8, 191#u8, 156#u8, 141#u8,
+      66#u8, 25#u8, 20#u8, 84#u8, 235#u8, 4#u8, 252#u8, 241#u8, 16#u8, 177#u8,
+      99#u8, 150#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_15 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      139#u8, 37#u8, 10#u8, 42#u8, 6#u8, 65#u8, 154#u8, 219#u8, 155#u8, 97#u8,
+      30#u8, 137#u8, 247#u8, 248#u8, 242#u8, 153#u8, 10#u8, 163#u8, 1#u8,
+      148#u8, 155#u8, 83#u8, 58#u8, 211#u8, 191#u8, 23#u8, 196#u8, 166#u8,
+      26#u8, 181#u8, 245#u8, 190#u8, 11#u8, 29#u8, 94#u8, 43#u8, 87#u8, 24#u8,
+      100#u8, 209#u8, 63#u8, 27#u8, 183#u8, 88#u8, 5#u8, 199#u8, 121#u8, 93#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_16 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      132#u8, 80#u8, 244#u8, 159#u8, 172#u8, 242#u8, 230#u8, 32#u8, 250#u8,
+      69#u8, 238#u8, 144#u8, 225#u8, 128#u8, 17#u8, 120#u8, 132#u8, 45#u8,
+      146#u8, 122#u8, 42#u8, 37#u8, 252#u8, 110#u8, 215#u8, 186#u8, 153#u8,
+      164#u8, 238#u8, 199#u8, 174#u8, 64#u8, 238#u8, 191#u8, 238#u8, 65#u8,
+      2#u8, 142#u8, 170#u8, 132#u8, 241#u8, 7#u8, 244#u8, 167#u8, 119#u8,
+      105#u8, 73#u8, 118#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_17 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      145#u8, 4#u8, 144#u8, 128#u8, 207#u8, 101#u8, 156#u8, 9#u8, 133#u8,
+      162#u8, 45#u8, 19#u8, 102#u8, 229#u8, 145#u8, 145#u8, 187#u8, 137#u8,
+      102#u8, 63#u8, 146#u8, 46#u8, 129#u8, 104#u8, 185#u8, 183#u8, 216#u8,
+      92#u8, 138#u8, 115#u8, 215#u8, 74#u8, 109#u8, 157#u8, 206#u8, 239#u8,
+      216#u8, 85#u8, 211#u8, 216#u8, 88#u8, 180#u8, 147#u8, 103#u8, 12#u8,
+      117#u8, 5#u8, 129#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_18 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      161#u8, 225#u8, 103#u8, 174#u8, 178#u8, 0#u8, 128#u8, 135#u8, 243#u8,
+      25#u8, 89#u8, 38#u8, 241#u8, 152#u8, 92#u8, 10#u8, 69#u8, 157#u8, 110#u8,
+      197#u8, 114#u8, 55#u8, 37#u8, 91#u8, 20#u8, 115#u8, 169#u8, 109#u8,
+      228#u8, 226#u8, 193#u8, 207#u8, 118#u8, 97#u8, 39#u8, 200#u8, 98#u8,
+      199#u8, 220#u8, 133#u8, 58#u8, 105#u8, 9#u8, 230#u8, 124#u8, 176#u8,
+      108#u8, 247#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_19 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      182#u8, 103#u8, 192#u8, 212#u8, 226#u8, 110#u8, 32#u8, 105#u8, 139#u8,
+      7#u8, 86#u8, 115#u8, 88#u8, 98#u8, 93#u8, 95#u8, 0#u8, 56#u8, 57#u8,
+      201#u8, 45#u8, 232#u8, 8#u8, 142#u8, 18#u8, 219#u8, 215#u8, 74#u8,
+      111#u8, 106#u8, 49#u8, 86#u8, 180#u8, 234#u8, 141#u8, 37#u8, 44#u8,
+      154#u8, 214#u8, 42#u8, 245#u8, 246#u8, 196#u8, 254#u8, 193#u8, 207#u8,
+      108#u8, 199#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_20 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      142#u8, 75#u8, 94#u8, 48#u8, 76#u8, 11#u8, 27#u8, 22#u8, 26#u8, 227#u8,
+      228#u8, 182#u8, 139#u8, 94#u8, 58#u8, 198#u8, 108#u8, 66#u8, 172#u8,
+      215#u8, 193#u8, 238#u8, 36#u8, 88#u8, 4#u8, 79#u8, 101#u8, 39#u8, 197#u8,
+      8#u8, 169#u8, 57#u8, 149#u8, 229#u8, 8#u8, 148#u8, 215#u8, 45#u8, 87#u8,
+      193#u8, 53#u8, 15#u8, 145#u8, 175#u8, 231#u8, 39#u8, 117#u8, 255#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_21 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      140#u8, 100#u8, 38#u8, 64#u8, 170#u8, 121#u8, 21#u8, 66#u8, 28#u8,
+      220#u8, 33#u8, 253#u8, 99#u8, 159#u8, 136#u8, 164#u8, 32#u8, 82#u8,
+      177#u8, 207#u8, 163#u8, 88#u8, 255#u8, 119#u8, 2#u8, 230#u8, 7#u8,
+      147#u8, 169#u8, 43#u8, 123#u8, 89#u8, 38#u8, 218#u8, 225#u8, 90#u8,
+      12#u8, 143#u8, 143#u8, 89#u8, 205#u8, 48#u8, 19#u8, 240#u8, 28#u8, 21#u8,
+      155#u8, 163#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_22 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      163#u8, 86#u8, 243#u8, 94#u8, 113#u8, 60#u8, 252#u8, 40#u8, 48#u8, 86#u8,
+      191#u8, 83#u8, 157#u8, 229#u8, 74#u8, 33#u8, 115#u8, 30#u8, 97#u8,
+      239#u8, 180#u8, 196#u8, 115#u8, 25#u8, 242#u8, 13#u8, 228#u8, 164#u8,
+      183#u8, 35#u8, 215#u8, 106#u8, 51#u8, 182#u8, 95#u8, 74#u8, 103#u8,
+      210#u8, 152#u8, 185#u8, 236#u8, 92#u8, 42#u8, 21#u8, 121#u8, 65#u8,
+      134#u8, 87#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_23 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      147#u8, 206#u8, 32#u8, 65#u8, 70#u8, 206#u8, 149#u8, 244#u8, 132#u8,
+      220#u8, 121#u8, 194#u8, 121#u8, 25#u8, 161#u8, 108#u8, 158#u8, 63#u8,
+      193#u8, 74#u8, 145#u8, 17#u8, 198#u8, 198#u8, 61#u8, 68#u8, 73#u8, 17#u8,
+      88#u8, 213#u8, 131#u8, 129#u8, 23#u8, 210#u8, 8#u8, 81#u8, 204#u8, 50#u8,
+      39#u8, 165#u8, 232#u8, 186#u8, 108#u8, 207#u8, 121#u8, 231#u8, 127#u8,
+      57#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_24 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      181#u8, 133#u8, 102#u8, 76#u8, 187#u8, 154#u8, 132#u8, 181#u8, 47#u8,
+      137#u8, 17#u8, 78#u8, 28#u8, 240#u8, 207#u8, 17#u8, 113#u8, 190#u8,
+      167#u8, 138#u8, 19#u8, 109#u8, 193#u8, 64#u8, 74#u8, 200#u8, 138#u8,
+      17#u8, 33#u8, 11#u8, 45#u8, 235#u8, 195#u8, 183#u8, 165#u8, 94#u8,
+      112#u8, 45#u8, 169#u8, 63#u8, 246#u8, 41#u8, 9#u8, 92#u8, 19#u8, 74#u8,
+      41#u8, 94#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_25 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      182#u8, 223#u8, 212#u8, 68#u8, 236#u8, 127#u8, 220#u8, 235#u8, 20#u8,
+      198#u8, 50#u8, 143#u8, 38#u8, 202#u8, 18#u8, 195#u8, 249#u8, 252#u8,
+      67#u8, 39#u8, 216#u8, 216#u8, 198#u8, 137#u8, 72#u8, 233#u8, 46#u8,
+      126#u8, 97#u8, 38#u8, 43#u8, 130#u8, 216#u8, 51#u8, 166#u8, 90#u8,
+      158#u8, 58#u8, 246#u8, 53#u8, 63#u8, 250#u8, 131#u8, 43#u8, 109#u8,
+      162#u8, 87#u8, 5#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_26 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      180#u8, 212#u8, 184#u8, 235#u8, 158#u8, 207#u8, 255#u8, 227#u8, 240#u8,
+      212#u8, 143#u8, 180#u8, 20#u8, 156#u8, 123#u8, 49#u8, 174#u8, 193#u8,
+      218#u8, 112#u8, 65#u8, 236#u8, 3#u8, 189#u8, 7#u8, 80#u8, 197#u8, 42#u8,
+      42#u8, 124#u8, 188#u8, 58#u8, 124#u8, 251#u8, 240#u8, 157#u8, 91#u8,
+      253#u8, 197#u8, 110#u8, 56#u8, 96#u8, 130#u8, 106#u8, 98#u8, 208#u8,
+      187#u8, 145#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_27 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      164#u8, 226#u8, 72#u8, 227#u8, 214#u8, 29#u8, 181#u8, 45#u8, 169#u8,
+      104#u8, 63#u8, 239#u8, 24#u8, 133#u8, 121#u8, 196#u8, 112#u8, 214#u8,
+      94#u8, 45#u8, 249#u8, 6#u8, 71#u8, 38#u8, 132#u8, 123#u8, 21#u8, 153#u8,
+      252#u8, 119#u8, 64#u8, 73#u8, 255#u8, 220#u8, 110#u8, 242#u8, 174#u8,
+      87#u8, 141#u8, 94#u8, 215#u8, 135#u8, 79#u8, 18#u8, 152#u8, 236#u8,
+      223#u8, 105#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_28 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      166#u8, 138#u8, 15#u8, 255#u8, 194#u8, 227#u8, 125#u8, 49#u8, 131#u8,
+      254#u8, 176#u8, 27#u8, 66#u8, 35#u8, 76#u8, 15#u8, 78#u8, 81#u8, 15#u8,
+      157#u8, 194#u8, 157#u8, 9#u8, 197#u8, 113#u8, 230#u8, 218#u8, 0#u8,
+      254#u8, 202#u8, 217#u8, 218#u8, 34#u8, 76#u8, 208#u8, 243#u8, 21#u8,
+      80#u8, 7#u8, 1#u8, 72#u8, 102#u8, 126#u8, 34#u8, 108#u8, 76#u8, 164#u8,
+      19#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_29 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      134#u8, 173#u8, 218#u8, 47#u8, 254#u8, 203#u8, 119#u8, 35#u8, 108#u8,
+      24#u8, 0#u8, 80#u8, 81#u8, 243#u8, 31#u8, 150#u8, 87#u8, 160#u8, 213#u8,
+      15#u8, 239#u8, 42#u8, 17#u8, 117#u8, 223#u8, 218#u8, 50#u8, 231#u8,
+      77#u8, 93#u8, 83#u8, 223#u8, 130#u8, 92#u8, 16#u8, 242#u8, 137#u8,
+      235#u8, 10#u8, 211#u8, 157#u8, 240#u8, 198#u8, 79#u8, 201#u8, 188#u8,
+      119#u8, 41#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_30 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      153#u8, 130#u8, 102#u8, 213#u8, 201#u8, 195#u8, 118#u8, 78#u8, 217#u8,
+      125#u8, 102#u8, 250#u8, 158#u8, 209#u8, 118#u8, 175#u8, 4#u8, 57#u8,
+      153#u8, 101#u8, 43#u8, 174#u8, 25#u8, 240#u8, 101#u8, 124#u8, 131#u8,
+      40#u8, 98#u8, 157#u8, 48#u8, 175#u8, 69#u8, 50#u8, 48#u8, 227#u8, 104#u8,
+      28#u8, 90#u8, 56#u8, 226#u8, 240#u8, 30#u8, 56#u8, 158#u8, 216#u8,
+      216#u8, 37#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_31 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      160#u8, 82#u8, 97#u8, 85#u8, 77#u8, 60#u8, 98#u8, 10#u8, 240#u8, 201#u8,
+      20#u8, 207#u8, 39#u8, 171#u8, 152#u8, 245#u8, 211#u8, 89#u8, 60#u8,
+      51#u8, 171#u8, 49#u8, 60#u8, 25#u8, 142#u8, 12#u8, 64#u8, 214#u8, 199#u8,
+      32#u8, 34#u8, 235#u8, 89#u8, 67#u8, 119#u8, 140#u8, 212#u8, 247#u8,
+      62#u8, 159#u8, 232#u8, 56#u8, 51#u8, 146#u8, 167#u8, 0#u8, 73#u8, 118#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_32 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      173#u8, 36#u8, 63#u8, 179#u8, 99#u8, 27#u8, 249#u8, 15#u8, 237#u8,
+      185#u8, 214#u8, 121#u8, 253#u8, 113#u8, 252#u8, 12#u8, 240#u8, 107#u8,
+      218#u8, 2#u8, 133#u8, 145#u8, 222#u8, 210#u8, 189#u8, 76#u8, 99#u8,
+      78#u8, 167#u8, 179#u8, 194#u8, 189#u8, 34#u8, 236#u8, 162#u8, 171#u8,
+      49#u8, 143#u8, 205#u8, 170#u8, 108#u8, 44#u8, 218#u8, 30#u8, 99#u8,
+      225#u8, 197#u8, 123#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_33 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      137#u8, 185#u8, 133#u8, 154#u8, 4#u8, 249#u8, 3#u8, 201#u8, 94#u8,
+      151#u8, 251#u8, 41#u8, 81#u8, 240#u8, 28#u8, 198#u8, 65#u8, 138#u8,
+      37#u8, 5#u8, 238#u8, 224#u8, 181#u8, 188#u8, 114#u8, 102#u8, 180#u8,
+      211#u8, 62#u8, 1#u8, 182#u8, 155#u8, 159#u8, 231#u8, 220#u8, 86#u8,
+      250#u8, 158#u8, 187#u8, 88#u8, 86#u8, 9#u8, 91#u8, 224#u8, 146#u8, 90#u8,
+      66#u8, 45#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_34 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      166#u8, 141#u8, 17#u8, 131#u8, 67#u8, 165#u8, 187#u8, 251#u8, 186#u8,
+      185#u8, 95#u8, 249#u8, 191#u8, 229#u8, 58#u8, 235#u8, 127#u8, 219#u8,
+      175#u8, 22#u8, 219#u8, 152#u8, 62#u8, 111#u8, 68#u8, 86#u8, 54#u8,
+      109#u8, 242#u8, 170#u8, 1#u8, 251#u8, 219#u8, 110#u8, 233#u8, 144#u8,
+      28#u8, 177#u8, 2#u8, 252#u8, 125#u8, 43#u8, 208#u8, 153#u8, 190#u8,
+      47#u8, 31#u8, 62#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_35 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      180#u8, 147#u8, 1#u8, 242#u8, 93#u8, 90#u8, 157#u8, 210#u8, 236#u8,
+      96#u8, 221#u8, 176#u8, 180#u8, 180#u8, 119#u8, 41#u8, 25#u8, 88#u8,
+      72#u8, 126#u8, 254#u8, 169#u8, 229#u8, 77#u8, 192#u8, 228#u8, 239#u8,
+      56#u8, 143#u8, 3#u8, 184#u8, 187#u8, 173#u8, 209#u8, 50#u8, 89#u8,
+      209#u8, 145#u8, 247#u8, 160#u8, 183#u8, 81#u8, 56#u8, 118#u8, 118#u8,
+      125#u8, 130#u8, 130#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_36 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      139#u8, 147#u8, 223#u8, 127#u8, 180#u8, 81#u8, 63#u8, 103#u8, 116#u8,
+      153#u8, 5#u8, 253#u8, 67#u8, 219#u8, 120#u8, 247#u8, 2#u8, 101#u8,
+      137#u8, 183#u8, 4#u8, 235#u8, 185#u8, 234#u8, 50#u8, 85#u8, 208#u8,
+      173#u8, 100#u8, 21#u8, 67#u8, 119#u8, 153#u8, 244#u8, 15#u8, 2#u8,
+      224#u8, 126#u8, 252#u8, 205#u8, 161#u8, 230#u8, 253#u8, 94#u8, 140#u8,
+      208#u8, 167#u8, 33#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_37 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      173#u8, 136#u8, 118#u8, 154#u8, 206#u8, 150#u8, 69#u8, 93#u8, 163#u8,
+      124#u8, 60#u8, 144#u8, 25#u8, 169#u8, 245#u8, 35#u8, 198#u8, 148#u8,
+      100#u8, 59#u8, 227#u8, 246#u8, 179#u8, 123#u8, 30#u8, 157#u8, 204#u8,
+      80#u8, 83#u8, 209#u8, 254#u8, 142#u8, 70#u8, 58#u8, 190#u8, 189#u8,
+      177#u8, 179#u8, 239#u8, 47#u8, 47#u8, 184#u8, 1#u8, 82#u8, 138#u8, 1#u8,
+      196#u8, 124#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_38 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      128#u8, 240#u8, 235#u8, 93#u8, 203#u8, 250#u8, 175#u8, 66#u8, 27#u8,
+      245#u8, 154#u8, 139#u8, 155#u8, 213#u8, 36#u8, 92#u8, 72#u8, 35#u8,
+      201#u8, 69#u8, 16#u8, 9#u8, 62#u8, 35#u8, 224#u8, 176#u8, 83#u8, 70#u8,
+      71#u8, 251#u8, 85#u8, 37#u8, 162#u8, 94#u8, 163#u8, 174#u8, 234#u8,
+      10#u8, 146#u8, 122#u8, 30#u8, 226#u8, 12#u8, 5#u8, 127#u8, 44#u8, 146#u8,
+      52#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_39 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      177#u8, 10#u8, 216#u8, 46#u8, 166#u8, 165#u8, 174#u8, 171#u8, 227#u8,
+      69#u8, 208#u8, 14#u8, 177#u8, 121#u8, 16#u8, 214#u8, 148#u8, 43#u8,
+      104#u8, 98#u8, 247#u8, 243#u8, 119#u8, 60#u8, 125#u8, 50#u8, 17#u8,
+      148#u8, 230#u8, 124#u8, 156#u8, 206#u8, 208#u8, 179#u8, 49#u8, 4#u8,
+      37#u8, 102#u8, 38#u8, 6#u8, 99#u8, 77#u8, 205#u8, 127#u8, 139#u8, 151#u8,
+      108#u8, 4#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_40 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      130#u8, 246#u8, 253#u8, 145#u8, 248#u8, 120#u8, 34#u8, 246#u8, 204#u8,
+      151#u8, 120#u8, 8#u8, 238#u8, 172#u8, 119#u8, 136#u8, 159#u8, 74#u8,
+      50#u8, 251#u8, 13#u8, 97#u8, 142#u8, 120#u8, 75#u8, 35#u8, 49#u8, 38#u8,
+      61#u8, 15#u8, 250#u8, 130#u8, 11#u8, 63#u8, 112#u8, 176#u8, 105#u8,
+      211#u8, 46#u8, 3#u8, 25#u8, 201#u8, 224#u8, 51#u8, 171#u8, 117#u8,
+      211#u8, 180#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_41 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      148#u8, 54#u8, 211#u8, 220#u8, 107#u8, 94#u8, 37#u8, 177#u8, 246#u8,
+      149#u8, 248#u8, 198#u8, 193#u8, 197#u8, 83#u8, 218#u8, 179#u8, 18#u8,
+      204#u8, 172#u8, 228#u8, 218#u8, 195#u8, 175#u8, 221#u8, 193#u8, 65#u8,
+      211#u8, 80#u8, 100#u8, 103#u8, 205#u8, 80#u8, 203#u8, 4#u8, 164#u8,
+      158#u8, 169#u8, 110#u8, 167#u8, 245#u8, 168#u8, 167#u8, 176#u8, 252#u8,
+      101#u8, 239#u8, 55#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_42 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      142#u8, 10#u8, 148#u8, 145#u8, 101#u8, 29#u8, 82#u8, 190#u8, 142#u8,
+      191#u8, 67#u8, 21#u8, 251#u8, 187#u8, 65#u8, 2#u8, 114#u8, 249#u8,
+      167#u8, 75#u8, 150#u8, 93#u8, 51#u8, 183#u8, 159#u8, 241#u8, 185#u8,
+      225#u8, 190#u8, 59#u8, 229#u8, 158#u8, 67#u8, 217#u8, 86#u8, 103#u8,
+      115#u8, 86#u8, 14#u8, 67#u8, 40#u8, 5#u8, 73#u8, 195#u8, 72#u8, 228#u8,
+      143#u8, 1#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_43 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      136#u8, 9#u8, 19#u8, 126#u8, 93#u8, 58#u8, 34#u8, 64#u8, 13#u8, 110#u8,
+      100#u8, 90#u8, 155#u8, 216#u8, 78#u8, 33#u8, 196#u8, 146#u8, 55#u8,
+      23#u8, 54#u8, 199#u8, 230#u8, 44#u8, 81#u8, 206#u8, 245#u8, 15#u8,
+      238#u8, 58#u8, 167#u8, 242#u8, 64#u8, 87#u8, 36#u8, 54#u8, 122#u8,
+      131#u8, 253#u8, 5#u8, 31#u8, 247#u8, 2#u8, 217#u8, 113#u8, 22#u8, 127#u8,
+      103#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_44 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      181#u8, 54#u8, 162#u8, 79#u8, 49#u8, 163#u8, 70#u8, 222#u8, 127#u8,
+      152#u8, 99#u8, 252#u8, 53#u8, 31#u8, 166#u8, 2#u8, 21#u8, 132#u8, 4#u8,
+      210#u8, 249#u8, 71#u8, 71#u8, 238#u8, 190#u8, 67#u8, 171#u8, 241#u8,
+      242#u8, 27#u8, 248#u8, 249#u8, 90#u8, 100#u8, 20#u8, 108#u8, 2#u8,
+      164#u8, 190#u8, 194#u8, 123#u8, 80#u8, 63#u8, 84#u8, 103#u8, 137#u8,
+      163#u8, 136#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_45 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      181#u8, 205#u8, 245#u8, 160#u8, 79#u8, 193#u8, 42#u8, 14#u8, 14#u8,
+      247#u8, 84#u8, 88#u8, 48#u8, 6#u8, 29#u8, 255#u8, 127#u8, 216#u8, 171#u8,
+      234#u8, 70#u8, 228#u8, 143#u8, 190#u8, 98#u8, 53#u8, 16#u8, 158#u8,
+      108#u8, 54#u8, 238#u8, 107#u8, 255#u8, 203#u8, 149#u8, 41#u8, 226#u8,
+      243#u8, 208#u8, 215#u8, 1#u8, 207#u8, 88#u8, 187#u8, 251#u8, 106#u8,
+      65#u8, 151#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_46 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      171#u8, 21#u8, 55#u8, 117#u8, 37#u8, 117#u8, 52#u8, 103#u8, 208#u8,
+      66#u8, 183#u8, 147#u8, 31#u8, 102#u8, 248#u8, 98#u8, 203#u8, 187#u8,
+      119#u8, 70#u8, 66#u8, 18#u8, 201#u8, 170#u8, 114#u8, 212#u8, 229#u8,
+      192#u8, 67#u8, 117#u8, 239#u8, 85#u8, 246#u8, 25#u8, 179#u8, 164#u8,
+      70#u8, 9#u8, 28#u8, 27#u8, 161#u8, 163#u8, 181#u8, 217#u8, 240#u8, 94#u8,
+      83#u8, 143#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_47 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      144#u8, 90#u8, 117#u8, 185#u8, 67#u8, 173#u8, 1#u8, 127#u8, 247#u8,
+      142#u8, 166#u8, 221#u8, 209#u8, 210#u8, 138#u8, 69#u8, 199#u8, 39#u8,
+      62#u8, 225#u8, 194#u8, 229#u8, 227#u8, 53#u8, 54#u8, 133#u8, 129#u8,
+      55#u8, 147#u8, 234#u8, 211#u8, 55#u8, 12#u8, 9#u8, 202#u8, 189#u8,
+      144#u8, 63#u8, 202#u8, 185#u8, 216#u8, 177#u8, 198#u8, 150#u8, 19#u8,
+      114#u8, 212#u8, 134#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_48 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      129#u8, 71#u8, 223#u8, 67#u8, 36#u8, 250#u8, 221#u8, 192#u8, 47#u8,
+      176#u8, 137#u8, 99#u8, 103#u8, 167#u8, 100#u8, 123#u8, 113#u8, 155#u8,
+      100#u8, 153#u8, 163#u8, 97#u8, 174#u8, 207#u8, 221#u8, 58#u8, 52#u8,
+      41#u8, 111#u8, 166#u8, 118#u8, 138#u8, 211#u8, 28#u8, 52#u8, 249#u8,
+      232#u8, 115#u8, 253#u8, 30#u8, 104#u8, 51#u8, 134#u8, 196#u8, 70#u8,
+      81#u8, 136#u8, 62#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_49 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      172#u8, 145#u8, 208#u8, 133#u8, 112#u8, 221#u8, 145#u8, 248#u8, 157#u8,
+      46#u8, 1#u8, 220#u8, 166#u8, 124#u8, 220#u8, 131#u8, 182#u8, 64#u8,
+      226#u8, 15#u8, 7#u8, 62#u8, 169#u8, 240#u8, 115#u8, 71#u8, 89#u8, 201#u8,
+      33#u8, 130#u8, 187#u8, 102#u8, 197#u8, 214#u8, 69#u8, 241#u8, 94#u8,
+      189#u8, 145#u8, 237#u8, 112#u8, 91#u8, 102#u8, 72#u8, 110#u8, 210#u8,
+      8#u8, 141#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_50 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      172#u8, 98#u8, 149#u8, 239#u8, 37#u8, 19#u8, 187#u8, 234#u8, 126#u8,
+      244#u8, 205#u8, 207#u8, 55#u8, 210#u8, 128#u8, 48#u8, 12#u8, 52#u8,
+      230#u8, 60#u8, 75#u8, 151#u8, 4#u8, 102#u8, 61#u8, 85#u8, 137#u8, 26#u8,
+      97#u8, 191#u8, 92#u8, 145#u8, 176#u8, 76#u8, 193#u8, 210#u8, 2#u8,
+      163#u8, 160#u8, 167#u8, 196#u8, 82#u8, 12#u8, 48#u8, 237#u8, 194#u8,
+      119#u8, 199#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_51 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      182#u8, 4#u8, 190#u8, 119#u8, 106#u8, 1#u8, 32#u8, 149#u8, 192#u8,
+      212#u8, 235#u8, 199#u8, 119#u8, 151#u8, 221#u8, 141#u8, 236#u8, 98#u8,
+      165#u8, 76#u8, 5#u8, 89#u8, 251#u8, 33#u8, 133#u8, 215#u8, 186#u8,
+      198#u8, 181#u8, 13#u8, 78#u8, 95#u8, 212#u8, 113#u8, 172#u8, 45#u8,
+      127#u8, 69#u8, 35#u8, 32#u8, 109#u8, 93#u8, 129#u8, 120#u8, 234#u8,
+      189#u8, 154#u8, 135#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_52 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      128#u8, 234#u8, 214#u8, 141#u8, 239#u8, 39#u8, 44#u8, 227#u8, 245#u8,
+      121#u8, 81#u8, 20#u8, 94#u8, 113#u8, 237#u8, 109#u8, 194#u8, 109#u8,
+      169#u8, 142#u8, 88#u8, 37#u8, 239#u8, 67#u8, 154#u8, 245#u8, 119#u8,
+      192#u8, 197#u8, 222#u8, 118#u8, 109#u8, 78#u8, 57#u8, 32#u8, 127#u8,
+      32#u8, 93#u8, 93#u8, 33#u8, 219#u8, 144#u8, 61#u8, 137#u8, 243#u8,
+      123#u8, 187#u8, 2#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_53 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      153#u8, 80#u8, 180#u8, 168#u8, 48#u8, 56#u8, 140#u8, 137#u8, 113#u8,
+      88#u8, 199#u8, 254#u8, 57#u8, 33#u8, 226#u8, 254#u8, 36#u8, 190#u8,
+      237#u8, 199#u8, 200#u8, 78#u8, 32#u8, 36#u8, 232#u8, 185#u8, 43#u8,
+      151#u8, 117#u8, 248#u8, 249#u8, 149#u8, 147#u8, 181#u8, 74#u8, 134#u8,
+      184#u8, 135#u8, 14#u8, 197#u8, 8#u8, 119#u8, 52#u8, 41#u8, 91#u8, 160#u8,
+      96#u8, 50#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_54 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      184#u8, 155#u8, 167#u8, 20#u8, 173#u8, 171#u8, 249#u8, 78#u8, 101#u8,
+      138#u8, 125#u8, 20#u8, 172#u8, 143#u8, 193#u8, 151#u8, 55#u8, 106#u8,
+      65#u8, 104#u8, 65#u8, 194#u8, 168#u8, 14#u8, 26#u8, 109#u8, 222#u8,
+      79#u8, 67#u8, 141#u8, 95#u8, 116#u8, 125#u8, 31#u8, 185#u8, 11#u8, 57#u8,
+      232#u8, 234#u8, 67#u8, 92#u8, 89#u8, 214#u8, 236#u8, 218#u8, 19#u8,
+      222#u8, 161#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_55 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      176#u8, 199#u8, 142#u8, 124#u8, 198#u8, 11#u8, 208#u8, 91#u8, 228#u8,
+      109#u8, 72#u8, 251#u8, 176#u8, 66#u8, 26#u8, 103#u8, 140#u8, 127#u8,
+      20#u8, 184#u8, 217#u8, 55#u8, 48#u8, 222#u8, 182#u8, 111#u8, 190#u8,
+      22#u8, 71#u8, 97#u8, 59#u8, 44#u8, 98#u8, 181#u8, 7#u8, 81#u8, 38#u8,
+      217#u8, 23#u8, 4#u8, 120#u8, 32#u8, 197#u8, 127#u8, 195#u8, 80#u8,
+      156#u8, 185#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_56 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      168#u8, 96#u8, 196#u8, 172#u8, 197#u8, 68#u8, 78#u8, 154#u8, 233#u8,
+      135#u8, 232#u8, 201#u8, 60#u8, 185#u8, 165#u8, 241#u8, 125#u8, 149#u8,
+      77#u8, 99#u8, 192#u8, 96#u8, 204#u8, 97#u8, 111#u8, 114#u8, 78#u8, 38#u8,
+      188#u8, 115#u8, 210#u8, 197#u8, 76#u8, 211#u8, 110#u8, 4#u8, 146#u8,
+      209#u8, 253#u8, 225#u8, 115#u8, 132#u8, 114#u8, 120#u8, 229#u8, 89#u8,
+      66#u8, 186#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_57 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      143#u8, 184#u8, 38#u8, 156#u8, 157#u8, 92#u8, 21#u8, 66#u8, 142#u8,
+      141#u8, 69#u8, 218#u8, 18#u8, 81#u8, 228#u8, 196#u8, 164#u8, 182#u8,
+      0#u8, 212#u8, 125#u8, 160#u8, 202#u8, 234#u8, 41#u8, 254#u8, 242#u8,
+      70#u8, 133#u8, 77#u8, 143#u8, 182#u8, 172#u8, 174#u8, 134#u8, 168#u8,
+      230#u8, 68#u8, 13#u8, 12#u8, 66#u8, 157#u8, 141#u8, 217#u8, 194#u8,
+      223#u8, 238#u8, 12#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_58 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      150#u8, 197#u8, 216#u8, 235#u8, 111#u8, 213#u8, 197#u8, 37#u8, 179#u8,
+      72#u8, 238#u8, 67#u8, 53#u8, 210#u8, 0#u8, 19#u8, 158#u8, 67#u8, 126#u8,
+      75#u8, 232#u8, 54#u8, 144#u8, 175#u8, 15#u8, 53#u8, 183#u8, 243#u8,
+      54#u8, 167#u8, 205#u8, 168#u8, 198#u8, 210#u8, 149#u8, 134#u8, 71#u8,
+      152#u8, 139#u8, 132#u8, 218#u8, 159#u8, 45#u8, 215#u8, 187#u8, 183#u8,
+      113#u8, 11#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_59 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      167#u8, 246#u8, 33#u8, 65#u8, 196#u8, 52#u8, 108#u8, 193#u8, 78#u8,
+      152#u8, 35#u8, 220#u8, 56#u8, 172#u8, 125#u8, 88#u8, 123#u8, 4#u8, 39#u8,
+      2#u8, 42#u8, 252#u8, 20#u8, 152#u8, 209#u8, 46#u8, 226#u8, 196#u8, 63#u8,
+      106#u8, 195#u8, 168#u8, 33#u8, 103#u8, 5#u8, 126#u8, 103#u8, 13#u8,
+      213#u8, 36#u8, 183#u8, 65#u8, 55#u8, 248#u8, 195#u8, 206#u8, 181#u8,
+      109#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_60 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      149#u8, 106#u8, 172#u8, 80#u8, 208#u8, 107#u8, 70#u8, 163#u8, 233#u8,
+      67#u8, 151#u8, 241#u8, 99#u8, 245#u8, 147#u8, 245#u8, 1#u8, 13#u8, 54#u8,
+      106#u8, 162#u8, 216#u8, 22#u8, 194#u8, 32#u8, 92#u8, 125#u8, 15#u8,
+      71#u8, 249#u8, 12#u8, 240#u8, 243#u8, 108#u8, 22#u8, 158#u8, 150#u8,
+      79#u8, 155#u8, 207#u8, 105#u8, 141#u8, 73#u8, 24#u8, 45#u8, 71#u8,
+      217#u8, 31#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_61 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      184#u8, 18#u8, 137#u8, 155#u8, 205#u8, 192#u8, 231#u8, 13#u8, 121#u8,
+      202#u8, 114#u8, 156#u8, 176#u8, 17#u8, 4#u8, 191#u8, 96#u8, 225#u8,
+      53#u8, 123#u8, 144#u8, 133#u8, 161#u8, 15#u8, 100#u8, 243#u8, 186#u8,
+      152#u8, 101#u8, 213#u8, 126#u8, 154#u8, 189#u8, 10#u8, 80#u8, 90#u8,
+      80#u8, 45#u8, 77#u8, 224#u8, 122#u8, 251#u8, 70#u8, 244#u8, 210#u8,
+      102#u8, 190#u8, 47#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_62 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      171#u8, 206#u8, 2#u8, 199#u8, 225#u8, 55#u8, 46#u8, 37#u8, 212#u8, 9#u8,
+      68#u8, 220#u8, 158#u8, 206#u8, 41#u8, 4#u8, 168#u8, 245#u8, 156#u8,
+      136#u8, 84#u8, 197#u8, 242#u8, 135#u8, 95#u8, 230#u8, 58#u8, 206#u8,
+      140#u8, 227#u8, 125#u8, 151#u8, 136#u8, 31#u8, 79#u8, 154#u8, 180#u8,
+      247#u8, 186#u8, 208#u8, 112#u8, 236#u8, 142#u8, 13#u8, 174#u8, 229#u8,
+      141#u8, 63#u8
+      ] (by rfl)
+
+private def kzg.trusted_setup.G1_MONOMIAL_row_63 : Array Std.U8 48#usize :=
+  Array.make 48#usize [
+      143#u8, 177#u8, 60#u8, 81#u8, 91#u8, 45#u8, 106#u8, 187#u8, 78#u8, 20#u8,
+      237#u8, 117#u8, 63#u8, 173#u8, 92#u8, 195#u8, 108#u8, 54#u8, 49#u8,
+      223#u8, 226#u8, 26#u8, 35#u8, 208#u8, 246#u8, 3#u8, 170#u8, 215#u8,
+      25#u8, 66#u8, 61#u8, 213#u8, 66#u8, 49#u8, 87#u8, 238#u8, 252#u8, 189#u8,
+      154#u8, 156#u8, 96#u8, 116#u8, 225#u8, 85#u8, 183#u8, 158#u8, 179#u8,
+      141#u8
+      ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::trusted_setup::G1_MONOMIAL]
+    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 4:0-389:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.trusted_setup.G1_MONOMIAL : Array (Array Std.U8 48#usize) 64#usize :=
+  Array.make 64#usize [
+    kzg.trusted_setup.G1_MONOMIAL_row_0,
+    kzg.trusted_setup.G1_MONOMIAL_row_1,
+    kzg.trusted_setup.G1_MONOMIAL_row_2,
+    kzg.trusted_setup.G1_MONOMIAL_row_3,
+    kzg.trusted_setup.G1_MONOMIAL_row_4,
+    kzg.trusted_setup.G1_MONOMIAL_row_5,
+    kzg.trusted_setup.G1_MONOMIAL_row_6,
+    kzg.trusted_setup.G1_MONOMIAL_row_7,
+    kzg.trusted_setup.G1_MONOMIAL_row_8,
+    kzg.trusted_setup.G1_MONOMIAL_row_9,
+    kzg.trusted_setup.G1_MONOMIAL_row_10,
+    kzg.trusted_setup.G1_MONOMIAL_row_11,
+    kzg.trusted_setup.G1_MONOMIAL_row_12,
+    kzg.trusted_setup.G1_MONOMIAL_row_13,
+    kzg.trusted_setup.G1_MONOMIAL_row_14,
+    kzg.trusted_setup.G1_MONOMIAL_row_15,
+    kzg.trusted_setup.G1_MONOMIAL_row_16,
+    kzg.trusted_setup.G1_MONOMIAL_row_17,
+    kzg.trusted_setup.G1_MONOMIAL_row_18,
+    kzg.trusted_setup.G1_MONOMIAL_row_19,
+    kzg.trusted_setup.G1_MONOMIAL_row_20,
+    kzg.trusted_setup.G1_MONOMIAL_row_21,
+    kzg.trusted_setup.G1_MONOMIAL_row_22,
+    kzg.trusted_setup.G1_MONOMIAL_row_23,
+    kzg.trusted_setup.G1_MONOMIAL_row_24,
+    kzg.trusted_setup.G1_MONOMIAL_row_25,
+    kzg.trusted_setup.G1_MONOMIAL_row_26,
+    kzg.trusted_setup.G1_MONOMIAL_row_27,
+    kzg.trusted_setup.G1_MONOMIAL_row_28,
+    kzg.trusted_setup.G1_MONOMIAL_row_29,
+    kzg.trusted_setup.G1_MONOMIAL_row_30,
+    kzg.trusted_setup.G1_MONOMIAL_row_31,
+    kzg.trusted_setup.G1_MONOMIAL_row_32,
+    kzg.trusted_setup.G1_MONOMIAL_row_33,
+    kzg.trusted_setup.G1_MONOMIAL_row_34,
+    kzg.trusted_setup.G1_MONOMIAL_row_35,
+    kzg.trusted_setup.G1_MONOMIAL_row_36,
+    kzg.trusted_setup.G1_MONOMIAL_row_37,
+    kzg.trusted_setup.G1_MONOMIAL_row_38,
+    kzg.trusted_setup.G1_MONOMIAL_row_39,
+    kzg.trusted_setup.G1_MONOMIAL_row_40,
+    kzg.trusted_setup.G1_MONOMIAL_row_41,
+    kzg.trusted_setup.G1_MONOMIAL_row_42,
+    kzg.trusted_setup.G1_MONOMIAL_row_43,
+    kzg.trusted_setup.G1_MONOMIAL_row_44,
+    kzg.trusted_setup.G1_MONOMIAL_row_45,
+    kzg.trusted_setup.G1_MONOMIAL_row_46,
+    kzg.trusted_setup.G1_MONOMIAL_row_47,
+    kzg.trusted_setup.G1_MONOMIAL_row_48,
+    kzg.trusted_setup.G1_MONOMIAL_row_49,
+    kzg.trusted_setup.G1_MONOMIAL_row_50,
+    kzg.trusted_setup.G1_MONOMIAL_row_51,
+    kzg.trusted_setup.G1_MONOMIAL_row_52,
+    kzg.trusted_setup.G1_MONOMIAL_row_53,
+    kzg.trusted_setup.G1_MONOMIAL_row_54,
+    kzg.trusted_setup.G1_MONOMIAL_row_55,
+    kzg.trusted_setup.G1_MONOMIAL_row_56,
+    kzg.trusted_setup.G1_MONOMIAL_row_57,
+    kzg.trusted_setup.G1_MONOMIAL_row_58,
+    kzg.trusted_setup.G1_MONOMIAL_row_59,
+    kzg.trusted_setup.G1_MONOMIAL_row_60,
+    kzg.trusted_setup.G1_MONOMIAL_row_61,
+    kzg.trusted_setup.G1_MONOMIAL_row_62,
+    kzg.trusted_setup.G1_MONOMIAL_row_63
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 27:8-32:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.setup.Setup.decode_loop.body
+  (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+  (iter : core.ops.range.Range Std.Usize)
+  (g1_monomial : alloc.vec.Vec blst.blst_p1_affine) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_p1_affine)) (alloc.vec.Vec blst.blst_p1_affine))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done g1_monomial)
+  | some i =>
+    let o1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Option
+        blst.blst_p1_affine)) decoded i
+    match o1 with
+    | none => fail panic
+    | some point =>
+      let g1_monomial1 ← alloc.vec.Vec.push g1_monomial point
+      ok (cont (iter1, g1_monomial1))
+
+/-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 27:8-32:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.setup.Setup.decode_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+  (g1_monomial : alloc.vec.Vec blst.blst_p1_affine) :
+  Result (alloc.vec.Vec blst.blst_p1_affine)
+  := do
+  loop
+    (fun (iter1, g1_monomial1) => kzg.setup.Setup.decode_loop.body decoded
+      iter1 g1_monomial1)
+    (iter, g1_monomial)
+
+/-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]:
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 22:4-42:5
+    Visibility: public -/
+def kzg.setup.Setup.decode : Result kzg.setup.Setup := do
+  let decoded :=
+    alloc.vec.Vec.with_capacity (Option blst.blst_p1_affine)
+      kzg.FIELD_ELEMENTS_PER_CELL
+  let decoded1 ←
+    alloc.vec.Vec.resize (core.option.Option.Insts.CoreCloneClone
+      blst.blst_p1_affine.Insts.CoreCloneClone) decoded
+      kzg.FIELD_ELEMENTS_PER_CELL none
+  let s ← lift (Array.to_slice kzg.trusted_setup.G1_MONOMIAL)
+  let (s1, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut decoded1)
+  let s2 ← bls.uncompress_in_g1 s s1
+  let g1_monomial :=
+    alloc.vec.Vec.with_capacity blst.blst_p1_affine kzg.FIELD_ELEMENTS_PER_CELL
+  let decoded2 := deref_mut_back s2
+  let g1_monomial1 ←
+    kzg.setup.Setup.decode_loop
+      { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL } decoded2
+      g1_monomial
+  let o ← bls.uncompress_in_g2_blst kzg.trusted_setup.G2_MONOMIAL_64
+  match o with
+  | none => fail panic
+  | some point =>
+    let o1 ← bls.uncompress_in_g2_blst kzg.trusted_setup.G2_MONOMIAL_0
+    match o1 with
+    | none => fail panic
+    | some point1 =>
+      let bpa ← kzg.blst_ops.g2_neg point1
+      ok
+        {
+          g1_monomial := g1_monomial1,
+          g2_s_pow_cell := point,
+          g2_neg_generator := bpa
+        }
+
+/-- [silver_crypto_simd::kzg::verify::LOG_CELL]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 24:0-24:24 -/
+@[global_simps, irreducible] def kzg.verify.LOG_CELL : Std.U32 := 6#u32
+
+/-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}::default]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 232:9-232:16
+    Visibility: public -/
+def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
+  : Result kzg.verify.Deduplicated := do
+  let v ←
+    alloc.vec.Vec.Insts.CoreDefaultDefault.default (Array Std.U8 48#usize)
+  let v1 ← alloc.vec.Vec.Insts.CoreDefaultDefault.default Std.Usize
+  ok { unique := v, index_of_cell := v1 }
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::new]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 54:4-73:5
+    Visibility: public -/
+def kzg.verify.CellBatchVerifier.new
+  : Result kzg.verify.CellBatchVerifier := do
+  let s ← kzg.setup.Setup.decode
+  let c ← kzg.cosets.Cosets.new
+  let d ← kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
+  let p ← kzg.challenge.Preimage.new
+  let ls ← kzg.blst_ops.LincombScratch.new
+  ok
+    {
+      setup := s,
+      cosets := c,
+      commitments := d,
+      decoded := (alloc.vec.Vec.new (Option blst.blst_p1_affine)),
+      commitment_points := (alloc.vec.Vec.new blst.blst_p1_affine),
+      proof_points := (alloc.vec.Vec.new blst.blst_p1_affine),
+      evaluations := (alloc.vec.Vec.new blst.blst_fr),
+      preimage := p,
+      r_powers := (alloc.vec.Vec.new blst.blst_fr),
+      scalars := (alloc.vec.Vec.new blst.blst_fr),
+      columns := (alloc.vec.Vec.new blst.blst_fr),
+      column_used := (alloc.vec.Vec.new Bool),
+      column := (alloc.vec.Vec.new blst.blst_fr),
+      coefficients := (alloc.vec.Vec.new blst.blst_fr),
+      interpolation := (alloc.vec.Vec.new blst.blst_fr),
+      lincomb := ls
+    }
+
+/-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}::default]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 48:4-50:5
+    Visibility: public -/
+def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default
+  : Result kzg.verify.CellBatchVerifier := do
+  kzg.verify.CellBatchVerifier.new
+
+/-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 47:0-51:1 -/
+@[reducible]
+def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
+  core.default.Default kzg.verify.CellBatchVerifier := {
+  default := kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default
+}
+
+/-- [silver_crypto_simd::kzg::verify::same_bytes]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 283:4-285:5 -/
+@[rust_loop_body]
+def kzg.verify.same_bytes_loop.body
+  (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if i < bls.COMPRESSED_LEN
+  then
+    let i1 ← Array.index_usize a i
+    let i2 ← Array.index_usize b i
+    if i1 = i2
+    then let i3 ← i + 1#usize
+         ok (cont i3)
+    else ok (done i)
+  else ok (done i)
+
+/-- [silver_crypto_simd::kzg::verify::same_bytes]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 283:4-285:5 -/
+@[rust_loop]
+def kzg.verify.same_bytes_loop
+  (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
+  Result Std.Usize
+  := do
+  loop
+    (fun i1 => kzg.verify.same_bytes_loop.body a b i1)
+    i
+
+/-- [silver_crypto_simd::kzg::verify::same_bytes]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 281:0-287:1 -/
+def kzg.verify.same_bytes
+  (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) : Result Bool := do
+  let i ← kzg.verify.same_bytes_loop a b 0#usize
+  ok (i = bls.COMPRESSED_LEN)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:12-251:13
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.verify.Deduplicated.fill_loop0_loop0.body
+  (v : alloc.vec.Vec (Array Std.U8 48#usize))
+  (commitments : Slice (Array Std.U8 48#usize)) (k : Std.Usize)
+  (found : Std.Usize) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  let i1 := alloc.vec.Vec.len v
+  if i < i1
+  then
+    let a ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array Std.U8
+        48#usize)) v i
+    let a1 ← Slice.index_usize commitments k
+    let b ← kzg.verify.same_bytes a a1
+    if b
+    then ok (done i)
+    else let i2 ← i + 1#usize
+         ok (cont i2)
+  else ok (done found)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:12-251:13
+    Visibility: public -/
+@[rust_loop]
+def kzg.verify.Deduplicated.fill_loop0_loop0
+  (v : alloc.vec.Vec (Array Std.U8 48#usize))
+  (commitments : Slice (Array Std.U8 48#usize)) (k : Std.Usize)
+  (found : Std.Usize) (i : Std.Usize) :
+  Result Std.Usize
+  := do
+  loop
+    (fun i1 => kzg.verify.Deduplicated.fill_loop0_loop0.body v commitments k
+      found i1)
+    i
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 242:8-256:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.verify.Deduplicated.fill_loop0.body
+  (commitments : Slice (Array Std.U8 48#usize))
+  (iter : core.ops.range.Range Std.Usize)
+  (v : alloc.vec.Vec (Array Std.U8 48#usize)) (v1 : alloc.vec.Vec Std.Usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    (Array Std.U8 48#usize)) × (alloc.vec.Vec Std.Usize)) ((alloc.vec.Vec
+    (Array Std.U8 48#usize)) × (alloc.vec.Vec Std.Usize)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (v, v1))
+  | some k =>
+    let found := alloc.vec.Vec.len v
+    let found1 ←
+      kzg.verify.Deduplicated.fill_loop0_loop0 v commitments k found 0#usize
+    let i := alloc.vec.Vec.len v
+    let v2 ←
+      if found1 = i
+      then do
+           let a ← Slice.index_usize commitments k
+           alloc.vec.Vec.push v a
+      else ok v
+    let v3 ← alloc.vec.Vec.push v1 found1
+    ok (cont (iter1, v2, v3))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 242:8-256:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.verify.Deduplicated.fill_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (v : alloc.vec.Vec (Array Std.U8 48#usize)) (v1 : alloc.vec.Vec Std.Usize)
+  (commitments : Slice (Array Std.U8 48#usize)) :
+  Result ((alloc.vec.Vec (Array Std.U8 48#usize)) × (alloc.vec.Vec Std.Usize))
+  := do
+  loop
+    (fun (iter1, v2, v3) => kzg.verify.Deduplicated.fill_loop0.body commitments
+      iter1 v2 v3)
+    (iter, v, v1)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 239:4-257:5
+    Visibility: public -/
+def kzg.verify.Deduplicated.fill
+  (self : kzg.verify.Deduplicated)
+  (commitments : Slice (Array Std.U8 48#usize)) :
+  Result kzg.verify.Deduplicated
+  := do
+  let a := Array.repeat 48#usize 0#u8
+  let v ←
+    alloc.vec.Vec.resize (core.clone.CloneArray 48#usize core.clone.CloneU8)
+      self.unique 0#usize a
+  let v1 ←
+    alloc.vec.Vec.resize core.clone.CloneUsize self.index_of_cell 0#usize
+      0#usize
+  let i := Slice.len commitments
+  let (v2, v3) ←
+    kzg.verify.Deduplicated.fill_loop0 { start := 0#usize, «end» := i } v v1
+      commitments
+  ok { unique := v2, index_of_cell := v3 }
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 193:12-198:13 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
+  (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
+  (k : Std.Usize) (c : Std.Usize) (iter : core.ops.range.Range Std.Usize)
+  (v2 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr)) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v2)
+  | some j =>
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v1 k
+    let i ← k * kzg.FIELD_ELEMENTS_PER_CELL
+    let i1 ← i + j
+    let bf1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v i1
+    let term ← kzg.blst_ops.fr_mul bf bf1
+    let i2 ← c * kzg.FIELD_ELEMENTS_PER_CELL
+    let at1 ← i2 + j
+    let bf2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v2 at1
+    let bf3 ← kzg.blst_ops.fr_add bf2 term
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        blst.blst_fr) v2 at1
+    let v3 := index_mut_back bf3
+    ok (cont (iter1, v3))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 193:12-198:13 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec blst.blst_fr) (v2 : alloc.vec.Vec blst.blst_fr)
+  (k : Std.Usize) (c : Std.Usize) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v3) =>
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body v
+      v1 k c iter1 v3)
+    (iter, v2)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 190:8-199:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
+  (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
+  (cell_indices : Slice Std.U64) (iter : core.ops.range.Range Std.Usize)
+  (v2 : alloc.vec.Vec blst.blst_fr) (v3 : alloc.vec.Vec Bool) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × (alloc.vec.Vec Bool)) ((alloc.vec.Vec blst.blst_fr) ×
+    (alloc.vec.Vec Bool)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (v2, v3))
+  | some k =>
+    let i ← Slice.index_usize cell_indices k
+    let c ← lift (UScalar.cast .Usize i)
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Bool) v3 c
+    let v4 := index_mut_back true
+    let v5 ←
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
+        { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL } v v1 v2 k
+        c
+    ok (cont (iter1, v5, v4))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 190:8-199:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec blst.blst_fr) (v2 : alloc.vec.Vec blst.blst_fr)
+  (v3 : alloc.vec.Vec Bool) (cell_indices : Slice Std.U64) :
+  Result ((alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec Bool))
+  := do
+  loop
+    (fun (iter1, v4, v5) =>
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body v v1
+      cell_indices iter1 v4 v5)
+    (iter, v2, v3)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 3:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 209:12-212:13 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
+  (v : alloc.vec.Vec blst.blst_fr) (c : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize) (v1 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr)) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v1)
+  | some j =>
+    let i ← c * kzg.FIELD_ELEMENTS_PER_CELL
+    let i1 ← kzg.domain.reverse_bits j kzg.verify.LOG_CELL
+    let i2 ← i + i1
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v i2
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        blst.blst_fr) v1 j
+    let v2 := index_mut_back bf
+    ok (cont (iter1, v2))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 3:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 209:12-212:13 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec blst.blst_fr) (c : Std.Usize) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v2) =>
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body v
+      c iter1 v2)
+    (iter, v1)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 4:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 220:12-224:13 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
+  (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
+  (c : Std.Usize) (iter : core.ops.range.Range Std.Usize)
+  (v2 : alloc.vec.Vec blst.blst_fr) (factor : blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × blst.blst_fr) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v2)
+  | some i =>
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v1 i
+    let term ← kzg.blst_ops.fr_mul bf factor
+    let bf1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v2 i
+    let bf2 ← kzg.blst_ops.fr_add bf1 term
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        blst.blst_fr) v2 i
+    let bf3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v c
+    let factor1 ← kzg.blst_ops.fr_mul factor bf3
+    let v3 := index_mut_back bf2
+    ok (cont (iter1, v3, factor1))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 4:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 220:12-224:13 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec blst.blst_fr) (v2 : alloc.vec.Vec blst.blst_fr)
+  (c : Std.Usize) (factor : blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v3, factor1) =>
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body v
+      v1 c iter1 v3 factor1)
+    (iter, v2, factor)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 2:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-225:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
+  (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec Bool) (iter : core.ops.range.Range Std.Usize)
+  (v2 : alloc.vec.Vec blst.blst_fr) (v3 : alloc.vec.Vec blst.blst_fr)
+  (v4 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × (alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec
+    blst.blst_fr)) (kzg.cosets.Cosets × (alloc.vec.Vec blst.blst_fr) ×
+    (alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec blst.blst_fr)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (c, v2, v3, v4))
+  | some c1 =>
+    let b ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Bool) v1 c1
+    if b
+    then
+      let v5 ←
+        kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
+          { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL } v v2 c1
+      let (s, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut v3)
+      let s1 := alloc.vec.Vec.deref v5
+      let s2 := alloc.vec.Vec.deref c.inverse_roots
+      let s3 ← kzg.fft.inverse_fft s s1 s2 c.inverse_size
+      let factor ← kzg.blst_ops.fr_from_u64 1#u64
+      let v6 := deref_mut_back s3
+      let v7 ←
+        kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
+          { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL }
+          c.shift_inverse v6 v4 c1 factor
+      ok (cont (iter1, v5, v6, v7))
+    else ok (cont (iter1, v2, v3, v4))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 2:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-225:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
+  (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
+  (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec Bool)
+  (v2 : alloc.vec.Vec blst.blst_fr) (v3 : alloc.vec.Vec blst.blst_fr)
+  (v4 : alloc.vec.Vec blst.blst_fr) :
+  Result (kzg.cosets.Cosets × (alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec
+    blst.blst_fr) × (alloc.vec.Vec blst.blst_fr))
+  := do
+  loop
+    (fun (iter1, v5, v6, v7) =>
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body c v v1
+      iter1 v5 v6 v7)
+    (iter, v2, v3, v4)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 184:4-227:5 -/
+def kzg.verify.CellBatchVerifier.interpolation_commitment
+  (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64) :
+  Result (blst.blst_p1 × kzg.verify.CellBatchVerifier)
+  := do
+  let zero ← kzg.blst_ops.fr_from_u64 0#u64
+  let v ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.columns 0#usize
+      zero
+  let i ← kzg.CELLS_PER_EXT_BLOB
+  let i1 ← i * kzg.FIELD_ELEMENTS_PER_CELL
+  let v1 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v i1 zero
+  let v2 ←
+    alloc.vec.Vec.resize core.clone.CloneBool self.column_used 0#usize false
+  let v3 ← alloc.vec.Vec.resize core.clone.CloneBool v2 i false
+  let i2 := Slice.len cell_indices
+  let (v4, v5) ←
+    kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
+      { start := 0#usize, «end» := i2 } self.evaluations self.r_powers v1 v3
+      cell_indices
+  let v6 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
+      0#usize zero
+  let v7 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v6
+      kzg.FIELD_ELEMENTS_PER_CELL zero
+  let v8 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.column
+      kzg.FIELD_ELEMENTS_PER_CELL zero
+  let v9 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.coefficients
+      kzg.FIELD_ELEMENTS_PER_CELL zero
+  let (c, v10, v11, v12) ←
+    kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
+      { start := 0#usize, «end» := i } self.cosets v4 v5 v8 v9 v7
+  let s := alloc.vec.Vec.deref self.setup.g1_monomial
+  let s1 := alloc.vec.Vec.deref v12
+  let (bp, ls) ← kzg.blst_ops.g1_lincomb s s1 self.lincomb
+  ok (bp,
+    {
+      self
+        with
+        cosets := c,
+        columns := v4,
+        column_used := v5,
+        column := v10,
+        coefficients := v11,
+        interpolation := v12,
+        lincomb := ls
+    })
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 149:8-152:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop0.body
+  (r : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (v : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × blst.blst_fr) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v)
+  | some _ =>
+    let v1 ← alloc.vec.Vec.push v power
+    let power1 ← kzg.blst_ops.fr_mul power r
+    ok (cont (iter1, v1, power1))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 149:8-152:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop0
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (r : blst.blst_fr) (power : blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v1, power1) =>
+      kzg.verify.CellBatchVerifier.pairing_holds_loop0.body r iter1 v1 power1)
+    (iter, v, power)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-160:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
+  (v : alloc.vec.Vec Std.Usize) (v1 : alloc.vec.Vec blst.blst_fr)
+  (iter : core.ops.range.Range Std.Usize) (v2 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr)) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v2)
+  | some k =>
+    let i ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.Usize) v k
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v2 i
+    let bf1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v1 k
+    let bf2 ← kzg.blst_ops.fr_add bf bf1
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        blst.blst_fr) v2 i
+    let v3 := index_mut_back bf2
+    ok (cont (iter1, v3))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-160:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop1
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec Std.Usize)
+  (v1 : alloc.vec.Vec blst.blst_fr) (v2 : alloc.vec.Vec blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v3) => kzg.verify.CellBatchVerifier.pairing_holds_loop1.body v
+      v1 iter1 v3)
+    (iter, v2)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 2:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 166:8-169:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop2.body
+  (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
+  (cell_indices : Slice Std.U64) (iter : core.ops.range.Range Std.Usize)
+  (v1 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr)) (kzg.cosets.Cosets × (alloc.vec.Vec blst.blst_fr)))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (c, v1))
+  | some k =>
+    let i ← Slice.index_usize cell_indices k
+    let i1 ← lift (UScalar.cast .Usize i)
+    let shift ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        c.shift_pow_cell i1
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v k
+    let bf1 ← kzg.blst_ops.fr_mul bf shift
+    let v2 ← alloc.vec.Vec.push v1 bf1
+    ok (cont (iter1, v2))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 2:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 166:8-169:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.pairing_holds_loop2
+  (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
+  (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
+  (cell_indices : Slice Std.U64) :
+  Result (kzg.cosets.Cosets × (alloc.vec.Vec blst.blst_fr))
+  := do
+  loop
+    (fun (iter1, v2) => kzg.verify.CellBatchVerifier.pairing_holds_loop2.body c
+      v cell_indices iter1 v2)
+    (iter, v1)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 144:4-179:5 -/
+def kzg.verify.CellBatchVerifier.pairing_holds
+  (self : kzg.verify.CellBatchVerifier) (r : blst.blst_fr)
+  (cell_indices : Slice Std.U64) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let n := Slice.len cell_indices
+  let zero ← kzg.blst_ops.fr_from_u64 0#u64
+  let v ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.r_powers
+      0#usize zero
+  let power ← kzg.blst_ops.fr_from_u64 1#u64
+  let v1 ←
+    kzg.verify.CellBatchVerifier.pairing_holds_loop0
+      { start := 0#usize, «end» := n } v r power
+  let s := alloc.vec.Vec.deref self.proof_points
+  let s1 := alloc.vec.Vec.deref v1
+  let (ll, ls) ← kzg.blst_ops.g1_lincomb s s1 self.lincomb
+  let v2 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.scalars 0#usize
+      zero
+  let i := alloc.vec.Vec.len self.commitments.unique
+  let v3 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v2 i zero
+  let v4 ←
+    kzg.verify.CellBatchVerifier.pairing_holds_loop1
+      { start := 0#usize, «end» := n } self.commitments.index_of_cell v1 v3
+  let s2 := alloc.vec.Vec.deref self.commitment_points
+  let s3 := alloc.vec.Vec.deref v4
+  let (rlc, ls1) ← kzg.blst_ops.g1_lincomb s2 s3 ls
+  let (rli, self1) ←
+    kzg.verify.CellBatchVerifier.interpolation_commitment
+      { self with r_powers := v1, scalars := v4, lincomb := ls1 } cell_indices
+  let v5 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self1.scalars
+      0#usize zero
+  let (c, v6) ←
+    kzg.verify.CellBatchVerifier.pairing_holds_loop2
+      { start := 0#usize, «end» := n } self1.cosets self1.r_powers v5
+      cell_indices
+  let s4 := alloc.vec.Vec.deref self1.proof_points
+  let s5 := alloc.vec.Vec.deref v6
+  let (rlp, ls2) ← kzg.blst_ops.g1_lincomb s4 s5 self1.lincomb
+  let bp ← kzg.blst_ops.g1_neg rli
+  let bp1 ← kzg.blst_ops.g1_add rlc bp
+  let rl ← kzg.blst_ops.g1_add bp1 rlp
+  let bpa ← kzg.blst_ops.g1_to_affine ll
+  let bpa1 ← kzg.blst_ops.g1_to_affine rl
+  let b ←
+    kzg.blst_ops.pairing_check bpa self1.setup.g2_s_pow_cell bpa1
+      self1.setup.g2_neg_generator
+  ok (b, { self1 with cosets := c, scalars := v6, lincomb := ls2 })
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 128:8-138:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.decode_cell_loop.body
+  (cell : Array Std.U8 2048#usize) (self : kzg.verify.CellBatchVerifier)
+  (j : Std.Usize) :
+  Result (ControlFlow (kzg.verify.CellBatchVerifier × Std.Usize)
+    (kzg.verify.CellBatchVerifier × Std.Usize))
+  := do
+  if j < kzg.FIELD_ELEMENTS_PER_CELL
+  then
+    let bytes := Array.repeat 32#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i ← j * kzg.BYTES_PER_FIELD_ELEMENT
+    let i1 ← j + 1#usize
+    let i2 ← i1 * kzg.BYTES_PER_FIELD_ELEMENT
+    let s1 ←
+      core.array.Array.index (core.ops.index.IndexSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) cell
+        { start := i, «end» := i2 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let bytes1 := to_slice_mut_back s2
+    let o ← kzg.blst_ops.fr_from_bytes bytes1
+    match o with
+    | none => ok (done (self, j))
+    | some value =>
+      let v ← alloc.vec.Vec.push self.evaluations value
+      ok (cont ({ self with evaluations := v }, i1))
+  else ok (done (self, j))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 128:8-138:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.decode_cell_loop
+  (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize)
+  (j : Std.Usize) :
+  Result (kzg.verify.CellBatchVerifier × Std.Usize)
+  := do
+  loop
+    (fun (self1, j1) => kzg.verify.CellBatchVerifier.decode_cell_loop.body cell
+      self1 j1)
+    (self, j)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 126:4-140:5 -/
+def kzg.verify.CellBatchVerifier.decode_cell
+  (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let (self1, j) ←
+    kzg.verify.CellBatchVerifier.decode_cell_loop self cell 0#usize
+  ok (j = kzg.FIELD_ELEMENTS_PER_CELL, self1)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 120:8-122:9 -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.decode_cells_loop.body
+  (cells : Slice (Array Std.U8 2048#usize))
+  (self : kzg.verify.CellBatchVerifier) (k : Std.Usize) :
+  Result (ControlFlow (kzg.verify.CellBatchVerifier × Std.Usize)
+    (kzg.verify.CellBatchVerifier × Std.Usize))
+  := do
+  let i := Slice.len cells
+  if k < i
+  then
+    let a ← Slice.index_usize cells k
+    let (b, self1) ← kzg.verify.CellBatchVerifier.decode_cell self a
+    if b
+    then let k1 ← k + 1#usize
+         ok (cont (self1, k1))
+    else ok (done (self1, k))
+  else ok (done (self, k))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 120:8-122:9 -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.decode_cells_loop
+  (self : kzg.verify.CellBatchVerifier)
+  (cells : Slice (Array Std.U8 2048#usize)) (k : Std.Usize) :
+  Result (kzg.verify.CellBatchVerifier × Std.Usize)
+  := do
+  loop
+    (fun (self1, k1) => kzg.verify.CellBatchVerifier.decode_cells_loop.body
+      cells self1 k1)
+    (self, k)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 117:4-124:5 -/
+def kzg.verify.CellBatchVerifier.decode_cells
+  (self : kzg.verify.CellBatchVerifier)
+  (cells : Slice (Array Std.U8 2048#usize)) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let bf ← kzg.blst_ops.fr_from_u64 0#u64
+  let v ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations
+      0#usize bf
+  let (self1, k) ←
+    kzg.verify.CellBatchVerifier.decode_cells_loop
+      { self with evaluations := v } cells 0#usize
+  let i := Slice.len cells
+  ok (k = i, self1)
+
+/-- [silver_crypto_simd::kzg::verify::decode_points]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 271:4-277:5 -/
+@[rust_loop_body]
+def kzg.verify.decode_points_loop.body
+  (encodings : Slice (Array Std.U8 48#usize))
+  (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+  (points : alloc.vec.Vec blst.blst_p1_affine) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec blst.blst_p1_affine) × Std.Usize)
+    ((alloc.vec.Vec blst.blst_p1_affine) × Std.Usize))
+  := do
+  let i1 := Slice.len encodings
+  if i < i1
+  then
+    let o ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Option
+        blst.blst_p1_affine)) decoded i
+    match o with
+    | none => ok (done (points, i))
+    | some point =>
+      let points1 ← alloc.vec.Vec.push points point
+      let i2 ← i + 1#usize
+      ok (cont (points1, i2))
+  else ok (done (points, i))
+
+/-- [silver_crypto_simd::kzg::verify::decode_points]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 271:4-277:5 -/
+@[rust_loop]
+def kzg.verify.decode_points_loop
+  (encodings : Slice (Array Std.U8 48#usize))
+  (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+  (points : alloc.vec.Vec blst.blst_p1_affine) (i : Std.Usize) :
+  Result ((alloc.vec.Vec blst.blst_p1_affine) × Std.Usize)
+  := do
+  loop
+    (fun (points1, i1) => kzg.verify.decode_points_loop.body encodings decoded
+      points1 i1)
+    (points, i)
+
+/-- [silver_crypto_simd::kzg::verify::decode_points]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:0-279:1 -/
+def kzg.verify.decode_points
+  (encodings : Slice (Array Std.U8 48#usize))
+  (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+  (points : alloc.vec.Vec blst.blst_p1_affine) :
+  Result (Bool × (alloc.vec.Vec (Option blst.blst_p1_affine)) ×
+    (alloc.vec.Vec blst.blst_p1_affine))
+  := do
+  let decoded1 ←
+    alloc.vec.Vec.resize (core.option.Option.Insts.CoreCloneClone
+      blst.blst_p1_affine.Insts.CoreCloneClone) decoded 0#usize none
+  let i := Slice.len encodings
+  let decoded2 ←
+    alloc.vec.Vec.resize (core.option.Option.Insts.CoreCloneClone
+      blst.blst_p1_affine.Insts.CoreCloneClone) decoded1 i none
+  let (s, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut decoded2)
+  let s1 ← bls.uncompress_in_g1 encodings s
+  let bpa ← blst.blst_p1_affine.Insts.CoreDefaultDefault.default
+  let points1 ←
+    alloc.vec.Vec.resize blst.blst_p1_affine.Insts.CoreCloneClone points
+      0#usize bpa
+  let decoded3 := deref_mut_back s1
+  let (points2, i1) ←
+    kzg.verify.decode_points_loop encodings decoded3 points1 0#usize
+  let i2 := Slice.len encodings
+  ok (i1 = i2, decoded3, points2)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_proofs]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 113:4-115:5 -/
+def kzg.verify.CellBatchVerifier.decode_proofs
+  (self : kzg.verify.CellBatchVerifier)
+  (proofs : Slice (Array Std.U8 48#usize)) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let (b, v, v1) ←
+    kzg.verify.decode_points proofs self.decoded self.proof_points
+  ok (b, { self with decoded := v, proof_points := v1 })
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_commitments]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 109:4-111:5 -/
+def kzg.verify.CellBatchVerifier.decode_commitments
+  (self : kzg.verify.CellBatchVerifier) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let s := alloc.vec.Vec.deref self.commitments.unique
+  let (b, v, v1) ←
+    kzg.verify.decode_points s self.decoded self.commitment_points
+  ok (b, { self with decoded := v, commitment_points := v1 })
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 89:8-91:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.verify.CellBatchVerifier.verify_loop.body
+  (cell_indices : Slice Std.U64) (n : Std.Usize) (k : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if k < n
+  then
+    let i ← Slice.index_usize cell_indices k
+    let i1 ← kzg.CELLS_PER_EXT_BLOB
+    let i2 ← lift (UScalar.cast .U64 i1)
+    if i < i2
+    then let k1 ← k + 1#usize
+         ok (cont k1)
+    else ok (done k)
+  else ok (done k)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 89:8-91:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.verify.CellBatchVerifier.verify_loop
+  (cell_indices : Slice Std.U64) (n : Std.Usize) (k : Std.Usize) :
+  Result Std.Usize
+  := do
+  loop
+    (fun k1 => kzg.verify.CellBatchVerifier.verify_loop.body cell_indices n k1)
+    k
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 77:4-107:5
+    Visibility: public -/
+def kzg.verify.CellBatchVerifier.verify
+  (self : kzg.verify.CellBatchVerifier)
+  (commitments : Slice (Array Std.U8 48#usize)) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) :
+  Result (Bool × kzg.verify.CellBatchVerifier)
+  := do
+  let n := Slice.len commitments
+  let i := Slice.len cell_indices
+  if i != n
+  then ok (false, self)
+  else
+    let i1 := Slice.len cells
+    if i1 != n
+    then ok (false, self)
+    else
+      let i2 := Slice.len proofs
+      if i2 != n
+      then ok (false, self)
+      else
+        let k ←
+          kzg.verify.CellBatchVerifier.verify_loop cell_indices n 0#usize
+        if k < n
+        then ok (false, self)
+        else
+          let d ← kzg.verify.Deduplicated.fill self.commitments commitments
+          let (b, self1) ←
+            kzg.verify.CellBatchVerifier.decode_commitments
+              { self with commitments := d }
+          if b
+          then
+            let (b1, self2) ←
+              kzg.verify.CellBatchVerifier.decode_cells self1 cells
+            if b1
+            then
+              let (b2, self3) ←
+                kzg.verify.CellBatchVerifier.decode_proofs self2 proofs
+              if b2
+              then
+                let s := alloc.vec.Vec.deref self3.commitments.unique
+                let s1 := alloc.vec.Vec.deref self3.commitments.index_of_cell
+                let (r, p) ←
+                  kzg.challenge.Preimage.challenge self3.preimage s s1
+                    cell_indices cells proofs
+                kzg.verify.CellBatchVerifier.pairing_holds
+                  { self3 with preimage := p } r cell_indices
+              else ok (false, self3)
+            else ok (false, self2)
+          else ok (false, self1)
+
+/-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 232:9-232:16 -/
+@[reducible]
+def kzg.verify.Deduplicated.Insts.CoreDefaultDefault : core.default.Default
+  kzg.verify.Deduplicated := {
+  default := kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
+}
+
+end KzgScope
 
 end silver_crypto_simd

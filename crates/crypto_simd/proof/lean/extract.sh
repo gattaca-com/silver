@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: extract.sh [--check]
 #
-# Regenerate LeanBlsSimd/Extracted/{Types,Funs}.lean from crates/crypto_simd/src/bls using Charon
+# Regenerate LeanBlsSimd/Extracted/{Types,Funs}.lean from crates/crypto_simd/src using Charon
 # and Aeneas, then print the diff. By default, replace the checked-in files with the result.
 # With --check, leave them unchanged and exit 1 if the comparison finds a difference.
 # The handwritten TypesExternal.lean and FunsExternal.lean are left unchanged.
@@ -66,10 +66,16 @@ trap 'rm -rf "$work"' EXIT
 
 # A separate target directory keeps Charon's nightly build out of the workspace's `target/`.
 # `fp8::lanes` is a `transmute`, which Aeneas cannot translate; FunsExternal.lean defines it.
+# Each blst wrapper stays external; making the whole module opaque crashes this Aeneas revision.
+opq=()
+while read -r function; do
+  opq+=(--opaque "crate::kzg::blst_ops::$function")
+done < <(sed -n 's/^pub fn \([a-z0-9_]*\).*/\1/p' "$crate_dir/src/kzg/blst_ops.rs")
 (cd "$crate_dir" &&
   CARGO_TARGET_DIR="$work/target" "$charon" cargo --preset aeneas \
     --start-from crate::bls::decompress_g2::decompress --start-from crate::bls::uncompress_in_g1 \
     --start-from crate::bls::uncompress_in_g2 \
+    --start-from crate::kzg::verify "${opq[@]}" \
     --opaque crate::bls::fp8::lanes --opaque crate::bls::simd_available \
     --opaque crate::bls::uncompress_in_g1_blst --opaque crate::bls::uncompress_in_g2_blst \
     --dest-file "$work/silver_crypto_simd.llbc")
@@ -77,24 +83,8 @@ trap 'rm -rf "$work"' EXIT
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_crypto_simd.llbc"
 
-# Abstract feature detection and both total scalar externals. Lean adds this instance
-# parameter only to generated definitions whose bodies use it; the kernels stay unchanged.
-python3 -I - "$work/lean/LeanBlsSimd/Extracted/Funs.lean" <<'PY'
-from pathlib import Path
-import re
-import sys
-path = Path(sys.argv[1])
-source = path.read_text()
-anchor = "namespace silver_crypto_simd\n"
-if source.count(anchor) != 1:
-    raise SystemExit("expected exactly one silver_crypto_simd namespace")
-source = source.replace(anchor, anchor + "\nvariable [bls.BlsExternals]\n", 1)
-# `full` is a keyword in the imported Lean environment. Quoting preserves its name.
-source, full_count = re.subn(r"\bfull\b", "«full»", source)
-if full_count != 6:
-    raise SystemExit(f"expected six generated full identifiers, found {full_count}")
-path.write_text(source)
-PY
+# Supply the external dictionary, quote reserved identifiers and hoist setup rows.
+python3 -I "$lean_dir/prepare-extraction.py" "$work/lean/LeanBlsSimd/Extracted/Funs.lean"
 
 for f in Types.lean Funs.lean; do
   for side in "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f"; do

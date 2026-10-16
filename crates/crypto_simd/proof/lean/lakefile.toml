@@ -1,5 +1,5 @@
 name = "lean_bls_simd"
-defaultTargets = ["LeanBlsSimd"]
+defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms"]
 
 [leanOptions]
 autoImplicit = false
@@ -25,6 +25,9 @@ subDir = "backends/lean"
 
 [[lean_lib]]
 name = "LeanBlsSimd"
+
+[[lean_lib]]
+name = "controls"
 
 [[lean_lib]]
 name = "Differential"
