@@ -1,4 +1,5 @@
 import LeanBlsSimd.Refines.Complete
+import LeanBlsSimd.Refines.WrapperLengths
 import LeanBlsSimd.Model.UncompressG2
 import LeanBlsSimd.Spec.G2Encoding
 
@@ -79,13 +80,6 @@ theorem uncompress_in_g2_eq_spec_model_list [BlsExternals] (hblst : BlstMatchesS
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val.map (Option.map ofBlstP2Affine) =
         inputs.val.map (G2Spec.verdict ∘ ofArray ofU8) := by
-  sorry
-
-/-- Aeneas represents the Rust assertion failure without its panic message. -/
-theorem uncompress_in_g2_length_mismatch [BlsExternals]
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
-    (hlen : out.val.length ≠ inputs.val.length) :
-    silver_crypto_simd.bls.uncompress_in_g2 inputs out = fail .assertionFailure := by
   sorry
 
 end LeanBlsSimd.UncompressG2
