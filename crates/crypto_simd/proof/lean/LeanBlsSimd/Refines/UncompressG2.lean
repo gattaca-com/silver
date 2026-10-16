@@ -1,7 +1,7 @@
 import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.WrapperLengths
 import LeanBlsSimd.Model.UncompressG2
-import LeanBlsSimd.Spec.G2Encoding
+import LeanBlsSimd.Proofs.UncompressG2
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
@@ -19,6 +19,13 @@ def specVerdict (bytes : Array U8 96#usize) : Option blst.blst_p2_affine :=
 /-- Agreement includes acceptance and every affine limb, including infinity's zero limbs. -/
 def BlstMatchesSpec [BlsExternals] : Prop :=
   ∀ bytes : Array U8 96#usize, BlsExternals.uncompressG2 bytes = specVerdict bytes
+
+theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : blst.blst_p2_affine) :
+    specVerdict bytes = some p ↔
+      ∃ P, EthCryptographySpecs.Bls.G2.uncompress (toBytes (ofArray ofU8 bytes)) = .ok P ∧
+        EthCryptographySpecs.Bls.G2.inSubgroup P = true ∧
+        p = toBlstP2Affine (G2Spec.blstLimbs P) := by
+  sorry
 
 def usesKernelAt [BlsExternals] (inputs : Slice (Array U8 96#usize)) (i : ℕ) : Bool :=
   usesKernel BlsExternals.simdAvailable (inputs.val.map (ofArray ofU8)) i
