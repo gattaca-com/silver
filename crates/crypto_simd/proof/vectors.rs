@@ -17,7 +17,7 @@
 #[path = "../src/bls/tests/g2_cases.rs"]
 mod g2_cases;
 
-use std::{collections::BTreeMap, fmt::Write as _};
+use std::{collections::BTreeMap, fmt::Write as _, panic::catch_unwind};
 
 use blst::{blst_p2, blst_p2_add_or_double, blst_p2_generator};
 use g2_cases::{G2_INFINITY, G2_KINDS, G2Cases, G2Kind, compress_g2, uncompress_g2};
@@ -126,52 +126,89 @@ struct Wrapper {
 }
 
 impl Recorded {
+    /// Read the declared numbers of batches and wrappers in order and require
+    /// an `endfile` marker. A truncated recording panics instead of
+    /// checking fewer cases.
     fn parse_file(text: &str) -> (Vec<Recorded>, Vec<Wrapper>) {
-        let mut lines =
-            text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'));
-        let mut next = |key: &str| -> Vec<String> {
-            let words: Vec<_> =
-                lines.next().expect("truncated G2 fixture").split_whitespace().collect();
-            assert_eq!(words[0], key);
-            words[1..].iter().map(|s| (*s).into()).collect()
+        let mut lines = text
+            .lines()
+            .enumerate()
+            .map(|(i, line)| (i + 1, line.trim()))
+            .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'));
+        let mut next = |key: &str, count: Option<usize>| -> (usize, Vec<String>) {
+            let (n, line) = lines.next().unwrap_or_else(|| {
+                panic!("{VECTORS}:{}: ends before `{key}`", text.lines().count() + 1)
+            });
+            let mut words = line.split_whitespace();
+            assert_eq!(words.next(), Some(key), "{VECTORS}:{n}: expected `{key}`");
+            let words: Vec<_> = words.map(str::to_owned).collect();
+            if let Some(count) = count {
+                assert_eq!(
+                    words.len(),
+                    count,
+                    "{VECTORS}:{n}: expected {count} fields after `{key}`"
+                );
+            }
+            (n, words)
         };
-        let hex = |s: &str| u64::from_str_radix(s, 16).unwrap();
-        let point = |words: &[String]| -> [u64; 24] {
-            assert_eq!(words.len(), 24);
-            std::array::from_fn(|i| hex(&words[i]))
+        let hex = |word: &str, n: usize| {
+            u64::from_str_radix(word, 16)
+                .unwrap_or_else(|_| panic!("{VECTORS}:{n}: invalid hex word `{word}`"))
         };
-        let verdict = |words: &[String], lane: usize| -> Option<[u64; 24]> {
-            assert_eq!(words[0], lane.to_string());
+        let number = |word: &str, n: usize| {
+            word.parse::<usize>()
+                .unwrap_or_else(|_| panic!("{VECTORS}:{n}: invalid integer `{word}`"))
+        };
+        let point = |words: &[String], n: usize| -> [u64; 24] {
+            assert_eq!(words.len(), 24, "{VECTORS}:{n}: expected 24 point words");
+            std::array::from_fn(|i| hex(&words[i], n))
+        };
+        let verdict = |words: &[String], lane: usize, n: usize| -> Option<[u64; 24]> {
+            assert!(words.len() >= 2, "{VECTORS}:{n}: expected a lane and verdict");
+            assert_eq!(words[0], lane.to_string(), "{VECTORS}:{n}: expected lane {lane}");
             if words[1] == "none" {
-                assert_eq!(words.len(), 2);
+                assert_eq!(words.len(), 2, "{VECTORS}:{n}: unexpected words after `none`");
                 None
             } else {
-                Some(point(&words[1..]))
+                Some(point(&words[1..], n))
             }
         };
-        assert_eq!(next("seed").len(), 1);
-        let count: usize = next("batches")[0].parse().unwrap();
-        assert!(count > 0);
+        next("seed", Some(1));
+        let (n, words) = next("batches", Some(1));
+        let count = number(&words[0], n);
+        assert!(count > 0, "{VECTORS}:{n}: no batches");
         let mut batches = Vec::new();
         for index in 0..count {
-            let batch = next("batch");
-            assert_eq!(batch.len(), 2);
-            assert_eq!(batch[0], index.to_string());
+            let (n, batch) = next("batch", Some(2));
+            assert_eq!(batch[0], index.to_string(), "{VECTORS}:{n}: expected batch {index}");
             let inputs = std::array::from_fn(|_| {
-                let digits = &next("in")[0];
-                assert_eq!(digits.len(), 192);
-                std::array::from_fn(|i| u8::from_str_radix(&digits[2 * i..2 * i + 2], 16).unwrap())
+                let (n, words) = next("in", Some(1));
+                let digits = &words[0];
+                assert!(
+                    digits.is_ascii() && digits.len() == 192,
+                    "{VECTORS}:{n}: expected 192 input hex digits"
+                );
+                std::array::from_fn(|i| {
+                    u8::from_str_radix(&digits[2 * i..2 * i + 2], 16)
+                        .unwrap_or_else(|_| panic!("{VECTORS}:{n}: invalid input hex"))
+                })
             });
-            let on_curve = u8::try_from(hex(&next("on_curve")[0])).unwrap();
-            let valid = u8::try_from(hex(&next("valid")[0])).unwrap();
-            let undecided = u8::try_from(hex(&next("undecided")[0])).unwrap();
+            let mut mask = |key: &str| {
+                let (n, words) = next(key, Some(1));
+                u8::try_from(hex(&words[0], n))
+                    .unwrap_or_else(|_| panic!("{VECTORS}:{n}: `{key}` mask out of range"))
+            };
+            let (on_curve, valid, undecided) = (mask("on_curve"), mask("valid"), mask("undecided"));
             let points = std::array::from_fn(|lane| {
-                let words = next("pt");
-                assert_eq!(words[0], lane.to_string());
-                point(&words[1..])
+                let (n, words) = next("pt", Some(25));
+                assert_eq!(words[0], lane.to_string(), "{VECTORS}:{n}: expected lane {lane}");
+                point(&words[1..], n)
             });
-            let blst = std::array::from_fn(|lane| verdict(&next("blst"), lane));
-            assert!(next("end").is_empty());
+            let blst = std::array::from_fn(|lane| {
+                let (n, words) = next("blst", None);
+                verdict(&words, lane, n)
+            });
+            next("end", Some(0));
             batches.push(Recorded {
                 kind: batch[1].clone(),
                 inputs,
@@ -179,28 +216,71 @@ impl Recorded {
                 blst,
             });
         }
-        let count: usize = next("wrappers")[0].parse().unwrap();
-        assert!(count > 0);
+        let (n, words) = next("wrappers", Some(1));
+        let count = number(&words[0], n);
+        assert!(count > 0, "{VECTORS}:{n}: no wrappers");
         let mut wrappers = Vec::new();
         for index in 0..count {
-            let header = next("wrapper");
-            assert_eq!(header[0], index.to_string());
-            let n: usize = header[2].parse().unwrap();
-            let refs = (0..n)
+            let (n, header) = next("wrapper", Some(3));
+            assert_eq!(header[0], index.to_string(), "{VECTORS}:{n}: expected wrapper {index}");
+            let len = number(&header[2], n);
+            let refs = (0..len)
                 .map(|_| {
-                    let r = next("ref");
-                    let (b, l): (usize, usize) = (r[0].parse().unwrap(), r[1].parse().unwrap());
-                    assert!(b < batches.len() && l < LANES);
+                    let (n, r) = next("ref", Some(2));
+                    let (b, l) = (number(&r[0], n), number(&r[1], n));
+                    assert!(
+                        b < batches.len() && l < LANES,
+                        "{VECTORS}:{n}: reference out of range"
+                    );
                     (b, l)
                 })
                 .collect();
-            let output = (0..n).map(|lane| verdict(&next("out"), lane)).collect();
-            assert!(next("end").is_empty());
+            let output = (0..len)
+                .map(|lane| {
+                    let (n, words) = next("out", None);
+                    verdict(&words, lane, n)
+                })
+                .collect();
+            next("end", Some(0));
             wrappers.push(Wrapper { refs, output });
         }
-        assert!(next("endfile").is_empty());
-        assert!(lines.next().is_none(), "text after endfile");
+        next("endfile", Some(0));
+        if let Some((n, _)) = lines.next() {
+            panic!("{VECTORS}:{n}: text after endfile");
+        }
         (batches, wrappers)
+    }
+}
+
+#[test]
+fn fixture_parser_reports_lines_and_truncation() {
+    let text = std::fs::read_to_string(VECTORS).expect(VECTORS);
+    Recorded::parse_file(&format!("\n  # formatting control\n{text}\n"));
+    let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+    let reference = lines.iter().position(|line| line.starts_with("ref ")).unwrap();
+    lines[reference] = "ref 999999 0".into();
+
+    for (input, line, diagnostic) in [
+        ("# comment\n\nwrong control\n".into(), 3, "expected `seed`"),
+        ("seed control\nbatches\n".into(), 2, "expected 1 fields after `batches`"),
+        ("seed control\nbatches invalid\n".into(), 2, "invalid integer `invalid`"),
+        ("seed control\nbatches 1\nbatch 0 control\n".into(), 4, "ends before `in`"),
+        (
+            format!("seed control\nbatches 1\nbatch 0 control\nin {}\n", "z".repeat(192)),
+            4,
+            "invalid input hex",
+        ),
+        (lines.join("\n"), reference + 1, "reference out of range"),
+        (format!("{text}extra\n"), text.lines().count() + 1, "text after endfile"),
+    ] {
+        let error = catch_unwind(|| Recorded::parse_file(&input)).err().expect("fixture must fail");
+        let message = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .expect("string panic");
+        assert!(message.contains(&format!("{VECTORS}:{line}:")), "{message}");
+        assert!(message.contains(diagnostic), "{message}");
     }
 }
 
