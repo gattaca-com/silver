@@ -1,3 +1,5 @@
+# Independent BLS consumers
+
 This independent Lake package imports `lean_bls_simd` by path and inherits its dependency pins. It checks that the public interface of `silver_crypto_simd::bls` is useful to its consumers. Each file models a consumer extracted separately, which declares its own copies of blst's structs and its own externals class, and uses the published theorems across that boundary. It does not model calls between sibling `bls` and `kzg` modules extracted together in one crate, where the extraction can share the blst structs directly.
 
 Each file follows the same pattern for one public wrapper:
@@ -13,7 +15,7 @@ These are interoperability demonstrations, not changes to any consumer's extract
 
 ## `G1Smoke.lean`
 
-A G1 consumer decodes commitments or proofs. This file models one, extracted separately under the example namespace `silver_kzg`. It copies `blst_fp` and `blst_p1_affine`, and imports `LeanBlsSimd.Refines.UncompressG1`. The namespace is an example consumer name; the crate's sibling `kzg` module uses the shared generated decoder and shared structs directly.
+A G1 consumer decodes commitments or proofs. This file models one, extracted separately under the example namespace `silver_kzg`. It copies `blst_fp` and `blst_p1_affine`, and imports `LeanBlsSimd.Refines.UncompressG1`.
 
 ## `G2Smoke.lean`
 
