@@ -66,19 +66,19 @@ pub trait ColumnSpec {
 pub struct Previous;
 impl ColumnSpec for Previous {
     type Val = u8;
-    type Page = [B256; 32];
+    type Page = [B256; 256];
 }
 
 pub struct Current;
 impl ColumnSpec for Current {
     type Val = u8;
-    type Page = [B256; 32];
+    type Page = [B256; 256];
 }
 
 pub struct Balances;
 impl ColumnSpec for Balances {
     type Val = u64;
-    type Page = [B256; 32];
+    type Page = [B256; 16];
 }
 
 pub type PreviousParticipationGroup = ColumnGroup<Previous>;
