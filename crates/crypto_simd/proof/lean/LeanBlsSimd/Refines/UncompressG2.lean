@@ -77,7 +77,7 @@ theorem uncompress_in_g2_eq_spec_or_blst [BlsExternals]
       have he := decompress_eq_verdict _ ⟨i.val % 8, Nat.mod_lt _ (by decide)⟩ hu
       simp only [Fin.getElem_fin] at he
       rw [he]
-      simp only [Fin.getElem_fin, hc, specVerdict, usesKernelAt, hk, ↓reduceIte]
+      simp only [hc, specVerdict, usesKernelAt, hk, ↓reduceIte]
     · have hf : usesKernelAt inputs i.val = false := Bool.eq_false_iff.mpr hk
       simp only [usesKernelAt] at hf
       simp only [hf, Bool.false_eq_true, ↓reduceIte, usesKernelAt]

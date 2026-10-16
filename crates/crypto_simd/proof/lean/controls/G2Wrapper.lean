@@ -42,6 +42,30 @@ example : (uncompress true fallback [rejected, rejected, rejected]).map Option.i
 example : (uncompress true fallback (List.replicate 7 rejected)).map Option.isSome ≠
     (uncompressWith 8 false false true fallback (List.replicate 7 rejected)).map Option.isSome := by decide +kernel
 
+-- Tail routing after a full chunk: index 8 of 9 is scalar, indices 8–10 of 11 use the kernel.
+example : (uncompress true fallback (List.replicate 9 rejected)).map Option.isSome =
+    List.replicate 8 false ++ [true] := by decide +kernel
+
+example : (uncompress true fallback (List.replicate 11 rejected)).map Option.isSome =
+    List.replicate 11 false := by decide +kernel
+
+/-- The fallback reads the chunk's first input instead of its own. -/
+def uncompressFirstFallback (simd : Bool) (blst : Encoding → Option BlstP2Affine)
+    (inputs : List Encoding) : List (Option BlstP2Affine) :=
+  (List.range inputs.length).map fun i =>
+    if usesKernel simd inputs i then
+      let batch := decompress (chunkAt inputs i)
+      if batch.valid.toNat.testBit (i % 8) then some batch.points[i % 8]! else none
+    else blst inputs[i / 8 * 8]!
+
+def distinguishing (e : Encoding) : Option BlstP2Affine :=
+  if e = rejected then none else some sentinel
+
+example : (uncompress true distinguishing [rejected, G2Spec.infinity, G2Spec.infinity]).map
+      Option.isSome ≠
+    (uncompressFirstFallback true distinguishing [rejected, G2Spec.infinity, G2Spec.infinity]).map
+      Option.isSome := by decide +kernel
+
 -- Infinity is undecided, so ignoring that mask loses the scalar verdict.
 example : (uncompress true fallback (List.replicate 3 G2Spec.infinity)).map Option.isSome ≠
     (uncompressWith 3 true false true fallback (List.replicate 3 G2Spec.infinity)).map Option.isSome := by decide +kernel
@@ -50,7 +74,7 @@ example : G2Spec.verdict G2Spec.infinity = some
     (point (.replicate 6 0) (.replicate 6 0) (.replicate 6 0) (.replicate 6 0)) :=
   G2Spec.infinity_verdict
 
-example : G2Spec.verdict (G2Spec.infinity.set 95 1) = none := by
+theorem malformed_infinity_verdict : G2Spec.verdict (G2Spec.infinity.set 95 1) = none := by
   unfold G2Spec.verdict EthCryptographySpecs.Bls.G2.uncompress
   decide +kernel
 
@@ -74,6 +98,16 @@ example : ¬ @BlstMatchesSpec rejecting := by
   have hi := h (toArray toU8 G2Spec.infinity)
   change (none : Option blst.blst_p2_affine) = specVerdict _ at hi
   simp [specVerdict, ofArray_toArray, G2Spec.infinity_verdict] at hi
+
+@[reducible] def accepting : BlsExternals := ⟨false, fun _ => none, fun _ =>
+  some (toBlstP2Affine (point (.replicate 6 0) (.replicate 6 0)
+    (.replicate 6 0) (.replicate 6 0)))⟩
+
+example : ¬ @BlstMatchesSpec accepting := by
+  intro h
+  have hi := h (toArray toU8 (G2Spec.infinity.set 95 1))
+  change some _ = specVerdict _ at hi
+  simp [specVerdict, ofArray_toArray, malformed_infinity_verdict] at hi
 
 @[reducible] def wrongLimbs : BlsExternals := ⟨false, fun _ => none, fun _ => some (toBlstP2Affine sentinel)⟩
 

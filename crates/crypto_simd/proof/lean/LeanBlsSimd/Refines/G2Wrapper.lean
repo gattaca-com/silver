@@ -30,7 +30,8 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     rw [sub_ok _ _ (by simpa using Nat.le_of_lt hlt)]
     rfl
   have hchoose : (if rest < LANES then ok rest else ok LANES) = ok len := by
-    split <;> congr 1 <;> apply UScalar.eq_of_val_eq <;> simp_all [rest, LANES] <;> omega
+    split <;> congr 1 <;> apply UScalar.eq_of_val_eq <;> simp_all [rest, LANES]
+    omega
   have hadd : start + len = ok next := by
     rw [add_ok _ _ (by have := next.hBounds; simpa [hn] using this)]
   have hlt' : start < Slice.len inputs := by simpa using hlt
