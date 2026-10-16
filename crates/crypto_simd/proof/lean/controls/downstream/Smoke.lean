@@ -48,7 +48,7 @@ def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p1_
     Slice (Option blst.blst_p1_affine) :=
   ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
 
-def uncompress (upstream : _root_.silver_crypto_simd.bls.G1Externals)
+def uncompress (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
     Result (Slice (Option blst.blst_p1_affine)) := do
   let result ← @_root_.silver_crypto_simd.bls.uncompress_in_g1 upstream inputs (toUpstreamSlice out)
@@ -59,7 +59,7 @@ end Bridge
 def specVerdict (bytes : Array Std.U8 48#usize) : Option blst.blst_p1_affine :=
   (LeanBlsSimd.UncompressG1.specVerdict bytes).map Bridge.fromUpstream
 
-theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.bls.G1Externals)
+theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -83,16 +83,16 @@ def UncompressMatchesSpec [Externals] : Prop :=
       ∃ result, Externals.uncompress inputs out = ok result ∧
         result.val = inputs.val.map specVerdict
 
-@[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.bls.G1Externals) : Externals :=
+@[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.bls.BlsExternals) : Externals :=
   ⟨Bridge.uncompress upstream⟩
 
-theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.bls.G1Externals)
+theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream) :
     @UncompressMatchesSpec (externalsOf upstream) :=
   Bridge.uncompress_eq_spec_list upstream hblst
 
-@[reducible] def specUpstream : _root_.silver_crypto_simd.bls.G1Externals :=
-  ⟨true, LeanBlsSimd.UncompressG1.specVerdict⟩
+@[reducible] def specUpstream : _root_.silver_crypto_simd.bls.BlsExternals :=
+  ⟨true, LeanBlsSimd.UncompressG1.specVerdict, fun _ => none⟩
 
 theorem specUpstream_matches : @LeanBlsSimd.UncompressG1.BlstMatchesSpec specUpstream :=
   fun _ => rfl
@@ -125,7 +125,7 @@ example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) :
     @caller external inputs out = external.uncompress inputs out := rfl
 
-example (upstream : _root_.silver_crypto_simd.bls.G1Externals)
+example (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (hblst : @LeanBlsSimd.UncompressG1.BlstMatchesSpec upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :

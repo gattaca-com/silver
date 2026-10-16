@@ -177,9 +177,10 @@ def compareWrapper (t : Tally) (batches : Array Batch) (w : Wrapper) (simd : Boo
   let want := w.outputs
   let model := (UncompressG1.uncompress simd oracle inputs).toArray.map (Option.map wordsOfPoint)
   let t ← check t s!"{context} model" want model
-  letI : silver_crypto_simd.bls.G1Externals := {
+  letI : silver_crypto_simd.bls.BlsExternals := {
     simdAvailable := simd
-    uncompress := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine }
+    uncompressG1 := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine
+    uncompressG2 := fun _ => none }
   let extracted : List (Std.Array Std.U8 48#usize) := inputs.map (toArray toU8)
   if h : extracted.length ≤ Std.Usize.max then do
     let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := ⟨extracted, h⟩

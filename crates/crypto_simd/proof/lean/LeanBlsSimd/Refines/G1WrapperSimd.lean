@@ -5,7 +5,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.UncompressG1
 
-theorem simd_body_runs [G1Externals]
+theorem simd_body_runs [BlsExternals]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (stop start next : Usize) (target : List (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) (htarget : target.length = inputs.val.length)

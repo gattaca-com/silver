@@ -13,8 +13,8 @@ namespace UncompressG1
 
 open DecompressG1
 
-def modelBlst [G1Externals] (bytes : Encoding) : Option BlstP1Affine :=
-  (G1Externals.uncompress (toArray toU8 bytes)).map ofBlstP1Affine
+def modelBlst [BlsExternals] (bytes : Encoding) : Option BlstP1Affine :=
+  (BlsExternals.uncompressG1 (toArray toU8 bytes)).map ofBlstP1Affine
 
 private theorem mask_bit (m : UInt8) (l : Fin 8) :
     (toU8 m &&& toU8 (1 <<< l.val.toUInt8) != 0#u8) = m.toNat.testBit l := by
@@ -37,11 +37,11 @@ private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n �
   apply Subtype.ext
   simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
 
-private theorem modelBlst_roundtrip [G1Externals] (a : Array U8 48#usize) :
-    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = G1Externals.uncompress a := by
+private theorem modelBlst_roundtrip [BlsExternals] (a : Array U8 48#usize) :
+    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = BlsExternals.uncompressG1 a := by
   simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-theorem chunk_refines [G1Externals] (inputs : Array (Array U8 48#usize) 8#usize)
+theorem chunk_refines [BlsExternals] (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, silver_crypto_simd.bls.decompress_g1_chunk inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
@@ -68,7 +68,7 @@ theorem chunk_refines [G1Externals] (inputs : Array (Array U8 48#usize) 8#usize)
     simp only [lift, bind_tc_ok, toBatch]
     rw [show r.start.val = j.val from hs, mask_bit]
     have ht : target[j] =
-        if b.undecided.toNat.testBit j then G1Externals.uncompress (inputs.val[j.val]'(by simp [inputs.property]))
+        if b.undecided.toNat.testBit j then BlsExternals.uncompressG1 (inputs.val[j.val]'(by simp [inputs.property]))
         else if b.valid.toNat.testBit j then some (toBlstP1Affine b.points[j]) else none := by
       simp only [target, chunk, Fin.getElem_fin, Vector.getElem_map, Vector.getElem_ofFn, laneVerdict]
       split
@@ -97,24 +97,24 @@ theorem chunk_refines [G1Externals] (inputs : Array (Array U8 48#usize) 8#usize)
     ext i hi
     simp
 
-private def rawOutput [G1Externals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :=
+private def rawOutput [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :=
   (uncompress simd modelBlst (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP1Affine)
 
-private theorem rawOutput_length [G1Externals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :
+private theorem rawOutput_length [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :
     (rawOutput simd inputs).length = inputs.val.length := by
   simp [rawOutput]
 
-private theorem rawOutput_scalar [G1Externals] (simd : Bool) (inputs : Slice (Array U8 48#usize))
+private theorem rawOutput_scalar [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize))
     (i : ℕ) (hi : i < inputs.val.length)
     (hscalar : simd = false ∨ inputs.val.length / 8 * 8 ≤ i) :
-    (rawOutput simd inputs)[i]! = G1Externals.uncompress inputs.val[i]! := by
+    (rawOutput simd inputs)[i]! = BlsExternals.uncompressG1 inputs.val[i]! := by
   rw [getElem!_pos _ _ (by simpa [rawOutput] using hi)]
   simp only [rawOutput, List.getElem_map]
   rw [getElem_uncompress_scalar _ _ _ _ (by simpa using hi) (by simpa using hscalar)]
   rw [getElem!_pos _ _ (by simpa using hi), List.getElem_map, modelBlst_roundtrip]
   rw [getElem!_pos inputs.val i hi]
 
-private theorem chunk_slice_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
+private theorem chunk_slice_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (start next : Usize) (hnext : next.val = start.val + 8)
     (halign : start.val % 8 = 0) (hbound : next.val ≤ inputs.val.length)
     (c : Array (Array U8 48#usize) 8#usize)
@@ -144,7 +144,7 @@ private theorem chunk_slice_refines [G1Externals] (inputs : Slice (Array U8 48#u
     simp only [List.getElem_map, Vector.getElem_toList, rawOutput]
     rw [getElem_uncompress_chunk _ _ _ halign (by simp; omega) ⟨lane, hlane⟩]
 
-private theorem stop_loop_of_step [G1Externals]
+private theorem stop_loop_of_step [BlsExternals]
     (inputs : Slice (Array U8 48#usize)) (simd : Bool) (stop : Usize)
     (target : List (Option blst.blst_p1_affine))
     (halign : stop.val % 8 = 0)
@@ -189,12 +189,12 @@ private theorem stop_loop_of_step [G1Externals]
       rw [hrv i hi, hv i hi]
       split_ifs <;> first | rfl | omega
 
-theorem uncompress_refines [G1Externals] (inputs : Slice (Array U8 48#usize))
+theorem uncompress_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = (uncompress G1Externals.simdAvailable modelBlst
+      result.val = (uncompress BlsExternals.simdAvailable modelBlst
         (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP1Affine) := by
-  let simd := G1Externals.simdAvailable
+  let simd := BlsExternals.simdAvailable
   let n := Slice.len inputs
   let q : Usize := UScalar.ofNatCore (n.val / 8)
     (lt_of_le_of_lt (Nat.div_le_self _ _) n.hBounds)
