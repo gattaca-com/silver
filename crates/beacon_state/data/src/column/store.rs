@@ -9,7 +9,7 @@ use super::{
     snapshot::PageSnapshot,
     subtree::NodeRange,
 };
-use crate::types::B256;
+use crate::{merkle::ZERO_HASHES, types::B256};
 
 pub(super) struct NodeStore<C: ColumnSpec> {
     pub(super) nodes: Vec<B256>,
@@ -87,8 +87,9 @@ impl<C: ColumnSpec> NodeStore<C> {
     }
 
     /// Commit the flat tree into `dst`, reusing `dst`'s allocations: clean
-    /// pages are `parent`'s, dirty ones get fresh pages. A parent in another
-    /// format, or none, shares nothing.
+    /// pages are `parent`'s, dirty ones get fresh pages, except all-zero
+    /// subtrees, which share the pool's zero page of their depth. A parent in
+    /// another format, or none, shares nothing.
     pub(super) fn commit(
         &mut self,
         format: TreeFormat,
@@ -126,13 +127,19 @@ struct PageCommitter<'a, C: ColumnSpec> {
 
 impl<C: ColumnSpec> PageCommitter<'_, C> {
     fn commit_page(&mut self, sub: Subtree, at: PagePos, parent: Option<PageId>) -> PageId {
-        let chunks = sub.chunks_under::<C>(at);
         if let Some(parent) = parent &&
-            !self.writes.touches(chunks.clone())
+            !self.writes.touches(sub.chunks_under::<C>(at))
         {
             return parent;
         }
+        // A subtree is all zero iff its root is the zero hash of its depth:
+        // the collision resistance the Merkle tree already rests on.
         let nodes = self.nodes;
+        let (top_node, depth) = (sub.top_node::<C>(at), sub.depth::<C>(at));
+        if nodes[top_node] == ZERO_HASHES[depth as usize] {
+            return self.pool.zero_page(depth);
+        }
+
         let rows = sub.rows_of::<C>(at).map(|(node, len)| &nodes[node..node + len]);
         let id = self.pool.alloc(sub.child_count::<C>(at), rows);
         for j in 0..sub.child_count::<C>(at) {
@@ -141,7 +148,7 @@ impl<C: ColumnSpec> PageCommitter<'_, C> {
             self.pool.set_child(id, j, child);
         }
 
-        self.allocated.push((sub.top_node::<C>(at) as u32, id));
+        self.allocated.push((top_node as u32, id));
         id
     }
 }

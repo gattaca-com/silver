@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{iter, marker::PhantomData, slice};
 
 use bytesize::ByteSize;
 
@@ -6,7 +6,10 @@ use super::{
     ColumnSpec,
     page_format::{PagePos, Subtree},
 };
-use crate::types::B256;
+use crate::{
+    merkle::{ZERO_HASHES, ZERO_HASHES_LEN},
+    types::B256,
+};
 
 pub type PageId = u32;
 
@@ -57,6 +60,9 @@ pub(super) struct PagePool<P: PageArray> {
     free: [Vec<PageId>; 2],
     /// The segment each kind takes fresh ids from, indexed as `free`.
     filling: [Option<usize>; 2],
+    /// The all-zero subtree's page per depth, like `ZERO_HASHES`. Never freed:
+    /// no fork owns it.
+    zero_pages: [PageId; ZERO_HASHES_LEN],
     _page: PhantomData<fn() -> P>,
 }
 
@@ -70,12 +76,37 @@ impl<P: PageArray> PagePool<P> {
     };
 
     pub(super) fn new() -> Self {
-        Self {
+        let mut pool = Self {
             segments: Vec::with_capacity(MAX_SEGMENTS),
             free: [Vec::new(), Vec::new()],
             filling: [None, None],
+            zero_pages: [0; ZERO_HASHES_LEN],
             _page: PhantomData,
+        };
+        for depth in 0..ZERO_HASHES_LEN {
+            pool.zero_pages[depth] = pool.alloc_zero(depth);
         }
+        pool
+    }
+
+    /// Pages are cut from the leaves up, so `depth` fixes the row count and
+    /// whether the page has children, which are zero pages themselves.
+    fn alloc_zero(&mut self, depth: usize) -> PageId {
+        let levels_per_page = P::LEN.trailing_zeros() as usize;
+        let rows = depth % levels_per_page + 1;
+        let hashes = (0..rows)
+            .flat_map(|r| iter::repeat_n(slice::from_ref(&ZERO_HASHES[depth - r]), 1 << r));
+        let children = if depth < levels_per_page { 0 } else { 1 << rows };
+        let id = self.alloc(children, hashes);
+        for j in 0..children {
+            self.set_child(id, j, self.zero_pages[depth - rows]);
+        }
+        id
+    }
+
+    #[inline]
+    pub(super) fn zero_page(&self, depth: u32) -> PageId {
+        self.zero_pages[depth as usize]
     }
 
     #[inline]
@@ -126,7 +157,8 @@ impl<P: PageArray> PagePool<P> {
         self.free[inner as usize].push(id);
     }
 
-    /// Free `old`'s pages down to where they meet `new`'s.
+    /// Free `old`'s pages down to where they meet `new`'s. Zero pages are the
+    /// pool's, never a fork's.
     pub(super) fn free_unshared<C: ColumnSpec<Page = P>>(
         &mut self,
         sub: Subtree,
@@ -134,7 +166,7 @@ impl<P: PageArray> PagePool<P> {
         old: PageId,
         new: Option<PageId>,
     ) {
-        if new == Some(old) {
+        if new == Some(old) || old == self.zero_page(sub.depth::<C>(at)) {
             return;
         }
         self.free(old);

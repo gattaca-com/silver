@@ -115,6 +115,25 @@ fn released_winner_frees_nothing_and_promote_frees_its_replaced_pages() {
     assert_eq!(freed(&pool), sorted(w0.to_vec()));
 }
 
+/// A fork that grows into a zero page without writing it shares that page;
+/// promoting past it must not free the pool's zero page.
+#[test]
+fn promote_never_frees_a_zero_page() {
+    let mut pool = PagePool::new();
+    let mut base = commit(&mut pool, None, &nodes(2, 1), &[], 2);
+    let zero = pool.zero_page(1);
+    assert_eq!(path(&pool, &base, 1)[2], zero, "padding shares the zero page");
+
+    let grown = commit(&mut pool, Some(&base), &nodes(2, 2), &[0], 3);
+    assert_eq!(path(&pool, &grown, 1)[2], zero, "unwritten growth shares the zero page");
+    base.promote::<P4>(&mut pool, &grown);
+
+    let written = commit(&mut pool, Some(&base), &nodes(3, 3), &[0, 2], 3);
+    base.promote::<P4>(&mut pool, &written);
+
+    assert!(!freed(&pool).contains(&zero));
+}
+
 #[test]
 fn release_is_idempotent() {
     let mut pool = PagePool::new();

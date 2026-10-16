@@ -134,6 +134,14 @@ impl Subtree {
         start..start + width
     }
 
+    /// Merkle depth of `at`'s top node. Pages are cut from the leaves up, so
+    /// the depth also fixes the row count: an all-zero page is the same for
+    /// every tree at the same depth.
+    #[inline]
+    pub(super) fn depth<C: ColumnSpec>(self, at: PagePos) -> u32 {
+        self.height - self.top_level::<C>(at.page_level)
+    }
+
     /// Page slot of node (`level`, `pos`) and the child index to follow at each
     /// page level above it, root first.
     pub(super) fn path_to<C: ColumnSpec>(

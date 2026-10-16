@@ -676,6 +676,40 @@ fn page_lending_survives_random_forks_and_finalize() {
     }
 }
 
+/// A column far below its capacity commits its padding as shared zero pages.
+/// Appends into a zero page, and reloading a shorter fork over a longer one,
+/// must both read and hash as if every page were private.
+#[test]
+fn zero_padding_pages_track_appends_and_shorter_forks() {
+    let short: Vec<u64> = (1..=60).collect();
+    let mut g =
+        BalancesGroup::new(4096, short.len(), &le_bytes(&short), HashFormat::Fixed).unwrap();
+    let mut wv = g.roll_fresh();
+    assert_root_matches(&mut wv);
+    let short_id = wv.commit();
+
+    let mut wv = g.roll_from(short_id);
+    let mut long = short.clone();
+    for v in 61..=300 {
+        let idx = wv.append_empty();
+        wv.set(idx, v);
+        long.push(v);
+    }
+    assert_root_matches(&mut wv);
+    let long_id = wv.commit();
+
+    let mut wv = g.roll_from(long_id);
+    assert_eq!(wv.iter().collect::<Vec<_>>(), long);
+    assert_root_matches(&mut wv);
+
+    let mut wv = g.roll_from(short_id);
+    assert_eq!(wv.iter().collect::<Vec<_>>(), short);
+    assert_root_matches(&mut wv);
+    let idx = wv.append_empty();
+    wv.set(idx, 7);
+    assert_root_matches(&mut wv);
+}
+
 /// A page is dirty iff an uncommitted chunk lies under it: after deferred
 /// writes, writes into padding pages past the old count and a rehash, the
 /// committed fork reads and hashes as the flat tree did, in both tree formats.
