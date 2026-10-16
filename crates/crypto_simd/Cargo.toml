@@ -8,11 +8,14 @@ version.workspace = true
 [features]
 default = ["simd"]
 simd = []
+# Tests against the reference vectors that `make -C crates/crypto_simd` fetches.
+spec_vectors = []
 
 [dependencies]
 blst.workspace = true
 
 [dev-dependencies]
+c-kzg.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 

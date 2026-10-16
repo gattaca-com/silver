@@ -5071,6 +5071,7 @@ name = "silver_crypto_simd"
 version = "0.1.0-alpha.2"
 dependencies = [
  "blst",
+ "c-kzg",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
 ]
