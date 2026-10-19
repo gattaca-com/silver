@@ -8,10 +8,9 @@ use std::{
 
 use quinn_proto::StreamId;
 use silver_common::{
-    AcquiredWithOffset, CacheFrameRef, CacheSegment, GossipTopic, GossipTraffic,
-    GossipTrafficBytes, P2pStreamId, StreamProtocol, SubLayout, SubReservationRef, TCache,
-    TCacheId, TCacheProducer, TCacheReader, TCacheTable, TProducer,
-    test_util::follow_producer_floor,
+    CacheFrameRef, CacheSegment, GossipTopic, GossipTraffic, GossipTrafficBytes, P2pStreamId,
+    StreamProtocol, SubLayout, SubReservationRef, TCache, TCacheId, TCacheProducer, TCacheReader,
+    TCacheTable, TProducer, test_util::follow_producer_floor,
 };
 
 use super::*;
@@ -175,13 +174,6 @@ impl StreamIo for MockIo {
         let n = self.budget.min(data.len());
         self.written.extend_from_slice(&data[..n]);
         Ok(n)
-    }
-    fn write_leased_to_stream(
-        &mut self,
-        id: StreamId,
-        data: Leased<AcquiredWithOffset>,
-    ) -> Result<usize, StreamError> {
-        self.write_chunks(id, &mut [Bytes::from_owner(data)])
     }
     fn write_chunks(&mut self, _: StreamId, chunks: &mut [Bytes]) -> Result<usize, StreamError> {
         if self.fail {
@@ -549,7 +541,7 @@ fn contiguous_baseline_uses_one_owner_per_write_attempt() {
     for _ in 0..10 {
         state = state.spin(&mut io, &stream()).unwrap();
     }
-    assert_eq!(ALLOCATIONS.with(Cell::get) - before, 10);
+    assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     drop(state);
     drop(io);
     assert_eq!(h.wheel.active_count(), 0);

@@ -369,10 +369,17 @@ impl P2p {
         did_work
     }
 
-    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, context: &mut Context) -> SendResult {
+    pub fn enqueue_gossip(
+        &mut self,
+        msg: GossipMsgOut,
+        context: &mut Context,
+        now: Instant,
+    ) -> SendResult {
         let result = match context.reader.acquire_strict(msg.into()) {
             Some(acquired) => match self.peers.get_mut(&ConnectionHandle(msg.peer_id)) {
-                Some(peer) => peer.send_gossip(acquired, msg.traffic, &mut self.rpc_codec_pool),
+                Some(peer) => {
+                    peer.send_gossip(acquired, msg.traffic, &mut self.rpc_codec_pool, now)
+                }
                 None => SendResult::UnknownPeer,
             },
             None => SendResult::Dropped(None),
@@ -389,6 +396,7 @@ impl P2p {
         traffic: GossipTraffic,
         partial_cells: Option<u8>,
         context: &mut Context,
+        now: Instant,
     ) -> SendResult {
         let result = match self.peers.get_mut(&ConnectionHandle(peer_id)) {
             Some(peer) => peer.send_segmented_gossip(
@@ -398,6 +406,7 @@ impl P2p {
                 context,
                 self.segmented_limits.get_or_insert_with(Box::default),
                 &mut self.rpc_codec_pool,
+                now,
             ),
             None => SendResult::UnknownPeer,
         };

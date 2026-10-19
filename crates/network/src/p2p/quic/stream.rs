@@ -2,7 +2,6 @@ use std::io::{Error, Write};
 
 use bytes::Bytes;
 use quinn_proto::{Connection, StreamId, WriteError};
-use silver_common::AcquiredWithOffset;
 
 use crate::{
     NetworkCounters,
@@ -56,23 +55,6 @@ impl<'a> StreamIo for StreamIoImpl<'a> {
             Ok(wrote) => {
                 self.count_sent(wrote);
                 Ok(wrote)
-            }
-            Err(WriteError::Blocked) => Ok(0),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn write_leased_to_stream(
-        &mut self,
-        id: StreamId,
-        data: Leased<AcquiredWithOffset>,
-    ) -> Result<usize, StreamError> {
-        let data = Bytes::from_owner(data);
-        let mut stream = self.connection.send_stream(id);
-        match stream.write_chunks(&mut [data]) {
-            Ok(wrote) => {
-                self.count_sent(wrote.bytes);
-                Ok(wrote.bytes)
             }
             Err(WriteError::Blocked) => Ok(0),
             Err(e) => Err(e.into()),

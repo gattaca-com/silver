@@ -1,14 +1,15 @@
 use std::slice;
 
+use bytes::Bytes;
 use silver_common::{
     GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME,
-    GossipTraffic, GossipTrafficBytes, MAX_GOSSIP_FRAME_SIZE, P2pStreamId, TRead,
+    GossipTraffic, GossipTrafficBytes, MAX_GOSSIP_FRAME_SIZE, P2pStreamId,
 };
 
 use crate::{
     NetworkCounters,
     p2p::{
-        quic::{Leased, OutboundGossip, SegmentedWriter},
+        quic::{OutboundGossip, SegmentedWriter},
         streams::{StreamError, StreamIo},
     },
 };
@@ -24,13 +25,9 @@ pub(crate) enum GossipWriteState {
         partial_columns: bool,
     },
     Idle,
-    /// Writing length-prefixed frame. `offset`/`length` track progress
-    /// into the current message; the handler provides frame bytes via
-    /// `send_data`.
+    /// Writing length-prefixed frame.
     Writing {
-        offset: usize,
-        length: usize,
-        message: Leased<TRead>,
+        chunk: Bytes,
         traffic: GossipTraffic,
     },
     WritingSegments(SegmentedWriter, GossipTraffic),
@@ -88,7 +85,13 @@ impl GossipWriteState {
                     }
                     Ok(Spin::Next(match message {
                         OutboundGossip::Contiguous(message, traffic) => {
-                            Self::Writing { offset: 0, length: len, message, traffic }
+                            let seq = message.seq();
+                            let Some(r_offset) = message.into_offset(0) else {
+                                silver_log::error!(?p2p_id, "stale tcache read @ {seq}, skipping");
+                                NetworkCounters::GossipMsgSkipped.inc();
+                                return Ok(Spin::Next(Self::Idle));
+                            };
+                            Self::Writing { chunk: Bytes::from_owner(r_offset), traffic }
                         }
                         OutboundGossip::Segmented(frame, traffic) => {
                             Self::WritingSegments(frame.into_writer(), traffic)
@@ -97,20 +100,13 @@ impl GossipWriteState {
                 }
                 None => Ok(Spin::Ok(Self::Idle)),
             },
-            Self::Writing { mut offset, length, message, traffic } => {
-                let Some(r_offset) = message.with_offset(offset) else {
-                    silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
-                    NetworkCounters::GossipMsgSkipped.inc();
-                    return Ok(Spin::Next(Self::Idle));
-                };
-
-                let n = io.write_leased_to_stream(p2p_id.stream_id(), message.child(r_offset))?;
+            Self::Writing { mut chunk, traffic } => {
+                let n = io.write_chunks(p2p_id.stream_id(), slice::from_mut(&mut chunk))?;
                 GossipTrafficBytes::Sent.add(traffic, n);
-                offset += n;
-                if offset == length {
+                if chunk.is_empty() {
                     return Ok(Spin::Next(Self::Idle));
                 }
-                Ok(Spin::Ok(Self::Writing { offset, length, message, traffic }))
+                Ok(Spin::Ok(Self::Writing { chunk, traffic }))
             }
             Self::WritingSegments(mut frame, traffic) => {
                 let chunk = frame.chunk().ok_or(StreamError::InvalidGossipFrame)?;
@@ -134,15 +130,16 @@ impl GossipWriteState {
 mod tests {
     use std::{array, io::Write as _, net::SocketAddr, time::Instant};
 
-    use bytes::Bytes;
     use quinn_proto::StreamId;
     use silver_common::{
-        AcquiredWithOffset, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheReader,
-        TProducer, TReadMode,
+        StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheReader, TProducer, TRead, TReadMode,
     };
 
     use super::*;
-    use crate::p2p::{quic::OutboundLeaseWheel, streams::AcquiredRpcOutbound};
+    use crate::p2p::{
+        quic::{Leased, OutboundLeaseWheel},
+        streams::AcquiredRpcOutbound,
+    };
 
     /// Write-only io: hands out one queued gossip message, then accepts at
     /// most `budget` bytes per write call (0 = peer granting no credit).
@@ -160,19 +157,22 @@ mod tests {
             Ok(n)
         }
 
-        fn write_leased_to_stream(
+        fn write_chunks(
             &mut self,
             _id: StreamId,
-            data: Leased<AcquiredWithOffset>,
+            chunks: &mut [Bytes],
         ) -> Result<usize, StreamError> {
-            let mut data = Bytes::from_owner(data);
-            let n = data.len().min(self.budget);
-            if n != 0 {
-                let accepted = data.split_to(n);
-                self.written.extend_from_slice(&accepted);
-                self.retained.push(accepted);
+            let mut remaining = self.budget;
+            for chunk in chunks {
+                let n = remaining.min(chunk.len());
+                if n != 0 {
+                    let accepted = chunk.split_to(n);
+                    self.written.extend_from_slice(&accepted);
+                    self.retained.push(accepted);
+                    remaining -= n;
+                }
             }
-            Ok(n)
+            Ok(self.budget - remaining)
         }
 
         fn read_from_stream(&mut self, _id: StreamId, _b: &mut [u8]) -> Result<usize, StreamError> {
@@ -229,7 +229,7 @@ mod tests {
         };
 
         let state = GossipWriteState::Idle.spin(&mut io, &p2p_id).expect("blocked write parks");
-        assert!(matches!(state, GossipWriteState::Writing { offset: 0, .. }));
+        assert!(matches!(state, GossipWriteState::Writing { ref chunk, .. } if chunk.len() == 100));
         assert_eq!(wheel.active_count(), 1);
         drop(state);
         assert_eq!(wheel.active_count(), 0);
@@ -305,17 +305,21 @@ mod tests {
         };
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, false);
         let mut state = GossipWriteState::Idle.spin(&mut io, &p2p_id).unwrap();
-        assert!(matches!(state, GossipWriteState::Writing { offset: 17, .. }));
+        assert!(
+            matches!(state, GossipWriteState::Writing { ref chunk, .. } if chunk.len() == payload.len() - 17)
+        );
         assert_eq!(&io.written[..], &payload[..17]);
         assert_eq!(io.retained[0].as_ptr(), payload_ptr);
-        assert_eq!(wheel.active_count(), 2);
+        assert_eq!(wheel.active_count(), 1);
 
         io.budget = 0;
         state = state.spin(&mut io, &p2p_id).unwrap();
-        assert!(matches!(state, GossipWriteState::Writing { offset: 17, .. }));
+        assert!(
+            matches!(state, GossipWriteState::Writing { ref chunk, .. } if chunk.len() == payload.len() - 17)
+        );
         assert_eq!(io.written.len(), 17);
         assert_eq!(io.retained.len(), 1);
-        assert_eq!(wheel.active_count(), 2, "blocked attempts must release their child owner");
+        assert_eq!(wheel.active_count(), 1);
 
         let mut produced = 0;
         loop {
@@ -345,7 +349,7 @@ mod tests {
             offset += chunk.len();
         }
         assert_eq!(offset, payload.len());
-        assert_eq!(wheel.active_count(), io.retained.len() as u64);
+        assert_eq!(wheel.active_count(), 1);
 
         let ack_held = io.retained[0].slice(3..);
         let clone = ack_held.clone();

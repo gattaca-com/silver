@@ -218,6 +218,8 @@ impl NetworkTile {
         let mut gossips = 0;
         self.inner.send_drained = false;
 
+        let now = Instant::now();
+
         loop {
             if rpcs > MAX_PENDING_OUTBOUND_RPC_MSGS || gossips > MAX_PENDING_OUTBOUND_GOSSIP_MSGS {
                 break;
@@ -228,12 +230,12 @@ impl NetworkTile {
                     P2pSend::Gossip(gossip_msg_out) => {
                         gossips += 1;
                         silver_log::debug!(peer=gossip_msg_out.peer_id, "send gossip");
-                        self.inner.enqueue_gossip(gossip_msg_out)
+                        self.inner.enqueue_gossip(gossip_msg_out, now)
                     },
                     P2pSend::SegmentedGossip { peer_id, frame, traffic, partial_cells } => {
                         gossips += 1;
                         self.inner.p2p_endpoint.enqueue_segmented_gossip(
-                            peer_id, frame, traffic, partial_cells, &mut self.inner.context,
+                            peer_id, frame, traffic, partial_cells, &mut self.inner.context, now,
                         )
                     }
                     P2pSend::Identify(peer) => {
@@ -407,8 +409,8 @@ where
         &mut self.context
     }
 
-    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut) -> SendResult {
-        self.p2p_endpoint.enqueue_gossip(msg, &mut self.context)
+    pub fn enqueue_gossip(&mut self, msg: GossipMsgOut, now: Instant) -> SendResult {
+        self.p2p_endpoint.enqueue_gossip(msg, &mut self.context, now)
     }
 
     pub fn enqueue_rpc_out(&mut self, msg: RpcOutbound) -> SendResult {

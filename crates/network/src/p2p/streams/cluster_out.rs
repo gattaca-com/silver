@@ -1,3 +1,6 @@
+use std::slice;
+
+use bytes::Bytes;
 use silver_common::{MAX_CLUSTER_MESSAGE_BYTES, P2pStreamId, TRead};
 
 use super::StreamIo;
@@ -11,12 +14,9 @@ pub enum ClusterWrite {
         written: usize,
         message: Leased<TRead>,
     },
-    /// Writing body. `offset`/`length` track progress into the current
-    /// message; the handler provides body bytes via `send_data`.
+    /// Writing body.
     Writing {
-        offset: usize,
-        length: usize,
-        message: Leased<TRead>,
+        chunk: Bytes,
     },
 }
 
@@ -65,26 +65,21 @@ impl ClusterWrite {
                 let n = io.write_to_stream(p2p_id.stream_id(), &buffer[written..])?;
                 written += n;
                 if written == buffer.len() {
-                    return Ok(Spin::Next(Self::Writing {
-                        offset: 0,
-                        length: message.len()?,
-                        message,
-                    }));
+                    let seq = message.seq();
+                    let Some(r_offset) = message.into_offset(0) else {
+                        silver_log::error!(?p2p_id, "stale tcache read @ {seq}, skipping");
+                        return Ok(Spin::Next(Self::Idle));
+                    };
+                    return Ok(Spin::Next(Self::Writing { chunk: Bytes::from_owner(r_offset) }));
                 }
                 Ok(Spin::Ok(Self::WritingLength { buffer, written, message }))
             }
-            Self::Writing { mut offset, length, message } => {
-                let Some(r_offset) = message.with_offset(offset) else {
-                    silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
-                    return Ok(Spin::Next(Self::Idle));
-                };
-
-                let n = io.write_leased_to_stream(p2p_id.stream_id(), message.child(r_offset))?;
-                offset += n;
-                if offset == length {
+            Self::Writing { mut chunk } => {
+                let _ = io.write_chunks(p2p_id.stream_id(), slice::from_mut(&mut chunk))?;
+                if chunk.is_empty() {
                     return Ok(Spin::Next(Self::Idle));
                 }
-                Ok(Spin::Ok(Self::Writing { offset, length, message }))
+                Ok(Spin::Ok(Self::Writing { chunk }))
             }
         }
     }

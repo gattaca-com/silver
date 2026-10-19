@@ -197,14 +197,6 @@ mod tests {
             "127.0.0.1:0".parse().unwrap()
         }
 
-        fn write_leased_to_stream(
-            &mut self,
-            _id: StreamId,
-            data: crate::p2p::quic::Leased<silver_common::AcquiredWithOffset>,
-        ) -> Result<usize, StreamError> {
-            Ok(data.as_ref().len())
-        }
-
         fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
             None
         }

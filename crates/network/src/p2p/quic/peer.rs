@@ -165,11 +165,11 @@ impl Peer {
         msg: TRead,
         traffic: GossipTraffic,
         rpc_codec_pool: &mut RpcCodecPool,
+        now: Instant,
     ) -> SendResult<OutboundGossip> {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
-        let now = Instant::now();
         if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
@@ -177,6 +177,7 @@ impl Peer {
         self.queue_gossip(msg)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn send_segmented_gossip(
         &mut self,
         frame: CacheFrameRef,
@@ -185,11 +186,11 @@ impl Peer {
         context: &mut Context,
         limits: &SegmentedGossipLimits,
         rpc_codec_pool: &mut RpcCodecPool,
+        now: Instant,
     ) -> SendResult<OutboundGossip> {
         if self.connection.is_closed() {
             return SendResult::ConnectionClosing;
         }
-        let now = Instant::now();
         if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
@@ -1502,7 +1503,12 @@ mod tests {
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
             let read = self.context.reader.acquire(res.read());
-            peer.send_gossip(read, GossipTraffic::CONTROL, &mut self.rpc_codec_pool);
+            peer.send_gossip(
+                read,
+                GossipTraffic::CONTROL,
+                &mut self.rpc_codec_pool,
+                Instant::now(),
+            );
         }
 
         fn send_cluster(&mut self, payload: &[u8], peer: &mut Peer) -> SendResult {
@@ -2035,7 +2041,8 @@ mod tests {
             pair.client_peer.send_gossip(
                 late,
                 GossipTraffic::CONTROL,
-                &mut client_h.rpc_codec_pool
+                &mut client_h.rpc_codec_pool,
+                Instant::now()
             ),
             SendResult::ConnectionClosing
         ));
@@ -2319,7 +2326,8 @@ mod tests {
                 None,
                 &mut client_h.context,
                 &limits,
-                &mut client_h.rpc_codec_pool
+                &mut client_h.rpc_codec_pool,
+                Instant::now()
             ),
             SendResult::Ok
         ));
@@ -2368,7 +2376,8 @@ mod tests {
                 None,
                 &mut h.context,
                 &limits,
-                &mut h.rpc_codec_pool
+                &mut h.rpc_codec_pool,
+                Instant::now()
             ),
             SendResult::Ok
         ));
@@ -2391,6 +2400,7 @@ mod tests {
                 &mut h.context,
                 &limits,
                 &mut h.rpc_codec_pool,
+                Instant::now(),
             );
             if i == 0 {
                 assert!(matches!(result, SendResult::Ok));
@@ -2432,7 +2442,10 @@ mod tests {
             tcache: reservation.read(),
             traffic: GossipTraffic::CONTROL,
         };
-        assert!(matches!(endpoint.enqueue_gossip(first, &mut h.context), SendResult::Ok));
+        assert!(matches!(
+            endpoint.enqueue_gossip(first, &mut h.context, Instant::now()),
+            SendResult::Ok
+        ));
 
         let expires = Instant::now() + Duration::from_secs(1);
         let frame = CacheFrameRef::write(
@@ -2449,6 +2462,7 @@ mod tests {
                 GossipTraffic::CONTROL,
                 Some(7),
                 &mut h.context,
+                Instant::now(),
             )
         else {
             panic!("expected the evicted contiguous message");
@@ -2468,7 +2482,7 @@ mod tests {
             frame: dropped,
             partial_cells,
             ..
-        })) = endpoint.enqueue_gossip(third, &mut h.context)
+        })) = endpoint.enqueue_gossip(third, &mut h.context, Instant::now())
         else {
             panic!("expected the evicted segmented message");
         };
@@ -2510,7 +2524,7 @@ mod tests {
             traffic: GossipTraffic::CONTROL,
         };
         let SendResult::Dropped(Some(P2pSend::Gossip(dropped))) =
-            endpoint.enqueue_gossip(msg, &mut h.context)
+            endpoint.enqueue_gossip(msg, &mut h.context, Instant::now())
         else {
             panic!("expected rejection of the incomplete message");
         };
@@ -2535,6 +2549,7 @@ mod tests {
             GossipTraffic::CONTROL,
             Some(3),
             &mut h.context,
+            Instant::now(),
         )
         else {
             panic!("expected rejection of the expired frame");

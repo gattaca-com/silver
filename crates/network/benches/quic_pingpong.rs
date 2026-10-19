@@ -111,11 +111,14 @@ pub fn broadcast(c: &mut Criterion) {
                                         reservation.write_all(&prefix[..prefix_len]).unwrap();
                                         reservation.write_all(payload).unwrap();
                                         if !matches!(
-                                            server_tile.enqueue_gossip(GossipMsgOut {
-                                                peer_id: id.peer(),
-                                                tcache: reservation.read(),
-                                                traffic: GossipTraffic::CONTROL,
-                                            }),
+                                            server_tile.enqueue_gossip(
+                                                GossipMsgOut {
+                                                    peer_id: id.peer(),
+                                                    tcache: reservation.read(),
+                                                    traffic: GossipTraffic::CONTROL,
+                                                },
+                                                std::time::Instant::now()
+                                            ),
                                             SendResult::Ok
                                         ) {
                                             println!("send failed!");
@@ -243,7 +246,7 @@ pub fn broadcast(c: &mut Criterion) {
                                 tcache: reservation.read(),
                                 traffic: GossipTraffic::CONTROL,
                             };
-                            match client.enqueue_gossip(msg) {
+                            match client.enqueue_gossip(msg, std::time::Instant::now()) {
                                 SendResult::Ok => {}
                                 other => {
                                     println!("send failed! {other:?}");

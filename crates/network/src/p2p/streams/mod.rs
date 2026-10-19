@@ -3,7 +3,7 @@ use std::{array::TryFromSliceError, fmt, net::SocketAddr};
 use buffa::DecodeError;
 use bytes::Bytes;
 use quinn_proto::{FinishError, ReadError, ReadableError, StreamId, WriteError};
-use silver_common::{AcquiredWithOffset, TCacheError, TRead};
+use silver_common::{TCacheError, TRead};
 use thiserror::Error;
 
 use crate::p2p::{
@@ -60,11 +60,6 @@ impl fmt::Display for StreamError {
 
 pub trait StreamIo {
     fn write_to_stream(&mut self, id: StreamId, data: &[u8]) -> Result<usize, StreamError>;
-    fn write_leased_to_stream(
-        &mut self,
-        id: StreamId,
-        data: Leased<AcquiredWithOffset>,
-    ) -> Result<usize, StreamError>;
     fn write_chunks(&mut self, _id: StreamId, _chunks: &mut [Bytes]) -> Result<usize, StreamError> {
         Err(StreamError::InvalidGossipFrame)
     }

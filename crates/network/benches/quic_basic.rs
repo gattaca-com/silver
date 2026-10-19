@@ -215,7 +215,7 @@ pub fn broadcast(c: &mut Criterion) {
                                     if client.p2p_mut().pending(0) < 1000 &&
                                         let Some(msg) = msgs.last()
                                     {
-                                        let result = client.enqueue_gossip(*msg);
+                                        let result = client.enqueue_gossip(*msg, Instant::now());
                                         if matches!(result, SendResult::Ok) {
                                             msgs.pop();
                                             //println!("enqueue_gossip failed:

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_common::cell_store::GOSSIP_DELIVERY_RETENTION;
+use silver_common::{AcquiredWithOffset, TRead, cell_store::GOSSIP_DELIVERY_RETENTION};
 
 /// End-to-end age after which outbound gossip delivery is stale, measured from
 /// enqueue until Quinn releases every owner after ACK or teardown. Expiry is
@@ -178,6 +178,13 @@ pub(crate) struct Leased<T> {
 impl<T> Leased<T> {
     pub(crate) fn child<U>(&self, value: U) -> Leased<U> {
         Leased { value, lease: self.lease.clone() }
+    }
+}
+
+impl Leased<TRead> {
+    pub(crate) fn into_offset(self, offset: usize) -> Option<Leased<AcquiredWithOffset>> {
+        let Self { value, lease } = self;
+        Some(Leased { value: value.with_offset(offset)?, lease })
     }
 }
 
