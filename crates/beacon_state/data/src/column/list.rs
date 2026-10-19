@@ -4,7 +4,10 @@ use super::{
     store::NodeStore,
     subtree::{build_subtree_hashes, rehash_subtree},
 };
-use crate::{merkle::ZERO_HASHES, types::B256};
+use crate::{
+    merkle::{ZERO_HASHES, hash_concat},
+    types::B256,
+};
 
 pub(super) struct ListTree<C: ColumnSpec> {
     pub(super) store: NodeStore<C>,
@@ -40,6 +43,31 @@ impl<C: ColumnSpec> ListTree<C> {
         let (nodes, unhashed) = self.store.take_unhashed();
         let (internal, leaves) = nodes.split_at_mut(self.max_elements);
         rehash_subtree(internal, leaves, unhashed);
+    }
+
+    /// The old tree becomes the new root's left child, so only the new root is
+    /// hashed.
+    #[cold]
+    pub(super) fn grow_one(&mut self) {
+        let old_max = self.max_elements;
+        let new_max = 2 * old_max;
+        let depth = old_max.ilog2();
+
+        let nodes = &mut self.store.nodes;
+        nodes.resize(2 * new_max, ZERO_HASHES[0]);
+        nodes.copy_within(old_max..2 * old_max, new_max);
+        // Deepest level first: each destination lies past every source not yet
+        // moved.
+        for level in (0..depth).rev() {
+            let start = 1usize << level;
+            nodes.copy_within(start..2 * start, 2 * start);
+            nodes[3 * start..4 * start].fill(ZERO_HASHES[(depth - level) as usize]);
+        }
+        nodes[1] = hash_concat(&nodes[2], &nodes[3]);
+
+        self.max_elements = new_max;
+        self.store.writes.resize(new_max);
+        self.store.writes.mark_all_hashed();
     }
 
     pub(super) fn fill_zero(&mut self) {

@@ -101,7 +101,7 @@ impl<C: ColumnSpec> ProgressiveListTree<C> {
         self.rebuild_segments(0);
     }
 
-    pub(super) fn append_progressive_segment(&mut self) {
+    pub(super) fn grow_one(&mut self) {
         let old = self.format();
         self.last_seg += 1;
         let new = self.format();

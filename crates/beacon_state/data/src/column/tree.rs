@@ -189,10 +189,8 @@ impl<C: ColumnSpec> ColumnTree<C> {
         self.store_mut().count += 1;
         if self.count().div_ceil(C::VALS_PER_CHUNK) > self.format().data_capacity() {
             match self {
-                ColumnTree::List(_) => {
-                    debug_assert!(false, "append past leaf capacity — cap headroom exhausted")
-                }
-                ColumnTree::ProgressiveList(t) => t.append_progressive_segment(),
+                ColumnTree::List(t) => t.grow_one(),
+                ColumnTree::ProgressiveList(t) => t.grow_one(),
             }
         }
 

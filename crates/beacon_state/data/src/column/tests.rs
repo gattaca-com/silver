@@ -1,3 +1,5 @@
+use std::iter;
+
 use super::{
     BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec, RandaoMixesGroup,
 };
@@ -771,4 +773,26 @@ fn write_ssz_emits_finalized_values_across_pages() {
             assert_eq!(ssz, le_bytes(&appended), "{format:?} n={n}: after finalize");
         }
     }
+}
+
+#[test]
+fn append_past_cap_doubles_the_tree_across_commits_and_finalize() {
+    let mut g = BalancesGroup::new(4, 1, &le_bytes(&[5]), HashFormat::Fixed).unwrap();
+    let mut parent = g.roll_fresh().commit();
+    for batch in 0..8u64 {
+        let mut wv = g.roll_from(parent);
+        for v in 0..5 {
+            let idx = wv.append_empty();
+            wv.set(idx, 100 * batch + v);
+        }
+        assert_root_matches(&mut wv);
+        parent = wv.commit();
+        if batch == 3 {
+            g.finalize(parent, &[parent], |&id| id);
+        }
+    }
+
+    let view = g.view(parent);
+    let expected = iter::once(5).chain((0..8).flat_map(|b| (0..5).map(move |v| 100 * b + v)));
+    assert!(expected.enumerate().all(|(i, v)| view.get(i) == v));
 }
