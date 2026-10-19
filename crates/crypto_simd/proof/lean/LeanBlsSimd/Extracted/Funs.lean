@@ -2850,6 +2850,687 @@ def kzg.blst_ops.LincombScratch.new : Result kzg.blst_ops.LincombScratch := do
       pippenger := (alloc.vec.Vec.new Std.U64)
     }
 
+/-- [silver_crypto_simd::kzg::cell_extender::LOG_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 17:0-17:25 -/
+@[global_simps, irreducible] def kzg.cell_extender.LOG_BLOB : Std.U32 := 12#u32
+
+/-- [silver_crypto_simd::kzg::cell_extender::LOG_EXT_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 18:0-18:29 -/
+@[global_simps, irreducible]
+def kzg.cell_extender.LOG_EXT_BLOB : Std.U32 := 13#u32
+
+/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 28:0-28:48
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.FIELD_ELEMENTS_PER_BLOB : Std.Usize := 4096#usize
+
+/-- [silver_crypto_simd::kzg::cell_extender::_]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 19:0-19:64 -/
+@[global_simps, irreducible]
+def kzg.cell_extender._ : Result Unit := do
+  let i ← 1#usize <<< kzg.cell_extender.LOG_BLOB
+  massert (i = kzg.FIELD_ELEMENTS_PER_BLOB)
+
+/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_CELL]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 29:0-29:46
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.FIELD_ELEMENTS_PER_CELL : Std.Usize := 64#usize
+
+/-- [silver_crypto_simd::kzg::CELLS_PER_EXT_BLOB]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 30:0-30:92
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.CELLS_PER_EXT_BLOB : Result Std.Usize := do
+  let i ← 2#usize * kzg.FIELD_ELEMENTS_PER_BLOB
+  i / kzg.FIELD_ELEMENTS_PER_CELL
+
+/-- [silver_crypto_simd::kzg::cell_extender::_#1]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 20:0-20:89 -/
+@[global_simps, irreducible]
+def kzg.cell_extender.__1 : Result Unit := do
+  let i ← 1#usize <<< kzg.cell_extender.LOG_EXT_BLOB
+  let i1 ← kzg.CELLS_PER_EXT_BLOB
+  let i2 ← kzg.FIELD_ELEMENTS_PER_CELL * i1
+  massert (i = i2)
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.inverse_roots_loop.body
+  (roots : Slice blst.blst_fr) (n : Std.Usize)
+  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec blst.blst_fr) × Std.Usize)
+    (alloc.vec.Vec blst.blst_fr))
+  := do
+  if i < n
+  then
+    let i1 ← n - i
+    let bf ← Slice.index_usize roots i1
+    let inverse1 ← alloc.vec.Vec.push inverse bf
+    let i2 ← i + 1#usize
+    ok (cont (inverse1, i2))
+  else ok (done inverse)
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.inverse_roots_loop
+  (roots : Slice blst.blst_fr) (n : Std.Usize)
+  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (inverse1, i1) => kzg.domain.inverse_roots_loop.body roots n inverse1
+      i1)
+    (inverse, i)
+
+/-- [silver_crypto_simd::kzg::domain::inverse_roots]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 44:0-54:1
+    Visibility: public -/
+def kzg.domain.inverse_roots
+  (roots : Slice blst.blst_fr) : Result (alloc.vec.Vec blst.blst_fr) := do
+  let n := Slice.len roots
+  let inverse := alloc.vec.Vec.with_capacity blst.blst_fr n
+  let bf ← Slice.index_usize roots 0#usize
+  let inverse1 ← alloc.vec.Vec.push inverse bf
+  kzg.domain.inverse_roots_loop roots n inverse1 1#usize
+
+/-- [silver_crypto_simd::kzg::domain::R_MINUS_ONE]
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 10:0-11:97 -/
+@[global_simps, irreducible]
+def kzg.domain.R_MINUS_ONE : Array Std.U64 4#usize :=
+  Array.make 4#usize [
+    18446744069414584320#u64, 6034159408538082302#u64, 3691218898639771653#u64,
+    8353516859464449352#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::domain::PRIMITIVE_ROOT_OF_UNITY]
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 8:0-8:39 -/
+@[global_simps, irreducible]
+def kzg.domain.PRIMITIVE_ROOT_OF_UNITY : Std.U64 := 7#u64
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+@[rust_loop_body]
+def kzg.domain.primitive_root_loop.body
+  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
+  (bit : Std.U32) :
+  Result (ControlFlow (blst.blst_fr × Std.U32) blst.blst_fr)
+  := do
+  if bit > log_order
+  then
+    let bit1 ← bit - 1#u32
+    let root1 ← kzg.blst_ops.fr_mul root root
+    let i ← bit1 / 64#u32
+    let i1 ← lift (UScalar.cast .Usize i)
+    let i2 ← Array.index_usize kzg.domain.R_MINUS_ONE i1
+    let i3 ← bit1 % 64#u32
+    let i4 ← i2 >>> i3
+    let i5 ← lift (i4 &&& 1#u64)
+    if i5 = 1#u64
+    then let root2 ← kzg.blst_ops.fr_mul root1 base
+         ok (cont (root2, bit1))
+    else ok (cont (root1, bit1))
+  else ok (done root)
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+@[rust_loop]
+def kzg.domain.primitive_root_loop
+  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
+  (bit : Std.U32) :
+  Result blst.blst_fr
+  := do
+  loop
+    (fun (root1, bit1) => kzg.domain.primitive_root_loop.body log_order base
+      root1 bit1)
+    (root, bit)
+
+/-- [silver_crypto_simd::kzg::domain::primitive_root]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 15:0-27:1 -/
+def kzg.domain.primitive_root (log_order : Std.U32) : Result blst.blst_fr := do
+  let base ← kzg.blst_ops.fr_from_u64 kzg.domain.PRIMITIVE_ROOT_OF_UNITY
+  let root ← kzg.blst_ops.fr_from_u64 1#u64
+  kzg.domain.primitive_root_loop log_order base root 256#u32
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.roots_of_unity_loop.body
+  (root : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr) × blst.blst_fr) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done roots)
+  | some _ =>
+    let roots1 ← alloc.vec.Vec.push roots power
+    let power1 ← kzg.blst_ops.fr_mul power root
+    ok (cont (iter1, roots1, power1))
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.roots_of_unity_loop
+  (iter : core.ops.range.Range Std.Usize) (root : blst.blst_fr)
+  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, roots1, power1) => kzg.domain.roots_of_unity_loop.body root
+      iter1 roots1 power1)
+    (iter, roots, power)
+
+/-- [silver_crypto_simd::kzg::domain::roots_of_unity]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 30:0-40:1
+    Visibility: public -/
+def kzg.domain.roots_of_unity
+  (log_order : Std.U32) : Result (alloc.vec.Vec blst.blst_fr) := do
+  let order ← 1#usize <<< log_order
+  let root ← kzg.domain.primitive_root log_order
+  let roots := alloc.vec.Vec.with_capacity blst.blst_fr order
+  let power ← kzg.blst_ops.fr_from_u64 1#u64
+  kzg.domain.roots_of_unity_loop { start := 0#usize, «end» := order } root
+    roots power
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::new]:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 39:4-56:5
+    Visibility: public -/
+def kzg.cell_extender.CellExtender.new
+  : Result kzg.cell_extender.CellExtender := do
+  let roots ← kzg.domain.roots_of_unity kzg.cell_extender.LOG_BLOB
+  let zero ← kzg.blst_ops.fr_from_u64 0#u64
+  let shift_powers ← kzg.domain.roots_of_unity kzg.cell_extender.LOG_EXT_BLOB
+  let shift_powers1 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone shift_powers
+      kzg.FIELD_ELEMENTS_PER_BLOB zero
+  let evaluations :=
+    alloc.vec.Vec.with_capacity blst.blst_fr kzg.FIELD_ELEMENTS_PER_BLOB
+  let evaluations1 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone evaluations
+      kzg.FIELD_ELEMENTS_PER_BLOB zero
+  let coefficients :=
+    alloc.vec.Vec.with_capacity blst.blst_fr kzg.FIELD_ELEMENTS_PER_BLOB
+  let coefficients1 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone coefficients
+      kzg.FIELD_ELEMENTS_PER_BLOB zero
+  let s := alloc.vec.Vec.deref roots
+  let v ← kzg.domain.inverse_roots s
+  let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
+  let bf ← kzg.blst_ops.fr_from_u64 i
+  let bf1 ← kzg.blst_ops.fr_inverse bf
+  ok
+    {
+      roots,
+      inverse_roots := v,
+      inverse_size := bf1,
+      shift_powers := shift_powers1,
+      evaluations := evaluations1,
+      coefficients := coefficients1
+    }
+
+/-- [silver_crypto_simd::kzg::cell_extender::{core::default::Default for silver_crypto_simd::kzg::cell_extender::CellExtender}::default]:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 33:4-35:5
+    Visibility: public -/
+def kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default
+  : Result kzg.cell_extender.CellExtender := do
+  kzg.cell_extender.CellExtender.new
+
+/-- Trait implementation: [silver_crypto_simd::kzg::cell_extender::{core::default::Default for silver_crypto_simd::kzg::cell_extender::CellExtender}]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 32:0-36:1 -/
+@[reducible]
+def kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault :
+  core.default.Default kzg.cell_extender.CellExtender := {
+  default := kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default
+}
+
+/-- [silver_crypto_simd::kzg::BYTES_PER_FIELD_ELEMENT]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 27:0-27:46
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
+
+/-- [silver_crypto_simd::kzg::BYTES_PER_CELL]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 31:0-31:84
+    Visibility: public -/
+@[global_simps, irreducible]
+def kzg.BYTES_PER_CELL : Result Std.Usize :=
+  kzg.FIELD_ELEMENTS_PER_CELL * kzg.BYTES_PER_FIELD_ELEMENT
+
+/-- [silver_crypto_simd::kzg::fft::transform]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
+@[rust_loop_body]
+def kzg.fft.transform_loop.body
+  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
+    blst.blst_fr)) (Slice blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some i =>
+    let i1 ← half + i
+    let bf ← Slice.index_usize out i1
+    let i2 ← i * roots_stride
+    let bf1 ← Slice.index_usize roots i2
+    let odd ← kzg.blst_ops.fr_mul bf bf1
+    let bf2 ← Slice.index_usize out i
+    let bf3 ← kzg.blst_ops.fr_sub bf2 odd
+    let out1 ← Slice.update out i1 bf3
+    let bf4 ← Slice.index_usize out1 i
+    let bf5 ← kzg.blst_ops.fr_add bf4 odd
+    let s ← Slice.update out1 i bf5
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::kzg::fft::transform]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
+@[rust_loop]
+def kzg.fft.transform_loop
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
+  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize) :
+  Result (Slice blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, out1) => kzg.fft.transform_loop.body roots roots_stride half
+      iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::kzg::fft::transform]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 34:0-55:1 -/
+def kzg.fft.transform
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr) (start : Std.Usize)
+  (stride : Std.Usize) (roots : Slice blst.blst_fr) (roots_stride : Std.Usize)
+  :
+  Result (Slice blst.blst_fr)
+  := do
+  let n := Slice.len out
+  if n = 1#usize
+  then let bf ← Slice.index_usize input start
+       Slice.update out 0#usize bf
+  else
+    let half ← n / 2#usize
+    let (s, index_mut_back) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeToUsizeSlice blst.blst_fr) out
+        { «end» := half }
+    let i ← 2#usize * stride
+    let i1 ← 2#usize * roots_stride
+    let s1 ← kzg.fft.transform s input start i roots i1
+    let out1 := index_mut_back s1
+    let (s2, index_mut_back1) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeFromUsizeSlice blst.blst_fr) out1
+        { start := half }
+    let i2 ← start + stride
+    let s3 ← kzg.fft.transform s2 input i2 i roots i1
+    let out2 := index_mut_back1 s3
+    kzg.fft.transform_loop { start := 0#usize, «end» := half } out2 roots
+      roots_stride half
+partial_fixpoint
+
+/-- [silver_crypto_simd::kzg::fft::fft]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 13:0-18:1
+    Visibility: public -/
+def kzg.fft.fft
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
+  (roots : Slice blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  let n := Slice.len out
+  massert (n > 0#usize)
+  let i ← n - 1#usize
+  let i1 ← lift (n &&& i)
+  massert (i1 = 0#usize)
+  let i2 := Slice.len input
+  massert (i2 = n)
+  let i3 := Slice.len roots
+  let i4 ← i3 % n
+  massert (i4 = 0#usize)
+  let i5 := Slice.len roots
+  let i6 ← i5 / n
+  kzg.fft.transform out input 0#usize 1#usize roots i6
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.fft.inverse_fft_loop.body
+  (inverse_n : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (out : Slice blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
+    blst.blst_fr)) (Slice blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done out)
+  | some i =>
+    let bf ← Slice.index_usize out i
+    let bf1 ← kzg.blst_ops.fr_mul bf inverse_n
+    let s ← Slice.update out i bf1
+    ok (cont (iter1, s))
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.fft.inverse_fft_loop
+  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
+  (inverse_n : blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, out1) => kzg.fft.inverse_fft_loop.body inverse_n iter1 out1)
+    (iter, out)
+
+/-- [silver_crypto_simd::kzg::fft::inverse_fft]:
+    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 22:0-32:1
+    Visibility: public -/
+def kzg.fft.inverse_fft
+  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
+  (inverse_roots : Slice blst.blst_fr) (inverse_n : blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  let out1 ← kzg.fft.fft out input inverse_roots
+  let i := Slice.len out1
+  kzg.fft.inverse_fft_loop { start := 0#usize, «end» := i } out1 inverse_n
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.domain.reverse_bits_loop.body
+  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
+  Result (ControlFlow (Std.Usize × Std.Usize × Std.U32) Std.Usize)
+  := do
+  if bit < bits
+  then
+    let i ← reversed <<< 1#i32
+    let i1 ← lift (rest &&& 1#usize)
+    let reversed1 ← lift (i ||| i1)
+    let rest1 ← rest >>> 1#i32
+    let bit1 ← bit + 1#u32
+    ok (cont (rest1, reversed1, bit1))
+  else ok (done reversed)
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.domain.reverse_bits_loop
+  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
+  Result Std.Usize
+  := do
+  loop
+    (fun (rest1, reversed1, bit1) => kzg.domain.reverse_bits_loop.body bits
+      rest1 reversed1 bit1)
+    (rest, reversed, bit)
+
+/-- [silver_crypto_simd::kzg::domain::reverse_bits]:
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 57:0-67:1
+    Visibility: public -/
+@[reducible]
+def kzg.domain.reverse_bits
+  (index : Std.Usize) (bits : Std.U32) : Result Std.Usize := do
+  kzg.domain.reverse_bits_loop bits index 0#usize 0#u32
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 105:8-110:9 -/
+@[rust_loop_body]
+def kzg.cell_extender.CellExtender.write_extension_loop.body
+  (self : kzg.cell_extender.CellExtender)
+  (iter : core.ops.range.Range Std.Usize)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array Std.U8
+    2048#usize) 128#usize)) (Array (Array Std.U8 2048#usize) 128#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done cells)
+  | some j =>
+    let i ← kzg.domain.reverse_bits j kzg.cell_extender.LOG_BLOB
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        self.evaluations i
+    let bytes ← kzg.blst_ops.fr_to_bytes bf
+    let i1 ← kzg.CELLS_PER_EXT_BLOB
+    let i2 ← i1 / 2#usize
+    let i3 ← j / kzg.FIELD_ELEMENTS_PER_CELL
+    let cell ← i2 + i3
+    let i4 ← j % kzg.FIELD_ELEMENTS_PER_CELL
+    let at1 ← i4 * kzg.BYTES_PER_FIELD_ELEMENT
+    let (a, index_mut_back) ← Array.index_mut_usize cells cell
+    let i5 ← at1 + kzg.BYTES_PER_FIELD_ELEMENT
+    let (s, index_mut_back1) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) a
+        { start := at1, «end» := i5 }
+    let s1 ← lift (Array.to_slice bytes)
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let a1 := index_mut_back1 s2
+    let a2 := index_mut_back a1
+    ok (cont (iter1, a2))
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 105:8-110:9 -/
+@[rust_loop]
+def kzg.cell_extender.CellExtender.write_extension_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (self : kzg.cell_extender.CellExtender)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (Array (Array Std.U8 2048#usize) 128#usize)
+  := do
+  loop
+    (fun (iter1, cells1) =>
+      kzg.cell_extender.CellExtender.write_extension_loop.body self iter1
+      cells1)
+    (iter, cells)
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 104:4-111:5 -/
+@[reducible]
+def kzg.cell_extender.CellExtender.write_extension
+  (self : kzg.cell_extender.CellExtender)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (Array (Array Std.U8 2048#usize) 128#usize)
+  := do
+  kzg.cell_extender.CellExtender.write_extension_loop
+    { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_BLOB } self cells
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 90:8-100:9 -/
+@[rust_loop_body]
+def kzg.cell_extender.CellExtender.decode_blob_loop.body
+  (blob : Array Std.U8 131072#usize) (self : kzg.cell_extender.CellExtender)
+  (i : Std.Usize) :
+  Result (ControlFlow (kzg.cell_extender.CellExtender × Std.Usize)
+    (kzg.cell_extender.CellExtender × Std.Usize))
+  := do
+  if i < kzg.FIELD_ELEMENTS_PER_BLOB
+  then
+    let bytes := Array.repeat 32#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i1 ← i * kzg.BYTES_PER_FIELD_ELEMENT
+    let i2 ← i + 1#usize
+    let i3 ← i2 * kzg.BYTES_PER_FIELD_ELEMENT
+    let s1 ←
+      core.array.Array.index (core.ops.index.IndexSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) blob
+        { start := i1, «end» := i3 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let bytes1 := to_slice_mut_back s2
+    let o ← kzg.blst_ops.fr_from_bytes bytes1
+    match o with
+    | none => ok (done (self, i))
+    | some value =>
+      let i4 ← kzg.domain.reverse_bits i kzg.cell_extender.LOG_BLOB
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+          blst.blst_fr) self.evaluations i4
+      let v := index_mut_back value
+      ok (cont ({ self with evaluations := v }, i2))
+  else ok (done (self, i))
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 90:8-100:9 -/
+@[rust_loop]
+def kzg.cell_extender.CellExtender.decode_blob_loop
+  (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize)
+  (i : Std.Usize) :
+  Result (kzg.cell_extender.CellExtender × Std.Usize)
+  := do
+  loop
+    (fun (self1, i1) => kzg.cell_extender.CellExtender.decode_blob_loop.body
+      blob self1 i1)
+    (self, i)
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 88:4-102:5 -/
+def kzg.cell_extender.CellExtender.decode_blob
+  (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize) :
+  Result (Bool × kzg.cell_extender.CellExtender)
+  := do
+  let (self1, i) ←
+    kzg.cell_extender.CellExtender.decode_blob_loop self blob 0#usize
+  ok (i = kzg.FIELD_ELEMENTS_PER_BLOB, self1)
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 68:8-70:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.cell_extender.CellExtender.compute_loop0.body
+  (blob : Array Std.U8 131072#usize) (iter : core.ops.range.Range Std.Usize)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array Std.U8
+    2048#usize) 128#usize)) (Array (Array Std.U8 2048#usize) 128#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done cells)
+  | some k =>
+    let (a, index_mut_back) ← Array.index_mut_usize cells k
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut a)
+    let i ← kzg.BYTES_PER_CELL
+    let i1 ← k * i
+    let i2 ← k + 1#usize
+    let i3 ← i2 * i
+    let s1 ←
+      core.array.Array.index (core.ops.index.IndexSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) blob
+        { start := i1, «end» := i3 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let a1 := to_slice_mut_back s2
+    let a2 := index_mut_back a1
+    ok (cont (iter1, a2))
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 68:8-70:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.cell_extender.CellExtender.compute_loop0
+  (iter : core.ops.range.Range Std.Usize) (blob : Array Std.U8 131072#usize)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (Array (Array Std.U8 2048#usize) 128#usize)
+  := do
+  loop
+    (fun (iter1, cells1) => kzg.cell_extender.CellExtender.compute_loop0.body
+      blob iter1 cells1)
+    (iter, cells)
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 78:8-80:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.cell_extender.CellExtender.compute_loop1.body
+  (v : alloc.vec.Vec blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
+  (v1 : alloc.vec.Vec blst.blst_fr) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
+    blst.blst_fr)) (alloc.vec.Vec blst.blst_fr))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v1)
+  | some k =>
+    let bf ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v1 k
+    let bf1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v k
+    let bf2 ← kzg.blst_ops.fr_mul bf bf1
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        blst.blst_fr) v1 k
+    let v2 := index_mut_back bf2
+    ok (cont (iter1, v2))
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 78:8-80:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.cell_extender.CellExtender.compute_loop1
+  (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
+  (v1 : alloc.vec.Vec blst.blst_fr) :
+  Result (alloc.vec.Vec blst.blst_fr)
+  := do
+  loop
+    (fun (iter1, v2) => kzg.cell_extender.CellExtender.compute_loop1.body v
+      iter1 v2)
+    (iter, v1)
+
+/-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]:
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 60:4-84:5
+    Visibility: public -/
+def kzg.cell_extender.CellExtender.compute
+  (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize)
+  (cells : Array (Array Std.U8 2048#usize) 128#usize) :
+  Result (Bool × kzg.cell_extender.CellExtender × (Array (Array Std.U8
+    2048#usize) 128#usize))
+  := do
+  let (b, self1) ← kzg.cell_extender.CellExtender.decode_blob self blob
+  if b
+  then
+    let i ← kzg.CELLS_PER_EXT_BLOB
+    let i1 ← i / 2#usize
+    let cells1 ←
+      kzg.cell_extender.CellExtender.compute_loop0
+        { start := 0#usize, «end» := i1 } blob cells
+    let (s, deref_mut_back) ←
+      lift (alloc.vec.Vec.deref_mut self1.coefficients)
+    let s1 := alloc.vec.Vec.deref self1.evaluations
+    let s2 := alloc.vec.Vec.deref self1.inverse_roots
+    let s3 ← kzg.fft.inverse_fft s s1 s2 self1.inverse_size
+    let v := deref_mut_back s3
+    let v1 ←
+      kzg.cell_extender.CellExtender.compute_loop1
+        { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_BLOB }
+        self1.shift_powers v
+    let (s4, deref_mut_back1) ←
+      lift (alloc.vec.Vec.deref_mut self1.evaluations)
+    let s5 := alloc.vec.Vec.deref v1
+    let s6 := alloc.vec.Vec.deref self1.roots
+    let s7 ← kzg.fft.fft s4 s5 s6
+    let v2 := deref_mut_back1 s7
+    let cells2 ←
+      kzg.cell_extender.CellExtender.write_extension
+        { self1 with evaluations := v2, coefficients := v1 } cells1
+    ok (true, { self1 with evaluations := v2, coefficients := v1 }, cells2)
+  else ok (false, self1, cells)
+
 /-- [silver_crypto_simd::kzg::challenge::DOMAIN]
     Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 12:0-12:46 -/
 @[global_simps, irreducible]
@@ -2864,18 +3545,6 @@ def kzg.challenge.DOMAIN : Array Std.U8 16#usize :=
     Visibility: public -/
 def kzg.challenge.Preimage.new : Result kzg.challenge.Preimage := do
   ok { bytes := (alloc.vec.Vec.new Std.U8) }
-
-/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_CELL]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 29:0-29:46
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.FIELD_ELEMENTS_PER_CELL : Std.Usize := 64#usize
-
-/-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 28:0-28:48
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.FIELD_ELEMENTS_PER_BLOB : Std.Usize := 4096#usize
 
 /-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]: loop body 0:
     Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 58:8-61:9 -/
@@ -3035,200 +3704,6 @@ def kzg.challenge.Preimage.challenge
     Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 14:0-14:29 -/
 @[global_simps, irreducible] def kzg.cosets.LOG_EXT_BLOB : Std.U32 := 13#u32
 
-/-- [silver_crypto_simd::kzg::CELLS_PER_EXT_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 30:0-30:92
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.CELLS_PER_EXT_BLOB : Result Std.Usize := do
-  let i ← 2#usize * kzg.FIELD_ELEMENTS_PER_BLOB
-  i / kzg.FIELD_ELEMENTS_PER_CELL
-
-/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
-    Visibility: public -/
-@[rust_loop_body]
-def kzg.domain.reverse_bits_loop.body
-  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
-  Result (ControlFlow (Std.Usize × Std.Usize × Std.U32) Std.Usize)
-  := do
-  if bit < bits
-  then
-    let i ← reversed <<< 1#i32
-    let i1 ← lift (rest &&& 1#usize)
-    let reversed1 ← lift (i ||| i1)
-    let rest1 ← rest >>> 1#i32
-    let bit1 ← bit + 1#u32
-    ok (cont (rest1, reversed1, bit1))
-  else ok (done reversed)
-
-/-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
-    Visibility: public -/
-@[rust_loop]
-def kzg.domain.reverse_bits_loop
-  (bits : Std.U32) (rest : Std.Usize) (reversed : Std.Usize) (bit : Std.U32) :
-  Result Std.Usize
-  := do
-  loop
-    (fun (rest1, reversed1, bit1) => kzg.domain.reverse_bits_loop.body bits
-      rest1 reversed1 bit1)
-    (rest, reversed, bit)
-
-/-- [silver_crypto_simd::kzg::domain::reverse_bits]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 57:0-67:1
-    Visibility: public -/
-@[reducible]
-def kzg.domain.reverse_bits
-  (index : Std.Usize) (bits : Std.U32) : Result Std.Usize := do
-  kzg.domain.reverse_bits_loop bits index 0#usize 0#u32
-
-/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
-    Visibility: public -/
-@[rust_loop_body]
-def kzg.domain.inverse_roots_loop.body
-  (roots : Slice blst.blst_fr) (n : Std.Usize)
-  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
-  Result (ControlFlow ((alloc.vec.Vec blst.blst_fr) × Std.Usize)
-    (alloc.vec.Vec blst.blst_fr))
-  := do
-  if i < n
-  then
-    let i1 ← n - i
-    let bf ← Slice.index_usize roots i1
-    let inverse1 ← alloc.vec.Vec.push inverse bf
-    let i2 ← i + 1#usize
-    ok (cont (inverse1, i2))
-  else ok (done inverse)
-
-/-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
-    Visibility: public -/
-@[rust_loop]
-def kzg.domain.inverse_roots_loop
-  (roots : Slice blst.blst_fr) (n : Std.Usize)
-  (inverse : alloc.vec.Vec blst.blst_fr) (i : Std.Usize) :
-  Result (alloc.vec.Vec blst.blst_fr)
-  := do
-  loop
-    (fun (inverse1, i1) => kzg.domain.inverse_roots_loop.body roots n inverse1
-      i1)
-    (inverse, i)
-
-/-- [silver_crypto_simd::kzg::domain::inverse_roots]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 44:0-54:1
-    Visibility: public -/
-def kzg.domain.inverse_roots
-  (roots : Slice blst.blst_fr) : Result (alloc.vec.Vec blst.blst_fr) := do
-  let n := Slice.len roots
-  let inverse := alloc.vec.Vec.with_capacity blst.blst_fr n
-  let bf ← Slice.index_usize roots 0#usize
-  let inverse1 ← alloc.vec.Vec.push inverse bf
-  kzg.domain.inverse_roots_loop roots n inverse1 1#usize
-
-/-- [silver_crypto_simd::kzg::domain::R_MINUS_ONE]
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 10:0-11:97 -/
-@[global_simps, irreducible]
-def kzg.domain.R_MINUS_ONE : Array Std.U64 4#usize :=
-  Array.make 4#usize [
-    18446744069414584320#u64, 6034159408538082302#u64, 3691218898639771653#u64,
-    8353516859464449352#u64
-    ] (by rfl)
-
-/-- [silver_crypto_simd::kzg::domain::PRIMITIVE_ROOT_OF_UNITY]
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 8:0-8:39 -/
-@[global_simps, irreducible]
-def kzg.domain.PRIMITIVE_ROOT_OF_UNITY : Std.U64 := 7#u64
-
-/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
-@[rust_loop_body]
-def kzg.domain.primitive_root_loop.body
-  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
-  (bit : Std.U32) :
-  Result (ControlFlow (blst.blst_fr × Std.U32) blst.blst_fr)
-  := do
-  if bit > log_order
-  then
-    let bit1 ← bit - 1#u32
-    let root1 ← kzg.blst_ops.fr_mul root root
-    let i ← bit1 / 64#u32
-    let i1 ← lift (UScalar.cast .Usize i)
-    let i2 ← Array.index_usize kzg.domain.R_MINUS_ONE i1
-    let i3 ← bit1 % 64#u32
-    let i4 ← i2 >>> i3
-    let i5 ← lift (i4 &&& 1#u64)
-    if i5 = 1#u64
-    then let root2 ← kzg.blst_ops.fr_mul root1 base
-         ok (cont (root2, bit1))
-    else ok (cont (root1, bit1))
-  else ok (done root)
-
-/-- [silver_crypto_simd::kzg::domain::primitive_root]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
-@[rust_loop]
-def kzg.domain.primitive_root_loop
-  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
-  (bit : Std.U32) :
-  Result blst.blst_fr
-  := do
-  loop
-    (fun (root1, bit1) => kzg.domain.primitive_root_loop.body log_order base
-      root1 bit1)
-    (root, bit)
-
-/-- [silver_crypto_simd::kzg::domain::primitive_root]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 15:0-27:1 -/
-def kzg.domain.primitive_root (log_order : Std.U32) : Result blst.blst_fr := do
-  let base ← kzg.blst_ops.fr_from_u64 kzg.domain.PRIMITIVE_ROOT_OF_UNITY
-  let root ← kzg.blst_ops.fr_from_u64 1#u64
-  kzg.domain.primitive_root_loop log_order base root 256#u32
-
-/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
-    Visibility: public -/
-@[rust_loop_body]
-def kzg.domain.roots_of_unity_loop.body
-  (root : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
-  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (alloc.vec.Vec
-    blst.blst_fr) × blst.blst_fr) (alloc.vec.Vec blst.blst_fr))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done roots)
-  | some _ =>
-    let roots1 ← alloc.vec.Vec.push roots power
-    let power1 ← kzg.blst_ops.fr_mul power root
-    ok (cont (iter1, roots1, power1))
-
-/-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
-    Visibility: public -/
-@[rust_loop]
-def kzg.domain.roots_of_unity_loop
-  (iter : core.ops.range.Range Std.Usize) (root : blst.blst_fr)
-  (roots : alloc.vec.Vec blst.blst_fr) (power : blst.blst_fr) :
-  Result (alloc.vec.Vec blst.blst_fr)
-  := do
-  loop
-    (fun (iter1, roots1, power1) => kzg.domain.roots_of_unity_loop.body root
-      iter1 roots1 power1)
-    (iter, roots, power)
-
-/-- [silver_crypto_simd::kzg::domain::roots_of_unity]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 30:0-40:1
-    Visibility: public -/
-def kzg.domain.roots_of_unity
-  (log_order : Std.U32) : Result (alloc.vec.Vec blst.blst_fr) := do
-  let order ← 1#usize <<< log_order
-  let root ← kzg.domain.primitive_root log_order
-  let roots := alloc.vec.Vec.with_capacity blst.blst_fr order
-  let power ← kzg.blst_ops.fr_from_u64 1#u64
-  kzg.domain.roots_of_unity_loop { start := 0#usize, «end» := order } root
-    roots power
-
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop body 1:
     Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 38:12-40:13
     Visibility: public -/
@@ -3331,152 +3806,6 @@ def kzg.cosets.Cosets.new : Result kzg.cosets.Cosets := do
       shift_inverse := shift_inverse1,
       shift_pow_cell := shift_pow_cell1
     }
-
-/-- [silver_crypto_simd::kzg::fft::transform]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
-@[rust_loop_body]
-def kzg.fft.transform_loop.body
-  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize)
-  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
-    blst.blst_fr)) (Slice blst.blst_fr))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done out)
-  | some i =>
-    let i1 ← half + i
-    let bf ← Slice.index_usize out i1
-    let i2 ← i * roots_stride
-    let bf1 ← Slice.index_usize roots i2
-    let odd ← kzg.blst_ops.fr_mul bf bf1
-    let bf2 ← Slice.index_usize out i
-    let bf3 ← kzg.blst_ops.fr_sub bf2 odd
-    let out1 ← Slice.update out i1 bf3
-    let bf4 ← Slice.index_usize out1 i
-    let bf5 ← kzg.blst_ops.fr_add bf4 odd
-    let s ← Slice.update out1 i bf5
-    ok (cont (iter1, s))
-
-/-- [silver_crypto_simd::kzg::fft::transform]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
-@[rust_loop]
-def kzg.fft.transform_loop
-  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
-  (roots : Slice blst.blst_fr) (roots_stride : Std.Usize) (half : Std.Usize) :
-  Result (Slice blst.blst_fr)
-  := do
-  loop
-    (fun (iter1, out1) => kzg.fft.transform_loop.body roots roots_stride half
-      iter1 out1)
-    (iter, out)
-
-/-- [silver_crypto_simd::kzg::fft::transform]:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 34:0-55:1 -/
-def kzg.fft.transform
-  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr) (start : Std.Usize)
-  (stride : Std.Usize) (roots : Slice blst.blst_fr) (roots_stride : Std.Usize)
-  :
-  Result (Slice blst.blst_fr)
-  := do
-  let n := Slice.len out
-  if n = 1#usize
-  then let bf ← Slice.index_usize input start
-       Slice.update out 0#usize bf
-  else
-    let half ← n / 2#usize
-    let (s, index_mut_back) ←
-      core.slice.index.Slice.index_mut
-        (core.slice.index.SliceIndexRangeToUsizeSlice blst.blst_fr) out
-        { «end» := half }
-    let i ← 2#usize * stride
-    let i1 ← 2#usize * roots_stride
-    let s1 ← kzg.fft.transform s input start i roots i1
-    let out1 := index_mut_back s1
-    let (s2, index_mut_back1) ←
-      core.slice.index.Slice.index_mut
-        (core.slice.index.SliceIndexRangeFromUsizeSlice blst.blst_fr) out1
-        { start := half }
-    let i2 ← start + stride
-    let s3 ← kzg.fft.transform s2 input i2 i roots i1
-    let out2 := index_mut_back1 s3
-    kzg.fft.transform_loop { start := 0#usize, «end» := half } out2 roots
-      roots_stride half
-partial_fixpoint
-
-/-- [silver_crypto_simd::kzg::fft::fft]:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 13:0-18:1
-    Visibility: public -/
-def kzg.fft.fft
-  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
-  (roots : Slice blst.blst_fr) :
-  Result (Slice blst.blst_fr)
-  := do
-  let n := Slice.len out
-  massert (n > 0#usize)
-  let i ← n - 1#usize
-  let i1 ← lift (n &&& i)
-  massert (i1 = 0#usize)
-  let i2 := Slice.len input
-  massert (i2 = n)
-  let i3 := Slice.len roots
-  let i4 ← i3 % n
-  massert (i4 = 0#usize)
-  let i5 := Slice.len roots
-  let i6 ← i5 / n
-  kzg.fft.transform out input 0#usize 1#usize roots i6
-
-/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
-    Visibility: public -/
-@[rust_loop_body]
-def kzg.fft.inverse_fft_loop.body
-  (inverse_n : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
-  (out : Slice blst.blst_fr) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice
-    blst.blst_fr)) (Slice blst.blst_fr))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done out)
-  | some i =>
-    let bf ← Slice.index_usize out i
-    let bf1 ← kzg.blst_ops.fr_mul bf inverse_n
-    let s ← Slice.update out i bf1
-    ok (cont (iter1, s))
-
-/-- [silver_crypto_simd::kzg::fft::inverse_fft]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 29:4-31:5
-    Visibility: public -/
-@[rust_loop]
-def kzg.fft.inverse_fft_loop
-  (iter : core.ops.range.Range Std.Usize) (out : Slice blst.blst_fr)
-  (inverse_n : blst.blst_fr) :
-  Result (Slice blst.blst_fr)
-  := do
-  loop
-    (fun (iter1, out1) => kzg.fft.inverse_fft_loop.body inverse_n iter1 out1)
-    (iter, out)
-
-/-- [silver_crypto_simd::kzg::fft::inverse_fft]:
-    Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 22:0-32:1
-    Visibility: public -/
-def kzg.fft.inverse_fft
-  (out : Slice blst.blst_fr) (input : Slice blst.blst_fr)
-  (inverse_roots : Slice blst.blst_fr) (inverse_n : blst.blst_fr) :
-  Result (Slice blst.blst_fr)
-  := do
-  let out1 ← kzg.fft.fft out input inverse_roots
-  let i := Slice.len out1
-  kzg.fft.inverse_fft_loop { start := 0#usize, «end» := i } out1 inverse_n
-
-/-- [silver_crypto_simd::kzg::BYTES_PER_FIELD_ELEMENT]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 27:0-27:46
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
 
 /-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_64]
     Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 398:0-405:2

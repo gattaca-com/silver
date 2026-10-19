@@ -1,6 +1,6 @@
 # Maintaining the shared BLS and KZG proof
 
-One extraction and one Lake project cover BLS decoding and KZG cell batch verification. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. `CellExtender` is excluded. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-verifier-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
+One extraction and one Lake project cover BLS decoding, KZG cell batch verification and cell extension. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
 
 ## Common reproduction and extraction
 
@@ -13,9 +13,9 @@ python3 -I controls/extraction-check.py
 
 Run one Lean job at a time. A cold build also compiles uncached Aeneas and specification modules. The [parent README](../README.md#reproducing-the-proof-and-checks) explains the default build and its guard reports.
 
-`extract.sh` checks tool pins and starts from the three BLS roots and `crate::kzg::verify`. Individual blst operation wrappers remain opaque. `prepare-extraction.py` scopes BLS definitions over `BlsExternals` and KZG definitions over its child `KzgExternals`; a KZG call inherits the same BLS observations. BLS-only callers need only the three-field parent. The script also quotes exactly six `full` identifiers, supplies structural `Array.make` length witnesses at BLS and KZG sites, and hoists exactly 64 G1 setup rows without changing terms, order or outer type. All adaptations run before `--check`, which compares both complete generated files after masking only numeric source spans.
+`extract.sh` checks tool pins and starts from the three BLS roots, `crate::kzg::verify` and `crate::kzg::cell_extender`. Individual blst operation wrappers remain opaque. `prepare-extraction.py` scopes BLS definitions over `BlsExternals` and KZG definitions over its child `KzgExternals`; a KZG call inherits the same BLS observations. BLS-only callers need only the three-field parent. The script also quotes exactly six `full` identifiers, supplies structural `Array.make` length witnesses at BLS and KZG sites, and hoists exactly 64 G1 setup rows without changing terms, order or outer type. It requires exactly one verifier `verify` and extender `new`, `compute` and `Default` definition. All adaptations run before `--check`, which compares both complete generated files after masking only numeric source spans.
 
-After changing any import, rebuild its artifacts before running controls. The parent README lists the control loop, downstream build, differential runner and Rust checks. `controls/extraction-check.py` uses deterministic extractor fixtures to test the drift boundary; the real-tool `--check` is a separate required check.
+After changing any import, rebuild its artifacts before running controls. The parent README lists the control loop, downstream build, differential runner and Rust checks. `controls/extraction-check.py` uses 16 deterministic extractor fixtures to test the drift boundary. These include missing and duplicated verifier and extender entry points. The real-tool `--check` is a separate required check.
 
 ### Working in Lean
 
@@ -63,7 +63,7 @@ Keep the original recording until you understand the difference. `write_vectors`
 
 Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) and [`AENEAS_DIR`](../README.md#reproducing-the-extraction) as described in the parent README. Run Cargo commands from the silver repository root; run Lake commands and `extract.sh` from this directory. Keep the original failure output so a reviewer can compare the old and new behaviour.
 
-1. Regenerate the extraction with `AENEAS_DIR=/path/to/aeneas ./extract.sh`. It replaces `LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`, and prints how they changed, with the line numbers of Aeneas's `Source:` locations masked. The shared extraction includes both public wrappers, their kernels and the KZG verifier. The common preparation steps above are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`. If the Rust now calls an item that Aeneas does not translate, such as a new intrinsic, add it to the externals (see below).
+1. Regenerate the extraction with `AENEAS_DIR=/path/to/aeneas ./extract.sh`. It replaces `LeanBlsSimd/Extracted/Types.lean` and `Funs.lean`, and prints how they changed, with the line numbers of Aeneas's `Source:` locations masked. The shared extraction includes both public wrappers, their kernels, the KZG verifier and the cell extender. The common preparation steps above are checked by `--check`; regenerate through the script rather than editing `Extracted/Funs.lean`. If the Rust now calls an item that Aeneas does not translate, such as a new intrinsic, add it to the externals (see below).
 2. Regenerate the vectors on a host with AVX-512 IFMA:
 
    ```sh
@@ -134,7 +134,7 @@ For G2, if your change needs a case the file lacks, add it to `Cases` in `../vec
 
 For G1, add cases to `g1::cases` in `../vectors.rs`. For both groups, record the scalar blst result even when the kernel leaves a lane undecided. Wrapper cases refer to recorded batch/lane inputs and must include the complete expected optional output. Regenerate with the ignored `write_vectors` tests, then run the combined Lean differential command and the Rust replay checks.
 
-## KZG verifier maintenance
+## KZG maintenance
 
 Start with `LeanBlsSimd.Kzg.Statements`: `verify_eq_spec` uses the explicit
 `embeddedSetup`, while `verify_eq_upstream` additionally assumes the runtime
@@ -142,7 +142,7 @@ loader returns it. Both take `BlstCorrect e` and the inherited G1
 `UncompressG1.BlstMatchesSpec`. Preserve these assumptions, the slice-byte bounds,
 successful construction, specification verdict and next-state invariant. The
 input theorem includes malformed or rejected batches and repeated calls.
-`default_eq_new` relates generated `Default` to `new`; `CellExtender` has no correctness theorem here.
+`default_eq_new` relates generated `Default` to `new`.
 
 The decoder boundary is `Kzg/Decoder.lean`.
 `g1DecoderCorrect_of_blstMatchesSpec` derives the generated batch-decoder contract
@@ -153,14 +153,38 @@ Do not replace this theorem with an external slice-decoder assumption.
 when available. `Kzg/SpecExternals.lean` witnesses joint consistency of the KZG
 operation laws and both full scalar contracts.
 
+For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`.
+`Extender.compute_eq_spec` takes the whole `BlstCorrect e` record, including field,
+group, hash and pairing laws, plus `FrToBytesCorrect e`.
+Preserve total construction and execution, canonicality in both directions,
+and exact `computeCells` output bytes. Rejection must produce a specification
+error and leave output cells unchanged. Every call preserves the state invariant.
+It permits arbitrary scratch contents of the fixed lengths, covering calls after
+rejection. There is no G1 decoder or runtime setup premise.
+`Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the
+complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
+
+`specExternals_fr_to_bytes_correct` witnesses the
+[serialization law](../README.md#what-a-reader-must-trust).
+`BlstCorrect` has no serialization law.
+
 ### Mapping Rust changes to Lean
 
-| Rust area under `src/kzg/` | Lean area under `LeanBlsSimd/Kzg/` |
+| Rust file under `src/kzg/` | Lean modules under `LeanBlsSimd/Kzg/` |
 |---|---|
-| `verify.rs`, point/cell decoding, validation and challenge | `Refines/Verify.lean`, the other `Refines/` modules and `Statements.lean` |
-| `setup.rs`, `trusted_setup.rs`, `cosets.rs` | `Setup.lean`, `SetupPoints.lean`, `SetupArithmetic.lean`, `Refines/Setup.lean` and `Refines/Cosets.lean` |
-| IFFT, aggregation and interpolation | `Model.lean`, `InterpolationModel.lean`, polynomial modules, `InterpolationIdentity.lean`, `ModelSpec.lean` and the corresponding `Refines/` modules |
-| `blst_ops.rs` | `Externals.lean`, `Representation.lean`, `SpecExternals.lean` and the shared `Extracted/FunsExternal.lean` bindings |
+| `verify.rs` | `Statements.lean`, `Model.lean`, `InterpolationModel.lean`, `Refines/Verify.lean`, `Refines/Cells.lean`, `Refines/Points.lean`, `Refines/Checks.lean`, `Refines/Deduplicate.lean`, `Refines/Pairing.lean`, `Refines/Interpolation.lean` and `Refines/InterpolationCommitment.lean` |
+| `cell_extender.rs` | `Extender/Basic.lean`, `Extender/Model.lean`, `Extender/Acceptance.lean`, `Extender/Decode.lean`, `Extender/Scale.lean`, `Extender/WriteStep.lean`, `Extender/WriteBytes.lean`, `Extender/Write.lean`, `Extender/Refines.lean` and `Extender/Statements.lean` |
+| `fft.rs` | `Refines/Fft.lean` |
+| `domain.rs` | `Refines/Roots.lean`, `Refines/Bits.lean` and `Extender/Primitives.lean` |
+| `challenge.rs` | `ByteSerialization.lean` and `Refines/Challenge.lean` |
+| `cosets.rs` | `Refines/Cosets.lean` |
+| `setup.rs`, `trusted_setup.rs` | `Setup.lean`, `SetupPoints.lean`, `SetupArithmetic.lean` and `Refines/Setup.lean` |
+| `blst_ops.rs` | `Externals.lean`, `Representation.lean`, `SpecExternals.lean` and the shared `../Extracted/FunsExternal.lean` bindings |
+
+The verifier's specification bridge uses the polynomial modules,
+`InterpolationIdentity.lean`, `ModelSpec.lean` and `SpecBridge.lean`.
+The extender's bridge uses `Extender/SpecMath.lean`, `Extender/Spec.lean` and
+`Extender/SpecBytes.lean` for polynomial evaluation and byte layout.
 
 ### Working in Lean
 
@@ -172,6 +196,19 @@ results are compared by `G1Rep`, not by equality of their coordinate triples.
 Changes to setup constants require the kernel-checked point certificates and the
 connection to the pinned spec's embedded setup; the reference-loader hypothesis
 cannot stand in for those proofs.
+
+The verifier's roots and FFT theorems take `ExternalsCorrect` and delegate to
+refinements with `BlstCorrect` premises. Preserve both interfaces when changing
+shared arithmetic.
+
+Keep array dimensions and collections explicit when rewriting 4096-element
+transforms. An unresolved collection argument in `getElem!_pos` or a large
+serialization expression in `change` can make unification evaluate the entire
+array. Use getter and size lemmas before specializing dimensions. Align the
+specification's `Cell` alias in serialization helpers to avoid unfolding its
+2048-byte fold merely to compare getter instances.
+A mismatched model term can also appear as a maximum recursion depth failure.
+Inspect the competing terms before raising the limit.
 
 `G1Bridge.lean` provides a generic transport theorem for independent extractions;
 the shared verifier uses the direct decoder bridge.

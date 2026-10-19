@@ -12,6 +12,7 @@ class silver_crypto_simd.bls.BlsExternals where
 
 class silver_crypto_simd.kzg.KzgExternals extends BlsExternals where
   frFromBytes : Array U8 32#usize → Result (Option blst.blst_fr)
+  frToBytes : blst.blst_fr → Result (Array U8 32#usize)
   frFromU64 : U64 → Result blst.blst_fr
   frAdd : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
   frSub : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
@@ -178,6 +179,7 @@ def silver_crypto_simd.bls.fp8.lanes (v : core.core_arch.x86.__m512i) : Result (
 namespace silver_crypto_simd
 
 def kzg.blst_ops.fr_from_bytes [kzg.KzgExternals] := kzg.KzgExternals.frFromBytes
+def kzg.blst_ops.fr_to_bytes [kzg.KzgExternals] := kzg.KzgExternals.frToBytes
 def kzg.blst_ops.fr_from_u64 [kzg.KzgExternals] := kzg.KzgExternals.frFromU64
 def kzg.blst_ops.fr_add [kzg.KzgExternals] := kzg.KzgExternals.frAdd
 def kzg.blst_ops.fr_sub [kzg.KzgExternals] := kzg.KzgExternals.frSub

@@ -47,6 +47,10 @@ structure BlstCorrect (e : KzgExternals) : Prop where
       ok (Bls.pairingCheck #[(g1ReadAffine p, g2ReadAffine q),
         (g1ReadAffine p', g2ReadAffine q')])
 
+def FrToBytesCorrect (e : KzgExternals) : Prop :=
+  ∀ x, ∃ result, e.frToBytes (frEncode x) = ok result ∧
+    arrayBytes result = Kzg.blsFieldToBytes x
+
 structure ExternalsCorrect (e : KzgExternals) : Prop where
   blst : BlstCorrect e
   g1 : G1DecoderCorrect e

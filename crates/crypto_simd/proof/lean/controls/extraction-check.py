@@ -53,7 +53,14 @@ prefix = (
     "def kzg.trusted_setup.G1_MONOMIAL : Array (Array Std.U8 48#usize) 64#usize :=\n"
 )
 table = "  Array.make 64#usize [\n" + ",\n".join(rows) + "]\n"
-suffix = "\n/-- following --/\ndef kzg.verify.CellBatchVerifier.verify\n  : Nat := 0\nend silver_crypto_simd\n"
+suffix = (
+    "\n/-- following --/\ndef kzg.verify.CellBatchVerifier.verify\n  : Nat := 0\n"
+    "/-- extender constructor --/\ndef kzg.cell_extender.CellExtender.new\n  : Nat := 0\n"
+    "/-- extender compute --/\ndef kzg.cell_extender.CellExtender.compute\n  : Nat := 4096\n"
+    "/-- extender default --/\n"
+    "def kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default\n  : Nat := 0\n"
+    "end silver_crypto_simd\n"
+)
 direct = prefix + table + suffix
 reversed_table = prefix + "  let table :=\n  " + table + (
     "  ⟨table.val.reverse, by simpa using table.property⟩\n" + suffix
@@ -93,6 +100,8 @@ import pathlib, sys
 if sys.argv[1:] == ['version']:
     print('0.0.0')
 else:
+    roots = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == '--start-from']
+    assert 'crate::kzg::cell_extender' in roots, 'missing cell extender extraction root'
     pathlib.Path(sys.argv[sys.argv.index('--dest-file') + 1]).write_text('fixture')
 """)
     committed = project / "LeanBlsSimd/Extracted"
@@ -129,3 +138,17 @@ else:
         1, "expected all BLS definitions before the KZG definitions")
     check("missing reserved identifier", direct.replace("full + full", "full + 1", 1),
         1, "expected six generated full identifiers, found 5")
+    check("extender body edit", direct.replace(": Nat := 4096", ": Nat := 4095"),
+        1, ": Nat := 4095")
+    for entry_point in [
+        "kzg.verify.CellBatchVerifier.verify",
+        "kzg.cell_extender.CellExtender.new",
+        "kzg.cell_extender.CellExtender.compute",
+        "kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default",
+    ]:
+        declaration = f"def {entry_point}\n"
+        diagnostic = f"expected exactly one generated entry point: {entry_point}"
+        check(f"missing {entry_point}", direct.replace(declaration, f"def missing_{entry_point}\n"),
+            1, diagnostic)
+        check(f"duplicate {entry_point}", direct.replace(declaration, declaration + declaration),
+            1, diagnostic)

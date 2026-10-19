@@ -142,6 +142,17 @@ structure kzg.blst_ops.LincombScratch where
   scalars : alloc.vec.Vec (Array Std.U8 32#usize)
   pippenger : alloc.vec.Vec Std.U64
 
+/-- [silver_crypto_simd::kzg::cell_extender::CellExtender]
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 22:0-30:1
+    Visibility: public -/
+structure kzg.cell_extender.CellExtender where
+  roots : alloc.vec.Vec blst.blst_fr
+  inverse_roots : alloc.vec.Vec blst.blst_fr
+  inverse_size : blst.blst_fr
+  shift_powers : alloc.vec.Vec blst.blst_fr
+  evaluations : alloc.vec.Vec blst.blst_fr
+  coefficients : alloc.vec.Vec blst.blst_fr
+
 /-- [silver_crypto_simd::kzg::challenge::Preimage]
     Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 15:0-17:1
     Visibility: public -/

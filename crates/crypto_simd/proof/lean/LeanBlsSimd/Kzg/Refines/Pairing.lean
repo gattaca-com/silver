@@ -20,7 +20,7 @@ theorem powers_loop [e : KzgExternals] (h : ExternalsCorrect e)
     ∃ out, verify.CellBatchVerifier.pairing_holds_loop0 iter acc (frEncode r) (frEncode power) =
       ok out ∧ out.val = acc.val ++
         (computePowersAux r power (iter.end.val - iter.start.val)).map frEncode :=
-  LeanBlsSimd.Kzg.Refinement.powers_loop h r power acc iter hi hb
+  LeanBlsSimd.Kzg.Refinement.powers_loop h.blst r power acc iter hi hb
 
 private theorem index_encoded (v : alloc.vec.Vec blst.blst_fr) (xs : List Fr)
     (hv : v.val = xs.map frEncode) (i : Usize) (hi : i.val < xs.length) :

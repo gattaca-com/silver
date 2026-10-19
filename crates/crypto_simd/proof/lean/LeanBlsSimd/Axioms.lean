@@ -48,7 +48,10 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.bls.uncompress_in_g1, ``silver_crypto_simd.bls.uncompress_in_g2,
   ``silver_crypto_simd.kzg.verify.CellBatchVerifier.new,
   ``silver_crypto_simd.kzg.verify.CellBatchVerifier.verify,
-  ``silver_crypto_simd.kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default]
+  ``silver_crypto_simd.kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default,
+  ``silver_crypto_simd.kzg.cell_extender.CellExtender.new,
+  ``silver_crypto_simd.kzg.cell_extender.CellExtender.compute,
+  ``silver_crypto_simd.kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default]
 
 def libraryTheorems : CommandElabM (Array Name) := do
   let theorems := (← getEnv).constants.fold (init := #[]) fun found c info =>

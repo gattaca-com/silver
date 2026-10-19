@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Statements
+import LeanBlsSimd.Kzg.Extender.Statements
 import LeanBlsSimd.Kzg.Refines.Bytes
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.Refines.Points

@@ -10,8 +10,17 @@ source = path.read_text()
 marker = "namespace silver_crypto_simd\n"
 if source.count(marker) != 1:
     raise SystemExit("expected exactly one silver_crypto_simd namespace")
-if "def kzg.verify.CellBatchVerifier.verify\n" not in source or "sorry" in source:
-    raise SystemExit("missing verifier or sorry in generated functions")
+entry_points = [
+    "kzg.verify.CellBatchVerifier.verify",
+    "kzg.cell_extender.CellExtender.new",
+    "kzg.cell_extender.CellExtender.compute",
+    "kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default",
+]
+for entry_point in entry_points:
+    if source.count(f"def {entry_point}\n") != 1:
+        raise SystemExit(f"expected exactly one generated entry point: {entry_point}")
+if "sorry" in source:
+    raise SystemExit("sorry in generated functions")
 # Separate scopes prevent KZG from binding an independent BLS dictionary.
 source = source.replace(marker, marker + "\nsection BlsScope\n\nvariable [bls.BlsExternals]\n", 1)
 first_kzg = source.index("def kzg.")

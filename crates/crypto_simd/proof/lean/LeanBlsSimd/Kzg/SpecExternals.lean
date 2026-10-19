@@ -7,11 +7,15 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg
 
+def specFrBytes (x : Fr) : Aeneas.Std.Array U8 32#usize :=
+  ⟨x.toBytesBE.data.toList.map (fun b => ⟨b.toBitVec⟩), by simp [Fr.toBytesBE]⟩
+
 @[reducible] def specExternals : KzgExternals where
   simdAvailable := false
   uncompressG1 := UncompressG1.specVerdict
   uncompressG2 := UncompressG2.specVerdict
   frFromBytes b := ok ((Kzg.bytesToBlsField (arrayBytes b)).toOption.map frEncode)
+  frToBytes x := ok (specFrBytes (frRead x))
   frFromU64 x := ok (frEncode (Fr.ofNat x.val))
   frAdd x y := ok (frEncode (frRead x + frRead y))
   frSub x y := ok (frEncode (frRead x - frRead y))
@@ -78,5 +82,15 @@ theorem specExternals_correct :
 theorem specExternals_contract : ExternalsCorrect specExternals :=
   @externalsCorrect_of_blstMatchesSpec specExternals
     specExternals_correct.1 specExternals_correct.2.1
+
+theorem specExternals_fr_to_bytes_correct : FrToBytesCorrect specExternals := by
+  intro x
+  refine ⟨specFrBytes x, ?_, ?_⟩
+  · change ok (specFrBytes (frRead (frEncode x))) = _
+    rw [frRead_frEncode]
+  · apply ByteArray.ext
+    simp only [arrayBytes, bytes, specFrBytes, Kzg.blsFieldToBytes, List.map_map,
+      Function.comp_def, U8.bv, UInt8.ofBitVec_toBitVec, List.map_id_fun', id_eq,
+      _root_.Array.toArray_toList]
 
 end LeanBlsSimd.Kzg
