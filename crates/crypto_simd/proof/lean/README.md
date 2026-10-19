@@ -123,10 +123,7 @@ Proof-writing pitfalls:
 
 ### Controls
 
-After `lake build differential`, run `python3 -I Test/check_g1_controls.py` to
-check both differential runners' value comparisons, accepted formatting and
-parser failures. Run the BLS Lean controls, independent downstream package and
-Rust replay/blst comparisons through the parent README's reproduction commands.
+After `lake build differential`, run `python3 -I Test/check_g1_controls.py` to check both differential runners' value comparisons, accepted formatting and parser failures. Run the BLS Lean controls, independent downstream package and Rust replay/blst comparisons through the parent README's reproduction commands.
 
 ### Adding a batch
 
@@ -136,37 +133,13 @@ For G1, add cases to `g1::cases` in `../vectors.rs`. For both groups, record the
 
 ## KZG maintenance
 
-Start with `LeanBlsSimd.Kzg.Statements`: `verify_eq_spec` uses the explicit
-`embeddedSetup`, while `verify_eq_upstream` additionally assumes the runtime
-loader returns it. Both take `BlstCorrect e` and the inherited G1
-`UncompressG1.BlstMatchesSpec`. Preserve these assumptions, the slice-byte bounds,
-successful construction, specification verdict and next-state invariant. The
-input theorem includes malformed or rejected batches and repeated calls.
-`default_eq_new` relates generated `Default` to `new`.
+Start with `LeanBlsSimd.Kzg.Statements`: `verify_eq_spec` uses the explicit `embeddedSetup`, while `verify_eq_upstream` additionally assumes the runtime loader returns it. Both take `BlstCorrect e` and the inherited G1 `UncompressG1.BlstMatchesSpec`. Preserve these assumptions, the slice-byte bounds, successful construction, specification verdict and next-state invariant. The input theorem includes malformed or rejected batches and repeated calls. `default_eq_new` relates generated `Default` to `new`.
 
-The decoder boundary is `Kzg/Decoder.lean`.
-`g1DecoderCorrect_of_blstMatchesSpec` derives the generated batch-decoder contract
-from the BLS list theorem via equality of the KZG/BLS optional affine verdicts.
-Do not replace this theorem with an external slice-decoder assumption.
-`BlstCorrect.g2_decode` concerns only the two embedded G2 constants;
-`g2_decode_of_blstMatchesSpec` derives it from the full BLS G2 scalar contract
-when available. `Kzg/SpecExternals.lean` witnesses joint consistency of the KZG
-operation laws and both full scalar contracts.
+The decoder boundary is `Kzg/Decoder.lean`. `g1DecoderCorrect_of_blstMatchesSpec` derives the generated batch-decoder contract from the BLS list theorem via equality of the KZG/BLS optional affine verdicts. Do not replace this theorem with an external slice-decoder assumption. `BlstCorrect.g2_decode` concerns only the two embedded G2 constants; `g2_decode_of_blstMatchesSpec` derives it from the full BLS G2 scalar contract when available. `Kzg/SpecExternals.lean` witnesses joint consistency of the KZG operation laws and both full scalar contracts.
 
-For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`.
-`Extender.compute_eq_spec` takes the whole `BlstCorrect e` record, including field,
-group, hash and pairing laws, plus `FrToBytesCorrect e`.
-Preserve total construction and execution, canonicality in both directions,
-and exact `computeCells` output bytes. Rejection must produce a specification
-error and leave output cells unchanged. Every call preserves the state invariant.
-It permits arbitrary scratch contents of the fixed lengths, covering calls after
-rejection. There is no G1 decoder or runtime setup premise.
-`Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the
-complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
+For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.compute_eq_spec` takes the whole `BlstCorrect e` record, including field, group, hash and pairing laws, plus `FrToBytesCorrect e`. Preserve total construction and execution, canonicality in both directions, and exact `computeCells` output bytes. Rejection must produce a specification error and leave output cells unchanged. Every call preserves the state invariant. It permits arbitrary scratch contents of the fixed lengths, covering calls after rejection. There is no G1 decoder or runtime setup premise. `Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
 
-`specExternals_fr_to_bytes_correct` witnesses the
-[serialization law](../README.md#what-a-reader-must-trust).
-`BlstCorrect` has no serialization law.
+`specExternals_fr_to_bytes_correct` witnesses the [serialization law](../README.md#what-a-reader-must-trust). `BlstCorrect` has no serialization law.
 
 ### Mapping Rust changes to Lean
 
@@ -181,56 +154,27 @@ complete specification result, and `Extender.model_accepts_iff` characterizes va
 | `setup.rs`, `trusted_setup.rs` | `Setup.lean`, `SetupPoints.lean`, `SetupArithmetic.lean` and `Refines/Setup.lean` |
 | `blst_ops.rs` | `Externals.lean`, `Representation.lean`, `SpecExternals.lean` and the shared `../Extracted/FunsExternal.lean` bindings |
 
-The verifier's specification bridge uses the polynomial modules,
-`InterpolationIdentity.lean`, `ModelSpec.lean` and `SpecBridge.lean`.
-The extender's bridge uses `Extender/SpecMath.lean`, `Extender/Spec.lean` and
-`Extender/SpecBytes.lean` for polynomial evaluation and byte layout.
+The verifier's specification bridge uses the polynomial modules, `InterpolationIdentity.lean`, `ModelSpec.lean` and `SpecBridge.lean`. The extender's bridge uses `Extender/SpecMath.lean`, `Extender/Spec.lean` and `Extender/SpecBytes.lean` for polynomial evaluation and byte layout.
 
 ### Working in Lean
 
-Regenerate through `extract.sh`, repair affected refinements, and rebuild the
-shared library before running controls. For changed mathematical code, check both
-the exact coefficient-array result and its interpretation: trailing zero
-coefficients and fixed array sizes are part of the refinement. Jacobian point
-results are compared by `G1Rep`, not by equality of their coordinate triples.
-Changes to setup constants require the kernel-checked point certificates and the
-connection to the pinned spec's embedded setup; the reference-loader hypothesis
-cannot stand in for those proofs.
+Regenerate through `extract.sh`, repair affected refinements, and rebuild the shared library before running controls. For changed mathematical code, check both the exact coefficient-array result and its interpretation: trailing zero coefficients and fixed array sizes are part of the refinement. Jacobian point results are compared by `G1Rep`, not by equality of their coordinate triples. Changes to setup constants require the kernel-checked point certificates and the connection to the pinned spec's embedded setup; the reference-loader hypothesis cannot stand in for those proofs.
 
-The verifier's roots and FFT theorems take `ExternalsCorrect` and delegate to
-refinements with `BlstCorrect` premises. Preserve both interfaces when changing
-shared arithmetic.
+The verifier's roots and FFT theorems take `ExternalsCorrect` and delegate to refinements with `BlstCorrect` premises. Preserve both interfaces when changing shared arithmetic.
 
-Keep array dimensions and collections explicit when rewriting 4096-element
-transforms. An unresolved collection argument in `getElem!_pos` or a large
-serialization expression in `change` can make unification evaluate the entire
-array. Use getter and size lemmas before specializing dimensions. Align the
-specification's `Cell` alias in serialization helpers to avoid unfolding its
-2048-byte fold merely to compare getter instances.
-A mismatched model term can also appear as a maximum recursion depth failure.
-Inspect the competing terms before raising the limit.
+Keep array dimensions and collections explicit when rewriting 4096-element transforms. An unresolved collection argument in `getElem!_pos` or a large serialization expression in `change` can make unification evaluate the entire array. Use getter and size lemmas before specializing dimensions. Align the specification's `Cell` alias in serialization helpers to avoid unfolding its 2048-byte fold merely to compare getter instances. A mismatched model term can also appear as a maximum recursion depth failure. Inspect the competing terms before raising the limit.
 
-`G1Bridge.lean` provides a generic transport theorem for independent extractions;
-the shared verifier uses the direct decoder bridge.
+`G1Bridge.lean` provides a generic transport theorem for independent extractions; the shared verifier uses the direct decoder bridge.
 
 #### Constructor panic message
 
-The constructor's panic message in `verify.rs` must remain constant to avoid
-pulling Aeneas's opaque `core.fmt.Formatter` into its generated guard closure.
-No exception is accepted for this dependency.
+The constructor's panic message in `verify.rs` must remain constant to avoid pulling Aeneas's opaque `core.fmt.Formatter` into its generated guard closure. No exception is accepted for this dependency.
 
 ### Controls
 
-The [KZG controls table](../README.md#evidence-and-controls) describes each checked
-boundary, including the production G1 decoder control. Run the files through the
-common `controls/*.lean` loop.
+The [KZG controls table](../README.md#evidence-and-controls) describes each checked boundary, including the production G1 decoder control. Run the files through the common `controls/*.lean` loop.
 
-`ExtenderExternalBoundary.lean` separates serialization correctness from the
-shared `BlstCorrect` contract. `ExtenderMathematical.lean` checks the blob-sized
-transform steps; `ExtenderLayout.lean` checks copying and rejection behavior.
-`ExtenderSpecInstance.lean` applies the complete headline to the specification
-dictionary. The default `KzgStrictAxioms.lean` includes these controls and all nine
-generated entry points.
+`ExtenderExternalBoundary.lean` separates serialization correctness from the shared `BlstCorrect` contract. `ExtenderMathematical.lean` checks the blob-sized transform steps; `ExtenderLayout.lean` checks copying and rejection behavior. `ExtenderSpecInstance.lean` applies the complete headline to the specification dictionary. The default `KzgStrictAxioms.lean` includes these controls and all nine generated entry points.
 
 After the Lean checks and extraction controls, run from the repository root:
 
@@ -239,10 +183,7 @@ make -C crates/crypto_simd
 SILVER_REQUIRE_IFMA=1 cargo test --locked -p silver_crypto_simd --all-features
 ```
 
-Read the Rust test output to confirm the KZG specification-vector and c-kzg
-reference comparisons ran, and that BLS kernel replay did not skip. Finite tests
-provide evidence at the extraction and external boundaries; they do not discharge
-the universal blst laws.
+Read the Rust test output to confirm the KZG specification-vector and c-kzg reference comparisons ran, and that BLS kernel replay did not skip. Finite tests provide evidence at the extraction and external boundaries; they do not discharge the universal blst laws.
 
 #### Scoped checks
 
@@ -256,6 +197,4 @@ lake build controls.KzgSpecBridgeAxioms
 lake build controls.KzgPolynomialAxioms
 ```
 
-The top-level control loop already runs these checks alongside
-`controls/KzgStrictAxioms.lean`, which checks the concrete instance and KZG negative
-controls with the shared guard.
+The top-level control loop already runs these checks alongside `controls/KzgStrictAxioms.lean`, which checks the concrete instance and KZG negative controls with the shared guard.
