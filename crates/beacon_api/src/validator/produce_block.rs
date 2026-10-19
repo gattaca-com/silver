@@ -40,6 +40,7 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
         randao_reveal,
         graffiti,
         bid_policy,
+        builder_config: None,
     }));
 }
 
@@ -74,11 +75,14 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
         min_bid: builder_config.min_bid(),
         builder_boost_factor: builder_config.builder_boost_factor(),
     };
+    // Held for the boundary tile's bid requests and the winner's URL.
+    let builder_config = builder_config.entries().next().is_some().then(|| req.body.into());
     resp.defer(Outcome::AwaitingProducedBlock(ProduceBlockRequest {
         slot,
         randao_reveal,
         graffiti,
         bid_policy,
+        builder_config,
     }));
 }
 
@@ -114,28 +118,41 @@ fn proposal_query(req: &Request<'_>, resp: &mut Response<'_>) -> Option<([u8; 96
     Some((randao_reveal, graffiti))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProduceBlockRequest {
     slot: Slot,
     randao_reveal: [u8; 96],
     graffiti: [u8; 32],
     bid_policy: BidPolicy,
+    /// The SSZ `BuilderConfig`, when it names a builder.
+    builder_config: Option<Box<[u8]>>,
 }
 
 impl ProduceBlockRequest {
-    pub(crate) fn state_request(self, request_id: u64) -> BeaconApiRequest {
+    pub(crate) fn state_request(&self, request_id: u64) -> BeaconApiRequest {
         BeaconApiRequest::ProduceBlock {
             request_id,
             slot: self.slot,
             randao_reveal: self.randao_reveal,
             graffiti: self.graffiti,
             bid_policy: self.bid_policy,
+            builder_bids: self.builder_config.is_some(),
         }
+    }
+
+    pub(crate) fn builder_config(&self) -> Option<BuilderConfig<'_>> {
+        BuilderConfig::parse(self.builder_config.as_deref()?)
+    }
+
+    /// Only a URL that is a valid header value is echoed.
+    fn builder_url(&self, entry: u32) -> Option<&str> {
+        let url = self.builder_config()?.entries().nth(entry as usize)?.url();
+        url.iter().all(u8::is_ascii_graphic).then(|| str::from_utf8(url).expect("ascii"))
     }
 
     #[timed]
     pub(crate) fn respond(
-        self,
+        &self,
         resp: &mut Response<'_>,
         block: Result<ProducedBlock, ProduceBlockFailure>,
         reader: &mut TCacheReader,
@@ -200,7 +217,7 @@ impl ProduceBlockRequest {
     /// A Fulu `BlindedBeaconBlock` or a Gloas `BeaconBlock`: a bid commits to
     /// the payload, which is not included.
     fn respond_without_payload(
-        self,
+        &self,
         resp: &mut Response<'_>,
         block: &ProducedBlock,
         reader: &mut TCacheReader,
@@ -218,13 +235,16 @@ impl ProduceBlockRequest {
         } else {
             ("Eth-Execution-Payload-Blinded", "true")
         };
+        let builder_url = block.builder_entry.and_then(|entry| self.builder_url(entry));
         let headers = [
             ("Eth-Consensus-Version", spec.fork_at_slot(self.slot).name()),
             payload_header,
             ("Eth-Execution-Payload-Value", payload_value.as_str()),
             ("Eth-Consensus-Block-Value", block_value.as_str()),
+            ("Eth-Builder-Url", builder_url.unwrap_or_default()),
         ];
-        resp.send(200, Some(SSZ_MEDIA_TYPE), &headers, &[beacon_block]);
+        let headers = if builder_url.is_some() { &headers[..] } else { &headers[..4] };
+        resp.send(200, Some(SSZ_MEDIA_TYPE), headers, &[beacon_block]);
     }
 }
 
@@ -291,6 +311,7 @@ mod tests {
                 randao_reveal: [0x11; 96],
                 graffiti: [0x22; 32],
                 bid_policy: BidPolicy::default(),
+                builder_config: None,
             })
         );
     }
@@ -355,11 +376,12 @@ mod tests {
     const BUILDER_CONFIG_FIXED: usize = 8 + 8 + 4;
 
     /// A framed `BuilderEntry` with an empty URL and auth data.
-    fn builder_entry() -> Vec<u8> {
+    fn builder_entry(url: &[u8]) -> Vec<u8> {
         let message = [12u32.to_le_bytes().as_slice(), &(SLOT + 1).to_le_bytes()].concat();
         let auth = [100u32.to_le_bytes().as_slice(), &[0; 96], &message].concat();
-        let offsets = [36u32, 36, 36 + auth.len() as u32].map(u32::to_le_bytes).concat();
-        [offsets, vec![0; 24], auth].concat()
+        let auth_at = 36 + url.len() as u32;
+        let offsets = [36, auth_at, auth_at + auth.len() as u32].map(u32::to_le_bytes).concat();
+        [offsets, vec![0; 24], url.to_vec(), auth].concat()
     }
 
     fn builder_config(min_bid: u64, boost: u64, builders: &[u8]) -> Vec<u8> {
@@ -395,7 +417,7 @@ mod tests {
 
     #[test]
     fn v4_defers_with_the_p2p_terms_of_the_builder_config() {
-        let entry = builder_entry();
+        let entry = builder_entry(b"");
         let offsets = [8u32, 8 + entry.len() as u32].map(u32::to_le_bytes).concat();
         let body = builder_config(7, 150, &[offsets, entry.clone(), entry].concat());
         let ctx = gloas_ctx();
@@ -403,6 +425,29 @@ mod tests {
         let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
         assert_eq!(request.bid_policy, BidPolicy { min_bid: 7, builder_boost_factor: 150 });
         assert_eq!(request.slot, SLOT + 1);
+        assert_eq!(request.builder_config.as_deref(), Some(&body[..]), "held for the bid requests");
+        let BeaconApiRequest::ProduceBlock { builder_bids, .. } = request.state_request(1) else {
+            unreachable!()
+        };
+        assert!(builder_bids);
+
+        let body = builder_config(7, 150, &[]);
+        let (outcome, _) = post_v4(&ctx, &v4_query(), Some("gloas"), Some(SSZ_MEDIA_TYPE), &body);
+        let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
+        assert_eq!(request.builder_config, None, "no builder to ask");
+    }
+
+    #[test]
+    fn only_a_header_safe_builder_url_is_echoed() {
+        let [safe, unsafe_] = [&b"http://b:18550"[..], b"http://b\r\nX: 1"].map(builder_entry);
+        let offsets = [8u32, 8 + safe.len() as u32].map(u32::to_le_bytes).concat();
+        let body = builder_config(0, 100, &[offsets, safe, unsafe_].concat());
+        let (outcome, _) =
+            post_v4(&gloas_ctx(), &v4_query(), Some("gloas"), Some(SSZ_MEDIA_TYPE), &body);
+        let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
+        assert_eq!(request.builder_url(0), Some("http://b:18550"));
+        assert_eq!(request.builder_url(1), None, "a header break is not echoed");
+        assert_eq!(request.builder_url(2), None, "no such entry");
     }
 
     #[test]

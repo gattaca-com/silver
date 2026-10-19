@@ -2,13 +2,15 @@ use silver_beacon_state_data::{BodyFork, BodyOffsets};
 use silver_common::{
     GossipTopic,
     block_contents::SignedBlockContents,
-    ssz_view::{ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
+    ssz_view::{BeaconBlockBodyGloasView, ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
 };
 
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
 };
+
+const MAX_BUILDER_URL_SIZE: usize = 2048;
 
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.body_is_ssz() {
@@ -17,15 +19,36 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
     if !ctx.follows_chain(resp) {
         return;
     }
-    let Some(contents) = SignedBlockContents::parse(req.body) else {
-        return resp.error(400, "invalid SignedBlockContents");
-    };
-    if ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(contents.signed_block)) {
-        return resp.error(400, "only Fulu blocks are published");
+    let body = req.body;
+    // Gloas blocks are posted bare, Fulu blocks as `SignedBlockContents`; the
+    // leading offset (100 or 12) tells the two apart.
+    if SignedBeaconBlockView::check_size(body) {
+        if !ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(body)) {
+            return resp.error(400, "only Gloas blocks are published without their blobs");
+        }
+        let block_body = SignedBeaconBlockView::body(body);
+        if !BeaconBlockBodyGloasView::check_canonical(block_body) ||
+            BodyOffsets::validated(block_body, BodyFork::Gloas).is_err()
+        {
+            return resp.error(400, "invalid SignedBeaconBlock");
+        }
+    } else {
+        let Some(contents) = SignedBlockContents::parse(body) else {
+            return resp.error(400, "invalid SignedBlockContents");
+        };
+        if ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(contents.signed_block)) {
+            return resp.error(400, "Gloas blocks are published without their blobs");
+        }
     }
 
-    let body = req.body;
     resp.await_verdicts(0, [GossipTopic::BeaconBlock], body.len(), |out| out.copy_from_slice(body));
+    if let Some(url) = req.eth_builder_url.filter(|_| SignedBeaconBlockView::check_size(body)) {
+        if url.starts_with("http://") && url.len() <= MAX_BUILDER_URL_SIZE {
+            resp.forward_to_builder(url);
+        } else {
+            silver_log::warn!(url, "only http:// builder urls are served; block not forwarded");
+        }
+    }
 }
 
 pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -58,10 +81,12 @@ pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
 pub(crate) mod tests {
     use silver_common::{
         TCache, TCacheId, TCacheProducer,
+        ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
         ssz_view::{
             BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
             EXECUTION_PAYLOAD_HEADER_FIXED,
         },
+        test_util::{SynthBid, SynthBlock},
     };
     use silver_httpcore::ParsedRequest;
 
@@ -132,6 +157,53 @@ pub(crate) mod tests {
         let (outcome, out) = post(&body, SSZ_MEDIA_TYPE);
         assert_eq!(outcome, Outcome::Response(None));
         assert_eq!(status_code(&out), "400");
+    }
+
+    fn gloas_ctx() -> ApiCtx {
+        let mut ctx = ctx();
+        ctx.spec.gloas_fork_epoch = 0;
+        ctx
+    }
+
+    /// The synthetic block with an empty `parent_execution_requests`, which
+    /// a canonical body still frames.
+    pub(crate) fn gloas_block() -> Vec<u8> {
+        let mut block = SynthBlock::gloas(SLOT + 1, SynthBid::new(&[])).into_bytes();
+        block.extend_from_slice(&EMPTY_EXECUTION_REQUESTS);
+        block
+    }
+
+    #[test]
+    fn gloas_block_is_submitted_bare_on_the_block_topic() {
+        let body = gloas_block();
+        let mut submissions = submissions();
+        let (outcome, out) = dispatch_into(
+            &gloas_ctx(),
+            &ParsedRequest { body: &body, content_type: Some(SSZ_MEDIA_TYPE), ..posting(PATH, "") },
+            &mut submissions,
+        );
+        assert!(out.is_empty());
+        let Outcome::AwaitingVerdicts(submission) = outcome else { panic!("{outcome:?}") };
+        let [entry] = &submission.accepted[..] else { panic!("one entry") };
+        assert_eq!(entry.topic, GossipTopic::BeaconBlock);
+        assert_eq!(submissions.read_buffer(entry.ssz).unwrap(), body);
+    }
+
+    #[test]
+    fn block_framed_for_another_fork_is_a_400() {
+        let mut truncated = gloas_block();
+        truncated.truncate(truncated.len() - 1);
+        for (ctx, body) in
+            [(ctx(), gloas_block()), (gloas_ctx(), contents()), (gloas_ctx(), truncated)]
+        {
+            let (outcome, out) = dispatch(&ctx, &ParsedRequest {
+                body: &body,
+                content_type: Some(SSZ_MEDIA_TYPE),
+                ..posting(PATH, "")
+            });
+            assert_eq!(outcome, Outcome::Response(None));
+            assert_eq!(status_code(&out), "400");
+        }
     }
 
     const BLINDED_PATH: &str = "/eth/v2/beacon/blinded_blocks";

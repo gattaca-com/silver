@@ -20,7 +20,7 @@ use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, ClientResponse, Closed, Listener, ParsedRequest,
     ServerConnection, Stream, TokenRange,
 };
-use silver_pbs::SidecarCall;
+use silver_pbs::{BuilderConfig, SidecarCall};
 
 use crate::{
     HeadStatus, NodeStatus,
@@ -34,7 +34,7 @@ use crate::{
     },
     node::peers::Peer,
     routes::ROUTES,
-    submission::{AcceptedEntry, SubmissionFailure, failure_message},
+    submission::{AcceptedEntry, BuilderForward, SubmissionFailure, failure_message},
     validator::{
         aggregate_attestation::AggregateRequest, produce_block::ProduceBlockRequest,
         sync_contribution::SyncCommitteeContributionRequest,
@@ -91,7 +91,7 @@ enum Pending {
     Block { request_id: u64, kind: Kind },
     Aggregate { request_id: u64, request: AggregateRequest },
     Contribution { request_id: u64, request: SyncCommitteeContributionRequest },
-    ProducedBlock { request_id: u64, request: ProduceBlockRequest },
+    ProducedBlock { request_id: u64, request: Box<ProduceBlockRequest> },
     Submission(PendingSubmission),
     BlindedBlockLock { request_id: u64, ssz: TCacheRead },
     SidecarResponse { request_id: u64, call_path: SidecarCall },
@@ -105,6 +105,7 @@ struct PendingSubmission {
     body_len: usize,
     unanswered: usize,
     failures: Vec<SubmissionFailure>,
+    forward: Option<BuilderForward>,
 }
 
 impl PendingSubmission {
@@ -129,11 +130,14 @@ impl PendingSubmission {
         self.unanswered == 0
     }
 
-    fn respond(&self, resp: &mut Response<'_>) {
+    /// Returns the builder forward of a submission published whole.
+    fn respond(&mut self, resp: &mut Response<'_>) -> Option<BuilderForward> {
         if self.failures.is_empty() {
             resp.ok();
+            self.forward.take()
         } else {
             resp.indexed_failures(&self.failures);
+            None
         }
     }
 }
@@ -161,7 +165,7 @@ impl Pending {
             }
             Outcome::AwaitingProducedBlock(request) => {
                 emit(request.state_request(first_id));
-                (Self::ProducedBlock { request_id: first_id, request }, 1)
+                (Self::ProducedBlock { request_id: first_id, request: Box::new(request) }, 1)
             }
             Outcome::AwaitingVerdicts(submission) => {
                 for &AcceptedEntry { body_index, topic, ssz } in &submission.accepted {
@@ -174,6 +178,7 @@ impl Pending {
                     body_len,
                     unanswered: submission.accepted.len(),
                     failures: submission.failures,
+                    forward: submission.forward,
                 };
                 (Self::Submission(pending), body_len as u64)
             }
@@ -849,11 +854,14 @@ impl BeaconApi {
     /// publishes nothing.
     /// A blinded block whose lock is held goes to the sidecar through
     /// `to_sidecar`, and its request waits on the sidecar's answer.
+    /// `to_builder` gets a published block and the URL of the builder whose
+    /// bid it commits to.
     pub fn handle_response(
         &mut self,
         response: BeaconApiResponse,
         submissions: &mut TProducer,
         to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
+        to_builder: &mut impl FnMut(&str, &[u8]),
     ) {
         let request_id = response.request_id();
         let Some(token) = self.token_awaiting(request_id) else {
@@ -881,6 +889,7 @@ impl BeaconApi {
             return;
         }
 
+        let mut forward = None;
         let mut resp = Response::new(requests.http.write_buf_mut(), submissions);
         let settled = match (response, requests.pending.as_mut().expect("found awaiting above")) {
             (BeaconApiResponse::Block { block, .. }, Pending::Block { kind, .. }) => {
@@ -926,12 +935,21 @@ impl BeaconApi {
             ) => {
                 let settled = pending.record(request_id, response);
                 if settled {
-                    pending.respond(&mut resp);
+                    forward = pending.respond(&mut resp);
                 }
                 settled
             }
             _ => unreachable!("a request id is answered by the tile it was sent to"),
         };
+        // Read once `resp` releases `submissions`.
+        if let Some(BuilderForward { url, ssz }) = forward {
+            match submissions.read_buffer(ssz) {
+                Ok(block) => to_builder(&url, block),
+                Err(error) => {
+                    silver_log::warn!(?error, url = &*url, "published block gone; not forwarded")
+                }
+            }
+        }
         if settled {
             requests.pending = None;
             self.resume_writing(token);
@@ -959,6 +977,16 @@ impl BeaconApi {
         Response::new(requests.http.write_buf_mut(), submissions)
             .sidecar_response(call_path, answer);
         self.resume_writing(token);
+    }
+
+    /// The builders a block request still waiting on `request_id` names.
+    pub fn builder_config(&self, request_id: u64) -> Option<BuilderConfig<'_>> {
+        self.connections.values().find_map(|conn| match conn.pending()? {
+            Pending::ProducedBlock { request_id: awaited, request } if *awaited == request_id => {
+                request.builder_config()
+            }
+            _ => None,
+        })
     }
 
     fn token_awaiting(&self, request_id: u64) -> Option<Token> {
@@ -1180,7 +1208,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        beacon::{block_submission::tests::blinded_block, operations::tests::entry},
+        beacon::{
+            block_submission::tests::{blinded_block, gloas_block},
+            operations::tests::entry,
+        },
         submission::{Submission, tests as submission},
         testing::submissions,
     };
@@ -1202,6 +1233,8 @@ mod tests {
         /// Stands in for the PBS client: each request id, path and body
         /// handed to it.
         sidecar: Vec<(u64, SidecarCall, Vec<u8>)>,
+        /// Each builder url and the block forwarded to it.
+        forwarded: Vec<(String, Vec<u8>)>,
     }
 
     impl Server {
@@ -1249,6 +1282,7 @@ mod tests {
                 requests: Vec::new(),
                 submissions,
                 sidecar: Vec::new(),
+                forwarded: Vec::new(),
             }
         }
 
@@ -1260,10 +1294,15 @@ mod tests {
         }
 
         fn answer(&mut self, response: BeaconApiResponse) {
-            let Self { api, submissions, sidecar, .. } = self;
-            api.handle_response(response, submissions, &mut |request_id, call_path, body| {
-                sidecar.push((request_id, call_path, body.to_vec()))
-            });
+            let Self { api, submissions, sidecar, forwarded, .. } = self;
+            api.handle_response(
+                response,
+                submissions,
+                &mut |request_id, call_path, body| {
+                    sidecar.push((request_id, call_path, body.to_vec()))
+                },
+                &mut |url, block| forwarded.push((url.to_owned(), block.to_vec())),
+            );
         }
 
         fn serve_bytes(&mut self, bytes: &[u8]) -> TCacheRead {
@@ -2575,6 +2614,37 @@ mod tests {
         client
     }
 
+    /// A Gloas block goes to the builder the VC names once it is published,
+    /// and not when it is refused.
+    #[test]
+    fn published_gloas_block_is_forwarded_to_its_builder() {
+        let refused = Err(LocalGossipFailure::ConflictingProposal);
+        for (verdict, forwarded) in [(Ok(()), true), (refused, false)] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            server.api.ctx = submission::ctx();
+            server.api.ctx.spec.gloas_fork_epoch = 0;
+            let block = gloas_block();
+            let mut client = connect(tcp_addr(&server));
+            write!(
+                client,
+                "POST /eth/v2/beacon/blocks HTTP/1.1\r\nHost: x\r\n\
+                 Content-Type: application/octet-stream\r\nEth-Builder-Url: http://b:18550\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                block.len()
+            )
+            .unwrap();
+            client.write_all(&block).unwrap();
+            let BeaconApiRequest::LocalGossip { request_id, .. } = deferred_request(&mut server)
+            else {
+                panic!("the block is published locally")
+            };
+            assert!(server.forwarded.is_empty(), "nothing is forwarded before the verdict");
+            server.answer(BeaconApiResponse::LocalGossipResponse { request_id, response: verdict });
+            let expected = forwarded.then(|| ("http://b:18550".to_owned(), block));
+            assert_eq!(server.forwarded, Vec::from_iter(expected), "{verdict:?}");
+        }
+    }
+
     /// The v2 endpoint accepts with 202 only.
     #[test]
     fn locked_blinded_block_is_revealed_through_the_sidecar() {
@@ -2708,7 +2778,7 @@ mod tests {
         let failures = vec![SubmissionFailure { body_index: 2, message: "refused" }];
         let mut ids = Vec::new();
         let (_, ids_used) = Pending::defer(
-            Outcome::AwaitingVerdicts(Submission { accepted, failures }),
+            Outcome::AwaitingVerdicts(Submission { accepted, failures, forward: None }),
             10,
             &mut |request| ids.push(request_id(&request)),
         );
@@ -2959,6 +3029,7 @@ mod tests {
                 payload: Some(payload.unwrap()),
                 execution_payload_value,
                 consensus_block_value,
+                builder_entry: None,
             }),
         });
         let reader = std::thread::spawn(move || read_to_eof(client));
@@ -3000,6 +3071,7 @@ mod tests {
                     payload: None,
                     execution_payload_value,
                     consensus_block_value,
+                    builder_entry: None,
                 }),
             });
             let reader = std::thread::spawn(move || read_to_eof(client));

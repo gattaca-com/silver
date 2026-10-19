@@ -89,6 +89,15 @@ pub(crate) struct SubmissionFailure {
 pub(crate) struct Submission {
     pub(crate) accepted: Vec<AcceptedEntry>,
     pub(crate) failures: Vec<SubmissionFailure>,
+    pub(crate) forward: Option<BuilderForward>,
+}
+
+/// A block for the builder whose bid it commits to, sent once every verdict
+/// accepts it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BuilderForward {
+    pub(crate) url: Box<str>,
+    pub(crate) ssz: TCacheRead,
 }
 
 impl Submission {

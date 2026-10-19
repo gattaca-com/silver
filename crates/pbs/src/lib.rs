@@ -14,11 +14,13 @@ use crate::{
 
 mod bid;
 mod block_submission;
+mod builder_bids;
 mod builder_config;
 mod header_fetch;
 mod json_bid;
 mod registrations;
 
+pub use builder_bids::BuilderBids;
 pub use builder_config::{BuilderConfig, BuilderEntry};
 
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";

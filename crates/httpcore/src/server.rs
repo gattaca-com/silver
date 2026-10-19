@@ -19,6 +19,7 @@ pub struct ParsedRequest<'a> {
     pub accept: Option<&'a str>,
     pub content_type: Option<&'a str>,
     pub eth_consensus_version: Option<&'a str>,
+    pub eth_builder_url: Option<&'a str>,
     pub version: u8,
     pub keep_alive: bool,
 }
@@ -93,6 +94,7 @@ impl<'a> ParsedRequest<'a> {
                 accept: header("accept").and_then(trimmed_utf8),
                 content_type: header("content-type").and_then(trimmed_utf8),
                 eth_consensus_version: header("eth-consensus-version").and_then(trimmed_utf8),
+                eth_builder_url: header("eth-builder-url").and_then(trimmed_utf8),
                 version,
                 keep_alive,
             },
@@ -482,11 +484,12 @@ mod tests {
 
     #[test]
     fn parse_negotiation_headers() {
-        let req = b"POST /eth/v2/beacon/blocks HTTP/1.1\r\nHost: x\r\nAccept: application/octet-stream;q=1.0,application/json;q=0.9\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\n\r\n";
+        let req = b"POST /eth/v2/beacon/blocks HTTP/1.1\r\nHost: x\r\nAccept: application/octet-stream;q=1.0,application/json;q=0.9\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: fulu\r\nEth-Builder-Url: http://b:18550\r\n\r\n";
         let (_, r) = parsed(req);
         assert_eq!(r.accept, Some("application/octet-stream;q=1.0,application/json;q=0.9"));
         assert_eq!(r.content_type, Some("application/octet-stream"));
         assert_eq!(r.eth_consensus_version, Some("fulu"));
+        assert_eq!(r.eth_builder_url, Some("http://b:18550"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use silver_pbs::SidecarCall;
 use crate::{
     events::ChannelSet,
     http::{json::Json, router::Outcome},
-    submission::{AcceptedEntry, Submission, SubmissionFailure, failure_message},
+    submission::{AcceptedEntry, BuilderForward, Submission, SubmissionFailure, failure_message},
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -44,6 +44,13 @@ impl<'a> Response<'a> {
         };
         let accepted = &mut self.submission().accepted;
         accepted.extend(topics.into_iter().map(|topic| AcceptedEntry { body_index, topic, ssz }));
+    }
+
+    /// The block the last [`Self::await_verdicts`] wrote also goes to `url`.
+    pub(crate) fn forward_to_builder(&mut self, url: &str) {
+        let Outcome::AwaitingVerdicts(submission) = &mut self.outcome else { return };
+        let Some(entry) = submission.accepted.last() else { return };
+        submission.forward = Some(BuilderForward { url: url.into(), ssz: entry.ssz });
     }
 
     pub(crate) fn fail_entry(&mut self, body_index: usize, message: &'static str) {

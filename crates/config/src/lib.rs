@@ -192,6 +192,9 @@ pub struct Config {
     /// transfer never trips it.
     #[serde(default = "default_u64::<75>")]
     beacon_api_idle_timeout_secs: u64,
+    /// The `X-Timeout-Ms` a proposal gives each builder it asks for a bid.
+    #[serde(default = "default_u64::<600>")]
+    builder_bid_timeout_ms: u64,
     #[serde(default)]
     disable_weak_subjectivity_check: bool,
     #[serde(default)]
@@ -420,6 +423,10 @@ impl Config {
 
     pub fn beacon_api_idle_timeout(&self) -> Duration {
         Duration::from_secs(self.beacon_api_idle_timeout_secs)
+    }
+
+    pub fn builder_bid_timeout(&self) -> Duration {
+        Duration::from_millis(self.builder_bid_timeout_ms)
     }
 
     pub fn disable_weak_subjectivity_check(&self) -> bool {

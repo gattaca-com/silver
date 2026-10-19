@@ -5463,6 +5463,7 @@ fn proposal(tile: &BeaconStateTile, slot: Slot) -> Proposal {
         randao_reveal,
         graffiti: [0; 32],
         bid_policy: BidPolicy { builder_boost_factor: 0, ..BidPolicy::default() },
+        builder_bids: false,
     }
 }
 
@@ -5941,6 +5942,7 @@ fn a_gloas_block_commits_to_the_pooled_bid() {
         randao_reveal: *BeaconBlockBodyGloasView::randao_reveal(body),
         graffiti: *BeaconBlockBodyGloasView::graffiti(body),
         bid_policy: BidPolicy { min_bid, ..BidPolicy::default() },
+        builder_bids: false,
     };
     let mut produce = |tile: &mut BeaconStateTile, proposal| {
         tile.produce_block(1, proposal, &mut adapter.producers);
@@ -5967,6 +5969,85 @@ fn a_gloas_block_commits_to_the_pooled_bid() {
     let above_the_bid = proposal(bid.value + 1);
     let refused = produce(&mut tile, above_the_bid).err();
     assert_eq!(refused, Some(ProduceBlockFailure::NoAcceptableBid));
+}
+
+/// The proposal waits on its builders' answer and then commits to the pool's
+/// bid when no builder bid passes. The anchor's fork choice knows no payload
+/// owner for the fixture bid's parent hash, so the builder bid is refused as
+/// gossip would ignore it.
+#[cfg(feature = "ef_tests")]
+#[test]
+fn a_proposal_waits_on_its_builders_and_falls_back_to_the_pool() {
+    use silver_beacon_state_data::{BodyFork, BodyOffsets};
+    use silver_common::{
+        BuilderBid, BuilderBidsRequest, BuilderBidsResponse, BuilderTerms,
+        ssz_view::{BeaconBlockBodyGloasView, SignedExecutionPayloadBidView},
+    };
+
+    use super::seen_proposer_preferences::ProposerPreferences;
+
+    let (pre_ssz, block_ssz, _) = sanity_fixture_of("gloas", "empty_block_transition");
+    let spec = SpecConfig { fulu_fork_epoch: 0, gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+    let state = BeaconState::from_checkpoint(&pre_ssz, &spec, &[]).unwrap();
+    let slot = SignedBeaconBlockView::slot(&block_ssz);
+    let (mut tile, mut gp, _rp, mut spine, mut adapter) = tile_with_producers_on(slot, state, spec);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    produced_blocks(&mut sink);
+    sink.consume(|_: BuilderBidsRequest, _| {});
+
+    let body = SignedBeaconBlockView::body(&block_ssz);
+    let signed_bid = BodyOffsets::new(body, BodyFork::Gloas).unwrap().signed_bid().unwrap();
+    let bid = stf::decode_bid(signed_bid).unwrap();
+    let parent_root = tile.head_block_root();
+    let dependent_root =
+        tile.fork_choice.shuffling_dependent_root(&parent_root, slot / SLOTS_PER_EPOCH).unwrap();
+    tile.seen_proposer_preferences.insert(slot, dependent_root, ProposerPreferences {
+        fee_recipient: bid.fee_recipient,
+        target_gas_limit: bid.gas_limit,
+    });
+    tile.payload_bids_pool.add(bid.clone(), *SignedExecutionPayloadBidView::signature(signed_bid));
+    let mut produce = |tile: &mut BeaconStateTile, graffiti, builder_bid: Option<&[u8]>| {
+        let proposal = Proposal {
+            slot,
+            parent_root,
+            randao_reveal: *BeaconBlockBodyGloasView::randao_reveal(body),
+            graffiti,
+            bid_policy: BidPolicy::default(),
+            builder_bids: true,
+        };
+        tile.produce_block(1, proposal, &mut adapter.producers);
+        let mut requests = Vec::new();
+        sink.consume(|request: BuilderBidsRequest, _| requests.push(request));
+        let [request] = requests[..] else { panic!("one bid request: {requests:?}") };
+        assert_eq!((request.request_id, request.slot), (1, slot));
+        assert_eq!(
+            (request.parent_root, request.parent_hash),
+            (parent_root, bid.parent_block_hash)
+        );
+        assert!(produced_blocks(&mut sink).is_empty(), "answered before the bids");
+
+        let bids = builder_bid.map(|frame| publish_block_bytes(&mut gp, frame).1);
+        tile.on_builder_bids(BuilderBidsResponse { request_id: 1, bids }, &mut adapter.producers);
+        let mut answers = Vec::new();
+        sink.consume(|response: BeaconApiResponse, _| {
+            if let BeaconApiResponse::ProducedBlock { block, .. } = response {
+                answers.push(block);
+            }
+        });
+        let [answer] = answers[..] else { panic!("one answer: {answers:?}") };
+        answer.expect("built on a bid").builder_entry
+    };
+
+    let terms = BuilderTerms { min_bid: 0, builder_boost_factor: 500, max_execution_payment: 0 };
+    let mut frame = Vec::new();
+    BuilderBid { entry: 3, terms, builder_pubkeys: &[], signed_bid }.write(&mut frame);
+    let graffiti = *BeaconBlockBodyGloasView::graffiti(body);
+    assert_eq!(
+        produce(&mut tile, graffiti, Some(&frame)),
+        None,
+        "the refused bid leaves the pool's"
+    );
+    assert_eq!(produce(&mut tile, [7; 32], None), None, "no builder bid");
 }
 
 /// A blinded block on a bid carrying the fixture payload's header is the full
@@ -6245,6 +6326,7 @@ fn fixture_proposal(tile: &BeaconStateTile, block_ssz: &[u8]) -> Proposal {
         randao_reveal: *BeaconBlockBodyFuluView::randao_reveal(body),
         graffiti: *BeaconBlockBodyFuluView::graffiti(body),
         bid_policy: BidPolicy::default(),
+        builder_bids: false,
     }
 }
 

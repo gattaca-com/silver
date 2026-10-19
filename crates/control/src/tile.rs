@@ -232,15 +232,18 @@ impl Controller {
                     producers,
                 )
             }
-            GossipTopic::BeaconBlock => self.slashing_protection.on_local_block(
-                request_id,
-                acquired,
-                SubmittedBlock::Full,
-                now,
-                &mut self.local_gossip,
-                &mut self.gossip_handler,
-                producers,
-            ),
+            GossipTopic::BeaconBlock => {
+                let block = SubmittedBlock::framed(ssz);
+                self.slashing_protection.on_local_block(
+                    request_id,
+                    acquired,
+                    block,
+                    now,
+                    &mut self.local_gossip,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
             // None carries a slot; `slot` only labels the logs.
             GossipTopic::VoluntaryExit |
             GossipTopic::BlsToExecutionChange |

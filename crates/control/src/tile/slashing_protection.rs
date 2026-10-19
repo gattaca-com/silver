@@ -42,16 +42,25 @@ impl PendingAttestation {
 pub(super) enum SubmittedBlock {
     /// `SignedBlockContents`, published by this node.
     Full,
+    /// A Gloas `SignedBeaconBlock`, published by this node. Its blobs travel
+    /// with the payload envelope.
+    Gloas,
     /// A `SignedBlindedBeaconBlock`; the API has the sidecar reveal it once
     /// told the lock is held.
     Blinded,
 }
 
 impl SubmittedBlock {
+    /// A block to publish: `SignedBlockContents` lead with offset 12, a bare
+    /// `SignedBeaconBlock` with offset 100.
+    pub(super) fn framed(bytes: &[u8]) -> Self {
+        if SignedBeaconBlockView::check_size(bytes) { Self::Gloas } else { Self::Full }
+    }
+
     fn signed_block(self, bytes: &[u8]) -> Option<&[u8]> {
         match self {
             Self::Full => SignedBlockContents::signed_block(bytes),
-            Self::Blinded => Some(bytes),
+            Self::Gloas | Self::Blinded => Some(bytes),
         }
     }
 }
@@ -89,6 +98,18 @@ impl PendingBlock {
                     producers,
                 );
             }
+            SubmittedBlock::Gloas => local_gossip.submit(
+                LocalMessage {
+                    request_id: self.request_id,
+                    topic: GossipTopic::BeaconBlock,
+                    ssz: block,
+                    ssz_read: Some(self.contents.to_read()),
+                    slot: self.key.slot,
+                },
+                now,
+                gossip_handler,
+                producers,
+            ),
             SubmittedBlock::Blinded => produce_response(producers, self.request_id, Ok(())),
         }
     }
@@ -688,6 +709,31 @@ mod tests {
             (3, Err(LocalGossipFailure::ConflictingProposal)),
             (4, Err(LocalGossipFailure::ConflictingProposal)),
         ]);
+        assert!(harness.gossip.pop_event().is_none());
+    }
+
+    #[test]
+    fn gloas_block_is_published_bare_once_locked() {
+        let now = Instant::now();
+        let mut standalone = Standalone::new(now);
+        let mut submissions = Submissions::new();
+        standalone.handler.on_status(10, 10);
+        standalone.handler.on_status(11, 11);
+        let Standalone { handler, harness } = &mut standalone;
+        assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
+
+        let mut block = block_bytes(11, 4, 1);
+        block[..4].copy_from_slice(&100u32.to_le_bytes());
+        block[180..184].copy_from_slice(&84u32.to_le_bytes());
+        assert_eq!(SubmittedBlock::framed(&block), SubmittedBlock::Gloas);
+        lock_block(handler, harness, &mut submissions, 1, &block, SubmittedBlock::Gloas, now);
+        harness.pop_gossip();
+        assert_eq!(locked_proposals(harness), 0, "its blobs travel with the envelope");
+        assert!(harness.responses().is_empty());
+
+        block[4] = 2;
+        lock_block(handler, harness, &mut submissions, 2, &block, SubmittedBlock::Gloas, now);
+        assert_eq!(harness.responses(), [(2, Err(LocalGossipFailure::ConflictingProposal))]);
         assert!(harness.gossip.pop_event().is_none());
     }
 

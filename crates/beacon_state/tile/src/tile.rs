@@ -11,11 +11,11 @@ use silver_beacon_state_data::{
     Epoch, ExecutionAddress, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
 };
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, DataColumnsEvent, DataKind,
-    EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg, Origin, PayloadResolution,
-    PtcObservation, ReplayBlock, RequestId, RpcInbound, RpcResponse, RpcResponseInbound,
-    SidecarBidResponse, SilverSpine, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode, TileId, hex32,
+    BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BuilderBidsResponse,
+    DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg,
+    Origin, PayloadResolution, PtcObservation, ReplayBlock, RequestId, RpcInbound, RpcResponse,
+    RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncUpdate, TCacheError, TCacheId,
+    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -939,9 +939,17 @@ impl BeaconStateTile {
                 randao_reveal,
                 graffiti,
                 bid_policy,
+                builder_bids,
             } => {
                 let parent_root = self.head_block_root();
-                let proposal = Proposal { slot, parent_root, randao_reveal, graffiti, bid_policy };
+                let proposal = Proposal {
+                    slot,
+                    parent_root,
+                    randao_reveal,
+                    graffiti,
+                    bid_policy,
+                    builder_bids,
+                };
                 self.produce_block(request_id, proposal, producers)
             }
             _ => {}
@@ -989,6 +997,10 @@ impl BeaconStateTile {
 
         adapter.consume(|answer: SidecarBidResponse, producers| {
             self.on_sidecar_bid(answer, producers);
+        });
+
+        adapter.consume(|answer: BuilderBidsResponse, producers| {
+            self.on_builder_bids(answer, producers);
         });
 
         adapter.consume(|m: ReplayBlock, producers| self.on_replay(m, producers));

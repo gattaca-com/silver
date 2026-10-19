@@ -70,6 +70,7 @@ pub(crate) struct Request<'a> {
     pub(crate) accept: Option<&'a str>,
     pub(crate) content_type: Option<&'a str>,
     pub(crate) eth_consensus_version: Option<&'a str>,
+    pub(crate) eth_builder_url: Option<&'a str>,
     pub(crate) body: &'a [u8],
 }
 
@@ -204,6 +205,7 @@ impl Router {
                 accept: req.accept,
                 content_type: req.content_type,
                 eth_consensus_version: req.eth_consensus_version,
+                eth_builder_url: req.eth_builder_url,
                 body: req.body,
             };
             let mut response = Response::new(out, submissions);
@@ -264,6 +266,7 @@ mod tests {
             accept: None,
             content_type: None,
             eth_consensus_version: None,
+            eth_builder_url: None,
             version: 1,
             keep_alive: true,
         }
@@ -320,6 +323,7 @@ mod tests {
             accept: None,
             content_type,
             eth_consensus_version: None,
+            eth_builder_url: None,
             version: 1,
             keep_alive: true,
         };

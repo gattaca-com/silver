@@ -19,6 +19,7 @@ pub use crate::{
 };
 
 mod block_root;
+mod builder_bid;
 pub mod cell_store;
 pub mod column_util;
 mod enr;
@@ -39,6 +40,7 @@ pub mod json_fields;
 mod node_chain;
 mod spine;
 pub use block_root::{block_root, block_root_fulu, block_root_gloas, body_root, body_root_at};
+pub use builder_bid::{BuilderBid, BuilderTerms};
 pub use node_chain::NodeChain;
 pub use payload_frame::PayloadFrame;
 pub use silver_beacon_state_data::{FAR_FUTURE_EPOCH, ForkName, SLOTS_PER_EPOCH};

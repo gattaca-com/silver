@@ -29,6 +29,14 @@ impl TokenRange {
         Self::new(index * span, span)
     }
 
+    /// One of `count` equal shares of this range, split as [`Self::share`]
+    /// splits the whole.
+    pub const fn share_of(&self, index: usize, count: usize) -> Self {
+        assert!(index < count, "share index outside the tenant count");
+        let span = self.span / count;
+        Self::new(self.base + index * span, span)
+    }
+
     pub const fn span(&self) -> usize {
         self.span
     }
@@ -56,6 +64,15 @@ mod tests {
     /// The partition a tile with two tenants hands out: neither half may claim
     /// a token the other allocates.
     const HALF: usize = 1 << (usize::BITS - 1);
+
+    #[test]
+    fn shares_of_a_range_stay_inside_it_and_apart() {
+        let range = TokenRange::new(HALF, HALF);
+        let [first, last] = [0, 63].map(|index| range.share_of(index, 64));
+        assert!(!first.overlaps(last));
+        assert_eq!(first.at(0), range.at(0));
+        assert_eq!(range.offset_of(last.at(last.span() - 1)).map(|at| at < HALF), Some(true));
+    }
 
     #[test]
     fn offsets_map_to_tokens_above_the_base() {

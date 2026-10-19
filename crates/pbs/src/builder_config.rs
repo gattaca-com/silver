@@ -184,19 +184,20 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    struct Entry<'a> {
-        url: &'a [u8],
-        data: &'a [u8],
-        slot: u64,
-        pubkeys: &'a [BLSPubkey],
-        terms: [u64; 3],
+    pub(crate) struct Entry<'a> {
+        pub(crate) url: &'a [u8],
+        pub(crate) data: &'a [u8],
+        pub(crate) slot: u64,
+        pub(crate) pubkeys: &'a [BLSPubkey],
+        /// `max_execution_payment`, `min_bid`, `builder_boost_factor`.
+        pub(crate) terms: [u64; 3],
     }
 
     impl Entry<'_> {
-        fn ssz(&self) -> Vec<u8> {
+        pub(crate) fn ssz(&self) -> Vec<u8> {
             let message = [
                 &(AUTH_MESSAGE_FIXED as u32).to_le_bytes()[..],
                 &self.slot.to_le_bytes(),
@@ -221,7 +222,7 @@ mod tests {
         }
     }
 
-    fn config(min_bid: u64, boost: u64, entries: &[Vec<u8>]) -> Vec<u8> {
+    pub(crate) fn config(min_bid: u64, boost: u64, entries: &[Vec<u8>]) -> Vec<u8> {
         let mut ssz = [min_bid.to_le_bytes(), boost.to_le_bytes()].concat();
         ssz.extend_from_slice(&(CONFIG_FIXED as u32).to_le_bytes());
         let mut offset = entries.len() * 4;

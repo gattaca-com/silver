@@ -138,7 +138,7 @@ fn bid_passes(request: &BidRequest, checked: Result<(), BidRefusal>, signed_bid:
     true
 }
 
-fn write_hex(out: &mut String, bytes: &[u8]) {
+pub(crate) fn write_hex(out: &mut String, bytes: &[u8]) {
     out.push_str("0x");
     for byte in bytes {
         write!(out, "{byte:02x}").unwrap();

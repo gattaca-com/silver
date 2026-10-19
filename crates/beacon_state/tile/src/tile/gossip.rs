@@ -2,9 +2,9 @@ use std::fmt::{self, Display};
 
 use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
-    B256, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid, MIN_SEED_LOOKAHEAD,
-    ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS, SYNC_SUBCOMMITTEE_SIZE,
-    Slot, StateId, StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
+    B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
+    MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
+    SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -680,33 +680,45 @@ impl BeaconStateTile {
         if bid.execution_payment != 0 {
             return Feedback::reject("bid has execution payment");
         }
+        if let Err(feedback) = self.check_bid_on_parent(&bid, signature, |_| true) {
+            return feedback;
+        }
+        self.payload_bids_pool.add(bid, *signature);
+        Feedback::Accept
+    }
+
+    /// What a bid must pass however it arrived: its parent, its builder's
+    /// standing, then `accepts_builder`, then its signature.
+    pub(super) fn check_bid_on_parent(
+        &mut self,
+        bid: &ExecutionPayloadBid,
+        signature: &[u8; 96],
+        accepts_builder: impl Fn(&BLSPubkey) -> bool,
+    ) -> Result<(), Feedback> {
         if bid.block_hash == bid.parent_block_hash {
-            return Feedback::reject("bid block hash equals parent");
+            return Err(Feedback::reject("bid block hash equals parent"));
         }
         let bid_epoch = bid.slot / SLOTS_PER_EPOCH;
         let max_blobs = self.spec.blob_params_at(bid_epoch).max_blobs_per_block as usize;
         if bid.blob_kzg_commitments.len() > max_blobs {
-            return Feedback::reject("bid too many blob commitments");
+            return Err(Feedback::reject("bid too many blob commitments"));
         }
 
         let Some(idx) = self.fork_choice.find_node_idx(&bid.parent_block_root) else {
-            return Feedback::Ignore;
+            return Err(Feedback::Ignore);
         };
         let node = self.fork_choice.node(idx);
         if bid.slot <= node.slot {
-            return Feedback::reject("bid slot not after parent");
+            return Err(Feedback::reject("bid slot not after parent"));
         }
         let (parent_state, parent_payload) = (node.state_id, node.payload);
-        let full = match self.check_bid_against_parent_payload(
-            &bid,
+        let full = self.check_bid_against_parent_payload(
+            bid,
             parent_state,
             &parent_payload,
             bid_epoch,
             idx,
-        ) {
-            Ok(full) => full,
-            Err(feedback) => return feedback,
-        };
+        )?;
 
         // The spec checks the builder on `process_slots(parent, bid.slot)`.
         // Only epoch processing moves what those checks read (finalization,
@@ -717,32 +729,34 @@ impl BeaconStateTile {
         let view = self.state.read_view(at_bid);
 
         let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
-        match BuilderRegistry::of_reader(&view).check_bid(
+        let builder = match BuilderRegistry::of_reader(&view).check_bid(
             finalized_epoch,
             bid.builder_index,
             bid.value,
         ) {
-            Ok(_) => {}
+            Ok(builder) => builder,
             Err(e @ BidBuilderError::InsufficientBalance { .. }) => {
                 silver_log::debug!(?e, "execution payload bid ignored");
-                return Feedback::Ignore;
+                return Err(Feedback::Ignore);
             }
             Err(e) => {
                 silver_log::debug!(?e, "invalid execution payload bid");
-                return Feedback::reject("bid invalid");
+                return Err(Feedback::reject("bid invalid"));
             }
-        }
+        };
         // The parent payload's exits apply only in the bid's own block, so the
         // state above still shows the builder active.
         if full {
-            let builder = view.builders.get(bid.builder_index as usize).expect("validated builder");
             let mut exits = self.payload_execution_requests.builder_exits(&bid.parent_block_root);
             if exits.any(|request| {
                 *BuilderExitRequestView::pubkey(request) == builder.pubkey &&
                     *BuilderExitRequestView::source_address(request) == builder.execution_address
             }) {
-                return Feedback::Ignore;
+                return Err(Feedback::Ignore);
             }
+        }
+        if !accepts_builder(&builder.pubkey) {
+            return Err(Feedback::Ignore);
         }
 
         // Last of the checks: a pairing costs more than all of them together.
@@ -750,15 +764,14 @@ impl BeaconStateTile {
             view.imm,
             &view.epoch,
             &view.builders,
-            &bid,
+            bid,
             signature,
         ) {
             silver_log::debug!(?e, "execution payload bid signature rejected");
-            return Feedback::reject("bid bad signature");
+            return Err(Feedback::reject("bid bad signature"));
         }
 
-        self.payload_bids_pool.add(bid, *signature);
-        Feedback::Accept
+        Ok(())
     }
 
     /// Retunrs whetehr the parent payload was full or not.
