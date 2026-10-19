@@ -1,12 +1,13 @@
 use flux_profiler::timed;
 
 use crate::{
-    BalancesGroup, BeaconState, BlockRootsGroup, BuildersGroup, ColumnLenMismatch,
-    CurrentParticipationGroup, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-    EpochGroup, EpochStateFinalized, Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators,
-    InactivityScoresGroup, LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup,
-    QueueItem, RandaoMixesGroup, SLOTS_PER_HISTORICAL_ROOT, SlashingsGroup, SlotStateFinalized,
-    SlotStateGroup, SpecConfig, StateRootsGroup, ValidatorsDecodeError, ValidatorsGroup,
+    BalancesGroup, BeaconState, BlockRootsGroup, BuildersGroup, CurrentParticipationGroup,
+    EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, EpochGroup, EpochStateFinalized,
+    Eth1Group, Eth1Votes, FinalizedBuilders, FinalizedValidators, InactivityScoresGroup,
+    LongtailGroup, LongtailState, PendingGroup, PreviousParticipationGroup, QueueItem,
+    RandaoMixesGroup, SLOTS_PER_HISTORICAL_ROOT, SlashingsGroup, SlotStateFinalized,
+    SlotStateGroup, SpecConfig, StateRootsGroup, TreeLenMismatch, ValidatorsDecodeError,
+    ValidatorsGroup,
     gloas::BuilderPendingWithdrawal,
     merkle,
     types::{
@@ -85,7 +86,7 @@ pub enum DecomposeError {
     #[error(transparent)]
     Validators(#[from] ValidatorsDecodeError),
     #[error(transparent)]
-    Column(#[from] ColumnLenMismatch),
+    Column(#[from] TreeLenMismatch),
     #[error("eth1_votes bytes {len} not a multiple of {ETH1_DATA_SSZ_SIZE}")]
     Eth1VotesLenNotMultiple { len: usize },
     #[error("too many eth1_votes: {n} > MAX_ETH1_VOTES {max}")]

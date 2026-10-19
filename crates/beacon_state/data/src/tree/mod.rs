@@ -1,5 +1,6 @@
 mod chunk_bits;
 mod chunk_writes;
+mod flat;
 mod format;
 mod group;
 mod hashing_writer;
@@ -12,14 +13,13 @@ mod roots;
 mod snapshot;
 mod store;
 mod subtree;
-mod tree;
 mod view;
 
 #[cfg(test)]
 mod tests;
 
 use format::{MAX_SEGS, seg_off};
-pub use group::ColumnGroup;
+pub use group::TreeGroup;
 pub use pool::PageArray;
 pub use randao::{
     RandaoMixes, RandaoMixesGroup, RandaoMixesId, RandaoMixesView, RandaoMixesWriteView,
@@ -29,16 +29,18 @@ pub use roots::{
     StateRootsGroup, StateRootsId,
 };
 pub use silver_ssz::scalar::SszScalar;
-pub use view::{ColumnReader, ColumnWriteView};
+pub use view::{TreeReader, TreeWriteView};
 
 use crate::{
     ring::Id,
     types::{B256, EPOCHS_PER_SLASHINGS_VECTOR, VALIDATOR_REGISTRY_LIMIT},
 };
 
+pub type TreeView<'a, C> = TreeReader<'a, C>;
+
 /// A column's marker: its scalar `Val` plus a distinct type identity, so ring
 /// ids of different columns can't be mixed.
-pub trait ColumnSpec {
+pub trait TreeSpec {
     type Val: SszScalar;
     /// This column's COW page. Tunable per column: pointwise-written trees want
     /// fewer nodes per page (less copied per dirty leaf), densely written ones
@@ -60,56 +62,56 @@ pub trait ColumnSpec {
     const SEG_OFF: [usize; MAX_SEGS + 1] = seg_off(Self::PAGE_NODES);
 }
 
-/// Column markers — one zero-sized type per registry-aligned column, named
+/// Tree markers — one zero-sized type per registry-aligned list, named
 /// (rather than a discriminated `Col<V, ID>`) so `type_name` reads cleanly in
 /// perf frames (`Balances`, not `Col<u64, 3>`).
 pub struct Previous;
-impl ColumnSpec for Previous {
+impl TreeSpec for Previous {
     type Val = u8;
     type Page = [B256; 256];
 }
 
 pub struct Current;
-impl ColumnSpec for Current {
+impl TreeSpec for Current {
     type Val = u8;
     type Page = [B256; 256];
 }
 
 pub struct Balances;
-impl ColumnSpec for Balances {
+impl TreeSpec for Balances {
     type Val = u64;
     type Page = [B256; 16];
 }
 
-pub type PreviousParticipationGroup = ColumnGroup<Previous>;
+pub type PreviousParticipationGroup = TreeGroup<Previous>;
 pub type PreviousParticipationId = Id<PreviousParticipationGroup>;
 
-pub type CurrentParticipationGroup = ColumnGroup<Current>;
+pub type CurrentParticipationGroup = TreeGroup<Current>;
 pub type CurrentParticipationId = Id<CurrentParticipationGroup>;
 
-pub type ParticipationView<'a, M> = ColumnReader<'a, M>;
-pub type ParticipationWriteView<'a, M> = ColumnWriteView<'a, M>;
+pub type ParticipationView<'a, M> = TreeView<'a, M>;
+pub type ParticipationWriteView<'a, M> = TreeWriteView<'a, M>;
 
-pub type BalancesGroup = ColumnGroup<Balances>;
+pub type BalancesGroup = TreeGroup<Balances>;
 pub type BalancesId = Id<BalancesGroup>;
 
-pub type BalancesReader<'a> = ColumnReader<'a, Balances>;
-pub type BalancesWriteView<'a> = ColumnWriteView<'a, Balances>;
+pub type BalancesReader<'a> = TreeView<'a, Balances>;
+pub type BalancesWriteView<'a> = TreeWriteView<'a, Balances>;
 
 pub struct Inactivity;
-impl ColumnSpec for Inactivity {
+impl TreeSpec for Inactivity {
     type Val = u64;
     type Page = [B256; 256];
 }
 
 pub struct ValidatorsHash;
-impl ColumnSpec for ValidatorsHash {
+impl TreeSpec for ValidatorsHash {
     type Val = B256;
     type Page = [B256; 1024];
 }
 
 pub struct BuildersHash;
-impl ColumnSpec for BuildersHash {
+impl TreeSpec for BuildersHash {
     type Val = B256;
     type Page = [B256; 32];
 }
@@ -118,19 +120,19 @@ impl ColumnSpec for BuildersHash {
 /// swept: one bucket per epoch, plus the running total as slashings land
 /// inside the current epoch.
 pub struct Slashings;
-impl ColumnSpec for Slashings {
+impl TreeSpec for Slashings {
     type Val = u64;
     type Page = [B256; 32];
     const SSZ_LIMIT: usize = EPOCHS_PER_SLASHINGS_VECTOR;
     const IS_LIST: bool = false;
 }
 
-pub type SlashingsGroup = ColumnGroup<Slashings>;
+pub type SlashingsGroup = TreeGroup<Slashings>;
 pub type SlashingsId = Id<SlashingsGroup>;
-pub type SlashingsView<'a> = ColumnReader<'a, Slashings>;
-pub type SlashingsWriteView<'a> = ColumnWriteView<'a, Slashings>;
+pub type SlashingsView<'a> = TreeView<'a, Slashings>;
+pub type SlashingsWriteView<'a> = TreeWriteView<'a, Slashings>;
 
-pub type InactivityScoresGroup = ColumnGroup<Inactivity>;
+pub type InactivityScoresGroup = TreeGroup<Inactivity>;
 pub type InactivityId = Id<InactivityScoresGroup>;
-pub type InactivityView<'a> = ColumnReader<'a, Inactivity>;
-pub type InactivityWriteView<'a> = ColumnWriteView<'a, Inactivity>;
+pub type InactivityView<'a> = TreeView<'a, Inactivity>;
+pub type InactivityWriteView<'a> = TreeWriteView<'a, Inactivity>;

@@ -1,4 +1,4 @@
-use super::{ColumnGroup, ColumnReader, ColumnSpec, ColumnWriteView};
+use super::{TreeGroup, TreeSpec, TreeView, TreeWriteView};
 use crate::{
     ring::Id,
     types::{B256, Epoch, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, Slot},
@@ -7,7 +7,7 @@ use crate::{
 /// `Vector[Root, SLOTS_PER_HISTORICAL_ROOT]`, written pointwise: `process_slot`
 /// overwrites the bucket at `slot % SLOTS_PER_HISTORICAL_ROOT` every slot.
 pub struct BlockRoots;
-impl ColumnSpec for BlockRoots {
+impl TreeSpec for BlockRoots {
     type Val = B256;
     type Page = [B256; 32];
     const SSZ_LIMIT: usize = SLOTS_PER_HISTORICAL_ROOT;
@@ -16,20 +16,20 @@ impl ColumnSpec for BlockRoots {
 
 /// `block_roots`' twin, written in the same `process_slot`.
 pub struct StateRoots;
-impl ColumnSpec for StateRoots {
+impl TreeSpec for StateRoots {
     type Val = B256;
     type Page = [B256; 32];
     const SSZ_LIMIT: usize = SLOTS_PER_HISTORICAL_ROOT;
     const IS_LIST: bool = false;
 }
 
-pub type BlockRootsGroup = ColumnGroup<BlockRoots>;
+pub type BlockRootsGroup = TreeGroup<BlockRoots>;
 pub type BlockRootsId = Id<BlockRootsGroup>;
-pub type StateRootsGroup = ColumnGroup<StateRoots>;
+pub type StateRootsGroup = TreeGroup<StateRoots>;
 pub type StateRootsId = Id<StateRootsGroup>;
 
-pub type RootsView<'a, M> = ColumnReader<'a, M>;
-pub type RootsWriteView<'a, M> = ColumnWriteView<'a, M>;
+pub type RootsView<'a, M> = TreeView<'a, M>;
+pub type RootsWriteView<'a, M> = TreeWriteView<'a, M>;
 
 impl RootsView<'_, BlockRoots> {
     /// Spec `get_block_root_at_slot`; valid for the last

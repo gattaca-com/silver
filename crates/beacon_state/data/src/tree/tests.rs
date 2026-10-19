@@ -1,7 +1,7 @@
 use std::iter;
 
 use super::{
-    BalancesGroup, BalancesWriteView, BlockRootsGroup, ColumnGroup, ColumnSpec, RandaoMixesGroup,
+    BalancesGroup, BalancesWriteView, BlockRootsGroup, RandaoMixesGroup, TreeGroup, TreeSpec,
 };
 use crate::{
     merkle::{MerkleStack, hash_b256_vector, hash_uint64_list, hash_uint64_vector},
@@ -14,15 +14,15 @@ use crate::{
 /// `Vector[uint64, 8192]` — covers the vector root path (fixed depth, no
 /// length mix-in) independently of the production columns.
 struct U64Vector;
-impl ColumnSpec for U64Vector {
+impl TreeSpec for U64Vector {
     type Val = u64;
     type Page = [B256; 32];
     const SSZ_LIMIT: usize = 8192;
     const IS_LIST: bool = false;
 }
 
-fn vector_group(values: &[u64]) -> ColumnGroup<U64Vector> {
-    ColumnGroup::new(values.len(), values.len(), &le_bytes(values), HashFormat::Fixed).unwrap()
+fn vector_group(values: &[u64]) -> TreeGroup<U64Vector> {
+    TreeGroup::new(values.len(), values.len(), &le_bytes(values), HashFormat::Fixed).unwrap()
 }
 
 pub(super) fn le_bytes(values: &[u64]) -> Vec<u8> {

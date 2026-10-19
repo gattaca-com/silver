@@ -3,7 +3,7 @@ use std::{iter, marker::PhantomData, slice};
 use bytesize::ByteSize;
 
 use super::{
-    ColumnSpec,
+    TreeSpec,
     page_format::{PagePos, Subtree},
 };
 use crate::{merkle::ZERO_HASHES, types::B256};
@@ -156,7 +156,7 @@ impl<P: PageArray> PagePool<P> {
 
     /// Free `old`'s pages down to where they meet `new`'s. Zero pages are the
     /// pool's, never a fork's.
-    pub(super) fn free_unshared<C: ColumnSpec<Page = P>>(
+    pub(super) fn free_unshared<C: TreeSpec<Page = P>>(
         &mut self,
         sub: Subtree,
         at: PagePos,

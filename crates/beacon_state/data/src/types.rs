@@ -518,11 +518,11 @@ pub enum HashFormat {
     Progressive,
 }
 
-/// A sparse column's SSZ byte length disagrees with the expected registry
-/// count — surfaced by the column constructors so construction = validation.
+/// A tree's SSZ byte length disagrees with the expected registry count —
+/// surfaced by the `TreeGroup` constructors so construction = validation.
 #[derive(Debug, thiserror::Error)]
-#[error("column bytes {bytes} don't match expected count {expected}")]
-pub struct ColumnLenMismatch {
+#[error("tree bytes {bytes} don't match expected count {expected}")]
+pub struct TreeLenMismatch {
     pub bytes: usize,
     pub expected: usize,
 }

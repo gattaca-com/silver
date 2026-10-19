@@ -1,6 +1,5 @@
 pub use builders::{BuildersGroup, BuildersId, BuildersView, BuildersWriteView, FinalizedBuilders};
 pub use checkpoint_state::CheckpointState;
-pub use column::*;
 pub use committee::{
     CommitteeSlot, ShufflingId, TARGET_COMMITTEE_SIZE, committee_at_position, committee_range,
     committees_per_slot,
@@ -34,6 +33,7 @@ pub use slot_state::{
     EpochBalances, EpochBalancesRow, SlotStateFinalized, SlotStateGroup, SlotStateId,
     SlotStateView, SlotStateWriteView,
 };
+pub use tree::*;
 pub use types::*;
 pub use validators::{
     FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, ValidatorsId,
@@ -43,7 +43,6 @@ pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointC
 
 mod builders;
 mod checkpoint_state;
-mod column;
 mod committee;
 mod decompose;
 mod delta_view;
@@ -60,6 +59,7 @@ mod reanchor;
 pub mod ring;
 mod slot_state;
 pub(crate) mod sparse;
+mod tree;
 pub mod types;
 mod validators;
 mod view;

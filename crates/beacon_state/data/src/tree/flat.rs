@@ -2,23 +2,23 @@ use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
-    ColumnSpec, format::TreeFormat, list::ListTree, pool::PagePool,
+    TreeSpec, format::TreeFormat, list::ListTree, pool::PagePool,
     progressive_list::ProgressiveListTree, snapshot::PageSnapshot, store::NodeStore,
 };
 use crate::types::{B256, HashFormat};
 
-pub enum ColumnTree<C: ColumnSpec> {
+pub enum FlatTree<C: TreeSpec> {
     List(ListTree<C>),
     ProgressiveList(ProgressiveListTree<C>),
 }
 
-impl<C: ColumnSpec> Default for ColumnTree<C> {
+impl<C: TreeSpec> Default for FlatTree<C> {
     fn default() -> Self {
-        ColumnTree::List(ListTree::default())
+        FlatTree::List(ListTree::default())
     }
 }
 
-impl<C: ColumnSpec> ColumnTree<C> {
+impl<C: TreeSpec> FlatTree<C> {
     #[timed]
     pub fn from_leaves(
         cap: usize,
@@ -27,31 +27,31 @@ impl<C: ColumnSpec> ColumnTree<C> {
         format: HashFormat,
     ) -> Self {
         match format {
-            HashFormat::Fixed => ColumnTree::List(ListTree::new(cap, count, leaves)),
+            HashFormat::Fixed => FlatTree::List(ListTree::new(cap, count, leaves)),
             HashFormat::Progressive => {
-                ColumnTree::ProgressiveList(ProgressiveListTree::from_leaves(cap, count, leaves))
+                FlatTree::ProgressiveList(ProgressiveListTree::from_leaves(cap, count, leaves))
             }
         }
     }
 
     pub fn migrate_to_progressive(&mut self) {
-        let ColumnTree::List(list) = self else { return };
-        *self = ColumnTree::ProgressiveList(ProgressiveListTree::from_list(list));
+        let FlatTree::List(list) = self else { return };
+        *self = FlatTree::ProgressiveList(ProgressiveListTree::from_list(list));
     }
 
     #[inline]
     fn store(&self) -> &NodeStore<C> {
         match self {
-            ColumnTree::List(t) => &t.store,
-            ColumnTree::ProgressiveList(t) => &t.store,
+            FlatTree::List(t) => &t.store,
+            FlatTree::ProgressiveList(t) => &t.store,
         }
     }
 
     #[inline]
     fn store_mut(&mut self) -> &mut NodeStore<C> {
         match self {
-            ColumnTree::List(t) => &mut t.store,
-            ColumnTree::ProgressiveList(t) => &mut t.store,
+            FlatTree::List(t) => &mut t.store,
+            FlatTree::ProgressiveList(t) => &mut t.store,
         }
     }
 
@@ -63,8 +63,8 @@ impl<C: ColumnSpec> ColumnTree<C> {
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
         match self {
-            ColumnTree::List(t) => t.format(),
-            ColumnTree::ProgressiveList(t) => t.format(),
+            FlatTree::List(t) => t.format(),
+            FlatTree::ProgressiveList(t) => t.format(),
         }
     }
 
@@ -93,10 +93,10 @@ impl<C: ColumnSpec> ColumnTree<C> {
             let store = std::mem::take(self.store_mut());
             *self = match format {
                 TreeFormat::Fixed { max_elements } => {
-                    ColumnTree::List(ListTree { store, max_elements })
+                    FlatTree::List(ListTree { store, max_elements })
                 }
                 TreeFormat::Progressive { last_seg } => {
-                    ColumnTree::ProgressiveList(ProgressiveListTree { store, last_seg })
+                    FlatTree::ProgressiveList(ProgressiveListTree { store, last_seg })
                 }
             };
         }
@@ -121,9 +121,9 @@ impl<C: ColumnSpec> ColumnTree<C> {
         self.store_mut().commit(format, pool, dst, parent);
     }
 
-    pub(super) fn copy_from<D>(&mut self, src: &ColumnTree<D>)
+    pub(super) fn copy_from<D>(&mut self, src: &FlatTree<D>)
     where
-        D: ColumnSpec<Val = C::Val, Page = C::Page>,
+        D: TreeSpec<Val = C::Val, Page = C::Page>,
     {
         debug_assert_eq!(self.format(), src.format(), "rotate needs a same-format source");
         debug_assert_eq!(self.count(), src.count(), "rotate needs a same-length source");
@@ -134,8 +134,8 @@ impl<C: ColumnSpec> ColumnTree<C> {
 
     pub fn fill_zero(&mut self) {
         match self {
-            ColumnTree::List(t) => t.fill_zero(),
-            ColumnTree::ProgressiveList(t) => t.fill_zero(),
+            FlatTree::List(t) => t.fill_zero(),
+            FlatTree::ProgressiveList(t) => t.fill_zero(),
         }
         let writes = &mut self.store_mut().writes;
         writes.clear();
@@ -179,8 +179,8 @@ impl<C: ColumnSpec> ColumnTree<C> {
     #[timed]
     pub fn rehash(&mut self) {
         match self {
-            ColumnTree::List(t) => t.rehash(),
-            ColumnTree::ProgressiveList(t) => t.rehash(),
+            FlatTree::List(t) => t.rehash(),
+            FlatTree::ProgressiveList(t) => t.rehash(),
         }
     }
 
@@ -189,8 +189,8 @@ impl<C: ColumnSpec> ColumnTree<C> {
         self.store_mut().count += 1;
         if self.count().div_ceil(C::VALS_PER_CHUNK) > self.format().data_capacity() {
             match self {
-                ColumnTree::List(t) => t.grow_one(),
-                ColumnTree::ProgressiveList(t) => t.grow_one(),
+                FlatTree::List(t) => t.grow_one(),
+                FlatTree::ProgressiveList(t) => t.grow_one(),
             }
         }
 
@@ -205,7 +205,7 @@ impl<C: ColumnSpec> ColumnTree<C> {
     }
 }
 
-impl<C: ColumnSpec<Val = u64>> ColumnTree<C> {
+impl<C: TreeSpec<Val = u64>> FlatTree<C> {
     pub fn add_at(&mut self, idx: u32, delta: i64) {
         let k = C::VALS_PER_CHUNK as u32;
         let chunk = (idx / k) as usize;

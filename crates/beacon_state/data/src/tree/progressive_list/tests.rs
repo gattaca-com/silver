@@ -1,7 +1,7 @@
 use silver_ssz::scalar::SszScalar;
 
 use super::super::{
-    BalancesGroup, BalancesWriteView, ColumnGroup, Previous,
+    BalancesGroup, BalancesWriteView, Previous, TreeGroup,
     tests::{group, le_bytes},
 };
 use crate::{
@@ -357,7 +357,7 @@ fn clear_to_zero() {
 fn u8_column_migrate_and_rehash() {
     let values: Vec<u8> = (0..77u8).collect();
     let mut g =
-        ColumnGroup::<Previous>::new(values.len() + 4, values.len(), &values, HashFormat::Fixed)
+        TreeGroup::<Previous>::new(values.len() + 4, values.len(), &values, HashFormat::Fixed)
             .unwrap();
     let mut wv = g.roll_fresh();
     wv.migrate_to_progressive();

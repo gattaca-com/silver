@@ -1,4 +1,4 @@
-use super::{ColumnSpec, page_format::Subtree};
+use super::{TreeSpec, page_format::Subtree};
 use crate::{
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
@@ -11,9 +11,9 @@ use crate::{
 pub(super) const MAX_SEGS: usize = 16;
 
 /// Page-aligned offsets of progressive container subtree roots, for a given
-/// page size. Only the *values* depend on the column; the length is fixed,
-/// which is what keeps this legal as a per-column associated const
-/// ([`ColumnSpec::SEG_OFF`]).
+/// page size. Only the *values* depend on the list; the length is fixed,
+/// which is what keeps this legal as a per-list associated const
+/// ([`TreeSpec::SEG_OFF`]).
 pub(super) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
     let mut t = [0usize; MAX_SEGS + 1];
     let mut k = 1;
@@ -27,7 +27,7 @@ pub(super) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
 
 /// Node ids are `u32` (`NodeRange`), so the node array must fit `u32`. The
 /// deepest segment dominates the sum, so this bounds every page size up to the
-/// one asserted here; a column wanting more than 4096 nodes per page has to
+/// one asserted here; a list wanting more than 4096 nodes per page has to
 /// widen `NodeRange` first.
 const _: () = assert!(seg_off(4096)[MAX_SEGS] <= u32::MAX as usize);
 
@@ -49,7 +49,7 @@ impl Default for TreeFormat {
 
 impl TreeFormat {
     #[inline]
-    pub(super) fn num_nodes<C: ColumnSpec>(self) -> usize {
+    pub(super) fn num_nodes<C: TreeSpec>(self) -> usize {
         match self {
             TreeFormat::Fixed { max_elements } => 2 * max_elements,
             TreeFormat::Progressive { .. } => self.data_start::<C>() + self.data_capacity(),
@@ -67,7 +67,7 @@ impl TreeFormat {
     }
 
     #[inline]
-    pub(super) fn data_start<C: ColumnSpec>(self) -> usize {
+    pub(super) fn data_start<C: TreeSpec>(self) -> usize {
         match self {
             TreeFormat::Fixed { max_elements } => max_elements,
             TreeFormat::Progressive { last_seg } => C::SEG_OFF[last_seg as usize + 1],
@@ -75,15 +75,11 @@ impl TreeFormat {
     }
 
     #[inline]
-    pub(super) fn leaf_pos<C: ColumnSpec>(self, chunk: usize) -> usize {
+    pub(super) fn leaf_pos<C: TreeSpec>(self, chunk: usize) -> usize {
         self.data_start::<C>() + chunk
     }
 
-    pub(super) fn hash_root<C: ColumnSpec>(
-        self,
-        count: usize,
-        node: impl Fn(usize) -> B256,
-    ) -> B256 {
+    pub(super) fn hash_root<C: TreeSpec>(self, count: usize, node: impl Fn(usize) -> B256) -> B256 {
         let vals_per_chunk = C::VALS_PER_CHUNK;
         let root = match self {
             TreeFormat::Fixed { max_elements } => {
@@ -105,7 +101,7 @@ impl TreeFormat {
         if C::IS_LIST { mix_in_length(&root, count) } else { root }
     }
 
-    pub(super) fn subtrees<C: ColumnSpec>(self) -> impl Iterator<Item = Subtree> {
+    pub(super) fn subtrees<C: TreeSpec>(self) -> impl Iterator<Item = Subtree> {
         let count = match self {
             TreeFormat::Fixed { .. } => 1,
             TreeFormat::Progressive { last_seg } => last_seg as usize + 1,
@@ -115,7 +111,7 @@ impl TreeFormat {
 
     /// Flat-tree node `n` as (subtree, level, pos), or `None` for padding and
     /// ids past the tree: a racing reader may pair `n` with another format.
-    pub(super) fn locate<C: ColumnSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
+    pub(super) fn locate<C: TreeSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
         let data_start = self.data_start::<C>();
         match self {
             TreeFormat::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {
@@ -146,14 +142,14 @@ mod tests {
     use super::*;
 
     struct P32;
-    impl ColumnSpec for P32 {
+    impl TreeSpec for P32 {
         type Val = u64;
         type Page = [B256; 32];
         const SSZ_LIMIT: usize = 8192;
         const IS_LIST: bool = false;
     }
     struct P512;
-    impl ColumnSpec for P512 {
+    impl TreeSpec for P512 {
         type Val = u64;
         type Page = [B256; 512];
         const SSZ_LIMIT: usize = 8192;

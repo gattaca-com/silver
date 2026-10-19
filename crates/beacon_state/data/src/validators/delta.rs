@@ -4,9 +4,9 @@ use flux_profiler::timed;
 use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
     B256, Withdrawals,
-    column::{ColumnReader, ColumnWriteView, ValidatorsHash},
     ring::{Reset, Slot as RingSlot},
     sparse::Edits,
+    tree::{TreeView, TreeWriteView, ValidatorsHash},
     types::{BLSPubkey, Epoch, FAR_FUTURE_EPOCH},
 };
 
@@ -204,7 +204,7 @@ impl Reset for ValidatorsDelta {
 pub struct ValidatorsView<'a> {
     base: &'a FinalizedValidators,
     delta: &'a ValidatorsDelta,
-    hash: ColumnReader<'a, ValidatorsHash>,
+    hash: TreeView<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsView<'a> {
@@ -212,7 +212,7 @@ impl<'a> ValidatorsView<'a> {
     pub(crate) fn new(
         base: &'a FinalizedValidators,
         delta: &'a ValidatorsDelta,
-        hash: ColumnReader<'a, ValidatorsHash>,
+        hash: TreeView<'a, ValidatorsHash>,
     ) -> Self {
         Self { base, delta, hash }
     }
@@ -542,7 +542,7 @@ impl<'a> ValidatorsView<'a> {
 pub struct ValidatorsWriteView<'a> {
     base: &'a FinalizedValidators,
     fork: RingSlot<'a, ValidatorsGroup>,
-    hash: ColumnWriteView<'a, ValidatorsHash>,
+    hash: TreeWriteView<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsWriteView<'a> {
@@ -550,7 +550,7 @@ impl<'a> ValidatorsWriteView<'a> {
     pub(super) fn new(
         base: &'a FinalizedValidators,
         fork: RingSlot<'a, ValidatorsGroup>,
-        hash: ColumnWriteView<'a, ValidatorsHash>,
+        hash: TreeWriteView<'a, ValidatorsHash>,
     ) -> Self {
         Self { base, fork, hash }
     }

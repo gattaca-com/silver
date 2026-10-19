@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use super::{
-    ColumnSpec,
+    TreeSpec,
     format::TreeFormat,
     page_format::Subtree,
     pool::{PageId, PagePool},
@@ -48,7 +48,7 @@ impl PageSnapshot {
 
     /// Make this base `winner`'s tree, freeing the base pages the winner does
     /// not share.
-    pub(super) fn promote<C: ColumnSpec>(
+    pub(super) fn promote<C: TreeSpec>(
         &mut self,
         pool: &mut PagePool<C::Page>,
         winner: &PageSnapshot,
@@ -64,7 +64,7 @@ impl PageSnapshot {
     /// Free this fork's allocated pages, except those `base` holds. Idempotent,
     /// as it clears `allocated`; `roots` stay, so racing readers stay in
     /// bounds.
-    pub(super) fn release<C: ColumnSpec>(
+    pub(super) fn release<C: TreeSpec>(
         &mut self,
         pool: &mut PagePool<C::Page>,
         base: &PageSnapshot,
@@ -89,7 +89,7 @@ impl PageSnapshot {
     }
 
     /// One root-to-page walk per leaf row, not per chunk.
-    pub(super) fn write_ssz<C: ColumnSpec, W: Write>(
+    pub(super) fn write_ssz<C: TreeSpec, W: Write>(
         &self,
         pool: &PagePool<C::Page>,
         w: &mut W,
@@ -110,11 +110,7 @@ impl PageSnapshot {
     }
 
     #[inline]
-    pub(super) fn node<'a, C: ColumnSpec>(
-        &self,
-        pool: &'a PagePool<C::Page>,
-        n: usize,
-    ) -> &'a B256 {
+    pub(super) fn node<'a, C: TreeSpec>(&self, pool: &'a PagePool<C::Page>, n: usize) -> &'a B256 {
         let (id, slot) = self.page_of::<C>(pool, n);
         &pool.page(id)[slot]
     }
@@ -123,7 +119,7 @@ impl PageSnapshot {
     /// format can't place, as a racing reader may ask, resolves to the first
     /// root slot.
     #[inline]
-    fn page_of<C: ColumnSpec>(&self, pool: &PagePool<C::Page>, n: usize) -> (PageId, usize) {
+    fn page_of<C: TreeSpec>(&self, pool: &PagePool<C::Page>, n: usize) -> (PageId, usize) {
         let (s, level, pos) = self.format.locate::<C>(n).unwrap_or_default();
         let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
         let root = self.roots.get(s).copied().unwrap_or(0);

@@ -4,8 +4,7 @@ use flux_profiler::timed;
 use silver_ssz::scalar::SszScalar;
 
 use super::{
-    ColumnGroup, ColumnSpec, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
-    tree::ColumnTree,
+    TreeGroup, TreeSpec, flat::FlatTree, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
 };
 use crate::{ring::Id, types::B256};
 
@@ -13,21 +12,21 @@ use crate::{ring::Id, types::B256};
 /// writable head — hot path) or a committed fork's paged snapshot. The read
 /// algorithms (`get`/`hash_root`) are written once here over
 /// [`node`](Self::node); only node addressing differs between backings.
-enum Nodes<'a, C: ColumnSpec> {
-    Flat(&'a ColumnTree<C>),
+enum Nodes<'a, C: TreeSpec> {
+    Flat(&'a FlatTree<C>),
     Paged(&'a PagePool<C::Page>, &'a PageSnapshot),
 }
 
 // Derived by hand: `#[derive]` would demand `C: Clone + Copy`, and a column
 // marker is a zero-sized tag that need not be either.
-impl<C: ColumnSpec> Clone for Nodes<'_, C> {
+impl<C: TreeSpec> Clone for Nodes<'_, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<C: ColumnSpec> Copy for Nodes<'_, C> {}
+impl<C: TreeSpec> Copy for Nodes<'_, C> {}
 
-impl<'a, C: ColumnSpec> Nodes<'a, C> {
+impl<'a, C: TreeSpec> Nodes<'a, C> {
     #[inline]
     fn node(&self, n: usize) -> &B256 {
         match self {
@@ -48,7 +47,7 @@ impl<'a, C: ColumnSpec> Nodes<'a, C> {
 /// Read handle over a fork's column: value reads (`get`/`iter`) plus the SSZ
 /// list root, whether the fork is the live flat head or a committed paged
 /// snapshot.
-pub struct ColumnReader<'a, C: ColumnSpec> {
+pub struct TreeReader<'a, C: TreeSpec> {
     nodes: Nodes<'a, C>,
     /// Resolved once at construction so per-element reads pay a single
     /// layout match.
@@ -57,16 +56,16 @@ pub struct ColumnReader<'a, C: ColumnSpec> {
 }
 
 // By hand for the same reason as `Nodes`.
-impl<C: ColumnSpec> Clone for ColumnReader<'_, C> {
+impl<C: TreeSpec> Clone for TreeReader<'_, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<C: ColumnSpec> Copy for ColumnReader<'_, C> {}
+impl<C: TreeSpec> Copy for TreeReader<'_, C> {}
 
-impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
+impl<'a, C: TreeSpec> TreeReader<'a, C> {
     #[inline]
-    pub(super) fn flat(tree: &'a ColumnTree<C>) -> Self {
+    pub(super) fn flat(tree: &'a FlatTree<C>) -> Self {
         Self { nodes: Nodes::Flat(tree), format: tree.format(), _marker: PhantomData }
     }
 
@@ -98,19 +97,19 @@ impl<'a, C: ColumnSpec> ColumnReader<'a, C> {
 /// Write handle over the flat tree. Values are written flat (fast
 /// path); `commit` pages the result into the ring, sharing the parent's
 /// unchanged pages.
-pub struct ColumnWriteView<'a, C: ColumnSpec> {
-    group: &'a mut ColumnGroup<C>,
-    parent: Option<Id<ColumnGroup<C>>>,
+pub struct TreeWriteView<'a, C: TreeSpec> {
+    group: &'a mut TreeGroup<C>,
+    parent: Option<Id<TreeGroup<C>>>,
 }
 
-impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
+impl<'a, C: TreeSpec> TreeWriteView<'a, C> {
     #[inline]
-    pub(super) fn new(group: &'a mut ColumnGroup<C>, parent: Option<Id<ColumnGroup<C>>>) -> Self {
+    pub(super) fn new(group: &'a mut TreeGroup<C>, parent: Option<Id<TreeGroup<C>>>) -> Self {
         Self { group, parent }
     }
 
     #[inline]
-    pub fn commit(self) -> Id<ColumnGroup<C>> {
+    pub fn commit(self) -> Id<TreeGroup<C>> {
         self.group.commit_writer(self.parent)
     }
 
@@ -121,13 +120,13 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
 
     #[inline]
     pub fn append_empty(&mut self) -> u32 {
-        debug_assert!(C::IS_LIST, "a vector column has fixed length");
+        debug_assert!(C::IS_LIST, "a vector tree has fixed length");
         self.group.tree_mut().append_empty()
     }
 
-    pub fn copy_from<D: ColumnSpec<Val = C::Val, Page = C::Page>>(
+    pub fn copy_from<D: TreeSpec<Val = C::Val, Page = C::Page>>(
         &mut self,
-        other: &mut ColumnWriteView<'_, D>,
+        other: &mut TreeWriteView<'_, D>,
     ) {
         other.group.tree_mut().rehash();
         self.group.tree_mut().copy_from(other.group.tree());
@@ -145,11 +144,11 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     }
 
     #[inline]
-    pub fn reader(&self) -> ColumnReader<'_, C> {
-        ColumnReader::flat(self.group.tree())
+    pub fn reader(&self) -> TreeReader<'_, C> {
+        TreeReader::flat(self.group.tree())
     }
 
-    pub fn hashed_reader(&mut self) -> ColumnReader<'_, C> {
+    pub fn hashed_reader(&mut self) -> TreeReader<'_, C> {
         self.group.tree_mut().rehash();
         self.reader()
     }
@@ -170,7 +169,7 @@ impl<'a, C: ColumnSpec> ColumnWriteView<'a, C> {
     }
 }
 
-impl<C: ColumnSpec<Val = u64>> ColumnWriteView<'_, C> {
+impl<C: TreeSpec<Val = u64>> TreeWriteView<'_, C> {
     #[inline]
     pub fn add_at(&mut self, idx: u32, delta: i64) {
         self.group.tree_mut().add_at(idx, delta);

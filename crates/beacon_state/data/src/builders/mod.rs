@@ -10,11 +10,11 @@ pub use finalized::FinalizedBuilders;
 use flux_profiler::timed;
 
 use crate::{
-    column::{BuildersHash, ColumnGroup},
     gloas::Builder,
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
     ring::{Id, Ring, RingGroup},
+    tree::{BuildersHash, TreeGroup},
     types::{B256, HashFormat, SLOTS_RING_N},
 };
 
@@ -24,13 +24,13 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct BuildersId {
     data: Id<BuildersGroup>,
-    hash: Id<ColumnGroup<BuildersHash>>,
+    hash: Id<TreeGroup<BuildersHash>>,
 }
 
 pub struct BuildersGroup {
     finalized: FinalizedBuilders,
     deltas: Ring<Self>,
-    hash: ColumnGroup<BuildersHash>,
+    hash: TreeGroup<BuildersHash>,
 }
 
 impl RingGroup for BuildersGroup {
@@ -40,7 +40,7 @@ impl RingGroup for BuildersGroup {
 impl BuildersGroup {
     pub fn new(finalized: FinalizedBuilders) -> Self {
         let builders = finalized.as_slice();
-        let hash = ColumnGroup::from_leaves(
+        let hash = TreeGroup::from_leaves(
             finalized.capacity(),
             builders.len(),
             builders.iter().map(builder_hash),

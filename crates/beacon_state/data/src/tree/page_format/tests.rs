@@ -2,24 +2,24 @@ use std::collections::HashSet;
 
 use super::{PagePos, Subtree};
 use crate::{
-    column::{ColumnSpec, format::TreeFormat},
     progressive::PROGRESSIVE_SEGMENT_START,
+    tree::{TreeSpec, format::TreeFormat},
     types::B256,
 };
 
 struct P4;
-impl ColumnSpec for P4 {
+impl TreeSpec for P4 {
     type Val = u64;
     type Page = [B256; 4];
 }
 
 struct P32;
-impl ColumnSpec for P32 {
+impl TreeSpec for P32 {
     type Val = u64;
     type Page = [B256; 32];
 }
 
-fn flat_nodes<C: ColumnSpec>(format: TreeFormat) -> Vec<usize> {
+fn flat_nodes<C: TreeSpec>(format: TreeFormat) -> Vec<usize> {
     match format {
         TreeFormat::Fixed { max_elements } => (1..2 * max_elements).collect(),
         TreeFormat::Progressive { last_seg } => (0..=last_seg as usize)
@@ -32,7 +32,7 @@ fn flat_nodes<C: ColumnSpec>(format: TreeFormat) -> Vec<usize> {
     }
 }
 
-fn pages<C: ColumnSpec>(sub: Subtree) -> impl Iterator<Item = PagePos> {
+fn pages<C: TreeSpec>(sub: Subtree) -> impl Iterator<Item = PagePos> {
     (0..sub.page_levels::<C>()).flat_map(move |page_level| {
         (0..1usize << sub.top_level::<C>(page_level))
             .map(move |index| PagePos { page_level, index })
@@ -42,7 +42,7 @@ fn pages<C: ColumnSpec>(sub: Subtree) -> impl Iterator<Item = PagePos> {
 /// Pages partition the flat tree nodes, descending from the root by `path_to`
 /// lands on the page row and slot holding each node, and every page on a
 /// leaf's path spans that leaf's chunk.
-fn check<C: ColumnSpec>(format: TreeFormat) {
+fn check<C: TreeSpec>(format: TreeFormat) {
     let mut seen = HashSet::new();
     for sub in format.subtrees::<C>() {
         for at in pages::<C>(sub) {
@@ -100,7 +100,7 @@ fn progressive_pages_partition_every_segment() {
 
 /// A reader can pair a node id with another fork's format, so `locate` resolves
 /// exactly the flat-tree nodes and refuses padding and ids past the tree.
-fn check_locate_is_total<C: ColumnSpec>(format: TreeFormat) {
+fn check_locate_is_total<C: TreeSpec>(format: TreeFormat) {
     let nodes: HashSet<_> = flat_nodes::<C>(format).into_iter().collect();
     let end = nodes.iter().max().unwrap() + 2 * C::PAGE_NODES;
     for n in 0..end {

@@ -13,7 +13,7 @@ use crate::{
 /// One isolated pending queue: its finalized base + a per-fork delta ring,
 /// generic over the element `Q`. The three queues are distinct instantiations
 /// (distinct ring-id types), bundled by [`PendingGroup`](super::PendingGroup).
-/// Mirrors [`ColumnGroup`](crate::ColumnGroup); the growable finalized `Vec` is
+/// Mirrors [`TreeGroup`](crate::TreeGroup); the growable finalized `Vec` is
 /// read by the checkpoint-persist thread, so it's guarded by `persist_lock`.
 pub struct QueueGroup<Q: QueueItem> {
     finalized: Queue<Q>,
@@ -89,7 +89,7 @@ impl<Q: QueueItem> QueueGroup<Q> {
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots
     /// (deduped for shared survivors), then promote the winner into the
-    /// finalized base. Mirrors [`ColumnGroup::finalize`](crate::ColumnGroup).
+    /// finalized base. Mirrors [`TreeGroup::finalize`](crate::TreeGroup).
     pub(super) fn finalize(&mut self, winner: Id<Self>, survivors: &[Id<Self>]) -> Vec<Id<Self>> {
         let old_base_len = self.finalized.len();
         debug_assert!(survivors.contains(&winner), "winner must be among the survivors");

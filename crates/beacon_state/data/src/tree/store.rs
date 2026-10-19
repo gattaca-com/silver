@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use super::{
-    ColumnSpec,
+    TreeSpec,
     chunk_writes::ChunkWrites,
     format::TreeFormat,
     page_format::{PagePos, Subtree},
@@ -11,20 +11,20 @@ use super::{
 };
 use crate::{merkle::ZERO_HASHES, types::B256};
 
-pub(super) struct NodeStore<C: ColumnSpec> {
+pub(super) struct NodeStore<C: TreeSpec> {
     pub(super) nodes: Vec<B256>,
     pub(super) count: usize,
     pub(super) writes: ChunkWrites,
     _marker: PhantomData<fn() -> C>,
 }
 
-impl<C: ColumnSpec> Default for NodeStore<C> {
+impl<C: TreeSpec> Default for NodeStore<C> {
     fn default() -> Self {
         Self { nodes: Vec::new(), count: 0, writes: ChunkWrites::default(), _marker: PhantomData }
     }
 }
 
-impl<C: ColumnSpec> NodeStore<C> {
+impl<C: TreeSpec> NodeStore<C> {
     pub(super) fn with_leaves(
         format: TreeFormat,
         count: usize,
@@ -118,14 +118,14 @@ impl<C: ColumnSpec> NodeStore<C> {
     }
 }
 
-struct PageCommitter<'a, C: ColumnSpec> {
+struct PageCommitter<'a, C: TreeSpec> {
     writes: &'a ChunkWrites,
     nodes: &'a [B256],
     pool: &'a mut PagePool<C::Page>,
     allocated: &'a mut Vec<(u32, PageId)>,
 }
 
-impl<C: ColumnSpec> PageCommitter<'_, C> {
+impl<C: TreeSpec> PageCommitter<'_, C> {
     fn commit_page(&mut self, sub: Subtree, at: PagePos, parent: Option<PageId>) -> PageId {
         if let Some(parent) = parent &&
             !self.writes.touches(sub.chunks_under::<C>(at))

@@ -4,11 +4,11 @@ use std::{fs, path::PathBuf};
 
 use flux::timing::Nanos;
 use silver_beacon_state_data::{
-    BLSPubkey, BeaconBlockHeader, BeaconState, ColumnGroup, ColumnSpec,
-    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState, EpochStateFinalized, Eth1Data, HistoricalSummary,
-    Id, Immutable, PROPOSER_LOOKAHEAD_SIZE, PendingDeposit, PendingPartialWithdrawal,
-    SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SYNC_SUBCOMMITTEE_SIZE, ShufflingId,
-    StateReadView, SyncCommittee, ValSeed, Withdrawals,
+    BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState,
+    EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
+    PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
+    SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, TreeGroup, TreeSpec,
+    ValSeed, Withdrawals,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
@@ -4993,12 +4993,12 @@ fn availability_outlives_a_failed_release() {
 /// persists its boot-time base: the slashings checkpoint-corruption bug.
 #[test]
 fn finalize_promotes_every_tier_into_checkpoint_encode() {
-    fn set1<C: ColumnSpec>(
-        g: &mut ColumnGroup<C>,
-        parent: Id<ColumnGroup<C>>,
+    fn set1<C: TreeSpec>(
+        g: &mut TreeGroup<C>,
+        parent: Id<TreeGroup<C>>,
         ix: u32,
         v: C::Val,
-    ) -> Id<ColumnGroup<C>> {
+    ) -> Id<TreeGroup<C>> {
         let mut w = g.roll_from(parent);
         w.set(ix, v);
         w.commit()

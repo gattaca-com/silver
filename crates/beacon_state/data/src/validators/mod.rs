@@ -11,10 +11,10 @@ use flux_profiler::timed;
 
 use crate::{
     Withdrawals,
-    column::{ColumnGroup, ValidatorsHash},
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
     ring::{Id, Ring, RingGroup},
+    tree::{TreeGroup, ValidatorsHash},
     types::{B256, BLSPubkey, Epoch, HashFormat, SLOTS_RING_N},
 };
 
@@ -24,7 +24,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ValidatorsId {
     data: Id<ValidatorsGroup>,
-    hash: Id<ColumnGroup<ValidatorsHash>>,
+    hash: Id<TreeGroup<ValidatorsHash>>,
 }
 
 /// The validator registry as one coupled unit: the finalized columns + pubkey
@@ -39,7 +39,7 @@ pub struct ValidatorsId {
 pub struct ValidatorsGroup {
     finalized: FinalizedValidators,
     deltas: Ring<Self>,
-    hash: ColumnGroup<ValidatorsHash>,
+    hash: TreeGroup<ValidatorsHash>,
 }
 
 impl RingGroup for ValidatorsGroup {
@@ -50,7 +50,7 @@ impl ValidatorsGroup {
     #[timed]
     pub fn new(finalized: FinalizedValidators, format: HashFormat) -> Self {
         let n = finalized.validator_count();
-        let hash = ColumnGroup::from_leaves(
+        let hash = TreeGroup::from_leaves(
             finalized.capacity(),
             n,
             (0..n).map(|i| finalized.leaf_hash(i)),

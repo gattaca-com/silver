@@ -1,4 +1,4 @@
-use crate::{BeaconState, ColumnGroup, ColumnSpec, Id, StateId};
+use crate::{BeaconState, Id, StateId, TreeGroup, TreeSpec};
 
 /// A bundle listed twice re-anchors once: every group dedups its survivors.
 struct Survivors<'a> {
@@ -35,10 +35,10 @@ impl<'a> Survivors<'a> {
         }
     }
 
-    fn finalize_column<C: ColumnSpec>(
+    fn finalize_column<C: TreeSpec>(
         &self,
-        group: &mut ColumnGroup<C>,
-        idx: impl Fn(&StateId) -> Id<ColumnGroup<C>>,
+        group: &mut TreeGroup<C>,
+        idx: impl Fn(&StateId) -> Id<TreeGroup<C>>,
     ) {
         group.finalize(idx(&self.winner), &self.live, |s| idx(s));
     }

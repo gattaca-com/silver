@@ -153,7 +153,7 @@ impl<Q: QueueItem> Reset for QueueDelta<Q> {
 
 /// Read view over one queue: the finalized `base` overlaid by a fork's
 /// `delta`. Holds the base+delta merge (effective element, length, SSZ root),
-/// mirroring [`ColumnReader`](crate::ColumnReader). A [`PendingView`] exposes
+/// mirroring [`TreeView`](crate::TreeView). A [`PendingView`] exposes
 /// one per queue as a public field.
 #[derive(Clone, Copy)]
 pub struct QueueView<'a, Q> {
@@ -200,7 +200,7 @@ impl<'a, Q: QueueItem> QueueView<'a, Q> {
 
 /// Write view over one queue: the appends/drains, each keeping the delta's
 /// hasher consistent, plus `commit` of the ring slot. Mirror of
-/// [`ColumnWriteView`](crate::ColumnWriteView); held per queue by
+/// [`TreeWriteView`](crate::TreeWriteView); held per queue by
 /// [`PendingWriteView`].
 pub struct QueueWriteView<'a, Q: QueueItem> {
     base: &'a Queue<Q>,

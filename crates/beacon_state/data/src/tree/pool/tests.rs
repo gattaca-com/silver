@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use super::{PageId, PagePool};
 use crate::{
-    column::{
-        ColumnSpec, format::TreeFormat, snapshot::PageSnapshot, store::NodeStore,
+    tree::{
+        TreeSpec, format::TreeFormat, snapshot::PageSnapshot, store::NodeStore,
         subtree::build_subtree_hashes,
     },
     types::B256,
@@ -12,7 +12,7 @@ use crate::{
 /// Sixteen leaves in pages of four nodes: a root page over two page-level-1
 /// pages of four leaf pages each, two leaves per leaf page.
 struct P4;
-impl ColumnSpec for P4 {
+impl TreeSpec for P4 {
     type Val = u64;
     type Page = [B256; 4];
 }

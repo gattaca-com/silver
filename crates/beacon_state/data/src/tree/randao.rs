@@ -1,4 +1,4 @@
-use super::{ColumnGroup, ColumnReader, ColumnSpec, ColumnWriteView};
+use super::{TreeGroup, TreeSpec, TreeView, TreeWriteView};
 use crate::{
     ring::Id,
     types::{B256, EPOCHS_PER_HISTORICAL_VECTOR, Epoch, MIN_SEED_LOOKAHEAD},
@@ -8,18 +8,18 @@ use crate::{
 /// current epoch's bucket absorbs one reveal per block, and the epoch boundary
 /// copies it into the next.
 pub struct RandaoMixes;
-impl ColumnSpec for RandaoMixes {
+impl TreeSpec for RandaoMixes {
     type Val = B256;
     type Page = [B256; 32];
     const SSZ_LIMIT: usize = EPOCHS_PER_HISTORICAL_VECTOR;
     const IS_LIST: bool = false;
 }
 
-pub type RandaoMixesGroup = ColumnGroup<RandaoMixes>;
+pub type RandaoMixesGroup = TreeGroup<RandaoMixes>;
 pub type RandaoMixesId = Id<RandaoMixesGroup>;
 
-pub type RandaoMixesView<'a> = ColumnReader<'a, RandaoMixes>;
-pub type RandaoMixesWriteView<'a> = ColumnWriteView<'a, RandaoMixes>;
+pub type RandaoMixesView<'a> = TreeView<'a, RandaoMixes>;
+pub type RandaoMixesWriteView<'a> = TreeWriteView<'a, RandaoMixes>;
 
 #[inline]
 fn bucket(epoch: Epoch) -> usize {

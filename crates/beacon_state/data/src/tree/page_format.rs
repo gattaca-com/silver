@@ -1,11 +1,11 @@
 use std::ops::Range;
 
-use super::{ColumnSpec, format::TreeFormat};
+use super::{TreeSpec, format::TreeFormat};
 use crate::progressive::PROGRESSIVE_SEGMENT_START;
 
-/// One Merkle tree of a column, cut into pages that forks can share.
+/// One Merkle tree of a list, cut into pages that forks can share.
 ///
-/// A column's flat tree is one array: internal nodes in heap order, then the
+/// A list's flat tree is one array: internal nodes in heap order, then the
 /// leaves. A fixed list is one subtree; a progressive list has one per segment.
 /// Each subtree is cut into pages, small mini-trees a commit copies or shares
 /// whole. Eight leaves, page size 4:
@@ -36,8 +36,8 @@ use crate::progressive::PROGRESSIVE_SEGMENT_START;
 /// - Pages are cut from the leaves up, in page levels of equal height. Only the
 ///   root page can be shorter, when the height does not divide evenly.
 /// - A page level spans `log2(page size)` merkle levels. The page size is fixed
-///   per column by `ColumnSpec::Page`, so a bigger tree gets more page levels,
-///   not taller ones.
+///   per list by `TreeSpec::Page`, so a bigger tree gets more page levels, not
+///   taller ones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Subtree {
     nodes_start: usize,
@@ -53,7 +53,7 @@ pub(super) struct PagePos {
 }
 
 impl Subtree {
-    pub(super) fn of<C: ColumnSpec>(format: TreeFormat, s: usize) -> Self {
+    pub(super) fn of<C: TreeSpec>(format: TreeFormat, s: usize) -> Self {
         match format {
             TreeFormat::Fixed { max_elements } => Self {
                 nodes_start: 0,
@@ -80,27 +80,27 @@ impl Subtree {
     }
 
     #[inline]
-    pub(super) fn page_levels<C: ColumnSpec>(&self) -> u32 {
+    pub(super) fn page_levels<C: TreeSpec>(&self) -> u32 {
         (self.height + 1).div_ceil(levels_per_page::<C>())
     }
 
     #[inline]
-    fn top_level<C: ColumnSpec>(&self, page_level: u32) -> u32 {
+    fn top_level<C: TreeSpec>(&self, page_level: u32) -> u32 {
         (self.height + 1).saturating_sub((page_level + 1) * levels_per_page::<C>())
     }
 
     #[inline]
-    pub(super) fn rows<C: ColumnSpec>(&self, page_level: u32) -> u32 {
+    pub(super) fn rows<C: TreeSpec>(&self, page_level: u32) -> u32 {
         self.height + 1 - page_level * levels_per_page::<C>() - self.top_level::<C>(page_level)
     }
 
     #[inline]
-    pub(super) fn root<C: ColumnSpec>(&self) -> PagePos {
+    pub(super) fn root<C: TreeSpec>(&self) -> PagePos {
         PagePos { page_level: self.page_levels::<C>() - 1, index: 0 }
     }
 
     #[inline]
-    pub(super) fn child<C: ColumnSpec>(&self, at: PagePos, j: usize) -> PagePos {
+    pub(super) fn child<C: TreeSpec>(&self, at: PagePos, j: usize) -> PagePos {
         PagePos {
             page_level: at.page_level - 1,
             index: (at.index << self.rows::<C>(at.page_level)) + j,
@@ -108,27 +108,24 @@ impl Subtree {
     }
 
     #[inline]
-    pub(super) fn child_count<C: ColumnSpec>(&self, at: PagePos) -> usize {
+    pub(super) fn child_count<C: TreeSpec>(&self, at: PagePos) -> usize {
         if at.page_level == 0 { 0 } else { 1 << self.rows::<C>(at.page_level) }
     }
 
     /// `(flat-tree node, len)` per row of `at`; a row of `len` nodes starts at
     /// page slot `len`.
-    pub(super) fn rows_of<C: ColumnSpec>(
-        self,
-        at: PagePos,
-    ) -> impl Iterator<Item = (usize, usize)> {
+    pub(super) fn rows_of<C: TreeSpec>(self, at: PagePos) -> impl Iterator<Item = (usize, usize)> {
         let top = self.top_level::<C>(at.page_level);
         (0..self.rows::<C>(at.page_level)).map(move |i| (self.node(top + i, at.index << i), 1 << i))
     }
 
     #[inline]
-    pub(super) fn top_node<C: ColumnSpec>(self, at: PagePos) -> usize {
+    pub(super) fn top_node<C: TreeSpec>(self, at: PagePos) -> usize {
         self.node(self.top_level::<C>(at.page_level), at.index)
     }
 
     #[inline]
-    pub(super) fn chunks_under<C: ColumnSpec>(self, at: PagePos) -> Range<usize> {
+    pub(super) fn chunks_under<C: TreeSpec>(self, at: PagePos) -> Range<usize> {
         let width = 1 << (self.height - self.top_level::<C>(at.page_level));
         let start = self.leaves_offset + at.index * width;
         start..start + width
@@ -138,13 +135,13 @@ impl Subtree {
     /// the depth also fixes the row count: an all-zero page is the same for
     /// every tree at the same depth.
     #[inline]
-    pub(super) fn depth<C: ColumnSpec>(self, at: PagePos) -> u32 {
+    pub(super) fn depth<C: TreeSpec>(self, at: PagePos) -> u32 {
         self.height - self.top_level::<C>(at.page_level)
     }
 
     /// Page slot of node (`level`, `pos`) and the child index to follow at each
     /// page level above it, root first.
-    pub(super) fn path_to<C: ColumnSpec>(
+    pub(super) fn path_to<C: TreeSpec>(
         self,
         level: u32,
         pos: usize,
@@ -160,7 +157,7 @@ impl Subtree {
 }
 
 #[inline]
-const fn levels_per_page<C: ColumnSpec>() -> u32 {
+const fn levels_per_page<C: TreeSpec>() -> u32 {
     C::PAGE_NODES.trailing_zeros()
 }
 

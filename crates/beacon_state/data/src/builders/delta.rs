@@ -1,10 +1,10 @@
 use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
     B256,
-    column::{BuildersHash, ColumnReader, ColumnWriteView},
     gloas::{BUILDER_REGISTRY_LIMIT, Builder},
     ring::{Reset, Slot},
     sparse::Edits,
+    tree::{BuildersHash, TreeView, TreeWriteView},
 };
 
 /// Per-fork delta over [`FinalizedBuilders`]. `appended` holds the immutable
@@ -79,7 +79,7 @@ impl Reset for BuildersDelta {
 pub struct BuildersView<'a> {
     base: &'a FinalizedBuilders,
     delta: &'a BuildersDelta,
-    hash: ColumnReader<'a, BuildersHash>,
+    hash: TreeView<'a, BuildersHash>,
 }
 
 impl<'a> BuildersView<'a> {
@@ -87,7 +87,7 @@ impl<'a> BuildersView<'a> {
     pub(super) fn new(
         base: &'a FinalizedBuilders,
         delta: &'a BuildersDelta,
-        hash: ColumnReader<'a, BuildersHash>,
+        hash: TreeView<'a, BuildersHash>,
     ) -> Self {
         Self { base, delta, hash }
     }
@@ -148,7 +148,7 @@ impl<'a> BuildersView<'a> {
 pub struct BuildersWriteView<'a> {
     base: &'a FinalizedBuilders,
     fork: Slot<'a, BuildersGroup>,
-    hash: ColumnWriteView<'a, BuildersHash>,
+    hash: TreeWriteView<'a, BuildersHash>,
 }
 
 impl<'a> BuildersWriteView<'a> {
@@ -156,7 +156,7 @@ impl<'a> BuildersWriteView<'a> {
     pub(super) fn new(
         base: &'a FinalizedBuilders,
         fork: Slot<'a, BuildersGroup>,
-        hash: ColumnWriteView<'a, BuildersHash>,
+        hash: TreeWriteView<'a, BuildersHash>,
     ) -> Self {
         Self { base, fork, hash }
     }

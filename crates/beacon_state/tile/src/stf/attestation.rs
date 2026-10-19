@@ -1,9 +1,9 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    B256, Checkpoint, ColumnSpec, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS,
-    ParticipationWriteView, SLOTS_PER_EPOCH, Slot, SlotStateWriteView, StateWriterView,
-    TIMELY_HEAD_FLAG, TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, ValidatorsView,
+    B256, Checkpoint, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS, ParticipationWriteView,
+    SLOTS_PER_EPOCH, Slot, SlotStateWriteView, StateWriterView, TIMELY_HEAD_FLAG,
+    TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TreeSpec, ValidatorsView,
 };
 use silver_common::ssz_view::{AttestationDataView, AttestationView};
 
@@ -433,7 +433,7 @@ impl<'a> BlockAttestations<'a> {
         Ok(())
     }
 
-    fn apply_flags<M: ColumnSpec<Val = u8>>(
+    fn apply_flags<M: TreeSpec<Val = u8>>(
         &self,
         participation: &mut ParticipationWriteView<M>,
         validators: &ValidatorsView,

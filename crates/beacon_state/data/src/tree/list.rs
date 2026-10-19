@@ -1,5 +1,5 @@
 use super::{
-    ColumnSpec,
+    TreeSpec,
     format::TreeFormat,
     store::NodeStore,
     subtree::{build_subtree_hashes, rehash_subtree},
@@ -9,18 +9,18 @@ use crate::{
     types::B256,
 };
 
-pub(super) struct ListTree<C: ColumnSpec> {
+pub(super) struct ListTree<C: TreeSpec> {
     pub(super) store: NodeStore<C>,
     pub(super) max_elements: usize,
 }
 
-impl<C: ColumnSpec> Default for ListTree<C> {
+impl<C: TreeSpec> Default for ListTree<C> {
     fn default() -> Self {
         Self { store: NodeStore::default(), max_elements: 0 }
     }
 }
 
-impl<C: ColumnSpec> ListTree<C> {
+impl<C: TreeSpec> ListTree<C> {
     pub(super) fn new(cap: usize, count: usize, leaves: impl Iterator<Item = B256>) -> Self {
         let max_elements = cap.div_ceil(C::VALS_PER_CHUNK).next_power_of_two().max(1);
         let store = NodeStore::with_leaves(TreeFormat::Fixed { max_elements }, count, leaves);
