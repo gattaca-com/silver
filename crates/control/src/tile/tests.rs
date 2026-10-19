@@ -490,8 +490,10 @@ fn assert_column_publication(origin: ColumnOrigin) {
     let mut message = None;
     let mut encoded = Vec::new();
     for frame in frames_to(2) {
+        let (len, offset) = silver_common::decode_varint(&frame, 0).unwrap();
+        assert_eq!(frame[offset..].len(), len as usize);
         let mut packet = stream.as_ref().to_vec();
-        packet.extend_from_slice(&frame);
+        packet.extend_from_slice(&frame[offset..]);
         let tcache = write_bytes(&mut capture.incoming, &packet);
         capture.observer.produce(GossipMsgIn { p2p_id: stream, tcache });
         receiver.spin(&mut receiver_adapter, None);

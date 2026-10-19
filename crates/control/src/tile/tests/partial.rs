@@ -74,7 +74,9 @@ fn mode_off_allocates_assemblies_without_enabling_partial_exchange() {
     capture.crank();
     let mut subscriptions = 0;
     for (_, bytes) in capture.sent() {
-        let rpc = protobuf::RPCView::decode_view(&bytes).unwrap();
+        let (len, offset) = silver_common::decode_varint(&bytes, 0).unwrap();
+        assert_eq!(bytes[offset..].len(), len as usize);
+        let rpc = protobuf::RPCView::decode_view(&bytes[offset..]).unwrap();
         for subscription in &rpc.subscriptions {
             subscriptions += 1;
             assert!(!subscription.requests_partial.unwrap_or(false));
@@ -185,7 +187,9 @@ fn metadata_crosses_ingress_control_and_segmented_send_spine_queues() {
             wire.extend_from_slice(segment.acquire(&mut network_reader).unwrap().as_ref());
         }
     }
-    let decoded = protobuf::RPCView::decode_view(&wire).unwrap();
+    let (len, offset) = silver_common::decode_varint(&wire, 0).unwrap();
+    assert_eq!(wire[offset..].len(), len as usize);
+    let decoded = protobuf::RPCView::decode_view(&wire[offset..]).unwrap();
     let payload = decoded.partial.as_option().unwrap().partial_message.unwrap();
     assert_eq!(PartialDataColumnSidecarGloasView::check_size(payload, 2), Some(2));
     assert_eq!(PartialDataColumnSidecarGloasView::cells(payload), &[0x22; BYTES_PER_CELL]);
@@ -309,7 +313,9 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
         capture.crank();
         let mut subscriptions = 0;
         for (_, bytes) in capture.sent() {
-            let rpc = protobuf::RPCView::decode_view(&bytes).unwrap();
+            let (len, offset) = silver_common::decode_varint(&bytes, 0).unwrap();
+            assert_eq!(bytes[offset..].len(), len as usize);
+            let rpc = protobuf::RPCView::decode_view(&bytes[offset..]).unwrap();
             for subscription in &rpc.subscriptions {
                 if subscription.subscribe != Some(true) {
                     continue;
@@ -346,7 +352,9 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
         if let GossipHandlerEvent::SendGossip(message) = event {
             let read = capture.outbound.acquire(message.tcache);
             let bytes = read.buffer().unwrap().0;
-            let rpc = protobuf::RPCView::decode_view(bytes).unwrap();
+            let (len, offset) = silver_common::decode_varint(bytes, 0).unwrap();
+            assert_eq!(bytes[offset..].len(), len as usize);
+            let rpc = protobuf::RPCView::decode_view(&bytes[offset..]).unwrap();
             let subscription = rpc.subscriptions.iter().next().unwrap();
             assert_eq!(subscription.requests_partial, None);
             assert_eq!(subscription.supports_sending_partial, None);

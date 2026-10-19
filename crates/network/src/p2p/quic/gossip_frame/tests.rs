@@ -108,9 +108,9 @@ impl Harness {
         let frame = CacheFrameRef::write(
             &mut self.gossip,
             self.now + Duration::from_secs(1),
-            b"head",
+            b"\x4chead",
             [
-                CacheSegment::Framing { offset: 0, length: 4 },
+                CacheSegment::Framing { offset: 0, length: 5 },
                 CacheSegment::Shared {
                     reservation: reference,
                     part: 0,
@@ -450,15 +450,22 @@ fn framing_fragments_share_one_lazy_owner_until_the_last_ack() {
 fn dropping_before_the_prefix_allocates_no_owners_and_releases_the_lease() {
     let mut h = Harness::new();
     let (reference, _) = h.assembly(true);
-    let frame = h.acquire(reference).unwrap();
-    assert_eq!(h.wheel.active_count(), 1);
-    let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 0);
     let before = ALLOCATIONS.with(Cell::get);
+    let writer = h.acquire(reference).unwrap().into_writer();
+    assert_eq!(h.wheel.active_count(), 1);
+    drop(writer);
+    assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
+    assert_eq!(h.limits.frames.get(), 0);
+    assert_eq!(h.limits.owners.get(), 0);
+    assert_eq!(h.limits.retained_bytes.get(), 0);
+    assert_eq!(h.wheel.active_count(), 0);
+
+    let frame = h.acquire(reference).unwrap();
+    let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 0);
     let state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
-    assert!(matches!(state, GossipWriteState::WritingLength { written: 0, .. }));
+    assert!(matches!(state, GossipWriteState::WritingSegments(..)));
     assert!(h.wheel.expire(h.now + Duration::from_secs(11)).is_some());
     drop(state);
-    assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
     assert_eq!(h.limits.frames.get(), 0);
     assert_eq!(h.limits.owners.get(), 0);
     assert_eq!(h.limits.retained_bytes.get(), 0);
@@ -468,20 +475,22 @@ fn dropping_before_the_prefix_allocates_no_owners_and_releases_the_lease() {
 #[test]
 fn partial_length_prefix_and_mixed_frames_preserve_boundaries() {
     let mut h = Harness::new();
+    let mut body = [0xab; 302];
+    body[..2].copy_from_slice(&[0xac, 0x02]);
     let reference = CacheFrameRef::write(
         &mut h.gossip,
         h.now + Duration::from_secs(1),
-        &[0xab; 300],
-        [CacheSegment::Framing { offset: 0, length: 300 }].into_iter(),
+        &body,
+        [CacheSegment::Framing { offset: 0, length: 302 }].into_iter(),
     )
     .unwrap();
     let frame = h.acquire(reference).unwrap();
     let mut io = MockIo::new(OutboundGossip::Segmented(frame, GossipTraffic::CONTROL), 1);
     let mut state = GossipWriteState::Idle.spin(&mut io, &stream()).unwrap();
     assert_eq!(io.written, [0xac]);
-    assert!(matches!(state, GossipWriteState::WritingLength { written: 1, .. }));
-    let mut write = h.gossip.reserve(3, true).unwrap();
-    write.write_all(b"end").unwrap();
+    assert!(matches!(state, GossipWriteState::WritingSegments(..)));
+    let mut write = h.gossip.reserve(4, true).unwrap();
+    write.write_all(b"\x03end").unwrap();
     let read = h.context.reader.acquire_strict(write.read()).unwrap();
     io.pending =
         Some(OutboundGossip::Contiguous(h.wheel.leased(read, h.now), GossipTraffic::CONTROL));
@@ -507,8 +516,8 @@ fn written_bytes_count_toward_the_frame_traffic() {
     let mut h = Harness::new();
     let traffic = GossipTraffic::of(GossipTopic::DataColumnSidecar(77));
     let before = GossipTrafficBytes::Sent.get(traffic);
-    let mut reservation = h.gossip.reserve(300, true).unwrap();
-    reservation.write_all(&[0xab; 300]).unwrap();
+    let mut reservation = h.gossip.reserve(302, true).unwrap();
+    reservation.write_all(&[0xab; 302]).unwrap();
     let read = h.context.reader.acquire_strict(reservation.read()).unwrap();
     let mut io = MockIo::new(OutboundGossip::Contiguous(h.wheel.leased(read, h.now), traffic), 7);
     let mut state = GossipWriteState::Idle;

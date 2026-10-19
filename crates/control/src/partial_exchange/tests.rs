@@ -255,7 +255,9 @@ impl Rig {
             }
         }
         assert_eq!(wire.len(), view.wire_len());
-        wire
+        let (len, offset) = silver_common::decode_varint(&wire, 0).unwrap();
+        assert_eq!(wire[offset..].len(), len as usize);
+        wire[offset..].to_vec()
     }
 
     fn dropped(&mut self, peer: usize, frame: CacheFrameRef) {
@@ -690,7 +692,7 @@ fn heartbeat_byte_quota_checks_the_entire_frame_before_writing() {
         rig.publish(0);
         rig.request(1, 0, 1);
         let frame = rig.spin()[0].1;
-        let wire_len = rig.wire(frame).len();
+        let wire_len = frame.acquire(&mut rig.network, rig.now).unwrap().wire_len();
         let budget = rig.exchange.peer_exchanges.get_mut(&1).unwrap();
         budget.record(frame.read().seq(), budget.remaining_bytes() - wire_len + 1);
         rig.request(1, 0, 2);
@@ -703,7 +705,7 @@ fn heartbeat_byte_quota_checks_the_entire_frame_before_writing() {
         rig.now += HEARTBEAT;
         let frames = rig.spin();
         assert_eq!(frames.len(), 1);
-        assert_eq!(rig.wire(frames[0].1).len(), wire_len);
+        assert_eq!(frames[0].1.acquire(&mut rig.network, rig.now).unwrap().wire_len(), wire_len);
     }
 }
 

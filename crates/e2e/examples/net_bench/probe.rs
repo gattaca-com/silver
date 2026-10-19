@@ -91,13 +91,17 @@ impl<'a> InboundFrame<'a> {
         outbound: &mut TProducer,
         turnaround_ns: u64,
     ) -> Result<TCacheRead, InjectError> {
-        let len = self.rpc.len();
-        let mut reservation = outbound.reserve(len, true).ok_or(InjectError::ReserveFailed)?;
-        let out = &mut outbound.reservation_buffer(&mut reservation)?[..len];
-        out.copy_from_slice(self.rpc);
+        let rpc_len = self.rpc.len();
+        let prefix_len = buffa::encoding::varint_len(rpc_len as u64);
+        let total = prefix_len + rpc_len;
+        let mut reservation = outbound.reserve(total, true).ok_or(InjectError::ReserveFailed)?;
+        let out = &mut outbound.reservation_buffer(&mut reservation)?[..total];
+        let mut cursor: &mut [u8] = out;
+        buffa::encoding::encode_varint(rpc_len as u64, &mut cursor);
+        cursor.copy_from_slice(self.rpc);
         let at = self.payload_at + TURNAROUND;
-        out[at..at + 8].copy_from_slice(&turnaround_ns.to_le_bytes());
-        reservation.increment_offset(len);
+        cursor[at..at + 8].copy_from_slice(&turnaround_ns.to_le_bytes());
+        reservation.increment_offset(total);
         Ok(reservation.read())
     }
 }

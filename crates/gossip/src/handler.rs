@@ -731,7 +731,10 @@ mod tests {
             let bytes = [index as u8; 20];
             let built = handler.publish_in_domain(topic, old, &bytes).unwrap();
             let read = output.acquire(built.protobuf);
-            let rpc = RPCView::decode_view(read.buffer().unwrap().0).unwrap();
+            let mut buf = read.buffer().unwrap().0;
+            let len = buffa::encoding::decode_varint(&mut buf).unwrap() as usize;
+            assert_eq!(buf.len(), len);
+            let rpc = RPCView::decode_view(buf).unwrap();
             let published = rpc.publish.iter().next().unwrap();
             assert_eq!(published.topic, topic.to_wire("01010101"));
             assert_eq!(built.msg_id, msg_id_valid_snappy(&topic.to_wire("01010101"), &bytes));
@@ -776,7 +779,10 @@ mod tests {
         assert!(handler.pop_event().is_none());
 
         let read = output.acquire(tcache);
-        let rpc = RPCView::decode_view(read.buffer().unwrap().0).unwrap();
+        let mut buf = read.buffer().unwrap().0;
+        let len = buffa::encoding::decode_varint(&mut buf).unwrap() as usize;
+        assert_eq!(buf.len(), len);
+        let rpc = RPCView::decode_view(buf).unwrap();
         let subscriptions: Vec<_> = rpc
             .subscriptions
             .iter()

@@ -45,11 +45,14 @@ pub fn build_publish_frame(
 
     let inner_len =
         TAG_LEN + bytes_encoded_len(snappy_data) + TAG_LEN + string_encoded_len(wire_topic);
-    let total = TAG_LEN + varint_len(inner_len as u64) + inner_len;
+    let rpc_len = TAG_LEN + varint_len(inner_len as u64) + inner_len;
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = mcache_producer.reserve(total, true).ok_or(InjectError::ReserveFailed)?;
     let out = mcache_producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     Tag::new(2, WireType::LengthDelimited).encode(&mut cursor); // RPC.publish
     encode_varint(inner_len as u64, &mut cursor);

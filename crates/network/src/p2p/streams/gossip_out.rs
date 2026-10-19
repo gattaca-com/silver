@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-/// Write-side state for gossipsub: idle → varint length → body.
+/// Write-side state for gossipsub: idle → length-prefixed body.
 #[derive(Debug)]
 pub(crate) enum GossipWriteState {
     /// Initial state on a meshsub 1.3 stream: the extensions
@@ -24,14 +24,9 @@ pub(crate) enum GossipWriteState {
         partial_columns: bool,
     },
     Idle,
-    WritingLength {
-        buffer: [u8; 10],
-        limit: usize,
-        written: usize,
-        message: OutboundGossip,
-    },
-    /// Writing body. `offset`/`length` track progress into the current
-    /// message; the handler provides body bytes via `send_data`.
+    /// Writing length-prefixed frame. `offset`/`length` track progress
+    /// into the current message; the handler provides frame bytes via
+    /// `send_data`.
     Writing {
         offset: usize,
         length: usize,
@@ -84,7 +79,6 @@ impl GossipWriteState {
             }
             Self::Idle => match io.gossip_next() {
                 Some(message) => {
-                    let mut buffer = [0u8; 10];
                     let len = match &message {
                         OutboundGossip::Contiguous(message, _) => message.len()?,
                         OutboundGossip::Segmented(frame, _) => frame.wire_len(),
@@ -92,31 +86,17 @@ impl GossipWriteState {
                     if len > MAX_GOSSIP_FRAME_SIZE {
                         return Err(StreamError::GossipFrameTooLarge);
                     }
-                    let len = len as u64;
-                    let limit =
-                        silver_common::encode_varint(len, &mut buffer).inspect_err(|e| {
-                            silver_log::error!(?e, len, "network gossiip write failed");
-                        })?;
-                    Ok(Spin::Next(Self::WritingLength { buffer, limit, written: 0, message }))
-                }
-                None => Ok(Spin::Ok(Self::Idle)),
-            },
-            Self::WritingLength { buffer, limit, mut written, message } => {
-                let n = io.write_to_stream(p2p_id.stream_id(), &buffer[written..limit])?;
-                GossipTrafficBytes::Sent.add(message.traffic(), n);
-                written += n;
-                if written == limit {
-                    return Ok(Spin::Next(match message {
+                    Ok(Spin::Next(match message {
                         OutboundGossip::Contiguous(message, traffic) => {
-                            Self::Writing { offset: 0, length: message.len()?, message, traffic }
+                            Self::Writing { offset: 0, length: len, message, traffic }
                         }
                         OutboundGossip::Segmented(frame, traffic) => {
                             Self::WritingSegments(frame.into_writer(), traffic)
                         }
-                    }));
+                    }))
                 }
-                Ok(Spin::Ok(Self::WritingLength { buffer, limit, written, message }))
-            }
+                None => Ok(Spin::Ok(Self::Idle)),
+            },
             Self::Writing { mut offset, length, message, traffic } => {
                 let Some(r_offset) = message.with_offset(offset) else {
                     silver_log::error!(?p2p_id, "stale tcache read @ {}, skipping", message.seq());
@@ -249,7 +229,7 @@ mod tests {
         };
 
         let state = GossipWriteState::Idle.spin(&mut io, &p2p_id).expect("blocked write parks");
-        assert!(matches!(state, GossipWriteState::WritingLength { written: 0, .. }));
+        assert!(matches!(state, GossipWriteState::Writing { offset: 0, .. }));
         assert_eq!(wheel.active_count(), 1);
         drop(state);
         assert_eq!(wheel.active_count(), 0);
@@ -326,15 +306,14 @@ mod tests {
         let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, false);
         let mut state = GossipWriteState::Idle.spin(&mut io, &p2p_id).unwrap();
         assert!(matches!(state, GossipWriteState::Writing { offset: 17, .. }));
-        assert_eq!(io.written[..2], [0x81, 0x04]);
-        assert_eq!(&io.written[2..], &payload[..17]);
+        assert_eq!(&io.written[..], &payload[..17]);
         assert_eq!(io.retained[0].as_ptr(), payload_ptr);
         assert_eq!(wheel.active_count(), 2);
 
         io.budget = 0;
         state = state.spin(&mut io, &p2p_id).unwrap();
         assert!(matches!(state, GossipWriteState::Writing { offset: 17, .. }));
-        assert_eq!(io.written.len(), 2 + 17);
+        assert_eq!(io.written.len(), 17);
         assert_eq!(io.retained.len(), 1);
         assert_eq!(wheel.active_count(), 2, "blocked attempts must release their child owner");
 
@@ -358,8 +337,7 @@ mod tests {
             }
         }
         assert!(matches!(state, GossipWriteState::Idle));
-        assert_eq!(&io.written[..2], &[0x81, 0x04]);
-        assert_eq!(&io.written[2..], &payload);
+        assert_eq!(&io.written[..], &payload);
         let mut offset = 0;
         for chunk in &io.retained {
             assert_eq!(chunk.as_ref(), &payload[offset..offset + chunk.len()]);

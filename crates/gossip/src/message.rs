@@ -195,10 +195,11 @@ pub(crate) fn copy_compressed_to_protobuf_output(
 
     let inner_len = TAG_LEN + bytes_encoded_len(snappy_data) + TAG_LEN + string_encoded_len(topic);
 
-    let total = TAG_LEN + varint_len(inner_len as u64) + inner_len;
-    if total > MAX_GOSSIP_FRAME_SIZE {
+    let rpc_len = TAG_LEN + varint_len(inner_len as u64) + inner_len;
+    if rpc_len > MAX_GOSSIP_FRAME_SIZE {
         return Err(Error::GossipFrameTooLarge);
     }
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
@@ -206,6 +207,8 @@ pub(crate) fn copy_compressed_to_protobuf_output(
     // giving a single copy of `snappy_data` into the reservation via the
     // `put_slice` inside `encode_bytes`.
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     Tag::new(2, WireType::LengthDelimited).encode(&mut cursor); // RPC.publish
     encode_varint(inner_len as u64, &mut cursor);

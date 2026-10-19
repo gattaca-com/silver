@@ -98,14 +98,18 @@ pub fn broadcast(c: &mut Criterion) {
                         while r.load(Ordering::Relaxed) {
                             server_tile.spin(&mut |_: NetworkTileEvent| {});
                             while let Ok((read, _)) = gi_consumer.read() {
+                                let payload = &read[size_of::<P2pStreamId>()..];
+                                let mut prefix = [0u8; 10];
+                                let prefix_len =
+                                    silver_common::encode_varint(payload.len() as u64, &mut prefix)
+                                        .unwrap();
                                 for _ in 0..2 {
-                                    if let Some(mut reservation) = go_producer
-                                        .reserve(read.len() - size_of::<P2pStreamId>(), true)
+                                    if let Some(mut reservation) =
+                                        go_producer.reserve(prefix_len + payload.len(), true)
                                     {
                                         let id: &P2pStreamId = read.into();
-                                        reservation
-                                            .write_all(&read[size_of::<P2pStreamId>()..])
-                                            .unwrap();
+                                        reservation.write_all(&prefix[..prefix_len]).unwrap();
+                                        reservation.write_all(payload).unwrap();
                                         if !matches!(
                                             server_tile.enqueue_gossip(GossipMsgOut {
                                                 peer_id: id.peer(),
@@ -210,13 +214,19 @@ pub fn broadcast(c: &mut Criterion) {
                         {
                             let now = Instant::now().0;
                             datum[..8].copy_from_slice(&now.to_le_bytes());
-                            let mut reservation = match producer.reserve(datum.len(), true) {
-                                Some(r) => r,
-                                None => {
-                                    println!("failed to reserve");
-                                    continue;
-                                }
-                            };
+                            let mut prefix = [0u8; 10];
+                            let prefix_len =
+                                silver_common::encode_varint(datum.len() as u64, &mut prefix)
+                                    .unwrap();
+                            let mut reservation =
+                                match producer.reserve(prefix_len + datum.len(), true) {
+                                    Some(r) => r,
+                                    None => {
+                                        println!("failed to reserve");
+                                        continue;
+                                    }
+                                };
+                            reservation.write_all(&prefix[..prefix_len]).unwrap();
                             match reservation.write(&datum.as_slice()) {
                                 Ok(x) if x == datum.len() => {}
                                 Ok(n) => {

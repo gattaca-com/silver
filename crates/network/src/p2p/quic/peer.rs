@@ -1491,8 +1491,14 @@ mod tests {
         /// space in the gossip-out tcache, copies the payload, then queues
         /// the `TCacheRead` so the gossip-out state machine can pick it up.
         fn send_gossip(&mut self, _stream_id: P2pStreamId, payload: &[u8], peer: &mut Peer) {
-            let mut res =
-                self.gossip_out_producer.reserve(payload.len(), true).expect("tcache full");
+            let mut prefix = [0u8; 10];
+            let prefix_len = silver_common::encode_varint(payload.len() as u64, &mut prefix)
+                .expect("varint encode");
+            let mut res = self
+                .gossip_out_producer
+                .reserve(prefix_len + payload.len(), true)
+                .expect("tcache full");
+            res.write_all(&prefix[..prefix_len]).unwrap();
             res.write_all(payload).unwrap();
             assert!(res.is_committed());
             let read = self.context.reader.acquire(res.read());
@@ -2297,9 +2303,9 @@ mod tests {
         let frame = CacheFrameRef::write(
             &mut client_h.gossip_out_producer,
             Instant::now() + Duration::from_secs(1),
-            &payload[..2],
+            b"\x07\x0a\x05",
             [
-                CacheSegment::Framing { offset: 0, length: 2 },
+                CacheSegment::Framing { offset: 0, length: 3 },
                 CacheSegment::DataColumns { read, offset: 0, length: 2 },
                 CacheSegment::DataColumns { read, offset: 2, length: 3 },
             ]

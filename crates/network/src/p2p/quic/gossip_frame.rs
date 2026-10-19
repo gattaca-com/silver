@@ -19,12 +19,6 @@ pub(crate) enum OutboundGossip {
 }
 
 impl OutboundGossip {
-    pub(crate) fn traffic(&self) -> GossipTraffic {
-        match self {
-            Self::Contiguous(_, traffic) | Self::Segmented(_, traffic) => *traffic,
-        }
-    }
-
     pub(crate) fn into_message(self, peer_id: usize) -> P2pSend {
         match self {
             Self::Contiguous(read, traffic) => {

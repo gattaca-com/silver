@@ -57,11 +57,12 @@ pub struct PartialFrame<'a> {
 }
 
 impl PartialFrame<'_> {
-    /// Protobuf RPC length, excluding the stream's length prefix.
+    /// Length-prefixed protobuf RPC wire length.
     pub fn wire_len(&self) -> usize {
         let (fields, tail) = self.field_lengths();
         let extension = fields + self.plan.map_or(0, |plan| plan.ssz_len()) + tail;
-        1 + varint_len(extension as u64) + extension
+        let rpc_len = 1 + varint_len(extension as u64) + extension;
+        varint_len(rpc_len as u64) + rpc_len
     }
 
     fn field_lengths(&self) -> (usize, usize) {
@@ -109,9 +110,11 @@ impl PartialFrame<'_> {
         let ssz_len = self.plan.map_or(0, |plan| plan.ssz_len());
         let (fields_len, tail) = self.field_lengths();
         let ext_len = fields_len + ssz_len + tail;
+        let rpc_len = 1 + varint_len(ext_len as u64) + ext_len;
 
         // Framing layout: [lead | header list prefix | metadata field].
-        let lead = 1 +
+        let lead = varint_len(rpc_len as u64) +
+            1 +
             varint_len(ext_len as u64) +
             fields_len +
             self.plan.map_or(0, |plan| plan.prefix_len());
@@ -123,6 +126,7 @@ impl PartialFrame<'_> {
 
         let mut buf = [0u8; MAX_PARTIAL_FRAMING];
         let mut cursor: &mut [u8] = &mut buf[..framing_len];
+        encode_varint(rpc_len as u64, &mut cursor);
         Tag::new(10, WireType::LengthDelimited).encode(&mut cursor);
         encode_varint(ext_len as u64, &mut cursor);
         Tag::new(1, WireType::LengthDelimited).encode(&mut cursor);
@@ -331,7 +335,7 @@ mod tests {
 
     /// Reference bytes from buffa's own encoder over the same content.
     fn reference_rpc(group_id: &[u8], ssz: Vec<u8>, metadata: Option<Vec<u8>>) -> Vec<u8> {
-        RPC {
+        let rpc = RPC {
             partial: MessageField::some(PartialMessagesExtension {
                 topic_id: Some(TOPIC.as_bytes().to_vec()),
                 group_id: Some(group_id.to_vec()),
@@ -341,7 +345,11 @@ mod tests {
             }),
             ..Default::default()
         }
-        .encode_to_vec()
+        .encode_to_vec();
+        let mut out = Vec::with_capacity(super::varint_len(rpc.len() as u64) + rpc.len());
+        super::encode_varint(rpc.len() as u64, &mut out);
+        out.extend_from_slice(&rpc);
+        out
     }
 
     fn reassemble(frame: CacheFrameRef, consumer: &mut TCacheReader, now: Instant) -> Vec<u8> {
@@ -631,7 +639,7 @@ mod tests {
 
         let mut metadata = vec![0u8; parts_metadata_len(4)];
         write_parts_metadata(0b11, 0b100, 4, &mut metadata);
-        let reference = RPC {
+        let rpc = RPC {
             partial: MessageField::some(PartialMessagesExtension {
                 topic_id: Some(TOPIC.as_bytes().to_vec()),
                 group_id: Some(group.to_vec()),
@@ -642,6 +650,9 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
+        let mut reference = Vec::with_capacity(super::varint_len(rpc.len() as u64) + rpc.len());
+        super::encode_varint(rpc.len() as u64, &mut reference);
+        reference.extend_from_slice(&rpc);
         assert_eq!(reassemble(frame, &mut consumer, now), reference);
 
         // Neither payload nor metadata: nothing to send.

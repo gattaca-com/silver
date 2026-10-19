@@ -255,12 +255,15 @@ pub(crate) fn copy_ihaves_to_protobuf_output<'a>(
     //    message_ids.iter().map(|id| TAG_LEN + bytes_encoded_len(&id[..])).sum();
     let ihave_inner_len = TAG_LEN + string_encoded_len(topic) + ids_len;
     let control_inner_len = TAG_LEN + varint_len(ihave_inner_len as u64) + ihave_inner_len;
-    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let rpc_len = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     // `&mut [u8]` implements `BufMut` and advances in-place on each put.
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     // RPC.control (field 3, LD).
     Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
@@ -298,11 +301,14 @@ pub fn copy_iwants_to_protobuf_output<'a>(
     let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
     let iwant_inner_len = ids_len;
     let control_inner_len = TAG_LEN + varint_len(iwant_inner_len as u64) + iwant_inner_len;
-    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let rpc_len = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     // RPC.control (field 3, LD).
     Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
@@ -336,11 +342,14 @@ pub(crate) fn copy_idontwants_to_protobuf_output<'a>(
     let ids_len = id_count * (TAG_LEN + varint_len(MESSAGE_ID_LEN as u64) + MESSAGE_ID_LEN);
     let idontwant_inner_len = ids_len;
     let control_inner_len = TAG_LEN + varint_len(idontwant_inner_len as u64) + idontwant_inner_len;
-    let total = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let rpc_len = TAG_LEN + varint_len(control_inner_len as u64) + control_inner_len;
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     // RPC.control (field 3, LD).
     Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
@@ -395,11 +404,13 @@ fn encode_sub_opts(
     mode: PartialColumnsMode,
 ) -> Result<TCacheRead, Error> {
     let partial = mode.supports_sending().then_some(mode);
-    let total: usize = topics.iter().map(|topic| sub_opts_len(topic, partial)).sum();
+    let rpc_len: usize = topics.iter().map(|topic| sub_opts_len(topic, partial)).sum();
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
+    encode_varint(rpc_len as u64, &mut cursor);
     for topic in topics {
         write_sub_opts(&mut cursor, topic, subscribe, partial);
     }
@@ -421,11 +432,17 @@ pub(crate) fn append_subscription(
     write_sub_opts(&mut cursor, topic, true, partial);
 }
 
-/// Copies an already encoded RPC frame into the publish tcache.
+/// Copies an already encoded RPC frame into the publish tcache, prepending
+/// its varint length prefix.
 pub(crate) fn copy_encoded(producer: &mut TProducer, frame: &[u8]) -> Result<TCacheRead, Error> {
-    let mut reservation = producer.reserve(frame.len(), true).ok_or(Error::BufferTooSmall)?;
-    producer.reservation_buffer(&mut reservation)?[..frame.len()].copy_from_slice(frame);
-    reservation.increment_offset(frame.len());
+    let rpc_len = frame.len();
+    let total = varint_len(rpc_len as u64) + rpc_len;
+    let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
+    let out = producer.reservation_buffer(&mut reservation)?;
+    let mut cursor: &mut [u8] = &mut out[..total];
+    encode_varint(rpc_len as u64, &mut cursor);
+    cursor.copy_from_slice(frame);
+    reservation.increment_offset(total);
     Ok(reservation.read())
 }
 
@@ -518,11 +535,14 @@ fn encode_control_topics(
             TAG_LEN + varint_len(entry as u64) + entry
         })
         .sum();
-    let total = TAG_LEN + varint_len(cm_inner as u64) + cm_inner;
+    let rpc_len = TAG_LEN + varint_len(cm_inner as u64) + cm_inner;
+    let total = varint_len(rpc_len as u64) + rpc_len;
 
     let mut reservation = producer.reserve(total, true).ok_or(Error::BufferTooSmall)?;
     let out = producer.reservation_buffer(&mut reservation)?;
     let mut cursor: &mut [u8] = &mut out[..total];
+
+    encode_varint(rpc_len as u64, &mut cursor);
 
     // RPC.control (field 3, LD).
     Tag::new(3, WireType::LengthDelimited).encode(&mut cursor);
@@ -572,7 +592,7 @@ fn message_id(
 
 #[cfg(test)]
 mod tests {
-    use buffa::MessageView;
+    use buffa::{MessageView, encoding::decode_varint};
     use silver_common::{GossipDomain, TCache, TCacheId, TCacheReader, TReadMode};
 
     use super::*;
@@ -583,7 +603,9 @@ mod tests {
             TCacheReader::single(producer.cache_ref(), "test", TReadMode::SlidingManualFree)
                 .unwrap();
         let read = consumer.acquire(tc);
-        let (bytes, _) = read.buffer().unwrap();
+        let (mut bytes, _) = read.buffer().unwrap();
+        let len = decode_varint(&mut bytes).unwrap() as usize;
+        assert_eq!(bytes.len(), len);
         bytes.to_vec()
     }
 
