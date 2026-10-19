@@ -195,6 +195,14 @@ fn fft_timing() {
     assert!(simd_available(), "this CPU has no avx512ifma");
     let reps = 50;
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 2);
+    // An idle core runs the first few hundred milliseconds below full clock.
+    let mut warm_up = CellExtender::without_kernel();
+    let mut cells = Box::new([[0u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]);
+    let zeros = blob_of(|_| [0; 32]);
+    let started = Instant::now();
+    while started.elapsed().as_millis() < 500 {
+        assert!(warm_up.compute(&zeros, black_box(&mut cells)));
+    }
     println!("{:<40} {:>10}", "best of 50", "µs");
     for log_n in [6, MAX_LOG] {
         let n = 1 << log_n;
@@ -236,7 +244,6 @@ fn fft_timing() {
 
     let random: Vec<_> = (0..4096).map(|_| fr_to_bytes(&random_fr(&mut rng))).collect();
     let blob = blob_of(|i| random[i]);
-    let mut cells = Box::new([[0u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]);
     let mut kernel = CellExtender::new();
     let mut scalar = CellExtender::without_kernel();
     let with_kernel = best_micros(reps, || assert!(kernel.compute(&blob, black_box(&mut cells))));
