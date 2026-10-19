@@ -2,6 +2,18 @@
 
 One extraction and one Lake project cover BLS decoding, KZG cell batch verification and cell extension. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
 
+## Claims
+
+The generated x86_64 APIs cover BLS decoding and subgroup checks, KZG batch verification, and cell extension through both the Fr FFT kernel and scalar fallback. The extender's single `compute_eq_spec` theorem includes canonicality, exact cell bytes, unchanged cells on rejection, construction and repeated calls. See the [full statements](../README.md#what-is-proved) for their premises and runtime scope.
+
+## Usage
+
+Import `LeanBlsSimd.Kzg.Extender.Statements` for cell extension and `LeanBlsSimd.Kzg.Statements` for verification. BLS consumers use the public `Refines.UncompressG1` and `Refines.UncompressG2` modules. The [consumer examples](../README.md#using-the-public-results) show how to supply external dictionaries and their agreement proofs.
+
+## Trust
+
+The [shared trust list](../README.md#what-a-reader-must-trust) covers extraction, dependencies, intrinsic models, external operations and runtime behavior. The extender headline keeps `BlstCorrect` and `FrToBytesCorrect`: construction uses the former, and scalar output uses the latter. The internal kernel-route refinement uses neither law after its invariant is established. `_mm512_permutex2var_epi64` and Aeneas's `U64.to_be_bytes` semantics are included in that trust boundary. The extraction targets x86_64; other target configurations are not separately extracted here.
+
 ## Common reproduction and extraction
 
 ```sh
@@ -137,7 +149,7 @@ Start with `LeanBlsSimd.Kzg.Statements`: `verify_eq_spec` uses the explicit `emb
 
 The decoder boundary is `Kzg/Decoder.lean`. `g1DecoderCorrect_of_blstMatchesSpec` derives the generated batch-decoder contract from the BLS list theorem via equality of the KZG/BLS optional affine verdicts. Do not replace this theorem with an external slice-decoder assumption. `BlstCorrect.g2_decode` concerns only the two embedded G2 constants; `g2_decode_of_blstMatchesSpec` derives it from the full BLS G2 scalar contract when available. `Kzg/SpecExternals.lean` witnesses joint consistency of the KZG operation laws and both full scalar contracts.
 
-For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.compute_eq_spec` takes the whole `BlstCorrect e` record, including field, group, hash and pairing laws, plus `FrToBytesCorrect e`. Preserve total construction and execution, canonicality in both directions, and exact `computeCells` output bytes. Rejection must produce a specification error and leave output cells unchanged. Every call preserves the state invariant. It permits arbitrary scratch contents of the fixed lengths, covering calls after rejection. There is no G1 decoder or runtime setup premise. `Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
+For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.compute_eq_spec` takes the whole `BlstCorrect e` record, including field, group, hash and pairing laws, plus `FrToBytesCorrect e`. Preserve total construction and execution, canonicality in both directions, and exact `computeCells` output bytes. Rejection must produce a specification error and leave output cells unchanged. Every call preserves the state invariant, including the optional kernel's tables. It permits arbitrary scratch contents of the fixed lengths, covering calls after rejection. There is no G1 decoder or runtime setup premise. `Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
 
 `specExternals_fr_to_bytes_correct` witnesses the [serialization law](../README.md#what-a-reader-must-trust). `BlstCorrect` has no serialization law.
 
@@ -148,6 +160,9 @@ For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.
 | `verify.rs` | `Statements.lean`, `Model.lean`, `InterpolationModel.lean`, `Refines/Verify.lean`, `Refines/Cells.lean`, `Refines/Points.lean`, `Refines/Checks.lean`, `Refines/Deduplicate.lean`, `Refines/Pairing.lean`, `Refines/Interpolation.lean` and `Refines/InterpolationCommitment.lean` |
 | `cell_extender.rs` | `Extender/Basic.lean`, `Extender/Model.lean`, `Extender/Acceptance.lean`, `Extender/Decode.lean`, `Extender/Scale.lean`, `Extender/WriteStep.lean`, `Extender/WriteBytes.lean`, `Extender/Write.lean`, `Extender/Refines.lean` and `Extender/Statements.lean` |
 | `fft.rs` | `Refines/Fft.lean` |
+| `fr8.rs` | Shared `../Model/Fr8.lean`, `../Refines/Fr8.lean`, `../Proofs/Fr8*.lean`; `Extender/Kernel/Fr8.lean`, `Fr8Arithmetic.lean` and `Fr8Bytes*.lean` |
+| `fft8.rs` | `Extender/Kernel/Fft.lean`, `FftMath.lean`, `FftTableBuild.lean`, `FftTables.lean` and the lane/wide stage helpers |
+| `extension_kernel.rs` | `Extender/Kernel/Basic.lean`, `Construct.lean`, `Decode.lean`, `Shift.lean`, `Encode.lean` and `Refines.lean` |
 | `domain.rs` | `Refines/Roots.lean`, `Refines/Bits.lean` and `Extender/Primitives.lean` |
 | `challenge.rs` | `ByteSerialization.lean` and `Refines/Challenge.lean` |
 | `cosets.rs` | `Refines/Cosets.lean` |
@@ -162,6 +177,10 @@ Regenerate through `extract.sh`, repair affected refinements, and rebuild the sh
 
 The verifier's roots and FFT theorems take `ExternalsCorrect` and delegate to refinements with `BlstCorrect` premises. Preserve both interfaces when changing shared arithmetic.
 
+For Fr arithmetic, prove generated-code equality to the per-lane model before reasoning about five-limb carries. `Kernel.RootsValid` uses `IsPrimitiveRoot` and root powers, matching the specification's FFT lemmas. Keep the pure iterative-transform induction valid down to size 1; only the generated FFT contracts require sizes 16 through 4096. Data lanes are ordinary integers and multipliers carry `2^260`; blst's four-word encoding carries `2^256`, so the constructor's factor of 16 is essential.
+
+Preserve exact raw decode values on rejection: they support the range-mask controls and may be outside the arithmetic invariant. `Kernel.StateInvariant` deliberately permits those data contents, while fixing table contents and buffer lengths. `Kernel.compute_refinement` must remain independent of `FrToBytesCorrect` and `BlstCorrect`; `Kernel.new_refinement` supplies the invariant from the constructor's external operations. Compose that route with the scalar route for the public headline.
+
 Keep array dimensions and collections explicit when rewriting 4096-element transforms. An unresolved collection argument in `getElem!_pos` or a large serialization expression in `change` can make unification evaluate the entire array. Use getter and size lemmas before specializing dimensions. Align the specification's `Cell` alias in serialization helpers to avoid unfolding its 2048-byte fold merely to compare getter instances. A mismatched model term can also appear as a maximum recursion depth failure. Inspect the competing terms before raising the limit.
 
 `G1Bridge.lean` provides a generic transport theorem for independent extractions; the shared verifier uses the direct decoder bridge.
@@ -174,7 +193,7 @@ The constructor's panic message in `verify.rs` must remain constant to avoid pul
 
 The [KZG controls table](../README.md#evidence-and-controls) describes each checked boundary, including the production G1 decoder control. Run the files through the common `controls/*.lean` loop.
 
-`ExtenderExternalBoundary.lean` separates serialization correctness from the shared `BlstCorrect` contract. `ExtenderMathematical.lean` checks the blob-sized transform steps; `ExtenderLayout.lean` checks copying and rejection behavior. `ExtenderSpecInstance.lean` applies the complete headline to the specification dictionary. The default `KzgStrictAxioms.lean` includes these controls and all nine generated entry points.
+`ExtenderExternalBoundary.lean` separates serialization correctness from the shared `BlstCorrect` contract. `ExtenderMathematical.lean` checks the blob-sized transform steps; `ExtenderLayout.lean` checks copying and rejection behavior. `ExtenderSpecInstance.lean` applies the complete headline to the specification dictionary. Kernel controls cover raw decode/masks, multiplier scaling, permutation selection, canonical output, byte order, table/stage ordering and output frames. The default `KzgStrictAxioms.lean` includes the controls and all 26 generated entry points.
 
 After the Lean checks and extraction controls, run from the repository root:
 
