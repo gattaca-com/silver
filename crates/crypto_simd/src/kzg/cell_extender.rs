@@ -13,6 +13,8 @@ use crate::kzg::{
     domain::{inverse_roots, reverse_bits, roots_of_unity},
     fft::{fft, inverse_fft},
 };
+#[cfg(target_arch = "x86_64")]
+use crate::{kzg::extension_kernel::ExtensionKernel, simd_available};
 
 const LOG_BLOB: u32 = 12;
 const LOG_EXT_BLOB: u32 = 13;
@@ -27,6 +29,8 @@ pub struct CellExtender {
     shift_powers: Vec<blst_fr>,
     evaluations: Vec<blst_fr>,
     coefficients: Vec<blst_fr>,
+    #[cfg(target_arch = "x86_64")]
+    kernel: Option<ExtensionKernel>,
 }
 
 impl Default for CellExtender {
@@ -45,13 +49,35 @@ impl CellExtender {
         evaluations.resize(FIELD_ELEMENTS_PER_BLOB, zero);
         let mut coefficients = Vec::with_capacity(FIELD_ELEMENTS_PER_BLOB);
         coefficients.resize(FIELD_ELEMENTS_PER_BLOB, zero);
+        let inverse_roots = inverse_roots(&roots);
+        let inverse_size = fr_inverse(&fr_from_u64(FIELD_ELEMENTS_PER_BLOB as u64));
+        #[cfg(target_arch = "x86_64")]
+        let kernel = if simd_available() {
+            // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+            Some(unsafe {
+                ExtensionKernel::new(&roots, &inverse_roots, &shift_powers, &inverse_size)
+            })
+        } else {
+            None
+        };
         Self {
-            inverse_roots: inverse_roots(&roots),
             roots,
-            inverse_size: fr_inverse(&fr_from_u64(FIELD_ELEMENTS_PER_BLOB as u64)),
+            inverse_roots,
+            inverse_size,
             shift_powers,
             evaluations,
             coefficients,
+            #[cfg(target_arch = "x86_64")]
+            kernel,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn without_kernel() -> Self {
+        Self {
+            #[cfg(target_arch = "x86_64")]
+            kernel: None,
+            ..Self::new()
         }
     }
 
@@ -62,13 +88,22 @@ impl CellExtender {
         blob: &[u8; BYTES_PER_BLOB],
         cells: &mut [[u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB],
     ) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(kernel) = &mut self.kernel {
+            // SAFETY: `kernel` is built only where `simd_available` held.
+            if !unsafe { kernel.decode(blob) } {
+                return false;
+            }
+            copy_blob(blob, cells);
+            // SAFETY: as above.
+            unsafe { kernel.extend(cells) };
+            return true;
+        }
+
         if !self.decode_blob(blob) {
             return false;
         }
-        for k in 0..CELLS_PER_EXT_BLOB / 2 {
-            cells[k].copy_from_slice(&blob[k * BYTES_PER_CELL..(k + 1) * BYTES_PER_CELL]);
-        }
-
+        copy_blob(blob, cells);
         inverse_fft(
             &mut self.coefficients,
             &self.evaluations,
@@ -108,5 +143,12 @@ impl CellExtender {
             let at = j % FIELD_ELEMENTS_PER_CELL * BYTES_PER_FIELD_ELEMENT;
             cells[cell][at..at + BYTES_PER_FIELD_ELEMENT].copy_from_slice(&bytes);
         }
+    }
+}
+
+/// The first half of the cells are the blob's bytes.
+fn copy_blob(blob: &[u8; BYTES_PER_BLOB], cells: &mut [[u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]) {
+    for k in 0..CELLS_PER_EXT_BLOB / 2 {
+        cells[k].copy_from_slice(&blob[k * BYTES_PER_CELL..(k + 1) * BYTES_PER_CELL]);
     }
 }

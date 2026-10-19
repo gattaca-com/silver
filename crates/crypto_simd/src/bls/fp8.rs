@@ -47,7 +47,7 @@ fn splat_limbs(limbs: &Limbs) -> [__m512i; LIMBS] {
 }
 
 #[inline]
-fn lanes(v: __m512i) -> [u64; LANES] {
+pub(crate) fn lanes(v: __m512i) -> [u64; LANES] {
     // SAFETY: __m512i is 64 bytes of plain integer data with no invalid bit
     // patterns.
     unsafe { std::mem::transmute(v) }

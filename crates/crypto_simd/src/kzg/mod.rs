@@ -16,7 +16,13 @@ mod cell_extender;
 mod challenge;
 mod cosets;
 mod domain;
+#[cfg(target_arch = "x86_64")]
+mod extension_kernel;
 mod fft;
+#[cfg(target_arch = "x86_64")]
+mod fft8;
+#[cfg(target_arch = "x86_64")]
+mod fr8;
 mod setup;
 mod trusted_setup;
 mod verify;
