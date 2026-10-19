@@ -6,11 +6,11 @@ use super::{
     TreeSpec,
     page_format::{PagePos, Subtree},
 };
-use crate::{merkle::ZERO_HASHES, types::B256};
+use crate::{B256, merkle::ZERO_HASHES};
 
 pub type PageId = u32;
 
-/// A column's page, carried as a type rather than a `const PAGE_NODES` because
+/// A list's page, carried as a type rather than a `const PAGE_NODES` because
 /// an associated const may not be an array length in a generic context
 /// (`error: generic parameters may not be used in const operations`).
 pub trait PageArray: 'static {
@@ -51,7 +51,7 @@ struct Segment {
     used: usize,
 }
 
-pub(super) struct PagePool<P: PageArray> {
+pub struct PagePool<P: PageArray> {
     segments: Vec<Segment>,
     /// Freed ids per segment kind: `[without children, with children]`.
     free: [Vec<PageId>; 2],
@@ -71,20 +71,6 @@ impl<P: PageArray> PagePool<P> {
         assert!(pages.is_power_of_two(), "PagePool: segment pages must be a power of two");
         pages
     };
-
-    pub(super) fn new() -> Self {
-        let mut pool = Self {
-            segments: Vec::with_capacity(MAX_SEGMENTS),
-            free: [Vec::new(), Vec::new()],
-            filling: [None, None],
-            zero_pages: [0; ZERO_HASHES.len()],
-            _page: PhantomData,
-        };
-        for depth in 0..ZERO_HASHES.len() {
-            pool.zero_pages[depth] = pool.alloc_zero(depth);
-        }
-        pool
-    }
 
     /// Pages are cut from the leaves up, so `depth` fixes the row count and
     /// whether the page has children, which are zero pages themselves.
@@ -202,6 +188,22 @@ impl<P: PageArray> PagePool<P> {
     pub(super) fn set_child(&mut self, id: PageId, j: usize, child: PageId) {
         let (segment, i) = Self::split(id);
         self.segments[segment].children_pages[i * P::LEN + j] = child;
+    }
+}
+
+impl<P: PageArray> Default for PagePool<P> {
+    fn default() -> Self {
+        let mut pool = Self {
+            segments: Vec::with_capacity(MAX_SEGMENTS),
+            free: [Vec::new(), Vec::new()],
+            filling: [None, None],
+            zero_pages: [0; ZERO_HASHES.len()],
+            _page: PhantomData,
+        };
+        for depth in 0..ZERO_HASHES.len() {
+            pool.zero_pages[depth] = pool.alloc_zero(depth);
+        }
+        pool
     }
 }
 

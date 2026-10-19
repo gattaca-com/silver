@@ -1,3 +1,5 @@
+pub use silver_hashing::HashFormat;
+
 use crate::{
     BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,
     InactivityId, LongtailId, PendingId, PreviousParticipationId, RandaoMixesId, SlashingsId,
@@ -510,12 +512,6 @@ impl Withdrawals {
             MIN_ACTIVATION_BALANCE
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum HashFormat {
-    Fixed,
-    Progressive,
 }
 
 /// A tree's SSZ byte length disagrees with the expected registry count —

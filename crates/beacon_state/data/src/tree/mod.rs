@@ -1,26 +1,15 @@
-mod chunk_bits;
-mod chunk_writes;
-mod flat;
-mod format;
 mod group;
 mod hashing_writer;
-mod list;
-mod page_format;
-mod pool;
-mod progressive_list;
 mod randao;
 mod roots;
-mod snapshot;
-mod store;
-mod subtree;
 mod view;
 
 #[cfg(test)]
+mod progressive_tests;
+#[cfg(test)]
 mod tests;
 
-use format::{MAX_SEGS, seg_off};
 pub use group::TreeGroup;
-pub use pool::PageArray;
 pub use randao::{
     RandaoMixes, RandaoMixesGroup, RandaoMixesId, RandaoMixesView, RandaoMixesWriteView,
 };
@@ -28,39 +17,14 @@ pub use roots::{
     BlockRoots, BlockRootsGroup, BlockRootsId, RootsView, RootsWriteView, StateRoots,
     StateRootsGroup, StateRootsId,
 };
+pub use silver_hashing::{PageArray, TreeSpec};
 pub use silver_ssz::scalar::SszScalar;
-pub use view::{TreeReader, TreeWriteView};
+pub use view::{TreeView, TreeWriteView};
 
 use crate::{
     ring::Id,
-    types::{B256, EPOCHS_PER_SLASHINGS_VECTOR, VALIDATOR_REGISTRY_LIMIT},
+    types::{B256, EPOCHS_PER_SLASHINGS_VECTOR},
 };
-
-pub type TreeView<'a, C> = TreeReader<'a, C>;
-
-/// A column's marker: its scalar `Val` plus a distinct type identity, so ring
-/// ids of different columns can't be mixed.
-pub trait TreeSpec {
-    type Val: SszScalar;
-    /// This column's COW page. Tunable per column: pointwise-written trees want
-    /// fewer nodes per page (less copied per dirty leaf), densely written ones
-    /// want more (fewer pages to share and free per fork).
-    type Page: PageArray;
-    /// The SSZ type's capacity: `N` for `Vector[T, N]`, the limit for
-    /// `List[T, N]`. Roots pad to its chunk depth regardless of how much the
-    /// tree currently materializes. Defaults to the registry limit — most
-    /// columns are registry-aligned.
-    const SSZ_LIMIT: usize = VALIDATOR_REGISTRY_LIMIT;
-    /// A list mixes its length into the root and can grow; a vector does
-    /// neither.
-    const IS_LIST: bool = true;
-
-    /// Geometry derived from `Val`/`Page` at compile time — these defaults
-    /// *are* the definition; columns never override them.
-    const VALS_PER_CHUNK: usize = <Self::Val as SszScalar>::VALS_PER_CHUNK;
-    const PAGE_NODES: usize = <Self::Page as PageArray>::LEN;
-    const SEG_OFF: [usize; MAX_SEGS + 1] = seg_off(Self::PAGE_NODES);
-}
 
 /// Tree markers — one zero-sized type per registry-aligned list, named
 /// (rather than a discriminated `Col<V, ID>`) so `type_name` reads cleanly in

@@ -6,10 +6,11 @@ use super::{
     page_format::Subtree,
     pool::{PageId, PagePool},
 };
-use crate::types::B256;
+use crate::B256;
 
-/// A committed fork's column tree: one root page per subtree. A page id names
-/// its whole subtree, so forks share every page they did not write.
+/// A committed fork's tree in a [`PagePool`]: one root page per subtree. A
+/// page id names its whole subtree, so forks share every page they did not
+/// write.
 ///
 /// Ownership: the base owns every page reachable from its roots, and a fork
 /// owns exactly its `allocated` pages.
@@ -25,34 +26,30 @@ pub struct PageSnapshot {
 impl PageSnapshot {
     /// Only correct during the ring's copy-grow: the original is retired and
     /// never released, so ownership of its allocated pages moves to the copy.
-    pub(super) fn clone_for_grow(&self) -> Self {
+    pub fn clone_for_grow(&self) -> Self {
         Self { roots: self.roots.clone(), allocated: self.allocated.clone(), ..*self }
     }
 
     /// Take `src`'s content without taking ownership of any page.
-    pub(super) fn mirror(&mut self, src: &PageSnapshot) {
+    pub fn mirror(&mut self, src: &PageSnapshot) {
         self.roots.clone_from(&src.roots);
         self.format = src.format;
         self.count = src.count;
     }
 
     /// Forget the mirrored content, so a load against this copies every page.
-    pub(super) fn unmirror(&mut self) {
+    pub fn unmirror(&mut self) {
         self.roots.clear();
     }
 
     #[inline]
-    pub(super) fn same_pages(&self, other: &PageSnapshot) -> bool {
+    pub fn same_pages(&self, other: &PageSnapshot) -> bool {
         self.format == other.format && self.roots == other.roots
     }
 
     /// Make this base `winner`'s tree, freeing the base pages the winner does
     /// not share.
-    pub(super) fn promote<C: TreeSpec>(
-        &mut self,
-        pool: &mut PagePool<C::Page>,
-        winner: &PageSnapshot,
-    ) {
+    pub fn promote<C: TreeSpec>(&mut self, pool: &mut PagePool<C::Page>, winner: &PageSnapshot) {
         let same_format = self.format == winner.format;
         for (s, sub) in self.format.subtrees::<C>().enumerate() {
             let new = winner.roots.get(s).copied().filter(|_| same_format);
@@ -64,11 +61,7 @@ impl PageSnapshot {
     /// Free this fork's allocated pages, except those `base` holds. Idempotent,
     /// as it clears `allocated`; `roots` stay, so racing readers stay in
     /// bounds.
-    pub(super) fn release<C: TreeSpec>(
-        &mut self,
-        pool: &mut PagePool<C::Page>,
-        base: &PageSnapshot,
-    ) {
+    pub fn release<C: TreeSpec>(&mut self, pool: &mut PagePool<C::Page>, base: &PageSnapshot) {
         let same_format = self.format == base.format;
         for &(n, id) in &self.allocated {
             if !same_format || base.page_of::<C>(pool, n as usize).0 != id {
@@ -76,6 +69,11 @@ impl PageSnapshot {
             }
         }
         self.allocated.clear();
+    }
+
+    #[inline]
+    pub fn owns_pages(&self) -> bool {
+        !self.allocated.is_empty()
     }
 
     #[inline]
@@ -89,7 +87,7 @@ impl PageSnapshot {
     }
 
     /// One root-to-page walk per leaf row, not per chunk.
-    pub(super) fn write_ssz<C: TreeSpec, W: Write>(
+    pub fn write_ssz<C: TreeSpec, W: Write>(
         &self,
         pool: &PagePool<C::Page>,
         w: &mut W,

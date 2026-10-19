@@ -9,7 +9,7 @@ use super::{
     snapshot::PageSnapshot,
     subtree::NodeRange,
 };
-use crate::{merkle::ZERO_HASHES, types::B256};
+use crate::{B256, merkle::ZERO_HASHES};
 
 pub(super) struct NodeStore<C: TreeSpec> {
     pub(super) nodes: Vec<B256>,
@@ -86,10 +86,10 @@ impl<C: TreeSpec> NodeStore<C> {
         }
     }
 
-    /// Commit the flat tree into `dst`, reusing `dst`'s allocations: clean
-    /// pages are `parent`'s, dirty ones get fresh pages, except all-zero
-    /// subtrees, which share the pool's zero page of their depth. A parent in
-    /// another format, or none, shares nothing.
+    /// Commit the flat tree into `dst`, reusing its buffers. Clean pages are
+    /// `parent`'s, dirty ones are new, and all-zero subtrees share the zero
+    /// page of their depth. A parent in another format, or none, shares
+    /// nothing.
     pub(super) fn commit(
         &mut self,
         format: TreeFormat,

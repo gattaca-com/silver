@@ -1,11 +1,10 @@
 use flux_profiler::timed;
-use silver_ssz::scalar::SszScalar;
 
 use super::{
     TreeSpec, format::TreeFormat, list::ListTree, pool::PagePool,
     progressive_list::ProgressiveListTree, snapshot::PageSnapshot, store::NodeStore,
 };
-use crate::types::{B256, HashFormat};
+use crate::{B256, HashFormat, SszScalar};
 
 pub enum FlatTree<C: TreeSpec> {
     List(ListTree<C>),
@@ -82,12 +81,7 @@ impl<C: TreeSpec> FlatTree<C> {
     /// `loaded` is the snapshot our content already matches, so only
     /// mismatched or dirtied pages get copied.
     #[timed]
-    pub(super) fn load(
-        &mut self,
-        pool: &PagePool<C::Page>,
-        loaded: &PageSnapshot,
-        target: &PageSnapshot,
-    ) {
+    pub fn load(&mut self, pool: &PagePool<C::Page>, loaded: &PageSnapshot, target: &PageSnapshot) {
         let format = target.format();
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
@@ -104,14 +98,14 @@ impl<C: TreeSpec> FlatTree<C> {
     }
 
     #[timed]
-    pub(super) fn to_snapshot(&mut self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
+    pub fn to_snapshot(&mut self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
         let mut snapshot = PageSnapshot::default();
         self.commit(pool, &mut snapshot, None);
         snapshot.allocated.clear();
         snapshot
     }
 
-    pub(super) fn commit(
+    pub fn commit(
         &mut self,
         pool: &mut PagePool<C::Page>,
         dst: &mut PageSnapshot,
@@ -121,7 +115,7 @@ impl<C: TreeSpec> FlatTree<C> {
         self.store_mut().commit(format, pool, dst, parent);
     }
 
-    pub(super) fn copy_from<D>(&mut self, src: &FlatTree<D>)
+    pub fn copy_from<D>(&mut self, src: &FlatTree<D>)
     where
         D: TreeSpec<Val = C::Val, Page = C::Page>,
     {

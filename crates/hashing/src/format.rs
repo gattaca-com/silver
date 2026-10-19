@@ -1,19 +1,18 @@
 use super::{TreeSpec, page_format::Subtree};
 use crate::{
+    B256,
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
         PROGRESSIVE_SEGMENT_START, fold_progressive_spine, progressive_segment_of_chunk,
         progressive_segments_for,
     },
-    types::B256,
 };
 
 pub(super) const MAX_SEGS: usize = 16;
 
-/// Page-aligned offsets of progressive container subtree roots, for a given
-/// page size. Only the *values* depend on the list; the length is fixed,
-/// which is what keeps this legal as a per-list associated const
-/// ([`TreeSpec::SEG_OFF`]).
+/// Where each progressive segment's internal nodes start in the flat tree,
+/// page-aligned for `page_nodes`. The length is fixed, so it can be a per-spec
+/// associated const ([`TreeSpec::SEG_OFF`]); only the values vary.
 pub(super) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
     let mut t = [0usize; MAX_SEGS + 1];
     let mut k = 1;
@@ -160,8 +159,8 @@ mod tests {
     fn seg_off_page_aligned_and_contiguous() {
         // Block k is `max(4^k, page_nodes)`: segments narrower than a page each
         // round up to one, and from the first segment wider than a page the
-        // block is the region itself. Checked across every page size a column
-        // may name, so tuning one column cannot break the geometry.
+        // block is the region itself. Checked across every page size a spec
+        // may name, so tuning one list cannot break the geometry.
         for page_nodes in [8, 16, 32, 64, 128, 256, 512, 1024] {
             let table = seg_off(page_nodes);
             for k in 0..MAX_SEGS {

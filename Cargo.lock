@@ -4952,6 +4952,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "silver_chain_spec",
+ "silver_hashing",
  "silver_log",
  "silver_ssz",
  "snap 1.1.1",
@@ -5201,6 +5202,8 @@ dependencies = [
 name = "silver_hashing"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "bytesize",
+ "flux-profiler",
  "hashtree-rs",
  "sha2-const-stable",
 ]

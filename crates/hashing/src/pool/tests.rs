@@ -2,11 +2,8 @@ use std::collections::HashSet;
 
 use super::{PageId, PagePool};
 use crate::{
-    tree::{
-        TreeSpec, format::TreeFormat, snapshot::PageSnapshot, store::NodeStore,
-        subtree::build_subtree_hashes,
-    },
-    types::B256,
+    B256, TreeSpec, format::TreeFormat, snapshot::PageSnapshot, store::NodeStore,
+    subtree::build_subtree_hashes,
 };
 
 /// Sixteen leaves in pages of four nodes: a root page over two page-level-1
@@ -75,7 +72,7 @@ fn sorted(mut ids: Vec<PageId>) -> Vec<PageId> {
 /// frees what `w` replaced, `a` keeps what `w` holds, `d` frees everything.
 #[test]
 fn release_frees_allocated_pages_the_winner_does_not_hold() {
-    let mut pool = PagePool::new();
+    let mut pool = PagePool::default();
     let mut base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
     let b0 = path(&pool, &base, 0);
     let b7 = path(&pool, &base, 7);
@@ -100,7 +97,7 @@ fn release_frees_allocated_pages_the_winner_does_not_hold() {
 /// all its pages. The next promote frees exactly what the new winner replaced.
 #[test]
 fn released_winner_frees_nothing_and_promote_frees_its_replaced_pages() {
-    let mut pool = PagePool::new();
+    let mut pool = PagePool::default();
     let mut base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
     let mut w = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
     base.promote::<P4>(&mut pool, &w);
@@ -119,7 +116,7 @@ fn released_winner_frees_nothing_and_promote_frees_its_replaced_pages() {
 /// promoting past it must not free the pool's zero page.
 #[test]
 fn promote_never_frees_a_zero_page() {
-    let mut pool = PagePool::new();
+    let mut pool = PagePool::default();
     let mut base = commit(&mut pool, None, &nodes(2, 1), &[], 2);
     let zero = pool.zero_page(1);
     assert_eq!(path(&pool, &base, 1)[2], zero, "padding shares the zero page");
@@ -136,7 +133,7 @@ fn promote_never_frees_a_zero_page() {
 
 #[test]
 fn release_is_idempotent() {
-    let mut pool = PagePool::new();
+    let mut pool = PagePool::default();
     let base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
     let mut dead = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
     let roots = dead.roots.clone();

@@ -41,8 +41,8 @@ impl DerefMut for Words {
     }
 }
 
-/// A set of leaf chunks. Two levels so draining and clearing scan only the
-/// words that were touched, and a wide span tests summary words.
+/// A set of leaf chunks in two levels. Draining and clearing visit only the
+/// touched words, and `any_in` over a wide range tests whole summary words.
 #[derive(Default)]
 pub(super) struct ChunkBits {
     words: Words,

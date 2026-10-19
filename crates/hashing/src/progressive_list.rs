@@ -6,12 +6,12 @@ use super::{
     subtree::{NodeRange, build_subtree_hashes, rehash_subtree},
 };
 use crate::{
+    B256,
     merkle::ZERO_HASHES,
     progressive::{PROGRESSIVE_SEGMENT_START, progressive_segment_of_chunk},
-    types::B256,
 };
 
-pub(super) struct ProgressiveListTree<C: TreeSpec> {
+pub struct ProgressiveListTree<C: TreeSpec> {
     pub(super) store: NodeStore<C>,
     pub(super) last_seg: u32,
 }
@@ -134,6 +134,3 @@ fn build_segment<C: TreeSpec>(
         non_zero,
     );
 }
-
-#[cfg(test)]
-mod tests;

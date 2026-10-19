@@ -18,7 +18,8 @@ impl ChunkWrites {
         self.unhashed.mark(chunk);
     }
 
-    /// Every chunk was rewritten with its hashes rebuilt.
+    /// Marks every chunk as written and already hashed, after a whole-tree
+    /// rewrite.
     #[inline]
     pub(super) fn mark_all_hashed(&mut self) {
         self.hashed.mark_all();

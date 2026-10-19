@@ -1,11 +1,7 @@
 use std::collections::HashSet;
 
 use super::{PagePos, Subtree};
-use crate::{
-    progressive::PROGRESSIVE_SEGMENT_START,
-    tree::{TreeSpec, format::TreeFormat},
-    types::B256,
-};
+use crate::{B256, TreeSpec, format::TreeFormat, progressive::PROGRESSIVE_SEGMENT_START};
 
 struct P4;
 impl TreeSpec for P4 {

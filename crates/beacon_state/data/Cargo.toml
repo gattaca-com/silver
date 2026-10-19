@@ -9,6 +9,7 @@ version.workspace = true
 silver_chain_spec.workspace = true
 silver_log.workspace = true
 silver_ssz.workspace = true
+silver_hashing.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 blst.workspace = true

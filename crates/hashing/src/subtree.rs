@@ -1,6 +1,6 @@
 use crate::{
+    B256,
     merkle::{ZERO_HASHES, hash_concat_many},
-    types::B256,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

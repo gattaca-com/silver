@@ -3,12 +3,12 @@ use std::ops::Range;
 use super::{TreeSpec, format::TreeFormat};
 use crate::progressive::PROGRESSIVE_SEGMENT_START;
 
-/// One Merkle tree of a list, cut into pages that forks can share.
+/// One binary subtree of a flat tree, and how it is cut into pages.
 ///
-/// A list's flat tree is one array: internal nodes in heap order, then the
-/// leaves. A fixed list is one subtree; a progressive list has one per segment.
-/// Each subtree is cut into pages, small mini-trees a commit copies or shares
-/// whole. Eight leaves, page size 4:
+/// The flat tree is one array: internal nodes in heap order, then the leaves.
+/// A fixed list is a single subtree; a progressive list has one per segment.
+/// A commit copies or shares each page, a small mini-tree, whole. Eight
+/// leaves in pages of four nodes:
 ///
 /// ```text
 /// flat tree:  _ 1 2 3 4 5 6 7 | 8 9 10 11 12 13 14 15
@@ -29,15 +29,15 @@ use crate::progressive::PROGRESSIVE_SEGMENT_START;
 ///   leaf pages: [_ [4] [8 9]]  [_ [5] [10 11]]  [_ [6] [12 13]]  [_ [7] [14 15]]
 /// ```
 ///
-/// - Each box is a page: the mini-tree under one node. Slot 1 holds that node,
-///   and slot 0 is unused.
-/// - A row is a page's nodes on one merkle level, like `[2 3]` or `[8 9]`. It
-///   is contiguous in the flat tree too, so a page copies row by row.
+/// - A box is a page: the mini-tree under one node. That node sits in slot 1;
+///   slot 0 is unused.
+/// - A row is a page's nodes on one merkle level, like `[2 3]` or `[8 9]`. Rows
+///   are contiguous in the flat tree too, so a page copies row by row.
 /// - Pages are cut from the leaves up, in page levels of equal height. Only the
 ///   root page can be shorter, when the height does not divide evenly.
 /// - A page level spans `log2(page size)` merkle levels. The page size is fixed
-///   per list by `TreeSpec::Page`, so a bigger tree gets more page levels, not
-///   taller ones.
+///   per list by `TreeSpec::Page`, so a taller tree gets more page levels, not
+///   taller pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Subtree {
     nodes_start: usize,

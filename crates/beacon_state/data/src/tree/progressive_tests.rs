@@ -1,6 +1,6 @@
 use silver_ssz::scalar::SszScalar;
 
-use super::super::{
+use super::{
     BalancesGroup, BalancesWriteView, Previous, TreeGroup,
     tests::{group, le_bytes},
 };

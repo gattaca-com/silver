@@ -5,11 +5,11 @@ use super::{
     subtree::{build_subtree_hashes, rehash_subtree},
 };
 use crate::{
+    B256,
     merkle::{ZERO_HASHES, hash_concat},
-    types::B256,
 };
 
-pub(super) struct ListTree<C: TreeSpec> {
+pub struct ListTree<C: TreeSpec> {
     pub(super) store: NodeStore<C>,
     pub(super) max_elements: usize,
 }

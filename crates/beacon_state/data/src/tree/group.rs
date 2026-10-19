@@ -4,11 +4,9 @@ use std::{
 };
 
 use flux_profiler::timed;
+use silver_hashing::{FlatTree, PagePool, PageSnapshot};
 
-use super::{
-    TreeSpec, TreeView, TreeWriteView, flat::FlatTree, hashing_writer::HashingWriter,
-    pool::PagePool, snapshot::PageSnapshot,
-};
+use super::{TreeSpec, TreeView, TreeWriteView, hashing_writer::HashingWriter};
 use crate::{
     ring::{Id, Ring, RingGroup},
     types::{B256, HashFormat, SLOTS_RING_N, TreeLenMismatch},
@@ -29,8 +27,7 @@ pub struct TreeGroup<C: TreeSpec> {
     /// `finalized`.
     finalized_id: Option<Id<Self>>,
     ring: Ring<Self>,
-    /// Flat writable head — the hot write path stays flat; committed forks are
-    /// paged.
+    /// Writes go to this flat tree; committed forks live in pages.
     writer: HashingWriter<C>,
     _marker: PhantomData<fn() -> C>,
 }
@@ -68,7 +65,7 @@ impl<C: TreeSpec> TreeGroup<C> {
         leaves: impl Iterator<Item = B256>,
         format: HashFormat,
     ) -> Self {
-        let mut pool = PagePool::new();
+        let mut pool = PagePool::default();
         let flat = FlatTree::from_leaves(cap, count, leaves, format);
         let (writer, finalized) = HashingWriter::new(flat, &mut pool);
         Self {
@@ -114,7 +111,7 @@ impl<C: TreeSpec> TreeGroup<C> {
         let parent_in_ring = parent.filter(|&p| Some(p) != *finalized_id);
         let (id, dst, parent_snap) = ring.roll_deriving(parent_in_ring);
 
-        debug_assert!(dst.allocated.is_empty(), "recycled slot still owns pages: not released");
+        debug_assert!(!dst.owns_pages(), "recycled slot still owns pages: not released");
         writer.commit(pool, dst, parent_snap.unwrap_or(finalized), id);
         id
     }

@@ -1,12 +1,17 @@
-use super::{TreeGroup, TreeSpec, flat::FlatTree, pool::PagePool, snapshot::PageSnapshot};
+use silver_hashing::{FlatTree, PagePool, PageSnapshot};
+
+use super::{TreeGroup, TreeSpec};
 use crate::ring::Id;
 
-/// A flat writable copy of one fork. `mirror` is what `tree` holds outside its
-/// uncommitted chunks, as the ring entry `mirror_of` (`None`: the base) had it.
-/// A mirror owns no pages, so an equal page id proves equal content only while
-/// the mirrored pages are live. Pages are freed only at finalize, and a mirror
-/// of a survivor or of the unchanged base names only live ids, so finalize
-/// unmirrors any other.
+/// The group's flat tree, plus the committed table it last matched.
+///
+/// `mirror` is `tree` outside its uncommitted chunks, as ring entry
+/// `mirror_of` (`None`: the base) committed it. A load diffs against it, so it
+/// copies only the pages that differ.
+///
+/// The mirror owns no pages, so an equal page id proves equal content only
+/// while those pages are live. Pages are freed only at finalize, which clears
+/// any mirror that is neither a survivor nor the unchanged base.
 pub(super) struct HashingWriter<C: TreeSpec> {
     tree: FlatTree<C>,
     mirror: PageSnapshot,
