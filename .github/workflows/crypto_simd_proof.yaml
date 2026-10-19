@@ -172,8 +172,8 @@ jobs:
         with:
           toolchain: nightly-2026-06-21
 
-      # Run BLS and KZG tests on every runner. On IFMA hosts, require kernel replay
-      # so a missing kernel cannot silently fall back to blst.
+      # Run BLS and KZG tests. On IFMA hosts, require SIMD acceleration to be present, so that
+      # a missing kernel fails the test. On non-IFMA hosts, skip the SIMD replay tests.
       - name: Run BLS replay and KZG tests
         env:
           IFMA: ${{ steps.cpu.outputs.ifma }}
