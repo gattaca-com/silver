@@ -12,7 +12,6 @@ base64.workspace = true
 blst.workspace = true
 buffa.workspace = true
 bytes.workspace = true
-c-kzg.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 flux-utils.workspace = true
@@ -53,6 +52,7 @@ thread_park = ["flux/park"]
 
 
 [dev-dependencies]
+c-kzg.workspace = true
 shared_memory = "0.12"
 tempfile = "3"
 

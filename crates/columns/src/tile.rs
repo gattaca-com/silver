@@ -866,7 +866,6 @@ impl Tile<SilverSpine> for DataColumnsTile {
     }
 
     fn try_init(&mut self, _adapter: &mut SpineAdapter<SilverSpine>) -> bool {
-        util::warm_kzg_settings();
         self.open_tcaches().expect("tcache wiring");
         true
     }

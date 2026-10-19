@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 blst.workspace = true
-c-kzg.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 fxhash.workspace = true
@@ -20,6 +19,7 @@ silver_log.workspace = true
 workspace = true
 
 [dev-dependencies]
+c-kzg.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
 rand.workspace = true
 tempfile = "3"

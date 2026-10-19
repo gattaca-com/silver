@@ -18,9 +18,7 @@ use std::{
 
 use c_kzg::{Blob, Bytes48, Cell, CkzgError, KzgProof, KzgSettings, ethereum_kzg_settings};
 use silver_common::{
-    column_util::{
-        CellScratch, KzgBatchEntry, KzgScratch, kzg_verify_batch_multi, warm_kzg_settings,
-    },
+    column_util::{CellScratch, KzgBatchEntry, KzgScratch, kzg_verify_batch_multi},
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 use silver_crypto_simd::{
@@ -164,7 +162,7 @@ fn blobs(sidecars: &[&[u8]]) -> Vec<Box<[u8; BYTES_PER_BLOB]>> {
 fn main() {
     assert!(simd_available(), "this CPU has no avx512ifma; crypto_simd would not use its kernel");
     let capture = ColumnFixtures::da().load();
-    warm_kzg_settings();
+    ethereum_kzg_settings(0);
 
     let (slot, largest) = capture
         .slots

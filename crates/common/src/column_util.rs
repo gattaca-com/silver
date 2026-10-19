@@ -212,13 +212,6 @@ pub fn verify_data_column_sidecar_kzg_proofs_gloas(
     kzg_verify_batch_multi(iter::once(entry), scratch)
 }
 
-/// Force c-kzg's lazy trusted-setup construction. Without this the first
-/// sidecar verified after boot absorbs the ~2s load inside its own
-/// validation, delaying that block's DA right after sync.
-pub fn warm_kzg_settings() {
-    c_kzg::ethereum_kzg_settings(0);
-}
-
 /// KZG inputs of one sidecar for `kzg_verify_batch_multi`. Caller-verified
 /// via `verify_data_column_sidecar{,_gloas}`: one commitment and one proof per
 /// cell.
