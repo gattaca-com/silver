@@ -291,7 +291,8 @@ input and output types supply their byte lengths. The external premises are
 described in the [trust list](#what-a-reader-must-trust). The verifier does not
 require `FrToBytesCorrect`.
 
-The specification dictionary supplies both external premises:
+[controls/ExtenderSpecInstance.lean](lean/controls/ExtenderSpecInstance.lean)
+instantiates the full result with the specification dictionary:
 
 ```lean
 import LeanBlsSimd.Kzg.Extender.Statements
@@ -834,6 +835,10 @@ Paths below are relative to `lean/controls/`.
 | `KzgExternalBoundary.lean` | Mutations violate each of the fourteen blst laws; `wrongScalarG1_rejected` proves `¬ G1DecoderCorrect wrongScalarG1` using the real generated decoder with SIMD off and a scalar observation that returns `some` infinity for invalid bytes requiring `none`. |
 | `KzgMathematical.lean` | Bit reversal, inverse coset-shift direction and inverse FFT scaling. |
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |
+| `ExtenderSpecInstance.lean` | The spec dictionary instantiates construction, canonicality, exact output bytes, specification errors and unchanged output on rejection. |
+| `ExtenderExternalBoundary.lean` | Wrong field bytes and failed serialization violate `FrToBytesCorrect` while preserving the reused `BlstCorrect` contract. |
+| `ExtenderMathematical.lean` | Extender input/output bit reversal, coset shifting, forward FFT direction and inverse FFT scaling at the blob size. |
+| `ExtenderLayout.lean` | First-half copying, the extension's cell-64 offset, rejection of noncanonical blobs and output preservation on rejection; generated decoding rejects an all-`ff` blob. |
 | `KzgStrictAxioms.lean` | The shared proof, concrete instance and all KZG negative controls use only the three standard axioms. |
 | `KzgSetupAxioms.lean`, `KzgRefinementAxioms.lean`, `KzgRepresentationAxioms.lean`, `KzgSpecBridgeAxioms.lean`, `KzgPolynomialAxioms.lean` | Scoped axiom checks for setup, refinement, representations, spec bridge and interpolation. |
 | `extraction-check.py` | Sixteen fixtures: unchanged output and numeric source-span changes pass; changed setup-row order, an added declaration, late BLS definitions (including attribute-prefixed constants), a wrong `full` count, an extender-body edit, and missing or duplicated verifier/extender entry points are rejected. |
@@ -843,3 +848,9 @@ For layer-specific build commands, see the [KZG scoped checks](lean/README.md#sc
 The pairing control negates the specification's Boolean result symbolically at
 valid inputs. Its Miller-loop `while` loops use `Lean.Loop.forIn`, opaque in Lean's
 logic, so the controls do not kernel-evaluate pairing or prove blst itself.
+
+The extender's mathematical controls distinguish the actual 4096-element
+transform stages using field-array witnesses. Its layout controls compare the
+generated copy loop and output-update function, plus mutations of the model's
+error branches. A further control constructs an extender and proves its generated
+decoder rejects an all-`ff` blob. They do not rerun a mutated Rust implementation.

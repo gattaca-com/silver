@@ -225,6 +225,13 @@ The [KZG controls table](../README.md#evidence-and-controls) describes each chec
 boundary, including the production G1 decoder control. Run the files through the
 common `controls/*.lean` loop.
 
+`ExtenderExternalBoundary.lean` separates serialization correctness from the
+shared `BlstCorrect` contract. `ExtenderMathematical.lean` checks the blob-sized
+transform steps; `ExtenderLayout.lean` checks copying and rejection behavior.
+`ExtenderSpecInstance.lean` applies the complete headline to the specification
+dictionary. The default `KzgStrictAxioms.lean` includes these controls and all nine
+generated entry points.
+
 After the Lean checks and extraction controls, run from the repository root:
 
 ```sh
