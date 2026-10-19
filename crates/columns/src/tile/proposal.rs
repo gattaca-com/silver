@@ -7,7 +7,7 @@ use silver_common::{
     TCacheProducer, TCacheRead, TProducer, TRead,
     block_contents::SignedBlockContents,
     column_util::{
-        CellScratch, KzgBatchEntry, KzgScratch, cell_bytes, data_column_sidecar_len,
+        CellScratch, KzgBatchEntry, KzgScratch, data_column_sidecar_len,
         fulu_header_and_inclusion_proof, kzg_verify_batch_multi, write_data_column_sidecar_fulu,
     },
     ssz_hash::hash_beacon_block_header_bytes,
@@ -117,16 +117,13 @@ impl ProposedBlocks {
         }
 
         for blob in 0..blob_count {
-            let cells = match self.cells.compute(contents.blob(blob)) {
-                Ok(cells) => cells,
-                Err(error) => {
-                    silver_log::error!(?error, slot, blob, "proposed blob has no cells");
-                    return None;
-                }
+            let Some(cells) = self.cells.compute(contents.blob(blob)) else {
+                silver_log::error!(slot, blob, "proposed blob has no cells");
+                return None;
             };
             let cell_at = DATA_COLUMN_SIDECAR_MIN + blob * BYTES_PER_CELL;
             for (sidecar, cell) in sidecars.iter_mut().zip(cells.iter()) {
-                sidecar[cell_at..cell_at + BYTES_PER_CELL].copy_from_slice(cell_bytes(cell));
+                sidecar[cell_at..cell_at + BYTES_PER_CELL].copy_from_slice(cell);
             }
         }
 

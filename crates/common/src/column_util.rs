@@ -18,7 +18,7 @@ use silver_common::{
         SidecarLayout, SignedBeaconBlockView,
     },
 };
-use silver_crypto_simd::kzg::CellBatchVerifier;
+use silver_crypto_simd::kzg::{self, CellBatchVerifier, CellExtender};
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -382,55 +382,33 @@ pub fn data_column_sidecar_prefix_fulu(
     prefix
 }
 
-pub fn cell_bytes(cell: &c_kzg::Cell) -> &[u8; BYTES_PER_CELL] {
-    // SAFETY: Cell is repr(C) over [u8; BYTES_PER_CELL].
-    unsafe { &*std::ptr::from_ref(cell).cast() }
+const _: () = assert!(NUMBER_OF_COLUMNS == kzg::CELLS_PER_EXT_BLOB);
+const _: () = assert!(BYTES_PER_BLOB == kzg::BYTES_PER_BLOB);
+const _: () = assert!(BYTES_PER_CELL == kzg::BYTES_PER_CELL);
+
+pub struct CellScratch {
+    extender: CellExtender,
+    cells: Box<[[u8; BYTES_PER_CELL]; NUMBER_OF_COLUMNS]>,
 }
-
-unsafe extern "C" {
-    fn compute_cells_and_kzg_proofs(
-        cells: *mut c_kzg::Cell,
-        proofs: *mut c_kzg::KzgProof,
-        blob: *const c_kzg::Blob,
-        settings: *const c_kzg::KzgSettings,
-    ) -> c_kzg::CkzgError;
-}
-
-const _: () = assert!(NUMBER_OF_COLUMNS == c_kzg::CELLS_PER_EXT_BLOB);
-const _: () = assert!(BYTES_PER_BLOB == c_kzg::BYTES_PER_BLOB);
-
-/// Reused output of `KzgSettings::compute_cells`, which boxes a fresh array
-/// per blob. It calls c-kzg's C entry point directly: the binding keeps it
-/// private, and `extern "C"` does not check its signature against c-kzg's, so
-/// re-check it on every c-kzg upgrade.
-pub struct CellScratch(Box<[c_kzg::Cell; NUMBER_OF_COLUMNS]>);
 
 impl Default for CellScratch {
     fn default() -> Self {
-        let cells = vec![c_kzg::Cell::default(); NUMBER_OF_COLUMNS].into_boxed_slice();
-        Self(cells.try_into().unwrap_or_else(|_| unreachable!()))
+        let cells = vec![[0; BYTES_PER_CELL]; NUMBER_OF_COLUMNS].into_boxed_slice();
+        Self {
+            extender: CellExtender::new(),
+            cells: cells.try_into().unwrap_or_else(|_| unreachable!()),
+        }
     }
 }
 
 impl CellScratch {
+    /// None exactly when some blob element is not below the BLS modulus.
     #[timed]
     pub fn compute(
         &mut self,
         blob: &[u8; BYTES_PER_BLOB],
-    ) -> Result<&[c_kzg::Cell; NUMBER_OF_COLUMNS], c_kzg::CkzgError> {
-        // SAFETY: Blob is repr(C) over [u8; BYTES_PER_BLOB]; null proofs are skipped.
-        let result = unsafe {
-            compute_cells_and_kzg_proofs(
-                self.0.as_mut_ptr(),
-                std::ptr::null_mut(),
-                blob.as_ptr().cast(),
-                c_kzg::ethereum_kzg_settings(0),
-            )
-        };
-        match result {
-            c_kzg::CkzgError::C_KZG_OK => Ok(&self.0),
-            error => Err(error),
-        }
+    ) -> Option<&[[u8; BYTES_PER_CELL]; NUMBER_OF_COLUMNS]> {
+        self.extender.compute(blob, &mut self.cells).then_some(&*self.cells)
     }
 }
 
@@ -763,7 +741,8 @@ mod tests {
         let blob = c_kzg::Blob::new([0u8; 131072]);
         let commitment = settings.blob_to_kzg_commitment(&blob).unwrap().to_bytes().into_inner();
         let commitments = [commitment, commitment].concat();
-        let cells = settings.compute_cells(&blob).unwrap();
+        let mut cell_scratch = CellScratch::default();
+        let cells = cell_scratch.compute(&blob).unwrap();
         let (_, proofs) = settings.compute_cells_and_kzg_proofs(&blob).unwrap();
 
         let block = SynthBlock::fulu(7, &commitments);
@@ -780,7 +759,7 @@ mod tests {
                 &header,
                 &inclusion_proof,
                 &commitments,
-                [cell_bytes(&cells[j]); 2].into_iter(),
+                [&cells[j]; 2].into_iter(),
                 [&proof; 2].into_iter(),
             );
 

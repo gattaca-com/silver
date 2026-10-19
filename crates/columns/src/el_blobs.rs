@@ -329,7 +329,7 @@ impl ElBlobFetcher {
             };
             for (row, entry) in response.present() {
                 match self.cell_scratch.compute(entry.blob) {
-                    Ok(computed) => cells.stage_el_row(
+                    Some(computed) => cells.stage_el_row(
                         context,
                         pending.fetch.domain,
                         needed,
@@ -339,7 +339,7 @@ impl ElBlobFetcher {
                         pending.read.seq(),
                         producers,
                     ),
-                    Err(error) => silver_log::error!(?error, "compute_cells failed"),
+                    None => silver_log::error!(row, "compute_cells failed"),
                 }
             }
         }

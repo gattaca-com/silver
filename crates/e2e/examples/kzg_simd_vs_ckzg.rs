@@ -16,17 +16,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use c_kzg::{Bytes48, Cell, ethereum_kzg_settings};
+use c_kzg::{Blob, Bytes48, Cell, CkzgError, KzgProof, KzgSettings, ethereum_kzg_settings};
 use silver_common::{
     column_util::{
-        CellScratch, KzgBatchEntry, KzgScratch, cell_bytes, kzg_verify_batch_multi,
-        warm_kzg_settings,
+        CellScratch, KzgBatchEntry, KzgScratch, kzg_verify_batch_multi, warm_kzg_settings,
     },
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 use silver_crypto_simd::{
     bls::simd_available,
-    kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB, CellExtender},
+    kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB},
 };
 use silver_e2e::da_capture::ColumnFixtures;
 use silver_metrics::table::{Column, Table};
@@ -110,6 +109,43 @@ impl CkzgScratch {
     }
 }
 
+unsafe extern "C" {
+    fn compute_cells_and_kzg_proofs(
+        cells: *mut Cell,
+        proofs: *mut KzgProof,
+        blob: *const Blob,
+        settings: *const KzgSettings,
+    ) -> CkzgError;
+}
+
+/// c-kzg's cells into a reused array, as silver computed them before using
+/// `silver_crypto_simd::kzg`. `KzgSettings::compute_cells` would box a fresh
+/// array per blob; the binding keeps this C entry point private, and
+/// `extern "C"` does not check its signature against c-kzg's.
+struct CkzgCells(Box<[Cell; CELLS_PER_EXT_BLOB]>);
+
+impl Default for CkzgCells {
+    fn default() -> Self {
+        let cells = vec![Cell::default(); CELLS_PER_EXT_BLOB].into_boxed_slice();
+        Self(cells.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+}
+
+impl CkzgCells {
+    fn compute(&mut self, blob: &[u8; BYTES_PER_BLOB]) -> Option<&[Cell; CELLS_PER_EXT_BLOB]> {
+        // SAFETY: Blob is repr(C) over [u8; BYTES_PER_BLOB]; null proofs are skipped.
+        let result = unsafe {
+            compute_cells_and_kzg_proofs(
+                self.0.as_mut_ptr(),
+                std::ptr::null_mut(),
+                blob.as_ptr().cast(),
+                ethereum_kzg_settings(0),
+            )
+        };
+        matches!(result, CkzgError::C_KZG_OK).then_some(&*self.0)
+    }
+}
+
 /// Blob b is the concatenation of cell b of columns 0 to 63.
 fn blobs(sidecars: &[&[u8]]) -> Vec<Box<[u8; BYTES_PER_BLOB]>> {
     let count = DataColumnSidecarFuluView::column(sidecars[0]).len() / BYTES_PER_CELL;
@@ -129,7 +165,6 @@ fn main() {
     assert!(simd_available(), "this CPU has no avx512ifma; crypto_simd would not use its kernel");
     let capture = ColumnFixtures::da().load();
     warm_kzg_settings();
-    let mut extender = CellExtender::new();
 
     let (slot, largest) = capture
         .slots
@@ -188,13 +223,13 @@ fn main() {
         all_blobs.extend(blobs(&sidecars));
     }
 
-    let mut ckzg_cells = CellScratch::default();
-    let mut cells = Box::new([[0u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]);
+    let mut ckzg_cells = CkzgCells::default();
+    let mut cell_scratch = CellScratch::default();
     for (b, blob) in all_blobs.iter().enumerate() {
         let expected = ckzg_cells.compute(blob).expect("c-kzg accepts a captured blob");
-        assert!(extender.compute(blob, &mut cells), "crypto_simd accepts blob {b}");
+        let cells = cell_scratch.compute(blob).expect("crypto_simd accepts a captured blob");
         for (k, cell) in cells.iter().enumerate() {
-            assert!(cell == cell_bytes(&expected[k]), "blob {b}, cell {k}");
+            assert!(*cell == expected[k].to_bytes(), "blob {b}, cell {k}");
         }
     }
     let ckzg = best_of(|| {
@@ -204,8 +239,7 @@ fn main() {
     });
     let ours = best_of(|| {
         for blob in &all_blobs {
-            assert!(extender.compute(blob, &mut cells));
-            black_box(&cells);
+            black_box(cell_scratch.compute(blob).unwrap());
         }
     });
     let per_blob = |d: Duration| d.as_secs_f64() * 1e6 / all_blobs.len() as f64;

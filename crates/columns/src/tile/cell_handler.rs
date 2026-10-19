@@ -10,8 +10,8 @@ use silver_common::{
         ColumnRef, CommitmentContext, ContextData, DataColumnCounters, HeaderValidationRequest,
         RetentionEvent, StoreError,
     },
-    column_util::{SidecarIdentity, cell_bytes, columns_of},
-    ssz_view::{BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF},
+    column_util::{SidecarIdentity, columns_of},
+    ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS},
 };
 
 use crate::{
@@ -171,7 +171,7 @@ impl CellHandler {
         domain: GossipDomain,
         columns: u128,
         row: usize,
-        cells: &[c_kzg::Cell; c_kzg::CELLS_PER_EXT_BLOB],
+        cells: &[[u8; BYTES_PER_CELL]; NUMBER_OF_COLUMNS],
         proofs: &[u8],
         request_id: u64,
         producers: &mut SilverSpineProducers,
@@ -203,7 +203,7 @@ impl CellHandler {
             else {
                 continue
             };
-            let cell = cell_bytes(&cells[column as usize]);
+            let cell = &cells[column as usize];
             match reference.stage(&mut self.reader, row, cell, proof) {
                 Ok(Some(pending)) => {
                     DataColumnCounters::ElCellsQueued.inc();
