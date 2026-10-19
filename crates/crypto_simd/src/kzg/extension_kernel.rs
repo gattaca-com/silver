@@ -8,7 +8,7 @@ use blst::blst_fr;
 use crate::kzg::{
     BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB,
     FIELD_ELEMENTS_PER_CELL,
-    blst_ops::fr_mul,
+    blst_ops::{fr_from_u64, fr_mul},
     fft8::Fft8,
     fr8::{Fr8, LANES, multiplier},
 };
@@ -34,7 +34,7 @@ impl ExtensionKernel {
         let n = shift_powers.len();
         let mut shift = Vec::with_capacity(n / LANES);
         let mut data = Vec::with_capacity(n / LANES);
-        let mut factors = [blst_fr::default(); LANES];
+        let mut factors = [fr_from_u64(0); LANES];
         let mut v = 0;
         while v < n / LANES {
             let mut lane = 0;
@@ -43,7 +43,7 @@ impl ExtensionKernel {
                 lane += 1;
             }
             shift.push(Fr8::load(&factors, 0));
-            data.push(Fr8::load(&[blst_fr::default(); LANES], 0));
+            data.push(Fr8::zero());
             v += 1;
         }
         Self { inverse: Fft8::new(inverse_roots, n), forward: Fft8::new(roots, n), shift, data }
@@ -58,7 +58,9 @@ impl ExtensionKernel {
         while v < self.data.len() {
             let (vector, below_r) = Fr8::from_bytes(blob, v * LANES * BYTES_PER_FIELD_ELEMENT);
             self.data[v] = vector;
-            valid &= below_r == 0xff;
+            if below_r != 0xff {
+                valid = false;
+            }
             v += 1;
         }
         valid

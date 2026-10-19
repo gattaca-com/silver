@@ -7,7 +7,10 @@ use std::arch::x86_64::{__m512i, _mm512_set_epi64};
 
 use blst::blst_fr;
 
-use crate::kzg::fr8::{Fr8, LANES, multiplier};
+use crate::kzg::{
+    blst_ops::fr_from_u64,
+    fr8::{Fr8, LANES, multiplier},
+};
 
 pub struct Fft8 {
     vectors: usize,
@@ -160,7 +163,7 @@ impl Fft8 {
 
 /// `multiplier(ω^(k·step))` for k = start + m % h, m < 8.
 fn stage_twiddles(roots: &[blst_fr], step: usize, start: usize, h: usize) -> [blst_fr; LANES] {
-    let mut twiddles = [blst_fr::default(); LANES];
+    let mut twiddles = [fr_from_u64(0); LANES];
     let mut m = 0;
     while m < LANES {
         twiddles[m] = multiplier(&roots[(start + m % h) * step]);

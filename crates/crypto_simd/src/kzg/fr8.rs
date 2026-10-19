@@ -190,6 +190,12 @@ fn transpose_in(limbs: &[[u64; LIMBS]; LANES]) -> [__m512i; LIMBS] {
 }
 
 impl Fr8 {
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn zero() -> Self {
+        Self([zero(); LIMBS])
+    }
+
     /// Lane `l` takes the limbs of `values[at + l]` as they are.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
