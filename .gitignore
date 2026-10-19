@@ -20,7 +20,8 @@ target/
 .vscode
 # LLMs
 .cursor
-.claude
+.claude/*
+!.claude/skills/
 .memsearch
 
 *.ssz
