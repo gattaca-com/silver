@@ -19,7 +19,7 @@ COPY . .
 # the justfile), so resolution must not drift in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/silver/target \
-    cargo build --release --locked --no-default-features --features bls_simd --bin silver && \
+    cargo build --release --locked --no-default-features --features crypto_simd --bin silver && \
     cp target/release/silver /usr/local/bin/silver
 
 FROM debian:bookworm-slim

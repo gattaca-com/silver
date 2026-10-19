@@ -6,8 +6,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-default = ["bls_simd"]
-bls_simd = ["silver_crypto_simd/simd"]
+default = ["crypto_simd"]
+crypto_simd = ["silver_crypto_simd/simd"]
 ef_tests = ["silver_common/test-util"]
 
 [dependencies]
