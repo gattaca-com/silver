@@ -1,7 +1,7 @@
 /-!
-# The AVX-512 intrinsics of `fp8.rs`
+# The AVX-512 intrinsics of `fp8.rs` and `fr8.rs`
 
-The trusted model of the twelve intrinsics that `crates/crypto_simd/src/bls/fp8.rs` calls.
+The trusted model of the thirteen intrinsics used by the BLS and KZG field kernels.
 Arithmetic and bitwise operations act independently on each 64-bit lane. Their definitions
 lift `UInt64` operations to the eight lanes of `M512`; constructors and masks also specify
 the lane order.
@@ -23,6 +23,7 @@ conventions below.
 | `_mm512_set1_epi64(a)`, `_mm512_setzero_si512()` | `a`, `0` |
 | `_mm512_cmpeq_epi64_mask(a, b)` | bit `l` of the mask is `a = b` |
 | `_mm512_mask_blend_epi64(k, a, b)` | `b` where bit `l` of `k` is set, else `a` |
+| `_mm512_permutex2var_epi64(a, index, b)` | lane `index[l] mod 8` of `a` or `b`, selected by bit 3 |
 
 The IFMA operands are truncated to their low 52 bits before the multiplication; the accumulator is
 not. Rust's `_mm512_set_epi64` names its first parameter `e0` but forwards it to lane 7 through
@@ -79,5 +80,10 @@ def _mm512_cmpeq_epi64_mask (a b : M512) : Mmask8 :=
 
 def _mm512_mask_blend_epi64 (k : Mmask8) (a b : M512) : M512 :=
   .ofFn fun l => if k.toNat.testBit l then b[l] else a[l]
+
+def _mm512_permutex2var_epi64 (a index b : M512) : M512 :=
+  .ofFn fun l =>
+    let j : Fin 8 := ⟨index[l].toNat % 8, Nat.mod_lt _ (by decide)⟩
+    if index[l].toNat.testBit 3 then b[j] else a[j]
 
 end LeanBlsSimd

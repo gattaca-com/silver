@@ -115,6 +115,15 @@ def core.core_arch.x86.avx512f._mm512_mask_blend_epi64 (k : Std.U8)
     (a b : core.core_arch.x86.__m512i) : Result core.core_arch.x86.__m512i :=
   ok (LeanBlsSimd._mm512_mask_blend_epi64 (UInt8.ofBitVec k.bv) a b)
 
+/-- [core::core_arch::x86::avx512f::_mm512_permutex2var_epi64]:
+    Source: '/rustc/library/core/src/../../stdarch/crates/core_arch/src/x86/avx512f.rs', lines 24132:0-24132:81
+    Name pattern: [core::core_arch::x86::avx512f::_mm512_permutex2var_epi64]
+    Visibility: public -/
+@[rust_fun "core::core_arch::x86::avx512f::_mm512_permutex2var_epi64"]
+def core.core_arch.x86.avx512f._mm512_permutex2var_epi64
+    (a index b : core.core_arch.x86.__m512i) : Result core.core_arch.x86.__m512i :=
+  ok (LeanBlsSimd._mm512_permutex2var_epi64 a index b)
+
 /-- [core::core_arch::x86::avx512f::_mm512_and_si512]:
     Source: '/rustc/library/core/src/../../stdarch/crates/core_arch/src/x86/avx512f.rs', lines 29551:0-29551:64
     Name pattern: [core::core_arch::x86::avx512f::_mm512_and_si512]

@@ -142,8 +142,32 @@ structure kzg.blst_ops.LincombScratch where
   scalars : alloc.vec.Vec (Array Std.U8 32#usize)
   pippenger : alloc.vec.Vec Std.U64
 
+/-- [silver_crypto_simd::kzg::fr8::Fr8]
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 44:0-44:33
+    Visibility: public -/
+@[reducible]
+def kzg.fr8.Fr8 := Array core.core_arch.x86.__m512i 5#usize
+
+/-- [silver_crypto_simd::kzg::fft8::Fft8]
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 15:0-22:1
+    Visibility: public -/
+structure kzg.fft8.Fft8 where
+  vectors : Std.Usize
+  wide : alloc.vec.Vec kzg.fr8.Fr8
+  stage2 : kzg.fr8.Fr8
+  stage4 : kzg.fr8.Fr8
+
+/-- [silver_crypto_simd::kzg::extension_kernel::ExtensionKernel]
+    Source: 'crates/crypto_simd/src/kzg/extension_kernel.rs', lines 18:0-24:1
+    Visibility: public -/
+structure kzg.extension_kernel.ExtensionKernel where
+  inverse : kzg.fft8.Fft8
+  forward : kzg.fft8.Fft8
+  shift : alloc.vec.Vec kzg.fr8.Fr8
+  data : alloc.vec.Vec kzg.fr8.Fr8
+
 /-- [silver_crypto_simd::kzg::cell_extender::CellExtender]
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 22:0-30:1
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 24:0-34:1
     Visibility: public -/
 structure kzg.cell_extender.CellExtender where
   roots : alloc.vec.Vec blst.blst_fr
@@ -152,6 +176,15 @@ structure kzg.cell_extender.CellExtender where
   shift_powers : alloc.vec.Vec blst.blst_fr
   evaluations : alloc.vec.Vec blst.blst_fr
   coefficients : alloc.vec.Vec blst.blst_fr
+  kernel : Option kzg.extension_kernel.ExtensionKernel
+
+/-- [silver_crypto_simd::kzg::fft8::LanePairs]
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 29:0-34:1 -/
+structure kzg.fft8.LanePairs where
+  upper : core.core_arch.x86.__m512i
+  lower : core.core_arch.x86.__m512i
+  first : core.core_arch.x86.__m512i
+  second : core.core_arch.x86.__m512i
 
 /-- [silver_crypto_simd::kzg::challenge::Preimage]
     Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 15:0-17:1

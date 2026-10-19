@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Extender.Basic
+import LeanBlsSimd.Kzg.Extender.Kernel.Refines
 import LeanBlsSimd.Kzg.Refines.Roots
 import LeanBlsSimd.Kzg.Refines.Fft
 import EthCryptographySpecs.Proofs.Kzg.Polynomials
@@ -108,8 +109,9 @@ private theorem inverse_roots_refinement (roots : Slice blst.blst_fr)
 
 -- Simplification descends through the 4096-element scratch vectors.
 set_option maxRecDepth 16000 in
-theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
-    ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
+theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
+    ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
+      initial.kernel.isSome = e.simdAvailable := by
   obtain ⟨rs, hrs, hrsval⟩ := roots_refinement_of_blst hblst cell_extender.LOG_BLOB
     (by simp [cell_extender.LOG_BLOB])
   obtain ⟨ext, hext, hextval⟩ := roots_refinement_of_blst hblst cell_extender.LOG_EXT_BLOB
@@ -132,22 +134,50 @@ theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
   have hcast : UScalar.cast .U64 FIELD_ELEMENTS_PER_BLOB = 4096#u64 := by
     apply UScalar.eq_of_val_eq
     simp [FIELD_ELEMENTS_PER_BLOB]
-  refine ⟨⟨rs, inv, frEncode (Fr.ofNat 4096).inverse, shift, scratch, scratch⟩, ?_, ?_⟩
-  · unfold cell_extender.CellExtender.new
+  have hshiftmodel : shift.val = ((Kzg.Model.roots 13).extract 0 4096).toList.map frEncode := by
+    have hextlen : ext.val.length = 8192 := by simp [hextval, Kzg.Model.roots]
+    rw [hshiftval]
+    simp only [List.resize, FIELD_ELEMENTS_PER_BLOB, UScalar.ofNatCore_val_eq,
+      Nat.zero_le, if_true, hextlen]
+    simp only [show 4096 - 8192 = 0 by decide, List.replicate_zero, List.append_nil]
+    rw [hextval, ← List.map_take]
+    simp only [_root_.Array.toList_extract, List.extract_eq_take_drop, Nat.sub_zero, List.drop_zero]
+  have hscratchlen : scratch.val.length = 4096 := by
+    simp [hscratchval, empty, alloc.vec.Vec.with_capacity, List.resize, FIELD_ELEMENTS_PER_BLOB]
+  let scalar : cell_extender.CellExtender :=
+    ⟨rs, inv, frEncode (Fr.ofNat 4096).inverse, shift, scratch, scratch, none⟩
+  have hscalar : StateInvariant scalar :=
+    ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, trivial⟩
+  have hnew : cell_extender.CellExtender.new =
+      (if e.simdAvailable then do
+        let kernel ← extension_kernel.ExtensionKernel.new
+          (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv)
+          (alloc.vec.Vec.deref shift) (frEncode (Fr.ofNat 4096).inverse)
+        ok { scalar with kernel := some kernel }
+      else ok scalar) := by
+    unfold cell_extender.CellExtender.new
     rw [hrs]
     simp only [bind_tc_ok, blst_ops.fr_from_u64, hblst.fr_u64]
     rw [hext]
     simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, hshift, hscratch, hinv, lift, hcast]
     simp only [bind_tc_ok, blst_ops.fr_inverse, hinverse]
-  · refine ⟨hrsval, hinvval, rfl, ?_, ?_, ?_⟩
-    · have hextlen : ext.val.length = 8192 := by simp [hextval, Kzg.Model.roots]
-      rw [hshiftval]
-      simp only [List.resize, FIELD_ELEMENTS_PER_BLOB, UScalar.ofNatCore_val_eq,
-        Nat.zero_le, if_true, hextlen]
-      simp only [show 4096 - 8192 = 0 by decide, List.replicate_zero, List.append_nil]
-      rw [hextval, ← List.map_take]
-      simp only [_root_.Array.toList_extract, List.extract_eq_take_drop, Nat.sub_zero, List.drop_zero]
-    · simp [hscratchval, empty, alloc.vec.Vec.with_capacity, List.resize, FIELD_ELEMENTS_PER_BLOB]
-    · simp [hscratchval, empty, alloc.vec.Vec.with_capacity, List.resize, FIELD_ELEMENTS_PER_BLOB]
+    rfl
+  cases hsimd : e.simdAvailable with
+  | false =>
+    exact ⟨scalar, by simp only [hnew, hsimd, Bool.false_eq_true, if_false],
+      hscalar, rfl⟩
+  | true =>
+    obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement hblst
+      (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv) (alloc.vec.Vec.deref shift)
+      (frEncode (Fr.ofNat 4096).inverse) hrsval hinvval hshiftmodel rfl
+    refine ⟨{ scalar with kernel := some kernel }, ?_, ?_, ?_⟩
+    · simp only [hnew, hsimd, if_true, hkernel, bind_tc_ok]
+    · exact ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, hki⟩
+    · rfl
+
+theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
+    ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
+  obtain ⟨initial, hnew, hinvariant, _⟩ := new_dispatch_refinement hblst
+  exact ⟨initial, hnew, hinvariant⟩
 
 end LeanBlsSimd.Kzg.Extender

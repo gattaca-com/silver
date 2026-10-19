@@ -33,7 +33,7 @@ theorem copy_cell_body (blob : Blob) (cells : Cells)
     (iter iter' : core.ops.range.Range Usize) (hk : iter.start.val < 64)
     (hn : core.iter.range.IteratorRange.next core.iter.range.StepUsize iter =
       ok (some iter.start, iter')) :
-    cell_extender.CellExtender.compute_loop0.body blob iter cells =
+    cell_extender.copy_blob_loop.body blob iter cells =
       ok (cont (iter', cells.set iter.start (blobCell blob iter.start.val hk))) := by
   let k := iter.start
   have hk' : k.val < 64 := hk
@@ -68,7 +68,7 @@ theorem copy_cell_body (blob : Blob) (cells : Cells)
     rw [scalar_mul_ok 64#usize 32#usize (by scalar_tac)]
     congr 1
   dsimp only [k] at hindex hadd hstart hcopy hback
-  simp only [cell_extender.CellExtender.compute_loop0.body, hn, bind_tc_ok,
+  simp only [cell_extender.copy_blob_loop.body, hn, bind_tc_ok,
     Function.uncurry_apply_pair, hindex, Array.to_slice_mut, lift, hbytes,
     hstart, hadd, hstop, hsrc, hcopy, hback]
   rfl
@@ -78,15 +78,15 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
     (hs : iter.start.val ≤ 64)
     (hc : ∀ k, k < iter.start.val → arrayBytes cells.val[k]! =
       (arrayBytes blob).extract (k*2048) ((k+1)*2048)) :
-    ∃ out, cell_extender.CellExtender.compute_loop0 iter blob cells = ok out ∧
+    ∃ out, cell_extender.copy_blob_loop iter blob cells = ok out ∧
       ∀ k, k < 64 → arrayBytes out.val[k]! =
         (arrayBytes blob).extract (k*2048) ((k+1)*2048) := by
   induction hrem : 64-iter.start.val generalizing cells iter with
   | zero =>
     have hs' : iter.start.val = 64 := by omega
     refine ⟨cells, ?_, by simpa [hs'] using hc⟩
-    rw [cell_extender.CellExtender.compute_loop0, loop.eq_1]
-    simp only [cell_extender.CellExtender.compute_loop0.body,
+    rw [cell_extender.copy_blob_loop, loop.eq_1]
+    simp only [cell_extender.copy_blob_loop.body,
       Refinement.next_ge iter (by omega), bind_tc_ok, Function.uncurry_apply_pair]
   | succ rem ih =>
     have hk : iter.start.val < 64 := by omega
@@ -104,11 +104,11 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
       · simpa [cells', Array.set, List.getElem!_set_ne, Ne.symm hke] using hc k (by omega)
     obtain ⟨out, ho, hp⟩ := ih cells' iter' (by simp [he', he]) (by omega) hc' (by omega)
     refine ⟨out, ?_, hp⟩
-    rw [cell_extender.CellExtender.compute_loop0, loop.eq_1]
+    rw [cell_extender.copy_blob_loop, loop.eq_1]
     simpa only [copy_cell_body blob cells iter iter' hk hn] using ho
 
 theorem copy_first_half (blob : Blob) (cells : Cells) :
-    ∃ out, cell_extender.CellExtender.compute_loop0
+    ∃ out, cell_extender.copy_blob_loop
         { start := 0#usize, «end» := 64#usize } blob cells = ok out ∧
       ∀ k, k < 64 → (cellBytes out)[k]! =
         (arrayBytes blob).extract (k*2048) ((k+1)*2048) := by
@@ -198,7 +198,7 @@ theorem output_refinement [e : KzgExternals] (hbytes : FrToBytesCorrect e)
     (blob : Blob) (cells : Cells) (values : _root_.Array Fr)
     (v : cell_extender.CellExtender) (hsize : values.size = 4096)
     (hvals : v.evaluations.val = values.toList.map frEncode) :
-    ∃ copied out, cell_extender.CellExtender.compute_loop0
+    ∃ copied out, cell_extender.copy_blob_loop
         { start := 0#usize, «end» := 64#usize } blob cells = ok copied ∧
       cell_extender.CellExtender.write_extension v copied = ok out ∧
       cellBytes out = _root_.Array.ofFn (n := 128) (fun i =>

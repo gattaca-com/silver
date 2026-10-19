@@ -17,6 +17,7 @@ def words (n : Usize) (x : Nat) : Aeneas.Std.Array U64 n :=
   ⟨(List.range n.val).map (fun i => ⟨BitVec.ofNat 64 (x / 2^(64*i))⟩), by simp⟩
 
 def frEncode (x : Fr) : blst.blst_fr := ⟨words 4#usize ((x.val * 2^256) % Fr.modulus)⟩
+instance rawFrInhabited : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 def frRead (x : blst.blst_fr) : Fr := Fr.ofNat (limbs x.l.val) * (Fr.ofNat (2^256)).inverse
 def fpEncode (x : Fp) : blst.blst_fp := ⟨words 6#usize ((x.val * 2^384) % Fp.modulus)⟩
 def fpRead (x : blst.blst_fp) : Fp := Fp.ofNat (limbs x.l.val) * (Fp.ofNat (2^384)).inverse

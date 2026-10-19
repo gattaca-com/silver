@@ -1,5 +1,6 @@
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Extender.Model
+import LeanBlsSimd.Kzg.Extender.Kernel.Basic
 
 open Aeneas Aeneas.Std Result
 open EthCryptographySpecs Bls Kzg
@@ -24,6 +25,9 @@ def StateInvariant (v : cell_extender.CellExtender) : Prop :=
   v.inverse_size = frEncode (Fr.ofNat 4096).inverse ∧
   v.shift_powers.val = ((Kzg.Model.roots 13).extract 0 4096).toList.map frEncode ∧
   v.evaluations.val.length = 4096 ∧
-  v.coefficients.val.length = 4096
+  v.coefficients.val.length = 4096 ∧
+  match v.kernel with
+  | none => True
+  | some kernel => Kernel.StateInvariant kernel
 
 end LeanBlsSimd.Kzg.Extender

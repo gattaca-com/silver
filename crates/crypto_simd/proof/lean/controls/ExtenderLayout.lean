@@ -80,7 +80,7 @@ def omitFirstHalfCopy (_blob : Blob) (cells : Cells) : Result Cells := ok cells
 
 private theorem copy_changes_first_byte (blob : Blob) (cells : Cells)
     (hdiff : ((cellBytes cells)[0]!)[0]! ≠ (arrayBytes blob)[0]!) :
-    cell_extender.CellExtender.compute_loop0
+    cell_extender.copy_blob_loop
       { start := 0#usize, «end» := 64#usize } blob cells ≠ omitFirstHalfCopy blob cells := by
   obtain ⟨out, hout, hfirst⟩ := copy_first_half blob cells
   intro he
@@ -92,7 +92,7 @@ private theorem copy_changes_first_byte (blob : Blob) (cells : Cells)
   exact hdiff hbyte
 
 theorem omitFirstHalfCopy_rejected :
-    cell_extender.CellExtender.compute_loop0
+    cell_extender.copy_blob_loop
       { start := 0#usize, «end» := 64#usize } (layoutBlob 0#u8) (layoutCells 255#u8) ≠
       omitFirstHalfCopy (layoutBlob 0#u8) (layoutCells 255#u8) := by
   apply copy_changes_first_byte

@@ -89,4 +89,18 @@ theorem spec_instance_nonvacuous :
   refine ⟨specExternals_correct.1, specExternals_fr_to_bytes_correct, ?_⟩
   exact @new_returns_ok specExternals specExternals_correct.1
 
+@[reducible] def specSimdExternals : KzgExternals :=
+  { specExternals with simdAvailable := true }
+
+theorem spec_instance_kernel_nonvacuous :
+    BlstCorrect specSimdExternals ∧ FrToBytesCorrect specSimdExternals ∧
+      ∃ initial, @cell_extender.CellExtender.new specSimdExternals = ok initial ∧
+        StateInvariant initial ∧ initial.kernel.isSome = true := by
+  have h := specExternals_correct.1
+  have hblst : BlstCorrect specSimdExternals :=
+    ⟨h.g2_decode, h.fr_bytes, h.fr_u64, h.fr_add, h.fr_sub, h.fr_mul, h.fr_inverse,
+      h.hash, h.g1_affine, h.g1_add, h.g1_neg, h.g2_neg, h.lincomb, h.pairing⟩
+  exact ⟨hblst, specExternals_fr_to_bytes_correct,
+    @new_dispatch_refinement specSimdExternals hblst⟩
+
 end LeanBlsSimd.Kzg.Extender

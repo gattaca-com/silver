@@ -16,14 +16,14 @@ private theorem shift_loop [e : KzgExternals] (h : BlstCorrect e)
     (hp : shiftPrefix.length = doneValues.length)
     (iter : core.ops.range.Range Usize) (hi : iter.start.val = doneValues.length)
     (he : iter.end.val = doneValues.length + remaining.length) :
-    ∃ result, cell_extender.CellExtender.compute_loop1 iter shifts out = ok result ∧
+    ∃ result, cell_extender.CellExtender.compute_loop iter shifts out = ok result ∧
       result.val = (doneValues ++ remaining.map (fun p => p.1 * p.2)).map frEncode := by
   induction remaining generalizing doneValues shiftPrefix out iter with
   | nil =>
     have hn := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
-    rw [cell_extender.CellExtender.compute_loop1, loop.eq_1]
-    simp only [cell_extender.CellExtender.compute_loop1.body, hn, bind_tc_ok,
+    rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
+    simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
       Function.uncurry_apply_pair]
   | cons p remaining ih =>
     rcases p with ⟨a, w⟩
@@ -44,15 +44,15 @@ private theorem shift_loop [e : KzgExternals] (h : BlstCorrect e)
       simp [out', alloc.vec.Vec.set, ho, hi, List.set_append_right]
     have hs' : shifts.val = ((shiftPrefix ++ [w]) ++ remaining.map Prod.snd).map frEncode := by
       simpa only [List.map_cons, List.append_assoc, List.singleton_append] using hs
-    have hbody : cell_extender.CellExtender.compute_loop1.body shifts iter out =
+    have hbody : cell_extender.CellExtender.compute_loop.body shifts iter out =
         ok (cont (iter', out')) := by
-      simp only [cell_extender.CellExtender.compute_loop1.body, hn, bind_tc_ok,
+      simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
         Function.uncurry_apply_pair, hindex, hshift, blst_ops.fr_mul, h.fr_mul, hmut, out']
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * w]) (shiftPrefix ++ [w]) out'
       hout' hs' (by simpa using hp) iter' (by simp [hi', hi])
       (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
     refine ⟨result, ?_, ?_⟩
-    · rw [cell_extender.CellExtender.compute_loop1, loop.eq_1]
+    · rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
       simp only [hbody]
       exact hloop
     · simpa [List.append_assoc] using hr
@@ -63,7 +63,7 @@ private theorem shift_arrays [e : KzgExternals] (h : BlstCorrect e)
     (hv : values.size = n) (hf : factors.size = n)
     (hc : coefficients.val = values.toList.map frEncode)
     (hs : shifts.val = factors.toList.map frEncode) :
-    ∃ out, cell_extender.CellExtender.compute_loop1
+    ∃ out, cell_extender.CellExtender.compute_loop
         { start := 0#usize, «end» := count } shifts coefficients = ok out ∧
       out.val = (_root_.Array.ofFn (n := n) fun i =>
         values[i.val]! * factors[i.val]!).toList.map frEncode := by
@@ -94,7 +94,7 @@ private theorem shift_extract [e : KzgExternals] (h : BlstCorrect e)
     (hv : values.size = n) (hf : n ≤ factors.size)
     (hc : coefficients.val = values.toList.map frEncode)
     (hs : shifts.val = (factors.extract 0 n).toList.map frEncode) :
-    ∃ out, cell_extender.CellExtender.compute_loop1
+    ∃ out, cell_extender.CellExtender.compute_loop
         { start := 0#usize, «end» := count } shifts coefficients = ok out ∧
       out.val = (_root_.Array.ofFn (n := n) fun i =>
         values[i.val]! * factors[i.val]!).toList.map frEncode := by
@@ -118,7 +118,7 @@ theorem shift_refinement [e : KzgExternals] (h : BlstCorrect e)
     (hv : values.size = 4096)
     (hc : coefficients.val = values.toList.map frEncode)
     (hs : shifts.val = ((Kzg.Model.roots 13).extract 0 4096).toList.map frEncode) :
-    ∃ out, cell_extender.CellExtender.compute_loop1
+    ∃ out, cell_extender.CellExtender.compute_loop
         { start := 0#usize, «end» := FIELD_ELEMENTS_PER_BLOB } shifts coefficients = ok out ∧
       out.val = (_root_.Array.ofFn (n := 4096) fun i =>
         values[i.val]! * (Kzg.Model.roots 13)[i.val]!).toList.map frEncode :=
