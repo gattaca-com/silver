@@ -22,8 +22,8 @@ use silver_common::{
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 use silver_crypto_simd::{
-    bls::simd_available,
     kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB},
+    simd_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 use silver_metrics::table::{Column, Table};

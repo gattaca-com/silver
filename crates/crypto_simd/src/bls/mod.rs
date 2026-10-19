@@ -46,6 +46,8 @@ use blst::{
 };
 pub use blst::{blst_p1_affine, blst_p2_affine};
 
+use crate::simd_available;
+
 pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
 const LANES: usize = 8;
@@ -59,20 +61,6 @@ const MIN_KERNEL_LANES: usize = 3;
 pub struct Membership {
     pub members: __mmask8,
     pub undecided: __mmask8,
-}
-
-/// Built without the `simd` feature, every point goes to blst, as on a CPU
-/// without the instructions.
-#[cfg(target_arch = "x86_64")]
-pub fn simd_available() -> bool {
-    cfg!(feature = "simd") &&
-        is_x86_feature_detected!("avx512f") &&
-        is_x86_feature_detected!("avx512ifma")
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn simd_available() -> bool {
-    false
 }
 
 /// `Some` iff blst accepts the encoding as a point of G1.

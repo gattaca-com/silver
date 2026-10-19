@@ -81,7 +81,7 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 59:0-62:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 61:0-64:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8

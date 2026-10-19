@@ -23,12 +23,15 @@ use blst::{blst_p2, blst_p2_add_or_double, blst_p2_generator};
 use g2_cases::{G2_INFINITY, G2_KINDS, G2Cases, G2Kind, compress_g2, uncompress_g2};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use silver_crypto_simd::bls::{
-    G2_COMPRESSED_LEN, blst_p2_affine,
-    constants::P_U64,
-    decompress_g2::{self, Batch},
-    fp8::LANES,
-    simd_available, uncompress_in_g2, uncompress_in_g2_blst,
+use silver_crypto_simd::{
+    bls::{
+        G2_COMPRESSED_LEN, blst_p2_affine,
+        constants::P_U64,
+        decompress_g2::{self, Batch},
+        fp8::LANES,
+        uncompress_in_g2, uncompress_in_g2_blst,
+    },
+    simd_available,
 };
 
 const VECTORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proof/decompress_g2_vectors.txt");
@@ -951,8 +954,9 @@ mod g1 {
     };
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
-    use silver_crypto_simd::bls::{
-        decompress, simd_available, uncompress_in_g1, uncompress_in_g1_blst,
+    use silver_crypto_simd::{
+        bls::{decompress, uncompress_in_g1, uncompress_in_g1_blst},
+        simd_available,
     };
 
     use super::{LANES, SEED, g2_cases, p_plus, p_word, small};

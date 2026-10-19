@@ -10,8 +10,9 @@ use std::{
 };
 
 use silver_common::ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView};
-use silver_crypto_simd::bls::{
-    COMPRESSED_LEN, simd_available, uncompress_in_g1, uncompress_in_g1_blst,
+use silver_crypto_simd::{
+    bls::{COMPRESSED_LEN, uncompress_in_g1, uncompress_in_g1_blst},
+    simd_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 

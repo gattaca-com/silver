@@ -353,7 +353,7 @@ def bls.decompress_g2.less_than_p
   bls.decompress_g2.less_than_p_loop x 6#usize
 
 /-- [silver_crypto_simd::bls::G2_COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 50:0-50:40
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 52:0-52:40
     Visibility: public -/
 @[global_simps, irreducible] def bls.G2_COMPRESSED_LEN : Std.Usize := 96#usize
 
@@ -2354,20 +2354,20 @@ def bls.decompress_g2.decompress
       ok { points := a1, on_curve := i1, valid := i7, undecided := i4 }
 
 /-- [silver_crypto_simd::bls::COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 49:0-49:37
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 51:0-51:37
     Visibility: public -/
 @[global_simps, irreducible] def bls.COMPRESSED_LEN : Std.Usize := 48#usize
 
 /-- [silver_crypto_simd::bls::LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 51:0-51:23 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 53:0-53:23 -/
 @[global_simps, irreducible] def bls.LANES : Std.Usize := 8#usize
 
 /-- [silver_crypto_simd::bls::MIN_KERNEL_LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 54:0-54:34 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 56:0-56:34 -/
 @[global_simps, irreducible] def bls.MIN_KERNEL_LANES : Std.Usize := 3#usize
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 118:4-127:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 106:4-115:5 -/
 @[rust_loop_body]
 def bls.decompress_g1_chunk_loop.body
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
@@ -2404,7 +2404,7 @@ def bls.decompress_g1_chunk_loop.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 118:4-127:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 106:4-115:5 -/
 @[rust_loop]
 def bls.decompress_g1_chunk_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -2418,7 +2418,7 @@ def bls.decompress_g1_chunk_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 115:0-128:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 103:0-116:1 -/
 def bls.decompress_g1_chunk
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
   (out : Slice (Option blst.blst_p1_affine)) :
@@ -2429,7 +2429,7 @@ def bls.decompress_g1_chunk
     out batch
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 102:12-104:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 90:12-92:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g1_loop0_loop0.body
@@ -2451,7 +2451,7 @@ def bls.uncompress_in_g1_loop0_loop0.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 102:12-104:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 90:12-92:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g1_loop0_loop0
@@ -2466,7 +2466,7 @@ def bls.uncompress_in_g1_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 96:4-107:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 84:4-95:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g1_loop0.body
@@ -2508,7 +2508,7 @@ def bls.uncompress_in_g1_loop0.body
   else ok (done (out, start))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 96:4-107:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 84:4-95:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g1_loop0
@@ -2523,7 +2523,7 @@ def bls.uncompress_in_g1_loop0
     (out, simd, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 108:4-111:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 96:4-99:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g1_loop1.body
@@ -2543,7 +2543,7 @@ def bls.uncompress_in_g1_loop1.body
   else ok (done out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 108:4-111:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 96:4-99:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g1_loop1
@@ -2556,7 +2556,7 @@ def bls.uncompress_in_g1_loop1
     (out, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 91:0-112:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 79:0-100:1
     Visibility: public -/
 def bls.uncompress_in_g1
   (inputs : Slice (Array Std.U8 48#usize))
@@ -2566,7 +2566,7 @@ def bls.uncompress_in_g1
   let i := Slice.len out
   let i1 := Slice.len inputs
   massert (i = i1)
-  let simd ← bls.simd_available
+  let simd ← simd_available
   let i2 := Slice.len inputs
   let i3 ← i2 / bls.LANES
   let «full» ← i3 * bls.LANES
@@ -2574,7 +2574,7 @@ def bls.uncompress_in_g1
   bls.uncompress_in_g1_loop1 inputs out1 start
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 172:4-174:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:4-162:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop0.body
   (chunk : Slice (Array Std.U8 96#usize))
@@ -2599,7 +2599,7 @@ def bls.decompress_g2_chunk_loop0.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 172:4-174:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:4-162:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -2613,7 +2613,7 @@ def bls.decompress_g2_chunk_loop0
     (iter, lanes)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 177:4-186:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 165:4-174:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop1.body
   (chunk : Slice (Array Std.U8 96#usize)) (batch : bls.decompress_g2.Batch)
@@ -2650,7 +2650,7 @@ def bls.decompress_g2_chunk_loop1.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 177:4-186:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 165:4-174:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -2665,7 +2665,7 @@ def bls.decompress_g2_chunk_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 170:0-187:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 158:0-175:1 -/
 def bls.decompress_g2_chunk
   (chunk : Slice (Array Std.U8 96#usize))
   (out : Slice (Option blst.blst_p2_affine)) :
@@ -2682,7 +2682,7 @@ def bls.decompress_g2_chunk
     batch
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:12-150:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop0.body
@@ -2704,7 +2704,7 @@ def bls.uncompress_in_g2_loop0_loop0.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:12-150:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop0
@@ -2719,7 +2719,7 @@ def bls.uncompress_in_g2_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:12-150:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop1.body
@@ -2741,7 +2741,7 @@ def bls.uncompress_in_g2_loop0_loop1.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:12-162:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:12-150:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop1
@@ -2756,7 +2756,7 @@ def bls.uncompress_in_g2_loop0_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 154:4-165:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 142:4-153:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0.body
@@ -2805,7 +2805,7 @@ def bls.uncompress_in_g2_loop0.body
   else ok (done out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 154:4-165:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 142:4-153:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0
@@ -2820,7 +2820,7 @@ def bls.uncompress_in_g2_loop0
     (out, simd, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 150:0-166:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 138:0-154:1
     Visibility: public -/
 def bls.uncompress_in_g2
   (inputs : Slice (Array Std.U8 96#usize))
@@ -2830,7 +2830,7 @@ def bls.uncompress_in_g2
   let i := Slice.len out
   let i1 := Slice.len inputs
   massert (i = i1)
-  let simd ← bls.simd_available
+  let simd ← simd_available
   bls.uncompress_in_g2_loop0 inputs out simd 0#usize
 
 end BlsScope
