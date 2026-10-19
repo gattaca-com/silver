@@ -48,7 +48,7 @@ pub(super) struct Proposal {
     pub(super) randao_reveal: [u8; 96],
     pub(super) graffiti: [u8; 32],
     pub(super) bid_policy: BidPolicy,
-    pub(super) builder_bids: bool,
+    pub(super) builder_config_hash: Option<B256>,
 }
 
 impl Proposal {
@@ -182,7 +182,7 @@ struct BidCommitment {
     /// SSZ `SignedExecutionPayloadBid`.
     signed_bid: Vec<u8>,
     /// Gwei.
-    value: u64,
+    value: u128,
     /// The parent payload's requests when building on it, else empty.
     parent_requests: Box<[u8]>,
     builds_on_full_parent: bool,
@@ -193,7 +193,7 @@ struct BidCommitment {
 struct WeighedBid<'a> {
     /// `builder_boost_factor` times the counted payment.
     weight: u128,
-    value: u64,
+    value: u128,
     entry: u32,
     signed_bid: &'a [u8],
 }
@@ -427,7 +427,7 @@ impl BeaconStateTile {
             return answer(producers, request_id, Ok(block));
         }
         if self.spec.is_gloas_at_slot(proposal.slot) {
-            if proposal.builder_bids {
+            if proposal.builder_config_hash.is_some() {
                 return self.ask_builder_bids(request_id, proposal, producers);
             }
             let block = self.produce_gloas_block(proposal, &[]);
@@ -1006,7 +1006,7 @@ impl BeaconStateTile {
                 let mut signed_bid = ((4 + signature.len()) as u32).to_le_bytes().to_vec();
                 signed_bid.extend_from_slice(signature);
                 bid.write_ssz(&mut signed_bid).expect("writes to a Vec");
-                (signed_bid, bid.value, None)
+                (signed_bid, u128::from(bid.value), None)
             }
             (None, None) => {
                 silver_log::info!(slot = proposal.slot, full, "no admitted bid on the branch");
@@ -1076,7 +1076,8 @@ impl BeaconStateTile {
             weight,
             "builder bid verified"
         );
-        Some(WeighedBid { weight, value: decoded.value, entry, signed_bid: bid.signed_bid })
+        let value = u128::from(decoded.value) + u128::from(decoded.execution_payment);
+        Some(WeighedBid { weight, value, entry, signed_bid: bid.signed_bid })
     }
 
     #[timed]
@@ -1153,7 +1154,7 @@ impl BeaconStateTile {
                 payload_at,
                 payload: Some(acquired.to_read()),
                 execution_payload_value: frame.block_value,
-                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: None,
             },
             payload: Some(acquired),
@@ -1220,7 +1221,7 @@ impl BeaconStateTile {
                 payload_at: (BEACON_BLOCK_FIXED + encoded.len()) as u32,
                 payload: None,
                 execution_payload_value: wei_from_gwei(commitment.value),
-                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: commitment.builder_entry,
             },
             payload: None,
@@ -1288,7 +1289,7 @@ impl BeaconStateTile {
                 payload_at: (BEACON_BLOCK_FIXED + body.ssz_len()) as u32,
                 payload: None,
                 execution_payload_value: *BuilderBidFuluView::value(bid),
-                consensus_block_value: wei_from_gwei(post_state.proposer_reward()),
+                consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: None,
             },
             payload: None,
@@ -1451,9 +1452,9 @@ fn local_payload(payload: &TRead) -> Option<LocalPayload> {
     })
 }
 
-fn wei_from_gwei(gwei: u64) -> [u8; 32] {
+fn wei_from_gwei(gwei: u128) -> [u8; 32] {
     let mut wei = [0; 32];
-    wei[..16].copy_from_slice(&(u128::from(gwei) * 1_000_000_000).to_le_bytes());
+    wei[..16].copy_from_slice(&(gwei * 1_000_000_000).to_le_bytes());
     wei
 }
 

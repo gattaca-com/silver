@@ -204,33 +204,38 @@ impl BuilderBids {
         }
     }
 
-    /// Only `http://` is served; past [`MAX_REQUESTS`] URLs a new one is
-    /// refused.
     fn pool_for(&mut self, url: &str) -> Option<usize> {
         if !url.starts_with("http://") {
             silver_log::warn!(url, "only http:// builder urls are served; no bid asked");
             return None;
         }
-        let at = match self.pools.iter().position(|pool| *pool.url == *url) {
-            Some(at) => at,
-            None if self.pools.len() < MAX_REQUESTS => {
-                let tokens = self.tokens.share_of(self.pools.len(), MAX_REQUESTS);
-                let capacity = BufferCapacity { read: 16 << 10, write: 8 << 10 };
-                let pool = HttpPool::new(
-                    Endpoint::Http(url.to_owned()),
-                    tokens,
-                    capacity,
-                    MAX_REQUESTS,
-                    self.timeout,
-                );
-                self.pools.push(BuilderPool { url: url.into(), pool });
-                self.pools.len() - 1
-            }
-            None => {
+        if let Some(at) = self.pools.iter().position(|pool| *pool.url == *url) {
+            return Some(at);
+        }
+        let at = if self.pools.len() < MAX_REQUESTS {
+            self.pools.len()
+        } else {
+            let Some(at) = self.pools.iter().position(|pool| pool.pool.is_idle()) else {
                 silver_log::warn!(url, "too many builder urls; no bid asked");
                 return None;
-            }
+            };
+            at
         };
+        let tokens = self.tokens.share_of(at, MAX_REQUESTS);
+        let capacity = BufferCapacity { read: 16 << 10, write: 8 << 10 };
+        let pool = HttpPool::new(
+            Endpoint::Http(url.to_owned()),
+            tokens,
+            capacity,
+            MAX_REQUESTS,
+            self.timeout,
+        );
+        let builder = BuilderPool { url: url.into(), pool };
+        if at == self.pools.len() {
+            self.pools.push(builder);
+        } else {
+            self.pools[at] = builder;
+        }
         Some(at)
     }
 }
@@ -454,6 +459,54 @@ mod tests {
         assert!(bids.request(&request(), BuilderConfig::parse(&body).unwrap()));
         assert_eq!(answered(&mut bids, &mut readiness), (77, Vec::new()));
         assert!(asked.elapsed() >= timeout);
+    }
+
+    #[test]
+    fn completed_pools_are_reused_for_new_builder_urls() {
+        let (url, _received) = builder(false);
+        let mut readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
+
+        for index in 0..MAX_REQUESTS + 2 {
+            let body = config(0, 100, &[entry(&format!("{url}/relay/{index}"), [0, 0, 100])]);
+            assert!(bids.request(&request(), BuilderConfig::parse(&body).unwrap()), "{index}");
+            let (id, frame) = answered(&mut bids, &mut readiness);
+            assert_eq!(id, 77);
+            assert_eq!(BuilderBid::iter(&frame).count(), 1);
+            assert!(bids.pools.len() <= MAX_REQUESTS);
+        }
+    }
+
+    #[test]
+    fn busy_pools_survive_until_all_requests_time_out() {
+        let (url, _received) = builder(true);
+        let mut readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_millis(50));
+        let mut request = request();
+        for index in 0..MAX_REQUESTS {
+            request.request_id = index as u64;
+            let body = config(0, 100, &[entry(&format!("{url}/{index}"), [0, 0, 100])]);
+            assert!(bids.request(&request, BuilderConfig::parse(&body).unwrap()));
+        }
+        let body = config(0, 100, &[entry(&format!("{url}/new"), [0, 0, 100])]);
+        assert!(!bids.request(&request, BuilderConfig::parse(&body).unwrap()));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut answered = Vec::new();
+        while !bids.rounds.is_empty() {
+            assert!(Instant::now() < deadline, "requests did not time out");
+            readiness.wait(Duration::from_millis(5));
+            bids.spin(readiness.events(), &mut |id, frame| {
+                assert!(frame.is_empty());
+                answered.push(id);
+            });
+        }
+        answered.sort_unstable();
+        assert_eq!(answered, (0..MAX_REQUESTS as u64).collect::<Vec<_>>());
+        assert!(bids.request(&request, BuilderConfig::parse(&body).unwrap()));
+        assert_eq!(bids.pools.len(), MAX_REQUESTS);
     }
 
     #[test]

@@ -118,8 +118,9 @@ pub enum BeaconApiRequest {
         randao_reveal: [u8; 96],
         graffiti: [u8; 32],
         bid_policy: BidPolicy,
-        /// The request names builders to ask for bids.
-        builder_bids: bool,
+        /// Hash of the request's SSZ builder configuration, when it names
+        /// builders.
+        builder_config_hash: Option<B256>,
     },
     LockBlindedBlock {
         request_id: u64,

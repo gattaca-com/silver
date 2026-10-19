@@ -303,6 +303,10 @@ impl HttpPool {
             self.connections.len() < self.max_connections
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.connections.iter().all(PooledConnection::is_free)
+    }
+
     pub fn enqueue(&mut self, id: u64, request: &ClientRequest<'_>, registry: &Registry) {
         if let Some(conn) = self.connections.iter_mut().find(|c| c.is_free()) {
             conn.enqueue(id, request, registry);

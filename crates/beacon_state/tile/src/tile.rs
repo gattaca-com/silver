@@ -359,6 +359,7 @@ impl BeaconStateTile {
             "bs_boundary_processing",
             TReadMode::Sliding,
         )?;
+        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::Control]);
         self.reader.open(TCacheId::StorageDelivery, "bs_storage_delivery", TReadMode::Sliding)?;
         self.reader.open(TCacheId::ControlSlot, "bs_control_slot", TReadMode::Strict)
     }
@@ -939,7 +940,7 @@ impl BeaconStateTile {
                 randao_reveal,
                 graffiti,
                 bid_policy,
-                builder_bids,
+                builder_config_hash,
             } => {
                 let parent_root = self.head_block_root();
                 let proposal = Proposal {
@@ -948,7 +949,7 @@ impl BeaconStateTile {
                     randao_reveal,
                     graffiti,
                     bid_policy,
-                    builder_bids,
+                    builder_config_hash,
                 };
                 self.produce_block(request_id, proposal, producers)
             }

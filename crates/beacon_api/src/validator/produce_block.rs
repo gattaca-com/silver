@@ -3,6 +3,7 @@ use silver_beacon_state_data::{Slot, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BidPolicy, PayloadFrame, ProduceBlockFailure, ProducedBlock, TCacheReader,
     json_fields::{parse_hex, parse_uint64},
+    merkle::sha256,
 };
 use silver_pbs::BuilderConfig;
 
@@ -136,7 +137,7 @@ impl ProduceBlockRequest {
             randao_reveal: self.randao_reveal,
             graffiti: self.graffiti,
             bid_policy: self.bid_policy,
-            builder_bids: self.builder_config.is_some(),
+            builder_config_hash: self.builder_config.as_deref().map(sha256),
         }
     }
 
@@ -426,10 +427,11 @@ mod tests {
         assert_eq!(request.bid_policy, BidPolicy { min_bid: 7, builder_boost_factor: 150 });
         assert_eq!(request.slot, SLOT + 1);
         assert_eq!(request.builder_config.as_deref(), Some(&body[..]), "held for the bid requests");
-        let BeaconApiRequest::ProduceBlock { builder_bids, .. } = request.state_request(1) else {
+        let BeaconApiRequest::ProduceBlock { builder_config_hash, .. } = request.state_request(1)
+        else {
             unreachable!()
         };
-        assert!(builder_bids);
+        assert_eq!(builder_config_hash, Some(sha256(&body)));
 
         let body = builder_config(7, 150, &[]);
         let (outcome, _) = post_v4(&ctx, &v4_query(), Some("gloas"), Some(SSZ_MEDIA_TYPE), &body);
@@ -448,6 +450,36 @@ mod tests {
         assert_eq!(request.builder_url(0), Some("http://b:18550"));
         assert_eq!(request.builder_url(1), None, "a header break is not echoed");
         assert_eq!(request.builder_url(2), None, "no such entry");
+    }
+
+    #[test]
+    fn proposal_cache_identity_covers_every_builder_setting() {
+        let entries = [builder_entry(b"http://a"), builder_entry(b"http://b")];
+        let identity = |entries: &[Vec<u8>; 2], id| {
+            let offsets = [8u32, 8 + entries[0].len() as u32].map(u32::to_le_bytes).concat();
+            let body = builder_config(0, 100, &[offsets, entries.concat()].concat());
+            let (outcome, _) =
+                post_v4(&gloas_ctx(), &v4_query(), Some("gloas"), Some(SSZ_MEDIA_TYPE), &body);
+            let Outcome::AwaitingProducedBlock(request) = outcome else { panic!("{outcome:?}") };
+            let BeaconApiRequest::ProduceBlock { builder_config_hash, .. } =
+                request.state_request(id)
+            else {
+                unreachable!()
+            };
+            builder_config_hash.unwrap()
+        };
+        let original = identity(&entries, 1);
+        assert_eq!(original, identity(&entries, 2));
+        assert_ne!(original, identity(&[entries[1].clone(), entries[0].clone()], 1));
+        assert_ne!(original, identity(&[builder_entry(b"http://c"), entries[1].clone()], 1));
+        for offset in [12, 20, 28] {
+            let mut changed = entries.clone();
+            changed[0][offset..offset + 8].copy_from_slice(&7u64.to_le_bytes());
+            assert_ne!(original, identity(&changed, 1));
+        }
+        let mut changed = entries.clone();
+        changed[0].extend_from_slice(&[3; 48]);
+        assert_ne!(original, identity(&changed, 1));
     }
 
     #[test]
