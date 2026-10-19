@@ -3,7 +3,8 @@ pub mod block_contents;
 pub mod body_offsets;
 pub mod merkle;
 pub mod progressive;
-pub mod scalar;
 pub mod ssz_hash;
 pub mod ssz_hash_gloas;
 pub mod ssz_view;
+
+pub use silver_hashing::scalar;

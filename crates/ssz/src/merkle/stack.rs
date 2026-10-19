@@ -3,9 +3,7 @@
 
 use flux::utils::ArrayVec;
 
-use super::hash::{
-    B256, ZERO_HASHES, ZERO_HASHES_LEN, const_hash_concat, hash_concat, mix_in_length,
-};
+use super::hash::{B256, ZERO_HASHES, const_hash_concat, hash_concat, mix_in_length};
 
 #[inline]
 const fn depth_for(capacity: usize) -> u8 {
@@ -18,7 +16,7 @@ const fn depth_for(capacity: usize) -> u8 {
 /// `Default` yields capacity 1 (a single-leaf tree).
 #[derive(Clone, Copy, Default)]
 pub struct MerkleStack {
-    stack: ArrayVec<(u8, B256), ZERO_HASHES_LEN>,
+    stack: ArrayVec<(u8, B256), { ZERO_HASHES.len() }>,
     target_depth: u8,
 }
 

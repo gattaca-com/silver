@@ -15,6 +15,7 @@ members = [
   "crates/discovery",
   "crates/e2e",
   "crates/gossip",
+  "crates/hashing",
   "crates/httpcore",
   "crates/log",
   "crates/engine_api",
@@ -91,6 +92,7 @@ silver_log = { path = "crates/log" }
 silver_metrics = { path = "crates/metrics" }
 silver_slashing = { path = "crates/slashing" }
 silver_ssz = { path = "crates/ssz" }
+silver_hashing = { path = "crates/hashing" }
 silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }

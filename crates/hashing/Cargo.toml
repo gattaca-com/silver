@@ -1,0 +1,13 @@
+[package]
+name = "silver_hashing"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+hashtree-rs.workspace = true
+sha2-const-stable.workspace = true
+
+[lints]
+workspace = true

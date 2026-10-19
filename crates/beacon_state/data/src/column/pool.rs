@@ -6,10 +6,7 @@ use super::{
     ColumnSpec,
     page_format::{PagePos, Subtree},
 };
-use crate::{
-    merkle::{ZERO_HASHES, ZERO_HASHES_LEN},
-    types::B256,
-};
+use crate::{merkle::ZERO_HASHES, types::B256};
 
 pub type PageId = u32;
 
@@ -62,7 +59,7 @@ pub(super) struct PagePool<P: PageArray> {
     filling: [Option<usize>; 2],
     /// The all-zero subtree's page per depth, like `ZERO_HASHES`. Never freed:
     /// no fork owns it.
-    zero_pages: [PageId; ZERO_HASHES_LEN],
+    zero_pages: [PageId; ZERO_HASHES.len()],
     _page: PhantomData<fn() -> P>,
 }
 
@@ -80,10 +77,10 @@ impl<P: PageArray> PagePool<P> {
             segments: Vec::with_capacity(MAX_SEGMENTS),
             free: [Vec::new(), Vec::new()],
             filling: [None, None],
-            zero_pages: [0; ZERO_HASHES_LEN],
+            zero_pages: [0; ZERO_HASHES.len()],
             _page: PhantomData,
         };
-        for depth in 0..ZERO_HASHES_LEN {
+        for depth in 0..ZERO_HASHES.len() {
             pool.zero_pages[depth] = pool.alloc_zero(depth);
         }
         pool

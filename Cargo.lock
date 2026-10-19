@@ -5198,6 +5198,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "silver_hashing"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "hashtree-rs",
+ "sha2-const-stable",
+]
+
+[[package]]
 name = "silver_httpcore"
 version = "0.1.0-alpha.2"
 dependencies = [
@@ -5337,9 +5345,9 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "flux",
  "flux-profiler",
- "hashtree-rs",
  "sha2",
  "sha2-const-stable",
+ "silver_hashing",
  "thiserror 1.0.69",
 ]
 
