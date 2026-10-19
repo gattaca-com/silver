@@ -195,7 +195,7 @@ fn fft_timing() {
     assert!(simd_available(), "this CPU has no avx512ifma");
     let reps = 50;
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 2);
-    println!("{:<34} {:>10}", "best of 50", "µs");
+    println!("{:<40} {:>10}", "best of 50", "µs");
     for log_n in [6, MAX_LOG] {
         let n = 1 << log_n;
         let roots = roots_of_unity(log_n);
@@ -228,10 +228,10 @@ fn fft_timing() {
                 }
             }
         });
-        println!("{:<34} {scalar:>10.1}", format!("scalar fft, n = {n}"));
-        println!("{:<34} {scalar_inverse:>10.1}", format!("scalar inverse_fft, n = {n}"));
-        println!("{:<34} {kernel_only:>10.1}", format!("kernel dit, n = {n}"));
-        println!("{:<34} {converted:>10.1}", format!("kernel from_bytes+dit+to_bytes, n = {n}"));
+        println!("{:<40} {scalar:>10.1}", format!("scalar fft, n = {n}"));
+        println!("{:<40} {scalar_inverse:>10.1}", format!("scalar inverse_fft, n = {n}"));
+        println!("{:<40} {kernel_only:>10.1}", format!("kernel dit, n = {n}"));
+        println!("{:<40} {converted:>10.1}", format!("kernel from_bytes+dit+to_bytes, n = {n}"));
     }
 
     let random: Vec<_> = (0..4096).map(|_| fr_to_bytes(&random_fr(&mut rng))).collect();
@@ -241,6 +241,6 @@ fn fft_timing() {
     let mut scalar = CellExtender::without_kernel();
     let with_kernel = best_micros(reps, || assert!(kernel.compute(&blob, black_box(&mut cells))));
     let without = best_micros(reps, || assert!(scalar.compute(&blob, black_box(&mut cells))));
-    println!("{:<34} {without:>10.1}", "CellExtender::compute, scalar");
-    println!("{:<34} {with_kernel:>10.1}", "CellExtender::compute, kernel");
+    println!("{:<40} {without:>10.1}", "CellExtender::compute, scalar");
+    println!("{:<40} {with_kernel:>10.1}", "CellExtender::compute, kernel");
 }
