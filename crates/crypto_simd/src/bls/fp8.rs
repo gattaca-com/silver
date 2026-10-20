@@ -110,6 +110,17 @@ fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m51
     }
 }
 
+/// `t[2i + 1..] += a_i · a[i + 1..]`: the products of row `i` above the
+/// diagonal.
+#[target_feature(enable = "avx512f,avx512ifma")]
+#[inline]
+fn square_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], i: usize) {
+    for j in i + 1..LIMBS {
+        t[i + j] = _mm512_madd52lo_epu64(t[i + j], a[i], a[j]);
+        t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], a[i], a[j]);
+    }
+}
+
 /// `(t + lo(q·m₀)) >> 52` for any q with q·m₀ ≡ −t (mod 2^52), without the
 /// product. Both are `t >> 52` plus one if the low 52 bits of `t` are
 /// nonzero, and both wrap alike, so they agree on every `t`.
@@ -251,13 +262,11 @@ impl Fp8 {
         out
     }
 
-    /// Montgomery product: the full 16-limb product first, then eight
-    /// reduction rows, every index a constant so the accumulator stays in
-    /// registers.
+    /// Montgomery product: the full 16-limb product, then `reduce`. Every row
+    /// takes a constant index, so neither phase indexes the accumulator at run
+    /// time.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let p = splat_limbs(&P);
-        let pinv = splat(P_INV52);
         let mut t = [zero(); 2 * LIMBS + 1];
         muladd_row(&mut t, &self.0, rhs.0[0], 0);
         muladd_row(&mut t, &self.0, rhs.0[1], 1);
@@ -267,6 +276,39 @@ impl Fp8 {
         muladd_row(&mut t, &self.0, rhs.0[5], 5);
         muladd_row(&mut t, &self.0, rhs.0[6], 6);
         muladd_row(&mut t, &self.0, rhs.0[7], 7);
+        Self::reduce(t)
+    }
+
+    /// The limbs of `self.mul(self)` from 72 products instead of 128: those
+    /// above the diagonal once, doubled, then the diagonal.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn square(&self) -> Self {
+        let a = &self.0;
+        let mut t = [zero(); 2 * LIMBS + 1];
+        square_row(&mut t, a, 0);
+        square_row(&mut t, a, 1);
+        square_row(&mut t, a, 2);
+        square_row(&mut t, a, 3);
+        square_row(&mut t, a, 4);
+        square_row(&mut t, a, 5);
+        square_row(&mut t, a, 6);
+        for k in 0..2 * LIMBS + 1 {
+            t[k] = _mm512_add_epi64(t[k], t[k]);
+        }
+        for i in 0..LIMBS {
+            t[2 * i] = _mm512_madd52lo_epu64(t[2 * i], a[i], a[i]);
+            t[2 * i + 1] = _mm512_madd52hi_epu64(t[2 * i + 1], a[i], a[i]);
+        }
+        Self::reduce(t)
+    }
+
+    /// Montgomery-reduces a full product: `t · 2^-416` modulo p, with
+    /// normalised limbs.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    fn reduce(mut t: [__m512i; 2 * LIMBS + 1]) -> Self {
+        let p = splat_limbs(&P);
+        let pinv = splat(P_INV52);
         reduce_row(&mut t, &p, pinv, 0);
         reduce_row(&mut t, &p, pinv, 1);
         reduce_row(&mut t, &p, pinv, 2);
@@ -284,12 +326,6 @@ impl Fp8 {
             r[j] = _mm512_and_si512(r[j], mask);
         }
         Self(r)
-    }
-
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    #[inline]
-    pub fn square(&self) -> Self {
-        self.mul(self)
     }
 
     /// Down from [0, 2p) to [0, p).

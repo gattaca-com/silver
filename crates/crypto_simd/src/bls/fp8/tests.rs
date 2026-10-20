@@ -1,6 +1,6 @@
-//! `Fp8::mul` against the reduction it replaced, limb for limb. The refinement
-//! of `mul` holds without a precondition, so the inputs go beyond its contract
-//! of normalised values below 2p.
+//! `Fp8::mul` and `Fp8::square` against the code they replaced, limb for limb.
+//! The refinement of `mul` holds without a precondition, so the inputs go
+//! beyond its contract of normalised values below 2p.
 
 use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52hi_epu64, _mm512_madd52lo_epu64,
@@ -147,6 +147,24 @@ fn mul_matches_the_reduction_it_replaced() {
         unsafe {
             let (a, b) = (Fp8::load(a), Fp8::load(b));
             assert!(a.mul(&b).store() == mul_before(&a, &b).store(), "case {case}");
+        }
+    }
+}
+
+/// `square` was `self.mul(self)`.
+#[test]
+fn square_matches_the_product_it_replaced() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x5a);
+    for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
+        for x in [a, b] {
+            // SAFETY: `kernels_run` checked `simd_available`.
+            unsafe {
+                let x = Fp8::load(x);
+                assert!(x.square().store() == mul_before(&x, &x).store(), "case {case}");
+            }
         }
     }
 }
