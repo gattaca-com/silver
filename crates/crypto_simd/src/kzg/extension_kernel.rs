@@ -72,7 +72,7 @@ impl ExtensionKernel {
         self.inverse.dit(&mut self.data);
         let mut v = 0;
         while v < self.data.len() {
-            self.data[v] = self.data[v].normalise().mul(&self.shift[v]).normalise();
+            self.data[v] = self.data[v].normalise().mul(&self.shift[v]);
             v += 1;
         }
         self.forward.dif(&mut self.data);

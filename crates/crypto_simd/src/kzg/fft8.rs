@@ -58,6 +58,8 @@ impl Fft8 {
     }
 
     /// Σ_j x_j·ω^(i·j) at `reverse_bits(i)`, from x in natural order.
+    /// Inputs lazy(2, 32), such as reduced values and products, give reduced
+    /// outputs.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn dif(&self, data: &mut [Fr8]) {
         assert!(data.len() == self.vectors, "one transform length");
@@ -77,9 +79,9 @@ impl Fft8 {
         }
     }
 
-    /// Σ_j x_j·ω^(i·j) at i, from x_j at `reverse_bits(j)`. Its sums and
-    /// differences are left unreduced: reduced inputs give lazy(16 + 2w,
-    /// 73 + 33w) outputs, w = log2(n) − 3, at most lazy(34, 370).
+    /// Σ_j x_j·ω^(i·j) at i, from x_j at `reverse_bits(j)`. Sums and
+    /// differences stay unreduced, so reduced inputs give outputs in
+    /// lazy(16 + 2w, 73 + 33w), w = log2(n) − 3, at most lazy(34, 370).
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn dit(&self, data: &mut [Fr8]) {
         assert!(data.len() == self.vectors, "one transform length");
@@ -99,16 +101,20 @@ impl Fft8 {
         }
     }
 
-    /// The stage pairing vectors `half` apart.
+    /// The stage pairing vectors `half` apart, lazy(2, 32) to lazy(2, 32). Sums
+    /// are reduced; differences, offset by 2r, go to their products as they
+    /// are.
     #[target_feature(enable = "avx512f,avx512ifma")]
     fn dif_wide(&self, data: &mut [Fr8], half: usize) {
+        let input_bound = Fr8::multiple_of_r(2);
         let mut block = 0;
         while block < self.vectors {
             let mut j = 0;
             while j < half {
                 let (a, b) = (data[block + j], data[block + j + half]);
                 data[block + j] = a.add(&b);
-                data[block + j + half] = a.sub(&b).mul(&self.wide[half - 1 + j]).normalise();
+                let difference = a.sub_raw(&b, &input_bound).normalise();
+                data[block + j + half] = difference.mul(&self.wide[half - 1 + j]);
                 j += 1;
             }
             block += 2 * half;
@@ -135,21 +141,22 @@ impl Fft8 {
     }
 
     /// The stage pairing elements h < 8 apart, on a transposed block: vectors
-    /// h apart.
+    /// h apart. As in `dif_wide`, except that j = 0 differences skip their
+    /// product and so are reduced.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     fn dif_short(&self, t: &mut [Fr8; LANES], h: usize) {
+        let input_bound = Fr8::multiple_of_r(2);
         let mut group = 0;
         while group < LANES {
             let mut j = 0;
             while j < h {
                 let (a, b) = (t[group + j], t[group + j + h]);
                 t[group + j] = a.add(&b);
-                let difference = a.sub(&b);
                 t[group + j + h] = if j == 0 {
-                    difference
+                    a.sub(&b)
                 } else {
-                    difference.mul(&self.short[h - 1 + j]).normalise()
+                    a.sub_raw(&b, &input_bound).normalise().mul(&self.short[h - 1 + j])
                 };
                 j += 1;
             }
@@ -157,9 +164,9 @@ impl Fft8 {
         }
     }
 
-    /// In turn, stages 1, 2 and 4 take reduced inputs to lazy(4, 3), lazy(8, 36)
-    /// and lazy(16, 73). The j = 0 pairs skip the product, so they offset their
-    /// differences by the inputs' bound 2h·r, doubling it.
+    /// Stages 1, 2 and 4 in turn take reduced inputs to lazy(4, 3),
+    /// lazy(8, 36) and lazy(16, 73). The j = 0 pairs skip the product, so
+    /// they offset their differences by the inputs' bound 2h·r, doubling it.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     fn dit_short(&self, t: &mut [Fr8; LANES], h: usize) {

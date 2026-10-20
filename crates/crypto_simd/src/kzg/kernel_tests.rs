@@ -12,7 +12,7 @@ use crate::{
         domain::{inverse_roots, reverse_bits, roots_of_unity},
         fft::{fft, inverse_fft},
         fft8::Fft8,
-        fr8::{Fr8, LANES},
+        fr8::{Fr8, LANES, multiplier},
     },
     simd_available,
 };
@@ -183,8 +183,8 @@ unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
 }
 
 /// Both transforms of x against the scalar FFT, each loaded with the
-/// positions `raised` picks raised by r. `dif` takes x in natural order, `dit`
-/// in bit-reversed order.
+/// positions `raised` picks raised by r. `dif` takes x in natural order, also
+/// as uncarried products by 1, and `dit` in bit-reversed order.
 ///
 /// SAFETY: the caller checked `simd_available`.
 unsafe fn check_transforms(
@@ -200,11 +200,20 @@ unsafe fn check_transforms(
     fft(&mut expected, x, roots);
     // SAFETY: the caller checked `simd_available`.
     unsafe {
-        let mut data = load_raised(x, raised);
-        kernel.dif(&mut data);
-        let dif = store(&data);
-        for p in 0..n {
-            assert!(dif[p] == expected[reverse_bits(p, log_n)], "dif {case} at {p}");
+        let one = Fr8::load(&[multiplier(&fr_from_u64(1)); LANES], 0);
+        for as_products in [false, true] {
+            let mut data = load_raised(x, raised);
+            if as_products {
+                for v in 0..data.len() {
+                    data[v] = data[v].mul(&one);
+                }
+            }
+            kernel.dif(&mut data);
+            let dif = store(&data);
+            for p in 0..n {
+                let at = reverse_bits(p, log_n);
+                assert!(dif[p] == expected[at], "dif {case} products {as_products} at {p}");
+            }
         }
 
         let reversed: Vec<_> = (0..n).map(|p| x[reverse_bits(p, log_n)]).collect();

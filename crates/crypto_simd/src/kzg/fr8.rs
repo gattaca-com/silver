@@ -19,8 +19,7 @@
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
     _mm512_madd52hi_epu64, _mm512_madd52lo_epu64, _mm512_mask_blend_epi64, _mm512_set_epi64,
-    _mm512_set1_epi64, _mm512_setzero_si512, _mm512_srai_epi64, _mm512_srli_epi64,
-    _mm512_sub_epi64,
+    _mm512_set1_epi64, _mm512_setzero_si512, _mm512_srai_epi64, _mm512_sub_epi64,
 };
 
 use blst::blst_fr;
@@ -85,21 +84,6 @@ fn sub_limbs(a: &[__m512i; LIMBS], b: &[__m512i; LIMBS]) -> ([__m512i; LIMBS], _
         d[j] = _mm512_and_si512(s, mask);
     }
     (d, borrow)
-}
-
-/// `a + b` limb-wise with carries normalised into the next limb.
-#[target_feature(enable = "avx512f,avx512ifma")]
-#[inline]
-fn add_limbs(a: &[__m512i; LIMBS], b: &[__m512i; LIMBS]) -> [__m512i; LIMBS] {
-    let mask = splat(MASK52);
-    let mut s = [zero(); LIMBS];
-    let mut carry = zero();
-    for j in 0..LIMBS {
-        let t = _mm512_add_epi64(_mm512_add_epi64(a[j], b[j]), carry);
-        carry = _mm512_srli_epi64::<52>(t);
-        s[j] = _mm512_and_si512(t, mask);
-    }
-    s
 }
 
 /// Where `borrow` is set (all ones), `a` was below `b` in `sub_limbs`.
@@ -356,21 +340,27 @@ impl Fr8 {
         Self(select_borrowed(borrow, &self.0, &d))
     }
 
-    /// Sum below 4r, brought back under 2r.
+    /// Down from [0, 4r) to [0, 2r), for normalised limbs.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    fn reduced(self) -> Self {
+        let (d, borrow) = sub_limbs(&self.0, &Self::multiple_of_r(2).0);
+        Self(select_borrowed(borrow, &self.0, &d))
+    }
+
+    /// lazy(2, m) operands, m ≤ 2^8, such as products, give a reduced sum.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn add(&self, rhs: &Self) -> Self {
-        let s = add_limbs(&self.0, &rhs.0);
-        let (d, borrow) = sub_limbs(&s, &two_r());
-        Self(select_borrowed(borrow, &s, &d))
+        self.add_raw(rhs).normalise().reduced()
     }
 
+    /// lazy(2, m) operands, m ≤ 2^8, such as products, give a reduced
+    /// difference.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn sub(&self, rhs: &Self) -> Self {
-        let (d, borrow) = sub_limbs(&self.0, &rhs.0);
-        let wrapped = add_limbs(&d, &two_r());
-        Self(select_borrowed(borrow, &wrapped, &d))
+        self.sub_raw(rhs, &Self::multiple_of_r(2)).normalise().reduced()
     }
 
     /// The eight vectors at `at`, lane l of vector k becoming lane k of
@@ -405,12 +395,6 @@ impl Fr8 {
             Self(out[7]),
         ]
     }
-}
-
-#[target_feature(enable = "avx512f,avx512ifma")]
-#[inline]
-fn two_r() -> [__m512i; LIMBS] {
-    add_limbs(&splat_limbs(&R), &splat_limbs(&R))
 }
 
 #[cfg(test)]
