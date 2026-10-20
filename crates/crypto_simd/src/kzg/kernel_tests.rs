@@ -256,7 +256,7 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
     let r = Limbs::r();
     let edges: Vec<_> = (0..256)
         .map(Limbs::single_bit)
-        .chain([Limbs([0; 5]), Limbs::from_bytes(&[0xff; 32])])
+        .chain([Limbs::ZERO, Limbs::from_bytes(&[0xff; 32])])
         .chain(around_r())
         .collect();
     let mut values = in_every_lane(&edges);
@@ -295,7 +295,7 @@ fn to_bytes_writes_canonical_lanes_and_nothing_else() {
     let two_r = Limbs::near_multiple_of_r(2, 0);
     let edges: Vec<_> = (0..256)
         .map(Limbs::single_bit)
-        .chain([Limbs([0; 5]), Limbs::near_multiple_of_r(2, -2), Limbs::near_multiple_of_r(2, -1)])
+        .chain([Limbs::ZERO, Limbs::near_multiple_of_r(2, -2), Limbs::near_multiple_of_r(2, -1)])
         .chain(around_r())
         .collect();
     let mut values = in_every_lane(&edges);

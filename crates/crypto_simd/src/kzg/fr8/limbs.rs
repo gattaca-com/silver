@@ -11,6 +11,8 @@ use crate::kzg::blst_ops::{fr_from_u64, fr_sub, fr_to_bytes};
 pub(crate) struct Limbs(pub(crate) [u64; LIMBS]);
 
 impl Limbs {
+    pub(crate) const ZERO: Self = Self([0; LIMBS]);
+
     pub(crate) fn single_bit(bit: usize) -> Self {
         let mut x = [0; LIMBS];
         x[bit / 52] = 1 << (bit % 52);
@@ -25,7 +27,7 @@ impl Limbs {
 
     /// k·r + d, which must lie in [0, 2^260).
     pub(crate) fn near_multiple_of_r(k: i128, d: i128) -> Self {
-        Self([0; LIMBS]).plus_multiple(k, &Self::r()).plus_multiple(d, &Self::single_bit(0))
+        Self::ZERO.plus_multiple(k, &Self::r()).plus_multiple(d, &Self::single_bit(0))
     }
 
     /// Bit by bit, from 32 big-endian bytes.
@@ -61,7 +63,7 @@ impl Limbs {
     /// The value of the limbs read as signed 64-bit integers, which must lie
     /// in [0, 2^260), in normalised limbs.
     pub(crate) fn carried(&self) -> Self {
-        Self([0; LIMBS]).plus_multiple(1, self)
+        Self::ZERO.plus_multiple(1, self)
     }
 
     /// self + k·b in normalised limbs, every limb read as a signed 64-bit
