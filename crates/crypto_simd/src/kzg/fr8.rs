@@ -129,17 +129,20 @@ fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m51
 }
 
 /// Clears limb `i` of the accumulator with a multiple of r and carries it up,
-/// leaving limb `i` itself stale. The carry needs no product, so it enters
-/// ahead of the multiple, off the dependency chain of q.
+/// leaving limb `i` itself stale. The next row's q waits on limb `i + 1`
+/// alone. Its carry needs no product, so it enters first, and its two products
+/// of q accumulate apart, so they run in parallel.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
 fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], r: &[__m512i; LIMBS], rinv: __m512i, i: usize) {
     let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
     t[i + 1] = _mm512_add_epi64(t[i + 1], carry_of_cleared(t[i]));
+    let high = _mm512_madd52hi_epu64(zero(), r[0], q);
     for j in 1..LIMBS {
         t[i + j] = _mm512_madd52lo_epu64(t[i + j], r[j], q);
     }
-    for j in 0..LIMBS {
+    t[i + 1] = _mm512_add_epi64(t[i + 1], high);
+    for j in 1..LIMBS {
         t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], r[j], q);
     }
 }
