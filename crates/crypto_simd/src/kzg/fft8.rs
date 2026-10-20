@@ -77,7 +77,9 @@ impl Fft8 {
         }
     }
 
-    /// Σ_j x_j·ω^(i·j) at i, from x_j at `reverse_bits(j)`.
+    /// Σ_j x_j·ω^(i·j) at i, from x_j at `reverse_bits(j)`. Its sums and
+    /// differences are left unreduced: reduced inputs give lazy(16 + 2w,
+    /// 73 + 33w) outputs, w = log2(n) − 3, at most lazy(34, 370).
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn dit(&self, data: &mut [Fr8]) {
         assert!(data.len() == self.vectors, "one transform length");
@@ -113,16 +115,19 @@ impl Fft8 {
         }
     }
 
+    /// lazy(k, m) to lazy(k + 2, m + 33): products below 2r offset the
+    /// differences by 2r.
     #[target_feature(enable = "avx512f,avx512ifma")]
     fn dit_wide(&self, data: &mut [Fr8], half: usize) {
+        let product_bound = Fr8::multiple_of_r(2);
         let mut block = 0;
         while block < self.vectors {
             let mut j = 0;
             while j < half {
                 let a = data[block + j];
-                let t = data[block + j + half].mul(&self.wide[half - 1 + j]).normalise();
-                data[block + j] = a.add(&t);
-                data[block + j + half] = a.sub(&t);
+                let t = data[block + j + half].normalise().mul(&self.wide[half - 1 + j]);
+                data[block + j] = a.add_raw(&t);
+                data[block + j + half] = a.sub_raw(&t, &product_bound);
                 j += 1;
             }
             block += 2 * half;
@@ -152,18 +157,27 @@ impl Fft8 {
         }
     }
 
+    /// In turn, stages 1, 2 and 4 take reduced inputs to lazy(4, 3), lazy(8, 36)
+    /// and lazy(16, 73). The j = 0 pairs skip the product, so they offset their
+    /// differences by the inputs' bound 2h·r, doubling it.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     fn dit_short(&self, t: &mut [Fr8; LANES], h: usize) {
+        let input_bound = Fr8::multiple_of_r(2 * h as u64);
+        let product_bound = Fr8::multiple_of_r(2);
         let mut group = 0;
         while group < LANES {
             let mut j = 0;
             while j < h {
                 let a = t[group + j];
                 let b = t[group + j + h];
-                let product = if j == 0 { b } else { b.mul(&self.short[h - 1 + j]).normalise() };
-                t[group + j] = a.add(&product);
-                t[group + j + h] = a.sub(&product);
+                let (product, bound) = if j == 0 {
+                    (b, &input_bound)
+                } else {
+                    (b.normalise().mul(&self.short[h - 1 + j]), &product_bound)
+                };
+                t[group + j] = a.add_raw(&product);
+                t[group + j + h] = a.sub_raw(&product, bound);
                 j += 1;
             }
             group += 2 * h;

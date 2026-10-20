@@ -5,11 +5,16 @@
 //! `multiplier(w)`, w's Montgomery form for R = 2^260. Every constant is
 //! loaded that way, and blst's form (R = 2^256) of 16·w spells it out.
 //!
-//! Values are kept in [0, 2r) with normalised limbs, as in `bls::fp8`:
-//! Montgomery products of such inputs land there without a conditional
-//! subtraction, since 4r < 2^260. A product's limbs stay uncarried, each below
-//! 2^57, until `normalise` carries them. Values are canonicalised only when
-//! stored.
+//! A lane's value is Σ_j limb_j·2^(52j), each limb a signed 64-bit integer.
+//! Operations state their ranges in three classes:
+//! - normalised: every limb in [0, 2^52), as IFMA operands must be;
+//! - reduced: normalised and below 2r;
+//! - lazy(k, m): in [0, k·r), every limb below m·2^52 in magnitude.
+//!
+//! A reduced value is lazy(2, 1). Montgomery products land below 2r without a
+//! conditional subtraction, as in `bls::fp8`, and `normalise` brings a lazy
+//! value below 2^260 back to normalised limbs. Values are canonicalised only
+//! when stored.
 
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
@@ -253,8 +258,8 @@ impl Fr8 {
     /// Montgomery product with R = 2^260: the full ten-limb product first, then
     /// five reduction rows, every index a constant so the accumulator stays in
     /// registers. For normalised operands with a·b < r·2^260, such as both
-    /// below 2r or either below r, the result lies below 2r. Its limbs are left
-    /// uncarried, each below 2^57.
+    /// below 2r or either below r, the result is lazy(2, 32), its limbs left
+    /// uncarried in [0, 2^57).
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
@@ -287,6 +292,60 @@ impl Fr8 {
             s[j] = _mm512_and_si512(s[j], mask);
         }
         Self(s)
+    }
+
+    /// Limb-wise, without carries: lazy(k, m) and lazy(k', m') give
+    /// lazy(k + k', m + m').
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn add_raw(&self, rhs: &Self) -> Self {
+        let mut s = [zero(); LIMBS];
+        for j in 0..LIMBS {
+            s[j] = _mm512_add_epi64(self.0[j], rhs.0[j]);
+        }
+        Self(s)
+    }
+
+    /// `self + offset − rhs` limb-wise, without carries; limbs may go
+    /// negative. With `offset` the normalised c·r: lazy(k, m) and lazy(k', m')
+    /// for k' ≤ c give lazy(k + c, m + m' + 1).
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn sub_raw(&self, rhs: &Self, offset: &Self) -> Self {
+        let mut s = [zero(); LIMBS];
+        for j in 0..LIMBS {
+            s[j] = _mm512_sub_epi64(_mm512_add_epi64(self.0[j], offset.0[j]), rhs.0[j]);
+        }
+        Self(s)
+    }
+
+    /// c·r in every lane, normalised.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn multiple_of_r(c: u64) -> Self {
+        assert!(c <= 35, "c·r below 2^260");
+        let mut v = [zero(); LIMBS];
+        let mut carry = 0;
+        for j in 0..LIMBS {
+            let limb = R[j] * c + carry;
+            v[j] = splat(limb & MASK52);
+            carry = limb >> LIMB_BITS;
+        }
+        Self(v)
+    }
+
+    /// Lane l's limbs at l, as they are.
+    #[cfg(test)]
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub(super) fn lane_limbs(&self) -> [[u64; LIMBS]; LANES] {
+        let mut out = [[0u64; LIMBS]; LANES];
+        for j in 0..LIMBS {
+            let l = lanes(self.0[j]);
+            for lane in 0..LANES {
+                out[lane][j] = l[lane];
+            }
+        }
+        out
     }
 
     /// Down from [0, 2r) to [0, r).

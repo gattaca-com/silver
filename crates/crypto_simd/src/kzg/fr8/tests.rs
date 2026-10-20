@@ -11,7 +11,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    Fr8, LANES, LIMBS, MASK52, R, R_INV52, lanes, muladd_row, multiplier, splat, splat_limbs,
+    Fr8, LANES, LIMBS, MASK52, R, R_INV52, muladd_row, multiplier, splat, splat_limbs,
     transpose_in, unpack52, zero,
 };
 use crate::{kernels_run, kzg::blst_ops::fr_from_u64};
@@ -60,18 +60,6 @@ fn carried_reference(x: &Fr8) -> Fr8 {
         out[j] = _mm512_and_si512(out[j], mask);
     }
     Fr8(out)
-}
-
-#[target_feature(enable = "avx512f,avx512ifma")]
-fn limbs_of(v: &Fr8) -> [Limbs; LANES] {
-    let mut out = [[0u64; LIMBS]; LANES];
-    for j in 0..LIMBS {
-        let l = lanes(v.0[j]);
-        for lane in 0..LANES {
-            out[lane][j] = l[lane];
-        }
-    }
-    out
 }
 
 /// k·r + d in normalised limbs.
@@ -151,7 +139,7 @@ fn mul_matches_reference_reduction() {
         // SAFETY: `kernels_run` checked `simd_available`.
         unsafe {
             let (a, b) = (Fr8(transpose_in(a)), Fr8(transpose_in(b)));
-            assert!(limbs_of(&a.mul(&b)) == limbs_of(&mul_reference(&a, &b)), "case {case}");
+            assert!(a.mul(&b).lane_limbs() == mul_reference(&a, &b).lane_limbs(), "case {case}");
         }
     }
 }
@@ -169,7 +157,7 @@ fn normalised_products_match_carried_reference() {
         unsafe {
             let (a, b) = (Fr8(transpose_in(a)), Fr8(transpose_in(b)));
             let expected = carried_reference(&mul_reference(&a, &b));
-            assert!(limbs_of(&a.mul(&b).normalise()) == limbs_of(&expected), "case {case}");
+            assert!(a.mul(&b).normalise().lane_limbs() == expected.lane_limbs(), "case {case}");
         }
     }
 }
@@ -202,7 +190,7 @@ fn normalise_restores_limbs_with_moved_excess() {
             }
         }
         // SAFETY: `kernels_run` checked `simd_available`.
-        let out = unsafe { limbs_of(&Fr8(transpose_in(&moved)).normalise()) };
+        let out = unsafe { Fr8(transpose_in(&moved)).normalise().lane_limbs() };
         assert!(out == values, "case {case}");
     }
 }
@@ -232,7 +220,7 @@ fn products_have_bounded_limbs_and_lie_below_two_r() {
         // SAFETY: `kernels_run` checked `simd_available`.
         let (raw, carried) = unsafe {
             let product = Fr8(transpose_in(&data)).mul(&Fr8(transpose_in(&w)));
-            (limbs_of(&product), limbs_of(&product.normalise()))
+            (product.lane_limbs(), product.normalise().lane_limbs())
         };
         for lane in 0..LANES {
             assert!(raw[lane].iter().all(|&limb| limb < PRODUCT_LIMB), "case {case} lane {lane}");

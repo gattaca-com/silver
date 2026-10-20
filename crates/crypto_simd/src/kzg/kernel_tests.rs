@@ -73,22 +73,151 @@ unsafe fn store(data: &[Fr8]) -> Vec<blst_fr> {
         .collect()
 }
 
+/// Five 52-bit limbs, little-endian, as `Fr8` lanes hold them.
+type Limbs = [u64; 5];
+
+fn limbs_from_bytes(bytes: &[u8; 32]) -> Limbs {
+    let mut x = [0u64; 5];
+    for bit in 0..256 {
+        x[bit / 52] |= u64::from(bytes[31 - bit / 8] >> (bit % 8) & 1) << (bit % 52);
+    }
+    x
+}
+
+fn bytes_from_limbs(x: &Limbs) -> [u8; 32] {
+    assert!(x[4] >> (256 - 4 * 52) == 0, "below 2^256");
+    let mut bytes = [0u8; 32];
+    for bit in 0..256 {
+        bytes[31 - bit / 8] |= ((x[bit / 52] >> (bit % 52) & 1) as u8) << (bit % 8);
+    }
+    bytes
+}
+
+/// The value of limbs read as signed 64-bit integers, which must lie in
+/// [0, 2^260), in normalised limbs.
+fn carried(limbs: &Limbs) -> Limbs {
+    let mut x = [0u64; 5];
+    let mut carry = 0i128;
+    for j in 0..5 {
+        let limb = limbs[j] as i64 as i128 + carry;
+        x[j] = (limb & ((1 << 52) - 1)) as u64;
+        carry = limb >> 52;
+    }
+    assert!(carry == 0, "value in [0, 2^260)");
+    x
+}
+
+/// a + k·b in normalised limbs, for k ≥ 0 or a ≥ |k|·b.
+fn plus_multiple(a: &Limbs, k: i128, b: &Limbs) -> Limbs {
+    let mut x = [0u64; 5];
+    let mut carry = 0i128;
+    for j in 0..5 {
+        let limb = a[j] as i128 + k * b[j] as i128 + carry;
+        x[j] = (limb & ((1 << 52) - 1)) as u64;
+        carry = limb >> 52;
+    }
+    assert!(carry == 0, "result in [0, 2^260)");
+    x
+}
+
+fn is_below(a: &Limbs, b: &Limbs) -> bool {
+    a.iter().rev().lt(b.iter().rev())
+}
+
+fn r_limbs() -> Limbs {
+    let largest = fr_to_bytes(&fr_sub(&fr_from_u64(0), &fr_from_u64(1)));
+    plus_multiple(&limbs_from_bytes(&largest), 1, &[1, 0, 0, 0, 0])
+}
+
+/// `input`, with the elements at the positions `raised` picks raised by r:
+/// reduced, but not canonical.
+///
 /// SAFETY: the caller checked `simd_available`.
-unsafe fn transform(kernel: &Fft8, input: &[blst_fr], dif: bool) -> Vec<blst_fr> {
+unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<Fr8> {
+    let r = r_limbs();
+    let mut bytes = Vec::with_capacity(input.len() * BYTES_PER_FIELD_ELEMENT);
+    for (p, x) in input.iter().enumerate() {
+        let lift = if raised(p) { 1 } else { 0 };
+        bytes.extend(bytes_from_limbs(&plus_multiple(
+            &limbs_from_bytes(&fr_to_bytes(x)),
+            lift,
+            &r,
+        )));
+    }
+    let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
+    (0..input.len() / LANES)
+        .map(|v| {
+            // SAFETY: the caller checked `simd_available`.
+            let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, v * vector_bytes) };
+            for lane in 0..LANES {
+                assert!(below_r >> lane & 1 != u8::from(raised(LANES * v + lane)), "raised");
+            }
+            vector
+        })
+        .collect()
+}
+
+/// `dit`'s outputs, checked against its bound lazy(16 + 2w, 73 + 33w) for w
+/// wide stages, then reduced below r by subtracting r.
+///
+/// SAFETY: the caller checked `simd_available`.
+unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
+    let r = r_limbs();
+    let (k, m) = (16 + 2 * wide_stages, 73 + 33 * wide_stages);
+    let bound = plus_multiple(&[0; 5], k.into(), &r);
+    let mut out = Vec::with_capacity(data.len() * LANES);
+    for vector in data {
+        // SAFETY: the caller checked `simd_available`.
+        for lane in unsafe { vector.lane_limbs() } {
+            let limit = u64::from(m) << 52;
+            assert!(lane.iter().all(|&limb| (limb as i64).unsigned_abs() < limit), "limbs");
+            let mut x = carried(&lane);
+            assert!(is_below(&x, &bound), "value below {k}r");
+            while !is_below(&x, &r) {
+                x = plus_multiple(&x, -1, &r);
+            }
+            out.push(fr_from_bytes(&bytes_from_limbs(&x)).expect("canonical"));
+        }
+    }
+    out
+}
+
+/// Both transforms of x against the scalar FFT, each loaded with the
+/// positions `raised` picks raised by r. `dif` takes x in natural order, `dit`
+/// in bit-reversed order.
+///
+/// SAFETY: the caller checked `simd_available`.
+unsafe fn check_transforms(
+    kernel: &Fft8,
+    roots: &[blst_fr],
+    x: &[blst_fr],
+    raised: &dyn Fn(usize) -> bool,
+    case: &str,
+) {
+    let n = x.len();
+    let log_n = n.trailing_zeros();
+    let mut expected = vec![blst_fr::default(); n];
+    fft(&mut expected, x, roots);
     // SAFETY: the caller checked `simd_available`.
     unsafe {
-        let mut data = load(input);
-        if dif {
-            kernel.dif(&mut data);
-        } else {
-            kernel.dit(&mut data);
+        let mut data = load_raised(x, raised);
+        kernel.dif(&mut data);
+        let dif = store(&data);
+        for p in 0..n {
+            assert!(dif[p] == expected[reverse_bits(p, log_n)], "dif {case} at {p}");
         }
-        store(&data)
+
+        let reversed: Vec<_> = (0..n).map(|p| x[reverse_bits(p, log_n)]).collect();
+        let mut data = load_raised(&reversed, raised);
+        kernel.dit(&mut data);
+        assert!(store_lazy(&data, log_n - 3) == expected, "dit {case}");
     }
 }
 
 /// At every supported length, with roots of exactly that order and strided
-/// roots of order 2^12, in both directions.
+/// roots of order 2^12, in both directions. The inputs are canonical, raised
+/// by r, and, for each stage, zeros paired with values raised by r: then a
+/// difference meets its widest gap, from 0 down to a large subtrahend.
 #[test]
 fn kernel_transforms_match_scalar_fft() {
     if !kernels_run() {
@@ -97,6 +226,7 @@ fn kernel_transforms_match_scalar_fft() {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
     let strided = roots_of_unity(MAX_LOG);
     let strided_inverse = inverse_roots(&strided);
+    let largest = fr_sub(&fr_from_u64(0), &fr_from_u64(1));
     for log_n in 6..=MAX_LOG {
         let n = 1 << log_n;
         let exact = roots_of_unity(log_n);
@@ -104,23 +234,27 @@ fn kernel_transforms_match_scalar_fft() {
         for roots in [&exact, &exact_inverse, &strided, &strided_inverse] {
             // SAFETY: `kernels_run` checked `simd_available`.
             let kernel = unsafe { Fft8::new(roots, n) };
-            for (case, input) in edge_inputs(&mut rng, n).iter().enumerate() {
-                let mut expected = vec![blst_fr::default(); n];
-                fft(&mut expected, input, roots);
-
-                // SAFETY: as above.
-                let dif = unsafe { transform(&kernel, input, true) };
-                for p in 0..n {
-                    assert!(
-                        dif[p] == expected[reverse_bits(p, log_n)],
-                        "dif n {n} case {case} at {p}"
-                    );
+            for (case, x) in edge_inputs(&mut rng, n).iter().enumerate() {
+                for raised in [false, true] {
+                    let case = format!("n {n} case {case} raised {raised}");
+                    // SAFETY: as above.
+                    unsafe { check_transforms(&kernel, roots, x, &|_| raised, &case) };
                 }
-
-                let reversed: Vec<_> = (0..n).map(|p| input[reverse_bits(p, log_n)]).collect();
-                // SAFETY: as above.
-                let dit = unsafe { transform(&kernel, &reversed, false) };
-                assert!(dit == expected, "dit n {n} case {case}");
+            }
+            for log_h in 0..log_n {
+                let second_of_pair = |p: usize| p >> log_h & 1 == 1;
+                for trial in 0..4 {
+                    let x: Vec<_> = (0..n)
+                        .map(|j| match (second_of_pair(reverse_bits(j, log_n)), trial) {
+                            (false, _) => fr_from_u64(0),
+                            (true, 0) => largest,
+                            (true, _) => random_fr(&mut rng),
+                        })
+                        .collect();
+                    let case = format!("n {n} gap at stage {} trial {trial}", 1 << log_h);
+                    // SAFETY: as above.
+                    unsafe { check_transforms(&kernel, roots, &x, &second_of_pair, &case) };
+                }
             }
         }
     }
@@ -223,7 +357,7 @@ fn fft_timing() {
                 for v in 0..n / LANES {
                     data[v] = Fr8::from_bytes(&bytes, v * vector_bytes).0;
                 }
-                kernel.dit(&mut data);
+                kernel.dif(&mut data);
                 for v in 0..n / LANES {
                     data[v].to_bytes(black_box(&mut out_bytes), v * vector_bytes);
                 }
@@ -233,7 +367,7 @@ fn fft_timing() {
         println!("{:<40} {scalar_inverse:>10.1}", format!("scalar inverse_fft, n = {n}"));
         println!("{:<40} {kernel_only:>10.1}", format!("kernel dit, n = {n}"));
         println!("{:<40} {kernel_dif:>10.1}", format!("kernel dif, n = {n}"));
-        println!("{:<40} {converted:>10.1}", format!("kernel from_bytes+dit+to_bytes, n = {n}"));
+        println!("{:<40} {converted:>10.1}", format!("kernel from_bytes+dif+to_bytes, n = {n}"));
     }
 
     let random: Vec<_> = (0..4096).map(|_| fr_to_bytes(&random_fr(&mut rng))).collect();
