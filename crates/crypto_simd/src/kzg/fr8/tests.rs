@@ -1,68 +1,46 @@
-//! `Fr8::mul` against the reduction it replaced, limb for limb. The refinement
-//! of `mul` holds without a precondition, so the inputs go beyond its contract
-//! of normalised values below 2r.
+//! `Fr8::mul` against a reference Montgomery reduction, limb for limb. The
+//! refinement of `mul` holds without a precondition, so the inputs go beyond
+//! its contract of normalised values below 2r.
 
 use std::arch::x86_64::{
-    __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52hi_epu64, _mm512_madd52lo_epu64,
-    _mm512_srli_epi64,
+    __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
 };
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    Fr8, LANES, LIMBS, MASK52, R, R_INV52, lanes, multiplier, splat, splat_limbs, transpose_in,
-    unpack52, zero,
+    Fr8, LANES, LIMBS, MASK52, R, R_INV52, lanes, muladd_row, multiplier, splat, splat_limbs,
+    transpose_in, unpack52, zero,
 };
-use crate::{kzg::blst_ops::fr_from_u64, simd_available};
+use crate::{kernels_run, kzg::blst_ops::fr_from_u64};
 
 type Limbs = [u64; LIMBS];
 
-fn kernels_run() -> bool {
-    assert!(
-        simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
-        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
-    );
-    simd_available()
-}
-
 #[target_feature(enable = "avx512f,avx512ifma")]
-fn muladd_row_before(
-    t: &mut [__m512i; 2 * LIMBS + 1],
-    a: &[__m512i; LIMBS],
-    b_i: __m512i,
-    i: usize,
-) {
-    for j in 0..LIMBS {
-        t[i + j] = _mm512_madd52lo_epu64(t[i + j], a[j], b_i);
-        t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], a[j], b_i);
-    }
-}
-
-#[target_feature(enable = "avx512f,avx512ifma")]
-fn reduce_row_before(
+fn reduce_row_reference(
     t: &mut [__m512i; 2 * LIMBS + 1],
     r: &[__m512i; LIMBS],
     rinv: __m512i,
     i: usize,
 ) {
     let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
-    muladd_row_before(t, r, q, i);
+    muladd_row(t, r, q, i);
     t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
 }
 
-/// `Fr8::mul` before the early carry: each reduction row adds the low product
-/// that clears its limb, then carries out of the sum.
+/// The Montgomery product whose reduction rows each add the low product that
+/// clears their limb, then carry out of the sum.
 #[target_feature(enable = "avx512f,avx512ifma")]
-fn mul_before(a: &Fr8, b: &Fr8) -> Fr8 {
+fn mul_reference(a: &Fr8, b: &Fr8) -> Fr8 {
     let r = splat_limbs(&R);
     let rinv = splat(R_INV52);
     let mut t = [zero(); 2 * LIMBS + 1];
     for i in 0..LIMBS {
-        muladd_row_before(&mut t, &a.0, b.0[i], i);
+        muladd_row(&mut t, &a.0, b.0[i], i);
     }
     for i in 0..LIMBS {
-        reduce_row_before(&mut t, &r, rinv, i);
+        reduce_row_reference(&mut t, &r, rinv, i);
     }
 
     let mask = splat(MASK52);
@@ -151,7 +129,7 @@ fn operands(rng: &mut ChaCha8Rng) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
 }
 
 #[test]
-fn mul_matches_the_reduction_it_replaced() {
+fn mul_matches_reference_reduction() {
     if !kernels_run() {
         return;
     }
@@ -160,7 +138,7 @@ fn mul_matches_the_reduction_it_replaced() {
         // SAFETY: `kernels_run` checked `simd_available`.
         unsafe {
             let (a, b) = (Fr8(transpose_in(a)), Fr8(transpose_in(b)));
-            assert!(limbs_of(&a.mul(&b)) == limbs_of(&mul_before(&a, &b)), "case {case}");
+            assert!(limbs_of(&a.mul(&b)) == limbs_of(&mul_reference(&a, &b)), "case {case}");
         }
     }
 }

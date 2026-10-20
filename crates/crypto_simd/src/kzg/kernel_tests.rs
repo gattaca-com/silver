@@ -5,6 +5,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
+    kernels_run,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, CellExtender,
         blst_ops::{fr_from_bytes, fr_from_u64, fr_inverse, fr_sub, fr_to_bytes, hash_to_fr},
@@ -18,16 +19,6 @@ use crate::{
 
 const SEED: u64 = 0x6666_7438_6b65_726e;
 const MAX_LOG: u32 = 12;
-
-/// False where the kernels cannot run, unless `SILVER_REQUIRE_IFMA` asks for
-/// them.
-fn kernels_run() -> bool {
-    assert!(
-        simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
-        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
-    );
-    simd_available()
-}
 
 fn random_fr(rng: &mut ChaCha8Rng) -> blst_fr {
     hash_to_fr(&rng.r#gen::<[u8; 32]>())
