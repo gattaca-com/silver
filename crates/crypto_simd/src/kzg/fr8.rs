@@ -32,6 +32,8 @@ use crate::{
     kzg::blst_ops::{fr_from_u64, fr_mul},
 };
 
+#[cfg(test)]
+pub(super) mod limbs;
 mod u256x8;
 
 pub const LANES: usize = 8;

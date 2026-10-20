@@ -12,7 +12,7 @@ use crate::{
         domain::{inverse_roots, reverse_bits, roots_of_unity},
         fft::{fft, inverse_fft},
         fft8::Fft8,
-        fr8::{Fr8, LANES, multiplier},
+        fr8::{Fr8, LANES, limbs::Limbs, multiplier},
     },
     simd_available,
 };
@@ -73,76 +73,16 @@ unsafe fn store(data: &[Fr8]) -> Vec<blst_fr> {
         .collect()
 }
 
-/// Five 52-bit limbs, little-endian, as `Fr8` lanes hold them.
-type Limbs = [u64; 5];
-
-fn limbs_from_bytes(bytes: &[u8; 32]) -> Limbs {
-    let mut x = [0u64; 5];
-    for bit in 0..256 {
-        x[bit / 52] |= u64::from(bytes[31 - bit / 8] >> (bit % 8) & 1) << (bit % 52);
-    }
-    x
-}
-
-fn bytes_from_limbs(x: &Limbs) -> [u8; 32] {
-    assert!(x[4] >> (256 - 4 * 52) == 0, "below 2^256");
-    let mut bytes = [0u8; 32];
-    for bit in 0..256 {
-        bytes[31 - bit / 8] |= ((x[bit / 52] >> (bit % 52) & 1) as u8) << (bit % 8);
-    }
-    bytes
-}
-
-/// The value of limbs read as signed 64-bit integers, which must lie in
-/// [0, 2^260), in normalised limbs.
-fn carried(limbs: &Limbs) -> Limbs {
-    let mut x = [0u64; 5];
-    let mut carry = 0i128;
-    for j in 0..5 {
-        let limb = limbs[j] as i64 as i128 + carry;
-        x[j] = (limb & ((1 << 52) - 1)) as u64;
-        carry = limb >> 52;
-    }
-    assert!(carry == 0, "value in [0, 2^260)");
-    x
-}
-
-/// a + k·b in normalised limbs, for k ≥ 0 or a ≥ |k|·b.
-fn plus_multiple(a: &Limbs, k: i128, b: &Limbs) -> Limbs {
-    let mut x = [0u64; 5];
-    let mut carry = 0i128;
-    for j in 0..5 {
-        let limb = a[j] as i128 + k * b[j] as i128 + carry;
-        x[j] = (limb & ((1 << 52) - 1)) as u64;
-        carry = limb >> 52;
-    }
-    assert!(carry == 0, "result in [0, 2^260)");
-    x
-}
-
-fn is_below(a: &Limbs, b: &Limbs) -> bool {
-    a.iter().rev().lt(b.iter().rev())
-}
-
-fn r_limbs() -> Limbs {
-    let largest = fr_to_bytes(&fr_sub(&fr_from_u64(0), &fr_from_u64(1)));
-    plus_multiple(&limbs_from_bytes(&largest), 1, &[1, 0, 0, 0, 0])
-}
-
 /// `input`, with the elements at the positions `raised` picks raised by r:
 /// reduced, but not canonical.
 ///
 /// SAFETY: the caller checked `simd_available`.
 unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<Fr8> {
-    let r = r_limbs();
+    let r = Limbs::r();
     let mut bytes = Vec::with_capacity(input.len() * BYTES_PER_FIELD_ELEMENT);
     for (p, x) in input.iter().enumerate() {
         let lift = if raised(p) { 1 } else { 0 };
-        bytes.extend(bytes_from_limbs(&plus_multiple(
-            &limbs_from_bytes(&fr_to_bytes(x)),
-            lift,
-            &r,
-        )));
+        bytes.extend(Limbs::from_bytes(&fr_to_bytes(x)).plus_multiple(lift, &r).to_bytes());
     }
     let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
     (0..input.len() / LANES)
@@ -164,21 +104,21 @@ unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<
 ///
 /// SAFETY: the caller checked `simd_available`.
 unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
-    let r = r_limbs();
+    let r = Limbs::r();
     let (k, m) = (16 + 2 * wide_stages, 73 + 33 * wide_stages);
-    let bound = plus_multiple(&[0; 5], k.into(), &r);
+    let bound = Limbs::near_multiple_of_r(k.into(), 0);
     let mut out = Vec::with_capacity(data.len() * LANES);
     for vector in data {
         // SAFETY: the caller checked `simd_available`.
         for lane in unsafe { vector.lane_limbs() } {
             let limit = u64::from(m) << 52;
             assert!(lane.iter().all(|&limb| (limb as i64).unsigned_abs() < limit), "limbs");
-            let mut x = carried(&lane);
-            assert!(is_below(&x, &bound), "value below {k}r");
-            while !is_below(&x, &r) {
-                x = plus_multiple(&x, -1, &r);
+            let mut x = Limbs(lane).carried();
+            assert!(x.is_below(&bound), "value below {k}r");
+            while !x.is_below(&r) {
+                x = x.plus_multiple(-1, &r);
             }
-            out.push(fr_from_bytes(&bytes_from_limbs(&x)).expect("canonical"));
+            out.push(fr_from_bytes(&x.to_bytes()).expect("canonical"));
         }
     }
     out
@@ -288,22 +228,13 @@ fn transforms_beyond_4096_elements_are_rejected() {
 /// Elements start this far into their buffers, so no lane is 8-byte aligned.
 const ODD_OFFSET: usize = 5;
 
-fn single_bit(bit: usize) -> Limbs {
-    let mut x = [0; 5];
-    x[bit / 52] = 1 << (bit % 52);
-    x
-}
-
-/// r − 1, r and r + 1, and r ± 2^b at each limb and word boundary b.
+/// r, and r ± 2^b for b = 0 and at each limb and word boundary b.
 fn around_r() -> Vec<Limbs> {
-    let r = r_limbs();
-    let mut out: Vec<_> =
-        [-1, 0, 1].iter().map(|&d| plus_multiple(&r, d, &single_bit(0))).collect();
-    for bit in [52, 104, 156, 208, 64, 128, 192] {
-        out.push(plus_multiple(&r, -1, &single_bit(bit)));
-        out.push(plus_multiple(&r, 1, &single_bit(bit)));
-    }
-    out
+    let r = Limbs::r();
+    let moved = [0, 52, 104, 156, 208, 64, 128, 192]
+        .into_iter()
+        .flat_map(|b| [-1, 1].map(|d| r.plus_multiple(d, &Limbs::single_bit(b))));
+    [r].into_iter().chain(moved).collect()
 }
 
 /// Every value of `values` in every lane, eight to a vector.
@@ -311,17 +242,6 @@ fn in_every_lane(values: &[Limbs]) -> Vec<Limbs> {
     (0..values.len())
         .flat_map(|v| (0..LANES).map(move |lane| values[(v + lane) % values.len()]))
         .collect()
-}
-
-/// The blst element whose 64-bit limbs, which `Fr8::load` takes as they are,
-/// hold x.
-fn raw_fr(x: &Limbs) -> blst_fr {
-    let bytes = bytes_from_limbs(x);
-    let mut l = [0; 4];
-    for k in 0..4 {
-        l[k] = u64::from_be_bytes(bytes[24 - 8 * k..32 - 8 * k].try_into().unwrap());
-    }
-    blst_fr { l }
 }
 
 /// Lane l of `from_bytes` holds the 32 big-endian bytes at `at + 32·l` as
@@ -333,19 +253,21 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 3);
-    let r = r_limbs();
-    let mut edges: Vec<_> = (0..256).map(single_bit).collect();
-    edges.extend([[0; 5], limbs_from_bytes(&[0xff; 32])]);
-    edges.extend(around_r());
+    let r = Limbs::r();
+    let edges: Vec<_> = (0..256)
+        .map(Limbs::single_bit)
+        .chain([Limbs([0; 5]), Limbs::from_bytes(&[0xff; 32])])
+        .chain(around_r())
+        .collect();
     let mut values = in_every_lane(&edges);
     for _ in 0..64 * LANES {
-        values.push(limbs_from_bytes(&rng.r#gen()));
-        values.push(limbs_from_bytes(&fr_to_bytes(&random_fr(&mut rng))));
+        values.push(Limbs::from_bytes(&rng.r#gen()));
+        values.push(Limbs::from_bytes(&fr_to_bytes(&random_fr(&mut rng))));
     }
     let mut bytes = vec![0x5a; ODD_OFFSET + values.len() * BYTES_PER_FIELD_ELEMENT];
     for (i, x) in values.iter().enumerate() {
         let at = ODD_OFFSET + i * BYTES_PER_FIELD_ELEMENT;
-        bytes[at..at + BYTES_PER_FIELD_ELEMENT].copy_from_slice(&bytes_from_limbs(x));
+        bytes[at..at + BYTES_PER_FIELD_ELEMENT].copy_from_slice(&x.to_bytes());
     }
     for v in 0..values.len() / LANES {
         let at = ODD_OFFSET + v * LANES * BYTES_PER_FIELD_ELEMENT;
@@ -355,8 +277,8 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
         let limbs = unsafe { vector.lane_limbs() };
         for lane in 0..LANES {
             let x = &values[v * LANES + lane];
-            assert!(limbs[lane] == *x, "vector {v} lane {lane}");
-            assert!((below_r >> lane & 1 == 1) == is_below(x, &r), "vector {v} lane {lane} mask");
+            assert!(Limbs(limbs[lane]) == *x, "vector {v} lane {lane}");
+            assert!((below_r >> lane & 1 == 1) == x.is_below(&r), "vector {v} lane {lane} mask");
         }
     }
 }
@@ -369,32 +291,27 @@ fn to_bytes_writes_canonical_lanes_and_nothing_else() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 4);
-    let r = r_limbs();
-    let two_r = plus_multiple(&r, 1, &r);
-    let mut edges: Vec<_> = (0..256).map(single_bit).collect();
-    edges.push([0; 5]);
-    edges.extend([-2, -1].iter().map(|&d| plus_multiple(&two_r, d, &single_bit(0))));
-    edges.extend(around_r());
+    let r = Limbs::r();
+    let two_r = Limbs::near_multiple_of_r(2, 0);
+    let edges: Vec<_> = (0..256)
+        .map(Limbs::single_bit)
+        .chain([Limbs([0; 5]), Limbs::near_multiple_of_r(2, -2), Limbs::near_multiple_of_r(2, -1)])
+        .chain(around_r())
+        .collect();
     let mut values = in_every_lane(&edges);
-    let count = values.len() + 64 * LANES;
-    while values.len() < count {
-        let x = limbs_from_bytes(&rng.r#gen());
-        if is_below(&x, &two_r) {
-            values.push(x);
-        }
-    }
+    values.extend((0..64 * LANES).map(|_| two_r.random_below(&mut rng)));
     let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
     let mut bytes = vec![0; ODD_OFFSET + vector_bytes + ODD_OFFSET];
     for v in 0..values.len() / LANES {
-        let raw: Vec<_> = values[v * LANES..(v + 1) * LANES].iter().map(raw_fr).collect();
+        let raw: Vec<_> = values[v * LANES..(v + 1) * LANES].iter().map(Limbs::to_raw_fr).collect();
         bytes.fill(0x5a);
         // SAFETY: `kernels_run` checked `simd_available`.
         unsafe { Fr8::load(&raw, 0).to_bytes(&mut bytes, ODD_OFFSET) };
         for lane in 0..LANES {
             let x = &values[v * LANES + lane];
-            let canonical = if is_below(x, &r) { *x } else { plus_multiple(x, -1, &r) };
+            let canonical = if x.is_below(&r) { *x } else { x.plus_multiple(-1, &r) };
             let at = ODD_OFFSET + lane * BYTES_PER_FIELD_ELEMENT;
-            assert!(bytes[at..at + 32] == bytes_from_limbs(&canonical), "vector {v} lane {lane}");
+            assert!(bytes[at..at + 32] == canonical.to_bytes(), "vector {v} lane {lane}");
         }
         let mut outside = bytes[..ODD_OFFSET].iter().chain(&bytes[ODD_OFFSET + vector_bytes..]);
         assert!(outside.all(|&byte| byte == 0x5a), "vector {v}: bytes outside the lanes");
