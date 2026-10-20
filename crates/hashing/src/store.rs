@@ -47,15 +47,15 @@ impl<C: TreeSpec> NodeStore<C> {
     /// `loaded` is the table it matches outside the written chunks.
     /// A format change copies every page.
     pub(super) fn load(&mut self, pages: &impl PageStore, loaded: &PageTable, target: &PageTable) {
-        let format = target.format;
+        let format = target.format();
         self.nodes.resize(format.num_nodes::<C>(), [0u8; 32]);
-        let same_format = loaded.format == format;
+        let same_format = loaded.format() == format;
         for (s, sub) in format.subtrees::<C>().enumerate() {
-            let loaded = loaded.roots.get(s).copied().filter(|_| same_format);
-            self.load_page(pages, sub, sub.root::<C>(), loaded, target.roots[s]);
+            let loaded = loaded.roots().get(s).copied().filter(|_| same_format);
+            self.load_page(pages, sub, sub.root::<C>(), loaded, target.roots()[s]);
         }
 
-        self.count = target.count;
+        self.count = target.len();
         self.writes.clear();
         self.writes.resize(format.data_capacity());
     }
@@ -94,20 +94,14 @@ impl<C: TreeSpec> NodeStore<C> {
         allocated: Option<&mut Vec<(u32, PageId)>>,
     ) {
         debug_assert!(!self.writes.has_unhashed(), "commit before rehash");
-        let parent = parent.filter(|parent| parent.format == format);
-        dst.roots.clear();
+        let parent = parent.filter(|parent| parent.format() == format);
         let mut committer =
             PageCommitter { writes: &self.writes, nodes: &self.nodes, alloc, allocated };
-        for (s, sub) in format.subtrees::<C>().enumerate() {
-            let root = committer.commit_page::<C>(
-                sub,
-                sub.root::<C>(),
-                parent.map(|parent| parent.roots[s]),
-            );
-            dst.roots.push(root);
-        }
-        dst.format = format;
-        dst.count = self.count;
+        let roots = format.subtrees::<C>().enumerate().map(|(s, sub)| {
+            let parent = parent.map(|parent| parent.roots()[s]);
+            committer.commit_page::<C>(sub, sub.root::<C>(), parent)
+        });
+        dst.set(format, self.count, roots);
         self.writes.clear();
     }
 }

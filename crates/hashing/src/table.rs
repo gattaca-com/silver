@@ -22,6 +22,24 @@ pub struct PageTable {
 }
 
 impl PageTable {
+    /// Refill with a new commit's roots, reusing the `roots` buffer.
+    pub(crate) fn set(
+        &mut self,
+        format: TreeFormat,
+        count: usize,
+        roots: impl Iterator<Item = PageId>,
+    ) {
+        self.roots.clear();
+        self.roots.extend(roots);
+        self.format = format;
+        self.count = count;
+    }
+
+    #[inline]
+    pub(crate) fn roots(&self) -> &[PageId] {
+        &self.roots
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.count
