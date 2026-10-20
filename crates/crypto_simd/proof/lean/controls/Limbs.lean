@@ -1,4 +1,4 @@
-import LeanBlsSimd.Proofs.Limbs
+import LeanBlsSimd.Proofs.EarlyCarry
 
 /-! Mutation controls for `LeanBlsSimd.Proofs.Limbs`. Each `fail_if_success` checks that a proof
 script rejects a mutation; each plain `example` must pass.
@@ -98,7 +98,20 @@ example : val (mulWith madd52loFull madd52hi 52 pMinus1 twoPMinus1) * R % Fp.mod
     val pMinus1 * val twoPMinus1 % Fp.modulus := by
   decide +kernel
 
-/-! ## The carry shift of `reduce_row` -/
+/-! ## The carry shift
+
+The reference row still uses its cleared limb. The generated row shifts the wrapping sum of
+its original limb and MASK52, justified by `carry_of_cleared_eq`. Both shifts must be 52. -/
+
+def earlyCarryWith (shift : Nat) (t : UInt64) : UInt64 :=
+  srli shift (t + UInt64.ofNat (2 ^ 52 - 1))
+
+example (t : UInt64) : earlyCarryWith 52 t =
+    srli 52 (madd52lo t (UInt64.ofNat P[0]!) (madd52lo 0 t (.ofNat P_INV52))) := by
+  exact (carry_of_cleared_eq t _ _ (by decide)).symm
+
+example : earlyCarryWith 51 1 ≠ earlyCarryWith 52 1 := by decide
+
 
 example : True := by
   fail_if_success

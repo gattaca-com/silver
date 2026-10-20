@@ -522,8 +522,6 @@ same mutation, and that model differs from `Lane.mul` on a concrete input. So th
 is false, not only unproved. -/
 
 def mulWith (k : Usize) (self rhs : fp8.Fp8) : Result fp8.Fp8 := do
-  let p ← fp8.splat_limbs constants.P
-  let pinv ← fp8.splat constants.P_INV52
   let mi ← fp8.zero
   let t := Array.repeat 17#usize mi
   let mi1 ← Array.index_usize rhs 0#usize
@@ -542,22 +540,7 @@ def mulWith (k : Usize) (self rhs : fp8.Fp8) : Result fp8.Fp8 := do
   let t7 ← fp8.muladd_row t6 self mi7 6#usize
   let mi8 ← Array.index_usize rhs 7#usize
   let t8 ← fp8.muladd_row t7 self mi8 k
-  let t9 ← fp8.reduce_row t8 p pinv 0#usize
-  let t10 ← fp8.reduce_row t9 p pinv 1#usize
-  let t11 ← fp8.reduce_row t10 p pinv 2#usize
-  let t12 ← fp8.reduce_row t11 p pinv 3#usize
-  let t13 ← fp8.reduce_row t12 p pinv 4#usize
-  let t14 ← fp8.reduce_row t13 p pinv 5#usize
-  let t15 ← fp8.reduce_row t14 p pinv 6#usize
-  let t16 ← fp8.reduce_row t15 p pinv 7#usize
-  let i ← constants.MASK52
-  let mask ← fp8.splat i
-  let r := Array.repeat 8#usize mi
-  let mi9 ← Array.index_usize t16 constants.LIMBS
-  let a ← Array.update r 0#usize mi9
-  let i1 ← constants.LIMBS - 1#usize
-  let r1 ← fp8.Fp8.mul_loop { start := 0#usize, «end» := i1 } t16 mask a
-  ok r1
+  fp8.Fp8.reduce t8
 
 example : mulWith 7#usize = fp8.Fp8.mul := rfl
 
@@ -592,33 +575,35 @@ example : Lane.mulWith 7 = Lane.mul := rfl
 set_option hygiene false in
 /-- The proof of `Fp8.mul_refines`, over `mulWith`, and over `Lane.mulWith` where the claim
 names it. -/
--- Each use keeps `Lane.reduce_row` folded, as `Fp8.mul_refines` does.
+-- Keep the shared reduction rows folded while comparing the product row indices.
 local macro "mul_proof" : tactic => `(tactic| (
   intro self rhs
+  obtain ⟨A, rfl⟩ : ∃ A : Vector M512 LIMBS, self = toArray id A :=
+    ⟨ofArray id self, (toArray_ofArray (fun _ => rfl) self _ _).symm⟩
+  obtain ⟨B, rfl⟩ : ∃ B : Vector M512 LIMBS, rhs = toArray id B :=
+    ⟨ofArray id rhs, (toArray_ofArray (fun _ => rfl) rhs _ _).symm⟩
   unfold mulWith
-  simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines,
-    Simd.zero_refines, MASK52_refines, bind_tc_ok, LIMBS_refines]
-  rw [repeat_eq_toArray_id Simd.zero (show (17#usize).val = 2 * LIMBS + 1 from rfl),
-    repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
-  simp (disch := decide) only [index_usize_eq rhs, Lane.muladd_row_refines,
-    Lane.reduce_row_refines, bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
-  simp (disch := decide) only [index_usize_toArray, bind_tc_ok, update_eq, set_toArray, sub_ok,
-    show (8#usize).val = LIMBS from rfl]
-  rw [Fp8.mul_loop_refines _ _ _ _ rfl]
-  simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8, bind_tc_ok,
-    ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
+  simp only [Simd.zero_refines, bind_tc_ok]
+  rw [repeat_eq_toArray_id Simd.zero (show (17#usize).val = 2 * LIMBS + 1 from rfl)]
+  simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines,
+    bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
+  rw [Fp8.reduce_refines]
+  simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8,
+    ofArray_toArray_id, laneOf_fromLanes]
   refine congrArg (fun F => ok (toArray id (fromLanes F) rfl)) (funext fun l => ?_)
-  simp only [Lane.mul, Lane.mulAcc, Lane.mulWith, Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero,
-    laneOf_replicate, Fin.getElem_fin, Simd.getElem_zero, Simd.getElem_splat, getElem_laneOf,
-    getElem_ofArray, id_eq, UScalar.ofNatCore_val_eq, ofU64_toU64, getElem_fromLanes,
-    Simd.laneOf_splat_limbs, ofArray_toArray_ofU64, fin_mk_zero, fin_mk_one, fin_mk_ofNat]))
+  simp only [Lane.reduce, Reduction.referenceRows, Lane.finRange_LIMBS, List.foldl_cons, List.foldl_nil,
+    Lane.referenceRow_eq, Reduction.finish, Lane.carryStep_eq, Lane.mul, Lane.mulAcc, Lane.mulWith,
+    Lane.splat_limbs_eq, Lane.splat_eq, Lane.zero, laneOf_replicate, Fin.getElem_fin,
+    Simd.getElem_zero, getElem_laneOf, getElem_ofArray, id_eq, UScalar.ofNatCore_val_eq,
+    fin_mk_zero, fin_mk_one, fin_mk_ofNat, MASK52, LIMB_BITS]
+  rfl))
 
-attribute [local irreducible] Lane.reduce_row in
+attribute [local irreducible] Lane.reduce_row Lane.muladd_row in
 example : ∀ self rhs : fp8.Fp8,
     mulWith 7#usize self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   mul_proof
 
-attribute [local irreducible] Lane.reduce_row in
+attribute [local irreducible] Lane.reduce_row Lane.muladd_row in
 example : True := by
   fail_if_success
     have : ∀ self rhs : fp8.Fp8,
@@ -626,7 +611,7 @@ example : True := by
       mul_proof
   trivial
 
-attribute [local irreducible] Lane.reduce_row in
+attribute [local irreducible] Lane.reduce_row Lane.muladd_row in
 theorem mulWith_six_refines : ∀ self rhs : fp8.Fp8,
     mulWith 6#usize self rhs = ok (toFp8 (Fp8.ofLanes (.ofFn fun l =>
       Lane.mulWith 6 ((ofFp8 self).lane l) ((ofFp8 rhs).lane l)))) := by
