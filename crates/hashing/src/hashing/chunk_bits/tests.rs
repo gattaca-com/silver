@@ -1,5 +1,5 @@
 use super::ChunkBits;
-use crate::subtree::NodeRange;
+use crate::hashing::subtree::NodeRange;
 
 fn marked(chunks: usize, marks: impl IntoIterator<Item = usize>) -> ChunkBits {
     let mut dirty = ChunkBits::default();

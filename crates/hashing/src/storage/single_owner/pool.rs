@@ -4,8 +4,8 @@ use bytesize::ByteSize;
 
 use crate::{
     B256, TreeSpec,
+    hashing::page_format::{PagePos, Subtree},
     merkle::ZERO_HASHES,
-    page_format::{PagePos, Subtree},
     storage::{PageAlloc, PageArray, PageId, PageStore},
 };
 

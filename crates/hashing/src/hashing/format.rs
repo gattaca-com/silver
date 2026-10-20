@@ -1,6 +1,6 @@
-use super::{TreeSpec, page_format::Subtree};
 use crate::{
-    B256,
+    B256, TreeSpec,
+    hashing::page_format::Subtree,
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
         PROGRESSIVE_SEGMENT_START, fold_progressive_spine, progressive_segment_of_chunk,
@@ -8,12 +8,12 @@ use crate::{
     },
 };
 
-pub(super) const MAX_SEGS: usize = 16;
+pub(crate) const MAX_SEGS: usize = 16;
 
 /// Where each progressive segment's internal nodes start in the flat tree,
 /// page-aligned for `page_nodes`. The length is fixed, so it can be a per-spec
 /// associated const ([`TreeSpec::SEG_OFF`]); only the values vary.
-pub(super) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
+pub(crate) const fn seg_off(page_nodes: usize) -> [usize; MAX_SEGS + 1] {
     let mut t = [0usize; MAX_SEGS + 1];
     let mut k = 1;
     while k <= MAX_SEGS {
@@ -74,7 +74,7 @@ impl TreeFormat {
     }
 
     #[inline]
-    pub(super) fn leaf_pos<C: TreeSpec>(self, chunk: usize) -> usize {
+    pub(crate) fn leaf_pos<C: TreeSpec>(self, chunk: usize) -> usize {
         self.data_start::<C>() + chunk
     }
 
@@ -100,7 +100,7 @@ impl TreeFormat {
         if C::IS_LIST { mix_in_length(&root, count) } else { root }
     }
 
-    pub(super) fn subtrees<C: TreeSpec>(self) -> impl Iterator<Item = Subtree> {
+    pub(crate) fn subtrees<C: TreeSpec>(self) -> impl Iterator<Item = Subtree> {
         let count = match self {
             TreeFormat::Fixed { .. } => 1,
             TreeFormat::Progressive { last_seg } => last_seg as usize + 1,
@@ -110,7 +110,7 @@ impl TreeFormat {
 
     /// Flat-tree node `n` as (subtree, level, pos), or `None` for padding and
     /// ids past the tree: a racing reader may pair `n` with another format.
-    pub(super) fn locate<C: TreeSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
+    pub(crate) fn locate<C: TreeSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
         let data_start = self.data_start::<C>();
         match self {
             TreeFormat::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {

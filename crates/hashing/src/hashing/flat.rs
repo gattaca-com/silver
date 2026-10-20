@@ -2,12 +2,10 @@ use flux_profiler::timed;
 
 use crate::{
     B256, HashFormat, SszScalar, TreeSpec,
-    format::TreeFormat,
-    list::ListTree,
-    progressive_list::ProgressiveListTree,
-    storage::{PageAlloc, PageId, PageStore},
-    store::NodeStore,
-    table::PageTable,
+    hashing::{
+        format::TreeFormat, list::ListTree, progressive_list::ProgressiveListTree, store::NodeStore,
+    },
+    storage::{PageAlloc, PageId, PageStore, PageTable},
 };
 
 pub enum FlatTree<C: TreeSpec> {

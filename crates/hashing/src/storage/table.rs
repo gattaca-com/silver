@@ -5,8 +5,7 @@ use std::{
 
 use crate::{
     B256, TreeSpec,
-    format::TreeFormat,
-    page_format::Subtree,
+    hashing::{format::TreeFormat, page_format::Subtree},
     storage::{PageId, PageStore},
 };
 
@@ -93,7 +92,7 @@ impl PageTable {
     }
 
     #[inline]
-    pub(super) fn node<'a, C: TreeSpec>(&self, store: &'a impl PageStore, n: usize) -> &'a B256 {
+    pub(crate) fn node<'a, C: TreeSpec>(&self, store: &'a impl PageStore, n: usize) -> &'a B256 {
         let (id, slot) = self.page_of::<C>(store, n);
         &store.page(id)[slot]
     }

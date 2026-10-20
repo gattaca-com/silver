@@ -1,15 +1,16 @@
 use std::marker::PhantomData;
 
-use super::{
-    TreeSpec,
-    chunk_writes::ChunkWrites,
-    format::TreeFormat,
-    page_format::{PagePos, Subtree},
-    storage::{PageAlloc, PageId, PageStore},
-    subtree::NodeRange,
-    table::PageTable,
+use crate::{
+    B256, TreeSpec,
+    hashing::{
+        chunk_writes::ChunkWrites,
+        format::TreeFormat,
+        page_format::{PagePos, Subtree},
+        subtree::NodeRange,
+    },
+    merkle::ZERO_HASHES,
+    storage::{PageAlloc, PageId, PageStore, PageTable},
 };
-use crate::{B256, merkle::ZERO_HASHES};
 
 pub(super) struct NodeStore<C: TreeSpec> {
     pub(super) nodes: Vec<B256>,

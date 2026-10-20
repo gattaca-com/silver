@@ -1,11 +1,10 @@
-use super::{
-    TreeSpec,
-    format::TreeFormat,
-    store::NodeStore,
-    subtree::{build_subtree_hashes, rehash_subtree},
-};
 use crate::{
-    B256,
+    B256, TreeSpec,
+    hashing::{
+        format::TreeFormat,
+        store::NodeStore,
+        subtree::{build_subtree_hashes, rehash_subtree},
+    },
     merkle::{ZERO_HASHES, hash_concat},
 };
 

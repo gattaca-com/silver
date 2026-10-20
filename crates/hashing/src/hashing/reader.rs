@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
 use crate::{
-    B256, FlatTree, SszScalar, TreeSpec, format::TreeFormat, storage::PageStore, table::PageTable,
+    B256, FlatTree, SszScalar, TreeSpec,
+    hashing::format::TreeFormat,
+    storage::{PageStore, PageTable},
 };
 
 /// What a read walks: the writer's flat tree or a committed tree's pages.

@@ -1,6 +1,9 @@
 use flux_profiler::timed;
 
-use crate::{FlatTree, TreeSpec, pool::PagePool, storage::PageId, table::PageTable};
+use crate::{
+    FlatTree, TreeSpec,
+    storage::{PageId, PageTable, single_owner::pool::PagePool},
+};
 
 /// A committed fork's tree in a [`PagePool`].
 ///

@@ -1,12 +1,11 @@
-use super::{
-    TreeSpec,
-    format::{TreeFormat, progressive_last_seg_for_chunks},
-    list::ListTree,
-    store::NodeStore,
-    subtree::{NodeRange, build_subtree_hashes, rehash_subtree},
-};
 use crate::{
-    B256,
+    B256, TreeSpec,
+    hashing::{
+        format::{TreeFormat, progressive_last_seg_for_chunks},
+        list::ListTree,
+        store::NodeStore,
+        subtree::{NodeRange, build_subtree_hashes, rehash_subtree},
+    },
     merkle::ZERO_HASHES,
     progressive::{PROGRESSIVE_SEGMENT_START, progressive_segment_of_chunk},
 };

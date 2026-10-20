@@ -25,7 +25,7 @@ impl NodeRange {
     }
 }
 
-pub(super) fn build_subtree_hashes(internal: &mut [B256], leaves: &[B256], non_zero: usize) {
+pub(crate) fn build_subtree_hashes(internal: &mut [B256], leaves: &[B256], non_zero: usize) {
     let cap = internal.len();
     if cap <= 1 {
         return;
