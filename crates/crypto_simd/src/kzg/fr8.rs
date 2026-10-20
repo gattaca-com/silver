@@ -7,7 +7,9 @@
 //!
 //! Values are kept in [0, 2r) with normalised limbs, as in `bls::fp8`:
 //! Montgomery products of such inputs land there without a conditional
-//! subtraction, since 4r < 2^260. They are canonicalised only when stored.
+//! subtraction, since 4r < 2^260. A product's limbs stay uncarried, each below
+//! 2^57, until `normalise` carries them. Values are canonicalised only when
+//! stored.
 
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
@@ -250,7 +252,9 @@ impl Fr8 {
 
     /// Montgomery product with R = 2^260: the full ten-limb product first, then
     /// five reduction rows, every index a constant so the accumulator stays in
-    /// registers.
+    /// registers. For normalised operands with a·b < r·2^260, such as both
+    /// below 2r or either below r, the result lies below 2r. Its limbs are left
+    /// uncarried, each below 2^57.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
@@ -267,15 +271,22 @@ impl Fr8 {
         reduce_row(&mut t, &r, rinv, 2);
         reduce_row(&mut t, &r, rinv, 3);
         reduce_row(&mut t, &r, rinv, 4);
+        Self([t[LIMBS], t[LIMBS + 1], t[LIMBS + 2], t[LIMBS + 3], t[LIMBS + 4]])
+    }
 
+    /// The same value with limbs 0 to 3 in [0, 2^52), each limb's signed excess
+    /// carried into the next. A value in [0, 2^260) comes out normalised.
+    /// Limbs below 2^62 in magnitude do not overflow.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn normalise(&self) -> Self {
         let mask = splat(MASK52);
-        let mut out = [zero(); LIMBS];
-        out[0] = t[LIMBS];
+        let mut s = self.0;
         for j in 0..LIMBS - 1 {
-            out[j + 1] = _mm512_add_epi64(t[LIMBS + j + 1], _mm512_srli_epi64::<52>(out[j]));
-            out[j] = _mm512_and_si512(out[j], mask);
+            s[j + 1] = _mm512_add_epi64(s[j + 1], _mm512_srai_epi64::<52>(s[j]));
+            s[j] = _mm512_and_si512(s[j], mask);
         }
-        Self(out)
+        Self(s)
     }
 
     /// Down from [0, 2r) to [0, r).

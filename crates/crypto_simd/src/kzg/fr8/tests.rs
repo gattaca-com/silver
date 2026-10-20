@@ -1,6 +1,7 @@
 //! `Fr8::mul` against a reference Montgomery reduction, limb for limb. The
 //! refinement of `mul` holds without a precondition, so the inputs go beyond
-//! its contract of normalised values below 2r.
+//! its contract of normalised operands. Also `normalise` against signed
+//! carries, and the range of carried products.
 
 use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
@@ -17,6 +18,9 @@ use crate::{kernels_run, kzg::blst_ops::fr_from_u64};
 
 type Limbs = [u64; LIMBS];
 
+/// The bound on a limb of `Fr8::mul`'s result.
+const PRODUCT_LIMB: u64 = 1 << 57;
+
 #[target_feature(enable = "avx512f,avx512ifma")]
 fn reduce_row_reference(
     t: &mut [__m512i; 2 * LIMBS + 1],
@@ -29,8 +33,8 @@ fn reduce_row_reference(
     t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
 }
 
-/// The Montgomery product whose reduction rows each add the low product that
-/// clears their limb, then carry out of the sum.
+/// The uncarried Montgomery product whose reduction rows each add the low
+/// product that clears their limb, then carry out of the sum.
 #[target_feature(enable = "avx512f,avx512ifma")]
 fn mul_reference(a: &Fr8, b: &Fr8) -> Fr8 {
     let r = splat_limbs(&R);
@@ -42,12 +46,17 @@ fn mul_reference(a: &Fr8, b: &Fr8) -> Fr8 {
     for i in 0..LIMBS {
         reduce_row_reference(&mut t, &r, rinv, i);
     }
+    Fr8([t[LIMBS], t[LIMBS + 1], t[LIMBS + 2], t[LIMBS + 3], t[LIMBS + 4]])
+}
 
+/// The unsigned carry pass that ended `Fr8::mul` while it returned normalised
+/// limbs.
+#[target_feature(enable = "avx512f,avx512ifma")]
+fn carried_reference(x: &Fr8) -> Fr8 {
     let mask = splat(MASK52);
-    let mut out = [zero(); LIMBS];
-    out[0] = t[LIMBS];
+    let mut out = x.0;
     for j in 0..LIMBS - 1 {
-        out[j + 1] = _mm512_add_epi64(t[LIMBS + j + 1], _mm512_srli_epi64::<52>(out[j]));
+        out[j + 1] = _mm512_add_epi64(out[j + 1], _mm512_srli_epi64::<52>(out[j]));
         out[j] = _mm512_and_si512(out[j], mask);
     }
     Fr8(out)
@@ -85,7 +94,7 @@ fn below(rng: &mut ChaCha8Rng, bound: &Limbs) -> Limbs {
             x[j] = rng.r#gen::<u64>() & MASK52;
         }
         x[LIMBS - 1] = rng.gen_range(0..=bound[LIMBS - 1]);
-        if x.iter().rev().lt(bound.iter().rev()) {
+        if is_below(&x, bound) {
             return x;
         }
     }
@@ -128,6 +137,10 @@ fn operands(rng: &mut ChaCha8Rng) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
     out
 }
 
+fn is_below(x: &Limbs, bound: &Limbs) -> bool {
+    x.iter().rev().lt(bound.iter().rev())
+}
+
 #[test]
 fn mul_matches_reference_reduction() {
     if !kernels_run() {
@@ -139,6 +152,91 @@ fn mul_matches_reference_reduction() {
         unsafe {
             let (a, b) = (Fr8(transpose_in(a)), Fr8(transpose_in(b)));
             assert!(limbs_of(&a.mul(&b)) == limbs_of(&mul_reference(&a, &b)), "case {case}");
+        }
+    }
+}
+
+/// Callers that carry a product get the limbs `mul` returned when it carried
+/// them itself.
+#[test]
+fn normalised_products_match_carried_reference() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0xca2);
+    for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
+        // SAFETY: `kernels_run` checked `simd_available`.
+        unsafe {
+            let (a, b) = (Fr8(transpose_in(a)), Fr8(transpose_in(b)));
+            let expected = carried_reference(&mul_reference(&a, &b));
+            assert!(limbs_of(&a.mul(&b).normalise()) == limbs_of(&expected), "case {case}");
+        }
+    }
+}
+
+/// Moving a signed multiple of 2^52 between neighbouring limbs keeps the
+/// value, so `normalise` must restore the normalised limbs, up to 2^61 in
+/// limb magnitude.
+#[test]
+fn normalise_restores_limbs_with_moved_excess() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x0e1);
+    for case in 0..256 {
+        let mut values = [[0u64; LIMBS]; LANES];
+        let mut moved = [[0u64; LIMBS]; LANES];
+        for lane in 0..LANES {
+            for j in 0..LIMBS {
+                values[lane][j] = match case % 4 {
+                    0 => MASK52,
+                    1 => 0,
+                    _ => rng.r#gen::<u64>() & MASK52,
+                };
+            }
+            moved[lane] = values[lane];
+            for j in 0..LIMBS - 1 {
+                let k = rng.gen_range(-(1i64 << 9)..=1 << 9);
+                moved[lane][j] = moved[lane][j].wrapping_add((k << 52) as u64);
+                moved[lane][j + 1] = moved[lane][j + 1].wrapping_sub(k as u64);
+            }
+        }
+        // SAFETY: `kernels_run` checked `simd_available`.
+        let out = unsafe { limbs_of(&Fr8(transpose_in(&moved)).normalise()) };
+        assert!(out == values, "case {case}");
+    }
+}
+
+/// The products the transforms form: normalised data below 2^260 by a
+/// multiplier below r.
+#[test]
+fn products_have_bounded_limbs_and_lie_below_two_r() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x2b0);
+    let r = near_multiple_of_r(1, 0);
+    let two_r = near_multiple_of_r(2, 0);
+    let mut edges = vec![[MASK52; LIMBS], [0; LIMBS], near_multiple_of_r(2, -1)];
+    edges.push(near_multiple_of_r(34, 0));
+    let multipliers = [near_multiple_of_r(1, -1), [0; LIMBS], near_multiple_of_r(0, 1)];
+    for case in 0..128 {
+        let data: [Limbs; LANES] = std::array::from_fn(|lane| match (case + lane) % 8 {
+            0..4 => edges[(case + lane) % 4],
+            _ => std::array::from_fn(|_| rng.r#gen::<u64>() & MASK52),
+        });
+        let w: [Limbs; LANES] = std::array::from_fn(|lane| match (case + lane) % 4 {
+            0..3 => multipliers[(case + lane) % 4],
+            _ => below(&mut rng, &r),
+        });
+        // SAFETY: `kernels_run` checked `simd_available`.
+        let (raw, carried) = unsafe {
+            let product = Fr8(transpose_in(&data)).mul(&Fr8(transpose_in(&w)));
+            (limbs_of(&product), limbs_of(&product.normalise()))
+        };
+        for lane in 0..LANES {
+            assert!(raw[lane].iter().all(|&limb| limb < PRODUCT_LIMB), "case {case} lane {lane}");
+            assert!(is_below(&carried[lane], &two_r), "case {case} lane {lane}");
         }
     }
 }

@@ -106,7 +106,7 @@ impl Fft8 {
             while j < half {
                 let (a, b) = (data[block + j], data[block + j + half]);
                 data[block + j] = a.add(&b);
-                data[block + j + half] = a.sub(&b).mul(&self.wide[half - 1 + j]);
+                data[block + j + half] = a.sub(&b).mul(&self.wide[half - 1 + j]).normalise();
                 j += 1;
             }
             block += 2 * half;
@@ -120,7 +120,7 @@ impl Fft8 {
             let mut j = 0;
             while j < half {
                 let a = data[block + j];
-                let t = data[block + j + half].mul(&self.wide[half - 1 + j]);
+                let t = data[block + j + half].mul(&self.wide[half - 1 + j]).normalise();
                 data[block + j] = a.add(&t);
                 data[block + j + half] = a.sub(&t);
                 j += 1;
@@ -141,8 +141,11 @@ impl Fft8 {
                 let (a, b) = (t[group + j], t[group + j + h]);
                 t[group + j] = a.add(&b);
                 let difference = a.sub(&b);
-                t[group + j + h] =
-                    if j == 0 { difference } else { difference.mul(&self.short[h - 1 + j]) };
+                t[group + j + h] = if j == 0 {
+                    difference
+                } else {
+                    difference.mul(&self.short[h - 1 + j]).normalise()
+                };
                 j += 1;
             }
             group += 2 * h;
@@ -158,7 +161,7 @@ impl Fft8 {
             while j < h {
                 let a = t[group + j];
                 let b = t[group + j + h];
-                let product = if j == 0 { b } else { b.mul(&self.short[h - 1 + j]) };
+                let product = if j == 0 { b } else { b.mul(&self.short[h - 1 + j]).normalise() };
                 t[group + j] = a.add(&product);
                 t[group + j + h] = a.sub(&product);
                 j += 1;
