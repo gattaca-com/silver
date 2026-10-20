@@ -57,6 +57,8 @@ pub fn multiplier(w: &blst_fr) -> blst_fr {
 #[derive(Clone, Copy)]
 pub struct Fr8([__m512i; LIMBS]);
 
+pub type Product = [__m512i; 2 * LIMBS + 1];
+
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
 fn splat(x: u64) -> __m512i {
@@ -120,7 +122,7 @@ fn select_borrowed(
 /// `t[i..] += a * b_i` over the 2·LIMBS-wide accumulator.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m512i, i: usize) {
+fn muladd_row(t: &mut Product, a: &[__m512i; LIMBS], b_i: __m512i, i: usize) {
     for j in 0..LIMBS {
         t[i + j] = _mm512_madd52lo_epu64(t[i + j], a[j], b_i);
         t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], a[j], b_i);
@@ -133,9 +135,34 @@ fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m51
 /// of q accumulate apart, so they run in parallel.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], r: &[__m512i; LIMBS], rinv: __m512i, i: usize) {
+fn reduce_row(t: &mut Product, r: &[__m512i; LIMBS], rinv: __m512i, i: usize) {
     let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
     t[i + 1] = _mm512_add_epi64(t[i + 1], carry_of_cleared(t[i]));
+    let high = _mm512_madd52hi_epu64(zero(), r[0], q);
+    for j in 1..LIMBS {
+        t[i + j] = _mm512_madd52lo_epu64(t[i + j], r[j], q);
+    }
+    t[i + 1] = _mm512_add_epi64(t[i + 1], high);
+    for j in 1..LIMBS {
+        t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], r[j], q);
+    }
+}
+
+/// `reduce_row`, with row `i` of the product `a·b` between q and its uses.
+#[target_feature(enable = "avx512f,avx512ifma")]
+#[inline]
+fn reduce_row_multiplying(
+    t: &mut Product,
+    r: &[__m512i; LIMBS],
+    rinv: __m512i,
+    i: usize,
+    next: &mut Product,
+    a: &[__m512i; LIMBS],
+    b_i: __m512i,
+) {
+    let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
+    t[i + 1] = _mm512_add_epi64(t[i + 1], carry_of_cleared(t[i]));
+    muladd_row(next, a, b_i, i);
     let high = _mm512_madd52hi_epu64(zero(), r[0], q);
     for j in 1..LIMBS {
         t[i + j] = _mm512_madd52lo_epu64(t[i + j], r[j], q);
@@ -219,20 +246,52 @@ impl Fr8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let r = splat_limbs(&R);
-        let rinv = splat(R_INV52);
+        Self::reduce(&self.product(rhs))
+    }
+
+    /// The ten-limb product, before reduction.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn product(&self, rhs: &Self) -> Product {
         let mut t = [zero(); 2 * LIMBS + 1];
         muladd_row(&mut t, &self.0, rhs.0[0], 0);
         muladd_row(&mut t, &self.0, rhs.0[1], 1);
         muladd_row(&mut t, &self.0, rhs.0[2], 2);
         muladd_row(&mut t, &self.0, rhs.0[3], 3);
         muladd_row(&mut t, &self.0, rhs.0[4], 4);
+        t
+    }
+
+    /// `mul`'s reduction of a product.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn reduce(t: &Product) -> Self {
+        let r = splat_limbs(&R);
+        let rinv = splat(R_INV52);
+        let mut t = *t;
         reduce_row(&mut t, &r, rinv, 0);
         reduce_row(&mut t, &r, rinv, 1);
         reduce_row(&mut t, &r, rinv, 2);
         reduce_row(&mut t, &r, rinv, 3);
         reduce_row(&mut t, &r, rinv, 4);
         Self([t[LIMBS], t[LIMBS + 1], t[LIMBS + 2], t[LIMBS + 3], t[LIMBS + 4]])
+    }
+
+    /// `reduce(t)`, and the product of `a` and `b`, row by row together: each
+    /// reduction row waits on its q, and the product's rows do not.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn reduce_while_multiplying(t: &Product, a: &Self, b: &Self) -> (Self, Product) {
+        let r = splat_limbs(&R);
+        let rinv = splat(R_INV52);
+        let mut t = *t;
+        let mut next = [zero(); 2 * LIMBS + 1];
+        reduce_row_multiplying(&mut t, &r, rinv, 0, &mut next, &a.0, b.0[0]);
+        reduce_row_multiplying(&mut t, &r, rinv, 1, &mut next, &a.0, b.0[1]);
+        reduce_row_multiplying(&mut t, &r, rinv, 2, &mut next, &a.0, b.0[2]);
+        reduce_row_multiplying(&mut t, &r, rinv, 3, &mut next, &a.0, b.0[3]);
+        reduce_row_multiplying(&mut t, &r, rinv, 4, &mut next, &a.0, b.0[4]);
+        (Self([t[LIMBS], t[LIMBS + 1], t[LIMBS + 2], t[LIMBS + 3], t[LIMBS + 4]]), next)
     }
 
     /// The same value with limbs 0 to 3 in [0, 2^52), each limb's signed excess
