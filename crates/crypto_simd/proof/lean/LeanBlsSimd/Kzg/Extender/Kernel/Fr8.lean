@@ -1,6 +1,7 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Arithmetic
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Bytes
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Transpose
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8BytesDecode
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8BytesEncode
 
@@ -78,7 +79,7 @@ theorem load_multiplier_refinement (input : Slice blst.blst_fr) (offset : Usize)
   have hl : ∀ lane, laneNat out lane = (values lane |>.val) * 2 ^ 260 % Fr.modulus := by
     intro lane
     rw [hv, hvalues, encoded_multiplier_limbs]
-  refine ⟨out, hout, ⟨⟨hn, ?_⟩, ?_⟩⟩
+  refine ⟨out, hout, ⟨⟨⟨hn, ?_⟩, ?_⟩, ?_⟩⟩
   · intro lane
     rw [hl]
     have := Nat.mod_lt ((values lane).val * 2 ^ 260) Fr.modulus_pos
@@ -88,6 +89,9 @@ theorem load_multiplier_refinement (input : Slice blst.blst_fr) (offset : Usize)
     change (laneNat out lane) % Fr.modulus =
       ((values lane).val * (2^260 % Fr.modulus)) % Fr.modulus
     rw [hl, Nat.mod_mod, Nat.mul_mod, Nat.mod_eq_of_lt (values lane).isLt]
+  · intro lane
+    rw [hl]
+    exact Nat.mod_lt _ Fr.modulus_pos
 
 theorem transpose_refinement (data : Slice fr8.Fr8) (offset : Usize)
     (hsize : offset.val + 8 ≤ data.val.length) :

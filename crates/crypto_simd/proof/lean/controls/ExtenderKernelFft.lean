@@ -62,8 +62,8 @@ theorem swapped_short_twiddles_violates_generated_table :
   have hset : (swapShortTwiddles table).short.val[2]! = table.short.val[4]! := by
     change ((table.short.val.set 2 table.short.val[4]!).set 4 table.short.val[2]!)[2]! = _
     rw [List.getElem!_set_ne _ 4 2 _ (by decide), List.getElem!_set _ _ _ (by omega)]
-  have hgood := (ht.2.2.2.2.2 4 (by simp) ⟨1, by decide⟩).2 ⟨0, by decide⟩
-  have hbad := (hmut.2.2.2.2.2 2 (by simp) ⟨1, by decide⟩).2 ⟨0, by decide⟩
+  have hgood := (ht.2.2.2.2.2 4 (by simp) ⟨1, by decide⟩).1.2 ⟨0, by decide⟩
+  have hbad := (hmut.2.2.2.2.2 2 (by simp) ⟨1, by decide⟩).1.2 ⟨0, by decide⟩
   change laneValue (swapShortTwiddles table).short.val[2]! ⟨0, by decide⟩ = _ at hbad
   rw [hset] at hbad
   have he := hgood.symm.trans hbad
@@ -87,9 +87,9 @@ theorem reading_next_wide_vector_violates_generated_table :
     change (table.wide.val.set 0 table.wide.val[1]!)[0]! = _
     exact List.getElem!_set _ _ _ (by omega)
   have hgood := (ht.2.2.2.1 4 (by decide) (by rw [layoutRoots_size]; decide)
-    ⟨0, by decide⟩).2 ⟨1, by decide⟩
+    ⟨0, by decide⟩).1.2 ⟨1, by decide⟩
   have hbad := (hmut.2.2.2.1 3 (by decide) (by rw [layoutRoots_size]; decide)
-    ⟨0, by decide⟩).2 ⟨1, by decide⟩
+    ⟨0, by decide⟩).1.2 ⟨1, by decide⟩
   change laneValue (readNextWideVector table).wide.val[0]! ⟨1, by decide⟩ = _ at hbad
   rw [hset] at hbad
   have he := hgood.symm.trans hbad

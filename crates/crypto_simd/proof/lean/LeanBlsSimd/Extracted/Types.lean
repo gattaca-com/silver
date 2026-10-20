@@ -143,7 +143,7 @@ structure kzg.blst_ops.LincombScratch where
   pippenger : alloc.vec.Vec Std.U64
 
 /-- [silver_crypto_simd::kzg::fr8::Fr8]
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 44:0-44:33
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 50:0-50:33
     Visibility: public -/
 @[reducible]
 def kzg.fr8.Fr8 := Array core.core_arch.x86.__m512i 5#usize

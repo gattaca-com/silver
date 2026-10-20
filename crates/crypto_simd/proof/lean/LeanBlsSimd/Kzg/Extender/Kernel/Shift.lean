@@ -13,9 +13,10 @@ def shiftedValues (values : _root_.Array Fr) : _root_.Array Fr :=
 private def ShiftPrefix (data : alloc.vec.Vec fr8.Fr8) (values : _root_.Array Fr)
     (count : Nat) : Prop :=
   data.val.length = 512 ∧ ∀ v : Fin 512,
-    Represents data.val[v.val]! (fun lane =>
-      if v.val < count then values[8 * v.val + lane.val]! * shiftFactor (8 * v.val + lane.val)
-      else values[8 * v.val + lane.val]!)
+    if v.val < count then
+      LazyRep 2 32 data.val[v.val]!
+        (fun lane => values[8 * v.val + lane.val]! * shiftFactor (8 * v.val + lane.val))
+    else LazyRep 34 370 data.val[v.val]! (fun lane => values[8 * v.val + lane.val]!)
 
 private theorem shift_loop (kernel : extension_kernel.ExtensionKernel)
     (hk : StateInvariant kernel) (values : _root_.Array Fr)
@@ -34,13 +35,13 @@ private theorem shift_loop (kernel : extension_kernel.ExtensionKernel)
     have hit : i.val < 512 := by omega
     have hil : i.val < data.val.length := by rw [hd.1]; exact hit
     have his : i.val < kernel.shift.val.length := by rw [hk.2.2.1]; exact hit
-    have hrep : Represents data.val[i.val]!
+    have hrep : LazyRep 34 370 data.val[i.val]!
         (fun lane => values[8 * i.val + lane.val]!) := by
       simpa only [lt_self_iff_false, if_false] using hd.2 ⟨i.val, hit⟩
-    obtain ⟨product, hmul, hp⟩ := mul_multiplier_refinement
+    obtain ⟨normal, product, hnormal, hmul, hp⟩ := normalise_mul_multiplier_refinement
       data.val[i.val]! kernel.shift.val[i.val]!
       (fun lane => values[8 * i.val + lane.val]!)
-      (fun lane => shiftFactor (8 * i.val + lane.val)) hrep (hk.2.2.2.2 ⟨i.val, hit⟩)
+      (fun lane => shiftFactor (8 * i.val + lane.val)) hrep (by decide) (by decide) (hk.2.2.2.2 ⟨i.val, hit⟩)
     let next := alloc.vec.Vec.set data i product
     have hprefix : ShiftPrefix next values (i.val + 1) := by
       refine ⟨by simpa [next, alloc.vec.Vec.set] using hd.1, ?_⟩
@@ -73,13 +74,13 @@ private theorem shift_loop (kernel : extension_kernel.ExtensionKernel)
     have hlt : i < alloc.vec.Vec.len data := by
       simpa only [UScalar.lt_equiv, alloc.vec.Vec.len, UScalar.ofNatCore_val_eq] using hil
     simpa only [extension_kernel.ExtensionKernel.extend_loop0.body, hlt, if_true,
-      hindex, hshift, hmul, hmut, hadd, bind_tc_ok, next] using hout
+      hindex, hnormal, hshift, hmul, hmut, hadd, bind_tc_ok, next] using hout
 
 theorem shift_refinement (kernel : extension_kernel.ExtensionKernel)
     (hk : StateInvariant kernel) (data : alloc.vec.Vec fr8.Fr8) (values : _root_.Array Fr)
-    (hsize : values.size = 4096) (hdata : DataRep (alloc.vec.Vec.deref data) values) :
+    (hsize : values.size = 4096) (hdata : LazyDataRep 34 370 (alloc.vec.Vec.deref data) values) :
     ∃ out, extension_kernel.ExtensionKernel.extend_loop0 kernel.shift data 0#usize = ok out ∧
-      DataRep (alloc.vec.Vec.deref out) (shiftedValues values) := by
+      LazyDataRep 2 32 (alloc.vec.Vec.deref out) (shiftedValues values) := by
   have hlen : data.val.length = 512 := by
     have := hdata.1
     change values.size = 8 * data.val.length at this

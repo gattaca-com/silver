@@ -1,5 +1,6 @@
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Extender.Model
+import LeanBlsSimd.Model.SignedLimbs
 
 open Aeneas Aeneas.Std Result
 open EthCryptographySpecs Bls Kzg
@@ -26,14 +27,32 @@ def laneValue (x : fr8.Fr8) (lane : Fin 8) : Fr := Fr.ofNat (laneNat x lane)
 def Represents (x : fr8.Fr8) (values : Fin 8 → Fr) : Prop :=
   Bounded x ∧ ∀ lane, laneValue x lane = values lane
 
-/-- Ordinary data lanes represent plain integers; only multiplication constants carry R = 2^260. -/
+def laneInt (x : fr8.Fr8) (lane : Fin 8) : ℤ :=
+  ∑ j : Fin 5, SignedLimbs.limb (x.val[j.val]!)[lane] * (2 : ℤ) ^ (52 * j.val)
+
+def Lazy (k m : Nat) (x : fr8.Fr8) : Prop :=
+  ∀ lane, 0 ≤ laneInt x lane ∧ laneInt x lane < (k : ℤ) * Fr.modulus ∧
+    ∀ j : Fin 5, |SignedLimbs.limb (x.val[j.val]!)[lane]| < (m : ℤ) * 2 ^ 52
+
+def lazyLaneValue (x : fr8.Fr8) (lane : Fin 8) : Fr := laneInt x lane
+
+def LazyRep (k m : Nat) (x : fr8.Fr8) (values : Fin 8 → Fr) : Prop :=
+  Lazy k m x ∧ ∀ lane, lazyLaneValue x lane = values lane
+
+/-- Canonical Montgomery constants carry R = 2^260; data lanes represent plain integers. -/
 def MultiplierRep (x : fr8.Fr8) (values : Fin 8 → Fr) : Prop :=
-  Represents x (fun lane => values lane * Fr.ofNat (2 ^ 260))
+  Represents x (fun lane => values lane * Fr.ofNat (2 ^ 260)) ∧
+    ∀ lane, laneNat x lane < Fr.modulus
 
 def DataRep (data : Slice fr8.Fr8) (values : _root_.Array Fr) : Prop :=
   values.size = 8 * data.val.length ∧
     ∀ v : Fin data.val.length,
       Represents data.val[v.val] (fun lane => values[8 * v.val + lane.val]!)
+
+def LazyDataRep (k m : Nat) (data : Slice fr8.Fr8) (values : _root_.Array Fr) : Prop :=
+  values.size = 8 * data.val.length ∧
+    ∀ v : Fin data.val.length,
+      LazyRep k m data.val[v.val] (fun lane => values[8 * v.val + lane.val]!)
 
 def TransformSize (n : Nat) : Prop :=
   ∃ logSize : Nat, 6 ≤ logSize ∧ logSize ≤ 12 ∧ n = 2 ^ logSize

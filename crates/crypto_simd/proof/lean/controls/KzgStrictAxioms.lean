@@ -11,6 +11,9 @@ import controls.ExtenderKernelBoundary
 import controls.ExtenderKernelBytes
 import controls.ExtenderKernelFft
 import controls.ExtenderKernelTranspose
+import controls.ExtenderKernelShortStage
+import controls.ExtenderKernelLazy
+import controls.SignedLimbs
 
 -- Check the proof, its concrete instance, and every negative control together.
 #assert_standard_axioms

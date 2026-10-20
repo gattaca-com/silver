@@ -18,16 +18,23 @@ def shortStages (dit : Bool) (values roots : _root_.Array Fr) : _root_.Array Fr 
     (shortStages dit values roots).size = values.size := by
   cases dit <;> simp [shortStages]
 
-private def BlockPrefix (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
-    (n count : Nat) : Prop :=
-  data.val.length = n ∧ ∀ v : Fin n, Represents data.val[v.val]!
-    (fun lane => if v.val < count then output[8*v.val+lane.val]! else values[8*v.val+lane.val]!)
+def BlockInput (dit : Bool) : fr8.Fr8 → (Fin 8 → Fr) → Prop :=
+  if dit then Represents else LazyRep 2 32
 
-private theorem prefix_set (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
+def BlockOutput (dit : Bool) : fr8.Fr8 → (Fin 8 → Fr) → Prop :=
+  if dit then LazyRep 16 73 else Represents
+
+private def BlockPrefix (dit : Bool) (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
+    (n count : Nat) : Prop :=
+  data.val.length = n ∧ ∀ v : Fin n,
+    if v.val < count then BlockOutput dit data.val[v.val]! (fun lane => output[8*v.val+lane.val]!)
+    else BlockInput dit data.val[v.val]! (fun lane => values[8*v.val+lane.val]!)
+
+private theorem prefix_set {dit : Bool} (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
     (n : Nat) (i : Usize) (hi : i.val < n) (value : fr8.Fr8)
-    (hvalue : Represents value (fun lane => output[8*i.val+lane.val]!))
-    (hp : BlockPrefix data values output n i.val) :
-    BlockPrefix (data.set i value) values output n (i.val+1) := by
+    (hvalue : BlockOutput dit value (fun lane => output[8*i.val+lane.val]!))
+    (hp : BlockPrefix dit data values output n i.val) :
+    BlockPrefix dit (data.set i value) values output n (i.val+1) := by
   refine ⟨by simpa [Slice.set, Slice.setAtNat] using hp.1, ?_⟩
   intro j
   by_cases hj : j.val = i.val
@@ -37,16 +44,16 @@ private theorem prefix_set (data : Slice fr8.Fr8) (values output : _root_.Array 
     simpa only [Slice.set, Slice.setAtNat,
       List.getElem!_set_ne data.val i.val j.val value (by omega), hiff] using hp.2 j
 
-private theorem set_block_loop_prefix
+private theorem set_block_loop_prefix (dit : Bool)
     (block : Array fr8.Fr8 8#usize) (values output : _root_.Array Fr) (n : Nat)
     (offset : Usize) (hat : offset.val+8 ≤ n) (hn : n ≤ 512)
-    (hb : ∀ row : Fin 8, Represents block.val[row.val]!
+    (hb : ∀ row : Fin 8, BlockOutput dit block.val[row.val]!
       (fun lane => output[8*(offset.val+row.val)+lane.val]!))
     (remaining : Nat) :
     ∀ (data : Slice fr8.Fr8) (k : Usize), k.val+remaining = 8 →
-      BlockPrefix data values output n (offset.val+k.val) →
+      BlockPrefix dit data values output n (offset.val+k.val) →
       ∃ out, fft8.set_block_loop data offset block k = ok out ∧
-        BlockPrefix out values output n (offset.val+8) := by
+        BlockPrefix dit out values output n (offset.val+8) := by
   induction remaining with
   | zero =>
     intro data k hk hp
@@ -69,7 +76,7 @@ private theorem set_block_loop_prefix
     have hiData : i.val < data.val.length := by rw [hp.1, hi]; omega
     have hupdate : Slice.update data i block.val[k.val]! = ok (data.set i block.val[k.val]!) := by
       simp [Slice.update, Slice.set, Slice.setAtNat, hiData]
-    have hnew : BlockPrefix (data.set i block.val[k.val]!) values output n (offset.val+next.val) := by
+    have hnew : BlockPrefix dit (data.set i block.val[k.val]!) values output n (offset.val+next.val) := by
       rw [hnext, show offset.val+(k.val+1) = i.val+1 by omega]
       apply prefix_set data values output n i (by omega) _
       · simpa only [hi] using hb ⟨k.val,hk8⟩
@@ -83,16 +90,16 @@ private theorem set_block_loop_prefix
     rw [fft8.set_block_loop, loop.eq_1]
     simpa only [hbody] using hout
 
-private theorem set_block_prefix
+private theorem set_block_prefix (dit : Bool)
     (data : Slice fr8.Fr8) (block : Array fr8.Fr8 8#usize)
     (values output : _root_.Array Fr) (n : Nat) (offset : Usize)
     (hat : offset.val+8 ≤ n) (hn : n ≤ 512)
-    (hb : ∀ row : Fin 8, Represents block.val[row.val]!
+    (hb : ∀ row : Fin 8, BlockOutput dit block.val[row.val]!
       (fun lane => output[8*(offset.val+row.val)+lane.val]!))
-    (hp : BlockPrefix data values output n offset.val) :
+    (hp : BlockPrefix dit data values output n offset.val) :
     ∃ out, fft8.set_block data offset block = ok out ∧
-      BlockPrefix out values output n (offset.val+8) := by
-  exact set_block_loop_prefix block values output n offset hat hn hb 8 data 0#usize
+      BlockPrefix dit out values output n (offset.val+8) := by
+  exact set_block_loop_prefix dit block values output n offset hat hn hb 8 data 0#usize
     (by decide) (by simpa using hp)
 
 def blockRun (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : Usize) :
@@ -108,52 +115,76 @@ def blockRun (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : U
       fft8.Fft8.dif_short table t2 1#usize
   fr8.Fr8.transpose (Array.to_slice t') 0#usize
 
-private theorem transpose_back (t : Array fr8.Fr8 8#usize)
-    (values : _root_.Array Fr) (offset : Nat) (ht : TransposedRep t values offset) :
+private theorem transpose_back (dit : Bool) (t : Array fr8.Fr8 8#usize)
+    (values : _root_.Array Fr) (offset : Nat)
+    (ht : TransposedRep (BlockOutput dit) t values offset) :
     ∃ out, fr8.Fr8.transpose (Array.to_slice t) 0#usize = ok out ∧
-      ∀ row : Fin 8, Represents out.val[row.val]!
+      ∀ row : Fin 8, BlockOutput dit out.val[row.val]!
         (fun lane => values[8*(offset+row.val)+lane.val]!) := by
-  apply transpose_representation (Array.to_slice t) 0#usize
-    (fun row lane => values[8*(offset+lane.val)+row.val]!)
-  · simp [Array.to_slice, t.property]
-  · intro row
-    simpa [Array.to_slice, getElem!_pos, row.isLt, t.property] using ht row
+  cases dit with
+  | false =>
+    apply transpose_representation (Array.to_slice t) 0#usize
+      (fun row lane => values[8*(offset+lane.val)+row.val]!)
+    · simp [Array.to_slice, t.property]
+    · intro row
+      simpa [Array.to_slice, getElem!_pos, row.isLt, t.property] using ht row
+  | true =>
+    apply lazy_transpose_representation 16 73 (Array.to_slice t) 0#usize
+      (fun row lane => values[8*(offset+lane.val)+row.val]!)
+    · simp [Array.to_slice, t.property]
+    · intro row
+      simpa [Array.to_slice, getElem!_pos, row.isLt, t.property] using ht row
 
 theorem block_run_representation
     (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : Usize)
     (values roots : _root_.Array Fr) (htable : FftInvariant table roots)
     (hsize : values.size = roots.size) (hunit : roots[0]! = 1)
     (hat : offset.val+8 ≤ data.val.length) (hblock : 8*(offset.val+8) ≤ values.size)
-    (hdata : ∀ row : Fin 8, Represents data.val[offset.val+row.val]!
+    (hdata : ∀ row : Fin 8, BlockInput dit data.val[offset.val+row.val]!
       (fun lane => values[8*(offset.val+row.val)+lane.val]!)) :
     ∃ out, blockRun dit table data offset = ok out ∧
-      ∀ row : Fin 8, Represents out.val[row.val]!
+      ∀ row : Fin 8, BlockOutput dit out.val[row.val]!
         (fun lane => (shortStages dit values roots)[8*(offset.val+row.val)+lane.val]!) := by
-  obtain ⟨t, htranspose, ht⟩ := transpose_representation data offset
-    (fun row lane => values[8*(offset.val+row.val)+lane.val]!) hat hdata
-  have htr : TransposedRep t values offset.val := ht
   cases dit
-  · obtain ⟨t1, h1, ht1⟩ := short_refinement false table t values roots offset.val 4#usize
+  · obtain ⟨t,htranspose,ht⟩ := lazy_transpose_representation 2 32 data offset
+      (fun row lane => values[8*(offset.val+row.val)+lane.val]!) hat hdata
+    have htr : TransposedRep (ShortInput false 4) t values offset.val := ht
+    obtain ⟨t1, h1, ht1⟩ := short_refinement false table t values roots offset.val 4#usize
       (by simp) htable hsize hblock hunit htr
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht1
+    norm_num at ht1
     obtain ⟨t2, h2, ht2⟩ := short_refinement false table t1
       (butterflyStage false values roots 4) roots offset.val 2#usize
       (by simp) htable (by simpa using hsize) (by simpa using hblock) hunit ht1
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht2
+    norm_num at ht2
     obtain ⟨t3, h3, ht3⟩ := short_refinement false table t2
       (butterflyStage false (butterflyStage false values roots 4) roots 2) roots offset.val 1#usize
       (by simp) htable (by simpa using hsize) (by simpa using hblock) hunit ht2
-    obtain ⟨out, hout, ho⟩ := transpose_back t3 _ offset.val ht3
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht3
+    norm_num at ht3
+    obtain ⟨out, hout, ho⟩ := transpose_back false t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
     simp only [blockRun, Bool.false_eq_true, if_false, htranspose, bind_tc_ok] at *
     simp only [h1, h2, h3, hout, bind_tc_ok]
-  · obtain ⟨t1, h1, ht1⟩ := short_refinement true table t values roots offset.val 1#usize
+  · obtain ⟨t,htranspose,ht⟩ := transpose_representation data offset
+      (fun row lane => values[8*(offset.val+row.val)+lane.val]!) hat hdata
+    have htr : TransposedRep (ShortInput true 1) t values offset.val := fun row => (ht row).lazy
+    obtain ⟨t1, h1, ht1⟩ := short_refinement true table t values roots offset.val 1#usize
       (by simp) htable hsize hblock hunit htr
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht1
+    norm_num at ht1
     obtain ⟨t2, h2, ht2⟩ := short_refinement true table t1
       (butterflyStage true values roots 1) roots offset.val 2#usize
       (by simp) htable (by simpa using hsize) (by simpa using hblock) hunit ht1
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht2
+    norm_num at ht2
     obtain ⟨t3, h3, ht3⟩ := short_refinement true table t2
       (butterflyStage true (butterflyStage true values roots 1) roots 2) roots offset.val 4#usize
       (by simp) htable (by simpa using hsize) (by simpa using hblock) hunit ht2
-    obtain ⟨out, hout, ho⟩ := transpose_back t3 _ offset.val ht3
+    simp only [UScalar.ofNatCore_val_eq, ShortOutput, shortLimbBound] at ht3
+    norm_num at ht3
+    obtain ⟨out, hout, ho⟩ := transpose_back true t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
     simp only [blockRun, if_true, htranspose, bind_tc_ok] at *
     simp only [h1, h2, h3, hout, bind_tc_ok]
@@ -183,9 +214,9 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
     (n : Nat) (hn : values.size = 8*n) (hsmall : n ≤ 512)
     (hvectors : table.vectors.val = n) (remaining : Nat) :
     ∀ (data : Slice fr8.Fr8) (offset : Usize), n = offset.val+8*remaining →
-      BlockPrefix data values (shortStages dit values roots) n offset.val →
+      BlockPrefix dit data values (shortStages dit values roots) n offset.val →
       ∃ out, loop (fun (d,i) => blockBody dit table d i) (data,offset) = ok out ∧
-        BlockPrefix out values (shortStages dit values roots) n n := by
+        BlockPrefix dit out values (shortStages dit values roots) n n := by
   induction remaining with
   | zero =>
     intro data offset hcount hp
@@ -199,14 +230,14 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
     have hat : offset.val+8 ≤ n := by omega
     let next : Usize := UScalar.ofNatCore (offset.val+8) (by scalar_tac)
     have hnext : next.val = offset.val+8 := UScalar.ofNatCore_val_eq _
-    have hrows : ∀ row : Fin 8, Represents data.val[offset.val+row.val]!
+    have hrows : ∀ row : Fin 8, BlockInput dit data.val[offset.val+row.val]!
         (fun lane => values[8*(offset.val+row.val)+lane.val]!) := by
       intro row
       simpa only [show ¬offset.val+row.val<offset.val by omega, if_false] using
         hp.2 ⟨offset.val+row.val, by omega⟩
     obtain ⟨block, hrun, hb⟩ := block_run_representation dit table data offset values roots
       htable hsize hunit (by rw [hp.1]; exact hat) (by omega) hrows
-    obtain ⟨updated, hstore, hupdated⟩ := set_block_prefix data block values
+    obtain ⟨updated, hstore, hupdated⟩ := set_block_prefix dit data block values
       (shortStages dit values roots) n offset hat hsmall hb hp
     obtain ⟨out, hout, ho⟩ := ih updated next (by omega) (by simpa only [hnext] using hupdated)
     refine ⟨out, ?_, ho⟩
@@ -219,10 +250,10 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
 theorem blocks_refinement (dit : Bool) (table : fft8.Fft8)
     (data : Slice fr8.Fr8) (values roots : _root_.Array Fr)
     (htable : FftInvariant table roots) (hsize : values.size = roots.size)
-    (hunit : roots[0]! = 1) (hdata : DataRep data values) :
+    (hunit : roots[0]! = 1) (hdata : DataRepWith (BlockInput dit) data values) :
     ∃ out, (if dit then fft8.Fft8.dit_loop0 table.vectors table.wide table.short data 0#usize
       else fft8.Fft8.dif_loop1 table.vectors table.wide table.short data 0#usize) = ok out ∧
-      DataRep out (shortStages dit values roots) := by
+      DataRepWith (BlockOutput dit) out (shortStages dit values roots) := by
   obtain ⟨k, hk6, hk12, hk⟩ := htable.1
   have hsmall : roots.size ≤ 4096 := by rw [hk]; exact Nat.pow_le_pow_right (by decide) hk12
   have hn64 : roots.size = 64 * 2^(k-6) := by
@@ -234,7 +265,7 @@ theorem blocks_refinement (dit : Bool) (table : fft8.Fft8)
   have hvectors : table.vectors.val = data.val.length := by
     rw [htable.2.1, ← hsize, hdata.1]
     omega
-  have hp : BlockPrefix data values (shortStages dit values roots) data.val.length 0 := by
+  have hp : BlockPrefix dit data values (shortStages dit values roots) data.val.length 0 := by
     refine ⟨rfl, ?_⟩
     intro v
     simpa only [getElem!_pos data.val v.val v.isLt, Nat.not_lt_zero, if_false] using hdata.2 v

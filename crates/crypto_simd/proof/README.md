@@ -514,9 +514,23 @@ The challenge preimage proof matches upstream's serialization of decoded cells. 
 
 #### IFMA Fr FFT kernel
 
-`Kernel/Basic.lean` relates each vector's eight lanes to field elements. Arithmetic represents each data lane as an integer in `[0, 2r)`, with five limbs below `2^52`; multiplication constants carry `R = 2^260`. `Model/Fr8.lean`, `Refines/Fr8.lean` and `Proofs/Fr8*.lean` first equate the generated arithmetic to a per-lane model, then prove carry bounds, normalization and field arithmetic. `Refines/Fr8.lean` reuses the [shared early-carry reduction proof](#montgomery-multiplication-and-squaring), applying `Reduction.finish_rows_eq` with the Fr constants. `Kernel/Fr8Arithmetic.lean` derives the lane contracts, including `mul(x, multiplier(w)) = x*w`. `Kernel/Fr8Bytes*.lean` proves loading, exact raw decoding and canonical big-endian encoding.
+`Kernel/Basic.lean` relates each vector's eight lanes to field elements. Each lane's integer value reads its five limbs as signed 64-bit integers. The range classes match `fr8.rs`:
 
-`Refines/Transpose.lean` proves the shared 8×8 shuffle from its generated intrinsic calls. `Kernel/Fr8.lean` lifts it to all five limbs; `FftOperations.lean` preserves the field representation of each lane. `FftShort.lean` proves stages 1, 2 and 4 on transposed blocks, including the skipped product when the twiddle is 1. `FftBlocks.lean` composes the two transposes, short stages and block stores. `Kernel/FftTableBuild.lean` and `FftTables.lean` prove the seven splat twiddles and the strided wide table.
+| Class | Integer value | Limbs |
+|---|---|---|
+| Normalized | Below `2^260` | Each in `[0, 2^52)` |
+| Reduced (`Bounded`) | In `[0, 2r)` | Normalized |
+| `Lazy k m` | In `[0, k*r)` | Each has magnitude below `m*2^52` |
+
+`Model/SignedLimbs.lean` and `Proofs/SignedLimbs.lean` provide signed carry and raw arithmetic facts. `normalise` preserves the integer value when its limbs have magnitude below `2^62` and its value lies below `2^260`. `Refines/Fr8.lean` equates uncarried products with `Fr8.mulRaw`, using the [shared early-carry reduction proof](#montgomery-multiplication-and-squaring). `Reduction.rows_agree` transfers the surviving limbs to the reference accumulator. `Proofs/Fr8Product.lean` establishes product limbs below `2^57` and values below `2r`, assuming normalized operands with `a*b < r*2^260`.
+
+Multiplication constants carry `R = 2^260` and have canonical representatives below `r`. `MultiplierRep` records both properties. `FftInvariant` requires this representation for all wide and short twiddles; `StateInvariant` also requires it for shift multipliers. The constructors establish these invariants through `load_multiplier_refinement`, which proves canonicality from the exact modulo-`r` packing equation, without an additional external premise.
+
+Canonical table multipliers permit multiplication of any normalized data operand within the product bound `a*b < r*2^260`. A noncanonical representative of the same field element need not satisfy that bound; `ExtenderKernelLazy.lean` checks a unit-multiplier counterexample whose raw product exceeds `2r`. `Kernel/Fr8Arithmetic.lean` composes the range and field facts. `Kernel/Fr8Bytes*.lean` proves loading, exact raw decoding and canonical big-endian encoding.
+
+`Refines/Transpose.lean` proves the shared 8×8 shuffle from its generated intrinsic calls. `Kernel/Fr8Transpose.lean` and `Kernel/Fr8.lean` lift it to all five limbs; `FftOperations.lean` preserves the field representation of each lane. `FftShort.lean` proves stages 1, 2 and 4 on transposed blocks, including the skipped product when the twiddle is 1. `FftBlocks.lean` composes the two transposes, short stages and block stores. `Kernel/FftTableBuild.lean` and `FftTables.lean` prove the seven splat twiddles and the strided wide table.
+
+DIT starts with reduced data. Its short stages produce `Lazy 4 3`, `Lazy 8 36`, then `Lazy 16 73`. Each wide stage increases the two bounds by 2 and 33 respectively. For `w = log2(n)-3` wide stages, the result is `Lazy (16+2*w) (73+33*w)`, at most `Lazy 34 370`. The numeric bounds `34*r < 2^260` and `370*2^52 < 2^62` justify normalization before the shift product. That product produces `Lazy 2 32`, the DIF input class. DIF preserves this class until its final short stage, whose outputs are reduced. The byte encoding contract requires reduced inputs.
 
 `Fft.lean` composes the block pass and wide butterflies. `FftMath.lean` proves the iterative DIT and DIF transforms equal the specification with bit reversal on their input and output respectively. Its induction covers every power-of-two size, including 1; the generated kernel contracts cover sizes 64 through 4096. `RootsValid` uses the specification's primitive-root predicate and powers directly.
 
@@ -572,6 +586,9 @@ Paths below are relative to `lean/controls/`.
 | `ExtenderKernelBytes.lean` | Omitting arithmetic reduction or output canonicalization, reversing byte order, omitting the cell-64 offset, and clearing the preserved first half each violate the generated contracts. |
 | `ExtenderKernelFft.lean` | Swapped short-stage twiddles and a shifted wide-table read violate the generated table invariant. Semantic controls distinguish skipping a nonunit short-stage product, omitting either block transpose, and substituting inverse DIF/forward DIT without the required bit reversals. |
 | `ExtenderKernelTranspose.lean` | A copied generated transpose network is pinned by definitional equality; changing its first shuffle index changes an observed output lane. |
+| `ExtenderKernelShortStage.lean` | A copied generated DIT short-stage body is pinned by definitional equality; skipping the product at the wrong column changes an observed output lane. |
+| `SignedLimbs.lean` | Raw addition needs the stated limb bound. Replacing the arithmetic carry shift with a logical shift changes the represented integer of a fixture with a negative limb. |
+| `ExtenderKernelLazy.lean` | Omitting the final reduction from generated addition leaves `2r` outside the reduced range. A noncanonical unit multiplier makes the raw product exceed `2r`. Numeric controls pin the largest FFT value and signed-limb bounds. |
 | `KzgStrictAxioms.lean` | The shared proof, concrete instance and all KZG negative controls use only the three standard axioms. |
 | `KzgSetupAxioms.lean`, `KzgRefinementAxioms.lean`, `KzgRepresentationAxioms.lean`, `KzgSpecBridgeAxioms.lean`, `KzgPolynomialAxioms.lean` | Scoped axiom checks for setup, refinement, representations, spec bridge and interpolation. |
 | `extraction-check.py` | Sixteen fixtures: unchanged output and numeric source-span changes pass; changed setup-row order, an added declaration, late BLS definitions (including attribute-prefixed constants), a wrong `full` count, an extender-body edit, and missing or duplicated verifier/extender entry points are rejected. |

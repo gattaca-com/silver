@@ -18,24 +18,6 @@ namespace LeanBlsSimd.Kzg.Extender.Kernel
 set_option maxRecDepth 10000
 set_option maxHeartbeats 4000000
 
-theorem dit_wide_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
-    (values roots : _root_.Array Fr) (half : Usize)
-    (htable : FftInvariant table roots) (hsize : values.size = roots.size)
-    (hdata : DataRep data values) (hhalf : ∃ stage : Nat, half.val = 2 ^ stage)
-    (hbound : half.val < table.vectors.val) :
-    ∃ out, fft8.Fft8.dit_wide table data half = ok out ∧
-      DataRep out (butterflyStage true values roots (8 * half.val)) := by
-  exact wide_refinement true table data half values roots htable hsize hdata hhalf hbound
-
-theorem dif_wide_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
-    (values roots : _root_.Array Fr) (half : Usize)
-    (htable : FftInvariant table roots) (hsize : values.size = roots.size)
-    (hdata : DataRep data values) (hhalf : ∃ stage : Nat, half.val = 2 ^ stage)
-    (hbound : half.val < table.vectors.val) :
-    ∃ out, fft8.Fft8.dif_wide table data half = ok out ∧
-      DataRep out (butterflyStage false values roots (8 * half.val)) := by
-  exact wide_refinement false table data half values roots htable hsize hdata hhalf hbound
-
 @[simp] theorem size_butterflyStage (dit : Bool) (values roots : _root_.Array Fr) (h : Nat) :
     (butterflyStage dit values roots h).size = values.size := by
   simp only [butterflyStage, _root_.Array.size_ofFn]
@@ -50,13 +32,13 @@ private theorem table_vectors_le (table : fft8.Fft8) (roots : _root_.Array Fr)
 private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
     (htable : FftInvariant table roots) (remaining : Nat) :
     ∀ (s : Nat) (data : Slice fr8.Fr8) (values : _root_.Array Fr) (half : Usize),
-      values.size = roots.size → DataRep data values →
-      half.val = 2 ^ s → table.vectors.val = 2 ^ (s + remaining) →
+      values.size = roots.size → LazyDataRep (16+2*s) (73+33*s) data values →
+      half.val = 2 ^ s → table.vectors.val = 2 ^ (s + remaining) → s + remaining ≤ 9 →
       ∃ out,
         fft8.Fft8.dit_loop1 table.vectors table.wide table.short data half = ok out ∧
-        DataRep out ((List.range' (s + 3) remaining).foldl
+        LazyDataRep (16+2*(s+remaining)) (73+33*(s+remaining)) out ((List.range' (s + 3) remaining).foldl
           (fun acc stage => butterflyStage true acc roots (2 ^ stage)) values) := by
-  intro s data values half hsize hdata hhalf hsteps
+  intro s data values half hsize hdata hhalf hsteps hlimit
   induction remaining generalizing s data values half with
   | zero =>
     refine ⟨data, ?_, by simpa using hdata⟩
@@ -76,15 +58,18 @@ private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
     have hnext : next.val = half.val * 2 := UScalar.ofNatCore_val_eq _
     have hmul : half * 2#usize = ok next := by
       simpa only [next] using scalar_mul_ok half 2#usize (by scalar_tac)
-    obtain ⟨stageData, hstage, hrep⟩ := dit_wide_refinement table data values roots half
+    obtain ⟨stageData, hstage, hrep⟩ := wide_refinement true (16+2*s) (73+33*s)
+      (by omega) (by omega) (by simp) table data half values roots
       htable hsize hdata ⟨s, hhalf⟩ hlt
+    change fft8.Fft8.dit_wide table data half = ok stageData at hstage
     have hwidth : 8 * half.val = 2 ^ (s + 3) := by rw [hhalf, Nat.pow_add]; ring
     rw [hwidth] at hrep
     obtain ⟨out, hrun, hout⟩ := ih (s + 1) stageData
       (butterflyStage true values roots (2 ^ (s + 3))) next
-      (by simpa using hsize) hrep
+      (by simpa using hsize) (by convert hrep using 1)
       (by rw [hnext, hhalf, Nat.pow_succ])
       (by simpa only [Nat.add_assoc, Nat.add_left_comm, Nat.add_comm] using hsteps)
+      (by omega)
     refine ⟨out, ?_, ?_⟩
     · rw [fft8.Fft8.dit_loop1, loop.eq_1]
       simp only [fft8.Fft8.dit_loop1.body, UScalar.lt_equiv, hlt, if_true,
@@ -96,11 +81,11 @@ private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
 private theorem dif_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
     (htable : FftInvariant table roots) (remaining : Nat) :
     ∀ (data : Slice fr8.Fr8) (values : _root_.Array Fr) (half : Usize),
-      values.size = roots.size → DataRep data values →
+      values.size = roots.size → LazyDataRep 2 32 data values →
       half.val = 2 ^ remaining / 2 → 2 ^ remaining ≤ table.vectors.val →
       ∃ out,
         fft8.Fft8.dif_loop0 table.vectors table.wide table.short data half = ok out ∧
-        DataRep out ((List.range' 3 remaining).reverse.foldl
+        LazyDataRep 2 32 out ((List.range' 3 remaining).reverse.foldl
           (fun acc stage => butterflyStage false acc roots (2 ^ stage)) values) := by
   intro data values half hsize hdata hhalf hsteps
   induction remaining generalizing data values half with
@@ -116,8 +101,9 @@ private theorem dif_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
       rw [Nat.pow_succ] at hsteps
       nlinarith [Nat.two_pow_pos remaining]
     obtain ⟨next, hdiv, hnext⟩ := UScalar.div_spec half (y := 2#usize) (by simp)
-    obtain ⟨stageData, hstage, hrep⟩ := dif_wide_refinement table data values roots half
-      htable hsize hdata ⟨remaining, hhalf'⟩ hlt
+    obtain ⟨stageData, hstage, hrep⟩ := wide_refinement false 2 32 (by decide) (by decide) (by simp)
+      table data half values roots htable hsize hdata ⟨remaining, hhalf'⟩ hlt
+    change fft8.Fft8.dif_wide table data half = ok stageData at hstage
     have hwidth : 8 * half.val = 2 ^ (3 + remaining) := by rw [hhalf', Nat.pow_add]
     rw [hwidth] at hrep
     obtain ⟨out, hrun, hout⟩ := ih stageData
@@ -143,11 +129,13 @@ theorem dit_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     (values roots : _root_.Array Fr) (logSize : Nat)
     (htable : FftInvariant table roots) (hsize : values.size = roots.size)
     (hlog : roots.size = 2 ^ logSize) (hunit : roots[0]! = 1) (hdata : DataRep data values) :
-    ∃ out, fft8.Fft8.dit table data = ok out ∧ DataRep out (iterativeDit logSize values roots) := by
-  have hk : 4 ≤ logSize := by
+    ∃ out, fft8.Fft8.dit table data = ok out ∧
+      LazyDataRep (16+2*(logSize-3)) (73+33*(logSize-3)) out (iterativeDit logSize values roots) := by
+  have hlogBounds : 6 ≤ logSize ∧ logSize ≤ 12 := by
     obtain ⟨k, hk4, hk12, hn⟩ := htable.1
     have heq : k = logSize := Nat.pow_right_injective (by decide) (hn.symm.trans hlog)
     omega
+  have hk := hlogBounds.1
   have hvectors : table.vectors.val = 2 ^ (logSize - 3) := by
     rw [htable.2.1, hlog]
     conv_lhs => rw [show logSize = (logSize - 3) + 3 by omega, Nat.pow_add]
@@ -162,7 +150,7 @@ theorem dit_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
   change fft8.Fft8.dit_loop0 table.vectors table.wide table.short data 0#usize = ok d3 at hd3
   obtain ⟨out, hout, hrep⟩ := dit_wide_steps table roots htable (logSize - 3) 0 d3
     (shortStages true values roots) 1#usize
-    (by simpa using hsize) hr3 (by simp) (by simpa using hvectors)
+    (by simpa using hsize) hr3 (by simp) (by simpa using hvectors) (by omega)
   refine ⟨out, ?_, ?_⟩
   · unfold fft8.Fft8.dit
     simpa only [hlen, massert, if_true, bind_tc_ok, hd3] using hout
@@ -173,7 +161,7 @@ theorem dit_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
 theorem dif_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     (values roots : _root_.Array Fr) (logSize : Nat)
     (htable : FftInvariant table roots) (hsize : values.size = roots.size)
-    (hlog : roots.size = 2 ^ logSize) (hunit : roots[0]! = 1) (hdata : DataRep data values) :
+    (hlog : roots.size = 2 ^ logSize) (hunit : roots[0]! = 1) (hdata : LazyDataRep 2 32 data values) :
     ∃ out, fft8.Fft8.dif table data = ok out ∧ DataRep out (iterativeDif logSize values roots) := by
   have hk : 4 ≤ logSize := by
     obtain ⟨k, hk4, hk12, hn⟩ := htable.1
@@ -229,7 +217,7 @@ theorem dit_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     (values roots : _root_.Array Fr) (htable : FftInvariant table roots)
     (hsize : values.size = roots.size) (hroots : RootsValid roots) (hdata : DataRep data values) :
     ∃ out, fft8.Fft8.dit table data = ok out ∧
-      DataRep out (fftFieldAux (bitReversalPermutation values) roots) := by
+      LazyDataRep 34 370 out (fftFieldAux (bitReversalPermutation values) roots) := by
   obtain ⟨ω, k, hrs, hω, hpow⟩ := hroots
   have hunit : roots[0]! = 1 := by
     simpa using hpow 0 (by rw [hrs]; positivity)
@@ -238,11 +226,15 @@ theorem dit_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
   refine ⟨out, hout, ?_⟩
   rw [iterative_dit_eq_spec values roots k htable.1 hsize hrs
     ⟨ω, k, hrs, hω, hpow⟩] at hrep
-  exact hrep
+  have hk : k ≤ 12 := by
+    obtain ⟨logSize, _, hle, heq⟩ := htable.1
+    have := Nat.pow_right_injective (by decide : 1 < 2) (heq.symm.trans hrs)
+    omega
+  exact hrep.mono (by omega) (by omega)
 
 theorem dif_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     (values roots : _root_.Array Fr) (htable : FftInvariant table roots)
-    (hsize : values.size = roots.size) (hroots : RootsValid roots) (hdata : DataRep data values) :
+    (hsize : values.size = roots.size) (hroots : RootsValid roots) (hdata : LazyDataRep 2 32 data values) :
     ∃ out, fft8.Fft8.dif table data = ok out ∧
       DataRep out (bitReversalPermutation (fftFieldAux values roots)) := by
   obtain ⟨ω, k, hrs, hω, hpow⟩ := hroots

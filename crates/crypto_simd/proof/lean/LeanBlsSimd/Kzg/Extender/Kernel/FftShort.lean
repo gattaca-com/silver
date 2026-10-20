@@ -9,18 +9,33 @@ attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
-def TransposedRep (t : Aeneas.Std.Array fr8.Fr8 8#usize)
+def shortLimbBound (h : Nat) : Nat :=
+  if h = 1 then 1 else if h = 2 then 3 else if h = 4 then 36 else 73
+
+def ShortInput (dit : Bool) (h : Nat) : fr8.Fr8 → (Fin 8 → Fr) → Prop :=
+  if dit then LazyRep (2*h) (shortLimbBound h) else LazyRep 2 32
+
+def ShortOutput (dit : Bool) (h : Nat) : fr8.Fr8 → (Fin 8 → Fr) → Prop :=
+  if dit then LazyRep (4*h) (shortLimbBound (2*h))
+  else if h = 1 then Represents else LazyRep 2 32
+
+def TransposedRep (rep : fr8.Fr8 → (Fin 8 → Fr) → Prop)
+    (t : Aeneas.Std.Array fr8.Fr8 8#usize)
     (values : _root_.Array Fr) (offset : Nat) : Prop :=
-  ∀ row : Fin 8, Represents t.val[row.val]!
+  ∀ row : Fin 8, rep t.val[row.val]!
     (fun lane => values[8 * (offset + lane.val) + row.val]!)
 
-private def ShortPrefix (t : Aeneas.Std.Array fr8.Fr8 8#usize)
+private def ShortBounds (dit : Bool) (h : Nat) (input product : fr8.Fr8) : Prop :=
+  Normalized input ∧
+  (∀ lane, laneNat input lane = (if dit then 2*h else 2) * Fr.modulus) ∧
+  Normalized product ∧ (∀ lane, laneNat product lane = 2 * Fr.modulus)
+
+private def ShortPrefix (dit : Bool) (t : Aeneas.Std.Array fr8.Fr8 8#usize)
     (values output : _root_.Array Fr) (offset h group count : Nat) : Prop :=
-  ∀ row : Fin 8, Represents t.val[row.val]!
-    (fun lane =>
-      if row.val < group + count ∨ group + h ≤ row.val ∧ row.val < group + h + count
-      then output[8 * (offset + lane.val) + row.val]!
-      else values[8 * (offset + lane.val) + row.val]!)
+  ∀ row : Fin 8,
+    if row.val < group + count ∨ group + h ≤ row.val ∧ row.val < group + h + count
+    then ShortOutput dit h t.val[row.val]! (fun lane => output[8*(offset+lane.val)+row.val]!)
+    else ShortInput dit h t.val[row.val]! (fun lane => values[8*(offset+lane.val)+row.val]!)
 
 private theorem short_pair_values (dit : Bool) (values roots : _root_.Array Fr)
     (offset h group j : Nat) (hh : h = 1 ∨ h = 2 ∨ h = 4)
@@ -45,38 +60,84 @@ private theorem short_pair_values (dit : Bool) (values roots : _root_.Array Fr)
   simpa only [hsize] using
     butterfly_pair_get dit values roots h (8*(offset+lane.val)+group) j hpos hj hmod hwithin
 
-private def shortPairRun (dit : Bool) (j : Usize) (a b w : fr8.Fr8) :
-    Result (fr8.Fr8 × fr8.Fr8) :=
-  if j = 0#usize then do
-    let first ← fr8.Fr8.add a b
-    let second ← fr8.Fr8.sub a b
-    ok (first, second)
-  else widePairRun dit a b w
+private def shortPairRun (dit : Bool) (input product : fr8.Fr8) (j : Usize)
+    (a b w : fr8.Fr8) : Result (fr8.Fr8 × fr8.Fr8) :=
+  if j = 0#usize then
+    if dit then do
+      let first ← fr8.Fr8.add_raw a b
+      let second ← fr8.Fr8.sub_raw a b input
+      ok (first, second)
+    else do
+      let first ← fr8.Fr8.add a b
+      let second ← fr8.Fr8.sub a b
+      ok (first, second)
+  else widePairRun dit (if dit then product else input) a b w
 
-private theorem short_pair_representation (dit : Bool) (j : Usize) (a b w : fr8.Fr8)
-    (av bv factors : Fin 8 → Fr) (ha : Represents a av) (hb : Represents b bv)
+private theorem short_pair_representation (dit : Bool) (h : Nat)
+    (hh : h = 1 ∨ h = 2 ∨ h = 4) (input product : fr8.Fr8)
+    (hbounds : ShortBounds dit h input product)
+    (j : Usize) (hjlt : j.val < h) (a b w : fr8.Fr8)
+    (av bv factors : Fin 8 → Fr) (ha : ShortInput dit h a av) (hb : ShortInput dit h b bv)
     (hw : MultiplierRep w factors) (hunit : j = 0#usize → ∀ lane, factors lane = 1) :
-    ∃ first second, shortPairRun dit j a b w = ok (first,second) ∧
-      Represents first (fun lane => if dit then av lane+bv lane*factors lane else av lane+bv lane) ∧
-      Represents second (fun lane => if dit then av lane-bv lane*factors lane else (av lane-bv lane)*factors lane) := by
+    ∃ first second, shortPairRun dit input product j a b w = ok (first,second) ∧
+      ShortOutput dit h first (fun lane => if dit then av lane+bv lane*factors lane else av lane+bv lane) ∧
+      ShortOutput dit h second (fun lane => if dit then av lane-bv lane*factors lane else (av lane-bv lane)*factors lane) := by
+  have hk : 2*h ≤ 32 := by rcases hh with rfl | rfl | rfl <;> decide
+  have hm : shortLimbBound h ≤ 36 := by rcases hh with rfl | rfl | rfl <;> decide
   by_cases hj : j = 0#usize
-  · obtain ⟨first,hf,hrf⟩ := add_representation a b av bv ha hb
-    obtain ⟨second,hs,hrs⟩ := sub_representation a b av bv ha hb
-    refine ⟨first,second,by simp [shortPairRun,hj,hf,hs],?_,?_⟩
-    · simpa only [hunit hj,Fin.mul_one,ite_self] using hrf
-    · simpa only [hunit hj,Fin.mul_one,ite_self] using hrs
-  · simpa only [shortPairRun,hj,if_false] using
-      wide_pair_representation dit a b w av bv factors ha hb hw
+  · cases dit with
+    | true =>
+      obtain ⟨first,hf,hrf,_⟩ := add_raw_lazy_refinement a b av bv ha hb (by omega)
+      obtain ⟨second,hs,hrs,_⟩ := sub_raw_lazy_refinement a b input av bv ha hb
+        hbounds.1 hbounds.2.1 (by simp) (by omega)
+      have hk' : 2*h+2*h ≤ 4*h := by omega
+      have hm' : shortLimbBound h+shortLimbBound h+1 ≤ shortLimbBound (2*h) := by
+        rcases hh with rfl | rfl | rfl <;> decide
+      refine ⟨first,second,by simp [shortPairRun,hj,hf,hs],?_,?_⟩
+      · simpa only [ShortOutput,if_true,hunit hj,Fin.mul_one] using hrf.mono hk' (by omega)
+      · simpa only [ShortOutput,if_true,hunit hj,Fin.mul_one] using hrs.mono hk' hm'
+    | false =>
+      obtain ⟨first,hf,hrf⟩ := add_lazy_representation a b av bv ha hb (by decide) (by decide)
+      obtain ⟨second,hs,hrs⟩ := sub_lazy_representation a b av bv ha hb (by decide) (by decide)
+      refine ⟨first,second,by simp [shortPairRun,hj,hf,hs],?_,?_⟩
+      · simp only [ShortOutput,Bool.false_eq_true,if_false]
+        split_ifs
+        · exact hrf
+        · exact hrf.lazy.mono (by decide) (by decide)
+      · simp only [ShortOutput,Bool.false_eq_true,if_false,hunit hj,Fin.mul_one]
+        split_ifs
+        · exact hrs
+        · exact hrs.lazy.mono (by decide) (by decide)
+  · have hne : h ≠ 1 := by
+      intro he
+      have hz : j.val = 0 := by omega
+      exact hj (UScalar.eq_of_val_eq hz)
+    cases dit with
+    | true =>
+      obtain ⟨first,second,hrun,hfirst,hsecond⟩ := wide_pair_representation true
+        (2*h) (shortLimbBound h) product a b w av bv factors hk (by omega)
+        (by simp) hbounds.2.2.1 hbounds.2.2.2 ha hb hw
+      have hk' : 2*h+2 ≤ 4*h := by omega
+      have hm' : shortLimbBound h+33 ≤ shortLimbBound (2*h) := by
+        rcases hh with rfl | rfl | rfl <;> simp_all [shortLimbBound]
+      exact ⟨first,second,by simpa [shortPairRun,hj] using hrun,
+        LazyRep.mono hfirst hk' hm',LazyRep.mono hsecond hk' hm'⟩
+    | false =>
+      obtain ⟨first,second,hrun,hfirst,hsecond⟩ := wide_pair_representation false
+        2 32 input a b w av bv factors (by decide) (by decide)
+        (by simp) hbounds.1 hbounds.2.1 ha hb hw
+      exact ⟨first,second,by simpa [shortPairRun,hj] using hrun,
+        by simpa [ShortOutput,hne] using hfirst,by simpa [ShortOutput,hne] using hsecond⟩
 
-private theorem short_prefix_set (t : Aeneas.Std.Array fr8.Fr8 8#usize)
+private theorem short_prefix_set {dit : Bool} (t : Aeneas.Std.Array fr8.Fr8 8#usize)
     (values output : _root_.Array Fr) (offset h group count : Nat) (i i1 : Usize)
     (hi : i.val = group+count) (hi1 : i1.val = group+count+h)
     (hh : 0 < h) (hj : count < h) (hg : group+2*h ≤ 8)
     (first second : fr8.Fr8)
-    (hfirst : Represents first (fun lane => output[8*(offset+lane.val)+i.val]!))
-    (hsecond : Represents second (fun lane => output[8*(offset+lane.val)+i1.val]!))
-    (hp : ShortPrefix t values output offset h group count) :
-    ShortPrefix ((t.set i first).set i1 second) values output offset h group (count+1) := by
+    (hfirst : ShortOutput dit h first (fun lane => output[8*(offset+lane.val)+i.val]!))
+    (hsecond : ShortOutput dit h second (fun lane => output[8*(offset+lane.val)+i1.val]!))
+    (hp : ShortPrefix dit t values output offset h group count) :
+    ShortPrefix dit ((t.set i first).set i1 second) values output offset h group (count+1) := by
   intro row
   have hib : i.val < t.val.length := by have := t.property; simp only [UScalar.ofNatCore_val_eq] at this; omega
   have hi1b : i1.val < t.val.length := by have := t.property; simp only [UScalar.ofNatCore_val_eq] at this; omega
@@ -108,18 +169,18 @@ private theorem short_add (a b c : Usize) (hc : c.val = a.val+b.val) :
 
 private theorem short_usize_bound : 8 < 2^UScalarTy.Usize.numBits := by scalar_tac
 
-private def shortBody (dit : Bool) (h group : Usize)
+private def shortBody (dit : Bool) (input product : fr8.Fr8) (h group : Usize)
     (table : fft8.Fft8) (t : Aeneas.Std.Array fr8.Fr8 8#usize) (j : Usize) :=
-  if dit then fft8.Fft8.dit_short_loop0_loop0.body h group table t j
-  else fft8.Fft8.dif_short_loop0_loop0.body h group table t j
+  if dit then fft8.Fft8.dit_short_loop0_loop0.body h input product group table t j
+  else fft8.Fft8.dif_short_loop0_loop0.body h input group table t j
 
-private theorem short_body_pair (dit : Bool) (table : fft8.Fft8)
+private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (h group j i i1 wi j1 : Usize)
     (hj : j.val < h.val) (hi : i.val=group.val+j.val) (hi1 : i1.val=i.val+h.val)
     (hwi : wi.val=h.val-1+j.val) (hj1 : j1.val=j.val+1)
     (hdata : i1.val < 8) (hshort : wi.val < table.short.val.length) :
-    shortBody dit h group table t j = (do
-      let (first,second) ← shortPairRun dit j t.val[i.val]! t.val[i1.val]! table.short.val[wi.val]!
+    shortBody dit input product h group table t j = (do
+      let (first,second) ← shortPairRun dit input product j t.val[i.val]! t.val[i1.val]! table.short.val[wi.val]!
       ok (cont (table,(t.set i first).set i1 second,j1))) := by
   have hhalf : 0 < h.val := by omega
   have hi0 : i.val < t.val.length := by
@@ -162,18 +223,19 @@ private theorem short_body_pair (dit : Bool) (table : fft8.Fft8)
       bind_tc_ok,bind_assoc_eq,Function.uncurry_apply_pair,Bool.false_eq_true,
       if_true,if_false]
 
-private theorem short_inner_loop (dit : Bool) (table : fft8.Fft8)
+private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
     (roots values : _root_.Array Fr) (offset : Nat)
     (htable : FftInvariant table roots) (hsize : values.size=roots.size)
     (hbound : 8*(offset+8) ≤ values.size) (hunit : roots[0]! = 1)
     (h group : Usize) (hh : h.val=1 ∨ h.val=2 ∨ h.val=4)
+    (hbounds : ShortBounds dit h.val input product)
     (hgmod : group.val%(2*h.val)=0) (hg : group.val+2*h.val ≤ 8)
     (remaining : Nat) :
     ∀ (t : Aeneas.Std.Array fr8.Fr8 8#usize) (j : Usize), h.val=j.val+remaining →
-      ShortPrefix t values (butterflyStage dit values roots h.val) offset h.val group.val j.val →
-      ∃ out, loop (fun (self,t,k) => shortBody dit h group self t k) (table,t,j) =
+      ShortPrefix dit t values (butterflyStage dit values roots h.val) offset h.val group.val j.val →
+      ∃ out, loop (fun (self,t,k) => shortBody dit input product h group self t k) (table,t,j) =
           ok (table,out) ∧
-        ShortPrefix out values (butterflyStage dit values roots h.val) offset h.val group.val h.val := by
+        ShortPrefix dit out values (butterflyStage dit values roots h.val) offset h.val group.val h.val := by
   have hpos : 0 < h.val := by rcases hh with hh | hh | hh <;> omega
   have hsmall : h.val ≤ 4 := by rcases hh with hh | hh | hh <;> omega
   induction remaining with
@@ -198,17 +260,17 @@ private theorem short_inner_loop (dit : Bool) (table : fft8.Fft8)
     have hi0 : i.val < 8 := by omega
     have hi1b : i1.val < 8 := by omega
     have hwib : wi.val < table.short.val.length := by rw [htable.2.2.2.2.1]; omega
-    have ha : Represents t.val[i.val]! (fun lane => values[8*(offset+lane.val)+i.val]!) := by
+    have ha : ShortInput dit h.val t.val[i.val]! (fun lane => values[8*(offset+lane.val)+i.val]!) := by
       have hf : ¬(i.val < group.val+j.val ∨ group.val+h.val ≤ i.val ∧ i.val < group.val+h.val+j.val) := by omega
       simpa only [hf,if_false] using hp ⟨i.val,hi0⟩
-    have hb : Represents t.val[i1.val]! (fun lane => values[8*(offset+lane.val)+i1.val]!) := by
+    have hb : ShortInput dit h.val t.val[i1.val]! (fun lane => values[8*(offset+lane.val)+i1.val]!) := by
       have hf : ¬(i1.val < group.val+j.val ∨ group.val+h.val ≤ i1.val ∧ i1.val < group.val+h.val+j.val) := by omega
       simpa only [hf,if_false] using hp ⟨i1.val,hi1b⟩
     have hw : MultiplierRep table.short.val[wi.val]!
         (fun _ => roots[j.val*(roots.size/(2*h.val))]!) := by
       rw [hwi]
       exact htable.2.2.2.2.2 h.val hh ⟨j.val,hjlt⟩
-    obtain ⟨first,second,hrun,hfirst,hsecond⟩ := short_pair_representation dit j _ _ _ _ _ _ ha hb hw
+    obtain ⟨first,second,hrun,hfirst,hsecond⟩ := short_pair_representation dit h.val hh input product hbounds j hjlt _ _ _ _ _ _ ha hb hw
       (by intro hz lane; simp [hz,hunit])
     have hsem (lane : Fin 8) := short_pair_values dit values roots offset h.val group.val j.val
       hh hjlt hgmod hg hsize hbound lane
@@ -228,7 +290,7 @@ private theorem short_inner_loop (dit : Bool) (table : fft8.Fft8)
     rw [he0] at hfirst
     rw [he1] at hsecond
     let next := (t.set i first).set i1 second
-    have hnext : ShortPrefix next values (butterflyStage dit values roots h.val)
+    have hnext : ShortPrefix dit next values (butterflyStage dit values roots h.val)
         offset h.val group.val j1.val := by
       rw [hj1]
       exact short_prefix_set t values _ offset h.val group.val j.val i i1 hi hi1
@@ -237,37 +299,38 @@ private theorem short_inner_loop (dit : Bool) (table : fft8.Fft8)
     refine ⟨out,?_,ho⟩
     rw [loop.eq_1]
     dsimp only
-    rw [short_body_pair dit table t h group j i i1 wi j1 hjlt hi (by omega) hwi hj1 hi1b hwib,hrun]
+    rw [short_body_pair dit input product table t h group j i i1 wi j1 hjlt hi (by omega) hwi hj1 hi1b hwib,hrun]
     exact hout
 
-private def shortOuterBody (dit : Bool) (h : Usize) (table : fft8.Fft8)
+private def shortOuterBody (dit : Bool) (input product : fr8.Fr8) (h : Usize) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize) :=
-  if dit then fft8.Fft8.dit_short_loop0.body h table t group
-  else fft8.Fft8.dif_short_loop0.body h table t group
+  if dit then fft8.Fft8.dit_short_loop0.body h input product table t group
+  else fft8.Fft8.dif_short_loop0.body h input table t group
 
-private theorem short_outer_body (dit : Bool) (h : Usize) (table : fft8.Fft8)
+private theorem short_outer_body (dit : Bool) (input product : fr8.Fr8) (h : Usize) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize) :
-    shortOuterBody dit h table t group =
+    shortOuterBody dit input product h table t group =
       if group < fr8.LANES then do
         let (self,t1) ← loop
           (fun (s : fft8.Fft8 × Aeneas.Std.Array fr8.Fr8 8#usize × Usize) =>
-            shortBody dit h group s.1 s.2.1 s.2.2) (table,t,0#usize)
+            shortBody dit input product h group s.1 s.2.1 s.2.2) (table,t,0#usize)
         let step ← 2#usize * h
         let next ← group + step
         ok (cont (self,t1,next))
       else ok (done t) := by
   cases dit <;> rfl
 
-private theorem short_outer_loop (dit : Bool) (table : fft8.Fft8)
+private theorem short_outer_loop (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
     (roots values : _root_.Array Fr) (offset : Nat)
     (htable : FftInvariant table roots) (hsize : values.size=roots.size)
     (hbound : 8*(offset+8) ≤ values.size) (hunit : roots[0]! = 1)
-    (h : Usize) (hh : h.val=1 ∨ h.val=2 ∨ h.val=4) (remaining : Nat) :
+    (h : Usize) (hh : h.val=1 ∨ h.val=2 ∨ h.val=4)
+    (hbounds : ShortBounds dit h.val input product) (remaining : Nat) :
     ∀ (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize),
       8 = group.val+2*h.val*remaining → group.val%(2*h.val)=0 →
-      ShortPrefix t values (butterflyStage dit values roots h.val) offset h.val group.val 0 →
-      ∃ out, loop (fun (self,t,g) => shortOuterBody dit h self t g) (table,t,group) = ok out ∧
-        TransposedRep out (butterflyStage dit values roots h.val) offset := by
+      ShortPrefix dit t values (butterflyStage dit values roots h.val) offset h.val group.val 0 →
+      ∃ out, loop (fun (self,t,g) => shortOuterBody dit input product h self t g) (table,t,group) = ok out ∧
+        TransposedRep (ShortOutput dit h.val) out (butterflyStage dit values roots h.val) offset := by
   have hpos : 0 < h.val := by rcases hh with hh | hh | hh <;> omega
   have hsmall : h.val ≤ 4 := by rcases hh with hh | hh | hh <;> omega
   induction remaining with
@@ -285,8 +348,8 @@ private theorem short_outer_loop (dit : Bool) (table : fft8.Fft8)
     intro t group hn hg hp
     have hgroup : group.val < 8 := by nlinarith
     have hwithin : group.val+2*h.val ≤ 8 := by nlinarith
-    obtain ⟨middle,hm,hmd⟩ := short_inner_loop dit table roots values offset htable hsize
-      hbound hunit h group hh hg hwithin h.val t 0#usize (by simp) hp
+    obtain ⟨middle,hm,hmd⟩ := short_inner_loop dit input product table roots values offset htable hsize
+      hbound hunit h group hh hbounds hg hwithin h.val t 0#usize (by simp) hp
     let step : Usize := UScalar.ofNatCore (2*h.val)
       (Nat.lt_of_le_of_lt (by omega) short_usize_bound)
     let next : Usize := UScalar.ofNatCore (group.val+2*h.val)
@@ -297,7 +360,7 @@ private theorem short_outer_loop (dit : Bool) (table : fft8.Fft8)
       rw [mul_ok _ _ (by change 2*h.val < _; rw [←hs]; exact step.hmax)]
       congr 1
     have hanext : group+step = ok next := short_add group step next (by omega)
-    have hprefix : ShortPrefix middle values (butterflyStage dit values roots h.val)
+    have hprefix : ShortPrefix dit middle values (butterflyStage dit values roots h.val)
         offset h.val next.val 0 := by
       intro row
       have he :
@@ -320,17 +383,39 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
     (h : Usize) (hh : h.val=1 ∨ h.val=2 ∨ h.val=4)
     (htable : FftInvariant table roots) (hsize : values.size=roots.size)
     (hbound : 8*(offset+8) ≤ values.size) (hunit : roots[0]! = 1)
-    (ht : TransposedRep t values offset) :
+    (ht : TransposedRep (ShortInput dit h.val) t values offset) :
     ∃ out, (if dit then fft8.Fft8.dit_short table t h else fft8.Fft8.dif_short table t h) = ok out ∧
-      TransposedRep out (butterflyStage dit values roots h.val) offset := by
-  have hp : ShortPrefix t values (butterflyStage dit values roots h.val) offset h.val 0 0 := by
+      TransposedRep (ShortOutput dit h.val) out (butterflyStage dit values roots h.val) offset := by
+  have hsmall : (if dit then 2*h.val else 2) ≤ 35 := by
+    cases dit <;> rcases hh with hh | hh | hh <;> simp [hh]
+  obtain ⟨input,hi,hin,hiv⟩ := multiple_of_r_refinement
+    (UScalar.ofNatCore (ty := .U64) (if dit then 2*h.val else 2) (by scalar_tac)) hsmall
+  obtain ⟨product,hproduct,hpn,hpv⟩ := multiple_of_r_refinement 2#u64 (by decide)
+  have hbounds : ShortBounds dit h.val input product := ⟨hin,hiv,hpn,hpv⟩
+  have hp : ShortPrefix dit t values (butterflyStage dit values roots h.val) offset h.val 0 0 := by
     intro row
     have hf : ¬ (row.val < 0+0 ∨ 0+h.val ≤ row.val ∧ row.val < 0+h.val+0) := by omega
     simpa only [hf,if_false] using ht row
-  obtain ⟨out,hout,ho⟩ := short_outer_loop dit table roots values offset htable hsize hbound hunit h hh
+  obtain ⟨out,hout,ho⟩ := short_outer_loop dit input product table roots values offset htable hsize hbound hunit h hh hbounds
     (8/(2*h.val)) t 0#usize
     (by rcases hh with hh | hh | hh <;> simp [hh]) (by simp) hp
   refine ⟨out,?_,ho⟩
-  cases dit <;> exact hout
+  cases dit with
+  | false =>
+    have hi' : fr8.Fr8.multiple_of_r 2#u64 = ok input := by simpa using hi
+    simpa only [fft8.Fft8.dif_short,hi',bind_tc_ok,fft8.Fft8.dif_short_loop0,shortOuterBody,
+      Bool.false_eq_true,if_false] using hout
+  | true =>
+    have hcast : UScalar.cast .U64 h = UScalar.ofNatCore (ty := .U64) h.val (by scalar_tac) := by
+      apply UScalar.eq_of_val_eq
+      rcases hh with hh | hh | hh <;> simp [hh]
+    have hmul : 2#u64 * UScalar.ofNatCore (ty := .U64) h.val (by scalar_tac) =
+        ok (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac)) := by
+      exact mul_ok _ _ (by scalar_tac)
+    have hi' : fr8.Fr8.multiple_of_r
+        (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac)) = ok input := by
+      simpa using hi
+    simpa only [fft8.Fft8.dit_short,hcast,lift,bind_tc_ok,hmul,hi',hproduct,
+      fft8.Fft8.dit_short_loop0,shortOuterBody,if_true] using hout
 
 end LeanBlsSimd.Kzg.Extender.Kernel

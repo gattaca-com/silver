@@ -118,50 +118,68 @@ private theorem wide_multiplier (table : fft8.Fft8) (roots : _root_.Array Fr)
     ⟨j,by simpa only [hp,Nat.mul_div_cancel_left _ (by decide : 0 < 8)] using hj⟩
   simpa only [hp,Nat.mul_div_cancel_left _ (by decide : 0 < 8)] using ht
 
-def widePairRun (dit : Bool) (a b w : fr8.Fr8) : Result (fr8.Fr8 × fr8.Fr8) :=
+def widePairRun (dit : Bool) (offset a b w : fr8.Fr8) : Result (fr8.Fr8 × fr8.Fr8) :=
   if dit then do
-    let t ← fr8.Fr8.mul b w
-    let first ← fr8.Fr8.add a t
-    let second ← fr8.Fr8.sub a t
+    let normal ← fr8.Fr8.normalise b
+    let t ← fr8.Fr8.mul normal w
+    let first ← fr8.Fr8.add_raw a t
+    let second ← fr8.Fr8.sub_raw a t offset
     ok (first,second)
   else do
     let first ← fr8.Fr8.add a b
-    let d ← fr8.Fr8.sub a b
-    let second ← fr8.Fr8.mul d w
+    let d ← fr8.Fr8.sub_raw a b offset
+    let normal ← fr8.Fr8.normalise d
+    let second ← fr8.Fr8.mul normal w
     ok (first,second)
 
-theorem wide_pair_representation (dit : Bool) (a b w : fr8.Fr8)
-    (av bv factors : Fin 8 → Fr) (ha : Represents a av) (hb : Represents b bv)
+def WideOutput (dit : Bool) (k m : Nat) : fr8.Fr8 → (Fin 8 → Fr) → Prop :=
+  LazyRep (if dit then k+2 else 2) (if dit then m+33 else 32)
+
+theorem wide_pair_representation (dit : Bool) (k m : Nat)
+    (offset a b w : fr8.Fr8) (av bv factors : Fin 8 → Fr)
+    (hk : k ≤ 32) (hm : m ≤ 337) (hmode : dit = false → k = 2 ∧ m = 32)
+    (hoff : Normalized offset) (hov : ∀ lane, laneNat offset lane = 2 * Fr.modulus)
+    (ha : LazyRep k m a av) (hb : LazyRep k m b bv)
     (hw : MultiplierRep w factors) :
-    ∃ first second, widePairRun dit a b w = ok (first,second) ∧
-      Represents first (fun lane => if dit then av lane+bv lane*factors lane else av lane+bv lane) ∧
-      Represents second (fun lane => if dit then av lane-bv lane*factors lane else (av lane-bv lane)*factors lane) := by
+    ∃ first second, widePairRun dit offset a b w = ok (first,second) ∧
+      WideOutput dit k m first
+        (fun lane => if dit then av lane+bv lane*factors lane else av lane+bv lane) ∧
+      WideOutput dit k m second
+        (fun lane => if dit then av lane-bv lane*factors lane else (av lane-bv lane)*factors lane) := by
   cases dit with
   | true =>
-    obtain ⟨t,ht,hrt⟩ := mul_multiplier_refinement b w bv factors hb hw
-    obtain ⟨first,hf,hrf⟩ := add_representation a t av _ ha hrt
-    obtain ⟨second,hs,hrs⟩ := sub_representation a t av _ ha hrt
-    exact ⟨first,second,by simp [widePairRun,ht,hf,hs],hrf,hrs⟩
+    obtain ⟨normal,t,hn,ht,hrt⟩ := normalise_mul_multiplier_refinement b w bv factors hb
+      (by omega) (by omega) hw
+    obtain ⟨first,hf,hrf,_⟩ := add_raw_lazy_refinement a t av _ ha hrt (by omega)
+    obtain ⟨second,hs,hrs,_⟩ := sub_raw_lazy_refinement a t offset av _ ha hrt hoff hov
+      (by decide) (by omega)
+    exact ⟨first,second,by simp [widePairRun,hn,ht,hf,hs],
+      hrf.mono (by simp) (by simp),hrs⟩
   | false =>
-    obtain ⟨first,hf,hrf⟩ := add_representation a b av bv ha hb
-    obtain ⟨d,hd,hrd⟩ := sub_representation a b av bv ha hb
-    obtain ⟨second,hs,hrs⟩ := mul_multiplier_refinement d w _ factors hrd hw
-    exact ⟨first,second,by simp [widePairRun,hf,hd,hs],hrf,hrs⟩
+    obtain ⟨rfl,rfl⟩ := hmode rfl
+    obtain ⟨first,hf,hrf⟩ := add_lazy_representation a b av bv ha hb (by decide) (by decide)
+    obtain ⟨d,hd,hrd,_⟩ := sub_raw_lazy_refinement a b offset av bv ha hb hoff hov
+      (by decide) (by decide)
+    obtain ⟨normal,second,hn,hs,hrs⟩ := normalise_mul_multiplier_refinement d w _ factors hrd
+      (by decide) (by decide) hw
+    exact ⟨first,second,by simp [widePairRun,hf,hd,hn,hs],
+      hrf.lazy.mono (by decide) (by decide),hrs⟩
 
-private def WidePrefix (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
+private def WidePrefix (dit : Bool) (k m : Nat) (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
     (n half block count : Nat) : Prop :=
-  data.val.length = n ∧ ∀ v : Fin n, Represents data.val[v.val]!
-    (fun lane => if v.val  <  block+count ∨ block+half  ≤  v.val ∧ v.val  <  block+half+count
-      then output[8*v.val+lane.val]! else values[8*v.val+lane.val]!)
+  data.val.length = n ∧ ∀ v : Fin n,
+    if v.val < block+count ∨ block+half ≤ v.val ∧ v.val < block+half+count
+    then WideOutput dit k m data.val[v.val]! (fun lane => output[8*v.val+lane.val]!)
+    else LazyRep k m data.val[v.val]! (fun lane => values[8*v.val+lane.val]!)
 
-private theorem wide_prefix_set (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
+private theorem wide_prefix_set {dit : Bool} {k m : Nat} (data : Slice fr8.Fr8) (values output : _root_.Array Fr)
     (n half block count : Nat) (i i1 : Usize) (hi : i.val=block+count)
     (hi1 : i1.val=block+count+half) (hh : 0 < half) (hj : count < half) (hb : block+2*half  ≤  n)
     (first second : fr8.Fr8)
-    (hfirst : Represents first (fun lane => output[8*i.val+lane.val]!))
-    (hsecond : Represents second (fun lane => output[8*i1.val+lane.val]!))
-    (hprefix : WidePrefix data values output n half block count) :
-    WidePrefix ((data.set i first).set i1 second) values output n half block (count+1) := by
+    (hfirst : WideOutput dit k m first (fun lane => output[8*i.val+lane.val]!))
+    (hsecond : WideOutput dit k m second (fun lane => output[8*i1.val+lane.val]!))
+    (hprefix : WidePrefix dit k m data values output n half block count) :
+    WidePrefix dit k m ((data.set i first).set i1 second) values output n half block (count+1) := by
   have hlen := hprefix.1
   refine ⟨by simpa [Slice.set,Slice.setAtNat] using hlen, ?_⟩
   intro v
@@ -185,18 +203,18 @@ private theorem wide_prefix_set (data : Slice fr8.Fr8) (values output : _root_.A
         List.getElem!_set_ne data.val i.val v.val first (by omega), hiff]
         using hprefix.2 v
 
-def wideBody (dit : Bool) (wide : alloc.vec.Vec fr8.Fr8) (half block : Usize)
+def wideBody (dit : Bool) (offset : fr8.Fr8) (wide : alloc.vec.Vec fr8.Fr8) (half block : Usize)
     (data : Slice fr8.Fr8) (j : Usize) : Result (ControlFlow (Slice fr8.Fr8 × Usize) (Slice fr8.Fr8)) :=
-  if dit then fft8.Fft8.dit_wide_loop0_loop0.body wide half block data j
-  else fft8.Fft8.dif_wide_loop0_loop0.body wide half block data j
+  if dit then fft8.Fft8.dit_wide_loop0_loop0.body wide half offset block data j
+  else fft8.Fft8.dif_wide_loop0_loop0.body wide half offset block data j
 
-private theorem wide_body_pair (dit : Bool) (wide : alloc.vec.Vec fr8.Fr8)
+private theorem wide_body_pair (dit : Bool) (offset : fr8.Fr8) (wide : alloc.vec.Vec fr8.Fr8)
     (data : Slice fr8.Fr8) (half block j i i1 wi j1 : Usize)
     (hj : j.val < half.val) (hi : i.val=block.val+j.val) (hi1 : i1.val=i.val+half.val)
     (hwi : wi.val=half.val-1+j.val) (hj1 : j1.val=j.val+1)
     (hdata : i1.val < data.val.length) (hwide : wi.val < wide.val.length) :
-    wideBody dit wide half block data j = (do
-      let (first,second) ← widePairRun dit data.val[i.val]! data.val[i1.val]! wide.val[wi.val]!
+    wideBody dit offset wide half block data j = (do
+      let (first,second) ← widePairRun dit offset data.val[i.val]! data.val[i1.val]! wide.val[wi.val]!
       ok (cont ((data.set i first).set i1 second,j1))) := by
   have hhalf : 0 < half.val := by omega
   have hi0 : i.val < data.val.length := by omega
@@ -223,16 +241,19 @@ private theorem wide_body_pair (dit : Bool) (wide : alloc.vec.Vec fr8.Fr8)
     UScalar.lt_equiv,hj,hadd,hadd1,haddj,hsub,haddw,ha,hb,hw,hu,hu1,
     widePairRun,bind_tc_ok,bind_assoc_eq,Function.uncurry_apply_pair]
 
-private theorem wide_inner_loop (dit : Bool) (table : fft8.Fft8) (roots values : _root_.Array Fr)
+private theorem wide_inner_loop (dit : Bool) (k m : Nat) (offset : fr8.Fr8)
+    (hk : k ≤ 32) (hm : m ≤ 337) (hmode : dit = false → k = 2 ∧ m = 32)
+    (hoff : Normalized offset) (hov : ∀ lane, laneNat offset lane = 2 * Fr.modulus)
+    (table : fft8.Fft8) (roots values : _root_.Array Fr)
     (htable : FftInvariant table roots) (hsize : values.size=roots.size)
     (half block : Usize) (stage : Nat) (hhalf : half.val=2^stage)
     (hbound : half.val < table.vectors.val) (hbmod : block.val%(2*half.val)=0)
     (hb : block.val+2*half.val ≤ table.vectors.val) (remaining : Nat) :
     ∀ (data : Slice fr8.Fr8) (j : Usize), half.val=j.val+remaining →
-      WidePrefix data values (butterflyStage dit values roots (8*half.val))
+      WidePrefix dit k m data values (butterflyStage dit values roots (8*half.val))
         table.vectors.val half.val block.val j.val →
-      ∃ out, loop (fun (d,k) => wideBody dit table.wide half block d k) (data,j) = ok out ∧
-        WidePrefix out values (butterflyStage dit values roots (8*half.val))
+      ∃ out, loop (fun (d,k) => wideBody dit offset table.wide half block d k) (data,j) = ok out ∧
+        WidePrefix dit k m out values (butterflyStage dit values roots (8*half.val))
           table.vectors.val half.val block.val half.val := by
   have htb := wide_table_bounds table roots htable
   have hhp : 0 < half.val := by rw [hhalf]; positivity
@@ -259,17 +280,17 @@ private theorem wide_inner_loop (dit : Bool) (table : fft8.Fft8) (roots values :
     have hi0 : i.val < table.vectors.val := by omega
     have hi1b : i1.val < table.vectors.val := by omega
     have hwib : wi.val < table.wide.val.length := by rw [htable.2.2.1,←htable.2.1]; omega
-    have ha : Represents data.val[i.val]! (fun lane => values[8*i.val+lane.val]!) := by
+    have ha : LazyRep k m data.val[i.val]! (fun lane => values[8*i.val+lane.val]!) := by
       have hf : ¬(i.val < block.val+j.val ∨ block.val+half.val ≤ i.val ∧ i.val < block.val+half.val+j.val) := by omega
       simpa only [hf,if_false] using hd.2 ⟨i.val,hi0⟩
-    have ha1 : Represents data.val[i1.val]! (fun lane => values[8*i1.val+lane.val]!) := by
+    have ha1 : LazyRep k m data.val[i1.val]! (fun lane => values[8*i1.val+lane.val]!) := by
       have hf : ¬(i1.val < block.val+j.val ∨ block.val+half.val ≤ i1.val ∧ i1.val < block.val+half.val+j.val) := by omega
       simpa only [hf,if_false] using hd.2 ⟨i1.val,hi1b⟩
     have hw : MultiplierRep table.wide.val[wi.val]!
         (fun lane => roots[(8*j.val+lane.val)*(roots.size/(2*(8*half.val)))]!) := by
       rw [hwi]
       exact wide_multiplier table roots htable half.val stage j.val hhalf hbound hjlt
-    obtain ⟨first,second,hrun,hfirst,hsecond⟩ := wide_pair_representation dit _ _ _ _ _ _ ha ha1 hw
+    obtain ⟨first,second,hrun,hfirst,hsecond⟩ := wide_pair_representation dit k m offset _ _ _ _ _ _ hk hm hmode hoff hov ha ha1 hw
     have hsem (lane : Fin 8) := wide_pair_values dit values roots half.val block.val j.val
       hhp hjlt hbmod (by rw [hsize,htb.1]; simpa using hb)
       (by rw [hsize,htb.1]; omega) hsize lane
@@ -289,7 +310,7 @@ private theorem wide_inner_loop (dit : Bool) (table : fft8.Fft8) (roots values :
     rw [he0] at hfirst
     rw [he1] at hsecond
     let next := (data.set i first).set i1 second
-    have hnext : WidePrefix next values (butterflyStage dit values roots (8*half.val))
+    have hnext : WidePrefix dit k m next values (butterflyStage dit values roots (8*half.val))
         table.vectors.val half.val block.val j1.val := by
       rw [hj1]
       exact wide_prefix_set data values _ _ _ _ _ i i1 hi hi1 hhp hjlt hb first second hfirst hsecond hd
@@ -297,38 +318,41 @@ private theorem wide_inner_loop (dit : Bool) (table : fft8.Fft8) (roots values :
     refine ⟨out,?_,ho⟩
     rw [loop.eq_1]
     dsimp only
-    rw [wide_body_pair dit table.wide data half block j i i1 wi j1 hjlt hi
+    rw [wide_body_pair dit offset table.wide data half block j i i1 wi j1 hjlt hi
       (by omega) hwi hj1 (by omega) hwib,hrun]
     exact hout
 
-def wideOuterBody (dit : Bool) (table : fft8.Fft8) (half : Usize)
+def wideOuterBody (dit : Bool) (offset : fr8.Fr8) (table : fft8.Fft8) (half : Usize)
     (data : Slice fr8.Fr8) (block : Usize) :
     Result (ControlFlow (Slice fr8.Fr8 × Usize) (Slice fr8.Fr8)) :=
-  if dit then fft8.Fft8.dit_wide_loop0.body table half data block
-  else fft8.Fft8.dif_wide_loop0.body table half data block
+  if dit then fft8.Fft8.dit_wide_loop0.body table half offset data block
+  else fft8.Fft8.dif_wide_loop0.body table half offset data block
 
-private theorem wide_outer_body (dit : Bool) (table : fft8.Fft8) (half : Usize)
+private theorem wide_outer_body (dit : Bool) (offset : fr8.Fr8) (table : fft8.Fft8) (half : Usize)
     (data : Slice fr8.Fr8) (block : Usize) :
-    wideOuterBody dit table half data block =
+    wideOuterBody dit offset table half data block =
       if block  <  table.vectors then do
-        let data1 ← loop (fun (d,k) => wideBody dit table.wide half block d k) (data,0#usize)
+        let data1 ← loop (fun (d,k) => wideBody dit offset table.wide half block d k) (data,0#usize)
         let step ← 2#usize * half
         let next ← block + step
         ok (cont (data1,next))
       else ok (done data) := by
   cases dit <;> rfl
 
-private theorem wide_outer_loop (dit : Bool) (table : fft8.Fft8) (roots values : _root_.Array Fr)
+private theorem wide_outer_loop (dit : Bool) (k m : Nat) (offset : fr8.Fr8)
+    (hk : k ≤ 32) (hm : m ≤ 337) (hmode : dit = false → k = 2 ∧ m = 32)
+    (hoff : Normalized offset) (hov : ∀ lane, laneNat offset lane = 2 * Fr.modulus)
+    (table : fft8.Fft8) (roots values : _root_.Array Fr)
     (htable : FftInvariant table roots) (hsize : values.size=roots.size)
     (half : Usize) (stage : Nat) (hhalf : half.val=2^stage)
     (hbound : half.val < table.vectors.val) (remaining : Nat) :
     ∀ (data : Slice fr8.Fr8) (block : Usize),
       table.vectors.val = block.val + 2*half.val*remaining →
       block.val%(2*half.val)=0 →
-      WidePrefix data values (butterflyStage dit values roots (8*half.val))
+      WidePrefix dit k m data values (butterflyStage dit values roots (8*half.val))
         table.vectors.val half.val block.val 0 →
-      ∃ out, loop (fun (d,b) => wideOuterBody dit table half d b) (data,block) = ok out ∧
-        DataRep out (butterflyStage dit values roots (8*half.val)) := by
+      ∃ out, loop (fun (d,b) => wideOuterBody dit offset table half d b) (data,block) = ok out ∧
+        LazyDataRep (if dit then k+2 else 2) (if dit then m+33 else 32) out (butterflyStage dit values roots (8*half.val)) := by
   have htb := wide_table_bounds table roots htable
   have hhp : 0 < half.val := by rw [hhalf]; positivity
   induction remaining with
@@ -350,7 +374,7 @@ private theorem wide_outer_loop (dit : Bool) (table : fft8.Fft8) (roots values :
     intro data block hn hb hd
     have hblock : block.val < table.vectors.val := by nlinarith
     have hwithin : block.val+2*half.val ≤ table.vectors.val := by nlinarith
-    obtain ⟨middle,hm,hmd⟩ := wide_inner_loop dit table roots values htable hsize half block stage
+    obtain ⟨middle,hm,hmd⟩ := wide_inner_loop dit k m offset hk hm hmode hoff hov table roots values htable hsize half block stage
       hhalf hbound hb hwithin half.val data 0#usize (by simp) hd
     let step : Usize := UScalar.ofNatCore (2*half.val) (by scalar_tac)
     let next : Usize := UScalar.ofNatCore (block.val+2*half.val) (by scalar_tac)
@@ -360,7 +384,7 @@ private theorem wide_outer_loop (dit : Bool) (table : fft8.Fft8) (roots values :
       rw [mul_ok _ _ (by change 2*half.val  <  _; rw [←hs]; exact step.hmax)]
       congr 1
     have hanext : block+step = ok next := small_add block step next (by omega)
-    have hprefix : WidePrefix middle values (butterflyStage dit values roots (8*half.val))
+    have hprefix : WidePrefix dit k m middle values (butterflyStage dit values roots (8*half.val))
         table.vectors.val half.val next.val 0 := by
       refine ⟨hmd.1, ?_⟩
       intro v
@@ -378,35 +402,41 @@ private theorem wide_outer_loop (dit : Bool) (table : fft8.Fft8) (roots values :
     simp only [bind_tc_ok,hmstep,hanext]
     exact hout
 
-theorem wide_refinement (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (half : Usize)
+theorem wide_refinement (dit : Bool) (k m : Nat)
+    (hk : k ≤ 32) (hm : m ≤ 337) (hmode : dit = false → k = 2 ∧ m = 32)
+    (table : fft8.Fft8) (data : Slice fr8.Fr8) (half : Usize)
     (values roots : _root_.Array Fr) (htable : FftInvariant table roots)
-    (hsize : values.size=roots.size) (hdata : DataRep data values)
+    (hsize : values.size=roots.size) (hdata : LazyDataRep k m data values)
     (hhalf : ∃ stage : Nat, half.val=2^stage) (hbound : half.val < table.vectors.val) :
     ∃ out, (if dit then fft8.Fft8.dit_wide table data half else fft8.Fft8.dif_wide table data half) = ok out ∧
-      DataRep out (butterflyStage dit values roots (8*half.val)) := by
+      LazyDataRep (if dit then k+2 else 2) (if dit then m+33 else 32) out (butterflyStage dit values roots (8*half.val)) := by
+  obtain ⟨offset,hoffset,hoff,hov⟩ := multiple_of_r_refinement 2#u64 (by decide)
   obtain ⟨stage,hhalf⟩ := hhalf
-  obtain ⟨hn,hnle,k,hk⟩ := wide_table_bounds table roots htable
-  have hslt : stage < k := by
-    have hp : 2^stage < 2^k := by rw [←hhalf,←hk]; exact hbound
+  obtain ⟨hn,hnle,vectorsLog,hvectorsLog⟩ := wide_table_bounds table roots htable
+  have hslt : stage < vectorsLog := by
+    have hp : 2^stage < 2^vectorsLog := by rw [←hhalf,←hvectorsLog]; exact hbound
     exact (Nat.pow_lt_pow_iff_right (by decide)).mp hp
   have hd : 2*half.val ∣ table.vectors.val := by
-    rw [hhalf,hk,←pow_succ']
+    rw [hhalf,hvectorsLog,←pow_succ']
     exact Nat.pow_dvd_pow 2 (Nat.succ_le_of_lt hslt)
   have hlen : data.val.length=table.vectors.val := by
     have h := hdata.1
     rw [hsize,hn] at h
     omega
-  have hprefix : WidePrefix data values (butterflyStage dit values roots (8*half.val))
+  have hprefix : WidePrefix dit k m data values (butterflyStage dit values roots (8*half.val))
       table.vectors.val half.val 0 0 := by
     refine ⟨hlen, ?_⟩
     intro v
     have hvd : v.val < data.val.length := by omega
     have hf : ¬(v.val < 0+0 ∨ 0+half.val ≤ v.val ∧ v.val < 0+half.val+0) := by omega
     simpa only [hf,if_false,getElem!_pos data.val v.val hvd] using hdata.2 ⟨v.val,hvd⟩
-  obtain ⟨out,hout,ho⟩ := wide_outer_loop dit table roots values htable hsize half stage hhalf hbound
+  obtain ⟨out,hout,ho⟩ := wide_outer_loop dit k m offset hk hm hmode hoff hov table roots values htable hsize half stage hhalf hbound
     (table.vectors.val/(2*half.val)) data 0#usize
     (by simpa [Nat.mul_comm] using (Nat.div_mul_cancel hd).symm) (by simp) hprefix
   refine ⟨out, ?_, ho⟩
-  cases dit <;> exact hout
+  cases dit <;>
+    simpa only [fft8.Fft8.dit_wide, fft8.Fft8.dif_wide, hoffset, bind_tc_ok,
+      fft8.Fft8.dit_wide_loop0, fft8.Fft8.dif_wide_loop0, wideOuterBody,
+      Bool.false_eq_true, Bool.true_eq, if_true, if_false] using hout
 
 end LeanBlsSimd.Kzg.Extender.Kernel
