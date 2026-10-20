@@ -293,8 +293,8 @@ impl Fr8 {
         Self(select_borrowed(borrow, &wrapped, &d))
     }
 
-    /// Lane `l` takes lane `index[l] % 8` of `self` if `index[l] < 8`, of
-    /// `other` otherwise.
+    /// Lane `l` takes lane `index[l] & 7` of `self` if bit 3 of `index[l]` is
+    /// clear, of `other` otherwise; higher bits are ignored.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn permute(&self, index: __m512i, other: &Self) -> Self {
