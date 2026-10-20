@@ -372,11 +372,25 @@ fn fft_timing() {
                 }
             }
         });
+        let decoded = best_micros(reps, || {
+            for v in 0..n / LANES {
+                // SAFETY: as above.
+                data[v] = unsafe { Fr8::from_bytes(black_box(&bytes), v * vector_bytes).0 };
+            }
+        });
+        let encoded = best_micros(reps, || {
+            for v in 0..n / LANES {
+                // SAFETY: as above.
+                unsafe { data[v].to_bytes(black_box(&mut out_bytes), v * vector_bytes) };
+            }
+        });
         println!("{:<40} {scalar:>10.1}", format!("scalar fft, n = {n}"));
         println!("{:<40} {scalar_inverse:>10.1}", format!("scalar inverse_fft, n = {n}"));
         println!("{:<40} {kernel_only:>10.1}", format!("kernel dit, n = {n}"));
         println!("{:<40} {kernel_dif:>10.1}", format!("kernel dif, n = {n}"));
         println!("{:<40} {converted:>10.1}", format!("kernel from_bytes+dif+to_bytes, n = {n}"));
+        println!("{:<40} {decoded:>10.1}", format!("kernel from_bytes, n = {n}"));
+        println!("{:<40} {encoded:>10.1}", format!("kernel to_bytes, n = {n}"));
     }
 
     let random: Vec<_> = (0..4096).map(|_| fr_to_bytes(&random_fr(&mut rng))).collect();
