@@ -37,11 +37,6 @@ impl PageSnapshot {
         self.count = src.count;
     }
 
-    /// Forget the mirrored content, so a load against this copies every page.
-    pub fn unmirror(&mut self) {
-        self.roots.clear();
-    }
-
     #[inline]
     pub fn same_pages(&self, other: &PageSnapshot) -> bool {
         self.format == other.format && self.roots == other.roots

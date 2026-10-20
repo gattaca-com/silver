@@ -6,7 +6,10 @@ use std::{
 use flux_profiler::timed;
 use silver_hashing::{FlatTree, PagePool, PageSnapshot};
 
-use super::{TreeSpec, TreeView, TreeWriteView, hashing_writer::HashingWriter};
+use super::{
+    TreeSpec, TreeView, TreeWriteView,
+    hashing_writer::{Committed, HashingWriter},
+};
 use crate::{
     ring::{Id, Ring, RingGroup},
     types::{B256, HashFormat, SLOTS_RING_N, TreeLenMismatch},
@@ -87,19 +90,17 @@ impl<C: TreeSpec> TreeGroup<C> {
 
     #[timed]
     pub fn roll_fresh(&mut self) -> TreeWriteView<'_, C> {
-        let Self { pool, finalized, writer, .. } = self;
-        writer.load(pool, finalized, None);
+        let Self { pool, finalized, ring, writer, .. } = self;
+        writer.load(pool, finalized, ring, Committed::Base);
         TreeWriteView::new(self, None)
     }
 
     #[timed]
     pub fn roll_from(&mut self, parent: Id<Self>) -> TreeWriteView<'_, C> {
         let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
-        if *finalized_id == Some(parent) {
-            writer.load(pool, finalized, None);
-        } else {
-            writer.load(pool, ring.get(parent), Some(parent));
-        }
+        let target =
+            if *finalized_id == Some(parent) { Committed::Base } else { Committed::Entry(parent) };
+        writer.load(pool, finalized, ring, target);
         TreeWriteView::new(self, Some(parent))
     }
 
@@ -140,10 +141,11 @@ impl<C: TreeSpec> TreeGroup<C> {
         if *finalized_id == Some(winner) {
             return;
         }
+        let base_kept = finalized.same_pages(ring.get(winner));
         finalized.promote::<C>(pool, ring.get(winner));
         ring.free_through_with(winner, |snapshot| snapshot.release::<C>(pool, finalized));
         *finalized_id = Some(winner);
-        writer.unmirror_dead(finalized, |id| survivors.iter().any(|s| idx(s) == id));
+        writer.forget_dead(winner, base_kept, |id| survivors.iter().any(|s| idx(s) == id));
     }
 
     #[inline]

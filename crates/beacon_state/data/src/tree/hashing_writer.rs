@@ -1,30 +1,39 @@
 use silver_hashing::{FlatTree, PagePool, PageSnapshot};
 
 use super::{TreeGroup, TreeSpec};
-use crate::ring::Id;
+use crate::ring::{Id, Ring};
 
-/// The group's flat tree, plus the committed table it last matched.
+/// The group's flat tree, plus which committed table it matches outside its
+/// uncommitted chunks, if any. A load diffs against that table, so it copies
+/// only the pages that differ.
 ///
-/// `mirror` is `tree` outside its uncommitted chunks, as ring entry
-/// `mirror_of` (`None`: the base) committed it. A load diffs against it, so it
-/// copies only the pages that differ.
-///
-/// The mirror owns no pages, so an equal page id proves equal content only
-/// while those pages are live. Pages are freed only at finalize, which clears
-/// any mirror that is neither a survivor nor the unchanged base.
+/// Equal page ids prove equal content only while those pages are live. Pages
+/// are freed only at finalize, which forgets a table that did not survive.
 pub(super) struct HashingWriter<C: TreeSpec> {
     tree: FlatTree<C>,
-    mirror: PageSnapshot,
-    mirror_of: Option<Id<TreeGroup<C>>>,
+    loaded: Option<Committed<C>>,
+}
+
+pub(super) enum Committed<C: TreeSpec> {
+    Base,
+    Entry(Id<TreeGroup<C>>),
+}
+
+impl<C: TreeSpec> Committed<C> {
+    #[inline]
+    fn table<'a>(&self, base: &'a PageSnapshot, ring: &'a Ring<TreeGroup<C>>) -> &'a PageSnapshot {
+        match self {
+            Committed::Base => base,
+            Committed::Entry(id) => ring.get(*id),
+        }
+    }
 }
 
 impl<C: TreeSpec> HashingWriter<C> {
-    /// The writer, and `tree` committed as the base it mirrors.
+    /// The writer, and `tree` committed as the base it matches.
     pub(super) fn new(mut tree: FlatTree<C>, pool: &mut PagePool<C::Page>) -> (Self, PageSnapshot) {
         let base = tree.to_snapshot(pool);
-        let mut mirror = PageSnapshot::default();
-        mirror.mirror(&base);
-        (Self { tree, mirror, mirror_of: None }, base)
+        (Self { tree, loaded: Some(Committed::Base) }, base)
     }
 
     #[inline]
@@ -40,12 +49,14 @@ impl<C: TreeSpec> HashingWriter<C> {
     pub(super) fn load(
         &mut self,
         pool: &PagePool<C::Page>,
-        target: &PageSnapshot,
-        of: Option<Id<TreeGroup<C>>>,
+        base: &PageSnapshot,
+        ring: &Ring<TreeGroup<C>>,
+        target: Committed<C>,
     ) {
-        self.tree.load(pool, &self.mirror, target);
-        self.mirror.mirror(target);
-        self.mirror_of = of;
+        let nothing = PageSnapshot::default();
+        let loaded = self.loaded.as_ref().map_or(&nothing, |l| l.table(base, ring));
+        self.tree.load(pool, loaded, target.table(base, ring));
+        self.loaded = Some(target);
     }
 
     pub(super) fn commit(
@@ -56,21 +67,22 @@ impl<C: TreeSpec> HashingWriter<C> {
         id: Id<TreeGroup<C>>,
     ) {
         self.tree.commit(pool, dst, Some(parent));
-        self.mirror.mirror(dst);
-        self.mirror_of = Some(id);
+        self.loaded = Some(Committed::Entry(id));
     }
 
-    pub(super) fn unmirror_dead(
+    /// `winner` now names the base; `base_kept` says the promotion left the
+    /// base's pages as they were.
+    pub(super) fn forget_dead(
         &mut self,
-        base: &PageSnapshot,
+        winner: Id<TreeGroup<C>>,
+        base_kept: bool,
         is_survivor: impl Fn(Id<TreeGroup<C>>) -> bool,
     ) {
-        let live = match self.mirror_of {
-            Some(id) => is_survivor(id),
-            None => self.mirror.same_pages(base),
+        self.loaded = match self.loaded.take() {
+            Some(Committed::Entry(id)) if id == winner => Some(Committed::Base),
+            Some(Committed::Entry(id)) if is_survivor(id) => Some(Committed::Entry(id)),
+            Some(Committed::Base) if base_kept => Some(Committed::Base),
+            _ => None,
         };
-        if !live {
-            self.mirror.unmirror();
-        }
     }
 }
