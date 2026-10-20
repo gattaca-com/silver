@@ -100,8 +100,9 @@ example : val (mulWith madd52loFull madd52hi 52 pMinus1 twoPMinus1) * R % Fp.mod
 
 /-! ## The carry shift
 
-The reference row still uses its cleared limb. The generated row shifts the wrapping sum of
-its original limb and MASK52, justified by `carry_of_cleared_eq`. Both shifts must be 52. -/
+The reference row uses its cleared limb. The early-carry model shifts the wrapping sum of
+its original limb and MASK52, justified by `carry_of_cleared_eq`. These controls check the
+model expressions; `Simd.carry_of_cleared_refines` connects the generated expression to them. -/
 
 def earlyCarryWith (shift : Nat) (t : UInt64) : UInt64 :=
   srli shift (t + UInt64.ofNat (2 ^ 52 - 1))

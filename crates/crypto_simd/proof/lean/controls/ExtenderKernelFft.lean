@@ -17,20 +17,20 @@ set_option maxHeartbeats 2000000
 set_option exponentiation.threshold 1000
 
 /-- Indexed values distinguish table positions without assuming a Fourier root law. -/
-def layoutRoots : _root_.Array Fr := _root_.Array.ofFn (fun i : Fin 32 => Fr.ofNat i.val)
+def layoutRoots : _root_.Array Fr := _root_.Array.ofFn (fun i : Fin 64 => Fr.ofNat i.val)
 
-private theorem layoutRoots_size : layoutRoots.size = 32 := _root_.Array.size_ofFn
+private theorem layoutRoots_size : layoutRoots.size = 64 := _root_.Array.size_ofFn
 
-private theorem layoutRoots_get (i : Nat) (hi : i < 32) : layoutRoots[i]! = Fr.ofNat i := by
+private theorem layoutRoots_get (i : Nat) (hi : i < 64) : layoutRoots[i]! = Fr.ofNat i := by
   rw [getElem!_pos layoutRoots i (by rw [layoutRoots_size]; exact hi)]
   simp only [layoutRoots, _root_.Array.getElem_ofFn]
 
-private theorem sampled_layout : sampleRoots layoutRoots 32 = layoutRoots := by
+private theorem sampled_layout : sampleRoots layoutRoots 64 = layoutRoots := by
   apply _root_.Array.ext
   · simp only [sampleRoots, _root_.Array.size_ofFn, layoutRoots_size]
   · intro i hi hj
     simp only [sampleRoots, _root_.Array.getElem_ofFn, layoutRoots_size,
-      show 32/32 = 1 by decide, Nat.mul_one]
+      show 64/64 = 1 by decide, Nat.mul_one]
     exact getElem!_pos layoutRoots i hj
 
 def layoutInput : Slice blst.blst_fr :=
@@ -39,41 +39,49 @@ def layoutInput : Slice blst.blst_fr :=
     scalar_tac⟩
 
 private theorem layout_table_exists :
-    ∃ table, @fft8.Fft8.new specExternals layoutInput 32#usize = ok table ∧
+    ∃ table, @fft8.Fft8.new specExternals layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots := by
   obtain ⟨table, hnew, ht⟩ := @fft_new_refinement specExternals specExternals_correct.1
-    layoutInput layoutRoots 32#usize ⟨5, by decide, by decide, rfl⟩
+    layoutInput layoutRoots 64#usize ⟨6, by decide, by decide, rfl⟩
     (by rw [layoutRoots_size]; decide) (by rw [layoutRoots_size]; decide) rfl
   exact ⟨table, hnew, by simpa only [UScalar.ofNatCore_val_eq, sampled_layout] using ht⟩
 
-def swapSmallTwiddles (table : fft8.Fft8) : fft8.Fft8 :=
-  { table with stage2 := table.stage4, stage4 := table.stage2 }
+def swapShortTwiddles (table : fft8.Fft8) : fft8.Fft8 :=
+  { table with
+    short := alloc.vec.Vec.set
+      (alloc.vec.Vec.set table.short 2#usize table.short.val[4]!)
+      4#usize table.short.val[2]! }
 
-theorem swapped_stage2_stage4_violates_generated_table :
-    ∃ table, @fft8.Fft8.new specExternals layoutInput 32#usize = ok table ∧
-      FftInvariant table layoutRoots ∧ ¬ FftInvariant (swapSmallTwiddles table) layoutRoots := by
+theorem swapped_short_twiddles_violates_generated_table :
+    ∃ table, @fft8.Fft8.new specExternals layoutInput 64#usize = ok table ∧
+      FftInvariant table layoutRoots ∧ ¬ FftInvariant (swapShortTwiddles table) layoutRoots := by
   obtain ⟨table, hnew, ht⟩ := layout_table_exists
   refine ⟨table, hnew, ht, ?_⟩
   intro hmut
-  have hgood := ht.2.2.2.2.2.2 ⟨1, by decide⟩
-  have hbad := hmut.2.2.2.2.1.2 ⟨1, by decide⟩
-  change laneValue table.stage4 ⟨1, by decide⟩ = _ at hbad
+  have hlen : table.short.val.length = 7 := ht.2.2.2.2.1
+  have hset : (swapShortTwiddles table).short.val[2]! = table.short.val[4]! := by
+    change ((table.short.val.set 2 table.short.val[4]!).set 4 table.short.val[2]!)[2]! = _
+    rw [List.getElem!_set_ne _ 4 2 _ (by decide), List.getElem!_set _ _ _ (by omega)]
+  have hgood := (ht.2.2.2.2.2 4 (by simp) ⟨1, by decide⟩).2 ⟨0, by decide⟩
+  have hbad := (hmut.2.2.2.2.2 2 (by simp) ⟨1, by decide⟩).2 ⟨0, by decide⟩
+  change laneValue (swapShortTwiddles table).short.val[2]! ⟨0, by decide⟩ = _ at hbad
+  rw [hset] at hbad
   have he := hgood.symm.trans hbad
   simp only [layoutRoots_size] at he
-  change layoutRoots[4]! * Fr.ofNat (2^260) = layoutRoots[8]! * Fr.ofNat (2^260) at he
-  rw [layoutRoots_get 4 (by decide), layoutRoots_get 8 (by decide)] at he
-  exact (by decide +kernel : Fr.ofNat 4 * Fr.ofNat (2^260) ≠ Fr.ofNat 8 * Fr.ofNat (2^260)) he
+  change layoutRoots[8]! * Fr.ofNat (2^260) = layoutRoots[16]! * Fr.ofNat (2^260) at he
+  rw [layoutRoots_get 8 (by decide), layoutRoots_get 16 (by decide)] at he
+  exact (by decide +kernel : Fr.ofNat 8 * Fr.ofNat (2^260) ≠ Fr.ofNat 16 * Fr.ofNat (2^260)) he
 
 def readNextWideVector (table : fft8.Fft8) : fft8.Fft8 :=
   { table with wide := alloc.vec.Vec.set table.wide 0#usize table.wide.val[1]! }
 
 theorem reading_next_wide_vector_violates_generated_table :
-    ∃ table, @fft8.Fft8.new specExternals layoutInput 32#usize = ok table ∧
+    ∃ table, @fft8.Fft8.new specExternals layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots ∧ ¬ FftInvariant (readNextWideVector table) layoutRoots := by
   obtain ⟨table, hnew, ht⟩ := layout_table_exists
   refine ⟨table, hnew, ht, ?_⟩
   intro hmut
-  have hlen : table.wide.val.length = 3 := by
+  have hlen : table.wide.val.length = 7 := by
     simpa only [layoutRoots_size] using ht.2.2.1
   have hset : (readNextWideVector table).wide.val[0]! = table.wide.val[1]! := by
     change (table.wide.val.set 0 table.wide.val[1]!)[0]! = _
@@ -86,26 +94,48 @@ theorem reading_next_wide_vector_violates_generated_table :
   rw [hset] at hbad
   have he := hgood.symm.trans hbad
   simp only [layoutRoots_size] at he
-  change layoutRoots[1]! * Fr.ofNat (2^260) = layoutRoots[2]! * Fr.ofNat (2^260) at he
-  rw [layoutRoots_get 1 (by decide), layoutRoots_get 2 (by decide)] at he
-  exact (by decide +kernel : Fr.ofNat 1 * Fr.ofNat (2^260) ≠ Fr.ofNat 2 * Fr.ofNat (2^260)) he
+  change layoutRoots[2]! * Fr.ofNat (2^260) = layoutRoots[4]! * Fr.ofNat (2^260) at he
+  rw [layoutRoots_get 2 (by decide), layoutRoots_get 4 (by decide)] at he
+  exact (by decide +kernel : Fr.ofNat 2 * Fr.ofNat (2^260) ≠ Fr.ofNat 4 * Fr.ofNat (2^260)) he
 
-def swapScatter (pairs : fft8.LanePairs) : fft8.LanePairs :=
-  { pairs with first := pairs.second, second := pairs.first }
+/-- The scalar layout of one transposed 8×8 block. -/
+def transposeValues (values : _root_.Array Fr) : _root_.Array Fr :=
+  _root_.Array.ofFn (fun i : Fin 64 => values[(i.val % 8)*8+i.val/8]!)
 
-theorem swapped_scatter_does_not_restore_input :
-    ∃ pairs, fft8.LanePairs.new 1#usize = ok pairs ∧ LanePairsInvariant pairs 1 ∧
-      let a : M512 := .replicate 8 0
-      let b : M512 := .replicate 8 1
-      let upper := _mm512_permutex2var_epi64 a pairs.upper b
-      let lower := _mm512_permutex2var_epi64 a pairs.lower b
-      _mm512_permutex2var_epi64 upper (swapScatter pairs).first lower ≠ a := by
-  obtain ⟨pairs, hnew, hp⟩ := lane_pairs_refinement 1#usize (by simp)
-  refine ⟨pairs, hnew, hp, ?_⟩
-  have h := (gather_scatter_inverse pairs 1 hp (.replicate 8 0) (.replicate 8 1)).2
-  dsimp only
-  rw [show (swapScatter pairs).first = pairs.second from rfl, h]
-  decide
+def shortImpulse (atIndex : Nat) : _root_.Array Fr :=
+  _root_.Array.ofFn (fun i : Fin 64 => if i.val = atIndex then 1 else 0)
+
+def unitRoots : _root_.Array Fr := _root_.Array.replicate 64 1
+
+def indexedUnitRoots : _root_.Array Fr :=
+  _root_.Array.ofFn (fun i : Fin 64 => if i.val = 0 then 1 else Fr.ofNat i.val)
+
+example : TransformSize unitRoots.size ∧ unitRoots[0]! = 1 ∧
+    TransformSize indexedUnitRoots.size ∧ indexedUnitRoots[0]! = 1 ∧
+    (shortImpulse 1).size = 64 ∧ (shortImpulse 3).size = 64 := by
+  exact ⟨⟨6, by decide, by decide, rfl⟩, by decide +kernel,
+    ⟨6, by decide, by decide, rfl⟩, by decide +kernel, rfl, rfl⟩
+
+/- `short_refinement` identifies these stage values with the generated short calls.
+Skipping j = 0 is valid because roots[0] = 1; skipping j = 1 changes this product. -/
+theorem skipped_nonunit_product_changes_short_stage :
+    (butterflyStage true (shortImpulse 3) indexedUnitRoots 2)[1]! ≠
+      (butterflyStage true (shortImpulse 3) unitRoots 2)[1]! := by
+  decide +kernel
+
+/- `block_run_representation` composes both generated transposes with the three
+short stages. Omitting the input transpose applies the stages to transposed values;
+omitting the output transpose leaves their result transposed. These are semantic
+controls on that composition, with roots satisfying its unit-root premise. -/
+theorem missing_input_transpose_changes_block :
+    (shortStages true (transposeValues (shortImpulse 1)) unitRoots)[0]! ≠
+      (shortStages true (shortImpulse 1) unitRoots)[0]! := by
+  decide +kernel
+
+theorem missing_output_transpose_changes_block :
+    (transposeValues (shortStages true (shortImpulse 1) unitRoots))[1]! ≠
+      (shortStages true (shortImpulse 1) unitRoots)[1]! := by
+  decide +kernel
 
 def impulse (atIndex : Nat) : _root_.Array Fr :=
   _root_.Array.ofFn (fun i : Fin 16 => if i.val = atIndex then 1 else 0)
@@ -179,7 +209,10 @@ theorem replacing_inverse_dit_and_forward_dif_changes_results :
 
 end LeanBlsSimd.Kzg.Extender.Controls.KernelFft
 
-#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.swapped_stage2_stage4_violates_generated_table
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.swapped_short_twiddles_violates_generated_table
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.reading_next_wide_vector_violates_generated_table
-#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.swapped_scatter_does_not_restore_input
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.replacing_inverse_dit_and_forward_dif_changes_results
+
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.skipped_nonunit_product_changes_short_stage
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.missing_input_transpose_changes_block
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelFft.missing_output_transpose_changes_block

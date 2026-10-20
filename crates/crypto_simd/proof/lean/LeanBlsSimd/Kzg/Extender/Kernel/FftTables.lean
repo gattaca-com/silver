@@ -42,14 +42,14 @@ private theorem wide_tables_loop [e : KzgExternals] (hblst : BlstCorrect e)
     (stage : Nat) (hs : 3 ≤ stage) (hsk : stage ≤ logSize)
     (wide : alloc.vec.Vec fr8.Fr8) (half : Usize) (hh : half.val = 2 ^ stage)
     (hw : WideTables wide roots stage) :
-    ∃ out, fft8.Fft8.new_loop0 input n stride wide half = ok out ∧
+    ∃ out, fft8.Fft8.new_loop1 input n stride wide half = ok out ∧
       WideTables out roots logSize := by
   induction hrem : logSize - stage generalizing stage wide half with
   | zero =>
     have he : stage = logSize := by omega
     refine ⟨wide, ?_, by simpa only [he] using hw⟩
-    rw [fft8.Fft8.new_loop0, loop.eq_1]
-    simp [fft8.Fft8.new_loop0.body, UScalar.lt_equiv, hh, hn, he]
+    rw [fft8.Fft8.new_loop1, loop.eq_1]
+    simp [fft8.Fft8.new_loop1.body, UScalar.lt_equiv, hh, hn, he]
   | succ rem ih =>
     have hst : stage < logSize := by omega
     have hhalf : 8 ≤ half.val := by
@@ -85,10 +85,69 @@ private theorem wide_tables_loop [e : KzgExternals] (hblst : BlstCorrect e)
     have hlt : half < n := by
       simp only [UScalar.lt_equiv, hh, hn]
       exact Nat.pow_lt_pow_right (by decide) hst
-    have hbody : fft8.Fft8.new_loop0.body input n stride wide half = ok (cont (next, half')) := by
-      simp only [fft8.Fft8.new_loop0.body, hlt, if_true, hstage, hmul, bind_tc_ok]
-    rw [fft8.Fft8.new_loop0, loop.eq_1]
+    have hbody : fft8.Fft8.new_loop1.body input n stride wide half = ok (cont (next, half')) := by
+      simp only [fft8.Fft8.new_loop1.body, hlt, if_true, hstage, hmul, bind_tc_ok]
+    rw [fft8.Fft8.new_loop1, loop.eq_1]
     simpa only [hbody] using hout
+
+private theorem short_tables_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+    (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
+    (hinput : input.val = roots.toList.map frEncode) (n stride : Usize)
+    (hproduct : stride.val * n.val = roots.size) (hnmin : 64 ≤ n.val)
+    (hnmax : n.val ≤ 4096) (hrootN : n.val ≤ roots.size) :
+    ∃ short, fft8.Fft8.new_loop0 input n stride
+        (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) 1#usize = ok short ∧
+      short.val.length = 7 ∧
+      ∀ h : Nat, h = 1 ∨ h = 2 ∨ h = 4 → ∀ j : Fin h,
+        MultiplierRep short.val[h - 1 + j.val]!
+          (fun _ => roots[j.val * (roots.size / (2 * h))]!) := by
+  obtain ⟨s1, hs1, hl1, hr1, _⟩ := short_stage_refinement hblst input roots hinput n stride
+    1#usize hproduct (by decide) (by decide) (by simpa using (show 2 ≤ n.val by omega))
+    hnmax hrootN (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) rfl
+  obtain ⟨s2, hs2, hl2, hr2, hf2⟩ := short_stage_refinement hblst input roots hinput n stride
+    2#usize hproduct (by decide) (by decide) (by simpa using (show 4 ≤ n.val by omega))
+    hnmax hrootN s1 (by simpa using hl1)
+  obtain ⟨s4, hs4, hl4, hr4, hf4⟩ := short_stage_refinement hblst input roots hinput n stride
+    4#usize hproduct (by decide) (by decide) (by simpa using (show 8 ≤ n.val by omega))
+    hnmax hrootN s2 (by simpa using hl2)
+  have hm1 : 1#usize * 2#usize = ok 2#usize := by
+    simpa using scalar_mul_ok 1#usize 2#usize (by scalar_tac)
+  have hm2 : 2#usize * 2#usize = ok 4#usize := by
+    simpa using scalar_mul_ok 2#usize 2#usize (by scalar_tac)
+  have hm4 : 4#usize * 2#usize = ok 8#usize := by
+    simpa using scalar_mul_ok 4#usize 2#usize (by scalar_tac)
+  have hstop : fft8.Fft8.new_loop0 input n stride s4 8#usize = ok s4 := by
+    rw [fft8.Fft8.new_loop0, loop.eq_1]
+    simp [fft8.Fft8.new_loop0.body, fr8.LANES]
+  have hloop4 : fft8.Fft8.new_loop0 input n stride s2 4#usize = ok s4 := by
+    have hbody : fft8.Fft8.new_loop0.body input n stride s2 4#usize =
+        ok (cont (s4, 8#usize)) := by
+      simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
+        UScalar.ofNatCore_val_eq, show 4 < 8 by decide, if_true, hs4, hm4, bind_tc_ok]
+    rw [fft8.Fft8.new_loop0, loop.eq_1]
+    simpa only [hbody] using hstop
+  have hloop2 : fft8.Fft8.new_loop0 input n stride s1 2#usize = ok s4 := by
+    have hbody : fft8.Fft8.new_loop0.body input n stride s1 2#usize =
+        ok (cont (s2, 4#usize)) := by
+      simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
+        UScalar.ofNatCore_val_eq, show 2 < 8 by decide, if_true, hs2, hm2, bind_tc_ok]
+    rw [fft8.Fft8.new_loop0, loop.eq_1]
+    simpa only [hbody] using hloop4
+  refine ⟨s4, ?_, by simpa using hl4, ?_⟩
+  · have hbody : fft8.Fft8.new_loop0.body input n stride (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) 1#usize =
+        ok (cont (s1, 2#usize)) := by
+      simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
+        UScalar.ofNatCore_val_eq, show 1 < 8 by decide, if_true, hs1, hm1, bind_tc_ok]
+    rw [fft8.Fft8.new_loop0, loop.eq_1]
+    simpa only [hbody] using hloop2
+  · intro h hh j
+    rcases hh with rfl | rfl | rfl
+    · rw [hf4 _ (by have := j.isLt; simp only [UScalar.ofNatCore_val_eq]; omega),
+        hf2 _ (by have := j.isLt; simp only [UScalar.ofNatCore_val_eq]; omega)]
+      exact hr1 j
+    · rw [hf4 _ (by have := j.isLt; simp only [UScalar.ofNatCore_val_eq]; omega)]
+      exact hr2 j
+    · exact hr4 j
 
 private theorem sampled_twiddle (roots : _root_.Array Fr) (n d i : Nat)
     (hn : 0 < n) (hd : 0 < d) (hdiv : d ∣ n) (hrootDiv : n ∣ roots.size)
@@ -112,7 +171,7 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     (hn : TransformSize n.val) (hroots : 0 < roots.size) (hdiv : roots.size % n.val = 0)
     (hinput : input.val = roots.toList.map frEncode) :
     ∃ table, fft8.Fft8.new input n = ok table ∧ FftInvariant table (sampleRoots roots n.val) := by
-  obtain ⟨logSize, hk4, hk12, hnpow⟩ := hn
+  obtain ⟨logSize, hk6, hk12, hnpow⟩ := hn
   have hnpos : 0 < n.val := by rw [hnpow]; positivity
   have hdiv' : n.val ∣ roots.size := Nat.dvd_of_mod_eq_zero hdiv
   have hrootN : n.val ≤ roots.size := Nat.le_of_dvd hroots hdiv'
@@ -136,46 +195,15 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
   obtain ⟨wide, hwide, hw⟩ := wide_tables_loop hblst input roots hinput n stride logSize
     hnpow hk12 hproduct hrootN 3 (by decide) (by omega) empty fr8.LANES
     (by simp [fr8.LANES]) hempty
-  let total : Usize := UScalar.ofNatCore (stride.val * n.val) (by rw [hproduct]; scalar_tac)
-  have htval : total.val = roots.size := by simp only [total, UScalar.ofNatCore_val_eq, hproduct]
-  have htotal : stride * n = ok total := scalar_mul_ok stride n (by rw [hproduct]; scalar_tac)
-  obtain ⟨step2, hs2, hs2val⟩ := UScalar.div_spec total (y := 4#usize) (by simp)
-  obtain ⟨step4, hs4, hs4val⟩ := UScalar.div_spec total (y := 8#usize) (by simp)
-  simp only [htval, UScalar.ofNatCore_val_eq] at hs2val hs4val
-  have hn16 : 16 ≤ n.val := by
+  have hn64 : 64 ≤ n.val := by
     rw [hnpow]
-    exact Nat.pow_le_pow_right (by decide : 0 < 2) hk4
-  have hstep2 : 0 < step2.val := by rw [hs2val]; exact Nat.div_pos (by omega) (by decide)
-  have hstep4 : 0 < step4.val := by rw [hs4val]; exact Nat.div_pos (by omega) (by decide)
-  have hbound2 (lane : Fin 8) : ((0#usize).val + lane.val % (2#usize).val) * step2.val < roots.size := by
-    simp only [UScalar.ofNatCore_val_eq, Nat.zero_add]
-    have ht : lane.val % 2 < 4 := by omega
-    have hlt := Nat.mul_lt_mul_of_pos_right ht hstep2
-    have hle := Nat.div_mul_le_self roots.size 4
-    rw [hs2val] at hlt ⊢
-    exact lt_of_lt_of_le hlt (by simpa only [Nat.mul_comm] using hle)
-  have hbound4 (lane : Fin 8) : ((0#usize).val + lane.val % (4#usize).val) * step4.val < roots.size := by
-    simp only [UScalar.ofNatCore_val_eq, Nat.zero_add]
-    have ht : lane.val % 4 < 8 := by omega
-    have hlt := Nat.mul_lt_mul_of_pos_right ht hstep4
-    have hle := Nat.div_mul_le_self roots.size 8
-    rw [hs4val] at hlt ⊢
-    exact lt_of_lt_of_le hlt (by simpa only [Nat.mul_comm] using hle)
-  obtain ⟨twiddles2, ht2, htv2⟩ := stage_twiddles_refinement hblst input roots hinput step2
-    0#usize 2#usize hstep2 (by decide) hbound2
-  obtain ⟨twiddles4, ht4, htv4⟩ := stage_twiddles_refinement hblst input roots hinput step4
-    0#usize 4#usize hstep4 (by decide) hbound4
-  obtain ⟨stage2, hl2, hr2⟩ := load_multiplier_refinement (Array.to_slice twiddles2) 0#usize
-    (fun lane => roots[(lane.val % 2) * (roots.size / 4)]!)
-    (by simp [Array.to_slice, twiddles2.property]) (by
-      intro lane
-      simpa only [Array.to_slice, UScalar.ofNatCore_val_eq, Nat.zero_add, hs2val] using htv2 lane)
-  obtain ⟨stage4, hl4, hr4⟩ := load_multiplier_refinement (Array.to_slice twiddles4) 0#usize
-    (fun lane => roots[(lane.val % 4) * (roots.size / 8)]!)
-    (by simp [Array.to_slice, twiddles4.property]) (by
-      intro lane
-      simpa only [Array.to_slice, UScalar.ofNatCore_val_eq, Nat.zero_add, hs4val] using htv4 lane)
-  let table : fft8.Fft8 := ⟨vectors, wide, stage2, stage4⟩
+    exact Nat.pow_le_pow_right (by decide : 0 < 2) hk6
+  have hnmax : n.val ≤ 4096 := by
+    rw [hnpow]
+    exact Nat.pow_le_pow_right (by decide : 0 < 2) hk12
+  obtain ⟨short, hshort, hshortlen, hshortrep⟩ := short_tables_refinement hblst input roots
+    hinput n stride hproduct hn64 hnmax hrootN
+  let table : fft8.Fft8 := ⟨vectors, wide, short⟩
   refine ⟨table, ?_, ?_⟩
   · obtain ⟨sub, hsub, hsubval, _⟩ := WP.spec_imp_exists
       (Usize.sub_spec (x := n) (y := 1#usize) (by simp only [UScalar.ofNatCore_val_eq]; omega))
@@ -187,15 +215,19 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
       (UScalar.rem_spec (Slice.len input) (y := n) (by omega))
     have he : rem = 0#usize := UScalar.eq_of_val_eq (by simpa only [hlenVal, hdiv, UScalar.ofNatCore_val_eq] using hremval)
     subst rem
-    have htwice : 2#usize * fr8.LANES = ok 16#usize := by
-      simpa only [fr8.LANES] using scalar_mul_ok 2#usize 8#usize (by scalar_tac)
-    have hge : n ≥ 16#usize := by simpa only [UScalar.le_equiv, UScalar.ofNatCore_val_eq] using hn16
+    have hblock : fr8.LANES * fr8.LANES = ok 64#usize := by
+      simpa only [fr8.LANES] using scalar_mul_ok 8#usize 8#usize (by scalar_tac)
+    have hcapacity : fr8.LANES - 1#usize = ok 7#usize := by
+      obtain ⟨capacity, hc, hcv, _⟩ := WP.spec_imp_exists
+        (Usize.sub_spec (x := fr8.LANES) (y := 1#usize) (by simp [fr8.LANES]))
+      have heq : capacity = 7#usize := UScalar.eq_of_val_eq (by simpa [fr8.LANES] using hcv)
+      simpa only [heq] using hc
+    have hge : n ≥ 64#usize := by simpa only [UScalar.le_equiv, UScalar.ofNatCore_val_eq] using hn64
     dsimp only [empty] at hwide
-    simp only [fft8.Fft8.new, htwice, hge, massert, if_true, bind_tc_ok,
-      hsub, lift, hand, hrem, hstride, hvectors, hwide, htotal, hs2, ht2, hs4, ht4,
-      hl2, hl4, table]
+    simp only [fft8.Fft8.new, hblock, hge, massert, if_true, bind_tc_ok,
+      hsub, lift, hand, hrem, hstride, hvectors, hwide, hcapacity, hshort, table]
   · have hsize : (sampleRoots roots n.val).size = n.val := _root_.Array.size_ofFn
-    refine ⟨by rw [hsize]; exact ⟨logSize, hk4, hk12, hnpow⟩,
+    refine ⟨by rw [hsize]; exact ⟨logSize, hk6, hk12, hnpow⟩,
       by simpa only [table, hsize] using hvval,
       by simpa only [table, sampleRoots, _root_.Array.size_ofFn, hnpow] using hw.1, ?_, ?_, ?_⟩
     · intro stage hs hb v
@@ -215,27 +247,22 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
           (by positivity) hd hdiv' (by have := v.isLt; omega)
       rw [hfn]
       exact hw.2 stage hs hsk v
-    · have hd : 4 ∣ n.val := by
+    · exact hshortlen
+    · intro h hh j
+      have hd : 2 * h ∣ n.val := by
         rw [hnpow]
-        exact Nat.pow_dvd_pow 2 (by omega : 2 ≤ logSize)
-      have hfn : (fun lane : Fin 8 => (sampleRoots roots n.val)[
-          (lane.val % 2) * ((sampleRoots roots n.val).size / 4)]!) =
-          (fun lane : Fin 8 => roots[(lane.val % 2) * (roots.size / 4)]!) := by
+        rcases hh with rfl | rfl | rfl
+        · exact Nat.pow_dvd_pow 2 (by omega : 1 ≤ logSize)
+        · exact Nat.pow_dvd_pow 2 (by omega : 2 ≤ logSize)
+        · exact Nat.pow_dvd_pow 2 (by omega : 3 ≤ logSize)
+      have hp : 0 < h := by rcases hh with rfl | rfl | rfl <;> decide
+      have hfn : (fun _ : Fin 8 => (sampleRoots roots n.val)[
+          j.val * ((sampleRoots roots n.val).size / (2 * h))]!) =
+          (fun _ : Fin 8 => roots[j.val * (roots.size / (2 * h))]!) := by
         funext lane
         rw [hsize]
-        exact sampled_twiddle roots n.val 4 (lane.val % 2) hnpos (by decide) hd hdiv' (by omega)
+        exact sampled_twiddle roots n.val (2 * h) j.val hnpos (by omega) hd hdiv' (by omega)
       rw [hfn]
-      exact hr2
-    · have hd : 8 ∣ n.val := by
-        rw [hnpow]
-        exact Nat.pow_dvd_pow 2 (by omega : 3 ≤ logSize)
-      have hfn : (fun lane : Fin 8 => (sampleRoots roots n.val)[
-          (lane.val % 4) * ((sampleRoots roots n.val).size / 8)]!) =
-          (fun lane : Fin 8 => roots[(lane.val % 4) * (roots.size / 8)]!) := by
-        funext lane
-        rw [hsize]
-        exact sampled_twiddle roots n.val 8 (lane.val % 4) hnpos (by decide) hd hdiv' (by omega)
-      rw [hfn]
-      exact hr4
+      exact hshortrep h hh j
 
 end LeanBlsSimd.Kzg.Extender.Kernel

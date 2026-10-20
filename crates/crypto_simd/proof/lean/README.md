@@ -100,7 +100,7 @@ Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) 
 | `mod.rs` (G1 chunk and wrapper) | `Model/UncompressG1.lean` | `Refines/G1Wrapper*.lean`, `Refines/UncompressG1.lean` | `Spec/G1Encoding.lean` and the G1 kernel proof |
 | `mod.rs` (G2 chunk and wrapper) | `Model/UncompressG2.lean` | `Refines/G2Wrapper*.lean`, `Refines/UncompressG2.lean` | `Spec/G2Encoding.lean`, `Proofs/UncompressG2.lean` and the G2 kernel proof |
 | `constants.rs` | `LeanBlsSimd/Constants.lean`, which also proves each table equal to its derivation | `Refines/Constants.lean` | every file |
-| `fp8.rs` | `LeanBlsSimd/Model/Fp8.lean`, over the intrinsics in `Model/Intrinsics.lean` | `Refines/Fp8.lean` | `Proofs/Limbs.lean` (`mul`), `Proofs/Vector.lean`, `Proofs/Carries.lean`, `Proofs/Fp8.lean` (the other operations), `Proofs/Pow.lean`, `Proofs/Convert.lean` |
+| `fp8.rs` | `LeanBlsSimd/Model/Fp8.lean`, over the intrinsics in `Model/Intrinsics.lean` | `Refines/Fp8.lean`, `Refines/Transpose.lean` | `Proofs/Limbs.lean` (`mul`), `Proofs/EarlyCarry.lean`, `Proofs/Reduction.lean`, `Proofs/Square.lean`, `Proofs/Vector.lean`, `Proofs/Carries.lean`, `Proofs/Fp8.lean` (the other operations), `Proofs/Pow.lean`, `Proofs/Convert.lean` |
 | `fp2x8.rs` | `LeanBlsSimd/Model/Fp2x8.lean` | `Refines/Fp2x8.lean` | `Proofs/Fp2x8.lean`, which relates the computed square root to `Kernel.sqrt` in `Spec/Sqrt.lean` |
 | `g1x8.rs` | `Model/G1x8.lean` | `Refines/G1x8.lean` | `Proofs/G1x8.lean`, against `Spec/G1Curve.lean` |
 | `decompress.rs` | `Model/DecompressG1.lean` | `Refines/DecompressG1.lean` | `Proofs/DecodeG1.lean`, `G1Finite.lean`, `G1KernelFacts.lean`, `DecompressG1.lean` |
@@ -161,8 +161,8 @@ For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.
 | `verify.rs` | `Statements.lean`, `Model.lean`, `InterpolationModel.lean`, `Refines/Verify.lean`, `Refines/Cells.lean`, `Refines/Points.lean`, `Refines/Checks.lean`, `Refines/Deduplicate.lean`, `Refines/Pairing.lean`, `Refines/Interpolation.lean` and `Refines/InterpolationCommitment.lean` |
 | `cell_extender.rs` | `Extender/Basic.lean`, `Extender/Model.lean`, `Extender/Acceptance.lean`, `Extender/Decode.lean`, `Extender/Scale.lean`, `Extender/WriteStep.lean`, `Extender/WriteBytes.lean`, `Extender/Write.lean`, `Extender/Refines.lean` and `Extender/Statements.lean` |
 | `fft.rs` | `Refines/Fft.lean` |
-| `fr8.rs` | Shared `../Model/Fr8.lean`, `../Refines/Fr8.lean`, `../Proofs/Fr8*.lean`; `Extender/Kernel/Fr8.lean`, `Fr8Arithmetic.lean` and `Fr8Bytes*.lean` |
-| `fft8.rs` | `Extender/Kernel/Fft.lean`, `FftMath.lean`, `FftTableBuild.lean`, `FftTables.lean` and the lane/wide stage helpers |
+| `fr8.rs` | Shared `../Model/Fr8.lean`, `../Refines/Fr8.lean`, `../Proofs/Fr8*.lean`, `../Proofs/EarlyCarry.lean`, `../Proofs/Reduction.lean`; `Extender/Kernel/Fr8.lean`, `Fr8Arithmetic.lean` and `Fr8Bytes*.lean` |
+| `fft8.rs` | `Extender/Kernel/Fft.lean`, `FftMath.lean`, `FftTableBuild.lean`, `FftTables.lean`, `FftShort.lean`, `FftBlocks.lean` and `FftWide.lean` |
 | `extension_kernel.rs` | `Extender/Kernel/Basic.lean`, `Construct.lean`, `Decode.lean`, `Shift.lean`, `Encode.lean` and `Refines.lean` |
 | `domain.rs` | `Refines/Roots.lean`, `Refines/Bits.lean` and `Extender/Primitives.lean` |
 | `challenge.rs` | `ByteSerialization.lean` and `Refines/Challenge.lean` |
@@ -178,7 +178,7 @@ Regenerate through `extract.sh`, repair affected refinements, and rebuild the sh
 
 The verifier's roots and FFT theorems take `ExternalsCorrect` and delegate to refinements with `BlstCorrect` premises. Preserve both interfaces when changing shared arithmetic.
 
-For Fr arithmetic, prove generated-code equality to the per-lane model before reasoning about five-limb carries. `Kernel.RootsValid` uses `IsPrimitiveRoot` and root powers, matching the specification's FFT lemmas. Keep the pure iterative-transform induction valid down to size 1; only the generated FFT contracts require sizes 16 through 4096. Data lanes are ordinary integers and multipliers carry `2^260`; blst's four-word encoding carries `2^256`, so the constructor's factor of 16 is essential.
+For Fr arithmetic, prove generated-code equality to the per-lane model before reasoning about five-limb carries. `Kernel.RootsValid` uses `IsPrimitiveRoot` and root powers, matching the specification's FFT lemmas. Keep the pure iterative-transform induction valid down to size 1; only the generated FFT contracts require sizes 64 through 4096. Data lanes are ordinary integers and multipliers carry `2^260`; blst's four-word encoding carries `2^256`, so the constructor's factor of 16 is essential.
 
 Preserve exact raw decode values on rejection: they support the range-mask controls and may be outside the arithmetic invariant. `Kernel.StateInvariant` deliberately permits those data contents, while fixing table contents and buffer lengths. `Kernel.compute_refinement` must remain independent of `FrToBytesCorrect` and `BlstCorrect`; `Kernel.new_refinement` supplies the invariant from the constructor's external operations. Compose that route with the scalar route for the public headline.
 

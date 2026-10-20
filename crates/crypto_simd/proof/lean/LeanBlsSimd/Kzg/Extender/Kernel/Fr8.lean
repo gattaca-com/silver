@@ -89,39 +89,22 @@ theorem load_multiplier_refinement (input : Slice blst.blst_fr) (offset : Usize)
       ((values lane).val * (2^260 % Fr.modulus)) % Fr.modulus
     rw [hl, Nat.mod_mod, Nat.mul_mod, Nat.mod_eq_of_lt (values lane).isLt]
 
-theorem permute_refinement (a b : fr8.Fr8) (index : M512) :
-    ∃ out, fr8.Fr8.permute a index b = ok out ∧
-      (∀ (j : Fin 5) (lane : Fin 8),
-        (out.val[j.val]!)[lane] =
-          if index[lane].toNat.testBit 3 then
-            (b.val[j.val]!)[index[lane].toNat % 8]
-          else (a.val[j.val]!)[index[lane].toNat % 8]) ∧
-      (Bounded a → Bounded b → Bounded out) := by
-  let out := toArray (n := 5#usize) id (BytePacking.permute (ofArray id a) (ofArray id b) index)
-  have hp (j : Fin 5) (lane : Fin 8) :
-      (out.val[j.val]!)[lane] = if index[lane].toNat.testBit 3 then
-        (b.val[j.val]!)[index[lane].toNat % 8] else
-        (a.val[j.val]!)[index[lane].toNat % 8] := by
-    simp [out, BytePacking.permute, _mm512_permutex2var_epi64]
-  refine ⟨out, BytePacking.permute_refines a b index, hp, ?_⟩
-  intro ha hb
-  refine ⟨?_, ?_⟩
-  · intro j lane
-    rw [hp]
-    split
-    · exact hb.1 j ⟨index[lane].toNat % 8, Nat.mod_lt _ (by decide)⟩
-    · exact ha.1 j ⟨index[lane].toNat % 8, Nat.mod_lt _ (by decide)⟩
-  · intro lane
-    let source : Fin 8 := ⟨index[lane].toNat % 8, Nat.mod_lt _ (by decide)⟩
-    have hval : laneNat out lane = if index[lane].toNat.testBit 3 then
-        laneNat b source else laneNat a source := by
-      unfold laneNat
-      simp_rw [hp]
-      cases index[lane].toNat.testBit 3 <;> rfl
-    rw [hval]
-    split
-    · exact hb.2 source
-    · exact ha.2 source
+theorem transpose_refinement (data : Slice fr8.Fr8) (offset : Usize)
+    (hsize : offset.val + 8 ≤ data.val.length) :
+    ∃ out, fr8.Fr8.transpose data offset = ok out ∧
+      ∀ (row lane : Fin 8) (j : Fin 5),
+        ((out.val[row.val]!).val[j.val]!)[lane] =
+          ((data.val[offset.val + lane.val]!).val[j.val]!)[row] := by
+  refine ⟨toArray (toArray id) (TransposePacking.store (TransposePacking.columns data offset)),
+    TransposePacking.transpose_refines data offset hsize, ?_⟩
+  intro row lane j
+  simp only [getElem!_pos, toArray_val, List.length_map, Vector.length_toList,
+    row.isLt, j.isLt, List.getElem_map, Vector.getElem_toList, id_eq]
+  have h := TransposePacking.getElem_store (TransposePacking.columns data offset) row j
+  simp only [Fin.getElem_fin] at h
+  refine (congrArg (fun v : M512 => v[lane]) h).trans ?_
+  simp only [TransposePacking.columns, LeanBlsSimd.transpose8, Fin.getElem_fin,
+    Vector.getElem_ofFn]
 
 theorem from_bytes_refinement (input : Slice U8) (offset : Usize)
     (hsize : offset.val + 256 ≤ input.val.length) :

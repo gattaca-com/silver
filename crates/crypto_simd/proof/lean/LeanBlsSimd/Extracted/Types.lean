@@ -149,13 +149,12 @@ structure kzg.blst_ops.LincombScratch where
 def kzg.fr8.Fr8 := Array core.core_arch.x86.__m512i 5#usize
 
 /-- [silver_crypto_simd::kzg::fft8::Fft8]
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 15:0-22:1
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 14:0-21:1
     Visibility: public -/
 structure kzg.fft8.Fft8 where
   vectors : Std.Usize
   wide : alloc.vec.Vec kzg.fr8.Fr8
-  stage2 : kzg.fr8.Fr8
-  stage4 : kzg.fr8.Fr8
+  short : alloc.vec.Vec kzg.fr8.Fr8
 
 /-- [silver_crypto_simd::kzg::extension_kernel::ExtensionKernel]
     Source: 'crates/crypto_simd/src/kzg/extension_kernel.rs', lines 18:0-24:1
@@ -177,14 +176,6 @@ structure kzg.cell_extender.CellExtender where
   evaluations : alloc.vec.Vec blst.blst_fr
   coefficients : alloc.vec.Vec blst.blst_fr
   kernel : Option kzg.extension_kernel.ExtensionKernel
-
-/-- [silver_crypto_simd::kzg::fft8::LanePairs]
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 29:0-34:1 -/
-structure kzg.fft8.LanePairs where
-  upper : core.core_arch.x86.__m512i
-  lower : core.core_arch.x86.__m512i
-  first : core.core_arch.x86.__m512i
-  second : core.core_arch.x86.__m512i
 
 /-- [silver_crypto_simd::kzg::challenge::Preimage]
     Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 15:0-17:1

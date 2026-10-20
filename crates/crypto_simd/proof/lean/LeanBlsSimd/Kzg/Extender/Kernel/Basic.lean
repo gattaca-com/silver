@@ -36,7 +36,7 @@ def DataRep (data : Slice fr8.Fr8) (values : _root_.Array Fr) : Prop :=
       Represents data.val[v.val] (fun lane => values[8 * v.val + lane.val]!)
 
 def TransformSize (n : Nat) : Prop :=
-  ∃ logSize : Nat, 4 ≤ logSize ∧ logSize ≤ 12 ∧ n = 2 ^ logSize
+  ∃ logSize : Nat, 6 ≤ logSize ∧ logSize ≤ 12 ∧ n = 2 ^ logSize
 
 def sampleRoots (roots : _root_.Array Fr) (n : Nat) : _root_.Array Fr :=
   _root_.Array.ofFn (n := n) fun i => roots[i.val * (roots.size / n)]!
@@ -52,19 +52,11 @@ def FftInvariant (table : fft8.Fft8) (roots : _root_.Array Fr) : Prop :=
     ∀ v : Fin (2 ^ stage / 8),
       MultiplierRep table.wide.val[2 ^ stage / 8 - 1 + v.val]!
         (fun lane => roots[(8 * v.val + lane.val) * (roots.size / (2 * 2 ^ stage))]!)) ∧
-  MultiplierRep table.stage2 (fun lane => roots[(lane.val % 2) * (roots.size / 4)]!) ∧
-  MultiplierRep table.stage4 (fun lane => roots[(lane.val % 4) * (roots.size / 8)]!)
-
-def LanePairsInvariant (pairs : fft8.LanePairs) (h : Nat) : Prop :=
-  (h = 1 ∨ h = 2 ∨ h = 4) ∧
-  (∀ m : Fin 8,
-    pairs.upper[m].toNat = m.val % 4 / h * (2 * h) + m.val % h + m.val / 4 * 8 ∧
-    pairs.lower[m].toNat = m.val % 4 / h * (2 * h) + m.val % h + m.val / 4 * 8 + h) ∧
-  (∀ e : Fin 8,
-    pairs.first[e].toNat = e.val / (2 * h) * h + e.val % h +
-      (if e.val % (2 * h) < h then 0 else 8) ∧
-    pairs.second[e].toNat = e.val / (2 * h) * h + e.val % h + 4 +
-      (if e.val % (2 * h) < h then 0 else 8))
+  table.short.val.length = 7 ∧
+  (∀ h : Nat, h = 1 ∨ h = 2 ∨ h = 4 →
+    ∀ j : Fin h,
+      MultiplierRep table.short.val[h - 1 + j.val]!
+        (fun _ => roots[j.val * (roots.size / (2 * h))]!))
 
 def shiftFactor (i : Nat) : Fr :=
   (Kzg.Model.roots 13)[i]! * (Fr.ofNat 4096).inverse

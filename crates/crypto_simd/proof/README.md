@@ -321,6 +321,16 @@ All adaptations run before the drift comparison. Only numeric source spans are m
 
 The proof has two parts: the generated code returns exactly the result of a hand-written model, and the model agrees with the specification on every lane the kernel decides. G2's Scott completeness uses a character-sum bound on the curve's point count; G1 uses the elementary finite point-count bound described below. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
 
+### Montgomery multiplication and squaring
+
+`Proofs/EarlyCarry.lean` proves the wrapping carry identity under the inverse-modulus premise.
+`Proofs/Reduction.lean` proves that each generated reduction row agrees with the reference model
+on the limbs above its row index, then transports that agreement through all rows and final
+carry extraction. The row's dead low limb is deliberately outside this equality.
+`Proofs/Square.lean` equates the triangular square accumulator with the full product accumulator,
+including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
+existing arithmetic bounds and public contracts.
+
 ### G1 Scott criterion
 
 The Scott lemmas use σ(x, y) = (βx, y), with β fixed by the kernel's `BETA_MONT`, and the identity σ²(P) = [−z²]P. Completeness uses the spec's generator-order proof and the elementary bound `Nat.card E.Point ≤ 2 * p + 1 < r²`. Formula correctness is conditional on a clear undecided bit; the headline theorem does not require proving that subgroup members always avoid exceptional formulas.
@@ -421,7 +431,7 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `G2Consumer.lean` | The public G2 list and model corollaries and length mismatch result can be applied from a separate module; a specification-backed external satisfies the universal premise at both SIMD settings. |
 | `G1Consumer.lean` | A downstream module imports only the G1 public theorem, applies it with arbitrary externals, and constructs an instance satisfying its blst hypothesis. |
 | `Statements.lean` | Changed constants and formulas break their proof scripts, including G1's Scott-membership proof when the model drops the y negation. |
-| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also rejects a wrong shift in the generated early-carry expression. |
+| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also shows that the early-carry model expression depends on its shift. |
 | `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
 | `Square.lean` | The triangular square accumulator equals the full product; omitting cross-term doubling fails on an input with two nonzero limbs. |
 | `Reduction.lean` | Both widths retain the stale dead limb; dropping the inverse premise can change a surviving limb. The valid inverse case agrees above the row index. |
@@ -432,14 +442,6 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `Refines.lean` | Mutated generated functions fail their refinement proofs, including G1's chunk fallback reading lane zero instead of the current lane. Concrete refutations cover five complete G2 refinements and the required loop steps for `times_minus_z` and G1's fallback. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
 
-`Proofs/EarlyCarry.lean` proves the wrapping carry identity under the inverse-modulus premise.
-`Proofs/Reduction.lean` proves that each generated reduction row agrees with the reference model
-on the limbs above its row index, then transports that agreement through all rows and final
-carry extraction. The row's dead low limb is deliberately outside this equality.
-`Proofs/Square.lean` equates the triangular square accumulator with the full product accumulator,
-including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
-existing arithmetic bounds and public contracts.
-
 ### Extracted BLS source
 
 `lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` contain items generated from the following Rust files. These content hashes pin the source read by the extraction.
@@ -448,7 +450,7 @@ existing arithmetic bounds and public contracts.
 |---|---|---|
 | `mod.rs` | `b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450` | `0002db9653bd730897823f019d36b21c552161ed` |
 | `constants.rs` | `903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f` | `87190c24741f42bc50d3cae4ed384995cdc15f14` |
-| `fp8.rs` | `8d94032589ab6ea2b5dc6372614561f5634f8b8037c576173811bc57b824fd28` | `ac0cf6c599f9cb864e926c51a3c4c789c368367a` |
+| `fp8.rs` | `68d47187d65436430b2d4b67834ad92776665d9e23faced7bfd9b83349cf5658` | `0cdd9c4a6ba709ade86288ee093dbcdbb24a3e53` |
 | `fp2x8.rs` | `9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069` | `951eadde84eca23e2ebe8626bc0382a205497071` |
 | `g1x8.rs` | `2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9` | `ddbd6159490ff0f58b27dbf4b4e63db92bac5391` |
 | `g2x8.rs` | `57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295` | `804ebf1d0e6681d20f07ede1867cef929ebe190c` |
@@ -463,7 +465,7 @@ To check for changes since the proof, run this from `crates/crypto_simd/src/bls`
 sha256sum -c <<'EOF'
 b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450  mod.rs
 903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f  constants.rs
-8d94032589ab6ea2b5dc6372614561f5634f8b8037c576173811bc57b824fd28  fp8.rs
+68d47187d65436430b2d4b67834ad92776665d9e23faced7bfd9b83349cf5658  fp8.rs
 9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069  fp2x8.rs
 2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9  g1x8.rs
 57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295  g2x8.rs
@@ -512,9 +514,11 @@ The challenge preimage proof matches upstream's serialization of decoded cells. 
 
 #### IFMA Fr FFT kernel
 
-`Kernel/Basic.lean` relates each vector's eight lanes to field elements. Arithmetic represents each data lane as an integer in `[0, 2r)`, with five limbs below `2^52`; multiplication constants carry `R = 2^260`. `Model/Fr8.lean`, `Refines/Fr8.lean` and `Proofs/Fr8*.lean` first equate the generated arithmetic to a per-lane model, then prove carry bounds, normalization and field arithmetic. `Kernel/Fr8Arithmetic.lean` derives the lane contracts, including `mul(x, multiplier(w)) = x*w`. `Kernel/Fr8Bytes*.lean` proves loading, permutation, exact raw decoding and canonical big-endian encoding.
+`Kernel/Basic.lean` relates each vector's eight lanes to field elements. Arithmetic represents each data lane as an integer in `[0, 2r)`, with five limbs below `2^52`; multiplication constants carry `R = 2^260`. `Model/Fr8.lean`, `Refines/Fr8.lean` and `Proofs/Fr8*.lean` first equate the generated arithmetic to a per-lane model, then prove carry bounds, normalization and field arithmetic. `Refines/Fr8.lean` reuses the [shared early-carry reduction proof](#montgomery-multiplication-and-squaring), applying `Reduction.finish_rows_eq` with the Fr constants. `Kernel/Fr8Arithmetic.lean` derives the lane contracts, including `mul(x, multiplier(w)) = x*w`. `Kernel/Fr8Bytes*.lean` proves loading, exact raw decoding and canonical big-endian encoding.
 
-`Kernel/FftTableBuild.lean` and `FftTables.lean` prove the strided root and twiddle layout. `Fft.lean` composes the generated lane and wide butterflies. Gather and scatter invert each other for the three lane stages. `FftMath.lean` proves the iterative DIT and DIF transforms equal the specification with bit reversal on their input and output respectively. Its induction covers every power-of-two size, including 1; the generated kernel contracts cover sizes 16 through 4096. `RootsValid` uses the specification's primitive-root predicate and powers directly.
+`Refines/Transpose.lean` proves the shared 8×8 shuffle from its generated intrinsic calls. `Kernel/Fr8.lean` lifts it to all five limbs; `FftOperations.lean` preserves the field representation of each lane. `FftShort.lean` proves stages 1, 2 and 4 on transposed blocks, including the skipped product when the twiddle is 1. `FftBlocks.lean` composes the two transposes, short stages and block stores. `Kernel/FftTableBuild.lean` and `FftTables.lean` prove the seven splat twiddles and the strided wide table.
+
+`Fft.lean` composes the block pass and wide butterflies. `FftMath.lean` proves the iterative DIT and DIF transforms equal the specification with bit reversal on their input and output respectively. Its induction covers every power-of-two size, including 1; the generated kernel contracts cover sizes 64 through 4096. `RootsValid` uses the specification's primitive-root predicate and powers directly.
 
 `Kernel/Construct.lean` initializes the two FFT tables, shift multipliers and 512 data vectors. `Decode.lean`, `Shift.lean` and `Encode.lean` prove each generated loop, and `Refines.lean` composes them. Rejected decoding retains the raw 256-bit integers, which may exceed the arithmetic bound. The state invariant therefore constrains the data length and immutable tables; the next decode overwrites every data vector before arithmetic. Successful decoding establishes the stronger data representation. Output writes preserve the first 64 cells and serialize the extension into cells 64 through 127.
 
@@ -566,7 +570,8 @@ Paths below are relative to `lean/controls/`.
 | `ExtenderLayout.lean` | First-half copying, the extension's cell-64 offset, rejection of noncanonical blobs and output preservation on rejection; generated decoding rejects an all-`ff` blob. |
 | `ExtenderKernelBoundary.lean` | The generated range mask rejects exact raw out-of-range values; permutation uses bit 3 and ignores higher bits; multiplier construction requires its factor of 16. The kernel route works with a dictionary whose scalar serialization fails. |
 | `ExtenderKernelBytes.lean` | Omitting arithmetic reduction or output canonicalization, reversing byte order, omitting the cell-64 offset, and clearing the preserved first half each violate the generated contracts. |
-| `ExtenderKernelFft.lean` | Swapped small-stage tables, a shifted wide-table read, swapped scatter indices, and substituting inverse DIF/forward DIT without the required bit reversals violate the FFT invariants or transform identities. |
+| `ExtenderKernelFft.lean` | Swapped short-stage twiddles and a shifted wide-table read violate the generated table invariant. Semantic controls distinguish skipping a nonunit short-stage product, omitting either block transpose, and substituting inverse DIF/forward DIT without the required bit reversals. |
+| `ExtenderKernelTranspose.lean` | A copied generated transpose network is pinned by definitional equality; changing its first shuffle index changes an observed output lane. |
 | `KzgStrictAxioms.lean` | The shared proof, concrete instance and all KZG negative controls use only the three standard axioms. |
 | `KzgSetupAxioms.lean`, `KzgRefinementAxioms.lean`, `KzgRepresentationAxioms.lean`, `KzgSpecBridgeAxioms.lean`, `KzgPolynomialAxioms.lean` | Scoped axiom checks for setup, refinement, representations, spec bridge and interpolation. |
 | `extraction-check.py` | Sixteen fixtures: unchanged output and numeric source-span changes pass; changed setup-row order, an added declaration, late BLS definitions (including attribute-prefixed constants), a wrong `full` count, an extender-body edit, and missing or duplicated verifier/extender entry points are rejected. |

@@ -10,6 +10,7 @@ import controls.ExtenderLayout
 import controls.ExtenderKernelBoundary
 import controls.ExtenderKernelBytes
 import controls.ExtenderKernelFft
+import controls.ExtenderKernelTranspose
 
 -- Check the proof, its concrete instance, and every negative control together.
 #assert_standard_axioms

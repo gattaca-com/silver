@@ -2,8 +2,7 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Kernel.FftTables
 import LeanBlsSimd.Kzg.Extender.Kernel.FftMath
 import LeanBlsSimd.Kzg.Extender.Kernel.FftWide
-import LeanBlsSimd.Kzg.Extender.Kernel.FftLanes
-import LeanBlsSimd.Kzg.Extender.Kernel.FftPairs
+import LeanBlsSimd.Kzg.Extender.Kernel.FftBlocks
 import LeanBlsSimd.Kzg.Extender.Decode
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -18,49 +17,6 @@ namespace LeanBlsSimd.Kzg.Extender.Kernel
 
 set_option maxRecDepth 10000
 set_option maxHeartbeats 4000000
-
-theorem lane_pairs_refinement (h : Usize) (hh : h.val = 1 ∨ h.val = 2 ∨ h.val = 4) :
-    ∃ pairs, fft8.LanePairs.new h = ok pairs ∧ LanePairsInvariant pairs h.val := by
-  exact PairConstruction.lane_pairs_refinement h hh
-
-theorem gather_scatter_inverse (pairs : fft8.LanePairs) (h : Nat)
-    (hpairs : LanePairsInvariant pairs h) (a b : M512) :
-    let upper := _mm512_permutex2var_epi64 a pairs.upper b
-    let lower := _mm512_permutex2var_epi64 a pairs.lower b
-    _mm512_permutex2var_epi64 upper pairs.first lower = a ∧
-      _mm512_permutex2var_epi64 upper pairs.second lower = b := by
-  obtain ⟨hh, hget, hput⟩ := hpairs
-  have hu (i : Nat) (hi : i < 8) : pairs.upper[i].toNat =
-      i % 4 / h * (2 * h) + i % h + i / 4 * 8 := (hget ⟨i, hi⟩).1
-  have hl (i : Nat) (hi : i < 8) : pairs.lower[i].toNat =
-      i % 4 / h * (2 * h) + i % h + i / 4 * 8 + h := (hget ⟨i, hi⟩).2
-  have hf (i : Nat) (hi : i < 8) : pairs.first[i].toNat =
-      i / (2*h)*h + i%h + (if i%(2*h)<h then 0 else 8) := (hput ⟨i, hi⟩).1
-  have hs (i : Nat) (hi : i < 8) : pairs.second[i].toNat =
-      i / (2*h)*h + i%h + 4 + (if i%(2*h)<h then 0 else 8) := (hput ⟨i, hi⟩).2
-  dsimp only
-  rcases hh with rfl | rfl | rfl <;> constructor <;>
-    apply Vector.ext <;> intro i hi <;> interval_cases i <;>
-    simp [_mm512_permutex2var_epi64, hu, hl, hf, hs, Nat.testBit_eq_decide_div_mod_eq]
-
-
-theorem dit_lanes_refinement (data : Slice fr8.Fr8) (values roots : _root_.Array Fr)
-    (pairs : fft8.LanePairs) (h : Nat) (twiddles : Option fr8.Fr8)
-    (hn : TransformSize roots.size) (hsize : values.size = roots.size)
-    (hdata : DataRep data values) (hpairs : LanePairsInvariant pairs h)
-    (htwiddles : LaneTwiddles twiddles roots h) :
-    ∃ out, fft8.dit_lanes data pairs twiddles = ok out ∧
-      DataRep out (butterflyStage true values roots h) := by
-  exact lanes_refinement true data values roots pairs h twiddles hn hsize hdata hpairs htwiddles
-
-theorem dif_lanes_refinement (data : Slice fr8.Fr8) (values roots : _root_.Array Fr)
-    (pairs : fft8.LanePairs) (h : Nat) (twiddles : Option fr8.Fr8)
-    (hn : TransformSize roots.size) (hsize : values.size = roots.size)
-    (hdata : DataRep data values) (hpairs : LanePairsInvariant pairs h)
-    (htwiddles : LaneTwiddles twiddles roots h) :
-    ∃ out, fft8.dif_lanes data pairs twiddles = ok out ∧
-      DataRep out (butterflyStage false values roots h) := by
-  exact lanes_refinement false data values roots pairs h twiddles hn hsize hdata hpairs htwiddles
 
 theorem dit_wide_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     (values roots : _root_.Array Fr) (half : Usize)
@@ -97,15 +53,15 @@ private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
       values.size = roots.size → DataRep data values →
       half.val = 2 ^ s → table.vectors.val = 2 ^ (s + remaining) →
       ∃ out,
-        fft8.Fft8.dit_loop table.vectors table.wide table.stage2 table.stage4 data half = ok out ∧
+        fft8.Fft8.dit_loop1 table.vectors table.wide table.short data half = ok out ∧
         DataRep out ((List.range' (s + 3) remaining).foldl
           (fun acc stage => butterflyStage true acc roots (2 ^ stage)) values) := by
   intro s data values half hsize hdata hhalf hsteps
   induction remaining generalizing s data values half with
   | zero =>
     refine ⟨data, ?_, by simpa using hdata⟩
-    rw [fft8.Fft8.dit_loop, loop.eq_1]
-    simp [fft8.Fft8.dit_loop.body, UScalar.lt_equiv, hsteps, hhalf]
+    rw [fft8.Fft8.dit_loop1, loop.eq_1]
+    simp [fft8.Fft8.dit_loop1.body, UScalar.lt_equiv, hsteps, hhalf]
   | succ remaining ih =>
     have hp : 0 < 2 ^ s := by positivity
     have hrem : 1 ≤ 2 ^ remaining := Nat.one_le_two_pow
@@ -130,8 +86,8 @@ private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
       (by rw [hnext, hhalf, Nat.pow_succ])
       (by simpa only [Nat.add_assoc, Nat.add_left_comm, Nat.add_comm] using hsteps)
     refine ⟨out, ?_, ?_⟩
-    · rw [fft8.Fft8.dit_loop, loop.eq_1]
-      simp only [fft8.Fft8.dit_loop.body, UScalar.lt_equiv, hlt, if_true,
+    · rw [fft8.Fft8.dit_loop1, loop.eq_1]
+      simp only [fft8.Fft8.dit_loop1.body, UScalar.lt_equiv, hlt, if_true,
         hstage, bind_tc_ok, hmul]
       exact hrun
     · simpa only [List.range'_succ, List.foldl_cons, Nat.add_assoc,
@@ -143,15 +99,15 @@ private theorem dif_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
       values.size = roots.size → DataRep data values →
       half.val = 2 ^ remaining / 2 → 2 ^ remaining ≤ table.vectors.val →
       ∃ out,
-        fft8.Fft8.dif_loop table.vectors table.wide table.stage2 table.stage4 data half = ok out ∧
+        fft8.Fft8.dif_loop0 table.vectors table.wide table.short data half = ok out ∧
         DataRep out ((List.range' 3 remaining).reverse.foldl
           (fun acc stage => butterflyStage false acc roots (2 ^ stage)) values) := by
   intro data values half hsize hdata hhalf hsteps
   induction remaining generalizing data values half with
   | zero =>
     refine ⟨data, ?_, by simpa using hdata⟩
-    rw [fft8.Fft8.dif_loop, loop.eq_1]
-    simp [fft8.Fft8.dif_loop.body, UScalar.lt_equiv, hhalf]
+    rw [fft8.Fft8.dif_loop0, loop.eq_1]
+    simp [fft8.Fft8.dif_loop0.body, UScalar.lt_equiv, hhalf]
   | succ remaining ih =>
     have hhalf' : half.val = 2 ^ remaining := by simpa [Nat.pow_succ] using hhalf
     have hp : 0 < half.val := by rw [hhalf']; positivity
@@ -170,8 +126,8 @@ private theorem dif_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
       (by simpa only [UScalar.ofNatCore_val_eq, hhalf'] using hnext)
       (by rw [Nat.pow_succ] at hsteps; nlinarith [Nat.two_pow_pos remaining])
     refine ⟨out, ?_, ?_⟩
-    · rw [fft8.Fft8.dif_loop, loop.eq_1]
-      simp only [fft8.Fft8.dif_loop.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+    · rw [fft8.Fft8.dif_loop0, loop.eq_1]
+      simp only [fft8.Fft8.dif_loop0.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
         hp, if_true, hstage, bind_tc_ok, hdiv]
       exact hrun
     · simpa only [List.range'_1_concat, List.reverse_append,
@@ -201,26 +157,17 @@ theorem dit_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     simp only [Slice.len, Usize.ofNatCore_val_eq]
     rw [htable.2.1, ← hsize, hdata.1]
     omega
-  obtain ⟨p1, hp1, hi1⟩ := lane_pairs_refinement 1#usize (by simp)
-  obtain ⟨d1, hd1, hr1⟩ := dit_lanes_refinement data values roots p1 1 none
-    htable.1 hsize hdata hi1 ⟨rfl, hunit⟩
-  obtain ⟨p2, hp2, hi2⟩ := lane_pairs_refinement 2#usize (by simp)
-  obtain ⟨d2, hd2, hr2⟩ := dit_lanes_refinement d1
-    (butterflyStage true values roots 1) roots p2 2 (some table.stage2)
-    htable.1 (by simpa using hsize) hr1 hi2
-    (by simpa [LaneTwiddles] using And.intro (Or.inl rfl : 2 = 2 ∨ 2 = 4) htable.2.2.2.2.1)
-  obtain ⟨p4, hp4, hi4⟩ := lane_pairs_refinement 4#usize (by simp)
-  obtain ⟨d3, hd3, hr3⟩ := dit_lanes_refinement d2
-    (butterflyStage true (butterflyStage true values roots 1) roots 2) roots p4 4
-    (some table.stage4) htable.1 (by simpa using hsize) hr2 hi4
-    (by simpa [LaneTwiddles] using And.intro (Or.inr rfl : 4 = 2 ∨ 4 = 4) htable.2.2.2.2.2)
+  obtain ⟨d3, hd3, hr3⟩ := blocks_refinement true table data values roots
+    htable hsize hunit hdata
+  change fft8.Fft8.dit_loop0 table.vectors table.wide table.short data 0#usize = ok d3 at hd3
   obtain ⟨out, hout, hrep⟩ := dit_wide_steps table roots htable (logSize - 3) 0 d3
-    (butterflyStage true (butterflyStage true (butterflyStage true values roots 1) roots 2) roots 4)
-    1#usize (by simpa using hsize) hr3 (by simp) (by simpa using hvectors)
+    (shortStages true values roots) 1#usize
+    (by simpa using hsize) hr3 (by simp) (by simpa using hvectors)
   refine ⟨out, ?_, ?_⟩
   · unfold fft8.Fft8.dit
-    simpa only [hlen, massert, if_true, bind_tc_ok, hp1, hd1, hp2, hd2, hp4, hd3] using hout
-  · simpa [iterativeDit, range_split_three logSize (by omega), List.foldl_append] using hrep
+    simpa only [hlen, massert, if_true, bind_tc_ok, hd3] using hout
+  · simpa [iterativeDit, range_split_three logSize (by omega), List.foldl_append,
+      shortStages] using hrep
 
 
 theorem dif_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
@@ -254,24 +201,14 @@ theorem dif_stages_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     induction stages with
     | nil => simp
     | cons stage stages ih => intro v; simp [ih]
-  obtain ⟨p4, hp4, hi4⟩ := lane_pairs_refinement 4#usize (by simp)
-  obtain ⟨d1, hd1, hr1⟩ := dif_lanes_refinement d0 middle roots p4 4
-    (some table.stage4) htable.1 hmid hr0 hi4
-    (by simpa [LaneTwiddles] using And.intro (Or.inr rfl : 4 = 2 ∨ 4 = 4) htable.2.2.2.2.2)
-  obtain ⟨p2, hp2, hi2⟩ := lane_pairs_refinement 2#usize (by simp)
-  obtain ⟨d2, hd2, hr2⟩ := dif_lanes_refinement d1
-    (butterflyStage false middle roots 4) roots p2 2 (some table.stage2)
-    htable.1 (by simpa using hmid) hr1 hi2
-    (by simpa [LaneTwiddles] using And.intro (Or.inl rfl : 2 = 2 ∨ 2 = 4) htable.2.2.2.2.1)
-  obtain ⟨p1, hp1, hi1⟩ := lane_pairs_refinement 1#usize (by simp)
-  obtain ⟨out, hout, hrep⟩ := dif_lanes_refinement d2
-    (butterflyStage false (butterflyStage false middle roots 4) roots 2) roots p1 1 none
-    htable.1 (by simpa using hmid) hr2 hi1 ⟨rfl, hunit⟩
+  obtain ⟨out, hout, hrep⟩ := blocks_refinement false table d0 middle roots
+    htable hmid hunit hr0
   refine ⟨out, ?_, ?_⟩
   · unfold fft8.Fft8.dif
-    simpa only [hlen, massert, if_true, bind_tc_ok, hdiv, hd0, hp4, hd1, hp2, hd2, hp1] using hout
+    simpa only [hlen, massert, if_true, bind_tc_ok, hdiv, hd0,
+      Bool.false_eq_true, if_false] using hout
   · simpa [iterativeDif, range_split_three logSize (by omega), List.foldl_append,
-      List.reverse_append, middle] using hrep
+      List.reverse_append, middle, shortStages] using hrep
 
 
 theorem iterative_dit_eq_spec (values roots : _root_.Array Fr) (logSize : Nat)

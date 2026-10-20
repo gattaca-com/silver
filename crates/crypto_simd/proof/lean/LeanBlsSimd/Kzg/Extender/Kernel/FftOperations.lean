@@ -8,26 +8,27 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
-def permuted (a b : Fin 8 → Fr) (index : M512) (lane : Fin 8) : Fr :=
-  let source : Fin 8 := ⟨index[lane].toNat % 8, Nat.mod_lt _ (by decide)⟩
-  if index[lane].toNat.testBit 3 then b source else a source
-
-theorem permute_representation (a b : fr8.Fr8) (av bv : Fin 8 → Fr) (index : M512)
-    (ha : Represents a av) (hb : Represents b bv) :
-    ∃ out, fr8.Fr8.permute a index b = ok out ∧ Represents out (permuted av bv index) := by
-  obtain ⟨out, hout, hp, hbound⟩ := permute_refinement a b index
-  refine ⟨out, hout, hbound ha.1 hb.1, ?_⟩
-  intro lane
-  let source : Fin 8 := ⟨index[lane].toNat % 8, Nat.mod_lt _ (by decide)⟩
-  have hval : laneNat out lane = if index[lane].toNat.testBit 3 then
-      laneNat b source else laneNat a source := by
+theorem transpose_representation (data : Slice fr8.Fr8) (offset : Usize)
+    (values : Fin 8 → Fin 8 → Fr) (hsize : offset.val + 8 ≤ data.val.length)
+    (hvalues : ∀ row, Represents data.val[offset.val + row.val]! (values row)) :
+    ∃ out, fr8.Fr8.transpose data offset = ok out ∧
+      ∀ row, Represents out.val[row.val]! (fun lane => values lane row) := by
+  obtain ⟨out, hout, hlimb⟩ := transpose_refinement data offset hsize
+  have hnat (row lane : Fin 8) :
+      laneNat out.val[row.val]! lane = laneNat data.val[offset.val + lane.val]! row := by
     unfold laneNat
-    simp_rw [hp]
-    cases index[lane].toNat.testBit 3 <;> rfl
-  simp only [laneValue, hval, permuted]
-  split
-  · exact hb.2 source
-  · exact ha.2 source
+    simp_rw [hlimb]
+  refine ⟨out, hout, ?_⟩
+  intro row
+  refine ⟨⟨?_, ?_⟩, ?_⟩
+  · intro j lane
+    rw [hlimb]
+    exact (hvalues lane).1.1 j row
+  · intro lane
+    rw [hnat]
+    exact (hvalues lane).1.2 row
+  · intro lane
+    simpa only [laneValue, hnat] using (hvalues lane).2 row
 
 theorem add_representation (a b : fr8.Fr8) (av bv : Fin 8 → Fr)
     (ha : Represents a av) (hb : Represents b bv) :
