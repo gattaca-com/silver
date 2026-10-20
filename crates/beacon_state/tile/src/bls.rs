@@ -11,6 +11,7 @@ use silver_common::ssz_view::{
 use silver_crypto_simd::bls::{blst_p2_affine, uncompress_in_g2};
 
 use crate::ssz_hash::hash_tree_root_block_header;
+pub use silver_ssz::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
 
 mod aggregator;
 mod sig_batch;
