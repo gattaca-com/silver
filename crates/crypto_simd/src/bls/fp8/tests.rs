@@ -1,7 +1,8 @@
 //! `Fp8::mul` and `Fp8::square` against a reference Montgomery product, limb
 //! for limb. The refinement of `mul` holds without a precondition, so the
-//! inputs go beyond its contract of normalised values below 2p. Also
-//! `carry_of_cleared` and `transpose8`.
+//! inputs go beyond its contract of normalised values below 2p. Also the
+//! widened bound of `mul`, the lazy steps, `carry_of_cleared` and
+//! `transpose8`.
 
 use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
@@ -55,7 +56,7 @@ fn mul_reference(a: &Fp8, b: &Fp8) -> Fp8 {
 }
 
 /// k·p + d in normalised limbs.
-fn near_multiple_of_p(k: i128, d: i128) -> Limbs {
+pub(crate) fn near_multiple_of_p(k: i128, d: i128) -> Limbs {
     let mut out = [0u64; LIMBS];
     let mut carry = d;
     for j in 0..LIMBS {
@@ -67,7 +68,7 @@ fn near_multiple_of_p(k: i128, d: i128) -> Limbs {
     out
 }
 
-fn below(rng: &mut ChaCha8Rng, bound: &Limbs) -> Limbs {
+pub(crate) fn below(rng: &mut ChaCha8Rng, bound: &Limbs) -> Limbs {
     loop {
         let mut x = [0u64; LIMBS];
         for j in 0..LIMBS - 1 {
@@ -80,6 +81,30 @@ fn below(rng: &mut ChaCha8Rng, bound: &Limbs) -> Limbs {
     }
 }
 
+/// Every pair of `edges`, eight pairs to a vector.
+fn every_pair(edges: &[Limbs]) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
+    let pairs: Vec<_> = edges.iter().flat_map(|a| edges.iter().map(move |b| (*a, *b))).collect();
+    pairs
+        .chunks(LANES)
+        .map(|chunk| {
+            let lane = |l: usize| chunk[l % chunk.len()];
+            (std::array::from_fn(|l| lane(l).0), std::array::from_fn(|l| lane(l).1))
+        })
+        .collect()
+}
+
+fn random_pairs_below(
+    rng: &mut ChaCha8Rng,
+    bound: &Limbs,
+    count: usize,
+) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
+    (0..count)
+        .map(|_| {
+            (std::array::from_fn(|_| below(rng, bound)), std::array::from_fn(|_| below(rng, bound)))
+        })
+        .collect()
+}
+
 /// Every pair of 0, 1, p − 1, p, p + 1, 2p − 2, 2p − 1, the Montgomery one,
 /// 2p and 2^416 − 1, eight pairs to a vector; then random values below 2p,
 /// random normalised limbs, and random 64-bit limbs.
@@ -89,22 +114,8 @@ fn operands(rng: &mut ChaCha8Rng) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
         .map(|&(k, d)| near_multiple_of_p(k, d))
         .collect();
     edges.extend([R_MOD_P, [MASK52; LIMBS]]);
-    let pairs: Vec<_> = edges.iter().flat_map(|a| edges.iter().map(move |b| (*a, *b))).collect();
-    let mut out: Vec<_> = pairs
-        .chunks(LANES)
-        .map(|chunk| {
-            let lane = |l: usize| chunk[l % chunk.len()];
-            (std::array::from_fn(|l| lane(l).0), std::array::from_fn(|l| lane(l).1))
-        })
-        .collect();
-
-    let two_p = near_multiple_of_p(2, 0);
-    for _ in 0..64 {
-        out.push((
-            std::array::from_fn(|_| below(rng, &two_p)),
-            std::array::from_fn(|_| below(rng, &two_p)),
-        ));
-    }
+    let mut out = every_pair(&edges);
+    out.extend(random_pairs_below(rng, &near_multiple_of_p(2, 0), 64));
     for _ in 0..16 {
         out.push((
             std::array::from_fn(|_| std::array::from_fn(|_| rng.r#gen::<u64>() & MASK52)),
@@ -146,6 +157,98 @@ fn square_matches_reference_product() {
                 let x = Fp8::load(x);
                 assert!(x.square().store() == mul_reference(&x, &x).store(), "case {case}");
             }
+        }
+    }
+}
+
+/// d + k·p in normalised limbs.
+fn plus_multiple_of_p(d: &Limbs, k: u64) -> Limbs {
+    let mut out = [0u64; LIMBS];
+    let mut carry = 0u128;
+    for j in 0..LIMBS {
+        let limb = d[j] as u128 + P[j] as u128 * k as u128 + carry;
+        out[j] = limb as u64 & MASK52;
+        carry = limb >> 52;
+    }
+    assert!(carry == 0, "d + k·p lies in [0, 2^416)");
+    out
+}
+
+/// Operands up to 2^34·p against ones below 2p, and up to 2^17·p against
+/// each other, give products below 2p with the values of their residues'
+/// products. The first case puts every operand at its bound.
+#[test]
+fn mul_reduces_operands_within_its_bound() {
+    if !kernels_run() {
+        return;
+    }
+    const MAX_34: u64 = (1 << 34) - 1;
+    const MAX_17: u64 = (1 << 17) - 1;
+    let mut rng = ChaCha8Rng::seed_from_u64(0x17);
+    let p = near_multiple_of_p(1, 0);
+    let two_p = near_multiple_of_p(2, 0);
+    for case in 0..16 {
+        let mut residues = [[[0u64; LIMBS]; LANES]; 2];
+        let mut operands = [[[0u64; LIMBS]; LANES]; 2];
+        for lane in 0..LANES {
+            let multiples = match lane % 4 {
+                0 => [MAX_34, 1],
+                1 => [rng.gen_range(0..=1), rng.gen_range(0..=MAX_34)],
+                2 => [MAX_17, MAX_17],
+                _ => [rng.gen_range(0..=MAX_17), rng.gen_range(0..=MAX_17)],
+            };
+            for k in 0..2 {
+                residues[k][lane] =
+                    if case == 0 { near_multiple_of_p(1, -1) } else { below(&mut rng, &p) };
+                operands[k][lane] = plus_multiple_of_p(&residues[k][lane], multiples[k]);
+            }
+        }
+        // SAFETY: `kernels_run` checked `simd_available`.
+        unsafe {
+            let product = Fp8::load(&operands[0]).mul(&Fp8::load(&operands[1]));
+            for limbs in product.store() {
+                assert!(limbs.iter().rev().lt(two_p.iter().rev()), "case {case}: {limbs:x?}");
+            }
+            let want = Fp8::load(&residues[0]).mul(&Fp8::load(&residues[1]));
+            assert!(product.canonical().store() == want.canonical().store(), "case {case}");
+        }
+    }
+}
+
+#[test]
+fn multiple_of_p_is_normalised_c_times_p() {
+    if !kernels_run() {
+        return;
+    }
+    for c in [0, 1, 2, 4, 8, (1 << 12) - 1] {
+        // SAFETY: `kernels_run` checked `simd_available`.
+        let got = unsafe { Fp8::multiple_of_p(c).store() };
+        assert!(got == [near_multiple_of_p(c as i128, 0); LANES], "c = {c}");
+    }
+}
+
+/// On every pair of 0, 1, p − 1, p, p + 1, 2p − 2 and 2p − 1, and on random
+/// pairs below 2p, the lazy steps reach the limbs of `add` and `sub`.
+#[test]
+fn lazy_steps_match_add_and_sub() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x1a27);
+    let edges: Vec<_> = [(0, 0), (0, 1), (1, -1), (1, 0), (1, 1), (2, -2), (2, -1)]
+        .iter()
+        .map(|&(k, d)| near_multiple_of_p(k, d))
+        .collect();
+    let mut pairs = every_pair(&edges);
+    pairs.extend(random_pairs_below(&mut rng, &near_multiple_of_p(2, 0), 64));
+    for (case, (a, b)) in pairs.iter().enumerate() {
+        // SAFETY: `kernels_run` checked `simd_available`.
+        unsafe {
+            let (a, b, two_p) = (Fp8::load(a), Fp8::load(b), Fp8::multiple_of_p(2));
+            let sum = a.add_raw(&b).normalise().cond_sub(&two_p);
+            assert!(sum.store() == a.add(&b).store(), "sum, case {case}");
+            let difference = a.sub_raw(&b, &two_p).normalise().cond_sub(&two_p);
+            assert!(difference.store() == a.sub(&b).store(), "difference, case {case}");
         }
     }
 }

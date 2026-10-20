@@ -1,9 +1,16 @@
 //! Eight independent Fp elements, one per 64-bit lane, as eight 52-bit limbs in
 //! Montgomery form with R = 2^416: the shape `vpmadd52` multiplies natively.
 //!
-//! Values are kept in [0, 2p) with normalised limbs — Montgomery products of
-//! such inputs land there without a conditional subtraction, since 4p < R —
-//! and are canonicalised only where bits are compared or exported.
+//! A lane's value is Σ_j limb_j·2^(52j), each limb a signed 64-bit integer.
+//! Operations state their ranges in three classes, as `kzg::fr8` does for r:
+//! - normalised: every limb in [0, 2^52), as IFMA operands must be;
+//! - reduced: normalised and below 2p;
+//! - lazy(k, m): in [0, k·p), every limb below m·2^52 in magnitude.
+//!
+//! Montgomery products land below 2p without a conditional subtraction, and
+//! `add` and `sub` keep reduced values reduced. The `_raw` operations leave
+//! values lazy until `normalise` and `cond_sub` bring them back. Values are
+//! canonicalised only where bits are compared or exported.
 
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
@@ -318,7 +325,8 @@ impl Fp8 {
 
     /// Montgomery product: the full 16-limb product, then `reduce`. Every row
     /// takes a constant index, so neither phase indexes the accumulator at run
-    /// time.
+    /// time. For normalised operands with a·b < R·p, such as one below 2p and
+    /// the other below 2^34·p, or both below 2^17·p, the result is reduced.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn mul(&self, rhs: &Self) -> Self {
         let mut t = [zero(); 2 * LIMBS + 1];
@@ -386,8 +394,71 @@ impl Fp8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn canonical(self) -> Self {
-        let (d, borrow) = sub_limbs(&self.0, &splat_limbs(&P));
+        self.cond_sub(&Self::splat_limbs(&P))
+    }
+
+    /// `self − c` in the lanes where `self ≥ c`, `self` in the others, for
+    /// normalised `self` and `c`. From below 2c, the result is below c.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn cond_sub(&self, c: &Self) -> Self {
+        let (d, borrow) = sub_limbs(&self.0, &c.0);
         Self(blend(borrowed(borrow), &d, &self.0))
+    }
+
+    /// c·p in every lane, normalised.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn multiple_of_p(c: u64) -> Self {
+        assert!(c < 1 << 12, "c·p limb by limb in 64 bits");
+        let mut v = [zero(); LIMBS];
+        let mut carry = 0;
+        for j in 0..LIMBS {
+            let limb = P[j] * c + carry;
+            v[j] = splat(limb & MASK52);
+            carry = limb >> LIMB_BITS;
+        }
+        Self(v)
+    }
+
+    /// Limb-wise, without carries: lazy(k, m) and lazy(k', m') give
+    /// lazy(k + k', m + m').
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn add_raw(&self, rhs: &Self) -> Self {
+        let mut s = [zero(); LIMBS];
+        for j in 0..LIMBS {
+            s[j] = _mm512_add_epi64(self.0[j], rhs.0[j]);
+        }
+        Self(s)
+    }
+
+    /// `self + offset − rhs` limb-wise, without carries; limbs may go
+    /// negative. With `offset` the normalised c·p: lazy(k, m) and lazy(k', m')
+    /// for k' ≤ c give lazy(k + c, m + m' + 1).
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn sub_raw(&self, rhs: &Self, offset: &Self) -> Self {
+        let mut s = [zero(); LIMBS];
+        for j in 0..LIMBS {
+            s[j] = _mm512_sub_epi64(_mm512_add_epi64(self.0[j], offset.0[j]), rhs.0[j]);
+        }
+        Self(s)
+    }
+
+    /// The same value with limbs 0 to 6 in [0, 2^52), each limb's signed
+    /// excess carried into the next. A value in [0, 2^416) comes out
+    /// normalised. Limbs below 2^62 in magnitude do not overflow.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn normalise(&self) -> Self {
+        let mask = splat(MASK52);
+        let mut s = self.0;
+        for j in 0..LIMBS - 1 {
+            s[j + 1] = _mm512_add_epi64(s[j + 1], _mm512_srai_epi64::<52>(s[j]));
+            s[j] = _mm512_and_si512(s[j], mask);
+        }
+        Self(s)
     }
 
     /// Sum below 4p, brought back under 2p.
@@ -395,7 +466,7 @@ impl Fp8 {
     #[inline]
     pub fn add(&self, rhs: &Self) -> Self {
         let s = add_limbs(&self.0, &rhs.0);
-        let (d, borrow) = sub_limbs(&s, &two_p());
+        let (d, borrow) = sub_limbs(&s, &Self::multiple_of_p(2).0);
         Self(blend(borrowed(borrow), &d, &s))
     }
 
@@ -403,7 +474,7 @@ impl Fp8 {
     #[inline]
     pub fn sub(&self, rhs: &Self) -> Self {
         let (d, borrow) = sub_limbs(&self.0, &rhs.0);
-        let wrapped = add_limbs(&d, &two_p());
+        let wrapped = add_limbs(&d, &Self::multiple_of_p(2).0);
         Self(blend(borrowed(borrow), &d, &wrapped))
     }
 
@@ -495,11 +566,5 @@ impl Fp8 {
     }
 }
 
-#[target_feature(enable = "avx512f,avx512ifma")]
-#[inline]
-fn two_p() -> [__m512i; LIMBS] {
-    add_limbs(&splat_limbs(&P), &splat_limbs(&P))
-}
-
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
