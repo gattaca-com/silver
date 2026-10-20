@@ -1,4 +1,4 @@
-use std::{hint::black_box, time::Instant};
+use std::{hint::black_box, panic::catch_unwind, time::Instant};
 
 use blst::blst_fr;
 use rand::{Rng, SeedableRng};
@@ -267,6 +267,20 @@ fn kernel_transforms_match_scalar_fft() {
             }
         }
     }
+}
+
+/// One stage more than 4096 elements takes `dit`'s output bound to 36r, past
+/// 2^260.
+#[test]
+fn transforms_beyond_4096_elements_are_rejected() {
+    if !kernels_run() {
+        return;
+    }
+    let roots = roots_of_unity(MAX_LOG + 1);
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let rejected = catch_unwind(|| unsafe { Fft8::new(&roots, roots.len()) }).err();
+    let message = rejected.as_ref().and_then(|payload| payload.downcast_ref::<&str>());
+    assert!(message.is_some_and(|m| m.contains("4096 elements")), "panic: {message:?}");
 }
 
 /// Elements start this far into their buffers, so no lane is 8-byte aligned.

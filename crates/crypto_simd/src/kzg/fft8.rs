@@ -21,14 +21,16 @@ pub struct Fft8 {
 }
 
 impl Fft8 {
-    /// For n-element transforms, n ≥ 64, with ω the root of order n among
-    /// `roots`, the powers of a primitive root of an order that n divides.
+    /// For n-element transforms, 64 ≤ n ≤ 4096, with ω the root of order n
+    /// among `roots`, the powers of a primitive root of an order that n
+    /// divides.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn new(roots: &[blst_fr], n: usize) -> Self {
         assert!(
             n >= LANES * LANES && n & (n - 1) == 0,
             "power-of-two length of eight vectors or more"
         );
+        assert!(n <= 1 << 12, "dit's outputs stay below 2^260 only up to 4096 elements");
         assert!(roots.len() % n == 0, "matching lengths");
         let stride = roots.len() / n;
         let mut short = Vec::with_capacity(LANES - 1);
@@ -81,7 +83,9 @@ impl Fft8 {
 
     /// Σ_j x_j·ω^(i·j) at i, from x_j at `reverse_bits(j)`. Sums and
     /// differences stay unreduced, so reduced inputs give outputs in
-    /// lazy(16 + 2w, 73 + 33w), w = log2(n) − 3, at most lazy(34, 370).
+    /// lazy(16 + 2w, 73 + 33w), w = log2(n) − 3. That is lazy(34, 370) at
+    /// n = 4096, the longest transform `new` takes: one more stage would reach
+    /// 36r > 2^260.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn dit(&self, data: &mut [Fr8]) {
         assert!(data.len() == self.vectors, "one transform length");
