@@ -24,10 +24,15 @@ use std::arch::x86_64::{
 
 use blst::blst_fr;
 
+use self::u256x8::U256x8;
+#[cfg(test)]
+use crate::bls::fp8::lanes;
 use crate::{
-    bls::fp8::{carry_of_cleared, lanes, transpose8},
+    bls::fp8::{carry_of_cleared, transpose8},
     kzg::blst_ops::{fr_from_u64, fr_mul},
 };
+
+mod u256x8;
 
 pub const LANES: usize = 8;
 const LIMBS: usize = 5;
@@ -149,28 +154,6 @@ fn unpack52(x: &[u64; 4]) -> [u64; LIMBS] {
     ]
 }
 
-/// The inverse of `unpack52` on values below 2^256.
-fn pack64(x: &[u64; LIMBS]) -> [u64; 4] {
-    [x[0] | x[1] << 52, x[1] >> 12 | x[2] << 40, x[2] >> 24 | x[3] << 28, x[3] >> 36 | x[4] << 16]
-}
-
-/// The 32 big-endian bytes at `at` as little-endian 64-bit words.
-fn words_from_bytes(bytes: &[u8], at: usize) -> [u64; 4] {
-    let mut words = [0u64; 4];
-    let mut word = [0u8; 8];
-    for k in 0..4 {
-        word.copy_from_slice(&bytes[at + 8 * k..at + 8 * k + 8]);
-        words[3 - k] = u64::from_be_bytes(word);
-    }
-    words
-}
-
-fn words_to_bytes(words: &[u64; 4], bytes: &mut [u8], at: usize) {
-    for k in 0..4 {
-        bytes[at + 8 * k..at + 8 * k + 8].copy_from_slice(&words[3 - k].to_be_bytes());
-    }
-}
-
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
 fn transpose_in(limbs: &[[u64; LIMBS]; LANES]) -> [__m512i; LIMBS] {
@@ -213,11 +196,7 @@ impl Fr8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn from_bytes(bytes: &[u8], at: usize) -> (Self, __mmask8) {
-        let mut limbs = [[0u64; LIMBS]; LANES];
-        for lane in 0..LANES {
-            limbs[lane] = unpack52(&words_from_bytes(bytes, at + 32 * lane));
-        }
-        let v = transpose_in(&limbs);
+        let v = U256x8::from_bytes(bytes, at).limbs();
         let (_, borrow) = sub_limbs(&v, &splat_limbs(&R));
         (Self(v), borrowed(borrow))
     }
@@ -226,17 +205,7 @@ impl Fr8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn to_bytes(self, bytes: &mut [u8], at: usize) {
-        let canonical = self.canonical();
-        let mut limbs = [[0u64; LIMBS]; LANES];
-        for j in 0..LIMBS {
-            let l = lanes(canonical.0[j]);
-            for lane in 0..LANES {
-                limbs[lane][j] = l[lane];
-            }
-        }
-        for lane in 0..LANES {
-            words_to_bytes(&pack64(&limbs[lane]), bytes, at + 32 * lane);
-        }
+        U256x8::from_limbs(&self.canonical().0).to_bytes(bytes, at);
     }
 
     /// Montgomery product with R = 2^260: the full ten-limb product first, then

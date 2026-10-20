@@ -55,7 +55,7 @@ pub(crate) fn lanes(v: __m512i) -> [u64; LANES] {
 
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn index_vector(index: &[i64; LANES]) -> __m512i {
+pub(crate) fn index_vector(index: &[i64; LANES]) -> __m512i {
     _mm512_set_epi64(index[7], index[6], index[5], index[4], index[3], index[2], index[1], index[0])
 }
 
