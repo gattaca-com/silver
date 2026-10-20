@@ -149,6 +149,8 @@ fn reduce_row(t: &mut Product, r: &[__m512i; LIMBS], rinv: __m512i, i: usize) {
 }
 
 /// `reduce_row`, with row `i` of the product `a·b` between q and its uses.
+/// The high half of `q·r[0]` accumulates in place: the product hides the
+/// longer q chain, and the row saves two instructions.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
 fn reduce_row_multiplying(
@@ -163,12 +165,10 @@ fn reduce_row_multiplying(
     let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
     t[i + 1] = _mm512_add_epi64(t[i + 1], carry_of_cleared(t[i]));
     muladd_row(next, a, b_i, i);
-    let high = _mm512_madd52hi_epu64(zero(), r[0], q);
     for j in 1..LIMBS {
         t[i + j] = _mm512_madd52lo_epu64(t[i + j], r[j], q);
     }
-    t[i + 1] = _mm512_add_epi64(t[i + 1], high);
-    for j in 1..LIMBS {
+    for j in 0..LIMBS {
         t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], r[j], q);
     }
 }
