@@ -90,9 +90,66 @@ def blocksWithIndex (index : Std.I64)
   ok (Array.make 4#usize [ mi10, mi11, mi14, mi15 ] (by rfl))
 
 
+def encodeBlocksWithIndex (index : Std.I64)
+  (self : kzg.fr8.u256x8.U256x8) :
+  Result (Array core.core_arch.x86.__m512i 4#usize)
+  := do
+  let first_halves ←
+    bls.fp8.index_vector
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 8#i64, 9#i64, 10#i64, 11#i64
+        ] (by rfl))
+  let second_halves ←
+    bls.fp8.index_vector
+      (Array.make 8#usize [
+        4#i64, 5#i64, 6#i64, 7#i64, 12#i64, 13#i64, 14#i64, 15#i64
+        ] (by rfl))
+  let mi ← Array.index_usize self 0#usize
+  let mi1 ← Array.index_usize self 1#usize
+  let mi2 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi first_halves mi1
+  let mi3 ← Array.index_usize self 2#usize
+  let mi4 ← Array.index_usize self 3#usize
+  let mi5 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi3 first_halves mi4
+  let mi6 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi second_halves mi1
+  let mi7 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi3 second_halves mi4
+  let even_block ←
+    bls.fp8.index_vector
+      (Array.make 8#usize [
+        index, 8#i64, 4#i64, 0#i64, 13#i64, 9#i64, 5#i64, 1#i64
+        ] (by rfl))
+  let odd_block ←
+    bls.fp8.index_vector
+      (Array.make 8#usize [
+        14#i64, 10#i64, 6#i64, 2#i64, 15#i64, 11#i64, 7#i64, 3#i64
+        ] (by rfl))
+  let mi8 ←
+    Array.index_usize (Array.make 4#usize [ mi2, mi5, mi6, mi7 ] (by rfl)) 0#usize
+  let mi9 ←
+    Array.index_usize (Array.make 4#usize [ mi2, mi5, mi6, mi7 ] (by rfl)) 1#usize
+  let mi10 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi8 even_block mi9
+  let mi11 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi8 odd_block mi9
+  let mi12 ←
+    Array.index_usize (Array.make 4#usize [ mi2, mi5, mi6, mi7 ] (by rfl)) 2#usize
+  let mi13 ←
+    Array.index_usize (Array.make 4#usize [ mi2, mi5, mi6, mi7 ] (by rfl)) 3#usize
+  let mi14 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi12 even_block mi13
+  let mi15 ←
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi12 odd_block mi13
+  ok (Array.make 4#usize [ mi10, mi11, mi14, mi15 ] (by rfl))
+
+
 theorem limbsWithShift_matches : limbsWithShift 12#u32 = fr8.u256x8.U256x8.limbs := rfl
 
 theorem blocksWithIndex_matches : blocksWithIndex 3#i64 = fr8.u256x8.U256x8.from_blocks := rfl
+
+theorem encodeBlocksWithIndex_matches : encodeBlocksWithIndex 12#i64 = fr8.u256x8.U256x8.blocks := rfl
 
 private def shiftInput : Vector M512 4 :=
   #v[Vector.replicate 8 0, Vector.replicate 8 1, Vector.replicate 8 0, Vector.replicate 8 0]
@@ -123,6 +180,16 @@ theorem wrong_permutation_rejected :
   have observed := congrArg (observedWord 0) h
   have rejected : observedWord 0 (blocksWithIndex 2#i64 (toArray id permutationInput)) ≠
       observedWord (n := 4#usize) 0 (ok (toArray id (fromBlocks permutationInput))) := by
+    decide +kernel
+  exact rejected observed
+
+theorem wrong_encode_permutation_rejected :
+    encodeBlocksWithIndex 13#i64 (toArray id permutationInput) ≠
+      ok (toArray id (wordBlocks permutationInput)) := by
+  intro h
+  have observed := congrArg (observedWord 0) h
+  have rejected : observedWord 0 (encodeBlocksWithIndex 13#i64 (toArray id permutationInput)) ≠
+      observedWord (n := 4#usize) 0 (ok (toArray id (wordBlocks permutationInput))) := by
     decide +kernel
   exact rejected observed
 

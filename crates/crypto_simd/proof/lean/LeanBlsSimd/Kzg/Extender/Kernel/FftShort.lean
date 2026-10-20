@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.FftWide
+import LeanBlsSimd.Kzg.Extender.Kernel.FftShortPipeline
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthCryptographySpecs Bls Kzg
@@ -171,8 +172,8 @@ private theorem short_usize_bound : 8 < 2^UScalarTy.Usize.numBits := by scalar_t
 
 private def shortBody (dit : Bool) (input product : fr8.Fr8) (h group : Usize)
     (table : fft8.Fft8) (t : Aeneas.Std.Array fr8.Fr8 8#usize) (j : Usize) :=
-  if dit then fft8.Fft8.dit_short_loop0_loop0.body h input product group table t j
-  else fft8.Fft8.dif_short_loop0_loop0.body h input group table t j
+  if dit then ShortModel.dit_short_loop0_loop0.body h input product group table t j
+  else ShortModel.dif_short_loop0_loop0.body h input group table t j
 
 private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (h group j i i1 wi j1 : Usize)
@@ -215,7 +216,7 @@ private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : 
       List.getElem?_eq_getElem (show i1.val < (t.val.set i.val x).length by simpa using hi1b)]
   cases dit <;>
     simp only [shortBody,Bool.false_eq_true,if_false,if_true,
-      fft8.Fft8.dit_short_loop0_loop0.body,fft8.Fft8.dif_short_loop0_loop0.body,
+      ShortModel.dit_short_loop0_loop0.body,ShortModel.dif_short_loop0_loop0.body,
       UScalar.lt_equiv,hj,hadd,hadd1,haddj,hsub,haddw,ha,hb,hw,hu,hu1,
       bind_tc_ok]
   all_goals by_cases hz : j = 0#usize <;>
@@ -244,8 +245,8 @@ private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table :
     have he : j.val=h.val := by omega
     refine ⟨t,?_,by simpa only [he] using hp⟩
     rw [loop.eq_1]
-    cases dit <;> simp [shortBody,fft8.Fft8.dit_short_loop0_loop0.body,
-      fft8.Fft8.dif_short_loop0_loop0.body,UScalar.lt_equiv,he]
+    cases dit <;> simp [shortBody,ShortModel.dit_short_loop0_loop0.body,
+      ShortModel.dif_short_loop0_loop0.body,UScalar.lt_equiv,he]
   | succ remaining ih =>
     intro t j hj hp
     have hjlt : j.val < h.val := by omega
@@ -304,8 +305,8 @@ private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table :
 
 private def shortOuterBody (dit : Bool) (input product : fr8.Fr8) (h : Usize) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize) :=
-  if dit then fft8.Fft8.dit_short_loop0.body h input product table t group
-  else fft8.Fft8.dif_short_loop0.body h input table t group
+  if dit then ShortModel.dit_short_loop0.body h input product table t group
+  else ShortModel.dif_short_loop0.body h input table t group
 
 private theorem short_outer_body (dit : Bool) (input product : fr8.Fr8) (h : Usize) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize) :
@@ -403,7 +404,8 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
   cases dit with
   | false =>
     have hi' : fr8.Fr8.multiple_of_r 2#u64 = ok input := by simpa using hi
-    simpa only [fft8.Fft8.dif_short,hi',bind_tc_ok,fft8.Fft8.dif_short_loop0,shortOuterBody,
+    rw [dif_short_eq_model table t h hh htable.2.2.2.2.1]
+    simpa only [ShortModel.dif_short,hi',bind_tc_ok,ShortModel.dif_short_loop0,shortOuterBody,
       Bool.false_eq_true,if_false] using hout
   | true =>
     have hcast : UScalar.cast .U64 h = UScalar.ofNatCore (ty := .U64) h.val (by scalar_tac) := by
@@ -415,7 +417,8 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
     have hi' : fr8.Fr8.multiple_of_r
         (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac)) = ok input := by
       simpa using hi
-    simpa only [fft8.Fft8.dit_short,hcast,lift,bind_tc_ok,hmul,hi',hproduct,
-      fft8.Fft8.dit_short_loop0,shortOuterBody,if_true] using hout
+    rw [dit_short_eq_model table t h hh htable.2.2.2.2.1]
+    simpa only [ShortModel.dit_short,hcast,lift,bind_tc_ok,hmul,hi',hproduct,
+      ShortModel.dit_short_loop0,shortOuterBody,if_true] using hout
 
 end LeanBlsSimd.Kzg.Extender.Kernel

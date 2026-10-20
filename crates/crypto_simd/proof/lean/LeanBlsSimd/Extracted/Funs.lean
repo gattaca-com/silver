@@ -3306,7 +3306,7 @@ def kzg.cell_extender.__1 : Result Unit := do
   massert (i = i2)
 
 /-- [silver_crypto_simd::kzg::fr8::zero]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 68:0-70:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 70:0-72:1 -/
 def kzg.fr8.zero : Result core.core_arch.x86.__m512i := do
   core.core_arch.x86.avx512f._mm512_setzero_si512
 
@@ -3315,7 +3315,7 @@ def kzg.fr8.zero : Result core.core_arch.x86.__m512i := do
 @[global_simps, irreducible] def kzg.fr8.LIMBS : Std.Usize := 5#usize
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 164:4-175:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:4-202:5 -/
 @[rust_loop_body]
 def kzg.fr8.transpose_in_loop.body
   (limbs : Array (Array Std.U64 5#usize) 8#usize)
@@ -3360,7 +3360,7 @@ def kzg.fr8.transpose_in_loop.body
     ok (cont (iter1, a8))
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 164:4-175:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:4-202:5 -/
 @[rust_loop]
 def kzg.fr8.transpose_in_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -3373,7 +3373,7 @@ def kzg.fr8.transpose_in_loop
     (iter, v)
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 162:0-177:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 189:0-204:1 -/
 def kzg.fr8.transpose_in
   (limbs : Array (Array Std.U64 5#usize) 8#usize) :
   Result (Array core.core_arch.x86.__m512i 5#usize)
@@ -3395,7 +3395,7 @@ def kzg.fr8.MASK52 : Result Std.U64 := do
   i - 1#u64
 
 /-- [silver_crypto_simd::kzg::fr8::unpack52]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 150:0-158:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 177:0-185:1 -/
 def kzg.fr8.unpack52
   (x : Array Std.U64 4#usize) : Result (Array Std.U64 5#usize) := do
   let i ← Array.index_usize x 0#usize
@@ -3425,7 +3425,7 @@ def kzg.fr8.unpack52
 @[global_simps, irreducible] def kzg.fr8.LANES : Std.Usize := 8#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:8-193:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 218:8-220:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.load_loop.body
@@ -3447,7 +3447,7 @@ def kzg.fr8.Fr8.load_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:8-193:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 218:8-220:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.load_loop
@@ -3460,7 +3460,7 @@ def kzg.fr8.Fr8.load_loop
     (iter, limbs)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 189:4-195:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 216:4-222:5
     Visibility: public -/
 def kzg.fr8.Fr8.load
   (values : Slice blst.blst_fr) (at1 : Std.Usize) : Result kzg.fr8.Fr8 := do
@@ -3473,7 +3473,7 @@ def kzg.fr8.Fr8.load
   ok a1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::zero]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 182:4-184:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 209:4-211:5
     Visibility: public -/
 def kzg.fr8.Fr8.zero : Result kzg.fr8.Fr8 := do
   let mi ← kzg.fr8.zero
@@ -3498,7 +3498,7 @@ def kzg.fr8.multiplier (w : blst.blst_fr) : Result blst.blst_fr := do
   kzg.blst_ops.fr_mul w bf
 
 /-- [silver_crypto_simd::kzg::fft8::stage_twiddles]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 215:4-218:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 283:4-286:5 -/
 @[rust_loop_body]
 def kzg.fft8.stage_twiddles_loop.body
   (roots : Slice blst.blst_fr) (step : Std.Usize) (start : Std.Usize)
@@ -3519,7 +3519,7 @@ def kzg.fft8.stage_twiddles_loop.body
   else ok (done twiddles)
 
 /-- [silver_crypto_simd::kzg::fft8::stage_twiddles]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 215:4-218:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 283:4-286:5 -/
 @[rust_loop]
 def kzg.fft8.stage_twiddles_loop
   (roots : Slice blst.blst_fr) (step : Std.Usize) (start : Std.Usize)
@@ -3532,7 +3532,7 @@ def kzg.fft8.stage_twiddles_loop
     (twiddles, m)
 
 /-- [silver_crypto_simd::kzg::fft8::stage_twiddles]:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 212:0-220:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 280:0-288:1 -/
 def kzg.fft8.stage_twiddles
   (roots : Slice blst.blst_fr) (step : Std.Usize) (start : Std.Usize)
   (h : Std.Usize) :
@@ -4171,13 +4171,13 @@ def kzg.fft.inverse_fft
 def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
 
 /-- [silver_crypto_simd::kzg::fr8::splat]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 62:0-64:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 64:0-66:1 -/
 def kzg.fr8.splat (x : Std.U64) : Result core.core_arch.x86.__m512i := do
   let i ← lift (UScalar.hcast .I64 x)
   core.core_arch.x86.avx512f._mm512_set1_epi64 i
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 246:8-249:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 305:8-308:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.normalise_loop.body
@@ -4204,7 +4204,7 @@ def kzg.fr8.Fr8.normalise_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 246:8-249:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 305:8-308:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.normalise_loop
@@ -4217,7 +4217,7 @@ def kzg.fr8.Fr8.normalise_loop
     (iter, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 243:4-251:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 302:4-310:5
     Visibility: public -/
 def kzg.fr8.Fr8.normalise (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let i ← kzg.fr8.MASK52
@@ -4228,7 +4228,7 @@ def kzg.fr8.Fr8.normalise (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   ok s
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 140:4-142:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 142:4-144:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_loop0.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -4251,7 +4251,7 @@ def kzg.fr8.reduce_row_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 140:4-142:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 142:4-144:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -4265,7 +4265,7 @@ def kzg.fr8.reduce_row_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 144:4-146:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 146:4-148:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_loop1.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -4290,7 +4290,7 @@ def kzg.fr8.reduce_row_loop1.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 144:4-146:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 146:4-148:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -4304,7 +4304,7 @@ def kzg.fr8.reduce_row_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 136:0-147:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 138:0-149:1 -/
 def kzg.fr8.reduce_row
   (t : Array core.core_arch.x86.__m512i 11#usize)
   (r : Array core.core_arch.x86.__m512i 5#usize)
@@ -4331,8 +4331,88 @@ def kzg.fr8.reduce_row
   kzg.fr8.reduce_row_loop1 { start := 1#usize, «end» := kzg.fr8.LIMBS } a1 r
     i q
 
+/-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 78:4-80:5 -/
+@[rust_loop_body]
+def kzg.fr8.splat_limbs_loop.body
+  (limbs : Array Std.U64 5#usize) (iter : core.ops.range.Range Std.Usize)
+  (v : Array core.core_arch.x86.__m512i 5#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 5#usize)) (Array core.core_arch.x86.__m512i
+    5#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v)
+  | some j =>
+    let i ← Array.index_usize limbs j
+    let mi ← kzg.fr8.splat i
+    let a ← Array.update v j mi
+    ok (cont (iter1, a))
+
+/-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 78:4-80:5 -/
+@[rust_loop]
+def kzg.fr8.splat_limbs_loop
+  (iter : core.ops.range.Range Std.Usize) (limbs : Array Std.U64 5#usize)
+  (v : Array core.core_arch.x86.__m512i 5#usize) :
+  Result (Array core.core_arch.x86.__m512i 5#usize)
+  := do
+  loop
+    (fun (iter1, v1) => kzg.fr8.splat_limbs_loop.body limbs iter1 v1)
+    (iter, v)
+
+/-- [silver_crypto_simd::kzg::fr8::splat_limbs]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 76:0-82:1 -/
+def kzg.fr8.splat_limbs
+  (limbs : Array Std.U64 5#usize) :
+  Result (Array core.core_arch.x86.__m512i 5#usize)
+  := do
+  let mi ← kzg.fr8.zero
+  let v := Array.repeat 5#usize mi
+  kzg.fr8.splat_limbs_loop { start := 0#usize, «end» := kzg.fr8.LIMBS } limbs
+    v
+
+/-- [silver_crypto_simd::kzg::fr8::R_INV52]
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 47:0-47:37 -/
+@[global_simps, irreducible]
+def kzg.fr8.R_INV52 : Std.U64 := 4503595332403199#u64
+
+/-- [silver_crypto_simd::kzg::fr8::R]
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 44:0-45:88 -/
+@[global_simps, irreducible]
+def kzg.fr8.R : Array Std.U64 5#usize :=
+  Array.make 5#usize [
+    4503595332403201#u64, 52776117727231#u64, 2711223964777892#u64,
+    2203984808738944#u64, 127464551688605#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 268:4-278:5
+    Visibility: public -/
+def kzg.fr8.Fr8.reduce
+  (t : Array core.core_arch.x86.__m512i 11#usize) : Result kzg.fr8.Fr8 := do
+  let r ← kzg.fr8.splat_limbs kzg.fr8.R
+  let rinv ← kzg.fr8.splat kzg.fr8.R_INV52
+  let t1 ← kzg.fr8.reduce_row t r rinv 0#usize
+  let t2 ← kzg.fr8.reduce_row t1 r rinv 1#usize
+  let t3 ← kzg.fr8.reduce_row t2 r rinv 2#usize
+  let t4 ← kzg.fr8.reduce_row t3 r rinv 3#usize
+  let t5 ← kzg.fr8.reduce_row t4 r rinv 4#usize
+  let mi ← Array.index_usize t5 kzg.fr8.LIMBS
+  let i ← kzg.fr8.LIMBS + 1#usize
+  let mi1 ← Array.index_usize t5 i
+  let i1 ← kzg.fr8.LIMBS + 2#usize
+  let mi2 ← Array.index_usize t5 i1
+  let i2 ← kzg.fr8.LIMBS + 3#usize
+  let mi3 ← Array.index_usize t5 i2
+  let i3 ← kzg.fr8.LIMBS + 4#usize
+  let mi4 ← Array.index_usize t5 i3
+  ok (Array.make 5#usize [ mi, mi1, mi2, mi3, mi4 ] (by rfl))
+
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 124:4-127:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 126:4-129:5 -/
 @[rust_loop_body]
 def kzg.fr8.muladd_row_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -4361,7 +4441,7 @@ def kzg.fr8.muladd_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 124:4-127:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 126:4-129:5 -/
 @[rust_loop]
 def kzg.fr8.muladd_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -4375,7 +4455,7 @@ def kzg.fr8.muladd_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 123:0-128:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 125:0-130:1 -/
 @[reducible]
 def kzg.fr8.muladd_row
   (t : Array core.core_arch.x86.__m512i 11#usize)
@@ -4386,70 +4466,13 @@ def kzg.fr8.muladd_row
   kzg.fr8.muladd_row_loop { start := 0#usize, «end» := kzg.fr8.LIMBS } t a
     b_i i
 
-/-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 76:4-78:5 -/
-@[rust_loop_body]
-def kzg.fr8.splat_limbs_loop.body
-  (limbs : Array Std.U64 5#usize) (iter : core.ops.range.Range Std.Usize)
-  (v : Array core.core_arch.x86.__m512i 5#usize) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
-    core.core_arch.x86.__m512i 5#usize)) (Array core.core_arch.x86.__m512i
-    5#usize))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done v)
-  | some j =>
-    let i ← Array.index_usize limbs j
-    let mi ← kzg.fr8.splat i
-    let a ← Array.update v j mi
-    ok (cont (iter1, a))
-
-/-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 76:4-78:5 -/
-@[rust_loop]
-def kzg.fr8.splat_limbs_loop
-  (iter : core.ops.range.Range Std.Usize) (limbs : Array Std.U64 5#usize)
-  (v : Array core.core_arch.x86.__m512i 5#usize) :
-  Result (Array core.core_arch.x86.__m512i 5#usize)
-  := do
-  loop
-    (fun (iter1, v1) => kzg.fr8.splat_limbs_loop.body limbs iter1 v1)
-    (iter, v)
-
-/-- [silver_crypto_simd::kzg::fr8::splat_limbs]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 74:0-80:1 -/
-def kzg.fr8.splat_limbs
-  (limbs : Array Std.U64 5#usize) :
-  Result (Array core.core_arch.x86.__m512i 5#usize)
-  := do
-  let mi ← kzg.fr8.zero
-  let v := Array.repeat 5#usize mi
-  kzg.fr8.splat_limbs_loop { start := 0#usize, «end» := kzg.fr8.LIMBS } limbs
-    v
-
-/-- [silver_crypto_simd::kzg::fr8::R_INV52]
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 47:0-47:37 -/
-@[global_simps, irreducible]
-def kzg.fr8.R_INV52 : Std.U64 := 4503595332403199#u64
-
-/-- [silver_crypto_simd::kzg::fr8::R]
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 44:0-45:88 -/
-@[global_simps, irreducible]
-def kzg.fr8.R : Array Std.U64 5#usize :=
-  Array.make 5#usize [
-    4503595332403201#u64, 52776117727231#u64, 2711223964777892#u64,
-    2203984808738944#u64, 127464551688605#u64
-    ] (by rfl)
-
-/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::mul]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 221:4-236:5
+/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::product]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 255:4-263:5
     Visibility: public -/
-def kzg.fr8.Fr8.mul
-  (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
-  let r ← kzg.fr8.splat_limbs kzg.fr8.R
-  let rinv ← kzg.fr8.splat kzg.fr8.R_INV52
+def kzg.fr8.Fr8.product
+  (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) :
+  Result (Array core.core_arch.x86.__m512i 11#usize)
+  := do
   let mi ← kzg.fr8.zero
   let t := Array.repeat 11#usize mi
   let mi1 ← Array.index_usize rhs 0#usize
@@ -4461,32 +4484,25 @@ def kzg.fr8.Fr8.mul
   let mi4 ← Array.index_usize rhs 3#usize
   let t4 ← kzg.fr8.muladd_row t3 self mi4 3#usize
   let mi5 ← Array.index_usize rhs 4#usize
-  let t5 ← kzg.fr8.muladd_row t4 self mi5 4#usize
-  let t6 ← kzg.fr8.reduce_row t5 r rinv 0#usize
-  let t7 ← kzg.fr8.reduce_row t6 r rinv 1#usize
-  let t8 ← kzg.fr8.reduce_row t7 r rinv 2#usize
-  let t9 ← kzg.fr8.reduce_row t8 r rinv 3#usize
-  let t10 ← kzg.fr8.reduce_row t9 r rinv 4#usize
-  let mi6 ← Array.index_usize t10 kzg.fr8.LIMBS
-  let i ← kzg.fr8.LIMBS + 1#usize
-  let mi7 ← Array.index_usize t10 i
-  let i1 ← kzg.fr8.LIMBS + 2#usize
-  let mi8 ← Array.index_usize t10 i1
-  let i2 ← kzg.fr8.LIMBS + 3#usize
-  let mi9 ← Array.index_usize t10 i2
-  let i3 ← kzg.fr8.LIMBS + 4#usize
-  let mi10 ← Array.index_usize t10 i3
-  ok (Array.make 5#usize [ mi6, mi7, mi8, mi9, mi10 ] (by rfl))
+  kzg.fr8.muladd_row t4 self mi5 4#usize
+
+/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::mul]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 248:4-250:5
+    Visibility: public -/
+def kzg.fr8.Fr8.mul
+  (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
+  let a ← kzg.fr8.Fr8.product self rhs
+  kzg.fr8.Fr8.reduce a
 
 /-- [silver_crypto_simd::kzg::fr8::borrowed]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 100:0-102:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 102:0-104:1 -/
 def kzg.fr8.borrowed
   (borrow : core.core_arch.x86.__m512i) : Result Std.U8 := do
   let mi ← kzg.fr8.splat core.num.U64.MAX
   core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask borrow mi
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 114:4-116:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 116:4-118:5 -/
 @[rust_loop_body]
 def kzg.fr8.select_borrowed_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -4509,7 +4525,7 @@ def kzg.fr8.select_borrowed_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 114:4-116:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 116:4-118:5 -/
 @[rust_loop]
 def kzg.fr8.select_borrowed_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -4523,7 +4539,7 @@ def kzg.fr8.select_borrowed_loop
     (iter, r)
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 107:0-118:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 109:0-120:1 -/
 def kzg.fr8.select_borrowed
   (borrow : core.core_arch.x86.__m512i)
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -4537,7 +4553,7 @@ def kzg.fr8.select_borrowed
     b k r
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 89:4-93:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 91:4-95:5 -/
 @[rust_loop_body]
 def kzg.fr8.sub_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -4564,7 +4580,7 @@ def kzg.fr8.sub_limbs_loop.body
     ok (cont (iter1, a1, borrow1))
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 89:4-93:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 91:4-95:5 -/
 @[rust_loop]
 def kzg.fr8.sub_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -4582,7 +4598,7 @@ def kzg.fr8.sub_limbs_loop
     (iter, d, borrow)
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 85:0-95:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 87:0-97:1 -/
 def kzg.fr8.sub_limbs
   (a : Array core.core_arch.x86.__m512i 5#usize)
   (b : Array core.core_arch.x86.__m512i 5#usize) :
@@ -4597,7 +4613,7 @@ def kzg.fr8.sub_limbs
     mask d mi
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::canonical]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 310:4-313:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 369:4-372:5 -/
 def kzg.fr8.Fr8.canonical (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let a ← kzg.fr8.splat_limbs kzg.fr8.R
   let (d, borrow) ← kzg.fr8.sub_limbs self a
@@ -4814,7 +4830,7 @@ def kzg.fr8.u256x8.U256x8.to_bytes
   ok (index_mut_back elements1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::to_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 210:4-212:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 237:4-239:5
     Visibility: public -/
 def kzg.fr8.Fr8.to_bytes
   (self : kzg.fr8.Fr8) (bytes : Slice Std.U8) (at1 : Std.Usize) :
@@ -4825,7 +4841,7 @@ def kzg.fr8.Fr8.to_bytes
   kzg.fr8.u256x8.U256x8.to_bytes ux bytes at1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 355:12-357:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:12-416:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0_loop0.body
@@ -4848,7 +4864,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 355:12-357:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:12-416:13
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0_loop0
@@ -4863,7 +4879,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-358:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 403:8-417:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0.body
@@ -4911,7 +4927,7 @@ def kzg.fr8.Fr8.transpose_loop0.body
     ok (cont (iter1, out1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-358:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 403:8-417:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0
@@ -4926,7 +4942,7 @@ def kzg.fr8.Fr8.transpose_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 342:4-369:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 401:4-428:5
     Visibility: public -/
 def kzg.fr8.Fr8.transpose
   (vectors : Slice kzg.fr8.Fr8) (at1 : Std.Usize) :
@@ -4949,7 +4965,7 @@ def kzg.fr8.Fr8.transpose
   ok (Array.make 8#usize [ a1, a2, a3, a4, a5, a6, a7, a8 ] (by rfl))
 
 /-- [silver_crypto_simd::kzg::fft8::set_block]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 205:4-208:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 273:4-276:5 -/
 @[rust_loop_body]
 def kzg.fft8.set_block_loop.body
   (at1 : Std.Usize) (block : Array kzg.fr8.Fr8 8#usize)
@@ -4966,7 +4982,7 @@ def kzg.fft8.set_block_loop.body
   else ok (done data)
 
 /-- [silver_crypto_simd::kzg::fft8::set_block]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 205:4-208:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 273:4-276:5 -/
 @[rust_loop]
 def kzg.fft8.set_block_loop
   (data : Slice kzg.fr8.Fr8) (at1 : Std.Usize)
@@ -4978,7 +4994,7 @@ def kzg.fft8.set_block_loop
     (data, k)
 
 /-- [silver_crypto_simd::kzg::fft8::set_block]:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 203:0-209:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 271:0-277:1 -/
 @[reducible]
 def kzg.fft8.set_block
   (data : Slice kzg.fr8.Fr8) (at1 : Std.Usize)
@@ -4988,7 +5004,7 @@ def kzg.fft8.set_block
   kzg.fft8.set_block_loop data at1 block 0#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 285:8-289:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-348:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.multiple_of_r_loop.body
@@ -5014,7 +5030,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop.body
     ok (cont (iter1, a, carry1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 285:8-289:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-348:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.multiple_of_r_loop
@@ -5028,7 +5044,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop
     (iter, v, carry)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 281:4-291:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 340:4-350:5
     Visibility: public -/
 def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   massert (c <= 35#u64)
@@ -5040,7 +5056,7 @@ def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   ok v1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 272:8-274:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 331:8-333:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.sub_raw_loop.body
@@ -5065,7 +5081,7 @@ def kzg.fr8.Fr8.sub_raw_loop.body
     ok (cont (iter1, self, rhs, offset, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 272:8-274:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 331:8-333:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.sub_raw_loop
@@ -5080,7 +5096,7 @@ def kzg.fr8.Fr8.sub_raw_loop
     (iter, self, rhs, offset, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 270:4-276:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 329:4-335:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) (offset : kzg.fr8.Fr8) :
@@ -5094,7 +5110,7 @@ def kzg.fr8.Fr8.sub_raw
   ok s1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 259:8-261:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 318:8-320:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.add_raw_loop.body
@@ -5116,7 +5132,7 @@ def kzg.fr8.Fr8.add_raw_loop.body
     ok (cont (iter1, self, rhs, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 259:8-261:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 318:8-320:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.add_raw_loop
@@ -5130,7 +5146,7 @@ def kzg.fr8.Fr8.add_raw_loop
     (iter, self, rhs, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 257:4-263:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 316:4-322:5
     Visibility: public -/
 def kzg.fr8.Fr8.add_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -5141,93 +5157,272 @@ def kzg.fr8.Fr8.add_raw
       self rhs s
   ok s1
 
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 184:12-195:13 -/
+/-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 168:4-170:5 -/
 @[rust_loop_body]
-def kzg.fft8.Fft8.dit_short_loop0_loop0.body
-  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (product_bound : kzg.fr8.Fr8)
-  (group : Std.Usize) (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize)
-  (j : Std.Usize) :
-  Result (ControlFlow (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize) ×
-    Std.Usize) (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize)))
+def kzg.fr8.reduce_row_multiplying_loop0.body
+  (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
+  (q : core.core_arch.x86.__m512i) (iter : core.ops.range.Range Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 11#usize)) (Array core.core_arch.x86.__m512i
+    11#usize))
   := do
-  if j < h
-  then
-    let i ← group + j
-    let a ← Array.index_usize t i
-    let i1 ← i + h
-    let b ← Array.index_usize t i1
-    let (self1, product, bound) ←
-      if j = 0#usize
-      then ok (self, b, input_bound)
-      else
-        do
-        let f ← kzg.fr8.Fr8.normalise b
-        let i2 ← h - 1#usize
-        let i3 ← i2 + j
-        let f1 ←
-          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-            kzg.fr8.Fr8) self.short i3
-        let f2 ← kzg.fr8.Fr8.mul f f1
-        ok (self, f2, product_bound)
-    let f ← kzg.fr8.Fr8.add_raw a product
-    let t1 ← Array.update t i f
-    let f1 ← kzg.fr8.Fr8.sub_raw a product bound
-    let i2 ← i + h
-    let a1 ← Array.update t1 i2 f1
-    let j1 ← j + 1#usize
-    ok (cont (self1, a1, j1))
-  else ok (done (self, t))
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done t)
+  | some j =>
+    let i1 ← i + j
+    let mi ← Array.index_usize t i1
+    let mi1 ← Array.index_usize r j
+    let mi2 ← core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64 mi mi1 q
+    let a ← Array.update t i1 mi2
+    ok (cont (iter1, a))
 
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 184:12-195:13 -/
+/-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 168:4-170:5 -/
 @[rust_loop]
-def kzg.fft8.Fft8.dit_short_loop0_loop0
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (product_bound : kzg.fr8.Fr8) (group : Std.Usize)
-  (j : Std.Usize) :
-  Result (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize))
+def kzg.fr8.reduce_row_multiplying_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize)
+  (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
+  (q : core.core_arch.x86.__m512i) :
+  Result (Array core.core_arch.x86.__m512i 11#usize)
   := do
   loop
-    (fun (self1, t1, j1) => kzg.fft8.Fft8.dit_short_loop0_loop0.body h
-      input_bound product_bound group self1 t1 j1)
-    (self, t, j)
+    (fun (iter1, t1) => kzg.fr8.reduce_row_multiplying_loop0.body r i q iter1
+      t1)
+    (iter, t)
+
+/-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 171:4-173:5 -/
+@[rust_loop_body]
+def kzg.fr8.reduce_row_multiplying_loop1.body
+  (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
+  (q : core.core_arch.x86.__m512i) (iter : core.ops.range.Range Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 11#usize)) (Array core.core_arch.x86.__m512i
+    11#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done t)
+  | some j =>
+    let i1 ← i + j
+    let i2 ← i1 + 1#usize
+    let mi ← Array.index_usize t i2
+    let mi1 ← Array.index_usize r j
+    let mi2 ← core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64 mi mi1 q
+    let i3 ← i1 + 1#usize
+    let a ← Array.update t i3 mi2
+    ok (cont (iter1, a))
+
+/-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 171:4-173:5 -/
+@[rust_loop]
+def kzg.fr8.reduce_row_multiplying_loop1
+  (iter : core.ops.range.Range Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize)
+  (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
+  (q : core.core_arch.x86.__m512i) :
+  Result (Array core.core_arch.x86.__m512i 11#usize)
+  := do
+  loop
+    (fun (iter1, t1) => kzg.fr8.reduce_row_multiplying_loop1.body r i q iter1
+      t1)
+    (iter, t)
+
+/-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 156:0-174:1 -/
+def kzg.fr8.reduce_row_multiplying
+  (t : Array core.core_arch.x86.__m512i 11#usize)
+  (r : Array core.core_arch.x86.__m512i 5#usize)
+  (rinv : core.core_arch.x86.__m512i) (i : Std.Usize)
+  (next : Array core.core_arch.x86.__m512i 11#usize)
+  (a : Array core.core_arch.x86.__m512i 5#usize)
+  (b_i : core.core_arch.x86.__m512i) :
+  Result ((Array core.core_arch.x86.__m512i 11#usize) × (Array
+    core.core_arch.x86.__m512i 11#usize))
+  := do
+  let mi ← kzg.fr8.zero
+  let mi1 ← Array.index_usize t i
+  let q ← core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64 mi mi1 rinv
+  let i1 ← i + 1#usize
+  let mi2 ← Array.index_usize t i1
+  let mi3 ← bls.fp8.carry_of_cleared mi1
+  let mi4 ← core.core_arch.x86.avx512f._mm512_add_epi64 mi2 mi3
+  let a1 ← Array.update t i1 mi4
+  let next1 ← kzg.fr8.muladd_row next a b_i i
+  let t1 ←
+    kzg.fr8.reduce_row_multiplying_loop0
+      { start := 1#usize, «end» := kzg.fr8.LIMBS } a1 r i q
+  let t2 ←
+    kzg.fr8.reduce_row_multiplying_loop1
+      { start := 0#usize, «end» := kzg.fr8.LIMBS } t1 r i q
+  ok (t2, next1)
+
+/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce_while_multiplying]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 284:4-295:5
+    Visibility: public -/
+def kzg.fr8.Fr8.reduce_while_multiplying
+  (t : Array core.core_arch.x86.__m512i 11#usize) (a : kzg.fr8.Fr8)
+  (b : kzg.fr8.Fr8) :
+  Result (kzg.fr8.Fr8 × (Array core.core_arch.x86.__m512i 11#usize))
+  := do
+  let r ← kzg.fr8.splat_limbs kzg.fr8.R
+  let rinv ← kzg.fr8.splat kzg.fr8.R_INV52
+  let mi ← kzg.fr8.zero
+  let next := Array.repeat 11#usize mi
+  let mi1 ← Array.index_usize b 0#usize
+  let (t1, next1) ←
+    kzg.fr8.reduce_row_multiplying t r rinv 0#usize next a mi1
+  let mi2 ← Array.index_usize b 1#usize
+  let (t2, next2) ←
+    kzg.fr8.reduce_row_multiplying t1 r rinv 1#usize next1 a mi2
+  let mi3 ← Array.index_usize b 2#usize
+  let (t3, next3) ←
+    kzg.fr8.reduce_row_multiplying t2 r rinv 2#usize next2 a mi3
+  let mi4 ← Array.index_usize b 3#usize
+  let (t4, next4) ←
+    kzg.fr8.reduce_row_multiplying t3 r rinv 3#usize next3 a mi4
+  let mi5 ← Array.index_usize b 4#usize
+  let (t5, next5) ←
+    kzg.fr8.reduce_row_multiplying t4 r rinv 4#usize next4 a mi5
+  let mi6 ← Array.index_usize t5 kzg.fr8.LIMBS
+  let i ← kzg.fr8.LIMBS + 1#usize
+  let mi7 ← Array.index_usize t5 i
+  let i1 ← kzg.fr8.LIMBS + 2#usize
+  let mi8 ← Array.index_usize t5 i1
+  let i2 ← kzg.fr8.LIMBS + 3#usize
+  let mi9 ← Array.index_usize t5 i2
+  let i3 ← kzg.fr8.LIMBS + 4#usize
+  let mi10 ← Array.index_usize t5 i3
+  ok (Array.make 5#usize [ mi6, mi7, mi8, mi9, mi10 ] (by rfl), next5)
+
+/-- [silver_crypto_simd::kzg::fft8::dit_finish]:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 263:0-267:1 -/
+def kzg.fft8.dit_finish
+  (data : Slice kzg.fr8.Fr8) (a : Std.Usize) (half : Std.Usize)
+  (product : kzg.fr8.Fr8) (bound : kzg.fr8.Fr8) :
+  Result (Slice kzg.fr8.Fr8)
+  := do
+  let x ← Slice.index_usize data a
+  let f ← kzg.fr8.Fr8.add_raw x product
+  let data1 ← Slice.update data a f
+  let f1 ← kzg.fr8.Fr8.sub_raw x product bound
+  let i ← a + half
+  Slice.update data1 i f1
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 182:8-197:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 224:8-229:9 -/
 @[rust_loop_body]
 def kzg.fft8.Fft8.dit_short_loop0.body
-  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (product_bound : kzg.fr8.Fr8)
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (group : Std.Usize) :
-  Result (ControlFlow (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize) ×
-    Std.Usize) (Array kzg.fr8.Fr8 8#usize))
+  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (t : Array kzg.fr8.Fr8 8#usize)
+  (group : Std.Usize) :
+  Result (ControlFlow ((Array kzg.fr8.Fr8 8#usize) × Std.Usize) (Array
+    kzg.fr8.Fr8 8#usize))
   := do
   if group < kzg.fr8.LANES
   then
-    let (self1, t1) ←
-      kzg.fft8.Fft8.dit_short_loop0_loop0 self t h input_bound product_bound
-        group 0#usize
-    let i ← 2#usize * h
-    let group1 ← group + i
-    ok (cont (self1, t1, group1))
+    let a ← Array.index_usize t group
+    let i ← group + h
+    let b ← Array.index_usize t i
+    let f ← kzg.fr8.Fr8.add_raw a b
+    let t1 ← Array.update t group f
+    let f1 ← kzg.fr8.Fr8.sub_raw a b input_bound
+    let a1 ← Array.update t1 i f1
+    let i1 ← 2#usize * h
+    let group1 ← group + i1
+    ok (cont (a1, group1))
   else ok (done t)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 182:8-197:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 224:8-229:9 -/
 @[rust_loop]
 def kzg.fft8.Fft8.dit_short_loop0
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (product_bound : kzg.fr8.Fr8) (group : Std.Usize)
-  :
+  (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize) (input_bound : kzg.fr8.Fr8)
+  (group : Std.Usize) :
   Result (Array kzg.fr8.Fr8 8#usize)
   := do
   loop
-    (fun (self1, t1, group1) => kzg.fft8.Fft8.dit_short_loop0.body h
-      input_bound product_bound self1 t1 group1)
-    (self, t, group)
+    (fun (t1, group1) => kzg.fft8.Fft8.dit_short_loop0.body h input_bound t1
+      group1)
+    (t, group)
+
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 236:8-251:9 -/
+@[rust_loop_body]
+def kzg.fft8.Fft8.dit_short_loop1.body
+  (v : alloc.vec.Vec kzg.fr8.Fr8) (h : Std.Usize) (product_bound : kzg.fr8.Fr8)
+  (t : Array kzg.fr8.Fr8 8#usize) (pending_at : Std.Usize)
+  (pending : Array core.core_arch.x86.__m512i 11#usize) (group : Std.Usize)
+  (j : Std.Usize) :
+  Result (ControlFlow ((Array kzg.fr8.Fr8 8#usize) × Std.Usize × (Array
+    core.core_arch.x86.__m512i 11#usize) × Std.Usize × Std.Usize) ((Array
+    kzg.fr8.Fr8 8#usize) × Std.Usize × (Array core.core_arch.x86.__m512i
+    11#usize)))
+  := do
+  if j = h
+  then
+    let i ← 2#usize * h
+    let group1 ← group + i
+    if group1 >= kzg.fr8.LANES
+    then ok (done (t, pending_at, pending))
+    else
+      let i1 ← group1 + 1#usize
+      let i2 ← i1 + h
+      let f ← Array.index_usize t i2
+      let b ← kzg.fr8.Fr8.normalise f
+      let i3 ← h - 1#usize
+      let i4 ← i3 + 1#usize
+      let f1 ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+          v i4
+      let (product, next) ← kzg.fr8.Fr8.reduce_while_multiplying pending b f1
+      let (s, to_slice_mut_back) ← lift (Array.to_slice_mut t)
+      let s1 ← kzg.fft8.dit_finish s pending_at h product product_bound
+      let j1 ← 1#usize + 1#usize
+      let t1 := to_slice_mut_back s1
+      ok (cont (t1, i1, next, group1, j1))
+  else
+    let i ← group + j
+    let i1 ← i + h
+    let f ← Array.index_usize t i1
+    let b ← kzg.fr8.Fr8.normalise f
+    let i2 ← h - 1#usize
+    let i3 ← i2 + j
+    let f1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8) v
+        i3
+    let (product, next) ← kzg.fr8.Fr8.reduce_while_multiplying pending b f1
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut t)
+    let s1 ← kzg.fft8.dit_finish s pending_at h product product_bound
+    let j1 ← j + 1#usize
+    let t1 := to_slice_mut_back s1
+    ok (cont (t1, i, next, group, j1))
+
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 236:8-251:9 -/
+@[rust_loop]
+def kzg.fft8.Fft8.dit_short_loop1
+  (v : alloc.vec.Vec kzg.fr8.Fr8) (t : Array kzg.fr8.Fr8 8#usize)
+  (h : Std.Usize) (product_bound : kzg.fr8.Fr8) (pending_at : Std.Usize)
+  (pending : Array core.core_arch.x86.__m512i 11#usize) (group : Std.Usize)
+  (j : Std.Usize) :
+  Result ((Array kzg.fr8.Fr8 8#usize) × Std.Usize × (Array
+    core.core_arch.x86.__m512i 11#usize))
+  := do
+  loop
+    (fun (t1, pending_at1, pending1, group1, j1) =>
+      kzg.fft8.Fft8.dit_short_loop1.body v h product_bound t1 pending_at1
+      pending1 group1 j1)
+    (t, pending_at, pending, group, j)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_short]:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 178:4-198:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 220:4-253:5 -/
 def kzg.fft8.Fft8.dit_short
   (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize) :
   Result (Array kzg.fr8.Fr8 8#usize)
@@ -5236,91 +5431,109 @@ def kzg.fft8.Fft8.dit_short
   let i1 ← 2#u64 * i
   let input_bound ← kzg.fr8.Fr8.multiple_of_r i1
   let product_bound ← kzg.fr8.Fr8.multiple_of_r 2#u64
-  kzg.fft8.Fft8.dit_short_loop0 self t h input_bound product_bound 0#usize
-
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 138:12-144:13 -/
-@[rust_loop_body]
-def kzg.fft8.Fft8.dit_wide_loop0_loop0.body
-  (v : alloc.vec.Vec kzg.fr8.Fr8) (half : Std.Usize)
-  (product_bound : kzg.fr8.Fr8) (block : Std.Usize) (data : Slice kzg.fr8.Fr8)
-  (j : Std.Usize) :
-  Result (ControlFlow ((Slice kzg.fr8.Fr8) × Std.Usize) (Slice kzg.fr8.Fr8))
-  := do
-  if j < half
-  then
-    let i ← block + j
-    let a ← Slice.index_usize data i
-    let i1 ← i + half
-    let f ← Slice.index_usize data i1
+  let t1 ← kzg.fft8.Fft8.dit_short_loop0 t h input_bound 0#usize
+  if h = 1#usize
+  then ok t1
+  else
+    let i2 ← 1#usize + h
+    let f ← Array.index_usize t1 i2
     let f1 ← kzg.fr8.Fr8.normalise f
-    let i2 ← half - 1#usize
-    let i3 ← i2 + j
     let f2 ←
-      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8) v
-        i3
-    let t ← kzg.fr8.Fr8.mul f1 f2
-    let f3 ← kzg.fr8.Fr8.add_raw a t
-    let data1 ← Slice.update data i f3
-    let f4 ← kzg.fr8.Fr8.sub_raw a t product_bound
-    let i4 ← i + half
-    let s ← Slice.update data1 i4 f4
-    let j1 ← j + 1#usize
-    ok (cont (s, j1))
-  else ok (done data)
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+        self.short h
+    let pending ← kzg.fr8.Fr8.product f1 f2
+    let (t2, pending_at, pending1) ←
+      kzg.fft8.Fft8.dit_short_loop1 self.short t1 h product_bound 1#usize
+        pending 0#usize 2#usize
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut t2)
+    let f3 ← kzg.fr8.Fr8.reduce pending1
+    let s1 ← kzg.fft8.dit_finish s pending_at h f3 product_bound
+    ok (to_slice_mut_back s1)
 
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 138:12-144:13 -/
-@[rust_loop]
-def kzg.fft8.Fft8.dit_wide_loop0_loop0
-  (v : alloc.vec.Vec kzg.fr8.Fr8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
-  (product_bound : kzg.fr8.Fr8) (block : Std.Usize) (j : Std.Usize) :
-  Result (Slice kzg.fr8.Fr8)
+/-- [silver_crypto_simd::kzg::fft8::first_of_pair]:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 257:0-259:1 -/
+def kzg.fft8.first_of_pair
+  (n : Std.Usize) (half : Std.Usize) : Result Std.Usize := do
+  let i ← 2#usize * n
+  let i1 ← half - 1#usize
+  let i2 ← lift (n &&& i1)
+  i - i2
+
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide_operands]:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 167:4-170:5 -/
+def kzg.fft8.Fft8.dit_wide_operands
+  (self : kzg.fft8.Fft8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
+  (n : Std.Usize) :
+  Result (kzg.fr8.Fr8 × kzg.fr8.Fr8)
   := do
-  loop
-    (fun (data1, j1) => kzg.fft8.Fft8.dit_wide_loop0_loop0.body v half
-      product_bound block data1 j1)
-    (data, j)
+  let a ← kzg.fft8.first_of_pair n half
+  let i ← a + half
+  let f ← Slice.index_usize data i
+  let f1 ← kzg.fr8.Fr8.normalise f
+  let i1 ← half - 1#usize
+  let i2 ← lift (n &&& i1)
+  let i3 ← i1 + i2
+  let f2 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+      self.wide i3
+  ok (f1, f2)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 136:8-146:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 155:8-161:9 -/
 @[rust_loop_body]
-def kzg.fft8.Fft8.dit_wide_loop0.body
-  (self : kzg.fft8.Fft8) (half : Std.Usize) (product_bound : kzg.fr8.Fr8)
-  (data : Slice kzg.fr8.Fr8) (block : Std.Usize) :
-  Result (ControlFlow ((Slice kzg.fr8.Fr8) × Std.Usize) (Slice kzg.fr8.Fr8))
+def kzg.fft8.Fft8.dit_wide_loop.body
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (half : Std.Usize)
+  (product_bound : kzg.fr8.Fr8) (pairs : Std.Usize) (data : Slice kzg.fr8.Fr8)
+  (t : Array core.core_arch.x86.__m512i 11#usize) (n : Std.Usize) :
+  Result (ControlFlow ((Slice kzg.fr8.Fr8) × (Array core.core_arch.x86.__m512i
+    11#usize) × Std.Usize) ((Slice kzg.fr8.Fr8) × (Array
+    core.core_arch.x86.__m512i 11#usize) × Std.Usize))
   := do
-  if block < self.vectors
+  let i1 ← n + 1#usize
+  if i1 < pairs
   then
-    let data1 ←
-      kzg.fft8.Fft8.dit_wide_loop0_loop0 self.wide data half product_bound
-        block 0#usize
-    let i ← 2#usize * half
-    let block1 ← block + i
-    ok (cont (data1, block1))
-  else ok (done data)
+    let (b, w) ←
+      kzg.fft8.Fft8.dit_wide_operands { vectors := i, wide := v, short := v1 }
+        data half i1
+    let (product, next) ← kzg.fr8.Fr8.reduce_while_multiplying t b w
+    let i2 ← kzg.fft8.first_of_pair n half
+    let data1 ← kzg.fft8.dit_finish data i2 half product product_bound
+    ok (cont (data1, next, i1))
+  else ok (done (data, t, n))
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 136:8-146:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 155:8-161:9 -/
 @[rust_loop]
-def kzg.fft8.Fft8.dit_wide_loop0
-  (self : kzg.fft8.Fft8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
-  (product_bound : kzg.fr8.Fr8) (block : Std.Usize) :
-  Result (Slice kzg.fr8.Fr8)
+def kzg.fft8.Fft8.dit_wide_loop
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (data : Slice kzg.fr8.Fr8)
+  (half : Std.Usize) (product_bound : kzg.fr8.Fr8) (pairs : Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize) (n : Std.Usize) :
+  Result ((Slice kzg.fr8.Fr8) × (Array core.core_arch.x86.__m512i 11#usize) ×
+    Std.Usize)
   := do
   loop
-    (fun (data1, block1) => kzg.fft8.Fft8.dit_wide_loop0.body self half
-      product_bound data1 block1)
-    (data, block)
+    (fun (data1, t1, n1) => kzg.fft8.Fft8.dit_wide_loop.body i v v1 half
+      product_bound pairs data1 t1 n1)
+    (data, t, n)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit_wide]:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 133:4-147:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 149:4-163:5 -/
 def kzg.fft8.Fft8.dit_wide
   (self : kzg.fft8.Fft8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize) :
   Result (Slice kzg.fr8.Fr8)
   := do
   let product_bound ← kzg.fr8.Fr8.multiple_of_r 2#u64
-  kzg.fft8.Fft8.dit_wide_loop0 self data half product_bound 0#usize
+  let pairs ← self.vectors / 2#usize
+  let (b, w) ← kzg.fft8.Fft8.dit_wide_operands self data half 0#usize
+  let t ← kzg.fr8.Fr8.product b w
+  let (data1, t1, n) ←
+    kzg.fft8.Fft8.dit_wide_loop self.vectors self.wide self.short data half
+      product_bound pairs t 0#usize
+  let i ← kzg.fft8.first_of_pair n half
+  let f ← kzg.fr8.Fr8.reduce t1
+  kzg.fft8.dit_finish data1 i half f product_bound
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dit]: loop body 0:
     Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 95:8-102:9
@@ -5411,7 +5624,7 @@ def kzg.fft8.Fft8.dit
   kzg.fft8.Fft8.dit_loop1 self.vectors self.wide self.short data1 1#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduced]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 318:4-321:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 377:4-380:5 -/
 def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let f ← kzg.fr8.Fr8.multiple_of_r 2#u64
   let (d, borrow) ← kzg.fr8.sub_limbs self f
@@ -5419,7 +5632,7 @@ def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   ok a
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 334:4-336:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 393:4-395:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -5429,7 +5642,7 @@ def kzg.fr8.Fr8.sub
   kzg.fr8.Fr8.reduced f2
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 326:4-328:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 385:4-387:5
     Visibility: public -/
 def kzg.fr8.Fr8.add
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -5437,172 +5650,208 @@ def kzg.fr8.Fr8.add
   let f1 ← kzg.fr8.Fr8.normalise f
   kzg.fr8.Fr8.reduced f1
 
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 159:12-168:13 -/
-@[rust_loop_body]
-def kzg.fft8.Fft8.dif_short_loop0_loop0.body
-  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (group : Std.Usize)
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (j : Std.Usize) :
-  Result (ControlFlow (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize) ×
-    Std.Usize) (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize)))
-  := do
-  if j < h
-  then
-    let i ← group + j
-    let a ← Array.index_usize t i
-    let i1 ← i + h
-    let b ← Array.index_usize t i1
-    let f ← kzg.fr8.Fr8.add a b
-    let t1 ← Array.update t i f
-    let (self1, f1) ←
-      if j = 0#usize
-      then do
-           let f2 ← kzg.fr8.Fr8.sub a b
-           ok (self, f2)
-      else
-        do
-        let f2 ← kzg.fr8.Fr8.sub_raw a b input_bound
-        let f3 ← kzg.fr8.Fr8.normalise f2
-        let i2 ← h - 1#usize
-        let i3 ← i2 + j
-        let f4 ←
-          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
-            kzg.fr8.Fr8) self.short i3
-        let f5 ← kzg.fr8.Fr8.mul f3 f4
-        ok (self, f5)
-    let i2 ← i + h
-    let a1 ← Array.update t1 i2 f1
-    let j1 ← j + 1#usize
-    ok (cont (self1, a1, j1))
-  else ok (done (self, t))
-
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 159:12-168:13 -/
-@[rust_loop]
-def kzg.fft8.Fft8.dif_short_loop0_loop0
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (group : Std.Usize) (j : Std.Usize) :
-  Result (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize))
-  := do
-  loop
-    (fun (self1, t1, j1) => kzg.fft8.Fft8.dif_short_loop0_loop0.body h
-      input_bound group self1 t1 j1)
-    (self, t, j)
-
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 157:8-170:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 180:8-185:9 -/
 @[rust_loop_body]
 def kzg.fft8.Fft8.dif_short_loop0.body
-  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (self : kzg.fft8.Fft8)
-  (t : Array kzg.fr8.Fr8 8#usize) (group : Std.Usize) :
-  Result (ControlFlow (kzg.fft8.Fft8 × (Array kzg.fr8.Fr8 8#usize) ×
-    Std.Usize) (Array kzg.fr8.Fr8 8#usize))
+  (h : Std.Usize) (t : Array kzg.fr8.Fr8 8#usize) (group : Std.Usize) :
+  Result (ControlFlow ((Array kzg.fr8.Fr8 8#usize) × Std.Usize) (Array
+    kzg.fr8.Fr8 8#usize))
   := do
   if group < kzg.fr8.LANES
   then
-    let (self1, t1) ←
-      kzg.fft8.Fft8.dif_short_loop0_loop0 self t h input_bound group 0#usize
-    let i ← 2#usize * h
-    let group1 ← group + i
-    ok (cont (self1, t1, group1))
+    let a ← Array.index_usize t group
+    let i ← group + h
+    let b ← Array.index_usize t i
+    let f ← kzg.fr8.Fr8.add a b
+    let t1 ← Array.update t group f
+    let f1 ← kzg.fr8.Fr8.sub a b
+    let a1 ← Array.update t1 i f1
+    let i1 ← 2#usize * h
+    let group1 ← group + i1
+    ok (cont (a1, group1))
   else ok (done t)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 157:8-170:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 180:8-185:9 -/
 @[rust_loop]
 def kzg.fft8.Fft8.dif_short_loop0
-  (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (group : Std.Usize) :
+  (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize) (group : Std.Usize) :
   Result (Array kzg.fr8.Fr8 8#usize)
   := do
   loop
-    (fun (self1, t1, group1) => kzg.fft8.Fft8.dif_short_loop0.body h
-      input_bound self1 t1 group1)
-    (self, t, group)
+    (fun (t1, group1) => kzg.fft8.Fft8.dif_short_loop0.body h t1 group1)
+    (t, group)
+
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 194:8-211:9 -/
+@[rust_loop_body]
+def kzg.fft8.Fft8.dif_short_loop1.body
+  (v : alloc.vec.Vec kzg.fr8.Fr8) (h : Std.Usize) (input_bound : kzg.fr8.Fr8)
+  (t : Array kzg.fr8.Fr8 8#usize) (pending_at : Std.Usize)
+  (pending : Array core.core_arch.x86.__m512i 11#usize) (group : Std.Usize)
+  (j : Std.Usize) :
+  Result (ControlFlow ((Array kzg.fr8.Fr8 8#usize) × Std.Usize × (Array
+    core.core_arch.x86.__m512i 11#usize) × Std.Usize × Std.Usize) ((Array
+    kzg.fr8.Fr8 8#usize) × Std.Usize × (Array core.core_arch.x86.__m512i
+    11#usize)))
+  := do
+  if j = h
+  then
+    let i ← 2#usize * h
+    let group1 ← group + i
+    if group1 >= kzg.fr8.LANES
+    then ok (done (t, pending_at, pending))
+    else
+      let i1 ← group1 + 1#usize
+      let x ← Array.index_usize t i1
+      let i2 ← i1 + h
+      let y ← Array.index_usize t i2
+      let f ← kzg.fr8.Fr8.add x y
+      let t1 ← Array.update t i1 f
+      let f1 ← kzg.fr8.Fr8.sub_raw x y input_bound
+      let difference ← kzg.fr8.Fr8.normalise f1
+      let i3 ← h - 1#usize
+      let i4 ← i3 + 1#usize
+      let f2 ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+          v i4
+      let (product, next) ←
+        kzg.fr8.Fr8.reduce_while_multiplying pending difference f2
+      let a ← Array.update t1 pending_at product
+      let pending_at1 ← i1 + h
+      let j1 ← 1#usize + 1#usize
+      ok (cont (a, pending_at1, next, group1, j1))
+  else
+    let i ← group + j
+    let x ← Array.index_usize t i
+    let i1 ← i + h
+    let y ← Array.index_usize t i1
+    let f ← kzg.fr8.Fr8.add x y
+    let t1 ← Array.update t i f
+    let f1 ← kzg.fr8.Fr8.sub_raw x y input_bound
+    let difference ← kzg.fr8.Fr8.normalise f1
+    let i2 ← h - 1#usize
+    let i3 ← i2 + j
+    let f2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8) v
+        i3
+    let (product, next) ←
+      kzg.fr8.Fr8.reduce_while_multiplying pending difference f2
+    let a ← Array.update t1 pending_at product
+    let pending_at1 ← i + h
+    let j1 ← j + 1#usize
+    ok (cont (a, pending_at1, next, group, j1))
+
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 194:8-211:9 -/
+@[rust_loop]
+def kzg.fft8.Fft8.dif_short_loop1
+  (v : alloc.vec.Vec kzg.fr8.Fr8) (t : Array kzg.fr8.Fr8 8#usize)
+  (h : Std.Usize) (input_bound : kzg.fr8.Fr8) (pending_at : Std.Usize)
+  (pending : Array core.core_arch.x86.__m512i 11#usize) (group : Std.Usize)
+  (j : Std.Usize) :
+  Result ((Array kzg.fr8.Fr8 8#usize) × Std.Usize × (Array
+    core.core_arch.x86.__m512i 11#usize))
+  := do
+  loop
+    (fun (t1, pending_at1, pending1, group1, j1) =>
+      kzg.fft8.Fft8.dif_short_loop1.body v h input_bound t1 pending_at1
+      pending1 group1 j1)
+    (t, pending_at, pending, group, j)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_short]:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 154:4-171:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 177:4-213:5 -/
 def kzg.fft8.Fft8.dif_short
   (self : kzg.fft8.Fft8) (t : Array kzg.fr8.Fr8 8#usize) (h : Std.Usize) :
   Result (Array kzg.fr8.Fr8 8#usize)
   := do
   let input_bound ← kzg.fr8.Fr8.multiple_of_r 2#u64
-  kzg.fft8.Fft8.dif_short_loop0 self t h input_bound 0#usize
+  let t1 ← kzg.fft8.Fft8.dif_short_loop0 t h 0#usize
+  if h = 1#usize
+  then ok t1
+  else
+    let x ← Array.index_usize t1 1#usize
+    let i ← 1#usize + h
+    let y ← Array.index_usize t1 i
+    let f ← kzg.fr8.Fr8.add x y
+    let a ← Array.update t1 1#usize f
+    let f1 ← kzg.fr8.Fr8.sub_raw x y input_bound
+    let f2 ← kzg.fr8.Fr8.normalise f1
+    let f3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+        self.short h
+    let pending ← kzg.fr8.Fr8.product f2 f3
+    let (t2, pending_at, pending1) ←
+      kzg.fft8.Fft8.dif_short_loop1 self.short a h input_bound i pending
+        0#usize 2#usize
+    let f4 ← kzg.fr8.Fr8.reduce pending1
+    Array.update t2 pending_at f4
 
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 119:12-125:13 -/
-@[rust_loop_body]
-def kzg.fft8.Fft8.dif_wide_loop0_loop0.body
-  (v : alloc.vec.Vec kzg.fr8.Fr8) (half : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (block : Std.Usize) (data : Slice kzg.fr8.Fr8)
-  (j : Std.Usize) :
-  Result (ControlFlow ((Slice kzg.fr8.Fr8) × Std.Usize) (Slice kzg.fr8.Fr8))
+/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide_operands]:
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 133:4-144:5 -/
+def kzg.fft8.Fft8.dif_wide_operands
+  (self : kzg.fft8.Fft8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
+  (n : Std.Usize) (bound : kzg.fr8.Fr8) :
+  Result ((kzg.fr8.Fr8 × kzg.fr8.Fr8) × (Slice kzg.fr8.Fr8))
   := do
-  if j < half
-  then
-    let i ← block + j
-    let a ← Slice.index_usize data i
-    let i1 ← i + half
-    let b ← Slice.index_usize data i1
-    let f ← kzg.fr8.Fr8.add a b
-    let data1 ← Slice.update data i f
-    let f1 ← kzg.fr8.Fr8.sub_raw a b input_bound
-    let difference ← kzg.fr8.Fr8.normalise f1
-    let i2 ← half - 1#usize
-    let i3 ← i2 + j
-    let f2 ←
-      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8) v
-        i3
-    let f3 ← kzg.fr8.Fr8.mul difference f2
-    let i4 ← i + half
-    let s ← Slice.update data1 i4 f3
-    let j1 ← j + 1#usize
-    ok (cont (s, j1))
-  else ok (done data)
-
-/-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 119:12-125:13 -/
-@[rust_loop]
-def kzg.fft8.Fft8.dif_wide_loop0_loop0
-  (v : alloc.vec.Vec kzg.fr8.Fr8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (block : Std.Usize) (j : Std.Usize) :
-  Result (Slice kzg.fr8.Fr8)
-  := do
-  loop
-    (fun (data1, j1) => kzg.fft8.Fft8.dif_wide_loop0_loop0.body v half
-      input_bound block data1 j1)
-    (data, j)
+  let a ← kzg.fft8.first_of_pair n half
+  let x ← Slice.index_usize data a
+  let i ← a + half
+  let y ← Slice.index_usize data i
+  let f ← kzg.fr8.Fr8.add x y
+  let data1 ← Slice.update data a f
+  let f1 ← kzg.fr8.Fr8.sub_raw x y bound
+  let f2 ← kzg.fr8.Fr8.normalise f1
+  let i1 ← half - 1#usize
+  let i2 ← lift (n &&& i1)
+  let i3 ← i1 + i2
+  let f3 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+      self.wide i3
+  ok ((f2, f3), data1)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 117:8-127:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 120:8-126:9 -/
 @[rust_loop_body]
-def kzg.fft8.Fft8.dif_wide_loop0.body
-  (self : kzg.fft8.Fft8) (half : Std.Usize) (input_bound : kzg.fr8.Fr8)
-  (data : Slice kzg.fr8.Fr8) (block : Std.Usize) :
-  Result (ControlFlow ((Slice kzg.fr8.Fr8) × Std.Usize) (Slice kzg.fr8.Fr8))
+def kzg.fft8.Fft8.dif_wide_loop.body
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (half : Std.Usize)
+  (input_bound : kzg.fr8.Fr8) (pairs : Std.Usize) (data : Slice kzg.fr8.Fr8)
+  (t : Array core.core_arch.x86.__m512i 11#usize) (n : Std.Usize) :
+  Result (ControlFlow ((Slice kzg.fr8.Fr8) × (Array core.core_arch.x86.__m512i
+    11#usize) × Std.Usize) ((Slice kzg.fr8.Fr8) × (Array
+    core.core_arch.x86.__m512i 11#usize) × Std.Usize))
   := do
-  if block < self.vectors
+  let i1 ← n + 1#usize
+  if i1 < pairs
   then
-    let data1 ←
-      kzg.fft8.Fft8.dif_wide_loop0_loop0 self.wide data half input_bound block
-        0#usize
-    let i ← 2#usize * half
-    let block1 ← block + i
-    ok (cont (data1, block1))
-  else ok (done data)
+    let (p, data1) ←
+      kzg.fft8.Fft8.dif_wide_operands { vectors := i, wide := v, short := v1 }
+        data half i1 input_bound
+    let (x, w) := p
+    let (product, next) ← kzg.fr8.Fr8.reduce_while_multiplying t x w
+    let i2 ← kzg.fft8.first_of_pair n half
+    let i3 ← i2 + half
+    let s ← Slice.update data1 i3 product
+    ok (cont (s, next, i1))
+  else ok (done (data, t, n))
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 117:8-127:9 -/
+    Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 120:8-126:9 -/
 @[rust_loop]
-def kzg.fft8.Fft8.dif_wide_loop0
-  (self : kzg.fft8.Fft8) (data : Slice kzg.fr8.Fr8) (half : Std.Usize)
-  (input_bound : kzg.fr8.Fr8) (block : Std.Usize) :
-  Result (Slice kzg.fr8.Fr8)
+def kzg.fft8.Fft8.dif_wide_loop
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (data : Slice kzg.fr8.Fr8)
+  (half : Std.Usize) (input_bound : kzg.fr8.Fr8) (pairs : Std.Usize)
+  (t : Array core.core_arch.x86.__m512i 11#usize) (n : Std.Usize) :
+  Result ((Slice kzg.fr8.Fr8) × (Array core.core_arch.x86.__m512i 11#usize) ×
+    Std.Usize)
   := do
   loop
-    (fun (data1, block1) => kzg.fft8.Fft8.dif_wide_loop0.body self half
-      input_bound data1 block1)
-    (data, block)
+    (fun (data1, t1, n1) => kzg.fft8.Fft8.dif_wide_loop.body i v v1 half
+      input_bound pairs data1 t1 n1)
+    (data, t, n)
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif_wide]:
     Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 114:4-128:5 -/
@@ -5611,7 +5860,18 @@ def kzg.fft8.Fft8.dif_wide
   Result (Slice kzg.fr8.Fr8)
   := do
   let input_bound ← kzg.fr8.Fr8.multiple_of_r 2#u64
-  kzg.fft8.Fft8.dif_wide_loop0 self data half input_bound 0#usize
+  let pairs ← self.vectors / 2#usize
+  let (p, data1) ←
+    kzg.fft8.Fft8.dif_wide_operands self data half 0#usize input_bound
+  let (x, w) := p
+  let t ← kzg.fr8.Fr8.product x w
+  let (data2, t1, n) ←
+    kzg.fft8.Fft8.dif_wide_loop self.vectors self.wide self.short data1 half
+      input_bound pairs t 0#usize
+  let f ← kzg.fr8.Fr8.reduce t1
+  let i ← kzg.fft8.first_of_pair n half
+  let i1 ← i + half
+  Slice.update data2 i1 f
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::dif]: loop body 0:
     Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 71:8-74:9
@@ -6000,7 +6260,7 @@ def kzg.fr8.u256x8.U256x8.from_bytes
   kzg.fr8.u256x8.U256x8.from_blocks blocks1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::from_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 201:4-205:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 228:4-232:5
     Visibility: public -/
 def kzg.fr8.Fr8.from_bytes
   (bytes : Slice Std.U8) (at1 : Std.Usize) :

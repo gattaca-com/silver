@@ -162,6 +162,19 @@ def productAcc (a b : Limbs) : Acc :=
   let t := muladd_row t a b[3] 3
   muladd_row t a b[4] 4
 
+theorem productAcc_bound (a b : Limbs) :
+    ∀ k : Fin (2 * LIMBS + 1), (productAcc a b)[k].toNat < 2 ^ 56 := by
+  unfold productAcc
+  extract_lets t0 t1 t2 t3 t4
+  have b0 : ∀ k : Fin (2 * LIMBS + 1), t0[k].toNat ≤ 0 := by simp [t0, zero]
+  have b1 := muladd_row_bound t0 a b[0] 0 _ b0
+  have b2 := muladd_row_bound t1 a b[1] 1 _ b1
+  have b3 := muladd_row_bound t2 a b[2] 2 _ b2
+  have b4 := muladd_row_bound t3 a b[3] 3 _ b3
+  have b5 := muladd_row_bound t4 a b[4] 4 _ b4
+  intro k
+  exact (b5 k).trans_lt (by norm_num)
+
 theorem referenceRow_eq : @Reduction.referenceRow LIMBS = reduce_row := rfl
 
 theorem referenceRows_productAcc (a b : Limbs) :

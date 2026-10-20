@@ -14,6 +14,7 @@ import controls.ExtenderKernelTranspose
 import controls.ExtenderKernelShortStage
 import controls.ExtenderKernelLazy
 import controls.ExtenderKernelRange
+import controls.ExtenderKernelPipeline
 import controls.LeftShiftIntrinsic
 import controls.Fr8Swap
 import controls.Fr8Words
