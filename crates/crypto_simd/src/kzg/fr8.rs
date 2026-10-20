@@ -19,7 +19,7 @@ use std::arch::x86_64::{
 use blst::blst_fr;
 
 use crate::{
-    bls::fp8::lanes,
+    bls::fp8::{carry_of_cleared, lanes},
     kzg::blst_ops::{fr_from_u64, fr_mul},
 };
 
@@ -128,13 +128,20 @@ fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m51
     }
 }
 
-/// Clears limb `i` of the accumulator with a multiple of r and carries it up.
+/// Clears limb `i` of the accumulator with a multiple of r and carries it up,
+/// leaving limb `i` itself stale. The carry needs no product, so it enters
+/// ahead of the multiple, off the dependency chain of q.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
 fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], r: &[__m512i; LIMBS], rinv: __m512i, i: usize) {
     let q = _mm512_madd52lo_epu64(zero(), t[i], rinv);
-    muladd_row(t, r, q, i);
-    t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
+    t[i + 1] = _mm512_add_epi64(t[i + 1], carry_of_cleared(t[i]));
+    for j in 1..LIMBS {
+        t[i + j] = _mm512_madd52lo_epu64(t[i + j], r[j], q);
+    }
+    for j in 0..LIMBS {
+        t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], r[j], q);
+    }
 }
 
 /// Four little-endian 64-bit words as five 52-bit limbs.
@@ -311,3 +318,6 @@ impl Fr8 {
 fn two_r() -> [__m512i; LIMBS] {
     add_limbs(&splat_limbs(&R), &splat_limbs(&R))
 }
+
+#[cfg(test)]
+mod tests;
