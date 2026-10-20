@@ -1,4 +1,4 @@
-use silver_hashing::{FlatTree, PagePool, PageSnapshot};
+use silver_hashing::{FlatTree, PagePool, PageSnapshot, PageTable};
 
 use super::{TreeGroup, TreeSpec};
 use crate::ring::{Id, Ring};
@@ -21,10 +21,10 @@ pub(super) enum Committed<C: TreeSpec> {
 
 impl<C: TreeSpec> Committed<C> {
     #[inline]
-    fn table<'a>(&self, base: &'a PageSnapshot, ring: &'a Ring<TreeGroup<C>>) -> &'a PageSnapshot {
+    fn table<'a>(&self, base: &'a PageSnapshot, ring: &'a Ring<TreeGroup<C>>) -> &'a PageTable {
         match self {
-            Committed::Base => base,
-            Committed::Entry(id) => ring.get(*id),
+            Committed::Base => base.table(),
+            Committed::Entry(id) => ring.get(*id).table(),
         }
     }
 }
@@ -32,7 +32,7 @@ impl<C: TreeSpec> Committed<C> {
 impl<C: TreeSpec> HashingWriter<C> {
     /// The writer, and `tree` committed as the base it matches.
     pub(super) fn new(mut tree: FlatTree<C>, pool: &mut PagePool<C::Page>) -> (Self, PageSnapshot) {
-        let base = tree.to_snapshot(pool);
+        let base = PageSnapshot::from_tree(&mut tree, pool);
         (Self { tree, loaded: Some(Committed::Base) }, base)
     }
 
@@ -53,7 +53,7 @@ impl<C: TreeSpec> HashingWriter<C> {
         ring: &Ring<TreeGroup<C>>,
         target: Committed<C>,
     ) {
-        let nothing = PageSnapshot::default();
+        let nothing = PageTable::default();
         let loaded = self.loaded.as_ref().map_or(&nothing, |l| l.table(base, ring));
         self.tree.load(pool, loaded, target.table(base, ring));
         self.loaded = Some(target);
@@ -66,7 +66,7 @@ impl<C: TreeSpec> HashingWriter<C> {
         parent: &PageSnapshot,
         id: Id<TreeGroup<C>>,
     ) {
-        self.tree.commit(pool, dst, Some(parent));
+        dst.commit(&mut self.tree, pool, parent);
         self.loaded = Some(Committed::Entry(id));
     }
 

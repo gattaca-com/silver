@@ -1,10 +1,14 @@
 use flux_profiler::timed;
 
-use super::{
-    TreeSpec, format::TreeFormat, list::ListTree, pool::PagePool,
-    progressive_list::ProgressiveListTree, snapshot::PageSnapshot, store::NodeStore,
+use crate::{
+    B256, HashFormat, SszScalar, TreeSpec,
+    format::TreeFormat,
+    list::ListTree,
+    progressive_list::ProgressiveListTree,
+    storage::{PageAlloc, PageId, PageStore},
+    store::NodeStore,
+    table::PageTable,
 };
-use crate::{B256, HashFormat, SszScalar};
 
 pub enum FlatTree<C: TreeSpec> {
     List(ListTree<C>),
@@ -78,10 +82,10 @@ impl<C: TreeSpec> FlatTree<C> {
     }
 
     /// Load `target`'s content, switching tree variant if its format differs.
-    /// `loaded` is the snapshot our content already matches, so only
-    /// mismatched or dirtied pages get copied.
+    /// `loaded` is the table our content already matches, so only mismatched
+    /// or dirtied pages get copied.
     #[timed]
-    pub fn load(&mut self, pool: &PagePool<C::Page>, loaded: &PageSnapshot, target: &PageSnapshot) {
+    pub fn load(&mut self, pages: &impl PageStore, loaded: &PageTable, target: &PageTable) {
         let format = target.format();
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
@@ -94,25 +98,18 @@ impl<C: TreeSpec> FlatTree<C> {
                 }
             };
         }
-        self.store_mut().load(pool, loaded, target);
-    }
-
-    #[timed]
-    pub fn to_snapshot(&mut self, pool: &mut PagePool<C::Page>) -> PageSnapshot {
-        let mut snapshot = PageSnapshot::default();
-        self.commit(pool, &mut snapshot, None);
-        snapshot.allocated.clear();
-        snapshot
+        self.store_mut().load(pages, loaded, target);
     }
 
     pub fn commit(
         &mut self,
-        pool: &mut PagePool<C::Page>,
-        dst: &mut PageSnapshot,
-        parent: Option<&PageSnapshot>,
+        alloc: &mut impl PageAlloc,
+        dst: &mut PageTable,
+        parent: Option<&PageTable>,
+        allocated: Option<&mut Vec<(u32, PageId)>>,
     ) {
         let format = self.format();
-        self.store_mut().commit(format, pool, dst, parent);
+        self.store_mut().commit(format, alloc, dst, parent, allocated);
     }
 
     pub fn copy_from<D>(&mut self, src: &FlatTree<D>)

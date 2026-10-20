@@ -85,7 +85,7 @@ impl<C: TreeSpec> TreeGroup<C> {
     pub fn view(&self, id: Id<Self>) -> TreeView<'_, C> {
         let snapshot =
             if self.finalized_id == Some(id) { &self.finalized } else { self.ring.get(id) };
-        TreeView::paged(&self.pool, snapshot)
+        TreeView::paged(&self.pool, snapshot.table())
     }
 
     #[timed]
@@ -111,8 +111,6 @@ impl<C: TreeSpec> TreeGroup<C> {
         ring.grow_if_full_with(PageSnapshot::default, |src, dst| *dst = src.clone_for_grow());
         let parent_in_ring = parent.filter(|&p| Some(p) != *finalized_id);
         let (id, dst, parent_snap) = ring.roll_deriving(parent_in_ring);
-
-        debug_assert!(!dst.owns_pages(), "recycled slot still owns pages: not released");
         writer.commit(pool, dst, parent_snap.unwrap_or(finalized), id);
         id
     }
@@ -141,7 +139,7 @@ impl<C: TreeSpec> TreeGroup<C> {
         if *finalized_id == Some(winner) {
             return;
         }
-        let base_kept = finalized.same_pages(ring.get(winner));
+        let base_kept = finalized.table().same_pages(ring.get(winner).table());
         finalized.promote::<C>(pool, ring.get(winner));
         ring.free_through_with(winner, |snapshot| snapshot.release::<C>(pool, finalized));
         *finalized_id = Some(winner);
@@ -150,6 +148,6 @@ impl<C: TreeSpec> TreeGroup<C> {
 
     #[inline]
     pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.finalized.write_ssz::<C, W>(&self.pool, w)
+        self.finalized.table().write_ssz::<C, W>(&self.pool, w)
     }
 }

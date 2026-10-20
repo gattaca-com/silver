@@ -1,23 +1,23 @@
 use std::marker::PhantomData;
 
 use crate::{
-    B256, FlatTree, SszScalar, TreeSpec, format::TreeFormat, pool::PagePool, snapshot::PageSnapshot,
+    B256, FlatTree, SszScalar, TreeSpec, format::TreeFormat, storage::PageStore, table::PageTable,
 };
 
 /// What a read walks: the writer's flat tree or a committed tree's pages.
 /// `get` and `hash_root` are written once over [`node`](Self::node); only node
 /// addressing differs.
-enum Nodes<'a, C: TreeSpec> {
+enum Nodes<'a, C: TreeSpec, Store> {
     Flat(&'a FlatTree<C>),
-    Paged(&'a PagePool<C::Page>, &'a PageSnapshot),
+    Paged(&'a Store, &'a PageTable),
 }
 
-impl<'a, C: TreeSpec> Nodes<'a, C> {
+impl<C: TreeSpec, Store: PageStore> Nodes<'_, C, Store> {
     #[inline]
     fn node(&self, n: usize) -> &B256 {
         match self {
             Nodes::Flat(t) => t.node(n),
-            Nodes::Paged(pool, snap) => snap.node::<C>(pool, n),
+            Nodes::Paged(pages, table) => table.node::<C>(*pages, n),
         }
     }
 
@@ -25,30 +25,30 @@ impl<'a, C: TreeSpec> Nodes<'a, C> {
     fn count(&self) -> usize {
         match self {
             Nodes::Flat(t) => t.count(),
-            Nodes::Paged(_, snap) => snap.len(),
+            Nodes::Paged(_, table) => table.len(),
         }
     }
 }
 
 /// Reads a list's values and SSZ root, from the writer's flat tree or from a
-/// committed [`PageSnapshot`].
-pub struct TreeReader<'a, C: TreeSpec> {
-    nodes: Nodes<'a, C>,
+/// committed table in `Store`.
+pub struct TreeReader<'a, C: TreeSpec, Store> {
+    nodes: Nodes<'a, C, Store>,
     /// Resolved once at construction so per-element reads pay a single
     /// layout match.
     format: TreeFormat,
     _marker: PhantomData<fn() -> C>,
 }
 
-impl<'a, C: TreeSpec> TreeReader<'a, C> {
+impl<'a, C: TreeSpec, Store: PageStore> TreeReader<'a, C, Store> {
     #[inline]
     pub fn flat(tree: &'a FlatTree<C>) -> Self {
         Self { nodes: Nodes::Flat(tree), format: tree.format(), _marker: PhantomData }
     }
 
     #[inline]
-    pub fn paged(pool: &'a PagePool<C::Page>, snap: &'a PageSnapshot) -> Self {
-        Self { nodes: Nodes::Paged(pool, snap), format: snap.format(), _marker: PhantomData }
+    pub fn paged(pages: &'a Store, table: &'a PageTable) -> Self {
+        Self { nodes: Nodes::Paged(pages, table), format: table.format(), _marker: PhantomData }
     }
 
     #[inline]

@@ -18,17 +18,21 @@ mod progressive_list;
 mod reader;
 pub mod scalar;
 mod snapshot;
+mod storage;
 mod store;
 mod subtree;
+mod table;
 
 pub use flat::FlatTree;
 pub use format::TreeFormat;
 use format::{MAX_SEGS, seg_off};
 pub use merkle::B256;
-pub use pool::{PageArray, PageId, PagePool};
+pub use pool::PagePool;
 pub use reader::TreeReader;
 pub use scalar::SszScalar;
 pub use snapshot::PageSnapshot;
+pub use storage::{PageAlloc, PageArray, PageId, PageStore};
+pub use table::PageTable;
 
 const VALIDATOR_REGISTRY_LIMIT: usize = 1 << 40;
 

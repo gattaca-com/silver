@@ -1,14 +1,14 @@
 use std::ops::Deref;
 
 use flux_profiler::timed;
-use silver_hashing::{FlatTree, PagePool, PageSnapshot, TreeReader};
+use silver_hashing::{FlatTree, PagePool, PageTable, TreeReader};
 
 use super::{TreeGroup, TreeSpec};
 use crate::{ring::Id, types::B256};
 
 /// A read over a group's pool. A local type, so groups add their own reads
 /// (`at_slot`, `at_epoch`).
-pub struct TreeView<'a, C: TreeSpec>(TreeReader<'a, C>);
+pub struct TreeView<'a, C: TreeSpec>(TreeReader<'a, C, PagePool<C::Page>>);
 
 impl<'a, C: TreeSpec> TreeView<'a, C> {
     #[inline]
@@ -17,13 +17,13 @@ impl<'a, C: TreeSpec> TreeView<'a, C> {
     }
 
     #[inline]
-    pub(super) fn paged(pool: &'a PagePool<C::Page>, snapshot: &'a PageSnapshot) -> Self {
-        Self(TreeReader::paged(pool, snapshot))
+    pub(super) fn paged(pool: &'a PagePool<C::Page>, table: &'a PageTable) -> Self {
+        Self(TreeReader::paged(pool, table))
     }
 }
 
 impl<'a, C: TreeSpec> Deref for TreeView<'a, C> {
-    type Target = TreeReader<'a, C>;
+    type Target = TreeReader<'a, C, PagePool<C::Page>>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {

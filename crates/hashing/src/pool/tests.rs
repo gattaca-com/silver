@@ -2,7 +2,11 @@ use std::collections::HashSet;
 
 use super::{PageId, PagePool};
 use crate::{
-    B256, TreeSpec, format::TreeFormat, snapshot::PageSnapshot, store::NodeStore,
+    B256, FlatTree, TreeSpec,
+    list::ListTree,
+    snapshot::PageSnapshot,
+    storage::{PageAlloc, PageStore},
+    store::NodeStore,
     subtree::build_subtree_hashes,
 };
 
@@ -13,8 +17,6 @@ impl TreeSpec for P4 {
     type Val = u64;
     type Page = [B256; 4];
 }
-
-const FORMAT: TreeFormat = TreeFormat::Fixed { max_elements: 16 };
 
 /// `leaves` non-zero leaves, leaf `i` filled with `fill + i`.
 fn nodes(leaves: usize, fill: u8) -> Vec<B256> {
@@ -45,14 +47,20 @@ fn commit(
             store.writes.take_unhashed();
         }
     }
-    let mut dst = PageSnapshot::default();
-    store.commit(FORMAT, pool, &mut dst, parent);
-    dst
+    let mut tree = FlatTree::List(ListTree { store, max_elements: 16 });
+    match parent {
+        None => PageSnapshot::from_tree(&mut tree, pool),
+        Some(parent) => {
+            let mut dst = PageSnapshot::default();
+            dst.commit(&mut tree, pool, parent);
+            dst
+        }
+    }
 }
 
 /// Ids along the page path from the root to leaf page `leaf_page`.
 fn path(pool: &PagePool<[B256; 4]>, snapshot: &PageSnapshot, leaf_page: usize) -> [PageId; 3] {
-    let root = snapshot.roots[0];
+    let root = snapshot.table().roots[0];
     let page_level1 = pool.child(root, leaf_page / 4);
     [root, page_level1, pool.child(page_level1, leaf_page % 4)]
 }
@@ -136,7 +144,7 @@ fn release_is_idempotent() {
     let mut pool = PagePool::default();
     let base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
     let mut dead = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
-    let roots = dead.roots.clone();
+    let roots = dead.table().roots.clone();
 
     dead.release::<P4>(&mut pool, &base);
     dead.release::<P4>(&mut pool, &base);
@@ -144,5 +152,5 @@ fn release_is_idempotent() {
     let unique: HashSet<_> = freed(&pool).into_iter().collect();
     assert_eq!(unique.len(), 3, "each allocated page freed once");
     assert_eq!(freed(&pool).len(), 3);
-    assert_eq!(dead.roots, roots, "readers keep their roots");
+    assert_eq!(dead.table().roots, roots, "readers keep their roots");
 }

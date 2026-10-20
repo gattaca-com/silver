@@ -2,34 +2,12 @@ use std::{iter, marker::PhantomData, slice};
 
 use bytesize::ByteSize;
 
-use super::{
-    TreeSpec,
+use crate::{
+    B256, TreeSpec,
+    merkle::ZERO_HASHES,
     page_format::{PagePos, Subtree},
+    storage::{PageAlloc, PageArray, PageId, PageStore},
 };
-use crate::{B256, merkle::ZERO_HASHES};
-
-pub type PageId = u32;
-
-/// A list's page, carried as a type rather than a `const PAGE_NODES` because
-/// an associated const may not be an array length in a generic context
-/// (`error: generic parameters may not be used in const operations`).
-pub trait PageArray: 'static {
-    const LEN: usize;
-    /// What a racing reader sees for an id the pool can't resolve yet; the
-    /// seqlock retry discards the read.
-    const UNRESOLVED: &'static [B256];
-}
-
-impl<const N: usize> PageArray for [B256; N] {
-    /// The check sits inside the value so any use of `LEN` const-evals it —
-    /// an assert in its own associated const is never evaluated unless forced.
-    /// Power-of-two keeps page-relative `/` and `%` folding to shift/mask.
-    const LEN: usize = {
-        assert!(N.is_power_of_two(), "PageArray: page size must be a power of two");
-        N
-    };
-    const UNRESOLVED: &'static [B256] = &[[0u8; 32]; N];
-}
 
 const SEGMENT_BYTES: usize = ByteSize::mib(1).as_u64() as usize;
 const MAX_POOL_BYTES: usize = ByteSize::gib(4).as_u64() as usize;
@@ -87,31 +65,6 @@ impl<P: PageArray> PagePool<P> {
         id
     }
 
-    #[inline]
-    pub(super) fn zero_page(&self, depth: u32) -> PageId {
-        self.zero_pages[depth as usize]
-    }
-
-    #[inline]
-    pub(super) fn alloc<'a>(
-        &mut self,
-        children: usize,
-        rows: impl Iterator<Item = &'a [B256]>,
-    ) -> PageId {
-        let inner = children != 0;
-        let id = match self.free[inner as usize].pop() {
-            Some(id) => id,
-            None => self.fresh_id(inner),
-        };
-        let (segment, i) = Self::split(id);
-        let mut page = &mut self.segments[segment].page_data[i * P::LEN + 1..];
-        for row in rows {
-            page[..row.len()].copy_from_slice(row);
-            page = &mut page[row.len()..];
-        }
-        id
-    }
-
     fn fresh_id(&mut self, inner: bool) -> PageId {
         let segment = match self.filling[inner as usize] {
             Some(s) if self.segments[s].used < Self::SEGMENT_PAGES => s,
@@ -149,7 +102,7 @@ impl<P: PageArray> PagePool<P> {
         old: PageId,
         new: Option<PageId>,
     ) {
-        if new == Some(old) || old == self.zero_page(sub.depth::<C>(at)) {
+        if new == Some(old) || old == self.zero_pages[sub.depth::<C>(at) as usize] {
             return;
         }
         self.free(old);
@@ -163,31 +116,6 @@ impl<P: PageArray> PagePool<P> {
     fn split(id: PageId) -> (usize, usize) {
         let id = id as usize;
         (id / Self::SEGMENT_PAGES, id % Self::SEGMENT_PAGES)
-    }
-
-    #[inline]
-    pub(super) fn page(&self, id: PageId) -> &[B256] {
-        let (segment, i) = Self::split(id);
-        self.segments
-            .get(segment)
-            .and_then(|s| s.page_data.get(i * P::LEN..(i + 1) * P::LEN))
-            .unwrap_or(P::UNRESOLVED)
-    }
-
-    #[inline]
-    pub(super) fn child(&self, id: PageId, j: usize) -> PageId {
-        let (segment, i) = Self::split(id);
-        self.segments
-            .get(segment)
-            .and_then(|s| s.children_pages.get(i * P::LEN + j))
-            .copied()
-            .unwrap_or(0)
-    }
-
-    #[inline]
-    pub(super) fn set_child(&mut self, id: PageId, j: usize, child: PageId) {
-        let (segment, i) = Self::split(id);
-        self.segments[segment].children_pages[i * P::LEN + j] = child;
     }
 }
 
@@ -204,6 +132,58 @@ impl<P: PageArray> Default for PagePool<P> {
             pool.zero_pages[depth] = pool.alloc_zero(depth);
         }
         pool
+    }
+}
+
+impl<P: PageArray> PageStore for PagePool<P> {
+    #[inline]
+    fn page(&self, id: PageId) -> &[B256] {
+        let (segment, i) = Self::split(id);
+        self.segments
+            .get(segment)
+            .and_then(|s| s.page_data.get(i * P::LEN..(i + 1) * P::LEN))
+            .unwrap_or(P::UNRESOLVED)
+    }
+
+    #[inline]
+    fn child(&self, id: PageId, j: usize) -> PageId {
+        let (segment, i) = Self::split(id);
+        self.segments
+            .get(segment)
+            .and_then(|s| s.children_pages.get(i * P::LEN + j))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Creator-owned: a fork owns the pages it allocated, and a shared page stays
+/// its creator's.
+impl<P: PageArray> PageAlloc for PagePool<P> {
+    #[inline]
+    fn alloc<'a>(&mut self, children: usize, rows: impl Iterator<Item = &'a [B256]>) -> PageId {
+        let inner = children != 0;
+        let id = match self.free[inner as usize].pop() {
+            Some(id) => id,
+            None => self.fresh_id(inner),
+        };
+        let (segment, i) = Self::split(id);
+        let mut page = &mut self.segments[segment].page_data[i * P::LEN + 1..];
+        for row in rows {
+            page[..row.len()].copy_from_slice(row);
+            page = &mut page[row.len()..];
+        }
+        id
+    }
+
+    #[inline]
+    fn set_child(&mut self, id: PageId, j: usize, child: PageId) {
+        let (segment, i) = Self::split(id);
+        self.segments[segment].children_pages[i * P::LEN + j] = child;
+    }
+
+    #[inline]
+    fn zero_page(&mut self, depth: u32) -> PageId {
+        self.zero_pages[depth as usize]
     }
 }
 
