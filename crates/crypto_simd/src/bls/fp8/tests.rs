@@ -1,7 +1,7 @@
 //! `Fp8::mul` and `Fp8::square` against a reference Montgomery product, limb
 //! for limb. The refinement of `mul` holds without a precondition, so the
-//! inputs go beyond its contract of normalised values below 2p. Also the lane
-//! helpers `kzg::fr8` shares.
+//! inputs go beyond its contract of normalised values below 2p. Also
+//! `carry_of_cleared` and `transpose8`.
 
 use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
