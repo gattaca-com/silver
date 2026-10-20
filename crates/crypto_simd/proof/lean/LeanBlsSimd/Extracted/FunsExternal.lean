@@ -97,6 +97,15 @@ def core.core_arch.x86.avx512f._mm512_srli_epi64 (IMM8 : Std.U32) (a : core.core
     Result core.core_arch.x86.__m512i :=
   ok (LeanBlsSimd._mm512_srli_epi64 IMM8.bv.toNat a)
 
+/-- [core::core_arch::x86::avx512f::_mm512_slli_epi64]:
+    Source: '/rustc/library/core/src/../../stdarch/crates/core_arch/src/x86/avx512f.rs', lines 19969:0-19969:70
+    Name pattern: [core::core_arch::x86::avx512f::_mm512_slli_epi64]
+    Visibility: public -/
+@[rust_fun "core::core_arch::x86::avx512f::_mm512_slli_epi64"]
+def core.core_arch.x86.avx512f._mm512_slli_epi64 (IMM8 : Std.U32) (a : core.core_arch.x86.__m512i) :
+    Result core.core_arch.x86.__m512i :=
+  ok (LeanBlsSimd._mm512_slli_epi64 IMM8.bv.toNat a)
+
 /-- [core::core_arch::x86::avx512f::_mm512_srai_epi64]:
     Source: '/rustc/library/core/src/../../stdarch/crates/core_arch/src/x86/avx512f.rs', lines 21375:0-21375:70
     Name pattern: [core::core_arch::x86::avx512f::_mm512_srai_epi64]

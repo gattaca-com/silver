@@ -1,4 +1,6 @@
-import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Bytes
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8WordStore
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Words
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Endian
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8BytesSerialize
 import LeanBlsSimd.Refines.DecompressG2
 import LeanBlsSimd.Kzg.ByteSerialization
@@ -50,73 +52,6 @@ theorem pack_value (x : Vector UInt64 5) (hn : ∀ j : Fin 5, x[j].toNat < 2^52)
   rw [valWords, w0, w1, w2, w3, val52]
   omega
 
-theorem pack_refines (x : Array U64 5#usize) :
-    fr8.pack64 x = ok (toArray toU64 (pack (ofArray ofU64 x))) := by
-  unfold fr8.pack64
-  simp only [index_usize_eq x 0#usize (by decide), index_usize_eq x 1#usize (by decide),
-    index_usize_eq x 2#usize (by decide), index_usize_eq x 3#usize (by decide),
-    index_usize_eq x 4#usize (by decide), bind_tc_ok, lift]
-  simp only [HShiftRight.hShiftRight, HShiftLeft.hShiftLeft, UScalar.shiftRight_IScalar,
-    UScalar.shiftLeft_IScalar, UScalar.shiftRight, UScalar.shiftLeft, IScalar.toNat]
-  simp only [show (52#i32).val = 52 by rfl, show (12#i32).val = 12 by rfl,
-    show (40#i32).val = 40 by rfl, show (24#i32).val = 24 by rfl,
-    show (28#i32).val = 28 by rfl, show (36#i32).val = 36 by rfl,
-    show (16#i32).val = 16 by rfl]
-  norm_num only [UScalarTy.U64_numBits_eq, Int.reduceLT, Nat.reduceLT, ↓reduceIte, bind_tc_ok]
-  simp only [show Int.toNat (52:Int) = 52 from rfl, show Int.toNat (12:Int) = 12 from rfl,
-    show Int.toNat (40:Int) = 40 from rfl, show Int.toNat (24:Int) = 24 from rfl,
-    show Int.toNat (28:Int) = 28 from rfl, show Int.toNat (36:Int) = 36 from rfl,
-    show Int.toNat (16:Int) = 16 from rfl, Nat.reduceLT, if_true, bind_tc_ok]
-  apply congrArg ok
-  apply Subtype.ext
-  have hinj : Function.Injective (List.map ofU64) := by
-    intro a b h
-    have hh := congrArg (List.map toU64) h
-    simpa [List.map_map, Function.comp_def] using hh
-  apply hinj
-  simp [Array.make, toArray, pack]
-
-def wordBytes (w : UInt64) : List U8 := (core.num.U64.to_be_bytes (toU64 w)).val
-
-@[simp] theorem wordBytes_length (w : UInt64) : (wordBytes w).length = 8 :=
-  (core.num.U64.to_be_bytes (toU64 w)).property
-
-private theorem from_to_be_bytes (w : U64) :
-    core.num.U64.from_be_bytes (core.num.U64.to_be_bytes w) = w := by
-  have hm : (core.num.U64.to_be_bytes w).val.map U8.bv = w.bv.toBEBytes := by
-    change (w.bv.toBEBytes.map (@UScalar.mk .U8)).map U8.bv = _
-    simp only [List.map_map, Function.comp_def, U8.bv]
-    exact List.map_id _
-  apply UScalar.eq_of_val_eq
-  change (BitVec.fromBEBytes ((core.num.U64.to_be_bytes w).val.map U8.bv)).toNat = w.bv.toNat
-  rw [hm]
-  change (BitVec.fromLEBytes w.bv.toLEBytes.reverse.reverse).toNat = w.bv.toNat
-  calc
-    _ = (BitVec.fromLEBytes w.bv.toLEBytes).toNat :=
-      congrArg (fun xs => (BitVec.fromLEBytes xs).toNat) (List.reverse_reverse _)
-    _ = w.bv.toNat := by
-      rw [BitVec.fromLEBytes_toLEBytes (show 64 % 8 = 0 by decide)]
-      rfl
-
-theorem wordBytes_value (w : UInt64) : bytesVal ((wordBytes w).map ofU8) = w.toNat := by
-  have h := DecompressG2.from_be_bytes_refines (core.num.U64.to_be_bytes (toU64 w))
-  rw [from_to_be_bytes, ofU64_toU64] at h
-  have hv := congrArg UInt64.toNat h
-  simpa [toNat_u64_from_be_bytes, wordBytes] using hv.symm
-
-def wordsBytes (w : Vector UInt64 4) : List U8 :=
-  wordBytes w[3] ++ wordBytes w[2] ++ wordBytes w[1] ++ wordBytes w[0]
-
-@[simp] theorem wordsBytes_length (w : Vector UInt64 4) : (wordsBytes w).length = 32 := by
-  simp [wordsBytes]
-
-theorem wordsBytes_value (w : Vector UInt64 4) :
-    bytesVal ((wordsBytes w).map ofU8) = valWords w := by
-  simp only [wordsBytes, List.map_append, bytesVal_append, wordBytes_value,
-    List.length_map, wordBytes_length]
-  norm_num [valWords]
-  ring
-
 def store (self : Vector M512 5) : Vector (Vector UInt64 5) 8 :=
   (List.finRange 5).foldl (init := .replicate 8 (.replicate 5 0)) fun out (j : Fin 5) =>
     (List.finRange 8).foldl (init := out) fun out (lane : Fin 8) =>
@@ -159,216 +94,6 @@ theorem getElem_store (x : Vector M512 5) (l : Fin 8) : (store x)[l] = laneOf x 
   rw [store, outer]
   simp [laneOf, hj']
 
-theorem store_inner_refines (out : Vector (Vector UInt64 5) 8) (j : Usize) (hj : j.val < 5)
-    (l : Vector UInt64 8) :
-    fr8.Fr8.to_bytes_loop0_loop0 { start := 0#usize, «end» := fr8.LANES } (toArray (toArray toU64) out) j
-        (toArray toU64 l) =
-      ok (toArray (toArray toU64) ((List.finRange 8).foldl
-        (fun out (lane : Fin 8) => out.set lane (out[lane].set j.val l[lane])) out)) := by
-  unfold fr8.Fr8.to_bytes_loop0_loop0
-  rw [fr8.LANES]
-  refine loop_range (n := 8) _ 8#usize rfl (toArray (toArray toU64))
-    (fun out (lane : Fin 8) => out.set lane (out[lane].set j.val l[lane])) (toArray (toArray toU64))
-    out _ ?_ ?_ rfl
-  · intro r m he hs hn
-    simp_body fr8.Fr8.to_bytes_loop0_loop0.body hn
-  · intro r r' m lane he hs he' hs' hn
-    have hl : r.start.val < (8#usize).val := by rw [hs]; exact lane.isLt
-    have hj' : j.val < (5#usize).val := hj
-    simp_body fr8.Fr8.to_bytes_loop0_loop0.body hn
-    simp only [index_usize_eq _ _ hl, bind_tc_ok, Array.index_mut_usize, update_eq _ _ _ hj']
-    refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
-    simp [hs, hj, List.map_set, Vector.toList_set]
-
-theorem store_refines (self : fr8.Fr8) :
-    fr8.Fr8.to_bytes_loop0 { start := 0#usize, «end» := fr8.LIMBS } self
-      (Array.repeat 8#usize (Array.repeat 5#usize 0#u64)) = ok (toArray (toArray toU64) (store (ofArray id self))) := by
-  unfold fr8.Fr8.to_bytes_loop0
-  simp only [fr8.LIMBS]
-  rw [show Array.repeat 8#usize (Array.repeat 5#usize 0#u64) =
-    toArray (toArray toU64) (Vector.replicate 8 (Vector.replicate 5 0)) from
-    by simp [toArray_replicate]; rfl]
-  refine loop_range (n := 5) _ 5#usize rfl (fun out => (self, toArray (toArray toU64) out))
-    (fun out (j : Fin 5) =>
-      (List.finRange 8).foldl (fun out (lane : Fin 8) =>
-        out.set lane (out[lane].set j (Simd.lanes (ofArray id self)[j])[lane])) out)
-    (toArray (toArray toU64)) (Vector.replicate 8 (Vector.replicate 5 0)) _ ?_ ?_ rfl
-  · intro r m he hs hn
-    simp_body fr8.Fr8.to_bytes_loop0.body hn
-  · intro r r' m j he hs he' hs' hn
-    have hj : r.start.val < (5#usize).val := by rw [hs]; exact j.isLt
-    simp_body fr8.Fr8.to_bytes_loop0.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, Simd.lanes_refines]
-    rw [store_inner_refines _ _ (by rw [hs]; exact j.isLt)]
-    simp [hs]
-
-
-def writeBlocks (n width start : Nat) (chunks : Nat → List U8) (input : Slice U8) : Slice U8 :=
-  (List.finRange n).foldl (fun out (j : Fin n) => out.setSlice! (start + width*j.val) (chunks j.val)) input
-
-theorem writeBlocks_spec (n width start : Nat) (chunks : Nat → List U8) (input : Slice U8)
-    (hlen : ∀ j < n, (chunks j).length = width) (hsize : start + width*n ≤ input.val.length) :
-    let out := writeBlocks n width start chunks input
-    out.val.length = input.val.length ∧
-      (∀ j < n, ∀ b < width, out.val[start + width*j+b]! = (chunks j)[b]!) ∧
-      (∀ i, i < start ∨ start + width*n ≤ i → out.val[i]? = input.val[i]?) := by
-  let inv (k : Nat) (out : Slice U8) :=
-    out.val.length = input.val.length ∧
-      (∀ j < k, ∀ b < width, out.val[start + width*j+b]! = (chunks j)[b]!) ∧
-      (∀ i, i < start ∨ start + width*k ≤ i → out.val[i]? = input.val[i]?)
-  apply foldl_finRange_inv (inv := inv)
-  · intro out k hk
-    rcases hk with ⟨hs, hv, hf⟩
-    refine ⟨by simpa using hs, ?_, ?_⟩
-    · intro j hj b hb
-      rw [Slice.setSlice!_val]
-      by_cases hjk : j < k.val
-      · have hmul := Nat.mul_le_mul_left width (Nat.succ_le_of_lt hjk)
-        simp only [Nat.mul_succ] at hmul
-        rw [List.getElem!_setSlice!_prefix _ _ _ _ (by omega)]
-        exact hv j hjk b hb
-      · have he : j = k.val := by omega
-        subst j
-        rw [List.getElem!_setSlice!_middle]
-        · simp
-        · rw [hlen _ k.isLt, hs]
-          have hmul := Nat.mul_le_mul_left width (Nat.succ_le_of_lt k.isLt)
-          simp only [Nat.mul_succ] at hmul
-          omega
-    · intro i hi
-      simp only [Nat.mul_add, Nat.mul_one] at hi
-      rw [Slice.setSlice!_val, List.setSlice!_getElem?_same]
-      · apply hf i
-        rcases hi with hi | hi
-        · exact Or.inl hi
-        · exact Or.inr (by omega)
-      · rw [hlen _ k.isLt]
-        omega
-  · refine ⟨rfl, ?_, ?_⟩
-    · intro j hj; omega
-    · intro i hi; rfl
-
-theorem slice_index_mut_ok (s : Slice U8) (a b : Usize) (hab : a.val ≤ b.val)
-    (hb : b.val ≤ s.val.length) :
-    core.slice.index.Slice.index_mut (core.slice.index.SliceIndexRangeUsizeSlice U8) s
-      { start := a, «end» := b } =
-      ok (⟨s.val.slice a.val b.val, le_trans (List.slice_length_le _ _ _) s.property⟩,
-        fun t => s.setSlice! a.val t.val) := by
-  simp only [core.slice.index.Slice.index_mut,
-    core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
-  rw [if_pos (by simp only [Slice.length]; exact ⟨hab, hb⟩)]
-  rfl
-
-theorem words_to_bytes_loop_refines (w : Vector UInt64 4) (input : Slice U8) (offset : Usize)
-    (hsize : offset.val + 32 ≤ input.val.length) :
-    fr8.words_to_bytes (toArray toU64 w) input offset =
-      ok (writeBlocks 4 8 offset.val (fun k => wordBytes w[3-k]!) input) := by
-  unfold fr8.words_to_bytes fr8.words_to_bytes_loop writeBlocks
-  refine loop_range_inv (n := 4) _ 4#usize rfl id
-    (fun out (k : Fin 4) => out.setSlice! (offset.val + 8*k.val) (wordBytes w[3-k.val]!)) id
-    (fun _ out => out.val.length = input.val.length) ?_ ?_ ?_ 0#usize input (by simp) rfl
-  · intro out k hk
-    simpa using hk
-  · intro r out he hs ho hn
-    simp_body fr8.words_to_bytes_loop.body hn
-  · intro r r' out k he hs he' hs' ho hn
-    have hk : r.start.val < 4 := by rw [hs]; exact k.isLt
-    have hmax : input.val.length < 2^UScalarTy.Usize.numBits := by
-      have hp := input.property
-      simp only [Usize.max, Usize.numBits] at hp
-      have := Nat.two_pow_pos UScalarTy.Usize.numBits
-      omega
-    have hplatform := two_pow_32_le_usize
-    simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
-    simp_body fr8.words_to_bytes_loop.body hn
-    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_mul_ok, add_ok,
-      sub_ok, bind_tc_ok, UScalar.ofNatCore_val_eq]
-    rw [slice_index_mut_ok _ _ _ (by simp) (by simp; omega)]
-    simp only [bind_tc_ok, Function.uncurry_apply_pair]
-    rw [index_usize_toArray toU64 w rfl _ (by simp; omega)]
-    simp only [bind_tc_ok, lift]
-    rw [copy_from_slice_ok]
-    · simp only [bind_tc_ok]
-      simp [wordBytes, hs, getElem!_pos w (3-k.val) (by omega)]
-    · change (out.val.slice (offset.val + 8*r.start.val)
-        (offset.val + 8*r.start.val + 8)).length = (wordBytes w[3-r.start.val]).length
-      rw [wordBytes_length, List.slice_length]
-      omega
-
-theorem wordsBytes_get (w : Vector UInt64 4) (k b : Nat) (hk : k < 4) (hb : b < 8) :
-    (wordsBytes w)[8*k+b]! = (wordBytes w[3-k]!)[b]! := by
-  interval_cases k <;>
-    simp (disch := (simp only [List.length_append, wordBytes_length]; omega)) only
-      [wordsBytes, Nat.reduceMul, Nat.reduceSub, Nat.zero_add,
-        getElem!_pos w 0 (by decide), getElem!_pos w 1 (by decide),
-        getElem!_pos w 2 (by decide), getElem!_pos w 3 (by decide),
-        List.getElem!_append_left, List.getElem!_append_right, List.length_append,
-        wordBytes_length, Nat.reduceAdd] <;>
-    congr 1 <;> omega
-
-theorem words_to_bytes_refines (w : Vector UInt64 4) (input : Slice U8) (offset : Usize)
-    (hsize : offset.val + 32 ≤ input.val.length) :
-    fr8.words_to_bytes (toArray toU64 w) input offset = ok (input.setSlice! offset.val (wordsBytes w)) := by
-  rw [words_to_bytes_loop_refines w input offset hsize]
-  apply congrArg ok
-  have h := writeBlocks_spec 4 8 offset.val (fun k => wordBytes w[3-k]!) input
-    (by simp) hsize
-  apply Subtype.ext
-  apply List.ext_getElem
-  · simpa using h.1
-  · intro i hi hi'
-    rw [← getElem!_pos _ i hi, ← getElem!_pos _ i hi', Slice.setSlice!_val]
-    by_cases hb : offset.val ≤ i ∧ i < offset.val+32
-    · let k := (i-offset.val)/8
-      let b := (i-offset.val)%8
-      have hk : k < 4 := by dsimp [k]; omega
-      have hb' : b < 8 := by dsimp [b]; omega
-      have he : offset.val + 8*k+b = i := by dsimp [k,b]; omega
-      rw [← he, h.2.1 k hk b hb', List.getElem!_setSlice!_middle]
-      · rw [show offset.val + 8*k+b-offset.val = 8*k+b by omega]
-        exact (wordsBytes_get w k b hk hb').symm
-      · rw [wordsBytes_length]
-        omega
-    · have hv := congrArg (fun x : Option U8 => x.getD default) (h.2.2 i (by omega))
-      have hv' : (writeBlocks 4 8 offset.val (fun k => wordBytes w[3-k]!) input).val[i]! = input.val[i]! := by
-        simpa using hv
-      rw [hv', List.getElem!_setSlice!_same]
-      rw [wordsBytes_length]
-      omega
-
-theorem to_bytes_loop1_refines (lanes : Vector (Vector UInt64 5) 8)
-    (input : Slice U8) (offset : Usize) (hsize : offset.val+256 ≤ input.val.length) :
-    fr8.Fr8.to_bytes_loop1 { start := 0#usize, «end» := fr8.LANES } input offset
-      (toArray (toArray toU64) lanes) =
-      ok (writeBlocks 8 32 offset.val (fun k => wordsBytes (pack lanes[k]!)) input) := by
-  unfold fr8.Fr8.to_bytes_loop1 writeBlocks
-  rw [fr8.LANES]
-  refine loop_range_inv (n := 8) _ 8#usize rfl id
-    (fun out (k : Fin 8) => out.setSlice! (offset.val + 32*k.val) (wordsBytes (pack lanes[k.val]!))) id
-    (fun _ out => out.val.length = input.val.length) ?_ ?_ ?_ 0#usize input (by simp) rfl
-  · intro out k hk
-    simpa using hk
-  · intro r out he hs ho hn
-    simp_body fr8.Fr8.to_bytes_loop1.body hn
-  · intro r r' out k he hs he' hs' ho hn
-    have hk : r.start.val < 8 := by rw [hs]; exact k.isLt
-    have hmax : input.val.length < 2^UScalarTy.Usize.numBits := by
-      have hp := input.property
-      simp only [Usize.max, Usize.numBits] at hp
-      have := Nat.two_pow_pos UScalarTy.Usize.numBits
-      omega
-    have hplatform := two_pow_32_le_usize
-    simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
-    simp_body fr8.Fr8.to_bytes_loop1.body hn
-    rw [index_usize_toArray (toArray toU64) lanes rfl _ hk]
-    simp only [bind_tc_ok]
-    rw [pack_refines]
-    simp only [ofArray_toArray_ofU64, bind_tc_ok]
-    simp (disch := (simp; omega)) only [usize_mul_ok, add_ok, bind_tc_ok, UScalar.ofNatCore_val_eq]
-    rw [words_to_bytes_refines _ _ _ (by simp; omega)]
-    simp [hs]
-
 theorem val52_eq_model (x : Vector UInt64 5) : val52 x = FrModel.val x := by
   unfold FrModel.val
   rw [FrModel.sum_fin_limbs]
@@ -399,6 +124,116 @@ theorem packed_store_value (a : fr8.Fr8) (hn : Normalized a) (lane : Fin 8)
       pack_value _ (normal_store a hn lane) (by rwa [val52_store])
     _ = laneNat a lane := val52_store a lane
 
+theorem vector_to_bytes_loop_refines (blocks : Vector M512 4) (input : Slice U8)
+    (hsize : 256 ≤ input.val.length) :
+    fr8.u256x8.U256x8.to_bytes_loop { start := 0#usize, «end» := fr8.u256x8.WORDS }
+      (toArray id blocks) input =
+      ok (writeBlocks 4 64 0 (fun k => blockBytes blocks[k]!) input) := by
+  unfold fr8.u256x8.U256x8.to_bytes_loop writeBlocks
+  rw [fr8.u256x8.WORDS]
+  refine loop_range_inv (n := 4) _ 4#usize rfl id
+    (fun out (k : Fin 4) => out.setSlice! (64*k.val) (blockBytes blocks[k.val]!)) id
+    (fun _ out => out.val.length = input.val.length) ?_ ?_ ?_ 0#usize input (by simp) rfl
+  · intro out k hk
+    simpa using hk
+  · intro r out he hs ho hn
+    simp_body fr8.u256x8.U256x8.to_bytes_loop.body hn
+  · intro r r' out k he hs he' hs' ho hn
+    have hk : r.start.val < 4 := by rw [hs]; exact k.isLt
+    have hplatform := two_pow_32_le_usize
+    simp only [UScalarTy.Usize_numBits_eq] at hplatform
+    simp_body fr8.u256x8.U256x8.to_bytes_loop.body hn
+    rw [index_usize_toArray id blocks rfl _ hk]
+    simp only [bind_tc_ok]
+    rw [swap_bytes_refines]
+    simp only [bind_tc_ok]
+    simp (disch := (simp <;> omega)) only [usize_mul_ok, bind_tc_ok, UScalar.ofNatCore_val_eq]
+    rw [store_block_refines (blocks[r.start.val]) _ _ _ ?_ (by simp; omega)]
+    · simp [hs]
+    · intro lane
+      simpa [wordBytes] using congrArg Subtype.val (to_le_bytes_swapWord (blocks[r.start.val][lane]))
+
+theorem blockBytes_wordBlocks_get (w : Vector M512 4) (lane : Fin 8) (b : Nat) (hb : b < 32) :
+    (blockBytes (wordBlocks w)[lane.val/2]!)[32*(lane.val%2)+b]! =
+      (wordsBytes (wordLane w lane))[b]! := by
+  have hhalf : lane.val / 2 < 4 := by omega
+  have hk : 4*(lane.val%2)+b/8 < 8 := by omega
+  have hbyte : b % 8 < 8 := Nat.mod_lt _ (by decide)
+  have hindex : 32*(lane.val%2)+b = 8*(4*(lane.val%2)+b/8)+b%8 := by omega
+  rw [hindex, blockBytes_get _ _ _ hk hbyte]
+  conv_rhs => rw [show b = 8*(b/8)+b%8 by omega]
+  rw [wordsBytes_get _ _ _ (by omega) hbyte]
+  have hword : (4*(lane.val%2)+b/8)%4 = b/8 := by omega
+  have hlane : 2*(lane.val/2)+(4*(lane.val%2)+b/8)/4 = lane.val := by omega
+  rw [getElem!_pos (wordBlocks w) (lane.val/2) hhalf,
+    getElem!_pos ((wordBlocks w)[lane.val/2]) (4*(lane.val%2)+b/8) hk,
+    getElem!_pos (wordLane w lane) (3-b/8) (by omega)]
+  simp only [wordBlocks, Vector.getElem_ofFn, wordLane, laneOf,
+    Vector.getElem_map, Fin.getElem_fin, hword, hlane]
+
+theorem vector_to_bytes_refines (w : Vector M512 4) (input : Slice U8) (offset : Usize)
+    (hsize : offset.val + 256 ≤ input.val.length) :
+    fr8.u256x8.U256x8.to_bytes (toArray id w) input offset =
+      ok (writeBlocks 8 32 offset.val (fun k => wordsBytes (wordLane w ⟨k%8, Nat.mod_lt _ (by decide)⟩)) input) := by
+  let chunks (k : Nat) := wordsBytes (wordLane w ⟨k%8, Nat.mod_lt _ (by decide)⟩)
+  let sub : Slice U8 := ⟨input.val.slice offset.val (offset.val+256),
+    le_trans (List.slice_length_le _ _ _) input.property⟩
+  have hsub : sub.val.length = 256 := by simp [sub, List.slice_length]; omega
+  let stored := writeBlocks 4 64 0 (fun k => blockBytes (wordBlocks w)[k]!) sub
+  have hs := writeBlocks_spec 4 64 0 (fun k => blockBytes (wordBlocks w)[k]!) sub
+    (by intros; simp) (by omega)
+  have ht := writeBlocks_spec 8 32 offset.val chunks input (by intros; simp [chunks]) hsize
+  have hmax : input.val.length < 2^UScalarTy.Usize.numBits := by
+    have hp := input.property
+    simp only [Usize.max, Usize.numBits] at hp
+    have := Nat.two_pow_pos UScalarTy.Usize.numBits
+    omega
+  have hplatform := two_pow_32_le_usize
+  simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
+  unfold fr8.u256x8.U256x8.to_bytes
+  rw [blocks_refines]
+  simp only [fr8.LANES, bind_tc_ok]
+  rw [usize_mul_ok 32#usize 8#usize (by decide)]
+  simp only [bind_tc_ok]
+  rw [add_ok _ _ (by change offset.val + 256 < 2^UScalarTy.Usize.numBits; simp only [UScalarTy.Usize_numBits_eq]; omega)]
+  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  rw [slice_index_mut_ok _ _ _ (by simp) (by simp; omega)]
+  simp only [bind_tc_ok, Function.uncurry_apply_pair]
+  rw [vector_to_bytes_loop_refines _ _ (by change 256 ≤ sub.val.length; omega)]
+  simp only [bind_tc_ok]
+  change ok (input.setSlice! offset.val stored.val) = ok (writeBlocks 8 32 offset.val chunks input)
+  apply congrArg ok
+  generalize hstored : stored = storedOut at ⊢
+  dsimp only [stored] at hstored
+  rw [hstored] at hs
+  generalize houtput : writeBlocks 8 32 offset.val chunks input = output at ht ⊢
+  apply Subtype.ext
+  apply List.ext_getElem
+  · simpa using ht.1.symm
+  · intro i hi hi'
+    rw [← getElem!_pos _ i hi, ← getElem!_pos _ i hi', Slice.setSlice!_val]
+    by_cases hb : offset.val ≤ i ∧ i < offset.val+256
+    · let lane : Fin 8 := ⟨(i-offset.val)/32, by omega⟩
+      let b := (i-offset.val)%32
+      have hb32 : b < 32 := Nat.mod_lt _ (by decide)
+      have hi32 : offset.val+32*lane.val+b = i := by dsimp [lane,b]; omega
+      have hi64 : 64*(lane.val/2)+(32*(lane.val%2)+b) = i-offset.val := by
+        dsimp [lane,b]; omega
+      have hb64 : 32*(lane.val%2)+b < 64 := by omega
+      rw [List.getElem!_setSlice!_middle input.val storedOut.val offset.val i (by rw [hs.1,hsub]; omega)]
+      rw [← hi64]
+      have hget := hs.2.1 (lane.val/2) (by have := lane.isLt; omega)
+        (32*(lane.val%2)+b) hb64
+      simp only [Nat.zero_add] at hget
+      rw [hget, blockBytes_wordBlocks_get w lane b hb32, ← hi32, ht.2.1 lane.val lane.isLt b hb32]
+      simp [chunks, Nat.mod_eq_of_lt lane.isLt]
+    · rw [List.getElem!_setSlice!_same]
+      · have hget := congrArg (fun x : Option U8 => x.getD default) (ht.2.2 i (by omega))
+        simpa using hget.symm
+      · change i < offset.val ∨ offset.val + storedOut.val.length ≤ i
+        rw [hs.1,hsub]
+        omega
+
 theorem encoded_bytes_refinement (a : fr8.Fr8) (ha : Bounded a) (input : Slice U8) (offset : Usize)
     (hsize : offset.val + 256 ≤ input.val.length) :
     ∃ out, fr8.Fr8.to_bytes a input offset = ok out ∧ out.val.length = input.val.length ∧
@@ -416,9 +251,30 @@ theorem encoded_bytes_refinement (a : fr8.Fr8) (ha : Bounded a) (input : Slice U
   · unfold fr8.Fr8.to_bytes
     rw [hc]
     simp only [bind_tc_ok]
-    rw [store_refines]
+    have hnormal : ∀ j : Fin 5, ∀ lane : Fin 8, (ofArray id canonical)[j][lane].toNat < 2^52 := by
+      intro j lane
+      have h := (normalized_iff_model canonical).mp hn lane j
+      change ((ofArray id canonical).map (fun x => x[lane]))[j.val].toNat < 2^52 at h
+      rw [Vector.getElem_map] at h
+      exact h
+    have hpack := vectorPack_refines (ofArray id canonical) hnormal
+    rw [toArray_ofArray (f := id) (g := id) (m := 5) (fun _ => rfl) canonical rfl rfl] at hpack
+    rw [hpack]
     simp only [bind_tc_ok]
-    exact to_bytes_loop1_refines lanes input offset hsize
+    rw [vector_to_bytes_refines _ _ _ hsize]
+    apply congrArg ok
+    unfold writeBlocks
+    apply congrArg (fun f => (List.finRange 8).foldl f input)
+    funext state k
+    apply congrArg (fun xs => state.setSlice! (offset.val + 32*k.val) xs)
+    dsimp only [chunks]
+    rw [getElem!_pos lanes k.val k.isLt]
+    change wordsBytes (wordLane (vectorPack (ofArray id canonical)) ⟨k.val%8, _⟩) =
+      wordsBytes (pack (store (ofArray id canonical))[k])
+    rw [getElem_store]
+    apply congrArg wordsBytes
+    ext j hj
+    simp [wordLane, vectorPack, laneOf, Nat.mod_eq_of_lt k.isLt]
   · intro lane
     have hbound : offset.val + 32*lane.val+32 ≤ out.val.length := by
       change _ ≤ (writeBlocks 8 32 offset.val chunks input).val.length

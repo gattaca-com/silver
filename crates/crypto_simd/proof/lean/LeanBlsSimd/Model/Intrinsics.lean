@@ -1,12 +1,12 @@
 /-!
 # The AVX-512 intrinsics of `fp8.rs` and `fr8.rs`
 
-The trusted model of the thirteen intrinsics used by the BLS and KZG field kernels.
+The trusted model of the fourteen intrinsics used by the BLS and KZG field kernels.
 Arithmetic and bitwise operations act independently on each 64-bit lane. Their definitions
 lift `UInt64` operations to the eight lanes of `M512`; constructors and masks also specify
 the lane order.
 
-Sources: the Intel SDM operation sections for `VPMADD52LUQ`, `VPMADD52HUQ`, `VPSRLQ` and `VPSRAQ`,
+Sources: the Intel SDM operation sections for `VPMADD52LUQ`, `VPMADD52HUQ`, `VPSLLQ`, `VPSRLQ` and `VPSRAQ`,
 as mirrored at felixcloutier.com/x86, and Rust's `core::arch` at 1.91.0, the toolchain `silver`
 pins. Rust defines the AVX-512F intrinsics through portable `simd_*` operations, which fix the
 conventions below.
@@ -18,6 +18,7 @@ conventions below.
 | `_mm512_add_epi64(a, b)`, `_mm512_sub_epi64(a, b)` | `a + b`, `a - b`, modulo 2^64 |
 | `_mm512_and_si512(a, b)` | `a &&& b` |
 | `_mm512_srli_epi64::<IMM8>(a)` | `srli`: `a >>> IMM8`, or 0 when `IMM8 ≥ 64` |
+| `_mm512_slli_epi64::<IMM8>(a)` | `slli`: `a <<< IMM8` modulo 2^64, or 0 when `IMM8 ≥ 64` |
 | `_mm512_srai_epi64::<IMM8>(a)` | `srai`: arithmetic `a >>> min IMM8 63` |
 | `_mm512_set_epi64(e7, …, e0)` | the `l`-th argument from the right |
 | `_mm512_set1_epi64(a)`, `_mm512_setzero_si512()` | `a`, `0` |
@@ -50,6 +51,8 @@ def madd52hi (a b c : UInt64) : UInt64 := a + UInt64.ofNat (lo52 b * lo52 c / 2 
 
 def srli (imm : Nat) (a : UInt64) : UInt64 := if imm < 64 then a >>> imm.toUInt64 else 0
 
+def slli (imm : Nat) (a : UInt64) : UInt64 := if imm < 64 then a <<< imm.toUInt64 else 0
+
 def srai (imm : Nat) (a : UInt64) : UInt64 := .ofBitVec (a.toBitVec.sshiftRight (min imm 63))
 
 /-! ## Eight lanes -/
@@ -65,6 +68,8 @@ def _mm512_sub_epi64 (a b : M512) : M512 := .ofFn fun l => a[l] - b[l]
 def _mm512_and_si512 (a b : M512) : M512 := .ofFn fun l => a[l] &&& b[l]
 
 def _mm512_srli_epi64 (IMM8 : Nat) (a : M512) : M512 := .ofFn fun l => srli IMM8 a[l]
+
+def _mm512_slli_epi64 (IMM8 : Nat) (a : M512) : M512 := .ofFn fun l => slli IMM8 a[l]
 
 def _mm512_srai_epi64 (IMM8 : Nat) (a : M512) : M512 := .ofFn fun l => srai IMM8 a[l]
 

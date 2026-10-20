@@ -223,8 +223,18 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
       have heq : capacity = 7#usize := UScalar.eq_of_val_eq (by simpa [fr8.LANES] using hcv)
       simpa only [heq] using hc
     have hge : n ≥ 64#usize := by simpa only [UScalar.le_equiv, UScalar.ofNatCore_val_eq] using hn64
+    have hle : n ≤ 4096#usize := by
+      simpa only [UScalar.le_equiv, UScalar.ofNatCore_val_eq] using hnmax
+    have hshift : 1#usize <<< 12#i32 = ok 4096#usize := by
+      have hbits := System.Platform.le_numBits
+      obtain ⟨shift, hs, hv, _⟩ := WP.spec_imp_exists
+        (Usize.ShiftLeft_IScalar_spec 1#usize 12#i32 (by scalar_tac) (by scalar_tac))
+      have he : shift = 4096#usize := by
+        apply UScalar.eq_of_val_eq
+        simpa [IScalar.toNat, Nat.mod_eq_of_lt (show 4096 < Usize.size by scalar_tac)] using hv
+      simpa only [he] using hs
     dsimp only [empty] at hwide
-    simp only [fft8.Fft8.new, hblock, hge, massert, if_true, bind_tc_ok,
+    simp only [fft8.Fft8.new, hblock, hge, hshift, hle, massert, if_true, bind_tc_ok,
       hsub, lift, hand, hrem, hstride, hvectors, hwide, hcapacity, hshort, table]
   · have hsize : (sampleRoots roots n.val).size = n.val := _root_.Array.size_ofFn
     refine ⟨by rw [hsize]; exact ⟨logSize, hk6, hk12, hnpow⟩,

@@ -63,9 +63,13 @@ private theorem byteBuffer_length : byteBuffer.val.length = 256 := by
 
 /-- The generated output body with its call to `canonical` omitted. -/
 def withoutCanonical (a : fr8.Fr8) (input : Slice U8) : Result (Slice U8) := do
-  let lanes ← fr8.Fr8.to_bytes_loop0 { start := 0#usize, «end» := fr8.LIMBS } a
-    (Array.repeat 8#usize (Array.repeat 5#usize 0#u64))
-  fr8.Fr8.to_bytes_loop1 { start := 0#usize, «end» := fr8.LANES } input 0#usize lanes
+  let words ← fr8.u256x8.U256x8.from_limbs a
+  fr8.u256x8.U256x8.to_bytes words input 0#usize
+
+example (a : fr8.Fr8) (input : Slice U8) :
+    fr8.Fr8.to_bytes a input 0#usize = (do
+      let canonical ← fr8.Fr8.canonical a
+      withoutCanonical canonical input) := by rfl
 
 private def rawChunks (a : fr8.Fr8) (lane : Nat) : List U8 :=
   wordsBytes (pack (store (ofArray id a))[lane]!)
@@ -73,11 +77,34 @@ private def rawChunks (a : fr8.Fr8) (lane : Nat) : List U8 :=
 private def rawEncoding (a : fr8.Fr8) (input : Slice U8) : Slice U8 :=
   writeBlocks 8 32 0 (rawChunks a) input
 
-private theorem withoutCanonical_refines (a : fr8.Fr8) (input : Slice U8)
+private theorem withoutCanonical_refines (a : fr8.Fr8) (hn : Normalized a) (input : Slice U8)
     (hlen : 256 ≤ input.val.length) :
     withoutCanonical a input = ok (rawEncoding a input) := by
-  simp only [withoutCanonical, store_refines, bind_tc_ok]
-  exact to_bytes_loop1_refines _ input 0#usize hlen
+  have hnormal : ∀ j : Fin 5, ∀ lane : Fin 8, (ofArray id a)[j][lane].toNat < 2^52 := by
+    intro j lane
+    have h := (normalized_iff_model a).mp hn lane j
+    change ((ofArray id a).map (fun x => x[lane]))[j.val].toNat < 2^52 at h
+    rw [Vector.getElem_map] at h
+    exact h
+  have hpack := vectorPack_refines (ofArray id a) hnormal
+  rw [toArray_ofArray (f := id) (g := id) (m := 5) (fun _ => rfl) a rfl rfl] at hpack
+  unfold withoutCanonical
+  rw [hpack]
+  simp only [bind_tc_ok]
+  rw [vector_to_bytes_refines _ input 0#usize hlen]
+  apply congrArg ok
+  unfold rawEncoding writeBlocks
+  apply congrArg (fun f => (List.finRange 8).foldl f input)
+  funext state k
+  apply congrArg (fun xs => state.setSlice! (0 + 32*k.val) xs)
+  dsimp only [rawChunks]
+  rw [getElem!_pos (store (ofArray id a)) k.val k.isLt]
+  change wordsBytes (wordLane (vectorPack (ofArray id a)) ⟨k.val%8, _⟩) =
+    wordsBytes (pack (store (ofArray id a))[k])
+  rw [getElem_store]
+  apply congrArg wordsBytes
+  ext j hj
+  simp [wordLane, vectorPack, laneOf, Nat.mod_eq_of_lt k.isLt]
 
 private theorem rawEncoding_first (a : fr8.Fr8) (input : Slice U8)
     (hlen : 256 ≤ input.val.length) :
@@ -95,7 +122,7 @@ theorem omitting_canonicalization_changes_generated_bytes :
     fr8.Fr8.to_bytes modulusBatch byteBuffer 0#usize ≠ withoutCanonical modulusBatch byteBuffer := by
   obtain ⟨out, hout, _, hb, _⟩ := to_bytes_refinement modulusBatch modulusBatch_bounded
     byteBuffer 0#usize (by rw [byteBuffer_length]; decide)
-  rw [hout, withoutCanonical_refines _ _ (by rw [byteBuffer_length])]
+  rw [hout, withoutCanonical_refines _ modulusBatch_bounded.1 _ (by rw [byteBuffer_length])]
   intro he
   have heq := Result.ok.inj he
   have hfirst := hb ⟨0, by decide⟩

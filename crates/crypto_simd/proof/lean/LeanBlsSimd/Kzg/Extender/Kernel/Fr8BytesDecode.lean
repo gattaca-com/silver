@@ -1,4 +1,6 @@
-import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Bytes
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8ByteLoad
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Words
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Endian
 import LeanBlsSimd.Refines.DecompressG2
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -11,85 +13,8 @@ set_option maxRecDepth 4000
 set_option maxHeartbeats 2000000
 set_option exponentiation.threshold 1000
 
-def inputChunk (input : Slice U8) (start : Nat) : Vector UInt8 8 :=
-  Vector.ofFn fun i => ofU8 input.val[start + i.val]!
-
 def decodedWords (input : Slice U8) (offset : Nat) : Vector UInt64 4 :=
   Vector.ofFn fun k => DecompressG2.u64_from_be_bytes (inputChunk input (offset + 8*(3-k.val)))
-
-theorem slice_to_chunk (input : Slice U8) (start : Nat) (h : start + 8 ≤ input.val.length) :
-    (input.val.slice start (start+8)).map ofU8 = (inputChunk input start).toList := by
-  apply List.ext_getElem
-  · simp [List.slice_length]
-    omega
-  · intro i hi hi'
-    have hi8 : i < 8 := by simpa using hi'
-    simp [inputChunk, List.slice, show start+i < input.val.length by omega]
-
-theorem words_from_bytes_refines (input : Slice U8) (offset : Usize)
-    (hsize : offset.val + 32 ≤ input.val.length) :
-    fr8.words_from_bytes input offset = ok (toArray toU64 (decodedWords input offset)) := by
-  unfold fr8.words_from_bytes fr8.words_from_bytes_loop
-  have hm : input.val.length < 2^UScalarTy.Usize.numBits := by
-    have hp := input.property
-    simp only [Usize.max, Usize.numBits] at hp
-    have := Nat.two_pow_pos UScalarTy.Usize.numBits
-    omega
-  simp only [UScalarTy.Usize_numBits_eq] at hm
-  let chunk (k : Fin 4) := inputChunk input (offset.val + 8*k.val)
-  let step (s : Vector UInt64 4 × Vector UInt8 8) (k : Fin 4) :=
-    (s.1.set (3-k.val) (DecompressG2.u64_from_be_bytes (chunk k)) (by omega), chunk k)
-  rw [show Array.repeat 4#usize 0#u64 = toArray toU64 (Vector.replicate 4 0) by
-    simp [toArray_replicate]; rfl]
-  rw [show Array.repeat 8#usize 0#u8 = toArray toU8 (Vector.replicate 8 0) by
-    simp [toArray_replicate]; rfl]
-  refine loop_range (n := 4) _ 4#usize rfl
-    (fun s : Vector UInt64 4 × Vector UInt8 8 => (toArray toU64 s.1, toArray toU8 s.2))
-    step (fun s => toArray toU64 s.1) (Vector.replicate 4 0, Vector.replicate 8 0) _ ?_ ?_ ?_
-  · intro r m he hs hn
-    simp_body fr8.words_from_bytes_loop.body hn
-  · intro r r' m k he hs he' hs' hn
-    have hplatform := two_pow_32_le_usize
-    simp only [UScalarTy.Usize_numBits_eq] at hplatform
-    have hk : r.start.val < 4 := by rw [hs]; exact k.isLt
-    have hstart : offset.val + 8*r.start.val + 8 ≤ input.val.length := by omega
-    simp_body fr8.words_from_bytes_loop.body hn
-    simp only [lift, bind_tc_ok, Array.to_slice_mut, Function.uncurry_apply_pair]
-    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_mul_ok, add_ok,
-      sub_ok, update_eq, bind_tc_ok,
-      UScalar.ofNatCore_val_eq]
-    have hslen : (input.val.slice (offset.val + 8*r.start.val)
-        (offset.val + 8*r.start.val + 8)).length = 8 := by
-      rw [List.slice_length]
-      omega
-    rw [slice_index_ok input _ _ (by simp) (by simp; omega)]
-    simp only [bind_tc_ok]
-    rw [copy_from_slice_ok _ _ _ (by simp [Array.to_slice, hslen])]
-    simp only [bind_tc_ok]
-    rw [Array.from_slice, dif_pos (by simpa using hslen)]
-    simp only [UScalar.ofNatCore_val_eq]
-    have heq : (⟨input.val.slice (offset.val + 8*r.start.val)
-        (offset.val + 8*r.start.val + 8), hslen⟩ : Array U8 8#usize) =
-        toArray toU8 (chunk k) := by
-      apply Subtype.ext
-      apply (List.map_injective_iff.mpr (fun a b h => by simpa using congrArg toU8 h) :
-        Function.Injective (List.map ofU8))
-      simpa [chunk, hs, Function.comp_def] using
-        slice_to_chunk input (offset.val + 8*r.start.val) hstart
-    rw [heq]
-    have hword : core.num.U64.from_be_bytes (toArray toU8 (chunk k)) =
-        toU64 (DecompressG2.u64_from_be_bytes (chunk k)) := by
-      rw [eq_toU64_iff, DecompressG2.from_be_bytes_refines]
-      simp
-    rw [hword]
-    simp only [step, hs]
-    simp (disch := (simp; omega)) only [set_toArray, UScalar.ofNatCore_val_eq]
-  · change toArray toU64 ((List.finRange 4).foldl step _).1 = _
-    apply congrArg (toArray (n := 4#usize) toU64)
-    have hr : List.finRange 4 = [0,1,2,3] := by decide
-    rw [hr]
-    ext j hj
-    interval_cases j <;> simp [step, chunk, decodedWords]
 
 theorem inputChunk_toList (input : Slice U8) (start : Nat)
     (h : start+8 ≤ input.val.length) :
@@ -143,42 +68,105 @@ theorem decodedWords_bytes (input : Slice U8) (offset : Usize)
   rw [decodedWords_value input offset hsize, bytesBEToNat_eq_bytesVal]
   simp [bytes, ByteArray.data_extract]
 
-def decodedLanes (input : Slice U8) (offset : Usize) : Vector (Vector UInt64 5) 8 :=
-  Vector.ofFn fun lane => unpack (decodedWords input (offset.val + 32*lane.val))
+def decodedBlocks (input : Slice U8) : Vector M512 4 :=
+  Vector.ofFn fun block => Vector.ofFn fun lane =>
+    DecompressG2.u64_from_be_bytes (inputChunk input (64*block.val + 8*lane.val))
 
-theorem from_bytes_loop_refines (input : Slice U8) (offset : Usize)
-    (hsize : offset.val + 256 ≤ input.val.length) :
-    fr8.Fr8.from_bytes_loop { start := 0#usize, «end» := fr8.LANES } input offset
-      (Array.repeat 8#usize (Array.repeat 5#usize 0#u64)) =
-      ok (toArray (toArray toU64) (decodedLanes input offset)) := by
-  unfold fr8.Fr8.from_bytes_loop
-  rw [fr8.LANES]
-  rw [show Array.repeat 8#usize (Array.repeat 5#usize 0#u64) =
-      toArray (toArray toU64) (Vector.replicate 8 (Vector.replicate 5 0)) by
-    simp [toArray_replicate]; rfl]
+theorem from_bytes_blocks_refines (input : Slice U8) (hsize : 256 ≤ input.val.length) :
+    fr8.u256x8.U256x8.from_bytes_loop { start := 0#usize, «end» := 4#usize } input
+      (toArray id (Vector.replicate 4 FrModel.Simd.zero)) =
+      ok (toArray id (decodedBlocks input)) := by
   have hm : input.val.length < 2^UScalarTy.Usize.numBits := by
     have hp := input.property
     simp only [Usize.max, Usize.numBits] at hp
     have := Nat.two_pow_pos UScalarTy.Usize.numBits
     omega
-  simp only [UScalarTy.Usize_numBits_eq] at hm
-  refine loop_range (n := 8) _ 8#usize rfl (toArray (toArray toU64))
-    (fun v lane => v.set lane (decodedLanes input offset)[lane]) (toArray (toArray toU64))
-    (Vector.replicate 8 (Vector.replicate 5 0)) _ ?_ ?_ ?_
+  unfold fr8.u256x8.U256x8.from_bytes_loop
+  refine loop_range (n := 4) _ 4#usize rfl (toArray id)
+    (fun v block => v.set block (decodedBlocks input)[block]) (toArray id)
+    (Vector.replicate 4 FrModel.Simd.zero) _ ?_ ?_ ?_
   · intro r m he hs hn
-    simp_body fr8.Fr8.from_bytes_loop.body hn
-  · intro r r' m lane he hs he' hs' hn
-    have hl : r.start.val < 8 := by rw [hs]; exact lane.isLt
+    simp_body fr8.u256x8.U256x8.from_bytes_loop.body hn
+  · intro r r' m block he hs he' hs' hn
+    have hb : r.start.val < 4 := by rw [hs]; exact block.isLt
     have hplatform := two_pow_32_le_usize
-    simp only [UScalarTy.Usize_numBits_eq] at hplatform
-    simp_body fr8.Fr8.from_bytes_loop.body hn
-    simp (disch := (simp; omega)) only [usize_mul_ok, add_ok, UScalar.ofNatCore_val_eq,
-      bind_tc_ok, words_from_bytes_refines, unpack_refines, ofArray_toArray_ofU64,
-      update_eq _ r.start _ (show r.start.val < (8#usize).val from hl)]
+    simp only [UScalarTy.Usize_numBits_eq] at hm hplatform
+    simp_body fr8.u256x8.U256x8.from_bytes_loop.body hn
+    simp (disch := (simp; omega)) only [usize_mul_ok, UScalar.ofNatCore_val_eq,
+      bind_tc_ok, load_block_refines, swap_bytes_refines]
+    have hv : (Vector.ofFn fun lane => swapWord (littleBlock input (64*r.start.val))[lane]) =
+        (decodedBlocks input)[block] := by
+      ext lane hlane
+      simp [littleBlock, decodedBlocks, swapWord_from_le_bytes, hs]
+    rw [hv, update_eq _ r.start _ (show r.start.val < (4#usize).val from hb)]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     apply Subtype.ext
-    simp [hs, List.map_set, Vector.toList_set, decodedLanes]
-  · simp [decodedLanes, foldl_set_ofFn]
+    simp [hs, List.map_set, Vector.toList_set]
+  · simp [decodedBlocks, foldl_set_ofFn]
+
+theorem inputChunk_slice (input : Slice U8) (start size pos : Nat)
+    (hpos : pos + 8 ≤ size) :
+    inputChunk ⟨input.val.slice start (start+size),
+      le_trans (List.slice_length_le _ _ _) input.property⟩ pos =
+      inputChunk input (start+pos) := by
+  ext i hi
+  simp [inputChunk, List.slice, show pos+i < size by omega, Nat.add_assoc]
+
+def decodedVectors (input : Slice U8) (offset : Nat) : Vector M512 4 :=
+  Vector.ofFn fun k => Vector.ofFn fun lane => (decodedWords input (offset+32*lane.val))[k]
+
+theorem vector_from_bytes_refines (input : Slice U8) (offset : Usize)
+    (hsize : offset.val + 256 ≤ input.val.length) :
+    fr8.u256x8.U256x8.from_bytes input offset =
+      ok (toArray id (decodedVectors input offset.val)) := by
+  have hm : input.val.length < 2^UScalarTy.Usize.numBits := by
+    have hp := input.property
+    simp only [Usize.max, Usize.numBits] at hp
+    have := Nat.two_pow_pos UScalarTy.Usize.numBits
+    omega
+  let window : Slice U8 := ⟨input.val.slice offset.val (offset.val+256),
+    le_trans (List.slice_length_le _ _ _) input.property⟩
+  have hw : window.val.length = 256 := by simp [window, List.slice_length]; omega
+  simp only [UScalarTy.Usize_numBits_eq] at hm
+  unfold fr8.u256x8.U256x8.from_bytes
+  simp only [fr8.LANES]
+  rw [usize_mul_ok 32#usize 8#usize (by decide)]
+  simp only [bind_tc_ok]
+  rw [add_ok _ _ (by
+    change offset.val + 256 < 2^UScalarTy.Usize.numBits
+    simp only [UScalarTy.Usize_numBits_eq]
+    omega)]
+  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  rw [slice_index_ok input _ _ (by simp) (by simp; omega)]
+  simp only [bind_tc_ok, FrModel.Simd.zero_refines, UScalar.ofNatCore_val_eq,
+    fr8.u256x8.WORDS]
+  rw [show Array.repeat 4#usize FrModel.Simd.zero =
+    toArray id (Vector.replicate 4 FrModel.Simd.zero) by simp [toArray_replicate]]
+  change (do
+    let b ← fr8.u256x8.U256x8.from_bytes_loop
+      { start := 0#usize, «end» := 4#usize } window
+      (toArray id (Vector.replicate 4 FrModel.Simd.zero))
+    fr8.u256x8.U256x8.from_blocks b) = _
+  rw [from_bytes_blocks_refines window (by omega)]
+  simp only [bind_tc_ok, from_blocks_refines]
+  apply congrArg (fun v : Vector M512 4 =>
+    (ok (toArray (n := 4#usize) id v) : Result fr8.u256x8.U256x8))
+  ext k hk lane hlane
+  simp only [fromBlocks, decodedBlocks, decodedVectors, decodedWords, Vector.getElem_ofFn,
+    Fin.getElem_fin]
+  rw [inputChunk_slice input offset.val 256 _ (by omega)]
+  apply congrArg UInt64.toNat
+  apply congrArg DecompressG2.u64_from_be_bytes
+  apply congrArg (inputChunk input)
+  omega
+
+def decodedLanes (input : Slice U8) (offset : Usize) : Vector (Vector UInt64 5) 8 :=
+  Vector.ofFn fun lane => unpack (decodedWords input (offset.val + 32*lane.val))
+
+theorem decodedVectors_lane (input : Slice U8) (offset : Nat) (lane : Fin 8) :
+    wordLane (decodedVectors input offset) lane = decodedWords input (offset+32*lane.val) := by
+  ext k hk
+  simp [wordLane, decodedVectors, laneOf]
 
 theorem raw_mask_spec (out : fr8.Fr8) (hn : Normalized out) :
     let borrow := (FrModel.Simd.sub_limbs (ofArray id out)
@@ -239,7 +227,8 @@ theorem decoded_bytes_refinement (input : Slice U8) (offset : Usize)
     rw [raw_mask_spec out hn]
     exact decide_eq_true_iff
   refine ⟨out, mask, ?_, hn, ?_, ?_⟩
-  · simp [fr8.Fr8.from_bytes, from_bytes_loop_refines input offset hsize, transpose_refines,
+  · simp [fr8.Fr8.from_bytes, vector_from_bytes_refines input offset hsize, vectorUnpack_refines,
+      decodedVectors_lane, decodedLanes,
       FrModel.P_refines, FrModel.Simd.splat_limbs_refines, FrModel.Simd.sub_limbs_refines,
       FrModel.Simd.borrowed_refines, out, borrow, mask, Prod.map]
   · intro lane
