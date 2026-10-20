@@ -35,7 +35,8 @@ After changing any import, rebuild its artifacts before running controls. The pa
 - Never edit `Extracted/Types.lean` or `Extracted/Funs.lean`; regenerate them. Importing Aeneas makes `name` a keyword.
 - A refinement theorem has the form `gen args = ok (toX (model (ofX args)))`. It rewrites a generated call for any arguments; the round-trip lemmas in `Refines/Basic.lean` then cancel nested conversions. Prefer explicit rewrite lemmas and `simp` when comparing large terms. Trying to close a mismatched goal by unfolding definitions can obscure the difference or exhaust Lean's resource limits.
 - Keep each proof well inside the default of 200000 heartbeats, or set explicit headroom with a comment saying why. `#count_heartbeats` under-reports unless `set_option Elab.async false in` precedes it.
-- When two sides hold the same large model term with arguments in different forms, unification can unfold the model function and evaluate it. `Fp8.mul_refines` makes `Lane.reduce_row` locally irreducible for this reason. `simp only`, `unfold` and `rw` still reach its body there, but a proof step that relies on unification, such as `rfl`, can exhaust heartbeats at `whnf` when it needs that unfolding.
+- When two sides hold the same large model term with arguments in different forms, unification can unfold the model function and evaluate it. The reduction and square refinements keep their row steps locally irreducible for this reason. `simp only`, `unfold` and `rw` still reach their bodies there, but a proof step that relies on unification, such as `rfl`, can exhaust heartbeats at `whnf` when it needs that unfolding.
+- Use the same dimension expression on both sides of array/vector conversions. For example, keep `2 * LIMBS + 1` throughout an accumulator refinement; `simp` may not unfold the dimension definitions when matching a round-trip lemma.
 - `get_elem_tactic` can time out in large contexts; give index bounds explicitly.
 
 ### Controls and axioms

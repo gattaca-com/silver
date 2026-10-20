@@ -421,7 +421,10 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `G2Consumer.lean` | The public G2 list and model corollaries and length mismatch result can be applied from a separate module; a specification-backed external satisfies the universal premise at both SIMD settings. |
 | `G1Consumer.lean` | A downstream module imports only the G1 public theorem, applies it with arbitrary externals, and constructs an instance satisfying its blst hypothesis. |
 | `Statements.lean` | Changed constants and formulas break their proof scripts, including G1's Scott-membership proof when the model drops the y negation. |
-| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. |
+| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also rejects a wrong shift in the generated early-carry expression. |
+| `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
+| `Square.lean` | The triangular square accumulator equals the full product; omitting cross-term doubling fails on an input with two nonzero limbs. |
+| `Reduction.lean` | Both widths retain the stale dead limb; dropping the inverse premise can change a surviving limb. The valid inverse case agrees above the row index. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
 | `CharacterSums.lean` | Scott soundness and completeness together; zero, cube and noncube fibers over F₇; the affine point count over F₅; and a counterexample to the Jacobi norm identity for trivial characters. |
@@ -429,15 +432,23 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `Refines.lean` | Mutated generated functions fail their refinement proofs, including G1's chunk fallback reading lane zero instead of the current lane. Concrete refutations cover five complete G2 refinements and the required loop steps for `times_minus_z` and G1's fallback. |
 | `AxiomLog.lean` | Prints the axioms of every theorem. |
 
+`Proofs/EarlyCarry.lean` proves the wrapping carry identity under the inverse-modulus premise.
+`Proofs/Reduction.lean` proves that each generated reduction row agrees with the reference model
+on the limbs above its row index, then transports that agreement through all rows and final
+carry extraction. The row's dead low limb is deliberately outside this equality.
+`Proofs/Square.lean` equates the triangular square accumulator with the full product accumulator,
+including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
+existing arithmetic bounds and public contracts.
+
 ### Extracted BLS source
 
 `lean/LeanBlsSimd/Extracted/Types.lean` and `Funs.lean` contain items generated from the following Rust files. These content hashes pin the source read by the extraction.
 
 | File | sha256 | git blob |
 |---|---|---|
-| `mod.rs` | `b0a85004d44096d34032190c2a26f35bf69afa35da4c36c271bdeb738d2771d5` | `099bade6d9bfa27953083b8167571f1da29a5a4e` |
+| `mod.rs` | `b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450` | `0002db9653bd730897823f019d36b21c552161ed` |
 | `constants.rs` | `903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f` | `87190c24741f42bc50d3cae4ed384995cdc15f14` |
-| `fp8.rs` | `0ba4b0f9dbc78dfe5032722d46739c58ec91ac86960c1257b201ae9a3d870512` | `11d1dbb2c69b3bd2dad3e502247e0165ef25b9ed` |
+| `fp8.rs` | `8d94032589ab6ea2b5dc6372614561f5634f8b8037c576173811bc57b824fd28` | `ac0cf6c599f9cb864e926c51a3c4c789c368367a` |
 | `fp2x8.rs` | `9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069` | `951eadde84eca23e2ebe8626bc0382a205497071` |
 | `g1x8.rs` | `2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9` | `ddbd6159490ff0f58b27dbf4b4e63db92bac5391` |
 | `g2x8.rs` | `57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295` | `804ebf1d0e6681d20f07ede1867cef929ebe190c` |
@@ -450,9 +461,9 @@ To check for changes since the proof, run this from `crates/crypto_simd/src/bls`
 
 ```sh
 sha256sum -c <<'EOF'
-b0a85004d44096d34032190c2a26f35bf69afa35da4c36c271bdeb738d2771d5  mod.rs
+b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450  mod.rs
 903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f  constants.rs
-0ba4b0f9dbc78dfe5032722d46739c58ec91ac86960c1257b201ae9a3d870512  fp8.rs
+8d94032589ab6ea2b5dc6372614561f5634f8b8037c576173811bc57b824fd28  fp8.rs
 9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069  fp2x8.rs
 2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9  g1x8.rs
 57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295  g2x8.rs
