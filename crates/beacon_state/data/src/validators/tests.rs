@@ -253,7 +253,7 @@ fn finalize_promotes_and_reanchors_winner() {
         w.set_activation_epoch(0, 7);
         w.commit()
     };
-    let before = g.view(winner).hash_root();
+    let before = g.hash_view(winner).hash_root();
 
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().validator_count(), 1);
@@ -281,7 +281,7 @@ fn descendant_view_survives_finalize() {
         w.set_activation_epoch(0, 42);
         w.commit()
     };
-    let child_before = g.view(child).hash_root();
+    let child_before = g.hash_view(child).hash_root();
 
     let live = g.finalize(parent, &[parent, child]); // [reanchored parent, child]
     assert_eq!(g.finalized().validator_count(), 1);
@@ -327,10 +327,10 @@ fn gloas_construction() {
         w.commit()
     };
     let leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
-    assert_eq!(g.view(a).hash_root(), gloas_reference_root(&leaves));
+    assert_eq!(g.hash_view(a).hash_root(), gloas_reference_root(&leaves));
 
     let live = g.finalize(a, &[a]);
-    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&leaves));
+    assert_eq!(g.hash_view(live[0]).hash_root(), gloas_reference_root(&leaves));
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn gloas_hash_transition_migrates_and_closes() {
         w.commit()
     };
     let fulu_leaves: Vec<_> = (0..5u8).map(|i| default_leaf(i, 0)).collect();
-    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
+    assert_eq!(g.hash_view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
     // Fork B crosses the fork: its root flips to the gloas shape; the
     // pre-fork sibling A keeps producing the fulu root off its own snapshot.
@@ -358,13 +358,13 @@ fn gloas_hash_transition_migrates_and_closes() {
     let mut gloas_leaves = fulu_leaves.clone();
     gloas_leaves[1] = default_leaf(1, 777);
     gloas_leaves.push(default_leaf(9, 0));
-    assert_eq!(g.view(b).hash_root(), gloas_reference_root(&gloas_leaves));
-    assert_eq!(g.view(a).hash_root(), fulu_reference_root(&fulu_leaves));
+    assert_eq!(g.hash_view(b).hash_root(), gloas_reference_root(&gloas_leaves));
+    assert_eq!(g.hash_view(a).hash_root(), fulu_reference_root(&fulu_leaves));
 
     // Finalizing the crossing fork adopts its gloas-format snapshot; the
     // reanchored survivor and every later fork are gloas-shaped.
     let live = g.finalize(b, &[b]);
-    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
+    assert_eq!(g.hash_view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
 
     let mut w = g.roll_fresh();
     w.set_effective_balance(0, 111);
@@ -396,12 +396,12 @@ fn transition_survives_pre_fork_winner_finalization() {
     let fulu_leaves: Vec<_> = (0..4u8).map(|i| default_leaf(i, 0)).collect();
     let mut gloas_leaves = fulu_leaves.clone();
     gloas_leaves[2] = default_leaf(2, 555);
-    assert_eq!(g.view(live[0]).hash_root(), fulu_reference_root(&fulu_leaves));
-    assert_eq!(g.view(live[1]).hash_root(), gloas_reference_root(&gloas_leaves));
+    assert_eq!(g.hash_view(live[0]).hash_root(), fulu_reference_root(&fulu_leaves));
+    assert_eq!(g.hash_view(live[1]).hash_root(), gloas_reference_root(&gloas_leaves));
 
     // A later crossing finalization flips the finalized snapshot to gloas.
     let live = g.finalize(live[1], &[live[1]]);
-    assert_eq!(g.view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
+    assert_eq!(g.hash_view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
     let mut w = g.roll_fresh();
     assert_eq!(w.hash_root(), gloas_reference_root(&gloas_leaves));
 }

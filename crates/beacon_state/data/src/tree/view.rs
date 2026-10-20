@@ -10,14 +10,6 @@ use crate::{ring::Id, types::B256};
 /// (`at_slot`, `at_epoch`).
 pub struct TreeView<'a, C: TreeSpec>(TreeReader<'a, C>);
 
-// Derived by hand: `#[derive]` would demand `C: Clone + Copy`.
-impl<C: TreeSpec> Clone for TreeView<'_, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<C: TreeSpec> Copy for TreeView<'_, C> {}
-
 impl<'a, C: TreeSpec> TreeView<'a, C> {
     #[inline]
     pub(super) fn flat(tree: &'a FlatTree<C>) -> Self {

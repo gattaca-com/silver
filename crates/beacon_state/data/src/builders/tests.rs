@@ -91,7 +91,7 @@ fn finalize_promotes_and_matches_naive() {
         wv.set_builder(1, builder(201));
         wv.commit()
     };
-    let before = g.view(winner).hash_root();
+    let before = g.hash_view(winner).hash_root();
 
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().len(), 12);
@@ -121,7 +121,7 @@ fn growth_past_initial_headroom() {
         assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
         wv.commit()
     };
-    let before = g.view(winner).hash_root();
+    let before = g.hash_view(winner).hash_root();
 
     let live = g.finalize(winner, &[winner]);
     assert_eq!(g.finalized().len(), 100);
@@ -155,12 +155,12 @@ fn survivor_edit_past_base_capacity() {
         wv.add_balance(66, 1_000);
         wv.commit()
     };
-    let child_before = g.view(child).hash_root();
+    let child_before = g.hash_view(child).hash_root();
 
     let live = g.finalize(winner, &[winner, child]);
     let sv = g.view(live[1]);
     assert_eq!(sv.get(66).unwrap().balance, builder(66).balance + 1_000);
-    assert_eq!(sv.hash_root(), child_before);
+    assert_eq!(g.hash_view(live[1]).hash_root(), child_before);
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn descendant_survives_finalize() {
         wv.add_balance(10, 2_000);
         wv.commit()
     };
-    let child_before = g.view(child).hash_root();
+    let child_before = g.hash_view(child).hash_root();
 
     let live = g.finalize(parent, &[parent, child]);
     assert_eq!(g.finalized().len(), 11);

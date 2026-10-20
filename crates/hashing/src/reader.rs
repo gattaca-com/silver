@@ -12,15 +12,6 @@ enum Nodes<'a, C: TreeSpec> {
     Paged(&'a PagePool<C::Page>, &'a PageSnapshot),
 }
 
-// Derived by hand: `#[derive]` would demand `C: Clone + Copy`, and a list
-// marker is a zero-sized tag that need not be either.
-impl<C: TreeSpec> Clone for Nodes<'_, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<C: TreeSpec> Copy for Nodes<'_, C> {}
-
 impl<'a, C: TreeSpec> Nodes<'a, C> {
     #[inline]
     fn node(&self, n: usize) -> &B256 {
@@ -48,14 +39,6 @@ pub struct TreeReader<'a, C: TreeSpec> {
     format: TreeFormat,
     _marker: PhantomData<fn() -> C>,
 }
-
-// By hand for the same reason as `Nodes`.
-impl<C: TreeSpec> Clone for TreeReader<'_, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<C: TreeSpec> Copy for TreeReader<'_, C> {}
 
 impl<'a, C: TreeSpec> TreeReader<'a, C> {
     #[inline]

@@ -197,24 +197,19 @@ impl Reset for ValidatorsDelta {
 }
 
 /// Value-layer read over the validator registry (base + per-fork delta). Holds
-/// every read: per-field `effective_*` merges, the pubkey lookup, the whole-
-/// column iterators, and the SSZ root. Built only from a published fork id (or
+/// every value read: per-field `effective_*` merges, the pubkey lookup and the
+/// whole-column iterators. Built only from a published fork id (or
 /// a held writer) — the delta is always present; pre-snapshot readers get none.
 #[derive(Clone, Copy)]
 pub struct ValidatorsView<'a> {
     base: &'a FinalizedValidators,
     delta: &'a ValidatorsDelta,
-    hash: TreeView<'a, ValidatorsHash>,
 }
 
 impl<'a> ValidatorsView<'a> {
     #[inline]
-    pub(crate) fn new(
-        base: &'a FinalizedValidators,
-        delta: &'a ValidatorsDelta,
-        hash: TreeView<'a, ValidatorsHash>,
-    ) -> Self {
-        Self { base, delta, hash }
+    pub(crate) fn new(base: &'a FinalizedValidators, delta: &'a ValidatorsDelta) -> Self {
+        Self { base, delta }
     }
 
     #[inline]
@@ -343,14 +338,6 @@ impl<'a> ValidatorsView<'a> {
     #[inline]
     pub fn find_by_finalized_pubkey(&self, pk: &BLSPubkey) -> Option<u32> {
         self.base.find_by_pubkey(pk).map(|i| i as u32)
-    }
-
-    /// SSZ `hash_tree_root` of the validators registry, in this fork's own
-    /// shape (fulu `List[Validator, N]` padding vs the gloas
-    /// `ProgressiveList`).
-    #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.hash.hash_root()
     }
 
     /// Recompute the Validator-container hash leaf for `idx` from the current
@@ -562,12 +549,14 @@ impl<'a> ValidatorsWriteView<'a> {
 
     #[inline]
     pub fn reader(&self) -> ValidatorsView<'_> {
-        ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
+        ValidatorsView { base: self.base, delta: &self.fork }
     }
 
+    /// The values, and the registry's hash tree rehashed to match them.
     #[inline]
-    pub fn hashed_reader(&mut self) -> ValidatorsView<'_> {
-        ValidatorsView { base: self.base, delta: &self.fork, hash: self.hash.hashed_reader() }
+    pub fn hashed_readers(&mut self) -> (ValidatorsView<'_>, TreeView<'_, ValidatorsHash>) {
+        let Self { base, fork, hash } = self;
+        (ValidatorsView { base, delta: fork }, hash.hashed_reader())
     }
 
     // All reads delegate to the read view (`reader()` is a two-pointer `Copy`,
@@ -590,7 +579,7 @@ impl<'a> ValidatorsWriteView<'a> {
 
     #[inline]
     pub fn hash_root(&mut self) -> B256 {
-        self.hashed_reader().hash_root()
+        self.hash.hashed_reader().hash_root()
     }
 
     #[inline]

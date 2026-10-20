@@ -79,17 +79,12 @@ impl Reset for BuildersDelta {
 pub struct BuildersView<'a> {
     base: &'a FinalizedBuilders,
     delta: &'a BuildersDelta,
-    hash: TreeView<'a, BuildersHash>,
 }
 
 impl<'a> BuildersView<'a> {
     #[inline]
-    pub(super) fn new(
-        base: &'a FinalizedBuilders,
-        delta: &'a BuildersDelta,
-        hash: TreeView<'a, BuildersHash>,
-    ) -> Self {
-        Self { base, delta, hash }
+    pub(super) fn new(base: &'a FinalizedBuilders, delta: &'a BuildersDelta) -> Self {
+        Self { base, delta }
     }
 
     #[inline]
@@ -129,11 +124,6 @@ impl<'a> BuildersView<'a> {
         )
     }
 
-    #[inline]
-    pub fn hash_root(&self) -> B256 {
-        self.hash.hash_root()
-    }
-
     // TODO: replace the linear scan
     pub fn find_by_pubkey(&self, pubkey: &[u8; 48]) -> Option<usize> {
         (0..self.len()).find(|&i| self.get(i).unwrap().pubkey == *pubkey)
@@ -168,7 +158,7 @@ impl<'a> BuildersWriteView<'a> {
 
     #[inline]
     pub fn reader(&self) -> BuildersView<'_> {
-        BuildersView { base: self.base, delta: &self.fork, hash: self.hash.reader() }
+        BuildersView { base: self.base, delta: &self.fork }
     }
 
     #[inline]
@@ -183,12 +173,14 @@ impl<'a> BuildersWriteView<'a> {
 
     #[inline]
     pub fn hash_root(&mut self) -> B256 {
-        self.hashed_reader().hash_root()
+        self.hash.hashed_reader().hash_root()
     }
 
+    /// The values, and the registry's hash tree rehashed to match them.
     #[inline]
-    pub fn hashed_reader(&mut self) -> BuildersView<'_> {
-        BuildersView { base: self.base, delta: &self.fork, hash: self.hash.hashed_reader() }
+    pub fn hashed_readers(&mut self) -> (BuildersView<'_>, TreeView<'_, BuildersHash>) {
+        let Self { base, fork, hash } = self;
+        (BuildersView { base, delta: fork }, hash.hashed_reader())
     }
 
     fn refresh_leaf(&mut self, i: usize) {

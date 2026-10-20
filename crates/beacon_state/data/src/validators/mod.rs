@@ -14,7 +14,7 @@ use crate::{
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
     ring::{Id, Ring, RingGroup},
-    tree::{TreeGroup, ValidatorsHash},
+    tree::{TreeGroup, TreeView, ValidatorsHash},
     types::{B256, BLSPubkey, Epoch, HashFormat, SLOTS_RING_N},
 };
 
@@ -67,7 +67,14 @@ impl ValidatorsGroup {
     /// Read-only view over a fork — for the read views.
     #[inline]
     pub fn view(&self, id: ValidatorsId) -> ValidatorsView<'_> {
-        ValidatorsView::new(&self.finalized, self.deltas.get(id.data), self.hash.view(id.hash))
+        ValidatorsView::new(&self.finalized, self.deltas.get(id.data))
+    }
+
+    /// SSZ `hash_tree_root` reads of the registry, in the fork's own shape
+    /// (fulu `List[Validator, N]` padding vs the gloas `ProgressiveList`).
+    #[inline]
+    pub fn hash_view(&self, id: ValidatorsId) -> TreeView<'_, ValidatorsHash> {
+        self.hash.view(id.hash)
     }
 
     #[inline]

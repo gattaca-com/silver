@@ -14,7 +14,7 @@ use crate::{
     merkle::{hash_fixed_bytes, merkleize, uint64_chunk},
     reanchor::reanchor_survivors,
     ring::{Id, Ring, RingGroup},
-    tree::{BuildersHash, TreeGroup},
+    tree::{BuildersHash, TreeGroup, TreeView},
     types::{B256, HashFormat, SLOTS_RING_N},
 };
 
@@ -56,7 +56,12 @@ impl BuildersGroup {
 
     #[inline]
     pub fn view(&self, id: BuildersId) -> BuildersView<'_> {
-        BuildersView::new(&self.finalized, self.deltas.get(id.data), self.hash.view(id.hash))
+        BuildersView::new(&self.finalized, self.deltas.get(id.data))
+    }
+
+    #[inline]
+    pub fn hash_view(&self, id: BuildersId) -> TreeView<'_, BuildersHash> {
+        self.hash.view(id.hash)
     }
 
     #[inline]

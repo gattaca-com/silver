@@ -192,7 +192,9 @@ impl BeaconState {
             inactivity: self.inactivity.view(state_id.inactivity_idx),
             slot: self.slot_states.view(state_id.slot_idx),
             validators: self.validators.view(state_id.validators_idx),
+            validators_hash: self.validators.hash_view(state_id.validators_idx),
             builders: self.builders.view(state_id.builders_idx),
+            builders_hash: self.builders.hash_view(state_id.builders_idx),
         }
     }
 }

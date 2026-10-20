@@ -37,7 +37,7 @@ impl BeaconStateGloas {
         let mut fields = [[0u8; 32]; 46];
         fields[..38].copy_from_slice(&common);
         fields[38..].copy_from_slice(&[
-            rv.builders.hash_root(),
+            rv.builders_hash.hash_root(),
             uint64_chunk(slot.next_withdrawal_builder_index),
             hash_fixed_bytes(&slot.execution_payload_availability),
             hash_vector(

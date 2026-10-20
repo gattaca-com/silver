@@ -7,6 +7,7 @@ use crate::{
     Previous, RandaoMixesView, RandaoMixesWriteView, RootsView, RootsWriteView, SlashingsView,
     SlashingsWriteView, SlotStateView, SlotStateWriteView, StateRoots, ValidatorsView,
     ValidatorsWriteView, Withdrawals,
+    tree::{BuildersHash, TreeView, ValidatorsHash},
     types::{BLSPubkey, Immutable, StateId},
 };
 
@@ -35,7 +36,9 @@ pub struct StateReadView<'a> {
     pub randao_mixes: RandaoMixesView<'a>,
     pub slot: SlotStateView<'a>,
     pub validators: ValidatorsView<'a>,
+    pub validators_hash: TreeView<'a, ValidatorsHash>,
     pub builders: BuildersView<'a>,
+    pub builders_hash: TreeView<'a, BuildersHash>,
 }
 
 /// Holder of a fork's per-slot tier writers (by value) — what the STF takes.
@@ -128,6 +131,8 @@ impl<'a> StateWriterView<'a> {
         epoch: EpochView<'s>,
         longtail: LongtailView<'s>,
     ) -> StateReadView<'s> {
+        let (validators, validators_hash) = self.validators.hashed_readers();
+        let (builders, builders_hash) = self.builders.hashed_readers();
         StateReadView {
             imm: self.imm,
             balances: self.balances.hashed_reader(),
@@ -143,8 +148,10 @@ impl<'a> StateWriterView<'a> {
             state_roots: self.state_roots.hashed_reader(),
             randao_mixes: self.randao_mixes.hashed_reader(),
             slot: self.slot.reader(),
-            validators: self.validators.hashed_reader(),
-            builders: self.builders.hashed_reader(),
+            validators,
+            validators_hash,
+            builders,
+            builders_hash,
         }
     }
 }

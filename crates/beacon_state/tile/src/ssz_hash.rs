@@ -89,7 +89,7 @@ pub(crate) fn hash_common_fields(rv: &StateReadView, execution_field: B256) -> [
         slot.eth1_data.leaf(),
         rv.eth1.hash_root(),
         uint64_chunk(slot.eth1_deposit_index),
-        rv.validators.hash_root(),
+        rv.validators_hash.hash_root(),
         rv.balances.hash_root(),
         rv.randao_mixes.hash_root(),
         rv.slashings.hash_root(),
