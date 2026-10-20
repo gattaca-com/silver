@@ -87,8 +87,7 @@ impl U256x8 {
             _mm512_permutex2var_epi64(blocks[2], low_words, blocks[3]),
             _mm512_permutex2var_epi64(blocks[2], high_words, blocks[3]),
         ];
-        let first_halves = index_vector(&[0, 1, 2, 3, 8, 9, 10, 11]);
-        let second_halves = index_vector(&[4, 5, 6, 7, 12, 13, 14, 15]);
+        let (first_halves, second_halves) = half_selectors();
         Self([
             _mm512_permutex2var_epi64(quarters[0], first_halves, quarters[2]),
             _mm512_permutex2var_epi64(quarters[0], second_halves, quarters[2]),
@@ -102,8 +101,7 @@ impl U256x8 {
     #[inline]
     fn blocks(&self) -> [__m512i; WORDS] {
         let w = &self.0;
-        let first_halves = index_vector(&[0, 1, 2, 3, 8, 9, 10, 11]);
-        let second_halves = index_vector(&[4, 5, 6, 7, 12, 13, 14, 15]);
+        let (first_halves, second_halves) = half_selectors();
         let quarters = [
             _mm512_permutex2var_epi64(w[0], first_halves, w[1]),
             _mm512_permutex2var_epi64(w[2], first_halves, w[3]),
@@ -119,6 +117,14 @@ impl U256x8 {
             _mm512_permutex2var_epi64(quarters[2], odd_block, quarters[3]),
         ]
     }
+}
+
+/// `_mm512_permutex2var_epi64` selectors joining the first halves, and the
+/// second halves, of two vectors.
+#[target_feature(enable = "avx512f,avx512ifma")]
+#[inline]
+fn half_selectors() -> (__m512i, __m512i) {
+    (index_vector(&[0, 1, 2, 3, 8, 9, 10, 11]), index_vector(&[4, 5, 6, 7, 12, 13, 14, 15]))
 }
 
 fn le_word(bytes: &[u8], at: usize) -> i64 {
