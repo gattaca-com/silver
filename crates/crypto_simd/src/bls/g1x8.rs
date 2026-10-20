@@ -5,6 +5,13 @@
 //! doubling a point with y = 0, adding P to ±P, or any point at infinity —
 //! is reported as undecided instead, and the caller falls back to blst for
 //! it. Honest points of prime order never do; only non-members can.
+//!
+//! Coordinates in and out are reduced. Inside a formula, sums and
+//! differences stay lazy, offset by multiples of p to stay positive, and are
+//! carried only where a product or the output needs it. The comments bound
+//! each lazy value and each product's operands; `Fp8::mul` admits them all.
+//! Adjacent products do not depend on each other, so the out-of-order core
+//! overlaps them.
 
 use std::arch::x86_64::__mmask8;
 
@@ -20,6 +27,39 @@ pub struct G1x8 {
     pub z: Fp8,
 }
 
+/// The multiples of p the lazy differences are offset by.
+struct Offsets {
+    two_p: Fp8,
+    four_p: Fp8,
+    eight_p: Fp8,
+}
+
+impl Offsets {
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    fn new() -> Self {
+        Self {
+            two_p: Fp8::multiple_of_p(2),
+            four_p: Fp8::multiple_of_p(4),
+            eight_p: Fp8::multiple_of_p(8),
+        }
+    }
+
+    /// A lazy value below 4p, reduced.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    fn reduced_from_4p(&self, v: &Fp8) -> Fp8 {
+        v.normalise().cond_sub(&self.two_p)
+    }
+
+    /// A lazy value below 8p, reduced.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    fn reduced_from_8p(&self, v: &Fp8) -> Fp8 {
+        v.normalise().cond_sub(&self.four_p).cond_sub(&self.two_p)
+    }
+}
+
 impl G1x8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn from_affine(x: &Fp8, y: &Fp8) -> Self {
@@ -29,34 +69,49 @@ impl G1x8 {
     /// dbl-2009-l. Undecided when y = 0 or z = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn double(&self) -> (Self, __mmask8) {
+        let o = Offsets::new();
         let a = self.x.square();
         let b = self.y.square();
+        let e = a.add_raw(&a).add_raw(&a).normalise(); // < 6p
+        let f = e.square(); // 6p · 6p
         let c = b.square();
-        let d = self.x.add(&b).square().sub(&a).sub(&c).double();
-        let e = a.double().add(&a);
-        let f = e.square();
-        let x3 = f.sub(&d.double());
-        let y3 = e.mul(&d.sub(&x3)).sub(&c.double().double().double());
-        let z3 = self.y.mul(&self.z).double();
+        let xb = self.x.add_raw(&b).normalise(); // < 4p
+        let xb_squared = xb.square(); // 4p · 4p
+        let yz = self.y.mul(&self.z);
+        let d = o.reduced_from_8p(&xb_squared.sub_raw(&a, &o.two_p).sub_raw(&c, &o.two_p));
+        let d = o.reduced_from_4p(&d.add_raw(&d));
+        let x3 = f.sub_raw(&d.add_raw(&d), &o.four_p).normalise(); // < 6p
+        let dx = d.sub_raw(&x3, &o.eight_p).normalise(); // < 10p
+        let c8 = o.reduced_from_8p(&c.add_raw(&c).add_raw(&c).add_raw(&c));
+        let y3 = o.reduced_from_8p(&e.mul(&dx).sub_raw(&c8.add_raw(&c8), &o.four_p)); // 6p · 10p
+        let z3 = o.reduced_from_4p(&yz.add_raw(&yz));
         let undecided = self.y.is_zero_mask() | self.z.is_zero_mask();
-        (Self { x: x3, y: y3, z: z3 }, undecided)
+        (Self { x: x3.cond_sub(&o.four_p).cond_sub(&o.two_p), y: y3, z: z3 }, undecided)
     }
 
     /// madd-2007-bl with Z2 = 1. Undecided when the points coincide or z = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn add_affine(&self, qx: &Fp8, qy: &Fp8) -> (Self, __mmask8) {
+        let o = Offsets::new();
         let z1z1 = self.z.square();
+        let qy_z = qy.mul(&self.z);
         let u2 = qx.mul(&z1z1);
-        let s2 = qy.mul(&self.z).mul(&z1z1);
+        let s2 = qy_z.mul(&z1z1);
         let h = u2.sub(&self.x);
         let hh = h.square();
-        let i = hh.double().double();
-        let j = h.mul(&i);
-        let r = s2.sub(&self.y).double();
-        let v = self.x.mul(&i);
-        let x3 = r.square().sub(&j).sub(&v.double());
-        let y3 = r.mul(&v.sub(&x3)).sub(&self.y.mul(&j).double());
-        let z3 = self.z.add(&h).square().sub(&z1z1).sub(&hh);
+        let zh = self.z.add_raw(&h).normalise(); // < 4p
+        let zh_squared = zh.square(); // 4p · 4p
+        let i = hh.add_raw(&hh).add_raw(&hh).add_raw(&hh).normalise(); // < 8p
+        let j = h.mul(&i); // 2p · 8p
+        let v = self.x.mul(&i); // 2p · 8p
+        let r = s2.sub_raw(&self.y, &o.two_p);
+        let r = r.add_raw(&r).normalise(); // < 8p
+        let rr = r.square(); // 8p · 8p
+        let yj = self.y.mul(&j);
+        let x3 = o.reduced_from_8p(&rr.sub_raw(&j, &o.two_p).sub_raw(&v.add_raw(&v), &o.four_p));
+        let vx = v.sub_raw(&x3, &o.two_p).normalise(); // < 4p
+        let y3 = o.reduced_from_8p(&r.mul(&vx).sub_raw(&yj.add_raw(&yj), &o.four_p)); // 8p · 4p
+        let z3 = o.reduced_from_8p(&zh_squared.sub_raw(&z1z1, &o.two_p).sub_raw(&hh, &o.two_p));
         let undecided = h.is_zero_mask() | self.z.is_zero_mask();
         (Self { x: x3, y: y3, z: z3 }, undecided)
     }
@@ -64,20 +119,30 @@ impl G1x8 {
     /// add-2007-bl. Undecided when the points coincide or either z = 0.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn add(&self, q: &Self) -> (Self, __mmask8) {
+        let o = Offsets::new();
         let z1z1 = self.z.square();
         let z2z2 = q.z.square();
+        let y1_z2 = self.y.mul(&q.z);
+        let y2_z1 = q.y.mul(&self.z);
+        let z_sum = self.z.add_raw(&q.z).normalise(); // < 4p
+        let z_sum_squared = z_sum.square(); // 4p · 4p
         let u1 = self.x.mul(&z2z2);
         let u2 = q.x.mul(&z1z1);
-        let s1 = self.y.mul(&q.z).mul(&z2z2);
-        let s2 = q.y.mul(&self.z).mul(&z1z1);
+        let s1 = y1_z2.mul(&z2z2);
+        let s2 = y2_z1.mul(&z1z1);
         let h = u2.sub(&u1);
-        let i = h.double().square();
+        let i = h.add_raw(&h).normalise().square(); // 4p · 4p
+        let two_z1_z2 = z_sum_squared.sub_raw(&z1z1, &o.two_p).sub_raw(&z2z2, &o.two_p).normalise(); // < 6p
+        let z3 = two_z1_z2.mul(&h); // 6p · 2p
         let j = h.mul(&i);
-        let r = s2.sub(&s1).double();
         let v = u1.mul(&i);
-        let x3 = r.square().sub(&j).sub(&v.double());
-        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).double());
-        let z3 = self.z.add(&q.z).square().sub(&z1z1).sub(&z2z2).mul(&h);
+        let r = s2.sub_raw(&s1, &o.two_p);
+        let r = r.add_raw(&r).normalise(); // < 8p
+        let rr = r.square(); // 8p · 8p
+        let s1_j = s1.mul(&j);
+        let x3 = o.reduced_from_8p(&rr.sub_raw(&j, &o.two_p).sub_raw(&v.add_raw(&v), &o.four_p));
+        let vx = v.sub_raw(&x3, &o.two_p).normalise(); // < 4p
+        let y3 = o.reduced_from_8p(&r.mul(&vx).sub_raw(&s1_j.add_raw(&s1_j), &o.four_p)); // 8p · 4p
         let undecided = h.is_zero_mask() | self.z.is_zero_mask() | q.z.is_zero_mask();
         (Self { x: x3, y: y3, z: z3 }, undecided)
     }
@@ -145,3 +210,6 @@ impl G1x8 {
 fn is_lower_z_bit(bit: u32) -> bool {
     bit == Z_BITS[1] || bit == Z_BITS[2] || bit == Z_BITS[3] || bit == Z_BITS[4] || bit == Z_BITS[5]
 }
+
+#[cfg(test)]
+mod tests;
