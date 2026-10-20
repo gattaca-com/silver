@@ -46,7 +46,8 @@ const R_INV52: u64 = 0xffffeffffffff;
 const SCALE: u64 = 1 << (LIMBS as u32 * LIMB_BITS - 256);
 
 /// The blst element whose limbs, loaded by `Fr8::load`, make `Fr8::mul`
-/// multiply by w.
+/// multiply by w. It is canonical, below r, so its product with any
+/// normalised value meets `mul`'s bound.
 pub fn multiplier(w: &blst_fr) -> blst_fr {
     fr_mul(w, &fr_from_u64(SCALE))
 }

@@ -18,7 +18,8 @@ const VECTORS_PER_CELL: usize = FIELD_ELEMENTS_PER_CELL / LANES;
 pub struct ExtensionKernel {
     inverse: Fft8,
     forward: Fft8,
-    /// `shift_powers[k]`/n.
+    /// Multipliers of `shift_powers[k]`/n. Each is below r, so `mul` takes it
+    /// with any normalised data.
     shift: Vec<Fr8>,
     data: Vec<Fr8>,
 }

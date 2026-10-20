@@ -13,10 +13,12 @@ use crate::kzg::{
 
 pub struct Fft8 {
     vectors: usize,
-    /// ω_2h^j for j < h, as h / 8 vectors per stage h ≥ 8, h ascending.
+    /// Multipliers of ω_2h^j for j < h, as h / 8 vectors per stage h ≥ 8, h
+    /// ascending. Each is below r, so `mul` takes it with any normalised data.
     wide: Vec<Fr8>,
-    /// ω_2h^j in every lane at h − 1 + j, for j < h and h = 1, 2, 4. The
-    /// stages skip the product by ω_2h^0 = 1.
+    /// Multipliers of ω_2h^j in every lane at h − 1 + j, for j < h and
+    /// h = 1, 2, 4, each below r like `wide`'s. The stages skip the product by
+    /// ω_2h^0 = 1.
     short: Vec<Fr8>,
 }
 
@@ -125,8 +127,8 @@ impl Fft8 {
         }
     }
 
-    /// lazy(k, m) to lazy(k + 2, m + 33): products below 2r offset the
-    /// differences by 2r.
+    /// lazy(k, m) to lazy(k + 2, m + 33). Products by twiddles below r lie
+    /// below 2r, so 2r offsets the differences.
     #[target_feature(enable = "avx512f,avx512ifma")]
     fn dit_wide(&self, data: &mut [Fr8], half: usize) {
         let product_bound = Fr8::multiple_of_r(2);
