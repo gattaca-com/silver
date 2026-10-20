@@ -158,7 +158,9 @@ unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<
 }
 
 /// `dit`'s outputs, checked against its bound lazy(16 + 2w, 73 + 33w) for w
-/// wide stages, then reduced below r by subtracting r.
+/// wide stages, then reduced below r by subtracting r. The check is coarse,
+/// as no input drives the products to their bound; the proof establishes the
+/// exact bound.
 ///
 /// SAFETY: the caller checked `simd_available`.
 unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
