@@ -269,6 +269,122 @@ fn kernel_transforms_match_scalar_fft() {
     }
 }
 
+/// Elements start this far into their buffers, so no lane is 8-byte aligned.
+const ODD_OFFSET: usize = 5;
+
+fn single_bit(bit: usize) -> Limbs {
+    let mut x = [0; 5];
+    x[bit / 52] = 1 << (bit % 52);
+    x
+}
+
+/// r − 1, r and r + 1, and r ± 2^b at each limb and word boundary b.
+fn around_r() -> Vec<Limbs> {
+    let r = r_limbs();
+    let mut out: Vec<_> =
+        [-1, 0, 1].iter().map(|&d| plus_multiple(&r, d, &single_bit(0))).collect();
+    for bit in [52, 104, 156, 208, 64, 128, 192] {
+        out.push(plus_multiple(&r, -1, &single_bit(bit)));
+        out.push(plus_multiple(&r, 1, &single_bit(bit)));
+    }
+    out
+}
+
+/// Every value of `values` in every lane, eight to a vector.
+fn in_every_lane(values: &[Limbs]) -> Vec<Limbs> {
+    (0..values.len())
+        .flat_map(|v| (0..LANES).map(move |lane| values[(v + lane) % values.len()]))
+        .collect()
+}
+
+/// The blst element whose 64-bit limbs, which `Fr8::load` takes as they are,
+/// hold x.
+fn raw_fr(x: &Limbs) -> blst_fr {
+    let bytes = bytes_from_limbs(x);
+    let mut l = [0; 4];
+    for k in 0..4 {
+        l[k] = u64::from_be_bytes(bytes[24 - 8 * k..32 - 8 * k].try_into().unwrap());
+    }
+    blst_fr { l }
+}
+
+/// Lane l of `from_bytes` holds the 32 big-endian bytes at `at + 32·l` as
+/// normalised limbs, whatever their value, and the mask flags exactly the
+/// lanes below r. Single bits tell every bit's place apart.
+#[test]
+fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 3);
+    let r = r_limbs();
+    let mut edges: Vec<_> = (0..256).map(single_bit).collect();
+    edges.extend([[0; 5], limbs_from_bytes(&[0xff; 32])]);
+    edges.extend(around_r());
+    let mut values = in_every_lane(&edges);
+    for _ in 0..64 * LANES {
+        values.push(limbs_from_bytes(&rng.r#gen()));
+        values.push(limbs_from_bytes(&fr_to_bytes(&random_fr(&mut rng))));
+    }
+    let mut bytes = vec![0x5a; ODD_OFFSET + values.len() * BYTES_PER_FIELD_ELEMENT];
+    for (i, x) in values.iter().enumerate() {
+        let at = ODD_OFFSET + i * BYTES_PER_FIELD_ELEMENT;
+        bytes[at..at + BYTES_PER_FIELD_ELEMENT].copy_from_slice(&bytes_from_limbs(x));
+    }
+    for v in 0..values.len() / LANES {
+        let at = ODD_OFFSET + v * LANES * BYTES_PER_FIELD_ELEMENT;
+        // SAFETY: `kernels_run` checked `simd_available`.
+        let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, at) };
+        // SAFETY: as above.
+        let limbs = unsafe { vector.lane_limbs() };
+        for lane in 0..LANES {
+            let x = &values[v * LANES + lane];
+            assert!(limbs[lane] == *x, "vector {v} lane {lane}");
+            assert!((below_r >> lane & 1 == 1) == is_below(x, &r), "vector {v} lane {lane} mask");
+        }
+    }
+}
+
+/// `to_bytes` writes lane l, for values below 2r, as the 32 big-endian bytes
+/// of its value mod r at `at + 32·l`, and changes no other byte.
+#[test]
+fn to_bytes_writes_canonical_lanes_and_nothing_else() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 4);
+    let r = r_limbs();
+    let two_r = plus_multiple(&r, 1, &r);
+    let mut edges: Vec<_> = (0..256).map(single_bit).collect();
+    edges.push([0; 5]);
+    edges.extend([-2, -1].iter().map(|&d| plus_multiple(&two_r, d, &single_bit(0))));
+    edges.extend(around_r());
+    let mut values = in_every_lane(&edges);
+    let count = values.len() + 64 * LANES;
+    while values.len() < count {
+        let x = limbs_from_bytes(&rng.r#gen());
+        if is_below(&x, &two_r) {
+            values.push(x);
+        }
+    }
+    let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
+    let mut bytes = vec![0; ODD_OFFSET + vector_bytes + ODD_OFFSET];
+    for v in 0..values.len() / LANES {
+        let raw: Vec<_> = values[v * LANES..(v + 1) * LANES].iter().map(raw_fr).collect();
+        bytes.fill(0x5a);
+        // SAFETY: `kernels_run` checked `simd_available`.
+        unsafe { Fr8::load(&raw, 0).to_bytes(&mut bytes, ODD_OFFSET) };
+        for lane in 0..LANES {
+            let x = &values[v * LANES + lane];
+            let canonical = if is_below(x, &r) { *x } else { plus_multiple(x, -1, &r) };
+            let at = ODD_OFFSET + lane * BYTES_PER_FIELD_ELEMENT;
+            assert!(bytes[at..at + 32] == bytes_from_limbs(&canonical), "vector {v} lane {lane}");
+        }
+        let mut outside = bytes[..ODD_OFFSET].iter().chain(&bytes[ODD_OFFSET + vector_bytes..]);
+        assert!(outside.all(|&byte| byte == 0x5a), "vector {v}: bytes outside the lanes");
+    }
+}
+
 fn blob_of(elements: impl Fn(usize) -> [u8; 32]) -> Box<[u8; BYTES_PER_BLOB]> {
     let mut blob = Box::new([0u8; BYTES_PER_BLOB]);
     for (i, element) in blob.chunks_exact_mut(32).enumerate() {
