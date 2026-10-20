@@ -224,6 +224,8 @@ fn fft_timing() {
             best_micros(reps, || inverse_fft(black_box(&mut out), &input, &inverse, &inverse_n));
         // SAFETY: as above.
         let kernel_only = best_micros(reps, || unsafe { kernel.dit(black_box(&mut data)) });
+        // SAFETY: as above.
+        let kernel_dif = best_micros(reps, || unsafe { kernel.dif(black_box(&mut data)) });
         let converted = best_micros(reps, || {
             // SAFETY: as above.
             unsafe {
@@ -239,6 +241,7 @@ fn fft_timing() {
         println!("{:<40} {scalar:>10.1}", format!("scalar fft, n = {n}"));
         println!("{:<40} {scalar_inverse:>10.1}", format!("scalar inverse_fft, n = {n}"));
         println!("{:<40} {kernel_only:>10.1}", format!("kernel dit, n = {n}"));
+        println!("{:<40} {kernel_dif:>10.1}", format!("kernel dif, n = {n}"));
         println!("{:<40} {converted:>10.1}", format!("kernel from_bytes+dit+to_bytes, n = {n}"));
     }
 
