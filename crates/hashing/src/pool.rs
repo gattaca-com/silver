@@ -87,6 +87,13 @@ impl<P: PageArray> PagePool<P> {
         self.segments.len() - 1
     }
 
+    /// Pages handed out and not freed, the zero pages included.
+    #[cfg(test)]
+    pub(crate) fn live_pages(&self) -> usize {
+        let used: usize = self.segments.iter().map(|segment| segment.used).sum();
+        used - self.free.iter().map(Vec::len).sum::<usize>()
+    }
+
     #[inline]
     pub(super) fn free(&mut self, id: PageId) {
         let inner = !self.segments[Self::split(id).0].children_pages.is_empty();

@@ -1,156 +1,165 @@
-use std::collections::HashSet;
-
-use super::{PageId, PagePool};
 use crate::{
-    B256, FlatTree, TreeSpec,
-    list::ListTree,
-    snapshot::PageSnapshot,
-    storage::{PageAlloc, PageStore},
-    store::NodeStore,
-    subtree::build_subtree_hashes,
+    B256, FlatTree, HashFormat, PagePool, PageSnapshot, PageTable, SszScalar, TreeReader, TreeSpec,
 };
 
-/// Sixteen leaves in pages of four nodes: a root page over two page-level-1
-/// pages of four leaf pages each, two leaves per leaf page.
+/// Sixteen chunks in pages of four nodes: a root page over two page-level-1
+/// pages of four leaf pages each, two chunks per leaf page.
 struct P4;
 impl TreeSpec for P4 {
     type Val = u64;
     type Page = [B256; 4];
 }
 
-/// `leaves` non-zero leaves, leaf `i` filled with `fill + i`.
-fn nodes(leaves: usize, fill: u8) -> Vec<B256> {
-    let mut nodes = vec![[0u8; 32]; 32];
-    let (internal, leaf_nodes) = nodes.split_at_mut(16);
-    for (i, leaf) in leaf_nodes[..leaves].iter_mut().enumerate() {
-        *leaf = [fill.wrapping_add(i as u8); 32];
-    }
-    build_subtree_hashes(internal, leaf_nodes, leaves);
-    nodes
+const CAP: usize = 16 * 4;
+
+type Pool = PagePool<[B256; 4]>;
+
+/// `n` non-zero values, distinct per `fill`.
+fn values(n: usize, fill: u64) -> Vec<u64> {
+    (0..n as u64).map(|i| fill << 32 | (i + 1)).collect()
 }
 
-fn commit(
-    pool: &mut PagePool<[B256; 4]>,
-    parent: Option<&PageSnapshot>,
-    nodes: &[B256],
-    written: &[u32],
-    chunks: usize,
+fn tree(vals: &[u64]) -> FlatTree<P4> {
+    let leaves = u64::as_ssz_bytes(vals)
+        .chunks(32)
+        .map(|bytes| {
+            let mut chunk = [0u8; 32];
+            chunk[..bytes.len()].copy_from_slice(bytes);
+            chunk
+        })
+        .collect::<Vec<_>>();
+    FlatTree::from_leaves(CAP, vals.len(), leaves.into_iter(), HashFormat::Fixed)
+}
+
+fn base(pool: &mut Pool, vals: &[u64]) -> PageSnapshot {
+    PageSnapshot::from_tree(&mut tree(vals), pool)
+}
+
+/// `parent` with `writes` applied, and `appended` values pushed after them.
+fn fork(
+    pool: &mut Pool,
+    parent: &PageSnapshot,
+    writes: &[(u32, u64)],
+    appended: &[u64],
 ) -> PageSnapshot {
-    let mut store = NodeStore::<P4>::default();
-    store.nodes = nodes.to_vec();
-    store.count = chunks * 4;
-    store.writes.resize(16);
-    match parent {
-        None => store.writes.mark_all_hashed(),
-        Some(_) => {
-            written.iter().for_each(|&leaf| store.writes.mark(leaf as usize));
-            store.writes.take_unhashed();
-        }
+    let mut tree = FlatTree::<P4>::default();
+    tree.load(pool, &PageTable::default(), parent.table());
+    for &(ix, v) in writes {
+        tree.set_val(ix, v);
     }
-    let mut tree = FlatTree::List(ListTree { store, max_elements: 16 });
-    match parent {
-        None => PageSnapshot::from_tree(&mut tree, pool),
-        Some(parent) => {
-            let mut dst = PageSnapshot::default();
-            dst.commit(&mut tree, pool, parent);
-            dst
-        }
+    for &v in appended {
+        let ix = tree.append_empty();
+        tree.set_val(ix, v);
     }
+    tree.rehash();
+    let mut snapshot = PageSnapshot::default();
+    snapshot.commit(&mut tree, pool, parent);
+    snapshot
 }
 
-/// Ids along the page path from the root to leaf page `leaf_page`.
-fn path(pool: &PagePool<[B256; 4]>, snapshot: &PageSnapshot, leaf_page: usize) -> [PageId; 3] {
-    let root = snapshot.table().roots[0];
-    let page_level1 = pool.child(root, leaf_page / 4);
-    [root, page_level1, pool.child(page_level1, leaf_page % 4)]
+fn with(vals: &[u64], writes: &[(u32, u64)], appended: &[u64]) -> Vec<u64> {
+    let mut vals = vals.to_vec();
+    writes.iter().for_each(|&(ix, v)| vals[ix as usize] = v);
+    vals.extend_from_slice(appended);
+    vals
 }
 
-fn freed(pool: &PagePool<[B256; 4]>) -> Vec<PageId> {
-    let mut ids: Vec<_> = pool.free.iter().flatten().copied().collect();
-    ids.sort_unstable();
-    ids
+/// The snapshot reads back `vals` and roots like a tree built from them.
+fn assert_holds(pool: &Pool, snapshot: &PageSnapshot, vals: &[u64]) {
+    let reader = TreeReader::<P4, Pool>::paged(pool, snapshot.table());
+    let read: Vec<u64> = (0..vals.len()).map(|ix| reader.get(ix)).collect();
+    assert_eq!(read, vals);
+    let reference = tree(vals);
+    assert_eq!(reader.hash_root(), TreeReader::<P4, Pool>::flat(&reference).hash_root());
 }
 
-fn sorted(mut ids: Vec<PageId>) -> Vec<PageId> {
-    ids.sort_unstable();
-    ids
+/// What a pool holding only `vals` keeps live: no leak, no double free.
+fn pages_of(vals: &[u64]) -> usize {
+    let mut pool = Pool::default();
+    base(&mut pool, vals);
+    pool.live_pages()
 }
 
-/// Finalize `w` over base ← a ← w with a dead sibling `d` of `a`: the base
-/// frees what `w` replaced, `a` keeps what `w` holds, `d` frees everything.
+/// Finalize `w` over base ← a ← w with a dead sibling `d` of `a`: once every
+/// fork is released, the pool holds exactly the winner's pages.
 #[test]
-fn release_frees_allocated_pages_the_winner_does_not_hold() {
-    let mut pool = PagePool::default();
-    let mut base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
-    let b0 = path(&pool, &base, 0);
-    let b7 = path(&pool, &base, 7);
-    let b4 = path(&pool, &base, 4);
-    let mut a = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
-    let mut w = commit(&mut pool, Some(&a), &nodes(16, 3), &[15], 16);
-    let mut d = commit(&mut pool, Some(&base), &nodes(16, 4), &[8], 16);
-    let (a0, d4) = (path(&pool, &a, 0), path(&pool, &d, 4));
+fn finalizing_a_lineage_keeps_exactly_the_winners_pages() {
+    let mut pool = Pool::default();
+    let vals = values(CAP, 1);
+    let mut base = base(&mut pool, &vals);
+    let mut a = fork(&mut pool, &base, &[(0, 7)], &[]);
+    let a_vals = with(&vals, &[(0, 7)], &[]);
+    let mut w = fork(&mut pool, &a, &[(60, 8)], &[]);
+    let w_vals = with(&a_vals, &[(60, 8)], &[]);
+    let mut d = fork(&mut pool, &base, &[(32, 9)], &[]);
 
     base.promote::<P4>(&mut pool, &w);
-    assert_eq!(freed(&pool), sorted(vec![b0[0], b0[1], b0[2], b7[1], b7[2]]));
+    for fork in [&mut a, &mut d, &mut w] {
+        fork.release::<P4>(&mut pool, &base);
+    }
 
-    a.release::<P4>(&mut pool, &base);
-    d.release::<P4>(&mut pool, &base);
-    w.release::<P4>(&mut pool, &base);
-    let expected = vec![b0[0], b0[1], b0[2], b7[1], b7[2], a0[0], d4[0], d4[1], d4[2]];
-    assert_eq!(freed(&pool), sorted(expected));
-    assert!(!freed(&pool).contains(&b4[2]), "base leaf page under no write");
+    assert_holds(&pool, &base, &w_vals);
+    assert_eq!(pool.live_pages(), pages_of(&w_vals));
 }
 
-/// The winner, released right after its promote, frees nothing: the base holds
-/// all its pages. The next promote frees exactly what the new winner replaced.
+/// A winner released right after its promote frees nothing the base holds;
+/// the next promote frees exactly what the new winner replaced.
 #[test]
-fn released_winner_frees_nothing_and_promote_frees_its_replaced_pages() {
-    let mut pool = PagePool::default();
-    let mut base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
-    let mut w = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
+fn a_released_winner_frees_nothing_the_base_holds() {
+    let mut pool = Pool::default();
+    let vals = values(CAP, 1);
+    let mut base = base(&mut pool, &vals);
+    let mut w = fork(&mut pool, &base, &[(0, 7)], &[]);
+    let w_vals = with(&vals, &[(0, 7)], &[]);
     base.promote::<P4>(&mut pool, &w);
-    pool.free = [Vec::new(), Vec::new()];
     w.release::<P4>(&mut pool, &base);
-    assert!(freed(&pool).is_empty(), "the base holds every page of the winner");
+    assert_holds(&pool, &base, &w_vals);
+    assert_eq!(pool.live_pages(), pages_of(&w_vals));
 
-    let w0 = path(&pool, &w, 0);
-    let w2 = commit(&mut pool, Some(&w), &nodes(16, 3), &[1], 16);
+    let mut w2 = fork(&mut pool, &w, &[(4, 9)], &[]);
+    let w2_vals = with(&w_vals, &[(4, 9)], &[]);
     base.promote::<P4>(&mut pool, &w2);
-
-    assert_eq!(freed(&pool), sorted(w0.to_vec()));
+    w2.release::<P4>(&mut pool, &base);
+    assert_holds(&pool, &base, &w2_vals);
+    assert_eq!(pool.live_pages(), pages_of(&w2_vals));
 }
 
-/// A fork that grows into a zero page without writing it shares that page;
-/// promoting past it must not free the pool's zero page.
+/// A fork that grows into padding without writing it shares the zero page;
+/// promoting past it, and past a later write there, keeps the zero page.
 #[test]
 fn promote_never_frees_a_zero_page() {
-    let mut pool = PagePool::default();
-    let mut base = commit(&mut pool, None, &nodes(2, 1), &[], 2);
-    let zero = pool.zero_page(1);
-    assert_eq!(path(&pool, &base, 1)[2], zero, "padding shares the zero page");
+    let mut pool = Pool::default();
+    let vals = values(8, 1);
+    let mut base = base(&mut pool, &vals);
 
-    let grown = commit(&mut pool, Some(&base), &nodes(2, 2), &[0], 3);
-    assert_eq!(path(&pool, &grown, 1)[2], zero, "unwritten growth shares the zero page");
+    let mut grown = fork(&mut pool, &base, &[(0, 7)], &[0; 4]);
+    let grown_vals = with(&vals, &[(0, 7)], &[0; 4]);
     base.promote::<P4>(&mut pool, &grown);
+    grown.release::<P4>(&mut pool, &base);
+    assert_holds(&pool, &base, &grown_vals);
 
-    let written = commit(&mut pool, Some(&base), &nodes(3, 3), &[0, 2], 3);
+    let mut written = fork(&mut pool, &base, &[(8, 5), (0, 6)], &[]);
+    let written_vals = with(&grown_vals, &[(8, 5), (0, 6)], &[]);
     base.promote::<P4>(&mut pool, &written);
+    written.release::<P4>(&mut pool, &base);
 
-    assert!(!freed(&pool).contains(&zero));
+    assert_holds(&pool, &base, &written_vals);
+    assert_eq!(pool.live_pages(), pages_of(&written_vals));
 }
 
 #[test]
-fn release_is_idempotent() {
-    let mut pool = PagePool::default();
-    let base = commit(&mut pool, None, &nodes(16, 1), &[], 16);
-    let mut dead = commit(&mut pool, Some(&base), &nodes(16, 2), &[0], 16);
-    let roots = dead.table().roots.clone();
+fn release_is_idempotent_and_keeps_the_dead_fork_readable() {
+    let mut pool = Pool::default();
+    let vals = values(CAP, 1);
+    let base = base(&mut pool, &vals);
+    let mut dead = fork(&mut pool, &base, &[(0, 7)], &[]);
 
     dead.release::<P4>(&mut pool, &base);
+    let live = pool.live_pages();
     dead.release::<P4>(&mut pool, &base);
 
-    let unique: HashSet<_> = freed(&pool).into_iter().collect();
-    assert_eq!(unique.len(), 3, "each allocated page freed once");
-    assert_eq!(freed(&pool).len(), 3);
-    assert_eq!(dead.table().roots, roots, "readers keep their roots");
+    assert_eq!(pool.live_pages(), live, "a second release frees nothing");
+    assert_eq!(live, pages_of(&vals));
+    let reader = TreeReader::<P4, Pool>::paged(&pool, dead.table());
+    (0..vals.len()).for_each(|ix| _ = reader.get(ix));
 }
