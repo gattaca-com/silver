@@ -29,8 +29,8 @@ fn leaf(path: &str) -> &str {
 
 /// Shorten a fully-qualified `type_name` for display: keep only the leaf of
 /// each `::`-path and drop lifetime arguments, so
-/// `crate::col::ColumnGroup<'_, crate::col::Balances>` renders as
-/// `ColumnGroup<Balances>`. (Same job as `disqualified::ShortName` / `tynm`,
+/// `crate::col::TreeGroup<'_, crate::col::Balances>` renders as
+/// `TreeGroup<Balances>`. (Same job as `disqualified::ShortName` / `tynm`,
 /// inlined to keep this low-level crate dependency-free.)
 fn short_type_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
