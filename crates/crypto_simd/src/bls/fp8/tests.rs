@@ -1,6 +1,7 @@
 //! `Fp8::mul` and `Fp8::square` against the code they replaced, limb for limb.
 //! The refinement of `mul` holds without a precondition, so the inputs go
-//! beyond its contract of normalised values below 2p.
+//! beyond its contract of normalised values below 2p. Also the lane helpers
+//! `kzg::fr8` shares.
 
 use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52hi_epu64, _mm512_madd52lo_epu64,
@@ -10,7 +11,7 @@ use std::arch::x86_64::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{Fp8, LANES, Limbs, carry_of_cleared, lanes, splat, splat_limbs, zero};
+use super::{Fp8, LANES, Limbs, carry_of_cleared, lanes, splat, splat_limbs, transpose8, zero};
 use crate::{
     bls::constants::{LIMBS, MASK52, P, P_INV52, R_MOD_P},
     simd_available,
@@ -194,5 +195,25 @@ fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
             lanes(carry_of_cleared(t.0[0]))
         };
         assert!(got == cleared, "{t:x?}");
+    }
+}
+
+/// Every lane holds a distinct value, so any misplaced lane shows.
+#[test]
+fn transpose8_swaps_rows_and_lanes() {
+    if !kernels_run() {
+        return;
+    }
+    let value = |row: usize, lane: usize| (LANES * row + lane) as u64;
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let out = unsafe {
+        let rows =
+            Fp8::load(&std::array::from_fn(|lane| std::array::from_fn(|row| value(row, lane))));
+        transpose8(&rows.0)
+    };
+    for row in 0..LANES {
+        for lane in 0..LANES {
+            assert!(lanes(out[lane])[row] == value(row, lane), "lane {lane} of row {row}");
+        }
     }
 }

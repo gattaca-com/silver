@@ -11,15 +11,15 @@
 
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
-    _mm512_madd52hi_epu64, _mm512_madd52lo_epu64, _mm512_mask_blend_epi64,
-    _mm512_permutex2var_epi64, _mm512_set_epi64, _mm512_set1_epi64, _mm512_setzero_si512,
-    _mm512_srai_epi64, _mm512_srli_epi64, _mm512_sub_epi64,
+    _mm512_madd52hi_epu64, _mm512_madd52lo_epu64, _mm512_mask_blend_epi64, _mm512_set_epi64,
+    _mm512_set1_epi64, _mm512_setzero_si512, _mm512_srai_epi64, _mm512_srli_epi64,
+    _mm512_sub_epi64,
 };
 
 use blst::blst_fr;
 
 use crate::{
-    bls::fp8::{carry_of_cleared, lanes},
+    bls::fp8::{carry_of_cleared, lanes, transpose8},
     kzg::blst_ops::{fr_from_u64, fr_mul},
 };
 
@@ -303,16 +303,37 @@ impl Fr8 {
         Self(select_borrowed(borrow, &wrapped, &d))
     }
 
-    /// Lane `l` takes lane `index[l] & 7` of `self` if bit 3 of `index[l]` is
-    /// clear, of `other` otherwise; higher bits are ignored.
+    /// The eight vectors at `at`, lane l of vector k becoming lane k of
+    /// vector l.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    pub fn permute(&self, index: __m512i, other: &Self) -> Self {
-        let mut v = [zero(); LIMBS];
+    pub fn transpose(vectors: &[Self], at: usize) -> [Self; LANES] {
+        let mut out = [[zero(); LIMBS]; LANES];
         for j in 0..LIMBS {
-            v[j] = _mm512_permutex2var_epi64(self.0[j], index, other.0[j]);
+            let rows = transpose8(&[
+                vectors[at].0[j],
+                vectors[at + 1].0[j],
+                vectors[at + 2].0[j],
+                vectors[at + 3].0[j],
+                vectors[at + 4].0[j],
+                vectors[at + 5].0[j],
+                vectors[at + 6].0[j],
+                vectors[at + 7].0[j],
+            ]);
+            for k in 0..LANES {
+                out[k][j] = rows[k];
+            }
         }
-        Self(v)
+        [
+            Self(out[0]),
+            Self(out[1]),
+            Self(out[2]),
+            Self(out[3]),
+            Self(out[4]),
+            Self(out[5]),
+            Self(out[6]),
+            Self(out[7]),
+        ]
     }
 }
 

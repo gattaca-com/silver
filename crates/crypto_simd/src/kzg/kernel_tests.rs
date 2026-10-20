@@ -106,7 +106,7 @@ fn kernel_transforms_match_scalar_fft() {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
     let strided = roots_of_unity(MAX_LOG);
     let strided_inverse = inverse_roots(&strided);
-    for log_n in 4..=MAX_LOG {
+    for log_n in 6..=MAX_LOG {
         let n = 1 << log_n;
         let exact = roots_of_unity(log_n);
         let exact_inverse = inverse_roots(&exact);

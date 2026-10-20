@@ -7,9 +7,9 @@
 
 use std::arch::x86_64::{
     __m512i, __mmask8, _mm512_add_epi64, _mm512_and_si512, _mm512_cmpeq_epi64_mask,
-    _mm512_madd52hi_epu64, _mm512_madd52lo_epu64, _mm512_mask_blend_epi64, _mm512_set_epi64,
-    _mm512_set1_epi64, _mm512_setzero_si512, _mm512_srai_epi64, _mm512_srli_epi64,
-    _mm512_sub_epi64,
+    _mm512_madd52hi_epu64, _mm512_madd52lo_epu64, _mm512_mask_blend_epi64,
+    _mm512_permutex2var_epi64, _mm512_set_epi64, _mm512_set1_epi64, _mm512_setzero_si512,
+    _mm512_srai_epi64, _mm512_srli_epi64, _mm512_sub_epi64,
 };
 
 use crate::bls::constants::{
@@ -51,6 +51,57 @@ pub(crate) fn lanes(v: __m512i) -> [u64; LANES] {
     // SAFETY: __m512i is 64 bytes of plain integer data with no invalid bit
     // patterns.
     unsafe { std::mem::transmute(v) }
+}
+
+#[target_feature(enable = "avx512f,avx512ifma")]
+#[inline]
+fn index_vector(index: &[i64; LANES]) -> __m512i {
+    _mm512_set_epi64(index[7], index[6], index[5], index[4], index[3], index[2], index[1], index[0])
+}
+
+/// Lane l of row k becomes lane k of row l. Round d, for d = 1, 2 and 4,
+/// swaps the d bit of the row index with the d bit of the lane index: rows
+/// k and k + d, for k without the d bit, trade the lanes whose d bit
+/// differs from their row's.
+#[target_feature(enable = "avx512f,avx512ifma")]
+#[inline]
+pub(crate) fn transpose8(r: &[__m512i; LANES]) -> [__m512i; LANES] {
+    let low = index_vector(&[0, 8, 2, 10, 4, 12, 6, 14]);
+    let high = index_vector(&[1, 9, 3, 11, 5, 13, 7, 15]);
+    let a = [
+        _mm512_permutex2var_epi64(r[0], low, r[1]),
+        _mm512_permutex2var_epi64(r[0], high, r[1]),
+        _mm512_permutex2var_epi64(r[2], low, r[3]),
+        _mm512_permutex2var_epi64(r[2], high, r[3]),
+        _mm512_permutex2var_epi64(r[4], low, r[5]),
+        _mm512_permutex2var_epi64(r[4], high, r[5]),
+        _mm512_permutex2var_epi64(r[6], low, r[7]),
+        _mm512_permutex2var_epi64(r[6], high, r[7]),
+    ];
+    let low = index_vector(&[0, 1, 8, 9, 4, 5, 12, 13]);
+    let high = index_vector(&[2, 3, 10, 11, 6, 7, 14, 15]);
+    let b = [
+        _mm512_permutex2var_epi64(a[0], low, a[2]),
+        _mm512_permutex2var_epi64(a[1], low, a[3]),
+        _mm512_permutex2var_epi64(a[0], high, a[2]),
+        _mm512_permutex2var_epi64(a[1], high, a[3]),
+        _mm512_permutex2var_epi64(a[4], low, a[6]),
+        _mm512_permutex2var_epi64(a[5], low, a[7]),
+        _mm512_permutex2var_epi64(a[4], high, a[6]),
+        _mm512_permutex2var_epi64(a[5], high, a[7]),
+    ];
+    let low = index_vector(&[0, 1, 2, 3, 8, 9, 10, 11]);
+    let high = index_vector(&[4, 5, 6, 7, 12, 13, 14, 15]);
+    [
+        _mm512_permutex2var_epi64(b[0], low, b[4]),
+        _mm512_permutex2var_epi64(b[1], low, b[5]),
+        _mm512_permutex2var_epi64(b[2], low, b[6]),
+        _mm512_permutex2var_epi64(b[3], low, b[7]),
+        _mm512_permutex2var_epi64(b[0], high, b[4]),
+        _mm512_permutex2var_epi64(b[1], high, b[5]),
+        _mm512_permutex2var_epi64(b[2], high, b[6]),
+        _mm512_permutex2var_epi64(b[3], high, b[7]),
+    ]
 }
 
 /// `a - b` limb-wise with a borrow chain; the borrow is 0 or -1 per lane.
