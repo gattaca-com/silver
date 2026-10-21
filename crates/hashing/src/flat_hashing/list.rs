@@ -19,6 +19,13 @@ impl<C: TreeSpec> Default for ListTree<C> {
     }
 }
 
+#[cfg(feature = "multi-owner")]
+impl<C: TreeSpec> Clone for ListTree<C> {
+    fn clone(&self) -> Self {
+        Self { store: self.store.clone(), max_elements: self.max_elements }
+    }
+}
+
 impl<C: TreeSpec> ListTree<C> {
     pub(super) fn new(cap: usize, count: usize, leaves: impl Iterator<Item = B256>) -> Self {
         let max_elements = cap.div_ceil(C::VALS_PER_CHUNK).next_power_of_two().max(1);

@@ -18,6 +18,16 @@ impl<C: TreeSpec> Default for FlatTree<C> {
 }
 
 impl<C: TreeSpec> FlatTree<C> {
+    /// A full copy, for a shared list cloned with uncommitted writes. Not
+    /// `Clone`, so a single-owner client cannot copy a tree by accident.
+    #[cfg(feature = "multi-owner")]
+    pub(crate) fn duplicate(&self) -> Self {
+        match self {
+            FlatTree::List(t) => FlatTree::List(t.clone()),
+            FlatTree::ProgressiveList(t) => FlatTree::ProgressiveList(t.clone()),
+        }
+    }
+
     #[cfg_attr(feature = "flux", flux_profiler::timed)]
     pub fn from_leaves(
         cap: usize,
@@ -60,7 +70,7 @@ impl<C: TreeSpec> FlatTree<C> {
     }
 
     #[inline]
-    pub(super) fn format(&self) -> TreeFormat {
+    pub(crate) fn format(&self) -> TreeFormat {
         match self {
             FlatTree::List(t) => t.format(),
             FlatTree::ProgressiveList(t) => t.format(),
@@ -68,7 +78,7 @@ impl<C: TreeSpec> FlatTree<C> {
     }
 
     #[inline]
-    pub(super) fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.store().count
     }
 
@@ -129,6 +139,13 @@ impl<C: TreeSpec> FlatTree<C> {
         writes.mark_all_hashed();
     }
 
+    #[cfg(feature = "multi-owner")]
+    #[inline]
+    pub(crate) fn leaves(&self) -> &[B256] {
+        let data_start = self.format().data_start::<C>();
+        &self.store().nodes[data_start..data_start + self.count().div_ceil(C::VALS_PER_CHUNK)]
+    }
+
     /// The values' SSZ bytes, read straight from the leaves.
     #[inline]
     pub(crate) fn ssz_bytes(&self) -> &[u8] {
@@ -162,6 +179,13 @@ impl<C: TreeSpec> FlatTree<C> {
             <C::Val>::set_lane(leaf, lane, v);
         }
         self.store_mut().writes.mark(chunk);
+    }
+
+    /// Written since the last load or commit.
+    #[cfg(feature = "multi-owner")]
+    #[inline]
+    pub(crate) fn has_writes(&self) -> bool {
+        !self.store().writes.is_empty()
     }
 
     #[inline]

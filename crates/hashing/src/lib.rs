@@ -4,9 +4,18 @@
 //! their chunks, and a rehash hashes only the marked paths, one level at a
 //! time. A commit cuts the array into copy-on-write pages, so every copy of
 //! the list shares the pages it did not write.
+//!
+//! Hashing never decides who owns a page: it reaches pages only through
+//! [`PageStore`] and [`PageAlloc`]. Two storages implement them:
+//!
+//! - [`PagePool`] + [`PageSnapshot`]: one writer, with forks freed explicitly
+//!   against a finalized base.
+//! - [`SharedList`]: refcounted pages that any thread may clone and drop.
 
 mod flat_hashing;
 pub mod merkle;
+#[cfg(feature = "multi-owner")]
+mod multi_owner;
 pub mod progressive;
 pub mod scalar;
 mod single_owner;
@@ -15,6 +24,8 @@ mod storage;
 pub use flat_hashing::{FlatTree, TreeFormat, TreeReader};
 use flat_hashing::{MAX_SEGS, seg_off};
 pub use merkle::B256;
+#[cfg(feature = "multi-owner")]
+pub use multi_owner::SharedList;
 pub use scalar::SszScalar;
 pub use single_owner::{PagePool, PageSnapshot};
 pub use storage::{PageAlloc, PageArray, PageId, PageStore, PageTable};

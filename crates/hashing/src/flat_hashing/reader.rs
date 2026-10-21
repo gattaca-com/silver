@@ -58,6 +58,18 @@ impl<'a, C: TreeSpec, Store: PageStore> TreeReader<'a, C, Store> {
         self.format.leaf_pos::<C>(chunk)
     }
 
+    #[cfg(feature = "multi-owner")]
+    #[inline]
+    pub(crate) fn format(&self) -> TreeFormat {
+        self.format
+    }
+
+    #[cfg(feature = "multi-owner")]
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.count()
+    }
+
     #[inline]
     pub fn get(&self, ix: usize) -> C::Val {
         let k = C::VALS_PER_CHUNK;

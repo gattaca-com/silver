@@ -6,6 +6,7 @@ use crate::flat_hashing::{chunk_bits::ChunkBits, subtree::NodeRange};
 /// them lies under it. Those not yet rehashed are kept apart, so a rehash
 /// visits each write once.
 #[derive(Default)]
+#[cfg_attr(feature = "multi-owner", derive(Clone))]
 pub(super) struct ChunkWrites {
     unhashed: ChunkBits,
     hashed: ChunkBits,
@@ -28,6 +29,12 @@ impl ChunkWrites {
     #[inline]
     pub(super) fn has_unhashed(&self) -> bool {
         !self.unhashed.is_empty()
+    }
+
+    #[cfg(feature = "multi-owner")]
+    #[inline]
+    pub(super) fn is_empty(&self) -> bool {
+        self.unhashed.is_empty() && self.hashed.is_empty()
     }
 
     #[inline]

@@ -75,7 +75,7 @@ impl PageTable {
     }
 
     /// The leaf chunks in order, walking from the root once per leaf row.
-    pub(super) fn leaf_rows<'a, C: TreeSpec, Store: PageStore>(
+    pub(crate) fn leaf_rows<'a, C: TreeSpec, Store: PageStore>(
         &'a self,
         store: &'a Store,
     ) -> impl Iterator<Item = &'a [B256]> {
