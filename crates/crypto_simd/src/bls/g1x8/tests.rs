@@ -12,7 +12,7 @@ use crate::{
     bls::{
         constants::{LIMBS, MASK52, R_MOD_P},
         fp8::{
-            Fp8, LANES, Limbs, lanes,
+            Fp8, LANES, Limbs,
             tests::{below, near_multiple_of_p},
         },
     },
@@ -74,29 +74,17 @@ impl G1x8 {
     }
 }
 
-/// Lane l's limbs, as they are.
-fn lane_limbs(v: &Fp8) -> [Limbs; LANES] {
-    let mut out = [[0u64; LIMBS]; LANES];
-    for j in 0..LIMBS {
-        let l = lanes(v.0[j]);
-        for lane in 0..LANES {
-            out[lane][j] = l[lane];
-        }
-    }
-    out
-}
-
 #[target_feature(enable = "avx512f,avx512ifma")]
 fn assert_same_points(got: &(G1x8, __mmask8), want: &(G1x8, __mmask8), formula: &str) {
     assert!(got.1 == want.1, "{formula}: undecided lanes");
     let two_p = near_multiple_of_p(2, 0);
     for (g, w) in [(&got.0.x, &want.0.x), (&got.0.y, &want.0.y), (&got.0.z, &want.0.z)] {
-        for limbs in lane_limbs(g) {
+        for limbs in g.store() {
             let normalised = limbs.iter().all(|&limb| limb <= MASK52);
             let below_two_p = limbs.iter().rev().lt(two_p.iter().rev());
             assert!(normalised && below_two_p, "{formula}: {limbs:x?} not reduced");
         }
-        assert!(lane_limbs(&g.canonical()) == lane_limbs(&w.canonical()), "{formula}: values");
+        assert!(g.canonical().store() == w.canonical().store(), "{formula}: values");
     }
 }
 

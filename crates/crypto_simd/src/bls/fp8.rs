@@ -287,7 +287,7 @@ impl Fp8 {
     }
 
     #[inline]
-    fn store(&self) -> [Limbs; LANES] {
+    pub(crate) fn store(&self) -> [Limbs; LANES] {
         let mut out = [[0u64; LIMBS]; LANES];
         for j in 0..LIMBS {
             let l = lanes(self.0[j]);

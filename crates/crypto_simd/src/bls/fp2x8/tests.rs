@@ -11,7 +11,7 @@ use crate::{
     bls::{
         constants::{LIMBS, MASK52},
         fp8::{
-            Fp8, LANES, Limbs, lanes,
+            Fp8, LANES, Limbs,
             tests::{below, near_multiple_of_p, plus_multiple_of_p},
         },
     },
@@ -36,23 +36,11 @@ impl Fp2x8 {
     }
 }
 
-/// Lane l's limbs, as they are.
-pub(crate) fn lane_limbs(v: &Fp8) -> [Limbs; LANES] {
-    let mut out = [[0u64; LIMBS]; LANES];
-    for j in 0..LIMBS {
-        let l = lanes(v.0[j]);
-        for lane in 0..LANES {
-            out[lane][j] = l[lane];
-        }
-    }
-    out
-}
-
 /// Every lane of both components normalised and below 2p.
 pub(crate) fn assert_reduced(v: &Fp2x8, what: &str) {
     let two_p = near_multiple_of_p(2, 0);
     for component in [&v.c0, &v.c1] {
-        for limbs in lane_limbs(component) {
+        for limbs in component.store() {
             let normalised = limbs.iter().all(|&limb| limb <= MASK52);
             let below_two_p = limbs.iter().rev().lt(two_p.iter().rev());
             assert!(normalised && below_two_p, "{what}: {limbs:x?} not reduced");
@@ -63,8 +51,8 @@ pub(crate) fn assert_reduced(v: &Fp2x8, what: &str) {
 /// The same values modulo p, for reduced `got` and `want`.
 #[target_feature(enable = "avx512f,avx512ifma")]
 pub(crate) fn assert_same_value(got: &Fp2x8, want: &Fp2x8, what: &str) {
-    assert!(lane_limbs(&got.c0.canonical()) == lane_limbs(&want.c0.canonical()), "{what}: c0");
-    assert!(lane_limbs(&got.c1.canonical()) == lane_limbs(&want.c1.canonical()), "{what}: c1");
+    assert!(got.c0.canonical().store() == want.c0.canonical().store(), "{what}: c0");
+    assert!(got.c1.canonical().store() == want.c1.canonical().store(), "{what}: c1");
 }
 
 /// One component's lanes: residues below p, and representatives of them in
@@ -199,7 +187,7 @@ fn lazy_steps_match_add_and_sub() {
                 (&difference.c0, &exact_difference.c0, "difference c0"),
                 (&difference.c1, &exact_difference.c1, "difference c1"),
             ] {
-                assert!(lane_limbs(got) == lane_limbs(want), "{what}, case {case}");
+                assert!(got.store() == want.store(), "{what}, case {case}");
             }
         }
     }
