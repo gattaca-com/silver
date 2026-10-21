@@ -125,6 +125,7 @@ impl<Alloc: PageAlloc> PageCommitter<'_, Alloc> {
         if let Some(parent) = parent &&
             !self.writes.touches(sub.chunks_under::<C>(at))
         {
+            self.alloc.reuse(parent);
             return parent;
         }
         // A subtree is all zero iff its root is the zero hash of its depth:

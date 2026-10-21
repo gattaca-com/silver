@@ -164,6 +164,9 @@ impl<P: PageArray> PageAlloc for PagePool<P> {
     }
 
     #[inline]
+    fn reuse(&mut self, _: PageId) {}
+
+    #[inline]
     fn zero_page(&mut self, depth: u32) -> PageId {
         self.zero_pages[depth as usize]
     }

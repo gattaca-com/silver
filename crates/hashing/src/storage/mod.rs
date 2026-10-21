@@ -42,7 +42,9 @@ pub(crate) fn zero_pages<P: PageArray>(alloc: &mut impl PageAlloc) -> [PageId; Z
         let children = if depth < levels_per_page { 0 } else { 1 << rows };
         let id = alloc.alloc(children, hashes);
         for j in 0..children {
-            alloc.set_child(id, j, pages[depth - rows]);
+            let child = pages[depth - rows];
+            alloc.reuse(child);
+            alloc.set_child(id, j, child);
         }
         pages[depth] = id;
     }
@@ -78,11 +80,14 @@ pub trait PageStore {
     fn child(&self, id: PageId, j: usize) -> PageId;
 }
 
-/// What one commit needs from storage.
+/// What one commit needs from storage. Every page the new tree holds comes
+/// from exactly one of `alloc`, `reuse` or `zero_page`.
 pub trait PageAlloc: PageStore {
     /// A new page holding `rows` from slot 1 on.
     fn alloc<'a>(&mut self, children: usize, rows: impl Iterator<Item = &'a [B256]>) -> PageId;
     fn set_child(&mut self, id: PageId, j: usize, child: PageId);
+    /// Reuses `id`'s whole subtree too.
+    fn reuse(&mut self, id: PageId);
     /// The page of an all-zero subtree of merkle depth `depth`.
     fn zero_page(&mut self, depth: u32) -> PageId;
 }
