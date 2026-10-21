@@ -1,5 +1,6 @@
 use crate::{
     B256, FlatTree, HashFormat, PagePool, PageSnapshot, PageTable, SszScalar, TreeReader, TreeSpec,
+    merkle::byte_chunks,
 };
 
 /// Sixteen chunks in pages of four nodes: a root page over two page-level-1
@@ -20,15 +21,8 @@ fn values(n: usize, fill: u64) -> Vec<u64> {
 }
 
 fn tree(vals: &[u64]) -> FlatTree<P4> {
-    let leaves = u64::as_ssz_bytes(vals)
-        .chunks(32)
-        .map(|bytes| {
-            let mut chunk = [0u8; 32];
-            chunk[..bytes.len()].copy_from_slice(bytes);
-            chunk
-        })
-        .collect::<Vec<_>>();
-    FlatTree::from_leaves(CAP, vals.len(), leaves.into_iter(), HashFormat::Fixed)
+    let bytes = u64::as_ssz_bytes(vals);
+    FlatTree::from_leaves(CAP, vals.len(), byte_chunks(&bytes), HashFormat::Fixed)
 }
 
 fn base(pool: &mut Pool, vals: &[u64]) -> PageSnapshot {

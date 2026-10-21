@@ -4,7 +4,7 @@ use std::{
 };
 
 use flux_profiler::timed;
-use silver_hashing::{FlatTree, PagePool, PageSnapshot};
+use silver_hashing::{FlatTree, PagePool, PageSnapshot, merkle::byte_chunks};
 
 use super::{
     TreeSpec, TreeView, TreeWriteView,
@@ -14,14 +14,6 @@ use crate::{
     ring::{Id, Ring, RingGroup},
     types::{B256, HashFormat, SLOTS_RING_N, TreeLenMismatch},
 };
-
-fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
-    bytes.chunks(32).map(|c| {
-        let mut chunk = [0u8; 32];
-        chunk[..c.len()].copy_from_slice(c);
-        chunk
-    })
-}
 
 pub struct TreeGroup<C: TreeSpec> {
     pool: PagePool<C::Page>,

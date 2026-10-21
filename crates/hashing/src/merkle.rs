@@ -30,6 +30,15 @@ pub fn hash_concat_many(out: &mut [B256], pairs: &[B256]) {
     hashtree_rs::hash(out_bytes, in_bytes, n);
 }
 
+/// SSZ bytes as 32-byte leaf chunks, the last one zero-padded.
+pub fn byte_chunks(bytes: &[u8]) -> impl Iterator<Item = B256> + '_ {
+    bytes.chunks(32).map(|c| {
+        let mut chunk = [0u8; 32];
+        chunk[..c.len()].copy_from_slice(c);
+        chunk
+    })
+}
+
 #[inline]
 pub fn mix_in_length(root: &B256, length: usize) -> B256 {
     let mut chunk = [0u8; 32];
