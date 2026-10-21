@@ -1,4 +1,4 @@
-use std::{iter, marker::PhantomData, slice};
+use std::marker::PhantomData;
 
 use bytesize::ByteSize;
 
@@ -6,10 +6,12 @@ use crate::{
     B256, TreeSpec,
     flat_hashing::page_format::{PagePos, Subtree},
     merkle::ZERO_HASHES,
-    storage::{PageAlloc, PageArray, PageId, PageStore},
+    storage::{
+        PageAlloc, PageArray, PageId, PageStore, SEGMENT_BYTES, segment_pages, write_rows,
+        zero_pages,
+    },
 };
 
-const SEGMENT_BYTES: usize = ByteSize::mib(1).as_u64() as usize;
 const MAX_POOL_BYTES: usize = ByteSize::gib(4).as_u64() as usize;
 
 /// Reserved up front, so the segment list a reader indexes never moves.
@@ -42,28 +44,7 @@ pub struct PagePool<P: PageArray> {
 }
 
 impl<P: PageArray> PagePool<P> {
-    const SEGMENT_PAGES: usize = {
-        let page_bytes = P::LEN * size_of::<B256>();
-        assert!(page_bytes <= SEGMENT_BYTES, "PagePool: a page must fit in one segment");
-        let pages = SEGMENT_BYTES / page_bytes;
-        assert!(pages.is_power_of_two(), "PagePool: segment pages must be a power of two");
-        pages
-    };
-
-    /// Pages are cut from the leaves up, so `depth` fixes the row count and
-    /// whether the page has children, which are zero pages themselves.
-    fn alloc_zero(&mut self, depth: usize) -> PageId {
-        let levels_per_page = P::LEN.trailing_zeros() as usize;
-        let rows = depth % levels_per_page + 1;
-        let hashes = (0..rows)
-            .flat_map(|r| iter::repeat_n(slice::from_ref(&ZERO_HASHES[depth - r]), 1 << r));
-        let children = if depth < levels_per_page { 0 } else { 1 << rows };
-        let id = self.alloc(children, hashes);
-        for j in 0..children {
-            self.set_child(id, j, self.zero_pages[depth - rows]);
-        }
-        id
-    }
+    const SEGMENT_PAGES: usize = segment_pages(P::LEN);
 
     fn fresh_id(&mut self, inner: bool) -> PageId {
         let segment = match self.filling[inner as usize] {
@@ -135,9 +116,7 @@ impl<P: PageArray> Default for PagePool<P> {
             zero_pages: [0; ZERO_HASHES.len()],
             _page: PhantomData,
         };
-        for depth in 0..ZERO_HASHES.len() {
-            pool.zero_pages[depth] = pool.alloc_zero(depth);
-        }
+        pool.zero_pages = zero_pages::<P>(&mut pool);
         pool
     }
 }
@@ -174,11 +153,7 @@ impl<P: PageArray> PageAlloc for PagePool<P> {
             None => self.fresh_id(inner),
         };
         let (segment, i) = Self::split(id);
-        let mut page = &mut self.segments[segment].page_data[i * P::LEN + 1..];
-        for row in rows {
-            page[..row.len()].copy_from_slice(row);
-            page = &mut page[row.len()..];
-        }
+        write_rows(&mut self.segments[segment].page_data[i * P::LEN + 1..], rows);
         id
     }
 
