@@ -131,11 +131,17 @@ impl<C: TreeSpec> FlatTree<C> {
         writes.mark_all_hashed();
     }
 
+    /// The values' SSZ bytes, read straight from the leaves.
+    #[inline]
+    pub(crate) fn ssz_bytes(&self) -> &[u8] {
+        let data_start = self.format().data_start::<C>();
+        &self.store().nodes[data_start..].as_flattened()[..self.count() * size_of::<C::Val>()]
+    }
+
     pub fn iter_vals(&self) -> impl Iterator<Item = C::Val> + '_ {
         let sz = size_of::<C::Val>();
         let count = self.count();
-        let data_start = self.format().data_start::<C>();
-        let bytes = &self.store().nodes[data_start..].as_flattened()[..count * sz];
+        let bytes = self.ssz_bytes();
         (0..count).map(move |i| {
             let mut out = [C::Val::default()];
             <C::Val>::read_ssz_slice(&mut out, &bytes[i * sz..i * sz + sz]);
