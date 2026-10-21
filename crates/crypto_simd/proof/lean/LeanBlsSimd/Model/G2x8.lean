@@ -29,36 +29,68 @@ structure G2x8 where
 
 namespace G2x8
 
+structure Offsets where
+  two_p : Fp8
+  four_p : Fp8
+  eight_p : Fp8
+
+namespace Offsets
+
+def new : Offsets := ⟨Fp8.multiple_of_p 2, Fp8.multiple_of_p 4, Fp8.multiple_of_p 8⟩
+
+def reduced_from_4p (self : Offsets) (v : Fp2x8) : Fp2x8 :=
+  v.normalise.cond_sub self.two_p
+
+def reduced_from_8p (self : Offsets) (v : Fp2x8) : Fp2x8 :=
+  (v.normalise.cond_sub self.four_p).cond_sub self.two_p
+
+end Offsets
+
 /-- dbl-2009-l. Undecided when y = 0 or z = 0. -/
 def double (self : G2x8) : G2x8 × Mmask8 :=
+  let o := Offsets.new
   let a := self.x.square
   let b := self.y.square
-  let c := b.square
-  let d := (((self.x.add b).square.sub a).sub c).double
-  let e := a.double.add a
+  let e := ((a.add_raw a).add_raw a).normalise
   let f := e.square
-  let x3 := f.sub d.double
-  let y3 := (e.mul (d.sub x3)).sub c.double.double.double
-  let z3 := (self.y.mul self.z).double
+  let c := b.square
+  let xb := (self.x.add_raw b).normalise
+  let xb_squared := xb.square
+  let yz := self.y.mul self.z
+  let d := o.reduced_from_8p ((xb_squared.sub_raw a o.two_p).sub_raw c o.two_p)
+  let d := o.reduced_from_4p (d.add_raw d)
+  let x3 := (f.sub_raw (d.add_raw d) o.four_p).normalise
+  let dx := (d.sub_raw x3 o.eight_p).normalise
+  let c8 := o.reduced_from_8p (((c.add_raw c).add_raw c).add_raw c)
+  let y3 := o.reduced_from_8p ((e.mul dx).sub_raw (c8.add_raw c8) o.four_p)
+  let z3 := o.reduced_from_4p (yz.add_raw yz)
   let undecided := self.y.is_zero_mask ||| self.z.is_zero_mask
-  ({ x := x3, y := y3, z := z3 }, undecided)
+  (⟨(x3.cond_sub o.four_p).cond_sub o.two_p, y3, z3⟩, undecided)
 
 /-- madd-2007-bl with Z2 = 1. Undecided when H = 0, that is equal x coordinates, or z = 0. -/
 def add_affine (self : G2x8) (qx qy : Fp2x8) : G2x8 × Mmask8 :=
+  let o := Offsets.new
   let z1z1 := self.z.square
+  let qy_z := qy.mul self.z
   let u2 := qx.mul z1z1
-  let s2 := (qy.mul self.z).mul z1z1
+  let s2 := qy_z.mul z1z1
   let h := u2.sub self.x
   let hh := h.square
-  let i := hh.double.double
+  let zh := (self.z.add_raw h).normalise
+  let zh_squared := zh.square
+  let i := (((hh.add_raw hh).add_raw hh).add_raw hh).normalise
   let j := h.mul i
-  let r := (s2.sub self.y).double
   let v := self.x.mul i
-  let x3 := (r.square.sub j).sub v.double
-  let y3 := (r.mul (v.sub x3)).sub (self.y.mul j).double
-  let z3 := ((self.z.add h).square.sub z1z1).sub hh
+  let r := s2.sub_raw self.y o.two_p
+  let r := (r.add_raw r).normalise
+  let rr := r.square
+  let yj := self.y.mul j
+  let x3 := o.reduced_from_8p ((rr.sub_raw j o.two_p).sub_raw (v.add_raw v) o.four_p)
+  let vx := (v.sub_raw x3 o.two_p).normalise
+  let y3 := o.reduced_from_8p ((r.mul vx).sub_raw (yj.add_raw yj) o.four_p)
+  let z3 := o.reduced_from_8p ((zh_squared.sub_raw z1z1 o.two_p).sub_raw hh o.two_p)
   let undecided := h.is_zero_mask ||| self.z.is_zero_mask
-  ({ x := x3, y := y3, z := z3 }, undecided)
+  (⟨x3, y3, z3⟩, undecided)
 
 /-- The body of `times_minus_z`'s loop. -/
 def chainStep (px py : Fp2x8) : G2x8 × Mmask8 → ℕ → G2x8 × Mmask8 :=

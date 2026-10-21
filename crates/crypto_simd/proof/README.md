@@ -342,6 +342,7 @@ Fp8 uses the same [range classes as the Fr8 FFT kernel](#ifma-fr-fft-kernel), wi
 The shared `SignedLimbs` model defines raw addition, offset subtraction and signed carrying for both fields.
 Its eight-limb normalization theorem preserves values in `[0, R)` when each limb has magnitude below `2^62`.
 `Proofs/Fp8Lazy.lean` connects these operations to Montgomery field values and composes their bounds.
+`Proofs/Fp8Holds.lean` supplies the reduced field representations shared by Fp8 and Fp2 proofs.
 Conditional subtraction preserves residues when its offset is a multiple of `p`.
 `Proofs/Fp8Multiple.lean` proves that `multiple_of_p c` returns normalized limbs for `c*p`, for every `c < 2^12`.
 
@@ -351,6 +352,18 @@ G1 formulas keep intermediate values below `10p`, with limb magnitudes below `6*
 Their largest product bound is `8p * 8p`, from squaring the doubled difference in point addition.
 Offsets of `2p`, `4p` and `8p` keep differences nonnegative; final conditional subtractions restore reduced coordinates.
 The G1 correctness theorems retain their reduced input and output contracts and their undecided-mask premises.
+
+`Fp2x8.LazyRep` and `Fp2x8.BoundRep` apply the Fp8 classes to each component.
+`BoundRep.mul` accepts normalized components below `16p`; its Karatsuba sums stay below `32p`.
+The largest underlying Fp8 product is below `1024p²`, which is below `R*p`.
+`BoundRep.square` accepts normalized components below `8p` and offsets the component difference by `8p`.
+Its imaginary component uses `c0 * (2*c1)`, carrying the doubled operand before multiplying.
+Both lemmas return reduced components; the existing reduced-input `Holds.mul` and `Holds.square` statements follow as corollaries.
+
+G2's double and affine-add formulas use the same componentwise bounds as G1, with reduced coordinates at both boundaries.
+Their multiplication operands stay below `16p`, and their square operands below `8p`.
+G1 and G2 retain separate models of Rust's offset structs but share the Fp8 reduction-chain proofs.
+The G2 formula theorems preserve their exact field triples and undecided-mask equalities.
 
 ### G1 Scott criterion
 
@@ -456,6 +469,8 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
 | `Square.lean` | The triangular square accumulator equals the full product; omitting cross-term doubling fails on an input with two nonzero limbs. |
 | `Fp8Lazy.lean` | Missing conditional subtraction violates the reduced bound; an insufficient offset makes a difference negative; a tighter lazy bound fails. Normalized operands alone do not guarantee a reduced product. |
+| `Fp2Lazy.lean` | Karatsuba sums need carrying; a smaller square offset makes a valid lazy difference negative. Omitting the imaginary-component doubling violates the square contract. |
+| `G2Lazy.lean` | Dropping the final conditional subtraction leaves nonreduced components. Replacing the double formula's `8p` offset with `4p` makes a valid intermediate difference negative. |
 | `Reduction.lean` | Both widths retain the stale dead limb; dropping the inverse premise can change a surviving limb. The valid inverse case agrees above the row index. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
@@ -472,10 +487,10 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 |---|---|---|
 | `mod.rs` | `b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450` | `0002db9653bd730897823f019d36b21c552161ed` |
 | `constants.rs` | `903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f` | `87190c24741f42bc50d3cae4ed384995cdc15f14` |
-| `fp8.rs` | `084a6ce228c77069a6580fd90a1fbd95552751425cd6ef58857c9d17e8098474` | `01985d62f40d5476b03c53af7967c8187567bcd5` |
-| `fp2x8.rs` | `9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069` | `951eadde84eca23e2ebe8626bc0382a205497071` |
-| `g1x8.rs` | `2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9` | `ddbd6159490ff0f58b27dbf4b4e63db92bac5391` |
-| `g2x8.rs` | `57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295` | `804ebf1d0e6681d20f07ede1867cef929ebe190c` |
+| `fp8.rs` | `a978b45ae808ac4483f71ada8ec170bbaefd82bea89e20582ade3d2b07641b23` | `4edaa33cbc9e385922a4d8de8b83ae9ee79d9d9c` |
+| `fp2x8.rs` | `9e7b7141a2492d3976f6df94f83dd96057dfee1a57a0dacfb4e47d79f0b86237` | `b38a8bd9803b11760f4680c4c66bddda0302a1e8` |
+| `g1x8.rs` | `8a14852522c27c2de80af49a8c805819ae2e7e5662602a3f2fda607b725ce1e3` | `8861243ddd8f04bd593b29e8c72386787b07fedd` |
+| `g2x8.rs` | `3e5da4797933264da07aa002060cb02d9b0caf794013c02a2a1984b174e9294b` | `9bbffcc30319f2c024adfa74748ad57e4236b437` |
 | `decompress.rs` | `718f280500e78890c78b175fe36378b62cf57244b356b6555ede1c829e93e184` | `1a9052c76f9797fd07e760df899ef017aa0adf62` |
 | `decompress_g2.rs` | `14df66f6f153149fc329bce2f2229a1f10c190bb9727d1604cd52a552df82cb8` | `e8f7d7cef432288936367f602a7b79838095bead` |
 
@@ -487,10 +502,10 @@ To check for changes since the proof, run this from `crates/crypto_simd/src/bls`
 sha256sum -c <<'EOF'
 b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450  mod.rs
 903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f  constants.rs
-084a6ce228c77069a6580fd90a1fbd95552751425cd6ef58857c9d17e8098474  fp8.rs
-9d5c8b5e87d996b2c374f8c38438c16f171bd8e39cab012267337e8baee5b069  fp2x8.rs
-2063afb8b7b931b44006b7979df3f0846bd0bc4e832ab8728d06735ecb18b7c9  g1x8.rs
-57a02d26fda9dd934c647fe7020e961a6c2efcd1e20ed72a09202cf2ccef7295  g2x8.rs
+a978b45ae808ac4483f71ada8ec170bbaefd82bea89e20582ade3d2b07641b23  fp8.rs
+9e7b7141a2492d3976f6df94f83dd96057dfee1a57a0dacfb4e47d79f0b86237  fp2x8.rs
+8a14852522c27c2de80af49a8c805819ae2e7e5662602a3f2fda607b725ce1e3  g1x8.rs
+3e5da4797933264da07aa002060cb02d9b0caf794013c02a2a1984b174e9294b  g2x8.rs
 718f280500e78890c78b175fe36378b62cf57244b356b6555ede1c829e93e184  decompress.rs
 14df66f6f153149fc329bce2f2229a1f10c190bb9727d1604cd52a552df82cb8  decompress_g2.rs
 EOF

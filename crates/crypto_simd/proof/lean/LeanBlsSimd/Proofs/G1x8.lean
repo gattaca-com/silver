@@ -18,13 +18,12 @@ structure Holds (self : G1x8) (l : Fin 8) (P : G1) : Prop where
 private theorem reduced_from_4p_holds {k m : ℕ} {v : Fp8} {l : Fin 8}
     {a : ZMod Fp.modulus} (h : Fp8.LazyRep k m v l a)
     (hk : k ≤ 4) (hm : m ≤ 1024) : (Offsets.new.reduced_from_4p v).Holds l a := by
-  exact ((h.normalise (by omega) hm).cond_sub (Fp8.offset_two l) (by omega)).holds (by decide)
+  exact h.reduced_from_4p hk hm
 
 private theorem reduced_from_8p_holds {k m : ℕ} {v : Fp8} {l : Fin 8}
     {a : ZMod Fp.modulus} (h : Fp8.LazyRep k m v l a)
     (hk : k ≤ 8) (hm : m ≤ 1024) : (Offsets.new.reduced_from_8p v).Holds l a := by
-  exact (((h.normalise (by omega) hm).cond_sub (Fp8.offset_four l) (by omega)).cond_sub
-    (Fp8.offset_two l) (by decide)).holds (by decide)
+  exact h.reduced_from_8p hk hm
 
 theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
     (h : self.Holds l P) (_hP : G1.Valid P)

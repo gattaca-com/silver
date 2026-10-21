@@ -126,15 +126,22 @@ structure bls.decompress_g2.Decoded where
   invalid : Std.U8
   undecided : Std.U8
 
+/-- [silver_crypto_simd::bls::g2x8::Offsets]
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 32:0-36:1 -/
+structure bls.g2x8.Offsets where
+  two_p : bls.fp8.Fp8
+  four_p : bls.fp8.Fp8
+  eight_p : bls.fp8.Fp8
+
 /-- [silver_crypto_simd::bls::fp2x8::Fp2x8]
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 8:0-11:1
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 12:0-15:1
     Visibility: public -/
 structure bls.fp2x8.Fp2x8 where
   c0 : bls.fp8.Fp8
   c1 : bls.fp8.Fp8
 
 /-- [silver_crypto_simd::bls::g2x8::G2x8]
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 18:0-22:1
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 25:0-29:1
     Visibility: public -/
 structure bls.g2x8.G2x8 where
   x : bls.fp2x8.Fp2x8

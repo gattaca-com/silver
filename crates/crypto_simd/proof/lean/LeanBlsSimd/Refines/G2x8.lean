@@ -50,18 +50,52 @@ def toMembership (x : LeanBlsSimd.Membership) : silver_crypto_simd.bls.Membershi
 
 namespace G2x8
 
+namespace Offsets
+
+def ofOffsets (o : g2x8.Offsets) : Offsets :=
+  ⟨ofFp8 o.two_p, ofFp8 o.four_p, ofFp8 o.eight_p⟩
+
+def toOffsets (o : Offsets) : g2x8.Offsets :=
+  ⟨toFp8 o.two_p, toFp8 o.four_p, toFp8 o.eight_p⟩
+
+@[simp] theorem ofOffsets_toOffsets (o : Offsets) : ofOffsets (toOffsets o) = o := by
+  simp [ofOffsets, toOffsets]
+
+theorem new_refines : g2x8.Offsets.new = ok (toOffsets new) := by
+  simp [g2x8.Offsets.new, Fp8.multiple_of_p_refines 2#u64 (by decide),
+    Fp8.multiple_of_p_refines 4#u64 (by decide), Fp8.multiple_of_p_refines 8#u64 (by decide),
+    new, toOffsets, show ofU64 2#u64 = 2 from rfl,
+    show ofU64 4#u64 = 4 from rfl, show ofU64 8#u64 = 8 from rfl]
+
+theorem reduced_from_4p_refines (o : g2x8.Offsets) (v : fp2x8.Fp2x8) :
+    g2x8.Offsets.reduced_from_4p o v =
+      ok (toFp2x8 ((ofOffsets o).reduced_from_4p (ofFp2x8 v))) := by
+  simp [g2x8.Offsets.reduced_from_4p, Fp2x8.normalise_refines, Fp2x8.cond_sub_refines,
+    reduced_from_4p, ofOffsets]
+
+theorem reduced_from_8p_refines (o : g2x8.Offsets) (v : fp2x8.Fp2x8) :
+    g2x8.Offsets.reduced_from_8p o v =
+      ok (toFp2x8 ((ofOffsets o).reduced_from_8p (ofFp2x8 v))) := by
+  simp [g2x8.Offsets.reduced_from_8p, Fp2x8.normalise_refines, Fp2x8.cond_sub_refines,
+    reduced_from_8p, ofOffsets]
+
+end Offsets
+
 theorem double_refines (self : g2x8.G2x8) :
     g2x8.G2x8.double self = ok (Prod.map toG2x8 toU8 (ofG2x8 self).double) := by
-  simp [g2x8.G2x8.double, Fp2x8.square_refines, Fp2x8.add_refines, Fp2x8.sub_refines,
-    Fp2x8.double_refines, Fp2x8.mul_refines, Fp2x8.is_zero_mask_refines, lift, G2x8.double,
-    toG2x8]
+  simp [g2x8.G2x8.double, Fp2x8.square_refines, Fp2x8.add_raw_refines, Fp2x8.sub_raw_refines,
+    Fp2x8.normalise_refines, Fp2x8.cond_sub_refines, Fp2x8.mul_refines,
+    Fp2x8.is_zero_mask_refines, Offsets.new_refines, Offsets.reduced_from_4p_refines,
+    Offsets.reduced_from_8p_refines, Offsets.toOffsets, Offsets.ofOffsets,
+    lift, G2x8.double, toG2x8]
 
 theorem add_affine_refines (self : g2x8.G2x8) (qx qy : fp2x8.Fp2x8) :
     g2x8.G2x8.add_affine self qx qy =
       ok (Prod.map toG2x8 toU8 ((ofG2x8 self).add_affine (ofFp2x8 qx) (ofFp2x8 qy))) := by
-  simp [g2x8.G2x8.add_affine, Fp2x8.square_refines, Fp2x8.add_refines, Fp2x8.sub_refines,
-    Fp2x8.double_refines, Fp2x8.mul_refines, Fp2x8.is_zero_mask_refines, lift, G2x8.add_affine,
-    toG2x8]
+  simp [g2x8.G2x8.add_affine, Fp2x8.square_refines, Fp2x8.add_raw_refines, Fp2x8.sub_raw_refines,
+    Fp2x8.sub_refines, Fp2x8.normalise_refines, Fp2x8.mul_refines,
+    Fp2x8.is_zero_mask_refines, Offsets.new_refines, Offsets.reduced_from_8p_refines,
+    Offsets.toOffsets, Offsets.ofOffsets, lift, G2x8.add_affine, toG2x8]
 
 theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c : U32) (n : ℕ)
     (hcn : c.val = n) (hn : n ≤ 63) :

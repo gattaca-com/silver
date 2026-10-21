@@ -2402,34 +2402,52 @@ def bls.decompress_g2.point
       y := { fp := (Array.make 2#usize [ { l := y0 }, { l := y1 } ] (by rfl)) }
     }
 
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::cond_sub]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 72:4-74:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.cond_sub
+  (self : bls.fp2x8.Fp2x8) (c : bls.fp8.Fp8) : Result bls.fp2x8.Fp2x8 := do
+  let f ← bls.fp8.Fp8.cond_sub self.c0 c
+  let f1 ← bls.fp8.Fp8.cond_sub self.c1 c
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::normalise]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 66:4-68:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.normalise
+  (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
+  let f ← bls.fp8.Fp8.normalise self.c0
+  let f1 ← bls.fp8.Fp8.normalise self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::Offsets}::reduced_from_8p]:
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 59:4-61:5 -/
+def bls.g2x8.Offsets.reduced_from_8p
+  (self : bls.g2x8.Offsets) (v : bls.fp2x8.Fp2x8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let fx ← bls.fp2x8.Fp2x8.normalise v
+  let fx1 ← bls.fp2x8.Fp2x8.cond_sub fx self.four_p
+  bls.fp2x8.Fp2x8.cond_sub fx1 self.two_p
+
+/-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::Offsets}::new]:
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 41:4-47:5 -/
+def bls.g2x8.Offsets.new : Result bls.g2x8.Offsets := do
+  let f ← bls.fp8.Fp8.multiple_of_p 2#u64
+  let f1 ← bls.fp8.Fp8.multiple_of_p 4#u64
+  let f2 ← bls.fp8.Fp8.multiple_of_p 8#u64
+  ok { two_p := f, four_p := f1, eight_p := f2 }
+
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 120:4-122:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 153:4-155:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_zero_mask (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
   let i ← bls.fp8.Fp8.is_zero_mask self.c0
   let i1 ← bls.fp8.Fp8.is_zero_mask self.c1
   ok (i &&& i1)
 
-/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::add]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 45:4-47:5
-    Visibility: public -/
-def bls.fp2x8.Fp2x8.add
-  (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
-  Result bls.fp2x8.Fp2x8
-  := do
-  let f ← bls.fp8.Fp8.add self.c0 rhs.c0
-  let f1 ← bls.fp8.Fp8.add self.c1 rhs.c1
-  ok { c0 := f, c1 := f1 }
-
-/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::double]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 57:4-59:5
-    Visibility: public -/
-def bls.fp2x8.Fp2x8.double
-  (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
-  bls.fp2x8.Fp2x8.add self self
-
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sub]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 51:4-53:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 84:4-86:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sub
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2439,26 +2457,46 @@ def bls.fp2x8.Fp2x8.sub
   let f1 ← bls.fp8.Fp8.sub self.c1 rhs.c1
   ok { c0 := f, c1 := f1 }
 
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::double]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 489:4-491:5
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sub_raw]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 60:4-62:5
     Visibility: public -/
-def bls.fp8.Fp8.double (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  bls.fp8.Fp8.add self self
+def bls.fp2x8.Fp2x8.sub_raw
+  (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) (offset : bls.fp8.Fp8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.sub_raw self.c0 rhs.c0 offset
+  let f1 ← bls.fp8.Fp8.sub_raw self.c1 rhs.c1 offset
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::add_raw]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 54:4-56:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.add_raw
+  (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.add_raw self.c0 rhs.c0
+  let f1 ← bls.fp8.Fp8.add_raw self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::square]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 37:4-41:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 45:4-50:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.square
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
-  let f ← bls.fp8.Fp8.add self.c0 self.c1
-  let f1 ← bls.fp8.Fp8.sub self.c0 self.c1
-  let c0 ← bls.fp8.Fp8.mul f f1
-  let f2 ← bls.fp8.Fp8.mul self.c0 self.c1
-  let c1 ← bls.fp8.Fp8.double f2
-  ok { c0, c1 }
+  let f ← bls.fp8.Fp8.add_raw self.c0 self.c1
+  let sum ← bls.fp8.Fp8.normalise f
+  let f1 ← bls.fp8.Fp8.multiple_of_p 8#u64
+  let f2 ← bls.fp8.Fp8.sub_raw self.c0 self.c1 f1
+  let difference ← bls.fp8.Fp8.normalise f2
+  let f3 ← bls.fp8.Fp8.add_raw self.c1 self.c1
+  let twice_c1 ← bls.fp8.Fp8.normalise f3
+  let f4 ← bls.fp8.Fp8.mul sum difference
+  let f5 ← bls.fp8.Fp8.mul self.c0 twice_c1
+  ok { c0 := f4, c1 := f5 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 28:4-33:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 33:4-40:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.mul
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2466,84 +2504,117 @@ def bls.fp2x8.Fp2x8.mul
   := do
   let v0 ← bls.fp8.Fp8.mul self.c0 rhs.c0
   let v1 ← bls.fp8.Fp8.mul self.c1 rhs.c1
-  let f ← bls.fp8.Fp8.add self.c0 self.c1
-  let f1 ← bls.fp8.Fp8.add rhs.c0 rhs.c1
-  let s ← bls.fp8.Fp8.mul f f1
+  let f ← bls.fp8.Fp8.add_raw self.c0 self.c1
+  let sum ← bls.fp8.Fp8.normalise f
+  let f1 ← bls.fp8.Fp8.add_raw rhs.c0 rhs.c1
+  let rhs_sum ← bls.fp8.Fp8.normalise f1
+  let s ← bls.fp8.Fp8.mul sum rhs_sum
   let f2 ← bls.fp8.Fp8.sub v0 v1
   let f3 ← bls.fp8.Fp8.sub s v0
   let f4 ← bls.fp8.Fp8.sub f3 v1
   ok { c0 := f2, c1 := f4 }
 
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::add_affine]:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 45:4-60:5
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 92:4-115:5
     Visibility: public -/
 def bls.g2x8.G2x8.add_affine
   (self : bls.g2x8.G2x8) (qx : bls.fp2x8.Fp2x8) (qy : bls.fp2x8.Fp2x8) :
   Result (bls.g2x8.G2x8 × Std.U8)
   := do
+  let o ← bls.g2x8.Offsets.new
   let z1z1 ← bls.fp2x8.Fp2x8.square self.z
+  let qy_z ← bls.fp2x8.Fp2x8.mul qy self.z
   let u2 ← bls.fp2x8.Fp2x8.mul qx z1z1
-  let fx ← bls.fp2x8.Fp2x8.mul qy self.z
-  let s2 ← bls.fp2x8.Fp2x8.mul fx z1z1
+  let s2 ← bls.fp2x8.Fp2x8.mul qy_z z1z1
   let h ← bls.fp2x8.Fp2x8.sub u2 self.x
   let hh ← bls.fp2x8.Fp2x8.square h
-  let fx1 ← bls.fp2x8.Fp2x8.double hh
-  let i ← bls.fp2x8.Fp2x8.double fx1
+  let fx ← bls.fp2x8.Fp2x8.add_raw self.z h
+  let zh ← bls.fp2x8.Fp2x8.normalise fx
+  let zh_squared ← bls.fp2x8.Fp2x8.square zh
+  let fx1 ← bls.fp2x8.Fp2x8.add_raw hh hh
+  let fx2 ← bls.fp2x8.Fp2x8.add_raw fx1 hh
+  let fx3 ← bls.fp2x8.Fp2x8.add_raw fx2 hh
+  let i ← bls.fp2x8.Fp2x8.normalise fx3
   let j ← bls.fp2x8.Fp2x8.mul h i
-  let fx2 ← bls.fp2x8.Fp2x8.sub s2 self.y
-  let r ← bls.fp2x8.Fp2x8.double fx2
   let v ← bls.fp2x8.Fp2x8.mul self.x i
-  let fx3 ← bls.fp2x8.Fp2x8.square r
-  let fx4 ← bls.fp2x8.Fp2x8.sub fx3 j
-  let fx5 ← bls.fp2x8.Fp2x8.double v
-  let x3 ← bls.fp2x8.Fp2x8.sub fx4 fx5
-  let fx6 ← bls.fp2x8.Fp2x8.sub v x3
-  let fx7 ← bls.fp2x8.Fp2x8.mul r fx6
-  let fx8 ← bls.fp2x8.Fp2x8.mul self.y j
-  let fx9 ← bls.fp2x8.Fp2x8.double fx8
-  let y3 ← bls.fp2x8.Fp2x8.sub fx7 fx9
-  let fx10 ← bls.fp2x8.Fp2x8.add self.z h
-  let fx11 ← bls.fp2x8.Fp2x8.square fx10
-  let fx12 ← bls.fp2x8.Fp2x8.sub fx11 z1z1
-  let z3 ← bls.fp2x8.Fp2x8.sub fx12 hh
+  let r ← bls.fp2x8.Fp2x8.sub_raw s2 self.y o.two_p
+  let fx4 ← bls.fp2x8.Fp2x8.add_raw r r
+  let r1 ← bls.fp2x8.Fp2x8.normalise fx4
+  let rr ← bls.fp2x8.Fp2x8.square r1
+  let yj ← bls.fp2x8.Fp2x8.mul self.y j
+  let fx5 ← bls.fp2x8.Fp2x8.sub_raw rr j o.two_p
+  let fx6 ← bls.fp2x8.Fp2x8.add_raw v v
+  let fx7 ← bls.fp2x8.Fp2x8.sub_raw fx5 fx6 o.four_p
+  let x3 ← bls.g2x8.Offsets.reduced_from_8p o fx7
+  let fx8 ← bls.fp2x8.Fp2x8.sub_raw v x3 o.two_p
+  let vx ← bls.fp2x8.Fp2x8.normalise fx8
+  let fx9 ← bls.fp2x8.Fp2x8.mul r1 vx
+  let fx10 ← bls.fp2x8.Fp2x8.add_raw yj yj
+  let fx11 ← bls.fp2x8.Fp2x8.sub_raw fx9 fx10 o.four_p
+  let y3 ← bls.g2x8.Offsets.reduced_from_8p o fx11
+  let fx12 ← bls.fp2x8.Fp2x8.sub_raw zh_squared z1z1 o.two_p
+  let fx13 ← bls.fp2x8.Fp2x8.sub_raw fx12 hh o.two_p
+  let z3 ← bls.g2x8.Offsets.reduced_from_8p o fx13
   let i1 ← bls.fp2x8.Fp2x8.is_zero_mask h
   let i2 ← bls.fp2x8.Fp2x8.is_zero_mask self.z
   let undecided ← lift (i1 ||| i2)
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
+/-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::Offsets}::reduced_from_4p]:
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 52:4-54:5 -/
+def bls.g2x8.Offsets.reduced_from_4p
+  (self : bls.g2x8.Offsets) (v : bls.fp2x8.Fp2x8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let fx ← bls.fp2x8.Fp2x8.normalise v
+  bls.fp2x8.Fp2x8.cond_sub fx self.two_p
+
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::double]:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 28:4-40:5
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 68:4-87:5
     Visibility: public -/
 def bls.g2x8.G2x8.double
   (self : bls.g2x8.G2x8) : Result (bls.g2x8.G2x8 × Std.U8) := do
+  let o ← bls.g2x8.Offsets.new
   let a ← bls.fp2x8.Fp2x8.square self.x
   let b ← bls.fp2x8.Fp2x8.square self.y
-  let c ← bls.fp2x8.Fp2x8.square b
-  let fx ← bls.fp2x8.Fp2x8.add self.x b
-  let fx1 ← bls.fp2x8.Fp2x8.square fx
-  let fx2 ← bls.fp2x8.Fp2x8.sub fx1 a
-  let fx3 ← bls.fp2x8.Fp2x8.sub fx2 c
-  let d ← bls.fp2x8.Fp2x8.double fx3
-  let fx4 ← bls.fp2x8.Fp2x8.double a
-  let e ← bls.fp2x8.Fp2x8.add fx4 a
+  let fx ← bls.fp2x8.Fp2x8.add_raw a a
+  let fx1 ← bls.fp2x8.Fp2x8.add_raw fx a
+  let e ← bls.fp2x8.Fp2x8.normalise fx1
   let f ← bls.fp2x8.Fp2x8.square e
-  let fx5 ← bls.fp2x8.Fp2x8.double d
-  let x3 ← bls.fp2x8.Fp2x8.sub f fx5
-  let fx6 ← bls.fp2x8.Fp2x8.sub d x3
-  let fx7 ← bls.fp2x8.Fp2x8.mul e fx6
-  let fx8 ← bls.fp2x8.Fp2x8.double c
-  let fx9 ← bls.fp2x8.Fp2x8.double fx8
-  let fx10 ← bls.fp2x8.Fp2x8.double fx9
-  let y3 ← bls.fp2x8.Fp2x8.sub fx7 fx10
-  let fx11 ← bls.fp2x8.Fp2x8.mul self.y self.z
-  let z3 ← bls.fp2x8.Fp2x8.double fx11
+  let c ← bls.fp2x8.Fp2x8.square b
+  let fx2 ← bls.fp2x8.Fp2x8.add_raw self.x b
+  let xb ← bls.fp2x8.Fp2x8.normalise fx2
+  let xb_squared ← bls.fp2x8.Fp2x8.square xb
+  let yz ← bls.fp2x8.Fp2x8.mul self.y self.z
+  let fx3 ← bls.fp2x8.Fp2x8.sub_raw xb_squared a o.two_p
+  let fx4 ← bls.fp2x8.Fp2x8.sub_raw fx3 c o.two_p
+  let d ← bls.g2x8.Offsets.reduced_from_8p o fx4
+  let fx5 ← bls.fp2x8.Fp2x8.add_raw d d
+  let d1 ← bls.g2x8.Offsets.reduced_from_4p o fx5
+  let fx6 ← bls.fp2x8.Fp2x8.add_raw d1 d1
+  let fx7 ← bls.fp2x8.Fp2x8.sub_raw f fx6 o.four_p
+  let x3 ← bls.fp2x8.Fp2x8.normalise fx7
+  let fx8 ← bls.fp2x8.Fp2x8.sub_raw d1 x3 o.eight_p
+  let dx ← bls.fp2x8.Fp2x8.normalise fx8
+  let fx9 ← bls.fp2x8.Fp2x8.add_raw c c
+  let fx10 ← bls.fp2x8.Fp2x8.add_raw fx9 c
+  let fx11 ← bls.fp2x8.Fp2x8.add_raw fx10 c
+  let c8 ← bls.g2x8.Offsets.reduced_from_8p o fx11
+  let fx12 ← bls.fp2x8.Fp2x8.mul e dx
+  let fx13 ← bls.fp2x8.Fp2x8.add_raw c8 c8
+  let fx14 ← bls.fp2x8.Fp2x8.sub_raw fx12 fx13 o.four_p
+  let y3 ← bls.g2x8.Offsets.reduced_from_8p o fx14
+  let fx15 ← bls.fp2x8.Fp2x8.add_raw yz yz
+  let z3 ← bls.g2x8.Offsets.reduced_from_4p o fx15
   let i ← bls.fp2x8.Fp2x8.is_zero_mask self.y
   let i1 ← bls.fp2x8.Fp2x8.is_zero_mask self.z
   let undecided ← lift (i ||| i1)
-  ok ({ x := x3, y := y3, z := z3 }, undecided)
+  let fx16 ← bls.fp2x8.Fp2x8.cond_sub x3 o.four_p
+  let fx17 ← bls.fp2x8.Fp2x8.cond_sub fx16 o.two_p
+  ok ({ x := fx17, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::one]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 22:4-24:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 26:4-28:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.one : Result bls.fp2x8.Fp2x8 := do
   let f ← bls.fp8.Fp8.one
@@ -2551,7 +2622,7 @@ def bls.fp2x8.Fp2x8.one : Result bls.fp2x8.Fp2x8 := do
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::times_minus_z]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 70:8-85:9 -/
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 125:8-140:9 -/
 @[rust_loop_body]
 def bls.g2x8.G2x8.times_minus_z_loop.body
   (px : bls.fp2x8.Fp2x8) (py : bls.fp2x8.Fp2x8) (undecided : Std.U8)
@@ -2602,7 +2673,7 @@ def bls.g2x8.G2x8.times_minus_z_loop.body
   else ok (done (r, undecided))
 
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::times_minus_z]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 70:8-85:9 -/
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 125:8-140:9 -/
 @[rust_loop]
 def bls.g2x8.G2x8.times_minus_z_loop
   (px : bls.fp2x8.Fp2x8) (py : bls.fp2x8.Fp2x8) (undecided : Std.U8)
@@ -2615,7 +2686,7 @@ def bls.g2x8.G2x8.times_minus_z_loop
     (undecided, r, bit)
 
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::times_minus_z]:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 66:4-87:5 -/
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 121:4-142:5 -/
 def bls.g2x8.G2x8.times_minus_z
   (px : bls.fp2x8.Fp2x8) (py : bls.fp2x8.Fp2x8) :
   Result (bls.g2x8.G2x8 × Std.U8)
@@ -2625,7 +2696,7 @@ def bls.g2x8.G2x8.times_minus_z
   bls.g2x8.G2x8.times_minus_z_loop px py 0#u8 { x := px, y := py, z := fx } bit
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 114:4-116:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 147:4-149:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.eq_mask
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2634,7 +2705,7 @@ def bls.fp2x8.Fp2x8.eq_mask
   ok (i &&& i1)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::conjugate]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 69:4-71:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 102:4-104:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.conjugate
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2642,7 +2713,7 @@ def bls.fp2x8.Fp2x8.conjugate
   ok { self with c1 := f }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::neg]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 63:4-65:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 96:4-98:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.neg (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
   let f ← bls.fp8.Fp8.neg self.c0
@@ -2650,7 +2721,7 @@ def bls.fp2x8.Fp2x8.neg (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::splat]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 16:4-18:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 20:4-22:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.splat
   (limbs : Array (Array Std.U64 8#usize) 2#usize) :
@@ -2663,7 +2734,7 @@ def bls.fp2x8.Fp2x8.splat
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::g2x8::{silver_crypto_simd::bls::g2x8::G2x8}::scott_membership]:
-    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 92:4-104:5
+    Source: 'crates/crypto_simd/src/bls/g2x8.rs', lines 147:4-159:5
     Visibility: public -/
 def bls.g2x8.G2x8.scott_membership
   (px : bls.fp2x8.Fp2x8) (py : bls.fp2x8.Fp2x8) : Result bls.Membership := do
@@ -2689,7 +2760,7 @@ def bls.g2x8.G2x8.scott_membership
   ok { members := i3, undecided }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 109:4-111:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 142:4-144:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_larger_root_mask
   (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2707,7 +2778,7 @@ def bls.fp8.Fp8.half (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.mul self f
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 82:4-84:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 115:4-117:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.select
   (k : Std.U8) (a : bls.fp2x8.Fp2x8) (b : bls.fp2x8.Fp2x8) :
@@ -2718,7 +2789,7 @@ def bls.fp2x8.Fp2x8.select
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul_by_i]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 75:4-77:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 108:4-110:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.mul_by_i
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2726,7 +2797,7 @@ def bls.fp2x8.Fp2x8.mul_by_i
   ok { c0 := f, c1 := self.c0 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sqrt]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 92:4-103:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 125:4-136:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sqrt
   (self : bls.fp2x8.Fp2x8) : Result (bls.fp2x8.Fp2x8 × Std.U8) := do
@@ -2751,6 +2822,17 @@ def bls.fp2x8.Fp2x8.sqrt
   let root ← bls.fp2x8.Fp2x8.select squares_to_neg { c0 := f5, c1 := f7 } fx1
   let i1 ← lift (squares_to_self ||| squares_to_neg)
   ok (root, i1)
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::add]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 78:4-80:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.add
+  (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.add self.c0 rhs.c0
+  let f1 ← bls.fp8.Fp8.add self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::decompress_g2::decompress]: loop body 0:
     Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 147:4-149:5

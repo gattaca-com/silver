@@ -37,17 +37,48 @@ structure Holds (P : G2x8) (l : Fin 8) (t : Fin 3 → Fp2Field) : Prop where
 
 variable {P : G2x8} {l : Fin 8} {t : Fin 3 → Fp2Field}
 
+private theorem reduced_from_4p_holds {k m : ℕ} {v : Fp2x8} {l : Fin 8}
+    {a : Fp2Field} (h : Fp2x8.LazyRep k m v l a)
+    (hk : k ≤ 4) (hm : m ≤ 1024) : (Offsets.new.reduced_from_4p v).Holds l a := by
+  exact h.reduced_from_4p hk hm
+
+private theorem reduced_from_8p_holds {k m : ℕ} {v : Fp2x8} {l : Fin 8}
+    {a : Fp2Field} (h : Fp2x8.LazyRep k m v l a)
+    (hk : k ≤ 8) (hm : m ≤ 1024) : (Offsets.new.reduced_from_8p v).Holds l a := by
+  exact h.reduced_from_8p hk hm
+
 theorem Holds.double (hP : P.Holds l t) :
     P.double.1.Holds l (Kernel.double t).1 ∧
       P.double.2.toNat.testBit l = (Kernel.double t).2 := by
   have ha := hP.x.square
   have hb := hP.y.square
+  have he := ((ha.lazyRep.add_raw ha.lazyRep (by decide)).add_raw ha.lazyRep
+    (by decide)).normalise (by decide) (by decide)
+  have hf := he.square (by decide)
   have hc := hb.square
-  have hd := (((hP.x.add hb).square.sub ha).sub hc).double
-  have he := ha.double.add ha
-  have hx3 := he.square.sub hd.double
-  have hy3 := (he.mul (hd.sub hx3)).sub hc.double.double.double
-  have hz3 := (hP.y.mul hP.z).double
+  have hxb := (hP.x.lazyRep.add_raw hb.lazyRep (by decide)).normalise
+    (by decide) (by decide)
+  have hxb2 := hxb.square (by decide)
+  have hyz := hP.y.mul hP.z
+  have hd0 := reduced_from_8p_holds
+    ((hxb2.lazyRep.sub_raw ha.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      hc.lazyRep (Fp8.offset_two l) (by decide) (by decide)) (by decide) (by decide)
+  have hd := reduced_from_4p_holds (hd0.lazyRep.add_raw hd0.lazyRep (by decide))
+    (by decide) (by decide)
+  have hx3' := (hf.lazyRep.sub_raw (hd.lazyRep.add_raw hd.lazyRep (by decide))
+    (Fp8.offset_four l) (by decide) (by decide)).normalise (by decide) (by decide)
+  have hdx := (hd.lazyRep.sub_raw hx3'.lazyRep (Fp8.offset_eight l)
+    (by decide) (by decide)).normalise (by decide) (by decide)
+  have hc8 := reduced_from_8p_holds
+    (((hc.lazyRep.add_raw hc.lazyRep (by decide)).add_raw hc.lazyRep (by decide)).add_raw
+      hc.lazyRep (by decide)) (by decide) (by decide)
+  have hy3 := reduced_from_8p_holds
+    ((he.mul hdx (by decide) (by decide)).lazyRep.sub_raw (hc8.lazyRep.add_raw hc8.lazyRep (by decide))
+      (Fp8.offset_four l) (by decide) (by decide)) (by decide) (by decide)
+  have hz3 := reduced_from_4p_holds (hyz.lazyRep.add_raw hyz.lazyRep (by decide))
+    (by decide) (by decide)
+  have hx3 := ((hx3'.cond_sub (Fp8.offset_four l) (by decide)).cond_sub
+    (Fp8.offset_two l) (by decide)).holds (by decide)
   refine ⟨⟨hx3.of_eq ?_, hy3.of_eq ?_, hz3.of_eq ?_⟩, ?_⟩
   rotate_left 3
   · rw [G2x8.double, Mmask8.testBit_or, hP.y.testBit_is_zero_mask, hP.z.testBit_is_zero_mask]
@@ -66,13 +97,30 @@ theorem Holds.add_affine (hP : P.Holds l t) {qx qy : Fp2x8} {vx vy : Fp2Field}
   have hs2 := (hqy.mul hP.z).mul hz1z1
   have hh := (hqx.mul hz1z1).sub hP.x
   have hhh := hh.square
-  have hi := hhh.double.double
-  have hj := hh.mul hi
-  have hr := (hs2.sub hP.y).double
-  have hv := hP.x.mul hi
-  have hx3 := (hr.square.sub hj).sub hv.double
-  have hy3 := (hr.mul (hv.sub hx3)).sub (hP.y.mul hj).double
-  have hz3 := ((hP.z.add hh).square.sub hz1z1).sub hhh
+  have hzh := (hP.z.lazyRep.add_raw hh.lazyRep (by decide)).normalise
+    (by decide) (by decide)
+  have hzh2 := hzh.square (by decide)
+  have hi := (((hhh.lazyRep.add_raw hhh.lazyRep (by decide)).add_raw hhh.lazyRep
+    (by decide)).add_raw hhh.lazyRep (by decide)).normalise (by decide) (by decide)
+  have hj := hh.boundRep.mul hi (by decide) (by decide)
+  have hv := hP.x.boundRep.mul hi (by decide) (by decide)
+  have hr0 := hs2.lazyRep.sub_raw hP.y.lazyRep (Fp8.offset_two l)
+    (by decide) (by decide)
+  have hr := (hr0.add_raw hr0 (by decide)).normalise (by decide) (by decide)
+  have hrr := hr.square (by decide)
+  have hyj := hP.y.mul hj
+  have hx3 := reduced_from_8p_holds
+    ((hrr.lazyRep.sub_raw hj.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      (hv.lazyRep.add_raw hv.lazyRep (by decide)) (Fp8.offset_four l)
+      (by decide) (by decide)) (by decide) (by decide)
+  have hvx := (hv.lazyRep.sub_raw hx3.lazyRep (Fp8.offset_two l) (by decide)
+    (by decide)).normalise (by decide) (by decide)
+  have hy3 := reduced_from_8p_holds
+    ((hr.mul hvx (by decide) (by decide)).lazyRep.sub_raw (hyj.lazyRep.add_raw hyj.lazyRep (by decide))
+      (Fp8.offset_four l) (by decide) (by decide)) (by decide) (by decide)
+  have hz3 := reduced_from_8p_holds
+    ((hzh2.lazyRep.sub_raw hz1z1.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      hhh.lazyRep (Fp8.offset_two l) (by decide) (by decide)) (by decide) (by decide)
   refine ⟨⟨hx3.of_eq ?_, hy3.of_eq ?_, hz3.of_eq ?_⟩, ?_⟩
   rotate_left 3
   · rw [G2x8.add_affine, Mmask8.testBit_or, hh.testBit_is_zero_mask, hP.z.testBit_is_zero_mask]

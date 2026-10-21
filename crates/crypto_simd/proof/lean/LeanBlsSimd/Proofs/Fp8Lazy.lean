@@ -1,4 +1,4 @@
-import LeanBlsSimd.Proofs.Fp2x8
+import LeanBlsSimd.Proofs.Fp8Holds
 import LeanBlsSimd.Proofs.Fp8Multiple
 import LeanBlsSimd.Proofs.SignedLimbs
 
@@ -56,6 +56,9 @@ variable {k m k' m' c : ℕ} {x y offset : Fp8} {l : Fin 8} {a b : ZMod Fp.modul
 
 theorem Holds.boundRep (h : x.Holds l a) : BoundRep 2 x l a :=
   ⟨h.inv.normal, h.inv.bound, h.eq⟩
+
+theorem BoundRep.mono (h : BoundRep k x l a) (hk : k ≤ k') : BoundRep k' x l a :=
+  ⟨h.normal, lt_of_lt_of_le h.bound (Nat.mul_le_mul_right _ hk), h.value⟩
 
 theorem BoundRep.lazyRep (h : BoundRep k x l a) : LazyRep k 1 x l a := by
   refine ⟨⟨?_, ?_, SignedLimbs.normalized_bounded h.normal⟩, ?_⟩
@@ -160,5 +163,16 @@ theorem BoundRep.cond_sub (hx : BoundRep k x l a) (ho : Offset c offset l)
     · exact hx.value
     · rw [Nat.cast_sub (by omega), Nat.cast_mul, ZMod.natCast_self, mul_zero, sub_zero]
       exact hx.value
+
+theorem LazyRep.reduced_from_4p (h : LazyRep k m x l a)
+    (hk : k ≤ 4) (hm : m ≤ 1024) :
+    (x.normalise.cond_sub (multiple_of_p 2)).Holds l a := by
+  exact ((h.normalise (by omega) hm).cond_sub (offset_two l) (by omega)).holds (by decide)
+
+theorem LazyRep.reduced_from_8p (h : LazyRep k m x l a)
+    (hk : k ≤ 8) (hm : m ≤ 1024) :
+    ((x.normalise.cond_sub (multiple_of_p 4)).cond_sub (multiple_of_p 2)).Holds l a := by
+  exact (((h.normalise (by omega) hm).cond_sub (offset_four l) (by omega)).cond_sub
+    (offset_two l) (by decide)).holds (by decide)
 
 end LeanBlsSimd.Fp8

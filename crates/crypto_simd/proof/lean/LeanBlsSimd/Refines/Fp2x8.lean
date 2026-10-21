@@ -41,6 +41,23 @@ theorem splat_refines (limbs : Array (Array U64 8#usize) 2#usize) :
 theorem one_refines : fp2x8.Fp2x8.one = ok (toFp2x8 Fp2x8.one) := by
   simp [fp2x8.Fp2x8.one, Fp8.one_refines, Fp8.zero_refines, Fp2x8.one, toFp2x8]
 
+theorem add_raw_refines (self rhs : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.add_raw self rhs = ok (toFp2x8 ((ofFp2x8 self).add_raw (ofFp2x8 rhs))) := by
+  simp [fp2x8.Fp2x8.add_raw, Fp8.add_raw_refines, Fp2x8.add_raw, toFp2x8]
+
+theorem sub_raw_refines (self rhs : fp2x8.Fp2x8) (offset : fp8.Fp8) :
+    fp2x8.Fp2x8.sub_raw self rhs offset =
+      ok (toFp2x8 ((ofFp2x8 self).sub_raw (ofFp2x8 rhs) (ofFp8 offset))) := by
+  simp [fp2x8.Fp2x8.sub_raw, Fp8.sub_raw_refines, Fp2x8.sub_raw, toFp2x8]
+
+theorem normalise_refines (self : fp2x8.Fp2x8) :
+    fp2x8.Fp2x8.normalise self = ok (toFp2x8 (ofFp2x8 self).normalise) := by
+  simp [fp2x8.Fp2x8.normalise, Fp8.normalise_refines, Fp2x8.normalise, toFp2x8]
+
+theorem cond_sub_refines (self : fp2x8.Fp2x8) (c : fp8.Fp8) :
+    fp2x8.Fp2x8.cond_sub self c = ok (toFp2x8 ((ofFp2x8 self).cond_sub (ofFp8 c))) := by
+  simp [fp2x8.Fp2x8.cond_sub, Fp8.cond_sub_refines, Fp2x8.cond_sub, toFp2x8]
+
 theorem add_refines (self rhs : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.add self rhs = ok (toFp2x8 ((ofFp2x8 self).add (ofFp2x8 rhs))) := by
   simp [fp2x8.Fp2x8.add, Fp8.add_refines, Fp2x8.add, toFp2x8]
@@ -48,10 +65,6 @@ theorem add_refines (self rhs : fp2x8.Fp2x8) :
 theorem sub_refines (self rhs : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.sub self rhs = ok (toFp2x8 ((ofFp2x8 self).sub (ofFp2x8 rhs))) := by
   simp [fp2x8.Fp2x8.sub, Fp8.sub_refines, Fp2x8.sub, toFp2x8]
-
-theorem double_refines (self : fp2x8.Fp2x8) :
-    fp2x8.Fp2x8.double self = ok (toFp2x8 (ofFp2x8 self).double) := by
-  simp [fp2x8.Fp2x8.double, add_refines, Fp2x8.double]
 
 theorem neg_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.neg self = ok (toFp2x8 (ofFp2x8 self).neg) := by
@@ -80,13 +93,14 @@ theorem is_zero_mask_refines (self : fp2x8.Fp2x8) :
 attribute [local simp] Fp8.mul_comm in
 theorem mul_refines (self rhs : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.mul self rhs = ok (toFp2x8 ((ofFp2x8 self).mul (ofFp2x8 rhs))) := by
-  simp [fp2x8.Fp2x8.mul, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines, Fp2x8.mul,
-    toFp2x8]
+  simp [fp2x8.Fp2x8.mul, Fp8.mul_refines, Fp8.add_raw_refines, Fp8.normalise_refines,
+    Fp8.sub_refines, Fp2x8.mul, toFp2x8]
 
 theorem square_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.square self = ok (toFp2x8 (ofFp2x8 self).square) := by
-  simp [fp2x8.Fp2x8.square, Fp8.mul_refines, Fp8.add_refines, Fp8.sub_refines,
-    Fp8.double_refines, Fp2x8.square, toFp2x8]
+  simp [fp2x8.Fp2x8.square, Fp8.mul_refines, Fp8.add_raw_refines, Fp8.sub_raw_refines,
+    Fp8.normalise_refines, Fp8.multiple_of_p_refines 8#u64 (by decide),
+    Fp2x8.square, toFp2x8, ofU64]
 
 theorem sqrt_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.sqrt self = ok (Prod.map toFp2x8 toU8 (ofFp2x8 self).sqrt) := by

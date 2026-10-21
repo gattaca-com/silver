@@ -629,10 +629,6 @@ theorem Fp8.neg_refines (self : fp8.Fp8) :
     fp8.Fp8.neg self = ok (toFp8 (ofFp8 self).neg) := by
   simp [fp8.Fp8.neg, Fp8.zero_refines, Fp8.sub_refines, Fp8.neg]
 
-theorem Fp8.double_refines (self : fp8.Fp8) :
-    fp8.Fp8.double self = ok (toFp8 (ofFp8 self).double) := by
-  simp [fp8.Fp8.double, Fp8.add_refines, Fp8.double]
-
 theorem Fp8.select_refines (k : U8) (a b : fp8.Fp8) :
     fp8.Fp8.select k a b = ok (toFp8 (Fp8.select (ofU8 k) (ofFp8 a) (ofFp8 b))) := by
   simp [fp8.Fp8.select, Simd.blend_refines, Fp8.select, toFp8]

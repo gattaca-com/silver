@@ -26,13 +26,28 @@ def one : Fp2x8 := { c0 := Fp8.one, c1 := Fp8.zero }
 def mul (self rhs : Fp2x8) : Fp2x8 :=
   let v0 := self.c0.mul rhs.c0
   let v1 := self.c1.mul rhs.c1
-  let s := (self.c0.add self.c1).mul (rhs.c0.add rhs.c1)
+  let sum := (self.c0.add_raw self.c1).normalise
+  let rhs_sum := (rhs.c0.add_raw rhs.c1).normalise
+  let s := sum.mul rhs_sum
   { c0 := v0.sub v1, c1 := (s.sub v0).sub v1 }
 
 def square (self : Fp2x8) : Fp2x8 :=
-  let c0 := (self.c0.add self.c1).mul (self.c0.sub self.c1)
-  let c1 := (self.c0.mul self.c1).double
-  { c0, c1 }
+  let sum := (self.c0.add_raw self.c1).normalise
+  let difference := (self.c0.sub_raw self.c1 (Fp8.multiple_of_p 8)).normalise
+  let twice_c1 := (self.c1.add_raw self.c1).normalise
+  { c0 := sum.mul difference, c1 := self.c0.mul twice_c1 }
+
+def add_raw (self rhs : Fp2x8) : Fp2x8 :=
+  { c0 := self.c0.add_raw rhs.c0, c1 := self.c1.add_raw rhs.c1 }
+
+def sub_raw (self rhs : Fp2x8) (offset : Fp8) : Fp2x8 :=
+  { c0 := self.c0.sub_raw rhs.c0 offset, c1 := self.c1.sub_raw rhs.c1 offset }
+
+def normalise (self : Fp2x8) : Fp2x8 :=
+  { c0 := self.c0.normalise, c1 := self.c1.normalise }
+
+def cond_sub (self : Fp2x8) (c : Fp8) : Fp2x8 :=
+  { c0 := self.c0.cond_sub c, c1 := self.c1.cond_sub c }
 
 def add (self rhs : Fp2x8) : Fp2x8 := { c0 := self.c0.add rhs.c0, c1 := self.c1.add rhs.c1 }
 
