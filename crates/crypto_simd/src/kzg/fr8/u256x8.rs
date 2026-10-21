@@ -72,6 +72,16 @@ impl U256x8 {
         ])
     }
 
+    /// The first `count` lanes onto `words`, as four words each.
+    pub(super) fn push_words(&self, words: &mut Vec<[u64; 4]>, count: usize) {
+        let w = [lanes(self.0[0]), lanes(self.0[1]), lanes(self.0[2]), lanes(self.0[3])];
+        let mut lane = 0;
+        while lane < count {
+            words.push([w[0][lane], w[1][lane], w[2][lane], w[3][lane]]);
+            lane += 1;
+        }
+    }
+
     /// From blocks in the elements' byte order: lane i of block b holds word
     /// 3 − i % 4 of element 2b + i / 4. The first round gathers words 0 and 1,
     /// then 2 and 3, of the four elements in two blocks; the second joins

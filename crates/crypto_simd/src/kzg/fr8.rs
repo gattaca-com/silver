@@ -401,6 +401,29 @@ impl Fr8 {
         self.sub_raw(rhs, &Self::multiple_of_r(2)).normalise().reduced()
     }
 
+    /// The plain values of `values`, blst elements a·2^256 mod r, as
+    /// little-endian words below r. Read as plain integers, blst's limbs make
+    /// `mul` by 16 = 2^260 / 2^256 give a.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn plain_words(values: &[blst_fr], words: &mut Vec<[u64; 4]>) {
+        let sixteen = Self::splat(&blst_fr { l: [16, 0, 0, 0] });
+        words.resize(0, [0; 4]);
+        let mut at = 0;
+        while at < values.len() {
+            let count = if values.len() - at < LANES { values.len() - at } else { LANES };
+            let mut chunk = [blst_fr { l: [0; 4] }; LANES];
+            let mut lane = 0;
+            while lane < count {
+                chunk[lane] = values[at + lane];
+                lane += 1;
+            }
+            // lazy(2, 32): both operands are below r.
+            let plain = Self::load(&chunk, 0).mul(&sixteen).normalise().canonical();
+            U256x8::from_limbs(&plain.0).push_words(words, count);
+            at += count;
+        }
+    }
+
     /// The eight vectors at `at`, lane l of vector k becoming lane k of
     /// vector l.
     #[target_feature(enable = "avx512f,avx512ifma")]

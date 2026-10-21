@@ -7,6 +7,7 @@ use std::arch::x86_64::{
     __m512i, _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
 };
 
+use blst::{blst_fr, blst_fr_from_uint64, blst_uint64_from_fr};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -207,5 +208,53 @@ fn products_have_bounded_limbs_and_lie_below_two_r() {
             assert!(raw[lane].iter().all(|&limb| limb < PRODUCT_LIMB), "case {case} lane {lane}");
             assert!(Limbs(carried[lane]).is_below(&two_r), "case {case} lane {lane}");
         }
+    }
+}
+
+fn fr_of_words(words: &[u64; 4]) -> blst_fr {
+    let mut fr = blst_fr::default();
+    // SAFETY: blst reads four words and writes one value.
+    unsafe { blst_fr_from_uint64(&mut fr, words.as_ptr()) };
+    fr
+}
+
+/// Against blst's own conversion, at lengths around the lane count, with 0,
+/// 1 and r − 1 among random elements; stale words are replaced.
+#[test]
+fn plain_words_match_blst() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x70);
+    let r_minus_1 = [
+        0xffff_ffff_0000_0000,
+        0x53bd_a402_fffe_5bfe,
+        0x3339_d808_09a1_d805,
+        0x73ed_a753_299d_7d48,
+    ];
+    for n in [0, 1, 7, 8, 9, 17, 64] {
+        let mut values: Vec<blst_fr> = (0..n)
+            .map(|_| {
+                let mut words: [u64; 4] = rng.r#gen();
+                words[3] >>= 2;
+                fr_of_words(&words)
+            })
+            .collect();
+        for (k, edge) in [[0; 4], [1, 0, 0, 0], r_minus_1].iter().enumerate().take(n) {
+            values[k] = fr_of_words(edge);
+        }
+        let mut words = vec![[7u64; 4]; 3];
+        // SAFETY: `kernels_run` checked `simd_available`.
+        unsafe { Fr8::plain_words(&values, &mut words) };
+        let want: Vec<[u64; 4]> = values
+            .iter()
+            .map(|value| {
+                let mut plain = [0u64; 4];
+                // SAFETY: blst reads one value and writes four words.
+                unsafe { blst_uint64_from_fr(plain.as_mut_ptr(), value) };
+                plain
+            })
+            .collect();
+        assert!(words == want, "{n} elements");
     }
 }
