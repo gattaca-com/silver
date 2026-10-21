@@ -138,6 +138,43 @@ theorem cells_decode_facts (cells : List (Aeneas.Std.Array U8 2048#usize))
     simpa only [List.all_eq_true, ModelFront.fieldOptions] using h c hc
 
 
+private theorem accepted_filterMap (xs : List (Option Fr))
+    (h : xs.all Option.isSome = true) :
+    xs.filterMap id = xs.map (fun x => x.getD 0) := by
+  induction xs with
+  | nil => rfl
+  | cons x xs ih => cases x <;> simp_all
+
+theorem cells_decode_rep (cells : Slice (Aeneas.Std.Array U8 2048#usize))
+    (h : (decodedCellElements cells.val).all Option.isSome = true) :
+    InterpolationKernel.CellsRep cells (cellValues cells.val) := by
+  have hall : ∀ cell ∈ cells.val, (ModelFront.fieldOptions (arrayBytes cell)).all Option.isSome = true := by
+    simpa only [decodedCellElements, List.all_flatMap, List.all_eq_true,
+      ModelFront.fieldOptions] using h
+  refine ⟨by simp [cellValues], ?_⟩
+  intro k
+  have hk := hall cells.val[k.val] (List.getElem_mem k.isLt)
+  have hvalues : (cellValues cells.val)[k.val]! = ModelFront.fieldValues (arrayBytes cells.val[k.val]) := by
+    simp [cellValues, getElem!_pos, k.isLt]
+  rw [hvalues]
+  refine ⟨ModelFront.cells_values_size _ hk, ?_⟩
+  intro j
+  have hj : (ModelFront.fieldOptions (arrayBytes cells.val[k.val]))[j.val]!.isSome = true := by
+    apply List.all_eq_true.mp hk
+    rw [getElem!_pos _ _ (by simp [ModelFront.fieldOptions_length])]
+    exact List.getElem_mem (by simp [ModelFront.fieldOptions_length])
+  have he : (ModelFront.fieldOptions (arrayBytes cells.val[k.val]))[j.val]! =
+      (bytesToBlsField ((arrayBytes cells.val[k.val]).extract (32*j.val) (32*(j.val+1)))).toOption := by
+    simp [ModelFront.fieldOptions, getElem!_pos, j.isLt]
+  simp only [ModelFront.fieldValues, accepted_filterMap _ hk]
+  simp only [List.getElem!_toArray]
+  simp [ModelFront.fieldOptions, getElem!_pos, j.isLt]
+  rw [he] at hj
+  cases hv : (bytesToBlsField ((arrayBytes cells.val[k.val]).extract (32*j.val) (32*(j.val+1)))).toOption with
+  | none => simp [hv] at hj
+  | some value => simp
+
+
 theorem verify_rejects_indices [KzgExternals] (v : verify.CellBatchVerifier)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -167,18 +204,20 @@ theorem points_acceptance_validate (bs : List (Aeneas.Std.Array U8 48#usize)) :
 
 def PairingContract [KzgExternals] : Prop :=
   ∀ (v : verify.CellBatchVerifier), StateInvariant v → ∀ (indices : Slice U64)
+    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr),
     indices.val.length * 2048 ≤ Isize.max.toNat →
     Model.RliInputs (indices.val.map (·.val)).toArray evals (computePowers r indices.val.length) →
     v.commitment_points.val = commitments.toList.map g1Affine →
     v.proof_points.val = proofs.toList.map g1Affine →
-    v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode →
+    InterpolationKernel.CellsRep cells evals →
+    (v.kernel = none → v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode) →
     v.commitments.unique.val.length = commitments.size →
     (v.commitments.index_of_cell.val.length = indices.val.length ∧
       ∀ i ∈ v.commitments.index_of_cell.val, i.val < commitments.size) →
     proofs.size = indices.val.length →
     ((∀ p ∈ commitments, G1Valid p) ∧ (∀ p ∈ proofs, G1Valid p)) →
-    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices =
+    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices cells =
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next
@@ -269,8 +308,8 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
           Bool.false_eq_true, if_false, hcheck, bind_tc_ok, hstop, hfill,
           hcommit', hc, Function.uncurry_apply_pair, hfalse]
       | true =>
-        obtain ⟨v2, hcells, hevals, hs2, hcosets2⟩ := decode_cells_refinement h v1 cells hb
-        have hv2 : StateInvariant v2 := by simpa only [StateInvariant, hs2, hcosets2] using hv1
+        obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement h v1 cells hb
+        have hv2 : StateInvariant v2 := by simpa only [StateInvariant, hs2, hcosets2, hkernel2] using hv1
         have hframe := decode_cells_frame h v1 cells _ v2 hcells
         have hcommitments2 : v2.commitments = d := by
           simpa only [v1] using congrArg verify.CellBatchVerifier.commitments hframe
@@ -330,8 +369,10 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
               rw [hcp, decoded_points_values _ hc, hdu]
             have hpp' : v3.proof_points.val = (pointValues P).toList.map g1Affine := by
               simpa only [v3, P] using hpp.trans (decoded_points_values _ hp)
-            have hev : v3.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode := by
-              simpa only [v3, evals, heFlat] using hevals
+            have hev : v3.kernel = none →
+                v3.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode := by
+              simpa only [v3, evals, heFlat, hkernel2] using hevals
+            have hcellRep : InterpolationKernel.CellsRep cells evals := cells_decode_rep cells hcb
             obtain ⟨preimage, hchallenge, _⟩ := challenge_refinement h v3.preimage
               (alloc.vec.Vec.deref d.unique) (alloc.vec.Vec.deref d.index_of_cell) indices cells ps
               ⟨hmapSize, by omega, by omega, huniqLe⟩ hb
@@ -365,8 +406,8 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
               apply deduplicate_indices C
               rw [← hdi]
               simp [hi]
-            obtain ⟨next, hpair, hvnext⟩ := hpairs { v3 with preimage := preimage } hv3 indices
-              (pointValues unique) (pointValues P) evals r (by omega) hs hpc hpp' hev
+            obtain ⟨next, hpair, hvnext⟩ := hpairs { v3 with preimage := preimage } hv3 indices cells
+              (pointValues unique) (pointValues P) evals r (by omega) hs hpc hpp' hcellRep hev
               (by simpa [hv3d, pointValues_size] using huniqSize)
               ⟨by simpa [hv3d] using hmapSize, by simpa [hv3d] using hci⟩
               (by simp [pointValues_size, P]; omega) hvalid

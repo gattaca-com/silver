@@ -1,5 +1,5 @@
 name = "bls_downstream_smoke"
-defaultTargets = ["G1Smoke", "G2Smoke"]
+defaultTargets = ["G1Smoke", "G2Smoke", "KzgSmoke"]
 
 [leanOptions]
 autoImplicit = false
@@ -14,3 +14,6 @@ name = "G1Smoke"
 
 [[lean_lib]]
 name = "G2Smoke"
+
+[[lean_lib]]
+name = "KzgSmoke"

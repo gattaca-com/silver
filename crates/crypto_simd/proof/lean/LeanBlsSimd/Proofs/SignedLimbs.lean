@@ -298,28 +298,6 @@ theorem normalise_width_spec {n : ℕ} {a : Vector UInt64 n}
     · rwa [hi.1]
 
 set_option exponentiation.threshold 1000 in
-theorem val_five (a : Vector UInt64 5) :
-    val a = limb a[0] + limb a[1] * 2 ^ 52 + limb a[2] * 2 ^ 104 +
-      limb a[3] * 2 ^ 156 + limb a[4] * 2 ^ 208 := by
-  simp [val, Fin.sum_univ_succ]
-  ring
-
-theorem normalise_five_eq (a : Vector UInt64 5) :
-    let x1 := a[1] + srai 52 a[0]
-    let x2 := a[2] + srai 52 x1
-    let x3 := a[3] + srai 52 x2
-    let x4 := a[4] + srai 52 x3
-    normalise a = #v[
-      a[0] &&& UInt64.ofNat (2 ^ 52 - 1),
-      x1 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x2 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x3 &&& UInt64.ofNat (2 ^ 52 - 1), x4] := by
-  have hf : List.finRange (5 - 1) = [0, 1, 2, 3] := by decide
-  simp only [normalise, hf, List.foldl_cons, List.foldl_nil]
-  ext j hj
-  interval_cases j <;> simp [carryStep]
-
-set_option exponentiation.threshold 1000 in
 /-- Signed carries preserve the five-limb integer. The range of that integer forces
 the unmasked final limb into radix 52, including when an input limb is negative. -/
 theorem normalise_spec {a : Vector UInt64 5}
@@ -327,34 +305,6 @@ theorem normalise_spec {a : Vector UInt64 5}
     (hlo : 0 ≤ val a) (hhi : val a < 2 ^ 260) :
     val (normalise a) = val a ∧ Normalized (normalise a) := by
   exact normalise_width_spec ha hlo hhi
-
-set_option exponentiation.threshold 1000 in
-theorem val_eight (a : Vector UInt64 8) :
-    val a = limb a[0] + limb a[1] * 2 ^ 52 + limb a[2] * 2 ^ 104 +
-      limb a[3] * 2 ^ 156 + limb a[4] * 2 ^ 208 + limb a[5] * 2 ^ 260 +
-      limb a[6] * 2 ^ 312 + limb a[7] * 2 ^ 364 := by
-  simp [val, Fin.sum_univ_eight]
-
-theorem normalise_eight_eq (a : Vector UInt64 8) :
-    let x1 := a[1] + srai 52 a[0]
-    let x2 := a[2] + srai 52 x1
-    let x3 := a[3] + srai 52 x2
-    let x4 := a[4] + srai 52 x3
-    let x5 := a[5] + srai 52 x4
-    let x6 := a[6] + srai 52 x5
-    let x7 := a[7] + srai 52 x6
-    normalise a = #v[
-      a[0] &&& UInt64.ofNat (2 ^ 52 - 1),
-      x1 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x2 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x3 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x4 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x5 &&& UInt64.ofNat (2 ^ 52 - 1),
-      x6 &&& UInt64.ofNat (2 ^ 52 - 1), x7] := by
-  have hf : List.finRange (8 - 1) = [0, 1, 2, 3, 4, 5, 6] := by decide
-  simp only [normalise, hf, List.foldl_cons, List.foldl_nil]
-  ext j hj
-  interval_cases j <;> simp [carryStep]
 
 set_option exponentiation.threshold 1000 in
 /-- Signed carries preserve the eight-limb integer; its range bounds the final limb. -/

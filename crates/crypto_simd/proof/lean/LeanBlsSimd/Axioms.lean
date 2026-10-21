@@ -54,6 +54,7 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default,
   ``silver_crypto_simd.kzg.fr8.Fr8.zero,
   ``silver_crypto_simd.kzg.fr8.Fr8.load,
+  ``silver_crypto_simd.kzg.fr8.Fr8.splat,
   ``silver_crypto_simd.kzg.fr8.Fr8.transpose,
   ``silver_crypto_simd.kzg.fr8.Fr8.from_bytes,
   ``silver_crypto_simd.kzg.fr8.Fr8.to_bytes,
@@ -68,7 +69,14 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.kzg.fft8.Fft8.dif,
   ``silver_crypto_simd.kzg.extension_kernel.ExtensionKernel.new,
   ``silver_crypto_simd.kzg.extension_kernel.ExtensionKernel.decode,
-  ``silver_crypto_simd.kzg.extension_kernel.ExtensionKernel.extend]
+  ``silver_crypto_simd.kzg.extension_kernel.ExtensionKernel.extend,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.new,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.check_cell,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.check,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.add_cell,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.add_column,
+  ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.interpolate,
+  ``silver_crypto_simd.kzg.interpolation_kernel.store_canonical]
 
 def libraryTheorems : CommandElabM (Array Name) := do
   let theorems := (← getEnv).constants.fold (init := #[]) fun found c info =>

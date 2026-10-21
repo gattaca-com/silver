@@ -112,26 +112,36 @@ theorem decode_cells_frame [e : KzgExternals] (h : ExternalsCorrect e)
     (b : Bool) (next : verify.CellBatchVerifier)
     (hcall : verify.CellBatchVerifier.decode_cells self cells = ok (b, next)) :
     next = { self with evaluations := next.evaluations } := by
-  let empty := alloc.vec.Vec.new blst.blst_fr
-  have hclear (f : blst.blst_fr) :
-      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations 0#usize f =
-        ok empty := by
-    simp [alloc.vec.Vec.resize, blst.blst_fr.Insts.CoreCloneClone.clone,
-      List.resize, empty, alloc.vec.Vec.new]
-  let initial := { self with evaluations := empty }
-  unfold verify.CellBatchVerifier.decode_cells at hcall
-  simp only [blst_ops.fr_from_u64, h.blst.fr_u64, bind_tc_ok, hclear] at hcall
-  change (do
-    let (out, stop) ← verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize
-    ok (decide (stop = Slice.len cells), out)) = ok (b, next) at hcall
-  cases hc : verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize with
-  | fail err => simp only [hc, bind_tc_fail] at hcall; cases hcall
-  | div => simp only [hc, bind_tc_div] at hcall; cases hcall
-  | ok pair =>
-    rcases pair with ⟨out, stop⟩
-    simp only [hc, bind_tc_ok, Function.uncurry_apply_pair, Result.ok.injEq,
+  cases hkernel : self.kernel with
+  | some kernel =>
+    simp only [verify.CellBatchVerifier.decode_cells, hkernel,
+      InterpolationKernel.check_refinement, bind_tc_ok, Result.ok.injEq,
       Prod.mk.injEq] at hcall
     rcases hcall with ⟨_, rfl⟩
-    exact decode_cells_loop_frame h initial cells 0#usize (by simp) out stop hc
+    rw [← hkernel]
+  | none =>
+    let empty := alloc.vec.Vec.new blst.blst_fr
+    have hclear (f : blst.blst_fr) :
+        alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations 0#usize f =
+          ok empty := by
+      simp [alloc.vec.Vec.resize, blst.blst_fr.Insts.CoreCloneClone.clone,
+        List.resize, empty, alloc.vec.Vec.new]
+    let initial := { self with evaluations := empty }
+    unfold verify.CellBatchVerifier.decode_cells at hcall
+    simp only [hkernel, blst_ops.fr_from_u64, h.blst.fr_u64, bind_tc_ok, hclear] at hcall
+    have hcall' : (do
+      let (out, stop) ← verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize
+      ok (decide (stop = Slice.len cells), out)) = ok (b, next) := by
+      simpa only [initial, hkernel] using hcall
+    cases hc : verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize with
+    | fail err => simp only [hc, bind_tc_fail] at hcall'; cases hcall'
+    | div => simp only [hc, bind_tc_div] at hcall'; cases hcall'
+    | ok pair =>
+      rcases pair with ⟨out, stop⟩
+      simp only [hc, bind_tc_ok, Function.uncurry_apply_pair, Result.ok.injEq,
+        Prod.mk.injEq] at hcall'
+      rcases hcall' with ⟨_, rfl⟩
+      simpa only [initial, hkernel] using
+        decode_cells_loop_frame h initial cells 0#usize (by simp) out stop hc
 
 end LeanBlsSimd.Kzg

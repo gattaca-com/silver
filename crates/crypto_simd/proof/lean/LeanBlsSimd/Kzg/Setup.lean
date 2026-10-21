@@ -2,6 +2,7 @@ import LeanBlsSimd.Extracted.Funs
 import LeanBlsSimd.Kzg.SetupPoints
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Model
+import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 
 open Aeneas Aeneas.Std Result
 open EthCryptographySpecs Bls Kzg
@@ -105,6 +106,10 @@ def CosetsRep (c : cosets.Cosets) : Prop :=
   c.shift_inverse.val = (List.range 128).map (fun i => frEncode (Model.cosetShift i).inverse) ∧
   c.shift_pow_cell.val = (List.range 128).map (fun i => frEncode (Fr.powNat (Model.cosetShift i) 64))
 
-def StateInvariant (v : verify.CellBatchVerifier) : Prop := SetupRep v.setup ∧ CosetsRep v.cosets
+def StateInvariant (v : verify.CellBatchVerifier) : Prop :=
+  SetupRep v.setup ∧ CosetsRep v.cosets ∧
+  match v.kernel with
+  | none => True
+  | some kernel => InterpolationKernel.StateInvariant kernel
 
 end LeanBlsSimd.Kzg

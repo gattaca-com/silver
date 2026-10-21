@@ -111,6 +111,8 @@ The headline takes `[e : KzgExternals]`, `(hblst : BlstCorrect e)` and `(hg1 : U
 
 A fixed dictionary `e` is quantified over the complete KZG statement. Equality to the specification holds for either value of its SIMD flag. The BLS theorem models one SIMD observation per decoder call; the KZG theorem does not formalize arbitrary changes to that observation between calls.
 
+Construction stores an interpolation kernel when SIMD is available. Verification dispatches on that stored option. The kernel checks canonical encodings and interpolates cells with `Fr8` and a 64-point `Fft8` DIT. The scalar route uses decoded evaluation scratch. The outer `StateInvariant` fixes the kernel's tables and buffer lengths while permitting scratch contents from earlier calls. Both routes preserve it and produce the same interpolation commitment.
+
 #### Input and runtime scope
 
 The input premise states Rust's slice-size restriction in bytes: each slice occupies at most `isize::MAX` bytes. It imposes no application-level batch-size limit. Aeneas models logical vectors and execution results, not heap availability or process termination caused by allocation failure. Rust also rejects capacities above `isize::MAX` bytes before Aeneas's logical `Usize.max` element bound. The challenge preimage uses `48 + 48u + 2112n` bytes, where `u` is the number of unique commitments and `n` the number of cells. Near `isize::MAX/2048` cells it can exceed Rust's capacity limit even though the input slices satisfy the premise. These physically unreachable inputs can panic with "capacity overflow" in Rust. The theorem does not exclude them by an extra premise and does not establish absence of Rust allocation or capacity panics.
@@ -174,6 +176,18 @@ Import `LeanBlsSimd.Kzg.Statements`. Supply `[e : KzgExternals]`, `hblst : LeanB
 
 `BlstCorrect` includes the restricted G2 setup law. If a consumer already has full `UncompressG2.BlstMatchesSpec`, `g2_decode_of_blstMatchesSpec` discharges that field; no all-input G2 premise is required by the KZG headline.
 
+For individual generated calls, import `LeanBlsSimd.Kzg.Refines`. The supporting wrappers expose these cell premises and results:
+
+| Wrapper | Cell interface |
+|---|---|
+| `decode_cells_refines` | Proves the canonical-decoding verdict on both routes. Its evaluation-scratch equality applies when `v.kernel = none`. |
+| `interpolation_commitment_refines` | Takes `cells` and `InterpolationKernel.CellsRep cells evals`, plus evaluation-scratch equality conditional on `v.kernel = none`. |
+| `pairing_holds_refines` | Takes the same cell relation and conditional scratch premise, and proves the specification's pairing verdict. |
+
+`CellsRep` requires matching batch lengths and 64 evaluations per cell. Every 32-byte element must decode successfully through `bytesToBlsField` to its corresponding evaluation. That decoder rejects integers at least `r`; the relation does not accept a noncanonical encoding of the same residue. The headline derives this relation from successful cell checks and discharges the scalar scratch premise internally. It needs no additional caller assumption.
+
+[`controls/downstream/KzgSmoke.lean`](lean/controls/downstream/KzgSmoke.lean) consumes all three wrapper statements from an independent package. Its kernel consumers discharge the conditional scratch premise using the stored kernel option.
+
 [controls/KzgSpecInstance.lean](lean/controls/KzgSpecInstance.lean) is a worked application using the specification-backed dictionary. Its final application is:
 
 ```lean
@@ -233,7 +247,7 @@ lake build
 
 `lake exe cache get` fetches Mathlib's prebuilt files; run it from `lean/`. Lean imports those files without rechecking Mathlib's proofs. Building Mathlib from source avoids reliance on those prebuilt artifacts.
 
-`lake build` compiles Aeneas's Lean library and the proof, then runs the axiom guard. Aeneas's library may print `declaration uses 'sorry'` warnings; the guard checks that none of the declarations it covers depend on those `sorry`s. The default build prints the library guard and the stricter control guard. Each reports its theorem count, 26 generated entry points, and `axioms used: [propext, Quot.sound, Classical.choice]`. A cold build also compiles uncached dependencies and needs substantially more time than a rebuild.
+`lake build` compiles Aeneas's Lean library and the proof, then runs the axiom guard. Aeneas's library may print `declaration uses 'sorry'` warnings; the guard checks that none of the declarations it covers depend on those `sorry`s. The default build prints the library guard and the stricter control guard. Each reports its theorem count, 34 generated entry points, and `axioms used: [propext, Quot.sound, Classical.choice]`. A cold build also compiles uncached dependencies and needs substantially more time than a rebuild.
 
 Negative controls check that selected mutations are rejected. Other controls check concrete inputs and the axiom list. Every top-level control must exit 0:
 
@@ -493,8 +507,8 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 |---|---|---|
 | `mod.rs` | `b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450` | `0002db9653bd730897823f019d36b21c552161ed` |
 | `constants.rs` | `903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f` | `87190c24741f42bc50d3cae4ed384995cdc15f14` |
-| `fp8.rs` | `a978b45ae808ac4483f71ada8ec170bbaefd82bea89e20582ade3d2b07641b23` | `4edaa33cbc9e385922a4d8de8b83ae9ee79d9d9c` |
-| `fp2x8.rs` | `9e7b7141a2492d3976f6df94f83dd96057dfee1a57a0dacfb4e47d79f0b86237` | `b38a8bd9803b11760f4680c4c66bddda0302a1e8` |
+| `fp8.rs` | `2240645d25b9170fc392ce915e78ef18c240e63f13eee4bdc705e77a6cf08c43` | `65bf7140013e89ddc17ffeb50476dee0cda2db96` |
+| `fp2x8.rs` | `c2a2394e2ae3e658817d9875357d6adcf253d1b7ff4a3f18cd5ff8dbc40a5a91` | `bef231eaa255d7aeafacf993b5683858f52dd126` |
 | `g1x8.rs` | `8a14852522c27c2de80af49a8c805819ae2e7e5662602a3f2fda607b725ce1e3` | `8861243ddd8f04bd593b29e8c72386787b07fedd` |
 | `g2x8.rs` | `3e5da4797933264da07aa002060cb02d9b0caf794013c02a2a1984b174e9294b` | `9bbffcc30319f2c024adfa74748ad57e4236b437` |
 | `decompress.rs` | `718f280500e78890c78b175fe36378b62cf57244b356b6555ede1c829e93e184` | `1a9052c76f9797fd07e760df899ef017aa0adf62` |
@@ -508,8 +522,8 @@ To check for changes since the proof, run this from `crates/crypto_simd/src/bls`
 sha256sum -c <<'EOF'
 b95fc50410f79586f2eafd0644f3cad1523e3c45140ceac60ff59000ce3db450  mod.rs
 903c4ea8360c254f1bd048d1be4df95511fd7a6e1db2257f47704e270589449f  constants.rs
-a978b45ae808ac4483f71ada8ec170bbaefd82bea89e20582ade3d2b07641b23  fp8.rs
-9e7b7141a2492d3976f6df94f83dd96057dfee1a57a0dacfb4e47d79f0b86237  fp2x8.rs
+2240645d25b9170fc392ce915e78ef18c240e63f13eee4bdc705e77a6cf08c43  fp8.rs
+c2a2394e2ae3e658817d9875357d6adcf253d1b7ff4a3f18cd5ff8dbc40a5a91  fp2x8.rs
 8a14852522c27c2de80af49a8c805819ae2e7e5662602a3f2fda607b725ce1e3  g1x8.rs
 3e5da4797933264da07aa002060cb02d9b0caf794013c02a2a1984b174e9294b  g2x8.rs
 718f280500e78890c78b175fe36378b62cf57244b356b6555ede1c829e93e184  decompress.rs
@@ -538,6 +552,7 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 | `Statements.lean` | Model/spec equivalence, interpolation, construction, refinement and headline theorems |
 | `Refines.lean` | Supporting statements for decoding, challenge, roots, IFFT and pairing inputs |
 | `Refines/` | Proofs for the extracted functions and shared loop lemmas |
+| `InterpolationKernel/` | Canonical cell checks, weighted columns, the shared 64-point DIT, coefficient stores and kernel construction |
 | `Decoder.lean` | Direct composition with the shared BLS decoder proofs |
 | `G1Bridge.lean` | Generic transport theorem for independent extractions; the shared verifier uses `Decoder.lean` |
 
@@ -587,6 +602,14 @@ DIT starts with reduced data. Its short stages produce `Lazy 4 3`, `Lazy 8 36`, 
 
 The scalar and kernel route lemmas preserve the outer extender invariant. The kernel route also preserves all tables, and the scalar route preserves `kernel = none`. Their case split proves the public theorem for construction and repeated calls.
 
+#### Verifier interpolation kernel
+
+`InterpolationKernel/Basic.lean` defines the verifier kernel's `StateInvariant`. The inverse FFT satisfies the shared `FftInvariant`, and each shift satisfies `MultiplierRep`. Column, shift and used-flag buffers have fixed lengths. The invariant places no arithmetic condition on stale scratch columns. `Construct.lean` proves these properties from the generated constructor, including canonical shift multipliers for `64⁻¹ * cosetShift(column)⁻ᵏ`. `Roots.lean` establishes `RootsValid` for the 64-point roots and their inverses.
+
+`Check.lean` equates the generated canonical masks with specification decoding for every cell byte string. `CellsRep` connects accepted cells with their 64 field elements. `Fr8Splat.lean` proves the broadcast weight representation, including the factor of 16 converting blst's Montgomery radix to the kernel's. `AddCell.lean` proves weighted accumulation: a column's first raw product is normalized before it is stored, and later additions restore the reduced range. `Aggregate.lean` and `Accumulate.lean` connect the generated used flags and columns to the scalar aggregation model. Clearing the flags makes stale columns irrelevant; each first use overwrites its column with bounded data.
+
+`Column.lean` reuses the extender's `dit_refinement` and lazy range bounds at size 64. It proves bit-reversed column loading, the inverse transform, normalization, multiplication by the column's shift factors and addition into reduced sums. `Store.lean` proves canonical coefficient bytes and their scalar decoding. `Interpolate.lean` composes these operations into exact equality with `Model.columnRli`, preserving the kernel invariant. The existing interpolation-commitment and pairing proofs then cover both dispatch routes. The kernel uses the existing `BlstCorrect.fr_u64`, `fr_mul` and `fr_bytes` laws; it adds no external contract or serialization premise.
+
 For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-maintenance). It covers both types, including the verifier's [constructor panic message](lean/README.md#constructor-panic-message).
 
 ### Field and point representations
@@ -627,6 +650,7 @@ Paths below are relative to `lean/controls/`.
 | `KzgExternalBoundary.lean` | Mutations violate each of the fourteen blst laws; `wrongScalarG1_rejected` proves `¬ G1DecoderCorrect wrongScalarG1` using the real generated decoder with SIMD off and a scalar observation that returns `some` infinity for invalid bytes requiring `none`. |
 | `KzgMathematical.lean` | Bit reversal, inverse coset-shift direction and inverse FFT scaling. |
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |
+| `InterpolationKernel.lean` | Wrong inverse-size shift factors or used-column flags violate the generated contracts. Unnormalized first products violate bounded DIT input. Noncanonical cells are rejected. Canonical acceptance and normalization supply positive controls. |
 | `ExtenderSpecInstance.lean` | The spec dictionary instantiates construction, canonicality, exact output bytes, specification errors and unchanged output on rejection. |
 | `ExtenderExternalBoundary.lean` | Wrong field bytes and failed serialization violate `FrToBytesCorrect` while preserving the reused `BlstCorrect` contract. |
 | `ExtenderMathematical.lean` | Extender input/output bit reversal, coset shifting, forward FFT direction and inverse FFT scaling at the blob size. |

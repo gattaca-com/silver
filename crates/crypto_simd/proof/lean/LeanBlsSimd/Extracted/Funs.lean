@@ -854,7 +854,7 @@ def bls.fp8.Fp8.canonical (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.cond_sub self f
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-517:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 509:8-511:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.is_zero_mask_loop.body
@@ -874,7 +874,7 @@ def bls.fp8.Fp8.is_zero_mask_loop.body
     ok (cont (iter1, a, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-517:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 509:8-511:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.is_zero_mask_loop
@@ -886,7 +886,7 @@ def bls.fp8.Fp8.is_zero_mask_loop
     (iter, a, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 512:4-519:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 506:4-513:5
     Visibility: public -/
 def bls.fp8.Fp8.is_zero_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.canonical self
@@ -1728,7 +1728,7 @@ def bls.g1x8.G1x8.times_z_affine
   bls.g1x8.G1x8.times_z_affine_loop px py 0#u8 r bit
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 504:8-506:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 498:8-500:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.eq_mask_loop.body
@@ -1749,7 +1749,7 @@ def bls.fp8.Fp8.eq_mask_loop.body
     ok (cont (iter1, a, b, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 504:8-506:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 498:8-500:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.eq_mask_loop
@@ -1762,7 +1762,7 @@ def bls.fp8.Fp8.eq_mask_loop
     (iter, a, b, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 501:4-508:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 495:4-502:5
     Visibility: public -/
 def bls.fp8.Fp8.eq_mask
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result Std.U8 := do
@@ -1971,7 +1971,7 @@ def bls.fp8.Fp8.load
   ok v1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 562:4-566:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 556:4-560:5
     Visibility: public -/
 def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.to_plain self
@@ -1981,7 +1981,7 @@ def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   bls.fp8.borrowed borrow
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 535:8-537:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 529:8-531:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
@@ -2002,7 +2002,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 535:8-537:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 529:8-531:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
@@ -2016,7 +2016,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
     (iter, table)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 540:8-547:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 534:8-541:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
@@ -2041,7 +2041,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
   else ok (done r)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 540:8-547:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 534:8-541:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
@@ -2053,7 +2053,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
     (r, w)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 532:4-549:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 526:4-543:5
     Visibility: public -/
 def bls.fp8.Fp8.pow_p_minus_3_over_4
   (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -2069,14 +2069,14 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4
   bls.fp8.Fp8.pow_p_minus_3_over_4_loop1 table1 r 94#usize
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sqrt_candidate]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 554:4-556:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 548:4-550:5
     Visibility: public -/
 def bls.fp8.Fp8.sqrt_candidate (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.pow_p_minus_3_over_4 self
   bls.fp8.Fp8.mul f self
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 524:4-526:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 518:4-520:5
     Visibility: public -/
 def bls.fp8.Fp8.select
   (k : Std.U8) (a : bls.fp8.Fp8) (b : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -2439,7 +2439,7 @@ def bls.g2x8.Offsets.new : Result bls.g2x8.Offsets := do
   ok { two_p := f, four_p := f1, eight_p := f2 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 153:4-155:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 147:4-149:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_zero_mask (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
   let i ← bls.fp8.Fp8.is_zero_mask self.c0
@@ -2696,7 +2696,7 @@ def bls.g2x8.G2x8.times_minus_z
   bls.g2x8.G2x8.times_minus_z_loop px py 0#u8 { x := px, y := py, z := fx } bit
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 147:4-149:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 141:4-143:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.eq_mask
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2705,7 +2705,7 @@ def bls.fp2x8.Fp2x8.eq_mask
   ok (i &&& i1)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::conjugate]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 102:4-104:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 96:4-98:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.conjugate
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2713,7 +2713,7 @@ def bls.fp2x8.Fp2x8.conjugate
   ok { self with c1 := f }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::neg]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 96:4-98:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 90:4-92:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.neg (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
   let f ← bls.fp8.Fp8.neg self.c0
@@ -2760,7 +2760,7 @@ def bls.g2x8.G2x8.scott_membership
   ok { members := i3, undecided }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 142:4-144:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 136:4-138:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_larger_root_mask
   (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2771,14 +2771,14 @@ def bls.fp2x8.Fp2x8.is_larger_root_mask
   ok (i ||| i3)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::half]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 495:4-497:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 489:4-491:5
     Visibility: public -/
 def bls.fp8.Fp8.half (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.splat_limbs bls.constants.HALF_MONT
   bls.fp8.Fp8.mul self f
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 115:4-117:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 109:4-111:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.select
   (k : Std.U8) (a : bls.fp2x8.Fp2x8) (b : bls.fp2x8.Fp2x8) :
@@ -2789,7 +2789,7 @@ def bls.fp2x8.Fp2x8.select
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul_by_i]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 108:4-110:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 102:4-104:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.mul_by_i
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2797,7 +2797,7 @@ def bls.fp2x8.Fp2x8.mul_by_i
   ok { c0 := f, c1 := self.c0 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sqrt]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 125:4-136:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 119:4-130:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sqrt
   (self : bls.fp2x8.Fp2x8) : Result (bls.fp2x8.Fp2x8 × Std.U8) := do
@@ -3612,7 +3612,7 @@ def kzg.blst_ops.LincombScratch.new : Result kzg.blst_ops.LincombScratch := do
 def kzg.cell_extender.LOG_EXT_BLOB : Std.U32 := 13#u32
 
 /-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 34:0-34:48
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 36:0-36:48
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.FIELD_ELEMENTS_PER_BLOB : Std.Usize := 4096#usize
@@ -3625,13 +3625,13 @@ def kzg.cell_extender._ : Result Unit := do
   massert (i = kzg.FIELD_ELEMENTS_PER_BLOB)
 
 /-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_CELL]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 35:0-35:46
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 37:0-37:46
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.FIELD_ELEMENTS_PER_CELL : Std.Usize := 64#usize
 
 /-- [silver_crypto_simd::kzg::CELLS_PER_EXT_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 36:0-36:92
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 38:0-38:92
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.CELLS_PER_EXT_BLOB : Result Std.Usize := do
@@ -4507,7 +4507,7 @@ def kzg.fft.inverse_fft
   kzg.fft.inverse_fft_loop { start := 0#usize, «end» := i } out1 inverse_n
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_FIELD_ELEMENT]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 33:0-33:46
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 35:0-35:46
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
@@ -4519,7 +4519,7 @@ def kzg.fr8.splat (x : Std.U64) : Result core.core_arch.x86.__m512i := do
   core.core_arch.x86.avx512f._mm512_set1_epi64 i
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 305:8-308:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 312:8-315:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.normalise_loop.body
@@ -4546,7 +4546,7 @@ def kzg.fr8.Fr8.normalise_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 305:8-308:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 312:8-315:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.normalise_loop
@@ -4559,7 +4559,7 @@ def kzg.fr8.Fr8.normalise_loop
     (iter, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 302:4-310:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 309:4-317:5
     Visibility: public -/
 def kzg.fr8.Fr8.normalise (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let i ← kzg.fr8.MASK52
@@ -4731,7 +4731,7 @@ def kzg.fr8.R : Array Std.U64 5#usize :=
     ] (by rfl)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 268:4-278:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 275:4-285:5
     Visibility: public -/
 def kzg.fr8.Fr8.reduce
   (t : Array core.core_arch.x86.__m512i 11#usize) : Result kzg.fr8.Fr8 := do
@@ -4809,7 +4809,7 @@ def kzg.fr8.muladd_row
     b_i i
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::product]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 255:4-263:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 262:4-270:5
     Visibility: public -/
 def kzg.fr8.Fr8.product
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) :
@@ -4829,7 +4829,7 @@ def kzg.fr8.Fr8.product
   kzg.fr8.muladd_row t4 self mi5 4#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::mul]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 248:4-250:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 255:4-257:5
     Visibility: public -/
 def kzg.fr8.Fr8.mul
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -4955,7 +4955,7 @@ def kzg.fr8.sub_limbs
     mask d mi
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::canonical]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 369:4-372:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 376:4-379:5 -/
 def kzg.fr8.Fr8.canonical (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let a ← kzg.fr8.splat_limbs kzg.fr8.R
   let (d, borrow) ← kzg.fr8.sub_limbs self a
@@ -5179,7 +5179,7 @@ def kzg.fr8.u256x8.U256x8.to_bytes
   ok (index_mut_back elements1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::to_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 237:4-239:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 244:4-246:5
     Visibility: public -/
 def kzg.fr8.Fr8.to_bytes
   (self : kzg.fr8.Fr8) (bytes : Slice Std.U8) (at1 : Std.Usize) :
@@ -5190,7 +5190,7 @@ def kzg.fr8.Fr8.to_bytes
   kzg.fr8.u256x8.U256x8.to_bytes ux bytes at1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:12-416:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 421:12-423:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0_loop0.body
@@ -5213,7 +5213,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:12-416:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 421:12-423:13
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0_loop0
@@ -5228,7 +5228,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 403:8-417:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 410:8-424:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0.body
@@ -5276,7 +5276,7 @@ def kzg.fr8.Fr8.transpose_loop0.body
     ok (cont (iter1, out1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 403:8-417:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 410:8-424:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0
@@ -5291,7 +5291,7 @@ def kzg.fr8.Fr8.transpose_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 401:4-428:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 408:4-435:5
     Visibility: public -/
 def kzg.fr8.Fr8.transpose
   (vectors : Slice kzg.fr8.Fr8) (at1 : Std.Usize) :
@@ -5353,7 +5353,7 @@ def kzg.fft8.set_block
   kzg.fft8.set_block_loop data at1 block 0#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-348:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 351:8-355:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.multiple_of_r_loop.body
@@ -5379,7 +5379,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop.body
     ok (cont (iter1, a, carry1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 344:8-348:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 351:8-355:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.multiple_of_r_loop
@@ -5393,7 +5393,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop
     (iter, v, carry)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 340:4-350:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 347:4-357:5
     Visibility: public -/
 def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   massert (c <= 35#u64)
@@ -5405,7 +5405,7 @@ def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   ok v1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 331:8-333:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 338:8-340:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.sub_raw_loop.body
@@ -5430,7 +5430,7 @@ def kzg.fr8.Fr8.sub_raw_loop.body
     ok (cont (iter1, self, rhs, offset, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 331:8-333:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 338:8-340:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.sub_raw_loop
@@ -5445,7 +5445,7 @@ def kzg.fr8.Fr8.sub_raw_loop
     (iter, self, rhs, offset, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 329:4-335:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 336:4-342:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) (offset : kzg.fr8.Fr8) :
@@ -5459,7 +5459,7 @@ def kzg.fr8.Fr8.sub_raw
   ok s1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 318:8-320:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 325:8-327:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.add_raw_loop.body
@@ -5481,7 +5481,7 @@ def kzg.fr8.Fr8.add_raw_loop.body
     ok (cont (iter1, self, rhs, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 318:8-320:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 325:8-327:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.add_raw_loop
@@ -5495,7 +5495,7 @@ def kzg.fr8.Fr8.add_raw_loop
     (iter, self, rhs, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 316:4-322:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 323:4-329:5
     Visibility: public -/
 def kzg.fr8.Fr8.add_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -5614,7 +5614,7 @@ def kzg.fr8.reduce_row_multiplying
   ok (t2, next1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce_while_multiplying]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 284:4-295:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 291:4-302:5
     Visibility: public -/
 def kzg.fr8.Fr8.reduce_while_multiplying
   (t : Array core.core_arch.x86.__m512i 11#usize) (a : kzg.fr8.Fr8)
@@ -5973,7 +5973,7 @@ def kzg.fft8.Fft8.dit
   kzg.fft8.Fft8.dit_loop1 self.vectors self.wide self.short data1 1#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduced]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 377:4-380:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 384:4-387:5 -/
 def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let f ← kzg.fr8.Fr8.multiple_of_r 2#u64
   let (d, borrow) ← kzg.fr8.sub_limbs self f
@@ -5981,7 +5981,7 @@ def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   ok a
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 393:4-395:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 400:4-402:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -5991,7 +5991,7 @@ def kzg.fr8.Fr8.sub
   kzg.fr8.Fr8.reduced f2
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 385:4-387:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 392:4-394:5
     Visibility: public -/
 def kzg.fr8.Fr8.add
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -6429,7 +6429,7 @@ def kzg.extension_kernel.ExtensionKernel.extend
   ok ({ self with data := v2 }, cells1)
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 38:0-38:84
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 40:0-40:84
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_BLOB : Result Std.Usize :=
@@ -6600,7 +6600,7 @@ def kzg.fr8.u256x8.U256x8.from_bytes
   kzg.fr8.u256x8.U256x8.from_blocks blocks1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::from_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 228:4-232:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 235:4-239:5
     Visibility: public -/
 def kzg.fr8.Fr8.from_bytes
   (bytes : Slice Std.U8) (at1 : Std.Usize) :
@@ -6676,7 +6676,7 @@ def kzg.extension_kernel.ExtensionKernel.decode
   ok (valid, { self with data := v })
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_CELL]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 37:0-37:84
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 39:0-39:84
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_CELL : Result Std.Usize :=
@@ -7260,6 +7260,624 @@ def kzg.cosets.Cosets.new : Result kzg.cosets.Cosets := do
       shift_inverse := shift_inverse1,
       shift_pow_cell := shift_pow_cell1
     }
+
+/-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::splat]:
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 227:4-229:5
+    Visibility: public -/
+def kzg.fr8.Fr8.splat (value : blst.blst_fr) : Result kzg.fr8.Fr8 := do
+  let a ← kzg.fr8.unpack52 value.l
+  let a1 ← kzg.fr8.splat_limbs a
+  ok a1
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::VECTORS_PER_CELL]
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 17:0-17:64 -/
+@[global_simps, irreducible]
+def kzg.interpolation_kernel.VECTORS_PER_CELL : Result Std.Usize :=
+  kzg.FIELD_ELEMENTS_PER_CELL / kzg.fr8.LANES
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::BYTES_PER_VECTOR]
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 18:0-18:64 -/
+@[global_simps, irreducible]
+def kzg.interpolation_kernel.BYTES_PER_VECTOR : Result Std.Usize :=
+  kzg.fr8.LANES * kzg.BYTES_PER_FIELD_ELEMENT
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 42:12-46:13
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop0.body
+  (v : alloc.vec.Vec blst.blst_fr) (c : Std.Usize)
+  (factors : Array blst.blst_fr 64#usize) (factor : blst.blst_fr)
+  (i : Std.Usize) :
+  Result (ControlFlow ((Array blst.blst_fr 64#usize) × blst.blst_fr ×
+    Std.Usize) (Array blst.blst_fr 64#usize))
+  := do
+  if i < kzg.FIELD_ELEMENTS_PER_CELL
+  then
+    let bf ← kzg.fr8.multiplier factor
+    let a ← Array.update factors i bf
+    let bf1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        v c
+    let factor1 ← kzg.blst_ops.fr_mul factor bf1
+    let i1 ← i + 1#usize
+    ok (cont (a, factor1, i1))
+  else ok (done factors)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 42:12-46:13
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop0
+  (v : alloc.vec.Vec blst.blst_fr) (factors : Array blst.blst_fr 64#usize)
+  (c : Std.Usize) (factor : blst.blst_fr) (i : Std.Usize) :
+  Result (Array blst.blst_fr 64#usize)
+  := do
+  loop
+    (fun (factors1, factor1, i1) =>
+      kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop0.body v c
+      factors1 factor1 i1)
+    (factors, factor, i)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop body 2:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 48:12-52:13
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop1.body
+  (i : Std.Usize) (factors : Array blst.blst_fr 64#usize)
+  (shift : alloc.vec.Vec kzg.fr8.Fr8) (columns : alloc.vec.Vec kzg.fr8.Fr8)
+  (v : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec
+    kzg.fr8.Fr8) × Std.Usize) ((alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec
+    kzg.fr8.Fr8)))
+  := do
+  if v < i
+  then
+    let s ← lift (Array.to_slice factors)
+    let i1 ← v * kzg.fr8.LANES
+    let f ← kzg.fr8.Fr8.load s i1
+    let shift1 ← alloc.vec.Vec.push shift f
+    let f1 ← kzg.fr8.Fr8.zero
+    let columns1 ← alloc.vec.Vec.push columns f1
+    let v1 ← v + 1#usize
+    ok (cont (shift1, columns1, v1))
+  else ok (done (shift, columns))
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop 2:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 48:12-52:13
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop1
+  (i : Std.Usize) (shift : alloc.vec.Vec kzg.fr8.Fr8)
+  (columns : alloc.vec.Vec kzg.fr8.Fr8) (factors : Array blst.blst_fr 64#usize)
+  (v : Std.Usize) :
+  Result ((alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec kzg.fr8.Fr8))
+  := do
+  loop
+    (fun (shift1, columns1, v1) =>
+      kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop1.body i
+      factors shift1 columns1 v1)
+    (shift, columns, v)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 39:8-55:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0.body
+  (i : Std.Usize) (i1 : Std.Usize) (cosets : kzg.cosets.Cosets)
+  (shift : alloc.vec.Vec kzg.fr8.Fr8) (columns : alloc.vec.Vec kzg.fr8.Fr8)
+  (used : alloc.vec.Vec Bool) (factors : Array blst.blst_fr 64#usize)
+  (c : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec
+    kzg.fr8.Fr8) × (alloc.vec.Vec Bool) × (Array blst.blst_fr 64#usize) ×
+    Std.Usize) (kzg.cosets.Cosets × (alloc.vec.Vec kzg.fr8.Fr8) ×
+    (alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec Bool)))
+  := do
+  if c < i
+  then
+    let factors1 ←
+      kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop0
+        cosets.shift_inverse factors c cosets.inverse_size 0#usize
+    let (shift1, columns1) ←
+      kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop1 i1 shift
+        columns factors1 0#usize
+    let used1 ← alloc.vec.Vec.push used false
+    let c1 ← c + 1#usize
+    ok (cont (shift1, columns1, used1, factors1, c1))
+  else ok (done (cosets, shift, columns, used))
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 39:8-55:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.new_loop0
+  (i : Std.Usize) (i1 : Std.Usize) (cosets : kzg.cosets.Cosets)
+  (shift : alloc.vec.Vec kzg.fr8.Fr8) (columns : alloc.vec.Vec kzg.fr8.Fr8)
+  (used : alloc.vec.Vec Bool) (factors : Array blst.blst_fr 64#usize)
+  (c : Std.Usize) :
+  Result (kzg.cosets.Cosets × (alloc.vec.Vec kzg.fr8.Fr8) × (alloc.vec.Vec
+    kzg.fr8.Fr8) × (alloc.vec.Vec Bool))
+  := do
+  loop
+    (fun (shift1, columns1, used1, factors1, c1) =>
+      kzg.interpolation_kernel.InterpolationKernel.new_loop0.body i i1 cosets
+      shift1 columns1 used1 factors1 c1)
+    (shift, columns, used, factors, c)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::new]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 33:4-62:5
+    Visibility: public -/
+def kzg.interpolation_kernel.InterpolationKernel.new
+  (cosets : kzg.cosets.Cosets) :
+  Result kzg.interpolation_kernel.InterpolationKernel
+  := do
+  let i ← kzg.CELLS_PER_EXT_BLOB
+  let i1 ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  let i2 ← i * i1
+  let shift := alloc.vec.Vec.with_capacity kzg.fr8.Fr8 i2
+  let i3 ← i * i1
+  let columns := alloc.vec.Vec.with_capacity kzg.fr8.Fr8 i3
+  let used := alloc.vec.Vec.with_capacity Bool i
+  let bf ← kzg.blst_ops.fr_from_u64 0#u64
+  let factors := Array.repeat 64#usize bf
+  let (cosets1, shift1, columns1, used1) ←
+    kzg.interpolation_kernel.InterpolationKernel.new_loop0 i i1 cosets shift
+      columns used factors 0#usize
+  let s := alloc.vec.Vec.deref cosets1.inverse_roots
+  let f ← kzg.fft8.Fft8.new s kzg.FIELD_ELEMENTS_PER_CELL
+  ok { inverse := f, shift := shift1, columns := columns1, used := used1 }
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check_cell]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 77:8-79:9 -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.check_cell_loop.body
+  (cell : Array Std.U8 2048#usize) (v : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  let i ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  if v < i
+  then
+    let s ← lift (Array.to_slice cell)
+    let i1 ← kzg.interpolation_kernel.BYTES_PER_VECTOR
+    let i2 ← v * i1
+    let (_, i3) ← kzg.fr8.Fr8.from_bytes s i2
+    if i3 = 255#u8
+    then let v1 ← v + 1#usize
+         ok (cont v1)
+    else ok (done v)
+  else ok (done v)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check_cell]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 77:8-79:9 -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.check_cell_loop
+  (cell : Array Std.U8 2048#usize) (v : Std.Usize) : Result Std.Usize := do
+  loop
+    (fun v1 =>
+      kzg.interpolation_kernel.InterpolationKernel.check_cell_loop.body cell
+      v1)
+    v
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check_cell]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 75:4-81:5 -/
+def kzg.interpolation_kernel.InterpolationKernel.check_cell
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cell : Array Std.U8 2048#usize) :
+  Result Bool
+  := do
+  let v ←
+    kzg.interpolation_kernel.InterpolationKernel.check_cell_loop cell 0#usize
+  let i ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  ok (v = i)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 68:8-70:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.check_loop.body
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cells : Slice (Array Std.U8 2048#usize)) (k : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  let i := Slice.len cells
+  if k < i
+  then
+    let a ← Slice.index_usize cells k
+    let b ← kzg.interpolation_kernel.InterpolationKernel.check_cell self a
+    if b
+    then let k1 ← k + 1#usize
+         ok (cont k1)
+    else ok (done k)
+  else ok (done k)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 68:8-70:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.check_loop
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cells : Slice (Array Std.U8 2048#usize)) (k : Std.Usize) :
+  Result Std.Usize
+  := do
+  loop
+    (fun k1 => kzg.interpolation_kernel.InterpolationKernel.check_loop.body
+      self cells k1)
+    k
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::check]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 66:4-72:5
+    Visibility: public -/
+def kzg.interpolation_kernel.InterpolationKernel.check
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cells : Slice (Array Std.U8 2048#usize)) :
+  Result Bool
+  := do
+  let k ←
+    kzg.interpolation_kernel.InterpolationKernel.check_loop self cells 0#usize
+  let i := Slice.len cells
+  ok (k = i)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::store_canonical]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 154:4-157:5 -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.store_canonical_loop0.body
+  (sums : Array kzg.fr8.Fr8 8#usize) (bytes : Array Std.U8 2048#usize)
+  (v : Std.Usize) :
+  Result (ControlFlow ((Array Std.U8 2048#usize) × Std.Usize) (Array Std.U8
+    2048#usize))
+  := do
+  let i ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  if v < i
+  then
+    let f ← Array.index_usize sums v
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i1 ← kzg.interpolation_kernel.BYTES_PER_VECTOR
+    let i2 ← v * i1
+    let s1 ← kzg.fr8.Fr8.to_bytes f s i2
+    let v1 ← v + 1#usize
+    let bytes1 := to_slice_mut_back s1
+    ok (cont (bytes1, v1))
+  else ok (done bytes)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::store_canonical]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 154:4-157:5 -/
+@[rust_loop]
+def kzg.interpolation_kernel.store_canonical_loop0
+  (sums : Array kzg.fr8.Fr8 8#usize) (bytes : Array Std.U8 2048#usize)
+  (v : Std.Usize) :
+  Result (Array Std.U8 2048#usize)
+  := do
+  loop
+    (fun (bytes1, v1) => kzg.interpolation_kernel.store_canonical_loop0.body
+      sums bytes1 v1)
+    (bytes, v)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::store_canonical]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 159:4-169:5 -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.store_canonical_loop1.body
+  (bytes : Array Std.U8 2048#usize) (out : Slice blst.blst_fr) (i : Std.Usize)
+  :
+  Result (ControlFlow ((Slice blst.blst_fr) × Std.Usize) (Slice blst.blst_fr))
+  := do
+  if i < kzg.FIELD_ELEMENTS_PER_CELL
+  then
+    let element := Array.repeat 32#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut element)
+    let i1 ← i * kzg.BYTES_PER_FIELD_ELEMENT
+    let i2 ← i + 1#usize
+    let i3 ← i2 * kzg.BYTES_PER_FIELD_ELEMENT
+    let s1 ←
+      core.array.Array.index (core.ops.index.IndexSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) bytes
+        { start := i1, «end» := i3 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let element1 := to_slice_mut_back s2
+    let o ← kzg.blst_ops.fr_from_bytes element1
+    match o with
+    | none => fail panic
+    | some value => let s3 ← Slice.update out i value
+                    ok (cont (s3, i2))
+  else ok (done out)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::store_canonical]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 159:4-169:5 -/
+@[rust_loop]
+def kzg.interpolation_kernel.store_canonical_loop1
+  (out : Slice blst.blst_fr) (bytes : Array Std.U8 2048#usize) (i : Std.Usize)
+  :
+  Result (Slice blst.blst_fr)
+  := do
+  loop
+    (fun (out1, i1) => kzg.interpolation_kernel.store_canonical_loop1.body
+      bytes out1 i1)
+    (out, i)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::store_canonical]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 151:0-170:1 -/
+def kzg.interpolation_kernel.store_canonical
+  (sums : Array kzg.fr8.Fr8 8#usize) (out : Slice blst.blst_fr) :
+  Result (Slice blst.blst_fr)
+  := do
+  let bytes := Array.repeat 2048#usize 0#u8
+  let bytes1 ←
+    kzg.interpolation_kernel.store_canonical_loop0 sums bytes 0#usize
+  kzg.interpolation_kernel.store_canonical_loop1 out bytes1 0#usize
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_column]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 140:8-145:9 -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.add_column_loop.body
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (at1 : Std.Usize)
+  (sums : Array kzg.fr8.Fr8 8#usize) (v2 : Std.Usize) :
+  Result (ControlFlow ((Array kzg.fr8.Fr8 8#usize) × Std.Usize) (Array
+    kzg.fr8.Fr8 8#usize))
+  := do
+  if v2 < i
+  then
+    let i1 ← at1 + v2
+    let f ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8)
+        v1 i1
+    let f1 ← kzg.fr8.Fr8.normalise f
+    let f2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice kzg.fr8.Fr8) v
+        i1
+    let scaled ← kzg.fr8.Fr8.mul f1 f2
+    let f3 ← Array.index_usize sums v2
+    let f4 ← kzg.fr8.Fr8.add f3 scaled
+    let a ← Array.update sums v2 f4
+    let v3 ← v2 + 1#usize
+    ok (cont (a, v3))
+  else ok (done sums)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_column]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 140:8-145:9 -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.add_column_loop
+  (i : Std.Usize) (v : alloc.vec.Vec kzg.fr8.Fr8)
+  (v1 : alloc.vec.Vec kzg.fr8.Fr8) (sums : Array kzg.fr8.Fr8 8#usize)
+  (at1 : Std.Usize) (v2 : Std.Usize) :
+  Result (Array kzg.fr8.Fr8 8#usize)
+  := do
+  loop
+    (fun (sums1, v3) =>
+      kzg.interpolation_kernel.InterpolationKernel.add_column_loop.body i v v1
+      at1 sums1 v3)
+    (sums, v2)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_column]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 135:4-146:5 -/
+def kzg.interpolation_kernel.InterpolationKernel.add_column
+  (self : kzg.interpolation_kernel.InterpolationKernel) (column : Std.Usize)
+  (sums : Array kzg.fr8.Fr8 8#usize) :
+  Result (kzg.interpolation_kernel.InterpolationKernel × (Array kzg.fr8.Fr8
+    8#usize))
+  := do
+  let i ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  let at1 ← column * i
+  let i1 ← at1 + i
+  let (s, index_mut_back) ←
+    alloc.vec.Vec.index_mut (core.slice.index.SliceIndexRangeUsizeSlice
+      kzg.fr8.Fr8) self.columns { start := at1, «end» := i1 }
+  let s1 ← kzg.fft8.Fft8.dit self.inverse s
+  let v := index_mut_back s1
+  let sums1 ←
+    kzg.interpolation_kernel.InterpolationKernel.add_column_loop i self.shift v
+      sums at1 0#usize
+  ok ({ self with columns := v }, sums1)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_cell]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 122:8-130:9 -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.add_cell_loop.body
+  (cell : Array Std.U8 2048#usize) (column : Std.Usize) (weight : kzg.fr8.Fr8)
+  (first : Bool) (v : alloc.vec.Vec kzg.fr8.Fr8) (v1 : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec kzg.fr8.Fr8) × Std.Usize) (alloc.vec.Vec
+    kzg.fr8.Fr8))
+  := do
+  let i ← kzg.interpolation_kernel.VECTORS_PER_CELL
+  if v1 < i
+  then
+    let s ← lift (Array.to_slice cell)
+    let i1 ← kzg.interpolation_kernel.BYTES_PER_VECTOR
+    let i2 ← v1 * i1
+    let (element, _) ← kzg.fr8.Fr8.from_bytes s i2
+    let product ← kzg.fr8.Fr8.mul element weight
+    let i3 ← column * i
+    let at1 ← i3 + v1
+    let f ←
+      if first
+      then kzg.fr8.Fr8.normalise product
+      else
+        do
+        let f1 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+            kzg.fr8.Fr8) v at1
+        kzg.fr8.Fr8.add f1 product
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+        kzg.fr8.Fr8) v at1
+    let v2 ← v1 + 1#usize
+    let v3 := index_mut_back f
+    ok (cont (v3, v2))
+  else ok (done v)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_cell]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 122:8-130:9 -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.add_cell_loop
+  (v : alloc.vec.Vec kzg.fr8.Fr8) (cell : Array Std.U8 2048#usize)
+  (column : Std.Usize) (weight : kzg.fr8.Fr8) (first : Bool) (v1 : Std.Usize) :
+  Result (alloc.vec.Vec kzg.fr8.Fr8)
+  := do
+  loop
+    (fun (v2, v3) =>
+      kzg.interpolation_kernel.InterpolationKernel.add_cell_loop.body cell
+      column weight first v2 v3)
+    (v, v1)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::add_cell]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 117:4-131:5 -/
+def kzg.interpolation_kernel.InterpolationKernel.add_cell
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cell : Array Std.U8 2048#usize) (column : Std.Usize) (power : blst.blst_fr)
+  :
+  Result kzg.interpolation_kernel.InterpolationKernel
+  := do
+  let bf ← kzg.fr8.multiplier power
+  let weight ← kzg.fr8.Fr8.splat bf
+  let b ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Bool) 
+      self.used column
+  let (_, index_mut_back) ←
+    alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Bool)
+      self.used column
+  let v := index_mut_back true
+  let v1 ←
+    kzg.interpolation_kernel.InterpolationKernel.add_cell_loop self.columns
+      cell column weight (¬ b) 0#usize
+  ok { self with columns := v1, used := v }
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 94:8-97:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop0.body
+  (self : kzg.interpolation_kernel.InterpolationKernel) (c : Std.Usize) :
+  Result (ControlFlow (kzg.interpolation_kernel.InterpolationKernel ×
+    Std.Usize) kzg.interpolation_kernel.InterpolationKernel)
+  := do
+  let i ← kzg.CELLS_PER_EXT_BLOB
+  if c < i
+  then
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Bool)
+        self.used c
+    let c1 ← c + 1#usize
+    let v := index_mut_back false
+    ok (cont ({ self with used := v }, c1))
+  else ok (done self)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 94:8-97:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop0
+  (self : kzg.interpolation_kernel.InterpolationKernel) (c : Std.Usize) :
+  Result kzg.interpolation_kernel.InterpolationKernel
+  := do
+  loop
+    (fun (self1, c1) =>
+      kzg.interpolation_kernel.InterpolationKernel.interpolate_loop0.body self1
+      c1)
+    (self, c)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 99:8-102:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop1.body
+  (cells : Slice (Array Std.U8 2048#usize)) (cell_indices : Slice Std.U64)
+  (powers : Slice blst.blst_fr)
+  (self : kzg.interpolation_kernel.InterpolationKernel) (k : Std.Usize) :
+  Result (ControlFlow (kzg.interpolation_kernel.InterpolationKernel ×
+    Std.Usize) kzg.interpolation_kernel.InterpolationKernel)
+  := do
+  let i := Slice.len cells
+  if k < i
+  then
+    let a ← Slice.index_usize cells k
+    let i1 ← Slice.index_usize cell_indices k
+    let i2 ← lift (UScalar.cast .Usize i1)
+    let bf ← Slice.index_usize powers k
+    let self1 ←
+      kzg.interpolation_kernel.InterpolationKernel.add_cell self a i2 bf
+    let k1 ← k + 1#usize
+    ok (cont (self1, k1))
+  else ok (done self)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 99:8-102:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop1
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cells : Slice (Array Std.U8 2048#usize)) (cell_indices : Slice Std.U64)
+  (powers : Slice blst.blst_fr) (k : Std.Usize) :
+  Result kzg.interpolation_kernel.InterpolationKernel
+  := do
+  loop
+    (fun (self1, k1) =>
+      kzg.interpolation_kernel.InterpolationKernel.interpolate_loop1.body cells
+      cell_indices powers self1 k1)
+    (self, k)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop body 2:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 106:8-111:9
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop2.body
+  (self : kzg.interpolation_kernel.InterpolationKernel) (c : Std.Usize)
+  (sums : Array kzg.fr8.Fr8 8#usize) :
+  Result (ControlFlow (kzg.interpolation_kernel.InterpolationKernel ×
+    Std.Usize × (Array kzg.fr8.Fr8 8#usize))
+    (kzg.interpolation_kernel.InterpolationKernel × (Array kzg.fr8.Fr8
+    8#usize)))
+  := do
+  let i ← kzg.CELLS_PER_EXT_BLOB
+  if c < i
+  then
+    let b ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Bool)
+        self.used c
+    let (self1, sums1) ←
+      if b
+      then kzg.interpolation_kernel.InterpolationKernel.add_column self c sums
+      else ok (self, sums)
+    let c1 ← c + 1#usize
+    ok (cont (self1, c1, sums1))
+  else ok (done (self, sums))
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]: loop 2:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 106:8-111:9
+    Visibility: public -/
+@[rust_loop]
+def kzg.interpolation_kernel.InterpolationKernel.interpolate_loop2
+  (self : kzg.interpolation_kernel.InterpolationKernel) (c : Std.Usize)
+  (sums : Array kzg.fr8.Fr8 8#usize) :
+  Result (kzg.interpolation_kernel.InterpolationKernel × (Array kzg.fr8.Fr8
+    8#usize))
+  := do
+  loop
+    (fun (self1, c1, sums1) =>
+      kzg.interpolation_kernel.InterpolationKernel.interpolate_loop2.body self1
+      c1 sums1)
+    (self, c, sums)
+
+/-- [silver_crypto_simd::kzg::interpolation_kernel::{silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel}::interpolate]:
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 86:4-113:5
+    Visibility: public -/
+def kzg.interpolation_kernel.InterpolationKernel.interpolate
+  (self : kzg.interpolation_kernel.InterpolationKernel)
+  (cells : Slice (Array Std.U8 2048#usize)) (cell_indices : Slice Std.U64)
+  (powers : Slice blst.blst_fr) (coefficients : Slice blst.blst_fr) :
+  Result (kzg.interpolation_kernel.InterpolationKernel × (Slice blst.blst_fr))
+  := do
+  let self1 ←
+    kzg.interpolation_kernel.InterpolationKernel.interpolate_loop0 self 0#usize
+  let self2 ←
+    kzg.interpolation_kernel.InterpolationKernel.interpolate_loop1 self1 cells
+      cell_indices powers 0#usize
+  let f ← kzg.fr8.Fr8.zero
+  let sums := Array.repeat 8#usize f
+  let (self3, sums1) ←
+    kzg.interpolation_kernel.InterpolationKernel.interpolate_loop2 self2
+      0#usize sums
+  let coefficients1 ←
+    kzg.interpolation_kernel.store_canonical sums1 coefficients
+  ok (self3, coefficients1)
 
 /-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_64]
     Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 398:0-405:2
@@ -8082,11 +8700,11 @@ def kzg.setup.Setup.decode : Result kzg.setup.Setup := do
         }
 
 /-- [silver_crypto_simd::kzg::verify::LOG_CELL]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 24:0-24:24 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 27:0-27:24 -/
 @[global_simps, irreducible] def kzg.verify.LOG_CELL : Std.U32 := 6#u32
 
 /-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}::default]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 232:9-232:16
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 280:9-280:16
     Visibility: public -/
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   : Result kzg.verify.Deduplicated := do
@@ -8096,19 +8714,27 @@ def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   ok { unique := v, index_of_cell := v1 }
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::new]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 54:4-73:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 59:4-89:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.new
   : Result kzg.verify.CellBatchVerifier := do
-  let s ← kzg.setup.Setup.decode
-  let c ← kzg.cosets.Cosets.new
+  let setup ← kzg.setup.Setup.decode
+  let cosets ← kzg.cosets.Cosets.new
+  let b ← simd_available
+  let kernel ←
+    if b
+    then
+      do
+      let ik ← kzg.interpolation_kernel.InterpolationKernel.new cosets
+      ok (some ik)
+    else ok none
   let d ← kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   let p ← kzg.challenge.Preimage.new
   let ls ← kzg.blst_ops.LincombScratch.new
   ok
     {
-      setup := s,
-      cosets := c,
+      setup,
+      cosets,
       commitments := d,
       decoded := (alloc.vec.Vec.new (Option blst.blst_p1_affine)),
       commitment_points := (alloc.vec.Vec.new blst.blst_p1_affine),
@@ -8122,18 +8748,19 @@ def kzg.verify.CellBatchVerifier.new
       column := (alloc.vec.Vec.new blst.blst_fr),
       coefficients := (alloc.vec.Vec.new blst.blst_fr),
       interpolation := (alloc.vec.Vec.new blst.blst_fr),
-      lincomb := ls
+      lincomb := ls,
+      kernel
     }
 
 /-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}::default]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 48:4-50:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 53:4-55:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default
   : Result kzg.verify.CellBatchVerifier := do
   kzg.verify.CellBatchVerifier.new
 
 /-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 47:0-51:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 52:0-56:1 -/
 @[reducible]
 def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
   core.default.Default kzg.verify.CellBatchVerifier := {
@@ -8141,7 +8768,7 @@ def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
 }
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 283:4-285:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 331:4-333:5 -/
 @[rust_loop_body]
 def kzg.verify.same_bytes_loop.body
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -8158,7 +8785,7 @@ def kzg.verify.same_bytes_loop.body
   else ok (done i)
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 283:4-285:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 331:4-333:5 -/
 @[rust_loop]
 def kzg.verify.same_bytes_loop
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -8169,14 +8796,14 @@ def kzg.verify.same_bytes_loop
     i
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 281:0-287:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 329:0-335:1 -/
 def kzg.verify.same_bytes
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) : Result Bool := do
   let i ← kzg.verify.same_bytes_loop a b 0#usize
   ok (i = bls.COMPRESSED_LEN)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:12-251:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 293:12-299:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0_loop0.body
@@ -8200,7 +8827,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0.body
   else ok (done found)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:12-251:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 293:12-299:13
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0_loop0
@@ -8215,7 +8842,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0
     i
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 242:8-256:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 290:8-304:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0.body
@@ -8245,7 +8872,7 @@ def kzg.verify.Deduplicated.fill_loop0.body
     ok (cont (iter1, v2, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 242:8-256:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 290:8-304:9
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0
@@ -8260,7 +8887,7 @@ def kzg.verify.Deduplicated.fill_loop0
     (iter, v, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 239:4-257:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 287:4-305:5
     Visibility: public -/
 def kzg.verify.Deduplicated.fill
   (self : kzg.verify.Deduplicated)
@@ -8281,7 +8908,7 @@ def kzg.verify.Deduplicated.fill
   ok { unique := v2, index_of_cell := v3 }
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 193:12-198:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 241:12-246:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -8317,7 +8944,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
     ok (cont (iter1, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 193:12-198:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 241:12-246:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -8332,7 +8959,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
     (iter, v2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 190:8-199:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 238:8-247:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -8359,7 +8986,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
     ok (cont (iter1, v5, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 190:8-199:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 238:8-247:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -8374,7 +9001,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
     (iter, v2, v3)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 209:12-212:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 257:12-260:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (c : Std.Usize)
@@ -8400,7 +9027,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 209:12-212:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 257:12-260:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -8414,7 +9041,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 220:12-224:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 268:12-272:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -8447,7 +9074,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
     ok (cont (iter1, v3, factor1))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 220:12-224:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 268:12-272:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -8462,7 +9089,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
     (iter, v2, factor)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-225:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 253:8-273:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
   (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
@@ -8500,7 +9127,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
     else ok (cont (iter1, v2, v3, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-225:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 253:8-273:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
   (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
@@ -8517,59 +9144,78 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
     (iter, v2, v3, v4)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 184:4-227:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 219:4-275:5 -/
 def kzg.verify.CellBatchVerifier.interpolation_commitment
-  (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64) :
+  (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize)) :
   Result (blst.blst_p1 × kzg.verify.CellBatchVerifier)
   := do
   let zero ← kzg.blst_ops.fr_from_u64 0#u64
-  let v ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.columns 0#usize
-      zero
-  let i ← kzg.CELLS_PER_EXT_BLOB
-  let i1 ← i * kzg.FIELD_ELEMENTS_PER_CELL
-  let v1 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v i1 zero
-  let v2 ←
-    alloc.vec.Vec.resize core.clone.CloneBool self.column_used 0#usize false
-  let v3 ← alloc.vec.Vec.resize core.clone.CloneBool v2 i false
-  let i2 := Slice.len cell_indices
-  let (v4, v5) ←
-    kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
-      { start := 0#usize, «end» := i2 } self.evaluations self.r_powers v1 v3
-      cell_indices
-  let v6 ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
-      0#usize zero
-  let v7 ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v6
-      kzg.FIELD_ELEMENTS_PER_CELL zero
-  let v8 ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.column
-      kzg.FIELD_ELEMENTS_PER_CELL zero
-  let v9 ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.coefficients
-      kzg.FIELD_ELEMENTS_PER_CELL zero
-  let (c, v10, v11, v12) ←
-    kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
-      { start := 0#usize, «end» := i } self.cosets v4 v5 v8 v9 v7
-  let s := alloc.vec.Vec.deref self.setup.g1_monomial
-  let s1 := alloc.vec.Vec.deref v12
-  let (bp, ls) ← kzg.blst_ops.g1_lincomb s s1 self.lincomb
-  ok (bp,
-    {
-      self
-        with
-        cosets := c,
-        columns := v4,
-        column_used := v5,
-        column := v10,
-        coefficients := v11,
-        interpolation := v12,
-        lincomb := ls
-    })
+  match self.kernel with
+  | none =>
+    let v ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.columns
+        0#usize zero
+    let i ← kzg.CELLS_PER_EXT_BLOB
+    let i1 ← i * kzg.FIELD_ELEMENTS_PER_CELL
+    let v1 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v i1 zero
+    let v2 ←
+      alloc.vec.Vec.resize core.clone.CloneBool self.column_used 0#usize false
+    let v3 ← alloc.vec.Vec.resize core.clone.CloneBool v2 i false
+    let i2 := Slice.len cell_indices
+    let (v4, v5) ←
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
+        { start := 0#usize, «end» := i2 } self.evaluations self.r_powers v1
+        v3 cell_indices
+    let v6 ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
+        0#usize zero
+    let v7 ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v6
+        kzg.FIELD_ELEMENTS_PER_CELL zero
+    let v8 ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.column
+        kzg.FIELD_ELEMENTS_PER_CELL zero
+    let v9 ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.coefficients
+        kzg.FIELD_ELEMENTS_PER_CELL zero
+    let (c, v10, v11, v12) ←
+      kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
+        { start := 0#usize, «end» := i } self.cosets v4 v5 v8 v9 v7
+    let s := alloc.vec.Vec.deref self.setup.g1_monomial
+    let s1 := alloc.vec.Vec.deref v12
+    let (bp, ls) ← kzg.blst_ops.g1_lincomb s s1 self.lincomb
+    ok (bp,
+      {
+        self
+          with
+          cosets := c,
+          columns := v4,
+          column_used := v5,
+          column := v10,
+          coefficients := v11,
+          interpolation := v12,
+          lincomb := ls
+      })
+  | some kernel =>
+    let v ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
+        kzg.FIELD_ELEMENTS_PER_CELL zero
+    let s := alloc.vec.Vec.deref self.r_powers
+    let (s1, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut v)
+    let (kernel1, s2) ←
+      kzg.interpolation_kernel.InterpolationKernel.interpolate kernel cells
+        cell_indices s s1
+    let s3 := alloc.vec.Vec.deref self.setup.g1_monomial
+    let v1 := deref_mut_back s2
+    let s4 := alloc.vec.Vec.deref v1
+    let (bp, ls) ← kzg.blst_ops.g1_lincomb s3 s4 self.lincomb
+    ok (bp,
+      { self with interpolation := v1, lincomb := ls, kernel := (some kernel1)
+      })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 149:8-152:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 184:8-187:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop0.body
   (r : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
@@ -8587,7 +9233,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop0.body
     ok (cont (iter1, v1, power1))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 149:8-152:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 184:8-187:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -8600,7 +9246,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop0
     (iter, v, power)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-160:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 192:8-195:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
   (v : alloc.vec.Vec Std.Usize) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -8629,7 +9275,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
     ok (cont (iter1, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-160:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 192:8-195:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop1
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec Std.Usize)
@@ -8642,7 +9288,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop1
     (iter, v2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 166:8-169:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 201:8-204:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop2.body
   (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
@@ -8669,7 +9315,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop2.body
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 166:8-169:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 201:8-204:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop2
   (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
@@ -8683,10 +9329,10 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop2
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 144:4-179:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 174:4-214:5 -/
 def kzg.verify.CellBatchVerifier.pairing_holds
   (self : kzg.verify.CellBatchVerifier) (r : blst.blst_fr)
-  (cell_indices : Slice Std.U64) :
+  (cell_indices : Slice Std.U64) (cells : Slice (Array Std.U8 2048#usize)) :
   Result (Bool × kzg.verify.CellBatchVerifier)
   := do
   let n := Slice.len cell_indices
@@ -8715,6 +9361,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds
   let (rli, self1) ←
     kzg.verify.CellBatchVerifier.interpolation_commitment
       { self with r_powers := v1, scalars := v4, lincomb := ls1 } cell_indices
+      cells
   let v5 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self1.scalars
       0#usize zero
@@ -8736,7 +9383,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds
   ok (b, { self1 with cosets := c, scalars := v6, lincomb := ls2 })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 128:8-138:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 158:8-168:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.decode_cell_loop.body
   (cell : Array Std.U8 2048#usize) (self : kzg.verify.CellBatchVerifier)
@@ -8766,7 +9413,7 @@ def kzg.verify.CellBatchVerifier.decode_cell_loop.body
   else ok (done (self, j))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 128:8-138:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 158:8-168:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.decode_cell_loop
   (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize)
@@ -8779,7 +9426,7 @@ def kzg.verify.CellBatchVerifier.decode_cell_loop
     (self, j)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 126:4-140:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 156:4-170:5 -/
 def kzg.verify.CellBatchVerifier.decode_cell
   (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize) :
   Result (Bool × kzg.verify.CellBatchVerifier)
@@ -8789,7 +9436,7 @@ def kzg.verify.CellBatchVerifier.decode_cell
   ok (j = kzg.FIELD_ELEMENTS_PER_CELL, self1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 120:8-122:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 150:8-152:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.decode_cells_loop.body
   (cells : Slice (Array Std.U8 2048#usize))
@@ -8809,7 +9456,7 @@ def kzg.verify.CellBatchVerifier.decode_cells_loop.body
   else ok (done (self, k))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 120:8-122:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 150:8-152:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.decode_cells_loop
   (self : kzg.verify.CellBatchVerifier)
@@ -8822,24 +9469,29 @@ def kzg.verify.CellBatchVerifier.decode_cells_loop
     (self, k)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 117:4-124:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 142:4-154:5 -/
 def kzg.verify.CellBatchVerifier.decode_cells
   (self : kzg.verify.CellBatchVerifier)
   (cells : Slice (Array Std.U8 2048#usize)) :
   Result (Bool × kzg.verify.CellBatchVerifier)
   := do
-  let bf ← kzg.blst_ops.fr_from_u64 0#u64
-  let v ←
-    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations
-      0#usize bf
-  let (self1, k) ←
-    kzg.verify.CellBatchVerifier.decode_cells_loop
-      { self with evaluations := v } cells 0#usize
-  let i := Slice.len cells
-  ok (k = i, self1)
+  match self.kernel with
+  | none =>
+    let bf ← kzg.blst_ops.fr_from_u64 0#u64
+    let v ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations
+        0#usize bf
+    let (self1, k) ←
+      kzg.verify.CellBatchVerifier.decode_cells_loop
+        { self with evaluations := v } cells 0#usize
+    let i := Slice.len cells
+    ok (k = i, self1)
+  | some kernel =>
+    let b ← kzg.interpolation_kernel.InterpolationKernel.check kernel cells
+    ok (b, self)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 271:4-277:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 319:4-325:5 -/
 @[rust_loop_body]
 def kzg.verify.decode_points_loop.body
   (encodings : Slice (Array Std.U8 48#usize))
@@ -8863,7 +9515,7 @@ def kzg.verify.decode_points_loop.body
   else ok (done (points, i))
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 271:4-277:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 319:4-325:5 -/
 @[rust_loop]
 def kzg.verify.decode_points_loop
   (encodings : Slice (Array Std.U8 48#usize))
@@ -8877,7 +9529,7 @@ def kzg.verify.decode_points_loop
     (points, i)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:0-279:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 309:0-327:1 -/
 def kzg.verify.decode_points
   (encodings : Slice (Array Std.U8 48#usize))
   (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
@@ -8905,7 +9557,7 @@ def kzg.verify.decode_points
   ok (i1 = i2, decoded3, points2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_proofs]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 113:4-115:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 138:4-140:5 -/
 def kzg.verify.CellBatchVerifier.decode_proofs
   (self : kzg.verify.CellBatchVerifier)
   (proofs : Slice (Array Std.U8 48#usize)) :
@@ -8916,7 +9568,7 @@ def kzg.verify.CellBatchVerifier.decode_proofs
   ok (b, { self with decoded := v, proof_points := v1 })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_commitments]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 109:4-111:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 134:4-136:5 -/
 def kzg.verify.CellBatchVerifier.decode_commitments
   (self : kzg.verify.CellBatchVerifier) :
   Result (Bool × kzg.verify.CellBatchVerifier)
@@ -8927,7 +9579,7 @@ def kzg.verify.CellBatchVerifier.decode_commitments
   ok (b, { self with decoded := v, commitment_points := v1 })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 89:8-91:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 114:8-116:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.verify_loop.body
@@ -8946,7 +9598,7 @@ def kzg.verify.CellBatchVerifier.verify_loop.body
   else ok (done k)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 89:8-91:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 114:8-116:9
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.verify_loop
@@ -8958,7 +9610,7 @@ def kzg.verify.CellBatchVerifier.verify_loop
     k
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 77:4-107:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 102:4-132:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.verify
   (self : kzg.verify.CellBatchVerifier)
@@ -9005,13 +9657,13 @@ def kzg.verify.CellBatchVerifier.verify
                   kzg.challenge.Preimage.challenge self3.preimage s s1
                     cell_indices cells proofs
                 kzg.verify.CellBatchVerifier.pairing_holds
-                  { self3 with preimage := p } r cell_indices
+                  { self3 with preimage := p } r cell_indices cells
               else ok (false, self3)
             else ok (false, self2)
           else ok (false, self1)
 
 /-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 232:9-232:16 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 280:9-280:16 -/
 @[reducible]
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault : core.default.Default
   kzg.verify.Deduplicated := {

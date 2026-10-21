@@ -52,7 +52,7 @@ theorem weights_model (mapping : List Usize) (powers : _root_.Array Fr) (count :
           weights.set! i (weights[i]! + powers[k]!)) := by
   apply _root_.Array.toList_inj.mp
   simp only [← _root_.Array.foldl_toList, _root_.Array.toList_range]
-  apply List.foldl_rel (r := fun (xs : List Fr) (ys : _root_.Array Fr) => xs = ys.toList) (by simp)
+  apply _root_.List.foldl_rel (r := fun (xs : List Fr) (ys : _root_.Array Fr) => xs = ys.toList) (by simp)
   intro k hk xs ys hxy
   have hkm : k < mapping.length := List.mem_range.mp hk
   have hmap : (mapping.map (·.val)).toArray[k]! = mapping[k]!.val := by
@@ -196,26 +196,38 @@ private theorem bind_ok_exists {α β : Type} (x : Result α) (f : α → Result
   | div => cases h
 
 theorem interpolation_frame [KzgExternals]
-    (v next : verify.CellBatchVerifier) (indices : Slice U64) (point : blst.blst_p1)
-    (hrun : verify.CellBatchVerifier.interpolation_commitment v indices = ok (point, next)) :
+    (v next : verify.CellBatchVerifier) (indices : Slice U64)
+    (cells : Slice (Aeneas.Std.Array U8 2048#usize)) (point : blst.blst_p1)
+    (hrun : verify.CellBatchVerifier.interpolation_commitment v indices cells = ok (point, next)) :
     next.r_powers = v.r_powers ∧ next.proof_points = v.proof_points := by
   unfold verify.CellBatchVerifier.interpolation_commitment at hrun
   obtain ⟨zero, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨columns0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨cells, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨total, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨columns1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨used0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨used1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨⟨columns, used⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨interpolation0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨interpolation1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨column0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨coefficients0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨⟨cosets, column, coefficients, interpolation⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  obtain ⟨⟨point', scratch⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-  cases hrun
-  exact ⟨rfl, rfl⟩
+  cases hk : v.kernel with
+  | none =>
+    simp only [hk] at hrun
+    obtain ⟨columns0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨cells, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨total, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨columns1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨used0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨used1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨⟨columns, used⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨interpolation0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨interpolation1, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨column0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨coefficients0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨⟨cosets, column, coefficients, interpolation⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨⟨point', scratch⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    cases hrun
+    exact ⟨rfl, rfl⟩
+  | some kernel =>
+    simp only [hk] at hrun
+    obtain ⟨interpolation, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    simp only [lift, bind_tc_ok, alloc.vec.Vec.deref_mut, Function.uncurry_apply_pair] at hrun
+    obtain ⟨⟨nextKernel, output⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    obtain ⟨⟨point', scratch⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
+    cases hrun
+    exact ⟨rfl, rfl⟩
 
 private theorem resize_fields (v : alloc.vec.Vec blst.blst_fr) (n : Usize) (x : blst.blst_fr) :
     ∃ out, alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v n x = ok out ∧
@@ -226,12 +238,14 @@ private theorem resize_fields (v : alloc.vec.Vec blst.blst_fr) (n : Usize) (x : 
 
 def InterpolationCorrect [KzgExternals] : Prop :=
   ∀ (v : verify.CellBatchVerifier), StateInvariant v → ∀ (indices : Slice U64)
+    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr),
     Model.RliInputs (indices.val.map (·.val)).toArray evals powers →
     indices.val.length * 2048 ≤ Isize.max.toNat →
-    v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode →
+    InterpolationKernel.CellsRep cells evals →
+    (v.kernel = none → v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode) →
     v.r_powers.val = powers.toList.map frEncode →
-    ∃ point next, verify.CellBatchVerifier.interpolation_commitment v indices = ok (point, next) ∧
+    ∃ point next, verify.CellBatchVerifier.interpolation_commitment v indices cells = ok (point, next) ∧
       StateInvariant next ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero))
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers))
@@ -239,19 +253,21 @@ def InterpolationCorrect [KzgExternals] : Prop :=
 theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
     (hinterp : InterpolationCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
+    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
     (hs : Model.RliInputs (indices.val.map (·.val)).toArray evals
       (computePowers r indices.val.length))
     (hc : v.commitment_points.val = commitments.toList.map g1Affine)
     (hp : v.proof_points.val = proofs.toList.map g1Affine)
-    (he : v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode)
+    (hcell : InterpolationKernel.CellsRep cells evals)
+    (he : v.kernel = none → v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode)
     (hunique : v.commitments.unique.val.length = commitments.size)
     (hci : v.commitments.index_of_cell.val.length = indices.val.length ∧
       ∀ i ∈ v.commitments.index_of_cell.val, i.val < commitments.size)
     (hproofs : proofs.size = indices.val.length)
     (hvalid : (∀ p ∈ commitments, G1Valid p) ∧ (∀ p ∈ proofs, G1Valid p)) :
-    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices =
+    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices cells =
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
@@ -294,9 +310,9 @@ theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
     hvalid.1 scratchL
   let middle := { v with r_powers := powersV, scalars := weightsV, lincomb := scratchC }
   obtain ⟨rli, after, hinterpolation, hafter, hrlirep⟩ :=
-    hinterp middle hv indices evals powers hs hb he hpowersE
+    hinterp middle hv indices cells evals powers hs hb hcell he hpowersE
   dsimp only [middle] at hinterpolation
-  have hframe := interpolation_frame middle after indices rli hinterpolation
+  have hframe := interpolation_frame middle after indices cells rli hinterpolation
   have hafterPowers : after.r_powers.val = powers.toList.map frEncode := by
     rw [hframe.1]
     exact hpowersE
@@ -308,7 +324,7 @@ theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
   have hindices : ∀ i ∈ indices.val, i.val < 128 := by
     intro i hi
     exact hs.2.2.1 i.val (by simp only [List.mem_toArray]; exact List.mem_map.mpr ⟨i, hi, rfl⟩)
-  obtain ⟨shiftedV, hshifted, hshiftedv⟩ := shifts_loop h after.cosets hafter.2 after.r_powers
+  obtain ⟨shiftedV, hshifted, hshiftedv⟩ := shifts_loop h after.cosets hafter.2.1 after.r_powers
     shifted0 powers.toList hafterPowers indices (by simpa using hplen.ge) hindices
     { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
     (by simpa only [hshifted0e, List.length_nil, UScalar.ofNatCore_val_eq,
@@ -359,23 +375,25 @@ namespace LeanBlsSimd.Kzg
 
 theorem pairing_holds_refinement [e : KzgExternals] (h : ExternalsCorrect e)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
+    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
     (hs : Model.RliInputs (indices.val.map (·.val)).toArray evals
       (computePowers r indices.val.length))
     (hc : v.commitment_points.val = commitments.toList.map g1Affine)
     (hp : v.proof_points.val = proofs.toList.map g1Affine)
-    (he : v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode)
+    (hcell : InterpolationKernel.CellsRep cells evals)
+    (he : v.kernel = none → v.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode)
     (hunique : v.commitments.unique.val.length = commitments.size)
     (hci : v.commitments.index_of_cell.val.length = indices.val.length ∧
       ∀ i ∈ v.commitments.index_of_cell.val, i.val < commitments.size)
     (hproofs : proofs.size = indices.val.length)
     (hvalid : (∀ p ∈ commitments, G1Valid p) ∧ (∀ p ∈ proofs, G1Valid p)) :
-    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices =
+    ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices cells =
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next :=
   Pairing.pairing_holds_composition h (interpolation_commitment_refinement h)
-    v hv indices commitments proofs evals r hb hs hc hp he hunique hci hproofs hvalid
+    v hv indices cells commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
 
 end LeanBlsSimd.Kzg

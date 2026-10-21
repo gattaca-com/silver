@@ -211,6 +211,15 @@ structure kzg.cosets.Cosets where
   shift_inverse : alloc.vec.Vec blst.blst_fr
   shift_pow_cell : alloc.vec.Vec blst.blst_fr
 
+/-- [silver_crypto_simd::kzg::interpolation_kernel::InterpolationKernel]
+    Source: 'crates/crypto_simd/src/kzg/interpolation_kernel.rs', lines 20:0-29:1
+    Visibility: public -/
+structure kzg.interpolation_kernel.InterpolationKernel where
+  inverse : kzg.fft8.Fft8
+  shift : alloc.vec.Vec kzg.fr8.Fr8
+  columns : alloc.vec.Vec kzg.fr8.Fr8
+  used : alloc.vec.Vec Bool
+
 /-- [silver_crypto_simd::kzg::setup::Setup]
     Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 12:0-19:1
     Visibility: public -/
@@ -220,13 +229,13 @@ structure kzg.setup.Setup where
   g2_neg_generator : blst.blst_p2_affine
 
 /-- [silver_crypto_simd::kzg::verify::Deduplicated]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 233:0-236:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 281:0-284:1 -/
 structure kzg.verify.Deduplicated where
   unique : alloc.vec.Vec (Array Std.U8 48#usize)
   index_of_cell : alloc.vec.Vec Std.Usize
 
 /-- [silver_crypto_simd::kzg::verify::CellBatchVerifier]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 28:0-45:1
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 31:0-50:1
     Visibility: public -/
 structure kzg.verify.CellBatchVerifier where
   setup : kzg.setup.Setup
@@ -245,5 +254,6 @@ structure kzg.verify.CellBatchVerifier where
   coefficients : alloc.vec.Vec blst.blst_fr
   interpolation : alloc.vec.Vec blst.blst_fr
   lincomb : kzg.blst_ops.LincombScratch
+  kernel : Option kzg.interpolation_kernel.InterpolationKernel
 
 end silver_crypto_simd

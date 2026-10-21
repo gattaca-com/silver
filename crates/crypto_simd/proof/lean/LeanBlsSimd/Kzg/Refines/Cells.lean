@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.InterpolationKernel.Check
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthCryptographySpecs Bls Kzg
@@ -7,10 +7,6 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 namespace LeanBlsSimd.Kzg
 
 set_option maxHeartbeats 2000000
-
-def decodedCellElements (cells : List (Aeneas.Std.Array U8 2048#usize)) : List (Option Fr) :=
-  cells.flatMap fun cell => (List.range 64).map fun j =>
-    (bytesToBlsField ((arrayBytes cell).extract (32*j) (32*(j+1)))).toOption
 
 private def cellVerdict (cell : Aeneas.Std.Array U8 2048#usize) (j : Nat) : Option Fr :=
   (bytesToBlsField ((arrayBytes cell).extract (32*j) (32*(j+1)))).toOption
@@ -130,12 +126,12 @@ private theorem decode_cell_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
       decide (stop = FIELD_ELEMENTS_PER_CELL) =
         ((cellVerdicts cell).drop j.val).all Option.isSome ∧
       next.evaluations.val = self.evaluations.val ++ cellAccepted ((cellVerdicts cell).drop j.val) ∧
-      next.setup = self.setup ∧ next.cosets = self.cosets := by
+      next.setup = self.setup ∧ next.cosets = self.cosets ∧ next.kernel = self.kernel := by
   induction hk : 64 - j.val generalizing self j with
   | zero =>
     have he : j.val = 64 := by omega
     have hstop : ¬ j < FIELD_ELEMENTS_PER_CELL := by simp [FIELD_ELEMENTS_PER_CELL, he]
-    refine ⟨self, j, ?_, ?_, ?_, rfl, rfl⟩
+    refine ⟨self, j, ?_, ?_, ?_, rfl, rfl, rfl⟩
     · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
       simp only [verify.CellBatchVerifier.decode_cell_loop.body, hstop, if_false]
     · simp [cellVerdicts, he, FIELD_ELEMENTS_PER_CELL, UScalar.eq_equiv]
@@ -151,7 +147,7 @@ private theorem decode_cell_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
     have hbody := decode_cell_body h cell self j j' hlt hj'
     cases hv : cellVerdict cell j.val with
     | none =>
-      refine ⟨self, j, ?_, ?_, ?_, rfl, rfl⟩
+      refine ⟨self, j, ?_, ?_, ?_, rfl, rfl, rfl⟩
       · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
         simp only [hbody, hv]
       · have hne : j ≠ FIELD_ELEMENTS_PER_CELL := by
@@ -168,9 +164,9 @@ private theorem decode_cell_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
       let self' := { self with evaluations := vs }
       have hpush : alloc.vec.Vec.push self.evaluations (frEncode f) = ok vs := by
         simp [alloc.vec.Vec.push, hpushBound, vs]
-      obtain ⟨next, stop, hloop, hresult, hval, hs, hc⟩ := ih self' j' (by omega)
+      obtain ⟨next, stop, hloop, hresult, hval, hs, hc, hkernel⟩ := ih self' j' (by omega)
         (by simp [self', vs]; omega) (by omega)
-      refine ⟨next, stop, ?_, ?_, ?_, hs, hc⟩
+      refine ⟨next, stop, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
         simp only [hbody, hv, hpush, bind_tc_ok]
         exact hloop
@@ -183,10 +179,10 @@ private theorem decode_cell_eq [e : KzgExternals] (h : ExternalsCorrect e)
     ∃ next, verify.CellBatchVerifier.decode_cell self cell =
         ok ((cellVerdicts cell).all Option.isSome, next) ∧
       next.evaluations.val = self.evaluations.val ++ cellAccepted (cellVerdicts cell) ∧
-      next.setup = self.setup ∧ next.cosets = self.cosets := by
-  obtain ⟨next, stop, hloop, hresult, hval, hs, hc⟩ :=
+      next.setup = self.setup ∧ next.cosets = self.cosets ∧ next.kernel = self.kernel := by
+  obtain ⟨next, stop, hloop, hresult, hval, hs, hc, hkernel⟩ :=
     decode_cell_loop_eq h self cell 0#usize (by decide) (by simpa using hb)
-  refine ⟨next, ?_, by simpa using hval, hs, hc⟩
+  refine ⟨next, ?_, by simpa using hval, hs, hc, hkernel⟩
   unfold verify.CellBatchVerifier.decode_cell
   rw [hloop]
   simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
@@ -201,12 +197,12 @@ private theorem decode_cells_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
         (decodedCellElements (cells.val.drop k.val)).all Option.isSome ∧
       next.evaluations.val = self.evaluations.val ++
         cellAccepted (decodedCellElements (cells.val.drop k.val)) ∧
-      next.setup = self.setup ∧ next.cosets = self.cosets := by
+      next.setup = self.setup ∧ next.cosets = self.cosets ∧ next.kernel = self.kernel := by
   induction hn : cells.val.length - k.val generalizing self k with
   | zero =>
     have he : k.val = cells.val.length := by omega
     have hstop : ¬ k < Slice.len cells := by simp [he]
-    refine ⟨self, k, ?_, ?_, ?_, rfl, rfl⟩
+    refine ⟨self, k, ?_, ?_, ?_, rfl, rfl, rfl⟩
     · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
       simp only [verify.CellBatchVerifier.decode_cells_loop.body, hstop, if_false]
     · simp [he, decodedCellElements, UScalar.eq_equiv]
@@ -230,12 +226,12 @@ private theorem decode_cells_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
       unfold decodedCellElements
       rw [List.drop_eq_getElem_cons hlt]
       rfl
-    obtain ⟨afterCell, hdecode, hvals, hs, hc⟩ := decode_cell_eq h self cell (by omega)
+    obtain ⟨afterCell, hdecode, hvals, hs, hc, hkernel⟩ := decode_cell_eq h self cell (by omega)
     have hsize : (cellAccepted (cellVerdicts cell)).length ≤ 64 := by
       simpa [cellVerdicts] using cellAccepted_length (cellVerdicts cell)
     cases hsuccess : (cellVerdicts cell).all Option.isSome with
     | false =>
-      refine ⟨afterCell, k, ?_, ?_, ?_, hs, hc⟩
+      refine ⟨afterCell, k, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
         simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, if_true,
           hindex, bind_tc_ok, hdecode, Function.uncurry_apply_pair, hsuccess, Bool.false_eq_true,
@@ -248,9 +244,9 @@ private theorem decode_cells_loop_eq [e : KzgExternals] (h : ExternalsCorrect e)
         simp [hdrop, hsuccess, hne]
       · simpa [hdrop, cellAccepted_append, hsuccess] using hvals
     | true =>
-      obtain ⟨next, stop, hloop, hresult, hval, hs', hc'⟩ := ih afterCell k' (by omega)
+      obtain ⟨next, stop, hloop, hresult, hval, hs', hc', hkernel'⟩ := ih afterCell k' (by omega)
         (by rw [hvals, List.length_append]; omega) (by omega)
-      refine ⟨next, stop, ?_, ?_, ?_, hs'.trans hs, hc'.trans hc⟩
+      refine ⟨next, stop, ?_, ?_, ?_, hs'.trans hs, hc'.trans hc, hkernel'.trans hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
         simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, if_true,
           hindex, bind_tc_ok, hdecode, Function.uncurry_apply_pair, hsuccess, hadd]
@@ -263,31 +259,40 @@ theorem decode_cells_refinement [e : KzgExternals] (h : ExternalsCorrect e)
     (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
     ∃ next, verify.CellBatchVerifier.decode_cells v cells =
       ok ((decodedCellElements cells.val).all Option.isSome, next) ∧
-      next.evaluations.val =
-        (((decodedCellElements cells.val).takeWhile Option.isSome).filterMap id).map frEncode ∧
-      next.setup = v.setup ∧ next.cosets = v.cosets := by
-  have hmax : Isize.max.toNat ≤ Usize.max := by
-    rcases System.Platform.numBits_eq with h | h <;>
-      norm_num [Isize.max, Isize.numBits, Usize.max, Usize.numBits,
-        UScalarTy.numBits, IScalarTy.numBits, h]
-  have hcapacity : cells.val.length * 64 ≤ Usize.max := by omega
-  let empty := alloc.vec.Vec.new blst.blst_fr
-  have hclear (f : blst.blst_fr) :
-      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v.evaluations 0#usize f =
-        ok empty := by
-    simp [alloc.vec.Vec.resize, blst.blst_fr.Insts.CoreCloneClone.clone,
-      List.resize, empty, alloc.vec.Vec.new]
-  let initial := { v with evaluations := empty }
-  obtain ⟨next, stop, hloop, hresult, hval, hs, hc⟩ :=
-    decode_cells_loop_eq h initial cells 0#usize (by simp)
-      (by simpa [initial, empty, alloc.vec.Vec.new] using hcapacity)
-  refine ⟨next, ?_, ?_, hs, hc⟩
-  · unfold verify.CellBatchVerifier.decode_cells
-    simp only [blst_ops.fr_from_u64, h.blst.fr_u64, bind_tc_ok, hclear]
-    dsimp only [initial] at hloop
-    rw [hloop]
-    simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
-      List.drop_zero] using congrArg (fun b => ok (b, next)) hresult
-  · simpa [initial, empty, alloc.vec.Vec.new, cellAccepted] using hval
+      (v.kernel = none → next.evaluations.val =
+        (((decodedCellElements cells.val).takeWhile Option.isSome).filterMap id).map frEncode) ∧
+      next.setup = v.setup ∧ next.cosets = v.cosets ∧ next.kernel = v.kernel := by
+  cases hkernelCase : v.kernel with
+  | some kernel =>
+    refine ⟨v, ?_, ?_, rfl, rfl, hkernelCase⟩
+    · simp [verify.CellBatchVerifier.decode_cells, hkernelCase,
+        InterpolationKernel.check_refinement]
+    · simp
+  | none =>
+    have hmax : Isize.max.toNat ≤ Usize.max := by
+      rcases System.Platform.numBits_eq with h | h <;>
+        norm_num [Isize.max, Isize.numBits, Usize.max, Usize.numBits,
+          UScalarTy.numBits, IScalarTy.numBits, h]
+    have hcapacity : cells.val.length * 64 ≤ Usize.max := by omega
+    let empty := alloc.vec.Vec.new blst.blst_fr
+    have hclear (f : blst.blst_fr) :
+        alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v.evaluations 0#usize f =
+          ok empty := by
+      simp [alloc.vec.Vec.resize, blst.blst_fr.Insts.CoreCloneClone.clone,
+        List.resize, empty, alloc.vec.Vec.new]
+    let initial := { v with evaluations := empty }
+    obtain ⟨next, stop, hloop, hresult, hval, hs, hc, hkernel⟩ :=
+      decode_cells_loop_eq h initial cells 0#usize (by simp)
+        (by simpa [initial, empty, alloc.vec.Vec.new] using hcapacity)
+    refine ⟨next, ?_, ?_, hs, hc, by simpa [initial, hkernelCase] using hkernel⟩
+    · unfold verify.CellBatchVerifier.decode_cells
+      simp only [hkernelCase, blst_ops.fr_from_u64, h.blst.fr_u64, bind_tc_ok, hclear]
+      dsimp only [initial] at hloop
+      simp only [hkernelCase] at hloop
+      rw [hloop]
+      simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
+        List.drop_zero] using congrArg (fun b => ok (b, next)) hresult
+    · intro _
+      simpa [initial, empty, alloc.vec.Vec.new, cellAccepted] using hval
 
 end LeanBlsSimd.Kzg
