@@ -4,7 +4,9 @@
 //! add-2007-bl) with no exceptional-case handling: a lane that hits one —
 //! doubling a point with y = 0, adding P to ±P, or any point at infinity —
 //! is reported as undecided instead, and the caller falls back to blst for
-//! it. Honest points of prime order never do; only non-members can.
+//! it. Honest points of prime order never do; only non-members can. The
+//! `_complete` forms decide every lane as the spec's `G1.add` and
+//! `G1.double` do, with z = 0 at infinity.
 //!
 //! Coordinates in and out are reduced. Inside a formula, sums and
 //! differences stay lazy, offset by multiples of p to stay positive, and are
@@ -18,7 +20,7 @@ use std::arch::x86_64::__mmask8;
 use crate::bls::{
     Membership,
     constants::{BETA_MONT, Z_BITS},
-    fp8::Fp8,
+    fp8::{Fp8, LANES},
 };
 
 pub struct G1x8 {
@@ -147,6 +149,106 @@ impl G1x8 {
         (Self { x: x3, y: y3, z: z3 }, undecided)
     }
 
+    /// The spec's `G1.zero` in every lane.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn infinity() -> Self {
+        Self { x: Fp8::one(), y: Fp8::one(), z: Fp8::zero() }
+    }
+
+    /// Lanes of `k` take `b`, the rest `a`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn select(k: __mmask8, a: &Self, b: &Self) -> Self {
+        Self {
+            x: Fp8::select(k, &a.x, &b.x),
+            y: Fp8::select(k, &a.y, &b.y),
+            z: Fp8::select(k, &a.z, &b.z),
+        }
+    }
+
+    /// Lane l takes lane `from[l]`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn permute(&self, from: &[i64; LANES]) -> Self {
+        Self { x: self.x.permute(from), y: self.y.permute(from), z: self.z.permute(from) }
+    }
+
+    /// The spec's `G1.double`, lane by lane.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn double_complete(&self) -> Self {
+        Self::select(self.z.is_zero_mask(), &self.double().0, self)
+    }
+
+    /// The spec's `G1.add` of each lane and the affine point (qx, qy).
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn add_affine_complete(&self, qx: &Fp8, qy: &Fp8) -> Self {
+        let (sum, undecided) = self.add_affine(qx, qy);
+        if undecided == 0 {
+            return sum;
+        }
+        let infinite = self.z.is_zero_mask();
+        let same_x = undecided & !infinite;
+        let decided = if same_x == 0 {
+            sum
+        } else {
+            let s2 = qy.mul(&self.z).mul(&self.z.square());
+            self.coincident(&sum, same_x, s2.eq_mask(&self.y))
+        };
+        Self::select(infinite, &decided, &Self::from_affine(qx, qy))
+    }
+
+    /// The spec's `G1.add`, lane by lane.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn add_complete(&self, q: &Self) -> Self {
+        let (sum, undecided) = self.add(q);
+        if undecided == 0 {
+            return sum;
+        }
+        let infinite = self.z.is_zero_mask();
+        let q_infinite = q.z.is_zero_mask();
+        let same_x = undecided & !(infinite | q_infinite);
+        let decided = if same_x == 0 {
+            sum
+        } else {
+            let s1 = self.y.mul(&q.z).mul(&q.z.square());
+            let s2 = q.y.mul(&self.z).mul(&self.z.square());
+            self.coincident(&sum, same_x, s1.eq_mask(&s2))
+        };
+        Self::select(infinite, &Self::select(q_infinite, &decided, self), q)
+    }
+
+    /// `[2^k]` of each lane, by complete doublings.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn times_two_pow(&self, k: usize) -> Self {
+        let mut r = Self { x: self.x, y: self.y, z: self.z };
+        let mut i = 0;
+        while i < k {
+            r = r.double_complete();
+            i += 1;
+        }
+        r
+    }
+
+    /// Σ_l `[2^(bits·l)]` lane l, in lane 0: lanes join pairwise, then
+    /// pairs of pairs, the upper of each scaled to its place.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn sum_lanes_shifted(&self, bits: usize) -> Self {
+        let mut r = Self { x: self.x, y: self.y, z: self.z };
+        let mut distance = 1;
+        while distance < LANES {
+            let upper = r.times_two_pow(distance * bits).permute(&lanes_above(distance));
+            r = r.add_complete(&upper);
+            distance *= 2;
+        }
+        r
+    }
+
+    /// `sum`, but in the lanes of `same_x`, where the summands share x, the
+    /// double of `self` where their y agree too and infinity where not.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    fn coincident(&self, sum: &Self, same_x: __mmask8, same_y: __mmask8) -> Self {
+        let cancelled = Self::select(same_x & !same_y, sum, &Self::infinity());
+        Self::select(same_x & same_y, &cancelled, &self.double().0)
+    }
+
     /// `[|z|] P` for an affine P, by double-and-add over the six set bits of
     /// |z|.
     #[target_feature(enable = "avx512f,avx512ifma")]
@@ -204,6 +306,17 @@ impl G1x8 {
         let y_matches = zzp.y.neg().eq_mask(&py.mul(&zzz));
         Membership { members: x_matches & y_matches & !undecided, undecided }
     }
+}
+
+/// Lane l takes lane l + `distance`, wrapping around.
+fn lanes_above(distance: usize) -> [i64; LANES] {
+    let mut from = [0i64; LANES];
+    let mut lane = 0;
+    while lane < LANES {
+        from[lane] = ((lane + distance) % LANES) as i64;
+        lane += 1;
+    }
+    from
 }
 
 /// A set bit of |z| below the top one, where both chains start.

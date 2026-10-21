@@ -126,10 +126,12 @@ impl BatchedAdds {
         let mut yb = [Fp8::zero(); PAIR];
         let mut s = 0;
         while s < PAIR {
-            let (x, y) = load_signed(store, &self.a, g + s);
+            let (indices, negated) = references(&self.a, g + s);
+            let (x, y) = store.load_signed(&indices, negated);
             xa[s] = x;
             ya[s] = y;
-            let (x, y) = load_signed(store, &self.b, g + s);
+            let (indices, negated) = references(&self.b, g + s);
+            let (x, y) = store.load_signed(&indices, negated);
             xb[s] = x;
             yb[s] = y;
             s += 1;
@@ -192,15 +194,6 @@ fn batch_inverse(values: &[Fp8; CHAINS]) -> [Fp8; CHAINS] {
     }
     out[0] = inverse;
     out
-}
-
-/// The points of group g, negated in the lanes whose reference says so.
-#[target_feature(enable = "avx512f,avx512ifma")]
-#[inline]
-fn load_signed(store: &PointStore, refs: &[u32], g: usize) -> (Fp8, Fp8) {
-    let (indices, negated) = references(refs, g);
-    let (x, y) = store.load_points(&indices);
-    (x, Fp8::select(negated, &y, &y.neg()))
 }
 
 /// The indices of group g's references, and the lanes they negate.

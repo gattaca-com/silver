@@ -105,6 +105,14 @@ impl PointStore {
         (Fp8(transpose8(&xs)), Fp8(transpose8(&ys)))
     }
 
+    /// As `load_points`, with y negated in the lanes of `negated`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn load_signed(&self, indices: &[u32; LANES], negated: __mmask8) -> (Fp8, Fp8) {
+        let (x, y) = self.load_points(indices);
+        (x, Fp8::select(negated, &y, &y.neg()))
+    }
+
     /// The x coordinates of the points at `indices`, as `load_points`.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
