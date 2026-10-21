@@ -60,6 +60,18 @@ pub const TWO_POW_384_MOD_P: [u64; LIMBS] = [
     0xec3fa80e4935c,
     0x0000000015f65,
 ];
+/// Multiplying blst's Montgomery form (R = 2^384) by this yields ours (R =
+/// 2^416).
+pub const TWO_POW_448_MOD_P: [u64; LIMBS] = [
+    0x7fde37dba9366,
+    0x4e27525bc342b,
+    0x1f5b1e9778489,
+    0xb872b2b91b9dc,
+    0xb206f497dfcaf,
+    0x4137cc89a9b0b,
+    0xd9d20d7e39959,
+    0x000000000411c,
+];
 pub const ONE_PLAIN: [u64; LIMBS] = [1, 0, 0, 0, 0, 0, 0, 0];
 /// Curve coefficient b = 4, Montgomery form.
 pub const FOUR_MONT: [u64; LIMBS] = [

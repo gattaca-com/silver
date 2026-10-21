@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use blst::{
-    blst_fp, blst_p1, blst_p1_add_or_double_affine, blst_p1_cneg, blst_p1_from_affine,
-    blst_p1_generator, blst_p1_mult, blst_p1_to_affine, blst_uint64_from_fp,
+    blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double_affine, blst_p1_cneg,
+    blst_p1_from_affine, blst_p1_generator, blst_p1_mult, blst_p1_to_affine, blst_uint64_from_fp,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -10,6 +10,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::{
     bls::{
         blst_p1_affine,
+        constants::TWO_POW_448_MOD_P,
         fp8::{Fp8, LANES, Limbs, unpack52},
         msm8::{
             pairs::{BatchedAdds, NEGATED},
@@ -50,7 +51,7 @@ fn coordinates(point: &blst_p1_affine) -> (Limbs, Limbs) {
     (plain(&point.x), plain(&point.y))
 }
 
-fn negated(point: &blst_p1_affine) -> blst_p1_affine {
+fn negated_point(point: &blst_p1_affine) -> blst_p1_affine {
     let mut projective = blst_p1::default();
     let mut affine = blst_p1_affine::default();
     // SAFETY: valid pointers to single values.
@@ -70,6 +71,21 @@ fn sum(a: &blst_p1_affine, b: &blst_p1_affine) -> blst_p1_affine {
         blst_p1_from_affine(&mut projective, a);
         blst_p1_add_or_double_affine(&mut total, &projective, b);
         blst_p1_to_affine(&mut affine, &total);
+    }
+    affine
+}
+
+/// [λ]P for λ = z² − 1, the eigenvalue of σ on G1.
+fn times_lambda(point: &blst_p1_affine) -> blst_p1_affine {
+    let lambda = 0xac45_a401_0001_a402_0000_0000_ffff_ffffu128.to_le_bytes();
+    let (mut projective, mut product) = (blst_p1::default(), blst_p1::default());
+    let mut affine = blst_p1_affine::default();
+    // SAFETY: valid pointers to single values, and blst reads 128 bits of the
+    // 16-byte scalar.
+    unsafe {
+        blst_p1_from_affine(&mut projective, point);
+        blst_p1_mult(&mut product, &projective, lambda.as_ptr(), 128);
+        blst_p1_to_affine(&mut affine, &product);
     }
     affine
 }
@@ -112,6 +128,43 @@ fn store_reads_back_its_points() {
     }
 }
 
+/// blst's Montgomery form of 2^64 is 2^64·2^384.
+#[test]
+fn two_pow_448_is_blst_montgomery_two_pow_64() {
+    let mut two_pow_64 = blst_fp::default();
+    // SAFETY: blst reads six words and writes one value.
+    unsafe { blst_fp_from_uint64(&mut two_pow_64, [0, 1, 0, 0, 0, 0].as_ptr()) };
+    assert!(unpack52(&two_pow_64.l) == TWO_POW_448_MOD_P);
+}
+
+/// Counts around the lane count, with signs at random, and σ.
+#[test]
+fn blst_points_convert_with_signs_and_sigma() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 4);
+    for count in [1, 2, 7, 8, 9, 16, 17, 40] {
+        for endomorphism in [false, true] {
+            let points = random_points(&mut rng, count);
+            let negated: Vec<bool> = (0..count).map(|_| rng.gen_bool(0.5)).collect();
+            let mut store = PointStore::new();
+            store.reset(count + 1);
+            store.allocate();
+            // SAFETY: `kernels_run` checked `simd_available`.
+            unsafe { store.push_blst(&points, &negated, endomorphism) };
+            assert!(store.len() == count + 1, "{count} points");
+            for (k, point) in points.iter().enumerate() {
+                let image = if endomorphism { times_lambda(point) } else { *point };
+                let want = if negated[k] { negated_point(&image) } else { image };
+                // SAFETY: as above.
+                let got = unsafe { read_point(&store, k as u32 + 1) };
+                assert!(got == coordinates(&want), "{count} points, σ {endomorphism}, point {k}");
+            }
+        }
+    }
+}
+
 /// Pair counts around the group and chain sizes, signs at random, and half
 /// the sums written over their first point, as a bucket round writes them.
 #[test]
@@ -134,7 +187,7 @@ fn batched_adds_match_blst() {
             let out = if i % 2 == 0 { store.allocate() } else { indices[2 * i] };
             adds.push(indices[2 * i] | sign(negate_a), indices[2 * i + 1] | sign(negate_b), out);
             let signed = |point: &blst_p1_affine, negate: bool| {
-                if negate { negated(point) } else { *point }
+                if negate { negated_point(point) } else { *point }
             };
             let want =
                 sum(&signed(&points[2 * i], negate_a), &signed(&points[2 * i + 1], negate_b));
@@ -196,7 +249,7 @@ fn equal_x_pairs_report_failure_and_write_nothing() {
 
 #[test]
 #[ignore = "timing; run with --ignored --nocapture"]
-fn batched_adds_timing() {
+fn msm8_parts_timing() {
     if !kernels_run() {
         return;
     }
@@ -221,6 +274,21 @@ fn batched_adds_timing() {
         best = best.min(start.elapsed().as_secs_f64());
     }
     println!("batched_adds: {pairs} pairs, best {:.1} ns per pair", best * 1e9 / pairs as f64);
+
+    let unsigned = vec![false; points.len()];
+    let mut best = f64::MAX;
+    for _ in 0..21 {
+        store.reset(points.len());
+        let start = Instant::now();
+        // SAFETY: as above.
+        unsafe { store.push_blst(&points, &unsigned, false) };
+        best = best.min(start.elapsed().as_secs_f64());
+    }
+    println!(
+        "push_blst: {} points, best {:.1} ns per point",
+        points.len(),
+        best * 1e9 / points.len() as f64
+    );
 
     let values: [Limbs; LANES] = std::array::from_fn(|l| plain(&points[l].x));
     let mut best = f64::MAX;

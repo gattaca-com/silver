@@ -1,8 +1,9 @@
-use std::arch::x86_64::{__m512i, _mm512_set_epi64, _mm512_setzero_si512};
+use std::arch::x86_64::{__m512i, __mmask8, _mm512_set_epi64, _mm512_setzero_si512};
 
 use crate::bls::{
-    constants::LIMBS,
-    fp8::{Fp8, LANES, Limbs, lanes, transpose8},
+    blst_p1_affine,
+    constants::{BETA_MONT, LIMBS, TWO_POW_448_MOD_P},
+    fp8::{Fp8, LANES, Limbs, lanes, transpose8, unpack52},
 };
 
 /// Affine points by index, coordinates in R' form: row 2i holds the limbs of
@@ -49,6 +50,43 @@ impl PointStore {
         assert!(self.len < self.capacity(), "the store holds every point");
         self.len += 1;
         (self.len - 1) as u32
+    }
+
+    /// Appends the points, from blst's Montgomery form to R' form: σ(P) =
+    /// (β·x, y) instead of P when `endomorphism`, and the negation of point k
+    /// where `negated[k]`. The points must be finite.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn push_blst(&mut self, points: &[blst_p1_affine], negated: &[bool], endomorphism: bool) {
+        assert!(negated.len() == points.len(), "one sign per point");
+        assert!(self.len + points.len() <= self.capacity(), "the store holds the points");
+        let from_blst = Fp8::splat_limbs(&TWO_POW_448_MOD_P);
+        let beta = Fp8::splat_limbs(&BETA_MONT);
+        let mut at = 0;
+        while at < points.len() {
+            let count = if points.len() - at < LANES { points.len() - at } else { LANES };
+            let mut xs = [[0u64; LIMBS]; LANES];
+            let mut ys = [[0u64; LIMBS]; LANES];
+            let mut indices = [0u32; LANES];
+            let mut negate: __mmask8 = 0;
+            let mut lane = 0;
+            while lane < LANES {
+                // Lanes past the last point repeat it, so they store the same values.
+                let k = if lane < count { at + lane } else { at + count - 1 };
+                xs[lane] = unpack52(&points[k].x.l);
+                ys[lane] = unpack52(&points[k].y.l);
+                negate |= (negated[k] as u8) << lane;
+                indices[lane] = (self.len + k - at) as u32;
+                lane += 1;
+            }
+            let mut x = Fp8::load(&xs).mul(&from_blst);
+            if endomorphism {
+                x = x.mul(&beta);
+            }
+            let y = Fp8::load(&ys).mul(&from_blst);
+            self.store_points(&indices, &x, &Fp8::select(negate, &y, &y.neg()));
+            self.len += count;
+            at += count;
+        }
     }
 
     /// The points at `indices`, lane l the point at `indices[l]`.
