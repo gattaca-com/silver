@@ -1,5 +1,3 @@
-use flux_profiler::timed;
-
 use crate::{
     B256, HashFormat, SszScalar, TreeSpec,
     flat_hashing::{
@@ -20,7 +18,7 @@ impl<C: TreeSpec> Default for FlatTree<C> {
 }
 
 impl<C: TreeSpec> FlatTree<C> {
-    #[timed]
+    #[cfg_attr(feature = "flux", flux_profiler::timed)]
     pub fn from_leaves(
         cap: usize,
         count: usize,
@@ -82,7 +80,7 @@ impl<C: TreeSpec> FlatTree<C> {
     /// Load `target`'s content, switching tree variant if its format differs.
     /// `loaded` is the table our content already matches, so only mismatched
     /// or dirtied pages get copied.
-    #[timed]
+    #[cfg_attr(feature = "flux", flux_profiler::timed)]
     pub fn load(&mut self, pages: &impl PageStore, loaded: &PageTable, target: &PageTable) {
         let format = target.format();
         if self.format() != format {
@@ -171,7 +169,7 @@ impl<C: TreeSpec> FlatTree<C> {
         self.store().writes.has_unhashed()
     }
 
-    #[timed]
+    #[cfg_attr(feature = "flux", flux_profiler::timed)]
     pub fn rehash(&mut self) {
         match self {
             FlatTree::List(t) => t.rehash(),

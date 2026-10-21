@@ -6,13 +6,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-# Compiles every `#[timed]` frame out. Feature unification makes it apply to
-# every crate in the build that uses flux-profiler.
-disable-profiling = ["flux-profiler/disable-profiling"]
+flux = ["dep:flux-profiler"]
 
 [dependencies]
 bytesize.workspace = true
-flux-profiler.workspace = true
+flux-profiler = { workspace = true, optional = true }
 hashtree-rs.workspace = true
 sha2-const-stable.workspace = true
 

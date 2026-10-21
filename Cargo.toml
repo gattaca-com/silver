@@ -92,7 +92,7 @@ silver_log = { path = "crates/log" }
 silver_metrics = { path = "crates/metrics" }
 silver_slashing = { path = "crates/slashing" }
 silver_ssz = { path = "crates/ssz" }
-silver_hashing = { path = "crates/hashing" }
+silver_hashing = { path = "crates/hashing", features = ["flux"] }
 silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
