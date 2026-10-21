@@ -15,6 +15,9 @@ open Aeneas Aeneas.Std Result
 
 namespace LeanBlsSimd
 
+theorem bind_return {α : Type} (x : Result α) : (x >>= ok) = x := by
+  cases x <;> rfl
+
 abbrev ofU64 (x : U64) : UInt64 := .ofBitVec x.bv
 abbrev toU64 (x : UInt64) : U64 := ⟨x.toBitVec⟩
 abbrev ofU8 (x : U8) : UInt8 := .ofBitVec x.bv

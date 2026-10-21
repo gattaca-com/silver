@@ -331,16 +331,22 @@ carry extraction. The row's dead low limb is deliberately outside this equality.
 including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
 existing arithmetic bounds and public contracts.
 
+### Lazy field arithmetic and point formulas
+
 Fp8 uses the same [range classes as the Fr8 FFT kernel](#ifma-fr-fft-kernel), with modulus `p` and eight radix-52 limbs:
 
-| Class | Integer value | Limbs |
-|---|---|---|
-| Normalized | Below `R = 2^416` | Each in `[0, 2^52)` |
-| Reduced | In `[0, 2p)` | Normalized |
-| `Lazy k m` | In `[0, k*p)` | Signed magnitudes below `m*2^52` |
+| Class | Integer value | Limbs | Lean predicates |
+|---|---|---|---|
+| Normalized | In `[0, R)`, where `R = 2^416` | Each in `[0, 2^52)` | `SignedLimbs.Normalized` |
+| Reduced | In `[0, 2p)` | Normalized | `Fp8Inv`; `Fp8.Holds` also records the field value |
+| `Lazy k m` | In `[0, k*p)` | Signed magnitudes below `m*2^52` | `Fp8.Lazy`; `Fp8.LazyRep` also records the field value |
+| Bounded | In `[0, k*p)` | Normalized | `Fp8.BoundRep` records the bound and field value |
+| Offset | Exactly `c*p` | Normalized | `Fp8.Offset` |
 
 The shared `SignedLimbs` model defines raw addition, offset subtraction and signed carrying for both fields.
-Its eight-limb normalization theorem preserves values in `[0, R)` when each limb has magnitude below `2^62`.
+Its width-generic normalization theorem preserves values in `[0, 2^(52*n))` when each limb has magnitude below `2^62`.
+The five- and eight-limb theorems follow as corollaries.
+`Refines/SignedLimbs.lean` shares the normalization, raw-addition and offset-subtraction refinements across both widths.
 `Proofs/Fp8Lazy.lean` connects these operations to Montgomery field values and composes their bounds.
 `Proofs/Fp8Holds.lean` supplies the reduced field representations shared by Fp8 and Fp2 proofs.
 Conditional subtraction preserves residues when its offset is a multiple of `p`.
