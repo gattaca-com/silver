@@ -77,6 +77,7 @@ fn fixed<const N: usize>(items: Vec<Vec<u8>>) -> Option<Vec<[u8; N]>> {
 #[test]
 fn verify_cell_kzg_proof_batch_vectors() {
     let mut verifier = CellBatchVerifier::new();
+    let mut scalar = CellBatchVerifier::without_kernel();
     let mut unrepresentable = 0;
     for (name, data) in suite("verify_cell_kzg_proof_batch") {
         let expected = match field(&data, "output").trim() {
@@ -96,6 +97,8 @@ fn verify_cell_kzg_proof_batch_vectors() {
         };
         let got = verifier.verify(&commitments, &cell_indices, &cells, &proofs);
         assert_eq!(got, expected == Some(true), "{name}");
+        let got = scalar.verify(&commitments, &cell_indices, &cells, &proofs);
+        assert_eq!(got, expected == Some(true), "scalar route, {name}");
     }
     assert!(unrepresentable < 10, "most vectors reach the verifier: {unrepresentable} did not");
 }

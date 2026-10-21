@@ -1,7 +1,8 @@
 //! `verify_cell_kzg_proof_batch` of EIP-7594, in the spec's phases: input
 //! checks, commitment deduplication, decoding, the challenge, then the pairing
 //! check. RLI uses c-kzg's per-column inverse FFT rather than the spec's
-//! per-cell Lagrange interpolation.
+//! per-cell Lagrange interpolation. With IFMA, the cell checks and that
+//! interpolation run on `Fr8` vectors, which read the cells' bytes directly.
 
 use blst::{blst_fr, blst_p1};
 
@@ -20,6 +21,8 @@ use crate::{
         setup::Setup,
     },
 };
+#[cfg(target_arch = "x86_64")]
+use crate::{kzg::interpolation_kernel::InterpolationKernel, simd_available};
 
 const LOG_CELL: u32 = 6;
 
@@ -42,6 +45,8 @@ pub struct CellBatchVerifier {
     coefficients: Vec<blst_fr>,
     interpolation: Vec<blst_fr>,
     lincomb: LincombScratch,
+    #[cfg(target_arch = "x86_64")]
+    kernel: Option<InterpolationKernel>,
 }
 
 impl Default for CellBatchVerifier {
@@ -52,9 +57,18 @@ impl Default for CellBatchVerifier {
 
 impl CellBatchVerifier {
     pub fn new() -> Self {
+        let setup = Setup::decode();
+        let cosets = Cosets::new();
+        #[cfg(target_arch = "x86_64")]
+        let kernel = if simd_available() {
+            // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+            Some(unsafe { InterpolationKernel::new(&cosets) })
+        } else {
+            None
+        };
         Self {
-            setup: Setup::decode(),
-            cosets: Cosets::new(),
+            setup,
+            cosets,
             commitments: Deduplicated::default(),
             decoded: Vec::new(),
             commitment_points: Vec::new(),
@@ -69,6 +83,17 @@ impl CellBatchVerifier {
             coefficients: Vec::new(),
             interpolation: Vec::new(),
             lincomb: LincombScratch::new(),
+            #[cfg(target_arch = "x86_64")]
+            kernel,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn without_kernel() -> Self {
+        Self {
+            #[cfg(target_arch = "x86_64")]
+            kernel: None,
+            ..Self::new()
         }
     }
 
@@ -103,7 +128,7 @@ impl CellBatchVerifier {
             cells,
             proofs,
         );
-        self.pairing_holds(&r, cell_indices)
+        self.pairing_holds(&r, cell_indices, cells)
     }
 
     fn decode_commitments(&mut self) -> bool {
@@ -115,6 +140,11 @@ impl CellBatchVerifier {
     }
 
     fn decode_cells(&mut self, cells: &[[u8; BYTES_PER_CELL]]) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(kernel) = &self.kernel {
+            // SAFETY: `kernel` is built only where `simd_available` held.
+            return unsafe { kernel.check(cells) };
+        }
         self.evaluations.resize(0, fr_from_u64(0));
         let mut k = 0;
         while k < cells.len() && self.decode_cell(&cells[k]) {
@@ -141,7 +171,12 @@ impl CellBatchVerifier {
 
     /// e(LL, [s^64])·e(RL, −[1]) = 1, with LL = Σ r^k·π_k and RL = RLC − RLI +
     /// RLP.
-    fn pairing_holds(&mut self, r: &blst_fr, cell_indices: &[u64]) -> bool {
+    fn pairing_holds(
+        &mut self,
+        r: &blst_fr,
+        cell_indices: &[u64],
+        cells: &[[u8; BYTES_PER_CELL]],
+    ) -> bool {
         let n = cell_indices.len();
         let zero = fr_from_u64(0);
         self.r_powers.resize(0, zero);
@@ -160,7 +195,7 @@ impl CellBatchVerifier {
         }
         let rlc = g1_lincomb(&self.commitment_points, &self.scalars, &mut self.lincomb);
 
-        let rli = self.interpolation_commitment(cell_indices);
+        let rli = self.interpolation_commitment(cell_indices, cells);
 
         self.scalars.resize(0, zero);
         for k in 0..n {
@@ -181,8 +216,21 @@ impl CellBatchVerifier {
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
     /// summed, put in natural order, inverse-transformed, and shifted from
     /// the column's coset by h⁻¹.
-    fn interpolation_commitment(&mut self, cell_indices: &[u64]) -> blst_p1 {
+    fn interpolation_commitment(
+        &mut self,
+        cell_indices: &[u64],
+        cells: &[[u8; BYTES_PER_CELL]],
+    ) -> blst_p1 {
         let zero = fr_from_u64(0);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(kernel) = &mut self.kernel {
+            self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, zero);
+            // SAFETY: `kernel` is built only where `simd_available` held.
+            unsafe {
+                kernel.interpolate(cells, cell_indices, &self.r_powers, &mut self.interpolation)
+            };
+            return g1_lincomb(&self.setup.g1_monomial, &self.interpolation, &mut self.lincomb);
+        }
         self.columns.resize(0, zero);
         self.columns.resize(CELLS_PER_EXT_BLOB * FIELD_ELEMENTS_PER_CELL, zero);
         self.column_used.resize(0, false);

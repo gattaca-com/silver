@@ -100,6 +100,7 @@ fn valid_batches_verify_like_ckzg() {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
     let blobs = blobs(&mut rng, settings, 3);
     let mut verifier = CellBatchVerifier::new();
+    let mut scalar = CellBatchVerifier::without_kernel();
 
     let mut sizes: Vec<usize> = (0..=17).collect();
     sizes.extend([64, 129]);
@@ -107,6 +108,7 @@ fn valid_batches_verify_like_ckzg() {
         let batch = random_batch(&mut rng, &blobs, size);
         assert!(batch.ckzg(settings), "c-kzg accepts size {size}");
         assert!(batch.ours(&mut verifier), "size {size}");
+        assert!(batch.ours(&mut scalar), "scalar route, size {size}");
     }
 
     let mut whole = Batch::default();
@@ -114,6 +116,7 @@ fn valid_batches_verify_like_ckzg() {
         whole.push(&blobs[0], cell);
     }
     assert!(whole.ours(&mut verifier), "every cell of one blob");
+    assert!(whole.ours(&mut scalar), "scalar route, every cell of one blob");
 }
 
 /// Each case changes one thing in a valid batch; both verifiers must agree,
@@ -124,6 +127,7 @@ fn corrupted_batches_match_ckzg() {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 1);
     let blobs = blobs(&mut rng, settings, 2);
     let mut verifier = CellBatchVerifier::new();
+    let mut scalar = CellBatchVerifier::without_kernel();
 
     let mut rejected = 0;
     for case in 0..108 {
@@ -152,6 +156,7 @@ fn corrupted_batches_match_ckzg() {
         let expected = batch.ckzg(settings);
         rejected += !expected as usize;
         assert_eq!(batch.ours(&mut verifier), expected, "case {case}");
+        assert_eq!(batch.ours(&mut scalar), expected, "scalar route, case {case}");
     }
     assert!(rejected > 90, "most corruptions are rejected: {rejected}");
 }

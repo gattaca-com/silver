@@ -23,6 +23,8 @@ mod fft;
 mod fft8;
 #[cfg(target_arch = "x86_64")]
 mod fr8;
+#[cfg(target_arch = "x86_64")]
+mod interpolation_kernel;
 mod setup;
 mod trusted_setup;
 mod verify;

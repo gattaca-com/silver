@@ -8,11 +8,16 @@ use crate::{
     kernels_run,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, CellExtender,
-        blst_ops::{fr_from_bytes, fr_from_u64, fr_inverse, fr_sub, fr_to_bytes, hash_to_fr},
+        FIELD_ELEMENTS_PER_CELL,
+        blst_ops::{
+            fr_add, fr_from_bytes, fr_from_u64, fr_inverse, fr_mul, fr_sub, fr_to_bytes, hash_to_fr,
+        },
+        cosets::Cosets,
         domain::{inverse_roots, reverse_bits, roots_of_unity},
         fft::{fft, inverse_fft},
         fft8::Fft8,
         fr8::{Fr8, LANES, limbs::Limbs, multiplier},
+        interpolation_kernel::InterpolationKernel,
     },
     simd_available,
 };
@@ -354,6 +359,138 @@ fn kernel_cells_match_scalar_cells() {
         assert!(kernel.compute(blob, &mut ours), "kernel, blob {b}");
         for k in 0..CELLS_PER_EXT_BLOB {
             assert!(ours[k] == expected[k], "blob {b}, cell {k}");
+        }
+    }
+}
+
+fn cell_of(values: &[blst_fr]) -> [u8; BYTES_PER_CELL] {
+    let mut cell = [0u8; BYTES_PER_CELL];
+    for (j, value) in values.iter().enumerate() {
+        cell[j * BYTES_PER_FIELD_ELEMENT..(j + 1) * BYTES_PER_FIELD_ELEMENT]
+            .copy_from_slice(&fr_to_bytes(value));
+    }
+    cell
+}
+
+fn random_cell(rng: &mut ChaCha8Rng) -> [u8; BYTES_PER_CELL] {
+    cell_of(&(0..FIELD_ELEMENTS_PER_CELL).map(|_| random_fr(rng)).collect::<Vec<_>>())
+}
+
+/// Σ_k powers[k]·I_k by the scalar route's steps: each column's weighted
+/// cells in natural order, `inverse_fft`, then the shift by h_c^(−i).
+fn scalar_interpolation(
+    cosets: &Cosets,
+    cells: &[[u8; BYTES_PER_CELL]],
+    cell_indices: &[u64],
+    powers: &[blst_fr],
+) -> Vec<blst_fr> {
+    let zero = fr_from_u64(0);
+    let mut total = vec![zero; FIELD_ELEMENTS_PER_CELL];
+    for column in 0..CELLS_PER_EXT_BLOB {
+        let members: Vec<_> =
+            (0..cells.len()).filter(|&k| cell_indices[k] as usize == column).collect();
+        if members.is_empty() {
+            continue;
+        }
+        let mut natural = vec![zero; FIELD_ELEMENTS_PER_CELL];
+        for k in members {
+            let elements = cells[k].chunks_exact(BYTES_PER_FIELD_ELEMENT);
+            for (j, bytes) in elements.enumerate() {
+                let element = fr_from_bytes(bytes.try_into().unwrap()).expect("cells below r");
+                let i = reverse_bits(j, FIELD_ELEMENTS_PER_CELL.trailing_zeros());
+                natural[i] = fr_add(&natural[i], &fr_mul(&powers[k], &element));
+            }
+        }
+        let mut coefficients = vec![zero; FIELD_ELEMENTS_PER_CELL];
+        inverse_fft(&mut coefficients, &natural, &cosets.inverse_roots, &cosets.inverse_size);
+        let mut factor = fr_from_u64(1);
+        for i in 0..FIELD_ELEMENTS_PER_CELL {
+            total[i] = fr_add(&total[i], &fr_mul(&coefficients[i], &factor));
+            factor = fr_mul(&factor, &cosets.shift_inverse[column]);
+        }
+    }
+    total
+}
+
+/// Edge and random cells, powers and column patterns go through one kernel
+/// in turn, so no call may see the columns of the call before.
+#[test]
+fn kernel_interpolation_matches_scalar_interpolation() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 5);
+    let cosets = Cosets::new();
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let mut kernel = unsafe { InterpolationKernel::new(&cosets) };
+    let (zero, one) = (fr_from_u64(0), fr_from_u64(1));
+    let largest = fr_sub(&zero, &one);
+    let edge_cells: Vec<_> =
+        edge_inputs(&mut rng, FIELD_ELEMENTS_PER_CELL).iter().map(|v| cell_of(v)).collect();
+    let mut edge_powers = vec![zero, one, largest];
+    edge_powers.extend((0..2).map(|_| random_fr(&mut rng)));
+
+    let mut cases: Vec<(Vec<[u8; BYTES_PER_CELL]>, Vec<u64>, Vec<blst_fr>)> = vec![
+        (vec![], vec![], vec![]),
+        (vec![edge_cells[4]], vec![0], vec![random_fr(&mut rng)]),
+        (vec![edge_cells[3]], vec![127], vec![largest]),
+        (edge_cells.clone(), vec![3; 5], edge_powers.clone()),
+    ];
+    let every_column: Vec<_> = (0..CELLS_PER_EXT_BLOB).map(|_| random_cell(&mut rng)).collect();
+    let powers: Vec<_> = (0..CELLS_PER_EXT_BLOB).map(|_| random_fr(&mut rng)).collect();
+    cases.push((every_column, (0..CELLS_PER_EXT_BLOB as u64).collect(), powers));
+    cases.push((vec![edge_cells[2]; 256], vec![42; 256], vec![largest; 256]));
+    let mut mixed = (vec![], vec![], vec![]);
+    for _ in 0..300 {
+        let cell = if rng.gen_bool(0.5) {
+            edge_cells[rng.gen_range(0..edge_cells.len())]
+        } else {
+            random_cell(&mut rng)
+        };
+        mixed.0.push(cell);
+        mixed.1.push(rng.gen_range(0..CELLS_PER_EXT_BLOB as u64));
+        mixed.2.push(edge_powers[rng.gen_range(0..edge_powers.len())]);
+    }
+    cases.push(mixed);
+
+    for (case, (cells, cell_indices, powers)) in cases.iter().enumerate() {
+        let mut got = vec![fr_from_u64(7); FIELD_ELEMENTS_PER_CELL];
+        // SAFETY: as above.
+        unsafe { kernel.interpolate(cells, cell_indices, powers, &mut got) };
+        let want = scalar_interpolation(&cosets, cells, cell_indices, powers);
+        for i in 0..FIELD_ELEMENTS_PER_CELL {
+            assert!(got[i].l == want[i].l, "case {case}, coefficient {i}");
+        }
+    }
+}
+
+/// `check` accepts exactly the cells whose every element is below r: each
+/// value around r goes at both ends of the first and last cells and inside
+/// the middle one.
+#[test]
+fn kernel_check_accepts_exactly_cells_below_r() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 6);
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let kernel = unsafe { InterpolationKernel::new(&Cosets::new()) };
+    let valid: Vec<_> = (0..3).map(|_| random_cell(&mut rng)).collect();
+    // SAFETY: as above.
+    unsafe {
+        assert!(kernel.check(&[]), "no cells");
+        assert!(kernel.check(&valid), "random cells");
+    }
+    let r = Limbs::r();
+    let values: Vec<_> = around_r().into_iter().chain([Limbs::from_bytes(&[0xff; 32])]).collect();
+    for x in &values {
+        for (cell, element) in [(0, 0), (0, 63), (1, 37), (2, 0), (2, 63)] {
+            let mut cells = valid.clone();
+            let at = element * BYTES_PER_FIELD_ELEMENT;
+            cells[cell][at..at + BYTES_PER_FIELD_ELEMENT].copy_from_slice(&x.to_bytes());
+            // SAFETY: as above.
+            let accepted = unsafe { kernel.check(&cells) };
+            assert!(accepted == x.is_below(&r), "cell {cell}, element {element}");
         }
     }
 }

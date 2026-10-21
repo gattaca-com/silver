@@ -221,6 +221,13 @@ impl Fr8 {
         Self(transpose_in(&limbs))
     }
 
+    /// Every lane takes the limbs of `value` as they are, as `load` does.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn splat(value: &blst_fr) -> Self {
+        Self(splat_limbs(&unpack52(&value.l)))
+    }
+
     /// Lane `l` takes the 32 big-endian bytes at `at + 32·l`; the mask holds
     /// the lanes whose value is below r.
     #[target_feature(enable = "avx512f,avx512ifma")]
