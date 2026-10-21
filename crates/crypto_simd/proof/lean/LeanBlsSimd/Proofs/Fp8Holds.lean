@@ -128,9 +128,6 @@ theorem Holds.square (hx : x.Holds l a) : x.square.Holds l (a ^ 2) := by
 theorem Holds.add (hx : x.Holds l a) (hy : y.Holds l b) : (x.add y).Holds l (a + b) :=
   ⟨(lane_add hx.inv hy.inv).1, by rw [decode_lane_add hx.inv hy.inv, hx.eq, hy.eq]⟩
 
-theorem Holds.double (hx : x.Holds l a) : x.double.Holds l (2 * a) :=
-  ⟨(lane_add hx.inv hx.inv).1, by rw [decode_lane_double hx.inv, hx.eq]⟩
-
 theorem Holds.sub (hx : x.Holds l a) (hy : y.Holds l b) : (x.sub y).Holds l (a - b) :=
   ⟨(lane_sub hx.inv hy.inv).1, by rw [decode_lane_sub hx.inv hy.inv, hx.eq, hy.eq]⟩
 

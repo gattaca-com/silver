@@ -118,9 +118,6 @@ theorem Holds.add (hx : x.Holds l v) (hy : y.Holds l w) : (x.add y).Holds l (v +
 theorem Holds.sub (hx : x.Holds l v) (hy : y.Holds l w) : (x.sub y).Holds l (v - w) :=
   ⟨hx.re.sub hy.re, hx.im.sub hy.im⟩
 
-theorem Holds.double (hx : x.Holds l v) : x.double.Holds l (2 * v) :=
-  (hx.add hx).of_eq (two_mul v).symm
-
 theorem Holds.neg (hx : x.Holds l v) : x.neg.Holds l (-v) := ⟨hx.re.neg, hx.im.neg⟩
 
 theorem Holds.conjugate (hx : x.Holds l v) : x.conjugate.Holds l (star v) :=

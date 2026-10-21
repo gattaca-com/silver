@@ -265,11 +265,6 @@ theorem decode_lane_add {x y : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) (hy : F
   rw [decode, (lane_add hx hy).2, decode, decode]
   ring
 
-theorem decode_lane_double {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    decode (x.double.lane l) = 2 * decode (x.lane l) := by
-  rw [double, decode_lane_add hx hx]
-  ring
-
 theorem lane_sub {x y : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) (hy : Fp8Inv (y.lane l)) :
     Fp8Inv ((x.sub y).lane l) ∧
       (val ((x.sub y).lane l) : ZMod Fp.modulus) = val (x.lane l) - val (y.lane l) := by

@@ -53,8 +53,6 @@ def add (self rhs : Fp2x8) : Fp2x8 := { c0 := self.c0.add rhs.c0, c1 := self.c1.
 
 def sub (self rhs : Fp2x8) : Fp2x8 := { c0 := self.c0.sub rhs.c0, c1 := self.c1.sub rhs.c1 }
 
-def double (self : Fp2x8) : Fp2x8 := self.add self
-
 def neg (self : Fp2x8) : Fp2x8 := { c0 := self.c0.neg, c1 := self.c1.neg }
 
 def conjugate (self : Fp2x8) : Fp2x8 := { c0 := self.c0, c1 := self.c1.neg }

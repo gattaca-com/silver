@@ -96,21 +96,30 @@ theorem missing_first_normalise_rejects_dit_input :
     rw [product_limb] at hbound
     norm_num at hbound
 
+private def addCellWrongUsed [KzgExternals]
+    (kernel : interpolation_kernel.InterpolationKernel)
+    (cell : Array U8 2048#usize) (column : Usize) (power : blst.blst_fr) :
+    Result interpolation_kernel.InterpolationKernel := do
+  let next ← interpolation_kernel.InterpolationKernel.add_cell kernel cell column power
+  ok { next with used := alloc.vec.Vec.set kernel.used 0#usize true }
+
 theorem wrong_used_column_rejected [e : KzgExternals] (hblst : BlstCorrect e)
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cell : Array U8 2048#usize) (values : _root_.Array Fr) (hcell : CellRep cell values)
     (hflags : kernel.used.val = List.replicate 128 false) :
-    ∃ next,
-      interpolation_kernel.InterpolationKernel.add_cell kernel cell 0#usize (frEncode 1) = ok next ∧
-      next.used.val = kernel.used.val.set 0 true ∧
-      next.used.val ≠ kernel.used.val.set 1 true := by
+    ∃ next mutated,
+      interpolation_kernel.InterpolationKernel.add_cell kernel cell 1#usize (frEncode 1) = ok next ∧
+      next.used.val = kernel.used.val.set 1 true ∧
+      addCellWrongUsed kernel cell 1#usize (frEncode 1) = ok mutated ∧
+      mutated.used.val ≠ next.used.val := by
   obtain ⟨next, hcall, _, _, hused, _, _⟩ := add_cell_refinement hblst kernel hk cell
-    0#usize 1 values (_root_.Array.replicate 64 0) (by decide) hcell
+    1#usize 1 values (_root_.Array.replicate 64 0) (by decide) hcell
     (by simp [hflags]) (by intro _ j; simp [j.isLt])
-  refine ⟨next, hcall, hused, ?_⟩
+  refine ⟨next, { next with used := alloc.vec.Vec.set kernel.used 0#usize true },
+    hcall, hused, by simp only [addCellWrongUsed, hcall, bind_tc_ok], ?_⟩
   intro hwrong
-  have he := congrArg (fun flags : List Bool => flags[0]!) (hused.symm.trans hwrong)
-  simp [hflags] at he
+  have he := congrArg (fun flags : List Bool => flags[1]!) (hwrong.trans hused)
+  simp [alloc.vec.Vec.set, hflags] at he
 
 private def noncanonicalCell : Array U8 2048#usize :=
   ⟨List.replicate 2048 255#u8, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩

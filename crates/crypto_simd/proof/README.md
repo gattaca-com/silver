@@ -602,13 +602,13 @@ DIT starts with reduced data. Its short stages produce `Lazy 4 3`, `Lazy 8 36`, 
 
 The scalar and kernel route lemmas preserve the outer extender invariant. The kernel route also preserves all tables, and the scalar route preserves `kernel = none`. Their case split proves the public theorem for construction and repeated calls.
 
-#### Verifier interpolation kernel
+### Verifier interpolation kernel
 
 `InterpolationKernel/Basic.lean` defines the verifier kernel's `StateInvariant`. The inverse FFT satisfies the shared `FftInvariant`, and each shift satisfies `MultiplierRep`. Column, shift and used-flag buffers have fixed lengths. The invariant places no arithmetic condition on stale scratch columns. `Construct.lean` proves these properties from the generated constructor, including canonical shift multipliers for `64⁻¹ * cosetShift(column)⁻ᵏ`. `Roots.lean` establishes `RootsValid` for the 64-point roots and their inverses.
 
 `Check.lean` equates the generated canonical masks with specification decoding for every cell byte string. `CellsRep` connects accepted cells with their 64 field elements. `Fr8Splat.lean` proves the broadcast weight representation, including the factor of 16 converting blst's Montgomery radix to the kernel's. `AddCell.lean` proves weighted accumulation: a column's first raw product is normalized before it is stored, and later additions restore the reduced range. `Aggregate.lean` and `Accumulate.lean` connect the generated used flags and columns to the scalar aggregation model. Clearing the flags makes stale columns irrelevant; each first use overwrites its column with bounded data.
 
-`Column.lean` reuses the extender's `dit_refinement` and lazy range bounds at size 64. It proves bit-reversed column loading, the inverse transform, normalization, multiplication by the column's shift factors and addition into reduced sums. `Store.lean` proves canonical coefficient bytes and their scalar decoding. `Interpolate.lean` composes these operations into exact equality with `Model.columnRli`, preserving the kernel invariant. The existing interpolation-commitment and pairing proofs then cover both dispatch routes. The kernel uses the existing `BlstCorrect.fr_u64`, `fr_mul` and `fr_bytes` laws; it adds no external contract or serialization premise.
+`Column.lean` reuses the extender's `dit_refinement` and lazy range bounds at size 64. It proves the DIT on bit-reversed column data, normalization, multiplication by the column's shift factors and addition into reduced sums. `Store.lean` proves canonical coefficient bytes and their scalar decoding. `Interpolate.lean` composes these operations into exact equality with `Model.columnRli`, preserving the kernel invariant. The existing interpolation-commitment and pairing proofs then cover both dispatch routes. The kernel uses the existing `BlstCorrect.fr_u64`, `fr_mul` and `fr_bytes` laws; it adds no external contract or serialization premise.
 
 For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-maintenance). It covers both types, including the verifier's [constructor panic message](lean/README.md#constructor-panic-message).
 

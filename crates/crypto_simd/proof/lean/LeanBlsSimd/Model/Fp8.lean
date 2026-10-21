@@ -243,8 +243,6 @@ def sub (self rhs : Fp8) : Fp8 :=
 
 def neg (self : Fp8) : Fp8 := Fp8.zero.sub self
 
-def double (self : Fp8) : Fp8 := self.add self
-
 def half (self : Fp8) : Fp8 := self.mul (splat_limbs (.ofList HALF_MONT))
 
 def eq_mask (self rhs : Fp8) : Mmask8 :=
