@@ -549,6 +549,12 @@ impl Fp8 {
         self.pow_p_minus_3_over_4().mul(self)
     }
 
+    /// `self^(p-2)`, the inverse, and 0 for 0: p - 2 = 4·(p-3)/4 + 1.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn inverse(&self) -> Self {
+        self.pow_p_minus_3_over_4().square().square().mul(self)
+    }
+
     /// Lanes whose plain value exceeds (p - 1) / 2: the lexicographically
     /// larger of the two square roots.
     #[target_feature(enable = "avx512f,avx512ifma")]

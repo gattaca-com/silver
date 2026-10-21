@@ -28,8 +28,8 @@ pub struct G1x8 {
 }
 
 /// The multiples of p the lazy differences are offset by.
-struct Offsets {
-    two_p: Fp8,
+pub(crate) struct Offsets {
+    pub(crate) two_p: Fp8,
     four_p: Fp8,
     eight_p: Fp8,
 }
@@ -37,7 +37,7 @@ struct Offsets {
 impl Offsets {
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             two_p: Fp8::multiple_of_p(2),
             four_p: Fp8::multiple_of_p(4),
@@ -48,14 +48,14 @@ impl Offsets {
     /// A lazy value below 4p, reduced.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    fn reduced_from_4p(&self, v: &Fp8) -> Fp8 {
+    pub(crate) fn reduced_from_4p(&self, v: &Fp8) -> Fp8 {
         v.normalise().cond_sub(&self.two_p)
     }
 
     /// A lazy value below 8p, reduced.
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    fn reduced_from_8p(&self, v: &Fp8) -> Fp8 {
+    pub(crate) fn reduced_from_8p(&self, v: &Fp8) -> Fp8 {
         v.normalise().cond_sub(&self.four_p).cond_sub(&self.two_p)
     }
 }

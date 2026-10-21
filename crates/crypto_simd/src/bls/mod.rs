@@ -37,6 +37,9 @@ pub mod g1x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod g2x8;
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::missing_safety_doc)]
+pub mod msm8;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__mmask8;

@@ -289,6 +289,34 @@ fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
     }
 }
 
+/// Reduced inputs, canonical or not: 0, 1, p − 1, p, p + 1, 2p − 1, the
+/// Montgomery one, and random values below 2p. Zero, also as p, maps to zero;
+/// every other lane multiplies back to one.
+#[test]
+fn inverse_multiplies_back_to_one() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x1a7e);
+    let mut values: Vec<_> = [(0, 0), (0, 1), (1, -1), (1, 0), (1, 1), (2, -1)]
+        .iter()
+        .map(|&(k, d)| near_multiple_of_p(k, d))
+        .collect();
+    values.push(R_MOD_P);
+    values.extend((0..57).map(|_| below(&mut rng, &near_multiple_of_p(2, 0))));
+    for chunk in values.chunks(LANES) {
+        let lanes_of: [Limbs; LANES] = std::array::from_fn(|l| chunk[l % chunk.len()]);
+        // SAFETY: `kernels_run` checked `simd_available`.
+        let (zero_lanes, zero_inverses, ones) = unsafe {
+            let a = Fp8::load(&lanes_of);
+            let inverse = a.inverse();
+            (a.is_zero_mask(), inverse.is_zero_mask(), a.mul(&inverse).eq_mask(&Fp8::one()))
+        };
+        assert!(zero_inverses == zero_lanes, "{lanes_of:x?}");
+        assert!(ones == !zero_lanes, "{lanes_of:x?}");
+    }
+}
+
 /// Every lane holds a distinct value, so any misplaced lane shows.
 #[test]
 fn transpose8_swaps_rows_and_lanes() {
