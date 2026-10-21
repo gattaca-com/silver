@@ -1,3 +1,4 @@
+mod arena;
 mod list;
 mod pool;
 
