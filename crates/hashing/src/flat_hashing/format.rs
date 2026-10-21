@@ -1,6 +1,6 @@
 use crate::{
     B256, TreeSpec,
-    hashing::page_format::Subtree,
+    flat_hashing::page_format::Subtree,
     merkle::{ZERO_HASHES, hash_concat, mix_in_length},
     progressive::{
         PROGRESSIVE_SEGMENT_START, fold_progressive_spine, progressive_segment_of_chunk,

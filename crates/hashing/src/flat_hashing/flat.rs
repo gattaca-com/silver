@@ -2,7 +2,7 @@ use flux_profiler::timed;
 
 use crate::{
     B256, HashFormat, SszScalar, TreeSpec,
-    hashing::{
+    flat_hashing::{
         format::TreeFormat, list::ListTree, progressive_list::ProgressiveListTree, store::NodeStore,
     },
     storage::{PageAlloc, PageId, PageStore, PageTable},

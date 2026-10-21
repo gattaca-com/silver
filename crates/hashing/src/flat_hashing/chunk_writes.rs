@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::hashing::{chunk_bits::ChunkBits, subtree::NodeRange};
+use crate::flat_hashing::{chunk_bits::ChunkBits, subtree::NodeRange};
 
 /// Chunks written since the last load or commit: a page is dirty iff one of
 /// them lies under it. Those not yet rehashed are kept apart, so a rehash

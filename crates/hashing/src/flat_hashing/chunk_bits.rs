@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut, Range};
 
-use crate::hashing::subtree::NodeRange;
+use crate::flat_hashing::subtree::NodeRange;
 
 const WORD_BITS: usize = u64::BITS as usize;
 

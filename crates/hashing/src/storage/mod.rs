@@ -1,4 +1,3 @@
-pub mod single_owner;
 mod table;
 
 pub use table::PageTable;

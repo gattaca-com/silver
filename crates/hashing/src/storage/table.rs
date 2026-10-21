@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     B256, TreeSpec,
-    hashing::{format::TreeFormat, page_format::Subtree},
+    flat_hashing::{format::TreeFormat, page_format::Subtree},
     storage::{PageId, PageStore},
 };
 
@@ -101,7 +101,7 @@ impl PageTable {
     /// format can't place, as a racing reader may ask, resolves to the first
     /// root slot.
     #[inline]
-    pub(super) fn page_of<C: TreeSpec>(&self, store: &impl PageStore, n: usize) -> (PageId, usize) {
+    pub(crate) fn page_of<C: TreeSpec>(&self, store: &impl PageStore, n: usize) -> (PageId, usize) {
         let (s, level, pos) = self.format.locate::<C>(n).unwrap_or_default();
         let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
         let root = self.roots.get(s).copied().unwrap_or(0);

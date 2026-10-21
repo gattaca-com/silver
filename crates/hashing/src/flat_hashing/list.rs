@@ -1,6 +1,6 @@
 use crate::{
     B256, TreeSpec,
-    hashing::{
+    flat_hashing::{
         format::TreeFormat,
         store::NodeStore,
         subtree::{build_subtree_hashes, rehash_subtree},

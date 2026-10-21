@@ -2,7 +2,8 @@ use flux_profiler::timed;
 
 use crate::{
     FlatTree, TreeSpec,
-    storage::{PageId, PageTable, single_owner::pool::PagePool},
+    single_owner::pool::PagePool,
+    storage::{PageId, PageTable},
 };
 
 /// A committed fork's tree in a [`PagePool`].
@@ -55,10 +56,10 @@ impl PageSnapshot {
     /// Make this base `winner`'s tree, freeing the base pages the winner does
     /// not share.
     pub fn promote<C: TreeSpec>(&mut self, pool: &mut PagePool<C::Page>, winner: &PageSnapshot) {
-        let same_format = self.table.format == winner.table.format;
-        for (s, sub) in self.table.format.subtrees::<C>().enumerate() {
-            let new = winner.table.roots.get(s).copied().filter(|_| same_format);
-            pool.free_unshared::<C>(sub, sub.root::<C>(), self.table.roots[s], new);
+        let same_format = self.table.format() == winner.table.format();
+        for (s, sub) in self.table.format().subtrees::<C>().enumerate() {
+            let new = winner.table.roots().get(s).copied().filter(|_| same_format);
+            pool.free_unshared::<C>(sub, sub.root::<C>(), self.table.roots()[s], new);
         }
         self.table.clone_from(&winner.table);
     }
@@ -67,7 +68,7 @@ impl PageSnapshot {
     /// as it clears `allocated`; `roots` stay, so racing readers stay in
     /// bounds.
     pub fn release<C: TreeSpec>(&mut self, pool: &mut PagePool<C::Page>, base: &PageSnapshot) {
-        let same_format = self.table.format == base.table.format;
+        let same_format = self.table.format() == base.table.format();
         for &(n, id) in &self.allocated {
             if !same_format || base.table.page_of::<C>(pool, n as usize).0 != id {
                 pool.free(id);

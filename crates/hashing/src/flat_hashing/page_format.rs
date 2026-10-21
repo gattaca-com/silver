@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{TreeSpec, hashing::format::TreeFormat, progressive::PROGRESSIVE_SEGMENT_START};
+use crate::{TreeSpec, flat_hashing::format::TreeFormat, progressive::PROGRESSIVE_SEGMENT_START};
 
 /// One binary subtree of a flat tree, and how it is cut into pages.
 ///

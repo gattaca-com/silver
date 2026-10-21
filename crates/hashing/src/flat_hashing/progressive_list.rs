@@ -1,6 +1,6 @@
 use crate::{
     B256, TreeSpec,
-    hashing::{
+    flat_hashing::{
         format::{TreeFormat, progressive_last_seg_for_chunks},
         list::ListTree,
         store::NodeStore,

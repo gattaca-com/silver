@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::{
     B256, FlatTree, SszScalar, TreeSpec,
-    hashing::format::TreeFormat,
+    flat_hashing::format::TreeFormat,
     storage::{PageStore, PageTable},
 };
 
