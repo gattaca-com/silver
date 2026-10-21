@@ -32,22 +32,59 @@ theorem from_affine_refines (x y : fp8.Fp8) :
     g1x8.G1x8.from_affine x y = ok (toG1x8 (from_affine (ofFp8 x) (ofFp8 y))) := by
   simp [g1x8.G1x8.from_affine, Fp8.one_refines, from_affine, toG1x8]
 
+namespace Offsets
+
+def ofOffsets (o : g1x8.Offsets) : Offsets :=
+  ⟨ofFp8 o.two_p, ofFp8 o.four_p, ofFp8 o.eight_p⟩
+
+def toOffsets (o : Offsets) : g1x8.Offsets :=
+  ⟨toFp8 o.two_p, toFp8 o.four_p, toFp8 o.eight_p⟩
+
+@[simp] theorem ofOffsets_toOffsets (o : Offsets) : ofOffsets (toOffsets o) = o := by
+  simp [ofOffsets, toOffsets]
+
+theorem new_refines : g1x8.Offsets.new = ok (toOffsets new) := by
+  simp [g1x8.Offsets.new, Fp8.multiple_of_p_refines 2#u64 (by decide),
+    Fp8.multiple_of_p_refines 4#u64 (by decide), Fp8.multiple_of_p_refines 8#u64 (by decide),
+    new, toOffsets, show ofU64 2#u64 = 2 from rfl,
+    show ofU64 4#u64 = 4 from rfl, show ofU64 8#u64 = 8 from rfl]
+
+theorem reduced_from_4p_refines (o : g1x8.Offsets) (v : fp8.Fp8) :
+    g1x8.Offsets.reduced_from_4p o v =
+      ok (toFp8 ((ofOffsets o).reduced_from_4p (ofFp8 v))) := by
+  simp [g1x8.Offsets.reduced_from_4p, Fp8.normalise_refines, Fp8.cond_sub_refines,
+    reduced_from_4p, ofOffsets]
+
+theorem reduced_from_8p_refines (o : g1x8.Offsets) (v : fp8.Fp8) :
+    g1x8.Offsets.reduced_from_8p o v =
+      ok (toFp8 ((ofOffsets o).reduced_from_8p (ofFp8 v))) := by
+  simp [g1x8.Offsets.reduced_from_8p, Fp8.normalise_refines, Fp8.cond_sub_refines,
+    reduced_from_8p, ofOffsets]
+
+end Offsets
+
 theorem double_refines (self : g1x8.G1x8) :
     g1x8.G1x8.double self = ok (Prod.map toG1x8 toU8 (ofG1x8 self).double) := by
-  simp [g1x8.G1x8.double, Fp8.square_refines, Fp8.add_refines, Fp8.sub_refines,
-    Fp8.double_refines, Fp8.mul_refines, Fp8.is_zero_mask_refines, lift, G1x8.double, toG1x8]
+  simp [g1x8.G1x8.double, Fp8.square_refines, Fp8.add_raw_refines, Fp8.sub_raw_refines,
+    Fp8.normalise_refines, Fp8.cond_sub_refines, Fp8.mul_refines,
+    Fp8.is_zero_mask_refines, Offsets.new_refines, Offsets.reduced_from_4p_refines,
+    Offsets.reduced_from_8p_refines, Offsets.toOffsets, Offsets.ofOffsets,
+    lift, G1x8.double, toG1x8]
 
 theorem add_affine_refines (self : g1x8.G1x8) (qx qy : fp8.Fp8) :
     g1x8.G1x8.add_affine self qx qy =
       ok (Prod.map toG1x8 toU8 ((ofG1x8 self).add_affine (ofFp8 qx) (ofFp8 qy))) := by
-  simp [g1x8.G1x8.add_affine, Fp8.square_refines, Fp8.add_refines, Fp8.sub_refines,
-    Fp8.double_refines, Fp8.mul_refines, Fp8.is_zero_mask_refines, lift, G1x8.add_affine,
-    toG1x8]
+  simp [g1x8.G1x8.add_affine, Fp8.square_refines, Fp8.add_raw_refines, Fp8.sub_raw_refines,
+    Fp8.sub_refines, Fp8.normalise_refines, Fp8.mul_refines,
+    Fp8.is_zero_mask_refines, Offsets.new_refines, Offsets.reduced_from_8p_refines,
+    Offsets.toOffsets, Offsets.ofOffsets, lift, G1x8.add_affine, toG1x8]
 
 theorem add_refines (self q : g1x8.G1x8) :
     g1x8.G1x8.add self q = ok (Prod.map toG1x8 toU8 ((ofG1x8 self).add (ofG1x8 q))) := by
-  simp [g1x8.G1x8.add, Fp8.square_refines, Fp8.add_refines, Fp8.sub_refines,
-    Fp8.double_refines, Fp8.mul_refines, Fp8.is_zero_mask_refines, lift, G1x8.add, toG1x8]
+  simp [g1x8.G1x8.add, Fp8.square_refines, Fp8.add_raw_refines, Fp8.sub_raw_refines,
+    Fp8.sub_refines, Fp8.normalise_refines, Fp8.mul_refines,
+    Fp8.is_zero_mask_refines, Offsets.new_refines, Offsets.reduced_from_8p_refines,
+    Offsets.toOffsets, Offsets.ofOffsets, lift, G1x8.add, toG1x8]
 
 theorem is_lower_z_bit_refines (bit : U32) :
     g1x8.is_lower_z_bit bit = ok (is_lower_z_bit bit.val) := by

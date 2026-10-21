@@ -250,7 +250,7 @@ def bls.constants.HALF_MONT : Array Std.U64 8#usize :=
     ] (by rfl)
 
 /-- [silver_crypto_simd::bls::fp8::unpack52]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 207:4-215:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 214:4-222:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.unpack52_loop.body
@@ -293,7 +293,7 @@ def bls.fp8.unpack52_loop.body
     ok (cont (iter2, a))
 
 /-- [silver_crypto_simd::bls::fp8::unpack52]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 207:4-215:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 214:4-222:5
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.unpack52_loop
@@ -306,7 +306,7 @@ def bls.fp8.unpack52_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::fp8::unpack52]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 205:0-217:1
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 212:0-224:1
     Visibility: public -/
 def bls.fp8.unpack52
   (x : Array Std.U64 6#usize) : Result (Array Std.U64 8#usize) := do
@@ -315,7 +315,7 @@ def bls.fp8.unpack52
     out
 
 /-- [silver_crypto_simd::bls::fp8::LANES]
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 20:0-20:27
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 27:0-27:27
     Visibility: public -/
 @[global_simps, irreducible] def bls.fp8.LANES : Std.Usize := 8#usize
 
@@ -517,7 +517,7 @@ def bls.decompress.point
   ok { x := { l := x }, y := { l := y } }
 
 /-- [silver_crypto_simd::bls::g1x8::is_lower_z_bit]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 145:0-147:1 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 210:0-212:1 -/
 def bls.g1x8.is_lower_z_bit (bit : Std.U32) : Result Bool := do
   let i ← Array.index_usize bls.constants.Z_BITS 1#usize
   if bit = i
@@ -539,25 +539,76 @@ def bls.g1x8.is_lower_z_bit (bit : Std.U32) : Result Bool := do
           ok (bit = i4)
 
 /-- [silver_crypto_simd::bls::fp8::splat]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 29:0-31:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 36:0-38:1 -/
 def bls.fp8.splat (x : Std.U64) : Result core.core_arch.x86.__m512i := do
   let i ← lift (UScalar.hcast .I64 x)
   core.core_arch.x86.avx512f._mm512_set1_epi64 i
 
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 457:8-460:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.normalise_loop.body
+  (mask : core.core_arch.x86.__m512i) (iter : core.ops.range.Range Std.Usize)
+  (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 8#usize)) (Array core.core_arch.x86.__m512i
+    8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done s)
+  | some j =>
+    let i ← j + 1#usize
+    let mi ← Array.index_usize s i
+    let mi1 ← Array.index_usize s j
+    let mi2 ← core.core_arch.x86.avx512f._mm512_srai_epi64 52#u32 mi1
+    let mi3 ← core.core_arch.x86.avx512f._mm512_add_epi64 mi mi2
+    let s1 ← Array.update s i mi3
+    let mi4 ← Array.index_usize s1 j
+    let mi5 ← core.core_arch.x86.avx512f._mm512_and_si512 mi4 mask
+    let a ← Array.update s1 j mi5
+    ok (cont (iter1, a))
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 457:8-460:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.normalise_loop
+  (iter : core.ops.range.Range Std.Usize) (mask : core.core_arch.x86.__m512i)
+  (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (iter1, s1) => bls.fp8.Fp8.normalise_loop.body mask iter1 s1)
+    (iter, s)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 454:4-462:5
+    Visibility: public -/
+def bls.fp8.Fp8.normalise (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let i ← bls.constants.MASK52
+  let mask ← bls.fp8.splat i
+  let i1 ← bls.constants.LIMBS - 1#usize
+  let s ←
+    bls.fp8.Fp8.normalise_loop { start := 0#usize, «end» := i1 } mask self
+  ok s
+
 /-- [silver_crypto_simd::bls::fp8::borrowed]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 150:0-152:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 157:0-159:1 -/
 def bls.fp8.borrowed
   (borrow : core.core_arch.x86.__m512i) : Result Std.U8 := do
   let mi ← bls.fp8.splat core.num.U64.MAX
   core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask borrow mi
 
 /-- [silver_crypto_simd::bls::fp8::zero]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 35:0-37:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 42:0-44:1 -/
 def bls.fp8.zero : Result core.core_arch.x86.__m512i := do
   core.core_arch.x86.avx512f._mm512_setzero_si512
 
 /-- [silver_crypto_simd::bls::fp8::blend]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 141:4-143:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 148:4-150:5 -/
 @[rust_loop_body]
 def bls.fp8.blend_loop.body
   (k : Std.U8) (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -580,7 +631,7 @@ def bls.fp8.blend_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::blend]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 141:4-143:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 148:4-150:5 -/
 @[rust_loop]
 def bls.fp8.blend_loop
   (iter : core.ops.range.Range Std.Usize) (k : Std.U8)
@@ -594,7 +645,7 @@ def bls.fp8.blend_loop
     (iter, r)
 
 /-- [silver_crypto_simd::bls::fp8::blend]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 139:0-145:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 146:0-152:1 -/
 def bls.fp8.blend
   (k : Std.U8) (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -606,7 +657,7 @@ def bls.fp8.blend
     r
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 114:4-118:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 121:4-125:5 -/
 @[rust_loop_body]
 def bls.fp8.sub_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -633,7 +684,7 @@ def bls.fp8.sub_limbs_loop.body
     ok (cont (iter1, a1, borrow1))
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 114:4-118:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 121:4-125:5 -/
 @[rust_loop]
 def bls.fp8.sub_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -651,7 +702,7 @@ def bls.fp8.sub_limbs_loop
     (iter, d, borrow)
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 110:0-120:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 117:0-127:1 -/
 def bls.fp8.sub_limbs
   (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -665,8 +716,87 @@ def bls.fp8.sub_limbs
   bls.fp8.sub_limbs_loop { start := 0#usize, «end» := bls.constants.LIMBS } a
     b mask d mi
 
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::cond_sub]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 404:4-407:5
+    Visibility: public -/
+def bls.fp8.Fp8.cond_sub
+  (self : bls.fp8.Fp8) (c : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let (d, borrow) ← bls.fp8.sub_limbs self c
+  let i ← bls.fp8.borrowed borrow
+  let a ← bls.fp8.blend i d self
+  ok a
+
+/-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::reduced_from_8p]:
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 58:4-60:5 -/
+def bls.g1x8.Offsets.reduced_from_8p
+  (self : bls.g1x8.Offsets) (v : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let f ← bls.fp8.Fp8.normalise v
+  let f1 ← bls.fp8.Fp8.cond_sub f self.four_p
+  bls.fp8.Fp8.cond_sub f1 self.two_p
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 416:8-420:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.multiple_of_p_loop.body
+  (c : Std.U64) (iter : core.ops.range.Range Std.Usize)
+  (v : Array core.core_arch.x86.__m512i 8#usize) (carry : Std.U64) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    core.core_arch.x86.__m512i 8#usize) × Std.U64) (Array
+    core.core_arch.x86.__m512i 8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done v)
+  | some j =>
+    let i ← Array.index_usize bls.constants.P j
+    let i1 ← i * c
+    let limb ← i1 + carry
+    let i2 ← bls.constants.MASK52
+    let i3 ← lift (limb &&& i2)
+    let mi ← bls.fp8.splat i3
+    let a ← Array.update v j mi
+    let carry1 ← limb >>> bls.constants.LIMB_BITS
+    ok (cont (iter1, a, carry1))
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 416:8-420:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.multiple_of_p_loop
+  (iter : core.ops.range.Range Std.Usize) (c : Std.U64)
+  (v : Array core.core_arch.x86.__m512i 8#usize) (carry : Std.U64) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (iter1, v1, carry1) => bls.fp8.Fp8.multiple_of_p_loop.body c iter1 v1
+      carry1)
+    (iter, v, carry)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 412:4-422:5
+    Visibility: public -/
+def bls.fp8.Fp8.multiple_of_p (c : Std.U64) : Result bls.fp8.Fp8 := do
+  let i ← 1#u64 <<< 12#i32
+  massert (c < i)
+  let mi ← bls.fp8.zero
+  let v := Array.repeat 8#usize mi
+  let v1 ←
+    bls.fp8.Fp8.multiple_of_p_loop
+      { start := 0#usize, «end» := bls.constants.LIMBS } c v 0#u64
+  ok v1
+
+/-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::new]:
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 40:4-46:5 -/
+def bls.g1x8.Offsets.new : Result bls.g1x8.Offsets := do
+  let f ← bls.fp8.Fp8.multiple_of_p 2#u64
+  let f1 ← bls.fp8.Fp8.multiple_of_p 4#u64
+  let f2 ← bls.fp8.Fp8.multiple_of_p 8#u64
+  ok { two_p := f, four_p := f1, eight_p := f2 }
+
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 43:4-45:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:4-52:5 -/
 @[rust_loop_body]
 def bls.fp8.splat_limbs_loop.body
   (limbs : Array Std.U64 8#usize) (iter : core.ops.range.Range Std.Usize)
@@ -686,7 +816,7 @@ def bls.fp8.splat_limbs_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 43:4-45:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:4-52:5 -/
 @[rust_loop]
 def bls.fp8.splat_limbs_loop
   (iter : core.ops.range.Range Std.Usize) (limbs : Array Std.U64 8#usize)
@@ -698,7 +828,7 @@ def bls.fp8.splat_limbs_loop
     (iter, v)
 
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 41:0-47:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 48:0-54:1 -/
 def bls.fp8.splat_limbs
   (limbs : Array Std.U64 8#usize) :
   Result (Array core.core_arch.x86.__m512i 8#usize)
@@ -708,18 +838,23 @@ def bls.fp8.splat_limbs
   bls.fp8.splat_limbs_loop { start := 0#usize, «end» := bls.constants.LIMBS }
     limbs v
 
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::splat_limbs]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 253:4-255:5
+    Visibility: public -/
+def bls.fp8.Fp8.splat_limbs
+  (limbs : Array Std.U64 8#usize) : Result bls.fp8.Fp8 := do
+  let a ← bls.fp8.splat_limbs limbs
+  ok a
+
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::canonical]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 388:4-391:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 396:4-398:5
     Visibility: public -/
 def bls.fp8.Fp8.canonical (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  let a ← bls.fp8.splat_limbs bls.constants.P
-  let (d, borrow) ← bls.fp8.sub_limbs self a
-  let i ← bls.fp8.borrowed borrow
-  let a1 ← bls.fp8.blend i d self
-  ok a1
+  let f ← bls.fp8.Fp8.splat_limbs bls.constants.P
+  bls.fp8.Fp8.cond_sub self f
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 444:8-446:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-517:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.is_zero_mask_loop.body
@@ -739,7 +874,7 @@ def bls.fp8.Fp8.is_zero_mask_loop.body
     ok (cont (iter1, a, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 444:8-446:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-517:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.is_zero_mask_loop
@@ -751,7 +886,7 @@ def bls.fp8.Fp8.is_zero_mask_loop
     (iter, a, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 441:4-448:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 512:4-519:5
     Visibility: public -/
 def bls.fp8.Fp8.is_zero_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.canonical self
@@ -759,7 +894,7 @@ def bls.fp8.Fp8.is_zero_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
     { start := 0#usize, «end» := bls.constants.LIMBS } a 255#u8
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 129:4-133:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 136:4-140:5 -/
 @[rust_loop_body]
 def bls.fp8.add_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -786,7 +921,7 @@ def bls.fp8.add_limbs_loop.body
     ok (cont (iter1, a1, carry1))
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 129:4-133:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 136:4-140:5 -/
 @[rust_loop]
 def bls.fp8.add_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -803,7 +938,7 @@ def bls.fp8.add_limbs_loop
     (iter, s, carry)
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 125:0-135:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 132:0-142:1 -/
 def bls.fp8.add_limbs
   (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -816,44 +951,122 @@ def bls.fp8.add_limbs
   bls.fp8.add_limbs_loop { start := 0#usize, «end» := bls.constants.LIMBS } a
     b mask s mi
 
-/-- [silver_crypto_simd::bls::fp8::two_p]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 500:0-502:1 -/
-def bls.fp8.two_p : Result (Array core.core_arch.x86.__m512i 8#usize) := do
-  let a ← bls.fp8.splat_limbs bls.constants.P
-  bls.fp8.add_limbs a a
-
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 396:4-400:5
-    Visibility: public -/
-def bls.fp8.Fp8.add
-  (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  let s ← bls.fp8.add_limbs self rhs
-  let a ← bls.fp8.two_p
-  let (d, borrow) ← bls.fp8.sub_limbs s a
-  let i ← bls.fp8.borrowed borrow
-  let a1 ← bls.fp8.blend i d s
-  ok a1
-
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::double]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 418:4-420:5
-    Visibility: public -/
-def bls.fp8.Fp8.double (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  bls.fp8.Fp8.add self self
-
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 404:4-408:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 475:4-479:5
     Visibility: public -/
 def bls.fp8.Fp8.sub
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let (d, borrow) ← bls.fp8.sub_limbs self rhs
-  let a ← bls.fp8.two_p
-  let wrapped ← bls.fp8.add_limbs d a
+  let f ← bls.fp8.Fp8.multiple_of_p 2#u64
+  let wrapped ← bls.fp8.add_limbs d f
   let i ← bls.fp8.borrowed borrow
-  let a1 ← bls.fp8.blend i d wrapped
-  ok a1
+  let a ← bls.fp8.blend i d wrapped
+  ok a
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 443:8-445:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.sub_raw_loop.body
+  (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
+  (rhs : bls.fp8.Fp8) (offset : bls.fp8.Fp8)
+  (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × bls.fp8.Fp8 ×
+    bls.fp8.Fp8 × bls.fp8.Fp8 × (Array core.core_arch.x86.__m512i 8#usize))
+    (Array core.core_arch.x86.__m512i 8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done s)
+  | some j =>
+    let mi ← Array.index_usize self j
+    let mi1 ← Array.index_usize offset j
+    let mi2 ← core.core_arch.x86.avx512f._mm512_add_epi64 mi mi1
+    let mi3 ← Array.index_usize rhs j
+    let mi4 ← core.core_arch.x86.avx512f._mm512_sub_epi64 mi2 mi3
+    let a ← Array.update s j mi4
+    ok (cont (iter1, self, rhs, offset, a))
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 443:8-445:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.sub_raw_loop
+  (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
+  (rhs : bls.fp8.Fp8) (offset : bls.fp8.Fp8)
+  (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (iter1, self1, rhs1, offset1, s1) => bls.fp8.Fp8.sub_raw_loop.body
+      iter1 self1 rhs1 offset1 s1)
+    (iter, self, rhs, offset, s)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 441:4-447:5
+    Visibility: public -/
+def bls.fp8.Fp8.sub_raw
+  (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) (offset : bls.fp8.Fp8) :
+  Result bls.fp8.Fp8
+  := do
+  let mi ← bls.fp8.zero
+  let s := Array.repeat 8#usize mi
+  let s1 ←
+    bls.fp8.Fp8.sub_raw_loop
+      { start := 0#usize, «end» := bls.constants.LIMBS } self rhs offset s
+  ok s1
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 430:8-432:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.add_raw_loop.body
+  (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
+  (rhs : bls.fp8.Fp8) (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × bls.fp8.Fp8 ×
+    bls.fp8.Fp8 × (Array core.core_arch.x86.__m512i 8#usize)) (Array
+    core.core_arch.x86.__m512i 8#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done s)
+  | some j =>
+    let mi ← Array.index_usize self j
+    let mi1 ← Array.index_usize rhs j
+    let mi2 ← core.core_arch.x86.avx512f._mm512_add_epi64 mi mi1
+    let a ← Array.update s j mi2
+    ok (cont (iter1, self, rhs, a))
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 430:8-432:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.add_raw_loop
+  (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
+  (rhs : bls.fp8.Fp8) (s : Array core.core_arch.x86.__m512i 8#usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (iter1, self1, rhs1, s1) => bls.fp8.Fp8.add_raw_loop.body iter1 self1
+      rhs1 s1)
+    (iter, self, rhs, s)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 428:4-434:5
+    Visibility: public -/
+def bls.fp8.Fp8.add_raw
+  (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let mi ← bls.fp8.zero
+  let s := Array.repeat 8#usize mi
+  let s1 ←
+    bls.fp8.Fp8.add_raw_loop
+      { start := 0#usize, «end» := bls.constants.LIMBS } self rhs s
+  ok s1
 
 /-- [silver_crypto_simd::bls::fp8::carry_of_cleared]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 180:0-182:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 187:0-189:1 -/
 def bls.fp8.carry_of_cleared
   (t : core.core_arch.x86.__m512i) : Result core.core_arch.x86.__m512i := do
   let i ← bls.constants.MASK52
@@ -862,7 +1075,7 @@ def bls.fp8.carry_of_cleared
   core.core_arch.x86.avx512f._mm512_srli_epi64 52#u32 mi1
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 194:4-196:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 201:4-203:5 -/
 @[rust_loop_body]
 def bls.fp8.reduce_row_loop0.body
   (p : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -885,7 +1098,7 @@ def bls.fp8.reduce_row_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 194:4-196:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 201:4-203:5 -/
 @[rust_loop]
 def bls.fp8.reduce_row_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -899,7 +1112,7 @@ def bls.fp8.reduce_row_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 198:4-200:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 205:4-207:5 -/
 @[rust_loop_body]
 def bls.fp8.reduce_row_loop1.body
   (p : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -924,7 +1137,7 @@ def bls.fp8.reduce_row_loop1.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 198:4-200:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 205:4-207:5 -/
 @[rust_loop]
 def bls.fp8.reduce_row_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -938,7 +1151,7 @@ def bls.fp8.reduce_row_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 190:0-201:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 197:0-208:1 -/
 def bls.fp8.reduce_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
   (p : Array core.core_arch.x86.__m512i 8#usize)
@@ -966,7 +1179,7 @@ def bls.fp8.reduce_row
     a1 p i q
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 378:8-381:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 386:8-389:9 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.reduce_loop.body
   (t : Array core.core_arch.x86.__m512i 17#usize)
@@ -995,7 +1208,7 @@ def bls.fp8.Fp8.reduce_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 378:8-381:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 386:8-389:9 -/
 @[rust_loop]
 def bls.fp8.Fp8.reduce_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1009,7 +1222,7 @@ def bls.fp8.Fp8.reduce_loop
     (iter, r)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 363:4-383:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 371:4-391:5 -/
 def bls.fp8.Fp8.reduce
   (t : Array core.core_arch.x86.__m512i 17#usize) : Result bls.fp8.Fp8 := do
   let p ← bls.fp8.splat_limbs bls.constants.P
@@ -1034,7 +1247,7 @@ def bls.fp8.Fp8.reduce
   ok r1
 
 /-- [silver_crypto_simd::bls::fp8::square_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 169:4-172:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 176:4-179:5 -/
 @[rust_loop_body]
 def bls.fp8.square_row_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -1063,7 +1276,7 @@ def bls.fp8.square_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::square_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 169:4-172:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 176:4-179:5 -/
 @[rust_loop]
 def bls.fp8.square_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1076,7 +1289,7 @@ def bls.fp8.square_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::square_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 168:0-173:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 175:0-180:1 -/
 def bls.fp8.square_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
   (a : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize) :
@@ -1086,7 +1299,7 @@ def bls.fp8.square_row
   bls.fp8.square_row_loop { start := i1, «end» := bls.constants.LIMBS } t a i
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 349:8-351:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-359:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.square_loop0.body
@@ -1107,7 +1320,7 @@ def bls.fp8.Fp8.square_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 349:8-351:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-359:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.square_loop0
@@ -1120,7 +1333,7 @@ def bls.fp8.Fp8.square_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 352:8-355:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 360:8-363:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.square_loop1.body
@@ -1149,7 +1362,7 @@ def bls.fp8.Fp8.square_loop1.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 352:8-355:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 360:8-363:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.square_loop1
@@ -1163,7 +1376,7 @@ def bls.fp8.Fp8.square_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 339:4-357:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 347:4-365:5
     Visibility: public -/
 def bls.fp8.Fp8.square (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let mi ← bls.fp8.zero
@@ -1184,7 +1397,7 @@ def bls.fp8.Fp8.square (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.reduce t9
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 158:4-161:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 165:4-168:5 -/
 @[rust_loop_body]
 def bls.fp8.muladd_row_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -1213,7 +1426,7 @@ def bls.fp8.muladd_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 158:4-161:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 165:4-168:5 -/
 @[rust_loop]
 def bls.fp8.muladd_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1227,7 +1440,7 @@ def bls.fp8.muladd_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 157:0-162:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 164:0-169:1 -/
 @[reducible]
 def bls.fp8.muladd_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
@@ -1239,7 +1452,7 @@ def bls.fp8.muladd_row
     t a b_i i
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::mul]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 323:4-334:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 331:4-342:5
     Visibility: public -/
 def bls.fp8.Fp8.mul
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -1264,41 +1477,49 @@ def bls.fp8.Fp8.mul
   bls.fp8.Fp8.reduce t8
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 66:4-83:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 121:4-148:5
     Visibility: public -/
 def bls.g1x8.G1x8.add
   (self : bls.g1x8.G1x8) (q : bls.g1x8.G1x8) :
   Result (bls.g1x8.G1x8 × Std.U8)
   := do
+  let o ← bls.g1x8.Offsets.new
   let z1z1 ← bls.fp8.Fp8.square self.z
   let z2z2 ← bls.fp8.Fp8.square q.z
+  let y1_z2 ← bls.fp8.Fp8.mul self.y q.z
+  let y2_z1 ← bls.fp8.Fp8.mul q.y self.z
+  let f ← bls.fp8.Fp8.add_raw self.z q.z
+  let z_sum ← bls.fp8.Fp8.normalise f
+  let z_sum_squared ← bls.fp8.Fp8.square z_sum
   let u1 ← bls.fp8.Fp8.mul self.x z2z2
   let u2 ← bls.fp8.Fp8.mul q.x z1z1
-  let f ← bls.fp8.Fp8.mul self.y q.z
-  let s1 ← bls.fp8.Fp8.mul f z2z2
-  let f1 ← bls.fp8.Fp8.mul q.y self.z
-  let s2 ← bls.fp8.Fp8.mul f1 z1z1
+  let s1 ← bls.fp8.Fp8.mul y1_z2 z2z2
+  let s2 ← bls.fp8.Fp8.mul y2_z1 z1z1
   let h ← bls.fp8.Fp8.sub u2 u1
-  let f2 ← bls.fp8.Fp8.double h
+  let f1 ← bls.fp8.Fp8.add_raw h h
+  let f2 ← bls.fp8.Fp8.normalise f1
   let i ← bls.fp8.Fp8.square f2
+  let f3 ← bls.fp8.Fp8.sub_raw z_sum_squared z1z1 o.two_p
+  let f4 ← bls.fp8.Fp8.sub_raw f3 z2z2 o.two_p
+  let two_z1_z2 ← bls.fp8.Fp8.normalise f4
+  let z3 ← bls.fp8.Fp8.mul two_z1_z2 h
   let j ← bls.fp8.Fp8.mul h i
-  let f3 ← bls.fp8.Fp8.sub s2 s1
-  let r ← bls.fp8.Fp8.double f3
   let v ← bls.fp8.Fp8.mul u1 i
-  let f4 ← bls.fp8.Fp8.square r
-  let f5 ← bls.fp8.Fp8.sub f4 j
-  let f6 ← bls.fp8.Fp8.double v
-  let x3 ← bls.fp8.Fp8.sub f5 f6
-  let f7 ← bls.fp8.Fp8.sub v x3
-  let f8 ← bls.fp8.Fp8.mul r f7
-  let f9 ← bls.fp8.Fp8.mul s1 j
-  let f10 ← bls.fp8.Fp8.double f9
-  let y3 ← bls.fp8.Fp8.sub f8 f10
-  let f11 ← bls.fp8.Fp8.add self.z q.z
-  let f12 ← bls.fp8.Fp8.square f11
-  let f13 ← bls.fp8.Fp8.sub f12 z1z1
-  let f14 ← bls.fp8.Fp8.sub f13 z2z2
-  let z3 ← bls.fp8.Fp8.mul f14 h
+  let r ← bls.fp8.Fp8.sub_raw s2 s1 o.two_p
+  let f5 ← bls.fp8.Fp8.add_raw r r
+  let r1 ← bls.fp8.Fp8.normalise f5
+  let rr ← bls.fp8.Fp8.square r1
+  let s1_j ← bls.fp8.Fp8.mul s1 j
+  let f6 ← bls.fp8.Fp8.sub_raw rr j o.two_p
+  let f7 ← bls.fp8.Fp8.add_raw v v
+  let f8 ← bls.fp8.Fp8.sub_raw f6 f7 o.four_p
+  let x3 ← bls.g1x8.Offsets.reduced_from_8p o f8
+  let f9 ← bls.fp8.Fp8.sub_raw v x3 o.two_p
+  let vx ← bls.fp8.Fp8.normalise f9
+  let f10 ← bls.fp8.Fp8.mul r1 vx
+  let f11 ← bls.fp8.Fp8.add_raw s1_j s1_j
+  let f12 ← bls.fp8.Fp8.sub_raw f10 f11 o.four_p
+  let y3 ← bls.g1x8.Offsets.reduced_from_8p o f12
   let i1 ← bls.fp8.Fp8.is_zero_mask h
   let i2 ← bls.fp8.Fp8.is_zero_mask self.z
   let i3 ← lift (i1 ||| i2)
@@ -1306,39 +1527,59 @@ def bls.g1x8.G1x8.add
   let undecided ← lift (i3 ||| i4)
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
+/-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::reduced_from_4p]:
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 51:4-53:5 -/
+def bls.g1x8.Offsets.reduced_from_4p
+  (self : bls.g1x8.Offsets) (v : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let f ← bls.fp8.Fp8.normalise v
+  bls.fp8.Fp8.cond_sub f self.two_p
+
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::double]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 31:4-43:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 71:4-90:5
     Visibility: public -/
 def bls.g1x8.G1x8.double
   (self : bls.g1x8.G1x8) : Result (bls.g1x8.G1x8 × Std.U8) := do
+  let o ← bls.g1x8.Offsets.new
   let a ← bls.fp8.Fp8.square self.x
   let b ← bls.fp8.Fp8.square self.y
+  let f ← bls.fp8.Fp8.add_raw a a
+  let f1 ← bls.fp8.Fp8.add_raw f a
+  let e ← bls.fp8.Fp8.normalise f1
+  let f2 ← bls.fp8.Fp8.square e
   let c ← bls.fp8.Fp8.square b
-  let f ← bls.fp8.Fp8.add self.x b
-  let f1 ← bls.fp8.Fp8.square f
-  let f2 ← bls.fp8.Fp8.sub f1 a
-  let f3 ← bls.fp8.Fp8.sub f2 c
-  let d ← bls.fp8.Fp8.double f3
-  let f4 ← bls.fp8.Fp8.double a
-  let e ← bls.fp8.Fp8.add f4 a
-  let f5 ← bls.fp8.Fp8.square e
-  let f6 ← bls.fp8.Fp8.double d
-  let x3 ← bls.fp8.Fp8.sub f5 f6
-  let f7 ← bls.fp8.Fp8.sub d x3
-  let f8 ← bls.fp8.Fp8.mul e f7
-  let f9 ← bls.fp8.Fp8.double c
-  let f10 ← bls.fp8.Fp8.double f9
-  let f11 ← bls.fp8.Fp8.double f10
-  let y3 ← bls.fp8.Fp8.sub f8 f11
-  let f12 ← bls.fp8.Fp8.mul self.y self.z
-  let z3 ← bls.fp8.Fp8.double f12
+  let f3 ← bls.fp8.Fp8.add_raw self.x b
+  let xb ← bls.fp8.Fp8.normalise f3
+  let xb_squared ← bls.fp8.Fp8.square xb
+  let yz ← bls.fp8.Fp8.mul self.y self.z
+  let f4 ← bls.fp8.Fp8.sub_raw xb_squared a o.two_p
+  let f5 ← bls.fp8.Fp8.sub_raw f4 c o.two_p
+  let d ← bls.g1x8.Offsets.reduced_from_8p o f5
+  let f6 ← bls.fp8.Fp8.add_raw d d
+  let d1 ← bls.g1x8.Offsets.reduced_from_4p o f6
+  let f7 ← bls.fp8.Fp8.add_raw d1 d1
+  let f8 ← bls.fp8.Fp8.sub_raw f2 f7 o.four_p
+  let x3 ← bls.fp8.Fp8.normalise f8
+  let f9 ← bls.fp8.Fp8.sub_raw d1 x3 o.eight_p
+  let dx ← bls.fp8.Fp8.normalise f9
+  let f10 ← bls.fp8.Fp8.add_raw c c
+  let f11 ← bls.fp8.Fp8.add_raw f10 c
+  let f12 ← bls.fp8.Fp8.add_raw f11 c
+  let c8 ← bls.g1x8.Offsets.reduced_from_8p o f12
+  let f13 ← bls.fp8.Fp8.mul e dx
+  let f14 ← bls.fp8.Fp8.add_raw c8 c8
+  let f15 ← bls.fp8.Fp8.sub_raw f13 f14 o.four_p
+  let y3 ← bls.g1x8.Offsets.reduced_from_8p o f15
+  let f16 ← bls.fp8.Fp8.add_raw yz yz
+  let z3 ← bls.g1x8.Offsets.reduced_from_4p o f16
   let i ← bls.fp8.Fp8.is_zero_mask self.y
   let i1 ← bls.fp8.Fp8.is_zero_mask self.z
   let undecided ← lift (i ||| i1)
-  ok ({ x := x3, y := y3, z := z3 }, undecided)
+  let f17 ← bls.fp8.Fp8.cond_sub x3 o.four_p
+  let f18 ← bls.fp8.Fp8.cond_sub f17 o.two_p
+  ok ({ x := f18, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 112:8-122:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 177:8-187:9 -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.times_z_loop.body
   (f : bls.fp8.Fp8) (f1 : bls.fp8.Fp8) (f2 : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1361,7 +1602,7 @@ def bls.g1x8.G1x8.times_z_loop.body
   else ok (done (r, undecided))
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 112:8-122:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 177:8-187:9 -/
 @[rust_loop]
 def bls.g1x8.G1x8.times_z_loop
   (f : bls.fp8.Fp8) (f1 : bls.fp8.Fp8) (f2 : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1374,65 +1615,66 @@ def bls.g1x8.G1x8.times_z_loop
     (undecided, r, bit)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 108:4-124:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 173:4-189:5 -/
 def bls.g1x8.G1x8.times_z
   (self : bls.g1x8.G1x8) : Result (bls.g1x8.G1x8 × Std.U8) := do
   let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
   bls.g1x8.G1x8.times_z_loop self.x self.y self.z 0#u8 self bit
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 47:4-62:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 94:4-117:5
     Visibility: public -/
 def bls.g1x8.G1x8.add_affine
   (self : bls.g1x8.G1x8) (qx : bls.fp8.Fp8) (qy : bls.fp8.Fp8) :
   Result (bls.g1x8.G1x8 × Std.U8)
   := do
+  let o ← bls.g1x8.Offsets.new
   let z1z1 ← bls.fp8.Fp8.square self.z
+  let qy_z ← bls.fp8.Fp8.mul qy self.z
   let u2 ← bls.fp8.Fp8.mul qx z1z1
-  let f ← bls.fp8.Fp8.mul qy self.z
-  let s2 ← bls.fp8.Fp8.mul f z1z1
+  let s2 ← bls.fp8.Fp8.mul qy_z z1z1
   let h ← bls.fp8.Fp8.sub u2 self.x
   let hh ← bls.fp8.Fp8.square h
-  let f1 ← bls.fp8.Fp8.double hh
-  let i ← bls.fp8.Fp8.double f1
+  let f ← bls.fp8.Fp8.add_raw self.z h
+  let zh ← bls.fp8.Fp8.normalise f
+  let zh_squared ← bls.fp8.Fp8.square zh
+  let f1 ← bls.fp8.Fp8.add_raw hh hh
+  let f2 ← bls.fp8.Fp8.add_raw f1 hh
+  let f3 ← bls.fp8.Fp8.add_raw f2 hh
+  let i ← bls.fp8.Fp8.normalise f3
   let j ← bls.fp8.Fp8.mul h i
-  let f2 ← bls.fp8.Fp8.sub s2 self.y
-  let r ← bls.fp8.Fp8.double f2
   let v ← bls.fp8.Fp8.mul self.x i
-  let f3 ← bls.fp8.Fp8.square r
-  let f4 ← bls.fp8.Fp8.sub f3 j
-  let f5 ← bls.fp8.Fp8.double v
-  let x3 ← bls.fp8.Fp8.sub f4 f5
-  let f6 ← bls.fp8.Fp8.sub v x3
-  let f7 ← bls.fp8.Fp8.mul r f6
-  let f8 ← bls.fp8.Fp8.mul self.y j
-  let f9 ← bls.fp8.Fp8.double f8
-  let y3 ← bls.fp8.Fp8.sub f7 f9
-  let f10 ← bls.fp8.Fp8.add self.z h
-  let f11 ← bls.fp8.Fp8.square f10
-  let f12 ← bls.fp8.Fp8.sub f11 z1z1
-  let z3 ← bls.fp8.Fp8.sub f12 hh
+  let r ← bls.fp8.Fp8.sub_raw s2 self.y o.two_p
+  let f4 ← bls.fp8.Fp8.add_raw r r
+  let r1 ← bls.fp8.Fp8.normalise f4
+  let rr ← bls.fp8.Fp8.square r1
+  let yj ← bls.fp8.Fp8.mul self.y j
+  let f5 ← bls.fp8.Fp8.sub_raw rr j o.two_p
+  let f6 ← bls.fp8.Fp8.add_raw v v
+  let f7 ← bls.fp8.Fp8.sub_raw f5 f6 o.four_p
+  let x3 ← bls.g1x8.Offsets.reduced_from_8p o f7
+  let f8 ← bls.fp8.Fp8.sub_raw v x3 o.two_p
+  let vx ← bls.fp8.Fp8.normalise f8
+  let f9 ← bls.fp8.Fp8.mul r1 vx
+  let f10 ← bls.fp8.Fp8.add_raw yj yj
+  let f11 ← bls.fp8.Fp8.sub_raw f9 f10 o.four_p
+  let y3 ← bls.g1x8.Offsets.reduced_from_8p o f11
+  let f12 ← bls.fp8.Fp8.sub_raw zh_squared z1z1 o.two_p
+  let f13 ← bls.fp8.Fp8.sub_raw f12 hh o.two_p
+  let z3 ← bls.g1x8.Offsets.reduced_from_8p o f13
   let i1 ← bls.fp8.Fp8.is_zero_mask h
   let i2 ← bls.fp8.Fp8.is_zero_mask self.z
   let undecided ← lift (i1 ||| i2)
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::splat_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 246:4-248:5
-    Visibility: public -/
-def bls.fp8.Fp8.splat_limbs
-  (limbs : Array Std.U64 8#usize) : Result bls.fp8.Fp8 := do
-  let a ← bls.fp8.splat_limbs limbs
-  ok a
-
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::one]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 258:4-260:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 265:4-267:5
     Visibility: public -/
 def bls.fp8.Fp8.one : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.splat_limbs bls.constants.R_MOD_P
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::from_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 25:4-27:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 65:4-67:5
     Visibility: public -/
 def bls.g1x8.G1x8.from_affine
   (x : bls.fp8.Fp8) (y : bls.fp8.Fp8) : Result bls.g1x8.G1x8 := do
@@ -1440,7 +1682,7 @@ def bls.g1x8.G1x8.from_affine
   ok { x, y, z := f }
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 92:8-102:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 157:8-167:9 -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.times_z_affine_loop.body
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1463,7 +1705,7 @@ def bls.g1x8.G1x8.times_z_affine_loop.body
   else ok (done (r, undecided))
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 92:8-102:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 157:8-167:9 -/
 @[rust_loop]
 def bls.g1x8.G1x8.times_z_affine_loop
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1476,7 +1718,7 @@ def bls.g1x8.G1x8.times_z_affine_loop
     (undecided, r, bit)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 88:4-104:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 153:4-169:5 -/
 def bls.g1x8.G1x8.times_z_affine
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) :
   Result (bls.g1x8.G1x8 × Std.U8)
@@ -1486,7 +1728,7 @@ def bls.g1x8.G1x8.times_z_affine
   bls.g1x8.G1x8.times_z_affine_loop px py 0#u8 r bit
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 433:8-435:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 504:8-506:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.eq_mask_loop.body
@@ -1507,7 +1749,7 @@ def bls.fp8.Fp8.eq_mask_loop.body
     ok (cont (iter1, a, b, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 433:8-435:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 504:8-506:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.eq_mask_loop
@@ -1520,7 +1762,7 @@ def bls.fp8.Fp8.eq_mask_loop
     (iter, a, b, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 430:4-437:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 501:4-508:5
     Visibility: public -/
 def bls.fp8.Fp8.eq_mask
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result Std.U8 := do
@@ -1530,7 +1772,7 @@ def bls.fp8.Fp8.eq_mask
     a b 255#u8
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::zero]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 252:4-254:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 259:4-261:5
     Visibility: public -/
 def bls.fp8.Fp8.zero : Result bls.fp8.Fp8 := do
   let mi ← bls.fp8.zero
@@ -1538,14 +1780,14 @@ def bls.fp8.Fp8.zero : Result bls.fp8.Fp8 := do
   ok a
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::neg]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 412:4-414:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 483:4-485:5
     Visibility: public -/
 def bls.fp8.Fp8.neg (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.zero
   bls.fp8.Fp8.sub f self
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::scott_membership]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 129:4-141:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 194:4-206:5
     Visibility: public -/
 def bls.g1x8.G1x8.scott_membership
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) : Result bls.Membership := do
@@ -1570,7 +1812,7 @@ def bls.g1x8.G1x8.scott_membership
   ok { members := i4, undecided }
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 287:12-289:13 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 294:12-296:13 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.store_loop0_loop0.body
   (j : Std.Usize) (l : Array Std.U64 8#usize)
@@ -1591,7 +1833,7 @@ def bls.fp8.Fp8.store_loop0_loop0.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 287:12-289:13 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 294:12-296:13 -/
 @[rust_loop]
 def bls.fp8.Fp8.store_loop0_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -1604,7 +1846,7 @@ def bls.fp8.Fp8.store_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 285:8-290:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 292:8-297:9 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.store_loop0.body
   (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
@@ -1626,7 +1868,7 @@ def bls.fp8.Fp8.store_loop0.body
     ok (cont (iter1, self, out1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 285:8-290:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 292:8-297:9 -/
 @[rust_loop]
 def bls.fp8.Fp8.store_loop0
   (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
@@ -1638,7 +1880,7 @@ def bls.fp8.Fp8.store_loop0
     (iter, self, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 283:4-292:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 290:4-299:5 -/
 def bls.fp8.Fp8.store
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
   let a := Array.repeat 8#usize 0#u64
@@ -1647,7 +1889,7 @@ def bls.fp8.Fp8.store
     self out
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_plain]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 303:4-305:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 310:4-312:5
     Visibility: public -/
 def bls.fp8.Fp8.to_plain
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
@@ -1657,7 +1899,7 @@ def bls.fp8.Fp8.to_plain
   bls.fp8.Fp8.store f2
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 267:8-278:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 274:8-285:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.load_loop.body
@@ -1703,7 +1945,7 @@ def bls.fp8.Fp8.load_loop.body
     ok (cont (iter1, a8))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 267:8-278:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 274:8-285:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.load_loop
@@ -1717,7 +1959,7 @@ def bls.fp8.Fp8.load_loop
     (iter, v)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 265:4-280:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 272:4-287:5
     Visibility: public -/
 def bls.fp8.Fp8.load
   (values : Array (Array Std.U64 8#usize) 8#usize) : Result bls.fp8.Fp8 := do
@@ -1729,7 +1971,7 @@ def bls.fp8.Fp8.load
   ok v1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 491:4-495:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 562:4-566:5
     Visibility: public -/
 def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.to_plain self
@@ -1739,7 +1981,7 @@ def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   bls.fp8.borrowed borrow
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 464:8-466:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 535:8-537:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
@@ -1760,7 +2002,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 464:8-466:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 535:8-537:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
@@ -1774,7 +2016,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
     (iter, table)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 469:8-476:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 540:8-547:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
@@ -1799,7 +2041,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
   else ok (done r)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 469:8-476:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 540:8-547:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
@@ -1811,7 +2053,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
     (r, w)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 461:4-478:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 532:4-549:5
     Visibility: public -/
 def bls.fp8.Fp8.pow_p_minus_3_over_4
   (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -1827,22 +2069,34 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4
   bls.fp8.Fp8.pow_p_minus_3_over_4_loop1 table1 r 94#usize
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sqrt_candidate]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 483:4-485:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 554:4-556:5
     Visibility: public -/
 def bls.fp8.Fp8.sqrt_candidate (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.pow_p_minus_3_over_4 self
   bls.fp8.Fp8.mul f self
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 453:4-455:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 524:4-526:5
     Visibility: public -/
 def bls.fp8.Fp8.select
   (k : Std.U8) (a : bls.fp8.Fp8) (b : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let a1 ← bls.fp8.blend k a b
   ok a1
 
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 467:4-471:5
+    Visibility: public -/
+def bls.fp8.Fp8.add
+  (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let s ← bls.fp8.add_limbs self rhs
+  let f ← bls.fp8.Fp8.multiple_of_p 2#u64
+  let (d, borrow) ← bls.fp8.sub_limbs s f
+  let i ← bls.fp8.borrowed borrow
+  let a ← bls.fp8.blend i d s
+  ok a
+
 /-- [silver_crypto_simd::bls::fp8::pack64]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 226:4-236:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:4-243:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.pack64_loop.body
@@ -1874,7 +2128,7 @@ def bls.fp8.pack64_loop.body
     else ok (cont (iter1, out, acc1, acc_bits1, word))
 
 /-- [silver_crypto_simd::bls::fp8::pack64]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 226:4-236:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:4-243:5
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.pack64_loop
@@ -1889,7 +2143,7 @@ def bls.fp8.pack64_loop
     (iter, out, acc, acc_bits, word)
 
 /-- [silver_crypto_simd::bls::fp8::pack64]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 221:0-241:1
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 228:0-248:1
     Visibility: public -/
 def bls.fp8.pack64
   (x : Array Std.U64 8#usize) : Result (Array Std.U64 6#usize) := do
@@ -1903,7 +2157,7 @@ def bls.fp8.pack64
   else ok out1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 313:8-315:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 320:8-322:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.to_blst_limbs_loop.body
@@ -1924,7 +2178,7 @@ def bls.fp8.Fp8.to_blst_limbs_loop.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 313:8-315:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 320:8-322:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.to_blst_limbs_loop
@@ -1938,7 +2192,7 @@ def bls.fp8.Fp8.to_blst_limbs_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 310:4-317:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 317:4-324:5
     Visibility: public -/
 def bls.fp8.Fp8.to_blst_limbs
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 6#usize) 8#usize) := do
@@ -1952,7 +2206,7 @@ def bls.fp8.Fp8.to_blst_limbs
     t out
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::from_plain]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 297:4-299:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 304:4-306:5
     Visibility: public -/
 def bls.fp8.Fp8.from_plain
   (values : Array (Array Std.U64 8#usize) 8#usize) : Result bls.fp8.Fp8 := do
@@ -2184,6 +2438,12 @@ def bls.fp2x8.Fp2x8.sub
   let f ← bls.fp8.Fp8.sub self.c0 rhs.c0
   let f1 ← bls.fp8.Fp8.sub self.c1 rhs.c1
   ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::double]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 489:4-491:5
+    Visibility: public -/
+def bls.fp8.Fp8.double (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  bls.fp8.Fp8.add self self
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::square]:
     Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 37:4-41:5
@@ -2440,7 +2700,7 @@ def bls.fp2x8.Fp2x8.is_larger_root_mask
   ok (i ||| i3)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::half]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 424:4-426:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 495:4-497:5
     Visibility: public -/
 def bls.fp8.Fp8.half (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.splat_limbs bls.constants.HALF_MONT
@@ -2597,7 +2857,7 @@ def bls.decompress_g2.decompress
       ok { points := a1, on_curve := i1, valid := i7, undecided := i4 }
 
 /-- [silver_crypto_simd::bls::fp8::index_vector]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 58:0-60:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 65:0-67:1 -/
 def bls.fp8.index_vector
   (index : Array Std.I64 8#usize) : Result core.core_arch.x86.__m512i := do
   let i ← Array.index_usize index 7#usize
@@ -2611,7 +2871,7 @@ def bls.fp8.index_vector
   core.core_arch.x86.avx512f._mm512_set_epi64 i i1 i2 i3 i4 i5 i6 i7
 
 /-- [silver_crypto_simd::bls::fp8::transpose8]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 68:0-105:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 75:0-112:1 -/
 def bls.fp8.transpose8
   (r : Array core.core_arch.x86.__m512i 8#usize) :
   Result (Array core.core_arch.x86.__m512i 8#usize)
@@ -4645,7 +4905,7 @@ def kzg.fr8.u256x8.U256x8.from_limbs
   ok (Array.make 4#usize [ mi3, mi7, mi11, mi15 ] (by rfl))
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::swap_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 158:0-170:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 164:0-176:1 -/
 def kzg.fr8.u256x8.swap_bytes
   (x : core.core_arch.x86.__m512i) : Result core.core_arch.x86.__m512i := do
   let mi ← core.core_arch.x86.avx512f._mm512_slli_epi64 32#u32 x
@@ -4665,7 +4925,7 @@ def kzg.fr8.u256x8.swap_bytes
   core.core_arch.x86.avx512f._mm512_add_epi64 mi7 mi9
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::store_block]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 150:4-152:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 156:4-158:5 -/
 @[rust_loop_body]
 def kzg.fr8.u256x8.store_block_loop.body
   (at1 : Std.Usize) (words : Array Std.U64 8#usize)
@@ -4694,7 +4954,7 @@ def kzg.fr8.u256x8.store_block_loop.body
     ok (cont (iter1, bytes1))
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::store_block]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 150:4-152:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 156:4-158:5 -/
 @[rust_loop]
 def kzg.fr8.u256x8.store_block_loop
   (iter : core.ops.range.Range Std.Usize) (bytes : Slice Std.U8)
@@ -4707,7 +4967,7 @@ def kzg.fr8.u256x8.store_block_loop
     (iter, bytes)
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::store_block]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 148:0-153:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 154:0-159:1 -/
 def kzg.fr8.u256x8.store_block
   (block : core.core_arch.x86.__m512i) (bytes : Slice Std.U8) (at1 : Std.Usize)
   :
@@ -4717,22 +4977,29 @@ def kzg.fr8.u256x8.store_block
   kzg.fr8.u256x8.store_block_loop
     { start := 0#usize, «end» := kzg.fr8.LANES } bytes at1 words
 
-/-- [silver_crypto_simd::kzg::fr8::u256x8::{silver_crypto_simd::kzg::fr8::u256x8::U256x8}::blocks]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 103:4-121:5 -/
-def kzg.fr8.u256x8.U256x8.blocks
-  (self : kzg.fr8.u256x8.U256x8) :
-  Result (Array core.core_arch.x86.__m512i 4#usize)
-  := do
-  let first_halves ←
+/-- [silver_crypto_simd::kzg::fr8::u256x8::half_selectors]:
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 126:0-128:1 -/
+def kzg.fr8.u256x8.half_selectors
+  : Result (core.core_arch.x86.__m512i × core.core_arch.x86.__m512i) := do
+  let mi ←
     bls.fp8.index_vector
       (Array.make 8#usize [
         0#i64, 1#i64, 2#i64, 3#i64, 8#i64, 9#i64, 10#i64, 11#i64
         ] (by rfl))
-  let second_halves ←
+  let mi1 ←
     bls.fp8.index_vector
       (Array.make 8#usize [
         4#i64, 5#i64, 6#i64, 7#i64, 12#i64, 13#i64, 14#i64, 15#i64
         ] (by rfl))
+  ok (mi, mi1)
+
+/-- [silver_crypto_simd::kzg::fr8::u256x8::{silver_crypto_simd::kzg::fr8::u256x8::U256x8}::blocks]:
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 102:4-119:5 -/
+def kzg.fr8.u256x8.U256x8.blocks
+  (self : kzg.fr8.u256x8.U256x8) :
+  Result (Array core.core_arch.x86.__m512i 4#usize)
+  := do
+  let (first_halves, second_halves) ← kzg.fr8.u256x8.half_selectors
   let mi ← Array.index_usize self 0#usize
   let mi1 ← Array.index_usize self 1#usize
   let mi2 ←
@@ -6115,7 +6382,7 @@ def kzg.fr8.u256x8.U256x8.limbs
   ok (Array.make 5#usize [ mi1, mi6, mi11, mi16, mi17 ] (by rfl))
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::le_word]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 124:0-128:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 130:0-134:1 -/
 def kzg.fr8.u256x8.le_word
   (bytes : Slice Std.U8) (at1 : Std.Usize) : Result Std.I64 := do
   let word := Array.repeat 8#usize 0#u8
@@ -6130,7 +6397,7 @@ def kzg.fr8.u256x8.le_word
   ok (UScalar.hcast .I64 i1)
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::load_block]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 133:0-144:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 139:0-150:1 -/
 def kzg.fr8.u256x8.load_block
   (bytes : Slice Std.U8) (at1 : Std.Usize) :
   Result core.core_arch.x86.__m512i
@@ -6153,7 +6420,7 @@ def kzg.fr8.u256x8.load_block
   core.core_arch.x86.avx512f._mm512_set_epi64 i1 i3 i5 i7 i9 i11 i13 i14
 
 /-- [silver_crypto_simd::kzg::fr8::u256x8::{silver_crypto_simd::kzg::fr8::u256x8::U256x8}::from_blocks]:
-    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 81:4-98:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8/u256x8.rs', lines 81:4-97:5 -/
 def kzg.fr8.u256x8.U256x8.from_blocks
   (blocks : Array core.core_arch.x86.__m512i 4#usize) :
   Result kzg.fr8.u256x8.U256x8
@@ -6180,16 +6447,7 @@ def kzg.fr8.u256x8.U256x8.from_blocks
     core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi4 low_words mi5
   let mi7 ←
     core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi4 high_words mi5
-  let first_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        0#i64, 1#i64, 2#i64, 3#i64, 8#i64, 9#i64, 10#i64, 11#i64
-        ] (by rfl))
-  let second_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        4#i64, 5#i64, 6#i64, 7#i64, 12#i64, 13#i64, 14#i64, 15#i64
-        ] (by rfl))
+  let (first_halves, second_halves) ← kzg.fr8.u256x8.half_selectors
   let mi8 ←
     Array.index_usize (Array.make 4#usize [ mi2, mi3, mi6, mi7 ] (by rfl)) 0#usize
   let mi9 ←

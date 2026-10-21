@@ -1,4 +1,5 @@
 import LeanBlsSimd.Spec.G1
+import LeanBlsSimd.Proofs.Fp8Lazy
 
 namespace LeanBlsSimd
 
@@ -14,18 +15,50 @@ structure Holds (self : G1x8) (l : Fin 8) (P : G1) : Prop where
   y : self.y.Holds l P.y
   z : self.z.Holds l P.z
 
+private theorem reduced_from_4p_holds {k m : ℕ} {v : Fp8} {l : Fin 8}
+    {a : ZMod Fp.modulus} (h : Fp8.LazyRep k m v l a)
+    (hk : k ≤ 4) (hm : m ≤ 1024) : (Offsets.new.reduced_from_4p v).Holds l a := by
+  exact ((h.normalise (by omega) hm).cond_sub (Fp8.offset_two l) (by omega)).holds (by decide)
+
+private theorem reduced_from_8p_holds {k m : ℕ} {v : Fp8} {l : Fin 8}
+    {a : ZMod Fp.modulus} (h : Fp8.LazyRep k m v l a)
+    (hk : k ≤ 8) (hm : m ≤ 1024) : (Offsets.new.reduced_from_8p v).Holds l a := by
+  exact (((h.normalise (by omega) hm).cond_sub (Fp8.offset_four l) (by omega)).cond_sub
+    (Fp8.offset_two l) (by decide)).holds (by decide)
+
 theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
     (h : self.Holds l P) (_hP : G1.Valid P)
     (hu : self.double.2.toNat.testBit l = false) :
     self.double.1.Holds l (G1.double P) := by
   have ha := (Holds.x h).square
   have hb := (Holds.y h).square
+  have he := ((ha.lazyRep.add_raw ha.lazyRep (by decide)).add_raw ha.lazyRep
+    (by decide)).normalise (by decide) (by decide)
+  have hf := he.square (by decide)
   have hc := hb.square
-  have hd := ((((Holds.x h).add hb).square.sub ha).sub hc).double
-  have he := ha.double.add ha
-  have hx3 := he.square.sub hd.double
-  have hy3 := (he.mul (hd.sub hx3)).sub hc.double.double.double
-  have hz3 := ((Holds.y h).mul (Holds.z h)).double
+  have hxb := ((Holds.x h).lazyRep.add_raw hb.lazyRep (by decide)).normalise
+    (by decide) (by decide)
+  have hxb2 := hxb.square (by decide)
+  have hyz := (Holds.y h).mul (Holds.z h)
+  have hd0 := reduced_from_8p_holds
+    ((hxb2.lazyRep.sub_raw ha.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      hc.lazyRep (Fp8.offset_two l) (by decide) (by decide)) (by decide) (by decide)
+  have hd := reduced_from_4p_holds (hd0.lazyRep.add_raw hd0.lazyRep (by decide))
+    (by decide) (by decide)
+  have hx3' := (hf.lazyRep.sub_raw (hd.lazyRep.add_raw hd.lazyRep (by decide))
+    (Fp8.offset_four l) (by decide) (by decide)).normalise (by decide) (by decide)
+  have hdx := (hd.lazyRep.sub_raw hx3'.lazyRep (Fp8.offset_eight l)
+    (by decide) (by decide)).normalise (by decide) (by decide)
+  have hc8 := reduced_from_8p_holds
+    (((hc.lazyRep.add_raw hc.lazyRep (by decide)).add_raw hc.lazyRep (by decide)).add_raw
+      hc.lazyRep (by decide)) (by decide) (by decide)
+  have hy3 := reduced_from_8p_holds
+    ((he.mul hdx (by decide)).lazyRep.sub_raw (hc8.lazyRep.add_raw hc8.lazyRep (by decide))
+      (Fp8.offset_four l) (by decide) (by decide)) (by decide) (by decide)
+  have hz3 := reduced_from_4p_holds (hyz.lazyRep.add_raw hyz.lazyRep (by decide))
+    (by decide) (by decide)
+  have hx3 := ((hx3'.cond_sub (Fp8.offset_four l) (by decide)).cond_sub
+    (Fp8.offset_two l) (by decide)).holds (by decide)
   have hu' := hu
   simp only [double, Mmask8.testBit_or, Bool.or_eq_false_iff,
     (Holds.y h).testBit_is_zero_mask, (Holds.z h).testBit_is_zero_mask, decide_eq_false_iff_not] at hu'
@@ -58,13 +91,30 @@ theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y
   have hs2 := (hy.mul (Holds.z h)).mul hz1z1
   have hh := (hx.mul hz1z1).sub (Holds.x h)
   have hhh := hh.square
-  have hi := hhh.double.double
-  have hj := hh.mul hi
-  have hr := (hs2.sub (Holds.y h)).double
-  have hv := (Holds.x h).mul hi
-  have hx3 := (hr.square.sub hj).sub hv.double
-  have hy3 := (hr.mul (hv.sub hx3)).sub ((Holds.y h).mul hj).double
-  have hz3 := (((Holds.z h).add hh).square.sub hz1z1).sub hhh
+  have hzh := ((Holds.z h).lazyRep.add_raw hh.lazyRep (by decide)).normalise
+    (by decide) (by decide)
+  have hzh2 := hzh.square (by decide)
+  have hi := (((hhh.lazyRep.add_raw hhh.lazyRep (by decide)).add_raw hhh.lazyRep
+    (by decide)).add_raw hhh.lazyRep (by decide)).normalise (by decide) (by decide)
+  have hj := hh.boundRep.mul hi (by decide)
+  have hv := (Holds.x h).boundRep.mul hi (by decide)
+  have hr0 := hs2.lazyRep.sub_raw (Holds.y h).lazyRep (Fp8.offset_two l)
+    (by decide) (by decide)
+  have hr := (hr0.add_raw hr0 (by decide)).normalise (by decide) (by decide)
+  have hrr := hr.square (by decide)
+  have hyj := (Holds.y h).mul hj
+  have hx3 := reduced_from_8p_holds
+    ((hrr.lazyRep.sub_raw hj.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      (hv.lazyRep.add_raw hv.lazyRep (by decide)) (Fp8.offset_four l)
+      (by decide) (by decide)) (by decide) (by decide)
+  have hvx := (hv.lazyRep.sub_raw hx3.lazyRep (Fp8.offset_two l) (by decide)
+    (by decide)).normalise (by decide) (by decide)
+  have hy3 := reduced_from_8p_holds
+    ((hr.mul hvx (by decide)).lazyRep.sub_raw (hyj.lazyRep.add_raw hyj.lazyRep (by decide))
+      (Fp8.offset_four l) (by decide) (by decide)) (by decide) (by decide)
+  have hz3 := reduced_from_8p_holds
+    ((hzh2.lazyRep.sub_raw hz1z1.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      hhh.lazyRep (Fp8.offset_two l) (by decide) (by decide)) (by decide) (by decide)
   have hu' := hu
   simp only [add_affine, Mmask8.testBit_or, hh.testBit_is_zero_mask,
     (Holds.z h).testBit_is_zero_mask, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hu'
@@ -102,18 +152,35 @@ theorem add_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
     (self.add q).1.Holds l (G1.add P Q) := by
   have hz1z1 := (Holds.z h).square
   have hz2z2 := (Holds.z hq).square
+  have hzsum := ((Holds.z h).lazyRep.add_raw (Holds.z hq).lazyRep (by decide)).normalise
+    (by decide) (by decide)
+  have hzsum2 := hzsum.square (by decide)
   have hu1 := (Holds.x h).mul hz2z2
   have hu2 := (Holds.x hq).mul hz1z1
   have hs1 := ((Holds.y h).mul (Holds.z hq)).mul hz2z2
   have hs2 := ((Holds.y hq).mul (Holds.z h)).mul hz1z1
   have hh := hu2.sub hu1
-  have hi := hh.double.square
+  have hi := ((hh.lazyRep.add_raw hh.lazyRep (by decide)).normalise
+    (by decide) (by decide)).square (by decide)
+  have htwoz := ((hzsum2.lazyRep.sub_raw hz1z1.lazyRep (Fp8.offset_two l)
+    (by decide) (by decide)).sub_raw hz2z2.lazyRep (Fp8.offset_two l)
+    (by decide) (by decide)).normalise (by decide) (by decide)
+  have hz3 := htwoz.mul hh.boundRep (by decide)
   have hj := hh.mul hi
-  have hr := (hs2.sub hs1).double
   have hv := hu1.mul hi
-  have hx3 := (hr.square.sub hj).sub hv.double
-  have hy3 := (hr.mul (hv.sub hx3)).sub (hs1.mul hj).double
-  have hz3 := ((((Holds.z h).add (Holds.z hq)).square.sub hz1z1).sub hz2z2).mul hh
+  have hr0 := hs2.lazyRep.sub_raw hs1.lazyRep (Fp8.offset_two l) (by decide) (by decide)
+  have hr := (hr0.add_raw hr0 (by decide)).normalise (by decide) (by decide)
+  have hrr := hr.square (by decide)
+  have hs1j := hs1.mul hj
+  have hx3 := reduced_from_8p_holds
+    ((hrr.lazyRep.sub_raw hj.lazyRep (Fp8.offset_two l) (by decide) (by decide)).sub_raw
+      (hv.lazyRep.add_raw hv.lazyRep (by decide)) (Fp8.offset_four l)
+      (by decide) (by decide)) (by decide) (by decide)
+  have hvx := (hv.lazyRep.sub_raw hx3.lazyRep (Fp8.offset_two l) (by decide)
+    (by decide)).normalise (by decide) (by decide)
+  have hy3 := reduced_from_8p_holds
+    ((hr.mul hvx (by decide)).lazyRep.sub_raw (hs1j.lazyRep.add_raw hs1j.lazyRep (by decide))
+      (Fp8.offset_four l) (by decide) (by decide)) (by decide) (by decide)
   have hu' := hu
   simp only [add, Mmask8.testBit_or, hh.testBit_is_zero_mask,
     (Holds.z h).testBit_is_zero_mask, (Holds.z hq).testBit_is_zero_mask,

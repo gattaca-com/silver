@@ -179,8 +179,180 @@ theorem Simd.blend_refines (k : U8) (a b : Array M512 8#usize) :
     simp [hs, List.map_set, Vector.toList_set]
   · simp [Simd.blend, foldl_set_ofFn]
 
-theorem Simd.two_p_refines : fp8.two_p = ok (toArray id Simd.two_p) := by
-  simp [fp8.two_p, P_refines, Simd.splat_limbs_refines, Simd.add_limbs_refines, Simd.two_p]
+private theorem bind_return {α : Type} (x : Result α) : (x >>= ok) = x := by
+  cases x <;> rfl
+
+
+theorem Fp8.normalise_refines (a : fp8.Fp8) :
+    fp8.Fp8.normalise a = ok (toFp8 (ofFp8 a).normalise) := by
+  unfold fp8.Fp8.normalise fp8.Fp8.normalise_loop
+  simp only [MASK52_refines, Simd.splat_refines, bind_tc_ok, LIMBS_refines,
+    ofU64_toU64]
+  have hsub : 8#usize - 1#usize = ok 7#usize := by
+    change UScalar.sub _ _ = _
+    simp [UScalar.sub]
+    apply UScalar.eq_of_val_eq
+    exact usize_ofNat_val 7 (by decide)
+  rw [hsub]
+  simp only [bind_tc_ok, bind_return]
+  let step := fun (v : Vector M512 LIMBS) (j : Fin (LIMBS - 1)) =>
+    let v := v.set (j.val + 1)
+      (_mm512_add_epi64 v[j.val + 1] (_mm512_srai_epi64 52 v[j.val]))
+    v.set j.val (_mm512_and_si512 v[j.val] (Simd.splat (.ofNat MASK52)))
+  conv_lhs => rw [show a = toArray id (ofArray id a) from (toArray_ofArray (fun _ => rfl) a _ _).symm]
+  refine loop_range (n := LIMBS - 1) _ 7#usize rfl (toArray (n := 8#usize) id) step
+    (toArray (n := 8#usize) id) (ofArray id a) _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body fp8.Fp8.normalise_loop.body hn
+  · intro r r' m j he hs he' hs' hn
+    have hj : r.start.val < 7 := by rw [hs]; exact j.isLt
+    simp_body fp8.Fp8.normalise_loop.body hn
+    simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, index_usize_eq, update_eq,
+      core.core_arch.x86.avx512f._mm512_srai_epi64,
+      core.core_arch.x86.avx512f._mm512_add_epi64,
+      core.core_arch.x86.avx512f._mm512_and_si512, UScalar.ofNatCore_val_eq]
+    refine congrArg (fun s => ok (cont (r', s))) ?_
+    apply Subtype.ext
+    simp [step, hs, List.map_set, Vector.toList_set]
+  · change toArray id _ = toArray id (Fp8.normalise (ofFp8 a)).limbs
+    apply congrArg (toArray (n := 8#usize) id)
+    change _ = (Fp8.ofLanes (.ofFn fun lane =>
+      SignedLimbs.normalise ((ofFp8 a).lane lane))).limbs
+    rw [Fp8.limbs_ofLanes_ofFn, eq_comm, fromLanes_eq_iff]
+    intro l
+    unfold SignedLimbs.normalise
+    refine List.foldl_hom (fun v => laneOf v l) ?_
+    intro v j
+    simp [step, SignedLimbs.carryStep, laneOf_set, getElem_laneOf, srai, MASK52,
+      Simd.splat, _mm512_set1_epi64, _mm512_add_epi64, _mm512_srai_epi64,
+      _mm512_and_si512]
+    rfl
+
+
+theorem Fp8.add_raw_refines (a b : fp8.Fp8) :
+    fp8.Fp8.add_raw a b = ok (toFp8 ((ofFp8 a).add_raw (ofFp8 b))) := by
+  unfold fp8.Fp8.add_raw fp8.Fp8.add_raw_loop
+  simp only [Simd.zero_refines, bind_tc_ok, LIMBS_refines, bind_return]
+  rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
+  refine loop_range (n := LIMBS) _ 8#usize rfl
+    (fun v => (a, b, toArray (n := 8#usize) id v))
+    (fun v j => v.set j (_mm512_add_epi64 (ofArray id a)[j] (ofArray id b)[j]))
+    (toArray (n := 8#usize) id) (Vector.replicate LIMBS Simd.zero) _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body fp8.Fp8.add_raw_loop.body hn
+  · intro r r' m j he hs he' hs' hn
+    have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
+    simp_body fp8.Fp8.add_raw_loop.body hn
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, update_eq _ _ _ hj,
+      core.core_arch.x86.avx512f._mm512_add_epi64]
+    refine congrArg (fun s => ok (cont (r', a, b, s))) ?_
+    apply Subtype.ext
+    simp [hs, List.map_set, Vector.toList_set]
+  · simp [Fp8.add_raw, toFp8, ofFp8, foldl_set_ofFn]
+
+theorem Fp8.sub_raw_refines (a b offset : fp8.Fp8) :
+    fp8.Fp8.sub_raw a b offset =
+      ok (toFp8 ((ofFp8 a).sub_raw (ofFp8 b) (ofFp8 offset))) := by
+  unfold fp8.Fp8.sub_raw fp8.Fp8.sub_raw_loop
+  simp only [Simd.zero_refines, bind_tc_ok, LIMBS_refines, bind_return]
+  rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
+  refine loop_range (n := LIMBS) _ 8#usize rfl
+    (fun v => (a, b, offset, toArray (n := 8#usize) id v))
+    (fun v j => v.set j (_mm512_sub_epi64
+      (_mm512_add_epi64 (ofArray id a)[j] (ofArray id offset)[j]) (ofArray id b)[j]))
+    (toArray (n := 8#usize) id) (Vector.replicate LIMBS Simd.zero) _ ?_ ?_ ?_
+  · intro r m he hs hn
+    simp_body fp8.Fp8.sub_raw_loop.body hn
+  · intro r r' m j he hs he' hs' hn
+    have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
+    simp_body fp8.Fp8.sub_raw_loop.body hn
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, update_eq _ _ _ hj,
+      core.core_arch.x86.avx512f._mm512_add_epi64,
+      core.core_arch.x86.avx512f._mm512_sub_epi64]
+    refine congrArg (fun s => ok (cont (r', a, b, offset, s))) ?_
+    apply Subtype.ext
+    simp [hs, List.map_set, Vector.toList_set]
+  · simp [Fp8.sub_raw, toFp8, ofFp8, foldl_set_ofFn]
+
+
+private theorem multiple_of_p_bounds (c carry : Nat) (j : Fin LIMBS) (hc : c < 4096)
+    (hcarry : carry ≤ 4095) :
+    (Limbs.ofList P)[j].toNat * c + carry < 4096 * 2^52 := by
+  have hp := normal_ofList_P j
+  have hm := Nat.mul_le_mul (show (Limbs.ofList P)[j].toNat ≤ 2^52-1 by omega)
+    (Nat.le_of_lt hc)
+  omega
+
+private theorem u64_ofNatCore (n : Nat) (hn : n < 2^64) :
+    UScalar.ofNatCore (ty := .U64) n hn = toU64 (UInt64.ofNat n) := by
+  apply UScalar.eq_of_val_eq
+  simp only [UScalar.ofNatCore_val_eq, val_toU64, UInt64.toNat_ofNat']
+  omega
+
+private theorem shift_ofNat52 (n : Nat) (hn : n < 2^64) :
+    (toU64 (UInt64.ofNat n)) >>> 52#u32 = ok (toU64 (.ofNat (n / 2^52))) := by
+  rw [shiftRight_ok _ _ (by decide)]
+  apply congrArg Result.ok
+  apply UScalar.eq_of_val_eq
+  simp [UScalar.val, BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+  omega
+
+theorem Fp8.multiple_of_p_refines (c : U64) (hc : c.val < 4096) :
+    fp8.Fp8.multiple_of_p c = ok (toFp8 (Fp8.multiple_of_p (ofU64 c))) := by
+  unfold fp8.Fp8.multiple_of_p fp8.Fp8.multiple_of_p_loop
+  have hshift : 1#u64 <<< 12#i32 = ok 4096#u64 := by rfl
+  rw [hshift]
+  have hc' : c < 4096#u64 := by scalar_tac
+  simp only [massert, hc', if_true, bind_tc_ok, Simd.zero_refines,
+    LIMBS_refines]
+  simp only [bind_return]
+  rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
+  let enc := fun m : Vector M512 LIMBS × Nat => (toArray (n := 8#usize) id m.1,
+    toU64 (UInt64.ofNat m.2))
+  have hi : ∀ m (j : Fin LIMBS), m.2 ≤ 4095 → (Fp8.multipleStep c.val m j).2 ≤ 4095 := by
+    intro m j hm
+    have := multiple_of_p_bounds c.val m.2 j hc hm
+    simp only [Fp8.multipleStep]
+    omega
+  change loop _ _ = ok (toArray id (((List.finRange LIMBS).drop 0).foldl
+    (Fp8.multipleStep c.val) (Vector.replicate LIMBS Simd.zero, 0)).1)
+  refine loop_range_inv (n := LIMBS) _ 8#usize rfl enc (Fp8.multipleStep c.val)
+    (fun m => toArray (n := 8#usize) id m.1) (fun _ m => m.2 ≤ 4095) hi ?_ ?_
+    0#usize (Vector.replicate LIMBS Simd.zero, 0) (by decide) (by decide)
+  · intro r m hr hs hm hnext
+    simp_body fp8.Fp8.multiple_of_p_loop.body hnext
+    rfl
+  · intro r r' m j hr hs hr' hs' hm hnext
+    have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
+    have hn := multiple_of_p_bounds c.val m.2 j hc hm
+    have hp := normal_ofList_P j
+    have hm64 : m.2 < 2^64 := by omega
+    simp_body fp8.Fp8.multiple_of_p_loop.body hnext
+    simp only [enc, P_refines]
+    rw [index_usize_toArray _ _ _ _ (show r.start.val < LIMBS from hj)]
+    simp only [bind_tc_ok, hs]
+    have hpMul : (toU64 (Limbs.ofList P)[j.val]).val * c.val < 2^64 := by
+      change (Limbs.ofList P)[j].toNat * c.val < 2^64
+      omega
+    rw [mul_ok _ _ hpMul]
+    simp only [bind_tc_ok]
+    rw [add_ok _ _ (by
+      simp only [UScalar.ofNatCore_val_eq, val_toU64, UInt64.toNat_ofNat',
+        Nat.mod_eq_of_lt hm64]
+      exact (hn.trans_le (by norm_num)))]
+    simp only [bind_tc_ok, MASK52_refines, Simd.splat_refines,
+      constants.LIMB_BITS]
+    simp only [lift, bind_tc_ok, UScalar.ofNatCore_val_eq, val_toU64,
+      UInt64.toNat_ofNat', Nat.mod_eq_of_lt hm64]
+    rw [update_eq _ _ _ hj]
+    simp only [bind_tc_ok]
+    simp only [u64_ofNatCore]
+    rw [shift_ofNat52 _ (by exact hn.trans_le (by norm_num))]
+    simp only [bind_tc_ok]
+    refine congrArg (fun st => ok (cont (r', st))) (Prod.ext ?_ ?_)
+    · apply Subtype.ext
+      simp [Fp8.multipleStep, hs, List.map_set, Vector.toList_set]
+    · rfl
 
 theorem Lane.muladd_row_refines (t : Array M512 17#usize) (a : Array M512 8#usize) (b_i : M512)
     (i : Usize) (hi : i.val < LIMBS) :
@@ -431,20 +603,27 @@ theorem Fp8.store_refines (self : fp8.Fp8) :
     rw [Fp8.store_inner_refines _ _ (by rw [hs]; exact j.isLt)]
     simp [hs]
 
+theorem Fp8.cond_sub_refines (self c : fp8.Fp8) :
+    fp8.Fp8.cond_sub self c = ok (toFp8 ((ofFp8 self).cond_sub (ofFp8 c))) := by
+  simp [fp8.Fp8.cond_sub, Simd.sub_limbs_refines, Fp8.cond_sub,
+    Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
+
 theorem Fp8.canonical_refines (self : fp8.Fp8) :
     fp8.Fp8.canonical self = ok (toFp8 (ofFp8 self).canonical) := by
-  simp [fp8.Fp8.canonical, P_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines,
-    Fp8.canonical, Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
+  simp [fp8.Fp8.canonical, P_refines, Fp8.splat_limbs_refines, Fp8.cond_sub_refines,
+    Fp8.canonical]
 
 theorem Fp8.add_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.add self rhs = ok (toFp8 ((ofFp8 self).add (ofFp8 rhs))) := by
-  simp [fp8.Fp8.add, Simd.add_limbs_refines, Simd.two_p_refines, Simd.sub_limbs_refines,
-    Fp8.add, Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
+  simp [fp8.Fp8.add, Simd.add_limbs_refines, Fp8.multiple_of_p_refines 2#u64 (by decide), Simd.sub_limbs_refines,
+    Fp8.add, Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
+    show ofU64 2#u64 = 2 from rfl]
 
 theorem Fp8.sub_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.sub self rhs = ok (toFp8 ((ofFp8 self).sub (ofFp8 rhs))) := by
-  simp [fp8.Fp8.sub, Simd.add_limbs_refines, Simd.two_p_refines, Simd.sub_limbs_refines,
-    Fp8.sub, Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
+  simp [fp8.Fp8.sub, Simd.add_limbs_refines, Fp8.multiple_of_p_refines 2#u64 (by decide), Simd.sub_limbs_refines,
+    Fp8.sub, Function.uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
+    show ofU64 2#u64 = 2 from rfl]
 
 theorem Fp8.neg_refines (self : fp8.Fp8) :
     fp8.Fp8.neg self = ok (toFp8 (ofFp8 self).neg) := by

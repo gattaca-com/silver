@@ -455,10 +455,13 @@ end Lane
 
 open Lane in
 set_option exponentiation.threshold 1000 in
-theorem mul_spec {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
+theorem mul_spec_of_product_lt {a b : Limbs}
+    (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ LIMB_BITS)
+    (hb : ∀ j : Fin LIMBS, b[j].toNat < 2 ^ LIMB_BITS)
+    (hAB : val a * val b < R * Fp.modulus) :
     Fp8Inv (Lane.mul a b) ∧
       (val (Lane.mul a b) : ZMod Fp.modulus) = val a * val b * (R : ZMod Fp.modulus)⁻¹ := by
-  obtain ⟨hacc, Q, hQ, hv⟩ := mulAcc_spec ha.normal hb.normal
+  obtain ⟨hacc, Q, hQ, hv⟩ := mulAcc_spec ha hb
   unfold Lane.mul
   extract_lets t16 mask r0 r1
   have ht16 : t16 = mulAcc a b := rfl
@@ -474,7 +477,6 @@ theorem mul_spec {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
     omega
   rw [valFrom_LIMBS, ← hval'] at hv
   generalize t16[2 * LIMBS].toNat = y at hv
-  have hAB : val a * val b < 2 * Fp.modulus * (2 * Fp.modulus) := Nat.mul_lt_mul'' ha.bound hb.bound
   have hvN := hv
   simp only [Fp.modulus, R, LIMBS, LIMB_BITS, Nat.reduceMul] at hvN hAB hQ
   have hlt : val res < 2 * Fp.modulus := by simp only [Fp.modulus]; omega
@@ -495,6 +497,14 @@ theorem mul_spec {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
     rw [hy] at this
     push_cast [ZMod.natCast_self] at this
     simpa [mul_comm] using this
+
+set_option exponentiation.threshold 1000 in
+theorem mul_spec {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
+    Fp8Inv (Lane.mul a b) ∧
+      (val (Lane.mul a b) : ZMod Fp.modulus) = val a * val b * (R : ZMod Fp.modulus)⁻¹ := by
+  apply mul_spec_of_product_lt ha.normal hb.normal
+  have hAB := Nat.mul_lt_mul'' ha.bound hb.bound
+  exact hAB.trans_le (by norm_num [Fp.modulus, R, LIMBS, LIMB_BITS])
 
 namespace Fp8
 

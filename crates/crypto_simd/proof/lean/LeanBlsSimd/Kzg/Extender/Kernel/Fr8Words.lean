@@ -82,7 +82,7 @@ private theorem oddBlock (a b : M512) :
 theorem from_blocks_refines (blocks : Vector M512 4) :
     fr8.u256x8.U256x8.from_blocks (toArray id blocks) = ok (toArray id (fromBlocks blocks)) := by
   unfold fr8.u256x8.U256x8.from_blocks
-  simp [bls.fp8.index_vector,
+  simp [fr8.u256x8.half_selectors, bls.fp8.index_vector,
     index_usize_eq (n := 8#usize) _ 0#usize (by decide), index_usize_eq (n := 8#usize) _ 1#usize (by decide),
     index_usize_eq (n := 8#usize) _ 2#usize (by decide), index_usize_eq (n := 8#usize) _ 3#usize (by decide),
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),
@@ -105,7 +105,7 @@ theorem from_blocks_refines (blocks : Vector M512 4) :
 theorem blocks_refines (w : Vector M512 4) :
     fr8.u256x8.U256x8.blocks (toArray id w) = ok (toArray id (wordBlocks w)) := by
   unfold fr8.u256x8.U256x8.blocks
-  simp [bls.fp8.index_vector,
+  simp [fr8.u256x8.half_selectors, bls.fp8.index_vector,
     index_usize_eq (n := 8#usize) _ 0#usize (by decide), index_usize_eq (n := 8#usize) _ 1#usize (by decide),
     index_usize_eq (n := 8#usize) _ 2#usize (by decide), index_usize_eq (n := 8#usize) _ 3#usize (by decide),
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),

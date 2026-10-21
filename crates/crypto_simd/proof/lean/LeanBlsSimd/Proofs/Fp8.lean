@@ -102,6 +102,8 @@ theorem decode_mul {a b : Limbs} (ha : Fp8Inv a) (hb : Fp8Inv b) :
 
 namespace Fp8
 
+theorem multiple_of_p_two : (multiple_of_p 2).limbs = Simd.two_p := by decide +kernel
+
 theorem lane_mk (v : Vector M512 LIMBS) (l : Fin 8) : (⟨v⟩ : Fp8).lane l = laneOf v l := rfl
 
 theorem lane_splat_limbs (t : Limbs) (l : Fin 8) : (splat_limbs t).lane l = t :=
@@ -149,28 +151,46 @@ theorem lane_select (k : Mmask8) (a b : Fp8) (l : Fin 8) :
     (select k a b).lane l = if k.toNat.testBit l then b.lane l else a.lane l :=
   Simd.laneOf_blend k a.limbs b.limbs l
 
-theorem lane_canonical {x : Fp8} {l : Fin 8} (h : Fp8Inv (x.lane l)) :
-    Fp8Inv (x.canonical.lane l) ∧ val (x.canonical.lane l) = val (x.lane l) % Fp.modulus := by
-  have hl := Simd.sub_limbs_lane x.limbs (Simd.splat_limbs (.ofList P)) l
-  rw [Simd.laneOf_splat_limbs, ← lane_eq] at hl
-  obtain ⟨hdn, hb, hv⟩ := Lane.sub_limbs_spec (fun j => h.normal j) normal_ofList_P
+theorem lane_cond_sub {x c : Fp8} {l : Fin 8}
+    (hx : SignedLimbs.Normalized (x.lane l)) (hc : SignedLimbs.Normalized (c.lane l)) :
+    SignedLimbs.Normalized ((x.cond_sub c).lane l) ∧
+      val ((x.cond_sub c).lane l) =
+        if val (x.lane l) < val (c.lane l) then val (x.lane l)
+        else val (x.lane l) - val (c.lane l) := by
+  have hl := Simd.sub_limbs_lane x.limbs c.limbs l
+  rw [← lane_eq, ← lane_eq] at hl
+  obtain ⟨hdn, hb, hv⟩ := Lane.sub_limbs_spec hx hc
   rw [← hl] at hdn hb hv
-  unfold canonical
-  generalize Simd.sub_limbs x.limbs (Simd.splat_limbs (.ofList P)) = st at hdn hb hv ⊢
+  unfold cond_sub
+  generalize Simd.sub_limbs x.limbs c.limbs = st at hdn hb hv ⊢
   obtain ⟨d, borrow⟩ := st
   simp only at hdn hb hv
   simp only [lane_mk]
-  rw [Simd.laneOf_blend, Simd.testBit_borrowed, hb, Lane.decide_borrowOf, val_ofList_P]
-  rw [val_ofList_P] at hv
-  have hx := h.bound
-  by_cases hlt : val (x.lane l) < Fp.modulus
+  rw [Simd.laneOf_blend, Simd.testBit_borrowed, hb, Lane.decide_borrowOf]
+  by_cases hlt : val (x.lane l) < val (c.lane l)
   · simp only [hlt, decide_true, if_true]
-    exact ⟨h, (Nat.mod_eq_of_lt hlt).symm⟩
-  · simp only [hlt, decide_false, Bool.false_eq_true, if_false, Bool.toNat_false, zero_mul,
-      add_zero] at hv ⊢
-    refine ⟨⟨fun j => hdn j, by omega⟩, ?_⟩
-    rw [Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
-    omega
+    exact ⟨hx, rfl⟩
+  · simp only [hlt, decide_false, Bool.false_eq_true, if_false, Bool.toNat_false,
+      zero_mul, add_zero] at hv ⊢
+    exact ⟨hdn, by omega⟩
+
+theorem lane_canonical {x : Fp8} {l : Fin 8} (h : Fp8Inv (x.lane l)) :
+    Fp8Inv (x.canonical.lane l) ∧ val (x.canonical.lane l) = val (x.lane l) % Fp.modulus := by
+  have hc : SignedLimbs.Normalized ((splat_limbs (.ofList P)).lane l) := by
+    rw [lane_splat_limbs]
+    exact normal_ofList_P
+  obtain ⟨hn, hv⟩ := lane_cond_sub h.normal hc
+  rw [lane_splat_limbs, val_ofList_P] at hv
+  change Fp8Inv ((x.cond_sub (splat_limbs (.ofList P))).lane l) ∧ _
+  change val ((x.cond_sub (splat_limbs (.ofList P))).lane l) = _ at hv
+  have hb := h.bound
+  by_cases hlt : val (x.lane l) < Fp.modulus
+  · rw [if_pos hlt] at hv
+    exact ⟨⟨hn, by omega⟩, by simp only [canonical, hv, Nat.mod_eq_of_lt hlt]⟩
+  · rw [if_neg hlt] at hv
+    refine ⟨⟨hn, by omega⟩, ?_⟩
+    change val ((x.cond_sub (splat_limbs (.ofList P))).lane l) = _
+    rw [hv, Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
 
 theorem decode_lane_canonical {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
     decode (x.canonical.lane l) = decode (x.lane l) := by
@@ -219,6 +239,7 @@ theorem lane_add {x y : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) (hy : Fp8Inv (
   obtain ⟨hdn, hb, hv⟩ := Lane.sub_limbs_spec hsn normal_two_p
   rw [← hl] at hdn hb hv
   unfold add
+  rw [multiple_of_p_two]
   dsimp only
   generalize Simd.add_limbs x.limbs y.limbs = s at hsn hsv hdn hb hv ⊢
   generalize Simd.sub_limbs s Simd.two_p = st at hdn hb hv ⊢
@@ -262,6 +283,7 @@ theorem lane_sub {x y : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) (hy : Fp8Inv (
   rw [← hw, val_two_p] at hwv
   rw [← hw] at hwn
   unfold sub
+  rw [multiple_of_p_two]
   dsimp only
   generalize Simd.sub_limbs x.limbs y.limbs = st at hdn hb hv hwn hwv ⊢
   obtain ⟨d, borrow⟩ := st

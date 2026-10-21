@@ -331,6 +331,27 @@ carry extraction. The row's dead low limb is deliberately outside this equality.
 including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
 existing arithmetic bounds and public contracts.
 
+Fp8 uses the same [range classes as the Fr8 FFT kernel](#ifma-fr-fft-kernel), with modulus `p` and eight radix-52 limbs:
+
+| Class | Integer value | Limbs |
+|---|---|---|
+| Normalized | Below `R = 2^416` | Each in `[0, 2^52)` |
+| Reduced | In `[0, 2p)` | Normalized |
+| `Lazy k m` | In `[0, k*p)` | Signed magnitudes below `m*2^52` |
+
+The shared `SignedLimbs` model defines raw addition, offset subtraction and signed carrying for both fields.
+Its eight-limb normalization theorem preserves values in `[0, R)` when each limb has magnitude below `2^62`.
+`Proofs/Fp8Lazy.lean` connects these operations to Montgomery field values and composes their bounds.
+Conditional subtraction preserves residues when its offset is a multiple of `p`.
+`Proofs/Fp8Multiple.lean` proves that `multiple_of_p c` returns normalized limbs for `c*p`, for every `c < 2^12`.
+
+`mul_spec_of_product_lt` accepts normalized operands with product below `R*p` and proves a reduced result.
+The existing multiplication theorems follow as special cases.
+G1 formulas keep intermediate values below `10p`, with limb magnitudes below `6*2^52` before carrying.
+Their largest product bound is `8p * 8p`, from squaring the doubled difference in point addition.
+Offsets of `2p`, `4p` and `8p` keep differences nonnegative; final conditional subtractions restore reduced coordinates.
+The G1 correctness theorems retain their reduced input and output contracts and their undecided-mask premises.
+
 ### G1 Scott criterion
 
 The Scott lemmas use σ(x, y) = (βx, y), with β fixed by the kernel's `BETA_MONT`, and the identity σ²(P) = [−z²]P. Completeness uses the spec's generator-order proof and the elementary bound `Nat.card E.Point ≤ 2 * p + 1 < r²`. Formula correctness is conditional on a clear undecided bit; the headline theorem does not require proving that subgroup members always avoid exceptional formulas.
@@ -434,6 +455,7 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also shows that the early-carry model expression depends on its shift. |
 | `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
 | `Square.lean` | The triangular square accumulator equals the full product; omitting cross-term doubling fails on an input with two nonzero limbs. |
+| `Fp8Lazy.lean` | Missing conditional subtraction violates the reduced bound; an insufficient offset makes a difference negative; a tighter lazy bound fails. Normalized operands alone do not guarantee a reduced product. |
 | `Reduction.lean` | Both widths retain the stale dead limb; dropping the inverse premise can change a surviving limb. The valid inverse case agrees above the row index. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
 | `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |

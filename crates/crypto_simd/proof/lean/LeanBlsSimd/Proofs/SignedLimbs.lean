@@ -216,4 +216,94 @@ theorem normalise_spec {a : Vector UInt64 5}
   · have := limb_eq_nat_of_nonneg ht.1
     omega
 
+set_option exponentiation.threshold 1000 in
+theorem val_eight (a : Vector UInt64 8) :
+    val a = limb a[0] + limb a[1] * 2 ^ 52 + limb a[2] * 2 ^ 104 +
+      limb a[3] * 2 ^ 156 + limb a[4] * 2 ^ 208 + limb a[5] * 2 ^ 260 +
+      limb a[6] * 2 ^ 312 + limb a[7] * 2 ^ 364 := by
+  simp [val, Fin.sum_univ_eight]
+
+theorem normalise_eight_eq (a : Vector UInt64 8) :
+    let x1 := a[1] + srai 52 a[0]
+    let x2 := a[2] + srai 52 x1
+    let x3 := a[3] + srai 52 x2
+    let x4 := a[4] + srai 52 x3
+    let x5 := a[5] + srai 52 x4
+    let x6 := a[6] + srai 52 x5
+    let x7 := a[7] + srai 52 x6
+    normalise a = #v[
+      a[0] &&& UInt64.ofNat (2 ^ 52 - 1),
+      x1 &&& UInt64.ofNat (2 ^ 52 - 1),
+      x2 &&& UInt64.ofNat (2 ^ 52 - 1),
+      x3 &&& UInt64.ofNat (2 ^ 52 - 1),
+      x4 &&& UInt64.ofNat (2 ^ 52 - 1),
+      x5 &&& UInt64.ofNat (2 ^ 52 - 1),
+      x6 &&& UInt64.ofNat (2 ^ 52 - 1), x7] := by
+  have hf : List.finRange (8 - 1) = [0, 1, 2, 3, 4, 5, 6] := by decide
+  simp only [normalise, hf, List.foldl_cons, List.foldl_nil]
+  ext j hj
+  interval_cases j <;> simp [carryStep]
+
+set_option exponentiation.threshold 1000 in
+/-- Signed carries preserve the eight-limb integer; its range bounds the final limb. -/
+theorem normalise_eight_spec {a : Vector UInt64 8}
+    (ha : ∀ j : Fin 8, |limb a[j]| < (2 : ℤ) ^ 62)
+    (hlo : 0 ≤ val a) (hhi : val a < 2 ^ 416) :
+    val (normalise a) = val a ∧ Normalized (normalise a) := by
+  let x1 := a[1] + srai 52 a[0]
+  let x2 := a[2] + srai 52 x1
+  let x3 := a[3] + srai 52 x2
+  let x4 := a[4] + srai 52 x3
+  let x5 := a[5] + srai 52 x4
+  let x6 := a[6] + srai 52 x5
+  let x7 := a[7] + srai 52 x6
+  have h0 : |limb a[0]| < (2 : ℤ) ^ 62 + 2048 := by
+    have h : |limb a[0]| < (2 : ℤ) ^ 62 := by simpa using ha 0
+    omega
+  have h1 := carry_limb_spec (x := a[0]) (y := a[1]) h0 (by simpa using ha 1)
+  have h2 := carry_limb_spec (x := x1) (y := a[2]) h1.2 (by simpa using ha 2)
+  have h3 := carry_limb_spec (x := x2) (y := a[3]) h2.2 (by simpa using ha 3)
+  have h4 := carry_limb_spec (x := x3) (y := a[4]) h3.2 (by simpa using ha 4)
+  have h5 := carry_limb_spec (x := x4) (y := a[5]) h4.2 (by simpa using ha 5)
+  have h6 := carry_limb_spec (x := x5) (y := a[6]) h5.2 (by simpa using ha 6)
+  have h7 := carry_limb_spec (x := x6) (y := a[7]) h6.2 (by simpa using ha 7)
+  change limb x1 = _ ∧ _ at h1
+  change limb x2 = _ ∧ _ at h2
+  change limb x3 = _ ∧ _ at h3
+  change limb x4 = _ ∧ _ at h4
+  change limb x5 = _ ∧ _ at h5
+  change limb x6 = _ ∧ _ at h6
+  change limb x7 = _ ∧ _ at h7
+  have hv : val (normalise a) = val a := by
+    rw [normalise_eight_eq, val_eight, val_eight]
+    simp only [Vector.getElem_mk, List.getElem_toArray, List.getElem_cons_zero,
+      List.getElem_cons_succ, limb_mask]
+    change limb a[0] % 2 ^ 52 + limb x1 % 2 ^ 52 * 2 ^ 52 +
+      limb x2 % 2 ^ 52 * 2 ^ 104 + limb x3 % 2 ^ 52 * 2 ^ 156 +
+      limb x4 % 2 ^ 52 * 2 ^ 208 + limb x5 % 2 ^ 52 * 2 ^ 260 +
+      limb x6 % 2 ^ 52 * 2 ^ 312 + limb x7 * 2 ^ 364 = _
+    omega
+  refine ⟨hv, ?_⟩
+  have hn := normalise_eight_eq a
+  change normalise a = #v[_, x1 &&& _, x2 &&& _, x3 &&& _, x4 &&& _,
+    x5 &&& _, x6 &&& _, x7] at hn
+  have ht : 0 ≤ limb x7 ∧ limb x7 < 2 ^ 52 := by
+    rw [← hv, hn, val_eight] at hlo hhi
+    simp only [Vector.getElem_mk, List.getElem_toArray, List.getElem_cons_zero,
+      List.getElem_cons_succ, limb_mask] at hlo hhi
+    omega
+  intro j
+  rw [hn]
+  fin_cases j <;> simp only [Fin.getElem_fin, Vector.getElem_mk,
+    List.getElem_toArray, List.getElem_cons_zero, List.getElem_cons_succ]
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · exact mask_normalized _
+  · have := limb_eq_nat_of_nonneg ht.1
+    omega
+
 end LeanBlsSimd.SignedLimbs

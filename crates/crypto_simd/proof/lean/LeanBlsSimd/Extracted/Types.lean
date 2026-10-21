@@ -88,13 +88,20 @@ structure bls.Membership where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::fp8::Fp8]
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 25:0-25:37
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 32:0-32:37
     Visibility: public -/
 @[reducible]
 def bls.fp8.Fp8 := Array core.core_arch.x86.__m512i 8#usize
 
+/-- [silver_crypto_simd::bls::g1x8::Offsets]
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 31:0-35:1 -/
+structure bls.g1x8.Offsets where
+  two_p : bls.fp8.Fp8
+  four_p : bls.fp8.Fp8
+  eight_p : bls.fp8.Fp8
+
 /-- [silver_crypto_simd::bls::g1x8::G1x8]
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 17:0-21:1
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 24:0-28:1
     Visibility: public -/
 structure bls.g1x8.G1x8 where
   x : bls.fp8.Fp8
