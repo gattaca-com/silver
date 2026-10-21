@@ -1,9 +1,11 @@
 //! Multi-scalar multiplication on G1 by Pippenger's signed-digit buckets, on
-//! `Fp8` lanes. Rounds of batched affine additions shorten every bucket to at
-//! most one point; the window sums then run eight windows at a time, one per
-//! lane. A round that meets two points with equal x gives up, and the
-//! refilled buckets are summed point by point with complete additions.
+//! `Fp8` lanes. GLV splits each scalar into two halves of 127 bits, for P and
+//! σ(P). Rounds of batched affine additions shorten every bucket to at most
+//! one point; the window sums then run eight windows at a time, one per lane.
+//! A round that meets two points with equal x gives up, and the refilled
+//! buckets are summed point by point with complete additions.
 pub mod buckets;
+pub mod glv;
 pub mod pairs;
 pub mod store;
 #[cfg(test)]
@@ -14,7 +16,12 @@ use blst::{blst_fp, blst_p1};
 use crate::bls::{
     blst_p1_affine,
     g1x8::G1x8,
-    msm8::{buckets::Buckets, pairs::BatchedAdds, store::PointStore},
+    msm8::{
+        buckets::Buckets,
+        glv::{HALF_SCALAR_BITS, decompose},
+        pairs::BatchedAdds,
+        store::PointStore,
+    },
 };
 
 #[derive(Default)]
@@ -24,13 +31,15 @@ pub struct Msm8 {
     adds: BatchedAdds,
     finite_points: Vec<blst_p1_affine>,
     finite_scalars: Vec<[u64; 4]>,
-    unsigned: Vec<bool>,
+    halves: Vec<[u64; 4]>,
+    first_signs: Vec<bool>,
+    second_signs: Vec<bool>,
 }
 
 impl Msm8 {
-    /// Σ scalars[i]·points[i] for little-endian scalars below 2^255. Points at
-    /// infinity, which blst encodes as all-zero coordinates, contribute
-    /// nothing.
+    /// Σ scalars[i]·points[i] for little-endian scalars below 2^255 and points
+    /// of G1. Points at infinity, which blst encodes as all-zero coordinates,
+    /// contribute nothing.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn msm(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
         assert!(points.len() == scalars.len(), "one scalar per point");
@@ -46,17 +55,36 @@ impl Msm8 {
             return lane_zero_in_blst(&G1x8::infinity());
         }
 
-        self.buckets.fill(&self.finite_scalars);
-        // A window's first round takes a new slot per pair of its n points at
+        self.split_scalars();
+        self.buckets.fill(&self.halves, HALF_SCALAR_BITS);
+        // A window's first round takes a new slot per pair of its 2n points at
         // most; later rounds overwrite sums.
-        self.store.reset(n + self.buckets.windows() * (n / 2));
-        self.unsigned.clear();
-        self.unsigned.resize(n, false);
-        self.store.push_blst(&self.finite_points, &self.unsigned, false);
-        if !self.pair_rounds(n) {
-            self.buckets.fill(&self.finite_scalars);
+        self.store.reset(2 * n + self.buckets.windows() * n);
+        self.store.push_blst(&self.finite_points, &self.first_signs, false);
+        self.store.push_blst(&self.finite_points, &self.second_signs, true);
+        if !self.pair_rounds(2 * n) {
+            self.buckets.fill(&self.halves, HALF_SCALAR_BITS);
         }
         lane_zero_in_blst(&self.buckets.sum(&self.store))
+    }
+
+    /// Scalar i's GLV halves k₁ and k₂ into `halves[i]` and `halves[n + i]`,
+    /// for P_i and σ(P_i), with their signs.
+    fn split_scalars(&mut self) {
+        let n = self.finite_scalars.len();
+        self.halves.clear();
+        self.halves.resize(2 * n, [0; 4]);
+        self.first_signs.clear();
+        self.second_signs.clear();
+        let mut i = 0;
+        while i < n {
+            let (first, second) = decompose(&self.finite_scalars[i]);
+            self.halves[i] = first.magnitude;
+            self.halves[n + i] = second.magnitude;
+            self.first_signs.push(first.negative);
+            self.second_signs.push(second.negative);
+            i += 1;
+        }
     }
 
     fn keep_if_finite(&mut self, point: &blst_p1_affine, scalar: &[u64; 4]) {

@@ -18,6 +18,7 @@ use crate::{
         msm8::{
             Msm8,
             buckets::Buckets,
+            glv::{HALF_SCALAR_BITS, decompose},
             lane_zero_in_blst,
             pairs::{BatchedAdds, NEGATED},
             store::PointStore,
@@ -370,48 +371,68 @@ fn msm_matches_blst() {
     }
 }
 
-/// Digits at the edges of each window width: every window at 2^(w−1), where
-/// a digit stays positive, and at 2^(w−1) + 1, where it turns negative and
-/// carries; and 0, 1, r − 1 and 2^255 − 1.
+/// The scalars where GLV's rounding changes: 0, 1, ceil(r/2) − 1 and
+/// ceil(r/2), λ, z² = λ + 1, r − 1, r, and 2^255 − 1.
+fn glv_edges() -> Vec<[u64; 4]> {
+    let r = [
+        0xffff_ffff_0000_0001,
+        0x53bd_a402_fffe_5bfe,
+        0x3339_d808_09a1_d805,
+        0x73ed_a753_299d_7d48,
+    ];
+    let half_r = [
+        0x7fff_ffff_8000_0001,
+        0xa9de_d201_7fff_2dff,
+        0x199c_ec04_04d0_ec02,
+        0x39f6_d3a9_94ce_bea4,
+    ];
+    vec![
+        [0; 4],
+        [1, 0, 0, 0],
+        [half_r[0] - 1, half_r[1], half_r[2], half_r[3]],
+        half_r,
+        [0xffff_ffff, 0xac45_a401_0001_a402, 0, 0],
+        [0x1_0000_0000, 0xac45_a401_0001_a402, 0, 0],
+        [r[0] - 1, r[1], r[2], r[3]],
+        r,
+        [u64::MAX, u64::MAX, u64::MAX, u64::MAX >> 1],
+    ]
+}
+
+/// Each half recombines with its sign: [k]P = ±[|k₁|]P ± [|k₂|]σ(P), for the
+/// GLV edges and random scalars below 2^255.
 #[test]
-fn msm_matches_blst_at_digit_edges() {
+fn glv_halves_recombine_on_points() {
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 12);
+    let point = random_points(&mut rng, 1)[0];
+    let image = times_lambda(&point);
+    let mut scalars = glv_edges();
+    scalars.extend(random_scalars(&mut rng, 200));
+    for scalar in &scalars {
+        let (first, second) = decompose(scalar);
+        let signed = |point: &blst_p1_affine, negative: bool| {
+            if negative { negated_point(point) } else { *point }
+        };
+        let halves =
+            lincomb(&[signed(&point, first.negative), signed(&image, second.negative)], &[
+                first.magnitude,
+                second.magnitude,
+            ]);
+        assert_same_point(&halves, &lincomb(&[point], &[*scalar]), &format!("{scalar:x?}"));
+    }
+}
+
+#[test]
+fn msm_matches_blst_at_glv_edges() {
     if !kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 6);
     let mut msm = Msm8::default();
-    let r_minus_1 = [
-        0xffff_ffff_0000_0000,
-        0x53bd_a402_fffe_5bfe,
-        0x3339_d808_09a1_d805,
-        0x73ed_a753_299d_7d48,
-    ];
-    for (n, window_bits) in [(20, 4), (100, 6), (520, 8)] {
-        let windows_value = |digit: u128| {
-            let mut value = [0u64; 4];
-            let mut bit = 0;
-            while bit + window_bits < 255 {
-                for k in 0..window_bits {
-                    if (digit >> k) & 1 == 1 {
-                        value[(bit + k) / 64] |= 1 << ((bit + k) % 64);
-                    }
-                }
-                bit += window_bits;
-            }
-            value
-        };
-        let half = 1u128 << (window_bits - 1);
-        let edges =
-            [windows_value(half), windows_value(half + 1), [0; 4], [1, 0, 0, 0], r_minus_1, [
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX >> 1,
-            ]];
-        let points = random_points(&mut rng, n);
-        let scalars: Vec<[u64; 4]> = (0..n).map(|i| edges[i % edges.len()]).collect();
-        assert_msm_matches(&mut msm, &points, &scalars, &format!("{window_bits}-bit windows"));
-    }
+    let edges = glv_edges();
+    let points = random_points(&mut rng, 3 * edges.len());
+    let scalars: Vec<[u64; 4]> = (0..points.len()).map(|i| edges[i % edges.len()]).collect();
+    assert_msm_matches(&mut msm, &points, &scalars, "GLV edges");
 }
 
 /// Equal points fail the batched rounds, so the refilled buckets are summed
@@ -444,6 +465,34 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
     }
 }
 
+/// Σ scalars[i]·points[i] through `Buckets` alone, without GLV, with the
+/// number of batched rounds, each of which must succeed. Callers check
+/// `kernels_run`.
+fn bucket_sum(
+    points: &[blst_p1_affine],
+    scalars: &[[u64; 4]],
+    scalar_bits: usize,
+) -> (blst_p1, usize) {
+    let n = points.len();
+    let mut buckets = Buckets::default();
+    buckets.fill(scalars, scalar_bits);
+    let mut store = PointStore::new();
+    store.reset(n + buckets.windows() * (n / 2));
+    let mut adds = BatchedAdds::default();
+    // SAFETY: the callers checked `kernels_run`.
+    unsafe { store.push_blst(points, &vec![false; n], false) };
+    buckets.queue_round(&mut adds, &mut store, n);
+    let mut rounds = 0;
+    while !adds.is_empty() {
+        // SAFETY: as above.
+        assert!(unsafe { adds.run(&mut store) }, "{n} points, round {rounds}");
+        buckets.queue_round(&mut adds, &mut store, n);
+        rounds += 1;
+    }
+    // SAFETY: as above.
+    (unsafe { lane_zero_in_blst(&buckets.sum(&store)) }, rounds)
+}
+
 /// Distinct points never share x, so every batched round succeeds, which is
 /// what makes `Msm8` fast; the buckets left then sum to blst's result.
 #[test]
@@ -452,28 +501,52 @@ fn rounds_on_distinct_points_succeed() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 11);
-    for n in [9, 70, 520] {
+    for n in [9, 140, 1100] {
         let points = random_points(&mut rng, n);
         let scalars = random_scalars(&mut rng, n);
-        let mut buckets = Buckets::default();
-        buckets.fill(&scalars);
-        let mut store = PointStore::new();
-        store.reset(n + buckets.windows() * (n / 2));
-        let mut adds = BatchedAdds::default();
-        // SAFETY: `kernels_run` checked `simd_available`.
-        unsafe { store.push_blst(&points, &vec![false; n], false) };
-        buckets.queue_round(&mut adds, &mut store, n);
-        let mut rounds = 0;
-        while !adds.is_empty() {
-            // SAFETY: as above.
-            assert!(unsafe { adds.run(&mut store) }, "{n} points, round {rounds}");
-            buckets.queue_round(&mut adds, &mut store, n);
-            rounds += 1;
-        }
+        let (got, rounds) = bucket_sum(&points, &scalars, 255);
         assert!(rounds > 0, "{n} points");
-        // SAFETY: as above.
-        let got = unsafe { lane_zero_in_blst(&buckets.sum(&store)) };
         assert_same_point(&got, &lincomb(&points, &scalars), &format!("{n} points"));
+    }
+}
+
+/// Digits at the edges of each window width, for 127- and 255-bit scalars:
+/// every window at 2^(w−1), where a digit stays positive, and at 2^(w−1) + 1,
+/// where it turns negative and carries; and 0, 1 and the largest scalar.
+#[test]
+fn buckets_match_blst_at_digit_edges() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 13);
+    for scalar_bits in [127, 255] {
+        for (n, window_bits) in [(20, 4), (200, 6), (1100, 8)] {
+            let windows_value = |digit: u128| {
+                let mut value = [0u64; 4];
+                let mut bit = 0;
+                while bit + window_bits < scalar_bits {
+                    for k in 0..window_bits {
+                        if (digit >> k) & 1 == 1 {
+                            value[(bit + k) / 64] |= 1 << ((bit + k) % 64);
+                        }
+                    }
+                    bit += window_bits;
+                }
+                value
+            };
+            let mut largest = [0u64; 4];
+            for bit in 0..scalar_bits {
+                largest[bit / 64] |= 1 << (bit % 64);
+            }
+            let half = 1u128 << (window_bits - 1);
+            let edges =
+                [windows_value(half), windows_value(half + 1), [0; 4], [1, 0, 0, 0], largest];
+            let points = random_points(&mut rng, n);
+            let scalars: Vec<[u64; 4]> = (0..n).map(|i| edges[i % edges.len()]).collect();
+            let (got, _) = bucket_sum(&points, &scalars, scalar_bits);
+            let case = format!("{scalar_bits}-bit scalars, {window_bits}-bit windows");
+            assert_same_point(&got, &lincomb(&points, &scalars), &case);
+        }
     }
 }
 
@@ -574,7 +647,7 @@ fn window_combination_timing() {
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 10);
     for window_bits in [4, 6, 8] {
-        let windows = 255 / window_bits + 1;
+        let windows = HALF_SCALAR_BITS / window_bits + 1;
         let groups = (windows - 1) / LANES + 1;
         let sums: Vec<blst_p1> = random_points(&mut rng, groups * LANES)
             .iter()

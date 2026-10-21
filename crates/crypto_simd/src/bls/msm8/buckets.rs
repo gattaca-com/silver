@@ -9,9 +9,6 @@ use crate::bls::{
     },
 };
 
-/// Scalars are below 2^SCALAR_BITS.
-pub const SCALAR_BITS: usize = 255;
-
 /// The points of each window's signed-digit buckets, as references into a
 /// `PointStore`: bucket b of window j, 1 ≤ b ≤ 2^(w−1), is list
 /// j·2^(w−1) + b − 1.
@@ -37,19 +34,20 @@ impl Buckets {
     }
 
     /// Point i in the bucket of each window's signed digit of `scalars[i]`, by
-    /// counting. Windows widen with the number of points, trading windows for
-    /// buckets; one more window than whole windows fit the scalars' bits takes
-    /// the digits' carry.
-    pub fn fill(&mut self, scalars: &[[u64; 4]]) {
-        let window_bits = if scalars.len() < 64 {
+    /// counting, for scalars below 2^`scalar_bits`. Windows widen with the
+    /// number of points, trading windows for buckets; one more window than
+    /// whole windows fit `scalar_bits` takes the digits' carry.
+    pub fn fill(&mut self, scalars: &[[u64; 4]], scalar_bits: usize) {
+        assert!(scalar_bits < 256, "scalars fit four words");
+        let window_bits = if scalars.len() < 128 {
             4
-        } else if scalars.len() < 512 {
+        } else if scalars.len() < 1024 {
             6
         } else {
             8
         };
         self.window_bits = window_bits;
-        self.windows = SCALAR_BITS / window_bits + 1;
+        self.windows = scalar_bits / window_bits + 1;
         let lists = self.windows << (window_bits - 1);
         self.lens.clear();
         self.lens.resize(lists, 0);
