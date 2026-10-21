@@ -1,4 +1,8 @@
 //! Eight Fp2 = Fp[i]/(i² + 1) elements, one per lane, over [`Fp8`].
+//!
+//! Components follow `Fp8`'s range classes, and the lazy steps act on each
+//! component as their `Fp8` namesakes do. `mul` and `square` take normalised
+//! components, lazy within their bounds, and return reduced ones.
 
 use std::arch::x86_64::__mmask8;
 
@@ -23,21 +27,50 @@ impl Fp2x8 {
         Self { c0: Fp8::one(), c1: Fp8::zero() }
     }
 
-    /// Karatsuba: three Fp products.
+    /// Karatsuba: three Fp products. Components below 16p give a reduced
+    /// result.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn mul(&self, rhs: &Self) -> Self {
         let v0 = self.c0.mul(&rhs.c0);
         let v1 = self.c1.mul(&rhs.c1);
-        let s = self.c0.add(&self.c1).mul(&rhs.c0.add(&rhs.c1));
+        let sum = self.c0.add_raw(&self.c1).normalise(); // < 32p
+        let rhs_sum = rhs.c0.add_raw(&rhs.c1).normalise(); // < 32p
+        let s = sum.mul(&rhs_sum);
         Self { c0: v0.sub(&v1), c1: s.sub(&v0).sub(&v1) }
     }
 
-    /// (c0 + c1)(c0 - c1) + 2·c0·c1·i: two Fp products.
+    /// (c0 + c1)(c0 - c1) + c0·2c1·i: two Fp products. Components below 8p
+    /// give a reduced result.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn square(&self) -> Self {
-        let c0 = self.c0.add(&self.c1).mul(&self.c0.sub(&self.c1));
-        let c1 = self.c0.mul(&self.c1).double();
-        Self { c0, c1 }
+        let sum = self.c0.add_raw(&self.c1).normalise(); // < 16p
+        let difference = self.c0.sub_raw(&self.c1, &Fp8::multiple_of_p(8)).normalise(); // < 16p
+        let twice_c1 = self.c1.add_raw(&self.c1).normalise(); // < 16p
+        Self { c0: sum.mul(&difference), c1: self.c0.mul(&twice_c1) }
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn add_raw(&self, rhs: &Self) -> Self {
+        Self { c0: self.c0.add_raw(&rhs.c0), c1: self.c1.add_raw(&rhs.c1) }
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn sub_raw(&self, rhs: &Self, offset: &Fp8) -> Self {
+        Self { c0: self.c0.sub_raw(&rhs.c0, offset), c1: self.c1.sub_raw(&rhs.c1, offset) }
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn normalise(&self) -> Self {
+        Self { c0: self.c0.normalise(), c1: self.c1.normalise() }
+    }
+
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn cond_sub(&self, c: &Fp8) -> Self {
+        Self { c0: self.c0.cond_sub(c), c1: self.c1.cond_sub(c) }
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
@@ -121,3 +154,6 @@ impl Fp2x8 {
         self.c0.is_zero_mask() & self.c1.is_zero_mask()
     }
 }
+
+#[cfg(test)]
+pub(super) mod tests;

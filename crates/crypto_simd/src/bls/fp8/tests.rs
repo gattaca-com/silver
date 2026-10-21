@@ -162,7 +162,7 @@ fn square_matches_reference_product() {
 }
 
 /// d + k·p in normalised limbs.
-fn plus_multiple_of_p(d: &Limbs, k: u64) -> Limbs {
+pub(crate) fn plus_multiple_of_p(d: &Limbs, k: u64) -> Limbs {
     let mut out = [0u64; LIMBS];
     let mut carry = 0u128;
     for j in 0..LIMBS {
