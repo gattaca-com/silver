@@ -204,7 +204,9 @@ impl<C: TreeSpec> ListPool<C> {
 impl<C: TreeSpec> Drop for ListPool<C> {
     fn drop(&mut self) {
         let spare = *self.spare.get_mut();
-        drop(self.take(spare));
+        if let Some(spare) = self.take(spare) {
+            self.release(&spare.table);
+        }
     }
 }
 
@@ -227,3 +229,6 @@ impl<C: TreeSpec> Drop for SharedList<C> {
         self.pool.release(&self.table);
     }
 }
+
+#[cfg(test)]
+mod tests;

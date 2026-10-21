@@ -64,6 +64,17 @@ impl Arena {
         self.pop().unwrap_or_else(|| self.fresh())
     }
 
+    pub(super) fn referenced_pages(&self) -> usize {
+        self.segments
+            .iter()
+            .map(|segment| segment.load(Ordering::Acquire))
+            .filter(|segment| !segment.is_null())
+            // SAFETY: published segments live until the pool drops.
+            .map(|segment| unsafe { &*segment })
+            .map(|segment| segment.refs.iter().filter(|r| r.load(Ordering::Relaxed) != 0).count())
+            .sum()
+    }
+
     fn fresh(&self) -> PageId {
         let index = self.next.fetch_add(1, Ordering::Relaxed) as usize;
         let segment = self

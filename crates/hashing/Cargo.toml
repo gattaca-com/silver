@@ -15,5 +15,8 @@ flux-profiler = { workspace = true, optional = true }
 hashtree-rs.workspace = true
 sha2-const-stable.workspace = true
 
+[dev-dependencies]
+rand.workspace = true
+
 [lints]
 workspace = true

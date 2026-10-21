@@ -2,6 +2,7 @@ use std::{
     marker::PhantomData,
     slice,
     sync::atomic::{Ordering, fence},
+    thread,
 };
 
 use crate::{
@@ -113,6 +114,20 @@ impl<P: PageArray> Default for SharedPool<P> {
         };
         pool.zero_pages = zero_pages::<P>(&mut &pool);
         pool
+    }
+}
+
+/// Every tree over the pool keeps it alive, so a page still referenced here
+/// leaked.
+impl<P: PageArray> Drop for SharedPool<P> {
+    fn drop(&mut self) {
+        if cfg!(debug_assertions) && !thread::panicking() {
+            for id in self.zero_pages {
+                self.release(id);
+            }
+            let leaked: usize = self.arenas.iter().map(Arena::referenced_pages).sum();
+            debug_assert_eq!(leaked, 0, "SharedPool dropped with leaked pages");
+        }
     }
 }
 
