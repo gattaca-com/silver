@@ -19,6 +19,12 @@ use crate::{
 };
 
 impl Fp2x8 {
+    /// For the reference formulas, which double where the kernels add lazily.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub(crate) fn double(&self) -> Self {
+        self.add(self)
+    }
+
     /// The products' formulas with exact sums, for reduced components.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub(crate) fn mul_reference(&self, rhs: &Self) -> Self {

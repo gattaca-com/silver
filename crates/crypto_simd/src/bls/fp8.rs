@@ -486,12 +486,6 @@ impl Fp8 {
 
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    pub fn double(&self) -> Self {
-        self.add(self)
-    }
-
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    #[inline]
     pub fn half(&self) -> Self {
         self.mul(&Self::splat_limbs(&HALF_MONT))
     }

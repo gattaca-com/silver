@@ -87,12 +87,6 @@ impl Fp2x8 {
 
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
-    pub fn double(&self) -> Self {
-        self.add(self)
-    }
-
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    #[inline]
     pub fn neg(&self) -> Self {
         Self { c0: self.c0.neg(), c1: self.c1.neg() }
     }

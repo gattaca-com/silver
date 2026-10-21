@@ -19,6 +19,14 @@ use crate::{
     kernels_run,
 };
 
+impl Fp8 {
+    /// For the reference formulas, which double where the kernels add lazily.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub(crate) fn double(&self) -> Self {
+        self.add(self)
+    }
+}
+
 #[target_feature(enable = "avx512f,avx512ifma")]
 fn reduce_row_reference(
     t: &mut [__m512i; 2 * LIMBS + 1],
