@@ -21,6 +21,7 @@ mod extension_kernel;
 mod fft;
 #[cfg(target_arch = "x86_64")]
 mod fft8;
+mod fr;
 #[cfg(target_arch = "x86_64")]
 mod fr8;
 #[cfg(target_arch = "x86_64")]

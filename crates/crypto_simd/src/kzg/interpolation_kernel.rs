@@ -8,9 +8,10 @@ use blst::blst_fr;
 
 use crate::kzg::{
     BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ZERO,
-    blst_ops::{fr_from_bytes, fr_mul},
+    blst_ops::fr_from_bytes,
     cosets::Cosets,
     fft8::Fft8,
+    fr::fr_mul,
     fr8::{Fr8, LANES, multiplier},
 };
 

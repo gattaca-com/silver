@@ -19,13 +19,13 @@ use crate::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
         blst_ops::{
-            LincombScratch, fr_add, fr_from_bytes, fr_mul, g1_add, g1_lincomb, g1_neg,
-            g1_to_affine, pairing_check,
+            LincombScratch, fr_from_bytes, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check,
         },
         challenge::Preimage,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
+        fr::{fr_add, fr_mul},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
     },
 };

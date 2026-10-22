@@ -3,7 +3,7 @@
 
 use blst::blst_fr;
 
-use crate::kzg::{FR_ONE, PRIMITIVE_ROOT_OF_UNITY, blst_ops::fr_mul};
+use crate::kzg::{FR_ONE, PRIMITIVE_ROOT_OF_UNITY, fr::fr_mul};
 
 /// r − 1, little-endian 64-bit words. 2^32 divides it.
 const R_MINUS_ONE: [u64; 4] =

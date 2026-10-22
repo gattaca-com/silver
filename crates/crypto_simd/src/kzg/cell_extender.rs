@@ -9,9 +9,10 @@ use blst::blst_fr;
 use crate::kzg::{
     BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB,
     FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ZERO, INVERSE_BLOB_SIZE,
-    blst_ops::{fr_from_bytes, fr_mul, fr_to_bytes},
+    blst_ops::{fr_from_bytes, fr_to_bytes},
     domain::{inverse_roots, reverse_bits, roots_of_unity},
     fft::{fft, inverse_fft},
+    fr::fr_mul,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{kzg::extension_kernel::ExtensionKernel, simd_available};

@@ -5,7 +5,7 @@
 
 use blst::blst_fr;
 
-use crate::kzg::blst_ops::{fr_add, fr_mul, fr_sub};
+use crate::kzg::fr::{fr_add, fr_mul, fr_sub};
 
 /// `out[i] = Σ_j input[j]·ω^(i·j)`, where `roots` holds the powers of a
 /// primitive root of an order that `out.len()` divides, and ω is the root of

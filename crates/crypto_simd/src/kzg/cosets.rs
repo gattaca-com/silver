@@ -6,8 +6,8 @@ use blst::blst_fr;
 
 use crate::kzg::{
     CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, INVERSE_CELL_SIZE,
-    blst_ops::fr_mul,
     domain::{inverse_roots, reverse_bits, roots_of_unity},
+    fr::fr_mul,
 };
 
 const LOG_CELL: u32 = 6;

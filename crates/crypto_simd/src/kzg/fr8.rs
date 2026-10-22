@@ -29,7 +29,7 @@ use self::u256x8::U256x8;
 use crate::bls::fp8::lanes;
 use crate::{
     bls::fp8::{carry_of_cleared, transpose8},
-    kzg::blst_ops::fr_mul,
+    kzg::fr::fr_mul,
 };
 
 #[cfg(test)]
