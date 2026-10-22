@@ -141,6 +141,8 @@ impl ApplicationBoundaryTile {
                 state.read(|view| view.imm.genesis_time).expect("the anchor state is published"),
             )
         });
+        let custody_columns =
+            local_enr.cgc().map(|count| local_enr.node_id().custody_groups(count as u8));
         let beacon = BeaconApi::new(
             readiness.registry(),
             BEACON_TOKENS,
@@ -155,7 +157,13 @@ impl ApplicationBoundaryTile {
             has_sidecar,
             tcaches,
         );
-        let engine = EngineApi::new(readiness.registry(), ENGINE_TOKENS, engine_config, tcaches);
+        let engine = EngineApi::new(
+            readiness.registry(),
+            ENGINE_TOKENS,
+            engine_config,
+            tcaches,
+            custody_columns,
+        );
         let builder_bids =
             BuilderBids::new(readiness.registry(), BUILDER_TOKENS, builder_bid_timeout);
         Self { readiness, beacon, engine, pbs, builder_bids, processing }

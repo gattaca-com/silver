@@ -14,11 +14,11 @@ use silver_beacon_api::HeadStatus;
 use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockLookup, BlockSource, BlockStage,
-    ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineReq, EngineResp, Enr,
-    GossipTopic, HeadChange, HeadRoots, Identify, IpBytes, Keypair, MessageId, P2pStreamId,
-    PayloadResolution, PayloadValidationStatus, PeerEvent, ServedBlock, SilverSpine, SszCache,
-    StreamProtocol, SyncUpdate, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
-    TProducer, block_root_fulu,
+    ColumnOrigin, DataColumnsEvent, ELSyncStatus, EngineFcuReq, EngineGetPayloadReq,
+    EnginePreparePayloadReq, EngineReq, EngineResp, Enr, GossipTopic, HeadChange, HeadRoots,
+    Identify, IpBytes, Keypair, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
+    PeerEvent, ServedBlock, SilverSpine, SszCache, StreamProtocol, SyncUpdate, TCache, TCacheId,
+    TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
     column_util::block_root_from_sidecar,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT, DATA_COLUMN_SIDECAR_GLOAS_MIN,
@@ -57,10 +57,10 @@ fn boundary_tile_with_spec(
     spec: &SpecConfig,
 ) -> (ApplicationBoundaryTile, TProducer, TProducer) {
     let keypair = Keypair::from_secret(&[1u8; 32]).unwrap();
-    let local_enr = Enr::empty(keypair.secret_key()).unwrap();
+    let local_enr = Enr::builder().cgc(8).build(keypair.secret_key()).unwrap();
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
     let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
-    let resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
+    let resp_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 16);
     let tcaches = TCacheTable::from_iter(
         [TCacheId::ControlSlot, TCacheId::StorageDelivery, TCacheId::BeaconStateHandoff]
             .map(|id| TCache::producer(id, 1 << 16).cache_ref())
@@ -199,6 +199,7 @@ fn fcu_req(byte: u8) -> EngineReq {
         head_block_hash: [byte; 32],
         safe_block_hash: [0u8; 32],
         finalized_block_hash: [0u8; 32],
+        is_gloas: false,
     })
 }
 
@@ -670,6 +671,125 @@ fn serves_beacon_api_while_engine_call_in_flight() {
         });
     }
     assert_eq!(completed, vec![[42u8; 32]]);
+}
+
+#[test]
+fn gloas_engine_requests_use_v4_and_v6_through_the_spine() {
+    let base = ShmemDir::new().unwrap();
+    let mut spine = Box::new(SilverSpine::new_with_base_dir(base.path(), None));
+    let (mut el, endpoint) = FakeEl::tcp();
+    let jwt_path = write_jwt(base.path());
+    let config = EngineConfig {
+        execution_endpoint: endpoint,
+        jwt_secret: jwt_path.to_str().unwrap().to_string(),
+        ..EngineConfig::default()
+    };
+    let mut tile = boundary_tile(&Bind::parse("127.0.0.1:0"), config);
+    let mut adapter = SpineAdapter::connect_tile(&tile, &mut *spine);
+    let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
+    inj.consume(|_: EngineResp, _| {});
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut crank = |tile: &mut ApplicationBoundaryTile, el: &mut FakeEl| {
+        assert!(Instant::now() < deadline, "timeout waiting for Gloas engine round trip");
+        tile.loop_body(&mut adapter);
+        el.pump();
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    while el.requests.len() < 3 {
+        crank(&mut tile, &mut el);
+    }
+
+    let EngineReq::Fcu(mut fcu) = fcu_req(42) else { unreachable!() };
+    fcu.is_gloas = true;
+    inj.produce(EngineReq::Fcu(fcu));
+    inj.produce(EngineReq::PreparePayload(EnginePreparePayloadReq {
+        id: 7,
+        head_block_hash: fcu.head_block_hash,
+        safe_block_hash: fcu.safe_block_hash,
+        finalized_block_hash: fcu.finalized_block_hash,
+        attrs_timestamp: 768,
+        attrs_prev_randao: [4; 32],
+        attrs_fee_recipient: [5; 20],
+        attrs_parent_beacon_block_root: [6; 32],
+        attrs_withdrawals: Default::default(),
+        is_gloas: true,
+        attrs_slot_number: 64,
+        attrs_target_gas_limit: 60_000_000,
+    }));
+    while el.requests.len() < 5 {
+        crank(&mut tile, &mut el);
+    }
+
+    let keypair = Keypair::from_secret(&[1; 32]).unwrap();
+    let columns = Enr::empty(keypair.secret_key()).unwrap().node_id().custody_groups(8);
+    let columns = format!("0x{}", hex::encode(columns.to_le_bytes()));
+    let mut prepare = None;
+    for i in 3..5 {
+        assert_eq!(el.requests[i].method, "engine_forkchoiceUpdatedV4");
+        let body: Value = serde_json::from_str(&el.requests[i].body).unwrap();
+        assert_eq!(body["params"].as_array().unwrap().len(), 3);
+        assert_eq!(body["params"][2], columns);
+        if body["params"][1].is_null() {
+            el.respond(i, FCU_VALID_RESULT);
+        } else {
+            let attrs = &body["params"][1];
+            assert_eq!(attrs["timestamp"], "0x300");
+            assert_eq!(attrs["slotNumber"], "0x40");
+            assert_eq!(attrs["targetGasLimit"], "0x3938700");
+            assert_eq!(attrs["parentBeaconBlockRoot"], format!("0x{}", hex::encode([6; 32])));
+            prepare = Some(i);
+        }
+    }
+    el.respond(prepare.unwrap(), r#"{"payloadStatus":{"status":"VALID","latestValidHash":null,"validationError":null},"payloadId":"0x0102030405060708"}"#);
+    let mut payload_id = None;
+    while payload_id.is_none() {
+        crank(&mut tile, &mut el);
+        inj.consume(|resp: EngineResp, _| {
+            if let EngineResp::PreparePayload(r) = resp {
+                assert_eq!(r.id, 7);
+                payload_id = r.payload_id;
+            }
+        });
+    }
+    assert_eq!(payload_id, Some([1, 2, 3, 4, 5, 6, 7, 8]));
+    inj.produce(EngineReq::GetPayload(EngineGetPayloadReq {
+        id: 8,
+        payload_id: payload_id.unwrap(),
+        is_gloas: true,
+    }));
+    while el.requests.len() < 6 {
+        crank(&mut tile, &mut el);
+    }
+    assert_eq!(el.requests[5].method, "engine_getPayloadV6");
+    let body: Value = serde_json::from_str(&el.requests[5].body).unwrap();
+    assert_eq!(body["params"], json!(["0x0102030405060708"]));
+    let hash = format!("0x{}", "00".repeat(32));
+    let result = json!({
+        "executionPayload": {
+            "parentHash": hash, "feeRecipient": format!("0x{}", "00".repeat(20)),
+            "stateRoot": hash, "receiptsRoot": hash, "logsBloom": format!("0x{}", "00".repeat(256)),
+            "prevRandao": hash, "blockNumber": "0x1", "gasLimit": "0x3938700", "gasUsed": "0x0",
+            "timestamp": "0x300", "extraData": "0x", "baseFeePerGas": "0x1", "blockHash": hash,
+            "transactions": [], "withdrawals": [], "blobGasUsed": "0x0", "excessBlobGas": "0x0",
+            "blockAccessList": "0xc0", "slotNumber": "0x40"
+        },
+        "blobsBundle": {"commitments": [], "proofs": [], "blobs": []},
+        "executionRequests": [format!("0x03{}", "00".repeat(184)), format!("0x04{}", "00".repeat(68))],
+        "blockValue": "0x1", "shouldOverrideBuilder": false
+    });
+    el.respond(5, &result.to_string());
+    let mut fetched = None;
+    while fetched.is_none() {
+        crank(&mut tile, &mut el);
+        inj.consume(|resp: EngineResp, _| {
+            if let EngineResp::GetPayload(r) = resp {
+                assert_eq!(r.id, 8);
+                fetched = Some(r.data);
+            }
+        });
+    }
+    assert!(fetched.unwrap().is_some(), "V6 decoded into the response tcache");
 }
 
 /// (cap+1) concurrent spine requests with `max_connections = cap`: the

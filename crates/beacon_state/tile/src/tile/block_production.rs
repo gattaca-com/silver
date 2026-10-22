@@ -97,7 +97,11 @@ impl BlockBuild {
 
     fn fetch(&mut self, payload_id: [u8; 8], producers: &mut Producers) {
         let id = self.engine_id;
-        producers.produce(EngineReq::GetPayload(EngineGetPayloadReq { id, payload_id }));
+        producers.produce(EngineReq::GetPayload(EngineGetPayloadReq {
+            id,
+            payload_id,
+            is_gloas: false,
+        }));
         self.stage = PayloadStage::Fetching { payload_id };
     }
 
@@ -401,6 +405,9 @@ impl BeaconStateTile {
             attrs_fee_recipient: fee_recipient,
             attrs_parent_beacon_block_root: head_root,
             attrs_withdrawals: withdrawals,
+            is_gloas: false,
+            attrs_slot_number: slot,
+            attrs_target_gas_limit: 0,
         }));
 
         silver_log::info!(slot, proposer, "payload preparation requested");

@@ -66,19 +66,30 @@ export function binnedSeries(inst, { source, counters }, slot, startS, bins) {
   return { label: inst.label, ys, blockX };
 }
 
+const clientKey = (inst) => `client:${inst.key}`;
+const lineKey = (line) => `line:${line.name}`;
+
 /** Per client, one line per entry of `lines`, in the client's colour, over a
  *  fixed x axis: the seconds of the current slot. The bins run to now, so the
  *  lines grow across the slot and restart at the next one. A dashed vertical
  *  marks when each client received a block this slot; the top-right totals
- *  sum each client's bins so far across all its lines. */
-function slotSpec(instances, nowS, lines, fmt, height) {
+ *  sum each client's bins so far across all its lines. A client or line in
+ *  `hidden` keeps its series, all null, so the plot is not rebuilt. */
+function slotSpec(instances, nowS, lines, fmt, height, hidden) {
   const { slot, slotS, startS, bins, xs } = slotWindow(instances.find((i) => i.clock)?.clock, nowS);
+  const shown = (line, inst) => !hidden.has(clientKey(inst)) && !(line.name && hidden.has(lineKey(line)));
   // Line-major: series `l * clients + i` is line `l` of client `i`, so the
   // first line's series index is the client's, as markers and corner labels
   // expect.
-  const perLine = lines.map(({ counter }) => instances.map((inst) => binnedSeries(inst, counter, slot, startS, bins)));
+  const perLine = lines.map((line) =>
+    instances.map((inst) => {
+      const s = binnedSeries(inst, line.counter, slot, startS, bins);
+      return shown(line, inst) ? s : { ...s, ys: new Array(bins).fill(null) };
+    }),
+  );
   const series = perLine[0];
   const sum = (ys) => ys.reduce((total, v) => total + (v ?? 0), 0);
+  const clientShown = instances.map((inst) => !hidden.has(clientKey(inst)));
   const spec = {
     labels: perLine.flatMap((line, l) => line.map((s) => (lines[l].name ? `${s.label} ${lines[l].name}` : s.label))),
     data: [xs, ...perLine.flatMap((line) => line.map((s) => s.ys))],
@@ -90,8 +101,10 @@ function slotSpec(instances, nowS, lines, fmt, height) {
     xSeconds: true,
     xRange: [0, slotS],
     spanGaps: true,
-    markers: series.flatMap((s, i) => (s.blockX === null ? [] : [{ x: s.blockX, series: i }])),
-    cornerLabels: series.map((_, i) => fmt(perLine.reduce((total, line) => total + sum(line[i].ys), 0))),
+    markers: series.flatMap((s, i) => (s.blockX === null || !clientShown[i] ? [] : [{ x: s.blockX, series: i }])),
+    cornerLabels: series.map((_, i) =>
+      clientShown[i] ? fmt(perLine.reduce((total, line) => total + sum(line[i].ys), 0)) : '',
+    ),
   };
   return { spec, slot, startS };
 }
@@ -100,18 +113,32 @@ function card(key, place, title) {
   return `<div class="${place}"><p class="meta" title="${title}">${title}</p><div class="chart" data-chart="${key}"></div></div>`;
 }
 
-/** Client colours, shared by all charts, and the gossip/rpc line styles. */
-function legend(instances) {
-  const clients = instances.map(
-    (inst, i) => `<span><i style="border-top-color: var(--series-${i + 1})"></i>${escape(inst.label)}</span>`,
+/** Client colours, shared by all charts, and the gossip/rpc line styles; each
+ *  entry toggles its lines. */
+function legend(instances, hidden) {
+  const entry = (key, mark, label) =>
+    `<span data-slot-legend="${escape(key)}"${hidden.has(key) ? ' class="off"' : ''}>${mark}${label}</span>`;
+  const clients = instances.map((inst, i) =>
+    entry(clientKey(inst), `<i style="border-top-color: var(--series-${i + 1})"></i>`, escape(inst.label)),
   );
-  const styles = ['<span><i></i>gossip</span>', '<span><i class="dashed"></i>rpc</span>'];
+  const styles = BYTES_RECV.map((line) =>
+    entry(lineKey(line), `<i${line.dashed ? ' class="dashed"' : ''}></i>`, line.name),
+  );
   return `<div class="slot-legend">${[...clients, ...styles].join('')}</div>`;
 }
 
+/** True when the click toggled a legend entry in `hidden`. */
+export function legendClick(target, hidden) {
+  const key = target.closest('[data-slot-legend]')?.dataset.slotLegend;
+  if (!key) return false;
+  if (!hidden.delete(key)) hidden.add(key);
+  return true;
+}
+
 /** Chart placeholders, with their specs added to `specs`. All are always
- *  drawn, empty until data arrives. */
-export function slotCharts(fleet, specs) {
+ *  drawn, empty until data arrives; `hidden` holds the legend entries
+ *  toggled off. */
+export function slotCharts(fleet, specs, hidden) {
   const nowS = Date.now() / 1000;
   const instances = fleet.sorted();
   const bytes = (v) => fmtBytes(Math.round(v));
@@ -128,11 +155,11 @@ export function slotCharts(fleet, specs) {
     },
   ];
   const cards = charts.map(({ key, place, what, lines, fmt, height }) => {
-    const built = slotSpec(instances, nowS, lines, fmt, height);
+    const built = slotSpec(instances, nowS, lines, fmt, height, hidden);
     specs.set(key, built.spec);
     if (built.slot === null) return card(key, place, `${what} per 100 ms`);
     const start = new Date(built.startS * 1000).toISOString().slice(11, 23);
     return card(key, place, `${what} per 100 ms, slot ${built.slot} from ${start} UTC`);
   });
-  return `<div class="slot-charts">${cards.join('')}${legend(instances)}</div>`;
+  return `<div class="slot-charts">${cards.join('')}${legend(instances, hidden)}</div>`;
 }

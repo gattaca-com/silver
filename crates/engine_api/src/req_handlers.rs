@@ -14,7 +14,9 @@ use crate::{
         send_prepare_payload,
     },
     resp_handlers::write_tcache,
-    types::{ForkchoiceState, PayloadAttributesV3, Withdrawal},
+    types::{
+        ForkchoiceState, PayloadAttributes, PayloadAttributesV3, PayloadAttributesV4, Withdrawal,
+    },
 };
 
 #[inline]
@@ -22,15 +24,16 @@ pub(crate) fn handle_request(
     client: &mut EngineClient,
     reader: &mut TCacheReader,
     req: &EngineReq,
+    custody_columns: Option<u128>,
     producers: &mut <SilverSpine as FluxSpine>::Producers,
 ) {
     match req {
-        EngineReq::Fcu(r) => handle_fcu(client, r),
+        EngineReq::Fcu(r) => handle_fcu(client, r, custody_columns),
         EngineReq::NewPayload(r) => handle_new_payload(client, reader, r, producers),
         EngineReq::NewPayloadEnvelope(r) => {
             handle_new_payload_envelope(client, reader, r, producers)
         }
-        EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r),
+        EngineReq::PreparePayload(r) => handle_prepare_payload(client, *r, custody_columns),
         EngineReq::GetPayload(r) => handle_get_payload(client, *r),
         EngineReq::GetBlobs(r) => handle_get_blobs(client, r),
     }
@@ -84,14 +87,14 @@ pub(crate) fn handle_request_no_el(
 }
 
 #[inline]
-fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq) {
+fn handle_fcu(client: &mut EngineClient, r: &EngineFcuReq, custody_columns: Option<u128>) {
     silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), "FCU ← spine");
     let state = ForkchoiceState {
         head_block_hash: r.head_block_hash,
         safe_block_hash: r.safe_block_hash,
         finalized_block_hash: r.finalized_block_hash,
     };
-    send_fcu(client, r.block_root, state);
+    send_fcu(client, r.block_root, state, r.is_gloas, custody_columns);
 }
 
 #[inline]
@@ -172,7 +175,11 @@ fn handle_get_blobs(client: &mut EngineClient, r: &EngineGetBlobsReq) {
 
 #[inline]
 #[timed]
-fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq) {
+fn handle_prepare_payload(
+    client: &mut EngineClient,
+    r: EnginePreparePayloadReq,
+    custody_columns: Option<u128>,
+) {
     silver_log::info!(head = %hex::encode(&r.head_block_hash[..4]), id = r.id, "preparePayload ← spine");
     let withdrawals = r
         .attrs_withdrawals
@@ -196,13 +203,22 @@ fn handle_prepare_payload(client: &mut EngineClient, r: EnginePreparePayloadReq)
         withdrawals,
         parent_beacon_block_root: r.attrs_parent_beacon_block_root,
     };
-    send_prepare_payload(client, r.id, state, attrs);
+    let attrs = if r.is_gloas {
+        PayloadAttributes::V4(PayloadAttributesV4 {
+            base: attrs,
+            slot_number: r.attrs_slot_number,
+            target_gas_limit: r.attrs_target_gas_limit,
+        })
+    } else {
+        PayloadAttributes::V3(attrs)
+    };
+    send_prepare_payload(client, r.id, state, attrs, custody_columns);
 }
 
 #[inline]
 fn handle_get_payload(client: &mut EngineClient, r: EngineGetPayloadReq) {
     silver_log::info!(payload_id = %hex::encode(r.payload_id), id = r.id, "fetchPayload ← spine");
-    get_payload(client, r.payload_id, r.id);
+    get_payload(client, r.payload_id, r.id, r.is_gloas);
 }
 
 #[inline]

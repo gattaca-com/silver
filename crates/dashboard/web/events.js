@@ -4,7 +4,7 @@
 // join at attestable (`data available → cols`, `stf → validate/apply`, `el`).
 
 import { LineCharts } from './chart.js';
-import { slotCharts } from './slot_charts.js';
+import { legendClick, slotCharts } from './slot_charts.js';
 import { BLOCK_SOURCE, EL_VERDICT } from './wire.js';
 import { Origin, Verdict, colsOrigin, colsSpan } from './trace.js';
 import { escape } from './view.js';
@@ -309,8 +309,9 @@ function toggle(row, ui) {
 export function render(fleet, root, _now, ui) {
   ui.expanded ??= new Set();
   ui.charts ??= new LineCharts();
+  ui.slotHidden ??= new Set();
   const specs = new Map();
-  const charts = slotCharts(fleet, specs);
+  const charts = slotCharts(fleet, specs, ui.slotHidden);
   const rows = displayRows(fleet, ui.expanded);
   ui.rows = rows;
   const multi = fleet.instances.size > 1;
@@ -367,6 +368,7 @@ export function render(fleet, root, _now, ui) {
 }
 
 export function click(target, ui) {
+  if (legendClick(target, (ui.slotHidden ??= new Set()))) return;
   const tr = target.closest('[data-row]');
   const row = tr && ui.rows?.[Number(tr.dataset.row)];
   if (!row) return;

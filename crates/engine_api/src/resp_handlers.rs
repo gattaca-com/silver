@@ -283,9 +283,16 @@ impl<'a> Responses<'a> {
     }
 
     #[inline]
-    pub(crate) fn get_payload(&mut self, spine_id: u64, response: Result<&mut [u8], EngineError>) {
+    pub(crate) fn get_payload(
+        &mut self,
+        spine_id: u64,
+        is_gloas: bool,
+        response: Result<&mut [u8], EngineError>,
+    ) {
         let resp = match response {
-            Ok(raw) => match self.scratch.encode(raw, self.producer, json_get_payload_to_tcache) {
+            Ok(raw) => match self.scratch.encode(raw, self.producer, |root, out| {
+                json_get_payload_to_tcache(root, out, is_gloas)
+            }) {
                 Ok(Some(((), data))) => {
                     silver_log::info!(id = spine_id, "getPayload ok");
                     EngineGetPayloadResp { id: spine_id, data: Some(data) }

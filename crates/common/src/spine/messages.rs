@@ -1378,7 +1378,8 @@ pub enum PayloadValidationStatus {
     Accepted = 3,
 }
 
-/// `engine_forkchoiceUpdatedV3` request.  Fully inline — no TCache needed.
+/// Fork-choice update without payload attributes. Fully inline — no TCache
+/// needed.
 ///
 /// `block_root` is the beacon root of the `head_block_hash` block. The EL
 /// response carries no beacon identity, so the engine tile echoes it in
@@ -1390,6 +1391,7 @@ pub struct EngineFcuReq {
     pub head_block_hash: [u8; 32],
     pub safe_block_hash: [u8; 32],
     pub finalized_block_hash: [u8; 32],
+    pub is_gloas: bool,
 }
 
 /// `engine_newPayloadV4` request.
@@ -1410,7 +1412,7 @@ pub struct EngineNewPayloadReq {
     pub block_source: BlockSource,
 }
 
-/// `engine_newPayloadV4` for a Gloas `SignedExecutionPayloadEnvelope`. Unlike a
+/// `engine_newPayloadV5` for a Gloas `SignedExecutionPayloadEnvelope`. Unlike a
 /// pre-Gloas block, the payload / `parent_beacon_block_root` / execution
 /// requests live in the envelope (`data`), but the blob KZG commitments do not
 /// — so the caller derives `versioned_hashes[..hash_count]` from the committed
@@ -1425,7 +1427,7 @@ pub struct EngineNewPayloadEnvelopeReq {
     pub versioned_hashes: [[u8; 32]; MAX_BLOBS_PER_BLOCK],
 }
 
-/// Response to `engine_forkchoiceUpdatedV3`.  Fully inline.
+/// Response to a fork-choice update. Fully inline.
 ///
 /// `block_root` echoes the request's head beacon root.
 #[derive(Clone, Copy, Debug)]
@@ -1445,12 +1447,8 @@ pub struct EngineNewPayloadResp {
     pub latest_valid_hash: Option<[u8; 32]>,
 }
 
-/// The engine tile sends `engine_forkchoiceUpdatedV3` with payload attributes
-/// and returns the `payload_id` assigned by the EL. The caller should use.
-/// this to fetch the built payload.
-///
-/// Field layout mirrors `EngineFcuReq` (attrs are always present for payload
-/// building).
+/// The EL's returned payload ID must be fetched using the same fork as this
+/// request.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EnginePreparePayloadReq {
@@ -1463,6 +1461,9 @@ pub struct EnginePreparePayloadReq {
     pub attrs_fee_recipient: [u8; 20],
     pub attrs_parent_beacon_block_root: [u8; 32],
     pub attrs_withdrawals: PayloadWithdrawals,
+    pub is_gloas: bool,
+    pub attrs_slot_number: u64,
+    pub attrs_target_gas_limit: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1477,11 +1478,11 @@ pub struct EnginePreparePayloadResp {
 pub struct EngineGetPayloadReq {
     pub id: u64,
     pub payload_id: [u8; 8],
+    pub is_gloas: bool,
 }
 
 /// Response to `EngineGetPayloadReq`.
-/// When `ok` is true, `data` is a TCache slot holding a
-/// [`crate::PayloadFrame`].
+/// `data` holds a [`crate::PayloadFrame`] encoded for the requested fork.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {

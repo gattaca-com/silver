@@ -255,6 +255,10 @@ impl BeaconStateTile {
             head_block_hash: head,
             safe_block_hash: safe,
             finalized_block_hash: fin,
+            is_gloas: self
+                .fork_choice
+                .find_node_idx(&head_root)
+                .is_some_and(|idx| self.fork_choice.node(idx).payload.is_gloas),
         }));
 
         self.drain_pending_envelope(block_root, slot, producers);

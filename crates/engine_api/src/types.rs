@@ -125,6 +125,24 @@ pub struct PayloadAttributesV3 {
     pub parent_beacon_block_root: B256,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadAttributesV4 {
+    #[serde(flatten)]
+    pub base: PayloadAttributesV3,
+    #[serde(with = "wire::quantity")]
+    pub slot_number: u64,
+    #[serde(with = "wire::quantity")]
+    pub target_gas_limit: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum PayloadAttributes {
+    V3(PayloadAttributesV3),
+    V4(PayloadAttributesV4),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForkchoiceUpdatedResult {
@@ -620,12 +638,13 @@ fn encode_withdrawals_json(
     Ok(())
 }
 
-/// Write the [`PayloadFrame`] of an `engine_getPayloadV5` JSON-RPC response
-/// into `out`.
+/// The request's fork selects the SSZ layout, including when the response
+/// crosses a fork boundary.
 #[timed]
 pub(crate) fn json_get_payload_to_tcache(
     root: TapeValue<'_, '_>,
     out: &mut FrameOut<'_>,
+    is_gloas: bool,
 ) -> Result<(), crate::EngineError> {
     debug_assert!(out.is_empty());
 
@@ -652,10 +671,9 @@ pub(crate) fn json_get_payload_to_tcache(
 
     out.zeroed(PayloadFrame::HEADER_LEN);
 
-    // ExecutionPayload SSZ — fixed section (528 bytes).
     let ssz_start = out.len();
     let f = ssz_start;
-    out.zeroed(PAYLOAD_FIXED_LEN);
+    out.zeroed(if is_gloas { PAYLOAD_FIXED_LEN_GLOAS } else { PAYLOAD_FIXED_LEN });
 
     out[f..f + 32].copy_from_slice(&hex_to_fixed::<32>(fstr(ep, "parentHash")?)?);
     out[f + 32..f + 52].copy_from_slice(&hex_to_fixed::<20>(fstr(ep, "feeRecipient")?)?);
@@ -675,6 +693,10 @@ pub(crate) fn json_get_payload_to_tcache(
     out[f + 512..f + 520].copy_from_slice(&parse_quantity(fstr(ep, "blobGasUsed")?)?.to_le_bytes());
     out[f + 520..f + 528]
         .copy_from_slice(&parse_quantity(fstr(ep, "excessBlobGas")?)?.to_le_bytes());
+    if is_gloas {
+        out[f + 532..f + 540]
+            .copy_from_slice(&parse_quantity(fstr(ep, "slotNumber")?)?.to_le_bytes());
+    }
 
     // Variable fields — patch offsets into fixed section as we go.
     let extra_off = (out.len() - ssz_start) as u32;
@@ -696,6 +718,12 @@ pub(crate) fn json_get_payload_to_tcache(
         .and_then(|v| v.as_array())
         .ok_or_else(|| crate::EngineError::Ssz("missing withdrawals".into()))?;
     encode_withdrawals_json(ws, out)?;
+
+    if is_gloas {
+        let bal_off = (out.len() - ssz_start) as u32;
+        out[f + 528..f + 532].copy_from_slice(&bal_off.to_le_bytes());
+        hex_extend(fstr(ep, "blockAccessList")?, out)?;
+    }
 
     let payload_len = out.len() - ssz_start;
 
@@ -722,7 +750,11 @@ pub(crate) fn json_get_payload_to_tcache(
     }
 
     let requests_at = out.len();
-    encode_execution_requests(exec_requests, out)?;
+    if is_gloas {
+        encode_execution_requests::<5>(exec_requests, out)?;
+    } else {
+        encode_execution_requests::<3>(exec_requests, out)?;
+    }
     let requests_len = out.len() - requests_at;
 
     for proof in array_items(proofs) {
@@ -747,14 +779,13 @@ pub(crate) fn json_get_payload_to_tcache(
     Ok(())
 }
 
-fn encode_execution_requests(
+fn encode_execution_requests<const N: usize>(
     requests: Option<TapeArray<'_, '_>>,
     out: &mut FrameOut<'_>,
 ) -> Result<(), crate::EngineError> {
-    const REQUEST_TYPES: usize = 3;
     let invalid = |why: &str| crate::EngineError::Ssz(format!("executionRequests: {why}"));
 
-    let mut data = [""; REQUEST_TYPES];
+    let mut data = [""; N];
     let mut previous_type = None;
     for request in array_items(requests) {
         let hex = request
@@ -766,7 +797,7 @@ fn encode_execution_requests(
         }
         let request_type =
             u8::from_str_radix(&hex[..2], 16).map_err(|_| invalid("bad request type"))?;
-        if request_type as usize >= REQUEST_TYPES {
+        if request_type as usize >= N {
             return Err(invalid("unknown request type"));
         }
         if previous_type.is_some_and(|previous| request_type <= previous) {
@@ -777,7 +808,7 @@ fn encode_execution_requests(
     }
 
     let container = out.len();
-    out.zeroed(4 * REQUEST_TYPES);
+    out.zeroed(4 * N);
     for (i, hex) in data.iter().enumerate() {
         let offset = (out.len() - container) as u32;
         out[container + 4 * i..container + 4 * i + 4].copy_from_slice(&offset.to_le_bytes());
@@ -849,7 +880,7 @@ mod tests {
     use silver_common::{TCache, TCacheId, TCacheProducer, TProducer, TapeScratch};
     use simd_json::{
         owned::to_value,
-        prelude::{ValueAsArray, ValueAsScalar, ValueObjectAccess},
+        prelude::{ValueAsArray, ValueAsMutObject, ValueAsScalar, ValueObjectAccess},
     };
 
     use super::*;
@@ -1517,8 +1548,18 @@ mod tests {
     }
 
     fn payload_frame(json: &mut [u8]) -> Result<Vec<u8>, crate::EngineError> {
+        payload_frame_for_fork(json, false)
+    }
+
+    fn payload_frame_for_fork(
+        json: &mut [u8],
+        is_gloas: bool,
+    ) -> Result<Vec<u8>, crate::EngineError> {
         let (mut scratch, mut producer) = (TapeScratch::new(FRAME_SLACK), frames());
-        encode(&mut scratch, &mut producer, json, json_get_payload_to_tcache).map(|((), f)| f)
+        encode(&mut scratch, &mut producer, json, |root, out| {
+            json_get_payload_to_tcache(root, out, is_gloas)
+        })
+        .map(|((), f)| f)
     }
 
     fn blobs_frame(json: &mut [u8]) -> Result<(u8, Vec<u8>), crate::EngineError> {
@@ -1578,6 +1619,92 @@ mod tests {
         assert_eq!(frame.block_value, block_value);
     }
 
+    fn gloas_payload_json() -> Vec<u8> {
+        let mut json = get_payload_json();
+        let mut root = simd_json::to_owned_value(&mut json).unwrap();
+        let payload = root["result"]["executionPayload"].as_object_mut().unwrap();
+        payload.insert("blockAccessList".into(), "0xc20102".into());
+        payload.insert("slotNumber".into(), "0x1234".into());
+        root["result"]["executionRequests"] = simd_json::json!([
+            format!("0x01{}", "aa".repeat(76)),
+            format!("0x02{}", "bb".repeat(116)),
+            format!("0x03{}", "cc".repeat(184)),
+            format!("0x04{}", "dd".repeat(68)),
+        ]);
+        simd_json::to_vec(&root).unwrap()
+    }
+
+    #[test]
+    fn get_payload_v6_preserves_gloas_fields_and_builder_requests() {
+        let bytes = payload_frame_for_fork(&mut gloas_payload_json(), true).unwrap();
+        let frame = PayloadFrame::parse(&bytes).unwrap();
+
+        // Shift the independent Fulu fixture's variable section by the new fields'
+        // size.
+        let mut expected = SAMPLE_PAYLOAD_SSZ[..528].to_vec();
+        for at in [436, 504, 508] {
+            let offset = u32::from_le_bytes(expected[at..at + 4].try_into().unwrap());
+            expected[at..at + 4].copy_from_slice(&(offset + 12).to_le_bytes());
+        }
+        expected.extend_from_slice(&((SAMPLE_PAYLOAD_SSZ.len() + 12) as u32).to_le_bytes());
+        expected.extend_from_slice(&0x1234u64.to_le_bytes());
+        expected.extend_from_slice(&SAMPLE_PAYLOAD_SSZ[528..]);
+        expected.extend_from_slice(&[0xc2, 1, 2]);
+        assert_eq!(frame.execution_payload, expected);
+
+        let mut requests =
+            [20u32, 20, 96, 212, 396].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+        for (byte, len) in [(0xaa, 76), (0xbb, 116), (0xcc, 184), (0xdd, 68)] {
+            requests.extend(std::iter::repeat_n(byte, len));
+        }
+        assert_eq!(frame.execution_requests, requests);
+
+        let fulu = payload_frame(&mut get_payload_json()).unwrap();
+        let fulu = PayloadFrame::parse(&fulu).unwrap();
+        assert_eq!(frame.commitments, fulu.commitments);
+        assert_eq!(frame.cell_proofs, fulu.cell_proofs);
+        assert_eq!(frame.blobs, fulu.blobs);
+        assert_eq!(frame.block_value, fulu.block_value);
+    }
+
+    #[test]
+    fn get_payload_v6_requires_both_new_fields() {
+        for field in ["slotNumber", "blockAccessList"] {
+            let mut json = gloas_payload_json();
+            let mut root = simd_json::to_owned_value(&mut json).unwrap();
+            root["result"]["executionPayload"][field] = simd_json::OwnedValue::from(());
+            let result = payload_frame_for_fork(&mut simd_json::to_vec(&root).unwrap(), true);
+            assert!(result.is_err(), "{field} cannot be null");
+        }
+        assert!(payload_frame_for_fork(&mut get_payload_json(), true).is_err());
+    }
+
+    #[test]
+    fn get_payload_v6_empty_execution_requests_still_has_five_lists() {
+        let mut json = gloas_payload_json();
+        let mut root = simd_json::to_owned_value(&mut json).unwrap();
+        root["result"]["executionRequests"] = simd_json::json!([]);
+        let bytes = payload_frame_for_fork(&mut simd_json::to_vec(&root).unwrap(), true).unwrap();
+        let frame = PayloadFrame::parse(&bytes).unwrap();
+        assert_eq!(frame.execution_requests, [20u32.to_le_bytes(); 5].as_flattened());
+    }
+
+    #[test]
+    fn get_payload_rejects_request_types_from_a_different_fork() {
+        assert!(payload_frame(&mut gloas_payload_json()).is_err());
+        for requests in [
+            simd_json::json!(["0x0500"]),
+            simd_json::json!(["0x0300", "0x0300"]),
+            simd_json::json!(["0x0400", "0x0300"]),
+            simd_json::json!(["0x03"]),
+        ] {
+            let mut json = gloas_payload_json();
+            let mut root = simd_json::to_owned_value(&mut json).unwrap();
+            root["result"]["executionRequests"] = requests;
+            assert!(payload_frame_for_fork(&mut simd_json::to_vec(&root).unwrap(), true).is_err());
+        }
+    }
+
     #[test]
     fn tape_scratch_is_reused_across_responses_and_errors() {
         let expected = payload_frame(&mut get_payload_json()).unwrap();
@@ -1585,12 +1712,13 @@ mod tests {
         for _ in 0..2 {
             let mut missing_result = br#"{"jsonrpc":"2.0","id":1}"#.to_vec();
             let failed = encode(&mut scratch, &mut producer, &mut missing_result, |root, out| {
-                json_get_payload_to_tcache(root, out)
+                json_get_payload_to_tcache(root, out, false)
             });
             assert!(failed.is_err());
             let mut json = get_payload_json();
-            let encoded =
-                encode(&mut scratch, &mut producer, &mut json, json_get_payload_to_tcache);
+            let encoded = encode(&mut scratch, &mut producer, &mut json, |root, out| {
+                json_get_payload_to_tcache(root, out, false)
+            });
             assert_eq!(encoded.unwrap().1, expected);
         }
     }

@@ -2,15 +2,15 @@ use crate::ssz_view::{
     BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS,
 };
 
-/// The `engine_getPayloadV5` result as the engine tile frames it: a
+/// The `engine_getPayloadV5/V6` result as the engine tile frames it: a
 /// [`Self::HEADER_LEN`] header, then the payload, commitments and requests
 /// SSZ, then every blob's `NUMBER_OF_COLUMNS` cell proofs and the blobs. All
-/// but the header is in `BlockContents` order, so a produced block's contents
-/// splice in the payload and `after_payload` as they are.
+/// but the header is in Fulu `BlockContents` order. Payload and requests SSZ
+/// use the fork of the corresponding request; V6 carries Gloas containers.
 pub struct PayloadFrame<'a> {
     pub execution_payload: &'a [u8],
-    /// Commitments, requests, cell proofs and blobs: what follows the body's
-    /// `bls_to_execution_changes` in `BlockContents`.
+    /// Commitments, requests, cell proofs and blobs, contiguous for Fulu block
+    /// publication.
     pub after_payload: &'a [u8],
     pub blob_count: usize,
     pub commitments: &'a [u8],

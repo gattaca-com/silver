@@ -8,7 +8,7 @@ use silver_httpcore::{BufferCapacity, ClientRequest, Endpoint, HttpPool, Method,
 use crate::{
     EngineError, JwtSecret,
     types::{
-        ForkchoiceState, PayloadAttributesV3, write_new_payload_params_fulu,
+        ForkchoiceState, PayloadAttributes, write_new_payload_params_fulu,
         write_new_payload_params_gloas,
     },
 };
@@ -32,9 +32,11 @@ pub(crate) const HEALTHCHECK_OVERSHOOT: usize = 2;
 
 const OUR_CAPABILITIES: &[&str] = &[
     "engine_forkchoiceUpdatedV3",
+    "engine_forkchoiceUpdatedV4",
     "engine_newPayloadV4",
     "engine_newPayloadV5",
     "engine_getPayloadV5",
+    "engine_getPayloadV6",
     "engine_getBlobsV3",
     "engine_getClientVersionV1",
 ];
@@ -47,7 +49,7 @@ pub enum ReqKind {
     Fcu(B256),           // head beacon block root
     PreparePayload(u64), // spine request id
     NewPayload(B256),    // block root
-    GetPayloadFetch(u64),
+    GetPayloadFetch { spine_id: u64, is_gloas: bool },
     GetBlobs { block_root: B256, slot: u64 },
 }
 
@@ -209,27 +211,49 @@ fn enqueue(c: &mut EngineClient, rpc_id: u64, body: &simd_json::OwnedValue) {
     c.enqueue_scratch(rpc_id);
 }
 
-pub fn send_fcu(c: &mut EngineClient, block_root: B256, state: ForkchoiceState) {
-    send_forkchoice_updated(c, ReqKind::Fcu(block_root), state, None);
+pub fn send_fcu(
+    c: &mut EngineClient,
+    block_root: B256,
+    state: ForkchoiceState,
+    is_gloas: bool,
+    custody_columns: Option<u128>,
+) {
+    send_forkchoice_updated(c, ReqKind::Fcu(block_root), state, None, is_gloas, custody_columns);
 }
 
 pub fn send_prepare_payload(
     c: &mut EngineClient,
     spine_id: u64,
     state: ForkchoiceState,
-    attrs: PayloadAttributesV3,
+    attrs: PayloadAttributes,
+    custody_columns: Option<u128>,
 ) {
-    send_forkchoice_updated(c, ReqKind::PreparePayload(spine_id), state, Some(attrs));
+    let is_gloas = matches!(attrs, PayloadAttributes::V4(_));
+    send_forkchoice_updated(
+        c,
+        ReqKind::PreparePayload(spine_id),
+        state,
+        Some(attrs),
+        is_gloas,
+        custody_columns,
+    );
 }
 
 fn send_forkchoice_updated(
     c: &mut EngineClient,
     kind: ReqKind,
     state: ForkchoiceState,
-    attrs: Option<PayloadAttributesV3>,
+    attrs: Option<PayloadAttributes>,
+    is_gloas: bool,
+    custody_columns: Option<u128>,
 ) {
-    let (id, body) =
-        make_rpc_body(&mut c.id, "engine_forkchoiceUpdatedV3", simd_json::json!([state, attrs]));
+    let (method, params) = if is_gloas {
+        let columns = custody_columns.map(|bits| format!("0x{}", hex::encode(bits.to_le_bytes())));
+        ("engine_forkchoiceUpdatedV4", simd_json::json!([state, attrs, columns]))
+    } else {
+        ("engine_forkchoiceUpdatedV3", simd_json::json!([state, attrs]))
+    };
+    let (id, body) = make_rpc_body(&mut c.id, method, params);
     enqueue(c, id, &body);
     c.pending_requests.insert(id, kind);
 }
@@ -300,11 +324,12 @@ fn append_decimal_u64(v: u64, out: &mut Vec<u8>) {
     out.extend_from_slice(&buf[20 - n..]);
 }
 
-pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64) {
+pub fn get_payload(c: &mut EngineClient, payload_id: [u8; 8], req_id: u64, is_gloas: bool) {
     let mut params = *b"[\"0x0000000000000000\"]";
     hex::encode_to_slice(payload_id, &mut params[4..20]).expect("8 bytes are 16 hex digits");
-    let kind = ReqKind::GetPayloadFetch(req_id);
-    let Ok(()) = enqueue_with::<Infallible>(c, "engine_getPayloadV5", kind, |out| {
+    let kind = ReqKind::GetPayloadFetch { spine_id: req_id, is_gloas };
+    let method = if is_gloas { "engine_getPayloadV6" } else { "engine_getPayloadV5" };
+    let Ok(()) = enqueue_with::<Infallible>(c, method, kind, |out| {
         out.extend_from_slice(&params);
         Ok(())
     });
@@ -351,10 +376,13 @@ mod tests {
     use std::time::Instant;
 
     use silver_httpcore::Readiness;
-    use simd_json::prelude::{ValueAsArray, ValueAsScalar};
+    use simd_json::prelude::{TypedScalarValue, ValueAsArray, ValueAsScalar};
 
     use super::*;
-    use crate::test_el::{FakeEl, write_jwt};
+    use crate::{
+        test_el::{FakeEl, write_jwt},
+        types::PayloadAttributesV3,
+    };
 
     #[test]
     fn get_blobs_uses_and_advertises_v3() {
@@ -419,14 +447,19 @@ mod tests {
             Duration::from_secs(10),
         );
 
-        get_payload(&mut client, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef], 7);
+        for (is_gloas, version) in [(false, 5), (true, 6)] {
+            get_payload(&mut client, [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef], 7, is_gloas);
 
-        let id = client.id - 1;
-        let expected = format!(
-            r#"{{"jsonrpc":"2.0","method":"engine_getPayloadV5","params":["0x0123456789abcdef"],"id":{id}}}"#
-        );
-        assert_eq!(client.scratch, expected.as_bytes());
-        assert!(matches!(client.pending_requests.get(&id), Some(ReqKind::GetPayloadFetch(7))));
+            let id = client.id - 1;
+            let expected = format!(
+                r#"{{"jsonrpc":"2.0","method":"engine_getPayloadV{version}","params":["0x0123456789abcdef"],"id":{id}}}"#
+            );
+            assert_eq!(client.scratch, expected.as_bytes());
+            assert!(matches!(
+                client.pending_requests.get(&id),
+                Some(ReqKind::GetPayloadFetch { spine_id: 7, is_gloas: fork }) if *fork == is_gloas
+            ));
+        }
     }
 
     #[test]
@@ -457,7 +490,7 @@ mod tests {
             parent_beacon_block_root: [6; 32],
         };
         exchange_capabilities(&mut client);
-        send_prepare_payload(&mut client, 7, state, attrs);
+        send_prepare_payload(&mut client, 7, state, PayloadAttributes::V3(attrs), None);
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while el.requests.len() < 2 {
@@ -476,6 +509,7 @@ mod tests {
         let mut body = request.body.as_bytes().to_vec();
         let body = simd_json::to_borrowed_value(&mut body).unwrap();
         assert_eq!(body["params"][1]["timestamp"].as_str(), Some("0xc"));
+        assert_eq!(body["params"].as_array().unwrap().len(), 2);
         assert!(matches!(
             client.pending_requests.get(&request.id),
             Some(ReqKind::PreparePayload(7))
@@ -487,7 +521,80 @@ mod tests {
         let body = simd_json::to_borrowed_value(&mut body).unwrap();
         let capabilities = body["params"][0].as_array().unwrap();
         assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getPayloadV5")));
+        assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_getPayloadV6")));
+        assert!(capabilities.iter().any(|v| v.as_str() == Some("engine_forkchoiceUpdatedV4")));
         assert!(!capabilities.iter().any(|v| v.as_str() == Some("engine_getPayloadV4")));
+    }
+
+    #[test]
+    fn fcu_without_building_encodes_custody_as_a_bitvector() {
+        let dir = tempfile::tempdir().unwrap();
+        let jwt = write_jwt(dir.path());
+        let socket = dir.path().join("engine.sock");
+        let mut el = FakeEl::uds(&socket);
+        let mut readiness = Readiness::new(16);
+        let mut client = EngineClient::new_uds(
+            readiness.registry(),
+            TokenRange::whole(),
+            &socket,
+            jwt.to_str().unwrap(),
+            4,
+            Duration::from_secs(10),
+        );
+        let bits = (1u128 << 127) | (1 << 8) | 1;
+        let cases = [(false, Some(bits)), (true, Some(bits)), (true, None), (true, Some(0))];
+        for (i, (is_gloas, columns)) in cases.into_iter().enumerate() {
+            send_fcu(
+                &mut client,
+                [i as u8; 32],
+                ForkchoiceState {
+                    head_block_hash: [i as u8; 32],
+                    safe_block_hash: [0; 32],
+                    finalized_block_hash: [0; 32],
+                },
+                is_gloas,
+                columns,
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while el.requests.len() < cases.len() {
+            assert!(Instant::now() < deadline, "timeout waiting for fork-choice updates");
+            readiness.wait(Duration::from_millis(1));
+            client.dispatch(readiness.events(), |_, response| {
+                panic!("unexpected response before the EL replied: {response:?}");
+            });
+            el.pump();
+        }
+        for request in &el.requests {
+            let mut bytes = request.body.as_bytes().to_vec();
+            let body = simd_json::to_owned_value(&mut bytes).unwrap();
+            let i = body["params"][0]["headBlockHash"].as_str().unwrap();
+            let i = usize::from_str_radix(&i[2..4], 16).unwrap();
+            assert_eq!(
+                request.method,
+                if cases[i].0 {
+                    "engine_forkchoiceUpdatedV4"
+                } else {
+                    "engine_forkchoiceUpdatedV3"
+                }
+            );
+            let params = body["params"].as_array().unwrap();
+            assert!(params[1].is_null());
+            if !cases[i].0 {
+                assert_eq!(params.len(), 2);
+                continue;
+            }
+            assert_eq!(params.len(), 3);
+            match cases[i].1 {
+                None => assert!(params[2].is_null()),
+                Some(0) => {
+                    assert_eq!(params[2].as_str(), Some("0x00000000000000000000000000000000"))
+                }
+                Some(_) => {
+                    assert_eq!(params[2].as_str(), Some("0x01010000000000000000000000000080"))
+                }
+            }
+        }
     }
 
     #[test]

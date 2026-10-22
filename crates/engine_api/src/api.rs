@@ -27,6 +27,7 @@ pub struct EngineApi {
     pub client: Option<EngineClient>,
     reader: TCacheReader,
     scratch: TapeScratch,
+    custody_columns: Option<u128>,
 
     first_run: bool,
     // The previous intake ran the request queue empty; licenses snapshots.
@@ -48,6 +49,7 @@ impl EngineApi {
         tokens: TokenRange,
         config: EngineConfig,
         tcaches: TCacheTable,
+        custody_columns: Option<u128>,
     ) -> Self {
         let client = if config.unsafe_no_el {
             silver_log::warn!(
@@ -74,6 +76,7 @@ impl EngineApi {
             healthcheck_deadline: Instant::now(),
             sync_status: ELSyncStatus::Unknown,
             scratch: TapeScratch::new(FRAME_SLACK),
+            custody_columns,
         }
     }
 
@@ -130,7 +133,13 @@ impl EngineApi {
         self.drained = false;
         while self.client.as_ref().unwrap().has_capacity() {
             let consumed = adapter.consume_one(|req: EngineReq, producers| {
-                handle_request(self.client.as_mut().unwrap(), &mut self.reader, &req, producers);
+                handle_request(
+                    self.client.as_mut().unwrap(),
+                    &mut self.reader,
+                    &req,
+                    self.custody_columns,
+                    producers,
+                );
             });
             if !consumed {
                 self.drained = true;
@@ -172,7 +181,9 @@ impl EngineApi {
                 ReqKind::Fcu(block_root) => out.fcu(block_root, response),
                 ReqKind::PreparePayload(spine_id) => out.prepare_payload(spine_id, response),
                 ReqKind::NewPayload(block_root) => out.new_payload(block_root, response),
-                ReqKind::GetPayloadFetch(spine_id) => out.get_payload(spine_id, response),
+                ReqKind::GetPayloadFetch { spine_id, is_gloas } => {
+                    out.get_payload(spine_id, is_gloas, response)
+                }
                 ReqKind::GetBlobs { block_root, slot } => out.get_blobs(block_root, slot, response),
             });
         }
