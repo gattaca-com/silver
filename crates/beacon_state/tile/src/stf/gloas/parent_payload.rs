@@ -53,7 +53,7 @@ pub fn process_parent_execution_payload(
     Ok(())
 }
 
-fn apply_parent_execution_payload(
+pub(crate) fn apply_parent_execution_payload(
     view: &mut StateWriterView,
     epoch: &EpochView,
     cfg: &SpecConfig,

@@ -20,6 +20,7 @@ pub(crate) fn request<'a>(method: &'a str, path: &'a str) -> ParsedRequest<'a> {
         content_type: None,
         eth_consensus_version: None,
         eth_builder_url: None,
+        eth_blob_data_included: None,
         version: 1,
         keep_alive: true,
     }

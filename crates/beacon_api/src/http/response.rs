@@ -10,7 +10,10 @@ use silver_pbs::SidecarCall;
 use crate::{
     events::ChannelSet,
     http::{json::Json, router::Outcome},
-    submission::{AcceptedEntry, BuilderForward, Submission, SubmissionFailure, failure_message},
+    submission::{
+        AcceptedEntry, BuilderForward, EnvelopePublication, Submission, SubmissionFailure,
+        failure_message,
+    },
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -51,6 +54,13 @@ impl<'a> Response<'a> {
         let Outcome::AwaitingVerdicts(submission) = &mut self.outcome else { return };
         let Some(entry) = submission.accepted.last() else { return };
         submission.forward = Some(BuilderForward { url: url.into(), ssz: entry.ssz });
+    }
+
+    pub(crate) fn await_payload_envelope(&mut self, body: &[u8], publication: EnvelopePublication) {
+        self.await_verdicts(0, [GossipTopic::ExecutionPayload], body.len(), |out| {
+            out.copy_from_slice(body)
+        });
+        self.submission().envelope = Some(publication);
     }
 
     pub(crate) fn fail_entry(&mut self, body_index: usize, message: &'static str) {

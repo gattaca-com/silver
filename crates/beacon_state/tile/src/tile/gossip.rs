@@ -870,7 +870,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    fn handle_proposer_preferences(&mut self, data: &[u8]) -> Feedback {
+    fn handle_proposer_preferences(&mut self, data: &[u8], local: bool) -> Feedback {
         let Ok(signed) = <&[u8; SIGNED_PROPOSER_PREFERENCES_SIZE]>::try_from(data) else {
             return Feedback::reject("proposer preferences size");
         };
@@ -878,7 +878,10 @@ impl BeaconStateTile {
         let proposal_slot = Prefs::proposal_slot(prefs);
         let dependent_root = *Prefs::dependent_root(prefs);
 
-        if self.seen_proposer_preferences.contains(proposal_slot, &dependent_root) {
+        let seen = self.seen_proposer_preferences.contains(proposal_slot, &dependent_root);
+        // Local duplicates still need authentication before enabling payload
+        // preparation.
+        if seen && !local {
             return Feedback::AlreadySeen;
         }
         let proposal_epoch = proposal_slot / SLOTS_PER_EPOCH;
@@ -926,11 +929,16 @@ impl BeaconStateTile {
             return Feedback::reject("proposer preferences bad signature");
         }
 
-        self.seen_proposer_preferences.insert(proposal_slot, dependent_root, ProposerPreferences {
-            fee_recipient: *Prefs::fee_recipient(prefs),
-            target_gas_limit: Prefs::target_gas_limit(prefs),
-        });
-        Feedback::Accept
+        self.seen_proposer_preferences.insert(
+            proposal_slot,
+            dependent_root,
+            ProposerPreferences {
+                fee_recipient: *Prefs::fee_recipient(prefs),
+                target_gas_limit: Prefs::target_gas_limit(prefs),
+            },
+            local,
+        );
+        if seen { Feedback::AlreadySeen } else { Feedback::Accept }
     }
 
     /// EF `fork_choice` vector path only: production gossip reaches the same
@@ -1627,7 +1635,9 @@ impl BeaconStateTile {
             ),
             GossipTopic::SyncCommitteeContributionAndProof => self.handle_sync_contribution(data),
             GossipTopic::ExecutionPayloadBid => self.handle_execution_payload_bid(data),
-            GossipTopic::ProposerPreferences => self.handle_proposer_preferences(data),
+            GossipTopic::ProposerPreferences => {
+                self.handle_proposer_preferences(data, m.stream_id == LOCAL_GOSSIP_STREAM_ID)
+            }
             _ => return true,
         };
         match feedback {
@@ -1750,7 +1760,7 @@ pub(super) fn is_sync_aggregator(selection_proof: &[u8; 96]) -> bool {
 #[cfg(feature = "ef_tests")]
 impl BeaconStateTile {
     pub fn ef_gossip_proposer_preferences(&mut self, ssz: &[u8]) -> Feedback {
-        self.handle_proposer_preferences(ssz)
+        self.handle_proposer_preferences(ssz, false)
     }
 
     pub fn ef_gossip_execution_payload_bid(&mut self, ssz: &[u8]) -> Feedback {

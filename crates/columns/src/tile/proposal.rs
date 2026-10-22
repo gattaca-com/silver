@@ -1,19 +1,23 @@
-use std::{array, iter};
+use std::array;
 
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_common::{
-    ColumnOrigin, DataColumnsEvent, GossipDomain, IngestionTime, SilverSpineProducers, SszCache,
-    TCacheProducer, TCacheRead, TProducer, TRead,
+    BeaconApiRequest, BeaconApiResponse, ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain,
+    GossipTopic, IngestionTime, LocalGossipFailure, PayloadFrame, ProposedPayload,
+    SilverSpineProducers, SszCache, TCacheProducer, TCacheRead, TProducer, TRead,
     block_contents::SignedBlockContents,
+    cell_store::{CommitmentContext, ContextData},
     column_util::{
-        CellScratch, KzgBatchEntry, KzgScratch, data_column_sidecar_len,
-        fulu_header_and_inclusion_proof, kzg_verify_batch_multi, write_data_column_sidecar_fulu,
+        CellScratch, KzgBatchEntry, KzgScratch, fulu_header_and_inclusion_proof,
+        kzg_verify_batch_multi,
     },
+    envelope_contents::SignedEnvelopeContents,
     ssz_hash::hash_beacon_block_header_bytes,
     ssz_view::{
-        BYTES_PER_CELL, BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView, DATA_COLUMN_SIDECAR_MIN,
-        DataColumnSidecarFuluView, NUMBER_OF_COLUMNS, SignedBeaconBlockView,
+        BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_KZG_PROOF, BeaconBlockBodyFuluView,
+        ExecutionPayloadEnvelopeView, ExecutionPayloadView, NUMBER_OF_COLUMNS,
+        SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
     },
 };
 
@@ -78,21 +82,31 @@ impl ProposedBlocks {
     #[timed]
     fn write_sidecars(
         &mut self,
-        slot: u64,
-        header: &[u8; 208],
-        inclusion_proof: &[u8; 128],
-        commitments: &[u8],
-        contents: &SignedBlockContents,
+        context: CommitmentContext,
+        data: ContextData<'_>,
+        blobs: &[u8],
+        proofs: &[u8],
         kzg_scratch: &mut KzgScratch,
-    ) -> Option<[TCacheRead; NUMBER_OF_COLUMNS]> {
-        let blob_count = contents.blob_count();
-        let len = data_column_sidecar_len(blob_count);
-
+    ) -> Result<[TCacheRead; NUMBER_OF_COLUMNS], LocalGossipFailure> {
+        let slot = context.slot;
+        let blob_count = context.blob_count;
+        if !data.valid_for(context) ||
+            blobs.len() != blob_count * BYTES_PER_BLOB ||
+            proofs.len() != blob_count * NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF
+        {
+            return Err(LocalGossipFailure::Invalid);
+        }
+        let (_, cells_at) = data.column_prefix(context, 0);
+        let cells_end = cells_at + blob_count * BYTES_PER_CELL;
+        let commitments_len =
+            if context.format == ForkName::Fulu { data.commitments().len() } else { 0 };
+        let proofs_at = cells_end + commitments_len;
+        let len = proofs_at + blob_count * BYTES_PER_KZG_PROOF;
         let reservations: [_; NUMBER_OF_COLUMNS] =
             array::from_fn(|_| self.producer.reserve(len, true));
         if reservations.iter().any(Option::is_none) {
             silver_log::error!(slot, "proposed_columns tcache full; columns not published");
-            return None;
+            return Err(LocalGossipFailure::Internal);
         }
         let reservations = reservations.map(|reservation| reservation.expect("reserved"));
         let mut sidecars = reservations
@@ -100,28 +114,25 @@ impl ProposedBlocks {
             .map(|reservation| &mut reservation.buffer().expect("uncommitted")[..len]);
 
         for (column, sidecar) in sidecars.iter_mut().enumerate() {
-            let proof_at = column * BYTES_PER_KZG_PROOF;
-            write_data_column_sidecar_fulu(
-                sidecar,
-                column as u64,
-                header,
-                inclusion_proof,
-                commitments,
-                iter::empty(),
-                (0..blob_count).map(|blob| {
-                    contents.cell_proofs(blob)[proof_at..proof_at + BYTES_PER_KZG_PROOF]
-                        .try_into()
-                        .expect("48 bytes")
-                }),
-            );
+            let (prefix, prefix_len) = data.column_prefix(context, column);
+            sidecar[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
+            if commitments_len > 0 {
+                sidecar[cells_end..proofs_at].copy_from_slice(data.commitments());
+            }
+            for blob in 0..blob_count {
+                let proof_at = (blob * NUMBER_OF_COLUMNS + column) * BYTES_PER_KZG_PROOF;
+                let dest = proofs_at + blob * BYTES_PER_KZG_PROOF;
+                sidecar[dest..dest + BYTES_PER_KZG_PROOF]
+                    .copy_from_slice(&proofs[proof_at..proof_at + BYTES_PER_KZG_PROOF]);
+            }
         }
 
-        for blob in 0..blob_count {
-            let Some(cells) = self.cells.compute(contents.blob(blob)) else {
+        for (blob, bytes) in blobs.chunks_exact(BYTES_PER_BLOB).enumerate() {
+            let Some(cells) = self.cells.compute(bytes.try_into().expect("one blob")) else {
                 silver_log::error!(slot, blob, "proposed blob has no cells");
-                return None;
+                return Err(LocalGossipFailure::Invalid);
             };
-            let cell_at = DATA_COLUMN_SIDECAR_MIN + blob * BYTES_PER_CELL;
+            let cell_at = cells_at + blob * BYTES_PER_CELL;
             for (sidecar, cell) in sidecars.iter_mut().zip(cells.iter()) {
                 sidecar[cell_at..cell_at + BYTES_PER_CELL].copy_from_slice(cell);
             }
@@ -129,17 +140,17 @@ impl ProposedBlocks {
 
         // The submitter may not be the validator client this node built for.
         let entries = sidecars.iter().zip(0..).map(|(sidecar, index)| KzgBatchEntry {
-            column: DataColumnSidecarFuluView::column(sidecar),
-            commitments: DataColumnSidecarFuluView::kzg_commitments(sidecar),
-            proofs: DataColumnSidecarFuluView::kzg_proofs(sidecar),
+            column: &sidecar[cells_at..cells_end],
+            commitments: data.commitments(),
+            proofs: &sidecar[proofs_at..],
             index,
         });
         if !kzg_verify_batch_multi(entries, kzg_scratch) {
             silver_log::error!(slot, "submitted blobs or proofs fail KZG; columns not published");
-            return None;
+            return Err(LocalGossipFailure::Invalid);
         }
 
-        Some(reservations.map(|mut reservation| {
+        Ok(reservations.map(|mut reservation| {
             reservation.increment_offset(len);
             reservation.read()
         }))
@@ -196,12 +207,22 @@ impl DataColumnsTile {
             return;
         };
         let Some(domain) = self.validator.domain_at(slot) else { return };
-        let Some(sidecars) = self.proposed.write_sidecars(
+        let context = CommitmentContext {
+            block_root,
             slot,
-            &header,
-            &inclusion_proof,
+            format: ForkName::Fulu,
+            blob_count: contents.blob_count(),
+        };
+        let data = ContextData::Fulu {
+            signed_header: &header,
+            inclusion_proof: &inclusion_proof,
             commitments,
-            &contents,
+        };
+        let Ok(sidecars) = self.proposed.write_sidecars(
+            context,
+            data,
+            contents.blobs,
+            contents.kzg_proofs,
             &mut self.kzg_scratch,
         ) else {
             return;
@@ -211,6 +232,68 @@ impl DataColumnsTile {
         self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
         let blob_count = contents.blob_count();
         self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });
+    }
+
+    pub(super) fn publish_payload_columns(
+        &mut self,
+        proposal: ProposedPayload,
+        producers: &mut SilverSpineProducers,
+    ) {
+        if let Err(failure) = self.build_payload_columns(proposal, producers) {
+            producers.produce(BeaconApiResponse::LocalGossipResponse {
+                request_id: proposal.request_id,
+                response: Err(failure),
+            });
+        }
+    }
+
+    fn build_payload_columns(
+        &mut self,
+        proposal: ProposedPayload,
+        producers: &mut SilverSpineProducers,
+    ) -> Result<(), LocalGossipFailure> {
+        let signed_read = self.reader.acquire(proposal.ssz);
+        let acquired = self.reader.acquire(proposal.contents);
+        let bytes = acquired.buffer().map_err(|_| LocalGossipFailure::Internal)?.0;
+        let payload = proposal.payload.map(|read| self.reader.acquire(read));
+        let (signed, blobs, proofs) = if let Some(payload) = &payload {
+            let frame =
+                PayloadFrame::parse(payload.buffer().map_err(|_| LocalGossipFailure::Internal)?.0)
+                    .ok_or(LocalGossipFailure::Internal)?;
+            (bytes, frame.blobs, frame.cell_proofs)
+        } else {
+            let contents =
+                SignedEnvelopeContents::parse(bytes).ok_or(LocalGossipFailure::Invalid)?;
+            (contents.signed_envelope, contents.blobs, contents.kzg_proofs)
+        };
+        if signed_read.buffer().map_err(|_| LocalGossipFailure::Internal)?.0 != signed {
+            return Err(LocalGossipFailure::Internal);
+        }
+        if !SignedExecutionPayloadEnvelopeView::check_canonical(signed) {
+            return Err(LocalGossipFailure::Invalid);
+        }
+        let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
+        let block_root = *ExecutionPayloadEnvelopeView::beacon_block_root(envelope);
+        let slot =
+            ExecutionPayloadView::slot_number(ExecutionPayloadEnvelopeView::payload(envelope));
+        let commitments = self.reader.acquire(proposal.commitments);
+        let commitments = commitments.buffer().map_err(|_| LocalGossipFailure::Internal)?.0;
+        let blob_count = commitments.len() / 48;
+        let context = CommitmentContext { block_root, slot, format: ForkName::Gloas, blob_count };
+        let data = ContextData::Gloas { commitments };
+        let domain = self.validator.domain_at(slot).ok_or(LocalGossipFailure::Unverifiable)?;
+        let sidecars =
+            self.proposed.write_sidecars(context, data, blobs, proofs, &mut self.kzg_scratch)?;
+        self.proposed.hold(HeldBlock { block_root, slot, domain, blob_count, sidecars });
+        self.publish_proposed_columns(&block_root, producers);
+        let custody = self.tracker.custody_columns();
+        self.tracker.record_and_notify(block_root, slot, custody, IngestionTime::now(), producers);
+        producers.produce(BeaconApiRequest::LocalGossip {
+            request_id: proposal.request_id,
+            topic: GossipTopic::ExecutionPayload,
+            ssz: signed_read.to_read(),
+        });
+        Ok(())
     }
 
     /// Custody columns are stored as well as published.

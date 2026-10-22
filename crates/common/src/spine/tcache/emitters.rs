@@ -24,6 +24,7 @@ impl TileId {
             (Self::Columns, TCacheId::NetworkProcessing) => "dc_network_processing",
             (Self::Columns, TCacheId::ControlGossip) => "dc_control_gossip",
             (Self::Columns, TCacheId::ControlSlot) => "dc_control_slot",
+            (Self::Columns, TCacheId::BeaconStateHandoff) => "dc_beacon_state_handoff",
             (Self::Control, TCacheId::ControlGossip) => "gossip_mcache",
             (Self::Control, TCacheId::BoundaryProcessing) => "ctl_boundary_processing",
             _ => panic!("{self:?} does not forward reads of {cache:?}"),

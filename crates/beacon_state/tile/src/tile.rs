@@ -69,6 +69,7 @@ mod held_blocks;
 mod orphan_pool;
 mod payload_attestation_pool;
 mod payload_execution_requests;
+mod payload_publication;
 mod pending_envelopes;
 mod proposer_preparations;
 mod seen_aggregates;
@@ -655,12 +656,9 @@ impl BeaconStateTile {
 
     fn publish_selected_head(&mut self, head: SelectedHead, producers: &mut Producers) {
         let event = self.status_event(head);
-        let moved = self.emitted_head.is_some_and(|emitted| emitted.root != head.observation.root);
         self.emitted_head = Some(head.observation);
         producers.produce(event);
-        if moved {
-            self.prepare_payload_on_new_head(producers);
-        }
+        self.refresh_payload_preparation(producers);
     }
 
     fn serve_aggregate(
@@ -913,6 +911,20 @@ impl BeaconStateTile {
         self.expire_payload_waits(&mut adapter.producers);
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
+            BeaconApiRequest::PublishPayloadEnvelope {
+                request_id,
+                ssz,
+                blob_data_included,
+                validation,
+            } => {
+                self.publish_payload_envelope(
+                    request_id,
+                    ssz,
+                    blob_data_included,
+                    validation,
+                    producers,
+                );
+            }
             BeaconApiRequest::AggregateAttestation {
                 request_id,
                 slot,
@@ -933,6 +945,11 @@ impl BeaconStateTile {
             ),
             BeaconApiRequest::ProposerPreparations { preparations } => {
                 self.record_proposer_preparations(preparations)
+            }
+            BeaconApiRequest::ExecutionPayloadEnvelope { request_id, slot, beacon_block_root } => {
+                let envelope = self.local_payload_envelope(slot, &beacon_block_root);
+                producers
+                    .produce(BeaconApiResponse::ExecutionPayloadEnvelope { request_id, envelope });
             }
             BeaconApiRequest::ProduceBlock {
                 request_id,

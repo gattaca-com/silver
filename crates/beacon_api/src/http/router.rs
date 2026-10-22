@@ -11,8 +11,8 @@ use crate::{
     http::response::Response,
     submission::Submission,
     validator::{
-        aggregate_attestation::AggregateRequest, produce_block::ProduceBlockRequest,
-        sync_contribution::SyncCommitteeContributionRequest,
+        aggregate_attestation::AggregateRequest, execution_payload_envelope::EnvelopeRequest,
+        produce_block::ProduceBlockRequest, sync_contribution::SyncCommitteeContributionRequest,
     },
 };
 
@@ -48,6 +48,7 @@ pub(crate) enum Outcome {
     AwaitingAggregate(AggregateRequest),
     AwaitingContribution(SyncCommitteeContributionRequest),
     AwaitingProducedBlock(ProduceBlockRequest),
+    AwaitingEnvelope(EnvelopeRequest),
     AwaitingVerdicts(Submission),
     AwaitingSidecarResponse(SidecarCall),
     AwaitingBlindedBlockLock { ssz: TCacheRead },
@@ -71,6 +72,7 @@ pub(crate) struct Request<'a> {
     pub(crate) content_type: Option<&'a str>,
     pub(crate) eth_consensus_version: Option<&'a str>,
     pub(crate) eth_builder_url: Option<&'a str>,
+    pub(crate) eth_blob_data_included: Option<&'a str>,
     pub(crate) body: &'a [u8],
 }
 
@@ -206,6 +208,7 @@ impl Router {
                 content_type: req.content_type,
                 eth_consensus_version: req.eth_consensus_version,
                 eth_builder_url: req.eth_builder_url,
+                eth_blob_data_included: req.eth_blob_data_included,
                 body: req.body,
             };
             let mut response = Response::new(out, submissions);
@@ -267,6 +270,7 @@ mod tests {
             content_type: None,
             eth_consensus_version: None,
             eth_builder_url: None,
+            eth_blob_data_included: None,
             version: 1,
             keep_alive: true,
         }
@@ -324,6 +328,7 @@ mod tests {
             content_type,
             eth_consensus_version: None,
             eth_builder_url: None,
+            eth_blob_data_included: None,
             version: 1,
             keep_alive: true,
         };

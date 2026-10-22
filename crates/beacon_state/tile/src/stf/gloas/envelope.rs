@@ -22,6 +22,9 @@ pub fn verify_execution_payload_envelope(
     cfg: &SpecConfig,
     signed: &[u8],
 ) -> Result<(), E> {
+    if !SignedExecutionPayloadEnvelopeView::check_canonical(signed) {
+        return Err(E::Malformed);
+    }
     let envelope = SignedExecutionPayloadEnvelopeView::message(signed);
     let payload = ExecutionPayloadEnvelopeView::payload(envelope);
     let (wd_off, bal_off) = withdrawal_bounds(payload)?;
@@ -88,6 +91,10 @@ pub fn envelope_execution_requests(signed: &[u8]) -> &[u8] {
 pub fn envelope_withdrawals_match_expected(rv: &StateReadView, signed: &[u8]) -> bool {
     let payload =
         ExecutionPayloadEnvelopeView::payload(SignedExecutionPayloadEnvelopeView::message(signed));
+    payload_withdrawals_match_expected(rv, payload)
+}
+
+pub(crate) fn payload_withdrawals_match_expected(rv: &StateReadView, payload: &[u8]) -> bool {
     let Ok((wd_off, bal_off)) = withdrawal_bounds(payload) else { return false };
     let withdrawals = &payload[wd_off..bal_off];
     let expected = &rv.slot.state().payload_expected_withdrawals;

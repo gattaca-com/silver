@@ -136,6 +136,7 @@ pub enum OutboundKind {
     Reorg,
     AttestersShuffling,
     LocalGossipVerdict,
+    ProposedPayload,
     PoolChange,
     NewPayload,
     NewPayloadEnvelope,
@@ -160,6 +161,7 @@ impl OutboundKind {
             "reorg" => Self::Reorg,
             "attesters_shuffling" => Self::AttestersShuffling,
             "local_gossip_verdict" => Self::LocalGossipVerdict,
+            "proposed_payload" => Self::ProposedPayload,
             "pool_change" => Self::PoolChange,
             "new_payload" => Self::NewPayload,
             "new_payload_envelope" => Self::NewPayloadEnvelope,
@@ -180,6 +182,7 @@ impl OutboundKind {
             BeaconStateEvent::Reorg { .. } => Self::Reorg,
             BeaconStateEvent::AttestersShuffling { .. } => Self::AttestersShuffling,
             BeaconStateEvent::LocalGossipVerdict { .. } => Self::LocalGossipVerdict,
+            BeaconStateEvent::ProposedPayload(_) => Self::ProposedPayload,
             BeaconStateEvent::PoolChange(_) => Self::PoolChange,
         }
     }

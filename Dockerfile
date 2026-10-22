@@ -15,6 +15,8 @@ RUN apt-get update && \
 WORKDIR /silver
 COPY . .
 
+ARG SILVER_BUILD_COMMIT
+
 # `--locked`: the committed Cargo.lock is under a publish-age cooldown (see
 # the justfile), so resolution must not drift in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
