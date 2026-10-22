@@ -334,10 +334,10 @@ fn lanes_above(distance: usize) -> [i64; LANES] {
     from
 }
 
-/// A set bit of |z| below the top one, where both chains start.
-fn is_lower_z_bit(bit: u32) -> bool {
+/// A set bit of |z| below the top one, where chains over |z| start.
+pub(crate) fn is_lower_z_bit(bit: u32) -> bool {
     bit == Z_BITS[1] || bit == Z_BITS[2] || bit == Z_BITS[3] || bit == Z_BITS[4] || bit == Z_BITS[5]
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -559,4 +559,4 @@ fn line_operands(group_a: &Fp2x8, group_b: &Fp2x8) -> [Fp8; 5] {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

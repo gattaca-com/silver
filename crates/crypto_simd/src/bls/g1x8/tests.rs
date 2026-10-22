@@ -150,7 +150,7 @@ fn formulas_match_the_reference_on_random_lanes() {
 }
 
 /// Multiples of the generator by random 255-bit scalars, whose z is not 1.
-fn random_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1> {
+pub(crate) fn random_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1> {
     (0..n)
         .map(|_| {
             let mut scalar: [u8; 32] = rng.r#gen();
@@ -165,7 +165,7 @@ fn random_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1> {
 }
 
 /// The same point at another Jacobian scale: (λ²x, λ³y, λz).
-fn rescaled(point: &blst_p1, lambda: u64) -> blst_p1 {
+pub(crate) fn rescaled(point: &blst_p1, lambda: u64) -> blst_p1 {
     let (mut l, mut l2, mut l3) = (blst_fp::default(), blst_fp::default(), blst_fp::default());
     let mut out = blst_p1::default();
     // SAFETY: valid pointers to single values; blst reads six words.
@@ -187,7 +187,7 @@ fn negated(point: &blst_p1) -> blst_p1 {
     out
 }
 
-fn affine(point: &blst_p1) -> blst_p1_affine {
+pub(crate) fn affine(point: &blst_p1) -> blst_p1_affine {
     let mut out = blst_p1_affine::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_p1_to_affine(&mut out, point) };
@@ -207,7 +207,7 @@ fn coordinate(values: &[blst_fp; LANES]) -> Fp8 {
 }
 
 #[target_feature(enable = "avx512f,avx512ifma")]
-fn in_lanes(points: &[blst_p1; LANES]) -> G1x8 {
+pub(crate) fn in_lanes(points: &[blst_p1; LANES]) -> G1x8 {
     G1x8 {
         x: coordinate(&points.map(|p| p.x)),
         y: coordinate(&points.map(|p| p.y)),

@@ -296,7 +296,7 @@ fn pairing_lines_are_the_spec_lines() {
         out
     }
     fn stored(step: usize, lane: usize) -> blst_fp2 {
-        let lanes = &PAIRING_LINES[step];
+        let lanes = &PAIRING_LINES.0[step];
         blst_fp2 { fp: [blst_of_fp8_form(&lanes[lane]), blst_of_fp8_form(&lanes[lane + 1])] }
     }
     fn times(a: &blst_fp2, b: &blst_fp) -> blst_fp2 {
@@ -316,7 +316,7 @@ fn pairing_lines_are_the_spec_lines() {
     w_cubed.fp6[1].fp2[1].fp[0] = fp(1);
     for (lane, q) in [(0, &G2_S_POW_CELL), (4, &G2_NEG_GENERATOR)] {
         let spec = miller_lines(&of_g2(q), &of_g1(&p));
-        assert_eq!(spec.len(), PAIRING_LINES.len());
+        assert_eq!(spec.len(), PAIRING_LINES.0.len());
         for (step, line) in spec.iter().enumerate() {
             let scaled = mul(line, &w_cubed);
             let mut c = zero();

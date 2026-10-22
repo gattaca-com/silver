@@ -2,8 +2,8 @@
 //! pairing on lanes is tested against.
 
 use blst::{
-    blst_fp, blst_fp_from_uint64, blst_fp_sub, blst_fp2, blst_fp6, blst_fp12, blst_fp12_inverse,
-    blst_fp12_mul,
+    blst_fp, blst_fp_from_uint64, blst_fp_sub, blst_fp2, blst_fp6, blst_fp12, blst_fp12_conjugate,
+    blst_fp12_inverse, blst_fp12_mul, blst_p1_affine_is_inf, blst_p2_affine_is_inf,
 };
 
 use crate::bls::{blst_p1_affine, blst_p2_affine};
@@ -44,7 +44,7 @@ pub(crate) fn mul(a: &blst_fp12, b: &blst_fp12) -> blst_fp12 {
     out
 }
 
-fn inverse(a: &blst_fp12) -> blst_fp12 {
+pub(crate) fn inverse(a: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_inverse(&mut out, a) };
@@ -107,19 +107,59 @@ fn add(t: &Point, r0: &Point, p: &Point) -> (Point, blst_fp12) {
     (Point { x, y }, eval_at(t, &m, p))
 }
 
-/// The lines `millerLoop X_ABS r0 p` multiplies in, in order.
-pub(crate) fn miller_lines(r0: &Point, p: &Point) -> Vec<blst_fp12> {
-    let mut lines = Vec::new();
+/// The lines `millerLoop X_ABS r0 p` multiplies in, in order, each with
+/// whether its step doubles, and so squares f first.
+fn miller_steps(r0: &Point, p: &Point) -> Vec<(bool, blst_fp12)> {
+    let mut steps = Vec::new();
     let mut t = *r0;
     for bit in (0..u64::BITS - X_ABS.leading_zeros() - 1).rev() {
         let (doubled, line) = double(&t, p);
-        lines.push(line);
+        steps.push((true, line));
         t = doubled;
         if X_ABS >> bit & 1 == 1 {
             let (sum, line) = add(&t, r0, p);
-            lines.push(line);
+            steps.push((false, line));
             t = sum;
         }
     }
-    lines
+    steps
+}
+
+/// The lines `millerLoop X_ABS r0 p` multiplies in, in order.
+pub(crate) fn miller_lines(r0: &Point, p: &Point) -> Vec<blst_fp12> {
+    miller_steps(r0, p).into_iter().map(|(_, line)| line).collect()
+}
+
+/// `millerLoop X_ABS r0 p`.
+pub(crate) fn miller_loop(r0: &Point, p: &Point) -> blst_fp12 {
+    let mut f = of_fp(&fp(1));
+    for (doubles, line) in miller_steps(r0, p) {
+        if doubles {
+            f = mul(&f, &f);
+        }
+        f = mul(&f, &line);
+    }
+    f
+}
+
+pub(crate) fn conjugate(f: &blst_fp12) -> blst_fp12 {
+    let mut out = *f;
+    // SAFETY: a valid pointer to a single value.
+    unsafe { blst_fp12_conjugate(&mut out) };
+    out
+}
+
+/// `pairingCheck`'s accumulator before the final exponentiation: the
+/// product of the pairs' conjugated Miller values, leaving out each pair
+/// with a point at infinity.
+pub(crate) fn pairing_product(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> blst_fp12 {
+    let mut acc = of_fp(&fp(1));
+    for (p, q) in pairs {
+        // SAFETY: valid pointers to single values.
+        if unsafe { blst_p1_affine_is_inf(p) || blst_p2_affine_is_inf(q) } {
+            continue;
+        }
+        acc = mul(&acc, &conjugate(&miller_loop(&of_g2(q), &of_g1(p))));
+    }
+    acc
 }
