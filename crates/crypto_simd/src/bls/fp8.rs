@@ -545,6 +545,21 @@ impl Fp8 {
         Self(v)
     }
 
+    /// Lane l takes lane `from[l]` of `self` below 8, else lane `from[l] − 8`
+    /// of `other`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn permute2(&self, other: &Self, from: &[i64; LANES]) -> Self {
+        let index = index_vector(from);
+        let mut v = [zero(); LIMBS];
+        let mut j = 0;
+        while j < LIMBS {
+            v[j] = _mm512_permutex2var_epi64(self.0[j], index, other.0[j]);
+            j += 1;
+        }
+        Self(v)
+    }
+
     /// `self^((p-3)/4)`: the reciprocal square root when `self` is a
     /// quadratic residue (p = 3 mod 4). The exponent is shared by every lane,
     /// so a fixed 4-bit window needs no per-lane table lookups.

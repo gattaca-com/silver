@@ -6,7 +6,7 @@
 
 use std::arch::x86_64::__mmask8;
 
-use crate::bls::fp8::{Fp8, Limbs};
+use crate::bls::fp8::{Fp8, LANES, Limbs};
 
 #[derive(Clone, Copy)]
 pub struct Fp2x8 {
@@ -101,6 +101,29 @@ impl Fp2x8 {
     #[inline]
     pub fn mul_by_i(&self) -> Self {
         Self { c0: self.c1.neg(), c1: self.c0 }
+    }
+
+    /// Times ξ = 1 + i: (c0 − c1, c0 + c1), lazy, with `offset` bounding c1
+    /// as `Fp8::sub_raw` needs.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn mul_by_xi_raw(&self, offset: &Fp8) -> Self {
+        Self { c0: self.c0.sub_raw(&self.c1, offset), c1: self.c0.add_raw(&self.c1) }
+    }
+
+    /// Lane l takes lane `from[l]`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn permute(&self, from: &[i64; LANES]) -> Self {
+        Self { c0: self.c0.permute(from), c1: self.c1.permute(from) }
+    }
+
+    /// Lane l takes lane `from[l]` of `self` below 8, else lane `from[l] − 8`
+    /// of `other`.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline]
+    pub fn permute2(&self, other: &Self, from: &[i64; LANES]) -> Self {
+        Self { c0: self.c0.permute2(&other.c0, from), c1: self.c1.permute2(&other.c1, from) }
     }
 
     /// Lanes of `k` take `b`, the rest `a`.

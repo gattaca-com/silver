@@ -27,6 +27,9 @@ pub mod decompress;
 pub mod decompress_g2;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+pub mod fp12;
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::missing_safety_doc)]
 pub mod fp2x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
