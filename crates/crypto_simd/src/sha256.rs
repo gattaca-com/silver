@@ -149,10 +149,8 @@ impl Sha256 {
 fn compress_blocks(state: &[u32; 8], data: &[u8], offset: usize, blocks: usize) -> [u32; 8] {
     let data = &data[offset..offset + BLOCK * blocks];
     let byte_swap = _mm_set_epi64x(0x0c0d_0e0f_0809_0a0b, 0x0405_0607_0001_0203);
-    // SAFETY: `state` holds eight words, so both loads stay inside it.
-    let (dcba, hgfe) = unsafe {
-        (_mm_loadu_si128(state.as_ptr().cast()), _mm_loadu_si128(state.as_ptr().add(4).cast()))
-    };
+    let dcba = load_words(&[state[0], state[1], state[2], state[3]]);
+    let hgfe = load_words(&[state[4], state[5], state[6], state[7]]);
     let cdab = _mm_shuffle_epi32(dcba, 0xb1);
     let efgh = _mm_shuffle_epi32(hgfe, 0x1b);
     let mut abef = _mm_alignr_epi8(cdab, efgh, 8);
@@ -163,16 +161,14 @@ fn compress_blocks(state: &[u32; 8], data: &[u8], offset: usize, blocks: usize) 
         let mut w = [abef; 4];
         let mut i = 0;
         while i < 4 {
-            // SAFETY: block < blocks and i < 4 keep the 16 bytes inside `data`.
-            let bytes =
-                unsafe { _mm_loadu_si128(data.as_ptr().add(BLOCK * block + 16 * i).cast()) };
-            w[i] = _mm_shuffle_epi8(bytes, byte_swap);
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&data[BLOCK * block + 16 * i..BLOCK * block + 16 * i + 16]);
+            w[i] = _mm_shuffle_epi8(load_bytes(&bytes), byte_swap);
             i += 1;
         }
         let mut quad = 0;
         while quad < 16 {
-            // SAFETY: quad < 16 keeps the four words inside `K`.
-            let k = unsafe { _mm_loadu_si128(K.as_ptr().add(4 * quad).cast()) };
+            let k = load_words(&[K[4 * quad], K[4 * quad + 1], K[4 * quad + 2], K[4 * quad + 3]]);
             let wk = _mm_add_epi32(w[0], k);
             cdgh = _mm_sha256rnds2_epu32(cdgh, abef, wk);
             abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(wk, 0x0e));
@@ -194,13 +190,28 @@ fn compress_blocks(state: &[u32; 8], data: &[u8], offset: usize, blocks: usize) 
     }
     let feba = _mm_shuffle_epi32(abef, 0x1b);
     let dchg = _mm_shuffle_epi32(cdgh, 0xb1);
-    let mut out = [0u32; 8];
-    // SAFETY: `out` holds eight words, so both stores stay inside it.
-    unsafe {
-        _mm_storeu_si128(out.as_mut_ptr().cast::<__m128i>(), _mm_blend_epi16(feba, dchg, 0xf0));
-        _mm_storeu_si128(out.as_mut_ptr().add(4).cast::<__m128i>(), _mm_alignr_epi8(dchg, feba, 8));
-    }
-    out
+    let low = store_words(_mm_blend_epi16(feba, dchg, 0xf0));
+    let high = store_words(_mm_alignr_epi8(dchg, feba, 8));
+    [low[0], low[1], low[2], low[3], high[0], high[1], high[2], high[3]]
+}
+
+// Aeneas cannot model raw pointers, so they stay inside these three opaque
+// functions.
+fn load_bytes(bytes: &[u8; 16]) -> __m128i {
+    // SAFETY: the load reads the array's 16 bytes.
+    unsafe { _mm_loadu_si128(bytes.as_ptr().cast()) }
+}
+
+fn load_words(words: &[u32; 4]) -> __m128i {
+    // SAFETY: the load reads the array's 16 bytes.
+    unsafe { _mm_loadu_si128(words.as_ptr().cast()) }
+}
+
+fn store_words(v: __m128i) -> [u32; 4] {
+    let mut words = [0u32; 4];
+    // SAFETY: the store writes the array's 16 bytes.
+    unsafe { _mm_storeu_si128(words.as_mut_ptr().cast(), v) };
+    words
 }
 
 #[cfg(test)]
