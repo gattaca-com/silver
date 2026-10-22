@@ -10,6 +10,8 @@ default = ["simd"]
 simd = []
 # Tests against the reference vectors that `make -C crates/crypto_simd` fetches.
 spec_vectors = []
+# The portable Fp product on `_mulx_u64` and `_addcarry_u64` instead of `u128`.
+portable_mulx = []
 
 [dependencies]
 blst.workspace = true
