@@ -3,13 +3,12 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::Sha256;
-use crate::kernels_run;
+use crate::sha_kernel_runs;
 
-/// For tests that have seen `kernels_run` hold.
+/// For tests that have seen `sha_kernel_runs` hold.
 fn digest(message: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // SAFETY: `kernels_run` implies `ifma_available`, which covers the SHA
-    // extensions and SSE4.1.
+    // SAFETY: `sha_kernel_runs` checked the SHA extensions and SSE4.1.
     unsafe {
         hasher.update(message);
         hasher.finish()
@@ -34,7 +33,7 @@ fn from_hex(hex: &str) -> [u8; 32] {
 /// The examples of FIPS 180-2's Appendix B, and the empty message.
 #[test]
 fn fips_examples() {
-    if !kernels_run() {
+    if !sha_kernel_runs() {
         return;
     }
     let cases: [(&[u8], &str); 3] = [
@@ -58,7 +57,7 @@ fn fips_examples() {
 /// padding blocks, after zero to four full blocks.
 #[test]
 fn every_length_to_five_blocks_matches_blst() {
-    if !kernels_run() {
+    if !sha_kernel_runs() {
         return;
     }
     let mut message = [0u8; 5 * 64];
@@ -70,7 +69,7 @@ fn every_length_to_five_blocks_matches_blst() {
 
 #[test]
 fn parts_hash_as_their_concatenation() {
-    if !kernels_run() {
+    if !sha_kernel_runs() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a);

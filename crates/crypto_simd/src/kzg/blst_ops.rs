@@ -9,12 +9,14 @@ use blst::{
     blst_scalar_fr_check,
 };
 use blst::{
-    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_fr_from_scalar, blst_miller_loop_n,
-    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
+    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_miller_loop_n, blst_p1,
+    blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
     blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
     blst_p1s_mult_pippenger_scratch_sizeof, blst_p2_affine, blst_p2_affine_is_inf, blst_scalar,
-    blst_scalar_from_bendian, blst_scalar_from_fr, blst_sha256, limb_t,
+    blst_scalar_from_fr, limb_t,
 };
+#[cfg(any(test, not(target_arch = "x86_64")))]
+use blst::{blst_fr_from_scalar, blst_scalar_from_bendian, blst_sha256};
 
 const SCALAR_BITS: usize = 255;
 /// blst's Pippenger is slower than one multiplication per point below this many
@@ -94,6 +96,7 @@ pub fn fr_inverse(a: &blst_fr) -> blst_fr {
 }
 
 /// SHA-256 of `message`, read as a big-endian integer and reduced modulo r.
+#[cfg(any(test, not(target_arch = "x86_64")))]
 pub fn hash_to_fr(message: &[u8]) -> blst_fr {
     let mut digest = [0u8; 32];
     let mut scalar = blst_scalar::default();

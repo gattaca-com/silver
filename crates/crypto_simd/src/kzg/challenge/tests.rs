@@ -5,7 +5,7 @@ use super::Preimage;
 #[cfg(target_arch = "x86_64")]
 use super::{challenge_in_parts, challenge_in_parts_portable};
 #[cfg(target_arch = "x86_64")]
-use crate::kernels_run;
+use crate::sha_kernel_runs;
 use crate::{
     bls::COMPRESSED_LEN,
     kzg::{BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, blst_ops},
@@ -70,9 +70,8 @@ fn challenge_matches_blst() {
             preimage.challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
         assert!(got == expected, "buffer, {unique} commitments, {n} cells");
         #[cfg(target_arch = "x86_64")]
-        if kernels_run() {
-            // SAFETY: `kernels_run` implies `ifma_available`, which covers the
-            // SHA extensions and SSE4.1.
+        if sha_kernel_runs() {
+            // SAFETY: `sha_kernel_runs` checked the SHA extensions and SSE4.1.
             let got = unsafe {
                 challenge_in_parts(
                     &commitments,

@@ -67,6 +67,7 @@ trap 'rm -rf "$work"' EXIT
 # A separate target directory keeps Charon's nightly build out of the workspace's `target/`.
 # `fp8::lanes` is a `transmute`, which Aeneas cannot translate; FunsExternal.lean defines it.
 # The `sha256` loads and stores hold raw pointers, which Aeneas cannot model.
+# The `*_available` checks query the CPU; FunsExternal.lean leaves their answers free.
 # Each blst wrapper stays external; making the whole module opaque crashes this Aeneas revision.
 opq=()
 while read -r function; do
@@ -78,6 +79,7 @@ done < <(sed -n 's/^pub fn \([a-z0-9_]*\).*/\1/p' "$crate_dir/src/kzg/blst_ops.r
     --start-from crate::bls::uncompress_in_g2 \
     --start-from crate::kzg::verify --start-from crate::kzg::cell_extender "${opq[@]}" \
     --opaque crate::bls::fp8::lanes --opaque crate::ifma_available \
+    --opaque crate::sha_available --opaque crate::bmi2_available \
     --opaque crate::bls::uncompress_in_g1_blst --opaque crate::bls::uncompress_in_g2_blst \
     --opaque crate::sha256::load_bytes --opaque crate::sha256::load_words \
     --opaque crate::sha256::store_words \

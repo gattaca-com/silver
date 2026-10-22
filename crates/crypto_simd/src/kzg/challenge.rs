@@ -4,9 +4,11 @@
 
 use blst::blst_fr;
 
+#[cfg(any(test, not(target_arch = "x86_64")))]
+use crate::kzg::blst_ops::hash_to_fr;
 use crate::{
     bls::COMPRESSED_LEN,
-    kzg::{BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, blst_ops::hash_to_fr},
+    kzg::{BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL},
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{
@@ -19,10 +21,12 @@ use crate::{
 const DOMAIN: [u8; 16] = *b"RCKZGCBATCH__V1_";
 
 /// The buffer for the spec's challenge preimage, reused between batches.
+#[cfg(any(test, not(target_arch = "x86_64")))]
 pub struct Preimage {
     bytes: Vec<u8>,
 }
 
+#[cfg(any(test, not(target_arch = "x86_64")))]
 impl Preimage {
     pub fn new() -> Self {
         Self { bytes: Vec::new() }
@@ -67,8 +71,8 @@ impl Preimage {
     }
 }
 
-/// `Preimage::challenge` on the SHA extensions, each part hashed as it comes,
-/// without the buffer.
+/// The challenge on the SHA extensions, each part of the preimage hashed as it
+/// comes, without a buffer.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sha,sse4.1")]
 pub fn challenge_in_parts(

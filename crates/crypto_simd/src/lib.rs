@@ -39,28 +39,30 @@ pub fn route() -> Route {
     Route::Blst
 }
 
-/// Whether the portable route hashes on the SHA extensions: where they and
-/// SSE4.1 run, unless `SILVER_SHA=portable` asks for plain Rust, for
-/// measurements.
+/// Whether the challenge hashes on the SHA extensions, which need SSE4.1 too.
+/// Tests may turn them off with `SILVER_TEST_NO_SHA`.
 #[cfg(target_arch = "x86_64")]
-pub fn sha_extensions() -> bool {
-    static EXTENSIONS: OnceLock<bool> = OnceLock::new();
-    *EXTENSIONS.get_or_init(|| {
-        is_x86_feature_detected!("sha") &&
-            is_x86_feature_detected!("sse4.1") &&
-            std::env::var("SILVER_SHA").ok().as_deref() != Some("portable")
-    })
+pub(crate) fn sha_available() -> bool {
+    is_x86_feature_detected!("sha") &&
+        is_x86_feature_detected!("sse4.1") &&
+        !off_in_tests("SILVER_TEST_NO_SHA")
 }
 
-/// Every CPU with avx512ifma also has the SHA extensions, so one observation
-/// serves the whole kernel.
 #[cfg(target_arch = "x86_64")]
 fn ifma_runs() -> bool {
     cfg!(feature = "simd") &&
         is_x86_feature_detected!("avx512f") &&
-        is_x86_feature_detected!("avx512ifma") &&
-        is_x86_feature_detected!("sha") &&
-        is_x86_feature_detected!("sse4.1")
+        is_x86_feature_detected!("avx512ifma")
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+fn off_in_tests(variable: &str) -> bool {
+    std::env::var_os(variable).is_some()
+}
+
+#[cfg(all(not(test), target_arch = "x86_64"))]
+fn off_in_tests(_variable: &str) -> bool {
+    false
 }
 
 /// Whether the portable route's products can take their twins built for BMI2.
@@ -81,8 +83,20 @@ pub fn ifma_available() -> bool {
 pub(crate) fn kernels_run() -> bool {
     assert!(
         ifma_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
-        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma or SHA extensions, \
-         or no simd feature"
+        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
     );
     ifma_available()
+}
+
+/// False where the SHA extensions cannot run, unless `SILVER_REQUIRE_SHA` asks
+/// for them, or `SILVER_REQUIRE_IFMA`: every IFMA CPU has them.
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) fn sha_kernel_runs() -> bool {
+    let required = std::env::var_os("SILVER_REQUIRE_SHA").is_some() ||
+        std::env::var_os("SILVER_REQUIRE_IFMA").is_some();
+    assert!(
+        sha_available() || !required,
+        "SILVER_REQUIRE_SHA or SILVER_REQUIRE_IFMA is set, but the SHA extensions are off"
+    );
+    sha_available()
 }

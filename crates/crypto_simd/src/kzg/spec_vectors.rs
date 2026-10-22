@@ -14,7 +14,10 @@ use crate::{
     },
 };
 #[cfg(target_arch = "x86_64")]
-use crate::{kernels_run, kzg::challenge::challenge_in_parts};
+use crate::{
+    kzg::challenge::{challenge_in_parts, challenge_in_parts_portable},
+    sha_kernel_runs,
+};
 
 fn suite(name: &str) -> Vec<(String, String)> {
     let dir =
@@ -105,7 +108,7 @@ fn verify_cell_kzg_proof_batch_vectors() {
     assert!(unrepresentable < 10, "most vectors reach the verifier: {unrepresentable} did not");
 }
 
-/// Both routes: blst on the preimage buffer, and the SHA extensions in parts.
+/// blst on the preimage buffer, and in parts the SHA extensions and plain Rust.
 #[test]
 fn challenge_vectors() {
     let mut preimage = Preimage::new();
@@ -126,9 +129,8 @@ fn challenge_vectors() {
             preimage.challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
         assert_eq!(Some(got), fr_from_bytes(&expected), "{name}");
         #[cfg(target_arch = "x86_64")]
-        if kernels_run() {
-            // SAFETY: `kernels_run` implies `ifma_available`, which covers the
-            // SHA extensions and SSE4.1.
+        if sha_kernel_runs() {
+            // SAFETY: `sha_kernel_runs` checked the SHA extensions and SSE4.1.
             let got = unsafe {
                 challenge_in_parts(
                     &commitments,
@@ -139,6 +141,17 @@ fn challenge_vectors() {
                 )
             };
             assert_eq!(Some(got), fr_from_bytes(&expected), "SHA extensions, {name}");
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let got = challenge_in_parts_portable(
+                &commitments,
+                &commitment_of_cell,
+                &cell_indices,
+                &cells,
+                &proofs,
+            );
+            assert_eq!(Some(got), fr_from_bytes(&expected), "plain Rust, {name}");
         }
     }
 }

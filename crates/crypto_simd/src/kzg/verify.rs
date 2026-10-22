@@ -8,6 +8,8 @@
 
 use blst::{blst_fr, blst_p1};
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::kzg::challenge::Preimage;
 #[cfg(target_arch = "x86_64")]
 use crate::{
     Route,
@@ -25,7 +27,7 @@ use crate::{
         pairing_lines::PAIRING_LINES,
     },
     portable::{g1::G1, msm::Msm, pairing::PairingLines},
-    route, sha_extensions,
+    route, sha_available,
 };
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
@@ -33,7 +35,6 @@ use crate::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
         blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
-        challenge::Preimage,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
@@ -54,6 +55,7 @@ pub struct CellBatchVerifier {
     commitment_points: Vec<blst_p1_affine>,
     proof_points: Vec<blst_p1_affine>,
     evaluations: Vec<blst_fr>,
+    #[cfg(not(target_arch = "x86_64"))]
     preimage: Preimage,
     r_powers: Vec<blst_fr>,
     scalars: Vec<blst_fr>,
@@ -92,6 +94,7 @@ impl CellBatchVerifier {
             commitment_points: Vec::new(),
             proof_points: Vec::new(),
             evaluations: Vec::new(),
+            #[cfg(not(target_arch = "x86_64"))]
             preimage: Preimage::new(),
             r_powers: Vec::new(),
             scalars: Vec::new(),
@@ -145,9 +148,25 @@ impl CellBatchVerifier {
         self.pairing_holds(&r, cell_indices, cells)
     }
 
-    /// On the SHA extensions where the kernel runs, and on the portable route
-    /// where they run; in plain Rust elsewhere on the portable route; by blst
-    /// elsewhere.
+    /// On the SHA extensions where they run, else in plain Rust.
+    #[cfg(target_arch = "x86_64")]
+    fn challenge(
+        &self,
+        cell_indices: &[u64],
+        cells: &[[u8; BYTES_PER_CELL]],
+        proofs: &[[u8; COMPRESSED_LEN]],
+    ) -> blst_fr {
+        let unique = &self.commitments.unique;
+        let index_of_cell = &self.commitments.index_of_cell;
+        if sha_available() {
+            // SAFETY: `sha_available` checked the SHA extensions and SSE4.1.
+            unsafe { challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs) }
+        } else {
+            challenge_in_parts_portable(unique, index_of_cell, cell_indices, cells, proofs)
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
     fn challenge(
         &mut self,
         cell_indices: &[u64],
@@ -155,20 +174,13 @@ impl CellBatchVerifier {
         proofs: &[[u8; COMPRESSED_LEN]],
     ) -> blst_fr {
         let unique = &self.commitments.unique;
-        let index_of_cell = &self.commitments.index_of_cell;
-        #[cfg(target_arch = "x86_64")]
-        if self.kernel.is_some() || (self.lincomb.portable.is_some() && sha_extensions()) {
-            // SAFETY: `kernel` is built only where `ifma_available` held, which
-            // covers the SHA extensions; `sha_extensions` checks them itself.
-            return unsafe {
-                challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs)
-            };
-        }
-        #[cfg(target_arch = "x86_64")]
-        if self.lincomb.portable.is_some() {
-            return challenge_in_parts_portable(unique, index_of_cell, cell_indices, cells, proofs);
-        }
-        self.preimage.challenge(unique, index_of_cell, cell_indices, cells, proofs)
+        self.preimage.challenge(
+            unique,
+            &self.commitments.index_of_cell,
+            cell_indices,
+            cells,
+            proofs,
+        )
     }
 
     fn decode_commitments(&mut self) -> bool {
