@@ -18,6 +18,8 @@ pub mod fp;
 pub mod g1;
 #[allow(clippy::missing_safety_doc)]
 pub mod g1_pair;
+#[allow(clippy::missing_safety_doc)]
+pub mod msm;
 
 /// Whether the portable route can run: `Fp`'s product compiles for BMI2 and
 /// ADX.

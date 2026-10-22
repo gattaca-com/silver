@@ -49,39 +49,13 @@ impl G1 {
     /// madd-2007-bl, for a finite self and x ≠ qx.
     #[target_feature(enable = "bmi2,adx")]
     pub fn add_affine(&self, qx: &Fp, qy: &Fp) -> Self {
-        let z1z1 = self.z.square();
-        let u2 = qx.mul(&z1z1);
-        let s2 = qy.mul(&self.z).mul(&z1z1);
-        let h = u2.sub(&self.x);
-        let hh = h.square();
-        let i = hh.double().double();
-        let j = h.mul(&i);
-        let r = s2.sub(&self.y).double();
-        let v = self.x.mul(&i);
-        let x3 = r.square().sub(&j).sub(&v.double());
-        let y3 = r.mul(&v.sub(&x3)).sub(&self.y.mul(&j).double());
-        let z3 = self.z.add(&h).square().sub(&z1z1).sub(&hh);
-        Self { x: x3, y: y3, z: z3 }
+        MixedTerms::new(self, qx, qy).sum(self)
     }
 
     /// add-2007-bl, for finite summands with distinct x.
     #[target_feature(enable = "bmi2,adx")]
     pub fn add(&self, q: &Self) -> Self {
-        let z1z1 = self.z.square();
-        let z2z2 = q.z.square();
-        let u1 = self.x.mul(&z2z2);
-        let u2 = q.x.mul(&z1z1);
-        let s1 = self.y.mul(&q.z).mul(&z2z2);
-        let s2 = q.y.mul(&self.z).mul(&z1z1);
-        let h = u2.sub(&u1);
-        let i = h.double().square();
-        let j = h.mul(&i);
-        let r = s2.sub(&s1).double();
-        let v = u1.mul(&i);
-        let x3 = r.square().sub(&j).sub(&v.double());
-        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).double());
-        let z3 = self.z.add(&q.z).square().sub(&z1z1).sub(&z2z2).mul(&h);
-        Self { x: x3, y: y3, z: z3 }
+        Terms::new(self, q).sum(self, q)
     }
 
     /// The spec's `G1.add` of self and the affine point (qx, qy).
@@ -90,11 +64,14 @@ impl G1 {
         if self.is_infinity() {
             return Self::from_affine(qx, qy);
         }
-        let z1z1 = self.z.square();
-        if qx.mul(&z1z1) != self.x {
-            return self.add_affine(qx, qy);
+        let terms = MixedTerms::new(self, qx, qy);
+        if !terms.h.is_zero() {
+            terms.sum(self)
+        } else if terms.r.is_zero() {
+            self.double()
+        } else {
+            Self::INFINITY
         }
-        if qy.mul(&self.z).mul(&z1z1) == self.y { self.double() } else { Self::INFINITY }
     }
 
     /// The spec's `G1.add`.
@@ -106,12 +83,10 @@ impl G1 {
         if q.is_infinity() {
             return *self;
         }
-        let z1z1 = self.z.square();
-        let z2z2 = q.z.square();
-        if self.x.mul(&z2z2) != q.x.mul(&z1z1) {
-            return self.add(q);
-        }
-        if self.y.mul(&q.z).mul(&z2z2) == q.y.mul(&self.z).mul(&z1z1) {
+        let terms = Terms::new(self, q);
+        if !terms.h.is_zero() {
+            terms.sum(self, q)
+        } else if terms.r.is_zero() {
             self.double()
         } else {
             Self::INFINITY
@@ -190,6 +165,71 @@ impl G1 {
         }
         let zz = self.z.square();
         self.x == px.mul(&BETA).mul(&BETA).mul(&zz) && self.y.neg() == py.mul(&zz.mul(&self.z))
+    }
+}
+
+/// madd-2007-bl's terms up to h = qx·z1² − x1 and r = 2·(qy·z1³ − y1):
+/// p and (qx, qy) share x when h = 0, and are equal when r = 0 too.
+struct MixedTerms {
+    z1z1: Fp,
+    h: Fp,
+    r: Fp,
+}
+
+impl MixedTerms {
+    #[target_feature(enable = "bmi2,adx")]
+    fn new(p: &G1, qx: &Fp, qy: &Fp) -> Self {
+        let z1z1 = p.z.square();
+        let h = qx.mul(&z1z1).sub(&p.x);
+        let r = qy.mul(&p.z).mul(&z1z1).sub(&p.y).double();
+        Self { z1z1, h, r }
+    }
+
+    #[target_feature(enable = "bmi2,adx")]
+    fn sum(&self, p: &G1) -> G1 {
+        let hh = self.h.square();
+        let i = hh.double().double();
+        let j = self.h.mul(&i);
+        let v = p.x.mul(&i);
+        let x3 = self.r.square().sub(&j).sub(&v.double());
+        let y3 = self.r.mul(&v.sub(&x3)).sub(&p.y.mul(&j).double());
+        let z3 = p.z.add(&self.h).square().sub(&self.z1z1).sub(&hh);
+        G1 { x: x3, y: y3, z: z3 }
+    }
+}
+
+/// add-2007-bl's terms up to h = u2 − u1 and r = 2·(s2 − s1), as in
+/// `MixedTerms`.
+struct Terms {
+    z1z1: Fp,
+    z2z2: Fp,
+    u1: Fp,
+    s1: Fp,
+    h: Fp,
+    r: Fp,
+}
+
+impl Terms {
+    #[target_feature(enable = "bmi2,adx")]
+    fn new(p: &G1, q: &G1) -> Self {
+        let z1z1 = p.z.square();
+        let z2z2 = q.z.square();
+        let u1 = p.x.mul(&z2z2);
+        let s1 = p.y.mul(&q.z).mul(&z2z2);
+        let h = q.x.mul(&z1z1).sub(&u1);
+        let r = q.y.mul(&p.z).mul(&z1z1).sub(&s1).double();
+        Self { z1z1, z2z2, u1, s1, h, r }
+    }
+
+    #[target_feature(enable = "bmi2,adx")]
+    fn sum(&self, p: &G1, q: &G1) -> G1 {
+        let i = self.h.double().square();
+        let j = self.h.mul(&i);
+        let v = self.u1.mul(&i);
+        let x3 = self.r.square().sub(&j).sub(&v.double());
+        let y3 = self.r.mul(&v.sub(&x3)).sub(&self.s1.mul(&j).double());
+        let z3 = p.z.add(&q.z).square().sub(&self.z1z1).sub(&self.z2z2).mul(&self.h);
+        G1 { x: x3, y: y3, z: z3 }
     }
 }
 

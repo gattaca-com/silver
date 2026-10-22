@@ -46,7 +46,12 @@ pub fn fr_from_bytes_reduced(bytes: &[u8; 32]) -> blst_fr {
 
 /// 32 big-endian bytes, the inverse of `fr_from_bytes`.
 pub fn fr_to_bytes(a: &blst_fr) -> [u8; 32] {
-    be_bytes_from_words(&montgomery_product(&a.l, &[1, 0, 0, 0]))
+    be_bytes_from_words(&fr_to_words(a))
+}
+
+/// The value's little-endian words, below r.
+pub fn fr_to_words(a: &blst_fr) -> [u64; 4] {
+    montgomery_product(&a.l, &[1, 0, 0, 0])
 }
 
 /// a·b/2^256 mod r, below r, for a below r.

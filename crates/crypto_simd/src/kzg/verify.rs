@@ -8,6 +8,21 @@
 
 use blst::{blst_fr, blst_p1};
 
+#[cfg(target_arch = "x86_64")]
+use crate::{
+    Route,
+    bls::{
+        fp8::{Fp8, LANES},
+        g1x8::G1x8,
+        msm8::Msm8,
+    },
+    kzg::{
+        challenge::challenge_in_parts, fr::fr_to_words, fr8::Fr8,
+        interpolation_kernel::InterpolationKernel, pairing_lines::PAIRING_LINES,
+    },
+    portable::msm::Msm,
+    route, simd_available,
+};
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
@@ -21,19 +36,6 @@ use crate::{
         fr::{fr_add, fr_from_bytes, fr_mul},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
     },
-};
-#[cfg(target_arch = "x86_64")]
-use crate::{
-    bls::{
-        fp8::{Fp8, LANES},
-        g1x8::G1x8,
-        msm8::Msm8,
-    },
-    kzg::{
-        challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel,
-        pairing_lines::PAIRING_LINES,
-    },
-    simd_available,
 };
 
 const LOG_CELL: u32 = 6;
@@ -297,11 +299,14 @@ impl CellBatchVerifier {
 
 /// The verifier's curve work: sums Σ scalars[i]·points[i], and the pairing
 /// check on two points from four of them. On `Msm8`, `Fp8` and `Fp12` lanes
-/// where IFMA runs, by blst elsewhere. Buffers are kept between calls.
+/// where IFMA runs, on the scalar portable route where it is taken, by blst
+/// elsewhere. Buffers are kept between calls.
 struct Lincomb {
     scratch: LincombScratch,
     #[cfg(target_arch = "x86_64")]
     msm: Option<Msm8>,
+    #[cfg(target_arch = "x86_64")]
+    portable: Option<Msm>,
     #[cfg(target_arch = "x86_64")]
     words: Vec<[u64; 4]>,
 }
@@ -312,6 +317,8 @@ impl Lincomb {
             scratch: LincombScratch::new(),
             #[cfg(target_arch = "x86_64")]
             msm: if simd_available() { Some(Msm8::default()) } else { None },
+            #[cfg(target_arch = "x86_64")]
+            portable: if route() == Route::Portable { Some(Msm::default()) } else { None },
             #[cfg(target_arch = "x86_64")]
             words: Vec::new(),
         }
@@ -325,6 +332,18 @@ impl Lincomb {
                 Fr8::plain_words(scalars, &mut self.words);
                 msm.msm(points, &self.words)
             };
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(msm) = &mut self.portable {
+            self.words.clear();
+            let mut i = 0;
+            while i < scalars.len() {
+                self.words.push(fr_to_words(&scalars[i]));
+                i += 1;
+            }
+            // SAFETY: `portable` is built only on the portable route, which is
+            // taken only where `portable_available` held.
+            return unsafe { msm.msm(points, &self.words) };
         }
         g1_lincomb(points, scalars, &mut self.scratch)
     }

@@ -243,7 +243,7 @@ fn sum_slot(first: u32, store: &mut PointStore, originals: usize) -> u32 {
 /// A scalar's signed digits, window by window from the least significant:
 /// digit d_j is in [−2^(w−1), 2^(w−1)], and Σ_j d_j·2^(w·j) is the scalar
 /// once the windows reach past its top bit.
-struct SignedDigits {
+pub(crate) struct SignedDigits {
     words: [u64; 4],
     window_bits: usize,
     bit: usize,
@@ -251,12 +251,12 @@ struct SignedDigits {
 }
 
 impl SignedDigits {
-    fn new(scalar: &[u64; 4], window_bits: usize) -> Self {
+    pub(crate) fn new(scalar: &[u64; 4], window_bits: usize) -> Self {
         Self { words: *scalar, window_bits, bit: 0, carry: 0 }
     }
 
     /// The next window's digit, as its magnitude and whether it is negative.
-    fn next_digit(&mut self) -> (usize, bool) {
+    pub(crate) fn next_digit(&mut self) -> (usize, bool) {
         let value = self.unsigned_window() + self.carry;
         let negated = value > 1 << (self.window_bits - 1);
         let magnitude = if negated { (1 << self.window_bits) - value } else { value };

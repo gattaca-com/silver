@@ -10,7 +10,7 @@ pub mod glv;
 pub mod pairs;
 pub mod store;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use blst::{blst_fp, blst_p1};
 

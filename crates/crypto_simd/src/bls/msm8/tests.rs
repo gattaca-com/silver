@@ -27,9 +27,9 @@ use crate::{
     kernels_run,
 };
 
-const SEED: u64 = 0x6d73_6d38_7061_6972;
+pub(crate) const SEED: u64 = 0x6d73_6d38_7061_6972;
 
-fn random_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1_affine> {
+pub(crate) fn random_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1_affine> {
     (0..n)
         .map(|_| {
             let mut scalar: [u8; 32] = rng.r#gen();
@@ -58,7 +58,7 @@ fn coordinates(point: &blst_p1_affine) -> (Limbs, Limbs) {
     (plain(&point.x), plain(&point.y))
 }
 
-fn negated_point(point: &blst_p1_affine) -> blst_p1_affine {
+pub(crate) fn negated_point(point: &blst_p1_affine) -> blst_p1_affine {
     let mut projective = blst_p1::default();
     let mut affine = blst_p1_affine::default();
     // SAFETY: valid pointers to single values.
@@ -70,7 +70,7 @@ fn negated_point(point: &blst_p1_affine) -> blst_p1_affine {
     affine
 }
 
-fn sum(a: &blst_p1_affine, b: &blst_p1_affine) -> blst_p1_affine {
+pub(crate) fn sum(a: &blst_p1_affine, b: &blst_p1_affine) -> blst_p1_affine {
     let (mut projective, mut total) = (blst_p1::default(), blst_p1::default());
     let mut affine = blst_p1_affine::default();
     // SAFETY: valid pointers to single values.
@@ -308,7 +308,7 @@ fn msm8_parts_timing() {
     println!("Fp8::inverse: best {:.2} us per call of eight lanes", best * 1e6);
 }
 
-fn random_scalars(rng: &mut ChaCha8Rng, n: usize) -> Vec<[u64; 4]> {
+pub(crate) fn random_scalars(rng: &mut ChaCha8Rng, n: usize) -> Vec<[u64; 4]> {
     (0..n)
         .map(|_| {
             let mut words: [u64; 4] = rng.r#gen();
@@ -319,7 +319,7 @@ fn random_scalars(rng: &mut ChaCha8Rng, n: usize) -> Vec<[u64; 4]> {
 }
 
 /// Σ scalars[i]·points[i] by blst, one multiplication per point.
-fn lincomb(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
+pub(crate) fn lincomb(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
     let mut total = blst_p1::default();
     for (point, scalar) in points.iter().zip(scalars) {
         let bytes: Vec<u8> = scalar.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -337,7 +337,7 @@ fn lincomb(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
 }
 
 /// The same point, z = 0 exactly when it is infinity.
-fn assert_same_point(got: &blst_p1, want: &blst_p1, case: &str) {
+pub(crate) fn assert_same_point(got: &blst_p1, want: &blst_p1, case: &str) {
     // SAFETY: valid pointers to single values.
     let (got_infinite, want_infinite, equal) =
         unsafe { (blst_p1_is_inf(got), blst_p1_is_inf(want), blst_p1_is_equal(got, want)) };
@@ -373,7 +373,7 @@ fn msm_matches_blst() {
 
 /// The scalars where GLV's rounding changes: 0, 1, ceil(r/2) − 1 and
 /// ceil(r/2), λ, z² = λ + 1, r − 1, r, and 2^255 − 1.
-fn glv_edges() -> Vec<[u64; 4]> {
+pub(crate) fn glv_edges() -> Vec<[u64; 4]> {
     let r = [
         0xffff_ffff_0000_0001,
         0x53bd_a402_fffe_5bfe,
@@ -466,13 +466,13 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
 }
 
 /// n distinct points P + i·Q, cheaper than `random_points` for long inputs.
-fn distinct_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1_affine> {
+pub(crate) fn distinct_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1_affine> {
     let ends = random_points(rng, 2);
     std::iter::successors(Some(ends[0]), |point| Some(sum(point, &ends[1]))).take(n).collect()
 }
 
 /// Σ scalars[i]·points[i] by blst's Pippenger over the finite points.
-fn finite_pippenger(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
+pub(crate) fn finite_pippenger(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
     let mut finite = Vec::new();
     let mut bytes = Vec::new();
     for (point, words) in points.iter().zip(scalars) {
