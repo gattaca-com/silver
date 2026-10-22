@@ -17,11 +17,14 @@ use crate::{
         msm8::Msm8,
     },
     kzg::{
-        challenge::challenge_in_parts, fr::fr_to_words, fr8::Fr8,
-        interpolation_kernel::InterpolationKernel, pairing_lines::PAIRING_LINES,
+        challenge::{challenge_in_parts, challenge_in_parts_portable},
+        fr::fr_to_words,
+        fr8::Fr8,
+        interpolation_kernel::InterpolationKernel,
+        pairing_lines::PAIRING_LINES,
     },
     portable::{g1::G1, msm::Msm, pairing::PairingLines},
-    route, simd_available,
+    route, sha_extensions, simd_available,
 };
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
@@ -141,7 +144,9 @@ impl CellBatchVerifier {
         self.pairing_holds(&r, cell_indices, cells)
     }
 
-    /// On the SHA extensions where the kernel runs, by blst elsewhere.
+    /// On the SHA extensions where the kernel runs, and on the portable route
+    /// where they run; in plain Rust elsewhere on the portable route; by blst
+    /// elsewhere.
     fn challenge(
         &mut self,
         cell_indices: &[u64],
@@ -151,11 +156,16 @@ impl CellBatchVerifier {
         let unique = &self.commitments.unique;
         let index_of_cell = &self.commitments.index_of_cell;
         #[cfg(target_arch = "x86_64")]
-        if self.kernel.is_some() {
-            // SAFETY: `kernel` is built only where `simd_available` held.
+        if self.kernel.is_some() || (self.lincomb.portable.is_some() && sha_extensions()) {
+            // SAFETY: `kernel` is built only where `simd_available` held, which
+            // covers the SHA extensions; `sha_extensions` checks them itself.
             return unsafe {
                 challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs)
             };
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.lincomb.portable.is_some() {
+            return challenge_in_parts_portable(unique, index_of_cell, cell_indices, cells, proofs);
         }
         self.preimage.challenge(unique, index_of_cell, cell_indices, cells, proofs)
     }

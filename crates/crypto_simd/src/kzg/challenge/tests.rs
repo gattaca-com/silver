@@ -3,7 +3,7 @@ use rand_chacha::ChaCha8Rng;
 
 use super::Preimage;
 #[cfg(target_arch = "x86_64")]
-use super::challenge_in_parts;
+use super::{challenge_in_parts, challenge_in_parts_portable};
 #[cfg(target_arch = "x86_64")]
 use crate::kernels_run;
 use crate::{
@@ -83,6 +83,17 @@ fn challenge_matches_blst() {
                 )
             };
             assert!(got == expected, "in parts, {unique} commitments, {n} cells");
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let got = challenge_in_parts_portable(
+                &commitments,
+                &commitment_of_cell,
+                &cell_indices,
+                &cells,
+                &proofs,
+            );
+            assert!(got == expected, "portable, {unique} commitments, {n} cells");
         }
     }
 }

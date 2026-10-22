@@ -9,6 +9,8 @@ use std::arch::x86_64::{
     _mm_shuffle_epi32, _mm_storeu_si128,
 };
 
+pub mod portable;
+
 const BLOCK: usize = 64;
 
 /// FIPS 180-4 §4.2.2.

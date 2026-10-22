@@ -39,6 +39,19 @@ pub fn route() -> Route {
     Route::Blst
 }
 
+/// Whether the portable route hashes on the SHA extensions: where they and
+/// SSE4.1 run, unless `SILVER_SHA=portable` asks for plain Rust, for
+/// measurements.
+#[cfg(target_arch = "x86_64")]
+pub fn sha_extensions() -> bool {
+    static EXTENSIONS: OnceLock<bool> = OnceLock::new();
+    *EXTENSIONS.get_or_init(|| {
+        is_x86_feature_detected!("sha") &&
+            is_x86_feature_detected!("sse4.1") &&
+            std::env::var("SILVER_SHA").ok().as_deref() != Some("portable")
+    })
+}
+
 /// Every CPU with avx512ifma also has the SHA extensions, so one observation
 /// serves the whole kernel.
 #[cfg(target_arch = "x86_64")]
