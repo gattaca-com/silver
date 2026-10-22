@@ -4,7 +4,10 @@ use blst::blst_fr;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{R, R_INV64, R_SQUARED, fr_add, fr_from_bytes, fr_mul, fr_sub, fr_to_bytes};
+use super::{
+    R, R_INV64, R_SQUARED, add_words, fr_add, fr_from_bytes, fr_from_bytes_reduced, fr_mul, fr_sub,
+    fr_to_bytes, sub_words,
+};
 use crate::kzg::{FR_ONE, FR_ZERO, blst_ops};
 
 /// Limbs at the edges of [0, r): 0, 1, r − 1, the largest top word below
@@ -113,4 +116,44 @@ fn byte_conversions_match_blst() {
         assert!(encoded == blst_ops::fr_to_bytes(&value), "{:x?}", value.l);
         assert!(fr_from_bytes(&encoded) == Some(value), "{:x?} back", value.l);
     }
+}
+
+/// Every 256-bit value is below 3r, so it is reduced by subtracting r at most
+/// twice. Edges of each count, with the residue derived from r; then random
+/// values against blst, at least one of each count.
+#[test]
+fn reduction_matches_blst() {
+    let one = [1, 0, 0, 0];
+    let r_minus_one = [R[0] - 1, R[1], R[2], R[3]];
+    let two_r = add_words(&R, &R);
+    let (top_residue, _) = sub_words(&[u64::MAX; 4], &two_r);
+    let edges = [
+        ([0; 4], [0; 4]),
+        (one, one),
+        (r_minus_one, r_minus_one),
+        (R, [0; 4]),
+        (add_words(&R, &one), one),
+        (add_words(&R, &r_minus_one), r_minus_one),
+        (two_r, [0; 4]),
+        (add_words(&two_r, &one), one),
+        ([u64::MAX; 4], top_residue),
+    ];
+    for (value, residue) in edges {
+        let reduced = fr_from_bytes_reduced(&be_bytes(&value));
+        assert!(Some(reduced) == fr_from_bytes(&be_bytes(&residue)), "{value:x?}");
+    }
+
+    let mut rng = ChaCha8Rng::seed_from_u64(0x7e);
+    let mut subtractions = [0; 3];
+    for _ in 0..256 {
+        let value: [u64; 4] = rng.r#gen();
+        let bytes = be_bytes(&value);
+        assert!(
+            fr_from_bytes_reduced(&bytes) == blst_ops::fr_from_bytes_reduced(&bytes),
+            "{value:x?}"
+        );
+        let above = |bound: &[u64; 4]| value.iter().rev().cmp(bound.iter().rev()) != Ordering::Less;
+        subtractions[above(&R) as usize + above(&two_r) as usize] += 1;
+    }
+    assert!(subtractions.iter().all(|&count| count > 0), "{subtractions:?}");
 }

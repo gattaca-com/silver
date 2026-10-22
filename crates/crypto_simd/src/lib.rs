@@ -1,5 +1,6 @@
 pub mod bls;
 pub mod kzg;
+mod sha256;
 
 /// Built without the `simd` feature, every operation takes its blst path, as
 /// on a CPU without the instructions.

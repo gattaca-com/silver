@@ -4,7 +4,10 @@ use blst::blst_fr;
 
 use crate::{
     bls::COMPRESSED_LEN,
-    kzg::{BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, blst_ops::hash_to_fr},
+    kzg::{
+        BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, fr::fr_from_bytes_reduced,
+    },
+    sha256::Sha256,
 };
 
 /// A value rather than a reference: Aeneas rejects a loop that follows a read
@@ -50,7 +53,9 @@ impl Preimage {
             self.bytes.extend_from_slice(&proofs[k]);
             k += 1;
         }
-        hash_to_fr(&self.bytes)
+        let mut hasher = Sha256::new();
+        hasher.update(&self.bytes);
+        fr_from_bytes_reduced(&hasher.finish())
     }
 
     fn push_u64(&mut self, value: u64) {
@@ -61,3 +66,6 @@ impl Preimage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

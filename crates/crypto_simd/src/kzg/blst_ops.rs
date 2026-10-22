@@ -4,16 +4,16 @@
 
 #[cfg(test)]
 use blst::{
-    blst_bendian_from_scalar, blst_fr_add, blst_fr_eucl_inverse, blst_fr_from_uint64, blst_fr_mul,
-    blst_fr_sub, blst_p2, blst_p2_cneg, blst_p2_from_affine, blst_p2_to_affine,
-    blst_scalar_fr_check,
+    blst_bendian_from_scalar, blst_fr_add, blst_fr_eucl_inverse, blst_fr_from_scalar,
+    blst_fr_from_uint64, blst_fr_mul, blst_fr_sub, blst_p2, blst_p2_cneg, blst_p2_from_affine,
+    blst_p2_to_affine, blst_scalar_fr_check, blst_scalar_from_bendian, blst_sha256,
 };
 use blst::{
-    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_fr_from_scalar, blst_miller_loop_n,
-    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
+    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_miller_loop_n, blst_p1,
+    blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
     blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
     blst_p1s_mult_pippenger_scratch_sizeof, blst_p2_affine, blst_p2_affine_is_inf, blst_scalar,
-    blst_scalar_from_bendian, blst_scalar_from_fr, blst_sha256, limb_t,
+    blst_scalar_from_fr, limb_t,
 };
 
 const SCALAR_BITS: usize = 255;
@@ -94,16 +94,24 @@ pub fn fr_inverse(a: &blst_fr) -> blst_fr {
 }
 
 /// SHA-256 of `message`, read as a big-endian integer and reduced modulo r.
+#[cfg(test)]
 pub fn hash_to_fr(message: &[u8]) -> blst_fr {
     let mut digest = [0u8; 32];
+    // SAFETY: blst reads `message.len()` bytes and writes 32.
+    unsafe { blst_sha256(digest.as_mut_ptr(), message.as_ptr(), message.len()) };
+    fr_from_bytes_reduced(&digest)
+}
+
+/// The value of the 32 big-endian bytes modulo r.
+#[cfg(test)]
+pub fn fr_from_bytes_reduced(bytes: &[u8; 32]) -> blst_fr {
     let mut scalar = blst_scalar::default();
     let mut fr = blst_fr::default();
-    // SAFETY: blst reads `message.len()` bytes and writes 32; the rest are single
-    // values. `blst_fr_from_scalar` multiplies by R² in Montgomery form, which
-    // reduces any 256-bit input modulo r.
+    // SAFETY: blst reads 32 bytes and writes one value, then reads one and
+    // writes one. `blst_fr_from_scalar` multiplies by R² in Montgomery form,
+    // which reduces any 256-bit input modulo r.
     unsafe {
-        blst_sha256(digest.as_mut_ptr(), message.as_ptr(), message.len());
-        blst_scalar_from_bendian(&mut scalar, digest.as_ptr());
+        blst_scalar_from_bendian(&mut scalar, bytes.as_ptr());
         blst_fr_from_scalar(&mut fr, &scalar);
     }
     fr

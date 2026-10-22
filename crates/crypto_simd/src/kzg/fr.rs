@@ -37,6 +37,12 @@ pub fn fr_from_bytes(bytes: &[u8; 32]) -> Option<blst_fr> {
     if below { Some(blst_fr { l: montgomery_product(&value, &R_SQUARED) }) } else { None }
 }
 
+/// The value of the 32 big-endian bytes modulo r. R² goes first: the product
+/// needs only its first operand below r.
+pub fn fr_from_bytes_reduced(bytes: &[u8; 32]) -> blst_fr {
+    blst_fr { l: montgomery_product(&R_SQUARED, &words_from_be_bytes(bytes)) }
+}
+
 /// 32 big-endian bytes, the inverse of `fr_from_bytes`.
 pub fn fr_to_bytes(a: &blst_fr) -> [u8; 32] {
     be_bytes_from_words(&montgomery_product(&a.l, &[1, 0, 0, 0]))
