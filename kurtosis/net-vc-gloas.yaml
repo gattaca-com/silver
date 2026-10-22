@@ -1,0 +1,65 @@
+# Run with the package returned by kurtosis/prepare-package.sh.
+# Reference validators retain 75% of the stake if Silver stops proposing or attesting.
+participants:
+  - el_type: reth
+    el_image: &reth ethpandaops/reth:main@sha256:3d12ccffa4373e59b496b8d960f066812ffe830065d8a6f84bc39a7ac5006411
+    cl_type: lighthouse
+    cl_image: &lighthouse ethpandaops/lighthouse:unstable@sha256:2e72e97b49c284e4df36466c45834befb4303da85ded3250f3c5ac285231ba11
+    use_separate_vc: true
+    vc_type: lighthouse
+    vc_image: *lighthouse
+    supernode: true
+    count: 3
+  - el_type: reth
+    el_image: *reth
+    cl_type: silver
+    cl_image: silver:proposing
+    use_separate_vc: true
+    vc_type: lighthouse
+    vc_image: *lighthouse
+    supernode: true
+    # Index 3 is the fourth participant. No reference BN can fulfill its duties.
+    vc_beacon_node_indices: [3]
+    cl_extra_env_vars:
+      RUST_LOG: "info,silver_beacon_api=debug,silver_engine=debug"
+
+network_params:
+  preset: mainnet
+  seconds_per_slot: 12
+  slot_duration_ms: 12000
+  num_validator_keys_per_node: 128
+  genesis_delay: 180
+  deneb_fork_epoch: 0
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 0
+  # Keep the epoch bounds in gloas-proposals.yaml consistent with this fork.
+  gloas_fork_epoch: 4
+  heze_fork_epoch: 18446744073709551615
+  genesis_gaslimit: 60000000
+  gas_limit: 60000000
+  builder_count: 0
+
+ethereum_genesis_generator_params:
+  image: ethpandaops/ethereum-genesis-generator:6.2.1@sha256:15bb557cbd6d29fc1b7516a7147326a8c8d3af54f3c3ac534ec8772f6e875256
+
+global_log_level: info
+
+additional_services:
+  - spamoor
+  - assertoor
+
+spamoor_params:
+  image: ethpandaops/spamoor:master@sha256:16a2ddbc858e438b9998a46b1abb1ed82e2de95b2ef360fd0d641bbc267c3903
+  spammers:
+    - scenario: blobs
+      name: blob-spammer
+      config:
+        throughput: 1
+        sidecars: 1
+
+assertoor_params:
+  image: ethpandaops/assertoor:master@sha256:ec970f7e97513fee1ff913b2a691b408b3e26e37a5d101b2c37d7c8402328eeb
+  run_stability_check: false
+  run_block_proposal_check: false
+  tests:
+    - file: /tests/silver-gloas.yaml

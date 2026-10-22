@@ -8,6 +8,7 @@ use crate::{
             post_proposer_slashing, post_voluntary_exit,
         },
         payload_attestations::post_payload_attestation_messages,
+        payload_submission::post_payload_envelope,
         pools::{
             get_attester_slashings, get_bls_to_execution_changes, get_proposer_slashings,
             get_voluntary_exits,
@@ -37,6 +38,7 @@ use crate::{
         attestation_data::attestation_data,
         attester_duties::post_attester_duties,
         contribution_submission::post_contribution_and_proofs,
+        execution_payload_envelope::execution_payload_envelope,
         liveness::post_liveness,
         payload_attestation_data::payload_attestation_data,
         produce_block::{produce_block_v3, produce_block_v4},
@@ -55,6 +57,7 @@ use crate::{
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
+    (Method::Post, "/eth/v1/beacon/execution_payload_envelopes", post_payload_envelope),
     (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
     (Method::Get, "/eth/v1/beacon/genesis", genesis),
     (Method::Get, "/eth/v1/beacon/headers/{block_id}", block_header),
@@ -129,6 +132,11 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v2/validator/duties/proposer/{epoch}", proposer_duties_v2),
     (Method::Get, "/eth/v3/validator/blocks/{slot}", produce_block_v3),
     (Method::Post, "/eth/v4/validator/blocks/{slot}", produce_block_v4),
+    (
+        Method::Get,
+        "/eth/v1/validator/execution_payload_envelopes/{slot}/{beacon_block_root}",
+        execution_payload_envelope,
+    ),
     (Method::Get, "/metrics", metrics),
 ];
 
