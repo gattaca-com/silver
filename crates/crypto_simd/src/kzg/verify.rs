@@ -3,10 +3,9 @@
 //! check. RLI uses c-kzg's per-column inverse FFT rather than the spec's
 //! per-cell Lagrange interpolation. With IFMA, the cell checks and that
 //! interpolation run on `Fr8` vectors, which read the cells' bytes directly,
-//! and the four multi-scalar multiplications run on `Msm8`.
+//! the four multi-scalar multiplications run on `Msm8`, and the pairing check
+//! runs on `Fp12` lanes.
 
-#[cfg(target_arch = "x86_64")]
-use blst::blst_fp;
 use blst::{blst_fr, blst_p1};
 
 use crate::{
@@ -30,7 +29,10 @@ use crate::{
         g1x8::G1x8,
         msm8::Msm8,
     },
-    kzg::{challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel},
+    kzg::{
+        challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel,
+        pairing_lines::PAIRING_LINES,
+    },
     simd_available,
 };
 
@@ -228,8 +230,7 @@ impl CellBatchVerifier {
         }
         let rlp = self.lincomb.sum(&self.proof_points, &self.scalars);
 
-        let (left, right) = self.lincomb.pairing_points(&ll, &rlc, &rli, &rlp);
-        pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR)
+        self.lincomb.pairing_check(&ll, &rlc, &rli, &rlp)
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
@@ -294,9 +295,9 @@ impl CellBatchVerifier {
     }
 }
 
-/// The verifier's G1 work: sums Σ scalars[i]·points[i], and the pairing's two
-/// points from four of them. On `Msm8` and `Fp8` lanes where IFMA runs, by
-/// blst elsewhere. Buffers are kept between calls.
+/// The verifier's curve work: sums Σ scalars[i]·points[i], and the pairing
+/// check on two points from four of them. On `Msm8`, `Fp8` and `Fp12` lanes
+/// where IFMA runs, by blst elsewhere. Buffers are kept between calls.
 struct Lincomb {
     scratch: LincombScratch,
     #[cfg(target_arch = "x86_64")]
@@ -328,41 +329,27 @@ impl Lincomb {
         g1_lincomb(points, scalars, &mut self.scratch)
     }
 
-    /// LL and RL = RLC − RLI + RLP, affine.
-    fn pairing_points(
-        &self,
-        ll: &blst_p1,
-        rlc: &blst_p1,
-        rli: &blst_p1,
-        rlp: &blst_p1,
-    ) -> (blst_p1_affine, blst_p1_affine) {
+    /// e(LL, [s^64])·e(RL, −[1]) = 1, with RL = RLC − RLI + RLP.
+    fn pairing_check(&self, ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> bool {
         #[cfg(target_arch = "x86_64")]
         if self.msm.is_some() {
             // SAFETY: `msm` is built only where `simd_available` held.
-            return unsafe { pairing_points_in_lanes(ll, rlc, rli, rlp) };
+            return unsafe {
+                PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp))
+            };
         }
         let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
-        (g1_to_affine(ll), g1_to_affine(&rl))
+        pairing_check(&g1_to_affine(ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
     }
 }
 
-/// `Lincomb::pairing_points` on lanes: LL stays in lane 0, complete additions
-/// gather RL in lane 1, and one inversion serves both.
+/// LL in lane 0 and RL in lane 1, Jacobian, gathered by complete additions.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512ifma")]
-fn pairing_points_in_lanes(
-    ll: &blst_p1,
-    rlc: &blst_p1,
-    rli: &blst_p1,
-    rlp: &blst_p1,
-) -> (blst_p1_affine, blst_p1_affine) {
+fn pairing_points_in_lanes(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> G1x8 {
     let infinity = blst_p1::default();
     let difference = two_lanes(ll, rlc).add_complete(&two_lanes(&infinity, rli).neg());
-    let (x, y) = difference.add_complete(&two_lanes(&infinity, rlp)).to_affine();
-    let (x, y) = (x.to_blst_limbs(), y.to_blst_limbs());
-    let left = blst_p1_affine { x: blst_fp { l: x[0] }, y: blst_fp { l: y[0] } };
-    let right = blst_p1_affine { x: blst_fp { l: x[1] }, y: blst_fp { l: y[1] } };
-    (left, right)
+    difference.add_complete(&two_lanes(&infinity, rlp))
 }
 
 /// `first` in lane 0 and `second` in lane 1, from blst's Jacobian form; the

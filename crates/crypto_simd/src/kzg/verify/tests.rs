@@ -2,7 +2,7 @@ use blst::{blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_generator, blst_p1_mul
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::pairing_points_in_lanes;
+use super::{Lincomb, pairing_points_in_lanes};
 use crate::{
     bls::blst_p1_affine,
     kernels_run,
@@ -71,9 +71,35 @@ fn pairing_points_match_blst() {
     for (case, sums) in cases(&mut rng).iter().enumerate() {
         let (want_left, want_right) = blst_pairing_points(sums);
         // SAFETY: `kernels_run` checked `simd_available`.
-        let (left, right) =
-            unsafe { pairing_points_in_lanes(&sums[0], &sums[1], &sums[2], &sums[3]) };
-        assert!(left.x == want_left.x && left.y == want_left.y, "case {case}: LL");
-        assert!(right.x == want_right.x && right.y == want_right.y, "case {case}: RL");
+        let (x, y) = unsafe {
+            let (x, y) =
+                pairing_points_in_lanes(&sums[0], &sums[1], &sums[2], &sums[3]).to_affine();
+            (x.to_blst_limbs(), y.to_blst_limbs())
+        };
+        assert!(x[0] == want_left.x.l && y[0] == want_left.y.l, "case {case}: LL");
+        assert!(x[1] == want_right.x.l && y[1] == want_right.y.l, "case {case}: RL");
     }
+}
+
+/// The lanes' verdict is blst's on every case, some of which hold: LL and RL
+/// at infinity together.
+#[test]
+fn pairing_check_matches_blst() {
+    if !kernels_run() {
+        return;
+    }
+    let lanes = Lincomb::new();
+    let blst = Lincomb { msm: None, ..Lincomb::new() };
+    let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
+    let mut held = 0;
+    for (case, sums) in cases(&mut rng).iter().enumerate() {
+        let want = blst.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
+        assert_eq!(
+            lanes.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]),
+            want,
+            "case {case}"
+        );
+        held += want as usize;
+    }
+    assert!(held > 0, "no case holds");
 }
