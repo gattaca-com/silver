@@ -282,3 +282,13 @@ def is_larger_root_mask (self : Fp8) : Mmask8 :=
 end Fp8
 
 end LeanBlsSimd
+
+namespace LeanBlsSimd.Fp8
+
+def inverse (self : Fp8) : Fp8 :=
+  self.pow_p_minus_3_over_4.square.square.mul self
+
+def permute (self : Fp8) (indices : Vector Int64 8) : Fp8 :=
+  ⟨self.limbs.map fun row => _mm512_permutex2var_epi64 row (indices.map Int64.toUInt64) row⟩
+
+end LeanBlsSimd.Fp8

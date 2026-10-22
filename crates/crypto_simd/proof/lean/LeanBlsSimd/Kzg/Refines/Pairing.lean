@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Lincomb
 import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.Refines.Roots
 import LeanBlsSimd.Kzg.Refines.Interpolation
@@ -291,7 +292,7 @@ theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
   have hpowersE : powersV.val = powers.toList.map frEncode := by
     simpa only [hpowers0e, List.nil_append, UScalar.ofNatCore_val_eq, Nat.sub_zero,
       powers, computePowers, List.toList_toArray] using hpowersv
-  obtain ⟨ll, scratchL, hll, hllrep⟩ := g1_lincomb_refinement h v.proof_points powersV
+  obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement h v.proof_points powersV
     proofs powers hp hpowersE (by omega) hvalid.2 v.lincomb
   obtain ⟨weights0, hweights0, hweights0v⟩ := resize_fields v.scalars 0#usize (frEncode Fr.zero)
   have hweights0e : weights0.val = [] := by simpa [List.resize] using hweights0v
@@ -305,7 +306,7 @@ theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
     (by simpa using hci.2) { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
   have hweightsE : weightsV.val = weights.map frEncode := by
     simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, weights] using hweightsv
-  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := g1_lincomb_refinement h v.commitment_points weightsV
+  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := verify_lincomb_refinement h v.commitment_points weightsV
     commitments weights.toArray hc (by simpa using hweightsE) (by simpa using hwlen.symm)
     hvalid.1 scratchL
   let middle := { v with r_powers := powersV, scalars := weightsV, lincomb := scratchC }
@@ -332,7 +333,7 @@ theorem pairing_holds_composition [e : KzgExternals] (h : ExternalsCorrect e)
   have hshiftedE : shiftedV.val = shifted.map frEncode := by
     simpa only [hshifted0e, List.nil_append, UScalar.ofNatCore_val_eq, List.drop_zero,
       shifted] using hshiftedv
-  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := g1_lincomb_refinement h after.proof_points shiftedV
+  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement h after.proof_points shiftedV
     proofs shifted.toArray hafterProofs (by simpa using hshiftedE) (by simp [hproofs, hslen])
     hvalid.2 after.lincomb
   have hvll := g1_msm_valid_of_mem proofs powers hvalid.2

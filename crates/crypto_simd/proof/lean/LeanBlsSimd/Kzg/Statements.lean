@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Lincomb
 import LeanBlsSimd.Kzg.Setup
 import LeanBlsSimd.Kzg.InterpolationKernel.Construct
 import LeanBlsSimd.Kzg.Decoder
@@ -90,13 +91,14 @@ theorem new_returns_ok [e : KzgExternals] (hblst : BlstCorrect e)
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
   obtain ⟨s, hs, hsrep⟩ := setup_decode_refines hblst hg1
   obtain ⟨c, hc, hcrep⟩ := cosets_new_refines hblst hg1
+  obtain ⟨lincomb,hl⟩ := lincomb_new_ok (e := e)
   cases hsimd : e.simdAvailable with
   | false =>
     simp only [verify.CellBatchVerifier.new, hs, hc, simd_available, hsimd,
       bind_tc_ok, Bool.false_eq_true, if_false,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
       alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new,
-      blst_ops.LincombScratch.new]
+      hl]
     exact ⟨_, rfl, hsrep, hcrep, trivial⟩
   | true =>
     obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement hblst c hcrep
@@ -104,8 +106,41 @@ theorem new_returns_ok [e : KzgExternals] (hblst : BlstCorrect e)
       bind_tc_ok, if_true, hkernel,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
       alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new,
-      blst_ops.LincombScratch.new]
+      hl]
     exact ⟨_, rfl, hsrep, hcrep, hki⟩
+
+
+theorem new_returns_ok_route [e : KzgExternals] (hblst : BlstCorrect e)
+    (hg1 : UncompressG1.BlstMatchesSpec) :
+    ∃ v, verify.CellBatchVerifier.new=ok v ∧ StateInvariant v ∧
+      v.lincomb.msm.isSome=e.simdAvailable ∧ v.kernel.isSome=e.simdAvailable := by
+  obtain ⟨s,hs,hsrep⟩ := setup_decode_refines hblst hg1
+  obtain ⟨c,hc,hcrep⟩ := cosets_new_refines hblst hg1
+  obtain ⟨lincomb,hl,hlroute⟩ := lincomb_new_route (e:=e)
+  cases hsimd : e.simdAvailable with
+  | false =>
+    simp only [verify.CellBatchVerifier.new,hs,hc,simd_available,hsimd,
+      bind_tc_ok,Bool.false_eq_true,if_false,
+      verify.Deduplicated.Insts.CoreDefaultDefault.default,
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default,challenge.Preimage.new,hl]
+    exact ⟨_,rfl,⟨hsrep,hcrep,trivial⟩,by simpa only [hsimd] using hlroute,rfl⟩
+  | true =>
+    obtain ⟨kernel,hkernel,hki⟩ := InterpolationKernel.new_refinement hblst c hcrep
+    simp only [verify.CellBatchVerifier.new,hs,hc,simd_available,hsimd,
+      bind_tc_ok,if_true,hkernel,
+      verify.Deduplicated.Insts.CoreDefaultDefault.default,
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default,challenge.Preimage.new,hl]
+    exact ⟨_,rfl,⟨hsrep,hcrep,hki⟩,by simpa only [hsimd] using hlroute,rfl⟩
+
+
+theorem stateInvariant_lincomb (v : verify.CellBatchVerifier)
+    (lincomb : silver_crypto_simd.kzg.verify.Lincomb) :
+    StateInvariant {v with lincomb:=lincomb} ↔ StateInvariant v := Iff.rfl
+
+theorem stateInvariant_allows_scalar (v : verify.CellBatchVerifier) (hv : StateInvariant v) :
+    ∃ next,StateInvariant next ∧ next.kernel=v.kernel ∧ next.lincomb.msm=none :=
+  ⟨{v with lincomb:={v.lincomb with msm:=none}},hv,rfl,rfl⟩
+
 
 theorem default_eq_new [KzgExternals] :
     verify.CellBatchVerifier.Insts.CoreDefaultDefault.default =

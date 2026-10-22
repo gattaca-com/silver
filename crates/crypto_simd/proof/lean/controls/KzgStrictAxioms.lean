@@ -20,6 +20,7 @@ import controls.Fr8Swap
 import controls.Fr8Words
 import controls.SignedLimbs
 import controls.InterpolationKernel
+import controls.Msm8
 
 -- Check the proof, its concrete instance, and every negative control together.
 #assert_standard_axioms

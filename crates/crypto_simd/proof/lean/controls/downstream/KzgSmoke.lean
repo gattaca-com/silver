@@ -65,4 +65,33 @@ theorem pairing_consumes_cells [e : KzgExternals]
   exact pairing_holds_refines hblst hg1 v hv indices cells commitments proofs evals r hb hs
     hc hp hcell he hunique hci hproofs hvalid
 
+
+theorem msm_accepts_arbitrary_aligned_lengths
+    (state : msm8.Msm8) (ps : Slice blst.blst_p1_affine)
+    (words : Slice (Aeneas.Std.Array U64 4#usize))
+    (hlen : ps.val.length = words.val.length)
+    (hp : ∀ p ∈ ps.val, G1AffineValid p)
+    (hw : ∀ w ∈ words.val, limbs w.val < Fr.modulus) :
+    ∃ point next, state.msm ps words = ok (point, next) ∧
+      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray
+        (words.val.map (fun w => Fr.ofNat (limbs w.val))).toArray) := by
+  exact LeanBlsSimd.Msm8.msm_refinement state ps words hlen hp hw
+
+theorem kernel_lincomb_requires_no_blst_law [e : KzgExternals]
+    (scratch : verify.Lincomb) (state : msm8.Msm8) (hroute : scratch.msm = some state)
+    (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
+    (hlen : ps.val.length = fs.val.length)
+    (hp : ∀ p ∈ ps.val, G1AffineValid p) (hf : ∀ f ∈ fs.val, FrReduced f) :
+    ∃ point next, scratch.sum ps fs = ok (point, next) ∧ next.msm.isSome = true ∧
+      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
+  exact verify_lincomb_raw_kernel_refinement scratch state hroute ps fs hlen hp hf
+
+theorem verifier_preserves_kernel_choices [KzgExternals]
+    (self next : verify.CellBatchVerifier) (commitments : Slice (Aeneas.Std.Array U8 48#usize))
+    (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
+    (proofs : Slice (Aeneas.Std.Array U8 48#usize)) (verdict : Bool)
+    (h : self.verify commitments indices cells proofs = ok (verdict, next)) :
+    next.kernel.isSome = self.kernel.isSome ∧ next.lincomb.msm.isSome = self.lincomb.msm.isSome := by
+  exact Routes.verify_preserves_routes self next commitments indices cells proofs verdict h
+
 end silver_kzg.Kzg

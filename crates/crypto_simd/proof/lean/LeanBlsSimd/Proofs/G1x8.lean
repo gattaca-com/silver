@@ -25,9 +25,8 @@ private theorem reduced_from_8p_holds {k m : ℕ} {v : Fp8} {l : Fin 8}
     (hk : k ≤ 8) (hm : m ≤ 1024) : (Offsets.new.reduced_from_8p v).Holds l a := by
   exact h.reduced_from_8p hk hm
 
-theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
-    (h : self.Holds l P) (_hP : G1.Valid P)
-    (hu : self.double.2.toNat.testBit l = false) :
+theorem double_finite_correct (self : G1x8) (l : Fin 8) (P : G1)
+    (h : self.Holds l P) (hz : ¬P.z.isZero = true) :
     self.double.1.Holds l (G1.double P) := by
   have ha := (Holds.x h).square
   have hb := (Holds.y h).square
@@ -58,12 +57,6 @@ theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
     (by decide) (by decide)
   have hx3 := ((hx3'.cond_sub (Fp8.offset_four l) (by decide)).cond_sub
     (Fp8.offset_two l) (by decide)).holds (by decide)
-  have hu' := hu
-  simp only [double, Mmask8.testBit_or, Bool.or_eq_false_iff,
-    (Holds.y h).testBit_is_zero_mask, (Holds.z h).testBit_is_zero_mask, decide_eq_false_iff_not] at hu'
-  have hz : ¬P.z.isZero = true := by
-    rw [G1.isZero_iff]
-    exact hu'.2
   let x : ZMod Fp.modulus := P.x
   let y : ZMod Fp.modulus := P.y
   let z : ZMod Fp.modulus := P.z
@@ -80,6 +73,15 @@ theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
     ring
   · change _ = 2 * y * z
     ring
+
+theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
+    (h : self.Holds l P) (_hP : G1.Valid P)
+    (hu : self.double.2.toNat.testBit l = false) :
+    self.double.1.Holds l (G1.double P) := by
+  have hu' := hu
+  simp only [double, Mmask8.testBit_or, Bool.or_eq_false_iff,
+    (Holds.y h).testBit_is_zero_mask, (Holds.z h).testBit_is_zero_mask, decide_eq_false_iff_not] at hu'
+  exact double_finite_correct self l P h (G1.isZero_iff.not.mpr hu'.2)
 
 theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y : Fp)
     (h : self.Holds l P) (hx : qx.Holds l x) (hy : qy.Holds l y)

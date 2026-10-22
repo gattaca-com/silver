@@ -76,7 +76,32 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.add_cell,
   ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.add_column,
   ``silver_crypto_simd.kzg.interpolation_kernel.InterpolationKernel.interpolate,
-  ``silver_crypto_simd.kzg.interpolation_kernel.store_canonical]
+  ``silver_crypto_simd.kzg.interpolation_kernel.store_canonical,
+  ``silver_crypto_simd.bls.fp8.Fp8.inverse,
+  ``silver_crypto_simd.bls.g1x8.G1x8.infinity,
+  ``silver_crypto_simd.bls.g1x8.G1x8.double_complete,
+  ``silver_crypto_simd.bls.g1x8.G1x8.add_affine_complete,
+  ``silver_crypto_simd.bls.g1x8.G1x8.add_complete,
+  ``silver_crypto_simd.bls.g1x8.G1x8.times_two_pow,
+  ``silver_crypto_simd.bls.g1x8.G1x8.sum_lanes_shifted,
+  ``silver_crypto_simd.bls.msm8.store.PointStore.reset,
+  ``silver_crypto_simd.bls.msm8.store.PointStore.push_blst,
+  ``silver_crypto_simd.bls.msm8.store.PointStore.load_signed,
+  ``silver_crypto_simd.bls.msm8.store.PointStore.store_points,
+  ``silver_crypto_simd.bls.msm8.pairs.batch_inverse,
+  ``silver_crypto_simd.bls.msm8.pairs.BatchedAdds.run,
+  ``silver_crypto_simd.bls.msm8.buckets.SignedDigits.next_digit,
+  ``silver_crypto_simd.bls.msm8.buckets.Buckets.fill,
+  ``silver_crypto_simd.bls.msm8.buckets.Buckets.queue_round,
+  ``silver_crypto_simd.bls.msm8.buckets.Buckets.sum,
+  ``silver_crypto_simd.bls.msm8.glv.decompose,
+  ``silver_crypto_simd.bls.msm8.Msm8.Insts.CoreDefaultDefault.default,
+  ``silver_crypto_simd.bls.msm8.Msm8.chunk_sum,
+  ``silver_crypto_simd.bls.msm8.Msm8.msm,
+  ``silver_crypto_simd.bls.msm8.lane_zero_in_blst,
+  ``silver_crypto_simd.kzg.fr8.Fr8.plain_words,
+  ``silver_crypto_simd.kzg.verify.Lincomb.new,
+  ``silver_crypto_simd.kzg.verify.Lincomb.sum]
 
 def libraryTheorems : CommandElabM (Array Name) := do
   let theorems := (← getEnv).constants.fold (init := #[]) fun found c info =>

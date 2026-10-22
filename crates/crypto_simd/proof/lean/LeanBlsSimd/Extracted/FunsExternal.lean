@@ -4,6 +4,14 @@ import LeanBlsSimd.Model.Intrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 
+def Aeneas.Std.alloc.vec.Vec.clear (_Allocator : Type) {α : Type} (_ : alloc.vec.Vec α) :
+    Result (alloc.vec.Vec α) :=
+  ok ⟨[], by simp⟩
+
+def Aeneas.Std.alloc.vec.Vec.is_empty (_Allocator : Type) {α : Type}
+    (v : alloc.vec.Vec α) : Result Bool :=
+  ok v.val.isEmpty
+
 /-- External observations supplied to the generated BLS APIs. -/
 class silver_crypto_simd.bls.BlsExternals where
   simdAvailable : Bool

@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.FpEncoding
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
@@ -10,26 +11,6 @@ namespace LeanBlsSimd.Kzg
 set_option exponentiation.threshold 512
 set_option maxRecDepth 2048
 
-private theorem fpEncode_eq_bls (x : EthCryptographySpecs.Bls.Fp) :
-    fpEncode x = DecompressG2.toBlstFp (DecompressG2.blstFp x) := by
-  have hpow : (2 ^ 384 : ZMod EthCryptographySpecs.Bls.Fp.modulus).val =
-      2 ^ 384 % EthCryptographySpecs.Bls.Fp.modulus := by
-    rw [show (2 ^ 384 : ZMod EthCryptographySpecs.Bls.Fp.modulus) =
-      ((2 ^ 384 : Nat) : ZMod EthCryptographySpecs.Bls.Fp.modulus) by
-        simp only [Nat.cast_pow, Nat.cast_ofNat], ZMod.val_natCast]
-  have hmont (a : ZMod EthCryptographySpecs.Bls.Fp.modulus) : (a * 2 ^ 384).val =
-      a.val * 2 ^ 384 % EthCryptographySpecs.Bls.Fp.modulus := by
-    rw [ZMod.val_mul, hpow]
-    exact Nat.mul_mod_mod _ _ _
-  simp only [fpEncode, DecompressG2.toBlstFp, DecompressG2.blstFp]
-  apply congrArg blst.blst_fp.mk
-  apply Subtype.ext
-  apply List.ext_getElem
-  · simp [words, toArray]
-  · intro i hi hj
-    simp only [words, toArray, List.getElem_map, List.getElem_range,
-      Vector.getElem_toList, Vector.getElem_ofFn, hmont]
-    rfl
 
 private theorem g1Affine_eq_bls (p : EthCryptographySpecs.Bls.G1) :
     g1Affine p = DecompressG1.toBlstP1Affine (G1Spec.blstLimbs p) := by

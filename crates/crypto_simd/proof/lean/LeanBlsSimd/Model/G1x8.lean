@@ -144,3 +144,58 @@ def scott_membership (px py : Fp8) : Membership :=
 
 end G1x8
 end LeanBlsSimd
+
+namespace LeanBlsSimd.G1x8
+
+def infinity : G1x8 := ⟨Fp8.one, Fp8.one, Fp8.zero⟩
+
+def select (k : Mmask8) (a b : G1x8) : G1x8 :=
+  ⟨Fp8.select k a.x b.x, Fp8.select k a.y b.y, Fp8.select k a.z b.z⟩
+
+def double_complete (self : G1x8) : G1x8 :=
+  select self.z.is_zero_mask self.double.1 self
+
+def coincident (self sum : G1x8) (same_x same_y : Mmask8) : G1x8 :=
+  let cancelled := select (same_x &&& ~~~same_y) sum infinity
+  select (same_x &&& same_y) cancelled self.double.1
+
+def add_affine_complete (self : G1x8) (qx qy : Fp8) : G1x8 :=
+  let sum := (self.add_affine qx qy).1
+  let undecided := (self.add_affine qx qy).2
+  if undecided = 0 then sum else
+    let infinite := self.z.is_zero_mask
+    let same_x := undecided &&& ~~~infinite
+    let decided := if same_x = 0 then sum else
+      let s2 := (qy.mul self.z).mul self.z.square
+      self.coincident sum same_x (s2.eq_mask self.y)
+    select infinite decided (from_affine qx qy)
+
+def add_complete (self q : G1x8) : G1x8 :=
+  let sum := (self.add q).1
+  let undecided := (self.add q).2
+  if undecided = 0 then sum else
+    let infinite := self.z.is_zero_mask
+    let q_infinite := q.z.is_zero_mask
+    let same_x := undecided &&& ~~~(infinite ||| q_infinite)
+    let decided := if same_x = 0 then sum else
+      let s1 := (self.y.mul q.z).mul q.z.square
+      let s2 := (q.y.mul self.z).mul self.z.square
+      self.coincident sum same_x (s1.eq_mask s2)
+    select infinite (select q_infinite decided self) q
+
+def times_two_pow (self : G1x8) (k : ℕ) : G1x8 :=
+  (List.range k).foldl (fun r _ => r.double_complete) self
+
+def permute (self : G1x8) (indices : Vector Int64 8) : G1x8 :=
+  ⟨self.x.permute indices, self.y.permute indices, self.z.permute indices⟩
+
+def lanesAbove (distance : ℕ) : Vector Int64 8 :=
+  Vector.ofFn fun l => Int64.ofNat ((l.val + distance) % 8)
+
+def joinLanes (self : G1x8) (bits distance : ℕ) : G1x8 :=
+  self.add_complete ((self.times_two_pow (distance * bits)).permute (lanesAbove distance))
+
+def sum_lanes_shifted (self : G1x8) (bits : ℕ) : G1x8 :=
+  ((self.joinLanes bits 1).joinLanes bits 2).joinLanes bits 4
+
+end LeanBlsSimd.G1x8

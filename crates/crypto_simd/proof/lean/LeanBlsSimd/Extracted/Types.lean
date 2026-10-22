@@ -81,7 +81,7 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 61:0-64:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 64:0-67:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8
@@ -94,14 +94,14 @@ structure bls.Membership where
 def bls.fp8.Fp8 := Array core.core_arch.x86.__m512i 8#usize
 
 /-- [silver_crypto_simd::bls::g1x8::Offsets]
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 31:0-35:1 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 33:0-37:1 -/
 structure bls.g1x8.Offsets where
   two_p : bls.fp8.Fp8
   four_p : bls.fp8.Fp8
   eight_p : bls.fp8.Fp8
 
 /-- [silver_crypto_simd::bls::g1x8::G1x8]
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 24:0-28:1
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 26:0-30:1
     Visibility: public -/
 structure bls.g1x8.G1x8 where
   x : bls.fp8.Fp8
@@ -147,6 +147,68 @@ structure bls.g2x8.G2x8 where
   x : bls.fp2x8.Fp2x8
   y : bls.fp2x8.Fp2x8
   z : bls.fp2x8.Fp2x8
+
+/-- [silver_crypto_simd::bls::msm8::buckets::Buckets]
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 19:0-25:1
+    Visibility: public -/
+structure bls.msm8.buckets.Buckets where
+  window_bits : Std.Usize
+  windows : Std.Usize
+  refs : alloc.vec.Vec Std.U32
+  starts : alloc.vec.Vec Std.U32
+  lens : alloc.vec.Vec Std.U32
+
+/-- [silver_crypto_simd::bls::msm8::buckets::Entries]
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 28:0-32:1 -/
+structure bls.msm8.buckets.Entries where
+  indices : Array Std.U32 8#usize
+  present : Std.U8
+  negated : Std.U8
+
+/-- [silver_crypto_simd::bls::msm8::buckets::SignedDigits]
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 246:0-251:1 -/
+structure bls.msm8.buckets.SignedDigits where
+  words : Array Std.U64 4#usize
+  window_bits : Std.Usize
+  bit : Std.Usize
+  carry : Std.U64
+
+/-- [silver_crypto_simd::bls::msm8::store::PointStore]
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 11:0-14:1
+    Visibility: public -/
+structure bls.msm8.store.PointStore where
+  rows : alloc.vec.Vec (Array Std.U64 8#usize)
+  len : Std.Usize
+
+/-- [silver_crypto_simd::bls::msm8::pairs::BatchedAdds]
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 22:0-28:1
+    Visibility: public -/
+structure bls.msm8.pairs.BatchedAdds where
+  a : alloc.vec.Vec Std.U32
+  b : alloc.vec.Vec Std.U32
+  out : alloc.vec.Vec Std.U32
+  dx : alloc.vec.Vec bls.fp8.Fp8
+  «prefix» : alloc.vec.Vec bls.fp8.Fp8
+
+/-- [silver_crypto_simd::bls::msm8::glv::Half]
+    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 27:0-30:1
+    Visibility: public -/
+structure bls.msm8.glv.Half where
+  magnitude : Array Std.U64 4#usize
+  negative : Bool
+
+/-- [silver_crypto_simd::bls::msm8::Msm8]
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 45:0-54:1
+    Visibility: public -/
+structure bls.msm8.Msm8 where
+  store : bls.msm8.store.PointStore
+  buckets : bls.msm8.buckets.Buckets
+  adds : bls.msm8.pairs.BatchedAdds
+  finite_points : alloc.vec.Vec blst.blst_p1_affine
+  finite_scalars : alloc.vec.Vec (Array Std.U64 4#usize)
+  halves : alloc.vec.Vec (Array Std.U64 4#usize)
+  first_signs : alloc.vec.Vec Bool
+  second_signs : alloc.vec.Vec Bool
 
 /-- [silver_crypto_simd::kzg::blst_ops::LincombScratch]
     Source: 'crates/crypto_simd/src/kzg/blst_ops.rs', lines 137:0-142:1
@@ -229,13 +291,20 @@ structure kzg.setup.Setup where
   g2_neg_generator : blst.blst_p2_affine
 
 /-- [silver_crypto_simd::kzg::verify::Deduplicated]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 281:0-284:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:0-325:1 -/
 structure kzg.verify.Deduplicated where
   unique : alloc.vec.Vec (Array Std.U8 48#usize)
   index_of_cell : alloc.vec.Vec Std.Usize
 
+/-- [silver_crypto_simd::kzg::verify::Lincomb]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 287:0-293:1 -/
+structure kzg.verify.Lincomb where
+  scratch : kzg.blst_ops.LincombScratch
+  msm : Option bls.msm8.Msm8
+  words : alloc.vec.Vec (Array Std.U64 4#usize)
+
 /-- [silver_crypto_simd::kzg::verify::CellBatchVerifier]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 31:0-50:1
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 36:0-55:1
     Visibility: public -/
 structure kzg.verify.CellBatchVerifier where
   setup : kzg.setup.Setup
@@ -253,7 +322,7 @@ structure kzg.verify.CellBatchVerifier where
   column : alloc.vec.Vec blst.blst_fr
   coefficients : alloc.vec.Vec blst.blst_fr
   interpolation : alloc.vec.Vec blst.blst_fr
-  lincomb : kzg.blst_ops.LincombScratch
+  lincomb : kzg.verify.Lincomb
   kernel : Option kzg.interpolation_kernel.InterpolationKernel
 
 end silver_crypto_simd
