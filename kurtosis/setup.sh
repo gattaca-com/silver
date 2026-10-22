@@ -77,7 +77,11 @@ CUSTODY_GROUP_COUNT="${CUSTODY_GROUP_COUNT:-8}"
 # works — both sides read the same generated file.
 ENGINE_PORT="${ENGINE_PORT:-8551}"
 JWT_SECRET="${JWT_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
-UNSAFE_NO_EL="${UNSAFE_NO_EL:-1}"
+UNSAFE_NO_EL="${UNSAFE_NO_EL:-0}"
+case "$UNSAFE_NO_EL" in
+  0|1) ;;
+  *) echo "UNSAFE_NO_EL must be 0 or 1" >&2; exit 1 ;;
+esac
 
 # Pin a known-good release — the bare locator pulls the default branch (HEAD),
 # which periodically breaks (e.g. the zkboost `GpuConfig` regression). Bump the
@@ -169,21 +173,10 @@ curl -fsS -H 'Accept: application/octet-stream' \
 #     a devnet (wrong digest -> no peers; wrong domain -> blocks fail sig
 #     verification). Beacon-API spec values are strings.
 SPEC="$(curl -fsS "$PRIMARY_URL/eth/v1/config/spec" | jq '.data')"
-gfv="$(jq -r '.GENESIS_FORK_VERSION' <<<"$SPEC")"
-cfv="$(jq -r '.CAPELLA_FORK_VERSION' <<<"$SPEC")"
 ffv="$(jq -r '.FULU_FORK_VERSION' <<<"$SPEC")"
-gloasfv="$(jq -r '.GLOAS_FORK_VERSION' <<<"$SPEC")"
-gloasfe="$(jq -r '.GLOAS_FORK_EPOCH | tonumber' <<<"$SPEC")"
-efe="$(jq -r '.ELECTRA_FORK_EPOCH | tonumber' <<<"$SPEC")"
-# The Fulu *epoch*, not just its version: `fork_at(epoch)` picks the active
-# fork from the epochs, and an unstated FULU_FORK_EPOCH falls back to
-# mainnet's 411392 -- so a Fulu-from-genesis devnet reads as Electra, which
-# silver does not run, and every fork version derived from the schedule
-# (signing domains, the fork digest) is the wrong one.
-ffe="$(jq -r '.FULU_FORK_EPOCH | tonumber' <<<"$SPEC")"
-mbe="$(jq -r '.MAX_BLOBS_PER_BLOCK_ELECTRA | tonumber' <<<"$SPEC")"
-sps="$(jq -r '.SECONDS_PER_SLOT | tonumber' <<<"$SPEC")"
-WALL_EPOCH=$(( ( $(date +%s) - GENESIS ) / sps / 32 ))
+gloasfe="$(jq -r '.GLOAS_FORK_EPOCH // "unavailable"' <<<"$SPEC")"
+slot_ms="$(jq -r '(.SLOT_DURATION_MS // ((.SECONDS_PER_SLOT | tonumber) * 1000)) | tonumber' <<<"$SPEC")"
+WALL_EPOCH=$(( ( $(date +%s) - GENESIS ) * 1000 / slot_ms / 32 ))
 echo "spec: fulu_fork_version=$ffv gloas_fork_epoch=$gloasfe wall_epoch=$WALL_EPOCH"
 
 # 7d. Local EL — silver drives its own dedicated reth over the engine API
@@ -233,24 +226,9 @@ echo "$JWT_SECRET" > "$EL_DIR/jwt.hex"
 #    as config.yaml and its bootnodes as bootstrap_nodes.yaml. silver derives
 #    the fork digest from this spec and the anchor state's
 #    genesis_validators_root, so the spec keys are what has to be right.
-{
-  echo "GENESIS_FORK_VERSION: $gfv"
-  echo "CAPELLA_FORK_VERSION: $cfv"
-  echo "FULU_FORK_VERSION: $ffv"
-  # Only for --gloas: an older CL's spec may not carry the Gloas keys at all.
-  if [ "$GLOAS" -eq 1 ]; then
-    echo "GLOAS_FORK_VERSION: $gloasfv"
-    echo "GLOAS_FORK_EPOCH: $gloasfe"
-  fi
-  echo "ELECTRA_FORK_EPOCH: $efe"
-  echo "FULU_FORK_EPOCH: $ffe"
-  echo "MAX_BLOBS_PER_BLOCK_ELECTRA: $mbe"
-  echo "SECONDS_PER_SLOT: $sps"
-  jq -r '(.BLOB_SCHEDULE // []) as $schedule
-    | if ($schedule | length) > 0 then "BLOB_SCHEDULE:" else empty end,
-      ($schedule[] | "  - EPOCH: \(.EPOCH|tonumber)\n    MAX_BLOBS_PER_BLOCK: \(.MAX_BLOBS_PER_BLOCK|tonumber)")' \
-    <<<"$SPEC"
-} > "$NETWORK_DIR/config.yaml"
+CL_CONFIG="$(dirname "$GENESIS_JSON")/config.yaml"
+[ -s "$CL_CONFIG" ] || { echo "no config.yaml beside $GENESIS_JSON" >&2; exit 1; }
+cp "$CL_CONFIG" "$NETWORK_DIR/config.yaml"
 printf -- '- "%s"\n' "${ENRS[@]}" > "$NETWORK_DIR/bootstrap_nodes.yaml"
 
 # 9. Write the config TOML. Static fields from the vars above; derived fields
@@ -268,7 +246,11 @@ printf -- '- "%s"\n' "${ENRS[@]}" > "$NETWORK_DIR/bootstrap_nodes.yaml"
   echo "jwt_secret = \"$EL_DIR/jwt.hex\""
   # Unsafe no-EL testing mode: set UNSAFE_NO_EL=1 to run silver without a local
   # reth — the engine tile answers every request VALID (CL-only testing).
-  [ -n "${UNSAFE_NO_EL:-}" ] && echo "unsafe_no_el = true"
+  if [ "$UNSAFE_NO_EL" -eq 1 ]; then
+    echo "unsafe_no_el = true"
+  else
+    echo "unsafe_no_el = false"
+  fi
   if [ "$ANCHOR" = finalized ]; then
     echo
     echo "[chain_config]"

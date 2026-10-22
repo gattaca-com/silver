@@ -15,7 +15,7 @@ use crate::{
     Origin, P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
     column_util::columns_of,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, EXECUTION_PAYLOAD_ENVELOPE_MIN,
         EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
         SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
         SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
@@ -126,6 +126,25 @@ pub enum BeaconApiRequest {
         request_id: u64,
         ssz: TCacheRead,
     },
+    ExecutionPayloadEnvelope {
+        request_id: u64,
+        slot: u64,
+        beacon_block_root: B256,
+    },
+    PublishPayloadEnvelope {
+        request_id: u64,
+        ssz: TCacheRead,
+        blob_data_included: bool,
+        validation: BroadcastValidation,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BroadcastValidation {
+    Gossip,
+    Consensus,
+    ConsensusAndEquivocation,
 }
 
 /// `produceBlockV4`'s terms for a p2p builder bid.
@@ -210,6 +229,10 @@ pub enum BlockLookup {
 #[derive(Clone, Copy, Debug)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
+    PayloadEnvelopeValidation {
+        request_id: u64,
+        consensus_valid: bool,
+    },
     LocalGossipResponse {
         request_id: u64,
         response: LocalGossipResult,
@@ -232,39 +255,55 @@ pub enum BeaconApiResponse {
         request_id: u64,
         block: Result<ProducedBlock, ProduceBlockFailure>,
     },
+    ExecutionPayloadEnvelope {
+        request_id: u64,
+        envelope: Option<ProducedEnvelope>,
+    },
 }
 
 impl BeaconApiResponse {
     pub fn request_id(&self) -> u64 {
         match self {
+            Self::PayloadEnvelopeValidation { request_id, .. } |
             Self::LocalGossipResponse { request_id, .. } |
             Self::AggregateAttestation { request_id, .. } |
             Self::SyncCommitteeContribution { request_id, .. } |
             Self::Block { request_id, .. } |
-            Self::ProducedBlock { request_id, .. } => *request_id,
+            Self::ProducedBlock { request_id, .. } |
+            Self::ExecutionPayloadEnvelope { request_id, .. } => *request_id,
         }
     }
 }
 
-/// SSZ `BlockContents` spliced from two reads. `header`, in the
-/// `beacon_state` tcache, holds all but the [`crate::PayloadFrame`] in
-/// `payload` carries. The frame's payload goes in at `payload_at`, its
-/// `after_payload` at the end.
+/// Fulu contents splice the payload frame into `header` at `payload_at`.
+/// Gloas keeps the whole beacon block in `header` and describes its optional
+/// envelope separately.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct ProducedBlock {
     pub header: TCacheRead,
     /// Where the payload goes in `header`; its end when there is none.
     pub payload_at: u32,
-    /// `None` for a block that commits to a bid and carries no payload: a
-    /// blinded Fulu block or a Gloas block.
+    /// `None` for a blinded Fulu block or a Gloas block from an external
+    /// builder.
     pub payload: Option<TCacheRead>,
+    /// Gloas envelope's fixed SSZ part; its payload and requests are in
+    /// `payload`.
+    pub envelope_header: Option<[u8; EXECUTION_PAYLOAD_ENVELOPE_MIN]>,
     /// Little-endian wei.
     pub execution_payload_value: [u8; 32],
     /// Little-endian wei.
     pub consensus_block_value: [u8; 32],
     /// The `BuilderEntry` whose bid the block commits to.
     pub builder_entry: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ProducedEnvelope {
+    pub header: [u8; EXECUTION_PAYLOAD_ENVELOPE_MIN],
+    /// Payload frame in the engine cache; includes requests, proofs and blobs.
+    pub payload: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1219,6 +1258,7 @@ pub struct PtcObservation {
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
+    ProposedPayload(ProposedPayload),
     LocalGossipVerdict {
         hash: MessageId,
         result: LocalGossipResult,
@@ -1311,6 +1351,18 @@ pub enum ReplayBlock {
 #[repr(C)]
 pub struct LockedProposal {
     pub contents: TCacheRead,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ProposedPayload {
+    pub request_id: u64,
+    /// Bare signed envelope in the Beacon State handoff cache.
+    pub ssz: TCacheRead,
+    pub contents: TCacheRead,
+    /// Cached payload frame; absent when `contents` supplies blobs and proofs.
+    pub payload: Option<TCacheRead>,
+    pub commitments: TCacheRead,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1579,6 +1631,7 @@ impl BeaconStateEvent {
             }
             Self::BlockRejected { .. } |
             Self::ReplayComplete |
+            Self::ProposedPayload(_) |
             Self::LocalGossipVerdict { .. } |
             Self::BlockReceived { .. } |
             Self::AttestersShuffling { .. } |

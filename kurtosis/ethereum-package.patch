@@ -1,0 +1,79 @@
+--- a/src/cl/silver/silver_launcher.star
++++ b/src/cl/silver/silver_launcher.star
+@@ -115,7 +115,10 @@
+     if participant.skip_start:
+         used_ports = shared_utils.get_port_specs(used_port_assignments, wait=None)
+     else:
+-        used_ports = shared_utils.get_port_specs(used_port_assignments)
++        # Silver opens its ports after genesis.
++        used_ports = shared_utils.get_port_specs(
++            used_port_assignments, wait="{0}s".format(network_params.genesis_delay + 120)
++        )
+ 
+     config_artifact = render_config(
+         plan,
+@@ -160,7 +163,7 @@
+         files["/opt/bin"] = cl_binary_artifact.artifact
+ 
+     env_vars = shared_utils.with_otel_env_vars(
+-        participant.cl_extra_env_vars | {"RUST_LOG": log_level},
++        {"RUST_LOG": log_level} | participant.cl_extra_env_vars,
+         otel_otlp_grpc_url,
+         beacon_service_name,
+     )
+@@ -173,17 +176,13 @@
+     )
+     cmd = ["silver", "--config", "/tmp/" + CONFIG_FILENAME]
+ 
+-    # Genesis-anchored on a chain that has not finalized cannot satisfy data
+-    # availability for its own early blob blocks, and a participant that
+-    # starts with the network is inside its own weak-subjectivity period
+-    # regardless — so the check only ever rejects a devnet restart.
+-    cmd.append("--disable-weak-subjectivity")
+-
+     if len(participant.cl_extra_params) > 0:
+         cmd.extend([param for param in participant.cl_extra_params])
+ 
+     config_args = {
+         "image": participant.cl_image,
++        # Flux queues and profiling exceed Docker's 64 MiB shared-memory default.
++        "gpu": GpuConfig(count=0, shm_size=2048),
+         "ports": used_ports,
+         "public_ports": public_ports,
+         "entrypoint": ["sh", "-c"],
+@@ -241,8 +240,7 @@
+         # No EL means nothing can answer newPayload, so the engine tile has to
+         # rule every payload VALID by itself.
+         "UnsafeNoEl": "true" if el_context == None else "false",
+-        "SpecFile": constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER + "/config.yaml",
+-        "AnchorFile": constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER + "/genesis.ssz",
++        "NetworkDir": constants.GENESIS_CONFIG_MOUNT_PATH_ON_CONTAINER,
+         "BootstrapEnrs": bootstrap_enrs(bootnode_contexts, bootnode_enr_override),
+     }
+ 
+--- a/static_files/silver-config/silver.toml.tmpl
++++ b/static_files/silver-config/silver.toml.tmpl
+@@ -1,10 +1,11 @@
+ # Rendered by src/cl/silver/silver_launcher.star.
+ #
+-# `fork_digest`, `next_fork_version` and `genesis_unix_secs` are absent on
+-# purpose: silver derives all three from `spec_file` plus the anchor state's
+-# own genesis fields, so this file cannot contradict the network it joins.
++# Silver derives fork and genesis values from the network metadata and anchor state.
+ # EXTERNAL_IP is substituted from `hostname -i` at start-up, because a
+ # rendered artifact predates the service that gets the address.
++network = "{{ .NetworkDir }}"
++# Local devnets start from genesis without a finalized checkpoint.
++disable_weak_subjectivity_check = true
+ secret_key = "{{ .SecretKey }}"
+ external_ip_v4 = "EXTERNAL_IP"
+ discovery_port = {{ .DiscoveryPort }}
+@@ -19,8 +20,6 @@
+ unsafe_no_el = {{ .UnsafeNoEl }}
+ 
+ [chain_config]
+-spec_file = "{{ .SpecFile }}"
+-checkpoint_file = "{{ .AnchorFile }}"
+ bootstrap_enrs = [
+ {{- range .BootstrapEnrs }}
+   "{{ . }}",

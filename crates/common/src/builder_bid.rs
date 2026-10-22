@@ -10,8 +10,8 @@ pub struct BuilderTerms {
 
 impl BuilderTerms {
     /// `value` plus `execution_payment` up to the entry's cap.
-    pub fn counted(&self, value: u64, execution_payment: u64) -> u64 {
-        value.saturating_add(execution_payment.min(self.max_execution_payment))
+    pub fn counted(&self, value: u64, execution_payment: u64) -> u128 {
+        u128::from(value) + u128::from(execution_payment.min(self.max_execution_payment))
     }
 }
 
@@ -105,6 +105,6 @@ mod tests {
             BuilderTerms { min_bid: 0, builder_boost_factor: 100, max_execution_payment: 5 };
         assert_eq!(terms.counted(10, 3), 13);
         assert_eq!(terms.counted(10, 9), 15);
-        assert_eq!(terms.counted(u64::MAX, 1), u64::MAX);
+        assert_eq!(terms.counted(u64::MAX, 1), u128::from(u64::MAX) + 1);
     }
 }

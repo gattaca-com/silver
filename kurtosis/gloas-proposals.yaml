@@ -1,0 +1,53 @@
+id: silver-gloas-proposals
+name: "Silver proposes across Fulu to Gloas"
+timeout: 65m
+tasks:
+  - name: check_clients_are_healthy
+    title: "All four client pairs are ready"
+    timeout: 10m
+    config:
+      minClientCount: 4
+
+  - name: check_consensus_block_proposals
+    title: "Silver proposes Fulu blocks"
+    timeout: 15m
+    config:
+      validatorNamePattern: ".*silver.*"
+      checkLookback: 0
+      blockCount: 2
+
+  - name: check_consensus_slot_range
+    title: "The Fulu proposals finished before Gloas"
+    config:
+      maxEpochNumber: 3
+
+  - name: check_consensus_slot_range
+    title: "Wait until Gloas has been active for one epoch"
+    timeout: 35m
+    config:
+      minEpochNumber: 5
+
+  - name: check_consensus_block_proposals
+    title: "Silver proposes Gloas blocks containing blobs"
+    timeout: 15m
+    config:
+      validatorNamePattern: ".*silver.*"
+      checkLookback: 0
+      blockCount: 3
+      minBlobCount: 1
+      minTransactionCount: 1
+
+  - name: check_consensus_finality
+    title: "Finalize beyond the Gloas fork"
+    timeout: 20m
+    config:
+      minFinalizedEpochs: 5
+      maxUnfinalizedEpochs: 3
+
+  - name: check_consensus_sync_status
+    title: "All consensus clients remain synced"
+    timeout: 5m
+
+  - name: check_execution_sync_status
+    title: "All execution clients remain synced"
+    timeout: 5m

@@ -449,6 +449,7 @@ mod tests {
             content_type: Some("application/json"),
             eth_consensus_version: None,
             eth_builder_url: None,
+            eth_blob_data_included: None,
             version: 1,
             keep_alive: true,
         };

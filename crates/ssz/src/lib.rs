@@ -1,6 +1,7 @@
 pub mod block_body;
 pub mod block_contents;
 pub mod body_offsets;
+pub mod envelope_contents;
 pub mod merkle;
 pub mod progressive;
 pub mod ssz_hash;

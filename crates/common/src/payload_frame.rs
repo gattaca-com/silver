@@ -1,5 +1,8 @@
+use silver_beacon_state_data::{B256, BUILDER_INDEX_SELF_BUILD};
+
 use crate::ssz_view::{
-    BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, NUMBER_OF_COLUMNS,
+    BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT, BYTES_PER_KZG_PROOF, EXECUTION_PAYLOAD_ENVELOPE_MIN,
+    NUMBER_OF_COLUMNS,
 };
 
 /// The `engine_getPayloadV5/V6` result as the engine tile frames it: a
@@ -22,6 +25,21 @@ pub struct PayloadFrame<'a> {
 }
 
 impl<'a> PayloadFrame<'a> {
+    pub fn self_build_envelope_header(
+        &self,
+        block_root: B256,
+        parent_root: B256,
+    ) -> [u8; EXECUTION_PAYLOAD_ENVELOPE_MIN] {
+        let mut header = [0; EXECUTION_PAYLOAD_ENVELOPE_MIN];
+        header[..4].copy_from_slice(&(EXECUTION_PAYLOAD_ENVELOPE_MIN as u32).to_le_bytes());
+        let requests_at = EXECUTION_PAYLOAD_ENVELOPE_MIN + self.execution_payload.len();
+        header[4..8].copy_from_slice(&(requests_at as u32).to_le_bytes());
+        header[8..16].copy_from_slice(&BUILDER_INDEX_SELF_BUILD.to_le_bytes());
+        header[16..48].copy_from_slice(&block_root);
+        header[48..].copy_from_slice(&parent_root);
+        header
+    }
+
     pub const CELL_PROOFS_PER_BLOB_LEN: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
     /// Payload and requests lengths, blob count, `shouldOverrideBuilder` and
     /// the little-endian `blockValue`.

@@ -14,6 +14,13 @@ use crate::stf::{
 const MAX_WITHDRAWALS_PER_PAYLOAD: usize = 16;
 const MAX_BUILDERS_PER_WITHDRAWALS_SWEEP: u64 = 16384;
 
+pub(crate) struct ExpectedWithdrawals {
+    pub withdrawals: PayloadWithdrawals,
+    processed_builder: usize,
+    processed_partial: usize,
+    processed_builders_sweep: usize,
+}
+
 /// Computes the expected withdrawal set — builder pending → validator partials
 /// → builders sweep → validators sweep — applies it, and advances every cursor.
 pub fn process_withdrawals(view: &mut StateWriterView) {
@@ -24,16 +31,12 @@ pub fn process_withdrawals(view: &mut StateWriterView) {
         return;
     }
 
-    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
-    let mut withdrawals = PayloadWithdrawals::new();
-    let mut wi = view.slot.state().next_withdrawal_index;
-
-    let processed_builder = get_builder_withdrawals(view, &mut withdrawals, &mut wi);
-    let processed_partial =
-        get_pending_partial_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
-    let processed_builders_sweep =
-        get_builders_sweep_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
-    get_validators_sweep_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+    let ExpectedWithdrawals {
+        withdrawals,
+        processed_builder,
+        processed_partial,
+        processed_builders_sweep,
+    } = get_expected_withdrawals(view);
 
     apply_withdrawals(view, &withdrawals);
 
@@ -49,6 +52,26 @@ pub fn process_withdrawals(view: &mut StateWriterView) {
     let stored = &mut view.slot.state_mut().payload_expected_withdrawals;
     stored.clear();
     stored.extend_from_slice(&withdrawals);
+}
+
+pub(crate) fn get_expected_withdrawals(view: &StateWriterView) -> ExpectedWithdrawals {
+    let current_epoch = view.slot.state().slot / SLOTS_PER_EPOCH;
+    let mut withdrawals = PayloadWithdrawals::new();
+    let mut wi = view.slot.state().next_withdrawal_index;
+
+    let processed_builder = get_builder_withdrawals(view, &mut withdrawals, &mut wi);
+    let processed_partial =
+        get_pending_partial_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+    let processed_builders_sweep =
+        get_builders_sweep_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+    get_validators_sweep_withdrawals(view, current_epoch, &mut withdrawals, &mut wi);
+
+    ExpectedWithdrawals {
+        withdrawals,
+        processed_builder,
+        processed_partial,
+        processed_builders_sweep,
+    }
 }
 
 /// Drain `builder_pending_withdrawals` into payouts to each builder's recorded

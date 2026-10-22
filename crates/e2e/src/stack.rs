@@ -270,6 +270,7 @@ impl PublisherStack {
             [&rpc_in_producer, &cluster_in_producer].map(|p| p.cache_ref()).into_iter().chain([
                 TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
                 TCache::producer(TCacheId::ProposedColumns, 32).cache_ref(),
+                TCache::producer(TCacheId::BeaconStateHandoff, 32).cache_ref(),
             ]),
         );
 
@@ -411,6 +412,7 @@ impl EchoStack {
             [&ctl_rpc_producer, &cluster_in_producer].map(|p| p.cache_ref()).into_iter().chain([
                 TCache::producer(TCacheId::BoundaryProcessing, 32).cache_ref(),
                 TCache::producer(TCacheId::ProposedColumns, 32).cache_ref(),
+                TCache::producer(TCacheId::BeaconStateHandoff, 32).cache_ref(),
             ]),
         );
 

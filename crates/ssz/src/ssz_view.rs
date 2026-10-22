@@ -1,5 +1,7 @@
 // Zero-copy SSZ field extraction for Fulu p2p wire types.
 
+use crate::ssz_hash_gloas::ExecutionRequestsView;
+
 pub enum SszView {
     SingleAttestation(SingleAttestationView),
     ProposerSlashing(ProposerSlashingView),
@@ -2050,6 +2052,20 @@ pub const SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN: usize = 100 + EXECUTION_PAYLOAD
 pub struct SignedExecutionPayloadEnvelopeView;
 
 impl SignedExecutionPayloadEnvelopeView {
+    pub fn check_canonical(buf: &[u8]) -> bool {
+        if !Self::check_size(buf) {
+            return false;
+        }
+        let message = Self::message(buf);
+        ExecutionPayloadEnvelopeView::check_size(message) &&
+            ExecutionPayloadView::check_canonical_gloas(ExecutionPayloadEnvelopeView::payload(
+                message,
+            )) &&
+            ExecutionRequestsView::check_canonical(
+                ExecutionPayloadEnvelopeView::execution_requests(message),
+            )
+    }
+
     #[inline]
     pub fn signature(buf: &[u8]) -> &[u8; 96] {
         fixed(buf, 4)
@@ -2870,6 +2886,18 @@ impl ExecutionPayloadView {
     #[inline]
     pub fn block_access_list_offset(buf: &[u8]) -> u32 {
         u32_le(buf, 528)
+    }
+    pub fn check_canonical_gloas(buf: &[u8]) -> bool {
+        const OFFSETS: [usize; 4] = [436, 504, 508, 528];
+        buf.len() >= EXECUTION_PAYLOAD_FIXED_GLOAS &&
+            offsets_ok(buf, &OFFSETS, EXECUTION_PAYLOAD_FIXED_GLOAS) &&
+            variable_field(buf, &OFFSETS, 0).len() <= MAX_EXTRA_DATA_BYTES &&
+            variable_list_ok(variable_field(buf, &OFFSETS, 1), usize::MAX, |_| true) &&
+            fixed_list_ok(
+                variable_field(buf, &OFFSETS, 2),
+                WITHDRAWAL_SIZE,
+                MAX_WITHDRAWALS_PER_PAYLOAD,
+            )
     }
     #[inline]
     pub fn slot_number(buf: &[u8]) -> u64 {
