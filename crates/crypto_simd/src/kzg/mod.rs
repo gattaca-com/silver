@@ -48,9 +48,9 @@ pub(crate) const FR_ONE: blst_fr =
 pub(crate) const PRIMITIVE_ROOT_OF_UNITY: blst_fr =
     blst_fr { l: [0x0000000efffffff1, 0x17e363d300189c0f, 0xff9c57876f8457b0, 0x351332208fc5a8c4] };
 /// 1/64, whose form is 2^256 / 2^6 = 2^250, below r.
-pub(crate) const INVERSE_CELL_SIZE: blst_fr = blst_fr { l: [0, 0, 0, 1 << (250 - 192)] };
+pub(crate) const INVERSE_CELL_SIZE: blst_fr = blst_fr { l: [0, 0, 0, 0x0400_0000_0000_0000] };
 /// 1/4096, whose form is 2^256 / 2^12 = 2^244, below r.
-pub(crate) const INVERSE_BLOB_SIZE: blst_fr = blst_fr { l: [0, 0, 0, 1 << (244 - 192)] };
+pub(crate) const INVERSE_BLOB_SIZE: blst_fr = blst_fr { l: [0, 0, 0, 0x0010_0000_0000_0000] };
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod kernel_tests;

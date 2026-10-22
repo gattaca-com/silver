@@ -281,6 +281,14 @@ fn fr_literals_match_blst() {
     assert!(INVERSE_BLOB_SIZE == fr_inverse(&blob_size), "1/4096");
 }
 
+/// blst's form of 1/2^k is 2^(256 − k): one bit of the top word, for k ≤ 64.
+#[test]
+fn inverse_sizes_are_powers_of_two() {
+    let form_of_inverse = |n: usize| [0, 0, 0, 1u64 << (256 - n.trailing_zeros() - 192)];
+    assert!(INVERSE_CELL_SIZE.l == form_of_inverse(FIELD_ELEMENTS_PER_CELL), "1/64");
+    assert!(INVERSE_BLOB_SIZE.l == form_of_inverse(FIELD_ELEMENTS_PER_BLOB), "1/4096");
+}
+
 #[test]
 fn coset_shift_inverses_match_blst() {
     let log_ext_blob = (FIELD_ELEMENTS_PER_CELL * CELLS_PER_EXT_BLOB).trailing_zeros();
