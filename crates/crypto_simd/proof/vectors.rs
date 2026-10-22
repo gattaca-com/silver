@@ -955,7 +955,7 @@ mod g1 {
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use silver_crypto_simd::{
-        bls::{decompress, uncompress_in_g1, uncompress_in_g1_blst},
+        bls::{decompress, uncompress_in_g1},
         ifma_available,
     };
 
@@ -969,8 +969,14 @@ mod g1 {
         std::array::from_fn(|i| if i < 6 { p.x.l[i] } else { p.y.l[i - 6] })
     }
 
+    /// blst's verdict: `blst_p1_uncompress`, then `blst_p1_affine_in_g1`.
     fn scalar(bytes: &Encoding) -> Option<Point> {
-        uncompress_in_g1_blst(bytes).as_ref().map(point_words)
+        let mut p = blst_p1_affine::default();
+        let member = unsafe {
+            blst_p1_uncompress(&mut p, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
+                blst_p1_affine_in_g1(&p)
+        };
+        member.then(|| point_words(&p))
     }
 
     fn sentinel() -> blst_p1_affine {

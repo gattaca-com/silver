@@ -1,14 +1,19 @@
 //! The trusted-setup points the cell verifier uses: the G1 points decoded
-//! once, the two G2 points as literals.
+//! once, the two G2 points as literals. On x86-64 the verifier pairs with the
+//! G2 points' lines in `pairing_lines`, and only tests read the literals.
 
+#[cfg(any(test, not(target_arch = "x86_64")))]
 use blst::{blst_fp, blst_fp2};
 
+#[cfg(any(test, not(target_arch = "x86_64")))]
+use crate::bls::blst_p2_affine;
 use crate::{
-    bls::{blst_p1_affine, blst_p2_affine, uncompress_in_g1},
+    bls::{blst_p1_affine, uncompress_in_g1},
     kzg::{FIELD_ELEMENTS_PER_CELL, trusted_setup::G1_MONOMIAL},
 };
 
 /// [s^64] in G2, `G2_MONOMIAL_64` decoded, in blst's Montgomery form.
+#[cfg(any(test, not(target_arch = "x86_64")))]
 pub const G2_S_POW_CELL: blst_p2_affine = blst_p2_affine {
     x: blst_fp2 {
         fp: [
@@ -61,6 +66,7 @@ pub const G2_S_POW_CELL: blst_p2_affine = blst_p2_affine {
 };
 
 /// −[1] in G2, `G2_MONOMIAL_0` decoded and negated, in blst's Montgomery form.
+#[cfg(any(test, not(target_arch = "x86_64")))]
 pub const G2_NEG_GENERATOR: blst_p2_affine = blst_p2_affine {
     x: blst_fp2 {
         fp: [

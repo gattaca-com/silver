@@ -6,7 +6,10 @@ use super::{Lincomb, pairing_points_in_lanes};
 use crate::{
     bls::blst_p1_affine,
     kernels_run,
-    kzg::blst_ops::{g1_add, g1_neg, g1_to_affine},
+    kzg::{
+        blst_ops::{g1_add, g1_neg, g1_to_affine, pairing_check},
+        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
+    },
 };
 
 /// [k]G for a random k, in the Jacobian form blst's multiplication leaves.
@@ -81,24 +84,23 @@ fn pairing_points_match_blst() {
     }
 }
 
-/// The lanes' verdict is blst's on every case, some of which hold: LL and RL
-/// at infinity together.
+/// The verdicts of the lanes and of the portable route are blst's on every
+/// case, some of which hold: LL and RL at infinity together.
 #[test]
 fn pairing_check_matches_blst() {
-    if !kernels_run() {
-        return;
-    }
-    let lanes = Lincomb::new();
-    let blst = Lincomb { msm: None, ..Lincomb::new() };
+    let lanes = kernels_run().then(Lincomb::new);
+    let portable = Lincomb::portable();
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
     let mut held = 0;
     for (case, sums) in cases(&mut rng).iter().enumerate() {
-        let want = blst.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
-        assert_eq!(
-            lanes.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]),
-            want,
-            "case {case}"
-        );
+        let (left, right) = blst_pairing_points(sums);
+        let want = pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR);
+        if let Some(lanes) = &lanes {
+            let got = lanes.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
+            assert_eq!(got, want, "lanes, case {case}");
+        }
+        let got = portable.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
+        assert_eq!(got, want, "portable, case {case}");
         held += want as usize;
     }
     assert!(held > 0, "no case holds");

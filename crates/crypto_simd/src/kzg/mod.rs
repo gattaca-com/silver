@@ -1,8 +1,9 @@
 //! KZG cell operations of EIP-7594 (PeerDAS) over the BLS12-381 setup of
 //! EIP-4844, following the executable Lean specification in
 //! `ethereum/EthLib`. Point decoding goes through `crate::bls`.
-//! The other curve operations run on lanes where IFMA runs, and as blst calls
-//! in `blst_ops` elsewhere.
+//! The other curve operations run on lanes where IFMA runs, on the portable
+//! route elsewhere on x86-64, and as blst calls in `blst_ops` on other
+//! architectures.
 #![allow(
     clippy::needless_range_loop,
     clippy::vec_resize_to_zero,
@@ -11,6 +12,7 @@
               adaptors, `Vec::clear` or `is_multiple_of`"
 )]
 
+#[cfg(any(test, not(target_arch = "x86_64")))]
 mod blst_ops;
 mod cell_extender;
 mod challenge;

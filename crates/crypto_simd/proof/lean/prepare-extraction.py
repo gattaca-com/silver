@@ -35,8 +35,8 @@ source = source.replace(end_marker, "end KzgScope\n\n" + end_marker)
 
 # `full` is a keyword in the imported Lean environment. Quoting preserves its name.
 source, full_count = re.subn(r"\bfull\b", "«full»", source)
-if full_count != 6:
-    raise SystemExit(f"expected six generated full identifiers, found {full_count}")
+if full_count != 8:
+    raise SystemExit(f"expected eight generated full identifiers, found {full_count}")
 
 # Array.make's default simp proof traverses the nested literal. Every list length is structural.
 ends = []

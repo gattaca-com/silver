@@ -4,23 +4,28 @@
 //! per-cell Lagrange interpolation. With IFMA, the cell checks and that
 //! interpolation run on `Fr8` vectors, which read the cells' bytes directly,
 //! the four multi-scalar multiplications run on `Msm8`, and the pairing check
-//! runs on `Fp12` lanes.
+//! runs on `Fp12` lanes. Without IFMA, the cells take scalar `Fr`, and the
+//! curve work the portable route; other architectures run the curve work in
+//! blst.
 
 use blst::{blst_fr, blst_p1};
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::kzg::challenge::Preimage;
+use crate::kzg::{
+    blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
+    challenge::Preimage,
+    setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
+};
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
-        blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
         fr::{fr_add, fr_from_bytes, fr_mul},
-        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
+        setup::Setup,
     },
 };
 #[cfg(target_arch = "x86_64")]
@@ -108,13 +113,15 @@ impl CellBatchVerifier {
         }
     }
 
+    /// Off the IFMA kernels, on the portable route; decoding still follows
+    /// `ifma_available`.
     #[cfg(test)]
     pub(crate) fn without_kernel() -> Self {
         Self {
             #[cfg(target_arch = "x86_64")]
             kernel: None,
             #[cfg(target_arch = "x86_64")]
-            lincomb: Lincomb { msm: None, ..Lincomb::new() },
+            lincomb: Lincomb::portable(),
             ..Self::new()
         }
     }
@@ -320,81 +327,84 @@ impl CellBatchVerifier {
 }
 
 /// The verifier's curve work: sums Σ scalars[i]·points[i], and the pairing
-/// check on two points from four of them. On `Msm8`, `Fp8` and `Fp12` lanes
-/// where IFMA runs, on the scalar portable route where it is taken, by blst
-/// elsewhere. Buffers are kept between calls.
-struct Lincomb {
-    scratch: LincombScratch,
+/// check on two points from four of them. Buffers are kept between calls.
+enum Lincomb {
+    /// On `Msm8`, `Fp8` and `Fp12` lanes, where IFMA runs.
     #[cfg(target_arch = "x86_64")]
-    msm: Option<Msm8>,
+    Lanes { msm: Msm8, words: Vec<[u64; 4]> },
     #[cfg(target_arch = "x86_64")]
-    portable: Option<PortableCurve>,
-    #[cfg(target_arch = "x86_64")]
-    words: Vec<[u64; 4]>,
-}
-
-/// The portable route's MSM buffers and pairing lines.
-#[cfg(target_arch = "x86_64")]
-struct PortableCurve {
-    msm: Msm,
-    lines: Box<PairingLines>,
+    Portable { msm: Msm, lines: Box<PairingLines>, words: Vec<[u64; 4]> },
+    #[cfg(not(target_arch = "x86_64"))]
+    Blst(LincombScratch),
 }
 
 impl Lincomb {
+    #[cfg(target_arch = "x86_64")]
     fn new() -> Self {
-        Self {
-            scratch: LincombScratch::new(),
-            #[cfg(target_arch = "x86_64")]
-            msm: if ifma_available() { Some(Msm8::default()) } else { None },
-            #[cfg(target_arch = "x86_64")]
-            portable: if !ifma_available() {
-                let lines = Box::new(PairingLines::new(&PAIRING_LINES));
-                Some(PortableCurve { msm: Msm::default(), lines })
-            } else {
-                None
-            },
-            #[cfg(target_arch = "x86_64")]
-            words: Vec::new(),
+        if ifma_available() {
+            Self::Lanes { msm: Msm8::default(), words: Vec::new() }
+        } else {
+            Self::portable()
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    fn new() -> Self {
+        Self::Blst(LincombScratch::new())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn portable() -> Self {
+        let lines = Box::new(PairingLines::new(&PAIRING_LINES));
+        Self::Portable { msm: Msm::default(), lines, words: Vec::new() }
+    }
+
     fn sum(&mut self, points: &[blst_p1_affine], scalars: &[blst_fr]) -> blst_p1 {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(msm) = &mut self.msm {
-            // SAFETY: `msm` is built only where `ifma_available` held.
-            return unsafe {
-                Fr8::plain_words(scalars, &mut self.words);
-                msm.msm(points, &self.words)
-            };
-        }
-        #[cfg(target_arch = "x86_64")]
-        if let Some(portable) = &mut self.portable {
-            self.words.clear();
-            let mut i = 0;
-            while i < scalars.len() {
-                self.words.push(fr_to_words(&scalars[i]));
-                i += 1;
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            Self::Lanes { msm, words } => {
+                // SAFETY: `Lanes` is built only where `ifma_available` held.
+                unsafe {
+                    Fr8::plain_words(scalars, words);
+                    msm.msm(points, words)
+                }
             }
-            return portable.msm.msm(points, &self.words);
+            #[cfg(target_arch = "x86_64")]
+            Self::Portable { msm, words, .. } => {
+                words.clear();
+                let mut i = 0;
+                while i < scalars.len() {
+                    words.push(fr_to_words(&scalars[i]));
+                    i += 1;
+                }
+                msm.msm(points, words)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            Self::Blst(scratch) => g1_lincomb(points, scalars, scratch),
         }
-        g1_lincomb(points, scalars, &mut self.scratch)
     }
 
     /// e(LL, [s^64])·e(RL, −[1]) = 1, with RL = RLC − RLI + RLP.
     fn pairing_check(&self, ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        if self.msm.is_some() {
-            // SAFETY: `msm` is built only where `ifma_available` held.
-            return unsafe {
-                PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp))
-            };
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            Self::Lanes { .. } => {
+                // SAFETY: `Lanes` is built only where `ifma_available` held.
+                unsafe { PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp)) }
+            }
+            #[cfg(target_arch = "x86_64")]
+            Self::Portable { lines, .. } => lines.pairing_check(&pairing_points(ll, rlc, rli, rlp)),
+            #[cfg(not(target_arch = "x86_64"))]
+            Self::Blst(_) => {
+                let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
+                pairing_check(
+                    &g1_to_affine(ll),
+                    &G2_S_POW_CELL,
+                    &g1_to_affine(&rl),
+                    &G2_NEG_GENERATOR,
+                )
+            }
         }
-        #[cfg(target_arch = "x86_64")]
-        if let Some(portable) = &self.portable {
-            return portable.lines.pairing_check(&pairing_points(ll, rlc, rli, rlp));
-        }
-        let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
-        pairing_check(&g1_to_affine(ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
     }
 }
 

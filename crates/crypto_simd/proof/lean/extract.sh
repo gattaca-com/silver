@@ -68,19 +68,15 @@ trap 'rm -rf "$work"' EXIT
 # `fp8::lanes` is a `transmute`, which Aeneas cannot translate; FunsExternal.lean defines it.
 # The `sha256` loads and stores hold raw pointers, which Aeneas cannot model.
 # The `*_available` checks query the CPU; FunsExternal.lean leaves their answers free.
-# Each blst wrapper stays external; making the whole module opaque crashes this Aeneas revision.
-opq=()
-while read -r function; do
-  opq+=(--opaque "crate::kzg::blst_ops::$function")
-done < <(sed -n 's/^pub fn \([a-z0-9_]*\).*/\1/p' "$crate_dir/src/kzg/blst_ops.rs")
+# The blst G2 decoder stays external.
 (cd "$crate_dir" &&
   CARGO_TARGET_DIR="$work/target" "$charon" cargo --preset aeneas \
     --start-from crate::bls::decompress_g2::decompress --start-from crate::bls::uncompress_in_g1 \
     --start-from crate::bls::uncompress_in_g2 \
-    --start-from crate::kzg::verify --start-from crate::kzg::cell_extender "${opq[@]}" \
+    --start-from crate::kzg::verify --start-from crate::kzg::cell_extender \
     --opaque crate::bls::fp8::lanes --opaque crate::ifma_available \
     --opaque crate::sha_available --opaque crate::bmi2_available \
-    --opaque crate::bls::uncompress_in_g1_blst --opaque crate::bls::uncompress_in_g2_blst \
+    --opaque crate::bls::uncompress_in_g2_blst \
     --opaque crate::sha256::load_bytes --opaque crate::sha256::load_words \
     --opaque crate::sha256::store_words \
     --dest-file "$work/silver_crypto_simd.llbc")

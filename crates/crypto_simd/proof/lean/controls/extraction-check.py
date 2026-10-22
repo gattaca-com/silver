@@ -48,7 +48,8 @@ rows = [row.replace(" (by rfl)", "") for row in rows]
 prefix = (
     "import LeanBlsSimd.Extracted.FunsExternal\nopen Aeneas.Std\nnamespace silver_crypto_simd\n"
     "/-- BLS fixture --/\n"
-    "@[irreducible] def bls.fixture (full : Nat) : Nat := full + full + full + full + full\n"
+    "@[irreducible] def bls.fixture (full : Nat) : Nat :=\n"
+    "  full + full + full + full + full + full + full\n"
     "/-- Source: 'fixture.rs', lines 1:0-2:0 --/\n"
     "def kzg.trusted_setup.G1_MONOMIAL : Array (Array Std.U8 48#usize) 64#usize :=\n"
 )
@@ -71,8 +72,6 @@ with tempfile.TemporaryDirectory(prefix="kzg-extraction-control-") as tmp:
     root = Path(tmp)
     project = root / "crate/proof/lean"
     project.mkdir(parents=True)
-    (root / "crate/src/kzg").mkdir(parents=True)
-    (root / "crate/src/kzg/blst_ops.rs").write_text("pub fn pairing_check() {}\n")
     for name in ["extract.sh", "prepare-extraction.py"]:
         shutil.copy2(LEAN / name, project / name)
 
@@ -137,7 +136,7 @@ else:
         "/-- late BLS --/\n@[global_simps, irreducible] def bls.late : Nat := 0\n/-- following --/"),
         1, "expected all BLS definitions before the KZG definitions")
     check("missing reserved identifier", direct.replace("full + full", "full + 1", 1),
-        1, "expected six generated full identifiers, found 5")
+        1, "expected eight generated full identifiers, found 7")
     check("extender body edit", direct.replace(": Nat := 4096", ": Nat := 4095"),
         1, ": Nat := 4095")
     for entry_point in [

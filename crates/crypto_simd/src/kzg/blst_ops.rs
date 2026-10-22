@@ -1,6 +1,5 @@
-//! Every call into blst. Charon treats this module as opaque: the Lean proof
-//! states what each function returns in terms of the specification, and trusts
-//! blst to return it.
+//! The KZG paths' calls into blst: the verifier's curve work and challenge on
+//! architectures other than x86-64, and the references tests compare against.
 
 #[cfg(test)]
 use blst::{
@@ -9,18 +8,22 @@ use blst::{
     blst_scalar_fr_check,
 };
 use blst::{
-    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_miller_loop_n, blst_p1,
-    blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
-    blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
-    blst_p1s_mult_pippenger_scratch_sizeof, blst_p2_affine, blst_p2_affine_is_inf, blst_scalar,
-    blst_scalar_from_fr, limb_t,
+    blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_fr_from_scalar, blst_miller_loop_n,
+    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
+    blst_p1_to_affine, blst_p2_affine, blst_p2_affine_is_inf, blst_scalar,
+    blst_scalar_from_bendian, blst_scalar_from_fr, blst_sha256,
 };
-#[cfg(any(test, not(target_arch = "x86_64")))]
-use blst::{blst_fr_from_scalar, blst_scalar_from_bendian, blst_sha256};
+#[cfg(not(target_arch = "x86_64"))]
+use blst::{
+    blst_p1_from_affine, blst_p1_mult, blst_p1s_mult_pippenger,
+    blst_p1s_mult_pippenger_scratch_sizeof, limb_t,
+};
 
+#[cfg(not(target_arch = "x86_64"))]
 const SCALAR_BITS: usize = 255;
 /// blst's Pippenger is slower than one multiplication per point below this many
 /// points.
+#[cfg(not(target_arch = "x86_64"))]
 const PIPPENGER_MIN_POINTS: usize = 8;
 
 /// `None` unless the 32 big-endian bytes encode a value below r.
@@ -96,7 +99,6 @@ pub fn fr_inverse(a: &blst_fr) -> blst_fr {
 }
 
 /// SHA-256 of `message`, read as a big-endian integer and reduced modulo r.
-#[cfg(any(test, not(target_arch = "x86_64")))]
 pub fn hash_to_fr(message: &[u8]) -> blst_fr {
     let mut digest = [0u8; 32];
     let mut scalar = blst_scalar::default();
@@ -164,6 +166,7 @@ pub fn g2_neg(a: &blst_p2_affine) -> blst_p2_affine {
 }
 
 /// Buffers for `g1_lincomb`, kept between calls.
+#[cfg(not(target_arch = "x86_64"))]
 pub struct LincombScratch {
     points: Vec<blst_p1_affine>,
     /// Little-endian scalars, the layout of `blst_scalar`.
@@ -171,6 +174,7 @@ pub struct LincombScratch {
     pippenger: Vec<limb_t>,
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 impl LincombScratch {
     pub fn new() -> Self {
         Self { points: Vec::new(), scalars: Vec::new(), pippenger: Vec::new() }
@@ -179,6 +183,7 @@ impl LincombScratch {
 
 /// Σ scalars[i]·points[i]. Points at infinity contribute nothing and are left
 /// out before blst sees them, as c-kzg does.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn g1_lincomb(
     points: &[blst_p1_affine],
     scalars: &[blst_fr],

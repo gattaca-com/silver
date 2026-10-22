@@ -9,14 +9,26 @@ use std::{
     time::{Duration, Instant},
 };
 
+use blst::{BLST_ERROR, blst_p1_affine_in_g1, blst_p1_uncompress};
 use silver_common::ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView};
 use silver_crypto_simd::{
-    bls::{COMPRESSED_LEN, uncompress_in_g1, uncompress_in_g1_blst},
+    bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     ifma_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 
 const REPS: usize = 5;
+
+/// `Some` iff blst accepts the encoding as a point of G1.
+fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
+    let mut point = blst_p1_affine::default();
+    // SAFETY: both pointers are valid for the lengths blst reads and writes.
+    let member = unsafe {
+        blst_p1_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
+            blst_p1_affine_in_g1(&point)
+    };
+    member.then_some(point)
+}
 
 fn best_of<R>(mut f: impl FnMut() -> R) -> Duration {
     let mut best = Duration::MAX;
@@ -35,7 +47,7 @@ fn encodings(sidecar: &[u8]) -> impl Iterator<Item = [u8; COMPRESSED_LEN]> + '_ 
         .map(|c| c.try_into().expect("48 bytes"))
 }
 
-fn serialized(p: &Option<silver_crypto_simd::bls::blst_p1_affine>) -> Option<[u64; 12]> {
+fn serialized(p: &Option<blst_p1_affine>) -> Option<[u64; 12]> {
     p.map(|p| {
         let mut out = [0u64; 12];
         out[..6].copy_from_slice(&p.x.l);

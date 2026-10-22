@@ -10,11 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use blst::{blst_fp, blst_hash_to_g2, blst_p2, blst_p2_compress, blst_uint64_from_fp};
+use blst::{
+    BLST_ERROR, blst_fp, blst_hash_to_g2, blst_p1_affine_in_g1, blst_p1_uncompress, blst_p2,
+    blst_p2_compress, blst_uint64_from_fp,
+};
 use silver_common::ssz_view::DataColumnSidecarFuluView;
 use silver_crypto_simd::{
     bls::{
-        COMPRESSED_LEN, G2_COMPRESSED_LEN,
+        COMPRESSED_LEN, G2_COMPRESSED_LEN, blst_p1_affine,
         constants::FOUR_MONT,
         decompress::decompress,
         decompress_g2,
@@ -22,13 +25,24 @@ use silver_crypto_simd::{
         fp8::{Fp8, LANES, Limbs, unpack52},
         g1x8::G1x8,
         g2x8::G2x8,
-        uncompress_in_g1_blst, uncompress_in_g2_blst,
+        uncompress_in_g2_blst,
     },
     ifma_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 
 const REPS: usize = 7;
+
+/// `Some` iff blst accepts the encoding as a point of G1.
+fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
+    let mut point = blst_p1_affine::default();
+    // SAFETY: both pointers are valid for the lengths blst reads and writes.
+    let member = unsafe {
+        blst_p1_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
+            blst_p1_affine_in_g1(&point)
+    };
+    member.then_some(point)
+}
 
 fn best_of<R>(mut f: impl FnMut() -> R) -> Duration {
     let mut best = Duration::MAX;
