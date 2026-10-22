@@ -3,41 +3,17 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::Sha256;
-#[cfg(target_arch = "x86_64")]
-use super::{compress, sha_ni};
+use crate::kernels_run;
 
-/// From random states, at the offsets and block counts `update` and `finish`
-/// pass and a few more. The other tests reach the extensions through
-/// `compress_blocks` only when the `simd` feature is on.
-#[cfg(target_arch = "x86_64")]
-#[test]
-fn sha_ni_matches_compress() {
-    if !(is_x86_feature_detected!("sha") && is_x86_feature_detected!("sse4.1")) {
-        return;
-    }
-    let mut rng = ChaCha8Rng::seed_from_u64(0x5e);
-    let mut data = [0u8; 5 * 64 + 7];
-    rng.fill(&mut data[..]);
-    for _ in 0..32 {
-        let state: [u32; 8] = rng.r#gen();
-        for blocks in 0..=5 {
-            for offset in [0, 3, 7] {
-                let mut expected = state;
-                for block in 0..blocks {
-                    expected = compress(&expected, &data, offset + 64 * block);
-                }
-                // SAFETY: the CPU has the SHA extensions and SSE4.1.
-                let got = unsafe { sha_ni::compress_blocks(&state, &data, offset, blocks) };
-                assert_eq!(got, expected, "{blocks} blocks at {offset}");
-            }
-        }
-    }
-}
-
+/// For tests that have seen `kernels_run` hold.
 fn digest(message: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(message);
-    hasher.finish()
+    // SAFETY: `kernels_run` implies `simd_available`, which covers the SHA
+    // extensions and SSE4.1.
+    unsafe {
+        hasher.update(message);
+        hasher.finish()
+    }
 }
 
 fn blst_digest(message: &[u8]) -> [u8; 32] {
@@ -58,6 +34,9 @@ fn from_hex(hex: &str) -> [u8; 32] {
 /// The examples of FIPS 180-2's Appendix B, and the empty message.
 #[test]
 fn fips_examples() {
+    if !kernels_run() {
+        return;
+    }
     let cases: [(&[u8], &str); 3] = [
         (b"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
         (b"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
@@ -79,6 +58,9 @@ fn fips_examples() {
 /// padding blocks, after zero to four full blocks.
 #[test]
 fn every_length_to_five_blocks_matches_blst() {
+    if !kernels_run() {
+        return;
+    }
     let mut message = [0u8; 5 * 64];
     ChaCha8Rng::seed_from_u64(0x5a).fill(&mut message[..]);
     for len in 0..=message.len() {
@@ -88,6 +70,9 @@ fn every_length_to_five_blocks_matches_blst() {
 
 #[test]
 fn parts_hash_as_their_concatenation() {
+    if !kernels_run() {
+        return;
+    }
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a);
     let mut message = [0u8; 600];
     rng.fill(&mut message[..]);
@@ -108,9 +93,12 @@ fn parts_hash_as_their_concatenation() {
         let mut hasher = Sha256::new();
         let mut start = 0;
         for part in &parts {
-            hasher.update(&message[start..start + part]);
+            // SAFETY: as in `digest`.
+            unsafe { hasher.update(&message[start..start + part]) };
             start += part;
         }
-        assert_eq!(hasher.finish(), digest(&message[..start]), "parts {parts:?}");
+        // SAFETY: as in `digest`.
+        let got = unsafe { hasher.finish() };
+        assert_eq!(got, digest(&message[..start]), "parts {parts:?}");
     }
 }

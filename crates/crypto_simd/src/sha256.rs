@@ -1,10 +1,13 @@
-//! SHA-256 of FIPS 180-4, absorbing its message in parts.
+//! SHA-256 of FIPS 180-4 on the SHA extensions, absorbing its message in
+//! parts. Vectors are named by their lanes from the top one down, as Intel's
+//! documentation names them: `_mm_sha256rnds2_epu32` keeps the state as ABEF
+//! and CDGH.
 
-#[cfg(target_arch = "x86_64")]
-use crate::simd_available;
-
-#[cfg(target_arch = "x86_64")]
-mod sha_ni;
+use std::arch::x86_64::{
+    __m128i, _mm_add_epi32, _mm_alignr_epi8, _mm_blend_epi16, _mm_loadu_si128, _mm_set_epi64x,
+    _mm_sha256msg1_epu32, _mm_sha256msg2_epu32, _mm_sha256rnds2_epu32, _mm_shuffle_epi8,
+    _mm_shuffle_epi32, _mm_storeu_si128,
+};
 
 const BLOCK: usize = 64;
 
@@ -101,6 +104,7 @@ impl Sha256 {
         Self { state: INITIAL_STATE, pending: [0; BLOCK], pending_len: 0, length: 0 }
     }
 
+    #[target_feature(enable = "sha,sse4.1")]
     pub fn update(&mut self, data: &[u8]) {
         self.length = self.length.wrapping_add(data.len() as u64);
         let room = BLOCK - self.pending_len;
@@ -122,6 +126,7 @@ impl Sha256 {
         }
     }
 
+    #[target_feature(enable = "sha,sse4.1")]
     pub fn finish(self) -> [u8; 32] {
         let mut tail = [0u8; 2 * BLOCK];
         tail[..self.pending_len].copy_from_slice(&self.pending[..self.pending_len]);
@@ -140,104 +145,62 @@ impl Sha256 {
 }
 
 /// The state after the `blocks` blocks of `data` from `offset`.
+#[target_feature(enable = "sha,sse4.1")]
 fn compress_blocks(state: &[u32; 8], data: &[u8], offset: usize, blocks: usize) -> [u32; 8] {
-    #[cfg(target_arch = "x86_64")]
-    if simd_available() {
-        // SAFETY: `simd_available` confirmed the SHA extensions and SSE4.1.
-        return unsafe { sha_ni::compress_blocks(state, data, offset, blocks) };
-    }
-    let mut state = *state;
+    let data = &data[offset..offset + BLOCK * blocks];
+    let byte_swap = _mm_set_epi64x(0x0c0d_0e0f_0809_0a0b, 0x0405_0607_0001_0203);
+    // SAFETY: `state` holds eight words, so both loads stay inside it.
+    let (dcba, hgfe) = unsafe {
+        (_mm_loadu_si128(state.as_ptr().cast()), _mm_loadu_si128(state.as_ptr().add(4).cast()))
+    };
+    let cdab = _mm_shuffle_epi32(dcba, 0xb1);
+    let efgh = _mm_shuffle_epi32(hgfe, 0x1b);
+    let mut abef = _mm_alignr_epi8(cdab, efgh, 8);
+    let mut cdgh = _mm_blend_epi16(efgh, cdab, 0xf0);
     let mut block = 0;
     while block < blocks {
-        state = compress(&state, data, offset + BLOCK * block);
+        let (abef_before, cdgh_before) = (abef, cdgh);
+        let mut w = [abef; 4];
+        let mut i = 0;
+        while i < 4 {
+            // SAFETY: block < blocks and i < 4 keep the 16 bytes inside `data`.
+            let bytes =
+                unsafe { _mm_loadu_si128(data.as_ptr().add(BLOCK * block + 16 * i).cast()) };
+            w[i] = _mm_shuffle_epi8(bytes, byte_swap);
+            i += 1;
+        }
+        let mut quad = 0;
+        while quad < 16 {
+            // SAFETY: quad < 16 keeps the four words inside `K`.
+            let k = unsafe { _mm_loadu_si128(K.as_ptr().add(4 * quad).cast()) };
+            let wk = _mm_add_epi32(w[0], k);
+            cdgh = _mm_sha256rnds2_epu32(cdgh, abef, wk);
+            abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(wk, 0x0e));
+            if quad < 12 {
+                let partial = _mm_sha256msg1_epu32(w[0], w[1]);
+                let next = _mm_sha256msg2_epu32(
+                    _mm_add_epi32(partial, _mm_alignr_epi8(w[3], w[2], 4)),
+                    w[3],
+                );
+                w = [w[1], w[2], w[3], next];
+            } else {
+                w = [w[1], w[2], w[3], w[3]];
+            }
+            quad += 1;
+        }
+        abef = _mm_add_epi32(abef, abef_before);
+        cdgh = _mm_add_epi32(cdgh, cdgh_before);
         block += 1;
     }
-    state
-}
-
-/// FIPS 180-4 §6.2.2, steps 2 to 4, on the block of `data` at `offset`.
-fn compress(state: &[u32; 8], data: &[u8], offset: usize) -> [u32; 8] {
-    let w = schedule(data, offset);
-    let mut a = state[0];
-    let mut b = state[1];
-    let mut c = state[2];
-    let mut d = state[3];
-    let mut e = state[4];
-    let mut f = state[5];
-    let mut g = state[6];
-    let mut h = state[7];
-    let mut t = 0;
-    while t < 64 {
-        let t1 = h
-            .wrapping_add(big_sigma1(e))
-            .wrapping_add(ch(e, f, g))
-            .wrapping_add(K[t])
-            .wrapping_add(w[t]);
-        let t2 = big_sigma0(a).wrapping_add(maj(a, b, c));
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
-        t += 1;
+    let feba = _mm_shuffle_epi32(abef, 0x1b);
+    let dchg = _mm_shuffle_epi32(cdgh, 0xb1);
+    let mut out = [0u32; 8];
+    // SAFETY: `out` holds eight words, so both stores stay inside it.
+    unsafe {
+        _mm_storeu_si128(out.as_mut_ptr().cast::<__m128i>(), _mm_blend_epi16(feba, dchg, 0xf0));
+        _mm_storeu_si128(out.as_mut_ptr().add(4).cast::<__m128i>(), _mm_alignr_epi8(dchg, feba, 8));
     }
-    [
-        state[0].wrapping_add(a),
-        state[1].wrapping_add(b),
-        state[2].wrapping_add(c),
-        state[3].wrapping_add(d),
-        state[4].wrapping_add(e),
-        state[5].wrapping_add(f),
-        state[6].wrapping_add(g),
-        state[7].wrapping_add(h),
-    ]
-}
-
-/// FIPS 180-4 §6.2.2, step 1.
-fn schedule(data: &[u8], offset: usize) -> [u32; 64] {
-    let mut w = [0u32; 64];
-    let mut t = 0;
-    while t < 16 {
-        let mut word = [0u8; 4];
-        word.copy_from_slice(&data[offset + 4 * t..offset + 4 * t + 4]);
-        w[t] = u32::from_be_bytes(word);
-        t += 1;
-    }
-    while t < 64 {
-        w[t] = w[t - 16]
-            .wrapping_add(small_sigma0(w[t - 15]))
-            .wrapping_add(w[t - 7])
-            .wrapping_add(small_sigma1(w[t - 2]));
-        t += 1;
-    }
-    w
-}
-
-fn ch(x: u32, y: u32, z: u32) -> u32 {
-    (x & y) ^ (!x & z)
-}
-
-fn maj(x: u32, y: u32, z: u32) -> u32 {
-    (x & y) ^ (x & z) ^ (y & z)
-}
-
-fn big_sigma0(x: u32) -> u32 {
-    x.rotate_right(2) ^ x.rotate_right(13) ^ x.rotate_right(22)
-}
-
-fn big_sigma1(x: u32) -> u32 {
-    x.rotate_right(6) ^ x.rotate_right(11) ^ x.rotate_right(25)
-}
-
-fn small_sigma0(x: u32) -> u32 {
-    x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3)
-}
-
-fn small_sigma1(x: u32) -> u32 {
-    x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10)
+    out
 }
 
 #[cfg(test)]

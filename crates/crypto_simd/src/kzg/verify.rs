@@ -15,7 +15,7 @@ use crate::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
         blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
-        challenge::challenge,
+        challenge::Preimage,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
@@ -30,7 +30,7 @@ use crate::{
         g1x8::G1x8,
         msm8::Msm8,
     },
-    kzg::{fr8::Fr8, interpolation_kernel::InterpolationKernel},
+    kzg::{challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel},
     simd_available,
 };
 
@@ -46,6 +46,7 @@ pub struct CellBatchVerifier {
     commitment_points: Vec<blst_p1_affine>,
     proof_points: Vec<blst_p1_affine>,
     evaluations: Vec<blst_fr>,
+    preimage: Preimage,
     r_powers: Vec<blst_fr>,
     scalars: Vec<blst_fr>,
     columns: Vec<blst_fr>,
@@ -83,6 +84,7 @@ impl CellBatchVerifier {
             commitment_points: Vec::new(),
             proof_points: Vec::new(),
             evaluations: Vec::new(),
+            preimage: Preimage::new(),
             r_powers: Vec::new(),
             scalars: Vec::new(),
             columns: Vec::new(),
@@ -131,14 +133,27 @@ impl CellBatchVerifier {
         if !self.decode_commitments() || !self.decode_cells(cells) || !self.decode_proofs(proofs) {
             return false;
         }
-        let r = challenge(
-            &self.commitments.unique,
-            &self.commitments.index_of_cell,
-            cell_indices,
-            cells,
-            proofs,
-        );
+        let r = self.challenge(cell_indices, cells, proofs);
         self.pairing_holds(&r, cell_indices, cells)
+    }
+
+    /// On the SHA extensions where the kernel runs, by blst elsewhere.
+    fn challenge(
+        &mut self,
+        cell_indices: &[u64],
+        cells: &[[u8; BYTES_PER_CELL]],
+        proofs: &[[u8; COMPRESSED_LEN]],
+    ) -> blst_fr {
+        let unique = &self.commitments.unique;
+        let index_of_cell = &self.commitments.index_of_cell;
+        #[cfg(target_arch = "x86_64")]
+        if self.kernel.is_some() {
+            // SAFETY: `kernel` is built only where `simd_available` held.
+            return unsafe {
+                challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs)
+            };
+        }
+        self.preimage.challenge(unique, index_of_cell, cell_indices, cells, proofs)
     }
 
     fn decode_commitments(&mut self) -> bool {

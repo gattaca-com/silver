@@ -39,6 +39,7 @@ pub fn fr_from_bytes(bytes: &[u8; 32]) -> Option<blst_fr> {
 
 /// The value of the 32 big-endian bytes modulo r. R² goes first: the product
 /// needs only its first operand below r.
+#[cfg(target_arch = "x86_64")]
 pub fn fr_from_bytes_reduced(bytes: &[u8; 32]) -> blst_fr {
     blst_fr { l: montgomery_product(&R_SQUARED, &words_from_be_bytes(bytes)) }
 }

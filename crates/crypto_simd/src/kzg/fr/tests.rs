@@ -4,10 +4,9 @@ use blst::blst_fr;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{
-    R, R_INV64, R_SQUARED, add_words, fr_add, fr_from_bytes, fr_from_bytes_reduced, fr_mul, fr_sub,
-    fr_to_bytes, sub_words,
-};
+use super::{R, R_INV64, R_SQUARED, fr_add, fr_from_bytes, fr_mul, fr_sub, fr_to_bytes};
+#[cfg(target_arch = "x86_64")]
+use super::{add_words, fr_from_bytes_reduced, sub_words};
 use crate::kzg::{FR_ONE, FR_ZERO, blst_ops};
 
 /// Limbs at the edges of [0, r): 0, 1, r − 1, the largest top word below
@@ -121,6 +120,7 @@ fn byte_conversions_match_blst() {
 /// Every 256-bit value is below 3r, so it is reduced by subtracting r at most
 /// twice. Edges of each count, with the residue derived from r; then random
 /// values against blst, at least one of each count.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn reduction_matches_blst() {
     let one = [1, 0, 0, 0];

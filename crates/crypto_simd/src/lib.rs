@@ -1,5 +1,6 @@
 pub mod bls;
 pub mod kzg;
+#[cfg(target_arch = "x86_64")]
 mod sha256;
 
 /// Built without the `simd` feature, every operation takes its blst path, as

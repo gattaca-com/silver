@@ -1,7 +1,11 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::challenge;
+use super::Preimage;
+#[cfg(target_arch = "x86_64")]
+use super::challenge_in_parts;
+#[cfg(target_arch = "x86_64")]
+use crate::kernels_run;
 use crate::{
     bls::COMPRESSED_LEN,
     kzg::{BYTES_PER_CELL, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, blst_ops},
@@ -32,12 +36,14 @@ fn spec_preimage(
     bytes
 }
 
-/// The verifier's shapes at 1 and 128 columns of 18 blobs, and small batches
-/// whose preimages leave each of the four remainders modulo 64 that the layout
-/// allows.
+/// Both routes against blst's `hash_to_fr` of the spec's preimage, at the
+/// verifier's shapes for 1 and 128 columns of 18 blobs, and small batches whose
+/// preimages leave each of the four remainders modulo 64 that the layout
+/// allows. One `Preimage` serves every batch, as in the verifier.
 #[test]
 fn challenge_matches_blst() {
     let mut rng = ChaCha8Rng::seed_from_u64(0xc4);
+    let mut preimage = Preimage::new();
     for (unique, n) in [(0, 0), (1, 1), (2, 3), (3, 2), (4, 9), (18, 18), (18, 2304)] {
         let mut commitments = vec![[0u8; COMPRESSED_LEN]; unique];
         for commitment in &mut commitments {
@@ -60,7 +66,23 @@ fn challenge_matches_blst() {
             &cells,
             &proofs,
         ));
-        let got = challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
-        assert!(got == expected, "{unique} commitments, {n} cells");
+        let got =
+            preimage.challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
+        assert!(got == expected, "buffer, {unique} commitments, {n} cells");
+        #[cfg(target_arch = "x86_64")]
+        if kernels_run() {
+            // SAFETY: `kernels_run` implies `simd_available`, which covers the
+            // SHA extensions and SSE4.1.
+            let got = unsafe {
+                challenge_in_parts(
+                    &commitments,
+                    &commitment_of_cell,
+                    &cell_indices,
+                    &cells,
+                    &proofs,
+                )
+            };
+            assert!(got == expected, "in parts, {unique} commitments, {n} cells");
+        }
     }
 }
