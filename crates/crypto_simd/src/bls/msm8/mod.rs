@@ -55,8 +55,8 @@ pub struct Msm8 {
 }
 
 impl Msm8 {
-    /// Σ scalars[i]·points[i] for little-endian scalars below 2^255 and points
-    /// of G1. Points at infinity, which blst encodes as all-zero coordinates,
+    /// Σ scalars[i]·points[i] for little-endian scalars below r and points of
+    /// G1. Points at infinity, which blst encodes as all-zero coordinates,
     /// contribute nothing.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn msm(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
