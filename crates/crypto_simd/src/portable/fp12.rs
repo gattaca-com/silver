@@ -170,5 +170,5 @@ fn frobenius_coefficient(c: &Fp2, power: usize) -> Fp2 {
     c.conjugate().mul(&gamma)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) mod tests;

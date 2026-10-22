@@ -109,5 +109,5 @@ fn point(x: &Fp, y: &Fp) -> blst_p1_affine {
     blst_p1_affine { x: blst_fp { l: x.0 }, y: blst_fp { l: y.0 } }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 mod tests;

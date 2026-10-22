@@ -1,11 +1,14 @@
-#[cfg(target_arch = "x86_64")]
 use blst::{blst_fp, blst_fp_mul, blst_fp2, blst_p1_affine_generator};
 use c_kzg::{Blob, Bytes48, Cell, KzgSettings, ethereum_kzg_settings};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
-    bls::uncompress_in_g2_blst,
+    bls::{
+        limbs::{Limbs, pack64},
+        spec_pairing::{fp, miller_lines, mul, of_g1, of_g2, zero},
+        uncompress_in_g2_blst,
+    },
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, CELLS_PER_EXT_BLOB, CellBatchVerifier, CellExtender,
         FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ONE, FR_ZERO, INVERSE_BLOB_SIZE,
@@ -13,17 +16,10 @@ use crate::{
         blst_ops::{fr_from_u64, fr_inverse, g2_neg},
         cosets::Cosets,
         domain::{reverse_bits, roots_of_unity},
+        pairing_lines::PAIRING_LINES,
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
         trusted_setup::{G2_MONOMIAL_0, G2_MONOMIAL_64},
     },
-};
-#[cfg(target_arch = "x86_64")]
-use crate::{
-    bls::{
-        limbs::{Limbs, pack64},
-        spec_pairing::{fp, miller_lines, mul, of_g1, of_g2, zero},
-    },
-    kzg::pairing_lines::PAIRING_LINES,
 };
 
 const SEED: u64 = 0x6b7a_6763_656c_6c73;
@@ -283,7 +279,6 @@ fn setup_g2_literals_match_blst() {
 /// Each step of `PAIRING_LINES` is the spec's line for its G2 point, which
 /// `Embedded.ofG2` untwists, up to a factor c·w⁻³ with c in Fp2. So at P =
 /// (x, y), w³ times the spec's line is c·((1, l1·x, 0) + (0, l2·y, 0)·w).
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn pairing_lines_are_the_spec_lines() {
     /// Fp8's form v·2^416, read as blst limbs, is v·2^32; 2^352 as blst

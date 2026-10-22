@@ -1,10 +1,9 @@
 use blst::{blst_fp, blst_fp2, blst_fp2_mul};
 
 use super::Fp2;
-use crate::{
-    bmi2_available,
-    portable::fp::{Fp, tests::inputs},
-};
+#[cfg(target_arch = "x86_64")]
+use crate::bmi2_available;
+use crate::portable::fp::{Fp, tests::inputs};
 
 fn blst(a: &Fp2) -> blst_fp2 {
     blst_fp2 { fp: [blst_fp { l: a.c0.0 }, blst_fp { l: a.c1.0 }] }
@@ -37,6 +36,7 @@ fn products_match_blst() {
 }
 
 /// As `Fp`'s twins.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn product_twins_agree() {
     if !bmi2_available() {

@@ -1,9 +1,9 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::Preimage;
 #[cfg(target_arch = "x86_64")]
-use super::{challenge_in_parts, challenge_in_parts_portable};
+use super::challenge_in_parts;
+use super::challenge_in_parts_portable;
 #[cfg(target_arch = "x86_64")]
 use crate::sha_kernel_runs;
 use crate::{
@@ -39,11 +39,10 @@ fn spec_preimage(
 /// Both routes against blst's `hash_to_fr` of the spec's preimage, at the
 /// verifier's shapes for 1 and 128 columns of 18 blobs, and small batches whose
 /// preimages leave each of the four remainders modulo 64 that the layout
-/// allows. One `Preimage` serves every batch, as in the verifier.
+/// allows.
 #[test]
 fn challenge_matches_blst() {
     let mut rng = ChaCha8Rng::seed_from_u64(0xc4);
-    let mut preimage = Preimage::new();
     for (unique, n) in [(0, 0), (1, 1), (2, 3), (3, 2), (4, 9), (18, 18), (18, 2304)] {
         let mut commitments = vec![[0u8; COMPRESSED_LEN]; unique];
         for commitment in &mut commitments {
@@ -66,9 +65,6 @@ fn challenge_matches_blst() {
             &cells,
             &proofs,
         ));
-        let got =
-            preimage.challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
-        assert!(got == expected, "buffer, {unique} commitments, {n} cells");
         #[cfg(target_arch = "x86_64")]
         if sha_kernel_runs() {
             // SAFETY: `sha_kernel_runs` checked the SHA extensions and SSE4.1.
@@ -83,16 +79,13 @@ fn challenge_matches_blst() {
             };
             assert!(got == expected, "in parts, {unique} commitments, {n} cells");
         }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let got = challenge_in_parts_portable(
-                &commitments,
-                &commitment_of_cell,
-                &cell_indices,
-                &cells,
-                &proofs,
-            );
-            assert!(got == expected, "portable, {unique} commitments, {n} cells");
-        }
+        let got = challenge_in_parts_portable(
+            &commitments,
+            &commitment_of_cell,
+            &cell_indices,
+            &cells,
+            &proofs,
+        );
+        assert!(got == expected, "portable, {unique} commitments, {n} cells");
     }
 }

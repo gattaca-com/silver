@@ -1,5 +1,6 @@
 //! SHA-256 of FIPS 180-4, absorbing its message in parts.
 
+#[cfg(target_arch = "x86_64")]
 pub mod extensions;
 pub mod portable;
 

@@ -1,8 +1,7 @@
 //! AVX-512 IFMA fast path for BLS12-381 G1 and G2 point decompression with
 //! subgroup membership, eight points per step. Lanes the vector path declines,
 //! short chunks, and CPUs without the instructions go elsewhere: G1 points to
-//! the portable decoder, G2 points to blst, and on other architectures both to
-//! blst. The verdicts are blst's either way.
+//! the portable decoder, G2 points to blst. The verdicts are blst's either way.
 //!
 //! The fast path is available when the `simd` build feature is enabled. It
 //! additionally requires AVX-512F and AVX-512 IFMA support enabled at run time.
@@ -18,7 +17,6 @@
 // The kernels are `#[target_feature]` functions: every one of them is unsafe to
 // call for the same single reason, that `ifma_available` must have been checked
 // on this CPU, so the safety section lives here rather than on each function.
-#[cfg(target_arch = "x86_64")]
 pub mod constants;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -26,7 +24,6 @@ pub mod decompress;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod decompress_g2;
-#[cfg(target_arch = "x86_64")]
 pub(crate) mod encoding;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -43,11 +40,8 @@ pub mod g1x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod g2x8;
-#[cfg(target_arch = "x86_64")]
 pub mod glv;
-#[cfg(target_arch = "x86_64")]
 pub mod limbs;
-#[cfg(target_arch = "x86_64")]
 pub mod miller_lines;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -55,9 +49,8 @@ pub mod msm8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod pairing;
-#[cfg(target_arch = "x86_64")]
 pub(crate) mod signed_digits;
-#[cfg(all(test, target_arch = "x86_64"))]
+#[cfg(test)]
 pub(crate) mod spec_pairing;
 
 #[cfg(target_arch = "x86_64")]
@@ -65,12 +58,12 @@ use std::arch::x86_64::__mmask8;
 
 use blst::{BLST_ERROR, blst_p2_affine_in_g2, blst_p2_uncompress};
 pub use blst::{blst_p1_affine, blst_p2_affine};
-#[cfg(any(test, not(target_arch = "x86_64")))]
+#[cfg(test)]
 use blst::{blst_p1_affine_in_g1, blst_p1_uncompress};
 
-use crate::ifma_available;
 #[cfg(target_arch = "x86_64")]
-use crate::portable::decompress::{uncompress_all_in_g1, uncompress_in_g1 as uncompress_one_in_g1};
+use crate::portable::decompress::uncompress_in_g1 as uncompress_one_in_g1;
+use crate::{ifma_available, portable::decompress::uncompress_all_in_g1};
 
 pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
@@ -88,7 +81,7 @@ pub struct Membership {
 }
 
 /// `Some` iff blst accepts the encoding as a point of G1.
-#[cfg(any(test, not(target_arch = "x86_64")))]
+#[cfg(test)]
 pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
     let mut point = blst_p1_affine::default();
     // SAFETY: both pointers are valid for the lengths blst reads and writes.
@@ -120,13 +113,11 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_
     uncompress_all_in_g1(&inputs[full..inputs.len()], &mut out[full..inputs.len()]);
 }
 
-/// Sets each `out[i]` to `uncompress_in_g1_blst(&inputs[i])`.
+/// Sets each `out[i]` to blst's verdict on `inputs[i]`, on the portable route.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
-    for i in 0..inputs.len() {
-        out[i] = uncompress_in_g1_blst(&inputs[i]);
-    }
+    uncompress_all_in_g1(inputs, out);
 }
 
 #[cfg(target_arch = "x86_64")]

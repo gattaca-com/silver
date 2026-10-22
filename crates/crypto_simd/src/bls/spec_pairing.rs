@@ -1,5 +1,9 @@
 //! Pairing.lean, transcribed with blst's Fp12 arithmetic: the oracle the
 //! pairing on lanes is tested against.
+#![cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(dead_code, reason = "off x86-64, only the pairing lines' test uses this oracle")
+)]
 
 use blst::{
     blst_fp, blst_fp_from_uint64, blst_fp_sub, blst_fp2, blst_fp6, blst_fp12, blst_fp12_conjugate,

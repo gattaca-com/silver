@@ -2,10 +2,13 @@ use blst::{blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_generator, blst_p1_mul
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{Lincomb, pairing_points_in_lanes};
+use super::Lincomb;
+#[cfg(target_arch = "x86_64")]
+use super::pairing_points_in_lanes;
+#[cfg(target_arch = "x86_64")]
+use crate::kernels_run;
 use crate::{
     bls::blst_p1_affine,
-    kernels_run,
     kzg::{
         blst_ops::{g1_add, g1_neg, g1_to_affine, pairing_check},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
@@ -65,6 +68,7 @@ fn cases(rng: &mut ChaCha8Rng) -> Vec<[blst_p1; 4]> {
     cases
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn pairing_points_match_blst() {
     if !kernels_run() {
@@ -88,6 +92,7 @@ fn pairing_points_match_blst() {
 /// case, some of which hold: LL and RL at infinity together.
 #[test]
 fn pairing_check_matches_blst() {
+    #[cfg(target_arch = "x86_64")]
     let lanes = kernels_run().then(Lincomb::new);
     let portable = Lincomb::portable();
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
@@ -95,6 +100,7 @@ fn pairing_check_matches_blst() {
     for (case, sums) in cases(&mut rng).iter().enumerate() {
         let (left, right) = blst_pairing_points(sums);
         let want = pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR);
+        #[cfg(target_arch = "x86_64")]
         if let Some(lanes) = &lanes {
             let got = lanes.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
             assert_eq!(got, want, "lanes, case {case}");

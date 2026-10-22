@@ -5,41 +5,30 @@
 //! interpolation run on `Fr8` vectors, which read the cells' bytes directly,
 //! the four multi-scalar multiplications run on `Msm8`, and the pairing check
 //! runs on `Fp12` lanes. Without IFMA, the cells take scalar `Fr`, and the
-//! curve work the portable route; other architectures run the curve work in
-//! blst.
+//! curve work the portable route.
 
 use blst::{blst_fr, blst_p1};
 
-#[cfg(not(target_arch = "x86_64"))]
-use crate::kzg::{
-    blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
-    challenge::Preimage,
-    setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
-};
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
+        challenge::challenge_in_parts_portable,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
-        fr::{fr_add, fr_from_bytes, fr_mul},
+        fr::{fr_add, fr_from_bytes, fr_mul, fr_to_words},
+        pairing_lines::PAIRING_LINES,
         setup::Setup,
     },
+    portable::{g1::G1, msm::Msm, pairing::PairingLines},
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{
     bls::{fp8::Fp8, g1x8::G1x8, limbs::LANES, msm8::Msm8},
     ifma_available,
-    kzg::{
-        challenge::{challenge_in_parts, challenge_in_parts_portable},
-        fr::fr_to_words,
-        fr8::Fr8,
-        interpolation_kernel::InterpolationKernel,
-        pairing_lines::PAIRING_LINES,
-    },
-    portable::{g1::G1, msm::Msm, pairing::PairingLines},
+    kzg::{challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel},
     sha_available,
 };
 
@@ -55,8 +44,6 @@ pub struct CellBatchVerifier {
     commitment_points: Vec<blst_p1_affine>,
     proof_points: Vec<blst_p1_affine>,
     evaluations: Vec<blst_fr>,
-    #[cfg(not(target_arch = "x86_64"))]
-    preimage: Preimage,
     r_powers: Vec<blst_fr>,
     scalars: Vec<blst_fr>,
     columns: Vec<blst_fr>,
@@ -94,8 +81,6 @@ impl CellBatchVerifier {
             commitment_points: Vec::new(),
             proof_points: Vec::new(),
             evaluations: Vec::new(),
-            #[cfg(not(target_arch = "x86_64"))]
-            preimage: Preimage::new(),
             r_powers: Vec::new(),
             scalars: Vec::new(),
             columns: Vec::new(),
@@ -116,7 +101,6 @@ impl CellBatchVerifier {
         Self {
             #[cfg(target_arch = "x86_64")]
             kernel: None,
-            #[cfg(target_arch = "x86_64")]
             lincomb: Lincomb::portable(),
             ..Self::new()
         }
@@ -151,7 +135,6 @@ impl CellBatchVerifier {
     }
 
     /// On the SHA extensions where they run, else in plain Rust.
-    #[cfg(target_arch = "x86_64")]
     fn challenge(
         &self,
         cell_indices: &[u64],
@@ -160,29 +143,14 @@ impl CellBatchVerifier {
     ) -> blst_fr {
         let unique = &self.commitments.unique;
         let index_of_cell = &self.commitments.index_of_cell;
+        #[cfg(target_arch = "x86_64")]
         if sha_available() {
             // SAFETY: `sha_available` checked the SHA extensions and SSE4.1.
-            unsafe { challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs) }
-        } else {
-            challenge_in_parts_portable(unique, index_of_cell, cell_indices, cells, proofs)
+            return unsafe {
+                challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs)
+            };
         }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn challenge(
-        &mut self,
-        cell_indices: &[u64],
-        cells: &[[u8; BYTES_PER_CELL]],
-        proofs: &[[u8; COMPRESSED_LEN]],
-    ) -> blst_fr {
-        let unique = &self.commitments.unique;
-        self.preimage.challenge(
-            unique,
-            &self.commitments.index_of_cell,
-            cell_indices,
-            cells,
-            proofs,
-        )
+        challenge_in_parts_portable(unique, index_of_cell, cell_indices, cells, proofs)
     }
 
     fn decode_commitments(&mut self) -> bool {
@@ -264,6 +232,10 @@ impl CellBatchVerifier {
     /// summed, inverse-transformed, and shifted from the column's coset by
     /// h⁻¹. Without IFMA, each column is first put in natural order; the
     /// kernel's transform takes the cells' bit-reversed order as it is.
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        expect(unused_variables, reason = "only the IFMA kernel reads the cells here")
+    )]
     fn interpolation_commitment(
         &mut self,
         cell_indices: &[u64],
@@ -327,29 +299,26 @@ impl CellBatchVerifier {
 enum Lincomb {
     /// On `Msm8`, `Fp8` and `Fp12` lanes, where IFMA runs.
     #[cfg(target_arch = "x86_64")]
-    Lanes { msm: Msm8, words: Vec<[u64; 4]> },
-    #[cfg(target_arch = "x86_64")]
-    Portable { msm: Msm, lines: Box<PairingLines>, words: Vec<[u64; 4]> },
-    #[cfg(not(target_arch = "x86_64"))]
-    Blst(LincombScratch),
+    Lanes {
+        msm: Msm8,
+        words: Vec<[u64; 4]>,
+    },
+    Portable {
+        msm: Msm,
+        lines: Box<PairingLines>,
+        words: Vec<[u64; 4]>,
+    },
 }
 
 impl Lincomb {
-    #[cfg(target_arch = "x86_64")]
     fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
         if ifma_available() {
-            Self::Lanes { msm: Msm8::default(), words: Vec::new() }
-        } else {
-            Self::portable()
+            return Self::Lanes { msm: Msm8::default(), words: Vec::new() };
         }
+        Self::portable()
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
-    fn new() -> Self {
-        Self::Blst(LincombScratch::new())
-    }
-
-    #[cfg(target_arch = "x86_64")]
     fn portable() -> Self {
         let lines = Box::new(PairingLines::new(&PAIRING_LINES));
         Self::Portable { msm: Msm::default(), lines, words: Vec::new() }
@@ -365,7 +334,6 @@ impl Lincomb {
                     msm.msm(points, words)
                 }
             }
-            #[cfg(target_arch = "x86_64")]
             Self::Portable { msm, words, .. } => {
                 words.clear();
                 let mut i = 0;
@@ -375,8 +343,6 @@ impl Lincomb {
                 }
                 msm.msm(points, words)
             }
-            #[cfg(not(target_arch = "x86_64"))]
-            Self::Blst(scratch) => g1_lincomb(points, scalars, scratch),
         }
     }
 
@@ -388,24 +354,12 @@ impl Lincomb {
                 // SAFETY: `Lanes` is built only where `ifma_available` held.
                 unsafe { PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp)) }
             }
-            #[cfg(target_arch = "x86_64")]
             Self::Portable { lines, .. } => lines.pairing_check(&pairing_points(ll, rlc, rli, rlp)),
-            #[cfg(not(target_arch = "x86_64"))]
-            Self::Blst(_) => {
-                let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
-                pairing_check(
-                    &g1_to_affine(ll),
-                    &G2_S_POW_CELL,
-                    &g1_to_affine(&rl),
-                    &G2_NEG_GENERATOR,
-                )
-            }
         }
     }
 }
 
 /// [LL, RL], gathered by complete additions on the scalar `G1`.
-#[cfg(target_arch = "x86_64")]
 fn pairing_points(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> [G1; 2] {
     let difference = G1::from_blst(rlc).add_complete(&G1::from_blst(rli).neg());
     [G1::from_blst(ll), difference.add_complete(&G1::from_blst(rlp))]
@@ -496,5 +450,5 @@ fn same_bytes(a: &[u8; COMPRESSED_LEN], b: &[u8; COMPRESSED_LEN]) -> bool {
     i == COMPRESSED_LEN
 }
 
-#[cfg(all(test, target_arch = "x86_64"))]
+#[cfg(test)]
 mod tests;

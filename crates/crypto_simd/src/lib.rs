@@ -1,8 +1,6 @@
 pub mod bls;
 pub mod kzg;
-#[cfg(target_arch = "x86_64")]
 pub mod portable;
-#[cfg(target_arch = "x86_64")]
 mod sha256;
 
 /// Whether the IFMA kernels run: built with the `simd` feature, on a CPU with

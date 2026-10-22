@@ -1,9 +1,8 @@
 //! Fp2 = Fp[i]/(i² + 1) over the scalar [`Fp`], blst's `blst_fp2`: c0 + c1·i.
 
-use crate::{
-    bmi2_available,
-    portable::fp::{Fp, Wide},
-};
+#[cfg(target_arch = "x86_64")]
+use crate::bmi2_available;
+use crate::portable::fp::{Fp, Wide};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fp2 {
@@ -14,6 +13,7 @@ pub struct Fp2 {
 impl Fp2 {
     pub const ZERO: Fp2 = Fp2 { c0: Fp::ZERO, c1: Fp::ZERO };
 
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
         if bmi2_available() {
@@ -23,12 +23,20 @@ impl Fp2 {
         self.mul_on_baseline(rhs)
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    #[inline]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        self.product(rhs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "bmi2")]
     fn mul_on_bmi2(&self, rhs: &Self) -> Self {
         self.product(rhs)
     }
 
     /// Out of line, so that `mul`'s callers do not inline this copy.
+    #[cfg(target_arch = "x86_64")]
     #[inline(never)]
     fn mul_on_baseline(&self, rhs: &Self) -> Self {
         self.product(rhs)

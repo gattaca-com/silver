@@ -3,16 +3,19 @@
 //!
 //! The product is CIOS in six explicit rows with the no-carry schedule: p's top
 //! word is below 2^62, so a row's running sum fits six words and a top word.
-//! The products are `u128`, and the carries come from `_addcarry_u64`, which
-//! LLVM chains into `adc`. The two product kernels, `Fp::mul` and `Fp2::mul`,
-//! each have a twin built for BMI2, on which LLVM emits `mulx`; other CPUs run
-//! the same body built for baseline x86-64.
+//! The products are `u128`. On x86-64, the carries come from `_addcarry_u64`,
+//! which LLVM chains into `adc`. There the two product kernels, `Fp::mul` and
+//! `Fp2::mul`, each have a twin built for BMI2, on which LLVM emits `mulx`;
+//! other CPUs run the same body built for baseline x86-64. Other architectures
+//! add with `overflowing_add`, and build each kernel once.
 
+#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::_addcarry_u64;
 
+#[cfg(target_arch = "x86_64")]
+use crate::bmi2_available;
 use crate::{
     bls::constants::{P_MINUS_3_OVER_4_WINDOWS, P_U64},
-    bmi2_available,
     portable::constants::{ONE, P_INV, R2, R3},
 };
 
@@ -26,13 +29,23 @@ fn wide_mul(a: u64, b: u64) -> (u64, u64) {
     (product as u64, (product >> 64) as u64)
 }
 
-/// a + b + carry and the carry out, for a carry of 0 or 1.
+/// a + b + carry and the carry out, for a carry of 0 or 1. Off x86-64, at
+/// most one of the two additions overflows, so one bit holds the carry out.
 #[inline(always)]
 fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
-    let mut s = 0;
-    // SAFETY: `_addcarry_u64` is plain x86-64 `adc`.
-    let c = unsafe { _addcarry_u64(carry as u8, a, b, &mut s) };
-    (s, c as u64)
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut s = 0;
+        // SAFETY: `_addcarry_u64` is plain x86-64 `adc`.
+        let c = unsafe { _addcarry_u64(carry as u8, a, b, &mut s) };
+        (s, c as u64)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let (s, first) = a.overflowing_add(b);
+        let (s, second) = s.overflowing_add(carry);
+        (s, (first | second) as u64)
+    }
 }
 
 /// acc + a·b in seven words, for sums below 2^448.
@@ -175,6 +188,7 @@ fn p_if(borrowed: bool) -> [u64; 6] {
 impl Fp {
     pub const ZERO: Fp = Fp([0; 6]);
 
+    #[cfg(target_arch = "x86_64")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
         if bmi2_available() {
@@ -184,12 +198,20 @@ impl Fp {
         self.mul_on_baseline(rhs)
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
+    #[inline]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        self.product(rhs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "bmi2")]
     fn mul_on_bmi2(&self, rhs: &Self) -> Self {
         self.product(rhs)
     }
 
     /// Out of line, so that `mul`'s callers do not inline this copy.
+    #[cfg(target_arch = "x86_64")]
     #[inline(never)]
     fn mul_on_baseline(&self, rhs: &Self) -> Self {
         self.product(rhs)

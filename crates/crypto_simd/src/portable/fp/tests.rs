@@ -6,7 +6,9 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{Fp, Wide};
-use crate::{bls::constants::P_U64, bmi2_available};
+use crate::bls::constants::P_U64;
+#[cfg(target_arch = "x86_64")]
+use crate::bmi2_available;
 
 fn below_p(rng: &mut ChaCha8Rng) -> Fp {
     loop {
@@ -86,6 +88,7 @@ fn operations_match_blst() {
 
 /// Where BMI2 runs, the products' twins built for it agree with the copies
 /// built for baseline x86-64, which other CPUs run.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn product_twins_agree() {
     if !bmi2_available() {
