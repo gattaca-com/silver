@@ -15,7 +15,7 @@ use crate::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO,
         blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
-        challenge::Preimage,
+        challenge::challenge,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
@@ -46,7 +46,6 @@ pub struct CellBatchVerifier {
     commitment_points: Vec<blst_p1_affine>,
     proof_points: Vec<blst_p1_affine>,
     evaluations: Vec<blst_fr>,
-    preimage: Preimage,
     r_powers: Vec<blst_fr>,
     scalars: Vec<blst_fr>,
     columns: Vec<blst_fr>,
@@ -84,7 +83,6 @@ impl CellBatchVerifier {
             commitment_points: Vec::new(),
             proof_points: Vec::new(),
             evaluations: Vec::new(),
-            preimage: Preimage::new(),
             r_powers: Vec::new(),
             scalars: Vec::new(),
             columns: Vec::new(),
@@ -133,7 +131,7 @@ impl CellBatchVerifier {
         if !self.decode_commitments() || !self.decode_cells(cells) || !self.decode_proofs(proofs) {
             return false;
         }
-        let r = self.preimage.challenge(
+        let r = challenge(
             &self.commitments.unique,
             &self.commitments.index_of_cell,
             cell_indices,

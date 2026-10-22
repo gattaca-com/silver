@@ -9,7 +9,7 @@ use crate::{
     bls::COMPRESSED_LEN,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB,
-        CellBatchVerifier, CellExtender, blst_ops::fr_from_bytes, challenge::Preimage,
+        CellBatchVerifier, CellExtender, blst_ops::fr_from_bytes, challenge::challenge,
         verify::Deduplicated,
     },
 };
@@ -105,7 +105,6 @@ fn verify_cell_kzg_proof_batch_vectors() {
 
 #[test]
 fn challenge_vectors() {
-    let mut preimage = Preimage::new();
     for (name, data) in suite("compute_verify_cell_kzg_proof_batch_challenge") {
         let commitments = fixed::<COMPRESSED_LEN>(hex_items(field(&data, "commitments"))).unwrap();
         let commitment_of_cell: Vec<usize> =
@@ -119,8 +118,7 @@ fn challenge_vectors() {
         let proofs = fixed::<COMPRESSED_LEN>(hex_items(field(&data, "proofs"))).unwrap();
         assert_eq!(cells.len(), cell_indices.len(), "{name}");
         let expected: [u8; 32] = hex_items(field(&data, "output")).remove(0).try_into().unwrap();
-        let got =
-            preimage.challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
+        let got = challenge(&commitments, &commitment_of_cell, &cell_indices, &cells, &proofs);
         assert_eq!(Some(got), fr_from_bytes(&expected), "{name}");
     }
 }
