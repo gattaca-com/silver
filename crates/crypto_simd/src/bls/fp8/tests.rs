@@ -11,11 +11,12 @@ use std::arch::x86_64::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{
-    Fp8, LANES, Limbs, carry_of_cleared, lanes, muladd_row, splat, splat_limbs, transpose8, zero,
-};
+use super::{Fp8, carry_of_cleared, lanes, muladd_row, splat, splat_limbs, transpose8, zero};
 use crate::{
-    bls::constants::{LIMBS, MASK52, P, P_INV52, R_MOD_P},
+    bls::{
+        constants::{LIMBS, MASK52, P, P_INV52, R_MOD_P},
+        limbs::{LANES, Limbs},
+    },
     kernels_run,
 };
 

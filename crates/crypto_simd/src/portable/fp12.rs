@@ -3,7 +3,7 @@
 //! coefficient of w^(2k + h).
 
 use crate::{
-    bls::{constants::Z_BITS, g1x8::is_lower_z_bit},
+    bls::constants::{Z_BITS, is_lower_z_bit},
     portable::{
         constants::{FROBENIUS, ONE},
         fp::Fp,

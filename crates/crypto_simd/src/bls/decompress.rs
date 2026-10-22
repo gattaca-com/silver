@@ -9,9 +9,10 @@ use blst::{blst_fp, blst_p1_affine};
 use crate::bls::{
     COMPRESSED_LEN,
     constants::FOUR_MONT,
-    decompress_g2::{FLAG_COMPRESSED, FLAG_INFINITY, FLAG_LARGER_ROOT, fp_words, less_than_p},
-    fp8::{Fp8, LANES, Limbs, unpack52},
+    encoding::{FLAG_COMPRESSED, FLAG_INFINITY, FLAG_LARGER_ROOT, fp_words, less_than_p},
+    fp8::Fp8,
     g1x8::G1x8,
+    limbs::{LANES, Limbs, unpack52},
 };
 
 /// Per-lane verdicts for one batch of eight.

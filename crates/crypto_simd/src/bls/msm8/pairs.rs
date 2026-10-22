@@ -1,10 +1,6 @@
 use std::arch::x86_64::__mmask8;
 
-use crate::bls::{
-    fp8::{Fp8, LANES},
-    g1x8::Offsets,
-    msm8::store::PointStore,
-};
+use crate::bls::{fp8::Fp8, g1x8::Offsets, limbs::LANES, msm8::store::PointStore};
 
 /// Set on a reference to the negation of the point it names.
 pub const NEGATED: u32 = 1 << 31;

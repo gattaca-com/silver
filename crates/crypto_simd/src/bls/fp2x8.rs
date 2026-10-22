@@ -6,7 +6,10 @@
 
 use std::arch::x86_64::__mmask8;
 
-use crate::bls::fp8::{Fp8, LANES, Limbs};
+use crate::bls::{
+    fp8::Fp8,
+    limbs::{LANES, Limbs},
+};
 
 #[derive(Clone, Copy)]
 pub struct Fp2x8 {

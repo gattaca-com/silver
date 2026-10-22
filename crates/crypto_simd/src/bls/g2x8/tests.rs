@@ -16,9 +16,10 @@ use crate::{
             tests::{assert_reduced, assert_same_value},
         },
         fp8::{
-            Fp8, LANES, Limbs,
+            Fp8,
             tests::{below, near_multiple_of_p},
         },
+        limbs::{LANES, Limbs},
     },
     kernels_run,
 };

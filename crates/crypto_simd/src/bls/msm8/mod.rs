@@ -6,7 +6,6 @@
 //! buckets are summed point by point with complete additions. Long inputs go
 //! through a chunk at a time, and complete additions sum the chunks.
 pub mod buckets;
-pub mod glv;
 pub mod pairs;
 pub mod store;
 #[cfg(test)]
@@ -17,9 +16,9 @@ use blst::{blst_fp, blst_p1};
 use crate::bls::{
     blst_p1_affine,
     g1x8::G1x8,
+    glv::{HALF_SCALAR_BITS, decompose},
     msm8::{
         buckets::{Buckets, NARROWEST_WINDOW_BITS},
-        glv::{HALF_SCALAR_BITS, decompose},
         pairs::{BatchedAdds, NEGATED},
         store::PointStore,
     },

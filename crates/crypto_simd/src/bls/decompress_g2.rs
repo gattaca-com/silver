@@ -8,16 +8,13 @@ use blst::{blst_fp, blst_fp2, blst_p2_affine};
 
 use crate::bls::{
     G2_COMPRESSED_LEN,
-    constants::{FOUR_MONT, P_U64},
+    constants::FOUR_MONT,
+    encoding::{FLAG_COMPRESSED, FLAG_INFINITY, FLAG_LARGER_ROOT, FP_BYTES, fp_words, less_than_p},
     fp2x8::Fp2x8,
-    fp8::{Fp8, LANES, Limbs, unpack52},
+    fp8::Fp8,
     g2x8::G2x8,
+    limbs::{LANES, Limbs, unpack52},
 };
-
-const FP_BYTES: usize = G2_COMPRESSED_LEN / 2;
-pub(crate) const FLAG_COMPRESSED: u8 = 0x80;
-pub(crate) const FLAG_INFINITY: u8 = 0x40;
-pub(crate) const FLAG_LARGER_ROOT: u8 = 0x20;
 
 /// Per-lane verdicts for one batch of eight.
 pub struct Batch {
@@ -86,30 +83,6 @@ fn point(x0: [u64; 6], x1: [u64; 6], y0: [u64; 6], y1: [u64; 6]) -> blst_p2_affi
         x: blst_fp2 { fp: [blst_fp { l: x0 }, blst_fp { l: x1 }] },
         y: blst_fp2 { fp: [blst_fp { l: y0 }, blst_fp { l: y1 }] },
     }
-}
-
-/// A 48-byte big-endian coordinate as little-endian 64-bit words.
-#[inline]
-pub(crate) fn fp_words(be: &[u8]) -> [u64; 6] {
-    let mut words = [0u64; 6];
-    for w in 0..6 {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&be[FP_BYTES - 8 * (w + 1)..FP_BYTES - 8 * w]);
-        words[w] = u64::from_be_bytes(bytes);
-    }
-    words
-}
-
-#[inline]
-pub(crate) fn less_than_p(x: &[u64; 6]) -> bool {
-    let mut w = 6;
-    while w > 0 {
-        w -= 1;
-        if x[w] != P_U64[w] {
-            return x[w] < P_U64[w];
-        }
-    }
-    false
 }
 
 #[target_feature(enable = "avx512f,avx512ifma")]

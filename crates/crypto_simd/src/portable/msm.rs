@@ -14,7 +14,7 @@ mod tests;
 use blst::{blst_p1, blst_p1_affine};
 
 use crate::{
-    bls::msm8::glv::{HALF_SCALAR_BITS, decompose},
+    bls::glv::{HALF_SCALAR_BITS, decompose},
     portable::{
         g1::G1,
         msm::{buckets::Buckets, pairs::BatchedAdds, store::PointStore},

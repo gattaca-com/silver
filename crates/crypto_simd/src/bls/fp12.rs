@@ -21,10 +21,10 @@
 //! largest operand pair, below 10K·p and 8K·p, is far below R·p = 2^416·p.
 
 use crate::bls::{
-    constants::{FROBENIUS_MONT, LIMBS, R_MOD_P, Z_BITS},
+    constants::{FROBENIUS_MONT, LIMBS, R_MOD_P, Z_BITS, is_lower_z_bit},
     fp2x8::Fp2x8,
-    fp8::{Fp8, LANES, Limbs},
-    g1x8::is_lower_z_bit,
+    fp8::Fp8,
+    limbs::{LANES, Limbs},
 };
 
 pub const BOUND: u64 = 256;

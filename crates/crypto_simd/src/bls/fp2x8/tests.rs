@@ -11,9 +11,10 @@ use crate::{
     bls::{
         constants::{LIMBS, MASK52},
         fp8::{
-            Fp8, LANES, Limbs,
+            Fp8,
             tests::{below, near_multiple_of_p, plus_multiple_of_p},
         },
+        limbs::{LANES, Limbs},
     },
     kernels_run,
 };

@@ -30,11 +30,7 @@ use crate::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{
-    bls::{
-        fp8::{Fp8, LANES},
-        g1x8::G1x8,
-        msm8::Msm8,
-    },
+    bls::{fp8::Fp8, g1x8::G1x8, limbs::LANES, msm8::Msm8},
     ifma_available,
     kzg::{
         challenge::{challenge_in_parts, challenge_in_parts_portable},

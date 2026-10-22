@@ -20,7 +20,7 @@ use crate::{
 #[cfg(target_arch = "x86_64")]
 use crate::{
     bls::{
-        fp8::{Limbs, pack64},
+        limbs::{Limbs, pack64},
         spec_pairing::{fp, miller_lines, mul, of_g1, of_g2, zero},
     },
     kzg::pairing_lines::PAIRING_LINES,

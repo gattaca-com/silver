@@ -13,7 +13,7 @@ use crate::{
 #[cfg(target_arch = "x86_64")]
 use crate::{
     kzg::fr::fr_from_bytes_reduced,
-    sha256::{Sha256, portable::Sha256 as PortableSha256},
+    sha256::{extensions::Sha256, portable::Sha256 as PortableSha256},
 };
 
 /// A value rather than a reference: Aeneas rejects a loop that follows a read

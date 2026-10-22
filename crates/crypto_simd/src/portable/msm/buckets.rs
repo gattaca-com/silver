@@ -1,8 +1,11 @@
 use crate::{
-    bls::msm8::{buckets::SignedDigits, pairs::NEGATED},
+    bls::signed_digits::SignedDigits,
     portable::{
         g1::G1,
-        msm::{pairs::BatchedAdds, store::PointStore},
+        msm::{
+            pairs::BatchedAdds,
+            store::{NEGATED, PointStore},
+        },
     },
 };
 

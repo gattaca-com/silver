@@ -3,10 +3,9 @@
 
 use crate::{
     bls::{
-        constants::Z_BITS,
-        fp8::pack64,
-        g1x8::is_lower_z_bit,
-        pairing::{LINE_COUNT, MillerLines},
+        constants::{Z_BITS, is_lower_z_bit},
+        limbs::pack64,
+        miller_lines::{LINE_COUNT, MillerLines},
     },
     portable::{fp::Fp, fp2::Fp2, fp12::Fp12, g1::G1},
 };

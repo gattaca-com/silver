@@ -19,8 +19,9 @@ use std::arch::x86_64::__mmask8;
 
 use crate::bls::{
     Membership,
-    constants::{BETA_MONT, Z_BITS},
-    fp8::{Fp8, LANES},
+    constants::{BETA_MONT, Z_BITS, is_lower_z_bit},
+    fp8::Fp8,
+    limbs::LANES,
 };
 
 pub struct G1x8 {
@@ -332,11 +333,6 @@ fn lanes_above(distance: usize) -> [i64; LANES] {
         lane += 1;
     }
     from
-}
-
-/// A set bit of |z| below the top one, where chains over |z| start.
-pub(crate) fn is_lower_z_bit(bit: u32) -> bool {
-    bit == Z_BITS[1] || bit == Z_BITS[2] || bit == Z_BITS[3] || bit == Z_BITS[4] || bit == Z_BITS[5]
 }
 
 #[cfg(test)]

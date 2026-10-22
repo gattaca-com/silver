@@ -19,10 +19,10 @@ use crate::{
         blst_p1_affine,
         constants::{LIMBS, MASK52, R_MOD_P},
         fp8::{
-            Fp8, LANES, Limbs,
+            Fp8,
             tests::{below, near_multiple_of_p},
-            unpack52,
         },
+        limbs::{LANES, Limbs, unpack52},
     },
     kernels_run,
 };

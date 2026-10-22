@@ -77,8 +77,9 @@ trap 'rm -rf "$work"' EXIT
     --opaque crate::bls::fp8::lanes --opaque crate::ifma_available \
     --opaque crate::sha_available --opaque crate::bmi2_available \
     --opaque crate::bls::uncompress_in_g2_blst \
-    --opaque crate::sha256::load_bytes --opaque crate::sha256::load_words \
-    --opaque crate::sha256::store_words \
+    --opaque crate::sha256::extensions::load_bytes \
+    --opaque crate::sha256::extensions::load_words \
+    --opaque crate::sha256::extensions::store_words \
     --dest-file "$work/silver_crypto_simd.llbc")
 
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \

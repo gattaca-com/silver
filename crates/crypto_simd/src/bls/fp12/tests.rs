@@ -11,7 +11,8 @@ use crate::{
     bls::{
         constants::{LIMB_BITS, LIMBS, MASK52, P, P_U64},
         fp2x8::Fp2x8,
-        fp8::{Fp8, LANES},
+        fp8::Fp8,
+        limbs::LANES,
         spec_pairing,
     },
     kernels_run,

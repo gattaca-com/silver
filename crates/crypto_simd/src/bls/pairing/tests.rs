@@ -11,16 +11,17 @@ use blst::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{LINE_COUNT, MillerLines};
 use crate::{
     bls::{
         constants::LIMBS,
-        fp8::{Fp8, LANES},
+        fp8::Fp8,
         fp12::tests::blst_of_lanes,
         g1x8::{
             G1x8,
             tests::{affine, in_lanes, negated, random_points, rescaled},
         },
+        limbs::LANES,
+        miller_lines::{LINE_COUNT, MillerLines},
         spec_pairing::{self, fp, inverse, miller_lines, mul, of_g1, of_g2, pairing_product, zero},
     },
     kernels_run,

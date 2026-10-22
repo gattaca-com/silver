@@ -28,7 +28,7 @@ use silver_crypto_simd::{
         G2_COMPRESSED_LEN, blst_p2_affine,
         constants::P_U64,
         decompress_g2::{self, Batch},
-        fp8::LANES,
+        limbs::LANES,
         uncompress_in_g2, uncompress_in_g2_blst,
     },
     ifma_available,

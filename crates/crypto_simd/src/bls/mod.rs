@@ -27,6 +27,8 @@ pub mod decompress;
 #[allow(clippy::missing_safety_doc)]
 pub mod decompress_g2;
 #[cfg(target_arch = "x86_64")]
+pub(crate) mod encoding;
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod fp12;
 #[cfg(target_arch = "x86_64")]
@@ -42,11 +44,19 @@ pub mod g1x8;
 #[allow(clippy::missing_safety_doc)]
 pub mod g2x8;
 #[cfg(target_arch = "x86_64")]
+pub mod glv;
+#[cfg(target_arch = "x86_64")]
+pub mod limbs;
+#[cfg(target_arch = "x86_64")]
+pub mod miller_lines;
+#[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod msm8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod pairing;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod signed_digits;
 #[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) mod spec_pairing;
 

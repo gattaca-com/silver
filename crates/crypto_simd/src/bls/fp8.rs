@@ -19,16 +19,15 @@ use std::arch::x86_64::{
     _mm512_srai_epi64, _mm512_srli_epi64, _mm512_sub_epi64,
 };
 
-use crate::bls::constants::{
-    HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
-    P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P, TWO_POW_448_MOD_P,
+use crate::bls::{
+    constants::{
+        HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
+        P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P, TWO_POW_448_MOD_P,
+    },
+    limbs::{LANES, Limbs, pack64, unpack52},
 };
 #[cfg(feature = "fp8_scalar_inverse")]
 use crate::portable::fp::Fp;
-
-pub const LANES: usize = 8;
-
-pub type Limbs = [u64; LIMBS];
 
 #[derive(Clone, Copy)]
 pub struct Fp8(pub [__m512i; LIMBS]);
@@ -207,46 +206,6 @@ fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], p: &[__m512i; LIMBS], pinv: __m5
     for j in 1..LIMBS {
         t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], p[j], q);
     }
-}
-
-/// Little-endian 64-bit limbs of a 381-bit value to 52-bit limbs.
-#[inline]
-pub fn unpack52(x: &[u64; 6]) -> Limbs {
-    let mut out = [0u64; LIMBS];
-    for j in 0..LIMBS {
-        let bit = j as u32 * LIMB_BITS;
-        let (word, shift) = ((bit / 64) as usize, bit % 64);
-        let mut v = x[word] >> shift;
-        if shift > 12 && word + 1 < 6 {
-            v |= x[word + 1] << (64 - shift);
-        }
-        out[j] = v & MASK52;
-    }
-    out
-}
-
-/// Inverse of `unpack52`.
-#[inline]
-pub fn pack64(x: &Limbs) -> [u64; 6] {
-    let mut out = [0u64; 6];
-    let mut acc: u128 = 0;
-    let mut acc_bits = 0u32;
-    let mut word = 0;
-    for j in 0..LIMBS {
-        let limb = x[j];
-        acc |= (limb as u128) << acc_bits;
-        acc_bits += LIMB_BITS;
-        if acc_bits >= 64 {
-            out[word] = acc as u64;
-            word += 1;
-            acc >>= 64;
-            acc_bits -= 64;
-        }
-    }
-    if word < 6 {
-        out[word] = acc as u64;
-    }
-    out
 }
 
 impl Fp8 {

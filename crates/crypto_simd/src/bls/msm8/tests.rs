@@ -13,12 +13,13 @@ use crate::{
     bls::{
         blst_p1_affine,
         constants::TWO_POW_448_MOD_P,
-        fp8::{Fp8, LANES, Limbs, unpack52},
+        fp8::Fp8,
         g1x8::G1x8,
+        glv::{HALF_SCALAR_BITS, decompose},
+        limbs::{LANES, Limbs, unpack52},
         msm8::{
             CHUNK, Msm8,
             buckets::Buckets,
-            glv::{HALF_SCALAR_BITS, decompose},
             lane_zero_in_blst,
             pairs::{BatchedAdds, NEGATED},
             store::PointStore,

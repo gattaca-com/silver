@@ -1,9 +1,9 @@
 use blst::blst_p1_affine;
 
-use crate::{
-    bls::msm8::pairs::NEGATED,
-    portable::{constants::BETA, fp::Fp},
-};
+use crate::portable::{constants::BETA, fp::Fp};
+
+/// Set on a reference to the negation of the point it names.
+pub const NEGATED: u32 = 1 << 31;
 
 /// Affine points by index, in blst's Montgomery form.
 #[derive(Default)]

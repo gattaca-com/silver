@@ -8,14 +8,12 @@ use rand_chacha::ChaCha8Rng;
 use super::PairingLines;
 use crate::{
     bls::{
-        fp8::LANES,
         g1x8::tests::{affine, negated, random_points, rescaled},
-        pairing::{
-            LINE_COUNT,
-            tests::{
-                blst_pairing_check, final_exp, g1_times, g2_times, jacobian, line_values,
-                random_g2, random_scalar,
-            },
+        limbs::LANES,
+        miller_lines::LINE_COUNT,
+        pairing::tests::{
+            blst_pairing_check, final_exp, g1_times, g2_times, jacobian, line_values, random_g2,
+            random_scalar,
         },
         spec_pairing::{self, pairing_product},
     },

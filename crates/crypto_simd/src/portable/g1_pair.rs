@@ -4,7 +4,7 @@
 //! reported, and the caller recomputes it with `G1`.
 
 use crate::{
-    bls::{constants::Z_BITS, g1x8::is_lower_z_bit},
+    bls::constants::{Z_BITS, is_lower_z_bit},
     portable::{constants::ONE, fp::Fp, g1::G1},
 };
 

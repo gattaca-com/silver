@@ -18,7 +18,8 @@ use rand_chacha::ChaCha8Rng;
 use super::*;
 use crate::bls::{
     constants::P_U64,
-    fp8::{Fp8, LANES, Limbs, pack64, unpack52},
+    fp8::Fp8,
+    limbs::{LANES, Limbs, pack64, unpack52},
 };
 
 fn env_u64(name: &str, default: u64) -> u64 {
