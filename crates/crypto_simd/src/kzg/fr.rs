@@ -13,6 +13,9 @@ const R: [u64; 4] =
     [0xffff_ffff_0000_0001, 0x53bd_a402_fffe_5bfe, 0x3339_d808_09a1_d805, 0x73ed_a753_299d_7d48];
 /// −r⁻¹ mod 2^64.
 const R_INV64: u64 = 0xffff_fffe_ffff_ffff;
+/// 2^512 mod r: the product by it takes a plain value into blst's form.
+const R_SQUARED: [u64; 4] =
+    [0xc999_e990_f3f2_9c6d, 0x2b6c_edcb_8792_5c23, 0x05d3_1496_7254_398f, 0x0748_d9d9_9f59_ff11];
 
 pub fn fr_add(a: &blst_fr, b: &blst_fr) -> blst_fr {
     blst_fr { l: below_r(&add_words(&a.l, &b.l)) }
@@ -25,6 +28,18 @@ pub fn fr_sub(a: &blst_fr, b: &blst_fr) -> blst_fr {
 
 pub fn fr_mul(a: &blst_fr, b: &blst_fr) -> blst_fr {
     blst_fr { l: montgomery_product(&a.l, &b.l) }
+}
+
+/// `None` unless the 32 big-endian bytes encode a value below r.
+pub fn fr_from_bytes(bytes: &[u8; 32]) -> Option<blst_fr> {
+    let value = words_from_be_bytes(bytes);
+    let (_, below) = sub_words(&value, &R);
+    if below { Some(blst_fr { l: montgomery_product(&value, &R_SQUARED) }) } else { None }
+}
+
+/// 32 big-endian bytes, the inverse of `fr_from_bytes`.
+pub fn fr_to_bytes(a: &blst_fr) -> [u8; 32] {
+    be_bytes_from_words(&montgomery_product(&a.l, &[1, 0, 0, 0]))
 }
 
 /// a·b/2^256 mod r, below r, for a below r.
@@ -104,6 +119,28 @@ fn sub_words(a: &[u64; 4], b: &[u64; 4]) -> ([u64; 4], bool) {
         j += 1;
     }
     (difference, borrow == 1)
+}
+
+fn words_from_be_bytes(be: &[u8; 32]) -> [u64; 4] {
+    let mut words = [0u64; 4];
+    let mut w = 0;
+    while w < 4 {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&be[32 - 8 * (w + 1)..32 - 8 * w]);
+        words[w] = u64::from_be_bytes(bytes);
+        w += 1;
+    }
+    words
+}
+
+fn be_bytes_from_words(words: &[u64; 4]) -> [u8; 32] {
+    let mut be = [0u8; 32];
+    let mut w = 0;
+    while w < 4 {
+        be[32 - 8 * (w + 1)..32 - 8 * w].copy_from_slice(&words[w].to_be_bytes());
+        w += 1;
+    }
+    be
 }
 
 #[cfg(test)]
