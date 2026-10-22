@@ -407,7 +407,7 @@ impl Fr8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn plain_words(values: &[blst_fr], words: &mut Vec<[u64; 4]>) {
         let sixteen = Self::splat(&blst_fr { l: [16, 0, 0, 0] });
-        words.resize(0, [0; 4]);
+        words.clear();
         let mut at = 0;
         while at < values.len() {
             let count = if values.len() - at < LANES { values.len() - at } else { LANES };
