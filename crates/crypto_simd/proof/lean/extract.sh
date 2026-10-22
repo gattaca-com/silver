@@ -76,7 +76,7 @@ done < <(sed -n 's/^pub fn \([a-z0-9_]*\).*/\1/p' "$crate_dir/src/kzg/blst_ops.r
     --start-from crate::bls::decompress_g2::decompress --start-from crate::bls::uncompress_in_g1 \
     --start-from crate::bls::uncompress_in_g2 \
     --start-from crate::kzg::verify --start-from crate::kzg::cell_extender "${opq[@]}" \
-    --opaque crate::bls::fp8::lanes --opaque crate::simd_available --opaque crate::sha_available \
+    --opaque crate::bls::fp8::lanes --opaque crate::simd_available \
     --opaque crate::bls::uncompress_in_g1_blst --opaque crate::bls::uncompress_in_g2_blst \
     --dest-file "$work/silver_crypto_simd.llbc")
 

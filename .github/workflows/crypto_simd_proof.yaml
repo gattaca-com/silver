@@ -245,11 +245,12 @@ jobs:
 
       - id: cpu
         run: |
-          if grep -qw avx512ifma /proc/cpuinfo && grep -qw avx512f /proc/cpuinfo; then
+          if grep -qw avx512ifma /proc/cpuinfo && grep -qw avx512f /proc/cpuinfo &&
+            grep -qw sha_ni /proc/cpuinfo && grep -qw sse4_1 /proc/cpuinfo; then
             echo "ifma=true" >>"$GITHUB_OUTPUT"
           else
             echo "ifma=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::No AVX-512 IFMA; Rust tests will run with kernel replay skipped."
+            echo "::notice::No AVX-512 IFMA or SHA extensions; Rust tests will run with kernel replay skipped."
           fi
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-15

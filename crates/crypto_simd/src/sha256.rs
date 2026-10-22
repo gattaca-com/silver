@@ -1,7 +1,7 @@
 //! SHA-256 of FIPS 180-4, absorbing its message in parts.
 
 #[cfg(target_arch = "x86_64")]
-use crate::sha_available;
+use crate::simd_available;
 
 #[cfg(target_arch = "x86_64")]
 mod sha_ni;
@@ -142,8 +142,8 @@ impl Sha256 {
 /// The state after the `blocks` blocks of `data` from `offset`.
 fn compress_blocks(state: &[u32; 8], data: &[u8], offset: usize, blocks: usize) -> [u32; 8] {
     #[cfg(target_arch = "x86_64")]
-    if sha_available() {
-        // SAFETY: `sha_available` confirmed the SHA extensions and SSE4.1.
+    if simd_available() {
+        // SAFETY: `simd_available` confirmed the SHA extensions and SSE4.1.
         return unsafe { sha_ni::compress_blocks(state, data, offset, blocks) };
     }
     let mut state = *state;
