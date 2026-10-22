@@ -9,6 +9,8 @@ use crate::{
         FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ONE, FR_ZERO, INVERSE_BLOB_SIZE,
         INVERSE_CELL_SIZE, PRIMITIVE_ROOT_OF_UNITY,
         blst_ops::{fr_from_u64, fr_inverse, g2_neg},
+        cosets::Cosets,
+        domain::{reverse_bits, roots_of_unity},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
         trusted_setup::{G2_MONOMIAL_0, G2_MONOMIAL_64},
     },
@@ -277,4 +279,15 @@ fn fr_literals_match_blst() {
     assert!(INVERSE_CELL_SIZE == fr_inverse(&cell_size), "1/64");
     let blob_size = fr_from_u64(FIELD_ELEMENTS_PER_BLOB as u64);
     assert!(INVERSE_BLOB_SIZE == fr_inverse(&blob_size), "1/4096");
+}
+
+#[test]
+fn coset_shift_inverses_match_blst() {
+    let log_ext_blob = (FIELD_ELEMENTS_PER_CELL * CELLS_PER_EXT_BLOB).trailing_zeros();
+    let ext_roots = roots_of_unity(log_ext_blob);
+    let cosets = Cosets::new();
+    for k in 0..CELLS_PER_EXT_BLOB {
+        let shift = ext_roots[reverse_bits(FIELD_ELEMENTS_PER_CELL * k, log_ext_blob)];
+        assert!(cosets.shift_inverse[k] == fr_inverse(&shift), "cell {k}");
+    }
 }

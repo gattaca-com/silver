@@ -6,7 +6,7 @@ use blst::blst_fr;
 
 use crate::kzg::{
     CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, INVERSE_CELL_SIZE,
-    blst_ops::{fr_inverse, fr_mul},
+    blst_ops::fr_mul,
     domain::{inverse_roots, reverse_bits, roots_of_unity},
 };
 
@@ -29,12 +29,13 @@ pub struct Cosets {
 impl Cosets {
     pub fn new() -> Self {
         let ext_roots = roots_of_unity(LOG_EXT_BLOB);
+        let inverse_ext_roots = inverse_roots(&ext_roots);
         let mut shift_inverse = Vec::with_capacity(CELLS_PER_EXT_BLOB);
         let mut shift_pow_cell = Vec::with_capacity(CELLS_PER_EXT_BLOB);
         for k in 0..CELLS_PER_EXT_BLOB {
-            let shift = ext_roots[reverse_bits(FIELD_ELEMENTS_PER_CELL * k, LOG_EXT_BLOB)];
-            shift_inverse.push(fr_inverse(&shift));
-            let mut power = shift;
+            let exponent = reverse_bits(FIELD_ELEMENTS_PER_CELL * k, LOG_EXT_BLOB);
+            shift_inverse.push(inverse_ext_roots[exponent]);
+            let mut power = ext_roots[exponent];
             for _ in 0..LOG_CELL {
                 power = fr_mul(&power, &power);
             }
