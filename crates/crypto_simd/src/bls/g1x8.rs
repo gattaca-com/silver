@@ -215,6 +215,21 @@ impl G1x8 {
         Self::select(infinite, &Self::select(q_infinite, &decided, self), q)
     }
 
+    /// The spec's `G1.neg`, lane by lane.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn neg(&self) -> Self {
+        Self { x: self.x, y: self.y.neg(), z: self.z }
+    }
+
+    /// Each lane's affine x and y, reduced, from one inversion for all eight
+    /// lanes; (0, 0) at infinity, as blst encodes it.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn to_affine(&self) -> (Fp8, Fp8) {
+        let z_inverse = self.z.inverse();
+        let z_inverse_squared = z_inverse.square();
+        (self.x.mul(&z_inverse_squared), self.y.mul(&z_inverse_squared.mul(&z_inverse)))
+    }
+
     /// `[2^k]` of each lane, by complete doublings.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn times_two_pow(&self, k: usize) -> Self {

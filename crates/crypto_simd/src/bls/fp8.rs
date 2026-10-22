@@ -21,7 +21,7 @@ use std::arch::x86_64::{
 
 use crate::bls::constants::{
     HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
-    P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
+    P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P, TWO_POW_448_MOD_P,
 };
 
 pub const LANES: usize = 8;
@@ -321,6 +321,18 @@ impl Fp8 {
             out[lane] = pack64(&t[lane]);
         }
         out
+    }
+
+    /// The inverse of `to_blst_limbs`, for values below p, reduced.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn from_blst_limbs(values: &[[u64; 6]; LANES]) -> Self {
+        let mut limbs = [[0u64; LIMBS]; LANES];
+        let mut lane = 0;
+        while lane < LANES {
+            limbs[lane] = unpack52(&values[lane]);
+            lane += 1;
+        }
+        Self::load(&limbs).mul(&Self::splat_limbs(&TWO_POW_448_MOD_P))
     }
 
     /// Montgomery product: the full 16-limb product, then `reduce`. Every row

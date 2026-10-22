@@ -5,14 +5,10 @@
 //! interpolation run on `Fr8` vectors, which read the cells' bytes directly,
 //! and the four multi-scalar multiplications run on `Msm8`.
 
+#[cfg(target_arch = "x86_64")]
+use blst::blst_fp;
 use blst::{blst_fr, blst_p1};
 
-#[cfg(target_arch = "x86_64")]
-use crate::{
-    bls::msm8::Msm8,
-    kzg::{fr8::Fr8, interpolation_kernel::InterpolationKernel},
-    simd_available,
-};
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
@@ -26,6 +22,16 @@ use crate::{
         fr::{fr_add, fr_from_bytes, fr_mul},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
     },
+};
+#[cfg(target_arch = "x86_64")]
+use crate::{
+    bls::{
+        fp8::{Fp8, LANES},
+        g1x8::G1x8,
+        msm8::Msm8,
+    },
+    kzg::{fr8::Fr8, interpolation_kernel::InterpolationKernel},
+    simd_available,
 };
 
 const LOG_CELL: u32 = 6;
@@ -209,8 +215,8 @@ impl CellBatchVerifier {
         }
         let rlp = self.lincomb.sum(&self.proof_points, &self.scalars);
 
-        let rl = g1_add(&g1_add(&rlc, &g1_neg(&rli)), &rlp);
-        pairing_check(&g1_to_affine(&ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
+        let (left, right) = self.lincomb.pairing_points(&ll, &rlc, &rli, &rlp);
+        pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR)
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
@@ -275,8 +281,9 @@ impl CellBatchVerifier {
     }
 }
 
-/// Σ scalars[i]·points[i], on `Msm8` where IFMA runs and by blst's Pippenger
-/// elsewhere. Buffers are kept between calls.
+/// The verifier's G1 work: sums Σ scalars[i]·points[i], and the pairing's two
+/// points from four of them. On `Msm8` and `Fp8` lanes where IFMA runs, by
+/// blst elsewhere. Buffers are kept between calls.
 struct Lincomb {
     scratch: LincombScratch,
     #[cfg(target_arch = "x86_64")]
@@ -307,6 +314,59 @@ impl Lincomb {
         }
         g1_lincomb(points, scalars, &mut self.scratch)
     }
+
+    /// LL and RL = RLC − RLI + RLP, affine.
+    fn pairing_points(
+        &self,
+        ll: &blst_p1,
+        rlc: &blst_p1,
+        rli: &blst_p1,
+        rlp: &blst_p1,
+    ) -> (blst_p1_affine, blst_p1_affine) {
+        #[cfg(target_arch = "x86_64")]
+        if self.msm.is_some() {
+            // SAFETY: `msm` is built only where `simd_available` held.
+            return unsafe { pairing_points_in_lanes(ll, rlc, rli, rlp) };
+        }
+        let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
+        (g1_to_affine(ll), g1_to_affine(&rl))
+    }
+}
+
+/// `Lincomb::pairing_points` on lanes: LL stays in lane 0, complete additions
+/// gather RL in lane 1, and one inversion serves both.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512ifma")]
+fn pairing_points_in_lanes(
+    ll: &blst_p1,
+    rlc: &blst_p1,
+    rli: &blst_p1,
+    rlp: &blst_p1,
+) -> (blst_p1_affine, blst_p1_affine) {
+    let infinity = blst_p1::default();
+    let difference = two_lanes(ll, rlc).add_complete(&two_lanes(&infinity, rli).neg());
+    let (x, y) = difference.add_complete(&two_lanes(&infinity, rlp)).to_affine();
+    let (x, y) = (x.to_blst_limbs(), y.to_blst_limbs());
+    let left = blst_p1_affine { x: blst_fp { l: x[0] }, y: blst_fp { l: y[0] } };
+    let right = blst_p1_affine { x: blst_fp { l: x[1] }, y: blst_fp { l: y[1] } };
+    (left, right)
+}
+
+/// `first` in lane 0 and `second` in lane 1, from blst's Jacobian form; the
+/// other lanes have z = 0, infinity.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512ifma")]
+fn two_lanes(first: &blst_p1, second: &blst_p1) -> G1x8 {
+    let mut x = [[0u64; 6]; LANES];
+    let mut y = [[0u64; 6]; LANES];
+    let mut z = [[0u64; 6]; LANES];
+    x[0] = first.x.l;
+    y[0] = first.y.l;
+    z[0] = first.z.l;
+    x[1] = second.x.l;
+    y[1] = second.y.l;
+    z[1] = second.z.l;
+    G1x8 { x: Fp8::from_blst_limbs(&x), y: Fp8::from_blst_limbs(&y), z: Fp8::from_blst_limbs(&z) }
 }
 
 /// Unique commitments in first-occurrence order, and each cell's index into
@@ -367,3 +427,6 @@ fn same_bytes(a: &[u8; COMPRESSED_LEN], b: &[u8; COMPRESSED_LEN]) -> bool {
     }
     i == COMPRESSED_LEN
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests;
