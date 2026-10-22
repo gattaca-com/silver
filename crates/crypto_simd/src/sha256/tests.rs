@@ -3,6 +3,36 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::Sha256;
+#[cfg(target_arch = "x86_64")]
+use super::{compress, sha_ni};
+
+/// From random states, at the offsets and block counts `update` and `finish`
+/// pass and a few more. The other tests reach the extensions through
+/// `compress_blocks` only when the `simd` feature is on.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn sha_ni_matches_compress() {
+    if !(is_x86_feature_detected!("sha") && is_x86_feature_detected!("sse4.1")) {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x5e);
+    let mut data = [0u8; 5 * 64 + 7];
+    rng.fill(&mut data[..]);
+    for _ in 0..32 {
+        let state: [u32; 8] = rng.r#gen();
+        for blocks in 0..=5 {
+            for offset in [0, 3, 7] {
+                let mut expected = state;
+                for block in 0..blocks {
+                    expected = compress(&expected, &data, offset + 64 * block);
+                }
+                // SAFETY: the CPU has the SHA extensions and SSE4.1.
+                let got = unsafe { sha_ni::compress_blocks(&state, &data, offset, blocks) };
+                assert_eq!(got, expected, "{blocks} blocks at {offset}");
+            }
+        }
+    }
+}
 
 fn digest(message: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();

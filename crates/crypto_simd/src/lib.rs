@@ -16,6 +16,13 @@ pub fn simd_available() -> bool {
     false
 }
 
+/// Built without the `simd` feature, SHA-256 runs in portable code, as on a
+/// CPU without the SHA extensions.
+#[cfg(target_arch = "x86_64")]
+fn sha_available() -> bool {
+    cfg!(feature = "simd") && is_x86_feature_detected!("sha") && is_x86_feature_detected!("sse4.1")
+}
+
 /// False where the kernels cannot run, unless `SILVER_REQUIRE_IFMA` asks for
 /// them.
 #[cfg(test)]
