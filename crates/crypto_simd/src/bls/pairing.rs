@@ -1,4 +1,4 @@
-//! The Miller loop of two pairs whose G2 points are fixed, from their
+//! The pairing check of two pairs whose G2 points are fixed, from their
 //! precomputed lines and the G1 points in lanes 0 and 1 of a `G1x8`.
 
 use std::arch::x86_64::__mmask8;
@@ -30,6 +30,13 @@ const LINE_C1: [[i64; LANES]; 2] = [[0, 9, 11, 0, 0, 0, 0, 0], [0, 13, 15, 0, 0,
 pub struct MillerLines(pub [[Limbs; LANES]; LINE_COUNT]);
 
 impl MillerLines {
+    /// The spec's `pairingCheck` of the two pairs: whether
+    /// e(P0, Q0)·e(P1, Q1) = 1, for the G1 points in lanes 0 and 1.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn pairing_check(&self, points: &G1x8) -> bool {
+        self.miller_loop(points).final_exponentiation().is_one()
+    }
+
     /// The product of both pairs' Miller values, conjugated since z < 0,
     /// for the G1 points in lanes 0 and 1; a pair whose point is infinity
     /// is left out. At Jacobian (X, Y, Z), each line is scaled by Z³:

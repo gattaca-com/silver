@@ -180,7 +180,7 @@ pub(crate) fn rescaled(point: &blst_p1, lambda: u64) -> blst_p1 {
     out
 }
 
-fn negated(point: &blst_p1) -> blst_p1 {
+pub(crate) fn negated(point: &blst_p1) -> blst_p1 {
     let mut out = *point;
     // SAFETY: a valid pointer to a single value.
     unsafe { blst_p1_cneg(&mut out, true) };

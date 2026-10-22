@@ -1,7 +1,7 @@
 use blst::{
-    blst_fp, blst_fp2, blst_fp6, blst_fp12, blst_fp12_conjugate, blst_fp12_cyclotomic_sqr,
-    blst_fp12_frobenius_map, blst_fp12_inverse, blst_fp12_mul, blst_fp12_mul_by_xy00z0,
-    blst_fp12_sqr,
+    blst_final_exp, blst_fp, blst_fp2, blst_fp6, blst_fp12, blst_fp12_conjugate,
+    blst_fp12_cyclotomic_sqr, blst_fp12_frobenius_map, blst_fp12_inverse, blst_fp12_mul,
+    blst_fp12_mul_by_xy00z0, blst_fp12_sqr,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -12,6 +12,7 @@ use crate::{
         constants::{LIMB_BITS, LIMBS, MASK52, P, P_U64},
         fp2x8::Fp2x8,
         fp8::{Fp8, LANES},
+        spec_pairing,
     },
     kernels_run,
 };
@@ -318,6 +319,39 @@ fn chains_match_blst_within_range() {
                 assert!(fp12_in_range(&got, BOUND), "run {step}");
             }
             assert_eq!(limbs(&blst_of_lanes(&got)), limbs(&want));
+        }
+    }
+}
+
+fn blst_final_exponentiation(f: &blst_fp12) -> blst_fp12 {
+    let mut out = blst_fp12::default();
+    // SAFETY: valid pointers to single values.
+    unsafe { blst_final_exp(&mut out, f) };
+    out
+}
+
+/// The final exponentiation is the spec's cubed, f^(3·(p¹² − 1)/r), from
+/// reduced inputs and from each of their `LIFTS`; so is blst's.
+#[test]
+fn final_exponentiation_is_the_spec_one_cubed() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0xfe);
+    let line = random_line(&mut rng);
+    let inputs = [extreme_fp12(), full_line(&line), random_fp12(&mut rng), random_fp12(&mut rng)];
+    for f in inputs {
+        let spec = spec_pairing::final_exponentiation(&f);
+        let cubed = blst_mul(&blst_mul(&spec, &spec), &spec);
+        assert_ne!(limbs(&spec), limbs(&blst_mul(&spec, &spec)), "the spec's value is not 1");
+        assert_eq!(limbs(&blst_final_exponentiation(&f)), limbs(&cubed), "blst's");
+        // SAFETY: `kernels_run` held.
+        unsafe {
+            for (c0, c1) in LIFTS {
+                let got = Fp12(lifted(&lanes_of(&f).0, c0, c1)).final_exponentiation();
+                assert!(fp12_in_range(&got, BOUND), "lift ({c0}, {c1}) out of range");
+                assert_eq!(limbs(&blst_of_lanes(&got)), limbs(&cubed), "lift ({c0}, {c1})");
+            }
         }
     }
 }

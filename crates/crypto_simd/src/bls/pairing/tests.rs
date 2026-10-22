@@ -1,9 +1,11 @@
-//! The Miller loop against the spec's and blst's, compared after blst's
-//! final exponentiation, which removes the factors each line form leaves.
+//! The Miller loop and the pairing check against the spec's and blst's. The
+//! Miller values compare after blst's final exponentiation, which removes
+//! the factors each line form leaves.
 
 use blst::{
-    blst_final_exp, blst_fp, blst_fp2, blst_fp12, blst_miller_loop, blst_p1, blst_p1_affine,
-    blst_p1_affine_generator, blst_p1_from_affine, blst_p2, blst_p2_affine, blst_p2_generator,
+    blst_final_exp, blst_fp, blst_fp2, blst_fp12, blst_fp12_is_one, blst_miller_loop, blst_p1,
+    blst_p1_affine, blst_p1_affine_generator, blst_p1_affine_is_inf, blst_p1_from_affine,
+    blst_p1_mult, blst_p2, blst_p2_affine, blst_p2_affine_generator, blst_p2_from_affine,
     blst_p2_mult, blst_p2_to_affine,
 };
 use rand::{Rng, SeedableRng};
@@ -17,25 +19,43 @@ use crate::{
         fp12::tests::blst_of_lanes,
         g1x8::{
             G1x8,
-            tests::{affine, in_lanes, random_points, rescaled},
+            tests::{affine, in_lanes, negated, random_points, rescaled},
         },
-        spec_pairing::{fp, inverse, miller_lines, mul, of_g1, of_g2, pairing_product, zero},
+        spec_pairing::{self, fp, inverse, miller_lines, mul, of_g1, of_g2, pairing_product, zero},
     },
     kernels_run,
 };
 
-/// A multiple of the G2 generator by a random 255-bit scalar.
-fn random_g2(rng: &mut ChaCha8Rng) -> blst_p2_affine {
+/// A random 255-bit scalar, little-endian.
+fn random_scalar(rng: &mut ChaCha8Rng) -> [u8; 32] {
     let mut scalar: [u8; 32] = rng.r#gen();
     scalar[31] &= 0x7f;
-    let (mut point, mut out) = (blst_p2::default(), blst_p2_affine::default());
-    // SAFETY: blst returns a pointer to its static generator; valid pointers
-    // to single values, and blst reads 255 bits of the scalar.
+    scalar
+}
+
+fn g1_times(p: &blst_p1, scalar: &[u8; 32]) -> blst_p1 {
+    let mut out = blst_p1::default();
+    // SAFETY: valid pointers to single values; blst reads 255 bits.
+    unsafe { blst_p1_mult(&mut out, p, scalar.as_ptr(), 255) };
+    out
+}
+
+fn g2_times(q: &blst_p2_affine, scalar: &[u8; 32]) -> blst_p2_affine {
+    let (mut point, mut product, mut out) =
+        (blst_p2::default(), blst_p2::default(), blst_p2_affine::default());
+    // SAFETY: valid pointers to single values; blst reads 255 bits.
     unsafe {
-        blst_p2_mult(&mut point, blst_p2_generator(), scalar.as_ptr(), 255);
-        blst_p2_to_affine(&mut out, &point);
+        blst_p2_from_affine(&mut point, q);
+        blst_p2_mult(&mut product, &point, scalar.as_ptr(), 255);
+        blst_p2_to_affine(&mut out, &product);
     }
     out
+}
+
+/// A multiple of the G2 generator by a random 255-bit scalar.
+fn random_g2(rng: &mut ChaCha8Rng) -> blst_p2_affine {
+    // SAFETY: blst returns a pointer to its static generator.
+    g2_times(unsafe { &*blst_p2_affine_generator() }, &random_scalar(rng))
 }
 
 fn jacobian(p: &blst_p1_affine) -> blst_p1 {
@@ -163,5 +183,50 @@ fn miller_loop_leaves_out_points_at_infinity() {
         let mut lazy = pair_lanes(&[p[0], p[1]]);
         lazy.z = Fp8::multiple_of_p(1);
         assert!(lines.miller_loop(&lazy).is_one(), "z = p");
+    }
+}
+
+/// blst's verdict, leaving out each pair with its G1 point at infinity.
+fn blst_pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
+    let mut product = spec_pairing::one();
+    for (p, q) in pairs {
+        // SAFETY: a valid pointer to a single value.
+        if !unsafe { blst_p1_affine_is_inf(p) } {
+            product = mul(&product, &blst_miller(q, p));
+        }
+    }
+    // SAFETY: a valid pointer to a single value.
+    unsafe { blst_fp12_is_one(&final_exp(&product)) }
+}
+
+/// The pairing check against the spec's `pairingCheck` and blst's: on a
+/// balanced product, the same with a wrong sign, unrelated points, and
+/// points at infinity.
+#[test]
+fn pairing_check_matches_the_spec() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(0x9c);
+    let p = random_points(&mut rng, 3);
+    let q = [random_g2(&mut rng), random_g2(&mut rng)];
+    let a = random_scalar(&mut rng);
+    let (ap, aq) = (g1_times(&p[0], &a), g2_times(&q[0], &a));
+    let infinity = blst_p1 { z: blst_fp::default(), ..p[0] };
+    let cases = [
+        ("balanced", [ap, negated(&p[0])], [q[0], aq], true),
+        ("wrong sign", [ap, p[0]], [q[0], aq], false),
+        ("unrelated", [p[1], p[2]], q, false),
+        ("first at infinity", [infinity, p[1]], q, false),
+        ("second at infinity", [p[1], infinity], q, false),
+        ("both at infinity", [infinity, infinity], q, true),
+    ];
+    for (name, points, g2, want) in cases {
+        let pairs = [(affine(&points[0]), g2[0]), (affine(&points[1]), g2[1])];
+        assert_eq!(spec_pairing::pairing_check(&pairs), want, "{name}: the spec");
+        assert_eq!(blst_pairing_check(&pairs), want, "{name}: blst");
+        // SAFETY: `kernels_run` held.
+        let got = unsafe { lines_of(&g2).pairing_check(&pair_lanes(&points)) };
+        assert_eq!(got, want, "{name}");
     }
 }

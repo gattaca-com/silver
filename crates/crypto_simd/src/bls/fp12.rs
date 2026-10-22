@@ -21,9 +21,10 @@
 //! largest operand pair, below 10K·p and 8K·p, is far below R·p = 2^416·p.
 
 use crate::bls::{
-    constants::{FROBENIUS_MONT, LIMBS, R_MOD_P},
+    constants::{FROBENIUS_MONT, LIMBS, R_MOD_P, Z_BITS},
     fp2x8::Fp2x8,
     fp8::{Fp8, LANES, Limbs},
+    g1x8::is_lower_z_bit,
 };
 
 pub const BOUND: u64 = 256;
@@ -516,6 +517,52 @@ impl Fp12 {
         let n_inverse =
             fp2_products(&t, &det_inverse).permute2(&zero2(), &[0, 1, 2, Z, Z, Z, Z, Z]);
         conjugate.mul(&Self(n_inverse))
+    }
+
+    /// f^(3·(p¹² − 1)/r): the spec's final exponentiation, cubed, which
+    /// leaves `is_one` unchanged as 3 is prime to r. This is zkcrypto's
+    /// chain. The easy part, f^((p⁶ − 1)(p² + 1)), lands in the cyclotomic
+    /// subgroup. The hard part takes that to 3·Φ12(p)/r through five
+    /// exponentiations by z.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn final_exponentiation(&self) -> Self {
+        let t0 = self.conjugate();
+        let t1 = self.inverse();
+        let t2 = t0.mul(&t1);
+        let t1 = t2;
+        let t2 = t2.frobenius().frobenius().mul(&t1);
+
+        let t1 = t2.cyclotomic_square().conjugate();
+        let t3 = t2.cyclotomic_exp();
+        let t4 = t3.cyclotomic_square();
+        let t5 = t1.mul(&t3);
+        let t1 = t5.cyclotomic_exp();
+        let t0 = t1.cyclotomic_exp();
+        let t6 = t0.cyclotomic_exp().mul(&t4);
+        let t4 = t6.cyclotomic_exp();
+        let t5 = t5.conjugate();
+        let t4 = t4.mul(&t5.mul(&t2));
+        let t5 = t2.conjugate();
+        let t1 = t1.mul(&t2).frobenius().frobenius().frobenius();
+        let t6 = t6.mul(&t5).frobenius();
+        let t3 = t3.mul(&t0).frobenius().frobenius();
+        t3.mul(&t1).mul(&t6).mul(&t4)
+    }
+
+    /// f^z on the cyclotomic subgroup, where the inverse is the conjugate:
+    /// f^|z| over the bits of |z|, conjugated as z < 0.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    fn cyclotomic_exp(&self) -> Self {
+        let mut r = *self;
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
+            r = r.cyclotomic_square();
+            if is_lower_z_bit(bit) {
+                r = r.mul(self);
+            }
+        }
+        r.conjugate()
     }
 
     /// Whether the value is 1.
