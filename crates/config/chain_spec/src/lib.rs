@@ -579,11 +579,8 @@ impl SpecConfig {
             fulu_fork_version: default_fork_version::<0x70000910>(),
             fulu_fork_epoch: 50688,
             gloas_fork_version: default_fork_version::<0x80000910>(),
-            gloas_fork_epoch: 132352,
-            blob_schedule: vec![
-                BlobParameters { epoch: 52480, max_blobs_per_block: 15 },
-                BlobParameters { epoch: 54016, max_blobs_per_block: 21 },
-            ],
+            gloas_fork_epoch: unscheduled(),
+            blob_schedule: default_blob_schedule(),
             max_blobs_per_block_electra: 9,
             blob_sidecar_subnet_count: 6,
             blob_sidecar_subnet_count_electra: 9,
