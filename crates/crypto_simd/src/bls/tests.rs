@@ -173,7 +173,8 @@ fn assert_uncompress_in_g2_matches_blst(
 fn uncompress_in_g2_matches_blst_on_every_kind() {
     assert!(
         ifma_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
-        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, or no simd feature"
+        "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, no simd feature, \
+         or SILVER_TEST_NO_IFMA"
     );
     let kinds = assert_uncompress_in_g2_matches_blst(uncompress_all);
     assert!(kinds.iter().all(|&n| n > 0), "{kinds:?}");
