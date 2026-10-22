@@ -156,6 +156,22 @@ fn sub_words<const N: usize>(a: &[u64; N], b: &[u64; N]) -> ([u64; N], bool) {
     (d, borrow == 1)
 }
 
+/// a − b and whether it borrowed, as a + !b + 1 in one carry chain. With b
+/// variable, LLVM compiles this tighter than `sub_words`; against p, looser.
+#[inline(always)]
+fn sub_words_by_complement(a: &[u64; 6], b: &[u64; 6]) -> ([u64; 6], bool) {
+    let mut d = [0u64; 6];
+    let mut carry = 1;
+    let mut j = 0;
+    while j < 6 {
+        let (x, out) = add_carry(a[j], !b[j], carry);
+        d[j] = x;
+        carry = out;
+        j += 1;
+    }
+    (d, carry == 0)
+}
+
 /// a + b and its carry.
 #[inline(always)]
 fn add_words(a: &[u64; 6], b: &[u64; 6]) -> ([u64; 6], bool) {
@@ -264,7 +280,7 @@ impl Fp {
 
     #[inline(always)]
     pub fn sub(&self, rhs: &Self) -> Self {
-        let (d, borrowed) = sub_words(&self.0, &rhs.0);
+        let (d, borrowed) = sub_words_by_complement(&self.0, &rhs.0);
         Self(add_words(&d, &p_if(borrowed)).0)
     }
 
