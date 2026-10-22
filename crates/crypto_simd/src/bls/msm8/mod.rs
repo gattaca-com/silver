@@ -25,8 +25,9 @@ use crate::bls::{
     },
 };
 
-/// Points per bucket fill. A fill's buffers stay under about 20 MB, and each
-/// further chunk costs one more pass of window sums.
+/// Points per bucket fill. A full fill's buffers take about 20 MB, and their
+/// growth slack can keep about 30 MB allocated. Each further chunk costs one
+/// more pass of window sums.
 const CHUNK: usize = 4096;
 /// A fill's windows at most: halves cut into the narrowest windows.
 const MOST_WINDOWS: usize = HALF_SCALAR_BITS / NARROWEST_WINDOW_BITS + 1;
