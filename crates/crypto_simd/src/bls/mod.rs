@@ -58,6 +58,8 @@ use blst::{
 pub use blst::{blst_p1_affine, blst_p2_affine};
 
 use crate::simd_available;
+#[cfg(target_arch = "x86_64")]
+use crate::{Route, portable::decompress::uncompress_all_in_g1, route};
 
 pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
@@ -89,6 +91,13 @@ pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_aff
 /// `uncompress_in_g1_blst(&inputs[i])`.
 pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
+    #[cfg(target_arch = "x86_64")]
+    if route() == Route::Portable {
+        // SAFETY: the portable route is taken only where `portable_available`
+        // held.
+        unsafe { uncompress_all_in_g1(inputs, out) };
+        return;
+    }
     let simd = simd_available();
     let full = inputs.len() / LANES * LANES;
     let mut start = 0;
@@ -193,4 +202,4 @@ fn decompress_g2_chunk(chunk: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]
-mod tests;
+pub(crate) mod tests;

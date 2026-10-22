@@ -5,11 +5,44 @@ pub mod portable;
 #[cfg(target_arch = "x86_64")]
 mod sha256;
 
-/// Built without the `simd` feature, every operation takes its blst path, as
-/// on a CPU without the instructions. Every CPU with avx512ifma also has the
-/// SHA extensions, so one observation serves the whole kernel.
 #[cfg(target_arch = "x86_64")]
-pub fn simd_available() -> bool {
+use std::sync::OnceLock;
+
+/// Where the verifier's work runs: on IFMA lanes, on the scalar portable
+/// route, or in blst.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    Ifma,
+    Portable,
+    Blst,
+}
+
+/// IFMA where it runs, else the portable route where BMI2 and ADX run, else
+/// blst. `SILVER_ROUTE` set to `ifma`, `portable` or `blst` forces a route,
+/// for measurements; forcing one this CPU cannot run panics.
+#[cfg(target_arch = "x86_64")]
+pub fn route() -> Route {
+    static ROUTE: OnceLock<Route> = OnceLock::new();
+    *ROUTE.get_or_init(|| {
+        let forced = std::env::var("SILVER_ROUTE").ok();
+        match forced.as_deref() {
+            None | Some("ifma") if ifma_runs() => Route::Ifma,
+            None | Some("portable") if portable::portable_available() => Route::Portable,
+            None | Some("blst") => Route::Blst,
+            Some(other) => panic!("SILVER_ROUTE={other}: this CPU cannot run that route"),
+        }
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn route() -> Route {
+    Route::Blst
+}
+
+/// Every CPU with avx512ifma also has the SHA extensions, so one observation
+/// serves the whole kernel.
+#[cfg(target_arch = "x86_64")]
+fn ifma_runs() -> bool {
     cfg!(feature = "simd") &&
         is_x86_feature_detected!("avx512f") &&
         is_x86_feature_detected!("avx512ifma") &&
@@ -17,9 +50,10 @@ pub fn simd_available() -> bool {
         is_x86_feature_detected!("sse4.1")
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+/// Off the IFMA route, every operation takes its portable or blst path, as on
+/// a CPU without the instructions; so too built without the `simd` feature.
 pub fn simd_available() -> bool {
-    false
+    route() == Route::Ifma
 }
 
 /// False where the kernels cannot run, unless `SILVER_REQUIRE_IFMA` asks for

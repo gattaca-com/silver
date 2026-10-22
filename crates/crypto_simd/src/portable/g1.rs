@@ -1,0 +1,197 @@
+//! G1 points in Jacobian coordinates over the scalar [`Fp`], z = 0 at
+//! infinity.
+//!
+//! The formulas are the a = 0 ones from the EFD: dbl-2009-l, madd-2007-bl and
+//! add-2007-bl. Doubling is complete as it is: y = 0 or z = 0 gives z = 0.
+//! The additions assume distinct, finite summands; their `_complete` forms
+//! branch to the spec's `G1.add` for every input.
+
+use crate::{
+    bls::{constants::Z_BITS, g1x8::is_lower_z_bit},
+    portable::{
+        constants::{BETA, ONE},
+        fp::Fp,
+    },
+};
+
+#[derive(Clone, Copy, Debug)]
+pub struct G1 {
+    pub x: Fp,
+    pub y: Fp,
+    pub z: Fp,
+}
+
+impl G1 {
+    pub const INFINITY: G1 = G1 { x: ONE, y: ONE, z: Fp::ZERO };
+
+    pub fn from_affine(x: &Fp, y: &Fp) -> Self {
+        Self { x: *x, y: *y, z: ONE }
+    }
+
+    pub fn is_infinity(&self) -> bool {
+        self.z.is_zero()
+    }
+
+    /// dbl-2009-l.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn double(&self) -> Self {
+        let a = self.x.square();
+        let b = self.y.square();
+        let c = b.square();
+        let d = self.x.add(&b).square().sub(&a).sub(&c).double();
+        let e = a.double().add(&a);
+        let x3 = e.square().sub(&d.double());
+        let y3 = e.mul(&d.sub(&x3)).sub(&c.double().double().double());
+        let z3 = self.y.mul(&self.z).double();
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// madd-2007-bl, for a finite self and x ≠ qx.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn add_affine(&self, qx: &Fp, qy: &Fp) -> Self {
+        let z1z1 = self.z.square();
+        let u2 = qx.mul(&z1z1);
+        let s2 = qy.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&self.x);
+        let hh = h.square();
+        let i = hh.double().double();
+        let j = h.mul(&i);
+        let r = s2.sub(&self.y).double();
+        let v = self.x.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&self.y.mul(&j).double());
+        let z3 = self.z.add(&h).square().sub(&z1z1).sub(&hh);
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// add-2007-bl, for finite summands with distinct x.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn add(&self, q: &Self) -> Self {
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        let u1 = self.x.mul(&z2z2);
+        let u2 = q.x.mul(&z1z1);
+        let s1 = self.y.mul(&q.z).mul(&z2z2);
+        let s2 = q.y.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&u1);
+        let i = h.double().square();
+        let j = h.mul(&i);
+        let r = s2.sub(&s1).double();
+        let v = u1.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).double());
+        let z3 = self.z.add(&q.z).square().sub(&z1z1).sub(&z2z2).mul(&h);
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// The spec's `G1.add` of self and the affine point (qx, qy).
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn add_affine_complete(&self, qx: &Fp, qy: &Fp) -> Self {
+        if self.is_infinity() {
+            return Self::from_affine(qx, qy);
+        }
+        let z1z1 = self.z.square();
+        if qx.mul(&z1z1) != self.x {
+            return self.add_affine(qx, qy);
+        }
+        if qy.mul(&self.z).mul(&z1z1) == self.y { self.double() } else { Self::INFINITY }
+    }
+
+    /// The spec's `G1.add`.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn add_complete(&self, q: &Self) -> Self {
+        if self.is_infinity() {
+            return *q;
+        }
+        if q.is_infinity() {
+            return *self;
+        }
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        if self.x.mul(&z2z2) != q.x.mul(&z1z1) {
+            return self.add(q);
+        }
+        if self.y.mul(&q.z).mul(&z2z2) == q.y.mul(&self.z).mul(&z1z1) {
+            self.double()
+        } else {
+            Self::INFINITY
+        }
+    }
+
+    pub fn neg(&self) -> Self {
+        Self { x: self.x, y: self.y.neg(), z: self.z }
+    }
+
+    /// Affine x and y; (0, 0) at infinity, as blst encodes it.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn to_affine(&self) -> (Fp, Fp) {
+        if self.is_infinity() {
+            return (Fp::ZERO, Fp::ZERO);
+        }
+        let z_inverse = self.z.inverse();
+        let z_inverse_squared = z_inverse.square();
+        (self.x.mul(&z_inverse_squared), self.y.mul(&z_inverse_squared.mul(&z_inverse)))
+    }
+
+    /// Whether both represent the same point.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn equals(&self, q: &Self) -> bool {
+        if self.is_infinity() || q.is_infinity() {
+            return self.is_infinity() && q.is_infinity();
+        }
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        self.x.mul(&z2z2) == q.x.mul(&z1z1) &&
+            self.y.mul(&q.z).mul(&z2z2) == q.y.mul(&self.z).mul(&z1z1)
+    }
+
+    /// `[|z|] P` for an affine P, by double-and-add over the set bits of |z|.
+    #[target_feature(enable = "bmi2,adx")]
+    fn times_z_affine(px: &Fp, py: &Fp) -> Self {
+        let mut r = Self::from_affine(px, py);
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
+            r = r.double();
+            if is_lower_z_bit(bit) {
+                r = r.add_affine_complete(px, py);
+            }
+        }
+        r
+    }
+
+    /// `[|z|] self`, by the same chain as `times_z_affine`.
+    #[target_feature(enable = "bmi2,adx")]
+    fn times_z(&self) -> Self {
+        let mut r = *self;
+        let mut bit = Z_BITS[0];
+        while bit > 0 {
+            bit -= 1;
+            r = r.double();
+            if is_lower_z_bit(bit) {
+                r = r.add_complete(self);
+            }
+        }
+        r
+    }
+
+    /// Scott's test: a finite affine curve point is in G1 iff `[-z^2] P ==
+    /// sigma^2(P)`, where sigma scales x by a cube root of unity.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn in_g1(px: &Fp, py: &Fp) -> bool {
+        Self::times_z_affine(px, py).times_z().is_minus_sigma_squared(px, py)
+    }
+
+    /// Whether self is −σ²(P) for the finite affine P = (px, py).
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn is_minus_sigma_squared(&self, px: &Fp, py: &Fp) -> bool {
+        if self.is_infinity() {
+            return false;
+        }
+        let zz = self.z.square();
+        self.x == px.mul(&BETA).mul(&BETA).mul(&zz) && self.y.neg() == py.mul(&zz.mul(&self.z))
+    }
+}
+
+#[cfg(test)]
+mod tests;

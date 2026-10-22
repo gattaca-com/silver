@@ -3,12 +3,15 @@
 //!
 //! The product is CIOS in six explicit rows with the no-carry schedule: p's top
 //! word is below 2^62, so a row's running sum fits six words and a top word.
-//! Under BMI2, LLVM compiles the `u128` products to `mulx` and the
-//! `overflowing_add` pairs to `adc` chains. The `portable_mulx` feature writes
-//! the same rows with `_mulx_u64` and `_addcarry_u64` instead.
+//! Under BMI2, LLVM compiles the `u128` products to `mulx`. By default, carries
+//! are `overflowing_add` pairs. The `portable_addcarry` feature takes them from
+//! `_addcarry_u64`, which LLVM chains more tightly; `portable_mulx` also takes
+//! the products from `_mulx_u64`.
 
+#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
+use std::arch::x86_64::_addcarry_u64;
 #[cfg(feature = "portable_mulx")]
-use std::arch::x86_64::{_addcarry_u64, _mulx_u64};
+use std::arch::x86_64::_mulx_u64;
 
 use crate::{
     bls::constants::{P_MINUS_3_OVER_4_WINDOWS, P_U64},
@@ -37,7 +40,7 @@ fn wide_mul(a: u64, b: u64) -> (u64, u64) {
 
 /// a + b + carry and the carry out, for a carry of 0 or 1. The carries are
 /// words, not bools, so that LLVM chains them into `adc`.
-#[cfg(not(feature = "portable_mulx"))]
+#[cfg(not(any(feature = "portable_addcarry", feature = "portable_mulx")))]
 #[inline(always)]
 fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     let (s, c1) = a.overflowing_add(b);
@@ -45,7 +48,7 @@ fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     (s, c1 as u64 | c2 as u64)
 }
 
-#[cfg(feature = "portable_mulx")]
+#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
 #[inline(always)]
 fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     let mut s = 0;
@@ -184,6 +187,15 @@ impl Fp {
         self.mul(self)
     }
 
+    /// Two independent products, one after the other, which the core
+    /// overlaps. Interleaving their rows is slower: the two need more
+    /// registers than x86-64 has.
+    #[target_feature(enable = "bmi2,adx")]
+    #[inline]
+    pub fn mul_pair(a: &[Fp; 2], b: &[Fp; 2]) -> [Fp; 2] {
+        [a[0].mul(&b[0]), a[1].mul(&b[1])]
+    }
+
     // The sums need no BMI2, and inlined they keep their selects on registers:
     // LLVM turns a `cmov` that reads memory into a branch.
     #[inline(always)]
@@ -255,12 +267,47 @@ impl Fp {
         result
     }
 
+    /// `pow_p_minus_3_over_4` of two values in lockstep.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn pow_p_minus_3_over_4_pair(values: &[Fp; 2]) -> [Fp; 2] {
+        let mut table = [[ONE; 2]; 16];
+        let mut k = 1;
+        while k < 16 {
+            table[k] = Self::mul_pair(&table[k - 1], values);
+            k += 1;
+        }
+        let windows = P_MINUS_3_OVER_4_WINDOWS.len();
+        let mut result = table[P_MINUS_3_OVER_4_WINDOWS[windows - 1] as usize];
+        let mut w = windows - 1;
+        while w > 0 {
+            w -= 1;
+            let mut s = 0;
+            while s < 4 {
+                result = Self::mul_pair(&result, &result);
+                s += 1;
+            }
+            result = Self::mul_pair(&result, &table[P_MINUS_3_OVER_4_WINDOWS[w] as usize]);
+        }
+        result
+    }
+
     /// A square root when self is a square: self^((p + 1)/4), since p ≡ 3 mod
     /// 4.
     #[target_feature(enable = "bmi2,adx")]
     pub fn sqrt(&self) -> Option<Self> {
         let root = self.pow_p_minus_3_over_4().mul(self);
         if root.square() == *self { Some(root) } else { None }
+    }
+
+    /// `sqrt` of two values in lockstep.
+    #[target_feature(enable = "bmi2,adx")]
+    pub fn sqrt_pair(values: &[Fp; 2]) -> [Option<Fp>; 2] {
+        let roots = Self::mul_pair(&Self::pow_p_minus_3_over_4_pair(values), values);
+        let squares = Self::mul_pair(&roots, &roots);
+        [
+            if squares[0] == values[0] { Some(roots[0]) } else { None },
+            if squares[1] == values[1] { Some(roots[1]) } else { None },
+        ]
     }
 
     /// Whether the plain value exceeds (p − 1)/2: the larger of ±y.

@@ -266,7 +266,7 @@ fn kernel_early_returns_leave_infinity_to_blst() {
     assert!(uncompress_in_g2_blst(&G2_INFINITY).is_some(), "infinity is in G2");
 }
 
-fn serialized(p: &Option<blst_p1_affine>) -> Option<[u8; 96]> {
+pub(crate) fn serialized(p: &Option<blst_p1_affine>) -> Option<[u8; 96]> {
     p.map(|p| {
         let mut out = [0u8; 96];
         unsafe { blst_p1_affine_serialize(out.as_mut_ptr(), &p) };
@@ -274,13 +274,13 @@ fn serialized(p: &Option<blst_p1_affine>) -> Option<[u8; 96]> {
     })
 }
 
-fn compress(p: &blst_p1_affine) -> [u8; COMPRESSED_LEN] {
+pub(crate) fn compress(p: &blst_p1_affine) -> [u8; COMPRESSED_LEN] {
     let mut out = [0u8; COMPRESSED_LEN];
     unsafe { blst_p1_affine_compress(out.as_mut_ptr(), p) };
     out
 }
 
-fn g1_points(n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
+pub(crate) fn g1_points(n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
     (0..n)
         .map(|i| {
             let msg = format!("point {i}");
@@ -304,7 +304,7 @@ fn g1_points(n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
 }
 
 /// Points on the curve but, with overwhelming probability, not in G1.
-fn curve_points_outside_g1(rng: &mut StdRng, n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
+pub(crate) fn curve_points_outside_g1(rng: &mut StdRng, n: usize) -> Vec<[u8; COMPRESSED_LEN]> {
     let four = fp_from(&[4, 0, 0, 0, 0, 0]);
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
@@ -417,7 +417,8 @@ fn verdicts_match_blst_on_members_non_members_and_garbage() {
 }
 
 /// h1 = 3 · 11² · 10177² · 859267² · 52437899², as (prime, exponent).
-const H1_PRIMES: [(u64, u32); 5] = [(3, 1), (11, 2), (10177, 2), (859267, 2), (52437899, 2)];
+pub(crate) const H1_PRIMES: [(u64, u32); 5] =
+    [(3, 1), (11, 2), (10177, 2), (859267, 2), (52437899, 2)];
 
 fn g1_times<const N: usize>(p: &blst_p1, scalar: &[u64; N]) -> blst_p1 {
     let mut out = blst_p1::default();
@@ -426,14 +427,14 @@ fn g1_times<const N: usize>(p: &blst_p1, scalar: &[u64; N]) -> blst_p1 {
     out
 }
 
-fn g1_affine(p: &blst_p1) -> blst_p1_affine {
+pub(crate) fn g1_affine(p: &blst_p1) -> blst_p1_affine {
     let mut out = blst_p1_affine::default();
     unsafe { blst_p1_to_affine(&mut out, p) };
     out
 }
 
 /// Seeded G1 points of small prime order, built like `G2Cases::torsion`.
-struct G1Torsion(ChaCha8Rng);
+pub(crate) struct G1Torsion(pub(crate) ChaCha8Rng);
 
 impl G1Torsion {
     fn curve_point(&mut self) -> blst_p1 {
@@ -450,7 +451,7 @@ impl G1Torsion {
         }
     }
 
-    fn of_order(&mut self, prime_index: usize) -> blst_p1 {
+    pub(crate) fn of_order(&mut self, prime_index: usize) -> blst_p1 {
         let order = H1_PRIMES[prime_index].0;
         loop {
             let mut t = g1_times(&self.curve_point(), &R_LIMBS);

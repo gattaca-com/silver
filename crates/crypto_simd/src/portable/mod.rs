@@ -11,7 +11,13 @@
 // function.
 pub mod constants;
 #[allow(clippy::missing_safety_doc)]
+pub mod decompress;
+#[allow(clippy::missing_safety_doc)]
 pub mod fp;
+#[allow(clippy::missing_safety_doc)]
+pub mod g1;
+#[allow(clippy::missing_safety_doc)]
+pub mod g1_pair;
 
 /// Whether the portable route can run: `Fp`'s product compiles for BMI2 and
 /// ADX.
