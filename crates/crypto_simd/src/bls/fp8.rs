@@ -23,6 +23,8 @@ use crate::bls::constants::{
     HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
     P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P, TWO_POW_448_MOD_P,
 };
+#[cfg(feature = "fp8_scalar_inverse")]
+use crate::portable::fp::Fp;
 
 pub const LANES: usize = 8;
 
@@ -562,8 +564,10 @@ impl Fp8 {
 
     /// `self^((p-3)/4)`: the reciprocal square root when `self` is a
     /// quadratic residue (p = 3 mod 4). The exponent is shared by every lane,
-    /// so a fixed 4-bit window needs no per-lane table lookups.
+    /// so a fixed 4-bit window needs no per-lane table lookups. Inlined into
+    /// a sole caller, it slowed the G1 decoder by 15%.
     #[target_feature(enable = "avx512f,avx512ifma")]
+    #[inline(never)]
     pub fn pow_p_minus_3_over_4(&self) -> Self {
         let mut table = [Self::one(); 16];
         table[1] = *self;
@@ -591,9 +595,33 @@ impl Fp8 {
     }
 
     /// `self^(p-2)`, the inverse, and 0 for 0: p - 2 = 4·(p-3)/4 + 1.
+    #[cfg(not(feature = "fp8_scalar_inverse"))]
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn inverse(&self) -> Self {
         self.pow_p_minus_3_over_4().square().square().mul(self)
+    }
+
+    /// The inverse, and 0 for 0: the lanes' values by Montgomery's trick, from
+    /// one scalar inverse.
+    #[cfg(feature = "fp8_scalar_inverse")]
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    pub fn inverse(&self) -> Self {
+        let words = self.to_blst_limbs();
+        let mut values = [Fp::ZERO; LANES];
+        let mut lane = 0;
+        while lane < LANES {
+            values[lane] = Fp(words[lane]);
+            lane += 1;
+        }
+        // SAFETY: `simd_available` requires BMI2 and ADX with IFMA.
+        let inverses = unsafe { Fp::inverse_each(&values) };
+        let mut out = [[0u64; 6]; LANES];
+        lane = 0;
+        while lane < LANES {
+            out[lane] = inverses[lane].0;
+            lane += 1;
+        }
+        Self::from_blst_limbs(&out)
     }
 
     /// Lanes whose plain value exceeds (p - 1) / 2: the lexicographically

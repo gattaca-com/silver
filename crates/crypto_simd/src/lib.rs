@@ -52,15 +52,16 @@ pub fn sha_extensions() -> bool {
     })
 }
 
-/// Every CPU with avx512ifma also has the SHA extensions, so one observation
-/// serves the whole kernel.
+/// Every CPU with avx512ifma also has the SHA extensions, BMI2 and ADX, so one
+/// observation serves the whole kernel.
 #[cfg(target_arch = "x86_64")]
 fn ifma_runs() -> bool {
     cfg!(feature = "simd") &&
         is_x86_feature_detected!("avx512f") &&
         is_x86_feature_detected!("avx512ifma") &&
         is_x86_feature_detected!("sha") &&
-        is_x86_feature_detected!("sse4.1")
+        is_x86_feature_detected!("sse4.1") &&
+        portable::portable_available()
 }
 
 /// Off the IFMA route, every operation takes its portable or blst path, as on

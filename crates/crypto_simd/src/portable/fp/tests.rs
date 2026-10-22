@@ -91,6 +91,32 @@ fn operations_match_blst() {
     }
 }
 
+/// Each lane's inverse, zeros among them, as `inverse` gives it alone.
+#[test]
+fn inverse_each_matches_inverse() {
+    if !portable_available() {
+        return;
+    }
+    let values = inputs();
+    for start in [0, 3, 8, 40] {
+        let mut lanes = [Fp::ZERO; 8];
+        lanes.copy_from_slice(&values[start..start + 8]);
+        if start == 8 {
+            lanes[0] = Fp::ZERO;
+            lanes[7] = Fp::ZERO;
+        }
+        // SAFETY: `portable_available` held.
+        unsafe {
+            let got = Fp::inverse_each(&lanes);
+            for k in 0..8 {
+                assert_eq!(got[k], lanes[k].inverse(), "start {start}, lane {k}");
+            }
+        }
+    }
+    // SAFETY: as above.
+    assert_eq!(unsafe { Fp::inverse_each(&[Fp::ZERO; 8]) }, [Fp::ZERO; 8]);
+}
+
 /// `sqrt` finds a root exactly where blst does, the same up to sign, and
 /// `is_larger_root` picks the root whose plain value exceeds (p − 1)/2.
 #[test]
