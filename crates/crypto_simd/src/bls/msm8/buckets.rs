@@ -9,6 +9,9 @@ use crate::bls::{
     },
 };
 
+/// The window width for the fewest points, which gives a fill the most windows.
+pub const NARROWEST_WINDOW_BITS: usize = 4;
+
 /// The points of each window's signed-digit buckets, as references into a
 /// `PointStore`: bucket b of window j, 1 ≤ b ≤ 2^(w−1), is list
 /// j·2^(w−1) + b − 1.
@@ -40,7 +43,7 @@ impl Buckets {
     pub fn fill(&mut self, scalars: &[[u64; 4]], scalar_bits: usize) {
         assert!(scalar_bits < 256, "scalars fit four words");
         let window_bits = if scalars.len() < 128 {
-            4
+            NARROWEST_WINDOW_BITS
         } else if scalars.len() < 1024 {
             6
         } else {

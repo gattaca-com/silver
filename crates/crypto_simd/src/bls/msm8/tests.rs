@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use blst::{
     blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double, blst_p1_add_or_double_affine,
-    blst_p1_cneg, blst_p1_double, blst_p1_from_affine, blst_p1_generator, blst_p1_is_equal,
-    blst_p1_is_inf, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
+    blst_p1_affine_is_inf, blst_p1_cneg, blst_p1_double, blst_p1_from_affine, blst_p1_generator,
+    blst_p1_is_equal, blst_p1_is_inf, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
     blst_p1s_mult_pippenger_scratch_sizeof, blst_uint64_from_fp, limb_t,
 };
 use rand::{Rng, SeedableRng};
@@ -16,7 +16,7 @@ use crate::{
         fp8::{Fp8, LANES, Limbs, unpack52},
         g1x8::G1x8,
         msm8::{
-            Msm8,
+            CHUNK, Msm8,
             buckets::Buckets,
             glv::{HALF_SCALAR_BITS, decompose},
             lane_zero_in_blst,
@@ -463,6 +463,73 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
         scalars.push([3, 0, 0, 0]);
         assert_msm_matches(&mut msm, &points, &scalars, &format!("{n} cancelling, one left"));
     }
+}
+
+/// n distinct points P + i·Q, cheaper than `random_points` for long inputs.
+fn distinct_points(rng: &mut ChaCha8Rng, n: usize) -> Vec<blst_p1_affine> {
+    let ends = random_points(rng, 2);
+    std::iter::successors(Some(ends[0]), |point| Some(sum(point, &ends[1]))).take(n).collect()
+}
+
+/// Σ scalars[i]·points[i] by blst's Pippenger over the finite points.
+fn finite_pippenger(points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
+    let mut finite = Vec::new();
+    let mut bytes = Vec::new();
+    for (point, words) in points.iter().zip(scalars) {
+        // SAFETY: a valid pointer to a single value.
+        if !unsafe { blst_p1_affine_is_inf(point) } {
+            finite.push(*point);
+            bytes.push(std::array::from_fn(|k| words[k / 8].to_le_bytes()[k % 8]));
+        }
+    }
+    pippenger(&finite, &bytes, &mut Vec::new())
+}
+
+/// Inputs longer than a chunk: a last chunk of one point; a second chunk that
+/// repeats or negates the first, so that the chunk sums double or cancel; and
+/// a chunk of nothing but infinity between two others.
+#[test]
+fn msm_sums_its_chunks() {
+    if !kernels_run() {
+        return;
+    }
+    let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 14);
+    let mut msm = Msm8::default();
+    let first = distinct_points(&mut rng, CHUNK);
+    let scalars = random_scalars(&mut rng, CHUNK);
+
+    let mut points = first.clone();
+    points.extend(random_points(&mut rng, 1));
+    let mut longer = scalars.clone();
+    longer.extend(random_scalars(&mut rng, 1));
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let got = unsafe { msm.msm(&points, &longer) };
+    assert_same_point(&got, &finite_pippenger(&points, &longer), "a chunk and one point");
+
+    let once = finite_pippenger(&first, &scalars);
+    let mut want = blst_p1::default();
+    // SAFETY: valid pointers to single values.
+    unsafe { blst_p1_double(&mut want, &once) };
+    let twice = [first.as_slice(), &first].concat();
+    let doubled = [scalars.as_slice(), &scalars].concat();
+    // SAFETY: `kernels_run` checked `simd_available`.
+    let got = unsafe { msm.msm(&twice, &doubled) };
+    assert_same_point(&got, &want, "a chunk twice");
+
+    let mut opposite = first.clone();
+    opposite.extend(first.iter().map(negated_point));
+    // SAFETY: as above.
+    let got = unsafe { msm.msm(&opposite, &doubled) };
+    assert_same_point(&got, &blst_p1::default(), "a chunk and its negation");
+
+    let mut gapped = first;
+    gapped.extend(vec![blst_p1_affine::default(); CHUNK]);
+    gapped.extend(distinct_points(&mut rng, 300));
+    let gapped_scalars = random_scalars(&mut rng, gapped.len());
+    // SAFETY: as above.
+    let got = unsafe { msm.msm(&gapped, &gapped_scalars) };
+    let want = finite_pippenger(&gapped, &gapped_scalars);
+    assert_same_point(&got, &want, "a chunk of infinity between two");
 }
 
 /// Σ scalars[i]·points[i] through `Buckets` alone, without GLV, with the

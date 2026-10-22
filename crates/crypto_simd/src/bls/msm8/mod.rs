@@ -3,7 +3,8 @@
 //! σ(P). Rounds of batched affine additions shorten every bucket to at most
 //! one point; the window sums then run eight windows at a time, one per lane.
 //! A round that meets two points with equal x gives up, and the refilled
-//! buckets are summed point by point with complete additions.
+//! buckets are summed point by point with complete additions. Long inputs go
+//! through a chunk at a time, and complete additions sum the chunks.
 pub mod buckets;
 pub mod glv;
 pub mod pairs;
@@ -17,12 +18,28 @@ use crate::bls::{
     blst_p1_affine,
     g1x8::G1x8,
     msm8::{
-        buckets::Buckets,
+        buckets::{Buckets, NARROWEST_WINDOW_BITS},
         glv::{HALF_SCALAR_BITS, decompose},
-        pairs::BatchedAdds,
+        pairs::{BatchedAdds, NEGATED},
         store::PointStore,
     },
 };
+
+/// Points per bucket fill. A fill's buffers stay under about 20 MB, and each
+/// further chunk costs one more pass of window sums.
+const CHUNK: usize = 4096;
+/// A fill's windows at most: halves cut into the narrowest windows.
+const MOST_WINDOWS: usize = HALF_SCALAR_BITS / NARROWEST_WINDOW_BITS + 1;
+// A fill of n ≤ CHUNK points keeps every u32 count, offset and store index
+// below the sign bit:
+// - each of the 2n halves has at most one reference per window, so the
+//   reference total, each list's count and each offset are at most
+//   2·MOST_WINDOWS·n; a round's pairs, at most half the references, fit too,
+//   with the padding of their last group;
+// - the store holds the 2n originals and at most one sum per first-round pair,
+//   so at most (2 + MOST_WINDOWS)·n slots.
+const _: () = assert!(2 * MOST_WINDOWS * CHUNK < NEGATED as usize);
+const _: () = assert!((2 + MOST_WINDOWS) * CHUNK < NEGATED as usize);
 
 #[derive(Default)]
 pub struct Msm8 {
@@ -43,6 +60,20 @@ impl Msm8 {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn msm(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
         assert!(points.len() == scalars.len(), "one scalar per point");
+        let mut total = G1x8::infinity();
+        let mut start = 0;
+        while start < points.len() {
+            let end = if points.len() - start < CHUNK { points.len() } else { start + CHUNK };
+            let sum = self.chunk_sum(&points[start..end], &scalars[start..end]);
+            total = total.add_complete(&sum);
+            start = end;
+        }
+        lane_zero_in_blst(&total)
+    }
+
+    /// `msm`'s sum in lane 0, for at most `CHUNK` points.
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    fn chunk_sum(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> G1x8 {
         self.finite_points.clear();
         self.finite_scalars.clear();
         let mut i = 0;
@@ -52,7 +83,7 @@ impl Msm8 {
         }
         let n = self.finite_points.len();
         if n == 0 {
-            return lane_zero_in_blst(&G1x8::infinity());
+            return G1x8::infinity();
         }
 
         self.split_scalars();
@@ -65,7 +96,7 @@ impl Msm8 {
         if !self.pair_rounds(2 * n) {
             self.buckets.fill(&self.halves, HALF_SCALAR_BITS);
         }
-        lane_zero_in_blst(&self.buckets.sum(&self.store))
+        self.buckets.sum(&self.store)
     }
 
     /// Scalar i's GLV halves k₁ and k₂ into `halves[i]` and `halves[n + i]`,
