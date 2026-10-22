@@ -12,8 +12,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    Fr8, LANES, LIMBS, MASK52, R, R_INV52, limbs::Limbs, muladd_row, multiplier, splat,
-    splat_limbs, transpose_in, unpack52, zero,
+    Fr8, LANES, LIMB_BITS, LIMBS, MASK52, R, R_INV52, SCALE, limbs::Limbs, muladd_row, multiplier,
+    splat, splat_limbs, transpose_in, unpack52, zero,
 };
 use crate::{kernels_run, kzg::blst_ops::fr_from_u64};
 
@@ -257,4 +257,9 @@ fn plain_words_match_blst() {
             .collect();
         assert!(words == want, "{n} elements");
     }
+}
+
+#[test]
+fn scale_matches_blst() {
+    assert!(SCALE == fr_from_u64(1 << (LIMBS as u32 * LIMB_BITS - 256)));
 }

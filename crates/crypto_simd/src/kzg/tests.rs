@@ -6,7 +6,9 @@ use crate::{
     bls::uncompress_in_g2_blst,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, CELLS_PER_EXT_BLOB, CellBatchVerifier, CellExtender,
-        blst_ops::g2_neg,
+        FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ONE, FR_ZERO, INVERSE_BLOB_SIZE,
+        INVERSE_CELL_SIZE, PRIMITIVE_ROOT_OF_UNITY,
+        blst_ops::{fr_from_u64, fr_inverse, g2_neg},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
         trusted_setup::{G2_MONOMIAL_0, G2_MONOMIAL_64},
     },
@@ -264,4 +266,15 @@ fn setup_g2_literals_match_blst() {
     let generator = uncompress_in_g2_blst(&G2_MONOMIAL_0).expect("setup point 0 decodes");
     let negated = g2_neg(&generator);
     assert!(G2_NEG_GENERATOR.x == negated.x && G2_NEG_GENERATOR.y == negated.y, "−[1]");
+}
+
+#[test]
+fn fr_literals_match_blst() {
+    assert!(FR_ZERO == fr_from_u64(0), "0");
+    assert!(FR_ONE == fr_from_u64(1), "1");
+    assert!(PRIMITIVE_ROOT_OF_UNITY == fr_from_u64(7), "7");
+    let cell_size = fr_from_u64(FIELD_ELEMENTS_PER_CELL as u64);
+    assert!(INVERSE_CELL_SIZE == fr_inverse(&cell_size), "1/64");
+    let blob_size = fr_from_u64(FIELD_ELEMENTS_PER_BLOB as u64);
+    assert!(INVERSE_BLOB_SIZE == fr_inverse(&blob_size), "1/4096");
 }

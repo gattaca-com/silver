@@ -17,8 +17,9 @@ use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
+        FR_ONE, FR_ZERO,
         blst_ops::{
-            LincombScratch, fr_add, fr_from_bytes, fr_from_u64, fr_mul, g1_add, g1_lincomb, g1_neg,
+            LincombScratch, fr_add, fr_from_bytes, fr_mul, g1_add, g1_lincomb, g1_neg,
             g1_to_affine, pairing_check,
         },
         challenge::Preimage,
@@ -152,7 +153,7 @@ impl CellBatchVerifier {
             // SAFETY: `kernel` is built only where `simd_available` held.
             return unsafe { kernel.check(cells) };
         }
-        self.evaluations.resize(0, fr_from_u64(0));
+        self.evaluations.resize(0, FR_ZERO);
         let mut k = 0;
         while k < cells.len() && self.decode_cell(&cells[k]) {
             k += 1;
@@ -185,17 +186,16 @@ impl CellBatchVerifier {
         cells: &[[u8; BYTES_PER_CELL]],
     ) -> bool {
         let n = cell_indices.len();
-        let zero = fr_from_u64(0);
-        self.r_powers.resize(0, zero);
-        let mut power = fr_from_u64(1);
+        self.r_powers.resize(0, FR_ZERO);
+        let mut power = FR_ONE;
         for _ in 0..n {
             self.r_powers.push(power);
             power = fr_mul(&power, r);
         }
         let ll = self.lincomb.sum(&self.proof_points, &self.r_powers);
 
-        self.scalars.resize(0, zero);
-        self.scalars.resize(self.commitments.unique.len(), zero);
+        self.scalars.resize(0, FR_ZERO);
+        self.scalars.resize(self.commitments.unique.len(), FR_ZERO);
         for k in 0..n {
             let i = self.commitments.index_of_cell[k];
             self.scalars[i] = fr_add(&self.scalars[i], &self.r_powers[k]);
@@ -204,7 +204,7 @@ impl CellBatchVerifier {
 
         let rli = self.interpolation_commitment(cell_indices, cells);
 
-        self.scalars.resize(0, zero);
+        self.scalars.resize(0, FR_ZERO);
         for k in 0..n {
             let shift = &self.cosets.shift_pow_cell[cell_indices[k] as usize];
             self.scalars.push(fr_mul(&self.r_powers[k], shift));
@@ -224,18 +224,17 @@ impl CellBatchVerifier {
         cell_indices: &[u64],
         cells: &[[u8; BYTES_PER_CELL]],
     ) -> blst_p1 {
-        let zero = fr_from_u64(0);
         #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &mut self.kernel {
-            self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, zero);
+            self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, FR_ZERO);
             // SAFETY: `kernel` is built only where `simd_available` held.
             unsafe {
                 kernel.interpolate(cells, cell_indices, &self.r_powers, &mut self.interpolation)
             };
             return self.lincomb.sum(&self.setup.g1_monomial, &self.interpolation);
         }
-        self.columns.resize(0, zero);
-        self.columns.resize(CELLS_PER_EXT_BLOB * FIELD_ELEMENTS_PER_CELL, zero);
+        self.columns.resize(0, FR_ZERO);
+        self.columns.resize(CELLS_PER_EXT_BLOB * FIELD_ELEMENTS_PER_CELL, FR_ZERO);
         self.column_used.resize(0, false);
         self.column_used.resize(CELLS_PER_EXT_BLOB, false);
         for k in 0..cell_indices.len() {
@@ -249,10 +248,10 @@ impl CellBatchVerifier {
             }
         }
 
-        self.interpolation.resize(0, zero);
-        self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, zero);
-        self.column.resize(FIELD_ELEMENTS_PER_CELL, zero);
-        self.coefficients.resize(FIELD_ELEMENTS_PER_CELL, zero);
+        self.interpolation.resize(0, FR_ZERO);
+        self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, FR_ZERO);
+        self.column.resize(FIELD_ELEMENTS_PER_CELL, FR_ZERO);
+        self.coefficients.resize(FIELD_ELEMENTS_PER_CELL, FR_ZERO);
         for c in 0..CELLS_PER_EXT_BLOB {
             if !self.column_used[c] {
                 continue;
@@ -267,7 +266,7 @@ impl CellBatchVerifier {
                 &self.cosets.inverse_roots,
                 &self.cosets.inverse_size,
             );
-            let mut factor = fr_from_u64(1);
+            let mut factor = FR_ONE;
             for i in 0..FIELD_ELEMENTS_PER_CELL {
                 let term = fr_mul(&self.coefficients[i], &factor);
                 self.interpolation[i] = fr_add(&self.interpolation[i], &term);

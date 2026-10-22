@@ -5,8 +5,8 @@
 use blst::blst_fr;
 
 use crate::kzg::{
-    CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
-    blst_ops::{fr_from_u64, fr_inverse, fr_mul},
+    CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, INVERSE_CELL_SIZE,
+    blst_ops::{fr_inverse, fr_mul},
     domain::{inverse_roots, reverse_bits, roots_of_unity},
 };
 
@@ -42,7 +42,7 @@ impl Cosets {
         }
         Self {
             inverse_roots: inverse_roots(&roots_of_unity(LOG_CELL)),
-            inverse_size: fr_inverse(&fr_from_u64(FIELD_ELEMENTS_PER_CELL as u64)),
+            inverse_size: INVERSE_CELL_SIZE,
             shift_inverse,
             shift_pow_cell,
         }

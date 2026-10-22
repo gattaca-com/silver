@@ -7,7 +7,7 @@
 use blst::blst_fr;
 
 use crate::kzg::{
-    blst_ops::fr_from_u64,
+    FR_ZERO,
     fr8::{Fr8, LANES, multiplier},
 };
 
@@ -278,7 +278,7 @@ fn set_block(data: &mut [Fr8], at: usize, block: &[Fr8; LANES]) {
 
 /// `multiplier(ω^(k·step))` for k = start + m % h, m < 8.
 fn stage_twiddles(roots: &[blst_fr], step: usize, start: usize, h: usize) -> [blst_fr; LANES] {
-    let mut twiddles = [fr_from_u64(0); LANES];
+    let mut twiddles = [FR_ZERO; LANES];
     let mut m = 0;
     while m < LANES {
         twiddles[m] = multiplier(&roots[(start + m % h) * step]);

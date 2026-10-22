@@ -8,8 +8,8 @@ use blst::blst_fr;
 
 use crate::kzg::{
     BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB,
-    FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL,
-    blst_ops::{fr_from_bytes, fr_from_u64, fr_inverse, fr_mul, fr_to_bytes},
+    FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ZERO, INVERSE_BLOB_SIZE,
+    blst_ops::{fr_from_bytes, fr_mul, fr_to_bytes},
     domain::{inverse_roots, reverse_bits, roots_of_unity},
     fft::{fft, inverse_fft},
 };
@@ -42,20 +42,18 @@ impl Default for CellExtender {
 impl CellExtender {
     pub fn new() -> Self {
         let roots = roots_of_unity(LOG_BLOB);
-        let zero = fr_from_u64(0);
         let mut shift_powers = roots_of_unity(LOG_EXT_BLOB);
-        shift_powers.resize(FIELD_ELEMENTS_PER_BLOB, zero);
+        shift_powers.resize(FIELD_ELEMENTS_PER_BLOB, FR_ZERO);
         let mut evaluations = Vec::with_capacity(FIELD_ELEMENTS_PER_BLOB);
-        evaluations.resize(FIELD_ELEMENTS_PER_BLOB, zero);
+        evaluations.resize(FIELD_ELEMENTS_PER_BLOB, FR_ZERO);
         let mut coefficients = Vec::with_capacity(FIELD_ELEMENTS_PER_BLOB);
-        coefficients.resize(FIELD_ELEMENTS_PER_BLOB, zero);
+        coefficients.resize(FIELD_ELEMENTS_PER_BLOB, FR_ZERO);
         let inverse_roots = inverse_roots(&roots);
-        let inverse_size = fr_inverse(&fr_from_u64(FIELD_ELEMENTS_PER_BLOB as u64));
         #[cfg(target_arch = "x86_64")]
         let kernel = if simd_available() {
             // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
             Some(unsafe {
-                ExtensionKernel::new(&roots, &inverse_roots, &shift_powers, &inverse_size)
+                ExtensionKernel::new(&roots, &inverse_roots, &shift_powers, &INVERSE_BLOB_SIZE)
             })
         } else {
             None
@@ -63,7 +61,7 @@ impl CellExtender {
         Self {
             roots,
             inverse_roots,
-            inverse_size,
+            inverse_size: INVERSE_BLOB_SIZE,
             shift_powers,
             evaluations,
             coefficients,

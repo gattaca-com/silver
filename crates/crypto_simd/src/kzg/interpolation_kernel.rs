@@ -7,8 +7,8 @@
 use blst::blst_fr;
 
 use crate::kzg::{
-    BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
-    blst_ops::{fr_from_bytes, fr_from_u64, fr_mul},
+    BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL, FR_ZERO,
+    blst_ops::{fr_from_bytes, fr_mul},
     cosets::Cosets,
     fft8::Fft8,
     fr8::{Fr8, LANES, multiplier},
@@ -34,7 +34,7 @@ impl InterpolationKernel {
         let mut shift = Vec::with_capacity(CELLS_PER_EXT_BLOB * VECTORS_PER_CELL);
         let mut columns = Vec::with_capacity(CELLS_PER_EXT_BLOB * VECTORS_PER_CELL);
         let mut used = Vec::with_capacity(CELLS_PER_EXT_BLOB);
-        let mut factors = [fr_from_u64(0); FIELD_ELEMENTS_PER_CELL];
+        let mut factors = [FR_ZERO; FIELD_ELEMENTS_PER_CELL];
         let mut c = 0;
         while c < CELLS_PER_EXT_BLOB {
             let mut factor = cosets.inverse_size;

@@ -3,9 +3,8 @@
 
 use blst::blst_fr;
 
-use crate::kzg::blst_ops::{fr_from_u64, fr_mul};
+use crate::kzg::{FR_ONE, PRIMITIVE_ROOT_OF_UNITY, blst_ops::fr_mul};
 
-const PRIMITIVE_ROOT_OF_UNITY: u64 = 7;
 /// r − 1, little-endian 64-bit words. 2^32 divides it.
 const R_MINUS_ONE: [u64; 4] =
     [0xffff_ffff_0000_0000, 0x53bd_a402_fffe_5bfe, 0x3339_d808_09a1_d805, 0x73ed_a753_299d_7d48];
@@ -13,14 +12,13 @@ const R_MINUS_ONE: [u64; 4] =
 /// 7^((r − 1) / 2^log_order): square-and-multiply over the bits of r − 1 above
 /// the lowest `log_order`, which are all zero.
 fn primitive_root(log_order: u32) -> blst_fr {
-    let base = fr_from_u64(PRIMITIVE_ROOT_OF_UNITY);
-    let mut root = fr_from_u64(1);
+    let mut root = FR_ONE;
     let mut bit = 256;
     while bit > log_order {
         bit -= 1;
         root = fr_mul(&root, &root);
         if (R_MINUS_ONE[(bit / 64) as usize] >> (bit % 64)) & 1 == 1 {
-            root = fr_mul(&root, &base);
+            root = fr_mul(&root, &PRIMITIVE_ROOT_OF_UNITY);
         }
     }
     root
@@ -31,7 +29,7 @@ pub fn roots_of_unity(log_order: u32) -> Vec<blst_fr> {
     let order = 1usize << log_order;
     let root = primitive_root(log_order);
     let mut roots = Vec::with_capacity(order);
-    let mut power = fr_from_u64(1);
+    let mut power = FR_ONE;
     for _ in 0..order {
         roots.push(power);
         power = fr_mul(&power, &root);

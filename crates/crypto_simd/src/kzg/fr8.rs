@@ -29,7 +29,7 @@ use self::u256x8::U256x8;
 use crate::bls::fp8::lanes;
 use crate::{
     bls::fp8::{carry_of_cleared, transpose8},
-    kzg::blst_ops::{fr_from_u64, fr_mul},
+    kzg::blst_ops::fr_mul,
 };
 
 #[cfg(test)]
@@ -45,13 +45,15 @@ const R: [u64; LIMBS] =
     [0xfffff00000001, 0x2fffe5bfefff, 0x9a1d80553bda4, 0x7d483339d8080, 0x73eda753299d];
 /// `-r^-1 mod 2^52`.
 const R_INV52: u64 = 0xffffeffffffff;
-const SCALE: u64 = 1 << (LIMBS as u32 * LIMB_BITS - 256);
+/// `mul`'s R over blst's, 2^(LIMBS·LIMB_BITS − 256) = 16, in blst's form.
+const SCALE: blst_fr =
+    blst_fr { l: [0x00000022ffffffdd, 0x8d12939700396c23, 0xff1776e6aedf7745, 0x26821fa14f77df20] };
 
 /// The blst element whose limbs, loaded by `Fr8::load`, make `Fr8::mul`
 /// multiply by w. It is canonical, below r, so its product with any
 /// normalised value meets `mul`'s bound.
 pub fn multiplier(w: &blst_fr) -> blst_fr {
-    fr_mul(w, &fr_from_u64(SCALE))
+    fr_mul(w, &SCALE)
 }
 
 #[derive(Clone, Copy)]

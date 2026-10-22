@@ -4,14 +4,14 @@
 
 use blst::{
     blst_bendian_from_scalar, blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fr, blst_fr_add,
-    blst_fr_eucl_inverse, blst_fr_from_scalar, blst_fr_from_uint64, blst_fr_mul, blst_fr_sub,
-    blst_miller_loop_n, blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf,
-    blst_p1_cneg, blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
+    blst_fr_eucl_inverse, blst_fr_from_scalar, blst_fr_mul, blst_fr_sub, blst_miller_loop_n,
+    blst_p1, blst_p1_add_or_double, blst_p1_affine, blst_p1_affine_is_inf, blst_p1_cneg,
+    blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p1s_mult_pippenger,
     blst_p1s_mult_pippenger_scratch_sizeof, blst_p2_affine, blst_p2_affine_is_inf, blst_scalar,
     blst_scalar_fr_check, blst_scalar_from_bendian, blst_scalar_from_fr, blst_sha256, limb_t,
 };
 #[cfg(test)]
-use blst::{blst_p2, blst_p2_cneg, blst_p2_from_affine, blst_p2_to_affine};
+use blst::{blst_fr_from_uint64, blst_p2, blst_p2_cneg, blst_p2_from_affine, blst_p2_to_affine};
 
 const SCALAR_BITS: usize = 255;
 /// blst's Pippenger is slower than one multiplication per point below this many
@@ -46,6 +46,7 @@ pub fn fr_to_bytes(a: &blst_fr) -> [u8; 32] {
     bytes
 }
 
+#[cfg(test)]
 pub fn fr_from_u64(a: u64) -> blst_fr {
     let limbs = [a, 0, 0, 0];
     let mut fr = blst_fr::default();
