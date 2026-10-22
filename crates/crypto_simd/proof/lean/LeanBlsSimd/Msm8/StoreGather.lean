@@ -99,7 +99,7 @@ theorem push_gather_body (i offset count lane : Usize)
   let ik : Usize := UScalar.ofNatCore (i.val + k.val) (by omega)
   have hik : i + k = ok ik := by rw [add_ok i k (by omega)]
   let ix : Usize := UScalar.ofNatCore (i.val + k.val - offset.val)
-    (by have := Nat.sub_le (i.val+k.val) offset.val; omega)
+    (by have := Nat.sub_le (i.val + k.val) offset.val; omega)
   have hix : ik - offset = ok ix := by
     rw [sub_ok ik offset (by simp [ik]; omega)]
     rfl
@@ -267,7 +267,7 @@ theorem pointIndices_encodeGathered (b : GatheredBatch)
   apply Vector.ext
   intro j hj
   simp [pointIndices, encodeGathered, getElem_ofArray]
-  exact natIndex_val _ (hb ⟨j,hj⟩)
+  exact natIndex_val _ (hb ⟨j, hj⟩)
 
 
 theorem loadGathered_x (b : GatheredBatch) :

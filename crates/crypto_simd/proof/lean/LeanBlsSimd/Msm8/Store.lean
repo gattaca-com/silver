@@ -218,7 +218,7 @@ theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usiz
 
 theorem foldl_pair {A B I : Type} (l : List I) (f : A → I → A) (g : B → I → B)
     (a : A) (b : B) :
-    l.foldl (fun p i => (f p.1 i, g p.2 i)) (a,b) = (l.foldl f a, l.foldl g b) := by
+    l.foldl (fun p i => (f p.1 i, g p.2 i)) (a, b) = (l.foldl f a, l.foldl g b) := by
   induction l generalizing a b with
   | nil => rfl
   | cons i l ih => exact ih (f a i) (g b i)

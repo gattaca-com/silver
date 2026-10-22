@@ -198,7 +198,7 @@ structure bls.msm8.glv.Half where
   negative : Bool
 
 /-- [silver_crypto_simd::bls::msm8::Msm8]
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 45:0-54:1
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 46:0-55:1
     Visibility: public -/
 structure bls.msm8.Msm8 where
   store : bls.msm8.store.PointStore
@@ -291,13 +291,13 @@ structure kzg.setup.Setup where
   g2_neg_generator : blst.blst_p2_affine
 
 /-- [silver_crypto_simd::kzg::verify::Deduplicated]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:0-325:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 323:0-326:1 -/
 structure kzg.verify.Deduplicated where
   unique : alloc.vec.Vec (Array Std.U8 48#usize)
   index_of_cell : alloc.vec.Vec Std.Usize
 
 /-- [silver_crypto_simd::kzg::verify::Lincomb]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 287:0-293:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 288:0-294:1 -/
 structure kzg.verify.Lincomb where
   scratch : kzg.blst_ops.LincombScratch
   msm : Option bls.msm8.Msm8

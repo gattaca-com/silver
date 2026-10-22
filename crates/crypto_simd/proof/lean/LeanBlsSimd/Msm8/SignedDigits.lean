@@ -53,7 +53,7 @@ theorem wordsValue_pair (xs : List U64) :
 
 theorem window_mod (x r w : ℕ) (hrw : r + w ≤ 128) :
     x % 2 ^ 128 / 2 ^ r % 2 ^ w = x / 2 ^ r % 2 ^ w := by
-  have hp : 2 ^ 128 = 2 ^ r * 2 ^ (128-r) := by
+  have hp : 2 ^ 128 = 2 ^ r * 2 ^ (128 - r) := by
     rw [← pow_add, Nat.add_sub_of_le (by omega)]
   rw [hp, Nat.mod_mul_right_div_self]
   apply Nat.mod_mod_of_dvd
@@ -138,7 +138,7 @@ theorem unsigned_window_raw (self : buckets.SignedDigits)
     (lt_of_le_of_lt (Nat.div_le_self _ _) self.bit.hBounds)
   have hq : q.val < 4 := by change self.bit.val / 64 < 4; omega
   let next : Usize := UScalar.ofNatCore (q.val + 1)
-    (lt_of_lt_of_le (by omega : q.val+1 < 2^32) two_pow_32_le_usize)
+    (lt_of_lt_of_le (by omega : q.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   let r : Usize := UScalar.ofNatCore (self.bit.val % 64)
     (lt_of_le_of_lt (Nat.mod_le _ _) self.bit.hBounds)
   have hr : r.val < 128 := by change self.bit.val % 64 < 128; omega
@@ -154,10 +154,10 @@ theorem unsigned_window_raw (self : buckets.SignedDigits)
   simp only [bind_tc_ok]
   rw [show (UScalar.ofNatCore (self.bit.val / (64#usize).val)
     (lt_of_le_of_lt (Nat.div_le_self _ _) self.bit.hBounds) : Usize) = q from rfl]
-  rw [usize_add_ok q 1#usize (by change q.val+1<2^32; omega)]
+  rw [usize_add_ok q 1#usize (by change q.val + 1 < 2 ^ 32; omega)]
   simp only [bind_tc_ok]
   rw [show (UScalar.ofNatCore (q.val + (1#usize).val)
-    (by change q.val+1 < 2 ^ UScalarTy.Usize.numBits; exact lt_of_lt_of_le (by omega : q.val+1<2^32) two_pow_32_le_usize) : Usize) = next from rfl]
+    (by change q.val + 1 < 2 ^ UScalarTy.Usize.numBits; exact lt_of_lt_of_le (by omega : q.val + 1 < 2 ^ 32) two_pow_32_le_usize) : Usize) = next from rfl]
   rw [high_refines, index_usize_eq self.words q hq]
   simp only [bind_tc_ok, lift]
   rw [show (UScalar.cast .U128 (wordAt self.words.val next.val)) <<< 64#i32 =
@@ -240,7 +240,7 @@ theorem next_digit_refines (self : buckets.SignedDigits)
     (lt_of_lt_of_le (by omega : self.bit.val + self.window_bits.val < 2 ^ 32) two_pow_32_le_usize)
   by_cases hn : 2 ^ (self.window_bits.val - 1) < v.val
   · change 2 ^ (self.window_bits.val - 1) < u.val + self.carry.val at hn
-    let mag : U64 := UScalar.ofNatCore (2 ^ self.window_bits.val - v.val) (by change _ < 2^64; omega)
+    let mag : U64 := UScalar.ofNatCore (2 ^ self.window_bits.val - v.val) (by change _ < 2 ^ 64; omega)
     refine ⟨UScalar.cast .Usize mag, true, { self with bit := bit', carry := 1#u64 }, ?_, rfl, rfl, rfl, rfl, ?_, ?_, ?_⟩
     · simp only [buckets.SignedDigits.next_digit, hu, bind_tc_ok]
       rw [add_ok _ _ hv64]
@@ -377,7 +377,7 @@ theorem run_complete (words : Array U64 4#usize) (width : Usize)
   have hdiv := Nat.mod_add_div 127 width.val
   have hrem := Nat.mod_lt 127 (by omega : 0 < width.val)
   have hk : width.val * k ≤ 127 := by dsimp [k]; omega
-  have hk' : 127 < width.val * (k+1) := by dsimp [k]; nlinarith
+  have hk' : 127 < width.val * (k + 1) := by dsimp [k]; nlinarith
   obtain ⟨ds, state, hr, hlen, hwords, hwidth, hbit, hcarry, _, _⟩ :=
     run_refines (initial words width) k (by change 0 + width.val * k ≤ 256; omega)
       hwl hwh (by change 0 ≤ 1; decide)
@@ -401,20 +401,20 @@ theorem run_complete (words : Array U64 4#usize) (width : Usize)
     omega
   have hnfalse : neg = false := by rw [hneg]; exact decide_eq_false hsmall
   have hc0 : last.carry.val = 0 := by rw [hlcarry, hnfalse]; rfl
-  have hrun : run (k+1) (initial words width) = ok (ds ++ [(mag, neg)], last) := by
+  have hrun : run (k + 1) (initial words width) = ok (ds ++ [(mag, neg)], last) := by
     simp only [run, hr, bind_tc_ok, Function.uncurry_def, hs]
   obtain ⟨out, final, hfull, hlength, _, _, _, _, hbounds, hsum⟩ :=
-    run_refines (initial words width) (k+1)
-      (by change 0 + width.val * (k+1) ≤ 256; nlinarith) hwl hwh (by change 0 ≤ 1; decide)
+    run_refines (initial words width) (k + 1)
+      (by change 0 + width.val * (k + 1) ≤ 256; nlinarith) hwl hwh (by change 0 ≤ 1; decide)
   have heq : (out, final) = (ds ++ [(mag, neg)], last) := Result.ok.inj (hfull.symm.trans hrun)
   have hout : out = ds ++ [(mag, neg)] := congrArg Prod.fst heq
   have hfinal : final = last := congrArg Prod.snd heq
   rw [hout, hfinal] at hsum
   rw [hout] at hlength hbounds
   refine ⟨ds ++ [(mag, neg)], last, hrun, hlength, hc0, hbounds, ?_⟩
-  change digitSum width.val (ds ++ [(mag, neg)]) + (2 ^ width.val : ℤ) ^ (k+1) * last.carry.val =
-    (value words / 2 ^ 0 % (2 ^ width.val) ^ (k+1) : ℕ) + (0 : ℕ) at hsum
-  have hbound : value words < (2 ^ width.val) ^ (k+1) := by
+  change digitSum width.val (ds ++ [(mag, neg)]) + (2 ^ width.val : ℤ) ^ (k + 1) * last.carry.val =
+    (value words / 2 ^ 0 % (2 ^ width.val) ^ (k + 1) : ℕ) + (0 : ℕ) at hsum
+  have hbound : value words < (2 ^ width.val) ^ (k + 1) := by
     rw [← pow_mul]
     exact lt_of_lt_of_le hn (Nat.pow_le_pow_right (by decide) (by omega))
   simpa only [hc0, Nat.cast_zero, mul_zero, add_zero, pow_zero, Nat.div_one,

@@ -476,10 +476,10 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
   let body := fun p : Usize × Usize => msm8.buckets.Buckets.longest_loop.body state group bucket p.1 p.2
   let step := fun (m : Usize) (l : Fin 8) => maxScalar m
     (UScalar.cast .Usize (bucketLength state (group.val * 8 + l.val) bucket.val))
-  have hd (m c : Usize) (hc : c.val = 8) (_ : True) : body (m,c) = ok (done m) := by
+  have hd (m c : Usize) (hc : c.val = 8) (_ : True) : body (m, c) = ok (done m) := by
     simp [body, msm8.buckets.Buckets.longest_loop.body, fp8.LANES, UScalar.lt_equiv, hc]
   have hs (m c : Usize) (l : Fin 8) (hc : c.val = l.val) (_ : True) :
-      ∃ next, next.val = l.val + 1 ∧ body (m,c) = ok (cont (step m l,next)) := by
+      ∃ next, next.val = l.val + 1 ∧ body (m, c) = ok (cont (step m l, next)) := by
     have hl : c.val < 8 := by omega
     have hmul : group.val * (8#usize).val < 2 ^ UScalarTy.Usize.numBits := by change group.val * 8 < _; omega
     have hadd : group.val * 8 + c.val < 2 ^ UScalarTy.Usize.numBits := by omega
@@ -499,7 +499,7 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
     simp only [bind_tc_ok, len_refines state window bucket hshape hb hbmax]
     split <;> simp only [bind_tc_ok] <;> rw [add_ok _ _ hnext] <;>
       simp_all only [bind_tc_ok, step, maxScalar, UScalar.lt_equiv, window, UScalar.ofNatCore_val_eq, if_true, if_false]
-  have h := loop_up_inv body (fun m c => (m,c)) step id (fun _ => True) (by intros; trivial)
+  have h := loop_up_inv body (fun m c => (m, c)) step id (fun _ => True) (by intros; trivial)
     hd hs 0#usize 0#usize (by simp) trivial
   simpa only [msm8.buckets.Buckets.longest, msm8.buckets.Buckets.longest_loop, body,
     UScalar.ofNatCore_val_eq, List.drop_zero, id_eq, longestModel, step] using h
@@ -660,7 +660,7 @@ theorem entries_refines (state : msm8.buckets.Buckets) (group bucket cursor : Us
     (state, toArray (n := 8#usize) id e.indices, e.present, e.negated, c)
   let body := fun p : msm8.buckets.Buckets × Std.Array U32 8#usize × U8 × U8 × Usize => msm8.buckets.Buckets.entries_loop.body group bucket cursor
     p.1 p.2.1 p.2.2.1 p.2.2.2.1 p.2.2.2.2
-  let finish := fun e : EntryAccumulator => (toArray (n := 8#usize) id e.indices,e.present,e.negated)
+  let finish := fun e : EntryAccumulator => (toArray (n := 8#usize) id e.indices, e.present, e.negated)
   have h := loop_up_inv (n := 8) body enc (entriesStep state group.val bucket.val cursor.val)
     finish (fun _ => True) (by intros; trivial)
     (fun e c hc _ => by

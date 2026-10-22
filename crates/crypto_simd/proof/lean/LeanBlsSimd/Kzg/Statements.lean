@@ -86,60 +86,42 @@ theorem cosets_new_refines [e : KzgExternals] (hblst : BlstCorrect e)
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c := by
   exact cosets_new_refinement (externalsCorrect_of_blstMatchesSpec hblst hg1)
 
-theorem new_returns_ok [e : KzgExternals] (hblst : BlstCorrect e)
+theorem new_returns_ok_route [e : KzgExternals] (hblst : BlstCorrect e)
     (hg1 : UncompressG1.BlstMatchesSpec) :
-    ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
+    ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v ∧
+      v.lincomb.msm.isSome = e.simdAvailable ∧ v.kernel.isSome = e.simdAvailable := by
   obtain ⟨s, hs, hsrep⟩ := setup_decode_refines hblst hg1
   obtain ⟨c, hc, hcrep⟩ := cosets_new_refines hblst hg1
-  obtain ⟨lincomb,hl⟩ := lincomb_new_ok (e := e)
+  obtain ⟨lincomb, hl, hlroute⟩ := lincomb_new_route (e := e)
   cases hsimd : e.simdAvailable with
   | false =>
     simp only [verify.CellBatchVerifier.new, hs, hc, simd_available, hsimd,
       bind_tc_ok, Bool.false_eq_true, if_false,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
-      alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new,
-      hl]
-    exact ⟨_, rfl, hsrep, hcrep, trivial⟩
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new, hl]
+    exact ⟨_, rfl, ⟨hsrep, hcrep, trivial⟩, by simpa only [hsimd] using hlroute, rfl⟩
   | true =>
     obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement hblst c hcrep
     simp only [verify.CellBatchVerifier.new, hs, hc, simd_available, hsimd,
       bind_tc_ok, if_true, hkernel,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
-      alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new,
-      hl]
-    exact ⟨_, rfl, hsrep, hcrep, hki⟩
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new, hl]
+    exact ⟨_, rfl, ⟨hsrep, hcrep, hki⟩, by simpa only [hsimd] using hlroute, rfl⟩
 
 
-theorem new_returns_ok_route [e : KzgExternals] (hblst : BlstCorrect e)
+theorem new_returns_ok [e : KzgExternals] (hblst : BlstCorrect e)
     (hg1 : UncompressG1.BlstMatchesSpec) :
-    ∃ v, verify.CellBatchVerifier.new=ok v ∧ StateInvariant v ∧
-      v.lincomb.msm.isSome=e.simdAvailable ∧ v.kernel.isSome=e.simdAvailable := by
-  obtain ⟨s,hs,hsrep⟩ := setup_decode_refines hblst hg1
-  obtain ⟨c,hc,hcrep⟩ := cosets_new_refines hblst hg1
-  obtain ⟨lincomb,hl,hlroute⟩ := lincomb_new_route (e:=e)
-  cases hsimd : e.simdAvailable with
-  | false =>
-    simp only [verify.CellBatchVerifier.new,hs,hc,simd_available,hsimd,
-      bind_tc_ok,Bool.false_eq_true,if_false,
-      verify.Deduplicated.Insts.CoreDefaultDefault.default,
-      alloc.vec.Vec.Insts.CoreDefaultDefault.default,challenge.Preimage.new,hl]
-    exact ⟨_,rfl,⟨hsrep,hcrep,trivial⟩,by simpa only [hsimd] using hlroute,rfl⟩
-  | true =>
-    obtain ⟨kernel,hkernel,hki⟩ := InterpolationKernel.new_refinement hblst c hcrep
-    simp only [verify.CellBatchVerifier.new,hs,hc,simd_available,hsimd,
-      bind_tc_ok,if_true,hkernel,
-      verify.Deduplicated.Insts.CoreDefaultDefault.default,
-      alloc.vec.Vec.Insts.CoreDefaultDefault.default,challenge.Preimage.new,hl]
-    exact ⟨_,rfl,⟨hsrep,hcrep,hki⟩,by simpa only [hsimd] using hlroute,rfl⟩
-
+    ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
+  obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route hblst hg1
+  exact ⟨v, hnew, hinv⟩
 
 theorem stateInvariant_lincomb (v : verify.CellBatchVerifier)
     (lincomb : silver_crypto_simd.kzg.verify.Lincomb) :
-    StateInvariant {v with lincomb:=lincomb} ↔ StateInvariant v := Iff.rfl
+    StateInvariant {v with lincomb := lincomb} ↔ StateInvariant v := Iff.rfl
 
 theorem stateInvariant_allows_scalar (v : verify.CellBatchVerifier) (hv : StateInvariant v) :
-    ∃ next,StateInvariant next ∧ next.kernel=v.kernel ∧ next.lincomb.msm=none :=
-  ⟨{v with lincomb:={v.lincomb with msm:=none}},hv,rfl,rfl⟩
+    ∃ next, StateInvariant next ∧ next.kernel = v.kernel ∧ next.lincomb.msm = none :=
+  ⟨{v with lincomb := {v.lincomb with msm := none}}, hv, rfl, rfl⟩
 
 
 theorem default_eq_new [KzgExternals] :

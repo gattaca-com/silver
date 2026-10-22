@@ -18,7 +18,7 @@ def filteredSuffix (points : Slice blst.blst_p1_affine) (scalars : Slice FilterS
 theorem filteredSuffix_step (points : Slice blst.blst_p1_affine) (scalars : Slice FilterScalar)
     (i : ℕ) (halign : points.val.length = scalars.val.length) (hi : i < points.val.length) :
     filteredSuffix points scalars i =
-      (if (Kzg.g1ReadAffine points.val[i]).isInfinity then [] else [(points.val[i],scalars.val[i]'(by omega))]) ++
+      (if (Kzg.g1ReadAffine points.val[i]).isInfinity then [] else [(points.val[i], scalars.val[i]'(by omega))]) ++
         filteredSuffix points scalars (i + 1) := by
   unfold filteredSuffix
   rw [List.drop_eq_getElem_cons (by simpa [halign] using hi)]
@@ -49,7 +49,7 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
   induction hrem : points.val.length - i.val generalizing state i with
   | zero =>
     have he : i.val = points.val.length := by omega
-    refine ⟨state.finite_points,state.finite_scalars,?_,?_,?_⟩
+    refine ⟨state.finite_points, state.finite_scalars, ?_, ?_, ?_⟩
     · unfold msm8.Msm8.chunk_sum_loop
       rw [loop.eq_1]
       simp only [msm8.Msm8.chunk_sum_loop.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq,
@@ -61,7 +61,7 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
     have his : i.val < scalars.val.length := by omega
     have hpoint := hp points.val[i.val] (List.getElem_mem hil)
     have hscalar := hs scalars.val[i.val] (List.getElem_mem his)
-    obtain ⟨ps,ss,hkeep,hps,hss⟩ := keep_if_finite_refines state points.val[i.val] scalars.val[i.val]
+    obtain ⟨ps, ss, hkeep, hps, hss⟩ := keep_if_finite_refines state points.val[i.val] scalars.val[i.val]
       hscalar hpoint (by omega) (by omega)
     have hpslen : ps.val.length ≤ state.finite_points.val.length + 1 := by rw [hps]; split <;> simp
     have hsslen : ss.val.length ≤ state.finite_scalars.val.length + 1 := by rw [hss]; split <;> simp
@@ -75,23 +75,23 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
     let next : Usize := UScalar.ofNatCore (i.val + 1) hadd
     have hn : next.val = i.val + 1 := rfl
     let mid := {state with finite_points := ps, finite_scalars := ss}
-    have hbody : msm8.Msm8.chunk_sum_loop.body points scalars state i = ok (cont (mid,next)) := by
+    have hbody : msm8.Msm8.chunk_sum_loop.body points scalars state i = ok (cont (mid, next)) := by
       simp only [msm8.Msm8.chunk_sum_loop.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq,
         hil, if_true]
       have hix {A : Type} (xs : Slice A) (hx : i.val < xs.val.length) :
-          Slice.index_usize xs i = ok xs.val[i.val] := by simp [Slice.index_usize,hx]
+          Slice.index_usize xs i = ok xs.val[i.val] := by simp [Slice.index_usize, hx]
       rw [hix points hil]
       simp only [bind_tc_ok]
       rw [hix scalars his]
-      simp only [bind_tc_ok,hkeep]
+      simp only [bind_tc_ok, hkeep]
       rw [add_ok _ _ hadd]
       rfl
-    obtain ⟨ps',ss',hloop,hps',hss'⟩ := ih mid next (by omega) (by dsimp [mid]; omega)
+    obtain ⟨ps', ss', hloop, hps', hss'⟩ := ih mid next (by omega) (by dsimp [mid]; omega)
       (by dsimp [mid]; omega) (by omega)
-    refine ⟨ps',ss',?_,?_,?_⟩
+    refine ⟨ps', ss', ?_, ?_, ?_⟩
     · unfold msm8.Msm8.chunk_sum_loop
       change loop (fun p => msm8.Msm8.chunk_sum_loop.body points scalars p.1 p.2) _ = _
-      rw [loop.eq_1,hbody]
+      rw [loop.eq_1, hbody]
       exact hloop
     · rw [hps', filteredSuffix_step points scalars i.val halign hil]
       dsimp only [mid]
@@ -118,11 +118,11 @@ theorem filteredSuffix_length (points : Slice blst.blst_p1_affine)
 
 theorem filteredSuffix_mem (points : Slice blst.blst_p1_affine)
     (scalars : Slice FilterScalar) (i : ℕ) (p : blst.blst_p1_affine) (s : FilterScalar)
-    (h : (p,s) ∈ filteredSuffix points scalars i) :
+    (h : (p, s) ∈ filteredSuffix points scalars i) :
     p ∈ points.val ∧ s ∈ scalars.val ∧ (Kzg.g1ReadAffine p).isInfinity = false := by
-  obtain ⟨hm,hf⟩ := List.mem_filter.mp h
-  obtain ⟨hp,hs⟩ := List.of_mem_zip (List.mem_of_mem_drop hm)
-  exact ⟨hp,hs, by simpa only [finiteInput, Bool.not_eq_true'] using hf⟩
+  obtain ⟨hm, hf⟩ := List.mem_filter.mp h
+  obtain ⟨hp, hs⟩ := List.of_mem_zip (List.mem_of_mem_drop hm)
+  exact ⟨hp, hs, by simpa only [finiteInput, Bool.not_eq_true'] using hf⟩
 
 theorem paired_projections {A B : Type} (xs : List (A × B)) :
     (xs.map Prod.fst).zip (xs.map Prod.snd) = xs := by
@@ -157,10 +157,10 @@ theorem filter_prefix_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_a
     have := two_pow_32_le_usize
     simp only [Usize.max_def, Usize.numBits_def]
     omega
-  obtain ⟨ps,ss,hloop,hps,hss⟩ := filter_loop_refines
+  obtain ⟨ps, ss, hloop, hps, hss⟩ := filter_loop_refines
     {state with finite_points := emptyP, finite_scalars := emptyS} points scalars 0#usize
     halign (by simp) hp hs (by simpa [emptyP] using hroom) (by simpa [emptyS] using hroom)
-  refine ⟨ps,ss,?_,?_,?_⟩
+  refine ⟨ps, ss, ?_, ?_, ?_⟩
   · have he : Slice.len points = Slice.len scalars := by
       apply UScalar.eq_of_val_eq
       simpa only [Slice.len, Usize.ofNatCore_val_eq] using halign
@@ -188,27 +188,27 @@ theorem filter_prefix_correct (state : msm8.Msm8) (points : Slice blst.blst_p1_a
       ps.val.length < 2 ^ 32 ∧
       (∀ p ∈ ps.val, Kzg.G1AffineValid p ∧ (Kzg.g1ReadAffine p).isInfinity = false) ∧
       (∀ s ∈ ss.val, Kzg.limbs s.val < 2 ^ 255) := by
-  obtain ⟨ps,ss,hprefix,hps,hss⟩ := filter_prefix_refines state points scalars halign hp hs hn
+  obtain ⟨ps, ss, hprefix, hps, hss⟩ := filter_prefix_refines state points scalars halign hp hs hn
   have hlen := filteredSuffix_length points scalars 0
-  refine ⟨ps,ss,hprefix,?_,?_,?_,?_,?_,?_⟩
-  · rw [hps,hss,paired_projections]
+  refine ⟨ps, ss, hprefix, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · rw [hps, hss, paired_projections]
     rfl
-  · rw [hps,hss]
+  · rw [hps, hss]
     simp only [List.length_map]
-  · rw [hps,List.length_map]
+  · rw [hps, List.length_map]
     simpa only [Nat.sub_zero] using hlen
-  · rw [hps,List.length_map]
+  · rw [hps, List.length_map]
     omega
   · intro p h
     rw [hps] at h
-    obtain ⟨⟨p',s⟩,hm,he⟩ := List.mem_map.mp h
+    obtain ⟨⟨p', s⟩, hm, he⟩ := List.mem_map.mp h
     dsimp only at he
     subst p'
-    obtain ⟨hm,_,hf⟩ := filteredSuffix_mem points scalars 0 p s hm
-    exact ⟨hp p hm,hf⟩
+    obtain ⟨hm, _, hf⟩ := filteredSuffix_mem points scalars 0 p s hm
+    exact ⟨hp p hm, hf⟩
   · intro s h
     rw [hss] at h
-    obtain ⟨⟨p,s'⟩,hm,he⟩ := List.mem_map.mp h
+    obtain ⟨⟨p, s'⟩, hm, he⟩ := List.mem_map.mp h
     dsimp only at he
     subst s'
     exact hs s (filteredSuffix_mem points scalars 0 p s hm).2.1

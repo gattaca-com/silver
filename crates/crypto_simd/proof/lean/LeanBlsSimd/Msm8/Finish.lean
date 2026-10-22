@@ -166,7 +166,7 @@ theorem finish_correct (state : msm8.Msm8) (n : ℕ) (values : ℕ → G1Spec.E.
     have hrefsize : state.halves.val.length *
         (windows127 (selectedWidth state.halves.val.length)).val < 2 ^ 32 := by
       rw [h.halves_length]
-      have hw : state.buckets.windows.val = (windows127 (selectedWidth (2*n))).val :=
+      have hw : state.buckets.windows.val = (windows127 (selectedWidth (2 * n))).val :=
         congrArg UScalar.val h.selected_windows
       simpa only [hw] using h.resources.references32
     obtain ⟨b, cap, lists, hfill, _, _, hpacked, _, hshape, hwin, _, _, hsum, href⟩ :=

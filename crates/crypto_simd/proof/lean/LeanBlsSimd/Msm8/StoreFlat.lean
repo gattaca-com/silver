@@ -7,7 +7,7 @@ noncomputable section
 namespace LeanBlsSimd
 
 theorem getElem_ofFn_limbs (f : Fin 8 → Limbs) (j : ℕ) (hj : j < 8) :
-    (show Vector M512 8 from Vector.ofFn f)[j] = f ⟨j,hj⟩ := Vector.getElem_ofFn hj
+    (show Vector M512 8 from Vector.ofFn f)[j] = f ⟨j, hj⟩ := Vector.getElem_ofFn hj
 
 def writePoint (rows : List Limbs) (index : ℕ) (point : Limbs × Limbs) : List Limbs :=
   (rows.set (2 * index) point.1).set (2 * index + 1) point.2
@@ -74,14 +74,14 @@ theorem store_convertedBatch (points : List (Vector UInt64 6 × Vector UInt64 6)
       (convertedPoint points[batchSource offset count l]! negated[batchSource offset count l]! endomorphism).1) := by
     apply Vector.ext
     intro j hj
-    have h := congrArg Prod.fst (convertedBatch_lane points negated base offset count endomorphism ⟨j,hj⟩)
+    have h := congrArg Prod.fst (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
     conv_rhs => erw [Vector.getElem_ofFn]
     simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using h
   have hy : transpose8 converted.2.limbs = Vector.ofFn (fun l : Fin 8 =>
       (convertedPoint points[batchSource offset count l]! negated[batchSource offset count l]! endomorphism).2) := by
     apply Vector.ext
     intro j hj
-    have h := congrArg Prod.snd (convertedBatch_lane points negated base offset count endomorphism ⟨j,hj⟩)
+    have h := congrArg Prod.snd (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
     conv_rhs => erw [Vector.getElem_ofFn]
     simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using h
   change storeRows rows gathered.indices (transpose8 converted.1.limbs) (transpose8 converted.2.limbs) = _

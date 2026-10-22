@@ -16,7 +16,7 @@ def chooseWidth (scalars : Slice (Array U64 4#usize)) : Result Usize := do
 
 theorem chooseWidth_refines (scalars : Slice (Array U64 4#usize)) :
     chooseWidth scalars = ok (selectedWidth scalars.val.length) := by
-  simp only [chooseWidth,selectedWidth,UScalar.lt_equiv,Slice.len,Usize.ofNatCore_val_eq]
+  simp only [chooseWidth, selectedWidth, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq]
   change (if scalars.val.length < 128 then ok 4#usize else
     if scalars.val.length < 1024 then ok 6#usize else ok 8#usize) = _
   split_ifs <;> rfl
@@ -36,13 +36,13 @@ theorem selected_geometry (n : ℕ) :
     (selectedWidth n).val * (windows127 (selectedWidth n)).val ≤ 132 ∧
     2 ^ ((selectedWidth n).val - 1) ≤ 128 ∧
     (windows127 (selectedWidth n)).val * 2 ^ ((selectedWidth n).val - 1) ≤ 2048 := by
-  rcases selected_options n with ⟨hw,hn⟩ | ⟨hw,hn⟩ | ⟨hw,hn⟩ <;> rw [hw,hn] <;> decide
+  rcases selected_options n with ⟨hw, hn⟩ | ⟨hw, hn⟩ | ⟨hw, hn⟩ <;> rw [hw, hn] <;> decide
 
 theorem selected_groups (n : ℕ) :
     1 ≤ ((windows127 (selectedWidth n)).val - 1) / 8 + 1 ∧
     ((windows127 (selectedWidth n)).val - 1) / 8 + 1 ≤ 4 ∧
     8 * (((windows127 (selectedWidth n)).val - 1) / 8 + 1) ≤ 32 := by
-  rcases selected_options n with ⟨_,hn⟩ | ⟨_,hn⟩ | ⟨_,hn⟩ <;> rw [hn] <;> decide
+  rcases selected_options n with ⟨_, hn⟩ | ⟨_, hn⟩ | ⟨_, hn⟩ <;> rw [hn] <;> decide
 
 end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.MsmBounds
@@ -96,10 +96,10 @@ theorem padded_resource_bounds (n windows jobs : ℕ) (h : Resources n windows)
     (hj : 1 ≤ jobs) (hjobs : jobs ≤ n * windows) :
     let groups := ((jobs - 1) / 16 + 1) * 2
     groups % 2 = 0 ∧ jobs ≤ groups * 8 ∧ groups * 8 < 2 ^ 32 := by
-  obtain ⟨he,hl,hu⟩ := padded_groups jobs hj
+  obtain ⟨he, hl, hu⟩ := padded_groups jobs hj
   dsimp only at he hl hu ⊢
   have := h.padded32
-  exact ⟨he,hl,by omega⟩
+  exact ⟨he, hl, by omega⟩
 
 end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.BucketsRefines
@@ -109,7 +109,7 @@ theorem eventReferences_append (width : Usize) (left right : List Event) (i : �
     eventReferences width (left ++ right) i = eventReferences width left i ++ eventReferences width right i := by
   induction left with
   | nil => rfl
-  | cons event rest ih => simp only [List.cons_append,eventReferences,ih,List.append_assoc]
+  | cons event rest ih => simp only [List.cons_append, eventReferences, ih, List.append_assoc]
 
 private theorem eventReferences_before (width : Usize) (events : List Event) (floor i : ℕ)
     (hfloor : ∀ e ∈ events, floor ≤ e.window.val * 2 ^ (width.val - 1)) (hi : i < floor) :
@@ -118,7 +118,7 @@ private theorem eventReferences_before (width : Usize) (events : List Event) (fl
   | nil => rfl
   | cons e rest ih =>
     have hnot : ¬ (e.magnitude ≠ 0#usize ∧ eventIndex width e = i) := by
-      rintro ⟨hm,he⟩
+      rintro ⟨hm, he⟩
       have hmpos : 0 < e.magnitude.val := by
         have : e.magnitude.val ≠ 0 := by
           intro hz
@@ -127,9 +127,9 @@ private theorem eventReferences_before (width : Usize) (events : List Event) (fl
           exact hz
         omega
       have hlo := hfloor e (by simp)
-      simp only [eventIndex,listIndex] at he
+      simp only [eventIndex, listIndex] at he
       omega
-    simp only [eventReferences,hnot,if_false,List.nil_append]
+    simp only [eventReferences, hnot, if_false, List.nil_append]
     exact ih (fun e he => hfloor e (List.mem_cons_of_mem _ he))
 
 theorem eventReferences_window_bound (width : Usize) (events : List Event) (start i : ℕ)
@@ -143,7 +143,7 @@ theorem eventReferences_window_bound (width : Usize) (events : List Event) (star
     have hrest : ∀ j (hj : j < rest.length), (rest[j]'hj).window.val = start + 1 + j := by
       intro j hj
       have h := hcoords (j + 1) (by simpa using Nat.succ_lt_succ hj)
-      simpa only [List.getElem_cons_succ,Nat.add_assoc,Nat.add_comm 1 j] using h
+      simpa only [List.getElem_cons_succ, Nat.add_assoc, Nat.add_comm 1 j] using h
     have hrestmag := fun e he => hmag e (List.mem_cons_of_mem _ he)
     simp only [eventReferences]
     split
@@ -151,17 +151,17 @@ theorem eventReferences_window_bound (width : Usize) (events : List Event) (star
       have htarget : i < (start + 1) * 2 ^ (width.val - 1) := by
         have hm := hmag e (by simp)
         have he := hselected.2
-        simp only [eventIndex,listIndex,hew] at he
+        simp only [eventIndex, listIndex, hew] at he
         have hh : 0 < 2 ^ (width.val - 1) := Nat.two_pow_pos _
-        simp only [Nat.add_mul,Nat.one_mul]
+        simp only [Nat.add_mul, Nat.one_mul]
         omega
       have hempty := eventReferences_before width rest ((start + 1) * 2 ^ (width.val - 1)) i
         (fun event hm => by
-          obtain ⟨j,hj,he⟩ := List.mem_iff_getElem.mp hm
+          obtain ⟨j, hj, he⟩ := List.mem_iff_getElem.mp hm
           subst event
           rw [hrest j hj]
           exact Nat.mul_le_mul_right _ (by omega)) htarget
-      simp only [hempty,List.append_nil,List.length_singleton,Nat.le_refl]
+      simp only [hempty, List.append_nil, List.length_singleton, Nat.le_refl]
     · simpa only [List.nil_append] using ih (start + 1) hrest hrestmag
 
 theorem scalarEvents_bucket_bound (n : ℕ) (scalars : Slice (Array U64 4#usize))
@@ -176,10 +176,10 @@ theorem scalarEvents_bucket_bound (n : ℕ) (scalars : Slice (Array U64 4#usize)
     cases Result.ok.inj htrace
     simp [eventReferences]
   | succ n ih =>
-    simp only [scalarEvents,bind_success] at htrace
-    obtain ⟨words,_,digits,_,⟨first,last⟩,hfirst,htrace⟩ := htrace
-    simp only [Function.uncurry_def,bind_success] at htrace
-    obtain ⟨index',hindex,rest,hrest,htrace⟩ := htrace
+    simp only [scalarEvents, bind_success] at htrace
+    obtain ⟨words, _, digits, _, ⟨first, last⟩, hfirst, htrace⟩ := htrace
+    simp only [Function.uncurry_def, bind_success] at htrace
+    obtain ⟨index', hindex, rest, hrest, htrace⟩ := htrace
     cases Result.ok.inj htrace
     have hindexv : index'.val = index.val + 1 := by
       have hsize := two_pow_32_le_usize
@@ -193,7 +193,7 @@ theorem scalarEvents_bucket_bound (n : ℕ) (scalars : Slice (Array U64 4#usize)
       (fun e he => (hfits e (List.mem_append_left _ he)).2)
     have hrestbound := ih index' rest (by omega) hrest
       (fun e he => hfits e (List.mem_append_right _ he))
-    rw [eventReferences_append,List.length_append]
+    rw [eventReferences_append, List.length_append]
     omega
 
 end LeanBlsSimd.BucketsRefines
@@ -202,7 +202,7 @@ open silver_crypto_simd.bls.msm8 alloc.vec
 
 private theorem mutable_back_length {A : Type} (v : Vec A) (index : Usize)
     (value : A) (back : A → Vec A)
-    (h : Vec.index_mut (core.slice.index.SliceIndexUsizeSlice A) v index = ok (value,back))
+    (h : Vec.index_mut (core.slice.index.SliceIndexUsizeSlice A) v index = ok (value, back))
     (replacement : A) : (back replacement).val.length = v.val.length := by
   rw [Vec.index_mut_slice_index] at h
   unfold Vec.index_mut_usize at h
@@ -243,8 +243,8 @@ theorem placeEvents_refs_length (events : List Event) (state out : buckets.Bucke
   induction events generalizing state with
   | nil => cases Result.ok.inj h; rfl
   | cons event rest ih =>
-    simp only [placeEvents,bind_success] at h
-    obtain ⟨next,hnext,hrest⟩ := h
+    simp only [placeEvents, bind_success] at h
+    obtain ⟨next, hnext, hrest⟩ := h
     exact (ih next hrest).trans (place_refs_length _ _ _ _ _ hnext)
 
 theorem fillCore_size (state : buckets.Buckets) (scalars : Slice (Array U64 4#usize))
@@ -316,7 +316,7 @@ theorem fillCore_size (state : buckets.Buckets) (scalars : Slice (Array U64 4#us
 
   · rw [placeEvents_refs_length events placed out hplace]
     change refs.val.length = _
-    rw [hrefsv,List.length_replicate,cast_Usize_val,hp.total_value]
+    rw [hrefsv, List.length_replicate, cast_Usize_val, hp.total_value]
 
 end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.MsmBounds
@@ -333,32 +333,32 @@ theorem fill_chunk_bounds (state : buckets.Buckets) (scalars : Slice (Array U64 
       out.refs.val.length ≤ 2 * n * out.windows.val := by
   let width := selectedWidth scalars.val.length
   have hres : Resources n (windows127 width).val := by
-    simpa only [width,hscalars] using selected_resources n hn
-  obtain ⟨hwl,hwh⟩ := selectedWidth_bounds scalars.val.length
-  obtain ⟨events,htrace,hlen,hfits⟩ := scalarEvents_succeeds scalars.val.length scalars width
+    simpa only [width, hscalars] using selected_resources n hn
+  obtain ⟨hwl, hwh⟩ := selectedWidth_bounds scalars.val.length
+  obtain ⟨events, htrace, hlen, hfits⟩ := scalarEvents_succeeds scalars.val.length scalars width
     (windows127 width) 0#usize hwl hwh (windows127_bits width hwh)
     (by change 0 + scalars.val.length ≤ scalars.val.length; omega)
   have hsize : events.length < 2 ^ 32 := by
-    rw [hlen,hscalars]
+    rw [hlen, hscalars]
     exact hres.references32
   let lists : Usize := UScalar.ofNatCore ((windows127 width).val * 2 ^ (width.val - 1))
     (lt_of_lt_of_le (listCount127_bound width hwh) two_pow_32_le_usize)
-  obtain ⟨out,hout,how,hon,hrecover,hrefs⟩ := fillCore_size state scalars width (windows127 width)
+  obtain ⟨out, hout, how, hon, hrecover, hrefs⟩ := fillCore_size state scalars width (windows127 width)
     lists events hwl hwh rfl (listCount127_bound width hwh) htrace hfits hsize
-  refine ⟨out,?_,by simpa only [width,hscalars] using how,
-    by simpa only [width,hscalars] using hon,by simpa only [hon] using hres,?_,?_⟩
+  refine ⟨out, ?_, by simpa only [width, hscalars] using how,
+    by simpa only [width, hscalars] using hon, by simpa only [hon] using hres, ?_, ?_⟩
   · rw [fill127_setup]
     exact hout
   · intro i hi
-    rw [hrecover i (by change i < (windows127 width).val * 2 ^ (width.val - 1); simpa only [how,hon] using hi)]
+    rw [hrecover i (by change i < (windows127 width).val * 2 ^ (width.val - 1); simpa only [how, hon] using hi)]
     have h := scalarEvents_bucket_bound scalars.val.length scalars width (windows127 width) 0#usize events
       (by change 0 + scalars.val.length < 2 ^ 31; rw [hscalars]; simpa only [Nat.zero_add] using hres.originals31)
       (by have hw := (selected_geometry scalars.val.length).2.2.2.1; change (windows127 (selectedWidth scalars.val.length)).val < 2 ^ 32; omega)
       htrace hfits i
     simpa only [hscalars] using h
-  · rw [hrefs,hon]
+  · rw [hrefs, hon]
     have hb := eventReferences_total_bound width events lists.val
-    rw [hlen,hscalars] at hb
+    rw [hlen, hscalars] at hb
     exact hb
 
 end LeanBlsSimd.MsmBounds
@@ -371,7 +371,7 @@ theorem original_signed_reference (n windows : ℕ) (h : Resources n windows)
       (signedReference index negative).val % 2 ^ 31 = index.val ∧
       (signedReference index negative).val / 2 ^ 31 = (if negative then 1 else 0) := by
   have hb : index.val < 2 ^ 31 := lt_trans hi h.originals31
-  exact ⟨hb,signedReference_index index negative hb,signedReference_sign index negative hb⟩
+  exact ⟨hb, signedReference_index index negative hb, signedReference_sign index negative hb⟩
 
 theorem allocated_index31 (n windows capacity index : ℕ) (h : Resources n windows)
     (hcap : capacity ≤ 2 * n + n * windows) (hi : index < capacity) : index < 2 ^ 31 :=

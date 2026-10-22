@@ -5266,7 +5266,7 @@ def bls.msm8.glv.decompose
   ok (k1, k2)
 
 /-- [silver_crypto_simd::bls::msm8::CHUNK]
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 30:0-30:26 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 31:0-31:26 -/
 @[global_simps, irreducible] def bls.msm8.CHUNK : Std.Usize := 4096#usize
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::new]:
@@ -5292,7 +5292,7 @@ def bls.msm8.pairs.BatchedAdds.Insts.CoreDefaultDefault.default
   ok { a := v, b := v, out := v, dx := v1, «prefix» := v1 }
 
 /-- [silver_crypto_simd::bls::msm8::{core::default::Default for silver_crypto_simd::bls::msm8::Msm8}::default]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 44:9-44:16
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 45:9-45:16
     Visibility: public -/
 def bls.msm8.Msm8.Insts.CoreDefaultDefault.default : Result bls.msm8.Msm8 := do
   let ps ← bls.msm8.store.PointStore.Insts.CoreDefaultDefault.default
@@ -5315,7 +5315,7 @@ def bls.msm8.Msm8.Insts.CoreDefaultDefault.default : Result bls.msm8.Msm8 := do
     }
 
 /-- [silver_crypto_simd::bls::msm8::lane_zero_in_blst]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 151:0-157:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 152:0-158:1 -/
 def bls.msm8.lane_zero_in_blst
   (point : bls.g1x8.G1x8) : Result blst.blst_p1 := do
   let a ← bls.fp8.Fp8.to_blst_limbs point.x
@@ -6235,7 +6235,7 @@ def bls.msm8.pairs.BatchedAdds.is_empty
   alloc.vec.Vec.is_empty Global self.a
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 134:8-136:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 135:8-137:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.pair_rounds_loop.body
   (originals : Std.Usize) (ps : bls.msm8.store.PointStore)
@@ -6257,7 +6257,7 @@ def bls.msm8.Msm8.pair_rounds_loop.body
     else ok (done (ps1, b, ba1))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 134:8-136:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 135:8-137:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.pair_rounds_loop
   (ps : bls.msm8.store.PointStore) (b : bls.msm8.buckets.Buckets)
@@ -6271,7 +6271,7 @@ def bls.msm8.Msm8.pair_rounds_loop
     (ps, b, ba)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 132:4-138:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 133:4-139:5 -/
 def bls.msm8.Msm8.pair_rounds
   (self : bls.msm8.Msm8) (originals : Std.Usize) :
   Result (Bool × bls.msm8.Msm8)
@@ -6284,7 +6284,7 @@ def bls.msm8.Msm8.pair_rounds
   ok (b2, { self with store := ps1, buckets := b1, adds := ba1 })
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 143:4-145:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 144:4-146:5 -/
 @[rust_loop_body]
 def bls.msm8.is_infinity_loop.body
   (point : blst.blst_p1_affine) (k : Std.Usize) :
@@ -6304,7 +6304,7 @@ def bls.msm8.is_infinity_loop.body
   else ok (done k)
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 143:4-145:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 144:4-146:5 -/
 @[rust_loop]
 def bls.msm8.is_infinity_loop
   (point : blst.blst_p1_affine) (k : Std.Usize) : Result Std.Usize := do
@@ -6313,13 +6313,13 @@ def bls.msm8.is_infinity_loop
     k
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 141:0-147:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 142:0-148:1 -/
 def bls.msm8.is_infinity (point : blst.blst_p1_affine) : Result Bool := do
   let k ← bls.msm8.is_infinity_loop point 0#usize
   ok (k = 6#usize)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::keep_if_finite]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 121:4-127:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 122:4-128:5 -/
 def bls.msm8.Msm8.keep_if_finite
   (self : bls.msm8.Msm8) (point : blst.blst_p1_affine)
   (scalar : Array Std.U64 4#usize) :
@@ -6337,7 +6337,7 @@ def bls.msm8.Msm8.keep_if_finite
     ok { self with finite_points := v, finite_scalars := v1 }
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 111:8-118:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 112:8-119:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.split_scalars_loop.body
   (v : alloc.vec.Vec (Array Std.U64 4#usize)) (n : Std.Usize)
@@ -6369,7 +6369,7 @@ def bls.msm8.Msm8.split_scalars_loop.body
   else ok (done (v1, v2, v3))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 111:8-118:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 112:8-119:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.split_scalars_loop
   (v : alloc.vec.Vec (Array Std.U64 4#usize))
@@ -6384,7 +6384,7 @@ def bls.msm8.Msm8.split_scalars_loop
     (v1, v2, v3, i)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 104:4-119:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 105:4-120:5 -/
 def bls.msm8.Msm8.split_scalars
   (self : bls.msm8.Msm8) : Result bls.msm8.Msm8 := do
   let n := alloc.vec.Vec.len self.finite_scalars
@@ -6401,7 +6401,7 @@ def bls.msm8.Msm8.split_scalars
   ok { self with halves := v4, first_signs := v5, second_signs := v6 }
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 80:8-83:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 81:8-84:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.chunk_sum_loop.body
   (points : Slice blst.blst_p1_affine)
@@ -6420,7 +6420,7 @@ def bls.msm8.Msm8.chunk_sum_loop.body
   else ok (done self)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 80:8-83:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 81:8-84:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.chunk_sum_loop
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
@@ -6433,7 +6433,7 @@ def bls.msm8.Msm8.chunk_sum_loop
     (self, i)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 76:4-100:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 77:4-101:5 -/
 def bls.msm8.Msm8.chunk_sum
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
   (scalars : Slice (Array Std.U64 4#usize)) :
@@ -6482,7 +6482,7 @@ def bls.msm8.Msm8.chunk_sum
     ok (gx, self4)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 65:8-70:9
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 66:8-71:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.Msm8.msm_loop.body
@@ -6513,7 +6513,7 @@ def bls.msm8.Msm8.msm_loop.body
   else ok (done (self, total))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 65:8-70:9
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 66:8-71:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.Msm8.msm_loop
@@ -6528,7 +6528,7 @@ def bls.msm8.Msm8.msm_loop
     (self, total, start)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 61:4-72:5
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 62:4-73:5
     Visibility: public -/
 def bls.msm8.Msm8.msm
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
@@ -10378,10 +10378,7 @@ def kzg.fr8.Fr8.plain_words
   let sixteen ←
     kzg.fr8.Fr8.splat
       { l := (Array.make 4#usize [ 16#u64, 0#u64, 0#u64, 0#u64 ] (by rfl)) }
-  let a := Array.repeat 4#usize 0#u64
-  let words1 ←
-    alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64)
-      words 0#usize a
+  let words1 ← alloc.vec.Vec.clear Global words
   kzg.fr8.Fr8.plain_words_loop0 values words1 sixteen 0#usize
 
 /-- [silver_crypto_simd::kzg::interpolation_kernel::VECTORS_PER_CELL]
@@ -11819,7 +11816,7 @@ def kzg.setup.Setup.decode : Result kzg.setup.Setup := do
 @[global_simps, irreducible] def kzg.verify.LOG_CELL : Std.U32 := 6#u32
 
 /-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}::default]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 321:9-321:16
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:9-322:16
     Visibility: public -/
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   : Result kzg.verify.Deduplicated := do
@@ -11829,7 +11826,7 @@ def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   ok { unique := v, index_of_cell := v1 }
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Lincomb}::new]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 296:4-304:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 297:4-305:5 -/
 def kzg.verify.Lincomb.new : Result kzg.verify.Lincomb := do
   let ls ← kzg.blst_ops.LincombScratch.new
   let b ← simd_available
@@ -11902,7 +11899,7 @@ def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
 }
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 372:4-374:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 373:4-375:5 -/
 @[rust_loop_body]
 def kzg.verify.same_bytes_loop.body
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -11919,7 +11916,7 @@ def kzg.verify.same_bytes_loop.body
   else ok (done i)
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 372:4-374:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 373:4-375:5 -/
 @[rust_loop]
 def kzg.verify.same_bytes_loop
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -11930,14 +11927,14 @@ def kzg.verify.same_bytes_loop
     i
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 370:0-376:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 371:0-377:1 -/
 def kzg.verify.same_bytes
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) : Result Bool := do
   let i ← kzg.verify.same_bytes_loop a b 0#usize
   ok (i = bls.COMPRESSED_LEN)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 334:12-340:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 335:12-341:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0_loop0.body
@@ -11961,7 +11958,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0.body
   else ok (done found)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 334:12-340:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 335:12-341:13
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0_loop0
@@ -11976,7 +11973,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0
     i
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 331:8-345:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 332:8-346:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0.body
@@ -12006,7 +12003,7 @@ def kzg.verify.Deduplicated.fill_loop0.body
     ok (cont (iter1, v2, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 331:8-345:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 332:8-346:9
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0
@@ -12021,7 +12018,7 @@ def kzg.verify.Deduplicated.fill_loop0
     (iter, v, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 328:4-346:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 329:4-347:5
     Visibility: public -/
 def kzg.verify.Deduplicated.fill
   (self : kzg.verify.Deduplicated)
@@ -12042,7 +12039,7 @@ def kzg.verify.Deduplicated.fill
   ok { unique := v2, index_of_cell := v3 }
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Lincomb}::sum]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 306:4-316:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 307:4-317:5 -/
 def kzg.verify.Lincomb.sum
   (self : kzg.verify.Lincomb) (points : Slice blst.blst_p1_affine)
   (scalars : Slice blst.blst_fr) :
@@ -12059,7 +12056,7 @@ def kzg.verify.Lincomb.sum
     ok (bp, { self with msm := (some msm1), words := v })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 248:12-253:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 249:12-254:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12095,7 +12092,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
     ok (cont (iter1, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 248:12-253:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 249:12-254:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12110,7 +12107,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
     (iter, v2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:8-254:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 246:8-255:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12137,7 +12134,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
     ok (cont (iter1, v5, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 245:8-254:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 246:8-255:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12152,7 +12149,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
     (iter, v2, v3)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 264:12-267:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 265:12-268:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (c : Std.Usize)
@@ -12178,7 +12175,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 264:12-267:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 265:12-268:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12192,7 +12189,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 275:12-279:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-280:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12225,7 +12222,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
     ok (cont (iter1, v3, factor1))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 275:12-279:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-280:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12240,7 +12237,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
     (iter, v2, factor)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 260:8-280:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:8-281:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
   (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
@@ -12278,7 +12275,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
     else ok (cont (iter1, v2, v3, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 260:8-280:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:8-281:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
   (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
@@ -12295,7 +12292,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
     (iter, v2, v3, v4)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 226:4-282:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 227:4-283:5 -/
 def kzg.verify.CellBatchVerifier.interpolation_commitment
   (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64)
   (cells : Slice (Array Std.U8 2048#usize)) :
@@ -12641,7 +12638,7 @@ def kzg.verify.CellBatchVerifier.decode_cells
     ok (b, self)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 360:4-366:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 361:4-367:5 -/
 @[rust_loop_body]
 def kzg.verify.decode_points_loop.body
   (encodings : Slice (Array Std.U8 48#usize))
@@ -12665,7 +12662,7 @@ def kzg.verify.decode_points_loop.body
   else ok (done (points, i))
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 360:4-366:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 361:4-367:5 -/
 @[rust_loop]
 def kzg.verify.decode_points_loop
   (encodings : Slice (Array Std.U8 48#usize))
@@ -12679,7 +12676,7 @@ def kzg.verify.decode_points_loop
     (points, i)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 350:0-368:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 351:0-369:1 -/
 def kzg.verify.decode_points
   (encodings : Slice (Array Std.U8 48#usize))
   (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
@@ -12813,7 +12810,7 @@ def kzg.verify.CellBatchVerifier.verify
           else ok (false, self1)
 
 /-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 321:9-321:16 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:9-322:16 -/
 @[reducible]
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault : core.default.Default
   kzg.verify.Deduplicated := {

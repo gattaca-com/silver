@@ -7,20 +7,20 @@ namespace LeanBlsSimd.Kzg.Routes
 
 theorem lincomb_sum_route [e : KzgExternals] (self next : verify.Lincomb)
     (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr) (point : blst.blst_p1)
-    (hcall : self.sum ps fs=ok (point,next)) : next.msm.isSome=self.msm.isSome := by
+    (hcall : self.sum ps fs = ok (point, next)) : next.msm.isSome = self.msm.isSome := by
   cases hstate : self.msm with
   | none =>
     cases hscalar : blst_ops.g1_lincomb ps fs self.scratch <;>
-      simp only [verify.Lincomb.sum,hstate,hscalar,bind_tc_ok,bind_tc_fail,bind_tc_div] at hcall <;> try contradiction
-    obtain ⟨_,rfl⟩ := Prod.mk.inj (Result.ok.inj hcall)
+      simp only [verify.Lincomb.sum, hstate, hscalar, bind_tc_ok, bind_tc_fail, bind_tc_div] at hcall <;> try contradiction
+    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj hcall)
     rfl
   | some state =>
     cases hwords : fr8.Fr8.plain_words fs self.words <;>
-      simp only [verify.Lincomb.sum,hstate,hwords,bind_tc_ok,bind_tc_fail,bind_tc_div] at hcall <;> try contradiction
+      simp only [verify.Lincomb.sum, hstate, hwords, bind_tc_ok, bind_tc_fail, bind_tc_div] at hcall <;> try contradiction
     rename_i words
     cases hmsm : state.msm ps (alloc.vec.Vec.deref words) <;>
-      simp only [hmsm,bind_tc_ok,bind_tc_fail,bind_tc_div] at hcall <;> try contradiction
-    obtain ⟨_,rfl⟩ := Prod.mk.inj (Result.ok.inj hcall)
+      simp only [hmsm, bind_tc_ok, bind_tc_fail, bind_tc_div] at hcall <;> try contradiction
+    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj hcall)
     rfl
 
 

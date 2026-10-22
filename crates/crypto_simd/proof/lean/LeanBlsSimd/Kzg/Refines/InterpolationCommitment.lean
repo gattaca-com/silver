@@ -75,14 +75,12 @@ private theorem encoded_scalars_read (coeffs : List Fr) (v : alloc.vec.Vec blst.
     (hv : v.val = coeffs.map frEncode) : (v.val.map frRead).toArray = coeffs.toArray := by
   simp only [hv, List.map_map, Function.comp_def, frRead_frEncode, List.map_id']
 
-theorem setup_lincomb [e : KzgExternals] (h : ExternalsCorrect e)
+private theorem setup_lincomb_inputs
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
-    (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
-    (scratch : blst_ops.LincombScratch) :
-    ∃ point scratch',
-      blst_ops.g1_lincomb (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) scratch =
-        ok (point, scratch') ∧
-      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
+    (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode) :
+    (alloc.vec.Vec.deref s.g1_monomial).val.length = (alloc.vec.Vec.deref v).val.length ∧
+      (∀ p ∈ (alloc.vec.Vec.deref s.g1_monomial).val, G1AffineValid p) ∧
+      (∀ x ∈ (alloc.vec.Vec.deref v).val, FrReduced x) := by
   have hsize : (alloc.vec.Vec.deref s.g1_monomial).val.length =
       (alloc.vec.Vec.deref v).val.length := by
     simp only [alloc.vec.Vec.deref, setup_points_size s hs, hv, List.length_map, hcoeffs]
@@ -91,9 +89,20 @@ theorem setup_lincomb [e : KzgExternals] (h : ExternalsCorrect e)
     simp only [alloc.vec.Vec.deref, hv] at hx
     obtain ⟨f, _, rfl⟩ := List.mem_map.mp hx
     exact frEncode_reduced f
+  exact ⟨hsize, setup_points_valid s hs, hscalars⟩
+
+theorem setup_lincomb [e : KzgExternals] (h : ExternalsCorrect e)
+    (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
+    (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
+    (scratch : blst_ops.LincombScratch) :
+    ∃ point scratch',
+      blst_ops.g1_lincomb (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) scratch =
+        ok (point, scratch') ∧
+      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
+  obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
   obtain ⟨point, scratch', hcall, hrep⟩ := h.blst.lincomb
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) scratch hsize
-    (setup_points_valid s hs) hscalars
+    hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
@@ -106,17 +115,10 @@ theorem setup_verify_lincomb [e : KzgExternals] (h : ExternalsCorrect e)
       scratch.sum (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) =
         ok (point, scratch') ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
-  have hsize : (alloc.vec.Vec.deref s.g1_monomial).val.length =
-      (alloc.vec.Vec.deref v).val.length := by
-    simp only [alloc.vec.Vec.deref, setup_points_size s hs, hv, List.length_map, hcoeffs]
-  have hscalars : ∀ x ∈ (alloc.vec.Vec.deref v).val, FrReduced x := by
-    intro x hx
-    simp only [alloc.vec.Vec.deref, hv] at hx
-    obtain ⟨f, _, rfl⟩ := List.mem_map.mp hx
-    exact frEncode_reduced f
+  obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
   obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.blst scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
-    (setup_points_valid s hs) hscalars
+    hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
@@ -124,23 +126,16 @@ theorem setup_verify_lincomb [e : KzgExternals] (h : ExternalsCorrect e)
 theorem setup_verify_lincomb_kernel [e : KzgExternals]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
-    (scratch : verify.Lincomb) (state : msm8.Msm8) (hroute : scratch.msm=some state) :
+    (scratch : verify.Lincomb) (state : msm8.Msm8) (hroute : scratch.msm = some state) :
     ∃ point scratch',
       scratch.sum (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) =
         ok (point, scratch') ∧
-      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) ∧ scratch'.msm.isSome=true := by
-  have hsize : (alloc.vec.Vec.deref s.g1_monomial).val.length =
-      (alloc.vec.Vec.deref v).val.length := by
-    simp only [alloc.vec.Vec.deref, setup_points_size s hs, hv, List.length_map, hcoeffs]
-  have hscalars : ∀ x ∈ (alloc.vec.Vec.deref v).val, FrReduced x := by
-    intro x hx
-    simp only [alloc.vec.Vec.deref, hv] at hx
-    obtain ⟨f, _, rfl⟩ := List.mem_map.mp hx
-    exact frEncode_reduced f
+      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) ∧ scratch'.msm.isSome = true := by
+  obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
   obtain ⟨point, scratch', hcall, hnext, hrep⟩ := verify_lincomb_raw_kernel_refinement scratch state hroute
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
-    (setup_points_valid s hs) hscalars
-  refine ⟨point, scratch', hcall, ?_,?_⟩
+    hpoints hscalars
+  refine ⟨point, scratch', hcall, ?_, ?_⟩
   · simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
   · exact hnext
 
@@ -344,7 +339,7 @@ private theorem interpolation_commitment_execution [e : KzgExternals] (h : Exter
     simpa only [List.size_toArray, List.length_map] using hs.1.symm
   have hpowerCount : powers.toList.length = indices.val.length := by
     simpa only [List.size_toArray, List.length_map, _root_.Array.length_toList] using hs.2.1.symm
-  have hevals : evaluations.length = indices.val.length*64 := by
+  have hevals : evaluations.length = indices.val.length * 64 := by
     simpa only [evaluations, _root_.Array.length_toList, hcount] using flat_length evals.toList hrows
   have hindices : ∀ i ∈ indices.val, i.val < 128 := by
     intro i hi
@@ -388,7 +383,7 @@ private theorem interpolation_commitment_execution [e : KzgExternals] (h : Exter
   have hmul : 128#usize * FIELD_ELEMENTS_PER_CELL = ok 8192#usize := by
     simp only [FIELD_ELEMENTS_PER_CELL]
     show UScalar.tryMk .Usize 8192 = _
-    have hb : 8192 < 2^System.Platform.numBits := by
+    have hb : 8192 < 2 ^ System.Platform.numBits := by
       rcases System.Platform.numBits_eq with hh | hh <;> simp [hh]
     simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, hb]
   refine ⟨point, next, ?_, hv, hpoint⟩

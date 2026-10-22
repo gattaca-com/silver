@@ -13,13 +13,13 @@ open EthCryptographySpecs Bls
 theorem lane_zero_pointRep (p : g1x8.G1x8) (Q : G1) (hq : Kzg.G1Valid Q)
     (h : (ofG1x8 p).PointRep 0 (G1.toPoint Q)) :
     ∃ out, msm8.lane_zero_in_blst p = ok out ∧ Kzg.G1Rep out Q := by
-  obtain ⟨P,hholds,hvalid,heq⟩ := h
+  obtain ⟨P, hholds, hvalid, heq⟩ := h
   have hp : Kzg.G1Valid P := Kzg.g1Valid_of_groupValid hvalid (by
     rw [heq]
     exact Kzg.g1Valid_subgroup hq)
   have hmatches := (Kzg.g1_toPoint_eq_iff hp hq).mp heq
-  obtain ⟨hcall,hrep⟩ := lane_zero_in_blst_rep p P hholds
-  exact ⟨Kzg.g1Jacobian P,hcall,hrep.1,hrep.2.1.trans hmatches.1,
+  obtain ⟨hcall, hrep⟩ := lane_zero_in_blst_rep p P hholds
+  exact ⟨Kzg.g1Jacobian P, hcall, hrep.1, hrep.2.1.trans hmatches.1,
     hrep.2.2.trans hmatches.2⟩
 
 /-- The specification MSM accepts the broader Kzg validity predicate, including infinity. -/
@@ -31,7 +31,7 @@ theorem lane_zero_msm_rep (p : g1x8.G1x8) (points : _root_.Array G1)
       (∑ j ∈ Finset.range (if points.size ≤ scalars.size then points.size else scalars.size),
         scalars[j]!.val • G1.toPoint points[j]!)) :
     ∃ out, msm8.lane_zero_in_blst p = ok out ∧ Kzg.G1Rep out (G1.msm points scalars) := by
-  obtain ⟨hvalid,heq⟩ := Kzg.g1_msm_spec points scalars hp
+  obtain ⟨hvalid, heq⟩ := Kzg.g1_msm_spec points scalars hp
   apply lane_zero_pointRep p (G1.msm points scalars) hvalid
   rwa [heq]
 

@@ -69,7 +69,7 @@ theorem inner_step (k : Array U64 4#usize) (p : Array U64 7#usize)
     ok (cont (p', c', j''))) = _
   rw [index_usize_eq p ij (by change i.val + j.val < 7; omega)]
   simp only [lift, bind_tc_ok]
-  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val*b.val + old.val < 2^128; omega)]
+  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
   simp only [bind_tc_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact ht)]
   simp only [bind_tc_ok]
@@ -78,9 +78,9 @@ theorem inner_step (k : Array U64 4#usize) (p : Array U64 7#usize)
     let c' ← t >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
-  rw [update_eq p ij _ (by change i.val+j.val<7; omega), shiftRight_64_i32]
+  rw [update_eq p ij _ (by change i.val + j.val < 7; omega), shiftRight_64_i32]
   simp only [bind_tc_ok]
-  rw [usize_add_ok j 1#usize (by change j.val+1<2^32; omega)]
+  rw [usize_add_ok j 1#usize (by change j.val + 1 < 2 ^ 32; omega)]
   rfl
 
 def wordsValue : List U64 → ℤ
@@ -151,7 +151,7 @@ theorem inner_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
   induction hn : 3 - j.val generalizing p j c with
   | zero =>
     have hj3 : j.val = 3 := by omega
-    have hjge : ¬j < 3#usize := by change ¬j.val<3; omega
+    have hjge : ¬j < 3#usize := by change ¬j.val < 3; omega
     refine ⟨p, c, ?_, hc, ?_, fun _ _ _ => rfl⟩
     · rw [glv.times_z2_over_r_loop0_loop0, loop.eq_1]
       simp [glv.times_z2_over_r_loop0_loop0.body, hjge]
@@ -170,7 +170,7 @@ theorem inner_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
       have ht' : (t.val : ℤ) =
           (k.val[i.val]'(by rw [k.property]; exact hi)).val *
           (glv.Z2_OVER_R.val[j.val]'(by rw [glv.Z2_OVER_R.property]; exact hjlt)).val +
-          (p.val[i.val+j.val]'(by rw [p.property]; change i.val+j.val<7; omega)).val + c.val := by
+          (p.val[i.val + j.val]'(by rw [p.property]; change i.val + j.val < 7; omega)).val + c.val := by
         exact_mod_cast ht
       have hdiv : ((t.val % radix : ℕ) : ℤ) + (radix : ℤ) * (t.val / radix : ℕ) = t.val := by
         exact_mod_cast Nat.mod_add_div t.val radix
@@ -185,7 +185,7 @@ def sourceTail (k : Array U64 4#usize) (i : ℕ) : ℤ := wordsValue (k.val.drop
 
 theorem sourceTail_step (k : Array U64 4#usize) (i : ℕ) (hi : i < 4) :
     sourceTail k i = (k.val[i]'(by rw [k.property]; exact hi)).val +
-      (radix : ℤ) * sourceTail k (i+1) := by
+      (radix : ℤ) * sourceTail k (i + 1) := by
   unfold sourceTail
   rw [List.drop_eq_getElem_cons (by rw [k.property]; exact hi)]
   rfl
@@ -203,7 +203,7 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
   induction hn : 4 - i.val generalizing p i with
   | zero =>
     have hi4 : i.val = 4 := by omega
-    have hige : ¬i < 4#usize := by change ¬i.val<4; omega
+    have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
     refine ⟨p, ?_, ?_⟩
     · rw [glv.times_z2_over_r_loop0, loop.eq_1]
       simp [glv.times_z2_over_r_loop0.body, hige]
@@ -217,21 +217,21 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
       (lt_of_lt_of_le (by omega : i.val + 3 < 2 ^ 32) two_pow_32_le_usize)
     let next : Usize := UScalar.ofNatCore (i.val + 1)
       (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
-    have hlast : last.val = i.val+3 := rfl
-    have hnext : next.val = i.val+1 := rfl
+    have hlast : last.val = i.val + 3 := rfl
+    have hnext : next.val = i.val + 1 := rfl
     let p' := row.set last (UScalar.cast .U64 carry)
-    have hpz : row.val[last.val]'(by rw [row.property]; change last.val<7; omega) = 0#u64 := by
+    have hpz : row.val[last.val]'(by rw [row.property]; change last.val < 7; omega) = 0#u64 := by
       rw [htail last.val (by omega) (by omega)]
       exact hz last.val (by omega) (by omega)
     have hp' : value p' = value p +
         (k.val[i.val]'(by rw [k.property]; exact hilt)).val * coefficientTail 0 * (radix : ℤ) ^ i.val := by
-      rw [value_set row last _ (by change last.val<7; omega), hpz, cast64_val,
+      rw [value_set row last _ (by change last.val < 7; omega), hpz, cast64_val,
         Nat.mod_eq_of_lt hc]
       simp only [hlast]
       simp only [show (0#usize).val = 0 from rfl, show (0#u128).val = 0 from rfl,
         show (0#u64).val = 0 from rfl, Nat.cast_zero, add_zero, sub_zero] at heq ⊢
       exact heq
-    have hz' : ∀ q (hq : q < 7), next.val+3 ≤ q →
+    have hz' : ∀ q (hq : q < 7), next.val + 3 ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
       change (row.val.set last.val (UScalar.cast .U64 carry))[q]'_ = _
@@ -243,15 +243,15 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
       have hbody : glv.times_z2_over_r_loop0.body k p i = ok (cont (p', next)) := by
         simp only [glv.times_z2_over_r_loop0.body, show i < 4#usize from hilt,
           if_true, hinner, bind_tc_ok]
-        rw [usize_add_ok i 3#usize (by change i.val+3<2^32; omega)]
+        rw [usize_add_ok i 3#usize (by change i.val + 3 < 2 ^ 32; omega)]
         simp only [bind_tc_ok, lift]
         change (do
           let a ← Array.update row last (UScalar.cast .U64 carry)
           let i3 ← i + 1#usize
           ok (cont (a, i3))) = _
-        rw [update_eq row last _ (by change last.val<7; omega)]
+        rw [update_eq row last _ (by change last.val < 7; omega)]
         simp only [bind_tc_ok]
-        rw [usize_add_ok i 1#usize (by change i.val+1<2^32; omega)]
+        rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
         rfl
       simpa only [hbody] using hloop
     · rw [hout, hp', hnext, sourceTail_step k i.val hilt, pow_succ]
@@ -317,7 +317,7 @@ theorem roundedPrefix_refines (p : Array U64 7#usize)
   have he := e.hBounds
   have hf := f.hBounds
   have hg := g.hBounds
-  have hv : value (Array.make 7#usize [a,b,c,d,e,f,g] (by rfl)) =
+  have hv : value (Array.make 7#usize [a, b, c, d, e, f, g] (by rfl)) =
       a.val + (radix : ℤ) * (b.val + (radix : ℤ) * (c.val + (radix : ℤ) *
       (d.val + (radix : ℤ) * (e.val + (radix : ℤ) * (f.val + (radix : ℤ) * g.val))))) := rfl
   have hlow : e.val + d.val / 2 ^ 63 < 2 ^ 128 := by
@@ -340,7 +340,7 @@ theorem roundedPrefix_refines (p : Array U64 7#usize)
     rw [add_ok _ _ (by rw [cast128_val, cast128_val, shift63_val]; exact hlow)]
     simp only [bind_tc_ok, cast128_val, shift63_val]
     change (do
-      let f' ← Array.index_usize (Array.make 7#usize [a,b,c,d,e,f,g] (by rfl)) 5#usize
+      let f' ← Array.index_usize (Array.make 7#usize [a, b, c, d, e, f, g] (by rfl)) 5#usize
       let h ← low >>> 64#i32
       let high' ← f' + UScalar.cast .U64 h
       ok (Array.make 2#usize [UScalar.cast .U64 low, high'] (by rfl))) = _
@@ -383,9 +383,9 @@ theorem decompose_prefix (k : Array U64 4#usize) :
       let i10 ← Array.index_usize c1 0#usize
       let i11 ← Array.index_usize c1 1#usize
       let k2 ← glv.signed_difference
-        (Array.make 4#usize [i10,i11,0#u64,0#u64] (by rfl)) 0#u64
-        (Array.make 2#usize [c2,0#u64] (by rfl)) glv.Z2
-      ok (k1,k2)) := by
+        (Array.make 4#usize [i10, i11, 0#u64, 0#u64] (by rfl)) 0#u64
+        (Array.make 2#usize [c2, 0#u64] (by rfl)) glv.Z2
+      ok (k1, k2)) := by
   simp only [glv.decompose, roundedPrefix, bind_assoc, bind_tc_ok]
 
 
@@ -407,7 +407,7 @@ theorem compare_loop_zero (k : Array U64 4#usize) :
   rfl
 
 theorem at_least_half_r_eval (a b c d : U64) :
-    glv.at_least_half_r (Array.make 4#usize [a,b,c,d] (by rfl)) =
+    glv.at_least_half_r (Array.make 4#usize [a, b, c, d] (by rfl)) =
     ok (if d = 4176758429732224676#u64 then
       if c = 1845609449319885826#u64 then
         if b = 12240451741123816959#u64 then decide (9223372034707292161#u64 ≤ a)
@@ -429,9 +429,9 @@ theorem at_least_half_r_eval (a b c d : U64) :
 theorem at_least_half_r_refines (k : Array U64 4#usize) :
     glv.at_least_half_r k =
       ok (decide (26217937587563095239723870254092982918845276250263818911301829349969290592257 ≤ value k)) := by
-  rcases k with ⟨xs,hxs⟩
-  obtain ⟨a,b,c,d,rfl⟩ := List.length_eq_four.mp hxs
-  change glv.at_least_half_r (Array.make 4#usize [a,b,c,d] (by rfl)) = _
+  rcases k with ⟨xs, hxs⟩
+  obtain ⟨a, b, c, d, rfl⟩ := List.length_eq_four.mp hxs
+  change glv.at_least_half_r (Array.make 4#usize [a, b, c, d] (by rfl)) = _
   rw [at_least_half_r_eval]
   apply congrArg Result.ok
   have ha := a.hBounds
@@ -473,7 +473,7 @@ theorem negated_step (words p : Array U64 4#usize) (c : U128) (i : Usize)
   have ht : radix - 1 - a.val + c.val < 2 ^ 128 := by norm_num [radix]; omega
   let t : U128 := UScalar.ofNatCore (radix - 1 - a.val + c.val) ht
   let next : Usize := UScalar.ofNatCore (i.val + 1)
-    (lt_of_lt_of_le (by omega : i.val+1<2^32) two_pow_32_le_usize)
+    (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   refine ⟨t, next, rfl, ?_, rfl, ?_⟩
   · change radix - 1 - a.val + c.val ≤ radix
     norm_num [radix]
@@ -487,10 +487,10 @@ theorem negated_step (words p : Array U64 4#usize) (c : U128) (i : Usize)
       let a ← Array.update p i (UScalar.cast .U64 t)
       let c' ← t >>> 64#i32
       let i' ← i + 1#usize
-      ok (cont (a,c',i'))) = _
+      ok (cont (a, c', i'))) = _
     rw [update_eq p i _ hi, shiftRight_64_i32]
     simp only [bind_tc_ok]
-    rw [usize_add_ok i 1#usize (by change i.val+1<2^32; omega)]
+    rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
     rfl
 
 theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
@@ -504,15 +504,15 @@ theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
   induction hn : 4 - i.val generalizing p c i with
   | zero =>
     have hi4 : i.val = 4 := by omega
-    have hige : ¬i < 4#usize := by change ¬i.val<4; omega
-    refine ⟨p,c,?_,hc,?_⟩
+    have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
+    refine ⟨p, c, ?_, hc, ?_⟩
     · rw [glv.negated_loop, loop.eq_1]
       simp [glv.negated_loop.body, hige]
     · rw [hi4, sourceTail_four]
       norm_num
   | succ n ih =>
     have hilt : i.val < 4 := by omega
-    obtain ⟨t,next,ht,htb,hnxt,hbody⟩ := negated_step words p c i hilt hc
+    obtain ⟨t, next, ht, htb, hnxt, hbody⟩ := negated_step words p c i hilt hc
     let p' := p.set i (UScalar.cast .U64 t)
     let c' : U128 := ⟨t.bv.ushiftRight 64⟩
     have hc' : c'.val ≤ 1 := by
@@ -526,7 +526,7 @@ theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
       rw [List.getElem_set_ne (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, carry, hloop, hcarry, heq⟩ := ih p' c' next (by omega) hc' hz' (by omega)
-    refine ⟨out,carry,?_,hcarry,?_⟩
+    refine ⟨out, carry, ?_, hcarry, ?_⟩
     · rw [glv.negated_loop, loop.eq_1]
       simpa only [hbody] using hloop
     · rw [heq, value_set p i _ hilt, hz i.val hilt (by omega), cast64_val]
@@ -545,10 +545,10 @@ theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
 theorem negated_refines (words : Array U64 4#usize) :
     ∃ out : Array U64 4#usize, glv.negated words = ok out ∧
       value out = (-value words) % 2 ^ 256 := by
-  obtain ⟨out,carry,hloop,hcarry,heq⟩ := negated_loop_exact words
+  obtain ⟨out, carry, hloop, hcarry, heq⟩ := negated_loop_exact words
     (Array.repeat 4#usize 0#u64) 1#u128 0#usize (by decide) (by decide)
     (by intro q hq _; change (List.replicate 4 (0#u64))[q]'_ = _; simp only [List.getElem_replicate])
-  refine ⟨out,hloop,?_⟩
+  refine ⟨out, hloop, ?_⟩
   have hb := value_bounds out
   have hz : value (Array.repeat 4#usize 0#u64) = 0 := by
     change wordsValue (List.replicate 4 0#u64) = 0
@@ -561,13 +561,13 @@ theorem twice_radix_shift : 2#u128 <<< 64#i32 = ok 36893488147419103232#u128 := 
   rfl
 
 theorem subtraction_facts (x y z borrow : U64) (hb : borrow.val ≤ 2) :
-    36893488147419103232+x.val < 2^128 ∧
-    y.val ≤ 36893488147419103232+x.val ∧
-    z.val ≤ 36893488147419103232+x.val-y.val ∧
-    borrow.val ≤ 36893488147419103232+x.val-y.val-z.val ∧
-    36893488147419103232+x.val-y.val-z.val-borrow.val < 3*radix ∧
-    ((36893488147419103232+x.val-y.val-z.val-borrow.val : ℕ) : ℤ) =
-      36893488147419103232+(x.val : ℤ)-y.val-z.val-borrow.val := by
+    36893488147419103232 + x.val < 2 ^ 128 ∧
+    y.val ≤ 36893488147419103232 + x.val ∧
+    z.val ≤ 36893488147419103232 + x.val - y.val ∧
+    borrow.val ≤ 36893488147419103232 + x.val - y.val - z.val ∧
+    36893488147419103232 + x.val - y.val - z.val - borrow.val < 3 * radix ∧
+    ((36893488147419103232 + x.val - y.val - z.val - borrow.val : ℕ) : ℤ) =
+      36893488147419103232 + (x.val : ℤ) - y.val - z.val - borrow.val := by
   have hx := x.hBounds
   have hy := y.hBounds
   have hz := z.hBounds
@@ -575,18 +575,18 @@ theorem subtraction_facts (x y z borrow : U64) (hb : borrow.val ≤ 2) :
   omega
 
 theorem add_value {ty : UScalarTy} (x y : UScalar ty)
-    (h : x.val+y.val < 2^ty.numBits) :
-    ∃ z : UScalar ty, x+y = ok z ∧ z.val = x.val+y.val :=
+    (h : x.val + y.val < 2 ^ ty.numBits) :
+    ∃ z : UScalar ty, x + y = ok z ∧ z.val = x.val + y.val :=
   ⟨UScalar.ofNatCore _ h, add_ok x y h, rfl⟩
 
 theorem sub_value {ty : UScalarTy} (x y : UScalar ty) (h : y.val ≤ x.val) :
-    ∃ z : UScalar ty, x-y = ok z ∧ z.val = x.val-y.val :=
+    ∃ z : UScalar ty, x - y = ok z ∧ z.val = x.val - y.val :=
   ⟨UScalar.ofNatCore _ (by have := x.hBounds; omega), sub_ok x y h, rfl⟩
 
 theorem subtraction_run {α : Type} (x y z borrow : U64) (hb : borrow.val ≤ 2)
     (f : U128 → Result α) :
     ∃ t : U128,
-      (t.val : ℤ) = 36893488147419103232+x.val-y.val-z.val-borrow.val ∧ t.val < 3*radix ∧
+      (t.val : ℤ) = 36893488147419103232 + x.val - y.val - z.val - borrow.val ∧ t.val < 3 * radix ∧
       (do
         let base ← 2#u128 <<< 64#i32
         let s ← base + UScalar.cast .U128 x
@@ -594,20 +594,20 @@ theorem subtraction_run {α : Type} (x y z borrow : U64) (hb : borrow.val ≤ 2)
         let s ← s - UScalar.cast .U128 z
         let t ← s - UScalar.cast .U128 borrow
         f t) = f t := by
-  obtain ⟨hsum,hsub1,hsub2,hsub3,htb,htint⟩ := subtraction_facts x y z borrow hb
-  obtain ⟨s1,hs1,hv1⟩ := add_value 36893488147419103232#u128 (UScalar.cast .U128 x)
+  obtain ⟨hsum, hsub1, hsub2, hsub3, htb, htint⟩ := subtraction_facts x y z borrow hb
+  obtain ⟨s1, hs1, hv1⟩ := add_value 36893488147419103232#u128 (UScalar.cast .U128 x)
     (by rw [cast128_val]; exact hsum)
-  have hv1' : s1.val = 36893488147419103232+x.val := by simpa only [cast128_val] using hv1
-  obtain ⟨s2,hs2,hv2⟩ := sub_value s1 (UScalar.cast .U128 y)
-    (by rw [cast128_val,hv1']; exact hsub1)
-  have hv2' : s2.val = 36893488147419103232+x.val-y.val := by simpa only [cast128_val,hv1'] using hv2
-  obtain ⟨s3,hs3,hv3⟩ := sub_value s2 (UScalar.cast .U128 z)
-    (by rw [cast128_val,hv2']; exact hsub2)
-  have hv3' : s3.val = 36893488147419103232+x.val-y.val-z.val := by simpa only [cast128_val,hv2'] using hv3
-  obtain ⟨t,hst,hvt⟩ := sub_value s3 (UScalar.cast .U128 borrow)
-    (by rw [cast128_val,hv3']; exact hsub3)
-  have hvt' : t.val = 36893488147419103232+x.val-y.val-z.val-borrow.val := by
-    simpa only [cast128_val,hv3'] using hvt
+  have hv1' : s1.val = 36893488147419103232 + x.val := by simpa only [cast128_val] using hv1
+  obtain ⟨s2, hs2, hv2⟩ := sub_value s1 (UScalar.cast .U128 y)
+    (by rw [cast128_val, hv1']; exact hsub1)
+  have hv2' : s2.val = 36893488147419103232 + x.val - y.val := by simpa only [cast128_val, hv1'] using hv2
+  obtain ⟨s3, hs3, hv3⟩ := sub_value s2 (UScalar.cast .U128 z)
+    (by rw [cast128_val, hv2']; exact hsub2)
+  have hv3' : s3.val = 36893488147419103232 + x.val - y.val - z.val := by simpa only [cast128_val, hv2'] using hv3
+  obtain ⟨t, hst, hvt⟩ := sub_value s3 (UScalar.cast .U128 borrow)
+    (by rw [cast128_val, hv3']; exact hsub3)
+  have hvt' : t.val = 36893488147419103232 + x.val - y.val - z.val - borrow.val := by
+    simpa only [cast128_val, hv3'] using hvt
   refine ⟨t, ?_, ?_, ?_⟩
   · rw [hvt']; exact htint
   · rw [hvt']; exact htb
@@ -632,13 +632,13 @@ theorem subtract_step (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize
     let h ← t >>> 64#i32
     let b' ← 2#u64 - UScalar.cast .U64 h
     let next' ← i + 1#usize
-    ok (cont (next',p',b'))
-  obtain ⟨t,htint,htb,hrun⟩ := subtraction_run x y z borrow hb f
-  have hq : t.val/radix ≤ 2 := by norm_num [radix] at htb ⊢; omega
-  let b : U64 := UScalar.ofNatCore (2-t.val/radix) (lt_of_le_of_lt (Nat.sub_le 2 _) (by decide))
-  let next : Usize := UScalar.ofNatCore (i.val+1)
-    (lt_of_lt_of_le (by omega : i.val+1<2^32) two_pow_32_le_usize)
-  refine ⟨t,b,next,htint,htb,rfl,rfl,?_⟩
+    ok (cont (next', p', b'))
+  obtain ⟨t, htint, htb, hrun⟩ := subtraction_run x y z borrow hb f
+  have hq : t.val / radix ≤ 2 := by norm_num [radix] at htb ⊢; omega
+  let b : U64 := UScalar.ofNatCore (2 - t.val / radix) (lt_of_le_of_lt (Nat.sub_le 2 _) (by decide))
+  let next : Usize := UScalar.ofNatCore (i.val + 1)
+    (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
+  refine ⟨t, b, next, htint, htb, rfl, rfl, ?_⟩
   simp only [glv.signed_difference_loop1.body, show i < 4#usize from hi, if_true]
   simp only [index_usize_eq a i hi, index_usize_eq sub i hi, index_usize_eq cd i hi,
     bind_tc_ok, lift]
@@ -653,34 +653,34 @@ theorem subtract_step (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize
   dsimp only [f]
   rw [update_eq p i _ hi, shiftRight_64_i32]
   simp only [bind_tc_ok]
-  have hcast : (UScalar.cast .U64 (⟨t.bv.ushiftRight 64⟩ : U128)).val = t.val/radix := by
+  have hcast : (UScalar.cast .U64 (⟨t.bv.ushiftRight 64⟩ : U128)).val = t.val / radix := by
     rw [cast64_val, high_val, Nat.mod_eq_of_lt]
     exact (high_val t) ▸ high_bound t
   rw [sub_ok _ _ (by rw [hcast]; exact hq)]
   simp only [bind_tc_ok, hcast]
-  rw [usize_add_ok i 1#usize (by change i.val+1<2^32; omega)]
+  rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
   rfl
 
 theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize)
     (hi : i.val ≤ 4) (hb : borrow.val ≤ 2)
     (hz : ∀ q (hq : q < 4), i.val ≤ q → p.val[q]'(by rw [p.property]; exact hq) = 0#u64) :
     ∃ (out : Array U64 4#usize) (b : U64),
-      glv.signed_difference_loop1 a cd i sub p borrow = ok (out,b) ∧ b.val ≤ 2 ∧
+      glv.signed_difference_loop1 a cd i sub p borrow = ok (out, b) ∧ b.val ≤ 2 ∧
       value out - (b.val : ℤ) * (radix : ℤ) ^ 4 = value p +
         (sourceTail a i.val - sourceTail sub i.val - sourceTail cd i.val - borrow.val) *
           (radix : ℤ) ^ i.val := by
   induction hn : 4 - i.val generalizing p borrow i with
   | zero =>
     have hi4 : i.val = 4 := by omega
-    have hige : ¬i < 4#usize := by change ¬i.val<4; omega
-    refine ⟨p,borrow,?_,hb,?_⟩
+    have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
+    refine ⟨p, borrow, ?_, hb, ?_⟩
     · rw [glv.signed_difference_loop1, loop.eq_1]
       simp [glv.signed_difference_loop1.body, hige]
     · rw [hi4, sourceTail_four, sourceTail_four, sourceTail_four]
       ring
   | succ n ih =>
     have hilt : i.val < 4 := by omega
-    obtain ⟨t,b,next,ht,htb,hbval,hnxt,hbody⟩ := subtract_step a cd sub p borrow i hilt hb
+    obtain ⟨t, b, next, ht, htb, hbval, hnxt, hbody⟩ := subtract_step a cd sub p borrow i hilt hb
     let p' := p.set i (UScalar.cast .U64 t)
     have hb' : b.val ≤ 2 := by rw [hbval]; exact Nat.sub_le _ _
     have hz' : ∀ q (hq : q < 4), next.val ≤ q →
@@ -690,15 +690,15 @@ theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i :
       rw [List.getElem_set_ne (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, carry, hloop, hcarry, heq⟩ := ih p' b next (by omega) hb' hz' (by omega)
-    refine ⟨out,carry,?_,hcarry,?_⟩
+    refine ⟨out, carry, ?_, hcarry, ?_⟩
     · rw [glv.signed_difference_loop1, loop.eq_1]
       simpa only [hbody] using hloop
     · rw [heq, value_set p i _ hilt, hz i.val hilt (by omega), cast64_val]
       have hdiv : ((t.val % radix : ℕ) : ℤ) + (radix : ℤ) * (t.val / radix : ℕ) = t.val := by
         exact_mod_cast Nat.mod_add_div t.val radix
-      have hbint : (b.val : ℤ) = 2 - ((t.val/radix : ℕ) : ℤ) := by
+      have hbint : (b.val : ℤ) = 2 - ((t.val / radix : ℕ) : ℤ) := by
         rw [hbval]
-        have hq : t.val/radix ≤ 2 := by norm_num [radix] at htb ⊢; omega
+        have hq : t.val / radix ≤ 2 := by norm_num [radix] at htb ⊢; omega
         omega
       simp only [show (0#u64).val = 0 from rfl, Nat.cast_zero, sub_zero,
         sourceTail_step a i.val hilt, sourceTail_step sub i.val hilt,
@@ -707,12 +707,12 @@ theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i :
 
 theorem subtract_refines (a cd sub : Array U64 4#usize) :
     ∃ (out : Array U64 4#usize) (b : U64),
-      glv.signed_difference_loop1 a cd 0#usize sub (Array.repeat 4#usize 0#u64) 0#u64 = ok (out,b) ∧
+      glv.signed_difference_loop1 a cd 0#usize sub (Array.repeat 4#usize 0#u64) 0#u64 = ok (out, b) ∧
       b.val ≤ 2 ∧ value out - (b.val : ℤ) * 2 ^ 256 = value a - value sub - value cd := by
-  obtain ⟨out,b,hloop,hb,heq⟩ := subtract_loop_exact a cd sub
+  obtain ⟨out, b, hloop, hb, heq⟩ := subtract_loop_exact a cd sub
     (Array.repeat 4#usize 0#u64) 0#u64 0#usize (by decide) (by decide)
     (by intro q hq _; change (List.replicate 4 (0#u64))[q]'_ = _; simp only [List.getElem_replicate])
-  refine ⟨out,b,hloop,hb,?_⟩
+  refine ⟨out, b, hloop, hb, ?_⟩
   have hz : value (Array.repeat 4#usize 0#u64) = 0 := rfl
   rw [hz] at heq
   simpa [value, sourceTail, radix] using heq
@@ -762,7 +762,7 @@ theorem mul2_inner_step (k d : Array U64 2#usize) (p : Array U64 4#usize)
     ok (cont (p', c', j''))) = _
   rw [index_usize_eq p ij (by change i.val + j.val < 4; omega)]
   simp only [lift, bind_tc_ok]
-  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val*b.val + old.val < 2^128; omega)]
+  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
   simp only [bind_tc_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact ht)]
   simp only [bind_tc_ok]
@@ -771,9 +771,9 @@ theorem mul2_inner_step (k d : Array U64 2#usize) (p : Array U64 4#usize)
     let c' ← t >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
-  rw [update_eq p ij _ (by change i.val+j.val<4; omega), shiftRight_64_i32]
+  rw [update_eq p ij _ (by change i.val + j.val < 4; omega), shiftRight_64_i32]
   simp only [bind_tc_ok]
-  rw [usize_add_ok j 1#usize (by change j.val+1<2^32; omega)]
+  rw [usize_add_ok j 1#usize (by change j.val + 1 < 2 ^ 32; omega)]
   rfl
 
 def mul2_tail (d : Array U64 2#usize) (j : ℕ) : ℤ := wordsValue (d.val.drop j)
@@ -804,7 +804,7 @@ theorem mul2_inner_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
   induction hn : 2 - j.val generalizing p j c with
   | zero =>
     have hj2 : j.val = 2 := by omega
-    have hjge : ¬j < 2#usize := by change ¬j.val<2; omega
+    have hjge : ¬j < 2#usize := by change ¬j.val < 2; omega
     refine ⟨p, c, ?_, hc, ?_, fun _ _ _ => rfl⟩
     · rw [glv.signed_difference_loop0_loop0, loop.eq_1]
       simp [glv.signed_difference_loop0_loop0.body, hjge]
@@ -823,7 +823,7 @@ theorem mul2_inner_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
       have ht' : (t.val : ℤ) =
           (k.val[i.val]'(by rw [k.property]; exact hi)).val *
           (d.val[j.val]'(by rw [d.property]; exact hjlt)).val +
-          (p.val[i.val+j.val]'(by rw [p.property]; change i.val+j.val<4; omega)).val + c.val := by
+          (p.val[i.val + j.val]'(by rw [p.property]; change i.val + j.val < 4; omega)).val + c.val := by
         exact_mod_cast ht
       have hdiv : ((t.val % radix : ℕ) : ℤ) + (radix : ℤ) * (t.val / radix : ℕ) = t.val := by
         exact_mod_cast Nat.mod_add_div t.val radix
@@ -844,7 +844,7 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
   induction hn : 2 - i.val generalizing p i with
   | zero =>
     have hi2 : i.val = 2 := by omega
-    have hige : ¬i < 2#usize := by change ¬i.val<2; omega
+    have hige : ¬i < 2#usize := by change ¬i.val < 2; omega
     refine ⟨p, ?_, ?_⟩
     · rw [glv.signed_difference_loop0, loop.eq_1]
       simp [glv.signed_difference_loop0.body, hige]
@@ -858,21 +858,21 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
       (lt_of_lt_of_le (by omega : i.val + 2 < 2 ^ 32) two_pow_32_le_usize)
     let next : Usize := UScalar.ofNatCore (i.val + 1)
       (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
-    have hlast : last.val = i.val+2 := rfl
-    have hnext : next.val = i.val+1 := rfl
+    have hlast : last.val = i.val + 2 := rfl
+    have hnext : next.val = i.val + 1 := rfl
     let p' := row.set last (UScalar.cast .U64 carry)
-    have hpz : row.val[last.val]'(by rw [row.property]; change last.val<4; omega) = 0#u64 := by
+    have hpz : row.val[last.val]'(by rw [row.property]; change last.val < 4; omega) = 0#u64 := by
       rw [htail last.val (by omega) (by omega)]
       exact hz last.val (by omega) (by omega)
     have hp' : value p' = value p +
         (k.val[i.val]'(by rw [k.property]; exact hilt)).val * mul2_tail d 0 * (radix : ℤ) ^ i.val := by
-      rw [value_set row last _ (by change last.val<4; omega), hpz, cast64_val,
+      rw [value_set row last _ (by change last.val < 4; omega), hpz, cast64_val,
         Nat.mod_eq_of_lt hc]
       simp only [hlast]
       simp only [show (0#usize).val = 0 from rfl, show (0#u128).val = 0 from rfl,
         show (0#u64).val = 0 from rfl, Nat.cast_zero, add_zero, sub_zero] at heq ⊢
       exact heq
-    have hz' : ∀ q (hq : q < 4), next.val+2 ≤ q →
+    have hz' : ∀ q (hq : q < 4), next.val + 2 ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
       change (row.val.set last.val (UScalar.cast .U64 carry))[q]'_ = _
@@ -884,15 +884,15 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
       have hbody : glv.signed_difference_loop0.body k d p i = ok (cont (p', next)) := by
         simp only [glv.signed_difference_loop0.body, show i < 2#usize from hilt,
           if_true, hinner, bind_tc_ok]
-        rw [usize_add_ok i 2#usize (by change i.val+2<2^32; omega)]
+        rw [usize_add_ok i 2#usize (by change i.val + 2 < 2 ^ 32; omega)]
         simp only [bind_tc_ok, lift]
         change (do
           let a ← Array.update row last (UScalar.cast .U64 carry)
           let i3 ← i + 1#usize
           ok (cont (a, i3))) = _
-        rw [update_eq row last _ (by change last.val<4; omega)]
+        rw [update_eq row last _ (by change last.val < 4; omega)]
         simp only [bind_tc_ok]
-        rw [usize_add_ok i 1#usize (by change i.val+1<2^32; omega)]
+        rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
         rfl
       simpa only [hbody] using hloop
     · rw [hout, hp', hnext, mul2_tail_step k i.val hilt, pow_succ]
@@ -925,21 +925,21 @@ def finishHalf (magnitude : Array U64 4#usize) (negative : Bool) : Result glv.Ha
   ok { magnitude, negative }
 
 theorem finishHalf_ok (m : Array U64 4#usize) (negative : Bool) (hm : value m < 2 ^ 127) :
-    finishHalf m negative = ok ⟨m,negative⟩ := by
-  rcases m with ⟨xs,hxs⟩
-  obtain ⟨a,b,c,d,rfl⟩ := List.length_eq_four.mp hxs
+    finishHalf m negative = ok ⟨m, negative⟩ := by
+  rcases m with ⟨xs, hxs⟩
+  obtain ⟨a, b, c, d, rfl⟩ := List.length_eq_four.mp hxs
   have hc : c = 0#u64 := by
     apply UScalar.eq_of_val_eq
-    norm_num [value,wordsValue,radix] at hm
-    change c.val=0
+    norm_num [value, wordsValue, radix] at hm
+    change c.val = 0
     omega
   have hd : d = 0#u64 := by
     apply UScalar.eq_of_val_eq
-    norm_num [value,wordsValue,radix] at hm
-    change d.val=0
+    norm_num [value, wordsValue, radix] at hm
+    change d.val = 0
     omega
   have hb : b.val < 2 ^ 63 := by
-    norm_num [value,wordsValue,radix] at hm ⊢
+    norm_num [value, wordsValue, radix] at hm ⊢
     omega
   have hshift : b >>> 63#i32 = ok 0#u64 := by
     rw [show b >>> 63#i32 = ok (⟨b.bv.ushiftRight 63⟩ : U64) from rfl]
@@ -965,27 +965,27 @@ theorem signed_difference_refines (a : Array U64 4#usize) (b : U64) (c d : Array
     (hbound : |value a - (b.val : ℤ) - value c * value d| < 2 ^ 127) :
     ∃ h : glv.Half, glv.signed_difference a b c d = ok h ∧
       signedValue h = value a - (b.val : ℤ) - value c * value d ∧ value h.magnitude < 2 ^ 127 := by
-  obtain ⟨cd,hcd,hcdv⟩ := mul2_refines c d
-  let sub := Array.make 4#usize [b,0#u64,0#u64,0#u64] (by rfl)
-  obtain ⟨out,borrow,hsub,hborrow,hval⟩ := subtract_refines a cd sub
+  obtain ⟨cd, hcd, hcdv⟩ := mul2_refines c d
+  let sub := Array.make 4#usize [b, 0#u64, 0#u64, 0#u64] (by rfl)
+  obtain ⟨out, borrow, hsub, hborrow, hval⟩ := subtract_refines a cd sub
   have hsv : value sub = b.val := by
-    change wordsValue [b,0#u64,0#u64,0#u64] = b.val
+    change wordsValue [b, 0#u64, 0#u64, 0#u64] = b.val
     simp [wordsValue]
-  rw [hsv,hcdv] at hval
+  rw [hsv, hcdv] at hval
   have hout := value_bounds out
   have hsmall := abs_lt.mp hbound
   by_cases hb0 : borrow = 0#u64
   · have heq : value out = value a - (b.val : ℤ) - value c * value d := by
-      simpa only [hb0,show (0#u64).val=0 from rfl,Nat.cast_zero,zero_mul,sub_zero] using hval
+      simpa only [hb0, show (0#u64).val = 0 from rfl, Nat.cast_zero, zero_mul, sub_zero] using hval
     have hsize : value out < 2 ^ 127 := by omega
-    refine ⟨⟨out,false⟩,?_,?_,hsize⟩
-    · rw [glv.signed_difference,hcd]
+    refine ⟨⟨out, false⟩, ?_, ?_, hsize⟩
+    · rw [glv.signed_difference, hcd]
       simp only [bind_tc_ok]
       rw [hsub]
       simp only [bind_tc_ok]
       change ((if borrow != 0#u64 then
-          (glv.negated out >>= fun magnitude => ok (true,magnitude))
-        else ok (false,out)) >>= fun (negative,magnitude) => finishHalf magnitude negative) = _
+          (glv.negated out >>= fun magnitude => ok (true, magnitude))
+        else ok (false, out)) >>= fun (negative, magnitude) => finishHalf magnitude negative) = _
       simp only [hb0, bne_self_eq_false, Bool.false_eq_true, if_false, bind_tc_ok]
       exact finishHalf_ok out false hsize
     · exact heq
@@ -996,26 +996,26 @@ theorem signed_difference_refines (a : Array U64 4#usize) (b : U64) (c d : Array
     have hneg : value a - (b.val : ℤ) - value c * value d < 0 := by
       norm_num [radix] at hout
       omega
-    obtain ⟨mag,hmag,hmagv⟩ := negated_refines out
+    obtain ⟨mag, hmag, hmagv⟩ := negated_refines out
     have hmagval : value mag = -(value a - (b.val : ℤ) - value c * value d) := by
       rw [hmagv]
       norm_num [radix] at hout
       omega
     have hsize : value mag < 2 ^ 127 := by omega
-    refine ⟨⟨mag,true⟩,?_,?_,hsize⟩
-    · rw [glv.signed_difference,hcd]
+    refine ⟨⟨mag, true⟩, ?_, ?_, hsize⟩
+    · rw [glv.signed_difference, hcd]
       simp only [bind_tc_ok]
       rw [hsub]
       simp only [bind_tc_ok]
       change ((if borrow != 0#u64 then
-          (glv.negated out >>= fun magnitude => ok (true,magnitude))
-        else ok (false,out)) >>= fun (negative,magnitude) => finishHalf magnitude negative) = _
+          (glv.negated out >>= fun magnitude => ok (true, magnitude))
+        else ok (false, out)) >>= fun (negative, magnitude) => finishHalf magnitude negative) = _
       simp only [bne_iff_ne, if_pos hb0]
       rw [hmag]
       change finishHalf mag true = _
       exact finishHalf_ok mag true hsize
     · change -value mag = _
-      rw [hmagval,neg_neg]
+      rw [hmagval, neg_neg]
 
 end LeanBlsSimd.GlvRefines
 
@@ -1027,57 +1027,57 @@ theorem lambda_value : value glv.LAMBDA = Glv.lambda := by decide +kernel
 theorem z2_value : value glv.Z2 = Glv.zSquared := by decide +kernel
 
 def extendTwo (a : Array U64 2#usize) : Array U64 4#usize :=
-  Array.make 4#usize [a.val[0],a.val[1],0#u64,0#u64] (by rfl)
+  Array.make 4#usize [a.val[0], a.val[1], 0#u64, 0#u64] (by rfl)
 
 theorem extendTwo_value (a : Array U64 2#usize) : value (extendTwo a) = value a := by
-  rcases a with ⟨xs,hxs⟩
-  obtain ⟨a,b,rfl⟩ := List.length_eq_two.mp hxs
-  change wordsValue [a,b,0#u64,0#u64] = wordsValue [a,b]
+  rcases a with ⟨xs, hxs⟩
+  obtain ⟨a, b, rfl⟩ := List.length_eq_two.mp hxs
+  change wordsValue [a, b, 0#u64, 0#u64] = wordsValue [a, b]
   simp [wordsValue]
 
 theorem boolCast_value (b : Bool) : (UScalar.cast_fromBool .U64 b).val = if b then 1 else 0 := by
   cases b <;> rfl
 
 theorem decompose_refines (k : Array U64 4#usize) (hk : value k < 2 ^ 255) :
-    ∃ h1 h2 : glv.Half, glv.decompose k = ok (h1,h2) ∧
+    ∃ h1 h2 : glv.Half, glv.decompose k = ok (h1, h2) ∧
       signedValue h1 = Glv.first (value k) ∧ signedValue h2 = Glv.second (value k) ∧
       value h1.magnitude < 2 ^ 127 ∧ value h2.magnitude < 2 ^ 127 := by
-  obtain ⟨product,c1,hprod,hprefix,hc1⟩ := rounded_c1_refines k hk
+  obtain ⟨product, c1, hprod, hprefix, hc1⟩ := rounded_c1_refines k hk
   have hc1' : value c1 = Glv.c1 (value k) := hc1
   let b := UScalar.cast_fromBool .U64 (decide (Glv.halfModulusUp ≤ value k))
   have hb : (b.val : ℤ) = Glv.c2 (value k) := by
-    simp only [b,boolCast_value,Glv.c2]
+    simp only [b, boolCast_value, Glv.c2]
     split_ifs <;> simp_all
   have hk0 := (value_bounds k).1
-  obtain ⟨hfirst,hsecond⟩ := Glv.halves_bounded (value k) hk0 hk
+  obtain ⟨hfirst, hsecond⟩ := Glv.halves_bounded (value k) hk0 hk
   have hf : value k - (b.val : ℤ) - value c1 * value glv.LAMBDA = Glv.first (value k) := by
-    rw [hb,hc1',lambda_value]
+    rw [hb, hc1', lambda_value]
     rfl
-  obtain ⟨h1,hh1,hv1,hm1⟩ := signed_difference_refines k b c1 glv.LAMBDA (hf ▸ hfirst)
-  let bwords := Array.make 2#usize [b,0#u64] (by rfl)
+  obtain ⟨h1, hh1, hv1, hm1⟩ := signed_difference_refines k b c1 glv.LAMBDA (hf ▸ hfirst)
+  let bwords := Array.make 2#usize [b, 0#u64] (by rfl)
   have hbwords : value bwords = b.val := by
-    change wordsValue [b,0#u64] = b.val
+    change wordsValue [b, 0#u64] = b.val
     simp [wordsValue]
   have hs : value (extendTwo c1) - ((0#u64).val : ℤ) - value bwords * value glv.Z2 =
       Glv.second (value k) := by
-    rw [extendTwo_value,hc1',hbwords,hb,z2_value]
+    rw [extendTwo_value, hc1', hbwords, hb, z2_value]
     change Glv.c1 (value k) - 0 - Glv.c2 (value k) * Glv.zSquared = _
-    simp only [sub_zero,Glv.second]
-  obtain ⟨h2,hh2,hv2,hm2⟩ := signed_difference_refines (extendTwo c1) 0#u64 bwords glv.Z2 (hs ▸ hsecond)
-  refine ⟨h1,h2,?_,hv1.trans hf,hv2.trans hs,hm1,hm2⟩
-  rw [decompose_prefix,hprod]
-  simp only [bind_tc_ok,hprefix,at_least_half_r_refines,lift]
+    simp only [sub_zero, Glv.second]
+  obtain ⟨h2, hh2, hv2, hm2⟩ := signed_difference_refines (extendTwo c1) 0#u64 bwords glv.Z2 (hs ▸ hsecond)
+  refine ⟨h1, h2, ?_, hv1.trans hf, hv2.trans hs, hm1, hm2⟩
+  rw [decompose_prefix, hprod]
+  simp only [bind_tc_ok, hprefix, at_least_half_r_refines, lift]
   change (do
     let h1 ← glv.signed_difference k b c1 glv.LAMBDA
     let i10 ← Array.index_usize c1 0#usize
     let i11 ← Array.index_usize c1 1#usize
-    let h2 ← glv.signed_difference (Array.make 4#usize [i10,i11,0#u64,0#u64] (by rfl)) 0#u64 bwords glv.Z2
-    ok (h1,h2)) = _
+    let h2 ← glv.signed_difference (Array.make 4#usize [i10, i11, 0#u64, 0#u64] (by rfl)) 0#u64 bwords glv.Z2
+    ok (h1, h2)) = _
   rw [hh1]
   simp only [bind_tc_ok]
-  rw [index_usize_eq c1 0#usize (by decide),index_usize_eq c1 1#usize (by decide)]
+  rw [index_usize_eq c1 0#usize (by decide), index_usize_eq c1 1#usize (by decide)]
   simp only [bind_tc_ok]
-  change (do let h2 ← glv.signed_difference (extendTwo c1) 0#u64 bwords glv.Z2; ok (h1,h2)) = _
+  change (do let h2 ← glv.signed_difference (extendTwo c1) 0#u64 bwords glv.Z2; ok (h1, h2)) = _
   rw [hh2]
   rfl
 

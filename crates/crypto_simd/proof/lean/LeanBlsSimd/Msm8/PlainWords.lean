@@ -41,7 +41,7 @@ theorem push_loop_refines (w : Array (Aeneas.Std.Array U64 8#usize) 4#usize)
     let next : Usize := UScalar.ofNatCore (lane.val + 1) hadd
     have hv : next.val = lane.val + 1 := rfl
     have hbody : fr8.u256x8.U256x8.push_words_loop.body count w words lane =
-        ok (cont (nextWords,next)) := by
+        ok (cont (nextWords, next)) := by
       simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, hlt, if_true]
       simp only [index_usize_eq w 0#usize (by decide), index_usize_eq w 1#usize (by decide),
         index_usize_eq w 2#usize (by decide), index_usize_eq w 3#usize (by decide), bind_tc_ok]
@@ -61,7 +61,7 @@ theorem push_loop_refines (w : Array (Aeneas.Std.Array U64 8#usize) 4#usize)
       (by rw [hw, List.length_append, List.length_singleton]; omega) (by omega)
     refine ⟨out, ?_, ?_⟩
     · unfold fr8.u256x8.U256x8.push_words_loop
-      change loop (fun p => fr8.u256x8.U256x8.push_words_loop.body count w p.1 p.2) (words,lane) = _
+      change loop (fun p => fr8.u256x8.U256x8.push_words_loop.body count w p.1 p.2) (words, lane) = _
       rw [loop.eq_1, hbody]
       exact hout
     · rw [hval, hw, List.range'_succ, List.map_cons]
@@ -98,10 +98,10 @@ open scoped EthCryptographySpecs.Bls.Fr
 open Kzg.Extender.Kernel Kzg.Extender.Kernel.BytePacking
 
 def sixteenLiteral : blst.blst_fr :=
-  ⟨Array.make 4#usize [16#u64,0#u64,0#u64,0#u64] (by rfl)⟩
+  ⟨Array.make 4#usize [16#u64, 0#u64, 0#u64, 0#u64] (by rfl)⟩
 
 def sixteenVector : fr8.Fr8 :=
-  toArray id (transpose (Vector.replicate 8 (#v[16,0,0,0,0] : Vector UInt64 5)))
+  toArray id (transpose (Vector.replicate 8 (#v[16, 0, 0, 0, 0] : Vector UInt64 5)))
 
 theorem sixteen_refines : fr8.Fr8.splat sixteenLiteral = ok sixteenVector := by
   simp only [fr8.Fr8.splat, unpack_refines, bind_tc_ok, FrModel.Simd.splat_limbs_refines]
@@ -109,7 +109,7 @@ theorem sixteen_refines : fr8.Fr8.splat sixteenLiteral = ok sixteenVector := by
 
 theorem sixteen_normalized : Normalized sixteenVector := by
   intro j lane
-  rw [show (sixteenVector.val[j.val]!)[lane] = (#v[16,0,0,0,0] : Vector UInt64 5)[j] by
+  rw [show (sixteenVector.val[j.val]!)[lane] = (#v[16, 0, 0, 0, 0] : Vector UInt64 5)[j] by
     simp [sixteenVector, transpose, getElem!_pos, j.isLt]]
   fin_cases j <;> decide
 
@@ -443,7 +443,7 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
       let next : Usize := UScalar.ofNatCore (base.val + count.val) hadd
       have hnv : next.val = base.val + count.val := rfl
       have hbody : fr8.Fr8.plain_words_loop0.body input sixteenVector words base =
-          ok (cont (nextWords,next)) := by
+          ok (cont (nextWords, next)) := by
         simp only [fr8.Fr8.plain_words_loop0.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq, hlt, if_true]
         simp only [UScalar.lt_equiv, Slice.len] at hcount
         rw [← bind_assoc_eq, hcount]
@@ -500,19 +500,16 @@ theorem plain_words_correct (input : Slice blst.blst_fr) (words : alloc.vec.Vec 
     (hr : ∀ x ∈ input.val, FrReduced x) :
     ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length ∧
       out.val.map (fun word => limbs word.val) = input.val.map (fun x => (frRead x).val) := by
-  obtain ⟨empty, he, hev⟩ := WP.spec_imp_exists (alloc.vec.Vec.resize_spec
-    (core.clone.CloneArray 4#usize core.clone.CloneU64) words 0#usize (Array.repeat 4#usize 0#u64)
-    (clone_word _))
-  have hempty : empty.val = [] := by simpa [List.resize] using hev
+  let empty : alloc.vec.Vec Word := ⟨[], by simp⟩
+  have hempty : empty.val = [] := rfl
   obtain ⟨out, hout, hlen, hval⟩ := plain_loop_refines input empty 0#usize (by simp) hr
     (by simpa [hempty] using input.property)
   refine ⟨out, ?_, by simpa [hempty] using hlen, ?_⟩
   · simp only [fr8.Fr8.plain_words]
     change (do let sixteen ← fr8.Fr8.splat sixteenLiteral
-               let empty ← alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64)
-                 words 0#usize (Array.repeat 4#usize 0#u64)
+               let empty ← alloc.vec.Vec.clear Global words
                fr8.Fr8.plain_words_loop0 input empty sixteen 0#usize) = _
-    simp only [sixteen_refines, he, hout, bind_tc_ok]
+    simpa only [sixteen_refines, alloc.vec.Vec.clear, bind_tc_ok] using hout
   · simpa only [hempty, List.map_nil, List.nil_append, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, scalarValues_all] using hval
 

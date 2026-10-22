@@ -47,10 +47,10 @@ namespace LeanBlsSimd.Controls.MsmBuckets
 open BucketsRefines
 
 private def buckets4 : msm8.buckets.Buckets :=
-  ⟨4#usize,2#usize,alloc.vec.Vec.new U32,alloc.vec.Vec.new U32,alloc.vec.Vec.new U32⟩
+  ⟨4#usize, 2#usize, alloc.vec.Vec.new U32, alloc.vec.Vec.new U32, alloc.vec.Vec.new U32⟩
 
 private theorem second_window_first_bucket : buckets4.list 1#usize 1#usize = ok 8#usize := by
-  obtain ⟨i,hi,hv⟩ := list_refines buckets4 1#usize 1#usize (by decide) (by decide)
+  obtain ⟨i, hi, hv⟩ := list_refines buckets4 1#usize 1#usize (by decide) (by decide)
     (by decide) (by decide) (by decide)
   have he : i = 8#usize := UScalar.eq_of_val_eq hv
   simpa only [he] using hi
@@ -72,7 +72,7 @@ example (state : msm8.buckets.Buckets) (n : ℕ) (base capacity : ℕ → ℕ) (
   rw [packed_recovers state n base capacity contents h i hi]
   intro he
   have := congrArg List.length he
-  simp only [List.length_append,List.length_singleton] at this
+  simp only [List.length_append, List.length_singleton] at this
   omega
 
 example (i : Usize) (hi : i.val < 2 ^ 31) :
@@ -93,21 +93,21 @@ private theorem tie_positive (self : msm8.buckets.SignedDigits)
     (hc : self.carry.val ≤ 1)
     (htie : value self.words / 2 ^ self.bit.val % 2 ^ self.window_bits.val + self.carry.val =
       2 ^ (self.window_bits.val - 1)) :
-    ∃ mag next, self.next_digit = ok ((mag,false),next) ∧ next.carry.val = 0 := by
-  obtain ⟨mag,neg,next,hs,_,_,_,hcarry,hneg,_,_⟩ := next_digit_refines self hb hwl hwh hc
-  have hn : neg = false := by simpa only [htie,Nat.lt_irrefl,decide_false] using hneg
+    ∃ mag next, self.next_digit = ok ((mag, false), next) ∧ next.carry.val = 0 := by
+  obtain ⟨mag, neg, next, hs, _, _, _, hcarry, hneg, _, _⟩ := next_digit_refines self hb hwl hwh hc
+  have hn : neg = false := by simpa only [htie, Nat.lt_irrefl, decide_false] using hneg
   rw [hn] at hs hcarry
-  exact ⟨mag,next,hs,hcarry⟩
+  exact ⟨mag, next, hs, hcarry⟩
 
-private def tieWords : Array U64 4#usize := Array.make 4#usize [8#u64,0#u64,0#u64,0#u64] (by rfl)
+private def tieWords : Array U64 4#usize := Array.make 4#usize [8#u64, 0#u64, 0#u64, 0#u64] (by rfl)
 
-example : ∃ mag next, (initial tieWords 4#usize).next_digit = ok ((mag,false),next) ∧ next.carry.val = 0 :=
+example : ∃ mag next, (initial tieWords 4#usize).next_digit = ok ((mag, false), next) ∧ next.carry.val = 0 :=
   tie_positive _ (by decide) (by decide) (by decide) (by decide) (by decide +kernel)
 
-example : ¬ ∃ mag next, (initial tieWords 4#usize).next_digit = ok ((mag,true),next) := by
-  obtain ⟨mag,next,hgood,_⟩ := tie_positive (initial tieWords 4#usize)
+example : ¬ ∃ mag next, (initial tieWords 4#usize).next_digit = ok ((mag, true), next) := by
+  obtain ⟨mag, next, hgood, _⟩ := tie_positive (initial tieWords 4#usize)
     (by decide) (by decide) (by decide) (by decide) (by decide +kernel)
-  rintro ⟨mag',next',hbad⟩
+  rintro ⟨mag', next', hbad⟩
   have he := congrArg (fun x => x.1.2) (Result.ok.inj (hgood.symm.trans hbad))
   contradiction
 
@@ -121,7 +121,7 @@ private def prepareWithReject (reject : Bool) (self : msm8.pairs.BatchedAdds)
     Bool × msm8.pairs.BatchedAdds × Vector Fp8 4 :=
   if reject then prepareStep self store group products else
     let updated := preparedUpdate self group products (difference self store group)
-    (true,updated.1,updated.2)
+    (true, updated.1, updated.2)
 
 example : prepareWithReject true = prepareStep := rfl
 
@@ -134,19 +134,19 @@ example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     prepareWithReject false self store group products ≠ prepareStep self store group products := by
   intro h
   have he := congrArg Prod.fst h
-  simp only [prepareWithReject,prepareStep,hzero,if_false,Bool.false_eq_true] at he
+  simp only [prepareWithReject, prepareStep, hzero, if_false, Bool.false_eq_true] at he
   contradiction
 
 example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (g : Usize) (products : Array fp8.Fp8 4#usize)
     (ia ib : Array U32 8#usize) (na nb : U8) (xa xb : Fp8)
-    (hra : msm8.pairs.references self.a.deref g = ok (ia,na))
-    (hrb : msm8.pairs.references self.b.deref g = ok (ib,nb))
+    (hra : msm8.pairs.references self.a.deref g = ok (ia, na))
+    (hrb : msm8.pairs.references self.b.deref g = ok (ib, nb))
     (hla : store.load_x ia = ok (toFp8 xa)) (hlb : store.load_x ib = ok (toFp8 xb))
     (hzero : (xb.sub xa).is_zero_mask ≠ 0) :
-    ¬ ∃ next updated, self.extend_chain store g products = ok (true,next,updated) := by
+    ¬ ∃ next updated, self.extend_chain store g products = ok (true, next, updated) := by
   rw [extend_chain_zero self store g products ia ib na nb xa xb hra hrb hla hlb hzero]
-  rintro ⟨next,updated,h⟩
+  rintro ⟨next, updated, h⟩
   have he := congrArg Prod.fst (Result.ok.inj h)
   contradiction
 
@@ -184,12 +184,12 @@ example : joinWith 0 = G1x8.joinLanes := rfl
 example (self : G1x8) (bits distance : ℕ) (P : Fin 8 → G1.curve.toAffine.Point)
     (hP : ∀ l, self.PointRep l (P l)) (l : Fin 8) :
     (joinWith 0 self bits distance).PointRep l
-      (P l + 2 ^ (distance * bits) • P ⟨(l.val+distance)%8,Nat.mod_lt _ (by decide)⟩) :=
+      (P l + 2 ^ (distance * bits) • P ⟨(l.val + distance) % 8, Nat.mod_lt _ (by decide)⟩) :=
   G1x8.joinLanes_correct self bits distance P hP l
 
 example : (2 ^ (1 * 4 + 1) : ℕ) • G1.toPoint G1.generator ≠
     (2 ^ (1 * 4) : ℕ) • G1.toPoint G1.generator := by
-  rw [ne_eq,nsmul_inj_mod,G1.addOrderOf_toPoint_generator]
+  rw [ne_eq, nsmul_inj_mod, G1.addOrderOf_toPoint_generator]
   decide +kernel
 
 example : True := by
@@ -197,7 +197,7 @@ example : True := by
     have : ∀ (self : G1x8) (bits distance : ℕ) (P : Fin 8 → G1.curve.toAffine.Point),
         (∀ l, self.PointRep l (P l)) → ∀ l,
         (joinWith 1 self bits distance).PointRep l
-          (P l + 2 ^ (distance * bits) • P ⟨(l.val+distance)%8,Nat.mod_lt _ (by decide)⟩) := by
+          (P l + 2 ^ (distance * bits) • P ⟨(l.val + distance) % 8, Nat.mod_lt _ (by decide)⟩) := by
       intro self bits distance P hP l
       exact (hP l).add_complete ((hP _).times_two_pow (distance * bits)).lanesAbove
   trivial
@@ -209,22 +209,22 @@ open QueueRefines BatchedRefines
 
 example : RefIndependent 2 0#u32 0#u32 := by unfold RefIndependent; decide
 example : ¬ RefIndependent 2 2#u32 2#u32 := by unfold RefIndependent; decide
-example : ¬ JobIndependent ⟨0#u32,1#u32,2#u32⟩ ⟨2#u32,1#u32,3#u32⟩ := by
+example : ¬ JobIndependent ⟨0#u32, 1#u32, 2#u32⟩ ⟨2#u32, 1#u32, 3#u32⟩ := by
   unfold JobIndependent
   decide
-example : (reduce 2 4 [2#u32,0#u32,3#u32,1#u32]).2.2 = 4 := by decide
-example : (reduce 2 4 [0#u32,1#u32,0#u32,1#u32]).2.2 = 6 := by decide
+example : (reduce 2 4 [2#u32, 0#u32, 3#u32, 1#u32]).2.2 = 4 := by decide
+example : (reduce 2 4 [0#u32, 1#u32, 0#u32, 1#u32]).2.2 = 6 := by decide
 
 example : ¬ PairValues (fun r : U32 => (r.val : ℤ)) (fun _ => (0 : ℤ))
-    [⟨0#u32,1#u32,2#u32⟩] := by
+    [⟨0#u32, 1#u32, 2#u32⟩] := by
   intro h
-  have hh := h ⟨0#u32,1#u32,2#u32⟩ (by simp)
+  have hh := h ⟨0#u32, 1#u32, 2#u32⟩ (by simp)
   norm_num at hh
 
 private theorem padded_last (self : msm8.pairs.BatchedAdds)
     (ha : self.a.val = [3#u32]) (ho : self.out.val = [7#u32]) :
     (paddedAdds self 2#usize 16#usize).out.val = List.replicate 16 7#u32 := by
-  simp only [paddedAdds,resizeVec,ha,ho]
+  simp only [paddedAdds, resizeVec, ha, ho]
   rfl
 
 example (self : msm8.pairs.BatchedAdds)
@@ -253,8 +253,8 @@ example (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
 example (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
     (values : List Fr) (hinput : input.val = values.map frEncode) :
     ¬ ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = values.length + 1 := by
-  obtain ⟨out,hout,hlen,_⟩ := plain_words_encoded input words values hinput
-  rintro ⟨wrong,hwrong,hbad⟩
+  obtain ⟨out, hout, hlen, _⟩ := plain_words_encoded input words values hinput
+  rintro ⟨wrong, hwrong, hbad⟩
   have he := Result.ok.inj (hout.symm.trans hwrong)
   subst wrong
   omega

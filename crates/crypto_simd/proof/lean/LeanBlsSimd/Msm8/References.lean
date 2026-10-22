@@ -39,13 +39,13 @@ private theorem references_body_refines (refs : Slice U32) (g : Usize)
   have hkv : k.val = g.val * 8 + lane.val := UScalar.ofNatCore_val_eq _
   have hkl : k.val < refs.val.length := by omega
   have hbase : g * 8#usize = ok base := by
-    rw [mul_ok _ _ (by change g.val*8 < _; omega)]
+    rw [mul_ok _ _ (by change g.val * 8 < _; omega)]
     rfl
   have hk : base + lane = ok k := by
-    rw [add_ok _ _ (by change g.val*8+lane.val < _; omega)]
+    rw [add_ok _ _ (by change g.val * 8 + lane.val < _; omega)]
     rfl
   have hn : lane + 1#usize = ok next := by
-    rw [add_ok _ _ (by have := two_pow_32_le_usize; change lane.val+1 < _; omega)]
+    rw [add_ok _ _ (by have := two_pow_32_le_usize; change lane.val + 1 < _; omega)]
     rfl
   have hidx : Slice.index_usize refs k = ok refs.val[k.val] := by
     simp [Slice.index_usize, hkl]
