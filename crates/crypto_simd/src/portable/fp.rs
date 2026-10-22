@@ -325,15 +325,13 @@ impl Fp {
         if root.square() == *self { Some(root) } else { None }
     }
 
-    /// `sqrt` of two values in lockstep.
+    /// `sqrt` of two values in lockstep: the candidate roots, and whether each
+    /// squares back to its value.
     #[target_feature(enable = "bmi2,adx")]
-    pub fn sqrt_pair(values: &[Fp; 2]) -> [Option<Fp>; 2] {
+    pub fn sqrt_pair(values: &[Fp; 2]) -> ([Fp; 2], [bool; 2]) {
         let roots = Self::mul_pair(&Self::pow_p_minus_3_over_4_pair(values), values);
         let squares = Self::mul_pair(&roots, &roots);
-        [
-            if squares[0] == values[0] { Some(roots[0]) } else { None },
-            if squares[1] == values[1] { Some(roots[1]) } else { None },
-        ]
+        (roots, [squares[0] == values[0], squares[1] == values[1]])
     }
 
     /// Whether the plain value exceeds (p − 1)/2: the larger of ±y.

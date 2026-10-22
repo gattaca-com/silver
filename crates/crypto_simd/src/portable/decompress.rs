@@ -25,8 +25,9 @@ pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> 
         return extraordinary(bytes);
     };
     let x = Fp::from_plain(&words);
-    let y = signed_root(&x.square().mul(&x).add(&FOUR).sqrt()?, larger)?;
-    member(&x, &y)
+    let y = signed(&x.square().mul(&x).add(&FOUR).sqrt()?, larger);
+    // (x, 0) has order 2.
+    if !y.is_zero() && G1::in_g1(&x, &y) { Some(point(&x, &y)) } else { None }
 }
 
 /// Sets each `out[i]` to `uncompress_in_g1(&inputs[i])`, two at a time.
@@ -57,27 +58,19 @@ pub fn uncompress_pair_in_g1(
     };
     let x = Fp::mul_pair(&[Fp(words_a), Fp(words_b)], &[Fp(R2), Fp(R2)]);
     let x_cubed = Fp::mul_pair(&Fp::mul_pair(&x, &x), &x);
-    let roots = Fp::sqrt_pair(&[x_cubed[0].add(&FOUR), x_cubed[1].add(&FOUR)]);
-    let y_a = match roots[0] {
-        Some(root) => signed_root(&root, larger_a),
-        None => None,
+    let (roots, has_roots) = Fp::sqrt_pair(&[x_cubed[0].add(&FOUR), x_cubed[1].add(&FOUR)]);
+    let y = [signed(&roots[0], larger_a), signed(&roots[1], larger_b)];
+    // (x, 0) has order 2.
+    let curve_points = [has_roots[0] && !y[0].is_zero(), has_roots[1] && !y[1].is_zero()];
+    let members = if curve_points[0] && curve_points[1] {
+        G1Pair::in_g1(&x, &y)
+    } else {
+        [curve_points[0] && G1::in_g1(&x[0], &y[0]), curve_points[1] && G1::in_g1(&x[1], &y[1])]
     };
-    let y_b = match roots[1] {
-        Some(root) => signed_root(&root, larger_b),
-        None => None,
-    };
-    match (y_a, y_b) {
-        (Some(y_a), Some(y_b)) => {
-            let members = G1Pair::in_g1(&x, &[y_a, y_b]);
-            [
-                if members[0] { Some(point(&x[0], &y_a)) } else { None },
-                if members[1] { Some(point(&x[1], &y_b)) } else { None },
-            ]
-        }
-        (Some(y_a), None) => [member(&x[0], &y_a), None],
-        (None, Some(y_b)) => [None, member(&x[1], &y_b)],
-        (None, None) => [None, None],
-    }
+    [
+        if members[0] { Some(point(&x[0], &y[0])) } else { None },
+        if members[1] { Some(point(&x[1], &y[1])) } else { None },
+    ]
 }
 
 /// x's plain words and the sign flag, for a compressed encoding of a finite
@@ -110,18 +103,10 @@ fn extraordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
     }
 }
 
-/// The root the sign flag names; `None` for y = 0, which has order 2.
+/// The root the sign flag names.
 #[target_feature(enable = "bmi2,adx")]
-fn signed_root(root: &Fp, larger: bool) -> Option<Fp> {
-    if root.is_zero() {
-        return None;
-    }
-    Some(if root.is_larger_root() == larger { *root } else { root.neg() })
-}
-
-#[target_feature(enable = "bmi2,adx")]
-fn member(x: &Fp, y: &Fp) -> Option<blst_p1_affine> {
-    if G1::in_g1(x, y) { Some(point(x, y)) } else { None }
+fn signed(root: &Fp, larger: bool) -> Fp {
+    if root.is_larger_root() == larger { *root } else { root.neg() }
 }
 
 fn point(x: &Fp, y: &Fp) -> blst_p1_affine {

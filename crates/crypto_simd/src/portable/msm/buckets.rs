@@ -166,8 +166,9 @@ impl Buckets {
         while bucket > 0 {
             let list = self.list(window, bucket);
             let start = self.starts[list] as usize;
+            let len = self.lens[list] as usize;
             let mut at = 0;
-            while at < self.lens[list] as usize {
+            while at < len {
                 let (x, y) = store.signed(self.refs[start + at]);
                 running = running.add_affine_complete(&x, &y);
                 at += 1;
