@@ -1,3 +1,5 @@
+#[cfg(target_arch = "x86_64")]
+use blst::{blst_fp, blst_fp_mul, blst_fp2, blst_p1_affine_generator};
 use c_kzg::{Blob, Bytes48, Cell, KzgSettings, ethereum_kzg_settings};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -14,6 +16,14 @@ use crate::{
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
         trusted_setup::{G2_MONOMIAL_0, G2_MONOMIAL_64},
     },
+};
+#[cfg(target_arch = "x86_64")]
+use crate::{
+    bls::{
+        fp8::{Limbs, pack64},
+        spec_pairing::{fp, miller_lines, mul, of_g1, of_g2, zero},
+    },
+    kzg::pairing_lines::PAIRING_LINES,
 };
 
 const SEED: u64 = 0x6b7a_6763_656c_6c73;
@@ -268,6 +278,56 @@ fn setup_g2_literals_match_blst() {
     let generator = uncompress_in_g2_blst(&G2_MONOMIAL_0).expect("setup point 0 decodes");
     let negated = g2_neg(&generator);
     assert!(G2_NEG_GENERATOR.x == negated.x && G2_NEG_GENERATOR.y == negated.y, "−[1]");
+}
+
+/// Each step of `PAIRING_LINES` is the spec's line for its G2 point, which
+/// `Embedded.ofG2` untwists, up to a factor c·w⁻³ with c in Fp2. So at P =
+/// (x, y), w³ times the spec's line is c·((1, l1·x, 0) + (0, l2·y, 0)·w).
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn pairing_lines_are_the_spec_lines() {
+    /// Fp8's form v·2^416, read as blst limbs, is v·2^32; 2^352 as blst
+    /// limbs is 2^−32.
+    fn blst_of_fp8_form(limbs: &Limbs) -> blst_fp {
+        let two_pow_352 = blst_fp { l: [0, 0, 0, 0, 0, 1 << 32] };
+        let mut out = blst_fp::default();
+        // SAFETY: valid pointers to single values.
+        unsafe { blst_fp_mul(&mut out, &blst_fp { l: pack64(limbs) }, &two_pow_352) };
+        out
+    }
+    fn stored(step: usize, lane: usize) -> blst_fp2 {
+        let lanes = &PAIRING_LINES[step];
+        blst_fp2 { fp: [blst_of_fp8_form(&lanes[lane]), blst_of_fp8_form(&lanes[lane + 1])] }
+    }
+    fn times(a: &blst_fp2, b: &blst_fp) -> blst_fp2 {
+        let mut out = blst_fp2::default();
+        for c in 0..2 {
+            // SAFETY: valid pointers to single values.
+            unsafe { blst_fp_mul(&mut out.fp[c], &a.fp[c], b) };
+        }
+        out
+    }
+
+    // The generator's x and y are not 0, so the line's values there fix l1
+    // and l2.
+    // SAFETY: blst returns a pointer to a static point.
+    let p = unsafe { *blst_p1_affine_generator() };
+    let mut w_cubed = zero();
+    w_cubed.fp6[1].fp2[1].fp[0] = fp(1);
+    for (lane, q) in [(0, &G2_S_POW_CELL), (4, &G2_NEG_GENERATOR)] {
+        let spec = miller_lines(&of_g2(q), &of_g1(&p));
+        assert_eq!(spec.len(), PAIRING_LINES.len());
+        for (step, line) in spec.iter().enumerate() {
+            let scaled = mul(line, &w_cubed);
+            let mut c = zero();
+            c.fp6[0].fp2[0] = scaled.fp6[0].fp2[0];
+            let mut ours = zero();
+            ours.fp6[0].fp2[0].fp[0] = fp(1);
+            ours.fp6[0].fp2[1] = times(&stored(step, lane), &p.x);
+            ours.fp6[1].fp2[1] = times(&stored(step, lane + 2), &p.y);
+            assert!(scaled == mul(&c, &ours), "step {step}, lane {lane}");
+        }
+    }
 }
 
 #[test]

@@ -26,6 +26,9 @@ mod fr;
 mod fr8;
 #[cfg(target_arch = "x86_64")]
 mod interpolation_kernel;
+#[cfg(all(test, target_arch = "x86_64"))]
+#[rustfmt::skip]
+mod pairing_lines;
 mod setup;
 mod trusted_setup;
 mod verify;
