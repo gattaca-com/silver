@@ -221,8 +221,9 @@ impl CellBatchVerifier {
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
-    /// summed, put in natural order, inverse-transformed, and shifted from
-    /// the column's coset by h⁻¹.
+    /// summed, inverse-transformed, and shifted from the column's coset by
+    /// h⁻¹. Without IFMA, each column is first put in natural order; the
+    /// kernel's transform takes the cells' bit-reversed order as it is.
     fn interpolation_commitment(
         &mut self,
         cell_indices: &[u64],
