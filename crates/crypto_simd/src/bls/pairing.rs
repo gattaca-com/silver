@@ -100,4 +100,4 @@ fn line(products: &Fp8, z_cubed: &Fp8, pair: usize) -> Fp2x8 {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

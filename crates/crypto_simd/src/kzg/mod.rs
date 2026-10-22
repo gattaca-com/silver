@@ -28,8 +28,8 @@ mod fr8;
 mod interpolation_kernel;
 #[cfg(target_arch = "x86_64")]
 #[rustfmt::skip]
-mod pairing_lines;
-mod setup;
+pub(crate) mod pairing_lines;
+pub(crate) mod setup;
 mod trusted_setup;
 mod verify;
 

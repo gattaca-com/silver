@@ -42,7 +42,7 @@ fn random_fp2(rng: &mut ChaCha8Rng) -> blst_fp2 {
     blst_fp2 { fp: [random_fp(rng), random_fp(rng)] }
 }
 
-fn random_fp12(rng: &mut ChaCha8Rng) -> blst_fp12 {
+pub(crate) fn random_fp12(rng: &mut ChaCha8Rng) -> blst_fp12 {
     let mut f = blst_fp12::default();
     for h in 0..2 {
         for k in 0..3 {
@@ -52,7 +52,7 @@ fn random_fp12(rng: &mut ChaCha8Rng) -> blst_fp12 {
     f
 }
 
-fn extreme_fp12() -> blst_fp12 {
+pub(crate) fn extreme_fp12() -> blst_fp12 {
     let mut f = blst_fp12::default();
     for h in 0..2 {
         for k in 0..3 {
@@ -62,53 +62,53 @@ fn extreme_fp12() -> blst_fp12 {
     f
 }
 
-fn random_line(rng: &mut ChaCha8Rng) -> blst_fp6 {
+pub(crate) fn random_line(rng: &mut ChaCha8Rng) -> blst_fp6 {
     blst_fp6 { fp2: [random_fp2(rng), random_fp2(rng), random_fp2(rng)] }
 }
 
-fn blst_mul(a: &blst_fp12, b: &blst_fp12) -> blst_fp12 {
+pub(crate) fn blst_mul(a: &blst_fp12, b: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_mul(&mut out, a, b) };
     out
 }
 
-fn blst_square(a: &blst_fp12) -> blst_fp12 {
+pub(crate) fn blst_square(a: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_sqr(&mut out, a) };
     out
 }
 
-fn blst_mul_by_line(a: &blst_fp12, line: &blst_fp6) -> blst_fp12 {
+pub(crate) fn blst_mul_by_line(a: &blst_fp12, line: &blst_fp6) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_mul_by_xy00z0(&mut out, a, line) };
     out
 }
 
-fn blst_cyclotomic_square(a: &blst_fp12) -> blst_fp12 {
+pub(crate) fn blst_cyclotomic_square(a: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_cyclotomic_sqr(&mut out, a) };
     out
 }
 
-fn blst_frobenius(a: &blst_fp12, n: usize) -> blst_fp12 {
+pub(crate) fn blst_frobenius(a: &blst_fp12, n: usize) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_frobenius_map(&mut out, a, n) };
     out
 }
 
-fn blst_inverse(a: &blst_fp12) -> blst_fp12 {
+pub(crate) fn blst_inverse(a: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_fp12_inverse(&mut out, a) };
     out
 }
 
-fn blst_conjugate(a: &blst_fp12) -> blst_fp12 {
+pub(crate) fn blst_conjugate(a: &blst_fp12) -> blst_fp12 {
     let mut out = *a;
     // SAFETY: a valid pointer to a single value.
     unsafe { blst_fp12_conjugate(&mut out) };

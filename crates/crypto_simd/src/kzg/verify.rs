@@ -20,7 +20,7 @@ use crate::{
         challenge::challenge_in_parts, fr::fr_to_words, fr8::Fr8,
         interpolation_kernel::InterpolationKernel, pairing_lines::PAIRING_LINES,
     },
-    portable::msm::Msm,
+    portable::{g1::G1, msm::Msm, pairing::PairingLines},
     route, simd_available,
 };
 use crate::{
@@ -306,9 +306,16 @@ struct Lincomb {
     #[cfg(target_arch = "x86_64")]
     msm: Option<Msm8>,
     #[cfg(target_arch = "x86_64")]
-    portable: Option<Msm>,
+    portable: Option<PortableCurve>,
     #[cfg(target_arch = "x86_64")]
     words: Vec<[u64; 4]>,
+}
+
+/// The portable route's MSM buffers and pairing lines.
+#[cfg(target_arch = "x86_64")]
+struct PortableCurve {
+    msm: Msm,
+    lines: Box<PairingLines>,
 }
 
 impl Lincomb {
@@ -318,7 +325,14 @@ impl Lincomb {
             #[cfg(target_arch = "x86_64")]
             msm: if simd_available() { Some(Msm8::default()) } else { None },
             #[cfg(target_arch = "x86_64")]
-            portable: if route() == Route::Portable { Some(Msm::default()) } else { None },
+            portable: if route() == Route::Portable {
+                // SAFETY: the portable route is taken only where
+                // `portable_available` held.
+                let lines = Box::new(unsafe { PairingLines::new(&PAIRING_LINES) });
+                Some(PortableCurve { msm: Msm::default(), lines })
+            } else {
+                None
+            },
             #[cfg(target_arch = "x86_64")]
             words: Vec::new(),
         }
@@ -334,7 +348,7 @@ impl Lincomb {
             };
         }
         #[cfg(target_arch = "x86_64")]
-        if let Some(msm) = &mut self.portable {
+        if let Some(portable) = &mut self.portable {
             self.words.clear();
             let mut i = 0;
             while i < scalars.len() {
@@ -343,7 +357,7 @@ impl Lincomb {
             }
             // SAFETY: `portable` is built only on the portable route, which is
             // taken only where `portable_available` held.
-            return unsafe { msm.msm(points, &self.words) };
+            return unsafe { portable.msm.msm(points, &self.words) };
         }
         g1_lincomb(points, scalars, &mut self.scratch)
     }
@@ -357,9 +371,22 @@ impl Lincomb {
                 PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp))
             };
         }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(portable) = &self.portable {
+            // SAFETY: as in `sum`.
+            return unsafe { portable.lines.pairing_check(&pairing_points(ll, rlc, rli, rlp)) };
+        }
         let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
         pairing_check(&g1_to_affine(ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
     }
+}
+
+/// [LL, RL], gathered by complete additions on the scalar `G1`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "bmi2,adx")]
+fn pairing_points(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> [G1; 2] {
+    let difference = G1::from_blst(rlc).add_complete(&G1::from_blst(rli).neg());
+    [G1::from_blst(ll), difference.add_complete(&G1::from_blst(rlp))]
 }
 
 /// LL in lane 0 and RL in lane 1, Jacobian, gathered by complete additions.

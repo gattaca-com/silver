@@ -11,7 +11,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
-use blst::{blst_fp, blst_p1, blst_p1_affine};
+use blst::{blst_p1, blst_p1_affine};
 
 use crate::{
     bls::msm8::glv::{HALF_SCALAR_BITS, decompose},
@@ -51,11 +51,7 @@ impl Msm {
             total = total.add_complete(&sum);
             start = end;
         }
-        blst_p1 {
-            x: blst_fp { l: total.x.0 },
-            y: blst_fp { l: total.y.0 },
-            z: blst_fp { l: total.z.0 },
-        }
+        total.to_blst()
     }
 
     /// `msm`'s sum for at most `CHUNK` points.

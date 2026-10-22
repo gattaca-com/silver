@@ -6,6 +6,8 @@
 //! The additions assume distinct, finite summands; their `_complete` forms
 //! branch to the spec's `G1.add` for every input.
 
+use blst::{blst_fp, blst_p1};
+
 use crate::{
     bls::{constants::Z_BITS, g1x8::is_lower_z_bit},
     portable::{
@@ -26,6 +28,19 @@ impl G1 {
 
     pub fn from_affine(x: &Fp, y: &Fp) -> Self {
         Self { x: *x, y: *y, z: ONE }
+    }
+
+    /// blst's Jacobian coordinates are these, z = 0 at infinity too.
+    pub fn from_blst(p: &blst_p1) -> Self {
+        Self { x: Fp(p.x.l), y: Fp(p.y.l), z: Fp(p.z.l) }
+    }
+
+    pub fn to_blst(&self) -> blst_p1 {
+        blst_p1 {
+            x: blst_fp { l: self.x.0 },
+            y: blst_fp { l: self.y.0 },
+            z: blst_fp { l: self.z.0 },
+        }
     }
 
     pub fn is_infinity(&self) -> bool {

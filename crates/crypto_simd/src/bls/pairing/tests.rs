@@ -27,20 +27,20 @@ use crate::{
 };
 
 /// A random 255-bit scalar, little-endian.
-fn random_scalar(rng: &mut ChaCha8Rng) -> [u8; 32] {
+pub(crate) fn random_scalar(rng: &mut ChaCha8Rng) -> [u8; 32] {
     let mut scalar: [u8; 32] = rng.r#gen();
     scalar[31] &= 0x7f;
     scalar
 }
 
-fn g1_times(p: &blst_p1, scalar: &[u8; 32]) -> blst_p1 {
+pub(crate) fn g1_times(p: &blst_p1, scalar: &[u8; 32]) -> blst_p1 {
     let mut out = blst_p1::default();
     // SAFETY: valid pointers to single values; blst reads 255 bits.
     unsafe { blst_p1_mult(&mut out, p, scalar.as_ptr(), 255) };
     out
 }
 
-fn g2_times(q: &blst_p2_affine, scalar: &[u8; 32]) -> blst_p2_affine {
+pub(crate) fn g2_times(q: &blst_p2_affine, scalar: &[u8; 32]) -> blst_p2_affine {
     let (mut point, mut product, mut out) =
         (blst_p2::default(), blst_p2::default(), blst_p2_affine::default());
     // SAFETY: valid pointers to single values; blst reads 255 bits.
@@ -53,19 +53,19 @@ fn g2_times(q: &blst_p2_affine, scalar: &[u8; 32]) -> blst_p2_affine {
 }
 
 /// A multiple of the G2 generator by a random 255-bit scalar.
-fn random_g2(rng: &mut ChaCha8Rng) -> blst_p2_affine {
+pub(crate) fn random_g2(rng: &mut ChaCha8Rng) -> blst_p2_affine {
     // SAFETY: blst returns a pointer to its static generator.
     g2_times(unsafe { &*blst_p2_affine_generator() }, &random_scalar(rng))
 }
 
-fn jacobian(p: &blst_p1_affine) -> blst_p1 {
+pub(crate) fn jacobian(p: &blst_p1_affine) -> blst_p1 {
     let mut out = blst_p1::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_p1_from_affine(&mut out, p) };
     out
 }
 
-fn final_exp(f: &blst_fp12) -> blst_fp12 {
+pub(crate) fn final_exp(f: &blst_fp12) -> blst_fp12 {
     let mut out = blst_fp12::default();
     // SAFETY: valid pointers to single values.
     unsafe { blst_final_exp(&mut out, f) };
@@ -91,11 +91,10 @@ fn embedded_fp(a: &blst_fp) -> blst_fp12 {
     embedded(&fp2)
 }
 
-/// The `MillerLines` of two G2 points, from the spec's lines at the G1
-/// generator (x, y): w³ times a spec line is c·((1, l1·x, 0) +
-/// (0, l2·y, 0)·w), with c in Fp2.
-#[target_feature(enable = "avx512f,avx512ifma")]
-fn lines_of(points: &[blst_p2_affine; 2]) -> MillerLines {
+/// The lines of two G2 points in blst's form, lanes as in `MillerLines`, from
+/// the spec's lines at the G1 generator (x, y): w³ times a spec line is
+/// c·((1, l1·x, 0) + (0, l2·y, 0)·w), with c in Fp2.
+pub(crate) fn line_values(points: &[blst_p2_affine; 2]) -> [[[u64; 6]; LANES]; LINE_COUNT] {
     // SAFETY: blst returns a pointer to a static point.
     let g = unsafe { *blst_p1_affine_generator() };
     let (x_inverse, y_inverse) = (inverse(&embedded_fp(&g.x)), inverse(&embedded_fp(&g.y)));
@@ -113,6 +112,13 @@ fn lines_of(points: &[blst_p2_affine; 2]) -> MillerLines {
             lanes.copy_from_slice(&[l1.fp[0].l, l1.fp[1].l, l2.fp[0].l, l2.fp[1].l]);
         }
     }
+    values
+}
+
+/// The `MillerLines` of two G2 points, from `line_values`.
+#[target_feature(enable = "avx512f,avx512ifma")]
+fn lines_of(points: &[blst_p2_affine; 2]) -> MillerLines {
+    let values = line_values(points);
     let mut lines = [[[0u64; LIMBS]; LANES]; LINE_COUNT];
     for step in 0..LINE_COUNT {
         lines[step] = Fp8::from_blst_limbs(&values[step]).canonical().store();
@@ -187,7 +193,7 @@ fn miller_loop_leaves_out_points_at_infinity() {
 }
 
 /// blst's verdict, leaving out each pair with its G1 point at infinity.
-fn blst_pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
+pub(crate) fn blst_pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
     let mut product = spec_pairing::one();
     for (p, q) in pairs {
         // SAFETY: a valid pointer to a single value.
