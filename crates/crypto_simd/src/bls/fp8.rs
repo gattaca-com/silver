@@ -613,7 +613,7 @@ impl Fp8 {
             values[lane] = Fp(words[lane]);
             lane += 1;
         }
-        // SAFETY: `simd_available` requires BMI2 and ADX with IFMA.
+        // SAFETY: `ifma_available` requires BMI2 and ADX with IFMA.
         let inverses = unsafe { Fp::inverse_each(&values) };
         let mut out = [[0u64; 6]; LANES];
         lane = 0;

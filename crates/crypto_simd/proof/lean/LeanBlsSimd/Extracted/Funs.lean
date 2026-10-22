@@ -3624,7 +3624,7 @@ def bls.uncompress_in_g1
   let i := Slice.len out
   let i1 := Slice.len inputs
   massert (i = i1)
-  let simd ← simd_available
+  let simd ← ifma_available
   let i2 := Slice.len inputs
   let i3 ← i2 / bls.LANES
   let «full» ← i3 * bls.LANES
@@ -3888,7 +3888,7 @@ def bls.uncompress_in_g2
   let i := Slice.len out
   let i1 := Slice.len inputs
   massert (i = i1)
-  let simd ← simd_available
+  let simd ← ifma_available
   bls.uncompress_in_g2_loop0 inputs out simd 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::NARROWEST_WINDOW_BITS]
@@ -7281,7 +7281,7 @@ def kzg.cell_extender.CellExtender.new
   let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
   let bf ← kzg.blst_ops.fr_from_u64 i
   let inverse_size ← kzg.blst_ops.fr_inverse bf
-  let b ← simd_available
+  let b ← ifma_available
   if b
   then
     let s1 := alloc.vec.Vec.deref roots
@@ -11829,7 +11829,7 @@ def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
     Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 297:4-305:5 -/
 def kzg.verify.Lincomb.new : Result kzg.verify.Lincomb := do
   let ls ← kzg.blst_ops.LincombScratch.new
-  let b ← simd_available
+  let b ← ifma_available
   let o ←
     if b
     then
@@ -11851,7 +11851,7 @@ def kzg.verify.CellBatchVerifier.new
   : Result kzg.verify.CellBatchVerifier := do
   let setup ← kzg.setup.Setup.decode
   let cosets ← kzg.cosets.Cosets.new
-  let b ← simd_available
+  let b ← ifma_available
   let kernel ←
     if b
     then

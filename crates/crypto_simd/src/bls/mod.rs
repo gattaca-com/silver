@@ -15,7 +15,7 @@
 )]
 
 // The kernels are `#[target_feature]` functions: every one of them is unsafe to
-// call for the same single reason, that `simd_available` must have been checked
+// call for the same single reason, that `ifma_available` must have been checked
 // on this CPU, so the safety section lives here rather than on each function.
 #[cfg(target_arch = "x86_64")]
 pub mod constants;
@@ -57,7 +57,7 @@ use blst::{
 };
 pub use blst::{blst_p1_affine, blst_p2_affine};
 
-use crate::simd_available;
+use crate::ifma_available;
 #[cfg(target_arch = "x86_64")]
 use crate::{Route, portable::decompress::uncompress_all_in_g1, route};
 
@@ -98,7 +98,7 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_
         unsafe { uncompress_all_in_g1(inputs, out) };
         return;
     }
-    let simd = simd_available();
+    let simd = ifma_available();
     let full = inputs.len() / LANES * LANES;
     let mut start = 0;
     while start < full {
@@ -121,7 +121,7 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_
 
 #[cfg(target_arch = "x86_64")]
 fn decompress_g1_chunk(chunk: &[[u8; COMPRESSED_LEN]; LANES], out: &mut [Option<blst_p1_affine>]) {
-    // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+    // SAFETY: `ifma_available` confirmed avx512f and avx512ifma on this CPU.
     let batch = unsafe { decompress::decompress(chunk) };
     for lane in 0..LANES {
         let bit = 1u8 << lane;
@@ -157,7 +157,7 @@ pub fn uncompress_in_g2_blst(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<blst_p2_
 /// `uncompress_in_g2_blst(&inputs[i])`.
 pub fn uncompress_in_g2(inputs: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst_p2_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
-    let simd = simd_available();
+    let simd = ifma_available();
     let mut start = 0;
     while start < inputs.len() {
         let rest = inputs.len() - start;
@@ -180,7 +180,7 @@ fn decompress_g2_chunk(chunk: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<blst
     for lane in 0..LANES {
         lanes[lane] = chunk[if lane < chunk.len() { lane } else { chunk.len() - 1 }];
     }
-    // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+    // SAFETY: `ifma_available` confirmed avx512f and avx512ifma on this CPU.
     let batch = unsafe { decompress_g2::decompress(&lanes) };
     for lane in 0..chunk.len() {
         let bit = 1u8 << lane;

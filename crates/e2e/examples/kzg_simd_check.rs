@@ -12,7 +12,7 @@ use std::{
 use silver_common::ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView};
 use silver_crypto_simd::{
     bls::{COMPRESSED_LEN, uncompress_in_g1, uncompress_in_g1_blst},
-    simd_available,
+    ifma_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 
@@ -45,7 +45,7 @@ fn serialized(p: &Option<silver_crypto_simd::bls::blst_p1_affine>) -> Option<[u6
 }
 
 fn main() {
-    assert!(simd_available(), "this CPU has no avx512ifma; nothing to check");
+    assert!(ifma_available(), "this CPU has no avx512ifma; nothing to check");
     let cap = ColumnFixtures::da().load();
 
     let mut all: Vec<[u8; COMPRESSED_LEN]> = Vec::new();

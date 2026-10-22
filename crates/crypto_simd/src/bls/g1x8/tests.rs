@@ -129,7 +129,7 @@ fn formulas_match_the_reference_at_the_input_bounds() {
                 n /= edges.len();
             }
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("combinations from {first}")) };
     }
 }
@@ -144,7 +144,7 @@ fn formulas_match_the_reference_on_random_lanes() {
     let two_p = near_multiple_of_p(2, 0);
     for case in 0..256 {
         let coordinates = std::array::from_fn(|_| std::array::from_fn(|_| below(&mut rng, &two_p)));
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }
@@ -254,7 +254,7 @@ fn complete_additions_match_blst() {
         let left = [p, p, p, infinity, q, odd_infinity, p, rescaled(&r, 7)];
         let right =
             [q, rescaled(&p, 3), rescaled(&negated(&p), 5), q, infinity, infinity, twice, r];
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let (sums, doubles, shifted) = unsafe {
             let (a, b) = (in_lanes(&left), in_lanes(&right));
             (
@@ -310,7 +310,7 @@ fn complete_affine_additions_match_blst() {
         unsafe { blst_p1_double(&mut twice, &p) };
         let left = [p, rescaled(&p, 3), rescaled(&p, 5), infinity, odd_infinity, p, r, q];
         let right = [q, p, negated(&p), q, r, twice, r, q].map(|point| affine(&point));
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let sums = unsafe {
             let a = in_lanes(&left);
             let x = coordinate(&right.map(|point| point.x));
@@ -337,7 +337,7 @@ fn shifted_lane_sums_match_blst() {
         let mut lanes: [blst_p1; LANES] = random_points(&mut rng, LANES).try_into().unwrap();
         lanes[3] = blst_p1::default();
         lanes[6] = blst_p1::default();
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let got = unsafe { of_lanes(&in_lanes(&lanes).sum_lanes_shifted(bits))[0] };
         let mut want = blst_p1::default();
         for lane in (0..LANES).rev() {

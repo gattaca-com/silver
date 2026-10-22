@@ -8,7 +8,7 @@ use crate::kernels_run;
 /// For tests that have seen `kernels_run` hold.
 fn digest(message: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    // SAFETY: `kernels_run` implies `simd_available`, which covers the SHA
+    // SAFETY: `kernels_run` implies `ifma_available`, which covers the SHA
     // extensions and SSE4.1.
     unsafe {
         hasher.update(message);

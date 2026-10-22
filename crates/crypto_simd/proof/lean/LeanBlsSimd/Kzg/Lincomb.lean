@@ -157,7 +157,7 @@ theorem lincomb_new_route [e : KzgExternals] :
     ∃ self, verify.Lincomb.new = ok self ∧ self.msm.isSome = e.simdAvailable := by
   obtain ⟨state, hs⟩ := msm8_default_ok
   cases hsimd : e.simdAvailable <;>
-    simp only [verify.Lincomb.new, blst_ops.LincombScratch.new, simd_available, hsimd,
+    simp only [verify.Lincomb.new, blst_ops.LincombScratch.new, ifma_available, hsimd,
       bind_tc_ok, Bool.false_eq_true, if_false, if_true, hs] <;>
     exact ⟨_, rfl, rfl⟩
 

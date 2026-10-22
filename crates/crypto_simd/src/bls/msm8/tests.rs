@@ -126,7 +126,7 @@ fn store_reads_back_its_points() {
     let points = random_points(&mut rng, 21);
     let mut store = PointStore::new();
     store.reset(points.len());
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let indices = unsafe { push_points(&mut store, &points) };
     for (k, point) in points.iter().enumerate() {
         // SAFETY: as above.
@@ -158,7 +158,7 @@ fn blst_points_convert_with_signs_and_sigma() {
             let mut store = PointStore::new();
             store.reset(count + 1);
             store.allocate();
-            // SAFETY: `kernels_run` checked `simd_available`.
+            // SAFETY: `kernels_run` checked `ifma_available`.
             unsafe { store.push_blst(&points, &negated, endomorphism) };
             assert!(store.len() == count + 1, "{count} points");
             for (k, point) in points.iter().enumerate() {
@@ -184,7 +184,7 @@ fn batched_adds_match_blst() {
         let points = random_points(&mut rng, 2 * pairs);
         let mut store = PointStore::new();
         store.reset(3 * pairs);
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let indices = unsafe { push_points(&mut store, &points) };
         let mut adds = BatchedAdds::default();
         let mut expected = Vec::new();
@@ -223,7 +223,7 @@ fn equal_x_pairs_report_failure_and_write_nothing() {
             let points = random_points(&mut rng, 2 * pairs + 1);
             let mut store = PointStore::new();
             store.reset(3 * pairs + 1);
-            // SAFETY: `kernels_run` checked `simd_available`.
+            // SAFETY: `kernels_run` checked `ifma_available`.
             let indices = unsafe { push_points(&mut store, &points) };
             let sentinel = indices[2 * pairs];
             let mut adds = BatchedAdds::default();
@@ -265,7 +265,7 @@ fn msm8_parts_timing() {
     let points = random_points(&mut rng, 2 * pairs);
     let mut store = PointStore::new();
     store.reset(3 * pairs);
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let indices = unsafe { push_points(&mut store, &points) };
     let outs: Vec<u32> = (0..pairs).map(|_| store.allocate()).collect();
     let mut adds = BatchedAdds::default();
@@ -456,7 +456,7 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
         points.extend(originals.iter().map(negated_point));
         let mut scalars = random_scalars(&mut rng, n / 2);
         scalars.extend_from_within(..);
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let got = unsafe { msm.msm(&points, &scalars) };
         assert_same_point(&got, &blst_p1::default(), &format!("{n} points and their negations"));
         points.push(originals[0]);
@@ -502,7 +502,7 @@ fn msm_sums_its_chunks() {
     points.extend(random_points(&mut rng, 1));
     let mut longer = scalars.clone();
     longer.extend(random_scalars(&mut rng, 1));
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let got = unsafe { msm.msm(&points, &longer) };
     assert_same_point(&got, &finite_pippenger(&points, &longer), "a chunk and one point");
 
@@ -512,7 +512,7 @@ fn msm_sums_its_chunks() {
     unsafe { blst_p1_double(&mut want, &once) };
     let twice = [first.as_slice(), &first].concat();
     let doubled = [scalars.as_slice(), &scalars].concat();
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let got = unsafe { msm.msm(&twice, &doubled) };
     assert_same_point(&got, &want, "a chunk twice");
 
@@ -627,7 +627,7 @@ fn msm_of_nothing_is_infinity() {
     let points = random_points(&mut rng, 70);
     let infinities = vec![blst_p1_affine::default(); 70];
     let scalars = random_scalars(&mut rng, 70);
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let sums = unsafe {
         [msm.msm(&[], &[]), msm.msm(&points, &vec![[0; 4]; 70]), msm.msm(&infinities, &scalars)]
     };

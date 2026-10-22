@@ -70,7 +70,7 @@ fn pairing_points_match_blst() {
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a1);
     for (case, sums) in cases(&mut rng).iter().enumerate() {
         let (want_left, want_right) = blst_pairing_points(sums);
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let (x, y) = unsafe {
             let (x, y) =
                 pairing_points_in_lanes(&sums[0], &sums[1], &sums[2], &sums[3]).to_affine();

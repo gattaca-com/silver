@@ -66,7 +66,7 @@ fn ifma_runs() -> bool {
 
 /// Off the IFMA route, every operation takes its portable or blst path, as on
 /// a CPU without the instructions; so too built without the `simd` feature.
-pub fn simd_available() -> bool {
+pub fn ifma_available() -> bool {
     route() == Route::Ifma
 }
 
@@ -75,9 +75,9 @@ pub fn simd_available() -> bool {
 #[cfg(test)]
 pub(crate) fn kernels_run() -> bool {
     assert!(
-        simd_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
+        ifma_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
         "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma or SHA extensions, \
          or no simd feature"
     );
-    simd_available()
+    ifma_available()
 }

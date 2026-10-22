@@ -5,7 +5,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
-    kernels_run,
+    ifma_available, kernels_run,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, CellExtender,
         FIELD_ELEMENTS_PER_CELL,
@@ -19,7 +19,6 @@ use crate::{
         fr8::{Fr8, LANES, limbs::Limbs, multiplier},
         interpolation_kernel::InterpolationKernel,
     },
-    simd_available,
 };
 
 const SEED: u64 = 0x6666_7438_6b65_726e;
@@ -50,13 +49,13 @@ fn to_bytes(values: &[blst_fr]) -> Vec<u8> {
     values.iter().flat_map(fr_to_bytes).collect()
 }
 
-/// SAFETY: the caller checked `simd_available`.
+/// SAFETY: the caller checked `ifma_available`.
 unsafe fn load(input: &[blst_fr]) -> Vec<Fr8> {
     let bytes = to_bytes(input);
     let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
     (0..input.len() / LANES)
         .map(|v| {
-            // SAFETY: the caller checked `simd_available`.
+            // SAFETY: the caller checked `ifma_available`.
             let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, v * vector_bytes) };
             assert!(below_r == 0xff, "inputs below r");
             vector
@@ -64,12 +63,12 @@ unsafe fn load(input: &[blst_fr]) -> Vec<Fr8> {
         .collect()
 }
 
-/// SAFETY: the caller checked `simd_available`.
+/// SAFETY: the caller checked `ifma_available`.
 unsafe fn store(data: &[Fr8]) -> Vec<blst_fr> {
     let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
     let mut bytes = vec![0u8; data.len() * vector_bytes];
     for (v, vector) in data.iter().enumerate() {
-        // SAFETY: the caller checked `simd_available`.
+        // SAFETY: the caller checked `ifma_available`.
         unsafe { vector.to_bytes(&mut bytes, v * vector_bytes) };
     }
     bytes
@@ -81,7 +80,7 @@ unsafe fn store(data: &[Fr8]) -> Vec<blst_fr> {
 /// `input`, with the elements at the positions `raised` picks raised by r:
 /// reduced, but not canonical.
 ///
-/// SAFETY: the caller checked `simd_available`.
+/// SAFETY: the caller checked `ifma_available`.
 unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<Fr8> {
     let r = Limbs::r();
     let mut bytes = Vec::with_capacity(input.len() * BYTES_PER_FIELD_ELEMENT);
@@ -92,7 +91,7 @@ unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<
     let vector_bytes = LANES * BYTES_PER_FIELD_ELEMENT;
     (0..input.len() / LANES)
         .map(|v| {
-            // SAFETY: the caller checked `simd_available`.
+            // SAFETY: the caller checked `ifma_available`.
             let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, v * vector_bytes) };
             for lane in 0..LANES {
                 assert!(below_r >> lane & 1 != u8::from(raised(LANES * v + lane)), "raised");
@@ -107,14 +106,14 @@ unsafe fn load_raised(input: &[blst_fr], raised: &dyn Fn(usize) -> bool) -> Vec<
 /// as no input drives the products to their bound; the proof establishes the
 /// exact bound.
 ///
-/// SAFETY: the caller checked `simd_available`.
+/// SAFETY: the caller checked `ifma_available`.
 unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
     let r = Limbs::r();
     let (k, m) = (16 + 2 * wide_stages, 73 + 33 * wide_stages);
     let bound = Limbs::near_multiple_of_r(k.into(), 0);
     let mut out = Vec::with_capacity(data.len() * LANES);
     for vector in data {
-        // SAFETY: the caller checked `simd_available`.
+        // SAFETY: the caller checked `ifma_available`.
         for lane in unsafe { vector.lane_limbs() } {
             let limit = u64::from(m) << 52;
             assert!(lane.iter().all(|&limb| (limb as i64).unsigned_abs() < limit), "limbs");
@@ -133,7 +132,7 @@ unsafe fn store_lazy(data: &[Fr8], wide_stages: u32) -> Vec<blst_fr> {
 /// positions `raised` picks raised by r. `dif` takes x in natural order, also
 /// as uncarried products by 1, and `dit` in bit-reversed order.
 ///
-/// SAFETY: the caller checked `simd_available`.
+/// SAFETY: the caller checked `ifma_available`.
 unsafe fn check_transforms(
     kernel: &Fft8,
     roots: &[blst_fr],
@@ -145,7 +144,7 @@ unsafe fn check_transforms(
     let log_n = n.trailing_zeros();
     let mut expected = vec![blst_fr::default(); n];
     fft(&mut expected, x, roots);
-    // SAFETY: the caller checked `simd_available`.
+    // SAFETY: the caller checked `ifma_available`.
     unsafe {
         let one = Fr8::load(&[multiplier(&fr_from_u64(1)); LANES], 0);
         for as_products in [false, true] {
@@ -188,7 +187,7 @@ fn kernel_transforms_match_scalar_fft() {
         let exact = roots_of_unity(log_n);
         let exact_inverse = inverse_roots(&exact);
         for roots in [&exact, &exact_inverse, &strided, &strided_inverse] {
-            // SAFETY: `kernels_run` checked `simd_available`.
+            // SAFETY: `kernels_run` checked `ifma_available`.
             let kernel = unsafe { Fft8::new(roots, n) };
             for (case, x) in edge_inputs(&mut rng, n).iter().enumerate() {
                 for raised in [false, true] {
@@ -224,7 +223,7 @@ fn transforms_beyond_4096_elements_are_rejected() {
         return;
     }
     let roots = roots_of_unity(MAX_LOG + 1);
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let rejected = catch_unwind(|| unsafe { Fft8::new(&roots, roots.len()) }).err();
     let message = rejected.as_ref().and_then(|payload| payload.downcast_ref::<&str>());
     assert!(message.is_some_and(|m| m.contains("4096 elements")), "panic: {message:?}");
@@ -276,7 +275,7 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
     }
     for v in 0..values.len() / LANES {
         let at = ODD_OFFSET + v * LANES * BYTES_PER_FIELD_ELEMENT;
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, at) };
         // SAFETY: as above.
         let limbs = unsafe { vector.lane_limbs() };
@@ -310,7 +309,7 @@ fn to_bytes_writes_canonical_lanes_and_nothing_else() {
     for v in 0..values.len() / LANES {
         let raw: Vec<_> = values[v * LANES..(v + 1) * LANES].iter().map(Limbs::to_raw_fr).collect();
         bytes.fill(0x5a);
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { Fr8::load(&raw, 0).to_bytes(&mut bytes, ODD_OFFSET) };
         for lane in 0..LANES {
             let x = &values[v * LANES + lane];
@@ -421,7 +420,7 @@ fn kernel_interpolation_matches_scalar_interpolation() {
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 5);
     let cosets = Cosets::new();
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let mut kernel = unsafe { InterpolationKernel::new(&cosets) };
     let (zero, one) = (fr_from_u64(0), fr_from_u64(1));
     let largest = fr_sub(&zero, &one);
@@ -473,7 +472,7 @@ fn kernel_check_accepts_exactly_cells_below_r() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 6);
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let kernel = unsafe { InterpolationKernel::new(&Cosets::new()) };
     let valid: Vec<_> = (0..3).map(|_| random_cell(&mut rng)).collect();
     // SAFETY: as above.
@@ -512,7 +511,7 @@ fn best_micros(reps: usize, mut f: impl FnMut()) -> f64 {
 #[test]
 #[ignore]
 fn fft_timing() {
-    assert!(simd_available(), "this CPU has no avx512ifma");
+    assert!(ifma_available(), "this CPU has no avx512ifma");
     let reps = 50;
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 2);
     // An idle core runs the first few hundred milliseconds below full clock.
@@ -531,7 +530,7 @@ fn fft_timing() {
         let inverse_n = fr_inverse(&fr_from_u64(n as u64));
         let input: Vec<_> = (0..n).map(|_| random_fr(&mut rng)).collect();
         let mut out = vec![blst_fr::default(); n];
-        // SAFETY: asserted `simd_available` above.
+        // SAFETY: asserted `ifma_available` above.
         let kernel = unsafe { Fft8::new(&roots, n) };
         // SAFETY: as above.
         let mut data = unsafe { load(&input) };

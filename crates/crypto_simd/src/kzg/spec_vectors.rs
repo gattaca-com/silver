@@ -127,7 +127,7 @@ fn challenge_vectors() {
         assert_eq!(Some(got), fr_from_bytes(&expected), "{name}");
         #[cfg(target_arch = "x86_64")]
         if kernels_run() {
-            // SAFETY: `kernels_run` implies `simd_available`, which covers the
+            // SAFETY: `kernels_run` implies `ifma_available`, which covers the
             // SHA extensions and SSE4.1.
             let got = unsafe {
                 challenge_in_parts(

@@ -245,7 +245,7 @@ theorem uncompress_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
       rw [LANES, mul_ok q 8#usize (by simpa [q] using hstopbound)]
       rfl
     simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte,
-      bind_tc_ok, simd_available]
+      bind_tc_ok, ifma_available]
     rw [show Slice.len inputs = n from rfl, hd]
     simp only [bind_tc_ok]
     rw [hmul]

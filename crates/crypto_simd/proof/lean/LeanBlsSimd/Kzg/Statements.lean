@@ -95,14 +95,14 @@ theorem new_returns_ok_route [e : KzgExternals] (hblst : BlstCorrect e)
   obtain ⟨lincomb, hl, hlroute⟩ := lincomb_new_route (e := e)
   cases hsimd : e.simdAvailable with
   | false =>
-    simp only [verify.CellBatchVerifier.new, hs, hc, simd_available, hsimd,
+    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
       bind_tc_ok, Bool.false_eq_true, if_false,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
       alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new, hl]
     exact ⟨_, rfl, ⟨hsrep, hcrep, trivial⟩, by simpa only [hsimd] using hlroute, rfl⟩
   | true =>
     obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement hblst c hcrep
-    simp only [verify.CellBatchVerifier.new, hs, hc, simd_available, hsimd,
+    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
       bind_tc_ok, if_true, hkernel,
       verify.Deduplicated.Insts.CoreDefaultDefault.default,
       alloc.vec.Vec.Insts.CoreDefaultDefault.default, challenge.Preimage.new, hl]

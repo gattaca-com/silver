@@ -22,8 +22,8 @@ use silver_common::{
     ssz_view::{BYTES_PER_CELL, BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView},
 };
 use silver_crypto_simd::{
+    ifma_available,
     kzg::{BYTES_PER_BLOB, CELLS_PER_EXT_BLOB},
-    simd_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 use silver_metrics::table::{Column, Table};
@@ -160,7 +160,7 @@ fn blobs(sidecars: &[&[u8]]) -> Vec<Box<[u8; BYTES_PER_BLOB]>> {
 }
 
 fn main() {
-    assert!(simd_available(), "this CPU has no avx512ifma; crypto_simd would not use its kernel");
+    assert!(ifma_available(), "this CPU has no avx512ifma; crypto_simd would not use its kernel");
     let capture = ColumnFixtures::da().load();
     ethereum_kzg_settings(0);
 

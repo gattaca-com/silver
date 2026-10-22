@@ -130,7 +130,7 @@ fn mul_matches_the_reference_on_components_below_16p() {
     let mut rng = ChaCha8Rng::seed_from_u64(0xf2a);
     for (case, draw) in draws(4).iter().enumerate() {
         let c: Vec<_> = draw.iter().map(|&d| LazyLanes::draw(&mut rng, 16, d)).collect();
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, lazy_a) = fp2_pair(&c[0], &c[1]);
             let (b, lazy_b) = fp2_pair(&c[2], &c[3]);
@@ -149,7 +149,7 @@ fn square_matches_the_reference_on_components_below_8p() {
     let mut rng = ChaCha8Rng::seed_from_u64(0x5f2);
     for (case, draw) in draws(2).iter().enumerate() {
         let c: Vec<_> = draw.iter().map(|&d| LazyLanes::draw(&mut rng, 8, d)).collect();
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, lazy_a) = fp2_pair(&c[0], &c[1]);
             let got = lazy_a.square();
@@ -178,7 +178,7 @@ fn lazy_steps_match_add_and_sub() {
                 };
             }
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let [a0, a1, b0, b1] = components.map(|c| Fp8::load(&c));
             let (a, b) = (Fp2x8 { c0: a0, c1: a1 }, Fp2x8 { c0: b0, c1: b1 });

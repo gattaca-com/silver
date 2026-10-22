@@ -24,7 +24,7 @@ use crate::{
         pairing_lines::PAIRING_LINES,
     },
     portable::{g1::G1, msm::Msm, pairing::PairingLines},
-    route, sha_extensions, simd_available,
+    route, sha_extensions, ifma_available,
 };
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
@@ -77,8 +77,8 @@ impl CellBatchVerifier {
         let setup = Setup::decode();
         let cosets = Cosets::new();
         #[cfg(target_arch = "x86_64")]
-        let kernel = if simd_available() {
-            // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+        let kernel = if ifma_available() {
+            // SAFETY: `ifma_available` confirmed avx512f and avx512ifma on this CPU.
             Some(unsafe { InterpolationKernel::new(&cosets) })
         } else {
             None
@@ -157,7 +157,7 @@ impl CellBatchVerifier {
         let index_of_cell = &self.commitments.index_of_cell;
         #[cfg(target_arch = "x86_64")]
         if self.kernel.is_some() || (self.lincomb.portable.is_some() && sha_extensions()) {
-            // SAFETY: `kernel` is built only where `simd_available` held, which
+            // SAFETY: `kernel` is built only where `ifma_available` held, which
             // covers the SHA extensions; `sha_extensions` checks them itself.
             return unsafe {
                 challenge_in_parts(unique, index_of_cell, cell_indices, cells, proofs)
@@ -181,7 +181,7 @@ impl CellBatchVerifier {
     fn decode_cells(&mut self, cells: &[[u8; BYTES_PER_CELL]]) -> bool {
         #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &self.kernel {
-            // SAFETY: `kernel` is built only where `simd_available` held.
+            // SAFETY: `kernel` is built only where `ifma_available` held.
             return unsafe { kernel.check(cells) };
         }
         self.evaluations.resize(0, FR_ZERO);
@@ -257,7 +257,7 @@ impl CellBatchVerifier {
         #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &mut self.kernel {
             self.interpolation.resize(FIELD_ELEMENTS_PER_CELL, FR_ZERO);
-            // SAFETY: `kernel` is built only where `simd_available` held.
+            // SAFETY: `kernel` is built only where `ifma_available` held.
             unsafe {
                 kernel.interpolate(cells, cell_indices, &self.r_powers, &mut self.interpolation)
             };
@@ -333,7 +333,7 @@ impl Lincomb {
         Self {
             scratch: LincombScratch::new(),
             #[cfg(target_arch = "x86_64")]
-            msm: if simd_available() { Some(Msm8::default()) } else { None },
+            msm: if ifma_available() { Some(Msm8::default()) } else { None },
             #[cfg(target_arch = "x86_64")]
             portable: if route() == Route::Portable {
                 // SAFETY: the portable route is taken only where
@@ -351,7 +351,7 @@ impl Lincomb {
     fn sum(&mut self, points: &[blst_p1_affine], scalars: &[blst_fr]) -> blst_p1 {
         #[cfg(target_arch = "x86_64")]
         if let Some(msm) = &mut self.msm {
-            // SAFETY: `msm` is built only where `simd_available` held.
+            // SAFETY: `msm` is built only where `ifma_available` held.
             return unsafe {
                 Fr8::plain_words(scalars, &mut self.words);
                 msm.msm(points, &self.words)
@@ -376,7 +376,7 @@ impl Lincomb {
     fn pairing_check(&self, ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> bool {
         #[cfg(target_arch = "x86_64")]
         if self.msm.is_some() {
-            // SAFETY: `msm` is built only where `simd_available` held.
+            // SAFETY: `msm` is built only where `ifma_available` held.
             return unsafe {
                 PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp))
             };

@@ -114,7 +114,7 @@ fn formulas_match_the_reference_at_the_input_bounds() {
                 n /= edges.len();
             }
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("combinations from {first}")) };
     }
 }
@@ -131,7 +131,7 @@ fn formulas_match_the_reference_on_random_edges() {
     for case in 0..512 {
         let coordinates =
             std::array::from_fn(|_| std::array::from_fn(|_| edges[rng.gen_range(0..edges.len())]));
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }
@@ -146,7 +146,7 @@ fn formulas_match_the_reference_on_random_lanes() {
     let two_p = near_multiple_of_p(2, 0);
     for case in 0..256 {
         let coordinates = std::array::from_fn(|_| std::array::from_fn(|_| below(&mut rng, &two_p)));
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }

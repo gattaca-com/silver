@@ -113,7 +113,7 @@ fn mul_matches_reference_reduction() {
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xf58);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (vector(a), vector(b));
             assert!(a.mul(&b).lane_limbs() == mul_reference(&a, &b).lane_limbs(), "case {case}");
@@ -130,7 +130,7 @@ fn normalised_products_match_carried_reference() {
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xca2);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (vector(a), vector(b));
             let expected = carried_reference(&mul_reference(&a, &b));
@@ -166,7 +166,7 @@ fn normalise_restores_limbs_with_moved_excess() {
                 moved[lane][j + 1] = moved[lane][j + 1].wrapping_sub(k as u64);
             }
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let out = unsafe { Fr8(transpose_in(&moved)).normalise().lane_limbs() };
         assert!(out == values, "case {case}");
     }
@@ -199,7 +199,7 @@ fn products_have_bounded_limbs_and_lie_below_two_r() {
             0..3 => multipliers[(case + lane) % 4],
             _ => r.random_below(&mut rng),
         });
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let (raw, carried) = unsafe {
             let product = vector(&data).mul(&vector(&w));
             (product.lane_limbs(), product.normalise().lane_limbs())
@@ -244,7 +244,7 @@ fn plain_words_match_blst() {
             values[k] = fr_of_words(edge);
         }
         let mut words = vec![[7u64; 4]; 3];
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe { Fr8::plain_words(&values, &mut words) };
         let want: Vec<[u64; 4]> = values
             .iter()

@@ -24,7 +24,7 @@ use silver_crypto_simd::{
         g2x8::G2x8,
         uncompress_in_g1_blst, uncompress_in_g2_blst,
     },
-    simd_available,
+    ifma_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
 
@@ -155,7 +155,7 @@ fn affine_lanes_g2(points: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> (Fp2x8, Fp2x8) 
 }
 
 fn main() {
-    assert!(simd_available(), "this CPU has no avx512ifma");
+    assert!(ifma_available(), "this CPU has no avx512ifma");
     let cap = ColumnFixtures::da().load();
     let slot = cap.slots.values().next().unwrap();
     let mut batch = [[0u8; COMPRESSED_LEN]; LANES];
@@ -166,7 +166,7 @@ fn main() {
     for (lane, chunk) in proofs.take(LANES).enumerate() {
         batch[lane].copy_from_slice(chunk);
     }
-    // SAFETY: `simd_available` confirmed the target features.
+    // SAFETY: `ifma_available` confirmed the target features.
     let (x, y) = unsafe { affine_lanes(&batch) };
 
     let batch_g2 = g2_batch();

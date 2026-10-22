@@ -36,7 +36,7 @@ class silver_crypto_simd.kzg.KzgExternals extends BlsExternals where
   pairingCheck : blst.blst_p1_affine → blst.blst_p2_affine →
     blst.blst_p1_affine → blst.blst_p2_affine → Result Bool
 
-def silver_crypto_simd.simd_available [BlsExternals] : Result Bool :=
+def silver_crypto_simd.ifma_available [BlsExternals] : Result Bool :=
   ok BlsExternals.simdAvailable
 
 def silver_crypto_simd.bls.uncompress_in_g1_blst [BlsExternals]

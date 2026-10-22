@@ -14,7 +14,7 @@ use crate::kzg::{
     fr::{fr_from_bytes, fr_mul, fr_to_bytes},
 };
 #[cfg(target_arch = "x86_64")]
-use crate::{kzg::extension_kernel::ExtensionKernel, simd_available};
+use crate::{ifma_available, kzg::extension_kernel::ExtensionKernel};
 
 const LOG_BLOB: u32 = 12;
 const LOG_EXT_BLOB: u32 = 13;
@@ -50,8 +50,8 @@ impl CellExtender {
         coefficients.resize(FIELD_ELEMENTS_PER_BLOB, FR_ZERO);
         let inverse_roots = inverse_roots(&roots);
         #[cfg(target_arch = "x86_64")]
-        let kernel = if simd_available() {
-            // SAFETY: `simd_available` confirmed avx512f and avx512ifma on this CPU.
+        let kernel = if ifma_available() {
+            // SAFETY: `ifma_available` confirmed avx512f and avx512ifma on this CPU.
             Some(unsafe {
                 ExtensionKernel::new(&roots, &inverse_roots, &shift_powers, &INVERSE_BLOB_SIZE)
             })
@@ -88,7 +88,7 @@ impl CellExtender {
     ) -> bool {
         #[cfg(target_arch = "x86_64")]
         if let Some(kernel) = &mut self.kernel {
-            // SAFETY: `kernel` is built only where `simd_available` held.
+            // SAFETY: `kernel` is built only where `ifma_available` held.
             if !unsafe { kernel.decode(blob) } {
                 return false;
             }

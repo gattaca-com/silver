@@ -143,7 +143,7 @@ fn mul_matches_reference_reduction() {
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xf98);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (Fp8::load(a), Fp8::load(b));
             assert!(a.mul(&b).store() == mul_reference(&a, &b).store(), "case {case}");
@@ -160,7 +160,7 @@ fn square_matches_reference_product() {
     let mut rng = ChaCha8Rng::seed_from_u64(0x5a);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
         for x in [a, b] {
-            // SAFETY: `kernels_run` checked `simd_available`.
+            // SAFETY: `kernels_run` checked `ifma_available`.
             unsafe {
                 let x = Fp8::load(x);
                 assert!(x.square().store() == mul_reference(&x, &x).store(), "case {case}");
@@ -211,7 +211,7 @@ fn mul_reduces_operands_within_its_bound() {
                 operands[k][lane] = plus_multiple_of_p(&residues[k][lane], multiples[k]);
             }
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let product = Fp8::load(&operands[0]).mul(&Fp8::load(&operands[1]));
             for limbs in product.store() {
@@ -229,7 +229,7 @@ fn multiple_of_p_is_normalised_c_times_p() {
         return;
     }
     for c in [0, 1, 2, 4, 8, (1 << 12) - 1] {
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let got = unsafe { Fp8::multiple_of_p(c).store() };
         assert!(got == [near_multiple_of_p(c as i128, 0); LANES], "c = {c}");
     }
@@ -250,7 +250,7 @@ fn lazy_steps_match_add_and_sub() {
     let mut pairs = every_pair(&edges);
     pairs.extend(random_pairs_below(&mut rng, &near_multiple_of_p(2, 0), 64));
     for (case, (a, b)) in pairs.iter().enumerate() {
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b, two_p) = (Fp8::load(a), Fp8::load(b), Fp8::multiple_of_p(2));
             let sum = a.add_raw(&b).normalise().cond_sub(&two_p);
@@ -280,7 +280,7 @@ fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
             let low = q.wrapping_mul(P[0]) & MASK52;
             cleared[l] = t[l].wrapping_add(low) >> 52;
         }
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let got = unsafe {
             let t = Fp8::load(&std::array::from_fn(|l| [t[l]; LIMBS]));
             lanes(carry_of_cleared(t.0[0]))
@@ -306,7 +306,7 @@ fn inverse_multiplies_back_to_one() {
     values.extend((0..57).map(|_| below(&mut rng, &near_multiple_of_p(2, 0))));
     for chunk in values.chunks(LANES) {
         let lanes_of: [Limbs; LANES] = std::array::from_fn(|l| chunk[l % chunk.len()]);
-        // SAFETY: `kernels_run` checked `simd_available`.
+        // SAFETY: `kernels_run` checked `ifma_available`.
         let (zero_lanes, zero_inverses, ones) = unsafe {
             let a = Fp8::load(&lanes_of);
             let inverse = a.inverse();
@@ -324,7 +324,7 @@ fn transpose8_swaps_rows_and_lanes() {
         return;
     }
     let value = |row: usize, lane: usize| (LANES * row + lane) as u64;
-    // SAFETY: `kernels_run` checked `simd_available`.
+    // SAFETY: `kernels_run` checked `ifma_available`.
     let out = unsafe {
         let rows =
             Fp8::load(&std::array::from_fn(|lane| std::array::from_fn(|row| value(row, lane))));
