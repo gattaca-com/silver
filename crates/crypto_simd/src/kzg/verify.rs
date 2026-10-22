@@ -10,9 +10,21 @@ use blst::{blst_fr, blst_p1};
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::kzg::challenge::Preimage;
+use crate::{
+    bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
+    kzg::{
+        BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
+        FR_ONE, FR_ZERO,
+        blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
+        cosets::Cosets,
+        domain::reverse_bits,
+        fft::inverse_fft,
+        fr::{fr_add, fr_from_bytes, fr_mul},
+        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
+    },
+};
 #[cfg(target_arch = "x86_64")]
 use crate::{
-    Route,
     bls::{
         fp8::{Fp8, LANES},
         g1x8::G1x8,
@@ -27,20 +39,7 @@ use crate::{
         pairing_lines::PAIRING_LINES,
     },
     portable::{g1::G1, msm::Msm, pairing::PairingLines},
-    route, sha_available,
-};
-use crate::{
-    bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
-    kzg::{
-        BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
-        FR_ONE, FR_ZERO,
-        blst_ops::{LincombScratch, g1_add, g1_lincomb, g1_neg, g1_to_affine, pairing_check},
-        cosets::Cosets,
-        domain::reverse_bits,
-        fft::inverse_fft,
-        fr::{fr_add, fr_from_bytes, fr_mul},
-        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
-    },
+    sha_available,
 };
 
 const LOG_CELL: u32 = 6;
@@ -348,7 +347,7 @@ impl Lincomb {
             #[cfg(target_arch = "x86_64")]
             msm: if ifma_available() { Some(Msm8::default()) } else { None },
             #[cfg(target_arch = "x86_64")]
-            portable: if route() == Route::Portable {
+            portable: if !ifma_available() {
                 let lines = Box::new(PairingLines::new(&PAIRING_LINES));
                 Some(PortableCurve { msm: Msm::default(), lines })
             } else {

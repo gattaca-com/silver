@@ -70,13 +70,9 @@ impl CellExtender {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64"))]
     pub(crate) fn without_kernel() -> Self {
-        Self {
-            #[cfg(target_arch = "x86_64")]
-            kernel: None,
-            ..Self::new()
-        }
+        Self { kernel: None, ..Self::new() }
     }
 
     /// False exactly when the spec's `computeCells` rejects `blob`: some

@@ -59,7 +59,7 @@ pub use blst::{blst_p1_affine, blst_p2_affine};
 
 use crate::ifma_available;
 #[cfg(target_arch = "x86_64")]
-use crate::{Route, portable::decompress::uncompress_all_in_g1, route};
+use crate::portable::decompress::uncompress_all_in_g1;
 
 pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
@@ -91,12 +91,12 @@ pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_aff
 /// `uncompress_in_g1_blst(&inputs[i])`.
 pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
+    let simd = ifma_available();
     #[cfg(target_arch = "x86_64")]
-    if route() == Route::Portable {
+    if !simd {
         uncompress_all_in_g1(inputs, out);
         return;
     }
-    let simd = ifma_available();
     let full = inputs.len() / LANES * LANES;
     let mut start = 0;
     while start < full {
