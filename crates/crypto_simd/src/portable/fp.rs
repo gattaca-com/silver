@@ -119,13 +119,35 @@ fn row(t: &[u64; 6], a: &[u64; 6], bi: u64) -> [u64; 6] {
     [reduced[1], reduced[2], reduced[3], reduced[4], reduced[5], reduced[6]]
 }
 
+/// (t + m·p)/2^64 for the m that makes it exact: below 2^320 + p.
+#[inline(always)]
+fn reduce_row(t: &[u64; 6]) -> [u64; 6] {
+    let reduced =
+        mul_add(&[t[0], t[1], t[2], t[3], t[4], t[5], 0], &P_U64, t[0].wrapping_mul(P_INV));
+    [reduced[1], reduced[2], reduced[3], reduced[4], reduced[5], reduced[6]]
+}
+
+/// t + a·bi·2^(64·i), for t below 2^(64·(i + 6)).
+#[inline(always)]
+fn add_row_at(t: &mut [u64; 12], a: &[u64; 6], bi: u64, i: usize) {
+    debug_assert!(t[i + 6] == 0, "t reaches past the row");
+    let sum = mul_add(&[t[i], t[i + 1], t[i + 2], t[i + 3], t[i + 4], t[i + 5], 0], a, bi);
+    t[i] = sum[0];
+    t[i + 1] = sum[1];
+    t[i + 2] = sum[2];
+    t[i + 3] = sum[3];
+    t[i + 4] = sum[4];
+    t[i + 5] = sum[5];
+    t[i + 6] = sum[6];
+}
+
 /// a − b and whether it borrowed.
 #[inline(always)]
-fn sub_words(a: &[u64; 6], b: &[u64; 6]) -> ([u64; 6], bool) {
-    let mut d = [0u64; 6];
+fn sub_words<const N: usize>(a: &[u64; N], b: &[u64; N]) -> ([u64; N], bool) {
+    let mut d = [0u64; N];
     let mut borrow = 0;
     let mut j = 0;
-    while j < 6 {
+    while j < N {
         let (x, out) = sub_borrow(a[j], b[j], borrow);
         d[j] = x;
         borrow = out;
@@ -227,6 +249,12 @@ impl Fp {
     pub fn add(&self, rhs: &Self) -> Self {
         let (s, _) = add_words(&self.0, &rhs.0);
         Self(below_p(&s))
+    }
+
+    /// The sum's words, below 2p.
+    #[inline(always)]
+    pub fn unreduced_add(&self, rhs: &Self) -> [u64; 6] {
+        add_words(&self.0, &rhs.0).0
     }
 
     #[inline(always)]
@@ -369,6 +397,59 @@ impl Fp {
     }
 }
 
+/// A product before its Montgomery reduction, in twelve little-endian words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wide([u64; 12]);
+
+// Always inlined, into callers that enable BMI2: out of line, LLVM passes the
+// twelve words through memory.
+impl Wide {
+    /// a·b, exactly.
+    #[inline(always)]
+    pub fn product(a: &[u64; 6], b: &[u64; 6]) -> Self {
+        let mut t = [0u64; 12];
+        add_row_at(&mut t, a, b[0], 0);
+        add_row_at(&mut t, a, b[1], 1);
+        add_row_at(&mut t, a, b[2], 2);
+        add_row_at(&mut t, a, b[3], 3);
+        add_row_at(&mut t, a, b[4], 4);
+        add_row_at(&mut t, a, b[5], 5);
+        Self(t)
+    }
+
+    /// self − rhs, for rhs at most self.
+    #[inline(always)]
+    pub fn minus(&self, rhs: &Self) -> Self {
+        let (d, borrowed) = sub_words(&self.0, &rhs.0);
+        debug_assert!(!borrowed, "subtrahend above the minuend");
+        Self(d)
+    }
+
+    /// self − rhs mod p·2^384, for both below p·2^384.
+    #[inline(always)]
+    pub fn minus_mod(&self, rhs: &Self) -> Self {
+        let (d, borrowed) = sub_words(&self.0, &rhs.0);
+        let (h, _) = add_words(&[d[6], d[7], d[8], d[9], d[10], d[11]], &p_if(borrowed));
+        Self([d[0], d[1], d[2], d[3], d[4], d[5], h[0], h[1], h[2], h[3], h[4], h[5]])
+    }
+
+    /// self·2^−384 mod p, for self below p·2^384: the low half reduces to at
+    /// most p, and the high half is below p.
+    #[inline(always)]
+    pub fn reduce(&self) -> Fp {
+        let t = &self.0;
+        let high = [t[6], t[7], t[8], t[9], t[10], t[11]];
+        debug_assert!(sub_words(&high, &P_U64).1, "not below p·2^384");
+        let mut low = reduce_row(&[t[0], t[1], t[2], t[3], t[4], t[5]]);
+        low = reduce_row(&low);
+        low = reduce_row(&low);
+        low = reduce_row(&low);
+        low = reduce_row(&low);
+        low = reduce_row(&low);
+        Fp(below_p(&add_words(&low, &high).0))
+    }
+}
+
 fn is_even(a: &[u64; 6]) -> bool {
     a[0] & 1 == 0
 }
@@ -432,4 +513,4 @@ fn inverse_words(a: &[u64; 6]) -> [u64; 6] {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -1,6 +1,6 @@
 //! Fp2 = Fp[i]/(i² + 1) over the scalar [`Fp`], blst's `blst_fp2`: c0 + c1·i.
 
-use crate::portable::fp::Fp;
+use crate::portable::fp::{Fp, Wide};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fp2 {
@@ -11,14 +11,16 @@ pub struct Fp2 {
 impl Fp2 {
     pub const ZERO: Fp2 = Fp2 { c0: Fp::ZERO, c1: Fp::ZERO };
 
-    /// Karatsuba: three products.
+    /// Karatsuba on unreduced products, blst's `mul_mont_384x`: three
+    /// products, two reductions. On unreduced sums, (a0 + a1)(b0 + b1) − a0·b0
+    /// − a1·b1 is a0·b1 + a1·b0 exactly, below 2p².
     #[target_feature(enable = "bmi2,adx")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let t0 = self.c0.mul(&rhs.c0);
-        let t1 = self.c1.mul(&rhs.c1);
-        let t2 = self.c0.add(&self.c1).mul(&rhs.c0.add(&rhs.c1));
-        Self { c0: t0.sub(&t1), c1: t2.sub(&t0).sub(&t1) }
+        let t0 = Wide::product(&self.c0.0, &rhs.c0.0);
+        let t1 = Wide::product(&self.c1.0, &rhs.c1.0);
+        let t2 = Wide::product(&self.c0.unreduced_add(&self.c1), &rhs.c0.unreduced_add(&rhs.c1));
+        Self { c0: t0.minus_mod(&t1).reduce(), c1: t2.minus(&t0).minus(&t1).reduce() }
     }
 
     /// (c0 + c1)(c0 − c1) + 2·c0·c1·i: two products.
@@ -78,3 +80,6 @@ impl Fp2 {
         Self { c0: self.c0.mul(&norm_inverse), c1: self.c1.neg().mul(&norm_inverse) }
     }
 }
+
+#[cfg(test)]
+mod tests;

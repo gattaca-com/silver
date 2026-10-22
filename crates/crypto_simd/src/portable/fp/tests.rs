@@ -5,7 +5,7 @@ use blst::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::Fp;
+use super::{Fp, Wide};
 use crate::{bls::constants::P_U64, portable::portable_available};
 
 fn below_p(rng: &mut ChaCha8Rng) -> Fp {
@@ -24,7 +24,7 @@ fn below_p(rng: &mut ChaCha8Rng) -> Fp {
 }
 
 /// 0, 1, 2 and p − 1, p − 2 as stored words, and random values.
-fn inputs() -> Vec<Fp> {
+pub(crate) fn inputs() -> Vec<Fp> {
     let mut rng = ChaCha8Rng::seed_from_u64(0xf9);
     let mut top = P_U64;
     top[0] -= 1;
@@ -87,6 +87,33 @@ fn operations_match_blst() {
             blst_uint64_from_fp(plain.as_mut_ptr(), &blst(a));
             assert_eq!(a.to_plain(), plain, "to_plain");
             assert_eq!(Fp::from_plain(&plain), *a, "from_plain");
+        }
+    }
+}
+
+/// A product's reduction is the Montgomery product, also on sums below 2p,
+/// and differences of products reduce to their differences in Fp.
+#[test]
+fn wide_products_reduce_to_montgomery_products() {
+    if !portable_available() {
+        return;
+    }
+    let values = inputs();
+    for a in &values {
+        for b in values.iter().take(24) {
+            // SAFETY: `portable_available` held.
+            unsafe {
+                let ab = Wide::product(&a.0, &b.0);
+                let bb = Wide::product(&b.0, &b.0);
+                assert_eq!(ab.reduce(), a.mul(b), "reduce");
+                assert_eq!(ab.minus_mod(&bb).reduce(), a.mul(b).sub(&b.square()), "minus_mod");
+                assert_eq!(bb.minus_mod(&ab).reduce(), b.square().sub(&a.mul(b)), "minus_mod");
+                let sum = a.unreduced_add(b);
+                let squared_sum = Wide::product(&sum, &sum);
+                assert_eq!(squared_sum.reduce(), a.add(b).square(), "unreduced sums");
+                let cross = squared_sum.minus(&Wide::product(&a.0, &a.0)).minus(&bb);
+                assert_eq!(cross.reduce(), a.mul(b).double(), "minus");
+            }
         }
     }
 }
