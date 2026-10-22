@@ -5,6 +5,9 @@ Usage: python3 -I gen_trusted_setup.py <c-kzg>/src/trusted_setup.txt > src/kzg/t
 
 The file lists the G1 and G2 point counts, then the G1 Lagrange points, the G2 monomial points
 and the G1 monomial points, one hex-encoded compressed point per line.
+
+The verifier holds its two G2 points as literals, so their compressed forms are test inputs: a
+test checks the literals against blst's decoding of them.
 """
 import sys
 
@@ -27,5 +30,7 @@ print(f"pub const G1_MONOMIAL: [[u8; 48]; {CELL}] = [")
 for point in g1_monomial[:CELL]:
     print(f"    {array(point)},")
 print("];")
+print("#[cfg(test)]")
 print(f"pub const G2_MONOMIAL_0: [u8; 96] = {array(g2[0])};")
+print("#[cfg(test)]")
 print(f"pub const G2_MONOMIAL_{CELL}: [u8; 96] = {array(g2[CELL])};")

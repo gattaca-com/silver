@@ -2,8 +2,14 @@ use c_kzg::{Blob, Bytes48, Cell, KzgSettings, ethereum_kzg_settings};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::kzg::{
-    BYTES_PER_BLOB, BYTES_PER_CELL, CELLS_PER_EXT_BLOB, CellBatchVerifier, CellExtender,
+use crate::{
+    bls::uncompress_in_g2_blst,
+    kzg::{
+        BYTES_PER_BLOB, BYTES_PER_CELL, CELLS_PER_EXT_BLOB, CellBatchVerifier, CellExtender,
+        blst_ops::g2_neg,
+        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
+        trusted_setup::{G2_MONOMIAL_0, G2_MONOMIAL_64},
+    },
 };
 
 const SEED: u64 = 0x6b7a_6763_656c_6c73;
@@ -247,4 +253,15 @@ fn pairing_check_skips_infinity_on_either_side() {
     assert!(pairing_check(&g1, &inf2, &g1, &inf2), "G2 infinity in both pairs");
     assert!(pairing_check(&g1, &g2, &minus_g1, &g2), "e(g1, g2)·e(−g1, g2) = 1");
     assert!(!pairing_check(&g1, &g2, &g1, &inf2), "e(g1, g2) alone is not 1");
+}
+
+/// The verifier's G2 literals are blst's decoding of the setup's compressed
+/// points, with the generator negated by blst, limb for limb.
+#[test]
+fn setup_g2_literals_match_blst() {
+    let cell = uncompress_in_g2_blst(&G2_MONOMIAL_64).expect("setup point 64 decodes");
+    assert!(G2_S_POW_CELL.x == cell.x && G2_S_POW_CELL.y == cell.y, "[s^64]");
+    let generator = uncompress_in_g2_blst(&G2_MONOMIAL_0).expect("setup point 0 decodes");
+    let negated = g2_neg(&generator);
+    assert!(G2_NEG_GENERATOR.x == negated.x && G2_NEG_GENERATOR.y == negated.y, "−[1]");
 }

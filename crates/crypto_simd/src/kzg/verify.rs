@@ -25,7 +25,7 @@ use crate::{
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
-        setup::Setup,
+        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
     },
 };
 
@@ -212,12 +212,7 @@ impl CellBatchVerifier {
         let rlp = self.lincomb.sum(&self.proof_points, &self.scalars);
 
         let rl = g1_add(&g1_add(&rlc, &g1_neg(&rli)), &rlp);
-        pairing_check(
-            &g1_to_affine(&ll),
-            &self.setup.g2_s_pow_cell,
-            &g1_to_affine(&rl),
-            &self.setup.g2_neg_generator,
-        )
+        pairing_check(&g1_to_affine(&ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
