@@ -4,9 +4,10 @@
 //! The product is CIOS in six explicit rows with the no-carry schedule: p's top
 //! word is below 2^62, so a row's running sum fits six words and a top word.
 //! Under BMI2, LLVM compiles the `u128` products to `mulx`. By default, carries
-//! are `overflowing_add` pairs. The `portable_addcarry` feature takes them from
-//! `_addcarry_u64`, which LLVM chains more tightly; `portable_mulx` also takes
-//! the products from `_mulx_u64`.
+//! are `overflowing_add` pairs and borrows `u128` differences. The
+//! `portable_addcarry` feature takes both from `_addcarry_u64`, which LLVM
+//! chains more tightly; `portable_mulx` also takes the products from
+//! `_mulx_u64`.
 
 #[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
 use std::arch::x86_64::_addcarry_u64;
@@ -57,8 +58,19 @@ fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     (s, c as u64)
 }
 
+/// a − b − borrow and the borrow out, for a borrow of 0 or 1, from the
+/// difference lifted by 2^64. On `overflowing_add` carries, LLVM compiles the
+/// complement form below to comparisons and `setb`s, and this one tighter.
+#[cfg(not(any(feature = "portable_addcarry", feature = "portable_mulx")))]
+#[inline(always)]
+fn sub_borrow(a: u64, b: u64, borrow: u64) -> (u64, u64) {
+    let d = (1u128 << 64) + a as u128 - b as u128 - borrow as u128;
+    (d as u64, 1 - (d >> 64) as u64)
+}
+
 /// a − b − borrow and the borrow out, for a borrow of 0 or 1: a + !b + 1 −
 /// borrow carries out exactly when nothing is borrowed.
+#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
 #[inline(always)]
 fn sub_borrow(a: u64, b: u64, borrow: u64) -> (u64, u64) {
     let (d, carry) = add_carry(a, !b, 1 - borrow);
@@ -166,6 +178,19 @@ fn below_p(t: &[u64; 6]) -> [u64; 6] {
     select(negative_mask(&d), t, &d)
 }
 
+/// p when `borrowed`, else 0: masked words, which LLVM keeps free of branches.
+#[inline(always)]
+fn p_if(borrowed: bool) -> [u64; 6] {
+    let mask = 0u64.wrapping_sub(borrowed as u64);
+    let mut out = [0u64; 6];
+    let mut j = 0;
+    while j < 6 {
+        out[j] = P_U64[j] & mask;
+        j += 1;
+    }
+    out
+}
+
 impl Fp {
     pub const ZERO: Fp = Fp([0; 6]);
 
@@ -211,9 +236,8 @@ impl Fp {
 
     #[inline(always)]
     pub fn sub(&self, rhs: &Self) -> Self {
-        let (lifted, _) = add_words(&self.0, &P_U64);
-        let (d, _) = sub_words(&lifted, &rhs.0);
-        Self(below_p(&d))
+        let (d, borrowed) = sub_words(&self.0, &rhs.0);
+        Self(add_words(&d, &p_if(borrowed)).0)
     }
 
     #[inline(always)]
