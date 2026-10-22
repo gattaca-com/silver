@@ -93,9 +93,7 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_
     assert!(out.len() == inputs.len(), "one verdict slot per input");
     #[cfg(target_arch = "x86_64")]
     if route() == Route::Portable {
-        // SAFETY: the portable route is taken only where `portable_available`
-        // held.
-        unsafe { uncompress_all_in_g1(inputs, out) };
+        uncompress_all_in_g1(inputs, out);
         return;
     }
     let simd = ifma_available();

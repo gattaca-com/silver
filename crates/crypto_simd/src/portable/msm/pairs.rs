@@ -36,7 +36,6 @@ impl BatchedAdds {
     /// Writes every sum to its `out`. False, with nothing written, when some
     /// pair has equal x coordinates: its points are equal or opposite, and the
     /// slope would divide by zero.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn run(&mut self, store: &mut PointStore) -> bool {
         let n = self.a.len();
         self.dx.resize(n, Fp::ZERO);
@@ -67,7 +66,6 @@ impl BatchedAdds {
     }
 
     /// Writes pair i's sum, from the inverse of its x difference.
-    #[target_feature(enable = "bmi2,adx")]
     #[inline]
     fn finish(&self, store: &mut PointStore, i: usize, dx_inverse: &Fp) {
         let (xa, ya) = store.signed(self.a[i]);
@@ -81,7 +79,6 @@ impl BatchedAdds {
 
 /// The inverses of `values` by Montgomery's trick: one inversion and
 /// 3·(CHAINS − 1) products. Every value must be nonzero.
-#[target_feature(enable = "bmi2,adx")]
 fn batch_inverse(values: &[Fp; CHAINS]) -> [Fp; CHAINS] {
     let mut prefix = *values;
     let mut k = 1;

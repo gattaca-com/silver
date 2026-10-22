@@ -18,7 +18,6 @@ pub struct PairingLines([[[Fp2; 2]; 2]; LINE_COUNT]);
 impl PairingLines {
     /// From Fp8's form, R' = 2^416: the Montgomery product with 2^352 takes
     /// a·R' to a·R.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn new(lines: &MillerLines) -> Self {
         let r_prime_to_r = Fp([0, 0, 0, 0, 0, 1 << 32]);
         let mut out = [[[Fp2::ZERO; 2]; 2]; LINE_COUNT];
@@ -44,7 +43,6 @@ impl PairingLines {
 
     /// The spec's `pairingCheck` of the two pairs: whether
     /// e(P0, Q0)·e(P1, Q1) = 1.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn pairing_check(&self, points: &[G1; 2]) -> bool {
         self.miller_loop(points).final_exponentiation().is_one()
     }
@@ -52,7 +50,6 @@ impl PairingLines {
     /// The product of both pairs' Miller values, conjugated since z < 0; a
     /// pair whose point is infinity is left out. At Jacobian (X, Y, Z), each
     /// line is scaled by Z³: (Z³, l1·XZ, 0) + (0, l2·Y, 0)·w.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn miller_loop(&self, points: &[G1; 2]) -> Fp12 {
         let mut factors = [[Fp::ZERO; 3]; 2];
         let mut k = 0;
@@ -82,7 +79,6 @@ impl PairingLines {
 
     /// `f` times step `step`'s line at each present point, whose factors are
     /// [Z³, XZ, Y].
-    #[target_feature(enable = "bmi2,adx")]
     #[inline]
     fn times_lines(
         &self,

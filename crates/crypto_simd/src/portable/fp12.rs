@@ -25,7 +25,6 @@ impl Fp12 {
     };
 
     /// Karatsuba over the halves: three Fp6 products.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn mul(&self, rhs: &Self) -> Self {
         let t0 = self.c0.mul(&rhs.c0);
         let t1 = self.c1.mul(&rhs.c1);
@@ -35,7 +34,6 @@ impl Fp12 {
 
     /// (a + b·w)² = (a + b)(a + v·b) − t − v·t + 2t·w, t = a·b: two Fp6
     /// products.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn square(&self) -> Self {
         let t = self.c0.mul(&self.c1);
         let c0 =
@@ -45,7 +43,6 @@ impl Fp12 {
 
     /// Times the line (x + y·v) + z·v·w, blst's `mul_by_xy00z0`: 13 Fp2
     /// products.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn mul_by_line(&self, x: &Fp2, y: &Fp2, z: &Fp2) -> Self {
         let t0 = self.c0.mul_by_xy(x, y);
         let t1 = self.c1.mul_by_y(z);
@@ -56,7 +53,6 @@ impl Fp12 {
     /// Granger–Scott, on the cyclotomic subgroup: nine Fp2 squarings, as
     /// blst's `cyclotomic_sqr_fp12`. Off the subgroup it computes the same
     /// formula.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn cyclotomic_square(&self) -> Self {
         let (t00, t01) = fp4_square(&self.c0.c0, &self.c1.c1);
         let (t10, t11) = fp4_square(&self.c1.c0, &self.c0.c2);
@@ -81,7 +77,6 @@ impl Fp12 {
 
     /// The p-power Frobenius map: the coefficient of w^j conjugated, times
     /// ξ^(j(p − 1)/6).
-    #[target_feature(enable = "bmi2,adx")]
     pub fn frobenius(&self) -> Self {
         Self {
             c0: Fp6 {
@@ -98,7 +93,6 @@ impl Fp12 {
     }
 
     /// (a − b·w) / (a² − v·b²).
-    #[target_feature(enable = "bmi2,adx")]
     pub fn inverse(&self) -> Self {
         let norm = self.c0.mul(&self.c0).sub(&self.c1.mul(&self.c1).mul_by_v());
         let inverse = norm.inverse();
@@ -106,7 +100,6 @@ impl Fp12 {
     }
 
     /// f^(3·(p¹² − 1)/r), the chain of `bls::fp12::Fp12::final_exponentiation`.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn final_exponentiation(&self) -> Self {
         let t0 = self.conjugate();
         let t1 = self.inverse();
@@ -132,7 +125,6 @@ impl Fp12 {
     }
 
     /// f^z on the cyclotomic subgroup, where the inverse is the conjugate.
-    #[target_feature(enable = "bmi2,adx")]
     fn cyclotomic_exp(&self) -> Self {
         let mut r = *self;
         let mut bit = Z_BITS[0];
@@ -152,7 +144,6 @@ impl Fp12 {
 }
 
 /// (a0 + a1·w')² in Fp4 = Fp2[w']/(w'² − ξ): (a0² + ξ·a1², 2·a0·a1).
-#[target_feature(enable = "bmi2,adx")]
 #[inline]
 fn fp4_square(a0: &Fp2, a1: &Fp2) -> (Fp2, Fp2) {
     let s0 = a0.square();
@@ -173,7 +164,6 @@ fn thrice_plus_twice(t: &Fp2, a: &Fp2) -> Fp2 {
     t.add(a).double().add(t)
 }
 
-#[target_feature(enable = "bmi2,adx")]
 #[inline]
 fn frobenius_coefficient(c: &Fp2, power: usize) -> Fp2 {
     let gamma = Fp2 { c0: FROBENIUS[power][0], c1: FROBENIUS[power][1] };

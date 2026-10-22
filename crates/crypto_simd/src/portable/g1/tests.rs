@@ -8,7 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use super::G1;
 use crate::{
     bls::tests::{G1Torsion, H1_PRIMES, curve_points_outside_g1, g1_points},
-    portable::{fp::Fp, portable_available},
+    portable::fp::Fp,
 };
 
 fn affine(bytes: &[u8; 48]) -> blst_p1_affine {
@@ -59,9 +59,6 @@ fn members(n: usize) -> Vec<(blst_p1, blst_p1_affine)> {
 
 #[test]
 fn formulas_match_blst() {
-    if !portable_available() {
-        return;
-    }
     let points = members(12);
     for i in 0..points.len() {
         let (p, pa) = &points[i];
@@ -76,21 +73,14 @@ fn formulas_match_blst() {
             blst_p1_add_or_double_affine(&mut sum_affine, p, qa);
             blst_p1_cneg(&mut negated, true);
         }
-        // SAFETY: `portable_available` held.
-        unsafe {
-            let ours_p = ours(p);
-            assert_eq!(ours_p.to_affine(), (Fp(pa.x.l), Fp(pa.y.l)), "to_affine {i}");
-            assert_eq!(ours_p.double().to_affine(), blst_affine(&doubled), "double {i}");
-            assert_eq!(ours_p.add(&ours(q)).to_affine(), blst_affine(&add(p, q)), "add {i}");
-            assert_eq!(
-                ours_p.add_affine(&qx, &qy).to_affine(),
-                blst_affine(&sum_affine),
-                "madd {i}"
-            );
-            assert_eq!(ours_p.neg().to_affine(), blst_affine(&negated), "neg {i}");
-            assert!(ours_p.equals(&ours(&jacobian(pa))), "equals {i}");
-            assert!(!ours_p.equals(&ours(q)), "not equals {i}");
-        }
+        let ours_p = ours(p);
+        assert_eq!(ours_p.to_affine(), (Fp(pa.x.l), Fp(pa.y.l)), "to_affine {i}");
+        assert_eq!(ours_p.double().to_affine(), blst_affine(&doubled), "double {i}");
+        assert_eq!(ours_p.add(&ours(q)).to_affine(), blst_affine(&add(p, q)), "add {i}");
+        assert_eq!(ours_p.add_affine(&qx, &qy).to_affine(), blst_affine(&sum_affine), "madd {i}");
+        assert_eq!(ours_p.neg().to_affine(), blst_affine(&negated), "neg {i}");
+        assert!(ours_p.equals(&ours(&jacobian(pa))), "equals {i}");
+        assert!(!ours_p.equals(&ours(q)), "not equals {i}");
     }
 }
 
@@ -98,9 +88,6 @@ fn formulas_match_blst() {
 /// opposite points, and infinity on either side.
 #[test]
 fn complete_forms_match_blst_on_exceptional_summands() {
-    if !portable_available() {
-        return;
-    }
     let infinity = blst_p1::default();
     for (p, pa) in members(4) {
         let mut negated = p;
@@ -113,28 +100,22 @@ fn complete_forms_match_blst_on_exceptional_summands() {
             a
         };
         let cases = [(p, p), (p, negated), (p, infinity), (infinity, p), (infinity, infinity)];
-        // SAFETY: `portable_available` held.
-        unsafe {
-            for (k, (a, b)) in cases.iter().enumerate() {
-                let want = blst_affine(&add(a, b));
-                assert_eq!(ours(a).add_complete(&ours(b)).to_affine(), want, "add_complete {k}");
-            }
-            let (x, y) = (Fp(pa.x.l), Fp(pa.y.l));
-            let (nx, ny) = (Fp(negated_affine.x.l), Fp(negated_affine.y.l));
-            assert_eq!(ours(&p).add_affine_complete(&x, &y).to_affine(), blst_affine(&add(&p, &p)));
-            assert!(ours(&p).add_affine_complete(&nx, &ny).is_infinity());
-            assert_eq!(ours(&infinity).add_affine_complete(&x, &y).to_affine(), (x, y));
-            assert!(ours(&infinity).double().is_infinity());
-            assert_eq!(ours(&infinity).to_affine(), (Fp::ZERO, Fp::ZERO));
+        for (k, (a, b)) in cases.iter().enumerate() {
+            let want = blst_affine(&add(a, b));
+            assert_eq!(ours(a).add_complete(&ours(b)).to_affine(), want, "add_complete {k}");
         }
+        let (x, y) = (Fp(pa.x.l), Fp(pa.y.l));
+        let (nx, ny) = (Fp(negated_affine.x.l), Fp(negated_affine.y.l));
+        assert_eq!(ours(&p).add_affine_complete(&x, &y).to_affine(), blst_affine(&add(&p, &p)));
+        assert!(ours(&p).add_affine_complete(&nx, &ny).is_infinity());
+        assert_eq!(ours(&infinity).add_affine_complete(&x, &y).to_affine(), (x, y));
+        assert!(ours(&infinity).double().is_infinity());
+        assert_eq!(ours(&infinity).to_affine(), (Fp::ZERO, Fp::ZERO));
     }
 }
 
 #[test]
 fn membership_matches_blst() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = StdRng::seed_from_u64(17);
     let mut cases: Vec<(blst_p1_affine, bool)> =
         g1_points(16).iter().map(|b| (affine(b), true)).collect();
@@ -156,8 +137,7 @@ fn membership_matches_blst() {
         cases.push((b, false));
     }
     for (k, (point, member)) in cases.iter().enumerate() {
-        // SAFETY: `portable_available` held.
-        let got = unsafe { G1::in_g1(&Fp(point.x.l), &Fp(point.y.l)) };
+        let got = G1::in_g1(&Fp(point.x.l), &Fp(point.y.l));
         assert_eq!(got, *member, "case {k}");
     }
 }

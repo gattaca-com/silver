@@ -95,7 +95,6 @@ impl Buckets {
     }
 
     /// Σ_j `[2^(w·j)]` S_j, from the top window down.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn sum(&self, store: &PointStore) -> G1 {
         let mut window = self.windows - 1;
         let mut total = self.window_sum(store, window);
@@ -158,7 +157,6 @@ impl Buckets {
     /// The sum S_j = Σ_b b·B_(j,b) of `window`: running sums T += B_(j,b),
     /// then S += T, from the top bucket down. Each list's points join T one at
     /// a time, whatever their number.
-    #[target_feature(enable = "bmi2,adx")]
     fn window_sum(&self, store: &PointStore, window: usize) -> G1 {
         let mut running = G1::INFINITY;
         let mut sum = G1::INFINITY;

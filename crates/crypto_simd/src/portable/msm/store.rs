@@ -32,7 +32,6 @@ impl PointStore {
     /// Appends the points: σ(P) = (β·x, y) instead of P when `endomorphism`,
     /// and the negation of point k where `negated[k]`. The points must be
     /// finite.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn push_blst(&mut self, points: &[blst_p1_affine], negated: &[bool], endomorphism: bool) {
         assert!(negated.len() == points.len(), "one sign per point");
         assert!(self.len + points.len() <= self.points.len(), "the store holds the points");

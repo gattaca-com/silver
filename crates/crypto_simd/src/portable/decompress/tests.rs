@@ -3,17 +3,13 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{uncompress_in_g1, uncompress_pair_in_g1};
-use crate::{
-    bls::{
-        COMPRESSED_LEN,
-        constants::P_U64,
-        tests::{
-            G1Torsion, H1_PRIMES, compress, curve_points_outside_g1, g1_affine, g1_points,
-            serialized,
-        },
-        uncompress_in_g1_blst,
+use crate::bls::{
+    COMPRESSED_LEN,
+    constants::P_U64,
+    tests::{
+        G1Torsion, H1_PRIMES, compress, curve_points_outside_g1, g1_affine, g1_points, serialized,
     },
-    portable::portable_available,
+    uncompress_in_g1_blst,
 };
 
 /// x = p with each flag pattern, x = 0, and infinity encodings with stray
@@ -84,15 +80,11 @@ fn encodings() -> Vec<[u8; COMPRESSED_LEN]> {
 
 #[test]
 fn verdicts_match_blst() {
-    if !portable_available() {
-        return;
-    }
     let inputs = encodings();
     let mut members = 0;
     for (i, input) in inputs.iter().enumerate() {
         let want = uncompress_in_g1_blst(input);
-        // SAFETY: `portable_available` held.
-        let got: Option<blst_p1_affine> = unsafe { uncompress_in_g1(input) };
+        let got: Option<blst_p1_affine> = uncompress_in_g1(input);
         assert_eq!(serialized(&got), serialized(&want), "input {i}");
         members += want.is_some() as usize;
     }
@@ -103,14 +95,10 @@ fn verdicts_match_blst() {
 /// against each other kind's.
 #[test]
 fn pair_verdicts_match_blst() {
-    if !portable_available() {
-        return;
-    }
     let inputs = encodings();
     for (i, a) in inputs.iter().enumerate() {
         for (j, b) in inputs.iter().enumerate().skip(i % 7).step_by(7) {
-            // SAFETY: `portable_available` held.
-            let got = unsafe { uncompress_pair_in_g1(a, b) };
+            let got = uncompress_pair_in_g1(a, b);
             assert_eq!(serialized(&got[0]), serialized(&uncompress_in_g1_blst(a)), "{i}, {j}");
             assert_eq!(serialized(&got[1]), serialized(&uncompress_in_g1_blst(b)), "{i}, {j}");
         }

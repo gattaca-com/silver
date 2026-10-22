@@ -8,7 +8,7 @@ use crate::{
         blst_conjugate, blst_cyclotomic_square, blst_frobenius, blst_inverse, blst_mul,
         blst_mul_by_line, blst_square, cyclotomic, extreme_fp12, random_fp12, random_line,
     },
-    portable::{fp::Fp, fp2::Fp2, fp6::Fp6, portable_available},
+    portable::{fp::Fp, fp2::Fp2, fp6::Fp6},
 };
 
 fn fp2(a: &blst_fp2) -> Fp2 {
@@ -48,9 +48,6 @@ fn final_exp(f: &blst_fp12) -> blst_fp12 {
 /// p − 1.
 #[test]
 fn operations_match_blst() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(0x12);
     let mut values: Vec<blst_fp12> = (0..6).map(|_| random_fp12(&mut rng)).collect();
     values.push(extreme_fp12());
@@ -58,24 +55,21 @@ fn operations_match_blst() {
         let b = &values[(i + 1) % values.len()];
         let line = random_line(&mut rng);
         let (x, y, z) = (fp2(&line.fp2[0]), fp2(&line.fp2[1]), fp2(&line.fp2[2]));
-        // SAFETY: `portable_available` held.
-        unsafe {
-            assert_eq!(blst_of(&ours(a).mul(&ours(b))), blst_mul(a, b), "mul {i}");
-            assert_eq!(blst_of(&ours(a).square()), blst_square(a), "square {i}");
-            assert_eq!(
-                blst_of(&ours(a).mul_by_line(&x, &y, &z)),
-                blst_mul_by_line(a, &line),
-                "mul_by_line {i}"
-            );
-            assert_eq!(
-                blst_of(&ours(a).cyclotomic_square()),
-                blst_cyclotomic_square(a),
-                "cyclotomic_square {i}"
-            );
-            assert_eq!(blst_of(&ours(a).conjugate()), blst_conjugate(a), "conjugate {i}");
-            assert_eq!(blst_of(&ours(a).frobenius()), blst_frobenius(a, 1), "frobenius {i}");
-            assert_eq!(blst_of(&ours(a).inverse()), blst_inverse(a), "inverse {i}");
-        }
+        assert_eq!(blst_of(&ours(a).mul(&ours(b))), blst_mul(a, b), "mul {i}");
+        assert_eq!(blst_of(&ours(a).square()), blst_square(a), "square {i}");
+        assert_eq!(
+            blst_of(&ours(a).mul_by_line(&x, &y, &z)),
+            blst_mul_by_line(a, &line),
+            "mul_by_line {i}"
+        );
+        assert_eq!(
+            blst_of(&ours(a).cyclotomic_square()),
+            blst_cyclotomic_square(a),
+            "cyclotomic_square {i}"
+        );
+        assert_eq!(blst_of(&ours(a).conjugate()), blst_conjugate(a), "conjugate {i}");
+        assert_eq!(blst_of(&ours(a).frobenius()), blst_frobenius(a, 1), "frobenius {i}");
+        assert_eq!(blst_of(&ours(a).inverse()), blst_inverse(a), "inverse {i}");
     }
 }
 
@@ -83,19 +77,12 @@ fn operations_match_blst() {
 /// random values and on values already in the cyclotomic subgroup.
 #[test]
 fn final_exponentiation_matches_blst() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(0x13);
     for i in 0..4 {
         let f = random_fp12(&mut rng);
         let g = cyclotomic(&f);
-        // SAFETY: `portable_available` held.
-        unsafe {
-            assert_eq!(blst_of(&ours(&f).final_exponentiation()), final_exp(&f), "random {i}");
-            assert_eq!(blst_of(&ours(&g).final_exponentiation()), final_exp(&g), "cyclotomic {i}");
-        }
+        assert_eq!(blst_of(&ours(&f).final_exponentiation()), final_exp(&f), "random {i}");
+        assert_eq!(blst_of(&ours(&g).final_exponentiation()), final_exp(&g), "cyclotomic {i}");
     }
-    // SAFETY: as above.
-    assert!(unsafe { Fp12::ONE.final_exponentiation() }.is_one());
+    assert!(Fp12::ONE.final_exponentiation().is_one());
 }

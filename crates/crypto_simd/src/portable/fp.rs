@@ -3,19 +3,16 @@
 //!
 //! The product is CIOS in six explicit rows with the no-carry schedule: p's top
 //! word is below 2^62, so a row's running sum fits six words and a top word.
-//! Under BMI2, LLVM compiles the `u128` products to `mulx`. By default, carries
-//! are `overflowing_add` pairs and borrows `u128` differences. The
-//! `portable_addcarry` feature takes both from `_addcarry_u64`, which LLVM
-//! chains more tightly; `portable_mulx` also takes the products from
-//! `_mulx_u64`.
+//! The products are `u128`, and the carries come from `_addcarry_u64`, which
+//! LLVM chains into `adc`. The two product kernels, `Fp::mul` and `Fp2::mul`,
+//! each have a twin built for BMI2, on which LLVM emits `mulx`; other CPUs run
+//! the same body built for baseline x86-64.
 
-#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
 use std::arch::x86_64::_addcarry_u64;
-#[cfg(feature = "portable_mulx")]
-use std::arch::x86_64::_mulx_u64;
 
 use crate::{
     bls::constants::{P_MINUS_3_OVER_4_WINDOWS, P_U64},
+    bmi2_available,
     portable::constants::{ONE, P_INV, R2, R3},
 };
 
@@ -23,58 +20,19 @@ use crate::{
 pub struct Fp(pub [u64; 6]);
 
 /// a·b as its low and high words.
-#[cfg(not(feature = "portable_mulx"))]
 #[inline(always)]
 fn wide_mul(a: u64, b: u64) -> (u64, u64) {
     let product = a as u128 * b as u128;
     (product as u64, (product >> 64) as u64)
 }
 
-#[cfg(feature = "portable_mulx")]
-#[inline(always)]
-fn wide_mul(a: u64, b: u64) -> (u64, u64) {
-    let mut hi = 0;
-    // SAFETY: `portable_available` checked BMI2, and every caller runs under it.
-    let lo = unsafe { _mulx_u64(a, b, &mut hi) };
-    (lo, hi)
-}
-
-/// a + b + carry and the carry out, for a carry of 0 or 1. The carries are
-/// words, not bools, so that LLVM chains them into `adc`.
-#[cfg(not(any(feature = "portable_addcarry", feature = "portable_mulx")))]
-#[inline(always)]
-fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
-    let (s, c1) = a.overflowing_add(b);
-    let (s, c2) = s.overflowing_add(carry);
-    (s, c1 as u64 | c2 as u64)
-}
-
-#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
+/// a + b + carry and the carry out, for a carry of 0 or 1.
 #[inline(always)]
 fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     let mut s = 0;
     // SAFETY: `_addcarry_u64` is plain x86-64 `adc`.
     let c = unsafe { _addcarry_u64(carry as u8, a, b, &mut s) };
     (s, c as u64)
-}
-
-/// a − b − borrow and the borrow out, for a borrow of 0 or 1, from the
-/// difference lifted by 2^64. On `overflowing_add` carries, LLVM compiles the
-/// complement form below to comparisons and `setb`s, and this one tighter.
-#[cfg(not(any(feature = "portable_addcarry", feature = "portable_mulx")))]
-#[inline(always)]
-fn sub_borrow(a: u64, b: u64, borrow: u64) -> (u64, u64) {
-    let d = (1u128 << 64) + a as u128 - b as u128 - borrow as u128;
-    (d as u64, 1 - (d >> 64) as u64)
-}
-
-/// a − b − borrow and the borrow out, for a borrow of 0 or 1: a + !b + 1 −
-/// borrow carries out exactly when nothing is borrowed.
-#[cfg(any(feature = "portable_addcarry", feature = "portable_mulx"))]
-#[inline(always)]
-fn sub_borrow(a: u64, b: u64, borrow: u64) -> (u64, u64) {
-    let (d, carry) = add_carry(a, !b, 1 - borrow);
-    (d, 1 - carry)
 }
 
 /// acc + a·b in seven words, for sums below 2^448.
@@ -141,29 +99,14 @@ fn add_row_at(t: &mut [u64; 12], a: &[u64; 6], bi: u64, i: usize) {
     t[i + 6] = sum[6];
 }
 
-/// a − b and whether it borrowed.
+/// a − b and whether it borrowed: a + !b + 1 carries out exactly when nothing
+/// is borrowed.
 #[inline(always)]
 fn sub_words<const N: usize>(a: &[u64; N], b: &[u64; N]) -> ([u64; N], bool) {
     let mut d = [0u64; N];
-    let mut borrow = 0;
-    let mut j = 0;
-    while j < N {
-        let (x, out) = sub_borrow(a[j], b[j], borrow);
-        d[j] = x;
-        borrow = out;
-        j += 1;
-    }
-    (d, borrow == 1)
-}
-
-/// a − b and whether it borrowed, as a + !b + 1 in one carry chain. With b
-/// variable, LLVM compiles this tighter than `sub_words`; against p, looser.
-#[inline(always)]
-fn sub_words_by_complement(a: &[u64; 6], b: &[u64; 6]) -> ([u64; 6], bool) {
-    let mut d = [0u64; 6];
     let mut carry = 1;
     let mut j = 0;
-    while j < 6 {
+    while j < N {
         let (x, out) = add_carry(a[j], !b[j], carry);
         d[j] = x;
         carry = out;
@@ -232,9 +175,28 @@ fn p_if(borrowed: bool) -> [u64; 6] {
 impl Fp {
     pub const ZERO: Fp = Fp([0; 6]);
 
-    #[target_feature(enable = "bmi2,adx")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
+        if bmi2_available() {
+            // SAFETY: `bmi2_available` checked BMI2 on this CPU.
+            return unsafe { self.mul_on_bmi2(rhs) };
+        }
+        self.mul_on_baseline(rhs)
+    }
+
+    #[target_feature(enable = "bmi2")]
+    fn mul_on_bmi2(&self, rhs: &Self) -> Self {
+        self.product(rhs)
+    }
+
+    /// Out of line, so that `mul`'s callers do not inline this copy.
+    #[inline(never)]
+    fn mul_on_baseline(&self, rhs: &Self) -> Self {
+        self.product(rhs)
+    }
+
+    #[inline(always)]
+    fn product(&self, rhs: &Self) -> Self {
         let mut t = row(&[0; 6], &self.0, rhs.0[0]);
         t = row(&t, &self.0, rhs.0[1]);
         t = row(&t, &self.0, rhs.0[2]);
@@ -244,7 +206,6 @@ impl Fp {
         Self(below_p(&t))
     }
 
-    #[target_feature(enable = "bmi2,adx")]
     #[inline]
     pub fn square(&self) -> Self {
         self.mul(self)
@@ -253,14 +214,13 @@ impl Fp {
     /// Two independent products, one after the other, which the core
     /// overlaps. Interleaving their rows is slower: the two need more
     /// registers than x86-64 has.
-    #[target_feature(enable = "bmi2,adx")]
     #[inline]
     pub fn mul_pair(a: &[Fp; 2], b: &[Fp; 2]) -> [Fp; 2] {
         [a[0].mul(&b[0]), a[1].mul(&b[1])]
     }
 
-    // The sums need no BMI2, and inlined they keep their selects on registers:
-    // LLVM turns a `cmov` that reads memory into a branch.
+    // Inlined, the sums keep their selects on registers: LLVM turns a `cmov`
+    // that reads memory into a branch.
     #[inline(always)]
     pub fn add(&self, rhs: &Self) -> Self {
         let (s, _) = add_words(&self.0, &rhs.0);
@@ -280,7 +240,7 @@ impl Fp {
 
     #[inline(always)]
     pub fn sub(&self, rhs: &Self) -> Self {
-        let (d, borrowed) = sub_words_by_complement(&self.0, &rhs.0);
+        let (d, borrowed) = sub_words(&self.0, &rhs.0);
         Self(add_words(&d, &p_if(borrowed)).0)
     }
 
@@ -294,20 +254,17 @@ impl Fp {
     }
 
     /// The form of a plain value below p.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn from_plain(words: &[u64; 6]) -> Self {
         Self(*words).mul(&Self(R2))
     }
 
     /// The plain value, below p.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn to_plain(&self) -> [u64; 6] {
         self.mul(&Self([1, 0, 0, 0, 0, 0])).0
     }
 
     /// The inverse by binary extended Euclid on the stored aR, then R³ takes
     /// (aR)⁻¹ to a⁻¹R; 0 for 0. Variable time.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn inverse(&self) -> Self {
         if self.is_zero() {
             return Self::ZERO;
@@ -317,7 +274,6 @@ impl Fp {
 
     /// Each value's inverse, 0 for 0, from one `inverse` by Montgomery's
     /// trick: prefix products, then back down with 2 products per value.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn inverse_each(values: &[Fp; 8]) -> [Fp; 8] {
         let mut prefix = [ONE; 8];
         let mut running = ONE;
@@ -342,7 +298,6 @@ impl Fp {
     }
 
     /// self^((p − 3)/4), from 4-bit windows of the fixed exponent.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn pow_p_minus_3_over_4(&self) -> Self {
         let mut table = [ONE; 16];
         let mut k = 1;
@@ -362,7 +317,6 @@ impl Fp {
     }
 
     /// `pow_p_minus_3_over_4` of two values in lockstep.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn pow_p_minus_3_over_4_pair(values: &[Fp; 2]) -> [Fp; 2] {
         let mut table = [[ONE; 2]; 16];
         let mut k = 1;
@@ -387,7 +341,6 @@ impl Fp {
 
     /// A square root when self is a square: self^((p + 1)/4), since p ≡ 3 mod
     /// 4.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn sqrt(&self) -> Option<Self> {
         let root = self.pow_p_minus_3_over_4().mul(self);
         if root.square() == *self { Some(root) } else { None }
@@ -395,7 +348,6 @@ impl Fp {
 
     /// `sqrt` of two values in lockstep: the candidate roots, and whether each
     /// squares back to its value.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn sqrt_pair(values: &[Fp; 2]) -> ([Fp; 2], [bool; 2]) {
         let roots = Self::mul_pair(&Self::pow_p_minus_3_over_4_pair(values), values);
         let squares = Self::mul_pair(&roots, &roots);
@@ -403,7 +355,6 @@ impl Fp {
     }
 
     /// Whether the plain value exceeds (p − 1)/2: the larger of ±y.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn is_larger_root(&self) -> bool {
         let plain = self.to_plain();
         let (doubled, carry) = add_words(&plain, &plain);
@@ -417,8 +368,7 @@ impl Fp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Wide([u64; 12]);
 
-// Always inlined, into callers that enable BMI2: out of line, LLVM passes the
-// twelve words through memory.
+// Always inlined: out of line, LLVM passes the twelve words through memory.
 impl Wide {
     /// a·b, exactly.
     #[inline(always)]

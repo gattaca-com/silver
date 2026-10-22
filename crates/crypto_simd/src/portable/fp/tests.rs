@@ -6,7 +6,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{Fp, Wide};
-use crate::{bls::constants::P_U64, portable::portable_available};
+use crate::{bls::constants::P_U64, bmi2_available};
 
 fn below_p(rng: &mut ChaCha8Rng) -> Fp {
     loop {
@@ -62,31 +62,41 @@ fn unary(a: &Fp, op: unsafe extern "C" fn(*mut blst_fp, *const blst_fp)) -> Fp {
 
 #[test]
 fn operations_match_blst() {
-    if !portable_available() {
+    let values = inputs();
+    for a in &values {
+        for b in values.iter().take(24) {
+            assert_eq!(a.mul(b), binary(a, b, blst_fp_mul), "mul");
+            assert_eq!(a.add(b), binary(a, b, blst_fp_add), "add");
+            assert_eq!(a.sub(b), binary(a, b, blst_fp_sub), "sub");
+        }
+        let mut negated = blst(a);
+        let mut plain = [0u64; 6];
+        // SAFETY: valid pointers to single values and six words.
+        unsafe {
+            blst_fp_cneg(&mut negated, &blst(a), true);
+            blst_uint64_from_fp(plain.as_mut_ptr(), &blst(a));
+        }
+        assert_eq!(a.square(), unary(a, blst_fp_sqr), "square");
+        assert_eq!(a.neg(), Fp(negated.l), "neg");
+        assert_eq!(a.inverse(), unary(a, blst_fp_inverse), "inverse");
+        assert_eq!(a.to_plain(), plain, "to_plain");
+        assert_eq!(Fp::from_plain(&plain), *a, "from_plain");
+    }
+}
+
+/// Where BMI2 runs, the products' twins built for it agree with the copies
+/// built for baseline x86-64, which other CPUs run.
+#[test]
+fn product_twins_agree() {
+    if !bmi2_available() {
         return;
     }
     let values = inputs();
     for a in &values {
         for b in values.iter().take(24) {
-            // SAFETY: `portable_available` held.
-            unsafe {
-                assert_eq!(a.mul(b), binary(a, b, blst_fp_mul), "mul");
-                assert_eq!(a.add(b), binary(a, b, blst_fp_add), "add");
-                assert_eq!(a.sub(b), binary(a, b, blst_fp_sub), "sub");
-            }
-        }
-        let mut negated = blst(a);
-        // SAFETY: valid pointers to single values.
-        unsafe { blst_fp_cneg(&mut negated, &blst(a), true) };
-        // SAFETY: `portable_available` held.
-        unsafe {
-            assert_eq!(a.square(), unary(a, blst_fp_sqr), "square");
-            assert_eq!(a.neg(), Fp(negated.l), "neg");
-            assert_eq!(a.inverse(), unary(a, blst_fp_inverse), "inverse");
-            let mut plain = [0u64; 6];
-            blst_uint64_from_fp(plain.as_mut_ptr(), &blst(a));
-            assert_eq!(a.to_plain(), plain, "to_plain");
-            assert_eq!(Fp::from_plain(&plain), *a, "from_plain");
+            // SAFETY: `bmi2_available` checked BMI2 on this CPU.
+            let on_bmi2 = unsafe { a.mul_on_bmi2(b) };
+            assert_eq!(on_bmi2, a.mul_on_baseline(b), "{a:?} · {b:?}");
         }
     }
 }
@@ -95,25 +105,19 @@ fn operations_match_blst() {
 /// and differences of products reduce to their differences in Fp.
 #[test]
 fn wide_products_reduce_to_montgomery_products() {
-    if !portable_available() {
-        return;
-    }
     let values = inputs();
     for a in &values {
         for b in values.iter().take(24) {
-            // SAFETY: `portable_available` held.
-            unsafe {
-                let ab = Wide::product(&a.0, &b.0);
-                let bb = Wide::product(&b.0, &b.0);
-                assert_eq!(ab.reduce(), a.mul(b), "reduce");
-                assert_eq!(ab.minus_mod(&bb).reduce(), a.mul(b).sub(&b.square()), "minus_mod");
-                assert_eq!(bb.minus_mod(&ab).reduce(), b.square().sub(&a.mul(b)), "minus_mod");
-                let sum = a.unreduced_add(b);
-                let squared_sum = Wide::product(&sum, &sum);
-                assert_eq!(squared_sum.reduce(), a.add(b).square(), "unreduced sums");
-                let cross = squared_sum.minus(&Wide::product(&a.0, &a.0)).minus(&bb);
-                assert_eq!(cross.reduce(), a.mul(b).double(), "minus");
-            }
+            let ab = Wide::product(&a.0, &b.0);
+            let bb = Wide::product(&b.0, &b.0);
+            assert_eq!(ab.reduce(), a.mul(b), "reduce");
+            assert_eq!(ab.minus_mod(&bb).reduce(), a.mul(b).sub(&b.square()), "minus_mod");
+            assert_eq!(bb.minus_mod(&ab).reduce(), b.square().sub(&a.mul(b)), "minus_mod");
+            let sum = a.unreduced_add(b);
+            let squared_sum = Wide::product(&sum, &sum);
+            assert_eq!(squared_sum.reduce(), a.add(b).square(), "unreduced sums");
+            let cross = squared_sum.minus(&Wide::product(&a.0, &a.0)).minus(&bb);
+            assert_eq!(cross.reduce(), a.mul(b).double(), "minus");
         }
     }
 }
@@ -121,9 +125,6 @@ fn wide_products_reduce_to_montgomery_products() {
 /// Each lane's inverse, zeros among them, as `inverse` gives it alone.
 #[test]
 fn inverse_each_matches_inverse() {
-    if !portable_available() {
-        return;
-    }
     let values = inputs();
     for start in [0, 3, 8, 40] {
         let mut lanes = [Fp::ZERO; 8];
@@ -132,42 +133,32 @@ fn inverse_each_matches_inverse() {
             lanes[0] = Fp::ZERO;
             lanes[7] = Fp::ZERO;
         }
-        // SAFETY: `portable_available` held.
-        unsafe {
-            let got = Fp::inverse_each(&lanes);
-            for k in 0..8 {
-                assert_eq!(got[k], lanes[k].inverse(), "start {start}, lane {k}");
-            }
+        let got = Fp::inverse_each(&lanes);
+        for k in 0..8 {
+            assert_eq!(got[k], lanes[k].inverse(), "start {start}, lane {k}");
         }
     }
-    // SAFETY: as above.
-    assert_eq!(unsafe { Fp::inverse_each(&[Fp::ZERO; 8]) }, [Fp::ZERO; 8]);
+    assert_eq!(Fp::inverse_each(&[Fp::ZERO; 8]), [Fp::ZERO; 8]);
 }
 
 /// `sqrt` finds a root exactly where blst does, the same up to sign, and
 /// `is_larger_root` picks the root whose plain value exceeds (p − 1)/2.
 #[test]
 fn square_roots_match_blst() {
-    if !portable_available() {
-        return;
-    }
     for a in inputs() {
         let mut root = blst_fp::default();
         // SAFETY: valid pointers to single values.
         let has_root = unsafe { blst_fp_sqrt(&mut root, &blst(&a)) };
-        // SAFETY: `portable_available` held.
-        unsafe {
-            let ours = a.sqrt();
-            assert_eq!(ours.is_some(), has_root, "{a:?}");
-            if let Some(r) = ours {
-                assert!(r == Fp(root.l) || r == Fp(root.l).neg(), "{a:?}");
-                if !r.is_zero() {
-                    assert_ne!(r.is_larger_root(), r.neg().is_larger_root());
-                    let plain = r.to_plain();
-                    let half = halved_p_minus_one();
-                    let larger = (0..6).rev().map(|j| plain[j].cmp(&half[j])).find(|o| o.is_ne());
-                    assert_eq!(r.is_larger_root(), larger == Some(std::cmp::Ordering::Greater));
-                }
+        let ours = a.sqrt();
+        assert_eq!(ours.is_some(), has_root, "{a:?}");
+        if let Some(r) = ours {
+            assert!(r == Fp(root.l) || r == Fp(root.l).neg(), "{a:?}");
+            if !r.is_zero() {
+                assert_ne!(r.is_larger_root(), r.neg().is_larger_root());
+                let plain = r.to_plain();
+                let half = halved_p_minus_one();
+                let larger = (0..6).rev().map(|j| plain[j].cmp(&half[j])).find(|o| o.is_ne());
+                assert_eq!(r.is_larger_root(), larger == Some(std::cmp::Ordering::Greater));
             }
         }
     }

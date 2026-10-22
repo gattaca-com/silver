@@ -23,7 +23,7 @@ use crate::{
         pairing_lines::PAIRING_LINES,
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
     },
-    portable::{fp::Fp, fp2::Fp2, fp12::tests::blst_of, g1::G1, portable_available},
+    portable::{fp::Fp, fp2::Fp2, fp12::tests::blst_of, g1::G1},
 };
 
 fn lines_from_values(values: &[[[u64; 6]; LANES]; LINE_COUNT]) -> PairingLines {
@@ -51,20 +51,13 @@ fn points(p: &[blst_p1; 2]) -> [G1; 2] {
 /// The verifier's lines, converted from Fp8's form, are the spec's.
 #[test]
 fn pairing_lines_convert_to_the_spec_lines() {
-    if !portable_available() {
-        return;
-    }
-    // SAFETY: `portable_available` held.
-    let converted = unsafe { PairingLines::new(&PAIRING_LINES) };
+    let converted = PairingLines::new(&PAIRING_LINES);
     let spec = lines_of(&[G2_S_POW_CELL, G2_NEG_GENERATOR]);
     assert!(converted.0 == spec.0);
 }
 
 #[test]
 fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(0x4d12);
     for _ in 0..3 {
         let p = random_points(&mut rng, 2);
@@ -76,8 +69,7 @@ fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
             [p, [jacobian(&a[0]), jacobian(&a[1])], [rescaled(&p[0], 3), rescaled(&p[1], 5)]];
         let lines = lines_of(&q);
         for (case, scaled) in scales.iter().enumerate() {
-            // SAFETY: `portable_available` held.
-            let got = blst_of(&unsafe { lines.miller_loop(&points(scaled)) });
+            let got = blst_of(&lines.miller_loop(&points(scaled)));
             assert!(final_exp(&got) == want, "scale {case}");
         }
     }
@@ -87,9 +79,6 @@ fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
 /// points at infinity.
 #[test]
 fn pairing_check_matches_the_spec() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(0x9d);
     let p = random_points(&mut rng, 3);
     let q = [random_g2(&mut rng), random_g2(&mut rng)];
@@ -108,8 +97,7 @@ fn pairing_check_matches_the_spec() {
         let pairs = [(affine(&g1[0]), g2[0]), (affine(&g1[1]), g2[1])];
         assert_eq!(spec_pairing::pairing_check(&pairs), want, "{name}: the spec");
         assert_eq!(blst_pairing_check(&pairs), want, "{name}: blst");
-        // SAFETY: `portable_available` held.
-        let got = unsafe { lines_of(&g2).pairing_check(&points(&g1)) };
+        let got = lines_of(&g2).pairing_check(&points(&g1));
         assert_eq!(got, want, "{name}");
     }
 }

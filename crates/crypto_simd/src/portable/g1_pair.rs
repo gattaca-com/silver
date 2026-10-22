@@ -14,13 +14,11 @@ pub struct G1Pair {
     pub z: [Fp; 2],
 }
 
-#[target_feature(enable = "bmi2,adx")]
 #[inline]
 fn mul(a: &[Fp; 2], b: &[Fp; 2]) -> [Fp; 2] {
     Fp::mul_pair(a, b)
 }
 
-#[target_feature(enable = "bmi2,adx")]
 #[inline]
 fn square(a: &[Fp; 2]) -> [Fp; 2] {
     Fp::mul_pair(a, a)
@@ -51,7 +49,6 @@ impl G1Pair {
     }
 
     /// `G1::double` in both lanes.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn double(&self) -> Self {
         let a = square(&self.x);
         let b = square(&self.y);
@@ -66,7 +63,6 @@ impl G1Pair {
 
     /// `G1::add_affine` in both lanes, and the lanes where it does not hold:
     /// self at infinity, or x = qx.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add_affine(&self, qx: &[Fp; 2], qy: &[Fp; 2]) -> (Self, [bool; 2]) {
         let z1z1 = square(&self.z);
         let u2 = mul(qx, &z1z1);
@@ -87,7 +83,6 @@ impl G1Pair {
 
     /// `G1::add` in both lanes, and the lanes where it does not hold: either
     /// summand at infinity, or equal x.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add(&self, q: &Self) -> (Self, [bool; 2]) {
         let z1z1 = square(&self.z);
         let z2z2 = square(&q.z);
@@ -114,7 +109,6 @@ impl G1Pair {
 
     /// `G1::in_g1` of two finite affine curve points in lockstep; a lane whose
     /// chain meets an exceptional case is decided by `G1::in_g1` alone.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn in_g1(px: &[Fp; 2], py: &[Fp; 2]) -> [bool; 2] {
         let mut exceptional = [false; 2];
         let mut r = Self::from_affine(px, py);

@@ -10,10 +10,6 @@ default = ["simd"]
 simd = []
 # Tests against the reference vectors that `make -C crates/crypto_simd` fetches.
 spec_vectors = []
-# The portable Fp's carries on `_addcarry_u64` instead of `overflowing_add`.
-portable_addcarry = []
-# As `portable_addcarry`, with the products on `_mulx_u64` instead of `u128`.
-portable_mulx = []
 # `Fp8::inverse` by Montgomery's trick over its lanes and one scalar inverse.
 fp8_scalar_inverse = []
 

@@ -40,7 +40,6 @@ impl Msm {
     /// Σ scalars[i]·points[i] for little-endian scalars below r and points of
     /// G1. Points at infinity, which blst encodes as all-zero coordinates,
     /// contribute nothing.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn msm(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
         assert!(points.len() == scalars.len(), "one scalar per point");
         let mut total = G1::INFINITY;
@@ -55,7 +54,6 @@ impl Msm {
     }
 
     /// `msm`'s sum for at most `CHUNK` points.
-    #[target_feature(enable = "bmi2,adx")]
     fn chunk_sum(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> G1 {
         self.finite_points.clear();
         self.finite_scalars.clear();
@@ -111,7 +109,6 @@ impl Msm {
 
     /// Batched rounds until every bucket holds at most one point. False when a
     /// round meets equal x, which leaves the buckets naming unwritten sums.
-    #[target_feature(enable = "bmi2,adx")]
     fn pair_rounds(&mut self, originals: usize) -> bool {
         self.buckets.queue_round(&mut self.adds, &mut self.store, originals);
         while !self.adds.is_empty() && self.adds.run(&mut self.store) {

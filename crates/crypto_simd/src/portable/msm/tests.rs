@@ -3,17 +3,13 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{CHUNK, Msm};
-use crate::{
-    bls::msm8::tests::{
-        SEED, assert_same_point, distinct_points, finite_pippenger, glv_edges, lincomb,
-        negated_point, random_points, random_scalars,
-    },
-    portable::portable_available,
+use crate::bls::msm8::tests::{
+    SEED, assert_same_point, distinct_points, finite_pippenger, glv_edges, lincomb, negated_point,
+    random_points, random_scalars,
 };
 
 fn assert_msm_matches(msm: &mut Msm, points: &[blst_p1_affine], scalars: &[[u64; 4]], case: &str) {
-    // SAFETY: the callers checked `portable_available`.
-    let got = unsafe { msm.msm(points, scalars) };
+    let got = msm.msm(points, scalars);
     assert_same_point(&got, &lincomb(points, scalars), case);
 }
 
@@ -21,9 +17,6 @@ fn assert_msm_matches(msm: &mut Msm, points: &[blst_p1_affine], scalars: &[[u64;
 /// scalars up to 2^255 − 1. One `Msm` serves every size.
 #[test]
 fn msm_matches_blst() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 25);
     let mut msm = Msm::default();
     for n in [0, 1, 2, 3, 7, 8, 9, 18, 63, 64, 65, 200, 511, 512, 600] {
@@ -40,9 +33,6 @@ fn msm_matches_blst() {
 
 #[test]
 fn msm_matches_blst_at_glv_edges() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 26);
     let mut msm = Msm::default();
     let edges = glv_edges();
@@ -55,9 +45,6 @@ fn msm_matches_blst_at_glv_edges() {
 /// point by point; opposite points with equal scalars cancel.
 #[test]
 fn msm_matches_blst_with_repeated_and_opposite_points() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 27);
     let mut msm = Msm::default();
     for (n, distinct) in [(2, 1), (40, 1), (100, 3), (520, 2)] {
@@ -72,8 +59,7 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
         points.extend(originals.iter().map(negated_point));
         let mut scalars = random_scalars(&mut rng, n / 2);
         scalars.extend_from_within(..);
-        // SAFETY: `portable_available` held.
-        let got = unsafe { msm.msm(&points, &scalars) };
+        let got = msm.msm(&points, &scalars);
         assert_same_point(&got, &blst_p1::default(), &format!("{n} points and their negations"));
         points.push(originals[0]);
         scalars.push([3, 0, 0, 0]);
@@ -85,9 +71,6 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
 /// that repeats or negates the first, so that the chunk sums double or cancel.
 #[test]
 fn msm_sums_its_chunks() {
-    if !portable_available() {
-        return;
-    }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 28);
     let mut msm = Msm::default();
     let first = distinct_points(&mut rng, CHUNK);
@@ -97,8 +80,7 @@ fn msm_sums_its_chunks() {
     points.extend(random_points(&mut rng, 1));
     let mut longer = scalars.clone();
     longer.extend(random_scalars(&mut rng, 1));
-    // SAFETY: `portable_available` held.
-    let got = unsafe { msm.msm(&points, &longer) };
+    let got = msm.msm(&points, &longer);
     assert_same_point(&got, &finite_pippenger(&points, &longer), "a chunk and one point");
 
     let once = finite_pippenger(&first, &scalars);
@@ -107,13 +89,11 @@ fn msm_sums_its_chunks() {
     unsafe { blst_p1_double(&mut want, &once) };
     let twice = [first.as_slice(), &first].concat();
     let doubled = [scalars.as_slice(), &scalars].concat();
-    // SAFETY: `portable_available` held.
-    let got = unsafe { msm.msm(&twice, &doubled) };
+    let got = msm.msm(&twice, &doubled);
     assert_same_point(&got, &want, "a chunk twice");
 
     let mut opposite = first.clone();
     opposite.extend(first.iter().map(negated_point));
-    // SAFETY: as above.
-    let got = unsafe { msm.msm(&opposite, &doubled) };
+    let got = msm.msm(&opposite, &doubled);
     assert_same_point(&got, &blst_p1::default(), "a chunk and its negation");
 }

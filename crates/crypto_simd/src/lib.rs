@@ -17,9 +17,9 @@ pub enum Route {
     Blst,
 }
 
-/// IFMA where it runs, else the portable route where BMI2 and ADX run, else
-/// blst. `SILVER_ROUTE` set to `ifma`, `portable` or `blst` forces a route,
-/// for measurements; forcing one this CPU cannot run panics.
+/// IFMA where it runs, else the portable route. `SILVER_ROUTE` set to `ifma`,
+/// `portable` or `blst` forces a route, for measurements; forcing one this
+/// CPU cannot run panics.
 #[cfg(target_arch = "x86_64")]
 pub fn route() -> Route {
     static ROUTE: OnceLock<Route> = OnceLock::new();
@@ -27,8 +27,8 @@ pub fn route() -> Route {
         let forced = std::env::var("SILVER_ROUTE").ok();
         match forced.as_deref() {
             None | Some("ifma") if ifma_runs() => Route::Ifma,
-            None | Some("portable") if portable::portable_available() => Route::Portable,
-            None | Some("blst") => Route::Blst,
+            None | Some("portable") => Route::Portable,
+            Some("blst") => Route::Blst,
             Some(other) => panic!("SILVER_ROUTE={other}: this CPU cannot run that route"),
         }
     })
@@ -52,16 +52,21 @@ pub fn sha_extensions() -> bool {
     })
 }
 
-/// Every CPU with avx512ifma also has the SHA extensions, BMI2 and ADX, so one
-/// observation serves the whole kernel.
+/// Every CPU with avx512ifma also has the SHA extensions, so one observation
+/// serves the whole kernel.
 #[cfg(target_arch = "x86_64")]
 fn ifma_runs() -> bool {
     cfg!(feature = "simd") &&
         is_x86_feature_detected!("avx512f") &&
         is_x86_feature_detected!("avx512ifma") &&
         is_x86_feature_detected!("sha") &&
-        is_x86_feature_detected!("sse4.1") &&
-        portable::portable_available()
+        is_x86_feature_detected!("sse4.1")
+}
+
+/// Whether the portable route's products can take their twins built for BMI2.
+#[cfg(target_arch = "x86_64")]
+fn bmi2_available() -> bool {
+    is_x86_feature_detected!("bmi2")
 }
 
 /// Off the IFMA route, every operation takes its portable or blst path, as on

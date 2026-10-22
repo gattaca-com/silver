@@ -1,9 +1,9 @@
 use blst::{blst_fp, blst_fp2, blst_fp2_mul};
 
 use super::Fp2;
-use crate::portable::{
-    fp::{Fp, tests::inputs},
-    portable_available,
+use crate::{
+    bmi2_available,
+    portable::fp::{Fp, tests::inputs},
 };
 
 fn blst(a: &Fp2) -> blst_fp2 {
@@ -24,9 +24,6 @@ fn elements() -> Vec<Fp2> {
 
 #[test]
 fn products_match_blst() {
-    if !portable_available() {
-        return;
-    }
     let elements = elements();
     for a in &elements {
         for b in &elements {
@@ -34,8 +31,23 @@ fn products_match_blst() {
             // SAFETY: valid pointers to single values.
             unsafe { blst_fp2_mul(&mut product, &blst(a), &blst(b)) };
             let expected = Fp2 { c0: Fp(product.fp[0].l), c1: Fp(product.fp[1].l) };
-            // SAFETY: `portable_available` held.
-            assert_eq!(unsafe { a.mul(b) }, expected, "{a:?} · {b:?}");
+            assert_eq!(a.mul(b), expected, "{a:?} · {b:?}");
+        }
+    }
+}
+
+/// As `Fp`'s twins.
+#[test]
+fn product_twins_agree() {
+    if !bmi2_available() {
+        return;
+    }
+    let elements = elements();
+    for a in &elements {
+        for b in &elements {
+            // SAFETY: `bmi2_available` checked BMI2 on this CPU.
+            let on_bmi2 = unsafe { a.mul_on_bmi2(b) };
+            assert_eq!(on_bmi2, a.mul_on_baseline(b), "{a:?} · {b:?}");
         }
     }
 }

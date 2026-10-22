@@ -16,6 +16,7 @@ use crate::{
         g1x8::G1x8,
         msm8::Msm8,
     },
+    ifma_available,
     kzg::{
         challenge::{challenge_in_parts, challenge_in_parts_portable},
         fr::fr_to_words,
@@ -24,7 +25,7 @@ use crate::{
         pairing_lines::PAIRING_LINES,
     },
     portable::{g1::G1, msm::Msm, pairing::PairingLines},
-    route, sha_extensions, ifma_available,
+    route, sha_extensions,
 };
 use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
@@ -336,9 +337,7 @@ impl Lincomb {
             msm: if ifma_available() { Some(Msm8::default()) } else { None },
             #[cfg(target_arch = "x86_64")]
             portable: if route() == Route::Portable {
-                // SAFETY: the portable route is taken only where
-                // `portable_available` held.
-                let lines = Box::new(unsafe { PairingLines::new(&PAIRING_LINES) });
+                let lines = Box::new(PairingLines::new(&PAIRING_LINES));
                 Some(PortableCurve { msm: Msm::default(), lines })
             } else {
                 None
@@ -365,9 +364,7 @@ impl Lincomb {
                 self.words.push(fr_to_words(&scalars[i]));
                 i += 1;
             }
-            // SAFETY: `portable` is built only on the portable route, which is
-            // taken only where `portable_available` held.
-            return unsafe { portable.msm.msm(points, &self.words) };
+            return portable.msm.msm(points, &self.words);
         }
         g1_lincomb(points, scalars, &mut self.scratch)
     }
@@ -383,8 +380,7 @@ impl Lincomb {
         }
         #[cfg(target_arch = "x86_64")]
         if let Some(portable) = &self.portable {
-            // SAFETY: as in `sum`.
-            return unsafe { portable.lines.pairing_check(&pairing_points(ll, rlc, rli, rlp)) };
+            return portable.lines.pairing_check(&pairing_points(ll, rlc, rli, rlp));
         }
         let rl = g1_add(&g1_add(rlc, &g1_neg(rli)), rlp);
         pairing_check(&g1_to_affine(ll), &G2_S_POW_CELL, &g1_to_affine(&rl), &G2_NEG_GENERATOR)
@@ -393,7 +389,6 @@ impl Lincomb {
 
 /// [LL, RL], gathered by complete additions on the scalar `G1`.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "bmi2,adx")]
 fn pairing_points(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> [G1; 2] {
     let difference = G1::from_blst(rlc).add_complete(&G1::from_blst(rli).neg());
     [G1::from_blst(ll), difference.add_complete(&G1::from_blst(rlp))]

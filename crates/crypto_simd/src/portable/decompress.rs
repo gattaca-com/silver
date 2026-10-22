@@ -19,7 +19,6 @@ use crate::{
 };
 
 /// `Some` iff blst accepts the encoding as a point of G1.
-#[target_feature(enable = "bmi2,adx")]
 pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
     let Some((words, larger)) = ordinary(bytes) else {
         return extraordinary(bytes);
@@ -31,7 +30,6 @@ pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> 
 }
 
 /// Sets each `out[i]` to `uncompress_in_g1(&inputs[i])`, two at a time.
-#[target_feature(enable = "bmi2,adx")]
 pub fn uncompress_all_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
     let pairs = inputs.len() / 2 * 2;
@@ -48,7 +46,6 @@ pub fn uncompress_all_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<b
 }
 
 /// `uncompress_in_g1` of two encodings, in lockstep where both are ordinary.
-#[target_feature(enable = "bmi2,adx")]
 pub fn uncompress_pair_in_g1(
     a: &[u8; COMPRESSED_LEN],
     b: &[u8; COMPRESSED_LEN],
@@ -104,7 +101,6 @@ fn extraordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
 }
 
 /// The root the sign flag names.
-#[target_feature(enable = "bmi2,adx")]
 fn signed(root: &Fp, larger: bool) -> Fp {
     if root.is_larger_root() == larger { *root } else { root.neg() }
 }

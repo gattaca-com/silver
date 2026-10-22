@@ -48,7 +48,6 @@ impl G1 {
     }
 
     /// dbl-2009-l.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn double(&self) -> Self {
         let a = self.x.square();
         let b = self.y.square();
@@ -62,19 +61,16 @@ impl G1 {
     }
 
     /// madd-2007-bl, for a finite self and x ≠ qx.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add_affine(&self, qx: &Fp, qy: &Fp) -> Self {
         MixedTerms::new(self, qx, qy).sum(self)
     }
 
     /// add-2007-bl, for finite summands with distinct x.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add(&self, q: &Self) -> Self {
         Terms::new(self, q).sum(self, q)
     }
 
     /// The spec's `G1.add` of self and the affine point (qx, qy).
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add_affine_complete(&self, qx: &Fp, qy: &Fp) -> Self {
         if self.is_infinity() {
             return Self::from_affine(qx, qy);
@@ -90,7 +86,6 @@ impl G1 {
     }
 
     /// The spec's `G1.add`.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn add_complete(&self, q: &Self) -> Self {
         if self.is_infinity() {
             return *q;
@@ -113,7 +108,6 @@ impl G1 {
     }
 
     /// Affine x and y; (0, 0) at infinity, as blst encodes it.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn to_affine(&self) -> (Fp, Fp) {
         if self.is_infinity() {
             return (Fp::ZERO, Fp::ZERO);
@@ -124,7 +118,6 @@ impl G1 {
     }
 
     /// Whether both represent the same point.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn equals(&self, q: &Self) -> bool {
         if self.is_infinity() || q.is_infinity() {
             return self.is_infinity() && q.is_infinity();
@@ -136,7 +129,6 @@ impl G1 {
     }
 
     /// `[|z|] P` for an affine P, by double-and-add over the set bits of |z|.
-    #[target_feature(enable = "bmi2,adx")]
     fn times_z_affine(px: &Fp, py: &Fp) -> Self {
         let mut r = Self::from_affine(px, py);
         let mut bit = Z_BITS[0];
@@ -151,7 +143,6 @@ impl G1 {
     }
 
     /// `[|z|] self`, by the same chain as `times_z_affine`.
-    #[target_feature(enable = "bmi2,adx")]
     fn times_z(&self) -> Self {
         let mut r = *self;
         let mut bit = Z_BITS[0];
@@ -167,13 +158,11 @@ impl G1 {
 
     /// Scott's test: a finite affine curve point is in G1 iff `[-z^2] P ==
     /// sigma^2(P)`, where sigma scales x by a cube root of unity.
-    #[target_feature(enable = "bmi2,adx")]
     pub fn in_g1(px: &Fp, py: &Fp) -> bool {
         Self::times_z_affine(px, py).times_z().is_minus_sigma_squared(px, py)
     }
 
     /// Whether self is −σ²(P) for the finite affine P = (px, py).
-    #[target_feature(enable = "bmi2,adx")]
     pub fn is_minus_sigma_squared(&self, px: &Fp, py: &Fp) -> bool {
         if self.is_infinity() {
             return false;
@@ -192,7 +181,6 @@ struct MixedTerms {
 }
 
 impl MixedTerms {
-    #[target_feature(enable = "bmi2,adx")]
     fn new(p: &G1, qx: &Fp, qy: &Fp) -> Self {
         let z1z1 = p.z.square();
         let h = qx.mul(&z1z1).sub(&p.x);
@@ -200,7 +188,6 @@ impl MixedTerms {
         Self { z1z1, h, r }
     }
 
-    #[target_feature(enable = "bmi2,adx")]
     fn sum(&self, p: &G1) -> G1 {
         let hh = self.h.square();
         let i = hh.double().double();
@@ -225,7 +212,6 @@ struct Terms {
 }
 
 impl Terms {
-    #[target_feature(enable = "bmi2,adx")]
     fn new(p: &G1, q: &G1) -> Self {
         let z1z1 = p.z.square();
         let z2z2 = q.z.square();
@@ -236,7 +222,6 @@ impl Terms {
         Self { z1z1, z2z2, u1, s1, h, r }
     }
 
-    #[target_feature(enable = "bmi2,adx")]
     fn sum(&self, p: &G1, q: &G1) -> G1 {
         let i = self.h.double().square();
         let j = self.h.mul(&i);
