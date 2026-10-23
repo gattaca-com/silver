@@ -13,6 +13,7 @@ use crate::{
             get_attester_slashings, get_bls_to_execution_changes, get_proposer_slashings,
             get_voluntary_exits,
         },
+        proposer_preferences::get_proposer_preferences,
         states::{genesis, state_finality_checkpoints, state_fork},
         sync_committees::post_sync_committee_messages,
         validators::{
@@ -69,6 +70,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/beacon/pool/sync_committees", post_sync_committee_messages),
     (Method::Get, "/eth/v1/beacon/pool/voluntary_exits", get_voluntary_exits),
     (Method::Post, "/eth/v1/beacon/pool/voluntary_exits", post_voluntary_exit),
+    (Method::Get, "/eth/v1/beacon/proposer_preferences", get_proposer_preferences),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/committees", get_epoch_committees),
     (
         Method::Get,

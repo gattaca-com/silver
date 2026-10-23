@@ -23,6 +23,7 @@ pub(crate) enum Channel {
     BlockGossip,
     DataColumnSidecar,
     SingleAttestation,
+    ProposerPreferences,
     ExecutionPayloadAvailable,
 }
 
@@ -97,6 +98,7 @@ fn channel(topic: &str, gloas_scheduled: bool) -> Option<Channel> {
         "block_gossip" => Some(Channel::BlockGossip),
         "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         "single_attestation" => Some(Channel::SingleAttestation),
+        "proposer_preferences" => Some(Channel::ProposerPreferences),
         "execution_payload_available" if !gloas_scheduled => {
             Some(Channel::ExecutionPayloadAvailable)
         }
@@ -209,6 +211,16 @@ mod tests {
             topics(query, true),
             Err(Refused::Unknown("execution_payload_available".to_string()))
         );
+    }
+
+    #[test]
+    fn proposer_preferences_can_be_subscribed_before_gloas() {
+        let channels = set(&[Channel::ProposerPreferences]);
+        for scheduled in [false, true] {
+            assert_eq!(topics("topics=proposer_preferences", scheduled), Ok(channels));
+        }
+        let (outcome, _) = subscribe("topics=proposer_preferences");
+        assert_eq!(outcome, Outcome::Stream(channels));
     }
 
     /// Empty entries must not silently turn a malformed list into a valid
