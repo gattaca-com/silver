@@ -187,6 +187,8 @@ def fixtures():
         project.mkdir(parents=True)
         for name in ["extract.sh", "prepare-extraction.py"]:
             shutil.copy2(LEAN / name, project / name)
+        (project / "controls").mkdir()
+        shutil.copy2(Path(__file__), project / "controls/extraction-check.py")
         toolchain = root / "tools"
         aeneas_pin = git_head(toolchain)
         charon_pin = git_head(toolchain / "charon")
@@ -223,6 +225,9 @@ else:
         subprocess.run([sys.executable, "-I", str(project / "prepare-extraction.py"),
                         str(committed / "Funs.lean")], check=True)
         snapshot = {name: (committed / name).read_text() for name in FILES}
+        control = project / "controls/ExtractedLiterals.lean"
+        write_lean_control(direct, control)
+        control_snapshot = control.read_text()
         validate_hoisting(direct, snapshot)
 
         def check(name, raw, expected, diagnostic):
@@ -235,6 +240,7 @@ else:
             assert result.returncode == expected, f"{name}: exit {result.returncode}\n{output}"
             assert diagnostic in output, f"{name}: missing diagnostic\n{output}"
             assert all((committed / f).read_text() == snapshot[f] for f in FILES), "--check wrote committed output"
+            assert control.read_text() == control_snapshot, "--check wrote the Lean control"
             print(f"{name}: extract.sh --check exited {expected}; {diagnostic}")
 
         check("unchanged/interleaved functions", direct, 0, "No drift")
@@ -283,7 +289,26 @@ else:
         rejects("corrupt helper type", lambda s: s.replace("Array Std.U64 4#usize :=", "Array Std.U8 4#usize :=", 1), "helper type differs")
         rejects("corrupt outer attribute", lambda s: s.replace("global_simps, irreducible", "irreducible", 1), "outer type/comment/attribute changed")
 
-        # Default mode must update all three outputs after reporting their drift.
+        # Even mutually matching prepared/committed corruption must fail against raw output.
+        prepare_path = project / "prepare-extraction.py"
+        prepare_source = prepare_path.read_text()
+        prepare_path.write_text(prepare_source + "\np = Path(sys.argv[1]).with_name('Literals.lean')\n"
+                                "p.write_text(p.read_text().replace('0#u64', '9#u64', 1))\n")
+        (committed / "Literals.lean").write_text(snapshot["Literals.lean"].replace("0#u64", "9#u64", 1))
+        corrupt_snapshot = {name: (committed / name).read_bytes() for name in FILES}
+        (root / "raw.lean").write_text(direct)
+        for args in (["--check"], []):
+            result = subprocess.run([str(project / "extract.sh"), *args], text=True,
+                                    env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                    capture_output=True, timeout=30)
+            assert result.returncode != 0 and "expanded literal differs" in result.stderr, result.stdout + result.stderr
+            assert all((committed / name).read_bytes() == value for name, value in corrupt_snapshot.items())
+            assert control.read_text() == control_snapshot
+            print(f"corrupt normalizer {args}: raw expansion rejected before any output replacement")
+        prepare_path.write_text(prepare_source)
+        (committed / "Literals.lean").write_text(snapshot["Literals.lean"])
+
+        # Default mode must update every output after reporting their drift.
         changed_raw = direct.replace(": Nat := 4096", ": Nat := 4095").replace("0#u64", "9#u64", 1)
         (root / "raw.lean").write_text(changed_raw)
         (root / "types.lean").write_text("-- changed fixture types\n")
@@ -296,7 +321,9 @@ else:
         validate_hoisting(changed_raw, updated)
         assert updated["Types.lean"] == "-- changed fixture types\n"
         assert ": Nat := 4095" in updated["Funs.lean"]
-        print("default extraction: drift reported and Types/Literals/Funs all replaced")
+        assert control.read_text() != control_snapshot, "default mode did not regenerate the Lean control"
+        assert "9#u64" in control.read_text()
+        print("default extraction: Types/Literals/Funs and the Lean control all replaced")
 
 
 def write_lean_control(raw, path):

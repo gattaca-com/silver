@@ -315,7 +315,7 @@ AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 
 Aeneas records each item's origin in a `Source: '<file>', lines <span>` comment. The comparison ignores the line numbers in these comments and compares everything else exactly, including comment delimiters. A Rust edit that only moves these source locations therefore produces no reported drift. With `--check`, the script does not replace the generated files: it prints any other difference and exits 1, or exits 0 when there is none.
 
-If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean`, `Literals.lean` and `Funs.lean`, and follow `lean/README.md`. Rebuild and fix the affected BLS or KZG refinements. Update the models and specification proofs where behaviour changes. Then rerun the controls, Lean differential tests and Rust checks, and update the BLS source table below when its files change. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
+If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean`, `Literals.lean`, `Funs.lean` and `controls/ExtractedLiterals.lean`, and follow `lean/README.md`. Rebuild and fix the affected BLS or KZG refinements. Update the models and specification proofs where behaviour changes. Then rerun the controls, Lean differential tests and Rust checks, and update the BLS source table below when its files change. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
 The extraction roots are `crate::bls::decompress_g2::decompress`, `crate::bls::uncompress_in_g1`, `crate::bls::uncompress_in_g2`, `crate::kzg::verify` and `crate::kzg::cell_extender`. They reach both KZG types' public methods and `Default` implementations, IFMA kernels, `CurveWork`, streaming SHA and the portable arithmetic, decoder, MSM and pairing implementations. G2's `uncompress_in_g2_blst` remains opaque for signatures. `prepare-extraction.py` then:
 
@@ -323,6 +323,8 @@ The extraction roots are `crate::bls::decompress_g2::decompress`, `crate::bls::u
 - quotes the eight generated `full` identifiers;
 - supplies structural `Array.make` length witnesses;
 - recursively hoists G1 setup rows and pairing-table steps/lanes into the separate `Extracted/Literals.lean` module, preserving each literal's type, order and contents.
+
+Both extraction modes retain raw `Funs.lean` in temporary storage and independently expand the prepared literals against it. Validation runs before comparison or replacement. The script also regenerates `controls/ExtractedLiterals.lean`: `--check` compares it, and default mode updates it.
 
 The separate literal module prevents ordinary function edits from rebuilding the large tables. `controls/ExtractedLiterals.lean` checks equality with the unhoisted extracted literals. Preparation validates required entry points and literal structure. Extraction fixtures accept source-span changes and reject semantic drift, malformed literals and missing or duplicated entries.
 
@@ -726,7 +728,7 @@ Paths below are relative to `lean/controls/`.
 | `LeftShiftIntrinsic.lean` | Left shifts preserve lanes, discard overflow, and return zero for counts at least 64. Mutations to counts, lane order and overflow handling fail. |
 | `KzgStrictAxioms.lean` | The shared proof, conditional runtime consumers and KZG negative controls use only the three standard axioms. |
 | `KzgSetupAxioms.lean`, `KzgRefinementAxioms.lean`, `KzgRepresentationAxioms.lean`, `KzgSpecBridgeAxioms.lean`, `KzgPolynomialAxioms.lean` | Scoped axiom checks for setup, refinement, representations, spec bridge and interpolation. |
-| `extraction-check.py` | Unchanged output, interleaved function families and numeric source-span changes pass. Changed rows, lanes, step order, helper types or attributes, malformed literals, a wrong `full` count, body edits and missing or duplicated entry points are rejected. Exact expansion checks preserve both tables; default extraction updates all three generated files. |
+| `extraction-check.py` | Unchanged output, interleaved function families and numeric source-span changes pass. Changed rows, lanes, step order, helper types or attributes, malformed literals, a wrong `full` count, body edits and missing or duplicated entry points are rejected. Both extraction modes enforce raw expansion equality; default extraction updates all three generated files and the Lean equality control. |
 
 For layer-specific build commands, see the [KZG scoped checks](lean/README.md#scoped-checks).
 

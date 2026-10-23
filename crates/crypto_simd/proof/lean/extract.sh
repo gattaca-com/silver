@@ -2,7 +2,8 @@
 # Usage: extract.sh [--check]
 #
 # Regenerate LeanBlsSimd/Extracted/{Types,Literals,Funs}.lean from crates/crypto_simd/src using Charon
-# and Aeneas, then print the diff. By default, replace the checked-in files with the result.
+# and Aeneas. Validate exact literal expansion and regenerate controls/ExtractedLiterals.lean.
+# Print the diff and, by default, replace the checked-in files with the result.
 # With --check, leave them unchanged and exit 1 if the comparison finds a difference.
 # The handwritten TypesExternal.lean and FunsExternal.lean are left unchanged.
 #
@@ -85,11 +86,19 @@ trap 'rm -rf "$work"' EXIT
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_crypto_simd.llbc"
 
+cp "$work/lean/LeanBlsSimd/Extracted/Funs.lean" "$work/RawFuns.lean"
+
 # Bind runtime dictionaries, quote reserved identifiers and split setup literals.
 python3 -I "$lean_dir/prepare-extraction.py" "$work/lean/LeanBlsSimd/Extracted/Funs.lean"
+mkdir -p "$work/lean/controls"
+python3 -I "$lean_dir/controls/extraction-check.py" \
+  --raw "$work/RawFuns.lean" --prepared "$work/lean/LeanBlsSimd/Extracted" \
+  --lean-control "$work/lean/controls/ExtractedLiterals.lean"
 
-for f in Types.lean Literals.lean Funs.lean; do
-  for side in "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f"; do
+files=(LeanBlsSimd/Extracted/{Types,Literals,Funs}.lean controls/ExtractedLiterals.lean)
+
+for f in "${files[@]}"; do
+  for side in "$lean_dir/$f" "$work/lean/$f"; do
     if [[ ! -f $side ]]; then
       echo "missing $side" >&2
       exit 2
@@ -103,10 +112,10 @@ mask_spans() {
 }
 
 drift=false
-for f in Types.lean Literals.lean Funs.lean; do
-  mkdir -p "$work/committed" "$work/regenerated"
-  mask_spans "$lean_dir/LeanBlsSimd/Extracted/$f" >"$work/committed/$f"
-  mask_spans "$work/lean/LeanBlsSimd/Extracted/$f" >"$work/regenerated/$f"
+for f in "${files[@]}"; do
+  mkdir -p "$work/committed/$(dirname "$f")" "$work/regenerated/$(dirname "$f")"
+  mask_spans "$lean_dir/$f" >"$work/committed/$f"
+  mask_spans "$work/lean/$f" >"$work/regenerated/$f"
   status=0
   git --no-pager diff --no-index --exit-code "$work/committed/$f" "$work/regenerated/$f" ||
     status=$?
@@ -128,6 +137,6 @@ if $check; then
   exit 0
 fi
 
-for f in Types.lean Literals.lean Funs.lean; do
-  cp "$work/lean/LeanBlsSimd/Extracted/$f" "$lean_dir/LeanBlsSimd/Extracted/"
+for f in "${files[@]}"; do
+  cp "$work/lean/$f" "$lean_dir/$f"
 done
