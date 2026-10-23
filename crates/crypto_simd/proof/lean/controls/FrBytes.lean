@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.ByteDecode
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -42,5 +42,17 @@ theorem maximal_digest_reduced :
   have hn : Fr.bytesBEToNat (LeanBlsSimd.Kzg.arrayBytes (Array.repeat 32#usize 255#u8)) = 2^256-1 := by
     decide +kernel
   rw [hn]
+
+def littleEndianOneBytes : Array U8 32#usize :=
+  Array.make 32#usize (1#u8 :: List.replicate 31 0#u8) (by decide)
+
+theorem little_endian_serialization_rejected :
+    fr.fr_to_bytes (LeanBlsSimd.Kzg.frEncode (Fr.ofNat 1)) ≠ ok littleEndianOneBytes := by
+  intro h
+  obtain ⟨result, hresult, hbytes⟩ := fr_to_bytes_refines (Fr.ofNat 1)
+  have heq := Result.ok.inj (hresult.symm.trans h)
+  rw [heq] at hbytes
+  exact (by decide +kernel : LeanBlsSimd.Kzg.arrayBytes littleEndianOneBytes ≠
+    EthLib.Cryptography.Kzg.blsFieldToBytes (Fr.ofNat 1)) hbytes
 
 end LeanBlsSimd.Controls.FrBytes

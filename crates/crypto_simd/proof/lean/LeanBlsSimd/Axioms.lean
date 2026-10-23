@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.SetupLiterals
-import LeanBlsSimd.Kzg.Fr.ByteDecode
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.PairingEquations
