@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes src/portable/constants.rs: the scalar Fp's constants in blst's form (R = 2^384).
 
-Usage: python3 -I gen_portable_constants.py src/bls/constants.rs > src/portable/constants.rs
+Usage: python3 -I gen_portable_constants.py src/bls/constants.rs > src/portable/constants.rs && just fmt
 
 Reads BETA_MONT and FROBENIUS_MONT from bls/constants.rs (Fp8's R' = 2^416 form,
 52-bit limbs) and converts them; everything else is computed from p.
