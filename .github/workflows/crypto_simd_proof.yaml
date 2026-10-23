@@ -1,8 +1,8 @@
 name: crypto_simd proof
 
-# Branch protection requires only the `proof` job. The workflow runs on every
-# pull request so that `proof` always reports: a workflow filtered out by `paths`
-# never reports, and a required check that never reports blocks the merge.
+# `proof` is the aggregate check intended for branch protection. Run on every
+# pull request so it always reports; a workflow filtered out by `paths` leaves
+# a required check pending and blocks the merge.
 on:
   push:
     branches: [main]
@@ -118,6 +118,8 @@ jobs:
     if: needs.changes.outputs.crypto_simd == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -129,7 +131,83 @@ jobs:
         with:
           lake-package-directory: ${{ env.PROOF_DIR }}
 
+      - name: Archive the Lean build
+        working-directory: ${{ env.PROOF_DIR }}
+        run: |
+          df -h . "$RUNNER_TEMP"
+          du -sh .lake
+          time tar --zstd -cf "$RUNNER_TEMP/lean-build.tar.zst" .lake
+          du -h "$RUNNER_TEMP/lean-build.tar.zst"
+          df -h . "$RUNNER_TEMP"
+
+      - name: Publish the Lean build
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lean-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lean-build.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  lean-tests:
+    name: lean-${{ matrix.test }}
+    needs: [changes, lean]
+    if: needs.changes.outputs.crypto_simd == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test: controls
+            timeout-minutes: 60
+          - test: downstream
+            timeout-minutes: 45
+          - test: differential
+            timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Lean without building or restoring caches
+        uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
+        with:
+          lake-package-directory: ${{ env.PROOF_DIR }}
+          auto-config: "false"
+          build: "false"
+          test: "false"
+          lint: "false"
+          use-github-cache: "false"
+          use-mathlib-cache: "false"
+
+      - name: Check the producer artifact
+        env:
+          ARTIFACT_ID: ${{ needs.lean.outputs.artifact-id }}
+        run: |
+          [[ $ARTIFACT_ID =~ ^[0-9]+$ ]] || { echo "::error::Missing Lean build artifact ID"; exit 1; }
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Download the Lean build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.lean.outputs.artifact-id }}
+          path: ${{ runner.temp }}/lean-build
+          merge-multiple: true
+
+      - name: Restore and verify the Lean build
+        working-directory: ${{ env.PROOF_DIR }}
+        run: |
+          [[ ! -e .lake ]] || { echo "::error::Expected a clean Lean workspace before restore"; exit 1; }
+          df -h . "$RUNNER_TEMP"
+          time tar --zstd --no-same-owner -xf "$RUNNER_TEMP/lean-build/lean-build.tar.zst"
+          rm "$RUNNER_TEMP/lean-build/lean-build.tar.zst"
+          df -h . "$RUNNER_TEMP"
+          lake build --no-build
+
       - name: Negative and concrete controls
+        if: matrix.test == 'controls'
         working-directory: ${{ env.PROOF_DIR }}
         run: |
           for f in controls/*.lean; do
@@ -139,10 +217,16 @@ jobs:
           done
 
       - name: Downstream package
+        if: matrix.test == 'downstream'
         working-directory: ${{ env.PROOF_DIR }}/controls/downstream
         run: lake update && lake build
 
+      - name: Report downstream disk usage
+        if: always() && matrix.test == 'downstream'
+        run: df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
       - name: Differential vector test
+        if: matrix.test == 'differential'
         working-directory: ${{ env.PROOF_DIR }}
         run: |
           lake build differential
@@ -182,22 +266,24 @@ jobs:
           if [[ $IFMA == true ]]; then export SILVER_REQUIRE_IFMA=1; fi
           cargo test --locked -p silver_crypto_simd --all-features
 
-  # The required check covers extraction, Lean and Rust. Skips pass only when
+  # The aggregate check covers extraction, Lean and Rust. Skips pass only when
   # `changes` found no relevant edit; a failed or cancelled `changes` fails here.
   proof:
-    needs: [changes, extraction, lean, rust]
+    needs: [changes, extraction, lean, rust, lean-tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
           CHANGES: ${{ needs.changes.result }}
           RELEVANT: ${{ needs.changes.outputs.crypto_simd }}
-          RESULTS: ${{ needs.extraction.result }} ${{ needs.lean.result }} ${{ needs.rust.result }}
+          RESULTS: >-
+            ${{ needs.extraction.result }} ${{ needs.lean.result }} ${{ needs.rust.result }}
+            ${{ needs.lean-tests.result }}
         run: |
           echo "changes=$CHANGES relevant=$RELEVANT results=$RESULTS"
           [[ $CHANGES == success ]] || exit 1
           case $RELEVANT in
-            true) [[ $RESULTS == "success success success" ]] ;;
-            false) [[ $RESULTS == "skipped skipped skipped" ]] ;;
+            true) [[ $RESULTS == "success success success success" ]] ;;
+            false) [[ $RESULTS == "skipped skipped skipped skipped" ]] ;;
             *) exit 1 ;;
           esac
