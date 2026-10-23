@@ -13,8 +13,8 @@ use std::arch::x86_64::{
 };
 
 use crate::bls::constants::{
-    HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_INV52,
-    P_MINUS_3_OVER_4_WINDOWS, R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
+    HALF_MONT, HALF_P_MINUS_1, LIMB_BITS, LIMBS, MASK52, ONE_PLAIN, P, P_MINUS_3_OVER_4_WINDOWS,
+    R_MOD_P, R2_MOD_P, TWO_POW_384_MOD_P,
 };
 
 pub const LANES: usize = 8;
@@ -26,19 +26,19 @@ pub struct Fp8(pub [__m512i; LIMBS]);
 
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn splat(x: u64) -> __m512i {
+pub(crate) fn splat(x: u64) -> __m512i {
     _mm512_set1_epi64(x as i64)
 }
 
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn zero() -> __m512i {
+pub(crate) fn zero() -> __m512i {
     _mm512_setzero_si512()
 }
 
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn splat_limbs(limbs: &Limbs) -> [__m512i; LIMBS] {
+pub(crate) fn splat_limbs(limbs: &Limbs) -> [__m512i; LIMBS] {
     let mut v = [zero(); LIMBS];
     for j in 0..LIMBS {
         v[j] = splat(limbs[j]);
@@ -103,20 +103,16 @@ fn borrowed(borrow: __m512i) -> __mmask8 {
 /// `t[i..] += a * b_i` over the 2·LIMBS-wide accumulator.
 #[target_feature(enable = "avx512f,avx512ifma")]
 #[inline]
-fn muladd_row(t: &mut [__m512i; 2 * LIMBS + 1], a: &[__m512i; LIMBS], b_i: __m512i, i: usize) {
+pub(crate) fn muladd_row(
+    t: &mut [__m512i; 2 * LIMBS + 1],
+    a: &[__m512i; LIMBS],
+    b_i: __m512i,
+    i: usize,
+) {
     for j in 0..LIMBS {
         t[i + j] = _mm512_madd52lo_epu64(t[i + j], a[j], b_i);
         t[i + j + 1] = _mm512_madd52hi_epu64(t[i + j + 1], a[j], b_i);
     }
-}
-
-/// Clears limb `i` of the accumulator with a multiple of p and carries it up.
-#[target_feature(enable = "avx512f,avx512ifma")]
-#[inline]
-fn reduce_row(t: &mut [__m512i; 2 * LIMBS + 1], p: &[__m512i; LIMBS], pinv: __m512i, i: usize) {
-    let q = _mm512_madd52lo_epu64(zero(), t[i], pinv);
-    muladd_row(t, p, q, i);
-    t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
 }
 
 /// Little-endian 64-bit limbs of a 381-bit value to 52-bit limbs.
@@ -235,45 +231,18 @@ impl Fp8 {
         out
     }
 
-    /// Montgomery product: the full 16-limb product first, then eight
-    /// reduction rows, every index a constant so the accumulator stays in
-    /// registers.
+    /// Montgomery product. Operands are normalised; the product is normalised
+    /// and below 2p whenever a·b < 2^416·p: one operand below 2p and the
+    /// other below 2^34·p, or both below 2^17·p.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn mul(&self, rhs: &Self) -> Self {
-        let p = splat_limbs(&P);
-        let pinv = splat(P_INV52);
-        let mut t = [zero(); 2 * LIMBS + 1];
-        muladd_row(&mut t, &self.0, rhs.0[0], 0);
-        muladd_row(&mut t, &self.0, rhs.0[1], 1);
-        muladd_row(&mut t, &self.0, rhs.0[2], 2);
-        muladd_row(&mut t, &self.0, rhs.0[3], 3);
-        muladd_row(&mut t, &self.0, rhs.0[4], 4);
-        muladd_row(&mut t, &self.0, rhs.0[5], 5);
-        muladd_row(&mut t, &self.0, rhs.0[6], 6);
-        muladd_row(&mut t, &self.0, rhs.0[7], 7);
-        reduce_row(&mut t, &p, pinv, 0);
-        reduce_row(&mut t, &p, pinv, 1);
-        reduce_row(&mut t, &p, pinv, 2);
-        reduce_row(&mut t, &p, pinv, 3);
-        reduce_row(&mut t, &p, pinv, 4);
-        reduce_row(&mut t, &p, pinv, 5);
-        reduce_row(&mut t, &p, pinv, 6);
-        reduce_row(&mut t, &p, pinv, 7);
-
-        let mask = splat(MASK52);
-        let mut r = [zero(); LIMBS];
-        r[0] = t[LIMBS];
-        for j in 0..LIMBS - 1 {
-            r[j + 1] = _mm512_add_epi64(t[LIMBS + j + 1], _mm512_srli_epi64::<52>(r[j]));
-            r[j] = _mm512_and_si512(r[j], mask);
-        }
-        Self(r)
+        Self::reduce(self.product(rhs)).normalise()
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
     #[inline]
     pub fn square(&self) -> Self {
-        self.mul(self)
+        Self::reduce(self.square_product()).normalise()
     }
 
     /// Down from [0, 2p) to [0, p).
@@ -393,4 +362,42 @@ impl Fp8 {
 #[inline]
 fn two_p() -> [__m512i; LIMBS] {
     add_limbs(&splat_limbs(&P), &splat_limbs(&P))
+}
+
+#[cfg(test)]
+mod reference {
+    use std::arch::x86_64::{
+        _mm512_add_epi64, _mm512_and_si512, _mm512_madd52lo_epu64, _mm512_srli_epi64,
+    };
+
+    use super::{Fp8, LIMBS, MASK52, P, muladd_row, splat, splat_limbs, zero};
+    use crate::bls::constants::P_INV52;
+
+    impl Fp8 {
+        /// The full product first, then eight reduction rows and a carry
+        /// chain, as `mul` was before the early-carry reduction.
+        #[target_feature(enable = "avx512f,avx512ifma")]
+        pub(crate) fn mul_reference(&self, rhs: &Self) -> Self {
+            let p = splat_limbs(&P);
+            let pinv = splat(P_INV52);
+            let mut t = [zero(); 2 * LIMBS + 1];
+            for i in 0..LIMBS {
+                muladd_row(&mut t, &self.0, rhs.0[i], i);
+            }
+            for i in 0..LIMBS {
+                let q = _mm512_madd52lo_epu64(zero(), t[i], pinv);
+                muladd_row(&mut t, &p, q, i);
+                t[i + 1] = _mm512_add_epi64(t[i + 1], _mm512_srli_epi64::<52>(t[i]));
+            }
+
+            let mask = splat(MASK52);
+            let mut r = [zero(); LIMBS];
+            r[0] = t[LIMBS];
+            for j in 0..LIMBS - 1 {
+                r[j + 1] = _mm512_add_epi64(t[LIMBS + j + 1], _mm512_srli_epi64::<52>(r[j]));
+                r[j] = _mm512_and_si512(r[j], mask);
+            }
+            Self(r)
+        }
+    }
 }

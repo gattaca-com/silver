@@ -14,7 +14,7 @@ const MODULUS: [u8; 32] = [
 ];
 
 /// The same field element, encoded as its value plus r: the spec rejects it.
-fn add_modulus(element: &mut [u8]) {
+pub(super) fn add_modulus(element: &mut [u8]) {
     let mut carry = 0u16;
     for i in (0..32).rev() {
         let sum = element[i] as u16 + MODULUS[i] as u16 + carry;
@@ -24,14 +24,14 @@ fn add_modulus(element: &mut [u8]) {
     assert_eq!(carry, 0, "the element is small enough");
 }
 
-struct BlobFixture {
-    commitment: [u8; 48],
-    cells: Vec<[u8; BYTES_PER_CELL]>,
-    proofs: Vec<[u8; 48]>,
+pub(super) struct BlobFixture {
+    pub(super) commitment: [u8; 48],
+    pub(super) cells: Vec<[u8; BYTES_PER_CELL]>,
+    pub(super) proofs: Vec<[u8; 48]>,
 }
 
 /// Field elements below r: each 32-byte big-endian element has a zero top byte.
-fn random_blob(rng: &mut ChaCha8Rng) -> Blob {
+pub(super) fn random_blob(rng: &mut ChaCha8Rng) -> Blob {
     let mut bytes = [0u8; BYTES_PER_BLOB];
     rng.fill(&mut bytes[..]);
     for element in bytes.chunks_exact_mut(32) {
@@ -40,7 +40,7 @@ fn random_blob(rng: &mut ChaCha8Rng) -> Blob {
     Blob::new(bytes)
 }
 
-fn fixture(settings: &KzgSettings, blob: &Blob) -> BlobFixture {
+pub(super) fn fixture(settings: &KzgSettings, blob: &Blob) -> BlobFixture {
     let commitment = settings.blob_to_kzg_commitment(blob).unwrap().to_bytes().into_inner();
     let (cells, proofs) = settings.compute_cells_and_kzg_proofs(blob).unwrap();
     BlobFixture {
@@ -51,27 +51,27 @@ fn fixture(settings: &KzgSettings, blob: &Blob) -> BlobFixture {
 }
 
 #[derive(Clone, Default)]
-struct Batch {
-    commitments: Vec<[u8; 48]>,
-    cell_indices: Vec<u64>,
-    cells: Vec<[u8; BYTES_PER_CELL]>,
-    proofs: Vec<[u8; 48]>,
+pub(super) struct Batch {
+    pub(super) commitments: Vec<[u8; 48]>,
+    pub(super) cell_indices: Vec<u64>,
+    pub(super) cells: Vec<[u8; BYTES_PER_CELL]>,
+    pub(super) proofs: Vec<[u8; 48]>,
 }
 
 impl Batch {
-    fn push(&mut self, blob: &BlobFixture, cell: usize) {
+    pub(super) fn push(&mut self, blob: &BlobFixture, cell: usize) {
         self.commitments.push(blob.commitment);
         self.cell_indices.push(cell as u64);
         self.cells.push(blob.cells[cell]);
         self.proofs.push(blob.proofs[cell]);
     }
 
-    fn ours(&self, verifier: &mut CellBatchVerifier) -> bool {
+    pub(super) fn ours(&self, verifier: &mut CellBatchVerifier) -> bool {
         verifier.verify(&self.commitments, &self.cell_indices, &self.cells, &self.proofs)
     }
 
     /// c-kzg's verdict, with its errors as false, as silver treats them.
-    fn ckzg(&self, settings: &KzgSettings) -> bool {
+    pub(super) fn ckzg(&self, settings: &KzgSettings) -> bool {
         let commitments: Vec<_> = self.commitments.iter().map(|c| Bytes48::new(*c)).collect();
         let cells: Vec<_> = self.cells.iter().map(|c| Cell::new(*c)).collect();
         let proofs: Vec<_> = self.proofs.iter().map(|p| Bytes48::new(*p)).collect();
@@ -81,12 +81,16 @@ impl Batch {
     }
 }
 
-fn blobs(rng: &mut ChaCha8Rng, settings: &KzgSettings, count: usize) -> Vec<BlobFixture> {
+pub(super) fn blobs(
+    rng: &mut ChaCha8Rng,
+    settings: &KzgSettings,
+    count: usize,
+) -> Vec<BlobFixture> {
     (0..count).map(|_| fixture(settings, &random_blob(rng))).collect()
 }
 
 /// Random cells of random blobs, in random order, repeats allowed.
-fn random_batch(rng: &mut ChaCha8Rng, blobs: &[BlobFixture], size: usize) -> Batch {
+pub(super) fn random_batch(rng: &mut ChaCha8Rng, blobs: &[BlobFixture], size: usize) -> Batch {
     let mut batch = Batch::default();
     for _ in 0..size {
         batch.push(&blobs[rng.gen_range(0..blobs.len())], rng.gen_range(0..CELLS_PER_EXT_BLOB));

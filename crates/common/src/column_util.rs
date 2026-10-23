@@ -18,7 +18,7 @@ use silver_common::{
         SidecarLayout, SignedBeaconBlockView,
     },
 };
-use silver_crypto_simd::kzg::{self, CellBatchVerifier, CellExtender};
+use silver_crypto_simd::kzg::{self, CellBatchVerifier, CellExtender, SimdCellBatchVerifier};
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -225,13 +225,26 @@ pub struct KzgBatchEntry<'a> {
 /// The verifier and its staging buffers: cells of distinct sidecars are not
 /// contiguous, and `CellBatchVerifier` takes flat arrays. Capacity is retained
 /// across calls.
-#[derive(Default)]
 pub struct KzgScratch {
     verifier: CellBatchVerifier,
+    simd: Option<SimdCellBatchVerifier>,
     cells: Vec<[u8; BYTES_PER_CELL]>,
     commitments: Vec<[u8; BYTES_PER_KZG_COMMITMENT]>,
     proofs: Vec<[u8; BYTES_PER_KZG_PROOF]>,
     indices: Vec<u64>,
+}
+
+impl Default for KzgScratch {
+    fn default() -> Self {
+        Self {
+            verifier: CellBatchVerifier::new(),
+            simd: SimdCellBatchVerifier::new(),
+            cells: Vec::new(),
+            commitments: Vec::new(),
+            proofs: Vec::new(),
+            indices: Vec::new(),
+        }
+    }
 }
 
 /// Folds every entry's cells into one `verify_cell_kzg_proof_batch`: one
@@ -256,7 +269,11 @@ pub fn kzg_verify_batch_multi<'a>(
         scratch.proofs.extend_from_slice(proofs);
         scratch.indices.extend(iter::repeat_n(e.index, cells.len()));
     }
-    scratch.verifier.verify(&scratch.commitments, &scratch.indices, &scratch.cells, &scratch.proofs)
+    let KzgScratch { verifier, simd, cells, commitments, proofs, indices } = scratch;
+    match simd {
+        Some(simd) => simd.verify(commitments, indices, cells, proofs),
+        None => verifier.verify(commitments, indices, cells, proofs),
+    }
 }
 
 /// Spec `DOMAIN_BEACON_PROPOSER = bytes4(0x00000000)`.

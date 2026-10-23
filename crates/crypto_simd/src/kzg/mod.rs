@@ -11,17 +11,46 @@
               adaptors, `Vec::clear` or `is_multiple_of`"
 )]
 
+mod blst_msm;
 mod blst_ops;
 mod cell_extender;
 mod challenge;
+#[cfg(target_arch = "x86_64")]
+mod column_sums;
+mod commitment_cache;
 mod cosets;
 mod domain;
 mod fft;
+mod fixed_base;
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+mod fr8;
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+mod fr8_bytes;
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+mod fr8_fft;
+#[cfg(target_arch = "x86_64")]
+mod fr8_interpolation;
+#[cfg(target_arch = "x86_64")]
+mod fr8_scalars;
+#[cfg(all(test, target_arch = "x86_64"))]
+mod fr8_scalars_tests;
+#[cfg(all(test, target_arch = "x86_64"))]
+mod fr8_test_util;
+#[cfg(target_arch = "x86_64")]
+mod msm8;
+mod pairing_lines;
 mod setup;
+mod simd_verify;
+#[cfg(test)]
+mod simd_verify_tests;
 mod trusted_setup;
 mod verify;
 
 pub use cell_extender::CellExtender;
+pub use simd_verify::SimdCellBatchVerifier;
 pub use verify::CellBatchVerifier;
 
 pub const BYTES_PER_FIELD_ELEMENT: usize = 32;

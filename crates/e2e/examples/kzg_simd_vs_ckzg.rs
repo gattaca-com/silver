@@ -200,6 +200,17 @@ fn main() {
         let batch = &by_arrival[..columns];
         assert!(ckzg.verify(batch), "c-kzg accepts {columns} columns");
         assert!(silver_verify(batch, &mut scratch), "crypto_simd accepts {columns} columns");
+        let mut tampered = batch[columns - 1].to_vec();
+        let cell = DataColumnSidecarFuluView::column(batch[columns - 1]).as_ptr().addr() -
+            batch[columns - 1].as_ptr().addr();
+        tampered[cell + columns] ^= 1;
+        let mut tampered_batch = batch.to_vec();
+        tampered_batch[columns - 1] = &tampered;
+        assert!(!ckzg.verify(&tampered_batch), "c-kzg rejects a corrupted sidecar in {columns}");
+        assert!(
+            !silver_verify(&tampered_batch, &mut scratch),
+            "crypto_simd rejects a corrupted sidecar in {columns} columns"
+        );
         let theirs = best_of(|| ckzg.verify(batch));
         let ours = best_of(|| silver_verify(batch, &mut scratch));
         table.row(vec![
