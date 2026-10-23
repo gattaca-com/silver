@@ -100,4 +100,33 @@ theorem multiply_wide (x y : U64) :
   refine ⟨UScalar.ofNatCore _ h,mul_ok _ _ h,?_⟩
   simp only [UScalar.ofNatCore_val_eq,cast128_val]
 
+theorem wordsValue_injective (xs ys : List U64) (hlen : xs.length = ys.length)
+    (hvalue : wordsValue xs = wordsValue ys) : xs = ys := by
+  induction xs generalizing ys with
+  | nil =>
+    cases ys with
+    | nil => rfl
+    | cons y ys => simp at hlen
+  | cons x xs ih =>
+    cases ys with
+    | nil => simp at hlen
+    | cons y ys =>
+      simp only [List.length_cons] at hlen
+      simp only [wordsValue] at hvalue
+      have hx := x.hBounds
+      have hy := y.hBounds
+      have hxy : x.val = y.val := by
+        norm_num [UScalarTy.numBits,radix] at hx hy hvalue
+        omega
+      have heq : x = y := UScalar.eq_of_val_eq hxy
+      subst y
+      congr 1
+      apply ih ys (by omega)
+      norm_num [radix] at hvalue
+      omega
+
+theorem value_injective {n : Usize} (a b : Array U64 n) (h : value a = value b) : a = b := by
+  apply Subtype.ext
+  exact wordsValue_injective a.val b.val (by rw [a.property,b.property]) h
+
 end LeanBlsSimd.Word64
