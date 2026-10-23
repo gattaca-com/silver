@@ -204,7 +204,7 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 `Kzg/Lincomb.lean` supplies `verify_lincomb_refinement` and its raw-input variant for the actual `verify.CurveWork.sum`, using `FrBytesCorrect` and `PortableMsmCorrect`. Lane-only refinements use the proved MSM8 implementation and need neither of those premises. `CurveWork.sum_frame` preserves the exact stored table and route, enabling invariant preservation without restricting scratch to constructor-reachable values. The interpolation adapters specialize these statements to the embedded setup.
 
-`controls/KzgSpecInstance.lean` and `controls/downstream/KzgSmoke.lean` apply the generated-runtime headlines conditionally on the named contracts. This checks the consumer interfaces, not the truth of their pending premises.
+`controls/downstream/KzgSmoke.lean` applies the generated-runtime headlines conditionally on the named contracts. This checks the consumer interfaces, not the truth of their pending premises.
 
 ### Decoder bridge and component premises
 
@@ -700,10 +700,9 @@ Paths below are relative to `lean/controls/`.
 
 | Control | Checked boundary |
 |---|---|
-| `KzgSpecInstance.lean` | Conditional application of the actual-runtime headline. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
-| `KzgStreamingSha.lean` | Constant-zero hashing and reversed integer byte order are rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |
+| `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `KzgMathematical.lean` | Bit reversal, inverse coset-shift direction and inverse FFT scaling. |
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |

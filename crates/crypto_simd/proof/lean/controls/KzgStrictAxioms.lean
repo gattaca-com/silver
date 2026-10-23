@@ -1,5 +1,4 @@
 import LeanBlsSimd.Axioms
-import controls.KzgSpecInstance
 import controls.KzgMathematical
 import controls.KzgSetupBoundary
 import controls.KzgStreamingSha

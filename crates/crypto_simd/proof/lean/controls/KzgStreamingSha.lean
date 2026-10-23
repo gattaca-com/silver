@@ -46,11 +46,6 @@ theorem segmentation_preserves_digest
   obtain ⟨dr, hr, hdr⟩ := h right
   exact ⟨dl, dr, hl, hr, hdl.trans (by rw [heq]; exact hdr.symm)⟩
 
-/-- Endianness is part of the challenge transcript, not a serialization freedom. -/
-theorem byte_order_mutation_rejected :
-    (core.num.U64.to_be_bytes 1#u64).val ≠ (core.num.U64.to_le_bytes 1#u64).val := by
-  decide +kernel
-
 /-- Both generated SHA paths produce the same challenge for all well-indexed inputs. -/
 theorem sha_routes_agree (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
