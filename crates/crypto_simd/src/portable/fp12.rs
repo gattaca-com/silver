@@ -27,7 +27,8 @@ impl Fp12 {
         c1: Fp6::ZERO,
     };
 
-    /// Karatsuba over the halves: three Fp6 products.
+    /// Karatsuba multiplication (Devegili et al., eprint 2006/471, §3):
+    /// three Fp6 products.
     // Follows blst 0.3.16 fp12_tower.c `mul_fp12`.
     pub fn mul(&self, rhs: &Self) -> Self {
         let t0 = self.c0.mul(&rhs.c0);
@@ -36,7 +37,7 @@ impl Fp12 {
         Self { c0: t0.add(&t1.mul_by_v()), c1 }
     }
 
-    /// (a + b·w)² = (a + b)(a + v·b) − t − v·t + 2t·w, t = a·b: two Fp6
+    /// Complex squaring (Devegili et al., eprint 2006/471, §3): two Fp6
     /// products.
     // Follows blst 0.3.16 fp12_tower.c `sqr_fp12`.
     pub fn square(&self) -> Self {
@@ -46,8 +47,10 @@ impl Fp12 {
         Self { c0, c1: t.double() }
     }
 
-    /// Times the line (x + y·v) + z·v·w, blst's `mul_by_xy00z0`: 13 Fp2
-    /// products.
+    /// Times the line (x + y·v) + z·v·w: Karatsuba multiplication with
+    /// sparse Fp6 products, 13 Fp2 products.
+    /// Beuchat et al., eprint 2010/354, Algorithm 21, does the same
+    /// for another sparsity pattern.
     // Follows blst 0.3.16 fp12_tower.c `mul_by_xy00z0_fp12`.
     pub fn mul_by_line(&self, x: &Fp2, y: &Fp2, z: &Fp2) -> Self {
         let t0 = self.c0.mul_by_xy(x, y);
@@ -56,9 +59,9 @@ impl Fp12 {
         Self { c0: t0.add(&t1.mul_by_v()), c1 }
     }
 
-    /// Granger–Scott, on the cyclotomic subgroup: nine Fp2 squarings, as
-    /// blst's `cyclotomic_sqr_fp12`. Off the subgroup it computes the same
-    /// formula.
+    /// Granger–Scott cyclotomic squaring (eprint 2009/565, §3.2): self is
+    /// a + b·w + c·w² over Fp4 = Fp2[w³], squared as 3a² − 2ā, 3w³c² + 2b̄,
+    /// 3b² − 2c̄. Nine Fp2 squarings. Equals self² on the cyclotomic subgroup.
     // Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
     pub fn cyclotomic_square(&self) -> Self {
         let (t00, t01) = fp4_square(&self.c0.c0, &self.c1.c1);
@@ -99,7 +102,9 @@ impl Fp12 {
         }
     }
 
-    /// (a − b·w) / (a² − v·b²).
+    /// Inversion through the norm to Fp6: (a − b·w) / (a² − v·b²), as
+    /// Beuchat et al., eprint 2010/354, Algorithm 23. Four Fp6 products, two
+    /// of them squares, and one Fp6 inversion.
     // Follows blst 0.3.16 fp12_tower.c `inverse_fp12`.
     pub fn inverse(&self) -> Self {
         let norm = self.c0.mul(&self.c0).sub(&self.c1.mul(&self.c1).mul_by_v());
@@ -151,7 +156,8 @@ impl Fp12 {
     }
 }
 
-/// (a0 + a1·w')² in Fp4 = Fp2[w']/(w'² − ξ): (a0² + ξ·a1², 2·a0·a1).
+/// Karatsuba squaring in Fp4 = Fp2[w']/(w'² − ξ) (Devegili et al., eprint
+/// 2006/471, §3): three Fp2 squarings.
 // Follows blst 0.3.16 fp12_tower.c `sqr_fp4`.
 #[inline]
 fn fp4_square(a0: &Fp2, a1: &Fp2) -> (Fp2, Fp2) {
@@ -161,15 +167,13 @@ fn fp4_square(a0: &Fp2, a1: &Fp2) -> (Fp2, Fp2) {
     (s0.add(&s1.mul_by_xi()), cross)
 }
 
-/// 3t − 2a.
-// Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
+/// 3t − 2a: one Granger–Scott output coefficient.
 #[inline(always)]
 fn thrice_less_twice(t: &Fp2, a: &Fp2) -> Fp2 {
     t.sub(a).double().add(t)
 }
 
-/// 3t + 2a.
-// Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
+/// 3t + 2a: one Granger–Scott output coefficient.
 #[inline(always)]
 fn thrice_plus_twice(t: &Fp2, a: &Fp2) -> Fp2 {
     t.add(a).double().add(t)

@@ -15,7 +15,8 @@ pub struct Fp6 {
 impl Fp6 {
     pub const ZERO: Fp6 = Fp6 { c0: Fp2::ZERO, c1: Fp2::ZERO, c2: Fp2::ZERO };
 
-    /// Karatsuba over the three coefficients: six Fp2 products.
+    /// Karatsuba multiplication (Devegili et al., eprint 2006/471, §4): six
+    /// Fp2 products.
     // Follows blst 0.3.16 fp12_tower.c `mul_fp6`.
     pub fn mul(&self, rhs: &Self) -> Self {
         let t0 = self.c0.mul(&rhs.c0);
@@ -29,7 +30,9 @@ impl Fp6 {
         Self { c0, c1, c2 }
     }
 
-    /// Times x + y·v, blst's `mul_by_xy0`: five Fp2 products.
+    /// Karatsuba multiplication by x + y·v: five Fp2 products. A variant of
+    /// Beuchat et al., eprint 2010/354, Algorithm 15, with c2·y in place of
+    /// its (c1 + c2)·y − c1·y.
     // Follows blst 0.3.16 fp12_tower.c `mul_by_xy0_fp6`.
     pub fn mul_by_xy(&self, x: &Fp2, y: &Fp2) -> Self {
         let t0 = self.c0.mul(x);
@@ -40,7 +43,9 @@ impl Fp6 {
         Self { c0, c1, c2 }
     }
 
-    /// Times y·v, blst's `mul_by_0y0`: three Fp2 products.
+    /// Times the monomial y·v: a scaling by y, then multiplication by v.
+    /// Three Fp2 products.
+    /// As Beuchat et al., eprint 2010/354, Algorithms 14 then 12.
     // Follows blst 0.3.16 fp12_tower.c `mul_by_0y0_fp6`.
     pub fn mul_by_y(&self, y: &Fp2) -> Self {
         Self { c0: self.c2.mul(y).mul_by_xi(), c1: self.c0.mul(y), c2: self.c1.mul(y) }
@@ -72,16 +77,16 @@ impl Fp6 {
         Self { c0: self.c0.double(), c1: self.c1.double(), c2: self.c2.double() }
     }
 
-    /// From the norm to Fp2: t = (c0² − ξc1c2, ξc2² − c0c1, c1² − c0c2) and
-    /// self⁻¹ = t / (c0·t0 + ξ(c2·t1 + c1·t2)).
+    /// Inversion through the norm to Fp2: self⁻¹ = adj(self) / N(self).
+    /// Three Fp2 squarings, nine products and one Fp2 inversion.
+    /// Beuchat et al., eprint 2010/354, Algorithm 17, misprints steps 6 and 9.
     // Follows blst 0.3.16 fp12_tower.c `inverse_fp6`.
     pub fn inverse(&self) -> Self {
         let t0 = self.c0.square().sub(&self.c1.mul(&self.c2).mul_by_xi());
         let t1 = self.c2.square().mul_by_xi().sub(&self.c0.mul(&self.c1));
         let t2 = self.c1.square().sub(&self.c0.mul(&self.c2));
-        let determinant =
-            self.c0.mul(&t0).add(&self.c2.mul(&t1).add(&self.c1.mul(&t2)).mul_by_xi());
-        let inverse = determinant.inverse();
+        let norm = self.c0.mul(&t0).add(&self.c2.mul(&t1).add(&self.c1.mul(&t2)).mul_by_xi());
+        let inverse = norm.inverse();
         Self { c0: t0.mul(&inverse), c1: t1.mul(&inverse), c2: t2.mul(&inverse) }
     }
 }
