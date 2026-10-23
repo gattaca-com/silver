@@ -1,3 +1,4 @@
+import controls.FrScalar
 import LeanBlsSimd.Axioms
 import controls.KzgMathematical
 import controls.KzgSetupBoundary
