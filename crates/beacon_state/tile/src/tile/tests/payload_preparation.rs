@@ -261,6 +261,7 @@ fn local_duplicate_preferences_are_authenticated_before_registration() {
     tile.spec = Arc::new(SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() });
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     sink.consume(|_: BeaconStateEvent, _| {});
+    sink.consume(|_: PeerEvent, _| {});
     let mut bytes = [0u8; SIGNED_PROPOSER_PREFERENCES_SIZE];
     bytes[..32].copy_from_slice(&ANCHOR_ROOT);
     bytes[32..40].copy_from_slice(&1u64.to_le_bytes());
@@ -279,6 +280,13 @@ fn local_duplicate_preferences_are_authenticated_before_registration() {
     tile.handle_gossip(msg.ssz, msg, true, false, &mut adapter.producers);
     assert!(tile.seen_proposer_preferences.contains(1, &ANCHOR_ROOT));
     assert!(!tile.seen_proposer_preferences.is_local(1, &ANCHOR_ROOT));
+    let mut relays = Vec::new();
+    sink.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic: GossipTopic::ProposerPreferences, ssz, .. } = event {
+            relays.push(ssz.seq());
+        }
+    });
+    assert_eq!(relays, [msg.ssz.seq()]);
 
     bytes[76..].fill(0);
     let mut msg = gossip_msg(&mut gossip, &bytes, GossipTopic::ProposerPreferences);
@@ -291,6 +299,55 @@ fn local_duplicate_preferences_are_authenticated_before_registration() {
     msg.stream_id = LOCAL_GOSSIP_STREAM_ID;
     tile.handle_gossip(msg.ssz, msg, true, false, &mut adapter.producers);
     assert!(tile.seen_proposer_preferences.is_local(1, &ANCHOR_ROOT));
+    sink.consume(|event: PeerEvent, _| {
+        assert!(!matches!(event, PeerEvent::SendGossip { .. }), "duplicates are not relayed");
+    });
+}
+
+#[test]
+fn local_preferences_relay_only_after_successful_validation() {
+    let (mut tile, mut gossip, _rpc, _spine, mut adapter) = tile_with_producers(0);
+    seed_tile_with_keys(&mut tile, 4, 0);
+    tile.spec = Arc::new(SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() });
+    adapter.consume(|_: PeerEvent, _| {});
+
+    let mut bytes = [0u8; SIGNED_PROPOSER_PREFERENCES_SIZE];
+    bytes[..32].copy_from_slice(&ANCHOR_ROOT);
+    bytes[32..40].copy_from_slice(&1u64.to_le_bytes());
+    bytes[48..68].fill(7);
+    bytes[68..76].copy_from_slice(&60_000_000u64.to_le_bytes());
+    let mut invalid = gossip_msg(&mut gossip, &bytes, GossipTopic::ProposerPreferences);
+    invalid.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    tile.handle_gossip(invalid.ssz, invalid, true, false, &mut adapter.producers);
+    assert!(!tile.seen_proposer_preferences.contains(1, &ANCHOR_ROOT));
+    adapter.consume(|event: PeerEvent, _| {
+        assert!(
+            !matches!(event, PeerEvent::SendGossip { .. }),
+            "invalid preferences are not relayed"
+        );
+    });
+
+    let imm = tile.state.read_view(tile.last_applied).imm;
+    let domain = bls::compute_domain(
+        bls::DOMAIN_PROPOSER_PREFERENCES,
+        imm.gloas_fork_version,
+        &imm.genesis_validators_root,
+    );
+    let root = ProposerPreferencesView::hash_tree_root(bytes[..76].try_into().unwrap());
+    bytes[76..].copy_from_slice(&test_signing::sign(0, &bls::compute_signing_root(&root, &domain)));
+    let mut valid = gossip_msg(&mut gossip, &bytes, GossipTopic::ProposerPreferences);
+    valid.stream_id = LOCAL_GOSSIP_STREAM_ID;
+    tile.handle_gossip(valid.ssz, valid, true, false, &mut adapter.producers);
+    assert!(tile.seen_proposer_preferences.is_local(1, &ANCHOR_ROOT));
+    let mut relays = Vec::new();
+    adapter.consume(|event: PeerEvent, _| {
+        if let PeerEvent::SendGossip { topic, originator_stream_id, ssz, .. } = event {
+            assert_eq!(topic, GossipTopic::ProposerPreferences);
+            assert_eq!(originator_stream_id, LOCAL_GOSSIP_STREAM_ID);
+            relays.push(ssz.seq());
+        }
+    });
+    assert_eq!(relays, [valid.ssz.seq()]);
 }
 
 #[test]

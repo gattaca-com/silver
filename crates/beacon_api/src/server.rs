@@ -633,6 +633,7 @@ impl BeaconApi {
                 self.ctx.node_status.head_ptc = head_ptc;
                 self.ctx.node_status.build_on_full = build_on_full;
                 self.ctx.node_status.wall_slot = wall_slot;
+                self.ctx.proposer_preferences.on_slot(wall_slot);
                 self.ctx.node_status.finalized_epoch = StatusView::finalized_epoch(&ssz);
                 if head_change == HeadChange::None || !self.ctx.node_status.is_following() {
                     return;
@@ -720,6 +721,9 @@ impl BeaconApi {
             PeerEvent::SendGossip { topic: GossipTopic::BeaconAttestation(_), ssz, .. } => {
                 self.publish_relayed_attestation(ssz)
             }
+            PeerEvent::SendGossip { topic: GossipTopic::ProposerPreferences, ssz, .. } => {
+                self.publish_relayed_proposer_preferences(ssz)
+            }
             _ => {}
         }
     }
@@ -740,6 +744,35 @@ impl BeaconApi {
             },
             Err(e) => {
                 silver_log::warn!(?e, "relayed attestation unavailable to single_attestation")
+            }
+        }
+    }
+
+    fn publish_relayed_proposer_preferences(&mut self, ssz: TCacheRead) {
+        let preferences = self.reader.acquire(ssz);
+        match preferences.buffer() {
+            Ok((buf, _)) => match buf.try_into() {
+                Ok(buf) => {
+                    if self.ctx.proposer_preferences.record(buf, self.ctx.node_status.wall_slot) &&
+                        self.has_subscriber(Channel::ProposerPreferences)
+                    {
+                        self.publish(
+                            Channel::ProposerPreferences,
+                            "proposer_preferences",
+                            |json| {
+                                json.versioned_envelope("gloas", |json| {
+                                    json.signed_proposer_preferences(buf)
+                                })
+                            },
+                        );
+                    }
+                }
+                Err(_) => {
+                    silver_log::warn!(len = buf.len(), "relayed proposer preferences are misframed")
+                }
+            },
+            Err(e) => {
+                silver_log::warn!(?e, "relayed proposer preferences unavailable to beacon api")
             }
         }
     }
@@ -1236,9 +1269,9 @@ mod tests {
     use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
     use silver_common::{
         BlockLookup, ColumnOrigin, EngineNewPayloadResp, ForkName, GossipDomain, HeadRoots,
-        LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadFrame, PayloadResolution,
-        ProduceBlockFailure, ProducedBlock, ServedBlock, SszCache, StreamProtocol, TCache,
-        TCacheId, TCacheProducer, TProducer, body_root,
+        LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadFrame,
+        PayloadResolution, ProduceBlockFailure, ProducedBlock, ServedBlock, SszCache,
+        StreamProtocol, TCache, TCacheId, TCacheProducer, TProducer, body_root,
         ssz_view::{
             ATTESTATION_FIXED, BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
             DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN,
@@ -1253,9 +1286,10 @@ mod tests {
         beacon::{
             block_submission::tests::{blinded_block, gloas_block},
             operations::tests::entry,
+            proposer_preferences::tests as preferences,
         },
         submission::{Submission, tests as submission},
-        testing::submissions,
+        testing::{answer, dispatch_into, json, posting, request, submissions},
     };
 
     /// Longer than any test's 10 s spin deadline: the idle sweep never reaps.
@@ -2310,6 +2344,105 @@ mod tests {
                 serde_json::from_str(&entry(attester_index, committee_index)).unwrap();
             assert_eq!(event.data, posted);
         }
+    }
+
+    fn relayed_preferences(ssz: TCacheRead, local: bool) -> PeerEvent {
+        let mut event = relayed(GossipTopic::ProposerPreferences, ssz);
+        if let PeerEvent::SendGossip { domain, originator_stream_id, .. } = &mut event {
+            *domain = GossipDomain::new([0; 4], ForkName::Gloas);
+            if local {
+                *originator_stream_id = LOCAL_GOSSIP_STREAM_ID;
+            }
+        }
+        event
+    }
+
+    #[test]
+    fn relayed_preferences_are_cached_without_subscribers_and_emitted_once() {
+        for cache in [TCacheId::ControlProcessing, TCacheId::NetworkProcessing] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            server.api.ctx.spec.gloas_fork_epoch = 1;
+            server.api.handle_beacon_state_event(status(31, 0xab, false));
+            let mut gossip = TCache::producer(cache, 1 << 16);
+            server.api.reader = TCacheReader::new(TCacheTable::from_iter([gossip.cache_ref()]));
+            server.api.reader.open(cache, "api_test", TReadMode::Sliding).unwrap();
+
+            let bytes = preferences::signed_preferences(32, 0x11);
+            let early = gossip.write_with(bytes.len(), |out| out.copy_from_slice(&bytes)).unwrap();
+            server.api.handle_peer_event(relayed_preferences(early, false));
+            let get = request("GET", preferences::PATH);
+            assert_eq!(
+                json(&answer(&server.api.ctx, &get))["data"],
+                serde_json::json!([preferences::preferences_json(32, 0x11)])
+            );
+
+            let mut client = connect(tcp_addr(&server));
+            subscribe(&mut client, "proposer_preferences");
+            let reader = read_events_until_marker(client);
+            pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+            server.api.handle_peer_event(relayed_preferences(early, false));
+
+            let bytes = preferences::signed_preferences(33, 0x22);
+            let later = gossip.write_with(bytes.len(), |out| out.copy_from_slice(&bytes)).unwrap();
+            server.api.handle_peer_event(relayed_preferences(later, false));
+            server.api.handle_peer_event(relayed_preferences(later, false));
+            let malformed = gossip.write_with(1, |out| out[0] = 0).unwrap();
+            server.api.handle_peer_event(relayed_preferences(malformed, false));
+            server.api.handle_beacon_state_event(status(33, 0xab, false));
+            server.api.handle_peer_event(relayed_preferences(early, false));
+
+            let expected = preferences::preferences_json(33, 0x22);
+            assert_eq!(json(&answer(&server.api.ctx, &get))["data"], serde_json::json!([expected]));
+            finish_events(&mut server);
+            let events = serve(&mut server, reader, "preferences event and marker");
+            assert_eq!(events.len(), 1, "{cache:?}");
+            assert_eq!(events[0].topic, "proposer_preferences");
+            assert_eq!(events[0].data, serde_json::json!({ "version": "gloas", "data": expected }));
+
+            server.api.handle_beacon_state_event(status(34, 0xab, false));
+            assert_eq!(json(&answer(&server.api.ctx, &get))["data"], serde_json::json!([]));
+        }
+    }
+
+    #[test]
+    fn posted_preferences_become_queryable_and_emit_after_validation_relay() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.spec.gloas_fork_epoch = 1;
+        server.api.handle_sync_update(SyncUpdate::Following);
+        server.api.handle_beacon_state_event(status(31, 0xab, false));
+        let mut control = TCacheReader::new(*server.api.reader.table());
+        control
+            .open_forwarder(TileId::Control, TCacheId::BoundaryProcessing, TReadMode::Sliding)
+            .unwrap();
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "proposer_preferences");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let expected = preferences::preferences_json(32, 0x11);
+        let body = serde_json::json!([expected]).to_string();
+        let posted = ParsedRequest {
+            eth_consensus_version: Some("gloas"),
+            ..posting("/eth/v1/validator/proposer_preferences", &body)
+        };
+        let Outcome::AwaitingVerdicts(submission) =
+            dispatch_into(&server.api.ctx, &posted, &mut server.submissions).0
+        else {
+            panic!("preferences await validation")
+        };
+        let [entry] = submission.accepted.as_slice() else { panic!("one preference") };
+        assert_eq!(entry.topic, GossipTopic::ProposerPreferences);
+        let get = request("GET", preferences::PATH);
+        assert_eq!(json(&answer(&server.api.ctx, &get))["data"], serde_json::json!([]));
+
+        let signed = control.acquire(entry.ssz);
+        server.api.handle_peer_event(relayed_preferences(signed.to_read(), true));
+        assert_eq!(json(&answer(&server.api.ctx, &get))["data"], serde_json::json!([expected]));
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "local preferences event");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "proposer_preferences");
+        assert_eq!(events[0].data, serde_json::json!({ "version": "gloas", "data": expected }));
     }
 
     #[test]
