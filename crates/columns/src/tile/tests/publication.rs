@@ -17,6 +17,7 @@ use super::*;
 
 mod el;
 mod partial;
+mod payload;
 mod proposal;
 
 struct BlockBlob {

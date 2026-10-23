@@ -4,6 +4,7 @@ pub(crate) mod attestation_data;
 pub(crate) mod attester_duties;
 pub(crate) mod contribution_submission;
 pub(crate) mod duties;
+pub(crate) mod execution_payload_envelope;
 pub(crate) mod liveness;
 pub(crate) mod payload_attestation_data;
 pub(crate) mod produce_block;

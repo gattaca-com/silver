@@ -6,6 +6,24 @@ use flux::communication::cleanup_shmem;
 pub use synth_block::{SynthBid, SynthBlock};
 use tempfile::TempDir;
 
+use crate::{ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS, ssz_view::EXECUTION_PAYLOAD_FIXED_GLOAS};
+
+pub fn empty_signed_envelope(slot: u64, block_root: [u8; 32]) -> Vec<u8> {
+    let mut signed = vec![0; 100 + 80 + EXECUTION_PAYLOAD_FIXED_GLOAS];
+    signed[..4].copy_from_slice(&100u32.to_le_bytes());
+    let envelope = &mut signed[100..];
+    envelope[..4].copy_from_slice(&80u32.to_le_bytes());
+    envelope[4..8].copy_from_slice(&((80 + EXECUTION_PAYLOAD_FIXED_GLOAS) as u32).to_le_bytes());
+    envelope[16..48].copy_from_slice(&block_root);
+    let payload = &mut envelope[80..];
+    for at in [436, 504, 508, 528] {
+        payload[at..at + 4].copy_from_slice(&(EXECUTION_PAYLOAD_FIXED_GLOAS as u32).to_le_bytes());
+    }
+    payload[532..540].copy_from_slice(&slot.to_le_bytes());
+    signed.extend_from_slice(&EMPTY_EXECUTION_REQUESTS);
+    signed
+}
+
 /// Removing a Flux link file alone leaves its POSIX shared-memory object
 /// behind.
 pub struct ShmemDir(TempDir);

@@ -36,8 +36,8 @@ use crate::{
     routes::ROUTES,
     submission::{AcceptedEntry, BuilderForward, SubmissionFailure, failure_message},
     validator::{
-        aggregate_attestation::AggregateRequest, produce_block::ProduceBlockRequest,
-        sync_contribution::SyncCommitteeContributionRequest,
+        aggregate_attestation::AggregateRequest, execution_payload_envelope::EnvelopeRequest,
+        produce_block::ProduceBlockRequest, sync_contribution::SyncCommitteeContributionRequest,
     },
 };
 
@@ -92,6 +92,7 @@ enum Pending {
     Aggregate { request_id: u64, request: AggregateRequest },
     Contribution { request_id: u64, request: SyncCommitteeContributionRequest },
     ProducedBlock { request_id: u64, request: Box<ProduceBlockRequest> },
+    Envelope { request_id: u64, request: EnvelopeRequest },
     Submission(PendingSubmission),
     BlindedBlockLock { request_id: u64, ssz: TCacheRead },
     SidecarResponse { request_id: u64, call_path: SidecarCall },
@@ -104,6 +105,8 @@ struct PendingSubmission {
     first_id: u64,
     body_len: usize,
     unanswered: usize,
+    broadcast_only: bool,
+    awaits_envelope_validation: bool,
     failures: Vec<SubmissionFailure>,
     forward: Option<BuilderForward>,
 }
@@ -127,13 +130,17 @@ impl PendingSubmission {
         {
             self.failures.push(SubmissionFailure { body_index, message: failure_message(failure) });
         }
-        self.unanswered == 0
+        self.settled()
+    }
+
+    fn settled(&self) -> bool {
+        self.unanswered == 0 && (!self.awaits_envelope_validation || !self.failures.is_empty())
     }
 
     /// Returns the builder forward of a submission published whole.
     fn respond(&mut self, resp: &mut Response<'_>) -> Option<BuilderForward> {
         if self.failures.is_empty() {
-            resp.ok();
+            resp.status_only(if self.broadcast_only { 202 } else { 200 });
             self.forward.take()
         } else {
             resp.indexed_failures(&self.failures);
@@ -167,16 +174,30 @@ impl Pending {
                 emit(request.state_request(first_id));
                 (Self::ProducedBlock { request_id: first_id, request: Box::new(request) }, 1)
             }
+            Outcome::AwaitingEnvelope(request) => {
+                emit(request.state_request(first_id));
+                (Self::Envelope { request_id: first_id, request }, 1)
+            }
             Outcome::AwaitingVerdicts(submission) => {
                 for &AcceptedEntry { body_index, topic, ssz } in &submission.accepted {
                     let request_id = first_id + body_index as u64;
-                    emit(BeaconApiRequest::LocalGossip { request_id, topic, ssz });
+                    emit(match submission.envelope {
+                        Some(publication) => BeaconApiRequest::PublishPayloadEnvelope {
+                            request_id,
+                            ssz,
+                            blob_data_included: publication.blob_data_included,
+                            validation: publication.validation,
+                        },
+                        None => BeaconApiRequest::LocalGossip { request_id, topic, ssz },
+                    });
                 }
                 let body_len = submission.body_len();
                 let pending = PendingSubmission {
                     first_id,
                     body_len,
                     unanswered: submission.accepted.len(),
+                    broadcast_only: false,
+                    awaits_envelope_validation: submission.envelope.is_some(),
                     failures: submission.failures,
                     forward: submission.forward,
                 };
@@ -201,6 +222,7 @@ impl Pending {
             Self::Aggregate { request_id: awaited, .. } |
             Self::Contribution { request_id: awaited, .. } |
             Self::ProducedBlock { request_id: awaited, .. } |
+            Self::Envelope { request_id: awaited, .. } |
             Self::BlindedBlockLock { request_id: awaited, .. } |
             Self::SidecarResponse { request_id: awaited, .. } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
@@ -570,7 +592,7 @@ impl BeaconApi {
         self.reader.declare(TCacheId::ControlProcessing, &forwarders);
         self.reader.declare(TCacheId::NetworkProcessing, &forwarders);
         self.reader.declare(TCacheId::ControlSlot, &[TileId::Columns]);
-        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::BeaconState]);
+        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::Control, TileId::BeaconState]);
         Ok(())
     }
 
@@ -918,6 +940,13 @@ impl BeaconApi {
                 true
             }
             (
+                BeaconApiResponse::ExecutionPayloadEnvelope { envelope, .. },
+                Pending::Envelope { request, .. },
+            ) => {
+                request.respond(&mut resp, envelope, reader, &ctx.spec);
+                true
+            }
+            (
                 BeaconApiResponse::LocalGossipResponse { response, .. },
                 Pending::BlindedBlockLock { .. },
             ) => {
@@ -928,6 +957,18 @@ impl BeaconApi {
                     }
                 }
                 true
+            }
+            (
+                BeaconApiResponse::PayloadEnvelopeValidation { consensus_valid, .. },
+                Pending::Submission(pending),
+            ) => {
+                pending.broadcast_only = !consensus_valid;
+                pending.awaits_envelope_validation = false;
+                let settled = pending.settled();
+                if settled {
+                    forward = pending.respond(&mut resp);
+                }
+                settled
             }
             (
                 BeaconApiResponse::LocalGossipResponse { response, .. },
@@ -1203,6 +1244,7 @@ mod tests {
             DATA_COLUMN_SIDECAR_GLOAS_MIN, DATA_COLUMN_SIDECAR_MIN, SIGNED_BEACON_BLOCK_MIN,
             SINGLE_ATT_SIZE, STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE,
         },
+        test_util::empty_signed_envelope,
     };
     use silver_httpcore::Readiness;
 
@@ -2208,6 +2250,33 @@ mod tests {
     }
 
     #[test]
+    fn local_gloas_block_relay_reads_control_forwarded_boundary_cache() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.spec.gloas_fork_epoch = 0;
+        let mut control = TCacheReader::new(*server.api.reader.table());
+        control
+            .open_forwarder(TileId::Control, TCacheId::BoundaryProcessing, TReadMode::Sliding)
+            .unwrap();
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "block_gossip");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let bytes = gloas_block();
+        let root = block_root(&bytes, true);
+        let ssz = server.submissions.write_with(bytes.len(), |out| out.copy_from_slice(&bytes));
+        let block = control.acquire(ssz.unwrap());
+        server.api.handle_peer_event(relayed(GossipTopic::BeaconBlock, block.to_read()));
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "local block gossip event");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "block_gossip");
+        assert_eq!(events[0].data["slot"], (submission::SLOT + 1).to_string());
+        assert_eq!(events[0].data["block"], format!("0x{}", hex::encode(root)));
+    }
+
+    #[test]
     fn relayed_attestations_render_as_the_posted_json() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
@@ -2550,10 +2619,12 @@ mod tests {
     fn request_id(request: &BeaconApiRequest) -> u64 {
         match request {
             BeaconApiRequest::Block { request_id, .. } |
+            BeaconApiRequest::PublishPayloadEnvelope { request_id, .. } |
             BeaconApiRequest::LocalGossip { request_id, .. } |
             BeaconApiRequest::AggregateAttestation { request_id, .. } |
             BeaconApiRequest::SyncCommitteeContribution { request_id, .. } |
             BeaconApiRequest::ProduceBlock { request_id, .. } |
+            BeaconApiRequest::ExecutionPayloadEnvelope { request_id, .. } |
             BeaconApiRequest::LockBlindedBlock { request_id, .. } => *request_id,
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
             BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
@@ -2778,7 +2849,12 @@ mod tests {
         let failures = vec![SubmissionFailure { body_index: 2, message: "refused" }];
         let mut ids = Vec::new();
         let (_, ids_used) = Pending::defer(
-            Outcome::AwaitingVerdicts(Submission { accepted, failures, forward: None }),
+            Outcome::AwaitingVerdicts(Submission {
+                accepted,
+                failures,
+                forward: None,
+                envelope: None,
+            }),
             10,
             &mut |request| ids.push(request_id(&request)),
         );
@@ -3027,6 +3103,7 @@ mod tests {
                 header,
                 payload_at: b"up to the payload|".len() as u32,
                 payload: Some(payload.unwrap()),
+                envelope_header: None,
                 execution_payload_value,
                 consensus_block_value,
                 builder_entry: None,
@@ -3041,6 +3118,139 @@ mod tests {
         let spliced =
             [b"up to the payload|payload|bls changes".as_slice(), &after_payload].concat();
         assert_eq!(body(&response), spliced, "the payload goes before the bls changes");
+    }
+
+    #[test]
+    fn gloas_include_payload_selects_contents_or_the_bare_block() {
+        for include_payload in [false, true] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            server.api.ctx = submission::ctx();
+            server.api.ctx.spec =
+                SpecConfig { fulu_fork_epoch: 0, gloas_fork_epoch: 0, ..SpecConfig::mainnet() };
+            let mut client = connect(tcp_addr(&server));
+            let slot = submission::SLOT + 1;
+            let config =
+                [&0u64.to_le_bytes()[..], &100u64.to_le_bytes(), &20u32.to_le_bytes()].concat();
+            write!(client, "POST /eth/v4/validator/blocks/{slot}?randao_reveal=0x{}&include_payload={include_payload} HTTP/1.1\r\nHost: localhost\r\nAccept: application/octet-stream\r\nContent-Type: application/octet-stream\r\nEth-Consensus-Version: gloas\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", "11".repeat(96), config.len()).unwrap();
+            client.write_all(&config).unwrap();
+            let request_id = request_id(&deferred_request(&mut server));
+            let block = b"beacon block";
+            let payload = b"execution payload";
+            let requests = b"execution requests";
+            let proofs = vec![0x44; PayloadFrame::CELL_PROOFS_PER_BLOB_LEN];
+            let blobs = vec![0x55; BYTES_PER_BLOB];
+            let mut frame = vec![0; PayloadFrame::HEADER_LEN];
+            PayloadFrame::write_header(
+                &mut frame,
+                payload.len(),
+                requests.len(),
+                1,
+                false,
+                &[0; 32],
+            );
+            for part in [&payload[..], &[0x33; 48], requests, &proofs, &blobs] {
+                frame.extend_from_slice(part);
+            }
+            let envelope_header =
+                PayloadFrame::parse(&frame).unwrap().self_build_envelope_header([7; 32], [8; 32]);
+            let frame = server
+                .submissions
+                .write_with(frame.len(), |out| out.copy_from_slice(&frame))
+                .unwrap();
+            let header = server.serve_bytes(block);
+            server.answer(BeaconApiResponse::ProducedBlock {
+                request_id,
+                block: Ok(ProducedBlock {
+                    header,
+                    payload_at: block.len() as u32,
+                    payload: Some(frame),
+                    envelope_header: Some(envelope_header),
+                    execution_payload_value: [0; 32],
+                    consensus_block_value: [0; 32],
+                    builder_entry: None,
+                }),
+            });
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = serve(&mut server, reader, "Gloas block response");
+            let text = String::from_utf8_lossy(&response);
+            assert!(text.starts_with("HTTP/1.1 200 OK"));
+            assert!(
+                text.contains(&format!("Eth-Execution-Payload-Included: {include_payload}\r\n"))
+            );
+            assert!(!text.contains("Eth-Execution-Payload-Blinded"));
+            assert!(!text.contains("Eth-Builder-Url"));
+            if !include_payload {
+                assert_eq!(body(&response), block);
+                continue;
+            }
+            let body = body(&response);
+            let offsets: Vec<_> = body[..16]
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+                .collect();
+            assert_eq!(offsets[0], 16);
+            assert_eq!(&body[offsets[0]..offsets[1]], block);
+            assert_eq!(
+                &body[offsets[1]..offsets[2]],
+                [&envelope_header[..], payload, requests].concat()
+            );
+            assert_eq!(&body[offsets[2]..offsets[3]], proofs);
+            assert_eq!(&body[offsets[3]..], blobs);
+        }
+    }
+
+    #[test]
+    fn envelope_get_serves_the_cached_unsigned_envelope_or_404() {
+        use silver_common::ProducedEnvelope;
+
+        for present in [true, false] {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            server.api.ctx.spec.gloas_fork_epoch = 0;
+            let client = connect(tcp_addr(&server));
+            get(
+                &client,
+                &format!("/eth/v1/validator/execution_payload_envelopes/42/{}", root_hex(7)),
+            );
+            let request = deferred_request(&mut server);
+            let BeaconApiRequest::ExecutionPayloadEnvelope { request_id, slot, beacon_block_root } =
+                request
+            else {
+                panic!("envelope request");
+            };
+            assert_eq!((slot, beacon_block_root), (42, [7; 32]));
+            let payload = b"payload";
+            let requests = b"requests";
+            let mut frame = vec![0; PayloadFrame::HEADER_LEN];
+            PayloadFrame::write_header(
+                &mut frame,
+                payload.len(),
+                requests.len(),
+                0,
+                false,
+                &[0; 32],
+            );
+            frame.extend_from_slice(payload);
+            frame.extend_from_slice(requests);
+            let header =
+                PayloadFrame::parse(&frame).unwrap().self_build_envelope_header([7; 32], [8; 32]);
+            let frame = server
+                .submissions
+                .write_with(frame.len(), |out| out.copy_from_slice(&frame))
+                .unwrap();
+            let envelope = present.then_some(ProducedEnvelope { header, payload: frame });
+            server.answer(BeaconApiResponse::ExecutionPayloadEnvelope { request_id, envelope });
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = serve(&mut server, reader, "cached envelope response");
+            if present {
+                assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+                assert!(
+                    String::from_utf8_lossy(&response).contains("Eth-Consensus-Version: gloas\r\n")
+                );
+                assert_eq!(body(&response), [&header[..], payload, requests].concat());
+            } else {
+                assert!(response.starts_with(b"HTTP/1.1 404 Not Found"));
+            }
+        }
     }
 
     /// A block without a payload is the whole SSZ block: blinded on Fulu, a
@@ -3069,6 +3279,7 @@ mod tests {
                     header,
                     payload_at: beacon_block.len() as u32,
                     payload: None,
+                    envelope_header: None,
                     execution_payload_value,
                     consensus_block_value,
                     builder_entry: None,
@@ -3249,5 +3460,51 @@ mod tests {
         let expected = [SSE_HEAD, &block_frame(3, &[0x33; 32])].concat();
         let got = serve(&mut server, read_exactly(client, expected.len()), "only the stream");
         assert_same_bytes(&got, &expected);
+    }
+    #[test]
+    fn payload_publication_waits_for_validation_and_broadcast_in_either_order() {
+        for (consensus_valid, validation_first) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let mut server = server_with(64, LONG_TIMEOUT);
+            server.api.ctx = submission::ctx();
+            server.api.ctx.spec.gloas_fork_epoch = 0;
+            let signed = empty_signed_envelope(submission::SLOT, [3; 32]);
+            let mut client = connect(tcp_addr(&server));
+            write!(
+                client,
+                "POST /eth/v1/beacon/execution_payload_envelopes HTTP/1.1\r\nHost: x\r\n\
+                Content-Type: application/octet-stream\r\nEth-Consensus-Version: gloas\r\n\
+                Eth-Blob-Data-Included: false\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                signed.len()
+            )
+            .unwrap();
+            client.write_all(&signed).unwrap();
+            let BeaconApiRequest::PublishPayloadEnvelope {
+                request_id,
+                ssz,
+                blob_data_included,
+                ..
+            } = deferred_request(&mut server)
+            else {
+                panic!("await envelope validation")
+            };
+            assert!(!blob_data_included);
+            assert_eq!(server.submissions.read_buffer(ssz).unwrap(), signed);
+            let validation =
+                BeaconApiResponse::PayloadEnvelopeValidation { request_id, consensus_valid };
+            let broadcast = BeaconApiResponse::LocalGossipResponse { request_id, response: Ok(()) };
+            let responses =
+                if validation_first { [validation, broadcast] } else { [broadcast, validation] };
+            server.answer(responses[0]);
+            assert!(
+                server.api.connections.values().any(|connection| connection.awaits(request_id))
+            );
+            server.answer(responses[1]);
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = serve(&mut server, reader, "payload publication response");
+            let status = if consensus_valid { "200 OK" } else { "202 Accepted" };
+            assert!(response.starts_with(format!("HTTP/1.1 {status}\r\n").as_bytes()));
+        }
     }
 }

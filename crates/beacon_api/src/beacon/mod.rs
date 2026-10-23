@@ -3,6 +3,7 @@ pub(crate) mod blocks;
 pub(crate) mod committees;
 pub(crate) mod operations;
 pub(crate) mod payload_attestations;
+pub(crate) mod payload_submission;
 pub(crate) mod pools;
 pub(crate) mod states;
 pub(crate) mod sync_committees;

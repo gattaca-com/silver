@@ -16,11 +16,14 @@ pub use builders::{
 };
 pub use committee::process_ptc_window;
 pub(crate) use committee::{fill_epoch_ptc, get_ptc};
+pub(crate) use envelope::payload_withdrawals_match_expected;
 pub use envelope::{
     envelope_execution_requests, envelope_withdrawals_match_expected,
     verify_execution_payload_envelope,
 };
+pub(crate) use parent_payload::apply_parent_execution_payload;
 pub use parent_payload::process_parent_execution_payload;
 pub(crate) use payload_attestation::hash_payload_attestation_data;
 pub use payload_attestation::{collect_sigs_payload_attestations, process_payload_attestations};
+pub(crate) use withdrawals::get_expected_withdrawals as get_expected_withdrawals_gloas;
 pub use withdrawals::process_withdrawals as process_withdrawals_gloas;

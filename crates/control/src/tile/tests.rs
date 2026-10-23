@@ -2,10 +2,12 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, GossipTraffic, GossipTrafficBytes,
-    HeadChange, IpBytes, Keypair, MessageId, Nanos, P2pStreamId, PayloadResolution, PeerId,
-    SszCache, StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
-    TCacheTable, TProducer, TReadMode, test_util::ShmemDir,
+    BeaconApiResponse, ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, GossipTraffic,
+    GossipTrafficBytes, HeadChange, IpBytes, Keypair, LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos,
+    NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
+    ssz_view::{PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE},
+    test_util::{ShmemDir, empty_signed_envelope},
 };
 use silver_peer::SyncingConfig;
 
@@ -23,6 +25,7 @@ struct GossipPublications {
     observer: SpineAdapter<SilverSpine>,
     incoming: TProducer,
     rpc: TProducer,
+    boundary: TProducer,
     payload: TCacheRead,
     outbound: TCacheReader,
     _spine: Box<SilverSpine>,
@@ -69,10 +72,12 @@ impl GossipPublications {
                 .unwrap();
         let boundary = TCache::producer(TCacheId::BoundaryProcessing, 1 << 12);
         let proposed = TCache::producer(TCacheId::ProposedColumns, 1 << 12);
+        let state = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 16);
         // Plays the network: the handler's mcache pins forward to it.
         outbound.declare(TCacheId::ControlGossip, &[TileId::Control]);
         let tcaches = TCacheTable::from_iter(
-            [&incoming, &cluster_in, &rpc, &protobuf, &boundary, &proposed].map(|p| p.cache_ref()),
+            [&incoming, &cluster_in, &rpc, &protobuf, &boundary, &proposed, &state]
+                .map(|p| p.cache_ref()),
         );
         let mut controller = Controller::new(
             PeerManager::new(
@@ -114,6 +119,7 @@ impl GossipPublications {
             observer,
             incoming,
             rpc,
+            boundary,
             payload,
             outbound,
             _spine: spine,
@@ -187,6 +193,56 @@ fn write_bytes(producer: &mut TProducer, bytes: &[u8]) -> TCacheRead {
     reservation.write_all(bytes).unwrap();
     reservation.flush().unwrap();
     reservation.read()
+}
+
+#[test]
+fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
+    for (topic, size) in [
+        (GossipTopic::ProposerPreferences, SIGNED_PROPOSER_PREFERENCES_SIZE),
+        (GossipTopic::PayloadAttestationMessage, PAYLOAD_ATTESTATION_MESSAGE_SIZE),
+    ] {
+        for (len, expected) in [
+            (size, Ok(())),
+            (size, Err(LocalGossipFailure::Invalid)),
+            (size - 1, Err(LocalGossipFailure::Internal)),
+            (size + 1, Err(LocalGossipFailure::Internal)),
+        ] {
+            let mut capture = GossipPublications::attach(topic, &[]);
+            capture.crank();
+            capture
+                .controller
+                .gossip_handler
+                .set_domains(GossipDomain::new([0; 4], ForkName::Gloas), None);
+            capture.observer.consume(|_: NewGossipMsg, _| {});
+            capture.observer.consume(|_: BeaconApiResponse, _| {});
+            let ssz = write_bytes(&mut capture.boundary, &vec![0; len]);
+            capture.observer.produce(BeaconApiRequest::LocalGossip { request_id: 7, topic, ssz });
+            capture.crank();
+            let mut messages = Vec::new();
+            capture.observer.consume(|msg: NewGossipMsg, _| messages.push(msg));
+            if len == size {
+                let [msg] = messages[..] else { panic!("one local gossip message") };
+                assert_eq!(msg.topic, topic);
+                assert_eq!(msg.stream_id, LOCAL_GOSSIP_STREAM_ID);
+                assert_eq!(msg.ssz, ssz);
+                capture.observer.consume(|_: BeaconApiResponse, _| panic!("validation is pending"));
+                capture.observer.produce(BeaconStateEvent::LocalGossipVerdict {
+                    hash: msg.msg_hash,
+                    result: expected,
+                });
+                capture.crank();
+            } else {
+                assert!(messages.is_empty());
+            }
+            let mut responses = Vec::new();
+            capture.observer.consume(|response: BeaconApiResponse, _| {
+                if let BeaconApiResponse::LocalGossipResponse { request_id, response } = response {
+                    responses.push((request_id, response));
+                }
+            });
+            assert_eq!(responses, [(7, expected)], "{topic:?}, len={len}");
+        }
+    }
 }
 
 /// A published payload counts toward its topic, IHAVE, IWANT and IDONTWANT
@@ -545,4 +601,38 @@ fn assert_no_syncing_publication(origin: ColumnOrigin) {
     capture.persist_column(origin, &bytes);
     capture.crank();
     assert!(capture.sent().is_empty(), "peers ahead of us already hold the column");
+}
+
+#[test]
+fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
+    let topic = GossipTopic::ExecutionPayload;
+    let mut capture = GossipPublications::attach(topic, &[]);
+    capture.crank();
+    capture.controller.gossip_handler.set_domains(GossipDomain::new([0; 4], ForkName::Gloas), None);
+    capture.observer.consume(|_: NewGossipMsg, _| {});
+    capture.observer.consume(|_: BeaconApiResponse, _| {});
+    let bytes = empty_signed_envelope(1, [3; 32]);
+    let ssz = write_bytes(&mut capture.rpc, &bytes);
+    capture.observer.produce(BeaconApiRequest::LocalGossip { request_id: 7, topic, ssz });
+    capture.crank();
+    let mut messages = Vec::new();
+    capture.observer.consume(|message: NewGossipMsg, _| messages.push(message));
+    let [message] = messages[..] else { panic!("one envelope") };
+    assert_eq!(message.topic, topic);
+    assert_eq!(message.stream_id, LOCAL_GOSSIP_STREAM_ID);
+    assert_eq!(message.ssz.id(), TCacheId::ControlProcessing);
+    assert_ne!(message.ssz, ssz);
+    capture.observer.consume(|_: BeaconApiResponse, _| panic!("validation is pending"));
+    capture
+        .observer
+        .produce(BeaconStateEvent::LocalGossipVerdict { hash: message.msg_hash, result: Ok(()) });
+    capture.crank();
+    let mut completed = false;
+    capture.observer.consume(|response: BeaconApiResponse, _| {
+        if let BeaconApiResponse::LocalGossipResponse { request_id: 7, response: Ok(()) } = response
+        {
+            completed = true;
+        }
+    });
+    assert!(completed);
 }

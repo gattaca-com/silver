@@ -32,6 +32,7 @@ target/
 !crates/e2e/data/**/*.ssz
 !crates/engine/testdata/*.ssz
 # kurtosis generated files
+kurtosis/.cache/
 kurtosis/silver-devnet.toml
 kurtosis/silver-gloas.toml
 kurtosis/silver-*-network/

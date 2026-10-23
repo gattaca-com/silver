@@ -73,11 +73,9 @@ const _: () = assert!(
 );
 
 /// The commit stays first: telemetry reads the first field as the commit.
-const BUILD_INFO: &str = build_info::format!(
-    "{} · v{} · {}",
-    $.version_control?.git()?.commit_short_id,
-    $.crate_info.version,
-    $.timestamp
+const BUILD_INFO: &str = concat!(
+    env!("SILVER_BUILD_COMMIT"),
+    build_info::format!(" · v{} · {}", $.crate_info.version, $.timestamp)
 );
 
 fn publish_build_info() -> io::Result<()> {

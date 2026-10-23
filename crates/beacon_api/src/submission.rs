@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use silver_common::{GossipTopic, LocalGossipFailure, TCacheRead};
+use silver_common::{BroadcastValidation, GossipTopic, LocalGossipFailure, TCacheRead};
 
 use crate::{
     ctx::ApiCtx,
@@ -90,6 +90,13 @@ pub(crate) struct Submission {
     pub(crate) accepted: Vec<AcceptedEntry>,
     pub(crate) failures: Vec<SubmissionFailure>,
     pub(crate) forward: Option<BuilderForward>,
+    pub(crate) envelope: Option<EnvelopePublication>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EnvelopePublication {
+    pub(crate) blob_data_included: bool,
+    pub(crate) validation: BroadcastValidation,
 }
 
 /// A block for the builder whose bid it commits to, sent once every verdict
