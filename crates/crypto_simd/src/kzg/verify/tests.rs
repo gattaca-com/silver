@@ -2,7 +2,7 @@ use blst::{blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_generator, blst_p1_mul
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::Lincomb;
+use super::CurveWork;
 #[cfg(target_arch = "x86_64")]
 use super::pairing_points_in_lanes;
 #[cfg(target_arch = "x86_64")]
@@ -93,8 +93,8 @@ fn pairing_points_match_blst() {
 #[test]
 fn pairing_check_matches_blst() {
     #[cfg(target_arch = "x86_64")]
-    let lanes = kernels_run().then(Lincomb::new);
-    let portable = Lincomb::portable();
+    let lanes = kernels_run().then(CurveWork::new);
+    let portable = CurveWork::portable();
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
     let mut held = 0;
     for (case, sums) in cases(&mut rng).iter().enumerate() {

@@ -51,7 +51,7 @@ pub struct CellBatchVerifier {
     column: Vec<blst_fr>,
     coefficients: Vec<blst_fr>,
     interpolation: Vec<blst_fr>,
-    lincomb: Lincomb,
+    curve_work: CurveWork,
     #[cfg(target_arch = "x86_64")]
     kernel: Option<InterpolationKernel>,
 }
@@ -88,7 +88,7 @@ impl CellBatchVerifier {
             column: Vec::new(),
             coefficients: Vec::new(),
             interpolation: Vec::new(),
-            lincomb: Lincomb::new(),
+            curve_work: CurveWork::new(),
             #[cfg(target_arch = "x86_64")]
             kernel,
         }
@@ -101,7 +101,7 @@ impl CellBatchVerifier {
         Self {
             #[cfg(target_arch = "x86_64")]
             kernel: None,
-            lincomb: Lincomb::portable(),
+            curve_work: CurveWork::portable(),
             ..Self::new()
         }
     }
@@ -206,7 +206,7 @@ impl CellBatchVerifier {
             self.r_powers.push(power);
             power = fr_mul(&power, r);
         }
-        let ll = self.lincomb.sum(&self.proof_points, &self.r_powers);
+        let ll = self.curve_work.sum(&self.proof_points, &self.r_powers);
 
         self.scalars.resize(0, FR_ZERO);
         self.scalars.resize(self.commitments.unique.len(), FR_ZERO);
@@ -214,7 +214,7 @@ impl CellBatchVerifier {
             let i = self.commitments.index_of_cell[k];
             self.scalars[i] = fr_add(&self.scalars[i], &self.r_powers[k]);
         }
-        let rlc = self.lincomb.sum(&self.commitment_points, &self.scalars);
+        let rlc = self.curve_work.sum(&self.commitment_points, &self.scalars);
 
         let rli = self.interpolation_commitment(cell_indices, cells);
 
@@ -223,9 +223,9 @@ impl CellBatchVerifier {
             let shift = &self.cosets.shift_pow_cell[cell_indices[k] as usize];
             self.scalars.push(fr_mul(&self.r_powers[k], shift));
         }
-        let rlp = self.lincomb.sum(&self.proof_points, &self.scalars);
+        let rlp = self.curve_work.sum(&self.proof_points, &self.scalars);
 
-        self.lincomb.pairing_check(&ll, &rlc, &rli, &rlp)
+        self.curve_work.pairing_check(&ll, &rlc, &rli, &rlp)
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
@@ -248,7 +248,7 @@ impl CellBatchVerifier {
             unsafe {
                 kernel.interpolate(cells, cell_indices, &self.r_powers, &mut self.interpolation)
             };
-            return self.lincomb.sum(&self.setup.g1_monomial, &self.interpolation);
+            return self.curve_work.sum(&self.setup.g1_monomial, &self.interpolation);
         }
         self.columns.resize(0, FR_ZERO);
         self.columns.resize(CELLS_PER_EXT_BLOB * FIELD_ELEMENTS_PER_CELL, FR_ZERO);
@@ -290,13 +290,13 @@ impl CellBatchVerifier {
                 factor = fr_mul(&factor, &self.cosets.shift_inverse[c]);
             }
         }
-        self.lincomb.sum(&self.setup.g1_monomial, &self.interpolation)
+        self.curve_work.sum(&self.setup.g1_monomial, &self.interpolation)
     }
 }
 
 /// The verifier's curve work: sums Σ scalars[i]·points[i], and the pairing
 /// check on two points from four of them. Buffers are kept between calls.
-enum Lincomb {
+enum CurveWork {
     /// On `Msm8`, `Fp8` and `Fp12` lanes, where IFMA runs.
     #[cfg(target_arch = "x86_64")]
     Lanes {
@@ -310,7 +310,7 @@ enum Lincomb {
     },
 }
 
-impl Lincomb {
+impl CurveWork {
     fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         if ifma_available() {
