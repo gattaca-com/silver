@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Arithmetic
+import LeanBlsSimd.Kzg.Fr.Conversion
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -102,5 +102,21 @@ theorem ordinary_one_is_not_montgomery_one :
   have hvalue := congrArg (fun z : blst.blst_fr => value z.l) (Result.ok.inj h)
   have hne : value (LeanBlsSimd.Kzg.frEncode (1*1)).l ≠ value one := by decide +kernel
   exact hne hvalue
+
+theorem ordinary_words_one :
+    fr.fr_to_words (LeanBlsSimd.Kzg.frEncode (EthLib.Cryptography.Bls.Fr.ofNat 1)) = ok one :=
+  fr_to_words_refines _
+
+theorem wrong_r_squared_rejected :
+    fr.montgomery_product one one ≠ ok (LeanBlsSimd.Kzg.frEncode 1).l := by
+  intro h
+  obtain ⟨out,hr,_,hfield⟩ := montgomery_field_refines one one (by decide +kernel)
+  have heq := Result.ok.inj (hr.symm.trans h)
+  subst out
+  have hne : (value (LeanBlsSimd.Kzg.frEncode 1).l : ZMod EthLib.Cryptography.Bls.Fr.modulus)*
+      (2^256 : ZMod EthLib.Cryptography.Bls.Fr.modulus) ≠
+      (value one : ZMod EthLib.Cryptography.Bls.Fr.modulus)*(value one : ZMod EthLib.Cryptography.Bls.Fr.modulus) := by
+    decide +kernel
+  exact hne hfield
 
 end LeanBlsSimd.Controls.FrScalar
