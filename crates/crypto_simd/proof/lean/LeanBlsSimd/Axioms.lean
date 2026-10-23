@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Divide
+import LeanBlsSimd.Kzg.Fr.Montgomery
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.PairingEquations

@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Divide
+import LeanBlsSimd.Kzg.Fr.Montgomery
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -76,6 +76,22 @@ theorem zeroed_reduction_rejected :
     EthLib.Cryptography.Bls.Fr.modulus,UScalarTy.numBits] at hvalue hcancel hm
   change (0 : ℤ) = _ at hvalue
   obtain ⟨k,hk⟩ := hcancel
+  omega
+
+theorem full_width_second_accepted :
+    ∃ out, fr.montgomery_product one allMaximum = ok out ∧
+      value out < EthLib.Cryptography.Bls.Fr.modulus := by
+  obtain ⟨out,hr,hbound,_⟩ := montgomery_product_refines one allMaximum (by decide +kernel)
+  exact ⟨out,hr,hbound⟩
+
+theorem zeroed_montgomery_rejected :
+    fr.montgomery_product one one ≠ ok (Array.repeat 4#usize 0#u64) := by
+  intro h
+  obtain ⟨out,hr,_,k,hvalue⟩ := montgomery_product_refines one one (by decide +kernel)
+  have heq := Result.ok.inj (hr.symm.trans h)
+  subst out
+  change (0 : ℤ)*(radix : ℤ)^4 = 1*1+k*EthLib.Cryptography.Bls.Fr.modulus at hvalue
+  norm_num [EthLib.Cryptography.Bls.Fr.modulus] at hvalue
   omega
 
 end LeanBlsSimd.Controls.FrScalar
