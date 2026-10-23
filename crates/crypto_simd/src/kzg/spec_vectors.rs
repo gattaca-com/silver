@@ -9,8 +9,8 @@ use crate::{
     bls::COMPRESSED_LEN,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB,
-        CellBatchVerifier, CellExtender, blst_ops::fr_from_bytes, challenge::Preimage,
-        verify::Deduplicated,
+        CellBatchVerifier, CellExtender, SimdCellExtender, blst_ops::fr_from_bytes,
+        challenge::Preimage, verify::Deduplicated,
     },
 };
 
@@ -175,4 +175,29 @@ fn compute_cells_vectors() {
         }
     }
     assert!(unrepresentable < 4, "most vectors reach the extender: {unrepresentable} did not");
+}
+
+#[test]
+fn compute_cells_vectors_simd() {
+    let Some(mut extender) = SimdCellExtender::new() else {
+        assert!(
+            std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
+            "SILVER_REQUIRE_IFMA is set, but the IFMA path is off"
+        );
+        return;
+    };
+    let mut cells = Box::new([[0u8; BYTES_PER_CELL]; CELLS_PER_EXT_BLOB]);
+    for (name, data) in suite("compute_cells") {
+        let output = field(&data, "output");
+        let expected =
+            (output.trim() != "null").then(|| fixed::<BYTES_PER_CELL>(hex_items(output)).unwrap());
+        let Some(blob) = fixed::<BYTES_PER_BLOB>(hex_items(field(&data, "blob"))) else {
+            continue;
+        };
+        let accepted = extender.compute(&blob[0], &mut cells);
+        assert_eq!(accepted, expected.is_some(), "{name}");
+        if let Some(expected) = expected {
+            assert!(cells[..] == expected[..], "{name}");
+        }
+    }
 }

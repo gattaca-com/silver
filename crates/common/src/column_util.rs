@@ -18,7 +18,7 @@ use silver_common::{
         SidecarLayout, SignedBeaconBlockView,
     },
 };
-use silver_crypto_simd::kzg::{self, CellBatchVerifier, CellExtender};
+use silver_crypto_simd::kzg::{self, CellBatchVerifier, CellExtender, SimdCellExtender};
 
 /// EIP-4844 versioned-hash version byte (`VERSIONED_HASH_VERSION_KZG`).
 const VERSIONED_HASH_VERSION_KZG: u8 = 0x01;
@@ -381,6 +381,7 @@ const _: () = assert!(BYTES_PER_CELL == kzg::BYTES_PER_CELL);
 
 pub struct CellScratch {
     extender: CellExtender,
+    simd: Option<SimdCellExtender>,
     cells: Box<[[u8; BYTES_PER_CELL]; NUMBER_OF_COLUMNS]>,
 }
 
@@ -389,6 +390,7 @@ impl Default for CellScratch {
         let cells = vec![[0; BYTES_PER_CELL]; NUMBER_OF_COLUMNS].into_boxed_slice();
         Self {
             extender: CellExtender::new(),
+            simd: SimdCellExtender::new(),
             cells: cells.try_into().unwrap_or_else(|_| unreachable!()),
         }
     }
@@ -401,7 +403,11 @@ impl CellScratch {
         &mut self,
         blob: &[u8; BYTES_PER_BLOB],
     ) -> Option<&[[u8; BYTES_PER_CELL]; NUMBER_OF_COLUMNS]> {
-        self.extender.compute(blob, &mut self.cells).then_some(&*self.cells)
+        let accepted = match &mut self.simd {
+            Some(simd) => simd.compute(blob, &mut self.cells),
+            None => self.extender.compute(blob, &mut self.cells),
+        };
+        accepted.then_some(&*self.cells)
     }
 }
 
