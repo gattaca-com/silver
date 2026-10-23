@@ -8,6 +8,9 @@ Tests: python3 -m unittest discover -s .github/scripts -p crypto_simd_deps_chang
 The dependencies are every package reachable from silver_crypto_simd. Each
 resolved entry is compared whole, so a changed version, checksum or git
 revision counts. Cargo.lock does not mark dev-dependencies, so they count too.
+Exclude silver_crypto_simd's own entry: its version follows workspace
+releases, and the caller checks `crates/crypto_simd` by path. Compare path
+dependencies by their lockfile entries without reading their sources.
 An edge that matches no entry, or more than one, also prints `true`: an
 unparsed lockfile must never make the proof look irrelevant.
 """
@@ -58,7 +61,7 @@ def dependencies(path):
         if key not in seen:
             seen[key] = p
             todo.extend(resolve(e, packages) for e in p.get("dependencies", []))
-    return seen
+    return {key: p for key, p in seen.items() if p["name"] != ROOT}
 
 
 def changed(base_path, head_path):
@@ -89,12 +92,18 @@ def _lock(*packages):
     return "version = 4\n\n" + "\n\n".join(packages) + "\n"
 
 
-def _base_packages(blst_checksum="aa", rev="1111", unrelated="1.0.0"):
+def _base_packages(
+    blst_checksum="aa",
+    rev="1111",
+    unrelated="1.0.0",
+    root_version="0.1.0",
+    extra_deps=(),
+):
     return [
         _package(
             ROOT,
-            "0.1.0",
-            deps=["blst", f"foo 1.0.0 ({_GIT})", f"foo 1.0.0 ({_GIT}2)"],
+            root_version,
+            deps=["blst", f"foo 1.0.0 ({_GIT})", f"foo 1.0.0 ({_GIT}2)", *extra_deps],
         ),
         _package("blst", "0.3.16", _REGISTRY, blst_checksum, deps=["cc"]),
         _package("cc", "1.2.0", _REGISTRY, "cc"),
@@ -129,6 +138,24 @@ class TestChanged(unittest.TestCase):
     def test_git_revision_of_source_qualified_dependency_counts(self):
         head = _lock(*_base_packages(rev="2222"))
         self.assertTrue(self.check(_lock(*_base_packages()), head))
+
+    def test_root_version_is_ignored(self):
+        head = _lock(*_base_packages(root_version="0.1.1"))
+        self.assertFalse(self.check(_lock(*_base_packages()), head))
+
+    def test_new_dependency_counts(self):
+        head = _lock(*_base_packages(extra_deps=["tokio"]))
+        self.assertTrue(self.check(_lock(*_base_packages()), head))
+
+    def test_path_dependency_version_counts(self):
+        def packages(version):
+            return [
+                *_base_packages(root_version=version, extra_deps=["silver_common"]),
+                _package("silver_common", version),
+            ]
+
+        head = _lock(*packages("0.1.1"))
+        self.assertTrue(self.check(_lock(*packages("0.1.0")), head))
 
     def test_transitive_dependency_change_counts(self):
         packages = _base_packages()
