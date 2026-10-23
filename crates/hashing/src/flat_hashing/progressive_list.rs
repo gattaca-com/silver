@@ -15,6 +15,13 @@ pub struct ProgressiveListTree<C: TreeSpec> {
     pub(super) last_seg: u32,
 }
 
+#[cfg(feature = "multi-owner")]
+impl<C: TreeSpec> Clone for ProgressiveListTree<C> {
+    fn clone(&self) -> Self {
+        Self { store: self.store.clone(), last_seg: self.last_seg }
+    }
+}
+
 impl<C: TreeSpec> ProgressiveListTree<C> {
     pub(super) fn from_leaves(
         cap: usize,

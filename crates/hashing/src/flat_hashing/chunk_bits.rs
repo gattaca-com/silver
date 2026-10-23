@@ -5,6 +5,7 @@ use crate::flat_hashing::subtree::NodeRange;
 const WORD_BITS: usize = u64::BITS as usize;
 
 #[derive(Default)]
+#[cfg_attr(feature = "multi-owner", derive(Clone))]
 struct Words(Vec<u64>);
 
 impl Words {
@@ -44,6 +45,7 @@ impl DerefMut for Words {
 /// A set of leaf chunks in two levels. Draining and clearing visit only the
 /// touched words, and `any_in` over a wide range tests whole summary words.
 #[derive(Default)]
+#[cfg_attr(feature = "multi-owner", derive(Clone))]
 pub(super) struct ChunkBits {
     words: Words,
     /// Bit `i` is set iff `words[i] != 0`.

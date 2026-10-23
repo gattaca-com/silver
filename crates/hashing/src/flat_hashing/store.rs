@@ -25,6 +25,18 @@ impl<C: TreeSpec> Default for NodeStore<C> {
     }
 }
 
+#[cfg(feature = "multi-owner")]
+impl<C: TreeSpec> Clone for NodeStore<C> {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            count: self.count,
+            writes: self.writes.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<C: TreeSpec> NodeStore<C> {
     pub(super) fn with_leaves(
         format: TreeFormat,
@@ -125,6 +137,7 @@ impl<Alloc: PageAlloc> PageCommitter<'_, Alloc> {
         if let Some(parent) = parent &&
             !self.writes.touches(sub.chunks_under::<C>(at))
         {
+            self.alloc.reuse(parent);
             return parent;
         }
         // A subtree is all zero iff its root is the zero hash of its depth:
