@@ -20,6 +20,7 @@ pub struct ParsedRequest<'a> {
     pub content_type: Option<&'a str>,
     pub eth_consensus_version: Option<&'a str>,
     pub eth_builder_url: Option<&'a str>,
+    pub eth_blob_data_included: Option<&'a str>,
     pub version: u8,
     pub keep_alive: bool,
 }
@@ -95,6 +96,7 @@ impl<'a> ParsedRequest<'a> {
                 content_type: header("content-type").and_then(trimmed_utf8),
                 eth_consensus_version: header("eth-consensus-version").and_then(trimmed_utf8),
                 eth_builder_url: header("eth-builder-url").and_then(trimmed_utf8),
+                eth_blob_data_included: header("eth-blob-data-included").and_then(trimmed_utf8),
                 version,
                 keep_alive,
             },

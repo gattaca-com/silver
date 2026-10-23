@@ -42,11 +42,10 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
         graffiti,
         bid_policy,
         builder_config: None,
+        include_payload: true,
     }));
 }
 
-/// The block commits to a p2p bid; the local payload is not built yet, so
-/// `include_payload` changes nothing.
 pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !ctx.follows_chain(resp) {
         return;
@@ -60,9 +59,11 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
     if req.eth_consensus_version != Some(ctx.spec.fork_at_slot(slot).name()) {
         return resp.error(400, "Eth-Consensus-Version must name the slot's fork");
     }
-    if !matches!(req.query_value("include_payload").as_deref(), Some("true" | "false")) {
-        return resp.error(400, "include_payload is a required boolean query parameter");
-    }
+    let include_payload = match req.query_value("include_payload").as_deref() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => return resp.error(400, "include_payload is a required boolean query parameter"),
+    };
     let Some((randao_reveal, graffiti)) = proposal_query(req, resp) else {
         return;
     };
@@ -84,6 +85,7 @@ pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
         graffiti,
         bid_policy,
         builder_config,
+        include_payload,
     }));
 }
 
@@ -127,6 +129,7 @@ pub(crate) struct ProduceBlockRequest {
     bid_policy: BidPolicy,
     /// The SSZ `BuilderConfig`, when it names a builder.
     builder_config: Option<Box<[u8]>>,
+    include_payload: bool,
 }
 
 impl ProduceBlockRequest {
@@ -174,12 +177,15 @@ impl ProduceBlockRequest {
                 return resp.error(503, "the execution client built no payload");
             }
             Err(ProduceBlockFailure::NoAcceptableBid) => {
-                return resp.error(503, "no p2p bid qualifies and self-building is not supported");
+                return resp.error(503, "no acceptable builder bid or local payload is available");
             }
             Err(ProduceBlockFailure::Invalid | ProduceBlockFailure::Internal) => {
                 return resp.error(500, "the block could not be produced");
             }
         };
+        if spec.is_gloas_at_slot(self.slot) && !self.include_payload {
+            return self.respond_without_payload(resp, &block, reader, spec);
+        }
         let Some(payload) = block.payload else {
             return self.respond_without_payload(resp, &block, reader, spec);
         };
@@ -193,6 +199,37 @@ impl ProduceBlockRequest {
             silver_log::error!(slot = self.slot, "produced block's payload frame is misframed");
             return resp.error(500, "the block could not be read");
         };
+        if spec.is_gloas_at_slot(self.slot) {
+            let Some(envelope) = &block.envelope_header else {
+                return resp.error(500, "the local envelope is unavailable");
+            };
+            let envelope_at = 4 * 4 + head.len();
+            let proofs_at = envelope_at +
+                envelope.len() +
+                payload.execution_payload.len() +
+                payload.execution_requests.len();
+            let blobs_at = proofs_at + payload.cell_proofs.len();
+            let offsets = [16u32, envelope_at as u32, proofs_at as u32, blobs_at as u32]
+                .map(u32::to_le_bytes)
+                .concat();
+            let payload_value = wei_decimal(&block.execution_payload_value);
+            let block_value = wei_decimal(&block.consensus_block_value);
+            let headers = [
+                ("Eth-Consensus-Version", spec.fork_at_slot(self.slot).name()),
+                ("Eth-Execution-Payload-Included", "true"),
+                ("Eth-Execution-Payload-Value", payload_value.as_str()),
+                ("Eth-Consensus-Block-Value", block_value.as_str()),
+            ];
+            return resp.send(200, Some(SSZ_MEDIA_TYPE), &headers, &[
+                &offsets,
+                head,
+                envelope,
+                payload.execution_payload,
+                payload.execution_requests,
+                payload.cell_proofs,
+                payload.blobs,
+            ]);
+        }
         let Some((before_payload, bls_changes)) = head.split_at_checked(block.payload_at as usize)
         else {
             silver_log::error!(
@@ -313,6 +350,7 @@ mod tests {
                 graffiti: [0x22; 32],
                 bid_policy: BidPolicy::default(),
                 builder_config: None,
+                include_payload: true,
             })
         );
     }

@@ -128,6 +128,7 @@ impl DataColumnsTile {
         self.reader.open_forwarder(dc, TCacheId::ControlProcessing, TReadMode::Sliding)?;
         self.reader.open_forwarder(dc, TCacheId::NetworkProcessing, TReadMode::Sliding)?;
         self.reader.open_forwarder(dc, TCacheId::ControlGossip, TReadMode::Sliding)?;
+        self.reader.open_forwarder(dc, TCacheId::BeaconStateHandoff, TReadMode::Sliding)?;
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "dc_boundary_processing",
@@ -143,11 +144,17 @@ impl DataColumnsTile {
             "dc_persist_network_processing",
             TReadMode::Sliding,
         )?;
+        self.persist_reader.open(
+            TCacheId::BoundaryProcessing,
+            "dc_persist_boundary_processing",
+            TReadMode::Sliding,
+        )?;
         self.reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState]);
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState]);
-        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::Control]);
+        self.reader.declare(TCacheId::BoundaryProcessing, &[TileId::Control, TileId::BeaconState]);
         self.persist_reader.declare(TCacheId::ControlProcessing, &[TileId::BeaconState, dc]);
         self.persist_reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, dc]);
+        self.persist_reader.declare(TCacheId::BoundaryProcessing, &[TileId::BeaconState]);
         if let Some(cells) = &mut self.cells {
             cells.open_tcaches()?;
         }
@@ -789,6 +796,9 @@ impl DataColumnsTile {
     ) -> Option<[u8; 92]> {
         let mut latest_status_event: Option<[u8; 92]> = None;
         match event {
+            BeaconStateEvent::ProposedPayload(proposal) => {
+                self.publish_payload_columns(proposal, producers)
+            }
             BeaconStateEvent::Status { ssz, .. } => {
                 let root = *StatusView::head_root(&ssz);
                 let slot = StatusView::head_slot(&ssz);
@@ -1054,6 +1064,7 @@ mod tests {
         frame_p: TProducer,
         rpc_p: TProducer,
         engine_p: TProducer,
+        state_p: TProducer,
         _spine: Box<SilverSpine>,
         _dir: ShmemDir,
     }
@@ -1085,10 +1096,11 @@ mod tests {
             let frame_p = TCache::producer(TCacheId::ControlGossip, 1024 * 1024);
             let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
             let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1024 * 1024);
+            let state_p = TCache::producer(TCacheId::BeaconStateHandoff, 1024 * 1024);
 
             let mut tile = DataColumnsTile::new(
                 TCacheTable::from_iter(
-                    [&gossip_p, &frame_p, &rpc_p, &engine_p].map(|p| p.cache_ref()),
+                    [&gossip_p, &frame_p, &rpc_p, &engine_p, &state_p].map(|p| p.cache_ref()),
                 ),
                 beacon_state,
                 custody,
@@ -1108,7 +1120,18 @@ mod tests {
             inj.consume(|_: EngineReq, _| {});
             inj.consume(|_: PeerEvent, _| {});
             inj.consume(|_: CellStoreEvent, _| {});
-            Self { inj, conn, tile, gossip_p, frame_p, rpc_p, engine_p, _spine: spine, _dir: dir }
+            Self {
+                inj,
+                conn,
+                tile,
+                gossip_p,
+                frame_p,
+                rpc_p,
+                engine_p,
+                state_p,
+                _spine: spine,
+                _dir: dir,
+            }
         }
 
         fn turn(&mut self) {

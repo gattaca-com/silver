@@ -16,4 +16,5 @@ docs/
 crates/beacon_state/tile/consensus-spec-tests/
 crates/e2e/data/
 kurtosis/el/
+kurtosis/.cache/
 kurtosis/*.ssz

@@ -51,6 +51,12 @@ use crate::{
 };
 
 const MAX_EFFECTIVE_BALANCE: u64 = 32_000_000_000;
+
+#[cfg(feature = "ef_tests")]
+mod gloas_production;
+#[cfg(feature = "ef_tests")]
+mod payload_preparation;
+
 const TEST_RING_BYTES: usize = 1 << 20;
 const ANCHOR_ROOT: B256 = [0x01u8; 32];
 /// Non-zero so the anchor has complete head metadata.
@@ -5458,6 +5464,7 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     assert_eq!(request.attrs_fee_recipient, [7; 20]);
     assert_eq!(request.attrs_parent_beacon_block_root, ANCHOR_ROOT);
     assert_eq!(request.attrs_timestamp, 11 * 12);
+    assert!(!request.is_gloas);
 
     tile.handle_engine_response(
         EngineResp::PreparePayload(EnginePreparePayloadResp {
@@ -5616,6 +5623,7 @@ fn block_without_a_prepared_payload_prepares_one_then_fetches_it() {
         panic!("expected a payload fetch");
     };
     assert_eq!(fetch.payload_id, [9; 8]);
+    assert!(!fetch.is_gloas);
     assert!(produced_blocks(&mut sink).is_empty());
 
     no_payload(&mut tile, fetch.id, &mut adapter.producers);
@@ -6054,6 +6062,7 @@ fn a_proposal_waits_on_its_builders_and_falls_back_to_the_pool() {
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     produced_blocks(&mut sink);
     sink.consume(|_: BuilderBidsRequest, _| {});
+    engine_requests(&mut sink);
 
     let body = SignedBeaconBlockView::body(&block_ssz);
     let signed_bid = BodyOffsets::new(body, BodyFork::Gloas).unwrap().signed_bid().unwrap();
@@ -6061,10 +6070,12 @@ fn a_proposal_waits_on_its_builders_and_falls_back_to_the_pool() {
     let parent_root = tile.head_block_root();
     let dependent_root =
         tile.fork_choice.shuffling_dependent_root(&parent_root, slot / SLOTS_PER_EPOCH).unwrap();
-    tile.seen_proposer_preferences.insert(slot, dependent_root, ProposerPreferences {
-        fee_recipient: bid.fee_recipient,
-        target_gas_limit: bid.gas_limit,
-    });
+    tile.seen_proposer_preferences.insert(
+        slot,
+        dependent_root,
+        ProposerPreferences { fee_recipient: bid.fee_recipient, target_gas_limit: bid.gas_limit },
+        false,
+    );
     tile.payload_bids_pool.add(bid.clone(), *SignedExecutionPayloadBidView::signature(signed_bid));
     let mut produce = |tile: &mut BeaconStateTile,
                        builder_config_hash,
@@ -6090,6 +6101,14 @@ fn a_proposal_waits_on_its_builders_and_falls_back_to_the_pool() {
 
         let bids = builder_bid.map(|frame| publish_block_bytes(&mut gp, frame).1);
         tile.on_builder_bids(BuilderBidsResponse { request_id: 1, bids }, &mut adapter.producers);
+        for request in engine_requests(&mut sink) {
+            if let EngineReq::PreparePayload(request) = request {
+                tile.on_payload_prepared(
+                    EnginePreparePayloadResp { id: request.id, payload_id: None },
+                    &mut adapter.producers,
+                );
+            }
+        }
         let mut answers = Vec::new();
         sink.consume(|response: BeaconApiResponse, _| {
             if let BeaconApiResponse::ProducedBlock { block, .. } = response {
@@ -6156,16 +6175,19 @@ fn concurrent_builder_configs_report_their_winning_bids_total_payment() {
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     produced_blocks(&mut sink);
     sink.consume(|_: BuilderBidsRequest, _| {});
+    engine_requests(&mut sink);
     let parent_root = tile.head_block_root();
     tile.fork_choice.mark_payload_verified(&parent_root);
     bid.parent_block_root = parent_root;
     bid.value = 10;
     let dependent_root =
         tile.fork_choice.shuffling_dependent_root(&parent_root, slot / SLOTS_PER_EPOCH).unwrap();
-    tile.seen_proposer_preferences.insert(slot, dependent_root, ProposerPreferences {
-        fee_recipient: bid.fee_recipient,
-        target_gas_limit: bid.gas_limit,
-    });
+    tile.seen_proposer_preferences.insert(
+        slot,
+        dependent_root,
+        ProposerPreferences { fee_recipient: bid.fee_recipient, target_gas_limit: bid.gas_limit },
+        false,
+    );
     for id in [1, 2] {
         let proposal = Proposal {
             slot,
@@ -6181,6 +6203,15 @@ fn concurrent_builder_configs_report_their_winning_bids_total_payment() {
     sink.consume(|request: BuilderBidsRequest, _| requests.push(request.request_id));
     assert_eq!(requests, [1, 2]);
     assert!(produced_blocks(&mut sink).is_empty());
+
+    for request in engine_requests(&mut sink) {
+        if let EngineReq::PreparePayload(request) = request {
+            tile.on_payload_prepared(
+                EnginePreparePayloadResp { id: request.id, payload_id: None },
+                &mut adapter.producers,
+            );
+        }
+    }
 
     for (id, payment) in [(1, 9), (2, u64::MAX)] {
         bid.execution_payment = payment;

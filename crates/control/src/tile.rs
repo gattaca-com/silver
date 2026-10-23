@@ -17,8 +17,10 @@ use silver_common::{
     TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
-        METADATA_SIZE, STATUS_V2_SIZE, SignedAggregateAndProofView, SignedSyncCommitteeProofView,
-        StatusView, SyncCommitteeView,
+        ExecutionPayloadEnvelopeView, ExecutionPayloadView, METADATA_SIZE,
+        PayloadAttestationDataView, PayloadAttestationMessageView, ProposerPreferencesView,
+        STATUS_V2_SIZE, SignedAggregateAndProofView, SignedExecutionPayloadEnvelopeView,
+        SignedProposerPreferencesView, SignedSyncCommitteeProofView, StatusView, SyncCommitteeView,
     },
     ticker::SlotTicker,
 };
@@ -160,6 +162,26 @@ impl Controller {
             return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
         };
         match topic {
+            GossipTopic::ExecutionPayload => {
+                if !SignedExecutionPayloadEnvelopeView::check_canonical(ssz) {
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Invalid),
+                    );
+                }
+                let envelope = SignedExecutionPayloadEnvelopeView::message(ssz);
+                let slot = ExecutionPayloadView::slot_number(
+                    ExecutionPayloadEnvelopeView::payload(envelope),
+                );
+                self.local_gossip.submit(
+                    LocalMessage { request_id, topic, ssz, ssz_read: None, slot },
+                    now,
+                    &mut self.gossip_handler,
+                    producers,
+                );
+            }
+
             GossipTopic::BeaconAttestation(subnet) => {
                 let Ok(ssz) = ssz.try_into() else {
                     silver_log::error!(
@@ -225,6 +247,50 @@ impl Controller {
                     );
                 };
                 let slot = SignedSyncCommitteeProofView::slot(proof);
+                self.local_gossip.submit(
+                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    now,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            GossipTopic::PayloadAttestationMessage => {
+                let Ok(message) = ssz.try_into() else {
+                    silver_log::error!(
+                        request_id,
+                        len = ssz.len(),
+                        "submitted payload attestation is misframed"
+                    );
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                };
+                let slot =
+                    PayloadAttestationDataView::slot(PayloadAttestationMessageView::data(message));
+                self.local_gossip.submit(
+                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    now,
+                    &mut self.gossip_handler,
+                    producers,
+                )
+            }
+            GossipTopic::ProposerPreferences => {
+                let Ok(signed) = ssz.try_into() else {
+                    silver_log::error!(
+                        request_id,
+                        len = ssz.len(),
+                        "submitted proposer preferences are misframed"
+                    );
+                    return produce_response(
+                        producers,
+                        request_id,
+                        Err(LocalGossipFailure::Internal),
+                    );
+                };
+                let preferences = SignedProposerPreferencesView::message(signed);
+                let slot = ProposerPreferencesView::proposal_slot(preferences);
                 self.local_gossip.submit(
                     LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
                     now,
@@ -308,6 +374,12 @@ impl Controller {
         )?;
         self.reader.declare(TCacheId::NetworkProcessing, &[TileId::BeaconState, TileId::Columns]);
         self.reader.open(TCacheId::ProposedColumns, "ctl_proposed_columns", TReadMode::Sliding)?;
+        self.reader.open(
+            TCacheId::BeaconStateHandoff,
+            "ctl_beacon_state_handoff",
+            TReadMode::Sliding,
+        )?;
+        self.reader.declare(TCacheId::BeaconStateHandoff, &[TileId::Columns]);
         self.gossip_handler.open_tcaches()
     }
 
@@ -602,7 +674,9 @@ impl Tile<SilverSpine> for Controller {
             BeaconApiRequest::SyncCommitteeContribution { .. } |
             BeaconApiRequest::Block { .. } |
             BeaconApiRequest::ProposerPreparations { .. } |
-            BeaconApiRequest::ProduceBlock { .. } => {}
+            BeaconApiRequest::ProduceBlock { .. } |
+            BeaconApiRequest::PublishPayloadEnvelope { .. } |
+            BeaconApiRequest::ExecutionPayloadEnvelope { .. } => {}
         });
 
         self.slashing_protection.spin(
