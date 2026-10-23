@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Refines.Roots
+import LeanBlsSimd.Kzg.Refines.InverseRoots
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.CosetsRep
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
@@ -19,196 +19,6 @@ local instance : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 
 set_option maxRecDepth 16000
 set_option maxHeartbeats 2000000
-
-private theorem inverse_loop (roots : Slice blst.blst_fr) (target : List blst.blst_fr)
-    (hrlen : roots.val.length = 64) (htlen : target.length = 64)
-    (hlookup : ∀ j, 0 < j → j < 64 → roots.val[64-j]! = target[j]!)
-    (acc : alloc.vec.Vec blst.blst_fr) (i : Usize) (hi : 0 < i.val ∧ i.val ≤ 64)
-    (ha : acc.val = target.take i.val) :
-    ∃ out, domain.inverse_roots_loop roots 64#usize acc i = ok out ∧ out.val = target := by
-  induction hk : 64 - i.val generalizing i acc with
-  | zero =>
-    have he : i.val = 64 := by omega
-    refine ⟨acc, ?_, ?_⟩
-    · rw [domain.inverse_roots_loop, loop.eq_1]
-      simp [domain.inverse_roots_loop.body, UScalar.lt_equiv, he]
-    · simpa [he, ← htlen] using ha
-  | succ k ih =>
-    have hil : i.val < 64 := by omega
-    have hib : 64 < 2^UScalarTy.Usize.numBits := by
-      rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
-    let j : Usize := UScalar.ofNatCore (64 - i.val) (by omega)
-    let i' : Usize := UScalar.ofNatCore (i.val + 1) (by omega)
-    have hj : j.val = 64 - i.val := UScalar.ofNatCore_val_eq _
-    have hi' : i'.val = i.val + 1 := UScalar.ofNatCore_val_eq _
-    have hsub : 64#usize - i = ok j := by
-      show UScalar.sub _ _ = _
-      simp only [UScalar.sub, UScalar.ofNatCore_val_eq, Nat.not_lt.mpr hi.2, if_false,
-        Result.ok.injEq]
-      apply (UScalar.eq_equiv_bv_eq _ _).mpr
-      exact (UScalar.ofNatCore_bv _ _).symm
-    have hadd : i + 1#usize = ok i' := by
-      show UScalar.tryMk .Usize (i.val + (1#usize).val) = _
-      simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, i',
-        show i.val + 1 < 2^System.Platform.numBits by change i.val + 1 < 2^UScalarTy.Usize.numBits; omega]
-    have hindex : Slice.index_usize roots j = ok target[i.val]! := by
-      rw [← hlookup _ hi.1 hil]
-      simp [Slice.index_usize, hj, hrlen, show 64-i.val < 64 by omega]
-    have hsize : acc.val.length + 1 ≤ Usize.max := by
-      rw [ha, List.length_take, htlen]
-      scalar_tac
-    let acc' : alloc.vec.Vec blst.blst_fr :=
-      ⟨acc.val ++ [target[i.val]!], by simpa using hsize⟩
-    have hpush : alloc.vec.Vec.push acc target[i.val]! = ok acc' := by
-      simp [alloc.vec.Vec.push, hsize, acc']
-    have ha' : acc'.val = target.take i'.val := by
-      simp only [acc', ha, hi']
-      rw [List.take_add_one, List.getElem?_eq_getElem (by omega : i.val < target.length)]
-      simp only [getElem!_pos target i.val (by omega)]
-      rfl
-    obtain ⟨out, hout, hval⟩ := ih acc' i' (by omega) ha' (by omega)
-    refine ⟨out, ?_, hval⟩
-    rw [domain.inverse_roots_loop, loop.eq_1]
-    simp only [domain.inverse_roots_loop.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-      hil, if_true, hsub, hindex, hpush, hadd, bind_tc_ok]
-    exact hout
-
-private theorem inverse_roots_refinement (roots : Slice blst.blst_fr)
-    (values : _root_.Array Fr) (hv : values.size = 64)
-    (hr : roots.val = values.toList.map frEncode) :
-    ∃ out, domain.inverse_roots roots = ok out ∧
-      out.val = (Model.inverseRoots values).toList.map frEncode := by
-  let target := (Model.inverseRoots values).toList.map frEncode
-  have hlen : roots.val.length = 64 := by simp [hr, hv]
-  have htlen : target.length = 64 := by simp [target, Model.inverseRoots, hv]
-  have htarget (j : Nat) (hj : j < 64) :
-      target[j]! = frEncode (if j = 0 then values[0]! else values[64-j]!) := by
-    have htb : j < target.length := by omega
-    rw [getElem!_pos target j htb]
-    simp only [target, List.getElem_map, _root_.Array.getElem_toList,
-      Model.inverseRoots, _root_.Array.getElem_ofFn, hv]
-  have hlookup (j : Nat) (hj : j < 64) : roots.val[j]! = frEncode values[j]! := by
-    rw [hr, getElem!_pos _ j (by simp [hv]; omega)]
-    simp [getElem!_pos values j (by omega)]
-  have hzero : roots.val[0]! = target[0]! := by rw [hlookup 0 (by decide), htarget 0 (by decide)]; rfl
-  let initial : alloc.vec.Vec blst.blst_fr := ⟨[target[0]!], by simp; scalar_tac⟩
-  have hinitial : initial.val = target.take (1#usize).val := by
-    simp only [UScalar.ofNatCore_val_eq, initial]
-    rw [show (1 : Nat) = 0 + 1 by rfl, List.take_add_one,
-      List.getElem?_eq_getElem (by omega : 0 < target.length)]
-    simp [getElem!_pos target 0 (by omega)]
-  obtain ⟨out, hout, hval⟩ := inverse_loop roots target hlen htlen
-    (by
-      intro j hj hj64
-      rw [hlookup (64-j) (by omega), htarget j hj64, if_neg (by omega)])
-    initial 1#usize (by decide) hinitial
-  refine ⟨out, ?_, hval⟩
-  have hn : Slice.len roots = 64#usize := by apply UScalar.eq_of_val_eq; simpa using hlen
-  have hindex : Slice.index_usize roots 0#usize = ok target[0]! := by
-    rw [← hzero]
-    simp [Slice.index_usize, hlen]
-  have hpush : alloc.vec.Vec.push (alloc.vec.Vec.with_capacity blst.blst_fr 64#usize)
-      target[0]! = ok initial := by
-    simp [alloc.vec.Vec.push, alloc.vec.Vec.with_capacity, initial, U32.max_eq]
-  unfold domain.inverse_roots
-  dsimp only
-  simp only [hn, hindex, hpush, bind_tc_ok]
-  exact hout
-
-private theorem inverse_ext_loop (roots : Slice blst.blst_fr) (target : List blst.blst_fr)
-    (hrlen : roots.val.length = 8192) (htlen : target.length = 8192)
-    (hlookup : ∀ j, 0 < j → j < 8192 → roots.val[8192-j]! = target[j]!)
-    (acc : alloc.vec.Vec blst.blst_fr) (i : Usize) (hi : 0 < i.val ∧ i.val ≤ 8192)
-    (ha : acc.val = target.take i.val) :
-    ∃ out, domain.inverse_roots_loop roots 8192#usize acc i = ok out ∧ out.val = target := by
-  induction hk : 8192 - i.val generalizing i acc with
-  | zero =>
-    have he : i.val = 8192 := by omega
-    refine ⟨acc, ?_, ?_⟩
-    · rw [domain.inverse_roots_loop, loop.eq_1]
-      simp [domain.inverse_roots_loop.body, UScalar.lt_equiv, he]
-    · simpa [he, ← htlen] using ha
-  | succ k ih =>
-    have hil : i.val < 8192 := by omega
-    have hib : 8192 < 2^UScalarTy.Usize.numBits := by
-      rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
-    let j : Usize := UScalar.ofNatCore (8192 - i.val) (by omega)
-    let i' : Usize := UScalar.ofNatCore (i.val + 1) (by omega)
-    have hj : j.val = 8192 - i.val := UScalar.ofNatCore_val_eq _
-    have hi' : i'.val = i.val + 1 := UScalar.ofNatCore_val_eq _
-    have hsub : 8192#usize - i = ok j := by
-      show UScalar.sub _ _ = _
-      simp only [UScalar.sub, UScalar.ofNatCore_val_eq, Nat.not_lt.mpr hi.2, if_false,
-        Result.ok.injEq]
-      apply (UScalar.eq_equiv_bv_eq _ _).mpr
-      exact (UScalar.ofNatCore_bv _ _).symm
-    have hadd : i + 1#usize = ok i' := by
-      show UScalar.tryMk .Usize (i.val + (1#usize).val) = _
-      simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, i',
-        show i.val + 1 < 2^System.Platform.numBits by change i.val + 1 < 2^UScalarTy.Usize.numBits; omega]
-    have hindex : Slice.index_usize roots j = ok target[i.val]! := by
-      rw [← hlookup _ hi.1 hil]
-      simp [Slice.index_usize, hj, hrlen, show 8192-i.val < 8192 by omega]
-    have hsize : acc.val.length + 1 ≤ Usize.max := by
-      rw [ha, List.length_take, htlen]
-      scalar_tac
-    let acc' : alloc.vec.Vec blst.blst_fr :=
-      ⟨acc.val ++ [target[i.val]!], by simpa using hsize⟩
-    have hpush : alloc.vec.Vec.push acc target[i.val]! = ok acc' := by
-      simp [alloc.vec.Vec.push, hsize, acc']
-    have ha' : acc'.val = target.take i'.val := by
-      simp only [acc', ha, hi']
-      rw [List.take_add_one, List.getElem?_eq_getElem (by omega : i.val < target.length)]
-      simp only [getElem!_pos target i.val (by omega)]
-      rfl
-    obtain ⟨out, hout, hval⟩ := ih acc' i' (by omega) ha' (by omega)
-    refine ⟨out, ?_, hval⟩
-    rw [domain.inverse_roots_loop, loop.eq_1]
-    simp only [domain.inverse_roots_loop.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-      hil, if_true, hsub, hindex, hpush, hadd, bind_tc_ok]
-    exact hout
-
-private theorem inverse_ext_roots_refinement (roots : Slice blst.blst_fr)
-    (values : _root_.Array Fr) (hv : values.size = 8192)
-    (hr : roots.val = values.toList.map frEncode) :
-    ∃ out, domain.inverse_roots roots = ok out ∧
-      out.val = (Model.inverseRoots values).toList.map frEncode := by
-  let target := (Model.inverseRoots values).toList.map frEncode
-  have hlen : roots.val.length = 8192 := by simp [hr, hv]
-  have htlen : target.length = 8192 := by simp only [target, List.length_map, _root_.Array.length_toList, Model.inverseRoots, _root_.Array.size_ofFn, hv]
-  have htarget (j : Nat) (hj : j < 8192) :
-      target[j]! = frEncode (if j = 0 then values[0]! else values[8192-j]!) := by
-    have htb : j < target.length := by omega
-    rw [getElem!_pos target j htb]
-    simp only [target, List.getElem_map, _root_.Array.getElem_toList,
-      Model.inverseRoots, _root_.Array.getElem_ofFn, hv]
-  have hlookup (j : Nat) (hj : j < 8192) : roots.val[j]! = frEncode values[j]! := by
-    rw [hr, getElem!_pos _ j (by simp [hv]; omega)]
-    simp [getElem!_pos values j (by omega)]
-  have hzero : roots.val[0]! = target[0]! := by rw [hlookup 0 (by decide), htarget 0 (by decide)]; rfl
-  let initial : alloc.vec.Vec blst.blst_fr := ⟨[target[0]!], by simp; scalar_tac⟩
-  have hinitial : initial.val = target.take (1#usize).val := by
-    simp only [UScalar.ofNatCore_val_eq, initial]
-    rw [show (1 : Nat) = 0 + 1 by rfl, List.take_add_one,
-      List.getElem?_eq_getElem (by omega : 0 < target.length)]
-    simp [getElem!_pos target 0 (by omega)]
-  obtain ⟨out, hout, hval⟩ := inverse_ext_loop roots target hlen htlen
-    (by
-      intro j hj hj8192
-      rw [hlookup (8192-j) (by omega), htarget j hj8192, if_neg (by omega)])
-    initial 1#usize (by decide) hinitial
-  refine ⟨out, ?_, hval⟩
-  have hn : Slice.len roots = 8192#usize := by apply UScalar.eq_of_val_eq; simpa using hlen
-  have hindex : Slice.index_usize roots 0#usize = ok target[0]! := by
-    rw [← hzero]
-    simp [Slice.index_usize, hlen]
-  have hpush : alloc.vec.Vec.push (alloc.vec.Vec.with_capacity blst.blst_fr 8192#usize)
-      target[0]! = ok initial := by
-    simp [alloc.vec.Vec.push, alloc.vec.Vec.with_capacity, initial, U32.max_eq]
-  unfold domain.inverse_roots
-  dsimp only
-  simp only [hn, hindex, hpush, bind_tc_ok]
-  exact hout
 
 private def cosetIndex (k : Nat) : Nat := BitReversal.reverseBitsAux (64*k) 0 13
 
@@ -282,34 +92,10 @@ private def inverseShifts : List blst.blst_fr :=
 private def shiftPowers : List blst.blst_fr :=
   (List.range 128).map (fun k => frEncode (Fr.powNat (Model.cosetShift k) 64))
 
-open scoped EthLib.Cryptography.Bls.Fr in
 private theorem inverse_roots_at (i : Nat) (hi : i < 8192) :
-    (Model.inverseRoots (Model.roots 13))[i]! = ((Model.roots 13)[i]!).inverse := by
-  have hsize : (Model.roots 13).size = 8192 := by simp [Model.roots]
-  have hroot (j : Nat) (hj : j < 8192) :
-      (Model.roots 13)[j]! = domainRoot 8192 ^ j := by
-    change (computeRootsOfUnity 8192)[j]! = _
-    rw [getElem!_pos _ j (by simpa using hj), getElem_computeRootsOfUnity]
-  have hprim : IsPrimitiveRoot (domainRoot 8192) 8192 :=
-    isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
-  have hne : domainRoot 8192 ≠ 0 := hprim.ne_zero (by decide)
-  rw [getElem!_pos _ i (by simp [Model.inverseRoots, hsize]; omega)]
-  simp only [Model.inverseRoots, _root_.Array.getElem_ofFn, hsize]
-  by_cases hz : i = 0
-  · simp [hz, hroot 0 (by decide), Fr.inverse_eq_inv]
-  · rw [if_neg hz, hroot (8192-i) (by omega), hroot i hi, Fr.inverse_eq_inv]
-    have hp : domainRoot 8192 ^ i * domainRoot 8192 ^ (8192-i) = 1 := by
-      exact (pow_add (domainRoot 8192) i (8192-i)).symm.trans
-        (by rw [Nat.add_sub_of_le (by omega : i ≤ 8192)]; exact hprim.pow_eq_one)
-    have hc : (domainRoot 8192 ^ i)⁻¹ * domainRoot 8192 ^ i = (1 : Fr) :=
-      inv_mul_cancel₀ (pow_ne_zero i hne)
-    calc
-      domainRoot 8192 ^ (8192-i) = 1 * domainRoot 8192 ^ (8192-i) := (one_mul _).symm
-      _ = ((domainRoot 8192 ^ i)⁻¹ * domainRoot 8192 ^ i) *
-          domainRoot 8192 ^ (8192-i) := congrArg (fun x : Fr => x * _) hc.symm
-      _ = (domainRoot 8192 ^ i)⁻¹ * (domainRoot 8192 ^ i *
-          domainRoot 8192 ^ (8192-i)) := mul_assoc _ _ _
-      _ = (domainRoot 8192 ^ i)⁻¹ := by rw [hp]; exact mul_one _
+    (Model.inverseRoots (Model.roots 13))[i]! = ((Model.roots 13)[i]!).inverse :=
+  Refinement.inverse_roots_get_inverse 8192 (by decide)
+    (Nat.dvd_of_mod_eq_zero (by decide)) i hi
 
 private theorem encoded_lookup (values : _root_.Array Fr) (out : alloc.vec.Vec blst.blst_fr)
     (hr : out.val = values.toList.map frEncode) (i : Nat) (hi : i < values.size) :
@@ -424,7 +210,7 @@ theorem cosets_new_refinement (h : FrCorrect) :
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c := by
   obtain ⟨ext, hext, hextval⟩ := roots_refinement h cosets.LOG_EXT_BLOB (Or.inr (by simp [cosets.LOG_EXT_BLOB]))
   simp only [cosets.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
-  obtain ⟨inverseExt, hinverseExt, hinverseExtVal⟩ := inverse_ext_roots_refinement
+  obtain ⟨inverseExt, hinverseExt, hinverseExtVal⟩ := Refinement.inverse_roots_refinement 8192#usize (by decide)
     (alloc.vec.Vec.deref ext) (Model.roots 13) (by simp [Model.roots]) hextval
   have hinverseExtLen : inverseExt.val.length = 8192 := by
     rw [hinverseExtVal]
@@ -443,7 +229,7 @@ theorem cosets_new_refinement (h : FrCorrect) :
     (by simp [alloc.vec.Vec.with_capacity]) (by simp [alloc.vec.Vec.with_capacity])
   obtain ⟨rs, hrs, hrsval⟩ := roots_refinement h cosets.LOG_CELL (Or.inl (by simp [cosets.LOG_CELL]))
   simp only [cosets.LOG_CELL, UScalar.ofNatCore_val_eq] at hrsval
-  obtain ⟨inv, hinv, hinvval⟩ := inverse_roots_refinement (alloc.vec.Vec.deref rs)
+  obtain ⟨inv, hinv, hinvval⟩ := Refinement.inverse_roots_refinement 64#usize (by decide) (alloc.vec.Vec.deref rs)
     (Model.roots 6) (by simp [Model.roots]) hrsval
   refine ⟨⟨inv, frEncode (Fr.ofNat 64).inverse, si, sp⟩, ?_, ?_⟩
   · unfold cosets.Cosets.new
