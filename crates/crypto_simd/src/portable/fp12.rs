@@ -1,3 +1,6 @@
+// The functions marked below follow the same formulas as Supranational's
+// blst (Apache-2.0). This file is silver's own implementation.
+
 //! Fp12 = Fp6[w]/(w² − v) over the scalar [`Fp`], blst's `blst_fp12`:
 //! c0 + c1·w. The Fp2 coefficient k of half h, `c[h].c[k]`, is the
 //! coefficient of w^(2k + h).
@@ -25,6 +28,7 @@ impl Fp12 {
     };
 
     /// Karatsuba over the halves: three Fp6 products.
+    // Follows blst 0.3.16 fp12_tower.c `mul_fp12`.
     pub fn mul(&self, rhs: &Self) -> Self {
         let t0 = self.c0.mul(&rhs.c0);
         let t1 = self.c1.mul(&rhs.c1);
@@ -34,6 +38,7 @@ impl Fp12 {
 
     /// (a + b·w)² = (a + b)(a + v·b) − t − v·t + 2t·w, t = a·b: two Fp6
     /// products.
+    // Follows blst 0.3.16 fp12_tower.c `sqr_fp12`.
     pub fn square(&self) -> Self {
         let t = self.c0.mul(&self.c1);
         let c0 =
@@ -43,6 +48,7 @@ impl Fp12 {
 
     /// Times the line (x + y·v) + z·v·w, blst's `mul_by_xy00z0`: 13 Fp2
     /// products.
+    // Follows blst 0.3.16 fp12_tower.c `mul_by_xy00z0_fp12`.
     pub fn mul_by_line(&self, x: &Fp2, y: &Fp2, z: &Fp2) -> Self {
         let t0 = self.c0.mul_by_xy(x, y);
         let t1 = self.c1.mul_by_y(z);
@@ -53,6 +59,7 @@ impl Fp12 {
     /// Granger–Scott, on the cyclotomic subgroup: nine Fp2 squarings, as
     /// blst's `cyclotomic_sqr_fp12`. Off the subgroup it computes the same
     /// formula.
+    // Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
     pub fn cyclotomic_square(&self) -> Self {
         let (t00, t01) = fp4_square(&self.c0.c0, &self.c1.c1);
         let (t10, t11) = fp4_square(&self.c1.c0, &self.c0.c2);
@@ -93,6 +100,7 @@ impl Fp12 {
     }
 
     /// (a − b·w) / (a² − v·b²).
+    // Follows blst 0.3.16 fp12_tower.c `inverse_fp12`.
     pub fn inverse(&self) -> Self {
         let norm = self.c0.mul(&self.c0).sub(&self.c1.mul(&self.c1).mul_by_v());
         let inverse = norm.inverse();
@@ -144,6 +152,7 @@ impl Fp12 {
 }
 
 /// (a0 + a1·w')² in Fp4 = Fp2[w']/(w'² − ξ): (a0² + ξ·a1², 2·a0·a1).
+// Follows blst 0.3.16 fp12_tower.c `sqr_fp4`.
 #[inline]
 fn fp4_square(a0: &Fp2, a1: &Fp2) -> (Fp2, Fp2) {
     let s0 = a0.square();
@@ -153,12 +162,14 @@ fn fp4_square(a0: &Fp2, a1: &Fp2) -> (Fp2, Fp2) {
 }
 
 /// 3t − 2a.
+// Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
 #[inline(always)]
 fn thrice_less_twice(t: &Fp2, a: &Fp2) -> Fp2 {
     t.sub(a).double().add(t)
 }
 
 /// 3t + 2a.
+// Follows blst 0.3.16 fp12_tower.c `cyclotomic_sqr_fp12`.
 #[inline(always)]
 fn thrice_plus_twice(t: &Fp2, a: &Fp2) -> Fp2 {
     t.add(a).double().add(t)

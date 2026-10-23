@@ -1,6 +1,7 @@
 [package]
 name = "silver_crypto_simd"
 edition.workspace = true
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true

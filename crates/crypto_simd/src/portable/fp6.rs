@@ -1,3 +1,6 @@
+// The functions marked below follow the same formulas as Supranational's
+// blst (Apache-2.0). This file is silver's own implementation.
+
 //! Fp6 = Fp2[v]/(v³ − ξ), ξ = 1 + i, blst's `blst_fp6`: c0 + c1·v + c2·v².
 
 use crate::portable::fp2::Fp2;
@@ -13,6 +16,7 @@ impl Fp6 {
     pub const ZERO: Fp6 = Fp6 { c0: Fp2::ZERO, c1: Fp2::ZERO, c2: Fp2::ZERO };
 
     /// Karatsuba over the three coefficients: six Fp2 products.
+    // Follows blst 0.3.16 fp12_tower.c `mul_fp6`.
     pub fn mul(&self, rhs: &Self) -> Self {
         let t0 = self.c0.mul(&rhs.c0);
         let t1 = self.c1.mul(&rhs.c1);
@@ -26,6 +30,7 @@ impl Fp6 {
     }
 
     /// Times x + y·v, blst's `mul_by_xy0`: five Fp2 products.
+    // Follows blst 0.3.16 fp12_tower.c `mul_by_xy0_fp6`.
     pub fn mul_by_xy(&self, x: &Fp2, y: &Fp2) -> Self {
         let t0 = self.c0.mul(x);
         let t1 = self.c1.mul(y);
@@ -36,6 +41,7 @@ impl Fp6 {
     }
 
     /// Times y·v, blst's `mul_by_0y0`: three Fp2 products.
+    // Follows blst 0.3.16 fp12_tower.c `mul_by_0y0_fp6`.
     pub fn mul_by_y(&self, y: &Fp2) -> Self {
         Self { c0: self.c2.mul(y).mul_by_xi(), c1: self.c0.mul(y), c2: self.c1.mul(y) }
     }
@@ -68,6 +74,7 @@ impl Fp6 {
 
     /// From the norm to Fp2: t = (c0² − ξc1c2, ξc2² − c0c1, c1² − c0c2) and
     /// self⁻¹ = t / (c0·t0 + ξ(c2·t1 + c1·t2)).
+    // Follows blst 0.3.16 fp12_tower.c `inverse_fp6`.
     pub fn inverse(&self) -> Self {
         let t0 = self.c0.square().sub(&self.c1.mul(&self.c2).mul_by_xi());
         let t1 = self.c2.square().mul_by_xi().sub(&self.c0.mul(&self.c1));
