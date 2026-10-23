@@ -1,4 +1,3 @@
-import LeanBlsSimd.Kzg.SpecExternals
 import LeanBlsSimd.Kzg.SetupValidity
 import LeanBlsSimd.Kzg.G1Arithmetic
 import LeanBlsSimd.Kzg.G1Msm
@@ -15,7 +14,6 @@ run_cmd do
   for c in #[``LeanBlsSimd.Kzg.frEncode_reduced, ``LeanBlsSimd.Kzg.fpEncode_reduced,
       ``LeanBlsSimd.Kzg.frRead_frEncode, ``LeanBlsSimd.Kzg.fpRead_fpEncode,
       ``LeanBlsSimd.Kzg.fp2Read_fp2Encode, ``LeanBlsSimd.Kzg.g1Jacobian_rep,
-      ``LeanBlsSimd.Kzg.specExternals_correct, ``LeanBlsSimd.Kzg.specExternals_contract,
       ``LeanBlsSimd.Kzg.setup_g1_roundtrip,
       ``LeanBlsSimd.Kzg.setup_g1_valid, ``LeanBlsSimd.Kzg.setup_g1_affine_valid,
       ``LeanBlsSimd.Kzg.setup_g2_cell_valid, ``LeanBlsSimd.Kzg.setup_g2_neg_zero_valid,

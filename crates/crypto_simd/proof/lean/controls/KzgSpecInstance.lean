@@ -1,10 +1,8 @@
 import LeanBlsSimd.Kzg
-import LeanBlsSimd.Kzg.SpecExternals
 
 open Aeneas.Std Result silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls LeanBlsSimd.Kzg
 
-/-- A conditional consumer of all actual generated-operation contracts.
-The independent spec-model witness is `specExternals_correct`. -/
+/-- A conditional application of the generated-operation contracts. -/
 theorem LeanBlsSimd.Kzg.specInstance [cpu : RuntimeFeatures]
     (hfr : FrCorrect) (hbytes : FrBytesCorrect) (hsha : ShaCorrect)
     (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)

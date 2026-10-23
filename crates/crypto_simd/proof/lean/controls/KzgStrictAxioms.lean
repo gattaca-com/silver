@@ -1,6 +1,5 @@
 import LeanBlsSimd.Axioms
 import controls.KzgSpecInstance
-import controls.KzgExternalBoundary
 import controls.KzgMathematical
 import controls.KzgSetupBoundary
 import controls.KzgStreamingSha
@@ -28,5 +27,5 @@ import controls.SignedLimbs
 import controls.InterpolationKernel
 import controls.Msm8
 
--- Check conditional generated consumers, independent model witnesses, and mutation controls.
+-- Check conditional generated consumers and mutation controls.
 #assert_standard_axioms

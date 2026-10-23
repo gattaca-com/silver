@@ -206,11 +206,11 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 `controls/KzgSpecInstance.lean` and `controls/downstream/KzgSmoke.lean` apply the generated-runtime headlines conditionally on the named contracts. This checks the consumer interfaces, not the truth of their pending premises.
 
-### Decoder bridge and specification-model witnesses
+### Decoder bridge and component premises
 
 `Kzg/Decoder.lean` proves `specVerdict_eq_bls`: KZG and BLS G1 verdicts agree as optional affine points, including limbs and infinity. The KZG batch adapter composes directly with the shared generated G1 wrapper and its `G1DecoderCorrect` premise. There is no copied runtime decoder dictionary at this boundary.
 
-`Kzg/SpecExternals.lean` retains independent specification operations and mathematical mutation controls. Its specification-backed witness shows that those model laws are jointly satisfiable. These operations are not a selectable implementation of the generated runtime functions. In particular, the model witness does not inhabit all seven actual-runtime contracts; doing so would already discharge the pending component proofs. Runtime consumer examples therefore remain conditional. This distinction is essential when interpreting the nonvacuity controls.
+The seven contracts concern fixed generated definitions. Proving that any contract is inhabited requires proving that implementation correct. Consumer examples remain conditional until those proofs are complete.
 
 ### KZG cell extension
 
@@ -220,7 +220,7 @@ Import `LeanBlsSimd.Kzg.Extender.Statements` and apply:
 Extender.compute_eq_spec hfr hbytes
 ```
 
-The constructor establishes the invariant, and each returned state preserves it for the next call. The fixed-size blob and cell types supply the byte lengths. `controls/ExtenderSpecInstance.lean` checks the conditional generated-runtime application; independent model witnesses continue to check the mathematical specification operations.
+The constructor establishes the invariant, and each returned state preserves it for the next call. The fixed-size blob and cell types supply the byte lengths. `controls/ExtenderSpecInstance.lean` checks the conditional generated-runtime application.
 
 ## What a reader must trust
 
@@ -230,7 +230,7 @@ The constructor establishes the invariant, and each returned state preserves it 
 4. **Extraction and generated-code preparation.** Charon's MIR semantics, Aeneas's translation and the deterministic adaptations in `prepare-extraction.py` described in [reproduction](#reproducing-the-extraction). The pinned Aeneas revision is `d9733413`, Charon is `ed22146b`, and Charon uses nightly-2026-02-07 rather than the workspace's Rust 1.91.0. `extract.sh` verifies checkout pins and available binary version information; a Charon binary from another commit with the same reported crate version is not distinguished. The extraction targets x86_64, including its BLS chunk helpers, Fr FFT and verifier MSM8 kernels. The theorem includes the scalar route of this extraction; it does not check a separate non-x86_64 extraction. Transfer to other target configurations relies on their feature detection and source gating. Exact `--check` reproduction detects drift, not translator bugs.
 5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents; their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand; their source code is not refined by the extraction. The extraction contains the portable scalar, field, G1, MSM, pairing and SHA implementations themselves.
 6. **CPU observations and G2 fallback.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Its mixed-state model does not establish hardware support for arbitrary stored routes; constructor-produced states align those routes with stable CPU observations. `BlsExternals` supplies only the deterministic total `uncompressG2` observation for the signature-decoding path. `UncompressG2.BlstMatchesSpec` requires exact agreement on every 96-byte input, including acceptance, affine limbs and infinity. The external wrapper returns `ok`, so termination and absence of Rust-level failure for that opaque call are assumed. KZG does not use this external. The blst structs retained in generated KZG types are data containers, not evidence of calls to blst operations.
-7. **Pending generated-component contracts.** The seven [KZG contracts](#kzg-verifier) are explicit propositions about the actual generated definitions. M0 proves composition under them; later milestones must prove the contracts themselves. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its construction is already derived from `PortableFpCorrect`. Independent specification-operation witnesses and negative controls do not prove that the actual generated implementations satisfy these premises. The extender uses only `FrCorrect` and `FrBytesCorrect`.
+7. **Pending generated-component contracts.** The seven [KZG contracts](#kzg-verifier) are explicit propositions about the actual generated definitions. M0 proves composition under them; later milestones must prove the contracts themselves. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its construction is already derived from `PortableFpCorrect`. Negative controls do not prove that the actual generated implementations satisfy these premises. The extender uses only `FrCorrect` and `FrBytesCorrect`.
 8. **Runtime setup for literal-upstream corollaries.** Only `verify_eq_upstream` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
 Every `--opaque` item in `extract.sh` has this interpretation:
@@ -569,7 +569,7 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 |---|---|
 | `Representation.lean` | Byte, Montgomery-limb, affine and Jacobian interpretations |
 | `ScalarContracts.lean`, `ShaContracts.lean`, `PortableFp.lean`, `PortableMsmContract.lean`, `PairingContract.lean` | Named premises about generated components |
-| `Externals.lean`, `SpecExternals.lean` | Internal premise bundle and independent specification-operation witnesses |
+| `Externals.lean` | Internal bundle of generated-component premises |
 | `CurveWorkState.lean`, `PairingTable.lean`, `PairingTableBounds.lean`, `PairingTableConstruction.lean` | Exact table preservation, semantic invariant, literal certificates and generated constructor proof |
 | `Model.lean` | Spec decomposition, column-aggregated IFFT and intermediate computations |
 | `IOLawful.lean` | Monad laws missing from Lean v4.29.1's IO interface |
@@ -700,8 +700,7 @@ Paths below are relative to `lean/controls/`.
 
 | Control | Checked boundary |
 |---|---|
-| `KzgSpecInstance.lean` | Conditional application of the actual-runtime headline and independent specification-operation witnesses. |
-| `KzgExternalBoundary.lean` | Mutation controls for independent specification-operation laws; they do not replace the fixed generated implementation. |
+| `KzgSpecInstance.lean` | Conditional application of the actual-runtime headline. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
 | `KzgStreamingSha.lean` | Constant-zero hashing and reversed integer byte order are rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |
@@ -732,6 +731,6 @@ Paths below are relative to `lean/controls/`.
 
 For layer-specific build commands, see the [KZG scoped checks](lean/README.md#scoped-checks).
 
-The pairing control negates the specification's Boolean result symbolically at valid inputs. It does not evaluate the full pairing or prove the generated pairing implementations. `Spec/PairingEquations.lean` proves unfolding equations for the total `Fp2.powNat`, `Fp12.powNat`, `millerSteps`, `millerLoop` and final exponentiation, and expresses `pairingCheck` as an array fold. `controls/PairingEquations.lean` prints their axioms.
+`Spec/PairingEquations.lean` proves unfolding equations for the total `Fp2.powNat`, `Fp12.powNat`, `millerSteps`, `millerLoop` and final exponentiation, and expresses `pairingCheck` as an array fold. `controls/PairingEquations.lean` prints their axioms.
 
 The extender's mathematical controls distinguish the actual 4096-element transform stages using field-array witnesses. Its layout controls compare the generated copy loop and output-update function, plus mutations of the model's error branches. A further control constructs an extender and proves its generated decoder rejects an all-`ff` blob. They do not rerun a mutated Rust implementation.
