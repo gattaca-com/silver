@@ -27,10 +27,10 @@ impl PairingLines {
                 let mut l = 0;
                 while l < 2 {
                     let lane = 4 * pair + 2 * l;
-                    out[step][pair][l] = Fp2 {
-                        c0: Fp(pack64(&lines.0[step][lane])).mul(&r_prime_to_r),
-                        c1: Fp(pack64(&lines.0[step][lane + 1])).mul(&r_prime_to_r),
-                    };
+                    out[step][pair][l] = Fp2::new(
+                        Fp(pack64(&lines.0[step][lane])).mul(&r_prime_to_r),
+                        Fp(pack64(&lines.0[step][lane + 1])).mul(&r_prime_to_r),
+                    );
                     l += 1;
                 }
                 pair += 1;

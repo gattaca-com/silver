@@ -13,6 +13,11 @@ pub struct Fp2 {
 impl Fp2 {
     pub const ZERO: Fp2 = Fp2 { c0: Fp::ZERO, c1: Fp::ZERO };
 
+    // Aeneas mistranslates an Fp2 struct literal written into a nested array slot.
+    pub const fn new(c0: Fp, c1: Fp) -> Self {
+        Self { c0, c1 }
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[inline]
     pub fn mul(&self, rhs: &Self) -> Self {
