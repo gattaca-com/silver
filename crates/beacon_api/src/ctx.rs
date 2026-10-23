@@ -8,7 +8,7 @@ use silver_common::{Enr, Identify, Keypair};
 
 use crate::{
     NodeStatus,
-    beacon::pools::OperationPools,
+    beacon::{pools::OperationPools, proposer_preferences::ProposerPreferences},
     config::spec_body,
     http::{
         ids::is_recognized_id,
@@ -29,6 +29,7 @@ pub(crate) struct ApiCtx {
     pub(crate) shufflings: PostedShufflings,
     pub(crate) has_sidecar: bool,
     pub(crate) pools: OperationPools,
+    pub(crate) proposer_preferences: ProposerPreferences,
 }
 
 impl ApiCtx {
@@ -55,6 +56,7 @@ impl ApiCtx {
             shufflings: PostedShufflings::default(),
             has_sidecar,
             pools: OperationPools::default(),
+            proposer_preferences: ProposerPreferences::default(),
         }
     }
 

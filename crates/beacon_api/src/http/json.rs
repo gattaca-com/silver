@@ -13,9 +13,11 @@ use silver_common::{
     ssz_view::{
         AttestationView, BEACON_BLOCK_HEADER_SIZE, BYTES_PER_KZG_COMMITMENT, BeaconBlockHeaderView,
         IndexedAttestationView, PAYLOAD_ATTESTATION_DATA_SIZE, PROPOSER_SLASHING_SIZE,
-        PayloadAttestationDataView, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
-        SINGLE_ATT_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE, SignedBlsToExecutionChangeView,
-        SignedVoluntaryExitView, SingleAttestationView, SyncCommitteeContributionView,
+        PayloadAttestationDataView, ProposerPreferencesView, SIGNED_BLS_CHANGE_SIZE,
+        SIGNED_PROPOSER_PREFERENCES_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
+        SYNC_COMMITTEE_CONTRIBUTION_SIZE, SignedBlsToExecutionChangeView,
+        SignedProposerPreferencesView, SignedVoluntaryExitView, SingleAttestationView,
+        SyncCommitteeContributionView,
     },
 };
 
@@ -501,6 +503,30 @@ impl Json<'_> {
         self.end_object();
         self.key("signature");
         self.hex(SignedBlsToExecutionChangeView::signature(ssz));
+        self.end_object();
+    }
+
+    pub(crate) fn signed_proposer_preferences(
+        &mut self,
+        ssz: &[u8; SIGNED_PROPOSER_PREFERENCES_SIZE],
+    ) {
+        let message = SignedProposerPreferencesView::message(ssz);
+        self.begin_object();
+        self.key("message");
+        self.begin_object();
+        self.key("dependent_root");
+        self.hex(ProposerPreferencesView::dependent_root(message));
+        self.key("proposal_slot");
+        self.quoted_u64(ProposerPreferencesView::proposal_slot(message));
+        self.key("validator_index");
+        self.quoted_u64(ProposerPreferencesView::validator_index(message));
+        self.key("fee_recipient");
+        self.hex(ProposerPreferencesView::fee_recipient(message));
+        self.key("target_gas_limit");
+        self.quoted_u64(ProposerPreferencesView::target_gas_limit(message));
+        self.end_object();
+        self.key("signature");
+        self.hex(SignedProposerPreferencesView::signature(ssz));
         self.end_object();
     }
 
