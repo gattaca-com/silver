@@ -90,4 +90,14 @@ theorem sub_value {ty : UScalarTy} (x y : UScalar ty) (h : y.val ≤ x.val) :
     ∃ z : UScalar ty, x - y = ok z ∧ z.val = x.val - y.val :=
   ⟨UScalar.ofNatCore _ (by have := x.hBounds; omega), sub_ok x y h, rfl⟩
 
+theorem multiply_wide (x y : U64) :
+    ∃ p : U128, (UScalar.cast .U128 x)*(UScalar.cast .U128 y) = ok p ∧
+      p.val = x.val*y.val := by
+  have h : (UScalar.cast .U128 x).val*(UScalar.cast .U128 y).val < 2^128 := by
+    rw [cast128_val,cast128_val]
+    have h := mac_bounds x y 0#u64 0#u128 (by decide)
+    simpa only [show (0#u64).val = 0 from rfl,show (0#u128).val = 0 from rfl,add_zero] using h
+  refine ⟨UScalar.ofNatCore _ h,mul_ok _ _ h,?_⟩
+  simp only [UScalar.ofNatCore_val_eq,cast128_val]
+
 end LeanBlsSimd.Word64

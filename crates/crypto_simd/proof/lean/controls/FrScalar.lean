@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.MultiplyAdd
+import LeanBlsSimd.Kzg.Fr.Divide
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -59,6 +59,23 @@ theorem dropped_multiply_add_top_rejected (out : Array U64 4#usize) :
   have hzero : value (Array.repeat 4#usize 0#u64) = 0 := by rfl
   rw [hfull,hzero] at hvalue
   norm_num [radix] at hvalue hout
+  omega
+
+theorem zeroed_reduction_rejected :
+    fr.divide_out_word one 0#u64 ≠ ok (Array.repeat 4#usize 0#u64) := by
+  intro h
+  obtain ⟨out,m,hr,hvalue,hcancel⟩ := divide_out_word_refines one 0#u64
+  have heq := Result.ok.inj (hr.symm.trans h)
+  subst out
+  have hm := m.hBounds
+  have hrval : value fr.R = (EthLib.Cryptography.Bls.Fr.modulus : ℤ) := by
+    unfold fr.R
+    rfl
+  rw [hrval] at hvalue hcancel
+  norm_num [value,wordsValue,Array.repeat,one,Array.make,radix,
+    EthLib.Cryptography.Bls.Fr.modulus,UScalarTy.numBits] at hvalue hcancel hm
+  change (0 : ℤ) = _ at hvalue
+  obtain ⟨k,hk⟩ := hcancel
   omega
 
 end LeanBlsSimd.Controls.FrScalar
