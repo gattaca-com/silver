@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.SetupLiterals
 import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
