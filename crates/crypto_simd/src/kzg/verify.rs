@@ -225,7 +225,7 @@ impl CellBatchVerifier {
         }
         let rlp = self.curve_work.sum(&self.proof_points, &self.scalars);
 
-        self.curve_work.pairing_check(&ll, &rlc, &rli, &rlp)
+        self.curve_work.pairing_check(&PairingSums { ll, rlc, rli, rlp })
     }
 
     /// RLI = [Σ_k r^k·I_k(s)]. The r^k-weighted cells of each column are
@@ -346,32 +346,45 @@ impl CurveWork {
         }
     }
 
-    /// e(LL, [s^64])·e(RL, −[1]) = 1, with RL = RLC − RLI + RLP.
-    fn pairing_check(&self, ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> bool {
+    /// e(LL, [s^64])·e(RL, −[1]) = 1.
+    fn pairing_check(&self, sums: &PairingSums) -> bool {
         match self {
             #[cfg(target_arch = "x86_64")]
             Self::Lanes { .. } => {
                 // SAFETY: `Lanes` is built only where `ifma_available` held.
-                unsafe { PAIRING_LINES.pairing_check(&pairing_points_in_lanes(ll, rlc, rli, rlp)) }
+                unsafe { PAIRING_LINES.pairing_check(&sums.points_in_lanes()) }
             }
-            Self::Portable { lines, .. } => lines.pairing_check(&pairing_points(ll, rlc, rli, rlp)),
+            Self::Portable { lines, .. } => lines.pairing_check(&sums.points()),
         }
     }
 }
 
-/// [LL, RL], gathered by complete additions on the scalar `G1`.
-fn pairing_points(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> [G1; 2] {
-    let difference = G1::from_blst(rlc).add_complete(&G1::from_blst(rli).neg());
-    [G1::from_blst(ll), difference.add_complete(&G1::from_blst(rlp))]
+/// The pairing check's sums, in blst's Jacobian form: LL, and the RLC, RLI
+/// and RLP of RL = RLC − RLI + RLP.
+struct PairingSums {
+    ll: blst_p1,
+    rlc: blst_p1,
+    rli: blst_p1,
+    rlp: blst_p1,
 }
 
-/// LL in lane 0 and RL in lane 1, Jacobian, gathered by complete additions.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512ifma")]
-fn pairing_points_in_lanes(ll: &blst_p1, rlc: &blst_p1, rli: &blst_p1, rlp: &blst_p1) -> G1x8 {
-    let infinity = blst_p1::default();
-    let difference = two_lanes(ll, rlc).add_complete(&two_lanes(&infinity, rli).neg());
-    difference.add_complete(&two_lanes(&infinity, rlp))
+impl PairingSums {
+    /// [LL, RL], gathered by complete additions on the scalar `G1`.
+    fn points(&self) -> [G1; 2] {
+        let difference = G1::from_blst(&self.rlc).add_complete(&G1::from_blst(&self.rli).neg());
+        [G1::from_blst(&self.ll), difference.add_complete(&G1::from_blst(&self.rlp))]
+    }
+
+    /// LL in lane 0 and RL in lane 1, Jacobian, gathered by complete
+    /// additions.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512f,avx512ifma")]
+    fn points_in_lanes(&self) -> G1x8 {
+        let infinity = blst_p1::default();
+        let difference =
+            two_lanes(&self.ll, &self.rlc).add_complete(&two_lanes(&infinity, &self.rli).neg());
+        difference.add_complete(&two_lanes(&infinity, &self.rlp))
+    }
 }
 
 /// `first` in lane 0 and `second` in lane 1, from blst's Jacobian form; the

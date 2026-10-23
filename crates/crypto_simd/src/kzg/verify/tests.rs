@@ -2,9 +2,7 @@ use blst::{blst_fp, blst_fp_from_uint64, blst_p1, blst_p1_generator, blst_p1_mul
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::CurveWork;
-#[cfg(target_arch = "x86_64")]
-use super::pairing_points_in_lanes;
+use super::{CurveWork, PairingSums};
 #[cfg(target_arch = "x86_64")]
 use crate::kernels_run;
 use crate::{
@@ -29,6 +27,10 @@ fn random_point(rng: &mut ChaCha8Rng) -> blst_p1 {
 /// p in another Jacobian form: (p + q) − q.
 fn rescaled(p: &blst_p1, q: &blst_p1) -> blst_p1 {
     g1_add(&g1_add(p, q), &g1_neg(q))
+}
+
+fn pairing_sums(sums: &[blst_p1; 4]) -> PairingSums {
+    PairingSums { ll: sums[0], rlc: sums[1], rli: sums[2], rlp: sums[3] }
 }
 
 fn blst_pairing_points(sums: &[blst_p1; 4]) -> (blst_p1_affine, blst_p1_affine) {
@@ -79,8 +81,7 @@ fn pairing_points_match_blst() {
         let (want_left, want_right) = blst_pairing_points(sums);
         // SAFETY: `kernels_run` checked `ifma_available`.
         let (x, y) = unsafe {
-            let (x, y) =
-                pairing_points_in_lanes(&sums[0], &sums[1], &sums[2], &sums[3]).to_affine();
+            let (x, y) = pairing_sums(sums).points_in_lanes().to_affine();
             (x.to_blst_limbs(), y.to_blst_limbs())
         };
         assert!(x[0] == want_left.x.l && y[0] == want_left.y.l, "case {case}: LL");
@@ -102,10 +103,10 @@ fn pairing_check_matches_blst() {
         let want = pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR);
         #[cfg(target_arch = "x86_64")]
         if let Some(lanes) = &lanes {
-            let got = lanes.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
+            let got = lanes.pairing_check(&pairing_sums(sums));
             assert_eq!(got, want, "lanes, case {case}");
         }
-        let got = portable.pairing_check(&sums[0], &sums[1], &sums[2], &sums[3]);
+        let got = portable.pairing_check(&pairing_sums(sums));
         assert_eq!(got, want, "portable, case {case}");
         held += want as usize;
     }
