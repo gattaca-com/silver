@@ -101,7 +101,7 @@ theorem inverse_fft_refines (hfr : FrCorrect)
           frEncode := by
   exact inverse_fft_refinement hfr out input roots values ho hv hi hr
 
-theorem interpolation_commitment_refines [RuntimeFeatures] (h : ExternalsCorrect)
+theorem interpolation_commitment_refines [RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)
@@ -117,7 +117,7 @@ theorem interpolation_commitment_refines [RuntimeFeatures] (h : ExternalsCorrect
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers)) := by
   exact interpolation_commitment_refinement h v hv indices cells evals powers hs hb hcell he hp
 
-theorem pairing_holds_refines [RuntimeFeatures] (h : ExternalsCorrect)
+theorem pairing_holds_refines [RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)

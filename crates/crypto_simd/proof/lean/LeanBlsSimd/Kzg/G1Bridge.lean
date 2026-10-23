@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.Contracts
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls

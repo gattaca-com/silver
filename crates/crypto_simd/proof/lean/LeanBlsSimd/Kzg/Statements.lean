@@ -115,7 +115,7 @@ theorem new_returns_ok [cpu : RuntimeFeatures] (hfr : FrCorrect)
   exact ⟨v, hnew, hinv⟩
 
 /-- Replacing work preserves the invariant when its persistent table is valid. -/
-theorem stateInvariant_lincomb (v : verify.CellBatchVerifier) (work : verify.CurveWork)
+theorem stateInvariant_curveWork (v : verify.CellBatchVerifier) (work : verify.CurveWork)
     (hwork : CurveWorkInvariant work) (hv : StateInvariant v) :
     StateInvariant {v with curve_work := work} :=
   ⟨hv.1, hv.2.1, hv.2.2.1, hwork⟩
@@ -125,13 +125,13 @@ theorem stateInvariant_allows_scalar [RuntimeFeatures] (hfp : PortableFpCorrect)
     ∃ next, StateInvariant next ∧ next.kernel = v.kernel ∧
       CurveWork.isLanes next.curve_work = false := by
   obtain ⟨work, _, hwork, hroute⟩ := curveWork_portable_refinement hfp
-  exact ⟨{v with curve_work := work}, stateInvariant_lincomb v work hwork hv, rfl, hroute⟩
+  exact ⟨{v with curve_work := work}, stateInvariant_curveWork v work hwork hv, rfl, hroute⟩
 
 theorem default_eq_new [RuntimeFeatures] :
     verify.CellBatchVerifier.Insts.CoreDefaultDefault.default =
       verify.CellBatchVerifier.new := rfl
 
-theorem glue_refinement [RuntimeFeatures] (h : ExternalsCorrect)
+theorem glue_refinement [RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (i : Input) (hi : i.Representable) :
     ∃ next, i.generated v = ok (i.model, next) ∧ StateInvariant next := by
@@ -147,7 +147,7 @@ theorem verify_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrByt
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
-  let h : ExternalsCorrect := ⟨hfr, hbytes, hsha, hfp, hg1, hmsm, hpairing⟩
+  let h : ComponentContracts := ⟨hfr, hbytes, hsha, hfp, hg1, hmsm, hpairing⟩
   obtain ⟨initial, hnew, hinv⟩ := new_returns_ok hfr hfp hg1
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨next, hgen, hnext⟩ := glue_refinement h v hv i hi

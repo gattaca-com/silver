@@ -115,13 +115,13 @@ Each premise is a named `Prop` about actual generated functions:
 | `PortableMsmCorrect` | Generated portable MSM agrees with `G1.msm` for valid affine points, canonical ordinary scalar words and arbitrary scratch. |
 | `PairingCorrect` | Lane and portable pairing functions agree with the two fixed-G2 specification pairings, under their point and table representations. This includes `PAIRING_LINES` encoding the lines of [s^64]G2 and −G2. |
 
-`ExternalsCorrect` bundles these premises internally for composition. It is not an operation dictionary. No KZG headline takes `BlstCorrect` or an opaque G2 decoder.
+`ComponentContracts` bundles these premises internally for composition. It is not an operation dictionary. No KZG headline takes `BlstCorrect` or an opaque G2 decoder.
 
 `RuntimeFeatures` supplies independent `simdAvailable`, `shaAvailable` and `bmi2Available` Booleans. Construction selects the interpolation kernel and the `CurveWork` route from `simdAvailable`. SHA dispatch reads `shaAvailable`, while portable field multiplication can select BMI2 independently. The premises and headlines quantify over any fixed feature assignment. The model covers all four combinations of interpolation and curve-work routes independently of the eight feature assignments. Real execution requires hardware support for every instruction on the selected routes; constructor-produced states align the stored routes with stable CPU observations.
 
 `CurveWork.Portable` stores its pairing table alongside MSM scratch. `PortableLinesRep` interprets every coefficient of that table as a canonical Montgomery value matching the fixed extracted lane table. `PairingTableBounds.lean` checks each of its 544 lanes for normalized limbs and a canonical value. `pairingLines_new_refinement` proves the actual nested constructor from `PortableFpCorrect`, packing and radix-conversion lemmas; it does not require `PairingCorrect`. `CurveWork.sum_frame` proves that successful MSM preserves the exact table and the stored route.
 
-`new_returns_ok` needs only `FrCorrect`, `PortableFpCorrect` and `G1DecoderCorrect`. `default_eq_new` transfers that result through `Default`. `new_returns_ok_route` characterizes the constructor's two stored choices; `Routes.verify_preserves_routes` preserves them through successful calls. `StateInvariant` additionally fixes the setup, cosets, interpolation tables and buffer lengths, while permitting earlier scratch contents. Replacing curve work requires a valid replacement table: `stateInvariant_lincomb` takes `CurveWorkInvariant work`. It is not an unrestricted invariant equivalence for arbitrary replacement work.
+`new_returns_ok` needs only `FrCorrect`, `PortableFpCorrect` and `G1DecoderCorrect`. `default_eq_new` transfers that result through `Default`. `new_returns_ok_route` characterizes the constructor's two stored choices; `Routes.verify_preserves_routes` preserves them through successful calls. `StateInvariant` additionally fixes the setup, cosets, interpolation tables and buffer lengths, while permitting earlier scratch contents. Replacing curve work requires a valid replacement table: `stateInvariant_curveWork` takes `CurveWorkInvariant work`. It is not an unrestricted invariant equivalence for arbitrary replacement work.
 
 `verify_eq_upstream` has the same component premises and execution/state conclusion for the upstream `verifyCellKzgProofBatch` action. It additionally requires `TrustedSetup.get! = pure embeddedSetup`. The embedded-setup headline has no runtime-loader premise. The G2 setup points are fixed mathematical constants with proved decoding and subgroup certificates. Generated KZG execution consumes the fixed pairing table without calling `uncompress_in_g2_blst`.
 
@@ -190,7 +190,7 @@ Import `LeanBlsSimd.Kzg.Statements`. With the seven contracts in scope, apply:
 verify_eq_spec hfr hbytes hsha hfp hg1 hmsm hpairing
 ```
 
-Use `new_returns_ok hfr hfp hg1` for construction alone, or `glue_refinement` with an `ExternalsCorrect` bundle for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
+Use `new_returns_ok hfr hfp hg1` for construction alone, or `glue_refinement` with an `ComponentContracts` bundle for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
 
 For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
@@ -569,7 +569,7 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 |---|---|
 | `Representation.lean` | Byte, Montgomery-limb, affine and Jacobian interpretations |
 | `ScalarContracts.lean`, `ShaContracts.lean`, `PortableFp.lean`, `PortableMsmContract.lean`, `PairingContract.lean` | Named premises about generated components |
-| `Externals.lean` | Internal bundle of generated-component premises |
+| `Contracts.lean` | Internal bundle of generated-component premises |
 | `CurveWorkState.lean`, `PairingTable.lean`, `PairingTableBounds.lean`, `PairingTableConstruction.lean` | Exact table preservation, semantic invariant, literal certificates and generated constructor proof |
 | `Model.lean` | Spec decomposition, column-aggregated IFFT and intermediate computations |
 | `IOLawful.lean` | Monad laws missing from Lean v4.29.1's IO interface |

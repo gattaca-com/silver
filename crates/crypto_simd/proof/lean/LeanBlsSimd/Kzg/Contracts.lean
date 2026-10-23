@@ -10,7 +10,7 @@ open silver_crypto_simd
 namespace LeanBlsSimd.Kzg
 
 /-- Internal bundle for composing the explicit phase-2 headline premises. -/
-structure ExternalsCorrect [RuntimeFeatures] : Prop where
+structure ComponentContracts [RuntimeFeatures] : Prop where
   fr : FrCorrect
   bytes : FrBytesCorrect
   sha : ShaCorrect

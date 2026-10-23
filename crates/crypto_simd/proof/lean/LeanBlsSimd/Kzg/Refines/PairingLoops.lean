@@ -14,7 +14,7 @@ namespace LeanBlsSimd.Kzg.Pairing
 set_option maxHeartbeats 4000000
 set_option maxRecDepth 16000
 
-theorem powers_loop [RuntimeFeatures] (h : ExternalsCorrect)
+theorem powers_loop [RuntimeFeatures] (h : ComponentContracts)
     (r power : Fr) (acc : alloc.vec.Vec blst.blst_fr) (iter : core.ops.range.Range Usize)
     (hi : iter.start.val ≤ iter.end.val)
     (hb : acc.val.length + (iter.end.val - iter.start.val) ≤ Usize.max) :
@@ -61,7 +61,7 @@ theorem weights_model (mapping : List Usize) (powers : _root_.Array Fr) (count :
   simp only [hmap, _root_.Array.set!_eq_setIfInBounds, _root_.Array.toList_setIfInBounds, weightStep, hxy,
     _root_.Array.getElem!_toList]
 
-theorem weights_loop [RuntimeFeatures] (h : ExternalsCorrect)
+theorem weights_loop [RuntimeFeatures] (h : ComponentContracts)
     (mapping : alloc.vec.Vec Usize) (vp acc : alloc.vec.Vec blst.blst_fr)
     (powers weights : List Fr) (hp : vp.val = powers.map frEncode)
     (ha : acc.val = weights.map frEncode) (n : Nat)
@@ -129,7 +129,7 @@ theorem shifted_model (indices : List U64) (powers : _root_.Array Fr)
   have hkp : k < powers.size := by omega
   simp [shiftedScalar, getElem!_pos, hki, hkp]
 
-theorem shifts_loop [RuntimeFeatures] (h : ExternalsCorrect)
+theorem shifts_loop [RuntimeFeatures] (h : ComponentContracts)
     (c : cosets.Cosets) (hc : CosetsRep c) (vp acc : alloc.vec.Vec blst.blst_fr)
     (powers : List Fr) (hp : vp.val = powers.map frEncode) (indices : Slice U64)
     (hnp : indices.val.length ≤ powers.length) (hindices : ∀ i ∈ indices.val, i.val < 128)

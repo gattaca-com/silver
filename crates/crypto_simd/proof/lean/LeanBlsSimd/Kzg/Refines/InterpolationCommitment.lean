@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Lincomb
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.Contracts
 import LeanBlsSimd.Kzg.Refines.Interpolation
 import LeanBlsSimd.Kzg.SetupValidity
 import LeanBlsSimd.Kzg.Refines.Cosets
@@ -92,7 +92,7 @@ private theorem setup_lincomb_inputs
     exact frEncode_reduced f
   exact ⟨hsize, setup_points_valid s hs, hscalars⟩
 
-theorem setup_lincomb [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+theorem setup_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
     (scratch : verify.CurveWork) :
@@ -106,7 +106,7 @@ theorem setup_lincomb [cpu : RuntimeFeatures] (h : ExternalsCorrect)
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
-theorem setup_verify_lincomb [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+theorem setup_verify_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
     (scratch : verify.CurveWork) :
@@ -302,7 +302,7 @@ private theorem resize_nil {α : Type} (n : Nat) (x : α) :
     ([] : List α).resize n x = List.replicate n x := by
   simp [List.resize]
 
-private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize)) (hkernel : v.kernel = none)
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)
@@ -393,7 +393,7 @@ end LeanBlsSimd.Kzg.Interpolation
 
 namespace LeanBlsSimd.Kzg
 
-theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize))
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)

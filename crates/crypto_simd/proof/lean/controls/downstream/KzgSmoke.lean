@@ -21,7 +21,7 @@ theorem scalar_decode_populates_evaluations (hbytes : FrBytesCorrect)
     decode_cells_refines hbytes v cells hb
   exact ⟨next, hcall, hevaluations hscalar, hsetup, hcosets⟩
 
-theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (kernel : interpolation_kernel.InterpolationKernel) (hkernel : v.kernel = some kernel)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -39,7 +39,7 @@ theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ExternalsCorrect)
   · simp [hkernel]
   · exact hp
 
-theorem pairing_consumes_cells [cpu : RuntimeFeatures] (h : ExternalsCorrect)
+theorem pairing_consumes_cells [cpu : RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)

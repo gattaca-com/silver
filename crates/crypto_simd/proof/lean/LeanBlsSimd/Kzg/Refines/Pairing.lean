@@ -10,7 +10,7 @@ namespace LeanBlsSimd.Kzg.Pairing
 set_option maxHeartbeats 4000000
 set_option maxRecDepth 16000
 
-theorem pairing_holds_composition [RuntimeFeatures] (h : ExternalsCorrect)
+theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
     (hinterp : InterpolationCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -132,7 +132,7 @@ end LeanBlsSimd.Kzg.Pairing
 
 namespace LeanBlsSimd.Kzg
 
-theorem pairing_holds_refinement [RuntimeFeatures] (h : ExternalsCorrect)
+theorem pairing_holds_refinement [RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
