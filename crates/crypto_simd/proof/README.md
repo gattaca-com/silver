@@ -212,6 +212,10 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 The seven contracts concern fixed generated definitions. Proving that any contract is inhabited requires proving that implementation correct. Consumer examples remain conditional until those proofs are complete.
 
+`controls/ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` evaluate the generated functions against the specification. These `#eval` checks use Lean's interpreter outside the proof kernel. They provide finite evidence, not proofs or satisfiability witnesses for the contracts. Assertions make a mismatch fail the build.
+
+Samples cover scalar carries and canonical-byte boundaries, reducing 2^256−1, both BMI2 field paths, SHA padding and chunk boundaries, and reusable MSM scratch. Portable pairing includes a nonzero true case: `(G1.generator, [s^64]G1)` against `([s^64]G2, −G2)`, using the pinned setup. Negating its second G1 point must produce false. The sample checks the specification verdict and generated verdict separately. Lane pairing is not sampled here. G1 decoding has the separate generated-code differential corpus.
+
 ### KZG cell extension
 
 Import `LeanBlsSimd.Kzg.Extender.Statements` and apply:
@@ -702,6 +706,9 @@ Paths below are relative to `lean/controls/`.
 
 | Control | Checked boundary |
 |---|---|
+| `ContractSamples.lean` | Interpreter samples of generated Fr/byte operations, both portable Fp paths and both SHA implementations, with wrong-result controls. |
+| `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. |
+| `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |

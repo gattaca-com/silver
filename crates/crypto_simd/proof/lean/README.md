@@ -96,6 +96,8 @@ Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) 
 8. From this folder, `AENEAS_DIR=/path/to/aeneas ./extract.sh --check` must report no drift.
 9. Update `../README.md`: the sha256 and git blob of each changed file, and any counts that changed. Changes to `mod.rs` must preserve or update the corresponding wrapper model, refinement and public theorem.
 
+`ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` run asserting `#eval` samples of the generated contracts. They are finite interpreter evidence outside the kernel, not witnesses of the pending propositions. The default strict-control target imports them. The pairing samples cover portable execution, including a nonzero true case from the pinned setup.
+
 ### Mapping Rust changes to Lean
 
 | Rust file | Model | Refinement | Proofs that read the model |
@@ -159,6 +161,8 @@ The supporting wrappers in `Kzg/Refines.lean` take the generated cell arguments.
 The seven component contracts concern fixed generated definitions. Their satisfiability requires proofs of those implementations; conditional consumers do not provide such witnesses.
 
 For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.compute_eq_spec` takes `FrCorrect` and `FrBytesCorrect`; construction needs only `FrCorrect`. Preserve total construction and execution, canonicality in both directions, and exact `computeCells` output bytes. Rejection must produce a specification error and leave output cells unchanged. Every call preserves the state invariant, including the optional kernel's tables. It permits arbitrary scratch contents of the fixed lengths, covering calls after rejection. There is no group, hash, pairing, G1 decoder or runtime setup premise. `Extender.default_eq_new` covers `Default`. `Extender.model_eq_spec` preserves the complete specification result, and `Extender.model_accepts_iff` characterizes valid inputs.
+
+`ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` run asserting `#eval` samples of the generated contracts. They are finite interpreter evidence outside the kernel, not witnesses of the pending propositions. The default strict-control target imports them. The pairing samples cover portable execution, including a nonzero true case from the pinned setup.
 
 ### Mapping Rust changes to Lean
 

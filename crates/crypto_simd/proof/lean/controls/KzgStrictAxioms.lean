@@ -2,6 +2,9 @@ import LeanBlsSimd.Axioms
 import controls.KzgMathematical
 import controls.KzgSetupBoundary
 import controls.KzgStreamingSha
+import controls.ContractSamples
+import controls.MsmSamples
+import controls.PairingSamples
 import controls.KzgPairingTable
 import controls.KzgRuntimeBoundary
 import controls.KzgRepresentationAxioms
