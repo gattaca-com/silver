@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Words
+import LeanBlsSimd.Kzg.Fr.MultiplyAdd
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -43,5 +43,22 @@ theorem missing_borrow_rejected (out : Array U64 4#usize) :
   change fr.sub_words (Array.repeat 4#usize 0#u64) one = ok (actual,true) at hr
   have impossible := hr.symm.trans h
   cases impossible
+
+def allMaximum : Array U64 4#usize := Array.repeat 4#usize 18446744073709551615#u64
+
+theorem dropped_multiply_add_top_rejected (out : Array U64 4#usize) :
+    fr.multiply_add (Array.repeat 4#usize 0#u64) allMaximum 18446744073709551615#u64 ≠
+      ok (out,0#u64) := by
+  intro h
+  obtain ⟨actual,top,hr,hvalue⟩ := multiply_add_refines
+    (Array.repeat 4#usize 0#u64) allMaximum 18446744073709551615#u64
+  have heq := Prod.mk.inj (Result.ok.inj (hr.symm.trans h))
+  rcases heq with ⟨rfl,rfl⟩
+  have hout := value_bounds actual
+  have hfull : value allMaximum = (radix : ℤ)^4-1 := by rfl
+  have hzero : value (Array.repeat 4#usize 0#u64) = 0 := by rfl
+  rw [hfull,hzero] at hvalue
+  norm_num [radix] at hvalue hout
+  omega
 
 end LeanBlsSimd.Controls.FrScalar

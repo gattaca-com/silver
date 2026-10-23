@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Words
+import LeanBlsSimd.Kzg.Fr.MultiplyAdd
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.PairingEquations
