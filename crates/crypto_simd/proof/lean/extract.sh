@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: extract.sh [--check]
 #
-# Regenerate LeanBlsSimd/Extracted/{Types,Funs}.lean from crates/crypto_simd/src using Charon
+# Regenerate LeanBlsSimd/Extracted/{Types,Literals,Funs}.lean from crates/crypto_simd/src using Charon
 # and Aeneas, then print the diff. By default, replace the checked-in files with the result.
 # With --check, leave them unchanged and exit 1 if the comparison finds a difference.
 # The handwritten TypesExternal.lean and FunsExternal.lean are left unchanged.
@@ -85,10 +85,10 @@ trap 'rm -rf "$work"' EXIT
 "$aeneas" -backend lean -split-files -subdir LeanBlsSimd/Extracted \
   -dest "$work/lean" "$work/silver_crypto_simd.llbc"
 
-# Supply the external dictionary, quote reserved identifiers and hoist setup rows.
+# Bind runtime dictionaries, quote reserved identifiers and split setup literals.
 python3 -I "$lean_dir/prepare-extraction.py" "$work/lean/LeanBlsSimd/Extracted/Funs.lean"
 
-for f in Types.lean Funs.lean; do
+for f in Types.lean Literals.lean Funs.lean; do
   for side in "$lean_dir/LeanBlsSimd/Extracted/$f" "$work/lean/LeanBlsSimd/Extracted/$f"; do
     if [[ ! -f $side ]]; then
       echo "missing $side" >&2
@@ -103,7 +103,7 @@ mask_spans() {
 }
 
 drift=false
-for f in Types.lean Funs.lean; do
+for f in Types.lean Literals.lean Funs.lean; do
   mkdir -p "$work/committed" "$work/regenerated"
   mask_spans "$lean_dir/LeanBlsSimd/Extracted/$f" >"$work/committed/$f"
   mask_spans "$work/lean/LeanBlsSimd/Extracted/$f" >"$work/regenerated/$f"
@@ -128,5 +128,6 @@ if $check; then
   exit 0
 fi
 
-cp "$work/lean/LeanBlsSimd/Extracted/Types.lean" "$work/lean/LeanBlsSimd/Extracted/Funs.lean" \
-  "$lean_dir/LeanBlsSimd/Extracted/"
+for f in Types.lean Literals.lean Funs.lean; do
+  cp "$work/lean/LeanBlsSimd/Extracted/$f" "$lean_dir/LeanBlsSimd/Extracted/"
+done
