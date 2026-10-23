@@ -56,7 +56,10 @@ pub struct Msm8 {
 impl Msm8 {
     /// Σ scalars[i]·points[i] for little-endian scalars below r and points of
     /// G1. Points at infinity, which blst encodes as all-zero coordinates,
-    /// contribute nothing.
+    /// contribute nothing. Points with equal x force the complete-addition
+    /// fallback, at most about twice the batched cost while the digits spread
+    /// over the buckets. Scalars no caller can steer spread them; chosen ones
+    /// can crowd a window into one bucket and cost several times more.
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn msm(&mut self, points: &[blst_p1_affine], scalars: &[[u64; 4]]) -> blst_p1 {
         assert!(points.len() == scalars.len(), "one scalar per point");

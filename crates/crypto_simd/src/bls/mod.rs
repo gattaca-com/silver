@@ -45,7 +45,7 @@ pub mod limbs;
 pub mod miller_lines;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
-pub mod msm8;
+pub(crate) mod msm8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub mod pairing;
