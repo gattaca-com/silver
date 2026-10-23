@@ -1,3 +1,4 @@
+import controls.FrBytes
 import controls.SetupLiterals
 import controls.InverseRoots
 import controls.FrScalar
