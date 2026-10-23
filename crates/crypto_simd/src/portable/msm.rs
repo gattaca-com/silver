@@ -17,12 +17,27 @@ use crate::{
     bls::glv::{HALF_SCALAR_BITS, decompose},
     portable::{
         g1::G1,
-        msm::{buckets::Buckets, pairs::BatchedAdds, store::PointStore},
+        msm::{
+            buckets::{Buckets, NARROWEST_WINDOW_BITS},
+            pairs::BatchedAdds,
+            store::{NEGATED, PointStore},
+        },
     },
 };
 
 /// Points per bucket fill, as Msm8's.
 const CHUNK: usize = 4096;
+/// A fill's windows at most: halves cut into the narrowest windows.
+const MOST_WINDOWS: usize = HALF_SCALAR_BITS / NARROWEST_WINDOW_BITS + 1;
+// A fill of n ≤ CHUNK points keeps every u32 count, offset and store index
+// below the sign bit:
+// - each of the 2n halves has at most one reference per window, so the
+//   reference total, each list's count and each offset are at most
+//   2·MOST_WINDOWS·n; a round's pairs, at most half the references, fit too;
+// - the store holds the 2n originals and at most one sum per first-round pair,
+//   so at most (2 + MOST_WINDOWS)·n slots.
+const _: () = assert!(2 * MOST_WINDOWS * CHUNK < NEGATED as usize);
+const _: () = assert!((2 + MOST_WINDOWS) * CHUNK < NEGATED as usize);
 
 #[derive(Default)]
 pub struct Msm {

@@ -9,6 +9,9 @@ use crate::{
     },
 };
 
+/// The window width for the fewest points, which gives a fill the most windows.
+pub const NARROWEST_WINDOW_BITS: usize = 4;
+
 /// The points of each window's signed-digit buckets, as references into a
 /// `PointStore`: bucket b of window j, 1 ≤ b ≤ 2^(w−1), is list
 /// j·2^(w−1) + b − 1. The lists are Msm8's; the window sums run one window at
@@ -184,7 +187,7 @@ impl Buckets {
 /// The window width for `points` scalars, trading windows for buckets.
 fn window_bits(points: usize) -> usize {
     if points < 128 {
-        4
+        NARROWEST_WINDOW_BITS
     } else if points < 1024 {
         6
     } else {
