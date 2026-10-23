@@ -9,7 +9,7 @@ import Mathlib.Tactic.LinearCombination
 The tables of `crates/crypto_simd/src/bls/constants.rs`, transcribed verbatim, and each proved equal to
 its derivation from p, R = 2^416 and z.
 
-p, r and |z| are the definitions of `ethereum/cryptography-specs`: `Fp.modulus`, `Fr.modulus` and
+p, r and |z| are the definitions of `ethereum/EthLib`: `Fp.modulus`, `Fr.modulus` and
 `blsX`. The numerical identities are checked in Lean's kernel (`decide +kernel`);
 modular powers use natural-number representatives with explicit `% p`.
 Facts about Fp are stated in `ZMod Fp.modulus`, which the spec identifies with `Fp` (`Fp.toZMod`).

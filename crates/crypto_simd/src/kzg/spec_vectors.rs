@@ -1,7 +1,7 @@
-//! The reference vectors of `ethereum/cryptography-specs`, fetched by `make -C
-//! crates/kzg`. An expected error (`null`) counts as false. An input whose
-//! items do not have the sizes the Rust types fix cannot reach the verifier;
-//! such a vector must expect an error.
+//! Reference vectors from `ethereum/EthLib`, fetched by
+//! `make -C crates/crypto_simd`. An expected error (`null`) counts as false.
+//! Inputs with sizes incompatible with the Rust types cannot reach the
+//! verifier; those vectors must expect an error.
 
 use std::{fs, path::PathBuf};
 

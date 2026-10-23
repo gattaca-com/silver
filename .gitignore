@@ -41,5 +41,5 @@ kurtosis/el/
 
 crates/beacon_state/tile/tests/sync_scenarios/gloas_fork_transition/fixtures/
 
-# ethereum/cryptography-specs KZG vectors, fetched by `make -C crates/crypto_simd`
+# KZG fixture vectors, fetched by `make -C crates/crypto_simd`
 crates/crypto_simd/cryptography-specs-tests/

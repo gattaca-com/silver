@@ -1,6 +1,6 @@
 //! KZG cell operations of EIP-7594 (PeerDAS) over the BLS12-381 setup of
 //! EIP-4844, following the executable Lean specification in
-//! `ethereum/cryptography-specs`. Point decoding goes
+//! `ethereum/EthLib`. Point decoding goes
 //! through `crate::bls`; every other curve and field operation is a blst
 //! call in `blst_ops`.
 #![allow(
