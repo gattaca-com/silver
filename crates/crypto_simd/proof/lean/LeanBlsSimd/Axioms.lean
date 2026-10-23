@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Encoding
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
 import LeanBlsSimd.Spec.PairingEquations

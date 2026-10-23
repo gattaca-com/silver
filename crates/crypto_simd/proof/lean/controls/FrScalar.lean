@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Fr.Montgomery
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -93,5 +93,14 @@ theorem zeroed_montgomery_rejected :
   change (0 : ℤ)*(radix : ℤ)^4 = 1*1+k*EthLib.Cryptography.Bls.Fr.modulus at hvalue
   norm_num [EthLib.Cryptography.Bls.Fr.modulus] at hvalue
   omega
+
+theorem ordinary_one_is_not_montgomery_one :
+    fr.fr_mul (LeanBlsSimd.Kzg.frEncode 1) (LeanBlsSimd.Kzg.frEncode 1) ≠
+      ok (blst.blst_fr.mk one) := by
+  rw [fr_mul_refines]
+  intro h
+  have hvalue := congrArg (fun z : blst.blst_fr => value z.l) (Result.ok.inj h)
+  have hne : value (LeanBlsSimd.Kzg.frEncode (1*1)).l ≠ value one := by decide +kernel
+  exact hne hvalue
 
 end LeanBlsSimd.Controls.FrScalar
