@@ -292,32 +292,6 @@ impl Fp {
         Self(inverse_words(&self.0)).mul(&Self(R3))
     }
 
-    /// Each value's inverse, 0 for 0, from one `inverse` by Montgomery's
-    /// trick: prefix products, then back down with 2 products per value.
-    #[cfg(any(test, all(target_arch = "x86_64", feature = "fp8_scalar_inverse")))]
-    pub fn inverse_each(values: &[Fp; 8]) -> [Fp; 8] {
-        let mut prefix = [ONE; 8];
-        let mut running = ONE;
-        let mut k = 0;
-        while k < 8 {
-            if !values[k].is_zero() {
-                running = running.mul(&values[k]);
-            }
-            prefix[k] = running;
-            k += 1;
-        }
-        let mut inverse = running.inverse();
-        let mut out = [Self::ZERO; 8];
-        while k > 0 {
-            k -= 1;
-            if !values[k].is_zero() {
-                out[k] = if k > 0 { inverse.mul(&prefix[k - 1]) } else { inverse };
-                inverse = inverse.mul(&values[k]);
-            }
-        }
-        out
-    }
-
     /// self^((p − 3)/4), from 4-bit windows of the fixed exponent.
     pub fn pow_p_minus_3_over_4(&self) -> Self {
         let mut table = [ONE; 16];

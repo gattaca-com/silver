@@ -10,8 +10,6 @@ default = ["simd"]
 simd = []
 # Tests against the reference vectors that `make -C crates/crypto_simd` fetches.
 spec_vectors = []
-# `Fp8::inverse` by Montgomery's trick over its lanes and one scalar inverse.
-fp8_scalar_inverse = []
 
 [dependencies]
 blst.workspace = true

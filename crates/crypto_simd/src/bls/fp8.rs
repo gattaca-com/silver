@@ -26,8 +26,6 @@ use crate::bls::{
     },
     limbs::{LANES, Limbs, pack64, unpack52},
 };
-#[cfg(feature = "fp8_scalar_inverse")]
-use crate::portable::fp::Fp;
 
 #[derive(Clone, Copy)]
 pub struct Fp8(pub [__m512i; LIMBS]);
@@ -554,32 +552,9 @@ impl Fp8 {
     }
 
     /// `self^(p-2)`, the inverse, and 0 for 0: p - 2 = 4·(p-3)/4 + 1.
-    #[cfg(not(feature = "fp8_scalar_inverse"))]
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub fn inverse(&self) -> Self {
         self.pow_p_minus_3_over_4().square().square().mul(self)
-    }
-
-    /// The inverse, and 0 for 0: the lanes' values by Montgomery's trick, from
-    /// one scalar inverse.
-    #[cfg(feature = "fp8_scalar_inverse")]
-    #[target_feature(enable = "avx512f,avx512ifma")]
-    pub fn inverse(&self) -> Self {
-        let words = self.to_blst_limbs();
-        let mut values = [Fp::ZERO; LANES];
-        let mut lane = 0;
-        while lane < LANES {
-            values[lane] = Fp(words[lane]);
-            lane += 1;
-        }
-        let inverses = Fp::inverse_each(&values);
-        let mut out = [[0u64; 6]; LANES];
-        lane = 0;
-        while lane < LANES {
-            out[lane] = inverses[lane].0;
-            lane += 1;
-        }
-        Self::from_blst_limbs(&out)
     }
 
     /// Lanes whose plain value exceeds (p - 1) / 2: the lexicographically
