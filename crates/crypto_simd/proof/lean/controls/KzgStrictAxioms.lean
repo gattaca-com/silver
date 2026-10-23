@@ -3,6 +3,12 @@ import controls.KzgSpecInstance
 import controls.KzgExternalBoundary
 import controls.KzgMathematical
 import controls.KzgSetupBoundary
+import controls.KzgStreamingSha
+import controls.KzgPairingTable
+import controls.KzgRuntimeBoundary
+import controls.KzgRepresentationAxioms
+import controls.ExtractedLiterals
+import controls.ShaIntrinsics
 import controls.ExtenderSpecInstance
 import controls.ExtenderExternalBoundary
 import controls.ExtenderMathematical
@@ -22,5 +28,5 @@ import controls.SignedLimbs
 import controls.InterpolationKernel
 import controls.Msm8
 
--- Check the proof, its concrete instance, and every negative control together.
+-- Check conditional generated consumers, independent model witnesses, and mutation controls.
 #assert_standard_axioms

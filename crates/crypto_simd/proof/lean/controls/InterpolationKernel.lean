@@ -96,14 +96,14 @@ theorem missing_first_normalise_rejects_dit_input :
     rw [product_limb] at hbound
     norm_num at hbound
 
-private def addCellWrongUsed [KzgExternals]
+private def addCellWrongUsed
     (kernel : interpolation_kernel.InterpolationKernel)
     (cell : Array U8 2048#usize) (column : Usize) (power : blst.blst_fr) :
     Result interpolation_kernel.InterpolationKernel := do
   let next ← interpolation_kernel.InterpolationKernel.add_cell kernel cell column power
   ok { next with used := alloc.vec.Vec.set kernel.used 0#usize true }
 
-theorem wrong_used_column_rejected [e : KzgExternals] (hblst : BlstCorrect e)
+theorem wrong_used_column_rejected (hfr : FrCorrect)
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cell : Array U8 2048#usize) (values : _root_.Array Fr) (hcell : CellRep cell values)
     (hflags : kernel.used.val = List.replicate 128 false) :
@@ -112,7 +112,7 @@ theorem wrong_used_column_rejected [e : KzgExternals] (hblst : BlstCorrect e)
       next.used.val = kernel.used.val.set 1 true ∧
       addCellWrongUsed kernel cell 1#usize (frEncode 1) = ok mutated ∧
       mutated.used.val ≠ next.used.val := by
-  obtain ⟨next, hcall, _, _, hused, _, _⟩ := add_cell_refinement hblst kernel hk cell
+  obtain ⟨next, hcall, _, _, hused, _, _⟩ := add_cell_refinement hfr kernel hk cell
     1#usize 1 values (_root_.Array.replicate 64 0) (by decide) hcell
     (by simp [hflags]) (by intro _ j; simp [j.isLt])
   refine ⟨next, { next with used := alloc.vec.Vec.set kernel.used 0#usize true },

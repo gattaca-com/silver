@@ -104,45 +104,34 @@ theorem permute_ignores_higher_index_bits (a b : M512) :
   constructor <;> apply Vector.ext <;> intro i hi <;>
     simp [_mm512_permutex2var_epi64, Nat.testBit_eq_decide_div_mod_eq]
 
-theorem omitting_multiplier_scale_changes_generated_multiplier :
-    @fr8.multiplier specExternals (frEncode 1) ≠ ok (frEncode 1) := by
-  have h := @Kernel.multiplier_refinement specExternals specExternals_correct.1 (1 : Fr)
+theorem omitting_multiplier_scale_changes_generated_multiplier (hfr : FrCorrect) :
+    fr8.multiplier (frEncode 1) ≠ ok (frEncode 1) := by
+  have h := Kernel.multiplier_refinement hfr (1 : Fr)
   rw [h.1]
   intro he
   have hword := congrArg (fun x : blst.blst_fr => x.l.val[0]!.val) (Result.ok.inj he)
   exact (by decide +kernel : (frEncode (1 * Fr.ofNat 16)).l.val[0]!.val ≠
     (frEncode 1).l.val[0]!.val) hword
 
-@[reducible] def failingSimdSerialization : KzgExternals :=
-  { failSerialization with simdAvailable := true }
+theorem failing_simd_serialization_is_incorrect : ¬ SerializationLaw failSerialization :=
+  failSerialization_rejected
 
-private theorem failing_simd_blst_correct : BlstCorrect failingSimdSerialization := by
-  have h := specExternals_correct.1
-  exact ⟨h.g2_decode, h.fr_bytes, h.fr_u64, h.fr_add, h.fr_sub, h.fr_mul, h.fr_inverse,
-    h.hash, h.g1_affine, h.g1_add, h.g1_neg, h.g2_neg, h.lincomb, h.pairing⟩
-
-theorem failing_simd_serialization_is_incorrect : ¬ FrToBytesCorrect failingSimdSerialization := by
-  intro h
-  obtain ⟨out, hserialize, _⟩ := h 0
-  change fail Error.panic = ok out at hserialize
-  cases hserialize
-
-theorem kernel_route_does_not_require_serialization :
+theorem kernel_route_does_not_require_serialization (hfr : FrCorrect) :
     ∃ initial kernel,
-      @cell_extender.CellExtender.new failingSimdSerialization = ok initial ∧
+      @cell_extender.CellExtender.new ⟨true, false, false⟩ = ok initial ∧
       initial.kernel = some kernel ∧ Extender.StateInvariant initial ∧
       ∀ blob cells, ∃ verdict next out,
-        @cell_extender.CellExtender.compute failingSimdSerialization initial blob cells =
+        cell_extender.CellExtender.compute initial blob cells =
           ok (verdict, next, out) ∧
         (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  obtain ⟨initial, hnew, hi, hsimd⟩ := @new_dispatch_refinement failingSimdSerialization failing_simd_blst_correct
+  obtain ⟨initial, hnew, hi, hsimd⟩ := @new_dispatch_refinement ⟨true, false, false⟩ hfr
   cases hk : initial.kernel with
   | none => simp only [hk, Option.isSome_none] at hsimd; cases hsimd
   | some kernel =>
     refine ⟨initial, kernel, hnew, hk, hi, ?_⟩
     intro blob cells
     obtain ⟨verdict, next, out, hc, _, hm, _, _⟩ :=
-      @Kernel.compute_refinement failingSimdSerialization initial hi kernel hk blob cells
+      Kernel.compute_refinement initial hi kernel hk blob cells
     exact ⟨verdict, next, out, hc, hm⟩
 
 end LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary

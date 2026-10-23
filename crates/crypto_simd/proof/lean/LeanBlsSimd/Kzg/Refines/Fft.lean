@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Refines.Loop
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Kzg.Fft
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
@@ -15,7 +15,7 @@ local instance fftRawFrInhabited : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 set_option maxRecDepth 10000
 set_option maxHeartbeats 4000000
 
-private theorem scale_loop [e : KzgExternals] (h : BlstCorrect e)
+private theorem scale_loop (h : FrCorrect)
     (factor : Fr) (remaining doneValues : List Fr) (out : Slice blst.blst_fr)
     (ho : out.val = (doneValues ++ remaining).map frEncode)
     (iter : core.ops.range.Range Usize) (hi : iter.start.val = doneValues.length)
@@ -41,7 +41,7 @@ private theorem scale_loop [e : KzgExternals] (h : BlstCorrect e)
     have hbody : fft.inverse_fft_loop.body (frEncode factor) iter out =
         ok (cont (iter', out')) := by
       simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair,
-        hindex, blst_ops.fr_mul, h.fr_mul, hupdate]
+        hindex, h.fr_mul, hupdate]
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * factor]) out' rfl iter'
       (by simp [hi', hi]) (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
     refine ⟨result, ?_, ?_⟩
@@ -121,7 +121,7 @@ private theorem butterfly_spec (values roots : _root_.Array Fr) (n : Nat)
   · simp [upperOutputs, lowerOutputs, butterflyInputs, h]
   · simp [upperOutputs, lowerOutputs, butterflyInputs, List.getElem_append, h]
 
-private theorem butterfly_suffix [e : KzgExternals] (h : BlstCorrect e)
+private theorem butterfly_suffix (h : FrCorrect)
     (remaining : List ButterflyInput) (doneLeft doneRight : List Fr)
     (out roots : Slice blst.blst_fr) (stride half : Usize)
     (iter : core.ops.range.Range Usize)
@@ -199,8 +199,8 @@ private theorem butterfly_suffix [e : KzgExternals] (h : BlstCorrect e)
       simp [hout2, beforeEven, afterEven, List.append_assoc]
     have hbody : fft.transform_loop.body roots stride half iter out = ok (cont (iter', out2)) := by
       simp only [fft.transform_loop.body, hnext, bind_tc_ok, Function.uncurry_apply_pair,
-        hadd, hodd, hmul, hroot, blst_ops.fr_mul, h.fr_mul, heven,
-        blst_ops.fr_sub, h.fr_sub, hupdateOdd, heven1, blst_ops.fr_add,
+        hadd, hodd, hmul, hroot, h.fr_mul, heven,
+        h.fr_sub, hupdateOdd, heven1,
         h.fr_add, hupdateEven]
     obtain ⟨result, hloop, hresult⟩ := ih (doneLeft ++ [a + b * w]) (doneRight ++ [a - b * w])
       out2 iter' hout2' (by simp [hd]) (by simp [hi', hi]) (he'.trans he)
@@ -216,7 +216,7 @@ private theorem butterfly_suffix [e : KzgExternals] (h : BlstCorrect e)
     · simpa [upperOutputs, lowerOutputs, List.append_assoc] using hresult
 
 
-private theorem transform_refinement [e : KzgExternals] (h : BlstCorrect e)
+private theorem transform_refinement (h : FrCorrect)
     (capacity k : Nat) (hcapacity : capacity ≤ Usize.max) (out input roots : Slice blst.blst_fr) (start stride : Usize)
     (values rvalues : _root_.Array Fr)
     (ho : out.val.length = 2^k) (hiLen : input.val.length = capacity)
@@ -356,7 +356,7 @@ private theorem transform_refinement [e : KzgExternals] (h : BlstCorrect e)
       simpa only [List.nil_append, List.append_nil, hspec] using hresult
 
 
-theorem fft_refinement_of_blst [e : KzgExternals] (h : BlstCorrect e)
+theorem fft_refinement_of_blst (h : FrCorrect)
     (k : Nat) (out input roots : Slice blst.blst_fr) (values rvalues : _root_.Array Fr)
     (ho : out.val.length = 2^k) (hv : values.size = 2^k) (hrv : rvalues.size = 2^k)
     (hi : input.val = values.toList.map frEncode)
@@ -408,7 +408,7 @@ theorem fft_refinement_of_blst [e : KzgExternals] (h : BlstCorrect e)
     hsub, lift, bind_tc_ok, hand, hrem, hquot, htransform]
   simp [massert]
 
-theorem inverse_fft_refinement_of_blst [e : KzgExternals] (h : BlstCorrect e)
+theorem inverse_fft_refinement_of_blst (h : FrCorrect)
     (k : Nat) (out input roots : Slice blst.blst_fr) (values rvalues : _root_.Array Fr)
     (scale : Fr)
     (ho : out.val.length = 2^k) (hv : values.size = 2^k) (hrv : rvalues.size = 2^k)
@@ -426,7 +426,7 @@ theorem inverse_fft_refinement_of_blst [e : KzgExternals] (h : BlstCorrect e)
   · simp only [fft.inverse_fft, hfft, bind_tc_ok, hscale]
   · simpa [Model.inverseFft] using hresult
 
-theorem inverse_fft_refinement [e : KzgExternals] (h : ExternalsCorrect e)
+theorem inverse_fft_refinement (h : FrCorrect)
     (out input roots : Slice blst.blst_fr) (values : _root_.Array Fr)
     (ho : out.val.length = 64) (hv : values.size = 64)
     (hi : input.val = values.toList.map frEncode)
@@ -435,7 +435,7 @@ theorem inverse_fft_refinement [e : KzgExternals] (h : ExternalsCorrect e)
       result.val =
         (Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse).toList.map
           frEncode :=
-  inverse_fft_refinement_of_blst h.blst 6 out input roots values
+  inverse_fft_refinement_of_blst h 6 out input roots values
     (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse ho hv
     (by simp [Model.inverseRoots, Model.roots]) hi hr
 

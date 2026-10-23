@@ -13,7 +13,7 @@ def storeChunk (cells : Cells) (j : Nat) (bs : Aeneas.Std.Array U8 32#usize) : C
   ⟨cells.val.set (64+j/64)
     (Aeneas.Std.Array.setSlice! cells.val[64+j/64]! ((j%64)*32) bs.val), by simp [cells.property]⟩
 
-theorem write_chunk_body [e : KzgExternals] (hbytes : FrToBytesCorrect e)
+theorem write_chunk_body (hbytes : FrBytesCorrect)
     (v : cell_extender.CellExtender) (values : _root_.Array Fr)
     (hsize : values.size = 4096) (hvals : v.evaluations.val = values.toList.map frEncode)
     (cells : Cells) (iter iter' : core.ops.range.Range Usize)
@@ -23,7 +23,7 @@ theorem write_chunk_body [e : KzgExternals] (hbytes : FrToBytesCorrect e)
     ∃ bs, arrayBytes bs = blsFieldToBytes values[rev iter.start.val]! ∧
       cell_extender.CellExtender.write_extension_loop.body v iter cells =
         ok (cont (iter', storeChunk cells iter.start.val bs)) := by
-  obtain ⟨bs, hserialize, hbs⟩ := hbytes values[rev iter.start.val]!
+  obtain ⟨bs, hserialize, hbs⟩ := hbytes.fr_to_bytes values[rev iter.start.val]!
   refine ⟨bs, hbs, ?_⟩
   have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
       v.evaluations (UScalar.ofNatCore (rev iter.start.val) (by have := rev_lt iter.start.val; scalar_tac)) =
@@ -58,7 +58,7 @@ theorem write_chunk_body [e : KzgExternals] (hbytes : FrToBytesCorrect e)
   have hbounds : (iter.start.val % 64) * 32 + 32 ≤ 2048 := by omega
   have hroom : 32 ≤ 2048 - (iter.start.val % 64) * 32 := by omega
   simp only [cell_extender.CellExtender.write_extension_loop.body, hn, bind_tc_ok,
-    Function.uncurry_apply_pair, reverse_bits_blob, hindex, blst_ops.fr_to_bytes,
+    Function.uncurry_apply_pair, reverse_bits_blob, hindex,
     hserialize, cells_per_ext_blob_eq, hhalf, hquot, haddCell, hrem, hmul,
     hcellIndex, haddStop]
   simp [core.array.Array.index_mut, core.ops.index.IndexMutSlice,

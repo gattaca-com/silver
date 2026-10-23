@@ -3,6 +3,7 @@
 import Aeneas
 import LeanBlsSimd.Extracted.Types
 import LeanBlsSimd.Extracted.FunsExternal
+import LeanBlsSimd.Extracted.Literals
 open Aeneas Aeneas.Std Result ControlFlow Error
 set_option linter.dupNamespace false
 set_option linter.hashCommand false
@@ -16,9 +17,9 @@ noncomputable section
 
 namespace silver_crypto_simd
 
-section BlsScope
+section RuntimeScope
 
-variable [bls.BlsExternals]
+variable [RuntimeFeatures] [bls.BlsExternals]
 
 /-- Trait implementation: [core::array::{core::marker::Copy for [T; N]}]
     Source: '/rustc/library/core/src/array/mod.rs', lines 441:0-441:45
@@ -220,8 +221,30 @@ def bls.constants.P_MINUS_3_OVER_4_WINDOWS : Array Std.U8 95#usize :=
 def bls.constants.Z_BITS : Array Std.U32 6#usize :=
   Array.make 6#usize [ 63#u32, 62#u32, 60#u32, 57#u32, 48#u32, 16#u32 ] (by rfl)
 
+/-- [silver_crypto_simd::bls::constants::is_lower_z_bit]:
+    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 122:0-124:1 -/
+def bls.constants.is_lower_z_bit (bit : Std.U32) : Result Bool := do
+  let i ← Array.index_usize bls.constants.Z_BITS 1#usize
+  if bit = i
+  then ok true
+  else
+    let i1 ← Array.index_usize bls.constants.Z_BITS 2#usize
+    if bit = i1
+    then ok true
+    else
+      let i2 ← Array.index_usize bls.constants.Z_BITS 3#usize
+      if bit = i2
+      then ok true
+      else
+        let i3 ← Array.index_usize bls.constants.Z_BITS 4#usize
+        if bit = i3
+        then ok true
+        else
+          let i4 ← Array.index_usize bls.constants.Z_BITS 5#usize
+          ok (bit = i4)
+
 /-- [silver_crypto_simd::bls::constants::PSI_X_MONT]
-    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 122:0-131:2
+    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 128:0-137:2
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.constants.PSI_X_MONT : Array Std.U64 8#usize :=
@@ -232,7 +255,7 @@ def bls.constants.PSI_X_MONT : Array Std.U64 8#usize :=
     ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::PSI_Y_MONT]
-    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 134:0-155:2
+    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 140:0-161:2
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.constants.PSI_Y_MONT : Array (Array Std.U64 8#usize) 2#usize :=
@@ -250,7 +273,7 @@ def bls.constants.PSI_Y_MONT : Array (Array Std.U64 8#usize) 2#usize :=
     ] (by rfl)
 
 /-- [silver_crypto_simd::bls::constants::HALF_MONT]
-    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 157:0-166:2
+    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 163:0-172:2
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.constants.HALF_MONT : Array Std.U64 8#usize :=
@@ -260,11 +283,81 @@ def bls.constants.HALF_MONT : Array Std.U64 8#usize :=
     4495440562385464#u64, 95823#u64
     ] (by rfl)
 
-/-- [silver_crypto_simd::bls::fp8::unpack52]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 214:4-222:5
+/-- [silver_crypto_simd::bls::constants::FROBENIUS_MONT]
+    Source: 'crates/crypto_simd/src/bls/constants.rs', lines 176:0-309:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def bls.constants.FROBENIUS_MONT
+  : Array (Array (Array Std.U64 8#usize) 2#usize) 6#usize :=
+  let a := Array.repeat 8#usize 0#u64
+  let a1 := Array.repeat 8#usize 0#u64
+  let a2 := Array.repeat 8#usize 0#u64
+  Array.make 6#usize [
+    Array.make 2#usize [
+      Array.make 8#usize [
+        1768077660895663#u64, 1784948830651471#u64, 2451090568736637#u64,
+        1041162398848034#u64, 2928153646378469#u64, 4493615705178672#u64,
+        3948273840835109#u64, 85134#u64
+        ] (by rfl), a
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 8#usize [
+        1110231914919186#u64, 135434728223998#u64, 4372148503475291#u64,
+        148280549165791#u64, 1962485673131953#u64, 3230627058933140#u64,
+        1625548170429424#u64, 70042#u64
+        ] (by rfl),
+      Array.make 8#usize [
+        3111892735718809#u64, 4345166423017121#u64, 2014872198592420#u64,
+        181531919736623#u64, 118302694732756#u64, 1759486670069049#u64,
+        3417059113506394#u64, 36470#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      a1,
+      Array.make 8#usize [
+        2887619656701512#u64, 3506825232770873#u64, 3194117024243938#u64,
+        3831735519717732#u64, 116464425319080#u64, 948437682199678#u64,
+        2304207272264489#u64, 95745#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 8#usize [
+        1475929141823818#u64, 233426362838188#u64, 3772966930094105#u64,
+        2011278801024775#u64, 3400583483352765#u64, 2662677468968009#u64,
+        3931170223919247#u64, 69267#u64
+        ] (by rfl),
+      Array.make 8#usize [
+        1475929141823818#u64, 233426362838188#u64, 3772966930094105#u64,
+        2011278801024775#u64, 3400583483352765#u64, 2662677468968009#u64,
+        3931170223919247#u64, 69267#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 8#usize [
+        433572666959180#u64, 811172912181225#u64, 3761786518283360#u64,
+        39485822292855#u64, 963829703832841#u64, 451939658376161#u64,
+        1209873829163780#u64, 74367#u64
+        ] (by rfl), a2
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 8#usize [
+        2867636033475505#u64, 391859567191562#u64, 1758094731501684#u64,
+        1829746881288152#u64, 3282280788620009#u64, 903190798898960#u64,
+        514111110412853#u64, 32797#u64
+        ] (by rfl),
+      Array.make 8#usize [
+        1354488617162490#u64, 4088741584049557#u64, 125326343195531#u64,
+        3003665214984759#u64, 3302107206615195#u64, 4086922930103228#u64,
+        24896546152469#u64, 73716#u64
+        ] (by rfl)
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::limbs::unpack52]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 14:4-22:5
     Visibility: public -/
 @[rust_loop_body]
-def bls.fp8.unpack52_loop.body
+def bls.limbs.unpack52_loop.body
   (x : Array Std.U64 6#usize) (iter : core.ops.range.Range Std.Usize)
   (out : Array Std.U64 8#usize) :
   Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array Std.U64
@@ -303,37 +396,37 @@ def bls.fp8.unpack52_loop.body
     let a ← Array.update out j i4
     ok (cont (iter2, a))
 
-/-- [silver_crypto_simd::bls::fp8::unpack52]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 214:4-222:5
+/-- [silver_crypto_simd::bls::limbs::unpack52]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 14:4-22:5
     Visibility: public -/
 @[rust_loop]
-def bls.fp8.unpack52_loop
+def bls.limbs.unpack52_loop
   (iter : core.ops.range.Range Std.Usize) (x : Array Std.U64 6#usize)
   (out : Array Std.U64 8#usize) :
   Result (Array Std.U64 8#usize)
   := do
   loop
-    (fun (iter1, out1) => bls.fp8.unpack52_loop.body x iter1 out1)
+    (fun (iter1, out1) => bls.limbs.unpack52_loop.body x iter1 out1)
     (iter, out)
 
-/-- [silver_crypto_simd::bls::fp8::unpack52]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 212:0-224:1
+/-- [silver_crypto_simd::bls::limbs::unpack52]:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 12:0-24:1
     Visibility: public -/
-def bls.fp8.unpack52
+def bls.limbs.unpack52
   (x : Array Std.U64 6#usize) : Result (Array Std.U64 8#usize) := do
   let out := Array.repeat 8#usize 0#u64
-  bls.fp8.unpack52_loop { start := 0#usize, «end» := bls.constants.LIMBS } x
-    out
+  bls.limbs.unpack52_loop { start := 0#usize, «end» := bls.constants.LIMBS }
+    x out
 
-/-- [silver_crypto_simd::bls::fp8::LANES]
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 27:0-27:27
+/-- [silver_crypto_simd::bls::limbs::LANES]
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 6:0-6:27
     Visibility: public -/
-@[global_simps, irreducible] def bls.fp8.LANES : Std.Usize := 8#usize
+@[global_simps, irreducible] def bls.limbs.LANES : Std.Usize := 8#usize
 
-/-- [silver_crypto_simd::bls::decompress_g2::less_than_p]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 106:4-113:1 -/
+/-- [silver_crypto_simd::bls::encoding::less_than_p]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 25:4-32:1 -/
 @[rust_loop_body]
-def bls.decompress_g2.less_than_p_loop.body
+def bls.encoding.less_than_p_loop.body
   (x : Array Std.U64 6#usize) (w : Std.Usize) :
   Result (ControlFlow Std.Usize Bool)
   := do
@@ -347,37 +440,35 @@ def bls.decompress_g2.less_than_p_loop.body
     else ok (cont w1)
   else ok (done false)
 
-/-- [silver_crypto_simd::bls::decompress_g2::less_than_p]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 106:4-113:1 -/
+/-- [silver_crypto_simd::bls::encoding::less_than_p]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 25:4-32:1 -/
 @[rust_loop]
-def bls.decompress_g2.less_than_p_loop
+def bls.encoding.less_than_p_loop
   (x : Array Std.U64 6#usize) (w : Std.Usize) : Result Bool := do
   loop
-    (fun w1 => bls.decompress_g2.less_than_p_loop.body x w1)
+    (fun w1 => bls.encoding.less_than_p_loop.body x w1)
     w
 
-/-- [silver_crypto_simd::bls::decompress_g2::less_than_p]:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 104:0-113:1 -/
+/-- [silver_crypto_simd::bls::encoding::less_than_p]:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 23:0-32:1 -/
 @[reducible]
-def bls.decompress_g2.less_than_p
-  (x : Array Std.U64 6#usize) : Result Bool := do
-  bls.decompress_g2.less_than_p_loop x 6#usize
+def bls.encoding.less_than_p (x : Array Std.U64 6#usize) : Result Bool := do
+  bls.encoding.less_than_p_loop x 6#usize
 
 /-- [silver_crypto_simd::bls::G2_COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 55:0-55:40
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 69:0-69:40
     Visibility: public -/
 @[global_simps, irreducible] def bls.G2_COMPRESSED_LEN : Std.Usize := 96#usize
 
-/-- [silver_crypto_simd::bls::decompress_g2::FP_BYTES]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 17:0-17:46 -/
+/-- [silver_crypto_simd::bls::encoding::FP_BYTES]
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 5:0-5:57 -/
 @[global_simps, irreducible]
-def bls.decompress_g2.FP_BYTES : Result Std.Usize :=
-  bls.G2_COMPRESSED_LEN / 2#usize
+def bls.encoding.FP_BYTES : Result Std.Usize := bls.G2_COMPRESSED_LEN / 2#usize
 
-/-- [silver_crypto_simd::bls::decompress_g2::fp_words]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 95:4-99:5 -/
+/-- [silver_crypto_simd::bls::encoding::fp_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 14:4-18:5 -/
 @[rust_loop_body]
-def bls.decompress_g2.fp_words_loop.body
+def bls.encoding.fp_words_loop.body
   (be : Slice Std.U8) (iter : core.ops.range.Range Std.Usize)
   (words : Array Std.U64 6#usize) :
   Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array Std.U64
@@ -392,7 +483,7 @@ def bls.decompress_g2.fp_words_loop.body
     let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
     let i ← w + 1#usize
     let i1 ← 8#usize * i
-    let i2 ← bls.decompress_g2.FP_BYTES
+    let i2 ← bls.encoding.FP_BYTES
     let i3 ← i2 - i1
     let i4 ← 8#usize * w
     let i5 ← i2 - i4
@@ -405,44 +496,41 @@ def bls.decompress_g2.fp_words_loop.body
     let a ← Array.update words w i6
     ok (cont (iter1, a))
 
-/-- [silver_crypto_simd::bls::decompress_g2::fp_words]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 95:4-99:5 -/
+/-- [silver_crypto_simd::bls::encoding::fp_words]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 14:4-18:5 -/
 @[rust_loop]
-def bls.decompress_g2.fp_words_loop
+def bls.encoding.fp_words_loop
   (iter : core.ops.range.Range Std.Usize) (be : Slice Std.U8)
   (words : Array Std.U64 6#usize) :
   Result (Array Std.U64 6#usize)
   := do
   loop
-    (fun (iter1, words1) => bls.decompress_g2.fp_words_loop.body be iter1
-      words1)
+    (fun (iter1, words1) => bls.encoding.fp_words_loop.body be iter1 words1)
     (iter, words)
 
-/-- [silver_crypto_simd::bls::decompress_g2::fp_words]:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 93:0-101:1 -/
-def bls.decompress_g2.fp_words
+/-- [silver_crypto_simd::bls::encoding::fp_words]:
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 12:0-20:1 -/
+def bls.encoding.fp_words
   (be : Slice Std.U8) : Result (Array Std.U64 6#usize) := do
   let words := Array.repeat 6#usize 0#u64
-  bls.decompress_g2.fp_words_loop { start := 0#usize, «end» := 6#usize } be
-    words
+  bls.encoding.fp_words_loop { start := 0#usize, «end» := 6#usize } be words
 
-/-- [silver_crypto_simd::bls::decompress_g2::FLAG_LARGER_ROOT]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 20:0-20:45 -/
+/-- [silver_crypto_simd::bls::encoding::FLAG_LARGER_ROOT]
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 8:0-8:45 -/
 @[global_simps, irreducible]
-def bls.decompress_g2.FLAG_LARGER_ROOT : Std.U8 := 32#u8
+def bls.encoding.FLAG_LARGER_ROOT : Std.U8 := 32#u8
 
-/-- [silver_crypto_simd::bls::decompress_g2::FLAG_INFINITY]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 19:0-19:42 -/
-@[global_simps, irreducible]
-def bls.decompress_g2.FLAG_INFINITY : Std.U8 := 64#u8
+/-- [silver_crypto_simd::bls::encoding::FLAG_INFINITY]
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 7:0-7:42 -/
+@[global_simps, irreducible] def bls.encoding.FLAG_INFINITY : Std.U8 := 64#u8
 
-/-- [silver_crypto_simd::bls::decompress_g2::FLAG_COMPRESSED]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 18:0-18:44 -/
+/-- [silver_crypto_simd::bls::encoding::FLAG_COMPRESSED]
+    Source: 'crates/crypto_simd/src/bls/encoding.rs', lines 6:0-6:44 -/
 @[global_simps, irreducible]
-def bls.decompress_g2.FLAG_COMPRESSED : Std.U8 := 128#u8
+def bls.encoding.FLAG_COMPRESSED : Std.U8 := 128#u8
 
 /-- [silver_crypto_simd::bls::decompress::decode]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 38:4-60:5 -/
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 39:4-61:5 -/
 @[rust_loop_body]
 def bls.decompress.decode_loop.body
   (inputs : Array (Array Std.U8 48#usize) 8#usize)
@@ -462,36 +550,36 @@ def bls.decompress.decode_loop.body
     let bit ← 1#u8 <<< lane
     let i3 ← Array.index_usize bytes 0#usize
     let flags ← lift (i3 &&& 224#u8)
-    let i4 ← lift (flags &&& bls.decompress_g2.FLAG_COMPRESSED)
+    let i4 ← lift (flags &&& bls.encoding.FLAG_COMPRESSED)
     if i4 = 0#u8
     then let i5 ← lift (i1 ||| bit)
          ok (cont (iter1, a, i, i5, i2))
     else
-      let i5 ← lift (flags &&& bls.decompress_g2.FLAG_INFINITY)
+      let i5 ← lift (flags &&& bls.encoding.FLAG_INFINITY)
       if i5 != 0#u8
       then let i6 ← lift (i2 ||| bit)
            ok (cont (iter1, a, i, i1, i6))
       else
-        let i6 ← lift (flags &&& bls.decompress_g2.FLAG_LARGER_ROOT)
+        let i6 ← lift (flags &&& bls.encoding.FLAG_LARGER_ROOT)
         let i7 ← if i6 != 0#u8
                    then ok (i ||| bit)
                    else ok i
         let s ← lift (Array.to_slice bytes)
-        let words ← bls.decompress_g2.fp_words s
+        let words ← bls.encoding.fp_words s
         let i8 ← Array.index_usize words 5#usize
         let i9 ← lift (i8 &&& 2305843009213693951#u64)
         let words1 ← Array.update words 5#usize i9
-        let b ← bls.decompress_g2.less_than_p words1
+        let b ← bls.encoding.less_than_p words1
         if b
         then
-          let a1 ← bls.fp8.unpack52 words1
+          let a1 ← bls.limbs.unpack52 words1
           let a2 ← Array.update a lane a1
           ok (cont (iter1, a2, i7, i1, i2))
         else let i10 ← lift (i1 ||| bit)
              ok (cont (iter1, a, i7, i10, i2))
 
 /-- [silver_crypto_simd::bls::decompress::decode]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 38:4-60:5 -/
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 39:4-61:5 -/
 @[rust_loop]
 def bls.decompress.decode_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -507,7 +595,7 @@ def bls.decompress.decode_loop
     (iter, a, i, i1, i2)
 
 /-- [silver_crypto_simd::bls::decompress::decode]:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 36:0-62:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 37:0-63:1 -/
 def bls.decompress.decode
   (inputs : Array (Array Std.U8 48#usize) 8#usize) :
   Result bls.decompress.Decoded
@@ -515,48 +603,26 @@ def bls.decompress.decode
   let a := Array.repeat 8#usize 0#u64
   let a1 := Array.repeat 8#usize a
   let (a2, i, i1, i2) ←
-    bls.decompress.decode_loop { start := 0#usize, «end» := bls.fp8.LANES }
+    bls.decompress.decode_loop { start := 0#usize, «end» := bls.limbs.LANES }
       inputs a1 0#u8 0#u8 0#u8
   ok { x := a2, larger_root := i, invalid := i1, undecided := i2 }
 
 /-- [silver_crypto_simd::bls::decompress::point]:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 64:0-66:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 65:0-67:1 -/
 def bls.decompress.point
   (x : Array Std.U64 6#usize) (y : Array Std.U64 6#usize) :
   Result blst.blst_p1_affine
   := do
   ok { x := { l := x }, y := { l := y } }
 
-/-- [silver_crypto_simd::bls::g1x8::is_lower_z_bit]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 323:0-325:1 -/
-def bls.g1x8.is_lower_z_bit (bit : Std.U32) : Result Bool := do
-  let i ← Array.index_usize bls.constants.Z_BITS 1#usize
-  if bit = i
-  then ok true
-  else
-    let i1 ← Array.index_usize bls.constants.Z_BITS 2#usize
-    if bit = i1
-    then ok true
-    else
-      let i2 ← Array.index_usize bls.constants.Z_BITS 3#usize
-      if bit = i2
-      then ok true
-      else
-        let i3 ← Array.index_usize bls.constants.Z_BITS 4#usize
-        if bit = i3
-        then ok true
-        else
-          let i4 ← Array.index_usize bls.constants.Z_BITS 5#usize
-          ok (bit = i4)
-
 /-- [silver_crypto_simd::bls::fp8::splat]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 36:0-38:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 35:0-37:1 -/
 def bls.fp8.splat (x : Std.U64) : Result core.core_arch.x86.__m512i := do
   let i ← lift (UScalar.hcast .I64 x)
   core.core_arch.x86.avx512f._mm512_set1_epi64 i
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 457:8-460:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 428:8-431:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.normalise_loop.body
@@ -583,7 +649,7 @@ def bls.fp8.Fp8.normalise_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 457:8-460:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 428:8-431:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.normalise_loop
@@ -596,7 +662,7 @@ def bls.fp8.Fp8.normalise_loop
     (iter, s)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::normalise]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 454:4-462:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 425:4-433:5
     Visibility: public -/
 def bls.fp8.Fp8.normalise (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let i ← bls.constants.MASK52
@@ -607,19 +673,19 @@ def bls.fp8.Fp8.normalise (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   ok s
 
 /-- [silver_crypto_simd::bls::fp8::borrowed]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 157:0-159:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 156:0-158:1 -/
 def bls.fp8.borrowed
   (borrow : core.core_arch.x86.__m512i) : Result Std.U8 := do
   let mi ← bls.fp8.splat core.num.U64.MAX
   core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask borrow mi
 
 /-- [silver_crypto_simd::bls::fp8::zero]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 42:0-44:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 41:0-43:1 -/
 def bls.fp8.zero : Result core.core_arch.x86.__m512i := do
   core.core_arch.x86.avx512f._mm512_setzero_si512
 
 /-- [silver_crypto_simd::bls::fp8::blend]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 148:4-150:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 147:4-149:5 -/
 @[rust_loop_body]
 def bls.fp8.blend_loop.body
   (k : Std.U8) (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -642,7 +708,7 @@ def bls.fp8.blend_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::blend]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 148:4-150:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 147:4-149:5 -/
 @[rust_loop]
 def bls.fp8.blend_loop
   (iter : core.ops.range.Range Std.Usize) (k : Std.U8)
@@ -656,7 +722,7 @@ def bls.fp8.blend_loop
     (iter, r)
 
 /-- [silver_crypto_simd::bls::fp8::blend]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 146:0-152:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 145:0-151:1 -/
 def bls.fp8.blend
   (k : Std.U8) (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -668,7 +734,7 @@ def bls.fp8.blend
     r
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 121:4-125:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 120:4-124:5 -/
 @[rust_loop_body]
 def bls.fp8.sub_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -695,7 +761,7 @@ def bls.fp8.sub_limbs_loop.body
     ok (cont (iter1, a1, borrow1))
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 121:4-125:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 120:4-124:5 -/
 @[rust_loop]
 def bls.fp8.sub_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -713,7 +779,7 @@ def bls.fp8.sub_limbs_loop
     (iter, d, borrow)
 
 /-- [silver_crypto_simd::bls::fp8::sub_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 117:0-127:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 116:0-126:1 -/
 def bls.fp8.sub_limbs
   (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -728,7 +794,7 @@ def bls.fp8.sub_limbs
     b mask d mi
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::cond_sub]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 404:4-407:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 375:4-378:5
     Visibility: public -/
 def bls.fp8.Fp8.cond_sub
   (self : bls.fp8.Fp8) (c : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -738,7 +804,7 @@ def bls.fp8.Fp8.cond_sub
   ok a
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::reduced_from_8p]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 60:4-62:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 61:4-63:5 -/
 def bls.g1x8.Offsets.reduced_from_8p
   (self : bls.g1x8.Offsets) (v : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.normalise v
@@ -746,7 +812,7 @@ def bls.g1x8.Offsets.reduced_from_8p
   bls.fp8.Fp8.cond_sub f1 self.two_p
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 416:8-420:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 387:8-391:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.multiple_of_p_loop.body
@@ -772,7 +838,7 @@ def bls.fp8.Fp8.multiple_of_p_loop.body
     ok (cont (iter1, a, carry1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 416:8-420:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 387:8-391:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.multiple_of_p_loop
@@ -786,7 +852,7 @@ def bls.fp8.Fp8.multiple_of_p_loop
     (iter, v, carry)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::multiple_of_p]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 412:4-422:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 383:4-393:5
     Visibility: public -/
 def bls.fp8.Fp8.multiple_of_p (c : Std.U64) : Result bls.fp8.Fp8 := do
   let i ← 1#u64 <<< 12#i32
@@ -799,7 +865,7 @@ def bls.fp8.Fp8.multiple_of_p (c : Std.U64) : Result bls.fp8.Fp8 := do
   ok v1
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::new]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 42:4-48:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 43:4-49:5 -/
 def bls.g1x8.Offsets.new : Result bls.g1x8.Offsets := do
   let f ← bls.fp8.Fp8.multiple_of_p 2#u64
   let f1 ← bls.fp8.Fp8.multiple_of_p 4#u64
@@ -807,7 +873,7 @@ def bls.g1x8.Offsets.new : Result bls.g1x8.Offsets := do
   ok { two_p := f, four_p := f1, eight_p := f2 }
 
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:4-52:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 49:4-51:5 -/
 @[rust_loop_body]
 def bls.fp8.splat_limbs_loop.body
   (limbs : Array Std.U64 8#usize) (iter : core.ops.range.Range Std.Usize)
@@ -827,7 +893,7 @@ def bls.fp8.splat_limbs_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:4-52:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 49:4-51:5 -/
 @[rust_loop]
 def bls.fp8.splat_limbs_loop
   (iter : core.ops.range.Range Std.Usize) (limbs : Array Std.U64 8#usize)
@@ -839,7 +905,7 @@ def bls.fp8.splat_limbs_loop
     (iter, v)
 
 /-- [silver_crypto_simd::bls::fp8::splat_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 48:0-54:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 47:0-53:1 -/
 def bls.fp8.splat_limbs
   (limbs : Array Std.U64 8#usize) :
   Result (Array core.core_arch.x86.__m512i 8#usize)
@@ -850,7 +916,7 @@ def bls.fp8.splat_limbs
     limbs v
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::splat_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 253:4-255:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 212:4-214:5
     Visibility: public -/
 def bls.fp8.Fp8.splat_limbs
   (limbs : Array Std.U64 8#usize) : Result bls.fp8.Fp8 := do
@@ -858,14 +924,14 @@ def bls.fp8.Fp8.splat_limbs
   ok a
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::canonical]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 396:4-398:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 367:4-369:5
     Visibility: public -/
 def bls.fp8.Fp8.canonical (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.splat_limbs bls.constants.P
   bls.fp8.Fp8.cond_sub self f
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 509:8-511:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 480:8-482:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.is_zero_mask_loop.body
@@ -885,7 +951,7 @@ def bls.fp8.Fp8.is_zero_mask_loop.body
     ok (cont (iter1, a, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 509:8-511:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 480:8-482:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.is_zero_mask_loop
@@ -897,7 +963,7 @@ def bls.fp8.Fp8.is_zero_mask_loop
     (iter, a, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 506:4-513:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 477:4-484:5
     Visibility: public -/
 def bls.fp8.Fp8.is_zero_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.canonical self
@@ -905,7 +971,7 @@ def bls.fp8.Fp8.is_zero_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
     { start := 0#usize, «end» := bls.constants.LIMBS } a 255#u8
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 136:4-140:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 135:4-139:5 -/
 @[rust_loop_body]
 def bls.fp8.add_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -932,7 +998,7 @@ def bls.fp8.add_limbs_loop.body
     ok (cont (iter1, a1, carry1))
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 136:4-140:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 135:4-139:5 -/
 @[rust_loop]
 def bls.fp8.add_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -949,7 +1015,7 @@ def bls.fp8.add_limbs_loop
     (iter, s, carry)
 
 /-- [silver_crypto_simd::bls::fp8::add_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 132:0-142:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 131:0-141:1 -/
 def bls.fp8.add_limbs
   (a : Array core.core_arch.x86.__m512i 8#usize)
   (b : Array core.core_arch.x86.__m512i 8#usize) :
@@ -963,7 +1029,7 @@ def bls.fp8.add_limbs
     b mask s mi
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 475:4-479:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 446:4-450:5
     Visibility: public -/
 def bls.fp8.Fp8.sub
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -975,7 +1041,7 @@ def bls.fp8.Fp8.sub
   ok a
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 443:8-445:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 414:8-416:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.sub_raw_loop.body
@@ -1000,7 +1066,7 @@ def bls.fp8.Fp8.sub_raw_loop.body
     ok (cont (iter1, self, rhs, offset, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 443:8-445:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 414:8-416:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.sub_raw_loop
@@ -1015,7 +1081,7 @@ def bls.fp8.Fp8.sub_raw_loop
     (iter, self, rhs, offset, s)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sub_raw]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 441:4-447:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 412:4-418:5
     Visibility: public -/
 def bls.fp8.Fp8.sub_raw
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) (offset : bls.fp8.Fp8) :
@@ -1029,7 +1095,7 @@ def bls.fp8.Fp8.sub_raw
   ok s1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 430:8-432:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 401:8-403:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.add_raw_loop.body
@@ -1051,7 +1117,7 @@ def bls.fp8.Fp8.add_raw_loop.body
     ok (cont (iter1, self, rhs, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 430:8-432:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 401:8-403:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.add_raw_loop
@@ -1065,7 +1131,7 @@ def bls.fp8.Fp8.add_raw_loop
     (iter, self, rhs, s)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add_raw]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 428:4-434:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 399:4-405:5
     Visibility: public -/
 def bls.fp8.Fp8.add_raw
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -1077,7 +1143,7 @@ def bls.fp8.Fp8.add_raw
   ok s1
 
 /-- [silver_crypto_simd::bls::fp8::carry_of_cleared]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 187:0-189:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 186:0-188:1 -/
 def bls.fp8.carry_of_cleared
   (t : core.core_arch.x86.__m512i) : Result core.core_arch.x86.__m512i := do
   let i ← bls.constants.MASK52
@@ -1086,7 +1152,7 @@ def bls.fp8.carry_of_cleared
   core.core_arch.x86.avx512f._mm512_srli_epi64 52#u32 mi1
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 201:4-203:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 200:4-202:5 -/
 @[rust_loop_body]
 def bls.fp8.reduce_row_loop0.body
   (p : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -1109,7 +1175,7 @@ def bls.fp8.reduce_row_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 201:4-203:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 200:4-202:5 -/
 @[rust_loop]
 def bls.fp8.reduce_row_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -1123,7 +1189,7 @@ def bls.fp8.reduce_row_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 205:4-207:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 204:4-206:5 -/
 @[rust_loop_body]
 def bls.fp8.reduce_row_loop1.body
   (p : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -1148,7 +1214,7 @@ def bls.fp8.reduce_row_loop1.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 205:4-207:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 204:4-206:5 -/
 @[rust_loop]
 def bls.fp8.reduce_row_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -1162,7 +1228,7 @@ def bls.fp8.reduce_row_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::reduce_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 197:0-208:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 196:0-207:1 -/
 def bls.fp8.reduce_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
   (p : Array core.core_arch.x86.__m512i 8#usize)
@@ -1190,7 +1256,7 @@ def bls.fp8.reduce_row
     a1 p i q
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 386:8-389:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-360:9 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.reduce_loop.body
   (t : Array core.core_arch.x86.__m512i 17#usize)
@@ -1219,7 +1285,7 @@ def bls.fp8.Fp8.reduce_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 386:8-389:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-360:9 -/
 @[rust_loop]
 def bls.fp8.Fp8.reduce_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1233,7 +1299,7 @@ def bls.fp8.Fp8.reduce_loop
     (iter, r)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::reduce]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 371:4-391:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 342:4-362:5 -/
 def bls.fp8.Fp8.reduce
   (t : Array core.core_arch.x86.__m512i 17#usize) : Result bls.fp8.Fp8 := do
   let p ← bls.fp8.splat_limbs bls.constants.P
@@ -1258,7 +1324,7 @@ def bls.fp8.Fp8.reduce
   ok r1
 
 /-- [silver_crypto_simd::bls::fp8::square_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 176:4-179:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 175:4-178:5 -/
 @[rust_loop_body]
 def bls.fp8.square_row_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize)
@@ -1287,7 +1353,7 @@ def bls.fp8.square_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::square_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 176:4-179:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 175:4-178:5 -/
 @[rust_loop]
 def bls.fp8.square_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1300,7 +1366,7 @@ def bls.fp8.square_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::square_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 175:0-180:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 174:0-179:1 -/
 def bls.fp8.square_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
   (a : Array core.core_arch.x86.__m512i 8#usize) (i : Std.Usize) :
@@ -1310,7 +1376,7 @@ def bls.fp8.square_row
   bls.fp8.square_row_loop { start := i1, «end» := bls.constants.LIMBS } t a i
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-359:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 328:8-330:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.square_loop0.body
@@ -1331,7 +1397,7 @@ def bls.fp8.Fp8.square_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 357:8-359:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 328:8-330:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.square_loop0
@@ -1344,7 +1410,7 @@ def bls.fp8.Fp8.square_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 360:8-363:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 331:8-334:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.square_loop1.body
@@ -1373,7 +1439,7 @@ def bls.fp8.Fp8.square_loop1.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 360:8-363:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 331:8-334:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.square_loop1
@@ -1387,7 +1453,7 @@ def bls.fp8.Fp8.square_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::square]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 347:4-365:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 318:4-336:5
     Visibility: public -/
 def bls.fp8.Fp8.square (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let mi ← bls.fp8.zero
@@ -1408,7 +1474,7 @@ def bls.fp8.Fp8.square (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.reduce t9
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 165:4-168:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 164:4-167:5 -/
 @[rust_loop_body]
 def bls.fp8.muladd_row_loop.body
   (a : Array core.core_arch.x86.__m512i 8#usize)
@@ -1437,7 +1503,7 @@ def bls.fp8.muladd_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 165:4-168:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 164:4-167:5 -/
 @[rust_loop]
 def bls.fp8.muladd_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -1451,7 +1517,7 @@ def bls.fp8.muladd_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::bls::fp8::muladd_row]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 164:0-169:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 163:0-168:1 -/
 @[reducible]
 def bls.fp8.muladd_row
   (t : Array core.core_arch.x86.__m512i 17#usize)
@@ -1463,7 +1529,7 @@ def bls.fp8.muladd_row
     t a b_i i
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::mul]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 331:4-342:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 302:4-313:5
     Visibility: public -/
 def bls.fp8.Fp8.mul
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -1488,7 +1554,7 @@ def bls.fp8.Fp8.mul
   bls.fp8.Fp8.reduce t8
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 123:4-150:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 124:4-151:5
     Visibility: public -/
 def bls.g1x8.G1x8.add
   (self : bls.g1x8.G1x8) (q : bls.g1x8.G1x8) :
@@ -1539,14 +1605,14 @@ def bls.g1x8.G1x8.add
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::Offsets}::reduced_from_4p]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 53:4-55:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 54:4-56:5 -/
 def bls.g1x8.Offsets.reduced_from_4p
   (self : bls.g1x8.Offsets) (v : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.normalise v
   bls.fp8.Fp8.cond_sub f self.two_p
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::double]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 73:4-92:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 74:4-93:5
     Visibility: public -/
 def bls.g1x8.G1x8.double
   (self : bls.g1x8.G1x8) : Result (bls.g1x8.G1x8 × Std.U8) := do
@@ -1590,7 +1656,7 @@ def bls.g1x8.G1x8.double
   ok ({ x := f18, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 279:8-289:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 295:8-305:9 -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.times_z_loop.body
   (f : bls.fp8.Fp8) (f1 : bls.fp8.Fp8) (f2 : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1603,7 +1669,7 @@ def bls.g1x8.G1x8.times_z_loop.body
     let bit1 ← bit - 1#u32
     let (d, u) ← bls.g1x8.G1x8.double r
     let undecided1 ← lift (undecided ||| u)
-    let b ← bls.g1x8.is_lower_z_bit bit1
+    let b ← bls.constants.is_lower_z_bit bit1
     if b
     then
       let (a, u1) ← bls.g1x8.G1x8.add d { x := f, y := f1, z := f2 }
@@ -1613,7 +1679,7 @@ def bls.g1x8.G1x8.times_z_loop.body
   else ok (done (r, undecided))
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 279:8-289:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 295:8-305:9 -/
 @[rust_loop]
 def bls.g1x8.G1x8.times_z_loop
   (f : bls.fp8.Fp8) (f1 : bls.fp8.Fp8) (f2 : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1626,14 +1692,14 @@ def bls.g1x8.G1x8.times_z_loop
     (undecided, r, bit)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 275:4-291:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 291:4-307:5 -/
 def bls.g1x8.G1x8.times_z
   (self : bls.g1x8.G1x8) : Result (bls.g1x8.G1x8 × Std.U8) := do
   let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
   bls.g1x8.G1x8.times_z_loop self.x self.y self.z 0#u8 self bit
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 96:4-119:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 97:4-120:5
     Visibility: public -/
 def bls.g1x8.G1x8.add_affine
   (self : bls.g1x8.G1x8) (qx : bls.fp8.Fp8) (qy : bls.fp8.Fp8) :
@@ -1679,13 +1745,13 @@ def bls.g1x8.G1x8.add_affine
   ok ({ x := x3, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::one]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 265:4-267:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 224:4-226:5
     Visibility: public -/
 def bls.fp8.Fp8.one : Result bls.fp8.Fp8 := do
   bls.fp8.Fp8.splat_limbs bls.constants.R_MOD_P
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::from_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 67:4-69:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 68:4-70:5
     Visibility: public -/
 def bls.g1x8.G1x8.from_affine
   (x : bls.fp8.Fp8) (y : bls.fp8.Fp8) : Result bls.g1x8.G1x8 := do
@@ -1693,7 +1759,7 @@ def bls.g1x8.G1x8.from_affine
   ok { x, y, z := f }
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 259:8-269:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 275:8-285:9 -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.times_z_affine_loop.body
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1706,7 +1772,7 @@ def bls.g1x8.G1x8.times_z_affine_loop.body
     let bit1 ← bit - 1#u32
     let (d, u) ← bls.g1x8.G1x8.double r
     let undecided1 ← lift (undecided ||| u)
-    let b ← bls.g1x8.is_lower_z_bit bit1
+    let b ← bls.constants.is_lower_z_bit bit1
     if b
     then
       let (a, u1) ← bls.g1x8.G1x8.add_affine d px py
@@ -1716,7 +1782,7 @@ def bls.g1x8.G1x8.times_z_affine_loop.body
   else ok (done (r, undecided))
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 259:8-269:9 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 275:8-285:9 -/
 @[rust_loop]
 def bls.g1x8.G1x8.times_z_affine_loop
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) (undecided : Std.U8)
@@ -1729,7 +1795,7 @@ def bls.g1x8.G1x8.times_z_affine_loop
     (undecided, r, bit)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_z_affine]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 255:4-271:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 271:4-287:5 -/
 def bls.g1x8.G1x8.times_z_affine
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) :
   Result (bls.g1x8.G1x8 × Std.U8)
@@ -1739,7 +1805,7 @@ def bls.g1x8.G1x8.times_z_affine
   bls.g1x8.G1x8.times_z_affine_loop px py 0#u8 r bit
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 498:8-500:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 469:8-471:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.eq_mask_loop.body
@@ -1760,7 +1826,7 @@ def bls.fp8.Fp8.eq_mask_loop.body
     ok (cont (iter1, a, b, k1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 498:8-500:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 469:8-471:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.eq_mask_loop
@@ -1773,7 +1839,7 @@ def bls.fp8.Fp8.eq_mask_loop
     (iter, a, b, k)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 495:4-502:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 466:4-473:5
     Visibility: public -/
 def bls.fp8.Fp8.eq_mask
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result Std.U8 := do
@@ -1783,7 +1849,7 @@ def bls.fp8.Fp8.eq_mask
     a b 255#u8
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::zero]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 259:4-261:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 218:4-220:5
     Visibility: public -/
 def bls.fp8.Fp8.zero : Result bls.fp8.Fp8 := do
   let mi ← bls.fp8.zero
@@ -1791,14 +1857,14 @@ def bls.fp8.Fp8.zero : Result bls.fp8.Fp8 := do
   ok a
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::neg]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 483:4-485:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 454:4-456:5
     Visibility: public -/
 def bls.fp8.Fp8.neg (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.zero
   bls.fp8.Fp8.sub f self
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::scott_membership]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 296:4-308:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 312:4-324:5
     Visibility: public -/
 def bls.g1x8.G1x8.scott_membership
   (px : bls.fp8.Fp8) (py : bls.fp8.Fp8) : Result bls.Membership := do
@@ -1823,7 +1889,7 @@ def bls.g1x8.G1x8.scott_membership
   ok { members := i4, undecided }
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 294:12-296:13 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 253:12-255:13 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.store_loop0_loop0.body
   (j : Std.Usize) (l : Array Std.U64 8#usize)
@@ -1844,7 +1910,7 @@ def bls.fp8.Fp8.store_loop0_loop0.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 294:12-296:13 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 253:12-255:13 -/
 @[rust_loop]
 def bls.fp8.Fp8.store_loop0_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -1857,7 +1923,7 @@ def bls.fp8.Fp8.store_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 292:8-297:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 251:8-256:9 -/
 @[rust_loop_body]
 def bls.fp8.Fp8.store_loop0.body
   (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
@@ -1875,11 +1941,11 @@ def bls.fp8.Fp8.store_loop0.body
     let l ← bls.fp8.lanes mi
     let out1 ←
       bls.fp8.Fp8.store_loop0_loop0
-        { start := 0#usize, «end» := bls.fp8.LANES } out j l
+        { start := 0#usize, «end» := bls.limbs.LANES } out j l
     ok (cont (iter1, self, out1))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 292:8-297:9 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 251:8-256:9 -/
 @[rust_loop]
 def bls.fp8.Fp8.store_loop0
   (iter : core.ops.range.Range Std.Usize) (self : bls.fp8.Fp8)
@@ -1891,7 +1957,7 @@ def bls.fp8.Fp8.store_loop0
     (iter, self, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::store]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 290:4-299:5 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 249:4-258:5 -/
 def bls.fp8.Fp8.store
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
   let a := Array.repeat 8#usize 0#u64
@@ -1900,7 +1966,7 @@ def bls.fp8.Fp8.store
     self out
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_plain]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 310:4-312:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 269:4-271:5
     Visibility: public -/
 def bls.fp8.Fp8.to_plain
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 8#usize) 8#usize) := do
@@ -1910,7 +1976,7 @@ def bls.fp8.Fp8.to_plain
   bls.fp8.Fp8.store f2
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 274:8-285:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:8-244:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.load_loop.body
@@ -1956,7 +2022,7 @@ def bls.fp8.Fp8.load_loop.body
     ok (cont (iter1, a8))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 274:8-285:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:8-244:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.load_loop
@@ -1970,7 +2036,7 @@ def bls.fp8.Fp8.load_loop
     (iter, v)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::load]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 272:4-287:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 231:4-246:5
     Visibility: public -/
 def bls.fp8.Fp8.load
   (values : Array (Array Std.U64 8#usize) 8#usize) : Result bls.fp8.Fp8 := do
@@ -1982,7 +2048,7 @@ def bls.fp8.Fp8.load
   ok v1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 576:4-580:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 564:4-568:5
     Visibility: public -/
 def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   let a ← bls.fp8.Fp8.to_plain self
@@ -1992,7 +2058,7 @@ def bls.fp8.Fp8.is_larger_root_mask (self : bls.fp8.Fp8) : Result Std.U8 := do
   bls.fp8.borrowed borrow
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 543:8-545:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 531:8-533:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
@@ -2013,7 +2079,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 543:8-545:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 531:8-533:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
@@ -2027,7 +2093,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop0
     (iter, table)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 548:8-555:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 536:8-543:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
@@ -2052,7 +2118,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1.body
   else ok (done r)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 548:8-555:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 536:8-543:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
@@ -2064,7 +2130,7 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4_loop1
     (r, w)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::pow_p_minus_3_over_4]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 540:4-557:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 528:4-545:5
     Visibility: public -/
 def bls.fp8.Fp8.pow_p_minus_3_over_4
   (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -2080,14 +2146,14 @@ def bls.fp8.Fp8.pow_p_minus_3_over_4
   bls.fp8.Fp8.pow_p_minus_3_over_4_loop1 table1 r 94#usize
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::sqrt_candidate]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 562:4-564:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 550:4-552:5
     Visibility: public -/
 def bls.fp8.Fp8.sqrt_candidate (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.pow_p_minus_3_over_4 self
   bls.fp8.Fp8.mul f self
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 518:4-520:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 489:4-491:5
     Visibility: public -/
 def bls.fp8.Fp8.select
   (k : Std.U8) (a : bls.fp8.Fp8) (b : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -2095,7 +2161,7 @@ def bls.fp8.Fp8.select
   ok a1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::add]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 467:4-471:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 438:4-442:5
     Visibility: public -/
 def bls.fp8.Fp8.add
   (self : bls.fp8.Fp8) (rhs : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
@@ -2106,11 +2172,11 @@ def bls.fp8.Fp8.add
   let a ← bls.fp8.blend i d s
   ok a
 
-/-- [silver_crypto_simd::bls::fp8::pack64]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:4-243:5
+/-- [silver_crypto_simd::bls::limbs::pack64]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 33:4-43:5
     Visibility: public -/
 @[rust_loop_body]
-def bls.fp8.pack64_loop.body
+def bls.limbs.pack64_loop.body
   (x : Array Std.U64 8#usize) (iter : core.ops.range.Range Std.Usize)
   (out : Array Std.U64 6#usize) (acc : Std.U128) (acc_bits : Std.U32)
   (word : Std.Usize) :
@@ -2138,37 +2204,37 @@ def bls.fp8.pack64_loop.body
       ok (cont (iter1, a, acc2, acc_bits2, word1))
     else ok (cont (iter1, out, acc1, acc_bits1, word))
 
-/-- [silver_crypto_simd::bls::fp8::pack64]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 233:4-243:5
+/-- [silver_crypto_simd::bls::limbs::pack64]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 33:4-43:5
     Visibility: public -/
 @[rust_loop]
-def bls.fp8.pack64_loop
+def bls.limbs.pack64_loop
   (iter : core.ops.range.Range Std.Usize) (x : Array Std.U64 8#usize)
   (out : Array Std.U64 6#usize) (acc : Std.U128) (acc_bits : Std.U32)
   (word : Std.Usize) :
   Result ((Array Std.U64 6#usize) × Std.U128 × Std.Usize)
   := do
   loop
-    (fun (iter1, out1, acc1, acc_bits1, word1) => bls.fp8.pack64_loop.body x
+    (fun (iter1, out1, acc1, acc_bits1, word1) => bls.limbs.pack64_loop.body x
       iter1 out1 acc1 acc_bits1 word1)
     (iter, out, acc, acc_bits, word)
 
-/-- [silver_crypto_simd::bls::fp8::pack64]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 228:0-248:1
+/-- [silver_crypto_simd::bls::limbs::pack64]:
+    Source: 'crates/crypto_simd/src/bls/limbs.rs', lines 28:0-48:1
     Visibility: public -/
-def bls.fp8.pack64
+def bls.limbs.pack64
   (x : Array Std.U64 8#usize) : Result (Array Std.U64 6#usize) := do
   let out := Array.repeat 6#usize 0#u64
   let (out1, acc, word) ←
-    bls.fp8.pack64_loop { start := 0#usize, «end» := bls.constants.LIMBS } x
-      out 0#u128 0#u32 0#usize
+    bls.limbs.pack64_loop { start := 0#usize, «end» := bls.constants.LIMBS }
+      x out 0#u128 0#u32 0#usize
   if word < 6#usize
   then let i ← lift (UScalar.cast .U64 acc)
        Array.update out1 word i
   else ok out1
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 320:8-322:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 279:8-281:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.fp8.Fp8.to_blst_limbs_loop.body
@@ -2184,12 +2250,12 @@ def bls.fp8.Fp8.to_blst_limbs_loop.body
   | none => ok (done out)
   | some lane =>
     let a ← Array.index_usize t lane
-    let a1 ← bls.fp8.pack64 a
+    let a1 ← bls.limbs.pack64 a
     let a2 ← Array.update out lane a1
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 320:8-322:9
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 279:8-281:9
     Visibility: public -/
 @[rust_loop]
 def bls.fp8.Fp8.to_blst_limbs_loop
@@ -2203,7 +2269,7 @@ def bls.fp8.Fp8.to_blst_limbs_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::to_blst_limbs]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 317:4-324:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 276:4-283:5
     Visibility: public -/
 def bls.fp8.Fp8.to_blst_limbs
   (self : bls.fp8.Fp8) : Result (Array (Array Std.U64 6#usize) 8#usize) := do
@@ -2213,11 +2279,11 @@ def bls.fp8.Fp8.to_blst_limbs
   let t ← bls.fp8.Fp8.store f2
   let a := Array.repeat 6#usize 0#u64
   let out := Array.repeat 8#usize a
-  bls.fp8.Fp8.to_blst_limbs_loop { start := 0#usize, «end» := bls.fp8.LANES }
-    t out
+  bls.fp8.Fp8.to_blst_limbs_loop
+    { start := 0#usize, «end» := bls.limbs.LANES } t out
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::from_plain]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 304:4-306:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 263:4-265:5
     Visibility: public -/
 def bls.fp8.Fp8.from_plain
   (values : Array (Array Std.U64 8#usize) 8#usize) : Result bls.fp8.Fp8 := do
@@ -2226,7 +2292,7 @@ def bls.fp8.Fp8.from_plain
   bls.fp8.Fp8.mul f f1
 
 /-- [silver_crypto_simd::bls::decompress::decompress]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 89:4-91:5
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 90:4-92:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.decompress.decompress_loop.body
@@ -2249,7 +2315,7 @@ def bls.decompress.decompress_loop.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::bls::decompress::decompress]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 89:4-91:5
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 90:4-92:5
     Visibility: public -/
 @[rust_loop]
 def bls.decompress.decompress_loop
@@ -2265,7 +2331,7 @@ def bls.decompress.decompress_loop
     (iter, points)
 
 /-- [silver_crypto_simd::bls::decompress::decompress]:
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 69:0-93:1
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 70:0-94:1
     Visibility: public -/
 def bls.decompress.decompress
   (inputs : Array (Array Std.U8 48#usize) 8#usize) :
@@ -2301,11 +2367,11 @@ def bls.decompress.decompress
   let points := Array.repeat 8#usize bpa
   let points1 ←
     bls.decompress.decompress_loop
-      { start := 0#usize, «end» := bls.fp8.LANES } xs ys points
+      { start := 0#usize, «end» := bls.limbs.LANES } xs ys points
   ok { points := points1, valid, undecided := undecided1 }
 
 /-- [silver_crypto_simd::bls::decompress_g2::decode]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 54:4-79:5 -/
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 51:4-76:5 -/
 @[rust_loop_body]
 def bls.decompress_g2.decode_loop.body
   (inputs : Array (Array Std.U8 96#usize) 8#usize)
@@ -2327,37 +2393,37 @@ def bls.decompress_g2.decode_loop.body
     let bit ← 1#u8 <<< lane
     let i3 ← Array.index_usize bytes 0#usize
     let flags ← lift (i3 &&& 224#u8)
-    let i4 ← lift (flags &&& bls.decompress_g2.FLAG_COMPRESSED)
+    let i4 ← lift (flags &&& bls.encoding.FLAG_COMPRESSED)
     if i4 = 0#u8
     then let i5 ← lift (i1 ||| bit)
          ok (cont (iter1, a, a1, i, i5, i2))
     else
-      let i5 ← lift (flags &&& bls.decompress_g2.FLAG_INFINITY)
+      let i5 ← lift (flags &&& bls.encoding.FLAG_INFINITY)
       if i5 != 0#u8
       then let i6 ← lift (i2 ||| bit)
            ok (cont (iter1, a, a1, i, i1, i6))
       else
-        let i6 ← lift (flags &&& bls.decompress_g2.FLAG_LARGER_ROOT)
+        let i6 ← lift (flags &&& bls.encoding.FLAG_LARGER_ROOT)
         let i7 ← if i6 != 0#u8
                    then ok (i ||| bit)
                    else ok i
         let s ← lift (Array.to_slice bytes)
-        let i8 ← bls.decompress_g2.FP_BYTES
+        let i8 ← bls.encoding.FP_BYTES
         let (x1_bytes, x0_bytes) ← core.slice.Slice.split_at s i8
-        let x1 ← bls.decompress_g2.fp_words x1_bytes
+        let x1 ← bls.encoding.fp_words x1_bytes
         let i9 ← Array.index_usize x1 5#usize
         let i10 ← lift (i9 &&& 2305843009213693951#u64)
         let x11 ← Array.update x1 5#usize i10
-        let x0 ← bls.decompress_g2.fp_words x0_bytes
-        let b ← bls.decompress_g2.less_than_p x11
+        let x0 ← bls.encoding.fp_words x0_bytes
+        let b ← bls.encoding.less_than_p x11
         if b
         then
-          let b1 ← bls.decompress_g2.less_than_p x0
+          let b1 ← bls.encoding.less_than_p x0
           if b1
           then
-            let a2 ← bls.fp8.unpack52 x0
+            let a2 ← bls.limbs.unpack52 x0
             let a3 ← Array.update a lane a2
-            let a4 ← bls.fp8.unpack52 x11
+            let a4 ← bls.limbs.unpack52 x11
             let a5 ← Array.update a1 lane a4
             ok (cont (iter1, a3, a5, i7, i1, i2))
           else
@@ -2368,7 +2434,7 @@ def bls.decompress_g2.decode_loop.body
           ok (cont (iter1, a, a1, i7, i11, i2))
 
 /-- [silver_crypto_simd::bls::decompress_g2::decode]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 54:4-79:5 -/
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 51:4-76:5 -/
 @[rust_loop]
 def bls.decompress_g2.decode_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -2385,7 +2451,7 @@ def bls.decompress_g2.decode_loop
     (iter, a, a1, i, i1, i2)
 
 /-- [silver_crypto_simd::bls::decompress_g2::decode]:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 46:0-81:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 43:0-78:1 -/
 def bls.decompress_g2.decode
   (inputs : Array (Array Std.U8 96#usize) 8#usize) :
   Result bls.decompress_g2.Decoded
@@ -2396,12 +2462,12 @@ def bls.decompress_g2.decode
   let a3 := Array.repeat 8#usize a2
   let (a4, a5, i, i1, i2) ←
     bls.decompress_g2.decode_loop
-      { start := 0#usize, «end» := bls.fp8.LANES } inputs a1 a3 0#u8 0#u8
+      { start := 0#usize, «end» := bls.limbs.LANES } inputs a1 a3 0#u8 0#u8
       0#u8
   ok { x0 := a4, x1 := a5, larger_root := i, invalid := i1, undecided := i2 }
 
 /-- [silver_crypto_simd::bls::decompress_g2::point]:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 84:0-89:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 81:0-86:1 -/
 def bls.decompress_g2.point
   (x0 : Array Std.U64 6#usize) (x1 : Array Std.U64 6#usize)
   (y0 : Array Std.U64 6#usize) (y1 : Array Std.U64 6#usize) :
@@ -2414,7 +2480,7 @@ def bls.decompress_g2.point
     }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::cond_sub]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 72:4-74:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 75:4-77:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.cond_sub
   (self : bls.fp2x8.Fp2x8) (c : bls.fp8.Fp8) : Result bls.fp2x8.Fp2x8 := do
@@ -2423,7 +2489,7 @@ def bls.fp2x8.Fp2x8.cond_sub
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::normalise]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 66:4-68:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 69:4-71:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.normalise
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2450,7 +2516,7 @@ def bls.g2x8.Offsets.new : Result bls.g2x8.Offsets := do
   ok { two_p := f, four_p := f1, eight_p := f2 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_zero_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 147:4-149:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 173:4-175:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_zero_mask (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
   let i ← bls.fp8.Fp8.is_zero_mask self.c0
@@ -2458,7 +2524,7 @@ def bls.fp2x8.Fp2x8.is_zero_mask (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
   ok (i &&& i1)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sub]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 84:4-86:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 87:4-89:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sub
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2469,7 +2535,7 @@ def bls.fp2x8.Fp2x8.sub
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sub_raw]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 60:4-62:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 63:4-65:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sub_raw
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) (offset : bls.fp8.Fp8) :
@@ -2480,7 +2546,7 @@ def bls.fp2x8.Fp2x8.sub_raw
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::add_raw]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 54:4-56:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 57:4-59:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.add_raw
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2491,7 +2557,7 @@ def bls.fp2x8.Fp2x8.add_raw
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::square]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 45:4-50:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 48:4-53:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.square
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2507,7 +2573,7 @@ def bls.fp2x8.Fp2x8.square
   ok { c0 := f4, c1 := f5 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 33:4-40:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 36:4-43:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.mul
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2625,7 +2691,7 @@ def bls.g2x8.G2x8.double
   ok ({ x := fx17, y := y3, z := z3 }, undecided)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::one]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 26:4-28:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 29:4-31:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.one : Result bls.fp2x8.Fp2x8 := do
   let f ← bls.fp8.Fp8.one
@@ -2707,7 +2773,7 @@ def bls.g2x8.G2x8.times_minus_z
   bls.g2x8.G2x8.times_minus_z_loop px py 0#u8 { x := px, y := py, z := fx } bit
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::eq_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 141:4-143:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 167:4-169:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.eq_mask
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2716,7 +2782,7 @@ def bls.fp2x8.Fp2x8.eq_mask
   ok (i &&& i1)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::conjugate]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 96:4-98:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 99:4-101:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.conjugate
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2724,7 +2790,7 @@ def bls.fp2x8.Fp2x8.conjugate
   ok { self with c1 := f }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::neg]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 90:4-92:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 93:4-95:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.neg (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
   let f ← bls.fp8.Fp8.neg self.c0
@@ -2732,7 +2798,7 @@ def bls.fp2x8.Fp2x8.neg (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::splat]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 20:4-22:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 23:4-25:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.splat
   (limbs : Array (Array Std.U64 8#usize) 2#usize) :
@@ -2771,7 +2837,7 @@ def bls.g2x8.G2x8.scott_membership
   ok { members := i3, undecided }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::is_larger_root_mask]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 136:4-138:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 162:4-164:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.is_larger_root_mask
   (self : bls.fp2x8.Fp2x8) : Result Std.U8 := do
@@ -2782,14 +2848,14 @@ def bls.fp2x8.Fp2x8.is_larger_root_mask
   ok (i ||| i3)
 
 /-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::half]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 489:4-491:5
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 460:4-462:5
     Visibility: public -/
 def bls.fp8.Fp8.half (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
   let f ← bls.fp8.Fp8.splat_limbs bls.constants.HALF_MONT
   bls.fp8.Fp8.mul self f
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::select]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 109:4-111:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 135:4-137:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.select
   (k : Std.U8) (a : bls.fp2x8.Fp2x8) (b : bls.fp2x8.Fp2x8) :
@@ -2800,7 +2866,7 @@ def bls.fp2x8.Fp2x8.select
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul_by_i]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 102:4-104:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 105:4-107:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.mul_by_i
   (self : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
@@ -2808,7 +2874,7 @@ def bls.fp2x8.Fp2x8.mul_by_i
   ok { c0 := f, c1 := self.c0 }
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::sqrt]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 119:4-130:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 145:4-156:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.sqrt
   (self : bls.fp2x8.Fp2x8) : Result (bls.fp2x8.Fp2x8 × Std.U8) := do
@@ -2835,7 +2901,7 @@ def bls.fp2x8.Fp2x8.sqrt
   ok (root, i1)
 
 /-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::add]:
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 78:4-80:5
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 81:4-83:5
     Visibility: public -/
 def bls.fp2x8.Fp2x8.add
   (self : bls.fp2x8.Fp2x8) (rhs : bls.fp2x8.Fp2x8) :
@@ -2846,7 +2912,7 @@ def bls.fp2x8.Fp2x8.add
   ok { c0 := f, c1 := f1 }
 
 /-- [silver_crypto_simd::bls::decompress_g2::decompress]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 147:4-149:5
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 120:4-122:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.decompress_g2.decompress_loop.body
@@ -2873,7 +2939,7 @@ def bls.decompress_g2.decompress_loop.body
     ok (cont (iter1, a5))
 
 /-- [silver_crypto_simd::bls::decompress_g2::decompress]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 147:4-149:5
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 120:4-122:5
     Visibility: public -/
 @[rust_loop]
 def bls.decompress_g2.decompress_loop
@@ -2891,7 +2957,7 @@ def bls.decompress_g2.decompress_loop
     (iter, a)
 
 /-- [silver_crypto_simd::bls::decompress_g2::decompress]:
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 116:0-151:1
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 89:0-124:1
     Visibility: public -/
 def bls.decompress_g2.decompress
   (inputs : Array (Array Std.U8 96#usize) 8#usize) :
@@ -2946,25 +3012,67 @@ def bls.decompress_g2.decompress
       let y1 ← bls.fp8.Fp8.to_blst_limbs y.c1
       let a1 ←
         bls.decompress_g2.decompress_loop
-          { start := 0#usize, «end» := bls.fp8.LANES } a x0 x1 y0 y1
+          { start := 0#usize, «end» := bls.limbs.LANES } a x0 x1 y0 y1
       ok { points := a1, on_curve := i1, valid := i7, undecided := i4 }
 
-/-- [silver_crypto_simd::bls::fp8::{core::clone::Clone for silver_crypto_simd::bls::fp8::Fp8}::clone]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 31:9-31:14
+/-- [silver_crypto_simd::bls::fp12::BOUND]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 30:0-30:27
     Visibility: public -/
-def bls.fp8.Fp8.Insts.CoreCloneClone.clone
-  (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  ok self
+@[global_simps, irreducible] def bls.fp12.BOUND : Std.U64 := 256#u64
 
-/-- Trait implementation: [silver_crypto_simd::bls::fp8::{core::clone::Clone for silver_crypto_simd::bls::fp8::Fp8}]
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 31:9-31:14 -/
-@[reducible]
-def bls.fp8.Fp8.Insts.CoreCloneClone : core.clone.Clone bls.fp8.Fp8 := {
-  clone := bls.fp8.Fp8.Insts.CoreCloneClone.clone
-}
+/-- [silver_crypto_simd::bls::fp12::Z]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 34:0-34:17 -/
+@[global_simps, irreducible] def bls.fp12.Z : Std.I64 := 8#i64
+
+/-- [silver_crypto_simd::bls::fp12::POWER_OF_LANE]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 37:0-37:53 -/
+@[global_simps, irreducible]
+def bls.fp12.POWER_OF_LANE : Array Std.Usize 6#usize :=
+  Array.make 6#usize [ 0#usize, 2#usize, 4#usize, 1#usize, 3#usize, 5#usize ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::zero2]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 44:0-46:1 -/
+def bls.fp12.zero2 : Result bls.fp2x8.Fp2x8 := do
+  let f ← bls.fp8.Fp8.zero
+  ok { c0 := f, c1 := f }
+
+/-- [silver_crypto_simd::bls::fp12::fp2_from_products]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 52:0-57:1 -/
+def bls.fp12.fp2_from_products
+  (m0 : bls.fp8.Fp8) (m1 : bls.fp8.Fp8) (m2 : bls.fp8.Fp8) (k : Std.U64) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.multiple_of_p k
+  let f1 ← bls.fp8.Fp8.sub_raw m0 m1 f
+  let f2 ← bls.fp8.Fp8.add_raw m0 m1
+  let i ← 2#u64 * k
+  let f3 ← bls.fp8.Fp8.multiple_of_p i
+  let f4 ← bls.fp8.Fp8.sub_raw m2 f2 f3
+  ok { c0 := f1, c1 := f4 }
+
+/-- [silver_crypto_simd::bls::fp12::fp2_products]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 63:0-68:1 -/
+def bls.fp12.fp2_products
+  (a : bls.fp2x8.Fp2x8) (b : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
+  let m0 ← bls.fp8.Fp8.mul a.c0 b.c0
+  let m1 ← bls.fp8.Fp8.mul a.c1 b.c1
+  let f ← bls.fp8.Fp8.add_raw a.c0 a.c1
+  let f1 ← bls.fp8.Fp8.normalise f
+  let f2 ← bls.fp8.Fp8.add_raw b.c0 b.c1
+  let f3 ← bls.fp8.Fp8.normalise f2
+  let m2 ← bls.fp8.Fp8.mul f1 f3
+  let fx ← bls.fp12.fp2_from_products m0 m1 m2 2#u64
+  bls.fp2x8.Fp2x8.normalise fx
+
+/-- [silver_crypto_simd::bls::fp12::clear_free_lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 73:0-75:1 -/
+def bls.fp12.clear_free_lanes
+  (x : bls.fp2x8.Fp2x8) : Result bls.fp2x8.Fp2x8 := do
+  let fx ← bls.fp12.zero2
+  bls.fp2x8.Fp2x8.select 192#u8 x fx
 
 /-- [silver_crypto_simd::bls::fp8::index_vector]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 65:0-67:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 64:0-66:1 -/
 def bls.fp8.index_vector
   (index : Array Std.I64 8#usize) : Result core.core_arch.x86.__m512i := do
   let i ← Array.index_usize index 7#usize
@@ -2977,8 +3085,1287 @@ def bls.fp8.index_vector
   let i7 ← Array.index_usize index 0#usize
   core.core_arch.x86.avx512f._mm512_set_epi64 i i1 i2 i3 i4 i5 i6 i7
 
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute2]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-518:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.permute2_loop.body
+  (index : core.core_arch.x86.__m512i) (self : bls.fp8.Fp8)
+  (other : bls.fp8.Fp8) (v : Array core.core_arch.x86.__m512i 8#usize)
+  (j : Std.Usize) :
+  Result (ControlFlow (bls.fp8.Fp8 × bls.fp8.Fp8 × (Array
+    core.core_arch.x86.__m512i 8#usize) × Std.Usize) (Array
+    core.core_arch.x86.__m512i 8#usize))
+  := do
+  if j < bls.constants.LIMBS
+  then
+    let mi ← Array.index_usize self j
+    let mi1 ← Array.index_usize other j
+    let mi2 ←
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi index mi1
+    let a ← Array.update v j mi2
+    let j1 ← j + 1#usize
+    ok (cont (self, other, a, j1))
+  else ok (done v)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute2]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 515:8-518:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.permute2_loop
+  (self : bls.fp8.Fp8) (other : bls.fp8.Fp8)
+  (index : core.core_arch.x86.__m512i)
+  (v : Array core.core_arch.x86.__m512i 8#usize) (j : Std.Usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (self1, other1, v1, j1) => bls.fp8.Fp8.permute2_loop.body index self1
+      other1 v1 j1)
+    (self, other, v, j)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute2]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 511:4-520:5
+    Visibility: public -/
+def bls.fp8.Fp8.permute2
+  (self : bls.fp8.Fp8) (other : bls.fp8.Fp8) (from1 : Array Std.I64 8#usize) :
+  Result bls.fp8.Fp8
+  := do
+  let index ← bls.fp8.index_vector from1
+  let mi ← bls.fp8.zero
+  let v := Array.repeat 8#usize mi
+  let v1 ← bls.fp8.Fp8.permute2_loop self other index v 0#usize
+  ok v1
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::permute2]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 128:4-130:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.permute2
+  (self : bls.fp2x8.Fp2x8) (other : bls.fp2x8.Fp2x8)
+  (from1 : Array Std.I64 8#usize) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.permute2 self.c0 other.c0 from1
+  let f1 ← bls.fp8.Fp8.permute2 self.c1 other.c1 from1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp12::karatsuba_lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 81:0-87:1 -/
+def bls.fp12.karatsuba_lanes
+  (a : bls.fp2x8.Fp2x8) (base : Std.I64) : Result bls.fp2x8.Fp2x8 := do
+  let zero ← bls.fp12.zero2
+  let i ← base + 1#i64
+  let i1 ← base + 2#i64
+  let first ←
+    bls.fp2x8.Fp2x8.permute2 a zero
+      (Array.make 8#usize [
+        base, i, i1, base, base, i, bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let second ←
+    bls.fp2x8.Fp2x8.permute2 a zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, i, i1, i1, bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  bls.fp2x8.Fp2x8.add_raw first second
+
+/-- [silver_crypto_simd::bls::fp12::fp2_operands]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 92:0-94:1 -/
+def bls.fp12.fp2_operands
+  (x : bls.fp2x8.Fp2x8) : Result (Array bls.fp8.Fp8 3#usize) := do
+  let f ← bls.fp8.Fp8.add_raw x.c0 x.c1
+  ok (Array.make 3#usize [ x.c0, x.c1, f ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::pack_nine]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 100:0-110:1 -/
+def bls.fp12.pack_nine
+  (l : Array bls.fp8.Fp8 9#usize) : Result (Array bls.fp8.Fp8 7#usize) := do
+  let f ← Array.index_usize l 0#usize
+  let f1 ← Array.index_usize l 7#usize
+  let f2 ←
+    bls.fp8.Fp8.permute2 f f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 8#i64, 9#i64
+        ] (by rfl))
+  let f3 ← bls.fp8.Fp8.normalise f2
+  let f4 ← Array.index_usize l 1#usize
+  let f5 ←
+    bls.fp8.Fp8.permute2 f4 f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 10#i64, 11#i64
+        ] (by rfl))
+  let f6 ← bls.fp8.Fp8.normalise f5
+  let f7 ← Array.index_usize l 2#usize
+  let f8 ←
+    bls.fp8.Fp8.permute2 f7 f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 12#i64, 13#i64
+        ] (by rfl))
+  let f9 ← bls.fp8.Fp8.normalise f8
+  let f10 ← Array.index_usize l 3#usize
+  let f11 ← Array.index_usize l 8#usize
+  let f12 ←
+    bls.fp8.Fp8.permute2 f10 f11
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 8#i64, 9#i64
+        ] (by rfl))
+  let f13 ← bls.fp8.Fp8.normalise f12
+  let f14 ← Array.index_usize l 4#usize
+  let f15 ←
+    bls.fp8.Fp8.permute2 f14 f11
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 10#i64, 11#i64
+        ] (by rfl))
+  let f16 ← bls.fp8.Fp8.normalise f15
+  let f17 ← Array.index_usize l 5#usize
+  let f18 ←
+    bls.fp8.Fp8.permute2 f17 f11
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 12#i64, 13#i64
+        ] (by rfl))
+  let f19 ← bls.fp8.Fp8.normalise f18
+  let f20 ← Array.index_usize l 6#usize
+  let f21 ← bls.fp8.Fp8.normalise f20
+  ok (Array.make 7#usize [ f3, f6, f9, f13, f16, f19, f21 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::unpack_nine]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 115:0-129:1 -/
+def bls.fp12.unpack_nine
+  (q : Array bls.fp8.Fp8 7#usize) : Result (Array bls.fp8.Fp8 9#usize) := do
+  let f ← Array.index_usize q 0#usize
+  let f1 ← Array.index_usize q 1#usize
+  let low7 ←
+    bls.fp8.Fp8.permute2 f f1
+      (Array.make 8#usize [
+        6#i64, 7#i64, 14#i64, 15#i64, 6#i64, 7#i64, 14#i64, 15#i64
+        ] (by rfl))
+  let f2 ← Array.index_usize q 3#usize
+  let f3 ← Array.index_usize q 4#usize
+  let low8 ←
+    bls.fp8.Fp8.permute2 f2 f3
+      (Array.make 8#usize [
+        6#i64, 7#i64, 14#i64, 15#i64, 6#i64, 7#i64, 14#i64, 15#i64
+        ] (by rfl))
+  let f4 ← Array.index_usize q 2#usize
+  let f5 ← Array.index_usize q 5#usize
+  let f6 ← Array.index_usize q 6#usize
+  let f7 ←
+    bls.fp8.Fp8.permute2 low7 f4
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 14#i64, 15#i64, 14#i64, 15#i64
+        ] (by rfl))
+  let f8 ←
+    bls.fp8.Fp8.permute2 low8 f5
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 14#i64, 15#i64, 14#i64, 15#i64
+        ] (by rfl))
+  ok (Array.make 9#usize [ f, f1, f4, f2, f3, f5, f6, f7, f8 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::pack_six]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 135:0-143:1 -/
+def bls.fp12.pack_six
+  (l : Array bls.fp8.Fp8 6#usize) : Result (Array bls.fp8.Fp8 5#usize) := do
+  let f ← Array.index_usize l 0#usize
+  let f1 ← Array.index_usize l 5#usize
+  let f2 ←
+    bls.fp8.Fp8.permute2 f f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 8#i64, 9#i64
+        ] (by rfl))
+  let f3 ← bls.fp8.Fp8.normalise f2
+  let f4 ← Array.index_usize l 1#usize
+  let f5 ←
+    bls.fp8.Fp8.permute2 f4 f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 10#i64, 11#i64
+        ] (by rfl))
+  let f6 ← bls.fp8.Fp8.normalise f5
+  let f7 ← Array.index_usize l 2#usize
+  let f8 ←
+    bls.fp8.Fp8.permute2 f7 f1
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 5#i64, 12#i64, 13#i64
+        ] (by rfl))
+  let f9 ← bls.fp8.Fp8.normalise f8
+  let f10 ← Array.index_usize l 3#usize
+  let f11 ← bls.fp8.Fp8.normalise f10
+  let f12 ← Array.index_usize l 4#usize
+  let f13 ← bls.fp8.Fp8.normalise f12
+  ok (Array.make 5#usize [ f3, f6, f9, f11, f13 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::unpack_six]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 147:0-150:1 -/
+def bls.fp12.unpack_six
+  (q : Array bls.fp8.Fp8 5#usize) : Result (Array bls.fp8.Fp8 6#usize) := do
+  let f ← Array.index_usize q 0#usize
+  let f1 ← Array.index_usize q 1#usize
+  let low5 ←
+    bls.fp8.Fp8.permute2 f f1
+      (Array.make 8#usize [
+        6#i64, 7#i64, 14#i64, 15#i64, 6#i64, 7#i64, 14#i64, 15#i64
+        ] (by rfl))
+  let f2 ← Array.index_usize q 2#usize
+  let f3 ← Array.index_usize q 3#usize
+  let f4 ← Array.index_usize q 4#usize
+  let f5 ←
+    bls.fp8.Fp8.permute2 low5 f2
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 14#i64, 15#i64, 14#i64, 15#i64
+        ] (by rfl))
+  ok (Array.make 6#usize [ f, f1, f2, f3, f4, f5 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::add_slices]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 156:0-158:1 -/
+def bls.fp12.add_slices
+  (acc : bls.fp2x8.Fp2x8) (e : bls.fp2x8.Fp2x8) (xi_e : bls.fp2x8.Fp2x8)
+  (slices : Array (Array Std.I64 8#usize) 2#usize) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let a ← Array.index_usize slices 0#usize
+  let fx ← bls.fp2x8.Fp2x8.permute2 e xi_e a
+  let fx1 ← bls.fp2x8.Fp2x8.add_raw acc fx
+  let a1 ← Array.index_usize slices 1#usize
+  let fx2 ← bls.fp2x8.Fp2x8.permute2 e xi_e a1
+  bls.fp2x8.Fp2x8.add_raw fx1 fx2
+
+/-- [silver_crypto_simd::bls::fp12::Z0_POS]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 164:0-164:85 -/
+@[global_simps, irreducible]
+def bls.fp12.Z0_POS : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      0#i64, 3#i64, 4#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      13#i64, 10#i64, 1#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::Z0_NEG]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 165:0-165:84 -/
+@[global_simps, irreducible]
+def bls.fp12.Z0_NEG : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      9#i64, 0#i64, 0#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      10#i64, 1#i64, 2#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::Z3_POS]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 166:0-166:85 -/
+@[global_simps, irreducible]
+def bls.fp12.Z3_POS : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      6#i64, 6#i64, 6#i64, 0#i64, 3#i64, 4#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      6#i64, 6#i64, 6#i64, 13#i64, 10#i64, 1#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::Z3_NEG]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 167:0-167:84 -/
+@[global_simps, irreducible]
+def bls.fp12.Z3_NEG : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      6#i64, 6#i64, 6#i64, 9#i64, 0#i64, 0#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      6#i64, 6#i64, 6#i64, 10#i64, 1#i64, 2#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::V_Z0_POS]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 168:0-168:88 -/
+@[global_simps, irreducible]
+def bls.fp12.V_Z0_POS : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      12#i64, 0#i64, 3#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      9#i64, 13#i64, 10#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::V_Z0_NEG]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 169:0-169:87 -/
+@[global_simps, irreducible]
+def bls.fp12.V_Z0_NEG : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      8#i64, 9#i64, 0#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      10#i64, 10#i64, 1#i64, 6#i64, 6#i64, 6#i64, 6#i64, 6#i64
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::one]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 174:4-177:5
+    Visibility: public -/
+def bls.fp12.Fp12.one : Result bls.fp12.Fp12 := do
+  let zero ← bls.fp8.Fp8.zero
+  let f ← bls.fp8.Fp8.one
+  let f1 ←
+    bls.fp8.Fp8.permute2 zero f
+      (Array.make 8#usize [
+        8#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+        ] (by rfl))
+  ok { c0 := f1, c1 := zero }
+
+/-- [silver_crypto_simd::bls::fp12::product_operands]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 582:0-590:1 -/
+def bls.fp12.product_operands
+  (a : bls.fp2x8.Fp2x8) : Result (Array bls.fp8.Fp8 7#usize) := do
+  let k0 ← bls.fp12.karatsuba_lanes a 0#i64
+  let k1 ← bls.fp12.karatsuba_lanes a 3#i64
+  let k01 ← bls.fp2x8.Fp2x8.add_raw k0 k1
+  let l0 ← bls.fp12.fp2_operands k0
+  let l1 ← bls.fp12.fp2_operands k1
+  let l2 ← bls.fp12.fp2_operands k01
+  let f ← Array.index_usize l0 0#usize
+  let f1 ← Array.index_usize l0 1#usize
+  let f2 ← Array.index_usize l0 2#usize
+  let f3 ← Array.index_usize l1 0#usize
+  let f4 ← Array.index_usize l1 1#usize
+  let f5 ← Array.index_usize l1 2#usize
+  let f6 ← Array.index_usize l2 0#usize
+  let f7 ← Array.index_usize l2 1#usize
+  let f8 ← Array.index_usize l2 2#usize
+  bls.fp12.pack_nine (Array.make 9#usize [ f, f1, f2, f3, f4, f5, f6, f7, f8 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::mul_by_xi_raw]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 113:4-115:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.mul_by_xi_raw
+  (self : bls.fp2x8.Fp2x8) (offset : bls.fp8.Fp8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.sub_raw self.c0 self.c1 offset
+  let f1 ← bls.fp8.Fp8.add_raw self.c0 self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::from_product_lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 196:4-222:5 -/
+def bls.fp12.Fp12.from_product_lanes
+  (q : Array bls.fp8.Fp8 7#usize) : Result bls.fp12.Fp12 := do
+  let m ← bls.fp12.unpack_nine q
+  let p4 ← bls.fp8.Fp8.multiple_of_p 4#u64
+  let f ← Array.index_usize m 6#usize
+  let f1 ← Array.index_usize m 0#usize
+  let f2 ← Array.index_usize m 3#usize
+  let f3 ← bls.fp8.Fp8.add_raw f1 f2
+  let f4 ← bls.fp8.Fp8.sub_raw f f3 p4
+  let f5 ← Array.index_usize m 7#usize
+  let f6 ← Array.index_usize m 1#usize
+  let f7 ← Array.index_usize m 4#usize
+  let f8 ← bls.fp8.Fp8.add_raw f6 f7
+  let f9 ← bls.fp8.Fp8.sub_raw f5 f8 p4
+  let f10 ← Array.index_usize m 8#usize
+  let f11 ← Array.index_usize m 2#usize
+  let f12 ← Array.index_usize m 5#usize
+  let f13 ← bls.fp8.Fp8.add_raw f11 f12
+  let f14 ← bls.fp8.Fp8.sub_raw f10 f13 p4
+  let fx ← bls.fp12.fp2_from_products f1 f6 f11 2#u64
+  let r0 ← bls.fp12.clear_free_lanes fx
+  let fx1 ← bls.fp12.fp2_from_products f2 f7 f12 2#u64
+  let r1 ← bls.fp12.clear_free_lanes fx1
+  let f15 ← Array.index_usize (Array.make 3#usize [ f4, f9, f14 ] (by rfl)) 0#usize
+  let f16 ← Array.index_usize (Array.make 3#usize [ f4, f9, f14 ] (by rfl)) 1#usize
+  let f17 ← Array.index_usize (Array.make 3#usize [ f4, f9, f14 ] (by rfl)) 2#usize
+  let fx2 ← bls.fp12.fp2_from_products f15 f16 f17 6#u64
+  let d ← bls.fp12.clear_free_lanes fx2
+  let f18 ← bls.fp8.Fp8.multiple_of_p 6#u64
+  let xi_r0 ← bls.fp2x8.Fp2x8.mul_by_xi_raw r0 f18
+  let xi_r1 ← bls.fp2x8.Fp2x8.mul_by_xi_raw r1 f18
+  let f19 ← bls.fp8.Fp8.multiple_of_p 18#u64
+  let xi_d ← bls.fp2x8.Fp2x8.mul_by_xi_raw d f19
+  let zero ← bls.fp12.zero2
+  let pos ← bls.fp12.add_slices zero r0 xi_r0 bls.fp12.Z0_POS
+  let pos1 ← bls.fp12.add_slices pos r1 xi_r1 bls.fp12.V_Z0_POS
+  let pos2 ← bls.fp12.add_slices pos1 d xi_d bls.fp12.Z3_POS
+  let neg ← bls.fp12.add_slices zero r0 xi_r0 bls.fp12.Z0_NEG
+  let neg1 ← bls.fp12.add_slices neg r1 xi_r1 bls.fp12.V_Z0_NEG
+  let neg2 ← bls.fp12.add_slices neg1 d xi_d bls.fp12.Z3_NEG
+  let f20 ← bls.fp8.Fp8.multiple_of_p 60#u64
+  let fx3 ← bls.fp2x8.Fp2x8.sub_raw pos2 neg2 f20
+  let fx4 ← bls.fp2x8.Fp2x8.normalise fx3
+  ok fx4
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 186:8-189:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp12.Fp12.mul_loop.body
+  (left : Array bls.fp8.Fp8 7#usize) (right : Array bls.fp8.Fp8 7#usize)
+  (q : Array bls.fp8.Fp8 7#usize) (i : Std.Usize) :
+  Result (ControlFlow ((Array bls.fp8.Fp8 7#usize) × Std.Usize) (Array
+    bls.fp8.Fp8 7#usize))
+  := do
+  if i < 7#usize
+  then
+    let f ← Array.index_usize left i
+    let f1 ← Array.index_usize right i
+    let f2 ← bls.fp8.Fp8.mul f f1
+    let a ← Array.update q i f2
+    let i1 ← i + 1#usize
+    ok (cont (a, i1))
+  else ok (done q)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 186:8-189:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp12.Fp12.mul_loop
+  (left : Array bls.fp8.Fp8 7#usize) (right : Array bls.fp8.Fp8 7#usize)
+  (q : Array bls.fp8.Fp8 7#usize) (i : Std.Usize) :
+  Result (Array bls.fp8.Fp8 7#usize)
+  := do
+  loop
+    (fun (q1, i1) => bls.fp12.Fp12.mul_loop.body left right q1 i1)
+    (q, i)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 181:4-191:5
+    Visibility: public -/
+def bls.fp12.Fp12.mul
+  (self : bls.fp12.Fp12) (rhs : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let left ← bls.fp12.product_operands self
+  let right ← bls.fp12.product_operands rhs
+  let f ← bls.fp8.Fp8.zero
+  let q := Array.repeat 7#usize f
+  let q1 ← bls.fp12.Fp12.mul_loop left right q 0#usize
+  bls.fp12.Fp12.from_product_lanes q1
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::from_square_lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 257:4-280:5 -/
+def bls.fp12.Fp12.from_square_lanes
+  (q : Array bls.fp8.Fp8 5#usize) : Result bls.fp12.Fp12 := do
+  let m ← bls.fp12.unpack_six q
+  let f ← Array.index_usize m 0#usize
+  let f1 ← Array.index_usize m 1#usize
+  let f2 ← Array.index_usize m 2#usize
+  let t ← bls.fp12.fp2_from_products f f1 f2 2#u64
+  let f3 ← Array.index_usize m 3#usize
+  let f4 ← Array.index_usize m 4#usize
+  let f5 ← Array.index_usize m 5#usize
+  let s ← bls.fp12.fp2_from_products f3 f4 f5 2#u64
+  let f6 ← bls.fp8.Fp8.multiple_of_p 4#u64
+  let f7 ← bls.fp8.Fp8.sub_raw s.c0 t.c0 f6
+  let f8 ← bls.fp8.Fp8.multiple_of_p 6#u64
+  let f9 ← bls.fp8.Fp8.sub_raw s.c1 t.c1 f8
+  let u ← bls.fp12.clear_free_lanes { c0 := f7, c1 := f9 }
+  let t1 ← bls.fp12.clear_free_lanes t
+  let xi_t ← bls.fp2x8.Fp2x8.mul_by_xi_raw t1 f8
+  let f10 ← bls.fp8.Fp8.multiple_of_p 12#u64
+  let xi_u ← bls.fp2x8.Fp2x8.mul_by_xi_raw u f10
+  let zero ← bls.fp12.zero2
+  let pos ← bls.fp12.add_slices zero u xi_u bls.fp12.Z0_POS
+  let pos1 ← bls.fp12.add_slices pos t1 xi_t bls.fp12.V_Z0_NEG
+  let twice_pos ← bls.fp12.add_slices zero t1 xi_t bls.fp12.Z3_POS
+  let fx ← bls.fp2x8.Fp2x8.add_raw pos1 twice_pos
+  let pos2 ← bls.fp2x8.Fp2x8.add_raw fx twice_pos
+  let neg ← bls.fp12.add_slices zero u xi_u bls.fp12.Z0_NEG
+  let neg1 ← bls.fp12.add_slices neg t1 xi_t bls.fp12.V_Z0_POS
+  let twice_neg ← bls.fp12.add_slices zero t1 xi_t bls.fp12.Z3_NEG
+  let fx1 ← bls.fp2x8.Fp2x8.add_raw neg1 twice_neg
+  let neg2 ← bls.fp2x8.Fp2x8.add_raw fx1 twice_neg
+  let f11 ← bls.fp8.Fp8.multiple_of_p 60#u64
+  let fx2 ← bls.fp2x8.Fp2x8.sub_raw pos2 neg2 f11
+  let fx3 ← bls.fp2x8.Fp2x8.normalise fx2
+  ok fx3
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::square]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 247:8-250:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp12.Fp12.square_loop.body
+  (left : Array bls.fp8.Fp8 5#usize) (right : Array bls.fp8.Fp8 5#usize)
+  (q : Array bls.fp8.Fp8 5#usize) (i : Std.Usize) :
+  Result (ControlFlow ((Array bls.fp8.Fp8 5#usize) × Std.Usize) (Array
+    bls.fp8.Fp8 5#usize))
+  := do
+  if i < 5#usize
+  then
+    let f ← Array.index_usize left i
+    let f1 ← Array.index_usize right i
+    let f2 ← bls.fp8.Fp8.mul f f1
+    let a ← Array.update q i f2
+    let i1 ← i + 1#usize
+    ok (cont (a, i1))
+  else ok (done q)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::square]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 247:8-250:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp12.Fp12.square_loop
+  (left : Array bls.fp8.Fp8 5#usize) (right : Array bls.fp8.Fp8 5#usize)
+  (q : Array bls.fp8.Fp8 5#usize) (i : Std.Usize) :
+  Result (Array bls.fp8.Fp8 5#usize)
+  := do
+  loop
+    (fun (q1, i1) => bls.fp12.Fp12.square_loop.body left right q1 i1)
+    (q, i)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::square]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 227:4-252:5
+    Visibility: public -/
+def bls.fp12.Fp12.square (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let zero ← bls.fp12.zero2
+  let f ← bls.fp8.Fp8.multiple_of_p bls.fp12.BOUND
+  let xi_a ← bls.fp2x8.Fp2x8.mul_by_xi_raw self f
+  let k0 ← bls.fp12.karatsuba_lanes self 0#i64
+  let k1 ← bls.fp12.karatsuba_lanes self 3#i64
+  let fx ←
+    bls.fp2x8.Fp2x8.permute2 self xi_a
+      (Array.make 8#usize [
+        13#i64, 3#i64, 4#i64, 13#i64, 13#i64, 3#i64, 6#i64, 6#i64
+        ] (by rfl))
+  let fx1 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, 3#i64, 4#i64, 4#i64, bls.fp12.Z,
+        bls.fp12.Z
+        ] (by rfl))
+  let kv1 ← bls.fp2x8.Fp2x8.add_raw fx fx1
+  let left_sum ← bls.fp2x8.Fp2x8.add_raw k0 k1
+  let right_sum ← bls.fp2x8.Fp2x8.add_raw k0 kv1
+  let lt ← bls.fp12.fp2_operands k0
+  let ls ← bls.fp12.fp2_operands left_sum
+  let rt ← bls.fp12.fp2_operands k1
+  let rs ← bls.fp12.fp2_operands right_sum
+  let f1 ← Array.index_usize lt 0#usize
+  let f2 ← Array.index_usize lt 1#usize
+  let f3 ← Array.index_usize lt 2#usize
+  let f4 ← Array.index_usize ls 0#usize
+  let f5 ← Array.index_usize ls 1#usize
+  let f6 ← Array.index_usize ls 2#usize
+  let left ←
+    bls.fp12.pack_six (Array.make 6#usize [ f1, f2, f3, f4, f5, f6 ] (by rfl))
+  let f7 ← Array.index_usize rt 0#usize
+  let f8 ← Array.index_usize rt 1#usize
+  let f9 ← Array.index_usize rt 2#usize
+  let f10 ← Array.index_usize rs 0#usize
+  let f11 ← Array.index_usize rs 1#usize
+  let f12 ← Array.index_usize rs 2#usize
+  let right ←
+    bls.fp12.pack_six (Array.make 6#usize [ f7, f8, f9, f10, f11, f12 ] (by rfl))
+  let f13 ← bls.fp8.Fp8.zero
+  let q := Array.repeat 5#usize f13
+  let q1 ← bls.fp12.Fp12.square_loop left right q 0#usize
+  bls.fp12.Fp12.from_square_lanes q1
+
+/-- [silver_crypto_simd::bls::fp12::line_operands]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 596:0-606:1 -/
+def bls.fp12.line_operands
+  (group_a : bls.fp2x8.Fp2x8) (group_b : bls.fp2x8.Fp2x8) :
+  Result (Array bls.fp8.Fp8 5#usize)
+  := do
+  let a ← bls.fp12.fp2_operands group_a
+  let b ← bls.fp12.fp2_operands group_b
+  let f ← Array.index_usize a 0#usize
+  let f1 ← bls.fp8.Fp8.normalise f
+  let f2 ← Array.index_usize a 1#usize
+  let f3 ← bls.fp8.Fp8.normalise f2
+  let f4 ← Array.index_usize a 2#usize
+  let f5 ← bls.fp8.Fp8.normalise f4
+  let f6 ← Array.index_usize b 0#usize
+  let f7 ← Array.index_usize b 2#usize
+  let f8 ←
+    bls.fp8.Fp8.permute2 f6 f7
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 8#i64, 9#i64, 10#i64
+        ] (by rfl))
+  let f9 ← bls.fp8.Fp8.normalise f8
+  let f10 ← Array.index_usize b 1#usize
+  let f11 ←
+    bls.fp8.Fp8.permute2 f10 f7
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 3#i64, 4#i64, 11#i64, 12#i64, 13#i64
+        ] (by rfl))
+  let f12 ← bls.fp8.Fp8.normalise f11
+  ok (Array.make 5#usize [ f1, f3, f5, f9, f12 ] (by rfl))
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::from_line_lanes]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 321:4-362:5 -/
+def bls.fp12.Fp12.from_line_lanes
+  (q : Array bls.fp8.Fp8 5#usize) : Result bls.fp12.Fp12 := do
+  let zero ← bls.fp12.zero2
+  let f ← Array.index_usize q 0#usize
+  let f1 ← Array.index_usize q 1#usize
+  let f2 ← Array.index_usize q 2#usize
+  let ra ← bls.fp12.fp2_from_products f f1 f2 2#u64
+  let f3 ← Array.index_usize q 3#usize
+  let f4 ← Array.index_usize q 4#usize
+  let b2 ←
+    bls.fp8.Fp8.permute2 f3 f4
+      (Array.make 8#usize [
+        5#i64, 6#i64, 7#i64, 13#i64, 14#i64, 15#i64, 15#i64, 15#i64
+        ] (by rfl))
+  let rb ← bls.fp12.fp2_from_products f3 f4 b2 2#u64
+  let f5 ← bls.fp8.Fp8.multiple_of_p 4#u64
+  let f6 ← bls.fp8.Fp8.sub_raw rb.c0 ra.c0 f5
+  let f7 ← bls.fp8.Fp8.multiple_of_p 6#u64
+  let f8 ← bls.fp8.Fp8.sub_raw rb.c1 ra.c1 f7
+  let db ← bls.fp2x8.Fp2x8.select 224#u8 { c0 := f6, c1 := f8 } zero
+  let fx ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        0#i64, 2#i64, 3#i64, 8#i64, 10#i64, 11#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx1 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 13#i64, 1#i64, 13#i64, 13#i64, 9#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx2 ← bls.fp2x8.Fp2x8.add_raw fx fx1
+  let fx3 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 13#i64, 6#i64, 13#i64, 13#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let n_pos ← bls.fp2x8.Fp2x8.add_raw fx2 fx3
+  let fx4 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 0#i64, 0#i64, 13#i64, 8#i64, 8#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx5 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 1#i64, 13#i64, 13#i64, 9#i64, 7#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx6 ← bls.fp2x8.Fp2x8.add_raw fx4 fx5
+  let fx7 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 13#i64, 13#i64, 13#i64, 6#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let n_neg ← bls.fp2x8.Fp2x8.add_raw fx6 fx7
+  let fx8 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        4#i64, 5#i64, 13#i64, 12#i64, 13#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx9 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        7#i64, 13#i64, 13#i64, 13#i64, 13#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let m_pos ← bls.fp2x8.Fp2x8.add_raw fx8 fx9
+  let fx10 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        1#i64, 13#i64, 13#i64, 9#i64, 13#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let fx11 ←
+    bls.fp2x8.Fp2x8.permute2 ra db
+      (Array.make 8#usize [
+        13#i64, 13#i64, 13#i64, 5#i64, 13#i64, 13#i64, 13#i64, 13#i64
+        ] (by rfl))
+  let m_neg ← bls.fp2x8.Fp2x8.add_raw fx10 fx11
+  let f9 ← bls.fp8.Fp8.add_raw n_pos.c0 m_pos.c0
+  let c0_pos ← bls.fp8.Fp8.add_raw f9 m_neg.c1
+  let f10 ← bls.fp8.Fp8.add_raw n_neg.c0 m_neg.c0
+  let c0_neg ← bls.fp8.Fp8.add_raw f10 m_pos.c1
+  let f11 ← bls.fp8.Fp8.add_raw n_pos.c1 m_pos.c0
+  let c1_pos ← bls.fp8.Fp8.add_raw f11 m_pos.c1
+  let f12 ← bls.fp8.Fp8.add_raw n_neg.c1 m_neg.c0
+  let c1_neg ← bls.fp8.Fp8.add_raw f12 m_neg.c1
+  let offset ← bls.fp8.Fp8.multiple_of_p 66#u64
+  let f13 ← bls.fp8.Fp8.sub_raw c0_pos c0_neg offset
+  let f14 ← bls.fp8.Fp8.normalise f13
+  let f15 ← bls.fp8.Fp8.sub_raw c1_pos c1_neg offset
+  let f16 ← bls.fp8.Fp8.normalise f15
+  ok { c0 := f14, c1 := f16 }
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul_by_line]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 310:8-313:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp12.Fp12.mul_by_line_loop.body
+  (left : Array bls.fp8.Fp8 5#usize) (right : Array bls.fp8.Fp8 5#usize)
+  (q : Array bls.fp8.Fp8 5#usize) (i : Std.Usize) :
+  Result (ControlFlow ((Array bls.fp8.Fp8 5#usize) × Std.Usize) (Array
+    bls.fp8.Fp8 5#usize))
+  := do
+  if i < 5#usize
+  then
+    let f ← Array.index_usize left i
+    let f1 ← Array.index_usize right i
+    let f2 ← bls.fp8.Fp8.mul f f1
+    let a ← Array.update q i f2
+    let i1 ← i + 1#usize
+    ok (cont (a, i1))
+  else ok (done q)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul_by_line]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 310:8-313:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp12.Fp12.mul_by_line_loop
+  (left : Array bls.fp8.Fp8 5#usize) (right : Array bls.fp8.Fp8 5#usize)
+  (q : Array bls.fp8.Fp8 5#usize) (i : Std.Usize) :
+  Result (Array bls.fp8.Fp8 5#usize)
+  := do
+  loop
+    (fun (q1, i1) => bls.fp12.Fp12.mul_by_line_loop.body left right q1 i1)
+    (q, i)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::mul_by_line]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 285:4-315:5
+    Visibility: public -/
+def bls.fp12.Fp12.mul_by_line
+  (self : bls.fp12.Fp12) (line : bls.fp2x8.Fp2x8) : Result bls.fp12.Fp12 := do
+  let zero ← bls.fp12.zero2
+  let fx ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        0#i64, 1#i64, 0#i64, 0#i64, 1#i64, 5#i64, 3#i64, 4#i64
+        ] (by rfl))
+  let fx1 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, 1#i64, 2#i64, 2#i64, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z
+        ] (by rfl))
+  let left_a ← bls.fp2x8.Fp2x8.add_raw fx fx1
+  let fx2 ←
+    bls.fp2x8.Fp2x8.permute2 line zero
+      (Array.make 8#usize [
+        0#i64, 1#i64, 0#i64, 0#i64, 1#i64, 2#i64, 2#i64, 2#i64
+        ] (by rfl))
+  let fx3 ←
+    bls.fp2x8.Fp2x8.permute2 line zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, 1#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let right_a ← bls.fp2x8.Fp2x8.add_raw fx2 fx3
+  let fx4 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        3#i64, 4#i64, 5#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z
+        ] (by rfl))
+  let sum ← bls.fp2x8.Fp2x8.add_raw self fx4
+  let fx5 ←
+    bls.fp2x8.Fp2x8.permute2 sum zero
+      (Array.make 8#usize [
+        0#i64, 1#i64, 0#i64, 0#i64, 1#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let fx6 ←
+    bls.fp2x8.Fp2x8.permute2 sum zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, 1#i64, 2#i64, 2#i64, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z
+        ] (by rfl))
+  let left_b ← bls.fp2x8.Fp2x8.add_raw fx5 fx6
+  let fx7 ←
+    bls.fp2x8.Fp2x8.permute2 line zero
+      (Array.make 8#usize [
+        bls.fp12.Z, 2#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let line_sum ← bls.fp2x8.Fp2x8.add_raw line fx7
+  let fx8 ←
+    bls.fp2x8.Fp2x8.permute2 line_sum zero
+      (Array.make 8#usize [
+        0#i64, 1#i64, 0#i64, 0#i64, 1#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let fx9 ←
+    bls.fp2x8.Fp2x8.permute2 line_sum zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, 1#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let right_b ← bls.fp2x8.Fp2x8.add_raw fx8 fx9
+  let left ← bls.fp12.line_operands left_a left_b
+  let right ← bls.fp12.line_operands right_a right_b
+  let f ← bls.fp8.Fp8.zero
+  let q := Array.repeat 5#usize f
+  let q1 ← bls.fp12.Fp12.mul_by_line_loop left right q 0#usize
+  bls.fp12.Fp12.from_line_lanes q1
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::cyclotomic_sum]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 401:4-438:5 -/
+def bls.fp12.Fp12.cyclotomic_sum
+  (q : bls.fp2x8.Fp2x8) (m : bls.fp8.Fp8) (a : bls.fp2x8.Fp2x8) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let zero ← bls.fp12.zero2
+  let f ←
+    bls.fp8.Fp8.permute2 m zero.c0
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 2#i64, 7#i64, 0#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let f1 ←
+    bls.fp8.Fp8.permute2 m zero.c0
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 3#i64, 7#i64, 1#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let n_pos ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, 7#i64, 6#i64, 13#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let fx ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 7#i64, 0#i64, 1#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let fx1 ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 7#i64, 3#i64, 4#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let n_neg ← bls.fp2x8.Fp2x8.add_raw fx fx1
+  let m_pos ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        3#i64, 4#i64, 5#i64, 11#i64, 7#i64, 7#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let fx2 ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 2#i64, 7#i64, 7#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let fx3 ←
+    bls.fp2x8.Fp2x8.permute2 q { c0 := f, c1 := f1 }
+      (Array.make 8#usize [
+        7#i64, 7#i64, 7#i64, 5#i64, 7#i64, 7#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let m_neg ← bls.fp2x8.Fp2x8.add_raw fx2 fx3
+  let p12 ← bls.fp8.Fp8.multiple_of_p 12#u64
+  let f2 ← bls.fp8.Fp8.add_raw n_pos.c0 m_pos.c0
+  let f3 ← bls.fp8.Fp8.add_raw f2 m_neg.c1
+  let f4 ← bls.fp8.Fp8.add_raw n_neg.c0 m_neg.c0
+  let f5 ← bls.fp8.Fp8.add_raw f4 m_pos.c1
+  let f6 ← bls.fp8.Fp8.sub_raw f3 f5 p12
+  let f7 ← bls.fp8.Fp8.add_raw n_pos.c1 m_pos.c0
+  let f8 ← bls.fp8.Fp8.add_raw f7 m_pos.c1
+  let f9 ← bls.fp8.Fp8.add_raw n_neg.c1 m_neg.c0
+  let f10 ← bls.fp8.Fp8.add_raw f9 m_neg.c1
+  let f11 ← bls.fp8.Fp8.sub_raw f8 f10 p12
+  let twice_a ← bls.fp2x8.Fp2x8.add_raw a a
+  let i ← 2#u64 * bls.fp12.BOUND
+  let offset ← bls.fp8.Fp8.multiple_of_p i
+  let fx4 ← bls.fp2x8.Fp2x8.sub_raw zero twice_a offset
+  let signed ← bls.fp2x8.Fp2x8.select 56#u8 fx4 twice_a
+  let fx5 ←
+    bls.fp2x8.Fp2x8.add_raw { c0 := f6, c1 := f11 } { c0 := f6, c1 := f11 }
+  let fx6 ← bls.fp2x8.Fp2x8.add_raw fx5 { c0 := f6, c1 := f11 }
+  let fx7 ← bls.fp2x8.Fp2x8.add_raw fx6 signed
+  bls.fp2x8.Fp2x8.normalise fx7
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::cyclotomic_square]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 368:4-394:5
+    Visibility: public -/
+def bls.fp12.Fp12.cyclotomic_square
+  (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let zero ← bls.fp12.zero2
+  let fx ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        0#i64, 3#i64, 1#i64, 4#i64, 2#i64, 5#i64, 0#i64, bls.fp12.Z
+        ] (by rfl))
+  let fx1 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        4#i64, bls.fp12.Z
+        ] (by rfl))
+  let u ← bls.fp2x8.Fp2x8.add_raw fx fx1
+  let fx2 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        3#i64, 1#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let fx3 ←
+    bls.fp2x8.Fp2x8.permute2 self zero
+      (Array.make 8#usize [
+        2#i64, 5#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z, bls.fp12.Z
+        ] (by rfl))
+  let sums ← bls.fp2x8.Fp2x8.add_raw fx2 fx3
+  let i ← 2#u64 * bls.fp12.BOUND
+  let offset ← bls.fp8.Fp8.multiple_of_p i
+  let f ← bls.fp8.Fp8.add_raw u.c0 u.c1
+  let f1 ← bls.fp8.Fp8.normalise f
+  let f2 ← bls.fp8.Fp8.sub_raw u.c0 u.c1 offset
+  let f3 ← bls.fp8.Fp8.normalise f2
+  let f4 ← bls.fp8.Fp8.mul f1 f3
+  let f5 ← bls.fp8.Fp8.normalise u.c0
+  let f6 ← bls.fp8.Fp8.add_raw u.c1 u.c1
+  let f7 ← bls.fp8.Fp8.normalise f6
+  let f8 ← bls.fp8.Fp8.mul f5 f7
+  let sum ← bls.fp8.Fp8.add_raw sums.c0 sums.c1
+  let difference ← bls.fp8.Fp8.sub_raw sums.c0 sums.c1 offset
+  let twice ← bls.fp8.Fp8.add_raw sums.c1 sums.c1
+  let f9 ←
+    bls.fp8.Fp8.permute2 sum sums.c0
+      (Array.make 8#usize [
+        0#i64, 8#i64, 1#i64, 9#i64, 7#i64, 7#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let left ← bls.fp8.Fp8.normalise f9
+  let f10 ←
+    bls.fp8.Fp8.permute2 difference twice
+      (Array.make 8#usize [
+        0#i64, 8#i64, 1#i64, 9#i64, 7#i64, 7#i64, 7#i64, 7#i64
+        ] (by rfl))
+  let right ← bls.fp8.Fp8.normalise f10
+  let f11 ← bls.fp8.Fp8.mul left right
+  let r ← bls.fp12.Fp12.cyclotomic_sum { c0 := f4, c1 := f8 } f11 self
+  let f12 ← bls.fp8.Fp8.multiple_of_p i
+  let r1 ← bls.fp2x8.Fp2x8.cond_sub r f12
+  let f13 ← bls.fp8.Fp8.multiple_of_p bls.fp12.BOUND
+  let fx4 ← bls.fp2x8.Fp2x8.cond_sub r1 f13
+  ok fx4
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::conjugate]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 442:4-446:5
+    Visibility: public -/
+def bls.fp12.Fp12.conjugate (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let bound ← bls.fp8.Fp8.multiple_of_p bls.fp12.BOUND
+  let fx ← bls.fp12.zero2
+  let fx1 ← bls.fp2x8.Fp2x8.sub_raw fx self bound
+  let fx2 ← bls.fp2x8.Fp2x8.normalise fx1
+  let negated ← bls.fp2x8.Fp2x8.cond_sub fx2 bound
+  let fx3 ← bls.fp2x8.Fp2x8.select 56#u8 self negated
+  ok fx3
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::times_coefficients]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 469:8-473:9 -/
+@[rust_loop_body]
+def bls.fp12.Fp12.times_coefficients_loop.body
+  (gamma : Array (Array (Array Std.U64 8#usize) 2#usize) 6#usize)
+  (c0 : Array (Array Std.U64 8#usize) 8#usize)
+  (c1 : Array (Array Std.U64 8#usize) 8#usize) (lane : Std.Usize) :
+  Result (ControlFlow ((Array (Array Std.U64 8#usize) 8#usize) × (Array (Array
+    Std.U64 8#usize) 8#usize) × Std.Usize) ((Array (Array Std.U64 8#usize)
+    8#usize) × (Array (Array Std.U64 8#usize) 8#usize)))
+  := do
+  if lane < 6#usize
+  then
+    let i ← Array.index_usize bls.fp12.POWER_OF_LANE lane
+    let a ← Array.index_usize gamma i
+    let a1 ← Array.index_usize a 0#usize
+    let a2 ← Array.update c0 lane a1
+    let a3 ← Array.index_usize gamma i
+    let a4 ← Array.index_usize a3 1#usize
+    let a5 ← Array.update c1 lane a4
+    let lane1 ← lane + 1#usize
+    ok (cont (a2, a5, lane1))
+  else ok (done (c0, c1))
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::times_coefficients]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 469:8-473:9 -/
+@[rust_loop]
+def bls.fp12.Fp12.times_coefficients_loop
+  (gamma : Array (Array (Array Std.U64 8#usize) 2#usize) 6#usize)
+  (c0 : Array (Array Std.U64 8#usize) 8#usize)
+  (c1 : Array (Array Std.U64 8#usize) 8#usize) (lane : Std.Usize) :
+  Result ((Array (Array Std.U64 8#usize) 8#usize) × (Array (Array Std.U64
+    8#usize) 8#usize))
+  := do
+  loop
+    (fun (c01, c11, lane1) => bls.fp12.Fp12.times_coefficients_loop.body gamma
+      c01 c11 lane1)
+    (c0, c1, lane)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::times_coefficients]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 465:4-476:5 -/
+def bls.fp12.Fp12.times_coefficients
+  (self : bls.fp12.Fp12)
+  (gamma : Array (Array (Array Std.U64 8#usize) 2#usize) 6#usize) :
+  Result bls.fp12.Fp12
+  := do
+  let a := Array.repeat 8#usize 0#u64
+  let c0 := Array.repeat 8#usize a
+  let a1 := Array.repeat 8#usize 0#u64
+  let c1 := Array.repeat 8#usize a1
+  let (c01, c11) ← bls.fp12.Fp12.times_coefficients_loop gamma c0 c1 0#usize
+  let f ← bls.fp8.Fp8.load c01
+  let f1 ← bls.fp8.Fp8.load c11
+  let fx ← bls.fp12.fp2_products self { c0 := f, c1 := f1 }
+  ok fx
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::conjugate_coefficients]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 457:4-460:5 -/
+def bls.fp12.Fp12.conjugate_coefficients
+  (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let f ← bls.fp8.Fp8.zero
+  let f1 ← bls.fp8.Fp8.multiple_of_p bls.fp12.BOUND
+  let f2 ← bls.fp8.Fp8.sub_raw f self.c1 f1
+  let c1 ← bls.fp8.Fp8.normalise f2
+  ok { self with c1 }
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::frobenius]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 450:4-452:5
+    Visibility: public -/
+def bls.fp12.Fp12.frobenius (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let f ← bls.fp12.Fp12.conjugate_coefficients self
+  bls.fp12.Fp12.times_coefficients f bls.constants.FROBENIUS_MONT
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::inverse]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 556:4-558:5
+    Visibility: public -/
+def bls.fp8.Fp8.inverse (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  let f ← bls.fp8.Fp8.pow_p_minus_3_over_4 self
+  let f1 ← bls.fp8.Fp8.square f
+  let f2 ← bls.fp8.Fp8.square f1
+  bls.fp8.Fp8.mul f2 self
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 500:8-503:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.fp8.Fp8.permute_loop.body
+  (index : core.core_arch.x86.__m512i) (self : bls.fp8.Fp8)
+  (v : Array core.core_arch.x86.__m512i 8#usize) (j : Std.Usize) :
+  Result (ControlFlow (bls.fp8.Fp8 × (Array core.core_arch.x86.__m512i
+    8#usize) × Std.Usize) (Array core.core_arch.x86.__m512i 8#usize))
+  := do
+  if j < bls.constants.LIMBS
+  then
+    let mi ← Array.index_usize self j
+    let mi1 ←
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi index mi
+    let a ← Array.update v j mi1
+    let j1 ← j + 1#usize
+    ok (cont (self, a, j1))
+  else ok (done v)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 500:8-503:9
+    Visibility: public -/
+@[rust_loop]
+def bls.fp8.Fp8.permute_loop
+  (self : bls.fp8.Fp8) (index : core.core_arch.x86.__m512i)
+  (v : Array core.core_arch.x86.__m512i 8#usize) (j : Std.Usize) :
+  Result (Array core.core_arch.x86.__m512i 8#usize)
+  := do
+  loop
+    (fun (self1, v1, j1) => bls.fp8.Fp8.permute_loop.body index self1 v1 j1)
+    (self, v, j)
+
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 496:4-505:5
+    Visibility: public -/
+def bls.fp8.Fp8.permute
+  (self : bls.fp8.Fp8) (from1 : Array Std.I64 8#usize) :
+  Result bls.fp8.Fp8
+  := do
+  let index ← bls.fp8.index_vector from1
+  let mi ← bls.fp8.zero
+  let v := Array.repeat 8#usize mi
+  let v1 ← bls.fp8.Fp8.permute_loop self index v 0#usize
+  ok v1
+
+/-- [silver_crypto_simd::bls::fp2x8::{silver_crypto_simd::bls::fp2x8::Fp2x8}::permute]:
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 120:4-122:5
+    Visibility: public -/
+def bls.fp2x8.Fp2x8.permute
+  (self : bls.fp2x8.Fp2x8) (from1 : Array Std.I64 8#usize) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let f ← bls.fp8.Fp8.permute self.c0 from1
+  let f1 ← bls.fp8.Fp8.permute self.c1 from1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::inverse]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 481:4-520:5
+    Visibility: public -/
+def bls.fp12.Fp12.inverse (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let conjugate ← bls.fp12.Fp12.conjugate self
+  let f ← bls.fp12.Fp12.mul self conjugate
+  let f1 ← bls.fp8.Fp8.multiple_of_p bls.fp12.BOUND
+  let fx ← bls.fp2x8.Fp2x8.mul_by_xi_raw f f1
+  let xi_n ← bls.fp2x8.Fp2x8.normalise fx
+  let left ←
+    bls.fp2x8.Fp2x8.permute2 f xi_n
+      (Array.make 8#usize [
+        0#i64, 10#i64, 1#i64, 1#i64, 0#i64, 0#i64, 0#i64, 0#i64
+        ] (by rfl))
+  let right ←
+    bls.fp2x8.Fp2x8.permute f
+      (Array.make 8#usize [
+        0#i64, 2#i64, 1#i64, 2#i64, 1#i64, 2#i64, 0#i64, 0#i64
+        ] (by rfl))
+  let products ← bls.fp12.fp2_products left right
+  let f2 ← bls.fp8.Fp8.multiple_of_p 6#u64
+  let fx1 ← bls.fp2x8.Fp2x8.mul_by_xi_raw products f2
+  let xi_products ← bls.fp2x8.Fp2x8.normalise fx1
+  let subtrahend ←
+    bls.fp2x8.Fp2x8.permute2 products xi_products
+      (Array.make 8#usize [
+        11#i64, 4#i64, 5#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+        ] (by rfl))
+  let f3 ← bls.fp8.Fp8.multiple_of_p 12#u64
+  let fx2 ← bls.fp2x8.Fp2x8.sub_raw products subtrahend f3
+  let t ← bls.fp2x8.Fp2x8.normalise fx2
+  let fx3 ←
+    bls.fp2x8.Fp2x8.permute f
+      (Array.make 8#usize [
+        0#i64, 2#i64, 1#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+        ] (by rfl))
+  let d ← bls.fp12.fp2_products fx3 t
+  let fx4 ← bls.fp2x8.Fp2x8.mul_by_xi_raw d f2
+  let xi_d ← bls.fp2x8.Fp2x8.normalise fx4
+  let a := Array.repeat 8#usize 1#i64
+  let fx5 ← bls.fp2x8.Fp2x8.permute xi_d a
+  let fx6 ← bls.fp2x8.Fp2x8.add_raw d fx5
+  let a1 := Array.repeat 8#usize 2#i64
+  let fx7 ← bls.fp2x8.Fp2x8.permute xi_d a1
+  let fx8 ← bls.fp2x8.Fp2x8.add_raw fx6 fx7
+  let det ← bls.fp2x8.Fp2x8.normalise fx8
+  let components ←
+    bls.fp8.Fp8.permute2 det.c0 det.c1
+      (Array.make 8#usize [
+        0#i64, 8#i64, 0#i64, 8#i64, 0#i64, 8#i64, 0#i64, 8#i64
+        ] (by rfl))
+  let squares ← bls.fp8.Fp8.mul components components
+  let f4 ←
+    bls.fp8.Fp8.permute squares
+      (Array.make 8#usize [
+        1#i64, 0#i64, 1#i64, 0#i64, 1#i64, 0#i64, 1#i64, 0#i64
+        ] (by rfl))
+  let f5 ← bls.fp8.Fp8.add_raw squares f4
+  let norm ← bls.fp8.Fp8.normalise f5
+  let f6 ← bls.fp8.Fp8.inverse norm
+  let a2 := Array.repeat 8#usize 0#i64
+  let inverse_norm ← bls.fp8.Fp8.permute f6 a2
+  let a3 := Array.repeat 8#usize 0#i64
+  let f7 ← bls.fp8.Fp8.permute det.c0 a3
+  let f8 ← bls.fp8.Fp8.mul f7 inverse_norm
+  let f9 ← bls.fp8.Fp8.zero
+  let f10 ← bls.fp8.Fp8.multiple_of_p 30#u64
+  let f11 ← bls.fp8.Fp8.sub_raw f9 det.c1 f10
+  let f12 ← bls.fp8.Fp8.normalise f11
+  let a4 := Array.repeat 8#usize 0#i64
+  let f13 ← bls.fp8.Fp8.permute f12 a4
+  let f14 ← bls.fp8.Fp8.mul f13 inverse_norm
+  let fx9 ← bls.fp12.fp2_products t { c0 := f8, c1 := f14 }
+  let fx10 ← bls.fp12.zero2
+  let n_inverse ←
+    bls.fp2x8.Fp2x8.permute2 fx9 fx10
+      (Array.make 8#usize [
+        0#i64, 1#i64, 2#i64, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z, bls.fp12.Z,
+        bls.fp12.Z
+        ] (by rfl))
+  bls.fp12.Fp12.mul conjugate n_inverse
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::cyclotomic_exp]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 558:8-564:9 -/
+@[rust_loop_body]
+def bls.fp12.Fp12.cyclotomic_exp_loop.body
+  (self : bls.fp12.Fp12) (r : bls.fp12.Fp12) (bit : Std.U32) :
+  Result (ControlFlow (bls.fp12.Fp12 × Std.U32) bls.fp12.Fp12)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← bls.fp12.Fp12.cyclotomic_square r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then let r2 ← bls.fp12.Fp12.mul r1 self
+         ok (cont (r2, bit1))
+    else ok (cont (r1, bit1))
+  else ok (done r)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::cyclotomic_exp]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 558:8-564:9 -/
+@[rust_loop]
+def bls.fp12.Fp12.cyclotomic_exp_loop
+  (self : bls.fp12.Fp12) (r : bls.fp12.Fp12) (bit : Std.U32) :
+  Result bls.fp12.Fp12
+  := do
+  loop
+    (fun (r1, bit1) => bls.fp12.Fp12.cyclotomic_exp_loop.body self r1 bit1)
+    (r, bit)
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::cyclotomic_exp]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 555:4-566:5 -/
+def bls.fp12.Fp12.cyclotomic_exp
+  (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let r ← bls.fp12.Fp12.cyclotomic_exp_loop self self bit
+  bls.fp12.Fp12.conjugate r
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::final_exponentiation]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 528:4-550:5
+    Visibility: public -/
+def bls.fp12.Fp12.final_exponentiation
+  (self : bls.fp12.Fp12) : Result bls.fp12.Fp12 := do
+  let t0 ← bls.fp12.Fp12.conjugate self
+  let t1 ← bls.fp12.Fp12.inverse self
+  let t2 ← bls.fp12.Fp12.mul t0 t1
+  let f ← bls.fp12.Fp12.frobenius t2
+  let f1 ← bls.fp12.Fp12.frobenius f
+  let t21 ← bls.fp12.Fp12.mul f1 t2
+  let f2 ← bls.fp12.Fp12.cyclotomic_square t21
+  let t11 ← bls.fp12.Fp12.conjugate f2
+  let t3 ← bls.fp12.Fp12.cyclotomic_exp t21
+  let t4 ← bls.fp12.Fp12.cyclotomic_square t3
+  let t5 ← bls.fp12.Fp12.mul t11 t3
+  let t12 ← bls.fp12.Fp12.cyclotomic_exp t5
+  let t01 ← bls.fp12.Fp12.cyclotomic_exp t12
+  let f3 ← bls.fp12.Fp12.cyclotomic_exp t01
+  let t6 ← bls.fp12.Fp12.mul f3 t4
+  let t41 ← bls.fp12.Fp12.cyclotomic_exp t6
+  let t51 ← bls.fp12.Fp12.conjugate t5
+  let f4 ← bls.fp12.Fp12.mul t51 t21
+  let t42 ← bls.fp12.Fp12.mul t41 f4
+  let t52 ← bls.fp12.Fp12.conjugate t21
+  let f5 ← bls.fp12.Fp12.mul t12 t21
+  let f6 ← bls.fp12.Fp12.frobenius f5
+  let f7 ← bls.fp12.Fp12.frobenius f6
+  let t13 ← bls.fp12.Fp12.frobenius f7
+  let f8 ← bls.fp12.Fp12.mul t6 t52
+  let t61 ← bls.fp12.Fp12.frobenius f8
+  let f9 ← bls.fp12.Fp12.mul t3 t01
+  let f10 ← bls.fp12.Fp12.frobenius f9
+  let t31 ← bls.fp12.Fp12.frobenius f10
+  let f11 ← bls.fp12.Fp12.mul t31 t13
+  let f12 ← bls.fp12.Fp12.mul f11 t61
+  bls.fp12.Fp12.mul f12 t42
+
+/-- [silver_crypto_simd::bls::fp12::{silver_crypto_simd::bls::fp12::Fp12}::is_one]:
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 570:4-576:5
+    Visibility: public -/
+def bls.fp12.Fp12.is_one (self : bls.fp12.Fp12) : Result Bool := do
+  let one ← bls.fp8.Fp8.splat_limbs bls.constants.R_MOD_P
+  let f ← bls.fp12.Fp12.one
+  let f1 ← bls.fp8.Fp8.mul self.c0 one
+  let c0 ← bls.fp8.Fp8.eq_mask f1 f.c0
+  let f2 ← bls.fp8.Fp8.mul self.c1 one
+  let c1 ← bls.fp8.Fp8.eq_mask f2 f.c1
+  let i ← lift (c0 &&& c1)
+  let i1 ← lift (i &&& 63#u8)
+  ok (i1 = 63#u8)
+
+/-- [silver_crypto_simd::bls::fp8::{core::clone::Clone for silver_crypto_simd::bls::fp8::Fp8}::clone]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 30:9-30:14
+    Visibility: public -/
+def bls.fp8.Fp8.Insts.CoreCloneClone.clone
+  (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
+  ok self
+
+/-- Trait implementation: [silver_crypto_simd::bls::fp8::{core::clone::Clone for silver_crypto_simd::bls::fp8::Fp8}]
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 30:9-30:14 -/
+@[reducible]
+def bls.fp8.Fp8.Insts.CoreCloneClone : core.clone.Clone bls.fp8.Fp8 := {
+  clone := bls.fp8.Fp8.Insts.CoreCloneClone.clone
+}
+
 /-- [silver_crypto_simd::bls::fp8::transpose8]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 75:0-112:1 -/
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 74:0-111:1 -/
 def bls.fp8.transpose8
   (r : Array core.core_arch.x86.__m512i 8#usize) :
   Result (Array core.core_arch.x86.__m512i 8#usize)
@@ -3130,63 +4517,53 @@ def bls.fp8.transpose8
     core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi41 high2 mi42
   ok (Array.make 8#usize [ mi34, mi37, mi40, mi43, mi44, mi45, mi46, mi47 ] (by rfl))
 
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 529:8-532:9
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::from_blst_limbs]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 290:8-293:9
     Visibility: public -/
 @[rust_loop_body]
-def bls.fp8.Fp8.permute_loop.body
-  (index : core.core_arch.x86.__m512i) (self : bls.fp8.Fp8)
-  (v : Array core.core_arch.x86.__m512i 8#usize) (j : Std.Usize) :
-  Result (ControlFlow (bls.fp8.Fp8 × (Array core.core_arch.x86.__m512i
-    8#usize) × Std.Usize) (Array core.core_arch.x86.__m512i 8#usize))
+def bls.fp8.Fp8.from_blst_limbs_loop.body
+  (values : Array (Array Std.U64 6#usize) 8#usize)
+  (limbs : Array (Array Std.U64 8#usize) 8#usize) (lane : Std.Usize) :
+  Result (ControlFlow ((Array (Array Std.U64 8#usize) 8#usize) × Std.Usize)
+    (Array (Array Std.U64 8#usize) 8#usize))
   := do
-  if j < bls.constants.LIMBS
+  if lane < bls.limbs.LANES
   then
-    let mi ← Array.index_usize self j
-    let mi1 ←
-      core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi index mi
-    let a ← Array.update v j mi1
-    let j1 ← j + 1#usize
-    ok (cont (self, a, j1))
-  else ok (done v)
+    let a ← Array.index_usize values lane
+    let a1 ← bls.limbs.unpack52 a
+    let a2 ← Array.update limbs lane a1
+    let lane1 ← lane + 1#usize
+    ok (cont (a2, lane1))
+  else ok (done limbs)
 
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 529:8-532:9
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::from_blst_limbs]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 290:8-293:9
     Visibility: public -/
 @[rust_loop]
-def bls.fp8.Fp8.permute_loop
-  (self : bls.fp8.Fp8) (index : core.core_arch.x86.__m512i)
-  (v : Array core.core_arch.x86.__m512i 8#usize) (j : Std.Usize) :
-  Result (Array core.core_arch.x86.__m512i 8#usize)
+def bls.fp8.Fp8.from_blst_limbs_loop
+  (values : Array (Array Std.U64 6#usize) 8#usize)
+  (limbs : Array (Array Std.U64 8#usize) 8#usize) (lane : Std.Usize) :
+  Result (Array (Array Std.U64 8#usize) 8#usize)
   := do
   loop
-    (fun (self1, v1, j1) => bls.fp8.Fp8.permute_loop.body index self1 v1 j1)
-    (self, v, j)
+    (fun (limbs1, lane1) => bls.fp8.Fp8.from_blst_limbs_loop.body values limbs1
+      lane1)
+    (limbs, lane)
 
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::permute]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 525:4-534:5
+/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::from_blst_limbs]:
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 287:4-295:5
     Visibility: public -/
-def bls.fp8.Fp8.permute
-  (self : bls.fp8.Fp8) (from1 : Array Std.I64 8#usize) :
-  Result bls.fp8.Fp8
-  := do
-  let index ← bls.fp8.index_vector from1
-  let mi ← bls.fp8.zero
-  let v := Array.repeat 8#usize mi
-  let v1 ← bls.fp8.Fp8.permute_loop self index v 0#usize
-  ok v1
-
-/-- [silver_crypto_simd::bls::fp8::{silver_crypto_simd::bls::fp8::Fp8}::inverse]:
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 568:4-570:5
-    Visibility: public -/
-def bls.fp8.Fp8.inverse (self : bls.fp8.Fp8) : Result bls.fp8.Fp8 := do
-  let f ← bls.fp8.Fp8.pow_p_minus_3_over_4 self
-  let f1 ← bls.fp8.Fp8.square f
-  let f2 ← bls.fp8.Fp8.square f1
-  bls.fp8.Fp8.mul f2 self
+def bls.fp8.Fp8.from_blst_limbs
+  (values : Array (Array Std.U64 6#usize) 8#usize) : Result bls.fp8.Fp8 := do
+  let a := Array.repeat 8#usize 0#u64
+  let limbs := Array.repeat 8#usize a
+  let limbs1 ← bls.fp8.Fp8.from_blst_limbs_loop values limbs 0#usize
+  let f ← bls.fp8.Fp8.load limbs1
+  let f1 ← bls.fp8.Fp8.splat_limbs bls.constants.TWO_POW_448_MOD_P
+  bls.fp8.Fp8.mul f f1
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::infinity]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 154:4-156:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 155:4-157:5
     Visibility: public -/
 def bls.g1x8.G1x8.infinity : Result bls.g1x8.G1x8 := do
   let f ← bls.fp8.Fp8.one
@@ -3194,7 +4571,7 @@ def bls.g1x8.G1x8.infinity : Result bls.g1x8.G1x8 := do
   ok { x := f, y := f, z := f1 }
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::select]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 160:4-166:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 161:4-167:5
     Visibility: public -/
 def bls.g1x8.G1x8.select
   (k : Std.U8) (a : bls.g1x8.G1x8) (b : bls.g1x8.G1x8) :
@@ -3206,7 +4583,7 @@ def bls.g1x8.G1x8.select
   ok { x := f, y := f1, z := f2 }
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::permute]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 170:4-172:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 171:4-173:5
     Visibility: public -/
 def bls.g1x8.G1x8.permute
   (self : bls.g1x8.G1x8) (from1 : Array Std.I64 8#usize) :
@@ -3218,7 +4595,7 @@ def bls.g1x8.G1x8.permute
   ok { x := f, y := f1, z := f2 }
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::double_complete]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 176:4-178:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 177:4-179:5
     Visibility: public -/
 def bls.g1x8.G1x8.double_complete
   (self : bls.g1x8.G1x8) : Result bls.g1x8.G1x8 := do
@@ -3228,7 +4605,7 @@ def bls.g1x8.G1x8.double_complete
   bls.g1x8.G1x8.select i gx self
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::coincident]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 247:4-250:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 263:4-266:5 -/
 def bls.g1x8.G1x8.coincident
   (self : bls.g1x8.G1x8) (sum : bls.g1x8.G1x8) (same_x : Std.U8)
   (same_y : Std.U8) :
@@ -3244,7 +4621,7 @@ def bls.g1x8.G1x8.coincident
   bls.g1x8.G1x8.select i2 cancelled gx1
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add_affine_complete]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 182:4-196:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 183:4-197:5
     Visibility: public -/
 def bls.g1x8.G1x8.add_affine_complete
   (self : bls.g1x8.G1x8) (qx : bls.fp8.Fp8) (qy : bls.fp8.Fp8) :
@@ -3271,7 +4648,7 @@ def bls.g1x8.G1x8.add_affine_complete
     bls.g1x8.G1x8.select infinite decided gx
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::add_complete]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 200:4-216:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 201:4-217:5
     Visibility: public -/
 def bls.g1x8.G1x8.add_complete
   (self : bls.g1x8.G1x8) (q : bls.g1x8.G1x8) : Result bls.g1x8.G1x8 := do
@@ -3300,8 +4677,15 @@ def bls.g1x8.G1x8.add_complete
     let gx ← bls.g1x8.G1x8.select q_infinite decided self
     bls.g1x8.G1x8.select infinite gx q
 
+/-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::neg]:
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 221:4-223:5
+    Visibility: public -/
+def bls.g1x8.G1x8.neg (self : bls.g1x8.G1x8) : Result bls.g1x8.G1x8 := do
+  let f ← bls.fp8.Fp8.neg self.y
+  ok { self with y := f }
+
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_two_pow]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 223:8-226:9
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 239:8-242:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.times_two_pow_loop.body
@@ -3316,7 +4700,7 @@ def bls.g1x8.G1x8.times_two_pow_loop.body
   else ok (done r)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_two_pow]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 223:8-226:9
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 239:8-242:9
     Visibility: public -/
 @[rust_loop]
 def bls.g1x8.G1x8.times_two_pow_loop
@@ -3328,7 +4712,7 @@ def bls.g1x8.G1x8.times_two_pow_loop
     (r, i)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::times_two_pow]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 220:4-228:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 236:4-244:5
     Visibility: public -/
 @[reducible]
 def bls.g1x8.G1x8.times_two_pow
@@ -3336,17 +4720,17 @@ def bls.g1x8.G1x8.times_two_pow
   bls.g1x8.G1x8.times_two_pow_loop k self 0#usize
 
 /-- [silver_crypto_simd::bls::g1x8::lanes_above]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 315:4-318:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 331:4-334:5 -/
 @[rust_loop_body]
 def bls.g1x8.lanes_above_loop.body
   (distance : Std.Usize) (from1 : Array Std.I64 8#usize) (lane : Std.Usize) :
   Result (ControlFlow ((Array Std.I64 8#usize) × Std.Usize) (Array Std.I64
     8#usize))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
     let i ← lane + distance
-    let i1 ← i % bls.fp8.LANES
+    let i1 ← i % bls.limbs.LANES
     let i2 ← lift (UScalar.hcast .I64 i1)
     let a ← Array.update from1 lane i2
     let lane1 ← lane + 1#usize
@@ -3354,7 +4738,7 @@ def bls.g1x8.lanes_above_loop.body
   else ok (done from1)
 
 /-- [silver_crypto_simd::bls::g1x8::lanes_above]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 315:4-318:5 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 331:4-334:5 -/
 @[rust_loop]
 def bls.g1x8.lanes_above_loop
   (distance : Std.Usize) (from1 : Array Std.I64 8#usize) (lane : Std.Usize) :
@@ -3365,21 +4749,21 @@ def bls.g1x8.lanes_above_loop
     (from1, lane)
 
 /-- [silver_crypto_simd::bls::g1x8::lanes_above]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 312:0-320:1 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 328:0-336:1 -/
 def bls.g1x8.lanes_above
   (distance : Std.Usize) : Result (Array Std.I64 8#usize) := do
   let from1 := Array.repeat 8#usize 0#i64
   bls.g1x8.lanes_above_loop distance from1 0#usize
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::sum_lanes_shifted]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 236:8-240:9
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 252:8-256:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.g1x8.G1x8.sum_lanes_shifted_loop.body
   (bits : Std.Usize) (r : bls.g1x8.G1x8) (distance : Std.Usize) :
   Result (ControlFlow (bls.g1x8.G1x8 × Std.Usize) bls.g1x8.G1x8)
   := do
-  if distance < bls.fp8.LANES
+  if distance < bls.limbs.LANES
   then
     let i ← distance * bits
     let gx ← bls.g1x8.G1x8.times_two_pow r i
@@ -3391,7 +4775,7 @@ def bls.g1x8.G1x8.sum_lanes_shifted_loop.body
   else ok (done r)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::sum_lanes_shifted]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 236:8-240:9
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 252:8-256:9
     Visibility: public -/
 @[rust_loop]
 def bls.g1x8.G1x8.sum_lanes_shifted_loop
@@ -3404,28 +4788,2175 @@ def bls.g1x8.G1x8.sum_lanes_shifted_loop
     (r, distance)
 
 /-- [silver_crypto_simd::bls::g1x8::{silver_crypto_simd::bls::g1x8::G1x8}::sum_lanes_shifted]:
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 233:4-242:5
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 249:4-258:5
     Visibility: public -/
 @[reducible]
 def bls.g1x8.G1x8.sum_lanes_shifted
   (self : bls.g1x8.G1x8) (bits : Std.Usize) : Result bls.g1x8.G1x8 := do
   bls.g1x8.G1x8.sum_lanes_shifted_loop bits self 1#usize
 
+/-- [silver_crypto_simd::bls::glv::LAMBDA]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 15:0-15:62 -/
+@[global_simps, irreducible]
+def bls.glv.LAMBDA : Array Std.U64 2#usize :=
+  Array.make 2#usize [ 4294967295#u64, 12413508272118670338#u64 ] (by rfl)
+
+/-- [silver_crypto_simd::bls::glv::Z2]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 17:0-17:60 -/
+@[global_simps, irreducible]
+def bls.glv.Z2 : Array Std.U64 2#usize :=
+  Array.make 2#usize [ 4294967296#u64, 12413508272118670338#u64 ] (by rfl)
+
+/-- [silver_crypto_simd::bls::glv::Z2_OVER_R]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 19:0-19:80 -/
+@[global_simps, irreducible]
+def bls.glv.Z2_OVER_R : Array Std.U64 3#usize :=
+  Array.make 3#usize [
+    7203196592358157872#u64, 8965520006802549469#u64, 1#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::glv::HALF_R_UP]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 21:0-22:97 -/
+@[global_simps, irreducible]
+def bls.glv.HALF_R_UP : Array Std.U64 4#usize :=
+  Array.make 4#usize [
+    9223372034707292161#u64, 12240451741123816959#u64, 1845609449319885826#u64,
+    4176758429732224676#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::bls::glv::HALF_SCALAR_BITS]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 24:0-24:40
+    Visibility: public -/
+@[global_simps, irreducible]
+def bls.glv.HALF_SCALAR_BITS : Std.Usize := 127#usize
+
+/-- [silver_crypto_simd::bls::glv::negated]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 114:4-119:5 -/
+@[rust_loop_body]
+def bls.glv.negated_loop.body
+  (words : Array Std.U64 4#usize) (out : Array Std.U64 4#usize)
+  (carry : Std.U128) (i : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize) (Array
+    Std.U64 4#usize))
+  := do
+  if i < 4#usize
+  then
+    let i1 ← Array.index_usize words i
+    let i2 ← lift (~~~ i1)
+    let i3 ← lift (UScalar.cast .U128 i2)
+    let t ← i3 + carry
+    let i4 ← lift (UScalar.cast .U64 t)
+    let a ← Array.update out i i4
+    let carry1 ← t >>> 64#i32
+    let i5 ← i + 1#usize
+    ok (cont (a, carry1, i5))
+  else ok (done out)
+
+/-- [silver_crypto_simd::bls::glv::negated]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 114:4-119:5 -/
+@[rust_loop]
+def bls.glv.negated_loop
+  (words : Array Std.U64 4#usize) (out : Array Std.U64 4#usize)
+  (carry : Std.U128) (i : Std.Usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  loop
+    (fun (out1, carry1, i1) => bls.glv.negated_loop.body words out1 carry1 i1)
+    (out, carry, i)
+
+/-- [silver_crypto_simd::bls::glv::negated]:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 110:0-121:1 -/
+def bls.glv.negated
+  (words : Array Std.U64 4#usize) : Result (Array Std.U64 4#usize) := do
+  let out := Array.repeat 4#usize 0#u64
+  bls.glv.negated_loop words out 1#u128 0#usize
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop body 1:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 79:8-84:9 -/
+@[rust_loop_body]
+def bls.glv.signed_difference_loop0_loop0.body
+  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize) (i : Std.Usize)
+  (cd : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize)
+    ((Array Std.U64 4#usize) × Std.U128))
+  := do
+  if j < 2#usize
+  then
+    let i1 ← Array.index_usize c i
+    let i2 ← lift (UScalar.cast .U128 i1)
+    let i3 ← Array.index_usize d j
+    let i4 ← lift (UScalar.cast .U128 i3)
+    let i5 ← i2 * i4
+    let i6 ← i + j
+    let i7 ← Array.index_usize cd i6
+    let i8 ← lift (UScalar.cast .U128 i7)
+    let i9 ← i5 + i8
+    let t ← i9 + carry
+    let i10 ← lift (UScalar.cast .U64 t)
+    let a ← Array.update cd i6 i10
+    let carry1 ← t >>> 64#i32
+    let j1 ← j + 1#usize
+    ok (cont (a, carry1, j1))
+  else ok (done (cd, carry))
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop 1:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 79:8-84:9 -/
+@[rust_loop]
+def bls.glv.signed_difference_loop0_loop0
+  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
+  (cd : Array Std.U64 4#usize) (i : Std.Usize) (carry : Std.U128)
+  (j : Std.Usize) :
+  Result ((Array Std.U64 4#usize) × Std.U128)
+  := do
+  loop
+    (fun (cd1, carry1, j1) => bls.glv.signed_difference_loop0_loop0.body c d i
+      cd1 carry1 j1)
+    (cd, carry, j)
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 76:4-87:5 -/
+@[rust_loop_body]
+def bls.glv.signed_difference_loop0.body
+  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
+  (cd : Array Std.U64 4#usize) (i : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.Usize) (Array Std.U64
+    4#usize))
+  := do
+  if i < 2#usize
+  then
+    let (cd1, carry) ←
+      bls.glv.signed_difference_loop0_loop0 c d cd i 0#u128 0#usize
+    let i1 ← i + 2#usize
+    let i2 ← lift (UScalar.cast .U64 carry)
+    let a ← Array.update cd1 i1 i2
+    let i3 ← i + 1#usize
+    ok (cont (a, i3))
+  else ok (done cd)
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 76:4-87:5 -/
+@[rust_loop]
+def bls.glv.signed_difference_loop0
+  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
+  (cd : Array Std.U64 4#usize) (i : Std.Usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  loop
+    (fun (cd1, i1) => bls.glv.signed_difference_loop0.body c d cd1 i1)
+    (cd, i)
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop body 2:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 93:4-99:5 -/
+@[rust_loop_body]
+def bls.glv.signed_difference_loop1.body
+  (a : Array Std.U64 4#usize) (cd : Array Std.U64 4#usize)
+  (subtrahend : Array Std.U64 4#usize) (i : Std.Usize)
+  (difference : Array Std.U64 4#usize) (borrow : Std.U64) :
+  Result (ControlFlow (Std.Usize × (Array Std.U64 4#usize) × Std.U64) ((Array
+    Std.U64 4#usize) × Std.U64))
+  := do
+  if i < 4#usize
+  then
+    let i1 ← 2#u128 <<< 64#i32
+    let i2 ← Array.index_usize a i
+    let i3 ← lift (UScalar.cast .U128 i2)
+    let i4 ← i1 + i3
+    let i5 ← Array.index_usize subtrahend i
+    let i6 ← lift (UScalar.cast .U128 i5)
+    let i7 ← i4 - i6
+    let i8 ← Array.index_usize cd i
+    let i9 ← lift (UScalar.cast .U128 i8)
+    let i10 ← i7 - i9
+    let i11 ← lift (UScalar.cast .U128 borrow)
+    let t ← i10 - i11
+    let i12 ← lift (UScalar.cast .U64 t)
+    let a1 ← Array.update difference i i12
+    let i13 ← t >>> 64#i32
+    let i14 ← lift (UScalar.cast .U64 i13)
+    let borrow1 ← 2#u64 - i14
+    let i15 ← i + 1#usize
+    ok (cont (i15, a1, borrow1))
+  else ok (done (difference, borrow))
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]: loop 2:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 93:4-99:5 -/
+@[rust_loop]
+def bls.glv.signed_difference_loop1
+  (a : Array Std.U64 4#usize) (cd : Array Std.U64 4#usize) (i : Std.Usize)
+  (subtrahend : Array Std.U64 4#usize) (difference : Array Std.U64 4#usize)
+  (borrow : Std.U64) :
+  Result ((Array Std.U64 4#usize) × Std.U64)
+  := do
+  loop
+    (fun (i1, difference1, borrow1) => bls.glv.signed_difference_loop1.body a
+      cd subtrahend i1 difference1 borrow1)
+    (i, difference, borrow)
+
+/-- [silver_crypto_simd::bls::glv::signed_difference]:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 73:0-107:1 -/
+def bls.glv.signed_difference
+  (a : Array Std.U64 4#usize) (b : Std.U64) (c : Array Std.U64 2#usize)
+  (d : Array Std.U64 2#usize) :
+  Result bls.glv.Half
+  := do
+  let cd := Array.repeat 4#usize 0#u64
+  let cd1 ← bls.glv.signed_difference_loop0 c d cd 0#usize
+  let difference := Array.repeat 4#usize 0#u64
+  let (difference1, borrow) ←
+    bls.glv.signed_difference_loop1 a cd1 0#usize
+      (Array.make 4#usize [ b, 0#u64, 0#u64, 0#u64 ] (by rfl)) difference 0#u64
+  let (negative, magnitude) ←
+    if borrow != 0#u64
+    then
+      do
+      let magnitude1 ← bls.glv.negated difference1
+      ok (true, magnitude1)
+    else ok (false, difference1)
+  let i ← Array.index_usize magnitude 2#usize
+  massert (i = 0#u64)
+  let i1 ← Array.index_usize magnitude 3#usize
+  massert (i1 = 0#u64)
+  let i2 ← Array.index_usize magnitude 1#usize
+  let i3 ← i2 >>> 63#i32
+  massert (i3 = 0#u64)
+  ok { magnitude, negative }
+
+/-- [silver_crypto_simd::bls::glv::at_least_half_r]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 66:4-68:5 -/
+@[rust_loop_body]
+def bls.glv.at_least_half_r_loop.body
+  (k : Array Std.U64 4#usize) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if i > 0#usize
+  then
+    let i1 ← i - 1#usize
+    let i2 ← Array.index_usize k i1
+    let i3 ← Array.index_usize bls.glv.HALF_R_UP i1
+    if i2 = i3
+    then ok (cont i1)
+    else ok (done i)
+  else ok (done i)
+
+/-- [silver_crypto_simd::bls::glv::at_least_half_r]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 66:4-68:5 -/
+@[rust_loop]
+def bls.glv.at_least_half_r_loop
+  (k : Array Std.U64 4#usize) (i : Std.Usize) : Result Std.Usize := do
+  loop
+    (fun i1 => bls.glv.at_least_half_r_loop.body k i1)
+    i
+
+/-- [silver_crypto_simd::bls::glv::at_least_half_r]:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 64:0-70:1 -/
+def bls.glv.at_least_half_r (k : Array Std.U64 4#usize) : Result Bool := do
+  let i ← bls.glv.at_least_half_r_loop k 4#usize
+  if i = 0#usize
+  then ok true
+  else
+    let i1 ← i - 1#usize
+    let i2 ← Array.index_usize k i1
+    let i3 ← Array.index_usize bls.glv.HALF_R_UP i1
+    ok (i2 > i3)
+
+/-- [silver_crypto_simd::bls::glv::times_z2_over_r]: loop body 1:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 51:8-56:9 -/
+@[rust_loop_body]
+def bls.glv.times_z2_over_r_loop0_loop0.body
+  (k : Array Std.U64 4#usize) (i : Std.Usize) (product : Array Std.U64 7#usize)
+  (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 7#usize) × Std.U128 × Std.Usize)
+    ((Array Std.U64 7#usize) × Std.U128))
+  := do
+  if j < 3#usize
+  then
+    let i1 ← Array.index_usize k i
+    let i2 ← lift (UScalar.cast .U128 i1)
+    let i3 ← Array.index_usize bls.glv.Z2_OVER_R j
+    let i4 ← lift (UScalar.cast .U128 i3)
+    let i5 ← i2 * i4
+    let i6 ← i + j
+    let i7 ← Array.index_usize product i6
+    let i8 ← lift (UScalar.cast .U128 i7)
+    let i9 ← i5 + i8
+    let t ← i9 + carry
+    let i10 ← lift (UScalar.cast .U64 t)
+    let a ← Array.update product i6 i10
+    let carry1 ← t >>> 64#i32
+    let j1 ← j + 1#usize
+    ok (cont (a, carry1, j1))
+  else ok (done (product, carry))
+
+/-- [silver_crypto_simd::bls::glv::times_z2_over_r]: loop 1:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 51:8-56:9 -/
+@[rust_loop]
+def bls.glv.times_z2_over_r_loop0_loop0
+  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
+  (carry : Std.U128) (j : Std.Usize) :
+  Result ((Array Std.U64 7#usize) × Std.U128)
+  := do
+  loop
+    (fun (product1, carry1, j1) => bls.glv.times_z2_over_r_loop0_loop0.body k i
+      product1 carry1 j1)
+    (product, carry, j)
+
+/-- [silver_crypto_simd::bls::glv::times_z2_over_r]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 48:4-59:5 -/
+@[rust_loop_body]
+def bls.glv.times_z2_over_r_loop0.body
+  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
+  :
+  Result (ControlFlow ((Array Std.U64 7#usize) × Std.Usize) (Array Std.U64
+    7#usize))
+  := do
+  if i < 4#usize
+  then
+    let (product1, carry) ←
+      bls.glv.times_z2_over_r_loop0_loop0 k product i 0#u128 0#usize
+    let i1 ← i + 3#usize
+    let i2 ← lift (UScalar.cast .U64 carry)
+    let a ← Array.update product1 i1 i2
+    let i3 ← i + 1#usize
+    ok (cont (a, i3))
+  else ok (done product)
+
+/-- [silver_crypto_simd::bls::glv::times_z2_over_r]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 48:4-59:5 -/
+@[rust_loop]
+def bls.glv.times_z2_over_r_loop0
+  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
+  :
+  Result (Array Std.U64 7#usize)
+  := do
+  loop
+    (fun (product1, i1) => bls.glv.times_z2_over_r_loop0.body k product1 i1)
+    (product, i)
+
+/-- [silver_crypto_simd::bls::glv::times_z2_over_r]:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 45:0-61:1 -/
+def bls.glv.times_z2_over_r
+  (k : Array Std.U64 4#usize) : Result (Array Std.U64 7#usize) := do
+  let product := Array.repeat 7#usize 0#u64
+  bls.glv.times_z2_over_r_loop0 k product 0#usize
+
+/-- [silver_crypto_simd::bls::glv::decompose]:
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 33:0-42:1
+    Visibility: public -/
+def bls.glv.decompose
+  (k : Array Std.U64 4#usize) : Result (bls.glv.Half × bls.glv.Half) := do
+  let product ← bls.glv.times_z2_over_r k
+  let i ← Array.index_usize product 4#usize
+  let i1 ← lift (UScalar.cast .U128 i)
+  let i2 ← Array.index_usize product 3#usize
+  let i3 ← i2 >>> 63#i32
+  let i4 ← lift (UScalar.cast .U128 i3)
+  let low ← i1 + i4
+  let i5 ← lift (UScalar.cast .U64 low)
+  let i6 ← Array.index_usize product 5#usize
+  let i7 ← low >>> 64#i32
+  let i8 ← lift (UScalar.cast .U64 i7)
+  let i9 ← i6 + i8
+  let b ← bls.glv.at_least_half_r k
+  let c2 ← lift (UScalar.cast_fromBool .U64 b)
+  let k1 ←
+    bls.glv.signed_difference k c2 (Array.make 2#usize [ i5, i9 ] (by rfl))
+      bls.glv.LAMBDA
+  let i10 ← Array.index_usize (Array.make 2#usize [ i5, i9 ] (by rfl)) 0#usize
+  let i11 ← Array.index_usize (Array.make 2#usize [ i5, i9 ] (by rfl)) 1#usize
+  let k2 ←
+    bls.glv.signed_difference (Array.make 4#usize [ i10, i11, 0#u64, 0#u64 ] (by rfl))
+      0#u64 (Array.make 2#usize [ c2, 0#u64 ] (by rfl)) bls.glv.Z2
+  ok (k1, k2)
+
+/-- [silver_crypto_simd::bls::miller_lines::LINE_COUNT]
+    Source: 'crates/crypto_simd/src/bls/miller_lines.rs', lines 5:0-5:33
+    Visibility: public -/
+@[global_simps, irreducible]
+def bls.miller_lines.LINE_COUNT : Std.Usize := 68#usize
+
 /-- [silver_crypto_simd::bls::COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 54:0-54:37
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 68:0-68:37
     Visibility: public -/
 @[global_simps, irreducible] def bls.COMPRESSED_LEN : Std.Usize := 48#usize
 
 /-- [silver_crypto_simd::bls::LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 56:0-56:23 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 70:0-70:23 -/
 @[global_simps, irreducible] def bls.LANES : Std.Usize := 8#usize
 
 /-- [silver_crypto_simd::bls::MIN_KERNEL_LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 59:0-59:34 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 73:0-73:34 -/
 @[global_simps, irreducible] def bls.MIN_KERNEL_LANES : Std.Usize := 3#usize
 
+/-- [silver_crypto_simd::portable::fp::select]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 162:4-165:5 -/
+@[rust_loop_body]
+def portable.fp.select_loop.body
+  (mask : Std.U64) (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize)
+  (out : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × Std.Usize) (Array Std.U64
+    6#usize))
+  := do
+  if j < 6#usize
+  then
+    let i ← Array.index_usize a j
+    let i1 ← lift (i &&& mask)
+    let i2 ← Array.index_usize b j
+    let i3 ← lift (~~~ mask)
+    let i4 ← lift (i2 &&& i3)
+    let i5 ← lift (i1 ||| i4)
+    let a1 ← Array.update out j i5
+    let j1 ← j + 1#usize
+    ok (cont (a1, j1))
+  else ok (done out)
+
+/-- [silver_crypto_simd::portable::fp::select]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 162:4-165:5 -/
+@[rust_loop]
+def portable.fp.select_loop
+  (mask : Std.U64) (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize)
+  (out : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (Array Std.U64 6#usize)
+  := do
+  loop
+    (fun (out1, j1) => portable.fp.select_loop.body mask a b out1 j1)
+    (out, j)
+
+/-- [silver_crypto_simd::portable::fp::select]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 159:0-167:1 -/
+def portable.fp.select
+  (mask : Std.U64) (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize) :
+  Result (Array Std.U64 6#usize)
+  := do
+  let out := Array.repeat 6#usize 0#u64
+  portable.fp.select_loop mask a b out 0#usize
+
+/-- [silver_crypto_simd::portable::fp::negative_mask]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 153:0-155:1 -/
+def portable.fp.negative_mask
+  (d : Array Std.U64 6#usize) : Result Std.U64 := do
+  let i ← Array.index_usize d 5#usize
+  let i1 ← i >>> 63#i32
+  ok (core.num.U64.wrapping_sub 0#u64 i1)
+
+/-- [silver_crypto_simd::portable::fp::add_carry]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 35:0-50:1 -/
+def portable.fp.add_carry
+  (a : Std.U64) (b : Std.U64) (carry : Std.U64) :
+  Result (Std.U64 × Std.U64)
+  := do
+  let i ← lift (UScalar.cast .U8 carry)
+  let (c, s) ← core.core_arch.x86_64.adx._addcarry_u64 i a b 0#u64
+  let i1 ← lift (UScalar.cast .U64 c)
+  ok (s, i1)
+
+/-- [silver_crypto_simd::portable::fp::sub_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 123:4-128:5 -/
+@[rust_loop_body]
+def portable.fp.sub_words_loop.body
+  {N : Std.Usize} (a : Array Std.U64 N) (b : Array Std.U64 N)
+  (d : Array Std.U64 N) (carry : Std.U64) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 N) × Std.U64 × Std.Usize) ((Array
+    Std.U64 N) × Std.U64))
+  := do
+  if j < N
+  then
+    let i ← Array.index_usize a j
+    let i1 ← Array.index_usize b j
+    let i2 ← lift (~~~ i1)
+    let (x, out) ← portable.fp.add_carry i i2 carry
+    let a1 ← Array.update d j x
+    let j1 ← j + 1#usize
+    ok (cont (a1, out, j1))
+  else ok (done (d, carry))
+
+/-- [silver_crypto_simd::portable::fp::sub_words]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 123:4-128:5 -/
+@[rust_loop]
+def portable.fp.sub_words_loop
+  {N : Std.Usize} (a : Array Std.U64 N) (b : Array Std.U64 N)
+  (d : Array Std.U64 N) (carry : Std.U64) (j : Std.Usize) :
+  Result ((Array Std.U64 N) × Std.U64)
+  := do
+  loop
+    (fun (d1, carry1, j1) => portable.fp.sub_words_loop.body a b d1 carry1 j1)
+    (d, carry, j)
+
+/-- [silver_crypto_simd::portable::fp::sub_words]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 119:0-130:1 -/
+def portable.fp.sub_words
+  {N : Std.Usize} (a : Array Std.U64 N) (b : Array Std.U64 N) :
+  Result ((Array Std.U64 N) × Bool)
+  := do
+  let d := Array.repeat N 0#u64
+  let (d1, carry) ← portable.fp.sub_words_loop a b d 1#u64 0#usize
+  ok (d1, carry = 0#u64)
+
+/-- [silver_crypto_simd::portable::fp::below_p]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 171:0-174:1 -/
+def portable.fp.below_p
+  (t : Array Std.U64 6#usize) : Result (Array Std.U64 6#usize) := do
+  let (d, _) ← portable.fp.sub_words t bls.constants.P_U64
+  let i ← portable.fp.negative_mask d
+  portable.fp.select i t d
+
+/-- [silver_crypto_simd::portable::fp::add_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 138:4-143:5 -/
+@[rust_loop_body]
+def portable.fp.add_words_loop.body
+  (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize)
+  (s : Array Std.U64 6#usize) (carry : Std.U64) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × Std.U64 × Std.Usize) ((Array
+    Std.U64 6#usize) × Std.U64))
+  := do
+  if j < 6#usize
+  then
+    let i ← Array.index_usize a j
+    let i1 ← Array.index_usize b j
+    let (x, out) ← portable.fp.add_carry i i1 carry
+    let a1 ← Array.update s j x
+    let j1 ← j + 1#usize
+    ok (cont (a1, out, j1))
+  else ok (done (s, carry))
+
+/-- [silver_crypto_simd::portable::fp::add_words]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 138:4-143:5 -/
+@[rust_loop]
+def portable.fp.add_words_loop
+  (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize)
+  (s : Array Std.U64 6#usize) (carry : Std.U64) (j : Std.Usize) :
+  Result ((Array Std.U64 6#usize) × Std.U64)
+  := do
+  loop
+    (fun (s1, carry1, j1) => portable.fp.add_words_loop.body a b s1 carry1 j1)
+    (s, carry, j)
+
+/-- [silver_crypto_simd::portable::fp::add_words]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 134:0-145:1 -/
+def portable.fp.add_words
+  (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize) :
+  Result ((Array Std.U64 6#usize) × Bool)
+  := do
+  let s := Array.repeat 6#usize 0#u64
+  let (s1, carry) ← portable.fp.add_words_loop a b s 0#u64 0#usize
+  ok (s1, carry = 1#u64)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::add]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 248:4-251:5
+    Visibility: public -/
+def portable.fp.Fp.add
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  let (s, _) ← portable.fp.add_words self rhs
+  let a ← portable.fp.below_p s
+  ok a
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::double]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 260:4-262:5
+    Visibility: public -/
+def portable.fp.Fp.double (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  portable.fp.Fp.add self self
+
+/-- [silver_crypto_simd::portable::g1_pair::double]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 38:0-40:1 -/
+def portable.g1_pair.double
+  (a : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  let f ← Array.index_usize a 0#usize
+  let f1 ← portable.fp.Fp.double f
+  let f2 ← Array.index_usize a 1#usize
+  let f3 ← portable.fp.Fp.double f2
+  ok (Array.make 2#usize [ f1, f3 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::p_if]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 182:4-185:5 -/
+@[rust_loop_body]
+def portable.fp.p_if_loop.body
+  (mask : Std.U64) (out : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × Std.Usize) (Array Std.U64
+    6#usize))
+  := do
+  if j < 6#usize
+  then
+    let i ← Array.index_usize bls.constants.P_U64 j
+    let i1 ← lift (i &&& mask)
+    let a ← Array.update out j i1
+    let j1 ← j + 1#usize
+    ok (cont (a, j1))
+  else ok (done out)
+
+/-- [silver_crypto_simd::portable::fp::p_if]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 182:4-185:5 -/
+@[rust_loop]
+def portable.fp.p_if_loop
+  (mask : Std.U64) (out : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (Array Std.U64 6#usize)
+  := do
+  loop
+    (fun (out1, j1) => portable.fp.p_if_loop.body mask out1 j1)
+    (out, j)
+
+/-- [silver_crypto_simd::portable::fp::p_if]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 178:0-187:1 -/
+def portable.fp.p_if (borrowed : Bool) : Result (Array Std.U64 6#usize) := do
+  let i ← lift (UScalar.cast_fromBool .U64 borrowed)
+  let mask ← lift (core.num.U64.wrapping_sub 0#u64 i)
+  let out := Array.repeat 6#usize 0#u64
+  portable.fp.p_if_loop mask out 0#usize
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::sub]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 265:4-268:5
+    Visibility: public -/
+def portable.fp.Fp.sub
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  let (d, borrowed) ← portable.fp.sub_words self rhs
+  let a ← portable.fp.p_if borrowed
+  let (a1, _) ← portable.fp.add_words d a
+  ok a1
+
+/-- [silver_crypto_simd::portable::g1_pair::sub]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 33:0-35:1 -/
+def portable.g1_pair.sub
+  (a : Array portable.fp.Fp 2#usize) (b : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  let f ← Array.index_usize a 0#usize
+  let f1 ← Array.index_usize b 0#usize
+  let f2 ← portable.fp.Fp.sub f f1
+  let f3 ← Array.index_usize a 1#usize
+  let f4 ← Array.index_usize b 1#usize
+  let f5 ← portable.fp.Fp.sub f3 f4
+  ok (Array.make 2#usize [ f2, f5 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::g1_pair::add]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 28:0-30:1 -/
+def portable.g1_pair.add
+  (a : Array portable.fp.Fp 2#usize) (b : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  let f ← Array.index_usize a 0#usize
+  let f1 ← Array.index_usize b 0#usize
+  let f2 ← portable.fp.Fp.add f f1
+  let f3 ← Array.index_usize a 1#usize
+  let f4 ← Array.index_usize b 1#usize
+  let f5 ← portable.fp.Fp.add f3 f4
+  ok (Array.make 2#usize [ f2, f5 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::wide_mul]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 27:0-30:1 -/
+def portable.fp.wide_mul
+  (a : Std.U64) (b : Std.U64) : Result (Std.U64 × Std.U64) := do
+  let i ← lift (UScalar.cast .U128 a)
+  let i1 ← lift (UScalar.cast .U128 b)
+  let product ← i * i1
+  let i2 ← lift (UScalar.cast .U64 product)
+  let i3 ← product >>> 64#i32
+  let i4 ← lift (UScalar.cast .U64 i3)
+  ok (i2, i4)
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 58:4-63:5 -/
+@[rust_loop_body]
+def portable.fp.mul_add_loop0.body
+  (a : Array Std.U64 6#usize) (b : Std.U64) (lo : Array Std.U64 6#usize)
+  (hi : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × (Array Std.U64 6#usize) ×
+    Std.Usize) ((Array Std.U64 6#usize) × (Array Std.U64 6#usize)))
+  := do
+  if j < 6#usize
+  then
+    let i ← Array.index_usize a j
+    let (l, h) ← portable.fp.wide_mul i b
+    let a1 ← Array.update lo j l
+    let a2 ← Array.update hi j h
+    let j1 ← j + 1#usize
+    ok (cont (a1, a2, j1))
+  else ok (done (lo, hi))
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 58:4-63:5 -/
+@[rust_loop]
+def portable.fp.mul_add_loop0
+  (a : Array Std.U64 6#usize) (b : Std.U64) (lo : Array Std.U64 6#usize)
+  (hi : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result ((Array Std.U64 6#usize) × (Array Std.U64 6#usize))
+  := do
+  loop
+    (fun (lo1, hi1, j1) => portable.fp.mul_add_loop0.body a b lo1 hi1 j1)
+    (lo, hi, j)
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 67:4-72:5 -/
+@[rust_loop_body]
+def portable.fp.mul_add_loop1.body
+  (acc : Array Std.U64 7#usize) (lo : Array Std.U64 6#usize) (j : Std.Usize)
+  (out : Array Std.U64 7#usize) (carry : Std.U64) :
+  Result (ControlFlow (Std.Usize × (Array Std.U64 7#usize) × Std.U64) ((Array
+    Std.U64 7#usize) × Std.U64))
+  := do
+  if j < 6#usize
+  then
+    let i ← Array.index_usize acc j
+    let i1 ← Array.index_usize lo j
+    let (s, c) ← portable.fp.add_carry i i1 carry
+    let a ← Array.update out j s
+    let j1 ← j + 1#usize
+    ok (cont (j1, a, c))
+  else ok (done (out, carry))
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 67:4-72:5 -/
+@[rust_loop]
+def portable.fp.mul_add_loop1
+  (acc : Array Std.U64 7#usize) (lo : Array Std.U64 6#usize) (j : Std.Usize)
+  (out : Array Std.U64 7#usize) (carry : Std.U64) :
+  Result ((Array Std.U64 7#usize) × Std.U64)
+  := do
+  loop
+    (fun (j1, out1, carry1) => portable.fp.mul_add_loop1.body acc lo j1 out1
+      carry1)
+    (j, out, carry)
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 76:4-81:5 -/
+@[rust_loop_body]
+def portable.fp.mul_add_loop2.body
+  (hi : Array Std.U64 6#usize) (j : Std.Usize) (out : Array Std.U64 7#usize)
+  (carry : Std.U64) :
+  Result (ControlFlow (Std.Usize × (Array Std.U64 7#usize) × Std.U64) (Array
+    Std.U64 7#usize))
+  := do
+  if j < 6#usize
+  then
+    let i ← j + 1#usize
+    let i1 ← Array.index_usize out i
+    let i2 ← Array.index_usize hi j
+    let (s, c) ← portable.fp.add_carry i1 i2 carry
+    let a ← Array.update out i s
+    ok (cont (i, a, c))
+  else ok (done out)
+
+/-- [silver_crypto_simd::portable::fp::mul_add]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 76:4-81:5 -/
+@[rust_loop]
+def portable.fp.mul_add_loop2
+  (hi : Array Std.U64 6#usize) (j : Std.Usize) (out : Array Std.U64 7#usize)
+  (carry : Std.U64) :
+  Result (Array Std.U64 7#usize)
+  := do
+  loop
+    (fun (j1, out1, carry1) => portable.fp.mul_add_loop2.body hi j1 out1
+      carry1)
+    (j, out, carry)
+
+/-- [silver_crypto_simd::portable::fp::mul_add]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 54:0-83:1 -/
+def portable.fp.mul_add
+  (acc : Array Std.U64 7#usize) (a : Array Std.U64 6#usize) (b : Std.U64) :
+  Result (Array Std.U64 7#usize)
+  := do
+  let lo := Array.repeat 6#usize 0#u64
+  let hi := Array.repeat 6#usize 0#u64
+  let (lo1, hi1) ← portable.fp.mul_add_loop0 a b lo hi 0#usize
+  let out := Array.repeat 7#usize 0#u64
+  let (out1, carry) ← portable.fp.mul_add_loop1 acc lo1 0#usize out 0#u64
+  let i ← Array.index_usize acc 6#usize
+  let i1 ← lift (core.num.U64.wrapping_add i carry)
+  let a1 ← Array.update out1 6#usize i1
+  portable.fp.mul_add_loop2 hi1 0#usize a1 0#u64
+
+/-- [silver_crypto_simd::portable::constants::P_INV]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 8:0-8:42
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.P_INV : Std.U64 := 9940570264628428797#u64
+
+/-- [silver_crypto_simd::portable::fp::row]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 88:0-92:1 -/
+def portable.fp.row
+  (t : Array Std.U64 6#usize) (a : Array Std.U64 6#usize) (bi : Std.U64) :
+  Result (Array Std.U64 6#usize)
+  := do
+  let i ← Array.index_usize t 0#usize
+  let i1 ← Array.index_usize t 1#usize
+  let i2 ← Array.index_usize t 2#usize
+  let i3 ← Array.index_usize t 3#usize
+  let i4 ← Array.index_usize t 4#usize
+  let i5 ← Array.index_usize t 5#usize
+  let sum ←
+    portable.fp.mul_add (Array.make 7#usize [ i, i1, i2, i3, i4, i5, 0#u64 ] (by rfl)) a
+      bi
+  let i6 ← Array.index_usize sum 0#usize
+  let i7 ← lift (core.num.U64.wrapping_mul i6 portable.constants.P_INV)
+  let reduced ← portable.fp.mul_add sum bls.constants.P_U64 i7
+  let i8 ← Array.index_usize reduced 1#usize
+  let i9 ← Array.index_usize reduced 2#usize
+  let i10 ← Array.index_usize reduced 3#usize
+  let i11 ← Array.index_usize reduced 4#usize
+  let i12 ← Array.index_usize reduced 5#usize
+  let i13 ← Array.index_usize reduced 6#usize
+  ok (Array.make 6#usize [ i8, i9, i10, i11, i12, i13 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::product]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 222:4-230:5 -/
+def portable.fp.Fp.product
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  let a := Array.repeat 6#usize 0#u64
+  let i ← Array.index_usize rhs 0#usize
+  let t ← portable.fp.row a self i
+  let i1 ← Array.index_usize rhs 1#usize
+  let t1 ← portable.fp.row t self i1
+  let i2 ← Array.index_usize rhs 2#usize
+  let t2 ← portable.fp.row t1 self i2
+  let i3 ← Array.index_usize rhs 3#usize
+  let t3 ← portable.fp.row t2 self i3
+  let i4 ← Array.index_usize rhs 4#usize
+  let t4 ← portable.fp.row t3 self i4
+  let i5 ← Array.index_usize rhs 5#usize
+  let t5 ← portable.fp.row t4 self i5
+  let a1 ← portable.fp.below_p t5
+  ok a1
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::mul_on_baseline]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 217:4-219:5 -/
+def portable.fp.Fp.mul_on_baseline
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  portable.fp.Fp.product self rhs
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::mul_on_bmi2]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 210:4-212:5 -/
+def portable.fp.Fp.mul_on_bmi2
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  portable.fp.Fp.product self rhs
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::mul]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 194:4-200:5
+    Visibility: public -/
+def portable.fp.Fp.mul
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) : Result portable.fp.Fp := do
+  let b ← bmi2_available
+  if b
+  then portable.fp.Fp.mul_on_bmi2 self rhs
+  else portable.fp.Fp.mul_on_baseline self rhs
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::mul_pair]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 241:4-243:5
+    Visibility: public -/
+def portable.fp.Fp.mul_pair
+  (a : Array portable.fp.Fp 2#usize) (b : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  let f ← Array.index_usize a 0#usize
+  let f1 ← Array.index_usize b 0#usize
+  let f2 ← portable.fp.Fp.mul f f1
+  let f3 ← Array.index_usize a 1#usize
+  let f4 ← Array.index_usize b 1#usize
+  let f5 ← portable.fp.Fp.mul f3 f4
+  ok (Array.make 2#usize [ f2, f5 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::g1_pair::square]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 23:0-25:1 -/
+def portable.g1_pair.square
+  (a : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  portable.fp.Fp.mul_pair a a
+
+/-- [silver_crypto_simd::portable::g1_pair::mul]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 18:0-20:1 -/
+def portable.g1_pair.mul
+  (a : Array portable.fp.Fp 2#usize) (b : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  portable.fp.Fp.mul_pair a b
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::is_zero]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 275:4-277:5
+    Visibility: public -/
+def portable.fp.Fp.is_zero (self : portable.fp.Fp) : Result Bool := do
+  let i ← Array.index_usize self 0#usize
+  let i1 ← Array.index_usize self 1#usize
+  let i2 ← lift (i ||| i1)
+  let i3 ← Array.index_usize self 2#usize
+  let i4 ← lift (i2 ||| i3)
+  let i5 ← Array.index_usize self 3#usize
+  let i6 ← lift (i4 ||| i5)
+  let i7 ← Array.index_usize self 4#usize
+  let i8 ← lift (i6 ||| i7)
+  let i9 ← Array.index_usize self 5#usize
+  let i10 ← lift (i8 ||| i9)
+  ok (i10 = 0#u64)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::add]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 103:8-106:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.g1_pair.G1Pair.add_loop.body
+  (a : Array portable.fp.Fp 2#usize) (a1 : Array portable.fp.Fp 2#usize)
+  (h : Array portable.fp.Fp 2#usize) (exceptional : Array Bool 2#usize)
+  (k : Std.Usize) :
+  Result (ControlFlow ((Array Bool 2#usize) × Std.Usize) (Array Bool 2#usize))
+  := do
+  if k < 2#usize
+  then
+    let f ← Array.index_usize h k
+    let b ← portable.fp.Fp.is_zero f
+    let b1 ←
+      if b
+      then ok true
+      else
+        do
+        let f1 ← Array.index_usize a k
+        let b2 ← portable.fp.Fp.is_zero f1
+        if b2
+        then ok true
+        else let f2 ← Array.index_usize a1 k
+             portable.fp.Fp.is_zero f2
+    let a2 ← Array.update exceptional k b1
+    let k1 ← k + 1#usize
+    ok (cont (a2, k1))
+  else ok (done exceptional)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::add]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 103:8-106:9
+    Visibility: public -/
+@[rust_loop]
+def portable.g1_pair.G1Pair.add_loop
+  (a : Array portable.fp.Fp 2#usize) (a1 : Array portable.fp.Fp 2#usize)
+  (h : Array portable.fp.Fp 2#usize) (exceptional : Array Bool 2#usize)
+  (k : Std.Usize) :
+  Result (Array Bool 2#usize)
+  := do
+  loop
+    (fun (exceptional1, k1) => portable.g1_pair.G1Pair.add_loop.body a a1 h
+      exceptional1 k1)
+    (exceptional, k)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::add]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 86:4-108:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.add
+  (self : portable.g1_pair.G1Pair) (q : portable.g1_pair.G1Pair) :
+  Result (portable.g1_pair.G1Pair × (Array Bool 2#usize))
+  := do
+  let z1z1 ← portable.g1_pair.square self.z
+  let z2z2 ← portable.g1_pair.square q.z
+  let u1 ← portable.g1_pair.mul self.x z2z2
+  let u2 ← portable.g1_pair.mul q.x z1z1
+  let a ← portable.g1_pair.mul self.y q.z
+  let s1 ← portable.g1_pair.mul a z2z2
+  let a1 ← portable.g1_pair.mul q.y self.z
+  let s2 ← portable.g1_pair.mul a1 z1z1
+  let h ← portable.g1_pair.sub u2 u1
+  let a2 ← portable.g1_pair.double h
+  let i ← portable.g1_pair.square a2
+  let j ← portable.g1_pair.mul h i
+  let a3 ← portable.g1_pair.sub s2 s1
+  let r ← portable.g1_pair.double a3
+  let v ← portable.g1_pair.mul u1 i
+  let a4 ← portable.g1_pair.square r
+  let a5 ← portable.g1_pair.sub a4 j
+  let a6 ← portable.g1_pair.double v
+  let x3 ← portable.g1_pair.sub a5 a6
+  let a7 ← portable.g1_pair.sub v x3
+  let a8 ← portable.g1_pair.mul r a7
+  let a9 ← portable.g1_pair.mul s1 j
+  let a10 ← portable.g1_pair.double a9
+  let y3 ← portable.g1_pair.sub a8 a10
+  let a11 ← portable.g1_pair.add self.z q.z
+  let a12 ← portable.g1_pair.square a11
+  let a13 ← portable.g1_pair.sub a12 z1z1
+  let a14 ← portable.g1_pair.sub a13 z2z2
+  let z3 ← portable.g1_pair.mul a14 h
+  let exceptional := Array.repeat 2#usize false
+  let exceptional1 ←
+    portable.g1_pair.G1Pair.add_loop self.z q.z h exceptional 0#usize
+  ok ({ x := x3, y := y3, z := z3 }, exceptional1)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::add_affine]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 66:4-82:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.add_affine
+  (self : portable.g1_pair.G1Pair) (qx : Array portable.fp.Fp 2#usize)
+  (qy : Array portable.fp.Fp 2#usize) :
+  Result (portable.g1_pair.G1Pair × (Array Bool 2#usize))
+  := do
+  let z1z1 ← portable.g1_pair.square self.z
+  let u2 ← portable.g1_pair.mul qx z1z1
+  let a ← portable.g1_pair.mul qy self.z
+  let s2 ← portable.g1_pair.mul a z1z1
+  let h ← portable.g1_pair.sub u2 self.x
+  let hh ← portable.g1_pair.square h
+  let a1 ← portable.g1_pair.double hh
+  let i ← portable.g1_pair.double a1
+  let j ← portable.g1_pair.mul h i
+  let a2 ← portable.g1_pair.sub s2 self.y
+  let r ← portable.g1_pair.double a2
+  let v ← portable.g1_pair.mul self.x i
+  let a3 ← portable.g1_pair.square r
+  let a4 ← portable.g1_pair.sub a3 j
+  let a5 ← portable.g1_pair.double v
+  let x3 ← portable.g1_pair.sub a4 a5
+  let a6 ← portable.g1_pair.sub v x3
+  let a7 ← portable.g1_pair.mul r a6
+  let a8 ← portable.g1_pair.mul self.y j
+  let a9 ← portable.g1_pair.double a8
+  let y3 ← portable.g1_pair.sub a7 a9
+  let a10 ← portable.g1_pair.add self.z h
+  let a11 ← portable.g1_pair.square a10
+  let a12 ← portable.g1_pair.sub a11 z1z1
+  let z3 ← portable.g1_pair.sub a12 hh
+  let f ← Array.index_usize h 0#usize
+  let b ← portable.fp.Fp.is_zero f
+  let b1 ←
+    if b
+    then ok true
+    else
+      do
+      let f1 ← Array.index_usize self.z 0#usize
+      portable.fp.Fp.is_zero f1
+  let f1 ← Array.index_usize h 1#usize
+  let b2 ← portable.fp.Fp.is_zero f1
+  if b2
+  then ok ({ x := x3, y := y3, z := z3 }, Array.make 2#usize [ b1, true ] (by rfl))
+  else
+    let f2 ← Array.index_usize self.z 1#usize
+    let b3 ← portable.fp.Fp.is_zero f2
+    ok ({ x := x3, y := y3, z := z3 }, Array.make 2#usize [ b1, b3 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::double]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 52:4-62:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.double
+  (self : portable.g1_pair.G1Pair) : Result portable.g1_pair.G1Pair := do
+  let a ← portable.g1_pair.square self.x
+  let b ← portable.g1_pair.square self.y
+  let c ← portable.g1_pair.square b
+  let a1 ← portable.g1_pair.add self.x b
+  let a2 ← portable.g1_pair.square a1
+  let a3 ← portable.g1_pair.sub a2 a
+  let a4 ← portable.g1_pair.sub a3 c
+  let d ← portable.g1_pair.double a4
+  let a5 ← portable.g1_pair.double a
+  let e ← portable.g1_pair.add a5 a
+  let a6 ← portable.g1_pair.square e
+  let a7 ← portable.g1_pair.double d
+  let x3 ← portable.g1_pair.sub a6 a7
+  let a8 ← portable.g1_pair.sub d x3
+  let a9 ← portable.g1_pair.mul e a8
+  let a10 ← portable.g1_pair.double c
+  let a11 ← portable.g1_pair.double a10
+  let a12 ← portable.g1_pair.double a11
+  let y3 ← portable.g1_pair.sub a9 a12
+  let a13 ← portable.g1_pair.mul self.y self.z
+  let z3 ← portable.g1_pair.double a13
+  ok { x := x3, y := y3, z := z3 }
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::lane]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 47:4-49:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.lane
+  (self : portable.g1_pair.G1Pair) (k : Std.Usize) :
+  Result portable.g1.G1
+  := do
+  let f ← Array.index_usize self.x k
+  let f1 ← Array.index_usize self.y k
+  let f2 ← Array.index_usize self.z k
+  ok { x := f, y := f1, z := f2 }
+
+/-- [silver_crypto_simd::portable::constants::ONE]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 9:0-16:3
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.ONE : portable.fp.Fp :=
+  Array.make 6#usize [
+    8505329371266088957#u64, 17002214543764226050#u64, 6865905132761471162#u64,
+    8632934651105793861#u64, 6631298214892334189#u64, 1582556514881692819#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::from_affine]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 43:4-45:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.from_affine
+  (x : Array portable.fp.Fp 2#usize) (y : Array portable.fp.Fp 2#usize) :
+  Result portable.g1_pair.G1Pair
+  := do
+  let a := Array.repeat 2#usize portable.constants.ONE
+  ok { x, y, z := a }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::is_infinity]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 46:4-48:5
+    Visibility: public -/
+def portable.g1.G1.is_infinity (self : portable.g1.G1) : Result Bool := do
+  portable.fp.Fp.is_zero self.z
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::ZERO]
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 190:4-190:36
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.fp.Fp.ZERO : portable.fp.Fp :=
+  let a := Array.repeat 6#usize 0#u64
+  a
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::neg]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 271:4-273:5
+    Visibility: public -/
+def portable.fp.Fp.neg (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  portable.fp.Fp.sub portable.fp.Fp.ZERO self
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::square]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 233:4-235:5
+    Visibility: public -/
+def portable.fp.Fp.square (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  portable.fp.Fp.mul self self
+
+/-- [silver_crypto_simd::portable::fp::{core::cmp::PartialEq<silver_crypto_simd::portable::fp::Fp> for silver_crypto_simd::portable::fp::Fp}::eq]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 22:38-22:47
+    Visibility: public -/
+def portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq
+  (self : portable.fp.Fp) (other : portable.fp.Fp) : Result Bool := do
+  core.array.equality.PartialEqArray.eq core.cmp.PartialEqU64 self other
+
+/-- [silver_crypto_simd::portable::constants::BETA]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 45:0-52:3
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.BETA : portable.fp.Fp :=
+  Array.make 6#usize [
+    14772873186050699377#u64, 6749526151121446354#u64, 6372666795664677781#u64,
+    10283423008382700446#u64, 286397964926079186#u64, 1796971870900422465#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::is_minus_sigma_squared]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 135:4-141:5
+    Visibility: public -/
+def portable.g1.G1.is_minus_sigma_squared
+  (self : portable.g1.G1) (px : portable.fp.Fp) (py : portable.fp.Fp) :
+  Result Bool
+  := do
+  let b ← portable.g1.G1.is_infinity self
+  if b
+  then ok false
+  else
+    let zz ← portable.fp.Fp.square self.z
+    let f ← portable.fp.Fp.mul px portable.constants.BETA
+    let f1 ← portable.fp.Fp.mul f portable.constants.BETA
+    let f2 ← portable.fp.Fp.mul f1 zz
+    let b1 ← portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq self.x f2
+    if b1
+    then
+      let f3 ← portable.fp.Fp.neg self.y
+      let f4 ← portable.fp.Fp.mul zz self.z
+      let f5 ← portable.fp.Fp.mul py f4
+      portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq f3 f5
+    else ok false
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::Terms}::sum]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 228:4-236:5 -/
+def portable.g1.Terms.sum
+  (self : portable.g1.Terms) (p : portable.g1.G1) (q : portable.g1.G1) :
+  Result portable.g1.G1
+  := do
+  let f ← portable.fp.Fp.double self.h
+  let i ← portable.fp.Fp.square f
+  let j ← portable.fp.Fp.mul self.h i
+  let v ← portable.fp.Fp.mul self.u1 i
+  let f1 ← portable.fp.Fp.square self.r
+  let f2 ← portable.fp.Fp.sub f1 j
+  let f3 ← portable.fp.Fp.double v
+  let x3 ← portable.fp.Fp.sub f2 f3
+  let f4 ← portable.fp.Fp.sub v x3
+  let f5 ← portable.fp.Fp.mul self.r f4
+  let f6 ← portable.fp.Fp.mul self.s1 j
+  let f7 ← portable.fp.Fp.double f6
+  let y3 ← portable.fp.Fp.sub f5 f7
+  let f8 ← portable.fp.Fp.add p.z q.z
+  let f9 ← portable.fp.Fp.square f8
+  let f10 ← portable.fp.Fp.sub f9 self.z1z1
+  let f11 ← portable.fp.Fp.sub f10 self.z2z2
+  let z3 ← portable.fp.Fp.mul f11 self.h
+  ok { x := x3, y := y3, z := z3 }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::Terms}::new]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 218:4-226:5 -/
+def portable.g1.Terms.new
+  (p : portable.g1.G1) (q : portable.g1.G1) : Result portable.g1.Terms := do
+  let z1z1 ← portable.fp.Fp.square p.z
+  let z2z2 ← portable.fp.Fp.square q.z
+  let u1 ← portable.fp.Fp.mul p.x z2z2
+  let f ← portable.fp.Fp.mul p.y q.z
+  let s1 ← portable.fp.Fp.mul f z2z2
+  let f1 ← portable.fp.Fp.mul q.x z1z1
+  let h ← portable.fp.Fp.sub f1 u1
+  let f2 ← portable.fp.Fp.mul q.y p.z
+  let f3 ← portable.fp.Fp.mul f2 z1z1
+  let f4 ← portable.fp.Fp.sub f3 s1
+  let r ← portable.fp.Fp.double f4
+  ok { z1z1, z2z2, u1, s1, h, r }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::double]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 51:4-61:5
+    Visibility: public -/
+def portable.g1.G1.double (self : portable.g1.G1) : Result portable.g1.G1 := do
+  let a ← portable.fp.Fp.square self.x
+  let b ← portable.fp.Fp.square self.y
+  let c ← portable.fp.Fp.square b
+  let f ← portable.fp.Fp.add self.x b
+  let f1 ← portable.fp.Fp.square f
+  let f2 ← portable.fp.Fp.sub f1 a
+  let f3 ← portable.fp.Fp.sub f2 c
+  let d ← portable.fp.Fp.double f3
+  let f4 ← portable.fp.Fp.double a
+  let e ← portable.fp.Fp.add f4 a
+  let f5 ← portable.fp.Fp.square e
+  let f6 ← portable.fp.Fp.double d
+  let x3 ← portable.fp.Fp.sub f5 f6
+  let f7 ← portable.fp.Fp.sub d x3
+  let f8 ← portable.fp.Fp.mul e f7
+  let f9 ← portable.fp.Fp.double c
+  let f10 ← portable.fp.Fp.double f9
+  let f11 ← portable.fp.Fp.double f10
+  let y3 ← portable.fp.Fp.sub f8 f11
+  let f12 ← portable.fp.Fp.mul self.y self.z
+  let z3 ← portable.fp.Fp.double f12
+  ok { x := x3, y := y3, z := z3 }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::INFINITY]
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 27:4-27:64
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.g1.G1.INFINITY : portable.g1.G1 :=
+  {
+    x := portable.constants.ONE,
+    y := portable.constants.ONE,
+    z := portable.fp.Fp.ZERO
+  }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::add_complete]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 79:4-94:5
+    Visibility: public -/
+def portable.g1.G1.add_complete
+  (self : portable.g1.G1) (q : portable.g1.G1) : Result portable.g1.G1 := do
+  let b ← portable.g1.G1.is_infinity self
+  if b
+  then ok q
+  else
+    let b1 ← portable.g1.G1.is_infinity q
+    if b1
+    then ok self
+    else
+      let terms ← portable.g1.Terms.new self q
+      let b2 ← portable.fp.Fp.is_zero terms.h
+      if b2
+      then
+        let b3 ← portable.fp.Fp.is_zero terms.r
+        if b3
+        then portable.g1.G1.double self
+        else ok portable.g1.G1.INFINITY
+      else portable.g1.Terms.sum terms self q
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 118:8-124:9 -/
+@[rust_loop_body]
+def portable.g1.G1.times_z_loop.body
+  (self : portable.g1.G1) (r : portable.g1.G1) (bit : Std.U32) :
+  Result (ControlFlow (portable.g1.G1 × Std.U32) portable.g1.G1)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← portable.g1.G1.double r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then let r2 ← portable.g1.G1.add_complete r1 self
+         ok (cont (r2, bit1))
+    else ok (cont (r1, bit1))
+  else ok (done r)
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 118:8-124:9 -/
+@[rust_loop]
+def portable.g1.G1.times_z_loop
+  (self : portable.g1.G1) (r : portable.g1.G1) (bit : Std.U32) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (r1, bit1) => portable.g1.G1.times_z_loop.body self r1 bit1)
+    (r, bit)
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 115:4-126:5 -/
+def portable.g1.G1.times_z
+  (self : portable.g1.G1) : Result portable.g1.G1 := do
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  portable.g1.G1.times_z_loop self self bit
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::MixedTerms}::sum]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 194:4-203:5 -/
+def portable.g1.MixedTerms.sum
+  (self : portable.g1.MixedTerms) (p : portable.g1.G1) :
+  Result portable.g1.G1
+  := do
+  let hh ← portable.fp.Fp.square self.h
+  let f ← portable.fp.Fp.double hh
+  let i ← portable.fp.Fp.double f
+  let j ← portable.fp.Fp.mul self.h i
+  let v ← portable.fp.Fp.mul p.x i
+  let f1 ← portable.fp.Fp.square self.r
+  let f2 ← portable.fp.Fp.sub f1 j
+  let f3 ← portable.fp.Fp.double v
+  let x3 ← portable.fp.Fp.sub f2 f3
+  let f4 ← portable.fp.Fp.sub v x3
+  let f5 ← portable.fp.Fp.mul self.r f4
+  let f6 ← portable.fp.Fp.mul p.y j
+  let f7 ← portable.fp.Fp.double f6
+  let y3 ← portable.fp.Fp.sub f5 f7
+  let f8 ← portable.fp.Fp.add p.z self.h
+  let f9 ← portable.fp.Fp.square f8
+  let f10 ← portable.fp.Fp.sub f9 self.z1z1
+  let z3 ← portable.fp.Fp.sub f10 hh
+  ok { x := x3, y := y3, z := z3 }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::MixedTerms}::new]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 187:4-192:5 -/
+def portable.g1.MixedTerms.new
+  (p : portable.g1.G1) (qx : portable.fp.Fp) (qy : portable.fp.Fp) :
+  Result portable.g1.MixedTerms
+  := do
+  let z1z1 ← portable.fp.Fp.square p.z
+  let f ← portable.fp.Fp.mul qx z1z1
+  let h ← portable.fp.Fp.sub f p.x
+  let f1 ← portable.fp.Fp.mul qy p.z
+  let f2 ← portable.fp.Fp.mul f1 z1z1
+  let f3 ← portable.fp.Fp.sub f2 p.y
+  let r ← portable.fp.Fp.double f3
+  ok { z1z1, h, r }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::from_affine]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 29:4-31:5
+    Visibility: public -/
+def portable.g1.G1.from_affine
+  (x : portable.fp.Fp) (y : portable.fp.Fp) : Result portable.g1.G1 := do
+  ok { x, y, z := portable.constants.ONE }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::add_affine_complete]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 64:4-76:5
+    Visibility: public -/
+def portable.g1.G1.add_affine_complete
+  (self : portable.g1.G1) (qx : portable.fp.Fp) (qy : portable.fp.Fp) :
+  Result portable.g1.G1
+  := do
+  let b ← portable.g1.G1.is_infinity self
+  if b
+  then portable.g1.G1.from_affine qx qy
+  else
+    let terms ← portable.g1.MixedTerms.new self qx qy
+    let b1 ← portable.fp.Fp.is_zero terms.h
+    if b1
+    then
+      let b2 ← portable.fp.Fp.is_zero terms.r
+      if b2
+      then portable.g1.G1.double self
+      else ok portable.g1.G1.INFINITY
+    else portable.g1.MixedTerms.sum terms self
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z_affine]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 104:8-110:9 -/
+@[rust_loop_body]
+def portable.g1.G1.times_z_affine_loop.body
+  (px : portable.fp.Fp) (py : portable.fp.Fp) (r : portable.g1.G1)
+  (bit : Std.U32) :
+  Result (ControlFlow (portable.g1.G1 × Std.U32) portable.g1.G1)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← portable.g1.G1.double r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then
+      let r2 ← portable.g1.G1.add_affine_complete r1 px py
+      ok (cont (r2, bit1))
+    else ok (cont (r1, bit1))
+  else ok (done r)
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z_affine]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 104:8-110:9 -/
+@[rust_loop]
+def portable.g1.G1.times_z_affine_loop
+  (px : portable.fp.Fp) (py : portable.fp.Fp) (r : portable.g1.G1)
+  (bit : Std.U32) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (r1, bit1) => portable.g1.G1.times_z_affine_loop.body px py r1 bit1)
+    (r, bit)
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::times_z_affine]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 101:4-112:5 -/
+def portable.g1.G1.times_z_affine
+  (px : portable.fp.Fp) (py : portable.fp.Fp) : Result portable.g1.G1 := do
+  let r ← portable.g1.G1.from_affine px py
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  portable.g1.G1.times_z_affine_loop px py r bit
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::in_g1]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 130:4-132:5
+    Visibility: public -/
+def portable.g1.G1.in_g1
+  (px : portable.fp.Fp) (py : portable.fp.Fp) : Result Bool := do
+  let g ← portable.g1.G1.times_z_affine px py
+  let g1 ← portable.g1.G1.times_z g
+  portable.g1.G1.is_minus_sigma_squared g1 px py
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 116:8-124:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.g1_pair.G1Pair.in_g1_loop0.body
+  (px : Array portable.fp.Fp 2#usize) (py : Array portable.fp.Fp 2#usize)
+  (exceptional : Array Bool 2#usize) (r : portable.g1_pair.G1Pair)
+  (bit : Std.U32) :
+  Result (ControlFlow ((Array Bool 2#usize) × portable.g1_pair.G1Pair ×
+    Std.U32) ((Array Bool 2#usize) × portable.g1_pair.G1Pair))
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← portable.g1_pair.G1Pair.double r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then
+      let (sum, e) ← portable.g1_pair.G1Pair.add_affine r1 px py
+      let b1 ← Array.index_usize exceptional 0#usize
+      let b2 ← if b1
+                 then ok true
+                 else Array.index_usize e 0#usize
+      let b3 ← Array.index_usize exceptional 1#usize
+      if b3
+      then ok (cont (Array.make 2#usize [ b2, true ] (by rfl), sum, bit1))
+      else
+        let b4 ← Array.index_usize e 1#usize
+        ok (cont (Array.make 2#usize [ b2, b4 ] (by rfl), sum, bit1))
+    else ok (cont (exceptional, r1, bit1))
+  else ok (done (exceptional, r))
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 116:8-124:9
+    Visibility: public -/
+@[rust_loop]
+def portable.g1_pair.G1Pair.in_g1_loop0
+  (px : Array portable.fp.Fp 2#usize) (py : Array portable.fp.Fp 2#usize)
+  (exceptional : Array Bool 2#usize) (r : portable.g1_pair.G1Pair)
+  (bit : Std.U32) :
+  Result ((Array Bool 2#usize) × portable.g1_pair.G1Pair)
+  := do
+  loop
+    (fun (exceptional1, r1, bit1) => portable.g1_pair.G1Pair.in_g1_loop0.body
+      px py exceptional1 r1 bit1)
+    (exceptional, r, bit)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 127:8-135:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.g1_pair.G1Pair.in_g1_loop1.body
+  (a : Array portable.fp.Fp 2#usize) (a1 : Array portable.fp.Fp 2#usize)
+  (a2 : Array portable.fp.Fp 2#usize) (exceptional : Array Bool 2#usize)
+  (r : portable.g1_pair.G1Pair) (bit : Std.U32) :
+  Result (ControlFlow ((Array Bool 2#usize) × portable.g1_pair.G1Pair ×
+    Std.U32) ((Array Bool 2#usize) × portable.g1_pair.G1Pair))
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← portable.g1_pair.G1Pair.double r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then
+      let (sum, e) ←
+        portable.g1_pair.G1Pair.add r1 { x := a, y := a1, z := a2 }
+      let b1 ← Array.index_usize exceptional 0#usize
+      let b2 ← if b1
+                 then ok true
+                 else Array.index_usize e 0#usize
+      let b3 ← Array.index_usize exceptional 1#usize
+      if b3
+      then ok (cont (Array.make 2#usize [ b2, true ] (by rfl), sum, bit1))
+      else
+        let b4 ← Array.index_usize e 1#usize
+        ok (cont (Array.make 2#usize [ b2, b4 ] (by rfl), sum, bit1))
+    else ok (cont (exceptional, r1, bit1))
+  else ok (done (exceptional, r))
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 127:8-135:9
+    Visibility: public -/
+@[rust_loop]
+def portable.g1_pair.G1Pair.in_g1_loop1
+  (exceptional : Array Bool 2#usize) (r : portable.g1_pair.G1Pair)
+  (bit : Std.U32) (a : Array portable.fp.Fp 2#usize)
+  (a1 : Array portable.fp.Fp 2#usize) (a2 : Array portable.fp.Fp 2#usize) :
+  Result ((Array Bool 2#usize) × portable.g1_pair.G1Pair)
+  := do
+  loop
+    (fun (exceptional1, r1, bit1) => portable.g1_pair.G1Pair.in_g1_loop1.body a
+      a1 a2 exceptional1 r1 bit1)
+    (exceptional, r, bit)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 138:8-145:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.g1_pair.G1Pair.in_g1_loop2.body
+  (px : Array portable.fp.Fp 2#usize) (py : Array portable.fp.Fp 2#usize)
+  (exceptional : Array Bool 2#usize) (r : portable.g1_pair.G1Pair)
+  (members : Array Bool 2#usize) (k : Std.Usize) :
+  Result (ControlFlow ((Array Bool 2#usize) × Std.Usize) (Array Bool 2#usize))
+  := do
+  if k < 2#usize
+  then
+    let b ← Array.index_usize exceptional k
+    let b1 ←
+      if b
+      then
+        do
+        let f ← Array.index_usize px k
+        let f1 ← Array.index_usize py k
+        portable.g1.G1.in_g1 f f1
+      else
+        do
+        let g ← portable.g1_pair.G1Pair.lane r k
+        let f ← Array.index_usize px k
+        let f1 ← Array.index_usize py k
+        portable.g1.G1.is_minus_sigma_squared g f f1
+    let a ← Array.update members k b1
+    let k1 ← k + 1#usize
+    ok (cont (a, k1))
+  else ok (done members)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 138:8-145:9
+    Visibility: public -/
+@[rust_loop]
+def portable.g1_pair.G1Pair.in_g1_loop2
+  (px : Array portable.fp.Fp 2#usize) (py : Array portable.fp.Fp 2#usize)
+  (exceptional : Array Bool 2#usize) (r : portable.g1_pair.G1Pair)
+  (members : Array Bool 2#usize) (k : Std.Usize) :
+  Result (Array Bool 2#usize)
+  := do
+  loop
+    (fun (members1, k1) => portable.g1_pair.G1Pair.in_g1_loop2.body px py
+      exceptional r members1 k1)
+    (members, k)
+
+/-- [silver_crypto_simd::portable::g1_pair::{silver_crypto_simd::portable::g1_pair::G1Pair}::in_g1]:
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 112:4-147:5
+    Visibility: public -/
+def portable.g1_pair.G1Pair.in_g1
+  (px : Array portable.fp.Fp 2#usize) (py : Array portable.fp.Fp 2#usize) :
+  Result (Array Bool 2#usize)
+  := do
+  let exceptional := Array.repeat 2#usize false
+  let r ← portable.g1_pair.G1Pair.from_affine px py
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let (exceptional1, r1) ←
+    portable.g1_pair.G1Pair.in_g1_loop0 px py exceptional r bit
+  let (exceptional2, r2) ←
+    portable.g1_pair.G1Pair.in_g1_loop1 exceptional1 r1 bit r1.x r1.y r1.z
+  let members := Array.repeat 2#usize false
+  portable.g1_pair.G1Pair.in_g1_loop2 px py exceptional2 r2 members 0#usize
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 318:8-321:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop0.body
+  (values : Array portable.fp.Fp 2#usize)
+  (table : Array (Array portable.fp.Fp 2#usize) 16#usize) (k : Std.Usize) :
+  Result (ControlFlow ((Array (Array portable.fp.Fp 2#usize) 16#usize) ×
+    Std.Usize) (Array (Array portable.fp.Fp 2#usize) 16#usize))
+  := do
+  if k < 16#usize
+  then
+    let i ← k - 1#usize
+    let a ← Array.index_usize table i
+    let a1 ← portable.fp.Fp.mul_pair a values
+    let a2 ← Array.update table k a1
+    let k1 ← k + 1#usize
+    ok (cont (a2, k1))
+  else ok (done table)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 318:8-321:9
+    Visibility: public -/
+@[rust_loop]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop0
+  (values : Array portable.fp.Fp 2#usize)
+  (table : Array (Array portable.fp.Fp 2#usize) 16#usize) (k : Std.Usize) :
+  Result (Array (Array portable.fp.Fp 2#usize) 16#usize)
+  := do
+  loop
+    (fun (table1, k1) => portable.fp.Fp.pow_p_minus_3_over_4_pair_loop0.body
+      values table1 k1)
+    (table, k)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 328:12-331:13
+    Visibility: public -/
+@[rust_loop_body]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0.body
+  (result : Array portable.fp.Fp 2#usize) (s : Std.I32) :
+  Result (ControlFlow ((Array portable.fp.Fp 2#usize) × Std.I32) (Array
+    portable.fp.Fp 2#usize))
+  := do
+  if s < 4#i32
+  then
+    let result1 ← portable.fp.Fp.mul_pair result result
+    let s1 ← s + 1#i32
+    ok (cont (result1, s1))
+  else ok (done result)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 328:12-331:13
+    Visibility: public -/
+@[rust_loop]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0
+  (result : Array portable.fp.Fp 2#usize) (s : Std.I32) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  loop
+    (fun (result1, s1) =>
+      portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0.body result1 s1)
+    (result, s)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 325:8-333:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1.body
+  (table : Array (Array portable.fp.Fp 2#usize) 16#usize)
+  (result : Array portable.fp.Fp 2#usize) (w : Std.Usize) :
+  Result (ControlFlow ((Array portable.fp.Fp 2#usize) × Std.Usize) (Array
+    portable.fp.Fp 2#usize))
+  := do
+  if w > 0#usize
+  then
+    let w1 ← w - 1#usize
+    let result1 ←
+      portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0 result 0#i32
+    let i ← Array.index_usize bls.constants.P_MINUS_3_OVER_4_WINDOWS w1
+    let i1 ← lift (UScalar.cast .Usize i)
+    let a ← Array.index_usize table i1
+    let result2 ← portable.fp.Fp.mul_pair result1 a
+    ok (cont (result2, w1))
+  else ok (done result)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 325:8-333:9
+    Visibility: public -/
+@[rust_loop]
+def portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1
+  (table : Array (Array portable.fp.Fp 2#usize) 16#usize)
+  (result : Array portable.fp.Fp 2#usize) (w : Std.Usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  loop
+    (fun (result1, w1) => portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1.body
+      table result1 w1)
+    (result, w)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4_pair]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 315:4-335:5
+    Visibility: public -/
+def portable.fp.Fp.pow_p_minus_3_over_4_pair
+  (values : Array portable.fp.Fp 2#usize) :
+  Result (Array portable.fp.Fp 2#usize)
+  := do
+  let a := Array.repeat 2#usize portable.constants.ONE
+  let table := Array.repeat 16#usize a
+  let table1 ←
+    portable.fp.Fp.pow_p_minus_3_over_4_pair_loop0 values table 1#usize
+  let s ← lift (Array.to_slice bls.constants.P_MINUS_3_OVER_4_WINDOWS)
+  let windows := Slice.len s
+  let i ← windows - 1#usize
+  let i1 ← Array.index_usize bls.constants.P_MINUS_3_OVER_4_WINDOWS i
+  let i2 ← lift (UScalar.cast .Usize i1)
+  let result ← Array.index_usize table1 i2
+  portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1 table1 result i
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::sqrt_pair]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 346:4-350:5
+    Visibility: public -/
+def portable.fp.Fp.sqrt_pair
+  (values : Array portable.fp.Fp 2#usize) :
+  Result ((Array portable.fp.Fp 2#usize) × (Array Bool 2#usize))
+  := do
+  let a ← portable.fp.Fp.pow_p_minus_3_over_4_pair values
+  let roots ← portable.fp.Fp.mul_pair a values
+  let squares ← portable.fp.Fp.mul_pair roots roots
+  let f ← Array.index_usize squares 0#usize
+  let f1 ← Array.index_usize values 0#usize
+  let b ← portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq f f1
+  let f2 ← Array.index_usize squares 1#usize
+  let f3 ← Array.index_usize values 1#usize
+  let b1 ← portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq f2 f3
+  ok (roots, Array.make 2#usize [ b, b1 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::decompress::point]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 108:0-110:1 -/
+def portable.decompress.point
+  (x : portable.fp.Fp) (y : portable.fp.Fp) : Result blst.blst_p1_affine := do
+  ok { x := { l := x }, y := { l := y } }
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::to_plain]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 285:4-287:5
+    Visibility: public -/
+def portable.fp.Fp.to_plain
+  (self : portable.fp.Fp) : Result (Array Std.U64 6#usize) := do
+  portable.fp.Fp.mul self
+    (Array.make 6#usize [ 1#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::is_larger_root]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 353:4-359:5
+    Visibility: public -/
+def portable.fp.Fp.is_larger_root (self : portable.fp.Fp) : Result Bool := do
+  let plain ← portable.fp.Fp.to_plain self
+  let p ← portable.fp.add_words plain plain
+  let (doubled, carry) := p
+  let (_, borrow) ← portable.fp.sub_words doubled bls.constants.P_U64
+  if carry
+  then ok true
+  else ok (¬ borrow)
+
+/-- [silver_crypto_simd::portable::decompress::signed]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 104:0-106:1 -/
+def portable.decompress.signed
+  (root : portable.fp.Fp) (larger : Bool) : Result portable.fp.Fp := do
+  let b ← portable.fp.Fp.is_larger_root root
+  if b = larger
+  then ok root
+  else portable.fp.Fp.neg root
+
+/-- [silver_crypto_simd::portable::decompress::ordinary]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 75:0-86:1 -/
+def portable.decompress.ordinary
+  (bytes : Array Std.U8 48#usize) :
+  Result (Option ((Array Std.U64 6#usize) × Bool))
+  := do
+  let i ← Array.index_usize bytes 0#usize
+  let flags ← lift (i &&& 224#u8)
+  let i1 ← lift (flags &&& bls.encoding.FLAG_COMPRESSED)
+  if i1 = 0#u8
+  then ok none
+  else
+    let i2 ← lift (flags &&& bls.encoding.FLAG_INFINITY)
+    if i2 != 0#u8
+    then ok none
+    else
+      let s ← lift (Array.to_slice bytes)
+      let words ← bls.encoding.fp_words s
+      let i3 ← Array.index_usize words 5#usize
+      let i4 ← lift (i3 &&& 2305843009213693951#u64)
+      let words1 ← Array.update words 5#usize i4
+      let b ← bls.encoding.less_than_p words1
+      if b
+      then
+        let a := Array.repeat 6#usize 0#u64
+        let b1 ←
+          core.array.equality.PartialEqArray.eq core.cmp.PartialEqU64 words1 a
+        if b1
+        then ok none
+        else
+          let i5 ← lift (flags &&& bls.encoding.FLAG_LARGER_ROOT)
+          ok (some (words1, i5 != 0#u8))
+      else ok none
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 299:8-302:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.fp.Fp.pow_p_minus_3_over_4_loop0.body
+  (self : portable.fp.Fp) (table : Array portable.fp.Fp 16#usize)
+  (k : Std.Usize) :
+  Result (ControlFlow ((Array portable.fp.Fp 16#usize) × Std.Usize) (Array
+    portable.fp.Fp 16#usize))
+  := do
+  if k < 16#usize
+  then
+    let i ← k - 1#usize
+    let f ← Array.index_usize table i
+    let f1 ← portable.fp.Fp.mul f self
+    let a ← Array.update table k f1
+    let k1 ← k + 1#usize
+    ok (cont (a, k1))
+  else ok (done table)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 299:8-302:9
+    Visibility: public -/
+@[rust_loop]
+def portable.fp.Fp.pow_p_minus_3_over_4_loop0
+  (self : portable.fp.Fp) (table : Array portable.fp.Fp 16#usize)
+  (k : Std.Usize) :
+  Result (Array portable.fp.Fp 16#usize)
+  := do
+  loop
+    (fun (table1, k1) => portable.fp.Fp.pow_p_minus_3_over_4_loop0.body self
+      table1 k1)
+    (table, k)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 306:8-310:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.fp.Fp.pow_p_minus_3_over_4_loop1.body
+  (table : Array portable.fp.Fp 16#usize) (result : portable.fp.Fp)
+  (w : Std.Usize) :
+  Result (ControlFlow (portable.fp.Fp × Std.Usize) portable.fp.Fp)
+  := do
+  if w > 0#usize
+  then
+    let w1 ← w - 1#usize
+    let f ← portable.fp.Fp.square result
+    let f1 ← portable.fp.Fp.square f
+    let f2 ← portable.fp.Fp.square f1
+    let result1 ← portable.fp.Fp.square f2
+    let i ← Array.index_usize bls.constants.P_MINUS_3_OVER_4_WINDOWS w1
+    let i1 ← lift (UScalar.cast .Usize i)
+    let f3 ← Array.index_usize table i1
+    let result2 ← portable.fp.Fp.mul result1 f3
+    ok (cont (result2, w1))
+  else ok (done result)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 306:8-310:9
+    Visibility: public -/
+@[rust_loop]
+def portable.fp.Fp.pow_p_minus_3_over_4_loop1
+  (table : Array portable.fp.Fp 16#usize) (result : portable.fp.Fp)
+  (w : Std.Usize) :
+  Result portable.fp.Fp
+  := do
+  loop
+    (fun (result1, w1) => portable.fp.Fp.pow_p_minus_3_over_4_loop1.body table
+      result1 w1)
+    (result, w)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::pow_p_minus_3_over_4]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 296:4-312:5
+    Visibility: public -/
+def portable.fp.Fp.pow_p_minus_3_over_4
+  (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  let table := Array.repeat 16#usize portable.constants.ONE
+  let table1 ← portable.fp.Fp.pow_p_minus_3_over_4_loop0 self table 1#usize
+  let s ← lift (Array.to_slice bls.constants.P_MINUS_3_OVER_4_WINDOWS)
+  let windows := Slice.len s
+  let i ← windows - 1#usize
+  let i1 ← Array.index_usize bls.constants.P_MINUS_3_OVER_4_WINDOWS i
+  let i2 ← lift (UScalar.cast .Usize i1)
+  let result ← Array.index_usize table1 i2
+  portable.fp.Fp.pow_p_minus_3_over_4_loop1 table1 result i
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::sqrt]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 339:4-342:5
+    Visibility: public -/
+def portable.fp.Fp.sqrt
+  (self : portable.fp.Fp) : Result (Option portable.fp.Fp) := do
+  let f ← portable.fp.Fp.pow_p_minus_3_over_4 self
+  let root ← portable.fp.Fp.mul f self
+  let f1 ← portable.fp.Fp.square root
+  let b ← portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq f1 self
+  if b
+  then ok (some root)
+  else ok none
+
+/-- [silver_crypto_simd::portable::constants::R2]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 18:0-25:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.R2 : Array Std.U64 6#usize :=
+  Array.make 6#usize [
+    17644856173732828998#u64, 754043588434789617#u64, 10224657059481499349#u64,
+    7488229067341005760#u64, 11130996698012816685#u64, 1267921511277847466#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::from_plain]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 280:4-282:5
+    Visibility: public -/
+def portable.fp.Fp.from_plain
+  (words : Array Std.U64 6#usize) : Result portable.fp.Fp := do
+  portable.fp.Fp.mul words portable.constants.R2
+
+/-- [silver_crypto_simd::portable::decompress::extraordinary]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 93:4-95:5 -/
+@[rust_loop_body]
+def portable.decompress.extraordinary_loop.body
+  (bytes : Array Std.U8 48#usize) (i : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if i < bls.COMPRESSED_LEN
+  then
+    let i1 ← Array.index_usize bytes i
+    if i1 = 0#u8
+    then let i2 ← i + 1#usize
+         ok (cont i2)
+    else ok (done i)
+  else ok (done i)
+
+/-- [silver_crypto_simd::portable::decompress::extraordinary]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 93:4-95:5 -/
+@[rust_loop]
+def portable.decompress.extraordinary_loop
+  (bytes : Array Std.U8 48#usize) (i : Std.Usize) : Result Std.Usize := do
+  loop
+    (fun i1 => portable.decompress.extraordinary_loop.body bytes i1)
+    i
+
+/-- [silver_crypto_simd::portable::decompress::extraordinary]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 91:0-101:1 -/
+def portable.decompress.extraordinary
+  (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) := do
+  let i ← portable.decompress.extraordinary_loop bytes 1#usize
+  let i1 ← Array.index_usize bytes 0#usize
+  let i2 ← lift (bls.encoding.FLAG_COMPRESSED ||| bls.encoding.FLAG_INFINITY)
+  if i1 = i2
+  then
+    if i = bls.COMPRESSED_LEN
+    then
+      let bpa ← blst.blst_p1_affine.Insts.CoreDefaultDefault.default
+      ok (some bpa)
+    else ok none
+  else ok none
+
+/-- [silver_crypto_simd::portable::constants::FOUR]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 36:0-43:3
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.FOUR : portable.fp.Fp :=
+  Array.make 6#usize [
+    12260768510540316659#u64, 6038201419376623626#u64, 5156596810353639551#u64,
+    12813724723179037911#u64, 10288881524157229871#u64, 708830206584151678#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::decompress::uncompress_in_g1]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 22:0-30:1
+    Visibility: public -/
+def portable.decompress.uncompress_in_g1
+  (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) := do
+  let o ← portable.decompress.ordinary bytes
+  match o with
+  | none => portable.decompress.extraordinary bytes
+  | some p =>
+    let (words, larger) := p
+    let x ← portable.fp.Fp.from_plain words
+    let f ← portable.fp.Fp.square x
+    let f1 ← portable.fp.Fp.mul f x
+    let f2 ← portable.fp.Fp.add f1 portable.constants.FOUR
+    let o1 ← portable.fp.Fp.sqrt f2
+    let cf ←
+      core.option.Option.Insts.CoreOpsTry_traitTryTOptionInfallible.branch o1
+    match cf with
+    | core.ops.control_flow.ControlFlow.Continue val =>
+      let y ← portable.decompress.signed val larger
+      let b ← portable.fp.Fp.is_zero y
+      if b
+      then ok none
+      else
+        let b1 ← portable.g1.G1.in_g1 x y
+        if b1
+        then let bpa ← portable.decompress.point x y
+             ok (some bpa)
+        else ok none
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+        blst.blst_p1_affine residual
+
+/-- [silver_crypto_simd::portable::decompress::uncompress_pair_in_g1]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 49:0-71:1
+    Visibility: public -/
+def portable.decompress.uncompress_pair_in_g1
+  (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) :
+  Result (Array (Option blst.blst_p1_affine) 2#usize)
+  := do
+  let o ← portable.decompress.ordinary a
+  let o1 ← portable.decompress.ordinary b
+  match o with
+  | none =>
+    let o2 ← portable.decompress.uncompress_in_g1 a
+    let o3 ← portable.decompress.uncompress_in_g1 b
+    ok (Array.make 2#usize [ o2, o3 ] (by rfl))
+  | some p =>
+    match o1 with
+    | none =>
+      let o2 ← portable.decompress.uncompress_in_g1 a
+      let o3 ← portable.decompress.uncompress_in_g1 b
+      ok (Array.make 2#usize [ o2, o3 ] (by rfl))
+    | some p1 =>
+      let (words_a, larger_a) := p
+      let (words_b, larger_b) := p1
+      let x ←
+        portable.fp.Fp.mul_pair (Array.make 2#usize [ words_a, words_b ] (by rfl))
+          (Array.make 2#usize [ portable.constants.R2, portable.constants.R2 ] (by rfl))
+      let a1 ← portable.fp.Fp.mul_pair x x
+      let x_cubed ← portable.fp.Fp.mul_pair a1 x
+      let f ← Array.index_usize x_cubed 0#usize
+      let f1 ← portable.fp.Fp.add f portable.constants.FOUR
+      let f2 ← Array.index_usize x_cubed 1#usize
+      let f3 ← portable.fp.Fp.add f2 portable.constants.FOUR
+      let (roots, has_roots) ←
+        portable.fp.Fp.sqrt_pair (Array.make 2#usize [ f1, f3 ] (by rfl))
+      let f4 ← Array.index_usize roots 0#usize
+      let f5 ← portable.decompress.signed f4 larger_a
+      let f6 ← Array.index_usize roots 1#usize
+      let f7 ← portable.decompress.signed f6 larger_b
+      let b1 ← Array.index_usize has_roots 0#usize
+      let b2 ←
+        if b1
+        then
+          do
+          let f8 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 0#usize
+          let b3 ← portable.fp.Fp.is_zero f8
+          ok (¬ b3)
+        else ok false
+      let b3 ← Array.index_usize has_roots 1#usize
+      let b4 ←
+        if b3
+        then
+          do
+          let f8 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 1#usize
+          let b5 ← portable.fp.Fp.is_zero f8
+          ok (¬ b5)
+        else ok false
+      let b5 ← Array.index_usize (Array.make 2#usize [ b2, b4 ] (by rfl)) 0#usize
+      let members ←
+        if b5
+        then
+          do
+          let b6 ← Array.index_usize (Array.make 2#usize [ b2, b4 ] (by rfl)) 1#usize
+          if b6
+          then portable.g1_pair.G1Pair.in_g1 x (Array.make 2#usize [ f5, f7 ] (by rfl))
+          else
+            let b7 ←
+              if b5
+              then
+                do
+                let f8 ← Array.index_usize x 0#usize
+                let f9 ←
+                  Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 0#usize
+                portable.g1.G1.in_g1 f8 f9
+              else ok false
+            if b6
+            then
+              let f8 ← Array.index_usize x 1#usize
+              let f9 ←
+                Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 1#usize
+              let b8 ← portable.g1.G1.in_g1 f8 f9
+              ok (Array.make 2#usize [ b7, b8 ] (by rfl) : Array Bool 2#usize)
+            else ok (Array.make 2#usize [ b7, false ] (by rfl) : Array Bool 2#usize)
+        else
+          do
+          let b6 ←
+            if b5
+            then
+              do
+              let f8 ← Array.index_usize x 0#usize
+              let f9 ←
+                Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 0#usize
+              portable.g1.G1.in_g1 f8 f9
+            else ok false
+          let b7 ← Array.index_usize (Array.make 2#usize [ b2, b4 ] (by rfl)) 1#usize
+          if b7
+          then
+            let f8 ← Array.index_usize x 1#usize
+            let f9 ←
+              Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 1#usize
+            let b8 ← portable.g1.G1.in_g1 f8 f9
+            ok (Array.make 2#usize [ b6, b8 ] (by rfl) : Array Bool 2#usize)
+          else ok (Array.make 2#usize [ b6, false ] (by rfl) : Array Bool 2#usize)
+      let b6 ← Array.index_usize members 0#usize
+      let o2 ←
+        if b6
+        then
+          do
+          let f8 ← Array.index_usize x 0#usize
+          let f9 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 0#usize
+          let bpa ← portable.decompress.point f8 f9
+          ok (some bpa)
+        else ok none
+      let b7 ← Array.index_usize members 1#usize
+      if b7
+      then
+        let f8 ← Array.index_usize x 1#usize
+        let f9 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 1#usize
+        let bpa ← portable.decompress.point f8 f9
+        ok (Array.make 2#usize [ o2, some bpa ] (by rfl))
+      else ok (Array.make 2#usize [ o2, none ] (by rfl))
+
+/-- [silver_crypto_simd::portable::decompress::uncompress_all_in_g1]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 37:4-42:5
+    Visibility: public -/
+@[rust_loop_body]
+def portable.decompress.uncompress_all_in_g1_loop.body
+  (inputs : Slice (Array Std.U8 48#usize)) (pairs : Std.Usize)
+  (out : Slice (Option blst.blst_p1_affine)) (i : Std.Usize) :
+  Result (ControlFlow ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
+    ((Slice (Option blst.blst_p1_affine)) × Std.Usize))
+  := do
+  if i < pairs
+  then
+    let a ← Slice.index_usize inputs i
+    let i1 ← i + 1#usize
+    let a1 ← Slice.index_usize inputs i1
+    let two ← portable.decompress.uncompress_pair_in_g1 a a1
+    let o ← Array.index_usize two 0#usize
+    let out1 ← Slice.update out i o
+    let o1 ← Array.index_usize two 1#usize
+    let s ← Slice.update out1 i1 o1
+    let i2 ← i + 2#usize
+    ok (cont (s, i2))
+  else ok (done (out, i))
+
+/-- [silver_crypto_simd::portable::decompress::uncompress_all_in_g1]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 37:4-42:5
+    Visibility: public -/
+@[rust_loop]
+def portable.decompress.uncompress_all_in_g1_loop
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) (pairs : Std.Usize)
+  (i : Std.Usize) :
+  Result ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
+  := do
+  loop
+    (fun (out1, i1) => portable.decompress.uncompress_all_in_g1_loop.body
+      inputs pairs out1 i1)
+    (out, i)
+
+/-- [silver_crypto_simd::portable::decompress::uncompress_all_in_g1]:
+    Source: 'crates/crypto_simd/src/portable/decompress.rs', lines 33:0-46:1
+    Visibility: public -/
+def portable.decompress.uncompress_all_in_g1
+  (inputs : Slice (Array Std.U8 48#usize))
+  (out : Slice (Option blst.blst_p1_affine)) :
+  Result (Slice (Option blst.blst_p1_affine))
+  := do
+  let i := Slice.len out
+  let i1 := Slice.len inputs
+  massert (i = i1)
+  let i2 := Slice.len inputs
+  let i3 ← i2 / 2#usize
+  let pairs ← i3 * 2#usize
+  let (out1, i4) ←
+    portable.decompress.uncompress_all_in_g1_loop inputs out pairs 0#usize
+  let i5 := Slice.len inputs
+  if i4 < i5
+  then
+    let a ← Slice.index_usize inputs i4
+    let o ← portable.decompress.uncompress_in_g1 a
+    Slice.update out1 i4 o
+  else ok out1
+
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 109:4-118:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 127:4-136:5 -/
 @[rust_loop_body]
 def bls.decompress_g1_chunk_loop.body
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
@@ -3446,7 +6977,7 @@ def bls.decompress_g1_chunk_loop.body
       then
         do
         let a ← Array.index_usize chunk lane
-        let o2 ← bls.uncompress_in_g1_blst a
+        let o2 ← portable.decompress.uncompress_in_g1 a
         ok (iter1, o2)
       else
         do
@@ -3462,7 +6993,7 @@ def bls.decompress_g1_chunk_loop.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 109:4-118:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 127:4-136:5 -/
 @[rust_loop]
 def bls.decompress_g1_chunk_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -3476,7 +7007,7 @@ def bls.decompress_g1_chunk_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 106:0-119:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 124:0-137:1 -/
 def bls.decompress_g1_chunk
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
   (out : Slice (Option blst.blst_p1_affine)) :
@@ -3486,135 +7017,55 @@ def bls.decompress_g1_chunk
   bls.decompress_g1_chunk_loop { start := 0#usize, «end» := bls.LANES } chunk
     out batch
 
-/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 93:12-95:13
-    Visibility: public -/
-@[rust_loop_body]
-def bls.uncompress_in_g1_loop0_loop0.body
-  (inputs : Slice (Array Std.U8 48#usize)) (start : Std.Usize)
-  (iter : core.ops.range.Range Std.Usize)
-  (out : Slice (Option blst.blst_p1_affine)) :
-  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Slice (Option
-    blst.blst_p1_affine))) (Slice (Option blst.blst_p1_affine)))
-  := do
-  let (o, iter1) ←
-    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
-  match o with
-  | none => ok (done out)
-  | some lane =>
-    let i ← start + lane
-    let a ← Slice.index_usize inputs i
-    let o1 ← bls.uncompress_in_g1_blst a
-    let s ← Slice.update out i o1
-    ok (cont (iter1, s))
-
-/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 93:12-95:13
-    Visibility: public -/
-@[rust_loop]
-def bls.uncompress_in_g1_loop0_loop0
-  (iter : core.ops.range.Range Std.Usize)
-  (inputs : Slice (Array Std.U8 48#usize))
-  (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
-  Result (Slice (Option blst.blst_p1_affine))
-  := do
-  loop
-    (fun (iter1, out1) => bls.uncompress_in_g1_loop0_loop0.body inputs start
-      iter1 out1)
-    (iter, out)
-
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 87:4-98:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 107:4-112:5
     Visibility: public -/
 @[rust_loop_body]
-def bls.uncompress_in_g1_loop0.body
+def bls.uncompress_in_g1_loop.body
   (inputs : Slice (Array Std.U8 48#usize)) («full» : Std.Usize)
-  (out : Slice (Option blst.blst_p1_affine)) (simd : Bool) (start : Std.Usize)
-  :
-  Result (ControlFlow ((Slice (Option blst.blst_p1_affine)) × Bool ×
-    Std.Usize) ((Slice (Option blst.blst_p1_affine)) × Std.Usize))
-  := do
-  if start < «full»
-  then
-    if simd
-    then
-      let a := Array.repeat 48#usize 0#u8
-      let chunk := Array.repeat 8#usize a
-      let (s, to_slice_mut_back) ← lift (Array.to_slice_mut chunk)
-      let i ← start + bls.LANES
-      let s1 ←
-        core.slice.index.Slice.index
-          (core.slice.index.SliceIndexRangeUsizeSlice (Array Std.U8 48#usize))
-          inputs { start, «end» := i }
-      let s2 ←
-        core.slice.Slice.copy_from_slice (Array.Insts.CoreMarkerCopy 48#usize
-          core.marker.CopyU8) s s1
-      let chunk1 := to_slice_mut_back s2
-      let (s3, index_mut_back) ←
-        core.slice.index.Slice.index_mut
-          (core.slice.index.SliceIndexRangeUsizeSlice (Option
-          blst.blst_p1_affine)) out { start, «end» := i }
-      let s4 ← bls.decompress_g1_chunk chunk1 s3
-      let out1 := index_mut_back s4
-      ok (cont (out1, true, i))
-    else
-      let out1 ←
-        bls.uncompress_in_g1_loop0_loop0
-          { start := 0#usize, «end» := bls.LANES } inputs out start
-      let start1 ← start + bls.LANES
-      ok (cont (out1, false, start1))
-  else ok (done (out, start))
-
-/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 87:4-98:5
-    Visibility: public -/
-@[rust_loop]
-def bls.uncompress_in_g1_loop0
-  (inputs : Slice (Array Std.U8 48#usize))
-  (out : Slice (Option blst.blst_p1_affine)) (simd : Bool) («full» : Std.Usize)
-  (start : Std.Usize) :
-  Result ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
-  := do
-  loop
-    (fun (out1, simd1, start1) => bls.uncompress_in_g1_loop0.body inputs «full»
-      out1 simd1 start1)
-    (out, simd, start)
-
-/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 99:4-102:5
-    Visibility: public -/
-@[rust_loop_body]
-def bls.uncompress_in_g1_loop1.body
-  (inputs : Slice (Array Std.U8 48#usize))
   (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
   Result (ControlFlow ((Slice (Option blst.blst_p1_affine)) × Std.Usize)
     (Slice (Option blst.blst_p1_affine)))
   := do
-  let i := Slice.len inputs
-  if start < i
+  if start < «full»
   then
-    let a ← Slice.index_usize inputs start
-    let o ← bls.uncompress_in_g1_blst a
-    let s ← Slice.update out start o
-    let start1 ← start + 1#usize
-    ok (cont (s, start1))
+    let a := Array.repeat 48#usize 0#u8
+    let chunk := Array.repeat 8#usize a
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut chunk)
+    let i ← start + bls.LANES
+    let s1 ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        (Array Std.U8 48#usize)) inputs { start, «end» := i }
+    let s2 ←
+      core.slice.Slice.copy_from_slice (Array.Insts.CoreMarkerCopy 48#usize
+        core.marker.CopyU8) s s1
+    let chunk1 := to_slice_mut_back s2
+    let (s3, index_mut_back) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeUsizeSlice (Option
+        blst.blst_p1_affine)) out { start, «end» := i }
+    let s4 ← bls.decompress_g1_chunk chunk1 s3
+    let out1 := index_mut_back s4
+    ok (cont (out1, i))
   else ok (done out)
 
-/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 99:4-102:5
+/-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 107:4-112:5
     Visibility: public -/
 @[rust_loop]
-def bls.uncompress_in_g1_loop1
+def bls.uncompress_in_g1_loop
   (inputs : Slice (Array Std.U8 48#usize))
-  (out : Slice (Option blst.blst_p1_affine)) (start : Std.Usize) :
+  (out : Slice (Option blst.blst_p1_affine)) («full» : Std.Usize)
+  (start : Std.Usize) :
   Result (Slice (Option blst.blst_p1_affine))
   := do
   loop
-    (fun (out1, start1) => bls.uncompress_in_g1_loop1.body inputs out1 start1)
+    (fun (out1, start1) => bls.uncompress_in_g1_loop.body inputs «full» out1
+      start1)
     (out, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 82:0-103:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 99:0-114:1
     Visibility: public -/
 def bls.uncompress_in_g1
   (inputs : Slice (Array Std.U8 48#usize))
@@ -3624,15 +7075,28 @@ def bls.uncompress_in_g1
   let i := Slice.len out
   let i1 := Slice.len inputs
   massert (i = i1)
-  let simd ← ifma_available
-  let i2 := Slice.len inputs
-  let i3 ← i2 / bls.LANES
-  let «full» ← i3 * bls.LANES
-  let (out1, start) ← bls.uncompress_in_g1_loop0 inputs out simd «full» 0#usize
-  bls.uncompress_in_g1_loop1 inputs out1 start
+  let b ← ifma_available
+  if b
+  then
+    let i2 := Slice.len inputs
+    let i3 ← i2 / bls.LANES
+    let «full» ← i3 * bls.LANES
+    let out1 ← bls.uncompress_in_g1_loop inputs out «full» 0#usize
+    let i4 := Slice.len inputs
+    let s ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        (Array Std.U8 48#usize)) inputs { start := «full», «end» := i4 }
+    let i5 := Slice.len inputs
+    let (s1, index_mut_back) ←
+      core.slice.index.Slice.index_mut
+        (core.slice.index.SliceIndexRangeUsizeSlice (Option
+        blst.blst_p1_affine)) out1 { start := «full», «end» := i5 }
+    let s2 ← portable.decompress.uncompress_all_in_g1 s s1
+    ok (index_mut_back s2)
+  else portable.decompress.uncompress_all_in_g1 inputs out
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 163:4-165:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 174:4-176:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop0.body
   (chunk : Slice (Array Std.U8 96#usize))
@@ -3657,7 +7121,7 @@ def bls.decompress_g2_chunk_loop0.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 163:4-165:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 174:4-176:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -3671,7 +7135,7 @@ def bls.decompress_g2_chunk_loop0
     (iter, lanes)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 168:4-177:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 179:4-188:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop1.body
   (chunk : Slice (Array Std.U8 96#usize)) (batch : bls.decompress_g2.Batch)
@@ -3708,7 +7172,7 @@ def bls.decompress_g2_chunk_loop1.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 168:4-177:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 179:4-188:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -3723,7 +7187,7 @@ def bls.decompress_g2_chunk_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 161:0-178:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 172:0-189:1 -/
 def bls.decompress_g2_chunk
   (chunk : Slice (Array Std.U8 96#usize))
   (out : Slice (Option blst.blst_p2_affine)) :
@@ -3740,7 +7204,7 @@ def bls.decompress_g2_chunk
     batch
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 151:12-153:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 162:12-164:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop0.body
@@ -3762,7 +7226,7 @@ def bls.uncompress_in_g2_loop0_loop0.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 151:12-153:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 162:12-164:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop0
@@ -3777,7 +7241,7 @@ def bls.uncompress_in_g2_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 151:12-153:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 162:12-164:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop1.body
@@ -3799,7 +7263,7 @@ def bls.uncompress_in_g2_loop0_loop1.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 151:12-153:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 162:12-164:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop1
@@ -3814,7 +7278,7 @@ def bls.uncompress_in_g2_loop0_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 145:4-156:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 156:4-167:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0.body
@@ -3863,7 +7327,7 @@ def bls.uncompress_in_g2_loop0.body
   else ok (done out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 145:4-156:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 156:4-167:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0
@@ -3878,7 +7342,7 @@ def bls.uncompress_in_g2_loop0
     (out, simd, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 141:0-157:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 152:0-168:1
     Visibility: public -/
 def bls.uncompress_in_g2
   (inputs : Slice (Array Std.U8 96#usize))
@@ -3892,13 +7356,13 @@ def bls.uncompress_in_g2
   bls.uncompress_in_g2_loop0 inputs out simd 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::NARROWEST_WINDOW_BITS]
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 13:0-13:43
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 14:0-14:43
     Visibility: public -/
 @[global_simps, irreducible]
 def bls.msm8.buckets.NARROWEST_WINDOW_BITS : Std.Usize := 4#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{core::default::Default for silver_crypto_simd::bls::msm8::buckets::Buckets}::default]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 18:9-18:16
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 19:9-19:16
     Visibility: public -/
 def bls.msm8.buckets.Buckets.Insts.CoreDefaultDefault.default
   : Result bls.msm8.buckets.Buckets := do
@@ -3913,22 +7377,16 @@ def bls.msm8.buckets.Buckets.Insts.CoreDefaultDefault.default
     }
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::windows]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 35:4-37:5
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 36:4-38:5
     Visibility: public -/
 def bls.msm8.buckets.Buckets.impl.windows
   (self : bls.msm8.buckets.Buckets) : Result Std.Usize := do
   ok self.windows
 
-/-- [silver_crypto_simd::bls::msm8::pairs::NEGATED]
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 10:0-10:33
-    Visibility: public -/
-@[global_simps, irreducible]
-def bls.msm8.pairs.NEGATED : Result Std.U32 := 1#u32 <<< 31#i32
-
-/-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::SignedDigits}::unsigned_window]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 270:4-275:5 -/
-def bls.msm8.buckets.SignedDigits.unsigned_window
-  (self : bls.msm8.buckets.SignedDigits) : Result Std.U64 := do
+/-- [silver_crypto_simd::bls::signed_digits::{silver_crypto_simd::bls::signed_digits::SignedDigits}::unsigned_window]:
+    Source: 'crates/crypto_simd/src/bls/signed_digits.rs', lines 28:4-33:5 -/
+def bls.signed_digits.SignedDigits.unsigned_window
+  (self : bls.signed_digits.SignedDigits) : Result Std.U64 := do
   let word ← self.bit / 64#usize
   let i ← word + 1#usize
   let high ← if i < 4#usize
@@ -3946,13 +7404,13 @@ def bls.msm8.buckets.SignedDigits.unsigned_window
   let i9 ← i8 - 1#u64
   ok (i7 &&& i9)
 
-/-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::SignedDigits}::next_digit]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 259:4-266:5 -/
-def bls.msm8.buckets.SignedDigits.next_digit
-  (self : bls.msm8.buckets.SignedDigits) :
-  Result ((Std.Usize × Bool) × bls.msm8.buckets.SignedDigits)
+/-- [silver_crypto_simd::bls::signed_digits::{silver_crypto_simd::bls::signed_digits::SignedDigits}::next_digit]:
+    Source: 'crates/crypto_simd/src/bls/signed_digits.rs', lines 17:4-24:5 -/
+def bls.signed_digits.SignedDigits.next_digit
+  (self : bls.signed_digits.SignedDigits) :
+  Result ((Std.Usize × Bool) × bls.signed_digits.SignedDigits)
   := do
-  let i ← bls.msm8.buckets.SignedDigits.unsigned_window self
+  let i ← bls.signed_digits.SignedDigits.unsigned_window self
   let value ← i + self.carry
   let i1 ← self.window_bits - 1#usize
   let i2 ← 1#u64 <<< i1
@@ -3969,16 +7427,22 @@ def bls.msm8.buckets.SignedDigits.next_digit
   let i5 ← lift (UScalar.cast .Usize magnitude)
   ok ((i5, negated), { self with bit := i4, carry := i3 })
 
-/-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::SignedDigits}::new]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 254:4-256:5 -/
-def bls.msm8.buckets.SignedDigits.new
+/-- [silver_crypto_simd::bls::signed_digits::{silver_crypto_simd::bls::signed_digits::SignedDigits}::new]:
+    Source: 'crates/crypto_simd/src/bls/signed_digits.rs', lines 12:4-14:5 -/
+def bls.signed_digits.SignedDigits.new
   (scalar : Array Std.U64 4#usize) (window_bits : Std.Usize) :
-  Result bls.msm8.buckets.SignedDigits
+  Result bls.signed_digits.SignedDigits
   := do
   ok { words := scalar, window_bits, bit := 0#usize, carry := 0#u64 }
 
+/-- [silver_crypto_simd::bls::msm8::pairs::NEGATED]
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 6:0-6:33
+    Visibility: public -/
+@[global_simps, irreducible]
+def bls.msm8.pairs.NEGATED : Result Std.U32 := 1#u32 <<< 31#i32
+
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::list]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 130:4-132:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 131:4-133:5 -/
 def bls.msm8.buckets.Buckets.list
   (self : bls.msm8.buckets.Buckets) (window : Std.Usize) (bucket : Std.Usize) :
   Result Std.Usize
@@ -3989,7 +7453,7 @@ def bls.msm8.buckets.Buckets.list
   i2 - 1#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::place]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 143:4-149:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 144:4-150:5 -/
 def bls.msm8.buckets.Buckets.place
   (self : bls.msm8.buckets.Buckets) (window : Std.Usize)
   (magnitude : Std.Usize) (reference : Std.U32) :
@@ -4019,7 +7483,7 @@ def bls.msm8.buckets.Buckets.place
   else ok self
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::count]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 135:4-140:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 136:4-141:5 -/
 def bls.msm8.buckets.Buckets.count
   (self : bls.msm8.buckets.Buckets) (window : Std.Usize)
   (magnitude : Std.Usize) :
@@ -4037,20 +7501,20 @@ def bls.msm8.buckets.Buckets.count
   else ok self
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 61:12-65:13
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 62:12-66:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.fill_loop0_loop0.body
-  (self : bls.msm8.buckets.Buckets) (digits : bls.msm8.buckets.SignedDigits)
+  (self : bls.msm8.buckets.Buckets) (digits : bls.signed_digits.SignedDigits)
   (window : Std.Usize) :
   Result (ControlFlow (bls.msm8.buckets.Buckets ×
-    bls.msm8.buckets.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
+    bls.signed_digits.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
     (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
     Std.U32)))
   := do
   if window < self.windows
   then
-    let (p, digits1) ← bls.msm8.buckets.SignedDigits.next_digit digits
+    let (p, digits1) ← bls.signed_digits.SignedDigits.next_digit digits
     let (magnitude, _) := p
     let self1 ← bls.msm8.buckets.Buckets.count self window magnitude
     let window1 ← window + 1#usize
@@ -4060,11 +7524,11 @@ def bls.msm8.buckets.Buckets.fill_loop0_loop0.body
       self.lens))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 61:12-65:13
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 62:12-66:13
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.fill_loop0_loop0
-  (self : bls.msm8.buckets.Buckets) (digits : bls.msm8.buckets.SignedDigits)
+  (self : bls.msm8.buckets.Buckets) (digits : bls.signed_digits.SignedDigits)
   (window : Std.Usize) :
   Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
     Std.U32) × (alloc.vec.Vec Std.U32))
@@ -4075,7 +7539,7 @@ def bls.msm8.buckets.Buckets.fill_loop0_loop0
     (self, digits, window)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 58:8-67:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 59:8-68:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.fill_loop0.body
@@ -4091,7 +7555,7 @@ def bls.msm8.buckets.Buckets.fill_loop0.body
   if i1 < i2
   then
     let a ← Slice.index_usize scalars i1
-    let digits ← bls.msm8.buckets.SignedDigits.new a window_bits
+    let digits ← bls.signed_digits.SignedDigits.new a window_bits
     let (i3, i4, v3, v4, v5) ←
       bls.msm8.buckets.Buckets.fill_loop0_loop0
         {
@@ -4106,7 +7570,7 @@ def bls.msm8.buckets.Buckets.fill_loop0.body
   else ok (done (window_bits1, i, v, v1, v2))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 58:8-67:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 59:8-68:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.fill_loop0
@@ -4124,7 +7588,7 @@ def bls.msm8.buckets.Buckets.fill_loop0
     (window_bits, i, v, v1, v2, i1)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 72:8-77:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 73:8-78:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.fill_loop1.body
@@ -4150,7 +7614,7 @@ def bls.msm8.buckets.Buckets.fill_loop1.body
   else ok (done (v, v1, total))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 72:8-77:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 73:8-78:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.fill_loop1
@@ -4164,20 +7628,20 @@ def bls.msm8.buckets.Buckets.fill_loop1
     (v, v1, total, list)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop body 4:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 85:12-90:13
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 86:12-91:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.fill_loop2_loop0.body
   (i : Std.Usize) (self : bls.msm8.buckets.Buckets)
-  (digits : bls.msm8.buckets.SignedDigits) (window : Std.Usize) :
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
   Result (ControlFlow (bls.msm8.buckets.Buckets ×
-    bls.msm8.buckets.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
+    bls.signed_digits.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
     (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
     Std.U32)))
   := do
   if window < self.windows
   then
-    let (p, digits1) ← bls.msm8.buckets.SignedDigits.next_digit digits
+    let (p, digits1) ← bls.signed_digits.SignedDigits.next_digit digits
     let (magnitude, negated) := p
     let i1 ← lift (UScalar.cast_fromBool .U32 negated)
     let i2 ← bls.msm8.pairs.NEGATED
@@ -4192,12 +7656,12 @@ def bls.msm8.buckets.Buckets.fill_loop2_loop0.body
       self.lens))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop 4:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 85:12-90:13
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 86:12-91:13
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.fill_loop2_loop0
   (self : bls.msm8.buckets.Buckets) (i : Std.Usize)
-  (digits : bls.msm8.buckets.SignedDigits) (window : Std.Usize) :
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
   Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
     Std.U32) × (alloc.vec.Vec Std.U32))
   := do
@@ -4207,7 +7671,7 @@ def bls.msm8.buckets.Buckets.fill_loop2_loop0
     (self, digits, window)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop body 3:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 82:8-92:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 83:8-93:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.fill_loop2.body
@@ -4223,7 +7687,7 @@ def bls.msm8.buckets.Buckets.fill_loop2.body
   if i2 < i3
   then
     let a ← Slice.index_usize scalars i2
-    let digits ← bls.msm8.buckets.SignedDigits.new a window_bits
+    let digits ← bls.signed_digits.SignedDigits.new a window_bits
     let (i4, i5, v3, v4, v5) ←
       bls.msm8.buckets.Buckets.fill_loop2_loop0
         { window_bits := i, windows := i1, refs := v, starts := v1, lens := v2
@@ -4233,7 +7697,7 @@ def bls.msm8.buckets.Buckets.fill_loop2.body
   else ok (done (i, i1, v, v1, v2))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]: loop 3:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 82:8-92:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 83:8-93:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.fill_loop2
@@ -4250,7 +7714,7 @@ def bls.msm8.buckets.Buckets.fill_loop2
     (i, i1, v, v1, v2, i2)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::fill]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 43:4-93:5
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 44:4-94:5
     Visibility: public -/
 def bls.msm8.buckets.Buckets.fill
   (self : bls.msm8.buckets.Buckets) (scalars : Slice (Array Std.U64 4#usize))
@@ -4290,7 +7754,7 @@ def bls.msm8.buckets.Buckets.fill
     }
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::clear]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 31:4-35:5
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 27:4-31:5
     Visibility: public -/
 def bls.msm8.pairs.BatchedAdds.clear
   (self : bls.msm8.pairs.BatchedAdds) : Result bls.msm8.pairs.BatchedAdds := do
@@ -4300,7 +7764,7 @@ def bls.msm8.pairs.BatchedAdds.clear
   ok { self with a := v, b := v1, out := v2 }
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::push]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 37:4-41:5
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 33:4-37:5
     Visibility: public -/
 def bls.msm8.pairs.BatchedAdds.push
   (self : bls.msm8.pairs.BatchedAdds) (a : Std.U32) (b : Std.U32)
@@ -4313,7 +7777,7 @@ def bls.msm8.pairs.BatchedAdds.push
   ok { self with a := v, b := v1, out := v2 }
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::capacity]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 35:4-37:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 33:4-35:5
     Visibility: public -/
 def bls.msm8.store.PointStore.capacity
   (self : bls.msm8.store.PointStore) : Result Std.Usize := do
@@ -4321,7 +7785,7 @@ def bls.msm8.store.PointStore.capacity
   i / 2#usize
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::allocate]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 49:4-53:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 47:4-51:5
     Visibility: public -/
 def bls.msm8.store.PointStore.allocate
   (self : bls.msm8.store.PointStore) :
@@ -4335,7 +7799,7 @@ def bls.msm8.store.PointStore.allocate
   ok (i3, { self with len := i1 })
 
 /-- [silver_crypto_simd::bls::msm8::buckets::sum_slot]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 238:0-241:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 239:0-242:1 -/
 def bls.msm8.buckets.sum_slot
   (first : Std.U32) (store : bls.msm8.store.PointStore) (originals : Std.Usize)
   :
@@ -4350,7 +7814,7 @@ def bls.msm8.buckets.sum_slot
   else ok (index, store)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_pairs]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 161:8-167:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 162:8-168:9 -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.queue_pairs_loop.body
   (originals : Std.Usize) (start : Std.Usize) (len : Std.Usize)
@@ -4382,7 +7846,7 @@ def bls.msm8.buckets.Buckets.queue_pairs_loop.body
   else ok (done (v, adds, store))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_pairs]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 161:8-167:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 162:8-168:9 -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.queue_pairs_loop
   (v : alloc.vec.Vec Std.U32) (adds : bls.msm8.pairs.BatchedAdds)
@@ -4398,7 +7862,7 @@ def bls.msm8.buckets.Buckets.queue_pairs_loop
     (v, adds, store, at1)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_pairs]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 151:4-172:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 152:4-173:5 -/
 def bls.msm8.buckets.Buckets.queue_pairs
   (self : bls.msm8.buckets.Buckets) (list : Std.Usize)
   (adds : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
@@ -4444,7 +7908,7 @@ def bls.msm8.buckets.Buckets.queue_pairs
   ok ({ self with refs := v1, lens := v2 }, adds1, store1)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_round]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 109:8-112:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 110:8-113:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.queue_round_loop.body
@@ -4468,7 +7932,7 @@ def bls.msm8.buckets.Buckets.queue_round_loop.body
       self.lens, adds, store))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_round]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 109:8-112:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 110:8-113:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.queue_round_loop
@@ -4486,7 +7950,7 @@ def bls.msm8.buckets.Buckets.queue_round_loop
     (self, adds, store, list)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::queue_round]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 101:4-113:5
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 102:4-114:5
     Visibility: public -/
 def bls.msm8.buckets.Buckets.queue_round
   (self : bls.msm8.buckets.Buckets) (adds : bls.msm8.pairs.BatchedAdds)
@@ -4502,7 +7966,7 @@ def bls.msm8.buckets.Buckets.queue_round
     adds2, store1)
 
 /-- [silver_crypto_simd::bls::msm8::store::row_vector]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 149:0-160:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 147:0-158:1 -/
 def bls.msm8.store.row_vector
   (row : Array Std.U64 8#usize) : Result core.core_arch.x86.__m512i := do
   let i ← Array.index_usize row 7#usize
@@ -4524,7 +7988,7 @@ def bls.msm8.store.row_vector
   core.core_arch.x86.avx512f._mm512_set_epi64 i1 i3 i5 i7 i9 i11 i13 i15
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_points]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 99:8-104:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 97:8-102:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.store.PointStore.load_points_loop.body
@@ -4536,7 +8000,7 @@ def bls.msm8.store.PointStore.load_points_loop.body
     core.core_arch.x86.__m512i 8#usize) × (Array core.core_arch.x86.__m512i
     8#usize)))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
     let i ← Array.index_usize indices lane
     let i1 ← lift (UScalar.cast .Usize i)
@@ -4557,7 +8021,7 @@ def bls.msm8.store.PointStore.load_points_loop.body
   else ok (done (xs, ys))
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_points]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 99:8-104:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 97:8-102:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.store.PointStore.load_points_loop
@@ -4573,7 +8037,7 @@ def bls.msm8.store.PointStore.load_points_loop
     (xs, ys, lane)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_points]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 95:4-106:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 93:4-104:5
     Visibility: public -/
 def bls.msm8.store.PointStore.load_points
   (self : bls.msm8.store.PointStore) (indices : Array Std.U32 8#usize) :
@@ -4589,7 +8053,7 @@ def bls.msm8.store.PointStore.load_points
   ok (a, a1)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_signed]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 111:4-114:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 109:4-112:5
     Visibility: public -/
 def bls.msm8.store.PointStore.load_signed
   (self : bls.msm8.store.PointStore) (indices : Array Std.U32 8#usize)
@@ -4602,7 +8066,7 @@ def bls.msm8.store.PointStore.load_signed
   ok (x, f1)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::len]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 232:4-234:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 233:4-235:5 -/
 def bls.msm8.buckets.Buckets.len
   (self : bls.msm8.buckets.Buckets) (window : Std.Usize) (bucket : Std.Usize) :
   Result Std.Usize
@@ -4617,7 +8081,7 @@ def bls.msm8.buckets.Buckets.len
   else ok 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::entries]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 215:8-227:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 216:8-228:9 -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.entries_loop.body
   (group : Std.Usize) (bucket : Std.Usize) (at1 : Std.Usize)
@@ -4627,9 +8091,9 @@ def bls.msm8.buckets.Buckets.entries_loop.body
     Std.U8 × Std.U8 × Std.Usize) ((Array Std.U32 8#usize) × Std.U8 ×
     Std.U8))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
-    let i2 ← group * bls.fp8.LANES
+    let i2 ← group * bls.limbs.LANES
     let window ← i2 + lane
     let i3 ← bls.msm8.buckets.Buckets.len self window bucket
     let (self1, here, reference) ←
@@ -4663,7 +8127,7 @@ def bls.msm8.buckets.Buckets.entries_loop.body
   else ok (done (a, i, i1))
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::entries]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 215:8-227:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 216:8-228:9 -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.entries_loop
   (self : bls.msm8.buckets.Buckets) (group : Std.Usize) (bucket : Std.Usize)
@@ -4678,7 +8142,7 @@ def bls.msm8.buckets.Buckets.entries_loop
     (self, a, i, i1, lane)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::entries]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 212:4-229:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 213:4-230:5 -/
 def bls.msm8.buckets.Buckets.entries
   (self : bls.msm8.buckets.Buckets) (group : Std.Usize) (bucket : Std.Usize)
   (at1 : Std.Usize) :
@@ -4691,16 +8155,16 @@ def bls.msm8.buckets.Buckets.entries
   ok { indices := a1, present := i, negated := i1 }
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::longest]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 202:8-206:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 203:8-207:9 -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.longest_loop.body
   (self : bls.msm8.buckets.Buckets) (group : Std.Usize) (bucket : Std.Usize)
   (longest : Std.Usize) (lane : Std.Usize) :
   Result (ControlFlow (Std.Usize × Std.Usize) Std.Usize)
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
-    let i ← group * bls.fp8.LANES
+    let i ← group * bls.limbs.LANES
     let i1 ← i + lane
     let len ← bls.msm8.buckets.Buckets.len self i1 bucket
     let longest1 ← if len > longest
@@ -4711,7 +8175,7 @@ def bls.msm8.buckets.Buckets.longest_loop.body
   else ok (done longest)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::longest]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 202:8-206:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 203:8-207:9 -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.longest_loop
   (self : bls.msm8.buckets.Buckets) (group : Std.Usize) (bucket : Std.Usize)
@@ -4724,7 +8188,7 @@ def bls.msm8.buckets.Buckets.longest_loop
     (longest, lane)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::longest]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 199:4-208:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 200:4-209:5 -/
 @[reducible]
 def bls.msm8.buckets.Buckets.longest
   (self : bls.msm8.buckets.Buckets) (group : Std.Usize) (bucket : Std.Usize) :
@@ -4733,7 +8197,7 @@ def bls.msm8.buckets.Buckets.longest
   bls.msm8.buckets.Buckets.longest_loop self group bucket 0#usize 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::window_sums]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 185:12-191:13 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 186:12-192:13 -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.window_sums_loop0_loop0.body
   (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
@@ -4758,7 +8222,7 @@ def bls.msm8.buckets.Buckets.window_sums_loop0_loop0.body
   else ok (done running)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::window_sums]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 185:12-191:13 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 186:12-192:13 -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.window_sums_loop0_loop0
   (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
@@ -4775,7 +8239,7 @@ def bls.msm8.buckets.Buckets.window_sums_loop0_loop0
     (running, at1)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::window_sums]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 182:8-194:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 183:8-195:9 -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.window_sums_loop0.body
   (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
@@ -4800,7 +8264,7 @@ def bls.msm8.buckets.Buckets.window_sums_loop0.body
   else ok (done sum)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::window_sums]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 182:8-194:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 183:8-195:9 -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.window_sums_loop0
   (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
@@ -4816,7 +8280,7 @@ def bls.msm8.buckets.Buckets.window_sums_loop0
     (running, sum, bucket)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::window_sums]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 178:4-196:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 179:4-197:5 -/
 def bls.msm8.buckets.Buckets.window_sums
   (self : bls.msm8.buckets.Buckets) (store : bls.msm8.store.PointStore)
   (group : Std.Usize) :
@@ -4829,7 +8293,7 @@ def bls.msm8.buckets.Buckets.window_sums
     self.refs self.starts self.lens store group running running bucket
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::sum]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 122:8-126:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 123:8-127:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.buckets.Buckets.sum_loop.body
@@ -4842,7 +8306,7 @@ def bls.msm8.buckets.Buckets.sum_loop.body
   if group > 0#usize
   then
     let group1 ← group - 1#usize
-    let i2 ← bls.fp8.LANES * i
+    let i2 ← bls.limbs.LANES * i
     let shifted ← bls.g1x8.G1x8.times_two_pow total i2
     let gx ←
       bls.msm8.buckets.Buckets.window_sums
@@ -4853,7 +8317,7 @@ def bls.msm8.buckets.Buckets.sum_loop.body
   else ok (done total)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::sum]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 122:8-126:9
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 123:8-127:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.buckets.Buckets.sum_loop
@@ -4869,14 +8333,14 @@ def bls.msm8.buckets.Buckets.sum_loop
     (group, total)
 
 /-- [silver_crypto_simd::bls::msm8::buckets::{silver_crypto_simd::bls::msm8::buckets::Buckets}::sum]:
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 118:4-128:5
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 119:4-129:5
     Visibility: public -/
 def bls.msm8.buckets.Buckets.sum
   (self : bls.msm8.buckets.Buckets) (store : bls.msm8.store.PointStore) :
   Result bls.g1x8.G1x8
   := do
   let i ← self.windows - 1#usize
-  let i1 ← i / bls.fp8.LANES
+  let i1 ← i / bls.limbs.LANES
   let groups ← i1 + 1#usize
   let group ← groups - 1#usize
   let total ← bls.msm8.buckets.Buckets.window_sums self store group
@@ -4885,405 +8349,25 @@ def bls.msm8.buckets.Buckets.sum
       self.starts self.lens store group total
   bls.g1x8.G1x8.sum_lanes_shifted total1 self.window_bits
 
-/-- [silver_crypto_simd::bls::msm8::glv::LAMBDA]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 15:0-15:62 -/
-@[global_simps, irreducible]
-def bls.msm8.glv.LAMBDA : Array Std.U64 2#usize :=
-  Array.make 2#usize [ 4294967295#u64, 12413508272118670338#u64 ] (by rfl)
-
-/-- [silver_crypto_simd::bls::msm8::glv::Z2]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 17:0-17:60 -/
-@[global_simps, irreducible]
-def bls.msm8.glv.Z2 : Array Std.U64 2#usize :=
-  Array.make 2#usize [ 4294967296#u64, 12413508272118670338#u64 ] (by rfl)
-
-/-- [silver_crypto_simd::bls::msm8::glv::Z2_OVER_R]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 19:0-19:80 -/
-@[global_simps, irreducible]
-def bls.msm8.glv.Z2_OVER_R : Array Std.U64 3#usize :=
-  Array.make 3#usize [
-    7203196592358157872#u64, 8965520006802549469#u64, 1#u64
-    ] (by rfl)
-
-/-- [silver_crypto_simd::bls::msm8::glv::HALF_R_UP]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 21:0-22:97 -/
-@[global_simps, irreducible]
-def bls.msm8.glv.HALF_R_UP : Array Std.U64 4#usize :=
-  Array.make 4#usize [
-    9223372034707292161#u64, 12240451741123816959#u64, 1845609449319885826#u64,
-    4176758429732224676#u64
-    ] (by rfl)
-
-/-- [silver_crypto_simd::bls::msm8::glv::HALF_SCALAR_BITS]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 24:0-24:40
-    Visibility: public -/
-@[global_simps, irreducible]
-def bls.msm8.glv.HALF_SCALAR_BITS : Std.Usize := 127#usize
-
-/-- [silver_crypto_simd::bls::msm8::glv::negated]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 114:4-119:5 -/
-@[rust_loop_body]
-def bls.msm8.glv.negated_loop.body
-  (words : Array Std.U64 4#usize) (out : Array Std.U64 4#usize)
-  (carry : Std.U128) (i : Std.Usize) :
-  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize) (Array
-    Std.U64 4#usize))
-  := do
-  if i < 4#usize
-  then
-    let i1 ← Array.index_usize words i
-    let i2 ← lift (~~~ i1)
-    let i3 ← lift (UScalar.cast .U128 i2)
-    let t ← i3 + carry
-    let i4 ← lift (UScalar.cast .U64 t)
-    let a ← Array.update out i i4
-    let carry1 ← t >>> 64#i32
-    let i5 ← i + 1#usize
-    ok (cont (a, carry1, i5))
-  else ok (done out)
-
-/-- [silver_crypto_simd::bls::msm8::glv::negated]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 114:4-119:5 -/
-@[rust_loop]
-def bls.msm8.glv.negated_loop
-  (words : Array Std.U64 4#usize) (out : Array Std.U64 4#usize)
-  (carry : Std.U128) (i : Std.Usize) :
-  Result (Array Std.U64 4#usize)
-  := do
-  loop
-    (fun (out1, carry1, i1) => bls.msm8.glv.negated_loop.body words out1 carry1
-      i1)
-    (out, carry, i)
-
-/-- [silver_crypto_simd::bls::msm8::glv::negated]:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 110:0-121:1 -/
-def bls.msm8.glv.negated
-  (words : Array Std.U64 4#usize) : Result (Array Std.U64 4#usize) := do
-  let out := Array.repeat 4#usize 0#u64
-  bls.msm8.glv.negated_loop words out 1#u128 0#usize
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 79:8-84:9 -/
-@[rust_loop_body]
-def bls.msm8.glv.signed_difference_loop0_loop0.body
-  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize) (i : Std.Usize)
-  (cd : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
-  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize)
-    ((Array Std.U64 4#usize) × Std.U128))
-  := do
-  if j < 2#usize
-  then
-    let i1 ← Array.index_usize c i
-    let i2 ← lift (UScalar.cast .U128 i1)
-    let i3 ← Array.index_usize d j
-    let i4 ← lift (UScalar.cast .U128 i3)
-    let i5 ← i2 * i4
-    let i6 ← i + j
-    let i7 ← Array.index_usize cd i6
-    let i8 ← lift (UScalar.cast .U128 i7)
-    let i9 ← i5 + i8
-    let t ← i9 + carry
-    let i10 ← lift (UScalar.cast .U64 t)
-    let a ← Array.update cd i6 i10
-    let carry1 ← t >>> 64#i32
-    let j1 ← j + 1#usize
-    ok (cont (a, carry1, j1))
-  else ok (done (cd, carry))
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 79:8-84:9 -/
-@[rust_loop]
-def bls.msm8.glv.signed_difference_loop0_loop0
-  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
-  (cd : Array Std.U64 4#usize) (i : Std.Usize) (carry : Std.U128)
-  (j : Std.Usize) :
-  Result ((Array Std.U64 4#usize) × Std.U128)
-  := do
-  loop
-    (fun (cd1, carry1, j1) => bls.msm8.glv.signed_difference_loop0_loop0.body c
-      d i cd1 carry1 j1)
-    (cd, carry, j)
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 76:4-87:5 -/
-@[rust_loop_body]
-def bls.msm8.glv.signed_difference_loop0.body
-  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
-  (cd : Array Std.U64 4#usize) (i : Std.Usize) :
-  Result (ControlFlow ((Array Std.U64 4#usize) × Std.Usize) (Array Std.U64
-    4#usize))
-  := do
-  if i < 2#usize
-  then
-    let (cd1, carry) ←
-      bls.msm8.glv.signed_difference_loop0_loop0 c d cd i 0#u128 0#usize
-    let i1 ← i + 2#usize
-    let i2 ← lift (UScalar.cast .U64 carry)
-    let a ← Array.update cd1 i1 i2
-    let i3 ← i + 1#usize
-    ok (cont (a, i3))
-  else ok (done cd)
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 76:4-87:5 -/
-@[rust_loop]
-def bls.msm8.glv.signed_difference_loop0
-  (c : Array Std.U64 2#usize) (d : Array Std.U64 2#usize)
-  (cd : Array Std.U64 4#usize) (i : Std.Usize) :
-  Result (Array Std.U64 4#usize)
-  := do
-  loop
-    (fun (cd1, i1) => bls.msm8.glv.signed_difference_loop0.body c d cd1 i1)
-    (cd, i)
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 93:4-99:5 -/
-@[rust_loop_body]
-def bls.msm8.glv.signed_difference_loop1.body
-  (a : Array Std.U64 4#usize) (cd : Array Std.U64 4#usize)
-  (subtrahend : Array Std.U64 4#usize) (i : Std.Usize)
-  (difference : Array Std.U64 4#usize) (borrow : Std.U64) :
-  Result (ControlFlow (Std.Usize × (Array Std.U64 4#usize) × Std.U64) ((Array
-    Std.U64 4#usize) × Std.U64))
-  := do
-  if i < 4#usize
-  then
-    let i1 ← 2#u128 <<< 64#i32
-    let i2 ← Array.index_usize a i
-    let i3 ← lift (UScalar.cast .U128 i2)
-    let i4 ← i1 + i3
-    let i5 ← Array.index_usize subtrahend i
-    let i6 ← lift (UScalar.cast .U128 i5)
-    let i7 ← i4 - i6
-    let i8 ← Array.index_usize cd i
-    let i9 ← lift (UScalar.cast .U128 i8)
-    let i10 ← i7 - i9
-    let i11 ← lift (UScalar.cast .U128 borrow)
-    let t ← i10 - i11
-    let i12 ← lift (UScalar.cast .U64 t)
-    let a1 ← Array.update difference i i12
-    let i13 ← t >>> 64#i32
-    let i14 ← lift (UScalar.cast .U64 i13)
-    let borrow1 ← 2#u64 - i14
-    let i15 ← i + 1#usize
-    ok (cont (i15, a1, borrow1))
-  else ok (done (difference, borrow))
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 93:4-99:5 -/
-@[rust_loop]
-def bls.msm8.glv.signed_difference_loop1
-  (a : Array Std.U64 4#usize) (cd : Array Std.U64 4#usize) (i : Std.Usize)
-  (subtrahend : Array Std.U64 4#usize) (difference : Array Std.U64 4#usize)
-  (borrow : Std.U64) :
-  Result ((Array Std.U64 4#usize) × Std.U64)
-  := do
-  loop
-    (fun (i1, difference1, borrow1) =>
-      bls.msm8.glv.signed_difference_loop1.body a cd subtrahend i1 difference1
-      borrow1)
-    (i, difference, borrow)
-
-/-- [silver_crypto_simd::bls::msm8::glv::signed_difference]:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 73:0-107:1 -/
-def bls.msm8.glv.signed_difference
-  (a : Array Std.U64 4#usize) (b : Std.U64) (c : Array Std.U64 2#usize)
-  (d : Array Std.U64 2#usize) :
-  Result bls.msm8.glv.Half
-  := do
-  let cd := Array.repeat 4#usize 0#u64
-  let cd1 ← bls.msm8.glv.signed_difference_loop0 c d cd 0#usize
-  let difference := Array.repeat 4#usize 0#u64
-  let (difference1, borrow) ←
-    bls.msm8.glv.signed_difference_loop1 a cd1 0#usize
-      (Array.make 4#usize [ b, 0#u64, 0#u64, 0#u64 ] (by rfl)) difference 0#u64
-  let (negative, magnitude) ←
-    if borrow != 0#u64
-    then
-      do
-      let magnitude1 ← bls.msm8.glv.negated difference1
-      ok (true, magnitude1)
-    else ok (false, difference1)
-  let i ← Array.index_usize magnitude 2#usize
-  massert (i = 0#u64)
-  let i1 ← Array.index_usize magnitude 3#usize
-  massert (i1 = 0#u64)
-  let i2 ← Array.index_usize magnitude 1#usize
-  let i3 ← i2 >>> 63#i32
-  massert (i3 = 0#u64)
-  ok { magnitude, negative }
-
-/-- [silver_crypto_simd::bls::msm8::glv::at_least_half_r]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 66:4-68:5 -/
-@[rust_loop_body]
-def bls.msm8.glv.at_least_half_r_loop.body
-  (k : Array Std.U64 4#usize) (i : Std.Usize) :
-  Result (ControlFlow Std.Usize Std.Usize)
-  := do
-  if i > 0#usize
-  then
-    let i1 ← i - 1#usize
-    let i2 ← Array.index_usize k i1
-    let i3 ← Array.index_usize bls.msm8.glv.HALF_R_UP i1
-    if i2 = i3
-    then ok (cont i1)
-    else ok (done i)
-  else ok (done i)
-
-/-- [silver_crypto_simd::bls::msm8::glv::at_least_half_r]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 66:4-68:5 -/
-@[rust_loop]
-def bls.msm8.glv.at_least_half_r_loop
-  (k : Array Std.U64 4#usize) (i : Std.Usize) : Result Std.Usize := do
-  loop
-    (fun i1 => bls.msm8.glv.at_least_half_r_loop.body k i1)
-    i
-
-/-- [silver_crypto_simd::bls::msm8::glv::at_least_half_r]:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 64:0-70:1 -/
-def bls.msm8.glv.at_least_half_r
-  (k : Array Std.U64 4#usize) : Result Bool := do
-  let i ← bls.msm8.glv.at_least_half_r_loop k 4#usize
-  if i = 0#usize
-  then ok true
-  else
-    let i1 ← i - 1#usize
-    let i2 ← Array.index_usize k i1
-    let i3 ← Array.index_usize bls.msm8.glv.HALF_R_UP i1
-    ok (i2 > i3)
-
-/-- [silver_crypto_simd::bls::msm8::glv::times_z2_over_r]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 51:8-56:9 -/
-@[rust_loop_body]
-def bls.msm8.glv.times_z2_over_r_loop0_loop0.body
-  (k : Array Std.U64 4#usize) (i : Std.Usize) (product : Array Std.U64 7#usize)
-  (carry : Std.U128) (j : Std.Usize) :
-  Result (ControlFlow ((Array Std.U64 7#usize) × Std.U128 × Std.Usize)
-    ((Array Std.U64 7#usize) × Std.U128))
-  := do
-  if j < 3#usize
-  then
-    let i1 ← Array.index_usize k i
-    let i2 ← lift (UScalar.cast .U128 i1)
-    let i3 ← Array.index_usize bls.msm8.glv.Z2_OVER_R j
-    let i4 ← lift (UScalar.cast .U128 i3)
-    let i5 ← i2 * i4
-    let i6 ← i + j
-    let i7 ← Array.index_usize product i6
-    let i8 ← lift (UScalar.cast .U128 i7)
-    let i9 ← i5 + i8
-    let t ← i9 + carry
-    let i10 ← lift (UScalar.cast .U64 t)
-    let a ← Array.update product i6 i10
-    let carry1 ← t >>> 64#i32
-    let j1 ← j + 1#usize
-    ok (cont (a, carry1, j1))
-  else ok (done (product, carry))
-
-/-- [silver_crypto_simd::bls::msm8::glv::times_z2_over_r]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 51:8-56:9 -/
-@[rust_loop]
-def bls.msm8.glv.times_z2_over_r_loop0_loop0
-  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
-  (carry : Std.U128) (j : Std.Usize) :
-  Result ((Array Std.U64 7#usize) × Std.U128)
-  := do
-  loop
-    (fun (product1, carry1, j1) =>
-      bls.msm8.glv.times_z2_over_r_loop0_loop0.body k i product1 carry1 j1)
-    (product, carry, j)
-
-/-- [silver_crypto_simd::bls::msm8::glv::times_z2_over_r]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 48:4-59:5 -/
-@[rust_loop_body]
-def bls.msm8.glv.times_z2_over_r_loop0.body
-  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
-  :
-  Result (ControlFlow ((Array Std.U64 7#usize) × Std.Usize) (Array Std.U64
-    7#usize))
-  := do
-  if i < 4#usize
-  then
-    let (product1, carry) ←
-      bls.msm8.glv.times_z2_over_r_loop0_loop0 k product i 0#u128 0#usize
-    let i1 ← i + 3#usize
-    let i2 ← lift (UScalar.cast .U64 carry)
-    let a ← Array.update product1 i1 i2
-    let i3 ← i + 1#usize
-    ok (cont (a, i3))
-  else ok (done product)
-
-/-- [silver_crypto_simd::bls::msm8::glv::times_z2_over_r]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 48:4-59:5 -/
-@[rust_loop]
-def bls.msm8.glv.times_z2_over_r_loop0
-  (k : Array Std.U64 4#usize) (product : Array Std.U64 7#usize) (i : Std.Usize)
-  :
-  Result (Array Std.U64 7#usize)
-  := do
-  loop
-    (fun (product1, i1) => bls.msm8.glv.times_z2_over_r_loop0.body k product1
-      i1)
-    (product, i)
-
-/-- [silver_crypto_simd::bls::msm8::glv::times_z2_over_r]:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 45:0-61:1 -/
-def bls.msm8.glv.times_z2_over_r
-  (k : Array Std.U64 4#usize) : Result (Array Std.U64 7#usize) := do
-  let product := Array.repeat 7#usize 0#u64
-  bls.msm8.glv.times_z2_over_r_loop0 k product 0#usize
-
-/-- [silver_crypto_simd::bls::msm8::glv::decompose]:
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 33:0-42:1
-    Visibility: public -/
-def bls.msm8.glv.decompose
-  (k : Array Std.U64 4#usize) :
-  Result (bls.msm8.glv.Half × bls.msm8.glv.Half)
-  := do
-  let product ← bls.msm8.glv.times_z2_over_r k
-  let i ← Array.index_usize product 4#usize
-  let i1 ← lift (UScalar.cast .U128 i)
-  let i2 ← Array.index_usize product 3#usize
-  let i3 ← i2 >>> 63#i32
-  let i4 ← lift (UScalar.cast .U128 i3)
-  let low ← i1 + i4
-  let i5 ← lift (UScalar.cast .U64 low)
-  let i6 ← Array.index_usize product 5#usize
-  let i7 ← low >>> 64#i32
-  let i8 ← lift (UScalar.cast .U64 i7)
-  let i9 ← i6 + i8
-  let b ← bls.msm8.glv.at_least_half_r k
-  let c2 ← lift (UScalar.cast_fromBool .U64 b)
-  let k1 ←
-    bls.msm8.glv.signed_difference k c2 (Array.make 2#usize [ i5, i9 ] (by rfl))
-      bls.msm8.glv.LAMBDA
-  let i10 ← Array.index_usize (Array.make 2#usize [ i5, i9 ] (by rfl)) 0#usize
-  let i11 ← Array.index_usize (Array.make 2#usize [ i5, i9 ] (by rfl)) 1#usize
-  let k2 ←
-    bls.msm8.glv.signed_difference
-      (Array.make 4#usize [ i10, i11, 0#u64, 0#u64 ] (by rfl)) 0#u64
-      (Array.make 2#usize [ c2, 0#u64 ] (by rfl)) bls.msm8.glv.Z2
-  ok (k1, k2)
-
 /-- [silver_crypto_simd::bls::msm8::CHUNK]
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 31:0-31:26 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 30:0-30:26 -/
 @[global_simps, irreducible] def bls.msm8.CHUNK : Std.Usize := 4096#usize
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::new]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 23:4-25:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 24:4-26:5
     Visibility: public -/
 def bls.msm8.store.PointStore.new : Result bls.msm8.store.PointStore := do
   ok { rows := (alloc.vec.Vec.new (Array Std.U64 8#usize)), len := 0#usize }
 
 /-- [silver_crypto_simd::bls::msm8::store::{core::default::Default for silver_crypto_simd::bls::msm8::store::PointStore}::default]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 17:4-19:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 18:4-20:5
     Visibility: public -/
 def bls.msm8.store.PointStore.Insts.CoreDefaultDefault.default
   : Result bls.msm8.store.PointStore := do
   bls.msm8.store.PointStore.new
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{core::default::Default for silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::default]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 21:9-21:16
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 17:9-17:16
     Visibility: public -/
 def bls.msm8.pairs.BatchedAdds.Insts.CoreDefaultDefault.default
   : Result bls.msm8.pairs.BatchedAdds := do
@@ -5292,7 +8376,7 @@ def bls.msm8.pairs.BatchedAdds.Insts.CoreDefaultDefault.default
   ok { a := v, b := v, out := v, dx := v1, «prefix» := v1 }
 
 /-- [silver_crypto_simd::bls::msm8::{core::default::Default for silver_crypto_simd::bls::msm8::Msm8}::default]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 45:9-45:16
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 44:9-44:16
     Visibility: public -/
 def bls.msm8.Msm8.Insts.CoreDefaultDefault.default : Result bls.msm8.Msm8 := do
   let ps ← bls.msm8.store.PointStore.Insts.CoreDefaultDefault.default
@@ -5315,7 +8399,7 @@ def bls.msm8.Msm8.Insts.CoreDefaultDefault.default : Result bls.msm8.Msm8 := do
     }
 
 /-- [silver_crypto_simd::bls::msm8::lane_zero_in_blst]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 152:0-158:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 154:0-160:1 -/
 def bls.msm8.lane_zero_in_blst
   (point : bls.g1x8.G1x8) : Result blst.blst_p1 := do
   let a ← bls.fp8.Fp8.to_blst_limbs point.x
@@ -5327,7 +8411,7 @@ def bls.msm8.lane_zero_in_blst
   ok { x := { l := a1 }, y := { l := a3 }, z := { l := a5 } }
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::store_points]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 137:8-142:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 135:8-140:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.store.PointStore.store_points_loop.body
@@ -5338,7 +8422,7 @@ def bls.msm8.store.PointStore.store_points_loop.body
   Result (ControlFlow (bls.msm8.store.PointStore × Std.Usize)
     bls.msm8.store.PointStore)
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
     let i ← Array.index_usize indices lane
     let i1 ← lift (UScalar.cast .Usize i)
@@ -5361,7 +8445,7 @@ def bls.msm8.store.PointStore.store_points_loop.body
   else ok (done self)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::store_points]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 137:8-142:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 135:8-140:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.store.PointStore.store_points_loop
@@ -5376,7 +8460,7 @@ def bls.msm8.store.PointStore.store_points_loop
     (self, lane)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::store_points]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 133:4-143:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 131:4-141:5
     Visibility: public -/
 def bls.msm8.store.PointStore.store_points
   (self : bls.msm8.store.PointStore) (indices : Array Std.U32 8#usize)
@@ -5388,7 +8472,7 @@ def bls.msm8.store.PointStore.store_points
   bls.msm8.store.PointStore.store_points_loop self indices xs ys 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::push_blst]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 72:12-80:13
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 70:12-78:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.store.PointStore.push_blst_loop0_loop0.body
@@ -5402,7 +8486,7 @@ def bls.msm8.store.PointStore.push_blst_loop0_loop0.body
     Std.Usize) ((Array (Array Std.U64 8#usize) 8#usize) × (Array (Array
     Std.U64 8#usize) 8#usize) × (Array Std.U32 8#usize) × Std.U8))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
     let k ←
       if lane < count
@@ -5411,9 +8495,9 @@ def bls.msm8.store.PointStore.push_blst_loop0_loop0.body
            let i1 ← at1 + count
            i1 - 1#usize
     let bpa ← Slice.index_usize points k
-    let a ← bls.fp8.unpack52 bpa.x.l
+    let a ← bls.limbs.unpack52 bpa.x.l
     let a1 ← Array.update xs lane a
-    let a2 ← bls.fp8.unpack52 bpa.y.l
+    let a2 ← bls.limbs.unpack52 bpa.y.l
     let a3 ← Array.update ys lane a2
     let b ← Slice.index_usize negated k
     let i1 ← lift (UScalar.cast_fromBool .U8 b)
@@ -5428,7 +8512,7 @@ def bls.msm8.store.PointStore.push_blst_loop0_loop0.body
   else ok (done (xs, ys, indices, negate))
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::push_blst]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 72:12-80:13
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 70:12-78:13
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.store.PointStore.push_blst_loop0_loop0
@@ -5447,7 +8531,7 @@ def bls.msm8.store.PointStore.push_blst_loop0_loop0
     (xs, ys, indices, negate, lane)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::push_blst]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 65:8-89:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 63:8-87:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.store.PointStore.push_blst_loop0.body
@@ -5464,10 +8548,10 @@ def bls.msm8.store.PointStore.push_blst_loop0.body
     let i2 := Slice.len points
     let i3 ← i2 - at1
     let count ←
-      if i3 < bls.fp8.LANES
+      if i3 < bls.limbs.LANES
       then let i4 := Slice.len points
            i4 - at1
-      else ok bls.fp8.LANES
+      else ok bls.limbs.LANES
     let a := Array.repeat 8#usize 0#u64
     let xs := Array.repeat 8#usize a
     let a1 := Array.repeat 8#usize 0#u64
@@ -5494,7 +8578,7 @@ def bls.msm8.store.PointStore.push_blst_loop0.body
   else ok (done (v, i))
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::push_blst]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 65:8-89:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 63:8-87:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.store.PointStore.push_blst_loop0
@@ -5510,7 +8594,7 @@ def bls.msm8.store.PointStore.push_blst_loop0
     (v, i, at1)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::push_blst]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 59:4-90:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 57:4-88:5
     Visibility: public -/
 def bls.msm8.store.PointStore.push_blst
   (self : bls.msm8.store.PointStore) (points : Slice blst.blst_p1_affine)
@@ -5532,7 +8616,7 @@ def bls.msm8.store.PointStore.push_blst
   ok { rows := v, len := i5 }
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::reset]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 41:4-46:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 39:4-44:5
     Visibility: public -/
 def bls.msm8.store.PointStore.reset
   (self : bls.msm8.store.PointStore) (capacity : Std.Usize) :
@@ -5550,11 +8634,11 @@ def bls.msm8.store.PointStore.reset
   else ok { self with len := 0#usize }
 
 /-- [silver_crypto_simd::bls::msm8::pairs::CHAINS]
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 13:0-13:24 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 9:0-9:24 -/
 @[global_simps, irreducible] def bls.msm8.pairs.CHAINS : Std.Usize := 4#usize
 
 /-- [silver_crypto_simd::bls::msm8::pairs::batch_inverse]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 183:4-186:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 179:4-182:5 -/
 @[rust_loop_body]
 def bls.msm8.pairs.batch_inverse_loop0.body
   (values : Array bls.fp8.Fp8 4#usize) (prefix1 : Array bls.fp8.Fp8 4#usize)
@@ -5574,7 +8658,7 @@ def bls.msm8.pairs.batch_inverse_loop0.body
   else ok (done prefix1)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::batch_inverse]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 183:4-186:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 179:4-182:5 -/
 @[rust_loop]
 def bls.msm8.pairs.batch_inverse_loop0
   (values : Array bls.fp8.Fp8 4#usize) (prefix1 : Array bls.fp8.Fp8 4#usize)
@@ -5587,7 +8671,7 @@ def bls.msm8.pairs.batch_inverse_loop0
     (prefix1, k)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::batch_inverse]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 190:4-194:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 186:4-190:5 -/
 @[rust_loop_body]
 def bls.msm8.pairs.batch_inverse_loop1.body
   (values : Array bls.fp8.Fp8 4#usize) (prefix1 : Array bls.fp8.Fp8 4#usize)
@@ -5607,7 +8691,7 @@ def bls.msm8.pairs.batch_inverse_loop1.body
   else ok (done (inverse, out))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::batch_inverse]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 190:4-194:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 186:4-190:5 -/
 @[rust_loop]
 def bls.msm8.pairs.batch_inverse_loop1
   (values : Array bls.fp8.Fp8 4#usize) (prefix1 : Array bls.fp8.Fp8 4#usize)
@@ -5620,7 +8704,7 @@ def bls.msm8.pairs.batch_inverse_loop1
     (k, inverse, out)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::batch_inverse]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 180:0-197:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 176:0-193:1 -/
 def bls.msm8.pairs.batch_inverse
   (values : Array bls.fp8.Fp8 4#usize) :
   Result (Array bls.fp8.Fp8 4#usize)
@@ -5636,7 +8720,7 @@ def bls.msm8.pairs.batch_inverse
   Array.update out1 0#usize inverse1
 
 /-- [silver_crypto_simd::bls::msm8::pairs::references]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 204:4-209:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 200:4-205:5 -/
 @[rust_loop_body]
 def bls.msm8.pairs.references_loop.body
   (refs : Slice Std.U32) (g : Std.Usize) (indices : Array Std.U32 8#usize)
@@ -5644,9 +8728,9 @@ def bls.msm8.pairs.references_loop.body
   Result (ControlFlow ((Array Std.U32 8#usize) × Std.U8 × Std.Usize) ((Array
     Std.U32 8#usize) × Std.U8))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
-    let i ← g * bls.fp8.LANES
+    let i ← g * bls.limbs.LANES
     let i1 ← i + lane
     let reference ← Slice.index_usize refs i1
     let i2 ← bls.msm8.pairs.NEGATED
@@ -5662,7 +8746,7 @@ def bls.msm8.pairs.references_loop.body
   else ok (done (indices, negated))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::references]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 204:4-209:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 200:4-205:5 -/
 @[rust_loop]
 def bls.msm8.pairs.references_loop
   (refs : Slice Std.U32) (g : Std.Usize) (indices : Array Std.U32 8#usize)
@@ -5675,7 +8759,7 @@ def bls.msm8.pairs.references_loop
     (indices, negated, lane)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::references]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 200:0-211:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 196:0-207:1 -/
 def bls.msm8.pairs.references
   (refs : Slice Std.U32) (g : Std.Usize) :
   Result ((Array Std.U32 8#usize) × Std.U8)
@@ -5684,11 +8768,11 @@ def bls.msm8.pairs.references
   bls.msm8.pairs.references_loop refs g indices 0#u8 0#usize
 
 /-- [silver_crypto_simd::bls::msm8::pairs::PAIR]
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 16:0-16:22 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 12:0-12:22 -/
 @[global_simps, irreducible] def bls.msm8.pairs.PAIR : Std.Usize := 2#usize
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 128:8-138:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 124:8-134:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop0.body
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
@@ -5720,7 +8804,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop0.body
   else ok (done (self, xa, ya, xb, yb))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 128:8-138:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 124:8-134:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop0
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
@@ -5738,7 +8822,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop0
     (xa, ya, xb, yb, s)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 141:8-146:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 137:8-142:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop1.body
   (dx_inverses : Array bls.fp8.Fp8 2#usize) (o : bls.g1x8.Offsets)
@@ -5761,7 +8845,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop1.body
   else ok (done (o, slope))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 141:8-146:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 137:8-142:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop1
   (dx_inverses : Array bls.fp8.Fp8 2#usize) (o : bls.g1x8.Offsets)
@@ -5775,7 +8859,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop1
     (s, slope)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 149:8-152:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 145:8-148:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop2.body
   (slope : Array bls.fp8.Fp8 2#usize) (s : Std.Usize)
@@ -5793,7 +8877,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop2.body
   else ok (done squared)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 149:8-152:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 145:8-148:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop2
   (s : Std.Usize) (slope : Array bls.fp8.Fp8 2#usize)
@@ -5806,7 +8890,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop2
     (s, squared)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 3:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 155:8-159:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 151:8-155:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop3.body
   (o : bls.g1x8.Offsets) (xa : Array bls.fp8.Fp8 2#usize)
@@ -5829,7 +8913,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop3.body
   else ok (done (o, x3))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 3:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 155:8-159:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 151:8-155:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop3
   (o : bls.g1x8.Offsets) (xa : Array bls.fp8.Fp8 2#usize)
@@ -5843,7 +8927,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop3
     (s, x3)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 4:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 162:8-166:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 158:8-162:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop4.body
   (o : bls.g1x8.Offsets) (xa : Array bls.fp8.Fp8 2#usize)
@@ -5866,7 +8950,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop4.body
   else ok (done (o, product))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 4:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 162:8-166:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 158:8-162:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop4
   (o : bls.g1x8.Offsets) (xa : Array bls.fp8.Fp8 2#usize) (s : Std.Usize)
@@ -5880,7 +8964,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop4
     (s, product)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop body 5:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 168:8-172:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 164:8-168:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop5.body
   (self : bls.msm8.pairs.BatchedAdds) (g : Std.Usize) (o : bls.g1x8.Offsets)
@@ -5907,7 +8991,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop5.body
   else ok (done store)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]: loop 5:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 168:8-172:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 164:8-168:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.finish_pair_loop5
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
@@ -5922,7 +9006,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair_loop5
     (store, s)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::finish_pair]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 121:4-173:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 117:4-169:5 -/
 def bls.msm8.pairs.BatchedAdds.finish_pair
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
   (g : Std.Usize) (dx_inverses : Array bls.fp8.Fp8 2#usize) :
@@ -5955,7 +9039,7 @@ def bls.msm8.pairs.BatchedAdds.finish_pair
     product1
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::unwind_chains]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 104:8-114:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 100:8-110:9 -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.unwind_chains_loop.body
   (g : Std.Usize) (self : bls.msm8.pairs.BatchedAdds)
@@ -5995,7 +9079,7 @@ def bls.msm8.pairs.BatchedAdds.unwind_chains_loop.body
   else ok (done (dx_inverses, inverses))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::unwind_chains]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 104:8-114:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 100:8-110:9 -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.unwind_chains_loop
   (self : bls.msm8.pairs.BatchedAdds) (g : Std.Usize)
@@ -6010,7 +9094,7 @@ def bls.msm8.pairs.BatchedAdds.unwind_chains_loop
     (self, inverses, dx_inverses, s)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::unwind_chains]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 101:4-116:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 97:4-112:5 -/
 def bls.msm8.pairs.BatchedAdds.unwind_chains
   (self : bls.msm8.pairs.BatchedAdds) (g : Std.Usize)
   (inverses : Array bls.fp8.Fp8 4#usize) :
@@ -6022,7 +9106,7 @@ def bls.msm8.pairs.BatchedAdds.unwind_chains
     0#usize
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_x]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 122:8-125:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 120:8-123:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.store.PointStore.load_x_loop.body
@@ -6031,7 +9115,7 @@ def bls.msm8.store.PointStore.load_x_loop.body
   Result (ControlFlow ((Array core.core_arch.x86.__m512i 8#usize) × Std.Usize)
     (Array core.core_arch.x86.__m512i 8#usize))
   := do
-  if lane < bls.fp8.LANES
+  if lane < bls.limbs.LANES
   then
     let i ← Array.index_usize indices lane
     let i1 ← lift (UScalar.cast .Usize i)
@@ -6046,7 +9130,7 @@ def bls.msm8.store.PointStore.load_x_loop.body
   else ok (done xs)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_x]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 122:8-125:9
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 120:8-123:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.store.PointStore.load_x_loop
@@ -6060,7 +9144,7 @@ def bls.msm8.store.PointStore.load_x_loop
     (xs, lane)
 
 /-- [silver_crypto_simd::bls::msm8::store::{silver_crypto_simd::bls::msm8::store::PointStore}::load_x]:
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 119:4-127:5
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 117:4-125:5
     Visibility: public -/
 def bls.msm8.store.PointStore.load_x
   (self : bls.msm8.store.PointStore) (indices : Array Std.U32 8#usize) :
@@ -6073,7 +9157,7 @@ def bls.msm8.store.PointStore.load_x
   ok a
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::extend_chain]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 83:4-95:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 79:4-91:5 -/
 def bls.msm8.pairs.BatchedAdds.extend_chain
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore)
   (g : Std.Usize) (products : Array bls.fp8.Fp8 4#usize) :
@@ -6108,7 +9192,7 @@ def bls.msm8.pairs.BatchedAdds.extend_chain
     ok (true, { self with dx := v, «prefix» := v1 }, products1)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::run]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 64:8-66:9
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 60:8-62:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.run_loop0.body
@@ -6130,7 +9214,7 @@ def bls.msm8.pairs.BatchedAdds.run_loop0.body
   else ok (done (self, products, g))
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::run]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 64:8-66:9
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 60:8-62:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.run_loop0
@@ -6145,7 +9229,7 @@ def bls.msm8.pairs.BatchedAdds.run_loop0
     (self, products, g)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::run]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 71:8-75:9
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 67:8-71:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.pairs.BatchedAdds.run_loop1.body
@@ -6165,7 +9249,7 @@ def bls.msm8.pairs.BatchedAdds.run_loop1.body
   else ok (done store)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::run]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 71:8-75:9
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 67:8-71:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.pairs.BatchedAdds.run_loop1
@@ -6179,7 +9263,7 @@ def bls.msm8.pairs.BatchedAdds.run_loop1
     (store, g, inverses)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::run]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 51:4-77:5
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 47:4-73:5
     Visibility: public -/
 def bls.msm8.pairs.BatchedAdds.run
   (self : bls.msm8.pairs.BatchedAdds) (store : bls.msm8.store.PointStore) :
@@ -6189,7 +9273,7 @@ def bls.msm8.pairs.BatchedAdds.run
   massert (¬ b)
   let i := alloc.vec.Vec.len self.a
   let i1 ← i - 1#usize
-  let i2 ← bls.msm8.pairs.PAIR * bls.fp8.LANES
+  let i2 ← bls.msm8.pairs.PAIR * bls.limbs.LANES
   let i3 ← i1 / i2
   let i4 ← i3 + 1#usize
   let groups ← i4 * bls.msm8.pairs.PAIR
@@ -6204,7 +9288,7 @@ def bls.msm8.pairs.BatchedAdds.run
   let out ←
     alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
       self.out last
-  let i6 ← groups * bls.fp8.LANES
+  let i6 ← groups * bls.limbs.LANES
   let v ← alloc.vec.Vec.resize core.clone.CloneU32 self.a i6 a
   let v1 ← alloc.vec.Vec.resize core.clone.CloneU32 self.b i6 b1
   let v2 ← alloc.vec.Vec.resize core.clone.CloneU32 self.out i6 out
@@ -6228,14 +9312,14 @@ def bls.msm8.pairs.BatchedAdds.run
     ok (true, self1, store1)
 
 /-- [silver_crypto_simd::bls::msm8::pairs::{silver_crypto_simd::bls::msm8::pairs::BatchedAdds}::is_empty]:
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 43:4-45:5
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 39:4-41:5
     Visibility: public -/
 def bls.msm8.pairs.BatchedAdds.is_empty
   (self : bls.msm8.pairs.BatchedAdds) : Result Bool := do
   alloc.vec.Vec.is_empty Global self.a
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 135:8-137:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 137:8-139:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.pair_rounds_loop.body
   (originals : Std.Usize) (ps : bls.msm8.store.PointStore)
@@ -6257,7 +9341,7 @@ def bls.msm8.Msm8.pair_rounds_loop.body
     else ok (done (ps1, b, ba1))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 135:8-137:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 137:8-139:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.pair_rounds_loop
   (ps : bls.msm8.store.PointStore) (b : bls.msm8.buckets.Buckets)
@@ -6271,7 +9355,7 @@ def bls.msm8.Msm8.pair_rounds_loop
     (ps, b, ba)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::pair_rounds]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 133:4-139:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 135:4-141:5 -/
 def bls.msm8.Msm8.pair_rounds
   (self : bls.msm8.Msm8) (originals : Std.Usize) :
   Result (Bool × bls.msm8.Msm8)
@@ -6284,7 +9368,7 @@ def bls.msm8.Msm8.pair_rounds
   ok (b2, { self with store := ps1, buckets := b1, adds := ba1 })
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 144:4-146:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 146:4-148:5 -/
 @[rust_loop_body]
 def bls.msm8.is_infinity_loop.body
   (point : blst.blst_p1_affine) (k : Std.Usize) :
@@ -6304,7 +9388,7 @@ def bls.msm8.is_infinity_loop.body
   else ok (done k)
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 144:4-146:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 146:4-148:5 -/
 @[rust_loop]
 def bls.msm8.is_infinity_loop
   (point : blst.blst_p1_affine) (k : Std.Usize) : Result Std.Usize := do
@@ -6313,13 +9397,13 @@ def bls.msm8.is_infinity_loop
     k
 
 /-- [silver_crypto_simd::bls::msm8::is_infinity]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 142:0-148:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 144:0-150:1 -/
 def bls.msm8.is_infinity (point : blst.blst_p1_affine) : Result Bool := do
   let k ← bls.msm8.is_infinity_loop point 0#usize
   ok (k = 6#usize)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::keep_if_finite]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 122:4-128:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 124:4-130:5 -/
 def bls.msm8.Msm8.keep_if_finite
   (self : bls.msm8.Msm8) (point : blst.blst_p1_affine)
   (scalar : Array Std.U64 4#usize) :
@@ -6337,7 +9421,7 @@ def bls.msm8.Msm8.keep_if_finite
     ok { self with finite_points := v, finite_scalars := v1 }
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 112:8-119:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 114:8-121:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.split_scalars_loop.body
   (v : alloc.vec.Vec (Array Std.U64 4#usize)) (n : Std.Usize)
@@ -6352,7 +9436,7 @@ def bls.msm8.Msm8.split_scalars_loop.body
     let a ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array Std.U64
         4#usize)) v i
-    let (first, second) ← bls.msm8.glv.decompose a
+    let (first, second) ← bls.glv.decompose a
     let (_, index_mut_back) ←
       alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice (Array
         Std.U64 4#usize)) v1 i
@@ -6369,7 +9453,7 @@ def bls.msm8.Msm8.split_scalars_loop.body
   else ok (done (v1, v2, v3))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 112:8-119:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 114:8-121:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.split_scalars_loop
   (v : alloc.vec.Vec (Array Std.U64 4#usize))
@@ -6384,7 +9468,7 @@ def bls.msm8.Msm8.split_scalars_loop
     (v1, v2, v3, i)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::split_scalars]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 105:4-120:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 107:4-122:5 -/
 def bls.msm8.Msm8.split_scalars
   (self : bls.msm8.Msm8) : Result bls.msm8.Msm8 := do
   let n := alloc.vec.Vec.len self.finite_scalars
@@ -6401,7 +9485,7 @@ def bls.msm8.Msm8.split_scalars
   ok { self with halves := v4, first_signs := v5, second_signs := v6 }
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 81:8-84:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 83:8-86:9 -/
 @[rust_loop_body]
 def bls.msm8.Msm8.chunk_sum_loop.body
   (points : Slice blst.blst_p1_affine)
@@ -6420,7 +9504,7 @@ def bls.msm8.Msm8.chunk_sum_loop.body
   else ok (done self)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 81:8-84:9 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 83:8-86:9 -/
 @[rust_loop]
 def bls.msm8.Msm8.chunk_sum_loop
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
@@ -6433,7 +9517,7 @@ def bls.msm8.Msm8.chunk_sum_loop
     (self, i)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::chunk_sum]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 77:4-101:5 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 79:4-103:5 -/
 def bls.msm8.Msm8.chunk_sum
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
   (scalars : Slice (Array Std.U64 4#usize)) :
@@ -6453,8 +9537,7 @@ def bls.msm8.Msm8.chunk_sum
     let self2 ← bls.msm8.Msm8.split_scalars self1
     let s := alloc.vec.Vec.deref self2.halves
     let b ←
-      bls.msm8.buckets.Buckets.fill self2.buckets s
-        bls.msm8.glv.HALF_SCALAR_BITS
+      bls.msm8.buckets.Buckets.fill self2.buckets s bls.glv.HALF_SCALAR_BITS
     let i ← 2#usize * n
     let i1 ← bls.msm8.buckets.Buckets.impl.windows b
     let i2 ← i1 * n
@@ -6476,13 +9559,13 @@ def bls.msm8.Msm8.chunk_sum
         let s5 := alloc.vec.Vec.deref self3.halves
         let b2 ←
           bls.msm8.buckets.Buckets.fill self3.buckets s5
-            bls.msm8.glv.HALF_SCALAR_BITS
+            bls.glv.HALF_SCALAR_BITS
         ok { self3 with buckets := b2 }
     let gx ← bls.msm8.buckets.Buckets.sum self4.buckets self4.store
     ok (gx, self4)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 66:8-71:9
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 68:8-73:9
     Visibility: public -/
 @[rust_loop_body]
 def bls.msm8.Msm8.msm_loop.body
@@ -6513,7 +9596,7 @@ def bls.msm8.Msm8.msm_loop.body
   else ok (done (self, total))
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 66:8-71:9
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 68:8-73:9
     Visibility: public -/
 @[rust_loop]
 def bls.msm8.Msm8.msm_loop
@@ -6528,7 +9611,7 @@ def bls.msm8.Msm8.msm_loop
     (self, total, start)
 
 /-- [silver_crypto_simd::bls::msm8::{silver_crypto_simd::bls::msm8::Msm8}::msm]:
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 62:4-73:5
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 64:4-75:5
     Visibility: public -/
 def bls.msm8.Msm8.msm
   (self : bls.msm8.Msm8) (points : Slice blst.blst_p1_affine)
@@ -6544,22 +9627,149 @@ def bls.msm8.Msm8.msm
   let bp ← bls.msm8.lane_zero_in_blst total1
   ok (bp, self1)
 
-end BlsScope
+/-- [silver_crypto_simd::bls::pairing::LINE_C0]
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 19:0-19:91 -/
+@[global_simps, irreducible]
+def bls.pairing.LINE_C0 : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      0#i64, 8#i64, 10#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      1#i64, 12#i64, 14#i64, 1#i64, 1#i64, 1#i64, 1#i64, 1#i64
+      ] (by rfl)
+    ] (by rfl)
 
-section KzgScope
+/-- [silver_crypto_simd::bls::pairing::LINE_C1]
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 20:0-20:91 -/
+@[global_simps, irreducible]
+def bls.pairing.LINE_C1 : Array (Array Std.I64 8#usize) 2#usize :=
+  Array.make 2#usize [
+    Array.make 8#usize [
+      0#i64, 9#i64, 11#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+      ] (by rfl),
+    Array.make 8#usize [
+      0#i64, 13#i64, 15#i64, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+      ] (by rfl)
+    ] (by rfl)
 
-variable [kzg.KzgExternals]
+/-- [silver_crypto_simd::bls::pairing::line]:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 85:0-90:1 -/
+def bls.pairing.line
+  (products : bls.fp8.Fp8) (z_cubed : bls.fp8.Fp8) (pair : Std.Usize) :
+  Result bls.fp2x8.Fp2x8
+  := do
+  let a ← Array.index_usize bls.pairing.LINE_C0 pair
+  let f ← bls.fp8.Fp8.permute2 z_cubed products a
+  let f1 ← bls.fp8.Fp8.zero
+  let a1 ← Array.index_usize bls.pairing.LINE_C1 pair
+  let f2 ← bls.fp8.Fp8.permute2 f1 products a1
+  ok { c0 := f, c1 := f2 }
 
-/-- [silver_crypto_simd::kzg::blst_ops::{silver_crypto_simd::kzg::blst_ops::LincombScratch}::new]:
-    Source: 'crates/crypto_simd/src/kzg/blst_ops.rs', lines 145:4-147:5
+/-- [silver_crypto_simd::bls::pairing::{silver_crypto_simd::bls::miller_lines::MillerLines}::times_lines]:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 61:4-78:5 -/
+def bls.pairing.MillerLines.times_lines
+  (self : bls.miller_lines.MillerLines) (f : bls.fp12.Fp12) (step : Std.Usize)
+  (factors : bls.fp8.Fp8) (z_cubed : bls.fp8.Fp8) (present : Std.U8) :
+  Result bls.fp12.Fp12
+  := do
+  let a ← Array.index_usize self step
+  let f1 ← bls.fp8.Fp8.load a
+  let products ← bls.fp8.Fp8.mul f1 factors
+  let i ← lift (present &&& 1#u8)
+  let f2 ←
+    if i != 0#u8
+    then
+      do
+      let fx ← bls.pairing.line products z_cubed 0#usize
+      bls.fp12.Fp12.mul_by_line f fx
+    else ok f
+  let i1 ← lift (present &&& 2#u8)
+  if i1 != 0#u8
+  then
+    let fx ← bls.pairing.line products z_cubed 1#usize
+    bls.fp12.Fp12.mul_by_line f2 fx
+  else ok f2
+
+/-- [silver_crypto_simd::bls::pairing::{silver_crypto_simd::bls::miller_lines::MillerLines}::miller_loop]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 43:8-54:9
     Visibility: public -/
-def kzg.blst_ops.LincombScratch.new : Result kzg.blst_ops.LincombScratch := do
-  ok
-    {
-      points := (alloc.vec.Vec.new blst.blst_p1_affine),
-      scalars := (alloc.vec.Vec.new (Array Std.U8 32#usize)),
-      pippenger := (alloc.vec.Vec.new Std.U64)
-    }
+@[rust_loop_body]
+def bls.pairing.MillerLines.miller_loop_loop.body
+  (self : bls.miller_lines.MillerLines) (present : Std.U8)
+  (factors : bls.fp8.Fp8) (z_cubed : bls.fp8.Fp8) (f : bls.fp12.Fp12)
+  (step : Std.Usize) (bit : Std.U32) :
+  Result (ControlFlow (bls.fp12.Fp12 × Std.Usize × Std.U32) bls.fp12.Fp12)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let f1 ← if step > 0#usize
+               then bls.fp12.Fp12.square f
+               else ok f
+    let f2 ←
+      bls.pairing.MillerLines.times_lines self f1 step factors z_cubed present
+    let step1 ← step + 1#usize
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then
+      let f3 ←
+        bls.pairing.MillerLines.times_lines self f2 step1 factors z_cubed
+          present
+      let step2 ← step1 + 1#usize
+      ok (cont (f3, step2, bit1))
+    else ok (cont (f2, step1, bit1))
+  else ok (done f)
+
+/-- [silver_crypto_simd::bls::pairing::{silver_crypto_simd::bls::miller_lines::MillerLines}::miller_loop]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 43:8-54:9
+    Visibility: public -/
+@[rust_loop]
+def bls.pairing.MillerLines.miller_loop_loop
+  (self : bls.miller_lines.MillerLines) (present : Std.U8)
+  (factors : bls.fp8.Fp8) (z_cubed : bls.fp8.Fp8) (f : bls.fp12.Fp12)
+  (step : Std.Usize) (bit : Std.U32) :
+  Result bls.fp12.Fp12
+  := do
+  loop
+    (fun (f1, step1, bit1) => bls.pairing.MillerLines.miller_loop_loop.body
+      self present factors z_cubed f1 step1 bit1)
+    (f, step, bit)
+
+/-- [silver_crypto_simd::bls::pairing::{silver_crypto_simd::bls::miller_lines::MillerLines}::miller_loop]:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 35:4-56:5
+    Visibility: public -/
+def bls.pairing.MillerLines.miller_loop
+  (self : bls.miller_lines.MillerLines) (points : bls.g1x8.G1x8) :
+  Result bls.fp12.Fp12
+  := do
+  let i ← bls.fp8.Fp8.is_zero_mask points.z
+  let present ← lift (~~~ i)
+  let f ← bls.fp8.Fp8.mul points.x points.z
+  let factors ←
+    bls.fp8.Fp8.permute2 f points.y
+      (Array.make 8#usize [
+        0#i64, 0#i64, 8#i64, 8#i64, 1#i64, 1#i64, 9#i64, 9#i64
+        ] (by rfl))
+  let f1 ← bls.fp8.Fp8.square points.z
+  let z_cubed ← bls.fp8.Fp8.mul f1 points.z
+  let f2 ← bls.fp12.Fp12.one
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let f3 ←
+    bls.pairing.MillerLines.miller_loop_loop self present factors z_cubed f2
+      0#usize bit
+  bls.fp12.Fp12.conjugate f3
+
+/-- [silver_crypto_simd::bls::pairing::{silver_crypto_simd::bls::miller_lines::MillerLines}::pairing_check]:
+    Source: 'crates/crypto_simd/src/bls/pairing.rs', lines 26:4-28:5
+    Visibility: public -/
+def bls.pairing.MillerLines.pairing_check
+  (self : bls.miller_lines.MillerLines) (points : bls.g1x8.G1x8) :
+  Result Bool
+  := do
+  let f ← bls.pairing.MillerLines.miller_loop self points
+  let f1 ← bls.fp12.Fp12.final_exponentiation f
+  bls.fp12.Fp12.is_one f1
 
 /-- [silver_crypto_simd::kzg::cell_extender::LOG_BLOB]
     Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 19:0-19:25 -/
@@ -6571,7 +9781,7 @@ def kzg.blst_ops.LincombScratch.new : Result kzg.blst_ops.LincombScratch := do
 def kzg.cell_extender.LOG_EXT_BLOB : Std.U32 := 13#u32
 
 /-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 36:0-36:48
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 41:0-41:48
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.FIELD_ELEMENTS_PER_BLOB : Std.Usize := 4096#usize
@@ -6584,13 +9794,13 @@ def kzg.cell_extender._ : Result Unit := do
   massert (i = kzg.FIELD_ELEMENTS_PER_BLOB)
 
 /-- [silver_crypto_simd::kzg::FIELD_ELEMENTS_PER_CELL]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 37:0-37:46
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 42:0-42:46
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.FIELD_ELEMENTS_PER_CELL : Std.Usize := 64#usize
 
 /-- [silver_crypto_simd::kzg::CELLS_PER_EXT_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 38:0-38:92
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 43:0-43:92
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.CELLS_PER_EXT_BLOB : Result Std.Usize := do
@@ -6606,8 +9816,21 @@ def kzg.cell_extender.__1 : Result Unit := do
   let i2 ← kzg.FIELD_ELEMENTS_PER_CELL * i1
   massert (i = i2)
 
+/-- [silver_crypto_simd::kzg::INVERSE_BLOB_SIZE]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 57:0-57:94 -/
+@[global_simps, irreducible]
+def kzg.INVERSE_BLOB_SIZE : blst.blst_fr :=
+  { l := (Array.make 4#usize [ 0#u64, 0#u64, 0#u64, 4503599627370496#u64 ] (by rfl)) }
+
+/-- [silver_crypto_simd::kzg::FR_ZERO]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 48:0-48:58 -/
+@[global_simps, irreducible]
+def kzg.FR_ZERO : blst.blst_fr :=
+  let a := Array.repeat 4#usize 0#u64
+  { l := a }
+
 /-- [silver_crypto_simd::kzg::fr8::zero]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 70:0-72:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 72:0-74:1 -/
 def kzg.fr8.zero : Result core.core_arch.x86.__m512i := do
   core.core_arch.x86.avx512f._mm512_setzero_si512
 
@@ -6616,7 +9839,7 @@ def kzg.fr8.zero : Result core.core_arch.x86.__m512i := do
 @[global_simps, irreducible] def kzg.fr8.LIMBS : Std.Usize := 5#usize
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:4-202:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 193:4-204:5 -/
 @[rust_loop_body]
 def kzg.fr8.transpose_in_loop.body
   (limbs : Array (Array Std.U64 5#usize) 8#usize)
@@ -6661,7 +9884,7 @@ def kzg.fr8.transpose_in_loop.body
     ok (cont (iter1, a8))
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:4-202:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 193:4-204:5 -/
 @[rust_loop]
 def kzg.fr8.transpose_in_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -6674,7 +9897,7 @@ def kzg.fr8.transpose_in_loop
     (iter, v)
 
 /-- [silver_crypto_simd::kzg::fr8::transpose_in]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 189:0-204:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 191:0-206:1 -/
 def kzg.fr8.transpose_in
   (limbs : Array (Array Std.U64 5#usize) 8#usize) :
   Result (Array core.core_arch.x86.__m512i 5#usize)
@@ -6696,7 +9919,7 @@ def kzg.fr8.MASK52 : Result Std.U64 := do
   i - 1#u64
 
 /-- [silver_crypto_simd::kzg::fr8::unpack52]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 177:0-185:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 179:0-187:1 -/
 def kzg.fr8.unpack52
   (x : Array Std.U64 4#usize) : Result (Array Std.U64 5#usize) := do
   let i ← Array.index_usize x 0#usize
@@ -6726,7 +9949,7 @@ def kzg.fr8.unpack52
 @[global_simps, irreducible] def kzg.fr8.LANES : Std.Usize := 8#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 218:8-220:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 220:8-222:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.load_loop.body
@@ -6748,7 +9971,7 @@ def kzg.fr8.Fr8.load_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 218:8-220:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 220:8-222:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.load_loop
@@ -6761,7 +9984,7 @@ def kzg.fr8.Fr8.load_loop
     (iter, limbs)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::load]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 216:4-222:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 218:4-224:5
     Visibility: public -/
 def kzg.fr8.Fr8.load
   (values : Slice blst.blst_fr) (at1 : Std.Usize) : Result kzg.fr8.Fr8 := do
@@ -6774,7 +9997,7 @@ def kzg.fr8.Fr8.load
   ok a1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::zero]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 209:4-211:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 211:4-213:5
     Visibility: public -/
 def kzg.fr8.Fr8.zero : Result kzg.fr8.Fr8 := do
   let mi ← kzg.fr8.zero
@@ -6782,21 +10005,262 @@ def kzg.fr8.Fr8.zero : Result kzg.fr8.Fr8 := do
   ok a
 
 /-- [silver_crypto_simd::kzg::fr8::SCALE]
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 48:0-48:57 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 49:0-50:100 -/
 @[global_simps, irreducible]
-def kzg.fr8.SCALE : Result Std.U64 := do
-  let i ← lift (UScalar.cast .U32 kzg.fr8.LIMBS)
-  let i1 ← i * kzg.fr8.LIMB_BITS
-  let i2 ← i1 - 256#u32
-  1#u64 <<< i2
+def kzg.fr8.SCALE : blst.blst_fr :=
+  {
+    l :=
+      (Array.make 4#usize [
+        150323855325#u64, 10165349585681738787#u64, 18381291137284405061#u64,
+        2774815098097098528#u64
+        ] (by rfl))
+  }
+
+/-- [silver_crypto_simd::kzg::fr::sub_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 126:4-131:5 -/
+@[rust_loop_body]
+def kzg.fr.sub_words_loop.body
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (difference : Array Std.U64 4#usize) (borrow : Std.U64) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U64 × Std.Usize) ((Array
+    Std.U64 4#usize) × Std.U64))
+  := do
+  if j < 4#usize
+  then
+    let i ← 1#u128 <<< 64#i32
+    let i1 ← Array.index_usize a j
+    let i2 ← lift (UScalar.cast .U128 i1)
+    let i3 ← i + i2
+    let i4 ← Array.index_usize b j
+    let i5 ← lift (UScalar.cast .U128 i4)
+    let i6 ← i3 - i5
+    let i7 ← lift (UScalar.cast .U128 borrow)
+    let s ← i6 - i7
+    let i8 ← lift (UScalar.cast .U64 s)
+    let a1 ← Array.update difference j i8
+    let i9 ← s >>> 64#i32
+    let i10 ← lift (UScalar.cast .U64 i9)
+    let borrow1 ← 1#u64 - i10
+    let j1 ← j + 1#usize
+    ok (cont (a1, borrow1, j1))
+  else ok (done (difference, borrow))
+
+/-- [silver_crypto_simd::kzg::fr::sub_words]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 126:4-131:5 -/
+@[rust_loop]
+def kzg.fr.sub_words_loop
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (difference : Array Std.U64 4#usize) (borrow : Std.U64) (j : Std.Usize) :
+  Result ((Array Std.U64 4#usize) × Std.U64)
+  := do
+  loop
+    (fun (difference1, borrow1, j1) => kzg.fr.sub_words_loop.body a b
+      difference1 borrow1 j1)
+    (difference, borrow, j)
+
+/-- [silver_crypto_simd::kzg::fr::sub_words]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 120:0-133:1 -/
+def kzg.fr.sub_words
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize) :
+  Result ((Array Std.U64 4#usize) × Bool)
+  := do
+  let difference := Array.repeat 4#usize 0#u64
+  let (difference1, borrow) ←
+    kzg.fr.sub_words_loop a b difference 0#u64 0#usize
+  ok (difference1, borrow = 1#u64)
+
+/-- [silver_crypto_simd::kzg::fr::R]
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 12:0-13:97 -/
+@[global_simps, irreducible]
+def kzg.fr.R : Array Std.U64 4#usize :=
+  Array.make 4#usize [
+    18446744069414584321#u64, 6034159408538082302#u64, 3691218898639771653#u64,
+    8353516859464449352#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::fr::below_r]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 100:0-103:1 -/
+def kzg.fr.below_r
+  (t : Array Std.U64 4#usize) : Result (Array Std.U64 4#usize) := do
+  let (difference, borrowed) ← kzg.fr.sub_words t kzg.fr.R
+  if borrowed
+  then ok t
+  else ok difference
+
+/-- [silver_crypto_simd::kzg::fr::R_INV64]
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 15:0-15:43 -/
+@[global_simps, irreducible]
+def kzg.fr.R_INV64 : Std.U64 := 18446744069414584319#u64
+
+/-- [silver_crypto_simd::kzg::fr::divide_out_word]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 89:4-94:5 -/
+@[rust_loop_body]
+def kzg.fr.divide_out_word_loop.body
+  (low : Array Std.U64 4#usize) (m : Std.U64)
+  (quotient : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize)
+    ((Array Std.U64 4#usize) × Std.U128))
+  := do
+  if j < 4#usize
+  then
+    let i ← Array.index_usize low j
+    let i1 ← lift (UScalar.cast .U128 i)
+    let i2 ← lift (UScalar.cast .U128 m)
+    let i3 ← Array.index_usize kzg.fr.R j
+    let i4 ← lift (UScalar.cast .U128 i3)
+    let i5 ← i2 * i4
+    let i6 ← i1 + i5
+    let s ← i6 + carry
+    let i7 ← j - 1#usize
+    let i8 ← lift (UScalar.cast .U64 s)
+    let a ← Array.update quotient i7 i8
+    let carry1 ← s >>> 64#i32
+    let j1 ← j + 1#usize
+    ok (cont (a, carry1, j1))
+  else ok (done (quotient, carry))
+
+/-- [silver_crypto_simd::kzg::fr::divide_out_word]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 89:4-94:5 -/
+@[rust_loop]
+def kzg.fr.divide_out_word_loop
+  (low : Array Std.U64 4#usize) (m : Std.U64)
+  (quotient : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result ((Array Std.U64 4#usize) × Std.U128)
+  := do
+  loop
+    (fun (quotient1, carry1, j1) => kzg.fr.divide_out_word_loop.body low m
+      quotient1 carry1 j1)
+    (quotient, carry, j)
+
+/-- [silver_crypto_simd::kzg::fr::divide_out_word]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 84:0-97:1 -/
+def kzg.fr.divide_out_word
+  (low : Array Std.U64 4#usize) (top : Std.U64) :
+  Result (Array Std.U64 4#usize)
+  := do
+  let i ← Array.index_usize low 0#usize
+  let i1 ← lift (UScalar.cast .U128 i)
+  let i2 ← lift (UScalar.cast .U128 kzg.fr.R_INV64)
+  let i3 ← i1 * i2
+  let m ← lift (UScalar.cast .U64 i3)
+  let quotient := Array.repeat 4#usize 0#u64
+  let i4 ← lift (UScalar.cast .U128 i)
+  let i5 ← lift (UScalar.cast .U128 m)
+  let i6 ← Array.index_usize kzg.fr.R 0#usize
+  let i7 ← lift (UScalar.cast .U128 i6)
+  let i8 ← i5 * i7
+  let i9 ← i4 + i8
+  let carry ← i9 >>> 64#i32
+  let (quotient1, carry1) ←
+    kzg.fr.divide_out_word_loop low m quotient carry 1#usize
+  let i10 ← lift (UScalar.cast .U128 top)
+  let i11 ← i10 + carry1
+  let i12 ← lift (UScalar.cast .U64 i11)
+  Array.update quotient1 3#usize i12
+
+/-- [silver_crypto_simd::kzg::fr::multiply_add]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 73:4-78:5 -/
+@[rust_loop_body]
+def kzg.fr.multiply_add_loop.body
+  (t : Array Std.U64 4#usize) (a : Array Std.U64 4#usize) (w : Std.U64)
+  (sum : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize)
+    ((Array Std.U64 4#usize) × Std.U128))
+  := do
+  if j < 4#usize
+  then
+    let i ← Array.index_usize t j
+    let i1 ← lift (UScalar.cast .U128 i)
+    let i2 ← Array.index_usize a j
+    let i3 ← lift (UScalar.cast .U128 i2)
+    let i4 ← lift (UScalar.cast .U128 w)
+    let i5 ← i3 * i4
+    let i6 ← i1 + i5
+    let s ← i6 + carry
+    let i7 ← lift (UScalar.cast .U64 s)
+    let a1 ← Array.update sum j i7
+    let carry1 ← s >>> 64#i32
+    let j1 ← j + 1#usize
+    ok (cont (a1, carry1, j1))
+  else ok (done (sum, carry))
+
+/-- [silver_crypto_simd::kzg::fr::multiply_add]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 73:4-78:5 -/
+@[rust_loop]
+def kzg.fr.multiply_add_loop
+  (t : Array Std.U64 4#usize) (a : Array Std.U64 4#usize) (w : Std.U64)
+  (sum : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result ((Array Std.U64 4#usize) × Std.U128)
+  := do
+  loop
+    (fun (sum1, carry1, j1) => kzg.fr.multiply_add_loop.body t a w sum1 carry1
+      j1)
+    (sum, carry, j)
+
+/-- [silver_crypto_simd::kzg::fr::multiply_add]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 69:0-80:1 -/
+def kzg.fr.multiply_add
+  (t : Array Std.U64 4#usize) (a : Array Std.U64 4#usize) (w : Std.U64) :
+  Result ((Array Std.U64 4#usize) × Std.U64)
+  := do
+  let sum := Array.repeat 4#usize 0#u64
+  let (sum1, carry) ← kzg.fr.multiply_add_loop t a w sum 0#u128 0#usize
+  let i ← lift (UScalar.cast .U64 carry)
+  ok (sum1, i)
+
+/-- [silver_crypto_simd::kzg::fr::montgomery_product]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 60:4-64:5 -/
+@[rust_loop_body]
+def kzg.fr.montgomery_product_loop.body
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (t : Array Std.U64 4#usize) (i : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.Usize) (Array Std.U64
+    4#usize))
+  := do
+  if i < 4#usize
+  then
+    let i1 ← Array.index_usize b i
+    let (sum, top) ← kzg.fr.multiply_add t a i1
+    let t1 ← kzg.fr.divide_out_word sum top
+    let i2 ← i + 1#usize
+    ok (cont (t1, i2))
+  else ok (done t)
+
+/-- [silver_crypto_simd::kzg::fr::montgomery_product]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 60:4-64:5 -/
+@[rust_loop]
+def kzg.fr.montgomery_product_loop
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (t : Array Std.U64 4#usize) (i : Std.Usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  loop
+    (fun (t1, i1) => kzg.fr.montgomery_product_loop.body a b t1 i1)
+    (t, i)
+
+/-- [silver_crypto_simd::kzg::fr::montgomery_product]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 57:0-66:1 -/
+def kzg.fr.montgomery_product
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  let t := Array.repeat 4#usize 0#u64
+  let t1 ← kzg.fr.montgomery_product_loop a b t 0#usize
+  kzg.fr.below_r t1
+
+/-- [silver_crypto_simd::kzg::fr::fr_mul]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 29:0-31:1
+    Visibility: public -/
+def kzg.fr.fr_mul
+  (a : blst.blst_fr) (b : blst.blst_fr) : Result blst.blst_fr := do
+  let a1 ← kzg.fr.montgomery_product a.l b.l
+  ok { l := a1 }
 
 /-- [silver_crypto_simd::kzg::fr8::multiplier]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 53:0-55:1
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 55:0-57:1
     Visibility: public -/
 def kzg.fr8.multiplier (w : blst.blst_fr) : Result blst.blst_fr := do
-  let i ← kzg.fr8.SCALE
-  let bf ← kzg.blst_ops.fr_from_u64 i
-  kzg.blst_ops.fr_mul w bf
+  kzg.fr.fr_mul w kzg.fr8.SCALE
 
 /-- [silver_crypto_simd::kzg::fft8::stage_twiddles]: loop body 0:
     Source: 'crates/crypto_simd/src/kzg/fft8.rs', lines 283:4-286:5 -/
@@ -6839,8 +10303,7 @@ def kzg.fft8.stage_twiddles
   (h : Std.Usize) :
   Result (Array blst.blst_fr 8#usize)
   := do
-  let bf ← kzg.blst_ops.fr_from_u64 0#u64
-  let twiddles := Array.repeat 8#usize bf
+  let twiddles := Array.repeat 8#usize kzg.FR_ZERO
   kzg.fft8.stage_twiddles_loop roots step start h twiddles 0#usize
 
 /-- [silver_crypto_simd::kzg::fft8::{silver_crypto_simd::kzg::fft8::Fft8}::new]: loop body 1:
@@ -7020,7 +10483,7 @@ def kzg.extension_kernel.ExtensionKernel.new_loop0_loop0.body
     let i ← v * kzg.fr8.LANES
     let i1 ← i + lane
     let bf ← Slice.index_usize shift_powers i1
-    let bf1 ← kzg.blst_ops.fr_mul bf inverse_size
+    let bf1 ← kzg.fr.fr_mul bf inverse_size
     let bf2 ← kzg.fr8.multiplier bf1
     let a ← Array.update factors lane bf2
     let lane1 ← lane + 1#usize
@@ -7099,8 +10562,7 @@ def kzg.extension_kernel.ExtensionKernel.new
   let i ← n / kzg.fr8.LANES
   let shift := alloc.vec.Vec.with_capacity kzg.fr8.Fr8 i
   let data := alloc.vec.Vec.with_capacity kzg.fr8.Fr8 i
-  let bf ← kzg.blst_ops.fr_from_u64 0#u64
-  let factors := Array.repeat 8#usize bf
+  let factors := Array.repeat 8#usize kzg.FR_ZERO
   let (shift1, data1) ←
     kzg.extension_kernel.ExtensionKernel.new_loop0 shift_powers inverse_size n
       shift data factors 0#usize
@@ -7109,7 +10571,7 @@ def kzg.extension_kernel.ExtensionKernel.new
   ok { inverse := f, forward := f1, shift := shift1, data := data1 }
 
 /-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 47:4-50:5
     Visibility: public -/
 @[rust_loop_body]
 def kzg.domain.inverse_roots_loop.body
@@ -7128,7 +10590,7 @@ def kzg.domain.inverse_roots_loop.body
   else ok (done inverse)
 
 /-- [silver_crypto_simd::kzg::domain::inverse_roots]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 49:4-52:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 47:4-50:5
     Visibility: public -/
 @[rust_loop]
 def kzg.domain.inverse_roots_loop
@@ -7142,7 +10604,7 @@ def kzg.domain.inverse_roots_loop
     (inverse, i)
 
 /-- [silver_crypto_simd::kzg::domain::inverse_roots]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 44:0-54:1
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 42:0-52:1
     Visibility: public -/
 def kzg.domain.inverse_roots
   (roots : Slice blst.blst_fr) : Result (alloc.vec.Vec blst.blst_fr) := do
@@ -7152,8 +10614,32 @@ def kzg.domain.inverse_roots
   let inverse1 ← alloc.vec.Vec.push inverse bf
   kzg.domain.inverse_roots_loop roots n inverse1 1#usize
 
+/-- [silver_crypto_simd::kzg::FR_ONE]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 49:0-50:100 -/
+@[global_simps, irreducible]
+def kzg.FR_ONE : blst.blst_fr :=
+  {
+    l :=
+      (Array.make 4#usize [
+        8589934590#u64, 6378425256633387010#u64, 11064306276430008309#u64,
+        1739710354780652911#u64
+        ] (by rfl))
+  }
+
+/-- [silver_crypto_simd::kzg::PRIMITIVE_ROOT_OF_UNITY]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 52:0-53:100 -/
+@[global_simps, irreducible]
+def kzg.PRIMITIVE_ROOT_OF_UNITY : blst.blst_fr :=
+  {
+    l :=
+      (Array.make 4#usize [
+        64424509425#u64, 1721329240476523535#u64, 18418692815241631664#u64,
+        3824455624000121028#u64
+        ] (by rfl))
+  }
+
 /-- [silver_crypto_simd::kzg::domain::R_MINUS_ONE]
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 10:0-11:97 -/
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 9:0-10:97 -/
 @[global_simps, irreducible]
 def kzg.domain.R_MINUS_ONE : Array Std.U64 4#usize :=
   Array.make 4#usize [
@@ -7161,23 +10647,17 @@ def kzg.domain.R_MINUS_ONE : Array Std.U64 4#usize :=
     8353516859464449352#u64
     ] (by rfl)
 
-/-- [silver_crypto_simd::kzg::domain::PRIMITIVE_ROOT_OF_UNITY]
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 8:0-8:39 -/
-@[global_simps, irreducible]
-def kzg.domain.PRIMITIVE_ROOT_OF_UNITY : Std.U64 := 7#u64
-
 /-- [silver_crypto_simd::kzg::domain::primitive_root]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 17:4-23:5 -/
 @[rust_loop_body]
 def kzg.domain.primitive_root_loop.body
-  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
-  (bit : Std.U32) :
+  (log_order : Std.U32) (root : blst.blst_fr) (bit : Std.U32) :
   Result (ControlFlow (blst.blst_fr × Std.U32) blst.blst_fr)
   := do
   if bit > log_order
   then
     let bit1 ← bit - 1#u32
-    let root1 ← kzg.blst_ops.fr_mul root root
+    let root1 ← kzg.fr.fr_mul root root
     let i ← bit1 / 64#u32
     let i1 ← lift (UScalar.cast .Usize i)
     let i2 ← Array.index_usize kzg.domain.R_MINUS_ONE i1
@@ -7185,33 +10665,32 @@ def kzg.domain.primitive_root_loop.body
     let i4 ← i2 >>> i3
     let i5 ← lift (i4 &&& 1#u64)
     if i5 = 1#u64
-    then let root2 ← kzg.blst_ops.fr_mul root1 base
-         ok (cont (root2, bit1))
+    then
+      let root2 ← kzg.fr.fr_mul root1 kzg.PRIMITIVE_ROOT_OF_UNITY
+      ok (cont (root2, bit1))
     else ok (cont (root1, bit1))
   else ok (done root)
 
 /-- [silver_crypto_simd::kzg::domain::primitive_root]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 19:4-25:5 -/
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 17:4-23:5 -/
 @[rust_loop]
 def kzg.domain.primitive_root_loop
-  (log_order : Std.U32) (base : blst.blst_fr) (root : blst.blst_fr)
-  (bit : Std.U32) :
+  (log_order : Std.U32) (root : blst.blst_fr) (bit : Std.U32) :
   Result blst.blst_fr
   := do
   loop
-    (fun (root1, bit1) => kzg.domain.primitive_root_loop.body log_order base
-      root1 bit1)
+    (fun (root1, bit1) => kzg.domain.primitive_root_loop.body log_order root1
+      bit1)
     (root, bit)
 
 /-- [silver_crypto_simd::kzg::domain::primitive_root]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 15:0-27:1 -/
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 14:0-25:1 -/
+@[reducible]
 def kzg.domain.primitive_root (log_order : Std.U32) : Result blst.blst_fr := do
-  let base ← kzg.blst_ops.fr_from_u64 kzg.domain.PRIMITIVE_ROOT_OF_UNITY
-  let root ← kzg.blst_ops.fr_from_u64 1#u64
-  kzg.domain.primitive_root_loop log_order base root 256#u32
+  kzg.domain.primitive_root_loop log_order kzg.FR_ONE 256#u32
 
 /-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 33:4-36:5
     Visibility: public -/
 @[rust_loop_body]
 def kzg.domain.roots_of_unity_loop.body
@@ -7226,11 +10705,11 @@ def kzg.domain.roots_of_unity_loop.body
   | none => ok (done roots)
   | some _ =>
     let roots1 ← alloc.vec.Vec.push roots power
-    let power1 ← kzg.blst_ops.fr_mul power root
+    let power1 ← kzg.fr.fr_mul power root
     ok (cont (iter1, roots1, power1))
 
 /-- [silver_crypto_simd::kzg::domain::roots_of_unity]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 35:4-38:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 33:4-36:5
     Visibility: public -/
 @[rust_loop]
 def kzg.domain.roots_of_unity_loop
@@ -7244,55 +10723,51 @@ def kzg.domain.roots_of_unity_loop
     (iter, roots, power)
 
 /-- [silver_crypto_simd::kzg::domain::roots_of_unity]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 30:0-40:1
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 28:0-38:1
     Visibility: public -/
 def kzg.domain.roots_of_unity
   (log_order : Std.U32) : Result (alloc.vec.Vec blst.blst_fr) := do
   let order ← 1#usize <<< log_order
   let root ← kzg.domain.primitive_root log_order
   let roots := alloc.vec.Vec.with_capacity blst.blst_fr order
-  let power ← kzg.blst_ops.fr_from_u64 1#u64
   kzg.domain.roots_of_unity_loop { start := 0#usize, «end» := order } root
-    roots power
+    roots kzg.FR_ONE
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::new]:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 43:4-73:5
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 43:4-71:5
     Visibility: public -/
 def kzg.cell_extender.CellExtender.new
   : Result kzg.cell_extender.CellExtender := do
   let roots ← kzg.domain.roots_of_unity kzg.cell_extender.LOG_BLOB
-  let zero ← kzg.blst_ops.fr_from_u64 0#u64
   let shift_powers ← kzg.domain.roots_of_unity kzg.cell_extender.LOG_EXT_BLOB
   let shift_powers1 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone shift_powers
-      kzg.FIELD_ELEMENTS_PER_BLOB zero
+      kzg.FIELD_ELEMENTS_PER_BLOB kzg.FR_ZERO
   let evaluations :=
     alloc.vec.Vec.with_capacity blst.blst_fr kzg.FIELD_ELEMENTS_PER_BLOB
   let evaluations1 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone evaluations
-      kzg.FIELD_ELEMENTS_PER_BLOB zero
+      kzg.FIELD_ELEMENTS_PER_BLOB kzg.FR_ZERO
   let coefficients :=
     alloc.vec.Vec.with_capacity blst.blst_fr kzg.FIELD_ELEMENTS_PER_BLOB
   let coefficients1 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone coefficients
-      kzg.FIELD_ELEMENTS_PER_BLOB zero
+      kzg.FIELD_ELEMENTS_PER_BLOB kzg.FR_ZERO
   let s := alloc.vec.Vec.deref roots
   let inverse_roots ← kzg.domain.inverse_roots s
-  let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
-  let bf ← kzg.blst_ops.fr_from_u64 i
-  let inverse_size ← kzg.blst_ops.fr_inverse bf
   let b ← ifma_available
   if b
   then
     let s1 := alloc.vec.Vec.deref roots
     let s2 := alloc.vec.Vec.deref inverse_roots
     let s3 := alloc.vec.Vec.deref shift_powers1
-    let ek ← kzg.extension_kernel.ExtensionKernel.new s1 s2 s3 inverse_size
+    let ek ←
+      kzg.extension_kernel.ExtensionKernel.new s1 s2 s3 kzg.INVERSE_BLOB_SIZE
     ok
       {
         roots,
         inverse_roots,
-        inverse_size,
+        inverse_size := kzg.INVERSE_BLOB_SIZE,
         shift_powers := shift_powers1,
         evaluations := evaluations1,
         coefficients := coefficients1,
@@ -7303,7 +10778,7 @@ def kzg.cell_extender.CellExtender.new
       {
         roots,
         inverse_roots,
-        inverse_size,
+        inverse_size := kzg.INVERSE_BLOB_SIZE,
         shift_powers := shift_powers1,
         evaluations := evaluations1,
         coefficients := coefficients1,
@@ -7325,6 +10800,72 @@ def kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault :
   default := kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default
 }
 
+/-- [silver_crypto_simd::kzg::fr::add_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 110:4-115:5 -/
+@[rust_loop_body]
+def kzg.fr.add_words_loop.body
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (sum : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.U128 × Std.Usize) (Array
+    Std.U64 4#usize))
+  := do
+  if j < 4#usize
+  then
+    let i ← Array.index_usize a j
+    let i1 ← lift (UScalar.cast .U128 i)
+    let i2 ← Array.index_usize b j
+    let i3 ← lift (UScalar.cast .U128 i2)
+    let i4 ← i1 + i3
+    let s ← i4 + carry
+    let i5 ← lift (UScalar.cast .U64 s)
+    let a1 ← Array.update sum j i5
+    let carry1 ← s >>> 64#i32
+    let j1 ← j + 1#usize
+    ok (cont (a1, carry1, j1))
+  else ok (done sum)
+
+/-- [silver_crypto_simd::kzg::fr::add_words]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 110:4-115:5 -/
+@[rust_loop]
+def kzg.fr.add_words_loop
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize)
+  (sum : Array Std.U64 4#usize) (carry : Std.U128) (j : Std.Usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  loop
+    (fun (sum1, carry1, j1) => kzg.fr.add_words_loop.body a b sum1 carry1 j1)
+    (sum, carry, j)
+
+/-- [silver_crypto_simd::kzg::fr::add_words]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 106:0-117:1 -/
+def kzg.fr.add_words
+  (a : Array Std.U64 4#usize) (b : Array Std.U64 4#usize) :
+  Result (Array Std.U64 4#usize)
+  := do
+  let sum := Array.repeat 4#usize 0#u64
+  kzg.fr.add_words_loop a b sum 0#u128 0#usize
+
+/-- [silver_crypto_simd::kzg::fr::fr_sub]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 24:0-27:1
+    Visibility: public -/
+def kzg.fr.fr_sub
+  (a : blst.blst_fr) (b : blst.blst_fr) : Result blst.blst_fr := do
+  let (difference, borrowed) ← kzg.fr.sub_words a.l b.l
+  if borrowed
+  then
+    let difference1 ← kzg.fr.add_words difference kzg.fr.R
+    ok { l := difference1 }
+  else ok { l := difference }
+
+/-- [silver_crypto_simd::kzg::fr::fr_add]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 20:0-22:1
+    Visibility: public -/
+def kzg.fr.fr_add
+  (a : blst.blst_fr) (b : blst.blst_fr) : Result blst.blst_fr := do
+  let a1 ← kzg.fr.add_words a.l b.l
+  let a2 ← kzg.fr.below_r a1
+  ok { l := a2 }
+
 /-- [silver_crypto_simd::kzg::fft::transform]: loop body 0:
     Source: 'crates/crypto_simd/src/kzg/fft.rs', lines 50:4-54:5 -/
 @[rust_loop_body]
@@ -7343,12 +10884,12 @@ def kzg.fft.transform_loop.body
     let bf ← Slice.index_usize out i1
     let i2 ← i * roots_stride
     let bf1 ← Slice.index_usize roots i2
-    let odd ← kzg.blst_ops.fr_mul bf bf1
+    let odd ← kzg.fr.fr_mul bf bf1
     let bf2 ← Slice.index_usize out i
-    let bf3 ← kzg.blst_ops.fr_sub bf2 odd
+    let bf3 ← kzg.fr.fr_sub bf2 odd
     let out1 ← Slice.update out i1 bf3
     let bf4 ← Slice.index_usize out1 i
-    let bf5 ← kzg.blst_ops.fr_add bf4 odd
+    let bf5 ← kzg.fr.fr_add bf4 odd
     let s ← Slice.update out1 i bf5
     ok (cont (iter1, s))
 
@@ -7436,7 +10977,7 @@ def kzg.fft.inverse_fft_loop.body
   | none => ok (done out)
   | some i =>
     let bf ← Slice.index_usize out i
-    let bf1 ← kzg.blst_ops.fr_mul bf inverse_n
+    let bf1 ← kzg.fr.fr_mul bf inverse_n
     let s ← Slice.update out i bf1
     ok (cont (iter1, s))
 
@@ -7466,19 +11007,19 @@ def kzg.fft.inverse_fft
   kzg.fft.inverse_fft_loop { start := 0#usize, «end» := i } out1 inverse_n
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_FIELD_ELEMENT]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 35:0-35:46
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 40:0-40:46
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_FIELD_ELEMENT : Std.Usize := 32#usize
 
 /-- [silver_crypto_simd::kzg::fr8::splat]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 64:0-66:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 66:0-68:1 -/
 def kzg.fr8.splat (x : Std.U64) : Result core.core_arch.x86.__m512i := do
   let i ← lift (UScalar.hcast .I64 x)
   core.core_arch.x86.avx512f._mm512_set1_epi64 i
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 312:8-315:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 314:8-317:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.normalise_loop.body
@@ -7505,7 +11046,7 @@ def kzg.fr8.Fr8.normalise_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 312:8-315:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 314:8-317:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.normalise_loop
@@ -7518,7 +11059,7 @@ def kzg.fr8.Fr8.normalise_loop
     (iter, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::normalise]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 309:4-317:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 311:4-319:5
     Visibility: public -/
 def kzg.fr8.Fr8.normalise (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let i ← kzg.fr8.MASK52
@@ -7529,7 +11070,7 @@ def kzg.fr8.Fr8.normalise (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   ok s
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 142:4-144:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 144:4-146:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_loop0.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -7552,7 +11093,7 @@ def kzg.fr8.reduce_row_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 142:4-144:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 144:4-146:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -7566,7 +11107,7 @@ def kzg.fr8.reduce_row_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 146:4-148:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 148:4-150:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_loop1.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -7591,7 +11132,7 @@ def kzg.fr8.reduce_row_loop1.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 146:4-148:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 148:4-150:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -7605,7 +11146,7 @@ def kzg.fr8.reduce_row_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 138:0-149:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 140:0-151:1 -/
 def kzg.fr8.reduce_row
   (t : Array core.core_arch.x86.__m512i 11#usize)
   (r : Array core.core_arch.x86.__m512i 5#usize)
@@ -7633,7 +11174,7 @@ def kzg.fr8.reduce_row
     i q
 
 /-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 78:4-80:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 80:4-82:5 -/
 @[rust_loop_body]
 def kzg.fr8.splat_limbs_loop.body
   (limbs : Array Std.U64 5#usize) (iter : core.ops.range.Range Std.Usize)
@@ -7653,7 +11194,7 @@ def kzg.fr8.splat_limbs_loop.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::splat_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 78:4-80:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 80:4-82:5 -/
 @[rust_loop]
 def kzg.fr8.splat_limbs_loop
   (iter : core.ops.range.Range Std.Usize) (limbs : Array Std.U64 5#usize)
@@ -7665,7 +11206,7 @@ def kzg.fr8.splat_limbs_loop
     (iter, v)
 
 /-- [silver_crypto_simd::kzg::fr8::splat_limbs]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 76:0-82:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 78:0-84:1 -/
 def kzg.fr8.splat_limbs
   (limbs : Array Std.U64 5#usize) :
   Result (Array core.core_arch.x86.__m512i 5#usize)
@@ -7690,7 +11231,7 @@ def kzg.fr8.R : Array Std.U64 5#usize :=
     ] (by rfl)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 275:4-285:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 277:4-287:5
     Visibility: public -/
 def kzg.fr8.Fr8.reduce
   (t : Array core.core_arch.x86.__m512i 11#usize) : Result kzg.fr8.Fr8 := do
@@ -7713,7 +11254,7 @@ def kzg.fr8.Fr8.reduce
   ok (Array.make 5#usize [ mi, mi1, mi2, mi3, mi4 ] (by rfl))
 
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 126:4-129:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 128:4-131:5 -/
 @[rust_loop_body]
 def kzg.fr8.muladd_row_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -7742,7 +11283,7 @@ def kzg.fr8.muladd_row_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 126:4-129:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 128:4-131:5 -/
 @[rust_loop]
 def kzg.fr8.muladd_row_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -7756,7 +11297,7 @@ def kzg.fr8.muladd_row_loop
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::muladd_row]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 125:0-130:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 127:0-132:1 -/
 @[reducible]
 def kzg.fr8.muladd_row
   (t : Array core.core_arch.x86.__m512i 11#usize)
@@ -7768,7 +11309,7 @@ def kzg.fr8.muladd_row
     b_i i
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::product]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 262:4-270:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 264:4-272:5
     Visibility: public -/
 def kzg.fr8.Fr8.product
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) :
@@ -7788,7 +11329,7 @@ def kzg.fr8.Fr8.product
   kzg.fr8.muladd_row t4 self mi5 4#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::mul]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 255:4-257:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 257:4-259:5
     Visibility: public -/
 def kzg.fr8.Fr8.mul
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -7796,14 +11337,14 @@ def kzg.fr8.Fr8.mul
   kzg.fr8.Fr8.reduce a
 
 /-- [silver_crypto_simd::kzg::fr8::borrowed]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 102:0-104:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 104:0-106:1 -/
 def kzg.fr8.borrowed
   (borrow : core.core_arch.x86.__m512i) : Result Std.U8 := do
   let mi ← kzg.fr8.splat core.num.U64.MAX
   core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask borrow mi
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 116:4-118:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 118:4-120:5 -/
 @[rust_loop_body]
 def kzg.fr8.select_borrowed_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -7826,7 +11367,7 @@ def kzg.fr8.select_borrowed_loop.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 116:4-118:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 118:4-120:5 -/
 @[rust_loop]
 def kzg.fr8.select_borrowed_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -7840,7 +11381,7 @@ def kzg.fr8.select_borrowed_loop
     (iter, r)
 
 /-- [silver_crypto_simd::kzg::fr8::select_borrowed]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 109:0-120:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 111:0-122:1 -/
 def kzg.fr8.select_borrowed
   (borrow : core.core_arch.x86.__m512i)
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -7854,7 +11395,7 @@ def kzg.fr8.select_borrowed
     b k r
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 91:4-95:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 93:4-97:5 -/
 @[rust_loop_body]
 def kzg.fr8.sub_limbs_loop.body
   (a : Array core.core_arch.x86.__m512i 5#usize)
@@ -7881,7 +11422,7 @@ def kzg.fr8.sub_limbs_loop.body
     ok (cont (iter1, a1, borrow1))
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 91:4-95:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 93:4-97:5 -/
 @[rust_loop]
 def kzg.fr8.sub_limbs_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -7899,7 +11440,7 @@ def kzg.fr8.sub_limbs_loop
     (iter, d, borrow)
 
 /-- [silver_crypto_simd::kzg::fr8::sub_limbs]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 87:0-97:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 89:0-99:1 -/
 def kzg.fr8.sub_limbs
   (a : Array core.core_arch.x86.__m512i 5#usize)
   (b : Array core.core_arch.x86.__m512i 5#usize) :
@@ -7914,7 +11455,7 @@ def kzg.fr8.sub_limbs
     mask d mi
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::canonical]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 376:4-379:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 378:4-381:5 -/
 def kzg.fr8.Fr8.canonical (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let a ← kzg.fr8.splat_limbs kzg.fr8.R
   let (d, borrow) ← kzg.fr8.sub_limbs self a
@@ -8138,7 +11679,7 @@ def kzg.fr8.u256x8.U256x8.to_bytes
   ok (index_mut_back elements1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::to_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 244:4-246:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 246:4-248:5
     Visibility: public -/
 def kzg.fr8.Fr8.to_bytes
   (self : kzg.fr8.Fr8) (bytes : Slice Std.U8) (at1 : Std.Usize) :
@@ -8149,7 +11690,7 @@ def kzg.fr8.Fr8.to_bytes
   kzg.fr8.u256x8.U256x8.to_bytes ux bytes at1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 444:12-446:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 446:12-448:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0_loop0.body
@@ -8172,7 +11713,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 444:12-446:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 446:12-448:13
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0_loop0
@@ -8187,7 +11728,7 @@ def kzg.fr8.Fr8.transpose_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 433:8-447:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 435:8-449:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.transpose_loop0.body
@@ -8235,7 +11776,7 @@ def kzg.fr8.Fr8.transpose_loop0.body
     ok (cont (iter1, out1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 433:8-447:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 435:8-449:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.transpose_loop0
@@ -8250,7 +11791,7 @@ def kzg.fr8.Fr8.transpose_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::transpose]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 431:4-458:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 433:4-460:5
     Visibility: public -/
 def kzg.fr8.Fr8.transpose
   (vectors : Slice kzg.fr8.Fr8) (at1 : Std.Usize) :
@@ -8312,7 +11853,7 @@ def kzg.fft8.set_block
   kzg.fft8.set_block_loop data at1 block 0#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 351:8-355:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 353:8-357:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.multiple_of_r_loop.body
@@ -8338,7 +11879,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop.body
     ok (cont (iter1, a, carry1))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 351:8-355:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 353:8-357:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.multiple_of_r_loop
@@ -8352,7 +11893,7 @@ def kzg.fr8.Fr8.multiple_of_r_loop
     (iter, v, carry)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::multiple_of_r]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 347:4-357:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 349:4-359:5
     Visibility: public -/
 def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   massert (c <= 35#u64)
@@ -8364,7 +11905,7 @@ def kzg.fr8.Fr8.multiple_of_r (c : Std.U64) : Result kzg.fr8.Fr8 := do
   ok v1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 338:8-340:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 340:8-342:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.sub_raw_loop.body
@@ -8389,7 +11930,7 @@ def kzg.fr8.Fr8.sub_raw_loop.body
     ok (cont (iter1, self, rhs, offset, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 338:8-340:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 340:8-342:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.sub_raw_loop
@@ -8404,7 +11945,7 @@ def kzg.fr8.Fr8.sub_raw_loop
     (iter, self, rhs, offset, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 336:4-342:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 338:4-344:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) (offset : kzg.fr8.Fr8) :
@@ -8418,7 +11959,7 @@ def kzg.fr8.Fr8.sub_raw
   ok s1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 325:8-327:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 327:8-329:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.add_raw_loop.body
@@ -8440,7 +11981,7 @@ def kzg.fr8.Fr8.add_raw_loop.body
     ok (cont (iter1, self, rhs, a))
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 325:8-327:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 327:8-329:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.add_raw_loop
@@ -8454,7 +11995,7 @@ def kzg.fr8.Fr8.add_raw_loop
     (iter, self, rhs, s)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add_raw]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 323:4-329:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 325:4-331:5
     Visibility: public -/
 def kzg.fr8.Fr8.add_raw
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -8466,7 +12007,7 @@ def kzg.fr8.Fr8.add_raw
   ok s1
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 168:4-170:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 170:4-172:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_multiplying_loop0.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -8489,7 +12030,7 @@ def kzg.fr8.reduce_row_multiplying_loop0.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 168:4-170:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 170:4-172:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_multiplying_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -8504,7 +12045,7 @@ def kzg.fr8.reduce_row_multiplying_loop0
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 171:4-173:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 173:4-175:5 -/
 @[rust_loop_body]
 def kzg.fr8.reduce_row_multiplying_loop1.body
   (r : Array core.core_arch.x86.__m512i 5#usize) (i : Std.Usize)
@@ -8529,7 +12070,7 @@ def kzg.fr8.reduce_row_multiplying_loop1.body
     ok (cont (iter1, a))
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 171:4-173:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 173:4-175:5 -/
 @[rust_loop]
 def kzg.fr8.reduce_row_multiplying_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -8544,7 +12085,7 @@ def kzg.fr8.reduce_row_multiplying_loop1
     (iter, t)
 
 /-- [silver_crypto_simd::kzg::fr8::reduce_row_multiplying]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 156:0-174:1 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 158:0-176:1 -/
 def kzg.fr8.reduce_row_multiplying
   (t : Array core.core_arch.x86.__m512i 11#usize)
   (r : Array core.core_arch.x86.__m512i 5#usize)
@@ -8573,7 +12114,7 @@ def kzg.fr8.reduce_row_multiplying
   ok (t2, next1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduce_while_multiplying]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 291:4-302:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 293:4-304:5
     Visibility: public -/
 def kzg.fr8.Fr8.reduce_while_multiplying
   (t : Array core.core_arch.x86.__m512i 11#usize) (a : kzg.fr8.Fr8)
@@ -8932,7 +12473,7 @@ def kzg.fft8.Fft8.dit
   kzg.fft8.Fft8.dit_loop1 self.vectors self.wide self.short data1 1#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::reduced]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 384:4-387:5 -/
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 386:4-389:5 -/
 def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   let f ← kzg.fr8.Fr8.multiple_of_r 2#u64
   let (d, borrow) ← kzg.fr8.sub_limbs self f
@@ -8940,7 +12481,7 @@ def kzg.fr8.Fr8.reduced (self : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
   ok a
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::sub]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 400:4-402:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 402:4-404:5
     Visibility: public -/
 def kzg.fr8.Fr8.sub
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -8950,7 +12491,7 @@ def kzg.fr8.Fr8.sub
   kzg.fr8.Fr8.reduced f2
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::add]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 392:4-394:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 394:4-396:5
     Visibility: public -/
 def kzg.fr8.Fr8.add
   (self : kzg.fr8.Fr8) (rhs : kzg.fr8.Fr8) : Result kzg.fr8.Fr8 := do
@@ -9388,7 +12929,7 @@ def kzg.extension_kernel.ExtensionKernel.extend
   ok ({ self with data := v2 }, cells1)
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_BLOB]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 40:0-40:84
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 45:0-45:84
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_BLOB : Result Std.Usize :=
@@ -9559,7 +13100,7 @@ def kzg.fr8.u256x8.U256x8.from_bytes
   kzg.fr8.u256x8.U256x8.from_blocks blocks1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::from_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 235:4-239:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 237:4-241:5
     Visibility: public -/
 def kzg.fr8.Fr8.from_bytes
   (bytes : Slice Std.U8) (at1 : Std.Usize) :
@@ -9635,14 +13176,14 @@ def kzg.extension_kernel.ExtensionKernel.decode
   ok (valid, { self with data := v })
 
 /-- [silver_crypto_simd::kzg::BYTES_PER_CELL]
-    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 39:0-39:84
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 44:0-44:84
     Visibility: public -/
 @[global_simps, irreducible]
 def kzg.BYTES_PER_CELL : Result Std.Usize :=
   kzg.FIELD_ELEMENTS_PER_CELL * kzg.BYTES_PER_FIELD_ELEMENT
 
 /-- [silver_crypto_simd::kzg::cell_extender::copy_blob]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 151:4-153:5 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 145:4-147:5 -/
 @[rust_loop_body]
 def kzg.cell_extender.copy_blob_loop.body
   (blob : Array Std.U8 131072#usize) (iter : core.ops.range.Range Std.Usize)
@@ -9671,7 +13212,7 @@ def kzg.cell_extender.copy_blob_loop.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::kzg::cell_extender::copy_blob]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 151:4-153:5 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 145:4-147:5 -/
 @[rust_loop]
 def kzg.cell_extender.copy_blob_loop
   (iter : core.ops.range.Range Std.Usize) (blob : Array Std.U8 131072#usize)
@@ -9684,7 +13225,7 @@ def kzg.cell_extender.copy_blob_loop
     (iter, cells)
 
 /-- [silver_crypto_simd::kzg::cell_extender::copy_blob]:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 150:0-154:1 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 144:0-148:1 -/
 def kzg.cell_extender.copy_blob
   (blob : Array Std.U8 131072#usize)
   (cells : Array (Array Std.U8 2048#usize) 128#usize) :
@@ -9695,8 +13236,71 @@ def kzg.cell_extender.copy_blob
   kzg.cell_extender.copy_blob_loop { start := 0#usize, «end» := i1 } blob
     cells
 
+/-- [silver_crypto_simd::kzg::fr::be_bytes_from_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 150:4-153:5 -/
+@[rust_loop_body]
+def kzg.fr.be_bytes_from_words_loop.body
+  (words : Array Std.U64 4#usize) (be : Array Std.U8 32#usize) (w : Std.Usize)
+  :
+  Result (ControlFlow ((Array Std.U8 32#usize) × Std.Usize) (Array Std.U8
+    32#usize))
+  := do
+  if w < 4#usize
+  then
+    let i ← w + 1#usize
+    let i1 ← 8#usize * i
+    let i2 ← 32#usize - i1
+    let i3 ← 8#usize * w
+    let i4 ← 32#usize - i3
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) be
+        { start := i2, «end» := i4 }
+    let i5 ← Array.index_usize words w
+    let a ← lift (core.num.U64.to_be_bytes i5)
+    let s1 ← lift (Array.to_slice a)
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let be1 := index_mut_back s2
+    ok (cont (be1, i))
+  else ok (done be)
+
+/-- [silver_crypto_simd::kzg::fr::be_bytes_from_words]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 150:4-153:5 -/
+@[rust_loop]
+def kzg.fr.be_bytes_from_words_loop
+  (words : Array Std.U64 4#usize) (be : Array Std.U8 32#usize) (w : Std.Usize)
+  :
+  Result (Array Std.U8 32#usize)
+  := do
+  loop
+    (fun (be1, w1) => kzg.fr.be_bytes_from_words_loop.body words be1 w1)
+    (be, w)
+
+/-- [silver_crypto_simd::kzg::fr::be_bytes_from_words]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 147:0-155:1 -/
+def kzg.fr.be_bytes_from_words
+  (words : Array Std.U64 4#usize) : Result (Array Std.U8 32#usize) := do
+  let be := Array.repeat 32#usize 0#u8
+  kzg.fr.be_bytes_from_words_loop words be 0#usize
+
+/-- [silver_crypto_simd::kzg::fr::fr_to_words]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 52:0-54:1
+    Visibility: public -/
+def kzg.fr.fr_to_words
+  (a : blst.blst_fr) : Result (Array Std.U64 4#usize) := do
+  kzg.fr.montgomery_product a.l
+    (Array.make 4#usize [ 1#u64, 0#u64, 0#u64, 0#u64 ] (by rfl))
+
+/-- [silver_crypto_simd::kzg::fr::fr_to_bytes]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 47:0-49:1
+    Visibility: public -/
+def kzg.fr.fr_to_bytes
+  (a : blst.blst_fr) : Result (Array Std.U8 32#usize) := do
+  let a1 ← kzg.fr.fr_to_words a
+  kzg.fr.be_bytes_from_words a1
+
 /-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 59:4-63:5
     Visibility: public -/
 @[rust_loop_body]
 def kzg.domain.reverse_bits_loop.body
@@ -9714,7 +13318,7 @@ def kzg.domain.reverse_bits_loop.body
   else ok (done reversed)
 
 /-- [silver_crypto_simd::kzg::domain::reverse_bits]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 61:4-65:5
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 59:4-63:5
     Visibility: public -/
 @[rust_loop]
 def kzg.domain.reverse_bits_loop
@@ -9727,7 +13331,7 @@ def kzg.domain.reverse_bits_loop
     (rest, reversed, bit)
 
 /-- [silver_crypto_simd::kzg::domain::reverse_bits]:
-    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 57:0-67:1
+    Source: 'crates/crypto_simd/src/kzg/domain.rs', lines 55:0-65:1
     Visibility: public -/
 @[reducible]
 def kzg.domain.reverse_bits
@@ -9735,7 +13339,7 @@ def kzg.domain.reverse_bits
   kzg.domain.reverse_bits_loop bits index 0#usize 0#u32
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 140:8-145:9 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 134:8-139:9 -/
 @[rust_loop_body]
 def kzg.cell_extender.CellExtender.write_extension_loop.body
   (self : kzg.cell_extender.CellExtender)
@@ -9753,7 +13357,7 @@ def kzg.cell_extender.CellExtender.write_extension_loop.body
     let bf ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         self.evaluations i
-    let bytes ← kzg.blst_ops.fr_to_bytes bf
+    let bytes ← kzg.fr.fr_to_bytes bf
     let i1 ← kzg.CELLS_PER_EXT_BLOB
     let i2 ← i1 / 2#usize
     let i3 ← j / kzg.FIELD_ELEMENTS_PER_CELL
@@ -9773,7 +13377,7 @@ def kzg.cell_extender.CellExtender.write_extension_loop.body
     ok (cont (iter1, a2))
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 140:8-145:9 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 134:8-139:9 -/
 @[rust_loop]
 def kzg.cell_extender.CellExtender.write_extension_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -9788,7 +13392,7 @@ def kzg.cell_extender.CellExtender.write_extension_loop
     (iter, cells)
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::write_extension]:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 139:4-146:5 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 133:4-140:5 -/
 @[reducible]
 def kzg.cell_extender.CellExtender.write_extension
   (self : kzg.cell_extender.CellExtender)
@@ -9798,8 +13402,78 @@ def kzg.cell_extender.CellExtender.write_extension
   kzg.cell_extender.CellExtender.write_extension_loop
     { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_BLOB } self cells
 
+/-- [silver_crypto_simd::kzg::fr::words_from_be_bytes]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 138:4-143:5 -/
+@[rust_loop_body]
+def kzg.fr.words_from_be_bytes_loop.body
+  (be : Array Std.U8 32#usize) (words : Array Std.U64 4#usize) (w : Std.Usize)
+  :
+  Result (ControlFlow ((Array Std.U64 4#usize) × Std.Usize) (Array Std.U64
+    4#usize))
+  := do
+  if w < 4#usize
+  then
+    let bytes := Array.repeat 8#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i ← w + 1#usize
+    let i1 ← 8#usize * i
+    let i2 ← 32#usize - i1
+    let i3 ← 8#usize * w
+    let i4 ← 32#usize - i3
+    let s1 ←
+      core.array.Array.index (core.ops.index.IndexSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) be
+        { start := i2, «end» := i4 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let bytes1 := to_slice_mut_back s2
+    let i5 ← lift (core.num.U64.from_be_bytes bytes1)
+    let a ← Array.update words w i5
+    ok (cont (a, i))
+  else ok (done words)
+
+/-- [silver_crypto_simd::kzg::fr::words_from_be_bytes]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 138:4-143:5 -/
+@[rust_loop]
+def kzg.fr.words_from_be_bytes_loop
+  (be : Array Std.U8 32#usize) (words : Array Std.U64 4#usize) (w : Std.Usize)
+  :
+  Result (Array Std.U64 4#usize)
+  := do
+  loop
+    (fun (words1, w1) => kzg.fr.words_from_be_bytes_loop.body be words1 w1)
+    (words, w)
+
+/-- [silver_crypto_simd::kzg::fr::words_from_be_bytes]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 135:0-145:1 -/
+def kzg.fr.words_from_be_bytes
+  (be : Array Std.U8 32#usize) : Result (Array Std.U64 4#usize) := do
+  let words := Array.repeat 4#usize 0#u64
+  kzg.fr.words_from_be_bytes_loop be words 0#usize
+
+/-- [silver_crypto_simd::kzg::fr::R_SQUARED]
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 17:0-18:97 -/
+@[global_simps, irreducible]
+def kzg.fr.R_SQUARED : Array Std.U64 4#usize :=
+  Array.make 4#usize [
+    14526898881837571181#u64, 3129137299524312099#u64, 419701826671360399#u64,
+    524908885293268753#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::kzg::fr::fr_from_bytes]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 34:0-38:1
+    Visibility: public -/
+def kzg.fr.fr_from_bytes
+  (bytes : Array Std.U8 32#usize) : Result (Option blst.blst_fr) := do
+  let value ← kzg.fr.words_from_be_bytes bytes
+  let (_, below) ← kzg.fr.sub_words value kzg.fr.R
+  if below
+  then
+    let a ← kzg.fr.montgomery_product value kzg.fr.R_SQUARED
+    ok (some { l := a })
+  else ok none
+
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 125:8-135:9 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 119:8-129:9 -/
 @[rust_loop_body]
 def kzg.cell_extender.CellExtender.decode_blob_loop.body
   (blob : Array Std.U8 131072#usize) (self : kzg.cell_extender.CellExtender)
@@ -9820,7 +13494,7 @@ def kzg.cell_extender.CellExtender.decode_blob_loop.body
         { start := i1, «end» := i3 }
     let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
     let bytes1 := to_slice_mut_back s2
-    let o ← kzg.blst_ops.fr_from_bytes bytes1
+    let o ← kzg.fr.fr_from_bytes bytes1
     match o with
     | none => ok (done (self, i))
     | some value =>
@@ -9833,7 +13507,7 @@ def kzg.cell_extender.CellExtender.decode_blob_loop.body
   else ok (done (self, i))
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 125:8-135:9 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 119:8-129:9 -/
 @[rust_loop]
 def kzg.cell_extender.CellExtender.decode_blob_loop
   (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize)
@@ -9846,7 +13520,7 @@ def kzg.cell_extender.CellExtender.decode_blob_loop
     (self, i)
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::decode_blob]:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 123:4-137:5 -/
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 117:4-131:5 -/
 def kzg.cell_extender.CellExtender.decode_blob
   (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize) :
   Result (Bool × kzg.cell_extender.CellExtender)
@@ -9856,7 +13530,7 @@ def kzg.cell_extender.CellExtender.decode_blob
   ok (i = kzg.FIELD_ELEMENTS_PER_BLOB, self1)
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 113:8-115:9
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 107:8-109:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.cell_extender.CellExtender.compute_loop.body
@@ -9876,7 +13550,7 @@ def kzg.cell_extender.CellExtender.compute_loop.body
     let bf1 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v k
-    let bf2 ← kzg.blst_ops.fr_mul bf bf1
+    let bf2 ← kzg.fr.fr_mul bf bf1
     let (_, index_mut_back) ←
       alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
         blst.blst_fr) v1 k
@@ -9884,7 +13558,7 @@ def kzg.cell_extender.CellExtender.compute_loop.body
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 113:8-115:9
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 107:8-109:9
     Visibility: public -/
 @[rust_loop]
 def kzg.cell_extender.CellExtender.compute_loop
@@ -9898,7 +13572,7 @@ def kzg.cell_extender.CellExtender.compute_loop
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::cell_extender::{silver_crypto_simd::kzg::cell_extender::CellExtender}::compute]:
-    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 86:4-119:5
+    Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 80:4-113:5
     Visibility: public -/
 def kzg.cell_extender.CellExtender.compute
   (self : kzg.cell_extender.CellExtender) (blob : Array Std.U8 131072#usize)
@@ -9945,7 +13619,7 @@ def kzg.cell_extender.CellExtender.compute
     else ok (false, { self with kernel := (some kernel1) }, cells)
 
 /-- [silver_crypto_simd::kzg::challenge::DOMAIN]
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 12:0-12:46 -/
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 19:0-19:46 -/
 @[global_simps, irreducible]
 def kzg.challenge.DOMAIN : Array Std.U8 16#usize :=
   Array.make 16#usize [
@@ -9953,161 +13627,1071 @@ def kzg.challenge.DOMAIN : Array Std.U8 16#usize :=
     72#u8, 95#u8, 95#u8, 86#u8, 49#u8, 95#u8
     ] (by rfl)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::new]:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 20:4-22:5
-    Visibility: public -/
-def kzg.challenge.Preimage.new : Result kzg.challenge.Preimage := do
-  ok { bytes := (alloc.vec.Vec.new Std.U8) }
+/-- [silver_crypto_simd::sha256::BLOCK]
+    Source: 'crates/crypto_simd/src/sha256.rs', lines 7:0-7:24 -/
+@[global_simps, irreducible] def sha256.BLOCK : Std.Usize := 64#usize
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 58:8-61:9 -/
+/-- [silver_crypto_simd::sha256::K]
+    Source: 'crates/crypto_simd/src/sha256.rs', lines 10:0-75:2 -/
+@[global_simps, irreducible]
+def sha256.K : Array Std.U32 64#usize :=
+  Array.make 64#usize [
+    1116352408#u32, 1899447441#u32, 3049323471#u32, 3921009573#u32,
+    961987163#u32, 1508970993#u32, 2453635748#u32, 2870763221#u32,
+    3624381080#u32, 310598401#u32, 607225278#u32, 1426881987#u32,
+    1925078388#u32, 2162078206#u32, 2614888103#u32, 3248222580#u32,
+    3835390401#u32, 4022224774#u32, 264347078#u32, 604807628#u32,
+    770255983#u32, 1249150122#u32, 1555081692#u32, 1996064986#u32,
+    2554220882#u32, 2821834349#u32, 2952996808#u32, 3210313671#u32,
+    3336571891#u32, 3584528711#u32, 113926993#u32, 338241895#u32,
+    666307205#u32, 773529912#u32, 1294757372#u32, 1396182291#u32,
+    1695183700#u32, 1986661051#u32, 2177026350#u32, 2456956037#u32,
+    2730485921#u32, 2820302411#u32, 3259730800#u32, 3345764771#u32,
+    3516065817#u32, 3600352804#u32, 4094571909#u32, 275423344#u32,
+    430227734#u32, 506948616#u32, 659060556#u32, 883997877#u32, 958139571#u32,
+    1322822218#u32, 1537002063#u32, 1747873779#u32, 1955562222#u32,
+    2024104815#u32, 2227730452#u32, 2361852424#u32, 2428436474#u32,
+    2756734187#u32, 3204031479#u32, 3329325298#u32
+    ] (by rfl)
+
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop body 1:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 82:8-87:9 -/
 @[rust_loop_body]
-def kzg.challenge.Preimage.push_u64_loop.body
-  (value : Std.U64) (self : kzg.challenge.Preimage) (shift : Std.I32) :
-  Result (ControlFlow (kzg.challenge.Preimage × Std.I32)
-    kzg.challenge.Preimage)
+def sha256.extensions.compress_blocks_loop0_loop0.body
+  (data : Slice Std.U8) (byte_swap : core.core_arch.x86.__m128i)
+  (block : Std.Usize) (w : Array core.core_arch.x86.__m128i 4#usize)
+  (i : Std.Usize) :
+  Result (ControlFlow ((Array core.core_arch.x86.__m128i 4#usize) × Std.Usize)
+    (Array core.core_arch.x86.__m128i 4#usize))
   := do
-  if shift > 0#i32
+  if i < 4#usize
   then
-    let shift1 ← shift - 8#i32
-    let i ← value >>> shift1
-    let i1 ← lift (UScalar.cast .U8 i)
-    let v ← alloc.vec.Vec.push self.bytes i1
-    ok (cont ({ bytes := v }, shift1))
-  else ok (done self)
+    let bytes := Array.repeat 16#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut bytes)
+    let i1 ← sha256.BLOCK * block
+    let i2 ← 16#usize * i
+    let i3 ← i1 + i2
+    let i4 ← i1 + i2
+    let i5 ← i4 + 16#usize
+    let s1 ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        Std.U8) data { start := i3, «end» := i5 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let bytes1 := to_slice_mut_back s2
+    let mi ← sha256.extensions.load_bytes bytes1
+    let mi1 ← core.core_arch.x86.ssse3._mm_shuffle_epi8 mi byte_swap
+    let a ← Array.update w i mi1
+    let i6 ← i + 1#usize
+    ok (cont (a, i6))
+  else ok (done w)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 58:8-61:9 -/
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop 1:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 82:8-87:9 -/
 @[rust_loop]
-def kzg.challenge.Preimage.push_u64_loop
-  (self : kzg.challenge.Preimage) (value : Std.U64) (shift : Std.I32) :
-  Result kzg.challenge.Preimage
+def sha256.extensions.compress_blocks_loop0_loop0
+  (data : Slice Std.U8) (byte_swap : core.core_arch.x86.__m128i)
+  (block : Std.Usize) (w : Array core.core_arch.x86.__m128i 4#usize)
+  (i : Std.Usize) :
+  Result (Array core.core_arch.x86.__m128i 4#usize)
   := do
   loop
-    (fun (self1, shift1) => kzg.challenge.Preimage.push_u64_loop.body value
-      self1 shift1)
-    (self, shift)
+    (fun (w1, i1) => sha256.extensions.compress_blocks_loop0_loop0.body data
+      byte_swap block w1 i1)
+    (w, i)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::push_u64]:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 56:4-62:5 -/
-@[reducible]
-def kzg.challenge.Preimage.push_u64
-  (self : kzg.challenge.Preimage) (value : Std.U64) :
-  Result kzg.challenge.Preimage
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop body 2:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 89:8-105:9 -/
+@[rust_loop_body]
+def sha256.extensions.compress_blocks_loop0_loop1.body
+  (abef : core.core_arch.x86.__m128i) (cdgh : core.core_arch.x86.__m128i)
+  (w : Array core.core_arch.x86.__m128i 4#usize) (quad : Std.Usize) :
+  Result (ControlFlow (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i
+    × (Array core.core_arch.x86.__m128i 4#usize) × Std.Usize)
+    (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i))
   := do
-  kzg.challenge.Preimage.push_u64_loop self value 64#i32
+  if quad < 16#usize
+  then
+    let i ← 4#usize * quad
+    let i1 ← Array.index_usize sha256.K i
+    let i2 ← i + 1#usize
+    let i3 ← Array.index_usize sha256.K i2
+    let i4 ← i + 2#usize
+    let i5 ← Array.index_usize sha256.K i4
+    let i6 ← i + 3#usize
+    let i7 ← Array.index_usize sha256.K i6
+    let k ←
+      sha256.extensions.load_words (Array.make 4#usize [ i1, i3, i5, i7 ] (by rfl))
+    let mi ← Array.index_usize w 0#usize
+    let wk ← core.core_arch.x86.sse2._mm_add_epi32 mi k
+    let cdgh1 ← core.core_arch.x86.sha._mm_sha256rnds2_epu32 cdgh abef wk
+    let mi1 ← core.core_arch.x86.sse2._mm_shuffle_epi32 14#i32 wk
+    let abef1 ← core.core_arch.x86.sha._mm_sha256rnds2_epu32 abef cdgh1 mi1
+    let w1 ←
+      if quad < 12#usize
+      then
+        do
+        let mi2 ← Array.index_usize w 1#usize
+        let partial1 ← core.core_arch.x86.sha._mm_sha256msg1_epu32 mi mi2
+        let mi3 ← Array.index_usize w 3#usize
+        let mi4 ← Array.index_usize w 2#usize
+        let mi5 ← core.core_arch.x86.ssse3._mm_alignr_epi8 4#i32 mi3 mi4
+        let mi6 ← core.core_arch.x86.sse2._mm_add_epi32 partial1 mi5
+        let next ← core.core_arch.x86.sha._mm_sha256msg2_epu32 mi6 mi3
+        ok (Array.make 4#usize [ mi2, mi4, mi3, next ] (by rfl) : Array
+          core.core_arch.x86.__m128i 4#usize)
+      else
+        do
+        let mi2 ← Array.index_usize w 1#usize
+        let mi3 ← Array.index_usize w 2#usize
+        let mi4 ← Array.index_usize w 3#usize
+        ok (Array.make 4#usize [ mi2, mi3, mi4, mi4 ] (by rfl) : Array
+          core.core_arch.x86.__m128i 4#usize)
+    let quad1 ← quad + 1#usize
+    ok (cont (abef1, cdgh1, w1, quad1))
+  else ok (done (abef, cdgh))
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 41:8-44:9
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop 2:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 89:8-105:9 -/
+@[rust_loop]
+def sha256.extensions.compress_blocks_loop0_loop1
+  (abef : core.core_arch.x86.__m128i) (cdgh : core.core_arch.x86.__m128i)
+  (w : Array core.core_arch.x86.__m128i 4#usize) (quad : Std.Usize) :
+  Result (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i)
+  := do
+  loop
+    (fun (abef1, cdgh1, w1, quad1) =>
+      sha256.extensions.compress_blocks_loop0_loop1.body abef1 cdgh1 w1 quad1)
+    (abef, cdgh, w, quad)
+
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 78:4-109:5 -/
+@[rust_loop_body]
+def sha256.extensions.compress_blocks_loop0.body
+  (blocks : Std.Usize) (data : Slice Std.U8)
+  (byte_swap : core.core_arch.x86.__m128i) (abef : core.core_arch.x86.__m128i)
+  (cdgh : core.core_arch.x86.__m128i) (block : Std.Usize) :
+  Result (ControlFlow (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i
+    × Std.Usize) (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i))
+  := do
+  if block < blocks
+  then
+    let w := Array.repeat 4#usize abef
+    let w1 ←
+      sha256.extensions.compress_blocks_loop0_loop0 data byte_swap block w
+        0#usize
+    let (abef1, cdgh1) ←
+      sha256.extensions.compress_blocks_loop0_loop1 abef cdgh w1 0#usize
+    let abef2 ← core.core_arch.x86.sse2._mm_add_epi32 abef1 abef
+    let cdgh2 ← core.core_arch.x86.sse2._mm_add_epi32 cdgh1 cdgh
+    let block1 ← block + 1#usize
+    ok (cont (abef2, cdgh2, block1))
+  else ok (done (abef, cdgh))
+
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 78:4-109:5 -/
+@[rust_loop]
+def sha256.extensions.compress_blocks_loop0
+  (blocks : Std.Usize) (data : Slice Std.U8)
+  (byte_swap : core.core_arch.x86.__m128i) (abef : core.core_arch.x86.__m128i)
+  (cdgh : core.core_arch.x86.__m128i) (block : Std.Usize) :
+  Result (core.core_arch.x86.__m128i × core.core_arch.x86.__m128i)
+  := do
+  loop
+    (fun (abef1, cdgh1, block1) => sha256.extensions.compress_blocks_loop0.body
+      blocks data byte_swap abef1 cdgh1 block1)
+    (abef, cdgh, block)
+
+/-- [silver_crypto_simd::sha256::extensions::compress_blocks]:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 68:0-115:1 -/
+def sha256.extensions.compress_blocks
+  (state : Array Std.U32 8#usize) (data : Slice Std.U8) (offset : Std.Usize)
+  (blocks : Std.Usize) :
+  Result (Array Std.U32 8#usize)
+  := do
+  let i ← sha256.BLOCK * blocks
+  let i1 ← offset + i
+  let data1 ←
+    core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+      Std.U8) data { start := offset, «end» := i1 }
+  let byte_swap ←
+    core.core_arch.x86.sse2._mm_set_epi64x 868365760874482187#i64
+      289644378169868803#i64
+  let i2 ← Array.index_usize state 0#usize
+  let i3 ← Array.index_usize state 1#usize
+  let i4 ← Array.index_usize state 2#usize
+  let i5 ← Array.index_usize state 3#usize
+  let dcba ←
+    sha256.extensions.load_words (Array.make 4#usize [ i2, i3, i4, i5 ] (by rfl))
+  let i6 ← Array.index_usize state 4#usize
+  let i7 ← Array.index_usize state 5#usize
+  let i8 ← Array.index_usize state 6#usize
+  let i9 ← Array.index_usize state 7#usize
+  let hgfe ←
+    sha256.extensions.load_words (Array.make 4#usize [ i6, i7, i8, i9 ] (by rfl))
+  let cdab ← core.core_arch.x86.sse2._mm_shuffle_epi32 177#i32 dcba
+  let efgh ← core.core_arch.x86.sse2._mm_shuffle_epi32 27#i32 hgfe
+  let abef ← core.core_arch.x86.ssse3._mm_alignr_epi8 8#i32 cdab efgh
+  let cdgh ← core.core_arch.x86.sse41._mm_blend_epi16 240#i32 efgh cdab
+  let (abef1, cdgh1) ←
+    sha256.extensions.compress_blocks_loop0 blocks data1 byte_swap abef cdgh
+      0#usize
+  let feba ← core.core_arch.x86.sse2._mm_shuffle_epi32 27#i32 abef1
+  let dchg ← core.core_arch.x86.sse2._mm_shuffle_epi32 177#i32 cdgh1
+  let mi ← core.core_arch.x86.sse41._mm_blend_epi16 240#i32 feba dchg
+  let low ← sha256.extensions.store_words mi
+  let mi1 ← core.core_arch.x86.ssse3._mm_alignr_epi8 8#i32 dchg feba
+  let high ← sha256.extensions.store_words mi1
+  let i10 ← Array.index_usize low 0#usize
+  let i11 ← Array.index_usize low 1#usize
+  let i12 ← Array.index_usize low 2#usize
+  let i13 ← Array.index_usize low 3#usize
+  let i14 ← Array.index_usize high 0#usize
+  let i15 ← Array.index_usize high 1#usize
+  let i16 ← Array.index_usize high 2#usize
+  let i17 ← Array.index_usize high 3#usize
+  ok (Array.make 8#usize [ i10, i11, i12, i13, i14, i15, i16, i17 ] (by rfl))
+
+/-- [silver_crypto_simd::sha256::extensions::{silver_crypto_simd::sha256::extensions::Sha256}::finish]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 58:8-61:9
     Visibility: public -/
 @[rust_loop_body]
-def kzg.challenge.Preimage.challenge_loop0.body
+def sha256.extensions.Sha256.finish_loop.body
+  (state : Array Std.U32 8#usize) (digest : Array Std.U8 32#usize)
+  (i : Std.Usize) :
+  Result (ControlFlow ((Array Std.U8 32#usize) × Std.Usize) (Array Std.U8
+    32#usize))
+  := do
+  if i < 8#usize
+  then
+    let i1 ← 4#usize * i
+    let i2 ← i1 + 4#usize
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) digest
+        { start := i1, «end» := i2 }
+    let i3 ← Array.index_usize state i
+    let a ← lift (core.num.U32.to_be_bytes i3)
+    let s1 ← lift (Array.to_slice a)
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let i4 ← i + 1#usize
+    let digest1 := index_mut_back s2
+    ok (cont (digest1, i4))
+  else ok (done digest)
+
+/-- [silver_crypto_simd::sha256::extensions::{silver_crypto_simd::sha256::extensions::Sha256}::finish]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 58:8-61:9
+    Visibility: public -/
+@[rust_loop]
+def sha256.extensions.Sha256.finish_loop
+  (state : Array Std.U32 8#usize) (digest : Array Std.U8 32#usize)
+  (i : Std.Usize) :
+  Result (Array Std.U8 32#usize)
+  := do
+  loop
+    (fun (digest1, i1) => sha256.extensions.Sha256.finish_loop.body state
+      digest1 i1)
+    (digest, i)
+
+/-- [silver_crypto_simd::sha256::extensions::{silver_crypto_simd::sha256::extensions::Sha256}::finish]:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 49:4-63:5
+    Visibility: public -/
+def sha256.extensions.Sha256.finish
+  (self : sha256.extensions.Sha256) : Result (Array Std.U8 32#usize) := do
+  let tail := Array.repeat 128#usize 0#u8
+  let (s, index_mut_back) ←
+    core.array.Array.index_mut (core.ops.index.IndexMutSlice
+      (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) tail
+      { «end» := self.pending_len }
+  let s1 ←
+    core.array.Array.index (core.ops.index.IndexSlice
+      (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) self.pending
+      { «end» := self.pending_len }
+  let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+  let tail1 := index_mut_back s2
+  let tail2 ← Array.update tail1 self.pending_len 128#u8
+  let i ← sha256.BLOCK - 8#usize
+  let blocks ← if self.pending_len < i
+                 then ok 1#usize
+                 else ok 2#usize
+  let i1 ← sha256.BLOCK * blocks
+  let i2 ← i1 - 8#usize
+  let (s3, index_mut_back1) ←
+    core.array.Array.index_mut (core.ops.index.IndexMutSlice
+      (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) tail2
+      { start := i2, «end» := i1 }
+  let i3 ← self.length <<< 3#i32
+  let a ← lift (core.num.U64.to_be_bytes i3)
+  let s4 ← lift (Array.to_slice a)
+  let s5 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s3 s4
+  let tail3 := index_mut_back1 s5
+  let s6 ← lift (Array.to_slice tail3)
+  let state ← sha256.extensions.compress_blocks self.state s6 0#usize blocks
+  let digest := Array.repeat 32#usize 0#u8
+  sha256.extensions.Sha256.finish_loop state digest 0#usize
+
+/-- [silver_crypto_simd::sha256::extensions::{silver_crypto_simd::sha256::extensions::Sha256}::update]:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 27:4-46:5
+    Visibility: public -/
+def sha256.extensions.Sha256.update
+  (self : sha256.extensions.Sha256) (data : Slice Std.U8) :
+  Result sha256.extensions.Sha256
+  := do
+  let i := Slice.len data
+  let i1 ← lift (UScalar.cast .U64 i)
+  let i2 ← lift (core.num.U64.wrapping_add self.length i1)
+  let room ← sha256.BLOCK - self.pending_len
+  let i3 := Slice.len data
+  if i3 < room
+  then
+    let i4 := Slice.len data
+    let i5 ← self.pending_len + i4
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) self.pending
+        { start := self.pending_len, «end» := i5 }
+    let s1 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s data
+    let i6 := Slice.len data
+    let i7 ← self.pending_len + i6
+    let a := index_mut_back s1
+    ok { self with pending := a, pending_len := i7, length := i2 }
+  else
+    let (a, a1, start) ←
+      if self.pending_len > 0#usize
+      then
+        do
+        let (s, index_mut_back) ←
+          core.array.Array.index_mut (core.ops.index.IndexMutSlice
+            (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8))
+            self.pending { start := self.pending_len }
+        let s1 ←
+          core.slice.index.Slice.index
+            (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8) data
+            { «end» := room }
+        let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+        let a2 := index_mut_back s2
+        let s3 ← lift (Array.to_slice a2)
+        let a3 ←
+          sha256.extensions.compress_blocks self.state s3 0#usize 1#usize
+        ok (a3, a2, room)
+      else ok (self.state, self.pending, 0#usize)
+    let i4 := Slice.len data
+    let i5 ← i4 - start
+    let blocks ← i5 / sha256.BLOCK
+    let a2 ← sha256.extensions.compress_blocks a data start blocks
+    let i6 ← sha256.BLOCK * blocks
+    let start1 ← start + i6
+    let i7 := Slice.len data
+    let i8 ← i7 - start1
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) a1
+        { «end» := i8 }
+    let s1 ←
+      core.slice.index.Slice.index
+        (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8) data
+        { start := start1 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let a3 := index_mut_back s2
+    ok { state := a2, pending := a3, pending_len := i8, length := i2 }
+
+/-- [silver_crypto_simd::sha256::INITIAL_STATE]
+    Source: 'crates/crypto_simd/src/sha256.rs', lines 78:0-87:2 -/
+@[global_simps, irreducible]
+def sha256.INITIAL_STATE : Array Std.U32 8#usize :=
+  Array.make 8#usize [
+    1779033703#u32, 3144134277#u32, 1013904242#u32, 2773480762#u32,
+    1359893119#u32, 2600822924#u32, 528734635#u32, 1541459225#u32
+    ] (by rfl)
+
+/-- [silver_crypto_simd::sha256::extensions::{silver_crypto_simd::sha256::extensions::Sha256}::new]:
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 22:4-24:5
+    Visibility: public -/
+def sha256.extensions.Sha256.new : Result sha256.extensions.Sha256 := do
+  let a := Array.repeat 64#usize 0#u8
+  ok
+    {
+      state := sha256.INITIAL_STATE,
+      pending := a,
+      pending_len := 0#usize,
+      length := 0#u64
+    }
+
+/-- [silver_crypto_simd::kzg::fr::fr_from_bytes_reduced]:
+    Source: 'crates/crypto_simd/src/kzg/fr.rs', lines 42:0-44:1
+    Visibility: public -/
+def kzg.fr.fr_from_bytes_reduced
+  (bytes : Array Std.U8 32#usize) : Result blst.blst_fr := do
+  let a ← kzg.fr.words_from_be_bytes bytes
+  let a1 ← kzg.fr.montgomery_product kzg.fr.R_SQUARED a
+  ok { l := a1 }
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 39:4-42:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.challenge.challenge_in_parts_loop0.body
   (unique_commitments : Slice (Array Std.U8 48#usize))
-  (self : kzg.challenge.Preimage) (i : Std.Usize) :
-  Result (ControlFlow (kzg.challenge.Preimage × Std.Usize)
-    kzg.challenge.Preimage)
+  (hasher : sha256.extensions.Sha256) (i : Std.Usize) :
+  Result (ControlFlow (sha256.extensions.Sha256 × Std.Usize)
+    sha256.extensions.Sha256)
   := do
   let i1 := Slice.len unique_commitments
   if i < i1
   then
     let a ← Slice.index_usize unique_commitments i
     let s ← lift (Array.to_slice a)
-    let v ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 self.bytes s
+    let hasher1 ← sha256.extensions.Sha256.update hasher s
     let i2 ← i + 1#usize
-    ok (cont ({ bytes := v }, i2))
-  else ok (done self)
+    ok (cont (hasher1, i2))
+  else ok (done hasher)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 41:8-44:9
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 39:4-42:5
     Visibility: public -/
 @[rust_loop]
-def kzg.challenge.Preimage.challenge_loop0
-  (self : kzg.challenge.Preimage)
-  (unique_commitments : Slice (Array Std.U8 48#usize)) (i : Std.Usize) :
-  Result kzg.challenge.Preimage
+def kzg.challenge.challenge_in_parts_loop0
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (hasher : sha256.extensions.Sha256) (i : Std.Usize) :
+  Result sha256.extensions.Sha256
   := do
   loop
-    (fun (self1, i1) => kzg.challenge.Preimage.challenge_loop0.body
-      unique_commitments self1 i1)
-    (self, i)
+    (fun (hasher1, i1) => kzg.challenge.challenge_in_parts_loop0.body
+      unique_commitments hasher1 i1)
+    (hasher, i)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 46:8-52:9
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 44:4-50:5
     Visibility: public -/
 @[rust_loop_body]
-def kzg.challenge.Preimage.challenge_loop1.body
+def kzg.challenge.challenge_in_parts_loop1.body
   (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
   (cells : Slice (Array Std.U8 2048#usize))
-  (proofs : Slice (Array Std.U8 48#usize)) (self : kzg.challenge.Preimage)
+  (proofs : Slice (Array Std.U8 48#usize)) (hasher : sha256.extensions.Sha256)
   (k : Std.Usize) :
-  Result (ControlFlow (kzg.challenge.Preimage × Std.Usize)
-    kzg.challenge.Preimage)
+  Result (ControlFlow (sha256.extensions.Sha256 × Std.Usize)
+    sha256.extensions.Sha256)
   := do
   let i := Slice.len cell_indices
   if k < i
   then
     let i1 ← Slice.index_usize commitment_of_cell k
     let i2 ← lift (UScalar.cast .U64 i1)
-    let self1 ← kzg.challenge.Preimage.push_u64 self i2
-    let i3 ← Slice.index_usize cell_indices k
-    let self2 ← kzg.challenge.Preimage.push_u64 self1 i3
-    let a ← Slice.index_usize cells k
+    let a ← lift (core.num.U64.to_be_bytes i2)
     let s ← lift (Array.to_slice a)
-    let v ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 self2.bytes s
-    let a1 ← Slice.index_usize proofs k
+    let hasher1 ← sha256.extensions.Sha256.update hasher s
+    let i3 ← Slice.index_usize cell_indices k
+    let a1 ← lift (core.num.U64.to_be_bytes i3)
     let s1 ← lift (Array.to_slice a1)
-    let v1 ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 v s1
+    let hasher2 ← sha256.extensions.Sha256.update hasher1 s1
+    let a2 ← Slice.index_usize cells k
+    let s2 ← lift (Array.to_slice a2)
+    let hasher3 ← sha256.extensions.Sha256.update hasher2 s2
+    let a3 ← Slice.index_usize proofs k
+    let s3 ← lift (Array.to_slice a3)
+    let hasher4 ← sha256.extensions.Sha256.update hasher3 s3
     let k1 ← k + 1#usize
-    ok (cont ({ bytes := v1 }, k1))
-  else ok (done self)
+    ok (cont (hasher4, k1))
+  else ok (done hasher)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 46:8-52:9
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 44:4-50:5
     Visibility: public -/
 @[rust_loop]
-def kzg.challenge.Preimage.challenge_loop1
-  (self : kzg.challenge.Preimage) (commitment_of_cell : Slice Std.Usize)
-  (cell_indices : Slice Std.U64) (cells : Slice (Array Std.U8 2048#usize))
-  (proofs : Slice (Array Std.U8 48#usize)) (k : Std.Usize) :
-  Result kzg.challenge.Preimage
+def kzg.challenge.challenge_in_parts_loop1
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) (hasher : sha256.extensions.Sha256)
+  (k : Std.Usize) :
+  Result sha256.extensions.Sha256
   := do
   loop
-    (fun (self1, k1) => kzg.challenge.Preimage.challenge_loop1.body
-      commitment_of_cell cell_indices cells proofs self1 k1)
-    (self, k)
+    (fun (hasher1, k1) => kzg.challenge.challenge_in_parts_loop1.body
+      commitment_of_cell cell_indices cells proofs hasher1 k1)
+    (hasher, k)
 
-/-- [silver_crypto_simd::kzg::challenge::{silver_crypto_simd::kzg::challenge::Preimage}::challenge]:
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 26:4-54:5
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts]:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 25:0-52:1
     Visibility: public -/
-def kzg.challenge.Preimage.challenge
-  (self : kzg.challenge.Preimage)
+def kzg.challenge.challenge_in_parts
   (unique_commitments : Slice (Array Std.U8 48#usize))
   (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
   (cells : Slice (Array Std.U8 2048#usize))
   (proofs : Slice (Array Std.U8 48#usize)) :
-  Result (blst.blst_fr × kzg.challenge.Preimage)
+  Result blst.blst_fr
   := do
-  let v ← alloc.vec.Vec.resize core.clone.CloneU8 self.bytes 0#usize 0#u8
+  let hasher ← sha256.extensions.Sha256.new
   let s ← lift (Array.to_slice kzg.challenge.DOMAIN)
-  let v1 ← alloc.vec.Vec.extend_from_slice core.clone.CloneU8 v s
+  let hasher1 ← sha256.extensions.Sha256.update hasher s
   let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
-  let self1 ← kzg.challenge.Preimage.push_u64 { bytes := v1 } i
+  let a ← lift (core.num.U64.to_be_bytes i)
+  let s1 ← lift (Array.to_slice a)
+  let hasher2 ← sha256.extensions.Sha256.update hasher1 s1
   let i1 ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_CELL)
-  let self2 ← kzg.challenge.Preimage.push_u64 self1 i1
+  let a1 ← lift (core.num.U64.to_be_bytes i1)
+  let s2 ← lift (Array.to_slice a1)
+  let hasher3 ← sha256.extensions.Sha256.update hasher2 s2
   let i2 := Slice.len unique_commitments
   let i3 ← lift (UScalar.cast .U64 i2)
-  let self3 ← kzg.challenge.Preimage.push_u64 self2 i3
+  let a2 ← lift (core.num.U64.to_be_bytes i3)
+  let s3 ← lift (Array.to_slice a2)
+  let hasher4 ← sha256.extensions.Sha256.update hasher3 s3
   let i4 := Slice.len cell_indices
   let i5 ← lift (UScalar.cast .U64 i4)
-  let self4 ← kzg.challenge.Preimage.push_u64 self3 i5
-  let self5 ←
-    kzg.challenge.Preimage.challenge_loop0 self4 unique_commitments 0#usize
-  let self6 ←
-    kzg.challenge.Preimage.challenge_loop1 self5 commitment_of_cell
-      cell_indices cells proofs 0#usize
-  let s1 := alloc.vec.Vec.deref self6.bytes
-  let bf ← kzg.blst_ops.hash_to_fr s1
-  ok (bf, self6)
+  let a3 ← lift (core.num.U64.to_be_bytes i5)
+  let s4 ← lift (Array.to_slice a3)
+  let hasher5 ← sha256.extensions.Sha256.update hasher4 s4
+  let hasher6 ←
+    kzg.challenge.challenge_in_parts_loop0 unique_commitments hasher5 0#usize
+  let hasher7 ←
+    kzg.challenge.challenge_in_parts_loop1 commitment_of_cell cell_indices
+      cells proofs hasher6 0#usize
+  let a4 ← sha256.extensions.Sha256.finish hasher7
+  kzg.fr.fr_from_bytes_reduced a4
+
+/-- [silver_crypto_simd::sha256::portable::big_sigma1]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 141:0-143:1 -/
+def sha256.portable.big_sigma1 (x : Std.U32) : Result Std.U32 := do
+  let i ← lift (core.num.U32.rotate_right x 6#u32)
+  let i1 ← lift (core.num.U32.rotate_right x 11#u32)
+  let i2 ← lift (i ^^^ i1)
+  let i3 ← lift (core.num.U32.rotate_right x 25#u32)
+  ok (i2 ^^^ i3)
+
+/-- [silver_crypto_simd::sha256::portable::big_sigma0]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 137:0-139:1 -/
+def sha256.portable.big_sigma0 (x : Std.U32) : Result Std.U32 := do
+  let i ← lift (core.num.U32.rotate_right x 2#u32)
+  let i1 ← lift (core.num.U32.rotate_right x 13#u32)
+  let i2 ← lift (i ^^^ i1)
+  let i3 ← lift (core.num.U32.rotate_right x 22#u32)
+  ok (i2 ^^^ i3)
+
+/-- [silver_crypto_simd::sha256::portable::maj]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 133:0-135:1 -/
+def sha256.portable.maj
+  (x : Std.U32) (y : Std.U32) (z : Std.U32) : Result Std.U32 := do
+  let i ← lift (x &&& y)
+  let i1 ← lift (x &&& z)
+  let i2 ← lift (i ^^^ i1)
+  let i3 ← lift (y &&& z)
+  ok (i2 ^^^ i3)
+
+/-- [silver_crypto_simd::sha256::portable::ch]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 129:0-131:1 -/
+def sha256.portable.ch
+  (x : Std.U32) (y : Std.U32) (z : Std.U32) : Result Std.U32 := do
+  let i ← lift (x &&& y)
+  let i1 ← lift (~~~ x)
+  let i2 ← lift (i1 &&& z)
+  ok (i ^^^ i2)
+
+/-- [silver_crypto_simd::sha256::portable::small_sigma1]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 149:0-151:1 -/
+def sha256.portable.small_sigma1 (x : Std.U32) : Result Std.U32 := do
+  let i ← lift (core.num.U32.rotate_right x 17#u32)
+  let i1 ← lift (core.num.U32.rotate_right x 19#u32)
+  let i2 ← lift (i ^^^ i1)
+  let i3 ← x >>> 10#i32
+  ok (i2 ^^^ i3)
+
+/-- [silver_crypto_simd::sha256::portable::small_sigma0]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 145:0-147:1 -/
+def sha256.portable.small_sigma0 (x : Std.U32) : Result Std.U32 := do
+  let i ← lift (core.num.U32.rotate_right x 7#u32)
+  let i1 ← lift (core.num.U32.rotate_right x 18#u32)
+  let i2 ← lift (i ^^^ i1)
+  let i3 ← x >>> 3#i32
+  ok (i2 ^^^ i3)
+
+/-- [silver_crypto_simd::sha256::portable::schedule]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 113:4-118:5 -/
+@[rust_loop_body]
+def sha256.portable.schedule_loop0.body
+  (data : Slice Std.U8) (offset : Std.Usize) (w : Array Std.U32 64#usize)
+  (t : Std.Usize) :
+  Result (ControlFlow ((Array Std.U32 64#usize) × Std.Usize) ((Array Std.U32
+    64#usize) × Std.Usize))
+  := do
+  if t < 16#usize
+  then
+    let word := Array.repeat 4#usize 0#u8
+    let (s, to_slice_mut_back) ← lift (Array.to_slice_mut word)
+    let i ← 4#usize * t
+    let i1 ← offset + i
+    let i2 ← offset + i
+    let i3 ← i2 + 4#usize
+    let s1 ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        Std.U8) data { start := i1, «end» := i3 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let word1 := to_slice_mut_back s2
+    let i4 ← lift (core.num.U32.from_be_bytes word1)
+    let a ← Array.update w t i4
+    let t1 ← t + 1#usize
+    ok (cont (a, t1))
+  else ok (done (w, t))
+
+/-- [silver_crypto_simd::sha256::portable::schedule]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 113:4-118:5 -/
+@[rust_loop]
+def sha256.portable.schedule_loop0
+  (data : Slice Std.U8) (offset : Std.Usize) (w : Array Std.U32 64#usize)
+  (t : Std.Usize) :
+  Result ((Array Std.U32 64#usize) × Std.Usize)
+  := do
+  loop
+    (fun (w1, t1) => sha256.portable.schedule_loop0.body data offset w1 t1)
+    (w, t)
+
+/-- [silver_crypto_simd::sha256::portable::schedule]: loop body 1:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 119:4-125:5 -/
+@[rust_loop_body]
+def sha256.portable.schedule_loop1.body
+  (w : Array Std.U32 64#usize) (t : Std.Usize) :
+  Result (ControlFlow ((Array Std.U32 64#usize) × Std.Usize) (Array Std.U32
+    64#usize))
+  := do
+  if t < 64#usize
+  then
+    let i ← t - 16#usize
+    let i1 ← Array.index_usize w i
+    let i2 ← t - 15#usize
+    let i3 ← Array.index_usize w i2
+    let i4 ← sha256.portable.small_sigma0 i3
+    let i5 ← lift (core.num.U32.wrapping_add i1 i4)
+    let i6 ← t - 7#usize
+    let i7 ← Array.index_usize w i6
+    let i8 ← lift (core.num.U32.wrapping_add i5 i7)
+    let i9 ← t - 2#usize
+    let i10 ← Array.index_usize w i9
+    let i11 ← sha256.portable.small_sigma1 i10
+    let i12 ← lift (core.num.U32.wrapping_add i8 i11)
+    let a ← Array.update w t i12
+    let t1 ← t + 1#usize
+    ok (cont (a, t1))
+  else ok (done w)
+
+/-- [silver_crypto_simd::sha256::portable::schedule]: loop 1:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 119:4-125:5 -/
+@[rust_loop]
+def sha256.portable.schedule_loop1
+  (w : Array Std.U32 64#usize) (t : Std.Usize) :
+  Result (Array Std.U32 64#usize)
+  := do
+  loop
+    (fun (w1, t1) => sha256.portable.schedule_loop1.body w1 t1)
+    (w, t)
+
+/-- [silver_crypto_simd::sha256::portable::schedule]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 110:0-127:1 -/
+def sha256.portable.schedule
+  (data : Slice Std.U8) (offset : Std.Usize) :
+  Result (Array Std.U32 64#usize)
+  := do
+  let w := Array.repeat 64#usize 0#u32
+  let (w1, t) ← sha256.portable.schedule_loop0 data offset w 0#usize
+  sha256.portable.schedule_loop1 w1 t
+
+/-- [silver_crypto_simd::sha256::portable::compress]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 80:4-96:5 -/
+@[rust_loop_body]
+def sha256.portable.compress_loop.body
+  (w : Array Std.U32 64#usize) (a : Std.U32) (b : Std.U32) (c : Std.U32)
+  (d : Std.U32) (e : Std.U32) (f : Std.U32) (g : Std.U32) (h : Std.U32)
+  (t : Std.Usize) :
+  Result (ControlFlow (Std.U32 × Std.U32 × Std.U32 × Std.U32 × Std.U32 ×
+    Std.U32 × Std.U32 × Std.U32 × Std.Usize) (Std.U32 × Std.U32 × Std.U32
+    × Std.U32 × Std.U32 × Std.U32 × Std.U32 × Std.U32))
+  := do
+  if t < 64#usize
+  then
+    let i ← sha256.portable.big_sigma1 e
+    let i1 ← lift (core.num.U32.wrapping_add h i)
+    let i2 ← sha256.portable.ch e f g
+    let i3 ← lift (core.num.U32.wrapping_add i1 i2)
+    let i4 ← Array.index_usize sha256.K t
+    let i5 ← lift (core.num.U32.wrapping_add i3 i4)
+    let i6 ← Array.index_usize w t
+    let t1 ← lift (core.num.U32.wrapping_add i5 i6)
+    let i7 ← sha256.portable.big_sigma0 a
+    let i8 ← sha256.portable.maj a b c
+    let t2 ← lift (core.num.U32.wrapping_add i7 i8)
+    let e1 ← lift (core.num.U32.wrapping_add d t1)
+    let a1 ← lift (core.num.U32.wrapping_add t1 t2)
+    let t3 ← t + 1#usize
+    ok (cont (a1, a, b, c, e1, e, f, g, t3))
+  else ok (done (a, b, c, d, e, f, g, h))
+
+/-- [silver_crypto_simd::sha256::portable::compress]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 80:4-96:5 -/
+@[rust_loop]
+def sha256.portable.compress_loop
+  (w : Array Std.U32 64#usize) (a : Std.U32) (b : Std.U32) (c : Std.U32)
+  (d : Std.U32) (e : Std.U32) (f : Std.U32) (g : Std.U32) (h : Std.U32)
+  (t : Std.Usize) :
+  Result (Std.U32 × Std.U32 × Std.U32 × Std.U32 × Std.U32 × Std.U32 ×
+    Std.U32 × Std.U32)
+  := do
+  loop
+    (fun (a1, b1, c1, d1, e1, f1, g1, h1, t1) =>
+      sha256.portable.compress_loop.body w a1 b1 c1 d1 e1 f1 g1 h1 t1)
+    (a, b, c, d, e, f, g, h, t)
+
+/-- [silver_crypto_simd::sha256::portable::compress]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 69:0-107:1 -/
+def sha256.portable.compress
+  (state : Array Std.U32 8#usize) (data : Slice Std.U8) (offset : Std.Usize) :
+  Result (Array Std.U32 8#usize)
+  := do
+  let w ← sha256.portable.schedule data offset
+  let a ← Array.index_usize state 0#usize
+  let b ← Array.index_usize state 1#usize
+  let c ← Array.index_usize state 2#usize
+  let d ← Array.index_usize state 3#usize
+  let e ← Array.index_usize state 4#usize
+  let f ← Array.index_usize state 5#usize
+  let g ← Array.index_usize state 6#usize
+  let h ← Array.index_usize state 7#usize
+  let (a1, b1, c1, d1, e1, f1, g1, h1) ←
+    sha256.portable.compress_loop w a b c d e f g h 0#usize
+  let i ← Array.index_usize state 0#usize
+  let i1 ← lift (core.num.U32.wrapping_add i a1)
+  let i2 ← Array.index_usize state 1#usize
+  let i3 ← lift (core.num.U32.wrapping_add i2 b1)
+  let i4 ← Array.index_usize state 2#usize
+  let i5 ← lift (core.num.U32.wrapping_add i4 c1)
+  let i6 ← Array.index_usize state 3#usize
+  let i7 ← lift (core.num.U32.wrapping_add i6 d1)
+  let i8 ← Array.index_usize state 4#usize
+  let i9 ← lift (core.num.U32.wrapping_add i8 e1)
+  let i10 ← Array.index_usize state 5#usize
+  let i11 ← lift (core.num.U32.wrapping_add i10 f1)
+  let i12 ← Array.index_usize state 6#usize
+  let i13 ← lift (core.num.U32.wrapping_add i12 g1)
+  let i14 ← Array.index_usize state 7#usize
+  let i15 ← lift (core.num.U32.wrapping_add i14 h1)
+  ok (Array.make 8#usize [ i1, i3, i5, i7, i9, i11, i13, i15 ] (by rfl))
+
+/-- [silver_crypto_simd::sha256::portable::compress_blocks]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 61:4-64:5 -/
+@[rust_loop_body]
+def sha256.portable.compress_blocks_loop.body
+  (data : Slice Std.U8) (offset : Std.Usize) (blocks : Std.Usize)
+  (state : Array Std.U32 8#usize) (block : Std.Usize) :
+  Result (ControlFlow ((Array Std.U32 8#usize) × Std.Usize) (Array Std.U32
+    8#usize))
+  := do
+  if block < blocks
+  then
+    let i ← sha256.BLOCK * block
+    let i1 ← offset + i
+    let state1 ← sha256.portable.compress state data i1
+    let block1 ← block + 1#usize
+    ok (cont (state1, block1))
+  else ok (done state)
+
+/-- [silver_crypto_simd::sha256::portable::compress_blocks]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 61:4-64:5 -/
+@[rust_loop]
+def sha256.portable.compress_blocks_loop
+  (data : Slice Std.U8) (offset : Std.Usize) (blocks : Std.Usize)
+  (state : Array Std.U32 8#usize) (block : Std.Usize) :
+  Result (Array Std.U32 8#usize)
+  := do
+  loop
+    (fun (state1, block1) => sha256.portable.compress_blocks_loop.body data
+      offset blocks state1 block1)
+    (state, block)
+
+/-- [silver_crypto_simd::sha256::portable::compress_blocks]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 58:0-66:1 -/
+@[reducible]
+def sha256.portable.compress_blocks
+  (state : Array Std.U32 8#usize) (data : Slice Std.U8) (offset : Std.Usize)
+  (blocks : Std.Usize) :
+  Result (Array Std.U32 8#usize)
+  := do
+  sha256.portable.compress_blocks_loop data offset blocks state 0#usize
+
+/-- [silver_crypto_simd::sha256::portable::{silver_crypto_simd::sha256::portable::Sha256}::finish]: loop body 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 49:8-52:9
+    Visibility: public -/
+@[rust_loop_body]
+def sha256.portable.Sha256.finish_loop.body
+  (state : Array Std.U32 8#usize) (digest : Array Std.U8 32#usize)
+  (i : Std.Usize) :
+  Result (ControlFlow ((Array Std.U8 32#usize) × Std.Usize) (Array Std.U8
+    32#usize))
+  := do
+  if i < 8#usize
+  then
+    let i1 ← 4#usize * i
+    let i2 ← i1 + 4#usize
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) digest
+        { start := i1, «end» := i2 }
+    let i3 ← Array.index_usize state i
+    let a ← lift (core.num.U32.to_be_bytes i3)
+    let s1 ← lift (Array.to_slice a)
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let i4 ← i + 1#usize
+    let digest1 := index_mut_back s2
+    ok (cont (digest1, i4))
+  else ok (done digest)
+
+/-- [silver_crypto_simd::sha256::portable::{silver_crypto_simd::sha256::portable::Sha256}::finish]: loop 0:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 49:8-52:9
+    Visibility: public -/
+@[rust_loop]
+def sha256.portable.Sha256.finish_loop
+  (state : Array Std.U32 8#usize) (digest : Array Std.U8 32#usize)
+  (i : Std.Usize) :
+  Result (Array Std.U8 32#usize)
+  := do
+  loop
+    (fun (digest1, i1) => sha256.portable.Sha256.finish_loop.body state digest1
+      i1)
+    (digest, i)
+
+/-- [silver_crypto_simd::sha256::portable::{silver_crypto_simd::sha256::portable::Sha256}::finish]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 40:4-54:5
+    Visibility: public -/
+def sha256.portable.Sha256.finish
+  (self : sha256.portable.Sha256) : Result (Array Std.U8 32#usize) := do
+  let tail := Array.repeat 128#usize 0#u8
+  let (s, index_mut_back) ←
+    core.array.Array.index_mut (core.ops.index.IndexMutSlice
+      (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) tail
+      { «end» := self.pending_len }
+  let s1 ←
+    core.array.Array.index (core.ops.index.IndexSlice
+      (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) self.pending
+      { «end» := self.pending_len }
+  let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+  let tail1 := index_mut_back s2
+  let tail2 ← Array.update tail1 self.pending_len 128#u8
+  let i ← sha256.BLOCK - 8#usize
+  let blocks ← if self.pending_len < i
+                 then ok 1#usize
+                 else ok 2#usize
+  let i1 ← sha256.BLOCK * blocks
+  let i2 ← i1 - 8#usize
+  let (s3, index_mut_back1) ←
+    core.array.Array.index_mut (core.ops.index.IndexMutSlice
+      (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) tail2
+      { start := i2, «end» := i1 }
+  let i3 ← self.length <<< 3#i32
+  let a ← lift (core.num.U64.to_be_bytes i3)
+  let s4 ← lift (Array.to_slice a)
+  let s5 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s3 s4
+  let tail3 := index_mut_back1 s5
+  let s6 ← lift (Array.to_slice tail3)
+  let state ← sha256.portable.compress_blocks self.state s6 0#usize blocks
+  let digest := Array.repeat 32#usize 0#u8
+  sha256.portable.Sha256.finish_loop state digest 0#usize
+
+/-- [silver_crypto_simd::sha256::portable::{silver_crypto_simd::sha256::portable::Sha256}::update]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 19:4-38:5
+    Visibility: public -/
+def sha256.portable.Sha256.update
+  (self : sha256.portable.Sha256) (data : Slice Std.U8) :
+  Result sha256.portable.Sha256
+  := do
+  let i := Slice.len data
+  let i1 ← lift (UScalar.cast .U64 i)
+  let i2 ← lift (core.num.U64.wrapping_add self.length i1)
+  let room ← sha256.BLOCK - self.pending_len
+  let i3 := Slice.len data
+  if i3 < room
+  then
+    let i4 := Slice.len data
+    let i5 ← self.pending_len + i4
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeUsizeSlice Std.U8)) self.pending
+        { start := self.pending_len, «end» := i5 }
+    let s1 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s data
+    let i6 := Slice.len data
+    let i7 ← self.pending_len + i6
+    let a := index_mut_back s1
+    ok { self with pending := a, pending_len := i7, length := i2 }
+  else
+    let (a, a1, start) ←
+      if self.pending_len > 0#usize
+      then
+        do
+        let (s, index_mut_back) ←
+          core.array.Array.index_mut (core.ops.index.IndexMutSlice
+            (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8))
+            self.pending { start := self.pending_len }
+        let s1 ←
+          core.slice.index.Slice.index
+            (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8) data
+            { «end» := room }
+        let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+        let a2 := index_mut_back s2
+        let s3 ← lift (Array.to_slice a2)
+        let a3 ←
+          sha256.portable.compress_blocks self.state s3 0#usize 1#usize
+        ok (a3, a2, room)
+      else ok (self.state, self.pending, 0#usize)
+    let i4 := Slice.len data
+    let i5 ← i4 - start
+    let blocks ← i5 / sha256.BLOCK
+    let a2 ← sha256.portable.compress_blocks a data start blocks
+    let i6 ← sha256.BLOCK * blocks
+    let start1 ← start + i6
+    let i7 := Slice.len data
+    let i8 ← i7 - start1
+    let (s, index_mut_back) ←
+      core.array.Array.index_mut (core.ops.index.IndexMutSlice
+        (core.slice.index.SliceIndexRangeToUsizeSlice Std.U8)) a1
+        { «end» := i8 }
+    let s1 ←
+      core.slice.index.Slice.index
+        (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8) data
+        { start := start1 }
+    let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
+    let a3 := index_mut_back s2
+    ok { state := a2, pending := a3, pending_len := i8, length := i2 }
+
+/-- [silver_crypto_simd::sha256::portable::{silver_crypto_simd::sha256::portable::Sha256}::new]:
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 15:4-17:5
+    Visibility: public -/
+def sha256.portable.Sha256.new : Result sha256.portable.Sha256 := do
+  let a := Array.repeat 64#usize 0#u8
+  ok
+    {
+      state := sha256.INITIAL_STATE,
+      pending := a,
+      pending_len := 0#usize,
+      length := 0#u64
+    }
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts_portable]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 69:4-72:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.challenge.challenge_in_parts_portable_loop0.body
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (hasher : sha256.portable.Sha256) (i : Std.Usize) :
+  Result (ControlFlow (sha256.portable.Sha256 × Std.Usize)
+    sha256.portable.Sha256)
+  := do
+  let i1 := Slice.len unique_commitments
+  if i < i1
+  then
+    let a ← Slice.index_usize unique_commitments i
+    let s ← lift (Array.to_slice a)
+    let hasher1 ← sha256.portable.Sha256.update hasher s
+    let i2 ← i + 1#usize
+    ok (cont (hasher1, i2))
+  else ok (done hasher)
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts_portable]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 69:4-72:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.challenge.challenge_in_parts_portable_loop0
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (hasher : sha256.portable.Sha256) (i : Std.Usize) :
+  Result sha256.portable.Sha256
+  := do
+  loop
+    (fun (hasher1, i1) => kzg.challenge.challenge_in_parts_portable_loop0.body
+      unique_commitments hasher1 i1)
+    (hasher, i)
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts_portable]: loop body 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 74:4-80:5
+    Visibility: public -/
+@[rust_loop_body]
+def kzg.challenge.challenge_in_parts_portable_loop1.body
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) (hasher : sha256.portable.Sha256)
+  (k : Std.Usize) :
+  Result (ControlFlow (sha256.portable.Sha256 × Std.Usize)
+    sha256.portable.Sha256)
+  := do
+  let i := Slice.len cell_indices
+  if k < i
+  then
+    let i1 ← Slice.index_usize commitment_of_cell k
+    let i2 ← lift (UScalar.cast .U64 i1)
+    let a ← lift (core.num.U64.to_be_bytes i2)
+    let s ← lift (Array.to_slice a)
+    let hasher1 ← sha256.portable.Sha256.update hasher s
+    let i3 ← Slice.index_usize cell_indices k
+    let a1 ← lift (core.num.U64.to_be_bytes i3)
+    let s1 ← lift (Array.to_slice a1)
+    let hasher2 ← sha256.portable.Sha256.update hasher1 s1
+    let a2 ← Slice.index_usize cells k
+    let s2 ← lift (Array.to_slice a2)
+    let hasher3 ← sha256.portable.Sha256.update hasher2 s2
+    let a3 ← Slice.index_usize proofs k
+    let s3 ← lift (Array.to_slice a3)
+    let hasher4 ← sha256.portable.Sha256.update hasher3 s3
+    let k1 ← k + 1#usize
+    ok (cont (hasher4, k1))
+  else ok (done hasher)
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts_portable]: loop 1:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 74:4-80:5
+    Visibility: public -/
+@[rust_loop]
+def kzg.challenge.challenge_in_parts_portable_loop1
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) (hasher : sha256.portable.Sha256)
+  (k : Std.Usize) :
+  Result sha256.portable.Sha256
+  := do
+  loop
+    (fun (hasher1, k1) => kzg.challenge.challenge_in_parts_portable_loop1.body
+      commitment_of_cell cell_indices cells proofs hasher1 k1)
+    (hasher, k)
+
+/-- [silver_crypto_simd::kzg::challenge::challenge_in_parts_portable]:
+    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 55:0-82:1
+    Visibility: public -/
+def kzg.challenge.challenge_in_parts_portable
+  (unique_commitments : Slice (Array Std.U8 48#usize))
+  (commitment_of_cell : Slice Std.Usize) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) :
+  Result blst.blst_fr
+  := do
+  let hasher ← sha256.portable.Sha256.new
+  let s ← lift (Array.to_slice kzg.challenge.DOMAIN)
+  let hasher1 ← sha256.portable.Sha256.update hasher s
+  let i ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_BLOB)
+  let a ← lift (core.num.U64.to_be_bytes i)
+  let s1 ← lift (Array.to_slice a)
+  let hasher2 ← sha256.portable.Sha256.update hasher1 s1
+  let i1 ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_CELL)
+  let a1 ← lift (core.num.U64.to_be_bytes i1)
+  let s2 ← lift (Array.to_slice a1)
+  let hasher3 ← sha256.portable.Sha256.update hasher2 s2
+  let i2 := Slice.len unique_commitments
+  let i3 ← lift (UScalar.cast .U64 i2)
+  let a2 ← lift (core.num.U64.to_be_bytes i3)
+  let s3 ← lift (Array.to_slice a2)
+  let hasher4 ← sha256.portable.Sha256.update hasher3 s3
+  let i4 := Slice.len cell_indices
+  let i5 ← lift (UScalar.cast .U64 i4)
+  let a3 ← lift (core.num.U64.to_be_bytes i5)
+  let s4 ← lift (Array.to_slice a3)
+  let hasher5 ← sha256.portable.Sha256.update hasher4 s4
+  let hasher6 ←
+    kzg.challenge.challenge_in_parts_portable_loop0 unique_commitments hasher5
+      0#usize
+  let hasher7 ←
+    kzg.challenge.challenge_in_parts_portable_loop1 commitment_of_cell
+      cell_indices cells proofs hasher6 0#usize
+  let a4 ← sha256.portable.Sha256.finish hasher7
+  kzg.fr.fr_from_bytes_reduced a4
 
 /-- [silver_crypto_simd::kzg::cosets::LOG_CELL]
     Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 13:0-13:24 -/
@@ -10117,8 +14701,14 @@ def kzg.challenge.Preimage.challenge
     Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 14:0-14:29 -/
 @[global_simps, irreducible] def kzg.cosets.LOG_EXT_BLOB : Std.U32 := 13#u32
 
+/-- [silver_crypto_simd::kzg::INVERSE_CELL_SIZE]
+    Source: 'crates/crypto_simd/src/kzg/mod.rs', lines 55:0-55:94 -/
+@[global_simps, irreducible]
+def kzg.INVERSE_CELL_SIZE : blst.blst_fr :=
+  { l := (Array.make 4#usize [ 0#u64, 0#u64, 0#u64, 288230376151711744#u64 ] (by rfl)) }
+
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 38:12-40:13
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 39:12-41:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.cosets.Cosets.new_loop0_loop0.body
@@ -10131,11 +14721,11 @@ def kzg.cosets.Cosets.new_loop0_loop0.body
   match o with
   | none => ok (done power)
   | some _ =>
-    let power1 ← kzg.blst_ops.fr_mul power power
+    let power1 ← kzg.fr.fr_mul power power
     ok (cont (iter1, power1))
 
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 38:12-40:13
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 39:12-41:13
     Visibility: public -/
 @[rust_loop]
 def kzg.cosets.Cosets.new_loop0_loop0
@@ -10148,11 +14738,12 @@ def kzg.cosets.Cosets.new_loop0_loop0
     (iter, power)
 
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 34:8-42:9
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 35:8-43:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.cosets.Cosets.new_loop0.body
   (ext_roots : alloc.vec.Vec blst.blst_fr)
+  (inverse_ext_roots : alloc.vec.Vec blst.blst_fr)
   (iter : core.ops.range.Range Std.Usize)
   (shift_inverse : alloc.vec.Vec blst.blst_fr)
   (shift_pow_cell : alloc.vec.Vec blst.blst_fr) :
@@ -10166,56 +14757,58 @@ def kzg.cosets.Cosets.new_loop0.body
   | none => ok (done (shift_inverse, shift_pow_cell))
   | some k =>
     let i ← kzg.FIELD_ELEMENTS_PER_CELL * k
-    let i1 ← kzg.domain.reverse_bits i kzg.cosets.LOG_EXT_BLOB
-    let shift ←
+    let exponent ← kzg.domain.reverse_bits i kzg.cosets.LOG_EXT_BLOB
+    let bf ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
-        ext_roots i1
-    let bf ← kzg.blst_ops.fr_inverse shift
+        inverse_ext_roots exponent
     let shift_inverse1 ← alloc.vec.Vec.push shift_inverse bf
     let power ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
+        ext_roots exponent
+    let power1 ←
       kzg.cosets.Cosets.new_loop0_loop0
-        { start := 0#u32, «end» := kzg.cosets.LOG_CELL } shift
-    let shift_pow_cell1 ← alloc.vec.Vec.push shift_pow_cell power
+        { start := 0#u32, «end» := kzg.cosets.LOG_CELL } power
+    let shift_pow_cell1 ← alloc.vec.Vec.push shift_pow_cell power1
     ok (cont (iter1, shift_inverse1, shift_pow_cell1))
 
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 34:8-42:9
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 35:8-43:9
     Visibility: public -/
 @[rust_loop]
 def kzg.cosets.Cosets.new_loop0
   (iter : core.ops.range.Range Std.Usize)
   (ext_roots : alloc.vec.Vec blst.blst_fr)
+  (inverse_ext_roots : alloc.vec.Vec blst.blst_fr)
   (shift_inverse : alloc.vec.Vec blst.blst_fr)
   (shift_pow_cell : alloc.vec.Vec blst.blst_fr) :
   Result ((alloc.vec.Vec blst.blst_fr) × (alloc.vec.Vec blst.blst_fr))
   := do
   loop
     (fun (iter1, shift_inverse1, shift_pow_cell1) =>
-      kzg.cosets.Cosets.new_loop0.body ext_roots iter1 shift_inverse1
-      shift_pow_cell1)
+      kzg.cosets.Cosets.new_loop0.body ext_roots inverse_ext_roots iter1
+      shift_inverse1 shift_pow_cell1)
     (iter, shift_inverse, shift_pow_cell)
 
 /-- [silver_crypto_simd::kzg::cosets::{silver_crypto_simd::kzg::cosets::Cosets}::new]:
-    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 30:4-49:5
+    Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 30:4-50:5
     Visibility: public -/
 def kzg.cosets.Cosets.new : Result kzg.cosets.Cosets := do
   let ext_roots ← kzg.domain.roots_of_unity kzg.cosets.LOG_EXT_BLOB
+  let s := alloc.vec.Vec.deref ext_roots
+  let inverse_ext_roots ← kzg.domain.inverse_roots s
   let i ← kzg.CELLS_PER_EXT_BLOB
   let shift_inverse := alloc.vec.Vec.with_capacity blst.blst_fr i
   let shift_pow_cell := alloc.vec.Vec.with_capacity blst.blst_fr i
   let (shift_inverse1, shift_pow_cell1) ←
     kzg.cosets.Cosets.new_loop0 { start := 0#usize, «end» := i } ext_roots
-      shift_inverse shift_pow_cell
+      inverse_ext_roots shift_inverse shift_pow_cell
   let v ← kzg.domain.roots_of_unity kzg.cosets.LOG_CELL
-  let s := alloc.vec.Vec.deref v
-  let v1 ← kzg.domain.inverse_roots s
-  let i1 ← lift (UScalar.cast .U64 kzg.FIELD_ELEMENTS_PER_CELL)
-  let bf ← kzg.blst_ops.fr_from_u64 i1
-  let bf1 ← kzg.blst_ops.fr_inverse bf
+  let s1 := alloc.vec.Vec.deref v
+  let v1 ← kzg.domain.inverse_roots s1
   ok
     {
       inverse_roots := v1,
-      inverse_size := bf1,
+      inverse_size := kzg.INVERSE_CELL_SIZE,
       shift_inverse := shift_inverse1,
       shift_pow_cell := shift_pow_cell1
     }
@@ -10278,7 +14871,7 @@ def kzg.fr8.u256x8.U256x8.push_words
     (Array.make 4#usize [ a, a1, a2, a3 ] (by rfl)) 0#usize
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::splat]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 227:4-229:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 229:4-231:5
     Visibility: public -/
 def kzg.fr8.Fr8.splat (value : blst.blst_fr) : Result kzg.fr8.Fr8 := do
   let a ← kzg.fr8.unpack52 value.l
@@ -10286,7 +14879,7 @@ def kzg.fr8.Fr8.splat (value : blst.blst_fr) : Result kzg.fr8.Fr8 := do
   ok a1
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::plain_words]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 416:12-419:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 418:12-421:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.plain_words_loop0_loop0.body
@@ -10305,7 +14898,7 @@ def kzg.fr8.Fr8.plain_words_loop0_loop0.body
   else ok (done chunk)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::plain_words]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 416:12-419:13
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 418:12-421:13
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.plain_words_loop0_loop0
@@ -10319,7 +14912,7 @@ def kzg.fr8.Fr8.plain_words_loop0_loop0
     (chunk, lane)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::plain_words]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 412:8-424:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:8-426:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.fr8.Fr8.plain_words_loop0.body
@@ -10354,7 +14947,7 @@ def kzg.fr8.Fr8.plain_words_loop0.body
   else ok (done words)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::plain_words]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 412:8-424:9
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 414:8-426:9
     Visibility: public -/
 @[rust_loop]
 def kzg.fr8.Fr8.plain_words_loop0
@@ -10368,7 +14961,7 @@ def kzg.fr8.Fr8.plain_words_loop0
     (words, at1)
 
 /-- [silver_crypto_simd::kzg::fr8::{silver_crypto_simd::kzg::fr8::Fr8}::plain_words]:
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 408:4-425:5
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 410:4-427:5
     Visibility: public -/
 def kzg.fr8.Fr8.plain_words
   (values : Slice blst.blst_fr) (words : alloc.vec.Vec (Array Std.U64 4#usize))
@@ -10411,7 +15004,7 @@ def kzg.interpolation_kernel.InterpolationKernel.new_loop0_loop0.body
     let bf1 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v c
-    let factor1 ← kzg.blst_ops.fr_mul factor bf1
+    let factor1 ← kzg.fr.fr_mul factor bf1
     let i1 ← i + 1#usize
     ok (cont (a, factor1, i1))
   else ok (done factors)
@@ -10530,8 +15123,7 @@ def kzg.interpolation_kernel.InterpolationKernel.new
   let i3 ← i * i1
   let columns := alloc.vec.Vec.with_capacity kzg.fr8.Fr8 i3
   let used := alloc.vec.Vec.with_capacity Bool i
-  let bf ← kzg.blst_ops.fr_from_u64 0#u64
-  let factors := Array.repeat 64#usize bf
+  let factors := Array.repeat 64#usize kzg.FR_ZERO
   let (cosets1, shift1, columns1, used1) ←
     kzg.interpolation_kernel.InterpolationKernel.new_loop0 i i1 cosets shift
       columns used factors 0#usize
@@ -10685,7 +15277,7 @@ def kzg.interpolation_kernel.store_canonical_loop1.body
         { start := i1, «end» := i3 }
     let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
     let element1 := to_slice_mut_back s2
-    let o ← kzg.blst_ops.fr_from_bytes element1
+    let o ← kzg.fr.fr_from_bytes element1
     match o with
     | none => fail panic
     | some value => let s3 ← Slice.update out i value
@@ -10991,751 +15583,9 @@ def kzg.interpolation_kernel.InterpolationKernel.interpolate
     kzg.interpolation_kernel.store_canonical sums1 coefficients
   ok (self3, coefficients1)
 
-/-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_64]
-    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 398:0-405:2
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.trusted_setup.G2_MONOMIAL_64 : Array Std.U8 96#usize :=
-  Array.make 96#usize [
-    146#u8, 220#u8, 197#u8, 161#u8, 200#u8, 195#u8, 225#u8, 178#u8, 139#u8,
-    21#u8, 36#u8, 227#u8, 221#u8, 109#u8, 190#u8, 205#u8, 99#u8, 1#u8, 124#u8,
-    146#u8, 1#u8, 218#u8, 157#u8, 190#u8, 7#u8, 127#u8, 27#u8, 130#u8, 173#u8,
-    192#u8, 140#u8, 80#u8, 22#u8, 159#u8, 86#u8, 252#u8, 123#u8, 90#u8, 59#u8,
-    40#u8, 236#u8, 107#u8, 137#u8, 37#u8, 77#u8, 227#u8, 226#u8, 253#u8, 18#u8,
-    131#u8, 138#u8, 118#u8, 16#u8, 83#u8, 67#u8, 120#u8, 131#u8, 195#u8,
-    224#u8, 27#u8, 166#u8, 22#u8, 103#u8, 12#u8, 234#u8, 132#u8, 55#u8, 84#u8,
-    84#u8, 142#u8, 248#u8, 75#u8, 204#u8, 57#u8, 125#u8, 226#u8, 54#u8, 154#u8,
-    220#u8, 202#u8, 42#u8, 181#u8, 76#u8, 215#u8, 60#u8, 85#u8, 220#u8, 104#u8,
-    216#u8, 122#u8, 236#u8, 63#u8, 194#u8, 254#u8, 79#u8, 16#u8
-    ] (by rfl)
-
-/-- [silver_crypto_simd::kzg::trusted_setup::G2_MONOMIAL_0]
-    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 390:0-397:2
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.trusted_setup.G2_MONOMIAL_0 : Array Std.U8 96#usize :=
-  Array.make 96#usize [
-    147#u8, 224#u8, 43#u8, 96#u8, 82#u8, 113#u8, 159#u8, 96#u8, 125#u8, 172#u8,
-    211#u8, 160#u8, 136#u8, 39#u8, 79#u8, 101#u8, 89#u8, 107#u8, 208#u8,
-    208#u8, 153#u8, 32#u8, 182#u8, 26#u8, 181#u8, 218#u8, 97#u8, 187#u8,
-    220#u8, 127#u8, 80#u8, 73#u8, 51#u8, 76#u8, 241#u8, 18#u8, 19#u8, 148#u8,
-    93#u8, 87#u8, 229#u8, 172#u8, 125#u8, 5#u8, 93#u8, 4#u8, 43#u8, 126#u8,
-    2#u8, 74#u8, 162#u8, 178#u8, 240#u8, 143#u8, 10#u8, 145#u8, 38#u8, 8#u8,
-    5#u8, 39#u8, 45#u8, 197#u8, 16#u8, 81#u8, 198#u8, 228#u8, 122#u8, 212#u8,
-    250#u8, 64#u8, 59#u8, 2#u8, 180#u8, 81#u8, 11#u8, 100#u8, 122#u8, 227#u8,
-    209#u8, 119#u8, 11#u8, 172#u8, 3#u8, 38#u8, 168#u8, 5#u8, 187#u8, 239#u8,
-    212#u8, 128#u8, 86#u8, 200#u8, 193#u8, 33#u8, 189#u8, 184#u8
-    ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_0 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      151#u8, 241#u8, 211#u8, 167#u8, 49#u8, 151#u8, 215#u8, 148#u8, 38#u8,
-      149#u8, 99#u8, 140#u8, 79#u8, 169#u8, 172#u8, 15#u8, 195#u8, 104#u8,
-      140#u8, 79#u8, 151#u8, 116#u8, 185#u8, 5#u8, 161#u8, 78#u8, 58#u8, 63#u8,
-      23#u8, 27#u8, 172#u8, 88#u8, 108#u8, 85#u8, 232#u8, 63#u8, 249#u8,
-      122#u8, 26#u8, 239#u8, 251#u8, 58#u8, 240#u8, 10#u8, 219#u8, 34#u8,
-      198#u8, 187#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_1 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      173#u8, 62#u8, 181#u8, 1#u8, 33#u8, 19#u8, 154#u8, 163#u8, 77#u8, 177#u8,
-      213#u8, 69#u8, 9#u8, 58#u8, 201#u8, 55#u8, 74#u8, 183#u8, 188#u8, 162#u8,
-      192#u8, 243#u8, 191#u8, 40#u8, 226#u8, 124#u8, 141#u8, 205#u8, 143#u8,
-      199#u8, 203#u8, 66#u8, 210#u8, 89#u8, 38#u8, 252#u8, 12#u8, 151#u8,
-      179#u8, 54#u8, 233#u8, 240#u8, 251#u8, 53#u8, 229#u8, 160#u8, 76#u8,
-      129#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_2 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      128#u8, 41#u8, 200#u8, 206#u8, 13#u8, 45#u8, 206#u8, 118#u8, 26#u8,
-      127#u8, 41#u8, 194#u8, 223#u8, 34#u8, 144#u8, 133#u8, 12#u8, 133#u8,
-      189#u8, 250#u8, 236#u8, 41#u8, 85#u8, 98#u8, 109#u8, 122#u8, 204#u8,
-      136#u8, 100#u8, 174#u8, 176#u8, 31#u8, 225#u8, 108#u8, 158#u8, 21#u8,
-      104#u8, 99#u8, 220#u8, 99#u8, 182#u8, 194#u8, 37#u8, 83#u8, 145#u8,
-      14#u8, 39#u8, 193#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_3 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      177#u8, 56#u8, 108#u8, 153#u8, 93#u8, 49#u8, 1#u8, 209#u8, 6#u8, 57#u8,
-      228#u8, 155#u8, 158#u8, 93#u8, 57#u8, 185#u8, 162#u8, 128#u8, 220#u8,
-      240#u8, 241#u8, 53#u8, 194#u8, 230#u8, 198#u8, 146#u8, 139#u8, 179#u8,
-      171#u8, 131#u8, 9#u8, 169#u8, 218#u8, 113#u8, 120#u8, 243#u8, 57#u8,
-      37#u8, 118#u8, 140#u8, 50#u8, 79#u8, 17#u8, 195#u8, 118#u8, 44#u8,
-      253#u8, 213#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_4 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      149#u8, 150#u8, 217#u8, 41#u8, 97#u8, 14#u8, 109#u8, 46#u8, 211#u8,
-      80#u8, 43#u8, 27#u8, 176#u8, 241#u8, 234#u8, 1#u8, 15#u8, 107#u8, 102#u8,
-      5#u8, 201#u8, 93#u8, 72#u8, 89#u8, 245#u8, 229#u8, 62#u8, 9#u8, 250#u8,
-      104#u8, 220#u8, 113#u8, 223#u8, 213#u8, 135#u8, 73#u8, 5#u8, 68#u8,
-      123#u8, 94#u8, 198#u8, 205#u8, 21#u8, 106#u8, 118#u8, 214#u8, 182#u8,
-      232#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_5 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      133#u8, 30#u8, 60#u8, 61#u8, 75#u8, 91#u8, 124#u8, 219#u8, 186#u8, 37#u8,
-      215#u8, 42#u8, 191#u8, 152#u8, 18#u8, 207#u8, 61#u8, 124#u8, 90#u8,
-      157#u8, 189#u8, 236#u8, 66#u8, 182#u8, 99#u8, 94#u8, 42#u8, 221#u8,
-      112#u8, 108#u8, 190#u8, 234#u8, 24#u8, 249#u8, 133#u8, 175#u8, 229#u8,
-      36#u8, 116#u8, 89#u8, 246#u8, 201#u8, 8#u8, 98#u8, 3#u8, 34#u8, 244#u8,
-      52#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_6 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      177#u8, 15#u8, 76#u8, 248#u8, 236#u8, 110#u8, 2#u8, 73#u8, 27#u8, 190#u8,
-      109#u8, 144#u8, 132#u8, 216#u8, 140#u8, 22#u8, 48#u8, 111#u8, 218#u8,
-      243#u8, 153#u8, 254#u8, 243#u8, 205#u8, 20#u8, 83#u8, 245#u8, 138#u8,
-      79#u8, 118#u8, 51#u8, 248#u8, 13#u8, 198#u8, 11#u8, 16#u8, 15#u8, 146#u8,
-      54#u8, 195#u8, 16#u8, 62#u8, 175#u8, 114#u8, 116#u8, 104#u8, 55#u8, 79#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_7 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      173#u8, 225#u8, 30#u8, 198#u8, 48#u8, 18#u8, 126#u8, 4#u8, 209#u8,
-      126#u8, 112#u8, 219#u8, 2#u8, 55#u8, 213#u8, 95#u8, 47#u8, 242#u8,
-      162#u8, 9#u8, 72#u8, 129#u8, 164#u8, 131#u8, 121#u8, 126#u8, 140#u8,
-      221#u8, 185#u8, 139#u8, 98#u8, 34#u8, 69#u8, 225#u8, 246#u8, 8#u8,
-      229#u8, 220#u8, 209#u8, 23#u8, 43#u8, 152#u8, 112#u8, 231#u8, 51#u8,
-      180#u8, 163#u8, 47#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_8 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      175#u8, 88#u8, 200#u8, 162#u8, 245#u8, 143#u8, 144#u8, 76#u8, 226#u8,
-      13#u8, 184#u8, 16#u8, 5#u8, 51#u8, 27#u8, 242#u8, 210#u8, 81#u8, 226#u8,
-      39#u8, 231#u8, 209#u8, 190#u8, 245#u8, 117#u8, 214#u8, 145#u8, 189#u8,
-      202#u8, 132#u8, 46#u8, 98#u8, 51#u8, 235#u8, 46#u8, 38#u8, 194#u8,
-      225#u8, 22#u8, 166#u8, 26#u8, 120#u8, 89#u8, 71#u8, 114#u8, 179#u8,
-      141#u8, 37#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_9 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      179#u8, 193#u8, 49#u8, 60#u8, 49#u8, 236#u8, 130#u8, 218#u8, 90#u8,
-      122#u8, 9#u8, 233#u8, 207#u8, 102#u8, 86#u8, 202#u8, 89#u8, 140#u8,
-      36#u8, 51#u8, 69#u8, 254#u8, 141#u8, 72#u8, 40#u8, 229#u8, 32#u8, 173#u8,
-      233#u8, 23#u8, 135#u8, 255#u8, 184#u8, 185#u8, 134#u8, 125#u8, 183#u8,
-      137#u8, 179#u8, 74#u8, 214#u8, 124#u8, 239#u8, 71#u8, 178#u8, 111#u8,
-      248#u8, 109#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_10 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      168#u8, 237#u8, 138#u8, 35#u8, 83#u8, 85#u8, 148#u8, 142#u8, 11#u8, 4#u8,
-      190#u8, 8#u8, 11#u8, 123#u8, 62#u8, 20#u8, 82#u8, 147#u8, 172#u8, 206#u8,
-      251#u8, 71#u8, 4#u8, 209#u8, 218#u8, 144#u8, 80#u8, 121#u8, 107#u8,
-      47#u8, 104#u8, 112#u8, 81#u8, 108#u8, 30#u8, 191#u8, 119#u8, 174#u8,
-      106#u8, 101#u8, 53#u8, 158#u8, 220#u8, 253#u8, 1#u8, 108#u8, 15#u8, 54#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_11 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      128#u8, 231#u8, 146#u8, 213#u8, 186#u8, 36#u8, 184#u8, 5#u8, 143#u8,
-      109#u8, 114#u8, 145#u8, 162#u8, 236#u8, 92#u8, 182#u8, 138#u8, 171#u8,
-      30#u8, 22#u8, 233#u8, 109#u8, 121#u8, 49#u8, 40#u8, 232#u8, 104#u8,
-      21#u8, 99#u8, 27#u8, 175#u8, 66#u8, 197#u8, 107#u8, 98#u8, 5#u8, 193#u8,
-      158#u8, 37#u8, 206#u8, 151#u8, 39#u8, 189#u8, 31#u8, 214#u8, 249#u8,
-      222#u8, 251#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_12 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      129#u8, 98#u8, 136#u8, 197#u8, 215#u8, 38#u8, 176#u8, 148#u8, 227#u8,
-      253#u8, 249#u8, 92#u8, 184#u8, 136#u8, 47#u8, 68#u8, 44#u8, 77#u8,
-      157#u8, 17#u8, 1#u8, 185#u8, 44#u8, 121#u8, 56#u8, 167#u8, 223#u8,
-      212#u8, 155#u8, 197#u8, 6#u8, 54#u8, 215#u8, 62#u8, 161#u8, 176#u8,
-      95#u8, 117#u8, 235#u8, 115#u8, 28#u8, 144#u8, 140#u8, 143#u8, 216#u8,
-      222#u8, 231#u8, 23#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_13 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      174#u8, 0#u8, 145#u8, 40#u8, 209#u8, 40#u8, 186#u8, 46#u8, 21#u8, 25#u8,
-      191#u8, 167#u8, 160#u8, 192#u8, 30#u8, 212#u8, 148#u8, 167#u8, 212#u8,
-      97#u8, 195#u8, 171#u8, 166#u8, 15#u8, 138#u8, 48#u8, 23#u8, 1#u8, 254#u8,
-      214#u8, 31#u8, 228#u8, 227#u8, 29#u8, 108#u8, 121#u8, 206#u8, 24#u8,
-      149#u8, 66#u8, 174#u8, 81#u8, 223#u8, 145#u8, 231#u8, 60#u8, 225#u8,
-      179#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_14 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      150#u8, 168#u8, 102#u8, 214#u8, 10#u8, 144#u8, 7#u8, 208#u8, 88#u8,
-      37#u8, 195#u8, 50#u8, 71#u8, 106#u8, 131#u8, 232#u8, 105#u8, 225#u8,
-      91#u8, 17#u8, 215#u8, 37#u8, 113#u8, 114#u8, 166#u8, 118#u8, 144#u8,
-      234#u8, 155#u8, 211#u8, 239#u8, 234#u8, 68#u8, 191#u8, 156#u8, 141#u8,
-      66#u8, 25#u8, 20#u8, 84#u8, 235#u8, 4#u8, 252#u8, 241#u8, 16#u8, 177#u8,
-      99#u8, 150#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_15 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      139#u8, 37#u8, 10#u8, 42#u8, 6#u8, 65#u8, 154#u8, 219#u8, 155#u8, 97#u8,
-      30#u8, 137#u8, 247#u8, 248#u8, 242#u8, 153#u8, 10#u8, 163#u8, 1#u8,
-      148#u8, 155#u8, 83#u8, 58#u8, 211#u8, 191#u8, 23#u8, 196#u8, 166#u8,
-      26#u8, 181#u8, 245#u8, 190#u8, 11#u8, 29#u8, 94#u8, 43#u8, 87#u8, 24#u8,
-      100#u8, 209#u8, 63#u8, 27#u8, 183#u8, 88#u8, 5#u8, 199#u8, 121#u8, 93#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_16 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      132#u8, 80#u8, 244#u8, 159#u8, 172#u8, 242#u8, 230#u8, 32#u8, 250#u8,
-      69#u8, 238#u8, 144#u8, 225#u8, 128#u8, 17#u8, 120#u8, 132#u8, 45#u8,
-      146#u8, 122#u8, 42#u8, 37#u8, 252#u8, 110#u8, 215#u8, 186#u8, 153#u8,
-      164#u8, 238#u8, 199#u8, 174#u8, 64#u8, 238#u8, 191#u8, 238#u8, 65#u8,
-      2#u8, 142#u8, 170#u8, 132#u8, 241#u8, 7#u8, 244#u8, 167#u8, 119#u8,
-      105#u8, 73#u8, 118#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_17 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      145#u8, 4#u8, 144#u8, 128#u8, 207#u8, 101#u8, 156#u8, 9#u8, 133#u8,
-      162#u8, 45#u8, 19#u8, 102#u8, 229#u8, 145#u8, 145#u8, 187#u8, 137#u8,
-      102#u8, 63#u8, 146#u8, 46#u8, 129#u8, 104#u8, 185#u8, 183#u8, 216#u8,
-      92#u8, 138#u8, 115#u8, 215#u8, 74#u8, 109#u8, 157#u8, 206#u8, 239#u8,
-      216#u8, 85#u8, 211#u8, 216#u8, 88#u8, 180#u8, 147#u8, 103#u8, 12#u8,
-      117#u8, 5#u8, 129#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_18 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      161#u8, 225#u8, 103#u8, 174#u8, 178#u8, 0#u8, 128#u8, 135#u8, 243#u8,
-      25#u8, 89#u8, 38#u8, 241#u8, 152#u8, 92#u8, 10#u8, 69#u8, 157#u8, 110#u8,
-      197#u8, 114#u8, 55#u8, 37#u8, 91#u8, 20#u8, 115#u8, 169#u8, 109#u8,
-      228#u8, 226#u8, 193#u8, 207#u8, 118#u8, 97#u8, 39#u8, 200#u8, 98#u8,
-      199#u8, 220#u8, 133#u8, 58#u8, 105#u8, 9#u8, 230#u8, 124#u8, 176#u8,
-      108#u8, 247#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_19 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      182#u8, 103#u8, 192#u8, 212#u8, 226#u8, 110#u8, 32#u8, 105#u8, 139#u8,
-      7#u8, 86#u8, 115#u8, 88#u8, 98#u8, 93#u8, 95#u8, 0#u8, 56#u8, 57#u8,
-      201#u8, 45#u8, 232#u8, 8#u8, 142#u8, 18#u8, 219#u8, 215#u8, 74#u8,
-      111#u8, 106#u8, 49#u8, 86#u8, 180#u8, 234#u8, 141#u8, 37#u8, 44#u8,
-      154#u8, 214#u8, 42#u8, 245#u8, 246#u8, 196#u8, 254#u8, 193#u8, 207#u8,
-      108#u8, 199#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_20 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      142#u8, 75#u8, 94#u8, 48#u8, 76#u8, 11#u8, 27#u8, 22#u8, 26#u8, 227#u8,
-      228#u8, 182#u8, 139#u8, 94#u8, 58#u8, 198#u8, 108#u8, 66#u8, 172#u8,
-      215#u8, 193#u8, 238#u8, 36#u8, 88#u8, 4#u8, 79#u8, 101#u8, 39#u8, 197#u8,
-      8#u8, 169#u8, 57#u8, 149#u8, 229#u8, 8#u8, 148#u8, 215#u8, 45#u8, 87#u8,
-      193#u8, 53#u8, 15#u8, 145#u8, 175#u8, 231#u8, 39#u8, 117#u8, 255#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_21 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      140#u8, 100#u8, 38#u8, 64#u8, 170#u8, 121#u8, 21#u8, 66#u8, 28#u8,
-      220#u8, 33#u8, 253#u8, 99#u8, 159#u8, 136#u8, 164#u8, 32#u8, 82#u8,
-      177#u8, 207#u8, 163#u8, 88#u8, 255#u8, 119#u8, 2#u8, 230#u8, 7#u8,
-      147#u8, 169#u8, 43#u8, 123#u8, 89#u8, 38#u8, 218#u8, 225#u8, 90#u8,
-      12#u8, 143#u8, 143#u8, 89#u8, 205#u8, 48#u8, 19#u8, 240#u8, 28#u8, 21#u8,
-      155#u8, 163#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_22 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      163#u8, 86#u8, 243#u8, 94#u8, 113#u8, 60#u8, 252#u8, 40#u8, 48#u8, 86#u8,
-      191#u8, 83#u8, 157#u8, 229#u8, 74#u8, 33#u8, 115#u8, 30#u8, 97#u8,
-      239#u8, 180#u8, 196#u8, 115#u8, 25#u8, 242#u8, 13#u8, 228#u8, 164#u8,
-      183#u8, 35#u8, 215#u8, 106#u8, 51#u8, 182#u8, 95#u8, 74#u8, 103#u8,
-      210#u8, 152#u8, 185#u8, 236#u8, 92#u8, 42#u8, 21#u8, 121#u8, 65#u8,
-      134#u8, 87#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_23 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      147#u8, 206#u8, 32#u8, 65#u8, 70#u8, 206#u8, 149#u8, 244#u8, 132#u8,
-      220#u8, 121#u8, 194#u8, 121#u8, 25#u8, 161#u8, 108#u8, 158#u8, 63#u8,
-      193#u8, 74#u8, 145#u8, 17#u8, 198#u8, 198#u8, 61#u8, 68#u8, 73#u8, 17#u8,
-      88#u8, 213#u8, 131#u8, 129#u8, 23#u8, 210#u8, 8#u8, 81#u8, 204#u8, 50#u8,
-      39#u8, 165#u8, 232#u8, 186#u8, 108#u8, 207#u8, 121#u8, 231#u8, 127#u8,
-      57#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_24 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      181#u8, 133#u8, 102#u8, 76#u8, 187#u8, 154#u8, 132#u8, 181#u8, 47#u8,
-      137#u8, 17#u8, 78#u8, 28#u8, 240#u8, 207#u8, 17#u8, 113#u8, 190#u8,
-      167#u8, 138#u8, 19#u8, 109#u8, 193#u8, 64#u8, 74#u8, 200#u8, 138#u8,
-      17#u8, 33#u8, 11#u8, 45#u8, 235#u8, 195#u8, 183#u8, 165#u8, 94#u8,
-      112#u8, 45#u8, 169#u8, 63#u8, 246#u8, 41#u8, 9#u8, 92#u8, 19#u8, 74#u8,
-      41#u8, 94#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_25 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      182#u8, 223#u8, 212#u8, 68#u8, 236#u8, 127#u8, 220#u8, 235#u8, 20#u8,
-      198#u8, 50#u8, 143#u8, 38#u8, 202#u8, 18#u8, 195#u8, 249#u8, 252#u8,
-      67#u8, 39#u8, 216#u8, 216#u8, 198#u8, 137#u8, 72#u8, 233#u8, 46#u8,
-      126#u8, 97#u8, 38#u8, 43#u8, 130#u8, 216#u8, 51#u8, 166#u8, 90#u8,
-      158#u8, 58#u8, 246#u8, 53#u8, 63#u8, 250#u8, 131#u8, 43#u8, 109#u8,
-      162#u8, 87#u8, 5#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_26 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      180#u8, 212#u8, 184#u8, 235#u8, 158#u8, 207#u8, 255#u8, 227#u8, 240#u8,
-      212#u8, 143#u8, 180#u8, 20#u8, 156#u8, 123#u8, 49#u8, 174#u8, 193#u8,
-      218#u8, 112#u8, 65#u8, 236#u8, 3#u8, 189#u8, 7#u8, 80#u8, 197#u8, 42#u8,
-      42#u8, 124#u8, 188#u8, 58#u8, 124#u8, 251#u8, 240#u8, 157#u8, 91#u8,
-      253#u8, 197#u8, 110#u8, 56#u8, 96#u8, 130#u8, 106#u8, 98#u8, 208#u8,
-      187#u8, 145#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_27 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      164#u8, 226#u8, 72#u8, 227#u8, 214#u8, 29#u8, 181#u8, 45#u8, 169#u8,
-      104#u8, 63#u8, 239#u8, 24#u8, 133#u8, 121#u8, 196#u8, 112#u8, 214#u8,
-      94#u8, 45#u8, 249#u8, 6#u8, 71#u8, 38#u8, 132#u8, 123#u8, 21#u8, 153#u8,
-      252#u8, 119#u8, 64#u8, 73#u8, 255#u8, 220#u8, 110#u8, 242#u8, 174#u8,
-      87#u8, 141#u8, 94#u8, 215#u8, 135#u8, 79#u8, 18#u8, 152#u8, 236#u8,
-      223#u8, 105#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_28 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      166#u8, 138#u8, 15#u8, 255#u8, 194#u8, 227#u8, 125#u8, 49#u8, 131#u8,
-      254#u8, 176#u8, 27#u8, 66#u8, 35#u8, 76#u8, 15#u8, 78#u8, 81#u8, 15#u8,
-      157#u8, 194#u8, 157#u8, 9#u8, 197#u8, 113#u8, 230#u8, 218#u8, 0#u8,
-      254#u8, 202#u8, 217#u8, 218#u8, 34#u8, 76#u8, 208#u8, 243#u8, 21#u8,
-      80#u8, 7#u8, 1#u8, 72#u8, 102#u8, 126#u8, 34#u8, 108#u8, 76#u8, 164#u8,
-      19#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_29 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      134#u8, 173#u8, 218#u8, 47#u8, 254#u8, 203#u8, 119#u8, 35#u8, 108#u8,
-      24#u8, 0#u8, 80#u8, 81#u8, 243#u8, 31#u8, 150#u8, 87#u8, 160#u8, 213#u8,
-      15#u8, 239#u8, 42#u8, 17#u8, 117#u8, 223#u8, 218#u8, 50#u8, 231#u8,
-      77#u8, 93#u8, 83#u8, 223#u8, 130#u8, 92#u8, 16#u8, 242#u8, 137#u8,
-      235#u8, 10#u8, 211#u8, 157#u8, 240#u8, 198#u8, 79#u8, 201#u8, 188#u8,
-      119#u8, 41#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_30 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      153#u8, 130#u8, 102#u8, 213#u8, 201#u8, 195#u8, 118#u8, 78#u8, 217#u8,
-      125#u8, 102#u8, 250#u8, 158#u8, 209#u8, 118#u8, 175#u8, 4#u8, 57#u8,
-      153#u8, 101#u8, 43#u8, 174#u8, 25#u8, 240#u8, 101#u8, 124#u8, 131#u8,
-      40#u8, 98#u8, 157#u8, 48#u8, 175#u8, 69#u8, 50#u8, 48#u8, 227#u8, 104#u8,
-      28#u8, 90#u8, 56#u8, 226#u8, 240#u8, 30#u8, 56#u8, 158#u8, 216#u8,
-      216#u8, 37#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_31 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      160#u8, 82#u8, 97#u8, 85#u8, 77#u8, 60#u8, 98#u8, 10#u8, 240#u8, 201#u8,
-      20#u8, 207#u8, 39#u8, 171#u8, 152#u8, 245#u8, 211#u8, 89#u8, 60#u8,
-      51#u8, 171#u8, 49#u8, 60#u8, 25#u8, 142#u8, 12#u8, 64#u8, 214#u8, 199#u8,
-      32#u8, 34#u8, 235#u8, 89#u8, 67#u8, 119#u8, 140#u8, 212#u8, 247#u8,
-      62#u8, 159#u8, 232#u8, 56#u8, 51#u8, 146#u8, 167#u8, 0#u8, 73#u8, 118#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_32 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      173#u8, 36#u8, 63#u8, 179#u8, 99#u8, 27#u8, 249#u8, 15#u8, 237#u8,
-      185#u8, 214#u8, 121#u8, 253#u8, 113#u8, 252#u8, 12#u8, 240#u8, 107#u8,
-      218#u8, 2#u8, 133#u8, 145#u8, 222#u8, 210#u8, 189#u8, 76#u8, 99#u8,
-      78#u8, 167#u8, 179#u8, 194#u8, 189#u8, 34#u8, 236#u8, 162#u8, 171#u8,
-      49#u8, 143#u8, 205#u8, 170#u8, 108#u8, 44#u8, 218#u8, 30#u8, 99#u8,
-      225#u8, 197#u8, 123#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_33 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      137#u8, 185#u8, 133#u8, 154#u8, 4#u8, 249#u8, 3#u8, 201#u8, 94#u8,
-      151#u8, 251#u8, 41#u8, 81#u8, 240#u8, 28#u8, 198#u8, 65#u8, 138#u8,
-      37#u8, 5#u8, 238#u8, 224#u8, 181#u8, 188#u8, 114#u8, 102#u8, 180#u8,
-      211#u8, 62#u8, 1#u8, 182#u8, 155#u8, 159#u8, 231#u8, 220#u8, 86#u8,
-      250#u8, 158#u8, 187#u8, 88#u8, 86#u8, 9#u8, 91#u8, 224#u8, 146#u8, 90#u8,
-      66#u8, 45#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_34 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      166#u8, 141#u8, 17#u8, 131#u8, 67#u8, 165#u8, 187#u8, 251#u8, 186#u8,
-      185#u8, 95#u8, 249#u8, 191#u8, 229#u8, 58#u8, 235#u8, 127#u8, 219#u8,
-      175#u8, 22#u8, 219#u8, 152#u8, 62#u8, 111#u8, 68#u8, 86#u8, 54#u8,
-      109#u8, 242#u8, 170#u8, 1#u8, 251#u8, 219#u8, 110#u8, 233#u8, 144#u8,
-      28#u8, 177#u8, 2#u8, 252#u8, 125#u8, 43#u8, 208#u8, 153#u8, 190#u8,
-      47#u8, 31#u8, 62#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_35 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      180#u8, 147#u8, 1#u8, 242#u8, 93#u8, 90#u8, 157#u8, 210#u8, 236#u8,
-      96#u8, 221#u8, 176#u8, 180#u8, 180#u8, 119#u8, 41#u8, 25#u8, 88#u8,
-      72#u8, 126#u8, 254#u8, 169#u8, 229#u8, 77#u8, 192#u8, 228#u8, 239#u8,
-      56#u8, 143#u8, 3#u8, 184#u8, 187#u8, 173#u8, 209#u8, 50#u8, 89#u8,
-      209#u8, 145#u8, 247#u8, 160#u8, 183#u8, 81#u8, 56#u8, 118#u8, 118#u8,
-      125#u8, 130#u8, 130#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_36 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      139#u8, 147#u8, 223#u8, 127#u8, 180#u8, 81#u8, 63#u8, 103#u8, 116#u8,
-      153#u8, 5#u8, 253#u8, 67#u8, 219#u8, 120#u8, 247#u8, 2#u8, 101#u8,
-      137#u8, 183#u8, 4#u8, 235#u8, 185#u8, 234#u8, 50#u8, 85#u8, 208#u8,
-      173#u8, 100#u8, 21#u8, 67#u8, 119#u8, 153#u8, 244#u8, 15#u8, 2#u8,
-      224#u8, 126#u8, 252#u8, 205#u8, 161#u8, 230#u8, 253#u8, 94#u8, 140#u8,
-      208#u8, 167#u8, 33#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_37 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      173#u8, 136#u8, 118#u8, 154#u8, 206#u8, 150#u8, 69#u8, 93#u8, 163#u8,
-      124#u8, 60#u8, 144#u8, 25#u8, 169#u8, 245#u8, 35#u8, 198#u8, 148#u8,
-      100#u8, 59#u8, 227#u8, 246#u8, 179#u8, 123#u8, 30#u8, 157#u8, 204#u8,
-      80#u8, 83#u8, 209#u8, 254#u8, 142#u8, 70#u8, 58#u8, 190#u8, 189#u8,
-      177#u8, 179#u8, 239#u8, 47#u8, 47#u8, 184#u8, 1#u8, 82#u8, 138#u8, 1#u8,
-      196#u8, 124#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_38 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      128#u8, 240#u8, 235#u8, 93#u8, 203#u8, 250#u8, 175#u8, 66#u8, 27#u8,
-      245#u8, 154#u8, 139#u8, 155#u8, 213#u8, 36#u8, 92#u8, 72#u8, 35#u8,
-      201#u8, 69#u8, 16#u8, 9#u8, 62#u8, 35#u8, 224#u8, 176#u8, 83#u8, 70#u8,
-      71#u8, 251#u8, 85#u8, 37#u8, 162#u8, 94#u8, 163#u8, 174#u8, 234#u8,
-      10#u8, 146#u8, 122#u8, 30#u8, 226#u8, 12#u8, 5#u8, 127#u8, 44#u8, 146#u8,
-      52#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_39 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      177#u8, 10#u8, 216#u8, 46#u8, 166#u8, 165#u8, 174#u8, 171#u8, 227#u8,
-      69#u8, 208#u8, 14#u8, 177#u8, 121#u8, 16#u8, 214#u8, 148#u8, 43#u8,
-      104#u8, 98#u8, 247#u8, 243#u8, 119#u8, 60#u8, 125#u8, 50#u8, 17#u8,
-      148#u8, 230#u8, 124#u8, 156#u8, 206#u8, 208#u8, 179#u8, 49#u8, 4#u8,
-      37#u8, 102#u8, 38#u8, 6#u8, 99#u8, 77#u8, 205#u8, 127#u8, 139#u8, 151#u8,
-      108#u8, 4#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_40 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      130#u8, 246#u8, 253#u8, 145#u8, 248#u8, 120#u8, 34#u8, 246#u8, 204#u8,
-      151#u8, 120#u8, 8#u8, 238#u8, 172#u8, 119#u8, 136#u8, 159#u8, 74#u8,
-      50#u8, 251#u8, 13#u8, 97#u8, 142#u8, 120#u8, 75#u8, 35#u8, 49#u8, 38#u8,
-      61#u8, 15#u8, 250#u8, 130#u8, 11#u8, 63#u8, 112#u8, 176#u8, 105#u8,
-      211#u8, 46#u8, 3#u8, 25#u8, 201#u8, 224#u8, 51#u8, 171#u8, 117#u8,
-      211#u8, 180#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_41 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      148#u8, 54#u8, 211#u8, 220#u8, 107#u8, 94#u8, 37#u8, 177#u8, 246#u8,
-      149#u8, 248#u8, 198#u8, 193#u8, 197#u8, 83#u8, 218#u8, 179#u8, 18#u8,
-      204#u8, 172#u8, 228#u8, 218#u8, 195#u8, 175#u8, 221#u8, 193#u8, 65#u8,
-      211#u8, 80#u8, 100#u8, 103#u8, 205#u8, 80#u8, 203#u8, 4#u8, 164#u8,
-      158#u8, 169#u8, 110#u8, 167#u8, 245#u8, 168#u8, 167#u8, 176#u8, 252#u8,
-      101#u8, 239#u8, 55#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_42 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      142#u8, 10#u8, 148#u8, 145#u8, 101#u8, 29#u8, 82#u8, 190#u8, 142#u8,
-      191#u8, 67#u8, 21#u8, 251#u8, 187#u8, 65#u8, 2#u8, 114#u8, 249#u8,
-      167#u8, 75#u8, 150#u8, 93#u8, 51#u8, 183#u8, 159#u8, 241#u8, 185#u8,
-      225#u8, 190#u8, 59#u8, 229#u8, 158#u8, 67#u8, 217#u8, 86#u8, 103#u8,
-      115#u8, 86#u8, 14#u8, 67#u8, 40#u8, 5#u8, 73#u8, 195#u8, 72#u8, 228#u8,
-      143#u8, 1#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_43 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      136#u8, 9#u8, 19#u8, 126#u8, 93#u8, 58#u8, 34#u8, 64#u8, 13#u8, 110#u8,
-      100#u8, 90#u8, 155#u8, 216#u8, 78#u8, 33#u8, 196#u8, 146#u8, 55#u8,
-      23#u8, 54#u8, 199#u8, 230#u8, 44#u8, 81#u8, 206#u8, 245#u8, 15#u8,
-      238#u8, 58#u8, 167#u8, 242#u8, 64#u8, 87#u8, 36#u8, 54#u8, 122#u8,
-      131#u8, 253#u8, 5#u8, 31#u8, 247#u8, 2#u8, 217#u8, 113#u8, 22#u8, 127#u8,
-      103#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_44 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      181#u8, 54#u8, 162#u8, 79#u8, 49#u8, 163#u8, 70#u8, 222#u8, 127#u8,
-      152#u8, 99#u8, 252#u8, 53#u8, 31#u8, 166#u8, 2#u8, 21#u8, 132#u8, 4#u8,
-      210#u8, 249#u8, 71#u8, 71#u8, 238#u8, 190#u8, 67#u8, 171#u8, 241#u8,
-      242#u8, 27#u8, 248#u8, 249#u8, 90#u8, 100#u8, 20#u8, 108#u8, 2#u8,
-      164#u8, 190#u8, 194#u8, 123#u8, 80#u8, 63#u8, 84#u8, 103#u8, 137#u8,
-      163#u8, 136#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_45 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      181#u8, 205#u8, 245#u8, 160#u8, 79#u8, 193#u8, 42#u8, 14#u8, 14#u8,
-      247#u8, 84#u8, 88#u8, 48#u8, 6#u8, 29#u8, 255#u8, 127#u8, 216#u8, 171#u8,
-      234#u8, 70#u8, 228#u8, 143#u8, 190#u8, 98#u8, 53#u8, 16#u8, 158#u8,
-      108#u8, 54#u8, 238#u8, 107#u8, 255#u8, 203#u8, 149#u8, 41#u8, 226#u8,
-      243#u8, 208#u8, 215#u8, 1#u8, 207#u8, 88#u8, 187#u8, 251#u8, 106#u8,
-      65#u8, 151#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_46 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      171#u8, 21#u8, 55#u8, 117#u8, 37#u8, 117#u8, 52#u8, 103#u8, 208#u8,
-      66#u8, 183#u8, 147#u8, 31#u8, 102#u8, 248#u8, 98#u8, 203#u8, 187#u8,
-      119#u8, 70#u8, 66#u8, 18#u8, 201#u8, 170#u8, 114#u8, 212#u8, 229#u8,
-      192#u8, 67#u8, 117#u8, 239#u8, 85#u8, 246#u8, 25#u8, 179#u8, 164#u8,
-      70#u8, 9#u8, 28#u8, 27#u8, 161#u8, 163#u8, 181#u8, 217#u8, 240#u8, 94#u8,
-      83#u8, 143#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_47 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      144#u8, 90#u8, 117#u8, 185#u8, 67#u8, 173#u8, 1#u8, 127#u8, 247#u8,
-      142#u8, 166#u8, 221#u8, 209#u8, 210#u8, 138#u8, 69#u8, 199#u8, 39#u8,
-      62#u8, 225#u8, 194#u8, 229#u8, 227#u8, 53#u8, 54#u8, 133#u8, 129#u8,
-      55#u8, 147#u8, 234#u8, 211#u8, 55#u8, 12#u8, 9#u8, 202#u8, 189#u8,
-      144#u8, 63#u8, 202#u8, 185#u8, 216#u8, 177#u8, 198#u8, 150#u8, 19#u8,
-      114#u8, 212#u8, 134#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_48 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      129#u8, 71#u8, 223#u8, 67#u8, 36#u8, 250#u8, 221#u8, 192#u8, 47#u8,
-      176#u8, 137#u8, 99#u8, 103#u8, 167#u8, 100#u8, 123#u8, 113#u8, 155#u8,
-      100#u8, 153#u8, 163#u8, 97#u8, 174#u8, 207#u8, 221#u8, 58#u8, 52#u8,
-      41#u8, 111#u8, 166#u8, 118#u8, 138#u8, 211#u8, 28#u8, 52#u8, 249#u8,
-      232#u8, 115#u8, 253#u8, 30#u8, 104#u8, 51#u8, 134#u8, 196#u8, 70#u8,
-      81#u8, 136#u8, 62#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_49 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      172#u8, 145#u8, 208#u8, 133#u8, 112#u8, 221#u8, 145#u8, 248#u8, 157#u8,
-      46#u8, 1#u8, 220#u8, 166#u8, 124#u8, 220#u8, 131#u8, 182#u8, 64#u8,
-      226#u8, 15#u8, 7#u8, 62#u8, 169#u8, 240#u8, 115#u8, 71#u8, 89#u8, 201#u8,
-      33#u8, 130#u8, 187#u8, 102#u8, 197#u8, 214#u8, 69#u8, 241#u8, 94#u8,
-      189#u8, 145#u8, 237#u8, 112#u8, 91#u8, 102#u8, 72#u8, 110#u8, 210#u8,
-      8#u8, 141#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_50 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      172#u8, 98#u8, 149#u8, 239#u8, 37#u8, 19#u8, 187#u8, 234#u8, 126#u8,
-      244#u8, 205#u8, 207#u8, 55#u8, 210#u8, 128#u8, 48#u8, 12#u8, 52#u8,
-      230#u8, 60#u8, 75#u8, 151#u8, 4#u8, 102#u8, 61#u8, 85#u8, 137#u8, 26#u8,
-      97#u8, 191#u8, 92#u8, 145#u8, 176#u8, 76#u8, 193#u8, 210#u8, 2#u8,
-      163#u8, 160#u8, 167#u8, 196#u8, 82#u8, 12#u8, 48#u8, 237#u8, 194#u8,
-      119#u8, 199#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_51 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      182#u8, 4#u8, 190#u8, 119#u8, 106#u8, 1#u8, 32#u8, 149#u8, 192#u8,
-      212#u8, 235#u8, 199#u8, 119#u8, 151#u8, 221#u8, 141#u8, 236#u8, 98#u8,
-      165#u8, 76#u8, 5#u8, 89#u8, 251#u8, 33#u8, 133#u8, 215#u8, 186#u8,
-      198#u8, 181#u8, 13#u8, 78#u8, 95#u8, 212#u8, 113#u8, 172#u8, 45#u8,
-      127#u8, 69#u8, 35#u8, 32#u8, 109#u8, 93#u8, 129#u8, 120#u8, 234#u8,
-      189#u8, 154#u8, 135#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_52 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      128#u8, 234#u8, 214#u8, 141#u8, 239#u8, 39#u8, 44#u8, 227#u8, 245#u8,
-      121#u8, 81#u8, 20#u8, 94#u8, 113#u8, 237#u8, 109#u8, 194#u8, 109#u8,
-      169#u8, 142#u8, 88#u8, 37#u8, 239#u8, 67#u8, 154#u8, 245#u8, 119#u8,
-      192#u8, 197#u8, 222#u8, 118#u8, 109#u8, 78#u8, 57#u8, 32#u8, 127#u8,
-      32#u8, 93#u8, 93#u8, 33#u8, 219#u8, 144#u8, 61#u8, 137#u8, 243#u8,
-      123#u8, 187#u8, 2#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_53 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      153#u8, 80#u8, 180#u8, 168#u8, 48#u8, 56#u8, 140#u8, 137#u8, 113#u8,
-      88#u8, 199#u8, 254#u8, 57#u8, 33#u8, 226#u8, 254#u8, 36#u8, 190#u8,
-      237#u8, 199#u8, 200#u8, 78#u8, 32#u8, 36#u8, 232#u8, 185#u8, 43#u8,
-      151#u8, 117#u8, 248#u8, 249#u8, 149#u8, 147#u8, 181#u8, 74#u8, 134#u8,
-      184#u8, 135#u8, 14#u8, 197#u8, 8#u8, 119#u8, 52#u8, 41#u8, 91#u8, 160#u8,
-      96#u8, 50#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_54 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      184#u8, 155#u8, 167#u8, 20#u8, 173#u8, 171#u8, 249#u8, 78#u8, 101#u8,
-      138#u8, 125#u8, 20#u8, 172#u8, 143#u8, 193#u8, 151#u8, 55#u8, 106#u8,
-      65#u8, 104#u8, 65#u8, 194#u8, 168#u8, 14#u8, 26#u8, 109#u8, 222#u8,
-      79#u8, 67#u8, 141#u8, 95#u8, 116#u8, 125#u8, 31#u8, 185#u8, 11#u8, 57#u8,
-      232#u8, 234#u8, 67#u8, 92#u8, 89#u8, 214#u8, 236#u8, 218#u8, 19#u8,
-      222#u8, 161#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_55 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      176#u8, 199#u8, 142#u8, 124#u8, 198#u8, 11#u8, 208#u8, 91#u8, 228#u8,
-      109#u8, 72#u8, 251#u8, 176#u8, 66#u8, 26#u8, 103#u8, 140#u8, 127#u8,
-      20#u8, 184#u8, 217#u8, 55#u8, 48#u8, 222#u8, 182#u8, 111#u8, 190#u8,
-      22#u8, 71#u8, 97#u8, 59#u8, 44#u8, 98#u8, 181#u8, 7#u8, 81#u8, 38#u8,
-      217#u8, 23#u8, 4#u8, 120#u8, 32#u8, 197#u8, 127#u8, 195#u8, 80#u8,
-      156#u8, 185#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_56 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      168#u8, 96#u8, 196#u8, 172#u8, 197#u8, 68#u8, 78#u8, 154#u8, 233#u8,
-      135#u8, 232#u8, 201#u8, 60#u8, 185#u8, 165#u8, 241#u8, 125#u8, 149#u8,
-      77#u8, 99#u8, 192#u8, 96#u8, 204#u8, 97#u8, 111#u8, 114#u8, 78#u8, 38#u8,
-      188#u8, 115#u8, 210#u8, 197#u8, 76#u8, 211#u8, 110#u8, 4#u8, 146#u8,
-      209#u8, 253#u8, 225#u8, 115#u8, 132#u8, 114#u8, 120#u8, 229#u8, 89#u8,
-      66#u8, 186#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_57 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      143#u8, 184#u8, 38#u8, 156#u8, 157#u8, 92#u8, 21#u8, 66#u8, 142#u8,
-      141#u8, 69#u8, 218#u8, 18#u8, 81#u8, 228#u8, 196#u8, 164#u8, 182#u8,
-      0#u8, 212#u8, 125#u8, 160#u8, 202#u8, 234#u8, 41#u8, 254#u8, 242#u8,
-      70#u8, 133#u8, 77#u8, 143#u8, 182#u8, 172#u8, 174#u8, 134#u8, 168#u8,
-      230#u8, 68#u8, 13#u8, 12#u8, 66#u8, 157#u8, 141#u8, 217#u8, 194#u8,
-      223#u8, 238#u8, 12#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_58 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      150#u8, 197#u8, 216#u8, 235#u8, 111#u8, 213#u8, 197#u8, 37#u8, 179#u8,
-      72#u8, 238#u8, 67#u8, 53#u8, 210#u8, 0#u8, 19#u8, 158#u8, 67#u8, 126#u8,
-      75#u8, 232#u8, 54#u8, 144#u8, 175#u8, 15#u8, 53#u8, 183#u8, 243#u8,
-      54#u8, 167#u8, 205#u8, 168#u8, 198#u8, 210#u8, 149#u8, 134#u8, 71#u8,
-      152#u8, 139#u8, 132#u8, 218#u8, 159#u8, 45#u8, 215#u8, 187#u8, 183#u8,
-      113#u8, 11#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_59 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      167#u8, 246#u8, 33#u8, 65#u8, 196#u8, 52#u8, 108#u8, 193#u8, 78#u8,
-      152#u8, 35#u8, 220#u8, 56#u8, 172#u8, 125#u8, 88#u8, 123#u8, 4#u8, 39#u8,
-      2#u8, 42#u8, 252#u8, 20#u8, 152#u8, 209#u8, 46#u8, 226#u8, 196#u8, 63#u8,
-      106#u8, 195#u8, 168#u8, 33#u8, 103#u8, 5#u8, 126#u8, 103#u8, 13#u8,
-      213#u8, 36#u8, 183#u8, 65#u8, 55#u8, 248#u8, 195#u8, 206#u8, 181#u8,
-      109#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_60 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      149#u8, 106#u8, 172#u8, 80#u8, 208#u8, 107#u8, 70#u8, 163#u8, 233#u8,
-      67#u8, 151#u8, 241#u8, 99#u8, 245#u8, 147#u8, 245#u8, 1#u8, 13#u8, 54#u8,
-      106#u8, 162#u8, 216#u8, 22#u8, 194#u8, 32#u8, 92#u8, 125#u8, 15#u8,
-      71#u8, 249#u8, 12#u8, 240#u8, 243#u8, 108#u8, 22#u8, 158#u8, 150#u8,
-      79#u8, 155#u8, 207#u8, 105#u8, 141#u8, 73#u8, 24#u8, 45#u8, 71#u8,
-      217#u8, 31#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_61 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      184#u8, 18#u8, 137#u8, 155#u8, 205#u8, 192#u8, 231#u8, 13#u8, 121#u8,
-      202#u8, 114#u8, 156#u8, 176#u8, 17#u8, 4#u8, 191#u8, 96#u8, 225#u8,
-      53#u8, 123#u8, 144#u8, 133#u8, 161#u8, 15#u8, 100#u8, 243#u8, 186#u8,
-      152#u8, 101#u8, 213#u8, 126#u8, 154#u8, 189#u8, 10#u8, 80#u8, 90#u8,
-      80#u8, 45#u8, 77#u8, 224#u8, 122#u8, 251#u8, 70#u8, 244#u8, 210#u8,
-      102#u8, 190#u8, 47#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_62 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      171#u8, 206#u8, 2#u8, 199#u8, 225#u8, 55#u8, 46#u8, 37#u8, 212#u8, 9#u8,
-      68#u8, 220#u8, 158#u8, 206#u8, 41#u8, 4#u8, 168#u8, 245#u8, 156#u8,
-      136#u8, 84#u8, 197#u8, 242#u8, 135#u8, 95#u8, 230#u8, 58#u8, 206#u8,
-      140#u8, 227#u8, 125#u8, 151#u8, 136#u8, 31#u8, 79#u8, 154#u8, 180#u8,
-      247#u8, 186#u8, 208#u8, 112#u8, 236#u8, 142#u8, 13#u8, 174#u8, 229#u8,
-      141#u8, 63#u8
-      ] (by rfl)
-
-private def kzg.trusted_setup.G1_MONOMIAL_row_63 : Array Std.U8 48#usize :=
-  Array.make 48#usize [
-      143#u8, 177#u8, 60#u8, 81#u8, 91#u8, 45#u8, 106#u8, 187#u8, 78#u8, 20#u8,
-      237#u8, 117#u8, 63#u8, 173#u8, 92#u8, 195#u8, 108#u8, 54#u8, 49#u8,
-      223#u8, 226#u8, 26#u8, 35#u8, 208#u8, 246#u8, 3#u8, 170#u8, 215#u8,
-      25#u8, 66#u8, 61#u8, 213#u8, 66#u8, 49#u8, 87#u8, 238#u8, 252#u8, 189#u8,
-      154#u8, 156#u8, 96#u8, 116#u8, 225#u8, 85#u8, 183#u8, 158#u8, 179#u8,
-      141#u8
-      ] (by rfl)
-
-/-- [silver_crypto_simd::kzg::trusted_setup::G1_MONOMIAL]
-    Source: 'crates/crypto_simd/src/kzg/trusted_setup.rs', lines 4:0-389:2
-    Visibility: public -/
-@[global_simps, irreducible]
-def kzg.trusted_setup.G1_MONOMIAL : Array (Array Std.U8 48#usize) 64#usize :=
-  Array.make 64#usize [
-    kzg.trusted_setup.G1_MONOMIAL_row_0,
-    kzg.trusted_setup.G1_MONOMIAL_row_1,
-    kzg.trusted_setup.G1_MONOMIAL_row_2,
-    kzg.trusted_setup.G1_MONOMIAL_row_3,
-    kzg.trusted_setup.G1_MONOMIAL_row_4,
-    kzg.trusted_setup.G1_MONOMIAL_row_5,
-    kzg.trusted_setup.G1_MONOMIAL_row_6,
-    kzg.trusted_setup.G1_MONOMIAL_row_7,
-    kzg.trusted_setup.G1_MONOMIAL_row_8,
-    kzg.trusted_setup.G1_MONOMIAL_row_9,
-    kzg.trusted_setup.G1_MONOMIAL_row_10,
-    kzg.trusted_setup.G1_MONOMIAL_row_11,
-    kzg.trusted_setup.G1_MONOMIAL_row_12,
-    kzg.trusted_setup.G1_MONOMIAL_row_13,
-    kzg.trusted_setup.G1_MONOMIAL_row_14,
-    kzg.trusted_setup.G1_MONOMIAL_row_15,
-    kzg.trusted_setup.G1_MONOMIAL_row_16,
-    kzg.trusted_setup.G1_MONOMIAL_row_17,
-    kzg.trusted_setup.G1_MONOMIAL_row_18,
-    kzg.trusted_setup.G1_MONOMIAL_row_19,
-    kzg.trusted_setup.G1_MONOMIAL_row_20,
-    kzg.trusted_setup.G1_MONOMIAL_row_21,
-    kzg.trusted_setup.G1_MONOMIAL_row_22,
-    kzg.trusted_setup.G1_MONOMIAL_row_23,
-    kzg.trusted_setup.G1_MONOMIAL_row_24,
-    kzg.trusted_setup.G1_MONOMIAL_row_25,
-    kzg.trusted_setup.G1_MONOMIAL_row_26,
-    kzg.trusted_setup.G1_MONOMIAL_row_27,
-    kzg.trusted_setup.G1_MONOMIAL_row_28,
-    kzg.trusted_setup.G1_MONOMIAL_row_29,
-    kzg.trusted_setup.G1_MONOMIAL_row_30,
-    kzg.trusted_setup.G1_MONOMIAL_row_31,
-    kzg.trusted_setup.G1_MONOMIAL_row_32,
-    kzg.trusted_setup.G1_MONOMIAL_row_33,
-    kzg.trusted_setup.G1_MONOMIAL_row_34,
-    kzg.trusted_setup.G1_MONOMIAL_row_35,
-    kzg.trusted_setup.G1_MONOMIAL_row_36,
-    kzg.trusted_setup.G1_MONOMIAL_row_37,
-    kzg.trusted_setup.G1_MONOMIAL_row_38,
-    kzg.trusted_setup.G1_MONOMIAL_row_39,
-    kzg.trusted_setup.G1_MONOMIAL_row_40,
-    kzg.trusted_setup.G1_MONOMIAL_row_41,
-    kzg.trusted_setup.G1_MONOMIAL_row_42,
-    kzg.trusted_setup.G1_MONOMIAL_row_43,
-    kzg.trusted_setup.G1_MONOMIAL_row_44,
-    kzg.trusted_setup.G1_MONOMIAL_row_45,
-    kzg.trusted_setup.G1_MONOMIAL_row_46,
-    kzg.trusted_setup.G1_MONOMIAL_row_47,
-    kzg.trusted_setup.G1_MONOMIAL_row_48,
-    kzg.trusted_setup.G1_MONOMIAL_row_49,
-    kzg.trusted_setup.G1_MONOMIAL_row_50,
-    kzg.trusted_setup.G1_MONOMIAL_row_51,
-    kzg.trusted_setup.G1_MONOMIAL_row_52,
-    kzg.trusted_setup.G1_MONOMIAL_row_53,
-    kzg.trusted_setup.G1_MONOMIAL_row_54,
-    kzg.trusted_setup.G1_MONOMIAL_row_55,
-    kzg.trusted_setup.G1_MONOMIAL_row_56,
-    kzg.trusted_setup.G1_MONOMIAL_row_57,
-    kzg.trusted_setup.G1_MONOMIAL_row_58,
-    kzg.trusted_setup.G1_MONOMIAL_row_59,
-    kzg.trusted_setup.G1_MONOMIAL_row_60,
-    kzg.trusted_setup.G1_MONOMIAL_row_61,
-    kzg.trusted_setup.G1_MONOMIAL_row_62,
-    kzg.trusted_setup.G1_MONOMIAL_row_63
-    ] (by rfl)
 
 /-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 27:8-32:9
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 132:8-137:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.setup.Setup.decode_loop.body
@@ -11760,7 +15610,7 @@ def kzg.setup.Setup.decode_loop.body
       ok (cont (iter1, g1_monomial1))
 
 /-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 27:8-32:9
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 132:8-137:9
     Visibility: public -/
 @[rust_loop]
 def kzg.setup.Setup.decode_loop
@@ -11775,7 +15625,7 @@ def kzg.setup.Setup.decode_loop
     (iter, g1_monomial)
 
 /-- [silver_crypto_simd::kzg::setup::{silver_crypto_simd::kzg::setup::Setup}::decode]:
-    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 22:4-42:5
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 127:4-139:5
     Visibility: public -/
 def kzg.setup.Setup.decode : Result kzg.setup.Setup := do
   let decoded :=
@@ -11795,28 +15645,14 @@ def kzg.setup.Setup.decode : Result kzg.setup.Setup := do
     kzg.setup.Setup.decode_loop
       { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL } decoded2
       g1_monomial
-  let o ← bls.uncompress_in_g2_blst kzg.trusted_setup.G2_MONOMIAL_64
-  match o with
-  | none => fail panic
-  | some point =>
-    let o1 ← bls.uncompress_in_g2_blst kzg.trusted_setup.G2_MONOMIAL_0
-    match o1 with
-    | none => fail panic
-    | some point1 =>
-      let bpa ← kzg.blst_ops.g2_neg point1
-      ok
-        {
-          g1_monomial := g1_monomial1,
-          g2_s_pow_cell := point,
-          g2_neg_generator := bpa
-        }
+  ok { g1_monomial := g1_monomial1 }
 
 /-- [silver_crypto_simd::kzg::verify::LOG_CELL]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 32:0-32:24 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 35:0-35:24 -/
 @[global_simps, irreducible] def kzg.verify.LOG_CELL : Std.U32 := 6#u32
 
 /-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}::default]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:9-322:16
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 409:9-409:16
     Visibility: public -/
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   : Result kzg.verify.Deduplicated := do
@@ -11825,27 +15661,244 @@ def kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
   let v1 ← alloc.vec.Vec.Insts.CoreDefaultDefault.default Std.Usize
   ok { unique := v, index_of_cell := v1 }
 
-/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Lincomb}::new]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 297:4-305:5 -/
-def kzg.verify.Lincomb.new : Result kzg.verify.Lincomb := do
-  let ls ← kzg.blst_ops.LincombScratch.new
-  let b ← ifma_available
-  let o ←
-    if b
-    then
-      do
-      let m ← bls.msm8.Msm8.Insts.CoreDefaultDefault.default
-      ok (some m)
-    else ok none
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::new]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 17:4-19:5
+    Visibility: public -/
+def portable.fp2.Fp2.new
+  (c0 : portable.fp.Fp) (c1 : portable.fp.Fp) : Result portable.fp2.Fp2 := do
+  ok { c0, c1 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::ZERO]
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 14:4-14:61
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.fp2.Fp2.ZERO : portable.fp2.Fp2 :=
+  { c0 := portable.fp.Fp.ZERO, c1 := portable.fp.Fp.ZERO }
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 28:16-35:17
+    Visibility: public -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.new_loop0_loop0_loop0.body
+  (a : Array Std.U64 6#usize) (step : Std.Usize) (pair : Std.Usize)
+  (lines : bls.miller_lines.MillerLines)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (l : Std.Usize) :
+  Result (ControlFlow (bls.miller_lines.MillerLines × (Array (Array (Array
+    portable.fp2.Fp2 2#usize) 2#usize) 68#usize) × Std.Usize)
+    (bls.miller_lines.MillerLines × (Array (Array (Array portable.fp2.Fp2
+    2#usize) 2#usize) 68#usize)))
+  := do
+  if l < 2#usize
+  then
+    let i ← 4#usize * pair
+    let i1 ← 2#usize * l
+    let lane ← i + i1
+    let a1 ← Array.index_usize lines step
+    let a2 ← Array.index_usize a1 lane
+    let a3 ← bls.limbs.pack64 a2
+    let f ← portable.fp.Fp.mul a3 a
+    let i2 ← lane + 1#usize
+    let a4 ← Array.index_usize a1 i2
+    let a5 ← bls.limbs.pack64 a4
+    let f1 ← portable.fp.Fp.mul a5 a
+    let f2 ← portable.fp2.Fp2.new f f1
+    let (a6, index_mut_back) ← Array.index_mut_usize out step
+    let (a7, index_mut_back1) ← Array.index_mut_usize a6 pair
+    let a8 ← Array.update a7 l f2
+    let l1 ← l + 1#usize
+    let a9 := index_mut_back1 a8
+    let a10 := index_mut_back a9
+    ok (cont (lines, a10, l1))
+  else ok (done (lines, out))
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 28:16-35:17
+    Visibility: public -/
+@[rust_loop]
+def portable.pairing.PairingLines.new_loop0_loop0_loop0
+  (lines : bls.miller_lines.MillerLines) (a : Array Std.U64 6#usize)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (step : Std.Usize) (pair : Std.Usize) (l : Std.Usize) :
+  Result (bls.miller_lines.MillerLines × (Array (Array (Array portable.fp2.Fp2
+    2#usize) 2#usize) 68#usize))
+  := do
+  loop
+    (fun (lines1, out1, l1) =>
+      portable.pairing.PairingLines.new_loop0_loop0_loop0.body a step pair
+      lines1 out1 l1)
+    (lines, out, l)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 26:12-37:13
+    Visibility: public -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.new_loop0_loop0.body
+  (a : Array Std.U64 6#usize) (step : Std.Usize)
+  (lines : bls.miller_lines.MillerLines)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (pair : Std.Usize) :
+  Result (ControlFlow (bls.miller_lines.MillerLines × (Array (Array (Array
+    portable.fp2.Fp2 2#usize) 2#usize) 68#usize) × Std.Usize)
+    (bls.miller_lines.MillerLines × (Array (Array (Array portable.fp2.Fp2
+    2#usize) 2#usize) 68#usize)))
+  := do
+  if pair < 2#usize
+  then
+    let (lines1, out1) ←
+      portable.pairing.PairingLines.new_loop0_loop0_loop0 lines a out step pair
+        0#usize
+    let pair1 ← pair + 1#usize
+    ok (cont (lines1, out1, pair1))
+  else ok (done (lines, out))
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 26:12-37:13
+    Visibility: public -/
+@[rust_loop]
+def portable.pairing.PairingLines.new_loop0_loop0
+  (lines : bls.miller_lines.MillerLines) (a : Array Std.U64 6#usize)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (step : Std.Usize) (pair : Std.Usize) :
+  Result (bls.miller_lines.MillerLines × (Array (Array (Array portable.fp2.Fp2
+    2#usize) 2#usize) 68#usize))
+  := do
+  loop
+    (fun (lines1, out1, pair1) =>
+      portable.pairing.PairingLines.new_loop0_loop0.body a step lines1 out1
+      pair1)
+    (lines, out, pair)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 24:8-39:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.new_loop0.body
+  (a : Array Std.U64 6#usize) (lines : bls.miller_lines.MillerLines)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (step : Std.Usize) :
+  Result (ControlFlow (bls.miller_lines.MillerLines × (Array (Array (Array
+    portable.fp2.Fp2 2#usize) 2#usize) 68#usize) × Std.Usize) (Array (Array
+    (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize))
+  := do
+  if step < bls.miller_lines.LINE_COUNT
+  then
+    let (lines1, out1) ←
+      portable.pairing.PairingLines.new_loop0_loop0 lines a out step 0#usize
+    let step1 ← step + 1#usize
+    ok (cont (lines1, out1, step1))
+  else ok (done out)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 24:8-39:9
+    Visibility: public -/
+@[rust_loop]
+def portable.pairing.PairingLines.new_loop0
+  (lines : bls.miller_lines.MillerLines) (a : Array Std.U64 6#usize)
+  (out : Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  (step : Std.Usize) :
+  Result (Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize)
+  := do
+  loop
+    (fun (lines1, out1, step1) => portable.pairing.PairingLines.new_loop0.body
+      a lines1 out1 step1)
+    (lines, out, step)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::new]:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 20:4-41:5
+    Visibility: public -/
+def portable.pairing.PairingLines.new
+  (lines : bls.miller_lines.MillerLines) :
+  Result portable.pairing.PairingLines
+  := do
+  let i ← 1#u64 <<< 32#i32
+  let a := Array.repeat 2#usize portable.fp2.Fp2.ZERO
+  let a1 := Array.repeat 2#usize a
+  let out := Array.repeat 68#usize a1
+  let out1 ←
+    portable.pairing.PairingLines.new_loop0 lines
+      (Array.make 6#usize [ 0#u64, 0#u64, 0#u64, 0#u64, 0#u64, i ] (by rfl)) out 0#usize
+  ok out1
+
+/-- [silver_crypto_simd::portable::msm::store::{core::default::Default for silver_crypto_simd::portable::msm::store::PointStore}::default]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 9:9-9:16
+    Visibility: public -/
+def portable.msm.store.PointStore.Insts.CoreDefaultDefault.default
+  : Result portable.msm.store.PointStore := do
+  let v ←
+    alloc.vec.Vec.Insts.CoreDefaultDefault.default (Array portable.fp.Fp
+      2#usize)
+  ok { points := v, len := (core.default.DefaultUsize.default) }
+
+/-- [silver_crypto_simd::portable::msm::pairs::{core::default::Default for silver_crypto_simd::portable::msm::pairs::BatchedAdds}::default]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 10:9-10:16
+    Visibility: public -/
+def portable.msm.pairs.BatchedAdds.Insts.CoreDefaultDefault.default
+  : Result portable.msm.pairs.BatchedAdds := do
+  let v ← alloc.vec.Vec.Insts.CoreDefaultDefault.default Std.U32
+  let v1 ← alloc.vec.Vec.Insts.CoreDefaultDefault.default portable.fp.Fp
+  ok { a := v, b := v, out := v, dx := v1, «prefix» := v1 }
+
+/-- [silver_crypto_simd::portable::msm::buckets::{core::default::Default for silver_crypto_simd::portable::msm::buckets::Buckets}::default]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 19:9-19:16
+    Visibility: public -/
+def portable.msm.buckets.Buckets.Insts.CoreDefaultDefault.default
+  : Result portable.msm.buckets.Buckets := do
+  let v ← alloc.vec.Vec.Insts.CoreDefaultDefault.default Std.U32
   ok
     {
-      scratch := ls,
-      msm := o,
-      words := (alloc.vec.Vec.new (Array Std.U64 4#usize))
+      window_bits := (core.default.DefaultUsize.default),
+      windows := (core.default.DefaultUsize.default),
+      refs := v,
+      starts := v,
+      lens := v
     }
 
+/-- [silver_crypto_simd::portable::msm::{core::default::Default for silver_crypto_simd::portable::msm::Msm}::default]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 42:9-42:16
+    Visibility: public -/
+def portable.msm.Msm.Insts.CoreDefaultDefault.default
+  : Result portable.msm.Msm := do
+  let ps ← portable.msm.store.PointStore.Insts.CoreDefaultDefault.default
+  let b ← portable.msm.buckets.Buckets.Insts.CoreDefaultDefault.default
+  let ba ← portable.msm.pairs.BatchedAdds.Insts.CoreDefaultDefault.default
+  let v ← alloc.vec.Vec.Insts.CoreDefaultDefault.default blst.blst_p1_affine
+  let v1 ←
+    alloc.vec.Vec.Insts.CoreDefaultDefault.default (Array Std.U64 4#usize)
+  let v2 ← alloc.vec.Vec.Insts.CoreDefaultDefault.default Bool
+  ok
+    {
+      store := ps,
+      buckets := b,
+      adds := ba,
+      finite_points := v,
+      finite_scalars := v1,
+      halves := v1,
+      first_signs := v2,
+      second_signs := v2
+    }
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::portable]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:4-325:5 -/
+def kzg.verify.CurveWork.portable : Result kzg.verify.CurveWork := do
+  let pl ← portable.pairing.PairingLines.new kzg.pairing_lines.PAIRING_LINES
+  let m ← portable.msm.Msm.Insts.CoreDefaultDefault.default
+  ok (kzg.verify.CurveWork.Portable m pl (alloc.vec.Vec.new (Array Std.U64
+    4#usize)))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::new]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 314:4-320:5 -/
+def kzg.verify.CurveWork.new : Result kzg.verify.CurveWork := do
+  let b ← ifma_available
+  if b
+  then
+    let m ← bls.msm8.Msm8.Insts.CoreDefaultDefault.default
+    ok (kzg.verify.CurveWork.Lanes m (alloc.vec.Vec.new (Array Std.U64
+      4#usize)))
+  else kzg.verify.CurveWork.portable
+
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::new]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 64:4-94:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 66:4-95:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.new
   : Result kzg.verify.CellBatchVerifier := do
@@ -11860,8 +15913,7 @@ def kzg.verify.CellBatchVerifier.new
       ok (some ik)
     else ok none
   let d ← kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
-  let p ← kzg.challenge.Preimage.new
-  let l ← kzg.verify.Lincomb.new
+  let cw ← kzg.verify.CurveWork.new
   ok
     {
       setup,
@@ -11871,7 +15923,6 @@ def kzg.verify.CellBatchVerifier.new
       commitment_points := (alloc.vec.Vec.new blst.blst_p1_affine),
       proof_points := (alloc.vec.Vec.new blst.blst_p1_affine),
       evaluations := (alloc.vec.Vec.new blst.blst_fr),
-      preimage := p,
       r_powers := (alloc.vec.Vec.new blst.blst_fr),
       scalars := (alloc.vec.Vec.new blst.blst_fr),
       columns := (alloc.vec.Vec.new blst.blst_fr),
@@ -11879,19 +15930,19 @@ def kzg.verify.CellBatchVerifier.new
       column := (alloc.vec.Vec.new blst.blst_fr),
       coefficients := (alloc.vec.Vec.new blst.blst_fr),
       interpolation := (alloc.vec.Vec.new blst.blst_fr),
-      lincomb := l,
+      curve_work := cw,
       kernel
     }
 
 /-- [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}::default]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 58:4-60:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 60:4-62:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default
   : Result kzg.verify.CellBatchVerifier := do
   kzg.verify.CellBatchVerifier.new
 
 /-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::CellBatchVerifier}]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 57:0-61:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 59:0-63:1 -/
 @[reducible]
 def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
   core.default.Default kzg.verify.CellBatchVerifier := {
@@ -11899,7 +15950,7 @@ def kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault :
 }
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 373:4-375:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 460:4-462:5 -/
 @[rust_loop_body]
 def kzg.verify.same_bytes_loop.body
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -11916,7 +15967,7 @@ def kzg.verify.same_bytes_loop.body
   else ok (done i)
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 373:4-375:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 460:4-462:5 -/
 @[rust_loop]
 def kzg.verify.same_bytes_loop
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) (i : Std.Usize) :
@@ -11927,14 +15978,14 @@ def kzg.verify.same_bytes_loop
     i
 
 /-- [silver_crypto_simd::kzg::verify::same_bytes]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 371:0-377:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 458:0-464:1 -/
 def kzg.verify.same_bytes
   (a : Array Std.U8 48#usize) (b : Array Std.U8 48#usize) : Result Bool := do
   let i ← kzg.verify.same_bytes_loop a b 0#usize
   ok (i = bls.COMPRESSED_LEN)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 335:12-341:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 422:12-428:13
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0_loop0.body
@@ -11958,7 +16009,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0.body
   else ok (done found)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 335:12-341:13
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 422:12-428:13
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0_loop0
@@ -11973,7 +16024,7 @@ def kzg.verify.Deduplicated.fill_loop0_loop0
     i
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 332:8-346:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 419:8-433:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.Deduplicated.fill_loop0.body
@@ -12003,7 +16054,7 @@ def kzg.verify.Deduplicated.fill_loop0.body
     ok (cont (iter1, v2, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 332:8-346:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 419:8-433:9
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.Deduplicated.fill_loop0
@@ -12018,7 +16069,7 @@ def kzg.verify.Deduplicated.fill_loop0
     (iter, v, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Deduplicated}::fill]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 329:4-347:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 416:4-434:5
     Visibility: public -/
 def kzg.verify.Deduplicated.fill
   (self : kzg.verify.Deduplicated)
@@ -12038,25 +16089,2845 @@ def kzg.verify.Deduplicated.fill
       commitments
   ok { unique := v2, index_of_cell := v3 }
 
-/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::Lincomb}::sum]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 307:4-317:5 -/
-def kzg.verify.Lincomb.sum
-  (self : kzg.verify.Lincomb) (points : Slice blst.blst_p1_affine)
-  (scalars : Slice blst.blst_fr) :
-  Result (blst.blst_p1 × kzg.verify.Lincomb)
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::mul_by_fp]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 70:4-72:5
+    Visibility: public -/
+def portable.fp2.Fp2.mul_by_fp
+  (self : portable.fp2.Fp2) (rhs : portable.fp.Fp) :
+  Result portable.fp2.Fp2
   := do
-  match self.msm with
-  | none =>
-    let (bp, ls) ← kzg.blst_ops.g1_lincomb points scalars self.scratch
-    ok (bp, { self with scratch := ls })
-  | some msm =>
-    let v ← kzg.fr8.Fr8.plain_words scalars self.words
-    let s := alloc.vec.Vec.deref v
+  let f ← portable.fp.Fp.mul self.c0 rhs
+  let f1 ← portable.fp.Fp.mul self.c1 rhs
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::sub]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 80:4-82:5
+    Visibility: public -/
+def portable.fp2.Fp2.sub
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  let f ← portable.fp.Fp.sub self.c0 rhs.c0
+  let f1 ← portable.fp.Fp.sub self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::sub]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 66:4-68:5
+    Visibility: public -/
+def portable.fp6.Fp6.sub
+  (self : portable.fp6.Fp6) (rhs : portable.fp6.Fp6) :
+  Result portable.fp6.Fp6
+  := do
+  let f ← portable.fp2.Fp2.sub self.c0 rhs.c0
+  let f1 ← portable.fp2.Fp2.sub self.c1 rhs.c1
+  let f2 ← portable.fp2.Fp2.sub self.c2 rhs.c2
+  ok { c0 := f, c1 := f1, c2 := f2 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::add]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 75:4-77:5
+    Visibility: public -/
+def portable.fp2.Fp2.add
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  let f ← portable.fp.Fp.add self.c0 rhs.c0
+  let f1 ← portable.fp.Fp.add self.c1 rhs.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::add]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 61:4-63:5
+    Visibility: public -/
+def portable.fp6.Fp6.add
+  (self : portable.fp6.Fp6) (rhs : portable.fp6.Fp6) :
+  Result portable.fp6.Fp6
+  := do
+  let f ← portable.fp2.Fp2.add self.c0 rhs.c0
+  let f1 ← portable.fp2.Fp2.add self.c1 rhs.c1
+  let f2 ← portable.fp2.Fp2.add self.c2 rhs.c2
+  ok { c0 := f, c1 := f1, c2 := f2 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::mul_by_xi]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 101:4-103:5
+    Visibility: public -/
+def portable.fp2.Fp2.mul_by_xi
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.sub self.c0 self.c1
+  let f1 ← portable.fp.Fp.add self.c0 self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::mul_by_v]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 56:4-58:5
+    Visibility: public -/
+def portable.fp6.Fp6.mul_by_v
+  (self : portable.fp6.Fp6) : Result portable.fp6.Fp6 := do
+  let f ← portable.fp2.Fp2.mul_by_xi self.c2
+  ok { c0 := f, c1 := self.c0, c2 := self.c1 }
+
+/-- [silver_crypto_simd::portable::fp::reduce_row]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 96:0-100:1 -/
+def portable.fp.reduce_row
+  (t : Array Std.U64 6#usize) : Result (Array Std.U64 6#usize) := do
+  let i ← Array.index_usize t 0#usize
+  let i1 ← Array.index_usize t 1#usize
+  let i2 ← Array.index_usize t 2#usize
+  let i3 ← Array.index_usize t 3#usize
+  let i4 ← Array.index_usize t 4#usize
+  let i5 ← Array.index_usize t 5#usize
+  let i6 ← lift (core.num.U64.wrapping_mul i portable.constants.P_INV)
+  let reduced ←
+    portable.fp.mul_add (Array.make 7#usize [ i, i1, i2, i3, i4, i5, 0#u64 ] (by rfl))
+      bls.constants.P_U64 i6
+  let i7 ← Array.index_usize reduced 1#usize
+  let i8 ← Array.index_usize reduced 2#usize
+  let i9 ← Array.index_usize reduced 3#usize
+  let i10 ← Array.index_usize reduced 4#usize
+  let i11 ← Array.index_usize reduced 5#usize
+  let i12 ← Array.index_usize reduced 6#usize
+  ok (Array.make 6#usize [ i7, i8, i9, i10, i11, i12 ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Wide}::reduce]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 400:4-411:5
+    Visibility: public -/
+def portable.fp.Wide.reduce
+  (self : portable.fp.Wide) : Result portable.fp.Fp := do
+  let i ← Array.index_usize self 6#usize
+  let i1 ← Array.index_usize self 7#usize
+  let i2 ← Array.index_usize self 8#usize
+  let i3 ← Array.index_usize self 9#usize
+  let i4 ← Array.index_usize self 10#usize
+  let i5 ← Array.index_usize self 11#usize
+  let (_, b) ←
+    portable.fp.sub_words (Array.make 6#usize [ i, i1, i2, i3, i4, i5 ] (by rfl))
+      bls.constants.P_U64
+  massert b
+  let i6 ← Array.index_usize self 0#usize
+  let i7 ← Array.index_usize self 1#usize
+  let i8 ← Array.index_usize self 2#usize
+  let i9 ← Array.index_usize self 3#usize
+  let i10 ← Array.index_usize self 4#usize
+  let i11 ← Array.index_usize self 5#usize
+  let low ←
+    portable.fp.reduce_row (Array.make 6#usize [ i6, i7, i8, i9, i10, i11 ] (by rfl))
+  let low1 ← portable.fp.reduce_row low
+  let low2 ← portable.fp.reduce_row low1
+  let low3 ← portable.fp.reduce_row low2
+  let low4 ← portable.fp.reduce_row low3
+  let low5 ← portable.fp.reduce_row low4
+  let p ←
+    portable.fp.add_words low5 (Array.make 6#usize [ i, i1, i2, i3, i4, i5 ] (by rfl))
+  let (a, _) := p
+  let a1 ← portable.fp.below_p a
+  ok a1
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Wide}::minus_mod]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 391:4-395:5
+    Visibility: public -/
+def portable.fp.Wide.minus_mod
+  (self : portable.fp.Wide) (rhs : portable.fp.Wide) :
+  Result portable.fp.Wide
+  := do
+  let (d, borrowed) ← portable.fp.sub_words self rhs
+  let i ← Array.index_usize d 6#usize
+  let i1 ← Array.index_usize d 7#usize
+  let i2 ← Array.index_usize d 8#usize
+  let i3 ← Array.index_usize d 9#usize
+  let i4 ← Array.index_usize d 10#usize
+  let i5 ← Array.index_usize d 11#usize
+  let a ← portable.fp.p_if borrowed
+  let (h, _) ←
+    portable.fp.add_words (Array.make 6#usize [ i, i1, i2, i3, i4, i5 ] (by rfl)) a
+  let i6 ← Array.index_usize d 0#usize
+  let i7 ← Array.index_usize d 1#usize
+  let i8 ← Array.index_usize d 2#usize
+  let i9 ← Array.index_usize d 3#usize
+  let i10 ← Array.index_usize d 4#usize
+  let i11 ← Array.index_usize d 5#usize
+  let i12 ← Array.index_usize h 0#usize
+  let i13 ← Array.index_usize h 1#usize
+  let i14 ← Array.index_usize h 2#usize
+  let i15 ← Array.index_usize h 3#usize
+  let i16 ← Array.index_usize h 4#usize
+  let i17 ← Array.index_usize h 5#usize
+  ok
+    (Array.make 12#usize [
+      i6, i7, i8, i9, i10, i11, i12, i13, i14, i15, i16, i17
+      ] (by rfl))
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Wide}::minus]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 383:4-387:5
+    Visibility: public -/
+def portable.fp.Wide.minus
+  (self : portable.fp.Wide) (rhs : portable.fp.Wide) :
+  Result portable.fp.Wide
+  := do
+  let (d, borrowed) ← portable.fp.sub_words self rhs
+  massert (¬ borrowed)
+  ok d
+
+/-- [silver_crypto_simd::portable::fp::add_row_at]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 104:0-114:1 -/
+def portable.fp.add_row_at
+  (t : Array Std.U64 12#usize) (a : Array Std.U64 6#usize) (bi : Std.U64)
+  (i : Std.Usize) :
+  Result (Array Std.U64 12#usize)
+  := do
+  let i1 ← i + 6#usize
+  let i2 ← Array.index_usize t i1
+  massert (i2 = 0#u64)
+  let i3 ← Array.index_usize t i
+  let i4 ← i + 1#usize
+  let i5 ← Array.index_usize t i4
+  let i6 ← i + 2#usize
+  let i7 ← Array.index_usize t i6
+  let i8 ← i + 3#usize
+  let i9 ← Array.index_usize t i8
+  let i10 ← i + 4#usize
+  let i11 ← Array.index_usize t i10
+  let i12 ← i + 5#usize
+  let i13 ← Array.index_usize t i12
+  let sum ←
+    portable.fp.mul_add
+      (Array.make 7#usize [ i3, i5, i7, i9, i11, i13, 0#u64 ] (by rfl)) a bi
+  let i14 ← Array.index_usize sum 0#usize
+  let t1 ← Array.update t i i14
+  let i15 ← Array.index_usize sum 1#usize
+  let t2 ← Array.update t1 i4 i15
+  let i16 ← Array.index_usize sum 2#usize
+  let t3 ← Array.update t2 i6 i16
+  let i17 ← Array.index_usize sum 3#usize
+  let t4 ← Array.update t3 i8 i17
+  let i18 ← Array.index_usize sum 4#usize
+  let t5 ← Array.update t4 i10 i18
+  let i19 ← Array.index_usize sum 5#usize
+  let t6 ← Array.update t5 i12 i19
+  let i20 ← Array.index_usize sum 6#usize
+  Array.update t6 i1 i20
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Wide}::product]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 370:4-379:5
+    Visibility: public -/
+def portable.fp.Wide.product
+  (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize) :
+  Result portable.fp.Wide
+  := do
+  let t := Array.repeat 12#usize 0#u64
+  let i ← Array.index_usize b 0#usize
+  let t1 ← portable.fp.add_row_at t a i 0#usize
+  let i1 ← Array.index_usize b 1#usize
+  let t2 ← portable.fp.add_row_at t1 a i1 1#usize
+  let i2 ← Array.index_usize b 2#usize
+  let t3 ← portable.fp.add_row_at t2 a i2 2#usize
+  let i3 ← Array.index_usize b 3#usize
+  let t4 ← portable.fp.add_row_at t3 a i3 3#usize
+  let i4 ← Array.index_usize b 4#usize
+  let t5 ← portable.fp.add_row_at t4 a i4 4#usize
+  let i5 ← Array.index_usize b 5#usize
+  let t6 ← portable.fp.add_row_at t5 a i5 5#usize
+  ok t6
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::unreduced_add]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 255:4-257:5
+    Visibility: public -/
+def portable.fp.Fp.unreduced_add
+  (self : portable.fp.Fp) (rhs : portable.fp.Fp) :
+  Result (Array Std.U64 6#usize)
+  := do
+  let (a, _) ← portable.fp.add_words self rhs
+  ok a
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::product]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 54:4-59:5 -/
+def portable.fp2.Fp2.product
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  let a := self.c0
+  let a1 := rhs.c0
+  let t0 ← portable.fp.Wide.product a a1
+  let a2 := self.c1
+  let a3 := rhs.c1
+  let t1 ← portable.fp.Wide.product a2 a3
+  let a4 ← portable.fp.Fp.unreduced_add self.c0 self.c1
+  let a5 ← portable.fp.Fp.unreduced_add rhs.c0 rhs.c1
+  let t2 ← portable.fp.Wide.product a4 a5
+  let w ← portable.fp.Wide.minus_mod t0 t1
+  let f ← portable.fp.Wide.reduce w
+  let w1 ← portable.fp.Wide.minus t2 t0
+  let w2 ← portable.fp.Wide.minus w1 t1
+  let f1 ← portable.fp.Wide.reduce w2
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::mul_on_baseline]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 46:4-48:5 -/
+def portable.fp2.Fp2.mul_on_baseline
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  portable.fp2.Fp2.product self rhs
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::mul_on_bmi2]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 39:4-41:5 -/
+def portable.fp2.Fp2.mul_on_bmi2
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  portable.fp2.Fp2.product self rhs
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::mul]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 23:4-29:5
+    Visibility: public -/
+def portable.fp2.Fp2.mul
+  (self : portable.fp2.Fp2) (rhs : portable.fp2.Fp2) :
+  Result portable.fp2.Fp2
+  := do
+  let b ← bmi2_available
+  if b
+  then portable.fp2.Fp2.mul_on_bmi2 self rhs
+  else portable.fp2.Fp2.mul_on_baseline self rhs
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::mul_by_y]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 50:4-52:5
+    Visibility: public -/
+def portable.fp6.Fp6.mul_by_y
+  (self : portable.fp6.Fp6) (y : portable.fp2.Fp2) :
+  Result portable.fp6.Fp6
+  := do
+  let f ← portable.fp2.Fp2.mul self.c2 y
+  let f1 ← portable.fp2.Fp2.mul_by_xi f
+  let f2 ← portable.fp2.Fp2.mul self.c0 y
+  let f3 ← portable.fp2.Fp2.mul self.c1 y
+  ok { c0 := f1, c1 := f2, c2 := f3 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::mul_by_xy]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 37:4-44:5
+    Visibility: public -/
+def portable.fp6.Fp6.mul_by_xy
+  (self : portable.fp6.Fp6) (x : portable.fp2.Fp2) (y : portable.fp2.Fp2) :
+  Result portable.fp6.Fp6
+  := do
+  let t0 ← portable.fp2.Fp2.mul self.c0 x
+  let t1 ← portable.fp2.Fp2.mul self.c1 y
+  let f ← portable.fp2.Fp2.mul self.c2 y
+  let f1 ← portable.fp2.Fp2.mul_by_xi f
+  let c0 ← portable.fp2.Fp2.add f1 t0
+  let f2 ← portable.fp2.Fp2.add self.c0 self.c1
+  let f3 ← portable.fp2.Fp2.add x y
+  let f4 ← portable.fp2.Fp2.mul f2 f3
+  let f5 ← portable.fp2.Fp2.sub f4 t0
+  let c1 ← portable.fp2.Fp2.sub f5 t1
+  let f6 ← portable.fp2.Fp2.mul self.c2 x
+  let c2 ← portable.fp2.Fp2.add f6 t1
+  ok { c0, c1, c2 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::mul_by_line]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 55:4-60:5
+    Visibility: public -/
+def portable.fp12.Fp12.mul_by_line
+  (self : portable.fp12.Fp12) (x : portable.fp2.Fp2) (y : portable.fp2.Fp2)
+  (z : portable.fp2.Fp2) :
+  Result portable.fp12.Fp12
+  := do
+  let t0 ← portable.fp6.Fp6.mul_by_xy self.c0 x y
+  let t1 ← portable.fp6.Fp6.mul_by_y self.c1 z
+  let f ← portable.fp6.Fp6.add self.c0 self.c1
+  let f1 ← portable.fp2.Fp2.add y z
+  let f2 ← portable.fp6.Fp6.mul_by_xy f x f1
+  let f3 ← portable.fp6.Fp6.sub f2 t0
+  let c1 ← portable.fp6.Fp6.sub f3 t1
+  let f4 ← portable.fp6.Fp6.mul_by_v t1
+  let f5 ← portable.fp6.Fp6.add t0 f4
+  ok { c0 := f5, c1 }
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::times_lines]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 91:8-102:9 -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.times_lines_loop.body
+  (step : Std.Usize) (factors : Array (Array portable.fp.Fp 3#usize) 2#usize)
+  (present : Array Bool 2#usize) (self : portable.pairing.PairingLines)
+  (f : portable.fp12.Fp12) (k : Std.Usize) :
+  Result (ControlFlow (portable.pairing.PairingLines × portable.fp12.Fp12 ×
+    Std.Usize) portable.fp12.Fp12)
+  := do
+  if k < 2#usize
+  then
+    let b ← Array.index_usize present k
+    let (self1, f1) ←
+      if b
+      then
+        do
+        let a ← Array.index_usize self step
+        let lines ← Array.index_usize a k
+        let a1 ← Array.index_usize factors k
+        let f2 ← Array.index_usize a1 0#usize
+        let f3 ← Array.index_usize lines 0#usize
+        let f4 ← Array.index_usize a1 1#usize
+        let f5 ← portable.fp2.Fp2.mul_by_fp f3 f4
+        let f6 ← Array.index_usize lines 1#usize
+        let f7 ← Array.index_usize a1 2#usize
+        let f8 ← portable.fp2.Fp2.mul_by_fp f6 f7
+        let f9 ←
+          portable.fp12.Fp12.mul_by_line f
+            { c0 := f2, c1 := portable.fp.Fp.ZERO } f5 f8
+        ok (self, f9)
+      else ok (self, f)
+    let k1 ← k + 1#usize
+    ok (cont (self1, f1, k1))
+  else ok (done f)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::times_lines]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 91:8-102:9 -/
+@[rust_loop]
+def portable.pairing.PairingLines.times_lines_loop
+  (self : portable.pairing.PairingLines) (step : Std.Usize)
+  (factors : Array (Array portable.fp.Fp 3#usize) 2#usize)
+  (present : Array Bool 2#usize) (f : portable.fp12.Fp12) (k : Std.Usize) :
+  Result portable.fp12.Fp12
+  := do
+  loop
+    (fun (self1, f1, k1) => portable.pairing.PairingLines.times_lines_loop.body
+      step factors present self1 f1 k1)
+    (self, f, k)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::times_lines]:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 82:4-104:5 -/
+@[reducible]
+def portable.pairing.PairingLines.times_lines
+  (self : portable.pairing.PairingLines) (f : portable.fp12.Fp12)
+  (step : Std.Usize) (factors : Array (Array portable.fp.Fp 3#usize) 2#usize)
+  (present : Array Bool 2#usize) :
+  Result portable.fp12.Fp12
+  := do
+  portable.pairing.PairingLines.times_lines_loop self step factors present f
+    0#usize
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::neg]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 90:4-92:5
+    Visibility: public -/
+def portable.fp2.Fp2.neg
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.neg self.c0
+  let f1 ← portable.fp.Fp.neg self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::neg]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 71:4-73:5
+    Visibility: public -/
+def portable.fp6.Fp6.neg
+  (self : portable.fp6.Fp6) : Result portable.fp6.Fp6 := do
+  let f ← portable.fp2.Fp2.neg self.c0
+  let f1 ← portable.fp2.Fp2.neg self.c1
+  let f2 ← portable.fp2.Fp2.neg self.c2
+  ok { c0 := f, c1 := f1, c2 := f2 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::conjugate]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 84:4-86:5
+    Visibility: public -/
+def portable.fp12.Fp12.conjugate
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let f ← portable.fp6.Fp6.neg self.c1
+  ok { self with c1 := f }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::double]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 85:4-87:5
+    Visibility: public -/
+def portable.fp2.Fp2.double
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.double self.c0
+  let f1 ← portable.fp.Fp.double self.c1
+  ok { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::double]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 76:4-78:5
+    Visibility: public -/
+def portable.fp6.Fp6.double
+  (self : portable.fp6.Fp6) : Result portable.fp6.Fp6 := do
+  let f ← portable.fp2.Fp2.double self.c0
+  let f1 ← portable.fp2.Fp2.double self.c1
+  let f2 ← portable.fp2.Fp2.double self.c2
+  ok { c0 := f, c1 := f1, c2 := f2 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::mul]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 21:4-31:5
+    Visibility: public -/
+def portable.fp6.Fp6.mul
+  (self : portable.fp6.Fp6) (rhs : portable.fp6.Fp6) :
+  Result portable.fp6.Fp6
+  := do
+  let t0 ← portable.fp2.Fp2.mul self.c0 rhs.c0
+  let t1 ← portable.fp2.Fp2.mul self.c1 rhs.c1
+  let t2 ← portable.fp2.Fp2.mul self.c2 rhs.c2
+  let f ← portable.fp2.Fp2.add self.c1 self.c2
+  let f1 ← portable.fp2.Fp2.add rhs.c1 rhs.c2
+  let f2 ← portable.fp2.Fp2.mul f f1
+  let f3 ← portable.fp2.Fp2.sub f2 t1
+  let f4 ← portable.fp2.Fp2.sub f3 t2
+  let f5 ← portable.fp2.Fp2.mul_by_xi f4
+  let c0 ← portable.fp2.Fp2.add f5 t0
+  let f6 ← portable.fp2.Fp2.add self.c0 self.c1
+  let f7 ← portable.fp2.Fp2.add rhs.c0 rhs.c1
+  let f8 ← portable.fp2.Fp2.mul f6 f7
+  let f9 ← portable.fp2.Fp2.sub f8 t0
+  let f10 ← portable.fp2.Fp2.sub f9 t1
+  let f11 ← portable.fp2.Fp2.mul_by_xi t2
+  let c1 ← portable.fp2.Fp2.add f10 f11
+  let f12 ← portable.fp2.Fp2.add self.c0 self.c2
+  let f13 ← portable.fp2.Fp2.add rhs.c0 rhs.c2
+  let f14 ← portable.fp2.Fp2.mul f12 f13
+  let f15 ← portable.fp2.Fp2.sub f14 t0
+  let f16 ← portable.fp2.Fp2.sub f15 t2
+  let c2 ← portable.fp2.Fp2.add f16 t1
+  ok { c0, c1, c2 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::square]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 43:4-48:5
+    Visibility: public -/
+def portable.fp12.Fp12.square
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let t ← portable.fp6.Fp6.mul self.c0 self.c1
+  let f ← portable.fp6.Fp6.add self.c0 self.c1
+  let f1 ← portable.fp6.Fp6.mul_by_v self.c1
+  let f2 ← portable.fp6.Fp6.add self.c0 f1
+  let f3 ← portable.fp6.Fp6.mul f f2
+  let f4 ← portable.fp6.Fp6.sub f3 t
+  let f5 ← portable.fp6.Fp6.mul_by_v t
+  let c0 ← portable.fp6.Fp6.sub f4 f5
+  let f6 ← portable.fp6.Fp6.double t
+  ok { c0, c1 := f6 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::ZERO]
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 16:4-16:78
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.fp6.Fp6.ZERO : portable.fp6.Fp6 :=
+  {
+    c0 := portable.fp2.Fp2.ZERO,
+    c1 := portable.fp2.Fp2.ZERO,
+    c2 := portable.fp2.Fp2.ZERO
+  }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::ONE]
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 25:4-28:6
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.fp12.Fp12.ONE : portable.fp12.Fp12 :=
+  {
+    c0 :=
+      {
+        c0 := { c0 := portable.constants.ONE, c1 := portable.fp.Fp.ZERO },
+        c1 := portable.fp2.Fp2.ZERO,
+        c2 := portable.fp2.Fp2.ZERO
+      },
+    c1 := portable.fp6.Fp6.ZERO
+  }
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::miller_loop]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 55:8-59:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.miller_loop_loop0.body
+  (points : Array portable.g1.G1 2#usize)
+  (factors : Array (Array portable.fp.Fp 3#usize) 2#usize) (k : Std.Usize) :
+  Result (ControlFlow ((Array (Array portable.fp.Fp 3#usize) 2#usize) ×
+    Std.Usize) (Array (Array portable.fp.Fp 3#usize) 2#usize))
+  := do
+  if k < 2#usize
+  then
+    let p ← Array.index_usize points k
+    let f ← portable.fp.Fp.square p.z
+    let f1 ← portable.fp.Fp.mul f p.z
+    let f2 ← portable.fp.Fp.mul p.x p.z
+    let a ←
+      Array.update factors k (Array.make 3#usize [ f1, f2, p.y ] (by rfl) : Array
+        portable.fp.Fp 3#usize)
+    let k1 ← k + 1#usize
+    ok (cont (a, k1))
+  else ok (done factors)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::miller_loop]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 55:8-59:9
+    Visibility: public -/
+@[rust_loop]
+def portable.pairing.PairingLines.miller_loop_loop0
+  (points : Array portable.g1.G1 2#usize)
+  (factors : Array (Array portable.fp.Fp 3#usize) 2#usize) (k : Std.Usize) :
+  Result (Array (Array portable.fp.Fp 3#usize) 2#usize)
+  := do
+  loop
+    (fun (factors1, k1) => portable.pairing.PairingLines.miller_loop_loop0.body
+      points factors1 k1)
+    (factors, k)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::miller_loop]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 64:8-75:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.pairing.PairingLines.miller_loop_loop1.body
+  (self : portable.pairing.PairingLines)
+  (factors : Array (Array portable.fp.Fp 3#usize) 2#usize)
+  (present : Array Bool 2#usize) (f : portable.fp12.Fp12) (step : Std.Usize)
+  (bit : Std.U32) :
+  Result (ControlFlow (portable.fp12.Fp12 × Std.Usize × Std.U32)
+    portable.fp12.Fp12)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let f1 ← if step > 0#usize
+               then portable.fp12.Fp12.square f
+               else ok f
+    let f2 ←
+      portable.pairing.PairingLines.times_lines self f1 step factors present
+    let step1 ← step + 1#usize
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then
+      let f3 ←
+        portable.pairing.PairingLines.times_lines self f2 step1 factors present
+      let step2 ← step1 + 1#usize
+      ok (cont (f3, step2, bit1))
+    else ok (cont (f2, step1, bit1))
+  else ok (done f)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::miller_loop]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 64:8-75:9
+    Visibility: public -/
+@[rust_loop]
+def portable.pairing.PairingLines.miller_loop_loop1
+  (self : portable.pairing.PairingLines)
+  (factors : Array (Array portable.fp.Fp 3#usize) 2#usize)
+  (present : Array Bool 2#usize) (f : portable.fp12.Fp12) (step : Std.Usize)
+  (bit : Std.U32) :
+  Result portable.fp12.Fp12
+  := do
+  loop
+    (fun (f1, step1, bit1) =>
+      portable.pairing.PairingLines.miller_loop_loop1.body self factors present
+      f1 step1 bit1)
+    (f, step, bit)
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::miller_loop]:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 52:4-77:5
+    Visibility: public -/
+def portable.pairing.PairingLines.miller_loop
+  (self : portable.pairing.PairingLines)
+  (points : Array portable.g1.G1 2#usize) :
+  Result portable.fp12.Fp12
+  := do
+  let a := Array.repeat 3#usize portable.fp.Fp.ZERO
+  let factors := Array.repeat 2#usize a
+  let factors1 ←
+    portable.pairing.PairingLines.miller_loop_loop0 points factors 0#usize
+  let g ← Array.index_usize points 0#usize
+  let b ← portable.g1.G1.is_infinity g
+  let g1 ← Array.index_usize points 1#usize
+  let b1 ← portable.g1.G1.is_infinity g1
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let f ←
+    portable.pairing.PairingLines.miller_loop_loop1 self factors1
+      (Array.make 2#usize [ ¬ b, ¬ b1 ] (by rfl)) portable.fp12.Fp12.ONE 0#usize bit
+  portable.fp12.Fp12.conjugate f
+
+/-- [silver_crypto_simd::portable::fp2::{core::cmp::PartialEq<silver_crypto_simd::portable::fp2::Fp2> for silver_crypto_simd::portable::fp2::Fp2}::eq]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 7:38-7:47
+    Visibility: public -/
+def portable.fp2.Fp2.Insts.CoreCmpPartialEqFp2.eq
+  (self : portable.fp2.Fp2) (other : portable.fp2.Fp2) : Result Bool := do
+  let b ← portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq self.c0 other.c0
+  if b
+  then portable.fp.Fp.Insts.CoreCmpPartialEqFp.eq self.c1 other.c1
+  else ok false
+
+/-- [silver_crypto_simd::portable::fp6::{core::cmp::PartialEq<silver_crypto_simd::portable::fp6::Fp6> for silver_crypto_simd::portable::fp6::Fp6}::eq]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 8:38-8:47
+    Visibility: public -/
+def portable.fp6.Fp6.Insts.CoreCmpPartialEqFp6.eq
+  (self : portable.fp6.Fp6) (other : portable.fp6.Fp6) : Result Bool := do
+  let b ← portable.fp2.Fp2.Insts.CoreCmpPartialEqFp2.eq self.c0 other.c0
+  if b
+  then
+    let b1 ← portable.fp2.Fp2.Insts.CoreCmpPartialEqFp2.eq self.c1 other.c1
+    if b1
+    then portable.fp2.Fp2.Insts.CoreCmpPartialEqFp2.eq self.c2 other.c2
+    else ok false
+  else ok false
+
+/-- [silver_crypto_simd::portable::fp12::{core::cmp::PartialEq<silver_crypto_simd::portable::fp12::Fp12> for silver_crypto_simd::portable::fp12::Fp12}::eq]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 18:38-18:47
+    Visibility: public -/
+def portable.fp12.Fp12.Insts.CoreCmpPartialEqFp12.eq
+  (self : portable.fp12.Fp12) (other : portable.fp12.Fp12) : Result Bool := do
+  let b ← portable.fp6.Fp6.Insts.CoreCmpPartialEqFp6.eq self.c0 other.c0
+  if b
+  then portable.fp6.Fp6.Insts.CoreCmpPartialEqFp6.eq self.c1 other.c1
+  else ok false
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::is_one]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 154:4-156:5
+    Visibility: public -/
+def portable.fp12.Fp12.is_one (self : portable.fp12.Fp12) : Result Bool := do
+  portable.fp12.Fp12.Insts.CoreCmpPartialEqFp12.eq self portable.fp12.Fp12.ONE
+
+/-- [silver_crypto_simd::portable::fp12::thrice_plus_twice]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 178:0-180:1 -/
+def portable.fp12.thrice_plus_twice
+  (t : portable.fp2.Fp2) (a : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp2.Fp2.add t a
+  let f1 ← portable.fp2.Fp2.double f
+  portable.fp2.Fp2.add f1 t
+
+/-- [silver_crypto_simd::portable::fp12::thrice_less_twice]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 172:0-174:1 -/
+def portable.fp12.thrice_less_twice
+  (t : portable.fp2.Fp2) (a : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp2.Fp2.sub t a
+  let f1 ← portable.fp2.Fp2.double f
+  portable.fp2.Fp2.add f1 t
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::square]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 63:4-67:5
+    Visibility: public -/
+def portable.fp2.Fp2.square
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.add self.c0 self.c1
+  let f1 ← portable.fp.Fp.sub self.c0 self.c1
+  let c0 ← portable.fp.Fp.mul f f1
+  let f2 ← portable.fp.Fp.mul self.c0 self.c1
+  let c1 ← portable.fp.Fp.double f2
+  ok { c0, c1 }
+
+/-- [silver_crypto_simd::portable::fp12::fp4_square]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 163:0-168:1 -/
+def portable.fp12.fp4_square
+  (a0 : portable.fp2.Fp2) (a1 : portable.fp2.Fp2) :
+  Result (portable.fp2.Fp2 × portable.fp2.Fp2)
+  := do
+  let s0 ← portable.fp2.Fp2.square a0
+  let s1 ← portable.fp2.Fp2.square a1
+  let f ← portable.fp2.Fp2.add a0 a1
+  let f1 ← portable.fp2.Fp2.square f
+  let f2 ← portable.fp2.Fp2.sub f1 s0
+  let cross ← portable.fp2.Fp2.sub f2 s1
+  let f3 ← portable.fp2.Fp2.mul_by_xi s1
+  let f4 ← portable.fp2.Fp2.add s0 f3
+  ok (f4, cross)
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::cyclotomic_square]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 66:4-82:5
+    Visibility: public -/
+def portable.fp12.Fp12.cyclotomic_square
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let (t00, t01) ← portable.fp12.fp4_square self.c0.c0 self.c1.c1
+  let (t10, t11) ← portable.fp12.fp4_square self.c1.c0 self.c0.c2
+  let (t20, t21) ← portable.fp12.fp4_square self.c0.c1 self.c1.c2
+  let f ← portable.fp12.thrice_less_twice t00 self.c0.c0
+  let f1 ← portable.fp12.thrice_less_twice t10 self.c0.c1
+  let f2 ← portable.fp12.thrice_less_twice t20 self.c0.c2
+  let f3 ← portable.fp2.Fp2.mul_by_xi t21
+  let f4 ← portable.fp12.thrice_plus_twice f3 self.c1.c0
+  let f5 ← portable.fp12.thrice_plus_twice t01 self.c1.c1
+  let f6 ← portable.fp12.thrice_plus_twice t11 self.c1.c2
+  ok
+    {
+      c0 := { c0 := f, c1 := f1, c2 := f2 },
+      c1 := { c0 := f4, c1 := f5, c2 := f6 }
+    }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::mul]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 33:4-38:5
+    Visibility: public -/
+def portable.fp12.Fp12.mul
+  (self : portable.fp12.Fp12) (rhs : portable.fp12.Fp12) :
+  Result portable.fp12.Fp12
+  := do
+  let t0 ← portable.fp6.Fp6.mul self.c0 rhs.c0
+  let t1 ← portable.fp6.Fp6.mul self.c1 rhs.c1
+  let f ← portable.fp6.Fp6.add self.c0 self.c1
+  let f1 ← portable.fp6.Fp6.add rhs.c0 rhs.c1
+  let f2 ← portable.fp6.Fp6.mul f f1
+  let f3 ← portable.fp6.Fp6.sub f2 t0
+  let c1 ← portable.fp6.Fp6.sub f3 t1
+  let f4 ← portable.fp6.Fp6.mul_by_v t1
+  let f5 ← portable.fp6.Fp6.add t0 f4
+  ok { c0 := f5, c1 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::cyclotomic_exp]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 144:8-150:9 -/
+@[rust_loop_body]
+def portable.fp12.Fp12.cyclotomic_exp_loop.body
+  (self : portable.fp12.Fp12) (r : portable.fp12.Fp12) (bit : Std.U32) :
+  Result (ControlFlow (portable.fp12.Fp12 × Std.U32) portable.fp12.Fp12)
+  := do
+  if bit > 0#u32
+  then
+    let bit1 ← bit - 1#u32
+    let r1 ← portable.fp12.Fp12.cyclotomic_square r
+    let b ← bls.constants.is_lower_z_bit bit1
+    if b
+    then let r2 ← portable.fp12.Fp12.mul r1 self
+         ok (cont (r2, bit1))
+    else ok (cont (r1, bit1))
+  else ok (done r)
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::cyclotomic_exp]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 144:8-150:9 -/
+@[rust_loop]
+def portable.fp12.Fp12.cyclotomic_exp_loop
+  (self : portable.fp12.Fp12) (r : portable.fp12.Fp12) (bit : Std.U32) :
+  Result portable.fp12.Fp12
+  := do
+  loop
+    (fun (r1, bit1) => portable.fp12.Fp12.cyclotomic_exp_loop.body self r1
+      bit1)
+    (r, bit)
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::cyclotomic_exp]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 141:4-152:5 -/
+def portable.fp12.Fp12.cyclotomic_exp
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let r ← portable.fp12.Fp12.cyclotomic_exp_loop self self bit
+  portable.fp12.Fp12.conjugate r
+
+/-- [silver_crypto_simd::portable::fp::geq]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 442:0-445:1 -/
+def portable.fp.geq
+  (a : Array Std.U64 6#usize) (b : Array Std.U64 6#usize) : Result Bool := do
+  let (_, borrow) ← portable.fp.sub_words a b
+  ok (¬ borrow)
+
+/-- [silver_crypto_simd::portable::fp::halve]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 424:4-427:5 -/
+@[rust_loop_body]
+def portable.fp.halve_loop.body
+  (a : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × Std.Usize) (Array Std.U64
+    6#usize))
+  := do
+  if j < 5#usize
+  then
+    let i ← Array.index_usize a j
+    let i1 ← i >>> 1#i32
+    let i2 ← j + 1#usize
+    let i3 ← Array.index_usize a i2
+    let i4 ← i3 <<< 63#i32
+    let i5 ← lift (i1 ||| i4)
+    let a1 ← Array.update a j i5
+    ok (cont (a1, i2))
+  else ok (done a)
+
+/-- [silver_crypto_simd::portable::fp::halve]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 424:4-427:5 -/
+@[rust_loop]
+def portable.fp.halve_loop
+  (a : Array Std.U64 6#usize) (j : Std.Usize) :
+  Result (Array Std.U64 6#usize)
+  := do
+  loop
+    (fun (a1, j1) => portable.fp.halve_loop.body a1 j1)
+    (a, j)
+
+/-- [silver_crypto_simd::portable::fp::halve]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 422:0-429:1 -/
+def portable.fp.halve
+  (a : Array Std.U64 6#usize) (top : Std.U64) :
+  Result (Array Std.U64 6#usize)
+  := do
+  let a1 ← portable.fp.halve_loop a 0#usize
+  let i ← Array.index_usize a1 5#usize
+  let i1 ← i >>> 1#i32
+  let i2 ← top <<< 63#i32
+  let i3 ← lift (i1 ||| i2)
+  Array.update a1 5#usize i3
+
+/-- [silver_crypto_simd::portable::fp::is_even]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 414:0-416:1 -/
+def portable.fp.is_even (a : Array Std.U64 6#usize) : Result Bool := do
+  let i ← Array.index_usize a 0#usize
+  let i1 ← lift (i &&& 1#u64)
+  ok (i1 = 0#u64)
+
+/-- [silver_crypto_simd::portable::fp::halve_mod_p]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 432:0-440:1 -/
+def portable.fp.halve_mod_p
+  (x : Array Std.U64 6#usize) : Result (Array Std.U64 6#usize) := do
+  let b ← portable.fp.is_even x
+  if b
+  then portable.fp.halve x 0#u64
+  else
+    let (sum, carry) ← portable.fp.add_words x bls.constants.P_U64
+    let i ← lift (UScalar.cast_fromBool .U64 carry)
+    portable.fp.halve sum i
+
+/-- [silver_crypto_simd::portable::fp::is_one]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 418:0-420:1 -/
+def portable.fp.is_one (a : Array Std.U64 6#usize) : Result Bool := do
+  let i ← Array.index_usize a 0#usize
+  if i = 1#u64
+  then
+    let i1 ← Array.index_usize a 1#usize
+    let i2 ← Array.index_usize a 2#usize
+    let i3 ← lift (i1 ||| i2)
+    let i4 ← Array.index_usize a 3#usize
+    let i5 ← lift (i3 ||| i4)
+    let i6 ← Array.index_usize a 4#usize
+    let i7 ← lift (i5 ||| i6)
+    let i8 ← Array.index_usize a 5#usize
+    let i9 ← lift (i7 ||| i8)
+    ok (i9 = 0#u64)
+  else ok false
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 459:8-462:9 -/
+@[rust_loop_body]
+def portable.fp.inverse_words_loop0_loop0.body
+  (u : Array Std.U64 6#usize) (x1 : Array Std.U64 6#usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × (Array Std.U64 6#usize))
+    ((Array Std.U64 6#usize) × (Array Std.U64 6#usize)))
+  := do
+  let b ← portable.fp.is_even u
+  if b
+  then
+    let u1 ← portable.fp.halve u 0#u64
+    let x11 ← portable.fp.halve_mod_p x1
+    ok (cont (u1, x11))
+  else ok (done (u, x1))
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 459:8-462:9 -/
+@[rust_loop]
+def portable.fp.inverse_words_loop0_loop0
+  (u : Array Std.U64 6#usize) (x1 : Array Std.U64 6#usize) :
+  Result ((Array Std.U64 6#usize) × (Array Std.U64 6#usize))
+  := do
+  loop
+    (fun (u1, x11) => portable.fp.inverse_words_loop0_loop0.body u1 x11)
+    (u, x1)
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 463:8-466:9 -/
+@[rust_loop_body]
+def portable.fp.inverse_words_loop0_loop1.body
+  (v : Array Std.U64 6#usize) (x2 : Array Std.U64 6#usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × (Array Std.U64 6#usize))
+    ((Array Std.U64 6#usize) × (Array Std.U64 6#usize)))
+  := do
+  let b ← portable.fp.is_even v
+  if b
+  then
+    let v1 ← portable.fp.halve v 0#u64
+    let x21 ← portable.fp.halve_mod_p x2
+    ok (cont (v1, x21))
+  else ok (done (v, x2))
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 463:8-466:9 -/
+@[rust_loop]
+def portable.fp.inverse_words_loop0_loop1
+  (v : Array Std.U64 6#usize) (x2 : Array Std.U64 6#usize) :
+  Result ((Array Std.U64 6#usize) × (Array Std.U64 6#usize))
+  := do
+  loop
+    (fun (v1, x21) => portable.fp.inverse_words_loop0_loop1.body v1 x21)
+    (v, x2)
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 455:11-455:36 -/
+@[rust_loop_body]
+def portable.fp.inverse_words_loop0.body
+  (u : Array Std.U64 6#usize) (v : Array Std.U64 6#usize)
+  (x1 : Array Std.U64 6#usize) (x2 : Array Std.U64 6#usize) :
+  Result (ControlFlow ((Array Std.U64 6#usize) × (Array Std.U64 6#usize) ×
+    (Array Std.U64 6#usize) × (Array Std.U64 6#usize)) (Array Std.U64
+    6#usize))
+  := do
+  let b ← portable.fp.is_one u
+  if b
+  then if b
+       then ok (done x1)
+       else ok (done x2)
+  else
+    let b1 ← portable.fp.is_one v
+    if b1
+    then if b
+         then ok (done x1)
+         else ok (done x2)
+    else
+      let a := Array.repeat 6#usize 0#u64
+      let b2 ←
+        core.array.equality.PartialEqArray.eq core.cmp.PartialEqU64 u a
+      if b2
+      then let x11 := Array.repeat 6#usize 0#u64
+           ok (done x11)
+      else
+        let (u1, x11) ← portable.fp.inverse_words_loop0_loop0 u x1
+        let (v1, x21) ← portable.fp.inverse_words_loop0_loop1 v x2
+        let b3 ← portable.fp.geq u1 v1
+        if b3
+        then
+          let (u2, _) ← portable.fp.sub_words u1 v1
+          let (d, borrow) ← portable.fp.sub_words x11 x21
+          if borrow
+          then
+            let (x12, _) ← portable.fp.add_words d bls.constants.P_U64
+            ok (cont (u2, v1, x12, x21))
+          else ok (cont (u2, v1, d, x21))
+        else
+          let (v2, _) ← portable.fp.sub_words v1 u1
+          let (d, borrow) ← portable.fp.sub_words x21 x11
+          if borrow
+          then
+            let (x22, _) ← portable.fp.add_words d bls.constants.P_U64
+            ok (cont (u1, v2, x11, x22))
+          else ok (cont (u1, v2, x11, d))
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 455:11-455:36 -/
+@[rust_loop]
+def portable.fp.inverse_words_loop0
+  (u : Array Std.U64 6#usize) (v : Array Std.U64 6#usize)
+  (x1 : Array Std.U64 6#usize) (x2 : Array Std.U64 6#usize) :
+  Result (Array Std.U64 6#usize)
+  := do
+  loop
+    (fun (u1, v1, x11, x21) => portable.fp.inverse_words_loop0.body u1 v1 x11
+      x21)
+    (u, v, x1, x2)
+
+/-- [silver_crypto_simd::portable::fp::inverse_words]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 450:0-478:1 -/
+def portable.fp.inverse_words
+  (a : Array Std.U64 6#usize) : Result (Array Std.U64 6#usize) := do
+  let x2 := Array.repeat 6#usize 0#u64
+  portable.fp.inverse_words_loop0 a bls.constants.P_U64
+    (Array.make 6#usize [ 1#u64, 0#u64, 0#u64, 0#u64, 0#u64, 0#u64 ] (by rfl)) x2
+
+/-- [silver_crypto_simd::portable::constants::R3]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 27:0-34:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.R3 : Array Std.U64 6#usize :=
+  Array.make 6#usize [
+    17098105564519244256#u64, 3557706395579559416#u64,
+    11120290361046346205#u64, 3801124253586036577#u64, 2671430854784468776#u64,
+    767358375875140941#u64
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::fp::{silver_crypto_simd::portable::fp::Fp}::inverse]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 291:4-293:5
+    Visibility: public -/
+def portable.fp.Fp.inverse
+  (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  let a ← portable.fp.inverse_words self
+  portable.fp.Fp.mul a portable.constants.R3
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::inverse]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 106:4-109:5
+    Visibility: public -/
+def portable.fp2.Fp2.inverse
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.square self.c0
+  let f1 ← portable.fp.Fp.square self.c1
+  let f2 ← portable.fp.Fp.add f f1
+  let norm_inverse ← portable.fp.Fp.inverse f2
+  let f3 ← portable.fp.Fp.mul self.c0 norm_inverse
+  let f4 ← portable.fp.Fp.neg self.c1
+  let f5 ← portable.fp.Fp.mul f4 norm_inverse
+  ok { c0 := f3, c1 := f5 }
+
+/-- [silver_crypto_simd::portable::fp6::{silver_crypto_simd::portable::fp6::Fp6}::inverse]:
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 84:4-91:5
+    Visibility: public -/
+def portable.fp6.Fp6.inverse
+  (self : portable.fp6.Fp6) : Result portable.fp6.Fp6 := do
+  let f ← portable.fp2.Fp2.square self.c0
+  let f1 ← portable.fp2.Fp2.mul self.c1 self.c2
+  let f2 ← portable.fp2.Fp2.mul_by_xi f1
+  let t0 ← portable.fp2.Fp2.sub f f2
+  let f3 ← portable.fp2.Fp2.square self.c2
+  let f4 ← portable.fp2.Fp2.mul_by_xi f3
+  let f5 ← portable.fp2.Fp2.mul self.c0 self.c1
+  let t1 ← portable.fp2.Fp2.sub f4 f5
+  let f6 ← portable.fp2.Fp2.square self.c1
+  let f7 ← portable.fp2.Fp2.mul self.c0 self.c2
+  let t2 ← portable.fp2.Fp2.sub f6 f7
+  let f8 ← portable.fp2.Fp2.mul self.c0 t0
+  let f9 ← portable.fp2.Fp2.mul self.c2 t1
+  let f10 ← portable.fp2.Fp2.mul self.c1 t2
+  let f11 ← portable.fp2.Fp2.add f9 f10
+  let f12 ← portable.fp2.Fp2.mul_by_xi f11
+  let norm ← portable.fp2.Fp2.add f8 f12
+  let inverse ← portable.fp2.Fp2.inverse norm
+  let f13 ← portable.fp2.Fp2.mul t0 inverse
+  let f14 ← portable.fp2.Fp2.mul t1 inverse
+  let f15 ← portable.fp2.Fp2.mul t2 inverse
+  ok { c0 := f13, c1 := f14, c2 := f15 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::inverse]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 109:4-113:5
+    Visibility: public -/
+def portable.fp12.Fp12.inverse
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let f ← portable.fp6.Fp6.mul self.c0 self.c0
+  let f1 ← portable.fp6.Fp6.mul self.c1 self.c1
+  let f2 ← portable.fp6.Fp6.mul_by_v f1
+  let norm ← portable.fp6.Fp6.sub f f2
+  let inverse ← portable.fp6.Fp6.inverse norm
+  let f3 ← portable.fp6.Fp6.mul self.c0 inverse
+  let f4 ← portable.fp6.Fp6.mul self.c1 inverse
+  let f5 ← portable.fp6.Fp6.neg f4
+  ok { c0 := f3, c1 := f5 }
+
+/-- [silver_crypto_simd::portable::fp2::{silver_crypto_simd::portable::fp2::Fp2}::conjugate]:
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 95:4-97:5
+    Visibility: public -/
+def portable.fp2.Fp2.conjugate
+  (self : portable.fp2.Fp2) : Result portable.fp2.Fp2 := do
+  let f ← portable.fp.Fp.neg self.c1
+  ok { self with c1 := f }
+
+/-- [silver_crypto_simd::portable::constants::FROBENIUS]
+    Source: 'crates/crypto_simd/src/portable/constants.rs', lines 54:0-163:2
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.constants.FROBENIUS
+  : Array (Array portable.fp.Fp 2#usize) 6#usize :=
+  let a := Array.repeat 6#usize 0#u64
+  let a1 := Array.repeat 6#usize 0#u64
+  let a2 := Array.repeat 6#usize 0#u64
+  Array.make 6#usize [
+    Array.make 2#usize [
+      Array.make 6#usize [
+        8505329371266088957#u64, 17002214543764226050#u64,
+        6865905132761471162#u64, 8632934651105793861#u64,
+        6631298214892334189#u64, 1582556514881692819#u64
+        ] (by rfl), a
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 6#usize [
+        506819140503852133#u64, 14297063575771579155#u64,
+        10946065744702939791#u64, 11771194236670323182#u64,
+        2081670087578406477#u64, 644615147456521963#u64
+        ] (by rfl),
+      Array.make 6#usize [
+        12895611875574011462#u64, 6359822009455181036#u64,
+        14936352902570693524#u64, 13914887797453940944#u64,
+        3330433690892295817#u64, 1229183470191017903#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      a1,
+      Array.make 6#usize [
+        14772873186050699377#u64, 6749526151121446354#u64,
+        6372666795664677781#u64, 10283423008382700446#u64,
+        286397964926079186#u64, 1796971870900422465#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 6#usize [
+        8921533702591418330#u64, 15859389534032789116#u64,
+        3389114680249073393#u64, 15116930867080254631#u64,
+        3288288975085550621#u64, 1021049300055853010#u64
+        ] (by rfl),
+      Array.make 6#usize [
+        8921533702591418330#u64, 15859389534032789116#u64,
+        3389114680249073393#u64, 15116930867080254631#u64,
+        3288288975085550621#u64, 1021049300055853010#u64
+        ] (by rfl)
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 6#usize [
+        9875771541238924739#u64, 3094855109658912213#u64,
+        5802897354862067244#u64, 11677019699073781796#u64,
+        1505592401347711080#u64, 1505729768134575418#u64
+        ] (by rfl), a2
+      ] (by rfl),
+    Array.make 2#usize [
+      Array.make 6#usize [
+        9428352843095270463#u64, 11709709036094816655#u64,
+        14335180424952013185#u64, 8441381030041026197#u64,
+        5369959062663957099#u64, 1665664447512374973#u64
+        ] (by rfl),
+      Array.make 6#usize [
+        3974078172982593132#u64, 8947176549131943536#u64,
+        11547238222321620130#u64, 17244701004083237929#u64,
+        42144715806745195#u64, 208134170135164893#u64
+        ] (by rfl)
+      ] (by rfl)
+    ] (by rfl)
+
+/-- [silver_crypto_simd::portable::fp12::frobenius_coefficient]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 183:0-186:1 -/
+def portable.fp12.frobenius_coefficient
+  (c : portable.fp2.Fp2) (power : Std.Usize) : Result portable.fp2.Fp2 := do
+  let a ← Array.index_usize portable.constants.FROBENIUS power
+  let f ← Array.index_usize a 0#usize
+  let f1 ← Array.index_usize a 1#usize
+  let f2 ← portable.fp2.Fp2.conjugate c
+  portable.fp2.Fp2.mul f2 { c0 := f, c1 := f1 }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::frobenius]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 90:4-103:5
+    Visibility: public -/
+def portable.fp12.Fp12.frobenius
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let f ← portable.fp12.frobenius_coefficient self.c0.c0 0#usize
+  let f1 ← portable.fp12.frobenius_coefficient self.c0.c1 2#usize
+  let f2 ← portable.fp12.frobenius_coefficient self.c0.c2 4#usize
+  let f3 ← portable.fp12.frobenius_coefficient self.c1.c0 1#usize
+  let f4 ← portable.fp12.frobenius_coefficient self.c1.c1 3#usize
+  let f5 ← portable.fp12.frobenius_coefficient self.c1.c2 5#usize
+  ok
+    {
+      c0 := { c0 := f, c1 := f1, c2 := f2 },
+      c1 := { c0 := f3, c1 := f4, c2 := f5 }
+    }
+
+/-- [silver_crypto_simd::portable::fp12::{silver_crypto_simd::portable::fp12::Fp12}::final_exponentiation]:
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 116:4-138:5
+    Visibility: public -/
+def portable.fp12.Fp12.final_exponentiation
+  (self : portable.fp12.Fp12) : Result portable.fp12.Fp12 := do
+  let t0 ← portable.fp12.Fp12.conjugate self
+  let t1 ← portable.fp12.Fp12.inverse self
+  let t2 ← portable.fp12.Fp12.mul t0 t1
+  let f ← portable.fp12.Fp12.frobenius t2
+  let f1 ← portable.fp12.Fp12.frobenius f
+  let t21 ← portable.fp12.Fp12.mul f1 t2
+  let f2 ← portable.fp12.Fp12.cyclotomic_square t21
+  let t11 ← portable.fp12.Fp12.conjugate f2
+  let t3 ← portable.fp12.Fp12.cyclotomic_exp t21
+  let t4 ← portable.fp12.Fp12.cyclotomic_square t3
+  let t5 ← portable.fp12.Fp12.mul t11 t3
+  let t12 ← portable.fp12.Fp12.cyclotomic_exp t5
+  let t01 ← portable.fp12.Fp12.cyclotomic_exp t12
+  let f3 ← portable.fp12.Fp12.cyclotomic_exp t01
+  let t6 ← portable.fp12.Fp12.mul f3 t4
+  let t41 ← portable.fp12.Fp12.cyclotomic_exp t6
+  let t51 ← portable.fp12.Fp12.conjugate t5
+  let f4 ← portable.fp12.Fp12.mul t51 t21
+  let t42 ← portable.fp12.Fp12.mul t41 f4
+  let t52 ← portable.fp12.Fp12.conjugate t21
+  let f5 ← portable.fp12.Fp12.mul t12 t21
+  let f6 ← portable.fp12.Fp12.frobenius f5
+  let f7 ← portable.fp12.Fp12.frobenius f6
+  let t13 ← portable.fp12.Fp12.frobenius f7
+  let f8 ← portable.fp12.Fp12.mul t6 t52
+  let t61 ← portable.fp12.Fp12.frobenius f8
+  let f9 ← portable.fp12.Fp12.mul t3 t01
+  let f10 ← portable.fp12.Fp12.frobenius f9
+  let t31 ← portable.fp12.Fp12.frobenius f10
+  let f11 ← portable.fp12.Fp12.mul t31 t13
+  let f12 ← portable.fp12.Fp12.mul f11 t61
+  portable.fp12.Fp12.mul f12 t42
+
+/-- [silver_crypto_simd::portable::pairing::{silver_crypto_simd::portable::pairing::PairingLines}::pairing_check]:
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 45:4-47:5
+    Visibility: public -/
+def portable.pairing.PairingLines.pairing_check
+  (self : portable.pairing.PairingLines)
+  (points : Array portable.g1.G1 2#usize) :
+  Result Bool
+  := do
+  let f ← portable.pairing.PairingLines.miller_loop self points
+  let f1 ← portable.fp12.Fp12.final_exponentiation f
+  portable.fp12.Fp12.is_one f1
+
+/-- [silver_crypto_simd::kzg::verify::two_lanes]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 394:0-405:1 -/
+def kzg.verify.two_lanes
+  (first : blst.blst_p1) (second : blst.blst_p1) : Result bls.g1x8.G1x8 := do
+  let a := Array.repeat 6#usize 0#u64
+  let x := Array.repeat 8#usize a
+  let a1 := Array.repeat 6#usize 0#u64
+  let y := Array.repeat 8#usize a1
+  let a2 := Array.repeat 6#usize 0#u64
+  let z := Array.repeat 8#usize a2
+  let x1 ← Array.update x 0#usize first.x.l
+  let y1 ← Array.update y 0#usize first.y.l
+  let z1 ← Array.update z 0#usize first.z.l
+  let x2 ← Array.update x1 1#usize second.x.l
+  let y2 ← Array.update y1 1#usize second.y.l
+  let z2 ← Array.update z1 1#usize second.z.l
+  let f ← bls.fp8.Fp8.from_blst_limbs x2
+  let f1 ← bls.fp8.Fp8.from_blst_limbs y2
+  let f2 ← bls.fp8.Fp8.from_blst_limbs z2
+  ok { x := f, y := f1, z := f2 }
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::PairingSums}::points_in_lanes]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 382:4-387:5 -/
+def kzg.verify.PairingSums.points_in_lanes
+  (self : kzg.verify.PairingSums) : Result bls.g1x8.G1x8 := do
+  let infinity ← blst.blst_p1.Insts.CoreDefaultDefault.default
+  let gx ← kzg.verify.two_lanes self.ll self.rlc
+  let gx1 ← kzg.verify.two_lanes infinity self.rli
+  let gx2 ← bls.g1x8.G1x8.neg gx1
+  let difference ← bls.g1x8.G1x8.add_complete gx gx2
+  let gx3 ← kzg.verify.two_lanes infinity self.rlp
+  bls.g1x8.G1x8.add_complete difference gx3
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::neg]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 96:4-98:5
+    Visibility: public -/
+def portable.g1.G1.neg (self : portable.g1.G1) : Result portable.g1.G1 := do
+  let f ← portable.fp.Fp.neg self.y
+  ok { self with y := f }
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::from_blst]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 34:4-36:5
+    Visibility: public -/
+def portable.g1.G1.from_blst (p : blst.blst_p1) : Result portable.g1.G1 := do
+  ok { x := p.x.l, y := p.y.l, z := p.z.l }
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::PairingSums}::points]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 373:4-376:5 -/
+def kzg.verify.PairingSums.points
+  (self : kzg.verify.PairingSums) : Result (Array portable.g1.G1 2#usize) := do
+  let g ← portable.g1.G1.from_blst self.rlc
+  let g1 ← portable.g1.G1.from_blst self.rli
+  let g2 ← portable.g1.G1.neg g1
+  let difference ← portable.g1.G1.add_complete g g2
+  let g3 ← portable.g1.G1.from_blst self.ll
+  let g4 ← portable.g1.G1.from_blst self.rlp
+  let g5 ← portable.g1.G1.add_complete difference g4
+  ok (Array.make 2#usize [ g3, g5 ] (by rfl))
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::pairing_check]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 350:4-359:5 -/
+def kzg.verify.CurveWork.pairing_check
+  (self : kzg.verify.CurveWork) (sums : kzg.verify.PairingSums) :
+  Result Bool
+  := do
+  match self with
+  | kzg.verify.CurveWork.Lanes _ _ =>
+    let gx ← kzg.verify.PairingSums.points_in_lanes sums
+    bls.pairing.MillerLines.pairing_check kzg.pairing_lines.PAIRING_LINES gx
+  | kzg.verify.CurveWork.Portable _ lines _ =>
+    let a ← kzg.verify.PairingSums.points sums
+    portable.pairing.PairingLines.pairing_check lines a
+
+/-- [silver_crypto_simd::portable::msm::store::NEGATED]
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 6:0-6:33
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.msm.store.NEGATED : Result Std.U32 := 1#u32 <<< 31#i32
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::x]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 57:4-59:5
+    Visibility: public -/
+def portable.msm.store.PointStore.x
+  (self : portable.msm.store.PointStore) (reference : Std.U32) :
+  Result portable.fp.Fp
+  := do
+  let i ← portable.msm.store.NEGATED
+  let i1 ← lift (~~~ i)
+  let i2 ← lift (reference &&& i1)
+  let i3 ← lift (UScalar.cast .Usize i2)
+  let a ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array
+      portable.fp.Fp 2#usize)) self.points i3
+  Array.index_usize a 0#usize
+
+/-- [silver_crypto_simd::portable::msm::pairs::CHAINS]
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 5:0-5:24 -/
+@[global_simps, irreducible]
+def portable.msm.pairs.CHAINS : Std.Usize := 4#usize
+
+/-- [silver_crypto_simd::portable::msm::pairs::batch_inverse]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 85:4-88:5 -/
+@[rust_loop_body]
+def portable.msm.pairs.batch_inverse_loop0.body
+  (values : Array portable.fp.Fp 4#usize)
+  (prefix1 : Array portable.fp.Fp 4#usize) (k : Std.Usize) :
+  Result (ControlFlow ((Array portable.fp.Fp 4#usize) × Std.Usize) (Array
+    portable.fp.Fp 4#usize))
+  := do
+  if k < portable.msm.pairs.CHAINS
+  then
+    let i ← k - 1#usize
+    let f ← Array.index_usize prefix1 i
+    let f1 ← Array.index_usize values k
+    let f2 ← portable.fp.Fp.mul f f1
+    let a ← Array.update prefix1 k f2
+    let k1 ← k + 1#usize
+    ok (cont (a, k1))
+  else ok (done prefix1)
+
+/-- [silver_crypto_simd::portable::msm::pairs::batch_inverse]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 85:4-88:5 -/
+@[rust_loop]
+def portable.msm.pairs.batch_inverse_loop0
+  (values : Array portable.fp.Fp 4#usize)
+  (prefix1 : Array portable.fp.Fp 4#usize) (k : Std.Usize) :
+  Result (Array portable.fp.Fp 4#usize)
+  := do
+  loop
+    (fun (prefix2, k1) => portable.msm.pairs.batch_inverse_loop0.body values
+      prefix2 k1)
+    (prefix1, k)
+
+/-- [silver_crypto_simd::portable::msm::pairs::batch_inverse]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 92:4-96:5 -/
+@[rust_loop_body]
+def portable.msm.pairs.batch_inverse_loop1.body
+  (values : Array portable.fp.Fp 4#usize)
+  (prefix1 : Array portable.fp.Fp 4#usize) (k : Std.Usize)
+  (inverse : portable.fp.Fp) (out : Array portable.fp.Fp 4#usize) :
+  Result (ControlFlow (Std.Usize × portable.fp.Fp × (Array portable.fp.Fp
+    4#usize)) (portable.fp.Fp × (Array portable.fp.Fp 4#usize)))
+  := do
+  if k > 0#usize
+  then
+    let i ← k - 1#usize
+    let f ← Array.index_usize prefix1 i
+    let f1 ← portable.fp.Fp.mul inverse f
+    let a ← Array.update out k f1
+    let f2 ← Array.index_usize values k
+    let inverse1 ← portable.fp.Fp.mul inverse f2
+    ok (cont (i, inverse1, a))
+  else ok (done (inverse, out))
+
+/-- [silver_crypto_simd::portable::msm::pairs::batch_inverse]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 92:4-96:5 -/
+@[rust_loop]
+def portable.msm.pairs.batch_inverse_loop1
+  (values : Array portable.fp.Fp 4#usize)
+  (prefix1 : Array portable.fp.Fp 4#usize) (k : Std.Usize)
+  (inverse : portable.fp.Fp) (out : Array portable.fp.Fp 4#usize) :
+  Result (portable.fp.Fp × (Array portable.fp.Fp 4#usize))
+  := do
+  loop
+    (fun (k1, inverse1, out1) => portable.msm.pairs.batch_inverse_loop1.body
+      values prefix1 k1 inverse1 out1)
+    (k, inverse, out)
+
+/-- [silver_crypto_simd::portable::msm::pairs::batch_inverse]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 82:0-99:1 -/
+def portable.msm.pairs.batch_inverse
+  (values : Array portable.fp.Fp 4#usize) :
+  Result (Array portable.fp.Fp 4#usize)
+  := do
+  let prefix1 ← portable.msm.pairs.batch_inverse_loop0 values values 1#usize
+  let i ← portable.msm.pairs.CHAINS - 1#usize
+  let f ← Array.index_usize prefix1 i
+  let inverse ← portable.fp.Fp.inverse f
+  let out := Array.repeat 4#usize portable.fp.Fp.ZERO
+  let (inverse1, out1) ←
+    portable.msm.pairs.batch_inverse_loop1 values prefix1 i inverse out
+  Array.update out1 0#usize inverse1
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::set]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 62:4-64:5
+    Visibility: public -/
+def portable.msm.store.PointStore.set
+  (self : portable.msm.store.PointStore) (index : Std.U32) (x : portable.fp.Fp)
+  (y : portable.fp.Fp) :
+  Result portable.msm.store.PointStore
+  := do
+  let i ← lift (UScalar.cast .Usize index)
+  let (_, index_mut_back) ←
+    alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice (Array
+      portable.fp.Fp 2#usize)) self.points i
+  let v := index_mut_back (Array.make 2#usize [ x, y ] (by rfl))
+  ok { self with points := v }
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::signed]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 51:4-54:5
+    Visibility: public -/
+def portable.msm.store.PointStore.signed
+  (self : portable.msm.store.PointStore) (reference : Std.U32) :
+  Result (portable.fp.Fp × portable.fp.Fp)
+  := do
+  let i ← portable.msm.store.NEGATED
+  let i1 ← lift (~~~ i)
+  let i2 ← lift (reference &&& i1)
+  let i3 ← lift (UScalar.cast .Usize i2)
+  let point ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array
+      portable.fp.Fp 2#usize)) self.points i3
+  let f ← Array.index_usize point 0#usize
+  let i4 ← lift (reference &&& i)
+  if i4 != 0#u32
+  then
+    let f1 ← Array.index_usize point 1#usize
+    let f2 ← portable.fp.Fp.neg f1
+    ok (f, f2)
+  else let f1 ← Array.index_usize point 1#usize
+       ok (f, f1)
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::finish]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 70:4-77:5 -/
+def portable.msm.pairs.BatchedAdds.finish
+  (self : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (i : Std.Usize)
+  (dx_inverse : portable.fp.Fp) :
+  Result portable.msm.store.PointStore
+  := do
+  let i1 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) 
+      self.a i
+  let (xa, ya) ← portable.msm.store.PointStore.signed store i1
+  let i2 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) 
+      self.b i
+  let (xb, yb) ← portable.msm.store.PointStore.signed store i2
+  let f ← portable.fp.Fp.sub yb ya
+  let slope ← portable.fp.Fp.mul f dx_inverse
+  let f1 ← portable.fp.Fp.square slope
+  let f2 ← portable.fp.Fp.sub f1 xa
+  let x3 ← portable.fp.Fp.sub f2 xb
+  let f3 ← portable.fp.Fp.sub xa x3
+  let f4 ← portable.fp.Fp.mul slope f3
+  let y3 ← portable.fp.Fp.sub f4 ya
+  let i3 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
+      self.out i
+  portable.msm.store.PointStore.set store i3 x3 y3
+
+/-- [silver_crypto_simd::portable::fp::{core::clone::Clone for silver_crypto_simd::portable::fp::Fp}::clone]:
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 22:9-22:14
+    Visibility: public -/
+def portable.fp.Fp.Insts.CoreCloneClone.clone
+  (self : portable.fp.Fp) : Result portable.fp.Fp := do
+  ok self
+
+/-- Trait implementation: [silver_crypto_simd::portable::fp::{core::clone::Clone for silver_crypto_simd::portable::fp::Fp}]
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 22:9-22:14 -/
+@[reducible]
+def portable.fp.Fp.Insts.CoreCloneClone : core.clone.Clone portable.fp.Fp := {
+  clone := portable.fp.Fp.Insts.CoreCloneClone.clone
+}
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::run]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 57:8-64:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.pairs.BatchedAdds.run_loop0_loop0.body
+  (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32)
+  (v2 : alloc.vec.Vec Std.U32) (v3 : alloc.vec.Vec portable.fp.Fp)
+  (v4 : alloc.vec.Vec portable.fp.Fp) (store : portable.msm.store.PointStore)
+  (i : Std.Usize) (inverses : Array portable.fp.Fp 4#usize) :
+  Result (ControlFlow (portable.msm.store.PointStore × Std.Usize × (Array
+    portable.fp.Fp 4#usize)) portable.msm.store.PointStore)
+  := do
+  if i > 0#usize
+  then
+    let i1 ← i - 1#usize
+    let k ← i1 % portable.msm.pairs.CHAINS
+    let dx_inverse ←
+      if i1 < portable.msm.pairs.CHAINS
+      then Array.index_usize inverses k
+      else
+        do
+        let f ← Array.index_usize inverses k
+        let i2 ← i1 - portable.msm.pairs.CHAINS
+        let f1 ←
+          alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+            portable.fp.Fp) v4 i2
+        portable.fp.Fp.mul f f1
+    let f ← Array.index_usize inverses k
+    let f1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+        portable.fp.Fp) v3 i1
+    let f2 ← portable.fp.Fp.mul f f1
+    let a ← Array.update inverses k f2
+    let store1 ←
+      portable.msm.pairs.BatchedAdds.finish
+        { a := v, b := v1, out := v2, dx := v3, «prefix» := v4 } store i1
+        dx_inverse
+    ok (cont (store1, i1, a))
+  else ok (done store)
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::run]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 57:8-64:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.pairs.BatchedAdds.run_loop0_loop0
+  (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32)
+  (v2 : alloc.vec.Vec Std.U32) (v3 : alloc.vec.Vec portable.fp.Fp)
+  (v4 : alloc.vec.Vec portable.fp.Fp) (store : portable.msm.store.PointStore)
+  (i : Std.Usize) (inverses : Array portable.fp.Fp 4#usize) :
+  Result portable.msm.store.PointStore
+  := do
+  loop
+    (fun (store1, i1, inverses1) =>
+      portable.msm.pairs.BatchedAdds.run_loop0_loop0.body v v1 v2 v3 v4 store1
+      i1 inverses1)
+    (store, i, inverses)
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::run]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 45:8-66:5
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.pairs.BatchedAdds.run_loop0.body
+  (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32)
+  (v2 : alloc.vec.Vec Std.U32) (store : portable.msm.store.PointStore)
+  (n : Std.Usize) (v3 : alloc.vec.Vec portable.fp.Fp)
+  (v4 : alloc.vec.Vec portable.fp.Fp) (products : Array portable.fp.Fp 4#usize)
+  (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec portable.fp.Fp) × (alloc.vec.Vec
+    portable.fp.Fp) × (Array portable.fp.Fp 4#usize) × Std.Usize) (Bool ×
+    (alloc.vec.Vec portable.fp.Fp) × (alloc.vec.Vec portable.fp.Fp) ×
+    portable.msm.store.PointStore))
+  := do
+  if i < n
+  then
+    let i1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v1 i
+    let f ← portable.msm.store.PointStore.x store i1
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v i
+    let f1 ← portable.msm.store.PointStore.x store i2
+    let dx ← portable.fp.Fp.sub f f1
+    let b ← portable.fp.Fp.is_zero dx
+    if b
+    then ok (done (false, v3, v4, store))
+    else
+      let k ← i % portable.msm.pairs.CHAINS
+      let f2 ← Array.index_usize products k
+      let f3 ← portable.fp.Fp.mul f2 dx
+      let products1 ← Array.update products k f3
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+          portable.fp.Fp) v3 i
+      let f4 ← Array.index_usize products1 k
+      let (_, index_mut_back1) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+          portable.fp.Fp) v4 i
+      let i3 ← i + 1#usize
+      let v5 := index_mut_back1 f4
+      let v6 := index_mut_back dx
+      ok (cont (v6, v5, products1, i3))
+  else
+    let inverses ← portable.msm.pairs.batch_inverse products
+    let store1 ←
+      portable.msm.pairs.BatchedAdds.run_loop0_loop0 v v1 v2 v3 v4 store i
+        inverses
+    ok (done (true, v3, v4, store1))
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::run]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 45:8-66:5
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.pairs.BatchedAdds.run_loop0
+  (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32)
+  (v2 : alloc.vec.Vec Std.U32) (v3 : alloc.vec.Vec portable.fp.Fp)
+  (v4 : alloc.vec.Vec portable.fp.Fp) (store : portable.msm.store.PointStore)
+  (n : Std.Usize) (products : Array portable.fp.Fp 4#usize) (i : Std.Usize) :
+  Result (Bool × (alloc.vec.Vec portable.fp.Fp) × (alloc.vec.Vec
+    portable.fp.Fp) × portable.msm.store.PointStore)
+  := do
+  loop
+    (fun (v5, v6, products1, i1) =>
+      portable.msm.pairs.BatchedAdds.run_loop0.body v v1 v2 store n v5 v6
+      products1 i1)
+    (v3, v4, products, i)
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::run]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 39:4-66:5
+    Visibility: public -/
+def portable.msm.pairs.BatchedAdds.run
+  (self : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) :
+  Result (Bool × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore)
+  := do
+  let n := alloc.vec.Vec.len self.a
+  let v ←
+    alloc.vec.Vec.resize portable.fp.Fp.Insts.CoreCloneClone self.dx n
+      portable.fp.Fp.ZERO
+  let v1 ←
+    alloc.vec.Vec.resize portable.fp.Fp.Insts.CoreCloneClone self.«prefix» n
+      portable.fp.Fp.ZERO
+  let products := Array.repeat 4#usize portable.constants.ONE
+  let (b, v2, v3, store1) ←
+    portable.msm.pairs.BatchedAdds.run_loop0 self.a self.b self.out v v1 store
+      n products 0#usize
+  ok (b, { self with dx := v2, «prefix» := v3 }, store1)
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::is_empty]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 32:4-34:5
+    Visibility: public -/
+def portable.msm.pairs.BatchedAdds.is_empty
+  (self : portable.msm.pairs.BatchedAdds) : Result Bool := do
+  alloc.vec.Vec.is_empty Global self.a
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::clear]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 20:4-24:5
+    Visibility: public -/
+def portable.msm.pairs.BatchedAdds.clear
+  (self : portable.msm.pairs.BatchedAdds) :
+  Result portable.msm.pairs.BatchedAdds
+  := do
+  let v ← alloc.vec.Vec.clear Global self.a
+  let v1 ← alloc.vec.Vec.clear Global self.b
+  let v2 ← alloc.vec.Vec.clear Global self.out
+  ok { self with a := v, b := v1, out := v2 }
+
+/-- [silver_crypto_simd::portable::msm::pairs::{silver_crypto_simd::portable::msm::pairs::BatchedAdds}::push]:
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 26:4-30:5
+    Visibility: public -/
+def portable.msm.pairs.BatchedAdds.push
+  (self : portable.msm.pairs.BatchedAdds) (a : Std.U32) (b : Std.U32)
+  (out : Std.U32) :
+  Result portable.msm.pairs.BatchedAdds
+  := do
+  let v ← alloc.vec.Vec.push self.a a
+  let v1 ← alloc.vec.Vec.push self.b b
+  let v2 ← alloc.vec.Vec.push self.out out
+  ok { self with a := v, b := v1, out := v2 }
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::allocate]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 26:4-30:5
+    Visibility: public -/
+def portable.msm.store.PointStore.allocate
+  (self : portable.msm.store.PointStore) :
+  Result (Std.U32 × portable.msm.store.PointStore)
+  := do
+  let i := alloc.vec.Vec.len self.points
+  massert (self.len < i)
+  let i1 ← self.len + 1#usize
+  let i2 ← i1 - 1#usize
+  let i3 ← lift (UScalar.cast .U32 i2)
+  ok (i3, { self with len := i1 })
+
+/-- [silver_crypto_simd::portable::msm::buckets::sum_slot]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 199:0-202:1 -/
+def portable.msm.buckets.sum_slot
+  (first : Std.U32) (store : portable.msm.store.PointStore)
+  (originals : Std.Usize) :
+  Result (Std.U32 × portable.msm.store.PointStore)
+  := do
+  let i ← portable.msm.store.NEGATED
+  let i1 ← lift (~~~ i)
+  let index ← lift (first &&& i1)
+  let i2 ← lift (UScalar.cast .Usize index)
+  if i2 < originals
+  then portable.msm.store.PointStore.allocate store
+  else ok (index, store)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_pairs]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 150:8-156:9 -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.queue_pairs_loop.body
+  (originals : Std.Usize) (start : Std.Usize) (len : Std.Usize)
+  (v : alloc.vec.Vec Std.U32) (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (at1 : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U32) ×
+    portable.msm.pairs.BatchedAdds × portable.msm.store.PointStore ×
+    Std.Usize) ((alloc.vec.Vec Std.U32) × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore))
+  := do
+  let i ← at1 + 1#usize
+  if i < len
+  then
+    let i1 ← start + at1
+    let first ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v i1
+    let (out, store1) ← portable.msm.buckets.sum_slot first store originals
+    let i2 ← i1 + 1#usize
+    let i3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v i2
+    let adds1 ← portable.msm.pairs.BatchedAdds.push adds first i3 out
+    let i4 ← at1 / 2#usize
+    let i5 ← start + i4
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32) v
+        i5
+    let at2 ← at1 + 2#usize
+    let v1 := index_mut_back out
+    ok (cont (v1, adds1, store1, at2))
+  else ok (done (v, adds, store))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_pairs]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 150:8-156:9 -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.queue_pairs_loop
+  (v : alloc.vec.Vec Std.U32) (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (originals : Std.Usize)
+  (start : Std.Usize) (len : Std.Usize) (at1 : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U32) × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore)
+  := do
+  loop
+    (fun (v1, adds1, store1, at2) =>
+      portable.msm.buckets.Buckets.queue_pairs_loop.body originals start len v1
+      adds1 store1 at2)
+    (v, adds, store, at1)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_pairs]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 140:4-161:5 -/
+def portable.msm.buckets.Buckets.queue_pairs
+  (self : portable.msm.buckets.Buckets) (list : Std.Usize)
+  (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (originals : Std.Usize) :
+  Result (portable.msm.buckets.Buckets × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore)
+  := do
+  let i ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
+      self.starts list
+  let start ← lift (UScalar.cast .Usize i)
+  let i1 ←
+    alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
+      self.lens list
+  let len ← lift (UScalar.cast .Usize i1)
+  let (v, adds1, store1) ←
+    portable.msm.buckets.Buckets.queue_pairs_loop self.refs adds store
+      originals start len 0#usize
+  let i2 ← len % 2#usize
+  let v1 ←
+    if i2 = 1#usize
+    then
+      do
+      let i3 ← start + len
+      let i4 ← i3 - 1#usize
+      let i5 ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v
+          i4
+      let i6 ← len / 2#usize
+      let i7 ← start + i6
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+          v i7
+      ok (index_mut_back i5)
+    else ok v
+  let i3 ← len / 2#usize
+  let i4 ← i3 + i2
+  let (_, index_mut_back) ←
+    alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+      self.lens list
+  let i5 ← lift (UScalar.cast .U32 i4)
+  let v2 := index_mut_back i5
+  ok ({ self with refs := v1, lens := v2 }, adds1, store1)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_round]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 97:8-100:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.queue_round_loop.body
+  (originals : Std.Usize) (self : portable.msm.buckets.Buckets)
+  (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (list : Std.Usize) :
+  Result (ControlFlow (portable.msm.buckets.Buckets ×
+    portable.msm.pairs.BatchedAdds × portable.msm.store.PointStore ×
+    Std.Usize) (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) ×
+    (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) ×
+    portable.msm.pairs.BatchedAdds × portable.msm.store.PointStore))
+  := do
+  let i := alloc.vec.Vec.len self.lens
+  if list < i
+  then
+    let (self1, adds1, store1) ←
+      portable.msm.buckets.Buckets.queue_pairs self list adds store originals
+    let list1 ← list + 1#usize
+    ok (cont (self1, adds1, store1, list1))
+  else
+    ok (done (self.window_bits, self.windows, self.refs, self.starts,
+      self.lens, adds, store))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_round]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 97:8-100:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.queue_round_loop
+  (self : portable.msm.buckets.Buckets) (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (originals : Std.Usize)
+  (list : Std.Usize) :
+  Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32) × (alloc.vec.Vec Std.U32) × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore)
+  := do
+  loop
+    (fun (self1, adds1, store1, list1) =>
+      portable.msm.buckets.Buckets.queue_round_loop.body originals self1 adds1
+      store1 list1)
+    (self, adds, store, list)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::queue_round]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 89:4-101:5
+    Visibility: public -/
+def portable.msm.buckets.Buckets.queue_round
+  (self : portable.msm.buckets.Buckets) (adds : portable.msm.pairs.BatchedAdds)
+  (store : portable.msm.store.PointStore) (originals : Std.Usize) :
+  Result (portable.msm.buckets.Buckets × portable.msm.pairs.BatchedAdds ×
+    portable.msm.store.PointStore)
+  := do
+  let adds1 ← portable.msm.pairs.BatchedAdds.clear adds
+  let (i, i1, v, v1, v2, adds2, store1) ←
+    portable.msm.buckets.Buckets.queue_round_loop self adds1 store originals
+      0#usize
+  ok ({ window_bits := i, windows := i1, refs := v, starts := v1, lens := v2 },
+    adds2, store1)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::pair_rounds]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 132:8-134:9 -/
+@[rust_loop_body]
+def portable.msm.Msm.pair_rounds_loop.body
+  (originals : Std.Usize) (ps : portable.msm.store.PointStore)
+  (b : portable.msm.buckets.Buckets) (ba : portable.msm.pairs.BatchedAdds) :
+  Result (ControlFlow (portable.msm.store.PointStore ×
+    portable.msm.buckets.Buckets × portable.msm.pairs.BatchedAdds)
+    (portable.msm.store.PointStore × portable.msm.buckets.Buckets ×
+    portable.msm.pairs.BatchedAdds))
+  := do
+  let b1 ← portable.msm.pairs.BatchedAdds.is_empty ba
+  if b1
+  then ok (done (ps, b, ba))
+  else
+    let (b2, ba1, ps1) ← portable.msm.pairs.BatchedAdds.run ba ps
+    if b2
+    then
+      let (b3, ba2, ps2) ←
+        portable.msm.buckets.Buckets.queue_round b ba1 ps1 originals
+      ok (cont (ps2, b3, ba2))
+    else ok (done (ps1, b, ba1))
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::pair_rounds]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 132:8-134:9 -/
+@[rust_loop]
+def portable.msm.Msm.pair_rounds_loop
+  (ps : portable.msm.store.PointStore) (b : portable.msm.buckets.Buckets)
+  (ba : portable.msm.pairs.BatchedAdds) (originals : Std.Usize) :
+  Result (portable.msm.store.PointStore × portable.msm.buckets.Buckets ×
+    portable.msm.pairs.BatchedAdds)
+  := do
+  loop
+    (fun (ps1, b1, ba1) => portable.msm.Msm.pair_rounds_loop.body originals ps1
+      b1 ba1)
+    (ps, b, ba)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::pair_rounds]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 130:4-136:5 -/
+def portable.msm.Msm.pair_rounds
+  (self : portable.msm.Msm) (originals : Std.Usize) :
+  Result (Bool × portable.msm.Msm)
+  := do
+  let (b, ba, ps) ←
+    portable.msm.buckets.Buckets.queue_round self.buckets self.adds self.store
+      originals
+  let (ps1, b1, ba1) ← portable.msm.Msm.pair_rounds_loop ps b ba originals
+  let b2 ← portable.msm.pairs.BatchedAdds.is_empty ba1
+  ok (b2, { self with store := ps1, buckets := b1, adds := ba1 })
+
+/-- [silver_crypto_simd::portable::msm::is_infinity]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 141:4-143:5 -/
+@[rust_loop_body]
+def portable.msm.is_infinity_loop.body
+  (point : blst.blst_p1_affine) (k : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if k < 6#usize
+  then
+    let i ← Array.index_usize point.x.l k
+    if i = 0#u64
+    then
+      let i1 ← Array.index_usize point.y.l k
+      if i1 = 0#u64
+      then let k1 ← k + 1#usize
+           ok (cont k1)
+      else ok (done k)
+    else ok (done k)
+  else ok (done k)
+
+/-- [silver_crypto_simd::portable::msm::is_infinity]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 141:4-143:5 -/
+@[rust_loop]
+def portable.msm.is_infinity_loop
+  (point : blst.blst_p1_affine) (k : Std.Usize) : Result Std.Usize := do
+  loop
+    (fun k1 => portable.msm.is_infinity_loop.body point k1)
+    k
+
+/-- [silver_crypto_simd::portable::msm::is_infinity]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 139:0-145:1 -/
+def portable.msm.is_infinity (point : blst.blst_p1_affine) : Result Bool := do
+  let k ← portable.msm.is_infinity_loop point 0#usize
+  ok (k = 6#usize)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::keep_if_finite]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 120:4-126:5 -/
+def portable.msm.Msm.keep_if_finite
+  (self : portable.msm.Msm) (point : blst.blst_p1_affine)
+  (scalar : Array Std.U64 4#usize) :
+  Result portable.msm.Msm
+  := do
+  let i ← Array.index_usize scalar 3#usize
+  let i1 ← i >>> 63#i32
+  massert (i1 = 0#u64)
+  let b ← portable.msm.is_infinity point
+  if b
+  then ok self
+  else
+    let v ← alloc.vec.Vec.push self.finite_points point
+    let v1 ← alloc.vec.Vec.push self.finite_scalars scalar
+    ok { self with finite_points := v, finite_scalars := v1 }
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::split_scalars]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 110:8-117:9 -/
+@[rust_loop_body]
+def portable.msm.Msm.split_scalars_loop.body
+  (v : alloc.vec.Vec (Array Std.U64 4#usize)) (n : Std.Usize)
+  (v1 : alloc.vec.Vec (Array Std.U64 4#usize)) (v2 : alloc.vec.Vec Bool)
+  (v3 : alloc.vec.Vec Bool) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec (Array Std.U64 4#usize)) ×
+    (alloc.vec.Vec Bool) × (alloc.vec.Vec Bool) × Std.Usize) ((alloc.vec.Vec
+    (Array Std.U64 4#usize)) × (alloc.vec.Vec Bool) × (alloc.vec.Vec Bool)))
+  := do
+  if i < n
+  then
+    let a ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array Std.U64
+        4#usize)) v i
+    let (first, second) ← bls.glv.decompose a
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice (Array
+        Std.U64 4#usize)) v1 i
+    let v4 := index_mut_back first.magnitude
+    let i1 ← n + i
+    let (_, index_mut_back1) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice (Array
+        Std.U64 4#usize)) v4 i1
+    let v5 ← alloc.vec.Vec.push v2 first.negative
+    let v6 ← alloc.vec.Vec.push v3 second.negative
+    let i2 ← i + 1#usize
+    let v7 := index_mut_back1 second.magnitude
+    ok (cont (v7, v5, v6, i2))
+  else ok (done (v1, v2, v3))
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::split_scalars]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 110:8-117:9 -/
+@[rust_loop]
+def portable.msm.Msm.split_scalars_loop
+  (v : alloc.vec.Vec (Array Std.U64 4#usize))
+  (v1 : alloc.vec.Vec (Array Std.U64 4#usize)) (v2 : alloc.vec.Vec Bool)
+  (v3 : alloc.vec.Vec Bool) (n : Std.Usize) (i : Std.Usize) :
+  Result ((alloc.vec.Vec (Array Std.U64 4#usize)) × (alloc.vec.Vec Bool) ×
+    (alloc.vec.Vec Bool))
+  := do
+  loop
+    (fun (v4, v5, v6, i1) => portable.msm.Msm.split_scalars_loop.body v n v4 v5
+      v6 i1)
+    (v1, v2, v3, i)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::split_scalars]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 103:4-118:5 -/
+def portable.msm.Msm.split_scalars
+  (self : portable.msm.Msm) : Result portable.msm.Msm := do
+  let n := alloc.vec.Vec.len self.finite_scalars
+  let v ← alloc.vec.Vec.clear Global self.halves
+  let i ← 2#usize * n
+  let a := Array.repeat 4#usize 0#u64
+  let v1 ←
+    alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64) v
+      i a
+  let v2 ← alloc.vec.Vec.clear Global self.first_signs
+  let v3 ← alloc.vec.Vec.clear Global self.second_signs
+  let (v4, v5, v6) ←
+    portable.msm.Msm.split_scalars_loop self.finite_scalars v1 v2 v3 n 0#usize
+  ok { self with halves := v4, first_signs := v5, second_signs := v6 }
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::push_blst]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 39:8-46:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.store.PointStore.push_blst_loop.body
+  (points : Slice blst.blst_p1_affine) (negated : Slice Bool)
+  (endomorphism : Bool) (v : alloc.vec.Vec (Array portable.fp.Fp 2#usize))
+  (i : Std.Usize) (k : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec (Array portable.fp.Fp 2#usize)) ×
+    Std.Usize × Std.Usize) ((alloc.vec.Vec (Array portable.fp.Fp 2#usize)) ×
+    Std.Usize))
+  := do
+  let i1 := Slice.len points
+  if k < i1
+  then
+    let bpa ← Slice.index_usize points k
+    let f ←
+      if endomorphism
+      then portable.fp.Fp.mul bpa.x.l portable.constants.BETA
+      else ok bpa.x.l
+    let b ← Slice.index_usize negated k
+    let f1 ← if b
+               then portable.fp.Fp.neg bpa.y.l
+               else ok bpa.y.l
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice (Array
+        portable.fp.Fp 2#usize)) v i
+    let i2 ← i + 1#usize
+    let k1 ← k + 1#usize
+    let v1 := index_mut_back (Array.make 2#usize [ f, f1 ] (by rfl))
+    ok (cont (v1, i2, k1))
+  else ok (done (v, i))
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::push_blst]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 39:8-46:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.store.PointStore.push_blst_loop
+  (v : alloc.vec.Vec (Array portable.fp.Fp 2#usize)) (i : Std.Usize)
+  (points : Slice blst.blst_p1_affine) (negated : Slice Bool)
+  (endomorphism : Bool) (k : Std.Usize) :
+  Result ((alloc.vec.Vec (Array portable.fp.Fp 2#usize)) × Std.Usize)
+  := do
+  loop
+    (fun (v1, i1, k1) => portable.msm.store.PointStore.push_blst_loop.body
+      points negated endomorphism v1 i1 k1)
+    (v, i, k)
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::push_blst]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 35:4-47:5
+    Visibility: public -/
+def portable.msm.store.PointStore.push_blst
+  (self : portable.msm.store.PointStore) (points : Slice blst.blst_p1_affine)
+  (negated : Slice Bool) (endomorphism : Bool) :
+  Result portable.msm.store.PointStore
+  := do
+  let i := Slice.len negated
+  let i1 := Slice.len points
+  massert (i = i1)
+  let i2 := Slice.len points
+  let i3 ← self.len + i2
+  let i4 := alloc.vec.Vec.len self.points
+  massert (i3 <= i4)
+  let (v, i5) ←
+    portable.msm.store.PointStore.push_blst_loop self.points self.len points
+      negated endomorphism 0#usize
+  ok { points := v, len := i5 }
+
+/-- [silver_crypto_simd::portable::msm::store::{silver_crypto_simd::portable::msm::store::PointStore}::reset]:
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 18:4-23:5
+    Visibility: public -/
+def portable.msm.store.PointStore.reset
+  (self : portable.msm.store.PointStore) (capacity : Std.Usize) :
+  Result portable.msm.store.PointStore
+  := do
+  let i := alloc.vec.Vec.len self.points
+  if i < capacity
+  then
+    let a := Array.repeat 2#usize portable.fp.Fp.ZERO
+    let v ←
+      alloc.vec.Vec.resize (core.clone.CloneArray 2#usize
+        portable.fp.Fp.Insts.CoreCloneClone) self.points capacity a
+    ok { points := v, len := 0#usize }
+  else ok { self with len := 0#usize }
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::list]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 119:4-121:5 -/
+def portable.msm.buckets.Buckets.list
+  (self : portable.msm.buckets.Buckets) (window : Std.Usize)
+  (bucket : Std.Usize) :
+  Result Std.Usize
+  := do
+  let i ← self.window_bits - 1#usize
+  let i1 ← window <<< i
+  let i2 ← i1 + bucket
+  i2 - 1#usize
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::window_sum]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 175:12-179:13 -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.window_sum_loop0_loop0.body
+  (v : alloc.vec.Vec Std.U32) (store : portable.msm.store.PointStore)
+  (start : Std.Usize) (len : Std.Usize) (running : portable.g1.G1)
+  (at1 : Std.Usize) :
+  Result (ControlFlow (portable.g1.G1 × Std.Usize) portable.g1.G1)
+  := do
+  if at1 < len
+  then
+    let i ← start + at1
+    let i1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v i
+    let (x, y) ← portable.msm.store.PointStore.signed store i1
+    let running1 ← portable.g1.G1.add_affine_complete running x y
+    let at2 ← at1 + 1#usize
+    ok (cont (running1, at2))
+  else ok (done running)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::window_sum]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 175:12-179:13 -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.window_sum_loop0_loop0
+  (v : alloc.vec.Vec Std.U32) (store : portable.msm.store.PointStore)
+  (running : portable.g1.G1) (start : Std.Usize) (len : Std.Usize)
+  (at1 : Std.Usize) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (running1, at2) =>
+      portable.msm.buckets.Buckets.window_sum_loop0_loop0.body v store start
+      len running1 at2)
+    (running, at1)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::window_sum]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 170:8-182:9 -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.window_sum_loop0.body
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (store : portable.msm.store.PointStore) (window : Std.Usize)
+  (running : portable.g1.G1) (sum : portable.g1.G1) (bucket : Std.Usize) :
+  Result (ControlFlow (portable.g1.G1 × portable.g1.G1 × Std.Usize)
+    portable.g1.G1)
+  := do
+  if bucket > 0#usize
+  then
+    let list ←
+      portable.msm.buckets.Buckets.list
+        { window_bits := i, windows := i1, refs := v, starts := v1, lens := v2
+        } window bucket
+    let i2 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v1
+        list
+    let start ← lift (UScalar.cast .Usize i2)
+    let i3 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v2
+        list
+    let len ← lift (UScalar.cast .Usize i3)
+    let running1 ←
+      portable.msm.buckets.Buckets.window_sum_loop0_loop0 v store running start
+        len 0#usize
+    let sum1 ← portable.g1.G1.add_complete sum running1
+    let bucket1 ← bucket - 1#usize
+    ok (cont (running1, sum1, bucket1))
+  else ok (done sum)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::window_sum]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 170:8-182:9 -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.window_sum_loop0
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (store : portable.msm.store.PointStore) (window : Std.Usize)
+  (running : portable.g1.G1) (sum : portable.g1.G1) (bucket : Std.Usize) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (running1, sum1, bucket1) =>
+      portable.msm.buckets.Buckets.window_sum_loop0.body i i1 v v1 v2 store
+      window running1 sum1 bucket1)
+    (running, sum, bucket)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::window_sum]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 166:4-184:5 -/
+def portable.msm.buckets.Buckets.window_sum
+  (self : portable.msm.buckets.Buckets) (store : portable.msm.store.PointStore)
+  (window : Std.Usize) :
+  Result portable.g1.G1
+  := do
+  let i ← self.window_bits - 1#usize
+  let bucket ← 1#usize <<< i
+  portable.msm.buckets.Buckets.window_sum_loop0 self.window_bits self.windows
+    self.refs self.starts self.lens store window portable.g1.G1.INFINITY
+    portable.g1.G1.INFINITY bucket
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::sum]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 110:12-113:13
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.sum_loop0_loop0.body
+  (i : Std.Usize) (total : portable.g1.G1) (k : Std.Usize) :
+  Result (ControlFlow (portable.g1.G1 × Std.Usize) portable.g1.G1)
+  := do
+  if k < i
+  then
+    let total1 ← portable.g1.G1.double total
+    let k1 ← k + 1#usize
+    ok (cont (total1, k1))
+  else ok (done total)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::sum]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 110:12-113:13
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.sum_loop0_loop0
+  (i : Std.Usize) (total : portable.g1.G1) (k : Std.Usize) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (total1, k1) => portable.msm.buckets.Buckets.sum_loop0_loop0.body i
+      total1 k1)
+    (total, k)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::sum]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 107:8-115:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.sum_loop0.body
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (store : portable.msm.store.PointStore) (window : Std.Usize)
+  (total : portable.g1.G1) :
+  Result (ControlFlow (Std.Usize × portable.g1.G1) portable.g1.G1)
+  := do
+  if window > 0#usize
+  then
+    let window1 ← window - 1#usize
+    let total1 ← portable.msm.buckets.Buckets.sum_loop0_loop0 i total 0#usize
+    let g ←
+      portable.msm.buckets.Buckets.window_sum
+        { window_bits := i, windows := i1, refs := v, starts := v1, lens := v2
+        } store window1
+    let total2 ← portable.g1.G1.add_complete total1 g
+    ok (cont (window1, total2))
+  else ok (done total)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::sum]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 107:8-115:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.sum_loop0
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (store : portable.msm.store.PointStore) (window : Std.Usize)
+  (total : portable.g1.G1) :
+  Result portable.g1.G1
+  := do
+  loop
+    (fun (window1, total1) => portable.msm.buckets.Buckets.sum_loop0.body i i1
+      v v1 v2 store window1 total1)
+    (window, total)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::sum]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 104:4-117:5
+    Visibility: public -/
+def portable.msm.buckets.Buckets.sum
+  (self : portable.msm.buckets.Buckets) (store : portable.msm.store.PointStore)
+  :
+  Result portable.g1.G1
+  := do
+  let window ← self.windows - 1#usize
+  let total ← portable.msm.buckets.Buckets.window_sum self store window
+  portable.msm.buckets.Buckets.sum_loop0 self.window_bits self.windows
+    self.refs self.starts self.lens store window total
+
+/-- [silver_crypto_simd::portable::msm::buckets::NARROWEST_WINDOW_BITS]
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 13:0-13:43
+    Visibility: public -/
+@[global_simps, irreducible]
+def portable.msm.buckets.NARROWEST_WINDOW_BITS : Std.Usize := 4#usize
+
+/-- [silver_crypto_simd::portable::msm::buckets::window_bits]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 188:0-196:1 -/
+def portable.msm.buckets.window_bits
+  (points : Std.Usize) : Result Std.Usize := do
+  if points < 128#usize
+  then ok portable.msm.buckets.NARROWEST_WINDOW_BITS
+  else if points < 1024#usize
+       then ok 6#usize
+       else ok 8#usize
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::place]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 132:4-138:5 -/
+def portable.msm.buckets.Buckets.place
+  (self : portable.msm.buckets.Buckets) (window : Std.Usize)
+  (magnitude : Std.Usize) (reference : Std.U32) :
+  Result portable.msm.buckets.Buckets
+  := do
+  if magnitude != 0#usize
+  then
+    let list ← portable.msm.buckets.Buckets.list self window magnitude
+    let i ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        self.starts list
+    let i1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        self.lens list
+    let i2 ← i + i1
+    let i3 ← lift (UScalar.cast .Usize i2)
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        self.refs i3
+    let (i4, index_mut_back1) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        self.lens list
+    let i5 ← i4 + 1#u32
+    let v := index_mut_back reference
+    let v1 := index_mut_back1 i5
+    ok { self with refs := v, lens := v1 }
+  else ok self
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::count]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 124:4-129:5 -/
+def portable.msm.buckets.Buckets.count
+  (self : portable.msm.buckets.Buckets) (window : Std.Usize)
+  (magnitude : Std.Usize) :
+  Result portable.msm.buckets.Buckets
+  := do
+  if magnitude != 0#usize
+  then
+    let list ← portable.msm.buckets.Buckets.list self window magnitude
+    let (i, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        self.lens list
+    let i1 ← i + 1#u32
+    let v := index_mut_back i1
+    ok { self with lens := v }
+  else ok self
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop body 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 49:12-53:13
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.fill_loop0_loop0.body
+  (self : portable.msm.buckets.Buckets)
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
+  Result (ControlFlow (portable.msm.buckets.Buckets ×
+    bls.signed_digits.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
+    (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32)))
+  := do
+  if window < self.windows
+  then
+    let (p, digits1) ← bls.signed_digits.SignedDigits.next_digit digits
+    let (magnitude, _) := p
+    let self1 ← portable.msm.buckets.Buckets.count self window magnitude
+    let window1 ← window + 1#usize
+    ok (cont (self1, digits1, window1))
+  else
+    ok (done (self.window_bits, self.windows, self.refs, self.starts,
+      self.lens))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop 1:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 49:12-53:13
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.fill_loop0_loop0
+  (self : portable.msm.buckets.Buckets)
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
+  Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32) × (alloc.vec.Vec Std.U32))
+  := do
+  loop
+    (fun (self1, digits1, window1) =>
+      portable.msm.buckets.Buckets.fill_loop0_loop0.body self1 digits1 window1)
+    (self, digits, window)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 46:8-55:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.fill_loop0.body
+  (scalars : Slice (Array Std.U64 4#usize)) (window_bits : Std.Usize)
+  (window_bits1 : Std.Usize) (i : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32) (i1 : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) ×
+    (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × Std.Usize) (Std.Usize
+    × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) ×
+    (alloc.vec.Vec Std.U32)))
+  := do
+  let i2 := Slice.len scalars
+  if i1 < i2
+  then
+    let a ← Slice.index_usize scalars i1
+    let digits ← bls.signed_digits.SignedDigits.new a window_bits
+    let (i3, i4, v3, v4, v5) ←
+      portable.msm.buckets.Buckets.fill_loop0_loop0
+        {
+          window_bits := window_bits1,
+          windows := i,
+          refs := v,
+          starts := v1,
+          lens := v2
+        } digits 0#usize
+    let i5 ← i1 + 1#usize
+    ok (cont (i3, i4, v3, v4, v5, i5))
+  else ok (done (window_bits1, i, v, v1, v2))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 46:8-55:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.fill_loop0
+  (window_bits : Std.Usize) (i : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (scalars : Slice (Array Std.U64 4#usize)) (window_bits1 : Std.Usize)
+  (i1 : Std.Usize) :
+  Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32) × (alloc.vec.Vec Std.U32))
+  := do
+  loop
+    (fun (window_bits2, i2, v3, v4, v5, i3) =>
+      portable.msm.buckets.Buckets.fill_loop0.body scalars window_bits1
+      window_bits2 i2 v3 v4 v5 i3)
+    (window_bits, i, v, v1, v2, i1)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop body 2:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 60:8-65:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.fill_loop1.body
+  (lists : Std.Usize) (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32)
+  (total : Std.U32) (list : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) ×
+    Std.U32 × Std.Usize) ((alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32)
+    × Std.U32))
+  := do
+  if list < lists
+  then
+    let v2 ← alloc.vec.Vec.push v total
+    let i ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U32) v1
+        list
+    let total1 ← total + i
+    let (_, index_mut_back) ←
+      alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U32)
+        v1 list
+    let list1 ← list + 1#usize
+    let v3 := index_mut_back 0#u32
+    ok (cont (v2, v3, total1, list1))
+  else ok (done (v, v1, total))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop 2:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 60:8-65:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.fill_loop1
+  (v : alloc.vec.Vec Std.U32) (v1 : alloc.vec.Vec Std.U32) (lists : Std.Usize)
+  (total : Std.U32) (list : Std.Usize) :
+  Result ((alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × Std.U32)
+  := do
+  loop
+    (fun (v2, v3, total1, list1) =>
+      portable.msm.buckets.Buckets.fill_loop1.body lists v2 v3 total1 list1)
+    (v, v1, total, list)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop body 4:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 73:12-78:13
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.fill_loop2_loop0.body
+  (i : Std.Usize) (self : portable.msm.buckets.Buckets)
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
+  Result (ControlFlow (portable.msm.buckets.Buckets ×
+    bls.signed_digits.SignedDigits × Std.Usize) (Std.Usize × Std.Usize ×
+    (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32)))
+  := do
+  if window < self.windows
+  then
+    let (p, digits1) ← bls.signed_digits.SignedDigits.next_digit digits
+    let (magnitude, negated) := p
+    let i1 ← lift (UScalar.cast_fromBool .U32 negated)
+    let i2 ← portable.msm.store.NEGATED
+    let sign ← i1 * i2
+    let i3 ← lift (UScalar.cast .U32 i)
+    let i4 ← lift (i3 ||| sign)
+    let self1 ← portable.msm.buckets.Buckets.place self window magnitude i4
+    let window1 ← window + 1#usize
+    ok (cont (self1, digits1, window1))
+  else
+    ok (done (self.window_bits, self.windows, self.refs, self.starts,
+      self.lens))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop 4:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 73:12-78:13
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.fill_loop2_loop0
+  (self : portable.msm.buckets.Buckets) (i : Std.Usize)
+  (digits : bls.signed_digits.SignedDigits) (window : Std.Usize) :
+  Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32) × (alloc.vec.Vec Std.U32))
+  := do
+  loop
+    (fun (self1, digits1, window1) =>
+      portable.msm.buckets.Buckets.fill_loop2_loop0.body i self1 digits1
+      window1)
+    (self, digits, window)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop body 3:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 70:8-80:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.buckets.Buckets.fill_loop2.body
+  (scalars : Slice (Array Std.U64 4#usize)) (window_bits : Std.Usize)
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32) (i2 : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) ×
+    (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) × Std.Usize) (Std.Usize
+    × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec Std.U32) ×
+    (alloc.vec.Vec Std.U32)))
+  := do
+  let i3 := Slice.len scalars
+  if i2 < i3
+  then
+    let a ← Slice.index_usize scalars i2
+    let digits ← bls.signed_digits.SignedDigits.new a window_bits
+    let (i4, i5, v3, v4, v5) ←
+      portable.msm.buckets.Buckets.fill_loop2_loop0
+        { window_bits := i, windows := i1, refs := v, starts := v1, lens := v2
+        } i2 digits 0#usize
+    let i6 ← i2 + 1#usize
+    ok (cont (i4, i5, v3, v4, v5, i6))
+  else ok (done (i, i1, v, v1, v2))
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]: loop 3:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 70:8-80:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.buckets.Buckets.fill_loop2
+  (i : Std.Usize) (i1 : Std.Usize) (v : alloc.vec.Vec Std.U32)
+  (v1 : alloc.vec.Vec Std.U32) (v2 : alloc.vec.Vec Std.U32)
+  (scalars : Slice (Array Std.U64 4#usize)) (window_bits : Std.Usize)
+  (i2 : Std.Usize) :
+  Result (Std.Usize × Std.Usize × (alloc.vec.Vec Std.U32) × (alloc.vec.Vec
+    Std.U32) × (alloc.vec.Vec Std.U32))
+  := do
+  loop
+    (fun (i3, i4, v3, v4, v5, i5) =>
+      portable.msm.buckets.Buckets.fill_loop2.body scalars window_bits i3 i4 v3
+      v4 v5 i5)
+    (i, i1, v, v1, v2, i2)
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::fill]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 37:4-81:5
+    Visibility: public -/
+def portable.msm.buckets.Buckets.fill
+  (self : portable.msm.buckets.Buckets)
+  (scalars : Slice (Array Std.U64 4#usize)) (scalar_bits : Std.Usize) :
+  Result portable.msm.buckets.Buckets
+  := do
+  massert (scalar_bits < 256#usize)
+  let i := Slice.len scalars
+  let window_bits ← portable.msm.buckets.window_bits i
+  let i1 ← scalar_bits / window_bits
+  let i2 ← i1 + 1#usize
+  let i3 ← window_bits - 1#usize
+  let lists ← i2 <<< i3
+  let v ← alloc.vec.Vec.clear Global self.lens
+  let v1 ← alloc.vec.Vec.resize core.clone.CloneU32 v lists 0#u32
+  let (i4, i5, v2, v3, v4) ←
+    portable.msm.buckets.Buckets.fill_loop0 window_bits i2 self.refs
+      self.starts v1 scalars window_bits 0#usize
+  let v5 ← alloc.vec.Vec.clear Global v3
+  let (v6, v7, total) ←
+    portable.msm.buckets.Buckets.fill_loop1 v5 v4 lists 0#u32 0#usize
+  let v8 ← alloc.vec.Vec.clear Global v2
+  let i6 ← lift (UScalar.cast .Usize total)
+  let v9 ← alloc.vec.Vec.resize core.clone.CloneU32 v8 i6 0#u32
+  let (i7, i8, v10, v11, v12) ←
+    portable.msm.buckets.Buckets.fill_loop2 i4 i5 v9 v6 v7 scalars window_bits
+      0#usize
+  ok
+    { window_bits := i7, windows := i8, refs := v10, starts := v11, lens := v12
+    }
+
+/-- [silver_crypto_simd::portable::msm::buckets::{silver_crypto_simd::portable::msm::buckets::Buckets}::windows]:
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 29:4-31:5
+    Visibility: public -/
+def portable.msm.buckets.Buckets.impl.windows
+  (self : portable.msm.buckets.Buckets) : Result Std.Usize := do
+  ok self.windows
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::chunk_sum]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 79:8-82:9 -/
+@[rust_loop_body]
+def portable.msm.Msm.chunk_sum_loop.body
+  (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) (self : portable.msm.Msm)
+  (i : Std.Usize) :
+  Result (ControlFlow (portable.msm.Msm × Std.Usize) portable.msm.Msm)
+  := do
+  let i1 := Slice.len points
+  if i < i1
+  then
+    let bpa ← Slice.index_usize points i
+    let a ← Slice.index_usize scalars i
+    let self1 ← portable.msm.Msm.keep_if_finite self bpa a
+    let i2 ← i + 1#usize
+    ok (cont (self1, i2))
+  else ok (done self)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::chunk_sum]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 79:8-82:9 -/
+@[rust_loop]
+def portable.msm.Msm.chunk_sum_loop
+  (self : portable.msm.Msm) (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) (i : Std.Usize) :
+  Result portable.msm.Msm
+  := do
+  loop
+    (fun (self1, i1) => portable.msm.Msm.chunk_sum_loop.body points scalars
+      self1 i1)
+    (self, i)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::chunk_sum]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 75:4-99:5 -/
+def portable.msm.Msm.chunk_sum
+  (self : portable.msm.Msm) (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) :
+  Result (portable.g1.G1 × portable.msm.Msm)
+  := do
+  let v ← alloc.vec.Vec.clear Global self.finite_points
+  let v1 ← alloc.vec.Vec.clear Global self.finite_scalars
+  let self1 ←
+    portable.msm.Msm.chunk_sum_loop
+      { self with finite_points := v, finite_scalars := v1 } points scalars
+      0#usize
+  let n := alloc.vec.Vec.len self1.finite_points
+  if n = 0#usize
+  then ok (portable.g1.G1.INFINITY, self1)
+  else
+    let self2 ← portable.msm.Msm.split_scalars self1
+    let s := alloc.vec.Vec.deref self2.halves
+    let b ←
+      portable.msm.buckets.Buckets.fill self2.buckets s
+        bls.glv.HALF_SCALAR_BITS
+    let i ← 2#usize * n
+    let i1 ← portable.msm.buckets.Buckets.impl.windows b
+    let i2 ← i1 * n
+    let i3 ← i + i2
+    let ps ← portable.msm.store.PointStore.reset self2.store i3
+    let s1 := alloc.vec.Vec.deref self2.finite_points
+    let s2 := alloc.vec.Vec.deref self2.first_signs
+    let ps1 ← portable.msm.store.PointStore.push_blst ps s1 s2 false
+    let s3 := alloc.vec.Vec.deref self2.finite_points
+    let s4 := alloc.vec.Vec.deref self2.second_signs
+    let ps2 ← portable.msm.store.PointStore.push_blst ps1 s3 s4 true
+    let (b1, self3) ←
+      portable.msm.Msm.pair_rounds { self2 with store := ps2, buckets := b } i
+    let self4 ←
+      if b1
+      then ok self3
+      else
+        do
+        let s5 := alloc.vec.Vec.deref self3.halves
+        let b2 ←
+          portable.msm.buckets.Buckets.fill self3.buckets s5
+            bls.glv.HALF_SCALAR_BITS
+        ok { self3 with buckets := b2 }
+    let g ← portable.msm.buckets.Buckets.sum self4.buckets self4.store
+    ok (g, self4)
+
+/-- [silver_crypto_simd::portable::msm::CHUNK]
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 29:0-29:26 -/
+@[global_simps, irreducible] def portable.msm.CHUNK : Std.Usize := 4096#usize
+
+/-- [silver_crypto_simd::portable::g1::{silver_crypto_simd::portable::g1::G1}::to_blst]:
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 38:4-44:5
+    Visibility: public -/
+def portable.g1.G1.to_blst (self : portable.g1.G1) : Result blst.blst_p1 := do
+  let a := self.x
+  let a1 := self.y
+  let a2 := self.z
+  ok { x := { l := a }, y := { l := a1 }, z := { l := a2 } }
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::msm]: loop body 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 65:8-70:9
+    Visibility: public -/
+@[rust_loop_body]
+def portable.msm.Msm.msm_loop.body
+  (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) (self : portable.msm.Msm)
+  (total : portable.g1.G1) (start : Std.Usize) :
+  Result (ControlFlow (portable.msm.Msm × portable.g1.G1 × Std.Usize)
+    (portable.msm.Msm × portable.g1.G1))
+  := do
+  let i := Slice.len points
+  if start < i
+  then
+    let i1 := Slice.len points
+    let i2 ← i1 - start
+    let end1 ←
+      if i2 < portable.msm.CHUNK
+      then ok (Slice.len points)
+      else start + portable.msm.CHUNK
+    let s ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        blst.blst_p1_affine) points { start, «end» := end1 }
+    let s1 ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        (Array Std.U64 4#usize)) scalars { start, «end» := end1 }
+    let (sum, self1) ← portable.msm.Msm.chunk_sum self s s1
+    let total1 ← portable.g1.G1.add_complete total sum
+    ok (cont (self1, total1, end1))
+  else ok (done (self, total))
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::msm]: loop 0:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 65:8-70:9
+    Visibility: public -/
+@[rust_loop]
+def portable.msm.Msm.msm_loop
+  (self : portable.msm.Msm) (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) (total : portable.g1.G1)
+  (start : Std.Usize) :
+  Result (portable.msm.Msm × portable.g1.G1)
+  := do
+  loop
+    (fun (self1, total1, start1) => portable.msm.Msm.msm_loop.body points
+      scalars self1 total1 start1)
+    (self, total, start)
+
+/-- [silver_crypto_simd::portable::msm::{silver_crypto_simd::portable::msm::Msm}::msm]:
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 61:4-72:5
+    Visibility: public -/
+def portable.msm.Msm.msm
+  (self : portable.msm.Msm) (points : Slice blst.blst_p1_affine)
+  (scalars : Slice (Array Std.U64 4#usize)) :
+  Result (blst.blst_p1 × portable.msm.Msm)
+  := do
+  let i := Slice.len points
+  let i1 := Slice.len scalars
+  massert (i = i1)
+  let (self1, total) ←
+    portable.msm.Msm.msm_loop self points scalars portable.g1.G1.INFINITY
+      0#usize
+  let bp ← portable.g1.G1.to_blst total
+  ok (bp, self1)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::sum]: loop body 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 340:16-343:17 -/
+@[rust_loop_body]
+def kzg.verify.CurveWork.sum_loop.body
+  (scalars : Slice blst.blst_fr)
+  (words : alloc.vec.Vec (Array Std.U64 4#usize)) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec (Array Std.U64 4#usize)) × Std.Usize)
+    (alloc.vec.Vec (Array Std.U64 4#usize)))
+  := do
+  let i1 := Slice.len scalars
+  if i < i1
+  then
+    let bf ← Slice.index_usize scalars i
+    let a ← kzg.fr.fr_to_words bf
+    let words1 ← alloc.vec.Vec.push words a
+    let i2 ← i + 1#usize
+    ok (cont (words1, i2))
+  else ok (done words)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::sum]: loop 0:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 340:16-343:17 -/
+@[rust_loop]
+def kzg.verify.CurveWork.sum_loop
+  (scalars : Slice blst.blst_fr)
+  (words : alloc.vec.Vec (Array Std.U64 4#usize)) (i : Std.Usize) :
+  Result (alloc.vec.Vec (Array Std.U64 4#usize))
+  := do
+  loop
+    (fun (words1, i1) => kzg.verify.CurveWork.sum_loop.body scalars words1 i1)
+    (words, i)
+
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CurveWork}::sum]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 327:4-347:5 -/
+def kzg.verify.CurveWork.sum
+  (self : kzg.verify.CurveWork) (points : Slice blst.blst_p1_affine)
+  (scalars : Slice blst.blst_fr) :
+  Result (blst.blst_p1 × kzg.verify.CurveWork)
+  := do
+  match self with
+  | kzg.verify.CurveWork.Lanes msm words =>
+    let words1 ← kzg.fr8.Fr8.plain_words scalars words
+    let s := alloc.vec.Vec.deref words1
     let (bp, msm1) ← bls.msm8.Msm8.msm msm points s
-    ok (bp, { self with msm := (some msm1), words := v })
+    ok (bp, kzg.verify.CurveWork.Lanes msm1 words1)
+  | kzg.verify.CurveWork.Portable msm pl words =>
+    let words1 ← alloc.vec.Vec.clear Global words
+    let words2 ← kzg.verify.CurveWork.sum_loop scalars words1 0#usize
+    let s := alloc.vec.Vec.deref words2
+    let (bp, msm1) ← portable.msm.Msm.msm msm points s
+    ok (bp, kzg.verify.CurveWork.Portable msm1 pl words2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 249:12-254:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 260:12-265:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12078,13 +18949,13 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
     let bf1 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v i1
-    let term ← kzg.blst_ops.fr_mul bf bf1
+    let term ← kzg.fr.fr_mul bf bf1
     let i2 ← c * kzg.FIELD_ELEMENTS_PER_CELL
     let at1 ← i2 + j
     let bf2 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v2 at1
-    let bf3 ← kzg.blst_ops.fr_add bf2 term
+    let bf3 ← kzg.fr.fr_add bf2 term
     let (_, index_mut_back) ←
       alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
         blst.blst_fr) v2 at1
@@ -12092,7 +18963,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
     ok (cont (iter1, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 249:12-254:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 260:12-265:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12107,7 +18978,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0_loop0
     (iter, v2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 246:8-255:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 257:8-266:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12134,7 +19005,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0.body
     ok (cont (iter1, v5, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 246:8-255:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 257:8-266:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12149,7 +19020,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop0
     (iter, v2, v3)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 265:12-268:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-279:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
   (v : alloc.vec.Vec blst.blst_fr) (c : Std.Usize)
@@ -12175,7 +19046,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 3:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 265:12-268:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-279:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12189,7 +19060,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop0
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-280:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 287:12-291:13 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
   (v : alloc.vec.Vec blst.blst_fr) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12206,23 +19077,23 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body
     let bf ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v1 i
-    let term ← kzg.blst_ops.fr_mul bf factor
+    let term ← kzg.fr.fr_mul bf factor
     let bf1 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v2 i
-    let bf2 ← kzg.blst_ops.fr_add bf1 term
+    let bf2 ← kzg.fr.fr_add bf1 term
     let (_, index_mut_back) ←
       alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
         blst.blst_fr) v2 i
     let bf3 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v c
-    let factor1 ← kzg.blst_ops.fr_mul factor bf3
+    let factor1 ← kzg.fr.fr_mul factor bf3
     let v3 := index_mut_back bf2
     ok (cont (iter1, v3, factor1))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 4:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 276:12-280:13 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 287:12-291:13 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12237,7 +19108,7 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
     (iter, v2, factor)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop body 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:8-281:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 272:8-292:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
   (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
@@ -12265,17 +19136,16 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1.body
       let s1 := alloc.vec.Vec.deref v5
       let s2 := alloc.vec.Vec.deref c.inverse_roots
       let s3 ← kzg.fft.inverse_fft s s1 s2 c.inverse_size
-      let factor ← kzg.blst_ops.fr_from_u64 1#u64
       let v6 := deref_mut_back s3
       let v7 ←
         kzg.verify.CellBatchVerifier.interpolation_commitment_loop1_loop1
           { start := 0#usize, «end» := kzg.FIELD_ELEMENTS_PER_CELL }
-          c.shift_inverse v6 v4 c1 factor
+          c.shift_inverse v6 v4 c1 kzg.FR_ONE
       ok (cont (iter1, v5, v6, v7))
     else ok (cont (iter1, v2, v3, v4))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]: loop 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 261:8-281:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 272:8-292:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
   (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
@@ -12292,21 +19162,21 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
     (iter, v2, v3, v4)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::interpolation_commitment]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 227:4-283:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 239:4-294:5 -/
 def kzg.verify.CellBatchVerifier.interpolation_commitment
   (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64)
   (cells : Slice (Array Std.U8 2048#usize)) :
   Result (blst.blst_p1 × kzg.verify.CellBatchVerifier)
   := do
-  let zero ← kzg.blst_ops.fr_from_u64 0#u64
   match self.kernel with
   | none =>
     let v ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.columns
-        0#usize zero
+        0#usize kzg.FR_ZERO
     let i ← kzg.CELLS_PER_EXT_BLOB
     let i1 ← i * kzg.FIELD_ELEMENTS_PER_CELL
-    let v1 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v i1 zero
+    let v1 ←
+      alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v i1 kzg.FR_ZERO
     let v2 ←
       alloc.vec.Vec.resize core.clone.CloneBool self.column_used 0#usize false
     let v3 ← alloc.vec.Vec.resize core.clone.CloneBool v2 i false
@@ -12317,22 +19187,22 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment
         v3 cell_indices
     let v6 ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
-        0#usize zero
+        0#usize kzg.FR_ZERO
     let v7 ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v6
-        kzg.FIELD_ELEMENTS_PER_CELL zero
+        kzg.FIELD_ELEMENTS_PER_CELL kzg.FR_ZERO
     let v8 ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.column
-        kzg.FIELD_ELEMENTS_PER_CELL zero
+        kzg.FIELD_ELEMENTS_PER_CELL kzg.FR_ZERO
     let v9 ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.coefficients
-        kzg.FIELD_ELEMENTS_PER_CELL zero
+        kzg.FIELD_ELEMENTS_PER_CELL kzg.FR_ZERO
     let (c, v10, v11, v12) ←
       kzg.verify.CellBatchVerifier.interpolation_commitment_loop1
         { start := 0#usize, «end» := i } self.cosets v4 v5 v8 v9 v7
     let s := alloc.vec.Vec.deref self.setup.g1_monomial
     let s1 := alloc.vec.Vec.deref v12
-    let (bp, l) ← kzg.verify.Lincomb.sum self.lincomb s s1
+    let (bp, cw) ← kzg.verify.CurveWork.sum self.curve_work s s1
     ok (bp,
       {
         self
@@ -12343,12 +19213,12 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment
           column := v10,
           coefficients := v11,
           interpolation := v12,
-          lincomb := l
+          curve_work := cw
       })
   | some kernel =>
     let v ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.interpolation
-        kzg.FIELD_ELEMENTS_PER_CELL zero
+        kzg.FIELD_ELEMENTS_PER_CELL kzg.FR_ZERO
     let s := alloc.vec.Vec.deref self.r_powers
     let (s1, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut v)
     let (kernel1, s2) ←
@@ -12357,12 +19227,16 @@ def kzg.verify.CellBatchVerifier.interpolation_commitment
     let s3 := alloc.vec.Vec.deref self.setup.g1_monomial
     let v1 := deref_mut_back s2
     let s4 := alloc.vec.Vec.deref v1
-    let (bp, l) ← kzg.verify.Lincomb.sum self.lincomb s3 s4
+    let (bp, cw) ← kzg.verify.CurveWork.sum self.curve_work s3 s4
     ok (bp,
-      { self with interpolation := v1, lincomb := l, kernel := (some kernel1) })
+      {
+        self
+          with
+          interpolation := v1, curve_work := cw, kernel := (some kernel1)
+      })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 191:8-194:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-208:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop0.body
   (r : blst.blst_fr) (iter : core.ops.range.Range Std.Usize)
@@ -12376,11 +19250,11 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop0.body
   | none => ok (done v)
   | some _ =>
     let v1 ← alloc.vec.Vec.push v power
-    let power1 ← kzg.blst_ops.fr_mul power r
+    let power1 ← kzg.fr.fr_mul power r
     ok (cont (iter1, v1, power1))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 191:8-194:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 205:8-208:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop0
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec blst.blst_fr)
@@ -12393,7 +19267,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop0
     (iter, v, power)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 199:8-202:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 213:8-216:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
   (v : alloc.vec.Vec Std.Usize) (v1 : alloc.vec.Vec blst.blst_fr)
@@ -12414,7 +19288,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
     let bf1 ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v1 k
-    let bf2 ← kzg.blst_ops.fr_add bf bf1
+    let bf2 ← kzg.fr.fr_add bf bf1
     let (_, index_mut_back) ←
       alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
         blst.blst_fr) v2 i
@@ -12422,7 +19296,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop1.body
     ok (cont (iter1, v3))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 1:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 199:8-202:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 213:8-216:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop1
   (iter : core.ops.range.Range Std.Usize) (v : alloc.vec.Vec Std.Usize)
@@ -12435,7 +19309,7 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop1
     (iter, v2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop body 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 208:8-211:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 222:8-225:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop2.body
   (c : kzg.cosets.Cosets) (v : alloc.vec.Vec blst.blst_fr)
@@ -12457,12 +19331,12 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop2.body
     let bf ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         v k
-    let bf1 ← kzg.blst_ops.fr_mul bf shift
+    let bf1 ← kzg.fr.fr_mul bf shift
     let v2 ← alloc.vec.Vec.push v1 bf1
     ok (cont (iter1, v2))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]: loop 2:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 208:8-211:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 222:8-225:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.pairing_holds_loop2
   (iter : core.ops.range.Range Std.Usize) (c : kzg.cosets.Cosets)
@@ -12476,61 +19350,53 @@ def kzg.verify.CellBatchVerifier.pairing_holds_loop2
     (iter, v1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::pairing_holds]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 181:4-221:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 196:4-229:5 -/
 def kzg.verify.CellBatchVerifier.pairing_holds
   (self : kzg.verify.CellBatchVerifier) (r : blst.blst_fr)
   (cell_indices : Slice Std.U64) (cells : Slice (Array Std.U8 2048#usize)) :
   Result (Bool × kzg.verify.CellBatchVerifier)
   := do
   let n := Slice.len cell_indices
-  let zero ← kzg.blst_ops.fr_from_u64 0#u64
   let v ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.r_powers
-      0#usize zero
-  let power ← kzg.blst_ops.fr_from_u64 1#u64
+      0#usize kzg.FR_ZERO
   let v1 ←
     kzg.verify.CellBatchVerifier.pairing_holds_loop0
-      { start := 0#usize, «end» := n } v r power
+      { start := 0#usize, «end» := n } v r kzg.FR_ONE
   let s := alloc.vec.Vec.deref self.proof_points
   let s1 := alloc.vec.Vec.deref v1
-  let (ll, l) ← kzg.verify.Lincomb.sum self.lincomb s s1
+  let (ll, cw) ← kzg.verify.CurveWork.sum self.curve_work s s1
   let v2 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.scalars 0#usize
-      zero
+      kzg.FR_ZERO
   let i := alloc.vec.Vec.len self.commitments.unique
-  let v3 ← alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v2 i zero
+  let v3 ←
+    alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v2 i kzg.FR_ZERO
   let v4 ←
     kzg.verify.CellBatchVerifier.pairing_holds_loop1
       { start := 0#usize, «end» := n } self.commitments.index_of_cell v1 v3
   let s2 := alloc.vec.Vec.deref self.commitment_points
   let s3 := alloc.vec.Vec.deref v4
-  let (rlc, l1) ← kzg.verify.Lincomb.sum l s2 s3
+  let (rlc, cw1) ← kzg.verify.CurveWork.sum cw s2 s3
   let (rli, self1) ←
     kzg.verify.CellBatchVerifier.interpolation_commitment
-      { self with r_powers := v1, scalars := v4, lincomb := l1 } cell_indices
-      cells
+      { self with r_powers := v1, scalars := v4, curve_work := cw1 }
+      cell_indices cells
   let v5 ←
     alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self1.scalars
-      0#usize zero
+      0#usize kzg.FR_ZERO
   let (c, v6) ←
     kzg.verify.CellBatchVerifier.pairing_holds_loop2
       { start := 0#usize, «end» := n } self1.cosets self1.r_powers v5
       cell_indices
   let s4 := alloc.vec.Vec.deref self1.proof_points
   let s5 := alloc.vec.Vec.deref v6
-  let (rlp, l2) ← kzg.verify.Lincomb.sum self1.lincomb s4 s5
-  let bp ← kzg.blst_ops.g1_neg rli
-  let bp1 ← kzg.blst_ops.g1_add rlc bp
-  let rl ← kzg.blst_ops.g1_add bp1 rlp
-  let bpa ← kzg.blst_ops.g1_to_affine ll
-  let bpa1 ← kzg.blst_ops.g1_to_affine rl
-  let b ←
-    kzg.blst_ops.pairing_check bpa self1.setup.g2_s_pow_cell bpa1
-      self1.setup.g2_neg_generator
-  ok (b, { self1 with cosets := c, scalars := v6, lincomb := l2 })
+  let (rlp, cw2) ← kzg.verify.CurveWork.sum self1.curve_work s4 s5
+  let b ← kzg.verify.CurveWork.pairing_check cw2 { ll, rlc, rli, rlp }
+  ok (b, { self1 with cosets := c, scalars := v6, curve_work := cw2 })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 165:8-175:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 180:8-190:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.decode_cell_loop.body
   (cell : Array Std.U8 2048#usize) (self : kzg.verify.CellBatchVerifier)
@@ -12551,7 +19417,7 @@ def kzg.verify.CellBatchVerifier.decode_cell_loop.body
         { start := i, «end» := i2 }
     let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
     let bytes1 := to_slice_mut_back s2
-    let o ← kzg.blst_ops.fr_from_bytes bytes1
+    let o ← kzg.fr.fr_from_bytes bytes1
     match o with
     | none => ok (done (self, j))
     | some value =>
@@ -12560,7 +19426,7 @@ def kzg.verify.CellBatchVerifier.decode_cell_loop.body
   else ok (done (self, j))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 165:8-175:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 180:8-190:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.decode_cell_loop
   (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize)
@@ -12573,7 +19439,7 @@ def kzg.verify.CellBatchVerifier.decode_cell_loop
     (self, j)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cell]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 163:4-177:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 178:4-192:5 -/
 def kzg.verify.CellBatchVerifier.decode_cell
   (self : kzg.verify.CellBatchVerifier) (cell : Array Std.U8 2048#usize) :
   Result (Bool × kzg.verify.CellBatchVerifier)
@@ -12583,7 +19449,7 @@ def kzg.verify.CellBatchVerifier.decode_cell
   ok (j = kzg.FIELD_ELEMENTS_PER_CELL, self1)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-159:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 172:8-174:9 -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.decode_cells_loop.body
   (cells : Slice (Array Std.U8 2048#usize))
@@ -12603,7 +19469,7 @@ def kzg.verify.CellBatchVerifier.decode_cells_loop.body
   else ok (done (self, k))
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 157:8-159:9 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 172:8-174:9 -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.decode_cells_loop
   (self : kzg.verify.CellBatchVerifier)
@@ -12616,7 +19482,7 @@ def kzg.verify.CellBatchVerifier.decode_cells_loop
     (self, k)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_cells]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 149:4-161:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 164:4-176:5 -/
 def kzg.verify.CellBatchVerifier.decode_cells
   (self : kzg.verify.CellBatchVerifier)
   (cells : Slice (Array Std.U8 2048#usize)) :
@@ -12624,10 +19490,9 @@ def kzg.verify.CellBatchVerifier.decode_cells
   := do
   match self.kernel with
   | none =>
-    let bf ← kzg.blst_ops.fr_from_u64 0#u64
     let v ←
       alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone self.evaluations
-        0#usize bf
+        0#usize kzg.FR_ZERO
     let (self1, k) ←
       kzg.verify.CellBatchVerifier.decode_cells_loop
         { self with evaluations := v } cells 0#usize
@@ -12638,7 +19503,7 @@ def kzg.verify.CellBatchVerifier.decode_cells
     ok (b, self)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 361:4-367:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 448:4-454:5 -/
 @[rust_loop_body]
 def kzg.verify.decode_points_loop.body
   (encodings : Slice (Array Std.U8 48#usize))
@@ -12662,7 +19527,7 @@ def kzg.verify.decode_points_loop.body
   else ok (done (points, i))
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 361:4-367:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 448:4-454:5 -/
 @[rust_loop]
 def kzg.verify.decode_points_loop
   (encodings : Slice (Array Std.U8 48#usize))
@@ -12676,7 +19541,7 @@ def kzg.verify.decode_points_loop
     (points, i)
 
 /-- [silver_crypto_simd::kzg::verify::decode_points]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 351:0-369:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 438:0-456:1 -/
 def kzg.verify.decode_points
   (encodings : Slice (Array Std.U8 48#usize))
   (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
@@ -12704,7 +19569,7 @@ def kzg.verify.decode_points
   ok (i1 = i2, decoded3, points2)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_proofs]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 145:4-147:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 160:4-162:5 -/
 def kzg.verify.CellBatchVerifier.decode_proofs
   (self : kzg.verify.CellBatchVerifier)
   (proofs : Slice (Array Std.U8 48#usize)) :
@@ -12715,7 +19580,7 @@ def kzg.verify.CellBatchVerifier.decode_proofs
   ok (b, { self with decoded := v, proof_points := v1 })
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::decode_commitments]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 141:4-143:5 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 156:4-158:5 -/
 def kzg.verify.CellBatchVerifier.decode_commitments
   (self : kzg.verify.CellBatchVerifier) :
   Result (Bool × kzg.verify.CellBatchVerifier)
@@ -12725,8 +19590,27 @@ def kzg.verify.CellBatchVerifier.decode_commitments
     kzg.verify.decode_points s self.decoded self.commitment_points
   ok (b, { self with decoded := v, commitment_points := v1 })
 
+/-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::challenge]:
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 138:4-154:5 -/
+def kzg.verify.CellBatchVerifier.challenge
+  (self : kzg.verify.CellBatchVerifier) (cell_indices : Slice Std.U64)
+  (cells : Slice (Array Std.U8 2048#usize))
+  (proofs : Slice (Array Std.U8 48#usize)) :
+  Result blst.blst_fr
+  := do
+  let b ← sha_available
+  if b
+  then
+    let s := alloc.vec.Vec.deref self.commitments.unique
+    let s1 := alloc.vec.Vec.deref self.commitments.index_of_cell
+    kzg.challenge.challenge_in_parts s s1 cell_indices cells proofs
+  else
+    let s := alloc.vec.Vec.deref self.commitments.unique
+    let s1 := alloc.vec.Vec.deref self.commitments.index_of_cell
+    kzg.challenge.challenge_in_parts_portable s s1 cell_indices cells proofs
+
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop body 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 121:8-123:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 123:8-125:9
     Visibility: public -/
 @[rust_loop_body]
 def kzg.verify.CellBatchVerifier.verify_loop.body
@@ -12745,7 +19629,7 @@ def kzg.verify.CellBatchVerifier.verify_loop.body
   else ok (done k)
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]: loop 0:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 121:8-123:9
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 123:8-125:9
     Visibility: public -/
 @[rust_loop]
 def kzg.verify.CellBatchVerifier.verify_loop
@@ -12757,7 +19641,7 @@ def kzg.verify.CellBatchVerifier.verify_loop
     k
 
 /-- [silver_crypto_simd::kzg::verify::{silver_crypto_simd::kzg::verify::CellBatchVerifier}::verify]:
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 109:4-139:5
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 111:4-135:5
     Visibility: public -/
 def kzg.verify.CellBatchVerifier.verify
   (self : kzg.verify.CellBatchVerifier)
@@ -12798,25 +19682,23 @@ def kzg.verify.CellBatchVerifier.verify
                 kzg.verify.CellBatchVerifier.decode_proofs self2 proofs
               if b2
               then
-                let s := alloc.vec.Vec.deref self3.commitments.unique
-                let s1 := alloc.vec.Vec.deref self3.commitments.index_of_cell
-                let (r, p) ←
-                  kzg.challenge.Preimage.challenge self3.preimage s s1
-                    cell_indices cells proofs
-                kzg.verify.CellBatchVerifier.pairing_holds
-                  { self3 with preimage := p } r cell_indices cells
+                let r ←
+                  kzg.verify.CellBatchVerifier.challenge self3 cell_indices
+                    cells proofs
+                kzg.verify.CellBatchVerifier.pairing_holds self3 r cell_indices
+                  cells
               else ok (false, self3)
             else ok (false, self2)
           else ok (false, self1)
 
 /-- Trait implementation: [silver_crypto_simd::kzg::verify::{core::default::Default for silver_crypto_simd::kzg::verify::Deduplicated}]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 322:9-322:16 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 409:9-409:16 -/
 @[reducible]
 def kzg.verify.Deduplicated.Insts.CoreDefaultDefault : core.default.Default
   kzg.verify.Deduplicated := {
   default := kzg.verify.Deduplicated.Insts.CoreDefaultDefault.default
 }
 
-end KzgScope
+end RuntimeScope
 
 end silver_crypto_simd

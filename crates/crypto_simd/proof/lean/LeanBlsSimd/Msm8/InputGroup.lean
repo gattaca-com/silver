@@ -46,13 +46,13 @@ theorem signed_magnitude_smul (magnitude : ℕ) (negative : Bool) (P : G1Spec.E.
       (if negative then -(magnitude : ℤ) else (magnitude : ℤ)) • P := by
   cases negative <;> simp
 
-theorem signed_half_smul (half : msm8.glv.Half) (P : G1Spec.E.Point) :
+theorem signed_half_smul (half : glv.Half) (P : G1Spec.E.Point) :
     Kzg.limbs half.magnitude.val • (if half.negative then -P else P) =
       GlvRefines.signedValue half • P := by
   rw [signed_magnitude_smul, GlvRefines.signedValue, glv_value_eq_limbs]
 
 theorem split_scalar_contribution (point : blst.blst_p1_affine) (scalar : ScalarWords)
-    (first second : msm8.glv.Half) (hp : Kzg.G1AffineValid point)
+    (first second : glv.Half) (hp : Kzg.G1AffineValid point)
     (hfirst : GlvRefines.signedValue first = Glv.first (GlvRefines.value scalar))
     (hsecond : GlvRefines.signedValue second = Glv.second (GlvRefines.value scalar)) :
     Kzg.limbs first.magnitude.val •

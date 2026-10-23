@@ -57,8 +57,8 @@ theorem place_metadata (state next : buckets.Buckets) (window magnitude : Usize)
 def fields (state : buckets.Buckets) :=
   (state.window_bits, state.windows, state.refs, state.starts, state.lens)
 
-def windowEvents : ℕ → Usize → Usize → buckets.SignedDigits →
-    Result (List Event × buckets.SignedDigits)
+def windowEvents : ℕ → Usize → Usize → signed_digits.SignedDigits →
+    Result (List Event × signed_digits.SignedDigits)
   | 0, _, _, digits => ok ([], digits)
   | n + 1, index, window, digits => do
     let ((magnitude, negative), digits') ← digits.next_digit
@@ -66,7 +66,7 @@ def windowEvents : ℕ → Usize → Usize → buckets.SignedDigits →
     let (rest, last) ← windowEvents n index window' digits'
     ok ({window, magnitude, reference := signedReference index negative} :: rest, last)
 
-theorem count_windows_refines (state out : buckets.Buckets) (digits last : buckets.SignedDigits)
+theorem count_windows_refines (state out : buckets.Buckets) (digits last : signed_digits.SignedDigits)
     (index window : Usize) (events : List Event) (n : ℕ)
     (hn : window.val + n = state.windows.val)
     (hevents : windowEvents n index window digits = ok (events, last))
@@ -117,9 +117,9 @@ theorem sign_product (negative : Bool) :
       ok (if negative then 2147483648#u32 else 0#u32) := by
   cases negative <;> rfl
 
-def placeSuffix (state : buckets.Buckets) (digits' : buckets.SignedDigits)
+def placeSuffix (state : buckets.Buckets) (digits' : signed_digits.SignedDigits)
     (index window magnitude : Usize) (negative : Bool) :
-    Result (ControlFlow (buckets.Buckets × buckets.SignedDigits × Usize)
+    Result (ControlFlow (buckets.Buckets × signed_digits.SignedDigits × Usize)
       (Usize × Usize × Vec U32 × Vec U32 × Vec U32)) := do
   let bit ← lift (UScalar.cast_fromBool .U32 negative)
   let mask ← pairs.NEGATED
@@ -130,7 +130,7 @@ def placeSuffix (state : buckets.Buckets) (digits' : buckets.SignedDigits)
   let window1 ← window + 1#usize
   ok (cont (self1, digits', window1))
 
-theorem place_body_split (state : buckets.Buckets) (digits : buckets.SignedDigits)
+theorem place_body_split (state : buckets.Buckets) (digits : signed_digits.SignedDigits)
     (index window : Usize) :
     buckets.Buckets.fill_loop2_loop0.body index state digits window =
       (if window < state.windows then do
@@ -138,7 +138,7 @@ theorem place_body_split (state : buckets.Buckets) (digits : buckets.SignedDigit
         placeSuffix state digits' index window magnitude negative
       else ok (done (fields state))) := rfl
 
-theorem place_signed_suffix (state next : buckets.Buckets) (digits' : buckets.SignedDigits)
+theorem place_signed_suffix (state next : buckets.Buckets) (digits' : signed_digits.SignedDigits)
     (index window window' magnitude : Usize) (negative : Bool)
     (hstep : state.place window magnitude (signedReference index negative) = ok next)
     (hwindow : window + 1#usize = ok window') :
@@ -150,12 +150,12 @@ theorem place_signed_suffix (state next : buckets.Buckets) (digits' : buckets.Si
       let self1 ← state.place window magnitude reference
       let window1 ← window + 1#usize
       ok (cont (self1, digits', window1) : ControlFlow
-        (buckets.Buckets × buckets.SignedDigits × Usize)
+        (buckets.Buckets × signed_digits.SignedDigits × Usize)
         (Usize × Usize × Vec U32 × Vec U32 × Vec U32)))
     (signedReference_refines index negative)
   simpa only [bind_assoc_eq, lift, bind_tc_ok, hstep, hwindow] using hh
 
-theorem place_body_active (state : buckets.Buckets) (digits : buckets.SignedDigits)
+theorem place_body_active (state : buckets.Buckets) (digits : signed_digits.SignedDigits)
     (index window : Usize) (hlt : window < state.windows) :
     buckets.Buckets.fill_loop2_loop0.body index state digits window =
       (do
@@ -171,7 +171,7 @@ theorem bind_nested_pair {α β γ δ : Type} (r : Result ((α × β) × γ))
   rw [h]
   rfl
 
-theorem place_digit_active (state : buckets.Buckets) (digits digits' : buckets.SignedDigits)
+theorem place_digit_active (state : buckets.Buckets) (digits digits' : signed_digits.SignedDigits)
     (index window magnitude : Usize) (negative : Bool)
     (hdigit : digits.next_digit = ok ((magnitude, negative), digits')) :
     (do
@@ -181,7 +181,7 @@ theorem place_digit_active (state : buckets.Buckets) (digits digits' : buckets.S
   bind_nested_pair digits.next_digit (fun m neg d => placeSuffix state d index window m neg)
     magnitude negative digits' hdigit
 
-theorem place_window_step (state next : buckets.Buckets) (digits digits' : buckets.SignedDigits)
+theorem place_window_step (state next : buckets.Buckets) (digits digits' : signed_digits.SignedDigits)
     (index window window' magnitude : Usize) (negative : Bool)
     (hlt : window < state.windows)
     (hdigit : digits.next_digit = ok ((magnitude, negative), digits'))
@@ -193,7 +193,7 @@ theorem place_window_step (state next : buckets.Buckets) (digits digits' : bucke
     ((place_digit_active state digits digits' index window magnitude negative hdigit).trans
       (place_signed_suffix state next digits' index window window' magnitude negative hstep hwindow))
 
-theorem place_windows_refines (state out : buckets.Buckets) (digits last : buckets.SignedDigits)
+theorem place_windows_refines (state out : buckets.Buckets) (digits last : signed_digits.SignedDigits)
     (index window : Usize) (events : List Event) (n : ℕ)
     (hn : window.val + n = state.windows.val)
     (hevents : windowEvents n index window digits = ok (events, last))
@@ -284,7 +284,7 @@ def scalarEvents : ℕ → Slice (Array U64 4#usize) → Usize → Usize → Usi
   | 0, _, _, _, _ => ok []
   | n + 1, scalars, width, windows, index => do
     let words ← Slice.index_usize scalars index
-    let digits ← buckets.SignedDigits.new words width
+    let digits ← signed_digits.SignedDigits.new words width
     let (events, _) ← windowEvents windows.val index 0#usize digits
     let index' ← index + 1#usize
     let rest ← scalarEvents n scalars width windows index'
@@ -394,7 +394,7 @@ end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
 open silver_crypto_simd.bls.msm8 alloc.vec
 
-theorem windowEvents_succeeds (n : ℕ) (index window windows : Usize) (digits : buckets.SignedDigits)
+theorem windowEvents_succeeds (n : ℕ) (index window windows : Usize) (digits : signed_digits.SignedDigits)
     (hwl : 1 ≤ digits.window_bits.val) (hwh : digits.window_bits.val ≤ 8)
     (hc : digits.carry.val ≤ 1) (hb : digits.bit.val + digits.window_bits.val * n ≤ 256)
     (hw : window.val + n ≤ windows.val) :
@@ -441,7 +441,7 @@ theorem scalarEvents_succeeds (n : ℕ) (scalars : Slice (Array U64 4#usize))
     have hwords : Slice.index_usize scalars index = ok words := by
       simp [Slice.index_usize, words, List.getElem?_eq_getElem hil]
     let digits := SignedDigits.initial words width
-    have hdigits : buckets.SignedDigits.new words width = ok digits := rfl
+    have hdigits : signed_digits.SignedDigits.new words width = ok digits := rfl
     obtain ⟨first, last, hfirst, hfirstlen, hfits⟩ := windowEvents_succeeds windows.val index
       0#usize windows digits hwl hwh (by change 0 ≤ 1; omega)
       (by change 0 + width.val * windows.val ≤ 256; omega) (by change 0 + windows.val ≤ windows.val; omega)
@@ -686,7 +686,7 @@ end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
 open silver_crypto_simd.bls.msm8 alloc.vec
 
-theorem digits_run_succ_first (n : ℕ) (digits : buckets.SignedDigits) :
+theorem digits_run_succ_first (n : ℕ) (digits : signed_digits.SignedDigits) :
     SignedDigits.run (n + 1) digits = (do
       let (digit, next) ← digits.next_digit
       let (rest, last) ← SignedDigits.run n next
@@ -728,7 +728,7 @@ theorem eventDigit_reference (index window magnitude : Usize) (negative : Bool)
   rw [signedReference_sign index negative hi]
   cases negative <;> rfl
 
-theorem windowEvents_run (n : ℕ) (index window : Usize) (digits last : buckets.SignedDigits)
+theorem windowEvents_run (n : ℕ) (index window : Usize) (digits last : signed_digits.SignedDigits)
     (events : List Event) (hi : index.val < 2 ^ 31)
     (hevents : windowEvents n index window digits = ok (events, last)) :
     SignedDigits.run n digits = ok (events.map eventDigit, last) := by
@@ -752,7 +752,7 @@ theorem windowEvents_run (n : ℕ) (index window : Usize) (digits last : buckets
       List.map_cons, eventDigit_reference index window magnitude negative hi]
 
 theorem windowEvents_scalar (words : Array U64 4#usize) (width index : Usize)
-    (events : List Event) (last : buckets.SignedDigits)
+    (events : List Event) (last : signed_digits.SignedDigits)
     (hwl : 1 ≤ width.val) (hwh : width.val ≤ 8) (hi : index.val < 2 ^ 31)
     (hscalar : SignedDigits.value words < 2 ^ 127)
     (hevents : windowEvents (windows127 width).val index 0#usize (SignedDigits.initial words width) =
@@ -767,7 +767,7 @@ theorem windowEvents_scalar (words : Array U64 4#usize) (width index : Usize)
   exact ⟨hsum, hcarry⟩
 
 theorem windowEvents_coordinates (n : ℕ) (index window : Usize)
-    (digits last : buckets.SignedDigits) (events : List Event) (hi : index.val < 2 ^ 31)
+    (digits last : signed_digits.SignedDigits) (events : List Event) (hi : index.val < 2 ^ 31)
     (hb : window.val + n < 2 ^ 32)
     (hevents : windowEvents n index window digits = ok (events, last)) :
     ∀ j (hj : j < events.length),

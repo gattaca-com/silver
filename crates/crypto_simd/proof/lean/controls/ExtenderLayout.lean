@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Extender.Statements
+import controls.ExtenderExternalBoundary
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
@@ -46,15 +47,15 @@ theorem layout_ff_blob_noncanonical : ¬ Canonical (layoutBlob 255#u8) := by
   rw [← hchunk] at hc
   exact (by decide +kernel : ¬ Fr.bytesBEToNat (arrayBytes (layoutChunk 255#u8)) < Fr.modulus) hc
 
-theorem decode_ff_blob_rejects :
+theorem decode_ff_blob_rejects [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytesCorrect) :
     ∃ initial next,
-      @cell_extender.CellExtender.new specExternals = ok initial ∧
-      @cell_extender.CellExtender.decode_blob specExternals initial (layoutBlob 255#u8) =
+      cell_extender.CellExtender.new = ok initial ∧
+      cell_extender.CellExtender.decode_blob initial (layoutBlob 255#u8) =
         ok (false, next) ∧ StateInvariant next := by
   obtain ⟨initial, hnew, hinitial⟩ :=
-    @new_returns_ok specExternals specExternals_correct.1
+    new_returns_ok hfr
   obtain ⟨verdict, next, hdecode, hnext, _, hresult⟩ :=
-    @decode_blob_refinement specExternals specExternals_correct.1 initial hinitial
+    decode_blob_refinement hbytes initial hinitial
       (layoutBlob 255#u8)
   have hfalse : verdict = false := by
     cases hd : blobToPolynomial (arrayBytes (layoutBlob 255#u8)) with
@@ -152,21 +153,21 @@ def omitExtensionOffset (cells : Cells) (j : Nat) (bs : Aeneas.Std.Array U8 32#u
     (Aeneas.Std.Array.setSlice! cells.val[j/64]! ((j%64)*32) bs.val), by simp [cells.property]⟩
 
 theorem omitExtensionOffset_rejected :
-    omitExtensionOffset (layoutCells 0#u8) 0 (specFrBytes 1) ≠
-      storeChunk (layoutCells 0#u8) 0 (specFrBytes 1) := by
+    omitExtensionOffset (layoutCells 0#u8) 0 (serializationBytes 1) ≠
+      storeChunk (layoutCells 0#u8) 0 (serializationBytes 1) := by
   intro he
   have hc := congrArg (fun cells : Cells => (arrayBytes cells.val[0]!)[31]!) he
   dsimp only at hc
   rw [storeChunk_first _ _ 0 _ (by decide)] at hc
   have hleft :
-      (arrayBytes (omitExtensionOffset (layoutCells 0#u8) 0 (specFrBytes 1)).val[0]!)[31]! =
+      (arrayBytes (omitExtensionOffset (layoutCells 0#u8) 0 (serializationBytes 1)).val[0]!)[31]! =
         1 := by
     simp only [omitExtensionOffset, Nat.zero_div, Nat.zero_mod, Nat.zero_mul]
     rw [List.getElem!_set _ _ _ (by simp [-List.reduceReplicate, layoutCells]), arrayBytes_get _ 31 (by decide)]
     change UInt8.ofBitVec
-      (((layoutCells 0#u8).val[0]!.val.setSlice! 0 (specFrBytes 1).val)[31]!).bv = 1
+      (((layoutCells 0#u8).val[0]!.val.setSlice! 0 (serializationBytes 1).val)[31]!).bv = 1
     rw [List.getElem!_setSlice!_middle _ _ 0 31 (by
-      simp only [(specFrBytes 1).property, ((layoutCells 0#u8).val[0]!).property,
+      simp only [(serializationBytes 1).property, ((layoutCells 0#u8).val[0]!).property,
         UScalar.ofNatCore_val_eq]
       decide)]
     decide +kernel

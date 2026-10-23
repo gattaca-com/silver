@@ -54,7 +54,7 @@ private theorem references_body_refines (refs : Slice U32) (g : Usize)
     unfold msm8.pairs.NEGATED
     rfl
   refine ⟨next, by simp [next, hj], ?_⟩
-  simp only [msm8.pairs.references_loop.body, fp8.LANES, UScalar.lt_equiv,
+  simp only [msm8.pairs.references_loop.body, limbs.LANES, UScalar.lt_equiv,
     UScalar.ofNatCore_val_eq, hl, ↓reduceIte, hbase, bind_tc_ok, hk, hidx, hneg,
     lift, update_eq (n := 8#usize) _ lane _ hl, hsign,
     shiftLeft_ok (ty := .U8) _ lane (by exact hl), hn]
@@ -81,7 +81,7 @@ theorem references_refines (refs : Slice U32) (g : Usize)
     (fun (v, mask, lane) => msm8.pairs.references_loop.body refs g v mask lane)
     (fun v lane => (toArray id v.1, v.2, lane)) (referencesStep refs.val g.val)
     (fun v => (toArray id v.1, v.2)) (fun _ => True) (fun _ _ _ => trivial)
-    (by intro v c hc _; simp [msm8.pairs.references_loop.body, fp8.LANES, UScalar.lt_equiv, hc])
+    (by intro v c hc _; simp [msm8.pairs.references_loop.body, limbs.LANES, UScalar.lt_equiv, hc])
     (fun v c j hj _ => references_body_refines refs g hg v c j hj)
     (Vector.replicate 8 0#u32, 0#u8) 0#usize (by decide) trivial
 

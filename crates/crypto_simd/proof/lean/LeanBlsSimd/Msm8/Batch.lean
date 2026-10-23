@@ -1171,8 +1171,8 @@ theorem run_initializes (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poin
   have hlast : alloc.vec.Vec.len self.a - 1#usize = ok last := by
     rw [sub_ok _ _ (by simp only [alloc.vec.Vec.len_val]; change 1 ≤ self.a.val.length; omega)]
     rfl
-  have hpair : msm8.pairs.PAIR * fp8.LANES = ok 16#usize := by
-    rw [msm8.pairs.PAIR, fp8.LANES, mul_ok _ _ (by simpa using lt_of_lt_of_le (by decide : 16 < 2 ^ 32) two_pow_32_le_usize)]
+  have hpair : msm8.pairs.PAIR * limbs.LANES = ok 16#usize := by
+    rw [msm8.pairs.PAIR, limbs.LANES, mul_ok _ _ (by simpa using lt_of_lt_of_le (by decide : 16 < 2 ^ 32) two_pow_32_le_usize)]
     rfl
   have hdiv : last / 16#usize = ok q := by rw [div_ok _ _ (by decide)]; rfl
   have hadd : q + 1#usize = ok q1 := by
@@ -1185,8 +1185,8 @@ theorem run_initializes (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poin
     congr 1
     apply UScalar.eq_of_val_eq
     simpa only [q1, q, UScalar.ofNatCore_val_eq] using hg.symm
-  have hentries : groups * fp8.LANES = ok entries := by
-    rw [fp8.LANES, mul_ok _ _ (by change groups.val * 8 < 2 ^ UScalarTy.Usize.numBits; rw [← he]; exact lt_of_lt_of_le hsize two_pow_32_le_usize)]
+  have hentries : groups * limbs.LANES = ok entries := by
+    rw [limbs.LANES, mul_ok _ _ (by change groups.val * 8 < 2 ^ UScalarTy.Usize.numBits; rw [← he]; exact lt_of_lt_of_le hsize two_pow_32_le_usize)]
     congr 1
     apply UScalar.eq_of_val_eq
     exact he.symm

@@ -13,8 +13,8 @@ namespace UncompressG1
 
 open DecompressG1
 
-def modelBlst [BlsExternals] (bytes : Encoding) : Option BlstP1Affine :=
-  (BlsExternals.uncompressG1 (toArray toU8 bytes)).map ofBlstP1Affine
+def modelBlst (bytes : Encoding) : Option BlstP1Affine :=
+  (specVerdict (toArray toU8 bytes)).map ofBlstP1Affine
 
 private theorem mask_bit (m : UInt8) (l : Fin 8) :
     (toU8 m &&& toU8 (1 <<< l.val.toUInt8) != 0#u8) = m.toNat.testBit l := by
@@ -37,11 +37,11 @@ private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n �
   apply Subtype.ext
   simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
 
-private theorem modelBlst_roundtrip [BlsExternals] (a : Array U8 48#usize) :
-    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = BlsExternals.uncompressG1 a := by
+private theorem modelBlst_roundtrip [RuntimeFeatures] (a : Array U8 48#usize) :
+    (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = specVerdict a := by
   simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-theorem chunk_refines [BlsExternals] (inputs : Array (Array U8 48#usize) 8#usize)
+theorem chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, silver_crypto_simd.bls.decompress_g1_chunk inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
@@ -68,7 +68,7 @@ theorem chunk_refines [BlsExternals] (inputs : Array (Array U8 48#usize) 8#usize
     simp only [lift, bind_tc_ok, toBatch]
     rw [show r.start.val = j.val from hs, mask_bit]
     have ht : target[j] =
-        if b.undecided.toNat.testBit j then BlsExternals.uncompressG1 (inputs.val[j.val]'(by simp [inputs.property]))
+        if b.undecided.toNat.testBit j then specVerdict (inputs.val[j.val]'(by simp [inputs.property]))
         else if b.valid.toNat.testBit j then some (toBlstP1Affine b.points[j]) else none := by
       simp only [target, chunk, Fin.getElem_fin, Vector.getElem_map, Vector.getElem_ofFn, laneVerdict]
       split
@@ -89,7 +89,7 @@ theorem chunk_refines [BlsExternals] (inputs : Array (Array U8 48#usize) 8#usize
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ hj]
-      simp only [uncompress_in_g1_blst, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [hdec.singleton, bind_tc_ok, Function.uncurry_apply_pair]
       rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
       simp only [bind_tc_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]
@@ -97,24 +97,24 @@ theorem chunk_refines [BlsExternals] (inputs : Array (Array U8 48#usize) 8#usize
     ext i hi
     simp
 
-private def rawOutput [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :=
+private def rawOutput [RuntimeFeatures] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :=
   (uncompress simd modelBlst (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP1Affine)
 
-private theorem rawOutput_length [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :
+private theorem rawOutput_length [RuntimeFeatures] (simd : Bool) (inputs : Slice (Array U8 48#usize)) :
     (rawOutput simd inputs).length = inputs.val.length := by
   simp [rawOutput]
 
-private theorem rawOutput_scalar [BlsExternals] (simd : Bool) (inputs : Slice (Array U8 48#usize))
+private theorem rawOutput_scalar [RuntimeFeatures] (simd : Bool) (inputs : Slice (Array U8 48#usize))
     (i : ℕ) (hi : i < inputs.val.length)
     (hscalar : simd = false ∨ inputs.val.length / 8 * 8 ≤ i) :
-    (rawOutput simd inputs)[i]! = BlsExternals.uncompressG1 inputs.val[i]! := by
+    (rawOutput simd inputs)[i]! = specVerdict inputs.val[i]! := by
   rw [getElem!_pos _ _ (by simpa [rawOutput] using hi)]
   simp only [rawOutput, List.getElem_map]
   rw [getElem_uncompress_scalar _ _ _ _ (by simpa using hi) (by simpa using hscalar)]
   rw [getElem!_pos _ _ (by simpa using hi), List.getElem_map, modelBlst_roundtrip]
   rw [getElem!_pos inputs.val i hi]
 
-private theorem chunk_slice_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
+private theorem chunk_slice_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) (inputs : Slice (Array U8 48#usize))
     (start next : Usize) (hnext : next.val = start.val + 8)
     (halign : start.val % 8 = 0) (hbound : next.val ≤ inputs.val.length)
     (c : Array (Array U8 48#usize) 8#usize)
@@ -122,7 +122,7 @@ private theorem chunk_slice_refines [BlsExternals] (inputs : Slice (Array U8 48#
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, decompress_g1_chunk c out = ok result ∧
       result.val = (rawOutput true inputs).slice start.val next.val := by
-  obtain ⟨result, hr, hv⟩ := chunk_refines c out hlen
+  obtain ⟨result, hr, hv⟩ := chunk_refines hdec c out hlen
   refine ⟨result, hr, hv.trans ?_⟩
   have hcmodel : ofArray (ofArray ofU8) c = chunkAt (inputs.val.map (ofArray ofU8)) start.val := by
     apply Vector.ext
@@ -144,21 +144,21 @@ private theorem chunk_slice_refines [BlsExternals] (inputs : Slice (Array U8 48#
     simp only [List.getElem_map, Vector.getElem_toList, rawOutput]
     rw [getElem_uncompress_chunk _ _ _ halign (by simp; omega) ⟨lane, hlane⟩]
 
-private theorem stop_loop_of_step [BlsExternals]
-    (inputs : Slice (Array U8 48#usize)) (simd : Bool) (stop : Usize)
+private theorem stop_loop_of_step [RuntimeFeatures]
+    (inputs : Slice (Array U8 48#usize)) (stop : Usize)
     (target : List (Option blst.blst_p1_affine))
     (halign : stop.val % 8 = 0)
     (hstep : ∀ (start : Usize) (out : Slice (Option blst.blst_p1_affine)),
       start.val < stop.val → start.val % 8 = 0 → out.val.length = inputs.val.length →
       ∃ next out', next.val = start.val + 8 ∧
-        uncompress_in_g1_loop0.body inputs stop out simd start = ok (cont (out', simd, next)) ∧
+        uncompress_in_g1_loop.body inputs stop out start = ok (cont (out', next)) ∧
         out'.val.length = out.val.length ∧
         ∀ i, i < inputs.val.length → out'.val[i]! =
           if start.val ≤ i ∧ i < next.val then target[i]! else out.val[i]!)
     (start : Usize) (out : Slice (Option blst.blst_p1_affine))
     (hle : start.val ≤ stop.val) (hs : start.val % 8 = 0)
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, uncompress_in_g1_loop0 inputs out simd stop start = ok (result, stop) ∧
+    ∃ result, uncompress_in_g1_loop inputs out stop start = ok result ∧
       result.val.length = out.val.length ∧
       ∀ i, i < inputs.val.length → result.val[i]! =
         if start.val ≤ i ∧ i < stop.val then target[i]! else out.val[i]! := by
@@ -169,9 +169,9 @@ private theorem stop_loop_of_step [BlsExternals]
     have he : start = stop := UScalar.eq_of_val_eq (by omega)
     subst start
     refine ⟨out, ?_, rfl, ?_⟩
-    · unfold uncompress_in_g1_loop0
+    · unfold uncompress_in_g1_loop
       rw [loop.eq_1]
-      simp [uncompress_in_g1_loop0.body]
+      simp [uncompress_in_g1_loop.body]
     · intro i hi
       simp only [show ¬(stop.val ≤ i ∧ i < stop.val) by omega, ↓reduceIte]
    ·
@@ -181,7 +181,7 @@ private theorem stop_loop_of_step [BlsExternals]
     have hna : next.val % 8 = 0 := by omega
     obtain ⟨result, hr, hrl, hrv⟩ := ih (stop.val - next.val) (by omega) next out' hnle hna (hl.trans hlen) rfl
     refine ⟨result, ?_, hrl.trans hl, ?_⟩
-    · unfold uncompress_in_g1_loop0 at *
+    · unfold uncompress_in_g1_loop at *
       rw [loop.eq_1]
       simp only [hb]
       exact hr
@@ -189,80 +189,107 @@ private theorem stop_loop_of_step [BlsExternals]
       rw [hrv i hi, hv i hi]
       split_ifs <;> first | rfl | omega
 
-theorem uncompress_refines [BlsExternals] (inputs : Slice (Array U8 48#usize))
+theorem uncompress_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
+    (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = (uncompress BlsExternals.simdAvailable modelBlst
+      result.val = (uncompress RuntimeFeatures.simdAvailable modelBlst
         (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP1Affine) := by
-  let simd := BlsExternals.simdAvailable
-  let n := Slice.len inputs
-  let q : Usize := UScalar.ofNatCore (n.val / 8)
-    (lt_of_le_of_lt (Nat.div_le_self _ _) n.hBounds)
-  have hstopbound : n.val / 8 * 8 < 2 ^ UScalarTy.Usize.numBits :=
-    lt_of_le_of_lt (Nat.div_mul_le_self _ _) n.hBounds
-  let stop : Usize := UScalar.ofNatCore (n.val / 8 * 8) hstopbound
-  have hstop : stop.val = inputs.val.length / 8 * 8 := by simp [stop, n]
-  have hstoplen : stop.val ≤ inputs.val.length := by omega
-  have hstep : ∀ (start : Usize) (out : Slice (Option blst.blst_p1_affine)),
-      start.val < stop.val → start.val % 8 = 0 → out.val.length = inputs.val.length →
-      ∃ next out', next.val = start.val + 8 ∧
-        uncompress_in_g1_loop0.body inputs stop out simd start = ok (cont (out', simd, next)) ∧
-        out'.val.length = out.val.length ∧
-        ∀ i, i < inputs.val.length → out'.val[i]! =
-          if start.val ≤ i ∧ i < next.val then (rawOutput simd inputs)[i]! else out.val[i]! := by
-    intro start out hlt halign hlen
-    have hnextlen : start.val + 8 ≤ inputs.val.length := by omega
-    have hnextbound : start.val + 8 < 2 ^ UScalarTy.Usize.numBits :=
-      lt_of_le_of_lt hnextlen (Slice.len inputs).hBounds
-    let next : Usize := UScalar.ofNatCore (start.val + 8) hnextbound
-    have hn : next.val = start.val + 8 := by simp [next]
-    cases hs : simd
-    · obtain ⟨result, hr, hl, hv⟩ := scalar_chunk_refines inputs out start hlen hnextlen
-      refine ⟨next, result, hn, ?_, hl, ?_⟩
-      · have ha : start + LANES = ok next := by
-          rw [LANES, add_ok start 8#usize (by simpa using hnextbound)]
-          rfl
-        simp [uncompress_in_g1_loop0.body, hlt, hr, ha]
-      · intro i hi
-        rw [hv i (by omega)]
-        simp only [hn]
-        split_ifs with h
-        · exact (rawOutput_scalar false inputs i hi (Or.inl rfl)).symm
-        · rfl
-    · obtain ⟨result, hr, hl, hv⟩ := simd_body_runs inputs out stop start next
+  have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
+  cases hcpu : RuntimeFeatures.simdAvailable with
+  | false =>
+    obtain ⟨result, hr, hv⟩ := scalar_tail_refines hdec inputs out hlen
+    refine ⟨result, ?_, ?_⟩
+    · simpa [silver_crypto_simd.bls.uncompress_in_g1, heq, ifma_available, hcpu] using hr
+    · rw [hv]
+      apply List.ext_getElem (by simp)
+      intro i hi hj
+      have hin : i < inputs.val.length := by simpa using hi
+      have h := rawOutput_scalar false inputs i hin (Or.inl rfl)
+      simpa [rawOutput, getElem!_pos, hin] using h.symm
+  | true =>
+    let n := Slice.len inputs
+    let q : Usize := UScalar.ofNatCore (n.val / 8)
+      (lt_of_le_of_lt (Nat.div_le_self _ _) n.hBounds)
+    have hstopbound : n.val / 8 * 8 < 2 ^ UScalarTy.Usize.numBits :=
+      lt_of_le_of_lt (Nat.div_mul_le_self _ _) n.hBounds
+    let stop : Usize := UScalar.ofNatCore (n.val / 8 * 8) hstopbound
+    have hstop : stop.val = inputs.val.length / 8 * 8 := by simp [stop, n]
+    have hstoplen : stop.val ≤ inputs.val.length := by omega
+    have hstep : ∀ (start : Usize) (out : Slice (Option blst.blst_p1_affine)),
+        start.val < stop.val → start.val % 8 = 0 → out.val.length = inputs.val.length →
+        ∃ next out', next.val = start.val + 8 ∧
+          uncompress_in_g1_loop.body inputs stop out start = ok (cont (out', next)) ∧
+          out'.val.length = out.val.length ∧
+          ∀ i, i < inputs.val.length → out'.val[i]! =
+            if start.val ≤ i ∧ i < next.val then (rawOutput true inputs)[i]! else out.val[i]! := by
+      intro start out hlt halign hlen
+      have hnextlen : start.val + 8 ≤ inputs.val.length := by omega
+      have hnextbound : start.val + 8 < 2 ^ UScalarTy.Usize.numBits :=
+        lt_of_le_of_lt hnextlen (Slice.len inputs).hBounds
+      let next : Usize := UScalar.ofNatCore (start.val + 8) hnextbound
+      have hn : next.val = start.val + 8 := by simp [next]
+      obtain ⟨result, hr, hl, hv⟩ := simd_body_runs inputs out stop start next
         (rawOutput true inputs) hlen (rawOutput_length _ _) hlt hn (by omega)
-        (fun c s hc hs => chunk_slice_refines inputs start next hn halign (by omega) c hc s hs)
+        (fun c s hc hs => chunk_slice_refines hdec inputs start next hn halign (by omega) c hc s hs)
       exact ⟨next, result, hn, hr, hl, fun i hi => hv i (by omega)⟩
-  obtain ⟨middle, hm, hml, hmv⟩ := stop_loop_of_step inputs simd stop (rawOutput simd inputs)
-    (by omega) hstep 0#usize out (by simp) (by simp) hlen
-  obtain ⟨result, hr, hrl, hrv⟩ := scalar_tail_refines inputs middle stop (hml.trans hlen) hstoplen
-  refine ⟨result, ?_, ?_⟩
-  · have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
-    have hd : n / LANES = ok q := by
-      rw [LANES, div_ok n 8#usize (by decide)]
+    obtain ⟨middle, hm, hml, hmv⟩ := stop_loop_of_step inputs stop (rawOutput true inputs)
+      (by omega) hstep 0#usize out (by simp) (by simp) hlen
+    let ss : Slice (Array U8 48#usize) :=
+      ⟨inputs.val.slice stop.val n.val, le_trans (List.slice_length_le _ _ _) inputs.property⟩
+    let os : Slice (Option blst.blst_p1_affine) :=
+      ⟨middle.val.slice stop.val n.val, le_trans (List.slice_length_le _ _ _) middle.property⟩
+    have htail : os.val.length = ss.val.length := by
+      simp [os, ss, List.slice_length, hml, hlen]
+    obtain ⟨tail, ht, htv⟩ := scalar_tail_refines hdec ss os htail
+    let result := middle.setSlice! stop.val tail.val
+    refine ⟨result, ?_, ?_⟩
+    · have hd : n / LANES = ok q := by
+        rw [LANES, div_ok n 8#usize (by decide)]
+        rfl
+      have hmul : q * LANES = ok stop := by
+        rw [LANES, mul_ok q 8#usize (by simpa [q] using hstopbound)]
+        rfl
+      have hindex := slice_index_ok inputs stop n (by simpa [n] using hstoplen) (by simp [n])
+      have hmut : core.slice.index.Slice.index_mut
+          (core.slice.index.SliceIndexRangeUsizeSlice (Option blst.blst_p1_affine)) middle
+          { start := stop, «end» := n } =
+          ok (os, fun s => middle.setSlice! stop.val s.val) := by
+        simp only [core.slice.index.Slice.index_mut,
+          core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
+        rw [if_pos (by simp only [Slice.length]; constructor <;> simp [n] <;> omega)]
+        rfl
+      simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte,
+        bind_tc_ok, ifma_available, hcpu, show Slice.len inputs = n from rfl,
+        hd, hmul, hm, hindex, hmut, Function.uncurry_apply_pair]
+      change (do let tail ← portable.decompress.uncompress_all_in_g1 ss os
+                 ok (middle.setSlice! stop.val tail.val)) = ok result
+      rw [ht]
       rfl
-    have hmul : q * LANES = ok stop := by
-      rw [LANES, mul_ok q 8#usize (by simpa [q] using hstopbound)]
-      rfl
-    simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte,
-      bind_tc_ok, ifma_available]
-    rw [show Slice.len inputs = n from rfl, hd]
-    simp only [bind_tc_ok]
-    rw [hmul]
-    simp only [bind_tc_ok]
-    rw [hm]
-    simpa only [bind_tc_ok, Function.uncurry_apply_pair] using hr
-  · change result.val = rawOutput simd inputs
-    apply List.ext_getElem
-    · rw [hrl, hml, hlen, rawOutput_length]
-    · intro i hi ht
-      have hin : i < inputs.val.length := by rw [rawOutput_length] at ht; exact ht
-      rw [← getElem!_pos result.val i hi, ← getElem!_pos (rawOutput simd inputs) i ht]
-      rw [hrv i (by omega), hmv i hin]
-      by_cases hs : stop.val ≤ i
-      · rw [if_pos ⟨hs, hin⟩]
-        exact (rawOutput_scalar simd inputs i hin (Or.inr (by omega))).symm
-      · simp [hs, show i < stop.val by omega]
+    · change result.val = rawOutput true inputs
+      apply List.ext_getElem
+      · simp [result, Slice.setSlice!, hml, hlen, rawOutput_length]
+      · intro i hi hj
+        have hin : i < inputs.val.length := by simpa [rawOutput_length] using hj
+        rw [← getElem!_pos result.val i hi, ← getElem!_pos (rawOutput true inputs) i hj]
+        simp only [result, Slice.setSlice!_val]
+        by_cases hprefix : i < stop.val
+        · rw [List.getElem!_setSlice!_same _ _ _ _ (by omega), hmv i hin]
+          simp [hprefix]
+        · have htaillen : tail.val.length = inputs.val.length - stop.val := by
+            simp [htv, ss, List.slice_length, n]
+          rw [List.getElem!_setSlice!_middle _ _ _ _ (by omega), htv]
+          have hidx : i - stop.val < ss.val.length := by
+            simp [ss, List.slice_length, n]
+            omega
+          rw [getElem!_pos _ _ (by simpa using hidx), List.getElem_map]
+          change specVerdict ss.val[i - stop.val] = _
+          rw [← getElem!_pos ss.val (i - stop.val) hidx]
+          change specVerdict ((inputs.val.slice stop.val n.val)[i-stop.val]!) = _
+          rw [List.getElem!_slice _ _ _ _ (by simp [n]; omega)]
+          have hadd : stop.val + (i - stop.val) = i := by omega
+          rw [hadd]
+          exact (rawOutput_scalar true inputs i hin (Or.inr (by omega))).symm
 
 end UncompressG1
 end LeanBlsSimd

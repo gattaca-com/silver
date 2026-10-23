@@ -10,7 +10,7 @@ namespace LeanBlsSimd.Msm8
 
 abbrev ScalarWords := Array U64 4#usize
 
-def SplitInv (n : ℕ) (first second : Fin n → msm8.glv.Half)
+def SplitInv (n : ℕ) (first second : Fin n → glv.Half)
     (halves : alloc.vec.Vec ScalarWords) (fs ss : alloc.vec.Vec Bool) (i : ℕ) : Prop :=
   halves.val.length = 2 * n ∧ fs.val.length = i ∧ ss.val.length = i ∧
     ∀ j : Fin n, j.val < i →
@@ -34,11 +34,11 @@ private theorem scalar_vec_index_mut {α : Type} (v : alloc.vec.Vec α) (i : Usi
 
 theorem split_scalar_step (scalars halves : alloc.vec.Vec ScalarWords)
     (fs ss : alloc.vec.Vec Bool) (n i : Usize)
-    (first second : Fin n.val → msm8.glv.Half)
+    (first second : Fin n.val → glv.Half)
     (hn : scalars.val.length = n.val) (hi : i.val < n.val)
     (hcap : 2 * n.val < 2 ^ UScalarTy.Usize.numBits)
     (hinv : SplitInv n.val first second halves fs ss i.val)
-    (hd : msm8.glv.decompose (scalars.val[i.val]'(by omega)) =
+    (hd : glv.decompose (scalars.val[i.val]'(by omega)) =
       ok (first ⟨i.val, hi⟩, second ⟨i.val, hi⟩)) :
     ∃ h' fs' ss' next,
       next.val = i.val + 1 ∧
@@ -111,11 +111,11 @@ theorem split_scalar_step (scalars halves : alloc.vec.Vec ScalarWords)
 
 theorem split_scalar_loop (scalars halves : alloc.vec.Vec ScalarWords)
     (fs ss : alloc.vec.Vec Bool) (n i : Usize)
-    (first second : Fin n.val → msm8.glv.Half)
+    (first second : Fin n.val → glv.Half)
     (hn : scalars.val.length = n.val) (hi : i.val ≤ n.val)
     (hcap : 2 * n.val < 2 ^ UScalarTy.Usize.numBits)
     (hinv : SplitInv n.val first second halves fs ss i.val)
-    (hd : ∀ j : Fin n.val, msm8.glv.decompose (scalars.val[j.val]'(by omega)) =
+    (hd : ∀ j : Fin n.val, glv.decompose (scalars.val[j.val]'(by omega)) =
       ok (first j, second j)) :
     ∃ h' fs' ss', msm8.Msm8.split_scalars_loop scalars halves fs ss n i =
         ok (h', fs', ss') ∧ SplitInv n.val first second h' fs' ss' n.val := by
@@ -147,10 +147,10 @@ private theorem clone_scalar_words (words : ScalarWords) :
   simpa only [← heq] using hout
 
 theorem split_scalars_exact (self : msm8.Msm8)
-    (first second : Fin self.finite_scalars.val.length → msm8.glv.Half)
+    (first second : Fin self.finite_scalars.val.length → glv.Half)
     (hcap : 2 * self.finite_scalars.val.length < 2 ^ UScalarTy.Usize.numBits)
     (hd : ∀ j : Fin self.finite_scalars.val.length,
-      msm8.glv.decompose self.finite_scalars.val[j.val] = ok (first j, second j)) :
+      glv.decompose self.finite_scalars.val[j.val] = ok (first j, second j)) :
     ∃ halves fs ss, msm8.Msm8.split_scalars self =
         ok { self with halves := halves, first_signs := fs, second_signs := ss } ∧
       SplitInv self.finite_scalars.val.length first second halves fs ss
@@ -187,7 +187,7 @@ theorem split_scalars_refines (self : msm8.Msm8)
     (hcap : 2 * self.finite_scalars.val.length < 2 ^ UScalarTy.Usize.numBits)
     (hk : ∀ j : Fin self.finite_scalars.val.length,
       GlvRefines.value self.finite_scalars.val[j.val] < 2 ^ 255) :
-    ∃ (first second : Fin self.finite_scalars.val.length → msm8.glv.Half), ∃ halves fs ss,
+    ∃ (first second : Fin self.finite_scalars.val.length → glv.Half), ∃ halves fs ss,
       msm8.Msm8.split_scalars self =
         ok { self with halves := halves, first_signs := fs, second_signs := ss } ∧
       SplitInv self.finite_scalars.val.length first second halves fs ss

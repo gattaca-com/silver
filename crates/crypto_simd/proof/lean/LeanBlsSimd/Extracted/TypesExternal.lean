@@ -1,5 +1,6 @@
 import Aeneas
 import LeanBlsSimd.Model.Intrinsics
+import LeanBlsSimd.Model.ShaIntrinsics
 open Aeneas Aeneas.Std Result ControlFlow Error
 
 /-!
@@ -14,3 +15,7 @@ set_option linter.style.nameCheck false in
     Visibility: public -/
 @[rust_type "core::core_arch::x86::__m512i"]
 abbrev core.core_arch.x86.__m512i : Type := LeanBlsSimd.M512
+
+set_option linter.style.nameCheck false in
+@[rust_type "core::core_arch::x86::__m128i"]
+abbrev core.core_arch.x86.__m128i : Type := LeanBlsSimd.M128

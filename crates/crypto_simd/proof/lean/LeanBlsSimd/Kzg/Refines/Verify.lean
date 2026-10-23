@@ -1,4 +1,6 @@
 import LeanBlsSimd.Kzg.ModelFront
+import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.Setup
 import LeanBlsSimd.Kzg.G1Compression
 import LeanBlsSimd.Kzg.Refines.Checks
 import LeanBlsSimd.Kzg.Refines.Points
@@ -73,7 +75,7 @@ theorem decoded_points_values (bs : List (Aeneas.Std.Array U8 48#usize))
   rw [takeWhile_all _ _ h, pointOptions_accepted bs h]
   simp [pointValues, List.map_map, Function.comp_def]
 
-theorem decode_commitments_step [e : KzgExternals] (h : ExternalsCorrect e)
+theorem decode_commitments_step [cpu : RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
     (v : verify.CellBatchVerifier) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_commitments v =
@@ -81,21 +83,21 @@ theorem decode_commitments_step [e : KzgExternals] (h : ExternalsCorrect e)
           { v with decoded := decoded, commitment_points := points }) ∧
       points.val =
         ((v.commitments.unique.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h.g1
+  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h
     (alloc.vec.Vec.deref v.commitments.unique) v.decoded v.commitment_points
   refine ⟨decoded, points, ?_, hpoints⟩
   simp only [verify.CellBatchVerifier.decode_commitments, hcall, bind_tc_ok,
     Function.uncurry_apply_pair]
   rfl
 
-theorem decode_proofs_step [e : KzgExternals] (h : ExternalsCorrect e)
+theorem decode_proofs_step [cpu : RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
     (v : verify.CellBatchVerifier) (ps : Slice (Aeneas.Std.Array U8 48#usize)) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_proofs v ps =
         ok ((ps.val.map specVerdict).all Option.isSome,
           { v with decoded := decoded, proof_points := points }) ∧
       points.val = ((ps.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h.g1 ps v.decoded v.proof_points
+  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h ps v.decoded v.proof_points
   refine ⟨decoded, points, ?_, hpoints⟩
   simp only [verify.CellBatchVerifier.decode_proofs, hcall, bind_tc_ok,
     Function.uncurry_apply_pair]
@@ -175,7 +177,7 @@ theorem cells_decode_rep (cells : Slice (Aeneas.Std.Array U8 2048#usize))
   | some value => simp
 
 
-theorem verify_rejects_indices [KzgExternals] (v : verify.CellBatchVerifier)
+theorem verify_rejects_indices [RuntimeFeatures] (v : verify.CellBatchVerifier)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -202,7 +204,7 @@ theorem points_acceptance_validate (bs : List (Aeneas.Std.Array U8 48#usize)) :
   rw [decoded_points_acceptance]
   simp only [specPoint_isSome]
 
-def PairingContract [KzgExternals] : Prop :=
+def PairingContract [RuntimeFeatures] : Prop :=
   ∀ (v : verify.CellBatchVerifier), StateInvariant v → ∀ (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr),
@@ -241,7 +243,7 @@ private theorem rejectErrors_of_ok {result : Except KzgError Bool} {verdict : Bo
   rfl
 
 set_option maxHeartbeats 200000 in
-theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
+theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ExternalsCorrect)
     (hpairs : PairingContract) (hmodel : ModelPairingContract)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)
@@ -296,7 +298,7 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
       obtain ⟨d, hfill, hd⟩ := deduplicate_refinement v.commitments cs
       have hdu : (d.unique.val.map arrayBytes).toArray = (Model.deduplicate C).1 := congrArg Prod.fst hd
       have hdi : (d.index_of_cell.val.map (·.val)).toArray = (Model.deduplicate C).2 := congrArg Prod.snd hd
-      obtain ⟨cd, cp, hcommit, hcp⟩ := decode_commitments_step h { v with commitments := d }
+      obtain ⟨cd, cp, hcommit, hcp⟩ := decode_commitments_step h.g1 { v with commitments := d }
       let v1 := { v with commitments := d, decoded := cd, commitment_points := cp }
       have hv1 : StateInvariant v1 := hv
       have hcommit' : verify.CellBatchVerifier.decode_commitments { v with commitments := d } =
@@ -314,9 +316,12 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
           Bool.false_eq_true, if_false, hcheck, bind_tc_ok, hstop, hfill,
           hcommit', hc, Function.uncurry_apply_pair, hfalse]
       | true =>
-        obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement h v1 cells hb
-        have hv2 : StateInvariant v2 := by simpa only [StateInvariant, hs2, hcosets2, hkernel2] using hv1
-        have hframe := decode_cells_frame h v1 cells _ v2 hcells
+        obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement h.bytes v1 cells hb
+        have hframe := decode_cells_frame h.bytes v1 cells _ v2 hcells
+        have hwork2 : v2.curve_work = v1.curve_work := by
+          simpa only using congrArg verify.CellBatchVerifier.curve_work hframe
+        have hv2 : StateInvariant v2 := by
+          simpa only [StateInvariant, hs2, hcosets2, hkernel2, hwork2] using hv1
         have hcommitments2 : v2.commitments = d := by
           simpa only [v1] using congrArg verify.CellBatchVerifier.commitments hframe
         have hpoints2 : v2.commitment_points = cp := by
@@ -337,7 +342,7 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
             hcommit', hc, if_true, Function.uncurry_apply_pair, hcells, hcb, hfalse]
         | true =>
           obtain ⟨hdecode, heSize, heFlat, heShapes⟩ := cells_decode_facts cells.val hcb
-          obtain ⟨pd, pp, hproof, hpp⟩ := decode_proofs_step h v2 ps
+          obtain ⟨pd, pp, hproof, hpp⟩ := decode_proofs_step h.g1 v2 ps
           let v3 := { v2 with decoded := pd, proof_points := pp }
           have hv3 : StateInvariant v3 := hv2
           have hproof' : verify.CellBatchVerifier.decode_proofs v2 ps =
@@ -379,21 +384,19 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
                 v3.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode := by
               simpa only [v3, evals, heFlat, hkernel2] using hevals
             have hcellRep : InterpolationKernel.CellsRep cells evals := cells_decode_rep cells hcb
-            obtain ⟨preimage, hchallenge, _⟩ := challenge_refinement h v3.preimage
-              (alloc.vec.Vec.deref d.unique) (alloc.vec.Vec.deref d.index_of_cell) indices cells ps
-              ⟨hmapSize, by omega, by omega, huniqLe⟩ hb
+            have hchallenge := verifier_challenge_refinement h.sha h.bytes v3 indices cells ps
+              ⟨by simpa only [hv3d] using hmapSize, by omega, by omega⟩
+            simp only [hv3d] at hchallenge
             have hchallengeSpec := challenge_preimage_spec unique mapping I B P evals
               ⟨by simpa [mapping, I, C, hlen.1] using hsize.2,
                 by simp [B, I]; omega, by simp [P, I]; omega⟩ hdecode
-            have hchallenge' : challenge.Preimage.challenge v3.preimage
-                (alloc.vec.Vec.deref d.unique) (alloc.vec.Vec.deref d.index_of_cell) indices cells ps =
-                ok (frEncode r, preimage) := by
+            have hchallenge' : v3.challenge indices cells ps = ok (frEncode r) := by
               have hr : Fr.hashToBlsField (Model.challengePreimage
                   (d.unique.val.map arrayBytes).toArray (d.index_of_cell.val.map (·.val)).toArray
                   I B P) = r := by
                 rw [hdu, hdi]
                 exact hchallengeSpec
-              exact hchallenge.trans (congrArg (fun x => ok (frEncode x, preimage)) hr)
+              exact hchallenge.trans (congrArg (fun x => ok (frEncode x)) hr)
             have hs : Model.RliInputs I evals (computePowers r indices.val.length) := by
               refine ⟨?_, ?_, hI, heShapes⟩
               · simp [I, evals, heSize]; omega
@@ -412,7 +415,7 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
               apply deduplicate_indices C
               rw [← hdi]
               simp [hi]
-            obtain ⟨next, hpair, hvnext⟩ := hpairs { v3 with preimage := preimage } hv3 indices cells
+            obtain ⟨next, hpair, hvnext⟩ := hpairs v3 hv3 indices cells
               (pointValues unique) (pointValues P) evals r (by omega) hs hpc hpp' hcellRep hev
               (by simpa [hv3d, pointValues_size] using huniqSize)
               ⟨by simpa [hv3d] using hmapSize, by simpa [hv3d] using hci⟩

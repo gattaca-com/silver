@@ -30,12 +30,12 @@ theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : blst.blst_p2_affin
   · rintro ⟨P, hP, hg, rfl⟩
     exact ⟨G2Spec.blstLimbs P, (G2Spec.verdict_some_iff _ _).mpr ⟨P, hP, hg, rfl⟩, rfl⟩
 
-def usesKernelAt [BlsExternals] (inputs : Slice (Array U8 96#usize)) (i : ℕ) : Bool :=
-  usesKernel BlsExternals.simdAvailable (inputs.val.map (ofArray ofU8)) i
+def usesKernelAt [RuntimeFeatures] (inputs : Slice (Array U8 96#usize)) (i : ℕ) : Bool :=
+  usesKernel RuntimeFeatures.simdAvailable (inputs.val.map (ofArray ofU8)) i
 
-theorem usesKernelAt_iff [BlsExternals] (inputs : Slice (Array U8 96#usize)) (i : ℕ) :
+theorem usesKernelAt_iff [RuntimeFeatures] (inputs : Slice (Array U8 96#usize)) (i : ℕ) :
     usesKernelAt inputs i = true ↔
-      BlsExternals.simdAvailable = true ∧ i < inputs.val.length ∧
+      RuntimeFeatures.simdAvailable = true ∧ i < inputs.val.length ∧
       3 ≤ min 8 (inputs.val.length - i / 8 * 8) ∧
       (decompress (chunkAt (inputs.val.map (ofArray ofU8)) i)).undecided.toNat.testBit
         (i % 8) = false := by
@@ -43,7 +43,7 @@ theorem usesKernelAt_iff [BlsExternals] (inputs : Slice (Array U8 96#usize)) (i 
 
 /-- Every slot is overwritten. Decided kernel lanes use the specification; all other
 lanes preserve the arbitrary scalar external's result. -/
-theorem uncompress_in_g2_eq_spec_or_blst [BlsExternals]
+theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
     (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
@@ -84,7 +84,7 @@ theorem uncompress_in_g2_eq_spec_or_blst [BlsExternals]
       rw [getElem!_pos _ _ (by simp), List.getElem_map]
       exact modelBlst_roundtrip inputs.val[i.val]
 
-theorem uncompress_in_g2_eq_blst [BlsExternals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g2_eq_blst [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
@@ -97,7 +97,7 @@ theorem uncompress_in_g2_eq_blst [BlsExternals] (hblst : BlstMatchesSpec)
   have h := hv ⟨i, hi'⟩
   simpa only [hs, ite_self, List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
-theorem uncompress_in_g2_eq_spec [BlsExternals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g2_eq_spec [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
@@ -109,7 +109,7 @@ theorem uncompress_in_g2_eq_spec [BlsExternals] (hblst : BlstMatchesSpec)
   intro i
   simpa only [hblst inputs.val[i.val], ite_self] using hv i
 
-theorem uncompress_in_g2_eq_spec_list [BlsExternals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g2_eq_spec_list [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
@@ -121,7 +121,7 @@ theorem uncompress_in_g2_eq_spec_list [BlsExternals] (hblst : BlstMatchesSpec)
   have h := hv ⟨i, hi'⟩
   simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
-theorem uncompress_in_g2_eq_spec_model_list [BlsExternals] (hblst : BlstMatchesSpec)
+theorem uncompress_in_g2_eq_spec_model_list [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
     (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧

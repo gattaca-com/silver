@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.Decoder
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
@@ -75,7 +75,7 @@ private theorem decode_points_loop_eq
         exact hloop
       · simpa [points', List.append_assoc] using hval
 
-theorem decode_points_refinement [e : KzgExternals] (h : G1DecoderCorrect e)
+theorem decode_points_refinement [RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
     (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
     (points : alloc.vec.Vec blst.blst_p1_affine) :
@@ -96,7 +96,7 @@ theorem decode_points_refinement [e : KzgExternals] (h : G1DecoderCorrect e)
       ok initial := by
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, initial]
-  obtain ⟨output, houtput, houtputVal⟩ := h encodings (alloc.vec.Vec.deref_mut initial).1
+  obtain ⟨output, houtput, houtputVal⟩ := g1_decode_refinement h encodings (alloc.vec.Vec.deref_mut initial).1
     (by simp [initial, alloc.vec.Vec.deref_mut])
   let resultDecoded := (alloc.vec.Vec.deref_mut initial).2 output
   have hdecoded : resultDecoded.val = encodings.val.map specVerdict := houtputVal

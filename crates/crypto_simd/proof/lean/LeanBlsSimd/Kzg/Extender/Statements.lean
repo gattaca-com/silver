@@ -3,7 +3,6 @@ import LeanBlsSimd.Kzg.Extender.Acceptance
 import LeanBlsSimd.Kzg.Extender.Primitives
 import LeanBlsSimd.Kzg.Extender.Spec
 import LeanBlsSimd.Kzg.Extender.Refines
-import LeanBlsSimd.Kzg.SpecExternals
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
@@ -11,11 +10,11 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender
 
-theorem new_returns_ok [e : KzgExternals] (hblst : BlstCorrect e) :
+theorem new_returns_ok [cpu : RuntimeFeatures] (hfr : FrCorrect) :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
-  exact new_refinement hblst
+  exact new_refinement hfr
 
-theorem default_eq_new [KzgExternals] :
+theorem default_eq_new [RuntimeFeatures] :
     cell_extender.CellExtender.Insts.CoreDefaultDefault.default =
       cell_extender.CellExtender.new := by
   rfl
@@ -28,18 +27,18 @@ theorem model_accepts_iff (blob : Blob) :
     (Model.extend (arrayBytes blob)).isOk = true ↔ Canonical blob := by
   exact model_acceptance blob
 
-theorem glue_refinement [e : KzgExternals] (hblst : BlstCorrect e)
-    (hbytes : FrToBytesCorrect e)
+theorem glue_refinement (hfr : FrCorrect)
+    (hbytes : FrBytesCorrect)
     (v : cell_extender.CellExtender) (hv : StateInvariant v)
     (blob : Blob) (cells : Cells) :
     ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
       cell_extender.CellExtender.compute v blob cells = ok (verdict, next, out) ∧
       StateInvariant next ∧
       (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  exact compute_refinement hblst hbytes v hv blob cells
+  exact compute_refinement hfr hbytes v hv blob cells
 
-theorem compute_eq_spec [e : KzgExternals] (hblst : BlstCorrect e)
-    (hbytes : FrToBytesCorrect e) :
+theorem compute_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect)
+    (hbytes : FrBytesCorrect) :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : cell_extender.CellExtender), StateInvariant v →
       ∀ (blob : Blob) (cells : Cells),
@@ -52,11 +51,11 @@ theorem compute_eq_spec [e : KzgExternals] (hblst : BlstCorrect e)
         (verdict = false → ∃ err,
           (computeCells (arrayBytes blob)).run = pure (.error err)) ∧
         (verdict = false → out = cells) := by
-  obtain ⟨initial, hnew, hinitial⟩ := new_returns_ok hblst
+  obtain ⟨initial, hnew, hinitial⟩ := new_returns_ok hfr
   refine ⟨initial, hnew, hinitial, ?_⟩
   intro v hv blob cells
   obtain ⟨verdict, next, out, hcompute, hn, hmodel, hunchanged⟩ :=
-    compute_refinement_with_rejection hblst hbytes v hv blob cells
+    compute_refinement_with_rejection hfr hbytes v hv blob cells
   cases hm : Model.extend (arrayBytes blob) with
   | error err =>
     have hvfalse : verdict = false := by
@@ -82,25 +81,16 @@ theorem compute_eq_spec [e : KzgExternals] (hblst : BlstCorrect e)
     · intro _
       rw [model_eq_spec, hm, hout]
 
-theorem spec_instance_nonvacuous :
-    BlstCorrect specExternals ∧ FrToBytesCorrect specExternals ∧
-      ∃ initial, @cell_extender.CellExtender.new specExternals = ok initial ∧
-        StateInvariant initial := by
-  refine ⟨specExternals_correct.1, specExternals_fr_to_bytes_correct, ?_⟩
-  exact @new_returns_ok specExternals specExternals_correct.1
+/-- A scalar constructor route, conditional on generated scalar arithmetic laws. -/
+theorem scalar_route_from_contract (hfr : FrCorrect) :
+    ∃ initial, @cell_extender.CellExtender.new ⟨false, false, false⟩ = ok initial ∧
+      StateInvariant initial := by
+  exact @new_returns_ok ⟨false, false, false⟩ hfr
 
-@[reducible] def specSimdExternals : KzgExternals :=
-  { specExternals with simdAvailable := true }
-
-theorem spec_instance_kernel_nonvacuous :
-    BlstCorrect specSimdExternals ∧ FrToBytesCorrect specSimdExternals ∧
-      ∃ initial, @cell_extender.CellExtender.new specSimdExternals = ok initial ∧
-        StateInvariant initial ∧ initial.kernel.isSome = true := by
-  have h := specExternals_correct.1
-  have hblst : BlstCorrect specSimdExternals :=
-    ⟨h.g2_decode, h.fr_bytes, h.fr_u64, h.fr_add, h.fr_sub, h.fr_mul, h.fr_inverse,
-      h.hash, h.g1_affine, h.g1_add, h.g1_neg, h.g2_neg, h.lincomb, h.pairing⟩
-  exact ⟨hblst, specExternals_fr_to_bytes_correct,
-    @new_dispatch_refinement specSimdExternals hblst⟩
+/-- An IFMA constructor route, conditional on generated scalar arithmetic laws. -/
+theorem kernel_route_from_contract (hfr : FrCorrect) :
+    ∃ initial, @cell_extender.CellExtender.new ⟨true, false, false⟩ = ok initial ∧
+      StateInvariant initial ∧ initial.kernel.isSome = true := by
+  exact @new_dispatch_refinement ⟨true, false, false⟩ hfr
 
 end LeanBlsSimd.Kzg.Extender

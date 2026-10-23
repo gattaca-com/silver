@@ -1,7 +1,8 @@
+import LeanBlsSimd.Kzg.PairingTable
 import LeanBlsSimd.Extracted.Funs
 import LeanBlsSimd.Kzg.SetupPoints
-import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Model
+import LeanBlsSimd.Kzg.CosetsRep
 import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 
 open Aeneas Aeneas.Std Result
@@ -19,8 +20,8 @@ def embeddedSetup : TrustedSetup := buildEmbedded
 def rustG1Bytes : _root_.Array ByteArray :=
   (trusted_setup.G1_MONOMIAL.val.map arrayBytes).toArray
 
-def rustG2ZeroBytes : ByteArray := arrayBytes trusted_setup.G2_MONOMIAL_0
-def rustG2CellBytes : ByteArray := arrayBytes trusted_setup.G2_MONOMIAL_64
+def rustG2ZeroBytes : ByteArray := arrayBytes SetupPoints.g2Bytes0
+def rustG2CellBytes : ByteArray := arrayBytes SetupPoints.g2Bytes64
 
 theorem specPoint_of_decoded (b : ByteArray) (p : G1)
     (hd : G1.uncompress b = .ok p) (hi : p.isInfinity = false)
@@ -96,20 +97,14 @@ theorem embedded_setup_matches : SetupMatches embeddedSetup := by
 
 def SetupRep (s : setup.Setup) : Prop :=
   s.g1_monomial.val =
-    rustG1Bytes.toList.map (fun b => g1Affine ((specPoint b).getD G1.zero)) ∧
-  s.g2_s_pow_cell = g2Affine embeddedSetup.g2Monomial[64]! ∧
-  s.g2_neg_generator = g2Affine (G2.neg embeddedSetup.g2Monomial[0]!)
+    rustG1Bytes.toList.map (fun b => g1Affine ((specPoint b).getD G1.zero))
 
-def CosetsRep (c : cosets.Cosets) : Prop :=
-  c.inverse_roots.val = ((Model.inverseRoots (Model.roots 6)).toList.map frEncode) ∧
-  c.inverse_size = frEncode (Fr.ofNat 64).inverse ∧
-  c.shift_inverse.val = (List.range 128).map (fun i => frEncode (Model.cosetShift i).inverse) ∧
-  c.shift_pow_cell.val = (List.range 128).map (fun i => frEncode (Fr.powNat (Model.cosetShift i) 64))
 
 def StateInvariant (v : verify.CellBatchVerifier) : Prop :=
   SetupRep v.setup ∧ CosetsRep v.cosets ∧
-  match v.kernel with
+  (match v.kernel with
   | none => True
-  | some kernel => InterpolationKernel.StateInvariant kernel
+  | some kernel => InterpolationKernel.StateInvariant kernel) ∧
+  CurveWorkInvariant v.curve_work
 
 end LeanBlsSimd.Kzg

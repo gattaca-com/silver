@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Extender.Model
 import LeanBlsSimd.Kzg.Extender.Kernel.Basic
 

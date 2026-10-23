@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Refines.Loop
 import LeanBlsSimd.Kzg.Refines.Bits
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -50,7 +50,7 @@ private theorem set_encoded (v : alloc.vec.Vec blst.blst_fr) (xs : List Fr)
     (alloc.vec.Vec.set v i (frEncode x)).val = (xs.set i.val x).map frEncode := by
   simp [alloc.vec.Vec.set, hv]
 
-theorem aggregate_column_loop [e : KzgExternals] (h : ExternalsCorrect e)
+theorem aggregate_column_loop (h : FrCorrect)
     (evaluations powers columns : List Fr)
     (v vp acc : alloc.vec.Vec blst.blst_fr)
     (he : v.val = evaluations.map frEncode) (hp : vp.val = powers.map frEncode)
@@ -101,8 +101,8 @@ theorem aggregate_column_loop [e : KzgExternals] (h : ExternalsCorrect e)
         v vp k c iter acc = ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body,
         hnext, bind_tc_ok, Function.uncurry_apply_pair, hpow, heb, hei, heval,
-        blst_ops.fr_mul, h.blst.fr_mul, hcb, hat, hacc, blst_ops.fr_add,
-        h.blst.fr_add, hmut, acc', x]
+        h.fr_mul, hcb, hat, hacc,
+        h.fr_add, hmut, acc', x]
     obtain ⟨result, hloop, hr⟩ := ih
       (columnStep evaluations powers k.val c.val columns iter.start.val) acc' ha'
       (by simpa using hc) iter' (by omega) (by simpa only [hend'] using hend) (by omega)
@@ -113,7 +113,7 @@ theorem aggregate_column_loop [e : KzgExternals] (h : ExternalsCorrect e)
     · rw [List.drop_eq_getElem_cons (by simp [hj])]
       simpa only [List.foldl_cons, List.getElem_range, hi'] using hr
 
-theorem aggregate_column [e : KzgExternals] (h : ExternalsCorrect e)
+theorem aggregate_column (h : FrCorrect)
     (evaluations powers columns : List Fr)
     (v vp acc : alloc.vec.Vec blst.blst_fr)
     (he : v.val = evaluations.map frEncode) (hp : vp.val = powers.map frEncode)
@@ -137,7 +137,7 @@ def aggregateColumns (evaluations powers : List Fr) (indices : List Nat)
     (columns : List Fr) (used : List Bool) : List Fr × List Bool :=
   (List.range indices.length).foldl (aggregateStep evaluations powers indices) (columns, used)
 
-theorem aggregate_columns_loop [e : KzgExternals] (h : ExternalsCorrect e)
+theorem aggregate_columns_loop (h : FrCorrect)
     (evaluations powers columns : List Fr) (used : List Bool)
     (v vp acc : alloc.vec.Vec blst.blst_fr) (flags : alloc.vec.Vec Bool)
     (indices : Slice U64)
@@ -198,7 +198,7 @@ theorem aggregate_columns_loop [e : KzgExternals] (h : ExternalsCorrect e)
       rw [List.drop_eq_getElem_cons (by simp [hk])]
       simpa only [List.foldl_cons, List.getElem_range, hi', aggregateStep, hget] using hr
 
-theorem aggregate_columns [e : KzgExternals] (h : ExternalsCorrect e)
+theorem aggregate_columns (h : FrCorrect)
     (evaluations powers columns : List Fr) (used : List Bool)
     (v vp acc : alloc.vec.Vec blst.blst_fr) (flags : alloc.vec.Vec Bool)
     (indices : Slice U64)
@@ -233,7 +233,7 @@ theorem shiftAdd_length (shift factor : Fr) (coeffs old : List Fr)
     | nil => simp at hlen
     | cons b old => simp only [shiftAdd, List.length_cons, ih _ _ (by simpa using hlen)]
 
-theorem shift_add_loop [e : KzgExternals] (h : ExternalsCorrect e)
+theorem shift_add_loop (h : FrCorrect)
     (shifts coeffPrefix remaining doneValues oldValues : List Fr)
     (vs vc acc : alloc.vec.Vec blst.blst_fr)
     (hs : vs.val = shifts.map frEncode)
@@ -281,8 +281,8 @@ theorem shift_add_loop [e : KzgExternals] (h : ExternalsCorrect e)
           vs vc c iter acc (frEncode factor) =
           ok (cont (iter', acc', frEncode (factor*shifts[c.val]!))) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body,
-          hnext, bind_tc_ok, Function.uncurry_apply_pair, hcoeff, blst_ops.fr_mul,
-          h.blst.fr_mul, hacc, blst_ops.fr_add, h.blst.fr_add, hmut, hshift, acc']
+          hnext, bind_tc_ok, Function.uncurry_apply_pair, hcoeff,
+          h.fr_mul, hacc, h.fr_add, hmut, hshift, acc']
       obtain ⟨result, hloop, hr⟩ := ih (coeffPrefix ++ [a])
         (doneValues ++ [b+a*factor]) oldValues acc'
         (by simpa [List.append_assoc] using hc) ha'

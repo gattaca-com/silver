@@ -87,8 +87,8 @@ theorem add_refines (self q : g1x8.G1x8) :
     Offsets.toOffsets, Offsets.ofOffsets, lift, G1x8.add, toG1x8]
 
 theorem is_lower_z_bit_refines (bit : U32) :
-    g1x8.is_lower_z_bit bit = ok (is_lower_z_bit bit.val) := by
-  simp (disch := decide) only [g1x8.is_lower_z_bit, Z_BITS_index, bind_tc_ok,
+    constants.is_lower_z_bit bit = ok (is_lower_z_bit bit.val) := by
+  simp (disch := decide) only [constants.is_lower_z_bit, Z_BITS_index, bind_tc_ok,
     UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
   simp [is_lower_z_bit, Z_BITS]
   split_ifs <;> simp_all

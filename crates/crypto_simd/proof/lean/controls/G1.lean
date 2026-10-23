@@ -3,8 +3,8 @@ import LeanBlsSimd.Spec.G1Encoding
 import LeanBlsSimd.Proofs.G1Finite
 
 /-! Mutation and boundary controls for G1. Arithmetic proofs use Lean's kernel; the full
-canonicality mutation has a checked evaluation. The scalar external remains arbitrary in
-the wrapper controls. -/
+canonicality mutation has a checked evaluation. Model wrapper controls permit arbitrary
+scalar observations; generated wrapper controls use the portable decoder contract. -/
 
 namespace LeanBlsSimd.G1Controls
 
@@ -188,24 +188,60 @@ example (inputs : List Encoding) (hn : inputs.length = 9) : True := by
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 
-example [BlsExternals] (hs : BlsExternals.simdAvailable = false)
+example [RuntimeFeatures] (hdec : G1DecoderCorrect) (hs : RuntimeFeatures.simdAvailable = false)
     (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = inputs.val.map BlsExternals.uncompressG1 := by
-  obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out hlen
+      result.val = inputs.val.map UncompressG1.specVerdict := by
+  obtain ⟨result, hr, hv⟩ := uncompress_refines hdec inputs out hlen
   refine ⟨result, hr, ?_⟩
   rw [hv, hs, scalar_model]
   simp [modelBlst, List.map_map, Option.map_map, Function.comp_def, toArray_ofArray]
 
-example [BlsExternals] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
+example [cpu : RuntimeFeatures] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hi : inputs.val = []) (ho : out.val = []) :
     silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok out := by
-  obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out (by simp [hi, ho])
-  have he : result = out := by
-    apply Subtype.ext
-    simp [hv, hi, ho, uncompress]
-  simpa [he] using hr
+  rcases inputs with ⟨ins, hins⟩
+  rcases out with ⟨outs, houts⟩
+  change ins = [] at hi
+  change outs = [] at ho
+  subst ins
+  subst outs
+  have hlen (α : Type) (h : ([] : List α).length ≤ Usize.max) :
+      Slice.len (⟨[], h⟩ : Slice α) = 0#usize := by
+    apply UScalar.eq_of_val_eq
+    rfl
+  have hd2 : (0#usize / 2#usize) = ok 0#usize := by rfl
+  have hm2 : (0#usize * 2#usize) = ok 0#usize := by
+    rw [mul_ok _ _ (by scalar_tac)]
+    rfl
+  have hd8 : (0#usize / 8#usize) = ok 0#usize := by rfl
+  have hm8 : (0#usize * 8#usize) = ok 0#usize := by
+    rw [mul_ok _ _ (by scalar_tac)]
+    rfl
+  have hpLoop (i : Slice (Aeneas.Std.Array U8 48#usize))
+      (o : Slice (Option blst.blst_p1_affine)) :
+      portable.decompress.uncompress_all_in_g1_loop i o 0#usize 0#usize = ok (o, 0#usize) := by
+    unfold portable.decompress.uncompress_all_in_g1_loop
+    rw [loop.eq_1]
+    rfl
+  have hbLoop (i : Slice (Aeneas.Std.Array U8 48#usize))
+      (o : Slice (Option blst.blst_p1_affine)) :
+      uncompress_in_g1_loop i o 0#usize 0#usize = ok o := by
+    unfold uncompress_in_g1_loop
+    rw [loop.eq_1]
+    rfl
+  have hs : portable.decompress.uncompress_all_in_g1
+      (⟨[], by simp⟩ : Slice (Aeneas.Std.Array U8 48#usize))
+      (⟨[], by simp⟩ : Slice (Option blst.blst_p1_affine)) = ok ⟨[], by simp⟩ := by
+    simp [portable.decompress.uncompress_all_in_g1, hlen, hd2, hm2, hpLoop]
+  cases hcpu : cpu.simdAvailable
+  · simpa [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu] using hs
+  · simp [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu, hlen,
+      LANES, hd8, hm8, hbLoop,
+      core.slice.index.SliceIndexRangeUsizeSlice.index,
+      core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
+      Slice.length, List.slice, List.setSlice!, hs]
 
 end LeanBlsSimd.G1Controls

@@ -7,6 +7,9 @@ open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 open scoped EthLib.Cryptography.Bls.Fr
 
+/-! Independent spec-model mutations. Actual generated contracts are exercised by
+conditional consumers in `KzgSpecInstance`, `KzgStreamingSha`, and downstream smoke checks. -/
+
 namespace LeanBlsSimd.Kzg.Controls
 
 set_option maxRecDepth 16000
@@ -19,26 +22,26 @@ private theorem encode_shift_ne (x : Fr) : frEncode (x + 1) ≠ frEncode x := by
   rw [frRead_frEncode, frRead_frEncode] at hr
   exact one_ne_zero (add_left_cancel (hr.trans (add_zero x).symm))
 
-@[reducible] def rejectG2Setup : KzgExternals :=
+@[reducible] def rejectG2Setup : SpecOperations :=
   { specExternals with uncompressG2 := fun _ => none }
 
-theorem rejectG2Setup_rejected : ¬ BlstCorrect rejectG2Setup := by
+theorem rejectG2Setup_rejected : ¬ SpecOperationsCorrect rejectG2Setup := by
   intro h
-  have he := h.g2_decode trusted_setup.G2_MONOMIAL_0 (Or.inl rfl)
-  have hv : specG2Verdict trusted_setup.G2_MONOMIAL_0 =
+  have he := h.g2_decode SetupPoints.g2Bytes0 (Or.inl rfl)
+  have hv : specG2Verdict SetupPoints.g2Bytes0 =
       some (g2Affine SetupPoints.g2Point0) := by
     simp [specG2Verdict, SetupPoints.g2_0_decoded, SetupPoints.g2_0_subgroup, Except.toOption]
-  change ok none = ok (specG2Verdict trusted_setup.G2_MONOMIAL_0) at he
+  change ok none = ok (specG2Verdict SetupPoints.g2Bytes0) at he
   rw [hv] at he
   cases he
 
 def noncanonicalBytes : Aeneas.Std.Array U8 32#usize :=
   ⟨List.replicate 32 255#u8, by simp⟩
 
-@[reducible] def acceptNoncanonical : KzgExternals :=
+@[reducible] def acceptNoncanonical : SpecOperations :=
   { specExternals with frFromBytes := fun _ => ok (some (frEncode 0)) }
 
-theorem acceptNoncanonical_rejected : ¬ BlstCorrect acceptNoncanonical := by
+theorem acceptNoncanonical_rejected : ¬ SpecOperationsCorrect acceptNoncanonical := by
   intro h
   have he := h.fr_bytes noncanonicalBytes
   have hv : (bytesToBlsField (arrayBytes noncanonicalBytes)).toOption = none := by rfl
@@ -46,17 +49,17 @@ theorem acceptNoncanonical_rejected : ¬ BlstCorrect acceptNoncanonical := by
   rw [hv] at he
   cases he
 
-@[reducible] def shiftInteger : KzgExternals :=
+@[reducible] def shiftInteger : SpecOperations :=
   { specExternals with frFromU64 := fun x => ok (frEncode (Fr.ofNat x.val + 1)) }
 
-theorem shiftInteger_rejected : ¬ BlstCorrect shiftInteger := by
+theorem shiftInteger_rejected : ¬ SpecOperationsCorrect shiftInteger := by
   intro h
   exact encode_shift_ne _ (Result.ok.inj (h.fr_u64 0#u64))
 
-@[reducible] def shiftAdd : KzgExternals :=
+@[reducible] def shiftAdd : SpecOperations :=
   { specExternals with frAdd := fun x y => ok (frEncode (frRead x + frRead y + 1)) }
 
-theorem shiftAdd_rejected : ¬ BlstCorrect shiftAdd := by
+theorem shiftAdd_rejected : ¬ SpecOperationsCorrect shiftAdd := by
   intro h
   have he := h.fr_add 0 0
   change ok (frEncode (frRead (frEncode 0) + frRead (frEncode 0) + 1)) =
@@ -64,10 +67,10 @@ theorem shiftAdd_rejected : ¬ BlstCorrect shiftAdd := by
   simp only [frRead_frEncode] at he
   exact encode_shift_ne _ (Result.ok.inj he)
 
-@[reducible] def shiftSub : KzgExternals :=
+@[reducible] def shiftSub : SpecOperations :=
   { specExternals with frSub := fun x y => ok (frEncode (frRead x - frRead y + 1)) }
 
-theorem shiftSub_rejected : ¬ BlstCorrect shiftSub := by
+theorem shiftSub_rejected : ¬ SpecOperationsCorrect shiftSub := by
   intro h
   have he := h.fr_sub 0 0
   change ok (frEncode (frRead (frEncode 0) - frRead (frEncode 0) + 1)) =
@@ -75,10 +78,10 @@ theorem shiftSub_rejected : ¬ BlstCorrect shiftSub := by
   simp only [frRead_frEncode] at he
   exact encode_shift_ne _ (Result.ok.inj he)
 
-@[reducible] def shiftMul : KzgExternals :=
+@[reducible] def shiftMul : SpecOperations :=
   { specExternals with frMul := fun x y => ok (frEncode (frRead x * frRead y + 1)) }
 
-theorem shiftMul_rejected : ¬ BlstCorrect shiftMul := by
+theorem shiftMul_rejected : ¬ SpecOperationsCorrect shiftMul := by
   intro h
   have he := h.fr_mul 0 0
   change ok (frEncode (frRead (frEncode 0) * frRead (frEncode 0) + 1)) =
@@ -86,20 +89,20 @@ theorem shiftMul_rejected : ¬ BlstCorrect shiftMul := by
   simp only [frRead_frEncode] at he
   exact encode_shift_ne _ (Result.ok.inj he)
 
-@[reducible] def shiftInverse : KzgExternals :=
+@[reducible] def shiftInverse : SpecOperations :=
   { specExternals with frInverse := fun x => ok (frEncode ((frRead x).inverse + 1)) }
 
-theorem shiftInverse_rejected : ¬ BlstCorrect shiftInverse := by
+theorem shiftInverse_rejected : ¬ SpecOperationsCorrect shiftInverse := by
   intro h
   have he := h.fr_inverse 1 (by decide)
   change ok (frEncode ((frRead (frEncode 1)).inverse + 1)) = ok (frEncode (1 : Fr).inverse) at he
   simp only [frRead_frEncode] at he
   exact encode_shift_ne _ (Result.ok.inj he)
 
-@[reducible] def shiftHash : KzgExternals :=
+@[reducible] def shiftHash : SpecOperations :=
   { specExternals with hashToFr := fun b => ok (frEncode (Fr.hashToBlsField (bytes b.val) + 1)) }
 
-theorem shiftHash_rejected : ¬ BlstCorrect shiftHash := by
+theorem shiftHash_rejected : ¬ SpecOperationsCorrect shiftHash := by
   intro h
   exact encode_shift_ne _ (Result.ok.inj (h.hash ⟨[], by simp⟩))
 
@@ -109,10 +112,10 @@ private theorem zero_jacobian_valid : G1Valid (g1ReadJacobian (g1Jacobian G1.zer
   rw [g1ReadJacobian_g1Jacobian]
   exact g1Valid_zero
 
-@[reducible] def nonzeroAffineAtZero : KzgExternals :=
+@[reducible] def nonzeroAffineAtZero : SpecOperations :=
   { specExternals with g1ToAffine := fun _ => ok ⟨fpEncode Fp.one, fpEncode Fp.one⟩ }
 
-theorem nonzeroAffineAtZero_rejected : ¬ BlstCorrect nonzeroAffineAtZero := by
+theorem nonzeroAffineAtZero_rejected : ¬ SpecOperationsCorrect nonzeroAffineAtZero := by
   intro h
   have he := h.g1_affine (g1Jacobian G1.zero) (g1Jacobian_reduced _) zero_jacobian_valid
   change ok (blst.blst_p1_affine.mk (fpEncode Fp.one) (fpEncode Fp.one)) =
@@ -123,10 +126,10 @@ theorem nonzeroAffineAtZero_rejected : ¬ BlstCorrect nonzeroAffineAtZero := by
   rw [fpRead_fpEncode, fpRead_fpEncode] at hx
   exact (by decide : Fp.one ≠ Fp.zero) hx
 
-@[reducible] def nonzeroAddAtZero : KzgExternals :=
+@[reducible] def nonzeroAddAtZero : SpecOperations :=
   { specExternals with g1Add := fun _ _ => ok (g1Jacobian wrongPoint) }
 
-theorem nonzeroAddAtZero_rejected : ¬ BlstCorrect nonzeroAddAtZero := by
+theorem nonzeroAddAtZero_rejected : ¬ SpecOperationsCorrect nonzeroAddAtZero := by
   intro h
   obtain ⟨result, he, hr⟩ := h.g1_add (g1Jacobian G1.zero) (g1Jacobian G1.zero)
     (g1Jacobian_reduced _) (g1Jacobian_reduced _) zero_jacobian_valid zero_jacobian_valid
@@ -138,10 +141,10 @@ theorem nonzeroAddAtZero_rejected : ¬ BlstCorrect nonzeroAddAtZero := by
   change false = true at hi
   cases hi
 
-@[reducible] def nonzeroNegAtZero : KzgExternals :=
+@[reducible] def nonzeroNegAtZero : SpecOperations :=
   { specExternals with g1Neg := fun _ => ok (g1Jacobian wrongPoint) }
 
-theorem nonzeroNegAtZero_rejected : ¬ BlstCorrect nonzeroNegAtZero := by
+theorem nonzeroNegAtZero_rejected : ¬ SpecOperationsCorrect nonzeroNegAtZero := by
   intro h
   obtain ⟨result, he, hr⟩ := h.g1_neg (g1Jacobian G1.zero)
     (g1Jacobian_reduced _) zero_jacobian_valid
@@ -153,10 +156,10 @@ theorem nonzeroNegAtZero_rejected : ¬ BlstCorrect nonzeroNegAtZero := by
   change false = true at hi
   cases hi
 
-@[reducible] def eraseG2Neg : KzgExternals :=
+@[reducible] def eraseG2Neg : SpecOperations :=
   { specExternals with g2Neg := fun _ => ok (g2Affine G2.zero) }
 
-theorem eraseG2Neg_rejected : ¬ BlstCorrect eraseG2Neg := by
+theorem eraseG2Neg_rejected : ¬ SpecOperationsCorrect eraseG2Neg := by
   intro h
   have he := h.g2_neg (g2Affine SetupPoints.g2Point0) setup_g2_zero_valid
   change ok (g2Affine G2.zero) =
@@ -173,31 +176,28 @@ theorem eraseG2Neg_rejected : ¬ BlstCorrect eraseG2Neg := by
   rw [hn] at hi
   contradiction
 
-@[reducible] def nonzeroEmptyLincomb : KzgExternals :=
-  { specExternals with g1Lincomb := fun _ _ scratch => ok (g1Jacobian wrongPoint, scratch) }
+@[reducible] def nonzeroEmptyLincomb : SpecOperations :=
+  { specExternals with g1Lincomb := fun _ _ => ok (g1Jacobian wrongPoint) }
 
-theorem nonzeroEmptyLincomb_rejected : ¬ BlstCorrect nonzeroEmptyLincomb := by
+theorem nonzeroEmptyLincomb_rejected : ¬ SpecOperationsCorrect nonzeroEmptyLincomb := by
   intro h
-  let scratch : blst_ops.LincombScratch :=
-    ⟨alloc.vec.Vec.new _, alloc.vec.Vec.new _, alloc.vec.Vec.new _⟩
-  obtain ⟨result, scratch', he, hr⟩ := h.lincomb ⟨[], by simp⟩ ⟨[], by simp⟩ scratch
+  obtain ⟨result, he, hr⟩ := h.lincomb ⟨[], by simp⟩ ⟨[], by simp⟩
     rfl (by simp) (by simp)
-  change ok (g1Jacobian wrongPoint, scratch) = ok (result, scratch') at he
-  have he' := congrArg Prod.fst (Result.ok.inj he)
-  dsimp only at he'
+  change ok (g1Jacobian wrongPoint) = ok result at he
+  have he' := Result.ok.inj he
   subst result
   have hi := hr.2.1
   rw [g1ReadJacobian_g1Jacobian] at hi
   change false = true at hi
   cases hi
 
-@[reducible] def flipPairing : KzgExternals :=
+@[reducible] def flipPairing : SpecOperations :=
   { specExternals with
     pairingCheck := fun p q p' q' =>
       ok (Bool.not (Bls.pairingCheck #[(g1ReadAffine p, g2ReadAffine q),
         (g1ReadAffine p', g2ReadAffine q')])) }
 
-theorem flipPairing_rejected : ¬ BlstCorrect flipPairing := by
+theorem flipPairing_rejected : ¬ SpecOperationsCorrect flipPairing := by
   intro h
   have he := h.pairing (g1Affine G1.zero) (g2Affine SetupPoints.g2Point0)
     (g1Affine G1.zero) (g2Affine SetupPoints.g2Point0)
@@ -206,26 +206,18 @@ theorem flipPairing_rejected : ¬ BlstCorrect flipPairing := by
   have hb := Result.ok.inj he
   exact (Bool.not_eq_self _).mp hb
 
-@[reducible] def wrongScalarG1 : KzgExternals :=
-  { specExternals with simdAvailable := false, uncompressG1 := fun _ => some (g1Affine G1.zero) }
+@[reducible] def wrongScalarG1 : SpecOperations :=
+  { specExternals with uncompressG1 := fun _ => some (g1Affine G1.zero) }
 
 def invalidG1Bytes : Aeneas.Std.Array U8 48#usize :=
   ⟨List.replicate 48 0#u8, by simp⟩
 
-theorem wrongScalarG1_rejected : ¬ G1DecoderCorrect wrongScalarG1 := by
+theorem wrongScalarG1_rejected : ¬ SpecG1DecoderCorrect wrongScalarG1 := by
   intro h
-  let inputs : Slice (Aeneas.Std.Array U8 48#usize) := ⟨[invalidG1Bytes], by simp; scalar_tac⟩
-  let out : Slice (Option blst.blst_p1_affine) := ⟨[none], by simp; scalar_tac⟩
-  obtain ⟨result, hr, hv⟩ := h inputs out rfl
-  obtain ⟨result', hr', _, hv'⟩ :=
-    @UncompressG1.uncompress_in_g1_eq_spec_or_blst wrongScalarG1.toBlsExternals inputs out rfl
-  rw [hr] at hr'
-  cases hr'
-  have h0 := hv' ⟨0, by simp [inputs]⟩
-  have hk : @UncompressG1.usesKernelAt wrongScalarG1.toBlsExternals inputs 0 = false := by
-    simp [UncompressG1.usesKernelAt, UncompressG1.usesKernel]
-  rw [hk, hv] at h0
+  have he := h invalidG1Bytes
   have hn : specVerdict invalidG1Bytes = none := by rfl
-  simp [inputs, hn] at h0
+  change some (g1Affine G1.zero) = specVerdict invalidG1Bytes at he
+  rw [hn] at he
+  cases he
 
 end LeanBlsSimd.Kzg.Controls

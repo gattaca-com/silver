@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.SetupBytes
 import LeanBlsSimd.Kzg.SetupArithmetic
 
 open EthLib.Cryptography Bls Kzg LeanBlsSimd.Kzg.SetupArithmetic silver_crypto_simd silver_crypto_simd.kzg
@@ -155,7 +156,7 @@ def g2Point0 : G2 := ⟨⟨Fp.ofNat 35270106958746661818713911601106014489002995
     Fp.ofNat 927553665492332455747201965776037880757740193453592970025027978793976877002675564980949289727957565575433344219582⟩, Fp2.one⟩
 
 theorem g2_0_decoded :
-    G2.uncompress (arrayBytes trusted_setup.G2_MONOMIAL_0) = .ok g2Point0 := by
+    G2.uncompress (arrayBytes SetupPoints.g2Bytes0) = .ok g2Point0 := by
   rw [G2.uncompress]
   simp only [Fp2.sqrt, sqrt_eq, inverse_eq]
   decide +kernel
@@ -170,7 +171,7 @@ def g2Point64 : G2 := ⟨⟨Fp.ofNat 2849539466732689850758132220706875553388401
     Fp.ofNat 835991959944658505648700758027029378993888776946226283495557219926175330942067091684009495730003967349505680713509⟩, Fp2.one⟩
 
 theorem g2_64_decoded :
-    G2.uncompress (arrayBytes trusted_setup.G2_MONOMIAL_64) = .ok g2Point64 := by
+    G2.uncompress (arrayBytes SetupPoints.g2Bytes64) = .ok g2Point64 := by
   rw [G2.uncompress]
   simp only [Fp2.sqrt, sqrt_eq, inverse_eq]
   decide +kernel

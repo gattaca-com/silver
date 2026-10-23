@@ -30,7 +30,7 @@ theorem deduplicate_refines (old : verify.Deduplicated)
         Model.deduplicate (cs.val.map arrayBytes).toArray := by
   exact deduplicate_refinement old cs
 
-theorem decode_points_refines [e : KzgExternals] (hg1 : UncompressG1.BlstMatchesSpec)
+theorem decode_points_refines [RuntimeFeatures] (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
     (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
     (points : alloc.vec.Vec blst.blst_p1_affine) :
@@ -39,15 +39,13 @@ theorem decode_points_refines [e : KzgExternals] (hg1 : UncompressG1.BlstMatches
         ok ((encodings.val.map specVerdict).all Option.isSome, resultDecoded, resultPoints) ∧
       resultDecoded.val = encodings.val.map specVerdict ∧
       resultPoints.val = ((encodings.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  have h := g1DecoderCorrect_of_blstMatchesSpec hg1
-  exact decode_points_refinement h encodings decoded points
+  exact decode_points_refinement hg1 encodings decoded points
 
 def cellElements (cells : List (Aeneas.Std.Array U8 2048#usize)) : List (Option Fr) :=
   cells.flatMap fun cell => (List.range 64).map fun j =>
     (bytesToBlsField ((arrayBytes cell).extract (32*j) (32*(j+1)))).toOption
 
-theorem decode_cells_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec)
+theorem decode_cells_refines (hbytes : FrBytesCorrect)
     (v : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
     ∃ next, verify.CellBatchVerifier.decode_cells v cells =
@@ -55,26 +53,21 @@ theorem decode_cells_refines [e : KzgExternals] (hblst : BlstCorrect e)
       (v.kernel = none → next.evaluations.val =
         (((cellElements cells.val).takeWhile Option.isSome).filterMap id).map frEncode) ∧
       next.setup = v.setup ∧ next.cosets = v.cosets := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
-  obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement h v cells hb
+  obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement hbytes v cells hb
   exact ⟨next, hcall, he, hs, hc⟩
 
-theorem challenge_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec)
-    (old : challenge.Preimage) (unique : Slice (Aeneas.Std.Array U8 48#usize))
-    (ci : Slice Usize) (indices : Slice U64)
+theorem challenge_refines (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+    (unique : Slice (Aeneas.Std.Array U8 48#usize)) (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
     (hlen : ci.val.length = indices.val.length ∧ cells.val.length = indices.val.length ∧
-      ps.val.length = indices.val.length ∧ unique.val.length ≤ indices.val.length)
-    (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
-    let preimage := Model.challengePreimage (unique.val.map arrayBytes).toArray
-      (ci.val.map (·.val)).toArray (indices.val.map (·.val)).toArray
-      (cells.val.map arrayBytes).toArray (ps.val.map arrayBytes).toArray
-    ∃ next, challenge.Preimage.challenge old unique ci indices cells ps =
-      ok (frEncode (Fr.hashToBlsField preimage), next) ∧ bytes next.bytes.val = preimage := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
-  exact challenge_refinement h old unique ci indices cells ps hlen hb
+      ps.val.length = indices.val.length) :
+    challenge.challenge_in_parts unique ci indices cells ps =
+      ok (frEncode (Fr.hashToBlsField (Model.challengePreimage
+        (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
+        (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
+        (ps.val.map arrayBytes).toArray))) := by
+  exact challenge_refinement hsha hbytes unique ci indices cells ps hlen
 
 theorem challenge_preimage_eq_spec (unique : _root_.Array Bytes48)
     (ci indices : _root_.Array Nat) (cells : _root_.Array Cell) (ps : _root_.Array Bytes48)
@@ -91,16 +84,13 @@ theorem reverse_bits_refines (index : Usize) (bits : U32)
       ok ⟨BitVec.ofNat _ (BitReversal.reverseBitsAux index.val 0 bits.val)⟩ := by
   exact reverse_bits_refinement index bits hb
 
-theorem roots_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec) (logOrder : U32)
+theorem roots_refines (hfr : FrCorrect) (logOrder : U32)
     (hl : logOrder.val = 6 ∨ logOrder.val = 13) :
     ∃ rs, domain.roots_of_unity logOrder = ok rs ∧
       rs.val = (Model.roots logOrder.val).toList.map frEncode := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
-  exact roots_refinement h logOrder hl
+  exact roots_refinement hfr logOrder hl
 
-theorem inverse_fft_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec)
+theorem inverse_fft_refines (hfr : FrCorrect)
     (out input roots : Slice blst.blst_fr) (values : _root_.Array Fr)
     (ho : out.val.length = 64) (hv : values.size = 64)
     (hi : input.val = values.toList.map frEncode)
@@ -109,11 +99,9 @@ theorem inverse_fft_refines [e : KzgExternals] (hblst : BlstCorrect e)
       result.val =
         (Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse).toList.map
           frEncode := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
-  exact inverse_fft_refinement h out input roots values ho hv hi hr
+  exact inverse_fft_refinement hfr out input roots values ho hv hi hr
 
-theorem interpolation_commitment_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec)
+theorem interpolation_commitment_refines [RuntimeFeatures] (h : ExternalsCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)
@@ -127,11 +115,9 @@ theorem interpolation_commitment_refines [e : KzgExternals] (hblst : BlstCorrect
       G1Rep point (G1.msm
         (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero))
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers)) := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
   exact interpolation_commitment_refinement h v hv indices cells evals powers hs hb hcell he hp
 
-theorem pairing_holds_refines [e : KzgExternals] (hblst : BlstCorrect e)
-    (hg1 : UncompressG1.BlstMatchesSpec)
+theorem pairing_holds_refines [RuntimeFeatures] (h : ExternalsCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
@@ -151,7 +137,6 @@ theorem pairing_holds_refines [e : KzgExternals] (hblst : BlstCorrect e)
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
-  have h := externalsCorrect_of_blstMatchesSpec hblst hg1
   exact pairing_holds_refinement h v hv indices cells commitments proofs evals r hb hs
     hc hp hcell he hunique hci hproofs hvalid
 

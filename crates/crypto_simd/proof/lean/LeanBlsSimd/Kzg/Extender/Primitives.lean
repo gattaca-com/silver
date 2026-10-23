@@ -109,12 +109,12 @@ private theorem inverse_roots_refinement (roots : Slice blst.blst_fr)
 
 -- Simplification descends through the 4096-element scratch vectors.
 set_option maxRecDepth 16000 in
-theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
+theorem new_dispatch_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
-      initial.kernel.isSome = e.simdAvailable := by
-  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement_of_blst hblst cell_extender.LOG_BLOB
+      initial.kernel.isSome = cpu.simdAvailable := by
+  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement_of_blst hfr cell_extender.LOG_BLOB
     (by simp [cell_extender.LOG_BLOB])
-  obtain ⟨ext, hext, hextval⟩ := roots_refinement_of_blst hblst cell_extender.LOG_EXT_BLOB
+  obtain ⟨ext, hext, hextval⟩ := roots_refinement_of_blst hfr cell_extender.LOG_EXT_BLOB
     (by simp [cell_extender.LOG_EXT_BLOB])
   simp only [cell_extender.LOG_BLOB, UScalar.ofNatCore_val_eq] at hrsval
   simp only [cell_extender.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
@@ -130,10 +130,6 @@ theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
   dsimp only [empty] at hscratch
   obtain ⟨inv, hinv, hinvval⟩ := inverse_roots_refinement (alloc.vec.Vec.deref rs)
     (Kzg.Model.roots 12) (by simp [Kzg.Model.roots]) hrsval
-  have hinverse := hblst.fr_inverse (Fr.ofNat 4096) (by decide)
-  have hcast : UScalar.cast .U64 FIELD_ELEMENTS_PER_BLOB = 4096#u64 := by
-    apply UScalar.eq_of_val_eq
-    simp [FIELD_ELEMENTS_PER_BLOB]
   have hshiftmodel : shift.val = ((Kzg.Model.roots 13).extract 0 4096).toList.map frEncode := by
     have hextlen : ext.val.length = 8192 := by simp [hextval, Kzg.Model.roots]
     rw [hshiftval]
@@ -149,7 +145,7 @@ theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
   have hscalar : StateInvariant scalar :=
     ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, trivial⟩
   have hnew : cell_extender.CellExtender.new =
-      (if e.simdAvailable then do
+      (if cpu.simdAvailable then do
         let kernel ← extension_kernel.ExtensionKernel.new
           (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv)
           (alloc.vec.Vec.deref shift) (frEncode (Fr.ofNat 4096).inverse)
@@ -157,17 +153,16 @@ theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
       else ok scalar) := by
     unfold cell_extender.CellExtender.new
     rw [hrs]
-    simp only [bind_tc_ok, blst_ops.fr_from_u64, hblst.fr_u64]
+    simp only [bind_tc_ok, fr_zero_eq]
     rw [hext]
-    simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, hshift, hscratch, hinv, lift, hcast]
-    simp only [bind_tc_ok, blst_ops.fr_inverse, hinverse]
+    simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, hshift, hscratch, hinv, inverse_blob_size_eq]
     rfl
-  cases hsimd : e.simdAvailable with
+  cases hsimd : cpu.simdAvailable with
   | false =>
     exact ⟨scalar, by simp only [hnew, hsimd, Bool.false_eq_true, if_false],
       hscalar, rfl⟩
   | true =>
-    obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement hblst
+    obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement hfr
       (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv) (alloc.vec.Vec.deref shift)
       (frEncode (Fr.ofNat 4096).inverse) hrsval hinvval hshiftmodel rfl
     refine ⟨{ scalar with kernel := some kernel }, ?_, ?_, ?_⟩
@@ -175,9 +170,9 @@ theorem new_dispatch_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
     · exact ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, hki⟩
     · rfl
 
-theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e) :
+theorem new_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
-  obtain ⟨initial, hnew, hinvariant, _⟩ := new_dispatch_refinement hblst
+  obtain ⟨initial, hnew, hinvariant, _⟩ := new_dispatch_refinement hfr
   exact ⟨initial, hnew, hinvariant⟩
 
 end LeanBlsSimd.Kzg.Extender

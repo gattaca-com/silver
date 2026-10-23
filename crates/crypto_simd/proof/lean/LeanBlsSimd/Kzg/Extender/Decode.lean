@@ -76,7 +76,7 @@ theorem storeEvaluation_invariant (v : cell_extender.CellExtender)
     StateInvariant (storeEvaluation v j f) := by
   simpa [StateInvariant, storeEvaluation] using hv
 
-theorem decode_blob_body [e : KzgExternals] (h : BlstCorrect e)
+theorem decode_blob_body (h : FrBytesCorrect)
     (blob : Blob) (self : cell_extender.CellExtender) (hv : StateInvariant self)
     (j j' : Usize) (hj : j.val < 4096) (hj' : j'.val = j.val + 1) :
     cell_extender.CellExtender.decode_blob_loop.body blob self j =
@@ -116,7 +116,7 @@ theorem decode_blob_body [e : KzgExternals] (h : BlstCorrect e)
   unfold cell_extender.CellExtender.decode_blob_loop.body
   simp only [FIELD_ELEMENTS_PER_BLOB, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
     hj, if_true, lift, bind_tc_ok, Array.to_slice_mut, Function.uncurry_apply_pair,
-    hstart, hadd, hstop, hindex, hcopy, hback, blst_ops.fr_from_bytes]
+    hstart, hadd, hstop, hindex, hcopy, hback]
   rw [hdecode]
   have hlen := hv.2.2.2.2.1
   cases hd : bytesToBlsField ((arrayBytes blob).extract (32*j.val) (32*(j.val+1))) with
@@ -143,7 +143,7 @@ theorem storeEvaluation_current (v : cell_extender.CellExtender)
   have hlen := hv.2.2.2.2.1
   simp [storeEvaluation, hlen, rev_lt]
 
-theorem decode_blob_loop_eq [e : KzgExternals] (h : BlstCorrect e)
+theorem decode_blob_loop_eq (h : FrBytesCorrect)
     (self : cell_extender.CellExtender) (hv : StateInvariant self) (blob : Blob)
     (i : Usize) (hi : i.val ≤ 4096) :
     ∃ next stop, cell_extender.CellExtender.decode_blob_loop self blob i = ok (next, stop) ∧
@@ -206,7 +206,7 @@ theorem decode_blob_loop_eq [e : KzgExternals] (h : BlstCorrect e)
             simpa [hi', Nat.add_assoc, Nat.add_left_comm, Nat.add_comm] using
               hr.2 j (by simpa using hj)
 
-theorem decode_blob_refinement [e : KzgExternals] (h : BlstCorrect e)
+theorem decode_blob_refinement (h : FrBytesCorrect)
     (self : cell_extender.CellExtender) (hv : StateInvariant self) (blob : Blob) :
     ∃ verdict next, cell_extender.CellExtender.decode_blob self blob = ok (verdict, next) ∧
       StateInvariant next ∧

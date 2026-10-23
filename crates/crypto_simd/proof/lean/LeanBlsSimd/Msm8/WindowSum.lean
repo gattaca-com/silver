@@ -349,7 +349,7 @@ theorem groupSum_refines (self : msm8.buckets.Buckets) (store : msm8.store.Point
         self.starts self.lens store group (toG1x8 total) =
         ok (cont (next, toG1x8 ((total.times_two_pow (8 * self.window_bits.val)).add_complete (vectors next.val)))) := by
       simp only [msm8.buckets.Buckets.sum_loop.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hpos, if_true, fp8.LANES]
+        hpos, if_true, limbs.LANES]
       rw [sub_ok group 1#usize (by change 1 ≤ group.val; omega)]
       simp only [bind_tc_ok]
       rw [mul_ok _ _ hmul]
@@ -401,7 +401,7 @@ theorem buckets_sum_refines (self : msm8.buckets.Buckets) (store : msm8.store.Po
   obtain ⟨group, hg, hinit⟩ := topGroup_refines self.windows hwin
   have hwindow := hw group (by omega)
   have hloop := groupSum_refines self store group (vectors group.val) vectors hbits (fun g h => hw g (by omega))
-  simp only [msm8.buckets.Buckets.sum, fp8.LANES]
+  simp only [msm8.buckets.Buckets.sum, limbs.LANES]
   rw [← bind_assoc_eq, ← bind_assoc_eq] at hinit
   rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, hinit]
   simp only [bind_tc_ok, hwindow]
@@ -477,7 +477,7 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
   let step := fun (m : Usize) (l : Fin 8) => maxScalar m
     (UScalar.cast .Usize (bucketLength state (group.val * 8 + l.val) bucket.val))
   have hd (m c : Usize) (hc : c.val = 8) (_ : True) : body (m, c) = ok (done m) := by
-    simp [body, msm8.buckets.Buckets.longest_loop.body, fp8.LANES, UScalar.lt_equiv, hc]
+    simp [body, msm8.buckets.Buckets.longest_loop.body, limbs.LANES, UScalar.lt_equiv, hc]
   have hs (m c : Usize) (l : Fin 8) (hc : c.val = l.val) (_ : True) :
       ∃ next, next.val = l.val + 1 ∧ body (m, c) = ok (cont (step m l, next)) := by
     have hl : c.val < 8 := by omega
@@ -493,7 +493,7 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
       have := two_pow_32_le_usize
       omega
     refine ⟨UScalar.ofNatCore (c.val + 1) hnext, by simp [hc], ?_⟩
-    simp only [body, msm8.buckets.Buckets.longest_loop.body, fp8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+    simp only [body, msm8.buckets.Buckets.longest_loop.body, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
       hl, if_true]
     rw [← bind_assoc_eq, hwindow]
     simp only [bind_tc_ok, len_refines state window bucket hshape hb hbmax]
@@ -619,7 +619,7 @@ theorem entries_body (state : msm8.buckets.Buckets) (group bucket cursor lane : 
   have hmask : msm8.pairs.NEGATED = ok 2147483648#u32 := by unfold msm8.pairs.NEGATED; rfl
   have hshift (r : U32) : r >>> 31#i32 = ok (⟨r.bv.ushiftRight 31⟩ : U32) := rfl
   refine ⟨UScalar.ofNatCore (lane.val + 1) hnext, by simp [hl], ?_⟩
-  simp only [msm8.buckets.Buckets.entries_loop.body, fp8.LANES, UScalar.lt_equiv,
+  simp only [msm8.buckets.Buckets.entries_loop.body, limbs.LANES, UScalar.lt_equiv,
     UScalar.ofNatCore_val_eq, hlt, if_true]
   rw [← bind_assoc_eq, hwindow]
   simp only [bind_tc_ok, len_refines state window bucket hshape hb hbmax]
@@ -664,7 +664,7 @@ theorem entries_refines (state : msm8.buckets.Buckets) (group bucket cursor : Us
   have h := loop_up_inv (n := 8) body enc (entriesStep state group.val bucket.val cursor.val)
     finish (fun _ => True) (by intros; trivial)
     (fun e c hc _ => by
-      simp [body, enc, finish, msm8.buckets.Buckets.entries_loop.body, fp8.LANES, UScalar.lt_equiv, hc])
+      simp [body, enc, finish, msm8.buckets.Buckets.entries_loop.body, limbs.LANES, UScalar.lt_equiv, hc])
     (fun e c l hl _ => entries_body state group bucket cursor c hshape hb hbmax hg e l hl)
     emptyEntries 0#usize (by simp) trivial
   simp only [msm8.buckets.Buckets.entries, msm8.buckets.Buckets.entries_loop]

@@ -8,7 +8,7 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg.Extender
 
-private theorem shift_loop [e : KzgExternals] (h : BlstCorrect e)
+private theorem shift_loop (h : FrCorrect)
     (remaining : List (Fr × Fr)) (doneValues shiftPrefix : List Fr)
     (out shifts : alloc.vec.Vec blst.blst_fr)
     (ho : out.val = (doneValues ++ remaining.map Prod.fst).map frEncode)
@@ -47,7 +47,7 @@ private theorem shift_loop [e : KzgExternals] (h : BlstCorrect e)
     have hbody : cell_extender.CellExtender.compute_loop.body shifts iter out =
         ok (cont (iter', out')) := by
       simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair, hindex, hshift, blst_ops.fr_mul, h.fr_mul, hmut, out']
+        Function.uncurry_apply_pair, hindex, hshift, h.fr_mul, hmut, out']
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * w]) (shiftPrefix ++ [w]) out'
       hout' hs' (by simpa using hp) iter' (by simp [hi', hi])
       (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
@@ -57,7 +57,7 @@ private theorem shift_loop [e : KzgExternals] (h : BlstCorrect e)
       exact hloop
     · simpa [List.append_assoc] using hr
 
-private theorem shift_arrays [e : KzgExternals] (h : BlstCorrect e)
+private theorem shift_arrays (h : FrCorrect)
     (n : Nat) (count : Usize) (hn : count.val = n) (coefficients shifts : alloc.vec.Vec blst.blst_fr)
     (values factors : _root_.Array Fr)
     (hv : values.size = n) (hf : factors.size = n)
@@ -88,7 +88,7 @@ private theorem shift_arrays [e : KzgExternals] (h : BlstCorrect e)
   refine ⟨out, hout, ?_⟩
   simpa only [List.nil_append, pairs, List.map_ofFn, _root_.Array.toList_ofFn] using hval
 
-private theorem shift_extract [e : KzgExternals] (h : BlstCorrect e)
+private theorem shift_extract (h : FrCorrect)
     (n : Nat) (count : Usize) (hn : count.val = n) (coefficients shifts : alloc.vec.Vec blst.blst_fr)
     (values factors : _root_.Array Fr)
     (hv : values.size = n) (hf : n ≤ factors.size)
@@ -113,7 +113,7 @@ private theorem shift_extract [e : KzgExternals] (h : BlstCorrect e)
   rw [hfunctions] at hval
   exact hval
 
-theorem shift_refinement [e : KzgExternals] (h : BlstCorrect e)
+theorem shift_refinement (h : FrCorrect)
     (coefficients shifts : alloc.vec.Vec blst.blst_fr) (values : _root_.Array Fr)
     (hv : values.size = 4096)
     (hc : coefficients.val = values.toList.map frEncode)

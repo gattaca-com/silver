@@ -88,7 +88,7 @@ theorem Z_BITS_index (k : Usize) (hk : k.val < 6) :
   simp only [UScalar.ofNatCore_val_eq]
   rw [← Z_BITS_refines, getElem!_map_val _ _ hk]
 
-theorem LANES_refines : fp8.LANES = 8#usize := by rw [fp8.LANES]
+theorem LANES_refines : limbs.LANES = 8#usize := by rw [limbs.LANES]
 
 theorem U64_MAX_refines : core.num.U64.MAX = toU64 0xffffffffffffffff := rfl
 

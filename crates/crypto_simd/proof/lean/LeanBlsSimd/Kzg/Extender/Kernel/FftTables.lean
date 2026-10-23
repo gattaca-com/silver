@@ -34,7 +34,7 @@ private def WideTables (wide : alloc.vec.Vec fr8.Fr8) (roots : _root_.Array Fr)
       MultiplierRep wide.val[2 ^ stage / 8 - 1 + v.val]!
         (fun lane => roots[(8 * v.val + lane.val) * (roots.size / (2 * 2 ^ stage))]!)
 
-private theorem wide_tables_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem wide_tables_loop (hfr : FrCorrect)
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride : Usize) (logSize : Nat)
     (hn : n.val = 2 ^ logSize) (hmax : logSize ≤ 12)
@@ -61,7 +61,7 @@ private theorem wide_tables_loop [e : KzgExternals] (hblst : BlstCorrect e)
     have hnmax : n.val ≤ 4096 := by
       rw [hn]
       exact Nat.pow_le_pow_right (by decide) hmax
-    obtain ⟨next, hstage, hlen, hnew, hframe⟩ := wide_stage_refinement hblst input roots hinput
+    obtain ⟨next, hstage, hlen, hnew, hframe⟩ := wide_stage_refinement hfr input roots hinput
       n stride half hproduct hhalf hhalfN hnmax hrootN wide (by simpa only [hh] using hw.1)
     let half' : Usize := UScalar.ofNatCore (half.val * 2) (by scalar_tac)
     have hh' : half'.val = 2 ^ (stage + 1) := by
@@ -90,7 +90,7 @@ private theorem wide_tables_loop [e : KzgExternals] (hblst : BlstCorrect e)
     rw [fft8.Fft8.new_loop1, loop.eq_1]
     simpa only [hbody] using hout
 
-private theorem short_tables_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem short_tables_refinement (hfr : FrCorrect)
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride : Usize)
     (hproduct : stride.val * n.val = roots.size) (hnmin : 64 ≤ n.val)
@@ -101,13 +101,13 @@ private theorem short_tables_refinement [e : KzgExternals] (hblst : BlstCorrect 
       ∀ h : Nat, h = 1 ∨ h = 2 ∨ h = 4 → ∀ j : Fin h,
         MultiplierRep short.val[h - 1 + j.val]!
           (fun _ => roots[j.val * (roots.size / (2 * h))]!) := by
-  obtain ⟨s1, hs1, hl1, hr1, _⟩ := short_stage_refinement hblst input roots hinput n stride
+  obtain ⟨s1, hs1, hl1, hr1, _⟩ := short_stage_refinement hfr input roots hinput n stride
     1#usize hproduct (by decide) (by decide) (by simpa using (show 2 ≤ n.val by omega))
     hnmax hrootN (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) rfl
-  obtain ⟨s2, hs2, hl2, hr2, hf2⟩ := short_stage_refinement hblst input roots hinput n stride
+  obtain ⟨s2, hs2, hl2, hr2, hf2⟩ := short_stage_refinement hfr input roots hinput n stride
     2#usize hproduct (by decide) (by decide) (by simpa using (show 4 ≤ n.val by omega))
     hnmax hrootN s1 (by simpa using hl1)
-  obtain ⟨s4, hs4, hl4, hr4, hf4⟩ := short_stage_refinement hblst input roots hinput n stride
+  obtain ⟨s4, hs4, hl4, hr4, hf4⟩ := short_stage_refinement hfr input roots hinput n stride
     4#usize hproduct (by decide) (by decide) (by simpa using (show 8 ≤ n.val by omega))
     hnmax hrootN s2 (by simpa using hl2)
   have hm1 : 1#usize * 2#usize = ok 2#usize := by
@@ -166,7 +166,7 @@ private theorem sampled_twiddle (roots : _root_.Array Fr) (n d i : Nat)
   simp only [sampleRoots, _root_.Array.getElem!_ofFn, hib]
   rw [hstep, Nat.mul_assoc]
 
-theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+theorem fft_new_refinement (hfr : FrCorrect)
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr) (n : Usize)
     (hn : TransformSize n.val) (hroots : 0 < roots.size) (hdiv : roots.size % n.val = 0)
     (hinput : input.val = roots.toList.map frEncode) :
@@ -192,7 +192,7 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     refine ⟨rfl, ?_⟩
     intro stage hs ht
     omega
-  obtain ⟨wide, hwide, hw⟩ := wide_tables_loop hblst input roots hinput n stride logSize
+  obtain ⟨wide, hwide, hw⟩ := wide_tables_loop hfr input roots hinput n stride logSize
     hnpow hk12 hproduct hrootN 3 (by decide) (by omega) empty fr8.LANES
     (by simp [fr8.LANES]) hempty
   have hn64 : 64 ≤ n.val := by
@@ -201,7 +201,7 @@ theorem fft_new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
   have hnmax : n.val ≤ 4096 := by
     rw [hnpow]
     exact Nat.pow_le_pow_right (by decide : 0 < 2) hk12
-  obtain ⟨short, hshort, hshortlen, hshortrep⟩ := short_tables_refinement hblst input roots
+  obtain ⟨short, hshort, hshortlen, hshortrep⟩ := short_tables_refinement hfr input roots
     hinput n stride hproduct hn64 hnmax hrootN
   let table : fft8.Fft8 := ⟨vectors, wide, short⟩
   refine ⟨table, ?_, ?_⟩

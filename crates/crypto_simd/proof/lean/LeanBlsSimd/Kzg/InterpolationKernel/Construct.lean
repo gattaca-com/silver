@@ -1,4 +1,5 @@
-import LeanBlsSimd.Kzg.Setup
+import LeanBlsSimd.Kzg.CosetsRep
+import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 import LeanBlsSimd.Kzg.Extender.Kernel.Fft
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -17,7 +18,7 @@ private def Factors (factors : Array blst.blst_fr 64#usize) (column count : Nat)
   ∀ j : Fin 64, j.val < count →
     factors.val[j.val]! = frEncode (shiftFactor column j.val * Fr.ofNat 16)
 
-private theorem factors_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem factors_loop (hfr : FrCorrect)
     (cs : cosets.Cosets) (hcs : CosetsRep cs) (column : Usize) (hc : column.val < 128)
     (factors : Array blst.blst_fr 64#usize) (i : Usize) (hi : i.val ≤ 64)
     (hf : Factors factors column.val i.val) :
@@ -39,12 +40,12 @@ private theorem factors_loop [e : KzgExternals] (hblst : BlstCorrect e)
     have hlookup : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         cs.shift_inverse column = ok (frEncode (Model.cosetShift column.val).inverse) := by
       simp [alloc.vec.Vec.index_usize, hcs.2.2.1, hc]
-    have hproduct : blst_ops.fr_mul (frEncode (shiftFactor column.val i.val))
+    have hproduct : fr.fr_mul (frEncode (shiftFactor column.val i.val))
         (frEncode (Model.cosetShift column.val).inverse) =
         ok (frEncode (shiftFactor column.val i'.val)) := by
       simpa only [hi', shiftFactor, pow_succ, mul_assoc] using
-        hblst.fr_mul (shiftFactor column.val i.val) (Model.cosetShift column.val).inverse
-    have hmultiplier := (multiplier_refinement hblst (shiftFactor column.val i.val)).1
+        hfr.fr_mul (shiftFactor column.val i.val) (Model.cosetShift column.val).inverse
+    have hmultiplier := (multiplier_refinement hfr (shiftFactor column.val i.val)).1
     let next := Aeneas.Std.Array.set factors i (frEncode (shiftFactor column.val i.val * Fr.ofNat 16))
     have hupdate : Array.update factors i (frEncode (shiftFactor column.val i.val * Fr.ofNat 16)) =
         ok next := by
@@ -138,7 +139,7 @@ private theorem vectors_loop
     rw [interpolation_kernel.InterpolationKernel.new_loop0_loop1, loop.eq_1]
     simpa only [hbody] using hout
 
-private theorem columns_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem columns_loop (hfr : FrCorrect)
     (cs : cosets.Cosets) (hcs : CosetsRep cs)
     (shift columns : alloc.vec.Vec fr8.Fr8) (used : alloc.vec.Vec Bool)
     (factors : Array blst.blst_fr 64#usize) (c : Usize) (hc : c.val ≤ 128)
@@ -155,7 +156,7 @@ private theorem columns_loop [e : KzgExternals] (hblst : BlstCorrect e)
     simp [interpolation_kernel.InterpolationKernel.new_loop0.body, UScalar.lt_equiv, he]
   | succ rem ih =>
     have hlt : c.val < 128 := by omega
-    obtain ⟨factors', hfactors, hf⟩ := factors_loop hblst cs hcs c hlt factors
+    obtain ⟨factors', hfactors, hf⟩ := factors_loop hfr cs hcs c hlt factors
       0#usize (by decide) (by intro j hj; exact (Nat.not_lt_zero _ hj).elim)
     have hscale : frEncode (shiftFactor c.val (0#usize).val) = cs.inverse_size := by
       rw [hcs.2.1]
@@ -196,7 +197,7 @@ private theorem sample_cell (roots : _root_.Array Fr) (hsize : roots.size = 64) 
     simp only [sampleRoots, _root_.Array.getElem_ofFn, hsize, Nat.div_self (by decide : 0 < 64),
       Nat.mul_one, getElem!_pos roots i hj]
 
-theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+theorem new_refinement (hfr : FrCorrect)
     (cs : cosets.Cosets) (hcs : CosetsRep cs) :
     ∃ kernel, interpolation_kernel.InterpolationKernel.new cs = ok kernel ∧ StateInvariant kernel := by
   let empty := alloc.vec.Vec.with_capacity fr8.Fr8 1024#usize
@@ -206,12 +207,12 @@ theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     refine ⟨rfl, rfl, ?_⟩
     intro c v h
     exact (Nat.not_lt_zero _ h).elim
-  obtain ⟨shift, columns, used, hconstruct, hp, hu⟩ := columns_loop hblst cs hcs
+  obtain ⟨shift, columns, used, hconstruct, hp, hu⟩ := columns_loop hfr cs hcs
     empty empty unused factors 0#usize (by decide) (by simpa using hempty) rfl
   have hn : TransformSize (64#usize).val := ⟨6, by decide, by decide, by decide⟩
   have hrs : (Model.inverseRoots (Model.roots 6)).size = 64 := by
     simp [Model.inverseRoots, Model.roots]
-  obtain ⟨inverse, hiNew, hiInv⟩ := fft_new_refinement hblst
+  obtain ⟨inverse, hiNew, hiInv⟩ := fft_new_refinement hfr
     (alloc.vec.Vec.deref cs.inverse_roots) (Model.inverseRoots (Model.roots 6))
     64#usize hn (by omega) (by simp only [hrs, UScalar.ofNatCore_val_eq]) hcs.1
   rw [show (64#usize).val = 64 from rfl, sample_cell _ hrs] at hiInv
@@ -231,7 +232,7 @@ theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     have hcapacity : 128#usize * 8#usize = ok 1024#usize := by
       simpa using scalar_mul_ok 128#usize 8#usize (by scalar_tac)
     simp only [interpolation_kernel.InterpolationKernel.new, hcells, vectors_per_cell_eq, hcapacity,
-      bind_tc_ok, blst_ops.fr_from_u64, hblst.fr_u64, UScalar.ofNatCore_val_eq,
+      bind_tc_ok, fr_zero_eq, UScalar.ofNatCore_val_eq,
       show Fr.ofNat 0 = 0 from rfl, hconstruct, FIELD_ELEMENTS_PER_CELL, hiNew,
       Function.uncurry_apply_pair, kernel]
   · intro c v

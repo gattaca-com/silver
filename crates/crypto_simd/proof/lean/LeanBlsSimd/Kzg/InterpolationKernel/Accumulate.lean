@@ -18,7 +18,7 @@ theorem CellsRep.row_sizes {cells : Slice (Array U8 2048#usize)}
   have hrep := h.2 ⟨j, hjc⟩
   simpa only [getElem!_pos values j hjv, _root_.Array.getElem_toList] using hrep.1
 
-private theorem accumulate_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem accumulate_loop (hfr : FrCorrect)
     (cells : Slice (Array U8 2048#usize)) (indices : Slice U64) (powers : Slice blst.blst_fr)
     (values : _root_.Array (_root_.Array Fr)) (weights : List Fr)
     (hvalues : CellsRep cells values) (hindices : indices.val.length = cells.val.length)
@@ -63,7 +63,7 @@ private theorem accumulate_loop [e : KzgExternals] (hblst : BlstCorrect e)
       simpa only [_root_.Array.getElem!_toList] using
         Interpolation.flat_evals_get values.toList hvalues.row_sizes k.val j.val
           (by simp only [_root_.Array.length_toList]; omega) j.isLt
-    obtain ⟨next, hcellcall, hn, hrep⟩ := add_cell_columns hblst kernel hk cell column k.val
+    obtain ⟨next, hcellcall, hn, hrep⟩ := add_cell_columns hfr kernel hk cell column k.val
       (values.toList.flatMap _root_.Array.toList) weights columns used values[k.val]!
       (by omega) hcell hcolumns hflat
     let k' : Usize := UScalar.ofNatCore (k.val + 1) (by
@@ -93,7 +93,7 @@ private theorem accumulate_loop [e : KzgExternals] (hblst : BlstCorrect e)
       rw [List.drop_eq_getElem_cons (by simp only [List.length_range]; exact hkt)]
       simpa only [List.foldl_cons, List.getElem_range, hk', Interpolation.aggregateStep, hget] using houtrep
 
-theorem accumulate_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+theorem accumulate_refinement (hfr : FrCorrect)
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cells : Slice (Array U8 2048#usize)) (indices : Slice U64) (powers : Slice blst.blst_fr)
     (values : _root_.Array (_root_.Array Fr)) (weights : List Fr)
@@ -108,7 +108,7 @@ theorem accumulate_refinement [e : KzgExternals] (hblst : BlstCorrect e)
       ColumnsRep next expected.1 expected.2 := by
   simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, Interpolation.aggregateColumns,
     List.length_map, hindices] using
-    accumulate_loop hblst cells indices powers values weights hvalues hindices hpowers hweights
+    accumulate_loop hfr cells indices powers values weights hvalues hindices hpowers hweights
       hindicesBound kernel hk _ _ hcolumns 0#usize (by simp)
 
 end LeanBlsSimd.Kzg.InterpolationKernel

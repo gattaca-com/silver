@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.FpEncoding
-import LeanBlsSimd.Kzg.Externals
+import LeanBlsSimd.Portable.G1DecoderContract
 import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
 
@@ -31,17 +31,14 @@ theorem specVerdict_eq_bls (b : Array U8 48#usize) :
     | error e => rfl
     | ok p => exact congrArg some (g1Affine_eq_bls p)
 
-theorem g1DecoderCorrect_of_blstMatchesSpec [e : KzgExternals]
-    (hg1 : UncompressG1.BlstMatchesSpec) : G1DecoderCorrect e := by
-  intro inputs out hlen
+theorem g1_decode_refinement [RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
+    (inputs : Slice (Array U8 48#usize))
+    (out : Slice (Option blst.blst_p1_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
+      result.val = inputs.val.map specVerdict := by
   have hv : specVerdict = UncompressG1.specVerdict := funext specVerdict_eq_bls
-  simpa only [hv] using
-    UncompressG1.uncompress_in_g1_eq_spec_list hg1 inputs out hlen
-
-theorem externalsCorrect_of_blstMatchesSpec [e : KzgExternals]
-    (hblst : BlstCorrect e) (hg1 : UncompressG1.BlstMatchesSpec) :
-    ExternalsCorrect e := by
-  exact ⟨hblst, g1DecoderCorrect_of_blstMatchesSpec hg1⟩
+  simpa only [hv] using UncompressG1.uncompress_in_g1_eq_spec_list h inputs out hlen
 
 private theorem g2Affine_eq_bls (p : EthLib.Cryptography.Bls.G2) :
     g2Affine p = DecompressG2.toBlstP2Affine (G2Spec.blstLimbs p) := by
@@ -60,11 +57,9 @@ theorem specG2Verdict_eq_bls (b : Array U8 96#usize) :
   | ok p =>
     cases hs : p.inSubgroup <;> simp [Except.toOption, hs, g2Affine_eq_bls]
 
-theorem g2_decode_of_blstMatchesSpec [e : KzgExternals]
-    (hg2 : UncompressG2.BlstMatchesSpec) :
-    ∀ b, b = trusted_setup.G2_MONOMIAL_0 ∨ b = trusted_setup.G2_MONOMIAL_64 →
-      ok (e.uncompressG2 b) = ok (specG2Verdict b) := by
-  intro b _
+theorem g2_decode_of_blstMatchesSpec [e : BlsExternals]
+    (hg2 : UncompressG2.BlstMatchesSpec) (b : Array U8 96#usize) :
+    ok (e.uncompressG2 b) = ok (specG2Verdict b) := by
   exact congrArg ok ((hg2 b).trans (specG2Verdict_eq_bls b).symm)
 
 end LeanBlsSimd.Kzg

@@ -1,4 +1,4 @@
-import LeanBlsSimd.Kzg.SpecExternals
+import LeanBlsSimd.Kzg.ScalarContracts
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
@@ -6,35 +6,32 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Controls
 
-private theorem serialization_preserves_blst
-    (serialize : blst.blst_fr → Result (Aeneas.Std.Array U8 32#usize)) :
-    BlstCorrect { specExternals with frToBytes := serialize } := by
-  rcases specExternals_correct.1 with
-    ⟨hdecode, hbytes, hu64, hadd, hsub, hmul, hinverse, hhash,
-      haffine, hpointAdd, hneg, hg2neg, hlincomb, hpairing⟩
-  exact ⟨hdecode, hbytes, hu64, hadd, hsub, hmul, hinverse, hhash,
-    haffine, hpointAdd, hneg, hg2neg, hlincomb, hpairing⟩
+/-- A pure serialization fixture; this is not an implementation dictionary. -/
+def serializationBytes (x : Fr) : Aeneas.Std.Array U8 32#usize :=
+  ⟨x.toBytesBE.data.toList.map (fun b => ⟨b.toBitVec⟩), by simp [Fr.toBytesBE]⟩
 
-@[reducible] def eraseSerialization : KzgExternals :=
-  { specExternals with frToBytes := fun _ => ok (specFrBytes 0) }
+def SerializationLaw (serialize : Fr → Result (Aeneas.Std.Array U8 32#usize)) : Prop :=
+  ∀ x, ∃ result, serialize x = ok result ∧ arrayBytes result = blsFieldToBytes x
 
-theorem eraseSerialization_blst_correct : BlstCorrect eraseSerialization :=
-  serialization_preserves_blst _
+def eraseSerialization (_ : Fr) : Result (Aeneas.Std.Array U8 32#usize) :=
+  ok (serializationBytes 0)
 
-theorem eraseSerialization_rejected : ¬ FrToBytesCorrect eraseSerialization := by
+theorem eraseSerialization_zero_output (x : Fr) :
+    eraseSerialization x = ok (serializationBytes 0) := rfl
+
+theorem eraseSerialization_rejected : ¬ SerializationLaw eraseSerialization := by
   intro h
   obtain ⟨result, hserialize, hbytes⟩ := h 1
-  have hresult : specFrBytes 0 = result := Result.ok.inj hserialize
+  have hresult : serializationBytes 0 = result := Result.ok.inj hserialize
   rw [← hresult] at hbytes
-  exact (by decide +kernel : arrayBytes (specFrBytes 0) ≠ blsFieldToBytes 1) hbytes
+  exact (by decide +kernel : arrayBytes (serializationBytes 0) ≠ blsFieldToBytes 1) hbytes
 
-@[reducible] def failSerialization : KzgExternals :=
-  { specExternals with frToBytes := fun _ => fail .panic }
+def failSerialization (_ : Fr) : Result (Aeneas.Std.Array U8 32#usize) := fail .panic
 
-theorem failSerialization_blst_correct : BlstCorrect failSerialization :=
-  serialization_preserves_blst _
+theorem failSerialization_is_failure (x : Fr) :
+    failSerialization x = fail Error.panic := rfl
 
-theorem failSerialization_rejected : ¬ FrToBytesCorrect failSerialization := by
+theorem failSerialization_rejected : ¬ SerializationLaw failSerialization := by
   intro h
   obtain ⟨result, hserialize, _⟩ := h 0
   change fail Error.panic = ok result at hserialize
@@ -42,7 +39,7 @@ theorem failSerialization_rejected : ¬ FrToBytesCorrect failSerialization := by
 
 end LeanBlsSimd.Kzg.Extender.Controls
 
-#print axioms LeanBlsSimd.Kzg.Extender.Controls.eraseSerialization_blst_correct
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.eraseSerialization_zero_output
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.eraseSerialization_rejected
-#print axioms LeanBlsSimd.Kzg.Extender.Controls.failSerialization_blst_correct
+#print axioms LeanBlsSimd.Kzg.Extender.Controls.failSerialization_is_failure
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.failSerialization_rejected

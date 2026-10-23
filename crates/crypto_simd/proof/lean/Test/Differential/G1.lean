@@ -11,8 +11,9 @@ lines, `valid` and `undecided` masks, eight `pt <lane> <12 hex words>` lines, ei
 After batches, `wrappers <count>` declares cases. A `wrapper <index> <kind> <length>` has
 `ref <batch> <lane>` for each input and `out <index> none|<12 hex words>` for each output,
 then `end`. `endfile` terminates the recording. References reuse the independently recorded
-blst verdicts. Both SIMD settings of the generated wrapper use those verdicts as externals.
-The spec verdict is checked against blst on every recorded input, including undecided lanes.
+blst verdicts. The model uses those verdicts as its fallback; the generated wrapper executes
+the portable decoder at both SIMD settings. The spec verdict is checked against blst on
+every recorded input, including undecided lanes.
 -/
 
 open LeanBlsSimd LeanBlsSimd.DecompressG1 Aeneas
@@ -177,10 +178,10 @@ def compareWrapper (t : Tally) (batches : Array Batch) (w : Wrapper) (simd : Boo
   let want := w.outputs
   let model := (UncompressG1.uncompress simd oracle inputs).toArray.map (Option.map wordsOfPoint)
   let t ← check t s!"{context} model" want model
-  letI : silver_crypto_simd.bls.BlsExternals := {
+  letI : silver_crypto_simd.RuntimeFeatures := {
     simdAvailable := simd
-    uncompressG1 := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine
-    uncompressG2 := fun _ => none }
+    shaAvailable := false
+    bmi2Available := false }
   let extracted : List (Std.Array Std.U8 48#usize) := inputs.map (toArray toU8)
   if h : extracted.length ≤ Std.Usize.max then do
     let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := ⟨extracted, h⟩

@@ -8,7 +8,7 @@ open private LeanBlsSimd.Kzg.cellVerdict LeanBlsSimd.Kzg.decode_cell_body LeanBl
 
 namespace LeanBlsSimd.Kzg
 
-private theorem decode_cell_loop_frame [e : KzgExternals] (h : ExternalsCorrect e)
+private theorem decode_cell_loop_frame (h : FrBytesCorrect)
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize) (j : Usize)
     (hj : j.val ≤ 64) (next : verify.CellBatchVerifier) (stop : Usize)
     (hcall : verify.CellBatchVerifier.decode_cell_loop self cell j = ok (next, stop)) :
@@ -43,7 +43,7 @@ private theorem decode_cell_loop_frame [e : KzgExternals] (h : ExternalsCorrect 
         have hf := ih { self with evaluations := vs } j' (by omega) hcall (by omega)
         exact hf
 
-private theorem decode_cell_frame [e : KzgExternals] (h : ExternalsCorrect e)
+private theorem decode_cell_frame (h : FrBytesCorrect)
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize)
     (b : Bool) (next : verify.CellBatchVerifier)
     (hcall : verify.CellBatchVerifier.decode_cell self cell = ok (b, next)) :
@@ -59,7 +59,7 @@ private theorem decode_cell_frame [e : KzgExternals] (h : ExternalsCorrect e)
     rcases hcall with ⟨_, rfl⟩
     exact decode_cell_loop_frame h self cell 0#usize (by decide) out stop hc
 
-private theorem decode_cells_loop_frame [e : KzgExternals] (h : ExternalsCorrect e)
+private theorem decode_cells_loop_frame (h : FrBytesCorrect)
     (self : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (k : Usize) (hk : k.val ≤ cells.val.length) (next : verify.CellBatchVerifier) (stop : Usize)
     (hcall : verify.CellBatchVerifier.decode_cells_loop self cells k = ok (next, stop)) :
@@ -107,7 +107,7 @@ private theorem decode_cells_loop_frame [e : KzgExternals] (h : ExternalsCorrect
         rw [hf] at hrec
         exact hrec
 
-theorem decode_cells_frame [e : KzgExternals] (h : ExternalsCorrect e)
+theorem decode_cells_frame (h : FrBytesCorrect)
     (self : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (b : Bool) (next : verify.CellBatchVerifier)
     (hcall : verify.CellBatchVerifier.decode_cells self cells = ok (b, next)) :
@@ -128,7 +128,7 @@ theorem decode_cells_frame [e : KzgExternals] (h : ExternalsCorrect e)
         List.resize, empty, alloc.vec.Vec.new]
     let initial := { self with evaluations := empty }
     unfold verify.CellBatchVerifier.decode_cells at hcall
-    simp only [hkernel, blst_ops.fr_from_u64, h.blst.fr_u64, bind_tc_ok, hclear] at hcall
+    simp only [hkernel, fr_zero_eq, bind_tc_ok, hclear] at hcall
     have hcall' : (do
       let (out, stop) ← verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize
       ok (decide (stop = Slice.len cells), out)) = ok (b, next) := by

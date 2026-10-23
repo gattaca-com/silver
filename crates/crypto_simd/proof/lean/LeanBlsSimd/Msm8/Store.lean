@@ -92,7 +92,7 @@ theorem load_x_body (s : msm8.store.PointStore) (indices : Array U32 8#usize)
   have hadd' : (lane + 1#usize : Result Usize) = ok next := by
     rw [add_ok _ _ hadd]; rfl
   have hat : at1.val = 2 * ix.val := by simp [at1]
-  simp only [msm8.store.PointStore.load_x_loop.body, fp8.LANES,
+  simp only [msm8.store.PointStore.load_x_loop.body, limbs.LANES,
     UScalar.lt_equiv, hl, if_true, index_usize_eq indices lane hl, bind_tc_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
@@ -134,7 +134,7 @@ theorem load_x_refines (s : msm8.store.PointStore) (indices : Array U32 8#usize)
       (fun xs j => xs.set j target[j]) (toArray (n := 8#usize) id)
       (fun _ => True) (fun _ _ _ => trivial)
       (fun xs c hc _ => by
-        simp [msm8.store.PointStore.load_x_loop.body, fp8.LANES, UScalar.lt_equiv, hc])
+        simp [msm8.store.PointStore.load_x_loop.body, limbs.LANES, UScalar.lt_equiv, hc])
       (fun xs c j hc _ => load_x_body s indices hb (vec_length_bound s.rows) xs c j hc)
       (Vector.replicate 8 Simd.zero) 0#usize (by simp) trivial]
     simp [target, indexedRows, foldl_set_ofFn]
@@ -183,7 +183,7 @@ theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usiz
   have hyadd' : (at1 + 1#usize : Result Usize) = ok yat := by
     rw [add_ok _ _ hyadd]
     congr 1
-  simp only [msm8.store.PointStore.load_points_loop.body, fp8.LANES,
+  simp only [msm8.store.PointStore.load_points_loop.body, limbs.LANES,
     UScalar.lt_equiv, hl, if_true, index_usize_eq indices lane hl, bind_tc_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
@@ -242,7 +242,7 @@ theorem load_points_refines (s : msm8.store.PointStore) (indices : Array U32 8#u
       (fun p => (toArray (n := 8#usize) id p.1, toArray (n := 8#usize) id p.2))
       (fun _ => True) (fun _ _ _ => trivial)
       (fun p c hc _ => by
-        simp [msm8.store.PointStore.load_points_loop.body, fp8.LANES, UScalar.lt_equiv, hc])
+        simp [msm8.store.PointStore.load_points_loop.body, limbs.LANES, UScalar.lt_equiv, hc])
       (fun p c j hc _ => load_points_body s indices hb (vec_length_bound s.rows) p.1 p.2 c j hc)
       (zero, zero) 0#usize (by simp) trivial]
     change ok (toArray (n := 8#usize) id ((List.finRange 8).foldl
@@ -329,7 +329,7 @@ theorem store_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usi
   have hyadd' : (at1 + 1#usize : Result Usize) = ok yat := by
     rw [add_ok _ _ hyadd]
     congr 1
-  simp only [msm8.store.PointStore.store_points_loop.body, fp8.LANES,
+  simp only [msm8.store.PointStore.store_points_loop.body, limbs.LANES,
     UScalar.lt_equiv, hl, if_true, index_usize_eq indices lane hl, bind_tc_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
@@ -375,7 +375,7 @@ theorem store_points_fold (s : msm8.store.PointStore) (indices : Array U32 8#usi
     id (fun s => indicesInBounds s indices)
     (fun s j h => by simpa only [indicesInBounds, storeLane_length] using h)
     (fun s c hc _ => by
-      simp [msm8.store.PointStore.store_points_loop.body, fp8.LANES, UScalar.lt_equiv, hc])
+      simp [msm8.store.PointStore.store_points_loop.body, limbs.LANES, UScalar.lt_equiv, hc])
     (fun s c j hc h => store_points_body s indices h (vec_length_bound s.rows)
       (transpose8 (ofArray id x)) (transpose8 (ofArray id y)) c j hc)
     s 0#usize (by simp) hb]

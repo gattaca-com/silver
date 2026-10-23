@@ -5,7 +5,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.UncompressG1
 
-theorem simd_body_runs [BlsExternals]
+theorem simd_body_runs [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (stop start next : Usize) (target : List (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) (htarget : target.length = inputs.val.length)
@@ -16,8 +16,8 @@ theorem simd_body_runs [BlsExternals]
       c.val = inputs.val.slice start.val next.val → s.val.length = 8 →
       ∃ r, silver_crypto_simd.bls.decompress_g1_chunk c s = ok r ∧
         r.val = target.slice start.val next.val) :
-    ∃ result, silver_crypto_simd.bls.uncompress_in_g1_loop0.body inputs stop out true start =
-        ok (cont (result, true, next)) ∧
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1_loop.body inputs stop out start =
+        ok (cont (result, next)) ∧
       result.val.length = out.val.length ∧
       ∀ i, i < out.val.length → result.val[i]! =
         if start.val ≤ i ∧ i < next.val then target[i]! else out.val[i]! := by
@@ -63,13 +63,13 @@ theorem simd_body_runs [BlsExternals]
         core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
       rw [if_pos (by simp only [Slice.length]; constructor <;> omega)]
       rfl
-    simp only [silver_crypto_simd.bls.uncompress_in_g1_loop0.body, show start < stop from hlt,
+    simp only [silver_crypto_simd.bls.uncompress_in_g1_loop.body, show start < stop from hlt,
       if_true, Array.to_slice_mut, lift, bind_tc_ok, hadd, hindex, hmut]
     simp only [Function.uncurry_apply_pair]
     rw [hcopy]
     simp only [bind_tc_ok]
     change (do let r ← silver_crypto_simd.bls.decompress_g1_chunk c os
-               ok (cont (out.setSlice! start.val r.val, true, next))) = _
+               ok (cont (out.setSlice! start.val r.val, next))) = _
     rw [hr]
     rfl
   · simp [result, Slice.setSlice!]

@@ -15,7 +15,7 @@ private theorem cells_per_extended_blob : CELLS_PER_EXT_BLOB = ok 128#usize := b
   rw [scalar_mul_ok 2#usize 4096#usize (by scalar_tac)]
   rfl
 
-private theorem compute_scalar_core [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem compute_scalar_core (hfr : FrCorrect) (hbytes : FrBytesCorrect)
     (houtput : ∀ (blob : Blob) (cells : Cells) (values : _root_.Array Fr)
       (v : cell_extender.CellExtender), values.size = 4096 →
       v.evaluations.val = values.toList.map frEncode →
@@ -34,7 +34,7 @@ private theorem compute_scalar_core [e : KzgExternals] (hblst : BlstCorrect e)
       StateInvariant next ∧
       (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) ∧
       (verdict = false → out = cells) ∧ next.kernel = none := by
-  obtain ⟨verdict, decoded, hdecode, hd, hframe, hr⟩ := decode_blob_refinement hblst v hv blob
+  obtain ⟨verdict, decoded, hdecode, hd, hframe, hr⟩ := decode_blob_refinement hbytes v hv blob
   cases hm : blobToPolynomial (arrayBytes blob) with
   | error err =>
     simp only [hm] at hr
@@ -52,7 +52,7 @@ private theorem compute_scalar_core [e : KzgExternals] (hblst : BlstCorrect e)
       (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) (Fr.ofNat 4096).inverse
     have hcoeffSize : coefficients.size = 4096 := by
       simp [coefficients, Kzg.Model.inverseFft, size_bitReversalPermutation, hvalues]
-    obtain ⟨inverse, hinverse, hinverseVal⟩ := inverse_fft_refinement_of_blst hblst 12
+    obtain ⟨inverse, hinverse, hinverseVal⟩ := inverse_fft_refinement_of_blst hfr 12
       (alloc.vec.Vec.deref decoded.coefficients) (alloc.vec.Vec.deref decoded.evaluations)
       (alloc.vec.Vec.deref decoded.inverse_roots)
       (bitReversalPermutation values) (Kzg.Model.inverseRoots (Kzg.Model.roots 12))
@@ -60,12 +60,12 @@ private theorem compute_scalar_core [e : KzgExternals] (hblst : BlstCorrect e)
       hd.2.2.2.2.2.1 (by simpa [size_bitReversalPermutation] using hvalues)
       (by simp [Kzg.Model.inverseRoots, Kzg.Model.roots]) hdecoded hd.2.1
     let inverseVec : alloc.vec.Vec blst.blst_fr := ⟨inverse.val, inverse.property⟩
-    obtain ⟨shifted, hshift, hshiftVal⟩ := shift_refinement hblst inverseVec
+    obtain ⟨shifted, hshift, hshiftVal⟩ := shift_refinement hfr inverseVec
       decoded.shift_powers coefficients hcoeffSize hinverseVal hd.2.2.2.1
     let shiftedValues := _root_.Array.ofFn (n := 4096) fun i =>
       coefficients[i.val]! * (Kzg.Model.roots 13)[i.val]!
     have hshiftSize : shiftedValues.size = 4096 := _root_.Array.size_ofFn
-    obtain ⟨evaluations, hfft, hevaluations⟩ := fft_refinement_of_blst hblst 12
+    obtain ⟨evaluations, hfft, hevaluations⟩ := fft_refinement_of_blst hfr 12
       (alloc.vec.Vec.deref decoded.evaluations) (alloc.vec.Vec.deref shifted)
       (alloc.vec.Vec.deref decoded.roots) shiftedValues (Kzg.Model.roots 12)
       hd.2.2.2.2.1 hshiftSize (by simp [Kzg.Model.roots]) hshiftVal hd.1
@@ -125,7 +125,7 @@ private theorem compute_scalar_core [e : KzgExternals] (hblst : BlstCorrect e)
       rw [hframe]
       exact hkernel
 
-private theorem compute_core [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem compute_core (hfr : FrCorrect) (hbytes : FrBytesCorrect)
     (houtput : ∀ (blob : Blob) (cells : Cells) (values : _root_.Array Fr)
       (v : cell_extender.CellExtender), values.size = 4096 →
       v.evaluations.val = values.toList.map frEncode →
@@ -147,15 +147,15 @@ private theorem compute_core [e : KzgExternals] (hblst : BlstCorrect e)
   cases hkernel : v.kernel with
   | none =>
     obtain ⟨verdict, next, out, hcompute, hinvariant, hmodel, hrejected, _⟩ :=
-      compute_scalar_core hblst houtput v hv hkernel blob cells
+      compute_scalar_core hfr hbytes houtput v hv hkernel blob cells
     exact ⟨verdict, next, out, hcompute, hinvariant, hmodel, hrejected⟩
   | some kernel =>
     obtain ⟨verdict, next, out, hcompute, hinvariant, hmodel, hrejected, _⟩ :=
       Kernel.compute_refinement v hv kernel hkernel blob cells
     exact ⟨verdict, next, out, hcompute, hinvariant, hmodel, hrejected⟩
 
-theorem compute_refinement_with_rejection [e : KzgExternals] (hblst : BlstCorrect e)
-    (hbytes : FrToBytesCorrect e)
+theorem compute_refinement_with_rejection (hfr : FrCorrect)
+    (hbytes : FrBytesCorrect)
     (v : cell_extender.CellExtender) (hv : StateInvariant v)
     (blob : Blob) (cells : Cells) :
     ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
@@ -163,10 +163,10 @@ theorem compute_refinement_with_rejection [e : KzgExternals] (hblst : BlstCorrec
       StateInvariant next ∧
       (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) ∧
       (verdict = false → out = cells) := by
-  exact compute_core hblst (output_refinement hbytes) v hv blob cells
+  exact compute_core hfr hbytes (output_refinement hbytes) v hv blob cells
 
-theorem compute_refinement [e : KzgExternals] (hblst : BlstCorrect e)
-    (hbytes : FrToBytesCorrect e)
+theorem compute_refinement (hfr : FrCorrect)
+    (hbytes : FrBytesCorrect)
     (v : cell_extender.CellExtender) (hv : StateInvariant v)
     (blob : Blob) (cells : Cells) :
     ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
@@ -174,7 +174,7 @@ theorem compute_refinement [e : KzgExternals] (hblst : BlstCorrect e)
       StateInvariant next ∧
       (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
   obtain ⟨verdict, next, out, hr, hi, hm, _⟩ :=
-    compute_refinement_with_rejection hblst hbytes v hv blob cells
+    compute_refinement_with_rejection hfr hbytes v hv blob cells
   exact ⟨verdict, next, out, hr, hi, hm⟩
 
 end LeanBlsSimd.Kzg.Extender

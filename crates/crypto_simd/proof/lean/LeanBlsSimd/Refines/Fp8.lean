@@ -467,7 +467,7 @@ theorem Fp8.load_refines (values : Array (Array U64 8#usize) 8#usize) :
 
 theorem Fp8.store_inner_refines (out : Vector Limbs 8) (j : Usize) (hj : j.val < LIMBS)
     (l : Vector UInt64 8) :
-    fp8.Fp8.store_loop0_loop0 { start := 0#usize, «end» := fp8.LANES } (toArray (toArray toU64) out) j
+    fp8.Fp8.store_loop0_loop0 { start := 0#usize, «end» := limbs.LANES } (toArray (toArray toU64) out) j
         (toArray toU64 l) =
       ok (toArray (toArray toU64) ((List.finRange 8).foldl
         (fun out (lane : Fin 8) => out.set lane (out[lane].set j.val l[lane])) out)) := by
@@ -572,18 +572,18 @@ theorem Fp8.is_zero_mask_refines (self : fp8.Fp8) :
     simp [toFp8, hs]
 
 theorem unpack52_refines (x : Array U64 6#usize) :
-    fp8.unpack52 x = ok (toArray toU64 (unpack52 (ofArray ofU64 x))) := by
-  unfold fp8.unpack52 fp8.unpack52_loop
+    limbs.unpack52 x = ok (toArray toU64 (unpack52 (ofArray ofU64 x))) := by
+  unfold limbs.unpack52 limbs.unpack52_loop
   simp only [LIMBS_refines]
   refine loop_range (n := LIMBS) _ 8#usize rfl (toArray toU64)
     (fun v j => v.set j (unpack52 (ofArray ofU64 x))[j]) (toArray toU64) (Vector.replicate LIMBS 0)
     _ ?_ ?_ ?_
   · intro r m he hs hn
-    simp_body fp8.unpack52_loop.body hn
+    simp_body limbs.unpack52_loop.body hn
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     obtain rfl : j = ⟨r.start.val, hj⟩ := Fin.ext hs.symm
-    simp_body fp8.unpack52_loop.body hn
+    simp_body limbs.unpack52_loop.body hn
     simp only [update_eq _ _ _ hj]
     rcases usize_lt_8 r.start hj with h | h | h | h | h | h | h | h <;>
     · simp only [h]
@@ -596,8 +596,8 @@ theorem unpack52_refines (x : Array U64 6#usize) :
     rfl
 
 theorem pack64_refines (x : Array U64 8#usize) :
-    fp8.pack64 x = ok (toArray toU64 (pack64 (ofArray ofU64 x))) := by
-  unfold fp8.pack64 fp8.pack64_loop
+    limbs.pack64 x = ok (toArray toU64 (pack64 (ofArray ofU64 x))) := by
+  unfold limbs.pack64 limbs.pack64_loop
   simp only [LIMBS_refines]
   let X : Limbs := ofArray ofU64 x
   let step := packStep X
@@ -631,7 +631,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
     simp_body Function.uncurry_apply_pair Function.uncurry_apply_pair
     simp
   · intro r s he hs _ hn
-    simp_body fp8.pack64_loop.body hn
+    simp_body limbs.pack64_loop.body hn
     rfl
   · intro r r' s j he hs he' hs' hi hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
@@ -640,7 +640,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
     obtain ⟨hb, hw⟩ := hi
     simp only at hb hw
     subst hb hw
-    simp_body fp8.pack64_loop.body hn
+    simp_body limbs.pack64_loop.body hn
     rcases usize_lt_8 r.start hj with h | h | h | h | h | h | h | h <;>
     · simp only [h, enc, step, packStep, UScalar.ofNatCore_val_eq, LIMB_BITS, Fin.getElem_fin, X,
         getElem_ofArray]
@@ -933,7 +933,7 @@ theorem Fp8.to_plain_refines (self : fp8.Fp8) :
     Fp8.canonical_refines, Fp8.store_refines, Fp8.to_plain]
 
 theorem Fp8.to_blst_limbs_loop_refines (t : Array (Array U64 8#usize) 8#usize) :
-    fp8.Fp8.to_blst_limbs_loop { start := 0#usize, «end» := fp8.LANES } t
+    fp8.Fp8.to_blst_limbs_loop { start := 0#usize, «end» := limbs.LANES } t
         (Array.repeat 8#usize (Array.repeat 6#usize 0#u64)) =
       ok (toArray (toArray toU64) (.ofFn fun lane : Fin 8 =>
         pack64 (ofArray (ofArray ofU64) t (m := 8))[lane])) := by

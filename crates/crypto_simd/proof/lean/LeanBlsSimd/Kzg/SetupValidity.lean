@@ -26,11 +26,11 @@ theorem setup_g1_affine_valid (i : Fin 64) :
 
 theorem setup_g2_cell_valid : G2AffineValid (g2Affine SetupPoints.g2Point64) := by
   rw [G2AffineValid, setup_g2_cell_roundtrip]
-  exact ⟨rfl, arrayBytes trusted_setup.G2_MONOMIAL_64,
+  exact ⟨rfl, arrayBytes SetupPoints.g2Bytes64,
     SetupPoints.g2_64_decoded, SetupPoints.g2_64_subgroup⟩
 
 private def negGeneratorBytes : ByteArray :=
-  let b := arrayBytes trusted_setup.G2_MONOMIAL_0
+  let b := arrayBytes SetupPoints.g2Bytes0
   b.set! 0 (b[0]! ^^^ 0x20)
 
 theorem setup_g2_neg_zero_decoded :

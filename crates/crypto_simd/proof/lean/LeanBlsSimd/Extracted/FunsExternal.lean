@@ -12,36 +12,24 @@ def Aeneas.Std.alloc.vec.Vec.is_empty (_Allocator : Type) {α : Type}
     (v : alloc.vec.Vec α) : Result Bool :=
   ok v.val.isEmpty
 
-/-- External observations supplied to the generated BLS APIs. -/
-class silver_crypto_simd.bls.BlsExternals where
+/-- CPU observations supplied independently of the opaque G2 decoder. -/
+class silver_crypto_simd.RuntimeFeatures where
   simdAvailable : Bool
-  uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
+  shaAvailable : Bool
+  bmi2Available : Bool
+
+/-- The compressed G2 decoder is the only remaining opaque BLS operation. -/
+class silver_crypto_simd.bls.BlsExternals where
   uncompressG2 : Array Std.U8 96#usize → Option blst.blst_p2_affine
 
-class silver_crypto_simd.kzg.KzgExternals extends BlsExternals where
-  frFromBytes : Array U8 32#usize → Result (Option blst.blst_fr)
-  frToBytes : blst.blst_fr → Result (Array U8 32#usize)
-  frFromU64 : U64 → Result blst.blst_fr
-  frAdd : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
-  frSub : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
-  frMul : blst.blst_fr → blst.blst_fr → Result blst.blst_fr
-  frInverse : blst.blst_fr → Result blst.blst_fr
-  hashToFr : Slice U8 → Result blst.blst_fr
-  g1ToAffine : blst.blst_p1 → Result blst.blst_p1_affine
-  g1Add : blst.blst_p1 → blst.blst_p1 → Result blst.blst_p1
-  g1Neg : blst.blst_p1 → Result blst.blst_p1
-  g2Neg : blst.blst_p2_affine → Result blst.blst_p2_affine
-  g1Lincomb : Slice blst.blst_p1_affine → Slice blst.blst_fr → kzg.blst_ops.LincombScratch →
-    Result (blst.blst_p1 × kzg.blst_ops.LincombScratch)
-  pairingCheck : blst.blst_p1_affine → blst.blst_p2_affine →
-    blst.blst_p1_affine → blst.blst_p2_affine → Result Bool
+def silver_crypto_simd.ifma_available [RuntimeFeatures] : Result Bool :=
+  ok RuntimeFeatures.simdAvailable
 
-def silver_crypto_simd.ifma_available [BlsExternals] : Result Bool :=
-  ok BlsExternals.simdAvailable
+def silver_crypto_simd.sha_available [RuntimeFeatures] : Result Bool :=
+  ok RuntimeFeatures.shaAvailable
 
-def silver_crypto_simd.bls.uncompress_in_g1_blst [BlsExternals]
-    (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
-  ok (BlsExternals.uncompressG1 bytes)
+def silver_crypto_simd.bmi2_available [RuntimeFeatures] : Result Bool :=
+  ok RuntimeFeatures.bmi2Available
 
 def silver_crypto_simd.bls.uncompress_in_g2_blst [BlsExternals]
     (bytes : Array Std.U8 96#usize) : Result (Option blst.blst_p2_affine) :=
@@ -204,21 +192,6 @@ def silver_crypto_simd.bls.fp8.lanes (v : core.core_arch.x86.__m512i) : Result (
 
 namespace silver_crypto_simd
 
-def kzg.blst_ops.fr_from_bytes [kzg.KzgExternals] := kzg.KzgExternals.frFromBytes
-def kzg.blst_ops.fr_to_bytes [kzg.KzgExternals] := kzg.KzgExternals.frToBytes
-def kzg.blst_ops.fr_from_u64 [kzg.KzgExternals] := kzg.KzgExternals.frFromU64
-def kzg.blst_ops.fr_add [kzg.KzgExternals] := kzg.KzgExternals.frAdd
-def kzg.blst_ops.fr_sub [kzg.KzgExternals] := kzg.KzgExternals.frSub
-def kzg.blst_ops.fr_mul [kzg.KzgExternals] := kzg.KzgExternals.frMul
-def kzg.blst_ops.fr_inverse [kzg.KzgExternals] := kzg.KzgExternals.frInverse
-def kzg.blst_ops.hash_to_fr [kzg.KzgExternals] := kzg.KzgExternals.hashToFr
-def kzg.blst_ops.g1_to_affine [kzg.KzgExternals] := kzg.KzgExternals.g1ToAffine
-def kzg.blst_ops.g1_add [kzg.KzgExternals] := kzg.KzgExternals.g1Add
-def kzg.blst_ops.g1_neg [kzg.KzgExternals] := kzg.KzgExternals.g1Neg
-def kzg.blst_ops.g2_neg [kzg.KzgExternals] := kzg.KzgExternals.g2Neg
-def kzg.blst_ops.g1_lincomb [kzg.KzgExternals] := kzg.KzgExternals.g1Lincomb
-def kzg.blst_ops.pairing_check [kzg.KzgExternals] := kzg.KzgExternals.pairingCheck
-
 def U32.Insts.CoreIterRangeStep.backward_checked (a : Std.U32) (n : Usize) :
     Result (Option Std.U32) :=
   ok (if n.val ≤ a.val then some ⟨BitVec.ofNat 32 (a.val - n.val)⟩ else none)
@@ -246,4 +219,84 @@ def blst.blst_fr.Insts.CoreCloneClone.clone (x : blst.blst_fr) : Result blst.bls
 def blst.blst_p1_affine.Insts.CoreCloneClone.clone (x : blst.blst_p1_affine) :
     Result blst.blst_p1_affine := ok x
 
+def core.option.Option.Insts.CoreOpsTry_traitTryTOptionInfallible.branch {T : Type}
+    (x : Option T) :
+    Result (core.ops.control_flow.ControlFlow (Option core.convert.Infallible) T) :=
+  match x with
+  | none => ok (.Break none)
+  | some a => ok (.Continue a)
+
+def core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
+    (T : Type) (residual : Option core.convert.Infallible) : Result (Option T) :=
+  match residual with
+  | none => ok none
+  | some impossible => nomatch impossible
+
+def blst.blst_p1.Insts.CoreDefaultDefault.default : Result blst.blst_p1 :=
+  let fp : blst.blst_fp := { l := Array.repeat 6#usize 0#u64 }
+  ok { x := fp, y := fp, z := fp }
+
 end silver_crypto_simd
+
+@[rust_fun "core::core_arch::x86::sha::_mm_sha256msg1_epu32"]
+def core.core_arch.x86.sha._mm_sha256msg1_epu32 (a b : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok (LeanBlsSimd._mm_sha256msg1_epu32 a b)
+
+@[rust_fun "core::core_arch::x86::sha::_mm_sha256msg2_epu32"]
+def core.core_arch.x86.sha._mm_sha256msg2_epu32 (a b : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok (LeanBlsSimd._mm_sha256msg2_epu32 a b)
+
+@[rust_fun "core::core_arch::x86::sha::_mm_sha256rnds2_epu32"]
+def core.core_arch.x86.sha._mm_sha256rnds2_epu32 (a b wk : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok (LeanBlsSimd._mm_sha256rnds2_epu32 a b wk)
+
+@[rust_fun "core::core_arch::x86::sse2::_mm_add_epi32"]
+def core.core_arch.x86.sse2._mm_add_epi32 (a b : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok (LeanBlsSimd._mm_add_epi32 a b)
+
+@[rust_fun "core::core_arch::x86::sse2::_mm_set_epi64x"]
+def core.core_arch.x86.sse2._mm_set_epi64x (hi lo : Std.I64) :
+    Result core.core_arch.x86.__m128i :=
+  ok (LeanBlsSimd._mm_set_epi64x (Int64.ofBitVec hi.bv) (Int64.ofBitVec lo.bv))
+
+@[rust_fun "core::core_arch::x86::sse2::_mm_shuffle_epi32"]
+def core.core_arch.x86.sse2._mm_shuffle_epi32 (IMM8 : Std.I32)
+    (a : core.core_arch.x86.__m128i) : Result core.core_arch.x86.__m128i :=
+  ok (LeanBlsSimd._mm_shuffle_epi32 IMM8.bv.toNat a)
+
+@[rust_fun "core::core_arch::x86::sse41::_mm_blend_epi16"]
+def core.core_arch.x86.sse41._mm_blend_epi16 (IMM8 : Std.I32)
+    (a b : core.core_arch.x86.__m128i) : Result core.core_arch.x86.__m128i :=
+  ok (LeanBlsSimd._mm_blend_epi16 IMM8.bv.toNat a b)
+
+@[rust_fun "core::core_arch::x86::ssse3::_mm_shuffle_epi8"]
+def core.core_arch.x86.ssse3._mm_shuffle_epi8 (a b : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok (LeanBlsSimd._mm_shuffle_epi8 a b)
+
+@[rust_fun "core::core_arch::x86::ssse3::_mm_alignr_epi8"]
+def core.core_arch.x86.ssse3._mm_alignr_epi8 (IMM8 : Std.I32)
+    (a b : core.core_arch.x86.__m128i) : Result core.core_arch.x86.__m128i :=
+  ok (LeanBlsSimd._mm_alignr_epi8 IMM8.bv.toNat a b)
+
+@[rust_fun "core::core_arch::x86_64::adx::_addcarry_u64"]
+def core.core_arch.x86_64.adx._addcarry_u64 (carry : Std.U8) (a b _out : Std.U64) :
+    Result (Std.U8 × Std.U64) :=
+  let (c, s) := LeanBlsSimd._addcarry_u64 (UInt8.ofBitVec carry.bv)
+    (UInt64.ofBitVec a.bv) (UInt64.ofBitVec b.bv)
+  ok (⟨c.toBitVec⟩, ⟨s.toBitVec⟩)
+
+/-- The pointer load reads the 16 array bytes in x86 little-endian order. -/
+def silver_crypto_simd.sha256.extensions.load_bytes (bytes : Array Std.U8 16#usize) :
+    Result core.core_arch.x86.__m128i :=
+  ok (LeanBlsSimd.ShaIntrinsics.loadBytes (.ofFn fun i =>
+    UInt8.ofBitVec (bytes.val[i.val]'(by rw [bytes.property]; exact i.isLt)).bv))
+
+/-- A `[u32; 4]` has four consecutive native little-endian words on x86-64. -/
+def silver_crypto_simd.sha256.extensions.load_words (words : Array Std.U32 4#usize) :
+    Result core.core_arch.x86.__m128i :=
+  ok (.ofFn fun i => UInt32.ofBitVec (words.val[i.val]'(by
+    rw [words.property]; exact i.isLt)).bv)
+
+def silver_crypto_simd.sha256.extensions.store_words (v : core.core_arch.x86.__m128i) :
+    Result (Array Std.U32 4#usize) :=
+  ok ⟨v.toList.map fun x => ⟨x.toBitVec⟩, by simp⟩

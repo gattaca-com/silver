@@ -135,18 +135,18 @@ private theorem loop_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
         rw [hrv i hi, hmv i hi]
         split_ifs <;> first | rfl | omega
 
-theorem uncompress_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
+theorem uncompress_refines [RuntimeFeatures] [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
-      result.val = (uncompress BlsExternals.simdAvailable modelBlst
+      result.val = (uncompress RuntimeFeatures.simdAvailable modelBlst
         (inputs.val.map (ofArray ofU8))).map (Option.map toBlstP2Affine) := by
-  obtain ⟨result, hr, hrl, hrv⟩ := loop_refines inputs out BlsExternals.simdAvailable 0#usize
+  obtain ⟨result, hr, hrl, hrv⟩ := loop_refines inputs out RuntimeFeatures.simdAvailable 0#usize
     hlen (by simp) (Or.inl (by simp))
   refine ⟨result, ?_, ?_⟩
   · have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
     simp only [silver_crypto_simd.bls.uncompress_in_g2, heq, massert, ↓reduceIte,
       bind_tc_ok, ifma_available, hr]
-  · change result.val = rawOutput BlsExternals.simdAvailable inputs
+  · change result.val = rawOutput RuntimeFeatures.simdAvailable inputs
     apply List.ext_getElem
     · rw [hrl, hlen, rawOutput_length]
     · intro i hi ht

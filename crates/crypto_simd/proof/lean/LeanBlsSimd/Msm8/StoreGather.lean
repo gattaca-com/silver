@@ -104,7 +104,7 @@ theorem push_gather_body (i offset count lane : Usize)
     rw [sub_ok ik offset (by simp [ik]; omega)]
     rfl
   refine ⟨next, by simp [next, hj], ?_⟩
-  simp only [msm8.store.PointStore.push_blst_loop0_loop0.body, fp8.LANES,
+  simp only [msm8.store.PointStore.push_blst_loop0_loop0.body, limbs.LANES,
     UScalar.lt_equiv, hl, if_true]
   simp only [UScalar.lt_equiv] at hchoice
   rw [hchoice]
@@ -155,7 +155,7 @@ theorem push_gather_refines (i offset count : Usize)
     (gatherStep (blstPointWords points) negated.val i.val offset.val count.val)
     encodeGathered (fun _ => True) (fun _ _ _ => trivial)
     (fun b c h _ => by
-      simp [msm8.store.PointStore.push_blst_loop0_loop0.body, fp8.LANES, UScalar.lt_equiv, h]
+      simp [msm8.store.PointStore.push_blst_loop0_loop0.body, limbs.LANES, UScalar.lt_equiv, h]
       rfl)
     (fun b c j h _ => push_gather_body i offset count c points negated b j h hc hb hn hs)
     b 0#usize (by simp) trivial]
@@ -230,10 +230,10 @@ theorem batch_count_refines (points : Slice blst.blst_p1_affine) (offset count :
     (ho : offset.val ≤ points.val.length)
     (hc : count.val = min 8 (points.val.length - offset.val)) :
     (do let remaining ← Slice.len points - offset
-        if remaining < fp8.LANES then Slice.len points - offset else ok fp8.LANES) = ok count := by
+        if remaining < limbs.LANES then Slice.len points - offset else ok limbs.LANES) = ok count := by
   have hsub := sub_ok (Slice.len points) offset ho
   rw [hsub]
-  simp only [bind_tc_ok, fp8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
+  simp only [bind_tc_ok, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
   by_cases h : points.val.length - offset.val < 8
   · simp only [h, if_true]
     congr 1

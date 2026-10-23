@@ -92,17 +92,17 @@ def toBatch (b : Batch) : decompress_g2.Batch where
 @[simp] theorem toBatch_ofBatch (a : decompress_g2.Batch) : toBatch (ofBatch a) = a := by
   simp [ofBatch, toBatch]
 
-theorem FP_BYTES_refines : decompress_g2.FP_BYTES = ok 48#usize := by
-  rw [decompress_g2.FP_BYTES, silver_crypto_simd.bls.G2_COMPRESSED_LEN]; rfl
+theorem FP_BYTES_refines : encoding.FP_BYTES = ok 48#usize := by
+  rw [encoding.FP_BYTES, silver_crypto_simd.bls.G2_COMPRESSED_LEN]; rfl
 
-theorem FLAG_COMPRESSED_refines : decompress_g2.FLAG_COMPRESSED = toU8 FLAG_COMPRESSED := by
-  rw [decompress_g2.FLAG_COMPRESSED]; rfl
+theorem FLAG_COMPRESSED_refines : encoding.FLAG_COMPRESSED = toU8 FLAG_COMPRESSED := by
+  rw [encoding.FLAG_COMPRESSED]; rfl
 
-theorem FLAG_INFINITY_refines : decompress_g2.FLAG_INFINITY = toU8 FLAG_INFINITY := by
-  rw [decompress_g2.FLAG_INFINITY]; rfl
+theorem FLAG_INFINITY_refines : encoding.FLAG_INFINITY = toU8 FLAG_INFINITY := by
+  rw [encoding.FLAG_INFINITY]; rfl
 
-theorem FLAG_LARGER_ROOT_refines : decompress_g2.FLAG_LARGER_ROOT = toU8 FLAG_LARGER_ROOT := by
-  rw [decompress_g2.FLAG_LARGER_ROOT]; rfl
+theorem FLAG_LARGER_ROOT_refines : encoding.FLAG_LARGER_ROOT = toU8 FLAG_LARGER_ROOT := by
+  rw [encoding.FLAG_LARGER_ROOT]; rfl
 
 theorem point_refines (x0 x1 y0 y1 : Array U64 6#usize) :
     decompress_g2.point x0 x1 y0 y1 = ok (toBlstP2Affine
@@ -112,24 +112,24 @@ theorem point_refines (x0 x1 y0 y1 : Array U64 6#usize) :
   constructor <;> (apply Subtype.ext; simp [toBlstFp, Array.make])
 
 theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6) :
-    decompress_g2.less_than_p_loop x
+    encoding.less_than_p_loop x
         (UScalar.ofNatCore w (lt_of_lt_of_le (by omega) two_pow_32_le_usize)) =
       ok (((List.range w).reverse.foldl (ltStep (ofArray ofU64 x)) none).getD false) := by
   induction w with
   | zero =>
-    rw [decompress_g2.less_than_p_loop, loop.eq_1]
-    simp [decompress_g2.less_than_p_loop.body]
+    rw [encoding.less_than_p_loop, loop.eq_1]
+    simp [encoding.less_than_p_loop.body]
   | succ w ih =>
     have hw6 : w < 6 := by omega
     have hx : (ofArray ofU64 x : Vector UInt64 6)[w]! =
         ofU64 (x.val[w]'(by simp [x.property]; omega)) := by
       rw [getElem!_pos _ w hw6]; simp
-    have hbody : decompress_g2.less_than_p_loop.body x
+    have hbody : encoding.less_than_p_loop.body x
         (UScalar.ofNatCore (w + 1) (lt_of_lt_of_le (by omega) two_pow_32_le_usize)) =
         if (ofArray ofU64 x : Vector UInt64 6)[w]! ≠ P_U64v[w]! then
           ok (done (decide ((ofArray ofU64 x : Vector UInt64 6)[w]! < P_U64v[w]!)))
         else ok (cont (UScalar.ofNatCore w (lt_of_lt_of_le (by omega) two_pow_32_le_usize))) := by
-      simp only [decompress_g2.less_than_p_loop.body, gt_iff_lt, UScalar.lt_equiv,
+      simp only [encoding.less_than_p_loop.body, gt_iff_lt, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq]
       rw [if_pos (by simp)]
       rw [show (UScalar.ofNatCore (w + 1) (lt_of_lt_of_le (by omega) two_pow_32_le_usize) : Usize) -
@@ -139,7 +139,7 @@ theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6
       rw [index_usize_eq _ _ (by simp; omega), P_U64_refines, index_usize_eq _ _ (by simp; omega)]
       simp only [bind_tc_ok, hx]
       simp [List.getElem_map, ← UInt64.toNat_inj, UInt64.lt_iff_toNat_lt, getElem!_pos P_U64v w hw6]
-    rw [decompress_g2.less_than_p_loop, loop.eq_1, hbody]
+    rw [encoding.less_than_p_loop, loop.eq_1, hbody]
     simp only [List.range_succ, List.reverse_append, List.reverse_singleton,
       List.singleton_append, List.foldl_cons]
     by_cases hc : (ofArray ofU64 x : Vector UInt64 6)[w]! = P_U64v[w]!
@@ -193,19 +193,19 @@ theorem from_be_bytes_refines (a : Array U8 8#usize) :
   rfl
 
 theorem fp_words_refines (be : Slice U8) (h : be.val.length = FP_BYTES) :
-    decompress_g2.fp_words be = ok (toArray toU64 (fp_words (ofSlice ofU8 be h))) := by
-  unfold decompress_g2.fp_words decompress_g2.fp_words_loop
+    encoding.fp_words be = ok (toArray toU64 (fp_words (ofSlice ofU8 be h))) := by
+  unfold encoding.fp_words encoding.fp_words_loop
   refine loop_range (n := 6) _ 6#usize rfl (toArray toU64)
     (fun v w => v.set w (fp_words (ofSlice ofU8 be h))[w]) (toArray toU64) (Vector.replicate 6 0)
     _ ?_ ?_ ?_
   · intro r m he hs hn
-    simp_body decompress_g2.fp_words_loop.body hn
+    simp_body encoding.fp_words_loop.body hn
   · intro r r' m w he hs he' hs' hn
     have hw6 : r.start.val < 6 := by rw [hs]; exact w.isLt
     have hw : r.start.val < 8 := by omega
     obtain rfl : w = ⟨r.start.val, hw6⟩ := Fin.ext hs.symm
     have hlen : be.val.length = 48 := h
-    simp_body decompress_g2.fp_words_loop.body hn
+    simp_body encoding.fp_words_loop.body hn
     simp only [lift, bind_tc_ok, Function.uncurry_apply_pair, Array.to_slice_mut, FP_BYTES_refines]
     simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_add_ok,
       usize_mul_ok, sub_ok, slice_index_ok, copy_from_slice_ok, update_eq, bind_tc_ok,
@@ -223,7 +223,7 @@ theorem fp_words_refines (be : Slice U8) (h : be.val.length = FP_BYTES) :
     rfl
 
 theorem less_than_p_refines (x : Array U64 6#usize) :
-    decompress_g2.less_than_p x = ok (less_than_p (ofArray ofU64 x)) :=
+    encoding.less_than_p x = ok (less_than_p (ofArray ofU64 x)) :=
   less_than_p_loop_refines x 6 le_rfl
 
 theorem split_at_fst (B : Vector UInt8 G2_COMPRESSED_LEN) (h' : (96#usize).val = G2_COMPRESSED_LEN)
@@ -245,7 +245,7 @@ def decodeState (d : Decoded) :
     toU8 d.undecided)
 
 theorem decode_loop_refines (inputs : Array (Array U8 96#usize) 8#usize) :
-    decompress_g2.decode_loop { start := 0#usize, «end» := fp8.LANES } inputs
+    decompress_g2.decode_loop { start := 0#usize, «end» := limbs.LANES } inputs
         (decodeState decodeInit).1 (decodeState decodeInit).2.1 (decodeState decodeInit).2.2.1
         (decodeState decodeInit).2.2.2.1 (decodeState decodeInit).2.2.2.2 =
       ok (decodeState (decode (ofArray (ofArray ofU8) inputs))) := by
@@ -296,7 +296,7 @@ theorem decode_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     decompress_g2.decode inputs = ok (toDecoded (decode (ofArray (ofArray ofU8) inputs))) := by
   unfold decompress_g2.decode
   change (do
-    let (a4, a5, i, i1, i2) ← decompress_g2.decode_loop { start := 0#usize, «end» := fp8.LANES }
+    let (a4, a5, i, i1, i2) ← decompress_g2.decode_loop { start := 0#usize, «end» := limbs.LANES }
       inputs (decodeState decodeInit).1 (decodeState decodeInit).2.1
       (decodeState decodeInit).2.2.1 (decodeState decodeInit).2.2.2.1
       (decodeState decodeInit).2.2.2.2
@@ -313,7 +313,7 @@ theorem default_refines :
 
 theorem decompress_loop_refines (a : Array blst.blst_p2_affine 8#usize)
     (x0 x1 y0 y1 : Array (Array U64 6#usize) 8#usize) :
-    decompress_g2.decompress_loop { start := 0#usize, «end» := fp8.LANES } a x0 x1 y0 y1 =
+    decompress_g2.decompress_loop { start := 0#usize, «end» := limbs.LANES } a x0 x1 y0 y1 =
       ok (toArray toBlstP2Affine (.ofFn fun lane : Fin 8 =>
         point (ofArray (ofArray ofU64) x0 (m := 8))[lane]
           (ofArray (ofArray ofU64) x1 (m := 8))[lane] (ofArray (ofArray ofU64) y0 (m := 8))[lane]

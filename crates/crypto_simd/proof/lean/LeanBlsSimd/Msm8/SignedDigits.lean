@@ -130,7 +130,7 @@ theorem high_refines (words : Array U64 4#usize) (i : Usize) :
     have hn : words.val[i.val]? = none := List.getElem?_eq_none (by simpa only [words.property] using Nat.le_of_not_lt hi)
     simp only [wordAt, hn, Option.getD_none]
 
-theorem unsigned_window_raw (self : buckets.SignedDigits)
+theorem unsigned_window_raw (self : signed_digits.SignedDigits)
     (hb : self.bit.val < 256) (hw : self.window_bits.val < 64) :
     self.unsigned_window = ok (rawWindow (wordAt self.words.val (self.bit.val / 64))
       (wordAt self.words.val (self.bit.val / 64 + 1)) (self.bit.val % 64) self.window_bits.val) := by
@@ -150,7 +150,7 @@ theorem unsigned_window_raw (self : buckets.SignedDigits)
       (1#u64).bv.toNat <<< self.window_bits.val % 2 ^ 64 from BitVec.toNat_shiftLeft]
     simp only [show (1#u64).bv.toNat = 1 from rfl, Nat.one_shiftLeft]
     exact Nat.mod_eq_of_lt hp
-  rw [buckets.SignedDigits.unsigned_window, div_ok _ _ (by decide)]
+  rw [signed_digits.SignedDigits.unsigned_window, div_ok _ _ (by decide)]
   simp only [bind_tc_ok]
   rw [show (UScalar.ofNatCore (self.bit.val / (64#usize).val)
     (lt_of_le_of_lt (Nat.div_le_self _ _) self.bit.hBounds) : Usize) = q from rfl]
@@ -181,7 +181,7 @@ theorem unsigned_window_raw (self : buckets.SignedDigits)
   simp only [show (1#u64).val = 1 from rfl, hmask]
   rfl
 
-theorem unsigned_window_refines (self : buckets.SignedDigits)
+theorem unsigned_window_refines (self : signed_digits.SignedDigits)
     (hb : self.bit.val < 256) (hw : self.window_bits.val < 64) :
     ∃ out : U64, self.unsigned_window = ok out ∧
       out.val = value self.words / 2 ^ self.bit.val % 2 ^ self.window_bits.val := by
@@ -213,10 +213,10 @@ theorem cast_usize_val (x : U64) (hx : x.val < 2 ^ 32) :
   rw [UScalar.cast_val_eq]
   exact Nat.mod_eq_of_lt (lt_of_lt_of_le hx two_pow_32_le_usize)
 
-theorem next_digit_refines (self : buckets.SignedDigits)
+theorem next_digit_refines (self : signed_digits.SignedDigits)
     (hb : self.bit.val < 256) (hwl : 1 ≤ self.window_bits.val) (hwh : self.window_bits.val ≤ 8)
     (hc : self.carry.val ≤ 1) :
-    ∃ (magnitude : Usize) (negative : Bool) (next : buckets.SignedDigits),
+    ∃ (magnitude : Usize) (negative : Bool) (next : signed_digits.SignedDigits),
       self.next_digit = ok ((magnitude, negative), next) ∧
       next.words = self.words ∧ next.window_bits = self.window_bits ∧
       next.bit.val = self.bit.val + self.window_bits.val ∧
@@ -242,7 +242,7 @@ theorem next_digit_refines (self : buckets.SignedDigits)
   · change 2 ^ (self.window_bits.val - 1) < u.val + self.carry.val at hn
     let mag : U64 := UScalar.ofNatCore (2 ^ self.window_bits.val - v.val) (by change _ < 2 ^ 64; omega)
     refine ⟨UScalar.cast .Usize mag, true, { self with bit := bit', carry := 1#u64 }, ?_, rfl, rfl, rfl, rfl, ?_, ?_, ?_⟩
-    · simp only [buckets.SignedDigits.next_digit, hu, bind_tc_ok]
+    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_tc_ok]
       rw [add_ok _ _ hv64]
       simp only [bind_tc_ok]
       rw [sub_ok self.window_bits 1#usize hwl]
@@ -269,7 +269,7 @@ theorem next_digit_refines (self : buckets.SignedDigits)
       ring
   · change ¬2 ^ (self.window_bits.val - 1) < u.val + self.carry.val at hn
     refine ⟨UScalar.cast .Usize v, false, { self with bit := bit', carry := 0#u64 }, ?_, rfl, rfl, rfl, rfl, ?_, ?_, ?_⟩
-    · simp only [buckets.SignedDigits.next_digit, hu, bind_tc_ok]
+    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_tc_ok]
       rw [add_ok _ _ hv64]
       simp only [bind_tc_ok]
       rw [sub_ok self.window_bits 1#usize hwl]
@@ -298,7 +298,7 @@ def digitSum (w : ℕ) : List (Usize × Bool) → ℤ
   | [] => 0
   | (m, neg) :: ds => digitValue m.val neg + (2 ^ w : ℤ) * digitSum w ds
 
-def run : ℕ → buckets.SignedDigits → Result (List (Usize × Bool) × buckets.SignedDigits)
+def run : ℕ → signed_digits.SignedDigits → Result (List (Usize × Bool) × signed_digits.SignedDigits)
   | 0, self => ok ([], self)
   | n + 1, self => do
     let (digits, state) ← run n self
@@ -314,11 +314,11 @@ theorem digitSum_append (w : ℕ) (ds : List (Usize × Bool)) (d : Usize × Bool
     simp only [List.cons_append, digitSum, ih, List.length_cons, pow_succ]
     ring
 
-theorem run_refines (self : buckets.SignedDigits) (n : ℕ)
+theorem run_refines (self : signed_digits.SignedDigits) (n : ℕ)
     (hb : self.bit.val + self.window_bits.val * n ≤ 256)
     (hwl : 1 ≤ self.window_bits.val) (hwh : self.window_bits.val ≤ 8)
     (hc : self.carry.val ≤ 1) :
-    ∃ (digits : List (Usize × Bool)) (last : buckets.SignedDigits),
+    ∃ (digits : List (Usize × Bool)) (last : signed_digits.SignedDigits),
       run n self = ok (digits, last) ∧ digits.length = n ∧
       last.words = self.words ∧ last.window_bits = self.window_bits ∧
       last.bit.val = self.bit.val + self.window_bits.val * n ∧ last.carry.val ≤ 1 ∧
@@ -359,15 +359,15 @@ end LeanBlsSimd.SignedDigits
 namespace LeanBlsSimd.SignedDigits
 open silver_crypto_simd.bls.msm8
 
-def initial (words : Array U64 4#usize) (width : Usize) : buckets.SignedDigits :=
+def initial (words : Array U64 4#usize) (width : Usize) : signed_digits.SignedDigits :=
   ⟨words, width, 0#usize, 0#u64⟩
 
 theorem new_refines (words : Array U64 4#usize) (width : Usize) :
-    buckets.SignedDigits.new words width = ok (initial words width) := rfl
+    signed_digits.SignedDigits.new words width = ok (initial words width) := rfl
 
 theorem run_complete (words : Array U64 4#usize) (width : Usize)
     (hwl : 1 ≤ width.val) (hwh : width.val ≤ 8) (hn : value words < 2 ^ 127) :
-    ∃ (digits : List (Usize × Bool)) (last : buckets.SignedDigits),
+    ∃ (digits : List (Usize × Bool)) (last : signed_digits.SignedDigits),
       run (127 / width.val + 1) (initial words width) = ok (digits, last) ∧
       digits.length = 127 / width.val + 1 ∧
       last.carry.val = 0 ∧

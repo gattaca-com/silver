@@ -65,7 +65,7 @@ structure blst.blst_p2_affine where
   y : blst.blst_fp2
 
 /-- [silver_crypto_simd::bls::decompress::Batch]
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 18:0-25:1
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 19:0-26:1
     Visibility: public -/
 structure bls.decompress.Batch where
   points : Array blst.blst_p1_affine 8#usize
@@ -73,7 +73,7 @@ structure bls.decompress.Batch where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::decompress::Decoded]
-    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 27:0-34:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress.rs', lines 28:0-35:1 -/
 structure bls.decompress.Decoded where
   x : Array (Array Std.U64 8#usize) 8#usize
   larger_root : Std.U8
@@ -81,27 +81,27 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 64:0-67:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 78:0-81:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::fp8::Fp8]
-    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 32:0-32:37
+    Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 31:0-31:37
     Visibility: public -/
 @[reducible]
 def bls.fp8.Fp8 := Array core.core_arch.x86.__m512i 8#usize
 
 /-- [silver_crypto_simd::bls::g1x8::Offsets]
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 33:0-37:1 -/
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 34:0-38:1 -/
 structure bls.g1x8.Offsets where
   two_p : bls.fp8.Fp8
   four_p : bls.fp8.Fp8
   eight_p : bls.fp8.Fp8
 
 /-- [silver_crypto_simd::bls::g1x8::G1x8]
-    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 26:0-30:1
+    Source: 'crates/crypto_simd/src/bls/g1x8.rs', lines 27:0-31:1
     Visibility: public -/
 structure bls.g1x8.G1x8 where
   x : bls.fp8.Fp8
@@ -109,7 +109,7 @@ structure bls.g1x8.G1x8 where
   z : bls.fp8.Fp8
 
 /-- [silver_crypto_simd::bls::decompress_g2::Batch]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 23:0-33:1
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 20:0-30:1
     Visibility: public -/
 structure bls.decompress_g2.Batch where
   points : Array blst.blst_p2_affine 8#usize
@@ -118,7 +118,7 @@ structure bls.decompress_g2.Batch where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::decompress_g2::Decoded]
-    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 35:0-43:1 -/
+    Source: 'crates/crypto_simd/src/bls/decompress_g2.rs', lines 32:0-40:1 -/
 structure bls.decompress_g2.Decoded where
   x0 : Array (Array Std.U64 8#usize) 8#usize
   x1 : Array (Array Std.U64 8#usize) 8#usize
@@ -134,7 +134,7 @@ structure bls.g2x8.Offsets where
   eight_p : bls.fp8.Fp8
 
 /-- [silver_crypto_simd::bls::fp2x8::Fp2x8]
-    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 12:0-15:1
+    Source: 'crates/crypto_simd/src/bls/fp2x8.rs', lines 15:0-18:1
     Visibility: public -/
 structure bls.fp2x8.Fp2x8 where
   c0 : bls.fp8.Fp8
@@ -148,8 +148,67 @@ structure bls.g2x8.G2x8 where
   y : bls.fp2x8.Fp2x8
   z : bls.fp2x8.Fp2x8
 
+/-- [silver_crypto_simd::bls::fp12::Fp12]
+    Source: 'crates/crypto_simd/src/bls/fp12.rs', lines 40:0-40:27
+    Visibility: public -/
+@[reducible]
+def bls.fp12.Fp12 := bls.fp2x8.Fp2x8
+
+/-- [silver_crypto_simd::bls::glv::Half]
+    Source: 'crates/crypto_simd/src/bls/glv.rs', lines 27:0-30:1
+    Visibility: public -/
+structure bls.glv.Half where
+  magnitude : Array Std.U64 4#usize
+  negative : Bool
+
+/-- [silver_crypto_simd::bls::miller_lines::MillerLines]
+    Source: 'crates/crypto_simd/src/bls/miller_lines.rs', lines 13:0-13:57
+    Visibility: public -/
+@[reducible]
+def bls.miller_lines.MillerLines :=
+  Array (Array (Array Std.U64 8#usize) 8#usize) 68#usize
+
+/-- [silver_crypto_simd::portable::fp::Fp]
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 23:0-23:28
+    Visibility: public -/
+@[reducible]
+def portable.fp.Fp := Array Std.U64 6#usize
+
+/-- [silver_crypto_simd::portable::g1_pair::G1Pair]
+    Source: 'crates/crypto_simd/src/portable/g1_pair.rs', lines 11:0-15:1
+    Visibility: public -/
+structure portable.g1_pair.G1Pair where
+  x : Array portable.fp.Fp 2#usize
+  y : Array portable.fp.Fp 2#usize
+  z : Array portable.fp.Fp 2#usize
+
+/-- [silver_crypto_simd::portable::g1::G1]
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 20:0-24:1
+    Visibility: public -/
+structure portable.g1.G1 where
+  x : portable.fp.Fp
+  y : portable.fp.Fp
+  z : portable.fp.Fp
+
+/-- [silver_crypto_simd::portable::g1::Terms]
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 208:0-215:1 -/
+structure portable.g1.Terms where
+  z1z1 : portable.fp.Fp
+  z2z2 : portable.fp.Fp
+  u1 : portable.fp.Fp
+  s1 : portable.fp.Fp
+  h : portable.fp.Fp
+  r : portable.fp.Fp
+
+/-- [silver_crypto_simd::portable::g1::MixedTerms]
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 180:0-184:1 -/
+structure portable.g1.MixedTerms where
+  z1z1 : portable.fp.Fp
+  h : portable.fp.Fp
+  r : portable.fp.Fp
+
 /-- [silver_crypto_simd::bls::msm8::buckets::Buckets]
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 19:0-25:1
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 20:0-26:1
     Visibility: public -/
 structure bls.msm8.buckets.Buckets where
   window_bits : Std.Usize
@@ -159,29 +218,29 @@ structure bls.msm8.buckets.Buckets where
   lens : alloc.vec.Vec Std.U32
 
 /-- [silver_crypto_simd::bls::msm8::buckets::Entries]
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 28:0-32:1 -/
+    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 29:0-33:1 -/
 structure bls.msm8.buckets.Entries where
   indices : Array Std.U32 8#usize
   present : Std.U8
   negated : Std.U8
 
-/-- [silver_crypto_simd::bls::msm8::buckets::SignedDigits]
-    Source: 'crates/crypto_simd/src/bls/msm8/buckets.rs', lines 246:0-251:1 -/
-structure bls.msm8.buckets.SignedDigits where
+/-- [silver_crypto_simd::bls::signed_digits::SignedDigits]
+    Source: 'crates/crypto_simd/src/bls/signed_digits.rs', lines 4:0-9:1 -/
+structure bls.signed_digits.SignedDigits where
   words : Array Std.U64 4#usize
   window_bits : Std.Usize
   bit : Std.Usize
   carry : Std.U64
 
 /-- [silver_crypto_simd::bls::msm8::store::PointStore]
-    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 11:0-14:1
+    Source: 'crates/crypto_simd/src/bls/msm8/store.rs', lines 12:0-15:1
     Visibility: public -/
 structure bls.msm8.store.PointStore where
   rows : alloc.vec.Vec (Array Std.U64 8#usize)
   len : Std.Usize
 
 /-- [silver_crypto_simd::bls::msm8::pairs::BatchedAdds]
-    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 22:0-28:1
+    Source: 'crates/crypto_simd/src/bls/msm8/pairs.rs', lines 18:0-24:1
     Visibility: public -/
 structure bls.msm8.pairs.BatchedAdds where
   a : alloc.vec.Vec Std.U32
@@ -190,15 +249,8 @@ structure bls.msm8.pairs.BatchedAdds where
   dx : alloc.vec.Vec bls.fp8.Fp8
   «prefix» : alloc.vec.Vec bls.fp8.Fp8
 
-/-- [silver_crypto_simd::bls::msm8::glv::Half]
-    Source: 'crates/crypto_simd/src/bls/msm8/glv.rs', lines 27:0-30:1
-    Visibility: public -/
-structure bls.msm8.glv.Half where
-  magnitude : Array Std.U64 4#usize
-  negative : Bool
-
 /-- [silver_crypto_simd::bls::msm8::Msm8]
-    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 46:0-55:1
+    Source: 'crates/crypto_simd/src/bls/msm8/mod.rs', lines 45:0-54:1
     Visibility: public -/
 structure bls.msm8.Msm8 where
   store : bls.msm8.store.PointStore
@@ -210,16 +262,8 @@ structure bls.msm8.Msm8 where
   first_signs : alloc.vec.Vec Bool
   second_signs : alloc.vec.Vec Bool
 
-/-- [silver_crypto_simd::kzg::blst_ops::LincombScratch]
-    Source: 'crates/crypto_simd/src/kzg/blst_ops.rs', lines 137:0-142:1
-    Visibility: public -/
-structure kzg.blst_ops.LincombScratch where
-  points : alloc.vec.Vec blst.blst_p1_affine
-  scalars : alloc.vec.Vec (Array Std.U8 32#usize)
-  pippenger : alloc.vec.Vec Std.U64
-
 /-- [silver_crypto_simd::kzg::fr8::Fr8]
-    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 58:0-58:33
+    Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 60:0-60:33
     Visibility: public -/
 @[reducible]
 def kzg.fr8.Fr8 := Array core.core_arch.x86.__m512i 5#usize
@@ -258,11 +302,23 @@ structure kzg.cell_extender.CellExtender where
 @[reducible]
 def kzg.fr8.u256x8.U256x8 := Array core.core_arch.x86.__m512i 4#usize
 
-/-- [silver_crypto_simd::kzg::challenge::Preimage]
-    Source: 'crates/crypto_simd/src/kzg/challenge.rs', lines 15:0-17:1
+/-- [silver_crypto_simd::sha256::extensions::Sha256]
+    Source: 'crates/crypto_simd/src/sha256/extensions.rs', lines 13:0-19:1
     Visibility: public -/
-structure kzg.challenge.Preimage where
-  bytes : alloc.vec.Vec Std.U8
+structure sha256.extensions.Sha256 where
+  state : Array Std.U32 8#usize
+  pending : Array Std.U8 64#usize
+  pending_len : Std.Usize
+  length : Std.U64
+
+/-- [silver_crypto_simd::sha256::portable::Sha256]
+    Source: 'crates/crypto_simd/src/sha256/portable.rs', lines 6:0-12:1
+    Visibility: public -/
+structure sha256.portable.Sha256 where
+  state : Array Std.U32 8#usize
+  pending : Array Std.U8 64#usize
+  pending_len : Std.Usize
+  length : Std.U64
 
 /-- [silver_crypto_simd::kzg::cosets::Cosets]
     Source: 'crates/crypto_simd/src/kzg/cosets.rs', lines 18:0-27:1
@@ -283,28 +339,87 @@ structure kzg.interpolation_kernel.InterpolationKernel where
   used : alloc.vec.Vec Bool
 
 /-- [silver_crypto_simd::kzg::setup::Setup]
-    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 12:0-19:1
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 121:0-124:1
     Visibility: public -/
 structure kzg.setup.Setup where
   g1_monomial : alloc.vec.Vec blst.blst_p1_affine
-  g2_s_pow_cell : blst.blst_p2_affine
-  g2_neg_generator : blst.blst_p2_affine
 
 /-- [silver_crypto_simd::kzg::verify::Deduplicated]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 323:0-326:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 410:0-413:1 -/
 structure kzg.verify.Deduplicated where
   unique : alloc.vec.Vec (Array Std.U8 48#usize)
   index_of_cell : alloc.vec.Vec Std.Usize
 
-/-- [silver_crypto_simd::kzg::verify::Lincomb]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 288:0-294:1 -/
-structure kzg.verify.Lincomb where
-  scratch : kzg.blst_ops.LincombScratch
-  msm : Option bls.msm8.Msm8
-  words : alloc.vec.Vec (Array Std.U64 4#usize)
+/-- [silver_crypto_simd::portable::fp2::Fp2]
+    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 8:0-11:1
+    Visibility: public -/
+structure portable.fp2.Fp2 where
+  c0 : portable.fp.Fp
+  c1 : portable.fp.Fp
+
+/-- [silver_crypto_simd::portable::pairing::PairingLines]
+    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 15:0-15:53
+    Visibility: public -/
+@[reducible]
+def portable.pairing.PairingLines :=
+  Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize
+
+/-- [silver_crypto_simd::portable::msm::store::PointStore]
+    Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 10:0-13:1
+    Visibility: public -/
+structure portable.msm.store.PointStore where
+  points : alloc.vec.Vec (Array portable.fp.Fp 2#usize)
+  len : Std.Usize
+
+/-- [silver_crypto_simd::portable::msm::pairs::BatchedAdds]
+    Source: 'crates/crypto_simd/src/portable/msm/pairs.rs', lines 11:0-17:1
+    Visibility: public -/
+structure portable.msm.pairs.BatchedAdds where
+  a : alloc.vec.Vec Std.U32
+  b : alloc.vec.Vec Std.U32
+  out : alloc.vec.Vec Std.U32
+  dx : alloc.vec.Vec portable.fp.Fp
+  «prefix» : alloc.vec.Vec portable.fp.Fp
+
+/-- [silver_crypto_simd::portable::msm::buckets::Buckets]
+    Source: 'crates/crypto_simd/src/portable/msm/buckets.rs', lines 20:0-26:1
+    Visibility: public -/
+structure portable.msm.buckets.Buckets where
+  window_bits : Std.Usize
+  windows : Std.Usize
+  refs : alloc.vec.Vec Std.U32
+  starts : alloc.vec.Vec Std.U32
+  lens : alloc.vec.Vec Std.U32
+
+/-- [silver_crypto_simd::portable::msm::Msm]
+    Source: 'crates/crypto_simd/src/portable/msm.rs', lines 43:0-52:1
+    Visibility: public -/
+structure portable.msm.Msm where
+  store : portable.msm.store.PointStore
+  buckets : portable.msm.buckets.Buckets
+  adds : portable.msm.pairs.BatchedAdds
+  finite_points : alloc.vec.Vec blst.blst_p1_affine
+  finite_scalars : alloc.vec.Vec (Array Std.U64 4#usize)
+  halves : alloc.vec.Vec (Array Std.U64 4#usize)
+  first_signs : alloc.vec.Vec Bool
+  second_signs : alloc.vec.Vec Bool
+
+/-- [silver_crypto_simd::kzg::verify::CurveWork]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 299:0-311:1 -/
+@[discriminant isize]
+inductive kzg.verify.CurveWork where
+| Lanes :
+  bls.msm8.Msm8 →
+  alloc.vec.Vec (Array Std.U64 4#usize) →
+  kzg.verify.CurveWork
+| Portable :
+  portable.msm.Msm →
+  portable.pairing.PairingLines →
+  alloc.vec.Vec (Array Std.U64 4#usize) →
+  kzg.verify.CurveWork
 
 /-- [silver_crypto_simd::kzg::verify::CellBatchVerifier]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 36:0-55:1
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 39:0-57:1
     Visibility: public -/
 structure kzg.verify.CellBatchVerifier where
   setup : kzg.setup.Setup
@@ -314,7 +429,6 @@ structure kzg.verify.CellBatchVerifier where
   commitment_points : alloc.vec.Vec blst.blst_p1_affine
   proof_points : alloc.vec.Vec blst.blst_p1_affine
   evaluations : alloc.vec.Vec blst.blst_fr
-  preimage : kzg.challenge.Preimage
   r_powers : alloc.vec.Vec blst.blst_fr
   scalars : alloc.vec.Vec blst.blst_fr
   columns : alloc.vec.Vec blst.blst_fr
@@ -322,7 +436,36 @@ structure kzg.verify.CellBatchVerifier where
   column : alloc.vec.Vec blst.blst_fr
   coefficients : alloc.vec.Vec blst.blst_fr
   interpolation : alloc.vec.Vec blst.blst_fr
-  lincomb : kzg.verify.Lincomb
+  curve_work : kzg.verify.CurveWork
   kernel : Option kzg.interpolation_kernel.InterpolationKernel
+
+/-- [silver_crypto_simd::kzg::verify::PairingSums]
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 364:0-369:1 -/
+structure kzg.verify.PairingSums where
+  ll : blst.blst_p1
+  rlc : blst.blst_p1
+  rli : blst.blst_p1
+  rlp : blst.blst_p1
+
+/-- [silver_crypto_simd::portable::fp6::Fp6]
+    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 9:0-13:1
+    Visibility: public -/
+structure portable.fp6.Fp6 where
+  c0 : portable.fp2.Fp2
+  c1 : portable.fp2.Fp2
+  c2 : portable.fp2.Fp2
+
+/-- [silver_crypto_simd::portable::fp::Wide]
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 364:0-364:27
+    Visibility: public -/
+@[reducible]
+def portable.fp.Wide := Array Std.U64 12#usize
+
+/-- [silver_crypto_simd::portable::fp12::Fp12]
+    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 19:0-22:1
+    Visibility: public -/
+structure portable.fp12.Fp12 where
+  c0 : portable.fp6.Fp6
+  c1 : portable.fp6.Fp6
 
 end silver_crypto_simd

@@ -136,7 +136,7 @@ theorem indexed_events_contribution (width start index : ℕ) (events : List Eve
     rw [Nat.add_mul, Nat.one_mul, pow_add, mul_nsmul']
 
 theorem window_events_contribution (words : Array U64 4#usize) (width index : Usize)
-    (events : List Event) (last : silver_crypto_simd.bls.msm8.buckets.SignedDigits)
+    (events : List Event) (last : silver_crypto_simd.bls.signed_digits.SignedDigits)
     (points : ℕ → A) (hwl : 1 ≤ width.val) (hwh : width.val ≤ 8)
     (hi : index.val < 2 ^ 31) (hscalar : SignedDigits.value words < 2 ^ 127)
     (hevents : windowEvents (windows127 width).val index 0#usize (SignedDigits.initial words width) =
@@ -216,8 +216,8 @@ theorem eventReferences_all (width : Usize) (events : List Event) (i : ℕ)
     · exact ih (fun x hx => hp x (by simp [hx])) r hr
 
 theorem window_events_references (width index : Usize)
-    (events : List Event) (last : silver_crypto_simd.bls.msm8.buckets.SignedDigits)
-    (digits : silver_crypto_simd.bls.msm8.buckets.SignedDigits)
+    (events : List Event) (last : silver_crypto_simd.bls.signed_digits.SignedDigits)
+    (digits : silver_crypto_simd.bls.signed_digits.SignedDigits)
     (hwl : 1 ≤ width.val) (hwh : width.val ≤ 8) (hi : index.val < 2 ^ 31)
     (hevents : windowEvents (windows127 width).val index 0#usize digits = ok (events, last)) :
     ∀ e ∈ events, e.reference.val % 2 ^ 31 = index.val := by

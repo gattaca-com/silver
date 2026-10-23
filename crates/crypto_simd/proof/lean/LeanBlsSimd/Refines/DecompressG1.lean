@@ -49,7 +49,7 @@ theorem ofSlice_toArray (b : Encoding) (h : (toArray toU8 b (n := 48#usize)).val
   simp [Array.to_slice]
 
 theorem decode_loop_refines (inputs : Array (Array U8 48#usize) 8#usize) :
-    decompress.decode_loop { start := 0#usize, «end» := fp8.LANES } inputs
+    decompress.decode_loop { start := 0#usize, «end» := limbs.LANES } inputs
         (decodeState decodeInit).1 (decodeState decodeInit).2.1
         (decodeState decodeInit).2.2.1 (decodeState decodeInit).2.2.2 =
       ok (decodeState (decode (ofArray (ofArray ofU8) inputs))) := by
@@ -97,7 +97,7 @@ theorem decode_refines (inputs : Array (Array U8 48#usize) 8#usize) :
     decompress.decode inputs = ok (toDecoded (decode (ofArray (ofArray ofU8) inputs))) := by
   unfold decompress.decode
   change (do
-    let (a, i, i1, i2) ← decompress.decode_loop { start := 0#usize, «end» := fp8.LANES }
+    let (a, i, i1, i2) ← decompress.decode_loop { start := 0#usize, «end» := limbs.LANES }
       inputs (decodeState decodeInit).1 (decodeState decodeInit).2.1
       (decodeState decodeInit).2.2.1 (decodeState decodeInit).2.2.2
     ok ({ x := a, larger_root := i, invalid := i1, undecided := i2 } : decompress.Decoded)) = _
@@ -113,7 +113,7 @@ theorem default_refines :
 
 theorem decompress_loop_refines (xs ys : Array (Array U64 6#usize) 8#usize)
     (a : Array blst.blst_p1_affine 8#usize) :
-    decompress.decompress_loop { start := 0#usize, «end» := fp8.LANES } xs ys a =
+    decompress.decompress_loop { start := 0#usize, «end» := limbs.LANES } xs ys a =
       ok (toArray toBlstP1Affine (.ofFn fun lane : Fin 8 =>
         point (ofArray (ofArray ofU64) xs (m := 8))[lane]
           (ofArray (ofArray ofU64) ys (m := 8))[lane])) := by

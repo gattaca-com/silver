@@ -12,7 +12,7 @@ private def Factors (factors : Array blst.blst_fr 8#usize) (v count : Nat) : Pro
   ∀ lane : Fin 8, lane.val < count →
     factors.val[lane.val]! = frEncode (shiftFactor (8 * v + lane.val) * Fr.ofNat 16)
 
-private theorem factors_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem factors_loop (hfr : FrCorrect)
     (shifts : Slice blst.blst_fr) (hsize : shifts.val.length = 4096)
     (hlookup : ∀ i, i < 4096 → shifts.val[i]! = frEncode (Kzg.Model.roots 13)[i]!)
     (v : Usize) (hv : v.val < 512) (factors : Array blst.blst_fr 8#usize)
@@ -43,12 +43,12 @@ private theorem factors_loop [e : KzgExternals] (hblst : BlstCorrect e)
       simp only [Slice.index_usize, Slice.getElem?_Usize_eq, List.getElem?_eq_getElem hib]
       rw [← getElem!_pos shifts.val index.val hib, hi, Nat.mul_comm v.val 8,
         hlookup _ (by omega)]
-    have hproduct : blst_ops.fr_mul
+    have hproduct : fr.fr_mul
         (frEncode (Kzg.Model.roots 13)[8 * v.val + lane.val]!)
         (frEncode (Fr.ofNat 4096).inverse) =
         ok (frEncode (shiftFactor (8 * v.val + lane.val))) :=
-      hblst.fr_mul _ _
-    have hmultiplier := (multiplier_refinement hblst (shiftFactor (8 * v.val + lane.val))).1
+      hfr.fr_mul _ _
+    have hmultiplier := (multiplier_refinement hfr (shiftFactor (8 * v.val + lane.val))).1
     let next := Aeneas.Std.Array.set factors lane (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16))
     have hupdate : Array.update factors lane
         (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16)) = ok next := by
@@ -86,7 +86,7 @@ private theorem vector_count : 4096#usize / fr8.LANES = ok 512#usize := by
     simpa only [fr8.LANES, UScalar.ofNatCore_val_eq] using hv
   simpa only [he] using hout
 
-private theorem constructor_loop [e : KzgExternals] (hblst : BlstCorrect e)
+private theorem constructor_loop (hfr : FrCorrect)
     (shifts : Slice blst.blst_fr) (hsize : shifts.val.length = 4096)
     (hlookup : ∀ i, i < 4096 → shifts.val[i]! = frEncode (Kzg.Model.roots 13)[i]!)
     (shift data : alloc.vec.Vec fr8.Fr8) (factors : Array blst.blst_fr 8#usize)
@@ -103,7 +103,7 @@ private theorem constructor_loop [e : KzgExternals] (hblst : BlstCorrect e)
     simp [extension_kernel.ExtensionKernel.new_loop0.body, hdiv, UScalar.lt_equiv, he]
   | succ rem ih =>
     have hlt : v.val < 512 := by omega
-    obtain ⟨factors', hfactors, hf⟩ := factors_loop hblst shifts hsize hlookup v hlt
+    obtain ⟨factors', hfactors, hf⟩ := factors_loop hfr shifts hsize hlookup v hlt
       factors 0#usize (by decide) (by intro lane h; exact (Nat.not_lt_zero _ h).elim)
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice factors') 0#usize (fun lane => shiftFactor (8 * v.val + lane.val))
@@ -162,7 +162,7 @@ private theorem sample_blob (roots : _root_.Array Fr) (hsize : roots.size = 4096
     simp only [sampleRoots, _root_.Array.getElem_ofFn, hsize, Nat.div_self (by decide : 0 < 4096),
       Nat.mul_one, getElem!_pos roots i hj]
 
-theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+theorem new_refinement (hfr : FrCorrect)
     (roots inverseRoots shifts : Slice blst.blst_fr) (inverseSize : blst.blst_fr)
     (hroots : roots.val = (Kzg.Model.roots 12).toList.map frEncode)
     (hinverse : inverseRoots.val =
@@ -183,16 +183,16 @@ theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
   let factors := Array.repeat 8#usize (frEncode 0)
   have hempty : ConstructorPrefix empty empty 0 := by
     refine ⟨rfl, rfl, ?_, ?_⟩ <;> intro j <;> exact j.elim0
-  obtain ⟨shift, data, hconstruct, hp⟩ := constructor_loop hblst shifts hlen hlookup
+  obtain ⟨shift, data, hconstruct, hp⟩ := constructor_loop hfr shifts hlen hlookup
     empty empty factors 0#usize (by decide) hempty
   have hn : TransformSize (4096#usize).val := ⟨12, by decide, by decide, by decide⟩
   have hrs : (Kzg.Model.roots 12).size = 4096 := by simp [Kzg.Model.roots]
   have his : (Kzg.Model.inverseRoots (Kzg.Model.roots 12)).size = 4096 := by
     simp [Kzg.Model.inverseRoots, Kzg.Model.roots]
-  obtain ⟨inverse, hiNew, hiInv⟩ := fft_new_refinement hblst inverseRoots
+  obtain ⟨inverse, hiNew, hiInv⟩ := fft_new_refinement hfr inverseRoots
     (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) 4096#usize hn
     (by omega) (by simp only [his, UScalar.ofNatCore_val_eq]) hinverse
-  obtain ⟨forward, hfNew, hfInv⟩ := fft_new_refinement hblst roots
+  obtain ⟨forward, hfNew, hfInv⟩ := fft_new_refinement hfr roots
     (Kzg.Model.roots 12) 4096#usize hn
     (by omega) (by simp only [hrs, UScalar.ofNatCore_val_eq]) hroots
   rw [show (4096#usize).val = 4096 from rfl, sample_blob _ his] at hiInv
@@ -204,7 +204,7 @@ theorem new_refinement [e : KzgExternals] (hblst : BlstCorrect e)
       simpa only [Slice.len, UScalar.ofNatCore_val_eq] using hlen
     dsimp only [empty, factors] at hconstruct
     simp only [extension_kernel.ExtensionKernel.new, hlength, vector_count, bind_tc_ok,
-      blst_ops.fr_from_u64, hblst.fr_u64, UScalar.ofNatCore_val_eq,
+      fr_zero_eq,
       show Fr.ofNat 0 = 0 from rfl, hconstruct, hiNew, hfNew,
       Function.uncurry_apply_pair, initial]
   · refine ⟨by simp [initial, alloc.vec.Vec.deref, hp.2.1], ?_⟩

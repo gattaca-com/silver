@@ -23,7 +23,7 @@ theorem digit_wordsValue_eq_limbs (xs : List U64) : SignedDigits.wordsValue xs =
 theorem digit_value_eq_limbs (words : ScalarWords) : SignedDigits.value words = Kzg.limbs words.val :=
   digit_wordsValue_eq_limbs words.val
 
-theorem SplitInv.get {n : ℕ} {first second : Fin n → msm8.glv.Half}
+theorem SplitInv.get {n : ℕ} {first second : Fin n → glv.Half}
     {halves : alloc.vec.Vec ScalarWords} {fs ss : alloc.vec.Vec Bool}
     (h : SplitInv n first second halves fs ss n) (j : Fin n) :
     halves.val[j.val]! = (first j).magnitude ∧ halves.val[n + j.val]! = (second j).magnitude ∧
@@ -59,7 +59,7 @@ theorem split_points_rep (points : List blst.blst_p1_affine) (fs ss : List Bool)
     rw [he, splitPoint_second]
     exact hs _ (by omega)
 
-theorem split_values_bound {n : ℕ} {first second : Fin n → msm8.glv.Half}
+theorem split_values_bound {n : ℕ} {first second : Fin n → glv.Half}
     {halves : alloc.vec.Vec ScalarWords} {fs ss : alloc.vec.Vec Bool}
     (h : SplitInv n first second halves fs ss n)
     (hb : ∀ j, GlvRefines.value (first j).magnitude < 2 ^ 127 ∧
@@ -80,7 +80,7 @@ theorem split_values_bound {n : ℕ} {first second : Fin n → msm8.glv.Half}
 
 theorem split_sum_contribution (points : List blst.blst_p1_affine) (scalars : List ScalarWords)
     (halign : points.length = scalars.length)
-    (first second : Fin scalars.length → msm8.glv.Half)
+    (first second : Fin scalars.length → glv.Half)
     (halves : alloc.vec.Vec ScalarWords) (fs ss : alloc.vec.Vec Bool)
     (hinv : SplitInv scalars.length first second halves fs ss scalars.length)
     (hp : ∀ i, i < points.length → Kzg.G1AffineValid points[i]!)

@@ -97,7 +97,7 @@ private theorem zero_sums (zero : fr8.Fr8) (hz : Represents zero (fun _ => 0)) :
     simpa only [Array.to_slice, Array.repeat, List.getElem_replicate,
       List.getElem!_toArray, List.getElem!_replicate, hi] using hz
 
-theorem interpolate_refinement [e : KzgExternals] (hblst : BlstCorrect e)
+theorem interpolate_refinement (hfr : FrCorrect) (hbytes : FrBytesCorrect)
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cells : Slice (Array U8 2048#usize)) (indices : Slice U64)
     (powers coefficients : Slice blst.blst_fr) (evals : _root_.Array CosetEvals)
@@ -120,7 +120,7 @@ theorem interpolate_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     intro i hi
     exact hs.2.2.1 i.val (by simpa only [List.mem_toArray] using List.mem_map.mpr ⟨i, hi, rfl⟩)
   obtain ⟨cleared, hclear, hcleared, hcolumns⟩ := clear_refinement kernel hk
-  obtain ⟨aggregated, hacc, ha, har⟩ := accumulate_refinement hblst cleared hcleared
+  obtain ⟨aggregated, hacc, ha, har⟩ := accumulate_refinement hfr cleared hcleared
     cells indices powers evals weights.toList hcell hindices hp hweights hib hcolumns
   let model := Interpolation.aggregateColumns (evals.toList.flatMap _root_.Array.toList)
     weights.toList (indices.val.map (·.val)) (List.replicate 8192 Fr.zero) (List.replicate 128 false)
@@ -137,7 +137,7 @@ theorem interpolate_refinement [e : KzgExternals] (hblst : BlstCorrect e)
     simpa only [List.toList_toArray, model] using
       Interpolation.aggregate_columnRli (indices.val.map (·.val)).toArray evals weights hs
   simp only [UScalar.ofNatCore_val_eq, List.drop_zero, hmodel] at hrep
-  obtain ⟨out, hstore, hout⟩ := store_canonical_refinement hblst sums _ hrep coefficients ho
+  obtain ⟨out, hstore, hout⟩ := store_canonical_refinement hbytes sums _ hrep coefficients ho
   refine ⟨next, out, ?_, hn, hout⟩
   simp only [interpolation_kernel.InterpolationKernel.interpolate, hclear, hacc,
     hzero, hloop, hstore, bind_tc_ok, Function.uncurry_apply_pair]

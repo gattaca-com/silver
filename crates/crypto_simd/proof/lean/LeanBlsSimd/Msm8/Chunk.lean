@@ -27,7 +27,7 @@ private def generatedAfterFilter (self : msm8.Msm8) : Result (g1x8.G1x8 × msm8.
     let s := alloc.vec.Vec.deref self2.halves
     let b ←
       bls.msm8.buckets.Buckets.fill self2.buckets s
-        bls.msm8.glv.HALF_SCALAR_BITS
+        bls.glv.HALF_SCALAR_BITS
     let i ← 2#usize * n
     let i1 ← bls.msm8.buckets.Buckets.impl.windows b
     let i2 ← i1 * n
@@ -49,7 +49,7 @@ private def generatedAfterFilter (self : msm8.Msm8) : Result (g1x8.G1x8 × msm8.
         let s5 := alloc.vec.Vec.deref self3.halves
         let b2 ←
           bls.msm8.buckets.Buckets.fill self3.buckets s5
-            bls.msm8.glv.HALF_SCALAR_BITS
+            bls.glv.HALF_SCALAR_BITS
         ok { self3 with buckets := b2 }
     let gx ← bls.msm8.buckets.Buckets.sum self4.buckets self4.store
     ok (gx, self4)
@@ -96,7 +96,7 @@ private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
   simp only [bind_tc_ok, bind_success] at hprep
   obtain ⟨extra, hextra, capacity, hcapacity, reset, hreset, first, hfirst, hsecond⟩ := hprep
   simp only [generatedAfterFilter, hn, if_false, hsplit, bind_tc_ok,
-    msm8.glv.HALF_SCALAR_BITS, hfill, hmul, msm8.buckets.Buckets.impl.windows,
+    glv.HALF_SCALAR_BITS, hfill, hmul, msm8.buckets.Buckets.impl.windows,
     hextra, hcapacity, hreset, hp, hfirst, hsecond]
   simp only [finish, bind_assoc_eq]
   apply (bind_eq_iff _ _ _).mpr
