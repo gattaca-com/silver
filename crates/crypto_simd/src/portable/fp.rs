@@ -36,6 +36,7 @@ fn add_carry(a: u64, b: u64, carry: u64) -> (u64, u64) {
     #[cfg(target_arch = "x86_64")]
     {
         let mut s = 0;
+        #[allow(unused_unsafe, reason = "Rust 1.95's `core::arch` declares `_addcarry_u64` safe")]
         // SAFETY: `_addcarry_u64` is plain x86-64 `adc`.
         let c = unsafe { _addcarry_u64(carry as u8, a, b, &mut s) };
         (s, c as u64)
