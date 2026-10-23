@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 /-- Group equality transports the represented Jacobian to any valid subgroup target. -/
 theorem lane_zero_pointRep (p : g1x8.G1x8) (Q : G1) (hq : Kzg.G1Valid Q)

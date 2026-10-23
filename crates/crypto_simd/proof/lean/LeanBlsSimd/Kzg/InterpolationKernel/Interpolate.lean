@@ -4,7 +4,7 @@ import LeanBlsSimd.Kzg.InterpolationKernel.Roots
 import LeanBlsSimd.Kzg.InterpolationKernel.Store
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel

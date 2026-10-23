@@ -2,7 +2,7 @@ import LeanBlsSimd.Proofs.Fp8Holds
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def TWO_POW_448_MOD_P : List ℕ :=
   [0x7fde37dba9366, 0x4e27525bc342b, 0x1f5b1e9778489, 0xb872b2b91b9dc,

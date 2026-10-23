@@ -22,7 +22,7 @@ expanding the large-exponent powers during kernel checking.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls DecompressG2
+open EthLib.Cryptography.Bls DecompressG2
 
 namespace DecompressG2
 

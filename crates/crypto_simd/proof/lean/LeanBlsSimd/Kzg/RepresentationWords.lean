@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Representation
 import Aeneas
 
 open Aeneas Aeneas.Std
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 namespace LeanBlsSimd.Kzg
 

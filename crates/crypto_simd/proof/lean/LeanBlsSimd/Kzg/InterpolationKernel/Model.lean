@@ -1,8 +1,8 @@
 import LeanBlsSimd.Kzg.InterpolationKernel.Column
 import LeanBlsSimd.Kzg.InterpolationModel
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

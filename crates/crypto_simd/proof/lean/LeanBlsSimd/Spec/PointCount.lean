@@ -7,7 +7,7 @@ import Mathlib.Logic.Equiv.Prod
 /-! Counting affine solutions by the quadratic character. -/
 
 namespace LeanBlsSimd
-open EthCryptographySpecs.Bls WeierstrassCurve
+open EthLib.Cryptography.Bls WeierstrassCurve
 
 noncomputable instance Fp2Field.instFintype : Fintype Fp2Field :=
   Fintype.ofEquiv (ZMod Fp.modulus × ZMod Fp.modulus)

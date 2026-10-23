@@ -12,7 +12,7 @@ theorem decompress_eq_verdict
       else none) = G2Spec.verdict inputs[l] := by
   rw [decompress_eq_spec scott_complete inputs l hu]
   unfold G2Spec.verdict
-  cases hd : EthCryptographySpecs.Bls.G2.uncompress (toBytes inputs[l]) with
+  cases hd : EthLib.Cryptography.Bls.G2.uncompress (toBytes inputs[l]) with
   | error e => rfl
   | ok P =>
     have hu' : Kernel.laneUndecided inputs[l] = false :=

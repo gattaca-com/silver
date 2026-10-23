@@ -3,7 +3,7 @@ import LeanBlsSimd.Spec.G1Encoding
 
 namespace LeanBlsSimd.DecompressG1
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 open G1Spec (toBytes)
 
 theorem size_toBytes (bytes : Encoding) : (toBytes bytes).size = 48 := by

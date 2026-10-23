@@ -1,5 +1,5 @@
 import LeanBlsSimd.Spec.Fp2
-import EthCryptographySpecs.Bls.G2
+import EthLib.Cryptography.Bls.G2
 import Mathlib.AlgebraicGeometry.EllipticCurve.Affine.Point
 
 /-!
@@ -12,7 +12,7 @@ discriminant −432·b′² is nonzero, so every solution of the equation is a n
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve
+open EthLib.Cryptography.Bls WeierstrassCurve
 
 def bTwist : Fp2Field := ⟨4, 4⟩
 

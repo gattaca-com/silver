@@ -1,12 +1,12 @@
 import LeanBlsSimd.Kzg.G1Msm
-import EthCryptographySpecs.Proofs.IdLoops
+import EthLib.Cryptography.Proofs.IdLoops
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open WeierstrassCurve.Jacobian
-open scoped EthCryptographySpecs.Bls.Fp
-open private tailAllZero from EthCryptographySpecs.Bls.Compress
+open scoped EthLib.Cryptography.Bls.Fp
+open private tailAllZero from EthLib.Cryptography.Bls.Compress
 open private compress_inf compress_noninf uncompress_of_facts ba_get!_set!_ne
-  ba_get!_set!_self ba_size_set! ba_ext from EthCryptographySpecs.Proofs.Bls.Compress
+  ba_get!_set!_self ba_size_set! ba_ext from EthLib.Cryptography.Proofs.Bls.Compress
 
 namespace LeanBlsSimd.Kzg
 

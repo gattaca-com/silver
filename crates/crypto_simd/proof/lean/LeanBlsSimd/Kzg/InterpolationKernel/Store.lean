@@ -3,11 +3,11 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Write
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 open private bytesBEToNatAux_eq_fromBytesBEAux
-  from EthCryptographySpecs.Proofs.Kzg.Polynomials
+  from EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 

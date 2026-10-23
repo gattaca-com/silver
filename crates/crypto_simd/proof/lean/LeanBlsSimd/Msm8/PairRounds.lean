@@ -326,7 +326,7 @@ end LeanBlsSimd.PairRoundsRefines
 
 namespace LeanBlsSimd.PairRoundsRefines
 open silver_crypto_simd.bls.msm8 QueueRefines BucketsRefines
-open EthCryptographySpecs Bls LeanBlsSimd.Msm8 BatchedRefines
+open EthLib.Cryptography Bls LeanBlsSimd.Msm8 BatchedRefines
 
 structure Context where
   originals : Usize
@@ -490,7 +490,7 @@ end LeanBlsSimd.PairRoundsRefines
 
 namespace LeanBlsSimd.PairRoundsRefines
 open silver_crypto_simd.bls.msm8 QueueRefines BucketsRefines
-open EthCryptographySpecs Bls LeanBlsSimd.Msm8 BatchedRefines
+open EthLib.Cryptography Bls LeanBlsSimd.Msm8 BatchedRefines
 
 theorem run_pending (ctx : Context) (state : RoundState) (hpending : Pending ctx state)
     (he : state.2.2.a.val.isEmpty = false) :
@@ -613,7 +613,7 @@ end LeanBlsSimd.PairRoundsRefines
 
 namespace LeanBlsSimd.PairRoundsRefines
 open silver_crypto_simd.bls.msm8 QueueRefines BucketsRefines
-open EthCryptographySpecs Bls LeanBlsSimd.Msm8 BatchedRefines
+open EthLib.Cryptography Bls LeanBlsSimd.Msm8 BatchedRefines
 
 theorem original_refs_independent (originals : ℕ) (refs : List U32)
     (h : ∀ r ∈ refs, pointIndex r < originals) : refs.Pairwise (RefIndependent originals) := by

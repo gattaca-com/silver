@@ -18,7 +18,7 @@ and `Kernel.sqrt_fails` apply to the model. `Fp2x8.Holds.testBit_is_larger_root_
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-! ## `Fp2x8` -/
 

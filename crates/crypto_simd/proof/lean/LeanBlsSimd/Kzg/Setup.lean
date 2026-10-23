@@ -5,9 +5,9 @@ import LeanBlsSimd.Kzg.Model
 import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
-open private buildEmbedded from EthCryptographySpecs.Kzg.TrustedSetup
+open private buildEmbedded from EthLib.Cryptography.Kzg.TrustedSetup
 
 namespace LeanBlsSimd.Kzg
 

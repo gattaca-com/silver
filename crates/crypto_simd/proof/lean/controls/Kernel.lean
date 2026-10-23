@@ -19,7 +19,7 @@ on G. The square root, whose computation uses exponents of about 380 bits, is ha
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls DecompressG2 Kernel
+open EthLib.Cryptography.Bls DecompressG2 Kernel
 
 local notation "gx" => Fp2.toField G2.generator.x
 local notation "gy" => Fp2.toField G2.generator.y

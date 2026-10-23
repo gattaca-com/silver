@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.Decode
 
 namespace LeanBlsSimd.DecompressG1
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 open DecompressG2 (FP_BYTES fp_words flag_compressed flag_infinity flag_larger_root inv_replicate_zero)
 
 /-- What `decode` records for one lane's bytes, with its x coordinate as an integer. -/

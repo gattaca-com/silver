@@ -4,7 +4,7 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 private theorem bind_success {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
     (do let x ← r; f x) = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by

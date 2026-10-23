@@ -1,8 +1,8 @@
 import LeanBlsSimd.Extracted.FunsExternal
-import EthCryptographySpecs.Kzg.Cells
+import EthLib.Cryptography.Kzg.Cells
 
 open Aeneas.Std
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg

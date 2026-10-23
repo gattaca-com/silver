@@ -4,7 +4,7 @@ import LeanBlsSimd.Spec.Sqrt
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-! ## Mask bits -/
 

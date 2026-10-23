@@ -6,7 +6,7 @@ import LeanBlsSimd.Spec.CubicHasse
 namespace LeanBlsSimd
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs.Bls Kernel
+open EthLib.Cryptography.Bls Kernel
 
 namespace DecompressG2
 

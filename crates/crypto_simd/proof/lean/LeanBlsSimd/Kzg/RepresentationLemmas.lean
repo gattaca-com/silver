@@ -1,14 +1,14 @@
 import LeanBlsSimd.Kzg.RepresentationWords
-import EthCryptographySpecs.Proofs.Bls.FrZMod
-import EthCryptographySpecs.Proofs.Bls.FpZMod
+import EthLib.Cryptography.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Bls.FpZMod
 import Aeneas
 
 open Aeneas Aeneas.Std
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 namespace LeanBlsSimd.Kzg
 
-open scoped EthCryptographySpecs.Bls.Fr EthCryptographySpecs.Bls.Fp
+open scoped EthLib.Cryptography.Bls.Fr EthLib.Cryptography.Bls.Fp
 
 set_option exponentiation.threshold 512
 set_option maxRecDepth 8000

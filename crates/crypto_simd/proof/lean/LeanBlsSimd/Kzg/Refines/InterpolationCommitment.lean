@@ -6,10 +6,10 @@ import LeanBlsSimd.Kzg.Refines.Fft
 import LeanBlsSimd.Kzg.InterpolationModel
 import LeanBlsSimd.Kzg.InterpolationIdentity
 import LeanBlsSimd.Kzg.InterpolationKernel.Interpolate
-import EthCryptographySpecs.Proofs.Kzg.Fft
+import EthLib.Cryptography.Proofs.Kzg.Fft
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg.Interpolation

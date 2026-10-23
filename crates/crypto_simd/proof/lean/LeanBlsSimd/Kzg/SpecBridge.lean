@@ -2,7 +2,7 @@ import Aeneas
 import LeanBlsSimd.Kzg.Model
 import LeanBlsSimd.Kzg.IOLawful
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg
 

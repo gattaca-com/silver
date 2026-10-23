@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.G1KernelFacts
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 namespace DecompressG1
 

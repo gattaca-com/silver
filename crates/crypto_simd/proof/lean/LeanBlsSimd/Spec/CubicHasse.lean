@@ -15,7 +15,7 @@ generates all rational r-torsion and its Scott identity extends to every such po
 -/
 
 namespace LeanBlsSimd
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 variable (F : Type*) [Field F] [Fintype F] [DecidableEq F]
 
 noncomputable def quadraticCharComplex : MulChar F ℂ :=

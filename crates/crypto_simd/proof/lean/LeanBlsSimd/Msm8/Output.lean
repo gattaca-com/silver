@@ -6,7 +6,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def laneZero (p : G1x8) : blst.blst_p1 :=
   ⟨⟨toArray toU64 p.x.to_blst_limbs[0]⟩,

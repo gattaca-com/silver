@@ -748,7 +748,7 @@ theorem prepare_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
           prepareFrom, prepareStep, hz, if_false]
         rfl
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 abbrev ChainField := ZMod Fp.modulus
 

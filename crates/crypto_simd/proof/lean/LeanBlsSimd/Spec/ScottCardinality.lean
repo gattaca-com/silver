@@ -1,5 +1,5 @@
 import LeanBlsSimd.Spec.Generator
-import EthCryptographySpecs.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Bls.FrZMod
 import Mathlib.GroupTheory.Index
 import Mathlib.GroupTheory.QuotientGroup.Basic
 
@@ -18,7 +18,7 @@ the two Hasse bounds for E′. `Spec/CubicHasse.lean` supplies those bounds and 
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem generator_ne_zero : G2.toPoint G2.generator ≠ 0 := by
   rw [toPoint_generator]

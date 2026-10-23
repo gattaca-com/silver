@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.Fr8
 import LeanBlsSimd.Proofs.Reduction
 
 namespace LeanBlsSimd.FrModel
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 namespace Lane
 

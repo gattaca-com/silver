@@ -19,7 +19,7 @@ bit `l` of `is_zero_mask` exactly when lane `l` holds zero (`testBit_is_zero_mas
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-- The field element a lane holds in Montgomery form, with R = 2^416. -/
 def decode (a : Limbs) : ZMod Fp.modulus := (val a : ZMod Fp.modulus) * (R : ZMod Fp.modulus)⁻¹

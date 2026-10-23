@@ -2,9 +2,9 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Basic
 import LeanBlsSimd.Proofs.SignedLimbs
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 

@@ -2,10 +2,10 @@ import LeanBlsSimd.Kzg.Extender.Basic
 import LeanBlsSimd.Kzg.Extender.Kernel.Refines
 import LeanBlsSimd.Kzg.Refines.Roots
 import LeanBlsSimd.Kzg.Refines.Fft
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg.Extender

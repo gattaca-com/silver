@@ -1,12 +1,12 @@
 import LeanBlsSimd.Model.Fr8
 import LeanBlsSimd.Proofs.Limbs
-import EthCryptographySpecs.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Bls.FrZMod
 
 /-! The five-limb IFMA product, reduction rows, and closing carries. -/
 
 namespace LeanBlsSimd.FrModel
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-- The value of little-endian `LIMB_BITS`-bit limbs. -/
 def val (a : Limbs) : ℕ := ∑ j : Fin LIMBS, a[j].toNat * 2 ^ (LIMB_BITS * j.val)

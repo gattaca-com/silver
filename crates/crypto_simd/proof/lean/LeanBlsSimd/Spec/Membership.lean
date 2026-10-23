@@ -14,7 +14,7 @@ represents the multiple of P that the chain has reached (`timesMinusZ_spec`). Th
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Jacobian
+open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 namespace Kernel
 

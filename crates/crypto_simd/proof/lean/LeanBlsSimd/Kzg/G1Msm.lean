@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.G1Arithmetic
-import EthCryptographySpecs.Proofs.Bls.G1Msm
+import EthLib.Cryptography.Proofs.Bls.G1Msm
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 namespace LeanBlsSimd.Kzg
 

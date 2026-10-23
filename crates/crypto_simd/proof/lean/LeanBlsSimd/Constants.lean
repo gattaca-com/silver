@@ -1,5 +1,5 @@
-import EthCryptographySpecs.Bls.Pairing
-import EthCryptographySpecs.Proofs.Bls.FpZMod
+import EthLib.Cryptography.Bls.Pairing
+import EthLib.Cryptography.Proofs.Bls.FpZMod
 import Mathlib.NumberTheory.LegendreSymbol.Basic
 import Mathlib.Tactic.LinearCombination
 
@@ -19,7 +19,7 @@ model of Fp2, `Fp2Field` among them. Only the non-residue facts use the primalit
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs EthCryptographySpecs.Bls
+open EthLib.Cryptography EthLib.Cryptography.Bls
 
 /-! ## Parameters -/
 

@@ -2,7 +2,7 @@ import LeanBlsSimd.Model.G1x8
 import LeanBlsSimd.Proofs.Fp8
 import LeanBlsSimd.Proofs.SignedLimbs
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 namespace LeanBlsSimd.Controls.LazyFp8
 

@@ -6,7 +6,7 @@ noncomputable section
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem scalar_high_word (scalar : Array U64 4#usize)
     (h : Kzg.limbs scalar.val < 2 ^ 255) :

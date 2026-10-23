@@ -14,7 +14,7 @@ proves what those compute.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Jacobian
+open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 theorem List.foldl_rel {α β γ : Type*} (R : α → β → Prop) (f : α → γ → α) (g : β → γ → β)
     (hstep : ∀ a b c, R a b → R (f a c) (g b c)) :

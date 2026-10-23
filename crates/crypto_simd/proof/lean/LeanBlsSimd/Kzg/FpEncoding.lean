@@ -5,7 +5,7 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 namespace LeanBlsSimd.Kzg
 
 theorem fpEncode_eq_bls (x : Fp) :

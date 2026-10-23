@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.Fp8Lazy
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem BETA_MONT_eq : val (.ofList BETA_MONT) = beta * R % Fp.modulus := by
   decide +kernel

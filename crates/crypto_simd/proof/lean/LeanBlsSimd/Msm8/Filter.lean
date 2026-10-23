@@ -6,7 +6,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 private theorem filter_not_cons {A : Type} (b : Bool) (x : A) (xs : List A) :
     (if !b then x :: xs else xs) = (if b then [] else [x]) ++ xs := by
@@ -33,7 +33,7 @@ theorem filteredSuffix_done (points : Slice blst.blst_p1_affine) (scalars : Slic
 
 end LeanBlsSimd.Msm8
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_affine)
     (scalars : Slice FilterScalar) (i : Usize)
@@ -106,7 +106,7 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
 
 end LeanBlsSimd.Msm8
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem filteredSuffix_length (points : Slice blst.blst_p1_affine)
     (scalars : Slice FilterScalar) (i : ℕ) :
@@ -173,7 +173,7 @@ theorem filter_prefix_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_a
 end LeanBlsSimd.Msm8
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem filter_prefix_correct (state : msm8.Msm8) (points : Slice blst.blst_p1_affine)
     (scalars : Slice FilterScalar)

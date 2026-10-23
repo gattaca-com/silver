@@ -91,7 +91,7 @@ end LeanBlsSimd.Msm8
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 private theorem encoded_zero_word (j : Fin 6) :
     (Kzg.fpEncode Fp.zero).l.val[j.val]'(by

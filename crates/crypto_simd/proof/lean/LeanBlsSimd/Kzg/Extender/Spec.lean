@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Extender.SpecMath
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
 namespace LeanBlsSimd.Kzg.Extender
 
@@ -121,7 +121,7 @@ private theorem spec_cells_eq (a : Array Fr) :
     rfl
 
 theorem model_spec (blob : ByteArray) :
-    (EthCryptographySpecs.Kzg.computeCells blob).run = pure (Model.extend blob) := by
+    (EthLib.Cryptography.Kzg.computeCells blob).run = pure (Model.extend blob) := by
   suffices h : computeCells blob = liftE (Model.extend blob) by
     exact congrArg ExceptT.run h
   by_cases hs : blob.size = Constants.BYTES_PER_BLOB

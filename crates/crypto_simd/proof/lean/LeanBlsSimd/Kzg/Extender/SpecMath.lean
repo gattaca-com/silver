@@ -2,8 +2,8 @@ import LeanBlsSimd.Kzg.Extender.Model
 import LeanBlsSimd.Kzg.CosetPolynomial
 import Mathlib.Algebra.BigOperators.Intervals
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

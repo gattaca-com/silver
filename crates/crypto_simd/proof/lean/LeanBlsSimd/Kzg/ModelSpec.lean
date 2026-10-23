@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.ModelSpec
 

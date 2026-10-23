@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.DedupModel
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.Representation
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg
 

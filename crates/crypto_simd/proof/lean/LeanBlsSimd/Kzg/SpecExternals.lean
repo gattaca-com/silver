@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.RepresentationLemmas
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg

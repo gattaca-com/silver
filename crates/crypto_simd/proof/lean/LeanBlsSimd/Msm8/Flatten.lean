@@ -69,7 +69,7 @@ theorem weighted_groups_trim {G : Type} [AddCommMonoid G]
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open BucketsRefines EthCryptographySpecs Bls
+open BucketsRefines EthLib.Cryptography Bls
 
 def signedPoint (points : ℕ → G1Spec.E.Point) (reference : U32) : G1Spec.E.Point :=
   if 2 ^ 31 ≤ reference.val then -points (reference.val % 2 ^ 31)
@@ -160,7 +160,7 @@ theorem packed_nested_sum_flatten (state : msm8.buckets.Buckets) (base capacity 
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open BucketsRefines EthCryptographySpecs Bls
+open BucketsRefines EthLib.Cryptography Bls
 
 theorem packed_present_reference (state : msm8.buckets.Buckets) (base capacity : ℕ → ℕ)
     (contents : BucketLists)

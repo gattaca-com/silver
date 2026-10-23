@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open Msm8
 section
 attribute [local irreducible] Msm8.affineAdd
@@ -54,7 +54,7 @@ end
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open Msm8
 
 def AffineLaneRep (x y : Fp8) (lane : Fin 8) (P : G1Spec.E.Point) : Prop :=
@@ -171,7 +171,7 @@ end
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open Msm8
 
 def signedValue (values : ℕ → G1Spec.E.Point) (refs : Array U32 8#usize × U8) (lane : Fin 8) : G1Spec.E.Point :=
@@ -226,7 +226,7 @@ end
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open Msm8
 
 structure BatchGeometry (adds : msm8.pairs.BatchedAdds) (values : ℕ → G1Spec.E.Point) (groups : ℕ) : Prop where
@@ -319,7 +319,7 @@ end
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open Msm8
 
 theorem InputsRep.delta_holds (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
@@ -461,7 +461,7 @@ theorem run_rows_correct (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poi
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls Msm8
+open EthLib.Cryptography Bls Msm8
 
 theorem referencesAt_index (refs : List U32) (g : ℕ) (lane : Fin 8) :
     (pointIndices (referencesAt refs g).1)[lane] = refs[g * 8 + lane]!.val % 2 ^ 31 := by
@@ -658,7 +658,7 @@ theorem paddedAdds_bounds (self : msm8.pairs.BatchedAdds) (jobs : List Job)
 end LeanBlsSimd.BatchedRefines
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls Msm8 QueueRefines
+open EthLib.Cryptography Bls Msm8 QueueRefines
 
 theorem paddedJob_original (jobs : List Job) (hpos : 0 < jobs.length)
     (i : ℕ) (hi : i < jobs.length) :

@@ -1,8 +1,8 @@
 import LeanBlsSimd.Kzg.PolynomialModel
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
-open EthCryptographySpecs Bls Kzg
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

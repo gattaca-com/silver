@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Basic
 import LeanBlsSimd.Refines.Fr8Lazy
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel

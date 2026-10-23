@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.Extender.Model
-import EthCryptographySpecs.Proofs.Kzg.BitReversal
+import EthLib.Cryptography.Proofs.Kzg.BitReversal
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
 namespace LeanBlsSimd.Kzg.Extender
 

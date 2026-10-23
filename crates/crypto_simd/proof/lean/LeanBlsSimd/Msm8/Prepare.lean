@@ -5,7 +5,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 local instance prepareAffineInhabited0 : Inhabited blst.blst_p1_affine := ⟨Kzg.g1Affine G1.zero⟩
 
 /-- The reset and two pushes in the generated nonempty MSM branch. -/
@@ -77,7 +77,7 @@ theorem prepare_store_calls (store : msm8.store.PointStore)
 end LeanBlsSimd.Msm8
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 local instance prepareAffineInhabited1 : Inhabited blst.blst_p1_affine := ⟨Kzg.g1Affine G1.zero⟩
 
 theorem prepareStore_of_calls (store reset pushed out : msm8.store.PointStore)

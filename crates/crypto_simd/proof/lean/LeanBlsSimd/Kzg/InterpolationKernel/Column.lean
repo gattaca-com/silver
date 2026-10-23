@@ -3,9 +3,9 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Fft
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open silver_crypto_simd silver_crypto_simd.kzg
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 

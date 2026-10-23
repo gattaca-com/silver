@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.Fp8Multiple
 import LeanBlsSimd.Proofs.SignedLimbs
 
 namespace LeanBlsSimd.Fp8
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 structure Lazy (k m : ℕ) (x : Fp8) (l : Fin 8) : Prop where
   nonneg : 0 ≤ SignedLimbs.val (x.lane l)

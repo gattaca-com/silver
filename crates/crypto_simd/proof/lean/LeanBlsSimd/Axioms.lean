@@ -1,5 +1,6 @@
 import LeanBlsSimd.Constants
 import LeanBlsSimd.Spec.Fp2
+import LeanBlsSimd.Spec.PairingEquations
 import LeanBlsSimd.Spec.G2Curve
 import LeanBlsSimd.Spec.Scott
 import LeanBlsSimd.Spec.ScottCardinality

@@ -75,11 +75,11 @@ example : G2Spec.verdict G2Spec.infinity = some
   G2Spec.infinity_verdict
 
 theorem malformed_infinity_verdict : G2Spec.verdict (G2Spec.infinity.set 95 1) = none := by
-  unfold G2Spec.verdict EthCryptographySpecs.Bls.G2.uncompress
+  unfold G2Spec.verdict EthLib.Cryptography.Bls.G2.uncompress
   decide +kernel
 
 def generator : Encoding := .ofFn fun i =>
-  (EthCryptographySpecs.Bls.G2.compress EthCryptographySpecs.Bls.G2.generator).data[i.val]!
+  (EthLib.Cryptography.Bls.G2.compress EthLib.Cryptography.Bls.G2.generator).data[i.val]!
 
 /-- info: (true, true) -/
 #guard_msgs in

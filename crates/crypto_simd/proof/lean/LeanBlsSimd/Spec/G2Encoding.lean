@@ -2,8 +2,8 @@ import LeanBlsSimd.Proofs.DecompressG2
 
 namespace LeanBlsSimd.G2Spec
 
-open EthCryptographySpecs.Bls DecompressG2
-open EthCryptographySpecs.IdLoops
+open EthLib.Cryptography.Bls DecompressG2
+open EthLib.Cryptography.IdLoops
 
 /-- Affine infinity uses zero coordinates, as in blst's affine representation. -/
 def blstLimbs (P : G2) : BlstP2Affine :=

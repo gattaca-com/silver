@@ -18,7 +18,7 @@ of `dblXYZ`, `timesMinusZ_eq_formula` rewrites the chain using the explicit dbl-
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Jacobian
+open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 namespace Kernel
 

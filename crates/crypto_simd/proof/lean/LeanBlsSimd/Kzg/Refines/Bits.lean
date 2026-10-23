@@ -1,8 +1,8 @@
 import LeanBlsSimd.Extracted.Funs
-import EthCryptographySpecs.Kzg.BitReversal
+import EthLib.Cryptography.Kzg.BitReversal
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Kzg
+open EthLib.Cryptography Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg

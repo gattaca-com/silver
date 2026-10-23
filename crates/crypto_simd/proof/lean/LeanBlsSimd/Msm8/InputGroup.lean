@@ -8,7 +8,7 @@ noncomputable section
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem glv_wordsValue_eq_limbs (xs : List U64) :
     GlvRefines.wordsValue xs = (Kzg.limbs xs : ℤ) := by

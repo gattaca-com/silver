@@ -643,7 +643,7 @@ powers differ. So the mutated claim is false, not only unproved. -/
 
 section Pow
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def powWith (start : Usize) (self : fp8.Fp8) : Result fp8.Fp8 := do
   let f ← fp8.Fp8.one

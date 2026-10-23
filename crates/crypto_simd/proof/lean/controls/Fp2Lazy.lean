@@ -1,6 +1,6 @@
 import LeanBlsSimd.Proofs.Fp2x8
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 namespace LeanBlsSimd.Controls.LazyFp2
 

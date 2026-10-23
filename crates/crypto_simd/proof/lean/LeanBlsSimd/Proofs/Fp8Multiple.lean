@@ -3,7 +3,7 @@ import LeanBlsSimd.Proofs.SignedLimbs
 
 namespace LeanBlsSimd.Fp8
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 private theorem multiple_of_p_lane (c : UInt64) (l : Fin 8) :
     let n0 := 0xeffffffffaaab * c.toNat

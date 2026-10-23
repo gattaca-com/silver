@@ -5,7 +5,7 @@ import LeanBlsSimd.Kzg.Refines.Interpolation
 import LeanBlsSimd.Kzg.Refines.InterpolationCommitment
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 open private LeanBlsSimd.Kzg.Refinement.powers_loop from LeanBlsSimd.Kzg.Refines.Roots
 

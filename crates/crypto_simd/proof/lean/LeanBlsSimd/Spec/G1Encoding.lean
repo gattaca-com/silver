@@ -2,10 +2,10 @@ import LeanBlsSimd.Spec.G1Curve
 
 namespace LeanBlsSimd.G1Spec
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open WeierstrassCurve
 open DecompressG1
-open EthCryptographySpecs.IdLoops
+open EthLib.Cryptography.IdLoops
 
 def toBytes (b : Encoding) : ByteArray := ⟨b.toArray⟩
 

@@ -24,7 +24,7 @@ against Rust on its test vectors.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-- The value of little-endian `LIMB_BITS`-bit limbs. -/
 def val (a : Limbs) : ℕ := ∑ j : Fin LIMBS, a[j].toNat * 2 ^ (LIMB_BITS * j.val)

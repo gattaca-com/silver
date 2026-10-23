@@ -2,7 +2,7 @@ import LeanBlsSimd.Proofs.G1Finite
 
 namespace LeanBlsSimd.DecompressG1
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 /-- Field operations used by the decoder, before its membership test. -/
 def xOf (inputs : Vector Encoding 8) : Fp8 := Fp8.from_plain (decode inputs).x

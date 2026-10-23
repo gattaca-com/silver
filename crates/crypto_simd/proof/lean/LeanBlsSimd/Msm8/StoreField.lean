@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 @[simp] theorem ofU8_or (a b : U8) : ofU8 (a ||| b) = ofU8 a ||| ofU8 b := rfl
 
@@ -93,7 +93,7 @@ namespace LeanBlsSimd
 
 def negateLimbs (a : Limbs) : Limbs :=
   let st := Lane.sub_limbs (Vector.replicate LIMBS 0) a
-  if st.2 = 0xffffffffffffffff then (Lane.add_limbs st.1 (.ofList (limbs52 (2 * EthCryptographySpecs.Bls.Fp.modulus)))).1 else st.1
+  if st.2 = 0xffffffffffffffff then (Lane.add_limbs st.1 (.ofList (limbs52 (2 * EthLib.Cryptography.Bls.Fp.modulus)))).1 else st.1
 
 theorem lane_negateLimbs (a : Fp8) (l : Fin 8) : a.neg.lane l = negateLimbs (a.lane l) := by
   have hs := Simd.sub_limbs_lane Fp8.zero.limbs a.limbs l

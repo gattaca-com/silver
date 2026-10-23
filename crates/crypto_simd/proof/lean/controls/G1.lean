@@ -8,7 +8,7 @@ the wrapper controls. -/
 
 namespace LeanBlsSimd.G1Controls
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open DecompressG1
 open DecompressG2 (FLAG_COMPRESSED FLAG_INFINITY FLAG_LARGER_ROOT fp_words less_than_p)
 

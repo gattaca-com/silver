@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.Fft
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 

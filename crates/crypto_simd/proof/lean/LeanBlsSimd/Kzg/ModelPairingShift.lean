@@ -1,8 +1,8 @@
 import LeanBlsSimd.Kzg.Model
-import EthCryptographySpecs.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Bls.FrZMod
 
-open EthCryptographySpecs Bls Kzg
-open private cosetShiftForCell from EthCryptographySpecs.Kzg.Cells
+open EthLib.Cryptography Bls Kzg
+open private cosetShiftForCell from EthLib.Cryptography.Kzg.Cells
 
 namespace LeanBlsSimd.Kzg.ModelPairing
 

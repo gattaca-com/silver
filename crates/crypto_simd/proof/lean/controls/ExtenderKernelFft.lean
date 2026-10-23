@@ -2,8 +2,8 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Fft
 import LeanBlsSimd.Kzg.SpecExternals
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 open silver_crypto_simd silver_crypto_simd.kzg
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero

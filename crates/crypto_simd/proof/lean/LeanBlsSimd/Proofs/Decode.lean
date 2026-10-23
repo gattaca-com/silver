@@ -1,6 +1,6 @@
 import LeanBlsSimd.Model.DecompressG2
 import LeanBlsSimd.Proofs.Fp2x8
-import EthCryptographySpecs.Proofs.IdLoops
+import EthLib.Cryptography.Proofs.IdLoops
 
 /-!
 # Byte decoding
@@ -19,7 +19,7 @@ coordinates as `decodeLane` does.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls DecompressG2
+open EthLib.Cryptography.Bls DecompressG2
 
 /-- A big-endian byte string as an integer. -/
 def bytesVal (bs : List UInt8) : ℕ := bs.foldl (fun acc u => acc * 256 + u.toNat) 0
@@ -60,7 +60,7 @@ theorem shiftLeft_or_byte (acc : ℕ) (u : UInt8) : (acc <<< 8) ||| u.toNat = ac
   rw [Nat.shiftLeft_eq, Nat.or_comm, or_mul_two_pow u.toNat_lt, add_comm]
   rfl
 
-open EthCryptographySpecs.IdLoops in
+open EthLib.Cryptography.IdLoops in
 theorem bytesBEToNat_eq (b : ByteArray) : Fp.bytesBEToNat b = bytesVal b.data.toList := by
   unfold Fp.bytesBEToNat
   dsimp only [Id.run, id_pure, id_bind]

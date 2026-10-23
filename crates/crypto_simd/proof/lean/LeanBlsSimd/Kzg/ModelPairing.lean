@@ -4,7 +4,7 @@ import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.InterpolationModel
 import Mathlib.Data.List.Nodup
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.ModelPairing
 

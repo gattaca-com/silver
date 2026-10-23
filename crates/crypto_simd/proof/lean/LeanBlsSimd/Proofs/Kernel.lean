@@ -6,7 +6,7 @@ import LeanBlsSimd.Spec.Generator
 # `decompress` against the spec's signature check
 
 The spec reads a signature's 96 bytes with `G2.uncompress`, then tests the point with
-`G2.inSubgroup` (`coreVerify` in `EthCryptographySpecs/Bls/Signatures.lean`). The program reads
+`G2.inSubgroup` (`coreVerify` in `EthLib.Cryptography/Bls/Signatures.lean`). The program reads
 lane `l` of a `Batch` in `decompress_g2_chunk` of `crates/crypto_simd/src/bls/mod.rs`: an `undecided` lane goes to blst;
 otherwise a `valid` lane gives `Some(points[l])`, and any other lane `None`. Bit `l` of a mask
 `m` is `m.toNat.testBit l`, which is Rust's `m & (1 << l) != 0`
@@ -34,7 +34,7 @@ statement; this module retains it as an explicit parameter.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls DecompressG2 Kernel
+open EthLib.Cryptography.Bls DecompressG2 Kernel
 
 namespace DecompressG2
 

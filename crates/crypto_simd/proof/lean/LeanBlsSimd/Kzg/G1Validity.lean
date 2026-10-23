@@ -1,9 +1,9 @@
 import LeanBlsSimd.Kzg.RepresentationLemmas
-import EthCryptographySpecs.Proofs.Bls.Compress
+import EthLib.Cryptography.Proofs.Bls.Compress
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open WeierstrassCurve.Jacobian
-open scoped EthCryptographySpecs.Bls.Fp
+open scoped EthLib.Cryptography.Bls.Fp
 
 namespace LeanBlsSimd.Kzg
 

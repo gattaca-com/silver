@@ -5,7 +5,7 @@ Removing either bound admits a multiple of r², so the numerical exclusion would
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 example : addOrderOf (G2.toPoint G2.generator) ≠ Fr.modulus ^ 2 := by
   rw [addOrderOf_generator]

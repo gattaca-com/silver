@@ -2,7 +2,7 @@ import LeanBlsSimd.Proofs.Fr8Carries
 
 namespace LeanBlsSimd.FrModel
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem four_mul_p_lt_R : 4 * Fr.modulus < R := by decide +kernel
 

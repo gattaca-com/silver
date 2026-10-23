@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Model
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg

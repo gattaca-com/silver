@@ -8,7 +8,7 @@ import LeanBlsSimd.Kzg.Refines.Deduplicate
 import LeanBlsSimd.Kzg.Refines.Challenge
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg.Verify
@@ -234,6 +234,12 @@ def ModelPairingContract : Prop :=
       .ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup
         (pointValues unique) (pointValues proofs) ci indices evals r))
 
+-- Keep the Boolean abstract here to avoid kernel evaluation of a total pairing.
+private theorem rejectErrors_of_ok {result : Except KzgError Bool} {verdict : Bool}
+    (h : result = .ok verdict) : Model.rejectErrors result = verdict := by
+  rw [h]
+  rfl
+
 set_option maxHeartbeats 200000 in
 theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
     (hpairs : PairingContract) (hmodel : ModelPairingContract)
@@ -423,7 +429,7 @@ theorem glue_of_contracts [e : KzgExternals] (h : ExternalsCorrect e)
                 Bls.pairingCheck (Model.pairingInputs embeddedSetup
                   (pointValues unique) (pointValues P) mapping I evals r) := by
               simp only [Model.verify, Model.verifyPure, hfrontOk, Bind.bind, Except.bind]
-              exact congrArg Model.rejectErrors hmodelOk
+              exact rejectErrors_of_ok hmodelOk
             refine ⟨next, ?_, hvnext⟩
             simp only [verify.CellBatchVerifier.verify, hiLen, hbLen, hpLen, bne_self_eq_false,
               Bool.false_eq_true, if_false, hcheck, bind_tc_ok, hstop, hfill,

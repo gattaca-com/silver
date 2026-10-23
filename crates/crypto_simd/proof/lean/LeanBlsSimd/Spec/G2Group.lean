@@ -1,5 +1,5 @@
 import LeanBlsSimd.Spec.Scott
-import EthCryptographySpecs.Bls.Compress
+import EthLib.Cryptography.Bls.Compress
 import Mathlib.AlgebraicGeometry.EllipticCurve.Jacobian.Point
 import Mathlib.Tactic.Module
 
@@ -19,7 +19,7 @@ theorem also requires distinct affine x coordinates.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Jacobian
+open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 namespace G2
 

@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 local instance inputOutputAffineInhabited0 : Inhabited blst.blst_p1_affine := ⟨Kzg.g1Affine G1.zero⟩
 
 theorem inputContribution_range_eq_zip (ps : List blst.blst_p1_affine) (words : List ScalarWords)

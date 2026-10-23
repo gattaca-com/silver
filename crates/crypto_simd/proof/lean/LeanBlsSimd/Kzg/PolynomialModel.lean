@@ -1,10 +1,10 @@
 import LeanBlsSimd.Kzg.Model
-import EthCryptographySpecs.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Bls.FrZMod
 import Mathlib.Algebra.Polynomial.OfFn
 import Mathlib.LinearAlgebra.Lagrange
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg
 

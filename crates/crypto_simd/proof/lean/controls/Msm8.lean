@@ -12,7 +12,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Controls.MsmInverse
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 private def inverseWith (finish : Bool) (x : Fp8) : Fp8 :=
   let squared := x.pow_p_minus_3_over_4.square.square
@@ -174,7 +174,7 @@ example : True := by
 end LeanBlsSimd.Controls.MsmGlv
 
 namespace LeanBlsSimd.Controls.MsmWeights
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 private def joinWith (extra : ℕ) (self : G1x8) (bits distance : ℕ) : G1x8 :=
   self.add_complete ((self.times_two_pow (distance * bits + extra)).permute (G1x8.lanesAbove distance))
@@ -242,7 +242,7 @@ example (self : msm8.pairs.BatchedAdds)
 end LeanBlsSimd.Controls.MsmQueue
 
 namespace LeanBlsSimd.Controls.MsmPlainWords
-open EthCryptographySpecs.Bls PlainWords Kzg silver_crypto_simd.kzg
+open EthLib.Cryptography.Bls PlainWords Kzg silver_crypto_simd.kzg
 
 example (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
     (values : List Fr) (hinput : input.val = values.map frEncode) :

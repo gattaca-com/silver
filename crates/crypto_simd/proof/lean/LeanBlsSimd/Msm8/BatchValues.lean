@@ -5,7 +5,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.BatchedRefines
-open EthCryptographySpecs Bls Msm8 QueueRefines
+open EthLib.Cryptography Bls Msm8 QueueRefines
 
 theorem signedReferenceValue_eq_sign (values : ℕ → G1Spec.E.Point) (r : U32) :
     signedReferenceValue values r =

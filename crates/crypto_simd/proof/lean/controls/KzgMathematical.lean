@@ -1,10 +1,10 @@
 import LeanBlsSimd.Kzg.CosetPolynomial
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
 open private getElem!_reversedRoots getElem!_map_mul
-  from EthCryptographySpecs.Proofs.Kzg.FftInverse
+  from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

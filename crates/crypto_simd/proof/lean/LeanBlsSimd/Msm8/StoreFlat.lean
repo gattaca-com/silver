@@ -138,7 +138,7 @@ theorem push_blst_flat_refines (s : msm8.store.PointStore)
 end LeanBlsSimd
 
 namespace LeanBlsSimd
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def PointRowsHold (rows : Limbs × Limbs) (x y : ZMod Fp.modulus) : Prop :=
   Fp8Inv rows.1 ∧ decode rows.1 = x ∧ Fp8Inv rows.2 ∧ decode rows.2 = y

@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls BucketsRefines
+open EthLib.Cryptography Bls BucketsRefines
 local instance finiteCoreAffineInhabited : Inhabited blst.blst_p1_affine := ⟨Kzg.g1Affine G1.zero⟩
 
 def finiteCore (self : msm8.Msm8) (points : Slice blst.blst_p1_affine)

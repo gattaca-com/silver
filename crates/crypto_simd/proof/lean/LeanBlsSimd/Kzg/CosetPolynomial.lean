@@ -1,10 +1,10 @@
 import LeanBlsSimd.Kzg.PolynomialModel
 import LeanBlsSimd.Kzg.PolynomialArithmetic
-import EthCryptographySpecs.Proofs.Kzg.Domain
-import EthCryptographySpecs.Proofs.Kzg.FftInverse
+import EthLib.Cryptography.Proofs.Kzg.Domain
+import EthLib.Cryptography.Proofs.Kzg.FftInverse
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

@@ -11,7 +11,7 @@ example shows that the mutant is wrong on the spec's generator G. The mutated pr
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Jacobian
+open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 -- A mutated proof stops at its first failing step, so the linters flag the steps and simp
 -- arguments after it.

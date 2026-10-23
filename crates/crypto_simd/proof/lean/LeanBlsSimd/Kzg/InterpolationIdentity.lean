@@ -2,8 +2,8 @@ import LeanBlsSimd.Kzg.ColumnPolynomial
 import LeanBlsSimd.Kzg.CosetPolynomial
 import LeanBlsSimd.Kzg.PolynomialInterpolation
 
-open EthCryptographySpecs Bls Kzg
-open scoped EthCryptographySpecs.Bls.Fr
+open EthLib.Cryptography Bls Kzg
+open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg
 

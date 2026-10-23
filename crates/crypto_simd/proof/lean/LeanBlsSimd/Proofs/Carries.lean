@@ -14,7 +14,7 @@ least 2^64 − 2^52 − 1, so its bit 63 is set, and `srai 63` turns it into a b
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 set_option exponentiation.threshold 1000 in
 theorem R_eq : R = 2 ^ 416 := rfl

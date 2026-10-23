@@ -4,7 +4,7 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 private theorem slice_range {α : Type} (xs : Slice α) (start finish : Usize)
     (hstart : start.val ≤ finish.val) (hfinish : finish.val ≤ xs.val.length) :
@@ -131,7 +131,7 @@ private theorem msm_loop_refinement
 end LeanBlsSimd.Msm8
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem msm_refinement
     (state : msm8.Msm8) (points : Slice blst.blst_p1_affine) (scalars : Slice ScalarWords)

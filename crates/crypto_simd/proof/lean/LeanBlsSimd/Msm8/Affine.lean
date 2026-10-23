@@ -4,7 +4,7 @@ import LeanBlsSimd.Spec.G1Curve
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 
 theorem affineAdd_correct (xa ya xb yb inverse : Fp8) (l : Fin 8)

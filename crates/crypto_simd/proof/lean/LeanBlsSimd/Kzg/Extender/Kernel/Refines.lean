@@ -8,7 +8,7 @@ import LeanBlsSimd.Kzg.Extender.Write
 import LeanBlsSimd.Kzg.Extender.Acceptance
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel

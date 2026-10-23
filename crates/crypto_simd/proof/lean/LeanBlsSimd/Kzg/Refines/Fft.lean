@@ -1,11 +1,11 @@
 import LeanBlsSimd.Kzg.Refines.Loop
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Model
-import EthCryptographySpecs.Proofs.Kzg.Fft
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.Fft
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg

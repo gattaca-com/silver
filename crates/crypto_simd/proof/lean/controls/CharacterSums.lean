@@ -9,7 +9,7 @@ instance : Fact (Nat.Prime 7) := ⟨by decide⟩
 
 example : ScottComplete := scott_complete
 
-example (P : E'.Point) : psi P = z • P ↔ EthCryptographySpecs.Bls.Fr.modulus • P = 0 :=
+example (P : E'.Point) : psi P = z • P ↔ EthLib.Cryptography.Bls.Fr.modulus • P = 0 :=
   ⟨scott_sound P, scott_complete P⟩
 
 example : Nat.card {x : ZMod 7 // x ^ 3 = 0} ≠ 3 := by

@@ -18,7 +18,7 @@ bytes as the model's `Vector`s. The proof is `decompress_refines` followed by
 namespace LeanBlsSimd
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs.Bls Kernel
+open EthLib.Cryptography.Bls Kernel
 
 namespace DecompressG2
 

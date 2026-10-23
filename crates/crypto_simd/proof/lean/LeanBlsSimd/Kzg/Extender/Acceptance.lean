@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.Extender.Basic
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.Extender
 

@@ -7,7 +7,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.WindowSums
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 structure Entry where
   x : Fp8
@@ -205,7 +205,7 @@ theorem windowSum_loop_refines (self : msm8.buckets.Buckets) (store : msm8.store
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem bucketCount_refines (bits : Usize) (hlo : 1 ≤ bits.val) (hhi : bits.val ≤ 8) :
     ∃ maximum : Usize, maximum.val = 2 ^ (bits.val - 1) ∧
@@ -269,7 +269,7 @@ theorem window_sums_correct (self : msm8.buckets.Buckets) (store : msm8.store.Po
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def groupStep (vectors : ℕ → G1x8) (bits group : ℕ) (total : G1x8) : G1x8 :=
   (total.times_two_pow (8 * bits)).add_complete (vectors (group - 1))
@@ -322,7 +322,7 @@ theorem bucketSum_correct (vectors : ℕ → G1x8) (bits top : ℕ)
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem groupSum_refines (self : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (group : Usize) (total : G1x8) (vectors : ℕ → G1x8) (hbits : self.window_bits.val ≤ 255)
@@ -676,7 +676,7 @@ theorem entries_refines (state : msm8.buckets.Buckets) (group bucket cursor : Us
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def loadedEntry (state : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (group bucket cursor : ℕ) : Entry :=

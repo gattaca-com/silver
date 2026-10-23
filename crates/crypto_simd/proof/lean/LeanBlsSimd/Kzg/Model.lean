@@ -1,8 +1,8 @@
-import EthCryptographySpecs.Kzg.Cells
+import EthLib.Cryptography.Kzg.Cells
 import Batteries.Tactic.OpenPrivate
 
-open EthCryptographySpecs Bls Kzg Kzg.Constants Kzg.BitReversal
-open private cosetShiftForCell from EthCryptographySpecs.Kzg.Cells
+open EthLib.Cryptography Bls Kzg Kzg.Constants Kzg.BitReversal
+open private cosetShiftForCell from EthLib.Cryptography.Kzg.Cells
 
 namespace LeanBlsSimd.Kzg.Model
 

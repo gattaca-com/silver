@@ -5,7 +5,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 def readPoint (rows : List Limbs) (index : ℕ) : Limbs × Limbs :=
   (rows[2 * index]!, rows[2 * index + 1]!)

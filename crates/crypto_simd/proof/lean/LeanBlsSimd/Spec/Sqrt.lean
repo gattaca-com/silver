@@ -1,6 +1,6 @@
 import LeanBlsSimd.Spec.G2Curve
-import EthCryptographySpecs.Bls.Compress
-import EthCryptographySpecs.Proofs.Bls.Compress
+import EthLib.Cryptography.Bls.Compress
+import EthLib.Cryptography.Proofs.Bls.Compress
 
 /-!
 # Square roots in Fp2: the spec's and the kernel's
@@ -17,7 +17,7 @@ then picks the same one: `Kernel.sqrt_agrees` and `Kernel.sqrt_fails`.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs EthCryptographySpecs.Bls
+open EthLib.Cryptography EthLib.Cryptography.Bls
 
 private theorem two_ne_zero_zmod : (2 : ZMod Fp.modulus) ≠ 0 := by decide +kernel
 

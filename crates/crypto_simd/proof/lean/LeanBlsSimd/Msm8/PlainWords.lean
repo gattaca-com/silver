@@ -6,7 +6,7 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd.kzg
 open LeanBlsSimd
 namespace LeanBlsSimd.PlainWords
@@ -94,7 +94,7 @@ theorem push_words_refines (v : fr8.u256x8.U256x8)
 end LeanBlsSimd.PlainWords
 namespace LeanBlsSimd.PlainWords
 open LeanBlsSimd.Kzg
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 open Kzg.Extender.Kernel Kzg.Extender.Kernel.BytePacking
 
 def sixteenLiteral : blst.blst_fr :=

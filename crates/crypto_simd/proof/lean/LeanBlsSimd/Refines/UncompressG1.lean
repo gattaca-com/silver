@@ -18,8 +18,8 @@ def BlstMatchesSpec [BlsExternals] : Prop :=
 
 theorem specVerdict_some_iff (bytes : Array U8 48#usize) (p : blst.blst_p1_affine) :
     specVerdict bytes = some p ↔
-      (EthCryptographySpecs.Kzg.bytesToKzgProof (G1Spec.toBytes (ofArray ofU8 bytes))).isOk = true ∧
-      ∃ P, EthCryptographySpecs.Bls.G1.uncompress (G1Spec.toBytes (ofArray ofU8 bytes)) = .ok P ∧
+      (EthLib.Cryptography.Kzg.bytesToKzgProof (G1Spec.toBytes (ofArray ofU8 bytes))).isOk = true ∧
+      ∃ P, EthLib.Cryptography.Bls.G1.uncompress (G1Spec.toBytes (ofArray ofU8 bytes)) = .ok P ∧
         p = toBlstP1Affine (G1Spec.blstLimbs P) := by
   rw [specVerdict, Option.map_eq_some_iff]
   constructor

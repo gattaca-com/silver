@@ -15,7 +15,7 @@ The first examples refute each mutated statement. The final examples evaluate th
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs EthCryptographySpecs.Bls Kernel WeierstrassCurve
+open EthLib.Cryptography EthLib.Cryptography.Bls Kernel WeierstrassCurve
 
 local notation "G" => G2.toPoint G2.generator
 

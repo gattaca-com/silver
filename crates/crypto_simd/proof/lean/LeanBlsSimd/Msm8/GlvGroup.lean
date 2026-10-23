@@ -2,7 +2,7 @@ import LeanBlsSimd.Model.Glv
 import LeanBlsSimd.Spec.G1Curve
 
 namespace LeanBlsSimd.G1Spec
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem sigma_eq_lambda_smul (P : E.Point) (hP : Fr.modulus • P = 0) :
     sigma P = Glv.lambda • P := by

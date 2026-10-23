@@ -11,7 +11,7 @@ entry, so the exponent follows Horner's rule over the windows (`windows_horner`)
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 theorem windows_lt : ∀ w ∈ List.range 95, P_MINUS_3_OVER_4_WINDOWS[w]! < 16 := by decide
 

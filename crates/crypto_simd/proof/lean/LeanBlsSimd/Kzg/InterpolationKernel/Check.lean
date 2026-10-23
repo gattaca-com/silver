@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg
@@ -25,7 +25,7 @@ private theorem canonical_iff (cell : Aeneas.Std.Array U8 2048#usize)
     omega
   by_cases h : canonical cell j <;>
     simp only [canonical] at h <;>
-    simp [bytesToBlsField, hsize, EthCryptographySpecs.Kzg.Constants.BYTES_PER_FIELD_ELEMENT,
+    simp [bytesToBlsField, hsize, EthLib.Cryptography.Kzg.Constants.BYTES_PER_FIELD_ELEMENT,
       Fr.fromBytesBE, canonical, h, Except.toOption]
 
 private theorem tryMk_ok {ty : UScalarTy} (n : Nat) (hn : n < 2 ^ ty.numBits) :

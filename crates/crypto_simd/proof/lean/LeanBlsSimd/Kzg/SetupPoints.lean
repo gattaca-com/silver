@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.SetupArithmetic
 
-open EthCryptographySpecs Bls Kzg LeanBlsSimd.Kzg.SetupArithmetic silver_crypto_simd silver_crypto_simd.kzg
+open EthLib.Cryptography Bls Kzg LeanBlsSimd.Kzg.SetupArithmetic silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.SetupPoints
 

@@ -12,22 +12,22 @@ set_option exponentiation.threshold 512
 set_option maxRecDepth 2048
 
 
-private theorem g1Affine_eq_bls (p : EthCryptographySpecs.Bls.G1) :
+private theorem g1Affine_eq_bls (p : EthLib.Cryptography.Bls.G1) :
     g1Affine p = DecompressG1.toBlstP1Affine (G1Spec.blstLimbs p) := by
   simp [g1Affine, DecompressG1.toBlstP1Affine, G1Spec.blstLimbs, fpEncode_eq_bls]
 
 theorem specVerdict_eq_bls (b : Array U8 48#usize) :
     specVerdict b = UncompressG1.specVerdict b := by
   unfold specVerdict specPoint UncompressG1.specVerdict G1Spec.verdict
-  change ((EthCryptographySpecs.Kzg.bytesToKzgProof (arrayBytes b)).toOption.bind
-    (fun validated => (EthCryptographySpecs.Bls.G1.uncompress validated).toOption)).map _ = _
+  change ((EthLib.Cryptography.Kzg.bytesToKzgProof (arrayBytes b)).toOption.bind
+    (fun validated => (EthLib.Cryptography.Bls.G1.uncompress validated).toOption)).map _ = _
   have hb : G1Spec.toBytes (ofArray ofU8 b) = arrayBytes b := rfl
   rw [hb]
-  cases EthCryptographySpecs.Kzg.bytesToKzgProof (arrayBytes b) with
+  cases EthLib.Cryptography.Kzg.bytesToKzgProof (arrayBytes b) with
   | error e => rfl
   | ok validated =>
     dsimp only [Except.toOption, Option.bind]
-    cases EthCryptographySpecs.Bls.G1.uncompress validated with
+    cases EthLib.Cryptography.Bls.G1.uncompress validated with
     | error e => rfl
     | ok p => exact congrArg some (g1Affine_eq_bls p)
 
@@ -43,7 +43,7 @@ theorem externalsCorrect_of_blstMatchesSpec [e : KzgExternals]
     ExternalsCorrect e := by
   exact ⟨hblst, g1DecoderCorrect_of_blstMatchesSpec hg1⟩
 
-private theorem g2Affine_eq_bls (p : EthCryptographySpecs.Bls.G2) :
+private theorem g2Affine_eq_bls (p : EthLib.Cryptography.Bls.G2) :
     g2Affine p = DecompressG2.toBlstP2Affine (G2Spec.blstLimbs p) := by
   simp only [g2Affine, fp2Encode, DecompressG2.toBlstP2Affine, G2Spec.blstLimbs,
     DecompressG2.blstPoint, DecompressG2.toBlstFp2, toArray, fpEncode_eq_bls,
@@ -55,7 +55,7 @@ theorem specG2Verdict_eq_bls (b : Array U8 96#usize) :
   unfold specG2Verdict UncompressG2.specVerdict G2Spec.verdict
   have hb : DecompressG2.toBytes (ofArray ofU8 b) = arrayBytes b := rfl
   rw [hb]
-  cases EthCryptographySpecs.Bls.G2.uncompress (arrayBytes b) with
+  cases EthLib.Cryptography.Bls.G2.uncompress (arrayBytes b) with
   | error e => rfl
   | ok p =>
     cases hs : p.inSubgroup <;> simp [Except.toOption, hs, g2Affine_eq_bls]

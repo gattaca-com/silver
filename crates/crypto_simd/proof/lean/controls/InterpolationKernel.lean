@@ -3,9 +3,9 @@ import LeanBlsSimd.Kzg.InterpolationKernel.Check
 import LeanBlsSimd.Kzg.InterpolationKernel.Column
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 
 attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
 attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero

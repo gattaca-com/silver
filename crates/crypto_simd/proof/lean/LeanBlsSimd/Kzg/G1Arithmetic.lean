@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.G1Validity
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open WeierstrassCurve.Jacobian
 
 namespace LeanBlsSimd.Kzg

@@ -10,7 +10,7 @@ original. Concrete examples show the effects of the mutations. -/
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls DecompressG2 Kernel
+open EthLib.Cryptography.Bls DecompressG2 Kernel
 
 -- A mutated proof stops at its first failing step, so the linters flag the steps after it.
 set_option linter.unreachableTactic false

@@ -1,13 +1,13 @@
 import LeanBlsSimd.Model.DecompressG1
 import LeanBlsSimd.Proofs.DecompressG2
-import EthCryptographySpecs.Proofs.Bls.G1Order
-import EthCryptographySpecs.Kzg.Core
+import EthLib.Cryptography.Proofs.Bls.G1Order
+import EthLib.Cryptography.Kzg.Core
 import LeanBlsSimd.Spec.PointCount
 import LeanBlsSimd.Spec.ScottCardinality
 
 namespace LeanBlsSimd.G1Spec
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 open WeierstrassCurve
 open DecompressG1
 

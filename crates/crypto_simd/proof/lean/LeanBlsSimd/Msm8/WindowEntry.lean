@@ -7,7 +7,7 @@ noncomputable section
 
 namespace LeanBlsSimd.WindowSums
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 def entryPoint (state : msm8.buckets.Buckets) (points : ℕ → G1Spec.E.Point)
     (group bucket cursor : ℕ) (l : Fin 8) : G1Spec.E.Point :=

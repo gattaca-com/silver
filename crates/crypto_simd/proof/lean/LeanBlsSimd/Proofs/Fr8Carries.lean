@@ -70,7 +70,7 @@ theorem add_limbs_lane (a b : Vector M512 LIMBS) (l : Fin 8) :
 
 end Simd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 set_option exponentiation.threshold 1000 in
 theorem R_eq : R = 2 ^ 260 := rfl

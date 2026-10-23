@@ -15,7 +15,7 @@ theorem zSquared_eq : zSquared = z ^ 2 := by decide +kernel
 
 theorem lambda_eq : lambda = z ^ 2 - 1 := by decide +kernel
 
-theorem modulus_eq : modulus = (EthCryptographySpecs.Bls.Fr.modulus : ℤ) := by
+theorem modulus_eq : modulus = (EthLib.Cryptography.Bls.Fr.modulus : ℤ) := by
   decide +kernel
 
 theorem modulus_polynomial : modulus = lambda ^ 2 + lambda + 1 := by

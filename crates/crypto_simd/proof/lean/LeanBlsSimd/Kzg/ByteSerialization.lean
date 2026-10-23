@@ -1,12 +1,12 @@
 import LeanBlsSimd.Kzg.Model
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import Mathlib.Data.List.Forall2
 import Aeneas
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 open private bytesBEToNatAux_linear
-  from EthCryptographySpecs.Proofs.Kzg.Polynomials
+  from EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 namespace LeanBlsSimd.Kzg
 

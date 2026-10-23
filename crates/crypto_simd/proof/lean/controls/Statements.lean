@@ -11,7 +11,7 @@ the changed claim is false; concrete refutations and equivalent mutations are id
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs EthCryptographySpecs.Bls
+open EthLib.Cryptography EthLib.Cryptography.Bls
 
 -- A mutated proof stops at its first failing step, so the linter flags the steps after it.
 set_option linter.unreachableTactic false

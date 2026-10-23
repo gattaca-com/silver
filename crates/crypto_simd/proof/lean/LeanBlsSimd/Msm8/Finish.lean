@@ -11,7 +11,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.Msm8
-open EthCryptographySpecs Bls BucketsRefines QueueRefines BatchedRefines PairRoundsRefines
+open EthLib.Cryptography Bls BucketsRefines QueueRefines BatchedRefines PairRoundsRefines
 
 private theorem signedReferenceValue_eq_referencePoint (values : ℕ → G1Spec.E.Point) :
     signedReferenceValue values = referencePoint values := by

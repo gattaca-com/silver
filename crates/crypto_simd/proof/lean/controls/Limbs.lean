@@ -10,7 +10,7 @@ equation multiplied by the unit R. -/
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls Lane
+open EthLib.Cryptography.Bls Lane
 
 -- A mutated proof stops at its first failing step, so the linter flags the steps after it.
 set_option linter.unreachableTactic false

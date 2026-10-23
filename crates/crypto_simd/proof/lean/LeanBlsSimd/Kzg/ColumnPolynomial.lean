@@ -1,8 +1,8 @@
 import LeanBlsSimd.Kzg.PolynomialArithmetic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
-open scoped EthCryptographySpecs.Bls.Fr
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
+open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg
 

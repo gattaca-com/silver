@@ -1,11 +1,11 @@
 import LeanBlsSimd.Kzg.Refines.Roots
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.Setup
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
-import EthCryptographySpecs.Proofs.Bls.FrZMod
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Bls.FrZMod
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 open core.iter.range core.ops.range
 
@@ -130,7 +130,7 @@ private theorem coset_shift_eq (k : Nat) (hk : k < 128) :
   simp only [size_computeRootsOfUnity]
   rfl
 
-open scoped EthCryptographySpecs.Bls.Fr in
+open scoped EthLib.Cryptography.Bls.Fr in
 private theorem coset_shift_ne_zero (k : Nat) (hk : k < 128) : Model.cosetShift k ≠ 0 := by
   rw [coset_shift_eq k hk]
   simp only [Model.roots, computeRootsOfUnity_def]

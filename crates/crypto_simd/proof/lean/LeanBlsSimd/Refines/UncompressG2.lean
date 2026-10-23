@@ -19,8 +19,8 @@ def BlstMatchesSpec [BlsExternals] : Prop :=
 
 theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : blst.blst_p2_affine) :
     specVerdict bytes = some p ↔
-      ∃ P, EthCryptographySpecs.Bls.G2.uncompress (toBytes (ofArray ofU8 bytes)) = .ok P ∧
-        EthCryptographySpecs.Bls.G2.inSubgroup P = true ∧
+      ∃ P, EthLib.Cryptography.Bls.G2.uncompress (toBytes (ofArray ofU8 bytes)) = .ok P ∧
+        EthLib.Cryptography.Bls.G2.inSubgroup P = true ∧
         p = toBlstP2Affine (G2Spec.blstLimbs P) := by
   rw [specVerdict, Option.map_eq_some_iff]
   constructor

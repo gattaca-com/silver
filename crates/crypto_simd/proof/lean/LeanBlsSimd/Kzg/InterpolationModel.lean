@@ -1,8 +1,8 @@
 import LeanBlsSimd.Kzg.Refines.Interpolation
-import EthCryptographySpecs.Proofs.Kzg.Fft
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.Fft
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.Interpolation
 

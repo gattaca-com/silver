@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.PolynomialArithmetic
 
-open EthCryptographySpecs Bls Kzg
-open scoped EthCryptographySpecs.Bls.Fr BigOperators
+open EthLib.Cryptography Bls Kzg
+open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
 namespace LeanBlsSimd.Kzg.PolynomialInterpolation
 

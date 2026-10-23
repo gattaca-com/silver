@@ -1,10 +1,10 @@
 import LeanBlsSimd.Kzg.Extender.Basic
 import LeanBlsSimd.Kzg.Refines.Bits
-import EthCryptographySpecs.Proofs.Kzg.BitReversal
-import EthCryptographySpecs.Proofs.Kzg.Polynomials
+import EthLib.Cryptography.Proofs.Kzg.BitReversal
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg Kzg.BitReversal
+open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender

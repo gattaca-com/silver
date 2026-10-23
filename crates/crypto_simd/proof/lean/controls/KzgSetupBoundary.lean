@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Setup
 
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg.Controls
 

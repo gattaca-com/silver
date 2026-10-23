@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.Representation
 import LeanBlsSimd.Extracted.Funs
 
-open EthCryptographySpecs Bls LeanBlsSimd.Kzg silver_crypto_simd silver_crypto_simd.kzg
+open EthLib.Cryptography Bls LeanBlsSimd.Kzg silver_crypto_simd silver_crypto_simd.kzg
 deriving instance DecidableEq for BlsError
 deriving instance DecidableEq for Fp2
 deriving instance DecidableEq for G1

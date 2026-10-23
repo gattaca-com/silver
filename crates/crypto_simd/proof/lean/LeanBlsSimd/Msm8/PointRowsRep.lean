@@ -8,7 +8,7 @@ noncomputable section
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem loadedCoordinate_lane (store : msm8.store.PointStore)
     (indices : Array U32 8#usize) (coordinate : ℕ) (l : Fin 8) :

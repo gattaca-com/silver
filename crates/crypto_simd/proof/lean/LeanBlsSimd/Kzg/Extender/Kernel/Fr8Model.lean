@@ -3,12 +3,12 @@ import LeanBlsSimd.Refines.Fr8Core
 import LeanBlsSimd.Proofs.Fr8
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 
 theorem getElem_lane_ofFr8 (x : fr8.Fr8) (j : Fin 5) (lane : Fin 8) :
     ((FrModel.ofFr8 x).lane lane)[j.val] = (x.val[j.val]!)[lane] := by

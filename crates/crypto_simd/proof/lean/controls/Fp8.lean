@@ -11,7 +11,7 @@ counterexample satisfying the lemma's hypotheses and verifies the model on the s
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 -- A mutated proof stops at its first failing step, so the linter flags the steps after it.
 set_option linter.unreachableTactic false

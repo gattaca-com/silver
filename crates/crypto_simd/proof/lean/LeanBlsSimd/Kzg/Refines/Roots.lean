@@ -1,10 +1,10 @@
 import LeanBlsSimd.Kzg.Refines.Loop
 import LeanBlsSimd.Kzg.Externals
 import LeanBlsSimd.Kzg.Model
-import EthCryptographySpecs.Proofs.Bls.Fr
+import EthLib.Cryptography.Proofs.Bls.Fr
 
 open Aeneas Aeneas.Std Result ControlFlow
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 deriving instance DecidableEq for Aeneas.Std.Error

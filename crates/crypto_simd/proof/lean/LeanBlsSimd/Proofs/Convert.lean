@@ -15,7 +15,7 @@ value stays below 2^116.
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls
+open EthLib.Cryptography.Bls
 
 namespace Fp8
 

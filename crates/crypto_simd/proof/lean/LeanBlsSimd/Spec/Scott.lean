@@ -19,7 +19,7 @@ converse, `ScottComplete`, using the generator identity and a character-sum poin
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs.Bls WeierstrassCurve Affine
+open EthLib.Cryptography.Bls WeierstrassCurve Affine
 
 local notation "ω" => (QuadraticAlgebra.omega : Fp2Field)
 

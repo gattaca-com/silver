@@ -7,7 +7,7 @@ noncomputable section
 
 namespace LeanBlsSimd.Msm8
 
-open EthCryptographySpecs Bls
+open EthLib.Cryptography Bls
 
 theorem affine_read_finite (point : blst.blst_p1_affine)
     (hfinite : (Kzg.g1ReadAffine point).isInfinity ≠ true) :

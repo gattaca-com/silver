@@ -13,13 +13,13 @@ re·re′ − im·im′, `QuadraticAlgebra` computes re·re′ + (−1)·im·im�
 `Fp2.toField` is a `RingEquiv` built from the spec's own `+` and `*`. The spec's `Fp2` has no
 `Zero` or `One` instance and no additive group structure, so Mathlib's `map_zero`, `map_one`,
 `map_neg` and `map_sub` do not apply to it; `Fp2.toField_zero`, `Fp2.toField_one`,
-`Fp2.toField_neg` and `Fp2.toField_sub` state them instead. The spec's `Fp2.powNat` is
-`partial`, so no proof can unfold it.
+`Fp2.toField_neg` and `Fp2.toField_sub` state them instead.
+`Spec/PairingEquations.lean` exposes the total power definitions from the pinned specification.
 -/
 
 namespace LeanBlsSimd
 
-open EthCryptographySpecs EthCryptographySpecs.Bls
+open EthLib.Cryptography EthLib.Cryptography.Bls
 
 abbrev Fp2Field : Type := QuadraticAlgebra (ZMod Fp.modulus) (-1) 0
 

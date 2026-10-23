@@ -2,7 +2,7 @@ import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Model
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Offset
 
 open Aeneas Aeneas.Std Result
-open EthCryptographySpecs Bls Kzg
+open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.FrModel
@@ -53,7 +53,7 @@ end LeanBlsSimd.FrModel
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
-open scoped EthCryptographySpecs.Bls.Fr
+open scoped EthLib.Cryptography.Bls.Fr
 
 theorem reduced_refinement (a : fr8.Fr8) (hn : Normalized a)
     (ha : ∀ lane, laneNat a lane < 4 * Fr.modulus) :
