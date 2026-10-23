@@ -11,7 +11,7 @@
    "inputRev": "d973341320c1d5c947a95992db2aa6f70b658ea2",
    "inherited": false,
    "configFile": "lakefile.lean"},
-  {"url": "https://github.com/ethereum/cryptography-specs",
+  {"url": "https://github.com/ethereum/EthLib",
    "type": "git",
    "subDir": null,
    "scope": "",
