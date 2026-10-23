@@ -97,10 +97,6 @@ impl Fp2 {
         Self { c0: self.c0.sub(&self.c1), c1: self.c0.add(&self.c1) }
     }
 
-    pub fn is_zero(&self) -> bool {
-        self.c0.is_zero() && self.c1.is_zero()
-    }
-
     /// conj / (c0² + c1²); 0 for 0.
     pub fn inverse(&self) -> Self {
         let norm_inverse = self.c0.square().add(&self.c1.square()).inverse();

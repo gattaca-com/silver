@@ -1,6 +1,6 @@
 pub mod bls;
 pub mod kzg;
-pub mod portable;
+pub(crate) mod portable;
 mod sha256;
 
 /// Whether the IFMA kernels run: built with the `simd` feature, on a CPU with

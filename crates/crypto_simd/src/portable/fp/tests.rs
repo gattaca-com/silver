@@ -86,6 +86,28 @@ fn operations_match_blst() {
     }
 }
 
+/// k·p as six words.
+fn times_p(k: u64) -> [u64; 6] {
+    let mut out = [0u64; 6];
+    let mut carry = 0u128;
+    for (w, word) in P_U64.iter().enumerate() {
+        let t = *word as u128 * k as u128 + carry;
+        out[w] = t as u64;
+        carry = t >> 64;
+    }
+    assert!(carry == 0, "{k}·p fits six words");
+    out
+}
+
+/// No `Fp` operation returns a multiple of p but 0, yet `inverse` ends on
+/// every multiple of p that six words hold, with 0.
+#[test]
+fn inverse_is_total() {
+    for k in 0..=9 {
+        assert_eq!(Fp(times_p(k)).inverse(), Fp::ZERO, "{k}·p");
+    }
+}
+
 /// Where BMI2 runs, the products' twins built for it agree with the copies
 /// built for baseline x86-64, which other CPUs run.
 #[cfg(target_arch = "x86_64")]

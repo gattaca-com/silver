@@ -35,7 +35,7 @@ impl G1 {
         Self { x: Fp(p.x.l), y: Fp(p.y.l), z: Fp(p.z.l) }
     }
 
-    pub fn to_blst(&self) -> blst_p1 {
+    pub fn to_blst(self) -> blst_p1 {
         blst_p1 {
             x: blst_fp { l: self.x.0 },
             y: blst_fp { l: self.y.0 },
@@ -58,16 +58,6 @@ impl G1 {
         let y3 = e.mul(&d.sub(&x3)).sub(&c.double().double().double());
         let z3 = self.y.mul(&self.z).double();
         Self { x: x3, y: y3, z: z3 }
-    }
-
-    /// madd-2007-bl, for a finite self and x ≠ qx.
-    pub fn add_affine(&self, qx: &Fp, qy: &Fp) -> Self {
-        MixedTerms::new(self, qx, qy).sum(self)
-    }
-
-    /// add-2007-bl, for finite summands with distinct x.
-    pub fn add(&self, q: &Self) -> Self {
-        Terms::new(self, q).sum(self, q)
     }
 
     /// The spec's `G1.add` of self and the affine point (qx, qy).
@@ -105,27 +95,6 @@ impl G1 {
 
     pub fn neg(&self) -> Self {
         Self { x: self.x, y: self.y.neg(), z: self.z }
-    }
-
-    /// Affine x and y; (0, 0) at infinity, as blst encodes it.
-    pub fn to_affine(&self) -> (Fp, Fp) {
-        if self.is_infinity() {
-            return (Fp::ZERO, Fp::ZERO);
-        }
-        let z_inverse = self.z.inverse();
-        let z_inverse_squared = z_inverse.square();
-        (self.x.mul(&z_inverse_squared), self.y.mul(&z_inverse_squared.mul(&z_inverse)))
-    }
-
-    /// Whether both represent the same point.
-    pub fn equals(&self, q: &Self) -> bool {
-        if self.is_infinity() || q.is_infinity() {
-            return self.is_infinity() && q.is_infinity();
-        }
-        let z1z1 = self.z.square();
-        let z2z2 = q.z.square();
-        self.x.mul(&z2z2) == q.x.mul(&z1z1) &&
-            self.y.mul(&q.z).mul(&z2z2) == q.y.mul(&self.z).mul(&z1z1)
     }
 
     /// `[|z|] P` for an affine P, by double-and-add over the set bits of |z|.
@@ -169,6 +138,40 @@ impl G1 {
         }
         let zz = self.z.square();
         self.x == px.mul(&BETA).mul(&BETA).mul(&zz) && self.y.neg() == py.mul(&zz.mul(&self.z))
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+impl G1 {
+    /// madd-2007-bl, for a finite self and x ≠ qx.
+    pub fn add_affine(&self, qx: &Fp, qy: &Fp) -> Self {
+        MixedTerms::new(self, qx, qy).sum(self)
+    }
+
+    /// add-2007-bl, for finite summands with distinct x.
+    pub fn add(&self, q: &Self) -> Self {
+        Terms::new(self, q).sum(self, q)
+    }
+
+    /// Affine x and y; (0, 0) at infinity, as blst encodes it.
+    pub fn to_affine(&self) -> (Fp, Fp) {
+        if self.is_infinity() {
+            return (Fp::ZERO, Fp::ZERO);
+        }
+        let z_inverse = self.z.inverse();
+        let z_inverse_squared = z_inverse.square();
+        (self.x.mul(&z_inverse_squared), self.y.mul(&z_inverse_squared.mul(&z_inverse)))
+    }
+
+    /// Whether both represent the same point.
+    pub fn equals(&self, q: &Self) -> bool {
+        if self.is_infinity() || q.is_infinity() {
+            return self.is_infinity() && q.is_infinity();
+        }
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        self.x.mul(&z2z2) == q.x.mul(&z1z1) &&
+            self.y.mul(&q.z).mul(&z2z2) == q.y.mul(&self.z).mul(&z1z1)
     }
 }
 

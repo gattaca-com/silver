@@ -281,21 +281,19 @@ impl Fp {
     }
 
     /// The plain value, below p.
-    pub fn to_plain(&self) -> [u64; 6] {
+    pub fn to_plain(self) -> [u64; 6] {
         self.mul(&Self([1, 0, 0, 0, 0, 0])).0
     }
 
     /// The inverse by binary extended Euclid on the stored aR, then R³ takes
     /// (aR)⁻¹ to a⁻¹R; 0 for 0. Variable time.
     pub fn inverse(&self) -> Self {
-        if self.is_zero() {
-            return Self::ZERO;
-        }
         Self(inverse_words(&self.0)).mul(&Self(R3))
     }
 
     /// Each value's inverse, 0 for 0, from one `inverse` by Montgomery's
     /// trick: prefix products, then back down with 2 products per value.
+    #[cfg(any(test, all(target_arch = "x86_64", feature = "fp8_scalar_inverse")))]
     pub fn inverse_each(values: &[Fp; 8]) -> [Fp; 8] {
         let mut prefix = [ONE; 8];
         let mut running = ONE;
@@ -471,14 +469,18 @@ fn geq(a: &[u64; 6], b: &[u64; 6]) -> bool {
     !borrow
 }
 
-/// a⁻¹ mod p for 0 < a < p, as plain integers: u·x1 ≡ a and v·x2 ≡ a stay
-/// invariant modulo p, up to the common factor a⁻¹ the loop removes.
+/// a⁻¹ mod p as plain integers, 0 when p divides a: u·x1 ≡ a and v·x2 ≡ a
+/// stay invariant modulo p, up to the common factor a⁻¹ the loop removes.
+/// u reaches 0 exactly when p divides a, so every a ends the loop.
 fn inverse_words(a: &[u64; 6]) -> [u64; 6] {
     let mut u = *a;
     let mut v = P_U64;
     let mut x1 = [1u64, 0, 0, 0, 0, 0];
     let mut x2 = [0u64; 6];
     while !is_one(&u) && !is_one(&v) {
+        if u == [0; 6] {
+            return [0; 6];
+        }
         while is_even(&u) {
             halve(&mut u, 0);
             halve_mod_p(&mut x1);
