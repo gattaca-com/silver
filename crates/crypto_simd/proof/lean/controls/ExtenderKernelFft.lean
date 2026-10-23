@@ -37,10 +37,10 @@ def layoutInput : Slice blst.blst_fr :=
     simp only [List.length_map, _root_.Array.length_toList, layoutRoots_size]
     scalar_tac⟩
 
-private theorem layout_table_exists (hfr : FrCorrect) :
+private theorem layout_table_exists :
     ∃ table, fft8.Fft8.new layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots := by
-  obtain ⟨table, hnew, ht⟩ := fft_new_refinement hfr
+  obtain ⟨table, hnew, ht⟩ := fft_new_refinement
     layoutInput layoutRoots 64#usize ⟨6, by decide, by decide, rfl⟩
     (by rw [layoutRoots_size]; decide) (by rw [layoutRoots_size]; decide) rfl
   exact ⟨table, hnew, by simpa only [UScalar.ofNatCore_val_eq, sampled_layout] using ht⟩
@@ -51,10 +51,10 @@ def swapShortTwiddles (table : fft8.Fft8) : fft8.Fft8 :=
       (alloc.vec.Vec.set table.short 2#usize table.short.val[4]!)
       4#usize table.short.val[2]! }
 
-theorem swapped_short_twiddles_violates_generated_table (hfr : FrCorrect) :
+theorem swapped_short_twiddles_violates_generated_table :
     ∃ table, fft8.Fft8.new layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots ∧ ¬ FftInvariant (swapShortTwiddles table) layoutRoots := by
-  obtain ⟨table, hnew, ht⟩ := layout_table_exists hfr
+  obtain ⟨table, hnew, ht⟩ := layout_table_exists
   refine ⟨table, hnew, ht, ?_⟩
   intro hmut
   have hlen : table.short.val.length = 7 := ht.2.2.2.2.1
@@ -74,10 +74,10 @@ theorem swapped_short_twiddles_violates_generated_table (hfr : FrCorrect) :
 def readNextWideVector (table : fft8.Fft8) : fft8.Fft8 :=
   { table with wide := alloc.vec.Vec.set table.wide 0#usize table.wide.val[1]! }
 
-theorem reading_next_wide_vector_violates_generated_table (hfr : FrCorrect) :
+theorem reading_next_wide_vector_violates_generated_table :
     ∃ table, fft8.Fft8.new layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots ∧ ¬ FftInvariant (readNextWideVector table) layoutRoots := by
-  obtain ⟨table, hnew, ht⟩ := layout_table_exists hfr
+  obtain ⟨table, hnew, ht⟩ := layout_table_exists
   refine ⟨table, hnew, ht, ?_⟩
   intro hmut
   have hlen : table.wide.val.length = 7 := by

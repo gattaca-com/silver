@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Lincomb
 import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.Refines.Roots
@@ -14,14 +15,14 @@ namespace LeanBlsSimd.Kzg.Pairing
 set_option maxHeartbeats 4000000
 set_option maxRecDepth 16000
 
-theorem powers_loop [RuntimeFeatures] (h : ComponentContracts)
+theorem powers_loop [RuntimeFeatures]
     (r power : Fr) (acc : alloc.vec.Vec blst.blst_fr) (iter : core.ops.range.Range Usize)
     (hi : iter.start.val ≤ iter.end.val)
     (hb : acc.val.length + (iter.end.val - iter.start.val) ≤ Usize.max) :
     ∃ out, verify.CellBatchVerifier.pairing_holds_loop0 iter acc (frEncode r) (frEncode power) =
       ok out ∧ out.val = acc.val ++
         (computePowersAux r power (iter.end.val - iter.start.val)).map frEncode :=
-  LeanBlsSimd.Kzg.Refinement.powers_loop h.fr r power acc iter hi hb
+  LeanBlsSimd.Kzg.Refinement.powers_loop r power acc iter hi hb
 
 private theorem index_encoded (v : alloc.vec.Vec blst.blst_fr) (xs : List Fr)
     (hv : v.val = xs.map frEncode) (i : Usize) (hi : i.val < xs.length) :
@@ -61,7 +62,7 @@ theorem weights_model (mapping : List Usize) (powers : _root_.Array Fr) (count :
   simp only [hmap, _root_.Array.set!_eq_setIfInBounds, _root_.Array.toList_setIfInBounds, weightStep, hxy,
     _root_.Array.getElem!_toList]
 
-theorem weights_loop [RuntimeFeatures] (h : ComponentContracts)
+theorem weights_loop [RuntimeFeatures]
     (mapping : alloc.vec.Vec Usize) (vp acc : alloc.vec.Vec blst.blst_fr)
     (powers weights : List Fr) (hp : vp.val = powers.map frEncode)
     (ha : acc.val = weights.map frEncode) (n : Nat)
@@ -101,7 +102,7 @@ theorem weights_loop [RuntimeFeatures] (h : ComponentContracts)
         ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.pairing_holds_loop1.body, hnext,
         bind_tc_ok, Function.uncurry_apply_pair, hindex, hweight, hpower,
-        h.fr.fr_add, hmut, acc']
+        FrScalar.fr_add_refines, hmut, acc']
     obtain ⟨result, hloop, hr⟩ := ih acc'
       (weightStep mapping.val powers weights iter.start.val) ha'
       (by simpa [weightStep] using hmi) iter' (by omega)
@@ -129,7 +130,7 @@ theorem shifted_model (indices : List U64) (powers : _root_.Array Fr)
   have hkp : k < powers.size := by omega
   simp [shiftedScalar, getElem!_pos, hki, hkp]
 
-theorem shifts_loop [RuntimeFeatures] (h : ComponentContracts)
+theorem shifts_loop [RuntimeFeatures]
     (c : cosets.Cosets) (hc : CosetsRep c) (vp acc : alloc.vec.Vec blst.blst_fr)
     (powers : List Fr) (hp : vp.val = powers.map frEncode) (indices : Slice U64)
     (hnp : indices.val.length ≤ powers.length) (hindices : ∀ i ∈ indices.val, i.val < 128)
@@ -174,7 +175,7 @@ theorem shifts_loop [RuntimeFeatures] (h : ComponentContracts)
         ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.pairing_holds_loop2.body, hnext,
         bind_tc_ok, Function.uncurry_apply_pair, hindex, lift, hshift, hpower,
-        h.fr.fr_mul, ← hx, hpush, i]
+        FrScalar.fr_mul_refines, ← hx, hpush, i]
     obtain ⟨out, hloop, hout⟩ := ih acc' iter' (by omega) (by simpa only [he'] using he)
       (by simp only [acc', List.length_append, List.length_singleton]; omega) (by omega)
     refine ⟨out, ?_, ?_⟩

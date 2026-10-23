@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.Extender.Decode
 import LeanBlsSimd.Kzg.Refines.Cosets
 
@@ -13,7 +14,7 @@ def storeChunk (cells : Cells) (j : Nat) (bs : Aeneas.Std.Array U8 32#usize) : C
   ⟨cells.val.set (64+j/64)
     (Aeneas.Std.Array.setSlice! cells.val[64+j/64]! ((j%64)*32) bs.val), by simp [cells.property]⟩
 
-theorem write_chunk_body (hbytes : FrBytesCorrect)
+theorem write_chunk_body
     (v : cell_extender.CellExtender) (values : _root_.Array Fr)
     (hsize : values.size = 4096) (hvals : v.evaluations.val = values.toList.map frEncode)
     (cells : Cells) (iter iter' : core.ops.range.Range Usize)
@@ -23,7 +24,7 @@ theorem write_chunk_body (hbytes : FrBytesCorrect)
     ∃ bs, arrayBytes bs = blsFieldToBytes values[rev iter.start.val]! ∧
       cell_extender.CellExtender.write_extension_loop.body v iter cells =
         ok (cont (iter', storeChunk cells iter.start.val bs)) := by
-  obtain ⟨bs, hserialize, hbs⟩ := hbytes.fr_to_bytes values[rev iter.start.val]!
+  obtain ⟨bs, hserialize, hbs⟩ := FrScalar.fr_to_bytes_refines values[rev iter.start.val]!
   refine ⟨bs, hbs, ?_⟩
   have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
       v.evaluations (UScalar.ofNatCore (rev iter.start.val) (by have := rev_lt iter.start.val; scalar_tac)) =

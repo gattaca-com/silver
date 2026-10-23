@@ -101,7 +101,7 @@ theorem setup_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
         ok (point, scratch') ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
   obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.bytes h.msm scratch
+  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.msm scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
@@ -115,7 +115,7 @@ theorem setup_verify_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
         ok (point, scratch') ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
   obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.bytes h.msm scratch
+  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.msm scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
     hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
@@ -152,7 +152,7 @@ private theorem transform_step_length (columns total : List Fr) (used : List Boo
     exact hlen
   · exact hlen
 
-private theorem transform_columns_loop (h : FrCorrect)
+private theorem transform_columns_loop
     (cs : cosets.Cosets) (hcs : CosetsRep cs)
     (columns total : List Fr) (used : List Bool)
     (v : alloc.vec.Vec blst.blst_fr) (flags : alloc.vec.Vec Bool)
@@ -203,7 +203,7 @@ private theorem transform_columns_loop (h : FrCorrect)
         hcolumns hcol iter.start hlt
       let values := (reversedColumn columns iter.start.val).toArray
       have hvalues : values.size = 64 := by simp [values]
-      obtain ⟨decoded, hdecode, hdecoded⟩ := inverse_fft_refinement h
+      obtain ⟨decoded, hdecode, hdecoded⟩ := inverse_fft_refinement
         (alloc.vec.Vec.deref vcoeff) (alloc.vec.Vec.deref copied)
         (alloc.vec.Vec.deref cs.inverse_roots) values hcoeff hvalues
         (by simpa [values, alloc.vec.Vec.deref] using hcopied) hcs.1
@@ -221,7 +221,7 @@ private theorem transform_columns_loop (h : FrCorrect)
         simpa only [shifts, List.map_map, Function.comp_def] using hcs.2.2.1
       have hshift : shifts[iter.start.val]! = (Model.cosetShift iter.start.val).inverse := by
         simp [shifts, getElem!_pos, hlt]
-      obtain ⟨nextAcc, hshiftLoop, hnextAcc⟩ := shift_add_loop h shifts [] coeffValues [] total
+      obtain ⟨nextAcc, hshiftLoop, hnextAcc⟩ := shift_add_loop shifts [] coeffValues [] total
         cs.shift_inverse decodedVec acc hshifts (by simpa [decodedVec] using hdecoded')
         (by simpa using ha) (by omega) rfl iter.start (by simp [shifts, hlt]) (Fr.ofNat 1)
         { start := 0#usize, «end» := FIELD_ELEMENTS_PER_CELL }
@@ -342,7 +342,7 @@ private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : 
     intro i hi
     apply hs.2.2.1 i.val
     simpa only [List.mem_toArray] using List.mem_map_of_mem (f := fun x : U64 => x.val) hi
-  obtain ⟨aggregated, haggregate, haggColumns, haggFlags⟩ := aggregate_columns h.fr
+  obtain ⟨aggregated, haggregate, haggColumns, haggFlags⟩ := aggregate_columns
     evaluations powers.toList (List.replicate 8192 Fr.zero) (List.replicate 128 false)
     v.evaluations v.r_powers columns flags indices he hp hvcolumns' hvflags'
     (by omega) (by omega) (List.length_replicate ..) (List.length_replicate ..) hindices
@@ -364,7 +364,7 @@ private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : 
   have hcolLen : col.val.length = 64 := by simp [hvcol, FIELD_ELEMENTS_PER_CELL]
   obtain ⟨coeff, hcoeff, hvcoeff⟩ := resize_fields v.coefficients FIELD_ELEMENTS_PER_CELL zero
   have hcoeffLen : coeff.val.length = 64 := by simp [hvcoeff, FIELD_ELEMENTS_PER_CELL]
-  obtain ⟨finalCol, finalCoeff, result, htransform, _, _, hresult⟩ := transform_columns_loop h.fr
+  obtain ⟨finalCol, finalCoeff, result, htransform, _, _, hresult⟩ := transform_columns_loop
     v.cosets hv.2.1 ag.1 (List.replicate 64 Fr.zero) ag.2 aggColumns aggFlags col coeff total
     haggColumns' haggFlags' hvtotal' hagLen.1 hagLen.2 (by simp) hcolLen hcoeffLen
     { start := 0#usize, «end» := 128#usize } (by simp) (by simp)
@@ -420,7 +420,7 @@ theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : Compone
       v.interpolation FIELD_ELEMENTS_PER_CELL (frEncode Fr.zero)
     have hbufferLen : buffer.val.length = 64 := by
       simp [hbufferVal, FIELD_ELEMENTS_PER_CELL]
-    obtain ⟨kernel', out, hcall, hkernel', hout⟩ := InterpolationKernel.interpolate_refinement h.fr h.bytes
+    obtain ⟨kernel', out, hcall, hkernel', hout⟩ := InterpolationKernel.interpolate_refinement
       kernel hk cells indices (alloc.vec.Vec.deref v.r_powers) (alloc.vec.Vec.deref buffer)
       evals powers hcell hs hp hbufferLen
     let result : alloc.vec.Vec blst.blst_fr := ⟨out.val, out.property⟩

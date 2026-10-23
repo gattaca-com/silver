@@ -47,7 +47,7 @@ theorem segmentation_preserves_digest
   exact ⟨dl, dr, hl, hr, hdl.trans (by rw [heq]; exact hdr.symm)⟩
 
 /-- Both generated SHA paths produce the same challenge for all well-indexed inputs. -/
-theorem sha_routes_agree (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+theorem sha_routes_agree (hsha : ShaCorrect)
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
     (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -56,7 +56,7 @@ theorem sha_routes_agree (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
       ps.val.length = indices.val.length) :
     challenge.challenge_in_parts unique ci indices cells ps =
       challenge.challenge_in_parts_portable unique ci indices cells ps := by
-  rw [challenge_refinement hsha hbytes unique ci indices cells ps hlen,
-    challenge_portable_refinement hsha hbytes unique ci indices cells ps hlen]
+  rw [challenge_refinement hsha unique ci indices cells ps hlen,
+    challenge_portable_refinement hsha unique ci indices cells ps hlen]
 
 end LeanBlsSimd.Controls.KzgStreamingSha

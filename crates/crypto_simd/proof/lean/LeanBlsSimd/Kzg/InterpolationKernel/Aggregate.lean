@@ -33,7 +33,7 @@ private theorem weighted_column (evaluations powers columns : List Fr) (k c d : 
       simp only [_root_.Array.getElem_ofFn, weightedCell, hvalues ⟨j, hj64⟩]
   · rfl
 
-theorem add_cell_columns (hfr : FrCorrect)
+theorem add_cell_columns
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cell : Array U8 2048#usize) (column : Usize) (k : Nat)
     (evaluations powers columns : List Fr) (used : List Bool) (values : _root_.Array Fr)
@@ -42,7 +42,7 @@ theorem add_cell_columns (hfr : FrCorrect)
     ∃ next, interpolation_kernel.InterpolationKernel.add_cell kernel cell column (frEncode powers[k]!) = ok next ∧
       StateInvariant next ∧ ColumnsRep next
         (Interpolation.aggregateCell evaluations powers k column.val columns) (used.set column.val true) := by
-  obtain ⟨next, hcall, hn, _, hu, hr, hframe⟩ := add_cell_refinement hfr kernel hk
+  obtain ⟨next, hcall, hn, _, hu, hr, hframe⟩ := add_cell_refinement kernel hk
     cell column powers[k]! values (Interpolation.columnView columns column.val) hc hcell
     (by simpa only [hcolumns.2.2.1] using (hcolumns.2.2.2 ⟨column.val, hc⟩).1)
     (by simpa only [hcolumns.2.2.1] using (hcolumns.2.2.2 ⟨column.val, hc⟩).2)

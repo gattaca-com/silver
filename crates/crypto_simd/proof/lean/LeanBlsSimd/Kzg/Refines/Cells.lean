@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.InterpolationKernel.Check
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -41,7 +42,7 @@ private theorem cellChunk_bytes (cell : Aeneas.Std.Array U8 2048#usize)
   simp only [arrayBytes, bytes, cellChunk, List.toList_toArray, _root_.Array.toList_extract]
   simp [List.extract_eq_take_drop, List.slice, List.map_take, List.map_drop]
 
-private theorem decode_cell_body (h : FrBytesCorrect)
+private theorem decode_cell_body
     (cell : Aeneas.Std.Array U8 2048#usize) (self : verify.CellBatchVerifier)
     (j j' : Usize) (hj : j.val < 64) (hj' : j'.val = j.val + 1) :
     verify.CellBatchVerifier.decode_cell_loop.body cell self j =
@@ -79,7 +80,7 @@ private theorem decode_cell_body (h : FrBytesCorrect)
   have hback : Array.from_slice (Array.repeat 32#usize 0#u8) src = chunk := by
     apply Subtype.ext
     simp [src, Array.to_slice, chunk.property]
-  have hdecode := h.fr_bytes chunk
+  have hdecode := FrScalar.fr_from_bytes_refines chunk
   dsimp only [chunk] at hdecode
   rw [cellChunk_bytes] at hdecode
   unfold verify.CellBatchVerifier.decode_cell_loop.body
@@ -119,7 +120,7 @@ private theorem cellAccepted_append (xs ys : List (Option Fr)) :
       rw [ih]
       split <;> rfl
 
-private theorem decode_cell_loop_eq (h : FrBytesCorrect)
+private theorem decode_cell_loop_eq
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize) (j : Usize)
     (hj : j.val ≤ 64) (hb : self.evaluations.val.length + (64 - j.val) ≤ Usize.max) :
     ∃ next stop, verify.CellBatchVerifier.decode_cell_loop self cell j = ok (next, stop) ∧
@@ -144,7 +145,7 @@ private theorem decode_cell_loop_eq (h : FrBytesCorrect)
         cellVerdict cell j.val :: (cellVerdicts cell).drop j'.val := by
       rw [List.drop_eq_getElem_cons (by simp [cellVerdicts, hlt])]
       simp [cellVerdicts, hj']
-    have hbody := decode_cell_body h cell self j j' hlt hj'
+    have hbody := decode_cell_body cell self j j' hlt hj'
     cases hv : cellVerdict cell j.val with
     | none =>
       refine ⟨self, j, ?_, ?_, ?_, rfl, rfl, rfl⟩
@@ -173,7 +174,7 @@ private theorem decode_cell_loop_eq (h : FrBytesCorrect)
       · simpa [hdrop, hv] using hresult
       · simpa [self', vs, hdrop, hv, cellAccepted, List.append_assoc] using hval
 
-private theorem decode_cell_eq (h : FrBytesCorrect)
+private theorem decode_cell_eq
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize)
     (hb : self.evaluations.val.length + 64 ≤ Usize.max) :
     ∃ next, verify.CellBatchVerifier.decode_cell self cell =
@@ -181,14 +182,14 @@ private theorem decode_cell_eq (h : FrBytesCorrect)
       next.evaluations.val = self.evaluations.val ++ cellAccepted (cellVerdicts cell) ∧
       next.setup = self.setup ∧ next.cosets = self.cosets ∧ next.kernel = self.kernel := by
   obtain ⟨next, stop, hloop, hresult, hval, hs, hc, hkernel⟩ :=
-    decode_cell_loop_eq h self cell 0#usize (by decide) (by simpa using hb)
+    decode_cell_loop_eq self cell 0#usize (by decide) (by simpa using hb)
   refine ⟨next, ?_, by simpa using hval, hs, hc, hkernel⟩
   unfold verify.CellBatchVerifier.decode_cell
   rw [hloop]
   simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
     List.drop_zero] using congrArg (fun b => ok (b, next)) hresult
 
-private theorem decode_cells_loop_eq (h : FrBytesCorrect)
+private theorem decode_cells_loop_eq
     (self : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (k : Usize) (hk : k.val ≤ cells.val.length)
     (hb : self.evaluations.val.length + (cells.val.length - k.val) * 64 ≤ Usize.max) :
@@ -226,7 +227,7 @@ private theorem decode_cells_loop_eq (h : FrBytesCorrect)
       unfold decodedCellElements
       rw [List.drop_eq_getElem_cons hlt]
       rfl
-    obtain ⟨afterCell, hdecode, hvals, hs, hc, hkernel⟩ := decode_cell_eq h self cell (by omega)
+    obtain ⟨afterCell, hdecode, hvals, hs, hc, hkernel⟩ := decode_cell_eq self cell (by omega)
     have hsize : (cellAccepted (cellVerdicts cell)).length ≤ 64 := by
       simpa [cellVerdicts] using cellAccepted_length (cellVerdicts cell)
     cases hsuccess : (cellVerdicts cell).all Option.isSome with
@@ -254,7 +255,7 @@ private theorem decode_cells_loop_eq (h : FrBytesCorrect)
       · simpa [hdrop, hsuccess] using hresult
       · simpa [hvals, hdrop, cellAccepted_append, hsuccess, List.append_assoc] using hval
 
-theorem decode_cells_refinement (h : FrBytesCorrect)
+theorem decode_cells_refinement
     (v : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
     ∃ next, verify.CellBatchVerifier.decode_cells v cells =
@@ -282,7 +283,7 @@ theorem decode_cells_refinement (h : FrBytesCorrect)
         List.resize, empty, alloc.vec.Vec.new]
     let initial := { v with evaluations := empty }
     obtain ⟨next, stop, hloop, hresult, hval, hs, hc, hkernel⟩ :=
-      decode_cells_loop_eq h initial cells 0#usize (by simp)
+      decode_cells_loop_eq initial cells 0#usize (by simp)
         (by simpa [initial, empty, alloc.vec.Vec.new] using hcapacity)
     refine ⟨next, ?_, ?_, hs, hc, by simpa [initial, hkernelCase] using hkernel⟩
     · unfold verify.CellBatchVerifier.decode_cells

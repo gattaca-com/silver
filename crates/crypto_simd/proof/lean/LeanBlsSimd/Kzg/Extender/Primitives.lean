@@ -14,12 +14,12 @@ local instance extenderPrimitivesRawFrInhabited : Inhabited blst.blst_fr := ⟨f
 
 -- Simplification descends through the 4096-element scratch vectors.
 set_option maxRecDepth 16000 in
-theorem new_dispatch_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
+theorem new_dispatch_refinement [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
       initial.kernel.isSome = cpu.simdAvailable := by
-  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement_of_blst hfr cell_extender.LOG_BLOB
+  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement_of_blst cell_extender.LOG_BLOB
     (by simp [cell_extender.LOG_BLOB])
-  obtain ⟨ext, hext, hextval⟩ := roots_refinement_of_blst hfr cell_extender.LOG_EXT_BLOB
+  obtain ⟨ext, hext, hextval⟩ := roots_refinement_of_blst cell_extender.LOG_EXT_BLOB
     (by simp [cell_extender.LOG_EXT_BLOB])
   simp only [cell_extender.LOG_BLOB, UScalar.ofNatCore_val_eq] at hrsval
   simp only [cell_extender.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
@@ -67,7 +67,7 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
     exact ⟨scalar, by simp only [hnew, hsimd, Bool.false_eq_true, if_false],
       hscalar, rfl⟩
   | true =>
-    obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement hfr
+    obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement
       (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv) (alloc.vec.Vec.deref shift)
       (frEncode (Fr.ofNat 4096).inverse) hrsval hinvval hshiftmodel rfl
     refine ⟨{ scalar with kernel := some kernel }, ?_, ?_, ?_⟩
@@ -75,9 +75,9 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
     · exact ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, hki⟩
     · rfl
 
-theorem new_refinement [cpu : RuntimeFeatures] (hfr : FrCorrect) :
+theorem new_refinement [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
-  obtain ⟨initial, hnew, hinvariant, _⟩ := new_dispatch_refinement hfr
+  obtain ⟨initial, hnew, hinvariant, _⟩ := new_dispatch_refinement
   exact ⟨initial, hnew, hinvariant⟩
 
 end LeanBlsSimd.Kzg.Extender

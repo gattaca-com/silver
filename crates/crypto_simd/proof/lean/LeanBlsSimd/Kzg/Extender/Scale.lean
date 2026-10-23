@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Extender.Basic
 import LeanBlsSimd.Kzg.Refines.Loop
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
@@ -8,7 +9,7 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg.Extender
 
-private theorem shift_loop (h : FrCorrect)
+private theorem shift_loop
     (remaining : List (Fr × Fr)) (doneValues shiftPrefix : List Fr)
     (out shifts : alloc.vec.Vec blst.blst_fr)
     (ho : out.val = (doneValues ++ remaining.map Prod.fst).map frEncode)
@@ -47,7 +48,7 @@ private theorem shift_loop (h : FrCorrect)
     have hbody : cell_extender.CellExtender.compute_loop.body shifts iter out =
         ok (cont (iter', out')) := by
       simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair, hindex, hshift, h.fr_mul, hmut, out']
+        Function.uncurry_apply_pair, hindex, hshift, FrScalar.fr_mul_refines, hmut, out']
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * w]) (shiftPrefix ++ [w]) out'
       hout' hs' (by simpa using hp) iter' (by simp [hi', hi])
       (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
@@ -57,7 +58,7 @@ private theorem shift_loop (h : FrCorrect)
       exact hloop
     · simpa [List.append_assoc] using hr
 
-private theorem shift_arrays (h : FrCorrect)
+private theorem shift_arrays
     (n : Nat) (count : Usize) (hn : count.val = n) (coefficients shifts : alloc.vec.Vec blst.blst_fr)
     (values factors : _root_.Array Fr)
     (hv : values.size = n) (hf : factors.size = n)
@@ -81,14 +82,14 @@ private theorem shift_arrays (h : FrCorrect)
     have hjf : j < factors.size := by omega
     simp only [pairs, List.getElem_map, List.getElem_ofFn, _root_.Array.getElem_toList,
       getElem!_pos factors j hjf]
-  obtain ⟨out, hout, hval⟩ := shift_loop h pairs [] [] coefficients shifts
+  obtain ⟨out, hout, hval⟩ := shift_loop pairs [] [] coefficients shifts
     (by simpa only [List.nil_append, hleft] using hc)
     (by simpa only [List.nil_append, hright] using hs) rfl
     { start := 0#usize, «end» := count } (by simp) (by simp [hlen, hn])
   refine ⟨out, hout, ?_⟩
   simpa only [List.nil_append, pairs, List.map_ofFn, _root_.Array.toList_ofFn] using hval
 
-private theorem shift_extract (h : FrCorrect)
+private theorem shift_extract
     (n : Nat) (count : Usize) (hn : count.val = n) (coefficients shifts : alloc.vec.Vec blst.blst_fr)
     (values factors : _root_.Array Fr)
     (hv : values.size = n) (hf : n ≤ factors.size)
@@ -99,7 +100,7 @@ private theorem shift_extract (h : FrCorrect)
       out.val = (_root_.Array.ofFn (n := n) fun i =>
         values[i.val]! * factors[i.val]!).toList.map frEncode := by
   have hlen : (factors.extract 0 n).size = n := by simp [Nat.min_eq_left hf]
-  obtain ⟨out, hout, hval⟩ := shift_arrays h n count hn coefficients shifts
+  obtain ⟨out, hout, hval⟩ := shift_arrays n count hn coefficients shifts
     values (factors.extract 0 n) hv hlen hc hs
   have hfunctions :
       (fun i : Fin n => values[i.val]! * (factors.extract 0 n)[i.val]!) =
@@ -113,7 +114,7 @@ private theorem shift_extract (h : FrCorrect)
   rw [hfunctions] at hval
   exact hval
 
-theorem shift_refinement (h : FrCorrect)
+theorem shift_refinement
     (coefficients shifts : alloc.vec.Vec blst.blst_fr) (values : _root_.Array Fr)
     (hv : values.size = 4096)
     (hc : coefficients.val = values.toList.map frEncode)
@@ -122,7 +123,7 @@ theorem shift_refinement (h : FrCorrect)
         { start := 0#usize, «end» := FIELD_ELEMENTS_PER_BLOB } shifts coefficients = ok out ∧
       out.val = (_root_.Array.ofFn (n := 4096) fun i =>
         values[i.val]! * (Kzg.Model.roots 13)[i.val]!).toList.map frEncode :=
-  shift_extract h 4096 FIELD_ELEMENTS_PER_BLOB (by simp [FIELD_ELEMENTS_PER_BLOB])
+  shift_extract 4096 FIELD_ELEMENTS_PER_BLOB (by simp [FIELD_ELEMENTS_PER_BLOB])
     coefficients shifts values (Kzg.Model.roots 13) hv (by simp [Kzg.Model.roots]) hc hs
 
 end LeanBlsSimd.Kzg.Extender

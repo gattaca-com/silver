@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Refines.Loop
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.ScalarConstants
@@ -50,7 +51,7 @@ private theorem set_encoded (v : alloc.vec.Vec blst.blst_fr) (xs : List Fr)
     (alloc.vec.Vec.set v i (frEncode x)).val = (xs.set i.val x).map frEncode := by
   simp [alloc.vec.Vec.set, hv]
 
-theorem aggregate_column_loop (h : FrCorrect)
+theorem aggregate_column_loop
     (evaluations powers columns : List Fr)
     (v vp acc : alloc.vec.Vec blst.blst_fr)
     (he : v.val = evaluations.map frEncode) (hp : vp.val = powers.map frEncode)
@@ -101,8 +102,8 @@ theorem aggregate_column_loop (h : FrCorrect)
         v vp k c iter acc = ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body,
         hnext, bind_tc_ok, Function.uncurry_apply_pair, hpow, heb, hei, heval,
-        h.fr_mul, hcb, hat, hacc,
-        h.fr_add, hmut, acc', x]
+        FrScalar.fr_mul_refines, hcb, hat, hacc,
+        FrScalar.fr_add_refines, hmut, acc', x]
     obtain ⟨result, hloop, hr⟩ := ih
       (columnStep evaluations powers k.val c.val columns iter.start.val) acc' ha'
       (by simpa using hc) iter' (by omega) (by simpa only [hend'] using hend) (by omega)
@@ -113,7 +114,7 @@ theorem aggregate_column_loop (h : FrCorrect)
     · rw [List.drop_eq_getElem_cons (by simp [hj])]
       simpa only [List.foldl_cons, List.getElem_range, hi'] using hr
 
-theorem aggregate_column (h : FrCorrect)
+theorem aggregate_column
     (evaluations powers columns : List Fr)
     (v vp acc : alloc.vec.Vec blst.blst_fr)
     (he : v.val = evaluations.map frEncode) (hp : vp.val = powers.map frEncode)
@@ -125,7 +126,7 @@ theorem aggregate_column (h : FrCorrect)
         { start := 0#usize, «end» := FIELD_ELEMENTS_PER_CELL } v vp acc k c = ok result ∧
       result.val = (aggregateCell evaluations powers k.val c.val columns).map frEncode := by
   simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, aggregateCell] using
-    aggregate_column_loop h evaluations powers columns v vp acc he hp ha k c hk hke hc
+    aggregate_column_loop evaluations powers columns v vp acc he hp ha k c hk hke hc
       { start := 0#usize, «end» := FIELD_ELEMENTS_PER_CELL } (by simp)
       (by simp [FIELD_ELEMENTS_PER_CELL])
 
@@ -137,7 +138,7 @@ def aggregateColumns (evaluations powers : List Fr) (indices : List Nat)
     (columns : List Fr) (used : List Bool) : List Fr × List Bool :=
   (List.range indices.length).foldl (aggregateStep evaluations powers indices) (columns, used)
 
-theorem aggregate_columns_loop (h : FrCorrect)
+theorem aggregate_columns_loop
     (evaluations powers columns : List Fr) (used : List Bool)
     (v vp acc : alloc.vec.Vec blst.blst_fr) (flags : alloc.vec.Vec Bool)
     (indices : Slice U64)
@@ -179,7 +180,7 @@ theorem aggregate_columns_loop (h : FrCorrect)
         show c.val < used.length by omega]
     let flags' := alloc.vec.Vec.set flags c true
     have hf' : flags'.val = used.set c.val true := by simp [flags', alloc.vec.Vec.set, hf]
-    obtain ⟨acc', hcell, ha'⟩ := aggregate_column h evaluations powers columns v vp acc
+    obtain ⟨acc', hcell, ha'⟩ := aggregate_column evaluations powers columns v vp acc
       he hp ha iter.start c (by omega) (by omega) (by omega)
     have hbody : verify.CellBatchVerifier.interpolation_commitment_loop0.body
         v vp indices iter acc flags = ok (cont (iter', acc', flags')) := by
@@ -198,7 +199,7 @@ theorem aggregate_columns_loop (h : FrCorrect)
       rw [List.drop_eq_getElem_cons (by simp [hk])]
       simpa only [List.foldl_cons, List.getElem_range, hi', aggregateStep, hget] using hr
 
-theorem aggregate_columns (h : FrCorrect)
+theorem aggregate_columns
     (evaluations powers columns : List Fr) (used : List Bool)
     (v vp acc : alloc.vec.Vec blst.blst_fr) (flags : alloc.vec.Vec Bool)
     (indices : Slice U64)
@@ -213,7 +214,7 @@ theorem aggregate_columns (h : FrCorrect)
       let expected := aggregateColumns evaluations powers (indices.val.map (·.val)) columns used
       result.1.val = expected.1.map frEncode ∧ result.2.val = expected.2 := by
   simpa only [aggregateColumns, UScalar.ofNatCore_val_eq, List.drop_zero, List.length_map] using
-    aggregate_columns_loop h evaluations powers columns used v vp acc flags indices
+    aggregate_columns_loop evaluations powers columns used v vp acc flags indices
       he hp ha hf hep hpp hc hu hindices
       { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
 
@@ -233,7 +234,7 @@ theorem shiftAdd_length (shift factor : Fr) (coeffs old : List Fr)
     | nil => simp at hlen
     | cons b old => simp only [shiftAdd, List.length_cons, ih _ _ (by simpa using hlen)]
 
-theorem shift_add_loop (h : FrCorrect)
+theorem shift_add_loop
     (shifts coeffPrefix remaining doneValues oldValues : List Fr)
     (vs vc acc : alloc.vec.Vec blst.blst_fr)
     (hs : vs.val = shifts.map frEncode)
@@ -282,7 +283,7 @@ theorem shift_add_loop (h : FrCorrect)
           ok (cont (iter', acc', frEncode (factor*shifts[c.val]!))) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body,
           hnext, bind_tc_ok, Function.uncurry_apply_pair, hcoeff,
-          h.fr_mul, hacc, h.fr_add, hmut, hshift, acc']
+          FrScalar.fr_mul_refines, hacc, FrScalar.fr_add_refines, hmut, hshift, acc']
       obtain ⟨result, hloop, hr⟩ := ih (coeffPrefix ++ [a])
         (doneValues ++ [b+a*factor]) oldValues acc'
         (by simpa [List.append_assoc] using hc) ha'

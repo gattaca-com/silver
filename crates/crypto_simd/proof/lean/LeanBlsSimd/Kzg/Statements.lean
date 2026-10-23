@@ -81,17 +81,17 @@ theorem setup_decode_refines [RuntimeFeatures] (hg1 : LeanBlsSimd.G1DecoderCorre
     ∃ s, setup.Setup.decode = ok s ∧ SetupRep s :=
   setup_decode_refinement hg1
 
-theorem cosets_new_refines (hfr : FrCorrect) :
+theorem cosets_new_refines :
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c :=
-  cosets_new_refinement hfr
+  cosets_new_refinement
 
-theorem new_returns_ok_route [cpu : RuntimeFeatures] (hfr : FrCorrect)
+theorem new_returns_ok_route [cpu : RuntimeFeatures]
     (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect) :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v ∧
       CurveWork.isLanes v.curve_work = cpu.simdAvailable ∧
       v.kernel.isSome = cpu.simdAvailable := by
   obtain ⟨s, hs, hsrep⟩ := setup_decode_refines hg1
-  obtain ⟨c, hc, hcrep⟩ := cosets_new_refines hfr
+  obtain ⟨c, hc, hcrep⟩ := cosets_new_refines
   obtain ⟨work, hw, hwork, hwroute⟩ := curveWork_new_refinement hfp
   cases hsimd : cpu.simdAvailable with
   | false =>
@@ -101,17 +101,17 @@ theorem new_returns_ok_route [cpu : RuntimeFeatures] (hfr : FrCorrect)
     exact ⟨_, rfl, ⟨hsrep, hcrep, trivial, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
   | true =>
-    obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement hfr c hcrep
+    obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement c hcrep
     simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
       bind_tc_ok, if_true, hkernel,
       verify.Deduplicated.Insts.CoreDefaultDefault.default, hw]
     exact ⟨_, rfl, ⟨hsrep, hcrep, hki, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
 
-theorem new_returns_ok [cpu : RuntimeFeatures] (hfr : FrCorrect)
+theorem new_returns_ok [cpu : RuntimeFeatures]
     (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect) :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
-  obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route hfr hfp hg1
+  obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route hfp hg1
   exact ⟨v, hnew, hinv⟩
 
 /-- Replacing work preserves the invariant when its persistent table is valid. -/
@@ -138,7 +138,7 @@ theorem glue_refinement [RuntimeFeatures] (h : ComponentContracts)
   exact Verify.glue_of_contracts h (pairing_holds_refinement h) model_pairing_refinement
     v hv i.commitments i.indices i.cells i.proofs hi.2.2.1
 
-theorem verify_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytesCorrect)
+theorem verify_eq_spec [cpu : RuntimeFeatures]
     (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
@@ -147,13 +147,13 @@ theorem verify_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrByt
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
-  let h : ComponentContracts := ⟨hfr, hbytes, hsha, hfp, hg1, hmsm, hpairing⟩
-  obtain ⟨initial, hnew, hinv⟩ := new_returns_ok hfr hfp hg1
+  let h : ComponentContracts := ⟨hsha, hfp, hg1, hmsm, hpairing⟩
+  obtain ⟨initial, hnew, hinv⟩ := new_returns_ok hfp hg1
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨next, hgen, hnext⟩ := glue_refinement h v hv i hi
   exact ⟨i.model, next, hgen, hnext, model_eq_embedded_spec i⟩
 
-theorem verify_eq_upstream [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytesCorrect)
+theorem verify_eq_upstream [cpu : RuntimeFeatures]
     (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
     (hsetup : TrustedSetup.get! = pure embeddedSetup) :
@@ -163,7 +163,7 @@ theorem verify_eq_upstream [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : F
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         (Model.rejectErrors <$> i.spec.run) = pure verdict := by
-  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hfr hbytes hsha hfp hg1 hmsm hpairing
+  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hsha hfp hg1 hmsm hpairing
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨verdict, next, hgen, hnext, hverdict⟩ := hstep v hv i hi
   refine ⟨verdict, next, hgen, hnext, ?_⟩

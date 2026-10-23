@@ -104,9 +104,9 @@ theorem permute_ignores_higher_index_bits (a b : M512) :
   constructor <;> apply Vector.ext <;> intro i hi <;>
     simp [_mm512_permutex2var_epi64, Nat.testBit_eq_decide_div_mod_eq]
 
-theorem omitting_multiplier_scale_changes_generated_multiplier (hfr : FrCorrect) :
+theorem omitting_multiplier_scale_changes_generated_multiplier :
     fr8.multiplier (frEncode 1) ≠ ok (frEncode 1) := by
-  have h := Kernel.multiplier_refinement hfr (1 : Fr)
+  have h := Kernel.multiplier_refinement (1 : Fr)
   rw [h.1]
   intro he
   have hword := congrArg (fun x : blst.blst_fr => x.l.val[0]!.val) (Result.ok.inj he)
@@ -116,7 +116,7 @@ theorem omitting_multiplier_scale_changes_generated_multiplier (hfr : FrCorrect)
 theorem failing_simd_serialization_is_incorrect : ¬ SerializationLaw failSerialization :=
   failSerialization_rejected
 
-theorem kernel_route_does_not_require_serialization (hfr : FrCorrect) :
+theorem kernel_route_does_not_require_serialization :
     ∃ initial kernel,
       @cell_extender.CellExtender.new ⟨true, false, false⟩ = ok initial ∧
       initial.kernel = some kernel ∧ Extender.StateInvariant initial ∧
@@ -124,7 +124,7 @@ theorem kernel_route_does_not_require_serialization (hfr : FrCorrect) :
         cell_extender.CellExtender.compute initial blob cells =
           ok (verdict, next, out) ∧
         (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  obtain ⟨initial, hnew, hi, hsimd⟩ := @new_dispatch_refinement ⟨true, false, false⟩ hfr
+  obtain ⟨initial, hnew, hi, hsimd⟩ := @new_dispatch_refinement ⟨true, false, false⟩
   cases hk : initial.kernel with
   | none => simp only [hk, Option.isSome_none] at hsimd; cases hsimd
   | some kernel =>

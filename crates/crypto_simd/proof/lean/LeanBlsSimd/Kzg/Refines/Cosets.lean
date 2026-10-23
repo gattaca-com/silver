@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Refines.InverseRoots
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.CosetsRep
@@ -61,7 +62,7 @@ private theorem square_next (i : Fin 6) :
       ok (some (squareIter i.val).start, squareIter (i.val + 1)) := by
   fin_cases i <;> rfl
 
-private theorem square_step (h : FrCorrect)
+private theorem square_step
     (i : Fin 6) (x : Fr) :
     loop (fun (it, p) => cosets.Cosets.new_loop0_loop0.body it p)
       (squareIter i.val, frEncode x) =
@@ -69,17 +70,17 @@ private theorem square_step (h : FrCorrect)
       (squareIter (i.val + 1), frEncode (x * x)) := by
   rw [loop.eq_1]
   simp only [cosets.Cosets.new_loop0_loop0.body, square_next i, bind_tc_ok,
-    Function.uncurry_apply_pair, h.fr_mul]
+    Function.uncurry_apply_pair, FrScalar.fr_mul_refines]
 
-private theorem six_squares (h : FrCorrect) (x : Fr) :
+private theorem six_squares (x : Fr) :
     cosets.Cosets.new_loop0_loop0 { start := 0#u32, «end» := cosets.LOG_CELL }
       (frEncode x) = ok (frEncode (Fr.powNat x 64)) := by
   unfold cosets.Cosets.new_loop0_loop0
   rw [cosets.LOG_CELL]
   change loop _ (squareIter 0, frEncode x) = _
-  rw [square_step h ⟨0, by decide⟩, square_step h ⟨1, by decide⟩,
-    square_step h ⟨2, by decide⟩, square_step h ⟨3, by decide⟩,
-    square_step h ⟨4, by decide⟩, square_step h ⟨5, by decide⟩]
+  rw [square_step ⟨0, by decide⟩, square_step ⟨1, by decide⟩,
+    square_step ⟨2, by decide⟩, square_step ⟨3, by decide⟩,
+    square_step ⟨4, by decide⟩, square_step ⟨5, by decide⟩]
   have hn : IteratorRange.next U32.Insts.CoreIterRangeStep (squareIter 6) =
       ok (none, squareIter 6) := by rfl
   rw [loop.eq_1]
@@ -103,7 +104,7 @@ private theorem encoded_lookup (values : _root_.Array Fr) (out : alloc.vec.Vec b
   rw [hr, getElem!_pos _ i (by simpa using hi)]
   simp only [List.getElem_map, _root_.Array.getElem_toList, getElem!_pos values i hi]
 
-private theorem shifts_loop (h : FrCorrect)
+private theorem shifts_loop
     (roots inverse : alloc.vec.Vec blst.blst_fr)
     (hr : roots.val = (Model.roots 13).toList.map frEncode)
     (hirlen : inverse.val.length = 8192)
@@ -186,7 +187,7 @@ private theorem shifts_loop (h : FrCorrect)
     refine ⟨si'', sp'', ?_, hvalI, hvalP⟩
     rw [cosets.Cosets.new_loop0, loop.eq_1]
     simp only [cosets.Cosets.new_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair,
-      hmul, hrev, hget, hinverse, hpushI, six_squares h, hpushP]
+      hmul, hrev, hget, hinverse, hpushI, six_squares, hpushP]
     exact hout
 
 theorem cells_per_ext_blob_eq : CELLS_PER_EXT_BLOB = ok 128#usize := by
@@ -206,9 +207,9 @@ theorem cells_per_ext_blob_eq : CELLS_PER_EXT_BLOB = ok 128#usize := by
   apply UScalar.eq_of_val_eq
   simpa using hv
 
-theorem cosets_new_refinement (h : FrCorrect) :
+theorem cosets_new_refinement :
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c := by
-  obtain ⟨ext, hext, hextval⟩ := roots_refinement h cosets.LOG_EXT_BLOB (Or.inr (by simp [cosets.LOG_EXT_BLOB]))
+  obtain ⟨ext, hext, hextval⟩ := roots_refinement cosets.LOG_EXT_BLOB (Or.inr (by simp [cosets.LOG_EXT_BLOB]))
   simp only [cosets.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
   obtain ⟨inverseExt, hinverseExt, hinverseExtVal⟩ := Refinement.inverse_roots_refinement 8192#usize (by decide)
     (alloc.vec.Vec.deref ext) (Model.roots 13) (by simp [Model.roots]) hextval
@@ -222,12 +223,12 @@ theorem cosets_new_refinement (h : FrCorrect) :
       simpa only [Model.inverseRoots, _root_.Array.size_ofFn, Model.roots,
         size_computeRootsOfUnity] using hi
     exact (encoded_lookup _ _ hinverseExtVal i hi').trans (congrArg frEncode (inverse_roots_at i hi))
-  obtain ⟨si, sp, hshifts, hsi, hsp⟩ := shifts_loop h ext inverseExt hextval
+  obtain ⟨si, sp, hshifts, hsi, hsp⟩ := shifts_loop ext inverseExt hextval
     hinverseExtLen hinverseExtLookup
     { start := 0#usize, «end» := 128#usize } rfl (by decide)
     (alloc.vec.Vec.with_capacity _ 128#usize) (alloc.vec.Vec.with_capacity _ 128#usize)
     (by simp [alloc.vec.Vec.with_capacity]) (by simp [alloc.vec.Vec.with_capacity])
-  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement h cosets.LOG_CELL (Or.inl (by simp [cosets.LOG_CELL]))
+  obtain ⟨rs, hrs, hrsval⟩ := roots_refinement cosets.LOG_CELL (Or.inl (by simp [cosets.LOG_CELL]))
   simp only [cosets.LOG_CELL, UScalar.ofNatCore_val_eq] at hrsval
   obtain ⟨inv, hinv, hinvval⟩ := Refinement.inverse_roots_refinement 64#usize (by decide) (alloc.vec.Vec.deref rs)
     (Model.roots 6) (by simp [Model.roots]) hrsval

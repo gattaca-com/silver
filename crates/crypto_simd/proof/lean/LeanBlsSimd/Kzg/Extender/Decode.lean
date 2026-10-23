@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.Extender.Basic
 import LeanBlsSimd.Kzg.Refines.Bits
 import EthLib.Cryptography.Proofs.Kzg.BitReversal
@@ -76,7 +77,7 @@ theorem storeEvaluation_invariant (v : cell_extender.CellExtender)
     StateInvariant (storeEvaluation v j f) := by
   simpa [StateInvariant, storeEvaluation] using hv
 
-theorem decode_blob_body (h : FrBytesCorrect)
+theorem decode_blob_body
     (blob : Blob) (self : cell_extender.CellExtender) (hv : StateInvariant self)
     (j j' : Usize) (hj : j.val < 4096) (hj' : j'.val = j.val + 1) :
     cell_extender.CellExtender.decode_blob_loop.body blob self j =
@@ -110,7 +111,7 @@ theorem decode_blob_body (h : FrBytesCorrect)
   have hback : Array.from_slice (Array.repeat 32#usize 0#u8) src = chunk := by
     apply Subtype.ext
     simp [src, Array.to_slice, chunk.property]
-  have hdecode := h.fr_bytes chunk
+  have hdecode := FrScalar.fr_from_bytes_refines chunk
   dsimp only [chunk] at hdecode
   rw [blobChunk_bytes] at hdecode
   unfold cell_extender.CellExtender.decode_blob_loop.body
@@ -143,7 +144,7 @@ theorem storeEvaluation_current (v : cell_extender.CellExtender)
   have hlen := hv.2.2.2.2.1
   simp [storeEvaluation, hlen, rev_lt]
 
-theorem decode_blob_loop_eq (h : FrBytesCorrect)
+theorem decode_blob_loop_eq
     (self : cell_extender.CellExtender) (hv : StateInvariant self) (blob : Blob)
     (i : Usize) (hi : i.val ≤ 4096) :
     ∃ next stop, cell_extender.CellExtender.decode_blob_loop self blob i = ok (next, stop) ∧
@@ -165,7 +166,7 @@ theorem decode_blob_loop_eq (h : FrBytesCorrect)
     have hlt : i.val < 4096 := by omega
     let i' : Usize := UScalar.ofNatCore (i.val+1) (by scalar_tac)
     have hi' : i'.val = i.val+1 := UScalar.ofNatCore_val_eq _
-    have hbody := decode_blob_body h blob self hv i i' hlt hi'
+    have hbody := decode_blob_body blob self hv i i' hlt hi'
     have haux : blobToPolynomialAux (arrayBytes blob) i.val (k+1) =
         match bytesToBlsField ((arrayBytes blob).extract (i.val*32) ((i.val+1)*32)) with
         | .error _ => .error (.invalidFieldElement (some i.val))
@@ -206,7 +207,7 @@ theorem decode_blob_loop_eq (h : FrBytesCorrect)
             simpa [hi', Nat.add_assoc, Nat.add_left_comm, Nat.add_comm] using
               hr.2 j (by simpa using hj)
 
-theorem decode_blob_refinement (h : FrBytesCorrect)
+theorem decode_blob_refinement
     (self : cell_extender.CellExtender) (hv : StateInvariant self) (blob : Blob) :
     ∃ verdict next, cell_extender.CellExtender.decode_blob self blob = ok (verdict, next) ∧
       StateInvariant next ∧
@@ -216,7 +217,7 @@ theorem decode_blob_refinement (h : FrBytesCorrect)
       | .ok values => verdict = true ∧ values.size = 4096 ∧
           next.evaluations.val = (bitReversalPermutation values).toList.map frEncode) := by
   obtain ⟨next, stop, hloop, hn, hf, _, hr⟩ :=
-    decode_blob_loop_eq h self hv blob 0#usize (by decide)
+    decode_blob_loop_eq self hv blob 0#usize (by decide)
   refine ⟨decide (stop = FIELD_ELEMENTS_PER_BLOB), next, ?_, hn, hf, ?_⟩
   · simp only [cell_extender.CellExtender.decode_blob, hloop, bind_tc_ok,
       Function.uncurry_apply_pair]

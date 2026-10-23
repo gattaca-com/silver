@@ -6,7 +6,7 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender
 
-theorem specInstance [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytesCorrect) :
+theorem specInstance [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧
       StateInvariant initial ∧
       ∀ (v : cell_extender.CellExtender), StateInvariant v →
@@ -21,7 +21,7 @@ theorem specInstance [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytes
         (verdict = false → ∃ err,
           (computeCells (arrayBytes blob)).run = pure (.error err)) ∧
         (verdict = false → out = cells) :=
-  compute_eq_spec hfr hbytes
+  compute_eq_spec
 
 end LeanBlsSimd.Kzg.Extender
 

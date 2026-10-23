@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.ShaContracts
 import LeanBlsSimd.Kzg.ScalarContracts
 import LeanBlsSimd.Kzg.Model
@@ -257,7 +258,7 @@ private theorem challenge_extensions_loop1_eq
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
-theorem challenge_refinement (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+theorem challenge_refinement (hsha : ShaCorrect)
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
     (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -291,7 +292,7 @@ theorem challenge_refinement (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts
   simp only [hnew, bind_tc_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
-  rw [hbytes.fr_reduced, hdigest]
+  rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
 private theorem challenge_portable_loop0_eq
@@ -396,7 +397,7 @@ private theorem challenge_portable_loop1_eq
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
-theorem challenge_portable_refinement (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+theorem challenge_portable_refinement (hsha : ShaCorrect)
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
     (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -430,13 +431,13 @@ theorem challenge_portable_refinement (hsha : ShaCorrect) (hbytes : FrBytesCorre
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts_portable
   simp only [hnew, bind_tc_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
-  rw [hbytes.fr_reduced, hdigest]
+  rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
 
 /-- Runtime SHA selection preserves the challenge and consumes no verifier state. -/
 theorem verifier_challenge_refinement [RuntimeFeatures]
-    (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+    (hsha : ShaCorrect)
     (self : verify.CellBatchVerifier) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -451,7 +452,7 @@ theorem verifier_challenge_refinement [RuntimeFeatures]
   unfold verify.CellBatchVerifier.challenge
   simp only [sha_available, bind_tc_ok]
   split
-  · exact challenge_refinement hsha hbytes _ _ _ _ _ hlen
-  · exact challenge_portable_refinement hsha hbytes _ _ _ _ _ hlen
+  · exact challenge_refinement hsha _ _ _ _ _ hlen
+  · exact challenge_portable_refinement hsha _ _ _ _ _ hlen
 
 end LeanBlsSimd.Kzg

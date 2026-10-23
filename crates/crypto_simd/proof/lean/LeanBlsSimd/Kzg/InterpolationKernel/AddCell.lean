@@ -159,7 +159,7 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
       rw [hframe i hiout]
       exact List.getElem!_set_ne data.val index.val i result (by omega)
 
-theorem add_cell_refinement (hfr : FrCorrect)
+theorem add_cell_refinement
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
     (cell : Array U8 2048#usize) (column : Usize) (power : Fr)
     (values old : _root_.Array Fr) (hc : column.val < 128) (hcell : CellRep cell values)
@@ -200,7 +200,7 @@ theorem add_cell_refinement (hfr : FrCorrect)
   · have hnot : decide (¬ kernel.used.val[column.val]! = true) = !kernel.used.val[column.val]! := by
       cases kernel.used.val[column.val]! <;> rfl
     simp only [interpolation_kernel.InterpolationKernel.add_cell,
-      (multiplier_refinement hfr power).1, bind_tc_ok, hweight, hindex, hmut,
+      (multiplier_refinement power).1, bind_tc_ok, hweight, hindex, hmut,
       Function.uncurry_apply_pair, hnot, hloop, next, used]
   · exact ⟨hk.1, hk.2.1, ho.1, by simpa [next, used, alloc.vec.Vec.set] using hk.2.2.2.1,
       hk.2.2.2.2⟩

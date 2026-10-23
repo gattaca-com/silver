@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Extender.Statements
 import LeanBlsSimd.Kzg.Refines
 import LeanBlsSimd.Kzg.Routes
 
@@ -8,7 +9,28 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 
 namespace silver_kzg.Kzg
 
-theorem scalar_decode_populates_evaluations (hbytes : FrBytesCorrect)
+theorem verify_after_construction [cpu : RuntimeFeatures]
+    (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
+    (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
+    (input : Input) (hi : input.Representable) :
+    ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
+      input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
+      Model.rejectErrors input.embeddedSpec = verdict := by
+  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hsha hfp hg1 hmsm hpairing
+  obtain ⟨verdict, next, hrun, hn, hv⟩ := hcall initial hs input hi
+  exact ⟨initial, verdict, next, hnew, hrun, hn, hv⟩
+
+theorem extend_after_construction [cpu : RuntimeFeatures]
+    (blob : Extender.Blob) (cells : Extender.Cells) :
+    ∃ initial verdict next out, cell_extender.CellExtender.new = ok initial ∧
+      cell_extender.CellExtender.compute initial blob cells = ok (verdict, next, out) ∧
+      Extender.StateInvariant next ∧ (verdict = true ↔ Extender.Canonical blob) ∧
+      (verdict = false → out = cells) := by
+  obtain ⟨initial, hnew, hs, hcall⟩ := Extender.compute_eq_spec
+  obtain ⟨verdict, next, out, hrun, hn, hv, _, _, hunchanged⟩ := hcall initial hs blob cells
+  exact ⟨initial, verdict, next, out, hnew, hrun, hn, hv, hunchanged⟩
+
+theorem scalar_decode_populates_evaluations
     (v : verify.CellBatchVerifier) (hscalar : v.kernel = none)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
@@ -18,7 +40,7 @@ theorem scalar_decode_populates_evaluations (hbytes : FrBytesCorrect)
         (((cellElements cells.val).takeWhile Option.isSome).filterMap id).map frEncode ∧
       next.setup = v.setup ∧ next.cosets = v.cosets := by
   obtain ⟨next, hcall, hevaluations, hsetup, hcosets⟩ :=
-    decode_cells_refines hbytes v cells hb
+    decode_cells_refines v cells hb
   exact ⟨next, hcall, hevaluations hscalar, hsetup, hcosets⟩
 
 theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ComponentContracts)

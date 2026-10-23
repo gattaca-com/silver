@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Arithmetic
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8Bytes
@@ -56,12 +57,12 @@ theorem load_refinement (input : Slice blst.blst_fr) (offset : Usize)
     simp only [BytePacking.loadedLanes, Fin.getElem_fin, Vector.getElem_ofFn]
     rw [(BytePacking.unpack_spec _).2, BytePacking.limbs_ofArray]
 
-theorem multiplier_refinement (hfr : FrCorrect) (w : Fr) :
+theorem multiplier_refinement (w : Fr) :
     fr8.multiplier (frEncode w) = ok (frEncode (w * Fr.ofNat 16)) ∧
       limbs (frEncode (w * Fr.ofNat 16)).l.val = (w.val * 2 ^ 260) % Fr.modulus := by
   refine ⟨?_, encoded_multiplier_limbs w⟩
   rw [fr8.multiplier, fr8_scale_eq]
-  exact hfr.fr_mul _ _
+  exact FrScalar.fr_mul_refines _ _
 
 theorem load_multiplier_refinement (input : Slice blst.blst_fr) (offset : Usize)
     (values : Fin 8 → Fr) (hsize : offset.val + 8 ≤ input.val.length)

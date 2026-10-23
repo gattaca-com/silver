@@ -316,8 +316,8 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
           Bool.false_eq_true, if_false, hcheck, bind_tc_ok, hstop, hfill,
           hcommit', hc, Function.uncurry_apply_pair, hfalse]
       | true =>
-        obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement h.bytes v1 cells hb
-        have hframe := decode_cells_frame h.bytes v1 cells _ v2 hcells
+        obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement v1 cells hb
+        have hframe := decode_cells_frame v1 cells _ v2 hcells
         have hwork2 : v2.curve_work = v1.curve_work := by
           simpa only using congrArg verify.CellBatchVerifier.curve_work hframe
         have hv2 : StateInvariant v2 := by
@@ -384,7 +384,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
                 v3.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode := by
               simpa only [v3, evals, heFlat, hkernel2] using hevals
             have hcellRep : InterpolationKernel.CellsRep cells evals := cells_decode_rep cells hcb
-            have hchallenge := verifier_challenge_refinement h.sha h.bytes v3 indices cells ps
+            have hchallenge := verifier_challenge_refinement h.sha v3 indices cells ps
               ⟨by simpa only [hv3d] using hmapSize, by omega, by omega⟩
             simp only [hv3d] at hchallenge
             have hchallengeSpec := challenge_preimage_spec unique mapping I B P evals

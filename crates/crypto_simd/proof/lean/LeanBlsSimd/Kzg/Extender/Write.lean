@@ -116,7 +116,7 @@ theorem copy_first_half (blob : Blob) (cells : Cells) :
     { start := 0#usize, «end» := 64#usize } rfl (by decide) (by simp)
   exact ⟨out, ho, fun k hk => (cellBytes_get out k (by omega)).trans (hp k hk)⟩
 
-theorem write_cells_loop (hbytes : FrBytesCorrect)
+theorem write_cells_loop
     (v : cell_extender.CellExtender) (values : _root_.Array Fr)
     (hsize : values.size = 4096) (hvals : v.evaluations.val = values.toList.map frEncode)
     (initial cells : Cells) (iter : core.ops.range.Range Usize)
@@ -134,7 +134,7 @@ theorem write_cells_loop (hbytes : FrBytesCorrect)
   | succ rem ih =>
     have hj : iter.start.val < 4096 := by omega
     obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
-    obtain ⟨bs, hbs, hb⟩ := write_chunk_body hbytes v values hsize hvals cells iter iter' hj hn
+    obtain ⟨bs, hbs, hb⟩ := write_chunk_body v values hsize hvals cells iter iter' hj hn
     have hw' := Written.step values initial cells iter.start.val hj hw bs hbs
     obtain ⟨out, ho, hp⟩ := ih (storeChunk cells iter.start.val bs) iter'
       (by simp [he', he]) (by omega) (by simpa only [hs'] using hw') (by omega)
@@ -167,7 +167,7 @@ theorem written_cell (values : _root_.Array Fr) (hsize : values.size = 4096)
     simp only [rev, ByteArray.getElem_eq_getElem_data] at hh htarget
     exact hh.trans htarget.symm
 
-theorem write_extension_refinement (hbytes : FrBytesCorrect)
+theorem write_extension_refinement
     (v : cell_extender.CellExtender) (values : _root_.Array Fr)
     (hsize : values.size = 4096) (hvals : v.evaluations.val = values.toList.map frEncode)
     (cells : Cells) :
@@ -176,7 +176,7 @@ theorem write_extension_refinement (hbytes : FrBytesCorrect)
         if i.val < 64 then (cellBytes cells)[i.val]!
         else cosetEvalsToCell ((bitReversalPermutation values).extract
           ((i.val-64)*64) ((i.val-64)*64+64))) := by
-  obtain ⟨out, ho, hp⟩ := write_cells_loop hbytes v values hsize hvals cells cells
+  obtain ⟨out, ho, hp⟩ := write_cells_loop v values hsize hvals cells cells
     { start := 0#usize, «end» := FIELD_ELEMENTS_PER_BLOB }
     (by simp [FIELD_ELEMENTS_PER_BLOB]) (by decide)
     ⟨fun _ _ => rfl, by simp⟩
@@ -194,7 +194,7 @@ theorem write_extension_refinement (hbytes : FrBytesCorrect)
     · simp only [hkl, if_false]
       exact written_cell values hsize cells out hp k hk' (by omega)
 
-theorem output_refinement (hbytes : FrBytesCorrect)
+theorem output_refinement
     (blob : Blob) (cells : Cells) (values : _root_.Array Fr)
     (v : cell_extender.CellExtender) (hsize : values.size = 4096)
     (hvals : v.evaluations.val = values.toList.map frEncode) :
@@ -206,7 +206,7 @@ theorem output_refinement (hbytes : FrBytesCorrect)
         else cosetEvalsToCell ((bitReversalPermutation values).extract
           ((i.val-64)*64) ((i.val-64)*64+64))) := by
   obtain ⟨copied, hc, hp⟩ := copy_first_half blob cells
-  obtain ⟨out, ho, hv⟩ := write_extension_refinement hbytes v values hsize hvals copied
+  obtain ⟨out, ho, hv⟩ := write_extension_refinement v values hsize hvals copied
   refine ⟨copied, out, hc, ho, hv.trans ?_⟩
   apply congrArg _root_.Array.ofFn
   funext i

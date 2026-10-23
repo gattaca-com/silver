@@ -15,7 +15,7 @@ private def TwiddlePrefix (twiddles : Array blst.blst_fr 8#usize)
     (values : Fin 8 → Fr) (count : Nat) : Prop :=
   ∀ lane : Fin 8, lane.val < count → twiddles.val[lane.val]! = frEncode (values lane * Fr.ofNat 16)
 
-private theorem twiddle_loop (hfr : FrCorrect)
+private theorem twiddle_loop
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode)
     (step start h : Usize) (hstep : 0 < step.val) (hh : 0 < h.val)
@@ -59,7 +59,7 @@ private theorem twiddle_loop (hfr : FrCorrect)
       simp only [Slice.index_usize, Slice.getElem?_Usize_eq, List.getElem?_eq_getElem hib]
       simp only [hinput, List.getElem_map, _root_.Array.getElem_toList]
       rw [getElem!_pos roots index.val (by omega)]
-    have hmultiplier := (multiplier_refinement hfr roots[index.val]!).1
+    have hmultiplier := (multiplier_refinement roots[index.val]!).1
     let value := frEncode (roots[index.val]! * Fr.ofNat 16)
     let next := Aeneas.Std.Array.set twiddles m value
     have hupdate : Array.update twiddles m value = ok next := by
@@ -84,7 +84,7 @@ private theorem twiddle_loop (hfr : FrCorrect)
     rw [fft8.stage_twiddles_loop, loop.eq_1]
     simpa only [hbody] using hout
 
-theorem stage_twiddles_refinement (hfr : FrCorrect)
+theorem stage_twiddles_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode)
     (step start h : Usize) (hstep : 0 < step.val) (hh : 0 < h.val)
@@ -92,7 +92,7 @@ theorem stage_twiddles_refinement (hfr : FrCorrect)
     ∃ out, fft8.stage_twiddles input step start h = ok out ∧
       ∀ lane : Fin 8, out.val[lane.val]! =
         frEncode (roots[(start.val + lane.val % h.val) * step.val]! * Fr.ofNat 16) := by
-  obtain ⟨out, hout, ho⟩ := twiddle_loop hfr input roots hinput step start h hstep hh hbound
+  obtain ⟨out, hout, ho⟩ := twiddle_loop input roots hinput step start h hstep hh hbound
     (Array.repeat 8#usize (frEncode 0)) 0#usize (by decide)
     (by intro lane hlane; exact (Nat.not_lt_zero _ hlane).elim)
   refine ⟨out, ?_, fun lane => ho lane lane.isLt⟩
@@ -105,7 +105,7 @@ private def WideStagePrefix (wide : alloc.vec.Vec fr8.Fr8) (roots : _root_.Array
     ∀ v : Fin count, MultiplierRep wide.val[half / 8 - 1 + v.val]!
       (fun lane => roots[(8 * v.val + lane.val) * (roots.size / (2 * half))]!)
 
-private theorem wide_stage_loop (hfr : FrCorrect)
+private theorem wide_stage_loop
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride half : Usize)
     (hproduct : stride.val * n.val = roots.size)
@@ -154,7 +154,7 @@ private theorem wide_stage_loop (hfr : FrCorrect)
       have hlt := Nat.mul_lt_mul_of_pos_right hsmall hstep
       rw [hstepval] at hlt
       exact lt_of_lt_of_le hlt (by simpa only [Nat.mul_comm] using hle)
-    obtain ⟨twiddles, htwiddles, htw⟩ := stage_twiddles_refinement hfr input roots hinput
+    obtain ⟨twiddles, htwiddles, htw⟩ := stage_twiddles_refinement input roots hinput
       step start half hstep (by omega) hbound
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice twiddles) 0#usize
@@ -191,7 +191,7 @@ private theorem wide_stage_loop (hfr : FrCorrect)
       rw [hframe i hi]
       exact List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)
 
-theorem wide_stage_refinement (hfr : FrCorrect)
+theorem wide_stage_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride half : Usize)
     (hproduct : stride.val * n.val = roots.size)
@@ -203,7 +203,7 @@ theorem wide_stage_refinement (hfr : FrCorrect)
       (∀ v : Fin (half.val / 8), MultiplierRep out.val[half.val / 8 - 1 + v.val]!
         (fun lane => roots[(8 * v.val + lane.val) * (roots.size / (2 * half.val))]!)) ∧
       ∀ i, i < half.val / 8 - 1 → out.val[i]! = wide.val[i]! := by
-  obtain ⟨out, hout, hp, hframe⟩ := wide_stage_loop hfr input roots hinput n stride half
+  obtain ⟨out, hout, hp, hframe⟩ := wide_stage_loop input roots hinput n stride half
     hproduct hhalf hhalfN hn hrootN wide 0#usize (by simp)
     ⟨by simpa using hlen, fun v => v.elim0⟩
   exact ⟨out, hout, hp.1, hp.2, hframe⟩
@@ -214,7 +214,7 @@ private def ShortStagePrefix (short : alloc.vec.Vec fr8.Fr8) (roots : _root_.Arr
     ∀ v : Fin count, MultiplierRep short.val[half - 1 + v.val]!
       (fun _ => roots[v.val * (roots.size / (2 * half))]!)
 
-private theorem short_stage_loop (hfr : FrCorrect)
+private theorem short_stage_loop
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride half : Usize)
     (hproduct : stride.val * n.val = roots.size)
@@ -257,7 +257,7 @@ private theorem short_stage_loop (hfr : FrCorrect)
       have hlt := Nat.mul_lt_mul_of_pos_right hsmall hstep
       rw [hstepval] at hlt
       exact lt_of_lt_of_le hlt (by simpa only [Nat.mul_comm] using hle)
-    obtain ⟨twiddles, htwiddles, htw⟩ := stage_twiddles_refinement hfr input roots hinput
+    obtain ⟨twiddles, htwiddles, htw⟩ := stage_twiddles_refinement input roots hinput
       step v 1#usize hstep (by decide) hbound
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice twiddles) 0#usize
@@ -293,7 +293,7 @@ private theorem short_stage_loop (hfr : FrCorrect)
       rw [hframe i hi]
       exact List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)
 
-theorem short_stage_refinement (hfr : FrCorrect)
+theorem short_stage_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
     (hinput : input.val = roots.toList.map frEncode) (n stride half : Usize)
     (hproduct : stride.val * n.val = roots.size)
@@ -305,7 +305,7 @@ theorem short_stage_refinement (hfr : FrCorrect)
       (∀ v : Fin (half.val), MultiplierRep out.val[half.val - 1 + v.val]!
         (fun _ => roots[v.val * (roots.size / (2 * half.val))]!)) ∧
       ∀ i, i < half.val - 1 → out.val[i]! = short.val[i]! := by
-  obtain ⟨out, hout, hp, hframe⟩ := short_stage_loop hfr input roots hinput n stride half
+  obtain ⟨out, hout, hp, hframe⟩ := short_stage_loop input roots hinput n stride half
     hproduct hhalf hhalfMax hhalfN hn hrootN short 0#usize (by simp)
     ⟨by simpa using hlen, fun v => v.elim0⟩
   exact ⟨out, hout, hp.1, hp.2, hframe⟩

@@ -44,14 +44,14 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hone : FR_ONE = frEncode Fr.one := fr_one_eq
   obtain ⟨powers0, hpowers0, hpowers0v⟩ := resize_fields v.r_powers 0#usize (frEncode Fr.zero)
   have hpowers0e : powers0.val = [] := by simpa [List.resize] using hpowers0v
-  obtain ⟨powersV, hpowers, hpowersv⟩ := powers_loop h r Fr.one powers0
+  obtain ⟨powersV, hpowers, hpowersv⟩ := powers_loop r Fr.one powers0
     { start := 0#usize, «end» := Slice.len indices } (by simp)
     (by simpa only [hpowers0e, List.length_nil, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, Nat.zero_add] using indices.property)
   have hpowersE : powersV.val = powers.toList.map frEncode := by
     simpa only [hpowers0e, List.nil_append, UScalar.ofNatCore_val_eq, Nat.sub_zero,
       powers, computePowers, List.toList_toArray] using hpowersv
-  obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement h.bytes h.msm v.proof_points powersV
+  obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement h.msm v.proof_points powersV
     proofs powers hp hpowersE (by omega) hvalid.2 v.curve_work
   obtain ⟨weights0, hweights0, hweights0v⟩ := resize_fields v.scalars 0#usize (frEncode Fr.zero)
   have hweights0e : weights0.val = [] := by simpa [List.resize] using hweights0v
@@ -59,13 +59,13 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
     (alloc.vec.Vec.len v.commitments.unique) (frEncode Fr.zero)
   have hweights0'e : weights0'.val = (List.replicate commitments.size Fr.zero).map frEncode := by
     simpa [hweights0e, List.resize, hunique] using hweights0'v
-  obtain ⟨weightsV, hweights, hweightsv⟩ := weights_loop h v.commitments.index_of_cell
+  obtain ⟨weightsV, hweights, hweightsv⟩ := weights_loop v.commitments.index_of_cell
     powersV weights0' powers.toList (List.replicate commitments.size Fr.zero) hpowersE
     hweights0'e indices.val.length (by omega) (by simpa using hplen.ge)
     (by simpa using hci.2) { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
   have hweightsE : weightsV.val = weights.map frEncode := by
     simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, weights] using hweightsv
-  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := verify_lincomb_refinement h.bytes h.msm v.commitment_points weightsV
+  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := verify_lincomb_refinement h.msm v.commitment_points weightsV
     commitments weights.toArray hc (by simpa using hweightsE) (by simpa using hwlen.symm)
     hvalid.1 scratchL
   let middle := { v with r_powers := powersV, scalars := weightsV, curve_work := scratchC }
@@ -87,7 +87,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hindices : ∀ i ∈ indices.val, i.val < 128 := by
     intro i hi
     exact hs.2.2.1 i.val (by simp only [List.mem_toArray]; exact List.mem_map.mpr ⟨i, hi, rfl⟩)
-  obtain ⟨shiftedV, hshifted, hshiftedv⟩ := shifts_loop h after.cosets hafter.2.1 after.r_powers
+  obtain ⟨shiftedV, hshifted, hshiftedv⟩ := shifts_loop after.cosets hafter.2.1 after.r_powers
     shifted0 powers.toList hafterPowers indices (by simpa using hplen.ge) hindices
     { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
     (by simpa only [hshifted0e, List.length_nil, UScalar.ofNatCore_val_eq,
@@ -95,7 +95,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hshiftedE : shiftedV.val = shifted.map frEncode := by
     simpa only [hshifted0e, List.nil_append, UScalar.ofNatCore_val_eq, List.drop_zero,
       shifted] using hshiftedv
-  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement h.bytes h.msm after.proof_points shiftedV
+  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement h.msm after.proof_points shiftedV
     proofs shifted.toArray hafterProofs (by simpa using hshiftedE) (by simp [hproofs, hslen])
     hvalid.2 after.curve_work
   have hvll := g1_msm_valid_of_mem proofs powers hvalid.2

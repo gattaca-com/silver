@@ -10,9 +10,9 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender
 
-theorem new_returns_ok [cpu : RuntimeFeatures] (hfr : FrCorrect) :
+theorem new_returns_ok [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial := by
-  exact new_refinement hfr
+  exact new_refinement
 
 theorem default_eq_new [RuntimeFeatures] :
     cell_extender.CellExtender.Insts.CoreDefaultDefault.default =
@@ -27,18 +27,16 @@ theorem model_accepts_iff (blob : Blob) :
     (Model.extend (arrayBytes blob)).isOk = true ↔ Canonical blob := by
   exact model_acceptance blob
 
-theorem glue_refinement (hfr : FrCorrect)
-    (hbytes : FrBytesCorrect)
+theorem glue_refinement
     (v : cell_extender.CellExtender) (hv : StateInvariant v)
     (blob : Blob) (cells : Cells) :
     ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
       cell_extender.CellExtender.compute v blob cells = ok (verdict, next, out) ∧
       StateInvariant next ∧
       (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  exact compute_refinement hfr hbytes v hv blob cells
+  exact compute_refinement v hv blob cells
 
-theorem compute_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect)
-    (hbytes : FrBytesCorrect) :
+theorem compute_eq_spec [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : cell_extender.CellExtender), StateInvariant v →
       ∀ (blob : Blob) (cells : Cells),
@@ -51,11 +49,11 @@ theorem compute_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect)
         (verdict = false → ∃ err,
           (computeCells (arrayBytes blob)).run = pure (.error err)) ∧
         (verdict = false → out = cells) := by
-  obtain ⟨initial, hnew, hinitial⟩ := new_returns_ok hfr
+  obtain ⟨initial, hnew, hinitial⟩ := new_returns_ok
   refine ⟨initial, hnew, hinitial, ?_⟩
   intro v hv blob cells
   obtain ⟨verdict, next, out, hcompute, hn, hmodel, hunchanged⟩ :=
-    compute_refinement_with_rejection hfr hbytes v hv blob cells
+    compute_refinement_with_rejection v hv blob cells
   cases hm : Model.extend (arrayBytes blob) with
   | error err =>
     have hvfalse : verdict = false := by
@@ -81,16 +79,16 @@ theorem compute_eq_spec [cpu : RuntimeFeatures] (hfr : FrCorrect)
     · intro _
       rw [model_eq_spec, hm, hout]
 
-/-- A scalar constructor route, conditional on generated scalar arithmetic laws. -/
-theorem scalar_route_from_contract (hfr : FrCorrect) :
+/-- The scalar constructor establishes the invariant. -/
+theorem scalar_constructor_exists :
     ∃ initial, @cell_extender.CellExtender.new ⟨false, false, false⟩ = ok initial ∧
       StateInvariant initial := by
-  exact @new_returns_ok ⟨false, false, false⟩ hfr
+  exact @new_returns_ok ⟨false, false, false⟩
 
-/-- An IFMA constructor route, conditional on generated scalar arithmetic laws. -/
-theorem kernel_route_from_contract (hfr : FrCorrect) :
+/-- The IFMA constructor establishes the invariant and selects its kernel. -/
+theorem kernel_constructor_exists :
     ∃ initial, @cell_extender.CellExtender.new ⟨true, false, false⟩ = ok initial ∧
       StateInvariant initial ∧ initial.kernel.isSome = true := by
-  exact @new_dispatch_refinement ⟨true, false, false⟩ hfr
+  exact @new_dispatch_refinement ⟨true, false, false⟩
 
 end LeanBlsSimd.Kzg.Extender

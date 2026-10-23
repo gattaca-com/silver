@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Msm8.Refines
 import LeanBlsSimd.Msm8.PlainWords
 import LeanBlsSimd.Kzg.PairingRepresentation
@@ -60,7 +61,7 @@ private theorem frEncode_frRead (f : blst.blst_fr) (hf : FrReduced f) :
     rw [limbs_words_four _ (Nat.lt_trans (Nat.mod_lt _ Fr.modulus_pos) (by decide))]
     exact hn
 
-private theorem portable_words_loop (hbytes : FrBytesCorrect)
+private theorem portable_words_loop
     (fs : Slice blst.blst_fr) (ws : alloc.vec.Vec (MsmWord))
     (i : Usize) (hi : i.val ≤ fs.val.length)
     (hsize : ws.val.length = i.val) (hf : ∀ f ∈ fs.val, FrReduced f) :
@@ -81,7 +82,7 @@ private theorem portable_words_loop (hbytes : FrBytesCorrect)
     have hcanon := frEncode_frRead f (hf f (List.getElem_mem hlt))
     have hword : fr.fr_to_words f = ok (words 4#usize (frRead f).val) := by
       rw [← hcanon]
-      simpa only [frRead_frEncode] using hbytes.fr_to_words (frRead f)
+      simpa only [frRead_frEncode] using FrScalar.fr_to_words_refines (frRead f)
     have hpushbound : ws.val.length < Usize.max := by
       have := fs.property
       omega
@@ -104,7 +105,7 @@ private theorem portable_words_loop (hbytes : FrBytesCorrect)
     · rw [List.drop_eq_getElem_cons hlt]
       simpa only [List.map_cons, hw, hi', List.append_assoc, List.singleton_append] using hout
 
-private theorem portable_words (hbytes : FrBytesCorrect)
+private theorem portable_words
     (fs : Slice blst.blst_fr) (ws : alloc.vec.Vec (MsmWord))
     (hf : ∀ f ∈ fs.val, FrReduced f) :
     ∃ out,
@@ -113,7 +114,7 @@ private theorem portable_words (hbytes : FrBytesCorrect)
       out.val.length = fs.val.length ∧
       out.val.map (fun w => limbs w.val) = fs.val.map (fun f => (frRead f).val) := by
   let empty := alloc.vec.Vec.new (MsmWord)
-  obtain ⟨out, hloop, hout⟩ := portable_words_loop hbytes fs empty 0#usize (by simp) rfl hf
+  obtain ⟨out, hloop, hout⟩ := portable_words_loop fs empty 0#usize (by simp) rfl hf
   refine ⟨out, ?_, ?_, ?_⟩
   · simpa only [alloc.vec.Vec.clear, bind_tc_ok] using hloop
   · simp [hout, empty]
@@ -170,8 +171,7 @@ private theorem lincomb_sum_kernel [RuntimeFeatures]
     rfl
   · simpa only [alloc.vec.Vec.deref, hvalues] using hrep
 
-private theorem lincomb_sum_portable [RuntimeFeatures]
-    (hbytes : FrBytesCorrect) (hportable : PortableMsmCorrect)
+private theorem lincomb_sum_portable [RuntimeFeatures] (hportable : PortableMsmCorrect)
     (state : portable.msm.Msm) (lines : portable.pairing.PairingLines)
     (scratch : alloc.vec.Vec (MsmWord))
     (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
@@ -179,7 +179,7 @@ private theorem lincomb_sum_portable [RuntimeFeatures]
     (hfv : ∀ f ∈ fs.val, FrReduced f) :
     ∃ point next, (verify.CurveWork.Portable state lines scratch).sum ps fs = ok (point, next) ∧
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
-  obtain ⟨ws, hwords, hwlen, hwval⟩ := portable_words hbytes fs scratch hfv
+  obtain ⟨ws, hwords, hwlen, hwval⟩ := portable_words fs scratch hfv
   obtain ⟨hwbound, hvalues⟩ := word_values fs ws hwval
   obtain ⟨point, next, hcall, hrep⟩ := hportable.msm state ps (alloc.vec.Vec.deref ws)
     (by simpa only [alloc.vec.Vec.deref, hwlen] using hlen) hpv hwbound
@@ -190,8 +190,7 @@ private theorem lincomb_sum_portable [RuntimeFeatures]
   · simpa only [alloc.vec.Vec.deref, hvalues] using hrep
 
 /-- Both routes refine MSM for all reusable workspaces and reduced input scalars. -/
-theorem verify_lincomb_raw_refinement [RuntimeFeatures]
-    (hbytes : FrBytesCorrect) (hportable : PortableMsmCorrect)
+theorem verify_lincomb_raw_refinement [RuntimeFeatures] (hportable : PortableMsmCorrect)
     (self : verify.CurveWork) (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
     (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
     (hfv : ∀ f ∈ fs.val, FrReduced f) :
@@ -199,11 +198,10 @@ theorem verify_lincomb_raw_refinement [RuntimeFeatures]
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
   cases self with
   | Lanes state ws => exact lincomb_sum_kernel state ws ps fs hlen hpv hfv
-  | Portable state lines ws => exact lincomb_sum_portable hbytes hportable state lines ws ps fs hlen hpv hfv
+  | Portable state lines ws => exact lincomb_sum_portable hportable state lines ws ps fs hlen hpv hfv
 
 /-- The MSM result and preservation of persistent workspace fields. -/
-theorem curveWork_sum_raw [RuntimeFeatures]
-    (hbytes : FrBytesCorrect) (hportable : PortableMsmCorrect)
+theorem curveWork_sum_raw [RuntimeFeatures] (hportable : PortableMsmCorrect)
     (self : verify.CurveWork) (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
     (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
     (hfv : ∀ f ∈ fs.val, FrReduced f) :
@@ -211,7 +209,7 @@ theorem curveWork_sum_raw [RuntimeFeatures]
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) ∧
       CurveWork.isLanes next = CurveWork.isLanes self ∧
       CurveWork.pairingLines next = CurveWork.pairingLines self := by
-  obtain ⟨point, next, hcall, hrep⟩ := verify_lincomb_raw_refinement hbytes hportable self ps fs hlen hpv hfv
+  obtain ⟨point, next, hcall, hrep⟩ := verify_lincomb_raw_refinement hportable self ps fs hlen hpv hfv
   exact ⟨point, next, hcall, hrep, CurveWork.sum_frame self next ps fs point hcall⟩
 
 private theorem lincomb_encoded [RuntimeFeatures]
@@ -274,8 +272,7 @@ private theorem lincomb_encoded [RuntimeFeatures]
       exact (g1ReadAffine_g1Affine_matches (hvj j hjp)).2.symm)
   exact ⟨point, scratch', hcall, g1Rep_trans hrep hinf.symm haff.symm⟩
 
-theorem verify_lincomb_refinement [RuntimeFeatures]
-    (hbytes : FrBytesCorrect) (hportable : PortableMsmCorrect)
+theorem verify_lincomb_refinement [RuntimeFeatures] (hportable : PortableMsmCorrect)
     (ps : alloc.vec.Vec blst.blst_p1_affine) (fs : alloc.vec.Vec blst.blst_fr)
     (points : _root_.Array G1) (scalars : _root_.Array Fr)
     (hps : ps.val = points.toList.map g1Affine) (hfs : fs.val = scalars.toList.map frEncode)
@@ -285,7 +282,7 @@ theorem verify_lincomb_refinement [RuntimeFeatures]
       (alloc.vec.Vec.deref fs) = ok (point, scratch') ∧
       G1Rep point (G1.msm points scalars) := by
   exact lincomb_encoded ps fs points scalars hps hfs hsize hvalid scratch
-    (verify_lincomb_raw_refinement hbytes hportable scratch
+    (verify_lincomb_raw_refinement hportable scratch
       (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs))
 
 theorem verify_lincomb_raw_kernel_refinement [RuntimeFeatures]

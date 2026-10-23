@@ -45,7 +45,7 @@ def cellElements (cells : List (Aeneas.Std.Array U8 2048#usize)) : List (Option 
   cells.flatMap fun cell => (List.range 64).map fun j =>
     (bytesToBlsField ((arrayBytes cell).extract (32*j) (32*(j+1)))).toOption
 
-theorem decode_cells_refines (hbytes : FrBytesCorrect)
+theorem decode_cells_refines
     (v : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (hb : cells.val.length * 2048 ≤ Isize.max.toNat) :
     ∃ next, verify.CellBatchVerifier.decode_cells v cells =
@@ -53,10 +53,10 @@ theorem decode_cells_refines (hbytes : FrBytesCorrect)
       (v.kernel = none → next.evaluations.val =
         (((cellElements cells.val).takeWhile Option.isSome).filterMap id).map frEncode) ∧
       next.setup = v.setup ∧ next.cosets = v.cosets := by
-  obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement hbytes v cells hb
+  obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement v cells hb
   exact ⟨next, hcall, he, hs, hc⟩
 
-theorem challenge_refines (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
+theorem challenge_refines (hsha : ShaCorrect)
     (unique : Slice (Aeneas.Std.Array U8 48#usize)) (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -67,7 +67,7 @@ theorem challenge_refines (hsha : ShaCorrect) (hbytes : FrBytesCorrect)
         (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
-  exact challenge_refinement hsha hbytes unique ci indices cells ps hlen
+  exact challenge_refinement hsha unique ci indices cells ps hlen
 
 theorem challenge_preimage_eq_spec (unique : _root_.Array Bytes48)
     (ci indices : _root_.Array Nat) (cells : _root_.Array Cell) (ps : _root_.Array Bytes48)
@@ -84,13 +84,13 @@ theorem reverse_bits_refines (index : Usize) (bits : U32)
       ok ⟨BitVec.ofNat _ (BitReversal.reverseBitsAux index.val 0 bits.val)⟩ := by
   exact reverse_bits_refinement index bits hb
 
-theorem roots_refines (hfr : FrCorrect) (logOrder : U32)
+theorem roots_refines (logOrder : U32)
     (hl : logOrder.val = 6 ∨ logOrder.val = 13) :
     ∃ rs, domain.roots_of_unity logOrder = ok rs ∧
       rs.val = (Model.roots logOrder.val).toList.map frEncode := by
-  exact roots_refinement hfr logOrder hl
+  exact roots_refinement logOrder hl
 
-theorem inverse_fft_refines (hfr : FrCorrect)
+theorem inverse_fft_refines
     (out input roots : Slice blst.blst_fr) (values : _root_.Array Fr)
     (ho : out.val.length = 64) (hv : values.size = 64)
     (hi : input.val = values.toList.map frEncode)
@@ -99,7 +99,7 @@ theorem inverse_fft_refines (hfr : FrCorrect)
       result.val =
         (Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse).toList.map
           frEncode := by
-  exact inverse_fft_refinement hfr out input roots values ho hv hi hr
+  exact inverse_fft_refinement out input roots values ho hv hi hr
 
 theorem interpolation_commitment_refines [RuntimeFeatures] (h : ComponentContracts)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)

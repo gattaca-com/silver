@@ -8,7 +8,7 @@ open private LeanBlsSimd.Kzg.cellVerdict LeanBlsSimd.Kzg.decode_cell_body LeanBl
 
 namespace LeanBlsSimd.Kzg
 
-private theorem decode_cell_loop_frame (h : FrBytesCorrect)
+private theorem decode_cell_loop_frame
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize) (j : Usize)
     (hj : j.val ≤ 64) (next : verify.CellBatchVerifier) (stop : Usize)
     (hcall : verify.CellBatchVerifier.decode_cell_loop self cell j = ok (next, stop)) :
@@ -26,7 +26,7 @@ private theorem decode_cell_loop_frame (h : FrBytesCorrect)
     have hlt : j.val < 64 := by omega
     let j' : Usize := UScalar.ofNatCore (j.val + 1) (by scalar_tac)
     have hj' : j'.val = j.val + 1 := UScalar.ofNatCore_val_eq _
-    have hbody := LeanBlsSimd.Kzg.decode_cell_body h cell self j j' hlt hj'
+    have hbody := LeanBlsSimd.Kzg.decode_cell_body cell self j j' hlt hj'
     rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1] at hcall
     simp only [hbody] at hcall
     cases hv : LeanBlsSimd.Kzg.cellVerdict cell j.val with
@@ -43,7 +43,7 @@ private theorem decode_cell_loop_frame (h : FrBytesCorrect)
         have hf := ih { self with evaluations := vs } j' (by omega) hcall (by omega)
         exact hf
 
-private theorem decode_cell_frame (h : FrBytesCorrect)
+private theorem decode_cell_frame
     (self : verify.CellBatchVerifier) (cell : Aeneas.Std.Array U8 2048#usize)
     (b : Bool) (next : verify.CellBatchVerifier)
     (hcall : verify.CellBatchVerifier.decode_cell self cell = ok (b, next)) :
@@ -57,9 +57,9 @@ private theorem decode_cell_frame (h : FrBytesCorrect)
     simp only [hc, bind_tc_ok, Function.uncurry_apply_pair, Result.ok.injEq,
       Prod.mk.injEq] at hcall
     rcases hcall with ⟨_, rfl⟩
-    exact decode_cell_loop_frame h self cell 0#usize (by decide) out stop hc
+    exact decode_cell_loop_frame self cell 0#usize (by decide) out stop hc
 
-private theorem decode_cells_loop_frame (h : FrBytesCorrect)
+private theorem decode_cells_loop_frame
     (self : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (k : Usize) (hk : k.val ≤ cells.val.length) (next : verify.CellBatchVerifier) (stop : Usize)
     (hcall : verify.CellBatchVerifier.decode_cells_loop self cells k = ok (next, stop)) :
@@ -94,7 +94,7 @@ private theorem decode_cells_loop_frame (h : FrBytesCorrect)
     | div => simp only [hc, bind_tc_div] at hcall; cases hcall
     | ok pair =>
       rcases pair with ⟨b, out⟩
-      have hf := decode_cell_frame h self cell b out hc
+      have hf := decode_cell_frame self cell b out hc
       cases b with
       | false =>
         simp only [hc, bind_tc_ok, Function.uncurry_apply_pair, Bool.false_eq_true,
@@ -107,7 +107,7 @@ private theorem decode_cells_loop_frame (h : FrBytesCorrect)
         rw [hf] at hrec
         exact hrec
 
-theorem decode_cells_frame (h : FrBytesCorrect)
+theorem decode_cells_frame
     (self : verify.CellBatchVerifier) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (b : Bool) (next : verify.CellBatchVerifier)
     (hcall : verify.CellBatchVerifier.decode_cells self cells = ok (b, next)) :
@@ -142,6 +142,6 @@ theorem decode_cells_frame (h : FrBytesCorrect)
         Prod.mk.injEq] at hcall'
       rcases hcall' with ⟨_, rfl⟩
       simpa only [initial, hkernel] using
-        decode_cells_loop_frame h initial cells 0#usize (by simp) out stop hc
+        decode_cells_loop_frame initial cells 0#usize (by simp) out stop hc
 
 end LeanBlsSimd.Kzg

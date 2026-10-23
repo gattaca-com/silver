@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Refines.Loop
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
@@ -15,7 +16,7 @@ local instance fftRawFrInhabited : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 set_option maxRecDepth 10000
 set_option maxHeartbeats 4000000
 
-private theorem scale_loop (h : FrCorrect)
+private theorem scale_loop
     (factor : Fr) (remaining doneValues : List Fr) (out : Slice blst.blst_fr)
     (ho : out.val = (doneValues ++ remaining).map frEncode)
     (iter : core.ops.range.Range Usize) (hi : iter.start.val = doneValues.length)
@@ -41,7 +42,7 @@ private theorem scale_loop (h : FrCorrect)
     have hbody : fft.inverse_fft_loop.body (frEncode factor) iter out =
         ok (cont (iter', out')) := by
       simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair,
-        hindex, h.fr_mul, hupdate]
+        hindex, FrScalar.fr_mul_refines, hupdate]
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * factor]) out' rfl iter'
       (by simp [hi', hi]) (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
     refine ⟨result, ?_, ?_⟩
@@ -121,7 +122,7 @@ private theorem butterfly_spec (values roots : _root_.Array Fr) (n : Nat)
   · simp [upperOutputs, lowerOutputs, butterflyInputs, h]
   · simp [upperOutputs, lowerOutputs, butterflyInputs, List.getElem_append, h]
 
-private theorem butterfly_suffix (h : FrCorrect)
+private theorem butterfly_suffix
     (remaining : List ButterflyInput) (doneLeft doneRight : List Fr)
     (out roots : Slice blst.blst_fr) (stride half : Usize)
     (iter : core.ops.range.Range Usize)
@@ -199,9 +200,9 @@ private theorem butterfly_suffix (h : FrCorrect)
       simp [hout2, beforeEven, afterEven, List.append_assoc]
     have hbody : fft.transform_loop.body roots stride half iter out = ok (cont (iter', out2)) := by
       simp only [fft.transform_loop.body, hnext, bind_tc_ok, Function.uncurry_apply_pair,
-        hadd, hodd, hmul, hroot, h.fr_mul, heven,
-        h.fr_sub, hupdateOdd, heven1,
-        h.fr_add, hupdateEven]
+        hadd, hodd, hmul, hroot, FrScalar.fr_mul_refines, heven,
+        FrScalar.fr_sub_refines, hupdateOdd, heven1,
+        FrScalar.fr_add_refines, hupdateEven]
     obtain ⟨result, hloop, hresult⟩ := ih (doneLeft ++ [a + b * w]) (doneRight ++ [a - b * w])
       out2 iter' hout2' (by simp [hd]) (by simp [hi', hi]) (he'.trans he)
       (by simp only [List.length_append, List.length_cons, List.length_nil] at hn ⊢; omega)
@@ -216,7 +217,7 @@ private theorem butterfly_suffix (h : FrCorrect)
     · simpa [upperOutputs, lowerOutputs, List.append_assoc] using hresult
 
 
-private theorem transform_refinement (h : FrCorrect)
+private theorem transform_refinement
     (capacity k : Nat) (hcapacity : capacity ≤ Usize.max) (out input roots : Slice blst.blst_fr) (start stride : Usize)
     (values rvalues : _root_.Array Fr)
     (ho : out.val.length = 2^k) (hiLen : input.val.length = capacity)
@@ -334,7 +335,7 @@ private theorem transform_refinement (h : FrCorrect)
       (fftFieldAux (fftHalve values 1) (fftHalve rvalues 0)) rvalues n (by simp [hv'])
     have hrightInputs := butterfly_right (fftFieldAux (fftHalve values 0) (fftHalve rvalues 0))
       (fftFieldAux (fftHalve values 1) (fftHalve rvalues 0)) rvalues n (by simp [hv'])
-    obtain ⟨result, hloop, hresult⟩ := butterfly_suffix h inputs [] [] out2 roots stride half
+    obtain ⟨result, hloop, hresult⟩ := butterfly_suffix inputs [] [] out2 roots stride half
       { start := 0#usize, «end» := half }
       (by simpa [inputs, hleftInputs, hrightInputs, hleftResult, hrightResult] using hout2)
       rfl (by simp) rfl (by simpa using hhalf'.trans hinputs.symm) hstride
@@ -356,7 +357,7 @@ private theorem transform_refinement (h : FrCorrect)
       simpa only [List.nil_append, List.append_nil, hspec] using hresult
 
 
-theorem fft_refinement_of_blst (h : FrCorrect)
+theorem fft_refinement_of_blst
     (k : Nat) (out input roots : Slice blst.blst_fr) (values rvalues : _root_.Array Fr)
     (ho : out.val.length = 2^k) (hv : values.size = 2^k) (hrv : rvalues.size = 2^k)
     (hi : input.val = values.toList.map frEncode)
@@ -370,7 +371,7 @@ theorem fft_refinement_of_blst (h : FrCorrect)
   have hn : n.val = 2^k := by simp [n, ho]
   have hinLen : Slice.len input = n := UScalar.eq_of_val_eq (by simp [hn, hiLen])
   have hrootsLen : Slice.len roots = n := UScalar.eq_of_val_eq (by simp [hn, hrLen])
-  obtain ⟨transformed, htransform, htransformed⟩ := transform_refinement h (2^k) k
+  obtain ⟨transformed, htransform, htransformed⟩ := transform_refinement (2^k) k
     (by simpa [ho] using out.property) out input roots
     0#usize 1#usize values rvalues ho hiLen hrLen hv hrv (by simp) (by simp)
     (by
@@ -408,7 +409,7 @@ theorem fft_refinement_of_blst (h : FrCorrect)
     hsub, lift, bind_tc_ok, hand, hrem, hquot, htransform]
   simp [massert]
 
-theorem inverse_fft_refinement_of_blst (h : FrCorrect)
+theorem inverse_fft_refinement_of_blst
     (k : Nat) (out input roots : Slice blst.blst_fr) (values rvalues : _root_.Array Fr)
     (scale : Fr)
     (ho : out.val.length = 2^k) (hv : values.size = 2^k) (hrv : rvalues.size = 2^k)
@@ -417,8 +418,8 @@ theorem inverse_fft_refinement_of_blst (h : FrCorrect)
     ∃ result, fft.inverse_fft out input roots (frEncode scale) = ok result ∧
       result.val = (Model.inverseFft values rvalues scale).toList.map frEncode := by
   obtain ⟨transformed, hfft, htransformed⟩ :=
-    fft_refinement_of_blst h k out input roots values rvalues ho hv hrv hi hr
-  obtain ⟨result, hscale, hresult⟩ := scale_loop h scale
+    fft_refinement_of_blst k out input roots values rvalues ho hv hrv hi hr
+  obtain ⟨result, hscale, hresult⟩ := scale_loop scale
     (fftFieldAux values rvalues).toList [] transformed (by simpa using htransformed)
     { start := 0#usize, «end» := Slice.len transformed } (by simp)
     (by simp [htransformed])
@@ -426,7 +427,7 @@ theorem inverse_fft_refinement_of_blst (h : FrCorrect)
   · simp only [fft.inverse_fft, hfft, bind_tc_ok, hscale]
   · simpa [Model.inverseFft] using hresult
 
-theorem inverse_fft_refinement (h : FrCorrect)
+theorem inverse_fft_refinement
     (out input roots : Slice blst.blst_fr) (values : _root_.Array Fr)
     (ho : out.val.length = 64) (hv : values.size = 64)
     (hi : input.val = values.toList.map frEncode)
@@ -435,7 +436,7 @@ theorem inverse_fft_refinement (h : FrCorrect)
       result.val =
         (Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse).toList.map
           frEncode :=
-  inverse_fft_refinement_of_blst h 6 out input roots values
+  inverse_fft_refinement_of_blst 6 out input roots values
     (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse ho hv
     (by simp [Model.inverseRoots, Model.roots]) hi hr
 

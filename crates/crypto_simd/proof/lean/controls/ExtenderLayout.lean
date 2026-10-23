@@ -47,15 +47,15 @@ theorem layout_ff_blob_noncanonical : ¬ Canonical (layoutBlob 255#u8) := by
   rw [← hchunk] at hc
   exact (by decide +kernel : ¬ Fr.bytesBEToNat (arrayBytes (layoutChunk 255#u8)) < Fr.modulus) hc
 
-theorem decode_ff_blob_rejects [cpu : RuntimeFeatures] (hfr : FrCorrect) (hbytes : FrBytesCorrect) :
+theorem decode_ff_blob_rejects [cpu : RuntimeFeatures] :
     ∃ initial next,
       cell_extender.CellExtender.new = ok initial ∧
       cell_extender.CellExtender.decode_blob initial (layoutBlob 255#u8) =
         ok (false, next) ∧ StateInvariant next := by
   obtain ⟨initial, hnew, hinitial⟩ :=
-    new_returns_ok hfr
+    new_returns_ok
   obtain ⟨verdict, next, hdecode, hnext, _, hresult⟩ :=
-    decode_blob_refinement hbytes initial hinitial
+    decode_blob_refinement initial hinitial
       (layoutBlob 255#u8)
   have hfalse : verdict = false := by
     cases hd : blobToPolynomial (arrayBytes (layoutBlob 255#u8)) with
