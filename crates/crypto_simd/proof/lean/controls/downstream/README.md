@@ -32,7 +32,9 @@ still supplies a concrete witness for that external-function premise.
 ## KZG consumers
 
 `KzgSmoke.lean` checks scalar cell decoding, kernel interpolation and pairing
-composition with their named component contracts. It retains the canonical
+composition with the four remaining component contracts: `PortableFpCorrect`,
+`G1DecoderCorrect`, `PortableMsmCorrect` and `PairingCorrect`. SHA and scalar
+laws are discharged inside the imported results. It retains the canonical
 cell relation and the conditional scalar-scratch premise. It also checks
 arbitrary-length proved MSM8, lane-only linear combination and preservation
 of stored interpolation/curve-work routes.

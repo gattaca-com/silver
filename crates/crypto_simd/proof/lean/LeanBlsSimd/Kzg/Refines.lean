@@ -56,7 +56,7 @@ theorem decode_cells_refines
   obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement v cells hb
   exact ⟨next, hcall, he, hs, hc⟩
 
-theorem challenge_refines (hsha : ShaCorrect)
+theorem challenge_refines
     (unique : Slice (Aeneas.Std.Array U8 48#usize)) (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -67,7 +67,7 @@ theorem challenge_refines (hsha : ShaCorrect)
         (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
-  exact challenge_refinement hsha unique ci indices cells ps hlen
+  exact challenge_refinement unique ci indices cells ps hlen
 
 theorem challenge_preimage_eq_spec (unique : _root_.Array Bytes48)
     (ci indices : _root_.Array Nat) (cells : _root_.Array Cell) (ps : _root_.Array Bytes48)

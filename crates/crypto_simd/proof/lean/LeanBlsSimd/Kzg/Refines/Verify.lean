@@ -384,7 +384,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
                 v3.evaluations.val = (evals.toList.flatMap _root_.Array.toList).map frEncode := by
               simpa only [v3, evals, heFlat, hkernel2] using hevals
             have hcellRep : InterpolationKernel.CellsRep cells evals := cells_decode_rep cells hcb
-            have hchallenge := verifier_challenge_refinement h.sha v3 indices cells ps
+            have hchallenge := verifier_challenge_refinement v3 indices cells ps
               ⟨by simpa only [hv3d] using hmapSize, by omega, by omega⟩
             simp only [hv3d] at hchallenge
             have hchallengeSpec := challenge_preimage_spec unique mapping I B P evals

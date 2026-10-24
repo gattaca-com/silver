@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.ByteEncode
-import LeanBlsSimd.Kzg.ShaContracts
+import LeanBlsSimd.Sha256.Correct
 import LeanBlsSimd.Kzg.ScalarContracts
 import LeanBlsSimd.Kzg.Model
 
@@ -258,7 +258,7 @@ private theorem challenge_extensions_loop1_eq
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
-theorem challenge_refinement (hsha : ShaCorrect)
+theorem challenge_refinement
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
     (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -270,7 +270,7 @@ theorem challenge_refinement (hsha : ShaCorrect)
         (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
-  have h := hsha.extensions
+  have h := Sha256.sha_correct.extensions
   obtain ⟨s0, hnew, hs0⟩ := h.new_spec
   obtain ⟨s1, hup1, hs1⟩ := h.update_spec s0 [] (Array.to_slice challenge.DOMAIN) hs0
   obtain ⟨s2, hup2, hs2⟩ := h.update_spec s1 _
@@ -397,7 +397,7 @@ private theorem challenge_portable_loop1_eq
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
-theorem challenge_portable_refinement (hsha : ShaCorrect)
+theorem challenge_portable_refinement
     (unique : Slice (Aeneas.Std.Array U8 48#usize))
     (ci : Slice Usize) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -409,7 +409,7 @@ theorem challenge_portable_refinement (hsha : ShaCorrect)
         (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
-  have h := hsha.portable
+  have h := Sha256.sha_correct.portable
   obtain ⟨s0, hnew, hs0⟩ := h.new_spec
   obtain ⟨s1, hup1, hs1⟩ := h.update_spec s0 [] (Array.to_slice challenge.DOMAIN) hs0
   obtain ⟨s2, hup2, hs2⟩ := h.update_spec s1 _
@@ -437,7 +437,6 @@ theorem challenge_portable_refinement (hsha : ShaCorrect)
 
 /-- Runtime SHA selection preserves the challenge and consumes no verifier state. -/
 theorem verifier_challenge_refinement [RuntimeFeatures]
-    (hsha : ShaCorrect)
     (self : verify.CellBatchVerifier) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -452,7 +451,7 @@ theorem verifier_challenge_refinement [RuntimeFeatures]
   unfold verify.CellBatchVerifier.challenge
   simp only [sha_available, bind_tc_ok]
   split
-  · exact challenge_refinement hsha _ _ _ _ _ hlen
-  · exact challenge_portable_refinement hsha _ _ _ _ _ hlen
+  · exact challenge_refinement _ _ _ _ _ hlen
+  · exact challenge_portable_refinement _ _ _ _ _ hlen
 
 end LeanBlsSimd.Kzg

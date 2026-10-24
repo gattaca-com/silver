@@ -139,7 +139,7 @@ theorem glue_refinement [RuntimeFeatures] (h : ComponentContracts)
     v hv i.commitments i.indices i.cells i.proofs hi.2.2.1
 
 theorem verify_eq_spec [cpu : RuntimeFeatures]
-    (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
+    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
@@ -147,14 +147,14 @@ theorem verify_eq_spec [cpu : RuntimeFeatures]
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
-  let h : ComponentContracts := ⟨hsha, hfp, hg1, hmsm, hpairing⟩
+  let h : ComponentContracts := ⟨hfp, hg1, hmsm, hpairing⟩
   obtain ⟨initial, hnew, hinv⟩ := new_returns_ok hfp hg1
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨next, hgen, hnext⟩ := glue_refinement h v hv i hi
   exact ⟨i.model, next, hgen, hnext, model_eq_embedded_spec i⟩
 
 theorem verify_eq_upstream [cpu : RuntimeFeatures]
-    (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
+    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
     (hsetup : TrustedSetup.get! = pure embeddedSetup) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
@@ -163,7 +163,7 @@ theorem verify_eq_upstream [cpu : RuntimeFeatures]
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         (Model.rejectErrors <$> i.spec.run) = pure verdict := by
-  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hsha hfp hg1 hmsm hpairing
+  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hfp hg1 hmsm hpairing
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨verdict, next, hgen, hnext, hverdict⟩ := hstep v hv i hi
   refine ⟨verdict, next, hgen, hnext, ?_⟩

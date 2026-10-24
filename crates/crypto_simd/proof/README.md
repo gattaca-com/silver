@@ -1,6 +1,6 @@
 # Formal proof of BLS decoding and KZG cell operations
 
-One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The M0 KZG headlines refine the fresh x86-64 extraction under named correctness premises for its generated arithmetic, decoding, streaming SHA and pairing functions. The extender needs only scalar arithmetic and byte-conversion premises. These component contracts remain proof obligations; they are neither axioms nor completed implementation proofs. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
+One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The verifier headlines refine the x86-64 extraction under four remaining correctness premises for portable Fp, G1 decoding, portable MSM and pairing. Scalar arithmetic, scalar bytes and both streaming SHA implementations are proved. The extender has no component-contract premises. The four remaining contracts are proof obligations, not axioms. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
 
 The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is covered conditionally by `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
 
@@ -91,7 +91,7 @@ The left side is how `decompress_g2_chunk` in `mod.rs` reads one lane. `Mmask8.a
 
 ```lean
 theorem verify_eq_spec [cpu : RuntimeFeatures]
-    (hsha : ShaCorrect) (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
+    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
@@ -101,11 +101,10 @@ theorem verify_eq_spec [cpu : RuntimeFeatures]
         Model.rejectErrors i.embeddedSpec = verdict
 ```
 
-The five remaining premises are named `Prop`s about actual generated functions:
+The four remaining premises are named `Prop`s about actual generated functions:
 
 | Contract | Required component behavior |
 |---|---|
-| `ShaCorrect` | Successful streaming `new`, `update` and `finish` for both SHA-extension and portable implementations. `ShaRep` fixes the meaning of a state by requiring every finite continuation to yield the specification digest of the prefix followed by those chunks. |
 | `PortableFpCorrect` | Canonical six-word Montgomery Fp addition, subtraction, multiplication and zero testing. Small G1 formula adapters are derived from these laws. |
 | `G1DecoderCorrect` | Exact specification verdicts from generated portable singleton and pair G1 decoders. The public batch theorem also uses the proved IFMA path. |
 | `PortableMsmCorrect` | Generated portable MSM agrees with `G1.msm` for valid affine points, canonical ordinary scalar words and arbitrary scratch. |
@@ -179,10 +178,10 @@ For G2, import `LeanBlsSimd.Refines.UncompressG2` and use `uncompress_in_g2_eq_s
 
 ### KZG verification
 
-Import `LeanBlsSimd.Kzg.Statements`. With the five remaining contracts in scope, apply:
+Import `LeanBlsSimd.Kzg.Statements`. With the four remaining contracts in scope, apply:
 
 ```lean
-verify_eq_spec hsha hfp hg1 hmsm hpairing
+verify_eq_spec hfp hg1 hmsm hpairing
 ```
 
 Use `new_returns_ok hfp hg1` for construction alone, or `glue_refinement` with a `ComponentContracts` bundle for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
@@ -205,7 +204,7 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 `Kzg/Decoder.lean` proves `specVerdict_eq_bls`: KZG and BLS G1 verdicts agree as optional affine points, including limbs and infinity. The KZG batch adapter composes directly with the shared generated G1 wrapper and its `G1DecoderCorrect` premise. There is no copied runtime decoder dictionary at this boundary.
 
-The five remaining contracts concern fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`; `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
+The four remaining contracts concern fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`; `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
 
 `controls/ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` evaluate the generated functions against the specification. These `#eval` checks use Lean's interpreter outside the proof kernel. They provide finite evidence, not proofs or satisfiability witnesses for the contracts. Assertions make a mismatch fail the build.
 
@@ -229,7 +228,7 @@ The constructor establishes the invariant, and each returned state preserves it 
 4. **Extraction and generated-code preparation.** Charon's MIR semantics, Aeneas's translation and the deterministic adaptations in `prepare-extraction.py` described in [reproduction](#reproducing-the-extraction). The pinned Aeneas revision is `d9733413`, Charon is `ed22146b`, and Charon uses nightly-2026-02-07 rather than the workspace's Rust 1.91.0. `extract.sh` verifies checkout pins and available binary version information; a Charon binary from another commit with the same reported crate version is not distinguished. The extraction targets x86_64, including its BLS chunk helpers, Fr FFT and verifier MSM8 kernels. The theorem includes the scalar route of this extraction; it does not check a separate non-x86_64 extraction. Transfer to other target configurations relies on their feature detection and source gating. Exact `--check` reproduction detects drift, not translator bugs.
 5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents; their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand; their source code is not refined by the extraction. The extraction contains the portable scalar, field, G1, MSM, pairing and SHA implementations themselves.
 6. **CPU observations and G2 fallback.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Its mixed-state model does not establish hardware support for arbitrary stored routes; constructor-produced states align those routes with stable CPU observations. `BlsExternals` supplies only the deterministic total `uncompressG2` observation for the signature-decoding path. `UncompressG2.BlstMatchesSpec` requires exact agreement on every 96-byte input, including acceptance, affine limbs and infinity. The external wrapper returns `ok`, so termination and absence of Rust-level failure for that opaque call are assumed. KZG does not use this external. The blst structs retained in generated KZG types are data containers, not evidence of calls to blst operations.
-7. **Pending generated-component contracts.** The five [KZG premises](#kzg-verifier) are explicit propositions about the actual generated definitions. Verifier composition remains conditional on them. Scalar arithmetic and byte conversion are proved and supply no headline premises. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its construction is already derived from `PortableFpCorrect`. Negative controls do not prove that the actual generated implementations satisfy these premises. The extender has no component-contract premise.
+7. **Pending generated-component contracts.** The four [KZG premises](#kzg-verifier) are explicit propositions about the actual generated definitions. Verifier composition remains conditional on them. Scalar arithmetic, byte conversion and both SHA routes are proved and supply no headline premises. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its construction is already derived from `PortableFpCorrect`. Negative controls do not prove that the actual generated implementations satisfy these premises. The extender has no component-contract premise.
 8. **Runtime setup for literal-upstream corollaries.** Only `verify_eq_upstream` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
 Every `--opaque` item in `extract.sh` has this interpretation:
@@ -596,6 +595,14 @@ The streaming challenge proofs accumulate the exact upstream transcript in both 
 
 `SpecBridge.lean` proves `verifyWith_pure` for every setup, RLI step and input, preserving the complete `Except` result. `g1Lincomb_eq` connects the pure linear combination to upstream; `upstream_eq_verifyWith` composes the front and implementation decompositions used by the literal-upstream corollaries. `IOLawful.lean` proves `LawfulMonad (EST ε σ)` and derives the IO instance missing from Lean v4.29.1's interface.
 
+### SHA-256 and challenge proof
+
+`Sha256/Correct.lean` constructs `Sha256.sha_correct : Kzg.ShaCorrect` for the actual portable and SHA-extension constructors, updates and finishes. Challenge refinements use this theorem and M1's proved digest reduction internally; they take no hash contract premise.
+
+Both implementations use one `Streaming.Represents` invariant: state words equal the specification compression fold over complete blocks, the first `pending_len < 64` bytes are the remaining suffix, and length is the absorbed byte count modulo 2^64. `Streaming.update_append` and `finish_eq_hash` are proved once. `Generated.lean` factors schedules definitionally equal to both generated update/finish bodies. Their shared refinements cover filling a pending block, direct block folds, remainder copies, one- or two-block padding and big-endian output. No accumulated-message-length bound is added. `ContractAdapter.lean` derives the unchanged observational `ShaRep`, so its continuation laws still cover every observationally valid state.
+
+The portable compressor proves byte loading, all 64 schedule words and rounds, feed-forward and the block fold. The extension compressor proves the ABEF/CDGH layout, four-round instruction and schedule-window steps, the generated inner loops and the block fold. The SHA/SSE models and three hand-replaced pointer routines retain their existing statements and remain in the documented extraction trust boundary.
+
 ### Extender proof structure
 
 `Extender/Model.lean` decodes the blob and applies a 4096-point inverse FFT after input bit reversal. It multiplies coefficients by the first 4096 powers of the 8192nd root, then applies a forward FFT. It copies the original 64 cells and serializes the bit-reversed extension into the remaining 64 cells.
@@ -672,7 +679,7 @@ The generated outer MSM loop processes chunks of at most `CHUNK = 4096` inputs. 
 
 `frEncode` uses four little-endian 64-bit limbs for the reduced Montgomery residue `x * 2^256 mod r`. Scalar laws apply to this encoding, not arbitrary limb arrays. The extraction and representation target blst's 64-bit platform layout, `limb_t = u64`; they do not describe a 32-bit-limb build.
 
-`G1Rep` relates a Jacobian result to the spec by its infinity status and affine coordinates. It does not require blst and the spec to choose the same Jacobian representative. Affine coordinates use six reduced Montgomery limbs with `R = 2^384`. The pairing contract calls the spec's `pairingCheck`; both implementations omit pairs with either a G1 or a G2 point at infinity. `ShaCorrect` connects streaming states to specification SHA-256, and challenge refinement reaches `Fr.hashToBlsField` through reducing scalar decoding. The proved canonical scalar decode rejects integers greater than or equal to `r`. Portable G1 adapters retain the representation and validity conditions needed at their call sites. `G1Valid` checks subgroup membership on the Jacobian representative. `G1Validity.lean` transports this predicate through `G1Rep`, including arbitrary infinity representatives such as blst's all-zero triple, and proves that valid points have valid affine encodings. `G1Arithmetic.lean` proves closure and point equivalence for addition, negation, doubling and scalar multiplication under the same validity predicate. `G1Msm.lean` extends these results to multi-scalar multiplication, using upstream's weighted-sum theorem after normalizing infinity inputs. `G1Compression.lean` proves successful decompression after compression of a valid point, preserving infinity status and affine coordinates. Its header-bit certificate uses kernel reduction over 32 values. `PairingRepresentation.lean` transports the pairing inputs across these representative changes.
+`G1Rep` relates a Jacobian result to the spec by its infinity status and affine coordinates. It does not require blst and the spec to choose the same Jacobian representative. Affine coordinates use six reduced Montgomery limbs with `R = 2^384`. The pairing contract calls the spec's `pairingCheck`; both implementations omit pairs with either a G1 or a G2 point at infinity. `Sha256.sha_correct` proves both streaming implementations agree with specification SHA-256, and challenge refinement reaches `Fr.hashToBlsField` through reducing scalar decoding. The proved canonical scalar decode rejects integers greater than or equal to `r`. Portable G1 adapters retain the representation and validity conditions needed at their call sites. `G1Valid` checks subgroup membership on the Jacobian representative. `G1Validity.lean` transports this predicate through `G1Rep`, including arbitrary infinity representatives such as blst's all-zero triple, and proves that valid points have valid affine encodings. `G1Arithmetic.lean` proves closure and point equivalence for addition, negation, doubling and scalar multiplication under the same validity predicate. `G1Msm.lean` extends these results to multi-scalar multiplication, using upstream's weighted-sum theorem after normalizing infinity inputs. `G1Compression.lean` proves successful decompression after compression of a valid point, preserving infinity status and affine coordinates. Its header-bit certificate uses kernel reduction over 32 values. `PairingRepresentation.lean` transports the pairing inputs across these representative changes.
 
 ### Manual blst Fr audit
 
@@ -707,11 +714,12 @@ Paths below are relative to `lean/controls/`.
 | `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
+| `ShaGenerated.lean` | Generated updates reject a dropped length wrap; finish rejects a missing padding marker and reversed digest bytes. The proved `ShaCorrect` is checked with no premise. |
 | `ShaExtensions.lean` | The instruction refinements reject swapped state vectors, an omitted second-round shuffle, reuse of old message words and omitted byte swapping. |
 | `ShaPortable.lean` | Generated byte loading, schedule expansion and rounds reject reversed byte order, the wrong sigma function and a zeroed round constant. |
 | `ShaStreaming.lean` | The shared streaming invariant excludes missing pending bytes and incorrect stored lengths; empty and split updates preserve the state. |
 | `ShaSpec.lean` | The pinned SHA equations exclude a wrong round constant, omitted feed-forward, the wrong padding threshold and unwrapped lengths. |
-| `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |
+| `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both proved generated SHA paths agree. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `FrScalar.lean` | Generated scalar refinements exclude dropped carries, missing borrows, a lost fifth word, incorrect reduction and wrong Montgomery encodings. |
 | `FrBytes.lean` | Canonical decoding rejects r; digest reduction accepts the maximal 256-bit value. Generated decoding and serialization exclude reversed bytes. |
