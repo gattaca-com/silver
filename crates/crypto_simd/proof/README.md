@@ -722,6 +722,7 @@ Paths below are relative to `lean/controls/`.
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both proved generated SHA paths agree. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `PortableFpWords.lean` | Generated carry, subtraction and wide-product boundary witnesses retain the carry, borrow and high word. |
+| `PortableFpPowers.lean` | Conversion removes the Montgomery scale; sign tests distinguish 1 and −1; zero roots succeed and the pair result retains both validity bits. |
 | `PortableFpCorrect.lean` | Canonical wraparound and both BMI2 wrappers preserve Montgomery encoding; plain-one products and noncanonical modulus representatives are rejected. |
 | `PortableFpReduction.lean` | Generated reduction maps the modulus to zero; the split product retains a high word shifted across the six-word boundary. |
 | `FrScalar.lean` | Generated scalar refinements exclude dropped carries, missing borrows, a lost fifth word, incorrect reduction and wrong Montgomery encodings. |

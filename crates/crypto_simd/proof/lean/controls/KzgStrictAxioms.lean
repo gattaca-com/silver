@@ -1,3 +1,4 @@
+import controls.PortableFpPowers
 import controls.PortableFpCorrect
 import controls.PortableFpReduction
 import controls.PortableFpWords

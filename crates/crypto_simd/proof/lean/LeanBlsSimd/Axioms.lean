@@ -1,3 +1,5 @@
+import LeanBlsSimd.Portable.Fp.Sqrt
+import LeanBlsSimd.Portable.Fp.PairSqrt
 import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Portable.Fp.Reduction
 import LeanBlsSimd.Portable.Fp.MultiplyAdd
