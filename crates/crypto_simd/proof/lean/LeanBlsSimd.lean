@@ -1,5 +1,5 @@
-import LeanBlsSimd.Pairing.CombinedMiller
-import LeanBlsSimd.Pairing.PortableFactors
+import LeanBlsSimd.Pairing.PortableMiller
+import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates

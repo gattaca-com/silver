@@ -686,7 +686,7 @@ The unitary condition alone is insufficient; a checked `−1` counterexample dis
 `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
 `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
 `PairingCorrect` remains the verifier's component premise.
-The portable and lane towers have generated-code refinements below. The fixed-table and Miller-factor proofs are described separately; the outer runtime Miller loops and optimized final-exponentiation chain remain to be connected.
+The portable and lane towers and both generated Miller loops have refinements below. The optimized final-exponentiation chain and pairing-point adapters remain to be connected.
 
 ### Portable pairing tower
 
@@ -716,7 +716,7 @@ The generated Frobenius map refines the specification's p-th power for every inp
 
 `InversePower.lean` proves bounded-input inversion without adding a reduction absent from the generated schedule. `InverseStages.lean`, `InverseNorm.lean` and `InverseCoordinates.lean` connect the adjugate, determinant and total inverse, including zero, with a normalized output bound of `108p`. `Identity.lean` proves the normalization-by-one and equality-mask schedule, then identifies its six active bits with the specification identity test.
 
-### Fixed pairing lines and Miller factors
+### Fixed pairing lines and Miller loops
 
 `Pairing/FixedTable.lean` checks all 136 fixed lines against the live generated table. Its division-free certificates cover the running points, slopes, nonzero denominators, curve equations and nonzero normalizers. `FixedTableMeaning.lean:entry_decodes` identifies every decoded Fp2 coefficient; `step_correct` gives its affine line equation. `controls/pairing-table-witnesses.py` regenerates the numeric witnesses from the repository's public table generator. The Lean kernel checks them independently.
 
@@ -724,7 +724,9 @@ The generated Frobenius map refines the specification's p-th power for every inp
 
 `ProjectiveLine.lean` relates the generated G1 factors `[Z³, XZ, Y]` to affine evaluation through a nonzero subfield scale. `SetupEmbedding.lean` identifies the actual G2 setup points with the certified walks. `MillerFactors.lean` and `CombinedMiller.lean` prove the simultaneous two-pair fold's final-power agreement with the product of specification factors, including G1 infinity skips and negative-z conjugation.
 
-`PortableLines.lean` refines the generated two-pair line application, including both presence branches and canonical coefficient loading. `PortableFactors.lean` refines both generated factor-preparation iterations from arbitrary scratch. The outer portable loop and lane runtime composition remain pending; these component proofs do not yet discharge `PairingCorrect`.
+`MillerSchedule.lean` certifies the bit-to-row mapping and both counter increments. `MillerLoop.lean` shares the countdown composition across representations, including the omitted first square. `PortableLines.lean`, `PortableFactors.lean` and `PortableMiller*.lean` connect the actual portable line applications, preparation and complete loop to `combinedMiller` followed by conjugation.
+
+`LaneTable.lean` connects every loaded row to the same decoded coefficients using the lane model's `2^416` radix. `LaneLine.lean` and `LaneLines.lean` prove both actual permutations and presence-controlled sparse multiplications. `LaneFactors.lean` proves factor preparation and field-zero presence detection; a normalized `z=p` is skipped. `LaneMiller*.lean` composes the complete lane loop with final conjugation. `PortableLines.PointsRep` requires exact canonical encodings; `LaneLines.PointsRep` uses `Fp8.Holds` for all eight coordinate lanes. The broader pairing-point adapters and final-exponentiation chain remain separate obligations, and `PairingCorrect` remains unchanged.
 
 ### Portable MSM components
 
@@ -804,7 +806,8 @@ Paths below are relative to `lean/controls/`.
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
 | `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
 | `pairing-table-mutation-check.py` | After the build: copies the live generated table and checks a changed limb, tangent numerator, normalizer sign and denominator condition against the kernel certificate; original and reformatted tables pass. |
-| `pairing-loop-mutation-check.py` | After the build: generated factor indices, presence, table-row selection, loop bound and Z³ preparation mutations fail the actual portable refinement proofs with ordinary proof errors; original and reformatted definitions pass. |
+| `pairing-loop-mutation-check.py` | After the build: generated factor indices, table rows, presence masks, permutations, loop bounds, bit/counter steps, first squaring, Z³ preparation and final conjugation mutations fail the actual portable or lane refinement proofs with ordinary proof errors; original and reformatted definitions pass. |
+| `PairingMiller.lean` | A normalized lane whose raw value is p holds field zero; the actual generated zero-mask call returns all bits set and both pairing presence bits are false. |
 | `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking, the product loop, square and line recombination, conjugation, Frobenius coefficient selection, cyclotomic recombination, inverse determinant sign and identity-mask coverage reject mutations with ordinary proof errors; original and reformatted definitions pass. |
 | `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |
 | `portable-tower-mutation-check.py` | After the build: copies live generated definitions and rechecks their refinements. Reversed wide subtraction, a wrong sparse-line coefficient, a cyclotomic sign, a Frobenius index and a table limb fail named proofs. |

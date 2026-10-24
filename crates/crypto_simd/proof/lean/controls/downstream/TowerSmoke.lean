@@ -1,5 +1,5 @@
-import LeanBlsSimd.Pairing.CombinedMiller
-import LeanBlsSimd.Pairing.PortableFactors
+import LeanBlsSimd.Pairing.PortableMiller
+import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
@@ -142,3 +142,16 @@ example [RuntimeFeatures] (raw : Aeneas.Std.Array portable.g1.G1 2#usize)
     ∃ out, portable.pairing.PairingLines.miller_loop_loop0 raw factors 0#usize = ok out ∧
       Pairing.PortableLines.FactorsRep out (Pairing.g1Factors points) :=
   Pairing.PortableLines.factors_refines raw points hp factors
+
+example [RuntimeFeatures] (lines : portable.pairing.PairingLines) (hl : Kzg.PortableLinesRep lines)
+    (raw : Aeneas.Std.Array portable.g1.G1 2#usize) (points : Fin 2 → G1)
+    (hp : Pairing.PortableLines.PointsRep raw points) :
+    portable.pairing.PairingLines.miller_loop lines raw =
+      ok (Portable.Fp12.encode (Pairing.combinedMiller points).conjugate) :=
+  Pairing.PortableLines.miller_encoded lines hl raw points hp
+
+example (raw : bls.g1x8.G1x8) (points : Fin 8 → G1)
+    (hp : Pairing.LaneLines.PointsRep raw points) :
+    ∃ out, bls.pairing.MillerLines.miller_loop kzg.pairing_lines.PAIRING_LINES raw = ok out ∧
+      LaneTower.Rep out (Pairing.combinedMiller (Pairing.LaneLines.firstPoints points)).conjugate :=
+  Pairing.LaneLines.miller_refines raw points hp

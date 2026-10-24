@@ -16,7 +16,9 @@ def check_cases(directory, filename, name, proof, stop, closing, cases):
     original = (LEAN / filename).read_text()
     imports = re.match(r"(?:import [^\n]+\n)+", original)[0]
     body = original[len(imports):original.index(stop)]
-    body = body.replace(name, "proofPairingBody") + closing
+    names = [name, name.removeprefix("bls.")]
+    reference = r"(?<![\w.])(?:" + "|".join(map(re.escape, names)) + r")(?![\w.])"
+    body = re.sub(reference, "proofPairingBody", body) + closing
     prefix = (imports + "\nopen Aeneas Aeneas.Std Result ControlFlow\n"
               "namespace silver_crypto_simd\nnoncomputable section\nvariable [RuntimeFeatures]\n")
     for label, old, new in cases:
@@ -47,6 +49,42 @@ def main():
                     "portable.pairing.PairingLines.miller_loop_loop0.body", "factors_body",
                     "theorem factors_loop", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
                         ("ZFactor", "portable.fp.Fp.square p.z", "portable.fp.Fp.square p.x"),
+                    ])
+
+        check_cases(directory, "LeanBlsSimd/Pairing/PortableMillerStep.lean",
+                    "portable.pairing.PairingLines.miller_loop_loop1.body", "miller_body",
+                    "end LeanBlsSimd.Pairing.PortableLines", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
+                        ("PortableFirstSquare", "step > 0#usize", "step > 1#usize"),
+                        ("PortableStep", "let step1 ← step + 1#usize", "let step1 ← step + 2#usize"),
+                    ])
+        check_cases(directory, "LeanBlsSimd/Pairing/PortableMiller.lean",
+                    "portable.pairing.PairingLines.miller_loop", "miller_encoded",
+                    "end LeanBlsSimd.Pairing.PortableLines", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
+                        ("PortableConjugate", "portable.fp12.Fp12.conjugate f", "ok f"),
+                    ])
+
+        check_cases(directory, "LeanBlsSimd/Pairing/LaneLine.lean",
+                    "bls.pairing.line", "line_refines",
+                    "end LeanBlsSimd.Pairing.LaneLines", "\nend LeanBlsSimd.Pairing.LaneLines\n", [
+                        ("LanePermutation", "bls.fp8.Fp8.permute2 z_cubed products a",
+                         "bls.fp8.Fp8.permute2 products z_cubed a"),
+                    ])
+        check_cases(directory, "LeanBlsSimd/Pairing/LaneLines.lean",
+                    "bls.pairing.MillerLines.times_lines", "times_lines",
+                    "end LeanBlsSimd.Pairing.LaneLines", "\nend LeanBlsSimd.Pairing.LaneLines\n", [
+                        ("LaneRow", "Array.index_usize self step", "Array.index_usize self 0#usize"),
+                        ("LanePresent", "present &&& 2#u8", "present &&& 4#u8"),
+                    ])
+        check_cases(directory, "LeanBlsSimd/Pairing/LaneMillerStep.lean",
+                    "bls.pairing.MillerLines.miller_loop_loop.body", "miller_body",
+                    "end LeanBlsSimd.Pairing.LaneLines", "\nend LeanBlsSimd.Pairing.LaneLines\n", [
+                        ("LaneBit", "bit - 1#u32", "bit - 2#u32"),
+                    ])
+        check_cases(directory, "LeanBlsSimd/Pairing/LaneMiller.lean",
+                    "bls.pairing.MillerLines.miller_loop", "miller_refines",
+                    "end LeanBlsSimd.Pairing.LaneLines", "\nend LeanBlsSimd.Pairing.LaneLines\n", [
+                        ("LanePresenceComplement", "lift (~~~ i)", "lift i"),
+                        ("LaneConjugate", "bls.fp12.Fp12.conjugate f3", "ok f3"),
                     ])
 
 
