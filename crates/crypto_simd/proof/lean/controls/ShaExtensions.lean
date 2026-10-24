@@ -1,6 +1,8 @@
+import LeanBlsSimd.Sha256.ExtensionLoad
 import LeanBlsSimd.Sha256.ExtensionLayout
 import LeanBlsSimd.Sha256.ExtensionSchedule
 
+open Aeneas Aeneas.Std Result
 open LeanBlsSimd LeanBlsSimd.Sha256 LeanBlsSimd.Sha256.Extensions
 
 namespace LeanBlsSimd.Controls.ShaExtensions
@@ -28,6 +30,18 @@ theorem old_message_dependency_rejected :
       a[2] + Spec.smallSigma0 a[3] + c[3] + Spec.smallSigma1 d[0] := by
   decide +kernel
 
+private def byteInput : Array U8 16#usize := Array.make 16#usize
+  [0#u8,1#u8,2#u8,3#u8,4#u8,5#u8,6#u8,7#u8,8#u8,9#u8,10#u8,11#u8,12#u8,13#u8,14#u8,15#u8] (by rfl)
+
+private def firstWord : Result M128 → Option UInt32
+  | ok v => some v[0]
+  | _ => none
+
+theorem omitted_byte_swap_rejected :
+    firstWord (silver_crypto_simd.sha256.extensions.load_bytes byteInput) ≠
+      some (Spec.big32 (Spec.bytes (byteInput.val.map ofU8)) 0) := by
+  decide +kernel
+
 end LeanBlsSimd.Controls.ShaExtensions
 
 #print axioms LeanBlsSimd.Sha256.Extensions.four_rounds
@@ -36,3 +50,5 @@ end LeanBlsSimd.Controls.ShaExtensions
 #print axioms LeanBlsSimd.Sha256.Extensions.feed_forward
 #print axioms LeanBlsSimd.Sha256.Extensions.byte_load_get
 #print axioms LeanBlsSimd.Sha256.Extensions.schedule_four
+
+#print axioms LeanBlsSimd.Sha256.Extensions.load_swapped_words
