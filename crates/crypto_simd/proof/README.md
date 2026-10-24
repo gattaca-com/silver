@@ -4,7 +4,7 @@ One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s 
 
 The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is covered conditionally by `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
 
-M2 pins the `gattaca-com/EthLib` fork's total pairing definitions, with Lean and Mathlib at v4.29.1. M0 includes the portable implementations, independent CPU feature observations and separately compiled setup literals. The Lake package is `lean_bls_simd`; its library is `LeanBlsSimd`.
+The project pins the `gattaca-com/EthLib` fork's total pairing definitions, with Lean and Mathlib at v4.29.1. Its extraction includes portable implementations, independent CPU feature observations and separately compiled setup literals. The Lake package is `lean_bls_simd`; its library is `LeanBlsSimd`.
 
 - [What is proved](#what-is-proved): [G1 wrapper](#g1-wrapper), [G2 wrapper](#g2-wrapper), [G2 kernel](#g2-kernel), [KZG verifier](#kzg-verifier), [KZG extender](#kzg-extender).
 - [Using the public results](#using-the-public-results).
@@ -597,11 +597,11 @@ The streaming challenge proofs accumulate the exact upstream transcript in both 
 
 ### SHA-256 and challenge proof
 
-`Sha256/Correct.lean` constructs `Sha256.sha_correct : Kzg.ShaCorrect` for the actual portable and SHA-extension constructors, updates and finishes. Challenge refinements use this theorem and M1's proved digest reduction internally; they take no hash contract premise.
+`Sha256/Correct.lean` constructs `Sha256.sha_correct : Kzg.ShaCorrect` for the actual portable and SHA-extension constructors, updates and finishes. Challenge refinements use this theorem and the proved digest reduction internally; they take no hash contract premise.
 
-Both implementations use one `Streaming.Represents` invariant: state words equal the specification compression fold over complete blocks, the first `pending_len < 64` bytes are the remaining suffix, and length is the absorbed byte count modulo 2^64. `Streaming.update_append` and `finish_eq_hash` are proved once. `Generated.lean` factors schedules definitionally equal to both generated update/finish bodies. Their shared refinements cover filling a pending block, direct block folds, remainder copies, one- or two-block padding and big-endian output. No accumulated-message-length bound is added. `ContractAdapter.lean` derives the unchanged observational `ShaRep`, so its continuation laws still cover every observationally valid state.
+Both implementations use one `Streaming.Represents` invariant: state words equal the specification compression fold over complete blocks, the first `pending_len < 64` bytes are the remaining suffix, and length is the absorbed byte count modulo 2^64. `Streaming.update_append` and `finish_eq_hash` are proved once. `Generated.lean` factors schedules definitionally equal to both generated update/finish bodies. Their shared refinements cover filling a pending block, direct block folds, remainder copies, one- or two-block padding and big-endian output. The accumulated message length is unrestricted. `ContractAdapter.lean` derives observational `ShaRep`; its continuation laws cover every state satisfying that relation.
 
-The portable compressor proves byte loading, all 64 schedule words and rounds, feed-forward and the block fold. The extension compressor proves the ABEF/CDGH layout, four-round instruction and schedule-window steps, the generated inner loops and the block fold. The SHA/SSE models and three hand-replaced pointer routines retain their existing statements and remain in the documented extraction trust boundary.
+The portable compressor proves byte loading, all 64 schedule words and rounds, feed-forward and the block fold. The extension compressor proves the ABEF/CDGH layout, four-round instruction and schedule-window steps, the generated inner loops and the block fold. The SHA/SSE models and three hand-replaced pointer routines belong to the documented extraction trust boundary.
 
 ### Extender proof structure
 
@@ -715,10 +715,10 @@ Paths below are relative to `lean/controls/`.
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
 | `ShaGenerated.lean` | Generated updates reject a dropped length wrap; finish rejects a missing padding marker and reversed digest bytes. The proved `ShaCorrect` is checked with no premise. |
-| `ShaExtensions.lean` | The instruction refinements reject swapped state vectors, an omitted second-round shuffle, reuse of old message words and omitted byte swapping. |
+| `ShaExtensions.lean` | The ABEF/CDGH packing definitions differ on the fixture. Instruction samples distinguish an omitted shuffle, reused message words and omitted byte swapping. |
 | `ShaPortable.lean` | Generated byte loading, schedule expansion and rounds reject reversed byte order, the wrong sigma function and a zeroed round constant. |
 | `ShaStreaming.lean` | The shared streaming invariant excludes missing pending bytes and incorrect stored lengths; empty and split updates preserve the state. |
-| `ShaSpec.lean` | The pinned SHA equations exclude a wrong round constant, omitted feed-forward, the wrong padding threshold and unwrapped lengths. |
+| `ShaSpec.lean` | Local fixtures distinguish round constants and feed-forward. Padding equations check the 55/56-byte boundary and bit-length wrap; a UInt64 fixture checks byte-count wrapping. |
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both proved generated SHA paths agree. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `FrScalar.lean` | Generated scalar refinements exclude dropped carries, missing borrows, a lost fifth word, incorrect reduction and wrong Montgomery encodings. |
