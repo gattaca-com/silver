@@ -96,8 +96,6 @@ Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) 
 8. From this folder, `AENEAS_DIR=/path/to/aeneas ./extract.sh --check` must report no drift.
 9. Update `../README.md`: the sha256 and git blob of each changed file, and any counts that changed. Changes to `mod.rs` must preserve or update the corresponding wrapper model, refinement and public theorem.
 
-`ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` run asserting `#eval` samples of the generated contracts. They are finite interpreter evidence outside the kernel, not witnesses of the pending propositions. The default strict-control target imports them. The pairing samples cover portable execution, including a nonzero true case from the pinned setup.
-
 ### Mapping Rust changes to Lean
 
 | Rust file | Model | Refinement | Proofs that read the model |
