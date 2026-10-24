@@ -190,11 +190,28 @@ def fixtures():
         (project / "controls").mkdir()
         shutil.copy2(Path(__file__), project / "controls/extraction-check.py")
         shutil.copy2(LEAN / "controls/setup-literals-check.py", project / "controls/setup-literals-check.py")
-        mutation_checks = [(label, project / f"controls/{name}-mutation-check.py",
-                            f"print('{label} mutation fixture passed')\n")
-                           for label, name in (("SHA", "sha"), ("decoder", "decoder"))]
-        for _, mutation_check, fixture in mutation_checks:
-            mutation_check.write_text(fixture)
+        # Keep the real pre-check candidates: stubs would hide a Lean dependency.
+        mutation_checks = ("sha", "decoder", "msm")
+        for name in mutation_checks:
+            relative = f"controls/{name}-mutation-check.py"
+            shutil.copy2(LEAN / relative, project / relative)
+        for relative in ("LeanBlsSimd/Spec/Sha256.lean",
+                         "LeanBlsSimd/Portable/Decode/Ordinary.lean",
+                         "LeanBlsSimd/Portable/G1/Scott.lean",
+                         "LeanBlsSimd/Portable/Msm/Finish.lean"):
+            target = project / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(LEAN / relative, target)
+        path_without_lean = root / "path-without-lean"
+        path_without_lean.mkdir()
+        for command in ("bash", "dirname", "python3", "git", "awk", "tail", "sed", "head",
+                        "mktemp", "rm", "cp", "mkdir"):
+            resolved = shutil.which(command)
+            assert resolved is not None, f"missing extraction tool: {command}"
+            (path_without_lean / command).symlink_to(resolved)
+        assert shutil.which("lake", path=str(path_without_lean)) is None
+        assert shutil.which("lean", path=str(path_without_lean)) is None
+        assert not (project / ".lake").exists(), "fixture must not have build artifacts"
         source_setup = project.parents[1] / "src/kzg/setup.rs"
         source_setup.parent.mkdir(parents=True)
         shutil.copy2(LEAN.parents[1] / "src/kzg/setup.rs", source_setup)
@@ -205,6 +222,7 @@ def fixtures():
         aeneas_pin = git_head(toolchain)
         charon_pin = git_head(toolchain / "charon")
         (toolchain / "charon-pin").write_text(charon_pin + "\n")
+        extraction_env = {**os.environ, "AENEAS_DIR": str(toolchain), "PATH": str(path_without_lean)}
         (toolchain / "charon/charon").mkdir()
         (toolchain / "charon/charon/Cargo.toml").write_text('version = "0.0.0"\n')
         (project / "lake-manifest.json").write_text(json.dumps({
@@ -246,13 +264,11 @@ else:
             (root / "raw.lean").write_text(raw)
             result = subprocess.run(
                 [str(project / "extract.sh"), "--check"], text=True,
-                env={**os.environ, "AENEAS_DIR": str(toolchain)}, capture_output=True, timeout=30,
+                env=extraction_env, capture_output=True, timeout=30,
             )
             output = result.stdout + result.stderr
             assert result.returncode == expected, f"{name}: exit {result.returncode}\n{output}"
             assert diagnostic in output, f"{name}: missing diagnostic\n{output}"
-            for label, _, _ in mutation_checks:
-                assert f"{label} mutation fixture passed" in output, f"{label} mutation check was skipped"
             assert all((committed / f).read_text() == snapshot[f] for f in FILES), "--check wrote committed output"
             assert control.read_text() == control_snapshot, "--check wrote the Lean control"
             print(f"{name}: extract.sh --check exited {expected}; {diagnostic}")
@@ -265,25 +281,37 @@ else:
         (root / "raw.lean").write_text(direct)
         for args in (["--check"], []):
             result = subprocess.run([str(project / "extract.sh"), *args], text=True,
-                                    env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                    env=extraction_env,
                                     capture_output=True, timeout=30)
             assert result.returncode != 0 and "G2 literal differs" in result.stderr, result.stdout + result.stderr
             assert all((committed / name).read_text() == value for name, value in snapshot.items())
             assert control.read_text() == control_snapshot
             print(f"mutated G2 literal {args}: rejected before any output replacement")
         source_setup.write_text(original_setup)
-        # A failed mutation check must stop both modes before replacing generated files.
-        for label, mutation_check, fixture in mutation_checks:
-            mutation_check.write_text(f"import sys\nprint('{label} mutation fixture failed', file=sys.stderr)\nsys.exit(1)\n")
+        # Both modes must work before Lean is installed or the project is built.
+        for args in (["--check"], []):
+            result = subprocess.run([str(project / "extract.sh"), *args], text=True,
+                                    env=extraction_env, capture_output=True, timeout=30)
+            assert result.returncode == 0 and "No drift" in result.stdout, result.stdout + result.stderr
+            print(f"extraction without lake or build artifacts {args}: passed")
+
+        # Reinserting any Lean-dependent pre-check must break the same environment.
+        extract_path = project / "extract.sh"
+        extract_source = extract_path.read_text()
+        for name in mutation_checks:
+            extract_path.write_text(extract_source.replace(
+                'AENEAS_DIR=$(cd "$AENEAS_DIR" && pwd)',
+                f'python3 -I "$lean_dir/controls/{name}-mutation-check.py"\n'
+                'AENEAS_DIR=$(cd "$AENEAS_DIR" && pwd)'))
+            assert extract_path.read_text() != extract_source, "missing pre-check insertion point"
             for args in (["--check"], []):
-                result = subprocess.run([str(project / "extract.sh"), *args], text=True,
-                                        env={**os.environ, "AENEAS_DIR": str(toolchain)},
-                                        capture_output=True, timeout=30)
-                assert result.returncode != 0 and f"{label} mutation fixture failed" in result.stderr, result.stdout + result.stderr
-                assert all((committed / name).read_text() == value for name, value in snapshot.items())
+                result = subprocess.run([str(extract_path), *args], text=True,
+                                        env=extraction_env, capture_output=True, timeout=30)
+                assert result.returncode != 0 and "No such file or directory: 'lake'" in result.stderr, result.stdout + result.stderr
+                assert all((committed / f).read_text() == snapshot[f] for f in FILES)
                 assert control.read_text() == control_snapshot
-                print(f"failed {label} mutation check {args}: rejected before any output replacement")
-            mutation_check.write_text(fixture)
+                print(f"Lean-dependent {name} pre-check {args}: rejected without lake")
+            extract_path.write_text(extract_source)
         check("unchanged/interleaved functions", direct, 0, "No drift")
         check("source-span-only edit in literals", direct.replace("lines 1:0-2:0", "lines 31:7-45:2"), 0, "No drift")
         check("source comment edit", direct.replace("fixture.rs", "other.rs"), 1, "other.rs")
@@ -340,7 +368,7 @@ else:
         (root / "raw.lean").write_text(direct)
         for args in (["--check"], []):
             result = subprocess.run([str(project / "extract.sh"), *args], text=True,
-                                    env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                    env=extraction_env,
                                     capture_output=True, timeout=30)
             assert result.returncode != 0 and "expanded literal differs" in result.stderr, result.stdout + result.stderr
             assert all((committed / name).read_bytes() == value for name, value in corrupt_snapshot.items())
@@ -354,11 +382,9 @@ else:
         (root / "raw.lean").write_text(changed_raw)
         (root / "types.lean").write_text("-- changed fixture types\n")
         result = subprocess.run([str(project / "extract.sh")], text=True,
-                                env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                env=extraction_env,
                                 capture_output=True, timeout=30)
         assert result.returncode == 0, result.stdout + result.stderr
-        for label, _, _ in mutation_checks:
-            assert f"{label} mutation fixture passed" in result.stdout, f"{label} mutation check was skipped"
         updated = {name: (committed / name).read_text() for name in FILES}
         assert all(updated[name] != snapshot[name] for name in FILES), "default extraction did not copy every file"
         validate_hoisting(changed_raw, updated)
