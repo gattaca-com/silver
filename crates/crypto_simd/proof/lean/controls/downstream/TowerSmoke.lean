@@ -1,6 +1,7 @@
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
+import LeanBlsSimd.LaneTower.Identity
 import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
@@ -105,3 +106,10 @@ example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a)
       Fp12.toField a ^ (Fp.modulus ^ 4 - Fp.modulus ^ 2 + 1) = 1) :
     ∃ out, bls.fp12.Fp12.cyclotomic_square x = ok out ∧ LaneTower.Rep out a.square :=
   LaneTower.cyclotomic_square_refines hx h
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    ∃ out, bls.fp12.Fp12.inverse x = ok out ∧ LaneTower.Rep out a.inverse :=
+  LaneTower.inverse_refines hx
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    bls.fp12.Fp12.is_one x = ok a.isOne := LaneTower.is_one_refines hx

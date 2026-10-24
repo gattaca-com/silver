@@ -684,7 +684,7 @@ The unitary condition alone is insufficient; a checked `−1` counterexample dis
 `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
 `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
 `PairingCorrect` remains the verifier's component premise.
-The lane tower, Miller loops and optimized final-exponentiation chain require their own generated-code refinements.
+The portable and lane towers have generated-code refinements below. Miller loops and the optimized final-exponentiation chain require their own refinements.
 
 ### Portable pairing tower
 
@@ -710,7 +710,9 @@ The generated Frobenius map refines the specification's p-th power for every inp
 
 `Coordinates.lean:product_value` identifies that coordinate schedule with specification multiplication. `Representation.lean:Rep` requires normalized representatives below `256p` in all eight lanes; `value` reads the six active lanes. The multiplication refinement preserves this representation.
 
-`Basic.lean`, `Square.lean` and `LineCoordinates.lean` refine generated one, conjugation, square and sparse line multiplication. Square and line multiplication produce normalized outputs bounded by `112p` and `120p`. `Frobenius.lean` proves the actual coefficient-loading loop, consumes the decoded lane-table certificate and refines p-th powering. `CyclotomicSum.lean` proves the generated cyclotomic recombination and its `572p` bound. `Cyclotomic.lean` composes the quadratic products and both final conditional subtractions. `CyclotomicCoordinates.lean` identifies the result with `Schedule.raw` for every coefficient tuple, then proves square agreement when the field value is zero or satisfies the Φ12 relation. Inverse and the identity test remain separate lane refinement obligations.
+`Basic.lean`, `Square.lean` and `LineCoordinates.lean` refine generated one, conjugation, square and sparse line multiplication. Square and line multiplication produce normalized outputs bounded by `112p` and `120p`. `Frobenius.lean` proves the actual coefficient-loading loop, consumes the decoded lane-table certificate and refines p-th powering. `CyclotomicSum.lean` proves the generated cyclotomic recombination and its `572p` bound. `Cyclotomic.lean` composes the quadratic products and both final conditional subtractions. `CyclotomicCoordinates.lean` identifies the result with `Schedule.raw` for every coefficient tuple, then proves square agreement when the field value is zero or satisfies the Φ12 relation.
+
+`InversePower.lean` proves bounded-input inversion without adding a reduction absent from the generated schedule. `InverseStages.lean`, `InverseNorm.lean` and `InverseCoordinates.lean` connect the adjugate, determinant and total inverse, including zero, with a normalized output bound of `108p`. `Identity.lean` proves the normalization-by-one and equality-mask schedule, then identifies its six active bits with the specification identity test.
 
 ### Portable MSM components
 
@@ -789,7 +791,7 @@ Paths below are relative to `lean/controls/`.
 | `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. `[G,G]` with scalars `[1,1]` must reject a generated pair round and return `2G` through the MSM fallback. |
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
 | `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
-| `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking, the product loop, square and line recombination, conjugation, Frobenius coefficient selection and cyclotomic recombination reject mutations with ordinary proof errors; original and reformatted definitions pass. |
+| `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking, the product loop, square and line recombination, conjugation, Frobenius coefficient selection, cyclotomic recombination, inverse determinant sign and identity-mask coverage reject mutations with ordinary proof errors; original and reformatted definitions pass. |
 | `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |
 | `portable-tower-mutation-check.py` | After the build: copies live generated definitions and rechecks their refinements. Reversed wide subtraction, a wrong sparse-line coefficient, a cyclotomic sign, a Frobenius index and a table limb fail named proofs. |
 | `TowerField.lean` | Total inverse and zero-power behavior, the coordinate round trip, zero rejection and field/target-group axioms. |

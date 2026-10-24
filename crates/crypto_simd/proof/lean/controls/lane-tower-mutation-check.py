@@ -36,6 +36,11 @@ def main():
          "66#u64", "65#u64", "from_line_lanes"),
         ("Cyclotomic", "CyclotomicSum", "bls.fp12.Fp12.cyclotomic_sum",
          "56#u8", "7#u8", "cyclotomic_sum_raw"),
+        ("Inverse", "Inverse", "bls.fp12.Fp12.inverse",
+         "bls.fp8.Fp8.sub_raw f9 det.c1 f10", "bls.fp8.Fp8.sub_raw det.c1 f9 f10",
+         "inverse_schedule"),
+        ("Identity", "Identity", "bls.fp12.Fp12.is_one",
+         "i &&& 63#u8", "i &&& 31#u8", "is_one_run"),
     ]
     with tempfile.TemporaryDirectory(prefix="lane-tower-mutation-") as directory:
         for label, module, name, old, new, proof in cases:

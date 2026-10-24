@@ -24,8 +24,8 @@ noncomputable def inverseRun (x : fp2x8.Fp2x8) : Result fp2x8.Fp2x8 := do
 theorem inverse_schedule (x : fp2x8.Fp2x8) : fp12.Fp12.inverse x = inverseRun x := by
   have h6 := Fp8.multiple_of_p_refines 6#u64 (by decide)
   simp only [fp12.Fp12.inverse, inverseRun, adjugateRun, determinantRun,
-    inverseEmbedRun, determinantInverseRun, h6, bind_assoc, bind_tc_ok]
-  rfl
+    inverseEmbedRun, determinantInverseRun, invLeft, invRight, invSub, invDet,
+    invComponents, invSwap, invEmbed, h6, bind_assoc, bind_tc_ok]
 
 theorem inverse_raw_tower {x : fp2x8.Fp2x8} {a : P F} (hx : Strict2 256 x a) :
     ∃ out, fp12.Fp12.inverse x = ok out ∧
