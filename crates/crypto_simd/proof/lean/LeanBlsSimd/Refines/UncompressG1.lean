@@ -33,8 +33,7 @@ theorem usesKernelAt_iff [RuntimeFeatures] (inputs : Slice (Array U8 48#usize)) 
         (i % 8) = false := by
   simp [usesKernelAt, usesKernel, Bool.and_eq_true, and_assoc]
 
-/-- All slots are overwritten. IFMA lanes use the proved kernel; portable calls
-use the singleton and pair contracts. The declaration retains its public name. -/
+/-- Every slot is overwritten using the proved IFMA kernel or portable decoders. -/
 theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -67,7 +66,7 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures]
       rw [getElem!_pos _ _ (by simp), List.getElem_map]
       simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-/-- Exact verdicts under the generated portable singleton and pair contracts. -/
+/-- Exact verdicts compose the IFMA proof with the proved portable singleton and pair decoders. -/
 theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
