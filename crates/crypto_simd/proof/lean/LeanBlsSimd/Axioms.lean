@@ -1,3 +1,4 @@
+import LeanBlsSimd.Sha256.ExtensionCompress
 import LeanBlsSimd.Sha256.ExtensionLoad
 import LeanBlsSimd.Sha256.ExtensionLayout
 import LeanBlsSimd.Sha256.ExtensionSchedule

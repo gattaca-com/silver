@@ -1,3 +1,4 @@
+import LeanBlsSimd.Sha256.ExtensionCompress
 import LeanBlsSimd.Sha256.ExtensionLoad
 import LeanBlsSimd.Sha256.ExtensionLayout
 import LeanBlsSimd.Sha256.ExtensionSchedule
@@ -52,3 +53,6 @@ end LeanBlsSimd.Controls.ShaExtensions
 #print axioms LeanBlsSimd.Sha256.Extensions.schedule_four
 
 #print axioms LeanBlsSimd.Sha256.Extensions.load_swapped_words
+
+#print axioms LeanBlsSimd.Sha256.Extensions.quad_loop_refines
+#print axioms LeanBlsSimd.Sha256.Extensions.compress_blocks_refines
