@@ -1,3 +1,4 @@
+import controls.PortableFpInverse
 import controls.PortableFpWide
 import controls.PortableFpPowers
 import controls.PortableFpCorrect
