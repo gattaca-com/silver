@@ -23,6 +23,7 @@ lake exe cache get
 lake build
 AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 python3 -I controls/extraction-check.py
+python3 -I controls/sha-mutation-check.py
 ```
 
 Run one Lean job at a time. A cold build also compiles uncached Aeneas and specification modules. The [parent README](../README.md#reproducing-the-proof-and-checks) explains the default build and its guard reports.
