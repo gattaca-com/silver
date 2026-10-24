@@ -1,3 +1,5 @@
+import LeanBlsSimd.Portable.Msm.Initialise
+import LeanBlsSimd.Portable.Msm.Input
 import LeanBlsSimd.Portable.Msm.PairRounds
 import LeanBlsSimd.Portable.Msm.Queue
 import LeanBlsSimd.Portable.Msm.BatchRun
@@ -278,6 +280,15 @@ theorem rejected_round_is_not_empty [RuntimeFeatures]
   change actual.a.val.isEmpty = next.a.val.isEmpty at hs
   rw [ha,hempty] at hs
   cases hs
+
+theorem high_scalar_rejected (state : portable.msm.Msm) (point : blst.blst_p1_affine) :
+    state.keep_if_finite point (Array.make 4#usize [0#u64,0#u64,0#u64,9223372036854775808#u64] (by rfl)) =
+      fail Error.assertionFailure := rfl
+
+#print axioms initialise_correct
+#print axioms Input.filter_prefix_correct
+#print axioms Split.split_scalars_refines
+#print axioms Store.prepare_store_correct
 
 #print axioms Batch.run_jobs_correct
 #print axioms Rounds.pair_rounds_initial

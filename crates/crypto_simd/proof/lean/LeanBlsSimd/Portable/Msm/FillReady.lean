@@ -47,4 +47,18 @@ theorem chunk_reference_bounds (n : ℕ) (hn : n ≤ portable.msm.CHUNK.val) :
   change n ≤ 4096 at hn
   omega
 
+theorem fill_chunk_bounds (state : portable.msm.buckets.Buckets) (scalars : Slice (Array U64 4#usize))
+    (n : ℕ) (hscalars : scalars.val.length = 2*n) (hn : n ≤ portable.msm.CHUNK.val) :
+    ∃ out, state.fill scalars 127#usize = ok out ∧
+      out.window_bits = selectedWidth (2*n) ∧ out.windows = windows127 (selectedWidth (2*n)) ∧
+      MsmBounds.Resources n out.windows.val ∧
+      (∀ i < out.windows.val * 2^(out.window_bits.val-1),
+        (bucketSlice (toLane out) i).length ≤ 2*n) ∧
+      out.refs.val.length ≤ 2*n*out.windows.val := by
+  have hb : n ≤ 2^24 := by unfold portable.msm.CHUNK at hn; change n ≤ 4096 at hn; omega
+  obtain ⟨out,he,hrest⟩ := MsmBounds.fill_chunk_bounds (toLane state) scalars n hscalars hb
+  refine ⟨fromLane out,?_,hrest⟩
+  rw [fill_eq,he]
+  rfl
+
 end LeanBlsSimd.Portable.Msm.Buckets

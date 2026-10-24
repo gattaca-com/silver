@@ -1,3 +1,5 @@
+import LeanBlsSimd.Portable.Msm.Initialise
+import LeanBlsSimd.Portable.Msm.Input
 import LeanBlsSimd.Portable.Msm.PairRounds
 import LeanBlsSimd.Portable.Msm.Queue
 import LeanBlsSimd.Portable.Msm.BatchRun
