@@ -707,6 +707,7 @@ Paths below are relative to `lean/controls/`.
 | `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
+| `ShaStreaming.lean` | The shared streaming invariant excludes missing pending bytes and incorrect stored lengths; empty and split updates preserve the state. |
 | `ShaSpec.lean` | The pinned SHA equations exclude a wrong round constant, omitted feed-forward, the wrong padding threshold and unwrapped lengths. |
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both generated SHA paths agree under their contracts. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |

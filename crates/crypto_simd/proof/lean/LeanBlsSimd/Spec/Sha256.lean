@@ -22,8 +22,8 @@ abbrev smallSigma0 := EthLib.Cryptography.Bls.Sha256.smallSigma0
 abbrev smallSigma1 := EthLib.Cryptography.Bls.Sha256.smallSigma1
 abbrev constants := EthLib.Cryptography.Bls.Sha256.K
 abbrev big32 := EthLib.Cryptography.Bls.Sha256.big32
-abbrev compressBlock := EthLib.Cryptography.Bls.Sha256.compressBlock
-abbrev padded := EthLib.Cryptography.Bls.Sha256.padded
+def compressBlock : Array UInt32 → ByteArray → Nat → Array UInt32 := EthLib.Cryptography.Bls.Sha256.compressBlock
+def padded : ByteArray → ByteArray := EthLib.Cryptography.Bls.Sha256.padded
 
 def initialState : Array UInt32 :=
   #[0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
