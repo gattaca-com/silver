@@ -1,5 +1,4 @@
-import LeanBlsSimd.Portable.Decode.Scalar
-import LeanBlsSimd.Portable.Decode.PairBasis
+import LeanBlsSimd.Portable.Decode.Correct
 import controls.PortableG1Pair
 import controls.PortableG1
 import controls.PortableFpInverse

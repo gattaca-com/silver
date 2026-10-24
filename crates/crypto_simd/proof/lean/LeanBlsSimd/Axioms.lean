@@ -1,5 +1,4 @@
-import LeanBlsSimd.Portable.Decode.Scalar
-import LeanBlsSimd.Portable.Decode.PairBasis
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Portable.G1.PairScott
 import LeanBlsSimd.Portable.G1.Scott
 import LeanBlsSimd.Portable.Fp.BatchInverse
