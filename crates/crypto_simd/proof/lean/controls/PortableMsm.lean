@@ -1,9 +1,6 @@
-import LeanBlsSimd.Portable.Msm.BatchPrepareLoop
-import LeanBlsSimd.Portable.Msm.BatchUnwind
+import LeanBlsSimd.Portable.Msm.BatchRun
 import LeanBlsSimd.Portable.Msm.FillReady
 import LeanBlsSimd.Portable.Msm.StoreLifecycle
-import LeanBlsSimd.Portable.Msm.BatchReject
-import LeanBlsSimd.Portable.Msm.BatchFinish
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd
@@ -148,6 +145,52 @@ theorem later_equal_x_success_rejected [RuntimeFeatures]
   have hf := congrArg Prod.fst (Result.ok.inj h)
   cases hf
 
+private def selfWriteJobs (_ : ℕ) : QueueRefines.Job := ⟨0#u32,1#u32,0#u32⟩
+
+private def selfWriteCoords (i : ℕ) : Batch.ChainField × Batch.ChainField :=
+  if i = 0 then (0,1) else (6,1)
+
+private def selfWriteAdds : portable.msm.pairs.BatchedAdds :=
+  ⟨⟨[0#u32],by scalar_tac⟩,⟨[1#u32],by scalar_tac⟩,⟨[0#u32],by scalar_tac⟩,
+    alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
+
+theorem overwriting_own_input_succeeds [RuntimeFeatures] :
+    ∃ next, selfWriteAdds.run lateStore = ok (true,next,Store.write lateStore 0 (-6) (-1)) := by
+  have hstate : Batch.ExecutionState lateStore selfWriteJobs selfWriteCoords 1 := by
+    intro j hj
+    interval_cases j
+    exact ⟨rfl,rfl,by decide⟩
+  have hind : Batch.ReverseIndependent selfWriteJobs 1 := by
+    intro j hj k hk
+    omega
+  have hnz : ∀ j < 1, Batch.differences selfWriteJobs selfWriteCoords j ≠ 0 := by
+    intro j hj
+    interval_cases j
+    decide +kernel
+  obtain ⟨next,he,_,_,_⟩ := Batch.run_success selfWriteAdds lateStore selfWriteJobs selfWriteCoords
+    (by intro j hj; change j < 1 at hj; interval_cases j; rfl)
+    (by intro j hj; change j < 1 at hj; interval_cases j; rfl)
+    (by intro j hj; change j < 1 at hj; interval_cases j; rfl) hstate hind hnz
+  have hout : Batch.jobResult selfWriteJobs selfWriteCoords 0 = (-6,-1) := by
+    simp [Batch.jobResult,Batch.signedPair,Batch.finishValues,selfWriteJobs,selfWriteCoords]
+  refine ⟨next,?_⟩
+  simpa only [show selfWriteAdds.a.val.length = 1 from rfl,Batch.execute,hout] using he
+
+set_option exponentiation.threshold 512 in
+theorem omitted_reverse_write_rejected [RuntimeFeatures]
+    (next : portable.msm.pairs.BatchedAdds) : selfWriteAdds.run lateStore ≠ ok (true,next,lateStore) := by
+  obtain ⟨actual,he⟩ := overwriting_own_input_succeeds
+  rw [he]
+  intro h
+  have hs := congrArg (fun t => t.2.2.points.val[0]?) (Result.ok.inj h)
+  change some (Fp.pairEncode (-6) (-1)) = some (Fp.pairEncode 0 1) at hs
+  have hx := congrArg (fun row => Kzg.fpRead ⟨row.val[0]!⟩) (Option.some.inj hs)
+  change Kzg.fpRead (Kzg.fpEncode (-6)) = Kzg.fpRead (Kzg.fpEncode 0) at hx
+  simp only [Kzg.fpRead_fpEncode] at hx
+  exact (by decide +kernel : (-6 : EthLib.Cryptography.Bls.Fp) ≠ 0) hx
+
+#print axioms Batch.execute_loop
+#print axioms Batch.run_cases
 #print axioms Batch.run_rejects_at
 #print axioms Batch.prepare_all
 #print axioms Buckets.fill_eq
