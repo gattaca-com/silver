@@ -287,6 +287,7 @@ python3 -I controls/portable-tower-mutation-check.py
 python3 -I controls/lane-tower-mutation-check.py
 python3 -I controls/pairing-table-mutation-check.py
 python3 -I controls/pairing-loop-mutation-check.py
+python3 -I controls/final-exponent-mutation-check.py
 ```
 
 Build the independent downstream package from its own root:
@@ -686,7 +687,7 @@ The unitary condition alone is insufficient; a checked `−1` counterexample dis
 `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
 `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
 `PairingCorrect` remains the verifier's component premise.
-The portable and lane towers and both generated Miller loops have refinements below. The optimized final-exponentiation chain and pairing-point adapters remain to be connected.
+The portable and lane towers, both generated Miller loops and both optimized final-exponentiation chains have refinements below. The pairing-point adapters and verifier integration remain to be connected.
 
 ### Portable pairing tower
 
@@ -726,7 +727,15 @@ The generated Frobenius map refines the specification's p-th power for every inp
 
 `MillerSchedule.lean` certifies the bit-to-row mapping and both counter increments. `MillerLoop.lean` shares the countdown composition across representations, including the omitted first square. `PortableLines.lean`, `PortableFactors.lean` and `PortableMiller*.lean` connect the actual portable line applications, preparation and complete loop to `combinedMiller` followed by conjugation.
 
-`LaneTable.lean` connects every loaded row to the same decoded coefficients using the lane model's `2^416` radix. `LaneLine.lean` and `LaneLines.lean` prove both actual permutations and presence-controlled sparse multiplications. `LaneFactors.lean` proves factor preparation and field-zero presence detection; a normalized `z=p` is skipped. `LaneMiller*.lean` composes the complete lane loop with final conjugation. `PortableLines.PointsRep` requires exact canonical encodings; `LaneLines.PointsRep` uses `Fp8.Holds` for all eight coordinate lanes. The broader pairing-point adapters and final-exponentiation chain remain separate obligations, and `PairingCorrect` remains unchanged.
+`LaneTable.lean` connects every loaded row to the same decoded coefficients using the lane model's `2^416` radix. `LaneLine.lean` and `LaneLines.lean` prove both actual permutations and presence-controlled sparse multiplications. `LaneFactors.lean` proves factor preparation and field-zero presence detection; a normalized `z=p` is skipped. `LaneMiller*.lean` composes the complete lane loop with final conjugation. `PortableLines.PointsRep` requires exact canonical encodings; `LaneLines.PointsRep` uses `Fp8.Holds` for all eight coordinate lanes. The broader pairing-point adapters remain a separate obligation, and `PairingCorrect` remains unchanged.
+
+### Optimized final exponentiation
+
+`Pairing/FinalModel.lean` records the common generated hard-part schedule. A shared schedule-map lemma gives its field exponent, and a kernel certificate identifies that exponent with three times the specification exponent modulo `p^12-1`. `FinalVerdict.lean` proves that the optimized result is the cube of the specification result, including zero. The specification's nonzero result has r-torsion; `gcd(3,r)=1` therefore gives equal identity verdicts. Zero is rejected by both.
+
+`FinalExponent.Good`, defined in `FinalModel.lean`, means the field value is zero or its Φ12 power is one. `FinalInvariant.lean` proves its closure properties. The easy part constructs this invariant for every input, and multiplication, squaring, conjugation, parameter exponentiation and Frobenius preserve it. This supplies each optimized-square premise internally. `ExponentLoop.lean` shares the parameter-exponent countdown proof, while `PortableExponent.lean` and `LaneExponent.lean` connect the actual generated loops and their negative-parameter conjugation.
+
+`FinalRun.lean` shares the final-chain composition through an internal `Operations.Refines` record. Both route modules construct that record from proved tower operations. `FinalExponent.Portable.final_verdict` applies to every canonical encoding; `FinalExponent.Lanes.final_verdict` applies to every `LaneTower.Rep` input. Both state equality with the total specification verdict without a nonzero or cyclotomic input premise. The pairing-point adapters, construction of `PairingCorrect` and removal of its headline premise remain for integration.
 
 ### Portable MSM components
 
@@ -807,6 +816,8 @@ Paths below are relative to `lean/controls/`.
 | `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
 | `pairing-table-mutation-check.py` | After the build: copies the live generated table and checks a changed limb, tangent numerator, normalizer sign and denominator condition against the kernel certificate; original and reformatted tables pass. |
 | `pairing-loop-mutation-check.py` | After the build: generated factor indices, table rows, presence masks, permutations, loop bounds, bit/counter steps, first squaring, Z³ preparation and final conjugation mutations fail the actual portable or lane refinement proofs with ordinary proof errors; original and reformatted definitions pass. |
+| `FinalExponentiation.lean` | The easy output at zero fails unconditional Φ12 membership; the numeric exponent differs without the factor of three. Both generated final-exponentiation verdicts reject zero and accept one. |
+| `final-exponent-mutation-check.py` | Run after the build. Changes to the generated exponent bit, multiplication base, parameter conjugation, inverse, Frobenius step, square input and final product fail their named refinement proofs with ordinary errors; original and reformatted definitions pass. |
 | `PairingMiller.lean` | A normalized lane whose raw value is p holds field zero; the actual generated zero-mask call returns all bits set and both pairing presence bits are false. |
 | `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking, the product loop, square and line recombination, conjugation, Frobenius coefficient selection, cyclotomic recombination, inverse determinant sign and identity-mask coverage reject mutations with ordinary proof errors; original and reformatted definitions pass. |
 | `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |

@@ -198,11 +198,13 @@ They cover wide multiplication, sparse lines, total inverse, raw cyclotomic squa
 `portable_entry_decodes` gives each decoded portable Frobenius coefficient; `portable_entry_encoded` uses the arithmetic's canonical `2^384` encoder.
 `LaneTower/` proves the lane arithmetic, including total inverse and zero-or-Φ12 cyclotomic squaring.
 `Pairing/` certifies the fixed lines and connects both generated Miller loops to their common field fold, including lazy `z=p` infinity skipping and negative-parameter conjugation.
-The pairing-point adapters and optimized final-exponentiation chain remain separate obligations; `PairingCorrect` remains a verifier premise.
+`Pairing/Final*.lean`, `PortableFinal.lean` and `LaneFinal.lean` connect both optimized final-exponentiation chains to the total specification verdict. The easy part supplies zero-or-Φ12 membership; the exponent certificate includes the factor of three and the verdict uses r-torsion and coprimality.
+The pairing-point adapters and verifier integration remain separate obligations; `PairingCorrect` remains a verifier premise.
 `controls/TowerField.lean`, `controls/Cyclotomic.lean` and `controls/PortableTower.lean` are included in the default strict guard.
 Run `controls/tower-mutation-check.py` after the build to check formula, inverse-sign and radix mutations.
 Run `controls/portable-tower-mutation-check.py` for mutations of the live generated schedules and table literals.
 Run `controls/pairing-loop-mutation-check.py` for the generated portable and lane Miller schedules; the default strict guard also includes the `PairingMiller.lean` lazy-zero control.
+Run `controls/final-exponent-mutation-check.py` after the build for both final chains. `FinalExponentiation.lean` supplies zero/one verdict and exponent-factor controls in the default strict guard.
 
 ### Working in Lean
 

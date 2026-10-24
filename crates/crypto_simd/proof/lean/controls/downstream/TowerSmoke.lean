@@ -1,3 +1,5 @@
+import LeanBlsSimd.Pairing.PortableFinal
+import LeanBlsSimd.Pairing.LaneFinal
 import LeanBlsSimd.Pairing.PortableMiller
 import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
@@ -155,3 +157,13 @@ example (raw : bls.g1x8.G1x8) (points : Fin 8 → G1)
     ∃ out, bls.pairing.MillerLines.miller_loop kzg.pairing_lines.PAIRING_LINES raw = ok out ∧
       LaneTower.Rep out (Pairing.combinedMiller (Pairing.LaneLines.firstPoints points)).conjugate :=
   Pairing.LaneLines.miller_refines raw points hp
+
+example [RuntimeFeatures] (a : Fp12) :
+    (do let out ← portable.fp12.Fp12.final_exponentiation (Portable.Fp12.encode a)
+        portable.fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne :=
+  Pairing.FinalExponent.Portable.final_verdict a
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    (do let out ← bls.fp12.Fp12.final_exponentiation x
+        bls.fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne :=
+  Pairing.FinalExponent.Lanes.final_verdict hx

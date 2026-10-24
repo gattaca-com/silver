@@ -1,3 +1,5 @@
+import LeanBlsSimd.Pairing.PortableFinal
+import LeanBlsSimd.Pairing.LaneFinal
 import LeanBlsSimd.Pairing.PortableMiller
 import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
