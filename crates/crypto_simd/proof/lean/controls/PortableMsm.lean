@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.Refines
 import LeanBlsSimd.Portable.Msm.Sum
 import LeanBlsSimd.Portable.Msm.Initialise
 import LeanBlsSimd.Portable.Msm.Input
@@ -311,5 +312,9 @@ theorem high_scalar_rejected (state : portable.msm.Msm) (point : blst.blst_p1_af
 
 #print axioms Sums.packed_sum_contribution
 #print axioms Group.add_reference
+
+#print axioms finish_correct
+#print axioms msm_refinement
+#print axioms portable_msm_correct
 
 end LeanBlsSimd.Portable.Msm.Controls
