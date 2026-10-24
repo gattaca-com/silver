@@ -283,6 +283,7 @@ python3 -I controls/sha-mutation-check.py
 python3 -I controls/decoder-mutation-check.py
 python3 -I controls/msm-mutation-check.py
 python3 -I controls/tower-mutation-check.py
+python3 -I controls/portable-tower-mutation-check.py
 ```
 
 Build the independent downstream package from its own root:
@@ -318,7 +319,7 @@ The IFMA requirement applies to the BLS and Fr FFT kernel checks on a supported 
 AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 ```
 
-Extraction runs the pure-Python setup-literal check and needs no Lean toolchain or compiled proof artifacts. The SHA, decoder, MSM and tower mutation scripts run separately after `lake build`; use the commands above.
+Extraction runs the pure-Python setup-literal check and needs no Lean toolchain or compiled proof artifacts. The SHA, decoder, MSM and both tower mutation scripts run separately after `lake build`; use the commands above.
 
 Aeneas records each item's origin in a `Source: '<file>', lines <span>` comment. The comparison ignores the line numbers in these comments and compares everything else exactly, including comment delimiters. A Rust edit that only moves these source locations therefore produces no reported drift. With `--check`, the script does not replace the generated files: it prints any other difference and exits 1, or exits 0 when there is none.
 
@@ -681,8 +682,23 @@ The unitary condition alone is insufficient; a checked `−1` counterexample dis
 `Refines/FrobeniusConstants.lean` certifies both generated coefficient tables, their `2^384` and `2^416` Montgomery factors, canonical values and normalized lane limbs.
 `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
 `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
-These mathematical interfaces do not refine the generated tower, Miller loop or optimized final-exponentiation chain.
 `PairingCorrect` remains the verifier's component premise.
+The lane tower, Miller loops and optimized final-exponentiation chain require their own generated-code refinements.
+
+### Portable pairing tower
+
+`Portable/Fp2/Product.lean` proves the generated wide multiplication, including both subtraction guards and the reduction capacity bounds.
+Inputs use canonical six-word Montgomery coordinates; the proofs construct canonical outputs for both BMI2 branches.
+`Portable/Fp6.lean` and `Portable/Fp12/Arithmetic.lean` refine multiplication, optimized squaring, sparse-line multiplication, conjugation, equality and total inversion, including zero.
+Their `Rep` predicates apply `PortableFpRep` to every coefficient.
+The `encode` functions choose those exact canonical coordinates, and `rep_eq_encode` relates every represented input to its encoding.
+
+`Portable/Fp12/Cyclotomic.lean:cyclotomic_raw_encoded` proves agreement with `Schedule.raw` for every coefficient tuple.
+`cyclotomic_square_encoded` separately requires the Φ12 relation; unitary membership alone cannot justify it.
+`Portable/Fp12/Frobenius.lean:portable_entry_decodes` states each portable table entry's decoded value as `ξ^(j(p−1)/6)`.
+`portable_entry_encoded` ties those entries to the portable arithmetic's `2^384` Montgomery encoder.
+The generated Frobenius map refines the specification's p-th power for every input.
+The lane table's `2^416` arithmetic connection belongs to the lane tower refinement.
 
 ### Portable MSM components
 
@@ -760,6 +776,8 @@ Paths below are relative to `lean/controls/`.
 | `msm-mutation-check.py` | Run after `lake build`. Source mutation control: original and reformatted portable finish schedules compile; skipping rejected-round refill fails `finish_correct` with an unsolved goal. |
 | `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. `[G,G]` with scalars `[1,1]` must reject a generated pair round and return `2G` through the MSM fallback. |
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
+| `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |
+| `portable-tower-mutation-check.py` | After the build: copies live generated definitions and rechecks their refinements. Reversed wide subtraction, a wrong sparse-line coefficient, a cyclotomic sign, a Frobenius index and a table limb fail named proofs. |
 | `TowerField.lean` | Total inverse and zero-power behavior, the coordinate round trip, zero rejection and field/target-group axioms. |
 | `Cyclotomic.lean` | A unitary `−1` outside Φ12 makes the cyclotomic formula return the wrong square, including in the field model. |
 | `tower-mutation-check.py` | After the build: original/reformatted sources pass; changed Fp4 pairing, output sign, inverse sign and Montgomery radix fail named proofs. |

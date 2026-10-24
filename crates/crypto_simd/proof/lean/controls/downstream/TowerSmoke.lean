@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
 
@@ -25,3 +26,27 @@ example (a : Fp12Field) (h : a ≠ 0) :
 
 example (a : Fp12) (h : a ≠ Fp12.zero) :
     finalExponentiationTarget a h ^ Fr.modulus = 1 := target_pow_r _
+
+open Aeneas.Std Result silver_crypto_simd
+
+example [RuntimeFeatures] (a b : Fp12) :
+    portable.fp12.Fp12.mul (Portable.Fp12.encode a) (Portable.Fp12.encode b) =
+      ok (Portable.Fp12.encode (a * b)) := Portable.Fp12.mul_encoded a b
+
+example [RuntimeFeatures] (a : Fp12) :
+    portable.fp12.Fp12.inverse (Portable.Fp12.encode a) =
+      ok (Portable.Fp12.encode a.inverse) := Portable.Fp12.inverse_encoded a
+
+example [RuntimeFeatures] (a : Fp12)
+    (h : Fp12.toField a ^ (Fp.modulus ^ 4 - Fp.modulus ^ 2 + 1) = 1) :
+    portable.fp12.Fp12.cyclotomic_square (Portable.Fp12.encode a) =
+      ok (Portable.Fp12.encode a.square) := Portable.Fp12.cyclotomic_square_encoded a h
+
+example [RuntimeFeatures] (a : Fp12) :
+    portable.fp12.Fp12.frobenius (Portable.Fp12.encode a) =
+      ok (Portable.Fp12.encode (Fp12.powNat a Fp.modulus)) := Portable.Fp12.frobenius_encoded a
+
+example (j : Fin 6) :
+    Fp2.toField ⟨Kzg.fpRead ⟨FrobeniusConstants.portableRow j 0⟩,
+      Kzg.fpRead ⟨FrobeniusConstants.portableRow j 1⟩⟩ =
+      Fp6Field.xi ^ (j.val * ((Fp.modulus - 1) / 6)) := FrobeniusConstants.portable_entry_decodes j

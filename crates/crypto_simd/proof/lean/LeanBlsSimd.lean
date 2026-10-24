@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.PairingProduct
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Refines.FrobeniusConstants

@@ -67,3 +67,5 @@ ln -s ../../../.lake/packages .lake/packages
 lake update
 lake build
 ```
+
+`TowerSmoke.lean` also consumes portable multiplication, total inverse, cyclotomic squaring and Frobenius refinements, plus the decoded table-entry theorem.
