@@ -10,6 +10,7 @@ import LeanBlsSimd.Kzg.ScalarContracts
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
+open LeanBlsSimd.Portable.Msm (portable_msm_correct)
 noncomputable section
 
 namespace LeanBlsSimd.Kzg
@@ -182,7 +183,7 @@ private theorem lincomb_sum_portable [RuntimeFeatures]
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
   obtain ⟨ws, hwords, hwlen, hwval⟩ := portable_words fs scratch hfv
   obtain ⟨hwbound, hvalues⟩ := word_values fs ws hwval
-  obtain ⟨point, next, hcall, hrep⟩ := LeanBlsSimd.Portable.Msm.portable_msm_correct.msm state ps (alloc.vec.Vec.deref ws)
+  obtain ⟨point, next, hcall, hrep⟩ := portable_msm_correct.msm state ps (alloc.vec.Vec.deref ws)
     (by simpa only [alloc.vec.Vec.deref, hwlen] using hlen) hpv hwbound
   refine ⟨point, .Portable next lines ws, ?_, ?_⟩
   · simp only [alloc.vec.Vec.clear, bind_tc_ok] at hwords
