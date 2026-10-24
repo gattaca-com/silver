@@ -2,6 +2,8 @@ import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.PortableFp
 import LeanBlsSimd.Kzg.G1Arithmetic
 
+open LeanBlsSimd.Portable.Fp (portable_fp_correct)
+
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls
 open silver_crypto_simd
@@ -43,7 +45,7 @@ theorem to_blst_eq (p : portable.g1.G1) : portable.g1.G1.to_blst p = ok (toRaw p
 theorem neg_coords [RuntimeFeatures]
     {p : portable.g1.G1} {P : G1} (hp : Coords p P) :
     ∃ out, portable.g1.G1.neg p = ok out ∧ Coords out (G1.neg P) := by
-  obtain ⟨y, hy, hyr⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).neg hp.y
+  obtain ⟨y, hy, hyr⟩ := portable_fp_correct.neg hp.y
   exact ⟨{p with y := y}, by simp [portable.g1.G1.neg, hy], ⟨hp.x, hyr, hp.z⟩⟩
 
 structure TermValues where
@@ -79,17 +81,17 @@ def termsValues (P Q : G1) : TermValues :=
 theorem termsValues_refines [RuntimeFeatures]
     {p q : portable.g1.G1} {P Q : G1} (hp : Coords p P) (hq : Coords q Q) :
     ∃ out, portable.g1.Terms.new p q = ok out ∧ TermsRep out (termsValues P Q) := by
-  obtain ⟨z1z1, e_z1z1, h_z1z1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square hp.z
-  obtain ⟨z2z2, e_z2z2, h_z2z2⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square hq.z
-  obtain ⟨u1, e_u1, h_u1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hp.x h_z2z2
-  obtain ⟨f, e_f, h_f⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hp.y hq.z
-  obtain ⟨s1, e_s1, h_s1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul h_f h_z2z2
-  obtain ⟨f1, e_f1, h_f1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hq.x h_z1z1
-  obtain ⟨h, e_h, h_h⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f1 h_u1
-  obtain ⟨f2, e_f2, h_f2⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hq.y hp.z
-  obtain ⟨f3, e_f3, h_f3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul h_f2 h_z1z1
-  obtain ⟨f4, e_f4, h_f4⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f3 h_s1
-  obtain ⟨r, e_r, h_r⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f4
+  obtain ⟨z1z1, e_z1z1, h_z1z1⟩ := portable_fp_correct.square hp.z
+  obtain ⟨z2z2, e_z2z2, h_z2z2⟩ := portable_fp_correct.square hq.z
+  obtain ⟨u1, e_u1, h_u1⟩ := portable_fp_correct.mul hp.x h_z2z2
+  obtain ⟨f, e_f, h_f⟩ := portable_fp_correct.mul hp.y hq.z
+  obtain ⟨s1, e_s1, h_s1⟩ := portable_fp_correct.mul h_f h_z2z2
+  obtain ⟨f1, e_f1, h_f1⟩ := portable_fp_correct.mul hq.x h_z1z1
+  obtain ⟨h, e_h, h_h⟩ := portable_fp_correct.sub h_f1 h_u1
+  obtain ⟨f2, e_f2, h_f2⟩ := portable_fp_correct.mul hq.y hp.z
+  obtain ⟨f3, e_f3, h_f3⟩ := portable_fp_correct.mul h_f2 h_z1z1
+  obtain ⟨f4, e_f4, h_f4⟩ := portable_fp_correct.sub h_f3 h_s1
+  obtain ⟨r, e_r, h_r⟩ := portable_fp_correct.double h_f4
   refine ⟨⟨z1z1, z2z2, u1, s1, h, r⟩, ?_, ⟨h_z1z1, h_z2z2, h_u1, h_s1, h_h, h_r⟩⟩
   simp only [portable.g1.Terms.new, e_z1z1, e_z2z2, e_u1, e_f, e_s1, e_f1, e_h, e_f2, e_f3, e_f4, e_r, bind_tc_ok]
 
@@ -120,27 +122,27 @@ def doubleValues (P : G1) : G1 :=
 theorem doubleValues_refines [RuntimeFeatures]
     {p : portable.g1.G1} {P : G1} (hp : Coords p P) :
     ∃ out, portable.g1.G1.double p = ok out ∧ Coords out (doubleValues P) := by
-  obtain ⟨a, e_a, h_a⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square hp.x
-  obtain ⟨b, e_b, h_b⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square hp.y
-  obtain ⟨c, e_c, h_c⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square h_b
-  obtain ⟨f, e_f, h_f⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).add hp.x h_b
-  obtain ⟨f1, e_f1, h_f1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square h_f
-  obtain ⟨f2, e_f2, h_f2⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f1 h_a
-  obtain ⟨f3, e_f3, h_f3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f2 h_c
-  obtain ⟨d, e_d, h_d⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f3
-  obtain ⟨f4, e_f4, h_f4⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_a
-  obtain ⟨e, e_e, h_e⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).add h_f4 h_a
-  obtain ⟨f5, e_f5, h_f5⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square h_e
-  obtain ⟨f6, e_f6, h_f6⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_d
-  obtain ⟨x3, e_x3, h_x3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f5 h_f6
-  obtain ⟨f7, e_f7, h_f7⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_d h_x3
-  obtain ⟨f8, e_f8, h_f8⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul h_e h_f7
-  obtain ⟨f9, e_f9, h_f9⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_c
-  obtain ⟨f10, e_f10, h_f10⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f9
-  obtain ⟨f11, e_f11, h_f11⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f10
-  obtain ⟨y3, e_y3, h_y3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f8 h_f11
-  obtain ⟨f12, e_f12, h_f12⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hp.y hp.z
-  obtain ⟨z3, e_z3, h_z3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f12
+  obtain ⟨a, e_a, h_a⟩ := portable_fp_correct.square hp.x
+  obtain ⟨b, e_b, h_b⟩ := portable_fp_correct.square hp.y
+  obtain ⟨c, e_c, h_c⟩ := portable_fp_correct.square h_b
+  obtain ⟨f, e_f, h_f⟩ := portable_fp_correct.add hp.x h_b
+  obtain ⟨f1, e_f1, h_f1⟩ := portable_fp_correct.square h_f
+  obtain ⟨f2, e_f2, h_f2⟩ := portable_fp_correct.sub h_f1 h_a
+  obtain ⟨f3, e_f3, h_f3⟩ := portable_fp_correct.sub h_f2 h_c
+  obtain ⟨d, e_d, h_d⟩ := portable_fp_correct.double h_f3
+  obtain ⟨f4, e_f4, h_f4⟩ := portable_fp_correct.double h_a
+  obtain ⟨e, e_e, h_e⟩ := portable_fp_correct.add h_f4 h_a
+  obtain ⟨f5, e_f5, h_f5⟩ := portable_fp_correct.square h_e
+  obtain ⟨f6, e_f6, h_f6⟩ := portable_fp_correct.double h_d
+  obtain ⟨x3, e_x3, h_x3⟩ := portable_fp_correct.sub h_f5 h_f6
+  obtain ⟨f7, e_f7, h_f7⟩ := portable_fp_correct.sub h_d h_x3
+  obtain ⟨f8, e_f8, h_f8⟩ := portable_fp_correct.mul h_e h_f7
+  obtain ⟨f9, e_f9, h_f9⟩ := portable_fp_correct.double h_c
+  obtain ⟨f10, e_f10, h_f10⟩ := portable_fp_correct.double h_f9
+  obtain ⟨f11, e_f11, h_f11⟩ := portable_fp_correct.double h_f10
+  obtain ⟨y3, e_y3, h_y3⟩ := portable_fp_correct.sub h_f8 h_f11
+  obtain ⟨f12, e_f12, h_f12⟩ := portable_fp_correct.mul hp.y hp.z
+  obtain ⟨z3, e_z3, h_z3⟩ := portable_fp_correct.double h_f12
   refine ⟨⟨x3, y3, z3⟩, ?_, ⟨h_x3, h_y3, h_z3⟩⟩
   simp only [portable.g1.G1.double, e_a, e_b, e_c, e_f, e_f1, e_f2, e_f3, e_d, e_f4, e_e, e_f5, e_f6, e_x3, e_f7, e_f8, e_f9, e_f10, e_f11, e_y3, e_f12, e_z3, bind_tc_ok]
 
@@ -169,24 +171,24 @@ theorem sumValues_refines [RuntimeFeatures]
     {p q : portable.g1.G1} {P Q : G1} {t : portable.g1.Terms} {T : TermValues}
     (hp : Coords p P) (hq : Coords q Q) (ht : TermsRep t T) :
     ∃ out, portable.g1.Terms.sum t p q = ok out ∧ Coords out (sumValues T P Q) := by
-  obtain ⟨f, e_f, h_f⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double ht.h
-  obtain ⟨i, e_i, h_i⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square h_f
-  obtain ⟨j, e_j, h_j⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul ht.h h_i
-  obtain ⟨v, e_v, h_v⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul ht.u1 h_i
-  obtain ⟨f1, e_f1, h_f1⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square ht.r
-  obtain ⟨f2, e_f2, h_f2⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f1 h_j
-  obtain ⟨f3, e_f3, h_f3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_v
-  obtain ⟨x3, e_x3, h_x3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f2 h_f3
-  obtain ⟨f4, e_f4, h_f4⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_v h_x3
-  obtain ⟨f5, e_f5, h_f5⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul ht.r h_f4
-  obtain ⟨f6, e_f6, h_f6⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul ht.s1 h_j
-  obtain ⟨f7, e_f7, h_f7⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).double h_f6
-  obtain ⟨y3, e_y3, h_y3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f5 h_f7
-  obtain ⟨f8, e_f8, h_f8⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).add hp.z hq.z
-  obtain ⟨f9, e_f9, h_f9⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).square h_f8
-  obtain ⟨f10, e_f10, h_f10⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f9 ht.z1z1
-  obtain ⟨f11, e_f11, h_f11⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).sub h_f10 ht.z2z2
-  obtain ⟨z3, e_z3, h_z3⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul h_f11 ht.h
+  obtain ⟨f, e_f, h_f⟩ := portable_fp_correct.double ht.h
+  obtain ⟨i, e_i, h_i⟩ := portable_fp_correct.square h_f
+  obtain ⟨j, e_j, h_j⟩ := portable_fp_correct.mul ht.h h_i
+  obtain ⟨v, e_v, h_v⟩ := portable_fp_correct.mul ht.u1 h_i
+  obtain ⟨f1, e_f1, h_f1⟩ := portable_fp_correct.square ht.r
+  obtain ⟨f2, e_f2, h_f2⟩ := portable_fp_correct.sub h_f1 h_j
+  obtain ⟨f3, e_f3, h_f3⟩ := portable_fp_correct.double h_v
+  obtain ⟨x3, e_x3, h_x3⟩ := portable_fp_correct.sub h_f2 h_f3
+  obtain ⟨f4, e_f4, h_f4⟩ := portable_fp_correct.sub h_v h_x3
+  obtain ⟨f5, e_f5, h_f5⟩ := portable_fp_correct.mul ht.r h_f4
+  obtain ⟨f6, e_f6, h_f6⟩ := portable_fp_correct.mul ht.s1 h_j
+  obtain ⟨f7, e_f7, h_f7⟩ := portable_fp_correct.double h_f6
+  obtain ⟨y3, e_y3, h_y3⟩ := portable_fp_correct.sub h_f5 h_f7
+  obtain ⟨f8, e_f8, h_f8⟩ := portable_fp_correct.add hp.z hq.z
+  obtain ⟨f9, e_f9, h_f9⟩ := portable_fp_correct.square h_f8
+  obtain ⟨f10, e_f10, h_f10⟩ := portable_fp_correct.sub h_f9 ht.z1z1
+  obtain ⟨f11, e_f11, h_f11⟩ := portable_fp_correct.sub h_f10 ht.z2z2
+  obtain ⟨z3, e_z3, h_z3⟩ := portable_fp_correct.mul h_f11 ht.h
   refine ⟨⟨x3, y3, z3⟩, ?_, ⟨h_x3, h_y3, h_z3⟩⟩
   simp only [portable.g1.Terms.sum, e_f, e_i, e_j, e_v, e_f1, e_f2, e_f3, e_x3, e_f4, e_f5, e_f6, e_f7, e_y3, e_f8, e_f9, e_f10, e_f11, e_z3, bind_tc_ok]
 
@@ -334,8 +336,8 @@ theorem add_complete_coords [RuntimeFeatures]
     ∃ out, portable.g1.G1.add_complete p q = ok out ∧ Coords out (G1.add P Q) := by
   rw [← addValues_eq_add]
   unfold addValues
-  have hpz := (LeanBlsSimd.Portable.Fp.portable_fp_correct).is_zero hp.z
-  have hqz := (LeanBlsSimd.Portable.Fp.portable_fp_correct).is_zero hq.z
+  have hpz := portable_fp_correct.is_zero hp.z
+  have hqz := portable_fp_correct.is_zero hq.z
   split
   · rename_i hz
     exact ⟨q, by simp [portable.g1.G1.add_complete, portable.g1.G1.is_infinity, hpz, hz], hq⟩
@@ -345,8 +347,8 @@ theorem add_complete_coords [RuntimeFeatures]
       exact ⟨p, by simp [portable.g1.G1.add_complete, portable.g1.G1.is_infinity, hpz, hqz, hz, hqzero], hp⟩
     · rename_i hqzero
       obtain ⟨t, ht, htr⟩ := termsValues_refines hp hq
-      have hth := (LeanBlsSimd.Portable.Fp.portable_fp_correct).is_zero htr.h
-      have htrz := (LeanBlsSimd.Portable.Fp.portable_fp_correct).is_zero htr.r
+      have hth := portable_fp_correct.is_zero htr.h
+      have htrz := portable_fp_correct.is_zero htr.r
       dsimp only
       split
       · rename_i hh

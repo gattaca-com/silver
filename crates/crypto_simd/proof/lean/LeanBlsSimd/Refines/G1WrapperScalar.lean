@@ -1,6 +1,8 @@
 import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Portable.G1DecoderContract
 
+open LeanBlsSimd.Portable.Decode (g1_decoder_correct)
+
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.bls core.ops.range core.iter.range
 
@@ -41,7 +43,7 @@ private theorem scalar_index [RuntimeFeatures]
     (do let a ← Slice.index_usize inputs i
         let v ← portable.decompress.uncompress_in_g1 a
         Slice.update out i v) = ok (out.set i (specVerdict inputs.val[i.val]!)) := by
-  simp [Slice.index_usize, hi, (LeanBlsSimd.Portable.Decode.g1_decoder_correct).singleton,
+  simp [Slice.index_usize, hi, g1_decoder_correct.singleton,
     Slice.update, ho, Slice.set, Slice.setAtNat]
 
 private theorem range_runs {S : Type}
@@ -118,7 +120,7 @@ theorem scalar_chunk_refines [RuntimeFeatures]
         have hslen := hinv.1
         simp [portable.decompress.uncompress_all_in_g1_loop.body,
           show i < pairs from (by change i.val < pairs.val; omega),
-          Slice.index_usize, hi0, hj, hi1, ha1, ha2, (LeanBlsSimd.Portable.Decode.g1_decoder_correct).pair,
+          Slice.index_usize, hi0, hj, hi1, ha1, ha2, g1_decoder_correct.pair,
           Array.index_usize, Array.make, Slice.update, s2, s1,
           Slice.set, Slice.setAtNat, hslen, hlen]
       obtain ⟨result, hr, hp⟩ := ih (pairs.val - next.val) (by omega)

@@ -5,6 +5,8 @@ import LeanBlsSimd.Proofs.Mmask8
 import LeanBlsSimd.Refines.G1WrapperScalar
 import LeanBlsSimd.Refines.G1WrapperSimd
 
+open LeanBlsSimd.Portable.Decode (g1_decoder_correct)
+
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.bls
 
@@ -42,7 +44,7 @@ private theorem modelBlst_roundtrip [RuntimeFeatures] (a : Array U8 48#usize) :
     (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = specVerdict a := by
   simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-theorem chunk_refines [RuntimeFeatures]  (inputs : Array (Array U8 48#usize) 8#usize)
+theorem chunk_refines [RuntimeFeatures] (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, silver_crypto_simd.bls.decompress_g1_chunk inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
@@ -90,7 +92,7 @@ theorem chunk_refines [RuntimeFeatures]  (inputs : Array (Array U8 48#usize) 8#u
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ hj]
-      simp only [(LeanBlsSimd.Portable.Decode.g1_decoder_correct).singleton, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [g1_decoder_correct.singleton, bind_tc_ok, Function.uncurry_apply_pair]
       rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
       simp only [bind_tc_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]

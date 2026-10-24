@@ -3,6 +3,8 @@ import LeanBlsSimd.Kzg.PairingTableBounds
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Proofs.Convert
 
+open LeanBlsSimd.Portable.Fp (portable_fp_correct)
+
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -88,7 +90,7 @@ private theorem pairing_lane_convert [RuntimeFeatures]
       rw [hval]
       exact hb.2
     · simp only [fpRead, hval]
-  obtain ⟨out, hmul, hout⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hrep radixCorrection_rep
+  obtain ⟨out, hmul, hout⟩ := portable_fp_correct.mul hrep radixCorrection_rep
   refine ⟨packed, out, pack64_refines raw, hmul, ?_⟩
   rw [change_radix] at hout
   exact hout
