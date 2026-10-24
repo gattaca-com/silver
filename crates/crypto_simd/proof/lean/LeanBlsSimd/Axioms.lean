@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.Sum
 import LeanBlsSimd.Portable.Msm.Initialise
 import LeanBlsSimd.Portable.Msm.Input
 import LeanBlsSimd.Portable.Msm.PairRounds
