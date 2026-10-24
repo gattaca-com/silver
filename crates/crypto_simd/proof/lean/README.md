@@ -26,11 +26,12 @@ python3 -I controls/extraction-check.py
 python3 -I controls/sha-mutation-check.py
 python3 -I controls/decoder-mutation-check.py
 python3 -I controls/msm-mutation-check.py
+python3 -I controls/tower-mutation-check.py
 ```
 
 Run one Lean job at a time. A cold build also compiles uncached Aeneas and specification modules. The [parent README](../README.md#reproducing-the-proof-and-checks) explains the default build and its guard reports.
 
-`extract.sh` runs the pure-Python setup-literal check before translation in either mode. It needs no Lean toolchain or compiled project artifacts. Run the SHA, decoder and MSM mutation checks separately after `lake build`. Extraction checks tool pins and starts from the three BLS roots, `crate::kzg::verify` and `crate::kzg::cell_extender`. Portable field, scalar, G1, MSM, pairing and streaming SHA functions are extracted. Only the signature path's G2 decoder remains opaque. `prepare-extraction.py` introduces `RuntimeFeatures` and G2-only `BlsExternals` parameters; Lean retains each parameter only where the definition uses it.
+`extract.sh` runs the pure-Python setup-literal check before translation in either mode. It needs no Lean toolchain or compiled project artifacts. Run the SHA, decoder, MSM and tower mutation checks separately after `lake build`. Extraction checks tool pins and starts from the three BLS roots, `crate::kzg::verify` and `crate::kzg::cell_extender`. Portable field, scalar, G1, MSM, pairing and streaming SHA functions are extracted. Only the signature path's G2 decoder remains opaque. `prepare-extraction.py` introduces `RuntimeFeatures` and G2-only `BlsExternals` parameters; Lean retains each parameter only where the definition uses it.
 
 Preparation quotes the eight generated `full` identifiers and supplies structural `Array.make` length witnesses. It recursively hoists G1 rows and pairing steps/lanes into `Extracted/Literals.lean`, preserving their types, order and contents. It validates required verifier/extender entries and literal structure. All adaptations run before `--check`, which compares complete `Types.lean`, `Literals.lean` and `Funs.lean` after masking only numeric source spans. The explicit Rust `Fp2::new` helper makes the nested pairing-table write translate to the intended Fp2 value.
 
@@ -185,6 +186,15 @@ For cell extension, start with `LeanBlsSimd.Kzg.Extender.Statements`. `Extender.
 | `fr.rs` | `ScalarContracts.lean`, `ScalarConstants.lean`, `Representation.lean`, `RepresentationWords.lean` and `RepresentationLemmas.lean` |
 
 The verifier's specification bridge uses the polynomial modules, `InterpolationIdentity.lean`, `ModelSpec.lean` and `SpecBridge.lean`. The extender's bridge uses `Extender/SpecMath.lean`, `Extender/Spec.lean` and `Extender/SpecBytes.lean` for polynomial evaluation and byte layout.
+
+### Pairing algebra
+
+`Spec/Fp6*.lean` and `Spec/Fp12*.lean` connect the spec's exact coordinates, multiplication, total inverse and powers to finite fields.
+`Spec/Cyclotomic/` transfers the Granger–Scott formula, Frobenius and easy-part facts through an explicit coordinate equivalence.
+`Refines/FrobeniusConstants.lean` certifies the two generated Montgomery tables.
+These results supply the algebra for the pending runtime pairing refinements; they do not discharge `PairingCorrect`.
+`controls/TowerField.lean` and `controls/Cyclotomic.lean` are included in the default strict guard.
+Run `controls/tower-mutation-check.py` after the build to check formula, inverse-sign and radix mutations.
 
 ### Working in Lean
 

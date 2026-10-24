@@ -282,6 +282,7 @@ After `lake build`, run the source mutation checks. They require `lake` and the 
 python3 -I controls/sha-mutation-check.py
 python3 -I controls/decoder-mutation-check.py
 python3 -I controls/msm-mutation-check.py
+python3 -I controls/tower-mutation-check.py
 ```
 
 Build the independent downstream package from its own root:
@@ -317,7 +318,7 @@ The IFMA requirement applies to the BLS and Fr FFT kernel checks on a supported 
 AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 ```
 
-Extraction runs the pure-Python setup-literal check and needs no Lean toolchain or compiled proof artifacts. The SHA, decoder and MSM mutation scripts run separately after `lake build`; use the commands above.
+Extraction runs the pure-Python setup-literal check and needs no Lean toolchain or compiled proof artifacts. The SHA, decoder, MSM and tower mutation scripts run separately after `lake build`; use the commands above.
 
 Aeneas records each item's origin in a `Source: '<file>', lines <span>` comment. The comparison ignores the line numbers in these comments and compares everything else exactly, including comment delimiters. A Rust edit that only moves these source locations therefore produces no reported drift. With `--check`, the script does not replace the generated files: it prints any other difference and exits 1, or exits 0 when there is none.
 
@@ -661,6 +662,28 @@ The scalar and kernel route lemmas preserve the outer extender invariant. The ke
 
 For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-maintenance). It covers both types, including the verifier's [constructor panic message](lean/README.md#constructor-panic-message).
 
+### Pairing field model
+
+`Spec/Fp6*.lean` and `Spec/Fp12*.lean` give the executable coordinates exact field semantics.
+`Fp6.toField` and `Fp12.toField` are ring equivalences, with total inverse bridges that include zero.
+The Fp2 and Fp12 power bridges cover every natural exponent, including `0^0`.
+The pinned specification has no Fp6 `powNat` operation.
+Noncube and nonsquare certificates establish both extensions; their cardinalities are `p^6` and `p^12`.
+
+`Spec/Cyclotomic/FieldBridge.lean` identifies this field with a cubic-over-quadratic ring model by its six Fp2 coordinates.
+`Schedule.raw` records the three Fp4 squarings and coefficient order of the Rust cyclotomic formula.
+`field_cyclotomic_square` proves that formula under the Φ12 relation `g^(p^4-p^2+1) = 1`.
+The unitary condition alone is insufficient; a checked `−1` counterexample distinguishes it.
+`field_frobenius` proves the coefficient map with factors `ξ^(j(p−1)/6)`.
+`field_star` identifies conjugation with the `p^6` power.
+`field_easy_cyclotomic` proves membership for the nonzero easy-part output; zero maps to zero.
+
+`Refines/FrobeniusConstants.lean` certifies both generated coefficient tables, their `2^384` and `2^416` Montgomery factors, canonical values and normalized lane limbs.
+`Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
+`Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
+These mathematical interfaces do not refine the generated tower, Miller loop or optimized final-exponentiation chain.
+`PairingCorrect` remains the verifier's component premise.
+
 ### Portable MSM components
 
 `Portable/Msm/Buckets.lean` proves that portable bucket fill has the same generated schedule as the lane implementation after converting its five storage fields. `FillReady.lean` reuses the signed-digit, packing, weighted-sum and live-reference theorems. Its chunk bounds use the generated `CHUNK = 4096` constant.
@@ -737,6 +760,9 @@ Paths below are relative to `lean/controls/`.
 | `msm-mutation-check.py` | Run after `lake build`. Source mutation control: original and reformatted portable finish schedules compile; skipping rejected-round refill fails `finish_correct` with an unsolved goal. |
 | `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. `[G,G]` with scalars `[1,1]` must reject a generated pair round and return `2G` through the MSM fallback. |
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
+| `TowerField.lean` | Total inverse and zero-power behavior, the coordinate round trip, zero rejection and field/target-group axioms. |
+| `Cyclotomic.lean` | A unitary `−1` outside Φ12 makes the cyclotomic formula return the wrong square, including in the field model. |
+| `tower-mutation-check.py` | After the build: original/reformatted sources pass; changed Fp4 pairing, output sign, inverse sign and Montgomery radix fail named proofs. |
 | `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |

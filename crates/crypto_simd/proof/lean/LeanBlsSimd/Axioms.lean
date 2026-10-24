@@ -1,3 +1,6 @@
+import LeanBlsSimd.Spec.PairingProduct
+import LeanBlsSimd.Spec.Cyclotomic.Field
+import LeanBlsSimd.Refines.FrobeniusConstants
 import LeanBlsSimd.Portable.Msm.Refines
 import LeanBlsSimd.Portable.Msm.Sum
 import LeanBlsSimd.Portable.Msm.Initialise

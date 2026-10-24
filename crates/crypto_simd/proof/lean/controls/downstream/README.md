@@ -1,7 +1,7 @@
 # Independent consumers
 
 This Lake package imports `lean_bls_simd` by path and inherits its dependency
-pins. Its three default targets check the public BLS and KZG proof interfaces.
+pins. Its four default targets check the public BLS, KZG and pairing-field interfaces.
 
 ## BLS adapters
 
@@ -40,6 +40,13 @@ of stored interpolation/curve-work routes.
 These examples use the shared data types from the same-crate extraction.
 They do not model a second copy of the verifier or prove its pending
 generated-component contracts.
+
+## Pairing-field consumer
+
+`TowerSmoke.lean` imports the field and cyclotomic interfaces independently.
+It checks multiplication, total inverse, the coordinate formula, Frobenius,
+conjugation, easy-part membership and the target-group exponent.
+It assumes no generated pairing correctness.
 
 ## Running
 
