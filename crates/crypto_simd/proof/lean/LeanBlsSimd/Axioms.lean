@@ -1,3 +1,5 @@
+import LeanBlsSimd.Sha256.ExtensionLayout
+import LeanBlsSimd.Sha256.ExtensionSchedule
 import LeanBlsSimd.Sha256.PortableCompress
 import LeanBlsSimd.Sha256.ContractAdapter
 import LeanBlsSimd.Sha256.Streaming
