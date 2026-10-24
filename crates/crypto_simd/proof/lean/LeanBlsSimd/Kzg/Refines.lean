@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.Statements
 import LeanBlsSimd.Kzg.Extender.Statements
 import LeanBlsSimd.Kzg.Refines.Bytes
@@ -30,7 +31,7 @@ theorem deduplicate_refines (old : verify.Deduplicated)
         Model.deduplicate (cs.val.map arrayBytes).toArray := by
   exact deduplicate_refinement old cs
 
-theorem decode_points_refines [RuntimeFeatures] (hg1 : LeanBlsSimd.G1DecoderCorrect)
+theorem decode_points_refines [RuntimeFeatures]
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
     (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
     (points : alloc.vec.Vec blst.blst_p1_affine) :
@@ -39,7 +40,7 @@ theorem decode_points_refines [RuntimeFeatures] (hg1 : LeanBlsSimd.G1DecoderCorr
         ok ((encodings.val.map specVerdict).all Option.isSome, resultDecoded, resultPoints) ∧
       resultDecoded.val = encodings.val.map specVerdict ∧
       resultPoints.val = ((encodings.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  exact decode_points_refinement hg1 encodings decoded points
+  exact decode_points_refinement encodings decoded points
 
 def cellElements (cells : List (Aeneas.Std.Array U8 2048#usize)) : List (Option Fr) :=
   cells.flatMap fun cell => (List.range 64).map fun j =>

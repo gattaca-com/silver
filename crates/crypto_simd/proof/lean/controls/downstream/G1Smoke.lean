@@ -60,13 +60,12 @@ def specVerdict (bytes : Array Std.U8 48#usize) : Option blst.blst_p1_affine :=
   (LeanBlsSimd.UncompressG1.specVerdict bytes).map Bridge.fromUpstream
 
 theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
-    (hblst : @LeanBlsSimd.G1DecoderCorrect upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, Bridge.uncompress upstream inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hr, hv⟩ := @LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list
-    upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
+    upstream inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
   · simp only [Bridge.uncompress, hr, bind_tc_ok]
   · simp [Bridge.fromUpstreamSlice, hv, List.map_map, specVerdict, Function.comp_def]
@@ -86,17 +85,16 @@ def UncompressMatchesSpec [Externals] : Prop :=
 @[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.RuntimeFeatures) : Externals :=
   ⟨Bridge.uncompress upstream⟩
 
-theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
-    (hblst : @LeanBlsSimd.G1DecoderCorrect upstream) :
+theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.RuntimeFeatures) :
     @UncompressMatchesSpec (externalsOf upstream) :=
-  Bridge.uncompress_eq_spec_list upstream hblst
+  Bridge.uncompress_eq_spec_list upstream
 
 @[reducible] def simdFeatures : _root_.silver_crypto_simd.RuntimeFeatures :=
   ⟨true, false, false⟩
 
-example (hdec : @LeanBlsSimd.G1DecoderCorrect simdFeatures) :
+example :
     @UncompressMatchesSpec (externalsOf simdFeatures) :=
-  externalsOf_matches_spec simdFeatures hdec
+  externalsOf_matches_spec simdFeatures
 
 end Fixed
 
@@ -124,13 +122,12 @@ example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     @caller external inputs out = external.uncompress inputs out := rfl
 
 example (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
-    (hblst : @LeanBlsSimd.G1DecoderCorrect upstream)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, @caller (Fixed.externalsOf upstream) inputs out = ok result ∧
       result.val = inputs.val.map specVerdict :=
   @caller_eq_spec_list (Fixed.externalsOf upstream)
-    (Fixed.externalsOf_matches_spec upstream hblst) inputs out hlen
+    (Fixed.externalsOf_matches_spec upstream) inputs out hlen
 
 /-- info: 'silver_kzg.Bridge.uncompress_eq_spec_list' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in

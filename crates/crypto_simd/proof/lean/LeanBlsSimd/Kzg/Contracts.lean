@@ -9,8 +9,6 @@ namespace LeanBlsSimd.Kzg
 
 /-- Internal bundle for composing the explicit phase-2 headline premises. -/
 structure ComponentContracts [RuntimeFeatures] : Prop where
-  fp : PortableFpCorrect
-  g1 : LeanBlsSimd.G1DecoderCorrect
   msm : PortableMsmCorrect
   pairing : PairingCorrect
 

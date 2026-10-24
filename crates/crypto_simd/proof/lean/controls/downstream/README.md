@@ -19,10 +19,9 @@ root name. Adapter and caller axiom checks admit only `propext`,
 `Classical.choice` and `Quot.sound`.
 
 G1's `Fixed.externalsOf` captures `RuntimeFeatures` and calls the actual
-generated wrapper. Its agreement proof requires `G1DecoderCorrect` for the
-portable singleton and pair decoders. The IFMA component is already proved.
-The consumer examples are conditional applications; they do not prove that
-the generated portable implementation satisfies its contract.
+generated wrapper. Its agreement proof uses the proved portable singleton,
+pair and IFMA decoders internally. The consumer examples require no
+`G1DecoderCorrect` premise.
 
 G2's adapter captures `RuntimeFeatures` and a separate upstream
 `BlsExternals` containing only the opaque G2 decoder. Its agreement proof
@@ -32,9 +31,9 @@ still supplies a concrete witness for that external-function premise.
 ## KZG consumers
 
 `KzgSmoke.lean` checks scalar cell decoding, kernel interpolation and pairing
-composition with the four remaining component contracts: `PortableFpCorrect`,
-`G1DecoderCorrect`, `PortableMsmCorrect` and `PairingCorrect`. SHA and scalar
-laws are discharged inside the imported results. It retains the canonical
+composition with the two remaining component contracts: `PortableMsmCorrect`
+and `PairingCorrect`. SHA, scalar and base-field laws, and G1 decoding are
+discharged inside the imported results. It retains the canonical
 cell relation and the conditional scalar-scratch premise. It also checks
 arbitrary-length proved MSM8, lane-only linear combination and preservation
 of stored interpolation/curve-work routes.

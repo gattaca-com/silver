@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.FpEncoding
 import LeanBlsSimd.Portable.G1DecoderContract
 import LeanBlsSimd.Refines.UncompressG1
@@ -31,14 +32,14 @@ theorem specVerdict_eq_bls (b : Array U8 48#usize) :
     | error e => rfl
     | ok p => exact congrArg some (g1Affine_eq_bls p)
 
-theorem g1_decode_refinement [RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
+theorem g1_decode_refinement [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   have hv : specVerdict = UncompressG1.specVerdict := funext specVerdict_eq_bls
-  simpa only [hv] using UncompressG1.uncompress_in_g1_eq_spec_list h inputs out hlen
+  simpa only [hv] using UncompressG1.uncompress_in_g1_eq_spec_list inputs out hlen
 
 private theorem g2Affine_eq_bls (p : EthLib.Cryptography.Bls.G2) :
     g2Affine p = DecompressG2.toBlstP2Affine (G2Spec.blstLimbs p) := by

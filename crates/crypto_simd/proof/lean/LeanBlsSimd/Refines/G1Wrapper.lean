@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Refines.DecompressG1
 import LeanBlsSimd.Refines.G1WrapperModel
 import LeanBlsSimd.Proofs.Mmask8
@@ -41,7 +42,7 @@ private theorem modelBlst_roundtrip [RuntimeFeatures] (a : Array U8 48#usize) :
     (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = specVerdict a := by
   simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-theorem chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) (inputs : Array (Array U8 48#usize) 8#usize)
+theorem chunk_refines [RuntimeFeatures]  (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, silver_crypto_simd.bls.decompress_g1_chunk inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
@@ -89,7 +90,7 @@ theorem chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) (inputs : Arra
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ hj]
-      simp only [hdec.singleton, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [(LeanBlsSimd.Portable.Decode.g1_decoder_correct).singleton, bind_tc_ok, Function.uncurry_apply_pair]
       rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
       simp only [bind_tc_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]
@@ -114,7 +115,7 @@ private theorem rawOutput_scalar [RuntimeFeatures] (simd : Bool) (inputs : Slice
   rw [getElem!_pos _ _ (by simpa using hi), List.getElem_map, modelBlst_roundtrip]
   rw [getElem!_pos inputs.val i hi]
 
-private theorem chunk_slice_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) (inputs : Slice (Array U8 48#usize))
+private theorem chunk_slice_refines [RuntimeFeatures]  (inputs : Slice (Array U8 48#usize))
     (start next : Usize) (hnext : next.val = start.val + 8)
     (halign : start.val % 8 = 0) (hbound : next.val ≤ inputs.val.length)
     (c : Array (Array U8 48#usize) 8#usize)
@@ -122,7 +123,7 @@ private theorem chunk_slice_refines [RuntimeFeatures] (hdec : G1DecoderCorrect) 
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = 8) :
     ∃ result, decompress_g1_chunk c out = ok result ∧
       result.val = (rawOutput true inputs).slice start.val next.val := by
-  obtain ⟨result, hr, hv⟩ := chunk_refines hdec c out hlen
+  obtain ⟨result, hr, hv⟩ := chunk_refines c out hlen
   refine ⟨result, hr, hv.trans ?_⟩
   have hcmodel : ofArray (ofArray ofU8) c = chunkAt (inputs.val.map (ofArray ofU8)) start.val := by
     apply Vector.ext
@@ -189,7 +190,7 @@ private theorem stop_loop_of_step [RuntimeFeatures]
       rw [hrv i hi, hv i hi]
       split_ifs <;> first | rfl | omega
 
-theorem uncompress_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem uncompress_refines [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -198,7 +199,7 @@ theorem uncompress_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
   have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
   cases hcpu : RuntimeFeatures.simdAvailable with
   | false =>
-    obtain ⟨result, hr, hv⟩ := scalar_tail_refines hdec inputs out hlen
+    obtain ⟨result, hr, hv⟩ := scalar_tail_refines inputs out hlen
     refine ⟨result, ?_, ?_⟩
     · simpa [silver_crypto_simd.bls.uncompress_in_g1, heq, ifma_available, hcpu] using hr
     · rw [hv]
@@ -231,7 +232,7 @@ theorem uncompress_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
       have hn : next.val = start.val + 8 := by simp [next]
       obtain ⟨result, hr, hl, hv⟩ := simd_body_runs inputs out stop start next
         (rawOutput true inputs) hlen (rawOutput_length _ _) hlt hn (by omega)
-        (fun c s hc hs => chunk_slice_refines hdec inputs start next hn halign (by omega) c hc s hs)
+        (fun c s hc hs => chunk_slice_refines inputs start next hn halign (by omega) c hc s hs)
       exact ⟨next, result, hn, hr, hl, fun i hi => hv i (by omega)⟩
     obtain ⟨middle, hm, hml, hmv⟩ := stop_loop_of_step inputs stop (rawOutput true inputs)
       (by omega) hstep 0#usize out (by simp) (by simp) hlen
@@ -241,7 +242,7 @@ theorem uncompress_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
       ⟨middle.val.slice stop.val n.val, le_trans (List.slice_length_le _ _ _) middle.property⟩
     have htail : os.val.length = ss.val.length := by
       simp [os, ss, List.slice_length, hml, hlen]
-    obtain ⟨tail, ht, htv⟩ := scalar_tail_refines hdec ss os htail
+    obtain ⟨tail, ht, htv⟩ := scalar_tail_refines ss os htail
     let result := middle.setSlice! stop.val tail.val
     refine ⟨result, ?_, ?_⟩
     · have hd : n / LANES = ok q := by

@@ -10,13 +10,12 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 namespace silver_kzg.Kzg
 
 theorem verify_after_construction [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
     (input : Input) (hi : input.Representable) :
     ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
       input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
       Model.rejectErrors input.embeddedSpec = verdict := by
-  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hfp hg1 hmsm hpairing
+  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hmsm hpairing
   obtain ⟨verdict, next, hrun, hn, hv⟩ := hcall initial hs input hi
   exact ⟨initial, verdict, next, hnew, hrun, hn, hv⟩
 

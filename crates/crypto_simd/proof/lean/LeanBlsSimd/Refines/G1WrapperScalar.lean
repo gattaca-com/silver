@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Portable.G1DecoderContract
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -33,14 +34,14 @@ private theorem scalarWrites_step (inputs : Slice (Array U8 48#usize))
     have hc : (start ≤ j ∧ j < i.val) ↔ (start ≤ j ∧ j < i.val + 1) := by omega
     simp only [hc]
 
-private theorem scalar_index [RuntimeFeatures] (hdec : G1DecoderCorrect)
+private theorem scalar_index [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (i : Usize)
     (hi : i.val < inputs.val.length) (ho : i.val < out.val.length) :
     (do let a ← Slice.index_usize inputs i
         let v ← portable.decompress.uncompress_in_g1 a
         Slice.update out i v) = ok (out.set i (specVerdict inputs.val[i.val]!)) := by
-  simp [Slice.index_usize, hi, hdec.singleton,
+  simp [Slice.index_usize, hi, (LeanBlsSimd.Portable.Decode.g1_decoder_correct).singleton,
     Slice.update, ho, Slice.set, Slice.setAtNat]
 
 private theorem range_runs {S : Type}
@@ -65,7 +66,7 @@ private theorem range_runs {S : Type}
     obtain ⟨v, hv, hi''⟩ := ih r' s' (he'.trans he) (by omega) (hs' ▸ hi') (by omega)
     exact ⟨v, by rw [loop.eq_1, hb]; exact hv, hi''⟩
 
-theorem scalar_chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem scalar_chunk_refines [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (pairs start : Usize)
     (hlen : out.val.length = inputs.val.length)
@@ -117,7 +118,7 @@ theorem scalar_chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
         have hslen := hinv.1
         simp [portable.decompress.uncompress_all_in_g1_loop.body,
           show i < pairs from (by change i.val < pairs.val; omega),
-          Slice.index_usize, hi0, hj, hi1, ha1, ha2, hdec.pair,
+          Slice.index_usize, hi0, hj, hi1, ha1, ha2, (LeanBlsSimd.Portable.Decode.g1_decoder_correct).pair,
           Array.index_usize, Array.make, Slice.update, s2, s1,
           Slice.set, Slice.setAtNat, hslen, hlen]
       obtain ⟨result, hr, hp⟩ := ih (pairs.val - next.val) (by omega)
@@ -127,7 +128,7 @@ theorem scalar_chunk_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
       simp only [hbdy]
       exact hr
 
-theorem scalar_tail_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem scalar_tail_refines [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -140,7 +141,7 @@ theorem scalar_tail_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
     lt_of_le_of_lt (Nat.div_mul_le_self _ _) n.hBounds
   let pairs : Usize := UScalar.ofNatCore (n.val / 2 * 2) hb
   have hp : pairs.val = inputs.val.length / 2 * 2 := by simp [pairs, n]
-  obtain ⟨middle, hm, hmv⟩ := scalar_chunk_refines hdec inputs out pairs 0#usize hlen
+  obtain ⟨middle, hm, hmv⟩ := scalar_chunk_refines inputs out pairs 0#usize hlen
     (by simp) (by omega) (by simp [hp])
   have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
   have hd : n / 2#usize = ok q := by
@@ -168,7 +169,7 @@ theorem scalar_tail_refines [RuntimeFeatures] (hdec : G1DecoderCorrect)
       bind_tc_ok, show Slice.len inputs = n from rfl, hd, hmul, hm,
       Function.uncurry_apply_pair]
     rw [if_pos (by simpa [n] using hodd)]
-    exact scalar_index hdec inputs middle pairs hodd (by have := hmv.1; omega)
+    exact scalar_index inputs middle pairs hodd (by have := hmv.1; omega)
   · have hn : pairs.val = inputs.val.length := by omega
     refine ⟨middle, ?_, finish middle (hn ▸ hmv)⟩
     simp [portable.decompress.uncompress_all_in_g1, heq, massert,

@@ -1,3 +1,5 @@
+import LeanBlsSimd.Portable.Fp.Correct
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.Lincomb
 import LeanBlsSimd.Kzg.CurveWorkConstruct
 import LeanBlsSimd.Kzg.Setup
@@ -77,22 +79,21 @@ theorem model_eq_spec (hsetup : TrustedSetup.get! = pure embeddedSetup) (i : Inp
   rw [hrun, ← model_eq_embedded_spec i]
   rfl
 
-theorem setup_decode_refines [RuntimeFeatures] (hg1 : LeanBlsSimd.G1DecoderCorrect) :
+theorem setup_decode_refines [RuntimeFeatures] :
     ∃ s, setup.Setup.decode = ok s ∧ SetupRep s :=
-  setup_decode_refinement hg1
+  setup_decode_refinement
 
 theorem cosets_new_refines :
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c :=
   cosets_new_refinement
 
-theorem new_returns_ok_route [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect) :
+theorem new_returns_ok_route [cpu : RuntimeFeatures] :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v ∧
       CurveWork.isLanes v.curve_work = cpu.simdAvailable ∧
       v.kernel.isSome = cpu.simdAvailable := by
-  obtain ⟨s, hs, hsrep⟩ := setup_decode_refines hg1
+  obtain ⟨s, hs, hsrep⟩ := setup_decode_refines
   obtain ⟨c, hc, hcrep⟩ := cosets_new_refines
-  obtain ⟨work, hw, hwork, hwroute⟩ := curveWork_new_refinement hfp
+  obtain ⟨work, hw, hwork, hwroute⟩ := curveWork_new_refinement
   cases hsimd : cpu.simdAvailable with
   | false =>
     simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
@@ -108,10 +109,9 @@ theorem new_returns_ok_route [cpu : RuntimeFeatures]
     exact ⟨_, rfl, ⟨hsrep, hcrep, hki, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
 
-theorem new_returns_ok [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect) :
+theorem new_returns_ok [cpu : RuntimeFeatures] :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
-  obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route hfp hg1
+  obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route
   exact ⟨v, hnew, hinv⟩
 
 /-- Replacing work preserves the invariant when its persistent table is valid. -/
@@ -120,11 +120,11 @@ theorem stateInvariant_curveWork (v : verify.CellBatchVerifier) (work : verify.C
     StateInvariant {v with curve_work := work} :=
   ⟨hv.1, hv.2.1, hv.2.2.1, hwork⟩
 
-theorem stateInvariant_allows_scalar [RuntimeFeatures] (hfp : PortableFpCorrect)
+theorem stateInvariant_allows_scalar [RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) :
     ∃ next, StateInvariant next ∧ next.kernel = v.kernel ∧
       CurveWork.isLanes next.curve_work = false := by
-  obtain ⟨work, _, hwork, hroute⟩ := curveWork_portable_refinement hfp
+  obtain ⟨work, _, hwork, hroute⟩ := curveWork_portable_refinement
   exact ⟨{v with curve_work := work}, stateInvariant_curveWork v work hwork hv, rfl, hroute⟩
 
 theorem default_eq_new [RuntimeFeatures] :
@@ -139,7 +139,6 @@ theorem glue_refinement [RuntimeFeatures] (h : ComponentContracts)
     v hv i.commitments i.indices i.cells i.proofs hi.2.2.1
 
 theorem verify_eq_spec [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
@@ -147,14 +146,13 @@ theorem verify_eq_spec [cpu : RuntimeFeatures]
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
-  let h : ComponentContracts := ⟨hfp, hg1, hmsm, hpairing⟩
-  obtain ⟨initial, hnew, hinv⟩ := new_returns_ok hfp hg1
+  let h : ComponentContracts := ⟨hmsm, hpairing⟩
+  obtain ⟨initial, hnew, hinv⟩ := new_returns_ok
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨next, hgen, hnext⟩ := glue_refinement h v hv i hi
   exact ⟨i.model, next, hgen, hnext, model_eq_embedded_spec i⟩
 
 theorem verify_eq_upstream [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
     (hsetup : TrustedSetup.get! = pure embeddedSetup) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
@@ -163,7 +161,7 @@ theorem verify_eq_upstream [cpu : RuntimeFeatures]
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         (Model.rejectErrors <$> i.spec.run) = pure verdict := by
-  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hfp hg1 hmsm hpairing
+  obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec hmsm hpairing
   refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
   obtain ⟨verdict, next, hgen, hnext, hverdict⟩ := hstep v hv i hi
   refine ⟨verdict, next, hgen, hnext, ?_⟩

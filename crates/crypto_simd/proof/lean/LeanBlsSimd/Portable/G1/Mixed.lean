@@ -143,7 +143,7 @@ theorem add_affine_complete_coords [RuntimeFeatures] (p : portable.g1.G1) (qx qy
     · rename_i hzero
       split
       · rename_i rzero
-        obtain ⟨out,he,hc⟩ := Kzg.PortableG1.doubleValues_refines Fp.portable_fp_correct hp
+        obtain ⟨out,he,hc⟩ := Kzg.PortableG1.doubleValues_refines hp
         refine ⟨out,?_,hc⟩
         simp only [portable.g1.G1.add_affine_complete,portable.g1.G1.is_infinity,hz,
           hpz,bind_tc_ok,Bool.false_eq_true,if_false,ht,hh,hr,hzero,rzero,if_true,he]

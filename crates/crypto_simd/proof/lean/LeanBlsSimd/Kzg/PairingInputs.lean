@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.LanePairingInputs
 import LeanBlsSimd.Kzg.PortablePairingInputs
 import LeanBlsSimd.Kzg.PairingRepresentation
@@ -9,7 +10,7 @@ open silver_crypto_simd silver_crypto_simd.kzg
 namespace LeanBlsSimd.Kzg
 
 theorem curveWork_pairing_check_refinement [RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hpairing : PairingCorrect)
+     (hpairing : PairingCorrect)
     (work : verify.CurveWork) (hwork : CurveWorkInvariant work)
     (sums : verify.PairingSums) (ll rlc rli rlp : G1)
     (hll : G1Rep sums.ll ll) (hrlc : G1Rep sums.rlc rlc)
@@ -27,7 +28,7 @@ theorem curveWork_pairing_check_refinement [RuntimeFeatures]
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
       hpairing.lanes points ll _ hrep hvll hvright]
   | Portable msm lines words =>
-    obtain ⟨points,hpoints,hrep⟩ := pairing_points_refinement hfp sums ll rlc rli rlp
+    obtain ⟨points,hpoints,hrep⟩ := pairing_points_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvlc hvli hvlp
     have hlines : PortableLinesRep lines := hwork
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,

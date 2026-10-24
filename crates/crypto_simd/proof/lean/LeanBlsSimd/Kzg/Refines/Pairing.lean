@@ -103,7 +103,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hvrli : G1Valid interpolation := g1_msm_valid_of_mem _ _ setup_model_points_valid
   have hvrlp := g1_msm_valid_of_mem proofs shifted.toArray hvalid.2
   have hworkP := curveWorkInvariant_sum after.curve_work scratchP _ _ rlp hrlp hafter.2.2.2
-  have hpair := curveWork_pairing_check_refinement h.fp h.pairing scratchP hworkP
+  have hpair := curveWork_pairing_check_refinement h.pairing scratchP hworkP
     ⟨ll,rlc,rli,rlp⟩ _ _ _ _ hllrep hrlcrep hrlirep hrlprep hvll hvrlc hvrli hvrlp
   have hwmodel := weights_model v.commitments.index_of_cell.val powers commitments.size
   rw [hci.1] at hwmodel

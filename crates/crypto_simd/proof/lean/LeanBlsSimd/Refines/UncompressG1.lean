@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Refines.G1
 import LeanBlsSimd.Refines.WrapperLengths
 import LeanBlsSimd.Proofs.G1
@@ -34,7 +35,7 @@ theorem usesKernelAt_iff [RuntimeFeatures] (inputs : Slice (Array U8 48#usize)) 
 
 /-- All slots are overwritten. IFMA lanes use the proved kernel; portable calls
 use the singleton and pair contracts. The declaration retains its public name. -/
-theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -43,7 +44,7 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] (hdec : G1DecoderCorr
         result.val[i.val]? = some
           (if usesKernelAt inputs i.val then specVerdict inputs.val[i.val]
            else specVerdict inputs.val[i.val]) := by
-  obtain ⟨result, hr, hv⟩ := uncompress_refines hdec inputs out hlen
+  obtain ⟨result, hr, hv⟩ := uncompress_refines inputs out hlen
   refine ⟨result, hr, ?_, ?_⟩
   · rw [hv]
     simp
@@ -68,38 +69,37 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] (hdec : G1DecoderCorr
 
 /-- Exact verdicts under the generated portable singleton and pair contracts. -/
 theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
-    (hdec : G1DecoderCorrect)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
       ∀ i : Fin inputs.val.length,
         result.val[i.val]? = some (specVerdict inputs.val[i.val]) := by
-  obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g1_eq_spec_or_blst hdec inputs out hlen
+  obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g1_eq_spec_or_blst inputs out hlen
   refine ⟨result, hr, hl, ?_⟩
   intro i
   simpa only [ite_self] using hv i
 
 /-- The list form transports directly across another extraction's copy of blst's structs. -/
-theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
-  obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g1_eq_spec hdec inputs out hlen
+  obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g1_eq_spec inputs out hlen
   refine ⟨result, hr, List.ext_getElem (by simpa using hl) ?_⟩
   intro i hi hj
   have hi' : i < inputs.val.length := by omega
   have h := hv ⟨i, hi'⟩
   simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
-theorem uncompress_in_g1_eq_spec_model_list [RuntimeFeatures] (hdec : G1DecoderCorrect)
+theorem uncompress_in_g1_eq_spec_model_list [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.map (Option.map ofBlstP1Affine) =
         inputs.val.map (G1Spec.verdict ∘ ofArray ofU8) := by
-  obtain ⟨result, hr, hv⟩ := uncompress_in_g1_eq_spec_list hdec inputs out hlen
+  obtain ⟨result, hr, hv⟩ := uncompress_in_g1_eq_spec_list inputs out hlen
   refine ⟨result, hr, ?_⟩
   simp [hv, specVerdict, List.map_map, Option.map_map, Function.comp_def]
 

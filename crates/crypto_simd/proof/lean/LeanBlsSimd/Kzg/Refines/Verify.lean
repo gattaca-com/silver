@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.ModelFront
 import LeanBlsSimd.Kzg.Contracts
 import LeanBlsSimd.Kzg.Setup
@@ -75,7 +76,7 @@ theorem decoded_points_values (bs : List (Aeneas.Std.Array U8 48#usize))
   rw [takeWhile_all _ _ h, pointOptions_accepted bs h]
   simp [pointValues, List.map_map, Function.comp_def]
 
-theorem decode_commitments_step [cpu : RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
+theorem decode_commitments_step [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_commitments v =
@@ -83,21 +84,21 @@ theorem decode_commitments_step [cpu : RuntimeFeatures] (h : LeanBlsSimd.G1Decod
           { v with decoded := decoded, commitment_points := points }) ∧
       points.val =
         ((v.commitments.unique.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h
+  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement
     (alloc.vec.Vec.deref v.commitments.unique) v.decoded v.commitment_points
   refine ⟨decoded, points, ?_, hpoints⟩
   simp only [verify.CellBatchVerifier.decode_commitments, hcall, bind_tc_ok,
     Function.uncurry_apply_pair]
   rfl
 
-theorem decode_proofs_step [cpu : RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect)
+theorem decode_proofs_step [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) (ps : Slice (Aeneas.Std.Array U8 48#usize)) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_proofs v ps =
         ok ((ps.val.map specVerdict).all Option.isSome,
           { v with decoded := decoded, proof_points := points }) ∧
       points.val = ((ps.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement h ps v.decoded v.proof_points
+  obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement ps v.decoded v.proof_points
   refine ⟨decoded, points, ?_, hpoints⟩
   simp only [verify.CellBatchVerifier.decode_proofs, hcall, bind_tc_ok,
     Function.uncurry_apply_pair]
@@ -298,7 +299,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
       obtain ⟨d, hfill, hd⟩ := deduplicate_refinement v.commitments cs
       have hdu : (d.unique.val.map arrayBytes).toArray = (Model.deduplicate C).1 := congrArg Prod.fst hd
       have hdi : (d.index_of_cell.val.map (·.val)).toArray = (Model.deduplicate C).2 := congrArg Prod.snd hd
-      obtain ⟨cd, cp, hcommit, hcp⟩ := decode_commitments_step h.g1 { v with commitments := d }
+      obtain ⟨cd, cp, hcommit, hcp⟩ := decode_commitments_step { v with commitments := d }
       let v1 := { v with commitments := d, decoded := cd, commitment_points := cp }
       have hv1 : StateInvariant v1 := hv
       have hcommit' : verify.CellBatchVerifier.decode_commitments { v with commitments := d } =
@@ -342,7 +343,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
             hcommit', hc, if_true, Function.uncurry_apply_pair, hcells, hcb, hfalse]
         | true =>
           obtain ⟨hdecode, heSize, heFlat, heShapes⟩ := cells_decode_facts cells.val hcb
-          obtain ⟨pd, pp, hproof, hpp⟩ := decode_proofs_step h.g1 v2 ps
+          obtain ⟨pd, pp, hproof, hpp⟩ := decode_proofs_step v2 ps
           let v3 := { v2 with decoded := pd, proof_points := pp }
           have hv3 : StateInvariant v3 := hv2
           have hproof' : verify.CellBatchVerifier.decode_proofs v2 ps =

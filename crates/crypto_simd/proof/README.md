@@ -1,8 +1,8 @@
 # Formal proof of BLS decoding and KZG cell operations
 
-One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The verifier headlines refine the x86-64 extraction under four remaining correctness premises for portable Fp, G1 decoding, portable MSM and pairing. Scalar arithmetic, scalar bytes and both streaming SHA implementations are proved. The extender has no component-contract premises. The four remaining contracts are proof obligations, not axioms. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
+One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The verifier headlines refine the x86-64 extraction under two remaining correctness premises for portable MSM and pairing. Scalar and base-field arithmetic, scalar bytes, both streaming SHA implementations and portable G1 decoding are proved. The extender has no component-contract premises. The two remaining contracts are proof obligations, not axioms. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
 
-The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is covered conditionally by `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
+The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is proved by `Portable.Decode.g1_decoder_correct`, which constructs `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
 
 The project pins the `gattaca-com/EthLib` fork's total pairing definitions, with Lean and Mathlib at v4.29.1. Its extraction includes portable implementations, independent CPU feature observations and separately compiled setup literals. The Lake package is `lean_bls_simd`; its library is `LeanBlsSimd`.
 
@@ -22,7 +22,6 @@ Both public BLS wrappers require one output slot per input. On unequal lengths, 
 
 ```lean
 theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
-    (hdec : G1DecoderCorrect)
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -31,7 +30,7 @@ theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
         result.val[i.val]? = some (specVerdict inputs.val[i.val])
 ```
 
-An index uses IFMA when SIMD is available, it belongs to a complete eight-input chunk, and its undecided bit is clear. `G1DecoderCorrect` states exact specification verdicts for the actual generated portable singleton and pair decoders. The wrapper refinement combines those laws with the proved IFMA kernel. It has no G1 blst observation or `BlsExternals` parameter. The compatibility name `uncompress_in_g1_eq_spec_or_blst` remains available, with specification verdicts on both routes under the same premise.
+An index uses IFMA when SIMD is available, it belongs to a complete eight-input chunk, and its undecided bit is clear. `G1DecoderCorrect` states exact specification verdicts for the actual generated portable singleton and pair decoders. `Portable.Decode.g1_decoder_correct` proves those laws; the wrapper refinement combines them with the proved IFMA kernel. It has no G1 blst observation or `BlsExternals` parameter. The compatibility name `uncompress_in_g1_eq_spec_or_blst` remains available, with specification verdicts on both routes and no decoder-contract premise.
 
 The G1 specification verdict calls `bytesToKzgProof`, decodes accepted bytes with `G1.uncompress`, and normalizes through `G1.toAffine`. Each coordinate has six little-endian Montgomery words with R = 2^384. Infinity has both coordinates zero. The bridge lemmas relate acceptance to both `bytesToKzgProof` and `bytesToKzgCommitment`.
 
@@ -91,7 +90,6 @@ The left side is how `decompress_g2_chunk` in `mod.rs` reads one lane. `Mmask8.a
 
 ```lean
 theorem verify_eq_spec [cpu : RuntimeFeatures]
-    (hfp : PortableFpCorrect) (hg1 : LeanBlsSimd.G1DecoderCorrect)
     (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
@@ -101,12 +99,10 @@ theorem verify_eq_spec [cpu : RuntimeFeatures]
         Model.rejectErrors i.embeddedSpec = verdict
 ```
 
-The four remaining premises are named `Prop`s about actual generated functions:
+The two remaining premises are named `Prop`s about actual generated functions:
 
 | Contract | Required component behavior |
 |---|---|
-| `PortableFpCorrect` | Canonical six-word Montgomery Fp addition, subtraction, multiplication and zero testing, proved by `Portable.Fp.portable_fp_correct`. `PortableFpRep` requires canonical words and their field interpretation. Small G1 formula adapters are derived from these laws. |
-| `G1DecoderCorrect` | Exact specification verdicts from generated portable singleton and pair G1 decoders. The public batch theorem also uses the proved IFMA path. |
 | `PortableMsmCorrect` | Generated portable MSM agrees with `G1.msm` for valid affine points, canonical ordinary scalar words and arbitrary scratch. |
 | `PairingCorrect` | Lane and portable pairing functions agree with the two fixed-G2 specification pairings, under their point and table representations. This includes `PAIRING_LINES` encoding the lines of [s^64]G2 and −G2. |
 
@@ -114,9 +110,9 @@ The four remaining premises are named `Prop`s about actual generated functions:
 
 `RuntimeFeatures` supplies independent `simdAvailable`, `shaAvailable` and `bmi2Available` Booleans. Construction selects the interpolation kernel and the `CurveWork` route from `simdAvailable`. SHA dispatch reads `shaAvailable`, while portable field multiplication can select BMI2 independently. The premises and headlines quantify over any fixed feature assignment. The model covers all four combinations of interpolation and curve-work routes independently of the eight feature assignments. Real execution requires hardware support for every instruction on the selected routes; constructor-produced states align the stored routes with stable CPU observations.
 
-`CurveWork.Portable` stores its pairing table alongside MSM scratch. `PortableLinesRep` interprets every coefficient of that table as a canonical Montgomery value matching the fixed extracted lane table. `PairingTableBounds.lean` checks each of its 544 lanes for normalized limbs and a canonical value. `pairingLines_new_refinement` proves the actual nested constructor from `PortableFpCorrect`, packing and radix-conversion lemmas; it does not require `PairingCorrect`. `CurveWork.sum_frame` proves that successful MSM preserves the exact table and the stored route.
+`CurveWork.Portable` stores its pairing table alongside MSM scratch. `PortableLinesRep` interprets every coefficient of that table as a canonical Montgomery value matching the fixed extracted lane table. `PairingTableBounds.lean` checks each of its 544 lanes for normalized limbs and a canonical value. `pairingLines_new_refinement` proves the actual nested constructor using the proved portable Fp contract, packing and radix-conversion lemmas; it does not require `PairingCorrect`. `CurveWork.sum_frame` proves that successful MSM preserves the exact table and the stored route.
 
-`new_returns_ok` needs only `PortableFpCorrect` and `G1DecoderCorrect`. `default_eq_new` transfers that result through `Default`. `new_returns_ok_route` characterizes the constructor's two stored choices; `Routes.verify_preserves_routes` preserves them through successful calls. `StateInvariant` additionally fixes the setup, cosets, interpolation tables and buffer lengths, while permitting earlier scratch contents. Replacing curve work requires a valid replacement table: `stateInvariant_curveWork` takes `CurveWorkInvariant work`. It is not an unrestricted invariant equivalence for arbitrary replacement work.
+`new_returns_ok` has no component-contract premises. `default_eq_new` transfers that result through `Default`. `new_returns_ok_route` characterizes the constructor's two stored choices; `Routes.verify_preserves_routes` preserves them through successful calls. `StateInvariant` additionally fixes the setup, cosets, interpolation tables and buffer lengths, while permitting earlier scratch contents. Replacing curve work requires a valid replacement table: `stateInvariant_curveWork` takes `CurveWorkInvariant work`. It is not an unrestricted invariant equivalence for arbitrary replacement work.
 
 `verify_eq_upstream` has the same component premises and execution/state conclusion for the upstream `verifyCellKzgProofBatch` action. It additionally requires `TrustedSetup.get! = pure embeddedSetup`. The embedded-setup headline has no runtime-loader premise. The G2 setup points are fixed mathematical constants with proved decoding and subgroup certificates. Generated KZG execution consumes the fixed pairing table without calling `uncompress_in_g2_blst`.
 
@@ -160,11 +156,10 @@ Supply `[silver_crypto_simd.RuntimeFeatures]` to entry points that observe CPU f
 
 ### BLS decoding
 
-Import `LeanBlsSimd.Refines.UncompressG1` and supply `G1DecoderCorrect` for the G1 wrapper:
+Import `LeanBlsSimd.Refines.UncompressG1` for the G1 wrapper:
 
 ```lean
 theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
-    (hdec : G1DecoderCorrect)
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -172,19 +167,19 @@ theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
       result.val = inputs.val.map specVerdict
 ```
 
-`specVerdict_some_iff` relates an accepted affine result to `bytesToKzgProof` and exact decoded limbs. The pointwise and model-type list variants are also available. `controls/G1Consumer.lean` and the independent `controls/downstream/G1Smoke.lean` apply these conditional public results across consumer-owned structures.
+`specVerdict_some_iff` relates an accepted affine result to `bytesToKzgProof` and exact decoded limbs. The pointwise and model-type list variants are also available. `controls/G1Consumer.lean` and the independent `controls/downstream/G1Smoke.lean` apply these public results across consumer-owned structures without a decoder-contract premise.
 
 For G2, import `LeanBlsSimd.Refines.UncompressG2` and use `uncompress_in_g2_eq_spec_list` with `[RuntimeFeatures]`, `[BlsExternals]` and `UncompressG2.BlstMatchesSpec`. Without the agreement law, `uncompress_in_g2_eq_spec_or_blst` characterizes kernel verdicts and opaque fallback observations. `controls/G2Consumer.lean` and `controls/downstream/G2Smoke.lean` exercise the list interfaces and transport across independent structures.
 
 ### KZG verification
 
-Import `LeanBlsSimd.Kzg.Statements`. With the four remaining contracts in scope, apply:
+Import `LeanBlsSimd.Kzg.Statements`. With the two remaining contracts in scope, apply:
 
 ```lean
-verify_eq_spec hfp hg1 hmsm hpairing
+verify_eq_spec hmsm hpairing
 ```
 
-Use `new_returns_ok hfp hg1` for construction alone, or `glue_refinement` with a `ComponentContracts` bundle for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
+Use `new_returns_ok` for construction alone, or `glue_refinement` with a `ComponentContracts` bundle for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
 
 For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
@@ -202,9 +197,13 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 ### Decoder bridge and component premises
 
-`Kzg/Decoder.lean` proves `specVerdict_eq_bls`: KZG and BLS G1 verdicts agree as optional affine points, including limbs and infinity. The KZG batch adapter composes directly with the shared generated G1 wrapper and its `G1DecoderCorrect` premise. There is no copied runtime decoder dictionary at this boundary.
+`Kzg/Decoder.lean` proves `specVerdict_eq_bls`: KZG and BLS G1 verdicts agree as optional affine points, including limbs and infinity. The KZG batch adapter composes directly with the shared, proved generated G1 wrapper. There is no copied runtime decoder dictionary at this boundary.
 
-The four remaining contracts concern fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`; `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
+The two remaining contracts concern fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`; `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
+
+`Portable/Fp/` proves canonical six-word Montgomery arithmetic at R = 2^384, the exact wide product and reduction, ordered and modular subtraction, binary inversion, exponentiation, square root and root sign. Its CIOS proof permits any six words in the second operand when the first is canonical. Binary inversion returns zero for zero input. The generated four-input batch inverse uses one product inverse; if any input is zero, all four outputs are zero. Both BMI2 dispatch branches use the proved arithmetic.
+
+`Portable/G1/` proves complete scalar Jacobian operations and the two-lane formulas and chains. Each exceptional lane is recomputed by the scalar Scott test; an unflagged lane agrees with the complete group operations. `Portable/Decode/` connects flags, canonical x, square root and sign to the existing encoding verdict, proves rejection of the order-3 x = 0 and order-2 y = 0 cases, and accepts only canonical infinity. G1 uses the proved `G1Spec.scott_sound` and `G1Spec.scott_complete`; G2 retains the proved `scott_complete : ScottComplete`. No public theorem takes a Scott-completeness premise. The production extraction includes `G1.from_affine`; the Rust `G1.to_affine` helper is test-only and absent from that extraction, so its Rust body is outside these generated-function proofs.
 
 `controls/ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` evaluate the generated functions against the specification. These `#eval` checks use Lean's interpreter outside the proof kernel. They provide finite evidence, not proofs or satisfiability witnesses for the contracts. Assertions make a mismatch fail the build.
 
@@ -228,7 +227,7 @@ The constructor establishes the invariant, and each returned state preserves it 
 4. **Extraction and generated-code preparation.** Charon's MIR semantics, Aeneas's translation and the deterministic adaptations in `prepare-extraction.py` described in [reproduction](#reproducing-the-extraction). The pinned Aeneas revision is `d9733413`, Charon is `ed22146b`, and Charon uses nightly-2026-02-07 rather than the workspace's Rust 1.91.0. `extract.sh` verifies checkout pins and available binary version information; a Charon binary from another commit with the same reported crate version is not distinguished. The extraction targets x86_64, including its BLS chunk helpers, Fr FFT and verifier MSM8 kernels. The theorem includes the scalar route of this extraction; it does not check a separate non-x86_64 extraction. Transfer to other target configurations relies on their feature detection and source gating. Exact `--check` reproduction detects drift, not translator bugs.
 5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents; their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand; their source code is not refined by the extraction. The extraction contains the portable scalar, field, G1, MSM, pairing and SHA implementations themselves.
 6. **CPU observations and G2 fallback.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Its mixed-state model does not establish hardware support for arbitrary stored routes; constructor-produced states align those routes with stable CPU observations. `BlsExternals` supplies only the deterministic total `uncompressG2` observation for the signature-decoding path. `UncompressG2.BlstMatchesSpec` requires exact agreement on every 96-byte input, including acceptance, affine limbs and infinity. The external wrapper returns `ok`, so termination and absence of Rust-level failure for that opaque call are assumed. KZG does not use this external. The blst structs retained in generated KZG types are data containers, not evidence of calls to blst operations.
-7. **Generated-component contracts.** The four [KZG premises](#kzg-verifier) are explicit propositions about the actual generated definitions. `Portable.Fp.portable_fp_correct` now proves the Fp contract; removing its consumer arguments is part of the ongoing G1 decoder integration. The other three contracts remain pending. Scalar arithmetic, byte conversion and both SHA routes are proved and supply no headline premises. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its construction is already derived from `PortableFpCorrect`. Negative controls do not prove that the actual generated implementations satisfy these premises. The extender has no component-contract premise.
+7. **Generated-component contracts.** The two [KZG premises](#kzg-verifier), `PortableMsmCorrect` and `PairingCorrect`, are explicit propositions about actual generated definitions. `Portable.Fp.portable_fp_correct` and `Portable.Decode.g1_decoder_correct` prove the Fp and G1 contracts. These proofs, scalar arithmetic and bytes, and both SHA routes supply no headline premises. No contract is introduced as an axiom, and no whole-verifier or whole-challenge conclusion is hidden in a field. `ShaRep` has a fixed observational meaning. The portable table relation has a CPU-independent field interpretation, and its constructor is proved. Negative controls do not establish the pending MSM and pairing premises. The extender and both constructors have no component-contract premises.
 8. **Runtime setup for literal-upstream corollaries.** Only `verify_eq_upstream` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
 Every `--opaque` item in `extract.sh` has this interpretation:
@@ -459,7 +458,7 @@ The G1 checks are:
 
 - `g1::replay_vectors` runs the G1 replay check.
 - `g1::recorded_matches_blst` checks the G1 recording against blst.
-- `lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt` compares the model, extraction and recorded blst verdicts. The G1 public theorem now uses the actual portable decoder under `G1DecoderCorrect`; recorded scalar results cannot be installed as its fallback. These finite comparisons do not prove that universal component contract.
+- `lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt` compares the model, extraction and recorded blst verdicts. The G1 public theorem uses the proved actual portable decoder; recorded scalar results cannot be installed as its fallback. These finite comparisons supplement the universal decoder proof.
 
 The pinned specification and blst 0.3.16 agree on canonical compressed infinity: `0xc0` followed by 47 zero bytes is accepted; other infinity encodings are rejected. `validateKzgG1` explicitly allows this encoding, and `G1.uncompress` returns `G1.zero`. blst's `POINTonE1_Uncompress_Z` zeroes the affine output for it, and `blst_p1_affine_in_g1` accepts it. The kernel marks compressed infinity lanes undecided, and the public G1 wrapper handles them through its portable decoder. The Lean infinity lemmas prove the specification verdict and kernel fallback behavior; the vector file separately records blst agreement.
 
@@ -725,7 +724,7 @@ Paths below are relative to `lean/controls/`.
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `PortableFpWords.lean` | Generated carry, subtraction and wide-product boundary witnesses retain the carry, borrow and high word. |
 | `PortableG1Pair.lean` | Equal-point addition flags only the affected lane. One flagged lane is recomputed by the scalar test while the unflagged lane uses its chain; omitting that fallback rejects the generator. |
-| `PortableDecode.lean` | Generated scalar decoding accepts canonical infinity, rejects a nonzero infinity tail and x = 0, enforces x < p, and retains a canonical nonzero x. |
+| `PortableDecode.lean` | Generated scalar decoding accepts canonical infinity, rejects a nonzero infinity tail and x = 0, enforces x < p, and retains a canonical nonzero x. Paired decoding preserves the order of an accepted infinity and a rejected zero-x encoding. |
 | `PortableG1.lean` | Generated doubling preserves infinity; complete projective and affine addition handle opposite points. The scalar Scott test accepts the generator and rejects a false result. |
 | `PortableFpInverse.lean` | Halving retains the incoming high bit; odd coefficients require the modulus correction; the one test checks upper words. Inversion covers zero and one and changes two. A zero factor in the four-element batch yields four zero outputs; four ones remain ones. |
 | `PortableFpWide.lean` | Wide products retain the seventh word and last row. Subtraction retains borrow correction and rejects ordered underflow; reduction excludes a noncanonical modulus result. |

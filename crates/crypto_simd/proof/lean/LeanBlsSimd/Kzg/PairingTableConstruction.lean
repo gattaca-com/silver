@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.PairingTableBounds
 import LeanBlsSimd.Refines.Fp8
 import LeanBlsSimd.Proofs.Convert
@@ -65,7 +66,7 @@ private theorem change_radix (x : Fp) :
     decide +kernel
   rw [mul_assoc, hc]
 
-private theorem pairing_lane_convert [RuntimeFeatures] (hfp : PortableFpCorrect)
+private theorem pairing_lane_convert [RuntimeFeatures]
     (step : Fin 68) (lane : Fin 8) :
     ∃ packed out, bls.limbs.pack64 (pairingRaw step lane) = ok packed ∧
       portable.fp.Fp.mul packed radixCorrection = ok out ∧
@@ -87,7 +88,7 @@ private theorem pairing_lane_convert [RuntimeFeatures] (hfp : PortableFpCorrect)
       rw [hval]
       exact hb.2
     · simp only [fpRead, hval]
-  obtain ⟨out, hmul, hout⟩ := hfp.mul hrep radixCorrection_rep
+  obtain ⟨out, hmul, hout⟩ := (LeanBlsSimd.Portable.Fp.portable_fp_correct).mul hrep radixCorrection_rep
   refine ⟨packed, out, pack64_refines raw, hmul, ?_⟩
   rw [change_radix] at hout
   exact hout
@@ -147,7 +148,7 @@ private theorem tableWrite_prefix (out : Lines) (s p l : Usize)
     have hl' := l'.isLt
     omega
 
-private theorem constructor_inner_body [RuntimeFeatures] (hfp : PortableFpCorrect)
+private theorem constructor_inner_body [RuntimeFeatures]
     (out : Lines) (s p l : Usize) (hs : s.val < 68) (hp : p.val < 2) (hl : l.val < 2)
     (hout : tablePrefix out (4*s.val + 2*p.val + l.val)) :
     ∃ next l',
@@ -171,8 +172,8 @@ private theorem constructor_inner_body [RuntimeFeatures] (hfp : PortableFpCorrec
   have hlinc : l.val + 1 < 2^UScalarTy.Usize.numBits := by scalar_tac
   let l' : Usize := UScalar.ofNatCore (l.val+1) hlinc
   have hl' : l'.val = l.val+1 := rfl
-  obtain ⟨packed0, c0, hpack0, hmulc0, hc0⟩ := pairing_lane_convert hfp ⟨s.val, hs⟩ ⟨lane.val, hbLane⟩
-  obtain ⟨packed1, c1, hpack1, hmulc1, hc1⟩ := pairing_lane_convert hfp ⟨s.val, hs⟩ ⟨lane1.val, hbLane1⟩
+  obtain ⟨packed0, c0, hpack0, hmulc0, hc0⟩ := pairing_lane_convert ⟨s.val, hs⟩ ⟨lane.val, hbLane⟩
+  obtain ⟨packed1, c1, hpack1, hmulc1, hc1⟩ := pairing_lane_convert ⟨s.val, hs⟩ ⟨lane1.val, hbLane1⟩
   let v : portable.fp2.Fp2 := ⟨c0,c1⟩
   let next := tableWrite out s p l hs hp hl v
   have hv : coefficientRep ⟨s.val, hs⟩ ⟨p.val, hp⟩ ⟨l.val, hl⟩ v := by
@@ -236,7 +237,7 @@ private theorem constructor_inner_body [RuntimeFeatures] (hfp : PortableFpCorrec
     rfl
   · simpa only [hl', Nat.add_assoc] using tableWrite_prefix out s p l hs hp hl v hv hout
 
-private theorem constructor_inner [RuntimeFeatures] (hfp : PortableFpCorrect)
+private theorem constructor_inner [RuntimeFeatures]
     (out : Lines) (s p l : Usize) (hs : s.val < 68) (hp : p.val < 2) (hl : l.val ≤ 2)
     (hout : tablePrefix out (4*s.val + 2*p.val + l.val)) :
     ∃ next, portable.pairing.PairingLines.new_loop0_loop0_loop0
@@ -251,14 +252,14 @@ private theorem constructor_inner [RuntimeFeatures] (hfp : PortableFpCorrect)
     simp only [portable.pairing.PairingLines.new_loop0_loop0_loop0.body, hstop, if_false]
   | succ n ih =>
     have hlt : l.val < 2 := by omega
-    obtain ⟨next, l', hbody, hl', hnext⟩ := constructor_inner_body hfp out s p l hs hp hlt hout
+    obtain ⟨next, l', hbody, hl', hnext⟩ := constructor_inner_body out s p l hs hp hlt hout
     obtain ⟨final, hloop, hfinal⟩ := ih next l' (by omega) hnext (by omega)
     refine ⟨final, ?_, hfinal⟩
     rw [portable.pairing.PairingLines.new_loop0_loop0_loop0, loop.eq_1]
     simp only [hbody]
     exact hloop
 
-private theorem constructor_pair [RuntimeFeatures] (hfp : PortableFpCorrect)
+private theorem constructor_pair [RuntimeFeatures]
     (out : Lines) (s p : Usize) (hs : s.val < 68) (hp : p.val ≤ 2)
     (hout : tablePrefix out (4*s.val + 2*p.val)) :
     ∃ next, portable.pairing.PairingLines.new_loop0_loop0
@@ -274,7 +275,7 @@ private theorem constructor_pair [RuntimeFeatures] (hfp : PortableFpCorrect)
   | succ n ih =>
     have hlt : p.val < 2 := by omega
     have htest : p < 2#usize := by simpa using hlt
-    obtain ⟨next, hinner, hnext⟩ := constructor_inner hfp out s p 0#usize hs hlt (by decide)
+    obtain ⟨next, hinner, hnext⟩ := constructor_inner out s p 0#usize hs hlt (by decide)
       (by simpa using hout)
     have hin : p.val + 1 < 2^UScalarTy.Usize.numBits := by
       have := two_pow_32_le_usize
@@ -292,7 +293,7 @@ private theorem constructor_pair [RuntimeFeatures] (hfp : PortableFpCorrect)
     simp only [hadd]
     exact hloop
 
-private theorem constructor_steps [RuntimeFeatures] (hfp : PortableFpCorrect)
+private theorem constructor_steps [RuntimeFeatures]
     (out : Lines) (s : Usize) (hs : s.val ≤ 68)
     (hout : tablePrefix out (4*s.val)) :
     ∃ next, portable.pairing.PairingLines.new_loop0
@@ -310,7 +311,7 @@ private theorem constructor_steps [RuntimeFeatures] (hfp : PortableFpCorrect)
     have hlt : s.val < 68 := by omega
     have htest : s < bls.miller_lines.LINE_COUNT := by
       simpa only [bls.miller_lines.LINE_COUNT, UScalar.lt_equiv, UScalar.ofNatCore_val_eq] using hlt
-    obtain ⟨next, hpair, hnext⟩ := constructor_pair hfp out s 0#usize hlt (by decide)
+    obtain ⟨next, hpair, hnext⟩ := constructor_pair out s 0#usize hlt (by decide)
       (by simpa using hout)
     have hin : s.val + 1 < 2^UScalarTy.Usize.numBits := by
       have := two_pow_32_le_usize
@@ -330,12 +331,12 @@ private theorem constructor_steps [RuntimeFeatures] (hfp : PortableFpCorrect)
 
 /-- The actual constructor builds the semantic fixed table from primitive field
 multiplication; no pairing-verdict premise is used. -/
-theorem pairingLines_new_refinement [RuntimeFeatures] (hfp : PortableFpCorrect) :
+theorem pairingLines_new_refinement [RuntimeFeatures] :
     ∃ lines, portable.pairing.PairingLines.new pairing_lines.PAIRING_LINES = ok lines ∧
       PortableLinesRep lines := by
   let initial := Array.repeat 68#usize (Array.repeat 2#usize
     (Array.repeat 2#usize portable.fp2.Fp2.ZERO))
-  obtain ⟨out, hloop, hout⟩ := constructor_steps hfp initial 0#usize (by decide)
+  obtain ⟨out, hloop, hout⟩ := constructor_steps initial 0#usize (by decide)
     (by intro s p l hlt; simp only [UScalar.ofNatCore_val_eq, Nat.mul_zero] at hlt; omega)
   refine ⟨out, ?_, ?_⟩
   · have hshift : 1#u64 <<< 32#i32 = ok 4294967296#u64 := by rfl

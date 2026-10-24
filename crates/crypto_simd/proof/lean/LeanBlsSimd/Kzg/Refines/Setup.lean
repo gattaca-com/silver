@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.Setup
 import LeanBlsSimd.Kzg.Refines.Loop
@@ -69,7 +70,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option blst.blst_p1_affine)
     simp only [setup.Setup.decode_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair, hindex, hpush]
     exact hout
 
-theorem setup_decode_refinement [RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorrect) :
+theorem setup_decode_refinement [RuntimeFeatures] :
     ∃ s, setup.Setup.decode = ok s ∧ SetupRep s := by
   let initial : alloc.vec.Vec (Option blst.blst_p1_affine) :=
     ⟨List.replicate 64 none, by simp; scalar_tac⟩
@@ -83,7 +84,7 @@ theorem setup_decode_refinement [RuntimeFeatures] (h : LeanBlsSimd.G1DecoderCorr
   have hlen : (alloc.vec.Vec.deref_mut initial).1.val.length = inputs.val.length := by
     simp [initial, inputs, alloc.vec.Vec.deref_mut, Array.to_slice,
       trusted_setup.G1_MONOMIAL.property]
-  obtain ⟨decoded, hdecoded, hdecodedVal⟩ := g1_decode_refinement h inputs
+  obtain ⟨decoded, hdecoded, hdecodedVal⟩ := g1_decode_refinement inputs
     (alloc.vec.Vec.deref_mut initial).1 hlen
   let ps := rustG1Bytes.toList.map (fun b => g1Affine ((specPoint b).getD G1.zero))
   have hpslen : ps.length = 64 := by simp [ps, rustG1Bytes]

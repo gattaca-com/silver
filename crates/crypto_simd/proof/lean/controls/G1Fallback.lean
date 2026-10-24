@@ -142,7 +142,7 @@ local macro "chunk_proof" : tactic => `(tactic| (
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ (by first | exact hj | decide)]
-      simp only [hdec.singleton, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [Portable.Decode.g1_decoder_correct.singleton, bind_tc_ok, Function.uncurry_apply_pair]
       rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
       simp only [bind_tc_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]
@@ -150,14 +150,14 @@ local macro "chunk_proof" : tactic => `(tactic| (
     ext i hi
     simp))
 
-example [RuntimeFeatures] (hdec : G1DecoderCorrect) : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
+example [RuntimeFeatures] : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
     (out : Slice (Option blst.blst_p1_affine)), out.val.length = 8 →
     ∃ result, chunkWith id inputs out = ok result ∧
       result.val = ((chunk modelBlst (ofArray (ofArray ofU8) inputs)).toList.map
         (Option.map toBlstP1Affine)) := by
   chunk_proof
 
-example [RuntimeFeatures] (hdec : G1DecoderCorrect) : True := by
+example [RuntimeFeatures] : True := by
   fail_if_success
     have : ∀ (inputs : Array (Array U8 48#usize) 8#usize)
         (out : Slice (Option blst.blst_p1_affine)), out.val.length = 8 →

@@ -62,18 +62,18 @@ theorem double_values_point {P : Bls.G1} (h : Bls.G1.Valid P) :
 
 theorem double_encoded [RuntimeFeatures] (P : Bls.G1) :
     portable.g1.G1.double (encode P) = ok (encode (Kzg.PortableG1.doubleValues P)) := by
-  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.doubleValues_refines Fp.portable_fp_correct (encode_coords P)
+  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.doubleValues_refines (encode_coords P)
   rwa [coords_eq_encode hc] at he
 
 theorem add_complete_encoded [RuntimeFeatures] (P Q : Bls.G1) :
     portable.g1.G1.add_complete (encode P) (encode Q) = ok (encode (Bls.G1.add P Q)) := by
-  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.add_complete_coords Fp.portable_fp_correct
+  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.add_complete_coords
     (encode_coords P) (encode_coords Q)
   rwa [coords_eq_encode hc] at he
 
 theorem neg_encoded [RuntimeFeatures] (P : Bls.G1) :
     portable.g1.G1.neg (encode P) = ok (encode (Bls.G1.neg P)) := by
-  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.neg_coords Fp.portable_fp_correct (encode_coords P)
+  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.neg_coords (encode_coords P)
   rwa [coords_eq_encode hc] at he
 
 theorem from_affine_encoded (x y : Bls.Fp) :
