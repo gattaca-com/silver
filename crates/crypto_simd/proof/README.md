@@ -713,7 +713,7 @@ Paths below are relative to `lean/controls/`.
 | `FrBytes.lean` | Canonical decoding rejects r; digest reduction accepts the maximal 256-bit value. Generated decoding and serialization exclude reversed bytes. |
 | `InverseRoots.lean` | The generated inverse table excludes forward ordering; the root-order proof rejects a wrong inverse exponent. |
 | `SetupLiterals.lean` | The certified G2 literal excludes the wrong generator sign. |
-| `setup-literals-check.py` | All 48 test-only Rust G2 limbs match their Lean transcription; each literal rejects a single-limb mutation. |
+| `setup-literals-check.py` | Both extraction modes require all 48 test-only Rust G2 limbs to match their Lean transcription; each literal rejects a single-limb mutation. |
 | `KzgMathematical.lean` | Bit reversal, inverse coset-shift direction and inverse FFT scaling. |
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |
 | `InterpolationKernel.lean` | Wrong inverse-size shift factors or used-column flags violate the generated contracts. Unnormalized first products violate bounded DIT input. Noncanonical cells are rejected. Canonical acceptance and normalization supply positive controls. |

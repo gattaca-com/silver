@@ -32,6 +32,8 @@ esac
 lean_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 crate_dir=$(cd "$lean_dir/../.." && pwd)
 
+python3 -I "$lean_dir/controls/setup-literals-check.py"
+
 AENEAS_DIR=$(cd "$AENEAS_DIR" && pwd)
 aeneas="$AENEAS_DIR/bin/aeneas"
 charon="$AENEAS_DIR/charon/bin/charon"

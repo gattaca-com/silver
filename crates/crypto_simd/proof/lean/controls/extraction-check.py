@@ -189,6 +189,13 @@ def fixtures():
             shutil.copy2(LEAN / name, project / name)
         (project / "controls").mkdir()
         shutil.copy2(Path(__file__), project / "controls/extraction-check.py")
+        shutil.copy2(LEAN / "controls/setup-literals-check.py", project / "controls/setup-literals-check.py")
+        source_setup = project.parents[1] / "src/kzg/setup.rs"
+        source_setup.parent.mkdir(parents=True)
+        shutil.copy2(LEAN.parents[1] / "src/kzg/setup.rs", source_setup)
+        lean_setup = project / "LeanBlsSimd/Kzg/SetupLiterals.lean"
+        lean_setup.parent.mkdir(parents=True)
+        shutil.copy2(LEAN / "LeanBlsSimd/Kzg/SetupLiterals.lean", lean_setup)
         toolchain = root / "tools"
         aeneas_pin = git_head(toolchain)
         charon_pin = git_head(toolchain / "charon")
@@ -243,6 +250,21 @@ else:
             assert control.read_text() == control_snapshot, "--check wrote the Lean control"
             print(f"{name}: extract.sh --check exited {expected}; {diagnostic}")
 
+        # A source-only literal change must stop both modes before output replacement.
+        original_setup = source_setup.read_text()
+        word = re.search(r"0x[0-9a-fA-F]+", original_setup)
+        assert word is not None
+        source_setup.write_text(original_setup[:word.start()] + hex(int(word[0], 16) ^ 1) + original_setup[word.end():])
+        (root / "raw.lean").write_text(direct)
+        for args in (["--check"], []):
+            result = subprocess.run([str(project / "extract.sh"), *args], text=True,
+                                    env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                    capture_output=True, timeout=30)
+            assert result.returncode != 0 and "G2 literal differs" in result.stderr, result.stdout + result.stderr
+            assert all((committed / name).read_text() == value for name, value in snapshot.items())
+            assert control.read_text() == control_snapshot
+            print(f"mutated G2 literal {args}: rejected before any output replacement")
+        source_setup.write_text(original_setup)
         check("unchanged/interleaved functions", direct, 0, "No drift")
         check("source-span-only edit in literals", direct.replace("lines 1:0-2:0", "lines 31:7-45:2"), 0, "No drift")
         check("source comment edit", direct.replace("fixture.rs", "other.rs"), 1, "other.rs")
