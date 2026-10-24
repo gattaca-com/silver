@@ -10,12 +10,12 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 namespace silver_kzg.Kzg
 
 theorem verify_after_construction [cpu : RuntimeFeatures]
-    (hmsm : PortableMsmCorrect) (hpairing : PairingCorrect)
+    (hpairing : PairingCorrect)
     (input : Input) (hi : input.Representable) :
     ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
       input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
       Model.rejectErrors input.embeddedSpec = verdict := by
-  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hmsm hpairing
+  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hpairing
   obtain ⟨verdict, next, hrun, hn, hv⟩ := hcall initial hs input hi
   exact ⟨initial, verdict, next, hnew, hrun, hn, hv⟩
 
@@ -42,7 +42,7 @@ theorem scalar_decode_populates_evaluations
     decode_cells_refines v cells hb
   exact ⟨next, hcall, hevaluations hscalar, hsetup, hcosets⟩
 
-theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem kernel_interpolates_cells [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (kernel : interpolation_kernel.InterpolationKernel) (hkernel : v.kernel = some kernel)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -56,7 +56,7 @@ theorem kernel_interpolates_cells [cpu : RuntimeFeatures] (h : ComponentContract
       G1Rep point (G1.msm
         (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero))
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers)) := by
-  apply interpolation_commitment_refines h v hv indices cells evals powers hs hb hcell
+  apply interpolation_commitment_refines v hv indices cells evals powers hs hb hcell
   · simp [hkernel]
   · exact hp
 

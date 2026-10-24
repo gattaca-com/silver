@@ -92,7 +92,7 @@ private theorem setup_lincomb_inputs
     exact frEncode_reduced f
   exact ⟨hsize, setup_points_valid s hs, hscalars⟩
 
-theorem setup_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem setup_lincomb [cpu : RuntimeFeatures]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
     (scratch : verify.CurveWork) :
@@ -101,12 +101,12 @@ theorem setup_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
         ok (point, scratch') ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
   obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.msm scratch
+  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
-theorem setup_verify_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem setup_verify_lincomb [cpu : RuntimeFeatures]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
     (scratch : verify.CurveWork) :
@@ -115,7 +115,7 @@ theorem setup_verify_lincomb [cpu : RuntimeFeatures] (h : ComponentContracts)
         ok (point, scratch') ∧
       G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
   obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement h.msm scratch
+  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
     hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
@@ -302,7 +302,7 @@ private theorem resize_nil {α : Type} (n : Nat) (x : α) :
     ([] : List α).resize n x = List.replicate n x := by
   simp [List.resize]
 
-private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : ComponentContracts)
+private theorem interpolation_commitment_execution [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize)) (hkernel : v.kernel = none)
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)
@@ -372,7 +372,7 @@ private theorem interpolation_commitment_execution [cpu : RuntimeFeatures] (h : 
   have hresult' : result.val = coefficients.map frEncode := by
     simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, coefficients] using hresult
   have hresultLen : coefficients.length = 64 := totals_length _ _ _ _ (by simp)
-  obtain ⟨point, scratch, hlincomb, hpoint⟩ := setup_verify_lincomb h v.setup hv.1 coefficients hresultLen
+  obtain ⟨point, scratch, hlincomb, hpoint⟩ := setup_verify_lincomb v.setup hv.1 coefficients hresultLen
     result hresult' v.curve_work
   let next := { v with
     cosets := v.cosets, columns := aggColumns, column_used := aggFlags,
@@ -393,7 +393,7 @@ end LeanBlsSimd.Kzg.Interpolation
 
 namespace LeanBlsSimd.Kzg
 
-theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem interpolation_commitment_refinement [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize))
     (evals : _root_.Array CosetEvals) (powers : _root_.Array Fr)
@@ -410,7 +410,7 @@ theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : Compone
   cases hkernel : v.kernel with
   | none =>
     obtain ⟨point, next, hcall, hnext, hrep⟩ :=
-      Interpolation.interpolation_commitment_execution h v hv indices cells hkernel evals powers hs (he hkernel) hp
+      Interpolation.interpolation_commitment_execution v hv indices cells hkernel evals powers hs (he hkernel) hp
     refine ⟨point, next, hcall, hnext, ?_⟩
     have hmodel := Interpolation.aggregate_columnRli (indices.val.map (·.val)).toArray evals powers hs
     simpa only [hmodel] using hrep
@@ -427,7 +427,7 @@ theorem interpolation_commitment_refinement [cpu : RuntimeFeatures] (h : Compone
     let coefficients := (Model.columnRli (indices.val.map (·.val)).toArray evals powers).toList
     have hcoefficients : coefficients.length = 64 := by
       simp only [coefficients, _root_.Array.length_toList, columnRli_size]
-    obtain ⟨point, scratch, hlincomb, hpoint⟩ := Interpolation.setup_verify_lincomb h v.setup hv.1
+    obtain ⟨point, scratch, hlincomb, hpoint⟩ := Interpolation.setup_verify_lincomb v.setup hv.1
       coefficients hcoefficients result hout v.curve_work
     let next := { v with interpolation := result, curve_work := scratch, kernel := some kernel' }
     simp only [alloc.vec.Vec.deref, result] at hcall hlincomb

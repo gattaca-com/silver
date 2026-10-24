@@ -1,5 +1,4 @@
 import LeanBlsSimd.Kzg.PortableFp
-import LeanBlsSimd.Kzg.PortableMsmContract
 import LeanBlsSimd.Kzg.PairingContract
 import LeanBlsSimd.Kzg.Decoder
 
@@ -7,9 +6,8 @@ open silver_crypto_simd
 
 namespace LeanBlsSimd.Kzg
 
-/-- Internal bundle for composing the explicit phase-2 headline premises. -/
+/-- Internal wrapper for the remaining pairing premise. -/
 structure ComponentContracts [RuntimeFeatures] : Prop where
-  msm : PortableMsmCorrect
   pairing : PairingCorrect
 
 end LeanBlsSimd.Kzg

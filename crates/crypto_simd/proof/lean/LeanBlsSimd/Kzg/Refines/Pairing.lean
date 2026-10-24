@@ -51,7 +51,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hpowersE : powersV.val = powers.toList.map frEncode := by
     simpa only [hpowers0e, List.nil_append, UScalar.ofNatCore_val_eq, Nat.sub_zero,
       powers, computePowers, List.toList_toArray] using hpowersv
-  obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement h.msm v.proof_points powersV
+  obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement v.proof_points powersV
     proofs powers hp hpowersE (by omega) hvalid.2 v.curve_work
   obtain ⟨weights0, hweights0, hweights0v⟩ := resize_fields v.scalars 0#usize (frEncode Fr.zero)
   have hweights0e : weights0.val = [] := by simpa [List.resize] using hweights0v
@@ -65,7 +65,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
     (by simpa using hci.2) { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
   have hweightsE : weightsV.val = weights.map frEncode := by
     simpa only [UScalar.ofNatCore_val_eq, List.drop_zero, weights] using hweightsv
-  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := verify_lincomb_refinement h.msm v.commitment_points weightsV
+  obtain ⟨rlc, scratchC, hrlc, hrlcrep⟩ := verify_lincomb_refinement v.commitment_points weightsV
     commitments weights.toArray hc (by simpa using hweightsE) (by simpa using hwlen.symm)
     hvalid.1 scratchL
   let middle := { v with r_powers := powersV, scalars := weightsV, curve_work := scratchC }
@@ -95,7 +95,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hshiftedE : shiftedV.val = shifted.map frEncode := by
     simpa only [hshifted0e, List.nil_append, UScalar.ofNatCore_val_eq, List.drop_zero,
       shifted] using hshiftedv
-  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement h.msm after.proof_points shiftedV
+  obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement after.proof_points shiftedV
     proofs shifted.toArray hafterProofs (by simpa using hshiftedE) (by simp [hproofs, hslen])
     hvalid.2 after.curve_work
   have hvll := g1_msm_valid_of_mem proofs powers hvalid.2
@@ -152,7 +152,7 @@ theorem pairing_holds_refinement [RuntimeFeatures] (h : ComponentContracts)
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next :=
-  Pairing.pairing_holds_composition h (interpolation_commitment_refinement h)
+  Pairing.pairing_holds_composition h interpolation_commitment_refinement
     v hv indices cells commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
 
 end LeanBlsSimd.Kzg
