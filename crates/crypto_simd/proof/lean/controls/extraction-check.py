@@ -190,6 +190,9 @@ def fixtures():
         (project / "controls").mkdir()
         shutil.copy2(Path(__file__), project / "controls/extraction-check.py")
         shutil.copy2(LEAN / "controls/setup-literals-check.py", project / "controls/setup-literals-check.py")
+        sha_check = project / "controls/sha-mutation-check.py"
+        sha_fixture = "print('SHA mutation fixture passed')\n"
+        sha_check.write_text(sha_fixture)
         source_setup = project.parents[1] / "src/kzg/setup.rs"
         source_setup.parent.mkdir(parents=True)
         shutil.copy2(LEAN.parents[1] / "src/kzg/setup.rs", source_setup)
@@ -246,6 +249,7 @@ else:
             output = result.stdout + result.stderr
             assert result.returncode == expected, f"{name}: exit {result.returncode}\n{output}"
             assert diagnostic in output, f"{name}: missing diagnostic\n{output}"
+            assert "SHA mutation fixture passed" in output, "SHA mutation check was skipped"
             assert all((committed / f).read_text() == snapshot[f] for f in FILES), "--check wrote committed output"
             assert control.read_text() == control_snapshot, "--check wrote the Lean control"
             print(f"{name}: extract.sh --check exited {expected}; {diagnostic}")
@@ -265,6 +269,17 @@ else:
             assert control.read_text() == control_snapshot
             print(f"mutated G2 literal {args}: rejected before any output replacement")
         source_setup.write_text(original_setup)
+        # A failed mutation check must stop both modes before replacing generated files.
+        sha_check.write_text("import sys\nprint('SHA mutation fixture failed', file=sys.stderr)\nsys.exit(1)\n")
+        for args in (["--check"], []):
+            result = subprocess.run([str(project / "extract.sh"), *args], text=True,
+                                    env={**os.environ, "AENEAS_DIR": str(toolchain)},
+                                    capture_output=True, timeout=30)
+            assert result.returncode != 0 and "SHA mutation fixture failed" in result.stderr, result.stdout + result.stderr
+            assert all((committed / name).read_text() == value for name, value in snapshot.items())
+            assert control.read_text() == control_snapshot
+            print(f"failed SHA mutation check {args}: rejected before any output replacement")
+        sha_check.write_text(sha_fixture)
         check("unchanged/interleaved functions", direct, 0, "No drift")
         check("source-span-only edit in literals", direct.replace("lines 1:0-2:0", "lines 31:7-45:2"), 0, "No drift")
         check("source comment edit", direct.replace("fixture.rs", "other.rs"), 1, "other.rs")
@@ -338,6 +353,7 @@ else:
                                 env={**os.environ, "AENEAS_DIR": str(toolchain)},
                                 capture_output=True, timeout=30)
         assert result.returncode == 0, result.stdout + result.stderr
+        assert "SHA mutation fixture passed" in result.stdout, "SHA mutation check was skipped"
         updated = {name: (committed / name).read_text() for name in FILES}
         assert all(updated[name] != snapshot[name] for name in FILES), "default extraction did not copy every file"
         validate_hoisting(changed_raw, updated)
