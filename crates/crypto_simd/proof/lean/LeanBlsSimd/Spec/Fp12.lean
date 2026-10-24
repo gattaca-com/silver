@@ -91,26 +91,22 @@ theorem toField_conjugate (a : Fp12) : toField a.conjugate = star (toField a) :=
   · simp [conjugate, QuadraticAlgebra.re_star]
   · simp [conjugate, QuadraticAlgebra.im_star]
 
-theorem powNat_def (a : Fp12) (n : ℕ) :
-    powNat a n = if n = 0 then Fp12.one
-      else if n % 2 = 1 then a * powNat (a * a) (n / 2)
-      else powNat (a * a) (n / 2) := by
-  rw [powNat]
-
 @[simp] theorem toField_powNat (a : Fp12) (n : ℕ) :
     toField (powNat a n) = toField a ^ n := by
   induction n using Nat.strongRecOn generalizing a with
   | _ n ih =>
-    rw [powNat_def]
-    split_ifs with h0 hodd
+    by_cases hzero : n = 0
     · subst n
-      exact toField_one
-    · rw [map_mul, ih (n / 2) (by omega), map_mul, ← sq, ← pow_mul, ← pow_succ']
-      congr 1
-      omega
-    · rw [ih (n / 2) (by omega), map_mul, ← sq, ← pow_mul]
-      congr 1
-      omega
+      simp only [SpecPairing.fp12_powNat_zero, toField_one, pow_zero]
+    · rw [SpecPairing.fp12_powNat_step a n hzero]
+      have half := ih (n / 2) (by omega) (a * a)
+      split_ifs with hodd
+      · rw [map_mul, half, map_mul, ← pow_two, ← pow_mul, ← pow_succ']
+        congr 1
+        omega
+      · rw [half, map_mul, ← pow_two, ← pow_mul]
+        congr 1
+        omega
 
 theorem beq_iff (a b : Fp12) : a.beq b = true ↔ toField a = toField b := by
   rw [toField.injective.eq_iff]
