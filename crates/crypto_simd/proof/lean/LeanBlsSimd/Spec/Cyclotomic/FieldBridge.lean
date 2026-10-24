@@ -15,7 +15,7 @@ def fp6ToCubic : Fp6Field →+* T :=
   AdjoinRoot.lift (f := Fp6Field.polynomial) kembed (w u ^ 2) (by
     simp only [Fp6Field.polynomial, Polynomial.eval₂_sub, Polynomial.eval₂_pow,
       Polynomial.eval₂_X, Polynomial.eval₂_C]
-    rw [← pow_mul, show 2*3=6 by rfl, w_sixth]
+    rw [← pow_mul, show 2 * 3 = 6 by rfl, w_sixth]
     exact sub_self _)
 
 @[simp] theorem fp6ToCubic_of (a : K) : fp6ToCubic (Fp6Field.of a) = kembed a :=
@@ -33,7 +33,7 @@ def toCubic : Fp12Field →+* T :=
       rw [fp6ToCubic_v, map_zero, zero_mul, add_zero, mul_one, pow_two]⟩).toRingHom
 
 @[simp] theorem toCubic_mk (a b : Fp6Field) :
-    toCubic ⟨a,b⟩ = fp6ToCubic a + fp6ToCubic b * w u := by
+    toCubic ⟨a, b⟩ = fp6ToCubic a + fp6ToCubic b * w u := by
   change fp6ToCubic a * 1 + fp6ToCubic b * w u = _
   rw [mul_one]
 
@@ -41,14 +41,13 @@ noncomputable def fieldDecode (x : Coeffs K) : Fp12Field :=
   ⟨Fp6Field.assemble x.c00 x.c01 x.c02, Fp6Field.assemble x.c10 x.c11 x.c12⟩
 
 theorem fp6ToCubic_assemble (a b c : K) :
-    fp6ToCubic (Fp6Field.assemble a b c) =
-      kembed a + kembed b * w u ^ 2 + kembed c * w u ^ 4 := by
+    fp6ToCubic (Fp6Field.assemble a b c) = kembed a + kembed b * w u ^ 2 + kembed c * w u ^ 4 := by
   simp only [Fp6Field.assemble, map_add, map_mul, map_pow, fp6ToCubic_of, fp6ToCubic_v]
   rw [← pow_mul]
 
-theorem embed_mk (a b : K) : embed u (⟨a,b⟩ : S) = kembed a + kembed b * w u ^ 3 := by
+theorem embed_mk (a b : K) : embed u (⟨a, b⟩ : S) = kembed a + kembed b * w u ^ 3 := by
   rw [w_cube]
-  change embed u (⟨a,b⟩ : S) = embed u (j a) + embed u (j b) * embed u u
+  change embed u (⟨a, b⟩ : S) = embed u (j a) + embed u (j b) * embed u u
   rw [← map_mul, ← map_add]
   congr 1
   ext <;> simp
@@ -61,8 +60,8 @@ theorem toCubic_fieldDecode (x : Coeffs K) : toCubic (fieldDecode x) = decode xi
 theorem toCubic_bijective : Function.Bijective toCubic := by
   refine ⟨toCubic.injective, ?_⟩
   intro x
-  obtain ⟨a,b,c,rfl⟩ := assemble_surjective u x
-  refine ⟨fieldDecode ⟨a.re,c.re,b.im,b.re,a.im,c.im⟩, ?_⟩
+  obtain ⟨a, b, c, rfl⟩ := assemble_surjective u x
+  refine ⟨fieldDecode ⟨a.re, c.re, b.im, b.re, a.im, c.im⟩, ?_⟩
   rw [toCubic_fieldDecode]
   rfl
 
@@ -79,7 +78,7 @@ theorem spec_toCubic (x : Fp12) :
   exact toCubic_fieldDecode _
 
 theorem field_cyclotomic_square (x : Coeffs K)
-    (h : fieldDecode x ^ (p^4-p^2+1) = 1) :
+    (h : fieldDecode x ^ (p ^ 4 - p ^ 2 + 1) = 1) :
     fieldDecode (raw xi x) = fieldDecode x ^ 2 := by
   apply toCubic.injective
   rw [map_pow, toCubic_fieldDecode, toCubic_fieldDecode]
@@ -87,9 +86,10 @@ theorem field_cyclotomic_square (x : Coeffs K)
   simpa only [map_pow, map_one, toCubic_fieldDecode] using congrArg toCubic h
 
 theorem field_conjugate (x : Coeffs K) :
-    fieldDecode (conjugate x) = fieldDecode x ^ (p^6) := by
+    fieldDecode (conjugate x) = fieldDecode x ^ (p ^ 6) := by
   apply toCubic.injective
   rw [map_pow, toCubic_fieldDecode, toCubic_fieldDecode, conjugate_decode]
 
 end
+
 end LeanBlsSimd.Cyclotomic

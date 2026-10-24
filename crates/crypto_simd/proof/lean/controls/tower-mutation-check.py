@@ -39,7 +39,7 @@ def main():
         ("Pair", "LeanBlsSimd/Spec/Cyclotomic/Schedule.lean",
          "fp4Square xi x.c10 x.c02", "fp4Square xi x.c10 x.c01", "raw_c"),
         ("Sign", "LeanBlsSimd/Spec/Cyclotomic/Schedule.lean",
-         "plus (xi*t2.2) x.c10", "less (xi*t2.2) x.c10", "raw_b"),
+         "plus (xi * t2.2) x.c10", "less (xi * t2.2) x.c10", "raw_b"),
         ("Inverse", "LeanBlsSimd/Spec/Fp12.lean",
          "-(b * (a * a - (b * b) * Fp6Field.v)⁻¹)",
          "(b * (a * a - (b * b) * Fp6Field.v)⁻¹)", "inv_mk"),

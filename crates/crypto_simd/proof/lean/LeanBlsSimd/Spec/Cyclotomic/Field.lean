@@ -13,10 +13,10 @@ noncomputable section
 
 theorem fieldDecode_surjective : Function.Surjective fieldDecode := by
   intro x
-  obtain ⟨a,rfl⟩ := Fp12.toField.surjective x
-  exact ⟨specCoeffs a,rfl⟩
+  obtain ⟨a, rfl⟩ := Fp12.toField.surjective x
+  exact ⟨specCoeffs a, rfl⟩
 
-def powers (x : Coeffs K) : Fin 6 → K := ![x.c00,x.c10,x.c01,x.c11,x.c02,x.c12]
+def powers (x : Coeffs K) : Fin 6 → K := ![x.c00, x.c10, x.c01, x.c11, x.c02, x.c12]
 
 theorem decode_eq_sextic (x : Coeffs K) : decode xi x = sextic (powers x) := by
   simp only [decode, assemble, ca, cb, cc, embed_mk, sextic, powers, Fin.sum_univ_succ]
@@ -24,12 +24,12 @@ theorem decode_eq_sextic (x : Coeffs K) : decode xi x = sextic (powers x) := by
   ring
 
 def frobeniusCoeffs (x : Coeffs K) : Coeffs K :=
-  ⟨star x.c00, star x.c01 * xi^(2*((p-1)/6)), star x.c02 * xi^(4*((p-1)/6)),
-    star x.c10 * xi^((p-1)/6), star x.c11 * xi^(3*((p-1)/6)),
-    star x.c12 * xi^(5*((p-1)/6))⟩
+  ⟨star x.c00, star x.c01 * xi ^ (2 * ((p - 1) / 6)), star x.c02 * xi ^ (4 * ((p - 1) / 6)),
+    star x.c10 * xi ^ ((p - 1) / 6), star x.c11 * xi ^ (3 * ((p - 1) / 6)),
+    star x.c12 * xi ^ (5 * ((p - 1) / 6))⟩
 
 theorem powers_frobenius (x : Coeffs K) :
-    powers (frobeniusCoeffs x) = fun i => star (powers x i)*xi^(i.val*((p-1)/6)) := by
+    powers (frobeniusCoeffs x) = fun i => star (powers x i) * xi ^ (i.val * ((p - 1) / 6)) := by
   funext i
   fin_cases i <;> simp [powers, frobeniusCoeffs]
 
@@ -47,23 +47,23 @@ theorem fieldDecode_conjugate (x : Coeffs K) :
       QuadraticAlgebra.im_star]
     ring
 
-theorem field_star (x : Fp12Field) : star x = x ^ (p^6) := by
-  obtain ⟨a,rfl⟩ := fieldDecode_surjective x
+theorem field_star (x : Fp12Field) : star x = x ^ (p ^ 6) := by
+  obtain ⟨a, rfl⟩ := fieldDecode_surjective x
   rw [← fieldDecode_conjugate, field_conjugate]
 
 theorem spec_conjugate (x : Fp12) :
-    Fp12.toField x.conjugate = Fp12.toField x ^ (p^6) := by
+    Fp12.toField x.conjugate = Fp12.toField x ^ (p ^ 6) := by
   rw [Fp12.toField_conjugate, field_star]
 
 def fieldEasyPart (x : Fp12Field) : Fp12Field :=
-  (star x * x⁻¹)^(p^2) * (star x * x⁻¹)
+  (star x * x⁻¹) ^ (p ^ 2) * (star x * x⁻¹)
 
 theorem field_easy_cyclotomic (x : Fp12Field) (hx : x ≠ 0) :
-    fieldEasyPart x ^ (p^4-p^2+1) = 1 := by
+    fieldEasyPart x ^ (p ^ 4 - p ^ 2 + 1) = 1 := by
   let g := Units.mk0 x hx
-  have hperiod : g^(p^12-1) = 1 := by
+  have hperiod : g ^ (p ^ 12 - 1) = 1 := by
     apply Units.ext
-    change x^(p^12-1) = 1
+    change x ^ (p ^ 12 - 1) = 1
     rw [← Fp12Field.card_eq]
     exact FiniteField.pow_card_sub_one_eq_one x hx
   have h := congrArg (fun u : Fp12Fieldˣ => (u : Fp12Field))
@@ -75,7 +75,7 @@ theorem field_easy_zero : fieldEasyPart 0 = 0 := by
   simp [fieldEasyPart]
 
 theorem field_easy_unitary (x : Fp12Field) (hx : x ≠ 0) :
-    fieldEasyPart x ^ (p^6+1) = 1 := by
+    fieldEasyPart x ^ (p ^ 6 + 1) = 1 := by
   rw [← phi_factor p (by decide +kernel), Nat.mul_comm, pow_mul,
     field_easy_cyclotomic x hx, one_pow]
 
@@ -87,4 +87,5 @@ theorem field_easy_inverse (x : Fp12Field) (hx : x ≠ 0) :
   exact eq_inv_of_mul_eq_one_left h
 
 end
+
 end LeanBlsSimd.Cyclotomic
