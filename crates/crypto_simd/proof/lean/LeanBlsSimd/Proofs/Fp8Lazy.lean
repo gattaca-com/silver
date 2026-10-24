@@ -106,7 +106,9 @@ theorem LazyRep.sub_raw (hx : LazyRep k m x l a) (hy : LazyRep k' m' y l b)
     push_cast
     rw [ZMod.natCast_self, mul_zero, add_zero, sub_mul, hx.value, hy.value]
 
-theorem LazyRep.normalise (h : LazyRep k m x l a) (hk : k ≤ 1024) (hm : m ≤ 1024) :
+set_option exponentiation.threshold 1000 in
+theorem LazyRep.normalise_of_capacity (h : LazyRep k m x l a)
+    (hk : k * Fp.modulus ≤ R) (hm : m ≤ 1024) :
     BoundRep k x.normalise l a := by
   have hl (j : Fin 8) : |SignedLimbs.limb (x.lane l)[j]| < (2 : ℤ) ^ 62 := by
     have hb := h.range.limbs j
@@ -115,10 +117,8 @@ theorem LazyRep.normalise (h : LazyRep k m x l a) (hk : k ≤ 1024) (hm : m ≤ 
     norm_num at hb ⊢
     omega
   have hhi : SignedLimbs.val (x.lane l) < (2 : ℤ) ^ 416 := by
-    have hk' : (k : ℤ) ≤ 1024 := by exact_mod_cast hk
-    have hp : (1024 : ℤ) * Fp.modulus < 2 ^ 416 := by decide +kernel
-    exact lt_of_lt_of_le h.range.bound
-      (le_trans (mul_le_mul_of_nonneg_right hk' (by positivity)) hp.le)
+    have hk' : (k : ℤ) * Fp.modulus ≤ 2 ^ 416 := by exact_mod_cast hk
+    exact h.range.bound.trans_le hk'
   have hs := SignedLimbs.normalise_eight_spec hl h.range.nonneg hhi
   have hn : SignedLimbs.Normalized (x.normalise.lane l) := by rw [lane_normalise]; exact hs.2
   have hv : (val (x.normalise.lane l) : ℤ) = SignedLimbs.val (x.lane l) := by
@@ -131,18 +131,27 @@ theorem LazyRep.normalise (h : LazyRep k m x l a) (hk : k ≤ 1024) (hm : m ≤ 
   · rw [decode, ← Int.cast_natCast (val (x.normalise.lane l)), hv]
     exact h.value
 
-theorem BoundRep.mul (hx : BoundRep k x l a) (hy : BoundRep k' y l b)
-    (hk : k * k' ≤ 1024) : (x.mul y).Holds l (a * b) := by
+theorem LazyRep.normalise (h : LazyRep k m x l a) (hk : k ≤ 1024) (hm : m ≤ 1024) :
+    BoundRep k x.normalise l a := by
+  apply h.normalise_of_capacity _ hm
+  exact (Nat.mul_le_mul_right _ hk).trans (by decide +kernel)
+
+theorem BoundRep.mul_of_capacity (hx : BoundRep k x l a) (hy : BoundRep k' y l b)
+    (hk : k * k' * Fp.modulus ≤ R) : (x.mul y).Holds l (a * b) := by
   have hab : val (x.lane l) * val (y.lane l) < R * Fp.modulus := by
-    have hp : 1024 * Fp.modulus < R := by decide +kernel
     have hbound := Nat.mul_lt_mul_of_lt_of_lt hx.bound hy.bound
-    have hkk := Nat.mul_le_mul_right (Fp.modulus * Fp.modulus) hk
+    have hcap := Nat.mul_le_mul_right Fp.modulus hk
     nlinarith
   have hs := mul_spec_of_product_lt hx.normal hy.normal hab
   refine ⟨?_, ?_⟩
   · rw [lane_mul]; exact hs.1
   · rw [lane_mul, decode, hs.2, ← hx.value, ← hy.value, decode, decode]
     ring
+
+theorem BoundRep.mul (hx : BoundRep k x l a) (hy : BoundRep k' y l b)
+    (hk : k * k' ≤ 1024) : (x.mul y).Holds l (a * b) := by
+  apply hx.mul_of_capacity hy
+  exact (Nat.mul_le_mul_right Fp.modulus hk).trans (by decide +kernel)
 
 theorem BoundRep.square (hx : BoundRep k x l a) (hk : k * k ≤ 1024) :
     x.square.Holds l (a ^ 2) := by
