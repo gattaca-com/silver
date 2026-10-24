@@ -724,6 +724,7 @@ Paths below are relative to `lean/controls/`.
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both proved generated SHA paths agree. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `PortableFpWords.lean` | Generated carry, subtraction and wide-product boundary witnesses retain the carry, borrow and high word. |
+| `PortableG1.lean` | Generated doubling preserves infinity; complete projective and affine addition handle opposite points. The scalar Scott test accepts the generator and rejects a false result. |
 | `PortableFpInverse.lean` | Halving retains the incoming high bit; odd coefficients require the modulus correction; the one test checks upper words. Inversion covers zero and one and changes two. A zero factor in the four-element batch yields four zero outputs; four ones remain ones. |
 | `PortableFpWide.lean` | Wide products retain the seventh word and last row. Subtraction retains borrow correction and rejects ordered underflow; reduction excludes a noncanonical modulus result. |
 | `PortableFpPowers.lean` | Conversion removes the Montgomery scale; sign tests distinguish 1 and −1; zero roots succeed and the pair result retains both validity bits. |

@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.G1.Scott
 import LeanBlsSimd.Portable.Fp.BatchInverse
 import LeanBlsSimd.Portable.Fp.WideProduct
 import LeanBlsSimd.Portable.Fp.WideReduction
