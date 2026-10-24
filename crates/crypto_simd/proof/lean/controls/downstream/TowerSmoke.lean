@@ -1,3 +1,4 @@
+import LeanBlsSimd.LaneTower.Layout
 import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
@@ -50,3 +51,19 @@ example (j : Fin 6) :
     Fp2.toField ⟨Kzg.fpRead ⟨FrobeniusConstants.portableRow j 0⟩,
       Kzg.fpRead ⟨FrobeniusConstants.portableRow j 1⟩⟩ =
       Fp6Field.xi ^ (j.val * ((Fp.modulus - 1) / 6)) := FrobeniusConstants.portable_entry_decodes j
+
+example (j : Fin 6) :
+    (⟨decode (FrobeniusConstants.laneLimbs j 0),
+      decode (FrobeniusConstants.laneLimbs j 1)⟩ : Fp2Field) =
+      Fp6Field.xi ^ (j.val * ((Fp.modulus - 1) / 6)) := FrobeniusConstants.lane_entry_decodes j
+
+example (h : Fin 2) (k : Fin 3) (x : Fp2Field) :
+    Fp12.toField (LaneTower.value (LaneTower.single h k x)) =
+      LaneTower.embed x * Fp12Field.w ^ (2 * k.val + h.val) := LaneTower.lane_basis h k x
+
+example (x y : bls.fp2x8.Fp2x8) (a b : LaneTower.P LaneTower.F)
+    (hx : LaneTower.Normal2 (fun _ => 256, fun _ => 256) x a)
+    (hy : LaneTower.Normal2 (fun _ => 256, fun _ => 256) y b) :
+    ∃ out, bls.fp12.Fp12.mul x y = ok out ∧
+      LaneTower.Normal2 (fun _ => 108, fun _ => 108) out (LaneTower.productValues a b) :=
+  LaneTower.mul_raw hx hy

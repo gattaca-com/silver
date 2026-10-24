@@ -1,3 +1,4 @@
+import LeanBlsSimd.LaneTower.Layout
 import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.PairingProduct
 import LeanBlsSimd.Spec.Cyclotomic.Field

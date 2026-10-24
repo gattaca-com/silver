@@ -284,6 +284,7 @@ python3 -I controls/decoder-mutation-check.py
 python3 -I controls/msm-mutation-check.py
 python3 -I controls/tower-mutation-check.py
 python3 -I controls/portable-tower-mutation-check.py
+python3 -I controls/lane-tower-mutation-check.py
 ```
 
 Build the independent downstream package from its own root:
@@ -698,7 +699,16 @@ The `encode` functions choose those exact canonical coordinates, and `rep_eq_enc
 `Portable/Fp12/Frobenius.lean:portable_entry_decodes` states each portable table entry's decoded value as `ξ^(j(p−1)/6)`.
 `portable_entry_encoded` ties those entries to the portable arithmetic's `2^384` Montgomery encoder.
 The generated Frobenius map refines the specification's p-th power for every input.
-The lane table's `2^416` arithmetic connection belongs to the lane tower refinement.
+`LaneTower/Constants.lean:lane_entry_decodes` gives the lane table's decoded entries using the arithmetic model's `decode`.
+`lane_radix` identifies its `R` with `2^416`, and `lane_entry_bounds` certifies normalized canonical limbs.
+
+### Lane pairing tower schedules
+
+`LaneTower/Upper.lean` tracks inclusive bounds on signed, nonnegative limb values and their decoded field elements. Zero-valued contributions retain bound zero. `Vectors.lean` and `Pairs.lean` compose generated addition, offset subtraction, normalization, multiplication and lane permutations. The capacity lemmas cover the tower's operands above `1024p`; the existing reduced and lazy arithmetic contracts keep their statements.
+
+`Packing.lean` proves the generated six- and nine-row packing and unpacking, including recovery of all six active lanes after pointwise multiplication. `Products.lean` gives one array-width-generic product-loop proof. `Inputs.lean`, `Recombine.lean` and `Mul.lean:mul_raw` compose the generated multiplication schedule from inputs bounded by `256p` to outputs bounded by `108p`. `Layout.lean:lane_basis` identifies lane `3h+k` with the field basis element `w^(2k+h)`.
+
+The multiplication result is expressed by `productValues`, the exact coordinate schedule. Its identity with specification multiplication and the remaining lane tower operations are separate refinement obligations.
 
 ### Portable MSM components
 
@@ -776,6 +786,8 @@ Paths below are relative to `lean/controls/`.
 | `msm-mutation-check.py` | Run after `lake build`. Source mutation control: original and reformatted portable finish schedules compile; skipping rejected-round refill fails `finish_correct` with an unsolved goal. |
 | `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. `[G,G]` with scalars `[1,1]` must reject a generated pair round and return `2G` through the MSM fallback. |
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
+| `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
+| `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking and the product loop reject mutations with ordinary proof errors; original and reformatted definitions pass. |
 | `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |
 | `portable-tower-mutation-check.py` | After the build: copies live generated definitions and rechecks their refinements. Reversed wide subtraction, a wrong sparse-line coefficient, a cyclotomic sign, a Frobenius index and a table limb fail named proofs. |
 | `TowerField.lean` | Total inverse and zero-power behavior, the coordinate round trip, zero rejection and field/target-group axioms. |

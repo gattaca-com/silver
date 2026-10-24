@@ -1,3 +1,4 @@
+import controls.LaneTowerCapacity
 import controls.PortableTower
 import controls.TowerField
 import controls.Cyclotomic
