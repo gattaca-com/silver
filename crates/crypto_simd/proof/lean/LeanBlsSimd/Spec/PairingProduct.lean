@@ -34,7 +34,7 @@ theorem toField_pairingStep (acc : Fp12) (pair : G1 × G2) :
   unfold SpecPairing.pairingFoldStep pairingFactor
   split <;> simp [map_mul]
 
-theorem toField_pairingFold (pairs : List (G1 × G2)) (acc : Fp12) :
+theorem toField_list_pairingFold (pairs : List (G1 × G2)) (acc : Fp12) :
     Fp12.toField (pairs.foldl SpecPairing.pairingFoldStep acc) =
       Fp12.toField acc * (pairs.map (fun pair => Fp12.toField (pairingFactor pair))).prod := by
   induction pairs generalizing acc with
@@ -43,15 +43,15 @@ theorem toField_pairingFold (pairs : List (G1 × G2)) (acc : Fp12) :
     simp only [List.foldl_cons, List.map_cons, List.prod_cons]
     rw [ih, toField_pairingStep, mul_assoc]
 
-theorem toField_pairingAccumulator (pairs : Array (G1 × G2)) :
+theorem toField_pairingFold (pairs : Array (G1 × G2)) :
     Fp12.toField (SpecPairing.pairingFold pairs) =
       (pairs.toList.map (fun pair => Fp12.toField (pairingFactor pair))).prod := by
-  rw [SpecPairing.pairingFold, ← Array.foldl_toList, toField_pairingFold, Fp12.toField_one, one_mul]
+  rw [SpecPairing.pairingFold, ← Array.foldl_toList, toField_list_pairingFold, Fp12.toField_one, one_mul]
 
-theorem toField_finalExponentiation_pairingAccumulator (pairs : Array (G1 × G2)) :
+theorem toField_finalExponentiation_pairingFold (pairs : Array (G1 × G2)) :
     Fp12.toField (finalExponentiation (SpecPairing.pairingFold pairs)) =
       (pairs.toList.map (fun pair => Fp12.toField (eSpec pair.1 pair.2))).prod := by
-  rw [toField_finalExponentiation, toField_pairingAccumulator]
+  rw [toField_finalExponentiation, toField_pairingFold]
   simpa only [List.map_map, Function.comp_def, powMonoidHom_apply, eSpec,
     toField_finalExponentiation] using
       (List.prod_hom (pairs.toList.map (fun pair => Fp12.toField (pairingFactor pair)))
@@ -61,7 +61,7 @@ theorem toField_finalExponentiation_pairingAccumulator (pairs : Array (G1 × G2)
 theorem pairingCheck_iff (pairs : Array (G1 × G2)) :
     pairingCheck pairs = true ↔
       (pairs.toList.map (fun pair => Fp12.toField (eSpec pair.1 pair.2))).prod = 1 := by
-  rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation_pairingAccumulator]
+  rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation_pairingFold]
 
 /-- Group-valued factors require an explicit nonvanishing hypothesis for each contributing value. -/
 def pairingTargets (pairs : Array (G1 × G2))
