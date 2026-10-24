@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.BatchPrepareLoop
 import LeanBlsSimd.Portable.Msm.BatchUnwind
 import LeanBlsSimd.Portable.Msm.FillReady
 import LeanBlsSimd.Portable.Msm.StoreLifecycle
@@ -117,6 +118,38 @@ theorem missing_fifth_prefix_rejected [RuntimeFeatures]
   simp only [Kzg.fpRead_fpEncode] at hf
   exact (by decide : (12 : EthLib.Cryptography.Bls.Fp) ≠ 0) hf
 
+private def lateStore : portable.msm.store.PointStore :=
+  ⟨⟨[Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0,Fp.pairEncode 0 0],
+    by scalar_tac⟩,2#usize⟩
+
+private def lateAdds : portable.msm.pairs.BatchedAdds :=
+  ⟨⟨[0#u32,0#u32],by scalar_tac⟩,⟨[1#u32,0#u32],by scalar_tac⟩,
+    ⟨[2#u32,3#u32],by scalar_tac⟩,alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
+
+theorem later_equal_x_rejects [RuntimeFeatures] :
+    ∃ next, lateAdds.run lateStore = ok (false,next,lateStore) := by
+  let values : ℕ → Batch.ChainField := fun i => if i = 0 then 6 else 0
+  have hi : Batch.Inputs lateAdds.a lateAdds.b lateStore values 2 := by
+    intro j hj
+    interval_cases j
+    · exact ⟨0#u32,1#u32,0,1,6,1,rfl,rfl,rfl,rfl,by decide +kernel⟩
+    · exact ⟨0#u32,0#u32,0,1,0,1,rfl,rfl,rfl,rfl,by decide +kernel⟩
+  obtain ⟨next,h,_,_,_⟩ := Batch.run_rejects_at lateAdds lateStore values 1#usize
+    (by decide) hi (by intro j hj; change j < 1 at hj; interval_cases j; decide +kernel)
+    (by rfl)
+  exact ⟨next,h⟩
+
+theorem later_equal_x_success_rejected [RuntimeFeatures]
+    (next : portable.msm.pairs.BatchedAdds) (out : portable.msm.store.PointStore) :
+    lateAdds.run lateStore ≠ ok (true,next,out) := by
+  obtain ⟨next',he⟩ := later_equal_x_rejects
+  rw [he]
+  intro h
+  have hf := congrArg Prod.fst (Result.ok.inj h)
+  cases hf
+
+#print axioms Batch.run_rejects_at
+#print axioms Batch.prepare_all
 #print axioms Buckets.fill_eq
 #print axioms Buckets.fill127_ready
 #print axioms Store.signed_refines
