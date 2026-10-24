@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.BatchUnwind
 import LeanBlsSimd.Portable.Msm.StoreLifecycle
 import LeanBlsSimd.Portable.Msm.BatchReject
 import LeanBlsSimd.Portable.Msm.BatchFinish

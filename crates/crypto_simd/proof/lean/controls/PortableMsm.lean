@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.BatchUnwind
 import LeanBlsSimd.Portable.Msm.FillReady
 import LeanBlsSimd.Portable.Msm.StoreLifecycle
 import LeanBlsSimd.Portable.Msm.BatchReject
@@ -77,11 +78,52 @@ theorem chunk_counters_fit : 2*32*portable.msm.CHUNK.val < 2^31 ∧
     (2+32)*portable.msm.CHUNK.val < 2^31 :=
   Buckets.chunk_reference_bounds _ (Nat.le_refl _)
 
+private def differences (i : ℕ) : Batch.ChainField := (i+2 : ℕ)
+
+private def inputRefs (r : U32) : alloc.vec.Vec U32 :=
+  ⟨List.replicate 5 r, by scalar_tac⟩
+
+private def zeros : alloc.vec.Vec portable.fp.Fp :=
+  ⟨List.replicate 5 (Kzg.fpEncode 0).l, by scalar_tac⟩
+
+private def differenceStore : portable.msm.store.PointStore :=
+  ⟨⟨[Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0],by scalar_tac⟩,2#usize⟩
+
+theorem fifth_job_stores_chain_prefix [RuntimeFeatures] :
+    ∃ next, portable.msm.pairs.BatchedAdds.run_loop0.body
+        (inputRefs 0#u32) (inputRefs 1#u32) (inputRefs 2#u32) differenceStore 5#usize
+        zeros zeros (Batch.chainArray differences 4) 4#usize =
+      ok (ControlFlow.cont (zeros.set 4#usize (Kzg.fpEncode 6).l,
+        zeros.set 4#usize (Kzg.fpEncode 12).l,Batch.chainArray differences 5,next)) := by
+  obtain ⟨next,_,he⟩ := Batch.prepare_step (inputRefs 0#u32) (inputRefs 1#u32) (inputRefs 2#u32)
+    zeros zeros differenceStore 5#usize 4#usize differences 0#u32 1#u32 0 1 6 1
+    (by decide) (by rfl) (by rfl) (by rfl) (by rfl) (by decide +kernel)
+    (by decide +kernel) (by decide) (by decide)
+  exact ⟨next,he⟩
+
+theorem missing_fifth_prefix_rejected [RuntimeFeatures]
+    (dx : alloc.vec.Vec portable.fp.Fp) (products : Array portable.fp.Fp 4#usize) (next : Usize) :
+    portable.msm.pairs.BatchedAdds.run_loop0.body
+        (inputRefs 0#u32) (inputRefs 1#u32) (inputRefs 2#u32) differenceStore 5#usize
+        zeros zeros (Batch.chainArray differences 4) 4#usize ≠
+      ok (ControlFlow.cont (dx,zeros,products,next)) := by
+  obtain ⟨actual,he⟩ := fifth_job_stores_chain_prefix
+  rw [he]
+  intro h
+  have hp := congrArg (fun t => t.2.1.val[4]?) (ControlFlow.cont.inj (Result.ok.inj h))
+  change some (Kzg.fpEncode 12).l = some (Kzg.fpEncode 0).l at hp
+  have hf := congrArg (fun raw => Kzg.fpRead ⟨raw⟩) (Option.some.inj hp)
+  change Kzg.fpRead (Kzg.fpEncode 12) = Kzg.fpRead (Kzg.fpEncode 0) at hf
+  simp only [Kzg.fpRead_fpEncode] at hf
+  exact (by decide : (12 : EthLib.Cryptography.Bls.Fp) ≠ 0) hf
+
 #print axioms Buckets.fill_eq
 #print axioms Buckets.fill127_ready
 #print axioms Store.signed_refines
 #print axioms Store.reset_refines
 #print axioms Batch.run_rejects_first
+#print axioms Batch.prepare_step
+#print axioms Batch.unwind_step
 #print axioms Batch.finishValues_point
 
 end LeanBlsSimd.Portable.Msm.Controls

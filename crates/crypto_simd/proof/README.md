@@ -657,7 +657,7 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 `Portable/Msm/Buckets.lean` proves that portable bucket fill has the same generated schedule as the lane implementation after converting its five storage fields. `FillReady.lean` reuses the signed-digit, packing, weighted-sum and live-reference theorems. Its chunk bounds use the generated `CHUNK = 4096` constant.
 
-`Store.Holds` describes canonical coordinates at an initialized slot without constraining reserved scratch. The store refinements prove signed references, writes and their frame property, allocation and reset. `BatchReject.lean` proves the generated equal-x branch returns false before inversion and preserves the store, including the first-job case for arbitrary scratch. `BatchFinish.lean` proves the affine finish formula and reuses the shared nonsingular addition theorem. `PortableMsmCorrect` remains an explicit verifier premise until the round, fallback and chunk proofs are composed.
+`Store.Holds` describes canonical coordinates at an initialized slot without constraining reserved scratch. The store refinements prove signed references, writes and their frame property, allocation and reset. `BatchReject.lean` proves the generated equal-x branch returns false before inversion and preserves the store, including the first-job case for arbitrary scratch. `BatchFinish.lean` proves the affine finish formula and reuses the shared nonsingular addition theorem. `BatchPrepare.lean` and `BatchUnwind.lean` refine each generated step using the shared four-chain product invariant and the proved portable batch inversion. The reverse step recovers each inverse and updates its chain accumulator. `PortableMsmCorrect` remains an explicit verifier premise until the round, fallback and chunk proofs are composed.
 
 ### Verifier MSM8 kernel
 
@@ -717,7 +717,7 @@ Paths below are relative to `lean/controls/`.
 |---|---|
 | `ContractSamples.lean` | Interpreter samples of generated Fr/byte operations, both portable Fp paths and both SHA implementations, with wrong-result controls. |
 | `MsmSamples.lean` | Interpreter samples of actual portable MSM with reused scratch, infinity, cancellation and a wrong-weight control. |
-| `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs reject a successful-round result without changing the store. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
+| `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
 | `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
 | `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
 | `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
