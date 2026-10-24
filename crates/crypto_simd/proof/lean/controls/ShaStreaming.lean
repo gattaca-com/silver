@@ -1,4 +1,4 @@
-import LeanBlsSimd.Sha256.Streaming
+import LeanBlsSimd.Sha256.GeneratedUpdateRefines
 
 open LeanBlsSimd.Sha256 Streaming
 
@@ -25,3 +25,5 @@ end LeanBlsSimd.Controls.ShaStreaming
 
 #print axioms LeanBlsSimd.Sha256.Streaming.update_append
 #print axioms LeanBlsSimd.Sha256.Streaming.finish_eq_hash
+
+#print axioms LeanBlsSimd.Sha256.Generated.update_refines
