@@ -1,3 +1,4 @@
+import LeanBlsSimd.Spec.Sha256
 import LeanBlsSimd.Kzg.SetupLiterals
 import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Constants

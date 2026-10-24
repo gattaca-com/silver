@@ -1,3 +1,4 @@
+import controls.ShaSpec
 import controls.FrBytes
 import controls.SetupLiterals
 import controls.InverseRoots
