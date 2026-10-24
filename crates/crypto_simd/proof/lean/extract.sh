@@ -34,6 +34,7 @@ crate_dir=$(cd "$lean_dir/../.." && pwd)
 
 python3 -I "$lean_dir/controls/setup-literals-check.py"
 python3 -I "$lean_dir/controls/sha-mutation-check.py"
+python3 -I "$lean_dir/controls/decoder-mutation-check.py"
 
 AENEAS_DIR=$(cd "$AENEAS_DIR" && pwd)
 aeneas="$AENEAS_DIR/bin/aeneas"

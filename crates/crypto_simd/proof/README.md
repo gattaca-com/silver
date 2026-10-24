@@ -276,6 +276,7 @@ Run the extraction fixtures separately from the Lean control loop:
 ```sh
 python3 -I controls/extraction-check.py
 python3 -I controls/sha-mutation-check.py
+python3 -I controls/decoder-mutation-check.py
 ```
 
 Build the independent downstream package from its own root:
@@ -731,6 +732,7 @@ Paths below are relative to `lean/controls/`.
 | `ShaStreaming.lean` | The shared streaming invariant excludes missing pending bytes and incorrect stored lengths; empty and split updates preserve the state. |
 | `ShaSpec.lean` | Local fixtures distinguish round constants and feed-forward. Padding equations check the 55/56-byte boundary and bit-length wrap; a UInt64 fixture checks byte-count wrapping. |
 | `sha-mutation-check.py` | Both extraction modes run this check. Copies `Spec/Sha256.lean` and changes the round operand from `d+t1` to `c+t1`. Requires an unsolved goal in `compressBlock_eq`; timeouts fail the harness. Unchanged and reformatted sources must compile. |
+| `decoder-mutation-check.py` | Both extraction modes run mutations of the ordinary decoder zero-x check and Scott comparison y sign. The generated-code and specification ties must reject them with proof errors. Timeouts fail; unchanged and reformatted copies must compile. |
 | `KzgStreamingSha.lean` | Constant-zero hashing is rejected; changing chunk boundaries preserves the observed digest, and both proved generated SHA paths agree. |
 | `ExtractedLiterals.lean`, `ShaIntrinsics.lean` | Hoisted literals equal the extracted values; SHA/SSE intrinsic fixtures and mutations check packing, lane order and round operands. |
 | `PortableFpWords.lean` | Generated carry, subtraction and wide-product boundary witnesses retain the carry, borrow and high word. |
