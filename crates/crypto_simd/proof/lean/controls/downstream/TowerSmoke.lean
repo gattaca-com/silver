@@ -1,3 +1,5 @@
+import LeanBlsSimd.Pairing.CombinedMiller
+import LeanBlsSimd.Pairing.PortableFactors
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
@@ -113,3 +115,30 @@ example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
 
 example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
     bls.fp12.Fp12.is_one x = ok a.isOne := LaneTower.is_one_refines hx
+
+example (step : Fin 68) (pair i : Fin 2) :
+    Pairing.coefficient step pair i =
+      if i = 0 then (Pairing.FixedTable.lines pair step).1 else (Pairing.FixedTable.lines pair step).2 :=
+  Pairing.FixedTable.entry_decodes step pair i
+
+example (points : Fin 2 → G1) :
+    Pairing.FinalEq (pairingFactor (points 0, Pairing.setupPoint 0) *
+      pairingFactor (points 1, Pairing.setupPoint 1)) (Pairing.combinedMiller points).conjugate :=
+  Pairing.combined_final_eq points
+
+example [RuntimeFeatures] (lines : portable.pairing.PairingLines) (hl : Kzg.PortableLinesRep lines)
+    (step : Usize) (hs : step.val < 68)
+    (factors : Aeneas.Std.Array (Aeneas.Std.Array portable.fp.Fp 3#usize) 2#usize)
+    (v : Pairing.Factors) (hf : Pairing.PortableLines.FactorsRep factors v)
+    (present : Aeneas.Std.Array Bool 2#usize) (f : Fp12) :
+    portable.pairing.PairingLines.times_lines lines (Portable.Fp12.encode f) step factors present =
+      ok (Portable.Fp12.encode (Pairing.pairApply ⟨step.val, hs⟩ v present 1
+        (Pairing.pairApply ⟨step.val, hs⟩ v present 0 f))) :=
+  Pairing.PortableLines.times_lines lines hl step hs factors v hf present f
+
+example [RuntimeFeatures] (raw : Aeneas.Std.Array portable.g1.G1 2#usize)
+    (points : Fin 2 → G1) (hp : Pairing.PortableLines.PointsRep raw points)
+    (factors : Aeneas.Std.Array (Aeneas.Std.Array portable.fp.Fp 3#usize) 2#usize) :
+    ∃ out, portable.pairing.PairingLines.miller_loop_loop0 raw factors 0#usize = ok out ∧
+      Pairing.PortableLines.FactorsRep out (Pairing.g1Factors points) :=
+  Pairing.PortableLines.factors_refines raw points hp factors
