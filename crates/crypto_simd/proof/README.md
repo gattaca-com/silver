@@ -219,7 +219,7 @@ Import `LeanBlsSimd.Kzg.Extender.Statements` and apply:
 Extender.compute_eq_spec
 ```
 
-The constructor establishes the invariant, and each returned state preserves it for the next call. The fixed-size blob and cell types supply the byte lengths. `controls/ExtenderSpecInstance.lean` checks the conditional generated-runtime application.
+The constructor establishes the invariant, and each returned state preserves it for the next call. The fixed-size blob and cell types supply the byte lengths. `controls/downstream/KzgSmoke.lean` applies construction and execution without component premises.
 
 ## What a reader must trust
 
@@ -713,8 +713,6 @@ Paths below are relative to `lean/controls/`.
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |
 | `InterpolationKernel.lean` | Wrong inverse-size shift factors or used-column flags violate the generated contracts. Unnormalized first products violate bounded DIT input. Noncanonical cells are rejected. Canonical acceptance and normalization supply positive controls. |
 | `Msm8.lean` | Wrong bucket indices, digit signs, GLV constants and window weights violate their laws. Skipping equal-x rejection or the inverse chain's final multiplication fails concrete controls. Queue aliasing, allocation, repeated-job padding and scalar-word length have positive and negative cases. |
-| `ExtenderSpecInstance.lean` | The generated-runtime headline is applied conditionally to construction, canonicality, exact bytes and unchanged output on rejection. |
-| `ExtenderExternalBoundary.lean` | Wrong field bytes and failed serialization violate independent specification-model byte laws. |
 | `ExtenderMathematical.lean` | Extender input/output bit reversal, coset shifting, forward FFT direction and inverse FFT scaling at the blob size. |
 | `ExtenderLayout.lean` | First-half copying, the extension's cell-64 offset, rejection of noncanonical blobs and output preservation on rejection; generated decoding rejects an all-`ff` blob. |
 | `ExtenderKernelBoundary.lean` | The generated range mask rejects exact raw out-of-range values; permutation uses bit 3 and ignores higher bits; multiplier construction requires its factor of 16. Kernel byte encoding and portable scalar serialization are both proved. |

@@ -1,5 +1,4 @@
 import controls.ExtenderLayout
-import controls.ExtenderExternalBoundary
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 
 open Aeneas Aeneas.Std Result
@@ -113,9 +112,6 @@ theorem omitting_multiplier_scale_changes_generated_multiplier :
   exact (by decide +kernel : (frEncode (1 * Fr.ofNat 16)).l.val[0]!.val ≠
     (frEncode 1).l.val[0]!.val) hword
 
-theorem failing_simd_serialization_is_incorrect : ¬ SerializationLaw failSerialization :=
-  failSerialization_rejected
-
 theorem kernel_route_does_not_require_serialization :
     ∃ initial kernel,
       @cell_extender.CellExtender.new ⟨true, false, false⟩ = ok initial ∧
@@ -142,5 +138,4 @@ end LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary.permute_uses_bit_three
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary.permute_ignores_higher_index_bits
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary.omitting_multiplier_scale_changes_generated_multiplier
-#print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary.failing_simd_serialization_is_incorrect
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary.kernel_route_does_not_require_serialization

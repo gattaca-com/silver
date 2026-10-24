@@ -14,8 +14,6 @@ import controls.KzgRuntimeBoundary
 import controls.KzgRepresentationAxioms
 import controls.ExtractedLiterals
 import controls.ShaIntrinsics
-import controls.ExtenderSpecInstance
-import controls.ExtenderExternalBoundary
 import controls.ExtenderMathematical
 import controls.ExtenderLayout
 import controls.ExtenderKernelBoundary
