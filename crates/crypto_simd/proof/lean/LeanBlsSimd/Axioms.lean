@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Fp.WideReduction
 import LeanBlsSimd.Portable.Fp.Sqrt
 import LeanBlsSimd.Portable.Fp.PairSqrt
 import LeanBlsSimd.Portable.Fp.Correct

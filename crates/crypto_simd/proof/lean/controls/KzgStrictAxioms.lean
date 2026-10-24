@@ -1,3 +1,4 @@
+import controls.PortableFpWide
 import controls.PortableFpPowers
 import controls.PortableFpCorrect
 import controls.PortableFpReduction
