@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.Queue
 import LeanBlsSimd.Portable.Msm.BatchRun
 import LeanBlsSimd.Portable.Msm.FillReady
 import LeanBlsSimd.Portable.Msm.StoreLifecycle
@@ -188,6 +189,74 @@ theorem omitted_reverse_write_rejected [RuntimeFeatures]
   change Kzg.fpRead (Kzg.fpEncode (-6)) = Kzg.fpRead (Kzg.fpEncode 0) at hx
   simp only [Kzg.fpRead_fpEncode] at hx
   exact (by decide +kernel : (-6 : EthLib.Cryptography.Bls.Fp) ≠ 0) hx
+
+private def oddBuckets : portable.msm.buckets.Buckets :=
+  ⟨4#usize,1#usize,⟨[0#u32,1#u32,2#u32],by scalar_tac⟩,
+    ⟨[0#u32],by scalar_tac⟩,⟨[3#u32],by scalar_tac⟩⟩
+
+private def queueStore : portable.msm.store.PointStore :=
+  ⟨⟨List.replicate 4 Store.zeroRow,by scalar_tac⟩,3#usize⟩
+
+private theorem odd_packed : Queue.Packed oddBuckets 1 (fun _ => 0) (fun _ => 3)
+    (fun _ => [0#u32,1#u32,2#u32]) := by
+  constructor
+  · exact ⟨rfl,by intro i hi; interval_cases i; rfl⟩
+  · rfl
+  · intro i hi; interval_cases i; rfl
+  · decide
+  · intro i hi; decide
+  · intro i hi; decide
+  · intro i hi j hj; simp [oddBuckets,Buckets.toLane]
+
+theorem odd_bucket_round_preserves_carry :
+    ∃ result next out, oddBuckets.queue_round adds queueStore 3#usize = ok (result,next,out) ∧
+      result.refs.val[0]? = some 3#u32 ∧ result.refs.val[1]? = some 2#u32 ∧
+      result.lens.val[0]? = some 2#u32 ∧ next.a.val = [0#u32] ∧ next.b.val = [1#u32] ∧
+      next.out.val = [3#u32] ∧ out.len.val = 4 ∧ out.points = queueStore.points := by
+  obtain ⟨result,next,out,he,hp,ha,hb,ho,hn,_,_,_,hr,_,_⟩ :=
+    Queue.queue_round_packed_capacity oddBuckets 1 (fun _ => 0) (fun _ => 3)
+      (fun _ => [0#u32,1#u32,2#u32]) odd_packed
+      (by intro i hi k hk hne; omega) adds queueStore 3#usize
+      (by intro i hi; change 4 < 2^32; decide)
+      (by change 1 ≤ Usize.max; scalar_tac) (by intro _; decide) (by decide)
+  have hx := hp.entries 0 (by decide) 0 (by decide)
+  have hy := hp.entries 0 (by decide) 1 (by decide)
+  have hl := hp.counts.values 0 (by decide)
+  have hlength : result.lens.val.length = 1 := hp.counts.length
+  have hcapacity := hp.regions 0 (by decide)
+  change 0+3 ≤ result.refs.val.length at hcapacity
+  have hxe : result.refs.val[0] = 3#u32 := by
+    simpa only [Buckets.toLane,getElem!_pos result.refs.val 0 (by omega)] using hx
+  have hye : result.refs.val[1] = 2#u32 := by
+    simpa only [Buckets.toLane,getElem!_pos result.refs.val 1 (by omega)] using hy
+  have hle : result.lens.val[0] = 2#u32 := by
+    apply UScalar.eq_of_val_eq
+    simpa only [Buckets.toLane,getElem!_pos result.lens.val 0 (by omega)] using hl
+  exact ⟨result,next,out,he,by rw [List.getElem?_eq_getElem (by omega),hxe],
+    by rw [List.getElem?_eq_getElem (by omega),hye],
+    by rw [List.getElem?_eq_getElem (by omega),hle],ha,hb,ho,hn,hr⟩
+
+theorem dropped_odd_carry_rejected (result : portable.msm.buckets.Buckets)
+    (next : portable.msm.pairs.BatchedAdds) (out : portable.msm.store.PointStore)
+    (hdrop : result.refs.val[1]? = some 1#u32) :
+    oddBuckets.queue_round adds queueStore 3#usize ≠ ok (result,next,out) := by
+  obtain ⟨actual,a,s,he,_,hcarry,_⟩ := odd_bucket_round_preserves_carry
+  rw [he]
+  intro h
+  have hr := congrArg (fun t => t.1.refs.val[1]?) (Result.ok.inj h)
+  change actual.refs.val[1]? = result.refs.val[1]? at hr
+  rw [hcarry,hdrop] at hr
+  cases hr
+
+theorem reused_slot_needs_no_capacity :
+    ∃ out, portable.msm.buckets.sum_slot 2147483649#u32 store 1#usize = ok (1#u32,out) ∧
+      out.len = store.len ∧ out.points = store.points := by
+  obtain ⟨out,he,hn,hp⟩ := Store.sum_slot_refines 2147483649#u32 store 1#usize (by decide)
+  refine ⟨out,he,?_,hp⟩
+  apply UScalar.eq_of_val_eq
+  exact hn
+
+#print axioms Queue.queue_round_packed_capacity
 
 #print axioms Batch.execute_loop
 #print axioms Batch.run_cases
