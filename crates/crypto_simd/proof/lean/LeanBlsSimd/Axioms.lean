@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.PairRounds
 import LeanBlsSimd.Portable.Msm.Queue
 import LeanBlsSimd.Portable.Msm.BatchRun
 import LeanBlsSimd.Portable.Msm.StoreLifecycle

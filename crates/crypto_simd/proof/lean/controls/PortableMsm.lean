@@ -1,3 +1,4 @@
+import LeanBlsSimd.Portable.Msm.PairRounds
 import LeanBlsSimd.Portable.Msm.Queue
 import LeanBlsSimd.Portable.Msm.BatchRun
 import LeanBlsSimd.Portable.Msm.FillReady
@@ -255,6 +256,31 @@ theorem reused_slot_needs_no_capacity :
   refine ⟨out,he,?_,hp⟩
   apply UScalar.eq_of_val_eq
   exact hn
+
+theorem rejected_pair_round_exits [RuntimeFeatures] :
+    ∃ next, portable.msm.Msm.pair_rounds_loop store buckets adds 2#usize =
+      ok (store,buckets,next) ∧ next.a = adds.a := by
+  obtain ⟨next,hr,ha,_,_⟩ := Batch.run_rejects_first adds store 0#u32 1#u32 3 5 7
+    (by rfl) (by rfl) (by rfl) (by rfl)
+  refine ⟨next,?_,ha⟩
+  rw [portable.msm.Msm.pair_rounds_loop,Aeneas.Std.loop.eq_1]
+  simp only [portable.msm.Msm.pair_rounds_loop.body,Rounds.adds_is_empty,
+    show adds.a.val.isEmpty = false from rfl,bind_tc_ok,Bool.false_eq_true,if_false,hr]
+  rfl
+
+theorem rejected_round_is_not_empty [RuntimeFeatures]
+    (next : portable.msm.pairs.BatchedAdds) (hempty : next.a.val.isEmpty = true) :
+    portable.msm.Msm.pair_rounds_loop store buckets adds 2#usize ≠ ok (store,buckets,next) := by
+  obtain ⟨actual,he,ha⟩ := rejected_pair_round_exits
+  rw [he]
+  intro h
+  have hs := congrArg (fun t => t.2.2.a.val.isEmpty) (Result.ok.inj h)
+  change actual.a.val.isEmpty = next.a.val.isEmpty at hs
+  rw [ha,hempty] at hs
+  cases hs
+
+#print axioms Batch.run_jobs_correct
+#print axioms Rounds.pair_rounds_initial
 
 #print axioms Queue.queue_round_packed_capacity
 
