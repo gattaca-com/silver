@@ -1,3 +1,4 @@
+import controls.PortableG1Pair
 import controls.PortableG1
 import controls.PortableFpInverse
 import controls.PortableFpWide
