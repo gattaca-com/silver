@@ -24,6 +24,18 @@ def main():
          "let f2 ← Array.index_usize q 2#usize", "let f2 ← Array.index_usize q 3#usize", "unpack_six"),
         ("ProductLoop", "Products", "bls.fp12.Fp12.mul_loop.body",
          "Array.index_usize right i", "Array.index_usize left i", "mul_loop_eq"),
+        ("Square", "SquareRecombine", "bls.fp12.Fp12.from_square_lanes",
+         "bls.fp2x8.Fp2x8.sub_raw pos2 neg2 f11", "bls.fp2x8.Fp2x8.sub_raw neg2 pos2 f11",
+         "from_square_lanes"),
+        ("Conjugate", "Basic", "bls.fp12.Fp12.conjugate",
+         "56#u8", "7#u8", "conjugate_raw"),
+        ("Frobenius", "Frobenius", "bls.fp12.Fp12.times_coefficients_loop.body",
+         "Array.index_usize bls.fp12.POWER_OF_LANE lane",
+         "Array.index_usize bls.fp12.POWER_OF_LANE 0#usize", "coefficient_body_step"),
+        ("Line", "LineRecombine", "bls.fp12.Fp12.from_line_lanes",
+         "66#u64", "65#u64", "from_line_lanes"),
+        ("Cyclotomic", "CyclotomicSum", "bls.fp12.Fp12.cyclotomic_sum",
+         "56#u8", "7#u8", "cyclotomic_sum_raw"),
     ]
     with tempfile.TemporaryDirectory(prefix="lane-tower-mutation-") as directory:
         for label, module, name, old, new, proof in cases:
@@ -38,7 +50,8 @@ def main():
             original = original[:target.end()].rstrip()
             if original.endswith("-/"):
                 original = original[:original.rfind("/--")].rstrip()
-            original += "\nend LeanBlsSimd.LaneTower\n"
+            if not original.endswith("end LeanBlsSimd.LaneTower"):
+                original += "\nend LeanBlsSimd.LaneTower\n"
             imports = re.match(r"(?:import [^\n]+\n)+", original)
             if imports is None:
                 raise AssertionError(f"{label}: missing imports")

@@ -1,4 +1,6 @@
-import LeanBlsSimd.LaneTower.Layout
+import LeanBlsSimd.LaneTower.Frobenius
+import LeanBlsSimd.LaneTower.LineCoordinates
+import LeanBlsSimd.LaneTower.CyclotomicSum
 import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
@@ -67,3 +69,33 @@ example (x y : bls.fp2x8.Fp2x8) (a b : LaneTower.P LaneTower.F)
     ∃ out, bls.fp12.Fp12.mul x y = ok out ∧
       LaneTower.Normal2 (fun _ => 108, fun _ => 108) out (LaneTower.productValues a b) :=
   LaneTower.mul_raw hx hy
+
+example (a b : LaneTower.P LaneTower.F) :
+    LaneTower.value (LaneTower.productValues a b) =
+      (LaneTower.value a).mul (LaneTower.value b) := LaneTower.product_value a b
+
+example (x y : bls.fp2x8.Fp2x8) (a b : Fp12)
+    (hx : LaneTower.Rep x a) (hy : LaneTower.Rep y b) :
+    ∃ out, bls.fp12.Fp12.mul x y = ok out ∧ LaneTower.Rep out (a.mul b) :=
+  LaneTower.mul_refines hx hy
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    ∃ out, bls.fp12.Fp12.square x = ok out ∧ LaneTower.Rep out a.square :=
+  LaneTower.square_refines hx
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    ∃ out, bls.fp12.Fp12.conjugate x = ok out ∧ LaneTower.Rep out a.conjugate :=
+  LaneTower.conjugate_refines hx
+
+example : ∃ out, bls.fp12.Fp12.one = ok out ∧ LaneTower.Rep out Fp12.one :=
+  LaneTower.one_refines
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
+    ∃ out, bls.fp12.Fp12.frobenius x = ok out ∧ LaneTower.Rep out (Fp12.powNat a Fp.modulus) :=
+  LaneTower.frobenius_refines hx
+
+example (x y : bls.fp2x8.Fp2x8) (a : Fp12) (b : LaneTower.P LaneTower.F)
+    (hx : LaneTower.Rep x a) (hy : LaneTower.Strict2 256 y b) :
+    ∃ out, bls.fp12.Fp12.mul_by_line x y = ok out ∧
+      LaneTower.Rep out (a.mul (LaneTower.value (LaneTower.sparseLine b))) :=
+  LaneTower.mul_by_line_refines hx hy

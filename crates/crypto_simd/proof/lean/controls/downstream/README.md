@@ -69,3 +69,5 @@ lake build
 ```
 
 `TowerSmoke.lean` also consumes portable multiplication, total inverse, cyclotomic squaring and Frobenius refinements, plus the decoded table-entry theorem.
+
+The lane examples consume the multiplication field identity and generated one, conjugation, square, multiplication, sparse line multiplication and Frobenius refinements under `LaneTower.Rep`. Both portable and lane table entries are connected to the field basis.
