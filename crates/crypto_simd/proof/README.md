@@ -710,7 +710,7 @@ The generated Frobenius map refines the specification's p-th power for every inp
 
 `Coordinates.lean:product_value` identifies that coordinate schedule with specification multiplication. `Representation.lean:Rep` requires normalized representatives below `256p` in all eight lanes; `value` reads the six active lanes. The multiplication refinement preserves this representation.
 
-`Basic.lean`, `Square.lean` and `LineCoordinates.lean` refine generated one, conjugation, square and sparse line multiplication. Square and line multiplication produce normalized outputs bounded by `112p` and `120p`. `Frobenius.lean` proves the actual coefficient-loading loop, consumes the decoded lane-table certificate and refines p-th powering. `CyclotomicSum.lean` proves the generated cyclotomic recombination and its `572p` bound. The complete cyclotomic square, inverse and identity test remain separate lane refinement obligations.
+`Basic.lean`, `Square.lean` and `LineCoordinates.lean` refine generated one, conjugation, square and sparse line multiplication. Square and line multiplication produce normalized outputs bounded by `112p` and `120p`. `Frobenius.lean` proves the actual coefficient-loading loop, consumes the decoded lane-table certificate and refines p-th powering. `CyclotomicSum.lean` proves the generated cyclotomic recombination and its `572p` bound. `Cyclotomic.lean` composes the quadratic products and both final conditional subtractions. `CyclotomicCoordinates.lean` identifies the result with `Schedule.raw` for every coefficient tuple, then proves square agreement when the field value is zero or satisfies the Φ12 relation. Inverse and the identity test remain separate lane refinement obligations.
 
 ### Portable MSM components
 

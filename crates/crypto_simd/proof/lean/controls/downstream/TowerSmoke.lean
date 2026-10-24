@@ -1,6 +1,6 @@
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
-import LeanBlsSimd.LaneTower.CyclotomicSum
+import LeanBlsSimd.LaneTower.CyclotomicCoordinates
 import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
@@ -99,3 +99,9 @@ example (x y : bls.fp2x8.Fp2x8) (a : Fp12) (b : LaneTower.P LaneTower.F)
     ∃ out, bls.fp12.Fp12.mul_by_line x y = ok out ∧
       LaneTower.Rep out (a.mul (LaneTower.value (LaneTower.sparseLine b))) :=
   LaneTower.mul_by_line_refines hx hy
+
+example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a)
+    (h : Fp12.toField a = 0 ∨
+      Fp12.toField a ^ (Fp.modulus ^ 4 - Fp.modulus ^ 2 + 1) = 1) :
+    ∃ out, bls.fp12.Fp12.cyclotomic_square x = ok out ∧ LaneTower.Rep out a.square :=
+  LaneTower.cyclotomic_square_refines hx h
