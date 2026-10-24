@@ -1,3 +1,4 @@
+import controls.ShaGenerated
 import controls.ShaExtensions
 import controls.ShaPortable
 import controls.ShaStreaming
