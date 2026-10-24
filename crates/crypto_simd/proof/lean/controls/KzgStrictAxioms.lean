@@ -1,3 +1,4 @@
+import controls.ShaPortable
 import controls.ShaStreaming
 import controls.ShaSpec
 import controls.FrBytes

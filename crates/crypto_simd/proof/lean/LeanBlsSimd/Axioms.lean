@@ -1,3 +1,5 @@
+import LeanBlsSimd.Sha256.PortableCompress
+import LeanBlsSimd.Sha256.ContractAdapter
 import LeanBlsSimd.Sha256.Streaming
 import LeanBlsSimd.Spec.Sha256
 import LeanBlsSimd.Kzg.SetupLiterals
