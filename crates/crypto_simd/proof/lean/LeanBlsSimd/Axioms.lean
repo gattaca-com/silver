@@ -1,3 +1,5 @@
+import LeanBlsSimd.Portable.Fp.Reduction
+import LeanBlsSimd.Portable.Fp.MultiplyAdd
 import LeanBlsSimd.Portable.Fp.Words
 import LeanBlsSimd.Sha256.Correct
 import LeanBlsSimd.Sha256.GeneratedUpdateRefines
