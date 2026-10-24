@@ -15,7 +15,7 @@ example (a : Fp12) : Fp12.toField a.conjugate = Fp12.toField a ^ (Fp.modulus^6) 
 
 example (a : Schedule.Coeffs Bls.K)
     (h : fieldDecode a ^ (Fp.modulus^4-Fp.modulus^2+1) = 1) :
-    fieldDecode (Schedule.raw Bls.xi a) = fieldDecode a ^ 2 := field_cyclotomic_square a h
+    fieldDecode (Schedule.raw LeanBlsSimd.Fp6Field.xi a) = fieldDecode a ^ 2 := field_cyclotomic_square a h
 
 example (a : Schedule.Coeffs Bls.K) :
     fieldDecode (frobeniusCoeffs a) = fieldDecode a ^ Fp.modulus := field_frobenius a

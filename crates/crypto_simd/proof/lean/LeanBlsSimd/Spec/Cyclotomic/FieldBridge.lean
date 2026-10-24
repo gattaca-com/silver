@@ -3,6 +3,8 @@ import LeanBlsSimd.Spec.Cyclotomic.Schedule
 
 namespace LeanBlsSimd.Cyclotomic
 
+open LeanBlsSimd.Fp6Field (xi)
+
 open EthLib.Cryptography.Bls
 open Bls Schedule
 
@@ -14,7 +16,7 @@ def fp6ToCubic : Fp6Field →+* T :=
     simp only [Fp6Field.polynomial, Polynomial.eval₂_sub, Polynomial.eval₂_pow,
       Polynomial.eval₂_X, Polynomial.eval₂_C]
     rw [← pow_mul, show 2*3=6 by rfl, w_sixth]
-    simp [xi, Fp6Field.xi])
+    exact sub_self _)
 
 @[simp] theorem fp6ToCubic_of (a : K) : fp6ToCubic (Fp6Field.of a) = kembed a :=
   AdjoinRoot.lift_of _

@@ -2,6 +2,8 @@ import LeanBlsSimd.Spec.Cyclotomic.FieldBridge
 
 namespace LeanBlsSimd.Cyclotomic
 
+open LeanBlsSimd.Fp6Field (xi)
+
 open EthLib.Cryptography.Bls
 open Bls Schedule
 

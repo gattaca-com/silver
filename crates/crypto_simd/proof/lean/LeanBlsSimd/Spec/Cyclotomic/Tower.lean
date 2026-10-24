@@ -1,6 +1,8 @@
 import LeanBlsSimd.Spec.Cyclotomic.Constants
 
 namespace LeanBlsSimd.Cyclotomic.Bls
+
+open LeanBlsSimd.Fp6Field (xi)
 open LeanBlsSimd EthLib.Cryptography EthLib.Cryptography.Bls
 open QuadraticAlgebra
 

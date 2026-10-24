@@ -1,12 +1,13 @@
-import LeanBlsSimd.Spec.Fp2Tower
+import LeanBlsSimd.Spec.Fp6Noncube
 import LeanBlsSimd.Spec.Cyclotomic.Frobenius
 
 namespace LeanBlsSimd.Cyclotomic.Bls
+
+open LeanBlsSimd.Fp6Field (xi)
 open LeanBlsSimd EthLib.Cryptography EthLib.Cryptography.Bls
 abbrev K := LeanBlsSimd.Fp2Field
 abbrev p := Fp.modulus
 abbrev q := p^2
-noncomputable def xi : K := 1 + QuadraticAlgebra.omega
 
 theorem xi_power (e : ℕ) (he : e < 2^762) :
     toFp2 (QuadraticAlgebra.omega : K) (powBy mulFp2 (1,0) 762 (1,1) e) = xi^e := by

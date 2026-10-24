@@ -3,6 +3,8 @@ import LeanBlsSimd.Extracted.Funs
 
 namespace LeanBlsSimd.FrobeniusConstants
 
+open LeanBlsSimd.Fp6Field (xi)
+
 open Aeneas.Std silver_crypto_simd Cyclotomic.Bls
 
 set_option maxRecDepth 4096

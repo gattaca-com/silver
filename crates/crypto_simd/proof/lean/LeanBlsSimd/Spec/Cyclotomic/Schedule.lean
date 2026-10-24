@@ -62,8 +62,8 @@ theorem raw_decode (xi : R) (x : Coeffs R) : decode xi (raw xi x) =
   simp only [decode,raw_a,raw_b,raw_c]
 
 theorem bls_cyclotomic_square (x : Coeffs Bls.K)
-    (hphi : decode Bls.xi x ^ (Bls.p^4-Bls.p^2+1) = 1) :
-    decode Bls.xi (raw Bls.xi x) = decode Bls.xi x ^ 2 := by
+    (hphi : decode LeanBlsSimd.Fp6Field.xi x ^ (Bls.p^4-Bls.p^2+1) = 1) :
+    decode LeanBlsSimd.Fp6Field.xi (raw LeanBlsSimd.Fp6Field.xi x) = decode LeanBlsSimd.Fp6Field.xi x ^ 2 := by
   rw [raw_decode]
   exact (Bls.cyclotomic_square (ca _ x) (cb _ x) (cc _ x) hphi).symm
 
@@ -71,7 +71,7 @@ def conjugate (x : Coeffs R) : Coeffs R :=
   ⟨x.c00,x.c01,x.c02,-x.c10,-x.c11,-x.c12⟩
 
 theorem conjugate_decode (x : Coeffs Bls.K) :
-    decode Bls.xi (conjugate x) = decode Bls.xi x ^ (Bls.p^6) := by
+    decode LeanBlsSimd.Fp6Field.xi (conjugate x) = decode LeanBlsSimd.Fp6Field.xi x ^ (Bls.p^6) := by
   simp only [decode]
   rw [Bls.assemble_pow_p6]
   congr 1 <;> ext <;> simp [ca,cb,cc,conjugate,QuadraticAlgebra.star_mk]

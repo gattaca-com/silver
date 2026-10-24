@@ -1,6 +1,8 @@
 import LeanBlsSimd.Spec.Cyclotomic.Field
 
 namespace LeanBlsSimd.Controls.Cyclotomic
+
+open LeanBlsSimd.Fp6Field (xi)
 open LeanBlsSimd.Cyclotomic LeanBlsSimd.Cyclotomic.Schedule LeanBlsSimd.Cyclotomic.Bls
 
 def minusOne : Coeffs K := ⟨-1,0,0,0,0,0⟩
