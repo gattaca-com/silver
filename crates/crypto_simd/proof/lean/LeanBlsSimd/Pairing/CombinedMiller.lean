@@ -59,13 +59,13 @@ theorem absent_fold (steps : List (Fin 68)) (v : Factors) (present : Array Bool 
 
 theorem active_miller (points : Fin 2 → G1) (pair : Fin 2) :
     (List.finRange 68).foldl (activeStep (g1Factors points) (presence points) pair) Fp12.one =
-      if (points pair).isInfinity then Fp12.one else homogeneousMiller points pair := by
+      if (points pair).isInfinity then Fp12.one else jacobianMiller points pair := by
   cases hp : (points pair).isInfinity
-  · have hstep : activeStep (g1Factors points) (presence points) pair = homogeneousStep points pair := by
+  · have hstep : activeStep (g1Factors points) (presence points) pair = jacobianStep points pair := by
       funext f step
       simp only [activeStep, pairApply, presence_entry, hp, Bool.not_false, if_true]
       rfl
-    simp only [Bool.false_eq_true, if_false, hstep, homogeneousMiller]
+    simp only [Bool.false_eq_true, if_false, hstep, jacobianMiller]
   · simp only [if_true]
     exact absent_fold _ _ _ pair (by rw [presence_entry, hp]; rfl)
 
@@ -74,14 +74,14 @@ def combinedMiller (points : Fin 2 → G1) : Fp12 :=
 
 theorem combined_miller_field (points : Fin 2 → G1) :
     Fp12.toField (combinedMiller points).conjugate =
-      Fp12.toField (homogeneousFactor points 0) * Fp12.toField (homogeneousFactor points 1) := by
+      Fp12.toField (jacobianFactor points 0) * Fp12.toField (jacobianFactor points 1) := by
   have hf := combined_fold_field (List.finRange 68) (g1Factors points) (presence points)
     Fp12.one Fp12.one Fp12.one (by simp only [Fp12.toField_one, one_mul])
   rw [active_miller, active_miller] at hf
   rw [Cyclotomic.spec_conjugate]
   change Fp12.toField ((List.finRange 68).foldl _ Fp12.one) ^ (Fp.modulus ^ 6) = _
   rw [hf, mul_pow]
-  unfold homogeneousFactor
+  unfold jacobianFactor
   cases h0 : (points 0).isInfinity <;> cases h1 : (points 1).isInfinity <;>
     simp only [Bool.false_eq_true, if_false, if_true, Cyclotomic.spec_conjugate,
       Fp12.toField_one, one_pow]
