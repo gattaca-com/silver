@@ -8,7 +8,7 @@ use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTE
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
-use silver_crypto_simd::bls::{blst_p2_affine, uncompress_in_g2};
+use silver_crypto_simd::bls::{G2Point, uncompress_in_g2};
 pub use silver_ssz::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
 
 use crate::ssz_hash::hash_tree_root_block_header;
@@ -130,17 +130,17 @@ pub fn verify_deposit_signature(pubkey: &BLSPubkey, sig: &[u8; 96], signing_root
 /// aggregation need no re-check. `parse` and `SignatureChecker::check_all`
 /// are the only constructors.
 #[derive(Clone, Copy)]
-pub struct CheckedSignature(Signature);
+pub struct CheckedSignature(G2Point);
 
 impl CheckedSignature {
     pub fn parse(bytes: &[u8; 96]) -> Option<Self> {
         let mut point = [None];
         uncompress_in_g2(slice::from_ref(bytes), &mut point);
-        point[0].map(|p| Self(p.into()))
+        point[0].map(Self)
     }
 
-    pub(crate) fn as_sig(&self) -> &Signature {
-        &self.0
+    pub(crate) fn into_sig(self) -> Signature {
+        self.0.into_blst().into()
     }
 }
 
@@ -148,7 +148,7 @@ impl CheckedSignature {
 /// batches.
 pub struct SignatureChecker {
     inputs: Vec<[u8; 96]>,
-    points: Vec<Option<blst_p2_affine>>,
+    points: Vec<Option<G2Point>>,
 }
 
 impl SignatureChecker {
@@ -169,7 +169,7 @@ impl SignatureChecker {
         self.points.resize(self.inputs.len(), None);
         uncompress_in_g2(&self.inputs, &mut self.points);
         for point in self.points.drain(..) {
-            emit(point.map(|p| CheckedSignature(p.into())));
+            emit(point.map(CheckedSignature));
         }
     }
 }
@@ -178,7 +178,7 @@ impl SignatureChecker {
 /// `CheckedSignature` constructor already ran.
 #[timed]
 pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
-    sig.0.verify(false, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
+    sig.into_sig().verify(false, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
 }
 
 /// Signature is subgroup-checked by the verify, so downstream aggregation

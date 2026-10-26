@@ -10,7 +10,7 @@
 use blst::{blst_fr, blst_p1};
 
 use crate::{
-    bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
+    bls::{COMPRESSED_LEN, G1Point, blst_p1_affine, uncompress_in_g1},
     kzg::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
         FR_ONE, FR_ZERO, blst_pairing,
@@ -42,7 +42,7 @@ pub struct CellBatchVerifier {
     setup: Setup,
     cosets: Cosets,
     commitments: Deduplicated,
-    decoded: Vec<Option<blst_p1_affine>>,
+    decoded: Vec<Option<G1Point>>,
     commitment_points: Vec<blst_p1_affine>,
     proof_points: Vec<blst_p1_affine>,
     evaluations: Vec<blst_fr>,
@@ -440,7 +440,7 @@ impl Deduplicated {
 /// Decodes `encodings` into `points`; false if any is not a valid G1 point.
 fn decode_points(
     encodings: &[[u8; COMPRESSED_LEN]],
-    decoded: &mut Vec<Option<blst_p1_affine>>,
+    decoded: &mut Vec<Option<G1Point>>,
     points: &mut Vec<blst_p1_affine>,
 ) -> bool {
     decoded.resize(0, None);
@@ -450,7 +450,7 @@ fn decode_points(
     let mut i = 0;
     while i < encodings.len() {
         match decoded[i] {
-            Some(point) => points.push(point),
+            Some(point) => points.push(point.into_blst()),
             None => break,
         }
         i += 1;

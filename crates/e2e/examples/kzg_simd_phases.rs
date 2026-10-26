@@ -158,7 +158,7 @@ fn g2_batch() -> [[u8; G2_COMPRESSED_LEN]; LANES] {
 fn affine_lanes_g2(points: &[[u8; G2_COMPRESSED_LEN]; LANES]) -> (Fp2x8, Fp2x8) {
     let mut coordinates = [[[0u64; 8]; LANES]; 4];
     for (lane, bytes) in points.iter().enumerate() {
-        let p = uncompress_in_g2_blst(bytes).expect("member of G2");
+        let p = uncompress_in_g2_blst(bytes).expect("member of G2").into_blst();
         for (k, fp) in [p.x.fp[0], p.x.fp[1], p.y.fp[0], p.y.fp[1]].iter().enumerate() {
             coordinates[k][lane] = plain_limbs(fp);
         }

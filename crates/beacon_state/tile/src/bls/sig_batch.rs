@@ -144,14 +144,14 @@ impl SigBatch {
     pub fn push_parsed(&mut self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: B256) {
         self.msgs.push(signing_root);
         self.pks.push(*pubkey);
-        self.sigs.push(*sig.as_sig());
+        self.sigs.push(sig.into_sig());
     }
 
     pub fn contains(&self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: &B256) -> bool {
         (0..self.msgs.len()).any(|index| {
             &self.msgs[index] == signing_root &&
                 &self.pks[index] == pubkey &&
-                &self.sigs[index] == sig.as_sig()
+                self.sigs[index] == sig.into_sig()
         })
     }
 

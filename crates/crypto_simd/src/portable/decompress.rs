@@ -7,7 +7,7 @@ use blst::{blst_fp, blst_p1_affine};
 
 use crate::{
     bls::{
-        COMPRESSED_LEN,
+        COMPRESSED_LEN, G1Point,
         encoding::{FLAG_COMPRESSED, FLAG_INFINITY, FLAG_LARGER_ROOT, fp_words, less_than_p},
     },
     portable::{
@@ -19,18 +19,22 @@ use crate::{
 };
 
 /// `Some` iff blst accepts the encoding as a point of G1.
-pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
+pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<G1Point> {
     let Some((words, larger)) = ordinary(bytes) else {
         return extraordinary(bytes);
     };
     let x = Fp::from_plain(&words);
     let y = signed(&x.square().mul(&x).add(&FOUR).sqrt()?, larger);
     // (x, 0) has order 2.
-    if !y.is_zero() && G1::in_g1(&x, &y) { Some(point(&x, &y)) } else { None }
+    if !y.is_zero() && G1::in_g1(&x, &y) {
+        Some(G1Point::from_subgroup_unchecked(point(&x, &y)))
+    } else {
+        None
+    }
 }
 
 /// Sets each `out[i]` to `uncompress_in_g1(&inputs[i])`, two at a time.
-pub fn uncompress_all_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
+pub fn uncompress_all_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<G1Point>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
     let pairs = inputs.len() / 2 * 2;
     let mut i = 0;
@@ -49,7 +53,7 @@ pub fn uncompress_all_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<b
 pub fn uncompress_pair_in_g1(
     a: &[u8; COMPRESSED_LEN],
     b: &[u8; COMPRESSED_LEN],
-) -> [Option<blst_p1_affine>; 2] {
+) -> [Option<G1Point>; 2] {
     let (Some((words_a, larger_a)), Some((words_b, larger_b))) = (ordinary(a), ordinary(b)) else {
         return [uncompress_in_g1(a), uncompress_in_g1(b)];
     };
@@ -65,8 +69,8 @@ pub fn uncompress_pair_in_g1(
         [curve_points[0] && G1::in_g1(&x[0], &y[0]), curve_points[1] && G1::in_g1(&x[1], &y[1])]
     };
     [
-        if members[0] { Some(point(&x[0], &y[0])) } else { None },
-        if members[1] { Some(point(&x[1], &y[1])) } else { None },
+        if members[0] { Some(G1Point::from_subgroup_unchecked(point(&x[0], &y[0]))) } else { None },
+        if members[1] { Some(G1Point::from_subgroup_unchecked(point(&x[1], &y[1]))) } else { None },
     ]
 }
 
@@ -88,13 +92,13 @@ fn ordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<([u64; 6], bool)> {
 /// The verdict on an encoding `ordinary` declines: blst accepts only the
 /// canonical encoding of infinity. It rejects x = 0, whose points (0, ±2)
 /// have order 3.
-fn extraordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
+fn extraordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<G1Point> {
     let mut i = 1;
     while i < COMPRESSED_LEN && bytes[i] == 0 {
         i += 1;
     }
     if bytes[0] == FLAG_COMPRESSED | FLAG_INFINITY && i == COMPRESSED_LEN {
-        Some(blst_p1_affine::default())
+        Some(G1Point::from_subgroup_unchecked(blst_p1_affine::default()))
     } else {
         None
     }

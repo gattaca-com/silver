@@ -126,7 +126,7 @@ impl Setup {
         let mut g1_monomial = Vec::with_capacity(FIELD_ELEMENTS_PER_CELL);
         for i in 0..FIELD_ELEMENTS_PER_CELL {
             match decoded[i] {
-                Some(point) => g1_monomial.push(point),
+                Some(point) => g1_monomial.push(point.into_blst()),
                 None => panic!("a trusted-setup G1 point is invalid"),
             }
         }

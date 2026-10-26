@@ -243,7 +243,7 @@ impl BeaconStateTile {
             p.present,
             p.da,
             &p.ptc_positions,
-            signature.as_sig(),
+            &signature.into_sig(),
         );
     }
 

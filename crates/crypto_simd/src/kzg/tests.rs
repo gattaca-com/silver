@@ -273,10 +273,10 @@ fn pairing_check_skips_infinity_on_either_side() {
 /// points, with the generator negated by blst, limb for limb.
 #[test]
 fn setup_g2_literals_match_blst() {
-    let cell = uncompress_in_g2_blst(&G2_MONOMIAL_64).expect("setup point 64 decodes");
+    let cell = uncompress_in_g2_blst(&G2_MONOMIAL_64).expect("setup point 64 decodes").into_blst();
     assert!(G2_S_POW_CELL.x == cell.x && G2_S_POW_CELL.y == cell.y, "[s^64]");
     let generator = uncompress_in_g2_blst(&G2_MONOMIAL_0).expect("setup point 0 decodes");
-    let negated = g2_neg(&generator);
+    let negated = g2_neg(generator.as_blst());
     assert!(G2_NEG_GENERATOR.x == negated.x && G2_NEG_GENERATOR.y == negated.y, "−[1]");
 }
 

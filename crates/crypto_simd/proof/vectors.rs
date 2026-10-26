@@ -25,7 +25,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use silver_crypto_simd::{
     bls::{
-        G2_COMPRESSED_LEN, blst_p2_affine,
+        G2_COMPRESSED_LEN, G2Point, blst_p2_affine,
         constants::P_U64,
         decompress_g2::{self, Batch},
         limbs::LANES,
@@ -68,7 +68,7 @@ impl Output {
             .filter(|&lane| self.undecided & (1 << lane) == 0)
             .filter(|&lane| {
                 let kernel = (self.valid & (1 << lane) != 0).then_some(self.points[lane]);
-                let blst = uncompress_in_g2_blst(&inputs[lane]).map(|p| point_words(&p));
+                let blst = uncompress_in_g2_blst(&inputs[lane]).map(|p| point_words(p.as_blst()));
                 kernel != blst
             })
             .collect()
@@ -722,16 +722,11 @@ fn point_words(p: &blst_p2_affine) -> [u64; 24] {
 }
 
 fn scalar(bytes: &Encoding) -> Option<[u64; 24]> {
-    uncompress_in_g2_blst(bytes).as_ref().map(point_words)
+    uncompress_in_g2_blst(bytes).map(|p| point_words(p.as_blst()))
 }
 
-fn sentinel() -> blst_p2_affine {
-    let mut p = blst_p2_affine::default();
-    p.x.fp[0].l = [0xfeed; 6];
-    p.x.fp[1].l = [0xbeef; 6];
-    p.y.fp[0].l = [0xcafe; 6];
-    p.y.fp[1].l = [0xdead; 6];
-    p
+fn sentinel() -> G2Point {
+    G2Point::from_blst(blst_p2_affine::default()).unwrap()
 }
 
 fn write_point(out: &mut String, key: &str, lane: usize, p: Option<[u64; 24]>) {
@@ -824,9 +819,16 @@ fn replay_vectors() {
     for (index, wrapper) in wrappers.iter().enumerate() {
         let inputs: Vec<_> = wrapper.refs.iter().map(|&(b, l)| recorded[b].inputs[l]).collect();
         let mut out = vec![Some(sentinel()); inputs.len()];
+        let mut empty = vec![None; inputs.len()];
         uncompress_in_g2(&inputs, &mut out);
+        uncompress_in_g2(&inputs, &mut empty);
         assert_eq!(
-            out.iter().map(|p| p.as_ref().map(point_words)).collect::<Vec<_>>(),
+            out.iter().map(|p| p.as_ref().map(|p| point_words(p.as_blst()))).collect::<Vec<_>>(),
+            empty.iter().map(|p| p.as_ref().map(|p| point_words(p.as_blst()))).collect::<Vec<_>>(),
+            "every output slot must be overwritten"
+        );
+        assert_eq!(
+            out.iter().map(|p| p.as_ref().map(|p| point_words(p.as_blst()))).collect::<Vec<_>>(),
             wrapper.output,
             "G2 wrapper {index}"
         );
@@ -923,7 +925,8 @@ fn write_vectors() {
             let inputs: Vec<_> = refs.iter().map(|&(b, l)| cases[b].inputs[l]).collect();
             let mut result = vec![Some(sentinel()); len];
             uncompress_in_g2(&inputs, &mut result);
-            let result: Vec<_> = result.iter().map(|p| p.as_ref().map(point_words)).collect();
+            let result: Vec<_> =
+                result.iter().map(|p| p.as_ref().map(|p| point_words(p.as_blst()))).collect();
             assert_eq!(result, inputs.iter().map(scalar).collect::<Vec<_>>());
             writeln!(out, "wrapper {index} {kind} {len}").unwrap();
             for (b, l) in refs {
@@ -955,7 +958,7 @@ mod g1 {
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use silver_crypto_simd::{
-        bls::{decompress, uncompress_in_g1},
+        bls::{G1Point, decompress, uncompress_in_g1},
         ifma_available,
     };
 
@@ -979,11 +982,8 @@ mod g1 {
         member.then(|| point_words(&p))
     }
 
-    fn sentinel() -> blst_p1_affine {
-        let mut p = blst_p1_affine::default();
-        p.x.l = [0xfeed; 6];
-        p.y.l = [0xbeef; 6];
-        p
+    fn sentinel() -> G1Point {
+        G1Point::from_blst(blst_p1_affine::default()).unwrap()
     }
 
     fn compress(p: &blst_p1) -> Encoding {
@@ -1332,9 +1332,23 @@ mod g1 {
         for (index, w) in wrappers.iter().enumerate() {
             let inputs: Vec<_> = w.refs.iter().map(|&(b, l)| batches[b].inputs[l]).collect();
             let mut out = vec![Some(sentinel()); inputs.len()];
+            let mut empty = vec![None; inputs.len()];
             uncompress_in_g1(&inputs, &mut out);
+            uncompress_in_g1(&inputs, &mut empty);
             assert_eq!(
-                out.iter().map(|p| p.as_ref().map(point_words)).collect::<Vec<_>>(),
+                out.iter()
+                    .map(|p| p.as_ref().map(|p| point_words(p.as_blst())))
+                    .collect::<Vec<_>>(),
+                empty
+                    .iter()
+                    .map(|p| p.as_ref().map(|p| point_words(p.as_blst())))
+                    .collect::<Vec<_>>(),
+                "every output slot must be overwritten"
+            );
+            assert_eq!(
+                out.iter()
+                    .map(|p| p.as_ref().map(|p| point_words(p.as_blst())))
+                    .collect::<Vec<_>>(),
                 w.output,
                 "G1 wrapper {index}"
             );
@@ -1393,7 +1407,8 @@ mod g1 {
                 let inputs: Vec<_> = refs.iter().map(|&(b, l)| cases[b].inputs[l]).collect();
                 let mut result = vec![Some(sentinel()); len];
                 uncompress_in_g1(&inputs, &mut result);
-                let result: Vec<_> = result.iter().map(|p| p.as_ref().map(point_words)).collect();
+                let result: Vec<_> =
+                    result.iter().map(|p| p.as_ref().map(|p| point_words(p.as_blst()))).collect();
                 assert_eq!(result, inputs.iter().map(scalar).collect::<Vec<_>>());
                 writeln!(out, "wrapper {index} {kind} {len}").unwrap();
                 for (b, l) in refs {

@@ -12,7 +12,7 @@ use std::{
 use blst::{BLST_ERROR, blst_p1_affine_in_g1, blst_p1_uncompress};
 use silver_common::ssz_view::{BYTES_PER_KZG_COMMITMENT, DataColumnSidecarFuluView};
 use silver_crypto_simd::{
-    bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
+    bls::{COMPRESSED_LEN, G1Point, blst_p1_affine, uncompress_in_g1},
     ifma_available,
 };
 use silver_e2e::da_capture::ColumnFixtures;
@@ -81,7 +81,7 @@ fn main() {
     for (i, input) in all.iter().enumerate() {
         let want = uncompress_in_g1_blst(input);
         accepted += want.is_some() as usize;
-        if serialized(&simd[i]) != serialized(&want) {
+        if serialized(&simd[i].map(G1Point::into_blst)) != serialized(&want) {
             mismatches += 1;
             if mismatches <= 5 {
                 eprintln!(
