@@ -18,7 +18,7 @@ const MIN_HEIGHT = 320;
 /** Subnet topics listed, stacked and picked as one entry per kind. */
 const SUBNET_GROUP = /^(beacon_attestation|data_column_sidecar)_\d+$/;
 
-function entryOf(topic) {
+export function entryOf(topic) {
   const subnet = SUBNET_GROUP.exec(topic);
   return subnet ? `${subnet[1]}_*` : topic;
 }

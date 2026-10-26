@@ -3,18 +3,19 @@ import { Fleet } from './state.js';
 import * as events from './events.js';
 import * as flow from './flow.js';
 import * as gossip from './gossip.js';
+import * as home from './home.js';
 import * as peers from './peers.js';
 
 const RENDER_MS = 1000;
 const RECONNECT_MS = 2000;
 
-const PANES = { events, peers, gossip, flow };
+const PANES = { home, events, peers, gossip, flow };
 /** Per-pane view state (selected instance, sort, expanded rows); survives
  *  re-renders and reconnects. */
 const ui = Object.fromEntries(Object.keys(PANES).map((p) => [p, {}]));
 
 let fleet = new Fleet();
-let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'events';
+let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'home';
 
 const root = document.getElementById('pane');
 const status = document.getElementById('status');
@@ -88,7 +89,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.querySelector('nav').addEventListener('click', (e) => {
+document.querySelector('header').addEventListener('click', (e) => {
   const pane = e.target.dataset?.pane;
   if (!pane || !PANES[pane]) return;
   active = pane;
