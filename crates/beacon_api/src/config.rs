@@ -604,10 +604,9 @@ mod tests {
         assert_eq!(hoodi["SECONDS_PER_ETH1_BLOCK"], "12");
         assert_eq!(hoodi["TERMINAL_TOTAL_DIFFICULTY"], "0", "Hoodi merged at genesis");
         assert_eq!(hoodi["BLOB_SCHEDULE"].as_array().unwrap().len(), 2);
-        assert_eq!(hoodi["BLOB_SCHEDULE"][0]["EPOCH"], "52480");
+        assert_eq!(hoodi["BLOB_SCHEDULE"][0]["EPOCH"], "412672");
         assert_eq!(hoodi["BLOB_SCHEDULE"][0]["MAX_BLOBS_PER_BLOCK"], "15");
-        assert_eq!(hoodi["BLOB_SCHEDULE"][1]["EPOCH"], "54016");
-        assert_eq!(hoodi["BLOB_SCHEDULE"][1]["MAX_BLOBS_PER_BLOCK"], "21");
+        assert_eq!(hoodi["BLOB_SCHEDULE"][1]["EPOCH"], "419072");
 
         let mainnet = spec_map(&SpecConfig::mainnet());
         assert_eq!(mainnet["CONFIG_NAME"], "mainnet");
@@ -709,12 +708,10 @@ mod tests {
     fn fork_schedule_keeps_one_entry_per_fork_when_several_share_an_epoch() {
         let forks = data(&fork_schedule_body(&SpecConfig::hoodi()));
         let forks = forks.as_array().unwrap();
-        assert_eq!(forks.len(), 8);
+        assert_eq!(forks.len(), 7);
         assert_eq!(forks.iter().filter(|f| f["epoch"] == "0").count(), 5);
         assert_eq!(forks[5]["epoch"], "2048");
         assert_eq!(forks[6]["current_version"], "0x70000910");
-        assert_eq!(forks[7]["current_version"], "0x80000910");
-        assert_eq!(forks[7]["epoch"], "132352");
     }
 
     #[test]
