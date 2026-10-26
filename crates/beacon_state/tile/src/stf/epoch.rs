@@ -840,7 +840,11 @@ pub fn integer_sqrt(n: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use blst::min_pk::SecretKey;
+    use blst::{
+        BLST_ERROR, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double_affine, blst_p1_affine,
+        blst_p1_affine_in_g1, blst_p1_affine_on_curve, blst_p1_from_affine, blst_p1_to_affine,
+        min_pk::{PublicKey, SecretKey},
+    };
     use silver_beacon_state_data::{B256, PendingDeposit, ValSeed, Withdrawals};
 
     use super::*;
@@ -1131,6 +1135,53 @@ mod tests {
         });
 
         // Deposit consumed from queue but validator NOT added.
+        assert_eq!(view.validators.count(), 0);
+        assert_eq!(view.pending.deposits.reader().len(), 0);
+    }
+
+    #[test]
+    fn pending_deposit_non_subgroup_key_rejected() {
+        let (sk, _) = test_keypair();
+        let raw = sk.sk_to_pk().into();
+        let mut torsion = blst_p1_affine::default();
+        let mut point = blst_p1::default();
+        let mut sum = blst_p1::default();
+        let mut affine = blst_p1_affine::default();
+        // (0, 2) has order three; adding it preserves the unchecked pairing verdict.
+        unsafe {
+            blst_fp_from_uint64(&mut torsion.y, [2, 0, 0, 0, 0, 0].as_ptr());
+            assert!(blst_p1_affine_on_curve(&torsion));
+            assert!(!blst_p1_affine_in_g1(&torsion));
+            blst_p1_from_affine(&mut point, &raw);
+            blst_p1_add_or_double_affine(&mut sum, &point, &torsion);
+            blst_p1_to_affine(&mut affine, &sum);
+        }
+        let pubkey = PublicKey::from(affine).to_bytes();
+        let decoded = PublicKey::from_bytes(&pubkey).unwrap();
+        assert_eq!(decoded.validate(), Err(BLST_ERROR::BLST_POINT_NOT_IN_GROUP));
+        let withdrawal_credentials = Withdrawals([0xAA; 32]);
+        let amount = 32_000_000_000;
+        let signing_root = deposit_signing_root([0; 4], &pubkey, &withdrawal_credentials, amount);
+        let signature = sk.sign(&signing_root, bls::DST, &[]);
+        assert_eq!(
+            signature.verify(true, &signing_root, bls::DST, &[], &decoded, false),
+            BLST_ERROR::BLST_SUCCESS,
+            "the subgroup check must be responsible for rejection"
+        );
+
+        let mut st = TestState::new(fresh(10), &[]);
+        let sid = st.state_id;
+        let (mut view, epoch, _) = st.view();
+        view.pending.deposits.push(PendingDeposit {
+            pubkey,
+            withdrawal_credentials,
+            amount,
+            signature: signature.to_bytes(),
+            slot: 0,
+        });
+        at_boundary(&mut view, epoch, sid.epoch_idx, |v, e| {
+            process_pending_deposits(&SpecConfig::mainnet(), v, e, &mut Vec::new());
+        });
         assert_eq!(view.validators.count(), 0);
         assert_eq!(view.pending.deposits.reader().len(), 0);
     }

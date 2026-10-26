@@ -357,7 +357,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_signing::{pubkey_pk, sign};
+    use crate::{
+        bls::SignatureChecker,
+        test_signing::{pubkey_pk, sign},
+    };
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -474,6 +477,22 @@ mod tests {
             blst_p2_add_or_double_affine(&mut tampered, &rogue, &sig0_aff);
             blst_p2_compress(tampered_bytes.as_mut_ptr(), &tampered);
         }
+
+        assert!(Signature::from_bytes(&tampered_bytes).is_ok());
+        assert!(CheckedSignature::parse(&tampered_bytes).is_none());
+        assert!(CheckedSignature::parse(&sig0).is_some());
+        assert!(CheckedSignature::parse(&G2_POINT_AT_INFINITY).is_some());
+
+        let inputs = [tampered_bytes, sig0, G2_POINT_AT_INFINITY, tampered_bytes];
+        let mut checker = SignatureChecker::with_capacity(inputs.len());
+        let mut accepted = Vec::new();
+        checker.check_all(&inputs, |sig| accepted.push(sig.map(CheckedSignature::into_sig)));
+        assert_eq!(accepted, [
+            None,
+            Signature::from_bytes(&sig0).ok(),
+            Signature::from_bytes(&G2_POINT_AT_INFINITY).ok(),
+            None
+        ]);
 
         let msg1 = [0x02u8; 32];
         let sig1 = sign(1, &msg1);

@@ -37,7 +37,7 @@ impl G1Point {
 
 #[cfg(test)]
 mod tests {
-    use blst::{blst_fp_from_uint64, blst_p1_affine_generator};
+    use blst::{blst_fp_add, blst_fp_from_uint64, blst_p1_affine_generator};
 
     use super::*;
     use crate::bls::constants::P_U64;
@@ -59,8 +59,18 @@ mod tests {
         let generator = unsafe { *blst_p1_affine_generator() };
         let checked = G1Point::from_blst(generator).unwrap();
         let mut changed = checked.into_blst();
-        changed.y = Default::default();
+        // Scaling (x, y) by (4, 8) preserves the subgroup relation on a different
+        // curve.
+        unsafe {
+            for _ in 0..2 {
+                blst_fp_add(&mut changed.x, &changed.x, &changed.x);
+            }
+            for _ in 0..3 {
+                blst_fp_add(&mut changed.y, &changed.y, &changed.y);
+            }
+        }
         assert!(!unsafe { blst_p1_affine_on_curve(&changed) });
+        assert!(unsafe { blst_p1_affine_in_g1(&changed) });
         assert!(G1Point::from_blst(changed).is_none());
         assert_eq!(checked.as_blst(), &generator);
 
