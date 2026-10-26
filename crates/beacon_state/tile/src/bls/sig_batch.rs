@@ -1,17 +1,19 @@
-use core::{mem, ptr};
+use core::mem;
 
 use blst::{
-    BLST_ERROR, MultiPoint, Pairing, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine_generator,
-    blst_p2, blst_p2_affine, blst_p2_affine_is_inf, blst_p2_to_affine,
+    BLST_ERROR, MultiPoint, blst_fp_cneg, blst_p1_affine_generator, blst_p2_affine,
+    blst_p2_affine_is_inf,
 };
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::B256;
+use silver_crypto_simd::bls::PairingProduct;
 
 use super::{
     CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
     aggregator::{PubkeyAggregator, pk_affine, sig_affine},
+    hash_to_g2_affine,
 };
 
 // N.B. batching is only safe where NBITS < 144-bit GLS threshold.
@@ -32,8 +34,7 @@ pub struct SigBatch {
     /// contiguous slice for the multi-scalar mult.
     grouped_pks: Vec<PublicKey>,
     grouped_scalars: Vec<u8>,
-    /// Multi-pairing accumulator.
-    pairing: Pairing,
+    pairing: PairingProduct,
     hashed_msgs: HashedMsgs,
     aggregator: PubkeyAggregator,
     poisoned: bool,
@@ -98,7 +99,7 @@ impl SigBatch {
             order: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_pks: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_scalars: Vec::with_capacity(SIG_BATCH_CAP * 8),
-            pairing: Pairing::new(true, DST),
+            pairing: PairingProduct::with_capacity(8),
             hashed_msgs: HashedMsgs::default(),
             aggregator: PubkeyAggregator::default(),
             poisoned: false,
@@ -222,8 +223,8 @@ impl SigBatch {
             1 => {
                 let hashed = self.hashed_msgs.get(&self.msgs[0]);
                 let SigBatch { pks, sigs, pairing, .. } = self;
-                pairing.init(true, DST);
-                pairing.raw_aggregate(&hashed, pk_affine(&pks[0]));
+                pairing.clear();
+                pairing.push(pk_affine(&pks[0]), &hashed);
                 pairing_matches_signature(pairing, &sigs[0])
             }
             _ => self.verify_batch(),
@@ -305,8 +306,7 @@ impl SigBatch {
             grouped_scalars.extend_from_slice(&rand_bytes[i as usize * 8..(i as usize + 1) * 8]);
         }
 
-        // Re-init the existing pairing buffer.
-        pairing.init(true, DST);
+        pairing.clear();
         let mut start = 0;
         while start < n {
             let msg = msgs[order[start] as usize];
@@ -315,7 +315,7 @@ impl SigBatch {
                 end += 1;
             }
             let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], NBITS);
-            pairing.raw_aggregate(&hashed_msgs.get(&msg), pk_affine(&pk_sum.to_public_key()));
+            pairing.push(pk_affine(&pk_sum.to_public_key()), &hashed_msgs.get(&msg));
             start = end;
         }
         pairing_matches_signature(pairing, &sig_sum)
@@ -323,37 +323,25 @@ impl SigBatch {
 }
 
 /// Pairing the signature with `-G1` lets verification compare the product
-/// against one. Buffered message pairs share the signature's Miller loop
-/// squarings.
-fn pairing_matches_signature(pairing: &mut Pairing, sig: &Signature) -> bool {
+/// against one.
+fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &Signature) -> bool {
     let sig = sig_affine(sig);
-    // blst 0.3.16 only handles infinity explicitly for a single pair.
-    // Reject infinity here even when valid weighted signatures cancel.
+    // Preserve signature rejection even when valid weighted signatures cancel.
     if unsafe { blst_p2_affine_is_inf(sig) } {
         return false;
     }
     let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
     unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
-    pairing.raw_aggregate(sig, &neg_g1);
-    pairing.commit();
-    pairing.finalverify(None)
-}
-
-fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
-    let mut q = blst_p2::default();
-    let mut affine = blst_p2_affine::default();
-    unsafe {
-        blst_hash_to_g2(&mut q, msg.as_ptr(), msg.len(), DST.as_ptr(), DST.len(), ptr::null(), 0);
-        blst_p2_to_affine(&mut affine, &q);
-    }
-    affine
+    pairing.push(&neg_g1, sig);
+    pairing.is_one()
 }
 
 #[cfg(test)]
 mod tests {
     use blst::{
-        blst_p2_add_or_double_affine, blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine,
-        blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
+        Pairing, blst_fp2_cneg, blst_p1_affine_is_inf, blst_p2, blst_p2_add_or_double_affine,
+        blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult,
+        blst_p2_uncompress,
     };
 
     use super::*;
@@ -637,5 +625,82 @@ mod tests {
         summed.push_one(&pubkey_pk(2), &G2_POINT_AT_INFINITY, [9u8; 32]);
         assert_eq!(summed.len(), 2);
         assert!(!summed.verify_all());
+    }
+
+    #[test]
+    fn infinite_key_sum_matches_blst_pairing() {
+        let shared = [11u8; 32];
+        let other = [12u8; 32];
+        let pk = pubkey_pk(0);
+        let mut inverse_pk = *pk_affine(&pk);
+        unsafe { blst_fp_cneg(&mut inverse_pk.y, &inverse_pk.y, true) };
+        let inverse_pk = PublicKey::from(inverse_pk);
+        assert!(pk.validate().is_ok() && inverse_pk.validate().is_ok());
+
+        let signature = Signature::from_bytes(&sign(0, &shared)).unwrap();
+        let mut inverse_signature = *sig_affine(&signature);
+        unsafe { blst_fp2_cneg(&mut inverse_signature.y, &inverse_signature.y, true) };
+        let inverse_signature = Signature::from(inverse_signature);
+        assert!(inverse_signature.validate(false).is_ok());
+        let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
+        unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
+
+        for weight in [1u64, 7, u64::MAX] {
+            let scalars = weight.to_le_bytes().repeat(3);
+            let cancelled =
+                [pk, inverse_pk].mult(&scalars[..2 * RAND_BYTES], NBITS).to_public_key();
+            assert!(unsafe { blst_p1_affine_is_inf(pk_affine(&cancelled)) });
+            let remaining = [pubkey_pk(1)].mult(&scalars[..RAND_BYTES], NBITS).to_public_key();
+
+            for valid in [true, false] {
+                let message = if valid { other } else { shared };
+                let third = Signature::from_bytes(&sign(1, &message)).unwrap();
+                let sum =
+                    [signature, inverse_signature, third].mult(&scalars, NBITS).to_signature();
+                assert!(!unsafe { blst_p2_affine_is_inf(sig_affine(&sum)) });
+
+                let mut product = PairingProduct::default();
+                let mut previous = Pairing::new(true, DST);
+                for (key, message) in [(cancelled, shared), (remaining, other)] {
+                    let hashed = hash_to_g2_affine(&message);
+                    product.push(pk_affine(&key), &hashed);
+                    previous.raw_aggregate(&hashed, pk_affine(&key));
+                }
+                previous.raw_aggregate(sig_affine(&sum), &neg_g1);
+                previous.commit();
+                assert_eq!(previous.finalverify(None), valid, "unfiltered blst verdict");
+                assert_eq!(pairing_matches_signature(&mut product, &sum), valid);
+            }
+
+            let sum = [signature, inverse_signature]
+                .mult(&scalars[..2 * RAND_BYTES], NBITS)
+                .to_signature();
+            assert!(unsafe { blst_p2_affine_is_inf(sig_affine(&sum)) });
+            let mut product = PairingProduct::default();
+            product.push(pk_affine(&cancelled), &hash_to_g2_affine(&shared));
+            assert!(!pairing_matches_signature(&mut product, &sum));
+        }
+    }
+
+    #[test]
+    fn sig_batch_reuses_pairing_across_lane_boundaries() {
+        let mut batch = SigBatch::new();
+        for count in [1, 7, 8, 15, 16, 19] {
+            batch.clear();
+            for index in 0..count {
+                let message = [index as u8; 32];
+                batch.push_one(&pubkey_pk(0), &sign(0, &message), message);
+            }
+            assert!(batch.verify_all());
+            assert!(batch.verify_all());
+            batch.push_one(&pubkey_pk(0), &sign(0, &[42u8; 32]), [43u8; 32]);
+            assert!(!batch.verify_all());
+        }
+        batch.poison();
+        assert!(!batch.verify_all());
+        batch.clear();
+        assert!(batch.verify_all());
+        batch.poison();
+        assert!(!batch.verify_all());
     }
 }

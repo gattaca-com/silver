@@ -1,14 +1,17 @@
-use std::slice;
+use std::{ptr, slice};
 
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
-use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
+use blst::{
+    BLST_ERROR, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine_generator, blst_p1_affine_is_inf,
+    blst_p2, blst_p2_to_affine, min_pk::AggregatePublicKey,
+};
 use flux_profiler::timed;
 pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
-use silver_crypto_simd::bls::{G2Point, uncompress_in_g2};
+use silver_crypto_simd::bls::{G2Point, PairingProduct, blst_p2_affine, uncompress_in_g2};
 pub use silver_ssz::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
 
 use crate::ssz_hash::hash_tree_root_block_header;
@@ -16,8 +19,11 @@ use crate::ssz_hash::hash_tree_root_block_header;
 mod aggregator;
 mod sig_batch;
 mod signature_sum;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use aggregator::PubkeyAggregator;
+use aggregator::pk_affine;
 pub use sig_batch::SigBatch;
 pub(crate) use signature_sum::SignatureSum;
 
@@ -178,7 +184,24 @@ impl SignatureChecker {
 /// `CheckedSignature` constructor already ran.
 #[timed]
 pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
-    sig.into_sig().verify(false, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
+    let pk = pk_affine(pk);
+    if unsafe { blst_p1_affine_is_inf(pk) } {
+        return false;
+    }
+    let hashed = hash_to_g2_affine(message);
+    let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
+    unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
+    PairingProduct::two_pairs_are_one(pk, &hashed, &neg_g1, sig.0.as_blst())
+}
+
+fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
+    let mut q = blst_p2::default();
+    let mut affine = blst_p2_affine::default();
+    unsafe {
+        blst_hash_to_g2(&mut q, msg.as_ptr(), msg.len(), DST.as_ptr(), DST.len(), ptr::null(), 0);
+        blst_p2_to_affine(&mut affine, &q);
+    }
+    affine
 }
 
 /// Signature is subgroup-checked by the verify, so downstream aggregation
