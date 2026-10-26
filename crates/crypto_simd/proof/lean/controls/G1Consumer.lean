@@ -4,7 +4,7 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls LeanBlsSimd
 
 example [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
-    (out : Slice (Option blst.blst_p1_affine))
+    (out : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
@@ -25,6 +25,6 @@ example [RuntimeFeatures] (a b : Aeneas.Std.Array U8 48#usize)
         [UncompressG1.specVerdict b, UncompressG1.specVerdict a] (by rfl)) := by
   rw [Portable.Decode.g1_decoder_correct.pair]
   intro h
-  have hfirst := congrArg (fun xs : Aeneas.Std.Array (Option blst.blst_p1_affine) 2#usize =>
+  have hfirst := congrArg (fun xs : Aeneas.Std.Array (Option g1_point.G1Point) 2#usize =>
     xs.val[0]!) (Result.ok.inj h)
   exact hne (by simpa [Aeneas.Std.Array.make] using hfirst)

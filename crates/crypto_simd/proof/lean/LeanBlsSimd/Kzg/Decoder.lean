@@ -1,5 +1,5 @@
 import LeanBlsSimd.Portable.Decode.Correct
-import LeanBlsSimd.Kzg.FpEncoding
+import LeanBlsSimd.Kzg.PointValidity
 import LeanBlsSimd.Portable.G1DecoderContract
 import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
@@ -12,10 +12,6 @@ namespace LeanBlsSimd.Kzg
 set_option exponentiation.threshold 512
 set_option maxRecDepth 2048
 
-
-private theorem g1Affine_eq_bls (p : EthLib.Cryptography.Bls.G1) :
-    g1Affine p = DecompressG1.toBlstP1Affine (G1Spec.blstLimbs p) := by
-  simp [g1Affine, DecompressG1.toBlstP1Affine, G1Spec.blstLimbs, fpEncode_eq_bls]
 
 theorem specVerdict_eq_bls (b : Array U8 48#usize) :
     specVerdict b = UncompressG1.specVerdict b := by
@@ -34,19 +30,13 @@ theorem specVerdict_eq_bls (b : Array U8 48#usize) :
 
 theorem g1_decode_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (inputs : Slice (Array U8 48#usize))
-    (out : Slice (Option blst.blst_p1_affine))
+    (out : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = inputs.val.map specVerdict := by
+      result.val = inputs.val.map specVerdict ∧
+      ∀ p, some p ∈ result.val → G1AffineValid p := by
   have hv : specVerdict = UncompressG1.specVerdict := funext specVerdict_eq_bls
   simpa only [hv] using UncompressG1.uncompress_in_g1_eq_spec_list inputs out hlen
-
-private theorem g2Affine_eq_bls (p : EthLib.Cryptography.Bls.G2) :
-    g2Affine p = DecompressG2.toBlstP2Affine (G2Spec.blstLimbs p) := by
-  simp only [g2Affine, fp2Encode, DecompressG2.toBlstP2Affine, G2Spec.blstLimbs,
-    DecompressG2.blstPoint, DecompressG2.toBlstFp2, toArray, fpEncode_eq_bls,
-    Fp2.re_toField, Fp2.im_toField]
-  rfl
 
 theorem specG2Verdict_eq_bls (b : Array U8 96#usize) :
     specG2Verdict b = UncompressG2.specVerdict b := by

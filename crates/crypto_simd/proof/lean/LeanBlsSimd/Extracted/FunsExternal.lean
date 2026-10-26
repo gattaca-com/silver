@@ -20,7 +20,19 @@ class silver_crypto_simd.RuntimeFeatures where
 
 /-- Signature decoding has a separate boundary from KZG. -/
 class silver_crypto_simd.bls.BlsExternals where
-  uncompressG2 : Array Std.U8 96#usize → Option blst.blst_p2_affine
+  uncompressG2 : Array Std.U8 96#usize → Option g2_point.G2Point
+
+class silver_crypto_simd.bls.PointExternals where
+  fromG1 : blst.blst_p1_affine → Option g1_point.G1Point
+  fromG2 : blst.blst_p2_affine → Option g2_point.G2Point
+
+def silver_crypto_simd.bls.g1_point.G1Point.from_blst [PointExternals]
+    (point : blst.blst_p1_affine) : Result (Option g1_point.G1Point) :=
+  ok (PointExternals.fromG1 point)
+
+def silver_crypto_simd.bls.g2_point.G2Point.from_blst [PointExternals]
+    (point : blst.blst_p2_affine) : Result (Option g2_point.G2Point) :=
+  ok (PointExternals.fromG2 point)
 
 class silver_crypto_simd.KzgExternals where
   uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
@@ -45,7 +57,7 @@ def silver_crypto_simd.bmi2_available [RuntimeFeatures] : Result Bool :=
   ok RuntimeFeatures.bmi2Available
 
 def silver_crypto_simd.bls.uncompress_in_g2_blst [BlsExternals]
-    (bytes : Array Std.U8 96#usize) : Result (Option blst.blst_p2_affine) :=
+    (bytes : Array Std.U8 96#usize) : Result (Option g2_point.G2Point) :=
   ok (BlsExternals.uncompressG2 bytes)
 
 def blst.blst_p1_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p1_affine :=

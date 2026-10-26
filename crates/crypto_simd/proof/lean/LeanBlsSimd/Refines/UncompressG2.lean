@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.PointValidity
 import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.WrapperLengths
 import LeanBlsSimd.Refines.G2Wrapper
@@ -10,15 +11,21 @@ namespace LeanBlsSimd.UncompressG2
 
 open DecompressG2
 
-def specVerdict (bytes : Array U8 96#usize) : Option blst.blst_p2_affine :=
+def specVerdict (bytes : Array U8 96#usize) : Option g2_point.G2Point :=
   (G2Spec.verdict (ofArray ofU8 bytes)).map toBlstP2Affine
 
 /-- Agreement includes acceptance and every affine limb, including infinity's zero limbs. -/
 def BlstMatchesSpec [BlsExternals] : Prop :=
   ∀ bytes : Array U8 96#usize, BlsExternals.uncompressG2 bytes = specVerdict bytes
 
-theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : blst.blst_p2_affine) :
+theorem specVerdict_valid (bytes : Array U8 96#usize) (p : g2_point.G2Point)
+    (h : specVerdict bytes = some p) : Kzg.G2AffineValid p := by
+  obtain ⟨q, hq, rfl⟩ := Option.map_eq_some_iff.mp h
+  exact Kzg.g2_verdict_valid _ q hq
+
+theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : g2_point.G2Point) :
     specVerdict bytes = some p ↔
+      Kzg.G2AffineValid p ∧
       ∃ P, EthLib.Cryptography.Bls.G2.uncompress (toBytes (ofArray ofU8 bytes)) = .ok P ∧
         EthLib.Cryptography.Bls.G2.inSubgroup P = true ∧
         p = toBlstP2Affine (G2Spec.blstLimbs P) := by
@@ -26,8 +33,8 @@ theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : blst.blst_p2_affin
   constructor
   · rintro ⟨q, hq, rfl⟩
     obtain ⟨P, hP, hg, rfl⟩ := (G2Spec.verdict_some_iff _ q).mp hq
-    exact ⟨P, hP, hg, rfl⟩
-  · rintro ⟨P, hP, hg, rfl⟩
+    exact ⟨Kzg.g2_verdict_valid _ _ hq, P, hP, hg, rfl⟩
+  · rintro ⟨_, P, hP, hg, rfl⟩
     exact ⟨G2Spec.blstLimbs P, (G2Spec.verdict_some_iff _ _).mpr ⟨P, hP, hg, rfl⟩, rfl⟩
 
 def usesKernelAt [RuntimeFeatures] (inputs : Slice (Array U8 96#usize)) (i : ℕ) : Bool :=
@@ -44,7 +51,7 @@ theorem usesKernelAt_iff [RuntimeFeatures] (inputs : Slice (Array U8 96#usize)) 
 /-- Every slot is overwritten. Decided kernel lanes use the specification; all other
 lanes preserve the arbitrary scalar external's result. -/
 theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
@@ -85,7 +92,7 @@ theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
       exact modelBlst_roundtrip inputs.val[i.val]
 
 theorem uncompress_in_g2_eq_blst [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val = inputs.val.map BlsExternals.uncompressG2 := by
@@ -98,7 +105,7 @@ theorem uncompress_in_g2_eq_blst [RuntimeFeatures] [BlsExternals] (hblst : BlstM
   simpa only [hs, ite_self, List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
 theorem uncompress_in_g2_eq_spec [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
@@ -110,24 +117,31 @@ theorem uncompress_in_g2_eq_spec [RuntimeFeatures] [BlsExternals] (hblst : BlstM
   simpa only [hblst inputs.val[i.val], ite_self] using hv i
 
 theorem uncompress_in_g2_eq_spec_list [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
-      result.val = inputs.val.map specVerdict := by
+      result.val = inputs.val.map specVerdict ∧
+      ∀ p, some p ∈ result.val → Kzg.G2AffineValid p := by
   obtain ⟨result, hr, hl, hv⟩ := uncompress_in_g2_eq_spec hblst inputs out hlen
-  refine ⟨result, hr, List.ext_getElem (by simpa using hl) ?_⟩
-  intro i hi hj
-  have hi' : i < inputs.val.length := by omega
-  have h := hv ⟨i, hi'⟩
-  simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
+  have heq : result.val = inputs.val.map specVerdict := by
+    apply List.ext_getElem (by simpa using hl)
+    intro i hi hj
+    have hi' : i < inputs.val.length := by omega
+    have h := hv ⟨i, hi'⟩
+    simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
+  refine ⟨result, hr, heq, ?_⟩
+  intro p hp
+  rw [heq] at hp
+  obtain ⟨bytes, _, hb⟩ := List.mem_map.mp hp
+  exact specVerdict_valid bytes p hb
 
 theorem uncompress_in_g2_eq_spec_model_list [RuntimeFeatures] [BlsExternals] (hblst : BlstMatchesSpec)
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val.map (Option.map ofBlstP2Affine) =
         inputs.val.map (G2Spec.verdict ∘ ofArray ofU8) := by
-  obtain ⟨result, hr, hv⟩ := uncompress_in_g2_eq_spec_list hblst inputs out hlen
+  obtain ⟨result, hr, hv, _⟩ := uncompress_in_g2_eq_spec_list hblst inputs out hlen
   refine ⟨result, hr, ?_⟩
   simp [hv, specVerdict, List.map_map, Option.map_map, Function.comp_def]
 

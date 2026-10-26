@@ -416,7 +416,11 @@ fn verdicts_match_blst_on_members_non_members_and_garbage() {
     for (i, input) in inputs.iter().enumerate() {
         let want = uncompress_in_g1_blst(input);
         assert_eq!(serialized(&got[i]), serialized(&want), "input {i}");
-        assert_eq!(serialized(&portable[i]), serialized(&want), "portable input {i}");
+        assert_eq!(
+            serialized(&portable[i].map(G1Point::into_blst)),
+            serialized(&want),
+            "portable input {i}"
+        );
         members += want.is_some() as usize;
     }
     assert_eq!(

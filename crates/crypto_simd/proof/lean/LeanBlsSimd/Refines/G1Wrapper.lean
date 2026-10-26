@@ -87,7 +87,8 @@ theorem chunk_refines [RuntimeFeatures] (inputs : Array (Array U8 48#usize) 8#us
         simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
       · simp only [↓reduceIte]
         rw [index_usize_toArray _ _ _ _ hj]
-        simp only [bind_tc_ok, Function.uncurry_apply_pair]
+        simp only [g1_point.G1Point.from_subgroup_unchecked, bind_tc_ok,
+          Function.uncurry_apply_pair]
         rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
         simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
         rfl

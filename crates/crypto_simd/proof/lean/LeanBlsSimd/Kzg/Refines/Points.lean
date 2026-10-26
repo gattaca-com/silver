@@ -8,8 +8,8 @@ namespace LeanBlsSimd.Kzg
 
 private theorem decode_points_loop_eq
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
-    (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
-    (remaining : List (Option blst.blst_p1_affine))
+    (decoded : alloc.vec.Vec (Option g1_point.G1Point))
+    (remaining : List (Option g1_point.G1Point))
     (points : alloc.vec.Vec blst.blst_p1_affine) (i : Usize)
     (hlen : decoded.val.length = encodings.val.length)
     (hd : decoded.val = points.val.map some ++ remaining)
@@ -29,7 +29,7 @@ private theorem decode_points_loop_eq
     have hlt : i.val < encodings.val.length := by simp [hd, hi] at hlen ⊢; omega
     have htest : i < Slice.len encodings := by simpa using hlt
     have hindex : alloc.vec.Vec.index
-        (core.slice.index.SliceIndexUsizeSlice (Option blst.blst_p1_affine)) decoded i =
+        (core.slice.index.SliceIndexUsizeSlice (Option g1_point.G1Point)) decoded i =
           ok verdict := by
       simp [alloc.vec.Vec.index_usize, hd, hi, List.getElem_append_right]
     cases verdict with
@@ -72,32 +72,32 @@ private theorem decode_points_loop_eq
       refine ⟨out, j, ?_, by simpa using hresult, ?_⟩
       · rw [verify.decode_points_loop, loop.eq_1]
         simp only [verify.decode_points_loop.body, htest,
-          if_true, hindex, bind_tc_ok, hpush, hadd]
+          if_true, hindex, g1_point.G1Point.into_blst, bind_tc_ok, hpush, hadd]
         exact hloop
       · simpa [points', List.append_assoc] using hval
 
 theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
-    (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
+    (decoded : alloc.vec.Vec (Option g1_point.G1Point))
     (points : alloc.vec.Vec blst.blst_p1_affine) :
     ∃ resultDecoded resultPoints,
       verify.decode_points encodings decoded points =
         ok ((encodings.val.map specVerdict).all Option.isSome, resultDecoded, resultPoints) ∧
       resultDecoded.val = encodings.val.map specVerdict ∧
       resultPoints.val = ((encodings.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  let emptyDecoded := alloc.vec.Vec.new (Option blst.blst_p1_affine)
+  let emptyDecoded := alloc.vec.Vec.new (Option g1_point.G1Point)
   let optionClone := core.option.Option.Insts.CoreCloneClone
-    blst.blst_p1_affine.Insts.CoreCloneClone
+    g1_point.G1Point.Insts.CoreCloneClone
   have hclear : alloc.vec.Vec.resize optionClone decoded 0#usize none = ok emptyDecoded := by
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, alloc.vec.Vec.new]
-  let initial : alloc.vec.Vec (Option blst.blst_p1_affine) :=
+  let initial : alloc.vec.Vec (Option g1_point.G1Point) :=
     ⟨List.replicate encodings.val.length none, by simpa using encodings.property⟩
   have hresize : alloc.vec.Vec.resize optionClone emptyDecoded (Slice.len encodings) none =
       ok initial := by
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, initial]
-  obtain ⟨output, houtput, houtputVal⟩ := g1_decode_refinement encodings (alloc.vec.Vec.deref_mut initial).1
+  obtain ⟨output, houtput, houtputVal, _⟩ := g1_decode_refinement encodings (alloc.vec.Vec.deref_mut initial).1
     (by simp [initial, alloc.vec.Vec.deref_mut])
   let resultDecoded := (alloc.vec.Vec.deref_mut initial).2 output
   have hdecoded : resultDecoded.val = encodings.val.map specVerdict := houtputVal

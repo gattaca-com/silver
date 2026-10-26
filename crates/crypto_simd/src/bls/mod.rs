@@ -139,9 +139,13 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<G1Poi
     uncompress_all_in_g1_blst(inputs, out);
 }
 
-fn uncompress_all_in_g1_blst(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
+#[allow(clippy::manual_map, reason = "Aeneas does not translate `Option::map`")]
+fn uncompress_all_in_g1_blst(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<G1Point>]) {
     for i in 0..inputs.len() {
-        out[i] = uncompress_in_g1_blst(&inputs[i]);
+        out[i] = match uncompress_in_g1_blst(&inputs[i]) {
+            Some(point) => Some(G1Point::from_subgroup_unchecked(point)),
+            None => None,
+        };
     }
 }
 

@@ -8,7 +8,7 @@ namespace LeanBlsSimd
 
 open DecompressG1
 
-def UncompressG1.specVerdict (bytes : Array U8 48#usize) : Option blst.blst_p1_affine :=
+def UncompressG1.specVerdict (bytes : Array U8 48#usize) : Option g1_point.G1Point :=
   (G1Spec.verdict (ofArray ofU8 bytes)).map toBlstP1Affine
 
 /-- The generated portable decoders agree with the specification on each input. -/

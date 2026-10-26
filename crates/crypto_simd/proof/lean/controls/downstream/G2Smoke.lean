@@ -85,7 +85,7 @@ theorem Bridge.uncompress_eq_spec_list (cpu : _root_.silver_crypto_simd.RuntimeF
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, Bridge.uncompress cpu upstream inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
-  obtain ⟨result, hr, hv⟩ := @LeanBlsSimd.UncompressG2.uncompress_in_g2_eq_spec_list
+  obtain ⟨result, hr, hv, _⟩ := @LeanBlsSimd.UncompressG2.uncompress_in_g2_eq_spec_list
     cpu upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
   · simp only [Bridge.uncompress, hr, bind_tc_ok]

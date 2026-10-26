@@ -7,7 +7,7 @@ use blst::{blst_p1_affine, min_pk::PublicKey};
 use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
-use silver_crypto_simd::bls::uncompress_in_g1;
+use silver_crypto_simd::bls::{G1Point, uncompress_in_g1};
 
 use super::validator_hash;
 use crate::{
@@ -105,7 +105,7 @@ struct RecordKeys<'a> {
     val_bytes: &'a [u8],
     start: usize,
     compressed: Vec<BLSPubkey>,
-    decoded: Vec<Option<blst_p1_affine>>,
+    decoded: Vec<Option<G1Point>>,
 }
 
 impl<'a> RecordKeys<'a> {
@@ -126,7 +126,9 @@ impl<'a> RecordKeys<'a> {
         // Decoding checks G1 membership; `KeyValidate` also rejects infinity,
         // represented by blst as the all-zero point.
         match self.decoded[idx - self.start] {
-            Some(point) if point != blst_p1_affine::default() => Ok(PublicKey::from(point)),
+            Some(point) if *point.as_blst() != blst_p1_affine::default() => {
+                Ok(PublicKey::from(point.into_blst()))
+            }
             _ => Err(ValidatorsDecodeError::InvalidPubkey { idx }),
         }
     }

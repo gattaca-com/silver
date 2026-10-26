@@ -26,7 +26,7 @@ private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n �
   simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
 
 theorem blst_list_refines [KzgExternals]
-    (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
+    (inputs : Slice (Array U8 48#usize)) (out : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, uncompress_all_in_g1_blst inputs out = ok result ∧
       result.val = inputs.val.map KzgExternals.uncompressG1 := by
@@ -51,11 +51,15 @@ theorem blst_list_refines [KzgExternals]
       rw [show Slice.index_usize inputs r.start = ok inputs.val[r.start.val] by
         simp [Slice.index_usize, hj]]
       simp only [uncompress_in_g1_blst, bind_tc_ok]
-      rw [show Slice.update (enc v) r.start (KzgExternals.uncompressG1 inputs.val[r.start.val]) =
-        ok ((enc v).set r.start (KzgExternals.uncompressG1 inputs.val[r.start.val])) by
-          simp [Slice.update, enc, vectorSlice, hj, Slice.set, Slice.setAtNat]]
-      rw [vectorSlice_set v inputs.property r.start hj]
-      simp only [bind_tc_ok, enc, target, hs]
+      have hupdate : ∀ x, Slice.update (enc v) r.start x = ok ((enc v).set r.start x) := by
+        intro x
+        simp [Slice.update, enc, vectorSlice, hj, Slice.set, Slice.setAtNat]
+      have htarget : target j = KzgExternals.uncompressG1 inputs.val[r.start.val] := by
+        simp only [target, hs]
+      rw [htarget]
+      cases KzgExternals.uncompressG1 inputs.val[r.start.val] <;>
+        simp only [g1_point.G1Point.from_subgroup_unchecked, bind_tc_ok, hupdate,
+          vectorSlice_set v inputs.property r.start hj, enc, hs]
     · rw [foldl_set_ofFn]
   · apply List.ext_getElem (by simp [enc, vectorSlice])
     intro i hi hj

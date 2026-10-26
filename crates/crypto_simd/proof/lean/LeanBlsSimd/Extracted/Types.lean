@@ -81,7 +81,7 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 87:0-90:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 98:0-101:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8
@@ -153,6 +153,18 @@ structure bls.g2x8.G2x8 where
     Visibility: public -/
 @[reducible]
 def bls.fp12.Fp12 := bls.fp2x8.Fp2x8
+
+/-- [silver_crypto_simd::bls::g1_point::G1Point]
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 9:0-9:35
+    Visibility: public -/
+@[reducible]
+def bls.g1_point.G1Point := blst.blst_p1_affine
+
+/-- [silver_crypto_simd::bls::g2_point::G2Point]
+    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 9:0-9:35
+    Visibility: public -/
+@[reducible]
+def bls.g2_point.G2Point := blst.blst_p2_affine
 
 /-- [silver_crypto_simd::bls::glv::Half]
     Source: 'crates/crypto_simd/src/bls/glv.rs', lines 27:0-30:1
@@ -410,7 +422,7 @@ structure kzg.verify.CellBatchVerifier where
   setup : kzg.setup.Setup
   cosets : kzg.cosets.Cosets
   commitments : kzg.verify.Deduplicated
-  decoded : alloc.vec.Vec (Option blst.blst_p1_affine)
+  decoded : alloc.vec.Vec (Option bls.g1_point.G1Point)
   commitment_points : alloc.vec.Vec blst.blst_p1_affine
   proof_points : alloc.vec.Vec blst.blst_p1_affine
   evaluations : alloc.vec.Vec blst.blst_fr
