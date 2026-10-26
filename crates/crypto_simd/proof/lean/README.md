@@ -23,16 +23,17 @@ lake exe cache get
 lake build
 AENEAS_DIR=/path/to/aeneas ./extract.sh --check
 python3 -I controls/extraction-check.py
-python3 -I controls/sha-mutation-check.py
-python3 -I controls/decoder-mutation-check.py
-python3 -I controls/msm-mutation-check.py
-python3 -I controls/tower-mutation-check.py
-python3 -I controls/portable-tower-mutation-check.py
+```
+
+The mutation checks are development tools: run them after `lake build` while changing proofs or the Rust they refine. CI does not run them.
+
+```sh
+for f in controls/*-mutation-check.py; do python3 -I "$f"; done
 ```
 
 Run one Lean job at a time. A cold build also compiles uncached Aeneas and specification modules. The [parent README](../README.md#reproducing-the-proof-and-checks) explains the default build and its guard reports.
 
-`extract.sh` runs the pure-Python setup-literal check before translation in either mode. It needs no Lean toolchain or compiled project artifacts. Run the SHA, decoder, MSM and both tower mutation checks separately after `lake build`. Extraction checks tool pins and starts from the three BLS roots, `crate::kzg::verify` and `crate::kzg::cell_extender`. Portable field, scalar, G1, MSM, pairing and streaming SHA functions are extracted. Only the signature path's G2 decoder remains opaque. `prepare-extraction.py` introduces `RuntimeFeatures` and G2-only `BlsExternals` parameters; Lean retains each parameter only where the definition uses it.
+`extract.sh` runs the pure-Python setup-literal check before translation in either mode. It needs no Lean toolchain or compiled project artifacts. The nine mutation checks need the built project, so they stay separate from extraction. Extraction checks tool pins and starts from the three BLS roots, `crate::kzg::verify` and `crate::kzg::cell_extender`. Portable field, scalar, G1, MSM, pairing and streaming SHA functions are extracted. Only the signature path's G2 decoder remains opaque. `prepare-extraction.py` introduces `RuntimeFeatures` and G2-only `BlsExternals` parameters; Lean retains each parameter only where the definition uses it.
 
 Preparation quotes the eight generated `full` identifiers and supplies structural `Array.make` length witnesses. It recursively hoists G1 rows and pairing steps/lanes into `Extracted/Literals.lean`, preserving their types, order and contents. It validates required verifier/extender entries and literal structure. All adaptations run before `--check`, which compares complete `Types.lean`, `Literals.lean` and `Funs.lean` after masking only numeric source spans. The explicit Rust `Fp2::new` helper makes the nested pairing-table write translate to the intended Fp2 value.
 

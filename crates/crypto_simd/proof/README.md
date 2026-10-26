@@ -274,7 +274,7 @@ Run the extraction fixtures separately from the Lean control loop:
 python3 -I controls/extraction-check.py
 ```
 
-After `lake build`, run the source mutation checks. They require `lake` and the compiled project imports:
+After `lake build`, run the source mutation checks. They are development tools for changing proofs or the Rust they refine; CI does not run them. They require `lake` and the compiled project imports:
 
 ```sh
 python3 -I controls/sha-mutation-check.py
