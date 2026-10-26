@@ -20,9 +20,11 @@
 pub mod constants;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod decompress;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod decompress_g2;
 pub(crate) mod encoding;
 #[cfg(target_arch = "x86_64")]
@@ -30,15 +32,19 @@ pub(crate) mod encoding;
 pub(crate) mod fp12;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod fp2x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod fp8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod g1x8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
+#[doc(hidden)]
 pub mod g2x8;
 pub(crate) mod glv;
 pub mod limbs;
