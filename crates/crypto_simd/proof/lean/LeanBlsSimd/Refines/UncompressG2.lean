@@ -25,7 +25,6 @@ theorem specVerdict_valid (bytes : Array U8 96#usize) (p : g2_point.G2Point)
 
 theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : g2_point.G2Point) :
     specVerdict bytes = some p ↔
-      Kzg.G2AffineValid p ∧
       ∃ P, EthLib.Cryptography.Bls.G2.uncompress (toBytes (ofArray ofU8 bytes)) = .ok P ∧
         EthLib.Cryptography.Bls.G2.inSubgroup P = true ∧
         p = toBlstP2Affine (G2Spec.blstLimbs P) := by
@@ -33,8 +32,8 @@ theorem specVerdict_some_iff (bytes : Array U8 96#usize) (p : g2_point.G2Point) 
   constructor
   · rintro ⟨q, hq, rfl⟩
     obtain ⟨P, hP, hg, rfl⟩ := (G2Spec.verdict_some_iff _ q).mp hq
-    exact ⟨Kzg.g2_verdict_valid _ _ hq, P, hP, hg, rfl⟩
-  · rintro ⟨_, P, hP, hg, rfl⟩
+    exact ⟨P, hP, hg, rfl⟩
+  · rintro ⟨P, hP, hg, rfl⟩
     exact ⟨G2Spec.blstLimbs P, (G2Spec.verdict_some_iff _ _).mpr ⟨P, hP, hg, rfl⟩, rfl⟩
 
 def usesKernelAt [RuntimeFeatures] (inputs : Slice (Array U8 96#usize)) (i : ℕ) : Bool :=
