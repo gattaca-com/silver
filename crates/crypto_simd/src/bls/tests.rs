@@ -1,4 +1,5 @@
 mod g2_cases;
+mod pairing_product;
 
 use std::time::{Duration, Instant};
 

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::ptr;
 
 use blst::{
@@ -11,6 +13,11 @@ use crate::{
     bls::{fp12::Fp12, lane_pairs::LanePairs},
     ifma_available,
 };
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static BLST_PAIR_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+}
 
 #[derive(Default)]
 pub struct PairingProduct {
@@ -115,6 +122,8 @@ impl PairingInputs<'_> {
     }
 
     fn blst_is_one(&self) -> bool {
+        #[cfg(test)]
+        BLST_PAIR_COUNT.set(Some(self.pairs.len()));
         let mut product = blst_fp12::default();
         let mut start = 0;
         while start < self.pairs.len() {
