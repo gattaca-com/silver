@@ -141,3 +141,10 @@ cargo build --profile release-prod --locked --bin silver
 ```
 
 Development commands live in the `justfile`.
+
+## License
+
+Silver is licensed under the [MIT licence](LICENSE), with one exception.
+[`crates/crypto_simd/proof/lean/`](crates/crypto_simd/proof/lean/) and everything
+under it are dedicated to the public domain under
+[CC0 1.0](crates/crypto_simd/proof/lean/LICENSE).

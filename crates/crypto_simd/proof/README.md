@@ -365,13 +365,7 @@ The proof has two parts: the generated code returns exactly the result of a hand
 
 ### Montgomery multiplication and squaring
 
-`Proofs/EarlyCarry.lean` proves the wrapping carry identity under the inverse-modulus premise.
-`Proofs/Reduction.lean` proves that each generated reduction row agrees with the reference model
-on the limbs above its row index, then transports that agreement through all rows and final
-carry extraction. The row's dead low limb is deliberately outside this equality.
-`Proofs/Square.lean` equates the triangular square accumulator with the full product accumulator,
-including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the
-existing arithmetic bounds and public contracts.
+`Proofs/EarlyCarry.lean` proves the wrapping carry identity under the inverse-modulus premise. `Proofs/Reduction.lean` proves that each generated reduction row agrees with the reference model on the limbs above its row index, then transports that agreement through all rows and final carry extraction. The row's dead low limb is deliberately outside this equality. `Proofs/Square.lean` equates the triangular square accumulator with the full product accumulator, including wrapping additions. The Fp8 and Fr8 refinements use these identities to reuse the existing arithmetic bounds and public contracts.
 
 ### Lazy field arithmetic and point formulas
 
@@ -385,33 +379,13 @@ Fp8 uses the same [range classes as the Fr8 FFT kernel](#ifma-fr-fft-kernel), wi
 | Bounded | In `[0, k*p)` | Normalized | `Fp8.BoundRep` records the bound and field value |
 | Offset | Exactly `c*p` | Normalized | `Fp8.Offset` |
 
-The shared `SignedLimbs` model defines raw addition, offset subtraction and signed carrying for both fields.
-Its width-generic normalization theorem preserves values in `[0, 2^(52*n))` when each limb has magnitude below `2^62`.
-The five- and eight-limb theorems follow as corollaries.
-`Refines/SignedLimbs.lean` shares the normalization, raw-addition and offset-subtraction refinements across both widths.
-`Proofs/Fp8Lazy.lean` connects these operations to Montgomery field values and composes their bounds.
-`Proofs/Fp8Holds.lean` supplies the reduced field representations shared by Fp8 and Fp2 proofs.
-Conditional subtraction preserves residues when its offset is a multiple of `p`.
-`Proofs/Fp8Multiple.lean` proves that `multiple_of_p c` returns normalized limbs for `c*p`, for every `c < 2^12`.
+The shared `SignedLimbs` model defines raw addition, offset subtraction and signed carrying for both fields. Its width-generic normalization theorem preserves values in `[0, 2^(52*n))` when each limb has magnitude below `2^62`. The five- and eight-limb theorems follow as corollaries. `Refines/SignedLimbs.lean` shares the normalization, raw-addition and offset-subtraction refinements across both widths. `Proofs/Fp8Lazy.lean` connects these operations to Montgomery field values and composes their bounds. `Proofs/Fp8Holds.lean` supplies the reduced field representations shared by Fp8 and Fp2 proofs. Conditional subtraction preserves residues when its offset is a multiple of `p`. `Proofs/Fp8Multiple.lean` proves that `multiple_of_p c` returns normalized limbs for `c*p`, for every `c < 2^12`.
 
-`mul_spec_of_product_lt` accepts normalized operands with product below `R*p` and proves a reduced result.
-The existing multiplication theorems follow as special cases.
-G1 formulas keep intermediate values below `10p`, with limb magnitudes below `6*2^52` before carrying.
-Their largest product bound is `8p * 8p`, from squaring the doubled difference in point addition.
-Offsets of `2p`, `4p` and `8p` keep differences nonnegative; final conditional subtractions restore reduced coordinates.
-The G1 correctness theorems retain their reduced input and output contracts and their undecided-mask premises.
+`mul_spec_of_product_lt` accepts normalized operands with product below `R*p` and proves a reduced result. The existing multiplication theorems follow as special cases. G1 formulas keep intermediate values below `10p`, with limb magnitudes below `6*2^52` before carrying. Their largest product bound is `8p * 8p`, from squaring the doubled difference in point addition. Offsets of `2p`, `4p` and `8p` keep differences nonnegative; final conditional subtractions restore reduced coordinates. The G1 correctness theorems retain their reduced input and output contracts and their undecided-mask premises.
 
-`Fp2x8.LazyRep` and `Fp2x8.BoundRep` apply the Fp8 classes to each component.
-`BoundRep.mul` accepts normalized components below `16p`; its Karatsuba sums stay below `32p`.
-The largest underlying Fp8 product is below `1024p²`, which is below `R*p`.
-`BoundRep.square` accepts normalized components below `8p` and offsets the component difference by `8p`.
-Its imaginary component uses `c0 * (2*c1)`, carrying the doubled operand before multiplying.
-Both lemmas return reduced components; the existing reduced-input `Holds.mul` and `Holds.square` statements follow as corollaries.
+`Fp2x8.LazyRep` and `Fp2x8.BoundRep` apply the Fp8 classes to each component. `BoundRep.mul` accepts normalized components below `16p`; its Karatsuba sums stay below `32p`. The largest underlying Fp8 product is below `1024p²`, which is below `R*p`. `BoundRep.square` accepts normalized components below `8p` and offsets the component difference by `8p`. Its imaginary component uses `c0 * (2*c1)`, carrying the doubled operand before multiplying. Both lemmas return reduced components; the existing reduced-input `Holds.mul` and `Holds.square` statements follow as corollaries.
 
-G2's double and affine-add formulas use the same componentwise bounds as G1, with reduced coordinates at both boundaries.
-Their multiplication operands stay below `16p`, and their square operands below `8p`.
-G1 and G2 retain separate models of Rust's offset structs but share the Fp8 reduction-chain proofs.
-The G2 formula theorems preserve their exact field triples and undecided-mask equalities.
+G2's double and affine-add formulas use the same componentwise bounds as G1, with reduced coordinates at both boundaries. Their multiplication operands stay below `16p`, and their square operands below `8p`. G1 and G2 retain separate models of Rust's offset structs but share the Fp8 reduction-chain proofs. The G2 formula theorems preserve their exact field triples and undecided-mask equalities.
 
 ### G1 Scott criterion
 
@@ -667,41 +641,17 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 ### Pairing field model
 
-`Spec/Fp6*.lean` and `Spec/Fp12*.lean` give the executable coordinates exact field semantics.
-`Fp6.toField` and `Fp12.toField` are ring equivalences, with total inverse bridges that include zero.
-The Fp2 and Fp12 power bridges cover every natural exponent, including `0^0`.
-The pinned specification has no Fp6 `powNat` operation.
-Noncube and nonsquare certificates establish both extensions; their cardinalities are `p^6` and `p^12`.
+`Spec/Fp6*.lean` and `Spec/Fp12*.lean` give the executable coordinates exact field semantics. `Fp6.toField` and `Fp12.toField` are ring equivalences, with total inverse bridges that include zero. The Fp2 and Fp12 power bridges cover every natural exponent, including `0^0`. The pinned specification has no Fp6 `powNat` operation. Noncube and nonsquare certificates establish both extensions; their cardinalities are `p^6` and `p^12`.
 
-`Spec/Cyclotomic/FieldBridge.lean` identifies this field with a cubic-over-quadratic ring model by its six Fp2 coordinates.
-`Schedule.raw` records the three Fp4 squarings and coefficient order of the Rust cyclotomic formula.
-`field_cyclotomic_square` proves that formula under the Φ12 relation `g^(p^4-p^2+1) = 1`.
-The unitary condition alone is insufficient; a checked `−1` counterexample distinguishes it.
-`field_frobenius` proves the coefficient map with factors `ξ^(j(p−1)/6)`.
-`field_star` identifies conjugation with the `p^6` power.
-`field_easy_cyclotomic` proves membership for the nonzero easy-part output; zero maps to zero.
+`Spec/Cyclotomic/FieldBridge.lean` identifies this field with a cubic-over-quadratic ring model by its six Fp2 coordinates. `Schedule.raw` records the three Fp4 squarings and coefficient order of the Rust cyclotomic formula. `field_cyclotomic_square` proves that formula under the Φ12 relation `g^(p^4-p^2+1) = 1`. The unitary condition alone is insufficient; a checked `−1` counterexample distinguishes it. `field_frobenius` proves the coefficient map with factors `ξ^(j(p−1)/6)`. `field_star` identifies conjugation with the `p^6` power. `field_easy_cyclotomic` proves membership for the nonzero easy-part output; zero maps to zero.
 
-`Refines/FrobeniusConstants.lean` certifies both generated coefficient tables, their `2^384` and `2^416` Montgomery factors, canonical values and normalized lane limbs.
-`Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership.
-`Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases.
-`Kzg.pairing_correct` proves `PairingCorrect`, which the verifier consumes internally.
-The portable and lane towers, both generated Miller loops and both optimized final-exponentiation chains have refinements below. The point adapters connect them to the verifier.
+`Refines/FrobeniusConstants.lean` certifies both generated coefficient tables, their `2^384` and `2^416` Montgomery factors, canonical values and normalized lane limbs. `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership. `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases. `Kzg.pairing_correct` proves `PairingCorrect`, which the verifier consumes internally. The portable and lane towers, both generated Miller loops and both optimized final-exponentiation chains have refinements below. The point adapters connect them to the verifier.
 
 ### Portable pairing tower
 
-`Portable/Fp2/Product.lean` proves the generated wide multiplication, including both subtraction guards and the reduction capacity bounds.
-Inputs use canonical six-word Montgomery coordinates; the proofs construct canonical outputs for both BMI2 branches.
-`Portable/Fp6.lean` and `Portable/Fp12/Arithmetic.lean` refine multiplication, optimized squaring, sparse-line multiplication, conjugation, equality and total inversion, including zero.
-Their `Rep` predicates apply `PortableFpRep` to every coefficient.
-The `encode` functions choose those exact canonical coordinates, and `rep_eq_encode` relates every represented input to its encoding.
+`Portable/Fp2/Product.lean` proves the generated wide multiplication, including both subtraction guards and the reduction capacity bounds. Inputs use canonical six-word Montgomery coordinates; the proofs construct canonical outputs for both BMI2 branches. `Portable/Fp6.lean` and `Portable/Fp12/Arithmetic.lean` refine multiplication, optimized squaring, sparse-line multiplication, conjugation, equality and total inversion, including zero. Their `Rep` predicates apply `PortableFpRep` to every coefficient. The `encode` functions choose those exact canonical coordinates, and `rep_eq_encode` relates every represented input to its encoding.
 
-`Portable/Fp12/Cyclotomic.lean:cyclotomic_raw_encoded` proves agreement with `Schedule.raw` for every coefficient tuple.
-`cyclotomic_square_encoded` separately requires the Φ12 relation; unitary membership alone cannot justify it.
-`Portable/Fp12/Frobenius.lean:portable_entry_decodes` states each portable table entry's decoded value as `ξ^(j(p−1)/6)`.
-`portable_entry_encoded` ties those entries to the portable arithmetic's `2^384` Montgomery encoder.
-The generated Frobenius map refines the specification's p-th power for every input.
-`LaneTower/Constants.lean:lane_entry_decodes` gives the lane table's decoded entries using the arithmetic model's `decode`.
-`lane_radix` identifies its `R` with `2^416`, and `lane_entry_bounds` certifies normalized canonical limbs.
+`Portable/Fp12/Cyclotomic.lean:cyclotomic_raw_encoded` proves agreement with `Schedule.raw` for every coefficient tuple. `cyclotomic_square_encoded` separately requires the Φ12 relation; unitary membership alone cannot justify it. `Portable/Fp12/Frobenius.lean:portable_entry_decodes` states each portable table entry's decoded value as `ξ^(j(p−1)/6)`. `portable_entry_encoded` ties those entries to the portable arithmetic's `2^384` Montgomery encoder. The generated Frobenius map refines the specification's p-th power for every input. `LaneTower/Constants.lean:lane_entry_decodes` gives the lane table's decoded entries using the arithmetic model's `decode`. `lane_radix` identifies its `R` with `2^416`, and `lane_entry_bounds` certifies normalized canonical limbs.
 
 ### Lane pairing tower schedules
 

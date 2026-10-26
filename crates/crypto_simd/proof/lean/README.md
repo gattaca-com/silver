@@ -2,6 +2,12 @@
 
 One extraction and one Lake project cover BLS decoding, KZG cell batch verification and cell extension. [The parent README](../README.md) states their contracts, scope and consolidated trust boundary. See [common setup](#common-reproduction-and-extraction), [BLS maintenance](#bls-decoding-maintenance) or [KZG maintenance](#kzg-maintenance). Use this directory for Lake commands and `extract.sh`; run Cargo commands from the silver repository root.
 
+## License
+
+This directory and everything under it are dedicated to the public domain under [CC0 1.0](LICENSE). That overrides the repository-wide MIT licence for this directory only. You may copy, adapt and reuse these proofs without attribution. The rest of `silver_crypto_simd`, including the Rust source used to generate the extraction, remains under the [MIT licence](../../LICENSE).
+
+Contributions to this directory are accepted under CC0 only. Do not add material under another licence, such as Apache-2.0 code from Mathlib or other Lean libraries. It cannot be relicensed.
+
 ## Claims
 
 The generated x86_64 APIs cover BLS decoding and subgroup checks, KZG batch verification, and cell extension through both the Fr FFT kernel and scalar fallback. The extender's single `compute_eq_spec` theorem includes canonicality, exact cell bytes, unchanged cells on rejection, construction and repeated calls. See the [full statements](../README.md#what-is-proved) for their premises and runtime scope.
@@ -191,21 +197,7 @@ The verifier's specification bridge uses the polynomial modules, `InterpolationI
 
 ### Pairing algebra
 
-`Spec/Fp6*.lean` and `Spec/Fp12*.lean` connect the spec's exact coordinates, multiplication, total inverse and powers to finite fields.
-`Spec/Cyclotomic/` transfers the Granger–Scott formula, Frobenius and easy-part facts through an explicit coordinate equivalence.
-`Refines/FrobeniusConstants.lean` certifies the two generated Montgomery tables.
-`Portable/Fp2/`, `Portable/Fp6.lean` and `Portable/Fp12/` connect the generated portable tower to those specification coordinates.
-They cover wide multiplication, sparse lines, total inverse, raw cyclotomic squaring and its Φ12 interpretation, and Frobenius.
-`portable_entry_decodes` gives each decoded portable Frobenius coefficient; `portable_entry_encoded` uses the arithmetic's canonical `2^384` encoder.
-`LaneTower/` proves the lane arithmetic, including total inverse and zero-or-Φ12 cyclotomic squaring.
-`Pairing/` certifies the fixed lines and connects both generated Miller loops to their common field fold, including lazy `z=p` infinity skipping and negative-parameter conjugation.
-`Pairing/Final*.lean`, `PortableFinal.lean` and `LaneFinal.lean` connect both optimized final-exponentiation chains to the total specification verdict. The easy part supplies zero-or-Φ12 membership; the exponent certificate includes the factor of three and the verdict uses r-torsion and coprimality.
-`Kzg/PairingCorrect.lean` connects both point representations and proves `PairingCorrect`. The verifier consumes it without a headline premise.
-`controls/TowerField.lean`, `controls/Cyclotomic.lean` and `controls/PortableTower.lean` are included in the default strict guard.
-Run `controls/tower-mutation-check.py` after the build to check formula, inverse-sign and radix mutations.
-Run `controls/portable-tower-mutation-check.py` for mutations of the live generated schedules and table literals.
-Run `controls/pairing-loop-mutation-check.py` for the generated portable and lane Miller schedules and complete pairing calls; the default strict guard also includes the `PairingMiller.lean` lazy-zero control.
-Run `controls/final-exponent-mutation-check.py` after the build for both final chains. `FinalExponentiation.lean` supplies zero/one verdict and exponent-factor controls in the default strict guard.
+`Spec/Fp6*.lean` and `Spec/Fp12*.lean` connect the spec's exact coordinates, multiplication, total inverse and powers to finite fields. `Spec/Cyclotomic/` transfers the Granger–Scott formula, Frobenius and easy-part facts through an explicit coordinate equivalence. `Refines/FrobeniusConstants.lean` certifies the two generated Montgomery tables. `Portable/Fp2/`, `Portable/Fp6.lean` and `Portable/Fp12/` connect the generated portable tower to those specification coordinates. They cover wide multiplication, sparse lines, total inverse, raw cyclotomic squaring and its Φ12 interpretation, and Frobenius. `portable_entry_decodes` gives each decoded portable Frobenius coefficient; `portable_entry_encoded` uses the arithmetic's canonical `2^384` encoder. `LaneTower/` proves the lane arithmetic, including total inverse and zero-or-Φ12 cyclotomic squaring. `Pairing/` certifies the fixed lines and connects both generated Miller loops to their common field fold, including lazy `z=p` infinity skipping and negative-parameter conjugation. `Pairing/Final*.lean`, `PortableFinal.lean` and `LaneFinal.lean` connect both optimized final-exponentiation chains to the total specification verdict. The easy part supplies zero-or-Φ12 membership; the exponent certificate includes the factor of three and the verdict uses r-torsion and coprimality. `Kzg/PairingCorrect.lean` connects both point representations and proves `PairingCorrect`. The verifier consumes it without a headline premise. `controls/TowerField.lean`, `controls/Cyclotomic.lean` and `controls/PortableTower.lean` are included in the default strict guard. Run `controls/tower-mutation-check.py` after the build to check formula, inverse-sign and radix mutations. Run `controls/portable-tower-mutation-check.py` for mutations of the live generated schedules and table literals. Run `controls/pairing-loop-mutation-check.py` for the generated portable and lane Miller schedules and complete pairing calls; the default strict guard also includes the `PairingMiller.lean` lazy-zero control. Run `controls/final-exponent-mutation-check.py` after the build for both final chains. `FinalExponentiation.lean` supplies zero/one verdict and exponent-factor controls in the default strict guard.
 
 ### Working in Lean
 
