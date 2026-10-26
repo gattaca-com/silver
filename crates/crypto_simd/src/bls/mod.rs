@@ -26,7 +26,13 @@ pub mod decompress;
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
 pub mod decompress_g2;
-#[cfg(target_arch = "x86_64")]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(
+        dead_code,
+        reason = "only the point types' range check is used without the x86 decoders"
+    )
+)]
 pub(crate) mod encoding;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -39,10 +45,12 @@ pub mod fp2x8;
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
 pub mod fp8;
+mod g1_point;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
 pub mod g1x8;
+mod g2_point;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
@@ -68,6 +76,8 @@ use blst::{
     BLST_ERROR, blst_p1_affine_in_g1, blst_p1_uncompress, blst_p2_affine_in_g2, blst_p2_uncompress,
 };
 pub use blst::{blst_p1_affine, blst_p2_affine};
+pub use g1_point::G1Point;
+pub use g2_point::G2Point;
 
 use crate::ifma_available;
 #[cfg(target_arch = "x86_64")]
