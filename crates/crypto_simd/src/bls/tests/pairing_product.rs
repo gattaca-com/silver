@@ -12,7 +12,7 @@ use rand_chacha::ChaCha8Rng;
 use super::g2_cases::G2Cases;
 use crate::{
     bls::{
-        PairingProduct,
+        G1Point, G2Point, PairingProduct,
         limbs::LANES,
         pairing_product::{AffinePair, BLST_PAIR_COUNT},
     },
@@ -26,6 +26,21 @@ struct ProductCase {
 }
 
 impl ProductCase {
+    fn points(&self, degenerate: bool) -> Vec<(G1Point, G2Point)> {
+        self.pairs
+            .iter()
+            .map(|pair| {
+                let p = G1Point::from_blst(pair.p).unwrap();
+                let q = G2Point::from_blst(pair.q).unwrap_or_else(|| {
+                    // Inject a non-subgroup point to test the defensive fallback.
+                    assert!(degenerate);
+                    G2Point::from_subgroup_unchecked(pair.q)
+                });
+                (p, q)
+            })
+            .collect()
+    }
+
     fn signed(count: usize, distinct_messages: bool) -> Self {
         assert!(count >= 2);
         let mut pairs = Vec::new();
@@ -76,9 +91,10 @@ impl ProductCase {
     fn check(&self, product: &mut PairingProduct, expected: bool, degenerate: bool) {
         assert_eq!(self.oracle(), expected, "fixture verdict");
         product.clear();
+        let points = self.points(degenerate);
         let mut finite = 0;
-        for pair in &self.pairs {
-            product.push(&pair.p, &pair.q);
+        for (pair, (p, q)) in self.pairs.iter().zip(&points) {
+            product.push(p, q);
             if unsafe { !blst_p1_affine_is_inf(&pair.p) && !blst_p2_affine_is_inf(&pair.q) } {
                 finite += 1;
             }
@@ -93,9 +109,9 @@ impl ProductCase {
             }
         }
         if self.pairs.len() == 2 {
-            let [a, b] = [self.pairs[0], self.pairs[1]];
+            let [a, b] = [points[0], points[1]];
             BLST_PAIR_COUNT.set(None);
-            assert_eq!(PairingProduct::two_pairs_are_one(&a.p, &a.q, &b.p, &b.q), expected);
+            assert_eq!(PairingProduct::two_pairs_are_one((&a.0, &a.1), (&b.0, &b.1)), expected);
             if finite > 0 {
                 assert_eq!(BLST_PAIR_COUNT.get(), expected_blst, "fixed two-pair route");
             }
@@ -245,13 +261,14 @@ fn pairing_products_fall_back_for_middle_full_lane() {
 #[test]
 fn pairing_product_reuse_preserves_only_pushed_pairs() {
     let valid = ProductCase::signed(2, true);
+    let points = valid.points(false);
     let mut product = PairingProduct::with_capacity(2);
     valid.check(&mut product, true, false);
     product.clear();
     assert!(product.is_one());
-    product.push(&valid.pairs[0].p, &valid.pairs[0].q);
+    product.push(&points[0].0, &points[0].1);
     assert!(!product.is_one());
-    product.push(&valid.pairs[1].p, &valid.pairs[1].q);
+    product.push(&points[1].0, &points[1].1);
     assert!(product.is_one());
 
     let q = order_13();

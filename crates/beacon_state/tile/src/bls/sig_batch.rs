@@ -1,16 +1,15 @@
 use core::mem;
 
-use blst::{BLST_ERROR, MultiPoint, blst_p2_affine, blst_p2_affine_is_inf};
+use blst::{BLST_ERROR, MultiPoint, blst_p2_affine_is_inf};
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::B256;
-use silver_crypto_simd::bls::PairingProduct;
+use silver_crypto_simd::bls::{G1Point, G2Point, PairingProduct};
 
 use super::{
     CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
-    aggregator::{PubkeyAggregator, pk_affine, sig_affine},
-    hash_to_g2_affine, negative_g1,
+    aggregator::PubkeyAggregator, checked_public_key,
 };
 
 // N.B. batching is only safe where NBITS < 144-bit GLS threshold.
@@ -20,7 +19,7 @@ const RAND_BYTES: usize = NBITS / 8;
 pub struct SigBatch {
     msgs: Vec<B256>,
     pks: Vec<PublicKey>,
-    sigs: Vec<Signature>,
+    sigs: Vec<G2Point>,
     /// Per-tuple 64-bit random scalars, packed as little-endian bytes.
     /// Pre-allocated to `SIG_BATCH_CAP * 8`; resized (no realloc) per call.
     rand_bytes: Vec<u8>,
@@ -56,17 +55,17 @@ const MAX_HASHED_MSGS: usize = 256;
 /// One cache serves every batch the tile verifies, so each root is hashed once.
 #[derive(Default)]
 pub struct HashedMsgs {
-    live: FxHashMap<B256, blst_p2_affine>,
+    live: FxHashMap<B256, G2Point>,
     /// The generation `live` replaced. Still read, and promoted back on a hit.
-    prev: FxHashMap<B256, blst_p2_affine>,
+    prev: FxHashMap<B256, G2Point>,
 }
 
 impl HashedMsgs {
-    fn get(&mut self, msg: &B256) -> blst_p2_affine {
+    fn get(&mut self, msg: &B256) -> G2Point {
         if let Some(&point) = self.live.get(msg) {
             return point;
         }
-        let point = self.prev.get(msg).copied().unwrap_or_else(|| hash_to_g2_affine(msg));
+        let point = self.prev.get(msg).copied().unwrap_or_else(|| G2Point::hash_to_curve(msg, DST));
         // Retire the older generation instead of emptying the cache.
         // Emptying it made the next block re-hash all ~13 of its roots at
         // once. Flooding the cache with fresh roots only costs the hashing it
@@ -127,8 +126,8 @@ impl SigBatch {
     }
 
     /// Subgroup-checked, like every signature the batch holds.
-    pub fn last_signature(&self) -> Option<&Signature> {
-        self.sigs.last()
+    pub fn last_signature(&self) -> Option<Signature> {
+        self.sigs.last().map(|sig| sig.into_blst().into())
     }
 
     pub fn push_one(&mut self, pubkey: &PublicKey, sig: &[u8; 96], signing_root: B256) {
@@ -142,14 +141,14 @@ impl SigBatch {
     pub fn push_parsed(&mut self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: B256) {
         self.msgs.push(signing_root);
         self.pks.push(*pubkey);
-        self.sigs.push(sig.into_sig());
+        self.sigs.push(sig.0);
     }
 
     pub fn contains(&self, pubkey: &PublicKey, sig: CheckedSignature, signing_root: &B256) -> bool {
         (0..self.msgs.len()).any(|index| {
             &self.msgs[index] == signing_root &&
                 &self.pks[index] == pubkey &&
-                self.sigs[index] == sig.into_sig()
+                self.sigs[index].as_blst() == sig.0.as_blst()
         })
     }
 
@@ -221,7 +220,8 @@ impl SigBatch {
                 let hashed = self.hashed_msgs.get(&self.msgs[0]);
                 let SigBatch { pks, sigs, pairing, .. } = self;
                 pairing.clear();
-                pairing.push(pk_affine(&pks[0]), &hashed);
+                let Some(pk) = checked_public_key(&pks[0]) else { return false };
+                pairing.push(&pk, &hashed);
                 pairing_matches_signature(pairing, &sigs[0])
             }
             _ => self.verify_batch(),
@@ -237,6 +237,7 @@ impl SigBatch {
             return false;
         }
         for ((pk, sig), msg) in self.pks.iter().zip(self.sigs.iter()).zip(self.msgs.iter()) {
+            let sig = Signature::from(sig.into_blst());
             if sig.verify(true, msg, DST, &[], pk, false) != BLST_ERROR::BLST_SUCCESS {
                 return false;
             }
@@ -260,8 +261,7 @@ impl SigBatch {
     /// d whenever d | rᵢ, and the G2 cofactor has small factors
     /// (h₂ = 13²·23²·2713·11953·262069·p₄₄₈), so an order-13 component
     /// slips through ~1/13 of the time — retryable, and the raw sig points
-    /// are reused downstream in aggregates. `pks` are admission-time
-    /// validated, so no G1 checks.
+    /// are reused downstream in aggregates.
     fn verify_batch(&mut self) -> bool {
         let n = self.msgs.len();
 
@@ -278,7 +278,7 @@ impl SigBatch {
             }
         }
 
-        let sig_sum = self.sigs.mult(&self.rand_bytes, NBITS).to_signature();
+        let sig_sum = G2Point::weighted_sum(&self.sigs, &self.rand_bytes);
 
         let SigBatch {
             msgs,
@@ -312,7 +312,8 @@ impl SigBatch {
                 end += 1;
             }
             let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], NBITS);
-            pairing.push(pk_affine(&pk_sum.to_public_key()), &hashed_msgs.get(&msg));
+            let Some(pk_sum) = checked_public_key(&pk_sum.to_public_key()) else { return false };
+            pairing.push(&pk_sum, &hashed_msgs.get(&msg));
             start = end;
         }
         pairing_matches_signature(pairing, &sig_sum)
@@ -321,14 +322,13 @@ impl SigBatch {
 
 /// Pairing the signature with `-G1` lets verification compare the product
 /// against one.
-fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &Signature) -> bool {
-    let sig = sig_affine(sig);
+fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &G2Point) -> bool {
     // Reject an infinite weighted signature, even when valid weighted signatures
     // cancel.
-    if unsafe { blst_p2_affine_is_inf(sig) } {
+    if unsafe { blst_p2_affine_is_inf(sig.as_blst()) } {
         return false;
     }
-    pairing.push(&negative_g1(), sig);
+    pairing.push(&G1Point::negative_generator(), sig);
     pairing.is_one()
 }
 
@@ -336,13 +336,16 @@ fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &Signature) -> b
 mod tests {
     use blst::{
         Pairing, blst_fp_cneg, blst_fp2_cneg, blst_p1_affine_is_inf, blst_p2,
-        blst_p2_add_or_double_affine, blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine,
-        blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
+        blst_p2_add_or_double_affine, blst_p2_affine, blst_p2_affine_in_g2, blst_p2_compress,
+        blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
     };
 
     use super::*;
     use crate::{
-        bls::SignatureChecker,
+        bls::{
+            SignatureChecker,
+            aggregator::{pk_affine, sig_affine},
+        },
         test_signing::{pubkey_pk, sign},
     };
 
@@ -384,7 +387,11 @@ mod tests {
         }
 
         assert!(!memo.live.contains_key(&kept), "the filling roots displaced it");
-        assert_eq!(memo.get(&kept), first, "still served from the retired generation");
+        assert_eq!(
+            memo.get(&kept).into_blst(),
+            first.into_blst(),
+            "still served from the retired generation"
+        );
         assert!(memo.live.contains_key(&kept), "and promoted back");
     }
 
@@ -639,7 +646,7 @@ mod tests {
         unsafe { blst_fp2_cneg(&mut inverse_signature.y, &inverse_signature.y, true) };
         let inverse_signature = Signature::from(inverse_signature);
         assert!(inverse_signature.validate(false).is_ok());
-        let neg_g1 = negative_g1();
+        let neg_g1 = G1Point::negative_generator();
 
         for weight in [1u64, 7, u64::MAX] {
             let scalars = weight.to_le_bytes().repeat(3);
@@ -658,13 +665,14 @@ mod tests {
                 let mut product = PairingProduct::default();
                 let mut previous = Pairing::new(true, DST);
                 for (key, message) in [(cancelled, shared), (remaining, other)] {
-                    let hashed = hash_to_g2_affine(&message);
-                    product.push(pk_affine(&key), &hashed);
-                    previous.raw_aggregate(&hashed, pk_affine(&key));
+                    let hashed = G2Point::hash_to_curve(&message, DST);
+                    product.push(&checked_public_key(&key).unwrap(), &hashed);
+                    previous.raw_aggregate(hashed.as_blst(), pk_affine(&key));
                 }
-                previous.raw_aggregate(sig_affine(&sum), &neg_g1);
+                previous.raw_aggregate(sig_affine(&sum), neg_g1.as_blst());
                 previous.commit();
                 assert_eq!(previous.finalverify(None), valid, "unfiltered blst verdict");
+                let sum = G2Point::from_blst(*sig_affine(&sum)).unwrap();
                 assert_eq!(pairing_matches_signature(&mut product, &sum), valid);
             }
 
@@ -673,7 +681,11 @@ mod tests {
                 .to_signature();
             assert!(unsafe { blst_p2_affine_is_inf(sig_affine(&sum)) });
             let mut product = PairingProduct::default();
-            product.push(pk_affine(&cancelled), &hash_to_g2_affine(&shared));
+            product.push(
+                &checked_public_key(&cancelled).unwrap(),
+                &G2Point::hash_to_curve(&shared, DST),
+            );
+            let sum = G2Point::from_blst(*sig_affine(&sum)).unwrap();
             assert!(!pairing_matches_signature(&mut product, &sum));
         }
     }

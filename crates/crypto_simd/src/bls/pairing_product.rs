@@ -7,7 +7,7 @@ use blst::{
     blst_p2_affine,
 };
 
-use crate::bls::{encoding::less_than_p, limbs::LANES};
+use crate::bls::{G1Point, G2Point, limbs::LANES};
 #[cfg(target_arch = "x86_64")]
 use crate::{
     bls::{fp12::Fp12, lane_pairs::LanePairs},
@@ -35,7 +35,7 @@ impl PairingProduct {
         self.pairs.clear();
     }
 
-    pub fn push(&mut self, p: &blst_p1_affine, q: &blst_p2_affine) {
+    pub fn push(&mut self, p: &G1Point, q: &G2Point) {
         let pair = AffinePair::new(p, q);
         if !pair.is_infinite() {
             self.pairs.push(pair);
@@ -46,13 +46,8 @@ impl PairingProduct {
         PairingInputs { pairs: &self.pairs }.check()
     }
 
-    pub fn two_pairs_are_one(
-        p0: &blst_p1_affine,
-        q0: &blst_p2_affine,
-        p1: &blst_p1_affine,
-        q1: &blst_p2_affine,
-    ) -> bool {
-        let mut pairs = [AffinePair::new(p0, q0), AffinePair::new(p1, q1)];
+    pub fn two_pairs_are_one(first: (&G1Point, &G2Point), second: (&G1Point, &G2Point)) -> bool {
+        let mut pairs = [AffinePair::new(first.0, first.1), AffinePair::new(second.0, second.1)];
         let mut count = 0;
         for index in 0..2 {
             if !pairs[index].is_infinite() {
@@ -71,13 +66,8 @@ pub(super) struct AffinePair {
 }
 
 impl AffinePair {
-    fn new(p: &blst_p1_affine, q: &blst_p2_affine) -> Self {
-        debug_assert!(less_than_p(&p.x.l) && less_than_p(&p.y.l));
-        for component in 0..2 {
-            debug_assert!(less_than_p(&q.x.fp[component].l));
-            debug_assert!(less_than_p(&q.y.fp[component].l));
-        }
-        Self { p: *p, q: *q }
+    fn new(p: &G1Point, q: &G2Point) -> Self {
+        Self { p: p.into_blst(), q: q.into_blst() }
     }
 
     fn is_infinite(&self) -> bool {

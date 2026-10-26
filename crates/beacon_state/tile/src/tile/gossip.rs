@@ -1380,7 +1380,7 @@ impl BeaconStateTile {
         if !sig_batch.verify_all() {
             return None;
         }
-        sig_batch.last_signature().copied()
+        sig_batch.last_signature()
     }
 
     #[timed]

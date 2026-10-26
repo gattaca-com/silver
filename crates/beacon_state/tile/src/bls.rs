@@ -1,17 +1,14 @@
-use std::{ptr, slice};
+use std::slice;
 
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
-use blst::{
-    BLST_ERROR, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine, blst_p1_affine_generator,
-    blst_p1_affine_is_inf, blst_p2, blst_p2_to_affine, min_pk::AggregatePublicKey,
-};
+use blst::{BLST_ERROR, blst_p1_affine_is_inf, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
 use silver_common::ssz_view::{
     SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
 };
-use silver_crypto_simd::bls::{G2Point, PairingProduct, blst_p2_affine, uncompress_in_g2};
+use silver_crypto_simd::bls::{G1Point, G2Point, PairingProduct, uncompress_in_g2};
 pub use silver_ssz::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
 
 use crate::ssz_hash::hash_tree_root_block_header;
@@ -180,32 +177,19 @@ impl SignatureChecker {
     }
 }
 
-/// Same contract as `verify_one_parsed`, minus the group check the
-/// `CheckedSignature` constructor already ran.
 #[timed]
 pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
-    let pk = pk_affine(pk);
-    if unsafe { blst_p1_affine_is_inf(pk) } {
+    let Some(pk) = checked_public_key(pk) else { return false };
+    if unsafe { blst_p1_affine_is_inf(pk.as_blst()) } {
         return false;
     }
-    let hashed = hash_to_g2_affine(message);
-    PairingProduct::two_pairs_are_one(pk, &hashed, &negative_g1(), sig.0.as_blst())
+    let hashed = G2Point::hash_to_curve(message, DST);
+    PairingProduct::two_pairs_are_one((&pk, &hashed), (&G1Point::negative_generator(), &sig.0))
 }
 
-fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
-    let mut q = blst_p2::default();
-    let mut affine = blst_p2_affine::default();
-    unsafe {
-        blst_hash_to_g2(&mut q, msg.as_ptr(), msg.len(), DST.as_ptr(), DST.len(), ptr::null(), 0);
-        blst_p2_to_affine(&mut affine, &q);
-    }
-    affine
-}
-
-fn negative_g1() -> blst_p1_affine {
-    let mut point = unsafe { *blst_p1_affine_generator() };
-    unsafe { blst_fp_cneg(&mut point.y, &point.y, true) };
-    point
+fn checked_public_key(pk: &PublicKey) -> Option<G1Point> {
+    // CL-168 will validate cached keys; until then, admit each key sum here.
+    G1Point::from_blst(*pk_affine(pk))
 }
 
 /// Signature is subgroup-checked by the verify, so downstream aggregation
