@@ -444,9 +444,10 @@ fn geq(a: &[u64; 6], b: &[u64; 6]) -> bool {
     !borrow
 }
 
-/// a⁻¹ mod p as plain integers, 0 when p divides a: u·x1 ≡ a and v·x2 ≡ a
-/// stay invariant modulo p, up to the common factor a⁻¹ the loop removes.
-/// u reaches 0 exactly when p divides a, so every a ends the loop.
+/// a⁻¹ mod p as plain integers, 0 when p divides a. The loop keeps
+/// a·x1 ≡ u and a·x2 ≡ v modulo p, with gcd(u, v) = gcd(a, p), so
+/// whichever of u and v reaches 1 leaves a⁻¹ in its x. u reaches 0
+/// exactly when p divides a, so every a ends the loop.
 fn inverse_words(a: &[u64; 6]) -> [u64; 6] {
     let mut u = *a;
     let mut v = P_U64;
