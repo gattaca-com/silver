@@ -103,6 +103,7 @@ function column(inst, ui, specs, multi) {
   const utils = tileUtils(inst);
   const own = new Map();
   const g = MODES[ui.mode].graph(inst, utils, ui, own);
+  const svg = diagram(inst, ui, utils, g);
   // A p2p selection matches no line, so the mode's own detail (the tcache
   // table, or nothing in queues mode) still follows it.
   const p2p = ui.selected?.startsWith(P2P_SELECT) ? p2pDetail(inst, ui.selected.slice(P2P_SELECT.length), own) : '';
@@ -112,11 +113,21 @@ function column(inst, ui, specs, multi) {
     ? `<div class="flow-side">${detail}</div>`
     : '<div class="flow-side flow-unselected">select a line or arrow</div>';
   const heading = multi ? `<h3>${escape(inst.label)}</h3>` : '';
-  const html = `<div class="flow-col">${heading}<svg class="${ui.selected ? 'has-sel' : ''}" viewBox="${-P2P_MARGIN} 0 ${W + P2P_MARGIN} ${H}" role="img" aria-label="Tile ${ui.mode} flow for ${escape(inst.label)}">
+  return { html: `<div class="flow-col">${heading}${svg}${side}</div>`, legend: g.legend };
+}
+
+function diagram(inst, ui, utils, g) {
+  return `<svg class="${ui.selected ? 'has-sel' : ''}" viewBox="${-P2P_MARGIN} 0 ${W + P2P_MARGIN} ${H}" role="img" aria-label="Tile ${ui.mode} flow for ${escape(inst.label)}">
       <defs>${markers()}</defs>
       ${g.paths}${drawP2p(p2pRates(inst), ui.selected)}${drawNodes(utils, g.notes)}${g.labels}
-    </svg>${side}</div>`;
-  return { html, legend: g.legend };
+    </svg>`;
+}
+
+/** The queues diagram alone, nothing selected or hovered. */
+export function queuesDiagram(inst) {
+  const utils = tileUtils(inst);
+  const ui = { mode: 'queues' };
+  return diagram(inst, ui, utils, queues.graph(inst, utils, ui, new Map()));
 }
 
 export function render(fleet, root, now, ui) {

@@ -65,12 +65,12 @@ function listRow(name, bytes, colour, picked) {
     <td>${swatch}${escape(name)}</td><td class="num">${fmtBytes(bytes)}</td></tr>`;
 }
 
-/** The view's HTML, with its chart spec added to `specs`. */
-export function render(inst, ui, nowS, specs) {
-  ui.dir ??= 'recv';
-  const source = SOURCES[ui.dir];
+/** The stacked chart over `dir`'s samples, with the entries the topic list
+ *  shows; null before samples arrive. `ui` holds the picks and toggles. */
+export function trafficChart(inst, ui, dir, nowS) {
+  const source = SOURCES[dir];
   const samples = inst.samples(source);
-  if (!samples) return `${dirSwitch(ui.dir)}<p class="empty">no ${ui.dir} traffic samples yet</p>`;
+  if (!samples) return null;
 
   const { history, names } = samples;
   const w = slotWindow(inst.clock, nowS);
@@ -105,7 +105,7 @@ export function render(inst, ui, nowS, specs) {
   const order = layers.map((_, i) => i).reverse();
   const sum = (ys) => ys.reduce((total, v) => total + (v ?? 0), 0);
   const blockX = layers[0]?.blockX ?? null;
-  specs.set('gossip-traffic', {
+  const spec = {
     labels: order.map((i) => layers[i].label),
     data: [w.xs, ...order.map((i) => tops[i])],
     colourOf: order.map((i) => layers[i].colour),
@@ -118,8 +118,18 @@ export function render(inst, ui, nowS, specs) {
     spanGaps: true,
     markers: blockX === null ? [] : [{ x: blockX, series: 0 }],
     cornerLabels: order.map((i) => `${layers[i].label} ${fmtBytes(sum(layers[i].ys))}`),
-  });
+  };
+  return { spec, slot: w.slot, totals, entries, ranked, picked, rest };
+}
 
+/** The view's HTML, with its chart spec added to `specs`. */
+export function render(inst, ui, nowS, specs) {
+  ui.dir ??= 'recv';
+  const chart = trafficChart(inst, ui, ui.dir, nowS);
+  if (!chart) return `${dirSwitch(ui.dir)}<p class="empty">no ${ui.dir} traffic samples yet</p>`;
+  const { spec, slot, totals, entries, ranked, picked, rest } = chart;
+  specs.set('gossip-traffic', spec);
+  const bytesOf = (key) => entries.get(key).bytes;
   const colourOf = new Map(picked.map((n, i) => [n, i + 1]));
   const listed = [...new Set([...picked, ...ranked])];
   const rows = [
@@ -127,7 +137,7 @@ export function render(inst, ui, nowS, specs) {
     listRow(OTHER, rest.reduce((t, k) => t + bytesOf(k), 0), ui.hideOther ? null : OTHER_COLOUR, !ui.hideOther),
     ...listed.map((k) => listRow(k, bytesOf(k), colourOf.get(k) ?? null, colourOf.has(k))),
   ].join('');
-  const title = w.slot === null ? 'bytes per 100 ms' : `bytes per 100 ms, slot ${w.slot}`;
+  const title = slot === null ? 'bytes per 100 ms' : `bytes per 100 ms, slot ${slot}`;
   return `${dirSwitch(ui.dir)}
     <div class="gossip-traffic">
       <section><table class="dense">
