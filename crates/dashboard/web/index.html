@@ -180,6 +180,28 @@
   .slot-legend span.off { opacity: 0.35; text-decoration: line-through; }
   .slot-legend i { display: inline-block; width: 16px; border-top: 2px solid var(--muted); }
   .slot-legend i.dashed { border-top-style: dashed; }
+  .strips { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); margin-bottom: 18px; }
+  .strip-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px 8px; }
+  .strip-panel h3 { font-size: 12px; margin: 0 0 4px; display: flex; justify-content: space-between; gap: 8px; }
+  .strip-panel h4 { font-size: 11px; font-weight: normal; color: var(--muted); margin: 4px 0 0; }
+  .strip-row { display: grid; grid-template-columns: minmax(60px, 28%) minmax(0, 1fr) 72px; gap: 8px; align-items: center; height: 18px; font-size: 11px; }
+  .strip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* p99 whisker from zero, p50..p90 bar, then the three markers; each marker
+     is ringed in the panel colour so it reads over the bar. */
+  .strip { position: relative; height: 12px; }
+  .strip s { position: absolute; left: 0; top: 5px; height: 2px; background: var(--c); opacity: 0.45; }
+  .strip u { position: absolute; top: 3px; height: 6px; background: var(--c); border-radius: 2px; }
+  .strip i { position: absolute; top: 2px; width: 8px; height: 8px; margin-left: -4px; background: var(--c); box-shadow: 0 0 0 2px var(--panel); }
+  .strip i.m50 { border-radius: 50%; }
+  .strip i.m90 { transform: rotate(45deg) scale(0.85); }
+  .strip i.m99 { top: 0; width: 2px; height: 12px; margin-left: -1px; box-shadow: none; }
+  .strip-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 11px; margin-bottom: 10px; }
+  .strip-legend .strip-inst { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+  .strip-legend .strip-inst.off { opacity: 0.35; text-decoration: line-through; }
+  .strip-legend .swatch { display: inline-block; width: 16px; height: 6px; border-radius: 2px; background: var(--c); }
+  .strip-markers { display: inline-flex; gap: 10px; margin-left: auto; color: var(--muted); --c: var(--muted); --panel: var(--bg); }
+  .strip-markers > span { display: inline-flex; align-items: center; gap: 4px; }
+  .strip.key { display: inline-block; width: 12px; }
   .flow .q-idle { stroke: var(--idle); } .flow .qf-idle { fill: var(--idle); }
   .q0 { stroke: var(--seq-0); } .qf0 { fill: var(--seq-0); } .qb0 { background: var(--seq-0); }
   .q1 { stroke: var(--seq-1); } .qf1 { fill: var(--seq-1); } .qb1 { background: var(--seq-1); }

@@ -1,23 +1,25 @@
-// Landing pane: per instance, percentiles of each block pipeline component
-// over the retained traces of blocks that reached attestable, and of gossip
-// bytes per completed slot, grouped as in the traffic view.
+// Landing pane: percentile strips, one panel per block pipeline component and
+// per gossip topic entry, one row per instance. Pipeline durations come from
+// the retained traces of blocks that reached attestable; gossip bytes from
+// completed slots, grouped as in the traffic view.
 
+import { SERIES_MAX } from './chart.js';
 import { fmtNanos } from './events.js';
 import { entryOf } from './gossip_traffic.js';
-import { escape, fmtBytes, instanceHeading } from './view.js';
+import { escape, fmtBytes } from './view.js';
 
 const PERCENTILES = [50, 90, 99];
 const TRAFFIC = { recv: 'gossip_bytes_recv', sent: 'gossip_bytes_sent' };
 
-// [label, span, colour class, counts]. A blobless block's `da` is an instant,
-// not a wait; `daWait` only exists on parked imports.
+// [label, span, counts]. A blobless block's `da` is an instant, not a wait;
+// `daWait` only exists on parked imports.
 const always = () => true;
 const COMPONENTS = [
-  ['data available', 'da', 'c-da', (t) => t.columns.length > 0],
-  ['el', 'el', '', always],
-  ['validate', 'validate', 'c-validate', always],
-  ['apply', 'apply', 'c-apply', always],
-  ['da wait', 'daWait', 'c-dawait', (t) => t.parked()],
+  ['data available', 'da', (t) => t.columns.length > 0],
+  ['el', 'el', always],
+  ['validate', 'validate', always],
+  ['apply', 'apply', always],
+  ['da wait', 'daWait', (t) => t.parked()],
 ];
 
 /** Nearest rank on ascending `sorted`. */
@@ -25,20 +27,27 @@ function percentile(sorted, p) {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
 }
 
-function row([label, span, cls, counts], done) {
-  const durations = [];
-  for (const trace of done) {
-    const interval = counts(trace) ? trace.interval(span) : null;
-    if (interval) durations.push(interval.end - interval.start);
-  }
-  durations.sort((a, b) => a - b);
-  const cells = PERCENTILES.map((p) => (durations.length ? fmtNanos(percentile(durations, p)) : '·'));
-  return `<tr><td class="${cls}">${label}</td>${cells.map((c) => `<td class="num">${c}</td>`).join('')}
-    <td class="num">${durations.length}</td></tr>`;
+/** `{ p, n }` with `p` per PERCENTILES, or null when empty. */
+function stats(values) {
+  if (!values?.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  return { p: PERCENTILES.map((p) => percentile(sorted, p)), n: sorted.length };
 }
 
-/** Entry → its bytes per completed slot, ascending. */
-function entrySlotBytes(totals) {
+function pipelineStats(inst) {
+  const done = inst.traces.filter((t) => t.attestable !== null);
+  return COMPONENTS.map(([, span, counts]) => {
+    const durations = [];
+    for (const trace of done) {
+      const interval = counts(trace) ? trace.interval(span) : null;
+      if (interval) durations.push(interval.end - interval.start);
+    }
+    return stats(durations);
+  });
+}
+
+/** Entry → stats of its bytes per completed slot. */
+function trafficStats(totals) {
   const entries = new Map();
   if (!totals) return entries;
   totals.names.forEach((name, c) => {
@@ -48,50 +57,111 @@ function entrySlotBytes(totals) {
     if (!bytes) entries.set(key, (bytes = new Array(totals.slots.length).fill(0)));
     totals.slots.forEach((slot, k) => (bytes[k] += slot.bytes[c] ?? 0));
   });
-  for (const bytes of entries.values()) bytes.sort((a, b) => a - b);
-  return entries;
+  return new Map([...entries].map(([key, bytes]) => [key, stats(bytes)]));
 }
 
-function bytesCells(sorted) {
-  return PERCENTILES.map((p) => `<td class="num">${sorted?.length ? fmtBytes(percentile(sorted, p)) : '·'}</td>`).join('');
+function strip(s, max) {
+  if (!s) return '<div class="strip"></div>';
+  const [p50, p90, p99] = s.p.map((v) => (max > 0 ? (v / max) * 100 : 0));
+  return `<div class="strip"><s style="width:${p99}%"></s><u style="left:${p50}%;width:${p90 - p50}%"></u>
+    <i class="m50" style="left:${p50}%"></i><i class="m90" style="left:${p90}%"></i><i class="m99" style="left:${p99}%"></i></div>`;
 }
 
-function trafficTable(inst) {
-  const recvTotals = inst.slotTotalsOf(TRAFFIC.recv);
-  const sentTotals = inst.slotTotalsOf(TRAFFIC.sent);
-  const recv = entrySlotBytes(recvTotals);
-  const sent = entrySlotBytes(sentTotals);
-  const p50 = (bytes) => (bytes?.length ? percentile(bytes, 50) : 0);
-  const keys = [...new Set([...recv.keys(), ...sent.keys()])]
-    .filter((k) => recv.get(k)?.at(-1) || sent.get(k)?.at(-1))
-    .sort((a, b) => p50(recv.get(b)) - p50(recv.get(a)) || p50(sent.get(b)) - p50(sent.get(a)));
-  if (!keys.length) return '<p class="empty">no completed slots of gossip traffic yet</p>';
-
-  const recvSlots = recvTotals?.slots.length ?? 0;
-  const sentSlots = sentTotals?.slots.length ?? 0;
-  const slots = recvSlots === sentSlots ? `${recvSlots} slots` : `${recvSlots} recv / ${sentSlots} sent slots`;
-  const head = ['recv', 'sent'].flatMap((dir) => PERCENTILES.map((p) => `<th class="num">${dir} p${p}</th>`)).join('');
-  const rows = keys
-    .map((k) => `<tr><td>${escape(k)}</td>${bytesCells(recv.get(k))}${bytesCells(sent.get(k))}</tr>`)
+/** `rows`: `{ inst, s }`; a row's colour follows its instance. */
+function stripRows(rows, max, fmt, colourOf) {
+  return rows
+    .map(({ inst, s }) => {
+      const title = s
+        ? `${inst.label}: ${PERCENTILES.map((p, i) => `p${p} ${fmt(s.p[i])}`).join(' · ')} · ${s.n} slots`
+        : `${inst.label}: no data`;
+      return `<div class="strip-row" style="--c:${colourOf(inst)}" title="${escape(title)}">
+        <span class="strip-label">${escape(inst.label)}</span>${strip(s, max)}
+        <span class="num">${s ? fmt(s.p[0]) : '·'}</span></div>`;
+    })
     .join('');
-  return `<p class="meta">gossip bytes per slot, ${slots}</p>
-    <section><table class="dense"><thead><tr><th>topic</th>${head}</tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
-export function render(fleet, root, now) {
-  const instances = fleet.sorted();
-  if (!instances.length) {
+function maxP99(rows) {
+  return Math.max(0, ...rows.map(({ s }) => s?.p[2] ?? 0));
+}
+
+function panel(title, max, fmt, body) {
+  const scale = max > 0 ? `0 – ${fmt(max)}` : '';
+  return `<div class="strip-panel"><h3>${escape(title)}<span class="meta">${scale}</span></h3>${body}</div>`;
+}
+
+function pipelinePanels(insts, colourOf) {
+  const perInst = insts.map((inst) => ({ inst, all: pipelineStats(inst) }));
+  return COMPONENTS.map(([label], c) => {
+    const rows = perInst.map(({ inst, all }) => ({ inst, s: all[c] }));
+    const max = maxP99(rows);
+    return panel(label, max, fmtNanos, stripRows(rows, max, fmtNanos, colourOf));
+  }).join('');
+}
+
+/** Busiest received first; entries no shown instance moved bytes on are left
+ *  out. */
+function trafficPanels(insts, colourOf) {
+  const perInst = insts.map((inst) => ({
+    inst,
+    recv: trafficStats(inst.slotTotalsOf(TRAFFIC.recv)),
+    sent: trafficStats(inst.slotTotalsOf(TRAFFIC.sent)),
+  }));
+  const keys = new Set(perInst.flatMap(({ recv, sent }) => [...recv.keys(), ...sent.keys()]));
+  const panels = [...keys].map((key) => {
+    const recv = perInst.map(({ inst, recv }) => ({ inst, s: recv.get(key) ?? null }));
+    const sent = perInst.map(({ inst, sent }) => ({ inst, s: sent.get(key) ?? null }));
+    const max = Math.max(maxP99(recv), maxP99(sent));
+    const order = Math.max(0, ...recv.map(({ s }) => s?.p[0] ?? 0));
+    const body = `<h4>recv</h4>${stripRows(recv, max, fmtBytes, colourOf)}
+      <h4>sent</h4>${stripRows(sent, max, fmtBytes, colourOf)}`;
+    return { max, order, html: panel(key, max, fmtBytes, body) };
+  });
+  return panels
+    .filter((p) => p.max > 0)
+    .sort((a, b) => b.order - a.order)
+    .map((p) => p.html)
+    .join('');
+}
+
+function legend(all, hidden, colourOf) {
+  const insts = all
+    .map((inst) => {
+      const off = hidden.has(inst.key) ? ' off' : '';
+      const title = inst.buildInfo ? ` title="${escape(inst.buildInfo.trim())}"` : '';
+      return `<span class="strip-inst${off}" data-home-instance="${inst.key}" style="--c:${colourOf(inst)}"${title}>
+        <i class="swatch"></i>${escape(inst.label)}</span>`;
+    })
+    .join('');
+  const marker = (cls, label) => `<span><span class="strip key"><i class="${cls}" style="left:50%"></i></span>${label}</span>`;
+  return `<div class="strip-legend">${insts}
+    <span class="strip-markers">${marker('m50', 'p50')}${marker('m90', 'p90')}${marker('m99', 'p99')}</span></div>`;
+}
+
+export function render(fleet, root, _now, ui) {
+  ui.hidden ??= new Set();
+  const all = fleet.sorted();
+  if (!all.length) {
     root.innerHTML = '<p class="empty">no instances connected</p>';
     return;
   }
-  const head = `<thead><tr><th>component</th>${PERCENTILES.map((p) => `<th class="num">p${p}</th>`).join('')}
-    <th class="num">slots</th></tr></thead>`;
-  root.innerHTML = instances
-    .map((inst) => {
-      const done = inst.traces.filter((t) => t.attestable !== null);
-      return `${instanceHeading(inst, now)}<section><table class="dense">${head}
-        <tbody>${COMPONENTS.map((c) => row(c, done)).join('')}</tbody></table></section>
-        ${trafficTable(inst)}`;
-    })
-    .join('');
+  // Colour follows the instance's place in the whole fleet, so hiding one
+  // does not repaint the rest. Past the categorical palette, muted.
+  const index = new Map(all.map((inst, i) => [inst.key, i]));
+  const colourOf = (inst) => {
+    const i = index.get(inst.key);
+    return i < SERIES_MAX ? `var(--series-${i + 1})` : 'var(--muted)';
+  };
+  const shown = all.filter((inst) => !ui.hidden.has(inst.key));
+  const traffic = trafficPanels(shown, colourOf);
+  root.innerHTML = `${legend(all, ui.hidden, colourOf)}
+    <h2>block pipeline <span class="meta">per block reaching attestable</span></h2>
+    <div class="strips">${pipelinePanels(shown, colourOf)}</div>
+    <h2>gossip bytes <span class="meta">per completed slot</span></h2>
+    ${traffic ? `<div class="strips">${traffic}</div>` : '<p class="empty">no completed slots of gossip traffic yet</p>'}`;
+}
+
+export function click(target, ui) {
+  const key = target.closest('[data-home-instance]')?.dataset.homeInstance;
+  if (key && !ui.hidden.delete(key)) ui.hidden.add(key);
 }

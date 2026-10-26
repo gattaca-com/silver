@@ -163,8 +163,6 @@ export class Instance {
     this.buildInfo = '';
     this.clock = null;
     this.bootId = null;
-    this.nextSeq = 0n;
-    this.lost = 0;
     this.lastRecv = 0;
     this.nowNs = 0;
     /** Oldest first. */
@@ -254,11 +252,8 @@ export class Instance {
     this.nowNs = Math.max(this.nowNs, tsNs);
     if (d.bootId !== this.bootId) {
       this.bootId = d.bootId;
-      this.nextSeq = d.seq;
       this.resetBoot();
     }
-    if (d.seq > this.nextSeq) this.lost += Number(d.seq - this.nextSeq);
-    if (d.seq >= this.nextSeq) this.nextSeq = d.seq + 1n;
 
     switch (d.kind) {
       case Kind.Instance:
