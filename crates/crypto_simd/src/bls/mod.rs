@@ -56,6 +56,8 @@ mod g2_point;
 #[doc(hidden)]
 pub mod g2x8;
 pub(crate) mod glv;
+#[cfg(target_arch = "x86_64")]
+mod lane_pairs;
 pub mod limbs;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod miller_lines;
@@ -65,6 +67,8 @@ pub(crate) mod msm8;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
 pub(crate) mod pairing;
+mod pairing_product;
+pub use pairing_product::PairingProduct;
 pub(crate) mod signed_digits;
 #[cfg(test)]
 pub(crate) mod spec_pairing;
