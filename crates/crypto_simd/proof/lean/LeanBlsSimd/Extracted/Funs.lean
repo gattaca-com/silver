@@ -19,7 +19,7 @@ namespace silver_crypto_simd
 
 section RuntimeScope
 
-variable [RuntimeFeatures] [bls.BlsExternals] [KzgExternals]
+variable [RuntimeFeatures] [bls.BlsExternals] [KzgExternals] [bls.PairingExternals]
 
 /-- Trait implementation: [core::array::{core::marker::Copy for [T; N]}]
     Source: '/rustc/library/core/src/array/mod.rs', lines 441:0-441:45
@@ -456,7 +456,7 @@ def bls.encoding.less_than_p (x : Array Std.U64 6#usize) : Result Bool := do
   bls.encoding.less_than_p_loop x 6#usize
 
 /-- [silver_crypto_simd::bls::G2_COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 89:0-89:40
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 93:0-93:40
     Visibility: public -/
 @[global_simps, irreducible] def bls.G2_COMPRESSED_LEN : Std.Usize := 96#usize
 
@@ -5223,17 +5223,332 @@ def bls.glv.decompose
       0#u64 (Array.make 2#usize [ c2, 0#u64 ] (by rfl)) bls.glv.Z2
   ok (k1, k2)
 
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::new]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 31:8-39:9 -/
+@[rust_loop_body]
+def bls.lane_pairs.LanePairs.new_loop.body
+  (pairs : Slice bls.pairing_product.AffinePair)
+  (iter : core.ops.range.Range Std.Usize)
+  (limbs : Array (Array (Array Std.U64 6#usize) 8#usize) 6#usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array (Array (Array
+    Std.U64 6#usize) 8#usize) 6#usize)) (Array (Array (Array Std.U64 6#usize)
+    8#usize) 6#usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done limbs)
+  | some lane =>
+    let pair ← Slice.index_usize pairs lane
+    let (a, index_mut_back) ← Array.index_mut_usize limbs 0#usize
+    let a1 ← Array.update a lane pair.p.x.l
+    let limbs1 := index_mut_back a1
+    let (a2, index_mut_back1) ← Array.index_mut_usize limbs1 1#usize
+    let a3 ← Array.update a2 lane pair.p.y.l
+    let bf ← Array.index_usize pair.q.x.fp 0#usize
+    let limbs2 := index_mut_back1 a3
+    let (a4, index_mut_back2) ← Array.index_mut_usize limbs2 2#usize
+    let a5 ← Array.update a4 lane bf.l
+    let bf1 ← Array.index_usize pair.q.x.fp 1#usize
+    let limbs3 := index_mut_back2 a5
+    let (a6, index_mut_back3) ← Array.index_mut_usize limbs3 3#usize
+    let a7 ← Array.update a6 lane bf1.l
+    let bf2 ← Array.index_usize pair.q.y.fp 0#usize
+    let limbs4 := index_mut_back3 a7
+    let (a8, index_mut_back4) ← Array.index_mut_usize limbs4 4#usize
+    let a9 ← Array.update a8 lane bf2.l
+    let bf3 ← Array.index_usize pair.q.y.fp 1#usize
+    let limbs5 := index_mut_back4 a9
+    let (a10, index_mut_back5) ← Array.index_mut_usize limbs5 5#usize
+    let a11 ← Array.update a10 lane bf3.l
+    let a12 := index_mut_back5 a11
+    ok (cont (iter1, a12))
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::new]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 31:8-39:9 -/
+@[rust_loop]
+def bls.lane_pairs.LanePairs.new_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (pairs : Slice bls.pairing_product.AffinePair)
+  (limbs : Array (Array (Array Std.U64 6#usize) 8#usize) 6#usize) :
+  Result (Array (Array (Array Std.U64 6#usize) 8#usize) 6#usize)
+  := do
+  loop
+    (fun (iter1, limbs1) => bls.lane_pairs.LanePairs.new_loop.body pairs iter1
+      limbs1)
+    (iter, limbs)
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::new]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 28:4-53:5 -/
+def bls.lane_pairs.LanePairs.new
+  (pairs : Slice bls.pairing_product.AffinePair) :
+  Result bls.lane_pairs.LanePairs
+  := do
+  let b ← core.slice.Slice.is_empty pairs
+  massert (¬ b)
+  let i := Slice.len pairs
+  massert (i <= bls.limbs.LANES)
+  let a := Array.repeat 6#usize 0#u64
+  let a1 := Array.repeat 8#usize a
+  let limbs := Array.repeat 6#usize a1
+  let i1 := Slice.len pairs
+  let limbs1 ←
+    bls.lane_pairs.LanePairs.new_loop { start := 0#usize, «end» := i1 } pairs
+      limbs
+  let a2 ← Array.index_usize limbs1 0#usize
+  let px ← bls.fp8.Fp8.from_blst_limbs a2
+  let a3 ← Array.index_usize limbs1 1#usize
+  let py ← bls.fp8.Fp8.from_blst_limbs a3
+  let a4 ← Array.index_usize limbs1 2#usize
+  let f ← bls.fp8.Fp8.from_blst_limbs a4
+  let a5 ← Array.index_usize limbs1 3#usize
+  let f1 ← bls.fp8.Fp8.from_blst_limbs a5
+  let a6 ← Array.index_usize limbs1 4#usize
+  let f2 ← bls.fp8.Fp8.from_blst_limbs a6
+  let a7 ← Array.index_usize limbs1 5#usize
+  let f3 ← bls.fp8.Fp8.from_blst_limbs a7
+  let fx ← bls.fp2x8.Fp2x8.one
+  let f4 ← bls.fp8.Fp8.add px px
+  let f5 ← bls.fp8.Fp8.neg f4
+  let f6 ← bls.fp8.Fp8.add py py
+  let i2 := Slice.len pairs
+  ok
+    {
+      t := { x := { c0 := f, c1 := f1 }, y := { c0 := f2, c1 := f3 }, z := fx },
+      qx := { c0 := f, c1 := f1 },
+      qy := { c0 := f2, c1 := f3 },
+      minus_two_px := f5,
+      two_py := f6,
+      count := i2,
+      degenerate := 0#u8
+    }
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::active_mask]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 55:4-57:5 -/
+def bls.lane_pairs.LanePairs.active_mask
+  (self : bls.lane_pairs.LanePairs) : Result Std.U8 := do
+  let i ← bls.limbs.LANES - self.count
+  core.num.U8.MAX >>> i
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::Lines}::multiply_into]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 148:8-155:9 -/
+@[rust_loop_body]
+def bls.lane_pairs.Lines.multiply_into_loop.body
+  (self : bls.lane_pairs.Lines) (iter : core.ops.range.Range Std.Usize)
+  (value : bls.fp12.Fp12) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × bls.fp12.Fp12)
+    bls.fp12.Fp12)
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done value)
+  | some pair =>
+    let i ← lift (UScalar.hcast .I64 pair)
+    let i1 ← 8#i64 + i
+    let fx ←
+      bls.fp2x8.Fp2x8.permute2 self.l0 self.l1
+        (Array.make 8#usize [ i, i1, i, i, i, i, i, i ] (by rfl))
+    let line ←
+      bls.fp2x8.Fp2x8.permute2 fx self.l2
+        (Array.make 8#usize [
+          0#i64, 1#i64, i1, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64
+          ] (by rfl))
+    let value1 ← bls.fp12.Fp12.mul_by_line value line
+    ok (cont (iter1, value1))
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::Lines}::multiply_into]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 148:8-155:9 -/
+@[rust_loop]
+def bls.lane_pairs.Lines.multiply_into_loop
+  (iter : core.ops.range.Range Std.Usize) (self : bls.lane_pairs.Lines)
+  (value : bls.fp12.Fp12) :
+  Result bls.fp12.Fp12
+  := do
+  loop
+    (fun (iter1, value1) => bls.lane_pairs.Lines.multiply_into_loop.body self
+      iter1 value1)
+    (iter, value)
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::Lines}::multiply_into]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 146:4-157:5 -/
+@[reducible]
+def bls.lane_pairs.Lines.multiply_into
+  (self : bls.lane_pairs.Lines) (value : bls.fp12.Fp12) (count : Std.Usize) :
+  Result bls.fp12.Fp12
+  := do
+  bls.lane_pairs.Lines.multiply_into_loop
+    { start := 0#usize, «end» := count } self value
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::at_p]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 129:4-135:5 -/
+def bls.lane_pairs.LanePairs.at_p
+  (self : bls.lane_pairs.LanePairs) (l0 : bls.fp2x8.Fp2x8)
+  (l1 : bls.fp2x8.Fp2x8) (l2 : bls.fp2x8.Fp2x8) :
+  Result bls.lane_pairs.Lines
+  := do
+  let f ← bls.fp8.Fp8.mul l1.c0 self.minus_two_px
+  let f1 ← bls.fp8.Fp8.mul l1.c1 self.minus_two_px
+  let f2 ← bls.fp8.Fp8.mul l2.c0 self.two_py
+  let f3 ← bls.fp8.Fp8.mul l2.c1 self.two_py
+  ok { l0, l1 := { c0 := f, c1 := f1 }, l2 := { c0 := f2, c1 := f3 } }
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::add]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 104:4-126:5 -/
+def bls.lane_pairs.LanePairs.add
+  (self : bls.lane_pairs.LanePairs) :
+  Result (bls.lane_pairs.Lines × bls.lane_pairs.LanePairs)
+  := do
+  let z1z1 ← bls.fp2x8.Fp2x8.square self.t.z
+  let u2 ← bls.fp2x8.Fp2x8.mul self.qx z1z1
+  let fx ← bls.fp2x8.Fp2x8.mul self.qy self.t.z
+  let s2 ← bls.fp2x8.Fp2x8.mul fx z1z1
+  let h ← bls.fp2x8.Fp2x8.sub u2 self.t.x
+  let hh ← bls.fp2x8.Fp2x8.square h
+  let i2 ← bls.fp2x8.Fp2x8.add hh hh
+  let i ← bls.fp2x8.Fp2x8.add i2 i2
+  let j ← bls.fp2x8.Fp2x8.mul h i
+  let r ← bls.fp2x8.Fp2x8.sub s2 self.t.y
+  let r1 ← bls.fp2x8.Fp2x8.add r r
+  let v ← bls.fp2x8.Fp2x8.mul self.t.x i
+  let fx1 ← bls.fp2x8.Fp2x8.square r1
+  let fx2 ← bls.fp2x8.Fp2x8.sub fx1 j
+  let fx3 ← bls.fp2x8.Fp2x8.sub fx2 v
+  let x3 ← bls.fp2x8.Fp2x8.sub fx3 v
+  let yj ← bls.fp2x8.Fp2x8.mul self.t.y j
+  let fx4 ← bls.fp2x8.Fp2x8.sub v x3
+  let fx5 ← bls.fp2x8.Fp2x8.mul fx4 r1
+  let fx6 ← bls.fp2x8.Fp2x8.sub fx5 yj
+  let y3 ← bls.fp2x8.Fp2x8.sub fx6 yj
+  let fx7 ← bls.fp2x8.Fp2x8.add self.t.z h
+  let fx8 ← bls.fp2x8.Fp2x8.square fx7
+  let fx9 ← bls.fp2x8.Fp2x8.sub fx8 z1z1
+  let z3 ← bls.fp2x8.Fp2x8.sub fx9 hh
+  let fx10 ← bls.fp2x8.Fp2x8.mul r1 self.qx
+  let fx11 ← bls.fp2x8.Fp2x8.mul self.qy z3
+  let l0 ← bls.fp2x8.Fp2x8.sub fx10 fx11
+  let l01 ← bls.fp2x8.Fp2x8.add l0 l0
+  let i1 ← bls.fp2x8.Fp2x8.is_zero_mask z3
+  let i3 ← bls.lane_pairs.LanePairs.active_mask self
+  let i4 ← lift (i1 &&& i3)
+  let i5 ← lift (self.degenerate ||| i4)
+  let l ←
+    bls.lane_pairs.LanePairs.at_p
+      { self with t := { x := x3, y := y3, z := z3 }, degenerate := i5 } l01 r1
+      z3
+  ok (l, { self with t := { x := x3, y := y3, z := z3 }, degenerate := i5 })
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::double]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 78:4-100:5 -/
+def bls.lane_pairs.LanePairs.double
+  (self : bls.lane_pairs.LanePairs) :
+  Result (bls.lane_pairs.Lines × bls.lane_pairs.LanePairs)
+  := do
+  let a ← bls.fp2x8.Fp2x8.square self.t.x
+  let b ← bls.fp2x8.Fp2x8.square self.t.y
+  let zz ← bls.fp2x8.Fp2x8.square self.t.z
+  let c ← bls.fp2x8.Fp2x8.square b
+  let fx ← bls.fp2x8.Fp2x8.add self.t.x b
+  let fx1 ← bls.fp2x8.Fp2x8.square fx
+  let fx2 ← bls.fp2x8.Fp2x8.sub fx1 a
+  let d ← bls.fp2x8.Fp2x8.sub fx2 c
+  let d1 ← bls.fp2x8.Fp2x8.add d d
+  let fx3 ← bls.fp2x8.Fp2x8.add a a
+  let e ← bls.fp2x8.Fp2x8.add fx3 a
+  let f ← bls.fp2x8.Fp2x8.square e
+  let fx4 ← bls.fp2x8.Fp2x8.sub f d1
+  let x3 ← bls.fp2x8.Fp2x8.sub fx4 d1
+  let fx5 ← bls.fp2x8.Fp2x8.add self.t.y self.t.z
+  let fx6 ← bls.fp2x8.Fp2x8.square fx5
+  let fx7 ← bls.fp2x8.Fp2x8.sub fx6 b
+  let z3 ← bls.fp2x8.Fp2x8.sub fx7 zz
+  let c2 ← bls.fp2x8.Fp2x8.add c c
+  let c4 ← bls.fp2x8.Fp2x8.add c2 c2
+  let fx8 ← bls.fp2x8.Fp2x8.sub d1 x3
+  let fx9 ← bls.fp2x8.Fp2x8.mul e fx8
+  let fx10 ← bls.fp2x8.Fp2x8.add c4 c4
+  let y3 ← bls.fp2x8.Fp2x8.sub fx9 fx10
+  let b2 ← bls.fp2x8.Fp2x8.add b b
+  let fx11 ← bls.fp2x8.Fp2x8.add e self.t.x
+  let fx12 ← bls.fp2x8.Fp2x8.square fx11
+  let fx13 ← bls.fp2x8.Fp2x8.sub fx12 a
+  let fx14 ← bls.fp2x8.Fp2x8.sub fx13 f
+  let fx15 ← bls.fp2x8.Fp2x8.add b2 b2
+  let l0 ← bls.fp2x8.Fp2x8.sub fx14 fx15
+  let l1 ← bls.fp2x8.Fp2x8.mul e zz
+  let l2 ← bls.fp2x8.Fp2x8.mul z3 zz
+  let i ← bls.fp2x8.Fp2x8.is_zero_mask z3
+  let i1 ← bls.lane_pairs.LanePairs.active_mask self
+  let i2 ← lift (i &&& i1)
+  let i3 ← lift (self.degenerate ||| i2)
+  let l ←
+    bls.lane_pairs.LanePairs.at_p
+      { self with t := { x := x3, y := y3, z := z3 }, degenerate := i3 } l0 l1
+      l2
+  ok (l, { self with t := { x := x3, y := y3, z := z3 }, degenerate := i3 })
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::miller_loop]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 63:8-72:9 -/
+@[rust_loop_body]
+def bls.lane_pairs.LanePairs.miller_loop_loop.body
+  (bit : Std.U32) (self : bls.lane_pairs.LanePairs) (value : bls.fp12.Fp12)
+  (bit1 : Std.U32) :
+  Result (ControlFlow (bls.lane_pairs.LanePairs × bls.fp12.Fp12 × Std.U32)
+    (bls.lane_pairs.LanePairs × bls.fp12.Fp12))
+  := do
+  if bit1 > 0#u32
+  then
+    let bit2 ← bit1 - 1#u32
+    let i ← bit - 1#u32
+    let value1 ← if bit2 < i
+                   then bls.fp12.Fp12.square value
+                   else ok value
+    let (l, self1) ← bls.lane_pairs.LanePairs.double self
+    let value2 ← bls.lane_pairs.Lines.multiply_into l value1 self1.count
+    let b ← bls.constants.is_lower_z_bit bit2
+    if b
+    then
+      let (l1, self2) ← bls.lane_pairs.LanePairs.add self1
+      let value3 ← bls.lane_pairs.Lines.multiply_into l1 value2 self2.count
+      ok (cont (self2, value3, bit2))
+    else ok (cont (self1, value2, bit2))
+  else ok (done (self, value))
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::miller_loop]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 63:8-72:9 -/
+@[rust_loop]
+def bls.lane_pairs.LanePairs.miller_loop_loop
+  (bit : Std.U32) (self : bls.lane_pairs.LanePairs) (value : bls.fp12.Fp12)
+  (bit1 : Std.U32) :
+  Result (bls.lane_pairs.LanePairs × bls.fp12.Fp12)
+  := do
+  loop
+    (fun (self1, value1, bit2) =>
+      bls.lane_pairs.LanePairs.miller_loop_loop.body bit self1 value1 bit2)
+    (self, value, bit1)
+
+/-- [silver_crypto_simd::bls::lane_pairs::{silver_crypto_simd::bls::lane_pairs::LanePairs}::miller_loop]:
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 60:4-74:5 -/
+def bls.lane_pairs.LanePairs.miller_loop
+  (self : bls.lane_pairs.LanePairs) : Result bls.lane_pairs.MillerProduct := do
+  let value ← bls.fp12.Fp12.one
+  let bit ← Array.index_usize bls.constants.Z_BITS 0#usize
+  let (self1, value1) ←
+    bls.lane_pairs.LanePairs.miller_loop_loop bit self value bit
+  let f ← bls.fp12.Fp12.conjugate value1
+  ok { value := f, degenerate := self1.degenerate }
+
 /-- [silver_crypto_simd::bls::COMPRESSED_LEN]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 88:0-88:37
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 92:0-92:37
     Visibility: public -/
 @[global_simps, irreducible] def bls.COMPRESSED_LEN : Std.Usize := 48#usize
 
 /-- [silver_crypto_simd::bls::LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 90:0-90:23 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 94:0-94:23 -/
 @[global_simps, irreducible] def bls.LANES : Std.Usize := 8#usize
 
 /-- [silver_crypto_simd::bls::MIN_KERNEL_LANES]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 93:0-93:34 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 97:0-97:34 -/
 @[global_simps, irreducible] def bls.MIN_KERNEL_LANES : Std.Usize := 3#usize
 
 /-- [silver_crypto_simd::portable::fp::select]: loop body 0:
@@ -7010,7 +7325,7 @@ def portable.decompress.uncompress_all_in_g1
   else ok out1
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 156:4-165:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:4-169:5 -/
 @[rust_loop_body]
 def bls.decompress_g1_chunk_loop.body
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
@@ -7049,7 +7364,7 @@ def bls.decompress_g1_chunk_loop.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 156:4-165:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 160:4-169:5 -/
 @[rust_loop]
 def bls.decompress_g1_chunk_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -7063,7 +7378,7 @@ def bls.decompress_g1_chunk_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g1_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 153:0-166:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 157:0-170:1 -/
 def bls.decompress_g1_chunk
   (chunk : Array (Array Std.U8 48#usize) 8#usize)
   (out : Slice (Option bls.g1_point.G1Point)) :
@@ -7074,7 +7389,7 @@ def bls.decompress_g1_chunk
     out batch
 
 /-- [silver_crypto_simd::bls::uncompress_all_in_g1_blst]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 144:4-149:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:4-153:5 -/
 @[rust_loop_body]
 def bls.uncompress_all_in_g1_blst_loop.body
   (inputs : Slice (Array Std.U8 48#usize))
@@ -7101,7 +7416,7 @@ def bls.uncompress_all_in_g1_blst_loop.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_all_in_g1_blst]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 144:4-149:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 148:4-153:5 -/
 @[rust_loop]
 def bls.uncompress_all_in_g1_blst_loop
   (iter : core.ops.range.Range Std.Usize)
@@ -7115,7 +7430,7 @@ def bls.uncompress_all_in_g1_blst_loop
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_all_in_g1_blst]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 143:0-150:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 147:0-154:1 -/
 def bls.uncompress_all_in_g1_blst
   (inputs : Slice (Array Std.U8 48#usize))
   (out : Slice (Option bls.g1_point.G1Point)) :
@@ -7126,7 +7441,7 @@ def bls.uncompress_all_in_g1_blst
     out
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 126:4-131:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 130:4-135:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g1_loop.body
@@ -7158,7 +7473,7 @@ def bls.uncompress_in_g1_loop.body
   else ok (done out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 126:4-131:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 130:4-135:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g1_loop
@@ -7173,7 +7488,7 @@ def bls.uncompress_in_g1_loop
     (out, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g1]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 118:0-133:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 122:0-137:1
     Visibility: public -/
 def bls.uncompress_in_g1
   (inputs : Slice (Array Std.U8 48#usize))
@@ -7204,7 +7519,7 @@ def bls.uncompress_in_g1
   else bls.uncompress_all_in_g1_blst inputs out
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 203:4-205:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 207:4-209:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop0.body
   (chunk : Slice (Array Std.U8 96#usize))
@@ -7229,7 +7544,7 @@ def bls.decompress_g2_chunk_loop0.body
     ok (cont (iter1, a1))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 203:4-205:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 207:4-209:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop0
   (iter : core.ops.range.Range Std.Usize)
@@ -7243,7 +7558,7 @@ def bls.decompress_g2_chunk_loop0
     (iter, lanes)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 208:4-217:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 212:4-221:5 -/
 @[rust_loop_body]
 def bls.decompress_g2_chunk_loop1.body
   (chunk : Slice (Array Std.U8 96#usize)) (batch : bls.decompress_g2.Batch)
@@ -7282,7 +7597,7 @@ def bls.decompress_g2_chunk_loop1.body
     ok (cont (iter2, s))
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 208:4-217:5 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 212:4-221:5 -/
 @[rust_loop]
 def bls.decompress_g2_chunk_loop1
   (iter : core.ops.range.Range Std.Usize)
@@ -7297,7 +7612,7 @@ def bls.decompress_g2_chunk_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::decompress_g2_chunk]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 201:0-218:1 -/
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 205:0-222:1 -/
 def bls.decompress_g2_chunk
   (chunk : Slice (Array Std.U8 96#usize))
   (out : Slice (Option bls.g2_point.G2Point)) :
@@ -7314,7 +7629,7 @@ def bls.decompress_g2_chunk
     batch
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 191:12-193:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 195:12-197:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop0.body
@@ -7336,7 +7651,7 @@ def bls.uncompress_in_g2_loop0_loop0.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 1:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 191:12-193:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 195:12-197:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop0
@@ -7351,7 +7666,7 @@ def bls.uncompress_in_g2_loop0_loop0
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 191:12-193:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 195:12-197:13
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0_loop1.body
@@ -7373,7 +7688,7 @@ def bls.uncompress_in_g2_loop0_loop1.body
     ok (cont (iter1, s))
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 2:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 191:12-193:13
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 195:12-197:13
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0_loop1
@@ -7388,7 +7703,7 @@ def bls.uncompress_in_g2_loop0_loop1
     (iter, out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop body 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 185:4-196:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 189:4-200:5
     Visibility: public -/
 @[rust_loop_body]
 def bls.uncompress_in_g2_loop0.body
@@ -7437,7 +7752,7 @@ def bls.uncompress_in_g2_loop0.body
   else ok (done out)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]: loop 0:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 185:4-196:5
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 189:4-200:5
     Visibility: public -/
 @[rust_loop]
 def bls.uncompress_in_g2_loop0
@@ -7452,7 +7767,7 @@ def bls.uncompress_in_g2_loop0
     (out, simd, start)
 
 /-- [silver_crypto_simd::bls::uncompress_in_g2]:
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 181:0-197:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 185:0-201:1
     Visibility: public -/
 def bls.uncompress_in_g2
   (inputs : Slice (Array Std.U8 96#usize))
@@ -9880,6 +10195,325 @@ def bls.pairing.MillerLines.pairing_check
   let f ← bls.pairing.MillerLines.miller_loop self points
   let f1 ← bls.fp12.Fp12.final_exponentiation f
   bls.fp12.Fp12.is_one f1
+
+/-- [silver_crypto_simd::bls::pairing_product::BLST_LIMBS]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 17:0-17:39 -/
+@[global_simps, irreducible]
+def bls.pairing_product.BLST_LIMBS : Std.Usize := 6#usize
+
+/-- [silver_crypto_simd::bls::pairing_product::{core::default::Default for silver_crypto_simd::bls::pairing_product::PairingProduct}::default]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 24:9-24:16
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.Insts.CoreDefaultDefault.default
+  : Result bls.pairing_product.PairingProduct := do
+  let v ←
+    alloc.vec.Vec.Insts.CoreDefaultDefault.default
+      bls.pairing_product.AffinePair
+  ok { pairs := v }
+
+/-- Trait implementation: [silver_crypto_simd::bls::pairing_product::{core::default::Default for silver_crypto_simd::bls::pairing_product::PairingProduct}]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 24:9-24:16 -/
+@[reducible]
+def bls.pairing_product.PairingProduct.Insts.CoreDefaultDefault :
+  core.default.Default bls.pairing_product.PairingProduct := {
+  default :=
+    bls.pairing_product.PairingProduct.Insts.CoreDefaultDefault.default
+}
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::with_capacity]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 30:4-32:5
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.with_capacity
+  (capacity : Std.Usize) : Result bls.pairing_product.PairingProduct := do
+  let v := alloc.vec.Vec.with_capacity bls.pairing_product.AffinePair capacity
+  ok { pairs := v }
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::clear]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 34:4-36:5
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.clear
+  (self : bls.pairing_product.PairingProduct) :
+  Result bls.pairing_product.PairingProduct
+  := do
+  let v ← alloc.vec.Vec.clear Global self.pairs
+  ok { pairs := v }
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::is_infinite]: loop body 1:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 78:12-80:13 -/
+@[rust_loop_body]
+def bls.pairing_product.AffinePair.is_infinite_loop0_loop0.body
+  (bpa : blst.blst_p2_affine) (limb : Std.Usize)
+  (iter : core.ops.range.Range Std.Usize) (q_bits : Std.U64) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × Std.U64)
+    (blst.blst_p2_affine × Std.U64))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (bpa, q_bits))
+  | some component =>
+    let bf ← Array.index_usize bpa.x.fp component
+    let i ← Array.index_usize bf.l limb
+    let bf1 ← Array.index_usize bpa.y.fp component
+    let i1 ← Array.index_usize bf1.l limb
+    let i2 ← lift (i ||| i1)
+    let q_bits1 ← lift (q_bits ||| i2)
+    ok (cont (iter1, q_bits1))
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::is_infinite]: loop 1:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 78:12-80:13 -/
+@[rust_loop]
+def bls.pairing_product.AffinePair.is_infinite_loop0_loop0
+  (iter : core.ops.range.Range Std.Usize) (bpa : blst.blst_p2_affine)
+  (q_bits : Std.U64) (limb : Std.Usize) :
+  Result (blst.blst_p2_affine × Std.U64)
+  := do
+  loop
+    (fun (iter1, q_bits1) =>
+      bls.pairing_product.AffinePair.is_infinite_loop0_loop0.body bpa limb
+      iter1 q_bits1)
+    (iter, q_bits)
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::is_infinite]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 76:8-81:9 -/
+@[rust_loop_body]
+def bls.pairing_product.AffinePair.is_infinite_loop0.body
+  (iter : core.ops.range.Range Std.Usize)
+  (self : bls.pairing_product.AffinePair) (p_bits : Std.U64) (q_bits : Std.U64)
+  :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) ×
+    bls.pairing_product.AffinePair × Std.U64 × Std.U64) (Std.U64 × Std.U64))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (p_bits, q_bits))
+  | some limb =>
+    let i ← Array.index_usize self.p.x.l limb
+    let i1 ← Array.index_usize self.p.y.l limb
+    let i2 ← lift (i ||| i1)
+    let p_bits1 ← lift (p_bits ||| i2)
+    let (bpa, q_bits1) ←
+      bls.pairing_product.AffinePair.is_infinite_loop0_loop0
+        { start := 0#usize, «end» := 2#usize } self.q q_bits limb
+    ok (cont (iter1, { self with q := bpa }, p_bits1, q_bits1))
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::is_infinite]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 76:8-81:9 -/
+@[rust_loop]
+def bls.pairing_product.AffinePair.is_infinite_loop0
+  (iter : core.ops.range.Range Std.Usize)
+  (self : bls.pairing_product.AffinePair) (p_bits : Std.U64) (q_bits : Std.U64)
+  :
+  Result (Std.U64 × Std.U64)
+  := do
+  loop
+    (fun (iter1, self1, p_bits1, q_bits1) =>
+      bls.pairing_product.AffinePair.is_infinite_loop0.body iter1 self1 p_bits1
+      q_bits1)
+    (iter, self, p_bits, q_bits)
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::is_infinite]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 73:4-83:5 -/
+def bls.pairing_product.AffinePair.is_infinite
+  (self : bls.pairing_product.AffinePair) : Result Bool := do
+  let (p_bits, q_bits) ←
+    bls.pairing_product.AffinePair.is_infinite_loop0
+      { start := 0#usize, «end» := bls.pairing_product.BLST_LIMBS } self
+      0#u64 0#u64
+  if p_bits = 0#u64
+  then ok true
+  else ok (q_bits = 0#u64)
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::AffinePair}::new]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 69:4-71:5 -/
+def bls.pairing_product.AffinePair.new
+  (p : bls.g1_point.G1Point) (q : bls.g2_point.G2Point) :
+  Result bls.pairing_product.AffinePair
+  := do
+  let bpa ← bls.g1_point.G1Point.into_blst p
+  let bpa1 ← bls.g2_point.G2Point.into_blst q
+  ok { p := bpa, q := bpa1 }
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::push]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 38:4-43:5
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.push
+  (self : bls.pairing_product.PairingProduct) (p : bls.g1_point.G1Point)
+  (q : bls.g2_point.G2Point) :
+  Result bls.pairing_product.PairingProduct
+  := do
+  let pair ← bls.pairing_product.AffinePair.new p q
+  let b ← bls.pairing_product.AffinePair.is_infinite pair
+  if b
+  then ok self
+  else let v ← alloc.vec.Vec.push self.pairs pair
+       ok { pairs := v }
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingInputs<0>}::lane_is_one]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 110:8-117:9 -/
+@[rust_loop_body]
+def bls.pairing_product.PairingInputs.lane_is_one_loop.body
+  (s : Slice bls.pairing_product.AffinePair) (product : bls.fp12.Fp12)
+  (degenerate : Std.U8) (start : Std.Usize) :
+  Result (ControlFlow (bls.fp12.Fp12 × Std.U8 × Std.Usize) (bls.fp12.Fp12 ×
+    Std.U8))
+  := do
+  let i := Slice.len s
+  if start < i
+  then
+    let i1 := Slice.len s
+    let remaining ← i1 - start
+    let len ←
+      if remaining < bls.limbs.LANES
+      then ok remaining
+      else ok bls.limbs.LANES
+    let i2 ← start + len
+    let s1 ←
+      core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice
+        bls.pairing_product.AffinePair) s { start, «end» := i2 }
+    let lp ← bls.lane_pairs.LanePairs.new s1
+    let result ← bls.lane_pairs.LanePairs.miller_loop lp
+    let product1 ← bls.fp12.Fp12.mul product result.value
+    let degenerate1 ← lift (degenerate ||| result.degenerate)
+    ok (cont (product1, degenerate1, i2))
+  else ok (done (product, degenerate))
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingInputs<0>}::lane_is_one]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 110:8-117:9 -/
+@[rust_loop]
+def bls.pairing_product.PairingInputs.lane_is_one_loop
+  (s : Slice bls.pairing_product.AffinePair) (product : bls.fp12.Fp12)
+  (degenerate : Std.U8) (start : Std.Usize) :
+  Result (bls.fp12.Fp12 × Std.U8)
+  := do
+  loop
+    (fun (product1, degenerate1, start1) =>
+      bls.pairing_product.PairingInputs.lane_is_one_loop.body s product1
+      degenerate1 start1)
+    (product, degenerate, start)
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingInputs<0>}::lane_is_one]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 106:4-122:5 -/
+def bls.pairing_product.PairingInputs.lane_is_one
+  (self : bls.pairing_product.PairingInputs) : Result Bool := do
+  let product ← bls.fp12.Fp12.one
+  let (product1, degenerate) ←
+    bls.pairing_product.PairingInputs.lane_is_one_loop self.pairs product 0#u8
+      0#usize
+  if degenerate != 0#u8
+  then bls.pairing_product.PairingInputs.blst_is_one self
+  else
+    let f ← bls.fp12.Fp12.final_exponentiation product1
+    bls.fp12.Fp12.is_one f
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingInputs<0>}::check]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 92:4-102:5 -/
+def bls.pairing_product.PairingInputs.check
+  (self : bls.pairing_product.PairingInputs) : Result Bool := do
+  let b ← core.slice.Slice.is_empty self.pairs
+  if b
+  then ok true
+  else
+    let b1 ← ifma_available
+    if b1
+    then bls.pairing_product.PairingInputs.lane_is_one self
+    else bls.pairing_product.PairingInputs.blst_is_one self
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::is_one]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 45:4-47:5
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.is_one
+  (self : bls.pairing_product.PairingProduct) : Result Bool := do
+  let s := alloc.vec.Vec.deref self.pairs
+  bls.pairing_product.PairingInputs.check { pairs := s }
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::two_pairs_are_one]: loop body 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 52:8-57:9
+    Visibility: public -/
+@[rust_loop_body]
+def bls.pairing_product.PairingProduct.two_pairs_are_one_loop.body
+  (iter : core.ops.range.Range Std.Usize)
+  (pairs : Array bls.pairing_product.AffinePair 2#usize) (count : Std.Usize) :
+  Result (ControlFlow ((core.ops.range.Range Std.Usize) × (Array
+    bls.pairing_product.AffinePair 2#usize) × Std.Usize) ((Array
+    bls.pairing_product.AffinePair 2#usize) × Std.Usize))
+  := do
+  let (o, iter1) ←
+    core.iter.range.IteratorRange.next core.iter.range.StepUsize iter
+  match o with
+  | none => ok (done (pairs, count))
+  | some index =>
+    let ap ← Array.index_usize pairs index
+    let b ← bls.pairing_product.AffinePair.is_infinite ap
+    if b
+    then ok (cont (iter1, pairs, count))
+    else
+      let a ← Array.update pairs count ap
+      let count1 ← count + 1#usize
+      ok (cont (iter1, a, count1))
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::two_pairs_are_one]: loop 0:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 52:8-57:9
+    Visibility: public -/
+@[rust_loop]
+def bls.pairing_product.PairingProduct.two_pairs_are_one_loop
+  (iter : core.ops.range.Range Std.Usize)
+  (pairs : Array bls.pairing_product.AffinePair 2#usize) (count : Std.Usize) :
+  Result ((Array bls.pairing_product.AffinePair 2#usize) × Std.Usize)
+  := do
+  loop
+    (fun (iter1, pairs1, count1) =>
+      bls.pairing_product.PairingProduct.two_pairs_are_one_loop.body iter1
+      pairs1 count1)
+    (iter, pairs, count)
+
+/-- [silver_crypto_simd::bls::pairing_product::{silver_crypto_simd::bls::pairing_product::PairingProduct}::two_pairs_are_one]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 49:4-59:5
+    Visibility: public -/
+def bls.pairing_product.PairingProduct.two_pairs_are_one
+  (first : (bls.g1_point.G1Point × bls.g2_point.G2Point))
+  (second : (bls.g1_point.G1Point × bls.g2_point.G2Point)) :
+  Result Bool
+  := do
+  let (gp, gp1) := first
+  let (gp2, gp3) := second
+  let ap ← bls.pairing_product.AffinePair.new gp gp1
+  let ap1 ← bls.pairing_product.AffinePair.new gp2 gp3
+  let (pairs, count) ←
+    bls.pairing_product.PairingProduct.two_pairs_are_one_loop
+      { start := 0#usize, «end» := 2#usize } (Array.make 2#usize [ ap, ap1 ] (by rfl))
+      0#usize
+  let s ←
+    core.array.Array.index (core.ops.index.IndexSlice
+      (core.slice.index.SliceIndexRangeToUsizeSlice
+      bls.pairing_product.AffinePair)) pairs { «end» := count }
+  bls.pairing_product.PairingInputs.check { pairs := s }
+
+/-- [silver_crypto_simd::bls::pairing_product::{core::clone::Clone for silver_crypto_simd::bls::pairing_product::AffinePair}::clone]:
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 62:9-62:14
+    Visibility: public -/
+def bls.pairing_product.AffinePair.Insts.CoreCloneClone.clone
+  (self : bls.pairing_product.AffinePair) :
+  Result bls.pairing_product.AffinePair
+  := do
+  ok self
+
+/-- Trait implementation: [silver_crypto_simd::bls::pairing_product::{core::clone::Clone for silver_crypto_simd::bls::pairing_product::AffinePair}]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 62:9-62:14 -/
+@[reducible]
+def bls.pairing_product.AffinePair.Insts.CoreCloneClone : core.clone.Clone
+  bls.pairing_product.AffinePair := {
+  clone := bls.pairing_product.AffinePair.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [silver_crypto_simd::bls::pairing_product::{core::marker::Copy for silver_crypto_simd::bls::pairing_product::AffinePair}]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 62:16-62:20 -/
+@[reducible]
+def bls.pairing_product.AffinePair.Insts.CoreMarkerCopy : core.marker.Copy
+  bls.pairing_product.AffinePair := {
+  cloneInst := bls.pairing_product.AffinePair.Insts.CoreCloneClone
+}
 
 /-- [silver_crypto_simd::kzg::cell_extender::LOG_BLOB]
     Source: 'crates/crypto_simd/src/kzg/cell_extender.rs', lines 19:0-19:25 -/

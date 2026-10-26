@@ -32,6 +32,13 @@ class silver_crypto_simd.bls.PointOperationExternals where
   sumG1 : Slice g1_point.G1Point → Slice Std.U8 → g1_point.G1Point
   sumG2 : Slice g2_point.G2Point → Slice Std.U8 → g2_point.G2Point
 
+class silver_crypto_simd.bls.PairingExternals where
+  check : Slice pairing_product.AffinePair → Bool
+
+def silver_crypto_simd.bls.pairing_product.PairingInputs.blst_is_one [PairingExternals]
+    (inputs : pairing_product.PairingInputs) : Result Bool :=
+  ok (PairingExternals.check inputs.pairs)
+
 def silver_crypto_simd.bls.g1_point.G1Point.negative_generator [PointOperationExternals] :
     Result g1_point.G1Point := ok PointOperationExternals.negativeG1
 

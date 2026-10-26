@@ -87,6 +87,7 @@ trap 'rm -rf "$work"' EXIT
     --start-from 'crate::bls::g1_point::_::weighted_sum' \
     --start-from 'crate::bls::g2_point::_::weighted_sum' \
     --start-from 'crate::bls::g2_point::_::hash_to_curve' \
+    --start-from crate::bls::pairing_product \
     --start-from crate::kzg::verify --start-from crate::kzg::cell_extender \
     --opaque crate::bls::fp8::lanes --opaque crate::ifma_available \
     --opaque crate::sha_available --opaque crate::bmi2_available \
@@ -99,6 +100,7 @@ trap 'rm -rf "$work"' EXIT
     --opaque 'crate::bls::g1_point::_::weighted_sum' \
     --opaque 'crate::bls::g2_point::_::weighted_sum' \
     --opaque 'crate::bls::g2_point::_::hash_to_curve' \
+    --opaque 'crate::bls::pairing_product::_::blst_is_one' \
     --opaque crate::sha256::extensions::load_bytes \
     --opaque crate::sha256::extensions::load_words \
     --opaque crate::sha256::extensions::store_words \

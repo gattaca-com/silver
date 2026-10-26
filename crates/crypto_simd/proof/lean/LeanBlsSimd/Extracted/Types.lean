@@ -81,7 +81,7 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 98:0-101:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 102:0-105:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8
@@ -172,6 +172,36 @@ def bls.g2_point.G2Point := blst.blst_p2_affine
 structure bls.glv.Half where
   magnitude : Array Std.U64 4#usize
   negative : Bool
+
+/-- [silver_crypto_simd::bls::lane_pairs::LanePairs]
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 11:0-19:1 -/
+structure bls.lane_pairs.LanePairs where
+  t : bls.g2x8.G2x8
+  qx : bls.fp2x8.Fp2x8
+  qy : bls.fp2x8.Fp2x8
+  minus_two_px : bls.fp8.Fp8
+  two_py : bls.fp8.Fp8
+  count : Std.Usize
+  degenerate : Std.U8
+
+/-- [silver_crypto_simd::bls::lane_pairs::MillerProduct]
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 21:0-24:1 -/
+structure bls.lane_pairs.MillerProduct where
+  value : bls.fp12.Fp12
+  degenerate : Std.U8
+
+/-- [silver_crypto_simd::bls::pairing_product::AffinePair]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 63:0-66:1 -/
+structure bls.pairing_product.AffinePair where
+  p : blst.blst_p1_affine
+  q : blst.blst_p2_affine
+
+/-- [silver_crypto_simd::bls::lane_pairs::Lines]
+    Source: 'crates/crypto_simd/src/bls/lane_pairs.rs', lines 138:0-142:1 -/
+structure bls.lane_pairs.Lines where
+  l0 : bls.fp2x8.Fp2x8
+  l1 : bls.fp2x8.Fp2x8
+  l2 : bls.fp2x8.Fp2x8
 
 /-- [silver_crypto_simd::bls::miller_lines::MillerLines]
     Source: 'crates/crypto_simd/src/bls/miller_lines.rs', lines 13:0-13:57
@@ -273,6 +303,17 @@ structure bls.msm8.Msm8 where
   halves : alloc.vec.Vec (Array Std.U64 4#usize)
   first_signs : alloc.vec.Vec Bool
   second_signs : alloc.vec.Vec Bool
+
+/-- [silver_crypto_simd::bls::pairing_product::PairingProduct]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 25:0-27:1
+    Visibility: public -/
+structure bls.pairing_product.PairingProduct where
+  pairs : alloc.vec.Vec bls.pairing_product.AffinePair
+
+/-- [silver_crypto_simd::bls::pairing_product::PairingInputs]
+    Source: 'crates/crypto_simd/src/bls/pairing_product.rs', lines 87:0-89:1 -/
+structure bls.pairing_product.PairingInputs where
+  pairs : Slice bls.pairing_product.AffinePair
 
 /-- [silver_crypto_simd::kzg::fr8::Fr8]
     Source: 'crates/crypto_simd/src/kzg/fr8.rs', lines 60:0-60:33
