@@ -1,5 +1,5 @@
 name = "lean_bls_simd"
-defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms"]
+defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms", "controls.Refines"]
 
 [leanOptions]
 autoImplicit = false
