@@ -5,7 +5,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
-    ifma_available, kernels_run,
+    ifma_available, ifma_kernels_run,
     kzg::{
         BYTES_PER_BLOB, BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, CellExtender,
         FIELD_ELEMENTS_PER_CELL,
@@ -175,7 +175,7 @@ unsafe fn check_transforms(
 /// difference meets its widest gap, from 0 down to a large subtrahend.
 #[test]
 fn kernel_transforms_match_scalar_fft() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
@@ -187,7 +187,7 @@ fn kernel_transforms_match_scalar_fft() {
         let exact = roots_of_unity(log_n);
         let exact_inverse = inverse_roots(&exact);
         for roots in [&exact, &exact_inverse, &strided, &strided_inverse] {
-            // SAFETY: `kernels_run` checked `ifma_available`.
+            // SAFETY: `ifma_kernels_run` checked `ifma_available`.
             let kernel = unsafe { Fft8::new(roots, n) };
             for (case, x) in edge_inputs(&mut rng, n).iter().enumerate() {
                 for raised in [false, true] {
@@ -219,11 +219,11 @@ fn kernel_transforms_match_scalar_fft() {
 /// 2^260.
 #[test]
 fn transforms_beyond_4096_elements_are_rejected() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let roots = roots_of_unity(MAX_LOG + 1);
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let rejected = catch_unwind(|| unsafe { Fft8::new(&roots, roots.len()) }).err();
     let message = rejected.as_ref().and_then(|payload| payload.downcast_ref::<&str>());
     assert!(message.is_some_and(|m| m.contains("4096 elements")), "panic: {message:?}");
@@ -253,7 +253,7 @@ fn in_every_lane(values: &[Limbs]) -> Vec<Limbs> {
 /// lanes below r. Single bits tell every bit's place apart.
 #[test]
 fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 3);
@@ -275,7 +275,7 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
     }
     for v in 0..values.len() / LANES {
         let at = ODD_OFFSET + v * LANES * BYTES_PER_FIELD_ELEMENT;
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let (vector, below_r) = unsafe { Fr8::from_bytes(&bytes, at) };
         // SAFETY: as above.
         let limbs = unsafe { vector.lane_limbs() };
@@ -291,7 +291,7 @@ fn from_bytes_decodes_every_lane_and_flags_values_below_r() {
 /// of its value mod r at `at + 32·l`, and changes no other byte.
 #[test]
 fn to_bytes_writes_canonical_lanes_and_nothing_else() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 4);
@@ -309,7 +309,7 @@ fn to_bytes_writes_canonical_lanes_and_nothing_else() {
     for v in 0..values.len() / LANES {
         let raw: Vec<_> = values[v * LANES..(v + 1) * LANES].iter().map(Limbs::to_raw_fr).collect();
         bytes.fill(0x5a);
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { Fr8::load(&raw, 0).to_bytes(&mut bytes, ODD_OFFSET) };
         for lane in 0..LANES {
             let x = &values[v * LANES + lane];
@@ -332,7 +332,7 @@ fn blob_of(elements: impl Fn(usize) -> [u8; 32]) -> Box<[u8; BYTES_PER_BLOB]> {
 
 #[test]
 fn kernel_cells_match_scalar_cells() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 1);
@@ -415,12 +415,12 @@ fn scalar_interpolation(
 /// in turn, so no call may see the columns of the call before.
 #[test]
 fn kernel_interpolation_matches_scalar_interpolation() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 5);
     let cosets = Cosets::new();
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let mut kernel = unsafe { InterpolationKernel::new(&cosets) };
     let (zero, one) = (fr_from_u64(0), fr_from_u64(1));
     let largest = fr_sub(&zero, &one);
@@ -468,11 +468,11 @@ fn kernel_interpolation_matches_scalar_interpolation() {
 /// the middle one.
 #[test]
 fn kernel_check_accepts_exactly_cells_below_r() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 6);
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let kernel = unsafe { InterpolationKernel::new(&Cosets::new()) };
     let valid: Vec<_> = (0..3).map(|_| random_cell(&mut rng)).collect();
     // SAFETY: as above.

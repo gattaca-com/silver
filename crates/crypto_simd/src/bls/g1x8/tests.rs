@@ -24,7 +24,7 @@ use crate::{
         },
         limbs::{LANES, Limbs, unpack52},
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 impl G1x8 {
@@ -114,7 +114,7 @@ fn assert_formulas_match(coordinates: &[[Limbs; LANES]; 6], case: &str) {
 /// of two points, eight combinations to a vector.
 #[test]
 fn formulas_match_the_reference_at_the_input_bounds() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let edges = [(0, 0), (1, -1), (1, 0), (2, -1)].map(|(k, d)| near_multiple_of_p(k, d));
@@ -129,7 +129,7 @@ fn formulas_match_the_reference_at_the_input_bounds() {
                 n /= edges.len();
             }
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("combinations from {first}")) };
     }
 }
@@ -137,14 +137,14 @@ fn formulas_match_the_reference_at_the_input_bounds() {
 /// Random values below 2p: the arithmetic does not need curve points.
 #[test]
 fn formulas_match_the_reference_on_random_lanes() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x61);
     let two_p = near_multiple_of_p(2, 0);
     for case in 0..256 {
         let coordinates = std::array::from_fn(|_| std::array::from_fn(|_| below(&mut rng, &two_p)));
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }
@@ -237,7 +237,7 @@ fn assert_same_point(got: &blst_p1, want: &blst_p1, case: &str) {
 /// or both, and P + 2P.
 #[test]
 fn complete_additions_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x62);
@@ -254,7 +254,7 @@ fn complete_additions_match_blst() {
         let left = [p, p, p, infinity, q, odd_infinity, p, rescaled(&r, 7)];
         let right =
             [q, rescaled(&p, 3), rescaled(&negated(&p), 5), q, infinity, infinity, twice, r];
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let (sums, doubles, shifted) = unsafe {
             let (a, b) = (in_lanes(&left), in_lanes(&right));
             (
@@ -294,7 +294,7 @@ fn complete_additions_match_blst() {
 /// and P + 2P.
 #[test]
 fn complete_affine_additions_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x63);
@@ -310,7 +310,7 @@ fn complete_affine_additions_match_blst() {
         unsafe { blst_p1_double(&mut twice, &p) };
         let left = [p, rescaled(&p, 3), rescaled(&p, 5), infinity, odd_infinity, p, r, q];
         let right = [q, p, negated(&p), q, r, twice, r, q].map(|point| affine(&point));
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let sums = unsafe {
             let a = in_lanes(&left);
             let x = coordinate(&right.map(|point| point.x));
@@ -329,7 +329,7 @@ fn complete_affine_additions_match_blst() {
 /// Σ_l [2^(bits·l)] P_l in lane 0, with some lanes at infinity.
 #[test]
 fn shifted_lane_sums_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x64);
@@ -337,7 +337,7 @@ fn shifted_lane_sums_match_blst() {
         let mut lanes: [blst_p1; LANES] = random_points(&mut rng, LANES).try_into().unwrap();
         lanes[3] = blst_p1::default();
         lanes[6] = blst_p1::default();
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let got = unsafe { of_lanes(&in_lanes(&lanes).sum_lanes_shifted(bits))[0] };
         let mut want = blst_p1::default();
         for lane in (0..LANES).rev() {

@@ -15,7 +15,7 @@ use crate::{
         limbs::LANES,
         spec_pairing,
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 fn random_fp(rng: &mut ChaCha8Rng) -> blst_fp {
@@ -171,7 +171,7 @@ pub(crate) fn blst_of_lanes(f: &Fp12) -> blst_fp12 {
 
 /// Lanes 0 to 5 normalised and below k·p.
 fn in_range(x: &Fp8, k: u64) -> bool {
-    // SAFETY: called only where `kernels_run` held.
+    // SAFETY: called only where `ifma_kernels_run` held.
     let bound = unsafe { Fp8::multiple_of_p(k) }.store();
     let value = x.store();
     (0..6).all(|lane| {
@@ -249,11 +249,11 @@ fn cases() -> Vec<(blst_fp12, blst_fp12, blst_fp6)> {
 /// `LIFTS`.
 #[test]
 fn operations_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     for (a, b, line) in cases() {
-        // SAFETY: `kernels_run` held.
+        // SAFETY: `ifma_kernels_run` held.
         unsafe {
             let reduced = (lanes_of(&a), lanes_of(&b), line_lanes(&line));
             for (c0, c1) in LIFTS {
@@ -285,7 +285,7 @@ fn operations_match_blst() {
 /// exercised where they matter: every output must stay below `BOUND`·p.
 #[test]
 fn chains_match_blst_within_range() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x3c);
@@ -293,7 +293,7 @@ fn chains_match_blst_within_range() {
         let other = random_fp12(&mut rng);
         let line = random_line(&mut rng);
         let mut want = start;
-        // SAFETY: `kernels_run` held.
+        // SAFETY: `ifma_kernels_run` held.
         unsafe {
             let (mut got, lo, ll) = (lanes_of(&start), lanes_of(&other), line_lanes(&line));
             for step in 0..80 {
@@ -335,7 +335,7 @@ fn blst_final_exponentiation(f: &blst_fp12) -> blst_fp12 {
 /// reduced inputs and from each of their `LIFTS`; so is blst's.
 #[test]
 fn final_exponentiation_is_the_spec_one_cubed() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xfe);
@@ -346,7 +346,7 @@ fn final_exponentiation_is_the_spec_one_cubed() {
         let cubed = blst_mul(&blst_mul(&spec, &spec), &spec);
         assert_ne!(limbs(&spec), limbs(&blst_mul(&spec, &spec)), "the spec's value is not 1");
         assert_eq!(limbs(&blst_final_exponentiation(&f)), limbs(&cubed), "blst's");
-        // SAFETY: `kernels_run` held.
+        // SAFETY: `ifma_kernels_run` held.
         unsafe {
             for (c0, c1) in LIFTS {
                 let got = Fp12(lifted(&lanes_of(&f).0, c0, c1)).final_exponentiation();
@@ -359,11 +359,11 @@ fn final_exponentiation_is_the_spec_one_cubed() {
 
 #[test]
 fn is_one_reads_every_value_lane() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x11);
-    // SAFETY: `kernels_run` held.
+    // SAFETY: `ifma_kernels_run` held.
     unsafe {
         let one = Fp12::one();
         assert!(one.is_one());
@@ -416,7 +416,7 @@ fn extremes(
     ranges: &[[u64; LANES]],
     recombine: &dyn Fn(&[Fp8]) -> Fp2x8,
 ) -> (f64, f64) {
-    // SAFETY: called only where `kernels_run` held.
+    // SAFETY: called only where `ifma_kernels_run` held.
     let (zero, p) = unsafe { (Fp8::zero(), Fp8::multiple_of_p(1)) };
     let read = |f: &Fp2x8| [lane_values_over_p(&f.c0), lane_values_over_p(&f.c1)];
     let base = read(&recombine(&vec![zero; inputs]));
@@ -431,7 +431,7 @@ fn extremes(
             let mut probe = vec![zero; inputs];
             let mut from = [8i64; LANES];
             from[lane] = 0;
-            // SAFETY: called only where `kernels_run` held.
+            // SAFETY: called only where `ifma_kernels_run` held.
             probe[vector] = unsafe { p.permute2(&zero, &from) };
             let probed = read(&recombine(&probe));
             for component in 0..2 {
@@ -462,12 +462,12 @@ fn extremes(
 /// within the bound each documents. Random inputs do not reach these.
 #[test]
 fn recombinations_stay_in_range_for_every_product() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let products = |count: usize| vec![[2u64; LANES]; count];
 
-    // SAFETY (each closure): called only where `kernels_run` held.
+    // SAFETY (each closure): called only where `ifma_kernels_run` held.
     let product = |q: &[Fp8]| unsafe { Fp12::from_product_lanes(&q.try_into().unwrap()).0 };
     let (low, high) = extremes(7, &products(7), &product);
     assert!(low >= 0.0 && high < 108.0, "product: {low} to {high}");

@@ -5,7 +5,8 @@ mod sha256;
 
 /// Whether the IFMA kernels run: built with the `simd` feature, on a CPU with
 /// AVX-512F and AVX-512 IFMA. Elsewhere every operation takes its portable
-/// path. Tests may turn the kernels off with `SILVER_TEST_NO_IFMA`.
+/// path, except G2 decoding, which falls back to blst. Tests may turn the
+/// kernels off with `SILVER_TEST_NO_IFMA`.
 #[cfg(target_arch = "x86_64")]
 pub fn ifma_available() -> bool {
     cfg!(feature = "simd") &&
@@ -47,7 +48,7 @@ fn bmi2_available() -> bool {
 /// False where the kernels cannot run, unless `SILVER_REQUIRE_IFMA` asks for
 /// them.
 #[cfg(all(test, target_arch = "x86_64"))]
-pub(crate) fn kernels_run() -> bool {
+pub(crate) fn ifma_kernels_run() -> bool {
     assert!(
         ifma_available() || std::env::var_os("SILVER_REQUIRE_IFMA").is_none(),
         "SILVER_REQUIRE_IFMA is set, but the IFMA path is off: no avx512ifma, no simd feature, \

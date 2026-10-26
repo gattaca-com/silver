@@ -21,7 +21,7 @@ use crate::{
         },
         limbs::{LANES, Limbs},
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 impl G2x8 {
@@ -99,7 +99,7 @@ fn edges() -> [Limbs; 5] {
 /// of a coordinate alike, eight combinations to a vector.
 #[test]
 fn formulas_match_the_reference_at_the_input_bounds() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let edges = edges();
@@ -115,7 +115,7 @@ fn formulas_match_the_reference_at_the_input_bounds() {
                 n /= edges.len();
             }
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("combinations from {first}")) };
     }
 }
@@ -124,7 +124,7 @@ fn formulas_match_the_reference_at_the_input_bounds() {
 /// coordinate differ.
 #[test]
 fn formulas_match_the_reference_on_random_edges() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let edges = edges();
@@ -132,7 +132,7 @@ fn formulas_match_the_reference_on_random_edges() {
     for case in 0..512 {
         let coordinates =
             std::array::from_fn(|_| std::array::from_fn(|_| edges[rng.gen_range(0..edges.len())]));
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }
@@ -140,14 +140,14 @@ fn formulas_match_the_reference_on_random_edges() {
 /// Random values below 2p: the arithmetic does not need curve points.
 #[test]
 fn formulas_match_the_reference_on_random_lanes() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x62);
     let two_p = near_multiple_of_p(2, 0);
     for case in 0..256 {
         let coordinates = std::array::from_fn(|_| std::array::from_fn(|_| below(&mut rng, &two_p)));
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { assert_formulas_match(&coordinates, &format!("case {case}")) };
     }
 }

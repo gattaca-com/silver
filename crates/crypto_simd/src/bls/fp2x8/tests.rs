@@ -16,7 +16,7 @@ use crate::{
         },
         limbs::{LANES, Limbs},
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 impl Fp2x8 {
@@ -125,13 +125,13 @@ fn fp2_pair(c0: &LazyLanes, c1: &LazyLanes) -> (Fp2x8, Fp2x8) {
 
 #[test]
 fn mul_matches_the_reference_on_components_below_16p() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xf2a);
     for (case, draw) in draws(4).iter().enumerate() {
         let c: Vec<_> = draw.iter().map(|&d| LazyLanes::draw(&mut rng, 16, d)).collect();
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, lazy_a) = fp2_pair(&c[0], &c[1]);
             let (b, lazy_b) = fp2_pair(&c[2], &c[3]);
@@ -144,13 +144,13 @@ fn mul_matches_the_reference_on_components_below_16p() {
 
 #[test]
 fn square_matches_the_reference_on_components_below_8p() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x5f2);
     for (case, draw) in draws(2).iter().enumerate() {
         let c: Vec<_> = draw.iter().map(|&d| LazyLanes::draw(&mut rng, 8, d)).collect();
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, lazy_a) = fp2_pair(&c[0], &c[1]);
             let got = lazy_a.square();
@@ -163,7 +163,7 @@ fn square_matches_the_reference_on_components_below_8p() {
 /// On reduced components, the lazy steps reach the limbs of `add` and `sub`.
 #[test]
 fn lazy_steps_match_add_and_sub() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x2a27);
@@ -179,7 +179,7 @@ fn lazy_steps_match_add_and_sub() {
                 };
             }
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let [a0, a1, b0, b1] = components.map(|c| Fp8::load(&c));
             let (a, b) = (Fp2x8 { c0: a0, c1: a1 }, Fp2x8 { c0: b0, c1: b1 });

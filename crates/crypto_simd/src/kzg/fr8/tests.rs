@@ -15,7 +15,7 @@ use super::{
     Fr8, LANES, LIMB_BITS, LIMBS, MASK52, R, R_INV52, SCALE, limbs::Limbs, muladd_row, multiplier,
     splat, splat_limbs, transpose_in, unpack52, zero,
 };
-use crate::{kernels_run, kzg::blst_ops::fr_from_u64};
+use crate::{ifma_kernels_run, kzg::blst_ops::fr_from_u64};
 
 /// The bound on a limb of `Fr8::mul`'s result.
 const PRODUCT_LIMB: u64 = 1 << 57;
@@ -108,12 +108,12 @@ fn operands(rng: &mut ChaCha8Rng) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
 
 #[test]
 fn mul_matches_reference_reduction() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xf58);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (vector(a), vector(b));
             assert!(a.mul(&b).lane_limbs() == mul_reference(&a, &b).lane_limbs(), "case {case}");
@@ -125,12 +125,12 @@ fn mul_matches_reference_reduction() {
 /// them itself.
 #[test]
 fn normalised_products_match_carried_reference() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xca2);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (vector(a), vector(b));
             let expected = carried_reference(&mul_reference(&a, &b));
@@ -144,7 +144,7 @@ fn normalised_products_match_carried_reference() {
 /// limb magnitude.
 #[test]
 fn normalise_restores_limbs_with_moved_excess() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x0e1);
@@ -166,7 +166,7 @@ fn normalise_restores_limbs_with_moved_excess() {
                 moved[lane][j + 1] = moved[lane][j + 1].wrapping_sub(k as u64);
             }
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let out = unsafe { Fr8(transpose_in(&moved)).normalise().lane_limbs() };
         assert!(out == values, "case {case}");
     }
@@ -176,7 +176,7 @@ fn normalise_restores_limbs_with_moved_excess() {
 /// multiplier below r.
 #[test]
 fn products_have_bounded_limbs_and_lie_below_two_r() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x2b0);
@@ -199,7 +199,7 @@ fn products_have_bounded_limbs_and_lie_below_two_r() {
             0..3 => multipliers[(case + lane) % 4],
             _ => r.random_below(&mut rng),
         });
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let (raw, carried) = unsafe {
             let product = vector(&data).mul(&vector(&w));
             (product.lane_limbs(), product.normalise().lane_limbs())
@@ -222,7 +222,7 @@ fn fr_of_words(words: &[u64; 4]) -> blst_fr {
 /// 1 and r − 1 among random elements; stale words are replaced.
 #[test]
 fn plain_words_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x70);
@@ -244,7 +244,7 @@ fn plain_words_match_blst() {
             values[k] = fr_of_words(edge);
         }
         let mut words = vec![[7u64; 4]; 3];
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe { Fr8::plain_words(&values, &mut words) };
         let want: Vec<[u64; 4]> = values
             .iter()

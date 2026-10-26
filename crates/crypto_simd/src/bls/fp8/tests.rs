@@ -17,7 +17,7 @@ use crate::{
         constants::{LIMBS, MASK52, P, P_INV52, R_MOD_P},
         limbs::{LANES, Limbs},
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 impl Fp8 {
@@ -139,12 +139,12 @@ fn operands(rng: &mut ChaCha8Rng) -> Vec<([Limbs; LANES], [Limbs; LANES])> {
 
 #[test]
 fn mul_matches_reference_reduction() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xf98);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b) = (Fp8::load(a), Fp8::load(b));
             assert!(a.mul(&b).store() == mul_reference(&a, &b).store(), "case {case}");
@@ -155,13 +155,13 @@ fn mul_matches_reference_reduction() {
 /// The model of `square` is `mul(x, x)`.
 #[test]
 fn square_matches_reference_product() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x5a);
     for (case, (a, b)) in operands(&mut rng).iter().enumerate() {
         for x in [a, b] {
-            // SAFETY: `kernels_run` checked `ifma_available`.
+            // SAFETY: `ifma_kernels_run` checked `ifma_available`.
             unsafe {
                 let x = Fp8::load(x);
                 assert!(x.square().store() == mul_reference(&x, &x).store(), "case {case}");
@@ -188,7 +188,7 @@ pub(crate) fn plus_multiple_of_p(d: &Limbs, k: u64) -> Limbs {
 /// products. The first case puts every operand at its bound.
 #[test]
 fn mul_reduces_operands_within_its_bound() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     const MAX_34: u64 = (1 << 34) - 1;
@@ -212,7 +212,7 @@ fn mul_reduces_operands_within_its_bound() {
                 operands[k][lane] = plus_multiple_of_p(&residues[k][lane], multiples[k]);
             }
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let product = Fp8::load(&operands[0]).mul(&Fp8::load(&operands[1]));
             for limbs in product.store() {
@@ -226,11 +226,11 @@ fn mul_reduces_operands_within_its_bound() {
 
 #[test]
 fn multiple_of_p_is_normalised_c_times_p() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     for c in [0, 1, 2, 4, 8, (1 << 12) - 1] {
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let got = unsafe { Fp8::multiple_of_p(c).store() };
         assert!(got == [near_multiple_of_p(c as i128, 0); LANES], "c = {c}");
     }
@@ -240,7 +240,7 @@ fn multiple_of_p_is_normalised_c_times_p() {
 /// pairs below 2p, the lazy steps reach the limbs of `add` and `sub`.
 #[test]
 fn lazy_steps_match_add_and_sub() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x1a27);
@@ -251,7 +251,7 @@ fn lazy_steps_match_add_and_sub() {
     let mut pairs = every_pair(&edges);
     pairs.extend(random_pairs_below(&mut rng, &near_multiple_of_p(2, 0), 64));
     for (case, (a, b)) in pairs.iter().enumerate() {
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         unsafe {
             let (a, b, two_p) = (Fp8::load(a), Fp8::load(b), Fp8::multiple_of_p(2));
             let sum = a.add_raw(&b).normalise().cond_sub(&two_p);
@@ -266,7 +266,7 @@ fn lazy_steps_match_add_and_sub() {
 /// sums wrap as well as at random.
 #[test]
 fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0xca7);
@@ -281,7 +281,7 @@ fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
             let low = q.wrapping_mul(P[0]) & MASK52;
             cleared[l] = t[l].wrapping_add(low) >> 52;
         }
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let got = unsafe {
             let t = Fp8::load(&std::array::from_fn(|l| [t[l]; LIMBS]));
             lanes(carry_of_cleared(t.0[0]))
@@ -295,7 +295,7 @@ fn carry_of_cleared_matches_the_carry_of_the_cleared_sum() {
 /// every other lane multiplies back to one.
 #[test]
 fn inverse_multiplies_back_to_one() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x1a7e);
@@ -307,7 +307,7 @@ fn inverse_multiplies_back_to_one() {
     values.extend((0..57).map(|_| below(&mut rng, &near_multiple_of_p(2, 0))));
     for chunk in values.chunks(LANES) {
         let lanes_of: [Limbs; LANES] = std::array::from_fn(|l| chunk[l % chunk.len()]);
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let (zero_lanes, zero_inverses, ones) = unsafe {
             let a = Fp8::load(&lanes_of);
             let inverse = a.inverse();
@@ -321,11 +321,11 @@ fn inverse_multiplies_back_to_one() {
 /// Every lane holds a distinct value, so any misplaced lane shows.
 #[test]
 fn transpose8_swaps_rows_and_lanes() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let value = |row: usize, lane: usize| (LANES * row + lane) as u64;
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let out = unsafe {
         let rows =
             Fp8::load(&std::array::from_fn(|lane| std::array::from_fn(|row| value(row, lane))));

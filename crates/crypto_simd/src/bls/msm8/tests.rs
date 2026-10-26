@@ -25,7 +25,7 @@ use crate::{
             store::PointStore,
         },
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 pub(crate) const SEED: u64 = 0x6d73_6d38_7061_6972;
@@ -120,14 +120,14 @@ fn read_point(store: &PointStore, index: u32) -> (Limbs, Limbs) {
 
 #[test]
 fn store_reads_back_its_points() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
     let points = random_points(&mut rng, 21);
     let mut store = PointStore::new();
     store.reset(points.len());
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let indices = unsafe { push_points(&mut store, &points) };
     for (k, point) in points.iter().enumerate() {
         // SAFETY: as above.
@@ -148,7 +148,7 @@ fn two_pow_448_is_blst_montgomery_two_pow_64() {
 /// Counts around the lane count, with signs at random, and σ.
 #[test]
 fn blst_points_convert_with_signs_and_sigma() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 4);
@@ -159,7 +159,7 @@ fn blst_points_convert_with_signs_and_sigma() {
             let mut store = PointStore::new();
             store.reset(count + 1);
             store.allocate();
-            // SAFETY: `kernels_run` checked `ifma_available`.
+            // SAFETY: `ifma_kernels_run` checked `ifma_available`.
             unsafe { store.push_blst(&points, &negated, endomorphism) };
             assert!(store.len() == count + 1, "{count} points");
             for (k, point) in points.iter().enumerate() {
@@ -177,7 +177,7 @@ fn blst_points_convert_with_signs_and_sigma() {
 /// the sums written over their first point, as a bucket round writes them.
 #[test]
 fn batched_adds_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 1);
@@ -185,7 +185,7 @@ fn batched_adds_match_blst() {
         let points = random_points(&mut rng, 2 * pairs);
         let mut store = PointStore::new();
         store.reset(3 * pairs);
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let indices = unsafe { push_points(&mut store, &points) };
         let mut adds = BatchedAdds::default();
         let mut expected = Vec::new();
@@ -215,7 +215,7 @@ fn batched_adds_match_blst() {
 /// last group: `run` fails and every output keeps its old point.
 #[test]
 fn equal_x_pairs_report_failure_and_write_nothing() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 2);
@@ -224,7 +224,7 @@ fn equal_x_pairs_report_failure_and_write_nothing() {
             let points = random_points(&mut rng, 2 * pairs + 1);
             let mut store = PointStore::new();
             store.reset(3 * pairs + 1);
-            // SAFETY: `kernels_run` checked `ifma_available`.
+            // SAFETY: `ifma_kernels_run` checked `ifma_available`.
             let indices = unsafe { push_points(&mut store, &points) };
             let sentinel = indices[2 * pairs];
             let mut adds = BatchedAdds::default();
@@ -258,7 +258,7 @@ fn equal_x_pairs_report_failure_and_write_nothing() {
 #[test]
 #[ignore = "timing; run with --ignored --nocapture"]
 fn msm8_parts_timing() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 3);
@@ -266,7 +266,7 @@ fn msm8_parts_timing() {
     let points = random_points(&mut rng, 2 * pairs);
     let mut store = PointStore::new();
     store.reset(3 * pairs);
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let indices = unsafe { push_points(&mut store, &points) };
     let outs: Vec<u32> = (0..pairs).map(|_| store.allocate()).collect();
     let mut adds = BatchedAdds::default();
@@ -346,7 +346,7 @@ pub(crate) fn assert_same_point(got: &blst_p1, want: &blst_p1, case: &str) {
 }
 
 fn assert_msm_matches(msm: &mut Msm8, points: &[blst_p1_affine], scalars: &[[u64; 4]], case: &str) {
-    // SAFETY: the callers checked `kernels_run`.
+    // SAFETY: the callers checked `ifma_kernels_run`.
     let got = unsafe { msm.msm(points, scalars) };
     assert_same_point(&got, &lincomb(points, scalars), case);
 }
@@ -355,7 +355,7 @@ fn assert_msm_matches(msm: &mut Msm8, points: &[blst_p1_affine], scalars: &[[u64
 /// infinity, and scalars up to 2^255 − 1. One `Msm8` serves every size.
 #[test]
 fn msm_matches_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 5);
@@ -425,7 +425,7 @@ fn glv_halves_recombine_on_points() {
 
 #[test]
 fn msm_matches_blst_at_glv_edges() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 6);
@@ -440,7 +440,7 @@ fn msm_matches_blst_at_glv_edges() {
 /// point by point; opposite points with equal scalars cancel.
 #[test]
 fn msm_matches_blst_with_repeated_and_opposite_points() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 7);
@@ -457,7 +457,7 @@ fn msm_matches_blst_with_repeated_and_opposite_points() {
         points.extend(originals.iter().map(negated_point));
         let mut scalars = random_scalars(&mut rng, n / 2);
         scalars.extend_from_within(..);
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let got = unsafe { msm.msm(&points, &scalars) };
         assert_same_point(&got, &blst_p1::default(), &format!("{n} points and their negations"));
         points.push(originals[0]);
@@ -491,7 +491,7 @@ pub(crate) fn finite_pippenger(points: &[blst_p1_affine], scalars: &[[u64; 4]]) 
 /// a chunk of nothing but infinity between two others.
 #[test]
 fn msm_sums_its_chunks() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 14);
@@ -503,7 +503,7 @@ fn msm_sums_its_chunks() {
     points.extend(random_points(&mut rng, 1));
     let mut longer = scalars.clone();
     longer.extend(random_scalars(&mut rng, 1));
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let got = unsafe { msm.msm(&points, &longer) };
     assert_same_point(&got, &finite_pippenger(&points, &longer), "a chunk and one point");
 
@@ -513,7 +513,7 @@ fn msm_sums_its_chunks() {
     unsafe { blst_p1_double(&mut want, &once) };
     let twice = [first.as_slice(), &first].concat();
     let doubled = [scalars.as_slice(), &scalars].concat();
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let got = unsafe { msm.msm(&twice, &doubled) };
     assert_same_point(&got, &want, "a chunk twice");
 
@@ -535,7 +535,7 @@ fn msm_sums_its_chunks() {
 
 /// Σ scalars[i]·points[i] through `Buckets` alone, without GLV, with the
 /// number of batched rounds, each of which must succeed. Callers check
-/// `kernels_run`.
+/// `ifma_kernels_run`.
 fn bucket_sum(
     points: &[blst_p1_affine],
     scalars: &[[u64; 4]],
@@ -547,7 +547,7 @@ fn bucket_sum(
     let mut store = PointStore::new();
     store.reset(n + buckets.windows() * (n / 2));
     let mut adds = BatchedAdds::default();
-    // SAFETY: the callers checked `kernels_run`.
+    // SAFETY: the callers checked `ifma_kernels_run`.
     unsafe { store.push_blst(points, &vec![false; n], false) };
     buckets.queue_round(&mut adds, &mut store, n);
     let mut rounds = 0;
@@ -565,7 +565,7 @@ fn bucket_sum(
 /// what makes `Msm8` fast; the buckets left then sum to blst's result.
 #[test]
 fn rounds_on_distinct_points_succeed() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 11);
@@ -583,7 +583,7 @@ fn rounds_on_distinct_points_succeed() {
 /// where it turns negative and carries; and 0, 1 and the largest scalar.
 #[test]
 fn buckets_match_blst_at_digit_edges() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 13);
@@ -620,7 +620,7 @@ fn buckets_match_blst_at_digit_edges() {
 
 #[test]
 fn msm_of_nothing_is_infinity() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 8);
@@ -628,7 +628,7 @@ fn msm_of_nothing_is_infinity() {
     let points = random_points(&mut rng, 70);
     let infinities = vec![blst_p1_affine::default(); 70];
     let scalars = random_scalars(&mut rng, 70);
-    // SAFETY: `kernels_run` checked `ifma_available`.
+    // SAFETY: `ifma_kernels_run` checked `ifma_available`.
     let sums = unsafe {
         [msm.msm(&[], &[]), msm.msm(&points, &vec![[0; 4]; 70]), msm.msm(&infinities, &scalars)]
     };
@@ -670,7 +670,7 @@ fn pippenger(
 #[test]
 #[ignore = "timing; run with --ignored --nocapture"]
 fn msm8_timing() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 9);
@@ -710,7 +710,7 @@ fn msm8_timing() {
 #[test]
 #[ignore = "timing; run with --ignored --nocapture"]
 fn window_combination_timing() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(SEED ^ 10);

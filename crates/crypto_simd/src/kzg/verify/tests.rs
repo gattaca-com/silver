@@ -4,7 +4,7 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{CurveWork, PairingSums};
 #[cfg(target_arch = "x86_64")]
-use crate::kernels_run;
+use crate::ifma_kernels_run;
 use crate::{
     bls::blst_p1_affine,
     kzg::{
@@ -73,13 +73,13 @@ fn cases(rng: &mut ChaCha8Rng) -> Vec<[blst_p1; 4]> {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn pairing_points_match_blst() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a1);
     for (case, sums) in cases(&mut rng).iter().enumerate() {
         let (want_left, want_right) = blst_pairing_points(sums);
-        // SAFETY: `kernels_run` checked `ifma_available`.
+        // SAFETY: `ifma_kernels_run` checked `ifma_available`.
         let (x, y) = unsafe {
             let (x, y) = pairing_sums(sums).points_in_lanes().to_affine();
             (x.to_blst_limbs(), y.to_blst_limbs())
@@ -94,7 +94,7 @@ fn pairing_points_match_blst() {
 #[test]
 fn pairing_check_matches_blst() {
     #[cfg(target_arch = "x86_64")]
-    let lanes = kernels_run().then(CurveWork::new);
+    let lanes = ifma_kernels_run().then(CurveWork::new);
     let portable = CurveWork::portable();
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
     let mut held = 0;

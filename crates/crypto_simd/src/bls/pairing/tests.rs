@@ -24,7 +24,7 @@ use crate::{
         miller_lines::{LINE_COUNT, MillerLines},
         spec_pairing::{self, fp, inverse, miller_lines, mul, of_g1, of_g2, pairing_product, zero},
     },
-    kernels_run,
+    ifma_kernels_run,
 };
 
 /// A random 255-bit scalar, little-endian.
@@ -140,7 +140,7 @@ fn pair_lanes(points: &[blst_p1; 2]) -> G1x8 {
 /// come with z ≠ 1, with z = 1, and rescaled.
 #[test]
 fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x4d11);
@@ -154,7 +154,7 @@ fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
         assert!(final_exp(&blst) == want, "blst's Miller values are the spec's");
         let scales =
             [p, [jacobian(&a[0]), jacobian(&a[1])], [rescaled(&p[0], 3), rescaled(&p[1], 5)]];
-        // SAFETY: `kernels_run` held.
+        // SAFETY: `ifma_kernels_run` held.
         unsafe {
             let lines = lines_of(&q);
             for (case, points) in scales.iter().enumerate() {
@@ -170,7 +170,7 @@ fn miller_loop_matches_the_spec_after_the_final_exponentiation() {
 /// reduced.
 #[test]
 fn miller_loop_leaves_out_points_at_infinity() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x1f);
@@ -178,7 +178,7 @@ fn miller_loop_leaves_out_points_at_infinity() {
     let q = [random_g2(&mut rng), random_g2(&mut rng)];
     let infinity = blst_p1 { z: blst_fp::default(), ..p[0] };
     let alone = |pair: usize| final_exp(&pairing_product(&[(affine(&p[pair]), q[pair])]));
-    // SAFETY: `kernels_run` held.
+    // SAFETY: `ifma_kernels_run` held.
     unsafe {
         let lines = lines_of(&q);
         let got = |points: &[blst_p1; 2]| {
@@ -211,7 +211,7 @@ pub(crate) fn blst_pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> 
 /// points at infinity.
 #[test]
 fn pairing_check_matches_the_spec() {
-    if !kernels_run() {
+    if !ifma_kernels_run() {
         return;
     }
     let mut rng = ChaCha8Rng::seed_from_u64(0x9c);
@@ -232,7 +232,7 @@ fn pairing_check_matches_the_spec() {
         let pairs = [(affine(&points[0]), g2[0]), (affine(&points[1]), g2[1])];
         assert_eq!(spec_pairing::pairing_check(&pairs), want, "{name}: the spec");
         assert_eq!(blst_pairing_check(&pairs), want, "{name}: blst");
-        // SAFETY: `kernels_run` held.
+        // SAFETY: `ifma_kernels_run` held.
         let got = unsafe { lines_of(&g2).pairing_check(&pair_lanes(&points)) };
         assert_eq!(got, want, "{name}");
     }
