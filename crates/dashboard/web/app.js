@@ -10,6 +10,8 @@ const RENDER_MS = 1000;
 /** Panes may export a faster `renderMs`, a multiple of this. */
 const TICK_MS = 100;
 const RECONNECT_MS = 2000;
+/** A relay that predates the replay marker never sends it. */
+const REPLAY_TIMEOUT_MS = 5000;
 
 const PANES = { home, events, peers, gossip, flow };
 /** Per-pane view state (selected instance, sort, expanded rows); survives
@@ -32,8 +34,12 @@ function renderTabs() {
  *  until re-mounted), which clamps the window scroll, and horizontal table
  *  scroll goes with the old sections; both are restored after the redraw. */
 let lastRender = 0;
+/** Rendering waits for the connect-time replay: partial history redraws as
+ *  flicker. */
+let replaying = true;
 
 function render() {
+  if (replaying) return;
   lastRender = performance.now();
   const y = window.scrollY;
   const xs = [...root.querySelectorAll('section')].map((s) => s.scrollLeft);
@@ -121,21 +127,38 @@ document.querySelector('header').addEventListener('click', (e) => {
 });
 
 // The server replays every ring on connect, so a reconnect starts from an
-// empty fleet rather than merging a second replay into the first.
+// empty fleet rather than merging a second replay into the first. The last
+// render stays up until the replay's text-frame marker; datagrams are binary.
 function connect() {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${scheme}://${location.host}/ws`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    fleet = new Fleet();
+  let timeout = 0;
+  const live = () => {
+    clearTimeout(timeout);
+    if (!replaying) return;
+    replaying = false;
     status.textContent = 'live';
     status.className = 'live';
+    render();
+  };
+  ws.onopen = () => {
+    fleet = new Fleet();
+    replaying = true;
+    status.textContent = 'loading';
+    status.className = '';
+    timeout = setTimeout(live, REPLAY_TIMEOUT_MS);
   };
   ws.onmessage = (e) => {
+    if (typeof e.data === 'string') {
+      live();
+      return;
+    }
     const d = decode(e.data);
     if (d) fleet.apply(d);
   };
   ws.onclose = () => {
+    clearTimeout(timeout);
     status.textContent = 'reconnecting';
     status.className = 'down';
     setTimeout(connect, RECONNECT_MS);

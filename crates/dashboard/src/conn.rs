@@ -58,8 +58,15 @@ enum Phase {
     WebSocket {
         cursors: Vec<u64>,
         lapped: u64,
+        /// Per instance, the ring end at upgrade; dropped once every cursor
+        /// passes it and `REPLAYED` is sent.
+        replay_end: Option<Vec<u64>>,
     },
 }
+
+/// Text frame after the replay, so the client can hold rendering until then;
+/// every datagram is a binary frame.
+const REPLAYED: &[u8] = b"replayed";
 
 pub enum Progress {
     Open,
@@ -184,7 +191,13 @@ impl Conn {
              Sec-WebSocket-Accept: {accept}\r\n\r\n"
         )
         .unwrap();
-        Phase::WebSocket { cursors: instances.iter().map(|i| i.ring.first()).collect(), lapped: 0 }
+        Phase::WebSocket {
+            cursors: instances.iter().map(|i| i.ring.first()).collect(),
+            lapped: 0,
+            replay_end: Some(
+                instances.iter().map(|i| i.ring.first() + i.ring.len() as u64).collect(),
+            ),
+        }
     }
 
     pub fn on_writable(&mut self, instances: &[Instance]) -> Progress {
@@ -217,7 +230,7 @@ impl Conn {
     /// Round-robin across instances so one busy ring cannot starve the rest
     /// during replay.
     fn fill(&mut self, instances: &[Instance]) {
-        let Phase::WebSocket { cursors, lapped } = &mut self.phase else { return };
+        let Phase::WebSocket { cursors, lapped, replay_end } = &mut self.phase else { return };
         if self.out_pos > 0 && self.out.len() + 1500 > OUT_CAP {
             self.out.drain(..self.out_pos);
             self.out_pos = 0;
@@ -235,7 +248,7 @@ impl Conn {
                     *cursor = ring.first();
                 }
                 let Some(dgram) = ring.get(*cursor) else { continue };
-                frame_binary(&mut self.out, dgram);
+                frame(&mut self.out, FIN_BINARY, dgram);
                 *cursor += 1;
                 framed = true;
             }
@@ -243,23 +256,33 @@ impl Conn {
                 break;
             }
         }
+        // Instances first seen after the upgrade have no replay to wait for.
+        if replay_end
+            .as_ref()
+            .is_some_and(|end| cursors.iter().zip(end).all(|(cursor, end)| cursor >= end))
+        {
+            frame(&mut self.out, FIN_TEXT, REPLAYED);
+            *replay_end = None;
+        }
         if self.wants_write() && self.waiting_since.is_none() {
             self.waiting_since = Some(Instant::now());
         }
     }
 }
 
+const FIN_TEXT: u8 = 0x81;
+const FIN_BINARY: u8 = 0x82;
+
 /// Server frames are unmasked (RFC 6455 §5.1).
-fn frame_binary(out: &mut Vec<u8>, payload: &[u8]) {
-    const FIN_BINARY: u8 = 0x82;
+fn frame(out: &mut Vec<u8>, opcode: u8, payload: &[u8]) {
     match payload.len() {
-        len @ 0..=125 => out.extend_from_slice(&[FIN_BINARY, len as u8]),
+        len @ 0..=125 => out.extend_from_slice(&[opcode, len as u8]),
         len @ 126..=0xFFFF => {
-            out.extend_from_slice(&[FIN_BINARY, 126]);
+            out.extend_from_slice(&[opcode, 126]);
             out.extend_from_slice(&(len as u16).to_be_bytes());
         }
         len => {
-            out.extend_from_slice(&[FIN_BINARY, 127]);
+            out.extend_from_slice(&[opcode, 127]);
             out.extend_from_slice(&(len as u64).to_be_bytes());
         }
     }
@@ -283,11 +306,14 @@ mod tests {
     #[test]
     fn frame_lengths_use_the_shortest_encoding() {
         let mut out = Vec::new();
-        frame_binary(&mut out, &[7; 125]);
+        frame(&mut out, FIN_BINARY, &[7; 125]);
         assert_eq!(&out[..2], &[0x82, 125]);
         out.clear();
-        frame_binary(&mut out, &[7; 1400]);
+        frame(&mut out, FIN_BINARY, &[7; 1400]);
         assert_eq!(&out[..4], &[0x82, 126, 0x05, 0x78]);
         assert_eq!(out.len(), 4 + 1400);
+        out.clear();
+        frame(&mut out, FIN_TEXT, REPLAYED);
+        assert_eq!(&out[..2], &[0x81, REPLAYED.len() as u8]);
     }
 }
