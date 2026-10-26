@@ -12,11 +12,17 @@ example : @CheckedPoints.ConstructorsMatchSpec pointSpecExternals := by
   letI : PointExternals := pointSpecExternals
   exact ⟨fun _ => rfl, fun _ => rfl⟩
 
-example : ∃ p : g1_point.G1Point, Kzg.G1AffineValid p :=
-  ⟨_, Kzg.g1_verdict_valid _ _ G1Spec.infinity_verdict⟩
+private def zeroFp : blst.blst_fp :=
+  ⟨Array.make 6#usize (List.replicate 6 0#u64) (by rfl)⟩
 
-example : ∃ p : g2_point.G2Point, Kzg.G2AffineValid p :=
-  ⟨_, Kzg.g2_verdict_valid _ _ G2Spec.infinity_verdict⟩
+private def zeroFp2 : blst.blst_fp2 :=
+  ⟨Array.make 2#usize [zeroFp, zeroFp] (by rfl)⟩
+
+example : Kzg.G1AffineValid ⟨zeroFp, zeroFp⟩ :=
+  Kzg.g1_verdict_valid _ _ G1Spec.infinity_verdict
+
+example : Kzg.G2AffineValid ⟨zeroFp2, zeroFp2⟩ :=
+  Kzg.g2_verdict_valid _ _ G2Spec.infinity_verdict
 
 example [RuntimeFeatures] (inputs : Slice (Array U8 48#usize))
     (out result : Slice (Option g1_point.G1Point))

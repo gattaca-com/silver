@@ -29,10 +29,16 @@ run_cmd do
     ``silver_crypto_simd.kzg.cell_extender.CellExtender.new,
     ``silver_crypto_simd.kzg.cell_extender.CellExtender.compute,
     ``silver_crypto_simd.kzg.cell_extender.CellExtender.Insts.CoreDefaultDefault.default]
+  let constructors := #[``silver_crypto_simd.bls.PointExternals,
+    ``silver_crypto_simd.bls.PointExternals.fromG1,
+    ``silver_crypto_simd.bls.PointExternals.fromG2,
+    ``silver_crypto_simd.bls.g1_point.G1Point.from_blst,
+    ``silver_crypto_simd.bls.g2_point.G2Point.from_blst,
+    ``LeanBlsSimd.CheckedPoints.ConstructorsMatchSpec]
   let forbidden := #[``silver_crypto_simd.bls.BlsExternals,
     ``silver_crypto_simd.bls.BlsExternals.uncompressG2,
     ``silver_crypto_simd.bls.uncompress_in_g2_blst,
-    ``silver_crypto_simd.bls.PointOperationExternals]
+    ``silver_crypto_simd.bls.PointOperationExternals] ++ constructors
   let env ← getEnv
   let used := dependencies env roots
   for declName in forbidden do
@@ -43,14 +49,20 @@ run_cmd do
     throwError "signature-path control no longer reaches the opaque G2 decoder"
   let decoders := dependencies env #[``LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list,
     ``LeanBlsSimd.UncompressG2.uncompress_in_g2_eq_spec_list]
-  if decoders.contains ``silver_crypto_simd.bls.PointOperationExternals then
-    throwError "decoder headline reaches the point-operation dictionary"
+  for declName in #[``silver_crypto_simd.bls.PointOperationExternals] ++ constructors do
+    if decoders.contains declName then
+      throwError "decoder headline reaches an excluded external {declName}"
+  let admission := dependencies env #[``LeanBlsSimd.CheckedPoints.g1_from_blst_some_iff,
+    ``LeanBlsSimd.CheckedPoints.g2_from_blst_some_iff]
+  for declName in constructors do
+    unless admission.contains declName do
+      throwError "raw-constructor control no longer reaches {declName}"
   let operation := dependencies env #[``silver_crypto_simd.bls.g2_point.G2Point.hash_to_curve]
   unless operation.contains ``silver_crypto_simd.bls.PointOperationExternals do
     throwError "point-operation control no longer reaches its dictionary"
   logInfo m!"{roots.size} KZG headlines and runtime entry points exclude the opaque G2 decoder \
-    and point operations; decoder headlines exclude point operations; positive controls reach \
-    their respective external dictionaries"
+    and point operations/constructors; decoder headlines exclude point operations/constructors; \
+    positive controls reach their respective external dictionaries and constructor contract"
 
 private def requireIndependent (root : Name) : CommandElabM Unit := do
   let env ← getEnv
