@@ -58,7 +58,9 @@
   #status { margin-left: auto; font-size: 12px; }
   #status.live { color: var(--ok); }
   #status.down { color: var(--bad); }
-  main { padding: 12px 16px; }
+  /* Every render replaces the pane's nodes, so there is nothing stable to
+     anchor the scroll to; app.js holds the position itself. */
+  main { padding: 12px 16px; overflow-anchor: none; }
   section { margin-bottom: 20px; overflow-x: auto; }
   h2 { font-size: 13px; margin: 0 0 6px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .badge { font-weight: normal; font-size: 11px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }

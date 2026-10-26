@@ -30,20 +30,23 @@ function renderTabs() {
   }
 }
 
-/** Replacing the pane's HTML briefly collapses it (chart slots stay empty
- *  until re-mounted), which clamps the window scroll, and horizontal table
- *  scroll goes with the old sections; both are restored after the redraw. */
 let lastRender = 0;
 /** Rendering waits for the connect-time replay: partial history redraws as
  *  flicker. */
 let replaying = true;
 
+/** Replacing the pane's HTML briefly collapses it (chart slots stay empty
+ *  until re-mounted), which would clamp the window scroll; the pane's old
+ *  height is held through the redraw. Horizontal table scroll goes with the
+ *  old sections and is restored after it. */
 function render() {
   if (replaying) return;
   lastRender = performance.now();
   const y = window.scrollY;
   const xs = [...root.querySelectorAll('section')].map((s) => s.scrollLeft);
+  root.style.minHeight = `${root.offsetHeight}px`;
   PANES[active].render(fleet, root, performance.now(), ui[active]);
+  root.style.minHeight = '';
   root.querySelectorAll('section').forEach((s, i) => {
     if (xs[i]) s.scrollLeft = xs[i];
   });
