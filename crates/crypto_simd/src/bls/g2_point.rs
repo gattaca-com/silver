@@ -87,6 +87,8 @@ impl G2Point {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::catch_unwind;
+
     use blst::{BLST_ERROR, blst_fp2_add, blst_p2_affine_generator, blst_p2_uncompress};
 
     use super::*;
@@ -219,11 +221,8 @@ mod tests {
     fn weighted_sum_rejects_scalar_length_mismatch() {
         let point = G2Point::hash_to_curve(b"length", b"test");
         for bytes in [0, 7, 9, 16] {
-            assert!(
-                std::panic::catch_unwind(|| G2Point::weighted_sum(&[point], &vec![0; bytes]))
-                    .is_err()
-            );
+            assert!(catch_unwind(|| G2Point::weighted_sum(&[point], &vec![0; bytes])).is_err());
         }
-        assert!(std::panic::catch_unwind(|| G2Point::weighted_sum(&[], &[0; 8])).is_err());
+        assert!(catch_unwind(|| G2Point::weighted_sum(&[], &[0; 8])).is_err());
     }
 }

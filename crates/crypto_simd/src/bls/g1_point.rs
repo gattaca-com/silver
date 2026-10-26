@@ -70,6 +70,8 @@ impl G1Point {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::catch_unwind;
+
     use blst::{
         blst_fp_add, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double_affine,
         blst_p1_from_affine, blst_p1_is_inf,
@@ -184,11 +186,8 @@ mod tests {
     fn weighted_sum_rejects_scalar_length_mismatch() {
         let point = G1Point::negative_generator();
         for bytes in [0, 7, 9, 16] {
-            assert!(
-                std::panic::catch_unwind(|| G1Point::weighted_sum(&[point], &vec![0; bytes]))
-                    .is_err()
-            );
+            assert!(catch_unwind(|| G1Point::weighted_sum(&[point], &vec![0; bytes])).is_err());
         }
-        assert!(std::panic::catch_unwind(|| G1Point::weighted_sum(&[], &[0; 8])).is_err());
+        assert!(catch_unwind(|| G1Point::weighted_sum(&[], &[0; 8])).is_err());
     }
 }
