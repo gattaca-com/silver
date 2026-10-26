@@ -34,6 +34,8 @@ pub struct SigBatch {
     hashed_msgs: HashedMsgs,
     aggregator: PubkeyAggregator,
     poisoned: bool,
+    #[cfg(test)]
+    test_weight: Option<u64>,
 }
 
 /// Capacity for the per-block sig batch. Worst-case Fulu block envelope at
@@ -99,12 +101,20 @@ impl SigBatch {
             hashed_msgs: HashedMsgs::default(),
             aggregator: PubkeyAggregator::default(),
             poisoned: false,
+            #[cfg(test)]
+            test_weight: None,
         }
     }
 
     #[inline]
     pub fn poison(&mut self) {
         self.poisoned = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_weight(&mut self, weight: u64) {
+        assert_ne!(weight, 0);
+        self.test_weight = Some(weight);
     }
 
     pub fn clear(&mut self) {
@@ -278,6 +288,13 @@ impl SigBatch {
             }
         }
 
+        #[cfg(test)]
+        if let Some(weight) = self.test_weight {
+            for chunk in self.rand_bytes.chunks_exact_mut(RAND_BYTES) {
+                chunk.copy_from_slice(&weight.to_le_bytes());
+            }
+        }
+
         let sig_sum = G2Point::weighted_sum(&self.sigs, &self.rand_bytes);
 
         let SigBatch {
@@ -346,7 +363,7 @@ mod tests {
             SignatureChecker,
             aggregator::{pk_affine, sig_affine},
         },
-        test_signing::{pubkey_pk, sign},
+        test_signing::{pubkey_pk, pubkey_with_torsion, sign},
     };
 
     fn hex(s: &str) -> Vec<u8> {
@@ -408,6 +425,27 @@ mod tests {
         assert!(!batch.contains(&pubkey_pk(0), signature, &other_root));
         let other = CheckedSignature::parse(&sign(0, &other_root)).unwrap();
         assert!(!batch.contains(&pubkey_pk(0), other, &root));
+    }
+
+    #[test]
+    fn non_subgroup_key_sum_rejected_at_admission() {
+        let root = [7; 32];
+        let bad_key = pubkey_with_torsion(0);
+        let signature = CheckedSignature::parse(&sign(0, &root)).unwrap();
+        assert!(checked_public_key(&bad_key).is_none());
+        assert!(!super::super::verify_one_checked(&bad_key, &signature, &root));
+
+        let mut batch = SigBatch::new();
+        batch.push_parsed(&bad_key, signature, root);
+        assert!(!batch.verify_all(), "one-entry admission");
+        batch.push_one(&pubkey_pk(1), &sign(1, &root), root);
+        assert!(batch.verify_each_sequential(), "unchecked pairings accept the torsion component");
+        // SystemRandom weights can erase the order-three component; fix them for this
+        // regression.
+        batch.set_test_weight(1);
+        assert!(!batch.verify_all(), "weighted key sum admission");
+        let sum = batch.pks.mult(&batch.rand_bytes, NBITS).to_public_key();
+        assert!(checked_public_key(&sum).is_none());
     }
 
     #[test]

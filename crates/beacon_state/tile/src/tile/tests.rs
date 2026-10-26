@@ -3185,6 +3185,34 @@ fn attestation_batch_fallback_rejects_only_forged() {
 }
 
 #[test]
+fn attestation_batch_key_admission_runs_fallback() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    let (epoch_base, mut seeds) = build_seed_finalized(128, true);
+    seeds[1].pubkey = test_signing::pubkey_with_torsion(1).to_bytes();
+    arm_tile(&mut tile, epoch_base, &seeds, 0);
+    adapter.consume(|_: PeerEvent, _| {});
+    // SystemRandom weights can erase the order-three component; fix them to
+    // exercise admission failure.
+    tile.sig_batch.set_test_weight(1);
+    let bbr = tile.head_block_root();
+    let (good, good_subnet) = batched_att(&tile, 0, 0);
+    let (bad, bad_subnet) = batched_att(&tile, 1, 1);
+    tile.defer_vote(gossip_att_msg(&mut gp, &good, good_subnet), &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &bad, bad_subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(tile.sig_batch.len(), 2, "both votes reached the batch");
+    assert!(tile.sig_batch.verify_each_sequential(), "unchecked pairings would accept both votes");
+    assert!(!tile.sig_batch.verify_all(), "key admission rejects the batch");
+    assert_eq!(
+        voted_weight(&mut tile, bbr),
+        MAX_EFFECTIVE_BALANCE,
+        "fallback keeps the valid vote"
+    );
+    assert_eq!(non_block_relays(&mut adapter), [GossipTopic::BeaconAttestation(good_subnet)]);
+}
+
+#[test]
 fn invalid_vote_does_not_deduplicate_later_valid_vote() {
     let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
     seed_tile_with_keys(&mut tile, 128, 0);
