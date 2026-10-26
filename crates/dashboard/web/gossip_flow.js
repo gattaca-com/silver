@@ -73,15 +73,16 @@ function fmtCount(v) {
  *  their maximum. */
 function graph(g) {
   const unique = Math.max(g.recv, g.accepted + g.rejected);
-  // Ordered so bands into the same node run side by side: our own and IWANT
-  // traffic on top, beside relayed and served, network traffic below.
+  // Our own published messages and IWANT hits are already validated, so they
+  // sit beside accepted, and their bands run straight into relayed and
+  // served.
   const nodes = [
-    { id: 'published', col: 0, label: 'published by us', colour: 'var(--series-1)' },
-    { id: 'iwantIn', col: 0, label: 'IWANT hits', colour: 'var(--series-7)' },
     { id: 'received', col: 0, label: 'received copies', colour: 'var(--muted)' },
     { id: 'unique', col: 1, label: 'unique', colour: 'var(--muted)' },
     { id: 'duplicate', col: 1, label: 'duplicate', colour: 'var(--idle)' },
+    { id: 'published', col: 2, label: 'published by us', colour: 'var(--series-1)' },
     { id: 'accepted', col: 2, label: 'accepted', colour: 'var(--ok)' },
+    { id: 'iwantIn', col: 2, label: 'IWANT hits', colour: 'var(--series-7)' },
     { id: 'pending', col: 2, label: 'ignored / validating', colour: 'var(--c-warn)' },
     { id: 'rejected', col: 2, label: 'rejected', colour: 'var(--bad)' },
     { id: 'relayed', col: 3, label: 'relayed', colour: 'var(--fill)' },
