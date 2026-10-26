@@ -80,6 +80,7 @@ trap 'rm -rf "$work"' EXIT
     --start-from 'crate::bls::g1_point::_::from_blst' \
     --start-from 'crate::bls::g2_point::_::from_blst' \
     --start-from 'crate::bls::g1_point::_::as_blst' \
+    --start-from 'crate::bls::g1_point::_::into_blst' \
     --start-from 'crate::bls::g2_point::_::as_blst' \
     --start-from 'crate::bls::g2_point::_::into_blst' \
     --start-from 'crate::bls::g1_point::_::negative_generator' \
