@@ -50,4 +50,5 @@ import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
 import LeanBlsSimd.Refines.CheckedPoints
+import LeanBlsSimd.Refines.PointOperations
 import LeanBlsSimd.Axioms

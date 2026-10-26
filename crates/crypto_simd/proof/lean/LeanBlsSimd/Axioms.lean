@@ -58,6 +58,7 @@ import LeanBlsSimd.Refines.Complete
 import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
 import LeanBlsSimd.Refines.CheckedPoints
+import LeanBlsSimd.Refines.PointOperations
 import LeanBlsSimd.Kzg
 import LeanBlsSimd.Kzg.Routes
 
@@ -97,6 +98,10 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.bls.g2_point.G2Point.as_blst,
   ``silver_crypto_simd.bls.g1_point.G1Point.into_blst,
   ``silver_crypto_simd.bls.g2_point.G2Point.into_blst,
+  ``silver_crypto_simd.bls.g1_point.G1Point.negative_generator,
+  ``silver_crypto_simd.bls.g1_point.G1Point.weighted_sum,
+  ``silver_crypto_simd.bls.g2_point.G2Point.weighted_sum,
+  ``silver_crypto_simd.bls.g2_point.G2Point.hash_to_curve,
   ``silver_crypto_simd.kzg.verify.CellBatchVerifier.new,
   ``silver_crypto_simd.kzg.verify.CellBatchVerifier.verify,
   ``silver_crypto_simd.kzg.verify.CellBatchVerifier.Insts.CoreDefaultDefault.default,

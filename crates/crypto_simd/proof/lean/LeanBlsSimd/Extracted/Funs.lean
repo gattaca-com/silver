@@ -4563,14 +4563,14 @@ def bls.fp8.Fp8.from_blst_limbs
   bls.fp8.Fp8.mul f f1
 
 /-- [silver_crypto_simd::bls::g1_point::{core::clone::Clone for silver_crypto_simd::bls::g1_point::G1Point}::clone]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 7:9-7:14
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 17:9-17:14
     Visibility: public -/
 def bls.g1_point.G1Point.Insts.CoreCloneClone.clone
   (self : bls.g1_point.G1Point) : Result bls.g1_point.G1Point := do
   ok self
 
 /-- Trait implementation: [silver_crypto_simd::bls::g1_point::{core::clone::Clone for silver_crypto_simd::bls::g1_point::G1Point}]
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 7:9-7:14 -/
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 17:9-17:14 -/
 @[reducible]
 def bls.g1_point.G1Point.Insts.CoreCloneClone : core.clone.Clone
   bls.g1_point.G1Point := {
@@ -4578,21 +4578,20 @@ def bls.g1_point.G1Point.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::from_subgroup_unchecked]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 25:4-27:5
-    Visibility: public -/
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 35:4-37:5 -/
 def bls.g1_point.G1Point.from_subgroup_unchecked
   (point : blst.blst_p1_affine) : Result bls.g1_point.G1Point := do
   ok point
 
 /-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::as_blst]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 29:4-31:5
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 62:4-64:5
     Visibility: public -/
 def bls.g1_point.G1Point.as_blst
   (self : bls.g1_point.G1Point) : Result blst.blst_p1_affine := do
   ok self
 
 /-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::into_blst]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 33:4-35:5
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 66:4-68:5
     Visibility: public -/
 def bls.g1_point.G1Point.into_blst
   (self : bls.g1_point.G1Point) : Result blst.blst_p1_affine := do
@@ -4832,21 +4831,20 @@ def bls.g1x8.G1x8.sum_lanes_shifted
   bls.g1x8.G1x8.sum_lanes_shifted_loop bits self 1#usize
 
 /-- [silver_crypto_simd::bls::g2_point::{silver_crypto_simd::bls::g2_point::G2Point}::from_subgroup_unchecked]:
-    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 29:4-31:5
-    Visibility: public -/
+    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 39:4-41:5 -/
 def bls.g2_point.G2Point.from_subgroup_unchecked
   (point : blst.blst_p2_affine) : Result bls.g2_point.G2Point := do
   ok point
 
 /-- [silver_crypto_simd::bls::g2_point::{silver_crypto_simd::bls::g2_point::G2Point}::as_blst]:
-    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 33:4-35:5
+    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 79:4-81:5
     Visibility: public -/
 def bls.g2_point.G2Point.as_blst
   (self : bls.g2_point.G2Point) : Result blst.blst_p2_affine := do
   ok self
 
 /-- [silver_crypto_simd::bls::g2_point::{silver_crypto_simd::bls::g2_point::G2Point}::into_blst]:
-    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 37:4-39:5
+    Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 83:4-85:5
     Visibility: public -/
 def bls.g2_point.G2Point.into_blst
   (self : bls.g2_point.G2Point) : Result blst.blst_p2_affine := do

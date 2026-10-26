@@ -26,6 +26,31 @@ class silver_crypto_simd.bls.PointExternals where
   fromG1 : blst.blst_p1_affine → Option g1_point.G1Point
   fromG2 : blst.blst_p2_affine → Option g2_point.G2Point
 
+class silver_crypto_simd.bls.PointOperationExternals where
+  negativeG1 : g1_point.G1Point
+  hashG2 : Slice Std.U8 → Slice Std.U8 → g2_point.G2Point
+  sumG1 : Slice g1_point.G1Point → Slice Std.U8 → g1_point.G1Point
+  sumG2 : Slice g2_point.G2Point → Slice Std.U8 → g2_point.G2Point
+
+def silver_crypto_simd.bls.g1_point.G1Point.negative_generator [PointOperationExternals] :
+    Result g1_point.G1Point := ok PointOperationExternals.negativeG1
+
+def silver_crypto_simd.bls.g2_point.G2Point.hash_to_curve [PointOperationExternals]
+    (message dst : Slice Std.U8) : Result g2_point.G2Point :=
+  ok (PointOperationExternals.hashG2 message dst)
+
+def silver_crypto_simd.bls.g1_point.G1Point.weighted_sum [PointOperationExternals]
+    (points : Slice g1_point.G1Point) (scalars : Slice Std.U8) : Result g1_point.G1Point :=
+  if scalars.val.length = points.val.length * 8 then
+    ok (PointOperationExternals.sumG1 points scalars)
+  else fail .assertionFailure
+
+def silver_crypto_simd.bls.g2_point.G2Point.weighted_sum [PointOperationExternals]
+    (points : Slice g2_point.G2Point) (scalars : Slice Std.U8) : Result g2_point.G2Point :=
+  if scalars.val.length = points.val.length * 8 then
+    ok (PointOperationExternals.sumG2 points scalars)
+  else fail .assertionFailure
+
 def silver_crypto_simd.bls.g1_point.G1Point.from_blst [PointExternals]
     (point : blst.blst_p1_affine) : Result (Option g1_point.G1Point) :=
   ok (PointExternals.fromG1 point)
