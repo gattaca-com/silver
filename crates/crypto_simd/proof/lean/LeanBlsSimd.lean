@@ -5,6 +5,7 @@ import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
 import LeanBlsSimd.LaneTower.Identity
 import LeanBlsSimd.Spec.PairingProduct
+import LeanBlsSimd.PairingProduct.Headline
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Refines.FrobeniusConstants
 import LeanBlsSimd.Constants

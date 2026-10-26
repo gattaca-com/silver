@@ -59,7 +59,7 @@ import LeanBlsSimd.Refines.UncompressG1
 import LeanBlsSimd.Refines.UncompressG2
 import LeanBlsSimd.Refines.CheckedPoints
 import LeanBlsSimd.Refines.PointOperations
-import LeanBlsSimd.PairingProduct.BlstContract
+import LeanBlsSimd.PairingProduct.Headline
 import LeanBlsSimd.Kzg
 import LeanBlsSimd.Kzg.Routes
 
