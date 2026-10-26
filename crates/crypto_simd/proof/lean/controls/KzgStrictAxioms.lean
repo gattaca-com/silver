@@ -5,6 +5,7 @@ import controls.TowerField
 import controls.Cyclotomic
 import controls.PortableMsm
 import controls.PortableDecode
+import controls.TypedPoints
 import controls.PortableG1Pair
 import controls.PortableG1
 import controls.PortableFpInverse

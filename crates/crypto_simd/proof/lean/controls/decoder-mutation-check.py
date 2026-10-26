@@ -8,7 +8,7 @@ import tempfile
 
 
 LEAN = Path(__file__).resolve().parents[1]
-DECLARATION = r"^(?:private\s+)?(?:def|abbrev|theorem)\s+"
+DECLARATION = r"^(?:(?:private|noncomputable)\s+)?(?:def|abbrev|theorem)\s+"
 
 
 def declaration(source, name):
@@ -62,6 +62,14 @@ def main():
          "- ty", "ty",
          (("is_minus_sigma_squared_fields", "unsolved goals"),
           ("comparison_iff", "Application type mismatch"))),
+        ("G1Admission", "LeanBlsSimd/Refines/CheckedPoints.lean", "g1Spec",
+         r"if\s+Kzg\.G1AffineValid\s+raw\s+then\s+some\s+raw\s+else\s+none",
+         "if Kzg.G1AffineValid raw then\n    some raw else none", "some raw",
+         (("g1_from_blst_some_iff", "Type mismatch"),)),
+        ("G2Admission", "LeanBlsSimd/Refines/CheckedPoints.lean", "g2Spec",
+         r"if\s+Kzg\.G2AffineValid\s+raw\s+then\s+some\s+raw\s+else\s+none",
+         "if Kzg.G2AffineValid raw then\n    some raw else none", "some raw",
+         (("g2_from_blst_some_iff", "Type mismatch"),)),
     )
     with tempfile.TemporaryDirectory(prefix="decoder-mutation-") as directory:
         for label, filename, name, pattern, formatting, mutation, expected in cases:
