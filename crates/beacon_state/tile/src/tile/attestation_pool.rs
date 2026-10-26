@@ -9,6 +9,7 @@ use silver_common::{
 
 use crate::{
     bls::{Signature, SignatureSum, VerifiedSingleAttestation},
+    counters::BeaconStateCounters,
     merkle,
 };
 
@@ -21,7 +22,7 @@ mod vote_candidates;
 use committee_bits::{CommitteeBits, MAX_COMMITTEE_MEMBERS};
 use committee_store::{CommitteeId, CommitteeStore};
 use selection::{CommitteeAttestation, Selection};
-use vote_candidates::{MAX_CANDIDATES, VoteCandidate, VoteCandidates};
+use vote_candidates::{MAX_CANDIDATES, RETAINED_SLOTS, VoteCandidate, VoteCandidates};
 
 const MAX_COMMITTEE_CANDIDATES: usize = MAX_CANDIDATES * MAX_COMMITTEES_PER_SLOT;
 /// The longest SSZ list `pack` writes: every attestation over every
@@ -45,6 +46,8 @@ pub(super) struct AttestationPool {
     candidates: VoteCandidates,
     store: CommitteeStore,
     selection: Selection,
+    /// Committees of slots below hold their singles collapsed.
+    collapse_floor: Slot,
 }
 
 impl AttestationPool {
@@ -57,6 +60,7 @@ impl AttestationPool {
                 MAX_COMMITTEE_CANDIDATES,
                 MAX_ATTESTATIONS_ELECTRA,
             ),
+            collapse_floor: 0,
         }
     }
 
@@ -106,7 +110,33 @@ impl AttestationPool {
             return InsertOutcome::Full;
         }
         let participants = CommitteeBits::from_participants(aggregation_bits, committee_len);
+        if let Some((outside, without_single)) =
+            self.against_singles(data.slot(), committee_index, data_root, &participants)
+        {
+            BeaconStateCounters::SinglesOutsideAggregate.add(u64::from(outside));
+            BeaconStateCounters::AggregateVotesWithoutSingle.add(u64::from(without_single));
+        }
         self.insert(data, committee_index, data_root, committee_len, participants, signature)
+    }
+
+    /// Our singles the aggregate lacks, and its votes we hold no single for;
+    /// `None` unless we hold a single of its committee.
+    fn against_singles(
+        &self,
+        slot: Slot,
+        committee_index: u64,
+        data_root: B256,
+        participants: &CommitteeBits,
+    ) -> Option<(u32, u32)> {
+        let index = committee_index as usize;
+        let id = self.candidates.find(slot, data_root)?;
+        if !self.candidates[id].is_open(index) {
+            return None;
+        }
+        let singles = self.store.singles(CommitteeId::new(id, index));
+        (!singles.is_empty()).then(|| {
+            (singles.difference(participants).count(), participants.difference(singles).count())
+        })
     }
 
     fn insert(
@@ -128,7 +158,7 @@ impl AttestationPool {
         let index = committee_index as usize;
         let committee = CommitteeId::new(candidate, index);
         if self.candidates[candidate].open(index) {
-            self.store.open(committee, committee_len);
+            self.store.open(committee, committee_len, data.slot() < self.collapse_floor);
         } else if self.store.committee_len(committee) != committee_len {
             return InsertOutcome::Invalid;
         }
@@ -146,7 +176,7 @@ impl AttestationPool {
         mut weigh: impl FnMut(AttestationDataView, u64, &mut [u64]),
         out: &mut Vec<u8>,
     ) {
-        let Self { candidates, store, selection } = self;
+        let Self { candidates, store, selection, .. } = self;
         selection.clear();
         let mut weights = [0u64; MAX_COMMITTEE_MEMBERS];
         // Newest first, as the selection breaks ties by push order.
@@ -211,6 +241,20 @@ impl AttestationPool {
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.candidates.prune_before(floor, |committee| self.store.close(committee));
+    }
+
+    /// Collapses the singles of slots below `floor` into their committees'
+    /// sums: blocks still include them, but no longer member by member.
+    #[timed]
+    pub(super) fn collapse_before(&mut self, floor: Slot) {
+        let Self { candidates, store, collapse_floor, .. } = self;
+        let retained = floor.saturating_sub(RETAINED_SLOTS as Slot);
+        for slot in (*collapse_floor).max(retained)..floor {
+            for committee in candidates.committees_of(slot) {
+                store.collapse(committee);
+            }
+        }
+        *collapse_floor = (*collapse_floor).max(floor);
     }
 }
 
@@ -614,6 +658,86 @@ mod tests {
 
         assert_eq!(AttestationView::aggregation_bits(&attestation), &[0b1111_1111, 0b0000_0001]);
         assert_signed_by(&attestation, &[0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    /// Singles at `members` of a committee of 8, collapsed.
+    fn collapsed_singles(members: &[usize]) -> (AttestationPool, B256) {
+        let mut pool = AttestationPool::new();
+        for &member in members {
+            assert_eq!(
+                insert_aggregate(&mut pool, &[(member, member)], 8),
+                InsertOutcome::Inserted
+            );
+        }
+        pool.collapse_before(SLOT + 1);
+        assert_eq!(pool.store.pooled_singles(), 0, "the slab holds no collapsed single");
+        (pool, verified_single(0).1.data_root)
+    }
+
+    /// Collapsed singles cannot be split around an overlapping aggregate:
+    /// the heavier of the two is packed.
+    #[test]
+    fn collapsed_singles_pack_whole_or_not_beside_an_overlapping_aggregate() {
+        let (mut pool, data_root) = collapsed_singles(&[0, 4, 5, 6, 7]);
+        let aggregate = [(0, 0), (1, 1), (2, 2), (3, 3)];
+        assert_eq!(insert_aggregate(&mut pool, &aggregate, 8), InsertOutcome::Inserted);
+
+        let best = pool.aggregate_ssz(SLOT, 0, data_root).unwrap();
+        assert_eq!(AttestationView::aggregation_bits(&best), &[0b1111_0001, 0b0000_0001]);
+        assert_signed_by(&best, &[0, 4, 5, 6, 7]);
+
+        let (mut pool, data_root) = collapsed_singles(&[0, 4]);
+        assert_eq!(insert_aggregate(&mut pool, &aggregate, 8), InsertOutcome::Inserted);
+        let best = pool.aggregate_ssz(SLOT, 0, data_root).unwrap();
+        assert_eq!(AttestationView::aggregation_bits(&best), &[0b0000_1111, 0b0000_0001]);
+        assert_signed_by(&best, &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn collapsed_singles_share_an_attestation_with_a_disjoint_aggregate() {
+        let (mut pool, data_root) = collapsed_singles(&[0, 4, 5]);
+        assert_eq!(insert_aggregate(&mut pool, &[(6, 6), (7, 7)], 8), InsertOutcome::Inserted);
+
+        let combined = pool.aggregate_ssz(SLOT, 0, data_root).unwrap();
+        assert_eq!(AttestationView::aggregation_bits(&combined), &[0b1111_0001, 0b0000_0001]);
+        assert_signed_by(&combined, &[0, 4, 5, 6, 7]);
+    }
+
+    /// A late single joins its collapsed committee's sum, and a committee
+    /// first seen below the collapse floor starts collapsed.
+    #[test]
+    fn late_singles_below_the_collapse_floor_join_the_sum() {
+        let (mut pool, data_root) = collapsed_singles(&[0, 1]);
+        assert_eq!(insert_aggregate(&mut pool, &[(2, 2)], 8), InsertOutcome::Inserted);
+        let (other, verified) =
+            single_with(3, |buf| buf[0..8].copy_from_slice(&1u64.to_le_bytes()));
+        assert_eq!(pool.insert_verified(&other, 3, 8, &verified), InsertOutcome::Inserted);
+        assert_eq!(pool.store.pooled_singles(), 0);
+
+        let late = pool.aggregate_ssz(SLOT, 0, data_root).unwrap();
+        assert_eq!(AttestationView::aggregation_bits(&late), &[0b0000_0111, 0b0000_0001]);
+        assert_signed_by(&late, &[0, 1, 2]);
+        let first_seen = pool.aggregate_ssz(SLOT, 1, data_root).unwrap();
+        assert_eq!(AttestationView::aggregation_bits(&first_seen), &[0b0000_1000, 0b0000_0001]);
+    }
+
+    #[test]
+    fn aggregates_are_compared_with_the_singles_held() {
+        let mut pool = AttestationPool::new();
+        let data_root = verified_single(0).1.data_root;
+        let bits = |members: &[usize]| CommitteeBits::from_participants(&bitlist(members, 8), 8);
+        assert_eq!(pool.against_singles(SLOT, 0, data_root, &bits(&[0, 1])), None, "no committee");
+        assert_eq!(insert_aggregate(&mut pool, &[(0, 0), (1, 1)], 8), InsertOutcome::Inserted);
+        assert_eq!(pool.against_singles(SLOT, 0, data_root, &bits(&[0, 1])), None, "no singles");
+
+        for member in [1, 4, 5] {
+            assert_eq!(
+                insert_aggregate(&mut pool, &[(member, member)], 8),
+                InsertOutcome::Inserted
+            );
+        }
+        let aggregate = bits(&[1, 2, 3]);
+        assert_eq!(pool.against_singles(SLOT, 0, data_root, &aggregate), Some((2, 2)));
     }
 
     #[test]

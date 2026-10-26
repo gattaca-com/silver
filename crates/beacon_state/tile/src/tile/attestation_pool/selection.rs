@@ -211,19 +211,36 @@ impl CommitteeSelection {
 
     /// Readies the next attestation: every uncovered single, plus the
     /// disjoint aggregates whose uncovered committee members outside the
-    /// singles weigh most.
+    /// singles weigh most. Collapsed singles only join aggregates disjoint
+    /// from them, so the heavier of that and the aggregates alone is readied.
     fn ready_next(&mut self, store: &CommitteeStore, weights: &[u64]) {
         let singles = store.singles(self.id);
         self.ready_singles_value = singles.weight_outside(&self.covered, weights);
         let mut counted = self.covered;
         counted.union_with(singles);
+        let collapsed = store.collapsed(self.id);
 
         let mut values = [0u64; MAX_AGGREGATES];
         for (position, bits) in store.aggregates(self.id) {
-            values[position] = bits.weight_outside(&counted, weights);
+            if !(collapsed && bits.intersects(singles)) {
+                values[position] = bits.weight_outside(&counted, weights);
+            }
         }
         let committee = CommitteeAggregates { values: &values, overlaps: &self.overlaps };
         self.ready = committee.most_valuable_disjoint();
+        if !collapsed {
+            return;
+        }
+
+        for (position, bits) in store.aggregates(self.id) {
+            values[position] = bits.weight_outside(&self.covered, weights);
+        }
+        let committee = CommitteeAggregates { values: &values, overlaps: &self.overlaps };
+        let alone = committee.most_valuable_disjoint();
+        if alone.value > self.gain() {
+            self.ready = alone;
+            self.ready_singles_value = 0;
+        }
     }
 }
 
@@ -271,7 +288,7 @@ mod tests {
             weight: u64,
         ) {
             let id = CommitteeId::new(candidate as usize, index as usize);
-            self.store.open(id, committee_len);
+            self.store.open(id, committee_len, false);
             for members in attestations {
                 self.store.insert(id, bits(members), &BLANK_SIGNATURE);
             }

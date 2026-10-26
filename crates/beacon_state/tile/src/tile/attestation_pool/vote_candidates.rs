@@ -98,6 +98,13 @@ impl VoteCandidates {
         slots.rev().flat_map(|slot| self.ids(slot))
     }
 
+    /// The open committees of `slot`'s candidates.
+    pub(super) fn committees_of(&self, slot: Slot) -> impl Iterator<Item = CommitteeId> + '_ {
+        self.ids(slot).flat_map(move |id| {
+            self.candidates[id].committees().map(move |i| CommitteeId::new(id, i))
+        })
+    }
+
     pub(super) fn find(&self, slot: Slot, data_root: B256) -> Option<usize> {
         self.ids(slot).find(|&id| self.candidates[id].data_root == data_root)
     }

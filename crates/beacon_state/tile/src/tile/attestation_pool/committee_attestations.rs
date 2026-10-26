@@ -19,6 +19,9 @@ pub(super) struct CommitteeAttestations {
     pub(super) attesters: CommitteeBits,
     pub(super) singles: CommitteeBits,
     pub(super) singles_signature: AggregateSignature,
+    /// The singles are held as `singles` and `singles_signature` alone, so a
+    /// block takes all of them or none.
+    pub(super) collapsed: bool,
     first_single: u32,
     /// Slab indices by position; a position keeps its aggregate until it is
     /// removed.
@@ -42,14 +45,15 @@ pub(super) struct Single {
 }
 
 impl CommitteeAttestations {
-    pub(super) const EMPTY: Self = Self::new(0);
+    pub(super) const EMPTY: Self = Self::new(0, false);
 
-    pub(super) const fn new(committee_len: usize) -> Self {
+    pub(super) const fn new(committee_len: usize, collapsed: bool) -> Self {
         Self {
             committee_len,
             attesters: CommitteeBits::EMPTY,
             singles: CommitteeBits::EMPTY,
             singles_signature: EMPTY_AGGREGATE,
+            collapsed,
             first_single: NO_SINGLE,
             aggregates: [0; MAX_AGGREGATES],
             held: 0,
@@ -89,12 +93,14 @@ impl CommitteeAttestations {
         if self.singles.contains(member) {
             return InsertOutcome::Duplicate;
         }
-        if singles.len() == singles.capacity() {
-            return InsertOutcome::Full;
+        if !self.collapsed {
+            if singles.len() == singles.capacity() {
+                return InsertOutcome::Full;
+            }
+            let single =
+                Single { member: member as u16, next: self.first_single, signature: *signature };
+            self.first_single = singles.insert(single) as u32;
         }
-        let single =
-            Single { member: member as u16, next: self.first_single, signature: *signature };
-        self.first_single = singles.insert(single) as u32;
         self.singles.insert(member);
         self.attesters.insert(member);
         self.singles_signature
@@ -135,6 +141,17 @@ impl CommitteeAttestations {
         for (_, i) in self.aggregates() {
             aggregates.remove(i as usize);
         }
+        self.remove_singles(singles);
+    }
+
+    /// Returns its singles to their slab, keeping their members and sum.
+    pub(super) fn collapse(&mut self, singles: &mut Slab<Single>) {
+        self.remove_singles(singles);
+        self.first_single = NO_SINGLE;
+        self.collapsed = true;
+    }
+
+    fn remove_singles(&self, singles: &mut Slab<Single>) {
         let mut next = self.first_single;
         while next != NO_SINGLE {
             next = singles.remove(next as usize).next;

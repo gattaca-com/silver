@@ -12,8 +12,8 @@ use crate::bls::{Signature, SignatureSum};
 /// The 16 aggregators each committee expects across the 65-slot window,
 /// with twofold headroom.
 const MAX_POOLED_AGGREGATES: usize = 1 << 17;
-/// The two subnets every node joins, ~500 singles per committee across the
-/// 65-slot window, with twofold headroom.
+/// Singles stay in the slab only for the current and previous slot: on all 64
+/// subnets, ~500 per committee a slot is ~64k, with twofold headroom.
 const MAX_POOLED_SINGLES: usize = 1 << 17;
 
 /// A vote candidate's committee `i` has id
@@ -54,9 +54,19 @@ impl CommitteeStore {
     }
 
     /// Starts the committee empty; it must be closed.
-    pub(super) fn open(&mut self, id: CommitteeId, committee_len: usize) {
+    pub(super) fn open(&mut self, id: CommitteeId, committee_len: usize, collapsed: bool) {
         debug_assert_eq!(self.committee(id).committee_len, 0, "open committee");
-        self.attestations[id.0 as usize] = CommitteeAttestations::new(committee_len);
+        self.attestations[id.0 as usize] = CommitteeAttestations::new(committee_len, collapsed);
+    }
+
+    /// Frees the committee's singles from the slab; a block then takes them
+    /// all or none.
+    pub(super) fn collapse(&mut self, id: CommitteeId) {
+        self.attestations[id.0 as usize].collapse(&mut self.singles);
+    }
+
+    pub(super) fn collapsed(&self, id: CommitteeId) -> bool {
+        self.committee(id).collapsed
     }
 
     pub(super) fn close(&mut self, id: CommitteeId) {
@@ -108,6 +118,11 @@ impl CommitteeStore {
     }
 
     #[cfg(test)]
+    pub(super) fn pooled_singles(&self) -> usize {
+        self.singles.len()
+    }
+
+    #[cfg(test)]
     pub(super) fn aggregate_count(&self, id: CommitteeId) -> usize {
         self.committee(id).aggregates().count()
     }
@@ -146,7 +161,12 @@ impl CommitteeStore {
             signature.add(&aggregate.signature);
         }
         if attestation.with_singles {
-            self.add_missing_singles(committee, &members, signature);
+            if committee.collapsed {
+                debug_assert!(!members.intersects(&committee.singles), "disjoint from the singles");
+                signature.add_sum(&committee.singles_signature);
+            } else {
+                self.add_missing_singles(committee, &members, signature);
+            }
             members.union_with(&committee.singles);
         }
         members.write_bits_at(bits, offset);

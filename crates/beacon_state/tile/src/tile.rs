@@ -825,6 +825,9 @@ impl BeaconStateTile {
         let floor = slot.saturating_sub(1);
         let inclusion_floor = (slot / SLOTS_PER_EPOCH).saturating_sub(1) * SLOTS_PER_EPOCH;
         self.attestation_pool.prune_before(inclusion_floor);
+        // Block `slot` packs slot `slot - 1` member by member; older singles
+        // only as their committee's sum.
+        self.attestation_pool.collapse_before(floor);
         self.sync_contribution_pool.prune_before(floor);
         self.payload_attestation_pool.prune_before(floor);
         self.seen_aggregates.prune_before(floor);

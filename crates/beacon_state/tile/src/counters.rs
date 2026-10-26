@@ -30,5 +30,9 @@ silver_common::declare_counters! {
         // Valid sync messages are still accepted and relayed when this is
         // full; only creation of a local contribution is skipped.
         SyncContributionPoolFull,
+        // Per verified aggregate whose committee we hold singles for: our
+        // singles it lacks, and its votes we hold no single for.
+        SinglesOutsideAggregate,
+        AggregateVotesWithoutSingle,
     }
 }
