@@ -1,9 +1,6 @@
 use core::mem;
 
-use blst::{
-    BLST_ERROR, MultiPoint, blst_fp_cneg, blst_p1_affine_generator, blst_p2_affine,
-    blst_p2_affine_is_inf,
-};
+use blst::{BLST_ERROR, MultiPoint, blst_p2_affine, blst_p2_affine_is_inf};
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use rustc_hash::FxHashMap;
@@ -13,7 +10,7 @@ use silver_crypto_simd::bls::PairingProduct;
 use super::{
     CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
     aggregator::{PubkeyAggregator, pk_affine, sig_affine},
-    hash_to_g2_affine,
+    hash_to_g2_affine, negative_g1,
 };
 
 // N.B. batching is only safe where NBITS < 144-bit GLS threshold.
@@ -99,7 +96,7 @@ impl SigBatch {
             order: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_pks: Vec::with_capacity(SIG_BATCH_CAP),
             grouped_scalars: Vec::with_capacity(SIG_BATCH_CAP * 8),
-            pairing: PairingProduct::with_capacity(8),
+            pairing: PairingProduct::with_capacity(16),
             hashed_msgs: HashedMsgs::default(),
             aggregator: PubkeyAggregator::default(),
             poisoned: false,
@@ -326,22 +323,21 @@ impl SigBatch {
 /// against one.
 fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &Signature) -> bool {
     let sig = sig_affine(sig);
-    // Preserve signature rejection even when valid weighted signatures cancel.
+    // Reject an infinite weighted signature, even when valid weighted signatures
+    // cancel.
     if unsafe { blst_p2_affine_is_inf(sig) } {
         return false;
     }
-    let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
-    unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
-    pairing.push(&neg_g1, sig);
+    pairing.push(&negative_g1(), sig);
     pairing.is_one()
 }
 
 #[cfg(test)]
 mod tests {
     use blst::{
-        Pairing, blst_fp2_cneg, blst_p1_affine_is_inf, blst_p2, blst_p2_add_or_double_affine,
-        blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult,
-        blst_p2_uncompress,
+        Pairing, blst_fp_cneg, blst_fp2_cneg, blst_p1_affine_is_inf, blst_p2,
+        blst_p2_add_or_double_affine, blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine,
+        blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
     };
 
     use super::*;
@@ -629,6 +625,7 @@ mod tests {
 
     #[test]
     fn infinite_key_sum_matches_blst_pairing() {
+        // Use the private check because batch weights come from SystemRandom.
         let shared = [11u8; 32];
         let other = [12u8; 32];
         let pk = pubkey_pk(0);
@@ -642,8 +639,7 @@ mod tests {
         unsafe { blst_fp2_cneg(&mut inverse_signature.y, &inverse_signature.y, true) };
         let inverse_signature = Signature::from(inverse_signature);
         assert!(inverse_signature.validate(false).is_ok());
-        let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
-        unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
+        let neg_g1 = negative_g1();
 
         for weight in [1u64, 7, u64::MAX] {
             let scalars = weight.to_le_bytes().repeat(3);

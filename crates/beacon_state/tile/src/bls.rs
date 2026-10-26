@@ -2,8 +2,8 @@ use std::{ptr, slice};
 
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{
-    BLST_ERROR, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine_generator, blst_p1_affine_is_inf,
-    blst_p2, blst_p2_to_affine, min_pk::AggregatePublicKey,
+    BLST_ERROR, blst_fp_cneg, blst_hash_to_g2, blst_p1_affine, blst_p1_affine_generator,
+    blst_p1_affine_is_inf, blst_p2, blst_p2_to_affine, min_pk::AggregatePublicKey,
 };
 use flux_profiler::timed;
 pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
@@ -189,9 +189,7 @@ pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message
         return false;
     }
     let hashed = hash_to_g2_affine(message);
-    let mut neg_g1 = unsafe { *blst_p1_affine_generator() };
-    unsafe { blst_fp_cneg(&mut neg_g1.y, &neg_g1.y, true) };
-    PairingProduct::two_pairs_are_one(pk, &hashed, &neg_g1, sig.0.as_blst())
+    PairingProduct::two_pairs_are_one(pk, &hashed, &negative_g1(), sig.0.as_blst())
 }
 
 fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
@@ -202,6 +200,12 @@ fn hash_to_g2_affine(msg: &B256) -> blst_p2_affine {
         blst_p2_to_affine(&mut affine, &q);
     }
     affine
+}
+
+fn negative_g1() -> blst_p1_affine {
+    let mut point = unsafe { *blst_p1_affine_generator() };
+    unsafe { blst_fp_cneg(&mut point.y, &point.y, true) };
+    point
 }
 
 /// Signature is subgroup-checked by the verify, so downstream aggregation
