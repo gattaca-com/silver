@@ -73,8 +73,8 @@ mod tests {
     use std::panic::catch_unwind;
 
     use blst::{
-        blst_fp_add, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double_affine,
-        blst_p1_from_affine, blst_p1_is_inf,
+        blst_fp_add, blst_fp_from_uint64, blst_p1, blst_p1_add_or_double,
+        blst_p1_add_or_double_affine, blst_p1_from_affine, blst_p1_is_inf, blst_p1_mult,
     };
 
     use super::*;
@@ -163,6 +163,29 @@ mod tests {
                 let mut expected = blst_p1_affine::default();
                 unsafe { blst_p1_to_affine(&mut expected, &raw.mult(&scalars, 64)) };
                 assert_eq!(actual.into_blst(), expected);
+
+                let mut sum = blst_p1::default();
+                for (point, scalar) in raw.iter().zip(scalars.chunks_exact(size_of::<u64>())) {
+                    let mut projective = blst_p1::default();
+                    let mut product = blst_p1::default();
+                    unsafe {
+                        blst_p1_from_affine(&mut projective, point);
+                        blst_p1_mult(
+                            &mut product,
+                            &projective,
+                            scalar.as_ptr(),
+                            u64::BITS as usize,
+                        );
+                        blst_p1_add_or_double(&mut sum, &sum, &product);
+                    }
+                }
+                let mut expected_fold = blst_p1_affine::default();
+                unsafe { blst_p1_to_affine(&mut expected_fold, &sum) };
+                assert_eq!(
+                    actual.into_blst(),
+                    expected_fold,
+                    "independent sum for {count} points at scalar offset {offset}"
+                );
                 assert!(unsafe { blst_p1_affine_in_g1(actual.as_blst()) });
                 assert!(G1Point::from_blst(actual.into_blst()).is_some());
             }

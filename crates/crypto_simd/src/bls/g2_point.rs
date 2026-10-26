@@ -89,7 +89,10 @@ impl G2Point {
 mod tests {
     use std::panic::catch_unwind;
 
-    use blst::{BLST_ERROR, blst_fp2_add, blst_p2_affine_generator, blst_p2_uncompress};
+    use blst::{
+        BLST_ERROR, blst_fp2_add, blst_p2_add_or_double, blst_p2_affine_generator, blst_p2_cneg,
+        blst_p2_from_affine, blst_p2_mult, blst_p2_uncompress,
+    };
 
     use super::*;
     use crate::bls::constants::P_U64;
@@ -203,6 +206,29 @@ mod tests {
                 let mut expected = blst_p2_affine::default();
                 unsafe { blst_p2_to_affine(&mut expected, &raw.mult(&scalars, 64)) };
                 assert_eq!(actual.into_blst(), expected);
+
+                let mut sum = blst_p2::default();
+                for (point, scalar) in raw.iter().zip(scalars.chunks_exact(size_of::<u64>())) {
+                    let mut projective = blst_p2::default();
+                    let mut product = blst_p2::default();
+                    unsafe {
+                        blst_p2_from_affine(&mut projective, point);
+                        blst_p2_mult(
+                            &mut product,
+                            &projective,
+                            scalar.as_ptr(),
+                            u64::BITS as usize,
+                        );
+                        blst_p2_add_or_double(&mut sum, &sum, &product);
+                    }
+                }
+                let mut expected_fold = blst_p2_affine::default();
+                unsafe { blst_p2_to_affine(&mut expected_fold, &sum) };
+                assert_eq!(
+                    actual.into_blst(),
+                    expected_fold,
+                    "independent sum for {count} points at scalar offset {offset}"
+                );
                 assert!(unsafe { blst_p2_affine_in_g2(actual.as_blst()) });
                 assert!(G2Point::from_blst(actual.into_blst()).is_some());
             }
@@ -215,6 +241,19 @@ mod tests {
             G2Point::weighted_sum(&[generator], &0u64.to_le_bytes()).into_blst(),
             infinity.into_blst()
         );
+        let mut negative = blst_p2::default();
+        let mut negative_affine = blst_p2_affine::default();
+        unsafe {
+            blst_p2_from_affine(&mut negative, generator.as_blst());
+            blst_p2_cneg(&mut negative, true);
+            blst_p2_to_affine(&mut negative_affine, &negative);
+        }
+        let negative = G2Point::from_blst(negative_affine).unwrap();
+        let cancel = G2Point::weighted_sum(
+            &[generator, negative],
+            &[1u64.to_le_bytes(), 1u64.to_le_bytes()].concat(),
+        );
+        assert_eq!(cancel.into_blst(), infinity.into_blst());
     }
 
     #[test]
