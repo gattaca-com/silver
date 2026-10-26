@@ -13,6 +13,7 @@ use super::g2_cases::G2Cases;
 use crate::{
     bls::{
         PairingProduct,
+        limbs::LANES,
         pairing_product::{AffinePair, BLST_PAIR_COUNT},
     },
     ifma_kernels_run,
@@ -82,18 +83,22 @@ impl ProductCase {
                 finite += 1;
             }
         }
-        let expected_blst = (finite > 0 && (degenerate || !ifma_kernels_run())).then_some(finite);
+        let expected_blst = (degenerate || !ifma_kernels_run()).then_some(finite);
         for _ in 0..2 {
             BLST_PAIR_COUNT.set(None);
             assert_eq!(product.is_one(), expected, "{} input pairs", self.pairs.len());
-            // The order-13 verdict alone cannot distinguish a missing fallback.
-            assert_eq!(BLST_PAIR_COUNT.get(), expected_blst, "whole-product blst route");
+            if finite > 0 {
+                // The order-13 verdict alone cannot distinguish a missing fallback.
+                assert_eq!(BLST_PAIR_COUNT.get(), expected_blst, "whole-product blst route");
+            }
         }
         if self.pairs.len() == 2 {
             let [a, b] = [self.pairs[0], self.pairs[1]];
             BLST_PAIR_COUNT.set(None);
             assert_eq!(PairingProduct::two_pairs_are_one(&a.p, &a.q, &b.p, &b.q), expected);
-            assert_eq!(BLST_PAIR_COUNT.get(), expected_blst, "fixed two-pair route");
+            if finite > 0 {
+                assert_eq!(BLST_PAIR_COUNT.get(), expected_blst, "fixed two-pair route");
+            }
         }
     }
 }
@@ -219,6 +224,22 @@ fn pairing_products_fall_back_for_order_13() {
         case.check(&mut product, false, true);
         ProductCase::signed(prefix + 1, true).check(&mut product, true, false);
     }
+}
+
+#[test]
+fn pairing_products_fall_back_for_middle_partial_lane() {
+    let mut case = ProductCase::signed(LANES + 4, true);
+    let p = unsafe { *blst_p1_affine_generator() };
+    case.pairs.insert(LANES + 2, AffinePair { p, q: order_13() });
+    case.check(&mut PairingProduct::default(), false, true);
+}
+
+#[test]
+fn pairing_products_fall_back_for_middle_full_lane() {
+    let mut case = ProductCase::signed(2 * LANES - 1, true);
+    let p = unsafe { *blst_p1_affine_generator() };
+    case.pairs.insert(LANES + LANES / 2, AffinePair { p, q: order_13() });
+    case.check(&mut PairingProduct::default(), false, true);
 }
 
 #[test]
