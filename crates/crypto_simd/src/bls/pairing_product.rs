@@ -4,7 +4,7 @@ use std::ptr;
 
 use blst::{
     blst_final_exp, blst_fp12, blst_fp12_is_one, blst_fp12_mul, blst_miller_loop_n, blst_p1_affine,
-    blst_p1_affine_is_inf, blst_p2_affine, blst_p2_affine_is_inf,
+    blst_p2_affine,
 };
 
 use crate::bls::{encoding::less_than_p, limbs::LANES};
@@ -41,7 +41,7 @@ impl PairingProduct {
     }
 
     pub fn is_one(&self) -> bool {
-        PairingInputs { pairs: &self.pairs }.is_one()
+        PairingInputs { pairs: &self.pairs }.check()
     }
 
     pub fn two_pairs_are_one(
@@ -58,7 +58,7 @@ impl PairingProduct {
                 count += 1;
             }
         }
-        PairingInputs { pairs: &pairs[..count] }.is_one()
+        PairingInputs { pairs: &pairs[..count] }.check()
     }
 }
 
@@ -79,17 +79,25 @@ impl AffinePair {
     }
 
     fn is_infinite(&self) -> bool {
-        // SAFETY: both pointers refer to initialized affine points.
-        unsafe { blst_p1_affine_is_inf(&self.p) || blst_p2_affine_is_inf(&self.q) }
+        let mut p_bits = 0;
+        let mut q_bits = 0;
+        for limb in 0..6 {
+            p_bits |= self.p.x.l[limb] | self.p.y.l[limb];
+            for component in 0..2 {
+                q_bits |= self.q.x.fp[component].l[limb] | self.q.y.fp[component].l[limb];
+            }
+        }
+        p_bits == 0 || q_bits == 0
     }
 }
 
+// Consuming the view avoids nested shared borrows in Aeneas.
 struct PairingInputs<'a> {
     pairs: &'a [AffinePair],
 }
 
 impl PairingInputs<'_> {
-    fn is_one(&self) -> bool {
+    fn check(self) -> bool {
         if self.pairs.is_empty() {
             return true;
         }
@@ -103,7 +111,7 @@ impl PairingInputs<'_> {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx512f,avx512ifma")]
-    fn lane_is_one(&self) -> bool {
+    fn lane_is_one(self) -> bool {
         let mut product = Fp12::one();
         let mut degenerate = 0;
         let mut start = 0;
@@ -121,7 +129,7 @@ impl PairingInputs<'_> {
         product.final_exponentiation().is_one()
     }
 
-    fn blst_is_one(&self) -> bool {
+    fn blst_is_one(self) -> bool {
         #[cfg(test)]
         BLST_PAIR_COUNT.set(Some(self.pairs.len()));
         let mut product = blst_fp12::default();
