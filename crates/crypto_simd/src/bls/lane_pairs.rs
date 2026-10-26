@@ -5,7 +5,7 @@ use crate::bls::{
     fp12::Fp12,
     g2x8::G2x8,
     limbs::LANES,
-    pairing_product::AffinePair,
+    pairing_product::{AffinePair, BLST_LIMBS},
 };
 
 pub(super) struct LanePairs {
@@ -15,7 +15,6 @@ pub(super) struct LanePairs {
     minus_two_px: Fp8,
     two_py: Fp8,
     count: usize,
-    active: u8,
     degenerate: u8,
 }
 
@@ -28,8 +27,7 @@ impl LanePairs {
     #[target_feature(enable = "avx512f,avx512ifma")]
     pub(super) fn new(pairs: &[AffinePair]) -> Self {
         assert!(!pairs.is_empty() && pairs.len() <= LANES);
-        let mut limbs = [[[0u64; 6]; LANES]; 6];
-        let mut active = 0;
+        let mut limbs = [[[0u64; BLST_LIMBS]; LANES]; 6];
         for lane in 0..pairs.len() {
             let pair = &pairs[lane];
             limbs[0][lane] = pair.p.x.l;
@@ -38,7 +36,6 @@ impl LanePairs {
             limbs[3][lane] = pair.q.x.fp[1].l;
             limbs[4][lane] = pair.q.y.fp[0].l;
             limbs[5][lane] = pair.q.y.fp[1].l;
-            active |= 1 << lane;
         }
         let px = Fp8::from_blst_limbs(&limbs[0]);
         let py = Fp8::from_blst_limbs(&limbs[1]);
@@ -51,9 +48,12 @@ impl LanePairs {
             minus_two_px: px.add(&px).neg(),
             two_py: py.add(&py),
             count: pairs.len(),
-            active,
             degenerate: 0,
         }
+    }
+
+    fn active_mask(&self) -> u8 {
+        u8::MAX >> (LANES - self.count)
     }
 
     #[target_feature(enable = "avx512f,avx512ifma")]
@@ -94,7 +94,7 @@ impl LanePairs {
         let l0 = e.add(x).square().sub(&a).sub(&f).sub(&b2.add(&b2));
         let l1 = e.mul(&zz);
         let l2 = z3.mul(&zz);
-        self.degenerate |= z3.is_zero_mask() & self.active;
+        self.degenerate |= z3.is_zero_mask() & self.active_mask();
         self.t = G2x8 { x: x3, y: y3, z: z3 };
         self.at_p(l0, l1, l2)
     }
@@ -120,7 +120,7 @@ impl LanePairs {
         let z3 = z.add(&h).square().sub(&z1z1).sub(&hh);
         let l0 = r.mul(&self.qx).sub(&self.qy.mul(&z3));
         let l0 = l0.add(&l0);
-        self.degenerate |= z3.is_zero_mask() & self.active;
+        self.degenerate |= z3.is_zero_mask() & self.active_mask();
         self.t = G2x8 { x: x3, y: y3, z: z3 };
         self.at_p(l0, r, z3)
     }

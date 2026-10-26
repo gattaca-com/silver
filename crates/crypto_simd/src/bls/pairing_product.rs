@@ -14,6 +14,8 @@ use crate::{
     ifma_available,
 };
 
+pub(super) const BLST_LIMBS: usize = 6;
+
 #[cfg(test)]
 thread_local! {
     pub(super) static BLST_PAIR_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
@@ -81,7 +83,7 @@ impl AffinePair {
     fn is_infinite(&self) -> bool {
         let mut p_bits = 0;
         let mut q_bits = 0;
-        for limb in 0..6 {
+        for limb in 0..BLST_LIMBS {
             p_bits |= self.p.x.l[limb] | self.p.y.l[limb];
             for component in 0..2 {
                 q_bits |= self.q.x.fp[component].l[limb] | self.q.y.fp[component].l[limb];
