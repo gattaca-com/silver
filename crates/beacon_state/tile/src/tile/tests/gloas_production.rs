@@ -19,7 +19,8 @@ use crate::{bls::G2_POINT_AT_INFINITY, tile::block_production::BlockProduction};
 mod publication;
 
 struct ProductionRig {
-    tile: BeaconStateTile,
+    // Boxed: cached `AcquiredRead`s point into the tile's reader, and the rig moves.
+    tile: Box<BeaconStateTile>,
     proposal: Proposal,
     bid: ExecutionPayloadBid,
     signature: [u8; 96],
@@ -84,6 +85,7 @@ impl ProductionRig {
             bid_policy: BidPolicy::default(),
             builder_config_hash: None,
         };
+        let tile = Box::new(tile);
         Self { tile, proposal, bid, signature, gossip, adapter, sink, _spine: spine, _rpc: rpc }
     }
 
