@@ -22,6 +22,13 @@ impl GossipTraffic {
         Self(topic.counter_slot() as u16)
     }
 
+    /// The `GossipTopic::counter_slot` of a topic's payload; None for
+    /// control traffic.
+    pub fn topic_slot(self) -> Option<usize> {
+        let slot = self.0 as usize;
+        (slot < GOSSIP_TOPIC_COUNTER_SLOTS).then_some(slot)
+    }
+
     /// Observer-side label of counter `slot`.
     pub fn label(slot: usize) -> String {
         match slot {

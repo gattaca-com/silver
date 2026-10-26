@@ -1,8 +1,9 @@
 import { LineCharts } from './chart.js';
+import * as flow from './gossip_flow.js';
 import * as traffic from './gossip_traffic.js';
 import { escape, fixed, fmtSecs, instanceTabs, shortId } from './view.js';
 
-const VIEWS = ['topics', 'traffic'];
+const VIEWS = ['topics', 'traffic', 'flow'];
 
 /** Slots per topic in `gossip_topics`: sent, recv, mesh, subs. */
 const PER_TOPIC = 4;
@@ -50,6 +51,8 @@ export function render(fleet, root, now, ui) {
   const specs = new Map();
   if (ui.view === 'traffic') {
     root.innerHTML = `${tabs}${viewSwitch(ui.view)}${traffic.render(inst, ui, Date.now() / 1000, specs)}`;
+  } else if (ui.view === 'flow') {
+    root.innerHTML = `${tabs}${viewSwitch(ui.view)}${flow.render(inst, ui)}`;
   } else {
     root.innerHTML = `${tabs}${viewSwitch(ui.view)}${topics(inst, ui)}`;
   }
@@ -135,6 +138,10 @@ export function click(target, ui) {
   }
   if (ui.view === 'traffic') {
     traffic.click(target, ui);
+    return;
+  }
+  if (ui.view === 'flow') {
+    flow.click(target, ui);
     return;
   }
   const row = target.closest('[data-topic]');

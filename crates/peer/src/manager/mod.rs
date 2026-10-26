@@ -17,6 +17,7 @@ use silver_common::{
 use silver_config::{ScoreParams, SyncingConfig};
 
 use crate::{
+    counters::GossipFlowCounters,
     database::PeerDatabase,
     state::{ArchivedState, IpPrefix, MsgIdMap, PartialCapabilities},
 };
@@ -449,6 +450,7 @@ impl PeerManager {
             }
             PeerEvent::P2pGossipInvalidMsg { p2p_peer, topic, hash: _ } => {
                 crate::PeerCounters::GossipInvalidMsg.inc();
+                GossipFlowCounters::rejected(topic);
                 self.add_invalid_delivery(p2p_peer, topic);
             }
             PeerEvent::ColumnVerdict { p2p_peer, block_root, column, recv_ts, accepted } => {

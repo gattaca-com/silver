@@ -12,7 +12,7 @@ use silver_common::{
 };
 
 use super::PeerManager;
-use crate::scoring;
+use crate::{counters::GossipFlowCounters, scoring};
 
 const MESH_MESSAGE_DELIVERIES_WINDOW_NS: u64 = 2_000_000_000;
 
@@ -114,6 +114,9 @@ impl PeerManager {
         if peer.gossip_gate_score() < self.params.gossip_threshold {
             return;
         }
+        if let Some(slot) = traffic.topic_slot() {
+            GossipFlowCounters::iwant_served(slot);
+        }
         emit(PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut {
             peer_id: conn,
             tcache,
@@ -150,6 +153,7 @@ impl PeerManager {
         hash: MessageId,
         recv_ts: Nanos,
     ) {
+        GossipFlowCounters::duplicate(topic);
         self.promises.remove(&hash);
         if !self.mesh.get(&topic).is_some_and(|meshes| meshes.contains(conn)) {
             return;
@@ -348,6 +352,11 @@ impl PeerManager {
         partial_serving: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if sender == LOCAL_GOSSIP_STREAM_ID.peer() {
+            GossipFlowCounters::published(topic);
+        } else {
+            GossipFlowCounters::accepted(topic);
+        }
         let meshed = self.mesh.get(&topic).and_then(|m| m.get(digest));
         let mesh_len = meshed.map_or(0, |mesh| mesh.peers.len());
         for peer in meshed.into_iter().flat_map(|mesh| &mesh.peers) {
