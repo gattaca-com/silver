@@ -2,6 +2,7 @@ import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.LanePairingInputs
 import LeanBlsSimd.Kzg.PortablePairingInputs
 import LeanBlsSimd.Kzg.PairingRepresentation
+import LeanBlsSimd.Kzg.PairingCorrect
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls
@@ -10,7 +11,6 @@ open silver_crypto_simd silver_crypto_simd.kzg
 namespace LeanBlsSimd.Kzg
 
 theorem curveWork_pairing_check_refinement [RuntimeFeatures]
-     (hpairing : PairingCorrect)
     (work : verify.CurveWork) (hwork : CurveWorkInvariant work)
     (sums : verify.PairingSums) (ll rlc rli rlp : G1)
     (hll : G1Rep sums.ll ll) (hrlc : G1Rep sums.rlc rlc)
@@ -26,12 +26,12 @@ theorem curveWork_pairing_check_refinement [RuntimeFeatures]
     obtain ⟨points,hpoints,hrep⟩ := pairing_points_in_lanes_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvll hvlc hvli hvlp
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
-      hpairing.lanes points ll _ hrep hvll hvright]
+      pairing_correct.lanes points ll _ hrep hvll hvright]
   | Portable msm lines words =>
     obtain ⟨points,hpoints,hrep⟩ := pairing_points_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvlc hvli hvlp
     have hlines : PortableLinesRep lines := hwork
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
-      hpairing.portable lines points ll _ hlines hrep hvll hvright]
+      pairing_correct.portable lines points ll _ hlines hrep hvll hvright]
 
 end LeanBlsSimd.Kzg

@@ -10,12 +10,11 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 namespace silver_kzg.Kzg
 
 theorem verify_after_construction [cpu : RuntimeFeatures]
-    (hpairing : PairingCorrect)
     (input : Input) (hi : input.Representable) :
     ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
       input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
       Model.rejectErrors input.embeddedSpec = verdict := by
-  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec hpairing
+  obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec
   obtain ⟨verdict, next, hrun, hn, hv⟩ := hcall initial hs input hi
   exact ⟨initial, verdict, next, hnew, hrun, hn, hv⟩
 
@@ -60,7 +59,7 @@ theorem kernel_interpolates_cells [cpu : RuntimeFeatures]
   · simp [hkernel]
   · exact hp
 
-theorem pairing_consumes_cells [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem pairing_consumes_cells [cpu : RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
@@ -81,7 +80,7 @@ theorem pairing_consumes_cells [cpu : RuntimeFeatures] (h : ComponentContracts)
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
-  exact pairing_holds_refines h v hv indices cells commitments proofs evals r hb hs
+  exact pairing_holds_refines v hv indices cells commitments proofs evals r hb hs
     hc hp hcell he hunique hci hproofs hvalid
 
 

@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Lincomb
-import LeanBlsSimd.Kzg.Contracts
+import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.Refines.Interpolation
 import LeanBlsSimd.Kzg.SetupValidity
 import LeanBlsSimd.Kzg.Refines.Cosets

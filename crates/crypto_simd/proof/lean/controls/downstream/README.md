@@ -31,15 +31,15 @@ still supplies a concrete witness for that external-function premise.
 ## KZG consumers
 
 `KzgSmoke.lean` checks scalar cell decoding, kernel interpolation and pairing
-composition with the remaining component contract, `PairingCorrect`. SHA, scalar and base-field laws, and G1 decoding are
-discharged inside the imported results. It retains the canonical
+composition without a component-contract premise. Pairing, MSM, SHA, scalar and
+base-field laws, and G1 decoding are proved inside the imported results. It retains the canonical
 cell relation and the conditional scalar-scratch premise. It also checks
 arbitrary-length proved MSM8, lane-only linear combination and preservation
 of stored interpolation/curve-work routes.
 
 These examples use the shared data types from the same-crate extraction.
-They do not model a second copy of the verifier or prove its pending
-generated-component contracts.
+The imported library proves the generated-component contracts; these examples
+check their public consumer interfaces.
 
 ## Pairing-field consumer
 

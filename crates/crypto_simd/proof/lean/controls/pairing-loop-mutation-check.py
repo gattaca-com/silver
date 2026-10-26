@@ -88,5 +88,17 @@ def main():
                     ])
 
 
+        check_cases(directory, "LeanBlsSimd/Kzg/PairingCorrect.lean",
+                    "portable.pairing.PairingLines.pairing_check", "PortableLines.pairing_check",
+                    "theorem LaneLines.pairing_check", "\nend LeanBlsSimd.Pairing\n", [
+                        ("PortableFinalPower", "portable.fp12.Fp12.final_exponentiation f", "ok f"),
+                    ])
+        check_cases(directory, "LeanBlsSimd/Kzg/PairingCorrect.lean",
+                    "bls.pairing.MillerLines.pairing_check", "LaneLines.pairing_check",
+                    "end LeanBlsSimd.Pairing", "\nend LeanBlsSimd.Pairing\n", [
+                        ("LaneFinalPower", "bls.fp12.Fp12.final_exponentiation f", "ok f"),
+                    ])
+
+
 if __name__ == "__main__":
     main()

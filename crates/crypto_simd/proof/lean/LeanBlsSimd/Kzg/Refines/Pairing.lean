@@ -10,7 +10,7 @@ namespace LeanBlsSimd.Kzg.Pairing
 set_option maxHeartbeats 4000000
 set_option maxRecDepth 16000
 
-theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
+theorem pairing_holds_composition [RuntimeFeatures]
     (hinterp : InterpolationCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
@@ -103,7 +103,7 @@ theorem pairing_holds_composition [RuntimeFeatures] (h : ComponentContracts)
   have hvrli : G1Valid interpolation := g1_msm_valid_of_mem _ _ setup_model_points_valid
   have hvrlp := g1_msm_valid_of_mem proofs shifted.toArray hvalid.2
   have hworkP := curveWorkInvariant_sum after.curve_work scratchP _ _ rlp hrlp hafter.2.2.2
-  have hpair := curveWork_pairing_check_refinement h.pairing scratchP hworkP
+  have hpair := curveWork_pairing_check_refinement scratchP hworkP
     ⟨ll,rlc,rli,rlp⟩ _ _ _ _ hllrep hrlcrep hrlirep hrlprep hvll hvrlc hvrli hvrlp
   have hwmodel := weights_model v.commitments.index_of_cell.val powers commitments.size
   rw [hci.1] at hwmodel
@@ -132,7 +132,7 @@ end LeanBlsSimd.Kzg.Pairing
 
 namespace LeanBlsSimd.Kzg
 
-theorem pairing_holds_refinement [RuntimeFeatures] (h : ComponentContracts)
+theorem pairing_holds_refinement [RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
@@ -152,7 +152,7 @@ theorem pairing_holds_refinement [RuntimeFeatures] (h : ComponentContracts)
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next :=
-  Pairing.pairing_holds_composition h interpolation_commitment_refinement
+  Pairing.pairing_holds_composition interpolation_commitment_refinement
     v hv indices cells commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
 
 end LeanBlsSimd.Kzg

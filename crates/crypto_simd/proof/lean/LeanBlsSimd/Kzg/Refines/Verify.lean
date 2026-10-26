@@ -1,6 +1,6 @@
 import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.ModelFront
-import LeanBlsSimd.Kzg.Contracts
+import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.Setup
 import LeanBlsSimd.Kzg.G1Compression
 import LeanBlsSimd.Kzg.Refines.Checks
@@ -244,7 +244,7 @@ private theorem rejectErrors_of_ok {result : Except KzgError Bool} {verdict : Bo
   rfl
 
 set_option maxHeartbeats 200000 in
-theorem glue_of_contracts [cpu : RuntimeFeatures] (h : ComponentContracts)
+theorem glue_of_contracts [cpu : RuntimeFeatures]
     (hpairs : PairingContract) (hmodel : ModelPairingContract)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)

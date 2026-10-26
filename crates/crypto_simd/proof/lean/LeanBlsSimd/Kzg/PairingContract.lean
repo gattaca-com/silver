@@ -22,7 +22,7 @@ def PortablePairRep (raw : Array portable.g1.G1 2#usize) (p q : G1) : Prop :=
     let point := raw.val[lane.val]'(by simpa using lane.isLt)
     G1Rep ⟨⟨point.x⟩, ⟨point.y⟩, ⟨point.z⟩⟩ (if lane.val = 0 then p else q)
 
-/-- Pending pairing-module obligations for the two fixed-G2 pairings on either execution path. -/
+/-- Both execution paths implement the same two fixed-G2 pairing verdict. -/
 structure PairingCorrect [RuntimeFeatures] : Prop where
   lanes : ∀ raw p q, LanesPairRep raw p q → G1Valid p → G1Valid q →
     pairing.MillerLines.pairing_check pairing_lines.PAIRING_LINES raw =
