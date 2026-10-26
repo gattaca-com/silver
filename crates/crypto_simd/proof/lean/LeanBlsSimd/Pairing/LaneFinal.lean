@@ -34,7 +34,7 @@ theorem generated_schedule (x : fp2x8.Fp2x8) :
     fp12.Fp12.final_exponentiation x = run operations x := by
   simp only [fp12.Fp12.final_exponentiation, run, hardRun, operations]
 
-theorem final_refines {x : fp2x8.Fp2x8} {a : Bls.Fp12} (hx : Rep x a) :
+theorem final_cube_refines {x : fp2x8.Fp2x8} {a : Bls.Fp12} (hx : Rep x a) :
     ∃ out, fp12.Fp12.final_exponentiation x = ok out ∧ Rep out (optimized a) := by
   rw [generated_schedule]
   exact run_refines operations_refine hx
@@ -42,7 +42,7 @@ theorem final_refines {x : fp2x8.Fp2x8} {a : Bls.Fp12} (hx : Rep x a) :
 theorem final_verdict {x : fp2x8.Fp2x8} {a : Bls.Fp12} (hx : Rep x a) :
     (do let out ← fp12.Fp12.final_exponentiation x
         fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne := by
-  obtain ⟨out, hout, rout⟩ := final_refines hx
+  obtain ⟨out, hout, rout⟩ := final_cube_refines hx
   simp only [hout, bind_tc_ok, is_one_refines rout, verdict]
 
 end LeanBlsSimd.Pairing.FinalExponent.Lanes

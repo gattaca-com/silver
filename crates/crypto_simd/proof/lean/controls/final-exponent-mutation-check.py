@@ -36,13 +36,13 @@ def main():
               ])
         CHECK(directory, "LeanBlsSimd/Pairing/PortableFinal.lean",
               "portable.fp12.Fp12.final_exponentiation", "generated_schedule",
-              "theorem final_encoded", "\nend LeanBlsSimd.Pairing.FinalExponent.Portable\n", [
+              "theorem final_cube_encoded", "\nend LeanBlsSimd.Pairing.FinalExponent.Portable\n", [
                   ("PortableInverse", "portable.fp12.Fp12.inverse self", "portable.fp12.Fp12.conjugate self"),
                   ("PortableFrobenius", "portable.fp12.Fp12.frobenius f7", "portable.fp12.Fp12.conjugate f7"),
               ])
         CHECK(directory, "LeanBlsSimd/Pairing/LaneFinal.lean",
               "bls.fp12.Fp12.final_exponentiation", "generated_schedule",
-              "theorem final_refines", "\nend LeanBlsSimd.Pairing.FinalExponent.Lanes\n", [
+              "theorem final_cube_refines", "\nend LeanBlsSimd.Pairing.FinalExponent.Lanes\n", [
                   ("LaneLastProduct", "bls.fp12.Fp12.mul f12 t42", "bls.fp12.Fp12.mul f12 t41"),
                   ("LaneSquareInput", "bls.fp12.Fp12.cyclotomic_square t3", "bls.fp12.Fp12.cyclotomic_square t21"),
               ])

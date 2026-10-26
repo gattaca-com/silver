@@ -48,7 +48,7 @@ theorem generated_schedule [RuntimeFeatures] (x : portable.fp12.Fp12) :
     portable.fp12.Fp12.final_exponentiation x = run operations x := by
   simp only [portable.fp12.Fp12.final_exponentiation, run, hardRun, operations]
 
-theorem final_encoded [RuntimeFeatures] (a : Bls.Fp12) :
+theorem final_cube_encoded [RuntimeFeatures] (a : Bls.Fp12) :
     portable.fp12.Fp12.final_exponentiation (encode a) = ok (encode (optimized a)) := by
   obtain ⟨out, hout, he⟩ := run_refines operations_refine (x := encode a) (a := a) rfl
   rw [he] at hout
@@ -58,6 +58,6 @@ theorem final_encoded [RuntimeFeatures] (a : Bls.Fp12) :
 theorem final_verdict [RuntimeFeatures] (a : Bls.Fp12) :
     (do let out ← portable.fp12.Fp12.final_exponentiation (encode a)
         portable.fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne := by
-  simp only [final_encoded, bind_tc_ok, is_one_encoded, verdict]
+  simp only [final_cube_encoded, bind_tc_ok, is_one_encoded, verdict]
 
 end LeanBlsSimd.Pairing.FinalExponent.Portable
