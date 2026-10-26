@@ -11,7 +11,7 @@ open LeanBlsSimd.Portable.Fp12
 
 set_option maxRecDepth 4000
 
-theorem square_encoded [RuntimeFeatures] (a : Bls.Fp12) (ha : Good a) :
+theorem cyclotomic_square_encoded [RuntimeFeatures] (a : Bls.Fp12) (ha : Good a) :
     portable.fp12.Fp12.cyclotomic_square (encode a) = ok (encode a.square) := by
   rcases ha with ha | ha
   · have hz : a = Bls.Fp12.zero := (Fp12.toField_eq_zero_iff a).mp ha
@@ -27,7 +27,7 @@ theorem square_encoded [RuntimeFeatures] (a : Bls.Fp12) (ha : Good a) :
         Bls.Fp12.zero, Bls.Fp6.zero, Fp6Field.assemble]
       rfl
     rwa [he] at h
-  · exact cyclotomic_square_encoded a ha
+  · exact LeanBlsSimd.Portable.Fp12.cyclotomic_square_encoded a ha
 
 theorem exponent_body [RuntimeFeatures] (a f : Bls.Fp12) (hf : Good f)
     (n : Fin 63) (bit : U32) (hb : bit.val = n.val + 1) :
@@ -45,7 +45,7 @@ theorem exponent_body [RuntimeFeatures] (a f : Bls.Fp12) (hf : Good f)
   refine ⟨bit', rfl, ?_⟩
   simp only [portable.fp12.Fp12.cyclotomic_exp_loop.body,
     show bit > 0#u32 from by simp only [UScalar.lt_equiv]; change 0 < bit.val; omega,
-    if_true, hdec, bind_tc_ok, square_encoded f hf, G1x8.is_lower_z_bit_refines]
+    if_true, hdec, bind_tc_ok, cyclotomic_square_encoded f hf, G1x8.is_lower_z_bit_refines]
   change (do
     let r ← if G1x8.is_lower_z_bit n.val then portable.fp12.Fp12.mul (encode f.square) (encode a)
       else ok (encode f.square)

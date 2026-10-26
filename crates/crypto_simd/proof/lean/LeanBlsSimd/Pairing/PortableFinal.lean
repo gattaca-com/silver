@@ -25,7 +25,7 @@ theorem operations_refine [RuntimeFeatures] : operations.Refines (fun x a => x =
   square := by
     intro x a hx ha
     subst x
-    exact ⟨_, square_encoded a ha, rfl⟩
+    exact ⟨_, cyclotomic_square_encoded a ha, rfl⟩
   conjugate := by
     intro x a hx
     subst x
