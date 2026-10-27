@@ -1,4 +1,4 @@
-// Landing pane: stf apply percentiles per instance, then summaries of the
+// Landing pane: stf validate + apply percentiles per instance, then summaries of the
 // Slots, Gossip traffic and Data flow panes; pressing a summary opens its pane.
 
 import { LineCharts, SERIES_MAX } from './chart.js';
@@ -19,11 +19,13 @@ function percentile(sorted, p) {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
 }
 
-function applyRow(inst, colour) {
+function stfRow(inst, colour) {
   const durations = [];
   for (const trace of inst.traces) {
-    const interval = trace.attestable === null ? null : trace.interval('apply');
-    if (interval) durations.push(interval.end - interval.start);
+    if (trace.attestable === null) continue;
+    const validate = trace.interval('validate');
+    const apply = trace.interval('apply');
+    if (validate && apply) durations.push(validate.end - validate.start + apply.end - apply.start);
   }
   durations.sort((a, b) => a - b);
   const cells = PERCENTILES.map(
@@ -79,10 +81,10 @@ export function render(fleet, root, _now, ui) {
   const head = PERCENTILES.map((p) => `<th class="num">p${p}</th>`).join('');
   const attestations = attestationsChart(fleet, specs, 'home-attestations', ATTESTATIONS_HEIGHT);
   root.innerHTML = `
-    <h2>stf apply <span class="meta">blocks reaching attestable</span></h2>
+    <h2>stf validate + apply <span class="meta">blocks reaching attestable</span></h2>
     <section><table class="apply-big">
       <thead><tr><th>instance</th>${head}<th class="num">slots</th></tr></thead>
-      <tbody>${all.map((inst, i) => applyRow(inst, colour(i))).join('')}</tbody>
+      <tbody>${all.map((inst, i) => stfRow(inst, colour(i))).join('')}</tbody>
     </table></section>
     <div class="home-card home-wide" data-goto="events">
       <h3>${attestations}</h3><div class="chart" data-chart="home-attestations"></div></div>
