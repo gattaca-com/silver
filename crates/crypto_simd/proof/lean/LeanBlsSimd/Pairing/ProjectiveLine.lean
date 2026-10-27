@@ -1,5 +1,5 @@
 import LeanBlsSimd.Pairing.MillerSpec
-import LeanBlsSimd.Pairing.PortableLines
+import LeanBlsSimd.Pairing.LineFactors
 
 open EthLib.Cryptography Bls
 

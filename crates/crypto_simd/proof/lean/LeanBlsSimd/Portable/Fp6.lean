@@ -1,3 +1,4 @@
+import LeanBlsSimd.Spec.Line
 import LeanBlsSimd.Portable.Fp2.Arithmetic
 import LeanBlsSimd.Spec.Fp6Operations
 
@@ -86,8 +87,6 @@ theorem inverse_encoded [RuntimeFeatures] (a : Bls.Fp6) :
     simp only [map_add, add_assoc]
   simp only [hadd]
   rfl
-
-def sparse (x y : Bls.Fp2) : Bls.Fp6 := ⟨x, y, Bls.Fp2.zero⟩
 
 theorem mul_by_y_encoded [RuntimeFeatures] (a : Bls.Fp6) (y : Bls.Fp2) :
     portable.fp6.Fp6.mul_by_y (encode a) (Fp2.encode y) =

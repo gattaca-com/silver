@@ -24,22 +24,17 @@ theorem words_spec (j : Fin 6) :
 def limbValue (bits : Nat) {n : Usize} (a : Aeneas.Std.Array U64 n) : Nat :=
   a.val.foldr (fun w acc => w.val + 2^bits*acc) 0
 
-def portableRow (j : Fin 6) (i : Fin 2) : portable.fp.Fp :=
-  portable.constants.FROBENIUS[j.val]!.val[i.val]!
-
 def laneRow (j : Fin 6) (i : Fin 2) : Aeneas.Std.Array U64 8#usize :=
   bls.constants.FROBENIUS_MONT[j.val]!.val[i.val]!
 
-/-- Both generated tables encode the same ordinary coefficient in their respective radices. -/
+/-- The generated lane table encodes the ordinary coefficient in radix 2^52. -/
 theorem table_certificates (j : Fin 6) :
-    limbValue 64 (portableRow j 0) = (words j).1 * 2^384 % p ∧
-    limbValue 64 (portableRow j 1) = (words j).2 * 2^384 % p ∧
     limbValue 52 (laneRow j 0) = (words j).1 * 2^416 % p ∧
     limbValue 52 (laneRow j 1) = (words j).2 * 2^416 % p := by
   fin_cases j <;> decide +kernel
 
 theorem table_bounds (j : Fin 6) (i : Fin 2) :
-    limbValue 64 (portableRow j i) < p ∧ limbValue 52 (laneRow j i) < p ∧
+    limbValue 52 (laneRow j i) < p ∧
     ∀ w ∈ (laneRow j i).val, w.val < 2^52 := by
   fin_cases j <;> fin_cases i <;> decide +kernel
 

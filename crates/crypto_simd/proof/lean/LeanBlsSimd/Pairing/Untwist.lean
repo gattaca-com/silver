@@ -1,6 +1,6 @@
 import LeanBlsSimd.Pairing.LineScaling
 import LeanBlsSimd.Pairing.FixedTableMeaning
-import LeanBlsSimd.Portable.Fp12.Arithmetic
+import LeanBlsSimd.Spec.Line
 
 open EthLib.Cryptography Bls
 

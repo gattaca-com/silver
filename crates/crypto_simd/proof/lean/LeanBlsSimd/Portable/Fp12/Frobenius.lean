@@ -14,6 +14,18 @@ set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
 set_option exponentiation.threshold 4096
 
+def portableRow (j : Fin 6) (i : Fin 2) : portable.fp.Fp :=
+  portable.constants.FROBENIUS[j.val]!.val[i.val]!
+
+theorem portable_table_certificates (j : Fin 6) :
+    limbValue 64 (portableRow j 0) = (words j).1 * 2^384 % Bls.Fp.modulus ∧
+    limbValue 64 (portableRow j 1) = (words j).2 * 2^384 % Bls.Fp.modulus := by
+  fin_cases j <;> decide +kernel
+
+theorem portable_table_bounds (j : Fin 6) (i : Fin 2) :
+    limbValue 64 (portableRow j i) < Bls.Fp.modulus := by
+  fin_cases j <;> fin_cases i <;> decide +kernel
+
 def coefficient (j : Fin 6) : Bls.Fp2 :=
   ⟨Bls.Fp.ofNat (words j).1, Bls.Fp.ofNat (words j).2⟩
 

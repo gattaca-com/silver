@@ -27,7 +27,7 @@ theorem lane_entry_bounds (j : Fin 6) (i : Fin 2) :
   · unfold SignedLimbs.Normalized
     fin_cases j <;> fin_cases i <;> decide +kernel
   · rw [lane_value]
-    exact (table_bounds j i).2.1
+    exact (table_bounds j i).1
 
 theorem lane_entry_decodes (j : Fin 6) :
     (⟨decode (laneLimbs j 0), decode (laneLimbs j 1)⟩ : Fp2Field) =
@@ -35,10 +35,10 @@ theorem lane_entry_decodes (j : Fin 6) :
   rw [← words_spec]
   have h0 : val (laneLimbs j 0) = (words j).1 * R % Fp.modulus := by
     rw [lane_value, lane_radix]
-    exact (table_certificates j).2.2.1
+    exact (table_certificates j).1
   have h1 : val (laneLimbs j 1) = (words j).2 * R % Fp.modulus := by
     rw [lane_value, lane_radix]
-    exact (table_certificates j).2.2.2
+    exact (table_certificates j).2
   rw [decode_of_val h0, decode_of_val h1]
   ext <;> simp [toFp2]
 

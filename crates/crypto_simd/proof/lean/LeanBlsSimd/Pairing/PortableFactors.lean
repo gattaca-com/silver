@@ -1,3 +1,4 @@
+import LeanBlsSimd.Pairing.PortableLines
 import LeanBlsSimd.Pairing.ProjectiveLine
 import LeanBlsSimd.Portable.G1.Coordinates
 

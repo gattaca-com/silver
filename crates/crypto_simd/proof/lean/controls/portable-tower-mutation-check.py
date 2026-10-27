@@ -56,8 +56,8 @@ def main():
          "portable.fp12.thrice_plus_twice t10 self.c0.c1", "cyclotomic_raw_encoded"),
         ("Frobenius", "LeanBlsSimd/Portable/Fp12/Frobenius.lean", "portable.fp12.Fp12.frobenius",
          "self.c0.c1 2#usize", "self.c0.c1 4#usize", "frobenius_raw_encoded"),
-        ("Table", "LeanBlsSimd/Refines/FrobeniusConstants.lean", "portable.constants.FROBENIUS",
-         "8505329371266088957#u64", "8505329371266088958#u64", "table_certificates"),
+        ("Table", "LeanBlsSimd/Portable/Fp12/Frobenius.lean", "portable.constants.FROBENIUS",
+         "8505329371266088957#u64", "8505329371266088958#u64", "portable_table_certificates"),
     ]
     with tempfile.TemporaryDirectory(prefix="portable-tower-mutation-") as directory:
         for label, filename, name, old, new, proof in cases:

@@ -1,3 +1,4 @@
+import LeanBlsSimd.Pairing.PortableLines
 import LeanBlsSimd.Pairing.MillerSchedule
 
 open Aeneas Aeneas.Std Result ControlFlow

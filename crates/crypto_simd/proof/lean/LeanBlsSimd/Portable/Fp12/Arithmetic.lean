@@ -68,9 +68,6 @@ theorem square_encoded [RuntimeFeatures] (a : Bls.Fp12) :
   rw [square_formula]
   rfl
 
-def line (x y z : Bls.Fp2) : Bls.Fp12 :=
-  ⟨Fp6.sparse x y, Fp6.sparse Bls.Fp2.zero z⟩
-
 theorem mul_by_line_encoded [RuntimeFeatures] (a : Bls.Fp12) (x y z : Bls.Fp2) :
     portable.fp12.Fp12.mul_by_line (encode a) (Fp2.encode x) (Fp2.encode y) (Fp2.encode z) =
       ok (encode (a * line x y z)) := by
