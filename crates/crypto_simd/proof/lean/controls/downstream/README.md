@@ -18,10 +18,11 @@ A `#guard_msgs` control rejects redeclaration of the upstream wrapper at its
 root name. Adapter and caller axiom checks admit only `propext`,
 `Classical.choice` and `Quot.sound`.
 
-G1's `Fixed.externalsOf` captures `RuntimeFeatures` and calls the actual
-generated wrapper. Its agreement proof uses the proved portable singleton,
-pair and IFMA decoders internally. The consumer examples require no
-`G1DecoderCorrect` premise.
+G1's `Fixed.externalsOf` captures `RuntimeFeatures` and `KzgExternals`.
+Its general agreement proof uses `UncompressG1.FallbackCorrect`. The IFMA
+example discharges that conditional law without an external agreement
+premise. Portable singleton and pair decoding are proved internally for
+IFMA tails and undecided lanes.
 
 G2's adapter captures `RuntimeFeatures` and a separate upstream
 `BlsExternals` containing only the opaque G2 decoder. Its agreement proof
@@ -30,12 +31,12 @@ still supplies a concrete witness for that external-function premise.
 
 ## KZG consumers
 
-`KzgSmoke.lean` checks scalar cell decoding, kernel interpolation and pairing
-composition without a component-contract premise. Pairing, MSM, SHA, scalar and
-base-field laws, and G1 decoding are proved inside the imported results. It retains the canonical
-cell relation and the conditional scalar-scratch premise. It also checks
-arbitrary-length proved MSM8, lane-only linear combination and preservation
-of stored interpolation/curve-work routes.
+`KzgSmoke.lean` checks the general verifier under the scoped decoder and
+pairing laws. Cell decoding, interpolation, MSM, SHA and scalar/base-field
+arithmetic are proved internally. Extender consumers need no blst laws.
+The examples retain the canonical-cell relation and conditional
+scalar-scratch premise. They cover arbitrary-length MSM8, lane-only linear
+combination and preservation of stored routes.
 
 These examples use the shared data types from the same-crate extraction.
 The imported library proves the generated-component contracts; these examples
@@ -68,6 +69,10 @@ lake update
 lake build
 ```
 
-`TowerSmoke.lean` also consumes portable multiplication, total inverse, cyclotomic squaring and Frobenius refinements, plus the decoded table-entry theorem.
+`TowerSmoke.lean` consumes the lane tower and shared field mathematics,
+including the decoded lane-table certificate.
 
-The lane examples consume the multiplication field identity and generated one, conjugation, square, multiplication, sparse line multiplication, Frobenius, total inverse and the identity-test refinements under `LaneTower.Rep`. Both portable and lane table entries are connected to the field basis. The lane cyclotomic-square consumer permits zero as well as Φ12 membership.
+The lane examples consume multiplication, one, conjugation, square,
+sparse-line multiplication, Frobenius, total inverse and identity-test
+refinements under `LaneTower.Rep`. The table entries are connected to the
+field basis. Cyclotomic squaring permits zero as well as Φ12 membership.

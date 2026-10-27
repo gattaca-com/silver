@@ -1,6 +1,6 @@
 # Formal proof of BLS decoding and KZG cell operations
 
-One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The verifier and extender headlines refine the x86-64 extraction without generated-component correctness premises. Scalar and base-field arithmetic, scalar bytes, both streaming SHA implementations, portable G1 decoding, portable MSM and both fixed-target pairing routes are proved. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
+One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The IFMA verifier headline uses the proved lane pairing and G1 decoder paths. The general verifier headline assumes scoped blst G1-decoder and pairing laws. The extender needs neither law on either route. Scalar and base-field arithmetic, scalar bytes, both streaming SHA implementations, portable G1 decoding, portable MSM and lane pairing are proved. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
 
 The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is proved by `Portable.Decode.g1_decoder_correct`, which constructs `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
 
@@ -18,10 +18,10 @@ Both public BLS wrappers require one output slot per input. On unequal lengths, 
 
 ### G1 wrapper
 
-`UncompressG1.uncompress_in_g1_eq_spec` covers the generated public wrapper, including output writes and all portable singleton and pair calls:
+`UncompressG1.uncompress_in_g1_eq_spec` covers the generated public wrapper, including output writes, portable fallback calls on IFMA and the scoped non-IFMA external operation:
 
 ```lean
-theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
+theorem uncompress_in_g1_eq_spec [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -30,7 +30,7 @@ theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
         result.val[i.val]? = some (specVerdict inputs.val[i.val])
 ```
 
-An index uses IFMA when SIMD is available, it belongs to a complete eight-input chunk, and its undecided bit is clear. `G1DecoderCorrect` states exact specification verdicts for the actual generated portable singleton and pair decoders. `Portable.Decode.g1_decoder_correct` proves those laws; the wrapper refinement combines them with the proved IFMA kernel. It has no G1 blst observation or `BlsExternals` parameter. The compatibility name `uncompress_in_g1_eq_spec_or_blst` remains available, with specification verdicts on both routes and no decoder-contract premise.
+An index uses IFMA when SIMD is available, it belongs to a complete eight-input chunk, and its undecided bit is clear. `Portable.Decode.g1_decoder_correct` proves the portable singleton and pair decoders used for undecided IFMA lanes and short tails. Without IFMA, the wrapper calls `KzgExternals.uncompressG1` per input. `UncompressG1.FallbackCorrect` requires exact specification agreement only when `simdAvailable = false`. `uncompress_in_g1_eq_spec_list_ifma` gives the same list result for an arbitrary external dictionary with no agreement law. The compatibility name `uncompress_in_g1_eq_spec_or_blst` carries the same scoped decoder premise.
 
 The G1 specification verdict calls `bytesToKzgProof`, decodes accepted bytes with `G1.uncompress`, and normalizes through `G1.toAffine`. Each coordinate has six little-endian Montgomery words with R = 2^384. Infinity has both coordinates zero. The bridge lemmas relate acceptance to both `bytesToKzgProof` and `bytesToKzgCommitment`.
 
@@ -86,33 +86,36 @@ The left side is how `decompress_g2_chunk` in `mod.rs` reads one lane. `Mmask8.a
 
 ### KZG verifier
 
-`LeanBlsSimd.Kzg.verify_eq_spec` proves that the generated constructor succeeds and establishes the invariant. Every state satisfying that invariant returns the embedded specification's Boolean verdict on every representable input. The next state preserves the invariant, including after rejected batches. Specification errors become `false`; length mismatches, invalid encodings and out-of-range indices are included.
+Under the scoped decoder law, `LeanBlsSimd.Kzg.verify_eq_spec` proves that the generated constructor succeeds and establishes the invariant. Under the per-state pairing law, every state satisfying the invariant returns the embedded specification's Boolean verdict on every representable input. The next state preserves the invariant and stored curve-work route, including after rejected batches. Specification errors become `false`. These include length mismatches, invalid encodings and out-of-range indices.
 
 ```lean
-theorem verify_eq_spec [cpu : RuntimeFeatures] :
+theorem verify_eq_spec [cpu : RuntimeFeatures] [KzgExternals]
+    [UncompressG1.FallbackCorrect] :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
+      BlstPairing.CorrectFor v.curve_work →
       ∀ (i : Input), i.Representable →
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work ∧
         Model.rejectErrors i.embeddedSpec = verdict
 ```
 
-`Kzg.pairing_correct` proves the named `Prop` about actual generated functions:
+`Kzg.pairing_correct` proves the lane `PairingCorrect` contract. The scalar route uses `Kzg.BlstPairing.CorrectFor` per workspace. Its law covers reduced valid G1 inputs, including infinity, paired with the two fixed KZG G2 points. The wrapper performs Jacobian-to-affine conversion. It filters pairs with either point at infinity.
 
 | Proved contract | Component behavior |
 |---|---|
-| `PairingCorrect` | Lane and portable pairing functions agree with the two fixed-G2 specification pairings, under their point and table representations. This includes `PAIRING_LINES` encoding the lines of [s^64]G2 and −G2. |
+| `PairingCorrect` | The lane pairing function agrees with the two fixed-G2 specification pairings under its point representation. This includes `PAIRING_LINES` encoding the lines of [s^64]G2 and −G2. |
 
-The verifier discharges this contract internally. No KZG headline takes a generated-component contract, `BlstCorrect` or an opaque G2 decoder.
+The IFMA headlines `verify_eq_spec_ifma` and `verify_eq_upstream_ifma` require `simdAvailable = true` and a stored lane workspace for each call. They establish that route on construction and preserve it on return. Repeated calls therefore need no blst correctness law. The general headlines cover arbitrary states satisfying the invariant, including mixed interpolation and curve-work routes, under the two scoped laws. No KZG result uses the signature-only opaque G2 decoder.
 
 `RuntimeFeatures` supplies independent `simdAvailable`, `shaAvailable` and `bmi2Available` Booleans. Construction selects the interpolation kernel and the `CurveWork` route from `simdAvailable`. SHA dispatch reads `shaAvailable`, while portable field multiplication can select BMI2 independently. The headlines quantify over any fixed feature assignment. The model covers all four combinations of interpolation and curve-work routes independently of the eight feature assignments. Real execution requires hardware support for every instruction on the selected routes; constructor-produced states align the stored routes with stable CPU observations.
 
-`CurveWork.Portable` stores its pairing table alongside MSM scratch. `PortableLinesRep` interprets every coefficient of that table as a canonical Montgomery value matching the fixed extracted lane table. `PairingTableBounds.lean` checks each of its 544 lanes for normalized limbs and a canonical value. `pairingLines_new_refinement` proves the actual nested constructor using the proved portable Fp contract, packing and radix-conversion lemmas; it does not require `PairingCorrect`. `CurveWork.sum_frame` proves that successful MSM preserves the exact table and the stored route.
+`CurveWork.Scalar` stores portable MSM scratch and scalar words. Pairing uses the extracted G2 literals through blst. `CurveWork.Lanes` uses the fixed lane table, whose 544 coefficient lanes have kernel-checked bounds. `CurveWork.sum_frame` preserves the stored route. No workspace stores a mutable pairing table.
 
-`new_returns_ok` has no component-contract premises. `default_eq_new` transfers that result through `Default`. `new_returns_ok_route` characterizes the constructor's two stored choices; `Routes.verify_preserves_routes` preserves them through successful calls. `StateInvariant` additionally fixes the setup, cosets, interpolation tables and buffer lengths, while permitting earlier scratch contents. Replacing curve work requires a valid replacement table: `stateInvariant_curveWork` takes `CurveWorkInvariant work`. It is not an unrestricted invariant equivalence for arbitrary replacement work.
+`new_returns_ok` requires the scoped G1-decoder law but no pairing law. `default_eq_new` transfers construction through `Default`. `new_returns_ok_route` characterizes the two stored route choices. `Routes.verify_preserves_routes` preserves them. `StateInvariant` fixes setup, cosets, interpolation tables and buffer lengths while permitting arbitrary curve scratch. `CurveWorkInvariant` is `True` for both variants. Mixed-route states are admissible. The IFMA headline states its lane-workspace requirement.
 
-`verify_eq_upstream` has the same execution/state conclusion for the upstream `verifyCellKzgProofBatch` action. Its only additional hypothesis is `TrustedSetup.get! = pure embeddedSetup`. The embedded-setup headline has no runtime-loader premise. The G2 setup points are fixed mathematical constants with proved decoding and subgroup certificates. Generated KZG execution consumes the fixed pairing table without calling `uncompress_in_g2_blst`.
+`verify_eq_upstream` has the same execution/state conclusion for the upstream `verifyCellKzgProofBatch` action. Its only additional hypothesis is `TrustedSetup.get! = pure embeddedSetup`. The embedded-setup headline has no runtime-loader premise. The G2 setup points are fixed mathematical constants with proved decoding and subgroup certificates. IFMA execution uses the fixed pairing table. Scalar pairing uses the extracted affine G2 literals. Neither calls `uncompress_in_g2_blst`.
 
 #### Input and runtime scope
 
@@ -148,16 +151,16 @@ The headline and constructor have no component-contract premises. Scalar arithme
 
 ## Using the public results
 
-### Runtime features and the G2 external
+### Runtime features and external operations
 
-Supply `[silver_crypto_simd.RuntimeFeatures]` to entry points that observe CPU features. `silver_crypto_simd.bls.BlsExternals` contains only the opaque G2 decoder. G2 wrapper results additionally use that class and, for exact specification equality, `UncompressG2.BlstMatchesSpec`. G1 and KZG consumers do not require it.
+Supply `[silver_crypto_simd.RuntimeFeatures]` to entry points that observe CPU features. `silver_crypto_simd.bls.BlsExternals` contains only the opaque G2 decoder. G2 wrapper results additionally use that class and, for exact specification equality, `UncompressG2.BlstMatchesSpec`. G1 and KZG consumers do not require it. Their separate `KzgExternals` dictionary supplies G1 decoding and scalar pairing. The generic verifier uses `UncompressG1.FallbackCorrect` and `Kzg.BlstPairing.CorrectFor`. IFMA consumers can use the route-specific corollaries without those laws.
 
 ### BLS decoding
 
 Import `LeanBlsSimd.Refines.UncompressG1` for the G1 wrapper:
 
 ```lean
-theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
+theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -165,7 +168,7 @@ theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
       result.val = inputs.val.map specVerdict
 ```
 
-`specVerdict_some_iff` relates an accepted affine result to `bytesToKzgProof` and exact decoded limbs. The pointwise and model-type list variants are also available. `controls/G1Consumer.lean` and the independent `controls/downstream/G1Smoke.lean` apply these public results across consumer-owned structures without a decoder-contract premise.
+`specVerdict_some_iff` relates an accepted affine result to `bytesToKzgProof` and exact decoded limbs. Pointwise and model-type list variants carry the same scoped decoder law. `controls/G1Consumer.lean` and `controls/downstream/G1Smoke.lean` check these interfaces across consumer-owned structures, including an IFMA adapter without a blst agreement premise.
 
 For G2, import `LeanBlsSimd.Refines.UncompressG2` and use `uncompress_in_g2_eq_spec_list` with `[RuntimeFeatures]`, `[BlsExternals]` and `UncompressG2.BlstMatchesSpec`. Without the agreement law, `uncompress_in_g2_eq_spec_or_blst` characterizes kernel verdicts and opaque fallback observations. `controls/G2Consumer.lean` and `controls/downstream/G2Smoke.lean` exercise the list interfaces and transport across independent structures.
 
@@ -177,7 +180,7 @@ Import `LeanBlsSimd.Kzg.Statements` and apply:
 verify_eq_spec
 ```
 
-Use `new_returns_ok` for construction alone, or `glue_refinement` for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
+Supply the CPU-conditioned decoder law and the pairing premise for each state. Use `verify_eq_spec_ifma` for lane workspaces on IFMA with no blst law. Use `new_returns_ok` for construction alone, or `glue_refinement` for the intermediate model. `verify_eq_upstream` additionally takes the runtime setup-loader hypothesis.
 
 For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
@@ -189,23 +192,23 @@ For individual generated calls, import `LeanBlsSimd.Kzg.Refines`:
 
 `CellsRep` requires matching batch lengths and 64 evaluations per cell. Each 32-byte element must decode canonically through `bytesToBlsField`. The headline derives this relation from successful cell checks and discharges the scratch premise internally.
 
-`Kzg/Lincomb.lean` supplies `verify_lincomb_refinement` and its raw-input variant for the actual `verify.CurveWork.sum`, using the proved portable MSM contract and ordinary-word conversion. Lane-only refinements use the proved MSM8 implementation and need no component premise. `CurveWork.sum_frame` preserves the exact stored table and route, enabling invariant preservation without restricting scratch to constructor-reachable values. The interpolation adapters specialize these statements to the embedded setup.
+`Kzg/Lincomb.lean` supplies `verify_lincomb_refinement` and its raw-input variant for `verify.CurveWork.sum`, using the proved portable MSM contract and ordinary-word conversion. Lane-only refinements use proved MSM8. `CurveWork.sum_frame` preserves the stored route while allowing arbitrary scratch. The interpolation adapters specialize these results to the embedded setup.
 
-`controls/downstream/KzgSmoke.lean` applies the generated-runtime headlines without component premises. It also consumes the cell wrappers with their canonical-cell relation and conditional scalar-scratch premise.
+`controls/downstream/KzgSmoke.lean` applies the general verifier under the scoped blst laws. It applies the extender without component premises. It also checks the cell wrappers, their canonical-cell relation and the conditional scalar-scratch premise. `controls/KzgBlstBoundary.lean` checks IFMA construction and execution with an arbitrary external dictionary.
 
 ### Decoder bridge and component proofs
 
 `Kzg/Decoder.lean` proves `specVerdict_eq_bls`: KZG and BLS G1 verdicts agree as optional affine points, including limbs and infinity. The KZG batch adapter composes directly with the shared, proved generated G1 wrapper. There is no copied runtime decoder dictionary at this boundary.
 
-`Kzg.pairing_correct` proves the pairing contract for the fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`; `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
+`Kzg.pairing_correct` proves the lane pairing contract for the fixed generated definitions. `FrScalar.fr_correct` proves `FrCorrect`. `FrScalar.fr_bytes_correct` proves `FrBytesCorrect`. Neither scalar law is a consumer premise. The Montgomery invariant bounds every row by `a + r`. Only the first operand must be below `r`; the second may contain any four words. The proof retains the fifth multiply-add word and bounds each division result before eliminating truncation. Exact `frEncode` equalities cover addition, subtraction and multiplication. Byte proofs cover canonical decoding, arbitrary digest reduction, ordinary scalar words and exact big-endian serialization. Canonical decoding rejects `r` itself. Digest reduction preserves the generated operand order, with `R_SQUARED` first.
 
-`Portable/Fp/` proves canonical six-word Montgomery arithmetic at R = 2^384, the exact wide product and reduction, ordered and modular subtraction, binary inversion, exponentiation, square root and root sign. Its CIOS proof permits any six words in the second operand when the first is canonical. Binary inversion returns zero for zero input. The generated four-input batch inverse uses one product inverse; if any input is zero, all four outputs are zero. Both BMI2 dispatch branches use the proved arithmetic.
+`Portable/Fp/` proves canonical six-word Montgomery arithmetic at R = 2^384. This covers CIOS multiplication and reduction, modular addition and subtraction, binary inversion, exponentiation, square root and root sign. Its CIOS proof permits any six words in the second operand when the first is canonical. Binary inversion returns zero for zero input. The generated four-input batch inverse uses one product inverse. If any input is zero, all four outputs are zero. Both BMI2 dispatch branches use the proved arithmetic.
 
 `Portable/G1/` proves complete scalar Jacobian operations and the two-lane formulas and chains. Each exceptional lane is recomputed by the scalar Scott test; an unflagged lane agrees with the complete group operations. `Portable/Decode/` connects flags, canonical x, square root and sign to the existing encoding verdict, proves rejection of the order-3 x = 0 and order-2 y = 0 cases, and accepts only canonical infinity. G1 uses the proved `G1Spec.scott_sound` and `G1Spec.scott_complete`; G2 retains the proved `scott_complete : ScottComplete`. No public theorem takes a Scott-completeness premise. The production extraction includes `G1.from_affine`; the Rust `G1.to_affine` helper is test-only and absent from that extraction, so its Rust body is outside these generated-function proofs.
 
-`controls/ContractSamples.lean`, `MsmSamples.lean` and `PairingSamples.lean` evaluate the generated functions against the specification. These `#eval` checks use Lean's interpreter outside the proof kernel. They provide finite evidence, not proofs or satisfiability witnesses for the contracts. Assertions make a mismatch fail the build.
+`controls/ContractSamples.lean` and `MsmSamples.lean` evaluate generated arithmetic, hashing and MSM against the specification. These `#eval` checks use assertions. They run outside the proof kernel and supply finite evidence.
 
-Samples cover scalar carries and canonical-byte boundaries, reducing 2^256−1, both BMI2 field paths, SHA padding and chunk boundaries, and reusable MSM scratch. Portable pairing includes a nonzero true case: `(G1.generator, [s^64]G1)` against `([s^64]G2, −G2)`, using the pinned setup. Negating its second G1 point must produce false. The sample checks the specification verdict and generated verdict separately. Lane pairing is not sampled here. G1 decoding has the separate generated-code differential corpus.
+Samples cover scalar carries and canonical-byte boundaries, reducing 2^256−1, both BMI2 field paths, SHA padding and chunk boundaries, and reusable MSM scratch. Rust pairing tests compare random and infinity cases with a Rust transcription of the specification using blst field arithmetic. Infinity cases cover either sum, both infinity encodings used by the crate, and rejection when the remaining finite pair contributes. The generated-code differential corpus covers G1 decoding.
 
 ### KZG cell extension
 
@@ -223,9 +226,9 @@ The constructor establishes the invariant, and each returned state preserves it 
 2. **Specification and mathematics.** Mathlib v4.29.1 and [gattaca-com/EthLib at `5d7ab0f6`](https://github.com/gattaca-com/EthLib/tree/5d7ab0f648619d29da9637f8bd57b5e5aa093865) (`total-pairing-definitions`), including its field, group law, decoders, subgroup checks, KZG validation and cell-batch and `computeCells` specifications, and their fidelity to Ethereum's requirements. Agreement with vectors is finite evidence, not a proof of equivalence to other specifications or of the provenance of the embedded ceremony data. Manual review connects `G2Spec.verdict` to the private decoding stage of `coreVerify`: its fixed-size type supplies length 96, then it calls `G2.uncompress` and `G2.inSubgroup`. The stage accepts canonical infinity. Public-key validation, hash-to-curve and pairing in full signature verification are outside this proof.
 3. **Input and output interpretation.** `ofArray`, `ofU8`, `ofBatch` and the affine conversions preserve bit-vectors, lanes and fields. Coordinates use six little-endian 64-bit Montgomery limbs with R = 2^384; G2 orders c0 before c1 and x before y. G1 and G2 public verdicts normalize through `toAffine`, including all-zero infinity. The G2 kernel conversion reads projective x/y; its bridge to the normalized verdict is proved for decoded finite points with z = 1. KZG's reduced scalar encoding uses four 64-bit Montgomery limbs with R = 2^256. The representation targets blst's 64-bit platform layout.
 4. **Extraction and generated-code preparation.** Charon's MIR semantics, Aeneas's translation and the deterministic adaptations in `prepare-extraction.py` described in [reproduction](#reproducing-the-extraction). The pinned Aeneas revision is `d9733413`, Charon is `ed22146b`, and Charon uses nightly-2026-02-07 rather than the workspace's Rust 1.91.0. `extract.sh` verifies checkout pins and available binary version information; a Charon binary from another commit with the same reported crate version is not distinguished. The extraction targets x86_64, including its BLS chunk helpers, Fr FFT and verifier MSM8 kernels. The theorem includes the scalar route of this extraction; it does not check a separate non-x86_64 extraction. Transfer to other target configurations relies on their feature detection and source gating. Exact `--check` reproduction detects drift, not translator bugs.
-5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents; their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand; their source code is not refined by the extraction. The extraction contains the portable scalar, field, G1, MSM, pairing and SHA implementations themselves.
-6. **CPU observations and G2 fallback.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Its mixed-state model does not establish hardware support for arbitrary stored routes; constructor-produced states align those routes with stable CPU observations. `BlsExternals` supplies only the deterministic total `uncompressG2` observation for the signature-decoding path. `UncompressG2.BlstMatchesSpec` requires exact agreement on every 96-byte input, including acceptance, affine limbs and infinity. The external wrapper returns `ok`, so termination and absence of Rust-level failure for that opaque call are assumed. KZG does not use this external. The blst structs retained in generated KZG types are data containers, not evidence of calls to blst operations.
-7. **Runtime setup for literal-upstream corollaries.** Only `verify_eq_upstream` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
+5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents. Their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand. The extraction does not refine their source code. The extraction contains portable scalar, field, G1, MSM and SHA implementations, and the lane pairing implementation.
+6. **CPU observations and blst boundaries.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Arbitrary stored routes need matching hardware support in real execution. `BlsExternals` supplies the signature-only G2 decoder. `UncompressG2.BlstMatchesSpec` is its agreement premise. `KzgExternals` separately supplies G1 decoding and the scalar pairing wrapper. `UncompressG1.FallbackCorrect` requires exact verdicts on every 48-byte input when SIMD is unavailable. The scalar case of `Kzg.BlstPairing.CorrectFor` requires exact verdicts for reduced valid G1 inputs, including infinity, and the two fixed KZG G2 points. These opaque functions return `ok`, so their termination and absence of Rust-level failure are assumed. The IFMA verifier headlines require neither agreement law. The extender calls neither operation.
+7. **Runtime setup for literal-upstream corollaries.** `verify_eq_upstream`, `verify_eq_upstream_ifma` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
 Every `--opaque` item in `extract.sh` has this interpretation:
 
@@ -235,6 +238,8 @@ Every `--opaque` item in `extract.sh` has this interpretation:
 | `ifma_available` | The fixed SIMD Boolean in `RuntimeFeatures`. |
 | `sha_available` | The fixed SHA Boolean in `RuntimeFeatures`. |
 | `bmi2_available` | The fixed BMI2 Boolean in `RuntimeFeatures`. |
+| `bls::uncompress_in_g1_blst` | The non-IFMA G1 observation in `KzgExternals`. |
+| `kzg::blst_pairing::pairing_check` | The scalar two-pair wrapper observation in `KzgExternals`, including affine conversion and infinity filtering. |
 | `bls::uncompress_in_g2_blst` | The signature decoder observation in `BlsExternals`; excluded from KZG. |
 | `sha256::extensions::load_bytes` | Raw-pointer byte loads replaced by little-endian 32-bit lane packing. |
 | `sha256::extensions::load_words` | Raw-pointer word loads replaced by 32-bit lane packing. |
@@ -281,7 +286,6 @@ python3 -I controls/sha-mutation-check.py
 python3 -I controls/decoder-mutation-check.py
 python3 -I controls/msm-mutation-check.py
 python3 -I controls/tower-mutation-check.py
-python3 -I controls/portable-tower-mutation-check.py
 python3 -I controls/lane-tower-mutation-check.py
 python3 -I controls/pairing-table-mutation-check.py
 python3 -I controls/pairing-loop-mutation-check.py
@@ -327,9 +331,9 @@ Aeneas records each item's origin in a `Source: '<file>', lines <span>` comment.
 
 If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean`, `Literals.lean`, `Funs.lean` and `controls/ExtractedLiterals.lean`, and follow `lean/README.md`. Rebuild and fix the affected BLS or KZG refinements. Update the models and specification proofs where behaviour changes. Then rerun the controls, Lean differential tests and Rust checks, and update the BLS source table below when its files change. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
-The extraction roots are `crate::bls::decompress_g2::decompress`, `crate::bls::uncompress_in_g1`, `crate::bls::uncompress_in_g2`, `crate::kzg::verify` and `crate::kzg::cell_extender`. They reach both KZG types' public methods and `Default` implementations, IFMA kernels, `CurveWork`, streaming SHA and the portable arithmetic, decoder, MSM and pairing implementations. G2's `uncompress_in_g2_blst` remains opaque for signatures. `prepare-extraction.py` then:
+The extraction roots are `crate::bls::decompress_g2::decompress`, `crate::bls::uncompress_in_g1`, `crate::bls::uncompress_in_g2`, `crate::kzg::verify` and `crate::kzg::cell_extender`. They reach both KZG types' public methods and `Default` implementations, IFMA kernels, `CurveWork`, streaming SHA, portable arithmetic, the portable decoder and MSM. G1 decoding without IFMA and scalar pairing are opaque operations in `KzgExternals`. G2's `uncompress_in_g2_blst` is opaque for signatures. `prepare-extraction.py` then:
 
-- introduces a section with `RuntimeFeatures` and the G2-only `BlsExternals`; Lean retains a parameter only where a generated definition uses it;
+- introduces a section with `RuntimeFeatures`, `KzgExternals` and the G2-only `BlsExternals`; Lean retains a parameter only where a generated definition uses it;
 - quotes the eight generated `full` identifiers;
 - supplies structural `Array.make` length witnesses;
 - recursively hoists G1 setup rows and pairing-table steps/lanes into the separate `Extracted/Literals.lean` module, preserving each literal's type, order and contents.
@@ -338,7 +342,7 @@ Both extraction modes retain raw `Funs.lean` in temporary storage and independen
 
 The separate literal module prevents ordinary function edits from rebuilding the large tables. `controls/ExtractedLiterals.lean` checks equality with the unhoisted extracted literals. Preparation validates required entry points and literal structure. Extraction fixtures accept source-span changes and reject semantic drift, malformed literals and missing or duplicated entries.
 
-All adaptations run before drift comparison. Only numeric source spans are masked; the rest of the generated files is compared exactly. Handwritten external files are preserved by regeneration. The explicit `portable.fp2.Fp2.new` helper is included in the fresh extraction so the nested pairing-table write contains the constructed Fp2 value.
+All adaptations run before drift comparison. Only numeric source spans are masked. The rest of the generated files is compared exactly. Handwritten external files are preserved by regeneration.
 
 ### Project map
 
@@ -444,9 +448,9 @@ The G1 checks are:
 
 - `g1::replay_vectors` runs the G1 replay check.
 - `g1::recorded_matches_blst` checks the G1 recording against blst.
-- `lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt` compares the model, extraction and recorded blst verdicts. The G1 public theorem uses the proved actual portable decoder; recorded scalar results cannot be installed as its fallback. These finite comparisons supplement the universal decoder proof.
+- `lake exe differential ../decompress_g2_vectors.txt --g1 ../decompress_g1_vectors.txt` compares the model, extraction and recorded blst verdicts. The G1 wrapper uses the proved portable decoder for IFMA tails and undecided lanes, and recorded blst observations without IFMA. These finite comparisons supplement the portable decoder proof and check samples of the external law.
 
-The pinned specification and blst 0.3.16 agree on canonical compressed infinity: `0xc0` followed by 47 zero bytes is accepted; other infinity encodings are rejected. `validateKzgG1` explicitly allows this encoding, and `G1.uncompress` returns `G1.zero`. blst's `POINTonE1_Uncompress_Z` zeroes the affine output for it, and `blst_p1_affine_in_g1` accepts it. The kernel marks compressed infinity lanes undecided, and the public G1 wrapper handles them through its portable decoder. The Lean infinity lemmas prove the specification verdict and kernel fallback behavior; the vector file separately records blst agreement.
+The pinned specification and blst 0.3.16 agree on canonical compressed infinity. Both accept `0xc0` followed by 47 zero bytes and reject other infinity encodings. `validateKzgG1` explicitly allows this encoding. `G1.uncompress` returns `G1.zero`. blst's `POINTonE1_Uncompress_Z` zeroes the affine output for it. `blst_p1_affine_in_g1` accepts it. The kernel marks compressed infinity lanes undecided. The public G1 wrapper handles them through its portable decoder on IFMA and blst otherwise. The Lean infinity lemmas prove the specification verdict and kernel fallback behavior. The vector file separately records blst agreement.
 
 `decompress_g2_vectors.txt` holds 105 batches of eight encodings, 840 lanes, with all three masks, every lane's `points` as `decompress` returned them, and a scalar blst verdict on every lane. The batches mix seeded cases from `src/bls/tests/g2_cases.rs`, the generator the crate's own tests use, with hand-picked edge cases: flag combinations, infinity encodings, coordinates at and around p in every word, x with no square root, points outside G2 and of small order, and both early returns, taken and not taken.
 
@@ -485,7 +489,7 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `downstream/` | A separate Lake package transports both groups' list results across independently extracted structs, checks a generated-spelling caller with only downstream externals, and guards the root-name collision and proof axiom lists. |
 | `G2Wrapper.lean` | Wrong SIMD routing, thresholds, ignoring undecided lanes and dropping accepted kernel results change observable verdicts (the accepted-result mutation is a compiled `#eval`). Tail controls distinguish scalar and kernel routing after a full chunk; reading the chunk's first input on fallback changes the verdict. Rejecting infinity, accepting malformed infinity or returning wrong affine limbs violates `BlstMatchesSpec`; unequal lengths fail. These controls do not claim to observe padding contents. |
 | `G2Consumer.lean` | The public G2 list and model corollaries and length mismatch result can be applied from a separate module; a specification-backed external satisfies the universal premise at both SIMD settings. |
-| `G1Consumer.lean` | A downstream module imports and applies the G1 public theorem without a decoder-contract premise. |
+| `G1Consumer.lean` | A downstream module applies the general G1 theorem under its scoped decoder law. It applies the IFMA result with no blst agreement premise. |
 | `Statements.lean` | Changed constants and formulas break their proof scripts, including G1's Scott-membership proof when the model drops the y negation. |
 | `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also shows that the early-carry model expression depends on its shift. |
 | `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
@@ -507,8 +511,8 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 
 | File | sha256 | git blob |
 |---|---|---|
-| `mod.rs` | `e980912da65a7c55fc2d21af13928589e243f5bd44ec57f41d32533a5dc626d0` | `93a808f992ed56665b6602ad54a98e04bc072398` |
-| `constants.rs` | `920097ea1f31efd78b3267a998fbef5e7bde79886203f8769b3338f0accb99df` | `a26bd1e4105a84d831b852086f29ece76292381c` |
+| `mod.rs` | `2a78f180ef13e74283ff1476ff1391ea185ecfd18a98a9848f2ddfb36184ca9b` | `4f2f2abcb7363b5b9a554b6fb2e10fae23894878` |
+| `constants.rs` | `271dee35efa3f287af9f7f595f40f3a4c33eccf2ce5e6fd78ecf7c0feb09ee15` | `57e42041a030367d6feafacaeb4cb9fe3a01c791` |
 | `fp8.rs` | `a9e98e79112affc6b40ddf6a46e1364cc8a6834eecceac8c147805cec8cbd60e` | `2ae5aaec3ad3d7b25d3c70b762422e4ad81f1edf` |
 | `fp2x8.rs` | `ca765c2445eb8e27e63e3715b582ea7048c3edac48f5d59a2656559fd156a38a` | `cd57da198083218c44eb0b544b970dd9b0828ff9` |
 | `g1x8.rs` | `d9a036baa23fbf280ca404dec08048ba62738a35876cf91d5cc02bb9b355cbfd` | `6a540978f71d1a5201c2a056f5f7e5361929fe7d` |
@@ -523,14 +527,14 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 
 The MSM uses `msm8/`, shared `fp8.rs` inversion and `g1x8.rs` complete point operations.
 
-G1 coverage includes `uncompress_in_g1`, `decompress_g1_chunk`, the decoder, group operations and shared arithmetic. G1 portable decoding is a generated-code contract; CPU observations remain external inputs. G2 coverage includes `uncompress_in_g2`, `decompress_g2_chunk`, the decoder, group operations and shared arithmetic. The G2 wrapper refinement proves the chunk routing, padding bounds, fallback calls and output writes. The correspondence to `coreVerify` is described in the consolidated trust list. The extraction also includes blst 0.3.16's field and affine structures from `src/bindings.rs`.
+G1 coverage includes `uncompress_in_g1`, `decompress_g1_chunk`, the decoder, group operations and shared arithmetic. Portable G1 decoding for IFMA tails and undecided lanes has a proved generated-code contract. The non-IFMA route uses the scoped blst decoder law. CPU observations are external inputs. G2 coverage includes `uncompress_in_g2`, `decompress_g2_chunk`, the decoder, group operations and shared arithmetic. The G2 wrapper refinement proves the chunk routing, padding bounds, fallback calls and output writes. The consolidated trust list describes the correspondence to `coreVerify`. The extraction also includes blst 0.3.16's field and affine structures from `src/bindings.rs`.
 
 To check for changes since the proof, run this from `crates/crypto_simd/src/bls`:
 
 ```sh
 sha256sum -c <<'EOF'
-e980912da65a7c55fc2d21af13928589e243f5bd44ec57f41d32533a5dc626d0  mod.rs
-920097ea1f31efd78b3267a998fbef5e7bde79886203f8769b3338f0accb99df  constants.rs
+2a78f180ef13e74283ff1476ff1391ea185ecfd18a98a9848f2ddfb36184ca9b  mod.rs
+271dee35efa3f287af9f7f595f40f3a4c33eccf2ce5e6fd78ecf7c0feb09ee15  constants.rs
 a9e98e79112affc6b40ddf6a46e1364cc8a6834eecceac8c147805cec8cbd60e  fp8.rs
 ca765c2445eb8e27e63e3715b582ea7048c3edac48f5d59a2656559fd156a38a  fp2x8.rs
 d9a036baa23fbf280ca404dec08048ba62738a35876cf91d5cc02bb9b355cbfd  g1x8.rs
@@ -556,8 +560,8 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 | `Representation.lean` | Byte, Montgomery-limb, affine and Jacobian interpretations |
 | `ScalarContracts.lean`, `Fr/` | Proved scalar arithmetic and byte laws, with shared word lemmas in `Refines/Word64.lean` |
 | `ShaContracts.lean`, `PortableFp.lean`, `PortableMsmContract.lean`, `PairingContract.lean` | Proved generated-component contracts |
-| `PairingCorrect.lean` | Complete lane and portable pairing routes, point adapters and the proved `PairingCorrect` statement |
-| `CurveWorkState.lean`, `PairingTable.lean`, `PairingTableBounds.lean`, `PairingTableConstruction.lean` | Exact table preservation, semantic invariant, literal certificates and generated constructor proof |
+| `PairingCorrect.lean` | Lane pairing and the proved `PairingCorrect` statement; `BlstPairing.lean` supplies the scalar boundary |
+| `CurveWorkState.lean`, `PairingTable.lean`, `PairingTableBounds.lean`, `CurveWorkConstruct.lean` | Route preservation, unrestricted curve scratch, lane-table bounds and workspace construction |
 | `Model.lean` | Spec decomposition, column-aggregated IFFT and intermediate computations |
 | `IOLawful.lean` | Monad laws missing from Lean v4.29.1's IO interface |
 | `SpecBridge.lean` | Full-result correspondence between the pure model and upstream |
@@ -577,7 +581,7 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 
 `column_ifft_eq_interpolation` states T1 for aligned arrays, 64 field elements per cell and indices below 128. These are intermediate invariants established by the front half, not new assumptions on untrusted inputs. `spec_eq_column_ifft` states T2 for all spec inputs, preserving both the Boolean and errors as `KzgM` actions. `RliInputs` retains equality of the powers and index lengths: T1 could omit it, but the front half establishes it and the refinement uses aligned batches. The proofs establish index bounds and compression/decompression round trips explicitly; Lean's logical `get!` and panic fallback values do not certify that the executable avoids those branches.
 
-The streaming challenge proofs accumulate the exact upstream transcript in both SHA paths, then use the proved reducing scalar decode. The inverse FFT proof covers the generated recursive transform and scaling. The aggregation, bit-reversed column copy and shift-add loops are proved separately; `InterpolationModel.lean` proves that their pure composition equals `columnRli`, including skipped zero columns. The interpolation commitment and pairing proofs compose these loops with the portable field/MSM and lane/portable pairing contracts. `ModelPairing.lean` proves the corresponding pure-model computation, including successful compression round trips and empty linear combinations. `glue_refinement` combines every generated verifier branch with that model under the state invariant and slice-size premises. It preserves the invariant for subsequent calls. `InterpolationIdentity.lean` proves that the column IFFT equals the spec's per-cell interpolation. It interprets coefficient arrays as Mathlib polynomials, relates the spec interpolation loops to Lagrange interpolation, and proves the shifted IFFT has the same evaluations at all 64 distinct coset nodes. Interpolation linearity then regroups the weighted cells by column. Both arrays retain size 64, so polynomial injectivity recovers exact array equality, including trailing zero coefficients. `ModelSpec.lean` derives the intermediate shape contract from successful decoding and replaces the interpolation step while preserving the full `Except` result and arbitrary setup-loader actions. These proofs establish `column_ifft_eq_interpolation` (T1) and `spec_eq_column_ifft` (T2).
+The streaming challenge proofs accumulate the exact upstream transcript in both SHA paths, then use the proved reducing scalar decode. The inverse FFT proof covers the generated recursive transform and scaling. The aggregation, bit-reversed column copy and shift-add loops are proved separately. `InterpolationModel.lean` proves that their pure composition equals `columnRli`, including skipped zero columns. The interpolation commitment and pairing proofs compose these loops with the proved portable field/MSM and lane pairing contracts. They also use the scoped scalar blst pairing law. `ModelPairing.lean` proves the corresponding pure-model computation, including successful compression round trips and empty linear combinations. `glue_refinement` combines every generated verifier branch with that model under the state invariant and slice-size premises. It preserves the invariant for subsequent calls. `InterpolationIdentity.lean` proves that the column IFFT equals the spec's per-cell interpolation. It interprets coefficient arrays as Mathlib polynomials. It relates the spec interpolation loops to Lagrange interpolation. It proves the shifted IFFT has the same evaluations at all 64 distinct coset nodes. Interpolation linearity then regroups the weighted cells by column. Both arrays retain size 64, so polynomial injectivity recovers exact array equality, including trailing zero coefficients. `ModelSpec.lean` derives the intermediate shape contract from successful decoding. It replaces the interpolation step while preserving the full `Except` result and arbitrary setup-loader actions. These proofs establish `column_ifft_eq_interpolation` (T1) and `spec_eq_column_ifft` (T2).
 
 `SpecBridge.lean` proves `verifyWith_pure` for every setup, RLI step and input, preserving the complete `Except` result. `g1Lincomb_eq` connects the pure linear combination to upstream; `upstream_eq_verifyWith` composes the front and implementation decompositions used by the literal-upstream corollaries. `IOLawful.lean` proves `LawfulMonad (EST ε σ)` and derives the IO instance missing from Lean v4.29.1's interface.
 
@@ -595,7 +599,7 @@ The portable compressor proves byte loading, all 64 schedule words and rounds, f
 
 `SpecMath.lean` relates this transform to polynomial evaluation on both halves of the specification's domain. `Spec.lean` equates the complete `computeCells` action with the model, retaining errors; `SpecBytes.lean` proves serialization sizes and byte indexing. `Acceptance.lean` connects successful decoding to canonical big-endian field elements.
 
-`Primitives.lean` proves construction from the shared roots refinement. `Decode.lean` proves decoding and early rejection, `Scale.lean` proves coefficient shifting, and `WriteStep.lean`, `WriteBytes.lean` and `Write.lean` prove every output byte and the first-half copy. `Refines.lean` composes the generated operations and preserves `Basic.lean`'s invariant; `Statements.lean` supplies the public results. The roots, scalar FFT and byte bridges use the proved scalar refinements without contract premises. Generated scalar zero, one, roots and inverse-size constants have independent kernel certificates. `Refines/InverseRoots.lean` shares the table-shape proof across 64, 4096 and 8192 entries and derives inverse entries from the root order. `SetupLiterals.lean` certifies the two test-only Rust G2 coordinate literals against `SetupPoints`; those literals are absent from production extraction. Run `python3 controls/setup-literals-check.py` from `proof/lean` to compare all 48 limbs with `src/kzg/setup.rs`. The checker also rejects a changed limb in each literal.
+`Primitives.lean` proves construction from the shared roots refinement. `Decode.lean` proves decoding and early rejection. `Scale.lean` proves coefficient shifting. `WriteStep.lean`, `WriteBytes.lean` and `Write.lean` prove every output byte and the first-half copy. `Refines.lean` composes the generated operations and preserves `Basic.lean`'s invariant. `Statements.lean` supplies the public results. The roots, scalar FFT and byte bridges use the proved scalar refinements without contract premises. Generated scalar zero, one, roots and inverse-size constants have independent kernel certificates. `Refines/InverseRoots.lean` shares the table-shape proof across 64, 4096 and 8192 entries and derives inverse entries from the root order. `SetupLiterals.lean` certifies the two production G2 coordinate literals against `SetupPoints`. It binds those certificates to the extracted definitions. Run `python3 controls/setup-literals-check.py` from `proof/lean` to compare all 48 limbs with `src/kzg/setup.rs`. The checker also rejects a changed limb in each literal.
 
 #### IFMA Fr FFT kernel
 
@@ -645,13 +649,7 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 `Spec/Cyclotomic/FieldBridge.lean` identifies this field with a cubic-over-quadratic ring model by its six Fp2 coordinates. `Schedule.raw` records the three Fp4 squarings and coefficient order of the Rust cyclotomic formula. `field_cyclotomic_square` proves that formula under the Φ12 relation `g^(p^4-p^2+1) = 1`. The unitary condition alone is insufficient; a checked `−1` counterexample distinguishes it. `field_frobenius` proves the coefficient map with factors `ξ^(j(p−1)/6)`. `field_star` identifies conjugation with the `p^6` power. `field_easy_cyclotomic` proves membership for the nonzero easy-part output; zero maps to zero.
 
-`Refines/FrobeniusConstants.lean` certifies both generated coefficient tables, their `2^384` and `2^416` Montgomery factors, canonical values and normalized lane limbs. `Spec/FinalExponentiation.lean` proves the specification's total exponent, multiplicativity and nonzero target-group membership. `Spec/PairingProduct.lean` shares the existing pairing fold and identifies its result with a product of reduced factors, including zero and infinity cases. `Kzg.pairing_correct` proves `PairingCorrect`, which the verifier consumes internally. The portable and lane towers, both generated Miller loops and both optimized final-exponentiation chains have refinements below. The point adapters connect them to the verifier.
-
-### Portable pairing tower
-
-`Portable/Fp2/Product.lean` proves the generated wide multiplication, including both subtraction guards and the reduction capacity bounds. Inputs use canonical six-word Montgomery coordinates; the proofs construct canonical outputs for both BMI2 branches. `Portable/Fp6.lean` and `Portable/Fp12/Arithmetic.lean` refine multiplication, optimized squaring, sparse-line multiplication, conjugation, equality and total inversion, including zero. Their `Rep` predicates apply `PortableFpRep` to every coefficient. The `encode` functions choose those exact canonical coordinates, and `rep_eq_encode` relates every represented input to its encoding.
-
-`Portable/Fp12/Cyclotomic.lean:cyclotomic_raw_encoded` proves agreement with `Schedule.raw` for every coefficient tuple. `cyclotomic_square_encoded` separately requires the Φ12 relation; unitary membership alone cannot justify it. `Portable/Fp12/Frobenius.lean:portable_entry_decodes` states each portable table entry's decoded value as `ξ^(j(p−1)/6)`. `portable_entry_encoded` ties those entries to the portable arithmetic's `2^384` Montgomery encoder. The generated Frobenius map refines the specification's p-th power for every input. `LaneTower/Constants.lean:lane_entry_decodes` gives the lane table's decoded entries using the arithmetic model's `decode`. `lane_radix` identifies its `R` with `2^416`, and `lane_entry_bounds` certifies normalized canonical limbs.
+`Refines/FrobeniusConstants.lean` certifies the lane coefficient table at Montgomery radix `2^416`, its canonical values and normalized limbs. `Spec/FinalExponentiation.lean` proves the total exponent, multiplicativity and target-group membership. `Spec/PairingProduct.lean` identifies the pairing fold with a product of factors, including zero and infinity. `Kzg.pairing_correct` proves the lane implementation contract from the lane tower, Miller loop and optimized final exponentiation.
 
 ### Lane pairing tower schedules
 
@@ -673,24 +671,24 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 `ProjectiveLine.lean` relates the generated G1 factors `[Z³, XZ, Y]` to affine evaluation through a nonzero subfield scale. `SetupEmbedding.lean` identifies the actual G2 setup points with the certified walks. `MillerFactors.lean` and `CombinedMiller.lean` prove the simultaneous two-pair fold's final-power agreement with the product of specification factors, including G1 infinity skips and negative-z conjugation.
 
-`MillerSchedule.lean` certifies the bit-to-row mapping and both counter increments. `MillerLoop.lean` shares the countdown composition across representations, including the omitted first square. `PortableLines.lean`, `PortableFactors.lean` and `PortableMiller*.lean` connect the actual portable line applications, preparation and complete loop to `combinedMiller` followed by conjugation.
+`MillerSchedule.lean` certifies the bit-to-row mapping and counter increments. `MillerLoop.lean` composes the countdown schedule, including the omitted first square. `Spec/Line.lean` defines the shared line value under the stable name `Portable.Fp12.line`. `Pairing/LineFactors.lean` defines its factor interpretation.
 
-`LaneTable.lean` connects every loaded row to the same decoded coefficients using the lane model's `2^416` radix. `LaneLine.lean` and `LaneLines.lean` prove both actual permutations and presence-controlled sparse multiplications. `LaneFactors.lean` proves factor preparation and field-zero presence detection; a normalized `z=p` is skipped. `LaneMiller*.lean` composes the complete lane loop with final conjugation. `PortableLines.PointsRep` requires exact canonical encodings; `LaneLines.PointsRep` uses `Fp8.Holds` for all eight coordinate lanes. `Kzg/PairingCorrect.lean` connects these coordinate representations to the existing `PortablePairRep` and `LanesPairRep` predicates.
+`LaneTable.lean` connects loaded rows to decoded coefficients at radix `2^416`. `LaneLine.lean` and `LaneLines.lean` prove the permutations and presence-controlled sparse multiplications. `LaneFactors.lean` proves factor preparation and field-zero presence detection, including normalized `z=p`. `LaneMiller*.lean` composes the loop with conjugation. `LaneLines.PointsRep` uses `Fp8.Holds` for all eight coordinate lanes. `Kzg/PairingCorrect.lean` bridges it to `LanesPairRep`.
 
 ### Optimized final exponentiation
 
 `Pairing/FinalModel.lean` records the common generated hard-part schedule. A shared schedule-map lemma gives its field exponent, and a kernel certificate identifies that exponent with three times the specification exponent modulo `p^12-1`. `FinalVerdict.lean` proves that the optimized result is the cube of the specification result, including zero. The specification's nonzero result has r-torsion; `gcd(3,r)=1` therefore gives equal identity verdicts. Zero is rejected by both.
 
-`FinalExponent.Good`, defined in `FinalModel.lean`, means the field value is zero or its Φ12 power is one. `FinalInvariant.lean` proves its closure properties. The easy part constructs this invariant for every input, and multiplication, squaring, conjugation, parameter exponentiation and Frobenius preserve it. This supplies each optimized-square premise internally. `ExponentLoop.lean` shares the parameter-exponent countdown proof, while `PortableExponent.lean` and `LaneExponent.lean` connect the actual generated loops and their negative-parameter conjugation.
+`FinalExponent.Good`, defined in `FinalModel.lean`, means the field value is zero or its Φ12 power is one. `FinalInvariant.lean` proves closure. The easy part supplies this invariant for every input, so the optimized-square premises are discharged internally. `ExponentLoop.lean` proves the countdown schedule. `LaneExponent.lean` connects the generated loop and negative-parameter conjugation.
 
-`FinalRun.lean` shares the final-chain composition through an internal `Operations.Refines` record. Both route modules construct that record from proved tower operations. `FinalExponent.Portable.final_verdict` applies to every canonical encoding; `FinalExponent.Lanes.final_verdict` applies to every `LaneTower.Rep` input. Both state equality with the total specification verdict without a nonzero or cyclotomic input premise. `FinalExponent.Portable.final_cube_encoded` and `FinalExponent.Lanes.final_cube_refines` describe the cube-valued outputs; only their identity verdicts equal the specification verdict.
+`FinalRun.lean` composes the final chain through `Operations.Refines`, constructed from proved lane operations. `FinalExponent.Lanes.final_verdict` applies to every `LaneTower.Rep` input, with no nonzero or cyclotomic input premise. `final_cube_refines` describes its cube-valued output. Its identity verdict equals the specification verdict.
 
 
 ### Pairing integration
 
 `Pairing/Verdict.lean` turns `FinalEq` into verdict equality and expands the specification's two-pair fold through `toField_pairingFold`. `combined_verdict` unfolds `setupPoint` to `[s^64]G2` and `−G2`.
 
-`Kzg/PairingCorrect.lean` unfolds both generated `pairing_check` functions and composes Miller execution, final exponentiation and identity testing. The portable adapter obtains canonical encodings from `G1Rep`; the lane adapter chooses the coordinate witnesses supplied by `LanesPairRep`. Pairing factors depend only on `isInfinity` and `toAffine`, so the adapters preserve the verdict across equivalent Jacobian representatives. `pairing_correct` constructs the unchanged `PairingCorrect` statement, including its existing validity hypotheses. The headlines and their consumers discharge it internally.
+`Kzg/PairingCorrect.lean` composes the generated lane Miller loop, final exponentiation and identity test. The scalar sum adapter is proved in `Kzg/ScalarPairingInputs.lean`, using portable G1 add and negation. `Kzg/BlstPairing.lean` applies the scoped external law to those sums and the certified extracted G2 literals. Both adapters preserve the pairing verdict across equivalent Jacobian representatives.
 
 ### Portable MSM components
 
@@ -706,7 +704,7 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 `Group.lean`, `Join.lean`, `Window.lean` and `Sum.lean` prove complete mixed additions over each packed bucket, weighted window sums, doubling and the outer Horner fold. These proofs share the existing weighted-step and Horner identities and the signed-reference/group-sum bridge with MSM8.
 
-`Finish.lean` composes both round outcomes, refilling rejected rounds from preserved scalar halves and original points before complete summation. `FiniteCore.lean` and `Chunk.lean` include infinity filtering and the empty case. `Refines.lean` proves the unbounded outer chunk fold and constructs the unchanged `PortableMsmCorrect` contract. All verifier consumers discharge this contract and the pairing contract internally.
+`Finish.lean` composes both round outcomes, refilling rejected rounds from preserved scalar halves and original points before complete summation. `FiniteCore.lean` and `Chunk.lean` include infinity filtering and the empty case. `Refines.lean` proves the unbounded outer chunk fold and constructs the unchanged `PortableMsmCorrect` contract. All verifier consumers discharge the portable MSM contract internally. The lane pairing contract is also proved. Scalar pairing uses the scoped blst law.
 
 ### Verifier MSM8 kernel
 
@@ -744,7 +742,7 @@ The v0.3.16 source audit covered Fr arithmetic and input-conversion wrappers in 
 
 `embeddedSetup` is the pinned spec's private `TrustedSetup.buildEmbedded` value, accessed with Batteries' `open private`. `embedded_setup_matches` proves equality of the 64 G1 compressed encodings used by the verifier, successful G2 decodes at indices 0 and 64, subgroup membership and successful G1 validation.
 
-The proof compares the G1 Rust constants with the pinned specification and retains independent certificates for its two fixed G2 points. Generated KZG setup stores the G1 vector; the fixed pairing table supplies its G2-dependent data. `SetupPoints.lean` checks explicit witnesses for all 64 G1 points and both G2 points. Structural exponentiation and scalar multiplication reduce in the kernel, with general lemmas relating them to the spec operations. The certificate uses only the three standard axioms and needs no separate setup-file assumption. Relating the pinned spec's data to Ethereum's intended ceremony remains part of trusting the specification.
+The proof compares the G1 Rust constants with the pinned specification and retains independent certificates for its two fixed G2 points. Generated KZG setup stores the G1 vector. IFMA pairing uses the fixed line table. Scalar pairing uses the certified extracted affine G2 literals. `SetupPoints.lean` checks explicit witnesses for all 64 G1 points and both G2 points. Structural exponentiation and scalar multiplication reduce in the kernel, with general lemmas relating them to the spec operations. The certificate uses only the three standard axioms and needs no separate setup-file assumption. Relating the pinned spec's data to Ethereum's intended ceremony remains part of trusting the specification.
 
 ### Specification target and evidence
 
@@ -770,19 +768,16 @@ Paths below are relative to `lean/controls/`.
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
 | `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
 | `pairing-table-mutation-check.py` | After the build: copies the live generated table and checks a changed limb, tangent numerator, normalizer sign and denominator condition against the kernel certificate; original and reformatted tables pass. |
-| `pairing-loop-mutation-check.py` | After the build: generated factor indices, table rows, presence masks, permutations, loop bounds, bit/counter steps, first squaring, Z³ preparation, final conjugation and omitted final exponentiation mutations fail the actual portable or lane refinement proofs with ordinary proof errors; original and reformatted definitions pass. |
-| `FinalExponentiation.lean` | The easy output at zero fails unconditional Φ12 membership; the numeric exponent differs without the factor of three. Both generated final-exponentiation verdicts reject zero and accept one. |
-| `final-exponent-mutation-check.py` | Run after the build. Changes to the generated exponent bit, multiplication base, parameter conjugation, inverse, Frobenius step, square input and final product fail their named refinement proofs with ordinary errors; original and reformatted definitions pass. |
+| `pairing-loop-mutation-check.py` | Run after the build. Mutations cover generated lane permutations, table rows, presence selection/complement, bit decrements, final conjugation and omitted final exponentiation. Each fails the actual lane refinement proofs with ordinary proof errors. Original and reformatted definitions pass. |
+| `FinalExponentiation.lean` | The easy output at zero fails unconditional Φ12 membership. The numeric exponent differs without the factor of three. The generated lane final-exponentiation verdict rejects zero and accepts one. |
+| `final-exponent-mutation-check.py` | Run after the build. Changes to the generated multiplication base, parameter conjugation, square input and final product fail their named refinement proofs with ordinary errors. Original and reformatted definitions pass. |
 | `PairingMiller.lean` | A normalized lane whose raw value is p holds field zero; the actual generated zero-mask call returns all bits set and both pairing presence bits are false. |
 | `lane-tower-mutation-check.py` | After the build: generated subtraction order, multiplication by ξ, packing, unpacking, the product loop, square and line recombination, conjugation, Frobenius coefficient selection, cyclotomic recombination, inverse determinant sign and identity-mask coverage reject mutations with ordinary proof errors; original and reformatted definitions pass. |
-| `PortableTower.lean` | Total inverse at zero; a proved rejection of unconditional cyclotomic squaring; generated interpreter samples on both BMI2 branches and canonical boundary values. |
-| `portable-tower-mutation-check.py` | After the build: copies live generated definitions and rechecks their refinements. Reversed wide subtraction, a wrong sparse-line coefficient, a cyclotomic sign, a Frobenius index and a table limb fail named proofs. |
 | `TowerField.lean` | Total inverse and zero-power behavior, the coordinate round trip, zero rejection and field/target-group axioms. |
 | `Cyclotomic.lean` | A unitary `−1` outside Φ12 makes the cyclotomic formula return the wrong square, including in the field model. |
 | `tower-mutation-check.py` | After the build: original/reformatted sources pass; changed Fp4 pairing, output sign, inverse sign and Montgomery radix fail named proofs. |
-| `PairingSamples.lean` | Interpreter samples of portable pairing against the spec, including a nonzero true setup relation and its rejected sign mutation. |
-| `KzgPairingTable.lean` | A changed first coefficient violates the semantic table invariant; changed scratch with the same table is accepted. |
-| `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder; the signature-path control still reaches it. |
+| `KzgBlstBoundary.lean` | Constant-false decoder and pairing observations violate the scoped laws at infinity. A specification-defined dictionary witnesses their consistency together. This does not prove blst satisfies them. Arbitrary observations permit IFMA verification. |
+| `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder. The signature-path control reaches it. IFMA verifier/G1 and extender headline types exclude both blst laws. Adding either law is rejected. |
 | `ShaGenerated.lean` | Generated updates reject a dropped length wrap; finish rejects a missing padding marker and reversed digest bytes. The proved `ShaCorrect` is checked with no premise. |
 | `ShaExtensions.lean` | The ABEF/CDGH packing definitions differ on the fixture. Instruction samples distinguish an omitted shuffle, reused message words and omitted byte swapping. |
 | `ShaPortable.lean` | Generated byte loading, schedule expansion and rounds reject reversed byte order, the wrong sigma function and a zeroed round constant. |
@@ -797,7 +792,6 @@ Paths below are relative to `lean/controls/`.
 | `PortableDecode.lean` | Generated scalar decoding accepts canonical infinity, rejects a nonzero infinity tail and x = 0, enforces x < p, and retains a canonical nonzero x. Paired decoding preserves the order of an accepted infinity and a rejected zero-x encoding. |
 | `PortableG1.lean` | Generated doubling preserves infinity; complete projective and affine addition handle opposite points. The scalar Scott test accepts the generator and rejects a false result. |
 | `PortableFpInverse.lean` | Halving retains the incoming high bit; odd coefficients require the modulus correction; the one test checks upper words. Inversion covers zero and one and changes two. A zero factor in the four-element batch yields four zero outputs; four ones remain ones. |
-| `PortableFpWide.lean` | Wide products retain the seventh word and last row. Subtraction retains borrow correction and rejects ordered underflow; reduction excludes a noncanonical modulus result. |
 | `PortableFpPowers.lean` | Conversion removes the Montgomery scale; sign tests distinguish 1 and −1; zero roots succeed and the pair result retains both validity bits. |
 | `PortableFpCorrect.lean` | Canonical wraparound and both BMI2 wrappers preserve Montgomery encoding; plain-one products and noncanonical modulus representatives are rejected. |
 | `PortableFpReduction.lean` | Generated reduction maps the modulus to zero; the split product retains a high word shifted across the six-word boundary. |
@@ -805,7 +799,7 @@ Paths below are relative to `lean/controls/`.
 | `FrBytes.lean` | Canonical decoding rejects r; digest reduction accepts the maximal 256-bit value. Generated decoding and serialization exclude reversed bytes. |
 | `InverseRoots.lean` | The generated inverse table excludes forward ordering; the root-order proof rejects a wrong inverse exponent. |
 | `SetupLiterals.lean` | The certified G2 literal excludes the wrong generator sign. |
-| `setup-literals-check.py` | Both extraction modes require all 48 test-only Rust G2 limbs to match their Lean transcription; each literal rejects a single-limb mutation. |
+| `setup-literals-check.py` | Both extraction modes require all 48 production Rust G2 limbs to match their Lean transcription. A single-limb mutation in either literal is rejected. |
 | `KzgMathematical.lean` | Bit reversal, inverse coset-shift direction and inverse FFT scaling. |
 | `KzgSetupBoundary.lean` | Replacing embedded G2 point 64 with infinity violates the setup match. |
 | `InterpolationKernel.lean` | Wrong inverse-size shift factors or used-column flags violate the generated contracts. Unnormalized first products violate bounded DIT input. Noncanonical cells are rejected. Canonical acceptance and normalization supply positive controls. |
