@@ -4952,6 +4952,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "silver_chain_spec",
+ "silver_crypto_simd",
  "silver_hashing",
  "silver_log",
  "silver_ssz",

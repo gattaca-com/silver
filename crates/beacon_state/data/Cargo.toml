@@ -10,6 +10,7 @@ silver_chain_spec.workspace = true
 silver_log.workspace = true
 silver_ssz.workspace = true
 silver_hashing.workspace = true
+silver_crypto_simd.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 blst.workspace = true
@@ -21,6 +22,8 @@ thiserror.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+# Enable the IFMA decoder in this crate's tests on supported CPUs.
+silver_crypto_simd = { workspace = true, features = ["simd"] }
 criterion.workspace = true
 rand.workspace = true
 snap.workspace = true

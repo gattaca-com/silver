@@ -1,6 +1,9 @@
 use blst::min_pk::{PublicKey, SecretKey};
 
-use super::{FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, validator_hash};
+use super::{
+    FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, finalized::DECODE_CHUNK,
+    validator_hash,
+};
 use crate::{
     B256, Withdrawals,
     merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_list, merkleize, uint64_chunk},
@@ -417,28 +420,74 @@ const INVALID_PUBKEYS: [BLSPubkey; 2] = {
     [infinity, outside_g1]
 };
 
-fn valid_pubkey() -> PublicKey {
+fn valid_pubkey(secret: u64) -> PublicKey {
     let mut scalar = [0u8; 32];
-    scalar[31] = 1;
+    scalar[24..].copy_from_slice(&secret.to_be_bytes());
     SecretKey::from_bytes(&scalar).unwrap().sk_to_pk()
 }
 
-fn registry_ssz(pubkey: BLSPubkey) -> Vec<u8> {
-    let seed = ValSeed { pubkey, ..ValSeed::default() };
+fn registry_ssz(pubkeys: &[BLSPubkey]) -> Vec<u8> {
+    let seeds: Vec<_> =
+        pubkeys.iter().map(|&pubkey| ValSeed { pubkey, ..ValSeed::default() }).collect();
     let mut ssz = Vec::new();
-    FinalizedValidators::with_validators(&[seed]).write_ssz_range(0, 1, &mut ssz).unwrap();
+    FinalizedValidators::with_validators(&seeds).write_ssz_range(0, seeds.len(), &mut ssz).unwrap();
     ssz
 }
 
 #[test]
 fn try_new_rejects_invalid_record_pubkeys() {
-    assert!(FinalizedValidators::try_new(&registry_ssz(valid_pubkey().compress()), None).is_ok());
+    assert!(
+        FinalizedValidators::try_new(&registry_ssz(&[valid_pubkey(1).compress()]), None).is_ok()
+    );
 
     for pubkey in INVALID_PUBKEYS {
         assert!(PublicKey::from_bytes(&pubkey).is_ok(), "fixture must decode");
         assert!(matches!(
-            FinalizedValidators::try_new(&registry_ssz(pubkey), None),
+            FinalizedValidators::try_new(&registry_ssz(&[pubkey]), None),
             Err(ValidatorsDecodeError::InvalidPubkey { idx: 0 })
         ));
+    }
+}
+
+/// Malformed encodings: non-canonical infinity, an unset compression flag,
+/// and x ≥ p.
+const MALFORMED_PUBKEYS: [BLSPubkey; 3] = {
+    let mut infinity_with_tail = [0u8; 48];
+    infinity_with_tail[0] = 0xc0;
+    infinity_with_tail[47] = 1;
+    let mut uncompressed_flag = [0u8; 48];
+    uncompressed_flag[47] = 4;
+    let mut x_above_p = [0xffu8; 48];
+    x_above_p[0] = 0x9f;
+    [infinity_with_tail, uncompressed_flag, x_above_p]
+};
+
+/// Exercises rejection in eight-lane chunks of the first and second batches,
+/// and in the second batch's scalar tail. Supported CPUs use IFMA for full
+/// chunks.
+#[test]
+fn try_new_rejects_invalid_pubkeys_in_batches() {
+    let valid: Vec<_> = (1..=DECODE_CHUNK as u64 + 11).map(valid_pubkey).collect();
+    let compressed: Vec<_> = valid.iter().map(PublicKey::compress).collect();
+
+    let base = FinalizedValidators::try_new(&registry_ssz(&compressed), None).unwrap();
+    let mut group = ValidatorsGroup::new(base, HashFormat::Fixed);
+    let view = group.roll_fresh();
+    for (i, key) in valid.iter().enumerate() {
+        assert_eq!(view.reader().pubkey_decompressed(i), key);
+    }
+
+    for pubkey in MALFORMED_PUBKEYS {
+        assert!(PublicKey::from_bytes(&pubkey).is_err(), "fixture must fail decoding");
+    }
+    for idx in [3, DECODE_CHUNK + 5, DECODE_CHUNK + 9] {
+        for pubkey in INVALID_PUBKEYS.into_iter().chain(MALFORMED_PUBKEYS) {
+            let mut records = compressed.clone();
+            records[idx] = pubkey;
+            assert!(matches!(
+                FinalizedValidators::try_new(&registry_ssz(&records), None),
+                Err(ValidatorsDecodeError::InvalidPubkey { idx: got }) if got == idx
+            ));
+        }
     }
 }
