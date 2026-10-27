@@ -14,7 +14,7 @@ def build (pairs : List pairing_product.AffinePair) : Result pairing_product.Pai
   let owner ← pairing_product.PairingProduct.Insts.CoreDefaultDefault.default
   pairs.foldlM (fun owner pair => pairing_product.PairingProduct.push owner pair.p pair.q) owner
 
-private theorem push_list_refines (pairs : List pairing_product.AffinePair)
+theorem push_list_refines (pairs : List pairing_product.AffinePair)
     (valid : ∀ p ∈ pairs, Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q)
     (owner : pairing_product.PairingProduct)
     (room : (owner.pairs.val ++ pairs.filter finitePair).length ≤ Usize.max) :

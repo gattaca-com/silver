@@ -85,13 +85,6 @@ theorem add_z (t : Point) (q : Fp2Field × Fp2Field) :
   simp only [add, Matrix.cons_val_two, Matrix.tail_cons, Matrix.head_cons]
   ring
 
-theorem double_zero_z (t : Point) (h : t 2 = 0) : (double t).point 2 = 0 := by
-  rw [double_z, h, mul_zero]
-
-theorem add_zero_z (t : Point) (q : Fp2Field × Fp2Field) (h : t 2 = 0) :
-    (add t q).point 2 = 0 := by
-  rw [add_z, h, mul_zero, zero_mul]
-
 theorem double_clear (t : Point) (h : (double t).point 2 ≠ 0) :
     t 1 ≠ 0 ∧ t 2 ≠ 0 := by
   rw [double_z] at h

@@ -18,9 +18,6 @@ def evaluatedLine (o : Output) (xp yp : Fp2Field) : Fp12Field :=
 
 def scale (c : Fp2Field) : Fp12Field := fp2Embed c * Fp12Field.w ^ 3
 
-theorem scale_ne_zero (c : Fp2Field) (hc : c ≠ 0) : scale c ≠ 0 :=
-  mul_ne_zero ((map_ne_zero fp2Embed).mpr hc) (pow_ne_zero 3 w_ne_zero)
-
 theorem scale_final_power (c : Fp2Field) (hc : c ≠ 0) :
     scale c ^ finalExpExponent = 1 := by
   apply period_four_final_power

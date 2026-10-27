@@ -52,32 +52,8 @@ theorem run_clear (s : State) (i : Input) (kinds : List Bool)
   | cons add kinds ih =>
     exact (step_clear s i add (ih (s.step i add) h)).1
 
-theorem run_cons (s : State) (i : Input) (add : Bool) (kinds : List Bool) :
-    s.run i (add :: kinds) = (s.step i add).run i kinds := rfl
-
-theorem run_append (s : State) (i : Input) (xs ys : List Bool) :
-    s.run i (xs ++ ys) = (s.run i xs).run i ys := List.foldl_append
-
-theorem run_step_clear (s : State) (i : Input) (xs ys : List Bool) (add : Bool)
-    (h : (s.run i (xs ++ add :: ys)).flagged = false) :
-    (s.run i xs).flagged = false ∧ ((s.run i xs).output i add).point 2 ≠ 0 := by
-  rw [run_append, run_cons] at h
-  exact step_clear _ _ _ (run_clear _ _ _ h)
-
-def State.bitStep (s : State) (i : Input) (n : Nat) : State :=
-  let doubled := s.step i false
-  if blsX.testBit n then doubled.step i true else doubled
-
-theorem run_bits (s : State) (i : Input) (n : Nat) :
-    s.run i (lineKinds (n + 1)) = (s.bitStep i n).run i (lineKinds n) := by
-  simp only [lineKinds, State.run, List.foldl_cons, List.foldl_append, State.bitStep]
-  split <;> simp only [List.foldl_cons, List.foldl_nil]
-
 theorem initial_affine (i : Input) : Step.affine i.initial.point = Step.encodeAffine i.q := by
   simp [Input.initial, Step.affine, Step.affineField]
-
-theorem omitted_initial_square (i : Input) :
-    i.initial.value * i.initial.value = i.initial.value := by simp [Input.initial]
 
 end
 

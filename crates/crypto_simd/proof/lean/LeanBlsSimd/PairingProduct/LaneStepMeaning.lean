@@ -117,20 +117,4 @@ theorem add_holds {s : State} {l : Fin 8} {t : Step.Point}
       hz3.testBit_is_zero_mask, activeMask_testBit s.count hhi,
       Step.add, Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons, pow_two]
 
-theorem double_clear {s : State} {l : Fin 8} {t : Step.Point}
-    {q : Fp2Field × Fp2Field} {xp yp : Fp} (h : s.Holds l t q xp yp)
-    (hhi : s.count.val ≤ 8) (hl : l.val < s.count.val)
-    (clear : (double s).2.degenerate = 0) : (Step.double t).point 2 ≠ 0 := by
-  have flag := (double_holds h hhi).2.2
-  intro hz
-  simp [clear, hl, hz] at flag
-
-theorem add_clear {s : State} {l : Fin 8} {t : Step.Point}
-    {q : Fp2Field × Fp2Field} {xp yp : Fp} (h : s.Holds l t q xp yp)
-    (hhi : s.count.val ≤ 8) (hl : l.val < s.count.val)
-    (clear : (add s).2.degenerate = 0) : (Step.add t q).point 2 ≠ 0 := by
-  have flag := (add_holds h hhi).2.2
-  intro hz
-  simp [clear, hl, hz] at flag
-
 end LeanBlsSimd.PairingProduct.Lanes

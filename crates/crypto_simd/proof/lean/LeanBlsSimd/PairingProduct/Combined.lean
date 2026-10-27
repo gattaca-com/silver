@@ -70,22 +70,6 @@ theorem sharedRun_value (xs : Entries) (f : Fp12Field) (kinds : List Bool)
   rw [sharedRun_product xs f kinds hf, sharedRun_entries]
   simp only [valueProduct, List.map_map, Function.comp_def]
 
-theorem sharedRun_clear (xs : Entries) (f : Fp12Field) (kinds : List Bool)
-    (hc : flags (sharedRun xs f kinds).1 = false) :
-    ∀ x ∈ xs, (x.2.run x.1 kinds).flagged = false := by
-  simpa only [flags, sharedRun_entries, List.any_map, Function.comp_def,
-    List.any_eq_false, Bool.not_eq_true] using hc
-
-theorem advance_flags (xs : Entries) (add : Bool) :
-    flags (advance xs add) = (flags xs ||
-      xs.any (fun x => decide ((x.2.output x.1 add).point 2 = 0))) := by
-  induction xs with
-  | nil => rfl
-  | cons x xs ih =>
-    simp only [advance, List.map_cons, flags, List.any_cons, State.step] at ih ⊢
-    rw [ih]
-    simp only [Bool.or_assoc, Bool.or_left_comm]
-
 def sharedBitStep (s : Entries × Fp12Field) (n : Nat) : Entries × Fp12Field :=
   let doubled := sharedStep s false
   if blsX.testBit n then sharedStep doubled true else doubled
@@ -95,10 +79,6 @@ theorem sharedRun_bits (xs : Entries) (f : Fp12Field) (n : Nat) :
       sharedRun (sharedBitStep (xs, f) n).1 (sharedBitStep (xs, f) n).2 (lineKinds n) := by
   simp only [lineKinds, sharedRun, List.foldl_cons, List.foldl_append, sharedBitStep]
   split <;> simp only [List.foldl_cons, List.foldl_nil]
-
-theorem sharedStep_initial_square (xs : Entries) :
-    sharedStep (xs, 1) false = (advance xs false, lineProduct xs false) := by
-  simp [sharedStep]
 
 theorem initial_product (inputs : List Input) : valueProduct (initialEntries inputs) = 1 := by
   induction inputs with
@@ -146,23 +126,6 @@ theorem sharedFactor_spec (inputs : List Input)
     rw [factor_spec i (hclear i (by simp)), ih]
     exact fun j hj => hclear j (by simp [hj])
 
-theorem product_regroup {α : Type} (sets : List (List α)) (f : α → Fp12Field) :
-    (sets.map (fun xs => (xs.map f).prod)).prod = (sets.flatten.map f).prod := by
-  induction sets with
-  | nil => rfl
-  | cons xs sets ih =>
-    simp only [List.map_cons, List.prod_cons, List.flatten_cons, List.map_append,
-      List.prod_append, ih]
-
-theorem sharedFactor_regroup (sets : List (List Input)) :
-    (sets.map sharedFactor).prod = sharedFactor sets.flatten := by
-  calc
-    (sets.map sharedFactor).prod =
-        (sets.map fun xs => (xs.map Input.factor).prod).prod :=
-      congrArg List.prod (List.map_congr_left (fun xs _ => sharedFactor_product xs))
-    _ = sharedFactor sets.flatten :=
-      (product_regroup sets Input.factor).trans (sharedFactor_product _).symm
-
 theorem finite_sharedFactor_spec (pairs : List (G1 × G2))
     (hp : ∀ pair ∈ pairs, pair.1.isInfinity = false)
     (hq : ∀ pair ∈ pairs, pair.2.isInfinity = false)
@@ -176,15 +139,6 @@ theorem finite_sharedFactor_spec (pairs : List (G1 × G2))
   simp only [Function.comp_def, ofPoints_base _ _ (hq pair hm),
     ofPoints_evaluation _ _ (hp pair hm), pairingFactor, hp pair hm, hq pair hm,
     Bool.or_self, Bool.false_eq_true, if_false]
-
-theorem finite_pairingCheck (pairs : List (G1 × G2))
-    (hp : ∀ pair ∈ pairs, pair.1.isInfinity = false)
-    (hq : ∀ pair ∈ pairs, pair.2.isInfinity = false)
-    (hc : flags (sharedMiller (pairs.map fun pair => Input.ofPoints pair.1 pair.2)).1 = false) :
-    pairingCheck pairs.toArray = true ↔
-      sharedFactor (pairs.map fun pair => Input.ofPoints pair.1 pair.2) ^ finalExpExponent = 1 := by
-  rw [finite_sharedFactor_spec pairs hp hq hc, SpecPairing.pairingCheck_eq,
-    Fp12.isOne_iff, toField_finalExponentiation, toField_pairingFold, List.toList_toArray]
 
 end
 
