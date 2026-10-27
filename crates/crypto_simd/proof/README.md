@@ -22,7 +22,7 @@ Both public BLS wrappers require one output slot per input. On unequal lengths, 
 
 ```lean
 theorem uncompress_in_g1_eq_spec [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
-    (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
+    (inputs : Slice (Array U8 48#usize)) (out : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
@@ -40,7 +40,7 @@ The G1 specification verdict calls `bytesToKzgProof`, decodes accepted bytes wit
 
 ```lean
 theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
-    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
+    (inputs : Slice (Array U8 96#usize)) (out : Slice (Option g2_point.G2Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g2 inputs out = ok result ∧
       result.val.length = inputs.val.length ∧
@@ -162,15 +162,20 @@ Import `LeanBlsSimd.Refines.UncompressG1` for the G1 wrapper:
 ```lean
 theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize))
-    (out : Slice (Option blst.blst_p1_affine))
+    (out : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
-      result.val = inputs.val.map specVerdict
+      result.val = inputs.val.map specVerdict ∧
+      ∀ p, some p ∈ result.val → Kzg.G1AffineValid p
 ```
 
-`specVerdict_some_iff` relates an accepted affine result to `bytesToKzgProof` and exact decoded limbs. Pointwise and model-type list variants carry the same scoped decoder law. `controls/G1Consumer.lean` and `controls/downstream/G1Smoke.lean` check these interfaces across consumer-owned structures, including an IFMA adapter without a blst agreement premise.
+`specVerdict_some_iff` relates an accepted `G1Point` to `bytesToKzgProof` and exact decoded limbs. `specVerdict_valid` proves `Kzg.G1AffineValid`: accepted points have canonical coordinates and belong to the curve's subgroup. Aeneas represents both point newtypes as reducible aliases. Validity follows from the decoder proof, not the Lean type alone. Pointwise and model-type list variants carry the same scoped decoder law. `controls/G1Consumer.lean` and the independent `controls/downstream/G1Smoke.lean` check these interfaces across consumer-owned structures, including an IFMA adapter without a blst agreement premise.
 
-For G2, import `LeanBlsSimd.Refines.UncompressG2` and use `uncompress_in_g2_eq_spec_list` with `[RuntimeFeatures]`, `[BlsExternals]` and `UncompressG2.BlstMatchesSpec`. Without the agreement law, `uncompress_in_g2_eq_spec_or_blst` characterizes kernel verdicts and opaque fallback observations. `controls/G2Consumer.lean` and `controls/downstream/G2Smoke.lean` exercise the list interfaces and transport across independent structures.
+Import `LeanBlsSimd.Refines.UncompressG2` for G2. Apply `uncompress_in_g2_eq_spec_list` with `[RuntimeFeatures]`, `[BlsExternals]` and `UncompressG2.BlstMatchesSpec`. The theorem proves `Kzg.G2AffineValid p` for every `some p` in the result. `specVerdict_valid` proves validity for individual accepted verdicts. The predicate requires canonical coordinates and subgroup membership. Curve membership means decodability by `G2.uncompress`. Without the agreement law, `uncompress_in_g2_eq_spec_or_blst` characterizes kernel verdicts and opaque fallback observations. `controls/G2Consumer.lean` and `controls/downstream/G2Smoke.lean` exercise the list interfaces and transport across independent structures.
+
+`LeanBlsSimd.Refines.CheckedPoints` specifies the checked raw-constructor contracts. `g1_from_blst_some_iff` and `g2_from_blst_some_iff` characterize acceptance by the affine validity predicates. Accepted results preserve the input limbs. The contracts require `PointExternals` and `ConstructorsMatchSpec`. Decoder and KZG theorems do not require these premises. Both accessors return the wrapped affine value unchanged.
+
+`LeanBlsSimd.Refines.PointOperations` specifies contracts for hashing to G2, weighted sums and the negated G1 generator. `OperationsMatchSpec` relates these opaque calls to EthLib. It requires canonical subgroup outputs. Weighted sums use packed 64-bit little-endian scalars. Their specification requires valid input points. Hashing uses the caller's DST without augmentation. These assumptions apply only to the operation theorems. Decoder and KZG headlines do not use them.
 
 ### KZG verification
 
@@ -241,6 +246,8 @@ Every `--opaque` item in `extract.sh` has this interpretation:
 | `bls::uncompress_in_g1_blst` | The non-IFMA G1 observation in `KzgExternals`. |
 | `kzg::blst_pairing::pairing_check` | The scalar two-pair wrapper observation in `KzgExternals`, including affine conversion and infinity filtering. |
 | `bls::uncompress_in_g2_blst` | The signature decoder observation in `BlsExternals`; excluded from KZG. |
+| `G1Point::from_blst`, `G2Point::from_blst` | `PointExternals` supplies raw constructor observations. `ConstructorsMatchSpec` specifies acceptance by `Kzg.G1AffineValid` and `Kzg.G2AffineValid`. For G2, equivalence between decodability and blst's on-curve check is unproved. These blst-backed calls are assumed total. Decoder and KZG theorems do not use them. |
+| `G1Point::negative_generator`, `G2Point::hash_to_curve`, both `weighted_sum` methods | `PointOperationExternals` supplies blst observations specified by `OperationsMatchSpec`. Weighted sums assume totality on valid points with eight scalar bytes per point. Other scalar lengths produce assertion failure. Hashing and generator negation are assumed total. |
 | `sha256::extensions::load_bytes` | Raw-pointer byte loads replaced by little-endian 32-bit lane packing. |
 | `sha256::extensions::load_words` | Raw-pointer word loads replaced by 32-bit lane packing. |
 | `sha256::extensions::store_words` | Raw-pointer word stores replaced by 32-bit lane unpacking. |
