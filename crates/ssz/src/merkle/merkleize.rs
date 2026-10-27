@@ -100,3 +100,16 @@ pub fn merkleize_padded(chunks: &[B256], leaf_count: usize) -> B256 {
     }
     stack.finalize()
 }
+
+/// Roots of consecutive `width`-chunk trees, one `hash_concat_many` per level
+/// across all trees.
+pub fn merkleize_each(mut chunks: Vec<B256>, width: usize) -> Vec<B256> {
+    debug_assert!(width.is_power_of_two() && chunks.len().is_multiple_of(width));
+    let mut parents = Vec::with_capacity(chunks.len() / 2);
+    for _ in 0..width.ilog2() {
+        parents.resize(chunks.len() / 2, ZERO_HASH);
+        hash_concat_many(&mut parents, &chunks);
+        std::mem::swap(&mut chunks, &mut parents);
+    }
+    chunks
+}

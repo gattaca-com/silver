@@ -1,6 +1,7 @@
 use std::{
     convert::Infallible,
     io::{self, Write},
+    ops::Range,
 };
 
 use blst::{blst_p1_affine, min_pk::PublicKey};
@@ -9,9 +10,9 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_crypto_simd::bls::uncompress_in_g1;
 
-use super::validator_hash;
 use crate::{
     Withdrawals,
+    merkle::{merkleize_each, uint64_chunk},
     slot_state::{EpochBalances, EpochBalancesRow},
     types::{B256, BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
 };
@@ -362,18 +363,28 @@ impl FinalizedValidators {
         self.index.read().len()
     }
 
-    /// The Validator-container hash leaf for finalized index `i`.
-    pub(super) fn leaf_hash(&self, i: usize) -> B256 {
-        validator_hash(
-            &self.val_pubkey[i],
-            &self.val_withdrawal_credentials[i],
-            self.effective_balance[i],
-            self.is_slashed(i),
-            self.activation_eligibility_epoch[i],
-            self.activation_epoch[i],
-            self.exit_epoch[i],
-            self.withdrawable_epoch[i],
-        )
+    pub(super) fn leaf_hashes(&self, range: Range<usize>) -> Vec<B256> {
+        let pubkey_chunks = range.clone().flat_map(|i| {
+            let mut tail = [0u8; 32];
+            tail[..16].copy_from_slice(&self.val_pubkey[i][32..]);
+            [self.val_pubkey[i][..32].try_into().unwrap(), tail]
+        });
+        let pubkey_roots = merkleize_each(pubkey_chunks.collect(), 2);
+        let fields = range.zip(pubkey_roots).flat_map(|(i, pubkey_root)| {
+            let mut slashed = [0u8; 32];
+            slashed[0] = u8::from(self.is_slashed(i));
+            [
+                pubkey_root,
+                self.val_withdrawal_credentials[i].0,
+                uint64_chunk(self.effective_balance[i]),
+                slashed,
+                uint64_chunk(self.activation_eligibility_epoch[i]),
+                uint64_chunk(self.activation_epoch[i]),
+                uint64_chunk(self.exit_epoch[i]),
+                uint64_chunk(self.withdrawable_epoch[i]),
+            ]
+        });
+        merkleize_each(fields.collect(), 8)
     }
 
     /// Harness-seeding constructor: builds a registry from `ValSeed`s whose

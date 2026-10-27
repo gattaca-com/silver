@@ -5206,7 +5206,6 @@ dependencies = [
  "bytesize",
  "flux-profiler",
  "hashtree-rs",
- "libc",
  "rand 0.8.6",
  "sha2-const-stable",
 ]

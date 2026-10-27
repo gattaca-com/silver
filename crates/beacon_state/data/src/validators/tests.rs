@@ -491,3 +491,32 @@ fn try_new_rejects_invalid_pubkeys_in_batches() {
         }
     }
 }
+
+#[test]
+fn leaf_hashes_match_validator_hash() {
+    let seeds: Vec<_> = (0..37u8)
+        .map(|i| ValSeed {
+            pubkey: pk(i + 1),
+            withdrawal_credentials: creds(i),
+            effective_balance: 32_000_000_000 + u64::from(i),
+            exit_epoch: u64::from(i),
+            ..ValSeed::default()
+        })
+        .collect();
+    let f = FinalizedValidators::with_validators(&seeds);
+    for range in [0..0, 0..37, 5..21] {
+        for (i, root) in range.clone().zip(f.leaf_hashes(range)) {
+            let expected = validator_hash(
+                &f.val_pubkey[i],
+                &f.val_withdrawal_credentials[i],
+                f.effective_balance[i],
+                f.is_slashed(i),
+                f.activation_eligibility_epoch[i],
+                f.activation_epoch[i],
+                f.exit_epoch[i],
+                f.withdrawable_epoch[i],
+            );
+            assert_eq!(root, expected, "validator {i}");
+        }
+    }
+}

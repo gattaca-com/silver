@@ -46,16 +46,16 @@ impl RingGroup for ValidatorsGroup {
     type Entry = ValidatorsDelta;
 }
 
+const LEAF_BATCH: usize = 1024;
+
 impl ValidatorsGroup {
     #[timed]
     pub fn new(finalized: FinalizedValidators, format: HashFormat) -> Self {
         let n = finalized.validator_count();
-        let hash = TreeGroup::from_leaves(
-            finalized.capacity(),
-            n,
-            (0..n).map(|i| finalized.leaf_hash(i)),
-            format,
-        );
+        let leaves = (0..n)
+            .step_by(LEAF_BATCH)
+            .flat_map(|start| finalized.leaf_hashes(start..n.min(start + LEAF_BATCH)));
+        let hash = TreeGroup::from_leaves(finalized.capacity(), n, leaves, format);
         Self { finalized, deltas: Ring::new(SLOTS_RING_N), hash }
     }
 

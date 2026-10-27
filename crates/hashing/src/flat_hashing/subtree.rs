@@ -73,13 +73,53 @@ pub(super) fn rehash_subtree(internal: &mut [B256], leaves: &[B256], dirty: &mut
     }
 }
 
+/// Short dirty runs share `hash_concat_many` calls, so scattered writes still
+/// fill whole SIMD groups.
 fn hash_runs(parents: &mut [B256], children: &[B256], dirty: &[NodeRange], child_base: usize) {
+    let mut batch = RunBatch::default();
     for r in dirty {
         let (lo, hi) = (r.start as usize, r.end as usize);
-        hash_concat_many(
-            &mut parents[lo..hi],
-            &children[2 * (lo - child_base)..2 * (hi - child_base)],
-        );
+        if hi - lo >= RUN_BATCH {
+            hash_concat_many(
+                &mut parents[lo..hi],
+                &children[2 * (lo - child_base)..2 * (hi - child_base)],
+            );
+            continue;
+        }
+        for parent in lo..hi {
+            let child = 2 * (parent - child_base);
+            batch.push(parent, &children[child..child + 2], parents);
+        }
+    }
+    batch.flush(parents);
+}
+
+const RUN_BATCH: usize = 16;
+
+#[derive(Default)]
+struct RunBatch {
+    pairs: [[B256; 2]; RUN_BATCH],
+    parents: [usize; RUN_BATCH],
+    len: usize,
+}
+
+impl RunBatch {
+    fn push(&mut self, parent: usize, pair: &[B256], parents: &mut [B256]) {
+        self.pairs[self.len].copy_from_slice(pair);
+        self.parents[self.len] = parent;
+        self.len += 1;
+        if self.len == RUN_BATCH {
+            self.flush(parents);
+        }
+    }
+
+    fn flush(&mut self, parents: &mut [B256]) {
+        let mut hashed = [[0; 32]; RUN_BATCH];
+        hash_concat_many(&mut hashed[..self.len], self.pairs[..self.len].as_flattened());
+        for (&parent, hash) in self.parents[..self.len].iter().zip(hashed) {
+            parents[parent] = hash;
+        }
+        self.len = 0;
     }
 }
 
@@ -94,4 +134,29 @@ fn dedup_parents(dirty: &mut [NodeRange], base: u32) -> &mut [NodeRange] {
         n += 1;
     }
     &mut dirty[..n]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rehash_of_scattered_leaves_matches_rebuild() {
+        const CAP: usize = 1 << 10;
+        let mut leaves: Vec<B256> = (0..CAP).map(|i| [i as u8; 32]).collect();
+        let mut internal = vec![[0; 32]; CAP];
+        build_subtree_hashes(&mut internal, &leaves, CAP);
+
+        let mut dirty: Vec<_> =
+            (0..CAP as u32 - 64).step_by(7).map(|i| NodeRange { start: i, end: i + 1 }).collect();
+        dirty.push(NodeRange { start: CAP as u32 - 40, end: CAP as u32 });
+        for r in &dirty {
+            leaves[r.start as usize..r.end as usize].fill([0xFF; 32]);
+        }
+        rehash_subtree(&mut internal, &leaves, &mut dirty);
+
+        let mut rebuilt = vec![[0; 32]; CAP];
+        build_subtree_hashes(&mut rebuilt, &leaves, CAP);
+        assert_eq!(internal, rebuilt);
+    }
 }
