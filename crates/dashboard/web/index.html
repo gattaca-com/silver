@@ -3,58 +3,51 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Silver Dashboard</title>
+<title>Gattaca Silver</title>
 <link rel="stylesheet" href="vendor/uPlot.min.css">
 <script src="vendor/uPlot.iife.min.js"></script>
 <style>
+  /* Dark by default, after gattaca.com: greyscale chrome, one yellow accent.
+     Series are the brand hues stepped into the validated lightness band. */
   :root {
-    --bg: #eceef1; --fg: #1d1d1b; --muted: #5f6267; --line: #d7dade; --idle: #b3b7bd;
-    --panel: #ffffff; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
+    --bg: #1b1b1d; --fg: #eaeaea; --muted: #888888; --line: #2e2e31; --idle: #5a5a5e;
+    --panel: #161618; --accent: #fac105; --fill: #98d2f1; --mark: #ff8787; --ok: #69db7c; --bad: #ff6b6b;
+    --c-da: #3bc9db; --c-custody: #da77f2; --c-stf: #ffd43b; --c-validate: #74c0fc;
+    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ff922b;
+    --hover: #2f2a14; --sel: #26374a; --open: #1e2a38;
+    --series-1: #3d9bd8; --series-2: #bd8a00; --series-3: #aa65c5; --series-4: #199e70;
+    --series-5: #d95926; --series-6: #7486e8; --series-7: #d55181; --series-8: #8a9a2a;
+    --seq-0: #184f95; --seq-1: #1c5cab; --seq-2: #256abf; --seq-3: #2a78d6; --seq-4: #3987e5; --seq-5: #5598e7; --seq-6: #6da7ec; --seq-7: #86b6ef; --seq-8: #9ec5f4; --seq-9: #b7d3f6;
+  }
+  :root[data-theme="light"] {
+    --bg: #efefef; --fg: #222222; --muted: #565656; --line: #d4d4d4; --idle: #b3b3b3;
+    --panel: #f8f8f8; --accent: #b88a00; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
     --c-da: #0c8599; --c-custody: #ae3ec9; --c-stf: #e67700; --c-validate: #4dabf7;
     --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700;
-    --hover: #fcdcae; --sel: #cfe2f7; --open: #e3effb;
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
-    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+    --hover: #f6e7b0; --sel: #cfe2f7; --open: #e3effb;
+    --series-1: #2a80c2; --series-2: #a97b00; --series-3: #9a52b6; --series-4: #13906a;
+    --series-5: #d4541f; --series-6: #5b6fd6; --series-7: #c94375; --series-8: #77861c;
     --seq-0: #86b6ef; --seq-1: #6da7ec; --seq-2: #5598e7; --seq-3: #3987e5; --seq-4: #2a78d6; --seq-5: #256abf; --seq-6: #1c5cab; --seq-7: #184f95; --seq-8: #104281; --seq-9: #0d366b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #1d1f22; --fg: #e8e8e3; --muted: #93969b; --line: #34373c; --idle: #5a5e64; --idle: #5a5e64;
-      --panel: #1c1c1a; --fill: #4dabf7; --mark: #ff8787; --ok: #69db7c; --bad: #ff6b6b;
-      --c-da: #3bc9db; --c-custody: #da77f2; --c-stf: #ffd43b; --c-validate: #74c0fc;
-      --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ffd43b;
-    --hover: #3d2710; --sel: #26374a; --open: #1e2a38;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
-    --seq-0: #184f95; --seq-1: #1c5cab; --seq-2: #256abf; --seq-3: #2a78d6; --seq-4: #3987e5; --seq-5: #5598e7; --seq-6: #6da7ec; --seq-7: #86b6ef; --seq-8: #9ec5f4; --seq-9: #b7d3f6;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #1d1f22; --fg: #e8e8e3; --muted: #93969b; --line: #34373c; --idle: #5a5e64;
-    --panel: #1c1c1a; --fill: #4dabf7; --mark: #ff8787; --ok: #69db7c; --bad: #ff6b6b;
-    --c-da: #3bc9db; --c-custody: #da77f2; --c-stf: #ffd43b; --c-validate: #74c0fc;
-    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ffd43b;
-    --hover: #3d2710; --sel: #26374a; --open: #1e2a38;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
-    --seq-0: #184f95; --seq-1: #1c5cab; --seq-2: #256abf; --seq-3: #2a78d6; --seq-4: #3987e5; --seq-5: #5598e7; --seq-6: #6da7ec; --seq-7: #86b6ef; --seq-8: #9ec5f4; --seq-9: #b7d3f6;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
-    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font: 13px/1.4 "Fira Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   header {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  header h1 { font-size: 14px; margin: 0; cursor: pointer; }
+  header h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; margin: 0; cursor: pointer; }
+  /* The header listener reads `data-pane` off the target. */
+  header h1 span { color: var(--accent); pointer-events: none; }
   nav { display: flex; gap: 4px; flex-wrap: wrap; }
   nav button {
-    font: inherit; color: var(--muted); background: none; cursor: pointer;
+    font: inherit; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); background: none; cursor: pointer;
     border: 1px solid transparent; border-radius: 4px; padding: 3px 10px;
   }
-  nav button.active { color: var(--fg); border-color: var(--line); background: var(--bg); }
+  nav button.active { color: var(--accent); border-color: var(--line); background: var(--bg); }
   #status { margin-left: auto; font-size: 12px; }
   #status.live { color: var(--ok); }
   #status.down { color: var(--bad); }
@@ -62,13 +55,13 @@
      anchor the scroll to; app.js holds the position itself. */
   main { padding: 12px 16px; overflow-anchor: none; }
   section { margin-bottom: 20px; overflow-x: auto; }
-  h2 { font-size: 13px; margin: 0 0 6px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 6px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .badge { font-weight: normal; font-size: 11px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }
   .badge.stale { color: var(--bad); border-color: var(--bad); }
   .meta { font-weight: normal; color: var(--muted); font-size: 11px; }
   table { border-collapse: collapse; width: 100%; background: var(--panel); border: 1px solid var(--line); }
   th, td { padding: 3px 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: normal; }
+  th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.bar { width: 40%; min-width: 120px; }
   .ring { position: relative; height: 10px; background: var(--line); border-radius: 2px; overflow: hidden; }
@@ -81,7 +74,7 @@
     font: inherit; color: var(--muted); background: var(--panel); cursor: pointer;
     border: 1px solid var(--line); border-radius: 4px; padding: 2px 10px;
   }
-  .subtabs button.active { color: var(--fg); border-color: var(--fill); }
+  .subtabs button.active { color: var(--fg); border-color: var(--accent); }
   .subtabs button.stale { text-decoration: line-through; }
   table.dense th, table.dense td { padding: 2px 6px; }
   th[data-sort] { cursor: pointer; }
@@ -188,7 +181,7 @@
   table.apply-big td.meta { font-size: 12px; font-weight: normal; }
   @media (max-width: 600px) { table.apply-big { font-size: 16px; } table.apply-big td { padding: 3px 8px; } }
   .home-card { cursor: pointer; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px 8px; }
-  .home-card:hover { border-color: var(--fill); }
+  .home-card:hover { border-color: var(--accent); }
   .home-card h3 { font-size: 12px; margin: 0 0 4px; }
   .home-card .meta { margin: 0 0 2px; }
   .home-wide { margin-bottom: 18px; }
@@ -237,7 +230,7 @@
 </head>
 <body>
 <header>
-  <h1 data-pane="home">silver</h1>
+  <h1 data-pane="home"><span>gattaca</span> / silver</h1>
   <nav>
     <button data-pane="events">Slots</button>
     <button data-pane="peers">Peers</button>
