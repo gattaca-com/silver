@@ -173,8 +173,7 @@ theorem lane_is_one_refines [PairingExternals] (sets : SingleSetCorrect)
     simpa using congrArg (fun x : Fp12Field => ok (decide (x = 1))) he
   · simp only [bne_iff_ne]
     rw [if_pos hz]
-    exact blst_is_one_eq_spec blst inputs valid
-      (fun p hp => by simpa [finitePair] using finite p hp)
+    exact blst_is_one_eq_spec blst inputs valid finite
 
 theorem check_refines [RuntimeFeatures] [PairingExternals] (sets : SingleSetCorrect)
     (blst : BlstMatchesSpec) (inputs : pairing_product.PairingInputs)
@@ -189,8 +188,7 @@ theorem check_refines [RuntimeFeatures] [PairingExternals] (sets : SingleSetCorr
       Slice.length, hlen, decide_false, bind_tc_ok, Bool.false_eq_true, if_false, ifma_available]
     split
     · exact lane_is_one_refines sets blst inputs valid finite
-    · exact blst_is_one_eq_spec blst inputs valid
-        (fun p hp => by simpa [finitePair] using finite p hp)
+    · exact blst_is_one_eq_spec blst inputs valid finite
 
 end
 

@@ -11,9 +11,6 @@ noncomputable section
 
 def emptyOwner : pairing_product.PairingProduct := ⟨alloc.vec.Vec.new _⟩
 
-def finitePair (p : pairing_product.AffinePair) : Bool :=
-  !((Kzg.g1ReadAffine p.p).isInfinity || (Kzg.g2ReadAffine p.q).isInfinity)
-
 theorem default_empty :
     pairing_product.PairingProduct.Insts.CoreDefaultDefault.default = ok emptyOwner := rfl
 
