@@ -118,7 +118,7 @@ theorem interpolation_commitment_refines [RuntimeFeatures]
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers)) := by
   exact interpolation_commitment_refinement v hv indices cells evals powers hs hb hcell he hp
 
-theorem pairing_holds_refines [RuntimeFeatures]
+theorem pairing_holds_refines [RuntimeFeatures] [KzgExternals] [BlstPairing.Correct]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
@@ -138,7 +138,7 @@ theorem pairing_holds_refines [RuntimeFeatures]
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
-  exact pairing_holds_refinement v hv indices cells commitments proofs evals r hb hs
+  exact pairing_holds_refinement v hv (fun _ => BlstPairing.Correct.matchesSpec) indices cells commitments proofs evals r hb hs
     hc hp hcell he hunique hci hproofs hvalid
 
 end LeanBlsSimd.Kzg

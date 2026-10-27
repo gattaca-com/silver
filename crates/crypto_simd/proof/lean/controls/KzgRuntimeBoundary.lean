@@ -43,19 +43,44 @@ run_cmd do
   logInfo m!"{roots.size} KZG headlines and runtime entry points exclude the opaque G2 decoder; \
     signature-path control reaches it"
 
-run_cmd do
+private def requireIndependent (root : Name) : CommandElabM Unit := do
   let env ← getEnv
-  let law := ``LeanBlsSimd.UncompressG1.FallbackCorrect
+  let laws := #[``LeanBlsSimd.UncompressG1.FallbackCorrect,
+    ``LeanBlsSimd.UncompressG1.BlstMatchesSpec,
+    ``LeanBlsSimd.Kzg.BlstPairing.Correct,
+    ``LeanBlsSimd.Kzg.BlstPairing.FallbackCorrect,
+    ``LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec]
+  let used := dependencies env (← getConstInfo root).type.getUsedConstants
+  for law in laws do
+    if used.contains law then
+      throwError "headline type requires a blst correctness law"
+
+run_cmd do
   let roots := #[``LeanBlsSimd.Kzg.verify_eq_spec_ifma,
     ``LeanBlsSimd.Kzg.verify_eq_upstream_ifma,
     ``LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list_ifma,
+    ``LeanBlsSimd.Kzg.Extender.new_returns_ok,
     ``LeanBlsSimd.Kzg.Extender.compute_eq_spec]
   for root in roots do
-    let used := dependencies env (← getConstInfo root).type.getUsedConstants
-    if used.contains law then
-      throwError "IFMA headline requires the blst decoder law: {root}"
-  unless (← getConstInfo ``LeanBlsSimd.Kzg.verify_eq_spec).type.getUsedConstants.contains law do
-    throwError "general verifier headline lost its scoped decoder law"
-  logInfo "IFMA headlines require no blst decoder law; the general verifier requires the scoped law"
+    requireIndependent root
+  let general := (← getConstInfo ``LeanBlsSimd.Kzg.verify_eq_spec).type.getUsedConstants
+  for law in #[``LeanBlsSimd.UncompressG1.FallbackCorrect, ``LeanBlsSimd.Kzg.BlstPairing.Correct] do
+    unless general.contains law do
+      throwError "general verifier headline lost a scoped blst law: {law}"
+  logInfo "IFMA verifier and G1 headlines, and both extender routes, require no blst laws"
+
+private theorem decoderPremiseMutation [silver_crypto_simd.KzgExternals]
+    (h : LeanBlsSimd.UncompressG1.BlstMatchesSpec) : LeanBlsSimd.UncompressG1.BlstMatchesSpec := h
+
+/-- error: headline type requires a blst correctness law -/
+#guard_msgs in
+run_cmd requireIndependent ``decoderPremiseMutation
+
+private theorem pairingPremiseMutation [silver_crypto_simd.KzgExternals]
+    (h : LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec) : LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec := h
+
+/-- error: headline type requires a blst correctness law -/
+#guard_msgs in
+run_cmd requireIndependent ``pairingPremiseMutation
 
 end LeanBlsSimd.Controls.KzgRuntimeBoundary

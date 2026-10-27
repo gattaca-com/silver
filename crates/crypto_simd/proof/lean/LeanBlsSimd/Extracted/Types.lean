@@ -81,7 +81,7 @@ structure bls.decompress.Decoded where
   undecided : Std.U8
 
 /-- [silver_crypto_simd::bls::Membership]
-    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 86:0-89:1
+    Source: 'crates/crypto_simd/src/bls/mod.rs', lines 87:0-90:1
     Visibility: public -/
 structure bls.Membership where
   members : Std.U8
@@ -169,7 +169,7 @@ def bls.miller_lines.MillerLines :=
   Array (Array (Array Std.U64 8#usize) 8#usize) 68#usize
 
 /-- [silver_crypto_simd::portable::fp::Fp]
-    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 23:0-23:28
+    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 27:0-27:28
     Visibility: public -/
 @[reducible]
 def portable.fp.Fp := Array Std.U64 6#usize
@@ -183,7 +183,7 @@ structure portable.g1_pair.G1Pair where
   z : Array portable.fp.Fp 2#usize
 
 /-- [silver_crypto_simd::portable::g1::G1]
-    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 20:0-24:1
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 19:0-23:1
     Visibility: public -/
 structure portable.g1.G1 where
   x : portable.fp.Fp
@@ -191,7 +191,7 @@ structure portable.g1.G1 where
   z : portable.fp.Fp
 
 /-- [silver_crypto_simd::portable::g1::Terms]
-    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 208:0-215:1 -/
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 211:0-218:1 -/
 structure portable.g1.Terms where
   z1z1 : portable.fp.Fp
   z2z2 : portable.fp.Fp
@@ -201,7 +201,7 @@ structure portable.g1.Terms where
   r : portable.fp.Fp
 
 /-- [silver_crypto_simd::portable::g1::MixedTerms]
-    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 180:0-184:1 -/
+    Source: 'crates/crypto_simd/src/portable/g1.rs', lines 183:0-187:1 -/
 structure portable.g1.MixedTerms where
   z1z1 : portable.fp.Fp
   h : portable.fp.Fp
@@ -339,30 +339,16 @@ structure kzg.interpolation_kernel.InterpolationKernel where
   used : alloc.vec.Vec Bool
 
 /-- [silver_crypto_simd::kzg::setup::Setup]
-    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 121:0-124:1
+    Source: 'crates/crypto_simd/src/kzg/setup.rs', lines 116:0-119:1
     Visibility: public -/
 structure kzg.setup.Setup where
   g1_monomial : alloc.vec.Vec blst.blst_p1_affine
 
 /-- [silver_crypto_simd::kzg::verify::Deduplicated]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 410:0-413:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 413:0-416:1 -/
 structure kzg.verify.Deduplicated where
   unique : alloc.vec.Vec (Array Std.U8 48#usize)
   index_of_cell : alloc.vec.Vec Std.Usize
-
-/-- [silver_crypto_simd::portable::fp2::Fp2]
-    Source: 'crates/crypto_simd/src/portable/fp2.rs', lines 8:0-11:1
-    Visibility: public -/
-structure portable.fp2.Fp2 where
-  c0 : portable.fp.Fp
-  c1 : portable.fp.Fp
-
-/-- [silver_crypto_simd::portable::pairing::PairingLines]
-    Source: 'crates/crypto_simd/src/portable/pairing.rs', lines 15:0-15:53
-    Visibility: public -/
-@[reducible]
-def portable.pairing.PairingLines :=
-  Array (Array (Array portable.fp2.Fp2 2#usize) 2#usize) 68#usize
 
 /-- [silver_crypto_simd::portable::msm::store::PointStore]
     Source: 'crates/crypto_simd/src/portable/msm/store.rs', lines 10:0-13:1
@@ -405,21 +391,20 @@ structure portable.msm.Msm where
   second_signs : alloc.vec.Vec Bool
 
 /-- [silver_crypto_simd::kzg::verify::CurveWork]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 299:0-311:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 301:0-307:1 -/
 @[discriminant isize]
 inductive kzg.verify.CurveWork where
 | Lanes :
   bls.msm8.Msm8 →
   alloc.vec.Vec (Array Std.U64 4#usize) →
   kzg.verify.CurveWork
-| Portable :
+| Scalar :
   portable.msm.Msm →
-  portable.pairing.PairingLines →
   alloc.vec.Vec (Array Std.U64 4#usize) →
   kzg.verify.CurveWork
 
 /-- [silver_crypto_simd::kzg::verify::CellBatchVerifier]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 39:0-57:1
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 41:0-59:1
     Visibility: public -/
 structure kzg.verify.CellBatchVerifier where
   setup : kzg.setup.Setup
@@ -440,32 +425,11 @@ structure kzg.verify.CellBatchVerifier where
   kernel : Option kzg.interpolation_kernel.InterpolationKernel
 
 /-- [silver_crypto_simd::kzg::verify::PairingSums]
-    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 364:0-369:1 -/
+    Source: 'crates/crypto_simd/src/kzg/verify.rs', lines 367:0-372:1 -/
 structure kzg.verify.PairingSums where
   ll : blst.blst_p1
   rlc : blst.blst_p1
   rli : blst.blst_p1
   rlp : blst.blst_p1
-
-/-- [silver_crypto_simd::portable::fp6::Fp6]
-    Source: 'crates/crypto_simd/src/portable/fp6.rs', lines 9:0-13:1
-    Visibility: public -/
-structure portable.fp6.Fp6 where
-  c0 : portable.fp2.Fp2
-  c1 : portable.fp2.Fp2
-  c2 : portable.fp2.Fp2
-
-/-- [silver_crypto_simd::portable::fp::Wide]
-    Source: 'crates/crypto_simd/src/portable/fp.rs', lines 364:0-364:27
-    Visibility: public -/
-@[reducible]
-def portable.fp.Wide := Array Std.U64 12#usize
-
-/-- [silver_crypto_simd::portable::fp12::Fp12]
-    Source: 'crates/crypto_simd/src/portable/fp12.rs', lines 19:0-22:1
-    Visibility: public -/
-structure portable.fp12.Fp12 where
-  c0 : portable.fp6.Fp6
-  c1 : portable.fp6.Fp6
 
 end silver_crypto_simd

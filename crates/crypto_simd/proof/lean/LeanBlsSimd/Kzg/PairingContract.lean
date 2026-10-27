@@ -17,19 +17,10 @@ def LaneG1Rep (raw : g1x8.G1x8) (lane : Fin 8) (p : G1) : Prop :=
 def LanesPairRep (raw : g1x8.G1x8) (p q : G1) : Prop :=
   ∀ lane, LaneG1Rep raw lane (if lane.val = 0 then p else if lane.val = 1 then q else G1.zero)
 
-def PortablePairRep (raw : Array portable.g1.G1 2#usize) (p q : G1) : Prop :=
-  ∀ lane : Fin 2,
-    let point := raw.val[lane.val]'(by simpa using lane.isLt)
-    G1Rep ⟨⟨point.x⟩, ⟨point.y⟩, ⟨point.z⟩⟩ (if lane.val = 0 then p else q)
-
-/-- Both execution paths implement the same two fixed-G2 pairing verdict. -/
-structure PairingCorrect [RuntimeFeatures] : Prop where
+/-- The lane implementation computes the two fixed-G2 pairing verdict. -/
+structure PairingCorrect : Prop where
   lanes : ∀ raw p q, LanesPairRep raw p q → G1Valid p → G1Valid q →
     pairing.MillerLines.pairing_check pairing_lines.PAIRING_LINES raw =
-      ok (Bls.pairingCheck #[(p, SetupPoints.g2Point64), (q, G2.neg SetupPoints.g2Point0)])
-  portable : ∀ lines raw p q, PortableLinesRep lines → PortablePairRep raw p q →
-    G1Valid p → G1Valid q →
-    portable.pairing.PairingLines.pairing_check lines raw =
       ok (Bls.pairingCheck #[(p, SetupPoints.g2Point64), (q, G2.neg SetupPoints.g2Point0)])
 
 end LeanBlsSimd.Kzg

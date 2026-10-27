@@ -24,10 +24,16 @@ class silver_crypto_simd.bls.BlsExternals where
 
 class silver_crypto_simd.KzgExternals where
   uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
+  pairingCheck : blst.blst_p1 → blst.blst_p2_affine → blst.blst_p1 → blst.blst_p2_affine → Bool
 
 def silver_crypto_simd.bls.uncompress_in_g1_blst [KzgExternals]
     (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
   ok (KzgExternals.uncompressG1 bytes)
+
+def silver_crypto_simd.kzg.blst_pairing.pairing_check [KzgExternals]
+    (p1 : blst.blst_p1) (q1 : blst.blst_p2_affine)
+    (p2 : blst.blst_p1) (q2 : blst.blst_p2_affine) : Result Bool :=
+  ok (KzgExternals.pairingCheck p1 q1 p2 q2)
 
 def silver_crypto_simd.ifma_available [RuntimeFeatures] : Result Bool :=
   ok RuntimeFeatures.simdAvailable

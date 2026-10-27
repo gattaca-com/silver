@@ -1,6 +1,7 @@
+import LeanBlsSimd.Kzg.BlstPairing
 import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.LanePairingInputs
-import LeanBlsSimd.Kzg.PortablePairingInputs
+import LeanBlsSimd.Kzg.ScalarPairingInputs
 import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.PairingCorrect
 
@@ -10,8 +11,8 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg
 
-theorem curveWork_pairing_check_refinement [RuntimeFeatures]
-    (work : verify.CurveWork) (hwork : CurveWorkInvariant work)
+theorem curveWork_pairing_check_refinement [RuntimeFeatures] [KzgExternals]
+    (work : verify.CurveWork) (hblst : BlstPairing.FallbackCorrect work)
     (sums : verify.PairingSums) (ll rlc rli rlp : G1)
     (hll : G1Rep sums.ll ll) (hrlc : G1Rep sums.rlc rlc)
     (hrli : G1Rep sums.rli rli) (hrlp : G1Rep sums.rlp rlp)
@@ -27,11 +28,14 @@ theorem curveWork_pairing_check_refinement [RuntimeFeatures]
       hll hrlc hrli hrlp hvll hvlc hvli hvlp
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
       pairing_correct.lanes points ll _ hrep hvll hvright]
-  | Portable msm lines words =>
+  | Scalar msm words =>
     obtain ⟨points,hpoints,hrep⟩ := pairing_points_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvlc hvli hvlp
-    have hlines : PortableLinesRep lines := hwork
+    have hp := hrep (0 : Fin 2)
+    have hq := hrep (1 : Fin 2)
     simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
-      pairing_correct.portable lines points ll _ hlines hrep hvll hvright]
+      index_usize_eq points 0#usize (by decide), index_usize_eq points 1#usize (by decide),
+      PortableG1.to_blst_eq]
+    exact BlstPairing.pairing_check_refines (hblst rfl) _ _ ll _ hp hq hvll hvright
 
 end LeanBlsSimd.Kzg

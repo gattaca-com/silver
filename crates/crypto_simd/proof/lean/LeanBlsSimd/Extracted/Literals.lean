@@ -5422,5 +5422,4 @@ def kzg.pairing_lines.PAIRING_LINES : bls.miller_lines.MillerLines :=
     kzg.pairing_lines.PAIRING_LINES_step_67
     ] (by rfl)
 
-
 end silver_crypto_simd

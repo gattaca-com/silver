@@ -1,12 +1,9 @@
-import LeanBlsSimd.Pairing.PortableFinal
 import LeanBlsSimd.Pairing.LaneFinal
-import LeanBlsSimd.Pairing.PortableMiller
 import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
 import LeanBlsSimd.LaneTower.Identity
-import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.PairingProduct
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Refines.FrobeniusConstants
@@ -23,8 +20,6 @@ import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Portable.G1.PairScott
 import LeanBlsSimd.Portable.G1.Scott
 import LeanBlsSimd.Portable.Fp.BatchInverse
-import LeanBlsSimd.Portable.Fp.WideProduct
-import LeanBlsSimd.Portable.Fp.WideReduction
 import LeanBlsSimd.Portable.Fp.Sqrt
 import LeanBlsSimd.Portable.Fp.PairSqrt
 import LeanBlsSimd.Portable.Fp.Correct
@@ -175,11 +170,10 @@ def checkedDefinitions : Array Name := #[``silver_crypto_simd.bls.decompress_g2.
   ``silver_crypto_simd.portable.decompress.uncompress_in_g1,
   ``silver_crypto_simd.portable.decompress.uncompress_pair_in_g1,
   ``silver_crypto_simd.portable.msm.Msm.msm,
-  ``silver_crypto_simd.portable.pairing.PairingLines.new,
-  ``silver_crypto_simd.portable.pairing.PairingLines.pairing_check,
   ``silver_crypto_simd.bls.pairing.MillerLines.pairing_check,
-  ``silver_crypto_simd.kzg.verify.CurveWork.portable,
+  ``silver_crypto_simd.kzg.verify.CurveWork.scalar,
   ``silver_crypto_simd.kzg.verify.CurveWork.pairing_check,
+  ``silver_crypto_simd.kzg.blst_pairing.pairing_check,
   ``silver_crypto_simd.kzg.verify.PairingSums.points,
   ``silver_crypto_simd.kzg.verify.PairingSums.points_in_lanes,
   ``silver_crypto_simd.kzg.verify.two_lanes]

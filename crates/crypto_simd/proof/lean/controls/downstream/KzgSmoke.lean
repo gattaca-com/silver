@@ -9,7 +9,8 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 
 namespace silver_kzg.Kzg
 
-theorem verify_after_construction [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
+theorem verify_after_construction [cpu : RuntimeFeatures] [KzgExternals]
+    [UncompressG1.FallbackCorrect] [BlstPairing.Correct]
     (input : Input) (hi : input.Representable) :
     ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
       input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
@@ -59,7 +60,7 @@ theorem kernel_interpolates_cells [cpu : RuntimeFeatures]
   · simp [hkernel]
   · exact hp
 
-theorem pairing_consumes_cells [cpu : RuntimeFeatures]
+theorem pairing_consumes_cells [cpu : RuntimeFeatures] [KzgExternals] [BlstPairing.Correct]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)

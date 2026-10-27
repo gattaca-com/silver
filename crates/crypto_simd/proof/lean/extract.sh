@@ -71,7 +71,7 @@ trap 'rm -rf "$work"' EXIT
 # `fp8::lanes` is a `transmute`, which Aeneas cannot translate; FunsExternal.lean defines it.
 # The `sha256` loads and stores hold raw pointers, which Aeneas cannot model.
 # The `*_available` checks query the CPU; FunsExternal.lean leaves their answers free.
-# The blst decoders stay external.
+# The blst decoders and scalar pairing wrapper stay external.
 (cd "$crate_dir" &&
   CARGO_TARGET_DIR="$work/target" "$charon" cargo --preset aeneas \
     --start-from crate::bls::decompress_g2::decompress --start-from crate::bls::uncompress_in_g1 \
@@ -81,6 +81,7 @@ trap 'rm -rf "$work"' EXIT
     --opaque crate::sha_available --opaque crate::bmi2_available \
     --opaque crate::bls::uncompress_in_g1_blst \
     --opaque crate::bls::uncompress_in_g2_blst \
+    --opaque crate::kzg::blst_pairing::pairing_check \
     --opaque crate::sha256::extensions::load_bytes \
     --opaque crate::sha256::extensions::load_words \
     --opaque crate::sha256::extensions::store_words \

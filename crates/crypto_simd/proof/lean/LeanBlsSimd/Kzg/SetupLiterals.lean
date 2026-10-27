@@ -20,7 +20,7 @@ local instance : DecidableEq blst.blst_fp2 := fun a b =>
 local instance : DecidableEq blst.blst_p2_affine := fun a b =>
   decidable_of_iff (a.x = b.x ∧ a.y = b.y) (by cases a; cases b; simp)
 
--- The test-only Rust G2 literals in src/kzg/setup.rs are absent from extraction.
+-- Literal copies checked against Rust by setup-literals-check.py and the extraction below.
 def g2_s_pow_cell : blst.blst_p2_affine :=
   { x := { fp := Array.make 2#usize [
       { l := Array.make 6#usize [0xc0b3d27b16a3640b#u64, 0xace3fa1ffc86682b#u64, 0x533831bb8af82f36#u64, 0xb04049d0baad5520#u64, 0xb7b7a0cd6e353592#u64, 0x105956acf773013b#u64] (by rfl) },
@@ -42,5 +42,15 @@ theorem g2_s_pow_cell_eq : g2_s_pow_cell = g2Affine SetupPoints.g2Point64 := by
 
 theorem g2_neg_generator_eq : g2_neg_generator = g2Affine (G2.neg SetupPoints.g2Point0) := by
   decide +kernel
+
+theorem extracted_g2_s_pow_cell :
+    kzg.setup.G2_S_POW_CELL = g2Affine SetupPoints.g2Point64 := by
+  exact (show kzg.setup.G2_S_POW_CELL = g2_s_pow_cell by
+    unfold kzg.setup.G2_S_POW_CELL; rfl).trans g2_s_pow_cell_eq
+
+theorem extracted_g2_neg_generator :
+    kzg.setup.G2_NEG_GENERATOR = g2Affine (G2.neg SetupPoints.g2Point0) := by
+  exact (show kzg.setup.G2_NEG_GENERATOR = g2_neg_generator by
+    unfold kzg.setup.G2_NEG_GENERATOR; rfl).trans g2_neg_generator_eq
 
 end LeanBlsSimd.Kzg.SetupLiterals

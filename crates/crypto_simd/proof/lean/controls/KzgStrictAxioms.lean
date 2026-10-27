@@ -1,7 +1,6 @@
 import controls.FinalExponentiation
 import controls.PairingMiller
 import controls.LaneTowerCapacity
-import controls.PortableTower
 import controls.TowerField
 import controls.Cyclotomic
 import controls.PortableMsm
@@ -9,7 +8,6 @@ import controls.PortableDecode
 import controls.PortableG1Pair
 import controls.PortableG1
 import controls.PortableFpInverse
-import controls.PortableFpWide
 import controls.PortableFpPowers
 import controls.PortableFpCorrect
 import controls.PortableFpReduction
@@ -29,9 +27,8 @@ import controls.KzgSetupBoundary
 import controls.KzgStreamingSha
 import controls.ContractSamples
 import controls.MsmSamples
-import controls.PairingSamples
-import controls.KzgPairingTable
 import controls.KzgRuntimeBoundary
+import controls.KzgBlstBoundary
 import controls.KzgRepresentationAxioms
 import controls.ExtractedLiterals
 import controls.ShaIntrinsics

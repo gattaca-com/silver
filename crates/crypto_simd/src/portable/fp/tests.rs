@@ -5,7 +5,7 @@ use blst::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use super::{Fp, Wide};
+use super::Fp;
 use crate::bls::constants::P_U64;
 #[cfg(target_arch = "x86_64")]
 use crate::bmi2_available;
@@ -122,27 +122,6 @@ fn product_twins_agree() {
             // SAFETY: `bmi2_available` checked BMI2 on this CPU.
             let on_bmi2 = unsafe { a.mul_on_bmi2(b) };
             assert_eq!(on_bmi2, a.mul_on_baseline(b), "{a:?} · {b:?}");
-        }
-    }
-}
-
-/// A product's reduction is the Montgomery product, also on sums below 2p,
-/// and differences of products reduce to their differences in Fp.
-#[test]
-fn wide_products_reduce_to_montgomery_products() {
-    let values = inputs();
-    for a in &values {
-        for b in values.iter().take(24) {
-            let ab = Wide::product(&a.0, &b.0);
-            let bb = Wide::product(&b.0, &b.0);
-            assert_eq!(ab.reduce(), a.mul(b), "reduce");
-            assert_eq!(ab.minus_mod(&bb).reduce(), a.mul(b).sub(&b.square()), "minus_mod");
-            assert_eq!(bb.minus_mod(&ab).reduce(), b.square().sub(&a.mul(b)), "minus_mod");
-            let sum = a.unreduced_add(b);
-            let squared_sum = Wide::product(&sum, &sum);
-            assert_eq!(squared_sum.reduce(), a.add(b).square(), "unreduced sums");
-            let cross = squared_sum.minus(&Wide::product(&a.0, &a.0)).minus(&bb);
-            assert_eq!(cross.reduce(), a.mul(b).double(), "minus");
         }
     }
 }

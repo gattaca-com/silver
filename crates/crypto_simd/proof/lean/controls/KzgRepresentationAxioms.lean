@@ -39,7 +39,6 @@ run_cmd do
       ``LeanBlsSimd.Kzg.PortableFpCorrect.square, ``LeanBlsSimd.Kzg.PortableFpCorrect.neg,
       ``LeanBlsSimd.Kzg.pairing_points_in_lanes_refinement,
       ``LeanBlsSimd.Kzg.pairing_points_refinement,
-      ``LeanBlsSimd.Kzg.curveWorkInvariant_of_table_eq,
       ``LeanBlsSimd.Kzg.curveWorkInvariant_sum] do
     let axioms ← collectAxioms c
     unless axioms.all allowed.contains do

@@ -1,4 +1,3 @@
-import LeanBlsSimd.Pairing.PortableFinal
 import LeanBlsSimd.Pairing.LaneFinal
 
 open Aeneas Aeneas.Std Result
@@ -28,21 +27,12 @@ theorem optimized_one : optimized Bls.Fp12.one = Bls.Fp12.one := by
   apply Fp12.toField.injective
   rw [optimized_power, Fp12.toField_one, one_pow]
 
-theorem portable_zero_rejected [RuntimeFeatures] :
-    (do let out ← portable.fp12.Fp12.final_exponentiation (LeanBlsSimd.Portable.Fp12.encode Bls.Fp12.zero)
-        portable.fp12.Fp12.is_one out) = ok false := by
-  rw [Portable.final_verdict, finalExponentiation_zero_not_isOne]
 
 theorem lane_zero_rejected {raw : bls.fp2x8.Fp2x8} (h : LaneTower.Rep raw Bls.Fp12.zero) :
     (do let out ← bls.fp12.Fp12.final_exponentiation raw
         bls.fp12.Fp12.is_one out) = ok false := by
   rw [Lanes.final_verdict h, finalExponentiation_zero_not_isOne]
 
-theorem portable_one_accepted [RuntimeFeatures] :
-    (do let out ← portable.fp12.Fp12.final_exponentiation (LeanBlsSimd.Portable.Fp12.encode Bls.Fp12.one)
-        portable.fp12.Fp12.is_one out) = ok true := by
-  rw [Portable.final_verdict, finalExponentiation_one]
-  rfl
 
 theorem lane_one_accepted {raw : bls.fp2x8.Fp2x8} (h : LaneTower.Rep raw Bls.Fp12.one) :
     (do let out ← bls.fp12.Fp12.final_exponentiation raw

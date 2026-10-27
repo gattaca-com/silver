@@ -1,12 +1,9 @@
-import LeanBlsSimd.Pairing.PortableFinal
 import LeanBlsSimd.Pairing.LaneFinal
-import LeanBlsSimd.Pairing.PortableMiller
 import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
 import LeanBlsSimd.LaneTower.Identity
-import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.PairingProduct
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Refines.FrobeniusConstants

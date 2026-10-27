@@ -1,12 +1,9 @@
-import LeanBlsSimd.Pairing.PortableFinal
 import LeanBlsSimd.Pairing.LaneFinal
-import LeanBlsSimd.Pairing.PortableMiller
 import LeanBlsSimd.Pairing.LaneMiller
 import LeanBlsSimd.LaneTower.Frobenius
 import LeanBlsSimd.LaneTower.LineCoordinates
 import LeanBlsSimd.LaneTower.CyclotomicCoordinates
 import LeanBlsSimd.LaneTower.Identity
-import LeanBlsSimd.Portable.Fp12.Frobenius
 import LeanBlsSimd.Spec.Cyclotomic.Field
 import LeanBlsSimd.Spec.FinalExponentiation
 
@@ -37,27 +34,10 @@ example (a : Fp12) (h : a ≠ Fp12.zero) :
 
 open Aeneas.Std Result silver_crypto_simd
 
-example [RuntimeFeatures] (a b : Fp12) :
-    portable.fp12.Fp12.mul (Portable.Fp12.encode a) (Portable.Fp12.encode b) =
-      ok (Portable.Fp12.encode (a * b)) := Portable.Fp12.mul_encoded a b
 
-example [RuntimeFeatures] (a : Fp12) :
-    portable.fp12.Fp12.inverse (Portable.Fp12.encode a) =
-      ok (Portable.Fp12.encode a.inverse) := Portable.Fp12.inverse_encoded a
 
-example [RuntimeFeatures] (a : Fp12)
-    (h : Fp12.toField a ^ (Fp.modulus ^ 4 - Fp.modulus ^ 2 + 1) = 1) :
-    portable.fp12.Fp12.cyclotomic_square (Portable.Fp12.encode a) =
-      ok (Portable.Fp12.encode a.square) := Portable.Fp12.cyclotomic_square_encoded a h
 
-example [RuntimeFeatures] (a : Fp12) :
-    portable.fp12.Fp12.frobenius (Portable.Fp12.encode a) =
-      ok (Portable.Fp12.encode (Fp12.powNat a Fp.modulus)) := Portable.Fp12.frobenius_encoded a
 
-example (j : Fin 6) :
-    Fp2.toField ⟨Kzg.fpRead ⟨FrobeniusConstants.portableRow j 0⟩,
-      Kzg.fpRead ⟨FrobeniusConstants.portableRow j 1⟩⟩ =
-      Fp6Field.xi ^ (j.val * ((Fp.modulus - 1) / 6)) := FrobeniusConstants.portable_entry_decodes j
 
 example (j : Fin 6) :
     (⟨decode (FrobeniusConstants.laneLimbs j 0),
@@ -128,29 +108,8 @@ example (points : Fin 2 → G1) :
       pairingFactor (points 1, Pairing.setupPoint 1)) (Pairing.combinedMiller points).conjugate :=
   Pairing.combined_final_eq points
 
-example [RuntimeFeatures] (lines : portable.pairing.PairingLines) (hl : Kzg.PortableLinesRep lines)
-    (step : Usize) (hs : step.val < 68)
-    (factors : Aeneas.Std.Array (Aeneas.Std.Array portable.fp.Fp 3#usize) 2#usize)
-    (v : Pairing.Factors) (hf : Pairing.PortableLines.FactorsRep factors v)
-    (present : Aeneas.Std.Array Bool 2#usize) (f : Fp12) :
-    portable.pairing.PairingLines.times_lines lines (Portable.Fp12.encode f) step factors present =
-      ok (Portable.Fp12.encode (Pairing.pairApply ⟨step.val, hs⟩ v present 1
-        (Pairing.pairApply ⟨step.val, hs⟩ v present 0 f))) :=
-  Pairing.PortableLines.times_lines lines hl step hs factors v hf present f
 
-example [RuntimeFeatures] (raw : Aeneas.Std.Array portable.g1.G1 2#usize)
-    (points : Fin 2 → G1) (hp : Pairing.PortableLines.PointsRep raw points)
-    (factors : Aeneas.Std.Array (Aeneas.Std.Array portable.fp.Fp 3#usize) 2#usize) :
-    ∃ out, portable.pairing.PairingLines.miller_loop_loop0 raw factors 0#usize = ok out ∧
-      Pairing.PortableLines.FactorsRep out (Pairing.g1Factors points) :=
-  Pairing.PortableLines.factors_refines raw points hp factors
 
-example [RuntimeFeatures] (lines : portable.pairing.PairingLines) (hl : Kzg.PortableLinesRep lines)
-    (raw : Aeneas.Std.Array portable.g1.G1 2#usize) (points : Fin 2 → G1)
-    (hp : Pairing.PortableLines.PointsRep raw points) :
-    portable.pairing.PairingLines.miller_loop lines raw =
-      ok (Portable.Fp12.encode (Pairing.combinedMiller points).conjugate) :=
-  Pairing.PortableLines.miller_encoded lines hl raw points hp
 
 example (raw : bls.g1x8.G1x8) (points : Fin 8 → G1)
     (hp : Pairing.LaneLines.PointsRep raw points) :
@@ -158,10 +117,6 @@ example (raw : bls.g1x8.G1x8) (points : Fin 8 → G1)
       LaneTower.Rep out (Pairing.combinedMiller (Pairing.LaneLines.firstPoints points)).conjugate :=
   Pairing.LaneLines.miller_refines raw points hp
 
-example [RuntimeFeatures] (a : Fp12) :
-    (do let out ← portable.fp12.Fp12.final_exponentiation (Portable.Fp12.encode a)
-        portable.fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne :=
-  Pairing.FinalExponent.Portable.final_verdict a
 
 example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
     (do let out ← bls.fp12.Fp12.final_exponentiation x

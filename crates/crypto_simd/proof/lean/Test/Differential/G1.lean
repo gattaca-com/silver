@@ -183,7 +183,8 @@ def compareWrapper (t : Tally) (batches : Array Batch) (w : Wrapper) (simd : Boo
     shaAvailable := false
     bmi2Available := false }
   letI : silver_crypto_simd.KzgExternals := {
-    uncompressG1 := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine }
+    uncompressG1 := fun bytes => (oracle (ofArray ofU8 bytes)).map toBlstP1Affine
+    pairingCheck := fun _ _ _ _ => false }
   let extracted : List (Std.Array Std.U8 48#usize) := inputs.map (toArray toU8)
   if h : extracted.length ≤ Std.Usize.max then do
     let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := ⟨extracted, h⟩

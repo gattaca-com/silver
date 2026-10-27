@@ -1,4 +1,4 @@
-import LeanBlsSimd.Pairing.PortableLines
+import LeanBlsSimd.Pairing.LineFactors
 import LeanBlsSimd.LaneTower.LineCoordinates
 
 open Aeneas Aeneas.Std Result

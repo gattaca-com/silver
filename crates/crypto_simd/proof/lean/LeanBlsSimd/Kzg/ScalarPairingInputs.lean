@@ -8,13 +8,19 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg
 
+def ScalarPairRep (raw : Array portable.g1.G1 2#usize) (p q : G1) : Prop :=
+  ∀ lane : Fin 2,
+    let point := raw.val[lane.val]'(by simpa using lane.isLt)
+    G1Rep ⟨⟨point.x⟩, ⟨point.y⟩, ⟨point.z⟩⟩ (if lane.val = 0 then p else q)
+
+
 theorem pairing_points_refinement [RuntimeFeatures]
     (sums : verify.PairingSums) (ll rlc rli rlp : G1)
     (hll : G1Rep sums.ll ll) (hrlc : G1Rep sums.rlc rlc)
     (hrli : G1Rep sums.rli rli) (hrlp : G1Rep sums.rlp rlp)
     (hvlc : G1Valid rlc) (hvli : G1Valid rli) (hvlp : G1Valid rlp) :
     ∃ out, sums.points = ok out ∧
-      PortablePairRep out ll (G1.add (G1.add rlc (G1.neg rli)) rlp) := by
+      ScalarPairRep out ll (G1.add (G1.add rlc (G1.neg rli)) rlp) := by
   obtain ⟨lc,hlc,hlcr⟩ := PortableG1.from_blst_refines sums.rlc rlc hrlc
   obtain ⟨li,hli,hlir⟩ := PortableG1.from_blst_refines sums.rli rli hrli
   obtain ⟨nli,hnli,hnlir⟩ := PortableG1.neg_refines li rli hlir hvli

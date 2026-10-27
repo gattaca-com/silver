@@ -1,3 +1,4 @@
+import LeanBlsSimd.Kzg.Routes
 import LeanBlsSimd.Kzg.PairingInputs
 import LeanBlsSimd.Kzg.Refines.PairingLoops
 
@@ -10,9 +11,10 @@ namespace LeanBlsSimd.Kzg.Pairing
 set_option maxHeartbeats 4000000
 set_option maxRecDepth 16000
 
-theorem pairing_holds_composition [RuntimeFeatures]
+theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
     (hinterp : InterpolationCorrect)
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
+    (v : verify.CellBatchVerifier) (hv : StateInvariant v)
+    (hblst : BlstPairing.FallbackCorrect v.curve_work) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
@@ -103,7 +105,17 @@ theorem pairing_holds_composition [RuntimeFeatures]
   have hvrli : G1Valid interpolation := g1_msm_valid_of_mem _ _ setup_model_points_valid
   have hvrlp := g1_msm_valid_of_mem proofs shifted.toArray hvalid.2
   have hworkP := curveWorkInvariant_sum after.curve_work scratchP _ _ rlp hrlp hafter.2.2.2
-  have hpair := curveWork_pairing_check_refinement scratchP hworkP
+  have hrouteI := congrArg Prod.snd
+    (Routes.interpolation_commitment_route middle after indices cells rli hinterpolation)
+  change CurveWork.isLanes after.curve_work = CurveWork.isLanes scratchC at hrouteI
+  have hroute : CurveWork.isLanes scratchP = CurveWork.isLanes v.curve_work :=
+    (CurveWork.sum_frame after.curve_work scratchP _ _ rlp hrlp).trans
+      (hrouteI.trans ((CurveWork.sum_frame scratchL scratchC _ _ rlc hrlc).trans
+        (CurveWork.sum_frame v.curve_work scratchL _ _ ll hll)))
+  have hblstP : BlstPairing.FallbackCorrect scratchP := by
+    intro hs
+    exact hblst (hroute.symm.trans hs)
+  have hpair := curveWork_pairing_check_refinement scratchP hblstP
     ⟨ll,rlc,rli,rlp⟩ _ _ _ _ hllrep hrlcrep hrlirep hrlprep hvll hvrlc hvrli hvrlp
   have hwmodel := weights_model v.commitments.index_of_cell.val powers commitments.size
   rw [hci.1] at hwmodel
@@ -132,8 +144,9 @@ end LeanBlsSimd.Kzg.Pairing
 
 namespace LeanBlsSimd.Kzg
 
-theorem pairing_holds_refinement [RuntimeFeatures]
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
+theorem pairing_holds_refinement [RuntimeFeatures] [KzgExternals]
+    (v : verify.CellBatchVerifier) (hv : StateInvariant v)
+    (hblst : BlstPairing.FallbackCorrect v.curve_work) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
@@ -153,6 +166,6 @@ theorem pairing_holds_refinement [RuntimeFeatures]
         (v.commitments.index_of_cell.val.map (·.val)).toArray
         (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next :=
   Pairing.pairing_holds_composition interpolation_commitment_refinement
-    v hv indices cells commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
+    v hv hblst indices cells commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
 
 end LeanBlsSimd.Kzg

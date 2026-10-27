@@ -8,7 +8,7 @@ import tempfile
 
 
 LEAN = Path(__file__).resolve().parents[1]
-SUPPORT = runpy.run_path(str(LEAN / "controls/portable-tower-mutation-check.py"))
+SUPPORT = runpy.run_path(str(LEAN / "controls/mutation-support.py"))
 
 
 def check_cases(directory, filename, name, proof, stop, closing, cases):
@@ -37,31 +37,6 @@ def check_cases(directory, filename, name, proof, stop, closing, cases):
 def main():
     with tempfile.TemporaryDirectory(prefix="pairing-loop-mutation-") as temporary:
         directory = Path(temporary)
-        check_cases(directory, "LeanBlsSimd/Pairing/PortableLines.lean",
-                    "portable.pairing.PairingLines.times_lines_loop.body", "body_step",
-                    "theorem times_lines", "\nend PortableLines\nend LeanBlsSimd.Pairing\n", [
-                        ("XFactor", "Array.index_usize a1 1#usize", "Array.index_usize a1 2#usize"),
-                        ("Present", "if b\n", "if !b\n"),
-                        ("TableRow", "Array.index_usize self step", "Array.index_usize self 0#usize"),
-                        ("LoopBound", "k < 2#usize", "k < 1#usize"),
-                    ])
-        check_cases(directory, "LeanBlsSimd/Pairing/PortableFactors.lean",
-                    "portable.pairing.PairingLines.miller_loop_loop0.body", "factors_body",
-                    "theorem factors_loop", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
-                        ("ZFactor", "portable.fp.Fp.square p.z", "portable.fp.Fp.square p.x"),
-                    ])
-
-        check_cases(directory, "LeanBlsSimd/Pairing/PortableMillerStep.lean",
-                    "portable.pairing.PairingLines.miller_loop_loop1.body", "miller_body",
-                    "end LeanBlsSimd.Pairing.PortableLines", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
-                        ("PortableFirstSquare", "step > 0#usize", "step > 1#usize"),
-                        ("PortableStep", "let step1 ← step + 1#usize", "let step1 ← step + 2#usize"),
-                    ])
-        check_cases(directory, "LeanBlsSimd/Pairing/PortableMiller.lean",
-                    "portable.pairing.PairingLines.miller_loop", "miller_encoded",
-                    "end LeanBlsSimd.Pairing.PortableLines", "\nend LeanBlsSimd.Pairing.PortableLines\n", [
-                        ("PortableConjugate", "portable.fp12.Fp12.conjugate f", "ok f"),
-                    ])
 
         check_cases(directory, "LeanBlsSimd/Pairing/LaneLine.lean",
                     "bls.pairing.line", "line_refines",
@@ -87,12 +62,6 @@ def main():
                         ("LaneConjugate", "bls.fp12.Fp12.conjugate f3", "ok f3"),
                     ])
 
-
-        check_cases(directory, "LeanBlsSimd/Kzg/PairingCorrect.lean",
-                    "portable.pairing.PairingLines.pairing_check", "PortableLines.pairing_check",
-                    "theorem LaneLines.pairing_check", "\nend LeanBlsSimd.Pairing\n", [
-                        ("PortableFinalPower", "portable.fp12.Fp12.final_exponentiation f", "ok f"),
-                    ])
         check_cases(directory, "LeanBlsSimd/Kzg/PairingCorrect.lean",
                     "bls.pairing.MillerLines.pairing_check", "LaneLines.pairing_check",
                     "end LeanBlsSimd.Pairing", "\nend LeanBlsSimd.Pairing\n", [

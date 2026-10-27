@@ -89,13 +89,13 @@ fn pairing_points_match_blst() {
     }
 }
 
-/// The verdicts of the lanes and of the portable route are blst's on every
+/// The verdicts of the lanes and of the scalar route are blst's on every
 /// case, some of which hold: LL and RL at infinity together.
 #[test]
 fn pairing_check_matches_blst() {
     #[cfg(target_arch = "x86_64")]
     let lanes = ifma_kernels_run().then(CurveWork::new);
-    let portable = CurveWork::portable();
+    let scalar = CurveWork::scalar();
     let mut rng = ChaCha8Rng::seed_from_u64(0x9a2);
     let mut held = 0;
     for (case, sums) in cases(&mut rng).iter().enumerate() {
@@ -106,9 +106,29 @@ fn pairing_check_matches_blst() {
             let got = lanes.pairing_check(&pairing_sums(sums));
             assert_eq!(got, want, "lanes, case {case}");
         }
-        let got = portable.pairing_check(&pairing_sums(sums));
-        assert_eq!(got, want, "portable, case {case}");
+        let got = scalar.pairing_check(&pairing_sums(sums));
+        assert_eq!(got, want, "scalar, case {case}");
         held += want as usize;
     }
     assert!(held > 0, "no case holds");
+}
+
+#[test]
+fn scalar_pairing_matches_spec_with_infinity_on_either_side() {
+    let scalar = CurveWork::scalar();
+    // SAFETY: blst returns a pointer to its static generator.
+    let generator = unsafe { *blst_p1_generator() };
+    let one = blst_fp { l: crate::portable::constants::ONE.0 };
+    for infinity in [blst_p1::default(), blst_p1 { x: one, y: one, z: blst_fp::default() }] {
+        for (left, right, expected) in
+            [(infinity, generator, false), (generator, infinity, false), (infinity, infinity, true)]
+        {
+            let pairs =
+                [(g1_to_affine(&left), G2_S_POW_CELL), (g1_to_affine(&right), G2_NEG_GENERATOR)];
+            let spec = crate::bls::spec_pairing::pairing_check(&pairs);
+            assert_eq!(spec, expected, "finite pairs must contribute to the verdict");
+            let sums = PairingSums { ll: left, rlc: right, rli: infinity, rlp: infinity };
+            assert_eq!(scalar.pairing_check(&sums), spec);
+        }
+    }
 }

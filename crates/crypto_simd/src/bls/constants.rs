@@ -119,6 +119,7 @@ pub const P_MINUS_3_OVER_4_WINDOWS: [u8; 95] = [
 pub const Z_BITS: [u32; 6] = [63, 62, 60, 57, 48, 16];
 
 /// A set bit of |z| below the top one, where chains over |z| start.
+#[cfg(any(target_arch = "x86_64", test))]
 pub(crate) fn is_lower_z_bit(bit: u32) -> bool {
     bit == Z_BITS[1] || bit == Z_BITS[2] || bit == Z_BITS[3] || bit == Z_BITS[4] || bit == Z_BITS[5]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare test-only Rust G2 literals with their Lean kernel certificates."""
+"""Compare production Rust G2 literals with their Lean kernel certificates."""
 import argparse
 from pathlib import Path
 import re

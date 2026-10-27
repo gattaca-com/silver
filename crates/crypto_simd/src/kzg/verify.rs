@@ -5,7 +5,7 @@
 //! interpolation run on `Fr8` vectors, which read the cells' bytes directly,
 //! the four multi-scalar multiplications run on `Msm8`, and the pairing check
 //! runs on `Fp12` lanes. Without IFMA, the cells take scalar `Fr`, and the
-//! curve work the portable route.
+//! sums use portable MSM and the pairing check uses blst.
 
 use blst::{blst_fr, blst_p1};
 
@@ -13,22 +13,24 @@ use crate::{
     bls::{COMPRESSED_LEN, blst_p1_affine, uncompress_in_g1},
     kzg::{
         BYTES_PER_CELL, BYTES_PER_FIELD_ELEMENT, CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_CELL,
-        FR_ONE, FR_ZERO,
+        FR_ONE, FR_ZERO, blst_pairing,
         challenge::challenge_in_parts_portable,
         cosets::Cosets,
         domain::reverse_bits,
         fft::inverse_fft,
         fr::{fr_add, fr_from_bytes, fr_mul, fr_to_words},
-        pairing_lines::PAIRING_LINES,
-        setup::Setup,
+        setup::{G2_NEG_GENERATOR, G2_S_POW_CELL, Setup},
     },
-    portable::{g1::G1, msm::Msm, pairing::PairingLines},
+    portable::{g1::G1, msm::Msm},
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{
     bls::{fp8::Fp8, g1x8::G1x8, limbs::LANES, msm8::Msm8},
     ifma_available,
-    kzg::{challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel},
+    kzg::{
+        challenge::challenge_in_parts, fr8::Fr8, interpolation_kernel::InterpolationKernel,
+        pairing_lines::PAIRING_LINES,
+    },
     sha_available,
 };
 
@@ -101,7 +103,7 @@ impl CellBatchVerifier {
         Self {
             #[cfg(target_arch = "x86_64")]
             kernel: None,
-            curve_work: CurveWork::portable(),
+            curve_work: CurveWork::scalar(),
             ..Self::new()
         }
     }
@@ -299,15 +301,9 @@ impl CellBatchVerifier {
 enum CurveWork {
     /// On `Msm8`, `Fp8` and `Fp12` lanes, where IFMA runs.
     #[cfg(target_arch = "x86_64")]
-    Lanes {
-        msm: Msm8,
-        words: Vec<[u64; 4]>,
-    },
-    Portable {
-        msm: Msm,
-        lines: Box<PairingLines>,
-        words: Vec<[u64; 4]>,
-    },
+    Lanes { msm: Msm8, words: Vec<[u64; 4]> },
+    /// Portable MSM and blst pairing.
+    Scalar { msm: Msm, words: Vec<[u64; 4]> },
 }
 
 impl CurveWork {
@@ -316,12 +312,11 @@ impl CurveWork {
         if ifma_available() {
             return Self::Lanes { msm: Msm8::default(), words: Vec::new() };
         }
-        Self::portable()
+        Self::scalar()
     }
 
-    fn portable() -> Self {
-        let lines = Box::new(PairingLines::new(&PAIRING_LINES));
-        Self::Portable { msm: Msm::default(), lines, words: Vec::new() }
+    fn scalar() -> Self {
+        Self::Scalar { msm: Msm::default(), words: Vec::new() }
     }
 
     fn sum(&mut self, points: &[blst_p1_affine], scalars: &[blst_fr]) -> blst_p1 {
@@ -334,7 +329,7 @@ impl CurveWork {
                     msm.msm(points, words)
                 }
             }
-            Self::Portable { msm, words, .. } => {
+            Self::Scalar { msm, words } => {
                 words.clear();
                 let mut i = 0;
                 while i < scalars.len() {
@@ -354,7 +349,15 @@ impl CurveWork {
                 // SAFETY: `Lanes` is built only where `ifma_available` held.
                 unsafe { PAIRING_LINES.pairing_check(&sums.points_in_lanes()) }
             }
-            Self::Portable { lines, .. } => lines.pairing_check(&sums.points()),
+            Self::Scalar { .. } => {
+                let points = sums.points();
+                blst_pairing::pairing_check(
+                    &points[0].to_blst(),
+                    &G2_S_POW_CELL,
+                    &points[1].to_blst(),
+                    &G2_NEG_GENERATOR,
+                )
+            }
         }
     }
 }

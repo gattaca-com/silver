@@ -4,15 +4,13 @@ import LeanBlsSimd.Extracted.Funs
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls silver_crypto_simd.kzg
 noncomputable section
-variable [KzgExternals]
-
 namespace LeanBlsSimd.Kzg.Routes
 
 theorem lincomb_sum_route [RuntimeFeatures] (self next : verify.CurveWork)
     (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr) (point : blst.blst_p1)
     (hcall : self.sum ps fs = ok (point, next)) :
     CurveWork.isLanes next = CurveWork.isLanes self :=
-  (CurveWork.sum_frame self next ps fs point hcall).1
+  (CurveWork.sum_frame self next ps fs point hcall)
 
 private theorem bind_success {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
     (do let x ← r; f x) = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
@@ -64,7 +62,7 @@ theorem interpolation_commitment_route [RuntimeFeatures] (self next : verify.Cel
     have hr := lincomb_sum_route self.curve_work x.2 _ _ x.1 hx
     simp only [route, hk, Option.isSome_some, hr]
 
-theorem pairing_holds_route [RuntimeFeatures] (self next : verify.CellBatchVerifier)
+theorem pairing_holds_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (r : blst.blst_fr) (indices : Slice U64) (cells : Slice (Array U8 2048#usize)) (b : Bool)
     (h : self.pairing_holds r indices cells = ok (b, next)) : route next = route self := by
   simp only [verify.CellBatchVerifier.pairing_holds, bind_success, Function.uncurry] at h
@@ -166,7 +164,7 @@ theorem decode_cells_route [RuntimeFeatures] (self next : verify.CellBatchVerifi
     obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj h)
     rfl
 
-theorem decode_proofs_route [RuntimeFeatures] (self next : verify.CellBatchVerifier)
+theorem decode_proofs_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (proofs : Slice (Array U8 48#usize)) (b : Bool)
     (h : self.decode_proofs proofs = ok (b, next)) : route next = route self := by
   simp only [verify.CellBatchVerifier.decode_proofs, bind_success, Function.uncurry] at h
@@ -174,14 +172,14 @@ theorem decode_proofs_route [RuntimeFeatures] (self next : verify.CellBatchVerif
   obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj h)
   rfl
 
-theorem decode_commitments_route [RuntimeFeatures] (self next : verify.CellBatchVerifier) (b : Bool)
+theorem decode_commitments_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier) (b : Bool)
     (h : self.decode_commitments = ok (b, next)) : route next = route self := by
   simp only [verify.CellBatchVerifier.decode_commitments, bind_success, Function.uncurry] at h
   obtain ⟨_, _, h⟩ := h
   obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj h)
   rfl
 
-theorem verify_route [RuntimeFeatures] (self next : verify.CellBatchVerifier)
+theorem verify_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (commitments : Slice (Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize)) (proofs : Slice (Array U8 48#usize)) (b : Bool)
     (h : self.verify commitments indices cells proofs = ok (b, next)) : route next = route self := by
@@ -222,7 +220,7 @@ theorem verify_route [RuntimeFeatures] (self next : verify.CellBatchVerifier)
           · obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj h)
             exact h1
 
-theorem verify_preserves_routes [RuntimeFeatures] (self next : verify.CellBatchVerifier)
+theorem verify_preserves_routes [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (commitments : Slice (Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Array U8 2048#usize)) (proofs : Slice (Array U8 48#usize)) (b : Bool)
     (h : self.verify commitments indices cells proofs = ok (b, next)) :

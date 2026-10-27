@@ -49,6 +49,7 @@ pub mod g1x8;
 pub mod g2x8;
 pub(crate) mod glv;
 pub mod limbs;
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod miller_lines;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]

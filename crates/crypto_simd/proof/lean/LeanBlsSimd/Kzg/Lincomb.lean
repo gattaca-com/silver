@@ -174,18 +174,18 @@ private theorem lincomb_sum_kernel [RuntimeFeatures]
   · simpa only [alloc.vec.Vec.deref, hvalues] using hrep
 
 private theorem lincomb_sum_portable [RuntimeFeatures]
-    (state : portable.msm.Msm) (lines : portable.pairing.PairingLines)
+    (state : portable.msm.Msm)
     (scratch : alloc.vec.Vec (MsmWord))
     (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
     (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
     (hfv : ∀ f ∈ fs.val, FrReduced f) :
-    ∃ point next, (verify.CurveWork.Portable state lines scratch).sum ps fs = ok (point, next) ∧
+    ∃ point next, (verify.CurveWork.Scalar state scratch).sum ps fs = ok (point, next) ∧
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
   obtain ⟨ws, hwords, hwlen, hwval⟩ := portable_words fs scratch hfv
   obtain ⟨hwbound, hvalues⟩ := word_values fs ws hwval
   obtain ⟨point, next, hcall, hrep⟩ := portable_msm_correct.msm state ps (alloc.vec.Vec.deref ws)
     (by simpa only [alloc.vec.Vec.deref, hwlen] using hlen) hpv hwbound
-  refine ⟨point, .Portable next lines ws, ?_, ?_⟩
+  refine ⟨point, .Scalar next ws, ?_, ?_⟩
   · simp only [alloc.vec.Vec.clear, bind_tc_ok] at hwords
     simp only [verify.CurveWork.sum, alloc.vec.Vec.clear, bind_tc_ok, hwords, hcall]
     rfl
@@ -200,7 +200,7 @@ theorem verify_lincomb_raw_refinement [RuntimeFeatures]
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
   cases self with
   | Lanes state ws => exact lincomb_sum_kernel state ws ps fs hlen hpv hfv
-  | Portable state lines ws => exact lincomb_sum_portable state lines ws ps fs hlen hpv hfv
+  | Scalar state ws => exact lincomb_sum_portable state ws ps fs hlen hpv hfv
 
 /-- The MSM result and preservation of persistent workspace fields. -/
 theorem curveWork_sum_raw [RuntimeFeatures]
@@ -209,8 +209,7 @@ theorem curveWork_sum_raw [RuntimeFeatures]
     (hfv : ∀ f ∈ fs.val, FrReduced f) :
     ∃ point next, self.sum ps fs = ok (point, next) ∧
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) ∧
-      CurveWork.isLanes next = CurveWork.isLanes self ∧
-      CurveWork.pairingLines next = CurveWork.pairingLines self := by
+      CurveWork.isLanes next = CurveWork.isLanes self := by
   obtain ⟨point, next, hcall, hrep⟩ := verify_lincomb_raw_refinement self ps fs hlen hpv hfv
   exact ⟨point, next, hcall, hrep, CurveWork.sum_frame self next ps fs point hcall⟩
 
@@ -297,8 +296,8 @@ theorem verify_lincomb_raw_kernel_refinement [RuntimeFeatures]
   cases self with
   | Lanes state ws =>
     obtain ⟨point, next, hcall, hrep⟩ := lincomb_sum_kernel state ws ps fs hlen hpv hfv
-    exact ⟨point, next, hcall, (CurveWork.sum_frame _ next ps fs point hcall).1, hrep⟩
-  | Portable state lines ws => cases hstate
+    exact ⟨point, next, hcall, (CurveWork.sum_frame _ next ps fs point hcall), hrep⟩
+  | Scalar state ws => cases hstate
 
 theorem verify_lincomb_kernel_refinement [RuntimeFeatures]
     (ps : alloc.vec.Vec blst.blst_p1_affine) (fs : alloc.vec.Vec blst.blst_fr)
@@ -319,14 +318,14 @@ theorem verify_lincomb_kernel_refinement [RuntimeFeatures]
     exact ⟨point, next, hcall, hrep⟩
   obtain ⟨point, next, hcall, hrep⟩ := lincomb_encoded ps fs points scalars
     hps hfs hsize hvalid scratch hsum
-  exact ⟨point, next, hcall, hrep, (CurveWork.sum_frame scratch next _ _ point hcall).1.trans hroute⟩
+  exact ⟨point, next, hcall, hrep, (CurveWork.sum_frame scratch next _ _ point hcall).trans hroute⟩
 
 /-- A successful sum keeps the workspace route. -/
 theorem lincomb_sum_route [RuntimeFeatures] (self next : verify.CurveWork)
     (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr) (point : blst.blst_p1)
     (hcall : self.sum ps fs = ok (point, next)) :
     CurveWork.isLanes next = CurveWork.isLanes self :=
-  (CurveWork.sum_frame self next ps fs point hcall).1
+  (CurveWork.sum_frame self next ps fs point hcall)
 
 /-- The lane route does not inspect CPU feature selection. -/
 theorem lincomb_sum_kernel_runtime_independent (cpu cpu' : RuntimeFeatures)

@@ -14,8 +14,6 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
-variable [KzgExternals]
-
 namespace LeanBlsSimd.Kzg.Verify
 
 set_option maxRecDepth 16000
@@ -180,7 +178,7 @@ theorem cells_decode_rep (cells : Slice (Aeneas.Std.Array U8 2048#usize))
   | some value => simp
 
 
-theorem verify_rejects_indices [RuntimeFeatures] (v : verify.CellBatchVerifier)
+theorem verify_rejects_indices [RuntimeFeatures] [KzgExternals] (v : verify.CellBatchVerifier)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -207,8 +205,8 @@ theorem points_acceptance_validate (bs : List (Aeneas.Std.Array U8 48#usize)) :
   rw [decoded_points_acceptance]
   simp only [specPoint_isSome]
 
-def PairingContract [RuntimeFeatures] : Prop :=
-  ∀ (v : verify.CellBatchVerifier), StateInvariant v → ∀ (indices : Slice U64)
+def PairingContract [RuntimeFeatures] [KzgExternals] (work : verify.CurveWork) : Prop :=
+  ∀ (v : verify.CellBatchVerifier), v.curve_work = work → StateInvariant v → ∀ (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr),
     indices.val.length * 2048 ≤ Isize.max.toNat →
@@ -247,8 +245,8 @@ private theorem rejectErrors_of_ok {result : Except KzgError Bool} {verdict : Bo
 
 set_option maxHeartbeats 200000 in
 theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
-    (hpairs : PairingContract) (hmodel : ModelPairingContract)
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v)
+    (hmodel : ModelPairingContract)
+    (v : verify.CellBatchVerifier) (hv : StateInvariant v) (hpairs : PairingContract v.curve_work)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (ps : Slice (Aeneas.Std.Array U8 48#usize))
@@ -418,7 +416,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
               apply deduplicate_indices C
               rw [← hdi]
               simp [hi]
-            obtain ⟨next, hpair, hvnext⟩ := hpairs v3 hv3 indices cells
+            obtain ⟨next, hpair, hvnext⟩ := hpairs v3 (by simpa only [v3, v1] using hwork2) hv3 indices cells
               (pointValues unique) (pointValues P) evals r (by omega) hs hpc hpp' hcellRep hev
               (by simpa [hv3d, pointValues_size] using huniqSize)
               ⟨by simpa [hv3d] using hmapSize, by simpa [hv3d] using hci⟩
