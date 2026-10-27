@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Recheck pairing-product proofs against mutations of live generated functions."""
+"""Recheck pairing-product proofs against mutations of live generated functions.
+
+Swapping runtime dispatch or forcing the fallback are equivalent mutants here:
+both arms satisfy the same verdict contract. CPU target-feature safety and route
+performance are Rust-side properties.
+"""
 
 import argparse
 from dataclasses import dataclass
@@ -18,6 +23,7 @@ BASE = "LeanBlsSimd/PairingProduct/"
 LANES = "bls.lane_pairs.LanePairs."
 OWNER = "bls.pairing_product.PairingProduct."
 INPUTS = "bls.pairing_product.PairingInputs."
+AFFINE = "bls.pairing_product.AffinePair."
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,14 @@ CASES = [
          "s { start, «end» := i2 }", "s { start := 0#usize, «end» := i2 }", (INPUTS + "lane_is_one_loop",)),
     Case("Fallback", "ProductLoop.lean", INPUTS + "lane_is_one", "lane_is_one_refines",
          "theorem check_refines", PRODUCT_END, "if degenerate != 0#u8", "if false"),
+    Case("FinalProduct", "ProductLoop.lean", INPUTS + "lane_is_one", "lane_is_one_refines",
+         "theorem check_refines", PRODUCT_END,
+         "bls.fp12.Fp12.final_exponentiation product1", "bls.fp12.Fp12.final_exponentiation product"),
+    Case("FallbackVerdict", "ProductLoop.lean", INPUTS + "lane_is_one", "lane_is_one_refines",
+         "theorem check_refines", PRODUCT_END, INPUTS + "blst_is_one self", "ok true"),
+    Case("Infinity", "Infinity.lean", AFFINE + "is_infinite", "affinePair_is_infinite",
+         "\nend\n", OWNER_END, "then ok true\n  else ok (q_bits = 0#u64)",
+         "then ok (q_bits = 0#u64)\n  else ok false"),
     Case("PushFilter", "Owner.lean", OWNER + "push", "push_refines",
          "theorem push_preserves_valid", OWNER_END, "if b\n", "if !b\n"),
     Case("Clear", "Owner.lean", OWNER + "clear", "clear_empty",
@@ -122,6 +136,15 @@ def source_for(case, mutated, reformatted):
     if imports is None:
         raise AssertionError(f"{case.label}: missing imports")
     body = replace_references(original[imports.end():original.index(case.stop)], names)
+    if case.label == "Infinity":
+        # Keep the raw refinement inside the theorem whose rejection is checked.
+        start = body.index("private theorem infinity_raw ")
+        end = body.index("\nprivate theorem fp2_ext", start)
+        raw = body[start:end].replace("private theorem infinity_raw ", "have infinity_raw ", 1)
+        body = body[:start] + body[end:]
+        headline = body.index("theorem affinePair_is_infinite ")
+        proof = body.index(" := by\n", headline) + len(" := by\n")
+        body = body[:proof] + "\n".join("  " + line for line in raw.splitlines()) + "\n" + body[proof:]
     return (imports[0] + "\nopen Aeneas Aeneas.Std Result ControlFlow\n"
             "namespace silver_crypto_simd\nnoncomputable section\n"
             "variable [RuntimeFeatures] [bls.PairingExternals]\n" + generated
