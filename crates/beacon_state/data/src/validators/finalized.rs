@@ -170,8 +170,8 @@ impl FinalizedValidators {
     /// Decode the SSZ `validators` byte range (layout per [`offset`]); capacity
     /// is derived from the count, and `try_new(&[], None)` is the empty base.
     /// With `Some(decompressed)`, each sidecar key is bound to its record's
-    /// canonical compressed pubkey; with `None`, pubkeys are decompressed from
-    /// the records (which rejects non-canonical points).
+    /// canonical compressed pubkey; with `None`, valid pubkeys are decompressed
+    /// from the records and invalid are rejected. The sidecar is optional.
     #[timed]
     pub fn try_new(
         val_bytes: &[u8],
@@ -198,7 +198,7 @@ impl FinalizedValidators {
                     return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
                 }
                 Some(d) => d[i],
-                None => PublicKey::from_bytes(&pubkey)
+                None => PublicKey::key_validate(&pubkey)
                     .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?,
             };
             Ok(ValidatorInit {

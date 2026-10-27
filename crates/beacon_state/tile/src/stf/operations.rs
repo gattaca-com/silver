@@ -397,7 +397,7 @@ pub fn collect_sigs_bls_to_execution_changes(
             to_execution_address,
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
-        let Ok(from_pk) = PublicKey::from_bytes(from_bls_pubkey) else {
+        let Ok(from_pk) = PublicKey::key_validate(from_bls_pubkey) else {
             return Err(BlsToExecutionChangeError::BadPubkey { from_pubkey: *from_bls_pubkey });
         };
         sig_batch.push_one(&from_pk, sig, signing_root);

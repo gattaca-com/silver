@@ -118,7 +118,7 @@ fn bid_signing_input(
         .get(bid.builder_index as usize)
         .map(|b| b.pubkey)
         .ok_or(BidBuilderError::OutOfRange { index: bid.builder_index, count: builders.len() })?;
-    let Ok(pubkey) = PublicKey::from_bytes(&pubkey_bytes) else {
+    let Ok(pubkey) = PublicKey::key_validate(&pubkey_bytes) else {
         return Err(E::BadBuilderPubkey { index: bid.builder_index });
     };
 
