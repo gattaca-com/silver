@@ -1,7 +1,8 @@
 //! Streams the node's metrics to the dashboard as `silver_observe_wire`
-//! datagrams: shmem sources as one bucket per second, spine peer stats and
-//! stage events as they arrive, descriptors every ten seconds. A node restart
-//! reopens every shmem source under a new `boot_id`.
+//! datagrams: shmem sources as one bucket per second, the newest spine peer
+//! stats every five seconds, stage events as they arrive, descriptors every
+//! ten seconds. A node restart reopens every shmem source under a new
+//! `boot_id`.
 
 use std::{
     net::{SocketAddr, UdpSocket},
@@ -15,11 +16,9 @@ use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 use silver_stages::StageEvent;
 
-use crate::exporter::{
-    sources::ExportSources,
-    streams::{p2p_record, scores_record, stage_record, topic_record},
-};
+use crate::exporter::{peers::LatestPeerStats, sources::ExportSources, streams::stage_record};
 
+mod peers;
 mod sources;
 mod streams;
 
@@ -27,6 +26,9 @@ const BUCKET: Nanos = Nanos::from_secs(1);
 /// Cadence of the `fast:` sources; the loop runs every 10 ms, so a sample
 /// lands up to that late, and each carries its own timestamp.
 const FAST_BUCKET: Nanos = Nanos::from_millis(50);
+/// Half the dashboard's peer TTL, so a live peer never ages out between
+/// buckets.
+const PEER_BUCKET: Nanos = Nanos::from_secs(5);
 /// Also the rediscovery and measurement-log cadence.
 const DESCRIBE: Nanos = Nanos::from_secs(10);
 const KINDS: usize = Kind::LAST as usize + 1;
@@ -63,9 +65,11 @@ pub struct Exporter {
     node_pid: Option<u32>,
     encoder: Encoder,
     sources: ExportSources,
+    peers: LatestPeerStats,
     sink: Sink,
     next_bucket: Nanos,
     next_fast: Nanos,
+    next_peers: Nanos,
     next_describe: Nanos,
 }
 
@@ -89,9 +93,11 @@ impl Exporter {
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
+            peers: LatestPeerStats::default(),
             sink: Sink { socket, bytes: [0; KINDS], datagrams: 0, dropped: 0 },
             next_bucket: now,
             next_fast: now,
+            next_peers: now,
             next_describe: now,
         })
     }
@@ -104,19 +110,9 @@ impl Exporter {
 
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.sources.drain();
+        adapter.consume(|stats: PeerStats, _| self.peers.record(&stats));
 
         let now = Nanos::now();
-        let Self { encoder, sink, .. } = self;
-
-        adapter.consume(|stats: PeerStats, _| match &stats {
-            PeerStats::P2p(s) => encoder.peer_p2p(now.0, &p2p_record(s), &mut |d| sink.send(d)),
-            PeerStats::Scores(s) => {
-                encoder.peer_scores(now.0, &scores_record(s), &mut |d| sink.send(d))
-            }
-            PeerStats::Topic(s) => {
-                encoder.peer_topic(now.0, &topic_record(s), &mut |d| sink.send(d))
-            }
-        });
 
         if now >= self.next_bucket {
             self.follow_node(now);
@@ -128,6 +124,11 @@ impl Exporter {
             let Self { encoder, sources, sink, .. } = self;
             sources.encode_fast(encoder, now.0, &mut |d| sink.send(d));
             self.next_fast = now + FAST_BUCKET;
+        }
+        if now >= self.next_peers {
+            let Self { encoder, peers, sink, .. } = self;
+            peers.encode(encoder, now.0, &mut |d| sink.send(d));
+            self.next_peers = now + PEER_BUCKET;
         }
         if now >= self.next_describe {
             self.describe(now);
@@ -173,7 +174,9 @@ impl Exporter {
             counter_bps = rate(Kind::CounterValues),
             tile_bps = rate(Kind::TileUtils),
             timing_bps = rate(Kind::Timings),
-            peer_bps = rate(Kind::PeerP2p) + rate(Kind::PeerScores) + rate(Kind::PeerTopic),
+            peer_p2p_bps = rate(Kind::PeerP2p),
+            peer_scores_bps = rate(Kind::PeerScores),
+            peer_topic_bps = rate(Kind::PeerTopic),
             stage_bps = rate(Kind::Stages),
             descriptor_bps = rate(Kind::Sources) +
                 rate(Kind::SlotNames) +

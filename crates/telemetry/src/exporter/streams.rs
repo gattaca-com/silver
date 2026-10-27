@@ -1,6 +1,6 @@
-//! Spine-side sources: peer stats and per-block stage events, streamed as
-//! they arrive rather than bucketed. Stage events come from the tile's one
-//! `StageReader`, shared with the other sinks.
+//! Wire records for spine-side sources: peer stats and per-block stage
+//! events. Stage events come from the tile's one `StageReader`, shared with
+//! the other sinks.
 use silver_common::{
     BlockSource, ColumnOrigin, P2pConnectionStats, PeerScores as NodePeerScores, PeerTopicScores,
 };
