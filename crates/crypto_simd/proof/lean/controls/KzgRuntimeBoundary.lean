@@ -48,7 +48,7 @@ private def requireIndependent (root : Name) : CommandElabM Unit := do
   let laws := #[``LeanBlsSimd.UncompressG1.FallbackCorrect,
     ``LeanBlsSimd.UncompressG1.BlstMatchesSpec,
     ``LeanBlsSimd.Kzg.BlstPairing.Correct,
-    ``LeanBlsSimd.Kzg.BlstPairing.FallbackCorrect,
+    ``LeanBlsSimd.Kzg.BlstPairing.CorrectFor,
     ``LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec]
   let used := dependencies env (← getConstInfo root).type.getUsedConstants
   for law in laws do
@@ -63,11 +63,20 @@ run_cmd do
     ``LeanBlsSimd.Kzg.Extender.compute_eq_spec]
   for root in roots do
     requireIndependent root
-  let general := (← getConstInfo ``LeanBlsSimd.Kzg.verify_eq_spec).type.getUsedConstants
-  for law in #[``LeanBlsSimd.UncompressG1.FallbackCorrect, ``LeanBlsSimd.Kzg.BlstPairing.Correct] do
-    unless general.contains law do
-      throwError "general verifier headline lost a scoped blst law: {law}"
   logInfo "IFMA verifier and G1 headlines, and both extender routes, require no blst laws"
+
+open Aeneas Aeneas.Std Result
+open silver_crypto_simd silver_crypto_simd.kzg
+open LeanBlsSimd LeanBlsSimd.Kzg
+
+/-- Every invariant state is admitted, with a route-scoped premise and a preserved route. -/
+example [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
+    ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
+      ∀ v : verify.CellBatchVerifier, StateInvariant v →
+      BlstPairing.CorrectFor v.curve_work → ∀ i : Input, i.Representable →
+      ∃ verdict next, i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work ∧
+        Model.rejectErrors i.embeddedSpec = verdict := verify_eq_spec
 
 private theorem decoderPremiseMutation [silver_crypto_simd.KzgExternals]
     (h : LeanBlsSimd.UncompressG1.BlstMatchesSpec) : LeanBlsSimd.UncompressG1.BlstMatchesSpec := h

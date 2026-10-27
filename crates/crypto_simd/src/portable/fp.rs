@@ -220,7 +220,7 @@ impl Fp {
     /// overlaps. Interleaving their rows is slower: the two need more
     /// registers than x86-64 has.
     #[inline]
-    #[cfg(any(target_arch = "x86_64", test))]
+    #[cfg(target_arch = "x86_64")]
     pub fn mul_pair(a: &[Fp; 2], b: &[Fp; 2]) -> [Fp; 2] {
         [a[0].mul(&b[0]), a[1].mul(&b[1])]
     }
@@ -292,7 +292,7 @@ impl Fp {
     }
 
     /// `pow_p_minus_3_over_4` of two values in lockstep.
-    #[cfg(any(target_arch = "x86_64", test))]
+    #[cfg(target_arch = "x86_64")]
     pub fn pow_p_minus_3_over_4_pair(values: &[Fp; 2]) -> [Fp; 2] {
         let mut table = [[ONE; 2]; 16];
         let mut k = 1;
@@ -325,7 +325,7 @@ impl Fp {
 
     /// `sqrt` of two values in lockstep: the candidate roots, and whether each
     /// squares back to its value.
-    #[cfg(any(target_arch = "x86_64", test))]
+    #[cfg(target_arch = "x86_64")]
     pub fn sqrt_pair(values: &[Fp; 2]) -> ([Fp; 2], [bool; 2]) {
         let roots = Self::mul_pair(&Self::pow_p_minus_3_over_4_pair(values), values);
         let squares = Self::mul_pair(&roots, &roots);

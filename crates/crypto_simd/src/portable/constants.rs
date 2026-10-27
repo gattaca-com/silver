@@ -34,7 +34,7 @@ pub const R3: [u64; 6] = [
     0x0aa6346091755d4d,
 ];
 /// The curve coefficient b = 4.
-#[cfg(any(target_arch = "x86_64", test))]
+#[cfg(target_arch = "x86_64")]
 pub const FOUR: Fp = Fp([
     0xaa270000000cfff3,
     0x53cc0032fc34000a,

@@ -118,8 +118,9 @@ theorem interpolation_commitment_refines [RuntimeFeatures]
         (Model.columnRli (indices.val.map (·.val)).toArray evals powers)) := by
   exact interpolation_commitment_refinement v hv indices cells evals powers hs hb hcell he hp
 
-theorem pairing_holds_refines [RuntimeFeatures] [KzgExternals] [BlstPairing.Correct]
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)
+theorem pairing_holds_refines [RuntimeFeatures] [KzgExternals]
+    (v : verify.CellBatchVerifier) (hv : StateInvariant v)
+    (hblst : BlstPairing.CorrectFor v.curve_work) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
@@ -137,8 +138,11 @@ theorem pairing_holds_refines [RuntimeFeatures] [KzgExternals] [BlstPairing.Corr
     ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices cells =
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
-        (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
-  exact pairing_holds_refinement v hv (fun _ => BlstPairing.Correct.matchesSpec) indices cells commitments proofs evals r hb hs
-    hc hp hcell he hunique hci hproofs hvalid
+        (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next ∧
+      CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work := by
+  obtain ⟨next, hrun, hnext⟩ := pairing_holds_refinement v hv hblst indices cells
+    commitments proofs evals r hb hs hc hp hcell he hunique hci hproofs hvalid
+  exact ⟨next, hrun, hnext,
+    congrArg Prod.snd (Routes.pairing_holds_route v next _ indices cells _ hrun)⟩
 
 end LeanBlsSimd.Kzg

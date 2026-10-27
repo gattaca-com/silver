@@ -34,11 +34,6 @@ example (a : Fp12) (h : a ≠ Fp12.zero) :
 
 open Aeneas.Std Result silver_crypto_simd
 
-
-
-
-
-
 example (j : Fin 6) :
     (⟨decode (FrobeniusConstants.laneLimbs j 0),
       decode (FrobeniusConstants.laneLimbs j 1)⟩ : Fp2Field) =
@@ -108,15 +103,11 @@ example (points : Fin 2 → G1) :
       pairingFactor (points 1, Pairing.setupPoint 1)) (Pairing.combinedMiller points).conjugate :=
   Pairing.combined_final_eq points
 
-
-
-
 example (raw : bls.g1x8.G1x8) (points : Fin 8 → G1)
     (hp : Pairing.LaneLines.PointsRep raw points) :
     ∃ out, bls.pairing.MillerLines.miller_loop kzg.pairing_lines.PAIRING_LINES raw = ok out ∧
       LaneTower.Rep out (Pairing.combinedMiller (Pairing.LaneLines.firstPoints points)).conjugate :=
   Pairing.LaneLines.miller_refines raw points hp
-
 
 example (x : bls.fp2x8.Fp2x8) (a : Fp12) (hx : LaneTower.Rep x a) :
     (do let out ← bls.fp12.Fp12.final_exponentiation x

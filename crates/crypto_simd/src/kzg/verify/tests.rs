@@ -6,11 +6,12 @@ use super::{CurveWork, PairingSums};
 #[cfg(target_arch = "x86_64")]
 use crate::ifma_kernels_run;
 use crate::{
-    bls::blst_p1_affine,
+    bls::{blst_p1_affine, spec_pairing},
     kzg::{
-        blst_ops::{g1_add, g1_neg, g1_to_affine, pairing_check},
+        blst_ops::{g1_add, g1_neg, g1_to_affine},
         setup::{G2_NEG_GENERATOR, G2_S_POW_CELL},
     },
+    portable::constants::ONE,
 };
 
 /// [k]G for a random k, in the Jacobian form blst's multiplication leaves.
@@ -89,10 +90,10 @@ fn pairing_points_match_blst() {
     }
 }
 
-/// The verdicts of the lanes and of the scalar route are blst's on every
+/// The verdicts of the lanes and of the scalar route match the spec on every
 /// case, some of which hold: LL and RL at infinity together.
 #[test]
-fn pairing_check_matches_blst() {
+fn pairing_check_matches_spec() {
     #[cfg(target_arch = "x86_64")]
     let lanes = ifma_kernels_run().then(CurveWork::new);
     let scalar = CurveWork::scalar();
@@ -100,7 +101,7 @@ fn pairing_check_matches_blst() {
     let mut held = 0;
     for (case, sums) in cases(&mut rng).iter().enumerate() {
         let (left, right) = blst_pairing_points(sums);
-        let want = pairing_check(&left, &G2_S_POW_CELL, &right, &G2_NEG_GENERATOR);
+        let want = spec_pairing::pairing_check(&[(left, G2_S_POW_CELL), (right, G2_NEG_GENERATOR)]);
         #[cfg(target_arch = "x86_64")]
         if let Some(lanes) = &lanes {
             let got = lanes.pairing_check(&pairing_sums(sums));
@@ -118,14 +119,16 @@ fn scalar_pairing_matches_spec_with_infinity_on_either_side() {
     let scalar = CurveWork::scalar();
     // SAFETY: blst returns a pointer to its static generator.
     let generator = unsafe { *blst_p1_generator() };
-    let one = blst_fp { l: crate::portable::constants::ONE.0 };
+    let one = blst_fp { l: ONE.0 };
+    // blst already returns the spec verdict for G1 infinity, so removing its filter
+    // passes this test.
     for infinity in [blst_p1::default(), blst_p1 { x: one, y: one, z: blst_fp::default() }] {
         for (left, right, expected) in
             [(infinity, generator, false), (generator, infinity, false), (infinity, infinity, true)]
         {
             let pairs =
                 [(g1_to_affine(&left), G2_S_POW_CELL), (g1_to_affine(&right), G2_NEG_GENERATOR)];
-            let spec = crate::bls::spec_pairing::pairing_check(&pairs);
+            let spec = spec_pairing::pairing_check(&pairs);
             assert_eq!(spec, expected, "finite pairs must contribute to the verdict");
             let sums = PairingSums { ll: left, rlc: right, rli: infinity, rlp: infinity };
             assert_eq!(scalar.pairing_check(&sums), spec);

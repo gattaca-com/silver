@@ -53,7 +53,7 @@ print("pub const R2: [u64; 6] = [" + ", ".join(f"0x{w:016x}" for w in words(R * 
 print("/// R³ mod p: the Montgomery product with it turns (aR)⁻¹ into a⁻¹R.")
 print("pub const R3: [u64; 6] = [" + ", ".join(f"0x{w:016x}" for w in words(R**3 % P)) + "];")
 print("/// The curve coefficient b = 4.")
-print('#[cfg(any(target_arch = "x86_64", test))]')
+print('#[cfg(target_arch = "x86_64")]')
 print("pub const FOUR: Fp = " + fp(4) + ";")
 print("/// The cube root of unity σ scales x by.")
 print("pub const BETA: Fp = " + fp(beta) + ";")

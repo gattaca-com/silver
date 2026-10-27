@@ -10,14 +10,15 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 namespace silver_kzg.Kzg
 
 theorem verify_after_construction [cpu : RuntimeFeatures] [KzgExternals]
-    [UncompressG1.FallbackCorrect] [BlstPairing.Correct]
-    (input : Input) (hi : input.Representable) :
-    ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
-      input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
-      Model.rejectErrors input.embeddedSpec = verdict := by
+    [UncompressG1.FallbackCorrect] :
+    ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
+      (BlstPairing.CorrectFor initial.curve_work →
+      ∀ input : Input, input.Representable → ∃ verdict next,
+        input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
+        CurveWork.isLanes next.curve_work = CurveWork.isLanes initial.curve_work ∧
+        Model.rejectErrors input.embeddedSpec = verdict) := by
   obtain ⟨initial, hnew, hs, hcall⟩ := verify_eq_spec
-  obtain ⟨verdict, next, hrun, hn, hv⟩ := hcall initial hs input hi
-  exact ⟨initial, verdict, next, hnew, hrun, hn, hv⟩
+  exact ⟨initial, hnew, hs, hcall initial hs⟩
 
 theorem extend_after_construction [cpu : RuntimeFeatures]
     (blob : Extender.Blob) (cells : Extender.Cells) :
@@ -60,8 +61,9 @@ theorem kernel_interpolates_cells [cpu : RuntimeFeatures]
   · simp [hkernel]
   · exact hp
 
-theorem pairing_consumes_cells [cpu : RuntimeFeatures] [KzgExternals] [BlstPairing.Correct]
+theorem pairing_consumes_cells [cpu : RuntimeFeatures] [KzgExternals]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
+    (hblst : BlstPairing.CorrectFor v.curve_work)
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
@@ -80,8 +82,9 @@ theorem pairing_consumes_cells [cpu : RuntimeFeatures] [KzgExternals] [BlstPairi
     ∃ next, verify.CellBatchVerifier.pairing_holds v (frEncode r) indices cells =
       ok (Bls.pairingCheck (Model.pairingInputs embeddedSetup commitments proofs
         (v.commitments.index_of_cell.val.map (·.val)).toArray
-        (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next := by
-  exact pairing_holds_refines v hv indices cells commitments proofs evals r hb hs
+        (indices.val.map (·.val)).toArray evals r), next) ∧ StateInvariant next ∧
+      CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work := by
+  exact pairing_holds_refines v hv hblst indices cells commitments proofs evals r hb hs
     hc hp hcell he hunique hci hproofs hvalid
 
 

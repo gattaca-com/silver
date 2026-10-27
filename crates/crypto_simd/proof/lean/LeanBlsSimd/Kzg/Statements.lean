@@ -131,49 +131,49 @@ theorem default_eq_new [RuntimeFeatures] [KzgExternals] :
     verify.CellBatchVerifier.Insts.CoreDefaultDefault.default =
       verify.CellBatchVerifier.new := rfl
 
-theorem glue_refinement_scoped [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
+theorem glue_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
-    (hblst : BlstPairing.FallbackCorrect v.curve_work)
+    (hblst : BlstPairing.CorrectFor v.curve_work)
     (i : Input) (hi : i.Representable) :
-    ∃ next, i.generated v = ok (i.model, next) ∧ StateInvariant next := by
-  apply Verify.glue_of_contracts model_pairing_refinement v hv
+    ∃ next, i.generated v = ok (i.model, next) ∧ StateInvariant next ∧
+      CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work := by
+  obtain ⟨next, hgen, hnext⟩ := Verify.glue_of_contracts model_pairing_refinement v hv
     (fun state he hinv => pairing_holds_refinement state hinv
       (by simpa only [he] using hblst))
     i.commitments i.indices i.cells i.proofs hi.2.2.1
-
-theorem glue_refinement [RuntimeFeatures] [KzgExternals]
-    [UncompressG1.FallbackCorrect] [BlstPairing.Correct]
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v)
-    (i : Input) (hi : i.Representable) :
-    ∃ next, i.generated v = ok (i.model, next) ∧ StateInvariant next :=
-  glue_refinement_scoped v hv (fun _ => BlstPairing.Correct.matchesSpec) i hi
+  exact ⟨next, hgen, hnext, (Routes.verify_preserves_routes v next
+    i.commitments i.indices i.cells i.proofs i.model hgen).2⟩
 
 theorem verify_eq_spec [cpu : RuntimeFeatures] [KzgExternals]
-    [UncompressG1.FallbackCorrect] [BlstPairing.Correct] :
+    [UncompressG1.FallbackCorrect] :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
+      BlstPairing.CorrectFor v.curve_work →
       ∀ (i : Input), i.Representable →
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
   obtain ⟨initial, hnew, hinv⟩ := new_returns_ok
-  refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
-  obtain ⟨next, hgen, hnext⟩ := glue_refinement v hv i hi
-  exact ⟨i.model, next, hgen, hnext, model_eq_embedded_spec i⟩
+  refine ⟨initial, hnew, hinv, fun v hv hblst i hi => ?_⟩
+  obtain ⟨next, hgen, hnext, hroute⟩ := glue_refinement v hv hblst i hi
+  exact ⟨i.model, next, hgen, hnext, hroute, model_eq_embedded_spec i⟩
 
 theorem verify_eq_upstream [cpu : RuntimeFeatures] [KzgExternals]
-    [UncompressG1.FallbackCorrect] [BlstPairing.Correct]
+    [UncompressG1.FallbackCorrect]
     (hsetup : TrustedSetup.get! = pure embeddedSetup) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
+      BlstPairing.CorrectFor v.curve_work →
       ∀ (i : Input), i.Representable →
       ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        CurveWork.isLanes next.curve_work = CurveWork.isLanes v.curve_work ∧
         (Model.rejectErrors <$> i.spec.run) = pure verdict := by
   obtain ⟨initial, hnew, hinv, hstep⟩ := verify_eq_spec
-  refine ⟨initial, hnew, hinv, fun v hv i hi => ?_⟩
-  obtain ⟨verdict, next, hgen, hnext, hverdict⟩ := hstep v hv i hi
-  refine ⟨verdict, next, hgen, hnext, ?_⟩
+  refine ⟨initial, hnew, hinv, fun v hv hblst i hi => ?_⟩
+  obtain ⟨verdict, next, hgen, hnext, hroute, hverdict⟩ := hstep v hv hblst i hi
+  refine ⟨verdict, next, hgen, hnext, hroute, ?_⟩
   have hlift : (monadLift (pure embeddedSetup : IO TrustedSetup) : KzgM TrustedSetup) =
       pure embeddedSetup := rfl
   have hrun : i.spec.run = pure i.embeddedSpec := by
@@ -196,10 +196,8 @@ theorem verify_eq_spec_ifma [cpu : RuntimeFeatures] [KzgExternals]
   letI := UncompressG1.fallbackCorrect_ifma hifma
   obtain ⟨initial, hnew, hinv, hroute, _⟩ := new_returns_ok_route
   refine ⟨initial, hnew, hinv, hroute.trans hifma, fun v hv hr i hi => ?_⟩
-  obtain ⟨next, hgen, hnext⟩ :=
-    glue_refinement_scoped v hv (BlstPairing.fallbackCorrect_lanes hr) i hi
-  have hrouteNext := (Routes.verify_preserves_routes v next i.commitments i.indices i.cells
-    i.proofs i.model hgen).2
+  obtain ⟨next, hgen, hnext, hrouteNext⟩ :=
+    glue_refinement v hv (BlstPairing.correctFor_lanes hr) i hi
   exact ⟨i.model, next, hgen, hnext, hrouteNext.trans hr, model_eq_embedded_spec i⟩
 
 theorem verify_eq_upstream_ifma [cpu : RuntimeFeatures] [KzgExternals]

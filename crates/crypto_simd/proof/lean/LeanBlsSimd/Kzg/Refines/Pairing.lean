@@ -14,7 +14,7 @@ set_option maxRecDepth 16000
 theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
     (hinterp : InterpolationCorrect)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
-    (hblst : BlstPairing.FallbackCorrect v.curve_work) (indices : Slice U64)
+    (hblst : BlstPairing.CorrectFor v.curve_work) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)
@@ -112,7 +112,7 @@ theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
     (CurveWork.sum_frame after.curve_work scratchP _ _ rlp hrlp).trans
       (hrouteI.trans ((CurveWork.sum_frame scratchL scratchC _ _ rlc hrlc).trans
         (CurveWork.sum_frame v.curve_work scratchL _ _ ll hll)))
-  have hblstP : BlstPairing.FallbackCorrect scratchP := by
+  have hblstP : BlstPairing.CorrectFor scratchP := by
     intro hs
     exact hblst (hroute.symm.trans hs)
   have hpair := curveWork_pairing_check_refinement scratchP hblstP
@@ -146,7 +146,7 @@ namespace LeanBlsSimd.Kzg
 
 theorem pairing_holds_refinement [RuntimeFeatures] [KzgExternals]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
-    (hblst : BlstPairing.FallbackCorrect v.curve_work) (indices : Slice U64)
+    (hblst : BlstPairing.CorrectFor v.curve_work) (indices : Slice U64)
     (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (commitments proofs : _root_.Array G1) (evals : _root_.Array CosetEvals) (r : Fr)
     (hb : indices.val.length * 2048 ≤ Isize.max.toNat)

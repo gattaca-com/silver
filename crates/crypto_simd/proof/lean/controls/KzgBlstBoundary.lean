@@ -22,13 +22,27 @@ theorem rejectsAll_violates_pairing : ¬ @BlstPairing.BlstMatchesSpec rejectsAll
   have hv : G1Valid (g1ReadJacobian (g1Jacobian G1.zero)) := by
     rw [g1ReadJacobian_g1Jacobian]
     exact g1Valid_zero
-  have hz := h (g1Jacobian G1.zero) (g1Jacobian G1.zero) G2.zero G2.zero
+  have hz := h (g1Jacobian G1.zero) (g1Jacobian G1.zero)
     (g1Jacobian_reduced _) (g1Jacobian_reduced _) hv hv
-    G2.valid_zero rfl G2.valid_zero rfl
   rw [g1ReadJacobian_g1Jacobian, Pairing.pairingCheck_two] at hz
   change false = (finalExponentiation (Fp12.one * Fp12.one)).isOne at hz
   rw [show Fp12.one * Fp12.one = Fp12.one by rfl, finalExponentiation_one] at hz
   cases hz
+
+private abbrev specExternals : KzgExternals where
+  uncompressG1 := UncompressG1.specVerdict
+  pairingCheck := fun p1 q1 p2 q2 =>
+    Bls.pairingCheck #[(g1ReadJacobian p1, g2ReadAffine q1),
+      (g1ReadJacobian p2, g2ReadAffine q2)]
+
+/-- This witness shows the two laws are consistent together; it does not show that blst satisfies them. -/
+theorem laws_satisfiable : ∃ external : KzgExternals,
+    @UncompressG1.BlstMatchesSpec external ∧ @BlstPairing.BlstMatchesSpec external := by
+  refine ⟨specExternals, fun _ => rfl, ?_⟩
+  intro p1 p2 _ _ _ _
+  change Bls.pairingCheck #[(g1ReadJacobian p1, g2ReadAffine (g2Affine SetupPoints.g2Point64)),
+    (g1ReadJacobian p2, g2ReadAffine (g2Affine (G2.neg SetupPoints.g2Point0)))] = _
+  rw [setup_g2_cell_roundtrip, setup_g2_neg_zero_roundtrip]
 
 /-- An arbitrary external dictionary still permits IFMA construction and repeated calls. -/
 example [cpu : RuntimeFeatures] [KzgExternals] (h : cpu.simdAvailable = true) :

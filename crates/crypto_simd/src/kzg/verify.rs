@@ -96,7 +96,7 @@ impl CellBatchVerifier {
         }
     }
 
-    /// Off the IFMA kernels, on the portable route; decoding still follows
+    /// Off the IFMA kernels, on the scalar route; decoding still follows
     /// `ifma_available`.
     #[cfg(test)]
     pub(crate) fn without_kernel() -> Self {

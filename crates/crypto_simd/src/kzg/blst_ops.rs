@@ -7,7 +7,7 @@ use blst::{
     blst_scalar_fr_check, blst_scalar_from_bendian, blst_scalar_from_fr, blst_sha256,
 };
 
-pub(crate) use super::blst_pairing::{g1_to_affine, pairing_check_affine as pairing_check};
+pub(crate) use super::blst_pairing::{g1_to_affine, pairing_check_affine};
 
 /// `None` unless the 32 big-endian bytes encode a value below r.
 pub fn fr_from_bytes(bytes: &[u8; 32]) -> Option<blst_fr> {

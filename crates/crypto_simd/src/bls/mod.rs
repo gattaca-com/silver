@@ -26,7 +26,7 @@ pub mod decompress;
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
 pub mod decompress_g2;
-#[cfg(any(target_arch = "x86_64", test))]
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod encoding;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]

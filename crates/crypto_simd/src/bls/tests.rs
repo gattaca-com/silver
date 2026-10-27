@@ -16,10 +16,13 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
-use crate::bls::{
-    constants::P_U64,
-    fp8::Fp8,
-    limbs::{LANES, Limbs, pack64, unpack52},
+use crate::{
+    bls::{
+        constants::P_U64,
+        fp8::Fp8,
+        limbs::{LANES, Limbs, pack64, unpack52},
+    },
+    portable::decompress::uncompress_all_in_g1,
 };
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -402,11 +405,14 @@ fn verdicts_match_blst_on_members_non_members_and_garbage() {
     }
 
     let got = uncompress_all_g1(&inputs);
+    let mut portable = vec![None; inputs.len()];
+    uncompress_all_in_g1(&inputs, &mut portable);
     assert_eq!(got.len(), inputs.len());
     let mut members = 0;
     for (i, input) in inputs.iter().enumerate() {
         let want = uncompress_in_g1_blst(input);
         assert_eq!(serialized(&got[i]), serialized(&want), "input {i}");
+        assert_eq!(serialized(&portable[i]), serialized(&want), "portable input {i}");
         members += want.is_some() as usize;
     }
     assert_eq!(

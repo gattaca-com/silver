@@ -12,7 +12,7 @@ open silver_crypto_simd silver_crypto_simd.kzg
 namespace LeanBlsSimd.Kzg
 
 theorem curveWork_pairing_check_refinement [RuntimeFeatures] [KzgExternals]
-    (work : verify.CurveWork) (hblst : BlstPairing.FallbackCorrect work)
+    (work : verify.CurveWork) (hblst : BlstPairing.CorrectFor work)
     (sums : verify.PairingSums) (ll rlc rli rlp : G1)
     (hll : G1Rep sums.ll ll) (hrlc : G1Rep sums.rlc rlc)
     (hrli : G1Rep sums.rli rli) (hrlp : G1Rep sums.rlp rlp)
