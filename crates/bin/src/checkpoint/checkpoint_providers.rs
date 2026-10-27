@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde_json::Value;
-use silver_beacon_state_data::{Checkpoint, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::Checkpoint;
 use ureq::Agent;
 
 /// Bounds each provider's answer; they are queried in parallel.
@@ -81,31 +81,54 @@ impl CheckpointProviders {
     }
 
     /// By slot, not `finalized`: a provider finalizing again mid-boot still
-    /// serves the agreed state.
+    /// serves the agreed state. The block's slot, not the epoch's first: that
+    /// one may be empty, and Checkpointz serves states only at block slots.
     pub fn download(&self, checkpoint: Checkpoint) -> io::Result<Vec<u8>> {
-        let slot = checkpoint.epoch * SLOTS_PER_EPOCH;
+        let root = hex::encode(checkpoint.root);
         for url in &self.urls {
             let started = Instant::now();
-            let mut ssz = Vec::new();
-            let downloaded = self
-                .agent
-                .get(&format!("{url}/eth/v2/debug/beacon/states/{slot}"))
-                .set("Accept", "application/octet-stream")
-                .call()
-                .map_err(io::Error::other)
-                .and_then(|response| response.into_reader().read_to_end(&mut ssz));
+            let downloaded = self.block_slot(url, &root).and_then(|slot| self.state(url, slot));
             match downloaded {
-                Ok(bytes) => {
+                Ok(ssz) => {
+                    let bytes = ssz.len();
                     let elapsed_ms = started.elapsed().as_millis() as u64;
                     silver_log::info!(url = %url, bytes, elapsed_ms, "downloaded checkpoint state");
                     return Ok(ssz);
                 }
                 Err(e) => {
-                    silver_log::warn!(url = %url, slot, %e, "checkpoint state download failed")
+                    silver_log::warn!(url = %url, %root, %e, "checkpoint state download failed")
                 }
             }
         }
-        Err(io::Error::other(format!("no checkpoint provider served the state at slot {slot}")))
+        Err(io::Error::other(format!("no checkpoint provider served the state of block {root}")))
+    }
+
+    /// Reads a whole block: Checkpointz serves neither `headers` nor
+    /// `blinded_blocks`.
+    fn block_slot(&self, url: &str, root: &str) -> io::Result<u64> {
+        let body = self
+            .agent
+            .get(&format!("{url}/eth/v2/beacon/blocks/0x{root}"))
+            .call()
+            .map_err(io::Error::other)?
+            .into_string()?;
+        let json: Value = serde_json::from_str(&body)?;
+        json["data"]["message"]["slot"]
+            .as_str()
+            .and_then(|slot| slot.parse().ok())
+            .ok_or_else(|| io::Error::other(format!("block 0x{root} has no slot")))
+    }
+
+    fn state(&self, url: &str, slot: u64) -> io::Result<Vec<u8>> {
+        let mut ssz = Vec::new();
+        self.agent
+            .get(&format!("{url}/eth/v2/debug/beacon/states/{slot}"))
+            .set("Accept", "application/octet-stream")
+            .call()
+            .map_err(io::Error::other)?
+            .into_reader()
+            .read_to_end(&mut ssz)?;
+        Ok(ssz)
     }
 
     /// Asks the head state: a beacon node answers `finalized` from the
