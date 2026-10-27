@@ -13,6 +13,9 @@ const SAMPLE_HISTORY_LEN = 5000;
 const FAST_PREFIX = 'fast:';
 /** Per instance; the oldest trace is dropped past this. */
 const TRACES_CAP = 64;
+/** `fast:` sources also summed per slot, and the completed slots kept. */
+const SLOT_TOTAL_SOURCES = new Set(['fast:gossip_bytes_recv', 'fast:gossip_bytes_sent']);
+const SLOT_TOTALS_CAP = 64;
 
 /** Per-slot value and rate over consecutive completed buckets, columns
  *  aligned with `ts` (unix seconds). A slot first seen late is null-padded
@@ -107,6 +110,38 @@ export class SampleHistory {
   }
 }
 
+/** Per completed slot, each column's growth from a `fast:` source's
+ *  cumulative samples. A sample's delta lands in the slot holding its
+ *  timestamp. The first slot seen is partial and dropped. */
+export class SlotTotals {
+  constructor() {
+    /** Oldest first: `{ slot, bytes }`, `bytes` indexed by column. */
+    this.slots = [];
+    this.prev = [];
+    this.open = null;
+    this.first = null;
+  }
+
+  push(slot, firstSlot, values) {
+    if (this.open?.slot !== slot) {
+      if (this.open && this.open.slot !== this.first) {
+        if (this.slots.length === SLOT_TOTALS_CAP) this.slots.shift();
+        this.slots.push(this.open);
+      }
+      this.first ??= slot;
+      this.open = { slot, bytes: [] };
+    }
+    values.forEach((v, i) => {
+      const c = firstSlot + i;
+      const prev = this.prev[c];
+      this.prev[c] = v;
+      // A counter reset breaks the delta.
+      if (prev === undefined || prev === null || v === null || v < prev) return;
+      this.open.bytes[c] = (this.open.bytes[c] ?? 0) + v - prev;
+    });
+  }
+}
+
 export function tcacheMinTail(values) {
   const capacity = values[0] ?? 0;
   const head = values[1] ?? 0;
@@ -128,8 +163,6 @@ export class Instance {
     this.buildInfo = '';
     this.clock = null;
     this.bootId = null;
-    this.nextSeq = 0n;
-    this.lost = 0;
     this.lastRecv = 0;
     this.nowNs = 0;
     /** Oldest first. */
@@ -146,6 +179,8 @@ export class Instance {
     this.counterHistory = new Map();
     /** Per `fast:` source id; kept apart from the 1 s bucket history. */
     this.sampleHistory = new Map();
+    /** Per `SLOT_TOTAL_SOURCES` source id. */
+    this.slotTotals = new Map();
     /** Latest completed bucket per source id. */
     this.tileUtils = new Map();
     this.timings = new Map();
@@ -166,6 +201,13 @@ export class Instance {
     const id = this.sourceNamed(FAST_PREFIX + name);
     const history = id === null ? null : this.sampleHistory.get(id);
     return history ? { history, names: this.slotNames.get(id) ?? [] } : null;
+  }
+
+  /** Completed slots and slot names of the `fast:{name}` source, or null. */
+  slotTotalsOf(name) {
+    const id = this.sourceNamed(FAST_PREFIX + name);
+    const totals = id === null ? null : this.slotTotals.get(id);
+    return totals ? { slots: totals.slots, names: this.slotNames.get(id) ?? [] } : null;
   }
 
   sourceNamed(name) {
@@ -210,11 +252,8 @@ export class Instance {
     this.nowNs = Math.max(this.nowNs, tsNs);
     if (d.bootId !== this.bootId) {
       this.bootId = d.bootId;
-      this.nextSeq = d.seq;
       this.resetBoot();
     }
-    if (d.seq > this.nextSeq) this.lost += Number(d.seq - this.nextSeq);
-    if (d.seq >= this.nextSeq) this.nextSeq = d.seq + 1n;
 
     switch (d.kind) {
       case Kind.Instance:
@@ -272,10 +311,17 @@ export class Instance {
   applyCounters(d, tsNs) {
     // Samples before the first Sources descriptor of a replay land in the
     // bucket path below and are not kept.
-    if (this.sources.get(d.sourceId)?.name.startsWith(FAST_PREFIX)) {
+    const name = this.sources.get(d.sourceId)?.name;
+    if (name?.startsWith(FAST_PREFIX)) {
       let history = this.sampleHistory.get(d.sourceId);
       if (!history) this.sampleHistory.set(d.sourceId, (history = new SampleHistory()));
       history.push(tsNs, d.firstSlot, d.values);
+      if (this.clock && SLOT_TOTAL_SOURCES.has(name)) {
+        let totals = this.slotTotals.get(d.sourceId);
+        if (!totals) this.slotTotals.set(d.sourceId, (totals = new SlotTotals()));
+        const slot = Math.floor((tsNs - Number(this.clock.genesisNs)) / this.clock.slotNs);
+        totals.push(slot, d.firstSlot, d.values);
+      }
       return;
     }
     const cur = this.counters.get(d.sourceId);

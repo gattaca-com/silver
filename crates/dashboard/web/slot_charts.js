@@ -109,6 +109,15 @@ function slotSpec(instances, nowS, lines, fmt, height, hidden) {
   return { spec, slot, startS };
 }
 
+const fmtCount = (v) => String(Math.round(v));
+
+/** The attestations chart alone, every client shown; returns its title. */
+export function attestationsChart(fleet, specs, key, height) {
+  const built = slotSpec(fleet.sorted(), Date.now() / 1000, [{ counter: ATTESTATIONS }], fmtCount, height, new Set());
+  specs.set(key, built.spec);
+  return built.slot === null ? 'attestations per 100 ms' : `attestations per 100 ms, slot ${built.slot}`;
+}
+
 function card(key, place, title) {
   return `<div class="${place}"><p class="meta" title="${title}">${title}</p><div class="chart" data-chart="${key}"></div></div>`;
 }
@@ -150,7 +159,7 @@ export function slotCharts(fleet, specs, hidden) {
       place: 'right',
       what: 'attestations',
       lines: [{ counter: ATTESTATIONS }],
-      fmt: (v) => String(Math.round(v)),
+      fmt: fmtCount,
       height: RIGHT_HEIGHT,
     },
   ];

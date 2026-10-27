@@ -154,12 +154,12 @@ pub struct Config {
     peer_score_params: ScoreParams,
     #[serde(default)]
     syncing: SyncingConfig,
-    #[serde(default = "default_usize::<134217728>")] // 2 << 26
-    incoming_gossip_tcache_size: usize,
     #[serde(default = "default_usize::<67108864>")] // 2 << 25
+    incoming_gossip_tcache_size: usize,
+    #[serde(default = "default_usize::<134217728>")] // 2 << 26
     outgoing_gossip_tcache_size: usize,
     /// Decompressed gossip SSZ. Parks handles too — see below, at tip volumes.
-    #[serde(default = "default_usize::<134217728>")] // 2 << 26
+    #[serde(default = "default_usize::<67108864>")] // 2 << 25
     incoming_gossip_ssz_tcache_size: usize,
     /// Inbound RPC ring: block, column-sidecar and envelope chunks; the
     /// producer wraps when full. Beacon state parks its handles, so a block
@@ -171,7 +171,7 @@ pub struct Config {
     /// headroom for column traffic passing a parked block, which dominates
     /// and is why nothing asserts a static bound. Default is ~4× that
     /// floor.
-    #[serde(default = "default_usize::<134217728>")] // 2 << 26
+    #[serde(default = "default_usize::<67108864>")] // 2 << 25
     incoming_rpc_tcache_size: usize,
     #[serde(default = "default_usize::<67108864>")] // 2 << 25
     outgoing_rpc_tcache_size: usize,

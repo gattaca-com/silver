@@ -3,18 +3,21 @@ import { Fleet } from './state.js';
 import * as events from './events.js';
 import * as flow from './flow.js';
 import * as gossip from './gossip.js';
+import * as home from './home.js';
 import * as peers from './peers.js';
 
 const RENDER_MS = 1000;
+/** Panes may export a faster `renderMs`, a multiple of this. */
+const TICK_MS = 100;
 const RECONNECT_MS = 2000;
 
-const PANES = { events, peers, gossip, flow };
+const PANES = { home, events, peers, gossip, flow };
 /** Per-pane view state (selected instance, sort, expanded rows); survives
  *  re-renders and reconnects. */
 const ui = Object.fromEntries(Object.keys(PANES).map((p) => [p, {}]));
 
 let fleet = new Fleet();
-let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'events';
+let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'home';
 
 const root = document.getElementById('pane');
 const status = document.getElementById('status');
@@ -28,7 +31,10 @@ function renderTabs() {
 /** Replacing the pane's HTML briefly collapses it (chart slots stay empty
  *  until re-mounted), which clamps the window scroll, and horizontal table
  *  scroll goes with the old sections; both are restored after the redraw. */
+let lastRender = 0;
+
 function render() {
+  lastRender = performance.now();
   const y = window.scrollY;
   const xs = [...root.querySelectorAll('section')].map((s) => s.scrollLeft);
   PANES[active].render(fleet, root, performance.now(), ui[active]);
@@ -45,7 +51,19 @@ root.addEventListener('mouseleave', () => PANES[active].hover?.(root, ui[active]
 // every render, so an element-bound drag would not survive one.
 let dragFrame = 0;
 root.addEventListener('pointerdown', (e) => {
-  if (e.button === 0 && PANES[active].dragStart?.(e, ui[active], root)) e.preventDefault();
+  if (e.button !== 0) return;
+  // Taken on press: a fast-rendering pane may replace the pressed element
+  // before release, and the click would be lost.
+  const goto = e.target.closest('[data-goto]');
+  if (goto) {
+    e.preventDefault();
+    const { goto: pane, gotoInstance: instance, gotoView: view } = goto.dataset;
+    if (instance) Object.assign(ui[pane], { instance, instances: null });
+    if (view) ui[pane].view = view;
+    switchPane(pane);
+    return;
+  }
+  if (PANES[active].dragStart?.(e, ui[active], root)) e.preventDefault();
 });
 document.addEventListener('pointermove', (e) => {
   if (!PANES[active].dragMove?.(e, ui[active], root) || dragFrame) return;
@@ -88,15 +106,18 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.querySelector('nav').addEventListener('click', (e) => {
-  const pane = e.target.dataset?.pane;
-  if (!pane || !PANES[pane]) return;
+function switchPane(pane) {
   active = pane;
   history.replaceState(null, '', `#${pane}`);
   renderTabs();
   root.innerHTML = '';
   window.scrollTo(0, 0);
   render();
+}
+
+document.querySelector('header').addEventListener('click', (e) => {
+  const pane = e.target.dataset?.pane;
+  if (pane && PANES[pane]) switchPane(pane);
 });
 
 // The server replays every ring on connect, so a reconnect starts from an
@@ -123,4 +144,6 @@ function connect() {
 
 renderTabs();
 connect();
-setInterval(render, RENDER_MS);
+setInterval(() => {
+  if (performance.now() - lastRender >= (PANES[active].renderMs ?? RENDER_MS) - TICK_MS / 2) render();
+}, TICK_MS);

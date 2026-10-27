@@ -118,7 +118,7 @@ fn bid_signing_input(
         .get(bid.builder_index as usize)
         .map(|b| b.pubkey)
         .ok_or(BidBuilderError::OutOfRange { index: bid.builder_index, count: builders.len() })?;
-    let Ok(pubkey) = PublicKey::from_bytes(&pubkey_bytes) else {
+    let Ok(pubkey) = PublicKey::key_validate(&pubkey_bytes) else {
         return Err(E::BadBuilderPubkey { index: bid.builder_index });
     };
 
@@ -187,9 +187,37 @@ pub fn is_gas_limit_target_compatible(parent: u64, gas_limit: u64, target: u64) 
 
 #[cfg(test)]
 mod tests {
+    use silver_beacon_state_data::{
+        BLSPubkey, BeaconState, Builder, BuildersGroup, FinalizedBuilders,
+    };
     use silver_common::ssz_view::SIGNED_EXECUTION_PAYLOAD_BID_MIN;
 
     use super::*;
+    use crate::test_signing::{INVALID_PUBKEYS, pubkey_bytes};
+
+    fn builder_signing_input(pubkey: BLSPubkey) -> Result<Option<(PublicKey, B256)>, E> {
+        let state = BeaconState::empty_test(0);
+        let mut builders = BuildersGroup::new(FinalizedBuilders::default());
+        let mut builders = builders.roll_fresh();
+        builders.push(Builder { pubkey, ..Builder::default() });
+        let bid = ExecutionPayloadBid { builder_index: 0, ..ExecutionPayloadBid::default() };
+        bid_signing_input(
+            &state.immutable,
+            &state.epoch.finalized_view(),
+            &builders.reader(),
+            &bid,
+            0,
+        )
+    }
+
+    #[test]
+    fn bid_rejects_invalid_builder_pubkey() {
+        assert!(matches!(builder_signing_input(pubkey_bytes(0)), Ok(Some(_))));
+
+        for pubkey in INVALID_PUBKEYS {
+            assert!(matches!(builder_signing_input(pubkey), Err(E::BadBuilderPubkey { index: 0 })));
+        }
+    }
 
     #[test]
     fn gas_limit_moves_one_step_towards_target() {

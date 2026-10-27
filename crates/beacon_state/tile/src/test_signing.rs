@@ -29,6 +29,17 @@ pub const PRIVKEY_HEX: [&str; 3] = [
     "328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216",
 ];
 
+/// Compressed keys that decode but fail `KeyValidate`: the point at infinity,
+/// and the curve point with x = 4, which lies outside G1.
+pub const INVALID_PUBKEYS: [BLSPubkey; 2] = {
+    let mut infinity = [0u8; 48];
+    infinity[0] = 0xc0;
+    let mut outside_g1 = [0u8; 48];
+    outside_g1[0] = 0x80;
+    outside_g1[47] = 4;
+    [infinity, outside_g1]
+};
+
 /// Past the spec keys, the scalar `idx + 1`.
 pub fn privkey(idx: usize) -> SecretKey {
     let bytes = match PRIVKEY_HEX.get(idx) {

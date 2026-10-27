@@ -18,9 +18,8 @@ export function escape(s) {
 
 export function instanceHeading(inst, now) {
   const stale = inst.stale(now) ? '<span class="badge stale">stale</span>' : '';
-  const lost = inst.lost ? `<span class="badge">lost ${inst.lost}</span>` : '';
   const build = inst.buildInfo ? `<span class="meta">${escape(inst.buildInfo.trim())}</span>` : '';
-  return `<h2>${escape(inst.label)}${stale}${lost}${build}</h2>`;
+  return `<h2>${escape(inst.label)}${stale}${build}</h2>`;
 }
 
 export function fmtSecs(secs) {

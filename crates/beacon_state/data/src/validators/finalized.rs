@@ -3,10 +3,11 @@ use std::{
     io::{self, Write},
 };
 
-use blst::min_pk::PublicKey;
+use blst::{blst_p1_affine, min_pk::PublicKey};
 use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
+use silver_crypto_simd::bls::uncompress_in_g1;
 
 use super::validator_hash;
 use crate::{
@@ -94,6 +95,56 @@ fn u64_at(s: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(s[off..off + 8].try_into().unwrap())
 }
 
+/// A multiple of the decoder's eight lanes, so only the final batch can have
+/// a scalar tail.
+pub(super) const DECODE_CHUNK: usize = 1024;
+
+/// Validates record pubkeys in batches as `build` reads them in order,
+/// avoiding a temporary key buffer for the whole registry.
+struct RecordKeys<'a> {
+    val_bytes: &'a [u8],
+    start: usize,
+    compressed: Vec<BLSPubkey>,
+    decoded: Vec<Option<blst_p1_affine>>,
+}
+
+impl<'a> RecordKeys<'a> {
+    fn new(val_bytes: &'a [u8]) -> Self {
+        Self {
+            val_bytes,
+            start: 0,
+            compressed: Vec::with_capacity(DECODE_CHUNK),
+            decoded: vec![None; DECODE_CHUNK],
+        }
+    }
+
+    fn key(&mut self, idx: usize) -> Result<PublicKey, ValidatorsDecodeError> {
+        debug_assert!(idx >= self.start, "records are read in order");
+        if idx >= self.start + self.compressed.len() {
+            self.decode_batch(idx);
+        }
+        // Decoding checks G1 membership; `KeyValidate` also rejects infinity,
+        // represented by blst as the all-zero point.
+        match self.decoded[idx - self.start] {
+            Some(point) if point != blst_p1_affine::default() => Ok(PublicKey::from(point)),
+            _ => Err(ValidatorsDecodeError::InvalidPubkey { idx }),
+        }
+    }
+
+    fn decode_batch(&mut self, start: usize) {
+        let records = &self.val_bytes[start * VALIDATOR_SSZ_SIZE..];
+        let records = &records[..records.len().min(DECODE_CHUNK * VALIDATOR_SSZ_SIZE)];
+        self.compressed.clear();
+        self.compressed.extend(
+            records
+                .chunks_exact(VALIDATOR_SSZ_SIZE)
+                .map(|v| BLSPubkey::try_from(&v[offset::PUBKEY..offset::CREDENTIALS]).unwrap()),
+        );
+        self.start = start;
+        uncompress_in_g1(&self.compressed, &mut self.decoded[..self.compressed.len()]);
+    }
+}
+
 #[inline]
 fn put(buf: &mut [u8], off: usize, src: &[u8]) {
     buf[off..off + src.len()].copy_from_slice(src);
@@ -170,8 +221,8 @@ impl FinalizedValidators {
     /// Decode the SSZ `validators` byte range (layout per [`offset`]); capacity
     /// is derived from the count, and `try_new(&[], None)` is the empty base.
     /// With `Some(decompressed)`, each sidecar key is bound to its record's
-    /// canonical compressed pubkey; with `None`, pubkeys are decompressed from
-    /// the records (which rejects non-canonical points).
+    /// canonical compressed pubkey; with `None`, valid pubkeys are decompressed
+    /// from the records and invalid are rejected. The sidecar is optional.
     #[timed]
     pub fn try_new(
         val_bytes: &[u8],
@@ -190,6 +241,7 @@ impl FinalizedValidators {
             }
         }
 
+        let mut record_keys = RecordKeys::new(val_bytes);
         Self::build(validator_capacity(n), n, |i| {
             let v = &val_bytes[i * VALIDATOR_SSZ_SIZE..];
             let pubkey: BLSPubkey = v[offset::PUBKEY..offset::CREDENTIALS].try_into().unwrap();
@@ -198,8 +250,7 @@ impl FinalizedValidators {
                     return Err(ValidatorsDecodeError::PubkeyMismatch { idx: i });
                 }
                 Some(d) => d[i],
-                None => PublicKey::from_bytes(&pubkey)
-                    .map_err(|_| ValidatorsDecodeError::InvalidPubkey { idx: i })?,
+                None => record_keys.key(i)?,
             };
             Ok(ValidatorInit {
                 pubkey,

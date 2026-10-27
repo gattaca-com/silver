@@ -48,7 +48,7 @@
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  header h1 { font-size: 14px; margin: 0; }
+  header h1 { font-size: 14px; margin: 0; cursor: pointer; }
   nav { display: flex; gap: 4px; flex-wrap: wrap; }
   nav button {
     font: inherit; color: var(--muted); background: none; cursor: pointer;
@@ -180,6 +180,23 @@
   .slot-legend span.off { opacity: 0.35; text-decoration: line-through; }
   .slot-legend i { display: inline-block; width: 16px; border-top: 2px solid var(--muted); }
   .slot-legend i.dashed { border-top-style: dashed; }
+  table.apply-big { width: auto; font-size: 28px; line-height: 1.25; margin-bottom: 16px; }
+  table.apply-big th { font-size: 12px; }
+  table.apply-big td { padding: 4px 16px; font-weight: 600; }
+  table.apply-big td.meta { font-size: 12px; font-weight: normal; }
+  @media (max-width: 600px) { table.apply-big { font-size: 16px; } table.apply-big td { padding: 3px 8px; } }
+  .home-card { cursor: pointer; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px 8px; }
+  .home-card:hover { border-color: var(--fill); }
+  .home-card h3 { font-size: 12px; margin: 0 0 4px; }
+  .home-card .meta { margin: 0 0 2px; }
+  .home-wide { margin-bottom: 18px; }
+  .home-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); margin-bottom: 18px; }
+  .home-rows { display: grid; gap: 12px; margin-bottom: 18px; }
+  .home-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .home-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .home-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+  .home-pair { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .home-card.flow svg { width: 100%; height: auto; display: block; }
   .flow .q-idle { stroke: var(--idle); } .flow .qf-idle { fill: var(--idle); }
   .q0 { stroke: var(--seq-0); } .qf0 { fill: var(--seq-0); } .qb0 { background: var(--seq-0); }
   .q1 { stroke: var(--seq-1); } .qf1 { fill: var(--seq-1); } .qb1 { background: var(--seq-1); }
@@ -214,7 +231,7 @@
 </head>
 <body>
 <header>
-  <h1>silver</h1>
+  <h1 data-pane="home">silver</h1>
   <nav>
     <button data-pane="events">Slots</button>
     <button data-pane="peers">Peers</button>
