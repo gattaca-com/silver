@@ -1,38 +1,69 @@
-/// Below this many blocks the AVX-512 kernel falls back to AVX2, which is
-/// slower than SHA-NI.
-const AVX512_GROUP: usize = 16;
+use std::{ffi::c_int, sync::LazyLock};
 
-#[cfg(target_arch = "x86_64")]
+type HashFn = unsafe extern "C" fn(output: *mut u8, input: *const u8, count: u64);
+
 unsafe extern "C" {
-    /// In the static `libhashtree` that `hashtree-rs` links.
-    fn hashtree_sha256_avx512_x16(output: *mut u8, input: *const u8, count: u64);
+    /// `None` keeps hashtree's own CPU detection.
+    fn hashtree_init(backend: Option<HashFn>) -> c_int;
 }
 
-/// hashtree picks SHA-NI whenever the CPU has it, which wins only on short
-/// inputs.
+/// Serializes backend installation before either hashing entry point uses
+/// hashtree's unsynchronized global function pointer.
+static HASHTREE_READY: LazyLock<()> = LazyLock::new(|| {
+    // SAFETY: `avx512_groups::backend` checked the CPU for every kernel it calls.
+    let rc = unsafe { hashtree_init(avx512_groups::backend()) };
+    debug_assert_eq!(rc, 1, "hashtree_init() failed");
+});
+
 #[cfg(target_arch = "x86_64")]
-fn has_avx512_groups() -> bool {
-    is_x86_feature_detected!("sha") &&
-        is_x86_feature_detected!("avx512f") &&
-        is_x86_feature_detected!("avx512vl") &&
-        is_x86_feature_detected!("avx512bw")
+mod avx512_groups {
+    use std::arch::x86_64::_mm256_zeroupper;
+
+    use super::HashFn;
+
+    /// Smaller batches fall back to AVX2 inside the AVX-512 kernel.
+    const GROUP: u64 = 16;
+
+    unsafe extern "C" {
+        fn hashtree_sha256_avx512_x16(output: *mut u8, input: *const u8, count: u64);
+        fn hashtree_sha256_shani_x2(output: *mut u8, input: *const u8, count: u64);
+    }
+
+    pub(super) fn backend() -> Option<HashFn> {
+        let supported = is_x86_feature_detected!("sha") &&
+            is_x86_feature_detected!("avx512f") &&
+            is_x86_feature_detected!("avx512vl") &&
+            is_x86_feature_detected!("avx512bw");
+        supported.then_some(hash as HashFn)
+    }
+
+    #[target_feature(enable = "avx")]
+    unsafe extern "C" fn hash(output: *mut u8, input: *const u8, count: u64) {
+        let grouped = count / GROUP * GROUP;
+        if grouped > 0 {
+            unsafe { hashtree_sha256_avx512_x16(output, input, grouped) };
+            // The assembly kernel leaves upper vector state dirty.
+            _mm256_zeroupper();
+        }
+        let done = grouped as usize;
+        unsafe {
+            hashtree_sha256_shani_x2(output.add(32 * done), input.add(64 * done), count - grouped)
+        };
+    }
 }
 
-/// The kernel returns with the upper vector state dirty. On Zen 5 that made
-/// the code after it, SHA-NI included, measurably slower.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn hash_avx512_groups(out: &mut [B256], pairs: &[B256]) {
-    unsafe {
-        hashtree_sha256_avx512_x16(out.as_mut_ptr().cast(), pairs.as_ptr().cast(), out.len() as u64)
-    };
-    std::arch::x86_64::_mm256_zeroupper();
+#[cfg(not(target_arch = "x86_64"))]
+mod avx512_groups {
+    pub(super) fn backend() -> Option<super::HashFn> {
+        None
+    }
 }
 
 pub type B256 = [u8; 32];
 
 #[inline]
 pub fn hash_concat(a: &B256, b: &B256) -> B256 {
+    LazyLock::force(&HASHTREE_READY);
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(a);
     buf[32..].copy_from_slice(b);
@@ -44,15 +75,9 @@ pub fn hash_concat(a: &B256, b: &B256) -> B256 {
 #[inline]
 pub fn hash_concat_many(out: &mut [B256], pairs: &[B256]) {
     debug_assert_eq!(pairs.len(), 2 * out.len());
-    let mut grouped = 0;
-    #[cfg(target_arch = "x86_64")]
-    if out.len() >= AVX512_GROUP && has_avx512_groups() {
-        grouped = out.len() / AVX512_GROUP * AVX512_GROUP;
-        // SAFETY: `has_avx512_groups` checked the CPU.
-        unsafe { hash_avx512_groups(&mut out[..grouped], &pairs[..2 * grouped]) };
-    }
-    let rest = out.len() - grouped;
-    hashtree_rs::hash(out[grouped..].as_flattened_mut(), pairs[2 * grouped..].as_flattened(), rest);
+    LazyLock::force(&HASHTREE_READY);
+    let n = out.len();
+    hashtree_rs::hash(out.as_flattened_mut(), pairs.as_flattened(), n);
 }
 
 /// SSZ bytes as 32-byte leaf chunks, the last one zero-padded.
