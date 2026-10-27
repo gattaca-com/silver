@@ -17,7 +17,7 @@ import time
 
 
 LEAN = Path(__file__).resolve().parents[1]
-SUPPORT = runpy.run_path(str(LEAN / "controls/portable-tower-mutation-check.py"))
+SUPPORT = runpy.run_path(str(LEAN / "controls/mutation-support.py"))
 DECLARATION = SUPPORT["DECLARATION"]
 BASE = "LeanBlsSimd/PairingProduct/"
 LANES = "bls.lane_pairs.LanePairs."

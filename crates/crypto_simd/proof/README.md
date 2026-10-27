@@ -1,12 +1,12 @@
 # Formal proof of BLS decoding and KZG cell operations
 
-One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The IFMA verifier headline uses the proved lane pairing and G1 decoder paths. The general verifier headline assumes scoped blst G1-decoder and pairing laws. The extender needs neither law on either route. Scalar and base-field arithmetic, scalar bytes, both streaming SHA implementations, portable G1 decoding, portable MSM and lane pairing are proved. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
+One Lean project checks the Charon/Aeneas translation of `silver_crypto_simd`'s G1 and G2 batch decoders, `bls::PairingProduct`, `kzg::CellBatchVerifier` and `kzg::CellExtender`. The IFMA verifier headline uses the proved lane pairing and G1 decoder paths. The general verifier headline assumes scoped blst G1-decoder and pairing laws. The extender needs neither law on either route. `bls::PairingProduct` proves its IFMA lane route and assumes a separate blst law for the rest. Scalar and base-field arithmetic, scalar bytes, both streaming SHA implementations, portable G1 decoding, portable MSM and lane pairing are proved. The [trust list](#what-a-reader-must-trust) explains the connection from generated Lean semantics to Rust.
 
-The BLS scope is point decoding and subgroup checks, including the proved IFMA kernels and Scott criteria. G1 portable decoding is proved by `Portable.Decode.g1_decoder_correct`, which constructs `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
+The BLS proofs cover point decoding and subgroup checks, including the IFMA kernels and Scott criteria. They also cover pairing products. G1 portable decoding is proved by `Portable.Decode.g1_decoder_correct`, which constructs `G1DecoderCorrect`. G2 fallback retains the opaque blst decoder and its explicit agreement premise. Full BLS signature verification is outside the scope. KZG verification and extension include constructors, `Default`, output writes, persistent state and repeated calls.
 
 The project pins the `gattaca-com/EthLib` fork's total pairing definitions, with Lean and Mathlib at v4.29.1. Its extraction includes portable implementations, independent CPU feature observations and separately compiled setup literals. The Lake package is `lean_bls_simd`; its library is `LeanBlsSimd`.
 
-- [What is proved](#what-is-proved): [G1 wrapper](#g1-wrapper), [G2 wrapper](#g2-wrapper), [G2 kernel](#g2-kernel), [KZG verifier](#kzg-verifier), [KZG extender](#kzg-extender).
+- [What is proved](#what-is-proved): [G1 wrapper](#g1-wrapper), [G2 wrapper](#g2-wrapper), [G2 kernel](#g2-kernel), [pairing products](#pairing-products), [KZG verifier](#kzg-verifier), [KZG extender](#kzg-extender).
 - [Using the public results](#using-the-public-results).
 - [What a reader must trust](#what-a-reader-must-trust).
 - [Reproduction](#reproducing-the-proof-and-checks) and [maintenance](lean/README.md).
@@ -83,6 +83,95 @@ The left side is how `decompress_g2_chunk` in `mod.rs` reads one lane. `Mmask8.a
 
 - `decompress_refines`, in `lean/LeanBlsSimd/Refines/DecompressG2.lean`: on every input, the generated `decompress` returns `ok` of the model's result, converted back by `toBatch`. This unconditional equality covers every field, including points on rejected and undecided lanes. The other files in `Refines/` establish the corresponding equalities for the functions it calls.
 - `decompress_eq_spec`, in `lean/LeanBlsSimd/Proofs/Kernel.lean`: the same claim about the model's `decompress`, over `Vector`s. Its completeness argument is described in [G2 kernel proof and completeness](#g2-kernel-proof-and-completeness).
+
+### Pairing products
+
+Import `LeanBlsSimd.PairingProduct.Headline`. Its results refine generated `PairingProduct` operations to the pinned executable `EthLib.Cryptography.Bls.pairingCheck`. The declarations use the `LeanBlsSimd.PairingProduct` namespace.
+
+`build` runs the generated default constructor and pushes each supplied pair. The headline covers any list of valid points whose retained length is at most `Usize.max`. Infinity pairs and the empty list are allowed:
+
+```lean
+theorem build_is_one_correct [RuntimeFeatures] [PairingExternals]
+    (blst : BlstMatchesSpec) (pairs : List pairing_product.AffinePair)
+    (valid : ∀ p ∈ pairs, Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q)
+    (room : (pairs.filter finitePair).length ≤ Usize.max) :
+    (do let owner ← build pairs; pairing_product.PairingProduct.is_one owner) =
+      ok (pairingCheck (pairs.map
+        (fun p => (Kzg.g1ReadAffine p.p, Kzg.g2ReadAffine p.q))).toArray)
+```
+
+`built_owner_correct` gives the resulting owner and the exact list of retained pairs:
+
+```lean
+theorem built_owner_correct [RuntimeFeatures] [PairingExternals]
+    (blst : BlstMatchesSpec) (pairs : List pairing_product.AffinePair)
+    (valid : ∀ p ∈ pairs, Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q)
+    (room : (pairs.filter finitePair).length ≤ Usize.max) :
+    ∃ owner, build pairs = ok owner ∧ owner.pairs.val = pairs.filter finitePair ∧
+      pairing_product.PairingProduct.is_one owner =
+        ok (pairingCheck (pairs.map
+          (fun p => (Kzg.g1ReadAffine p.p, Kzg.g2ReadAffine p.q))).toArray)
+```
+
+The fixed-two-pair result compares against both original pairs, including pairs skipped because either point is infinity:
+
+```lean
+theorem two_pairs_are_one_correct [RuntimeFeatures] [PairingExternals]
+    (blst : BlstMatchesSpec) (first second : g1_point.G1Point × g2_point.G2Point)
+    (hp : Kzg.G1AffineValid first.1) (hq : Kzg.G2AffineValid first.2)
+    (hp' : Kzg.G1AffineValid second.1) (hq' : Kzg.G2AffineValid second.2) :
+    pairing_product.PairingProduct.two_pairs_are_one first second =
+      ok (pairingCheck #[(Kzg.g1ReadAffine first.1, Kzg.g2ReadAffine first.2),
+        (Kzg.g1ReadAffine second.1, Kzg.g2ReadAffine second.2)])
+```
+
+An existing owner's stored pairs must satisfy the validity and finiteness invariant:
+
+```lean
+theorem is_one_correct [RuntimeFeatures] [PairingExternals]
+    (blst : BlstMatchesSpec) (owner : pairing_product.PairingProduct)
+    (valid : ∀ p ∈ owner.pairs.val, Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q)
+    (finite : ∀ p ∈ owner.pairs.val, finitePair p = true) :
+    pairing_product.PairingProduct.is_one owner =
+      ok (pairingCheck (specPairs (alloc.vec.Vec.deref owner.pairs)))
+```
+
+`Kzg.G1AffineValid` and `Kzg.G2AffineValid` require canonical affine coordinates and subgroup membership. The G2 predicate expresses curve membership through decodability. Infinity is valid. The premises are explicit because Aeneas represents `G1Point` and `G2Point` as reducible aliases.
+
+`finitePair` means neither point reads as infinity. Generated `push` skips a pair when either point is infinity. Both build headlines compare against the original unfiltered list because the specification skips infinity pairs. The `room` premise bounds the retained length by `Usize.max`. It does not guarantee successful runtime allocation.
+
+`default_empty`, `with_capacity_empty` and `clear_empty` establish empty storage. `push_refines` describes one push. The public `push_list_refines` describes successive pushes from any owner:
+
+```lean
+theorem push_list_refines (pairs : List pairing_product.AffinePair)
+    (valid : ∀ p ∈ pairs, Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q)
+    (owner : pairing_product.PairingProduct)
+    (room : (owner.pairs.val ++ pairs.filter finitePair).length ≤ Usize.max) :
+    ∃ result,
+      pairs.foldlM (fun owner pair => pairing_product.PairingProduct.push owner pair.p pair.q) owner =
+        ok result ∧ result.pairs.val = owner.pairs.val ++ pairs.filter finitePair
+```
+
+Combine its exact storage equation with `is_one_correct` after establishing the owner invariant. `is_one_empty` needs no agreement premise. The generated `is_one` returns `Result Bool` without an updated owner. No scratch-state frame obligation is needed.
+
+The blst route uses a separate `PairingExternals` dictionary. Its agreement law applies to finite canonical subgroup pairs:
+
+```lean
+structure BlstMatchesSpec [PairingExternals] : Prop where
+  check : ∀ pairs, (∀ pair ∈ pairs.val, Kzg.G1AffineValid pair.p ∧ Kzg.G2AffineValid pair.q) →
+    (∀ pair ∈ pairs.val, finitePair pair = true) →
+    PairingExternals.check pairs = pairingCheck (specPairs pairs)
+```
+
+The law trusts the whole opaque Rust `PairingInputs::blst_is_one` wrapper. This includes the chunk loop, null-padded pointer arrays and accumulator initialization. It also includes `blst_miller_loop_n`, accumulator multiplication, `blst_final_exp` and `blst_fp12_is_one`. The binding assumes termination and no Rust-level failure.
+
+Raw `blst_miller_loop_n` does not skip G2 infinity. For the singleton `(G1 generator, G2 infinity)`, the unfiltered wrapper rejects while the specification accepts. The agreement law applies only after the proved infinity filter. It does not assume agreement on arbitrary unfiltered slices.
+
+The lane proof establishes the variable-Q steps, flags, sequential lane-set products and final-exponentiation verdict without the agreement law. The blst route and the whole-product fallback use that law. The KZG and decoder dependency guards exclude the dictionary and its agreement law.
+
+Random-weight batching, public-key admission and hash-to-G2 correctness are not proved here. Neither is their composition into full signature verification. Hardware support for the selected route remains a runtime obligation. The verdict theorem does not cover route choice, fallback frequency or performance.
+
+`controls/downstream/PairingSmoke.lean` applies the public results with an external defined by the specification. Its concrete list contains a finite setup pair and a pair with only its G2 point at infinity. The example discharges every premise. `controls/pairing-product-mutation-check.py` checks refinement proofs against mutations of generated declarations. The original and reformatted declarations serve as positive controls.
 
 ### KZG verifier
 
@@ -233,7 +322,8 @@ The constructor establishes the invariant, and each returned state preserves it 
 4. **Extraction and generated-code preparation.** Charon's MIR semantics, Aeneas's translation and the deterministic adaptations in `prepare-extraction.py` described in [reproduction](#reproducing-the-extraction). The pinned Aeneas revision is `d9733413`, Charon is `ed22146b`, and Charon uses nightly-2026-02-07 rather than the workspace's Rust 1.91.0. `extract.sh` verifies checkout pins and available binary version information; a Charon binary from another commit with the same reported crate version is not distinguished. The extraction targets x86_64, including its BLS chunk helpers, Fr FFT and verifier MSM8 kernels. The theorem includes the scalar route of this extraction; it does not check a separate non-x86_64 extraction. Transfer to other target configurations relies on their feature detection and source gating. Exact `--check` reproduction detects drift, not translator bugs.
 5. **External semantics and bindings.** Aeneas's pinned Lean library models integers, arrays, slices, bounds/overflow checks, byte conversions and `partial_fixpoint` loops. `Extracted/TypesExternal.lean` and `FunsExternal.lean` bind the vector types, AVX-512 operations, SHA/SSE operations, carry arithmetic, lane extraction, feature detection and standard-library operations such as `Vec.clear`. These models specify bit patterns and logical contents. Their agreement with hardware, ABI and standard-library behavior remains a trust boundary. Intrinsic controls check concrete cases and selected mutations. The opaque Rust functions below are replaced by hand. The extraction does not refine their source code. The extraction contains portable scalar, field, G1, MSM and SHA implementations, and the lane pairing implementation.
 6. **CPU observations and blst boundaries.** `RuntimeFeatures` supplies independent SIMD, SHA and BMI2 Booleans, fixed for a theorem instance. Arbitrary stored routes need matching hardware support in real execution. `BlsExternals` supplies the signature-only G2 decoder. `UncompressG2.BlstMatchesSpec` is its agreement premise. `KzgExternals` separately supplies G1 decoding and the scalar pairing wrapper. `UncompressG1.FallbackCorrect` requires exact verdicts on every 48-byte input when SIMD is unavailable. The scalar case of `Kzg.BlstPairing.CorrectFor` requires exact verdicts for reduced valid G1 inputs, including infinity, and the two fixed KZG G2 points. These opaque functions return `ok`, so their termination and absence of Rust-level failure are assumed. The IFMA verifier headlines require neither agreement law. The extender calls neither operation.
-7. **Runtime setup for literal-upstream corollaries.** `verify_eq_upstream`, `verify_eq_upstream_ifma` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
+7. **Signature pairing through blst.** `PairingProduct.BlstMatchesSpec` trusts the whole opaque `PairingInputs::blst_is_one` wrapper on finite canonical subgroup pairs. This includes chunking, null-padded pointers, accumulator setup, multi-Miller calls, multiplication, final exponentiation and the identity test. The binding assumes totality. Raw multi-Miller calls do not skip G2 infinity. The law applies only after the proved filter. KZG and decoder headlines exclude the dictionary and law.
+8. **Runtime setup for literal-upstream corollaries.** `verify_eq_upstream`, `verify_eq_upstream_ifma` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
 Every `--opaque` item in `extract.sh` has this interpretation:
 
@@ -246,6 +336,7 @@ Every `--opaque` item in `extract.sh` has this interpretation:
 | `bls::uncompress_in_g1_blst` | The non-IFMA G1 observation in `KzgExternals`. |
 | `kzg::blst_pairing::pairing_check` | The scalar two-pair wrapper observation in `KzgExternals`, including affine conversion and infinity filtering. |
 | `bls::uncompress_in_g2_blst` | The signature decoder observation in `BlsExternals`; excluded from KZG. |
+| `bls::pairing_product::PairingInputs::blst_is_one` | `PairingExternals.check` observes the whole wrapper, including chunking, pointer arrays, accumulator setup, Miller products, final exponentiation and the identity test. `PairingProduct.BlstMatchesSpec` assumes total specification agreement on finite canonical subgroup pairs. KZG and decoder headlines do not use it. |
 | `G1Point::from_blst`, `G2Point::from_blst` | `PointExternals` supplies raw constructor observations. `ConstructorsMatchSpec` specifies acceptance by `Kzg.G1AffineValid` and `Kzg.G2AffineValid`. For G2, equivalence between decodability and blst's on-curve check is unproved. These blst-backed calls are assumed total. Decoder and KZG theorems do not use them. |
 | `G1Point::negative_generator`, `G2Point::hash_to_curve`, both `weighted_sum` methods | `PointOperationExternals` supplies blst observations specified by `OperationsMatchSpec`. Weighted sums assume totality on valid points with eight scalar bytes per point. Other scalar lengths produce assertion failure. Hashing and generator negation are assumed total. |
 | `sha256::extensions::load_bytes` | Raw-pointer byte loads replaced by little-endian 32-bit lane packing. |
@@ -338,9 +429,9 @@ Aeneas records each item's origin in a `Source: '<file>', lines <span>` comment.
 
 If the generated code has drifted, run `./extract.sh` without `--check`, which replaces `Types.lean`, `Literals.lean`, `Funs.lean` and `controls/ExtractedLiterals.lean`, and follow `lean/README.md`. Rebuild and fix the affected BLS or KZG refinements. Update the models and specification proofs where behaviour changes. Then rerun the controls, Lean differential tests and Rust checks, and update the BLS source table below when its files change. A passing vector test does not replace the drift check, since it covers only the recorded inputs.
 
-The extraction roots are `crate::bls::decompress_g2::decompress`, `crate::bls::uncompress_in_g1`, `crate::bls::uncompress_in_g2`, `crate::kzg::verify` and `crate::kzg::cell_extender`. They reach both KZG types' public methods and `Default` implementations, IFMA kernels, `CurveWork`, streaming SHA, portable arithmetic, the portable decoder and MSM. G1 decoding without IFMA and scalar pairing are opaque operations in `KzgExternals`. G2's `uncompress_in_g2_blst` is opaque for signatures. `prepare-extraction.py` then:
+The extraction roots include the BLS decoders, typed-point methods, `crate::bls::pairing_product`, `crate::kzg::verify` and `crate::kzg::cell_extender`. They reach both KZG types' public methods and `Default` implementations. They also reach IFMA kernels, `CurveWork`, streaming SHA, portable arithmetic, the portable decoder and MSM, and lane pairing. G1 decoding without IFMA and scalar KZG pairing are opaque operations in `KzgExternals`. G2's `uncompress_in_g2_blst` and signature pairing's `blst_is_one` remain opaque. `prepare-extraction.py` then:
 
-- introduces a section with `RuntimeFeatures`, `KzgExternals` and the G2-only `BlsExternals`; Lean retains a parameter only where a generated definition uses it;
+- introduces a section with `RuntimeFeatures`, `KzgExternals`, the G2-only `BlsExternals` and `PairingExternals`; Lean retains a parameter only where a generated definition uses it;
 - quotes the eight generated `full` identifiers;
 - supplies structural `Array.make` length witnesses;
 - recursively hoists G1 setup rows and pairing-table steps/lanes into the separate `Extracted/Literals.lean` module, preserving each literal's type, order and contents.
@@ -364,6 +455,7 @@ All adaptations run before drift comparison. Only numeric source spans are maske
 | `LeanBlsSimd/Refines/` | The generated code against the model, function by function, with public wrapper APIs in `UncompressG1.lean` and `UncompressG2.lean`, both length-mismatch theorems in `WrapperLengths.lean`, and G2's kernel headline in `Complete.lean`. |
 | `LeanBlsSimd/Kzg/` | KZG specification decomposition, setup certificates, decoder bridge, representation laws, verifier refinements and public statements; `Extender/` contains the cell-extension model, refinements and specification bridge. |
 | `LeanBlsSimd/Msm8/` | Generated verifier MSM refinements: GLV splitting, stores, buckets, affine batches, complete sums and output representation. |
+| `LeanBlsSimd/PairingProduct/` | Variable-Q pairing steps, lane conversion and packing, arbitrary-length Miller products, owner lifecycle and verdict headlines. The blst route has a separate agreement law. |
 | `LeanBlsSimd/Axioms.lean` | The common axiom guard for BLS and KZG. |
 | `controls/` | BLS/KZG Lean controls, the common `AxiomLog.lean`, `KzgStrictAxioms.lean`, extraction fixtures in `extraction-check.py`, and the independent `downstream/` package. |
 | `Test/Main.lean`, `Test/Differential/` | The differential CLI, shared parser and separate G1/G2 checks; the G1/G2 module docstrings describe the formats. |
@@ -775,6 +867,7 @@ Paths below are relative to `lean/controls/`.
 | `PortableMsm.lean` | Generated signed-reference loads reject an omitted negation; writes preserve other slots. Equal-x jobs at the first or a later position reject a successful-round result without changing the store. The fifth preparation job checks reuse of the first chain and rejects an omitted prefix update. A complete batch permits overwriting its own input and rejects an omitted reverse write. A generated queue round preserves an odd carry and rejects a dropped carry; reusable references need no spare slot. A rejected pair-round loop exits with its rejected batch still nonempty. The input filter rejects a scalar whose high bit violates its bound. Bucket counting rejects a dropped increment, and chunk counter bounds are checked. |
 | `LaneTowerCapacity.lean` | Actual operands above `1024p` satisfy the tower product capacity; a too-small offset produces a negative signed value. |
 | `pairing-table-mutation-check.py` | After the build: copies the live generated table and checks a changed limb, tangent numerator, normalizer sign and denominator condition against the kernel certificate; original and reformatted tables pass. |
+| `pairing-product-mutation-check.py` | Refinement proofs reject mutations to generated infinity filtering, lane flags, conversion, packing, Miller loops and set products. They also reject mutations to final-exponentiation hand-off, fallback and owner lifecycle. Original and reformatted declarations pass. The suite excludes equivalent dispatch swaps and forced fallback, which preserve the verdict contract. |
 | `pairing-loop-mutation-check.py` | Run after the build. Mutations cover generated lane permutations, table rows, presence selection/complement, bit decrements, final conjugation and omitted final exponentiation. Each fails the actual lane refinement proofs with ordinary proof errors. Original and reformatted definitions pass. |
 | `FinalExponentiation.lean` | The easy output at zero fails unconditional Φ12 membership. The numeric exponent differs without the factor of three. The generated lane final-exponentiation verdict rejects zero and accepts one. |
 | `final-exponent-mutation-check.py` | Run after the build. Changes to the generated multiplication base, parameter conjugation, square input and final product fail their named refinement proofs with ordinary errors. Original and reformatted definitions pass. |
@@ -784,7 +877,7 @@ Paths below are relative to `lean/controls/`.
 | `Cyclotomic.lean` | A unitary `−1` outside Φ12 makes the cyclotomic formula return the wrong square, including in the field model. |
 | `tower-mutation-check.py` | After the build: original/reformatted sources pass; changed Fp4 pairing, output sign, inverse sign and Montgomery radix fail named proofs. |
 | `KzgBlstBoundary.lean` | Constant-false decoder and pairing observations violate the scoped laws at infinity. A specification-defined dictionary witnesses their consistency together. This does not prove blst satisfies them. Arbitrary observations permit IFMA verification. |
-| `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder. The signature-path control reaches it. IFMA verifier/G1 and extender headline types exclude both blst laws. Adding either law is rejected. |
+| `KzgRuntimeBoundary.lean` | KZG headline and runtime dependency closures exclude the opaque G2 decoder, typed-point externals and the signature pairing external. Decoder headlines exclude the typed-point and pairing externals. The signature-path, constructor, point-operation and pairing controls reach their expected externals. IFMA verifier/G1 and extender headline types exclude both blst laws. Adding either law is rejected. |
 | `ShaGenerated.lean` | Generated updates reject a dropped length wrap; finish rejects a missing padding marker and reversed digest bytes. The proved `ShaCorrect` is checked with no premise. |
 | `ShaExtensions.lean` | The ABEF/CDGH packing definitions differ on the fixture. Instruction samples distinguish an omitted shuffle, reused message words and omitted byte swapping. |
 | `ShaPortable.lean` | Generated byte loading, schedule expansion and rounds reject reversed byte order, the wrong sigma function and a zeroed round constant. |

@@ -1,7 +1,6 @@
 # Independent consumers
 
-This Lake package imports `lean_bls_simd` by path and inherits its dependency
-pins. Its four default targets check the public BLS, KZG and pairing-field interfaces.
+This Lake package imports `lean_bls_simd` by path and inherits its dependency pins. Its five default targets check the public BLS, KZG, pairing-product and pairing-field interfaces.
 
 ## BLS adapters
 
@@ -41,6 +40,10 @@ combination and preservation of stored routes.
 These examples use the shared data types from the same-crate extraction.
 The imported library proves the generated-component contracts; these examples
 check their public consumer interfaces.
+
+## Pairing-product consumer
+
+`PairingSmoke.lean` applies the public owner and fixed-two-pair headlines with explicit point-validity premises and an agreement premise for the blst route. Its concrete example defines the external from the specification. The inputs are a finite setup pair and a pair with only its G2 point at infinity. The example discharges every premise. Separate controls check which pair is finite.
 
 ## Pairing-field consumer
 
