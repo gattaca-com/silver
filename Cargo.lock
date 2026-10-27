@@ -4842,7 +4842,7 @@ dependencies = [
 
 [[package]]
 name = "silver"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "build-info",
  "build-info-build",
@@ -4873,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "silver_application_boundary"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "hex",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "silver_beacon_api"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux-profiler",
  "hex",
@@ -4911,7 +4911,7 @@ dependencies = [
 
 [[package]]
 name = "silver_beacon_state"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "criterion",
@@ -4939,7 +4939,7 @@ dependencies = [
 
 [[package]]
 name = "silver_beacon_state_data"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "bytesize",
@@ -4961,7 +4961,7 @@ dependencies = [
 
 [[package]]
 name = "silver_chain_spec"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "hex",
  "serde",
@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "silver_columns"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "c-kzg",
@@ -4990,7 +4990,7 @@ dependencies = [
 
 [[package]]
 name = "silver_common"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "alloy-rlp",
  "backtrace",
@@ -5034,7 +5034,7 @@ dependencies = [
 
 [[package]]
 name = "silver_config"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "hex",
  "serde",
@@ -5048,7 +5048,7 @@ dependencies = [
 
 [[package]]
 name = "silver_control"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "buffa",
  "bytes",
@@ -5070,7 +5070,7 @@ dependencies = [
 
 [[package]]
 name = "silver_crypto_simd"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "c-kzg",
@@ -5080,7 +5080,7 @@ dependencies = [
 
 [[package]]
 name = "silver_dashboard"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "base64 0.22.1",
  "bytesize",
@@ -5096,7 +5096,7 @@ dependencies = [
 
 [[package]]
 name = "silver_discovery"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5120,7 +5120,7 @@ dependencies = [
 
 [[package]]
 name = "silver_e2e"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "async-trait",
  "blst",
@@ -5156,7 +5156,7 @@ dependencies = [
 
 [[package]]
 name = "silver_engine_api"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "base64 0.22.1",
  "flux",
@@ -5181,7 +5181,7 @@ dependencies = [
 
 [[package]]
 name = "silver_gossip"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "buffa",
  "criterion",
@@ -5200,7 +5200,7 @@ dependencies = [
 
 [[package]]
 name = "silver_hashing"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "bytesize",
  "flux-profiler",
@@ -5211,7 +5211,7 @@ dependencies = [
 
 [[package]]
 name = "silver_httpcore"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "httparse",
  "mio",
@@ -5221,7 +5221,7 @@ dependencies = [
 
 [[package]]
 name = "silver_log"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "linkme",
@@ -5231,7 +5231,7 @@ dependencies = [
 
 [[package]]
 name = "silver_metrics"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "flux-profiler",
@@ -5244,7 +5244,7 @@ dependencies = [
 
 [[package]]
 name = "silver_network"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "buffa",
  "bytes",
@@ -5278,7 +5278,7 @@ dependencies = [
 
 [[package]]
 name = "silver_observe"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "libc",
@@ -5289,11 +5289,11 @@ dependencies = [
 
 [[package]]
 name = "silver_observe_wire"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 
 [[package]]
 name = "silver_pbs"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "hex",
@@ -5311,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "silver_peer"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "flux-profiler",
@@ -5326,7 +5326,7 @@ dependencies = [
 
 [[package]]
 name = "silver_proto_gen"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "buffa-build",
  "glob",
@@ -5334,7 +5334,7 @@ dependencies = [
 
 [[package]]
 name = "silver_slashing"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "silver_beacon_state_data",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "silver_ssz"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "flux-profiler",
@@ -5357,7 +5357,7 @@ dependencies = [
 
 [[package]]
 name = "silver_stages"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "flux",
  "libc",
@@ -5373,7 +5373,7 @@ dependencies = [
 
 [[package]]
 name = "silver_storage"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "blst",
  "c-kzg",
@@ -5390,7 +5390,7 @@ dependencies = [
 
 [[package]]
 name = "silver_surfer"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "crossterm",
  "flux",
@@ -5406,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "silver_telemetry"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "bytesize",
  "clap",
