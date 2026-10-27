@@ -156,6 +156,10 @@ impl ShufflingCache {
         self.entries[index].shuffling()
     }
 
+    pub fn find(&self, id: ShufflingId) -> Option<stf::EpochShuffling<'_>> {
+        self.entries.iter().find(|entry| entry.id == Some(id)).map(ShufflingEntry::shuffling)
+    }
+
     /// `None` unless the state is in the block's epoch and holds both decision
     /// roots.
     pub fn for_block(

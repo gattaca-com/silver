@@ -5,7 +5,10 @@ use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, MAX_COMMITTEES_PER_SLOT,
 };
 
-use super::{InsertOutcome, committee_store::CommitteeId};
+use super::{
+    InsertOutcome,
+    committee_store::{CommitteeId, CommitteeStore},
+};
 
 /// Retention is the inclusion window, the previous and current epoch, plus
 /// one slot of clock disparity past it.
@@ -17,11 +20,11 @@ pub(super) const RETAINED_SLOTS: usize = 2 * SLOTS_PER_EPOCH as usize + 1;
 pub(super) const MAX_SLOT_CANDIDATES: usize = 8;
 pub(super) const MAX_CANDIDATES: usize = RETAINED_SLOTS * MAX_SLOT_CANDIDATES;
 
-/// The vote candidates of the retained slots. A candidate's id is
-/// `slot % RETAINED_SLOTS * MAX_SLOT_CANDIDATES + offset`, `offset` being its
-/// place among its slot's candidates.
-pub(super) struct VoteCandidates {
-    slots: [SlotCandidates; RETAINED_SLOTS],
+/// The vote candidates of `SLOTS` retained slots. A candidate's id is
+/// `slot % SLOTS * MAX_SLOT_CANDIDATES + offset`, `offset` being its place
+/// among its slot's candidates.
+pub(super) struct VoteCandidates<const SLOTS: usize> {
+    slots: [SlotCandidates; SLOTS],
     candidates: Box<[VoteCandidate]>,
     floor: Slot,
 }
@@ -61,6 +64,10 @@ impl VoteCandidate {
         (0..MAX_COMMITTEES_PER_SLOT).filter(move |&index| committees & 1 << index != 0)
     }
 
+    pub(super) fn data_root(&self) -> &B256 {
+        &self.data_root
+    }
+
     pub(super) fn is_open(&self, index: usize) -> bool {
         self.committees & 1 << index != 0
     }
@@ -73,18 +80,18 @@ impl VoteCandidate {
     }
 }
 
-impl VoteCandidates {
+impl<const SLOTS: usize> VoteCandidates<SLOTS> {
     pub(super) fn new() -> Self {
         Self {
-            slots: [SlotCandidates { slot: 0, count: 0 }; RETAINED_SLOTS],
-            candidates: vec![VoteCandidate::EMPTY; MAX_CANDIDATES].into_boxed_slice(),
+            slots: [SlotCandidates { slot: 0, count: 0 }; SLOTS],
+            candidates: vec![VoteCandidate::EMPTY; SLOTS * MAX_SLOT_CANDIDATES].into_boxed_slice(),
             floor: 0,
         }
     }
 
     /// Ids of `slot`'s candidates; empty unless `slot` is retained.
     fn ids(&self, slot: Slot) -> Range<usize> {
-        let position = slot as usize % RETAINED_SLOTS;
+        let position = slot as usize % SLOTS;
         let slot_candidates = &self.slots[position];
         if slot < self.floor || slot_candidates.slot != slot {
             return 0..0;
@@ -94,7 +101,7 @@ impl VoteCandidates {
 
     /// Every retained candidate's id, newest slot first.
     pub(super) fn retained_ids(&self) -> impl Iterator<Item = usize> + '_ {
-        let slots = self.floor..self.floor + RETAINED_SLOTS as Slot;
+        let slots = self.floor..self.floor + SLOTS as Slot;
         slots.rev().flat_map(|slot| self.ids(slot))
     }
 
@@ -119,14 +126,14 @@ impl VoteCandidates {
         if slot < self.floor {
             return Err(InsertOutcome::Stale);
         }
-        if slot >= self.floor + RETAINED_SLOTS as Slot {
+        if slot >= self.floor + SLOTS as Slot {
             return Err(InsertOutcome::Full);
         }
         if let Some(id) = self.find(slot, data_root) {
             return Ok(id);
         }
 
-        let position = slot as usize % RETAINED_SLOTS;
+        let position = slot as usize % SLOTS;
         let slot_candidates = &mut self.slots[position];
         if slot_candidates.slot != slot {
             if slot_candidates.count > 0 {
@@ -143,26 +150,53 @@ impl VoteCandidates {
         Ok(id)
     }
 
+    /// Committee `committee_index` of `data`'s candidate, opened in `store`
+    /// when new.
+    pub(super) fn committee(
+        &mut self,
+        store: &mut CommitteeStore,
+        data: AttestationDataView,
+        data_root: B256,
+        committee_index: usize,
+        committee_len: usize,
+        collapsed: bool,
+    ) -> Result<CommitteeId, InsertOutcome> {
+        let candidate = self.find_or_add(data, data_root)?;
+        let committee = CommitteeId::new(candidate, committee_index);
+        if self.candidates[candidate].open(committee_index) {
+            store.open(committee, committee_len, collapsed);
+        } else if store.committee_len(committee) != committee_len {
+            return Err(InsertOutcome::Invalid);
+        }
+        Ok(committee)
+    }
+
+    /// Closes every committee of candidate `id`, passing each to `close`; the
+    /// candidate stays until its slot is pruned.
+    pub(super) fn close(&mut self, id: usize, mut close: impl FnMut(CommitteeId)) {
+        for index in self.candidates[id].committees() {
+            close(CommitteeId::new(id, index));
+        }
+        self.candidates[id].committees = 0;
+    }
+
     /// Drops the candidates of slots below `floor`, passing each of their
     /// open committees to `close`.
     pub(super) fn prune_before(&mut self, floor: Slot, mut close: impl FnMut(CommitteeId)) {
         self.floor = floor;
-        for (position, slot_candidates) in self.slots.iter_mut().enumerate() {
-            if slot_candidates.slot >= floor {
+        for position in 0..SLOTS {
+            if self.slots[position].slot >= floor {
                 continue;
             }
-            for id in slot_candidates.ids(position) {
-                for index in self.candidates[id].committees() {
-                    close(CommitteeId::new(id, index));
-                }
-                self.candidates[id].committees = 0;
+            for id in self.slots[position].ids(position) {
+                self.close(id, &mut close);
             }
-            slot_candidates.count = 0;
+            self.slots[position].count = 0;
         }
     }
 }
 
-impl Index<usize> for VoteCandidates {
+impl<const SLOTS: usize> Index<usize> for VoteCandidates<SLOTS> {
     type Output = VoteCandidate;
 
     fn index(&self, id: usize) -> &VoteCandidate {
@@ -170,7 +204,7 @@ impl Index<usize> for VoteCandidates {
     }
 }
 
-impl IndexMut<usize> for VoteCandidates {
+impl<const SLOTS: usize> IndexMut<usize> for VoteCandidates<SLOTS> {
     fn index_mut(&mut self, id: usize) -> &mut VoteCandidate {
         &mut self.candidates[id]
     }

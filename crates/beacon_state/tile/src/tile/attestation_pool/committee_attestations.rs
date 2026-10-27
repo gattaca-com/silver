@@ -109,6 +109,21 @@ impl CommitteeAttestations {
         InsertOutcome::Inserted
     }
 
+    pub(super) fn add_singles_sum(
+        &mut self,
+        members: &CommitteeBits,
+        sum: &AggregateSignature,
+    ) -> InsertOutcome {
+        debug_assert!(self.collapsed, "a sum joins collapsed singles only");
+        if members.intersects(&self.singles) {
+            return InsertOutcome::Duplicate;
+        }
+        self.singles.union_with(members);
+        self.attesters.union_with(members);
+        self.singles_signature.add_aggregate(sum);
+        InsertOutcome::Inserted
+    }
+
     /// An aggregate whose committee members outside the singles fit inside a
     /// held one's is dropped as covered. In theory it could still pack beside
     /// an aggregate that overlaps the larger one; that trade keeps the pool

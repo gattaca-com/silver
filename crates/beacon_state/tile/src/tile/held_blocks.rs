@@ -83,6 +83,10 @@ impl OrphanPool {
         true
     }
 
+    fn holds(&self, block_root: &B256) -> bool {
+        self.by_parent.values().flatten().any(|orphan| orphan.block_root == *block_root)
+    }
+
     pub(super) fn take(&mut self, parent_root: &B256) -> Vec<Orphan> {
         self.by_parent.remove(parent_root).unwrap_or_default()
     }
@@ -162,6 +166,14 @@ impl HeldBlocks {
 
     pub(super) fn is_staged(&self, block_root: &B256) -> bool {
         self.staged.contains_key(block_root)
+    }
+
+    /// Whether the block waits here on a dependency, so fetching it is waste.
+    pub(super) fn holds(&self, block_root: &B256) -> bool {
+        self.staged.contains_key(block_root) ||
+            self.available.contains_key(block_root) ||
+            self.orphans.holds(block_root) ||
+            self.payload_orphans.holds(block_root)
     }
 
     pub(super) fn is_available(&self, block_root: &B256) -> bool {

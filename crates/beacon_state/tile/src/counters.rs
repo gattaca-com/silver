@@ -9,9 +9,8 @@ silver_common::declare_counters! {
         // gossip-admission structures at capacity (attestations still
         // accepted and relayed; aggregation/shedding coverage degrades)
         AttestationPoolFull,
-        // Gossip attestation ignored (never relayed): beacon_block_root not
-        // in fork choice — the reprocess-queue gap vs lighthouse, which
-        // parks and replays these.
+        // Gossip vote naming a beacon_block_root not in fork choice; once its
+        // signature verifies it is buffered until the block arrives.
         AttestationUnknownRoot,
         SeenAggregatesFull,
         AttestationRootMemoFull,
@@ -34,5 +33,10 @@ silver_common::declare_counters! {
         // singles it lacks, and its votes we hold no single for.
         SinglesOutsideAggregate,
         AggregateVotesWithoutSingle,
+        // Votes, one per attester, buffered for their block or payload: those
+        // that reached the pool and fork choice, and those lost to a full
+        // buffer, expiry, an evicted shuffling or a failed check.
+        UnknownRootVotesPromoted,
+        UnknownRootVotesDropped,
     }
 }

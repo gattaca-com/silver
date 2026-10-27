@@ -68,8 +68,7 @@ impl BeaconStateTile {
         if !self.held.orphans.park(parent_root, orphan) {
             return false;
         }
-        // A staged parent is already held; its import drains this child.
-        if !self.held.is_staged(&parent_root) {
+        if !self.held.holds(&parent_root) {
             producers.produce(SyncNeed::missing_block(parent_root, block_slot));
         }
         true

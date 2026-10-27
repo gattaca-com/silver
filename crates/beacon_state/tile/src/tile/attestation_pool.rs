@@ -3,28 +3,36 @@ use silver_common::{
     metrics::timed,
     ssz_view::{
         ATTESTATION_FIXED, AttestationDataView, MAX_ATTESTATIONS_ELECTRA, MAX_COMMITTEES_PER_SLOT,
-        MAX_VALIDATORS_PER_COMMITTEE, SINGLE_ATT_SIZE, SingleAttestationView,
+        SINGLE_ATT_SIZE, SingleAttestationView,
     },
 };
 
 use crate::{
-    bls::{Signature, SignatureSum, VerifiedSingleAttestation},
+    bls::{AggregateSignature, Signature, SignatureSum, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
-    merkle,
 };
 
 mod committee_attestations;
 mod committee_bits;
 mod committee_store;
 mod selection;
+mod unknown_root_votes;
 mod vote_candidates;
 
+pub(super) use committee_bits::Participants;
 use committee_bits::{CommitteeBits, MAX_COMMITTEE_MEMBERS};
 use committee_store::{CommitteeId, CommitteeStore};
 use selection::{CommitteeAttestation, Selection};
+pub(super) use unknown_root_votes::UnknownRootVotes;
 use vote_candidates::{MAX_CANDIDATES, RETAINED_SLOTS, VoteCandidate, VoteCandidates};
 
 const MAX_COMMITTEE_CANDIDATES: usize = MAX_CANDIDATES * MAX_COMMITTEES_PER_SLOT;
+/// The 16 aggregators each committee expects across the 65-slot window,
+/// with twofold headroom.
+const MAX_POOLED_AGGREGATES: usize = 1 << 17;
+/// Singles stay in the slab only for the current and previous slot: on all 64
+/// subnets, ~500 per committee a slot is ~64k, with twofold headroom.
+const MAX_POOLED_SINGLES: usize = 1 << 17;
 /// The longest SSZ list `pack` writes: every attestation over every
 /// committee of a slot at full size, with its offset.
 const MAX_PACKED_LEN: usize = MAX_ATTESTATIONS_ELECTRA *
@@ -43,7 +51,7 @@ pub(super) enum InsertOutcome {
 }
 
 pub(super) struct AttestationPool {
-    candidates: VoteCandidates,
+    candidates: VoteCandidates<RETAINED_SLOTS>,
     store: CommitteeStore,
     selection: Selection,
     /// Committees of slots below hold their singles collapsed.
@@ -54,7 +62,11 @@ impl AttestationPool {
     pub(super) fn new() -> Self {
         Self {
             candidates: VoteCandidates::new(),
-            store: CommitteeStore::new(MAX_COMMITTEE_CANDIDATES),
+            store: CommitteeStore::new(
+                MAX_COMMITTEE_CANDIDATES,
+                MAX_POOLED_AGGREGATES,
+                MAX_POOLED_SINGLES,
+            ),
             selection: Selection::new(
                 MAX_CANDIDATES,
                 MAX_COMMITTEE_CANDIDATES,
@@ -72,14 +84,11 @@ impl AttestationPool {
         committee_len: usize,
         verified: &VerifiedSingleAttestation,
     ) -> InsertOutcome {
-        if committee_position >= committee_len || committee_len > MAX_VALIDATORS_PER_COMMITTEE {
-            return InsertOutcome::Invalid;
-        }
-        if committee_len > MAX_COMMITTEE_MEMBERS {
-            return InsertOutcome::Full;
-        }
-        let mut participants = CommitteeBits::EMPTY;
-        participants.insert(committee_position);
+        let participants =
+            match CommitteeBits::new(Participants::Single(committee_position), committee_len) {
+                Ok(participants) => participants,
+                Err(outcome) => return outcome,
+            };
         self.insert(
             SingleAttestationView::data(att),
             SingleAttestationView::committee_index(att),
@@ -100,16 +109,11 @@ impl AttestationPool {
         aggregation_bits: &[u8],
         signature: &Signature,
     ) -> InsertOutcome {
-        if committee_len > MAX_VALIDATORS_PER_COMMITTEE ||
-            aggregation_bits.len() != committee_len / 8 + 1 ||
-            merkle::bitlist_len(aggregation_bits) != committee_len
-        {
-            return InsertOutcome::Invalid;
-        }
-        if committee_len > MAX_COMMITTEE_MEMBERS {
-            return InsertOutcome::Full;
-        }
-        let participants = CommitteeBits::from_participants(aggregation_bits, committee_len);
+        let participants =
+            match CommitteeBits::new(Participants::Aggregate(aggregation_bits), committee_len) {
+                Ok(participants) => participants,
+                Err(outcome) => return outcome,
+            };
         if let Some((outside, without_single)) =
             self.against_singles(data.slot(), committee_index, data_root, &participants)
         {
@@ -150,19 +154,45 @@ impl AttestationPool {
     ) -> InsertOutcome {
         debug_assert!(signature.subgroup_check());
         debug_assert!(committee_index < MAX_COMMITTEES_PER_SLOT as u64);
-        let candidate = match self.candidates.find_or_add(data, data_root) {
-            Ok(candidate) => candidate,
-            Err(outcome) => return outcome,
-        };
-
-        let index = committee_index as usize;
-        let committee = CommitteeId::new(candidate, index);
-        if self.candidates[candidate].open(index) {
-            self.store.open(committee, committee_len, data.slot() < self.collapse_floor);
-        } else if self.store.committee_len(committee) != committee_len {
-            return InsertOutcome::Invalid;
+        let collapsed = data.slot() < self.collapse_floor;
+        match self.candidates.committee(
+            &mut self.store,
+            data,
+            data_root,
+            committee_index as usize,
+            committee_len,
+            collapsed,
+        ) {
+            Ok(committee) => self.store.insert(committee, participants, signature),
+            Err(outcome) => outcome,
         }
-        self.store.insert(committee, participants, signature)
+    }
+
+    /// Singles known only as their signature sum; their committee collapses
+    /// to hold them.
+    fn insert_singles_sum(
+        &mut self,
+        data: AttestationDataView,
+        committee_index: usize,
+        data_root: B256,
+        committee_len: usize,
+        singles: &CommitteeBits,
+        sum: &AggregateSignature,
+    ) -> InsertOutcome {
+        match self.candidates.committee(
+            &mut self.store,
+            data,
+            data_root,
+            committee_index,
+            committee_len,
+            true,
+        ) {
+            Ok(committee) => {
+                self.store.collapse(committee);
+                self.store.add_singles_sum(committee, singles, sum)
+            }
+            Err(outcome) => outcome,
+        }
     }
 
     /// Fills `out` with the SSZ list of up to `MAX_ATTESTATIONS_ELECTRA`

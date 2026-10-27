@@ -247,7 +247,10 @@ impl CommitteeSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bls::Signature;
+    use crate::{
+        bls::Signature,
+        tile::attestation_pool::{MAX_POOLED_AGGREGATES, MAX_POOLED_SINGLES},
+    };
 
     const BLANK_SIGNATURE: Signature = unsafe { std::mem::zeroed() };
 
@@ -275,7 +278,11 @@ mod tests {
     impl Pool {
         fn new() -> Self {
             Self {
-                store: CommitteeStore::new(16 * MAX_COMMITTEES_PER_SLOT),
+                store: CommitteeStore::new(
+                    16 * MAX_COMMITTEES_PER_SLOT,
+                    MAX_POOLED_AGGREGATES,
+                    MAX_POOLED_SINGLES,
+                ),
                 committees: Vec::new(),
             }
         }

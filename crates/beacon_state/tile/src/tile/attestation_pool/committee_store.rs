@@ -7,14 +7,7 @@ use super::{
     committee_bits::CommitteeBits,
     selection::{CommitteeAttestation, MAX_AGGREGATES},
 };
-use crate::bls::{Signature, SignatureSum};
-
-/// The 16 aggregators each committee expects across the 65-slot window,
-/// with twofold headroom.
-const MAX_POOLED_AGGREGATES: usize = 1 << 17;
-/// Singles stay in the slab only for the current and previous slot: on all 64
-/// subnets, ~500 per committee a slot is ~64k, with twofold headroom.
-const MAX_POOLED_SINGLES: usize = 1 << 17;
+use crate::bls::{AggregateSignature, Signature, SignatureSum};
 
 /// A vote candidate's committee `i` has id
 /// `candidate * MAX_COMMITTEES_PER_SLOT + i`.
@@ -30,6 +23,10 @@ impl CommitteeId {
     pub(super) fn index(self) -> usize {
         self.0 as usize % MAX_COMMITTEES_PER_SLOT
     }
+
+    pub(super) fn candidate(self) -> usize {
+        self.0 as usize / MAX_COMMITTEES_PER_SLOT
+    }
 }
 
 /// Every committee's verified attestations, in slabs sized once.
@@ -40,12 +37,12 @@ pub(super) struct CommitteeStore {
 }
 
 impl CommitteeStore {
-    pub(super) fn new(max_committees: usize) -> Self {
+    pub(super) fn new(max_committees: usize, max_aggregates: usize, max_singles: usize) -> Self {
         debug_assert!(max_committees <= u16::MAX as usize);
         Self {
             attestations: vec![CommitteeAttestations::EMPTY; max_committees].into_boxed_slice(),
-            aggregates: Slab::with_capacity(MAX_POOLED_AGGREGATES),
-            singles: Slab::with_capacity(MAX_POOLED_SINGLES),
+            aggregates: Slab::with_capacity(max_aggregates),
+            singles: Slab::with_capacity(max_singles),
         }
     }
 
@@ -101,6 +98,29 @@ impl CommitteeStore {
 
     pub(super) fn singles(&self, id: CommitteeId) -> &CommitteeBits {
         &self.committee(id).singles
+    }
+
+    pub(super) fn singles_sum(&self, id: CommitteeId) -> &AggregateSignature {
+        &self.committee(id).singles_signature
+    }
+
+    pub(super) fn add_singles_sum(
+        &mut self,
+        id: CommitteeId,
+        singles: &CommitteeBits,
+        sum: &AggregateSignature,
+    ) -> InsertOutcome {
+        self.attestations[id.0 as usize].add_singles_sum(singles, sum)
+    }
+
+    pub(super) fn aggregate_entries(
+        &self,
+        id: CommitteeId,
+    ) -> impl Iterator<Item = (&CommitteeBits, &Signature)> + '_ {
+        self.committee(id).aggregates().map(|(_, i)| {
+            let aggregate = &self.aggregates[i as usize];
+            (&aggregate.bits, &aggregate.signature)
+        })
     }
 
     /// Its aggregates' positions, ascending, with their bits.

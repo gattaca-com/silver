@@ -261,6 +261,7 @@ impl BeaconStateTile {
                 .is_some_and(|idx| self.fork_choice.node(idx).payload.is_gloas),
         }));
 
+        self.promote_unknown_root_votes(producers);
         self.drain_pending_envelope(block_root, slot, producers);
         self.publish_status(producers);
         self.maybe_finalize();

@@ -2862,8 +2862,11 @@ fn expected_subnet(tile: &BeaconStateTile, slot: Slot, ci: usize) -> u64 {
 }
 
 fn build_agg_for_vi0(tile: &BeaconStateTile) -> Vec<u8> {
+    build_agg_for_vi0_voting(tile, tile.head_block_root())
+}
+
+fn build_agg_for_vi0_voting(tile: &BeaconStateTile, beacon_block_root: B256) -> Vec<u8> {
     let imm = seed_immutable(tile);
-    let beacon_block_root = tile.head_block_root();
     let target_root = tile.head_block_root();
     let (slot, ci, pos, csize) = find_committee_for_vi0(tile);
     test_signing::sign_aggregate_and_proof(
@@ -3233,6 +3236,7 @@ fn ignored_local_attestation_emits_a_terminal_verdict() {
     // penalty, but a local request still needs a terminal result.
     let (mut unknown_root, subnet) = batched_att(&tile, 0, 0);
     unknown_root[32..64].fill(0xAA);
+    test_signing::resign_single_attestation(0, &mut unknown_root, &seed_immutable(&tile));
     let mut message = gossip_att_msg(&mut gp, &unknown_root, subnet);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x55; 20] };
@@ -3323,6 +3327,17 @@ fn vote_on_an_unseen_payload_requests_the_envelope() {
     let (mut payload_present, subnet) = batched_att(&tile, 0, 0);
     payload_present[24] = 1;
     payload_present[32..64].copy_from_slice(&unseen);
+    let fork_version =
+        tile.spec.fork_version_at(SingleAttestationView::target_epoch(&payload_present));
+    let domain = bls::compute_domain(
+        bls::DOMAIN_BEACON_ATTESTER,
+        fork_version,
+        &seed_immutable(&tile).genesis_validators_root,
+    );
+    let data_root =
+        ssz_hash::hash_attestation_data(SingleAttestationView::data(&payload_present).as_bytes());
+    payload_present[144..240]
+        .copy_from_slice(&test_signing::sign(0, &bls::compute_signing_root(&data_root, &domain)));
     let mut message = gossip_att_msg(&mut gp, &payload_present, subnet);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x88; 20] };
@@ -3356,8 +3371,7 @@ fn ignored_local_aggregate_emits_a_terminal_verdict() {
     adapter.consume(|_: BeaconStateEvent, _| {});
     let aggregate = build_agg_for_vi0(&tile);
 
-    let mut unknown_root = aggregate.clone();
-    unknown_root[228..260].fill(0xAA);
+    let unknown_root = build_agg_for_vi0_voting(&tile, [0xAA; 32]);
     let mut message = gossip_msg(&mut gp, &unknown_root, GossipTopic::BeaconAggregateAndProof);
     message.stream_id = LOCAL_GOSSIP_STREAM_ID;
     message.msg_hash = MessageId { id: [0x55; 20] };
@@ -3791,7 +3805,7 @@ fn ptc_vote_records_every_matching_committee_position() {
     assert_eq!(non_block_relays(&mut adapter), [GossipTopic::PayloadAttestationMessage]);
 }
 
-/// The vote itself is dropped; the block it names is fetched by root.
+/// The vote is buffered; the block it names is fetched by root.
 #[test]
 fn single_att_unknown_block_requests_it() {
     let mut tile = make_tile_at_wall_slot(31);
@@ -3814,6 +3828,65 @@ fn single_att_unknown_block_requests_it() {
         tile.handle_attestation(&buf, subnet),
         Feedback::Request(SyncNeed::missing_block(unknown, slot))
     );
+}
+
+/// Later votes for the same data join the first one's buffer candidate
+/// without asking for the block again.
+#[test]
+fn unknown_block_requested_once_per_vote_data() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    tile.unknown_root_votes.on_slot(slot);
+    let peer = (1..128)
+        .find(|&vi| {
+            let (peer_slot, peer_ci, _, _) = find_committee_for(&tile, vi);
+            peer_slot == slot && peer_ci == ci
+        })
+        .expect("vi0's committee has another member");
+    let subnet = expected_subnet(&tile, slot, ci);
+    let unknown = [0xAA; 32];
+    let imm = seed_immutable(&tile);
+    let [first, second] = [0, peer].map(|vi| {
+        test_signing::sign_single_attestation(
+            vi as usize % test_signing::PRIVKEY_HEX.len(),
+            vi as u64,
+            ci as u64,
+            slot,
+            unknown,
+            slot / SLOTS_PER_EPOCH,
+            unknown,
+            &imm,
+        )
+    });
+
+    assert_eq!(
+        tile.handle_attestation(&first, subnet),
+        Feedback::Request(SyncNeed::missing_block(unknown, slot))
+    );
+    assert_eq!(tile.handle_attestation(&second, subnet), Feedback::Ignore);
+}
+
+/// The head's committees may not be the unknown block's, so a mismatch
+/// against them is no proof of a bad vote.
+#[test]
+fn single_att_unknown_block_wrong_subnet_ignored() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let unknown = [0xAAu8; 32];
+    let buf = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        unknown,
+        slot / SLOTS_PER_EPOCH,
+        unknown,
+        &seed_immutable(&tile),
+    );
+    assert_eq!(tile.handle_attestation(&buf, (subnet + 1) % 64), Feedback::Ignore);
 }
 
 /// Spec `validate_on_attestation`: a known-block vote whose target does not
@@ -4162,16 +4235,53 @@ fn agg_multi_committee_bits_rejected() {
 
 #[test]
 fn agg_unknown_block_root_requests_the_block() {
-    let mut tile = make_tile();
-    seed_tile(&mut tile, 4, 0);
-    let mut buf = empty_aggregate();
-    buf[436] = 0b0000_0001; // single committee bit
-    buf[228] = 0xFF; // beacon_block_root not in fork choice
-    let block_root = buf[228..260].try_into().unwrap();
+    let (mut tile, _gossip, _rpc) = make_tile_with_gossip(31, BeaconState::empty_test(0));
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, _, _, _) = find_committee_for_vi0(&tile);
+    tile.unknown_root_votes.on_slot(slot);
+    let unknown = [0xAA; 32];
+    let aggregate = build_agg_for_vi0_voting(&tile, unknown);
     assert_eq!(
-        tile.handle_aggregate_and_proof(&buf),
-        Feedback::Request(SyncNeed::missing_block(block_root, 0))
+        tile.handle_aggregate_and_proof(&aggregate),
+        Feedback::Request(SyncNeed::missing_block(unknown, slot))
     );
+}
+
+/// The vote is held, not pooled or counted, until its block imports; then it
+/// lands in both.
+#[test]
+fn unknown_root_vote_reaches_pool_and_fork_choice_once_its_block_imports() {
+    let mut tile = make_tile_at_wall_slot(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let (slot, ci, _, _) = find_committee_for_vi0(&tile);
+    tile.unknown_root_votes.on_slot(slot);
+    let subnet = expected_subnet(&tile, slot, ci);
+    let late = [0x42; 32];
+    let vote = test_signing::sign_single_attestation(
+        0,
+        0,
+        ci as u64,
+        slot,
+        late,
+        slot / SLOTS_PER_EPOCH,
+        tile.head_block_root(),
+        &seed_immutable(&tile),
+    );
+    let data_root = ssz_hash::hash_attestation_data(SingleAttestationView::data(&vote).as_bytes());
+
+    assert_eq!(
+        tile.handle_attestation(&vote, subnet),
+        Feedback::Request(SyncNeed::missing_block(late, slot))
+    );
+    assert_eq!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root), None);
+
+    tile.fork_choice.on_block(BlockImport { slot, ..anchor_child(late, tile.last_applied) });
+    let (_spine, mut adapter) = spine_adapter(&tile);
+    tile.promote_unknown_root_votes(&mut adapter.producers);
+
+    assert!(tile.attestation_pool.aggregate_ssz(slot, ci as u64, data_root).is_some());
+    assert_eq!(voted_weight(&mut tile, late), MAX_EFFECTIVE_BALANCE);
+    assert_eq!(tile.unknown_root_votes.next_with_known_block(0, |_| true), None, "promoted once");
 }
 
 #[test]

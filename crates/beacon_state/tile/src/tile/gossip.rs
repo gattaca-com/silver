@@ -4,7 +4,8 @@ use flux::spine::SpineProducers;
 use silver_beacon_state_data::{
     B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
-    SYNC_SUBCOMMITTEE_SIZE, Slot, StateId, StateReadView, SyncSubcommittee, gloas::PTC_SIZE,
+    SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
+    gloas::PTC_SIZE,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
@@ -27,8 +28,11 @@ use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers,
-    attestation_pool::InsertOutcome, fork_data_roots::ForkDataRoots, held_blocks::BlockSourceMsg,
-    seen_aggregates::Coverage, seen_proposer_preferences::ProposerPreferences,
+    attestation_pool::{InsertOutcome, Participants},
+    fork_data_roots::ForkDataRoots,
+    held_blocks::BlockSourceMsg,
+    seen_aggregates::Coverage,
+    seen_proposer_preferences::ProposerPreferences,
     shuffling_cache::ShufflingRequest,
 };
 use crate::{
@@ -58,6 +62,9 @@ pub(super) struct PreparedAttestation {
     data_root: B256,
     attester: u32,
     target: stf::VoteTarget,
+    attested: AttestedBlock,
+    /// The head shuffling the committee position was read from.
+    shuffling: ShufflingId,
 }
 
 impl PreparedAttestation {
@@ -150,6 +157,37 @@ impl PreparedVote {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AttestedBlock {
+    Ready {
+        payload_present: bool,
+    },
+    /// Imported, but the payload the vote names is not yet valid.
+    AwaitingPayload,
+    Unknown,
+}
+
+enum Promotion {
+    Promoted,
+    Waiting,
+    Dropped,
+}
+
+impl AttestedBlock {
+    fn is_ready(self) -> bool {
+        matches!(self, Self::Ready { .. })
+    }
+
+    /// A failed committee check. Committees come from the head's shuffling,
+    /// which an unknown block may not share.
+    fn committee_reject(self, reason: &'static str) -> Feedback {
+        match self {
+            Self::Unknown => Feedback::Ignore,
+            Self::Ready { .. } | Self::AwaitingPayload => Feedback::reject(reason),
+        }
+    }
+}
+
 pub(super) enum EnvelopeCheck {
     Ready { block_root: B256, state_id: StateId },
     AwaitBlock(B256),
@@ -175,8 +213,7 @@ impl BeaconStateTile {
         if !bls::verify_one_checked(&prepared.pubkey, &signature, &prepared.signing_root) {
             return Feedback::reject("attestation bad signature");
         }
-        self.commit_attestation(&prepared, &signature);
-        Feedback::Accept
+        self.commit_attestation(&prepared, &signature)
     }
 
     /// Everything up to (but excluding) the signature check and the pairing:
@@ -218,12 +255,6 @@ impl BeaconStateTile {
         if !validate::attestation_index_ok(is_gloas, data_index) {
             return Err(Feedback::reject("attestation data index"));
         }
-        self.validate_attestation_target(SingleAttestationView::data(buf))?;
-        let payload_present = if is_gloas {
-            self.gloas_payload_present(&block_root, att_slot, data_index)?
-        } else {
-            false
-        };
 
         let canon_id = self.epoch_start_state(self.canonical_state_id(), att_slot);
         let att_epoch = att_slot / SLOTS_PER_EPOCH;
@@ -232,12 +263,11 @@ impl BeaconStateTile {
         let Some(request) = ShufflingRequest::new(&view, att_epoch) else {
             return Err(Feedback::Ignore);
         };
-        if !self.fork_choice.shares_shuffling(&block_root, request.id()) {
-            return Err(Feedback::Ignore);
-        }
+        let shuffling_id = request.id();
+        let attested = self.check_attested_block(SingleAttestationView::data(buf), shuffling_id)?;
         let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
-            return Err(Feedback::reject("attestation committee index out of range"));
+            return Err(attested.committee_reject("attestation committee index out of range"));
         }
         if subnet !=
             compute_subnet_for_attestation(
@@ -246,12 +276,12 @@ impl BeaconStateTile {
                 committee_index as u64,
             )
         {
-            return Err(Feedback::reject("attestation wrong subnet"));
+            return Err(attested.committee_reject("attestation wrong subnet"));
         }
         let committee = shuffling.committee(att_slot, committee_index);
         let Some(committee_position) = committee.iter().position(|&v| v == attester_index as u32)
         else {
-            return Err(Feedback::reject("attester not in committee"));
+            return Err(attested.committee_reject("attester not in committee"));
         };
         let committee_len = committee.len();
         if attester_index >= view.validators.count() {
@@ -277,12 +307,38 @@ impl BeaconStateTile {
                 block_root,
                 target_epoch,
                 attestation_slot: att_slot,
-                payload_present,
+                payload_present: attested == AttestedBlock::Ready { payload_present: true },
             },
+            attested,
+            shuffling: shuffling_id,
         })
     }
 
-    fn commit_attestation(&mut self, p: &PreparedAttestation, signature: &CheckedSignature) {
+    /// A vote waiting for its block or payload is buffered until it arrives.
+    fn commit_attestation(
+        &mut self,
+        p: &PreparedAttestation,
+        signature: &CheckedSignature,
+    ) -> Feedback {
+        self.seen_attesters.mark(p.target.target_epoch, p.attester as usize);
+        if !p.attested.is_ready() {
+            let new_data = self.unknown_root_votes.insert(
+                SingleAttestationView::data(&p.buf),
+                SingleAttestationView::committee_index(&p.buf),
+                p.data_root,
+                p.committee_len,
+                Participants::Single(p.committee_position),
+                p.shuffling,
+                signature.as_sig(),
+            );
+            return self.buffered_vote_feedback(
+                new_data,
+                p.attested,
+                &p.target.block_root,
+                p.target.attestation_slot,
+            );
+        }
+
         let verified =
             VerifiedSingleAttestation { data_root: p.data_root, signature: *signature.as_sig() };
         let outcome = self.attestation_pool.insert_verified(
@@ -309,8 +365,119 @@ impl BeaconStateTile {
             n,
             slot,
         );
+        Feedback::Accept
+    }
 
-        self.seen_attesters.mark(p.target.target_epoch, p.attester as usize);
+    fn commit_vote(&mut self, p: &PreparedVote, signature: &CheckedSignature) -> Feedback {
+        match p {
+            PreparedVote::Attestation(p) => self.commit_attestation(p, signature),
+            PreparedVote::SyncMessage(p) => {
+                self.commit_sync_message(p, signature);
+                Feedback::Accept
+            }
+            PreparedVote::Ptc(p) => {
+                self.commit_ptc(p, signature);
+                Feedback::Accept
+            }
+        }
+    }
+
+    /// Only the first vote buffered for its data asks for what it waits on.
+    fn buffered_vote_feedback(
+        &self,
+        new_data: bool,
+        attested: AttestedBlock,
+        block_root: &B256,
+        att_slot: Slot,
+    ) -> Feedback {
+        match self.awaited_need(attested, block_root, att_slot) {
+            Some(need) if new_data => Feedback::Request(need),
+            _ => Feedback::Ignore,
+        }
+    }
+
+    /// What a vote waiting on `attested` needs fetched; `None` once it is
+    /// held or verified here.
+    fn awaited_need(
+        &self,
+        attested: AttestedBlock,
+        block_root: &B256,
+        att_slot: Slot,
+    ) -> Option<SyncNeed> {
+        match attested {
+            AttestedBlock::Ready { .. } => None,
+            AttestedBlock::Unknown => (!self.held.holds(block_root))
+                .then(|| SyncNeed::missing_block(*block_root, att_slot)),
+            AttestedBlock::AwaitingPayload => (!self.fork_choice.is_payload_verified(block_root) &&
+                !self.pending_envelopes.holds(block_root))
+            .then(|| SyncNeed::missing_envelope(*block_root, att_slot)),
+        }
+    }
+
+    /// Buffered votes whose block is known take the checks that needed it,
+    /// then count as if they had just arrived. Those whose payload is not yet
+    /// valid stay buffered.
+    pub(super) fn promote_unknown_root_votes(&mut self, producers: &mut Producers) {
+        let mut from = 0;
+        while let Some(id) = self.unknown_root_votes.next_with_known_block(from, |block_root| {
+            self.fork_choice.find_node_idx(block_root).is_some()
+        }) {
+            from = id + 1;
+            let counter = match self.promote_buffered_candidate(id, producers) {
+                Promotion::Waiting => continue,
+                Promotion::Promoted => BeaconStateCounters::UnknownRootVotesPromoted,
+                Promotion::Dropped => BeaconStateCounters::UnknownRootVotesDropped,
+            };
+            counter.add(self.unknown_root_votes.vote_count(id));
+            self.unknown_root_votes.close(id);
+        }
+    }
+
+    fn promote_buffered_candidate(&mut self, id: usize, producers: &mut Producers) -> Promotion {
+        let data = self.unknown_root_votes.data(id);
+        let shuffling_id = self.unknown_root_votes.shuffling(id);
+        let att_slot = data.slot();
+        let block_root = *data.beacon_block_root();
+        let payload_present = match self.check_attested_block(data, shuffling_id) {
+            Ok(AttestedBlock::Ready { payload_present }) => payload_present,
+            Ok(attested) => {
+                if let Some(need) = self.awaited_need(attested, &block_root, att_slot) {
+                    producers.produce(need);
+                }
+                return Promotion::Waiting;
+            }
+            Err(_) => return Promotion::Dropped,
+        };
+
+        let Some(shuffling) = self.shuffling_cache.find(shuffling_id) else {
+            return Promotion::Dropped;
+        };
+        let validator_count = self.head_validator_count();
+
+        if !self.unknown_root_votes.promote_into(id, &mut self.attestation_pool) {
+            BeaconStateCounters::AttestationPoolFull.inc();
+        }
+
+        let target = stf::VoteTarget {
+            block_root,
+            target_epoch: data.target_epoch(),
+            attestation_slot: att_slot,
+            payload_present,
+        };
+        let current_slot = self.ticker.current_slot();
+        for (index, positions) in self.unknown_root_votes.committees(id) {
+            let members = shuffling.committee(att_slot, index);
+            let attesters = &mut self.stf_scratch.active;
+            attesters.clear();
+            attesters.extend(positions.map(|position| members[position]));
+            self.fork_choice.record_or_defer_votes(
+                target,
+                attesters,
+                validator_count,
+                current_slot,
+            );
+        }
+        Promotion::Promoted
     }
 
     pub(super) fn defer_vote(&mut self, vote: NewGossipMsg, producers: &mut Producers) {
@@ -356,19 +523,22 @@ impl BeaconStateTile {
             }
             let (pk, root) = p.pubkey_and_root();
             let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
-            if valid {
-                match &p {
-                    PreparedVote::Attestation(p) => self.commit_attestation(p, &sig),
-                    PreparedVote::SyncMessage(p) => self.commit_sync_message(p, &sig),
-                    PreparedVote::Ptc(p) => {
-                        self.commit_ptc(p, &sig);
-                        committed_ptc = true;
-                    }
-                }
-                Self::relay_gossip(&m, producers);
-                accepted = true;
-            } else {
+            if !valid {
                 self.reject_gossip(&m, p.message(), "vote bad signature", producers);
+                continue;
+            }
+            committed_ptc |= matches!(p, PreparedVote::Ptc(_));
+            match self.commit_vote(&p, &sig) {
+                Feedback::Accept => {
+                    Self::relay_gossip(&m, producers);
+                    accepted = true;
+                }
+                feedback => {
+                    if let Feedback::Request(need) = feedback {
+                        producers.produce(need);
+                    }
+                    Self::local_verdict(&m, feedback, producers);
+                }
             }
         }
 
@@ -416,10 +586,6 @@ impl BeaconStateTile {
                 Ok(p) => self.votes.prepared.push((BatchedVote { vote, pin }, p)),
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
-                }
-                Err(feedback @ Feedback::Request(need)) => {
-                    producers.produce(need);
-                    Self::local_verdict(&vote, feedback, producers);
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
             }
@@ -949,8 +1115,10 @@ impl BeaconStateTile {
         use silver_common::ssz_view::AttestationView;
 
         let data = AttestationView::data(att);
-        if let Err(f) = self.validate_attestation_target(data) {
-            return f;
+        match self.validate_attestation_target(data) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Feedback::Ignore,
+            Err(f) => return f,
         }
 
         let canon_id = self.epoch_start_state(self.canonical_state_id(), data.slot());
@@ -1031,19 +1199,6 @@ impl BeaconStateTile {
             return Feedback::AlreadySeen;
         }
 
-        if let Err(f) = self.validate_attestation_target(parsed.agg_data) {
-            return f;
-        }
-        if is_gloas {
-            if let Err(f) = self.gloas_payload_present(
-                parsed.agg_data.beacon_block_root(),
-                parsed.agg_slot,
-                parsed.agg_data_index,
-            ) {
-                return f;
-            }
-        }
-
         let canon_id = self.epoch_start_state(self.canonical_state_id(), parsed.agg_slot);
         let view = self.state.read_view(canon_id);
         let count = view.validators.count();
@@ -1054,31 +1209,33 @@ impl BeaconStateTile {
         let Some(request) = ShufflingRequest::new(&view, parsed.att_epoch) else {
             return Feedback::Ignore;
         };
-        if !self.fork_choice.shares_shuffling(parsed.agg_data.beacon_block_root(), request.id()) {
-            return Feedback::Ignore;
-        }
+        let shuffling_id = request.id();
+        let attested = match self.check_attested_block(parsed.agg_data, shuffling_id) {
+            Ok(attested) => attested,
+            Err(f) => return f,
+        };
         let shuffling = self.shuffling_cache.get(request);
         if committee_index >= shuffling.committees_per_slot {
-            return Feedback::reject("aggregate committee index out of range");
+            return attested.committee_reject("aggregate committee index out of range");
         }
         let committee = shuffling.committee(parsed.agg_slot, committee_index);
         if !committee.contains(&(parsed.aggregator_index as u32)) {
-            return Feedback::reject("aggregator not in committee");
+            return attested.committee_reject("aggregator not in committee");
         }
         let committee_len = committee.len();
 
         let Ok(committees) = stf::AttestedCommittees::new(parsed.aggregate_bytes, &shuffling)
         else {
-            return Feedback::reject("aggregate committees invalid");
+            return attested.committee_reject("aggregate committees invalid");
         };
         if committees.attesters_into(count, &mut self.stf_scratch.active).is_err() ||
             self.stf_scratch.active.is_empty()
         {
-            return Feedback::reject("aggregate has no attesters");
+            return attested.committee_reject("aggregate has no attesters");
         }
 
         if !is_aggregator(committee_len, parsed.selection_proof) {
-            return Feedback::reject("aggregator not selected");
+            return attested.committee_reject("aggregator not selected");
         }
 
         let Some(signature) = Self::verify_aggregate_and_proof_sigs(
@@ -1090,8 +1247,32 @@ impl BeaconStateTile {
             &mut self.fork_data_roots,
             &mut self.sig_batch,
         ) else {
-            return Feedback::reject("aggregate bad signature");
+            return attested.committee_reject("aggregate bad signature");
         };
+        self.seen_aggregates.record(
+            parsed.agg_slot,
+            committee_index as u64,
+            data_root,
+            parsed.aggregation_bits,
+        );
+        self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
+        if !attested.is_ready() {
+            let new_data = self.unknown_root_votes.insert(
+                parsed.agg_data,
+                committee_index as u64,
+                data_root,
+                committee_len,
+                Participants::Aggregate(parsed.aggregation_bits),
+                shuffling_id,
+                &signature,
+            );
+            return self.buffered_vote_feedback(
+                new_data,
+                attested,
+                parsed.agg_data.beacon_block_root(),
+                parsed.agg_slot,
+            );
+        }
         let outcome = self.attestation_pool.insert_verified_aggregate(
             parsed.agg_data,
             committee_index as u64,
@@ -1114,13 +1295,6 @@ impl BeaconStateTile {
         if coverage != Coverage::ByUnion {
             self.record_attester_votes(parsed.agg_data, count);
         }
-        self.seen_aggregates.record(
-            parsed.agg_slot,
-            committee_index as u64,
-            data_root,
-            parsed.aggregation_bits,
-        );
-        self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
         Feedback::Accept
     }
 
@@ -1263,32 +1437,34 @@ impl BeaconStateTile {
         );
     }
 
-    fn gloas_payload_present(
-        &mut self,
-        block_root: &B256,
-        att_slot: Slot,
-        data_index: u64,
-    ) -> Result<bool, Feedback> {
-        if data_index != 1 {
-            return Ok(false);
-        }
-        let Some(idx) = self.fork_choice.find_node_idx(block_root) else {
-            return Err(Feedback::Ignore);
+    /// The vote's checks that need its block, its committees read from
+    /// `shuffling`.
+    fn check_attested_block(
+        &self,
+        data: AttestationDataView<'_>,
+        shuffling: ShufflingId,
+    ) -> Result<AttestedBlock, Feedback> {
+        let Some(idx) = self.validate_attestation_target(data)? else {
+            return Ok(AttestedBlock::Unknown);
         };
-        if self.fork_choice.node(idx).slot == att_slot {
+        let block_root = data.beacon_block_root();
+        if !self.fork_choice.shares_shuffling(block_root, shuffling) {
+            return Err(Feedback::Ignore);
+        }
+        if !self.spec.is_gloas_at(data.target_epoch()) || data.index() != 1 {
+            return Ok(AttestedBlock::Ready { payload_present: false });
+        }
+        if self.fork_choice.node(idx).slot == data.slot() {
             return Err(Feedback::reject("payload present for same-slot block"));
         }
         if !self.fork_choice.is_payload_verified(block_root) {
-            if self.pending_envelopes.holds(block_root) {
-                return Err(Feedback::Ignore);
-            }
-            return Err(Feedback::Request(SyncNeed::missing_envelope(*block_root, att_slot)));
+            return Ok(AttestedBlock::AwaitingPayload);
         }
         // Spec `verify_attestation_payload_status`: the EL's verdict on the
         // attested payload decides, an outstanding one defers the vote.
         match self.fork_choice.node(idx).execution_status {
-            ExecutionStatus::Valid => Ok(true),
-            ExecutionStatus::Optimistic => Err(Feedback::Ignore),
+            ExecutionStatus::Valid => Ok(AttestedBlock::Ready { payload_present: true }),
+            ExecutionStatus::Optimistic => Ok(AttestedBlock::AwaitingPayload),
             ExecutionStatus::Invalid => Err(Feedback::reject("attested payload invalid")),
         }
     }
@@ -1323,19 +1499,22 @@ impl BeaconStateTile {
         self.ticker.latest_slot_with_disparity(MAXIMUM_GOSSIP_CLOCK_DISPARITY) / SLOTS_PER_EPOCH
     }
 
-    fn validate_attestation_target(&self, data: AttestationDataView<'_>) -> Result<(), Feedback> {
+    /// The attested block's fork-choice index; `None` while it is unknown.
+    fn validate_attestation_target(
+        &self,
+        data: AttestationDataView<'_>,
+    ) -> Result<Option<usize>, Feedback> {
         let att_slot = data.slot();
         let target_epoch = data.target_epoch();
         if target_epoch != att_slot / SLOTS_PER_EPOCH {
             return Err(Feedback::reject("attestation target epoch mismatch"));
         }
-        let block_root = data.beacon_block_root();
-        let Some(idx) = self.fork_choice.find_node_idx(block_root) else {
-            BeaconStateCounters::AttestationUnknownRoot.inc();
-            if self.held.is_staged(block_root) {
+        let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+            if self.held.rejected_reason(data.beacon_block_root()).is_some() {
                 return Err(Feedback::Ignore);
             }
-            return Err(Feedback::Request(SyncNeed::missing_block(*block_root, att_slot)));
+            BeaconStateCounters::AttestationUnknownRoot.inc();
+            return Ok(None);
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
             Some(r) if r == *data.target_root() => {}
@@ -1343,7 +1522,7 @@ impl BeaconStateTile {
             None => return Err(Feedback::Ignore),
         }
         if self.fork_choice.node(idx).slot <= att_slot {
-            Ok(())
+            Ok(Some(idx))
         } else {
             Err(Feedback::reject("attestation block newer than slot"))
         }
@@ -1798,13 +1977,9 @@ impl BeaconStateTile {
         if !bls::verify_one_checked(pk, &sig, root) {
             return Feedback::reject("vote bad signature");
         }
-        match &prepared {
-            PreparedVote::Attestation(p) => self.commit_attestation(p, &sig),
-            PreparedVote::SyncMessage(p) => self.commit_sync_message(p, &sig),
-            PreparedVote::Ptc(p) => self.commit_ptc(p, &sig),
-        }
+        let feedback = self.commit_vote(&prepared, &sig);
         self.recompute_head();
-        Feedback::Accept
+        feedback
     }
 }
 

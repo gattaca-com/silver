@@ -1,14 +1,67 @@
+use silver_common::ssz_view::MAX_VALIDATORS_PER_COMMITTEE;
+
+use super::InsertOutcome;
+use crate::merkle;
+
 /// Below the spec's 2048: with 64 committees a slot, a committee holds
 /// `active validators / 2048` members, so this covers ~2.1M active
 /// validators, over twice mainnet's.
 pub(super) const MAX_COMMITTEE_MEMBERS: usize = 1024;
 const WORDS: usize = MAX_COMMITTEE_MEMBERS / 64;
 
+/// A committee's votes in one attestation.
+#[derive(Clone, Copy)]
+pub(crate) enum Participants<'a> {
+    Single(usize),
+    /// An SSZ bitlist over the committee.
+    Aggregate(&'a [u8]),
+}
+
+impl Participants<'_> {
+    pub(crate) fn count(&self) -> u64 {
+        match self {
+            Self::Single(_) => 1,
+            Self::Aggregate(bits) => {
+                let set: u32 = bits.iter().map(|byte| byte.count_ones()).sum();
+                u64::from(set.saturating_sub(1))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct CommitteeBits([u64; WORDS]);
 
 impl CommitteeBits {
     pub(super) const EMPTY: Self = Self([0; WORDS]);
+
+    pub(super) fn new(
+        participants: Participants,
+        committee_len: usize,
+    ) -> Result<Self, InsertOutcome> {
+        let valid = committee_len <= MAX_VALIDATORS_PER_COMMITTEE &&
+            match participants {
+                Participants::Single(position) => position < committee_len,
+                Participants::Aggregate(bits) => {
+                    bits.len() == committee_len / 8 + 1 &&
+                        merkle::bitlist_len(bits) == committee_len
+                }
+            };
+        if !valid {
+            return Err(InsertOutcome::Invalid);
+        }
+        if committee_len > MAX_COMMITTEE_MEMBERS {
+            return Err(InsertOutcome::Full);
+        }
+        Ok(match participants {
+            Participants::Single(position) => {
+                let mut bits = Self::EMPTY;
+                bits.insert(position);
+                bits
+            }
+            Participants::Aggregate(bits) => Self::from_participants(bits, committee_len),
+        })
+    }
 
     /// `participants` holds the first `committee_len` bits of a bitlist.
     pub(super) fn from_participants(participants: &[u8], committee_len: usize) -> Self {
