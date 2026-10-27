@@ -1,6 +1,6 @@
-use blst::min_pk::PublicKey;
+use blst::min_pk::{PublicKey, SecretKey};
 
-use super::{FinalizedValidators, ValSeed, ValidatorsGroup, validator_hash};
+use super::{FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, validator_hash};
 use crate::{
     B256, Withdrawals,
     merkle::{MerkleStack, hash_concat, hash_fixed_bytes, hash_list, merkleize, uint64_chunk},
@@ -404,4 +404,41 @@ fn transition_survives_pre_fork_winner_finalization() {
     assert_eq!(g.hash_view(live[0]).hash_root(), gloas_reference_root(&gloas_leaves));
     let mut w = g.roll_fresh();
     assert_eq!(w.hash_root(), gloas_reference_root(&gloas_leaves));
+}
+
+/// Compressed keys that decode but fail `KeyValidate`: the point at infinity,
+/// and the curve point with x = 4, which lies outside G1.
+const INVALID_PUBKEYS: [BLSPubkey; 2] = {
+    let mut infinity = [0u8; 48];
+    infinity[0] = 0xc0;
+    let mut outside_g1 = [0u8; 48];
+    outside_g1[0] = 0x80;
+    outside_g1[47] = 4;
+    [infinity, outside_g1]
+};
+
+fn valid_pubkey() -> PublicKey {
+    let mut scalar = [0u8; 32];
+    scalar[31] = 1;
+    SecretKey::from_bytes(&scalar).unwrap().sk_to_pk()
+}
+
+fn registry_ssz(pubkey: BLSPubkey) -> Vec<u8> {
+    let seed = ValSeed { pubkey, ..ValSeed::default() };
+    let mut ssz = Vec::new();
+    FinalizedValidators::with_validators(&[seed]).write_ssz_range(0, 1, &mut ssz).unwrap();
+    ssz
+}
+
+#[test]
+fn try_new_rejects_invalid_record_pubkeys() {
+    assert!(FinalizedValidators::try_new(&registry_ssz(valid_pubkey().compress()), None).is_ok());
+
+    for pubkey in INVALID_PUBKEYS {
+        assert!(PublicKey::from_bytes(&pubkey).is_ok(), "fixture must decode");
+        assert!(matches!(
+            FinalizedValidators::try_new(&registry_ssz(pubkey), None),
+            Err(ValidatorsDecodeError::InvalidPubkey { idx: 0 })
+        ));
+    }
 }

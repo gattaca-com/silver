@@ -458,3 +458,42 @@ fn switch_to_compounding_validator(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use silver_beacon_state_data::{FinalizedValidators, HashFormat, ValidatorsGroup};
+
+    use super::*;
+    use crate::test_signing::{INVALID_PUBKEYS, sign_bls_to_execution_change};
+
+    /// An empty registry skips the credential check, so the change reaches the
+    /// key decode whatever its `from_bls_pubkey`.
+    fn collect(change: &[u8; SIGNED_BLS_CHANGE_SIZE]) -> Result<(), BlsToExecutionChangeError> {
+        let empty = FinalizedValidators::try_new(&[], None).unwrap();
+        let mut validators = ValidatorsGroup::new(empty, HashFormat::Fixed);
+        let validators = validators.roll_fresh();
+        let imm = Immutable::default();
+        collect_sigs_bls_to_execution_changes(
+            &imm,
+            &validators.reader(),
+            change,
+            &mut SigBatch::new(),
+        )
+    }
+
+    #[test]
+    fn bls_to_execution_change_rejects_invalid_from_pubkey() {
+        let valid = sign_bls_to_execution_change(0, 0, &[1; 20], &Immutable::default());
+        assert!(collect(&valid).is_ok());
+
+        for pubkey in INVALID_PUBKEYS {
+            let mut change = valid;
+            change[8..56].copy_from_slice(&pubkey);
+            assert_eq!(SignedBlsToExecutionChangeView::from_bls_pubkey(&change), &pubkey);
+            assert!(matches!(
+                collect(&change),
+                Err(BlsToExecutionChangeError::BadPubkey { from_pubkey }) if from_pubkey == pubkey
+            ));
+        }
+    }
+}
