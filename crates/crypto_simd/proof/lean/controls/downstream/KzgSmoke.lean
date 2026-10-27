@@ -9,7 +9,7 @@ open LeanBlsSimd LeanBlsSimd.Kzg
 
 namespace silver_kzg.Kzg
 
-theorem verify_after_construction [cpu : RuntimeFeatures]
+theorem verify_after_construction [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (input : Input) (hi : input.Representable) :
     ∃ initial verdict next, verify.CellBatchVerifier.new = ok initial ∧
       input.generated initial = ok (verdict, next) ∧ StateInvariant next ∧
@@ -104,7 +104,7 @@ theorem kernel_lincomb_requires_no_blst_law [RuntimeFeatures]
       G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
   exact verify_lincomb_raw_kernel_refinement scratch hroute ps fs hlen hp hf
 
-theorem verifier_preserves_kernel_choices [RuntimeFeatures]
+theorem verifier_preserves_kernel_choices [RuntimeFeatures] [KzgExternals]
     (self next : verify.CellBatchVerifier) (commitments : Slice (Aeneas.Std.Array U8 48#usize))
     (indices : Slice U64) (cells : Slice (Aeneas.Std.Array U8 2048#usize))
     (proofs : Slice (Aeneas.Std.Array U8 48#usize)) (verdict : Bool)

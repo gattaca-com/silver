@@ -1,3 +1,4 @@
+import LeanBlsSimd.Refines.G1Blst
 import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Refines.DecompressG1
 import LeanBlsSimd.Refines.G1WrapperModel
@@ -192,7 +193,7 @@ private theorem stop_loop_of_step [RuntimeFeatures]
       rw [hrv i hi, hv i hi]
       split_ifs <;> first | rfl | omega
 
-theorem uncompress_refines [RuntimeFeatures]
+theorem uncompress_refines [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -201,10 +202,12 @@ theorem uncompress_refines [RuntimeFeatures]
   have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
   cases hcpu : RuntimeFeatures.simdAvailable with
   | false =>
-    obtain ⟨result, hr, hv⟩ := scalar_tail_refines inputs out hlen
+    obtain ⟨result, hr, hv⟩ := blst_list_refines inputs out hlen
+    have hspec : KzgExternals.uncompressG1 = specVerdict :=
+      funext (FallbackCorrect.matchesSpec hcpu)
     refine ⟨result, ?_, ?_⟩
     · simpa [silver_crypto_simd.bls.uncompress_in_g1, heq, ifma_available, hcpu] using hr
-    · rw [hv]
+    · rw [hv, hspec]
       apply List.ext_getElem (by simp)
       intro i hi hj
       have hin : i < inputs.val.length := by simpa using hi

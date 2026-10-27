@@ -4,8 +4,8 @@ pub(crate) mod portable;
 mod sha256;
 
 /// Whether the IFMA kernels run: built with the `simd` feature, on a CPU with
-/// AVX-512F and AVX-512 IFMA. Elsewhere every operation takes its portable
-/// path, except G2 decoding, which falls back to blst. Tests may turn the
+/// AVX-512F and AVX-512 IFMA. Without IFMA, point decoding uses blst and
+/// arithmetic takes its scalar path. Tests may turn the
 /// kernels off with `SILVER_TEST_NO_IFMA`.
 #[cfg(target_arch = "x86_64")]
 pub fn ifma_available() -> bool {

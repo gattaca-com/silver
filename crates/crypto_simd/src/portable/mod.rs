@@ -6,12 +6,14 @@
 )]
 
 pub mod constants;
+#[cfg(any(target_arch = "x86_64", test))]
 pub mod decompress;
 pub mod fp;
 pub mod fp12;
 pub mod fp2;
 pub mod fp6;
 pub mod g1;
+#[cfg(any(target_arch = "x86_64", test))]
 pub mod g1_pair;
 pub(crate) mod msm;
 pub mod pairing;

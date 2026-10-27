@@ -32,7 +32,7 @@ theorem specVerdict_eq_bls (b : Array U8 48#usize) :
     | error e => rfl
     | ok p => exact congrArg some (g1Affine_eq_bls p)
 
-theorem g1_decode_refinement [RuntimeFeatures]
+theorem g1_decode_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :

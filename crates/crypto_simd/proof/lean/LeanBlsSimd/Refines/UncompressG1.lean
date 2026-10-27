@@ -33,8 +33,8 @@ theorem usesKernelAt_iff [RuntimeFeatures] (inputs : Slice (Array U8 48#usize)) 
         (i % 8) = false := by
   simp [usesKernelAt, usesKernel, Bool.and_eq_true, and_assoc]
 
-/-- Every slot is overwritten using the proved IFMA kernel or portable decoders. -/
-theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures]
+/-- The non-IFMA route uses the scoped blst decoder law. -/
+theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -66,8 +66,8 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures]
       rw [getElem!_pos _ _ (by simp), List.getElem_map]
       simp [modelBlst, toArray_ofArray, Option.map_map, Function.comp_def]
 
-/-- Exact verdicts compose the IFMA proof with the proved portable singleton and pair decoders. -/
-theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
+/-- IFMA includes proved portable singleton and pair decoding; non-IFMA uses the scoped law. -/
+theorem uncompress_in_g1_eq_spec [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -80,7 +80,7 @@ theorem uncompress_in_g1_eq_spec [RuntimeFeatures]
   simpa only [ite_self] using hv i
 
 /-- The list form transports directly across another extraction's copy of blst's structs. -/
-theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
+theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -92,7 +92,7 @@ theorem uncompress_in_g1_eq_spec_list [RuntimeFeatures]
   have h := hv ⟨i, hi'⟩
   simpa only [List.getElem?_eq_getElem hi, Option.some.injEq, List.getElem_map] using h
 
-theorem uncompress_in_g1_eq_spec_model_list [RuntimeFeatures]
+theorem uncompress_in_g1_eq_spec_model_list [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
@@ -101,5 +101,14 @@ theorem uncompress_in_g1_eq_spec_model_list [RuntimeFeatures]
   obtain ⟨result, hr, hv⟩ := uncompress_in_g1_eq_spec_list inputs out hlen
   refine ⟨result, hr, ?_⟩
   simp [hv, specVerdict, List.map_map, Option.map_map, Function.comp_def]
+
+theorem uncompress_in_g1_eq_spec_list_ifma [RuntimeFeatures] [KzgExternals]
+    (hifma : RuntimeFeatures.simdAvailable = true)
+    (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
+    (hlen : out.val.length = inputs.val.length) :
+    ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
+      result.val = inputs.val.map specVerdict := by
+  letI := fallbackCorrect_ifma hifma
+  exact uncompress_in_g1_eq_spec_list inputs out hlen
 
 end LeanBlsSimd.UncompressG1

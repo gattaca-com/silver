@@ -76,7 +76,7 @@ private theorem decode_points_loop_eq
         exact hloop
       · simpa [points', List.append_assoc] using hval
 
-theorem decode_points_refinement [RuntimeFeatures]
+theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
     (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
     (points : alloc.vec.Vec blst.blst_p1_affine) :

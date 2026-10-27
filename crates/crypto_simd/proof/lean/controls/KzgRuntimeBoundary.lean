@@ -43,4 +43,19 @@ run_cmd do
   logInfo m!"{roots.size} KZG headlines and runtime entry points exclude the opaque G2 decoder; \
     signature-path control reaches it"
 
+run_cmd do
+  let env ← getEnv
+  let law := ``LeanBlsSimd.UncompressG1.FallbackCorrect
+  let roots := #[``LeanBlsSimd.Kzg.verify_eq_spec_ifma,
+    ``LeanBlsSimd.Kzg.verify_eq_upstream_ifma,
+    ``LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list_ifma,
+    ``LeanBlsSimd.Kzg.Extender.compute_eq_spec]
+  for root in roots do
+    let used := dependencies env (← getConstInfo root).type.getUsedConstants
+    if used.contains law then
+      throwError "IFMA headline requires the blst decoder law: {root}"
+  unless (← getConstInfo ``LeanBlsSimd.Kzg.verify_eq_spec).type.getUsedConstants.contains law do
+    throwError "general verifier headline lost its scoped decoder law"
+  logInfo "IFMA headlines require no blst decoder law; the general verifier requires the scoped law"
+
 end LeanBlsSimd.Controls.KzgRuntimeBoundary

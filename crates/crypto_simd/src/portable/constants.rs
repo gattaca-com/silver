@@ -15,6 +15,7 @@ pub const ONE: Fp = Fp([
     0x15f65ec3fa80e493,
 ]);
 /// R² mod p: the Montgomery product with it takes a plain value to its form.
+#[cfg(any(target_arch = "x86_64", test))]
 pub const R2: [u64; 6] = [
     0xf4df1f341c341746,
     0x0a76e6a609d104f1,
@@ -33,6 +34,7 @@ pub const R3: [u64; 6] = [
     0x0aa6346091755d4d,
 ];
 /// The curve coefficient b = 4.
+#[cfg(any(target_arch = "x86_64", test))]
 pub const FOUR: Fp = Fp([
     0xaa270000000cfff3,
     0x53cc0032fc34000a,

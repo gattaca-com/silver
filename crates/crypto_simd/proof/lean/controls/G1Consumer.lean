@@ -3,7 +3,7 @@ import LeanBlsSimd.Refines.UncompressG1
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls LeanBlsSimd
 
-example [RuntimeFeatures] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
+example [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧

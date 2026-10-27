@@ -188,7 +188,7 @@ def prepare(source):
     # Portable and SIMD functions interleave in the extraction. Lean only binds
     # a section variable when the generated definition actually uses it.
     source = source.replace(NAMESPACE, NAMESPACE + "\nsection RuntimeScope\n\n"
-                            "variable [RuntimeFeatures] [bls.BlsExternals]\n", 1)
+                            "variable [RuntimeFeatures] [bls.BlsExternals] [KzgExternals]\n", 1)
     source = source.replace(END_NAMESPACE, "end RuntimeScope\n\n" + END_NAMESPACE, 1)
     return source, literals
 

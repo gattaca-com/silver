@@ -377,9 +377,6 @@ fn field_ops_match_blst() {
 
 #[test]
 fn verdicts_match_blst_on_members_non_members_and_garbage() {
-    if !ifma_available() {
-        return;
-    }
     let mut rng = StdRng::seed_from_u64(11);
     let mut inputs = g1_points(40);
     inputs.extend(curve_points_outside_g1(&mut rng, 20));

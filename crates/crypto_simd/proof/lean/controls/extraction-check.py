@@ -124,8 +124,7 @@ def validate_hoisting(raw, prepared):
     for name, (declared_type, body) in definitions.items():
         assert inferred_type(expand(body)) == declared_type, f"helper type differs: {name}"
     assert functions.count("import LeanBlsSimd.Extracted.Literals\n") == 1
-    assert "variable [RuntimeFeatures] [bls.BlsExternals]" in functions
-    assert "KzgExternals" not in functions
+    assert "variable [RuntimeFeatures] [bls.BlsExternals] [KzgExternals]" in functions
     print(f"exact literal expansion: {len(definitions)} helpers; values, order, shapes, types and outer headers match")
 
 

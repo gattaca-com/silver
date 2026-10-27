@@ -14,9 +14,14 @@ use std::arch::x86_64::_addcarry_u64;
 
 #[cfg(target_arch = "x86_64")]
 use crate::bmi2_available;
+#[cfg(any(target_arch = "x86_64", test))]
 use crate::{
-    bls::constants::{P_MINUS_3_OVER_4_WINDOWS, P_U64},
-    portable::constants::{ONE, P_INV, R2, R3},
+    bls::constants::P_MINUS_3_OVER_4_WINDOWS,
+    portable::constants::{ONE, R2},
+};
+use crate::{
+    bls::constants::P_U64,
+    portable::constants::{P_INV, R3},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -238,6 +243,7 @@ impl Fp {
     /// overlaps. Interleaving their rows is slower: the two need more
     /// registers than x86-64 has.
     #[inline]
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn mul_pair(a: &[Fp; 2], b: &[Fp; 2]) -> [Fp; 2] {
         [a[0].mul(&b[0]), a[1].mul(&b[1])]
     }
@@ -277,11 +283,13 @@ impl Fp {
     }
 
     /// The form of a plain value below p.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn from_plain(words: &[u64; 6]) -> Self {
         Self(*words).mul(&Self(R2))
     }
 
     /// The plain value, below p.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn to_plain(self) -> [u64; 6] {
         self.mul(&Self([1, 0, 0, 0, 0, 0])).0
     }
@@ -293,6 +301,7 @@ impl Fp {
     }
 
     /// self^((p − 3)/4), from 4-bit windows of the fixed exponent.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn pow_p_minus_3_over_4(&self) -> Self {
         let mut table = [ONE; 16];
         let mut k = 1;
@@ -312,6 +321,7 @@ impl Fp {
     }
 
     /// `pow_p_minus_3_over_4` of two values in lockstep.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn pow_p_minus_3_over_4_pair(values: &[Fp; 2]) -> [Fp; 2] {
         let mut table = [[ONE; 2]; 16];
         let mut k = 1;
@@ -336,6 +346,7 @@ impl Fp {
 
     /// A square root when self is a square: self^((p + 1)/4), since p ≡ 3 mod
     /// 4.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn sqrt(&self) -> Option<Self> {
         let root = self.pow_p_minus_3_over_4().mul(self);
         if root.square() == *self { Some(root) } else { None }
@@ -343,6 +354,7 @@ impl Fp {
 
     /// `sqrt` of two values in lockstep: the candidate roots, and whether each
     /// squares back to its value.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn sqrt_pair(values: &[Fp; 2]) -> ([Fp; 2], [bool; 2]) {
         let roots = Self::mul_pair(&Self::pow_p_minus_3_over_4_pair(values), values);
         let squares = Self::mul_pair(&roots, &roots);
@@ -350,6 +362,7 @@ impl Fp {
     }
 
     /// Whether the plain value exceeds (p − 1)/2: the larger of ±y.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn is_larger_root(&self) -> bool {
         let plain = self.to_plain();
         let (doubled, carry) = add_words(&plain, &plain);

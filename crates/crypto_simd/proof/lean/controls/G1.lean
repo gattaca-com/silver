@@ -188,7 +188,8 @@ example (inputs : List Encoding) (hn : inputs.length = 9) : True := by
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 
-example [RuntimeFeatures] (hs : RuntimeFeatures.simdAvailable = false)
+example [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
+    (hs : RuntimeFeatures.simdAvailable = false)
     (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
@@ -199,7 +200,7 @@ example [RuntimeFeatures] (hs : RuntimeFeatures.simdAvailable = false)
   rw [hv, hs, scalar_model]
   simp [modelBlst, List.map_map, Option.map_map, Function.comp_def, toArray_ofArray]
 
-example [cpu : RuntimeFeatures] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
+example [cpu : RuntimeFeatures] [KzgExternals] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hi : inputs.val = []) (ho : out.val = []) :
     silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok out := by
   rcases inputs with ⟨ins, hins⟩
@@ -236,8 +237,14 @@ example [cpu : RuntimeFeatures] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
       (⟨[], by simp⟩ : Slice (Aeneas.Std.Array U8 48#usize))
       (⟨[], by simp⟩ : Slice (Option blst.blst_p1_affine)) = ok ⟨[], by simp⟩ := by
     simp [portable.decompress.uncompress_all_in_g1, hlen, hd2, hm2, hpLoop]
+  have hblst : uncompress_all_in_g1_blst
+      (⟨[], by simp⟩ : Slice (Aeneas.Std.Array U8 48#usize))
+      (⟨[], by simp⟩ : Slice (Option blst.blst_p1_affine)) = ok ⟨[], by simp⟩ := by
+    unfold uncompress_all_in_g1_blst uncompress_all_in_g1_blst_loop
+    rw [loop.eq_1]
+    rfl
   cases hcpu : cpu.simdAvailable
-  · simpa [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu] using hs
+  · simpa [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu] using hblst
   · simp [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu, hlen,
       LANES, hd8, hm8, hbLoop,
       core.slice.index.SliceIndexRangeUsizeSlice.index,

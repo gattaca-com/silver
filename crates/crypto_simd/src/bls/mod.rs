@@ -1,7 +1,7 @@
 //! AVX-512 IFMA fast path for BLS12-381 G1 and G2 point decompression with
 //! subgroup membership, eight points per step. Lanes the vector path declines,
-//! short chunks, and CPUs without the instructions go elsewhere: G1 points to
-//! the portable decoder, G2 points to blst. The verdicts are blst's either way.
+//! and short chunks use the portable G1 decoder or blst's G2 decoder.
+//! CPUs without IFMA use blst for both groups.
 //!
 //! The fast path is available when the `simd` build feature is enabled. It
 //! additionally requires AVX-512F and AVX-512 IFMA support enabled at run time.
@@ -26,6 +26,7 @@ pub mod decompress;
 #[allow(clippy::missing_safety_doc)]
 #[doc(hidden)]
 pub mod decompress_g2;
+#[cfg(any(target_arch = "x86_64", test))]
 pub(crate) mod encoding;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::missing_safety_doc)]
@@ -62,14 +63,16 @@ pub(crate) mod spec_pairing;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__mmask8;
 
-use blst::{BLST_ERROR, blst_p2_affine_in_g2, blst_p2_uncompress};
+use blst::{
+    BLST_ERROR, blst_p1_affine_in_g1, blst_p1_uncompress, blst_p2_affine_in_g2, blst_p2_uncompress,
+};
 pub use blst::{blst_p1_affine, blst_p2_affine};
-#[cfg(test)]
-use blst::{blst_p1_affine_in_g1, blst_p1_uncompress};
 
+use crate::ifma_available;
+#[cfg(target_arch = "x86_64")]
+use crate::portable::decompress::uncompress_all_in_g1;
 #[cfg(target_arch = "x86_64")]
 use crate::portable::decompress::uncompress_in_g1 as uncompress_one_in_g1;
-use crate::{ifma_available, portable::decompress::uncompress_all_in_g1};
 
 pub const COMPRESSED_LEN: usize = 48;
 pub const G2_COMPRESSED_LEN: usize = 96;
@@ -87,7 +90,6 @@ pub struct Membership {
 }
 
 /// `Some` iff blst accepts the encoding as a point of G1.
-#[cfg(test)]
 pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_affine> {
     let mut point = blst_p1_affine::default();
     // SAFETY: both pointers are valid for the lengths blst reads and writes.
@@ -99,13 +101,13 @@ pub fn uncompress_in_g1_blst(bytes: &[u8; COMPRESSED_LEN]) -> Option<blst_p1_aff
 }
 
 /// Sets each `out[i]` to blst's verdict on `inputs[i]`: `blst_p1_uncompress`,
-/// then `blst_p1_affine_in_g1`. Full chunks of eight decode on IFMA lanes
-/// where they run, every other input on the portable route.
+/// then `blst_p1_affine_in_g1`. On IFMA, undecided lanes and short tails use
+/// the portable decoder. Without IFMA, every input uses blst.
 #[cfg(target_arch = "x86_64")]
 pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
     if !ifma_available() {
-        uncompress_all_in_g1(inputs, out);
+        uncompress_all_in_g1_blst(inputs, out);
         return;
     }
     let full = inputs.len() / LANES * LANES;
@@ -119,11 +121,17 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_
     uncompress_all_in_g1(&inputs[full..inputs.len()], &mut out[full..inputs.len()]);
 }
 
-/// Sets each `out[i]` to blst's verdict on `inputs[i]`, on the portable route.
+/// Sets each `out[i]` to blst's verdict on `inputs[i]`.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
     assert!(out.len() == inputs.len(), "one verdict slot per input");
-    uncompress_all_in_g1(inputs, out);
+    uncompress_all_in_g1_blst(inputs, out);
+}
+
+fn uncompress_all_in_g1_blst(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<blst_p1_affine>]) {
+    for i in 0..inputs.len() {
+        out[i] = uncompress_in_g1_blst(&inputs[i]);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

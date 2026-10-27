@@ -12,15 +12,22 @@ def Aeneas.Std.alloc.vec.Vec.is_empty (_Allocator : Type) {α : Type}
     (v : alloc.vec.Vec α) : Result Bool :=
   ok v.val.isEmpty
 
-/-- CPU observations supplied independently of the opaque G2 decoder. -/
+/-- CPU observations supplied independently of the opaque blst operations. -/
 class silver_crypto_simd.RuntimeFeatures where
   simdAvailable : Bool
   shaAvailable : Bool
   bmi2Available : Bool
 
-/-- The compressed G2 decoder is the only remaining opaque BLS operation. -/
+/-- Signature decoding has a separate boundary from KZG. -/
 class silver_crypto_simd.bls.BlsExternals where
   uncompressG2 : Array Std.U8 96#usize → Option blst.blst_p2_affine
+
+class silver_crypto_simd.KzgExternals where
+  uncompressG1 : Array Std.U8 48#usize → Option blst.blst_p1_affine
+
+def silver_crypto_simd.bls.uncompress_in_g1_blst [KzgExternals]
+    (bytes : Array Std.U8 48#usize) : Result (Option blst.blst_p1_affine) :=
+  ok (KzgExternals.uncompressG1 bytes)
 
 def silver_crypto_simd.ifma_available [RuntimeFeatures] : Result Bool :=
   ok RuntimeFeatures.simdAvailable

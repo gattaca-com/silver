@@ -48,7 +48,7 @@ def Input.embeddedSpec (i : Input) : Except KzgError Bool :=
   Model.verifyPure embeddedSetup Model.specRli
     i.commitmentBytes i.cellIndices i.cellBytes i.proofBytes
 
-def Input.generated [RuntimeFeatures] (i : Input) (v : verify.CellBatchVerifier) :=
+def Input.generated [RuntimeFeatures] [KzgExternals] (i : Input) (v : verify.CellBatchVerifier) :=
   verify.CellBatchVerifier.verify v i.commitments i.indices i.cells i.proofs
 
 theorem column_ifft_eq_interpolation
@@ -79,7 +79,7 @@ theorem model_eq_spec (hsetup : TrustedSetup.get! = pure embeddedSetup) (i : Inp
   rw [hrun, ← model_eq_embedded_spec i]
   rfl
 
-theorem setup_decode_refines [RuntimeFeatures] :
+theorem setup_decode_refines [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
     ∃ s, setup.Setup.decode = ok s ∧ SetupRep s :=
   setup_decode_refinement
 
@@ -87,7 +87,7 @@ theorem cosets_new_refines :
     ∃ c, cosets.Cosets.new = ok c ∧ CosetsRep c :=
   cosets_new_refinement
 
-theorem new_returns_ok_route [cpu : RuntimeFeatures] :
+theorem new_returns_ok_route [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v ∧
       CurveWork.isLanes v.curve_work = cpu.simdAvailable ∧
       v.kernel.isSome = cpu.simdAvailable := by
@@ -109,7 +109,7 @@ theorem new_returns_ok_route [cpu : RuntimeFeatures] :
     exact ⟨_, rfl, ⟨hsrep, hcrep, hki, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
 
-theorem new_returns_ok [cpu : RuntimeFeatures] :
+theorem new_returns_ok [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
   obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route
   exact ⟨v, hnew, hinv⟩
@@ -127,18 +127,18 @@ theorem stateInvariant_allows_scalar [RuntimeFeatures]
   obtain ⟨work, _, hwork, hroute⟩ := curveWork_portable_refinement
   exact ⟨{v with curve_work := work}, stateInvariant_curveWork v work hwork hv, rfl, hroute⟩
 
-theorem default_eq_new [RuntimeFeatures] :
+theorem default_eq_new [RuntimeFeatures] [KzgExternals] :
     verify.CellBatchVerifier.Insts.CoreDefaultDefault.default =
       verify.CellBatchVerifier.new := rfl
 
-theorem glue_refinement [RuntimeFeatures]
+theorem glue_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (i : Input) (hi : i.Representable) :
     ∃ next, i.generated v = ok (i.model, next) ∧ StateInvariant next := by
   exact Verify.glue_of_contracts pairing_holds_refinement model_pairing_refinement
     v hv i.commitments i.indices i.cells i.proofs hi.2.2.1
 
-theorem verify_eq_spec [cpu : RuntimeFeatures] :
+theorem verify_eq_spec [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
       ∀ (i : Input), i.Representable →
@@ -150,7 +150,7 @@ theorem verify_eq_spec [cpu : RuntimeFeatures] :
   obtain ⟨next, hgen, hnext⟩ := glue_refinement v hv i hi
   exact ⟨i.model, next, hgen, hnext, model_eq_embedded_spec i⟩
 
-theorem verify_eq_upstream [cpu : RuntimeFeatures]
+theorem verify_eq_upstream [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (hsetup : TrustedSetup.get! = pure embeddedSetup) :
     ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : verify.CellBatchVerifier), StateInvariant v →
@@ -169,5 +169,28 @@ theorem verify_eq_upstream [cpu : RuntimeFeatures]
     rfl
   rw [hrun, ← hverdict]
   rfl
+
+theorem verify_eq_spec_ifma [cpu : RuntimeFeatures] [KzgExternals]
+    (hifma : cpu.simdAvailable = true) :
+    ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
+      ∀ (v : verify.CellBatchVerifier), StateInvariant v →
+      ∀ (i : Input), i.Representable →
+      ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
+        i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        Model.rejectErrors i.embeddedSpec = verdict := by
+  letI := UncompressG1.fallbackCorrect_ifma hifma
+  exact verify_eq_spec
+
+theorem verify_eq_upstream_ifma [cpu : RuntimeFeatures] [KzgExternals]
+    (hifma : cpu.simdAvailable = true)
+    (hsetup : TrustedSetup.get! = pure embeddedSetup) :
+    ∃ initial, verify.CellBatchVerifier.new = ok initial ∧ StateInvariant initial ∧
+      ∀ (v : verify.CellBatchVerifier), StateInvariant v →
+      ∀ (i : Input), i.Representable →
+      ∃ (verdict : Bool) (next : verify.CellBatchVerifier),
+        i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
+        (Model.rejectErrors <$> i.spec.run) = pure verdict := by
+  letI := UncompressG1.fallbackCorrect_ifma hifma
+  exact verify_eq_upstream hsetup
 
 end LeanBlsSimd.Kzg

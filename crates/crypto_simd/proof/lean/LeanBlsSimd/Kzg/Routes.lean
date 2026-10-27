@@ -4,6 +4,8 @@ import LeanBlsSimd.Extracted.Funs
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls silver_crypto_simd.kzg
 noncomputable section
+variable [KzgExternals]
+
 namespace LeanBlsSimd.Kzg.Routes
 
 theorem lincomb_sum_route [RuntimeFeatures] (self next : verify.CurveWork)

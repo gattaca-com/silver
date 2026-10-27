@@ -14,6 +14,8 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
+variable [KzgExternals]
+
 namespace LeanBlsSimd.Kzg.Verify
 
 set_option maxRecDepth 16000
@@ -76,7 +78,7 @@ theorem decoded_points_values (bs : List (Aeneas.Std.Array U8 48#usize))
   rw [takeWhile_all _ _ h, pointOptions_accepted bs h]
   simp [pointValues, List.map_map, Function.comp_def]
 
-theorem decode_commitments_step [cpu : RuntimeFeatures]
+theorem decode_commitments_step [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (v : verify.CellBatchVerifier) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_commitments v =
@@ -91,7 +93,7 @@ theorem decode_commitments_step [cpu : RuntimeFeatures]
     Function.uncurry_apply_pair]
   rfl
 
-theorem decode_proofs_step [cpu : RuntimeFeatures]
+theorem decode_proofs_step [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (v : verify.CellBatchVerifier) (ps : Slice (Aeneas.Std.Array U8 48#usize)) :
     ∃ decoded points,
       verify.CellBatchVerifier.decode_proofs v ps =
@@ -244,7 +246,7 @@ private theorem rejectErrors_of_ok {result : Except KzgError Bool} {verdict : Bo
   rfl
 
 set_option maxHeartbeats 200000 in
-theorem glue_of_contracts [cpu : RuntimeFeatures]
+theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (hpairs : PairingContract) (hmodel : ModelPairingContract)
     (v : verify.CellBatchVerifier) (hv : StateInvariant v)
     (cs : Slice (Aeneas.Std.Array U8 48#usize)) (indices : Slice U64)

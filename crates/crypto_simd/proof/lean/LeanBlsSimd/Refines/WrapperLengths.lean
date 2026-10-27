@@ -6,7 +6,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 namespace LeanBlsSimd.UncompressG1
 
 /-- Aeneas represents the Rust assertion failure without its panic message. -/
-theorem uncompress_in_g1_length_mismatch [RuntimeFeatures]
+theorem uncompress_in_g1_length_mismatch [RuntimeFeatures] [KzgExternals]
     (inputs : Slice (Array U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length ≠ inputs.val.length) :
     silver_crypto_simd.bls.uncompress_in_g1 inputs out = fail .assertionFailure := by

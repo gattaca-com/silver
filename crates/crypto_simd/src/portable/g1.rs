@@ -8,12 +8,11 @@
 
 use blst::{blst_fp, blst_p1};
 
+use crate::portable::{constants::ONE, fp::Fp};
+#[cfg(any(target_arch = "x86_64", test))]
 use crate::{
     bls::constants::{Z_BITS, is_lower_z_bit},
-    portable::{
-        constants::{BETA, ONE},
-        fp::Fp,
-    },
+    portable::constants::BETA,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +97,7 @@ impl G1 {
     }
 
     /// `[|z|] P` for an affine P, by double-and-add over the set bits of |z|.
+    #[cfg(any(target_arch = "x86_64", test))]
     fn times_z_affine(px: &Fp, py: &Fp) -> Self {
         let mut r = Self::from_affine(px, py);
         let mut bit = Z_BITS[0];
@@ -112,6 +112,7 @@ impl G1 {
     }
 
     /// `[|z|] self`, by the same chain as `times_z_affine`.
+    #[cfg(any(target_arch = "x86_64", test))]
     fn times_z(&self) -> Self {
         let mut r = *self;
         let mut bit = Z_BITS[0];
@@ -127,11 +128,13 @@ impl G1 {
 
     /// Scott's test: a finite affine curve point is in G1 iff `[-z^2] P ==
     /// sigma^2(P)`, where sigma scales x by a cube root of unity.
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn in_g1(px: &Fp, py: &Fp) -> bool {
         Self::times_z_affine(px, py).times_z().is_minus_sigma_squared(px, py)
     }
 
     /// Whether self is −σ²(P) for the finite affine P = (px, py).
+    #[cfg(any(target_arch = "x86_64", test))]
     pub fn is_minus_sigma_squared(&self, px: &Fp, py: &Fp) -> bool {
         if self.is_infinity() {
             return false;

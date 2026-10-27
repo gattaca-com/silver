@@ -49,9 +49,10 @@ def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p1_
   ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
 
 def uncompress (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
+    (external : _root_.silver_crypto_simd.KzgExternals)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine)) :
     Result (Slice (Option blst.blst_p1_affine)) := do
-  let result ← @_root_.silver_crypto_simd.bls.uncompress_in_g1 upstream inputs (toUpstreamSlice out)
+  let result ← @_root_.silver_crypto_simd.bls.uncompress_in_g1 upstream external inputs (toUpstreamSlice out)
   ok (fromUpstreamSlice result)
 
 end Bridge
@@ -60,12 +61,14 @@ def specVerdict (bytes : Array Std.U8 48#usize) : Option blst.blst_p1_affine :=
   (LeanBlsSimd.UncompressG1.specVerdict bytes).map Bridge.fromUpstream
 
 theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
+    (external : _root_.silver_crypto_simd.KzgExternals)
+    (hblst : @LeanBlsSimd.UncompressG1.FallbackCorrect upstream external)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, Bridge.uncompress upstream inputs out = ok result ∧
+    ∃ result, Bridge.uncompress upstream external inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hr, hv⟩ := @LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list
-    upstream inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
+    upstream external hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
   · simp only [Bridge.uncompress, hr, bind_tc_ok]
   · simp [Bridge.fromUpstreamSlice, hv, List.map_map, specVerdict, Function.comp_def]
@@ -82,19 +85,23 @@ def UncompressMatchesSpec [Externals] : Prop :=
       ∃ result, Externals.uncompress inputs out = ok result ∧
         result.val = inputs.val.map specVerdict
 
-@[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.RuntimeFeatures) : Externals :=
-  ⟨Bridge.uncompress upstream⟩
+@[reducible] def externalsOf (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
+    (external : _root_.silver_crypto_simd.KzgExternals) : Externals :=
+  ⟨Bridge.uncompress upstream external⟩
 
-theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.RuntimeFeatures) :
-    @UncompressMatchesSpec (externalsOf upstream) :=
-  Bridge.uncompress_eq_spec_list upstream
+theorem externalsOf_matches_spec (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
+    (external : _root_.silver_crypto_simd.KzgExternals)
+    (hblst : @LeanBlsSimd.UncompressG1.FallbackCorrect upstream external) :
+    @UncompressMatchesSpec (externalsOf upstream external) :=
+  Bridge.uncompress_eq_spec_list upstream external hblst
 
 @[reducible] def simdFeatures : _root_.silver_crypto_simd.RuntimeFeatures :=
   ⟨true, false, false⟩
 
-example :
-    @UncompressMatchesSpec (externalsOf simdFeatures) :=
-  externalsOf_matches_spec simdFeatures
+example (external : _root_.silver_crypto_simd.KzgExternals) :
+    @UncompressMatchesSpec (externalsOf simdFeatures external) :=
+  externalsOf_matches_spec simdFeatures external
+    (@LeanBlsSimd.UncompressG1.fallbackCorrect_ifma simdFeatures external rfl)
 
 end Fixed
 
@@ -122,12 +129,14 @@ example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     @caller external inputs out = external.uncompress inputs out := rfl
 
 example (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
+    (external : _root_.silver_crypto_simd.KzgExternals)
+    (hblst : @LeanBlsSimd.UncompressG1.FallbackCorrect upstream external)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
-    ∃ result, @caller (Fixed.externalsOf upstream) inputs out = ok result ∧
+    ∃ result, @caller (Fixed.externalsOf upstream external) inputs out = ok result ∧
       result.val = inputs.val.map specVerdict :=
-  @caller_eq_spec_list (Fixed.externalsOf upstream)
-    (Fixed.externalsOf_matches_spec upstream) inputs out hlen
+  @caller_eq_spec_list (Fixed.externalsOf upstream external)
+    (Fixed.externalsOf_matches_spec upstream external hblst) inputs out hlen
 
 /-- info: 'silver_kzg.Bridge.uncompress_eq_spec_list' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in

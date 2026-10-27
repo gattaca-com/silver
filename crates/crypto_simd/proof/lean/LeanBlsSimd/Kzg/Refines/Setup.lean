@@ -70,7 +70,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option blst.blst_p1_affine)
     simp only [setup.Setup.decode_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair, hindex, hpush]
     exact hout
 
-theorem setup_decode_refinement [RuntimeFeatures] :
+theorem setup_decode_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] :
     ∃ s, setup.Setup.decode = ok s ∧ SetupRep s := by
   let initial : alloc.vec.Vec (Option blst.blst_p1_affine) :=
     ⟨List.replicate 64 none, by simp; scalar_tac⟩

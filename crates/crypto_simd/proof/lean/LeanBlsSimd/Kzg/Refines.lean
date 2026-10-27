@@ -31,7 +31,7 @@ theorem deduplicate_refines (old : verify.Deduplicated)
         Model.deduplicate (cs.val.map arrayBytes).toArray := by
   exact deduplicate_refinement old cs
 
-theorem decode_points_refines [RuntimeFeatures]
+theorem decode_points_refines [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
     (encodings : Slice (Aeneas.Std.Array U8 48#usize))
     (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
     (points : alloc.vec.Vec blst.blst_p1_affine) :
