@@ -12,6 +12,8 @@ const PAYLOAD_MAX: usize = MAX_DATAGRAM - HEADER_LEN;
 /// Prefix before an 8-aligned u64 array or fixed-size entry list.
 const ALIGNED_PREFIX: usize = 8;
 const VALUES_PER_DATAGRAM: usize = (PAYLOAD_MAX - ALIGNED_PREFIX) / 8;
+const CHANGE_LEN: usize = 4 + 4 + 8;
+const CHANGES_PER_DATAGRAM: usize = (PAYLOAD_MAX - ALIGNED_PREFIX) / CHANGE_LEN;
 const FIXED_ENTRY_LEN: usize = 40;
 const FIXED_ENTRIES_PER_DATAGRAM: usize = (PAYLOAD_MAX - ALIGNED_PREFIX) / FIXED_ENTRY_LEN;
 const NAME_MAX: usize = u8::MAX as usize;
@@ -249,6 +251,54 @@ impl Encoder {
             }
             self.send(emit);
         }
+    }
+
+    /// The slots of `values` that differ from `sent`, which then matches
+    /// `values`. Falls back to `counter_values` once changes would cost at
+    /// least as much. Emits even when nothing changed, so every call still
+    /// marks its bucket.
+    pub fn counter_changes(
+        &mut self,
+        ts_ns: u64,
+        source_id: u16,
+        values: &[u64],
+        sent: &mut [u64],
+        emit: &mut impl FnMut(&[u8]),
+    ) {
+        debug_assert_eq!(values.len(), sent.len());
+        let changed = values.iter().zip(sent.iter()).filter(|(v, s)| v != s).count();
+        if changed > 0 && changed * CHANGE_LEN >= values.len() * 8 {
+            self.counter_values(ts_ns, source_id, values, emit);
+            sent.copy_from_slice(values);
+            return;
+        }
+
+        self.begin_changes(ts_ns, source_id, emit);
+        let mut count = 0;
+        for (slot, (v, s)) in values.iter().zip(sent.iter_mut()).enumerate() {
+            if v == s {
+                continue;
+            }
+            if count == CHANGES_PER_DATAGRAM {
+                self.patch_u16(HEADER_LEN + 2, count as u16);
+                self.send(emit);
+                self.begin_changes(ts_ns, source_id, emit);
+                count = 0;
+            }
+            self.put(&(slot as u32).to_le_bytes());
+            self.put(&[0; 4]);
+            self.put(&v.to_le_bytes());
+            *s = *v;
+            count += 1;
+        }
+        self.patch_u16(HEADER_LEN + 2, count as u16);
+        self.send(emit);
+    }
+
+    fn begin_changes(&mut self, ts_ns: u64, source_id: u16, emit: &mut impl FnMut(&[u8])) {
+        self.begin(Kind::CounterChanges, ts_ns, emit);
+        self.put(&source_id.to_le_bytes());
+        self.put(&[0; 6]);
     }
 
     pub fn tile_utils(&mut self, ts_ns: u64, utils: &[TileUtil], emit: &mut impl FnMut(&[u8])) {
@@ -491,6 +541,61 @@ mod tests {
             r.done();
         }
         assert_eq!(got, values);
+    }
+
+    fn changes(d: &[u8]) -> (u16, Vec<(u32, u64)>) {
+        let mut r = Reader::payload(d);
+        let source = r.u16();
+        let count = r.u16();
+        r.bytes(4);
+        let entries = (0..count)
+            .map(|_| {
+                let slot = r.u32();
+                r.bytes(4);
+                (slot, r.u64())
+            })
+            .collect();
+        r.done();
+        (source, entries)
+    }
+
+    #[test]
+    fn counter_changes_carry_only_moved_slots_and_update_sent() {
+        let mut sent = vec![7u64; 400];
+        let mut values = sent.clone();
+        values[3] = 8;
+        values[399] = u64::MAX;
+        let dgrams =
+            collect(|enc, emit| enc.counter_changes(5, 9, &values, &mut sent, &mut |d| emit(d)));
+        assert_eq!(headers(&dgrams, Kind::CounterChanges).len(), 1);
+        assert_eq!(changes(&dgrams[0]), (9, vec![(3, 8), (399, u64::MAX)]));
+        assert_eq!(sent, values);
+
+        let dgrams =
+            collect(|enc, emit| enc.counter_changes(6, 9, &values, &mut sent, &mut |d| emit(d)));
+        assert_eq!(changes(&dgrams[0]), (9, vec![]), "an unchanged bucket is still marked");
+    }
+
+    #[test]
+    fn counter_changes_split_across_datagrams_and_fall_back_to_values() {
+        let n = 4 * CHANGES_PER_DATAGRAM;
+        let mut sent = vec![0u64; n];
+        let mut values = sent.clone();
+        for v in values.iter_mut().step_by(3) {
+            *v = 1;
+        }
+        let dgrams =
+            collect(|enc, emit| enc.counter_changes(5, 9, &values, &mut sent, &mut |d| emit(d)));
+        assert_eq!(headers(&dgrams, Kind::CounterChanges).len(), 2);
+        let got: Vec<_> = dgrams.iter().flat_map(|d| changes(d).1).collect();
+        let want: Vec<_> = (0..n).step_by(3).map(|i| (i as u32, 1)).collect();
+        assert_eq!(got, want);
+
+        let values = vec![2u64; n];
+        let dgrams =
+            collect(|enc, emit| enc.counter_changes(6, 9, &values, &mut sent, &mut |d| emit(d)));
+        assert_eq!(headers(&dgrams, Kind::CounterValues).len(), n.div_ceil(VALUES_PER_DATAGRAM));
+        assert_eq!(sent, values);
     }
 
     #[test]

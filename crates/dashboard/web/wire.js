@@ -19,6 +19,7 @@ export const Kind = {
   PeerScores: 10,
   PeerTopic: 11,
   Stages: 12,
+  CounterChanges: 13,
 };
 
 export const SourceClass = { Counters: 0, TCache: 1, Timing: 2, Tile: 3 };
@@ -153,6 +154,18 @@ export function decode(buf) {
       d.firstSlot = r.u32();
       d.values = [];
       for (let i = 0; i < count; i++) d.values.push(r.u64());
+      break;
+    }
+    case Kind.CounterChanges: {
+      d.sourceId = r.u16();
+      const count = r.u16();
+      r.skip(4);
+      d.changes = [];
+      for (let i = 0; i < count; i++) {
+        const slot = r.u32();
+        r.skip(4);
+        d.changes.push([slot, r.u64()]);
+      }
       break;
     }
     case Kind.TileUtils: {

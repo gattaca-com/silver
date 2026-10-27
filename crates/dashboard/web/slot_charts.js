@@ -1,6 +1,6 @@
 // Charts at the top of the Slots pane: each client's bytes received and sent
 // (gossip solid, rpc dashed) and attestations processed, per 100 ms of the
-// current slot, from the 50 ms `fast:` counter samples.
+// current slot, from the 100 ms `fast:` counter samples.
 
 import { escape, fmtBytes } from './view.js';
 
@@ -43,9 +43,11 @@ export function slotWindow(clock, nowS) {
 }
 
 /** Per bin of the slot starting at `startS`, the summed counters' growth: each
- *  sample's delta lands in the bin holding its timestamp. A bin with no sample
- *  is null; a counter reset breaks the delta. A client without samples keeps
- *  an all-null line, so the chart stays up. */
+ *  delta between consecutive samples is spread over the bins its interval
+ *  overlaps, pro rata, since the sample period is close to `BIN_S` and
+ *  jitters across bin edges. A bin no interval reaches is null; a counter
+ *  reset breaks the delta. A client without samples keeps an all-null line,
+ *  so the chart stays up. */
 export function binnedSeries(inst, { source, counters }, slot, startS, bins) {
   const ys = new Array(bins).fill(null);
   const block = inst.traces.find((t) => t.slot === slot && t.receivedAt !== null);
@@ -54,14 +56,22 @@ export function binnedSeries(inst, { source, counters }, slot, startS, bins) {
   const cols = s ? counters.map((n) => s.history.values[s.names.indexOf(n)]) : [];
   if (!s || cols.some((c) => !c)) return { label: inst.label, ys, blockX };
   let prevTotal = null;
+  let prevX = null;
   s.history.ts.forEach((x, k) => {
     const parts = cols.map((c) => c[k]);
     const total = parts.some((v) => v === null || v === undefined) ? null : parts.reduce((a, b) => a + b, 0);
-    const bin = Math.floor((x - startS) / BIN_S);
-    if (bin >= 0 && bin < bins && total !== null && prevTotal !== null && total >= prevTotal) {
-      ys[bin] = (ys[bin] ?? 0) + total - prevTotal;
+    if (total !== null && prevTotal !== null && total >= prevTotal && x > prevX) {
+      const from = prevX - startS;
+      const to = x - startS;
+      const perS = (total - prevTotal) / (to - from);
+      const last = Math.min(Math.floor(to / BIN_S), bins - 1);
+      for (let bin = Math.max(Math.floor(from / BIN_S), 0); bin <= last; bin++) {
+        const overlap = Math.min(to, (bin + 1) * BIN_S) - Math.max(from, bin * BIN_S);
+        if (overlap > 0) ys[bin] = (ys[bin] ?? 0) + perS * overlap;
+      }
     }
     prevTotal = total;
+    prevX = x;
   });
   return { label: inst.label, ys, blockX };
 }

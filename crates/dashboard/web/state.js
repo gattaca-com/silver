@@ -8,8 +8,8 @@ const STALE_MS = 5000;
 const PEER_TTL_NS = 10e9;
 /** 1 s buckets × 240 = 4 minutes, as surfer keeps. */
 const HISTORY_LEN = 240;
-/** 4 minutes of the exporter's 50 ms `fast:` samples, with slack. */
-const SAMPLE_HISTORY_LEN = 5000;
+/** 4 minutes of the exporter's 100 ms `fast:` samples, with slack. */
+const SAMPLE_HISTORY_LEN = 2500;
 const FAST_PREFIX = 'fast:';
 /** Per instance; the oldest trace is dropped past this. */
 const TRACES_CAP = 64;
@@ -173,6 +173,8 @@ export class Instance {
   resetBoot() {
     this.sources = new Map();
     this.slotNames = new Map();
+    /** Every slot received per counter source id, merged across datagrams. */
+    this.received = new Map();
     this.counters = new Map();
     this.prevCounters = new Map();
     /** Per-slot value and rate history of every counter source, by id. */
@@ -272,7 +274,8 @@ export class Instance {
         splice(this.slotNames, d.sourceId, d.firstSlot, d.names);
         break;
       case Kind.CounterValues:
-        this.applyCounters(d, tsNs);
+      case Kind.CounterChanges:
+        this.applyCounters({ sourceId: d.sourceId, firstSlot: 0, values: this.mergeCounters(d) }, tsNs);
         break;
       case Kind.TileUtils:
         for (const u of d.utils) this.tileUtils.set(u.sourceId, u);
@@ -304,6 +307,17 @@ export class Instance {
         for (const e of d.entries) this.applyStage(e);
         break;
     }
+  }
+
+  /** Changes carry only the slots that moved, so each datagram is merged
+   *  into everything received for its source. A slot stays undefined until
+   *  first received. */
+  mergeCounters(d) {
+    let values = this.received.get(d.sourceId);
+    if (!values) this.received.set(d.sourceId, (values = []));
+    if (d.changes) for (const [slot, v] of d.changes) values[slot] = v;
+    else d.values.forEach((v, i) => (values[d.firstSlot + i] = v));
+    return values;
   }
 
   /** One bucket spans several datagrams sharing a timestamp; the previous

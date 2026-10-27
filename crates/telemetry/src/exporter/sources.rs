@@ -16,6 +16,10 @@ use silver_log::warn;
 use silver_observe::{CounterFile, CounterMap, discover, names_for};
 use silver_observe_wire::{Encoder, Source, SourceClass, TileUtil, TimingChannel, TimingStats};
 
+/// Between keyframes a source sends only the slots that changed; a keyframe
+/// re-sends them all, bounding how long a late joiner or a lost datagram
+/// leaves a slot unknown or stale.
+const KEYFRAME_NS: u64 = 10_000_000_000;
 /// Upper bound of the recorded range: a 60 s gap is far past any sane stage.
 const HIST_MAX_NS: u64 = 60_000_000_000;
 const TCACHE_FIXED_SLOTS: usize = 2;
@@ -48,6 +52,7 @@ struct CounterSource {
     name: String,
     map: CounterMap,
     values: Vec<u64>,
+    sent: SentValues,
 }
 
 struct FastSource {
@@ -58,6 +63,36 @@ struct FastSource {
     slots: Vec<usize>,
     slot_names: Vec<String>,
     values: Vec<u64>,
+    sent: SentValues,
+}
+
+/// The values the dashboard last received from one source.
+struct SentValues {
+    values: Vec<u64>,
+    keyframe_at_ns: u64,
+}
+
+impl SentValues {
+    fn new(len: usize) -> Self {
+        Self { values: vec![0; len], keyframe_at_ns: 0 }
+    }
+
+    fn encode(
+        &mut self,
+        enc: &mut Encoder,
+        ts_ns: u64,
+        source_id: u16,
+        values: &[u64],
+        emit: &mut impl FnMut(&[u8]),
+    ) {
+        if ts_ns < self.keyframe_at_ns {
+            enc.counter_changes(ts_ns, source_id, values, &mut self.values, emit);
+            return;
+        }
+        enc.counter_values(ts_ns, source_id, values, emit);
+        self.values.copy_from_slice(values);
+        self.keyframe_at_ns = ts_ns + KEYFRAME_NS;
+    }
 }
 
 struct TimingHist {
@@ -213,12 +248,14 @@ impl ExportSources {
         match CounterMap::open(file) {
             Ok(map) => {
                 let values = vec![0; map.slot_count()];
+                let sent = SentValues::new(values.len());
                 self.counters.push(CounterSource {
                     id,
                     class,
                     name: file.name.clone(),
                     map,
                     values,
+                    sent,
                 });
                 self.open_fast(self.counters.len() - 1);
             }
@@ -243,7 +280,8 @@ impl ExportSources {
         let slot_names = slots.iter().map(|&i| names[i].clone()).collect();
         let Some(id) = self.claim(SourceClass::Counters, &name) else { return };
         let values = vec![0; slots.len()];
-        self.fast.push(FastSource { id, name, parent, slots, slot_names, values });
+        let sent = SentValues::new(slots.len());
+        self.fast.push(FastSource { id, name, parent, slots, slot_names, values, sent });
     }
 
     pub fn encode_fast(&mut self, enc: &mut Encoder, ts_ns: u64, emit: &mut impl FnMut(&[u8])) {
@@ -253,7 +291,7 @@ impl ExportSources {
             for (v, &slot) in f.values.iter_mut().zip(&f.slots) {
                 *v = map.load(slot);
             }
-            enc.counter_values(ts_ns, f.id, &f.values, emit);
+            f.sent.encode(enc, ts_ns, f.id, &f.values, emit);
         }
     }
 
@@ -272,7 +310,7 @@ impl ExportSources {
     pub fn encode_bucket(&mut self, enc: &mut Encoder, ts_ns: u64, emit: &mut impl FnMut(&[u8])) {
         for c in &mut self.counters {
             c.map.read_into(&mut c.values);
-            enc.counter_values(ts_ns, c.id, &c.values, emit);
+            c.sent.encode(enc, ts_ns, c.id, &c.values, emit);
         }
 
         self.tile_utils.clear();
@@ -402,6 +440,30 @@ mod tests {
         let values = &dgrams[0][HEADER_LEN + 8..];
         assert_eq!(values[..8], 30u64.to_le_bytes());
         assert_eq!(values[8..], 12u64.to_le_bytes());
+    }
+
+    #[test]
+    fn between_keyframes_only_changed_slots_are_sent() {
+        let tmp = TempDir::new().unwrap();
+        FastTestCounters::init_with_base(tmp.path(), "keyframe_test").unwrap();
+        let mut sources = ExportSources::default();
+        sources.discover(tmp.path(), "keyframe_test");
+        let mut enc = Encoder::new(1, 2);
+        let mut encode = |sources: &mut ExportSources, ts_ns| {
+            let mut dgrams = Vec::new();
+            sources.encode_bucket(&mut enc, ts_ns, &mut |d| dgrams.push(d.to_vec()));
+            let [d] = &dgrams[..] else { panic!("one datagram per bucket") };
+            (Header::parse(d).unwrap().kind, d[HEADER_LEN + 8..].to_vec())
+        };
+
+        assert_eq!(encode(&mut sources, 0).0, Kind::CounterValues);
+        FastTestCounters::VoteBatchSize.set(5);
+        let (kind, entries) = encode(&mut sources, 1);
+        assert_eq!(kind, Kind::CounterChanges);
+        assert_eq!(entries.len(), 16, "one change");
+        assert_eq!(entries[8..], 5u64.to_le_bytes(), "value");
+        assert_eq!(encode(&mut sources, 2), (Kind::CounterChanges, vec![]));
+        assert_eq!(encode(&mut sources, KEYFRAME_NS).0, Kind::CounterValues);
     }
 
     #[test]

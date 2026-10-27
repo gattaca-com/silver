@@ -30,6 +30,7 @@
 //! | PeerScores    | count u16, pad[6]                               | peer[48], agent[72], mesh_count u32, pad[4], p1 p2 p3 p3b p4 p5 p6 p7 total f64 |
 //! | PeerTopic     | count u16, pad[6]                               | peer[48], topic_slot u16, p3_scored u8, mesh_active u8, pad[4], meshed_secs u64, fanout_total u64, fanout_sent u64, first_deliveries f64, mesh_deliveries f64, mesh_failure_penalty f64, invalid_deliveries f64 |
 //! | Stages        | count u16, pad[6]                               | block_root[32], ts_ns u64, slot u64, column_index u64, stage u8, detail u8, pad[6] |
+//! | CounterChanges | source_id u16, count u16, pad[4]               | slot u32, pad[4], value u64                                           |
 //!
 //! Composite fields:
 //!
@@ -38,6 +39,11 @@
 //!   in the first 4 bytes).
 //! - `agent[72]`: len u8, pad[7], utf-8 bytes[64] zero-padded.
 //! - `slot`, `column_index`: u64::MAX when absent.
+//!
+//! `CounterChanges` carries only the slots that moved since the source's
+//! previous datagram; every source re-sends all its values as
+//! `CounterValues` periodically, so a late joiner or a lost datagram leaves a
+//! slot unknown or stale for at most that period.
 //!
 //! Peer and stage kinds are streamed: entries accumulate until the datagram
 //! is full, the kind changes, or the exporter flushes.

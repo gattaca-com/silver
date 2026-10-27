@@ -25,7 +25,7 @@ mod streams;
 const BUCKET: Nanos = Nanos::from_secs(1);
 /// Cadence of the `fast:` sources; the loop runs every 10 ms, so a sample
 /// lands up to that late, and each carries its own timestamp.
-const FAST_BUCKET: Nanos = Nanos::from_millis(50);
+const FAST_BUCKET: Nanos = Nanos::from_millis(100);
 /// Half the dashboard's peer TTL, so a live peer never ages out between
 /// buckets.
 const PEER_BUCKET: Nanos = Nanos::from_secs(5);
@@ -171,7 +171,7 @@ impl Exporter {
             tcache_slots = series.tcache_slots,
             timing_channels = series.timing_channels,
             tiles = series.tiles,
-            counter_bps = rate(Kind::CounterValues),
+            counter_bps = rate(Kind::CounterValues) + rate(Kind::CounterChanges),
             tile_bps = rate(Kind::TileUtils),
             timing_bps = rate(Kind::Timings),
             peer_p2p_bps = rate(Kind::PeerP2p),
