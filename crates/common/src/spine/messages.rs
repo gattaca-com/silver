@@ -811,7 +811,7 @@ pub struct Prefill {
     pub columns_missing: u128,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, u8)]
 pub enum SyncNeed {
     Persisted {

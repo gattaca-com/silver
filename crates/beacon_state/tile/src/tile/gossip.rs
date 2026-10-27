@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
 use silver_common::{
     BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
     LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
-    TCacheRead, TRead, compute_subnet_for_attestation, hex32,
+    SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -417,8 +417,8 @@ impl BeaconStateTile {
                 Err(Feedback::Reject { reason, .. }) => {
                     self.reject_gossip(&vote, data, reason, producers)
                 }
-                Err(feedback @ Feedback::RequestEnvelope { block_root, att_slot }) => {
-                    self.pending_envelopes.request(block_root, att_slot, producers);
+                Err(feedback @ Feedback::Request(need)) => {
+                    producers.produce(need);
                     Self::local_verdict(&vote, feedback, producers);
                 }
                 Err(feedback) => Self::local_verdict(&vote, feedback, producers),
@@ -1279,7 +1279,10 @@ impl BeaconStateTile {
             return Err(Feedback::reject("payload present for same-slot block"));
         }
         if !self.fork_choice.is_payload_verified(block_root) {
-            return Err(Feedback::RequestEnvelope { block_root: *block_root, att_slot });
+            if self.pending_envelopes.holds(block_root) {
+                return Err(Feedback::Ignore);
+            }
+            return Err(Feedback::Request(SyncNeed::missing_envelope(*block_root, att_slot)));
         }
         // Spec `verify_attestation_payload_status`: the EL's verdict on the
         // attested payload decides, an outstanding one defers the vote.
@@ -1326,9 +1329,13 @@ impl BeaconStateTile {
         if target_epoch != att_slot / SLOTS_PER_EPOCH {
             return Err(Feedback::reject("attestation target epoch mismatch"));
         }
-        let Some(idx) = self.fork_choice.find_node_idx(data.beacon_block_root()) else {
+        let block_root = data.beacon_block_root();
+        let Some(idx) = self.fork_choice.find_node_idx(block_root) else {
             BeaconStateCounters::AttestationUnknownRoot.inc();
-            return Err(Feedback::Ignore);
+            if self.held.is_staged(block_root) {
+                return Err(Feedback::Ignore);
+            }
+            return Err(Feedback::Request(SyncNeed::missing_block(*block_root, att_slot)));
         };
         match self.fork_choice.checkpoint_block_of(idx, target_epoch * SLOTS_PER_EPOCH) {
             Some(r) if r == *data.target_root() => {}
@@ -1665,8 +1672,8 @@ impl BeaconStateTile {
                     producers,
                 );
             }
-            Feedback::RequestEnvelope { block_root, att_slot } => {
-                self.pending_envelopes.request(block_root, att_slot, producers);
+            Feedback::Request(need) => {
+                producers.produce(need);
                 Self::local_verdict(&m, feedback, producers);
             }
             Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {

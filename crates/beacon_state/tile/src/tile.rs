@@ -14,8 +14,9 @@ use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BuilderBidsResponse,
     DataColumnsEvent, DataKind, EngineResp, GossipTopic, HeadChange, HeadRoots, NewGossipMsg,
     Origin, PayloadResolution, PtcObservation, ReplayBlock, RequestId, RpcInbound, RpcResponse,
-    RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncUpdate, TCacheError, TCacheId,
-    TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId, hex32,
+    RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncNeed, SyncUpdate, TCacheError,
+    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -100,10 +101,7 @@ pub enum Feedback {
         parent_root: B256,
         block_root: B256,
     },
-    RequestEnvelope {
-        block_root: B256,
-        att_slot: Slot,
-    },
+    Request(SyncNeed),
     Ignore,
     AlreadySeen,
     TooOld,
@@ -138,9 +136,7 @@ impl Debug for Feedback {
                 hex32(parent_root),
                 hex32(block_root)
             ),
-            Self::RequestEnvelope { block_root, att_slot } => {
-                write!(f, "RequestEnvelope(0x{}, att_slot={att_slot})", hex32(block_root))
-            }
+            Self::Request(need) => write!(f, "Request({need:?})"),
             Self::BlockKnown(r) => write!(f, "BlockKnown(0x{})", hex32(r)),
         }
     }

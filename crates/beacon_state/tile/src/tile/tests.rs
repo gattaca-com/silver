@@ -3791,11 +3791,9 @@ fn ptc_vote_records_every_matching_committee_position() {
     assert_eq!(non_block_relays(&mut adapter), [GossipTopic::PayloadAttestationMessage]);
 }
 
-/// Spec `validate_on_attestation`: a single attestation for a block we
-/// don't hold is dropped (Ignore), self-healing on the validator's next
-/// vote.
+/// The vote itself is dropped; the block it names is fetched by root.
 #[test]
-fn single_att_unknown_block_ignored() {
+fn single_att_unknown_block_requests_it() {
     let mut tile = make_tile_at_wall_slot(31);
     seed_tile_with_keys(&mut tile, 128, 0);
     let (slot, ci, _, _) = find_committee_for_vi0(&tile);
@@ -3812,7 +3810,10 @@ fn single_att_unknown_block_ignored() {
         unknown,
         &imm,
     );
-    assert_eq!(tile.handle_attestation(&buf, subnet), Feedback::Ignore);
+    assert_eq!(
+        tile.handle_attestation(&buf, subnet),
+        Feedback::Request(SyncNeed::missing_block(unknown, slot))
+    );
 }
 
 /// Spec `validate_on_attestation`: a known-block vote whose target does not
@@ -4160,13 +4161,17 @@ fn agg_multi_committee_bits_rejected() {
 }
 
 #[test]
-fn agg_unknown_block_root_ignored() {
+fn agg_unknown_block_root_requests_the_block() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 0);
     let mut buf = empty_aggregate();
     buf[436] = 0b0000_0001; // single committee bit
     buf[228] = 0xFF; // beacon_block_root not in fork choice
-    assert_eq!(tile.handle_aggregate_and_proof(&buf), Feedback::Ignore);
+    let block_root = buf[228..260].try_into().unwrap();
+    assert_eq!(
+        tile.handle_aggregate_and_proof(&buf),
+        Feedback::Request(SyncNeed::missing_block(block_root, 0))
+    );
 }
 
 #[test]
