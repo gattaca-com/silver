@@ -134,11 +134,11 @@ impl PbsClient {
 
     /// Returns whether a [`SidecarEvent::Bid`] will answer the request.
     pub fn request_bid(&mut self, request: &SidecarBidRequest) -> bool {
-        let Some(registration) = self.registrations.get(&request.proposer_pubkey) else {
+        let Some(gas_limit) = self.registrations.gas_limit(&request.proposer_pubkey) else {
             silver_log::debug!(slot = request.slot, "proposer has no registration; no bid asked");
             return false;
         };
-        self.header_fetch.fetch(request, registration, &self.registry)
+        self.header_fetch.fetch(request, gas_limit, &self.registry)
     }
 
     pub fn spin(&mut self, events: &Events, on_event: &mut impl FnMut(SidecarEvent<'_>)) {

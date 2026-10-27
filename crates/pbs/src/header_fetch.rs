@@ -13,7 +13,6 @@ use crate::{
     CONSENSUS_VERSION,
     bid::{BidRefusal, BidRequest, builder_domain},
     json_bid::JsonBid,
-    registrations::Registration,
 };
 
 pub(crate) struct HeaderFetch {
@@ -53,7 +52,7 @@ impl HeaderFetch {
     pub(crate) fn fetch(
         &mut self,
         request: &SidecarBidRequest,
-        registration: Registration,
+        registered_gas_limit: u64,
         registry: &Registry,
     ) -> bool {
         if !self.pool.has_capacity() {
@@ -76,7 +75,8 @@ impl HeaderFetch {
             headers: &[],
         };
         self.pool.enqueue(slot, &get, registry);
-        self.pending = Some(BidRequest::new(request, registration, &self.spec, self.genesis_time));
+        self.pending =
+            Some(BidRequest::new(request, registered_gas_limit, &self.spec, self.genesis_time));
         true
     }
 
@@ -125,9 +125,6 @@ fn bid_passes(request: &BidRequest, checked: Result<(), BidRefusal>, signed_bid:
         return false;
     }
     let bid = SignedBuilderBidFuluView::message(signed_bid);
-    if !request.pays_fee_recipient(signed_bid) {
-        silver_log::warn!(slot, "sidecar bid pays a fee recipient other than the registration's");
-    }
     silver_log::info!(
         slot,
         value_wei = wei_saturating(BuilderBidFuluView::value(bid)),

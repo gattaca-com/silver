@@ -2,7 +2,7 @@ use blst::{
     BLST_ERROR,
     min_pk::{PublicKey, Signature},
 };
-use silver_beacon_state_data::{B256, ExecutionAddress, SLOTS_PER_EPOCH, Slot, SpecConfig};
+use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot, SpecConfig};
 use silver_common::SidecarBidRequest;
 use silver_ssz::{
     merkle::{ZERO_HASH, hash_concat},
@@ -13,7 +13,7 @@ use silver_ssz::{
     },
 };
 
-use crate::{FULU, registrations::Registration};
+use crate::FULU;
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
@@ -37,7 +37,6 @@ pub(crate) struct BidRequest {
     withdrawals_root: B256,
     gas_limit: u64,
     max_blobs: usize,
-    fee_recipient: ExecutionAddress,
 }
 
 #[derive(Debug)]
@@ -58,7 +57,7 @@ pub(crate) enum BidRefusal {
 impl BidRequest {
     pub(crate) fn new(
         request: &SidecarBidRequest,
-        registration: Registration,
+        registered_gas_limit: u64,
         spec: &SpecConfig,
         genesis_time: u64,
     ) -> Self {
@@ -70,9 +69,8 @@ impl BidRequest {
             timestamp: genesis_time + slot * spec.seconds_per_slot(),
             block_number: request.block_number,
             withdrawals_root: request.withdrawals_root,
-            gas_limit: expected_gas_limit(request.parent_gas_limit, registration.gas_limit),
+            gas_limit: expected_gas_limit(request.parent_gas_limit, registered_gas_limit),
             max_blobs: spec.blob_params_at(slot / SLOTS_PER_EPOCH).max_blobs_per_block as usize,
-            fee_recipient: registration.fee_recipient,
         }
     }
 
@@ -128,13 +126,6 @@ impl BidRequest {
         }
         Ok(())
     }
-
-    /// A relay may pay the proposer by a transaction in the payload instead,
-    /// leaving its own address here, so a mismatch does not refuse the bid.
-    pub(crate) fn pays_fee_recipient(&self, signed_bid: &[u8]) -> bool {
-        let header = BuilderBidFuluView::header(SignedBuilderBidFuluView::message(signed_bid));
-        *ExecutionPayloadHeaderFuluView::fee_recipient(header) == self.fee_recipient
-    }
 }
 
 /// The furthest the EL may move the gas limit from `parent` toward the
@@ -162,7 +153,6 @@ mod tests {
     const BLOCK_NUMBER: u64 = 9;
     const WITHDRAWALS_ROOT: B256 = [0x55; 32];
     const PARENT_GAS_LIMIT: u64 = 30_000_000;
-    const FEE_RECIPIENT: ExecutionAddress = [0x22; 20];
 
     /// The registration targets the parent's gas limit, so the bid keeps it.
     fn request() -> BidRequest {
@@ -175,10 +165,8 @@ mod tests {
             parent_gas_limit: PARENT_GAS_LIMIT,
             proposer_pubkey: [0; 48],
         };
-        let registration =
-            Registration { fee_recipient: FEE_RECIPIENT, gas_limit: PARENT_GAS_LIMIT };
         let spec = SpecConfig::mainnet();
-        BidRequest::new(&request, registration, &spec, TIMESTAMP - spec.seconds_per_slot())
+        BidRequest::new(&request, PARENT_GAS_LIMIT, &spec, TIMESTAMP - spec.seconds_per_slot())
     }
 
     fn domain() -> B256 {
@@ -197,7 +185,6 @@ mod tests {
         bid[12] = 7;
         let header = &mut bid[BUILDER_BID_FULU_FIXED..];
         header[..32].copy_from_slice(&PARENT_HASH);
-        header[32..52].copy_from_slice(&FEE_RECIPIENT);
         header[372..404].copy_from_slice(&PREV_RANDAO);
         header[404..412].copy_from_slice(&BLOCK_NUMBER.to_le_bytes());
         header[412..420].copy_from_slice(&PARENT_GAS_LIMIT.to_le_bytes());
@@ -238,7 +225,6 @@ mod tests {
     fn signed_bid_passes() {
         let bid = signed(unsigned_bid());
         request().check(&bid, FULU, &domain()).unwrap();
-        assert!(request().pays_fee_recipient(&bid));
     }
 
     #[test]
@@ -315,13 +301,5 @@ mod tests {
             request().check(&bid[..150], FULU, &domain()),
             Err(BidRefusal::Malformed)
         ));
-    }
-
-    #[test]
-    fn other_fee_recipient_is_reported_not_refused() {
-        let bid = signed(unsigned_bid());
-        let other = BidRequest { fee_recipient: [0x23; 20], ..request() };
-        other.check(&bid, FULU, &domain()).unwrap();
-        assert!(!other.pays_fee_recipient(&bid));
     }
 }
