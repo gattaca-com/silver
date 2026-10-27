@@ -604,9 +604,9 @@ mod tests {
         assert_eq!(hoodi["SECONDS_PER_ETH1_BLOCK"], "12");
         assert_eq!(hoodi["TERMINAL_TOTAL_DIFFICULTY"], "0", "Hoodi merged at genesis");
         assert_eq!(hoodi["BLOB_SCHEDULE"].as_array().unwrap().len(), 2);
-        assert_eq!(hoodi["BLOB_SCHEDULE"][0]["EPOCH"], "412672");
+        assert_eq!(hoodi["BLOB_SCHEDULE"][0]["EPOCH"], "52480");
         assert_eq!(hoodi["BLOB_SCHEDULE"][0]["MAX_BLOBS_PER_BLOCK"], "15");
-        assert_eq!(hoodi["BLOB_SCHEDULE"][1]["EPOCH"], "419072");
+        assert_eq!(hoodi["BLOB_SCHEDULE"][1]["EPOCH"], "54016");
 
         let mainnet = spec_map(&SpecConfig::mainnet());
         assert_eq!(mainnet["CONFIG_NAME"], "mainnet");
