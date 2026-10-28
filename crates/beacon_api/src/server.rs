@@ -1041,21 +1041,15 @@ impl BeaconApi {
         answer: Result<ClientResponse<'_>, &str>,
         submissions: &mut TProducer,
     ) {
-        let Some(token) = self.token_awaiting(request_id) else {
+        let answered = self.answer_awaiting(request_id, submissions, |pending, response| {
+            let Pending::SidecarResponse { call_path, .. } = pending else {
+                unreachable!("awaiting a sidecar answer");
+            };
+            response.sidecar_response(call_path, answer);
+        });
+        if !answered {
             silver_log::debug!(request_id, "sidecar answer for a connection already closed");
-            return;
-        };
-        let requests = self
-            .connections
-            .get_mut(&token)
-            .and_then(Connection::requests_mut)
-            .expect("found awaiting above");
-        let Some(Pending::SidecarResponse { call_path, .. }) = requests.pending.take() else {
-            unreachable!("found awaiting a sidecar answer above");
-        };
-        Response::new(requests.http.write_buf_mut(), submissions)
-            .sidecar_response(call_path, answer);
-        self.resume_writing(token);
+        }
     }
 
     pub fn handle_builder_preferences_response(
@@ -1064,19 +1058,34 @@ impl BeaconApi {
         failures: PreferenceFailures<'_>,
         submissions: &mut TProducer,
     ) {
-        let Some(token) = self.token_awaiting(request_id) else {
+        let answered = self.answer_awaiting(request_id, submissions, |pending, response| {
+            let Pending::BuilderPreferences { .. } = pending else {
+                unreachable!("awaiting builder answers");
+            };
+            response.builder_preferences_response(failures);
+        });
+        if !answered {
             silver_log::debug!(request_id, "builder answers for a connection already closed");
-            return;
-        };
+        }
+    }
+
+    /// `false` when the connection awaiting `request_id` has closed.
+    fn answer_awaiting(
+        &mut self,
+        request_id: u64,
+        submissions: &mut TProducer,
+        answer: impl FnOnce(Pending, &mut Response<'_>),
+    ) -> bool {
+        let Some(token) = self.token_awaiting(request_id) else { return false };
         let requests = self
             .connections
             .get_mut(&token)
             .and_then(Connection::requests_mut)
             .expect("found awaiting above");
-        requests.pending = None;
-        Response::new(requests.http.write_buf_mut(), submissions)
-            .builder_preferences_response(failures);
+        let pending = requests.pending.take().expect("found awaiting above");
+        answer(pending, &mut Response::new(requests.http.write_buf_mut(), submissions));
         self.resume_writing(token);
+        true
     }
 
     /// The builders a block request still waiting on `request_id` names.
@@ -1188,8 +1197,11 @@ impl BeaconApi {
                     forward_to_sidecar(*next_request_id, call_path, req.body)
                 }
                 Outcome::AwaitingBuilderPreferences { is_json } => {
-                    let (body, _) =
-                        PreferencesBody::parse(req.body, is_json).expect("the handler parsed it");
+                    let body = if is_json {
+                        PreferencesBody::Json(req.body)
+                    } else {
+                        PreferencesBody::Ssz(req.body)
+                    };
                     to_builders(*next_request_id, body);
                 }
                 _ => {}
@@ -2901,13 +2913,11 @@ mod tests {
     #[test]
     fn builder_preferences_refused_before_any_builder() {
         let ssz = builder_preferences_ssz("https://builder.example");
-        let cases: [(&str, &str, &[u8], &str); 6] = [
+        let cases: [(&str, &str, &[u8], &str); 4] = [
             ("text/plain", "gloas", b"[]", "HTTP/1.1 415"),
-            ("application/json", "gloas", b"[]", "HTTP/1.1 200 OK"),
             ("application/json", "gloas", b"[{}]", "HTTP/1.1 400"),
             ("application/octet-stream", "fulu", &ssz, "HTTP/1.1 400"),
             ("application/octet-stream", "gloas", &ssz[..ssz.len() - 120], "HTTP/1.1 400"),
-            ("application/octet-stream", "gloas", b"", "HTTP/1.1 200 OK"),
         ];
         for (content_type, version, body, expected) in cases {
             let mut server = server_with(4, Duration::from_secs(5));

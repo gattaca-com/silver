@@ -29,22 +29,19 @@ pub enum PreferencesBody<'a> {
 }
 
 impl<'a> PreferencesBody<'a> {
-    /// The body and its entry count, `None` when it does not decode or breaks
-    /// a bound.
-    pub fn parse(body: &'a [u8], is_json: bool) -> Option<(Self, usize)> {
+    /// `None` when the body does not decode or breaks a bound.
+    pub fn parse(body: &'a [u8], is_json: bool) -> Option<Self> {
         if is_json {
             let mut urls_fit = true;
-            let count = each_array_entry(body, MAX_PREFERENCES, |_, entry: JsonEntry<'_>| {
+            let decoded = each_array_entry(body, MAX_PREFERENCES, |_, entry: JsonEntry<'_>| {
                 urls_fit &= entry.url.len() <= MAX_BUILDER_URL_SIZE;
             });
-            return count.ok().filter(|_| urls_fit).map(|count| (Self::Json(body), count));
+            return (decoded.is_ok() && urls_fit).then_some(Self::Json(body));
         }
-        let mut count = 0;
-        let framed = ListElements::parse(body, MAX_PREFERENCES)?.all(|entry| {
-            count += 1;
-            BuilderPreferencesEntry::parse(entry).is_some()
-        });
-        framed.then_some((Self::Ssz(body), count))
+        let mut entries = ListElements::parse(body, MAX_PREFERENCES)?;
+        entries
+            .all(|entry| BuilderPreferencesEntry::parse(entry).is_some())
+            .then_some(Self::Ssz(body))
     }
 
     /// Hands `each` every entry with its index. A JSON entry is encoded into
@@ -236,7 +233,7 @@ pub(crate) mod tests {
 
     /// Each entry's index, proposer, URL and SSZ builder request.
     fn requests(body: &[u8], is_json: bool) -> Vec<(usize, BLSPubkey, Vec<u8>, Vec<u8>)> {
-        let (body, _) = PreferencesBody::parse(body, is_json).expect("decodes");
+        let body = PreferencesBody::parse(body, is_json).expect("decodes");
         let mut requests = Vec::new();
         body.for_each_entry(&mut Vec::new(), |index, entry| {
             let mut request = Vec::new();
@@ -249,7 +246,6 @@ pub(crate) mod tests {
     #[test]
     fn entries_read_back_and_render_the_builder_request() {
         let ssz = list(&[entry(1, "https://a", 7), entry(2, "", 0)]);
-        assert_eq!(PreferencesBody::parse(&ssz, false).unwrap().1, 2);
         let auth = auth_ssz(b"builder.example", 9);
         let request = |max: u64| [&max.to_le_bytes()[..], &12u32.to_le_bytes(), &auth].concat();
         assert_eq!(requests(&ssz, false), [
@@ -257,7 +253,7 @@ pub(crate) mod tests {
             (1, [2; 48], Vec::new(), request(0)),
         ]);
 
-        let (body, _) = PreferencesBody::parse(&ssz, false).unwrap();
+        let body = PreferencesBody::parse(&ssz, false).unwrap();
         let mut json = String::new();
         body.for_each_entry(&mut Vec::new(), |index, entry| {
             if index == 0 {
@@ -284,9 +280,8 @@ pub(crate) mod tests {
     fn json_entries_match_their_ssz() {
         let json = format!("[{},{}]", entry_json(1, "https://a", 7), entry_json(2, "", 0));
         let ssz = list(&[entry(1, "https://a", 7), entry(2, "", 0)]);
-        assert_eq!(PreferencesBody::parse(json.as_bytes(), true).unwrap().1, 2);
         assert_eq!(requests(json.as_bytes(), true), requests(&ssz, false));
-        assert_eq!(PreferencesBody::parse(b"[]", true).unwrap().1, 0);
+        assert!(PreferencesBody::parse(b"[]", true).is_some());
     }
 
     #[test]
@@ -333,6 +328,6 @@ pub(crate) mod tests {
         for (i, body) in bodies.iter().enumerate() {
             assert!(PreferencesBody::parse(body, false).is_none(), "case {i}");
         }
-        assert_eq!(PreferencesBody::parse(&[], false).unwrap().1, 0);
+        assert!(PreferencesBody::parse(&[], false).is_some());
     }
 }

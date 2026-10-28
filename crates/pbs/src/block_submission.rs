@@ -26,7 +26,8 @@ impl BlockSubmission {
                 tokens,
                 BufferCapacity { read: 4 << 10, write: 64 << 10 },
                 1,
-            ),
+            )
+            .expect("pbs.endpoint is http://"),
             timeout: config.submit_blinded_block_timeout(),
             refused: Vec::new(),
         }

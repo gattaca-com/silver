@@ -117,7 +117,8 @@ impl EngineClient {
         );
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            pool: HttpPool::new(endpoint, tokens, CONNECTION_CAPACITY, max_connections),
+            pool: HttpPool::new(endpoint, tokens, CONNECTION_CAPACITY, max_connections)
+                .unwrap_or_else(|e| panic!("invalid engine endpoint: {e}")),
             request_timeout,
             jwt,
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),

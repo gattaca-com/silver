@@ -7,7 +7,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, pki_types::ServerNam
 
 use crate::Stream;
 
-static WEBPKI_ROOTS: LazyLock<Arc<ClientConfig>> = LazyLock::new(|| {
+static WEBPKI_CONFIG: LazyLock<Arc<ClientConfig>> = LazyLock::new(|| {
     let roots = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
     client_config(roots)
 });
@@ -24,12 +24,14 @@ pub(crate) fn client_config(roots: RootCertStore) -> Arc<ClientConfig> {
 
 pub(crate) struct Tls {
     pub(crate) config: Arc<ClientConfig>,
-    pub(crate) server_name: String,
+    pub(crate) server_name: ServerName<'static>,
 }
 
 impl Tls {
-    pub(crate) fn webpki(server_name: String) -> Self {
-        Self { config: WEBPKI_ROOTS.clone(), server_name }
+    pub(crate) fn webpki(server_name: &str) -> io::Result<Self> {
+        let server_name = ServerName::try_from(server_name.to_owned())
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "invalid tls server name"))?;
+        Ok(Self { config: WEBPKI_CONFIG.clone(), server_name })
     }
 }
 
@@ -42,10 +44,8 @@ pub(crate) enum Transport {
 impl Transport {
     pub(crate) fn new(stream: Stream, tls: Option<&Tls>) -> io::Result<Self> {
         let Some(tls) = tls else { return Ok(Self::Plain(stream)) };
-        let server_name = ServerName::try_from(tls.server_name.clone())
-            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "invalid tls server name"))?;
-        let mut session =
-            ClientConnection::new(tls.config.clone(), server_name).map_err(io::Error::other)?;
+        let mut session = ClientConnection::new(tls.config.clone(), tls.server_name.clone())
+            .map_err(io::Error::other)?;
         // A request is handed over whole, even before the handshake ends.
         session.set_buffer_limit(None);
         Ok(Self::Tls { stream, session: Box::new(session) })
@@ -55,10 +55,6 @@ impl Transport {
         match self {
             Self::Plain(stream) | Self::Tls { stream, .. } => stream,
         }
-    }
-
-    pub(crate) fn is_tls(&self) -> bool {
-        matches!(self, Self::Tls { .. })
     }
 
     pub(crate) fn wants_write(&self) -> bool {
@@ -115,6 +111,7 @@ impl Write for Transport {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.flush_records()?;
         self.stream_mut().flush()
     }
 }

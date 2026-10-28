@@ -111,7 +111,8 @@ impl PbsClient {
                 tokens,
                 CONNECTION_CAPACITY,
                 1,
-            ),
+            )
+            .expect("pbs.endpoint is http://"),
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             requests: VecDeque::new(),
             bodies: Vec::new(),

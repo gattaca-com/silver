@@ -119,6 +119,7 @@ impl<'a> Response<'a> {
     pub(crate) fn await_builder_preferences(&mut self, is_json: bool) {
         self.outcome = Outcome::AwaitingBuilderPreferences { is_json };
     }
+
     pub(crate) fn builder_preferences_response(&mut self, failures: PreferenceFailures<'_>) {
         if failures.is_empty() {
             return self.ok();

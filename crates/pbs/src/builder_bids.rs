@@ -1,5 +1,7 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Write},
+    mem,
     ops::Range,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -12,7 +14,7 @@ use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use crate::{
     CONSENSUS_VERSION,
-    builder_config::BuilderConfig,
+    builder_config::{BuilderConfig, MAX_BUILDER_ENTRIES},
     builder_pools::{BuilderCall, BuilderPools, MAX_REQUESTS},
     builder_preferences::{
         BuilderPreferencesEntry, MAX_PREFERENCES, PreferenceFailures, PreferencesBody,
@@ -25,8 +27,7 @@ const SSZ: &str = "application/octet-stream";
 const SSZ_OR_JSON: &str = "application/octet-stream;q=1.0,application/json;q=0.9";
 /// A round's request ids end in the entry's index.
 const INDEX_BITS: u32 = MAX_PREFERENCES.ilog2();
-/// Tags the id of a preferences entry sent as JSON.
-const JSON: u64 = 1 << 61;
+const _: () = assert!(MAX_PREFERENCES.is_power_of_two() && MAX_BUILDER_ENTRIES <= MAX_PREFERENCES);
 
 pub enum BuilderEvent<'a> {
     /// A finished bid round's framed [`BuilderBid`]s.
@@ -41,40 +42,52 @@ pub enum BuilderEvent<'a> {
 pub struct BuilderBids {
     registry: Registry,
     pools: BuilderPools,
-    rounds: Vec<Round>,
-    /// Finished rounds, whose buffers the next ones reuse.
-    spare_rounds: Vec<Round>,
-    next_round: u64,
+    bid_rounds: Rounds<BidEntries>,
+    preference_rounds: Rounds<PreferenceEntries>,
     next_submission: u64,
+    /// The bid requests' `X-Timeout-Ms`.
+    timeout_ms: String,
     buffers: RequestBuffers,
     json_entry: Vec<u8>,
     json_bid: JsonPayloadBid,
 }
 
+/// Finished rounds stay as spares, whose buffers the next ones reuse.
+#[derive(Default)]
+struct Rounds<E> {
+    live: Vec<Round<E>>,
+    spare: Vec<Round<E>>,
+    next_id: u64,
+}
+
 /// One request's entries: answered once the last is.
 #[derive(Default)]
-struct Round {
+struct Round<E> {
     id: u64,
     request_id: u64,
-    kind: RoundKind,
     unanswered: usize,
-    /// Bid rounds: each entry's terms and accepted builders.
-    terms: Vec<EntryTerms>,
-    pubkeys: Vec<u8>,
-    /// Preferences rounds: each entry's SSZ, to send again as JSON to a
-    /// builder that refuses SSZ.
-    entries: Vec<u8>,
-    entry_starts: Vec<usize>,
-    json_resends: Vec<usize>,
+    entries: E,
     /// Framed [`BuilderBid`]s, or framed [`PreferenceFailures`].
     out: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Default)]
-enum RoundKind {
-    #[default]
-    Bids,
-    Preferences,
+trait RoundEntries: Default {
+    fn clear(&mut self);
+}
+
+/// Each entry's terms and accepted builders.
+#[derive(Default)]
+struct BidEntries {
+    terms: Vec<EntryTerms>,
+    pubkeys: Vec<u8>,
+}
+
+/// Each entry's SSZ, to send again as JSON to a builder that refuses SSZ.
+#[derive(Default)]
+struct PreferenceEntries {
+    bytes: Vec<u8>,
+    starts: Vec<usize>,
+    json_resends: Vec<usize>,
 }
 
 struct EntryTerms {
@@ -87,6 +100,7 @@ struct EntryTerms {
 #[derive(Default)]
 struct RequestBuffers {
     path: String,
+    date_ms: String,
     ssz: Vec<u8>,
     json: String,
 }
@@ -98,10 +112,10 @@ impl BuilderBids {
         Self {
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             pools: BuilderPools::new(tokens, bid_timeout),
-            rounds: Vec::new(),
-            spare_rounds: Vec::new(),
-            next_round: 0,
+            bid_rounds: Rounds::default(),
+            preference_rounds: Rounds::default(),
             next_submission: 0,
+            timeout_ms: bid_timeout.as_millis().to_string(),
             buffers: RequestBuffers::default(),
             json_entry: Vec::new(),
             json_bid: JsonPayloadBid::new(),
@@ -112,18 +126,18 @@ impl BuilderBids {
     /// could be asked.
     pub fn request(&mut self, request: &BuilderBidsRequest, config: BuilderConfig<'_>) {
         let BuilderBidsRequest { request_id, slot, .. } = *request;
-        let mut round = self.start_round(request_id, RoundKind::Bids);
+        let mut round = self.bid_rounds.start(request_id);
         let sent_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
-        let (sent_ms, timeout_ms) =
-            (sent_ms.to_string(), self.pools.bid_timeout().as_millis().to_string());
+        let RequestBuffers { path, date_ms, .. } = &mut self.buffers;
+        date_ms.clear();
+        write!(date_ms, "{sent_ms}").unwrap();
         let headers = [
             (CONSENSUS_VERSION, "gloas"),
-            ("Date-Milliseconds", &sent_ms),
-            ("X-Timeout-Ms", &timeout_ms),
+            ("Date-Milliseconds", date_ms.as_str()),
+            ("X-Timeout-Ms", &self.timeout_ms),
         ];
 
         for (entry, builder) in config.entries().enumerate() {
-            let entry = entry as u32;
             let Some(url) = str::from_utf8(builder.url()).ok().filter(|url| !url.is_empty()) else {
                 silver_log::warn!(slot, entry, "builder url is not utf-8; no bid asked");
                 continue;
@@ -137,15 +151,6 @@ impl BuilderBids {
                 );
                 continue;
             }
-            let pool = match self.pools.get(url, BuilderCall::Bid) {
-                Ok(pool) => pool,
-                Err(unavailable) => {
-                    let reason = unavailable.reason();
-                    silver_log::warn!(slot, entry, url, reason, "no bid asked");
-                    continue;
-                }
-            };
-            let path = &mut self.buffers.path;
             write_bid_path(path, url, request);
             let post = ClientRequest {
                 method: Method::Post,
@@ -156,23 +161,30 @@ impl BuilderBids {
                 content_type: Some(SSZ),
                 headers: &headers,
             };
-            let id = round.id << INDEX_BITS | u64::from(entry);
-            pool.enqueue(BuilderCall::Bid, id, &post, &self.registry);
+            let id = round.entry_id(entry);
+            if let Err(unavailable) =
+                self.pools.enqueue(url, BuilderCall::Bid, id, &post, &self.registry)
+            {
+                let reason = unavailable.reason();
+                silver_log::warn!(slot, entry, url, reason, "no bid asked");
+                continue;
+            }
 
-            let start = round.pubkeys.len();
-            builder.builder_pubkeys().for_each(|key| round.pubkeys.extend_from_slice(key));
-            round.terms.push(EntryTerms {
-                entry,
+            let BidEntries { terms, pubkeys } = &mut round.entries;
+            let start = pubkeys.len();
+            builder.builder_pubkeys().for_each(|key| pubkeys.extend_from_slice(key));
+            terms.push(EntryTerms {
+                entry: entry as u32,
                 terms: BuilderTerms {
                     min_bid: builder.min_bid(),
                     builder_boost_factor: builder.builder_boost_factor(),
                     max_execution_payment: builder.max_execution_payment(),
                 },
-                pubkeys: start..round.pubkeys.len(),
+                pubkeys: start..pubkeys.len(),
             });
             round.unanswered += 1;
         }
-        self.rounds.push(round);
+        self.bid_rounds.live.push(round);
     }
 
     /// `submitBuilderPreferences` for each entry, as SSZ, and again as JSON
@@ -180,29 +192,22 @@ impl BuilderBids {
     /// every builder has; an entry whose builder has no connection to spare
     /// fails, for the VC to send again.
     pub fn submit_preferences(&mut self, request_id: u64, body: PreferencesBody<'_>) {
-        let mut round = self.start_round(request_id, RoundKind::Preferences);
+        let mut round = self.preference_rounds.start(request_id);
         let Self { registry, pools, buffers, json_entry, .. } = self;
         body.for_each_entry(json_entry, |index, entry| {
-            round.entry_starts.push(round.entries.len());
-            round.entries.extend_from_slice(entry.bytes());
-            let id = round.id << INDEX_BITS | index as u64;
-            match buffers.send_preferences(pools, registry, id, entry) {
+            round.entries.push(entry);
+            let id = round.entry_id(index);
+            match buffers.send_preferences(pools, registry, BuilderCall::Preferences, id, entry) {
                 Ok(()) => round.unanswered += 1,
                 Err(reason) => round.fail(index, format_args!("{reason}")),
             }
         });
-        self.rounds.push(round);
+        self.preference_rounds.live.push(round);
     }
 
     /// `submitSignedBeaconBlock`: the builder learns its bid won without
     /// waiting for gossip. Its answer is only logged.
     pub fn submit_block(&mut self, url: &str, signed_block: &[u8]) {
-        let pool = match self.pools.get(url, BuilderCall::Block) {
-            Ok(pool) => pool,
-            Err(unavailable) => {
-                return silver_log::warn!(url, reason = unavailable.reason(), "block not forwarded");
-            }
-        };
         let path = &mut self.buffers.path;
         write_base_path(path, url);
         path.push_str("/eth/v1/builder/beacon_blocks");
@@ -215,69 +220,121 @@ impl BuilderBids {
             content_type: Some(SSZ),
             headers: &[(CONSENSUS_VERSION, "gloas")],
         };
-        pool.enqueue(BuilderCall::Block, self.next_submission, &post, &self.registry);
+        let id = self.next_submission;
+        if let Err(unavailable) =
+            self.pools.enqueue(url, BuilderCall::Block, id, &post, &self.registry)
+        {
+            return silver_log::warn!(url, reason = unavailable.reason(), "block not forwarded");
+        }
         self.next_submission += 1;
     }
 
     pub fn spin(&mut self, events: &Events, on_event: &mut impl FnMut(BuilderEvent<'_>)) {
-        let Self { registry, pools, rounds, buffers, json_bid, .. } = self;
-        pools.dispatch_events(events, registry, &mut |url, call, id, response| {
-            if call == BuilderCall::Block {
-                return log_submission(url, response);
+        let Self { registry, pools, bid_rounds, preference_rounds, buffers, json_bid, .. } = self;
+        pools.dispatch_events(events, registry, &mut |url, call, id, response| match call {
+            BuilderCall::Block => log_submission(url, response),
+            BuilderCall::Bid => {
+                if let Some((round, entry)) = bid_rounds.answered(id) {
+                    round.record_bid(url, entry as u32, response, json_bid);
+                }
             }
-            let (round_id, index, as_json) = split_id(id);
-            if let Some(round) = rounds.iter_mut().find(|round| round.id == round_id) {
-                round.record(url, index, as_json, response, json_bid);
+            BuilderCall::Preferences | BuilderCall::PreferencesJson => {
+                if let Some((round, index)) = preference_rounds.answered(id) {
+                    round.record_preferences(url, call, index, response);
+                }
             }
         });
-        for round in rounds.iter_mut() {
+        for round in &mut preference_rounds.live {
             round.resend_as_json(buffers, pools, registry);
         }
 
-        let Self { rounds, spare_rounds, .. } = self;
-        for round in rounds.extract_if(.., |round| round.unanswered == 0) {
-            on_event(round.event());
-            spare_rounds.push(round);
-        }
-    }
-
-    fn start_round(&mut self, request_id: u64, kind: RoundKind) -> Round {
-        let mut round = self.spare_rounds.pop().unwrap_or_default();
-        for buffer in [&mut round.pubkeys, &mut round.entries, &mut round.out] {
-            buffer.clear();
-        }
-        round.terms.clear();
-        round.entry_starts.clear();
-        let round = Round { id: self.next_round, request_id, kind, unanswered: 0, ..round };
-        self.next_round += 1;
-        round
+        bid_rounds.finish(|round| {
+            on_event(BuilderEvent::Bids { request_id: round.request_id, bids: &round.out })
+        });
+        preference_rounds.finish(|round| {
+            let failures = PreferenceFailures::new(&round.out);
+            on_event(BuilderEvent::Preferences { request_id: round.request_id, failures })
+        });
     }
 }
 
-/// The round, the entry's index, and whether the entry went as JSON.
-fn split_id(id: u64) -> (u64, usize, bool) {
-    let as_json = id & JSON != 0;
-    let id = id & !JSON;
-    (id >> INDEX_BITS, (id % MAX_PREFERENCES as u64) as usize, as_json)
+impl<E: RoundEntries> Rounds<E> {
+    fn start(&mut self, request_id: u64) -> Round<E> {
+        let mut round = self.spare.pop().unwrap_or_default();
+        round.entries.clear();
+        round.out.clear();
+        let round = Round { id: self.next_id, request_id, unanswered: 0, ..round };
+        self.next_id += 1;
+        round
+    }
+
+    /// The round and entry index an answer's id names.
+    fn answered(&mut self, id: u64) -> Option<(&mut Round<E>, usize)> {
+        let (round_id, index) = (id >> INDEX_BITS, (id & ((1 << INDEX_BITS) - 1)) as usize);
+        let round = self.live.iter_mut().find(|round| round.id == round_id)?;
+        Some((round, index))
+    }
+
+    fn finish(&mut self, mut each: impl FnMut(&Round<E>)) {
+        let Self { live, spare, .. } = self;
+        for round in live.extract_if(.., |round| round.unanswered == 0) {
+            each(&round);
+            spare.push(round);
+        }
+    }
+}
+
+impl<E> Round<E> {
+    fn entry_id(&self, index: usize) -> u64 {
+        self.id << INDEX_BITS | index as u64
+    }
+}
+
+impl RoundEntries for BidEntries {
+    fn clear(&mut self) {
+        self.terms.clear();
+        self.pubkeys.clear();
+    }
+}
+
+impl RoundEntries for PreferenceEntries {
+    fn clear(&mut self) {
+        self.bytes.clear();
+        self.starts.clear();
+        self.json_resends.clear();
+    }
+}
+
+impl PreferenceEntries {
+    fn push(&mut self, entry: BuilderPreferencesEntry<'_>) {
+        self.starts.push(self.bytes.len());
+        self.bytes.extend_from_slice(entry.bytes());
+    }
+
+    fn entry(&self, index: usize) -> BuilderPreferencesEntry<'_> {
+        let end = self.starts.get(index + 1).copied().unwrap_or(self.bytes.len());
+        BuilderPreferencesEntry::parse(&self.bytes[self.starts[index]..end])
+            .expect("parsed when sent")
+    }
 }
 
 impl RequestBuffers {
-    /// SSZ under `id`, or JSON when `id` carries the [`JSON`] tag.
+    /// SSZ under [`BuilderCall::Preferences`], JSON under
+    /// [`BuilderCall::PreferencesJson`].
     fn send_preferences(
         &mut self,
         pools: &mut BuilderPools,
         registry: &Registry,
+        call: BuilderCall,
         id: u64,
         entry: BuilderPreferencesEntry<'_>,
     ) -> Result<(), &'static str> {
         let url = str::from_utf8(entry.url()).ok().filter(|url| !url.is_empty());
         let url = url.ok_or("url is empty or not utf-8")?;
-        let pool =
-            pools.get(url, BuilderCall::Preferences).map_err(|unavailable| unavailable.reason())?;
         write_base_path(&mut self.path, url);
         self.path.push_str("/eth/v1/builder/builder_preferences/");
         write_hex(&mut self.path, entry.proposer_pubkey());
-        let (body, content_type) = if id & JSON == 0 {
+        let (body, content_type) = if call == BuilderCall::Preferences {
             entry.write_request(&mut self.ssz);
             (&self.ssz[..], SSZ)
         } else {
@@ -293,41 +350,11 @@ impl RequestBuffers {
             content_type: Some(content_type),
             headers: &[(CONSENSUS_VERSION, "gloas")],
         };
-        pool.enqueue(BuilderCall::Preferences, id, &post, registry);
-        Ok(())
+        pools.enqueue(url, call, id, &post, registry).map_err(|unavailable| unavailable.reason())
     }
 }
 
-impl Round {
-    fn record(
-        &mut self,
-        url: &str,
-        index: usize,
-        as_json: bool,
-        response: Result<ClientResponse<'_>, &str>,
-        json_bid: &mut JsonPayloadBid,
-    ) {
-        match self.kind {
-            RoundKind::Bids => self.record_bid(url, index as u32, response, json_bid),
-            RoundKind::Preferences => self.record_preferences(url, index, as_json, response),
-        }
-    }
-
-    fn event(&self) -> BuilderEvent<'_> {
-        let request_id = self.request_id;
-        match self.kind {
-            RoundKind::Bids => BuilderEvent::Bids { request_id, bids: &self.out },
-            RoundKind::Preferences => BuilderEvent::Preferences {
-                request_id,
-                failures: PreferenceFailures::new(&self.out),
-            },
-        }
-    }
-
-    fn fail(&mut self, index: usize, message: fmt::Arguments<'_>) {
-        PreferenceFailures::write(&mut self.out, index, message);
-    }
-
+impl Round<BidEntries> {
     fn record_bid(
         &mut self,
         url: &str,
@@ -337,14 +364,21 @@ impl Round {
     ) {
         self.unanswered -= 1;
         let Some(signed_bid) = accepted_bid(url, entry, response, json_bid) else { return };
-        let terms = self.terms.iter().find(|terms| terms.entry == entry).expect("asked");
+        let BidEntries { terms, pubkeys } = &self.entries;
+        let terms = terms.iter().find(|terms| terms.entry == entry).expect("asked");
         BuilderBid {
             entry,
             terms: terms.terms,
-            builder_pubkeys: &self.pubkeys[terms.pubkeys.clone()],
+            builder_pubkeys: &pubkeys[terms.pubkeys.clone()],
             signed_bid,
         }
         .write(&mut self.out);
+    }
+}
+
+impl Round<PreferenceEntries> {
+    fn fail(&mut self, index: usize, message: fmt::Arguments<'_>) {
+        PreferenceFailures::write(&mut self.out, index, message);
     }
 
     /// A 202 is the only acceptance. A 415 or 406 to SSZ holds the entry for
@@ -352,34 +386,36 @@ impl Round {
     fn record_preferences(
         &mut self,
         url: &str,
+        call: BuilderCall,
         index: usize,
-        as_json: bool,
         response: Result<ClientResponse<'_>, &str>,
     ) {
         #[derive(Deserialize)]
         struct ErrorMessage<'a> {
-            message: &'a str,
+            #[serde(borrow)]
+            message: Cow<'a, str>,
         }
 
+        if call == BuilderCall::Preferences &&
+            let Ok(response) = &response &&
+            matches!(response.status, 406 | 415)
+        {
+            silver_log::info!(url, "builder refused ssz preferences; sending json");
+            return self.entries.json_resends.push(index);
+        }
+        self.unanswered -= 1;
         let response = match response {
             Ok(response) if response.status == 202 => {
-                self.unanswered -= 1;
                 return silver_log::debug!(url, "builder accepted preferences");
-            }
-            Ok(response) if matches!(response.status, 406 | 415) && !as_json => {
-                silver_log::info!(url, "builder refused ssz preferences; sending json");
-                return self.json_resends.push(index);
             }
             Ok(response) => response,
             Err(error) => {
                 silver_log::warn!(url, error, "preferences did not reach builder");
-                self.unanswered -= 1;
                 return self.fail(index, format_args!("builder unreachable: {error}"));
             }
         };
         let status = response.status;
         silver_log::warn!(url, status, "builder refused preferences");
-        self.unanswered -= 1;
         match serde_json::from_slice::<ErrorMessage<'_>>(response.body) {
             Ok(error) => self.fail(index, format_args!("{}", error.message)),
             Err(_) => self.fail(index, format_args!("builder answered {status}")),
@@ -392,17 +428,16 @@ impl Round {
         pools: &mut BuilderPools,
         registry: &Registry,
     ) {
-        let Self { id, unanswered, entries, entry_starts, json_resends, out, .. } = self;
-        for index in json_resends.drain(..) {
-            let end = entry_starts.get(index + 1).copied().unwrap_or(entries.len());
-            let entry = BuilderPreferencesEntry::parse(&entries[entry_starts[index]..end])
-                .expect("parsed when sent");
-            let json_id = JSON | *id << INDEX_BITS | index as u64;
-            if let Err(reason) = buffers.send_preferences(pools, registry, json_id, entry) {
-                *unanswered -= 1;
-                PreferenceFailures::write(out, index, format_args!("{reason}"));
+        let mut resends = mem::take(&mut self.entries.json_resends);
+        for index in resends.drain(..) {
+            let (id, entry) = (self.entry_id(index), self.entries.entry(index));
+            let call = BuilderCall::PreferencesJson;
+            if let Err(reason) = buffers.send_preferences(pools, registry, call, id, entry) {
+                self.unanswered -= 1;
+                self.fail(index, format_args!("{reason}"));
             }
         }
+        self.entries.json_resends = resends;
     }
 }
 
@@ -562,7 +597,7 @@ mod tests {
             } else if accept_preferences {
                 stream.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n").unwrap();
             } else if refuse_preferences {
-                let error = r#"{"code":400,"message":"slot has already passed"}"#;
+                let error = r#"{"code":400,"message":"slot \"9\" has already passed"}"#;
                 let head =
                     format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n", error.len());
                 stream.write_all(&[head.as_bytes(), error.as_bytes()].concat()).unwrap();
@@ -713,11 +748,15 @@ mod tests {
         let body = config(0, 100, &[entry(&format!("{url}/new"), [0, 0, 100])]);
         request.request_id = 999;
         bids.request(&request, BuilderConfig::parse(&body).unwrap());
-        assert_eq!(bids.rounds.last().unwrap().unanswered, 0, "no pool is free for a new url");
+        assert_eq!(
+            bids.bid_rounds.live.last().unwrap().unanswered,
+            0,
+            "no pool is free for a new url"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut answered = Vec::new();
-        while !bids.rounds.is_empty() {
+        while !bids.bid_rounds.live.is_empty() {
             assert!(Instant::now() < deadline, "requests did not time out");
             readiness.wait(Duration::from_millis(5));
             bids.spin(readiness.events(), &mut |event| {
@@ -730,7 +769,11 @@ mod tests {
         let expected: Vec<_> = (0..MAX_REQUESTS as u64).chain([999]).collect();
         assert_eq!(answered, expected);
         bids.request(&request, BuilderConfig::parse(&body).unwrap());
-        assert_eq!(bids.rounds.last().unwrap().unanswered, 1, "an idle pool is handed over");
+        assert_eq!(
+            bids.bid_rounds.live.last().unwrap().unanswered,
+            1,
+            "an idle pool is handed over"
+        );
         assert_eq!(bids.pools.len(), MAX_REQUESTS);
     }
 
@@ -799,14 +842,14 @@ mod tests {
         let mut bids =
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
 
-        bids.submit_preferences(55, PreferencesBody::parse(&body, false).unwrap().0);
+        bids.submit_preferences(55, PreferencesBody::parse(&body, false).unwrap());
         let (request_id, failures) = preference_failures(&mut bids, &mut readiness);
         assert_eq!(request_id, 55);
         let mut messages: Vec<_> =
             failures.iter().map(|(index, message)| (*index, message.as_str())).collect();
         messages.sort_unstable();
         assert_eq!(messages, [
-            (1, "slot has already passed"),
+            (1, r#"slot "9" has already passed"#),
             (2, "url is empty or not utf-8"),
             (3, PoolUnavailable::Scheme.reason()),
         ]);
@@ -835,7 +878,7 @@ mod tests {
         let mut bids =
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
 
-        bids.submit_preferences(8, PreferencesBody::parse(&body, false).unwrap().0);
+        bids.submit_preferences(8, PreferencesBody::parse(&body, false).unwrap());
         let busy = "builder connections all busy".to_owned();
         let expected =
             vec![(PREFERENCE_CONNECTIONS, busy.clone()), (PREFERENCE_CONNECTIONS + 1, busy)];
@@ -854,12 +897,12 @@ mod tests {
         let mut bids =
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
 
-        bids.submit_preferences(8, PreferencesBody::parse(&body, false).unwrap().0);
+        bids.submit_preferences(8, PreferencesBody::parse(&body, false).unwrap());
         let bid_entries = MAX_REQUESTS - PREFERENCE_CONNECTIONS;
         let config =
             config(0, 100, &vec![entry(&format!("{url}/relay"), [0, 0, 100]); bid_entries]);
         bids.request(&request(), BuilderConfig::parse(&config).unwrap());
-        let bid_round = bids.rounds.last().unwrap();
+        let bid_round = bids.bid_rounds.live.last().unwrap();
         assert_eq!(bid_round.unanswered, bid_entries, "every bid entry is asked");
     }
 
@@ -874,7 +917,7 @@ mod tests {
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
 
         for request_id in [1, 2] {
-            bids.submit_preferences(request_id, PreferencesBody::parse(&body, false).unwrap().0);
+            bids.submit_preferences(request_id, PreferencesBody::parse(&body, false).unwrap());
             assert_eq!(preference_failures(&mut bids, &mut readiness), (request_id, Vec::new()));
         }
         let content_types: Vec<_> = received
@@ -887,7 +930,17 @@ mod tests {
         assert_eq!(content_types, [false, true, false, true]);
     }
 
-    /// A finished round's buffers serve the next round of either kind.
+    #[test]
+    fn empty_preferences_are_answered_with_no_failures() {
+        let mut readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
+
+        bids.submit_preferences(3, PreferencesBody::parse(&[], false).unwrap());
+        assert_eq!(preference_failures(&mut bids, &mut readiness), (3, Vec::new()));
+    }
+
+    /// A finished round's buffers serve the next round of its kind.
     #[test]
     fn finished_rounds_are_reused() {
         let body = list(&[preferences_entry(1, "ftp://builder", 0)]);
@@ -895,12 +948,12 @@ mod tests {
         let mut bids =
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
 
-        bids.submit_preferences(1, PreferencesBody::parse(&body, false).unwrap().0);
+        bids.submit_preferences(1, PreferencesBody::parse(&body, false).unwrap());
         preference_failures(&mut bids, &mut readiness);
-        let out = bids.spare_rounds[0].out.as_ptr();
-        bids.submit_preferences(2, PreferencesBody::parse(&body, false).unwrap().0);
-        assert!(bids.spare_rounds.is_empty());
-        assert_eq!(bids.rounds[0].out.as_ptr(), out);
+        let out = bids.preference_rounds.spare[0].out.as_ptr();
+        bids.submit_preferences(2, PreferencesBody::parse(&body, false).unwrap());
+        assert!(bids.preference_rounds.spare.is_empty());
+        assert_eq!(bids.preference_rounds.live[0].out.as_ptr(), out);
     }
 
     #[test]

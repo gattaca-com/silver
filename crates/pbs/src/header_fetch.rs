@@ -39,7 +39,8 @@ impl HeaderFetch {
                 tokens,
                 BufferCapacity { read: 16 << 10, write: 1 << 10 },
                 1,
-            ),
+            )
+            .expect("pbs.endpoint is http://"),
             timeout: config.get_header_timeout(),
             genesis_time,
             spec: spec.clone(),

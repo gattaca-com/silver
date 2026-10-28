@@ -313,9 +313,6 @@ pub enum ProduceBlockFailure {
     InvalidRandaoReveal,
     NoFeeRecipient,
     PayloadUnavailable,
-    /// Gloas: no p2p bid the request admits, and no local build to fall back
-    /// on.
-    NoAcceptableBid,
     Invalid,
     Internal,
 }

@@ -68,7 +68,6 @@ impl Address {
         match resolved {
             Ok(addr) => *self = Self::Resolved { host_port: mem::take(host_port), addr },
             Err(error) => {
-                silver_log::warn!(host_port, %error, "resolve failed");
                 *self = Self::Unresolved(mem::take(host_port));
                 return Some(Err(error));
             }

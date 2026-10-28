@@ -20,6 +20,7 @@ pub(crate) enum BuilderCall {
     Bid,
     Block,
     Preferences,
+    PreferencesJson,
 }
 
 impl BuilderCall {
@@ -32,9 +33,14 @@ impl BuilderCall {
         let call = match tagged >> CALL_SHIFT {
             0 => Self::Bid,
             1 => Self::Block,
-            _ => Self::Preferences,
+            2 => Self::Preferences,
+            _ => Self::PreferencesJson,
         };
         (call, tagged & ((1 << CALL_SHIFT) - 1))
+    }
+
+    fn is_preferences(self) -> bool {
+        matches!(self, Self::Preferences | Self::PreferencesJson)
     }
 }
 
@@ -48,15 +54,15 @@ pub(crate) struct BuilderPools {
 }
 
 /// One builder's connections, shared by every call to it.
-pub(crate) struct BuilderPool {
+struct BuilderPool {
     url: Box<str>,
     pool: HttpPool,
-    bid_timeout: Duration,
     preferences_in_flight: usize,
 }
 
 pub(crate) enum PoolUnavailable {
     Scheme,
+    ServerName,
     TooManyUrls,
     Busy,
 }
@@ -65,6 +71,7 @@ impl PoolUnavailable {
     pub(crate) fn reason(&self) -> &'static str {
         match self {
             Self::Scheme => "only http:// and https:// builder urls are served",
+            Self::ServerName => "builder url names no valid tls server",
             Self::TooManyUrls => "too many builder urls in flight",
             Self::Busy => "builder connections all busy",
         }
@@ -76,19 +83,29 @@ impl BuilderPools {
         Self { pools: Vec::new(), tokens, bid_timeout }
     }
 
-    pub(crate) fn bid_timeout(&self) -> Duration {
-        self.bid_timeout
-    }
-
-    /// `url`'s pool when it has a connection for `call`.
-    pub(crate) fn get(
+    /// `dispatch_events` answers under `call` and `id`.
+    pub(crate) fn enqueue(
         &mut self,
         url: &str,
         call: BuilderCall,
-    ) -> Result<&mut BuilderPool, PoolUnavailable> {
+        id: u64,
+        request: &ClientRequest<'_>,
+        registry: &Registry,
+    ) -> Result<(), PoolUnavailable> {
         let at = self.position(url)?;
         let pool = &mut self.pools[at];
-        if pool.has_capacity(call) { Ok(pool) } else { Err(PoolUnavailable::Busy) }
+        if !pool.has_capacity(call) {
+            return Err(PoolUnavailable::Busy);
+        }
+        let timeout = match call {
+            BuilderCall::Bid | BuilderCall::Block => self.bid_timeout,
+            BuilderCall::Preferences | BuilderCall::PreferencesJson => {
+                pool.preferences_in_flight += 1;
+                PREFERENCES_TIMEOUT
+            }
+        };
+        pool.pool.enqueue(call.tagged(id), request, timeout, registry);
+        Ok(())
     }
 
     fn position(&mut self, url: &str) -> Result<usize, PoolUnavailable> {
@@ -109,13 +126,9 @@ impl BuilderPools {
             self.tokens.share_of(at, MAX_REQUESTS),
             BufferCapacity { read: 16 << 10, write: 8 << 10 },
             MAX_REQUESTS,
-        );
-        let builder = BuilderPool {
-            url: url.into(),
-            pool,
-            bid_timeout: self.bid_timeout,
-            preferences_in_flight: 0,
-        };
+        )
+        .map_err(|_| PoolUnavailable::ServerName)?;
+        let builder = BuilderPool { url: url.into(), pool, preferences_in_flight: 0 };
         if at == self.pools.len() {
             self.pools.push(builder);
         } else {
@@ -135,7 +148,7 @@ impl BuilderPools {
         for BuilderPool { url, pool, preferences_in_flight, .. } in &mut self.pools {
             pool.dispatch_events(events, registry, &mut |tagged, response| {
                 let (call, id) = BuilderCall::untagged(tagged);
-                if call == BuilderCall::Preferences {
+                if call.is_preferences() {
                     *preferences_in_flight -= 1;
                 }
                 on_answered(url, call, id, response);
@@ -152,26 +165,7 @@ impl BuilderPools {
 impl BuilderPool {
     fn has_capacity(&self, call: BuilderCall) -> bool {
         let within_share =
-            call != BuilderCall::Preferences || self.preferences_in_flight < PREFERENCE_CONNECTIONS;
+            !call.is_preferences() || self.preferences_in_flight < PREFERENCE_CONNECTIONS;
         within_share && self.pool.has_capacity()
-    }
-
-    /// `dispatch_events` answers under `call` and `id`.
-    pub(crate) fn enqueue(
-        &mut self,
-        call: BuilderCall,
-        id: u64,
-        request: &ClientRequest<'_>,
-        registry: &Registry,
-    ) {
-        debug_assert!(self.has_capacity(call), "callers check capacity first");
-        let timeout = match call {
-            BuilderCall::Bid | BuilderCall::Block => self.bid_timeout,
-            BuilderCall::Preferences => {
-                self.preferences_in_flight += 1;
-                PREFERENCES_TIMEOUT
-            }
-        };
-        self.pool.enqueue(call.tagged(id), request, timeout, registry);
     }
 }

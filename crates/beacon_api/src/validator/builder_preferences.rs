@@ -14,9 +14,8 @@ pub(crate) fn post_builder_preferences(req: &Request<'_>, _ctx: &ApiCtx, resp: &
     if is_json && !req.body_is_json() {
         return resp.error(415, UNSUPPORTED_MEDIA_TYPE);
     }
-    match PreferencesBody::parse(req.body, is_json) {
-        None => resp.error(400, "invalid BuilderPreferencesEntry list"),
-        Some((_, 0)) => resp.ok(),
-        Some(_) => resp.await_builder_preferences(is_json),
+    if PreferencesBody::parse(req.body, is_json).is_none() {
+        return resp.error(400, "invalid BuilderPreferencesEntry list");
     }
+    resp.await_builder_preferences(is_json);
 }

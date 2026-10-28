@@ -176,9 +176,6 @@ impl ProduceBlockRequest {
             Err(ProduceBlockFailure::PayloadUnavailable) => {
                 return resp.error(503, "the execution client built no payload");
             }
-            Err(ProduceBlockFailure::NoAcceptableBid) => {
-                return resp.error(503, "no acceptable builder bid or local payload is available");
-            }
             Err(ProduceBlockFailure::Invalid | ProduceBlockFailure::Internal) => {
                 return resp.error(500, "the block could not be produced");
             }

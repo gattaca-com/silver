@@ -34,24 +34,19 @@ enum Field {
     Uint64,
 }
 
+/// The `message` offset, then the signature.
+const MESSAGE_AT: usize = 4 + 96;
+
 /// Re-encodes a JSON `SignedExecutionPayloadBid` (Gloas) as SSZ, for a
-/// builder that answers JSON whatever `Accept` says. The buffers are reused
+/// builder that answers JSON whatever `Accept` says. The buffer is reused
 /// across bids.
 pub(crate) struct JsonPayloadBid {
-    fixed: [u8; EXECUTION_PAYLOAD_BID_MIN],
-    commitments: Vec<u8>,
-    signature: [u8; 96],
     ssz: Vec<u8>,
 }
 
 impl JsonPayloadBid {
     pub(crate) fn new() -> Self {
-        Self {
-            fixed: [0; EXECUTION_PAYLOAD_BID_MIN],
-            commitments: Vec::new(),
-            signature: [0; 96],
-            ssz: Vec::new(),
-        }
+        Self { ssz: Vec::new() }
     }
 
     /// The response's bid as SSZ, empty when a JSON body does not decode.
@@ -63,25 +58,23 @@ impl JsonPayloadBid {
     }
 
     pub(crate) fn reencode(&mut self, json: &[u8]) -> Option<&[u8]> {
-        self.commitments.clear();
-        self.ssz.clear();
+        let ssz = &mut self.ssz;
+        ssz.clear();
+        ssz.resize(MESSAGE_AT + EXECUTION_PAYLOAD_BID_MIN, 0);
         let mut deserializer = serde_json::Deserializer::from_slice(json);
-        if let Err(error) = Envelope(SignedBid(self)).deserialize(&mut deserializer) {
+        if let Err(error) = Envelope(SignedBid(ssz)).deserialize(&mut deserializer) {
             silver_log::warn!(%error, "builder bid is not a Gloas SignedExecutionPayloadBid");
             return None;
         }
-        let Self { fixed, commitments, signature, ssz } = self;
-        fixed[COMMITMENTS_OFFSET_AT..COMMITMENTS_OFFSET_AT + 4]
+        ssz[..4].copy_from_slice(&(MESSAGE_AT as u32).to_le_bytes());
+        let commitments_offset = MESSAGE_AT + COMMITMENTS_OFFSET_AT;
+        ssz[commitments_offset..commitments_offset + 4]
             .copy_from_slice(&(EXECUTION_PAYLOAD_BID_MIN as u32).to_le_bytes());
-        ssz.extend_from_slice(&(4 + signature.len() as u32).to_le_bytes());
-        ssz.extend_from_slice(signature);
-        ssz.extend_from_slice(fixed);
-        ssz.extend_from_slice(commitments);
         Some(ssz)
     }
 }
 
-struct SignedBid<'s>(&'s mut JsonPayloadBid);
+struct SignedBid<'s>(&'s mut Vec<u8>);
 
 impl<'de> DeserializeSeed<'de> for SignedBid<'_> {
     type Value = ();
@@ -107,7 +100,8 @@ impl<'de> Visitor<'de> for SignedBid<'_> {
                     has_message = true;
                 }
                 "signature" => {
-                    self.0.signature = map.next_value::<Bytes<96>>()?.0;
+                    let signature = map.next_value::<Bytes<96>>()?.0;
+                    self.0[4..MESSAGE_AT].copy_from_slice(&signature);
                     has_signature = true;
                 }
                 _ => {
@@ -123,7 +117,7 @@ impl<'de> Visitor<'de> for SignedBid<'_> {
     }
 }
 
-struct Message<'s>(&'s mut JsonPayloadBid);
+struct Message<'s>(&'s mut Vec<u8>);
 
 impl<'de> DeserializeSeed<'de> for Message<'_> {
     type Value = ();
@@ -141,11 +135,11 @@ impl<'de> Visitor<'de> for Message<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let bid = self.0;
+        let ssz = self.0;
         let mut seen = 0u16;
         while let Some(key) = map.next_key::<&str>()? {
             if key == "blob_kzg_commitments" {
-                map.next_value_seed(List::<Bytes<48>>::new(&mut bid.commitments))?;
+                map.next_value_seed(List::<Bytes<48>>::new(ssz))?;
                 continue;
             }
             let Some(index) = FIXED_FIELDS.iter().position(|(name, ..)| *name == key) else {
@@ -153,7 +147,7 @@ impl<'de> Visitor<'de> for Message<'_> {
                 continue;
             };
             let (_, at, field) = FIXED_FIELDS[index];
-            let fixed = &mut bid.fixed[at..];
+            let fixed = &mut ssz[MESSAGE_AT + at..];
             match field {
                 Field::Root => fixed[..32].copy_from_slice(&map.next_value::<Bytes<32>>()?.0),
                 Field::Address => fixed[..20].copy_from_slice(&map.next_value::<Bytes<20>>()?.0),

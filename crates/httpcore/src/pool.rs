@@ -20,18 +20,28 @@ pub enum Endpoint {
     Uds(PathBuf),
 }
 
+struct Target {
+    /// The `Host` header.
+    host: String,
+    tls: Option<Tls>,
+    address: Address,
+}
+
 impl Endpoint {
-    /// The `Host` header, the TLS server name and the address to connect to.
-    fn target(&self) -> (String, Option<Tls>, Address) {
+    fn target(&self) -> io::Result<Target> {
         let url = match self {
             Self::Http(url) => url,
-            Self::Uds(path) => return ("localhost".into(), None, Address::Uds(path.clone())),
+            Self::Uds(path) => {
+                let address = Address::Uds(path.clone());
+                return Ok(Target { host: "localhost".into(), tls: None, address });
+            }
         };
         let (tls, rest) = match url.strip_prefix("https://") {
             Some(rest) => (true, rest),
             None => (false, url.trim_start_matches("http://")),
         };
-        let authority = rest.split('/').next().unwrap_or(rest);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
         let (host, port) = match authority.rsplit_once(':') {
             Some((host, port)) if !port.contains(']') => (host, Some(port)),
             _ => (authority, None),
@@ -41,8 +51,9 @@ impl Endpoint {
             None => format!("{authority}:{}", if tls { 443 } else { 80 }),
         };
         let server_name = host.trim_start_matches('[').trim_end_matches(']');
-        let tls = tls.then(|| Tls::webpki(server_name.to_owned()));
-        (authority.to_owned(), tls, Address::of_host_port(host_port))
+        let tls = tls.then(|| Tls::webpki(server_name)).transpose()?;
+        let address = Address::of_host_port(host_port);
+        Ok(Target { host: authority.to_owned(), tls, address })
     }
 }
 
@@ -50,7 +61,7 @@ enum Conn {
     Disconnected,
     Resolving,
     Connecting(Stream),
-    Connected(Transport),
+    Connected { transport: Transport, interest: Interest },
 }
 
 struct PooledConnection {
@@ -80,8 +91,10 @@ impl PooledConnection {
 
     /// The deadline runs from enqueue rather than from the write hitting the
     /// wire, so a connect that never completes expires on the same deadline.
-    fn expired(&self, now: Instant) -> bool {
-        self.request_deadline.is_some_and(|deadline| now > deadline)
+    /// `now` is read only for a connection with a request, and once per sweep.
+    fn expired(&self, now: &mut Option<Instant>) -> bool {
+        self.request_deadline
+            .is_some_and(|deadline| *now.get_or_insert_with(Instant::now) > deadline)
     }
 
     fn enqueue(
@@ -100,7 +113,7 @@ impl PooledConnection {
 
         match self.conn {
             Conn::Disconnected => self.connect(address, registry),
-            Conn::Connected(_) => self.update_interest(registry),
+            Conn::Connected { .. } => self.update_interest(registry),
             Conn::Resolving | Conn::Connecting(_) => {}
         }
     }
@@ -110,6 +123,7 @@ impl PooledConnection {
         event: &Event,
         registry: &Registry,
         tls: Option<&Tls>,
+        address: &mut Address,
         on_complete: &mut F,
     ) where
         F: FnMut(u64, Result<ClientResponse<'_>, &str>),
@@ -119,77 +133,54 @@ impl PooledConnection {
             Conn::Disconnected | Conn::Resolving => {}
             Conn::Connecting(stream) => {
                 if event.is_error() || event.is_read_closed() || event.is_write_closed() {
-                    self.fail(registry, on_complete, "connect failed");
+                    return self.fail_connect(address, registry, on_complete, "connect failed");
+                }
+                if !event.is_writable() {
                     return;
                 }
-                if event.is_writable() {
-                    if stream.connect_complete().is_err() {
-                        self.fail(registry, on_complete, "connect failed");
-                        return;
-                    }
-                    let Conn::Connecting(stream) =
-                        std::mem::replace(&mut self.conn, Conn::Disconnected)
-                    else {
-                        unreachable!()
-                    };
-                    match Transport::new(stream, tls) {
-                        Ok(transport) => {
-                            self.conn = Conn::Connected(transport);
-                            if let Err(e) = self.do_write() {
-                                let msg = e.to_string();
-                                self.fail(registry, on_complete, &msg);
-                                return;
-                            }
-                            self.update_interest(registry);
-                        }
-                        Err(e) => {
-                            let msg = e.to_string();
-                            self.fail(registry, on_complete, &msg);
-                        }
-                    }
+                if stream.connect_complete().is_err() {
+                    return self.fail_connect(address, registry, on_complete, "connect failed");
                 }
+                let Conn::Connecting(stream) =
+                    std::mem::replace(&mut self.conn, Conn::Disconnected)
+                else {
+                    unreachable!()
+                };
+                let transport = match Transport::new(stream, tls) {
+                    Ok(transport) => transport,
+                    Err(e) => return self.fail(registry, on_complete, &e.to_string()),
+                };
+                self.conn = Conn::Connected { transport, interest: Interest::WRITABLE };
+                if let Err(e) = self.do_write() {
+                    return self.fail(registry, on_complete, &e.to_string());
+                }
+                self.update_interest(registry);
             }
-            Conn::Connected(transport) => {
-                let is_tls = transport.is_tls();
+            Conn::Connected { .. } => {
                 if event.is_error() {
-                    self.fail(registry, on_complete, "connection error");
-                    return;
+                    return self.fail(registry, on_complete, "connection error");
                 }
-                if event.is_writable() {
-                    if let Err(e) = self.do_write() {
-                        let msg = e.to_string();
-                        self.fail(registry, on_complete, &msg);
-                        return;
-                    }
-                    self.update_interest(registry);
+                if event.is_writable() &&
+                    let Err(e) = self.do_write()
+                {
+                    return self.fail(registry, on_complete, &e.to_string());
                 }
-                if event.is_readable() {
-                    // Drain data before checking is_read_closed: when the
-                    // remote sends a response + FIN in one exchange
-                    // (EPOLLIN|EPOLLRDHUP), we must read the response first.
-                    // do_read returns Err on EOF, so the return below covers
-                    // that close path too.
-                    if let Err(e) = self.do_read(on_complete) {
-                        let msg = e.to_string();
-                        self.fail(registry, on_complete, &msg);
-                        return;
-                    }
-                    // A read can finish the handshake, which releases the
-                    // request's records.
-                    if is_tls {
-                        if let Err(e) = self.do_write() {
-                            let msg = e.to_string();
-                            self.fail(registry, on_complete, &msg);
-                            return;
-                        }
-                        self.update_interest(registry);
-                    }
+                // Drain data before checking is_read_closed: when the remote
+                // sends a response + FIN in one exchange (EPOLLIN|EPOLLRDHUP),
+                // we must read the response first. do_read returns Err on EOF,
+                // so the return below covers that close path too.
+                if event.is_readable() &&
+                    let Err(e) = self.do_read(on_complete)
+                {
+                    return self.fail(registry, on_complete, &e.to_string());
                 }
                 if event.is_read_closed() {
                     // Remote closed with no (more) data — in_flight will
                     // never get a response.
-                    self.fail(registry, on_complete, "connection closed");
+                    return self.fail(registry, on_complete, "connection closed");
                 }
+                // A TLS read can leave records the socket would not take.
+                self.update_interest(registry);
             }
         }
     }
@@ -205,13 +196,16 @@ impl PooledConnection {
                     self.conn = Conn::Connecting(stream);
                 }
             }
-            Err(e) => silver_log::warn!("connect error: {e}"),
+            Err(e) => {
+                silver_log::warn!("connect error: {e}");
+                address.forget_resolved();
+            }
         }
     }
 
     fn do_write(&mut self) -> io::Result<()> {
         let Self { conn, machine, pending_id, in_flight, .. } = self;
-        let Conn::Connected(transport) = conn else { return Ok(()) };
+        let Conn::Connected { transport, .. } = conn else { return Ok(()) };
         if pending_id.is_some() {
             loop {
                 match transport.write(machine.pending_write()) {
@@ -236,7 +230,7 @@ impl PooledConnection {
         F: FnMut(u64, Result<ClientResponse<'_>, &str>),
     {
         let Self { conn, machine, in_flight, request_deadline, .. } = self;
-        let Conn::Connected(transport) = conn else { return Ok(()) };
+        let Conn::Connected { transport, .. } = conn else { return Ok(()) };
         loop {
             while let Some(response) = machine.take_response() {
                 if let Some(id) = in_flight.take() {
@@ -252,6 +246,20 @@ impl PooledConnection {
             }
         }
         Ok(())
+    }
+
+    /// The host may have moved, so the next connect looks its name up again.
+    fn fail_connect<F>(
+        &mut self,
+        address: &mut Address,
+        registry: &Registry,
+        on_complete: &mut F,
+        msg: &str,
+    ) where
+        F: FnMut(u64, Result<ClientResponse<'_>, &str>),
+    {
+        address.forget_resolved();
+        self.fail(registry, on_complete, msg);
     }
 
     fn fail<F>(&mut self, registry: &Registry, on_complete: &mut F, msg: &str)
@@ -271,28 +279,26 @@ impl PooledConnection {
             Conn::Connecting(mut stream) => {
                 let _ = registry.deregister(&mut stream);
             }
-            Conn::Connected(mut transport) => {
+            Conn::Connected { mut transport, .. } => {
                 let _ = registry.deregister(transport.stream_mut());
             }
             Conn::Disconnected | Conn::Resolving => {}
         }
     }
 
+    /// Re-registers only on a change, sparing a syscall per event.
     fn update_interest(&mut self, registry: &Registry) {
-        let (stream, wants_write) = match &mut self.conn {
-            Conn::Connecting(stream) => (stream, false),
-            Conn::Connected(transport) => {
-                let wants_write = transport.wants_write();
-                (transport.stream_mut(), wants_write)
-            }
-            Conn::Disconnected | Conn::Resolving => return,
-        };
-        let interest = if self.pending_id.is_none() && !wants_write {
+        let Conn::Connected { transport, interest } = &mut self.conn else { return };
+        let wanted = if self.pending_id.is_none() && !transport.wants_write() {
             Interest::READABLE
         } else {
             Interest::READABLE | Interest::WRITABLE
         };
-        let _ = registry.reregister(stream, self.token, interest);
+        if *interest != wanted &&
+            registry.reregister(transport.stream_mut(), self.token, wanted).is_ok()
+        {
+            *interest = wanted;
+        }
     }
 }
 
@@ -321,10 +327,10 @@ impl HttpPool {
         tokens: TokenRange,
         capacity: BufferCapacity,
         max_connections: usize,
-    ) -> Self {
-        let (host, tls, address) = endpoint.target();
+    ) -> io::Result<Self> {
+        let Target { host, tls, address } = endpoint.target()?;
         let connections = vec![PooledConnection::new(tokens.at(0), capacity)];
-        Self { connections, host, tls, address, tokens, capacity, max_connections }
+        Ok(Self { connections, host, tls, address, tokens, capacity, max_connections })
     }
 
     /// `enqueue` never refuses work; every caller gates on this before
@@ -370,11 +376,7 @@ impl HttpPool {
         for event in events.iter() {
             let Some(index) = self.tokens.offset_of(event.token()) else { continue };
             let Some(conn) = self.connections.get_mut(index) else { continue };
-            let was_connecting = matches!(conn.conn, Conn::Connecting(_));
-            conn.handle_event(event, registry, self.tls.as_ref(), on_complete);
-            if was_connecting && matches!(conn.conn, Conn::Disconnected) {
-                self.address.forget_resolved();
-            }
+            conn.handle_event(event, registry, self.tls.as_ref(), &mut self.address, on_complete);
         }
     }
 
@@ -387,7 +389,10 @@ impl HttpPool {
             self.connections.iter_mut().filter(|conn| matches!(conn.conn, Conn::Resolving));
         match resolved {
             Ok(()) => waiting.for_each(|conn| conn.connect(&mut self.address, registry)),
-            Err(_) => waiting.for_each(|conn| conn.fail(registry, on_complete, "resolve failed")),
+            Err(error) => {
+                let msg = format!("resolving {} failed: {error}", self.host);
+                waiting.for_each(|conn| conn.fail(registry, on_complete, &msg));
+            }
         }
     }
 
@@ -395,19 +400,24 @@ impl HttpPool {
     where
         F: FnMut(u64, Result<ClientResponse<'_>, &str>),
     {
-        let now = Instant::now();
+        let mut now = None;
         for conn in &mut self.connections {
             // Disconnected with a request pending means connect() could not
             // even start (connect/register error): no event will ever arrive
             // for it, so fail the rpc here or it is stranded forever.
             if matches!(conn.conn, Conn::Disconnected) && conn.pending_id.is_some() {
                 conn.fail(registry, on_complete, "connect failed to start");
-                self.address.forget_resolved();
-            } else if conn.expired(now) {
+            } else if conn.expired(&mut now) {
                 if matches!(conn.conn, Conn::Connecting(_)) {
-                    self.address.forget_resolved();
+                    conn.fail_connect(
+                        &mut self.address,
+                        registry,
+                        on_complete,
+                        "request timed out",
+                    );
+                } else {
+                    conn.fail(registry, on_complete, "request timed out");
                 }
-                conn.fail(registry, on_complete, "request timed out");
             }
         }
     }
@@ -425,7 +435,8 @@ mod tests {
     };
 
     use rustls::{
-        RootCertStore, ServerConfig, ServerConnection, StreamOwned, pki_types::PrivatePkcs8KeyDer,
+        RootCertStore, ServerConfig, ServerConnection, StreamOwned,
+        pki_types::{PrivatePkcs8KeyDer, ServerName},
     };
     use tempfile::TempDir;
 
@@ -511,7 +522,7 @@ mod tests {
     fn connect_failure_fails_the_request_and_frees_the_connection() {
         let dir = TempDir::new().unwrap();
         let endpoint = Endpoint::Uds(dir.path().join("missing.sock"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(3, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -526,7 +537,7 @@ mod tests {
         let socket = dir.path().join("server.sock");
         let mut server = Server::bind(&socket);
         let endpoint = Endpoint::Uds(socket);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(9, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -546,7 +557,7 @@ mod tests {
         let mut server = Server::bind(&socket);
         let timeout = Duration::from_millis(200);
         let endpoint = Endpoint::Uds(socket);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), timeout, readiness.registry());
@@ -575,7 +586,8 @@ mod tests {
         let socket = dir.path().join("server.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
 
-        let mut pool = HttpPool::new(Endpoint::Uds(socket), TokenRange::whole(), CAPACITY, 1);
+        let mut pool =
+            HttpPool::new(Endpoint::Uds(socket), TokenRange::whole(), CAPACITY, 1).unwrap();
         let readiness = Readiness::new(1);
 
         pool.enqueue(7, &post(b"{}"), Duration::from_millis(100), readiness.registry());
@@ -616,17 +628,30 @@ mod tests {
 
     #[test]
     fn urls_name_host_tls_and_address() {
-        let (host, tls, address) = Endpoint::Http("https://relay.example/base/".into()).target();
+        let Target { host, tls, address } =
+            Endpoint::Http("https://relay.example/base/".into()).target().unwrap();
         assert_eq!(host, "relay.example");
-        assert_eq!(tls.unwrap().server_name, "relay.example");
+        assert_eq!(tls.unwrap().server_name, ServerName::try_from("relay.example").unwrap());
         assert!(
             matches!(address, Address::Unresolved(host_port) if host_port == "relay.example:443")
         );
 
-        let (host, tls, address) = Endpoint::Http("http://[::1]:9000".into()).target();
+        let Target { host, tls, .. } =
+            Endpoint::Http("https://0xabc@relay.example?x=1".into()).target().unwrap();
+        assert_eq!(host, "relay.example");
+        assert_eq!(tls.unwrap().server_name, ServerName::try_from("relay.example").unwrap());
+
+        let Target { host, tls, address } =
+            Endpoint::Http("http://[::1]:9000".into()).target().unwrap();
         assert_eq!(host, "[::1]:9000");
         assert!(tls.is_none());
         assert!(matches!(address, Address::Tcp(addr) if addr.port() == 9000));
+    }
+
+    #[test]
+    fn invalid_tls_server_names_fail_the_pool() {
+        let endpoint = Endpoint::Http("https://relay..example/".into());
+        assert!(HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).is_err());
     }
 
     /// The body outgrows rustls's default plaintext limit, which the
@@ -652,11 +677,11 @@ mod tests {
         });
 
         let endpoint = Endpoint::Http(url);
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut roots = RootCertStore::empty();
         roots.add(cert).unwrap();
         let tls = pool.tls.as_mut().unwrap();
-        assert_eq!(tls.server_name, "127.0.0.1");
+        assert_eq!(tls.server_name, ServerName::try_from("127.0.0.1").unwrap());
         tls.config = client_config(roots);
         let mut readiness = Readiness::new(1);
 
@@ -674,7 +699,7 @@ mod tests {
         thread::spawn(move || answer_one_request(listener.accept().unwrap().0));
 
         let endpoint = Endpoint::Http(format!("http://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
         pool.enqueue(5, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
         assert!(matches!(pool.connections[0].conn, Conn::Resolving));
@@ -686,7 +711,7 @@ mod tests {
         let local = ("localhost", 0).to_socket_addrs().unwrap().next().unwrap();
         let port = TcpListener::bind(local).unwrap().local_addr().unwrap().port();
         let endpoint = Endpoint::Http(format!("http://localhost:{port}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
@@ -705,7 +730,7 @@ mod tests {
     fn ip_literals_are_never_looked_up() {
         let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let endpoint = Endpoint::Http(format!("http://{addr}"));
-        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
         let mut readiness = Readiness::new(1);
 
         pool.enqueue(1, &post(b"{}"), LONG_TIMEOUT, readiness.registry());

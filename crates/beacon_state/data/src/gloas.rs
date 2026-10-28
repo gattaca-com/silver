@@ -266,4 +266,11 @@ impl ExecutionPayloadBid {
         }
         Ok(())
     }
+
+    /// The `SignedExecutionPayloadBid` of this bid and `signature`.
+    pub fn write_signed_ssz(&self, signature: &[u8; 96], out: &mut Vec<u8>) {
+        out.extend_from_slice(&((4 + signature.len()) as u32).to_le_bytes());
+        out.extend_from_slice(signature);
+        self.write_ssz(out).expect("writes to a Vec");
+    }
 }
