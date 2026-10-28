@@ -329,7 +329,7 @@ impl BeaconStateTile {
                 p.committee_len,
                 Participants::Single(p.committee_position),
                 p.shuffling,
-                signature.as_sig(),
+                &signature.into_sig(),
             );
             return self.buffered_vote_feedback(
                 new_data,
