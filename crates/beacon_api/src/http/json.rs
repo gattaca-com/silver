@@ -25,7 +25,6 @@ use crate::{
     beacon::validators::ValidatorRecord,
     events::HeadEvent,
     node::peers::Peer,
-    submission::SubmissionFailure,
     validator::{
         attestation_data::AttestationData, attester_duties::AttesterDuty,
         proposer_duties::ProposerDuty, ptc_duties::PtcDuty, sync_duties::SyncDuty,
@@ -332,20 +331,24 @@ impl Json<'_> {
         self.end_object();
     }
 
-    pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
+    pub(crate) fn indexed_failures<'f>(
+        &mut self,
+        message: &str,
+        failures: impl IntoIterator<Item = (usize, &'f str)>,
+    ) {
         self.begin_object();
         self.key("code");
         self.u64(400);
         self.key("message");
-        self.string("some entries were not published");
+        self.string(message);
         self.key("failures");
         self.begin_array();
-        for failure in failures {
+        for (index, message) in failures {
             self.begin_object();
             self.key("index");
-            self.u64(failure.body_index as u64);
+            self.u64(index as u64);
             self.key("message");
-            self.string(failure.message);
+            self.string(message);
             self.end_object();
         }
         self.end_array();

@@ -14,7 +14,7 @@ use silver_common::{
 use silver_config::{EngineConfig, PbsConfig};
 use silver_engine_api::EngineApi;
 use silver_httpcore::{Bind, Readiness, TokenRange};
-use silver_pbs::{BuilderBids, PbsClient, SidecarEvent};
+use silver_pbs::{BuilderBids, BuilderEvent, PbsClient, SidecarEvent};
 
 /// A tenant added here takes the next share of a raised `TENANTS`, which keeps
 /// every share disjoint without a base to compute.
@@ -76,17 +76,22 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
             });
         }
 
-        let Self { readiness, builder_bids, processing, .. } = self;
-        builder_bids.spin(readiness.events(), &mut |request_id, bids| {
-            let bids = (!bids.is_empty())
-                .then(|| processing.write_with(bids.len(), |out| out.copy_from_slice(bids)))
-                .flatten();
-            adapter.produce(BuilderBidsResponse { request_id, bids });
+        let Self { readiness, beacon, builder_bids, processing, .. } = self;
+        builder_bids.spin(readiness.events(), &mut |event| match event {
+            BuilderEvent::Bids { request_id, bids } => {
+                let bids = (!bids.is_empty())
+                    .then(|| processing.write_with(bids.len(), |out| out.copy_from_slice(bids)))
+                    .flatten();
+                adapter.produce(BuilderBidsResponse { request_id, bids });
+            }
+            BuilderEvent::Preferences { request_id, failures } => {
+                beacon.handle_builder_preferences_response(request_id, failures, processing)
+            }
         });
 
         self.consume_spine_events(adapter);
 
-        let Self { readiness, beacon, pbs, processing, .. } = self;
+        let Self { readiness, beacon, pbs, builder_bids, processing, .. } = self;
         let did_work = beacon.pump(
             readiness.events(),
             processing,
@@ -96,6 +101,7 @@ impl Tile<SilverSpine> for ApplicationBoundaryTile {
                     .expect("a sidecar request needs a pbs.endpoint")
                     .send(request_id, call_path, body)
             },
+            &mut |request_id, body| builder_bids.submit_preferences(request_id, body),
         );
         if did_work {
             adapter.mark_work();
@@ -185,12 +191,12 @@ impl ApplicationBoundaryTile {
             }
         });
         adapter.consume(|request: BuilderBidsRequest, producers| {
-            let asked = beacon
-                .builder_config(request.request_id)
-                .is_some_and(|config| builder_bids.request(&request, config));
-            if !asked {
-                let request_id = request.request_id;
-                producers.produce(BuilderBidsResponse { request_id, bids: None });
+            match beacon.builder_config(request.request_id) {
+                Some(config) => builder_bids.request(&request, config),
+                None => {
+                    let request_id = request.request_id;
+                    producers.produce(BuilderBidsResponse { request_id, bids: None });
+                }
             }
         });
         adapter.consume(|response: EngineResp, _| beacon.handle_engine_resp(response));

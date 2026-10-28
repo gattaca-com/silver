@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// The phrase `UnsupportedMediaType` carries in `types/http.yaml`.
-const UNSUPPORTED_MEDIA_TYPE: &str = "Cannot read the supplied content type.";
+pub(crate) const UNSUPPORTED_MEDIA_TYPE: &str = "Cannot read the supplied content type.";
 
 /// `registerValidator` is the only schema here that declares a 415, and the
 /// only one that declares an SSZ request body beside the JSON one.

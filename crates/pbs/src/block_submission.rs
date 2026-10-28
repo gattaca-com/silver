@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use mio::{Events, Registry};
 use silver_config::PbsConfig;
 use silver_httpcore::{
@@ -10,6 +12,7 @@ use crate::{CONSENSUS_VERSION, FULU, SidecarCall};
 /// registration batch the sidecar is still forwarding.
 pub(crate) struct BlockSubmission {
     pool: HttpPool,
+    timeout: Duration,
     /// Submissions that arrived while one was in flight, answered on the next
     /// spin.
     refused: Vec<u64>,
@@ -23,8 +26,8 @@ impl BlockSubmission {
                 tokens,
                 BufferCapacity { read: 4 << 10, write: 64 << 10 },
                 1,
-                config.submit_blinded_block_timeout(),
             ),
+            timeout: config.submit_blinded_block_timeout(),
             refused: Vec::new(),
         }
     }
@@ -43,7 +46,7 @@ impl BlockSubmission {
             content_type: Some("application/octet-stream"),
             headers: &[(CONSENSUS_VERSION, FULU)],
         };
-        self.pool.enqueue(id, &post, registry);
+        self.pool.enqueue(id, &post, self.timeout, registry);
     }
 
     pub(crate) fn spin(

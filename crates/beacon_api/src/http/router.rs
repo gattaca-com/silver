@@ -51,6 +51,7 @@ pub(crate) enum Outcome {
     AwaitingEnvelope(EnvelopeRequest),
     AwaitingVerdicts(Submission),
     AwaitingSidecarResponse(SidecarCall),
+    AwaitingBuilderPreferences { is_json: bool },
     AwaitingBlindedBlockLock { ssz: TCacheRead },
 }
 

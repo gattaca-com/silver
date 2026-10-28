@@ -5,7 +5,7 @@ use silver_common::{
     BeaconApiRequest, GossipTopic, LocalGossipFailure, TCacheProducer, TCacheRead, TProducer,
 };
 use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_headers};
-use silver_pbs::SidecarCall;
+use silver_pbs::{PreferenceFailures, SidecarCall};
 
 use crate::{
     events::ChannelSet,
@@ -116,6 +116,19 @@ impl<'a> Response<'a> {
         self.outcome = Outcome::AwaitingSidecarResponse(call_path);
     }
 
+    pub(crate) fn await_builder_preferences(&mut self, is_json: bool) {
+        self.outcome = Outcome::AwaitingBuilderPreferences { is_json };
+    }
+    pub(crate) fn builder_preferences_response(&mut self, failures: PreferenceFailures<'_>) {
+        if failures.is_empty() {
+            return self.ok();
+        }
+        self.json_framed(400, &[], |json| {
+            let message = "some entries were not accepted by their builders";
+            json.indexed_failures(message, failures.iter())
+        });
+    }
+
     pub(crate) fn sidecar_response(
         &mut self,
         call_path: SidecarCall,
@@ -139,7 +152,10 @@ impl<'a> Response<'a> {
     }
 
     pub(crate) fn indexed_failures(&mut self, failures: &[SubmissionFailure]) {
-        self.json_framed(400, &[], |json| json.indexed_failures(failures));
+        let failures = failures.iter().map(|failure| (failure.body_index, failure.message));
+        self.json_framed(400, &[], |json| {
+            json.indexed_failures("some entries were not published", failures)
+        });
     }
 
     pub(crate) fn outcome(mut self) -> Outcome {

@@ -55,6 +55,7 @@ pub enum ReqKind {
 
 pub struct EngineClient {
     pool: HttpPool,
+    request_timeout: Duration,
     jwt: JwtSecret,
     registry: Registry,
     id: u64,
@@ -116,13 +117,8 @@ impl EngineClient {
         );
         let jwt = JwtSecret::from_file(jwt).unwrap_or_else(|e| panic!("invalid JWT secret: {e}"));
         Self {
-            pool: HttpPool::new(
-                endpoint,
-                tokens,
-                CONNECTION_CAPACITY,
-                max_connections,
-                request_timeout,
-            ),
+            pool: HttpPool::new(endpoint, tokens, CONNECTION_CAPACITY, max_connections),
+            request_timeout,
             jwt,
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),
             id: 1,
@@ -163,7 +159,7 @@ impl EngineClient {
             content_type: Some("application/json"),
             headers: &[],
         };
-        self.pool.enqueue(rpc_id, &request, &self.registry);
+        self.pool.enqueue(rpc_id, &request, self.request_timeout, &self.registry);
     }
 }
 

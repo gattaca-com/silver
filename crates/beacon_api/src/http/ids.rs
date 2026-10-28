@@ -1,11 +1,6 @@
-use std::{fmt, marker::PhantomData};
-
-use serde::{
-    Deserialize, Deserializer,
-    de::{self, SeqAccess, Visitor},
-};
+use serde::{Deserialize, Deserializer};
 use silver_beacon_state_data::{B256, BLSPubkey, ExecutionAddress};
-use silver_common::json_fields::{parse_hex, parse_uint64, uint64};
+use silver_common::json_fields::{each_array_entry, parse_hex, parse_uint64, uint64};
 
 use crate::http::response::Response;
 
@@ -31,49 +26,12 @@ pub(crate) fn body_entries<'a, T: Deserialize<'a>>(
     }
 }
 
-/// Parses the body's array one entry at a time, handing each to `each` with
-/// its index, and returns how many there were. Entries before a malformed one
-/// have already been handed over when the error returns.
+/// [`each_array_entry`] bounded by [`MAX_BODY_IDS`].
 pub(crate) fn each_body_entry<'a, T: Deserialize<'a>>(
     body: &'a [u8],
     each: impl FnMut(usize, T),
 ) -> Result<usize, &'static str> {
-    let mut too_many = false;
-    let mut deserializer = serde_json::Deserializer::from_slice(body);
-    let entries = Entries { each, too_many: &mut too_many, entry: PhantomData };
-    match deserializer.deserialize_seq(entries).and_then(|count| deserializer.end().map(|()| count))
-    {
-        Ok(count) => Ok(count),
-        Err(_) if too_many => Err("too many entries in request body"),
-        Err(_) => Err("invalid request body"),
-    }
-}
-
-struct Entries<'f, F, T> {
-    each: F,
-    too_many: &'f mut bool,
-    entry: PhantomData<T>,
-}
-
-impl<'de, F: FnMut(usize, T), T: Deserialize<'de>> Visitor<'de> for Entries<'_, F, T> {
-    type Value = usize;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an array")
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<usize, A::Error> {
-        let mut count = 0;
-        while let Some(entry) = seq.next_element()? {
-            if count == MAX_BODY_IDS {
-                *self.too_many = true;
-                return Err(de::Error::custom("too many entries"));
-            }
-            (self.each)(count, entry);
-            count += 1;
-        }
-        Ok(count)
-    }
+    each_array_entry(body, MAX_BODY_IDS, each)
 }
 
 /// A JSON array of quoted `Uint64`s.

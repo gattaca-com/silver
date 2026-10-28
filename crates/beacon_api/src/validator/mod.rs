@@ -2,6 +2,7 @@ pub(crate) mod aggregate_attestation;
 pub(crate) mod aggregate_submission;
 pub(crate) mod attestation_data;
 pub(crate) mod attester_duties;
+pub(crate) mod builder_preferences;
 pub(crate) mod contribution_submission;
 pub(crate) mod duties;
 pub(crate) mod execution_payload_envelope;

@@ -22,7 +22,6 @@ pub(crate) fn client_config(roots: RootCertStore) -> Arc<ClientConfig> {
     Arc::new(config)
 }
 
-#[derive(Clone)]
 pub(crate) struct Tls {
     pub(crate) config: Arc<ClientConfig>,
     pub(crate) server_name: String,

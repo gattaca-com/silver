@@ -1,9 +1,9 @@
 use silver_beacon_state_data::{BLSPubkey, Slot};
 
-const MAX_BUILDER_ENTRIES: usize = 64;
-const MAX_BUILDER_URL_SIZE: usize = 2048;
+pub(crate) const MAX_BUILDER_ENTRIES: usize = 64;
+pub(crate) const MAX_BUILDER_URL_SIZE: usize = 2048;
 const MAX_BUILDER_PUBKEYS: usize = 64;
-const MAX_BUILDER_AUTH_DATA_SIZE: usize = 4096;
+pub(crate) const MAX_BUILDER_AUTH_DATA_SIZE: usize = 4096;
 
 /// `min_bid`, `builder_boost_factor`, `builders` offset.
 const CONFIG_FIXED: usize = 8 + 8 + 4;
@@ -73,8 +73,8 @@ impl<'a> BuilderEntry<'a> {
         };
         let pubkeys_framed = entry.builder_pubkeys.len().is_multiple_of(size_of::<BLSPubkey>()) &&
             entry.builder_pubkeys.len() / size_of::<BLSPubkey>() <= MAX_BUILDER_PUBKEYS;
-        (entry.url.len() <= MAX_BUILDER_URL_SIZE && pubkeys_framed && auth_is_framed(entry.auth))
-            .then_some(entry)
+        let auth_framed = SignedRequestAuth::parse(entry.auth).is_some();
+        (entry.url.len() <= MAX_BUILDER_URL_SIZE && pubkeys_framed && auth_framed).then_some(entry)
     }
 
     /// UTF-8 bytes of the builder's URL, exactly as the VC sent them.
@@ -89,11 +89,11 @@ impl<'a> BuilderEntry<'a> {
     }
 
     pub fn auth_data(&self) -> &'a [u8] {
-        &self.auth_message()[AUTH_MESSAGE_FIXED..]
+        SignedRequestAuth(self.auth).data()
     }
 
     pub fn auth_slot(&self) -> Slot {
-        u64_at(self.auth_message(), 4)
+        SignedRequestAuth(self.auth).slot()
     }
 
     /// Empty accepts any builder.
@@ -114,30 +114,62 @@ impl<'a> BuilderEntry<'a> {
     pub fn builder_boost_factor(&self) -> u64 {
         u64_at(self.fixed, 28)
     }
-
-    fn auth_message(&self) -> &'a [u8] {
-        &self.auth[AUTH_FIXED..]
-    }
 }
 
-fn auth_is_framed(auth: &[u8]) -> bool {
-    let Some(message) = auth.get(AUTH_FIXED..) else { return false };
-    offset_at(auth, 0) == AUTH_FIXED &&
-        message.len() >= AUTH_MESSAGE_FIXED &&
-        offset_at(message, 0) == AUTH_MESSAGE_FIXED &&
-        message.len() - AUTH_MESSAGE_FIXED <= MAX_BUILDER_AUTH_DATA_SIZE
+/// An SSZ `SignedBuilderRequestAuth` whose offsets and data bound `parse`
+/// checked.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SignedRequestAuth<'a>(&'a [u8]);
+
+impl<'a> SignedRequestAuth<'a> {
+    pub(crate) fn parse(auth: &'a [u8]) -> Option<Self> {
+        let message = auth.get(AUTH_FIXED..)?;
+        let framed = offset_at(auth, 0) == AUTH_FIXED &&
+            message.len() >= AUTH_MESSAGE_FIXED &&
+            offset_at(message, 0) == AUTH_MESSAGE_FIXED &&
+            message.len() - AUTH_MESSAGE_FIXED <= MAX_BUILDER_AUTH_DATA_SIZE;
+        framed.then_some(Self(auth))
+    }
+
+    pub(crate) fn encode(data: &[u8], slot: Slot, signature: &[u8; 96], out: &mut Vec<u8>) {
+        out.extend_from_slice(&(AUTH_FIXED as u32).to_le_bytes());
+        out.extend_from_slice(signature);
+        out.extend_from_slice(&(AUTH_MESSAGE_FIXED as u32).to_le_bytes());
+        out.extend_from_slice(&slot.to_le_bytes());
+        out.extend_from_slice(data);
+    }
+
+    pub(crate) fn bytes(&self) -> &'a [u8] {
+        self.0
+    }
+
+    pub(crate) fn signature(&self) -> &'a [u8] {
+        &self.0[4..AUTH_FIXED]
+    }
+
+    pub(crate) fn data(&self) -> &'a [u8] {
+        &self.message()[AUTH_MESSAGE_FIXED..]
+    }
+
+    pub(crate) fn slot(&self) -> Slot {
+        u64_at(self.message(), 4)
+    }
+
+    fn message(&self) -> &'a [u8] {
+        &self.0[AUTH_FIXED..]
+    }
 }
 
 /// The elements of an SSZ list of variable-size elements: an offset per
 /// element, each in bounds and none before the last.
-struct ListElements<'a> {
+pub(crate) struct ListElements<'a> {
     list: &'a [u8],
     count: usize,
     next: usize,
 }
 
 impl<'a> ListElements<'a> {
-    fn parse(list: &'a [u8], max: usize) -> Option<Self> {
+    pub(crate) fn parse(list: &'a [u8], max: usize) -> Option<Self> {
         if list.is_empty() {
             return Some(Self { list, count: 0, next: 0 });
         }
@@ -175,11 +207,11 @@ impl<'a> Iterator for ListElements<'a> {
     }
 }
 
-fn offset_at(bytes: &[u8], at: usize) -> usize {
+pub(crate) fn offset_at(bytes: &[u8], at: usize) -> usize {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes")) as usize
 }
 
-fn u64_at(bytes: &[u8], at: usize) -> u64 {
+pub(crate) fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"))
 }
 
@@ -196,15 +228,16 @@ pub(crate) mod tests {
         pub(crate) terms: [u64; 3],
     }
 
+    /// A `SignedBuilderRequestAuth` signed with `0xAA` bytes.
+    pub(crate) fn auth_ssz(data: &[u8], slot: u64) -> Vec<u8> {
+        let mut auth = Vec::new();
+        SignedRequestAuth::encode(data, slot, &[0xAA; 96], &mut auth);
+        auth
+    }
+
     impl Entry<'_> {
         pub(crate) fn ssz(&self) -> Vec<u8> {
-            let message = [
-                &(AUTH_MESSAGE_FIXED as u32).to_le_bytes()[..],
-                &self.slot.to_le_bytes(),
-                self.data,
-            ]
-            .concat();
-            let auth = [&(AUTH_FIXED as u32).to_le_bytes()[..], &[0xAA; 96], &message].concat();
+            let auth = auth_ssz(self.data, self.slot);
             let url_at = ENTRY_FIXED;
             let auth_at = url_at + self.url.len();
             let pubkeys_at = auth_at + auth.len();

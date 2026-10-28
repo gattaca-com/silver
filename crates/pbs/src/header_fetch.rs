@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, time::Duration};
 
 use mio::{Events, Registry};
 use silver_beacon_state_data::{B256, SpecConfig};
@@ -17,6 +17,7 @@ use crate::{
 
 pub(crate) struct HeaderFetch {
     pool: HttpPool,
+    timeout: Duration,
     genesis_time: u64,
     spec: SpecConfig,
     builder_domain: B256,
@@ -38,8 +39,8 @@ impl HeaderFetch {
                 tokens,
                 BufferCapacity { read: 16 << 10, write: 1 << 10 },
                 1,
-                config.get_header_timeout(),
             ),
+            timeout: config.get_header_timeout(),
             genesis_time,
             spec: spec.clone(),
             builder_domain: builder_domain(spec.genesis_fork_version),
@@ -74,7 +75,7 @@ impl HeaderFetch {
             content_type: None,
             headers: &[],
         };
-        self.pool.enqueue(slot, &get, registry);
+        self.pool.enqueue(slot, &get, self.timeout, registry);
         self.pending =
             Some(BidRequest::new(request, registered_gas_limit, &self.spec, self.genesis_time));
         true

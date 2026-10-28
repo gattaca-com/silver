@@ -1,4 +1,9 @@
-use serde::{Deserialize, Deserializer, de};
+use std::{fmt, marker::PhantomData};
+
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, SeqAccess, Visitor},
+};
 
 /// The schemas' `Uint64`: a decimal inside a JSON string.
 pub fn uint64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
@@ -80,6 +85,54 @@ pub fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let mut bytes = [0u8; N];
     hex::decode_to_slice(text.strip_prefix("0x")?, &mut bytes).ok()?;
     Some(bytes)
+}
+
+/// Parses a JSON array of at most `max` entries one entry at a time, handing
+/// each to `each` with its index, and returns how many there were. Entries
+/// before a malformed one have already been handed over when the error
+/// returns.
+pub fn each_array_entry<'a, T: Deserialize<'a>>(
+    json: &'a [u8],
+    max: usize,
+    each: impl FnMut(usize, T),
+) -> Result<usize, &'static str> {
+    let mut too_many = false;
+    let mut deserializer = serde_json::Deserializer::from_slice(json);
+    let entries = Entries { each, max, too_many: &mut too_many, entry: PhantomData };
+    match deserializer.deserialize_seq(entries).and_then(|count| deserializer.end().map(|()| count))
+    {
+        Ok(count) => Ok(count),
+        Err(_) if too_many => Err("too many entries in request body"),
+        Err(_) => Err("invalid request body"),
+    }
+}
+
+struct Entries<'f, F, T> {
+    each: F,
+    max: usize,
+    too_many: &'f mut bool,
+    entry: PhantomData<T>,
+}
+
+impl<'de, F: FnMut(usize, T), T: Deserialize<'de>> Visitor<'de> for Entries<'_, F, T> {
+    type Value = usize;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<usize, A::Error> {
+        let mut count = 0;
+        while let Some(entry) = seq.next_element()? {
+            if count == self.max {
+                *self.too_many = true;
+                return Err(de::Error::custom("too many entries"));
+            }
+            (self.each)(count, entry);
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 #[cfg(test)]

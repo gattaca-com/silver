@@ -20,7 +20,7 @@ use silver_httpcore::{
     AfterResponse, Bind, ChunkedResponse, ClientResponse, Closed, Listener, ParsedRequest,
     ServerConnection, Stream, TokenRange,
 };
-use silver_pbs::{BuilderConfig, SidecarCall};
+use silver_pbs::{BuilderConfig, PreferenceFailures, PreferencesBody, SidecarCall};
 
 use crate::{
     HeadStatus, NodeStatus,
@@ -96,6 +96,7 @@ enum Pending {
     Submission(PendingSubmission),
     BlindedBlockLock { request_id: u64, ssz: TCacheRead },
     SidecarResponse { request_id: u64, call_path: SidecarCall },
+    BuilderPreferences { request_id: u64 },
 }
 
 /// Request ids span the whole body from `first_id`, one per entry, so an
@@ -206,6 +207,9 @@ impl Pending {
             Outcome::AwaitingSidecarResponse(call_path) => {
                 (Self::SidecarResponse { request_id: first_id, call_path }, 1)
             }
+            Outcome::AwaitingBuilderPreferences { .. } => {
+                (Self::BuilderPreferences { request_id: first_id }, 1)
+            }
             Outcome::AwaitingBlindedBlockLock { ssz } => {
                 emit(BeaconApiRequest::LockBlindedBlock { request_id: first_id, ssz });
                 (Self::BlindedBlockLock { request_id: first_id, ssz }, 1)
@@ -224,7 +228,8 @@ impl Pending {
             Self::ProducedBlock { request_id: awaited, .. } |
             Self::Envelope { request_id: awaited, .. } |
             Self::BlindedBlockLock { request_id: awaited, .. } |
-            Self::SidecarResponse { request_id: awaited, .. } => *awaited == request_id,
+            Self::SidecarResponse { request_id: awaited, .. } |
+            Self::BuilderPreferences { request_id: awaited } => *awaited == request_id,
             Self::Submission(pending) => pending.awaits(request_id),
         }
     }
@@ -1053,6 +1058,27 @@ impl BeaconApi {
         self.resume_writing(token);
     }
 
+    pub fn handle_builder_preferences_response(
+        &mut self,
+        request_id: u64,
+        failures: PreferenceFailures<'_>,
+        submissions: &mut TProducer,
+    ) {
+        let Some(token) = self.token_awaiting(request_id) else {
+            silver_log::debug!(request_id, "builder answers for a connection already closed");
+            return;
+        };
+        let requests = self
+            .connections
+            .get_mut(&token)
+            .and_then(Connection::requests_mut)
+            .expect("found awaiting above");
+        requests.pending = None;
+        Response::new(requests.http.write_buf_mut(), submissions)
+            .builder_preferences_response(failures);
+        self.resume_writing(token);
+    }
+
     /// The builders a block request still waiting on `request_id` names.
     pub fn builder_config(&self, request_id: u64) -> Option<BuilderConfig<'_>> {
         self.connections.values().find_map(|conn| match conn.pending()? {
@@ -1082,6 +1108,7 @@ impl BeaconApi {
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
         to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
+        to_builders: &mut impl FnMut(u64, PreferencesBody<'_>),
     ) -> bool {
         self.reader.free();
         let now = Instant::now();
@@ -1094,7 +1121,7 @@ impl BeaconApi {
             did_work |= if offset < self.listeners.len() {
                 self.accept_all(offset, now)
             } else {
-                self.serve(event, now, submissions, emit, to_sidecar)
+                self.serve(event, now, submissions, emit, to_sidecar, to_builders)
             };
         }
 
@@ -1146,6 +1173,7 @@ impl BeaconApi {
         submissions: &mut TProducer,
         emit: &mut impl FnMut(BeaconApiRequest),
         forward_to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
+        to_builders: &mut impl FnMut(u64, PreferencesBody<'_>),
     ) -> bool {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
@@ -1155,8 +1183,16 @@ impl BeaconApi {
             dispatched = router.dispatch(req, ctx, submissions, out);
             // The body is borrowed only here; `Pending::defer` below numbers
             // the wait with the same id.
-            if let Outcome::AwaitingSidecarResponse(call_path) = dispatched {
-                forward_to_sidecar(*next_request_id, call_path, req.body);
+            match dispatched {
+                Outcome::AwaitingSidecarResponse(call_path) => {
+                    forward_to_sidecar(*next_request_id, call_path, req.body)
+                }
+                Outcome::AwaitingBuilderPreferences { is_json } => {
+                    let (body, _) =
+                        PreferencesBody::parse(req.body, is_json).expect("the handler parsed it");
+                    to_builders(*next_request_id, body);
+                }
+                _ => {}
             }
         });
         if let Outcome::Response(Some(request)) = dispatched {
@@ -1311,6 +1347,8 @@ mod tests {
         sidecar: Vec<(u64, SidecarCall, Vec<u8>)>,
         /// Each builder url and the block forwarded to it.
         forwarded: Vec<(String, Vec<u8>)>,
+        /// Each `builder_preferences` request id and its body.
+        preferences: Vec<(u64, Vec<u8>)>,
     }
 
     impl Server {
@@ -1359,6 +1397,7 @@ mod tests {
                 submissions,
                 sidecar: Vec::new(),
                 forwarded: Vec::new(),
+                preferences: Vec::new(),
             }
         }
 
@@ -1390,13 +1429,17 @@ mod tests {
 
         fn pump(&mut self) -> bool {
             self.readiness.wait(Duration::ZERO);
-            let Self { readiness, api, requests, submissions, sidecar, .. } = self;
+            let Self { readiness, api, requests, submissions, sidecar, preferences, .. } = self;
             api.pump(
                 readiness.events(),
                 submissions,
                 &mut |request| requests.push(request),
                 &mut |request_id, call_path, body| {
                     sidecar.push((request_id, call_path, body.to_vec()))
+                },
+                &mut |request_id, body| {
+                    let (PreferencesBody::Ssz(bytes) | PreferencesBody::Json(bytes)) = body;
+                    preferences.push((request_id, bytes.to_vec()))
                 },
             )
         }
@@ -2762,6 +2805,118 @@ mod tests {
             BeaconApiRequest::BeaconCommitteeSubscriptions { .. } |
             BeaconApiRequest::SyncCommitteeSubscriptions { .. } |
             BeaconApiRequest::ProposerPreparations { .. } => unreachable!("never answered"),
+        }
+    }
+
+    /// One `BuilderPreferencesEntry` for `url`, in a list of one.
+    fn builder_preferences_ssz(url: &str) -> Vec<u8> {
+        let fixed = 48 + 4 + 4 + 8;
+        let mut auth = 100u32.to_le_bytes().to_vec();
+        auth.extend_from_slice(&[0xAA; 96]);
+        auth.extend_from_slice(&12u32.to_le_bytes());
+        auth.extend_from_slice(&9u64.to_le_bytes());
+        auth.extend_from_slice(b"builder.example");
+        let mut ssz = 4u32.to_le_bytes().to_vec();
+        ssz.extend_from_slice(&[1; 48]);
+        ssz.extend_from_slice(&(fixed as u32).to_le_bytes());
+        ssz.extend_from_slice(&((fixed + url.len()) as u32).to_le_bytes());
+        ssz.extend_from_slice(&7u64.to_le_bytes());
+        ssz.extend_from_slice(url.as_bytes());
+        ssz.extend_from_slice(&auth);
+        ssz
+    }
+
+    fn post_builder_preferences(
+        mut stream: impl Write,
+        content_type: &str,
+        version: &str,
+        body: &[u8],
+    ) {
+        write!(
+            stream,
+            "POST /eth/v1/validator/builder_preferences HTTP/1.1\r\nHost: x\r\n\
+             Content-Type: {content_type}\r\nEth-Consensus-Version: {version}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+    }
+
+    #[test]
+    fn json_builder_preferences_reach_the_builders_as_sent() {
+        let mut server = server_with(4, Duration::from_secs(5));
+        let json = format!(
+            r#"[{{"proposer_pubkey":"0x{}","url":"https://builder.example","auth":{{"message":{{"data":"0x{}","slot":"9"}},"signature":"0x{}"}},"max_execution_payment":"7"}}]"#,
+            "01".repeat(48),
+            "6275696c6465722e6578616d706c65",
+            "aa".repeat(96),
+        );
+        let client = connect(tcp_addr(&server));
+        post_builder_preferences(&client, "application/json", "gloas", json.as_bytes());
+        pump_until(&mut server, "preferences handed on", |server| !server.preferences.is_empty());
+        let (_, sent) = server.preferences.remove(0);
+        assert_eq!(sent, json.into_bytes());
+    }
+
+    /// The validator client waits on its builders and hears which entries
+    /// they refused.
+    #[test]
+    fn builder_preferences_wait_on_the_builders_answers() {
+        let refused = [(0, "slot has already passed")];
+        for (failures, expected) in [(&[][..], "HTTP/1.1 200 OK"), (&refused[..], "HTTP/1.1 400")] {
+            let mut server = server_with(4, Duration::from_secs(5));
+            let body = builder_preferences_ssz("https://builder.example");
+            let client = connect(tcp_addr(&server));
+            post_builder_preferences(&client, "application/octet-stream", "gloas", &body);
+            pump_until(&mut server, "preferences handed on", |server| {
+                !server.preferences.is_empty()
+            });
+            let (request_id, sent) = server.preferences.remove(0);
+            assert_eq!(sent, body);
+            assert!(server.requests.is_empty(), "nothing goes to the spine");
+
+            let mut frame = Vec::new();
+            for (index, message) in failures {
+                PreferenceFailures::write(&mut frame, *index, format_args!("{message}"));
+            }
+            let failures = PreferenceFailures::new(&frame);
+            server.api.handle_builder_preferences_response(
+                request_id,
+                failures,
+                &mut server.submissions,
+            );
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = String::from_utf8(serve(&mut server, reader, "answer")).unwrap();
+            assert!(response.starts_with(expected), "{response}");
+            if !failures.is_empty() {
+                let (_, body) = response.split_once("\r\n\r\n").unwrap();
+                let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                assert_eq!(body["failures"][0]["index"], 0);
+                assert_eq!(body["failures"][0]["message"], "slot has already passed");
+            }
+        }
+    }
+
+    #[test]
+    fn builder_preferences_refused_before_any_builder() {
+        let ssz = builder_preferences_ssz("https://builder.example");
+        let cases: [(&str, &str, &[u8], &str); 6] = [
+            ("text/plain", "gloas", b"[]", "HTTP/1.1 415"),
+            ("application/json", "gloas", b"[]", "HTTP/1.1 200 OK"),
+            ("application/json", "gloas", b"[{}]", "HTTP/1.1 400"),
+            ("application/octet-stream", "fulu", &ssz, "HTTP/1.1 400"),
+            ("application/octet-stream", "gloas", &ssz[..ssz.len() - 120], "HTTP/1.1 400"),
+            ("application/octet-stream", "gloas", b"", "HTTP/1.1 200 OK"),
+        ];
+        for (content_type, version, body, expected) in cases {
+            let mut server = server_with(4, Duration::from_secs(5));
+            let client = connect(tcp_addr(&server));
+            post_builder_preferences(&client, content_type, version, body);
+            let reader = std::thread::spawn(move || read_to_eof(client));
+            let response = String::from_utf8(serve(&mut server, reader, "answer")).unwrap();
+            assert!(response.starts_with(expected), "{content_type} {version}: {response}");
+            assert!(server.preferences.is_empty(), "no builder is asked");
         }
     }
 
