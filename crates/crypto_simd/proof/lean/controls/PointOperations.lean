@@ -29,7 +29,8 @@ example [PointOperationExternals] (h : PointOperations.OperationsMatchSpec) :
   simpa [PointOperations.g2Sum] using
     PointOperations.g2_weighted_sum_eq_spec h ⟨[], by simp⟩ ⟨[], by simp⟩ (by simp) (by simp)
 
-example [RuntimeFeatures] [PointOperationExternals] (h : PointOperations.OperationsMatchSpec)
+example [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
+    [PointOperationExternals] (h : PointOperations.OperationsMatchSpec)
     (inputs : Slice (Array U8 48#usize)) (out result : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length)
     (hcall : uncompress_in_g1 inputs out = ok result)

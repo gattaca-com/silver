@@ -24,7 +24,7 @@ example : Kzg.G1AffineValid ⟨zeroFp, zeroFp⟩ :=
 example : Kzg.G2AffineValid ⟨zeroFp2, zeroFp2⟩ :=
   Kzg.g2_verdict_valid _ _ G2Spec.infinity_verdict
 
-example [RuntimeFeatures] (inputs : Slice (Array U8 48#usize))
+example [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] (inputs : Slice (Array U8 48#usize))
     (out result : Slice (Option g1_point.G1Point))
     (hlen : out.val.length = inputs.val.length)
     (hcall : uncompress_in_g1 inputs out = ok result)
