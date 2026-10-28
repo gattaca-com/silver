@@ -34,6 +34,11 @@ It builds and checksums `silver` and `silver_surfer`, then packages both binarie
 It tests Silver's `--version` and `--help`, Surfer's executable permission, and byte equality with both release binaries before publishing.
 Surfer is an interactive TUI without `--version` or `--help` flags.
 The GitHub release keeps its binaries, checksums, and attestations, plus the image tag, digest, and package link.
+The image's provenance attestation is pushed to GHCR beside it. Verify it with:
+
+```bash
+gh attestation verify oci://ghcr.io/gattaca-com/silver:v0.1.0-alpha.6 --repo gattaca-com/silver
+```
 
 If publication fails before the release exists, rerun the workflow from `main`.
 It creates the release tag only after the image is published.
