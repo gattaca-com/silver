@@ -43,9 +43,11 @@ gh attestation verify oci://ghcr.io/gattaca-com/silver:v0.1.0-alpha.6 --repo gat
 If publication fails before the release exists, rerun the workflow from `main`.
 It creates the release tag only after the image is published.
 
+The image and chart publish from the `[self-hosted, silver]` runners, which need Docker with Buildx.
+
 To bootstrap an image for an existing release:
 
-This optional path requires `gh` and `python3` on the existing `[self-hosted, silver]` publishing runner.
+This optional path also requires `gh` and `python3` on those runners.
 
 ```bash
 gh workflow run release.yaml --ref main -f existing_tag=v0.1.0-alpha.6
