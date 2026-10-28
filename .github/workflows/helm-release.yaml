@@ -1,0 +1,51 @@
+name: helm-release
+
+on:
+  push:
+    tags: [helm-silver-*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'gattaca-com/silver' && startsWith(github.ref, 'refs/tags/helm-silver-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.19.0
+
+      - name: Validate chart version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(awk '$1 == "version:" {print $2}' charts/silver/Chart.yaml)
+          test "$TAG" = "helm-silver-$version"
+
+      - name: Validate and package chart
+        run: |
+          helm lint --strict charts/silver
+          helm package charts/silver --destination dist
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+
+      - name: Publish chart package
+        run: helm push dist/silver-*.tgz oci://ghcr.io/gattaca-com/charts

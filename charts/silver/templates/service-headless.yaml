@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ default (include "silver.fullname" .) .Values.serviceName }}
+  labels:
+    {{- include "silver.labels" . | nindent 4 }}
+    {{- with .Values.service.headless.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.service.headless.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.headless.type }}
+  clusterIP: None
+  publishNotReadyAddresses: {{ .Values.service.headless.publishNotReadyAddresses }}
+  ports:
+    - port: {{ .Values.service.rpc.port }}
+      name: rpc
+      targetPort: rpc
+      protocol: TCP
+  selector:
+    {{- include "silver.selectorLabels" . | nindent 4 }}

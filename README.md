@@ -132,6 +132,27 @@ These `[chain_config]` keys replace the network's own values:
 | `checkpoint_sync_urls` | the checkpoint providers, or a devnet's `genesis.ssz` |
 | `checkpoint_file` | the boot state, read on every start |
 
+## Docker and Kubernetes
+
+Release images are available as GitHub packages:
+
+```bash
+docker pull ghcr.io/gattaca-com/silver:v0.1.0-alpha.6
+```
+
+Images contain the same Linux amd64 Silver binary attached to the corresponding release.
+Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
+
+For Kubernetes, install the independently versioned [Helm chart](charts/silver/README.md):
+
+```bash
+helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
+  --version 0.1.0 --values silver-values.yaml
+```
+
+The chart guide explains the required execution endpoint, JWT Secret, storage, and UDP networking.
+Maintainers can find package setup and release instructions in [publishing](docs/publishing.md).
+
 ## Build from source
 
 Requires Rust (pinned in `rust-toolchain.toml`) and `clang`.

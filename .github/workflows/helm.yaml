@@ -1,0 +1,34 @@
+name: helm
+
+on:
+  pull_request:
+    paths:
+      - charts/**
+      - .github/workflows/helm*.yaml
+      - .github/scripts/test_chart.py
+  push:
+    branches: [main]
+    paths:
+      - charts/**
+      - .github/workflows/helm*.yaml
+      - .github/scripts/test_chart.py
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.19.0
+
+      - run: python3 -m pip install PyYAML==6.0.3
+      - run: python3 .github/scripts/test_chart.py
+      - run: helm package charts/silver --destination "$RUNNER_TEMP"

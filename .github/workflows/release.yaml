@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      existing_tag:
+        description: "Publish an image for an existing release (for example, v0.1.0-alpha.6)"
+        type: string
+        required: false
 
 concurrency:
   group: release
@@ -15,23 +20,43 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   unreleased-version:
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'gattaca-com/silver' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      existing: ${{ steps.tag.outputs.existing }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - id: tag
+        env:
+          EXISTING_TAG: ${{ inputs.existing_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ -n "$EXISTING_TAG" ]; then
+            if [[ ! "$EXISTING_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid Silver release tag: $EXISTING_TAG" >&2
+              exit 1
+            fi
+            gh release view "$EXISTING_TAG" > /dev/null
+            echo "tag=$EXISTING_TAG" >> "$GITHUB_OUTPUT"
+            echo "existing=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           tag="v$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
             echo "$tag is already released"
           else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
@@ -45,22 +70,28 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        if: needs.unreleased-version.outputs.existing != 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.91.0
 
       - name: Install buf
-        uses: bufbuild/buf-action@v1
+        if: needs.unreleased-version.outputs.existing != 'true'
+        uses: bufbuild/buf-action@e8b15693be91ae73e965d157c722987338c768b3 # v1
         with:
           setup_only: true
 
       - name: Build
+        if: needs.unreleased-version.outputs.existing != 'true'
         run: cargo build --profile release-prod --locked --bin silver --bin silver_surfer
 
       - name: Package
+        if: needs.unreleased-version.outputs.existing != 'true'
         run: |
           mkdir dist && cd dist
           for bin in silver silver_surfer; do
@@ -69,15 +100,82 @@ jobs:
           done
           ./silver-linux-x86_64 --version
 
-      - uses: actions/upload-artifact@v4
+      - name: Download existing release binaries
+        if: needs.unreleased-version.outputs.existing == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.unreleased-version.outputs.tag }}
+        run: |
+          gh release download "$TAG" --dir dist --pattern '*-linux-x86_64' --pattern '*-linux-x86_64.sha256'
+          cd dist
+          sha256sum --check ./*.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-x86_64
           path: dist/
           if-no-files-found: error
 
-  publish:
+  image:
     needs: [unreleased-version, linux-x86_64]
-    runs-on: [self-hosted, silver]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      IMAGE: ghcr.io/gattaca-com/silver
+      TAG: ${{ needs.unreleased-version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-x86_64
+          path: dist/
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build release image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: dist
+          file: Dockerfile
+          target: release
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          labels: org.opencontainers.image.version=${{ env.TAG }}
+
+      - name: Smoke-test image
+        run: |
+          docker run --rm --network none "$IMAGE:$TAG" --version
+          docker run --rm --network none "$IMAGE:$TAG" --help
+          container=$(docker create "$IMAGE:$TAG")
+          trap 'docker rm "$container" > /dev/null' EXIT
+          docker cp "$container:/usr/local/bin/silver" packaged-silver
+          cmp dist/silver-linux-x86_64 packaged-silver
+
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish tested image
+        id: push
+        run: |
+          docker push "$IMAGE:$TAG"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: [unreleased-version, linux-x86_64, image]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
@@ -85,22 +183,21 @@ jobs:
       attestations: write
 
     steps:
-      # Self-hosted workspaces persist, and nothing here checks out a fresh one.
-      - run: rm -rf dist
-
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: linux-x86_64
           path: dist/
 
       - name: Attest
+        if: needs.unreleased-version.outputs.existing != 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*-linux-x86_64
 
       # Creates the tag at this commit, so a failed build leaves no tag behind.
       - name: Publish
-        uses: softprops/action-gh-release@v2
+        if: needs.unreleased-version.outputs.existing != 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.unreleased-version.outputs.tag }}
           target_commitish: ${{ github.sha }}
@@ -108,3 +205,43 @@ jobs:
           make_latest: true
           fail_on_unmatched_files: true
           files: dist/*
+          body: |
+            <!-- silver-container -->
+            ## Container image
+
+            Linux amd64: `docker pull ghcr.io/gattaca-com/silver:${{ needs.unreleased-version.outputs.tag }}`
+
+            Digest: `${{ needs.image.outputs.digest }}`
+
+            [GitHub package](https://github.com/gattaca-com/silver/pkgs/container/silver)
+            <!-- /silver-container -->
+
+      - name: Link image from existing release
+        if: needs.unreleased-version.outputs.existing == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.unreleased-version.outputs.tag }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          gh release view "$TAG" --json body --jq .body > release-notes.md
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("release-notes.md")
+          body = path.read_text()
+          start = "<!-- silver-container -->"
+          end = "<!-- /silver-container -->"
+          if start in body and end in body:
+              before, rest = body.split(start, 1)
+              _, after = rest.split(end, 1)
+              body = before.rstrip() + after
+          image = f"ghcr.io/gattaca-com/silver:{os.environ['TAG']}"
+          body = body.rstrip() + f"\n\n{start}\n## Container image\n\n"
+          body += f"Linux amd64: `docker pull {image}`\n\n"
+          body += f"Digest: `{os.environ['IMAGE_DIGEST']}`\n\n"
+          body += "[GitHub package](https://github.com/gattaca-com/silver/pkgs/container/silver)\n"
+          path.write_text(body + f"{end}\n")
+          PY
+          gh release edit "$TAG" --notes-file release-notes.md

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "silver.fullname" . }}-config
+  labels:
+    {{- include "silver.labels" . | nindent 4 }}
+data:
+  config.toml: |-
+    data_storage_dir = "/data"
+    beacon_api_bind = ["0.0.0.0:{{ .Values.service.rpc.port }}"]
+    discovery_port = {{ .Values.service.p2p.udp.port }}
+    quic_port = {{ .Values.service.p2p.quic.port }}
+    {{- with .Values.config }}
+    {{- . | nindent 4 }}
+    {{- end }}

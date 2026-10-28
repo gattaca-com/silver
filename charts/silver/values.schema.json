@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Silver chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "podManagementPolicy": {
+      "enum": [
+        "OrderedReady",
+        "Parallel"
+      ]
+    },
+    "updateStrategy": {
+      "$ref": "#/definitions/updateStrategy"
+    },
+    "image": {
+      "$ref": "#/definitions/image"
+    },
+    "imagePullSecrets": {
+      "type": "array"
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "serviceName": {
+      "type": "string"
+    },
+    "serviceAccount": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "resources": {
+      "type": "object"
+    },
+    "jwtSecret": {
+      "$ref": "#/definitions/jwtSecret"
+    },
+    "config": {
+      "type": "string"
+    },
+    "externalIP": {
+      "$ref": "#/definitions/externalIP"
+    },
+    "env": {
+      "type": "array"
+    },
+    "envFrom": {
+      "type": "array"
+    },
+    "extraArgs": {
+      "$ref": "#/definitions/extraArgs"
+    },
+    "service": {
+      "type": "object"
+    },
+    "startupProbe": {
+      "type": "object"
+    },
+    "livenessProbe": {
+      "type": "object"
+    },
+    "readinessProbe": {
+      "type": "object"
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "persistence": {
+      "$ref": "#/definitions/persistence"
+    },
+    "serviceMonitor": {
+      "type": "object"
+    },
+    "extraVolumes": {
+      "type": "array"
+    },
+    "extraVolumeMounts": {
+      "type": "array"
+    },
+    "extraObjects": {
+      "type": "array"
+    }
+  },
+  "definitions": {
+    "updateStrategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "RollingUpdate",
+            "OnDelete"
+          ]
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "pullPolicy",
+        "tag"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "jwtSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existingSecret",
+        "key"
+      ],
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "externalIP": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "value",
+        "serviceURL",
+        "image",
+        "resources"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "value": {
+          "type": "string"
+        },
+        "serviceURL": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "extraArgs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      },
+      "propertyNames": {
+        "not": {
+          "const": "config"
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "existingClaim",
+        "hostPath",
+        "storageClass",
+        "accessModes",
+        "size"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "volumeClaimTemplate",
+            "existingClaim",
+            "hostPath",
+            "emptyDir"
+          ]
+        },
+        "existingClaim": {
+          "type": "string"
+        },
+        "hostPath": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "type"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "size": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "existingClaim"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "existingClaim": {
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "hostPath"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "hostPath": {
+                "properties": {
+                  "path": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

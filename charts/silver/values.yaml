@@ -1,0 +1,210 @@
+# -- Number of Silver pods.
+replicaCount: 1
+
+# -- StatefulSet pod management policy.
+podManagementPolicy: Parallel
+
+updateStrategy:
+  # -- StatefulSet update strategy.
+  type: RollingUpdate
+
+image:
+  # -- Silver image repository.
+  repository: ghcr.io/gattaca-com/silver
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to Chart.appVersion, independently of the chart version.
+  tag: ""
+
+# -- Image pull secrets.
+imagePullSecrets: []
+# -- Override the chart name.
+nameOverride: ""
+# -- Override the fully qualified app name.
+fullnameOverride: ""
+# -- Override the governing headless Service name.
+serviceName: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount.
+  create: true
+  # -- ServiceAccount annotations.
+  annotations: {}
+  # -- ServiceAccount name. Generated when empty.
+  name: ""
+
+# -- Additional pod annotations.
+podAnnotations: {}
+# -- Additional pod labels.
+podLabels: {}
+# -- Pod-level security context.
+podSecurityContext:
+  fsGroup: 1000
+# -- Main container security context.
+securityContext: {}
+# -- Main container resources.
+resources: {}
+
+jwtSecret:
+  # -- Existing Secret containing the Engine API JWT.
+  existingSecret: ""
+  # -- Key in the existing Secret containing the JWT.
+  key: jwt
+
+# -- Additional TOML config. Data path, bind address, P2P ports, and discovered IPv4 are managed by the chart.
+config: ""
+
+externalIP:
+  # -- Discover and advertise the pod's external IPv4 address.
+  enabled: true
+  # -- Explicit external IPv4 address. Skips discovery when set.
+  value: ""
+  # -- HTTP endpoint used to discover the external IPv4 address.
+  serviceURL: https://checkip.amazonaws.com
+  image:
+    # -- External IP init container image repository.
+    repository: alpine
+    # -- External IP init container image tag.
+    tag: "3.24"
+    # -- External IP init container image pull policy.
+    pullPolicy: IfNotPresent
+  # -- External IP init container resources.
+  resources:
+    requests:
+      cpu: 20m
+      memory: 16Mi
+    limits:
+      cpu: 20m
+      memory: 16Mi
+
+# -- Additional environment variables. XDG_DATA_HOME defaults to the writable runtime volume.
+env:
+  - name: RUST_LOG
+    value: info
+# -- Additional environment sources.
+envFrom: []
+# -- Additional Silver CLI flags. Use TOML config for settings without a CLI flag.
+extraArgs:
+  network: mainnet
+  execution-endpoint: http://localhost:8551
+
+service:
+  headless:
+    # -- Headless Service type.
+    type: ClusterIP
+    # -- Headless Service annotations.
+    annotations: {}
+    # -- Additional headless Service labels.
+    extraLabels: {}
+    # -- Publish endpoints before pods are ready.
+    publishNotReadyAddresses: true
+  p2p:
+    # -- Bind UDP discovery and QUIC ports on the host.
+    enableHostPort: true
+    udp:
+      # -- P2P discovery UDP port.
+      port: 31133
+    quic:
+      # -- P2P QUIC UDP port.
+      port: 31123
+  rpc:
+    # -- Beacon API Service type.
+    type: ClusterIP
+    # -- Beacon API listen and Service port.
+    port: 5051
+    # -- RPC Service annotations.
+    annotations: {}
+    # -- Additional RPC Service labels.
+    extraLabels: {}
+    # -- RPC Service session affinity.
+    sessionAffinity: None
+    # -- RPC Service session affinity configuration.
+    sessionAffinityConfig: {}
+  metrics:
+    # -- Metrics Service type. Targets the Beacon API listener.
+    type: ClusterIP
+    # -- Metrics Service port. Silver exposes /metrics on its Beacon API.
+    port: 5051
+    # -- Metrics Service annotations.
+    annotations: {}
+    # -- Additional metrics Service labels.
+    extraLabels: {}
+    # -- Publish metrics endpoints before pods are ready.
+    publishNotReadyAddresses: true
+
+livenessProbe:
+  httpGet:
+    path: /eth/v1/node/version
+    port: rpc
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+readinessProbe:
+  httpGet:
+    path: /eth/v1/node/health?syncing_status=503
+    port: rpc
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /eth/v1/node/version
+    port: rpc
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 180
+
+# -- Node selector. Published Silver images support Linux amd64.
+nodeSelector:
+  kubernetes.io/arch: amd64
+# -- Topology spread constraints.
+topologySpreadConstraints: []
+# -- Pod tolerations.
+tolerations: []
+# -- Pod affinity rules.
+affinity: {}
+
+persistence:
+  # -- Data volume type: volumeClaimTemplate, existingClaim, hostPath, or emptyDir.
+  type: volumeClaimTemplate
+  # -- Existing PVC name when type is existingClaim.
+  existingClaim: ""
+  hostPath:
+    # -- Host path when type is hostPath.
+    path: ""
+    # -- Kubernetes hostPath type.
+    type: Directory
+  # -- Storage class. Use "-" for no storage class.
+  storageClass: ""
+  # -- PVC access modes.
+  accessModes:
+    - ReadWriteOnce
+  # -- Requested data volume size. Size for the selected custody settings.
+  size: 500Gi
+
+serviceMonitor:
+  # -- Create a ServiceMonitor. Requires the Prometheus Operator CRDs.
+  enabled: false
+  # -- Additional ServiceMonitor labels.
+  additionalLabels: {}
+  # -- ServiceMonitor namespace. Defaults to the release namespace.
+  namespace: ""
+  # -- ServiceMonitor namespace selector.
+  namespaceSelector: {}
+  # -- Metrics scrape interval.
+  scrapeInterval: 60s
+  # -- Honor labels from scraped metrics.
+  honorLabels: false
+  # -- Labels copied from the Service to metrics.
+  targetLabels: []
+  # -- Metric relabeling rules.
+  metricRelabelings: []
+
+# -- Additional volumes.
+extraVolumes: []
+# -- Additional main container volume mounts.
+extraVolumeMounts: []
+# -- Additional Kubernetes objects rendered with tpl.
+extraObjects: []
