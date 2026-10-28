@@ -43,7 +43,7 @@ mod tests {
     use crate::{
         NodeStatus,
         ctx::{ApiCtx, anchor_ctx, test_ctx},
-        node::status::tests::{chasing, ready, with_head_optimistic},
+        node::status::tests::{ready, with_head_optimistic},
         testing::{answer, body, request},
     };
 
@@ -208,9 +208,7 @@ mod tests {
         for (status, want) in [
             (with_head_optimistic(true), "true"),
             (with_head_optimistic(false), "false"),
-            (NodeStatus { target: chasing(200), ..with_head_optimistic(false) }, "false"),
             (NodeStatus { el: ELSyncStatus::Offline, ..with_head_optimistic(false) }, "false"),
-            (NodeStatus { target: chasing(200), ..with_head_optimistic(true) }, "true"),
         ] {
             ctx.node_status = status;
             for path in state_paths("head") {

@@ -67,6 +67,9 @@ impl OperationPools {
 }
 
 pub(crate) fn get_voluntary_exits(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     resp.json_body(|json| {
         json.data_envelope(|json| {
             json.begin_array();
@@ -79,6 +82,9 @@ pub(crate) fn get_voluntary_exits(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut R
 }
 
 pub(crate) fn get_proposer_slashings(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     resp.json_body(|json| {
         json.data_envelope(|json| {
             json.begin_array();
@@ -91,6 +97,9 @@ pub(crate) fn get_proposer_slashings(_req: &Request<'_>, ctx: &ApiCtx, resp: &mu
 }
 
 pub(crate) fn get_attester_slashings(_req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let version = ctx.spec.fork_at_slot(ctx.node_status.wall_slot).name();
     resp.versioned_json(version, |json| {
         json.begin_array();
@@ -106,6 +115,9 @@ pub(crate) fn get_bls_to_execution_changes(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     resp.json_body(|json| {
         json.data_envelope(|json| {
             json.begin_array();

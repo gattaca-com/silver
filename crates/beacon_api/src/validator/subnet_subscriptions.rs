@@ -22,6 +22,9 @@ pub(crate) fn post_beacon_committee_subscriptions(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let window = SubnetsBySlot::window(ctx.node_status.wall_slot);
     let mut by_slot = SubnetsBySlot::default();
     let parsed = each_body_entry(req.body, |_, entry: CommitteeSubscription| {
@@ -81,6 +84,9 @@ pub(crate) fn post_sync_committee_subscriptions(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let wall_epoch = ctx.node_status.wall_slot / SLOTS_PER_EPOCH;
     let period_start = wall_epoch - wall_epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
     let valid_until = wall_epoch + 1..=period_start + 2 * EPOCHS_PER_SYNC_COMMITTEE_PERIOD;

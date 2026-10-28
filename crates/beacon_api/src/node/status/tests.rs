@@ -114,7 +114,8 @@ fn syncing_body_reports_the_head_and_both_layers() {
 /// measure a distance to, and neither layer has vouched for anything.
 #[test]
 fn syncing_answers_at_the_anchor_before_any_tile_reports() {
-    let ctx = anchor_ctx();
+    let mut ctx = anchor_ctx();
+    ctx.node_status.target = None;
     assert_eq!(
         status_body(ctx.node_status, "/eth/v1/node/syncing"),
         "{\"data\":{\"head_slot\":\"0\",\"sync_distance\":\"18446744073709551615\",\

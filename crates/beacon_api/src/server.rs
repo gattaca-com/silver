@@ -1446,6 +1446,7 @@ mod tests {
                 tcaches,
             );
             api.open_tcaches().unwrap();
+            api.ctx.node_status.target = Some(SyncUpdate::Following);
             Self {
                 readiness,
                 api,

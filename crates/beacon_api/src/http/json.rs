@@ -5,8 +5,8 @@
 use std::io::Write;
 
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BeaconBlockHeader, Checkpoint, FAR_FUTURE_EPOCH, Fork, ForkName, SpecConfig,
-    Version,
+    B256, BLSPubkey, BeaconBlockHeader, Builder, Checkpoint, FAR_FUTURE_EPOCH, Fork, ForkName,
+    SpecConfig, Version,
 };
 use silver_common::{
     AGENT_VERSION, PreparedPayloadAttributes,
@@ -857,6 +857,30 @@ impl Json<'_> {
         self.quoted_u64(record.lifecycle.exit_epoch);
         self.key("withdrawable_epoch");
         self.quoted_u64(record.lifecycle.withdrawable_epoch);
+        self.end_object();
+        self.end_object();
+    }
+
+    pub(crate) fn builder(&mut self, index: u64, status: &str, builder: &Builder) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(index);
+        self.key("status");
+        self.string(status);
+        self.key("builder");
+        self.begin_object();
+        self.key("pubkey");
+        self.hex(&builder.pubkey);
+        self.key("version");
+        self.quoted_u64(builder.version.into());
+        self.key("execution_address");
+        self.hex(&builder.execution_address);
+        self.key("balance");
+        self.quoted_u64(builder.balance);
+        self.key("deposit_epoch");
+        self.quoted_u64(builder.deposit_epoch);
+        self.key("withdrawable_epoch");
+        self.quoted_u64(builder.withdrawable_epoch);
         self.end_object();
         self.end_object();
     }

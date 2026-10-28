@@ -2,6 +2,7 @@ use crate::{
     beacon::{
         block_submission::{post_blinded_block_v2, post_block_v2},
         blocks::{block, block_header, block_root},
+        builders::post_state_builders,
         committees::get_epoch_committees,
         operations::{
             post_attestations, post_attester_slashing, post_bls_to_execution_changes,
@@ -72,6 +73,7 @@ pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Get, "/eth/v1/beacon/pool/voluntary_exits", get_voluntary_exits),
     (Method::Post, "/eth/v1/beacon/pool/voluntary_exits", post_voluntary_exit),
     (Method::Get, "/eth/v1/beacon/proposer_preferences", get_proposer_preferences),
+    (Method::Post, "/eth/v1/beacon/states/{state_id}/builders", post_state_builders),
     (Method::Get, "/eth/v1/beacon/states/{state_id}/committees", get_epoch_committees),
     (
         Method::Get,
@@ -150,10 +152,63 @@ fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
 
 #[cfg(test)]
 mod tests {
+    use super::ROUTES;
     use crate::{
         ctx::anchor_ctx,
-        testing::{answer, body, request},
+        http::router::Method,
+        testing::{answer, body, dispatch, posting, request},
     };
+
+    /// What a node answers before it follows the chain: its own status, the
+    /// chain's configuration, and event streams.
+    const SERVED_WHILE_SYNCING: &[&str] = &[
+        "/eth/v1/beacon/genesis",
+        "/eth/v1/config/deposit_contract",
+        "/eth/v1/config/fork_schedule",
+        "/eth/v1/config/spec",
+        "/eth/v1/events",
+        "/eth/v1/node/health",
+        "/eth/v1/node/identity",
+        "/eth/v1/node/peer_count",
+        "/eth/v1/node/peers",
+        "/eth/v1/node/syncing",
+        "/eth/v1/node/version",
+        "/metrics",
+    ];
+
+    fn concrete(pattern: &str) -> String {
+        let root = format!("0x{}", "00".repeat(32));
+        pattern
+            .replace("{state_id}", "head")
+            .replace("{block_id}", "head")
+            .replace("{validator_id}", "0")
+            .replace("{epoch}", "0")
+            .replace("{slot}", "1")
+            .replace("{beacon_block_root}", &root)
+    }
+
+    #[test]
+    fn every_other_route_is_503_until_the_node_follows() {
+        let mut ctx = anchor_ctx();
+        ctx.node_status.target = None;
+        let mut answered = Vec::new();
+        for &(method, pattern, _) in ROUTES {
+            if SERVED_WHILE_SYNCING.contains(&pattern) {
+                continue;
+            }
+            let path = concrete(pattern);
+            let req = match method {
+                Method::Get => request("GET", &path),
+                Method::Post => posting(&path, "[]"),
+            };
+            let (_, out) = dispatch(&ctx, &req);
+            let status = std::str::from_utf8(&out).unwrap().lines().next().unwrap_or("").to_owned();
+            if status != "HTTP/1.1 503 Service Unavailable" {
+                answered.push(format!("{pattern}: {status}"));
+            }
+        }
+        assert!(answered.is_empty(), "{answered:#?}");
+    }
 
     #[test]
     fn metrics_response_valid_prometheus_format() {

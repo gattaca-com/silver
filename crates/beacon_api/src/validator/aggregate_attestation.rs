@@ -12,6 +12,9 @@ use crate::{
 };
 
 pub(crate) fn aggregate_attestation(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let Some(committee) = CommitteeQuery::parse(req, ctx, resp) else {
         return;
     };
