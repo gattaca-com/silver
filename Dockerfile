@@ -20,10 +20,9 @@ ARG SILVER_BUILD_COMMIT
 # `--locked`: the committed Cargo.lock is under a publish-age cooldown (see
 # the justfile), so resolution must not drift in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/silver/target \
-    cargo build --profile release-prod --locked --bin silver --bin silver_surfer && \
-    cp target/release-prod/silver target/release-prod/silver_surfer /usr/local/bin/
+    cargo build --release --locked --no-default-features --features crypto_simd --bin silver --bin silver_surfer && \
+    cp target/release/silver target/release/silver_surfer /usr/local/bin/
 
 FROM debian:bookworm-slim AS runtime
 
@@ -36,7 +35,7 @@ LABEL org.opencontainers.image.source="https://github.com/gattaca-com/silver" \
 
 # Without this the tracing subscriber writes to rolling files under LOG_PATH,
 # where `docker logs` never sees them.
-ENV LOG_STDOUT=1 RUST_LOG=info
+ENV LOG_STDOUT=1
 
 ENTRYPOINT ["/usr/local/bin/silver"]
 

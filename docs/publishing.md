@@ -40,6 +40,8 @@ It creates the release tag only after the image is published.
 
 To bootstrap an image for an existing release:
 
+This optional path requires `gh` and `python3` on the existing `[self-hosted, silver]` publishing runner.
+
 ```bash
 gh workflow run release.yaml --ref main -f existing_tag=v0.1.0-alpha.6
 ```
