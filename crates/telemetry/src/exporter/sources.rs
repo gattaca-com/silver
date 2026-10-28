@@ -416,6 +416,14 @@ mod tests {
         }
     }
 
+    declare_counters! {
+        KeyframeTestCounters => "keyframe_smoke" {
+            Alpha,
+            Beta,
+            Gamma,
+        }
+    }
+
     #[test]
     fn fast_source_republishes_only_its_slots() {
         let tmp = TempDir::new().unwrap();
@@ -445,7 +453,7 @@ mod tests {
     #[test]
     fn between_keyframes_only_changed_slots_are_sent() {
         let tmp = TempDir::new().unwrap();
-        FastTestCounters::init_with_base(tmp.path(), "keyframe_test").unwrap();
+        KeyframeTestCounters::init_with_base(tmp.path(), "keyframe_test").unwrap();
         let mut sources = ExportSources::default();
         sources.discover(tmp.path(), "keyframe_test");
         let mut enc = Encoder::new(1, 2);
@@ -457,7 +465,7 @@ mod tests {
         };
 
         assert_eq!(encode(&mut sources, 0).0, Kind::CounterValues);
-        FastTestCounters::VoteBatchSize.set(5);
+        KeyframeTestCounters::Alpha.set(5);
         let (kind, entries) = encode(&mut sources, 1);
         assert_eq!(kind, Kind::CounterChanges);
         assert_eq!(entries.len(), 16, "one change");
