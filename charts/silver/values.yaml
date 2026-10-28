@@ -39,9 +39,15 @@ podAnnotations: {}
 podLabels: {}
 # -- Pod-level security context.
 podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
   fsGroup: 1000
-# -- Main container security context.
-securityContext: {}
+# -- Security context for the Silver and external IP containers.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
 # -- Main container resources.
 resources: {}
 

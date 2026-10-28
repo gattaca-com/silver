@@ -57,6 +57,11 @@ The default storage mode creates a 500Gi PVC for each pod.
 `persistence.type` also supports `existingClaim`, `hostPath`, and `emptyDir`.
 `emptyDir` loses the database when the pod is replaced.
 
+Silver runs as UID and GID 1000 with every capability dropped.
+`fsGroup` makes PVCs writable, but a `hostPath` directory must already be writable by UID 1000.
+Tiles request the highest thread priority and log a warning without `CAP_SYS_NICE`.
+Granting it requires running as root, because Kubernetes gives added capabilities only to root processes.
+
 ## Networking and monitoring
 
 Silver uses UDP 31133 for discovery, UDP 31123 for QUIC, and TCP 5051 for the Beacon API.

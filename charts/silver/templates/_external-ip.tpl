@@ -2,6 +2,10 @@
 - name: external-ip
   image: "{{ .Values.externalIP.image.repository }}:{{ .Values.externalIP.image.tag }}"
   imagePullPolicy: {{ .Values.externalIP.image.pullPolicy }}
+  {{- with .Values.securityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   env:
     - name: EXTERNAL_IP
       value: {{ .Values.externalIP.value | quote }}
