@@ -76,11 +76,9 @@ impl Address {
         Some(Ok(()))
     }
 
-    /// After a failed connect: the host may have moved, so the next connect
-    /// looks its name up again.
     pub(crate) fn forget_resolved(&mut self) {
         if let Self::Resolved { host_port, addr } = self {
-            silver_log::info!(host_port, %addr, "connect failed; resolving again");
+            silver_log::info!(host_port, %addr, "failed before a response; resolving again");
             *self = Self::Unresolved(mem::take(host_port));
         }
     }
