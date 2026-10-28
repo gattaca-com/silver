@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+      attestations: read
 
     steps:
       - uses: actions/checkout@v4
@@ -97,10 +98,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.unreleased-version.outputs.tag }}
+        # The checksums are release assets too, so only the attestation proves this workflow built the binaries.
         run: |
           gh release download "$TAG" --dir dist --pattern '*-linux-x86_64' --pattern '*-linux-x86_64.sha256'
           cd dist
           sha256sum --check ./*.sha256
+          for bin in ./*-linux-x86_64; do
+            gh attestation verify "$bin" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yaml"
+          done
 
       - uses: actions/upload-artifact@v4
         with:

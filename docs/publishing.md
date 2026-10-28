@@ -46,7 +46,7 @@ This optional path requires `gh` and `python3` on the existing `[self-hosted, si
 gh workflow run release.yaml --ref main -f existing_tag=v0.1.0-alpha.6
 ```
 
-This path downloads and verifies the release's existing checksums.
+This path downloads the release's binaries and verifies their checksums and attestations.
 It publishes the image and adds its link to the existing release notes.
 It does not replace the binary assets or their attestations.
 Rerunning it replaces the marked image section in the notes.
