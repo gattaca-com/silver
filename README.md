@@ -149,11 +149,11 @@ Open Surfer inside a running Silver container:
 docker exec -it <container> silver_surfer
 ```
 
-For Kubernetes, install the independently versioned [Helm chart](charts/silver/README.md):
+For Kubernetes, install the [Helm chart](charts/silver/README.md):
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0 --values silver-values.yaml
+  --version 0.1.0-alpha.6 --values silver-values.yaml
 ```
 
 The chart guide explains the required execution endpoint, JWT Secret, storage, and UDP networking.

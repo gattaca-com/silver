@@ -25,11 +25,11 @@ Install the chart package from GHCR:
 
 ```bash
 helm upgrade --install silver oci://ghcr.io/gattaca-com/charts/silver \
-  --version 0.1.0 --values silver-values.yaml
+  --version 0.1.0-alpha.6 --values silver-values.yaml
 ```
 
-Chart `version` and Silver `appVersion` are independent.
-An empty `image.tag` uses `appVersion`, including its `v` prefix.
+Each Silver release publishes a chart with the same version, without the `v` prefix.
+An empty `image.tag` uses that release's image.
 Set `image.tag` to select another published Silver release without releasing a new chart.
 The chart does not deploy an execution client or generate JWT secrets.
 
@@ -91,4 +91,4 @@ Silver `v0.1.0-alpha.6` exposes `/metrics` but returns no samples.
 
 ## Release the chart
 
-See [publishing](../../docs/publishing.md) for package setup and independent chart releases.
+See [publishing](../../docs/publishing.md) for package setup and chart releases.

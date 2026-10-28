@@ -180,9 +180,40 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-  publish:
-    needs: [unreleased-version, linux-x86_64, image]
+  chart:
+    needs: [unreleased-version, image]
     if: '!cancelled() && needs.image.result == ''success'''
+    runs-on: [self-hosted, silver]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.unreleased-version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.19.0
+
+      # Self-hosted home directories persist, so the registry login must not land there.
+      - name: Publish chart
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          helm lint --strict charts/silver
+          helm package charts/silver --version "${TAG#v}" --app-version "$TAG" --destination "$RUNNER_TEMP/chart"
+          export HELM_REGISTRY_CONFIG="$RUNNER_TEMP/helm-registry.json"
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP"/chart/silver-*.tgz oci://ghcr.io/gattaca-com/charts
+
+  publish:
+    needs: [unreleased-version, linux-x86_64, image, chart]
+    if: '!cancelled() && needs.chart.result == ''success'''
     runs-on: [self-hosted, silver]
     timeout-minutes: 15
     permissions:

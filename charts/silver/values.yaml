@@ -13,7 +13,7 @@ image:
   repository: ghcr.io/gattaca-com/silver
   # -- Image pull policy.
   pullPolicy: IfNotPresent
-  # -- Image tag. Defaults to Chart.appVersion, independently of the chart version.
+  # -- Image tag. Defaults to Chart.appVersion.
   tag: ""
 
 # -- Image pull secrets.

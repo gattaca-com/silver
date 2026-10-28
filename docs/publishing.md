@@ -5,7 +5,7 @@ Silver publishes two packages through GitHub Actions:
 | Package | Registry reference | Version source |
 | --- | --- | --- |
 | Linux amd64 image | `ghcr.io/gattaca-com/silver` | Silver release tag, such as `v0.1.0-alpha.6` |
-| Helm chart | `oci://ghcr.io/gattaca-com/charts/silver` | `version` in `charts/silver/Chart.yaml`, such as `0.1.0` |
+| Helm chart | `oci://ghcr.io/gattaca-com/charts/silver` | Silver release tag without the `v`, such as `0.1.0-alpha.6` |
 
 ## Maintainer setup
 
@@ -41,11 +41,11 @@ gh attestation verify oci://ghcr.io/gattaca-com/silver:v0.1.0-alpha.6 --repo gat
 ```
 
 If publication fails before the release exists, rerun the workflow from `main`.
-It creates the release tag only after the image is published.
+It creates the release tag only after the image and chart are published.
 
 The image and chart publish from the `[self-hosted, silver]` runners, which need Docker with Buildx.
 
-To bootstrap an image for an existing release:
+To bootstrap an image and chart for an existing release:
 
 This optional path also requires `gh` and `python3` on those runners.
 
@@ -54,7 +54,7 @@ gh workflow run release.yaml --ref main -f existing_tag=v0.1.0-alpha.6
 ```
 
 This path downloads the release's binaries and verifies their checksums and attestations.
-It publishes the image and adds its link to the existing release notes.
+It publishes the image and chart, and adds the image link to the existing release notes.
 It does not replace the binary assets or their attestations.
 Rerunning it replaces the marked image section in the notes.
 
@@ -62,33 +62,15 @@ Images use exact release tags. No floating `latest` tag is published.
 
 ## Helm chart releases
 
-Publish the chart after its default Silver image is available.
-Bump `version` in `charts/silver/Chart.yaml` for chart changes and merge them into `main`.
-Change `appVersion` only when changing the default Silver image.
-
-Create a separate chart tag at the reviewed commit:
-
-```bash
-git switch main
-git pull --ff-only
-git tag helm-silver-0.1.0
-git push origin helm-silver-0.1.0
-```
-
-The `helm-release` workflow verifies the tag matches the chart version, then pushes the chart package to GHCR.
-It does not create a GitHub release or rebuild Silver binaries or images.
-Never move a published chart tag; bump the chart version for changes.
-Retry a failed chart publication from its tag:
-
-```bash
-gh workflow run helm-release.yaml --ref helm-silver-0.1.0
-```
+Each Silver release also publishes the chart from `main`.
+The release tag sets the chart `version` and `appVersion`, overriding `charts/silver/Chart.yaml`.
+A chart-only change ships with the next Silver release.
 
 Check anonymous access after making both packages public:
 
 ```bash
 docker pull ghcr.io/gattaca-com/silver:v0.1.0-alpha.6
-helm show chart oci://ghcr.io/gattaca-com/charts/silver --version 0.1.0
+helm show chart oci://ghcr.io/gattaca-com/charts/silver --version 0.1.0-alpha.6
 ```
 
 Use a client without cached GHCR credentials for that check.

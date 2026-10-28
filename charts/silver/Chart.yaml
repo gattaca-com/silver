@@ -2,7 +2,7 @@ apiVersion: v2
 name: silver
 description: A Helm chart for the Silver Ethereum consensus client
 type: application
-version: 0.1.0
+version: 0.1.0-alpha.6
 appVersion: "v0.1.0-alpha.6"
 home: https://github.com/gattaca-com/silver
 sources:
