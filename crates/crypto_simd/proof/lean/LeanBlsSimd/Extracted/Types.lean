@@ -155,7 +155,7 @@ structure bls.g2x8.G2x8 where
 def bls.fp12.Fp12 := bls.fp2x8.Fp2x8
 
 /-- [silver_crypto_simd::bls::g1_point::G1Point]
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 19:0-19:35
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 14:0-14:35
     Visibility: public -/
 @[reducible]
 def bls.g1_point.G1Point := blst.blst_p1_affine

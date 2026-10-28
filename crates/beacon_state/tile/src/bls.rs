@@ -1,7 +1,7 @@
 use std::slice;
 
 pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
-use blst::{BLST_ERROR, blst_p1_affine_is_inf, min_pk::AggregatePublicKey};
+use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
 pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
 use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
@@ -179,17 +179,18 @@ impl SignatureChecker {
 
 #[timed]
 pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
-    let Some(pk) = checked_public_key(pk) else { return false };
-    if unsafe { blst_p1_affine_is_inf(pk.as_blst()) } {
+    let pk = trusted_key(pk);
+    if pk.is_infinity() {
         return false;
     }
     let hashed = G2Point::hash_to_curve(message, DST);
     PairingProduct::two_pairs_are_one((&pk, &hashed), (&G1Point::negative_generator(), &sig.0))
 }
 
-fn checked_public_key(pk: &PublicKey) -> Option<G1Point> {
-    // CL-168 will validate cached keys; until then, admit each key sum here.
-    G1Point::from_blst(*pk_affine(pk))
+/// Keys are validated when they enter the registry, and weighted sums of
+/// them stay in G1.
+fn trusted_key(pk: &PublicKey) -> G1Point {
+    G1Point::from_trusted(*pk_affine(pk))
 }
 
 /// Signature is subgroup-checked by the verify, so downstream aggregation

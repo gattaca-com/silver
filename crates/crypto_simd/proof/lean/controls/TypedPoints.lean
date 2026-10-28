@@ -55,7 +55,7 @@ example [PointExternals] (h : CheckedPoints.ConstructorsMatchSpec)
   simp [g2_point.G2Point.from_blst, h.g2, CheckedPoints.g2Spec, hp]
 
 example (raw : blst.blst_p1_affine) :
-    g1_point.G1Point.from_subgroup_unchecked raw = ok raw := rfl
+    g1_point.G1Point.from_trusted raw = ok raw := rfl
 
 example (raw : blst.blst_p2_affine) :
-    g2_point.G2Point.from_subgroup_unchecked raw = ok raw := rfl
+    g2_point.G2Point.from_trusted raw = ok raw := rfl

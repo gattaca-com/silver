@@ -12,7 +12,7 @@ use super::encoding::less_than_p;
 ///
 /// ```compile_fail,E0624
 /// use silver_crypto_simd::bls::G2Point;
-/// G2Point::from_subgroup_unchecked(Default::default());
+/// G2Point::from_trusted(Default::default());
 /// ```
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
@@ -36,7 +36,7 @@ impl G2Point {
     /// Trusts that the coordinates are canonical and the point is on-curve and
     /// in G2. Violating this contract can invalidate cryptographic
     /// verdicts, but does not cause undefined behavior.
-    pub(crate) const fn from_subgroup_unchecked(point: blst_p2_affine) -> Self {
+    pub(crate) const fn from_trusted(point: blst_p2_affine) -> Self {
         Self(point)
     }
 
@@ -57,7 +57,7 @@ impl G2Point {
             blst_p2_to_affine(&mut affine, &point);
         }
         // blst's hash-to-curve clears the cofactor.
-        Self::from_subgroup_unchecked(affine)
+        Self::from_trusted(affine)
     }
 
     /// Scalars are consecutive 64-bit little-endian integers, one per point.
@@ -73,7 +73,7 @@ impl G2Point {
             unsafe { blst_p2_to_affine(&mut affine, &sum) };
         }
         // Subgroup points are closed under scalar multiplication and addition.
-        Self::from_subgroup_unchecked(affine)
+        Self::from_trusted(affine)
     }
 
     pub const fn as_blst(&self) -> &blst_p2_affine {
@@ -105,7 +105,7 @@ mod tests {
             assert_eq!(point.as_blst(), &raw);
             assert_eq!(point.into_blst(), raw);
         }
-        let trusted = G2Point::from_subgroup_unchecked(generator);
+        let trusted = G2Point::from_trusted(generator);
         assert_eq!(trusted.into_blst(), generator);
     }
 

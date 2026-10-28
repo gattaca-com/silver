@@ -27,7 +27,7 @@ pub fn uncompress_in_g1(bytes: &[u8; COMPRESSED_LEN]) -> Option<G1Point> {
     let y = signed(&x.square().mul(&x).add(&FOUR).sqrt()?, larger);
     // (x, 0) has order 2.
     if !y.is_zero() && G1::in_g1(&x, &y) {
-        Some(G1Point::from_subgroup_unchecked(point(&x, &y)))
+        Some(G1Point::from_trusted(point(&x, &y)))
     } else {
         None
     }
@@ -69,8 +69,8 @@ pub fn uncompress_pair_in_g1(
         [curve_points[0] && G1::in_g1(&x[0], &y[0]), curve_points[1] && G1::in_g1(&x[1], &y[1])]
     };
     [
-        if members[0] { Some(G1Point::from_subgroup_unchecked(point(&x[0], &y[0]))) } else { None },
-        if members[1] { Some(G1Point::from_subgroup_unchecked(point(&x[1], &y[1]))) } else { None },
+        if members[0] { Some(G1Point::from_trusted(point(&x[0], &y[0]))) } else { None },
+        if members[1] { Some(G1Point::from_trusted(point(&x[1], &y[1]))) } else { None },
     ]
 }
 
@@ -98,7 +98,7 @@ fn extraordinary(bytes: &[u8; COMPRESSED_LEN]) -> Option<G1Point> {
         i += 1;
     }
     if bytes[0] == FLAG_COMPRESSED | FLAG_INFINITY && i == COMPRESSED_LEN {
-        Some(G1Point::from_subgroup_unchecked(blst_p1_affine::default()))
+        Some(G1Point::from_trusted(blst_p1_affine::default()))
     } else {
         None
     }

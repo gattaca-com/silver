@@ -147,7 +147,7 @@ pub fn uncompress_in_g1(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<G1Poi
 fn uncompress_all_in_g1_blst(inputs: &[[u8; COMPRESSED_LEN]], out: &mut [Option<G1Point>]) {
     for i in 0..inputs.len() {
         out[i] = match uncompress_in_g1_blst(&inputs[i]) {
-            Some(point) => Some(G1Point::from_subgroup_unchecked(point)),
+            Some(point) => Some(G1Point::from_trusted(point)),
             None => None,
         };
     }
@@ -162,7 +162,7 @@ fn decompress_g1_chunk(chunk: &[[u8; COMPRESSED_LEN]; LANES], out: &mut [Option<
         out[lane] = if batch.undecided & bit != 0 {
             uncompress_one_in_g1(&chunk[lane])
         } else if batch.valid & bit != 0 {
-            Some(G1Point::from_subgroup_unchecked(batch.points[lane]))
+            Some(G1Point::from_trusted(batch.points[lane]))
         } else {
             None
         };
@@ -177,7 +177,7 @@ pub fn uncompress_in_g2_blst(bytes: &[u8; G2_COMPRESSED_LEN]) -> Option<G2Point>
         blst_p2_uncompress(&mut point, bytes.as_ptr()) == BLST_ERROR::BLST_SUCCESS &&
             blst_p2_affine_in_g2(&point)
     };
-    if ok { Some(G2Point::from_subgroup_unchecked(point)) } else { None }
+    if ok { Some(G2Point::from_trusted(point)) } else { None }
 }
 
 /// Sets each `out[i]` to a verdict identical to
@@ -214,7 +214,7 @@ fn decompress_g2_chunk(chunk: &[[u8; G2_COMPRESSED_LEN]], out: &mut [Option<G2Po
         out[lane] = if batch.undecided & bit != 0 {
             uncompress_in_g2_blst(&chunk[lane])
         } else if batch.valid & bit != 0 {
-            Some(G2Point::from_subgroup_unchecked(batch.points[lane]))
+            Some(G2Point::from_trusted(batch.points[lane]))
         } else {
             None
         };

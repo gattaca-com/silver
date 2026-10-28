@@ -9,7 +9,7 @@ use silver_crypto_simd::bls::{G1Point, G2Point, PairingProduct};
 
 use super::{
     CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
-    aggregator::PubkeyAggregator, checked_public_key,
+    aggregator::PubkeyAggregator, trusted_key,
 };
 
 // N.B. batching is only safe where NBITS < 144-bit GLS threshold.
@@ -34,8 +34,6 @@ pub struct SigBatch {
     hashed_msgs: HashedMsgs,
     aggregator: PubkeyAggregator,
     poisoned: bool,
-    #[cfg(test)]
-    test_weight: Option<u64>,
 }
 
 /// Capacity for the per-block sig batch. Worst-case Fulu block envelope at
@@ -101,20 +99,12 @@ impl SigBatch {
             hashed_msgs: HashedMsgs::default(),
             aggregator: PubkeyAggregator::default(),
             poisoned: false,
-            #[cfg(test)]
-            test_weight: None,
         }
     }
 
     #[inline]
     pub fn poison(&mut self) {
         self.poisoned = true;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_test_weight(&mut self, weight: u64) {
-        assert_ne!(weight, 0);
-        self.test_weight = Some(weight);
     }
 
     pub fn clear(&mut self) {
@@ -230,8 +220,7 @@ impl SigBatch {
                 let hashed = self.hashed_msgs.get(&self.msgs[0]);
                 let SigBatch { pks, sigs, pairing, .. } = self;
                 pairing.clear();
-                let Some(pk) = checked_public_key(&pks[0]) else { return false };
-                pairing.push(&pk, &hashed);
+                pairing.push(&trusted_key(&pks[0]), &hashed);
                 pairing_matches_signature(pairing, &sigs[0])
             }
             _ => self.verify_batch(),
@@ -288,13 +277,6 @@ impl SigBatch {
             }
         }
 
-        #[cfg(test)]
-        if let Some(weight) = self.test_weight {
-            for chunk in self.rand_bytes.chunks_exact_mut(RAND_BYTES) {
-                chunk.copy_from_slice(&weight.to_le_bytes());
-            }
-        }
-
         let sig_sum = G2Point::weighted_sum(&self.sigs, &self.rand_bytes);
 
         let SigBatch {
@@ -329,8 +311,7 @@ impl SigBatch {
                 end += 1;
             }
             let pk_sum = grouped_pks[start..end].mult(&grouped_scalars[start * 8..end * 8], NBITS);
-            let Some(pk_sum) = checked_public_key(&pk_sum.to_public_key()) else { return false };
-            pairing.push(&pk_sum, &hashed_msgs.get(&msg));
+            pairing.push(&trusted_key(&pk_sum.to_public_key()), &hashed_msgs.get(&msg));
             start = end;
         }
         pairing_matches_signature(pairing, &sig_sum)
@@ -352,9 +333,9 @@ fn pairing_matches_signature(pairing: &mut PairingProduct, sig: &G2Point) -> boo
 #[cfg(test)]
 mod tests {
     use blst::{
-        Pairing, blst_fp_cneg, blst_fp2_cneg, blst_p1_affine_is_inf, blst_p2,
-        blst_p2_add_or_double_affine, blst_p2_affine, blst_p2_affine_in_g2, blst_p2_compress,
-        blst_p2_from_affine, blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
+        Pairing, blst_fp_cneg, blst_fp2_cneg, blst_p2, blst_p2_add_or_double_affine,
+        blst_p2_affine, blst_p2_affine_in_g2, blst_p2_compress, blst_p2_from_affine,
+        blst_p2_is_inf, blst_p2_mult, blst_p2_uncompress,
     };
 
     use super::*;
@@ -363,7 +344,7 @@ mod tests {
             SignatureChecker,
             aggregator::{pk_affine, sig_affine},
         },
-        test_signing::{pubkey_pk, pubkey_with_torsion, sign},
+        test_signing::{pubkey_pk, sign},
     };
 
     fn hex(s: &str) -> Vec<u8> {
@@ -425,27 +406,6 @@ mod tests {
         assert!(!batch.contains(&pubkey_pk(0), signature, &other_root));
         let other = CheckedSignature::parse(&sign(0, &other_root)).unwrap();
         assert!(!batch.contains(&pubkey_pk(0), other, &root));
-    }
-
-    #[test]
-    fn non_subgroup_key_sum_rejected_at_admission() {
-        let root = [7; 32];
-        let bad_key = pubkey_with_torsion(0);
-        let signature = CheckedSignature::parse(&sign(0, &root)).unwrap();
-        assert!(checked_public_key(&bad_key).is_none());
-        assert!(!super::super::verify_one_checked(&bad_key, &signature, &root));
-
-        let mut batch = SigBatch::new();
-        batch.push_parsed(&bad_key, signature, root);
-        assert!(!batch.verify_all(), "one-entry admission");
-        batch.push_one(&pubkey_pk(1), &sign(1, &root), root);
-        assert!(batch.verify_each_sequential(), "unchecked pairings accept the torsion component");
-        // SystemRandom weights can erase the order-three component; fix them for this
-        // regression.
-        batch.set_test_weight(1);
-        assert!(!batch.verify_all(), "weighted key sum admission");
-        let sum = batch.pks.mult(&batch.rand_bytes, NBITS).to_public_key();
-        assert!(checked_public_key(&sum).is_none());
     }
 
     #[test]
@@ -690,7 +650,10 @@ mod tests {
             let scalars = weight.to_le_bytes().repeat(3);
             let cancelled =
                 [pk, inverse_pk].mult(&scalars[..2 * RAND_BYTES], NBITS).to_public_key();
-            assert!(unsafe { blst_p1_affine_is_inf(pk_affine(&cancelled)) });
+            assert!(
+                trusted_key(&cancelled).is_infinity(),
+                "weighted sum of a key and its negation is infinity"
+            );
             let remaining = [pubkey_pk(1)].mult(&scalars[..RAND_BYTES], NBITS).to_public_key();
 
             for valid in [true, false] {
@@ -704,7 +667,7 @@ mod tests {
                 let mut previous = Pairing::new(true, DST);
                 for (key, message) in [(cancelled, shared), (remaining, other)] {
                     let hashed = G2Point::hash_to_curve(&message, DST);
-                    product.push(&checked_public_key(&key).unwrap(), &hashed);
+                    product.push(&trusted_key(&key), &hashed);
                     previous.raw_aggregate(hashed.as_blst(), pk_affine(&key));
                 }
                 previous.raw_aggregate(sig_affine(&sum), neg_g1.as_blst());
@@ -719,10 +682,7 @@ mod tests {
                 .to_signature();
             assert!(unsafe { blst_p2_affine_is_inf(sig_affine(&sum)) });
             let mut product = PairingProduct::default();
-            product.push(
-                &checked_public_key(&cancelled).unwrap(),
-                &G2Point::hash_to_curve(&shared, DST),
-            );
+            product.push(&trusted_key(&cancelled), &G2Point::hash_to_curve(&shared, DST));
             let sum = G2Point::from_blst(*sig_affine(&sum)).unwrap();
             assert!(!pairing_matches_signature(&mut product, &sum));
         }

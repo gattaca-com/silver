@@ -132,7 +132,7 @@ theorem chunk_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
         simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
       · simp only [↓reduceIte]
         rw [index_usize_toArray _ _ _ _ hj8]
-        simp only [g2_point.G2Point.from_subgroup_unchecked, bind_tc_ok,
+        simp only [g2_point.G2Point.from_trusted, bind_tc_ok,
           Function.uncurry_apply_pair]
         rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v inputs.property r.start hj]
         simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]

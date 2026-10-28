@@ -4563,35 +4563,36 @@ def bls.fp8.Fp8.from_blst_limbs
   bls.fp8.Fp8.mul f f1
 
 /-- [silver_crypto_simd::bls::g1_point::{core::clone::Clone for silver_crypto_simd::bls::g1_point::G1Point}::clone]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 17:9-17:14
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 12:9-12:14
     Visibility: public -/
 def bls.g1_point.G1Point.Insts.CoreCloneClone.clone
   (self : bls.g1_point.G1Point) : Result bls.g1_point.G1Point := do
   ok self
 
 /-- Trait implementation: [silver_crypto_simd::bls::g1_point::{core::clone::Clone for silver_crypto_simd::bls::g1_point::G1Point}]
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 17:9-17:14 -/
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 12:9-12:14 -/
 @[reducible]
 def bls.g1_point.G1Point.Insts.CoreCloneClone : core.clone.Clone
   bls.g1_point.G1Point := {
   clone := bls.g1_point.G1Point.Insts.CoreCloneClone.clone
 }
 
-/-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::from_subgroup_unchecked]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 35:4-37:5 -/
-def bls.g1_point.G1Point.from_subgroup_unchecked
+/-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::from_trusted]:
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 30:4-32:5
+    Visibility: public -/
+def bls.g1_point.G1Point.from_trusted
   (point : blst.blst_p1_affine) : Result bls.g1_point.G1Point := do
   ok point
 
 /-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::as_blst]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 62:4-64:5
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 57:4-59:5
     Visibility: public -/
 def bls.g1_point.G1Point.as_blst
   (self : bls.g1_point.G1Point) : Result blst.blst_p1_affine := do
   ok self
 
 /-- [silver_crypto_simd::bls::g1_point::{silver_crypto_simd::bls::g1_point::G1Point}::into_blst]:
-    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 66:4-68:5
+    Source: 'crates/crypto_simd/src/bls/g1_point.rs', lines 61:4-63:5
     Visibility: public -/
 def bls.g1_point.G1Point.into_blst
   (self : bls.g1_point.G1Point) : Result blst.blst_p1_affine := do
@@ -4830,9 +4831,9 @@ def bls.g1x8.G1x8.sum_lanes_shifted
   (self : bls.g1x8.G1x8) (bits : Std.Usize) : Result bls.g1x8.G1x8 := do
   bls.g1x8.G1x8.sum_lanes_shifted_loop bits self 1#usize
 
-/-- [silver_crypto_simd::bls::g2_point::{silver_crypto_simd::bls::g2_point::G2Point}::from_subgroup_unchecked]:
+/-- [silver_crypto_simd::bls::g2_point::{silver_crypto_simd::bls::g2_point::G2Point}::from_trusted]:
     Source: 'crates/crypto_simd/src/bls/g2_point.rs', lines 39:4-41:5 -/
-def bls.g2_point.G2Point.from_subgroup_unchecked
+def bls.g2_point.G2Point.from_trusted
   (point : blst.blst_p2_affine) : Result bls.g2_point.G2Point := do
   ok point
 
@@ -7088,7 +7089,7 @@ def portable.decompress.extraordinary
     if i = bls.COMPRESSED_LEN
     then
       let bpa ← blst.blst_p1_affine.Insts.CoreDefaultDefault.default
-      let gp ← bls.g1_point.G1Point.from_subgroup_unchecked bpa
+      let gp ← bls.g1_point.G1Point.from_trusted bpa
       ok (some gp)
     else ok none
   else ok none
@@ -7131,7 +7132,7 @@ def portable.decompress.uncompress_in_g1
         if b1
         then
           let bpa ← portable.decompress.point x y
-          let gp ← bls.g1_point.G1Point.from_subgroup_unchecked bpa
+          let gp ← bls.g1_point.G1Point.from_trusted bpa
           ok (some gp)
         else ok none
     | core.ops.control_flow.ControlFlow.Break residual =>
@@ -7248,7 +7249,7 @@ def portable.decompress.uncompress_pair_in_g1
           let f8 ← Array.index_usize x 0#usize
           let f9 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 0#usize
           let bpa ← portable.decompress.point f8 f9
-          let gp ← bls.g1_point.G1Point.from_subgroup_unchecked bpa
+          let gp ← bls.g1_point.G1Point.from_trusted bpa
           ok (some gp)
         else ok none
       let b7 ← Array.index_usize members 1#usize
@@ -7257,7 +7258,7 @@ def portable.decompress.uncompress_pair_in_g1
         let f8 ← Array.index_usize x 1#usize
         let f9 ← Array.index_usize (Array.make 2#usize [ f5, f7 ] (by rfl)) 1#usize
         let bpa ← portable.decompress.point f8 f9
-        let gp ← bls.g1_point.G1Point.from_subgroup_unchecked bpa
+        let gp ← bls.g1_point.G1Point.from_trusted bpa
         ok (Array.make 2#usize [ o2, some gp ] (by rfl))
       else ok (Array.make 2#usize [ o2, none ] (by rfl))
 
@@ -7356,7 +7357,7 @@ def bls.decompress_g1_chunk_loop.body
           then
             do
             let bpa ← Array.index_usize batch.points lane
-            let gp ← bls.g1_point.G1Point.from_subgroup_unchecked bpa
+            let gp ← bls.g1_point.G1Point.from_trusted bpa
             ok (some gp)
           else ok none
         ok (iter1, o2)
@@ -7410,7 +7411,7 @@ def bls.uncompress_all_in_g1_blst_loop.body
       | none => ok none
       | some point =>
         do
-        let gp ← bls.g1_point.G1Point.from_subgroup_unchecked point
+        let gp ← bls.g1_point.G1Point.from_trusted point
         ok (some gp)
     let s ← Slice.update out i o2
     ok (cont (iter1, s))
@@ -7589,7 +7590,7 @@ def bls.decompress_g2_chunk_loop1.body
           then
             do
             let bpa ← Array.index_usize batch.points lane
-            let gp ← bls.g2_point.G2Point.from_subgroup_unchecked bpa
+            let gp ← bls.g2_point.G2Point.from_trusted bpa
             ok (some gp)
           else ok none
         ok (iter1, o2)

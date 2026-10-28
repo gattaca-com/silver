@@ -4,11 +4,7 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
-use blst::{
-    blst_fp_from_uint64, blst_p1, blst_p1_add_or_double_affine, blst_p1_affine,
-    blst_p1_affine_in_g1, blst_p1_affine_on_curve, blst_p1_from_affine, blst_p1_to_affine,
-    min_pk::{PublicKey, SecretKey},
-};
+use blst::min_pk::{PublicKey, SecretKey};
 use silver_beacon_state_data::{
     B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
 };
@@ -59,24 +55,6 @@ pub fn privkey(idx: usize) -> SecretKey {
 
 pub fn pubkey_pk(idx: usize) -> PublicKey {
     privkey(idx).sk_to_pk()
-}
-
-pub fn pubkey_with_torsion(idx: usize) -> PublicKey {
-    let mut torsion = blst_p1_affine::default();
-    let mut point = blst_p1::default();
-    let mut sum = blst_p1::default();
-    let mut affine = blst_p1_affine::default();
-    // The deposit regression uses (0, 2), an order-three point invisible to
-    // unchecked pairing verification.
-    unsafe {
-        blst_fp_from_uint64(&mut torsion.y, [2, 0, 0, 0, 0, 0].as_ptr());
-        blst_p1_from_affine(&mut point, &pubkey_pk(idx).into());
-        blst_p1_add_or_double_affine(&mut sum, &point, &torsion);
-        blst_p1_to_affine(&mut affine, &sum);
-        assert!(blst_p1_affine_on_curve(&affine));
-        assert!(!blst_p1_affine_in_g1(&affine));
-    }
-    affine.into()
 }
 
 pub fn pubkey_bytes(idx: usize) -> BLSPubkey {

@@ -34,7 +34,7 @@ impl ProductCase {
                 let q = G2Point::from_blst(pair.q).unwrap_or_else(|| {
                     // Inject a non-subgroup point to test the defensive fallback.
                     assert!(degenerate);
-                    G2Point::from_subgroup_unchecked(pair.q)
+                    G2Point::from_trusted(pair.q)
                 });
                 (p, q)
             })

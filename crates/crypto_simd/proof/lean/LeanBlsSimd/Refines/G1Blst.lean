@@ -58,7 +58,7 @@ theorem blst_list_refines [KzgExternals]
         simp only [target, hs]
       rw [htarget]
       cases KzgExternals.uncompressG1 inputs.val[r.start.val] <;>
-        simp only [g1_point.G1Point.from_subgroup_unchecked, bind_tc_ok, hupdate,
+        simp only [g1_point.G1Point.from_trusted, bind_tc_ok, hupdate,
           vectorSlice_set v inputs.property r.start hj, enc, hs]
     · rw [foldl_set_ofFn]
   · apply List.ext_getElem (by simp [enc, vectorSlice])

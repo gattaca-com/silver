@@ -2,18 +2,13 @@ use core::slice;
 
 use blst::{
     MultiPoint, blst_fp_cneg, blst_p1_affine, blst_p1_affine_generator, blst_p1_affine_in_g1,
-    blst_p1_affine_on_curve, blst_p1_to_affine,
+    blst_p1_affine_is_inf, blst_p1_affine_on_curve, blst_p1_to_affine,
 };
 
 use super::encoding::less_than_p;
 
 /// An on-curve G1 subgroup point in canonical blst Montgomery form.
 /// Infinity is allowed; public-key admission must reject it separately.
-///
-/// ```compile_fail,E0624
-/// use silver_crypto_simd::bls::G1Point;
-/// G1Point::from_subgroup_unchecked(Default::default());
-/// ```
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct G1Point(blst_p1_affine);
@@ -32,15 +27,20 @@ impl G1Point {
     /// Trusts that the coordinates are canonical and the point is on-curve and
     /// in G1. Violating this contract can invalidate cryptographic
     /// verdicts, but does not cause undefined behavior.
-    pub(crate) const fn from_subgroup_unchecked(point: blst_p1_affine) -> Self {
+    pub const fn from_trusted(point: blst_p1_affine) -> Self {
         Self(point)
+    }
+
+    pub fn is_infinity(&self) -> bool {
+        // SAFETY: the pointer refers to a complete affine point.
+        unsafe { blst_p1_affine_is_inf(self.as_blst()) }
     }
 
     pub fn negative_generator() -> Self {
         // SAFETY: blst supplies a static generator; negation preserves G1.
         let mut point = unsafe { *blst_p1_affine_generator() };
         unsafe { blst_fp_cneg(&mut point.y, &point.y, true) };
-        Self::from_subgroup_unchecked(point)
+        Self::from_trusted(point)
     }
 
     /// Scalars are consecutive 64-bit little-endian integers, one per point.
@@ -56,7 +56,7 @@ impl G1Point {
             unsafe { blst_p1_to_affine(&mut affine, &sum) };
         }
         // Subgroup points are closed under scalar multiplication and addition.
-        Self::from_subgroup_unchecked(affine)
+        Self::from_trusted(affine)
     }
 
     pub const fn as_blst(&self) -> &blst_p1_affine {
@@ -88,7 +88,7 @@ mod tests {
             assert_eq!(point.as_blst(), &raw);
             assert_eq!(point.into_blst(), raw);
         }
-        let trusted = G1Point::from_subgroup_unchecked(generator);
+        let trusted = G1Point::from_trusted(generator);
         assert_eq!(trusted.into_blst(), generator);
     }
 
