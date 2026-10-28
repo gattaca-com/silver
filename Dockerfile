@@ -21,8 +21,8 @@ ARG SILVER_BUILD_COMMIT
 # the justfile), so resolution must not drift in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/silver/target \
-    cargo build --release --locked --no-default-features --features crypto_simd --bin silver --bin silver_surfer && \
-    cp target/release/silver target/release/silver_surfer /usr/local/bin/
+    cargo build --profile release-prod --locked --bin silver --bin silver_surfer && \
+    cp target/release-prod/silver target/release-prod/silver_surfer /usr/local/bin/
 
 FROM debian:bookworm-slim AS runtime
 
