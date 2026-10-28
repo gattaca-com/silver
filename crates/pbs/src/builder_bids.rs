@@ -11,11 +11,15 @@ use silver_httpcore::{
 };
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
-use crate::{CONSENSUS_VERSION, builder_config::BuilderConfig, header_fetch::write_hex};
+use crate::{
+    CONSENSUS_VERSION, builder_config::BuilderConfig, header_fetch::write_hex,
+    json_payload_bid::JsonPayloadBid,
+};
 
 /// `MAX_BUILDER_ENTRIES`: entries sharing a URL take a connection each.
 const MAX_REQUESTS: usize = 64;
 const SSZ: &str = "application/octet-stream";
+const SSZ_OR_JSON: &str = "application/octet-stream;q=1.0,application/json;q=0.9";
 /// Tags a block submission's request id; a bid request's is its round's.
 const SUBMISSION: u64 = 1 << 63;
 
@@ -32,6 +36,7 @@ pub struct BuilderBids {
     next_round: u64,
     next_submission: u64,
     path: String,
+    json_bid: JsonPayloadBid,
 }
 
 struct BuilderPool {
@@ -68,6 +73,7 @@ impl BuilderBids {
             next_round: 0,
             next_submission: 0,
             path: String::new(),
+            json_bid: JsonPayloadBid::new(),
         }
     }
 
@@ -119,7 +125,7 @@ impl BuilderBids {
                 path: &self.path,
                 body: builder.auth(),
                 authorization: None,
-                accept: Some(SSZ),
+                accept: Some(SSZ_OR_JSON),
                 content_type: Some(SSZ),
                 headers: &headers,
             };
@@ -173,7 +179,7 @@ impl BuilderBids {
     /// `on_answered` gets each finished round's request id and its framed
     /// [`BuilderBid`]s.
     pub fn spin(&mut self, events: &Events, on_answered: &mut impl FnMut(u64, &[u8])) {
-        let Self { registry, pools, rounds, .. } = self;
+        let Self { registry, pools, rounds, json_bid, .. } = self;
         for BuilderPool { url, pool } in pools {
             pool.dispatch_events(events, registry, &mut |id, response| {
                 if id & SUBMISSION != 0 {
@@ -184,7 +190,7 @@ impl BuilderBids {
                     return;
                 };
                 let round = &mut rounds[at];
-                if let Some(signed_bid) = accepted_bid(url, entry, response) {
+                if let Some(signed_bid) = accepted_bid(url, entry, response, json_bid) {
                     let terms =
                         round.terms.iter().find(|terms| terms.entry == entry).expect("asked");
                     BuilderBid {
@@ -205,8 +211,8 @@ impl BuilderBids {
     }
 
     fn pool_for(&mut self, url: &str) -> Option<usize> {
-        if !url.starts_with("http://") {
-            silver_log::warn!(url, "only http:// builder urls are served; no bid asked");
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            silver_log::warn!(url, "only http:// and https:// builder urls are served");
             return None;
         }
         if let Some(at) = self.pools.iter().position(|pool| *pool.url == *url) {
@@ -243,7 +249,8 @@ impl BuilderBids {
 /// `url`'s own path, if any, which the builder API's paths follow.
 fn write_base_path(path: &mut String, url: &str) {
     path.clear();
-    let base = url.trim_start_matches("http://").split_once('/').map_or("", |(_, base)| base);
+    let authority = url.split_once("://").map_or(url, |(_, authority)| authority);
+    let base = authority.split_once('/').map_or("", |(_, base)| base);
     let base = base.trim_end_matches('/');
     if !base.is_empty() {
         path.push('/');
@@ -275,15 +282,16 @@ fn log_submission(url: &str, response: Result<ClientResponse<'_>, &str>) {
     }
 }
 
-/// The SSZ bid of a 200, framed; a 204 or a refusal is no bid.
+/// The bid of a 200 as SSZ; a 204 or a refusal is no bid.
 fn accepted_bid<'a>(
     url: &str,
     entry: u32,
     response: Result<ClientResponse<'a>, &str>,
+    json_bid: &'a mut JsonPayloadBid,
 ) -> Option<&'a [u8]> {
     match response {
         Ok(response) if response.status == 200 => {
-            let body: &[u8] = response.body;
+            let body = json_bid.ssz_bid(response);
             if SignedExecutionPayloadBidView::check_size(body) {
                 return Some(body);
             }
@@ -291,7 +299,7 @@ fn accepted_bid<'a>(
                 url,
                 entry,
                 len = body.len(),
-                "builder bid is not an ssz SignedExecutionPayloadBid"
+                "builder bid is not a SignedExecutionPayloadBid"
             );
         }
         Ok(response) if response.status == 204 => {
@@ -319,7 +327,10 @@ mod tests {
     use silver_ssz::ssz_view::SIGNED_EXECUTION_PAYLOAD_BID_MIN;
 
     use super::*;
-    use crate::builder_config::tests::{Entry, config};
+    use crate::{
+        builder_config::tests::{Entry, config},
+        json_payload_bid::tests::{bid_json, hex_of},
+    };
 
     const SLOT: u64 = 9;
 
@@ -339,8 +350,9 @@ mod tests {
         bid
     }
 
-    /// Answers each request on its own connection: a bid under `/relay`,
-    /// no bid elsewhere. Requests go back as received; `silent` answers none.
+    /// Answers each request on its own connection: a bid under `/relay`, a
+    /// JSON bid under `/json`, no bid elsewhere. Requests go back as received;
+    /// `silent` answers none.
     fn builder(silent: bool) -> (String, mpsc::Receiver<Vec<u8>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -370,11 +382,19 @@ mod tests {
                 continue;
             }
             let answer = request.starts_with(b"POST /relay/");
+            let answer_json = request.starts_with(b"POST /json/");
             sent.send(std::mem::take(&mut request)).unwrap();
             if silent {
                 continue;
             }
-            if answer {
+            if answer_json {
+                let bid = bid_json(&[hex_of(0xc0, 48)]);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    bid.len()
+                );
+                stream.write_all(&[head.as_bytes(), bid.as_bytes()].concat()).unwrap();
+            } else if answer {
                 let bid = signed_bid();
                 let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", bid.len());
                 stream.write_all(&[head.as_bytes(), &bid].concat()).unwrap();
@@ -445,6 +465,24 @@ mod tests {
             }
             assert!(request.ends_with(auth), "the auth is forwarded as sent");
         }
+    }
+
+    #[test]
+    fn json_bids_are_framed_as_ssz() {
+        let (url, _received) = builder(false);
+        let body = config(0, 100, &[entry(&format!("{url}/json"), [0, 0, 100])]);
+        let mut readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
+
+        assert!(bids.request(&request(), BuilderConfig::parse(&body).unwrap()));
+        let (_, frame) = answered(&mut bids, &mut readiness);
+        let mut json_bid = JsonPayloadBid::new();
+        let expected = json_bid.reencode(bid_json(&[hex_of(0xc0, 48)]).as_bytes()).unwrap();
+        let [framed] = BuilderBid::iter(&frame).collect::<Vec<_>>()[..] else {
+            panic!("one bid framed");
+        };
+        assert_eq!(framed.signed_bid, expected);
     }
 
     #[test]
@@ -541,6 +579,13 @@ mod tests {
     }
 
     #[test]
+    fn https_urls_keep_their_base_path() {
+        let mut path = String::new();
+        write_base_path(&mut path, "https://relay.example/builder/");
+        assert_eq!(path, "/builder");
+    }
+
+    #[test]
     fn entries_that_cannot_be_asked_are_skipped() {
         let other_slot = Entry {
             url: b"http://127.0.0.1:1",
@@ -550,7 +595,7 @@ mod tests {
             terms: [0; 3],
         }
         .ssz();
-        let body = config(0, 100, &[entry("https://builder", [0; 3]), other_slot]);
+        let body = config(0, 100, &[entry("ftp://builder", [0; 3]), other_slot]);
         let readiness = Readiness::new(64);
         let mut bids =
             BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(1));

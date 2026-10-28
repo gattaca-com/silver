@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{
     Deserialize, Deserializer,
-    de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
+    de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
 use silver_common::json_fields::{BoundedHex, bytes, uint64, uint256};
 use silver_httpcore::ClientResponse;
@@ -61,7 +61,7 @@ impl JsonBid {
             buffer.clear();
         }
         let mut deserializer = serde_json::Deserializer::from_slice(json);
-        if let Err(error) = Envelope(self).deserialize(&mut deserializer) {
+        if let Err(error) = Envelope(SignedBid(self)).deserialize(&mut deserializer) {
             silver_log::warn!(%error, "sidecar bid is not a Fulu SignedBuilderBid");
             return None;
         }
@@ -98,10 +98,10 @@ impl JsonBid {
     }
 }
 
-/// `{ "version": .., "data": SignedBuilderBid }`
-struct Envelope<'s>(&'s mut JsonBid);
+/// `{ "version": .., "data": <signed bid> }`
+pub(crate) struct Envelope<S>(pub(crate) S);
 
-impl<'de> DeserializeSeed<'de> for Envelope<'_> {
+impl<'de, S: DeserializeSeed<'de, Value = ()>> DeserializeSeed<'de> for Envelope<S> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -109,23 +109,28 @@ impl<'de> DeserializeSeed<'de> for Envelope<'_> {
     }
 }
 
-impl<'de> Visitor<'de> for Envelope<'_> {
+impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<S> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a getHeader response")
+        formatter.write_str("a bid response")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let mut data = Some(self.0);
         while let Some(key) = map.next_key::<&str>()? {
-            match key {
-                "data" => map.next_value_seed(SignedBid(&mut *self.0))?,
-                _ => {
-                    map.next_value::<IgnoredAny>()?;
-                }
+            if key == "data" &&
+                let Some(seed) = data.take()
+            {
+                map.next_value_seed(seed)?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
             }
         }
-        Ok(())
+        match data {
+            Some(_) => Err(de::Error::missing_field("data")),
+            None => Ok(()),
+        }
     }
 }
 
@@ -235,18 +240,18 @@ impl<'de> Visitor<'de> for Requests<'_> {
 }
 
 /// An element of a JSON list that appends its own SSZ.
-trait Element: for<'de> Deserialize<'de> {
+pub(crate) trait Element: for<'de> Deserialize<'de> {
     fn encode(&self, out: &mut Vec<u8>);
 }
 
 /// Streams a JSON list into `out`, element by element.
-struct List<'s, T> {
+pub(crate) struct List<'s, T> {
     out: &'s mut Vec<u8>,
     element: std::marker::PhantomData<T>,
 }
 
 impl<'s, T> List<'s, T> {
-    fn new(out: &'s mut Vec<u8>) -> Self {
+    pub(crate) fn new(out: &'s mut Vec<u8>) -> Self {
         Self { out, element: std::marker::PhantomData }
     }
 }
@@ -276,7 +281,7 @@ impl<'de, T: Element> Visitor<'de> for List<'_, T> {
 
 #[derive(Deserialize)]
 #[serde(transparent)]
-struct Bytes<const N: usize>(#[serde(deserialize_with = "bytes")] [u8; N]);
+pub(crate) struct Bytes<const N: usize>(#[serde(deserialize_with = "bytes")] pub(crate) [u8; N]);
 
 impl<const N: usize> Element for Bytes<N> {
     fn encode(&self, out: &mut Vec<u8>) {

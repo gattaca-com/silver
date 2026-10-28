@@ -6104,7 +6104,7 @@ fn answer_bid(
 #[cfg(feature = "ef_tests")]
 #[test]
 fn a_gloas_block_commits_to_the_pooled_bid() {
-    use silver_beacon_state_data::{BodyFork, BodyOffsets};
+    use silver_beacon_state_data::{BUILDER_INDEX_SELF_BUILD, BodyFork, BodyOffsets};
     use silver_common::ssz_view::{BeaconBlockBodyGloasView, SignedExecutionPayloadBidView};
 
     let (pre_ssz, block_ssz, _) = sanity_fixture_of("gloas", "empty_block_transition");
@@ -6139,19 +6139,28 @@ fn a_gloas_block_commits_to_the_pooled_bid() {
         answer
     };
 
-    let unpooled = proposal(0);
-    assert_eq!(produce(&mut tile, unpooled).err(), Some(ProduceBlockFailure::NoAcceptableBid));
+    let produced_bid = |tile: &BeaconStateTile, block: ProducedBlock| {
+        let produced = tile.events_producer.read_buffer(block.header).unwrap();
+        let produced_body = BodyOffsets::validated(&produced[84..], BodyFork::Gloas).unwrap();
+        produced_body.signed_bid().unwrap().to_vec()
+    };
+    let is_empty_self_build = |signed_bid: &[u8]| {
+        let bid = stf::decode_bid(signed_bid).unwrap();
+        bid.builder_index == BUILDER_INDEX_SELF_BUILD && bid.block_hash == [0; 32]
+    };
+
+    let unpooled = Proposal { graffiti: [9; 32], ..proposal(0) };
+    let empty = produce(&mut tile, unpooled).expect("built empty");
+    assert!(is_empty_self_build(&produced_bid(&tile, empty)));
 
     tile.payload_bids_pool.add(bid.clone(), *SignedExecutionPayloadBidView::signature(signed_bid));
-    let block = produce(&mut tile, unpooled).expect("built on the pooled bid");
+    let block = produce(&mut tile, proposal(0)).expect("built on the pooled bid");
     assert!(block.payload.is_none());
-    let produced = tile.events_producer.read_buffer(block.header).unwrap();
-    let produced_body = BodyOffsets::validated(&produced[84..], BodyFork::Gloas).unwrap();
-    assert_eq!(produced_body.signed_bid(), Some(signed_bid));
+    assert_eq!(produced_bid(&tile, block), signed_bid);
 
     let above_the_bid = proposal(bid.value + 1);
-    let refused = produce(&mut tile, above_the_bid).err();
-    assert_eq!(refused, Some(ProduceBlockFailure::NoAcceptableBid));
+    let empty = produce(&mut tile, above_the_bid).expect("built empty");
+    assert!(is_empty_self_build(&produced_bid(&tile, empty)));
 }
 
 /// The proposal waits on its builders' answer and then commits to the pool's

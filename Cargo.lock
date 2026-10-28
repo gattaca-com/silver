@@ -5216,8 +5216,11 @@ version = "0.1.0-alpha.6"
 dependencies = [
  "httparse",
  "mio",
+ "rcgen 0.14.8",
+ "rustls",
  "silver_log",
  "tempfile",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]

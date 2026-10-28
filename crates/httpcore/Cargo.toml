@@ -8,9 +8,12 @@ version.workspace = true
 [dependencies]
 httparse.workspace = true
 mio.workspace = true
+rustls = { workspace = true, features = ["ring"] }
 silver_log.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 tempfile = "3"
 
 [lints]

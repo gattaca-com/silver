@@ -374,9 +374,9 @@ fn changing_execution_parents_does_not_extend_a_pending_deadline() {
     rig.respond(empty.id, &rig.payload(empty, 1, false, 0));
     assert!(rig.answers().is_empty(), "stale completion cannot satisfy the request");
     rig.tile.expire_payload_waits(&mut rig.adapter.producers);
-    let answers = rig.answers();
-    assert_eq!(answers.len(), 1);
-    assert_eq!(answers[0].1.err(), Some(ProduceBlockFailure::NoAcceptableBid));
+    let block = rig.one_block(1);
+    assert!(block.envelope_header.is_none());
+    assert_eq!(rig.bid_of(block).block_hash, [0; 32]);
     prepared(&mut rig.tile, full.id, [8; 8], &mut rig.adapter.producers);
     assert!(engine_requests(&mut rig.sink).is_empty(), "late preparation ignored");
 }
@@ -395,4 +395,22 @@ fn incorrect_local_withdrawals_fall_back_to_the_pool() {
     });
     rig.respond(attrs.id, &rig.payload(attrs, u128::MAX, true, 0));
     assert!(rig.one_block(1).payload.is_none());
+}
+
+#[test]
+fn no_bid_and_no_local_payload_builds_an_empty_self_built() {
+    let mut rig = ProductionRig::new("empty_block_transition");
+    let attrs = rig.start(1);
+    rig.tile
+        .on_payload(EngineGetPayloadResp { id: attrs.id, data: None }, &mut rig.adapter.producers);
+    let block = rig.one_block(1);
+    assert!(block.payload.is_none() && block.envelope_header.is_none());
+    let bid = rig.bid_of(block);
+    assert_eq!(
+        (bid.builder_index, bid.value, bid.block_hash),
+        (BUILDER_INDEX_SELF_BUILD, 0, [0; 32])
+    );
+    assert_eq!(bid.parent_block_root, rig.proposal.parent_root);
+    assert!(bid.blob_kzg_commitments.is_empty());
+    assert_eq!(bid.execution_requests_root, *EMPTY_EXECUTION_REQUESTS_ROOT);
 }

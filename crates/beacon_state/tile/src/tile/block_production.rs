@@ -15,7 +15,9 @@ use silver_common::{
     EngineGetPayloadReq, EngineGetPayloadResp, EnginePreparePayloadReq, EnginePreparePayloadResp,
     EngineReq, PayloadFrame, ProduceBlockFailure, ProducedBlock, ProducedEnvelope,
     SidecarBidRequest, SidecarBidResponse, TCacheProducer, TCacheRead, TRead,
-    ssz_hash_gloas::{EMPTY_EXECUTION_REQUESTS, ExecutionRequestsView},
+    ssz_hash_gloas::{
+        EMPTY_EXECUTION_REQUESTS, EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView,
+    },
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE, BuilderBidFuluView,
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, SignedBuilderBidFuluView,
@@ -1155,7 +1157,11 @@ impl BeaconStateTile {
                 external.as_ref().is_none_or(|external| bid.weight >= external.weight)
         });
         let local = local.map(|(bid, _)| bid);
-        let candidates = if local_wins { [local, external] } else { [external, local] };
+        let mut candidates = if local_wins { [local, external] } else { [external, local] };
+        if candidates.iter().all(Option::is_none) {
+            silver_log::info!(slot = proposal.slot, "no bid and no local payload; returning empty");
+            candidates[0] = Some(self.empty_commitment(&proposal, parent)?);
+        }
         let mut failure = ProduceBlockFailure::NoAcceptableBid;
         for commitment in candidates.into_iter().flatten() {
             match self.build_packed(
@@ -1418,6 +1424,51 @@ impl BeaconStateTile {
             },
             frame.should_override_builder,
         ))
+    }
+
+    /// A self-built bid whose payload is never revealed, so the slot's
+    /// payload is empty. Its `block_hash` is zero, which no parent has.
+    fn empty_commitment(
+        &mut self,
+        proposal: &Proposal,
+        parent: StateId,
+    ) -> Result<BidCommitment, ProduceBlockFailure> {
+        let (branch, full) = self.bid_branch(proposal)?;
+        let bid = ExecutionPayloadBid {
+            parent_block_hash: branch.parent_hash,
+            parent_block_root: proposal.parent_root,
+            block_hash: [0; 32],
+            prev_randao: self
+                .state
+                .read_view(parent)
+                .randao_mixes
+                .at_epoch(proposal.slot / SLOTS_PER_EPOCH),
+            fee_recipient: [0; 20],
+            gas_limit: 0,
+            builder_index: BUILDER_INDEX_SELF_BUILD,
+            slot: proposal.slot,
+            value: 0,
+            execution_payment: 0,
+            blob_kzg_commitments: Default::default(),
+            execution_requests_root: *EMPTY_EXECUTION_REQUESTS_ROOT,
+        };
+        let mut signed_bid = 100u32.to_le_bytes().to_vec();
+        signed_bid.extend_from_slice(&G2_POINT_AT_INFINITY);
+        bid.write_ssz(&mut signed_bid).expect("writes to a Vec");
+        let parent_requests = if full {
+            self.payload_execution_requests.get(&proposal.parent_root)
+        } else {
+            &EMPTY_EXECUTION_REQUESTS
+        };
+        Ok(BidCommitment {
+            signed_bid,
+            value: [0; 32],
+            weight: BidWeight::local(&[0; 32]),
+            local: None,
+            parent_requests: parent_requests.into(),
+            builds_on_full_parent: full,
+            builder_entry: None,
+        })
     }
 
     #[timed]

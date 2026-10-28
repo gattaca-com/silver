@@ -29,7 +29,7 @@ use silver_common::{
     column_util::data_column_sidecar_len,
     profiler::enable_profiler,
     ssz_view::NUMBER_OF_COLUMNS,
-    tracing::initialise_tracing_log,
+    tracing::initialise_tracing_log_on_core,
 };
 use silver_config::Genesis;
 use silver_control::{Controller, sync_engine::SyncEngine};
@@ -87,7 +87,8 @@ fn publish_build_info() -> io::Result<()> {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let build_info_log = format!("silver build info: {BUILD_INFO}");
-    let _tracing = initialise_tracing_log("silver", 10, None, false, Some(&build_info_log));
+    let _tracing =
+        initialise_tracing_log_on_core("silver", 10, None, false, Some(7), Some(&build_info_log));
     if let Err(e) = silver_log::counts::enable(APP_NAME) {
         silver_log::error!(%e, "log counts disabled");
     }

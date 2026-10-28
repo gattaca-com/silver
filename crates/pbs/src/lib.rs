@@ -18,6 +18,7 @@ mod builder_bids;
 mod builder_config;
 mod header_fetch;
 mod json_bid;
+mod json_payload_bid;
 mod registrations;
 
 pub use builder_bids::BuilderBids;
