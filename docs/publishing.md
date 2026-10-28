@@ -30,8 +30,9 @@ and [package access settings](https://docs.github.com/en/packages/learn-github-p
 ## Silver releases
 
 The existing release workflow runs on pushes to `main` when the workspace version has no tag.
-It builds and checksums `silver` and `silver_surfer`, then packages the same Silver binary into the image.
-It tests `--version`, `--help`, and byte equality with the release binary before pushing the image.
+It builds and checksums `silver` and `silver_surfer`, then packages both binaries into the image.
+It tests Silver's `--version` and `--help`, Surfer's executable permission, and byte equality with both release binaries before publishing.
+Surfer is an interactive TUI without `--version` or `--help` flags.
 The GitHub release keeps its binaries, checksums, and attestations, plus the image tag, digest, and package link.
 
 If publication fails before the release exists, rerun the workflow from `main`.

@@ -73,6 +73,14 @@ Startup and liveness use the version endpoint, so syncing alone does not restart
 Startup allows 30 minutes for checkpoint loading.
 Logs go to stdout at `info` level. Override `RUST_LOG` through `env` to change the level.
 
+Silver Surfer is included in the image. Open its terminal dashboard inside the running Silver container:
+
+```bash
+kubectl exec -it silver-0 -c silver -- silver_surfer /runtime silver
+```
+
+Replace `silver-0` with your pod name. Surfer shares the node's runtime files and uses the same release version.
+
 The optional ServiceMonitor requires the Prometheus Operator CRDs.
 Silver `v0.1.0-alpha.6` exposes `/metrics` but returns no samples.
 

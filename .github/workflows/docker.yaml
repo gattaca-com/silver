@@ -32,14 +32,17 @@ jobs:
           tags: silver:source
           build-args: SILVER_BUILD_COMMIT=${{ github.sha }}
 
-      - name: Smoke-test and extract binary
+      - name: Smoke-test and extract binaries
         run: |
           docker run --rm --network none silver:source --version
           docker run --rm --network none silver:source --help
+          docker run --rm --network none --entrypoint /usr/bin/test silver:source -x /usr/local/bin/silver_surfer
           mkdir dist
           container=$(docker create silver:source)
           trap 'docker rm "$container" > /dev/null' EXIT
-          docker cp "$container:/usr/local/bin/silver" dist/silver-linux-x86_64
+          for bin in silver silver_surfer; do
+            docker cp "$container:/usr/local/bin/$bin" "dist/$bin-linux-x86_64"
+          done
 
       - name: Package release image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -55,7 +58,10 @@ jobs:
         run: |
           docker run --rm --network none silver:release --version
           docker run --rm --network none silver:release --help
+          docker run --rm --network none --entrypoint /usr/bin/test silver:release -x /usr/local/bin/silver_surfer
           container=$(docker create silver:release)
           trap 'docker rm "$container" > /dev/null' EXIT
-          docker cp "$container:/usr/local/bin/silver" packaged-silver
-          cmp dist/silver-linux-x86_64 packaged-silver
+          for bin in silver silver_surfer; do
+            docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
+            cmp "dist/$bin-linux-x86_64" "packaged-$bin"
+          done

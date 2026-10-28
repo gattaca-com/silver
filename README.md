@@ -140,8 +140,14 @@ Release images are available as GitHub packages:
 docker pull ghcr.io/gattaca-com/silver:v0.1.0-alpha.6
 ```
 
-Images contain the same Linux amd64 Silver binary attached to the corresponding release.
+Images contain the same Linux amd64 `silver` and `silver_surfer` binaries attached to the corresponding release.
 Each release links to its image tag and digest. Set `LOG_STDOUT=1` and `RUST_LOG` to configure container logs.
+
+Open Surfer inside a running Silver container:
+
+```bash
+docker exec -it <container> silver_surfer
+```
 
 For Kubernetes, install the independently versioned [Helm chart](charts/silver/README.md):
 

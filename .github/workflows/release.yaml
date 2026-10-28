@@ -155,10 +155,13 @@ jobs:
         run: |
           docker run --rm --network none "$IMAGE:$TAG" --version
           docker run --rm --network none "$IMAGE:$TAG" --help
+          docker run --rm --network none --entrypoint /usr/bin/test "$IMAGE:$TAG" -x /usr/local/bin/silver_surfer
           container=$(docker create "$IMAGE:$TAG")
           trap 'docker rm "$container" > /dev/null' EXIT
-          docker cp "$container:/usr/local/bin/silver" packaged-silver
-          cmp dist/silver-linux-x86_64 packaged-silver
+          for bin in silver silver_surfer; do
+            docker cp "$container:/usr/local/bin/$bin" "packaged-$bin"
+            cmp "dist/$bin-linux-x86_64" "packaged-$bin"
+          done
 
       - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:

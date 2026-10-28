@@ -22,8 +22,8 @@ ARG SILVER_BUILD_COMMIT
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/silver/target \
-    cargo build --profile release-prod --locked --bin silver && \
-    cp target/release-prod/silver /usr/local/bin/silver
+    cargo build --profile release-prod --locked --bin silver --bin silver_surfer && \
+    cp target/release-prod/silver target/release-prod/silver_surfer /usr/local/bin/
 
 FROM debian:bookworm-slim AS runtime
 
@@ -40,9 +40,10 @@ ENV LOG_STDOUT=1 RUST_LOG=info
 
 ENTRYPOINT ["/usr/local/bin/silver"]
 
-# Release builds package the exact binary attached to the GitHub release.
+# Release builds package the exact binaries attached to the GitHub release.
 FROM runtime AS release
 COPY --chmod=755 silver-linux-x86_64 /usr/local/bin/silver
+COPY --chmod=755 silver_surfer-linux-x86_64 /usr/local/bin/silver_surfer
 
 FROM runtime AS silver
-COPY --from=builder /usr/local/bin/silver /usr/local/bin/silver
+COPY --from=builder /usr/local/bin/silver /usr/local/bin/silver_surfer /usr/local/bin/
