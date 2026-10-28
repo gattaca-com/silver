@@ -44,6 +44,7 @@ impl Address {
                 let (sender, answer) = mpsc::channel();
                 let resolver = host_port.clone();
                 let spawned = thread::Builder::new().name("http-resolve".into()).spawn(move || {
+                    silver_log::boot_on_log_core();
                     let _ = sender.send(resolve(&resolver));
                 });
                 if let Err(error) = spawned {

@@ -87,8 +87,14 @@ fn publish_build_info() -> io::Result<()> {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let build_info_log = format!("silver build info: {BUILD_INFO}");
-    let _tracing =
-        initialise_tracing_log_on_core("silver", 10, None, false, Some(7), Some(&build_info_log));
+    let _tracing = initialise_tracing_log_on_core(
+        "silver",
+        10,
+        None,
+        false,
+        Some(silver_log::LOG_CORE),
+        Some(&build_info_log),
+    );
     if let Err(e) = silver_log::counts::enable(APP_NAME) {
         silver_log::error!(%e, "log counts disabled");
     }

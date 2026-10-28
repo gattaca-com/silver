@@ -7,6 +7,8 @@ use std::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
+use flux::utils::{ThreadNiceness, thread_boot};
+
 #[doc(hidden)]
 pub mod __private {
     pub use linkme;
@@ -29,6 +31,14 @@ pub struct LogSite {
 pub static LOG_SITES: [LogSite];
 
 static COUNTERS: AtomicPtr<AtomicU64> = AtomicPtr::new(ptr::null_mut());
+
+pub const LOG_CORE: usize = 7;
+
+/// Background threads share the logging core, so they stay off the tiles'
+/// cores.
+pub fn boot_on_log_core() {
+    thread_boot(&[LOG_CORE], Some(ThreadNiceness::Medium));
+}
 
 /// Counter `i` counts `LOG_SITES[i]`. Events before this are not counted.
 pub(crate) fn attach(counters: &'static [AtomicU64]) {
@@ -94,7 +104,7 @@ macro_rules! warn {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{LOG_SITES, LogSite, attach};
+    use super::{LOG_CORE, LOG_SITES, LogSite, attach, boot_on_log_core};
 
     macro_rules! forwarded {
         ($message:expr) => {
@@ -139,5 +149,20 @@ mod tests {
             assert_eq!(site.level, level, "{template}");
             assert_eq!(counters[index].load(Ordering::Relaxed), 3, "{template}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn background_threads_move_onto_the_log_core() {
+        if std::thread::available_parallelism().unwrap().get() <= LOG_CORE {
+            return;
+        }
+        let allowed = std::thread::spawn(|| {
+            boot_on_log_core();
+            let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+            let line = status.lines().find(|line| line.starts_with("Cpus_allowed_list:"));
+            line.unwrap().split_whitespace().nth(1).unwrap().to_owned()
+        });
+        assert_eq!(allowed.join().unwrap(), LOG_CORE.to_string());
     }
 }
