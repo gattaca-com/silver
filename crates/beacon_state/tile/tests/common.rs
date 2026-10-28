@@ -138,6 +138,7 @@ pub enum OutboundKind {
     LocalGossipVerdict,
     ProposedPayload,
     PoolChange,
+    PayloadAttributes,
     NewPayload,
     NewPayloadEnvelope,
     Fcu,
@@ -163,6 +164,7 @@ impl OutboundKind {
             "local_gossip_verdict" => Self::LocalGossipVerdict,
             "proposed_payload" => Self::ProposedPayload,
             "pool_change" => Self::PoolChange,
+            "payload_attributes" => Self::PayloadAttributes,
             "new_payload" => Self::NewPayload,
             "new_payload_envelope" => Self::NewPayloadEnvelope,
             "fcu" => Self::Fcu,
@@ -184,6 +186,7 @@ impl OutboundKind {
             BeaconStateEvent::LocalGossipVerdict { .. } => Self::LocalGossipVerdict,
             BeaconStateEvent::ProposedPayload(_) => Self::ProposedPayload,
             BeaconStateEvent::PoolChange(_) => Self::PoolChange,
+            BeaconStateEvent::PayloadAttributes(_) => Self::PayloadAttributes,
         }
     }
 

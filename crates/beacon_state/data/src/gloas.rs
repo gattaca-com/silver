@@ -168,7 +168,7 @@ impl Withdrawal {
         }
     }
 
-    pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    pub fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(&self.index.to_le_bytes())?;
         w.write_all(&self.validator_index.to_le_bytes())?;
         w.write_all(&self.address)?;

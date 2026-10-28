@@ -112,6 +112,9 @@ pub enum BeaconApiRequest {
     ProposerPreparations {
         preparations: TCacheRead,
     },
+    /// Sent when the first `payload_attributes` subscriber arrives and after
+    /// the last one leaves.
+    PayloadAttributesWanted(bool),
     ProduceBlock {
         request_id: u64,
         slot: u64,
@@ -1308,6 +1311,28 @@ pub enum BeaconStateEvent {
         block_root: [u8; 32],
     },
     PoolChange(PoolChange),
+    PayloadAttributes(PreparedPayloadAttributes),
+}
+
+/// The attributes an EL was just asked to build on.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PreparedPayloadAttributes {
+    pub proposal_slot: u64,
+    pub proposer_index: u64,
+    pub parent_block_root: B256,
+    pub parent_block_hash: B256,
+    /// `None` for a Gloas proposal: the event no longer carries it.
+    pub parent_block_number: Option<u64>,
+    pub safe_block_hash: B256,
+    pub finalized_block_hash: B256,
+    pub timestamp: u64,
+    pub prev_randao: B256,
+    pub fee_recipient: ExecutionAddress,
+    pub target_gas_limit: u64,
+    /// SSZ `Withdrawal`s back to back in the Beacon State handoff cache, so
+    /// the event stays small. `None` when there are none.
+    pub withdrawals: Option<TCacheRead>,
 }
 
 /// A membership change in Beacon State's operation pools. Exits and BLS
@@ -1633,7 +1658,8 @@ impl BeaconStateEvent {
             Self::BlockReceived { .. } |
             Self::AttestersShuffling { .. } |
             Self::Reorg { .. } |
-            Self::PoolChange(_) => SszView::None,
+            Self::PoolChange(_) |
+            Self::PayloadAttributes(_) => SszView::None,
         }
     }
 }

@@ -9,7 +9,7 @@ use silver_beacon_state_data::{
     Version,
 };
 use silver_common::{
-    AGENT_VERSION,
+    AGENT_VERSION, PreparedPayloadAttributes,
     ssz_view::{
         AttestationView, BEACON_BLOCK_HEADER_SIZE, BYTES_PER_KZG_COMMITMENT, BeaconBlockHeaderView,
         IndexedAttestationView, PAYLOAD_ATTESTATION_DATA_SIZE, PROPOSER_SLASHING_SIZE,
@@ -17,7 +17,7 @@ use silver_common::{
         SIGNED_PROPOSER_PREFERENCES_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE,
         SYNC_COMMITTEE_CONTRIBUTION_SIZE, SignedBlsToExecutionChangeView,
         SignedProposerPreferencesView, SignedVoluntaryExitView, SingleAttestationView,
-        SyncCommitteeContributionView,
+        SyncCommitteeContributionView, WITHDRAWAL_SIZE, WithdrawalView,
     },
 };
 
@@ -467,6 +467,70 @@ impl Json<'_> {
         self.hex(&head.roots.current_duty_dependent_root);
         self.key("execution_optimistic");
         self.bool(head.execution_optimistic);
+        self.end_object();
+    }
+
+    pub(crate) fn payload_attributes_event(
+        &mut self,
+        attributes: &PreparedPayloadAttributes,
+        withdrawals_ssz: &[u8],
+        gloas: bool,
+    ) {
+        self.begin_object();
+        self.key("proposer_index");
+        self.quoted_u64(attributes.proposer_index);
+        self.key("proposal_slot");
+        self.quoted_u64(attributes.proposal_slot);
+        if let Some(number) = attributes.parent_block_number {
+            self.key("parent_block_number");
+            self.quoted_u64(number);
+        }
+        self.key("parent_block_root");
+        self.hex(&attributes.parent_block_root);
+        self.key("parent_block_hash");
+        self.hex(&attributes.parent_block_hash);
+        if gloas {
+            self.key("safe_block_hash");
+            self.hex(&attributes.safe_block_hash);
+            self.key("finalized_block_hash");
+            self.hex(&attributes.finalized_block_hash);
+        }
+        self.key("payload_attributes");
+        self.begin_object();
+        self.key("timestamp");
+        self.quoted_u64(attributes.timestamp);
+        self.key("prev_randao");
+        self.hex(&attributes.prev_randao);
+        self.key("suggested_fee_recipient");
+        self.hex(&attributes.fee_recipient);
+        self.key("withdrawals");
+        self.begin_array();
+        for withdrawal in withdrawals_ssz.chunks_exact(WITHDRAWAL_SIZE) {
+            self.withdrawal(withdrawal.try_into().unwrap());
+        }
+        self.end_array();
+        self.key("parent_beacon_block_root");
+        self.hex(&attributes.parent_block_root);
+        if gloas {
+            self.key("slot_number");
+            self.quoted_u64(attributes.proposal_slot);
+            self.key("target_gas_limit");
+            self.quoted_u64(attributes.target_gas_limit);
+        }
+        self.end_object();
+        self.end_object();
+    }
+
+    fn withdrawal(&mut self, ssz: &[u8; WITHDRAWAL_SIZE]) {
+        self.begin_object();
+        self.key("index");
+        self.quoted_u64(WithdrawalView::index(ssz));
+        self.key("validator_index");
+        self.quoted_u64(WithdrawalView::validator_index(ssz));
+        self.key("address");
+        self.hex(WithdrawalView::address(ssz));
+        self.key("amount");
+        self.quoted_u64(WithdrawalView::amount(ssz));
         self.end_object();
     }
 

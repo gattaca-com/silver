@@ -25,6 +25,7 @@ pub(crate) enum Channel {
     SingleAttestation,
     ProposerPreferences,
     ExecutionPayloadAvailable,
+    PayloadAttributes,
 }
 
 /// `epoch_transition` compares this head with the publisher's previous
@@ -99,6 +100,7 @@ fn channel(topic: &str, gloas_scheduled: bool) -> Option<Channel> {
         "data_column_sidecar" => Some(Channel::DataColumnSidecar),
         "single_attestation" => Some(Channel::SingleAttestation),
         "proposer_preferences" => Some(Channel::ProposerPreferences),
+        "payload_attributes" => Some(Channel::PayloadAttributes),
         "execution_payload_available" if !gloas_scheduled => {
             Some(Channel::ExecutionPayloadAvailable)
         }
@@ -221,6 +223,14 @@ mod tests {
         }
         let (outcome, _) = subscribe("topics=proposer_preferences");
         assert_eq!(outcome, Outcome::Stream(channels));
+    }
+
+    #[test]
+    fn payload_attributes_can_be_subscribed_alongside_head() {
+        let channels = set(&[Channel::Head, Channel::PayloadAttributes]);
+        for scheduled in [false, true] {
+            assert_eq!(topics("topics=head,payload_attributes", scheduled), Ok(channels));
+        }
     }
 
     /// Empty entries must not silently turn a malformed list into a valid

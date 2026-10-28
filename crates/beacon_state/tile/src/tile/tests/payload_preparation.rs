@@ -2,7 +2,7 @@ use silver_beacon_state_data::{
     BuilderPendingPayment, BuilderPendingWithdrawal, StateWriterView, Withdrawal,
 };
 use silver_common::{
-    EnginePreparePayloadReq,
+    EnginePreparePayloadReq, PreparedPayloadAttributes,
     ssz_hash_gloas::{EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView},
     ssz_view::{
         CONSOLIDATION_REQUEST_SIZE, ProposerPreferencesView, SIGNED_PROPOSER_PREFERENCES_SIZE,
@@ -29,6 +29,7 @@ impl PreparationRig {
         let (tile, gossip, rpc, mut spine, adapter) = tile_with_producers_on(slot, state, spec);
         let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         engine_requests(&mut sink);
+        sink.consume(|_: BeaconStateEvent, _| {});
         Self { tile, adapter, sink, _spine: spine, _gossip: gossip, _rpc: rpc }
     }
 
@@ -57,11 +58,12 @@ impl PreparationRig {
         rig
     }
 
-    fn register(&mut self, slot: Slot) {
+    fn register(&mut self, slot: Slot) -> u64 {
         let head = self.tile.state.read_view(self.tile.last_applied);
         let epoch_start = head.slot.state().slot / SLOTS_PER_EPOCH * SLOTS_PER_EPOCH;
         let proposer = head.epoch.proposer_at((slot - epoch_start) as usize).unwrap();
         register_proposer(&mut self.tile, proposer, [7; 20]);
+        proposer
     }
 
     fn prepare(&mut self, slot: Slot) -> EnginePreparePayloadReq {
@@ -74,6 +76,16 @@ impl PreparationRig {
             panic!("expected one preparation");
         };
         request
+    }
+
+    fn payload_attributes(&mut self) -> Vec<PreparedPayloadAttributes> {
+        let mut published = Vec::new();
+        self.sink.consume(|event: BeaconStateEvent, _| {
+            if let BeaconStateEvent::PayloadAttributes(attributes) = event {
+                published.push(attributes);
+            }
+        });
+        published
     }
 
     fn mark_full(&mut self) {
@@ -118,6 +130,35 @@ fn empty_parent_reuses_withdrawals_and_fetches_v6() {
     };
     assert!(fetch.is_gloas);
     assert_eq!(fetch.payload_id, [3; 8]);
+}
+
+#[test]
+fn preparation_publishes_the_attributes_it_asks_the_el_for() {
+    let mut rig = PreparationRig::gloas(|view| {
+        view.slot.state_mut().payload_expected_withdrawals =
+            vec![Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 }];
+    });
+    let proposer = rig.register(1);
+    let request = rig.prepare(1);
+    let [attributes] = rig.payload_attributes()[..] else { panic!("one event per preparation") };
+    assert_eq!((attributes.proposal_slot, attributes.proposer_index), (1, proposer));
+    assert_eq!(attributes.parent_block_root, request.attrs_parent_beacon_block_root);
+    assert_eq!(attributes.parent_block_hash, request.head_block_hash);
+    assert_eq!(attributes.parent_block_number, None, "removed from Gloas");
+    assert_eq!(attributes.safe_block_hash, request.safe_block_hash);
+    assert_eq!(attributes.finalized_block_hash, request.finalized_block_hash);
+    assert_eq!(attributes.target_gas_limit, request.attrs_target_gas_limit);
+    assert_eq!(attributes.timestamp, request.attrs_timestamp);
+    assert_eq!(attributes.prev_randao, request.attrs_prev_randao);
+    assert_eq!(attributes.fee_recipient, request.attrs_fee_recipient);
+    let mut withdrawals = Vec::new();
+    request.attrs_withdrawals[0].write_ssz(&mut withdrawals).unwrap();
+    let posted = attributes.withdrawals.expect("one withdrawal is posted");
+    assert_eq!(rig.tile.events_producer.read_buffer(posted).unwrap(), withdrawals);
+
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert!(engine_requests(&mut rig.sink).is_empty());
+    assert!(rig.payload_attributes().is_empty(), "an unchanged preparation is not republished");
 }
 
 #[test]
@@ -372,6 +413,10 @@ fn first_gloas_slot_prepares_on_the_last_fulu_payload() {
     assert_eq!(request.head_block_hash, parent.block_hash);
     assert_eq!(request.attrs_target_gas_limit, parent.gas_limit);
     assert_eq!(request.attrs_slot_number, slot);
+    let [attributes] = rig.payload_attributes()[..] else { panic!("one event per preparation") };
+    assert_eq!(attributes.parent_block_number, None, "keyed on the proposal's fork");
+    assert!(request.attrs_withdrawals.is_empty());
+    assert!(attributes.withdrawals.is_none());
     let advanced = rig.tile.epoch_start_state(rig.tile.last_applied, slot);
     assert!(rig.tile.state.read_view(advanced).is_gloas());
     assert_eq!(rig.state_root(), before);

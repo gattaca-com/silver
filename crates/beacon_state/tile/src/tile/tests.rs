@@ -5569,9 +5569,19 @@ fn registered_proposer_gets_a_payload_prepared_on_the_head() {
     seed_tile(&mut tile, 4, 10);
     let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
     engine_requests(&mut sink);
+    sink.consume(|_: BeaconStateEvent, _| {});
     register_proposer(&mut tile, 0, [7; 20]);
 
     assert!(tile.prepare_payload(11, None, &mut adapter.producers).is_ok());
+    let mut parent_block_numbers = Vec::new();
+    sink.consume(|event: BeaconStateEvent, _| {
+        if let BeaconStateEvent::PayloadAttributes(attributes) = event {
+            parent_block_numbers.push(attributes.parent_block_number);
+        }
+    });
+    let head = tile.state.read_view(tile.last_applied);
+    let parent_block_number = head.slot.state().latest_execution_payload_header.block_number;
+    assert_eq!(parent_block_numbers, [Some(parent_block_number)]);
 
     let [EngineReq::PreparePayload(request)] = engine_requests(&mut sink)[..] else {
         panic!("expected one payload preparation");

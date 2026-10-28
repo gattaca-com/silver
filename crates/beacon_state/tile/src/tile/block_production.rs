@@ -8,7 +8,7 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BUILDER_INDEX_SELF_BUILD, BeaconBlockHeader, BodyFork, BodyOffsets, ExecutionAddress,
-    ExecutionPayloadBid, PayloadWithdrawals, SLOTS_PER_EPOCH, Slot, StateId,
+    ExecutionPayloadBid, SLOTS_PER_EPOCH, Slot, StateId,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BuilderBid, BuilderBidsRequest, BuilderBidsResponse,
@@ -28,11 +28,16 @@ use silver_common::{
 use silver_slashing::Selection;
 use silver_ssz::block_body::{BeaconBlockBodyFulu, BeaconBlockBodyGloas, EMPTY_SYNC_AGGREGATE};
 
-use super::{BeaconStateTile, Feedback, Producers, bid_pool::BidBranch, block::AppliedBlock};
+use super::{
+    BeaconStateTile, Feedback, Producers,
+    bid_pool::BidBranch,
+    block::AppliedBlock,
+    payload_attributes::{PayloadBasis, PayloadContext},
+};
 use crate::{
     bls::G2_POINT_AT_INFINITY,
     ssz_hash,
-    stf::{self, BlockFork, BlockInput, ExpectedWithdrawals, decode_bid, get_expected_withdrawals},
+    stf::{self, BlockFork, BlockInput, decode_bid, get_expected_withdrawals},
 };
 
 mod attestation_rewards;
@@ -76,15 +81,6 @@ enum PayloadStage {
     Fetching {
         payload_id: [u8; 8],
     },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct PayloadContext {
-    head_block_hash: B256,
-    fee_recipient: ExecutionAddress,
-    target_gas_limit: u64,
-    is_gloas: bool,
-    full_parent: bool,
 }
 
 /// The one block being built, for `slot` on `parent_root`: the EL's payload
@@ -361,7 +357,7 @@ impl BlockProduction {
         self.built.as_ref().filter(|built| built.proposal == *proposal).map(|built| built.block)
     }
 
-    fn prepared_slot(&self) -> Option<Slot> {
+    pub(super) fn prepared_slot(&self) -> Option<Slot> {
         self.building.as_ref().filter(|build| build.stage != PayloadStage::Idle).map(|b| b.slot)
     }
 
@@ -443,7 +439,7 @@ impl BeaconStateTile {
         Some(block)
     }
 
-    fn proposer_on_head(&self, slot: Slot) -> Option<u64> {
+    pub(super) fn proposer_on_head(&self, slot: Slot) -> Option<u64> {
         let head = self.state.read_view(self.last_applied);
         let head_epoch_start = head.slot.state().slot / SLOTS_PER_EPOCH * SLOTS_PER_EPOCH;
         let proposer = head.epoch.proposer_at(slot.checked_sub(head_epoch_start)? as usize);
@@ -462,125 +458,48 @@ impl BeaconStateTile {
         fallback_fee_recipient: Option<ExecutionAddress>,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
-        if slot <= self.last_applied_block_slot() {
-            return Err(ProduceBlockFailure::SlotNotProposable);
-        }
-        let is_gloas = self.spec.is_gloas_at_slot(slot);
-        let (head_root, mut head_block_hash, safe_block_hash, finalized_block_hash) =
-            self.fork_choice.fcu_execution_hashes();
-        if head_root != self.head_block_root() {
-            silver_log::warn!(slot, "head state does not follow fork choice; payload not prepared");
-            return Err(ProduceBlockFailure::Internal);
-        }
-        let proposer = self.proposer_on_head(slot).ok_or(ProduceBlockFailure::Internal)?;
-        let registered = self.proposer_preparations.fee_recipient(proposer);
-        let dependent_root = is_gloas
-            .then(|| self.fork_choice.shuffling_dependent_root(&head_root, slot / SLOTS_PER_EPOCH))
-            .flatten();
-        let preferences =
-            dependent_root.and_then(|root| self.seen_proposer_preferences.get(slot, &root));
-        let local_preferences =
-            dependent_root.is_some_and(|root| self.seen_proposer_preferences.is_local(slot, &root));
-        if !local_preferences && registered.is_none() && fallback_fee_recipient.is_none() {
+        let basis = self.payload_basis(slot, fallback_fee_recipient.unwrap_or_default())?;
+        if !basis.local_proposer && fallback_fee_recipient.is_none() {
             return Err(ProduceBlockFailure::NoFeeRecipient);
         }
-        let fee_recipient = preferences
-            .map(|prefs| prefs.fee_recipient)
-            .or(registered)
-            .or(fallback_fee_recipient)
-            .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
-        let head = self.state.read_view(self.last_applied);
-        let genesis_time = head.imm.genesis_time;
-        let parent_gas_limit = if head.is_gloas() {
-            head.slot.state().latest_execution_payload_bid.gas_limit
-        } else {
-            head.slot.state().latest_execution_payload_header.gas_limit
-        };
-        let target_gas_limit = if is_gloas {
-            preferences.map_or(parent_gas_limit, |prefs| prefs.target_gas_limit)
-        } else {
-            0
-        };
-        let full_parent = if is_gloas {
-            let (parent_hash, full) = self.execution_parent(slot, head_root)?;
-            head_block_hash = parent_hash;
-            full
-        } else {
-            true
-        };
-        let context = PayloadContext {
-            head_block_hash,
-            fee_recipient,
-            target_gas_limit,
-            is_gloas,
-            full_parent,
-        };
-        if let Some(build) = self.block_production.building_on(slot, head_root) {
-            if build.stage != PayloadStage::Idle && build.context == Some(context) {
+        self.prepare_payload_on(basis, producers)
+    }
+
+    pub(super) fn prepare_payload_on(
+        &mut self,
+        basis: PayloadBasis,
+        producers: &mut Producers,
+    ) -> Result<(), ProduceBlockFailure> {
+        let slot = basis.slot;
+        if let Some(build) = self.block_production.building_on(slot, basis.head_root) {
+            if build.stage != PayloadStage::Idle && build.context == Some(basis.context) {
                 return Ok(());
             }
             build.stage = PayloadStage::Idle;
             build.context = None;
             build.local = None;
         }
+        let inputs = self.payload_inputs(&basis)?;
 
-        let state_id = self.epoch_start_state(self.last_applied, slot);
-        // Never committed: the ring slots it rolls are freed with the tail.
-        let mut fork = self.state.apply_block_view(state_id);
-        if is_gloas {
-            stf::process_slots(&self.spec, &mut fork, slot, &mut self.stf_scratch);
-        }
-        let prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
-        let withdrawals = if !is_gloas {
-            let ExpectedWithdrawals { withdrawals, .. } = get_expected_withdrawals(&fork.view);
-            withdrawals
-        } else if full_parent {
-            let requests = self.payload_execution_requests.get(&head_root);
-            let parent = fork.view.slot.state();
-            if ExecutionRequestsView::hash_tree_root(requests) !=
-                parent.latest_execution_payload_bid.execution_requests_root
-            {
-                silver_log::warn!(
-                    slot,
-                    "parent execution requests unavailable for payload preparation"
-                );
-                return Err(ProduceBlockFailure::PayloadUnavailable);
-            }
-            let parent_slot = parent.latest_block_header.slot;
-            let epoch = fork.epoch.view_opt(fork.epoch_idx);
-            stf::apply_parent_execution_payload(
-                &mut fork.view,
-                &epoch,
-                &self.spec,
-                requests,
-                parent_slot,
-            );
-            stf::get_expected_withdrawals_gloas(&fork.view).withdrawals
-        } else {
-            let mut withdrawals = PayloadWithdrawals::new();
-            for withdrawal in &fork.view.slot.state().payload_expected_withdrawals {
-                withdrawals.push(*withdrawal);
-            }
-            withdrawals
-        };
-
+        let (head_root, context) = (basis.head_root, basis.context);
         let id = self.block_production.begin_preparation(slot, head_root, context, producers);
         producers.produce(EngineReq::PreparePayload(EnginePreparePayloadReq {
             id,
-            head_block_hash,
-            safe_block_hash,
-            finalized_block_hash,
-            attrs_timestamp: genesis_time + slot * self.spec.seconds_per_slot(),
-            attrs_prev_randao: prev_randao,
-            attrs_fee_recipient: fee_recipient,
+            head_block_hash: context.head_block_hash,
+            safe_block_hash: basis.safe_block_hash,
+            finalized_block_hash: basis.finalized_block_hash,
+            attrs_timestamp: basis.timestamp,
+            attrs_prev_randao: inputs.prev_randao,
+            attrs_fee_recipient: context.fee_recipient,
             attrs_parent_beacon_block_root: head_root,
-            attrs_withdrawals: withdrawals,
-            is_gloas,
+            attrs_withdrawals: inputs.withdrawals,
+            is_gloas: context.is_gloas,
             attrs_slot_number: slot,
-            attrs_target_gas_limit: target_gas_limit,
+            attrs_target_gas_limit: context.target_gas_limit,
         }));
+        silver_log::info!(slot, proposer = basis.proposer, "payload preparation requested");
 
-        silver_log::info!(slot, proposer, "payload preparation requested");
+        self.publish_payload_attributes(&basis, &inputs, producers);
         Ok(())
     }
 
@@ -1225,7 +1144,7 @@ impl BeaconStateTile {
         Ok((branch, full))
     }
 
-    fn execution_parent(
+    pub(super) fn execution_parent(
         &self,
         slot: Slot,
         parent_root: B256,

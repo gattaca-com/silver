@@ -39,6 +39,7 @@ use crate::{
         gossip::BatchedVote,
         held_blocks::{HeldBlocks, StagedVerdict},
         payload_attestation_pool::PayloadAttestationPool,
+        payload_attributes::PayloadAttributesFeed,
         payload_execution_requests::PayloadExecutionRequests,
         pending_envelopes::PendingEnvelopes,
         precomputed_epochs::PrecomputedEpochs,
@@ -69,6 +70,7 @@ mod gossip;
 mod held_blocks;
 mod orphan_pool;
 mod payload_attestation_pool;
+mod payload_attributes;
 mod payload_execution_requests;
 mod payload_publication;
 mod pending_envelopes;
@@ -208,6 +210,7 @@ pub struct BeaconStateTile {
     sync_contribution_pool: SyncContributionPool,
     proposer_preparations: ProposerPreparations,
     default_fee_recipient: Option<ExecutionAddress>,
+    payload_attributes_feed: PayloadAttributesFeed,
     block_production: BlockProduction,
     seen_contribution_aggregators: [SeenValidators; silver_common::SYNC_COMMITTEE_SUBNETS],
     seen_ptc: SeenValidators,
@@ -313,6 +316,7 @@ impl BeaconStateTile {
             sync_contribution_pool: SyncContributionPool::new(),
             proposer_preparations: ProposerPreparations::default(),
             default_fee_recipient,
+            payload_attributes_feed: PayloadAttributesFeed::default(),
             block_production: BlockProduction::new(payload_timeout),
             seen_contribution_aggregators: std::array::from_fn(|_| SeenValidators::new(val_cap)),
             seen_ptc: SeenValidators::new(val_cap),
@@ -657,6 +661,7 @@ impl BeaconStateTile {
         self.emitted_head = Some(head.observation);
         producers.produce(event);
         self.refresh_payload_preparation(producers);
+        self.refresh_payload_attributes(producers);
     }
 
     fn serve_aggregate(
@@ -910,9 +915,7 @@ impl BeaconStateTile {
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
             TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
             TickEvent::PreparePayload(slot) => {
-                // Most slots have no registered proposer to prepare for. The
-                // default fee recipient would have the EL build every slot.
-                let _ = self.prepare_payload(slot + 1, None, &mut adapter.producers);
+                self.prepare_or_announce_payload(slot + 1, &mut adapter.producers)
             }
             TickEvent::None => {}
         }
@@ -953,6 +956,9 @@ impl BeaconStateTile {
             ),
             BeaconApiRequest::ProposerPreparations { preparations } => {
                 self.record_proposer_preparations(preparations)
+            }
+            BeaconApiRequest::PayloadAttributesWanted(wanted) => {
+                self.set_payload_attributes_wanted(wanted, producers)
             }
             BeaconApiRequest::ExecutionPayloadEnvelope { request_id, slot, beacon_block_root } => {
                 let envelope = self.local_payload_envelope(slot, &beacon_block_root);
