@@ -134,7 +134,8 @@ fn cached_and_submitted_blobs_publish_every_gloas_column() {
         assert_eq!(requests, [BeaconApiRequest::LocalGossip {
             request_id: 42,
             topic: GossipTopic::ExecutionPayload,
-            ssz: proposal.ssz
+            ssz: proposal.ssz,
+            validation: silver_common::BroadcastValidation::Gossip,
         }]);
         rig.inj.consume(|_: BeaconApiResponse, _| panic!("Control must confirm the broadcast"));
     }

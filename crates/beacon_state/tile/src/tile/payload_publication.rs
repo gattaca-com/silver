@@ -85,23 +85,16 @@ impl BeaconStateTile {
         if !consensus_valid && validation != BroadcastValidation::Gossip {
             return Err(LocalGossipFailure::Invalid);
         }
-        for node in &self.fork_choice.nodes {
-            if node.block_root == block_root && node.execution_status == ExecutionStatus::Invalid {
-                return Err(LocalGossipFailure::Invalid);
-            }
-            if validation == BroadcastValidation::ConsensusAndEquivocation &&
-                node.slot == slot &&
-                node.block_root != block_root &&
-                self.state
-                    .read_view(node.state_id)
-                    .slot
-                    .state()
-                    .latest_block_header
-                    .proposer_index ==
-                    state.latest_block_header.proposer_index
-            {
-                return Err(LocalGossipFailure::ConflictingProposal);
-            }
+        if self.fork_choice.nodes.iter().any(|node| {
+            node.block_root == block_root && node.execution_status == ExecutionStatus::Invalid
+        }) {
+            return Err(LocalGossipFailure::Invalid);
+        }
+        let proposer_index = state.latest_block_header.proposer_index;
+        if validation == BroadcastValidation::ConsensusAndEquivocation &&
+            self.equivocates(slot, proposer_index, &block_root)
+        {
+            return Err(LocalGossipFailure::ConflictingProposal);
         }
         let commitments = &state.latest_execution_payload_bid.blob_kzg_commitments;
         let payload = if let Some(contents) = contents {
@@ -138,6 +131,7 @@ impl BeaconStateTile {
                 request_id,
                 topic: GossipTopic::ExecutionPayload,
                 ssz,
+                validation: BroadcastValidation::Gossip,
             });
         } else {
             let commitments = self

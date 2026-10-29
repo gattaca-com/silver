@@ -6,7 +6,7 @@ use silver_common::json_fields::parse_uint64;
 use silver_httpcore::Query;
 
 use crate::{
-    ctx::ApiCtx,
+    ctx::{ApiCtx, read_flags},
     http::{
         ids::{each_body_entry, parse_pubkey},
         json::Json,
@@ -119,37 +119,37 @@ impl RegistryStream {
     /// Appends the next batch of the body to `out`. `Superseded` means a
     /// finalize ended the pinned state, and the body can no longer be whole.
     pub(crate) fn render_next(&mut self, ctx: &ApiCtx, out: &mut Vec<u8>) -> Batch {
-        let rendered = ctx.read_pinned(self.pin, |view, flags| {
+        let last = ctx.state.read_pinned(self.pin, |view| {
             let current_epoch = view.slot.current_epoch();
             let count = view.validators.count();
             if self.next == 0 {
                 let mut json = Json::new(out);
-                json.begin_flagged_envelope(flags);
+                json.begin_flagged_envelope(read_flags(ctx.node_status, &view));
                 json.begin_array();
             }
             let end = count.min(self.next + VALIDATORS_PER_BATCH);
-            let mut rendered_any = self.rendered_any;
             for ix in self.next..end {
-                let record = ValidatorRecord::read(view, current_epoch, ix);
+                let record = ValidatorRecord::read(&view, current_epoch, ix);
                 if !self.statuses.admits(record.status) {
                     continue;
                 }
-                if rendered_any {
+                if self.rendered_any {
                     out.push(b',');
                 }
                 Json::new(out).validator(&record);
-                rendered_any = true;
+                self.rendered_any = true;
             }
-            let last = end == count;
-            if last {
+            self.next = end;
+            if end == count {
                 out.extend_from_slice(b"]}");
             }
-            (end, rendered_any, last)
+            end == count
         });
-        let Some((end, rendered_any, last)) = rendered else { return Batch::Superseded };
-        self.next = end;
-        self.rendered_any = rendered_any;
-        if last { Batch::Last } else { Batch::More }
+        match last {
+            None => Batch::Superseded,
+            Some(true) => Batch::Last,
+            Some(false) => Batch::More,
+        }
     }
 }
 

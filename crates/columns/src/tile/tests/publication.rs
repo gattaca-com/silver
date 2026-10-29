@@ -180,6 +180,7 @@ impl Rig {
                 recv_ts: Nanos::now(),
                 ssz: read,
                 protobuf,
+                validation: silver_common::BroadcastValidation::Gossip,
             },
             &mut self.conn.producers,
         );

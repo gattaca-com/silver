@@ -6,9 +6,10 @@ use buffa::{
 };
 use flux::timing::Nanos;
 use silver_common::{
-    Error, GossipDomain, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE, MAX_GOSSIP_FRAME_SIZE,
-    MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SszCache, TCacheProducer, TCacheRead,
-    TProducer, TReservation, msg_id_invalid_snappy, msg_id_valid_snappy,
+    BroadcastValidation, Error, GossipDomain, GossipTopic, MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE,
+    MAX_GOSSIP_FRAME_SIZE, MessageId, NewGossipMsg, P2pStreamId, PeerEvent, SszCache,
+    TCacheProducer, TCacheRead, TProducer, TReservation, msg_id_invalid_snappy,
+    msg_id_valid_snappy,
 };
 
 use crate::{GossipHandlerEvent, control::copy_idontwants_to_protobuf_output, dedup::DedupCache};
@@ -146,6 +147,7 @@ pub(super) fn handle_incoming(
         recv_ts,
         ssz: ssz_read,
         protobuf: mcache_read,
+        validation: BroadcastValidation::Gossip,
     }));
 
     // Pre-encode an IDONTWANT control frame carrying this single id; the

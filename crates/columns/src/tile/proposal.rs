@@ -3,9 +3,9 @@ use std::array;
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_common::{
-    BeaconApiRequest, BeaconApiResponse, ColumnOrigin, DataColumnsEvent, ForkName, GossipDomain,
-    GossipTopic, IngestionTime, LocalGossipFailure, PayloadFrame, ProposedPayload,
-    SilverSpineProducers, SszCache, TCacheProducer, TCacheRead, TProducer, TRead,
+    BeaconApiRequest, BeaconApiResponse, BroadcastValidation, ColumnOrigin, DataColumnsEvent,
+    ForkName, GossipDomain, GossipTopic, IngestionTime, LocalGossipFailure, PayloadFrame,
+    ProposedPayload, SilverSpineProducers, SszCache, TCacheProducer, TCacheRead, TProducer, TRead,
     block_contents::SignedBlockContents,
     cell_store::{CommitmentContext, ContextData},
     column_util::{
@@ -292,6 +292,7 @@ impl DataColumnsTile {
             request_id: proposal.request_id,
             topic: GossipTopic::ExecutionPayload,
             ssz: signed_read.to_read(),
+            validation: BroadcastValidation::Gossip,
         });
         Ok(())
     }

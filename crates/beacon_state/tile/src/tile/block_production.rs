@@ -479,7 +479,8 @@ impl BeaconStateTile {
             build.context = None;
             build.local = None;
         }
-        let inputs = self.payload_inputs(&basis)?;
+        self.fill_payload_inputs(&basis)?;
+        let inputs = &self.payload_attributes.inputs;
 
         let (head_root, context) = (basis.head_root, basis.context);
         let id = self.block_production.begin_preparation(slot, head_root, context, producers);
@@ -499,7 +500,7 @@ impl BeaconStateTile {
         }));
         silver_log::info!(slot, proposer = basis.proposer, "payload preparation requested");
 
-        self.publish_payload_attributes(&basis, &inputs, producers);
+        self.publish_payload_attributes(&basis, producers);
         Ok(())
     }
 

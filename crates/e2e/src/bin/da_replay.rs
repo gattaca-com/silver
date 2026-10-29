@@ -183,6 +183,7 @@ impl Node {
             // Relay republishes this; the replay has no peers, so the
             // decompressed bytes stand in for the wire form.
             protobuf: ssz,
+            validation: silver_common::BroadcastValidation::Gossip,
         });
     }
 

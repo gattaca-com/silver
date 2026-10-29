@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use fxhash::FxHashMap;
 use silver_common::{
-    BeaconApiResponse, GossipTopic, LocalGossipFailure, LocalGossipResult, MessageId, Nanos,
-    SilverSpineProducers, TCacheRead,
+    BeaconApiResponse, BroadcastValidation, GossipTopic, LocalGossipFailure, LocalGossipResult,
+    MessageId, Nanos, SilverSpineProducers, TCacheRead,
 };
 use silver_gossip::GossipHandler;
 
@@ -24,6 +24,7 @@ pub(super) struct LocalMessage<'a> {
     pub(super) ssz: &'a [u8],
     pub(super) ssz_read: Option<TCacheRead>,
     pub(super) slot: u64,
+    pub(super) validation: BroadcastValidation,
 }
 
 impl LocalGossipHandler {
@@ -34,8 +35,8 @@ impl LocalGossipHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        let LocalMessage { request_id, topic, ssz, ssz_read, slot } = message;
-        match gossip_handler.inject_local(topic, ssz, ssz_read, Nanos::now()) {
+        let LocalMessage { request_id, topic, ssz, ssz_read, slot, validation } = message;
+        match gossip_handler.inject_local(topic, ssz, ssz_read, validation, Nanos::now()) {
             Ok(Some(msg_id)) => {
                 let request =
                     PendingValidationRequest { request_id, deadline: now + VALIDATION_TIMEOUT };
@@ -218,7 +219,14 @@ pub(super) mod tests {
         let mut aggregate = [0u8; SIGNED_AGG_PROOF_MIN + 1];
         aggregate[SIGNED_AGG_PROOF_MIN] = 1;
         let topic = GossipTopic::BeaconAggregateAndProof;
-        let message = LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
+        let message = LocalMessage {
+            request_id,
+            topic,
+            ssz: &aggregate,
+            ssz_read: None,
+            slot: 0,
+            validation: BroadcastValidation::Gossip,
+        };
         let Harness { local_gossip, gossip, adapter, .. } = harness;
         local_gossip.submit(message, Instant::now(), gossip, &mut adapter.producers);
     }
@@ -248,8 +256,14 @@ pub(super) mod tests {
         let aggregate = [0u8; SIGNED_AGG_PROOF_MIN + 1];
         for (request_id, at) in [(21, now), (22, now + Duration::from_millis(10))] {
             let topic = GossipTopic::BeaconAggregateAndProof;
-            let message =
-                LocalMessage { request_id, topic, ssz: &aggregate, ssz_read: None, slot: 0 };
+            let message = LocalMessage {
+                request_id,
+                topic,
+                ssz: &aggregate,
+                ssz_read: None,
+                slot: 0,
+                validation: BroadcastValidation::Gossip,
+            };
             let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
             local_gossip.submit(message, at, gossip, &mut adapter.producers);
         }

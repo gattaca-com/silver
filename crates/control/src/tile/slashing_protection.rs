@@ -4,9 +4,9 @@ use flux::spine::{SpineAdapter, SpineProducers};
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
-    ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult,
-    LockedProposal, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer,
-    TRead,
+    BroadcastValidation, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure,
+    LocalGossipResult, LockedProposal, SilverSpine, SilverSpineProducers, TCacheProducer,
+    TCacheReader, TProducer, TRead,
     block_contents::SignedBlockContents,
     ssz_view::{
         SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
@@ -41,10 +41,10 @@ impl PendingAttestation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SubmittedBlock {
     /// `SignedBlockContents`, published by this node.
-    Full,
+    Full(BroadcastValidation),
     /// A Gloas `SignedBeaconBlock`, published by this node. Its blobs travel
     /// with the payload envelope.
-    Gloas,
+    Gloas(BroadcastValidation),
     /// A `SignedBlindedBeaconBlock`; the API has the sidecar reveal it once
     /// told the lock is held.
     Blinded,
@@ -53,14 +53,18 @@ pub(super) enum SubmittedBlock {
 impl SubmittedBlock {
     /// A block to publish: `SignedBlockContents` lead with offset 12, a bare
     /// `SignedBeaconBlock` with offset 100.
-    pub(super) fn framed(bytes: &[u8]) -> Self {
-        if SignedBeaconBlockView::check_size(bytes) { Self::Gloas } else { Self::Full }
+    pub(super) fn framed(bytes: &[u8], validation: BroadcastValidation) -> Self {
+        if SignedBeaconBlockView::check_size(bytes) {
+            Self::Gloas(validation)
+        } else {
+            Self::Full(validation)
+        }
     }
 
     fn signed_block(self, bytes: &[u8]) -> Option<&[u8]> {
         match self {
-            Self::Full => SignedBlockContents::signed_block(bytes),
-            Self::Gloas | Self::Blinded => Some(bytes),
+            Self::Full(_) => SignedBlockContents::signed_block(bytes),
+            Self::Gloas(_) | Self::Blinded => Some(bytes),
         }
     }
 }
@@ -89,22 +93,23 @@ impl PendingBlock {
         producers: &mut SilverSpineProducers,
     ) {
         match self.block {
-            SubmittedBlock::Full => {
+            SubmittedBlock::Full(validation) => {
                 producers.produce(LockedProposal { contents: self.contents.to_read() });
                 local_gossip.submit(
-                    block_message(self.request_id, block, self.key.slot),
+                    block_message(self.request_id, block, self.key.slot, validation),
                     now,
                     gossip_handler,
                     producers,
                 );
             }
-            SubmittedBlock::Gloas => local_gossip.submit(
+            SubmittedBlock::Gloas(validation) => local_gossip.submit(
                 LocalMessage {
                     request_id: self.request_id,
                     topic: GossipTopic::BeaconBlock,
                     ssz: block,
                     ssz_read: Some(self.contents.to_read()),
                     slot: self.key.slot,
+                    validation,
                 },
                 now,
                 gossip_handler,
@@ -611,7 +616,15 @@ mod tests {
         let blobs_at = (12 + block.len()) as u32;
         let mut contents = [12, blobs_at, blobs_at].map(u32::to_le_bytes).concat();
         contents.extend_from_slice(block);
-        lock_block(handler, harness, submissions, request_id, &contents, SubmittedBlock::Full, now);
+        lock_block(
+            handler,
+            harness,
+            submissions,
+            request_id,
+            &contents,
+            SubmittedBlock::Full(BroadcastValidation::Gossip),
+            now,
+        );
     }
 
     fn lock_block(
@@ -725,14 +738,34 @@ mod tests {
         let mut block = block_bytes(11, 4, 1);
         block[..4].copy_from_slice(&100u32.to_le_bytes());
         block[180..184].copy_from_slice(&84u32.to_le_bytes());
-        assert_eq!(SubmittedBlock::framed(&block), SubmittedBlock::Gloas);
-        lock_block(handler, harness, &mut submissions, 1, &block, SubmittedBlock::Gloas, now);
-        harness.pop_gossip();
+        assert_eq!(
+            SubmittedBlock::framed(&block, BroadcastValidation::Gossip),
+            SubmittedBlock::Gloas(BroadcastValidation::Gossip)
+        );
+        let validation = BroadcastValidation::ConsensusAndEquivocation;
+        lock_block(
+            handler,
+            harness,
+            &mut submissions,
+            1,
+            &block,
+            SubmittedBlock::Gloas(validation),
+            now,
+        );
+        assert_eq!(harness.pop_gossip().validation, validation, "Beacon State applies the level");
         assert_eq!(locked_proposals(harness), 0, "its blobs travel with the envelope");
         assert!(harness.responses().is_empty());
 
         block[4] = 2;
-        lock_block(handler, harness, &mut submissions, 2, &block, SubmittedBlock::Gloas, now);
+        lock_block(
+            handler,
+            harness,
+            &mut submissions,
+            2,
+            &block,
+            SubmittedBlock::Gloas(BroadcastValidation::Gossip),
+            now,
+        );
         assert_eq!(harness.responses(), [(2, Err(LocalGossipFailure::ConflictingProposal))]);
         assert!(harness.gossip.pop_event().is_none());
     }
@@ -1128,9 +1161,14 @@ fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossi
 
 /// The submission holds the whole `SignedBlockContents`, so the block is
 /// copied rather than handed on as the submission's read.
-fn block_message(request_id: u64, ssz: &[u8], slot: u64) -> LocalMessage<'_> {
+fn block_message(
+    request_id: u64,
+    ssz: &[u8],
+    slot: u64,
+    validation: BroadcastValidation,
+) -> LocalMessage<'_> {
     let topic = GossipTopic::BeaconBlock;
-    LocalMessage { request_id, topic, ssz, ssz_read: None, slot }
+    LocalMessage { request_id, topic, ssz, ssz_read: None, slot, validation }
 }
 
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
@@ -1161,6 +1199,7 @@ impl AttestationLockCommand {
             ssz: &self.ssz,
             ssz_read: None,
             slot: self.key.slot,
+            validation: BroadcastValidation::Gossip,
         }
     }
 }

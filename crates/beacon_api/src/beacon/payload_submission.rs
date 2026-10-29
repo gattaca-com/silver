@@ -1,5 +1,4 @@
 use silver_common::{
-    BroadcastValidation,
     envelope_contents::SignedEnvelopeContents,
     ssz_view::{
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, SignedExecutionPayloadEnvelopeView,
@@ -9,7 +8,7 @@ use silver_common::{
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
-    submission::EnvelopePublication,
+    submission::{EnvelopePublication, requested_validation},
 };
 
 pub(crate) fn post_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -27,11 +26,8 @@ pub(crate) fn post_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
         Some("false") => false,
         _ => return resp.error(400, "Eth-Blob-Data-Included must be true or false"),
     };
-    let validation = match req.query_value("broadcast_validation").as_deref() {
-        None | Some("gossip") => BroadcastValidation::Gossip,
-        Some("consensus") => BroadcastValidation::Consensus,
-        Some("consensus_and_equivocation") => BroadcastValidation::ConsensusAndEquivocation,
-        _ => return resp.error(400, "invalid broadcast_validation"),
+    let Some(validation) = requested_validation(req) else {
+        return resp.error(400, "invalid broadcast_validation");
     };
     let signed = if blob_data_included {
         let Some(contents) = SignedEnvelopeContents::parse(req.body) else {
@@ -49,13 +45,13 @@ pub(crate) fn post_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
     if !ctx.spec.is_gloas_at_slot(slot) {
         return resp.error(400, "execution payload envelopes require Gloas");
     }
-    resp.await_payload_envelope(req.body, EnvelopePublication { blob_data_included, validation });
+    resp.await_payload_envelope(req.body, EnvelopePublication { blob_data_included }, validation);
 }
 
 #[cfg(test)]
 mod tests {
     use silver_common::{
-        TCache, TCacheId, TCacheProducer, ssz_view::BYTES_PER_BLOB,
+        BroadcastValidation, TCache, TCacheId, TCacheProducer, ssz_view::BYTES_PER_BLOB,
         test_util::empty_signed_envelope,
     };
     use silver_httpcore::ParsedRequest;
@@ -102,11 +98,9 @@ mod tests {
             };
             assert_eq!(
                 submission.envelope,
-                Some(EnvelopePublication {
-                    blob_data_included: included,
-                    validation: BroadcastValidation::Gossip
-                })
+                Some(EnvelopePublication { blob_data_included: included })
             );
+            assert_eq!(submission.validation, BroadcastValidation::Gossip);
             assert_eq!(producer.read_buffer(submission.accepted[0].ssz).unwrap(), body);
         }
     }
@@ -125,13 +119,8 @@ mod tests {
         let (outcome, response) = dispatch_into(&ctx, &req, &mut producer);
         assert!(response.is_empty(), "answered only once validation settles");
         let Outcome::AwaitingVerdicts(submission) = outcome else { panic!("await publication") };
-        assert_eq!(
-            submission.envelope,
-            Some(EnvelopePublication {
-                blob_data_included: true,
-                validation: BroadcastValidation::ConsensusAndEquivocation,
-            })
-        );
+        assert_eq!(submission.envelope, Some(EnvelopePublication { blob_data_included: true }));
+        assert_eq!(submission.validation, BroadcastValidation::ConsensusAndEquivocation);
         assert_eq!(producer.read_buffer(submission.accepted[0].ssz).unwrap(), body);
     }
 
@@ -157,10 +146,7 @@ mod tests {
         let Outcome::AwaitingVerdicts(submission) = dispatch(&ctx, &req).0 else {
             panic!("await publication")
         };
-        assert_eq!(
-            submission.envelope.unwrap().validation,
-            BroadcastValidation::ConsensusAndEquivocation
-        );
+        assert_eq!(submission.validation, BroadcastValidation::ConsensusAndEquivocation);
         let req =
             ParsedRequest { content_type: Some("application/json"), ..request(&signed, false) };
         assert_eq!(status_code(&dispatch(&ctx, &req).1), "415");

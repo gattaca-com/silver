@@ -217,6 +217,7 @@ fn gossip_pending(
             recv_ts: Nanos(0),
             ssz: read,
             protobuf: read,
+            validation: silver_common::BroadcastValidation::Gossip,
         },
         pin,
     )
@@ -3087,6 +3088,7 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
         recv_ts: Nanos(0),
         ssz,
         protobuf,
+        validation: silver_common::BroadcastValidation::Gossip,
     }
 }
 
@@ -3118,6 +3120,7 @@ fn gossip_att_msg(
         recv_ts: Nanos(0),
         ssz: read,
         protobuf: read,
+        validation: silver_common::BroadcastValidation::Gossip,
     }
 }
 

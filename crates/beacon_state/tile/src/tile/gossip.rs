@@ -8,9 +8,9 @@ use silver_beacon_state_data::{
     gloas::PTC_SIZE,
 };
 use silver_common::{
-    BeaconStateEvent, BlockSource, EngineNewPayloadEnvelopeReq, EngineReq, GossipTopic,
-    LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg, PeerEvent,
-    SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
+    BeaconStateEvent, BlockSource, BroadcastValidation, EngineNewPayloadEnvelopeReq, EngineReq,
+    GossipTopic, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MAX_BLOBS_PER_BLOCK, NewGossipMsg,
+    PeerEvent, SyncNeed, TCacheRead, TRead, compute_subnet_for_attestation, hex32,
     metrics::timed,
     ssz_view::{
         AttestationDataView, AttesterSlashingView, BuilderExitRequestView,
@@ -19,9 +19,10 @@ use silver_common::{
         ProposerPreferencesView as Prefs, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
         SIGNED_CONTRIBUTION_AND_PROOF_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE,
         SIGNED_VOLUNTARY_EXIT_SIZE, SINGLE_ATT_SIZE, SYNC_COMMITTEE_MSG_SIZE,
-        SignedBlsToExecutionChangeView, SignedExecutionPayloadEnvelopeView as SignedPayload,
-        SignedProposerPreferencesView, SignedSyncCommitteeProofView, SignedVoluntaryExitView,
-        SingleAttestationView, SyncCommitteeView,
+        SignedBeaconBlockView, SignedBlsToExecutionChangeView,
+        SignedExecutionPayloadEnvelopeView as SignedPayload, SignedProposerPreferencesView,
+        SignedSyncCommitteeProofView, SignedVoluntaryExitView, SingleAttestationView,
+        SyncCommitteeView,
     },
 };
 use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
@@ -1792,6 +1793,7 @@ impl BeaconStateTile {
                 return true;
             }
             GossipTopic::BeaconBlock => {
+                let relay_once_parsed = m.validation == BroadcastValidation::Gossip;
                 let feedback = self.apply_block(
                     data,
                     &acquired,
@@ -1799,12 +1801,15 @@ impl BeaconStateTile {
                     pre_verified,
                     producers,
                     |p| {
-                        if do_relay {
+                        if do_relay && relay_once_parsed {
                             Self::relay_gossip(&m, p);
                         }
                     },
                 );
-                do_relay = false; // relayed on callback.
+                if do_relay && !relay_once_parsed {
+                    self.relay_once_applied(&m, data, feedback, producers);
+                }
+                do_relay = false; // relayed on callback or once applied.
                 feedback
             }
             GossipTopic::BeaconAttestation(subnet) => self.handle_attestation(data, subnet),
@@ -1858,9 +1863,50 @@ impl BeaconStateTile {
             Feedback::Ignore | Feedback::AlreadySeen | Feedback::TooOld | Feedback::Future => {
                 Self::local_verdict(&m, feedback, producers)
             }
-            Feedback::BlockImported(_) | Feedback::AwaitData(_) | Feedback::BlockKnown(_) => {}
+            Feedback::BlockKnown(_) => Self::local_verdict(&m, feedback, producers),
+            Feedback::BlockImported(_) | Feedback::AwaitData(_) => {}
         }
         true
+    }
+
+    /// `consensus` levels relay a local block only after its state transition;
+    /// a block waiting on its columns has passed it.
+    pub(super) fn relay_once_applied(
+        &self,
+        m: &NewGossipMsg,
+        data: &[u8],
+        feedback: Feedback,
+        producers: &mut Producers,
+    ) {
+        let (Feedback::BlockImported(block_root) | Feedback::AwaitData(block_root)) = feedback
+        else {
+            return;
+        };
+        let slot = SignedBeaconBlockView::slot(data);
+        let proposer_index = SignedBeaconBlockView::proposer_index(data);
+        if m.validation == BroadcastValidation::ConsensusAndEquivocation &&
+            self.equivocates(slot, proposer_index, &block_root)
+        {
+            let result = Err(LocalGossipFailure::ConflictingProposal);
+            producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
+            return;
+        }
+        Self::relay_gossip(m, producers);
+    }
+
+    /// Another block in fork choice from the same proposer for the same slot.
+    pub(super) fn equivocates(&self, slot: Slot, proposer_index: u64, block_root: &B256) -> bool {
+        self.fork_choice.nodes.iter().any(|node| {
+            node.slot == slot &&
+                node.block_root != *block_root &&
+                self.state
+                    .read_view(node.state_id)
+                    .slot
+                    .state()
+                    .latest_block_header
+                    .proposer_index ==
+                    proposer_index
+        })
     }
 
     fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
@@ -1917,7 +1963,7 @@ impl BeaconStateTile {
             Feedback::Reject { .. } => Err(LocalGossipFailure::Invalid),
             // Already on the network is published, as fallback validator
             // clients that submit to several nodes rely on.
-            Feedback::AlreadySeen => Ok(()),
+            Feedback::AlreadySeen | Feedback::BlockKnown(_) => Ok(()),
             Feedback::TooOld => Err(LocalGossipFailure::TooOld),
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),

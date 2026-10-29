@@ -5,7 +5,7 @@ use silver_beacon_state_data::{
 };
 use silver_common::{
     BeaconStateEvent, PreparedPayloadAttributes, ProduceBlockFailure, TCacheProducer, TCacheRead,
-    ssz_hash_gloas::ExecutionRequestsView, ssz_view::WITHDRAWAL_SIZE,
+    TProducer, ssz_hash_gloas::ExecutionRequestsView, ssz_view::WITHDRAWAL_SIZE,
 };
 
 use super::{BeaconStateTile, Producers};
@@ -35,18 +35,22 @@ pub(super) struct PayloadBasis {
     pub(super) context: PayloadContext,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default)]
 pub(super) struct PayloadInputs {
     pub(super) prev_randao: B256,
     pub(super) withdrawals: PayloadWithdrawals,
 }
 
-/// Attributes published for slots no local validator proposes, while the API
-/// has `payload_attributes` subscribers.
+/// `inputs` are the last computed, filled in place, so a preparation following
+/// an announcement on the same parent reads them back. Slots no local
+/// validator proposes are announced only while the API has
+/// `payload_attributes` subscribers.
 #[derive(Default)]
-pub(super) struct PayloadAttributesFeed {
+pub(super) struct PayloadAttributes {
     wanted: bool,
-    announced: Option<(PayloadBasis, PayloadInputs)>,
+    announced: Option<PayloadBasis>,
+    computed_for: Option<PayloadBasis>,
+    pub(super) inputs: PayloadInputs,
 }
 
 impl PayloadBasis {
@@ -139,15 +143,19 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn payload_inputs(
+    /// Leaves `self.payload_attributes.inputs` holding `basis`'s inputs.
+    pub(super) fn fill_payload_inputs(
         &mut self,
         basis: &PayloadBasis,
-    ) -> Result<PayloadInputs, ProduceBlockFailure> {
-        if let Some((announced, inputs)) = &self.payload_attributes_feed.announced &&
-            announced.shares_inputs_with(basis)
+    ) -> Result<(), ProduceBlockFailure> {
+        if self
+            .payload_attributes
+            .computed_for
+            .is_some_and(|computed| computed.shares_inputs_with(basis))
         {
-            return Ok(*inputs);
+            return Ok(());
         }
+        self.payload_attributes.computed_for = None;
         let PayloadBasis { slot, head_root, context, .. } = *basis;
         let state_id = self.epoch_start_state(self.last_applied, slot);
         // Never committed: the ring slots it rolls are freed with the tail.
@@ -155,27 +163,32 @@ impl BeaconStateTile {
         if context.is_gloas {
             stf::process_slots(&self.spec, &mut fork, slot, &mut self.stf_scratch);
         }
-        let prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
-        let withdrawals = match (context.is_gloas, context.full_parent) {
-            (false, _) => get_expected_withdrawals(&fork.view).withdrawals,
+        let inputs = &mut self.payload_attributes.inputs;
+        inputs.prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
+        match (context.is_gloas, context.full_parent) {
+            (false, _) => inputs.withdrawals = get_expected_withdrawals(&fork.view).withdrawals,
             (true, true) => {
                 let requests = self.payload_execution_requests.get(&head_root);
-                withdrawals_after_parent_payload(&mut fork, &self.spec, requests, slot)?
+                inputs.withdrawals =
+                    withdrawals_after_parent_payload(&mut fork, &self.spec, requests, slot)?;
             }
-            (true, false) => withdrawals_owed_by_empty_parent(&fork),
-        };
-        Ok(PayloadInputs { prev_randao, withdrawals })
+            (true, false) => copy_withdrawals_owed_by_empty_parent(&fork, &mut inputs.withdrawals),
+        }
+        self.payload_attributes.computed_for = Some(*basis);
+        Ok(())
     }
 
+    /// Publishes `basis` with the inputs [`Self::fill_payload_inputs`] left.
     pub(super) fn publish_payload_attributes(
         &mut self,
         basis: &PayloadBasis,
-        inputs: &PayloadInputs,
         producers: &mut Producers,
     ) {
+        let inputs = &self.payload_attributes.inputs;
         let mut withdrawals = None;
         if !inputs.withdrawals.is_empty() {
-            withdrawals = self.post_withdrawals(basis.slot, &inputs.withdrawals);
+            withdrawals =
+                post_withdrawals(&mut self.events_producer, basis.slot, &inputs.withdrawals);
             if withdrawals.is_none() {
                 return;
             }
@@ -196,26 +209,13 @@ impl BeaconStateTile {
         }));
     }
 
-    fn post_withdrawals(&mut self, slot: Slot, withdrawals: &[Withdrawal]) -> Option<TCacheRead> {
-        let len = withdrawals.len() * WITHDRAWAL_SIZE;
-        let posted = self.events_producer.write_with(len, |mut out| {
-            for withdrawal in withdrawals {
-                withdrawal.write_ssz(&mut out).expect("reserved to size");
-            }
-        });
-        if posted.is_none() {
-            silver_log::warn!(slot, "beacon_state tcache full; payload attributes not posted");
-        }
-        posted
-    }
-
     /// The EL builds only for a local proposer; any other slot's attributes
     /// are computed only for subscribers.
     pub(super) fn prepare_or_announce_payload(&mut self, slot: Slot, producers: &mut Producers) {
         let Some(basis) = self.feed_basis(slot) else { return };
         if basis.local_proposer {
             let _ = self.prepare_payload_on(basis, producers);
-        } else if self.payload_attributes_feed.wanted {
+        } else if self.payload_attributes.wanted {
             self.announce_payload_attributes(basis, producers);
         }
     }
@@ -225,7 +225,8 @@ impl BeaconStateTile {
         wanted: bool,
         producers: &mut Producers,
     ) {
-        self.payload_attributes_feed = PayloadAttributesFeed { wanted, announced: None };
+        self.payload_attributes.wanted = wanted;
+        self.payload_attributes.announced = None;
         if wanted && let Some(basis) = self.feed_basis(self.ticker.current_slot() + 1) {
             self.announce_payload_attributes(basis, producers);
         }
@@ -233,7 +234,7 @@ impl BeaconStateTile {
 
     /// A slot the EL is building for is refreshed with its preparation.
     pub(super) fn refresh_payload_attributes(&mut self, producers: &mut Producers) {
-        let Some((announced, _)) = self.payload_attributes_feed.announced else { return };
+        let Some(announced) = self.payload_attributes.announced else { return };
         let slot = announced.slot;
         let current = slot >= self.ticker.current_slot();
         if current &&
@@ -251,12 +252,13 @@ impl BeaconStateTile {
     }
 
     fn announce_payload_attributes(&mut self, basis: PayloadBasis, producers: &mut Producers) {
-        if self.payload_attributes_feed.announced.is_some_and(|(announced, _)| announced == basis) {
+        if self.payload_attributes.announced == Some(basis) ||
+            self.fill_payload_inputs(&basis).is_err()
+        {
             return;
         }
-        let Ok(inputs) = self.payload_inputs(&basis) else { return };
-        self.payload_attributes_feed.announced = Some((basis, inputs));
-        self.publish_payload_attributes(&basis, &inputs, producers);
+        self.payload_attributes.announced = Some(basis);
+        self.publish_payload_attributes(&basis, producers);
     }
 }
 
@@ -279,10 +281,26 @@ fn withdrawals_after_parent_payload(
     Ok(stf::get_expected_withdrawals_gloas(&fork.view).withdrawals)
 }
 
-fn withdrawals_owed_by_empty_parent(fork: &ForkWriter<'_>) -> PayloadWithdrawals {
-    let mut withdrawals = PayloadWithdrawals::new();
+fn copy_withdrawals_owed_by_empty_parent(fork: &ForkWriter<'_>, out: &mut PayloadWithdrawals) {
+    out.clear();
     for withdrawal in &fork.view.slot.state().payload_expected_withdrawals {
-        withdrawals.push(*withdrawal);
+        out.push(*withdrawal);
     }
-    withdrawals
+}
+
+fn post_withdrawals(
+    producer: &mut TProducer,
+    slot: Slot,
+    withdrawals: &[Withdrawal],
+) -> Option<TCacheRead> {
+    let len = withdrawals.len() * WITHDRAWAL_SIZE;
+    let posted = producer.write_with(len, |mut out| {
+        for withdrawal in withdrawals {
+            withdrawal.write_ssz(&mut out).expect("reserved to size");
+        }
+    });
+    if posted.is_none() {
+        silver_log::warn!(slot, "beacon_state tcache full; payload attributes not posted");
+    }
+    posted
 }

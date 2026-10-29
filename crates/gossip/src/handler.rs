@@ -3,11 +3,11 @@ use std::{collections::VecDeque, io::Write, str, time::Instant};
 use buffa::MessageView;
 use flux::spine::SpineAdapter;
 use silver_common::{
-    Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn, GossipMsgOut, GossipTopic,
-    GossipTraffic, GossipTrafficBytes, LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos, NewGossipMsg,
-    P2pStreamId, PeerControl, PeerEvent, SelfBuiltGossip, SilverSpine, StreamProtocol, TCacheError,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
-    cell_store::PartialColumnsMode, msg_id_valid_snappy,
+    BroadcastValidation, Error, GOSSIP_TOPIC_COUNTER_SLOTS, GossipDomain, GossipMsgIn,
+    GossipMsgOut, GossipTopic, GossipTraffic, GossipTrafficBytes, LOCAL_GOSSIP_STREAM_ID,
+    MessageId, Nanos, NewGossipMsg, P2pStreamId, PeerControl, PeerEvent, SelfBuiltGossip,
+    SilverSpine, StreamProtocol, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader,
+    TCacheTable, TProducer, TReadMode, TileId, cell_store::PartialColumnsMode, msg_id_valid_snappy,
 };
 
 use crate::{
@@ -196,6 +196,7 @@ impl GossipHandler {
         topic: GossipTopic,
         ssz: &[u8],
         ssz_read: Option<TCacheRead>,
+        validation: BroadcastValidation,
         recv_ts: Nanos,
     ) -> Result<Option<MessageId>, Error> {
         let Some((domain, wire)) = self.domains.current_wire(topic) else {
@@ -253,6 +254,7 @@ impl GossipHandler {
             recv_ts,
             ssz: ssz_read,
             protobuf,
+            validation,
         }));
         Ok(Some(msg_id))
     }
@@ -852,7 +854,7 @@ mod tests {
         let ssz = [42; SINGLE_ATT_SIZE];
 
         let msg_id = handler
-            .inject_local(topic, &ssz, None, Nanos::now())
+            .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, Nanos::now())
             .expect("local injection")
             .expect("new message");
         let message = match handler.pop_event().expect("new gossip event") {
@@ -872,7 +874,12 @@ mod tests {
         assert!(handler.dedup_cache.has(&msg_id));
         assert!(!handler.mcache.has(&msg_id));
 
-        assert_eq!(handler.inject_local(topic, &ssz, None, Nanos::now()).unwrap(), Some(msg_id));
+        assert_eq!(
+            handler
+                .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, Nanos::now())
+                .unwrap(),
+            Some(msg_id)
+        );
         let duplicate = match handler.pop_event().expect("duplicate local gossip event") {
             GossipHandlerEvent::NewGossip(message) => message,
             GossipHandlerEvent::PartialMetadata(_) |

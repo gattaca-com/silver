@@ -380,6 +380,7 @@ impl Harness {
             recv_ts: Nanos(0),
             ssz: tcache,
             protobuf: tcache,
+            validation: silver_common::BroadcastValidation::Gossip,
         });
     }
 

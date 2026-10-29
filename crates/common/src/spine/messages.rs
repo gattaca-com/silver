@@ -84,6 +84,7 @@ pub enum BeaconApiRequest {
         request_id: u64,
         topic: GossipTopic,
         ssz: TCacheRead,
+        validation: BroadcastValidation,
     },
     AggregateAttestation {
         request_id: u64,
@@ -142,9 +143,10 @@ pub enum BeaconApiRequest {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BroadcastValidation {
+    #[default]
     Gossip,
     Consensus,
     ConsensusAndEquivocation,
@@ -368,6 +370,9 @@ pub struct NewGossipMsg {
     /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
     pub protobuf: TCacheRead,
+    /// What a local block must pass before it is relayed; anything else is
+    /// relayed once it passes gossip validation.
+    pub validation: BroadcastValidation,
 }
 
 #[derive(Clone, Copy, Debug)]

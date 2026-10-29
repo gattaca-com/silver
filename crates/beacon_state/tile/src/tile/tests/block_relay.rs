@@ -1,4 +1,7 @@
-use silver_common::TCacheReader;
+use silver_common::{
+    BroadcastValidation, LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, LocalGossipResult,
+    TCacheReader,
+};
 
 use super::*;
 
@@ -314,4 +317,128 @@ fn a_replayed_block_reports_no_gossip() {
     let published = rig.drain();
     assert!(published.receipts().is_empty(), "replay emits no block receipts");
     assert!(published.relays.is_empty(), "replay requests no gossip relay");
+}
+
+impl BlockPublications {
+    fn on_local(&mut self, block_ssz: &[u8], validation: BroadcastValidation) -> NewGossipMsg {
+        let m = NewGossipMsg {
+            stream_id: LOCAL_GOSSIP_STREAM_ID,
+            validation,
+            ..gossip_msg(&mut self.gossip, block_ssz, GossipTopic::BeaconBlock)
+        };
+        self.tile.on_gossip(m, &mut self.adapter.producers);
+        m
+    }
+}
+
+impl Published {
+    fn verdicts(&self) -> Vec<LocalGossipResult> {
+        self.events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn consensus_validation_relays_a_local_block_once_its_transition_passes() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    for validation in
+        [BroadcastValidation::Consensus, BroadcastValidation::ConsensusAndEquivocation]
+    {
+        let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+        rig.on_local(&block_ssz, validation);
+        let published = rig.drain();
+        assert_eq!(published.relays, [fulu_relayed(&block_ssz)], "{validation:?}");
+        assert_eq!(published.verdicts(), [Ok(())], "{validation:?}");
+        assert_eq!(stages_of(&published.receipts()), [BlockStage::Applied], "{validation:?}");
+    }
+}
+
+#[test]
+fn consensus_validation_never_relays_a_block_its_transition_rejects() {
+    let pre_ssz = sanity_file("invalid_incorrect_state_root", "pre.ssz_snappy");
+    let block_ssz = sanity_file("invalid_incorrect_state_root", "blocks_0.ssz_snappy");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+
+    rig.on_local(&block_ssz, BroadcastValidation::Consensus);
+    let published = rig.drain();
+    assert!(published.relays.is_empty(), "gossip validation alone no longer relays it");
+    assert_eq!(published.verdicts(), [Err(LocalGossipFailure::Invalid)]);
+}
+
+/// The relay answers the publisher; the rejection reaches it as an event.
+#[test]
+fn a_gossip_validated_block_that_fails_import_is_relayed_then_rejected() {
+    let pre_ssz = sanity_file("invalid_incorrect_state_root", "pre.ssz_snappy");
+    let block_ssz = sanity_file("invalid_incorrect_state_root", "blocks_0.ssz_snappy");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+
+    rig.on_local(&block_ssz, BroadcastValidation::Gossip);
+    let published = rig.drain();
+    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.verdicts()[0], Ok(()));
+    assert!(published.events.iter().any(|event| matches!(
+        event,
+        BeaconStateEvent::BlockRejected { block_root, .. }
+            if *block_root == fulu_relayed(&block_ssz).block_root
+    )));
+}
+
+#[test]
+fn a_block_already_known_is_published() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+    rig.on_gossip(&block_ssz);
+    rig.drain();
+
+    rig.on_local(&block_ssz, BroadcastValidation::ConsensusAndEquivocation);
+    let published = rig.drain();
+    assert_eq!(published.verdicts(), [Ok(())]);
+    assert_eq!(stages_of(&published.receipts()), [BlockStage::AlreadyKnown]);
+}
+
+/// Columns travel ahead of the block, so a block waiting on them has passed
+/// its transition and is relayed then.
+#[test]
+fn consensus_validation_relays_a_blob_block_before_its_columns_arrive() {
+    let (pre_ssz, block_ssz) = sanity_fixture("one_blob");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+
+    rig.on_local(&block_ssz, BroadcastValidation::Consensus);
+    let published = rig.drain();
+    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.verdicts(), [Ok(())]);
+    assert_eq!(stages_of(&published.receipts()), [BlockStage::AwaitData]);
+}
+
+#[test]
+fn equivocation_check_refuses_another_root_from_the_same_proposer_and_slot() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+    rig.on_gossip(&block_ssz);
+    rig.drain();
+    let imported = fulu_relayed(&block_ssz);
+    let proposer = SignedBeaconBlockView::proposer_index(&block_ssz);
+    assert!(!rig.tile.equivocates(imported.slot, proposer, &imported.block_root));
+    assert!(!rig.tile.equivocates(imported.slot, proposer + 1, &[7; 32]));
+    assert!(rig.tile.equivocates(imported.slot, proposer, &[7; 32]));
+
+    let m = NewGossipMsg {
+        stream_id: LOCAL_GOSSIP_STREAM_ID,
+        validation: BroadcastValidation::ConsensusAndEquivocation,
+        ..gossip_msg(&mut rig.gossip, &block_ssz, GossipTopic::BeaconBlock)
+    };
+    let applied = Feedback::BlockImported([7; 32]);
+    rig.tile.relay_once_applied(&m, &block_ssz, applied, &mut rig.adapter.producers);
+    let published = rig.drain();
+    assert!(published.relays.is_empty());
+    assert_eq!(published.verdicts(), [Err(LocalGossipFailure::ConflictingProposal)]);
+
+    let m = NewGossipMsg { validation: BroadcastValidation::Consensus, ..m };
+    rig.tile.relay_once_applied(&m, &block_ssz, applied, &mut rig.adapter.producers);
+    assert_eq!(rig.drain().verdicts(), [Ok(())], "plain consensus does not check equivocation");
 }

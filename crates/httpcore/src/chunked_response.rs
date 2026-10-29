@@ -50,6 +50,34 @@ impl ChunkedResponse {
         true
     }
 
+    /// Frames what `render` appends as one chunk, rendered in place. The size
+    /// is known only afterwards, so its line is zero-padded to a fixed width,
+    /// as RFC 9112 allows. Nothing is queued if `render` appends nothing.
+    /// Returns `false` without changing the buffer if the chunk exceeds the
+    /// pending send buffer limit.
+    #[must_use = "false means the stream is over: close the connection"]
+    pub fn push_rendered(&mut self, now: Instant, render: impl FnOnce(&mut Vec<u8>)) -> bool {
+        const SIZE_DIGITS: usize = 8;
+        const _: () = assert!(PENDING_MAX < 1 << (4 * SIZE_DIGITS));
+        if !self.make_room(SIZE_DIGITS + 2 + 2, now) {
+            return false;
+        }
+        let size_at = self.pending.len();
+        self.pending.extend_from_slice(&[b'0'; SIZE_DIGITS + 2]);
+        render(&mut self.pending);
+        let len = self.pending.len() - size_at - SIZE_DIGITS - 2;
+        if len == 0 || self.pending_write().len() + 2 > PENDING_MAX {
+            self.pending.truncate(size_at);
+            if self.pending_write().is_empty() {
+                self.waiting_since = None;
+            }
+            return len == 0;
+        }
+        write!(&mut self.pending[size_at..], "{len:0SIZE_DIGITS$x}\r\n").unwrap();
+        self.pending.extend_from_slice(b"\r\n");
+        true
+    }
+
     #[must_use = "false means the stream is over: close the connection"]
     pub fn push_last(&mut self, now: Instant) -> bool {
         const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
@@ -331,6 +359,22 @@ mod tests {
             assert_eq!(stream.deliver(&mut socket, frame, t0).unwrap(), None);
         }
         assert_eq!(socket.taken, expected);
+        assert!(stream.pending_write().is_empty());
+    }
+
+    #[test]
+    fn rendered_chunk_is_framed_in_place_and_an_empty_one_is_dropped() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        drain_all(&mut stream, t0);
+        assert!(stream.push_rendered(t0, |_| {}));
+        assert!(stream.pending_write().is_empty());
+        assert!(!stream.stalled(t0 + 2 * DEADLINE, DEADLINE), "nothing is waiting to leave");
+
+        assert!(stream.push_rendered(t0, |out| out.extend_from_slice(b"{}")));
+        assert_eq!(drain_all(&mut stream, t0), b"00000002\r\n{}\r\n");
+
+        assert!(!stream.push_rendered(t0, |out| out.resize(out.len() + PENDING_MAX, b'x')));
         assert!(stream.pending_write().is_empty());
     }
 

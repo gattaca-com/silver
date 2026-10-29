@@ -166,7 +166,12 @@ fn blobless_envelope_reaches_engine_and_storage_through_gossip() {
     let mut requests = Vec::new();
     rig.sink.consume(|request: BeaconApiRequest, _| requests.push(request));
     let [
-        BeaconApiRequest::LocalGossip { request_id: 42, topic: GossipTopic::ExecutionPayload, ssz },
+        BeaconApiRequest::LocalGossip {
+            request_id: 42,
+            topic: GossipTopic::ExecutionPayload,
+            ssz,
+            validation: BroadcastValidation::Gossip,
+        },
     ] = requests[..]
     else {
         panic!("release signed envelope")

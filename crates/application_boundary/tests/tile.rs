@@ -1633,6 +1633,8 @@ fn block_by_root_round_trips_over_the_storage_queues() {
     let mut inj = SpineAdapter::connect_tile(&Injector, &mut *spine);
     tile.loop_body(&mut adapter);
     inj.consume(|_: BeaconApiRequest, _| {});
+    inj.produce(SyncUpdate::Following);
+    tile.loop_body(&mut adapter);
 
     let [Bind::Tcp(addr)] = tile.beacon.local_addrs()[..] else { panic!("expected one tcp bind") };
     let client = std::thread::spawn(move || {

@@ -2,10 +2,11 @@ use std::{io::Write, sync::Arc, time::Duration};
 
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiResponse, ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut, GossipTraffic,
-    GossipTrafficBytes, HeadChange, IpBytes, Keypair, LOCAL_GOSSIP_STREAM_ID, MessageId, Nanos,
-    NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, SszCache, StreamProtocol, TCache,
-    TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode,
+    BeaconApiResponse, BroadcastValidation, ColumnOrigin, ForkName, GossipMsgIn, GossipMsgOut,
+    GossipTraffic, GossipTrafficBytes, HeadChange, IpBytes, Keypair, LOCAL_GOSSIP_STREAM_ID,
+    MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, SszCache,
+    StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
+    TProducer, TReadMode,
     ssz_view::{PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE},
     test_util::{ShmemDir, empty_signed_envelope},
 };
@@ -216,7 +217,12 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
             capture.observer.consume(|_: NewGossipMsg, _| {});
             capture.observer.consume(|_: BeaconApiResponse, _| {});
             let ssz = write_bytes(&mut capture.boundary, &vec![0; len]);
-            capture.observer.produce(BeaconApiRequest::LocalGossip { request_id: 7, topic, ssz });
+            capture.observer.produce(BeaconApiRequest::LocalGossip {
+                request_id: 7,
+                topic,
+                ssz,
+                validation: BroadcastValidation::Gossip,
+            });
             capture.crank();
             let mut messages = Vec::new();
             capture.observer.consume(|msg: NewGossipMsg, _| messages.push(msg));
@@ -613,7 +619,12 @@ fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
     capture.observer.consume(|_: BeaconApiResponse, _| {});
     let bytes = empty_signed_envelope(1, [3; 32]);
     let ssz = write_bytes(&mut capture.rpc, &bytes);
-    capture.observer.produce(BeaconApiRequest::LocalGossip { request_id: 7, topic, ssz });
+    capture.observer.produce(BeaconApiRequest::LocalGossip {
+        request_id: 7,
+        topic,
+        ssz,
+        validation: BroadcastValidation::Gossip,
+    });
     capture.crank();
     let mut messages = Vec::new();
     capture.observer.consume(|message: NewGossipMsg, _| messages.push(message));

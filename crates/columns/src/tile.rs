@@ -1176,6 +1176,7 @@ mod tests {
                 recv_ts,
                 ssz,
                 protobuf,
+                validation: silver_common::BroadcastValidation::Gossip,
             };
             self.tile.gossip_sidecar(index, gossip, &mut self.conn.producers);
         }

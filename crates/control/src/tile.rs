@@ -10,11 +10,12 @@ use flux::{
 };
 use silver_chain_spec::SpecConfig;
 use silver_common::{
-    BeaconApiRequest, BeaconStateEvent, DataColumnsEvent, GossipDomain, GossipTopic, IngestionTime,
-    LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats, RpcInbound, RpcOutbound,
-    RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound, SLOTS_PER_EPOCH, SilverSpine,
-    SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate, TCacheError, TCacheId, TCacheProducer,
-    TCacheRead, TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
+    BeaconApiRequest, BeaconStateEvent, BroadcastValidation, DataColumnsEvent, GossipDomain,
+    GossipTopic, IngestionTime, LocalGossipFailure, P2pSend, PeerControl, PeerEvent, PeerStats,
+    RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseInbound,
+    SLOTS_PER_EPOCH, SilverSpine, SilverSpineProducers, SlotSubnets, SyncNeed, SyncUpdate,
+    TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable, TProducer,
+    TReadMode, TileId,
     cell_store::{CellStoreConfig, CellStoreEvent, PartialColumnsMode, StoreError},
     ssz_view::{
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, METADATA_SIZE,
@@ -149,6 +150,7 @@ impl Controller {
         request_id: u64,
         topic: GossipTopic,
         ssz_read: TCacheRead,
+        validation: BroadcastValidation,
         now: Instant,
         producers: &mut SilverSpineProducers,
     ) {
@@ -175,7 +177,14 @@ impl Controller {
                     ExecutionPayloadEnvelopeView::payload(envelope),
                 );
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: None, slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: None,
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -218,7 +227,14 @@ impl Controller {
                 };
                 let slot = SyncCommitteeView::slot(message);
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: Some(ssz_read),
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -227,7 +243,14 @@ impl Controller {
             GossipTopic::BeaconAggregateAndProof => {
                 let slot = SignedAggregateAndProofView::agg_slot(ssz);
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: Some(ssz_read),
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -248,7 +271,14 @@ impl Controller {
                 };
                 let slot = SignedSyncCommitteeProofView::slot(proof);
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: Some(ssz_read),
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -270,7 +300,14 @@ impl Controller {
                 let slot =
                     PayloadAttestationDataView::slot(PayloadAttestationMessageView::data(message));
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: Some(ssz_read),
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
@@ -292,14 +329,21 @@ impl Controller {
                 let preferences = SignedProposerPreferencesView::message(signed);
                 let slot = ProposerPreferencesView::proposal_slot(preferences);
                 self.local_gossip.submit(
-                    LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot },
+                    LocalMessage {
+                        request_id,
+                        topic,
+                        ssz,
+                        ssz_read: Some(ssz_read),
+                        slot,
+                        validation: BroadcastValidation::Gossip,
+                    },
                     now,
                     &mut self.gossip_handler,
                     producers,
                 )
             }
             GossipTopic::BeaconBlock => {
-                let block = SubmittedBlock::framed(ssz);
+                let block = SubmittedBlock::framed(ssz, validation);
                 self.slashing_protection.on_local_block(
                     request_id,
                     acquired,
@@ -315,7 +359,14 @@ impl Controller {
             GossipTopic::BlsToExecutionChange |
             GossipTopic::ProposerSlashing |
             GossipTopic::AttesterSlashing => self.local_gossip.submit(
-                LocalMessage { request_id, topic, ssz, ssz_read: Some(ssz_read), slot: 0 },
+                LocalMessage {
+                    request_id,
+                    topic,
+                    ssz,
+                    ssz_read: Some(ssz_read),
+                    slot: 0,
+                    validation: BroadcastValidation::Gossip,
+                },
                 now,
                 &mut self.gossip_handler,
                 producers,
@@ -648,8 +699,8 @@ impl Tile<SilverSpine> for Controller {
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
-            BeaconApiRequest::LocalGossip { request_id, topic, ssz } => {
-                self.on_local_gossip(request_id, topic, ssz, now, producers)
+            BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation } => {
+                self.on_local_gossip(request_id, topic, ssz, validation, now, producers)
             }
             BeaconApiRequest::LockBlindedBlock { request_id, ssz } => {
                 self.slashing_protection.on_local_block(
