@@ -466,3 +466,31 @@ fn payload_parked_block_is_relayed_on_retry_only_if_parse_did_not_relay_it() {
         assert_eq!(parked.relayed_once_parsed(), relayed, "{validation:?}");
     }
 }
+
+/// A relay publishing to several nodes reaches some after gossip did; a
+/// block still waiting on its columns is relayed and answered then.
+#[test]
+fn block_staged_from_gossip_is_published_with_its_root() {
+    let (pre_ssz, block_ssz) = sanity_fixture("one_blob");
+    let block_root = fulu_relayed(&block_ssz).block_root;
+    for validation in [BroadcastValidation::Gossip, BroadcastValidation::Consensus] {
+        let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+        rig.on_gossip(&block_ssz);
+        assert_eq!(stages_of(&rig.drain().receipts()), [BlockStage::AwaitData]);
+
+        rig.on_local(&block_ssz, validation);
+        let published = rig.drain();
+        assert_eq!(published.relays, [fulu_relayed(&block_ssz)], "{validation:?}");
+        let verdicts: Vec<_> = published
+            .events
+            .iter()
+            .filter_map(|event| match *event {
+                BeaconStateEvent::LocalGossipVerdict { result, block_root, .. } => {
+                    Some((result, block_root))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(verdicts, [(Ok(()), Some(block_root))], "{validation:?}");
+    }
+}

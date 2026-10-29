@@ -140,10 +140,11 @@ impl PendingSubmission {
         let body_index = self.body_index(request_id).expect("awaited");
         self.unanswered -= 1;
         match result {
-            Ok(()) => {
+            Ok(()) if self.integration.awaits_import() => {
                 self.integration.on_published(block_root);
                 self.integration.update(imports, Instant::now());
             }
+            Ok(()) => {}
             Err(failure) => {
                 if !self.failures.iter().any(|failed| failed.body_index == body_index) {
                     let message = failure_message(failure);
@@ -835,7 +836,7 @@ impl BeaconApi {
             }
         };
         let fork = self.ctx.spec.fork_at_slot(attributes.proposal_slot);
-        let gloas = fork == ForkName::Gloas;
+        let gloas = fork >= ForkName::Gloas;
         self.publish(Channel::PayloadAttributes, "payload_attributes", |json| {
             json.versioned_envelope(fork.name(), |json| {
                 json.payload_attributes_event(attributes, withdrawals, gloas)

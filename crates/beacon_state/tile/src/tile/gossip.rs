@@ -1794,6 +1794,7 @@ impl BeaconStateTile {
             }
             GossipTopic::BeaconBlock => {
                 let relay_once_parsed = m.validation == BroadcastValidation::Gossip;
+                let mut relayed = false;
                 let feedback = self.apply_block(
                     data,
                     &acquired,
@@ -1803,10 +1804,11 @@ impl BeaconStateTile {
                     |block_root, p| {
                         if do_relay && relay_once_parsed {
                             Self::relay_gossip(&m, Some(block_root), p);
+                            relayed = true;
                         }
                     },
                 );
-                if do_relay && !relay_once_parsed {
+                if do_relay && !relayed && m.stream_id == LOCAL_GOSSIP_STREAM_ID {
                     self.relay_once_applied(&m, data, feedback, producers);
                 }
                 do_relay = false; // relayed on callback or once applied.
@@ -1869,8 +1871,9 @@ impl BeaconStateTile {
         true
     }
 
-    /// `consensus` levels relay a local block only after its state transition;
-    /// a block waiting on its columns has passed it.
+    /// A local block the parse did not relay, held by a `consensus` level or
+    /// staged before it arrived, is relayed once its transition has passed; a
+    /// block waiting on its columns has passed it.
     pub(super) fn relay_once_applied(
         &self,
         m: &NewGossipMsg,

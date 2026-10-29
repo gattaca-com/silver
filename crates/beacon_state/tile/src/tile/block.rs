@@ -152,10 +152,8 @@ impl BeaconStateTile {
                 }
                 parsed
             }
-            Err(e) => {
-                if let PrecheckError::AwaitingData { block_root } = e &&
-                    matches!(source, BlockSource::Rpc)
-                {
+            Err(PrecheckError::AwaitingData { block_root }) => {
+                if matches!(source, BlockSource::Rpc) {
                     self.emit_block_received(
                         data,
                         block_root,
@@ -164,6 +162,9 @@ impl BeaconStateTile {
                         producers,
                     );
                 }
+                return Feedback::AwaitData(block_root);
+            }
+            Err(e) => {
                 let f = e.feedback();
                 if let Feedback::BlockKnown(block_root) = f {
                     self.emit_block_received(

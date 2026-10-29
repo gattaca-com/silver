@@ -181,7 +181,10 @@ impl Router {
         served_while_syncing: &[&str],
     ) -> Self {
         for pattern in served_while_syncing {
-            assert!(table.iter().any(|route| route.1 == *pattern), "no route for {pattern}");
+            assert!(
+                table.iter().any(|&(_, route_pattern, _)| route_pattern == *pattern),
+                "no route for {pattern}"
+            );
         }
         let mut routes: Vec<Route> = Vec::with_capacity(table.len());
         for &(method, pattern, handler) in table {
