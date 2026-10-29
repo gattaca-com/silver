@@ -52,9 +52,6 @@ fn requested_block(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) -> Option<BlockLookup> {
-    if !ctx.follows_chain(resp) {
-        return None;
-    }
     let block_id = req.params.get("block_id").expect("{block_id} in the route pattern");
     let lookup = match block_id {
         "head" => Some(BlockLookup::Root(ctx.node_status.head_root)),

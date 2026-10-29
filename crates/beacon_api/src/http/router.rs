@@ -150,6 +150,7 @@ struct Route {
     method: Method,
     segs: Vec<Seg>,
     handler: Handler,
+    served_while_syncing: bool,
 }
 
 impl Route {
@@ -173,7 +174,15 @@ pub(crate) struct Router {
 }
 
 impl Router {
-    pub(crate) fn new(table: &[(Method, &'static str, Handler)]) -> Self {
+    /// Every route but those `served_while_syncing` names answers 503 until
+    /// the node follows the chain.
+    pub(crate) fn new(
+        table: &[(Method, &'static str, Handler)],
+        served_while_syncing: &[&str],
+    ) -> Self {
+        for pattern in served_while_syncing {
+            assert!(table.iter().any(|route| route.1 == *pattern), "no route for {pattern}");
+        }
         let mut routes: Vec<Route> = Vec::with_capacity(table.len());
         for &(method, pattern, handler) in table {
             let segs = compile(pattern);
@@ -181,7 +190,8 @@ impl Router {
                 !routes.iter().any(|r| r.method == method && same_match_set(&r.segs, &segs)),
                 "duplicate route pattern: {pattern}"
             );
-            routes.push(Route { method, segs, handler });
+            let served_while_syncing = served_while_syncing.contains(&pattern);
+            routes.push(Route { method, segs, handler, served_while_syncing });
         }
         Self { routes }
     }
@@ -214,7 +224,9 @@ impl Router {
                 body: req.body,
             };
             let mut response = Response::new(out, submissions);
-            (route.handler)(&request, ctx, &mut response);
+            if route.served_while_syncing || ctx.follows_chain(&mut response) {
+                (route.handler)(&request, ctx, &mut response);
+            }
             return response.outcome();
         }
         if path_known {
@@ -319,7 +331,7 @@ mod tests {
     }
 
     fn posted_with(content_type: Option<&str>) -> Vec<u8> {
-        let router = Router::new(&[(Method::Post, "/submit", echo_media_type)]);
+        let router = Router::new(&[(Method::Post, "/submit", echo_media_type)], &[]);
         let mut out = Vec::new();
         let req = ParsedRequest {
             method: "POST",
@@ -363,26 +375,27 @@ mod tests {
 
     #[test]
     fn two_params_extracted_by_name() {
-        let router =
-            Router::new(&[(Method::Get, "/eth/v1/states/{state_id}/epochs/{epoch}", echo_params)]);
+        let router = Router::new(
+            &[(Method::Get, "/eth/v1/states/{state_id}/epochs/{epoch}", echo_params)],
+            &[],
+        );
         let resp = dispatch(&router, "GET", "/eth/v1/states/0xdead/epochs/42");
         assert_eq!(body(&resp), b"state_id=0xdead;epoch=42;");
     }
 
     #[test]
     fn url_encoded_param_value_passed_through_verbatim() {
-        let router = Router::new(&[(Method::Get, "/states/{state_id}", echo_params)]);
+        let router = Router::new(&[(Method::Get, "/states/{state_id}", echo_params)], &[]);
         let resp = dispatch(&router, "GET", "/states/0x1234%2Fabc%20d");
         assert_eq!(body(&resp), b"state_id=0x1234%2Fabc%20d;");
     }
 
     #[test]
     fn unmatched_path_gets_bare_404() {
-        let router = Router::new(&[(
-            Method::Get,
-            "/eth/v1/beacon/states/{state_id}/finality_checkpoints",
-            echo_params,
-        )]);
+        let router = Router::new(
+            &[(Method::Get, "/eth/v1/beacon/states/{state_id}/finality_checkpoints", echo_params)],
+            &[],
+        );
         let expected: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
         assert_eq!(dispatch(&router, "GET", "/not/real"), expected);
         assert_eq!(dispatch(&router, "GET", "/eth/v1/beacon/states/head"), expected, "prefix");
@@ -395,7 +408,7 @@ mod tests {
 
     #[test]
     fn matched_path_wrong_method_gets_405() {
-        let router = Router::new(&[(Method::Get, "/metrics", first)]);
+        let router = Router::new(&[(Method::Get, "/metrics", first)], &[]);
         let resp = dispatch(&router, "POST", "/metrics");
         assert!(resp.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"));
         assert_eq!(body(&resp), br#"{"code":405,"message":"method not allowed"}"#);
@@ -403,17 +416,17 @@ mod tests {
 
     #[test]
     fn unknown_method_gets_405_on_known_path_else_404() {
-        let router = Router::new(&[(Method::Get, "/metrics", first)]);
+        let router = Router::new(&[(Method::Get, "/metrics", first)], &[]);
         assert!(dispatch(&router, "PUT", "/metrics").starts_with(b"HTTP/1.1 405"));
         assert!(dispatch(&router, "PUT", "/nope").starts_with(b"HTTP/1.1 404"));
     }
 
     #[test]
     fn same_pattern_distinct_methods_dispatch_by_method() {
-        let router = Router::new(&[
-            (Method::Get, "/eth/v1/thing", first),
-            (Method::Post, "/eth/v1/thing", second),
-        ]);
+        let router = Router::new(
+            &[(Method::Get, "/eth/v1/thing", first), (Method::Post, "/eth/v1/thing", second)],
+            &[],
+        );
         assert_eq!(body(&dispatch(&router, "GET", "/eth/v1/thing")), b"first");
         assert_eq!(body(&dispatch(&router, "POST", "/eth/v1/thing")), b"second");
     }
@@ -421,12 +434,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate route pattern")]
     fn duplicate_modulo_param_names_panics_at_init() {
-        Router::new(&[(Method::Get, "/a/{x}/c", first), (Method::Get, "/a/{y}/c", second)]);
+        Router::new(&[(Method::Get, "/a/{x}/c", first), (Method::Get, "/a/{y}/c", second)], &[]);
     }
 
     #[test]
     fn four_param_pattern_matches() {
-        let router = Router::new(&[(Method::Get, "/{a}/{b}/{c}/{d}", echo_params)]);
+        let router = Router::new(&[(Method::Get, "/{a}/{b}/{c}/{d}", echo_params)], &[]);
         let resp = dispatch(&router, "GET", "/1/2/3/4");
         assert_eq!(body(&resp), b"a=1;b=2;c=3;d=4;");
     }
@@ -434,6 +447,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds 4 params")]
     fn fifth_param_panics_at_init() {
-        Router::new(&[(Method::Get, "/{a}/{b}/{c}/{d}/{e}", echo_params)]);
+        Router::new(&[(Method::Get, "/{a}/{b}/{c}/{d}/{e}", echo_params)], &[]);
     }
 }

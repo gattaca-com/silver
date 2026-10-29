@@ -12,10 +12,11 @@ use crate::{
     },
 };
 
-pub(crate) fn execution_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
+pub(crate) fn execution_payload_envelope(
+    req: &Request<'_>,
+    _ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+) {
     if !req.accepts_ssz() {
         return resp.error(406, "only application/octet-stream is served");
     }

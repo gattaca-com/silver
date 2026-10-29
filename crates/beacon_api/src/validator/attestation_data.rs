@@ -34,9 +34,6 @@ pub(crate) struct CommitteeQuery {
 
 impl CommitteeQuery {
     pub(crate) fn parse(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> Option<Self> {
-        if !ctx.follows_chain(resp) {
-            return None;
-        }
         let (Some(slot), Some(committee_index)) =
             (uint64_query(req, "slot"), uint64_query(req, "committee_index"))
         else {

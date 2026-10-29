@@ -14,9 +14,6 @@ const VERSION: &str = "gloas";
 /// Answers from the head block alone: a slot whose block is not the head has
 /// no block this node would attest to, so it is a 204.
 pub(crate) fn payload_attestation_data(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     if ctx.node_status.execution_optimistic() {
         resp.error(503, "the head is optimistic, and validators must not attest to it");
         return;

@@ -15,9 +15,6 @@ use crate::{
 const MAX_BUILDER_URL_SIZE: usize = 2048;
 
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     if !req.body_is_ssz() {
         return resp.error(415, "only application/octet-stream bodies are read");
     }
@@ -64,9 +61,6 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
 }
 
 pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     if !ctx.has_sidecar {
         return resp.error(500, "no sidecar is configured to reveal the payload");
     }

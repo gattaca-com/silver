@@ -5,7 +5,7 @@ use silver_httpcore::ParsedRequest;
 use crate::{
     ctx::ApiCtx,
     http::router::{Outcome, Router},
-    routes::ROUTES,
+    routes::{ROUTES, SERVED_WHILE_SYNCING},
 };
 
 /// A request with every field a route ignores at its default, so a caller
@@ -51,7 +51,8 @@ pub(crate) fn dispatch_into(
     submissions: &mut TProducer,
 ) -> (Outcome, Vec<u8>) {
     let mut out = Vec::new();
-    let outcome = Router::new(ROUTES).dispatch(req, ctx, submissions, &mut out);
+    let outcome =
+        Router::new(ROUTES, SERVED_WHILE_SYNCING).dispatch(req, ctx, submissions, &mut out);
     (outcome, out)
 }
 

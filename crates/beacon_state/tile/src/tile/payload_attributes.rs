@@ -104,9 +104,12 @@ impl BeaconStateTile {
     ) -> Result<PayloadBasis, ProduceBlockFailure> {
         let slot = proposer.slot;
         // A proposer known only from the network is built for only on a fallback.
-        let fee_recipient = (proposer.local || fallback_fee_recipient.is_some())
-            .then(|| proposer.fee_recipient.or(fallback_fee_recipient))
-            .flatten()
+        if !proposer.local && fallback_fee_recipient.is_none() {
+            return Err(ProduceBlockFailure::NoFeeRecipient);
+        }
+        let fee_recipient = proposer
+            .fee_recipient
+            .or(fallback_fee_recipient)
             .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
         let (head_root, head_block_hash, safe_block_hash, finalized_block_hash) =
             self.fork_choice.fcu_execution_hashes();

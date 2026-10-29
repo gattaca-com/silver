@@ -59,6 +59,23 @@ use crate::{
 
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
+/// What a node answers before it follows the chain: its own status, the
+/// chain's configuration, and event streams.
+pub(crate) const SERVED_WHILE_SYNCING: &[&str] = &[
+    "/eth/v1/beacon/genesis",
+    "/eth/v1/config/deposit_contract",
+    "/eth/v1/config/fork_schedule",
+    "/eth/v1/config/spec",
+    "/eth/v1/events",
+    "/eth/v1/node/health",
+    "/eth/v1/node/identity",
+    "/eth/v1/node/peer_count",
+    "/eth/v1/node/peers",
+    "/eth/v1/node/syncing",
+    "/eth/v1/node/version",
+    "/metrics",
+];
+
 pub(crate) const ROUTES: &[(Method, &str, Handler)] = &[
     (Method::Post, "/eth/v1/beacon/execution_payload_envelopes", post_payload_envelope),
     (Method::Get, "/eth/v1/beacon/blocks/{block_id}/root", block_root),
@@ -152,29 +169,12 @@ fn metrics(_req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::ROUTES;
+    use super::{ROUTES, SERVED_WHILE_SYNCING};
     use crate::{
         ctx::anchor_ctx,
         http::router::Method,
         testing::{answer, body, dispatch, posting, request},
     };
-
-    /// What a node answers before it follows the chain: its own status, the
-    /// chain's configuration, and event streams.
-    const SERVED_WHILE_SYNCING: &[&str] = &[
-        "/eth/v1/beacon/genesis",
-        "/eth/v1/config/deposit_contract",
-        "/eth/v1/config/fork_schedule",
-        "/eth/v1/config/spec",
-        "/eth/v1/events",
-        "/eth/v1/node/health",
-        "/eth/v1/node/identity",
-        "/eth/v1/node/peer_count",
-        "/eth/v1/node/peers",
-        "/eth/v1/node/syncing",
-        "/eth/v1/node/version",
-        "/metrics",
-    ];
 
     fn concrete(pattern: &str) -> String {
         let root = format!("0x{}", "00".repeat(32));

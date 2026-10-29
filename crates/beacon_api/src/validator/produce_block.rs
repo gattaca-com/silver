@@ -16,9 +16,6 @@ use crate::{
 };
 
 pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(slot) = proposal_slot(req, resp) else {
         return;
     };
@@ -47,9 +44,6 @@ pub(crate) fn produce_block_v3(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
 }
 
 pub(crate) fn produce_block_v4(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(slot) = proposal_slot(req, resp) else {
         return;
     };

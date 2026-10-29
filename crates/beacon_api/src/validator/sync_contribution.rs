@@ -13,12 +13,9 @@ use crate::{
 
 pub(crate) fn sync_committee_contribution(
     req: &Request<'_>,
-    ctx: &ApiCtx,
+    _ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let (Some(slot), Some(subcommittee_index), Some(beacon_block_root)) = (
         uint64_query(req, "slot"),
         uint64_query(req, "subcommittee_index"),

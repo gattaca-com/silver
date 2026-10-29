@@ -12,9 +12,6 @@ use crate::{
 };
 
 pub(crate) fn post_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     if !req.body_is_ssz() {
         return resp.error(415, "only application/octet-stream bodies are read");
     }

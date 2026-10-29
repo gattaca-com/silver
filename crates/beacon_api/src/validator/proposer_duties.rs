@@ -20,9 +20,6 @@ pub(crate) fn proposer_duties_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Res
 }
 
 fn respond(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>, epochs_back: u64) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(epoch) = epoch_param(req, resp) else {
         return;
     };

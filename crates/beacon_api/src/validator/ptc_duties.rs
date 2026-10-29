@@ -14,9 +14,6 @@ use crate::{
 /// Lighthouse and Prysm VCs poll the current and the next epoch, from the
 /// epoch before the Gloas fork on.
 pub(crate) fn post_ptc_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(epoch) = epoch_param(req, resp) else {
         return;
     };

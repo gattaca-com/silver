@@ -107,9 +107,6 @@ fn respond_selection(
     selection: Result<Selection, Rejection>,
     render: fn(&Selection, &StateReadView<'_>, &mut Json<'_>),
 ) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let mut selection = match selection {
         Ok(selection) if !selection.ids.is_empty() => selection,
         Ok(_) => {
@@ -503,7 +500,7 @@ mod tests {
     use crate::{
         ctx::test_ctx,
         http::router::{Outcome, Router},
-        routes::ROUTES,
+        routes::{ROUTES, SERVED_WHILE_SYNCING},
         testing::{self, posting, request, submissions},
     };
 
@@ -570,7 +567,12 @@ mod tests {
         };
         let mut out = Vec::new();
         assert_eq!(
-            Router::new(ROUTES).dispatch(&req, &ctx(), &mut submissions(), &mut out),
+            Router::new(ROUTES, SERVED_WHILE_SYNCING).dispatch(
+                &req,
+                &ctx(),
+                &mut submissions(),
+                &mut out
+            ),
             Outcome::Response(None)
         );
         out

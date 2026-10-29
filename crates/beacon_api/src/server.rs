@@ -36,7 +36,7 @@ use crate::{
         router::{Outcome, Router},
     },
     node::peers::Peer,
-    routes::ROUTES,
+    routes::{ROUTES, SERVED_WHILE_SYNCING},
     submission::{
         AcceptedEntry, BuilderForward, Integration, RecentImports, SubmissionFailure,
         failure_message,
@@ -664,7 +664,7 @@ impl BeaconApi {
             connections: HashMap::new(),
             downloads: Vec::new(),
             frame: Vec::new(),
-            router: Router::new(ROUTES),
+            router: Router::new(ROUTES, SERVED_WHILE_SYNCING),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar),
             next_request_id: 0,
             head_verdict: HeadVerdict::default(),
@@ -1191,7 +1191,7 @@ impl BeaconApi {
                 BeaconApiResponse::PayloadEnvelopeValidation { consensus_valid, .. },
                 Pending::Submission(pending),
             ) => {
-                pending.integration = Integration::settled(consensus_valid);
+                pending.integration = Integration::of(consensus_valid);
                 let settled = pending.settled();
                 if settled {
                     pending.respond(&mut resp);

@@ -58,9 +58,6 @@ impl ProposerPreferences {
 }
 
 pub(crate) fn get_proposer_preferences(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let mut slot = None;
     let mut dependent_root = None;
     for (name, value) in Query::new(req.query) {

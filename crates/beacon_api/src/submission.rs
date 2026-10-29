@@ -16,7 +16,7 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !reads_submission(req, ctx, resp) {
+    if !reads_submission(req, resp) {
         return;
     }
     let parsed =
@@ -35,7 +35,7 @@ pub(crate) fn post_single_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !reads_submission(req, ctx, resp) {
+    if !reads_submission(req, resp) {
         return;
     }
     match serde_json::from_slice::<T>(req.body) {
@@ -44,10 +44,7 @@ pub(crate) fn post_single_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     }
 }
 
-fn reads_submission(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) -> bool {
-    if !ctx.follows_chain(resp) {
-        return false;
-    }
+fn reads_submission(req: &Request<'_>, resp: &mut Response<'_>) -> bool {
     if !req.body_is_json() {
         resp.error(415, "only application/json bodies are read");
         return false;
@@ -127,7 +124,7 @@ pub(crate) enum Integration {
 }
 
 impl Integration {
-    pub(crate) fn settled(integrated: bool) -> Self {
+    pub(crate) fn of(integrated: bool) -> Self {
         if integrated { Self::Integrated } else { Self::BroadcastOnly }
     }
 
@@ -145,7 +142,7 @@ impl Integration {
         if let Self::AwaitingImport(import) = self &&
             let Some(integrated) = import.integrated(imports, now)
         {
-            *self = Self::settled(integrated);
+            *self = Self::of(integrated);
         }
     }
 

@@ -161,12 +161,9 @@ impl ApiCtx {
         false
     }
 
-    /// Whether `{state_id}` names the one state silver serves, and the node
-    /// follows the chain, having answered the request when not.
+    /// Whether `{state_id}` names the one state silver serves, having answered
+    /// the request when it does not.
     fn serves_state(&self, req: &Request<'_>, resp: &mut Response<'_>) -> bool {
-        if !self.follows_chain(resp) {
-            return false;
-        }
         let state_id = req.params.get("state_id").expect("{state_id} in the route pattern");
         if state_id == "head" {
             return true;

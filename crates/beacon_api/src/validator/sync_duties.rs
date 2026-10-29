@@ -9,9 +9,6 @@ use crate::{
 };
 
 pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(epoch) = epoch_param(req, resp) else {
         return;
     };

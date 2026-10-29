@@ -16,9 +16,6 @@ use crate::{
 };
 
 pub(crate) fn post_state_builders(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let filter = match BuilderFilter::parse(req.body) {
         Ok(filter) => filter,
         Err(message) => return resp.error(400, message),

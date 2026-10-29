@@ -20,9 +20,6 @@ pub(crate) const UNSUPPORTED_MEDIA_TYPE: &str = "Cannot read the supplied conten
 /// `registerValidator` is the only schema here that declares a 415, and the
 /// only one that declares an SSZ request body beside the JSON one.
 pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     if !req.body_is_json() {
         resp.error(415, UNSUPPORTED_MEDIA_TYPE);
         return;
@@ -38,12 +35,9 @@ pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mu
 
 pub(crate) fn post_prepare_beacon_proposer(
     req: &Request<'_>,
-    ctx: &ApiCtx,
+    _ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
-    if !ctx.follows_chain(resp) {
-        return;
-    }
     let Some(preparations) = received(req.body, resp, ProposerPreparation::well_formed) else {
         return;
     };
