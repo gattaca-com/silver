@@ -5,7 +5,7 @@ use silver_httpcore::{ParsedRequest, Query, frame_response};
 use silver_pbs::SidecarCall;
 
 use crate::{
-    beacon::blocks::BlockRequest,
+    beacon::{blocks::BlockRequest, validators::RegistryStream},
     ctx::ApiCtx,
     events::ChannelSet,
     http::response::Response,
@@ -44,6 +44,7 @@ pub(crate) type Handler = fn(&Request<'_>, &ApiCtx, &mut Response<'_>);
 pub(crate) enum Outcome {
     Response(Option<BeaconApiRequest>),
     Stream(ChannelSet),
+    Download(RegistryStream),
     AwaitingBlock(BlockRequest),
     AwaitingAggregate(AggregateRequest),
     AwaitingContribution(SyncCommitteeContributionRequest),

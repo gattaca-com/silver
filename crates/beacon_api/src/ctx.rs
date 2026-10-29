@@ -3,7 +3,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
-use silver_beacon_state_data::{BeaconStateReader, SLOTS_PER_EPOCH, SpecConfig, StateReadView};
+use silver_beacon_state_data::{
+    BeaconStateReader, PinnedState, SLOTS_PER_EPOCH, SpecConfig, StateReadView,
+};
 #[cfg(test)]
 use silver_common::SyncUpdate;
 use silver_common::{Enr, Identify, Keypair};
@@ -106,6 +108,30 @@ impl ApiCtx {
                 json.flagged_envelope(read_flags(node_status, &view), |json| render(&view, json));
             });
         });
+    }
+
+    /// Resolves `{state_id}` to a state that stays readable through
+    /// [`Self::read_pinned`] until the next finalize, for a body too large to
+    /// render under one read.
+    pub(crate) fn pin_state(
+        &self,
+        req: &Request<'_>,
+        resp: &mut Response<'_>,
+    ) -> Option<PinnedState> {
+        if !self.serves_state(req, resp) {
+            return None;
+        }
+        Some(self.state.pin().expect("beacon api needs the anchor state published"))
+    }
+
+    /// `None` once a finalize has ended the pinned state, leaving whatever
+    /// `read` wrote torn.
+    pub(crate) fn read_pinned<R>(
+        &self,
+        pin: PinnedState,
+        read: impl FnOnce(&StateReadView<'_>, ReadFlags) -> R,
+    ) -> Option<R> {
+        self.state.read_pinned(pin, |view| read(&view, read_flags(self.node_status, &view)))
     }
 
     /// [`Self::state_response`] whose `render` may refuse the read; the

@@ -43,7 +43,9 @@ pub use validators::{
     FinalizedValidators, ValSeed, ValidatorsDecodeError, ValidatorsGroup, ValidatorsId,
     ValidatorsView, ValidatorsWriteView, validator_hash,
 };
-pub use view::{BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor};
+pub use view::{
+    BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor, PinnedState,
+};
 
 mod builder_registry;
 mod builders;

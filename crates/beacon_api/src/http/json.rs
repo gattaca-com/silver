@@ -33,6 +33,16 @@ use crate::{
 
 const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
 
+const HEX_PAIRS: [[u8; 2]; 256] = {
+    let mut pairs = [[0; 2]; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        pairs[byte] = [HEX_LOWER[byte >> 4], HEX_LOWER[byte & 0xf]];
+        byte += 1;
+    }
+    pairs
+};
+
 /// Appends JSON to a buffer the caller owns — fresh or reused is the caller's
 /// affair. `start` is where this body begins, so bytes already in the buffer
 /// are not siblings of the first value written.
@@ -79,19 +89,18 @@ impl<'a> Json<'a> {
 
     pub(crate) fn quoted_u64(&mut self, value: u64) {
         self.separate();
-        let mut digits = [0u8; 20];
-        let mut written = 0;
-        let mut rest = value;
-        loop {
-            digits[19 - written] = b'0' + (rest % 10) as u8;
-            rest /= 10;
-            written += 1;
-            if rest == 0 {
-                break;
-            }
+        self.unseparated_quoted_u64(value);
+    }
+
+    fn unseparated_quoted_u64(&mut self, value: u64) {
+        // Most validators' epochs are unset, and `u64::MAX` is itoa's slowest
+        // input.
+        if value == FAR_FUTURE_EPOCH {
+            self.out.extend_from_slice(b"\"18446744073709551615\"");
+            return;
         }
         self.out.push(b'"');
-        self.out.extend_from_slice(&digits[20 - written..]);
+        self.out.extend_from_slice(itoa::Buffer::new().format(value).as_bytes());
         self.out.push(b'"');
     }
 
@@ -107,10 +116,16 @@ impl<'a> Json<'a> {
 
     pub(crate) fn hex(&mut self, bytes: &[u8]) {
         self.separate();
+        self.unseparated_hex(bytes);
+    }
+
+    fn unseparated_hex(&mut self, bytes: &[u8]) {
         self.out.extend_from_slice(b"\"0x");
         let base = self.out.len();
         self.out.resize(base + bytes.len() * 2, 0);
-        hex::encode_to_slice(bytes, &mut self.out[base..]).expect("hex encode_to_slice");
+        for (pair, byte) in self.out[base..].chunks_exact_mut(2).zip(bytes) {
+            pair.copy_from_slice(&HEX_PAIRS[*byte as usize]);
+        }
         self.out.push(b'"');
     }
 
@@ -256,14 +271,19 @@ impl Json<'_> {
     }
 
     pub(crate) fn flagged_envelope(&mut self, flags: ReadFlags, data: impl FnOnce(&mut Self)) {
+        self.begin_flagged_envelope(flags);
+        data(self);
+        self.end_object();
+    }
+
+    /// The envelope up to its `data` value, for a body rendered in parts.
+    pub(crate) fn begin_flagged_envelope(&mut self, flags: ReadFlags) {
         self.begin_object();
         self.key("execution_optimistic");
         self.bool(flags.execution_optimistic);
         self.key("finalized");
         self.bool(flags.finalized);
         self.key("data");
-        data(self);
-        self.end_object();
     }
 
     pub(crate) fn genesis(&mut self, genesis: &GenesisData) {
@@ -830,35 +850,36 @@ impl Json<'_> {
         self.end_object();
     }
 
-    /// `ValidatorResponse` (`apis/beacon/states/validator.yaml`).
+    /// `ValidatorResponse` (`apis/beacon/states/validator.yaml`). Keys are
+    /// literals, as a whole-registry read writes about a million of these.
     pub(crate) fn validator(&mut self, record: &ValidatorRecord) {
-        self.begin_object();
-        self.key("index");
-        self.quoted_u64(record.index);
-        self.key("balance");
-        self.quoted_u64(record.balance);
-        self.key("status");
-        self.string(record.status.name());
-        self.key("validator");
-        self.begin_object();
-        self.key("pubkey");
-        self.hex(&record.pubkey);
-        self.key("withdrawal_credentials");
-        self.hex(&record.withdrawal_credentials.0);
-        self.key("effective_balance");
-        self.quoted_u64(record.effective_balance);
-        self.key("slashed");
-        self.bool(record.lifecycle.slashed);
-        self.key("activation_eligibility_epoch");
-        self.quoted_u64(record.lifecycle.activation_eligibility_epoch);
-        self.key("activation_epoch");
-        self.quoted_u64(record.lifecycle.activation_epoch);
-        self.key("exit_epoch");
-        self.quoted_u64(record.lifecycle.exit_epoch);
-        self.key("withdrawable_epoch");
-        self.quoted_u64(record.lifecycle.withdrawable_epoch);
-        self.end_object();
-        self.end_object();
+        let lifecycle = &record.lifecycle;
+        self.separate();
+        self.out.extend_from_slice(b"{\"index\":");
+        self.unseparated_quoted_u64(record.index);
+        self.out.extend_from_slice(b",\"balance\":");
+        self.unseparated_quoted_u64(record.balance);
+        self.out.extend_from_slice(b",\"status\":\"");
+        self.out.extend_from_slice(record.status.name().as_bytes());
+        self.out.extend_from_slice(b"\",\"validator\":{\"pubkey\":");
+        self.unseparated_hex(&record.pubkey);
+        self.out.extend_from_slice(b",\"withdrawal_credentials\":");
+        self.unseparated_hex(&record.withdrawal_credentials.0);
+        self.out.extend_from_slice(b",\"effective_balance\":");
+        self.unseparated_quoted_u64(record.effective_balance);
+        self.out.extend_from_slice(if lifecycle.slashed {
+            b",\"slashed\":true,\"activation_eligibility_epoch\":".as_slice()
+        } else {
+            b",\"slashed\":false,\"activation_eligibility_epoch\":".as_slice()
+        });
+        self.unseparated_quoted_u64(lifecycle.activation_eligibility_epoch);
+        self.out.extend_from_slice(b",\"activation_epoch\":");
+        self.unseparated_quoted_u64(lifecycle.activation_epoch);
+        self.out.extend_from_slice(b",\"exit_epoch\":");
+        self.unseparated_quoted_u64(lifecycle.exit_epoch);
+        self.out.extend_from_slice(b",\"withdrawable_epoch\":");
+        self.unseparated_quoted_u64(lifecycle.withdrawable_epoch);
+        self.out.extend_from_slice(b"}}");
     }
 
     pub(crate) fn builder(&mut self, index: u64, status: &str, builder: &Builder) {

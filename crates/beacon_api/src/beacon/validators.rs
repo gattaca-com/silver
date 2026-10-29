@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use silver_beacon_state_data::{
-    BLSPubkey, Epoch, FAR_FUTURE_EPOCH, StateReadView, ValidatorsView, Withdrawals,
+    BLSPubkey, Epoch, FAR_FUTURE_EPOCH, PinnedState, StateReadView, ValidatorsView, Withdrawals,
 };
 use silver_common::json_fields::parse_uint64;
 use silver_httpcore::Query;
@@ -16,6 +16,9 @@ use crate::{
 };
 
 const MAX_VALIDATOR_IDS: usize = 32 * 1024;
+
+/// About 0.25 MB of JSON and 40 µs of rendering per batch.
+const VALIDATORS_PER_BATCH: usize = 512;
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     respond_selection(req, ctx, resp, Selection::from_query(req.query), Selection::render);
@@ -59,7 +62,9 @@ impl Rejection {
 
 /// The whole registry is a valid selection the schema allows and no validator
 /// client sends: each one names the validators it runs, and the one library
-/// that wants every validator downloads the SSZ state instead.
+/// that wants every validator downloads the SSZ state instead. A status filter
+/// alone selects the registry it admits, as helix's relay asks for
+/// `active,pending`; on mainnet that body is over 500 MB, so it is streamed.
 fn respond_selection(
     req: &Request<'_>,
     ctx: &ApiCtx,
@@ -68,7 +73,7 @@ fn respond_selection(
     render: fn(&Selection, &StateReadView<'_>, &mut Json<'_>),
 ) {
     let mut selection = match selection {
-        Ok(selection) if !selection.ids.is_empty() => selection,
+        Ok(selection) if !selection.ids.is_empty() || selection.statuses.filters() => selection,
         Ok(_) => {
             resp.error(400, "at least one id is required");
             return;
@@ -78,9 +83,74 @@ fn respond_selection(
             return;
         }
     };
+    if selection.ids.is_empty() {
+        if let Some(pin) = ctx.pin_state(req, resp) {
+            resp.begin_registry_download(RegistryStream::new(pin, selection.statuses));
+        }
+        return;
+    }
     selection.ids.sort_unstable();
     selection.ids.dedup();
     ctx.state_response(req, resp, |view, json| render(&selection, view, json));
+}
+
+/// The registry from one pinned state, rendered a batch at a time so neither
+/// the render nor the body holds the tile for the whole registry.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegistryStream {
+    pin: PinnedState,
+    statuses: StatusSet,
+    next: usize,
+    rendered_any: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Batch {
+    More,
+    Last,
+    Superseded,
+}
+
+impl RegistryStream {
+    fn new(pin: PinnedState, statuses: StatusSet) -> Self {
+        Self { pin, statuses, next: 0, rendered_any: false }
+    }
+
+    /// Appends the next batch of the body to `out`. `Superseded` means a
+    /// finalize ended the pinned state, and the body can no longer be whole.
+    pub(crate) fn render_next(&mut self, ctx: &ApiCtx, out: &mut Vec<u8>) -> Batch {
+        let rendered = ctx.read_pinned(self.pin, |view, flags| {
+            let current_epoch = view.slot.current_epoch();
+            let count = view.validators.count();
+            if self.next == 0 {
+                let mut json = Json::new(out);
+                json.begin_flagged_envelope(flags);
+                json.begin_array();
+            }
+            let end = count.min(self.next + VALIDATORS_PER_BATCH);
+            let mut rendered_any = self.rendered_any;
+            for ix in self.next..end {
+                let record = ValidatorRecord::read(view, current_epoch, ix);
+                if !self.statuses.admits(record.status) {
+                    continue;
+                }
+                if rendered_any {
+                    out.push(b',');
+                }
+                Json::new(out).validator(&record);
+                rendered_any = true;
+            }
+            let last = end == count;
+            if last {
+                out.extend_from_slice(b"]}");
+            }
+            (end, rendered_any, last)
+        });
+        let Some((end, rendered_any, last)) = rendered else { return Batch::Superseded };
+        self.next = end;
+        self.rendered_any = rendered_any;
+        if last { Batch::Last } else { Batch::More }
+    }
 }
 
 pub(crate) fn state_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
@@ -356,7 +426,7 @@ impl ValidatorStatus {
 }
 
 /// One bit per status; the empty set is the absence of a filter.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 struct StatusSet(u16);
 
 impl StatusSet {
@@ -372,6 +442,10 @@ impl StatusSet {
         Self(self.0 | other.0)
     }
 
+    fn filters(self) -> bool {
+        self.0 != 0
+    }
+
     fn admits(self, status: ValidatorStatus) -> bool {
         self.0 == 0 || self.0 & 1 << status as u8 != 0
     }
@@ -379,6 +453,8 @@ impl StatusSet {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use silver_beacon_state_data::{
         BeaconState, BeaconStateOwner, EpochStateFinalized, SLOTS_PER_EPOCH, SpecConfig, ValSeed,
     };
@@ -389,7 +465,7 @@ mod tests {
         ctx::test_ctx,
         http::router::{Outcome, Router},
         routes::ROUTES,
-        testing::submissions,
+        testing::{self, posting, request, submissions},
     };
 
     const HEAD_SLOT: u64 = 100 * SLOTS_PER_EPOCH;
@@ -463,6 +539,19 @@ mod tests {
 
     fn get(path: &str, query: &str) -> Vec<u8> {
         dispatch("GET", path, query, "")
+    }
+
+    /// The `data` of a whole-registry download, rendered batch by batch.
+    fn downloaded(ctx: &ApiCtx, req: &ParsedRequest<'_>) -> String {
+        let (Outcome::Download(mut registry), head) = testing::dispatch(ctx, req) else {
+            panic!("a whole-registry selection downloads")
+        };
+        assert!(head.ends_with(b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"));
+        let mut body = Vec::new();
+        while registry.render_next(ctx, &mut body) == Batch::More {}
+        let body = String::from_utf8(body).unwrap();
+        let data = body.find(",\"data\":").unwrap();
+        body[data + ",\"data\":".len()..body.len() - 1].to_string()
     }
 
     fn post(body: &str) -> Vec<u8> {
@@ -555,10 +644,54 @@ mod tests {
         assert_eq!(statuses(&format!("{all}&status=withdrawal")), Vec::<String>::new());
     }
 
+    /// The housekeeper of helix's relay refreshes its known validators so.
+    #[test]
+    fn status_filter_alone_selects_the_registry_it_admits() {
+        let path = "/eth/v1/beacon/states/head/validators";
+        let pending = record_json(
+            1,
+            32_000_000_000,
+            "pending_initialized",
+            &format!(
+                "{{\"pubkey\":\"{}\",\"withdrawal_credentials\":\"{}\",\
+                 \"effective_balance\":\"32000000000\",\"slashed\":false,\
+                 \"activation_eligibility_epoch\":\"{FAR_FUTURE_EPOCH}\",\
+                 \"activation_epoch\":\"{}\",\"exit_epoch\":\"{FAR_FUTURE_EPOCH}\",\
+                 \"withdrawable_epoch\":\"{FAR_FUTURE_EPOCH}\"}}",
+                hex(&pubkey(0xa2)),
+                hex(&[0; 32]),
+                EPOCH + 1,
+            ),
+        );
+        let active = record_json(0, 32_000_000_123, "active_ongoing", &active_validator());
+        let get = |query| downloaded(&ctx(), &ParsedRequest { query, ..request("GET", path) });
+        assert_eq!(get("status=active,pending"), format!("[{active},{pending}]"));
+        assert_eq!(get("status=exited").matches("\"index\"").count(), 1);
+        assert_eq!(get("status=withdrawal"), "[]");
+        let body = r#"{"statuses":["pending"]}"#;
+        assert_eq!(downloaded(&ctx(), &posting(path, body)), format!("[{pending}]"));
+    }
+
+    #[test]
+    fn download_ends_when_a_finalize_supersedes_its_state() {
+        let mut owner = BeaconStateOwner::published_empty_test(HEAD_SLOT);
+        let ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
+        let req = ParsedRequest {
+            query: "status=active",
+            ..request("GET", "/eth/v1/beacon/states/head/validators")
+        };
+        let (Outcome::Download(mut registry), _) = testing::dispatch(&ctx, &req) else {
+            panic!("a whole-registry selection downloads")
+        };
+        drop(owner.write());
+        assert_eq!(registry.render_next(&ctx, &mut Vec::new()), Batch::Superseded);
+    }
+
     #[test]
     fn list_rejects_malformed_filters_and_an_empty_selection() {
         let path = "/eth/v1/beacon/states/head/validators";
-        for query in ["id=0&status=running", "id=abc", "id=0&id=0x12", "status=active", ""] {
+        for query in ["id=0&status=running", "id=abc", "id=0&id=0x12", "status=active,running", ""]
+        {
             assert_eq!(status_code(&get(path, query)), "400", "{query:?}");
         }
     }
@@ -659,6 +792,66 @@ mod tests {
         ];
         for (lifecycle, epoch, balance, expected) in cases {
             assert_eq!(lifecycle.status(epoch, balance), expected);
+        }
+    }
+
+    /// Helix's relay asks for the whole active and pending registry every
+    /// ten minutes; on mainnet that is about 1.1M validators. Each batch is
+    /// as long as the download holds the tile in one go.
+    #[test]
+    #[ignore = "timing; run with --release --ignored --nocapture"]
+    fn registry_download_timing() {
+        const VALIDATORS: u64 = 1_100_000;
+        let seeds: Vec<_> = (0..VALIDATORS)
+            .map(|i| {
+                let mut pubkey = [0xa5; 48];
+                pubkey[..8].copy_from_slice(&i.to_le_bytes());
+                ValSeed {
+                    pubkey,
+                    withdrawal_credentials: Withdrawals([i as u8; 32]),
+                    effective_balance: 32_000_000_000,
+                    balance: 32_000_000_000 + i,
+                    activation_epoch: 5 + i % EPOCH,
+                    exit_epoch: FAR_FUTURE_EPOCH,
+                }
+            })
+            .collect();
+        let state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, HEAD_SLOT);
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        let ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
+        let req = ParsedRequest {
+            query: "status=active,pending",
+            ..request("GET", "/eth/v1/beacon/states/head/validators")
+        };
+
+        let mut batch = Vec::new();
+        for _ in 0..3 {
+            let (Outcome::Download(mut registry), _) = testing::dispatch(&ctx, &req) else {
+                panic!("a whole-registry selection downloads")
+            };
+            let (mut total, mut slowest, mut bytes, mut batches) =
+                (Duration::ZERO, Duration::ZERO, 0, 0);
+            loop {
+                batch.clear();
+                let started = Instant::now();
+                let rendered = registry.render_next(&ctx, &mut batch);
+                let elapsed = started.elapsed();
+                total += elapsed;
+                slowest = slowest.max(elapsed);
+                bytes += batch.len();
+                batches += 1;
+                if rendered != Batch::More {
+                    assert_eq!(rendered, Batch::Last);
+                    break;
+                }
+            }
+            println!(
+                "{batches} batches, {} MB: total {total:?}, slowest {slowest:?}, largest {} KB",
+                bytes / 1_000_000,
+                batch.capacity() / 1000,
+            );
         }
     }
 }

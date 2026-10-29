@@ -206,6 +206,34 @@ impl BeaconStateReader {
         }
     }
 
+    /// The published head, readable through [`Self::read_pinned`] across many
+    /// reads until the next finalize. `None` until the first publish.
+    pub fn pin(&self) -> Option<PinnedState> {
+        loop {
+            let Ok((control, _)) = self.inner.read_copy() else { return None };
+            if control.finalize_version & 1 == 0 {
+                let state_id = control.state_id?;
+                return Some(PinnedState { state_id, finalize_version: control.finalize_version });
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    /// `None` once a finalize has begun since `pin`: its state may be gone.
+    pub fn read_pinned<R>(
+        &self,
+        pin: PinnedState,
+        reader: impl FnOnce(StateReadView<'_>) -> R,
+    ) -> Option<R> {
+        if self.finalize_version() != Some(pin.finalize_version) {
+            return None;
+        }
+        sync::atomic::fence(Ordering::Acquire);
+        let result = reader(self.state.get().read_view(pin.state_id));
+        sync::atomic::fence(Ordering::Acquire);
+        (self.finalize_version() == Some(pin.finalize_version)).then_some(result)
+    }
+
     /// Open a checkpoint cursor over the finalized base. `None` until the
     /// writer publishes its first snapshot (nothing to persist). Feed the
     /// cursor to [`Self::checkpoint_chunk`] to pull the SSZ out part by part.
@@ -309,6 +337,12 @@ impl BeaconStateReader {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PinnedState {
+    state_id: StateId,
+    finalize_version: u64,
+}
+
 /// Which part [`BeaconStateReader::checkpoint_chunk`] just produced.
 pub enum CheckpointChunk {
     /// `buf` holds the next slice of the canonical state SSZ.
@@ -408,4 +442,30 @@ impl<'a> Drop for WriteGuard<'a> {
 struct ControlInner {
     state_id: Option<StateId>,
     finalize_version: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_reads_hold_across_publishes_and_end_at_a_finalize() {
+        let mut owner = BeaconStateOwner::published_empty_test(64);
+        let reader = owner.reader();
+        let pin = reader.pin().unwrap();
+        let slot = |view: StateReadView<'_>| view.slot.state().slot;
+
+        let child = owner.roll_fresh();
+        owner.publish_state_id(child);
+        assert_eq!(reader.read_pinned(pin, slot), Some(64));
+
+        drop(owner.write());
+        assert_eq!(reader.read_pinned(pin, slot), None);
+        assert!(reader.read_pinned(reader.pin().unwrap(), slot).is_some());
+    }
+
+    #[test]
+    fn nothing_is_pinned_before_the_first_publish() {
+        assert!(BeaconStateOwner::empty_test(64).reader().pin().is_none());
+    }
 }

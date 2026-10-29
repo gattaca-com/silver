@@ -146,6 +146,7 @@ hkdf = "0.12"
 humantime = "2"
 hmac = "0.12"
 httparse = "1"
+itoa = "1"
 libc = "0.2"
 linkme = "0.3.36"
 # v2: pin the stable mimalloc 2.x line. The crate defaults to v3, whose

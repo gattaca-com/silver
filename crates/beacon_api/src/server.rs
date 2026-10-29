@@ -24,7 +24,10 @@ use silver_pbs::{BuilderConfig, PreferenceFailures, PreferencesBody, SidecarCall
 
 use crate::{
     HeadStatus, NodeStatus,
-    beacon::blocks::Kind,
+    beacon::{
+        blocks::Kind,
+        validators::{Batch, RegistryStream},
+    },
     ctx::ApiCtx,
     events::{self, Channel, ChannelSet, HeadEvent, head_verdict::HeadVerdict},
     http::{
@@ -78,6 +81,7 @@ struct Connection {
 enum State {
     Requests(Requests),
     Subscription(Subscription),
+    Download(Download),
 }
 
 struct Requests {
@@ -214,7 +218,7 @@ impl Pending {
                 emit(BeaconApiRequest::LockBlindedBlock { request_id: first_id, ssz });
                 (Self::BlindedBlockLock { request_id: first_id, ssz }, 1)
             }
-            Outcome::Response(_) | Outcome::Stream(_) => {
+            Outcome::Response(_) | Outcome::Stream(_) | Outcome::Download(_) => {
                 unreachable!("answered without deferring")
             }
         }
@@ -240,6 +244,15 @@ struct Subscription {
     channels: ChannelSet,
 }
 
+/// The pump renders the next batch once the last has left the buffer, so a
+/// client reading slowly holds back only its own body.
+struct Download {
+    body: ChunkedResponse,
+    registry: RegistryStream,
+    batch: Vec<u8>,
+    rendered_all: bool,
+}
+
 impl Connection {
     fn new(stream: Stream, now: Instant) -> Self {
         Self { stream, state: State::Requests(Requests::new(now)) }
@@ -248,14 +261,14 @@ impl Connection {
     fn requests_mut(&mut self) -> Option<&mut Requests> {
         match &mut self.state {
             State::Requests(requests) => Some(requests),
-            State::Subscription(_) => None,
+            State::Subscription(_) | State::Download(_) => None,
         }
     }
 
     fn pending(&self) -> Option<&Pending> {
         match &self.state {
             State::Requests(requests) => requests.pending.as_ref(),
-            State::Subscription(_) => None,
+            State::Subscription(_) | State::Download(_) => None,
         }
     }
 
@@ -273,6 +286,15 @@ impl Connection {
         Self { stream: self.stream, state: State::Subscription(Subscription { body, channels }) }
     }
 
+    fn downloading(self, registry: RegistryStream, now: Instant) -> Self {
+        let State::Requests(requests) = self.state else {
+            unreachable!("only a request handler begins a download")
+        };
+        let body = requests.http.into_stream(now);
+        let download = Download { body, registry, batch: Vec::new(), rendered_all: false };
+        Self { stream: self.stream, state: State::Download(download) }
+    }
+
     fn expired(
         &self,
         now: Instant,
@@ -285,6 +307,7 @@ impl Connection {
             State::Subscription(subscription) => {
                 subscription.body.stalled(now, streams.send_deadline)
             }
+            State::Download(download) => download.body.stalled(now, streams.send_deadline),
         }
     }
 
@@ -301,6 +324,9 @@ impl Connection {
             }
             State::Subscription(subscription) => {
                 subscription.handle_event(&mut self.stream, registry, event, now)
+            }
+            State::Download(download) => {
+                download.handle_event(&mut self.stream, registry, event, now)
             }
         }
     }
@@ -455,6 +481,60 @@ impl Subscription {
     }
 }
 
+impl Download {
+    /// `Ok(true)` once the whole body has left.
+    fn handle_event(
+        &mut self,
+        stream: &mut Stream,
+        registry: &Registry,
+        event: &Event,
+        now: Instant,
+    ) -> io::Result<bool> {
+        if event.is_readable() && drop_inbound(stream, self.body.discard_space()).is_none() {
+            return Ok(true);
+        }
+        if event.is_writable() && self.body.drain_into(stream, now)? {
+            if self.rendered_all {
+                return Ok(true);
+            }
+            registry.reregister(stream, event.token(), Interest::READABLE)?;
+        }
+        Ok(false)
+    }
+
+    /// Renders and sends the next batch if the last one has left. `Ok(true)`
+    /// once the whole body has left.
+    fn advance(
+        &mut self,
+        stream: &mut Stream,
+        registry: &Registry,
+        token: Token,
+        ctx: &ApiCtx,
+        now: Instant,
+    ) -> io::Result<bool> {
+        if !self.body.pending_write().is_empty() {
+            return Ok(false);
+        }
+        self.batch.clear();
+        let batch = self.registry.render_next(ctx, &mut self.batch);
+        if batch == Batch::Superseded {
+            return Err(io::Error::other("a finalize superseded the pinned state"));
+        }
+        if !self.batch.is_empty() {
+            assert!(self.body.push(&self.batch, now), "a batch fits the send cap");
+        }
+        if batch == Batch::Last {
+            assert!(self.body.push_last(now), "the last chunk fits behind a batch");
+            self.rendered_all = true;
+        }
+        if self.body.drain_into(stream, now)? {
+            return Ok(self.rendered_all);
+        }
+        registry.reregister(stream, token, Interest::READABLE | Interest::WRITABLE)?;
+        Ok(false)
+    }
+}
+
 /// Returns the bytes discarded before `WouldBlock`, or `None` on EOF or
 /// an unrecoverable read error.
 fn drop_inbound(stream: &mut Stream, scratch: &mut [u8]) -> Option<usize> {
@@ -504,6 +584,7 @@ pub struct BeaconApi {
     last_keep_alive: Instant,
     next_connection_offset: usize,
     connections: HashMap<Token, Connection>,
+    downloads: Vec<Token>,
     frame: Vec<u8>,
     router: Router,
     ctx: ApiCtx,
@@ -562,6 +643,7 @@ impl BeaconApi {
             next_connection_offset: listeners.len(),
             listeners,
             connections: HashMap::new(),
+            downloads: Vec::new(),
             frame: Vec::new(),
             router: Router::new(ROUTES),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar),
@@ -823,7 +905,7 @@ impl BeaconApi {
     fn has_subscriber(&self, channel: Channel) -> bool {
         self.connections.values().any(|conn| match &conn.state {
             State::Subscription(subscription) => subscription.channels.contains(channel),
-            State::Requests(_) => false,
+            State::Requests(_) | State::Download(_) => false,
         })
     }
 
@@ -1172,6 +1254,8 @@ impl BeaconApi {
             };
         }
 
+        did_work |= self.advance_downloads(now);
+
         if self.idle.due(now) {
             did_work |= self.close_expired(now);
             // Subscribers also leave on failed writes and reads, so the
@@ -1185,6 +1269,31 @@ impl BeaconApi {
         }
 
         did_work
+    }
+
+    /// One batch per download per pump, so a download shares the tile with
+    /// everything else it serves.
+    fn advance_downloads(&mut self, now: Instant) -> bool {
+        let Self { downloads, connections, registry, ctx, .. } = self;
+        let mut rendered = false;
+        downloads.retain(|token| {
+            let Some(conn) = connections.get_mut(token) else { return false };
+            let State::Download(download) = &mut conn.state else { return false };
+            rendered |= download.body.pending_write().is_empty();
+            let finished = match download.advance(&mut conn.stream, registry, *token, ctx, now) {
+                Ok(finished) => finished,
+                Err(e) => {
+                    silver_log::warn!("beacon api download cut short: {e}");
+                    true
+                }
+            };
+            if finished {
+                let _ = registry.deregister(&mut conn.stream);
+                connections.remove(token);
+            }
+            !finished
+        });
+        rendered
     }
 
     fn accept_all(&mut self, listener_index: usize, now: Instant) -> bool {
@@ -1255,6 +1364,15 @@ impl BeaconApi {
         match outcome {
             Ok(false) => match dispatched {
                 Outcome::Response(_) => {}
+                Outcome::Download(registry) => {
+                    let conn = self.connections.remove(&token).expect("looked up above");
+                    self.connections.insert(token, conn.downloading(registry, now));
+                    // A closed download's token may be reused before the pump
+                    // prunes it.
+                    if !self.downloads.contains(&token) {
+                        self.downloads.push(token);
+                    }
+                }
                 Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
                     self.connections.insert(token, conn.subscribed(channels, now));
@@ -1315,6 +1433,11 @@ impl BeaconApi {
                     streams.send_deadline,
                     subscription.body.pending_write().len()
                 ),
+                State::Download(download) => silver_log::warn!(
+                    "beacon api download made no write progress for over {:?} with {} bytes pending, closing",
+                    streams.send_deadline,
+                    download.body.pending_write().len()
+                ),
                 State::Requests(Requests { linger_since: Some(since), .. }) => silver_log::warn!(
                     "beacon api connection still sending {:?} after its answer, closing",
                     now.duration_since(*since)
@@ -1359,7 +1482,10 @@ mod tests {
     };
 
     use serde_json::Value;
-    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH};
+    use silver_beacon_state_data::{
+        BeaconState, BeaconStateOwner, EpochStateFinalized, FAR_FUTURE_EPOCH, SLOTS_PER_EPOCH,
+        ValSeed,
+    };
     use silver_common::{
         BlockLookup, ColumnOrigin, EngineNewPayloadResp, ForkName, GossipDomain, HeadRoots,
         LOCAL_GOSSIP_STREAM_ID, LocalGossipFailure, MessageId, Nanos, P2pStreamId, PayloadFrame,
@@ -2095,7 +2221,7 @@ mod tests {
             .values()
             .map(|conn| match &conn.state {
                 State::Subscription(subscription) => subscription.body.pending_write().len(),
-                State::Requests(_) => 0,
+                State::Requests(_) | State::Download(_) => 0,
             })
             .sum()
     }
@@ -3995,5 +4121,72 @@ mod tests {
             let status = if consensus_valid { "200 OK" } else { "202 Accepted" };
             assert!(response.starts_with(format!("HTTP/1.1 {status}\r\n").as_bytes()));
         }
+    }
+
+    /// The body spans several batches, each its own chunk, and ends with the
+    /// last chunk before the server closes the connection.
+    #[test]
+    fn whole_registry_downloads_in_chunks_and_closes() {
+        const VALIDATORS: u64 = 1500;
+        let seeds: Vec<_> = (0..VALIDATORS)
+            .map(|i| ValSeed {
+                pubkey: [i as u8; 48],
+                effective_balance: 32_000_000_000,
+                balance: 32_000_000_000,
+                activation_epoch: i % 2,
+                exit_epoch: FAR_FUTURE_EPOCH,
+                ..ValSeed::default()
+            })
+            .collect();
+        let state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, 0);
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        let mut server = server_with(4, LONG_TIMEOUT);
+        server.api.ctx.state = owner.reader();
+        let addr = tcp_addr(&server);
+
+        let client = std::thread::spawn(move || {
+            let mut stream = connect(addr);
+            stream
+                .write_all(
+                    b"GET /eth/v1/beacon/states/head/validators?status=active HTTP/1.1\r\n\
+                      Host: x\r\n\r\n",
+                )
+                .unwrap();
+            read_to_eof(stream)
+        });
+        let response = serve(&mut server, client, "registry downloaded");
+
+        let at = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        assert!(
+            response[..at].ends_with(b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+        );
+        let mut chunks = &response[at..];
+        let mut body = Vec::new();
+        let mut chunk_count = 0;
+        loop {
+            let line_end = chunks.windows(2).position(|w| w == b"\r\n").unwrap();
+            let len = usize::from_str_radix(std::str::from_utf8(&chunks[..line_end]).unwrap(), 16);
+            let len = len.unwrap();
+            chunks = &chunks[line_end + 2..];
+            if len == 0 {
+                assert_eq!(chunks, b"\r\n");
+                break;
+            }
+            body.extend_from_slice(&chunks[..len]);
+            chunks = &chunks[len + 2..];
+            chunk_count += 1;
+        }
+        assert!(chunk_count > 2, "{chunk_count} chunks");
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let indices: Vec<_> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["index"].as_str().unwrap().parse::<u64>().unwrap())
+            .collect();
+        assert_eq!(indices, (0..VALIDATORS).step_by(2).collect::<Vec<_>>());
+        assert!(server.api.connections.is_empty() && server.api.downloads.is_empty());
     }
 }

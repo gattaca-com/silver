@@ -8,6 +8,7 @@ use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_he
 use silver_pbs::{PreferenceFailures, SidecarCall};
 
 use crate::{
+    beacon::validators::RegistryStream,
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{
@@ -86,6 +87,12 @@ impl<'a> Response<'a> {
         debug_assert!(self.out.is_empty(), "a stream head follows no other response");
         frame_chunked_head(self.out, content_type, headers);
         self.outcome = Outcome::Stream(channels);
+    }
+
+    pub(crate) fn begin_registry_download(&mut self, registry: RegistryStream) {
+        debug_assert!(self.out.is_empty(), "a stream head follows no other response");
+        frame_chunked_head(self.out, JSON_CONTENT_TYPE, &[]);
+        self.outcome = Outcome::Download(registry);
     }
 
     pub(crate) fn defer(&mut self, outcome: Outcome) {

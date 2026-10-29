@@ -12,8 +12,8 @@ use mio::Interest;
 const PENDING_MAX: usize = 512 << 10;
 const DISCARD_LEN: usize = 4096;
 
-/// Does not emit a terminal chunk; the caller ends the stream by closing
-/// the connection.
+/// An endless stream ends by closing the connection; a finite one sends its
+/// terminal chunk with [`Self::push_last`] first.
 pub struct ChunkedResponse {
     pending: Vec<u8>,
     write_pos: usize,
@@ -41,7 +41,26 @@ impl ChunkedResponse {
     #[must_use = "false means the stream is over: close the connection"]
     pub fn push(&mut self, chunk: &[u8], now: Instant) -> bool {
         assert!(!chunk.is_empty(), "an empty chunk is the terminal chunk");
-        let framed = hex_digits(chunk.len()) + 2 + chunk.len() + 2;
+        if !self.make_room(hex_digits(chunk.len()) + 2 + chunk.len() + 2, now) {
+            return false;
+        }
+        write!(self.pending, "{:x}\r\n", chunk.len()).unwrap();
+        self.pending.extend_from_slice(chunk);
+        self.pending.extend_from_slice(b"\r\n");
+        true
+    }
+
+    #[must_use = "false means the stream is over: close the connection"]
+    pub fn push_last(&mut self, now: Instant) -> bool {
+        const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
+        if !self.make_room(LAST_CHUNK.len(), now) {
+            return false;
+        }
+        self.pending.extend_from_slice(LAST_CHUNK);
+        true
+    }
+
+    fn make_room(&mut self, framed: usize, now: Instant) -> bool {
         if self.pending_write().len() + framed > PENDING_MAX {
             return false;
         }
@@ -55,9 +74,6 @@ impl ChunkedResponse {
         if self.pending_write().is_empty() {
             self.waiting_since = Some(now);
         }
-        write!(self.pending, "{:x}\r\n", chunk.len()).unwrap();
-        self.pending.extend_from_slice(chunk);
-        self.pending.extend_from_slice(b"\r\n");
         true
     }
 
@@ -316,6 +332,21 @@ mod tests {
         }
         assert_eq!(socket.taken, expected);
         assert!(stream.pending_write().is_empty());
+    }
+
+    #[test]
+    fn last_chunk_ends_the_body_and_respects_the_cap() {
+        let t0 = Instant::now();
+        let mut stream = subscribed(t0);
+        assert!(stream.push(b"{}", t0));
+        assert!(stream.push_last(t0));
+        let mut expected = HEAD.to_vec();
+        expected.extend(framed(b"{}"));
+        expected.extend_from_slice(b"0\r\n\r\n");
+        assert_eq!(drain_all(&mut stream, t0), expected);
+
+        assert!(stream.push(&payload_framed_to(PENDING_MAX - 4), t0));
+        assert!(!stream.push_last(t0));
     }
 
     /// A blocked write requests `WRITABLE`; a delivery that drains the backlog
