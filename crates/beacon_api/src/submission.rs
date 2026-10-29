@@ -149,13 +149,13 @@ impl Integration {
         }
     }
 
-    /// A published block's verdict names it, or, for one already on the
-    /// network, leaves nothing to follow.
+    /// A published block's verdict names it; one that names none cannot be
+    /// followed, so it is known only to be broadcast.
     pub(crate) fn on_published(&mut self, block_root: Option<B256>) {
         if let Self::AwaitingImport(import) = self {
             match block_root {
                 Some(block_root) => import.block_root = Some(block_root),
-                None => *self = Self::Integrated,
+                None => *self = Self::BroadcastOnly,
             }
         }
     }
@@ -170,13 +170,14 @@ pub(crate) struct AwaitedImport {
 }
 
 impl AwaitedImport {
-    /// Two slots is past any import the node completes, and past any
-    /// publisher's own timeout. A Gloas block carries no payload.
+    /// A quarter slot answers within helix's 4 s publish timeout and
+    /// Lighthouse's half slot, so a late import reaches them as a 202. A Gloas
+    /// block carries no payload.
     pub(crate) fn of_block(slot: Slot, spec: &SpecConfig, now: Instant) -> Self {
         Self {
             block_root: None,
             awaits_execution: !spec.is_gloas_at_slot(slot),
-            deadline: now + Duration::from_secs(2 * spec.seconds_per_slot()),
+            deadline: now + Duration::from_millis(spec.seconds_per_slot() * 1000 / 4),
         }
     }
 

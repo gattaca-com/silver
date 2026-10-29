@@ -73,12 +73,21 @@ pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
     if !req.body_is_ssz() {
         return resp.error(415, "only application/octet-stream bodies are read");
     }
+    // The relay broadcasts the revealed block, so the level is checked but
+    // not applied here.
+    if requested_validation(req).is_none() {
+        return resp.error(400, "invalid broadcast_validation");
+    }
     let block = req.body;
     if !SignedBeaconBlockView::check_size(block) {
         return resp.error(400, "invalid SignedBlindedBeaconBlock");
     }
-    if ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(block)) {
+    let slot = SignedBeaconBlockView::slot(block);
+    if ctx.spec.is_gloas_at_slot(slot) {
         return resp.error(400, "only Fulu blinded blocks are published");
+    }
+    if req.eth_consensus_version != Some(ctx.spec.fork_at_slot(slot).name()) {
+        return resp.error(400, "Eth-Consensus-Version must name the block's fork");
     }
     let body = BodyOffsets::validated(SignedBeaconBlockView::body(block), BodyFork::FuluBlinded);
     if !body
@@ -307,19 +316,27 @@ pub(crate) mod tests {
     #[test]
     fn blinded_block_waits_on_its_proposal_lock() {
         let body = blinded_block();
+        let ctx = sidecar_ctx();
+        let fork = ctx.spec.fork_at_slot(SignedBeaconBlockView::slot(&body)).name();
+        let request = ParsedRequest {
+            body: &body,
+            content_type: Some(SSZ_MEDIA_TYPE),
+            eth_consensus_version: Some(fork),
+            ..posting(BLINDED_PATH, "")
+        };
         let mut submissions = submissions();
-        let (outcome, out) = dispatch_into(
-            &sidecar_ctx(),
-            &ParsedRequest {
-                body: &body,
-                content_type: Some(SSZ_MEDIA_TYPE),
-                ..posting(BLINDED_PATH, "")
-            },
-            &mut submissions,
-        );
+        let (outcome, out) = dispatch_into(&ctx, &request, &mut submissions);
         assert!(out.is_empty(), "answered once the sidecar has");
         let Outcome::AwaitingBlindedBlockLock { ssz } = outcome else { panic!("{outcome:?}") };
         assert_eq!(submissions.read_buffer(ssz).unwrap(), body);
+
+        for refused in [
+            ParsedRequest { query: "broadcast_validation=full", ..request },
+            ParsedRequest { eth_consensus_version: Some("gloas"), ..request },
+            ParsedRequest { eth_consensus_version: None, ..request },
+        ] {
+            assert_eq!(status_code(&dispatch(&ctx, &refused).1), "400");
+        }
     }
 
     #[test]

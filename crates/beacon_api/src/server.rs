@@ -1367,6 +1367,7 @@ impl BeaconApi {
             }
             !finished
         });
+        ctx.registry_downloads = downloads.len();
         rendered
     }
 
@@ -1446,6 +1447,7 @@ impl BeaconApi {
                     if !self.downloads.contains(&token) {
                         self.downloads.push(token);
                     }
+                    self.ctx.registry_downloads = self.downloads.len();
                 }
                 Outcome::Stream(channels) => {
                     let conn = self.connections.remove(&token).expect("looked up above");
@@ -3353,12 +3355,13 @@ mod tests {
         server.api.ctx = submission::ctx();
         server.api.ctx.has_sidecar = true;
         let block = blinded_block();
+        let fork = server.api.ctx.spec.fork_at_slot(SignedBeaconBlockView::slot(&block)).name();
         let mut client = connect(tcp_addr(server));
         write!(
             client,
             "POST /eth/v2/beacon/blinded_blocks HTTP/1.1\r\nHost: x\r\n\
-             Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\
-             Connection: close\r\n\r\n",
+             Content-Type: application/octet-stream\r\nEth-Consensus-Version: {fork}\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
             block.len()
         )
         .unwrap();
@@ -3405,7 +3408,7 @@ mod tests {
             (Ok(()), Some(root), Some(Ok(received)), true, "200 OK"),
             (Ok(()), Some(root), Some(Ok(rejected)), false, "202 Accepted"),
             (Ok(()), Some(root), Some(Err(refused_by_el)), true, "202 Accepted"),
-            (Ok(()), None, None, false, "200 OK"),
+            (Ok(()), None, None, false, "202 Accepted"),
             (refused, None, None, false, "400 Bad Request"),
         ] {
             let mut server = server_with(64, LONG_TIMEOUT);

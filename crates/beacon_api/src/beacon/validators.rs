@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     BLSPubkey, Epoch, FAR_FUTURE_EPOCH, PinnedState, StateReadView, ValidatorsView, Withdrawals,
 };
 use silver_common::json_fields::parse_uint64;
-use silver_httpcore::Query;
+use silver_httpcore::{ChunkedResponse, Query};
 
 use crate::{
     ctx::{ApiCtx, read_flags},
@@ -19,6 +19,21 @@ const MAX_VALIDATOR_IDS: usize = 32 * 1024;
 
 /// About 0.25 MB of JSON and 40 µs of rendering per batch.
 const VALIDATORS_PER_BATCH: usize = 512;
+
+/// The longest record [`Json::validator`] writes, with its separator: every
+/// number at 20 digits and the longest status.
+const MAX_VALIDATOR_JSON: usize = 550;
+
+/// A batch's chunk framing, and the envelope that opens the first batch and
+/// closes the last.
+const BATCH_OVERHEAD: usize = 128;
+
+const _: () = assert!(
+    VALIDATORS_PER_BATCH * MAX_VALIDATOR_JSON + BATCH_OVERHEAD <= ChunkedResponse::PENDING_MAX
+);
+
+/// Each open download renders a batch on every pump of the API tile.
+const MAX_REGISTRY_DOWNLOADS: usize = 2;
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     respond_validators(req, ctx, resp, Selection::from_query(req.query));
@@ -42,6 +57,9 @@ fn respond_validators(
 ) {
     match selection {
         Ok(selection) if selection.ids.is_empty() && selection.statuses.filters() => {
+            if ctx.registry_downloads >= MAX_REGISTRY_DOWNLOADS {
+                return resp.error(503, "too many registry downloads in progress");
+            }
             if let Some(pin) = ctx.pin_state(req, resp) {
                 resp.begin_registry_download(RegistryStream::new(pin, selection.statuses));
             }
@@ -691,6 +709,42 @@ mod tests {
         assert_eq!(get("status=withdrawal"), "[]");
         let body = r#"{"statuses":["pending"]}"#;
         assert_eq!(downloaded(&ctx(), &posting(path, body)), format!("[{pending}]"));
+    }
+
+    #[test]
+    fn registry_downloads_are_capped() {
+        let mut ctx = ctx();
+        let req = ParsedRequest {
+            query: "status=active",
+            ..request("GET", "/eth/v1/beacon/states/head/validators")
+        };
+        ctx.registry_downloads = MAX_REGISTRY_DOWNLOADS - 1;
+        assert!(matches!(testing::dispatch(&ctx, &req).0, Outcome::Download(_)));
+        ctx.registry_downloads = MAX_REGISTRY_DOWNLOADS;
+        assert_eq!(status_code(&testing::dispatch(&ctx, &req).1), "503");
+    }
+
+    #[test]
+    fn longest_validator_record_is_its_bound() {
+        let lifecycle = Lifecycle {
+            slashed: false,
+            activation_eligibility_epoch: u64::MAX,
+            activation_epoch: u64::MAX,
+            exit_epoch: u64::MAX,
+            withdrawable_epoch: u64::MAX,
+        };
+        let record = ValidatorRecord {
+            index: u64::MAX,
+            balance: u64::MAX,
+            status: ValidatorStatus::WithdrawalPossible,
+            pubkey: [0xff; 48],
+            withdrawal_credentials: Withdrawals([0xff; 32]),
+            effective_balance: u64::MAX,
+            lifecycle,
+        };
+        let mut out = Vec::new();
+        Json::new(&mut out).validator(&record);
+        assert_eq!(out.len() + ",".len(), MAX_VALIDATOR_JSON);
     }
 
     #[test]

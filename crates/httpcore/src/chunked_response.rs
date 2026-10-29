@@ -5,11 +5,6 @@ use std::{
 
 use mio::Interest;
 
-// Reserve the full output allowance at construction so accepted pushes do
-// not reallocate. The response head and chunk framing count against it.
-// Allows one block's 128 column events with 21 commitments each, about
-// 290 KiB in total, even when the writer accepts no bytes.
-const PENDING_MAX: usize = 512 << 10;
 const DISCARD_LEN: usize = 4096;
 
 /// An endless stream ends by closing the connection; a finite one sends its
@@ -24,13 +19,19 @@ pub struct ChunkedResponse {
 }
 
 impl ChunkedResponse {
+    // Reserve the full output allowance at construction so accepted pushes do
+    // not reallocate. The response head and chunk framing count against it.
+    // Allows one block's 128 column events with 21 commitments each, about
+    // 290 KiB in total, even when the writer accepts no bytes.
+    pub const PENDING_MAX: usize = 512 << 10;
+
     /// Trim inherited buffer capacity so a subscription does not retain
     /// large allocations from request handling.
     pub(crate) fn new(mut head: Vec<u8>, mut discard: Vec<u8>, now: Instant) -> Self {
         assert!(!head.is_empty(), "a stream begins with its response head");
-        assert!(head.len() <= PENDING_MAX, "the stream head alone exceeds the send cap");
-        head.reserve_exact(PENDING_MAX - head.len());
-        head.shrink_to(PENDING_MAX);
+        assert!(head.len() <= Self::PENDING_MAX, "the stream head alone exceeds the send cap");
+        head.reserve_exact(Self::PENDING_MAX - head.len());
+        head.shrink_to(Self::PENDING_MAX);
         discard.truncate(DISCARD_LEN);
         discard.shrink_to_fit();
         Self { pending: head, write_pos: 0, discard, waiting_since: Some(now) }
@@ -58,7 +59,7 @@ impl ChunkedResponse {
     #[must_use = "false means the stream is over: close the connection"]
     pub fn push_rendered(&mut self, now: Instant, render: impl FnOnce(&mut Vec<u8>)) -> bool {
         const SIZE_DIGITS: usize = 8;
-        const _: () = assert!(PENDING_MAX < 1 << (4 * SIZE_DIGITS));
+        const _: () = assert!(ChunkedResponse::PENDING_MAX < 1 << (4 * SIZE_DIGITS));
         if !self.make_room(SIZE_DIGITS + 2 + 2, now) {
             return false;
         }
@@ -66,7 +67,7 @@ impl ChunkedResponse {
         self.pending.extend_from_slice(&[b'0'; SIZE_DIGITS + 2]);
         render(&mut self.pending);
         let len = self.pending.len() - size_at - SIZE_DIGITS - 2;
-        if len == 0 || self.pending_write().len() + 2 > PENDING_MAX {
+        if len == 0 || self.pending_write().len() + 2 > Self::PENDING_MAX {
             self.pending.truncate(size_at);
             if self.pending_write().is_empty() {
                 self.waiting_since = None;
@@ -89,13 +90,13 @@ impl ChunkedResponse {
     }
 
     fn make_room(&mut self, framed: usize, now: Instant) -> bool {
-        if self.pending_write().len() + framed > PENDING_MAX {
+        if self.pending_write().len() + framed > Self::PENDING_MAX {
             return false;
         }
 
         // Delay compaction to avoid moving unsent bytes while there is room
         // to append after them.
-        if self.pending.len() + framed > PENDING_MAX {
+        if self.pending.len() + framed > Self::PENDING_MAX {
             self.pending.drain(..self.write_pos);
             self.write_pos = 0;
         }
@@ -248,7 +249,7 @@ mod tests {
     }
 
     fn largest_fitting_payload(stream: &ChunkedResponse) -> usize {
-        let room = PENDING_MAX - stream.pending_write().len();
+        let room = ChunkedResponse::PENDING_MAX - stream.pending_write().len();
         (1..room).rev().find(|&n| hex_digits(n) + 4 + n <= room).unwrap()
     }
 
@@ -347,11 +348,14 @@ mod tests {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = ScriptedSocket::taking_everything();
-        let past_the_cap = PENDING_MAX / framed(&burst_frame(0, 2300)).len() + 1;
+        let past_the_cap = ChunkedResponse::PENDING_MAX / framed(&burst_frame(0, 2300)).len() + 1;
         let frames: Vec<_> = (0..past_the_cap).map(|index| burst_frame(index, 2300)).collect();
         let mut expected = HEAD.to_vec();
         frames.iter().for_each(|frame| expected.extend(framed(frame)));
-        assert!(expected.len() - HEAD.len() > PENDING_MAX, "the burst passes the cap");
+        assert!(
+            expected.len() - HEAD.len() > ChunkedResponse::PENDING_MAX,
+            "the burst passes the cap"
+        );
 
         let (first, rest) = frames.split_first().unwrap();
         assert_eq!(stream.deliver(&mut socket, first, t0).unwrap(), Some(Interest::READABLE));
@@ -374,7 +378,10 @@ mod tests {
         assert!(stream.push_rendered(t0, |out| out.extend_from_slice(b"{}")));
         assert_eq!(drain_all(&mut stream, t0), b"00000002\r\n{}\r\n");
 
-        assert!(!stream.push_rendered(t0, |out| out.resize(out.len() + PENDING_MAX, b'x')));
+        assert!(
+            !stream.push_rendered(t0, |out| out
+                .resize(out.len() + ChunkedResponse::PENDING_MAX, b'x'))
+        );
         assert!(stream.pending_write().is_empty());
     }
 
@@ -389,7 +396,7 @@ mod tests {
         expected.extend_from_slice(b"0\r\n\r\n");
         assert_eq!(drain_all(&mut stream, t0), expected);
 
-        assert!(stream.push(&payload_framed_to(PENDING_MAX - 4), t0));
+        assert!(stream.push(&payload_framed_to(ChunkedResponse::PENDING_MAX - 4), t0));
         assert!(!stream.push_last(t0));
     }
 
@@ -474,7 +481,7 @@ mod tests {
         let mut socket = ScriptedSocket::refusing_everything();
         let frame = burst_frame(0, 2300);
         let chunk = framed(&frame).len();
-        let fit = (PENDING_MAX - HEAD.len()) / chunk;
+        let fit = (ChunkedResponse::PENDING_MAX - HEAD.len()) / chunk;
 
         for pushed in 0..fit {
             let interest = stream.deliver(&mut socket, &frame, t0).unwrap();
@@ -492,15 +499,15 @@ mod tests {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = BudgetSocket::default();
-        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        let first = payload_framed_to(ChunkedResponse::PENDING_MAX - HEAD.len());
         stream.deliver(&mut socket, &first, t0).unwrap();
-        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+        assert_eq!(stream.pending_write().len(), ChunkedResponse::PENDING_MAX);
 
         let next = burst_frame(1, 300);
         socket.remaining = framed(&next).len();
         let t1 = t0 + Duration::from_secs(1);
         stream.deliver(&mut socket, &next, t1).unwrap();
-        assert!(stream.pending_write().len() <= PENDING_MAX);
+        assert!(stream.pending_write().len() <= ChunkedResponse::PENDING_MAX);
 
         socket.remaining = usize::MAX;
         assert!(stream.drain_into(&mut socket, t1).unwrap());
@@ -512,9 +519,9 @@ mod tests {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
         let mut socket = BudgetSocket::default();
-        let first = payload_framed_to(PENDING_MAX - HEAD.len());
+        let first = payload_framed_to(ChunkedResponse::PENDING_MAX - HEAD.len());
         stream.deliver(&mut socket, &first, t0).unwrap();
-        assert_eq!(stream.pending_write().len(), PENDING_MAX);
+        assert_eq!(stream.pending_write().len(), ChunkedResponse::PENDING_MAX);
 
         let next = burst_frame(1, 300);
         socket.remaining = framed(&next).len() - 1;
@@ -584,7 +591,7 @@ mod tests {
         let mut stream = subscribed(t0);
         let payload = vec![b'x'; largest_fitting_payload(&stream)];
         assert!(stream.push(&payload, t0));
-        assert!(stream.pending_write().len() <= PENDING_MAX);
+        assert!(stream.pending_write().len() <= ChunkedResponse::PENDING_MAX);
         let held = stream.pending_write().to_vec();
 
         assert!(!stream.push(b"y", t0), "one more byte would pass the cap");
@@ -615,9 +622,12 @@ mod tests {
                 drain(&mut stream, half, t0);
                 assert!(stream.push(&frame, t0), "round {round}: half a drain frees room");
             }
-            assert!(stream.pending_write().len() <= PENDING_MAX, "round {round}");
-            assert!(stream.pending.len() <= PENDING_MAX, "round {round}: consumed prefix retained");
-            assert_eq!(stream.pending.capacity(), PENDING_MAX, "round {round}");
+            assert!(stream.pending_write().len() <= ChunkedResponse::PENDING_MAX, "round {round}");
+            assert!(
+                stream.pending.len() <= ChunkedResponse::PENDING_MAX,
+                "round {round}: consumed prefix retained"
+            );
+            assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX, "round {round}");
         }
     }
 
@@ -625,7 +635,7 @@ mod tests {
     fn send_buffer_is_allocated_once_at_the_cap_and_never_moves() {
         let t0 = Instant::now();
         let mut stream = subscribed(t0);
-        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX);
         let allocation = stream.pending.as_ptr();
         let frame = vec![b'f'; 450];
         let burst = |stream: &mut ChunkedResponse| {
@@ -643,7 +653,7 @@ mod tests {
         }
         let payload = vec![b'x'; largest_fitting_payload(&stream)];
         assert!(stream.push(&payload, t0), "a cap-sized burst fits the allocation as it is");
-        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX);
         assert_eq!(stream.pending.as_ptr(), allocation);
     }
 
@@ -669,7 +679,7 @@ mod tests {
 
         let third = vec![b'3'; largest_fitting_payload(&stream)];
         assert!(
-            stream.pending.len() + framed(&third).len() > PENDING_MAX,
+            stream.pending.len() + framed(&third).len() > ChunkedResponse::PENDING_MAX,
             "the frame fits the unsent-byte cap but requires compaction"
         );
         assert!(stream.push(&third, t0));
@@ -677,7 +687,7 @@ mod tests {
         expected.extend(framed(&third));
         assert_eq!(stream.pending_write(), expected);
         assert_eq!(stream.pending.len(), expected.len());
-        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX);
         assert_eq!(stream.pending.as_ptr(), allocation, "compaction happens inside the allocation");
     }
 
@@ -690,14 +700,14 @@ mod tests {
         drain(&mut stream, 500, t0);
         let allocation = stream.pending.as_ptr();
 
-        let exact = payload_framed_to(PENDING_MAX - stream.pending.len());
+        let exact = payload_framed_to(ChunkedResponse::PENDING_MAX - stream.pending.len());
         assert!(stream.push(&exact, t0));
         assert_eq!(stream.write_pos, 500, "a frame ending exactly at the allocation's end fits");
-        assert_eq!(stream.pending.len(), PENDING_MAX);
+        assert_eq!(stream.pending.len(), ChunkedResponse::PENDING_MAX);
 
         assert!(stream.push(b"y", t0), "the cap still has the consumed prefix's room to give");
         assert_eq!(stream.write_pos, 0, "one byte past the allocation forces compaction");
-        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX);
         assert_eq!(stream.pending.as_ptr(), allocation);
     }
 
@@ -714,7 +724,10 @@ mod tests {
 
         let t2 = t1 + DEADLINE * 2;
         let filler = vec![b'g'; largest_fitting_payload(&stream)];
-        assert!(stream.pending.len() + framed(&filler).len() > PENDING_MAX, "this push compacts");
+        assert!(
+            stream.pending.len() + framed(&filler).len() > ChunkedResponse::PENDING_MAX,
+            "this push compacts"
+        );
         assert!(stream.push(&filler, t2));
         assert_eq!(stream.write_pos, 0);
         assert_eq!(stream.waiting_since, Some(t1));
@@ -730,7 +743,7 @@ mod tests {
         drain(&mut stream, 500, t0);
         let held = stream.pending.clone();
 
-        let room = PENDING_MAX - stream.pending_write().len();
+        let room = ChunkedResponse::PENDING_MAX - stream.pending_write().len();
         assert!(!stream.push(&vec![b'z'; room], t0), "framing alone takes this past the cap");
         assert_eq!(stream.write_pos, 500);
         assert_eq!(stream.pending, held);
@@ -739,7 +752,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds the send cap")]
     fn head_past_the_cap_is_a_bug() {
-        let _ = ChunkedResponse::new(vec![b'h'; PENDING_MAX + 1], vec![0; 16], Instant::now());
+        let _ = ChunkedResponse::new(
+            vec![b'h'; ChunkedResponse::PENDING_MAX + 1],
+            vec![0; 16],
+            Instant::now(),
+        );
     }
 
     #[test]
@@ -841,7 +858,7 @@ mod tests {
         let mut stream = conn.into_stream(t0);
         assert_eq!(stream.discard_space().as_ptr(), read_buf);
         assert_eq!(stream.pending_write().len(), head_len.get());
-        assert_eq!(stream.pending.capacity(), PENDING_MAX);
+        assert_eq!(stream.pending.capacity(), ChunkedResponse::PENDING_MAX);
     }
 
     #[test]

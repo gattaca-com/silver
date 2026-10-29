@@ -34,6 +34,7 @@ pub(crate) struct ApiCtx {
     pub(crate) has_sidecar: bool,
     pub(crate) pools: OperationPools,
     pub(crate) proposer_preferences: ProposerPreferences,
+    pub(crate) registry_downloads: usize,
 }
 
 impl ApiCtx {
@@ -61,6 +62,7 @@ impl ApiCtx {
             has_sidecar,
             pools: OperationPools::default(),
             proposer_preferences: ProposerPreferences::default(),
+            registry_downloads: 0,
         }
     }
 
