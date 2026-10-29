@@ -163,7 +163,8 @@ impl Controller {
             );
             return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
         };
-        match topic {
+        // `slot` only labels the logs.
+        let (ssz_read, slot) = match topic {
             GossipTopic::ExecutionPayload => {
                 if !SignedExecutionPayloadEnvelopeView::check_canonical(ssz) {
                     return produce_response(
@@ -173,24 +174,9 @@ impl Controller {
                     );
                 }
                 let envelope = SignedExecutionPayloadEnvelopeView::message(ssz);
-                let slot = ExecutionPayloadView::slot_number(
-                    ExecutionPayloadEnvelopeView::payload(envelope),
-                );
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: None,
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                );
+                let payload = ExecutionPayloadEnvelopeView::payload(envelope);
+                (None, ExecutionPayloadView::slot_number(payload))
             }
-
             GossipTopic::BeaconAttestation(subnet) => {
                 let Ok(ssz) = ssz.try_into() else {
                     silver_log::error!(
@@ -204,13 +190,13 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                self.slashing_protection.on_local_attestation(
+                return self.slashing_protection.on_local_attestation(
                     PendingAttestation::new(request_id, subnet, ssz),
                     now,
                     &mut self.local_gossip,
                     &mut self.gossip_handler,
                     producers,
-                )
+                );
             }
             GossipTopic::SyncCommittee(_) => {
                 let Ok(message) = ssz.try_into() else {
@@ -225,36 +211,10 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                let slot = SyncCommitteeView::slot(message);
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: Some(ssz_read),
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
+                (Some(ssz_read), SyncCommitteeView::slot(message))
             }
             GossipTopic::BeaconAggregateAndProof => {
-                let slot = SignedAggregateAndProofView::agg_slot(ssz);
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: Some(ssz_read),
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
+                (Some(ssz_read), SignedAggregateAndProofView::agg_slot(ssz))
             }
             GossipTopic::SyncCommitteeContributionAndProof => {
                 let Ok(proof) = ssz.try_into() else {
@@ -269,20 +229,7 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                let slot = SignedSyncCommitteeProofView::slot(proof);
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: Some(ssz_read),
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
+                (Some(ssz_read), SignedSyncCommitteeProofView::slot(proof))
             }
             GossipTopic::PayloadAttestationMessage => {
                 let Ok(message) = ssz.try_into() else {
@@ -297,21 +244,8 @@ impl Controller {
                         Err(LocalGossipFailure::Internal),
                     );
                 };
-                let slot =
-                    PayloadAttestationDataView::slot(PayloadAttestationMessageView::data(message));
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: Some(ssz_read),
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
+                let data = PayloadAttestationMessageView::data(message);
+                (Some(ssz_read), PayloadAttestationDataView::slot(data))
             }
             GossipTopic::ProposerPreferences => {
                 let Ok(signed) = ssz.try_into() else {
@@ -327,24 +261,11 @@ impl Controller {
                     );
                 };
                 let preferences = SignedProposerPreferencesView::message(signed);
-                let slot = ProposerPreferencesView::proposal_slot(preferences);
-                self.local_gossip.submit(
-                    LocalMessage {
-                        request_id,
-                        topic,
-                        ssz,
-                        ssz_read: Some(ssz_read),
-                        slot,
-                        validation: BroadcastValidation::Gossip,
-                    },
-                    now,
-                    &mut self.gossip_handler,
-                    producers,
-                )
+                (Some(ssz_read), ProposerPreferencesView::proposal_slot(preferences))
             }
             GossipTopic::BeaconBlock => {
                 let block = SubmittedBlock::framed(ssz, validation);
-                self.slashing_protection.on_local_block(
+                return self.slashing_protection.on_local_block(
                     request_id,
                     acquired,
                     block,
@@ -352,30 +273,23 @@ impl Controller {
                     &mut self.local_gossip,
                     &mut self.gossip_handler,
                     producers,
-                )
+                );
             }
-            // None carries a slot; `slot` only labels the logs.
             GossipTopic::VoluntaryExit |
             GossipTopic::BlsToExecutionChange |
             GossipTopic::ProposerSlashing |
-            GossipTopic::AttesterSlashing => self.local_gossip.submit(
-                LocalMessage {
-                    request_id,
-                    topic,
-                    ssz,
-                    ssz_read: Some(ssz_read),
-                    slot: 0,
-                    validation: BroadcastValidation::Gossip,
-                },
-                now,
-                &mut self.gossip_handler,
-                producers,
-            ),
+            GossipTopic::AttesterSlashing => (Some(ssz_read), 0),
             topic => {
                 silver_log::error!(request_id, ?topic, "no local submission path for the topic");
-                produce_response(producers, request_id, Err(LocalGossipFailure::Internal))
+                return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
             }
-        }
+        };
+        self.local_gossip.submit(
+            LocalMessage { request_id, topic, ssz, ssz_read, slot, validation },
+            now,
+            &mut self.gossip_handler,
+            producers,
+        );
     }
 
     fn on_attestation_subscriptions(&mut self, subscriptions: TCacheRead, wall_slot: u64) {

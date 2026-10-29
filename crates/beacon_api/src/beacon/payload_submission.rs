@@ -12,11 +12,11 @@ use crate::{
 };
 
 pub(crate) fn post_payload_envelope(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !req.body_is_ssz() {
-        return resp.error(415, "only application/octet-stream bodies are read");
-    }
     if !ctx.follows_chain(resp) {
         return;
+    }
+    if !req.body_is_ssz() {
+        return resp.error(415, "only application/octet-stream bodies are read");
     }
     if req.eth_consensus_version != Some("gloas") {
         return resp.error(400, "Eth-Consensus-Version must be gloas");

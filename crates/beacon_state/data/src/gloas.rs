@@ -142,10 +142,6 @@ impl PayloadWithdrawals {
         self.items[self.len] = withdrawal;
         self.len += 1;
     }
-
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
 }
 
 impl Default for PayloadWithdrawals {

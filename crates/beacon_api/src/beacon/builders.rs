@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error};
 use serde_json::value::RawValue;
 use silver_beacon_state_data::{
     BLSPubkey, Builder, BuildersView, Epoch, FAR_FUTURE_EPOCH, StateReadView,
@@ -39,6 +39,8 @@ struct FilterBody<'a> {
     statuses: Option<&'a RawValue>,
 }
 
+/// Ids are answered in the order named: the schema promises no order, and
+/// each entry carries both index and pubkey.
 struct BuilderFilter<'a> {
     /// Every entry parses; `None` when the list names no builder.
     ids: Option<&'a [u8]>,
@@ -52,68 +54,43 @@ impl<'a> BuilderFilter<'a> {
         } else {
             serde_json::from_slice(body).map_err(|_| "invalid request body")?
         };
-
         let mut statuses = 0;
-        let mut valid = true;
         if let Some(list) = body.statuses {
-            each_body_entry(list.get().as_bytes(), |_, status: &str| {
-                match BuilderStatus::parse(status) {
-                    Some(status) => statuses |= 1 << status as u8,
-                    None => valid = false,
-                }
+            each_body_entry(list.get().as_bytes(), |_, status: BuilderStatus| {
+                statuses |= status.bit()
             })?;
         }
-        if !valid {
-            return Err("invalid status");
+        let mut ids = body.ids.map(|list| list.get().as_bytes());
+        if let Some(list) = ids &&
+            each_body_entry(list, |_, _: BuilderId| {})? == 0
+        {
+            ids = None;
         }
-
-        let ids = body.ids.map(|list| list.get().as_bytes());
-        let mut named = 0;
-        if let Some(list) = ids {
-            named = each_body_entry(list, |_, id: &str| valid &= BuilderId::parse(id).is_some())?;
-        }
-        if !valid {
-            return Err("invalid id");
-        }
-        Ok(Self { ids: ids.filter(|_| named > 0), statuses })
+        Ok(Self { ids, statuses })
     }
 
-    /// Ids are answered in the order they are named, repeats included: the
-    /// schema promises no order, and the entries carry both index and pubkey.
     fn render(&self, view: &StateReadView<'_>, json: &mut Json<'_>) {
         let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
         let builders = &view.builders;
         json.begin_array();
-        match self.ids {
-            None => {
-                for index in 0..builders.len() {
-                    self.render_admitted(builders, index, finalized_epoch, json);
-                }
+        let mut render = |index: usize| {
+            let builder = builders.get(index).expect("resolved within the registry");
+            let status = BuilderStatus::of(builder, finalized_epoch);
+            if self.statuses == 0 || self.statuses & status.bit() != 0 {
+                json.builder(index as u64, status.name(), builder);
             }
+        };
+        match self.ids {
+            None => (0..builders.len()).for_each(render),
             Some(ids) => {
-                let _ = each_body_entry(ids, |_, id: &str| {
-                    let index = BuilderId::parse(id).and_then(|id| id.resolve(builders));
-                    if let Some(index) = index {
-                        self.render_admitted(builders, index, finalized_epoch, json);
+                let _ = each_body_entry(ids, |_, id: BuilderId| {
+                    if let Some(index) = id.resolve(builders) {
+                        render(index);
                     }
                 });
             }
         }
         json.end_array();
-    }
-
-    fn render_admitted(
-        &self,
-        builders: &BuildersView<'_>,
-        index: usize,
-        finalized_epoch: Epoch,
-        json: &mut Json<'_>,
-    ) {
-        let builder = builders.get(index).expect("resolved within the registry");
-        let status = BuilderStatus::of(builder, finalized_epoch);
-        if self.statuses == 0 || self.statuses & 1 << status as u8 != 0 {
-            json.builder(index as u64, status.name(), builder);
-        }
     }
 }
 
@@ -122,14 +99,17 @@ enum BuilderId {
     Pubkey(BLSPubkey),
 }
 
-impl BuilderId {
-    fn parse(text: &str) -> Option<Self> {
+impl<'de> Deserialize<'de> for BuilderId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <&str>::deserialize(deserializer)?;
         match parse_uint64(text) {
-            Some(index) => Some(Self::Index(index)),
-            None => parse_pubkey(text).map(Self::Pubkey),
+            Some(index) => Ok(Self::Index(index)),
+            None => parse_pubkey(text).map(Self::Pubkey).ok_or_else(|| Error::custom("invalid id")),
         }
     }
+}
 
+impl BuilderId {
     fn resolve(&self, builders: &BuildersView<'_>) -> Option<usize> {
         match self {
             Self::Index(index) => usize::try_from(*index).ok().filter(|&ix| ix < builders.len()),
@@ -139,7 +119,8 @@ impl BuilderId {
 }
 
 /// `types/api.yaml#/BuilderStatus`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum BuilderStatus {
     Pending,
     Active,
@@ -157,8 +138,8 @@ impl BuilderStatus {
         }
     }
 
-    fn parse(text: &str) -> Option<Self> {
-        [Self::Pending, Self::Active, Self::Exited].into_iter().find(|status| status.name() == text)
+    fn bit(self) -> u8 {
+        1 << self as u8
     }
 
     fn name(self) -> &'static str {

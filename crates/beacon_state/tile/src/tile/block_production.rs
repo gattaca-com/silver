@@ -357,7 +357,7 @@ impl BlockProduction {
         self.built.as_ref().filter(|built| built.proposal == *proposal).map(|built| built.block)
     }
 
-    pub(super) fn prepared_slot(&self) -> Option<Slot> {
+    fn prepared_slot(&self) -> Option<Slot> {
         self.building.as_ref().filter(|build| build.stage != PayloadStage::Idle).map(|b| b.slot)
     }
 
@@ -458,11 +458,7 @@ impl BeaconStateTile {
         fallback_fee_recipient: Option<ExecutionAddress>,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
-        let proposer = self.payload_proposer(slot)?;
-        if !proposer.local && fallback_fee_recipient.is_none() {
-            return Err(ProduceBlockFailure::NoFeeRecipient);
-        }
-        let basis = self.payload_basis(proposer, fallback_fee_recipient.unwrap_or_default())?;
+        let basis = self.payload_basis(self.payload_proposer(slot)?, fallback_fee_recipient)?;
         self.prepare_payload_on(basis, producers)
     }
 
@@ -480,8 +476,7 @@ impl BeaconStateTile {
             build.context = None;
             build.local = None;
         }
-        self.fill_payload_inputs(&basis)?;
-        let inputs = &self.payload_attributes.inputs;
+        let inputs = self.payload_inputs(&basis)?;
 
         let (head_root, context) = (basis.head_root, basis.context);
         let id = self.block_production.begin_preparation(slot, head_root, context, producers);
@@ -501,9 +496,7 @@ impl BeaconStateTile {
         }));
         silver_log::info!(slot, proposer = basis.proposer, "payload preparation requested");
 
-        if self.payload_attributes.wanted {
-            self.publish_payload_attributes(&basis, producers);
-        }
+        self.publish_payload_attributes(&basis, &inputs, producers);
         Ok(())
     }
 

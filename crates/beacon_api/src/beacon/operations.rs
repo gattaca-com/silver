@@ -142,6 +142,9 @@ pub(crate) fn post_proposer_slashing(req: &Request<'_>, ctx: &ApiCtx, resp: &mut
 }
 
 pub(crate) fn post_attester_slashing(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     // Electra onward shares one SSZ layout; Silver runs Fulu and Gloas.
     if !matches!(req.eth_consensus_version, Some("fulu" | "gloas")) {
         resp.error(400, "Eth-Consensus-Version must name fulu or gloas");

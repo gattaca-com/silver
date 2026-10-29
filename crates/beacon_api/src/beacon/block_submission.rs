@@ -15,11 +15,11 @@ use crate::{
 const MAX_BUILDER_URL_SIZE: usize = 2048;
 
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    if !req.body_is_ssz() {
-        return resp.error(415, "only application/octet-stream bodies are read");
-    }
     if !ctx.follows_chain(resp) {
         return;
+    }
+    if !req.body_is_ssz() {
+        return resp.error(415, "only application/octet-stream bodies are read");
     }
     let Some(validation) = requested_validation(req) else {
         return resp.error(400, "invalid broadcast_validation");

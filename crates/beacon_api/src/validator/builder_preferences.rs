@@ -6,7 +6,10 @@ use crate::{
     validator::registration::UNSUPPORTED_MEDIA_TYPE,
 };
 
-pub(crate) fn post_builder_preferences(req: &Request<'_>, _ctx: &ApiCtx, resp: &mut Response<'_>) {
+pub(crate) fn post_builder_preferences(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     if req.eth_consensus_version != Some("gloas") {
         return resp.error(400, "Eth-Consensus-Version must name gloas");
     }

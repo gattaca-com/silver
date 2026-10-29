@@ -16,6 +16,9 @@ pub(crate) fn post_payload_attestation_messages(
     ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     if req.eth_consensus_version != Some("gloas") {
         resp.error(400, "Eth-Consensus-Version must name gloas");
         return;

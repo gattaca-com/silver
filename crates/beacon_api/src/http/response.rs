@@ -13,7 +13,7 @@ use crate::{
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{
-        AcceptedEntry, AwaitedImport, BuilderForward, EnvelopePublication, Submission,
+        AcceptedEntry, AwaitedImport, BuilderForward, EnvelopePublication, Integration, Submission,
         SubmissionFailure, failure_message,
     },
 };
@@ -65,7 +65,9 @@ impl<'a> Response<'a> {
         validation: BroadcastValidation,
     ) {
         self.await_published(GossipTopic::ExecutionPayload, body, validation);
-        self.submission().envelope = Some(publication);
+        let submission = self.submission();
+        submission.envelope = Some(publication);
+        submission.integration = Integration::AwaitingEnvelopeCheck;
     }
 
     pub(crate) fn await_block(
@@ -75,7 +77,7 @@ impl<'a> Response<'a> {
         import: AwaitedImport,
     ) {
         self.await_published(GossipTopic::BeaconBlock, body, validation);
-        self.submission().import = Some(import);
+        self.submission().integration = Integration::AwaitingImport(import);
     }
 
     fn await_published(

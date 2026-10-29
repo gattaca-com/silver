@@ -38,7 +38,7 @@ use crate::{
     node::peers::Peer,
     routes::ROUTES,
     submission::{
-        AcceptedEntry, AwaitedImport, BuilderForward, RecentImports, SubmissionFailure,
+        AcceptedEntry, BuilderForward, Integration, RecentImports, SubmissionFailure,
         failure_message,
     },
     validator::{
@@ -113,11 +113,9 @@ struct PendingSubmission {
     first_id: u64,
     body_len: usize,
     unanswered: usize,
-    broadcast_only: bool,
-    awaits_envelope_validation: bool,
     failures: Vec<SubmissionFailure>,
     forward: Option<BuilderForward>,
-    import: Option<AwaitedImport>,
+    integration: Integration,
 }
 
 impl PendingSubmission {
@@ -130,57 +128,44 @@ impl PendingSubmission {
         self.body_index(request_id).is_some()
     }
 
-    /// Whether this was the last answer awaited. A block published without
-    /// a root, as one already on the network, leaves no import to await.
+    /// Returns the builder forward once every entry is broadcast: the builder
+    /// releases the payload on the block, not on its import.
     fn record(
         &mut self,
         request_id: u64,
         result: LocalGossipResult,
         block_root: Option<B256>,
         imports: &RecentImports,
-    ) -> bool {
+    ) -> Option<BuilderForward> {
         let body_index = self.body_index(request_id).expect("awaited");
         self.unanswered -= 1;
-        match (result, block_root) {
-            (Err(failure), _) => {
+        match result {
+            Ok(()) => {
+                self.integration.on_published(block_root);
+                self.integration.update(imports, Instant::now());
+            }
+            Err(failure) => {
                 if !self.failures.iter().any(|failed| failed.body_index == body_index) {
                     let message = failure_message(failure);
                     self.failures.push(SubmissionFailure { body_index, message });
                 }
             }
-            (Ok(()), Some(block_root)) => {
-                if let Some(import) = &mut self.import {
-                    import.name(block_root);
-                }
-            }
-            (Ok(()), None) => self.import = None,
         }
-        self.settled(imports, Instant::now())
+        let published = self.unanswered == 0 && self.failures.is_empty();
+        if published { self.forward.take() } else { None }
     }
 
-    fn settled(&mut self, imports: &RecentImports, now: Instant) -> bool {
-        if let Some(integrated) = self.import.and_then(|import| import.integrated(imports, now)) {
-            self.broadcast_only |= !integrated;
-            self.import = None;
-        }
-        self.unanswered == 0 &&
-            (!self.failures.is_empty() ||
-                !self.awaits_envelope_validation && self.import.is_none())
+    fn settled(&self) -> bool {
+        self.unanswered == 0 && (!self.failures.is_empty() || self.integration.is_settled())
     }
 
-    /// Every entry was broadcast, though an import may still be awaited.
-    fn published(&self) -> bool {
-        self.unanswered == 0 && self.failures.is_empty()
-    }
-
-    /// Returns the builder forward of a submission published whole.
-    fn respond(&mut self, resp: &mut Response<'_>) -> Option<BuilderForward> {
-        if self.failures.is_empty() {
-            resp.status_only(if self.broadcast_only { 202 } else { 200 });
-            self.forward.take()
-        } else {
+    fn respond(&self, resp: &mut Response<'_>) {
+        if !self.failures.is_empty() {
             resp.indexed_failures(&self.failures);
-            None
+        } else if self.integration == Integration::BroadcastOnly {
+            resp.status_only(202);
+        } else {
+            resp.status_only(200);
         }
     }
 }
@@ -235,11 +220,9 @@ impl Pending {
                     first_id,
                     body_len,
                     unanswered: submission.accepted.len(),
-                    broadcast_only: false,
-                    awaits_envelope_validation: submission.envelope.is_some(),
                     failures: submission.failures,
                     forward: submission.forward,
-                    import: submission.import,
+                    integration: submission.integration,
                 };
                 (Self::Submission(pending), body_len as u64)
             }
@@ -883,33 +866,23 @@ impl BeaconApi {
     fn settle_imports(&mut self, submissions: &mut TProducer, now: Instant) -> bool {
         let mut answered = false;
         let mut i = 0;
-        while i < self.awaiting_import.len() {
-            let token = self.awaiting_import[i];
-            let Some(requests) =
-                self.connections.get_mut(&token).and_then(Connection::requests_mut)
-            else {
-                self.awaiting_import.swap_remove(i);
-                continue;
-            };
-            let Some(Pending::Submission(pending)) = &mut requests.pending else {
-                self.awaiting_import.swap_remove(i);
-                continue;
-            };
-            if !pending.settled(&self.recent_imports, now) {
-                if pending.import.is_none() {
-                    self.awaiting_import.swap_remove(i);
-                } else {
+        while let Some(&token) = self.awaiting_import.get(i) {
+            let requests = self.connections.get_mut(&token).and_then(Connection::requests_mut);
+            if let Some(requests) = requests &&
+                let Some(Pending::Submission(pending)) = &mut requests.pending
+            {
+                pending.integration.update(&self.recent_imports, now);
+                if pending.settled() {
+                    pending.respond(&mut Response::new(requests.http.write_buf_mut(), submissions));
+                    requests.pending = None;
+                    self.resume_writing(token);
+                    answered = true;
+                } else if pending.integration.awaits_import() {
                     i += 1;
+                    continue;
                 }
-                continue;
             }
-            let mut resp = Response::new(requests.http.write_buf_mut(), submissions);
-            let forward = pending.respond(&mut resp);
-            debug_assert!(forward.is_none(), "released at the verdict");
-            requests.pending = None;
             self.awaiting_import.swap_remove(i);
-            self.resume_writing(token);
-            answered = true;
         }
         answered
     }
@@ -1218,11 +1191,10 @@ impl BeaconApi {
                 BeaconApiResponse::PayloadEnvelopeValidation { consensus_valid, .. },
                 Pending::Submission(pending),
             ) => {
-                pending.broadcast_only = !consensus_valid;
-                pending.awaits_envelope_validation = false;
-                let settled = pending.settled(recent_imports, Instant::now());
+                pending.integration = Integration::settled(consensus_valid);
+                let settled = pending.settled();
                 if settled {
-                    forward = pending.respond(&mut resp);
+                    pending.respond(&mut resp);
                 }
                 settled
             }
@@ -1230,13 +1202,10 @@ impl BeaconApi {
                 BeaconApiResponse::LocalGossipResponse { response, block_root, .. },
                 Pending::Submission(pending),
             ) => {
-                let settled = pending.record(request_id, response, block_root, recent_imports);
+                forward = pending.record(request_id, response, block_root, recent_imports);
+                let settled = pending.settled();
                 if settled {
-                    forward = pending.respond(&mut resp);
-                } else if pending.published() {
-                    // The builder releases the payload on the block, not on
-                    // its import.
-                    forward = pending.forward.take();
+                    pending.respond(&mut resp);
                 }
                 settled
             }
@@ -1488,7 +1457,7 @@ impl BeaconApi {
                 deferred => {
                     let (pending, ids_used) = Pending::defer(deferred, self.next_request_id, emit);
                     self.next_request_id += ids_used;
-                    if matches!(&pending, Pending::Submission(p) if p.import.is_some()) {
+                    if matches!(&pending, Pending::Submission(p) if p.integration.awaits_import()) {
                         self.awaiting_import.push(token);
                     }
                     let requests = conn.requests_mut().expect("only a request handler defers");

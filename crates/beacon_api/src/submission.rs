@@ -97,7 +97,7 @@ pub(crate) struct Submission {
     pub(crate) forward: Option<BuilderForward>,
     pub(crate) validation: BroadcastValidation,
     pub(crate) envelope: Option<EnvelopePublication>,
-    pub(crate) import: Option<AwaitedImport>,
+    pub(crate) integration: Integration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,8 +115,53 @@ pub(crate) fn requested_validation(req: &Request<'_>) -> Option<BroadcastValidat
     }
 }
 
-/// A published block's import, which its 200 waits on: a block broadcast but
-/// not integrated is answered 202. Its root comes with its verdict.
+/// What a broadcast submission's answer waits on: 200 once integrated, 202
+/// once broadcast but not integrated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Integration {
+    #[default]
+    Integrated,
+    BroadcastOnly,
+    AwaitingEnvelopeCheck,
+    AwaitingImport(AwaitedImport),
+}
+
+impl Integration {
+    pub(crate) fn settled(integrated: bool) -> Self {
+        if integrated { Self::Integrated } else { Self::BroadcastOnly }
+    }
+
+    pub(crate) fn is_settled(&self) -> bool {
+        matches!(self, Self::Integrated | Self::BroadcastOnly)
+    }
+
+    pub(crate) fn awaits_import(&self) -> bool {
+        matches!(self, Self::AwaitingImport(_))
+    }
+
+    /// An import is settled by what `imports` holds for its block, or by
+    /// its deadline.
+    pub(crate) fn update(&mut self, imports: &RecentImports, now: Instant) {
+        if let Self::AwaitingImport(import) = self &&
+            let Some(integrated) = import.integrated(imports, now)
+        {
+            *self = Self::settled(integrated);
+        }
+    }
+
+    /// A published block's verdict names it, or, for one already on the
+    /// network, leaves nothing to follow.
+    pub(crate) fn on_published(&mut self, block_root: Option<B256>) {
+        if let Self::AwaitingImport(import) = self {
+            match block_root {
+                Some(block_root) => import.block_root = Some(block_root),
+                None => *self = Self::Integrated,
+            }
+        }
+    }
+}
+
+/// Its root comes with the block's verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AwaitedImport {
     block_root: Option<B256>,
@@ -135,13 +180,9 @@ impl AwaitedImport {
         }
     }
 
-    pub(crate) fn name(&mut self, block_root: B256) {
-        self.block_root = Some(block_root);
-    }
-
     /// `Some(true)` once integrated, `Some(false)` once it cannot be in time.
     /// An EL still syncing leaves the block optimistically imported.
-    pub(crate) fn integrated(&self, imports: &RecentImports, now: Instant) -> Option<bool> {
+    fn integrated(&self, imports: &RecentImports, now: Instant) -> Option<bool> {
         if let Some(progress) = self.block_root.and_then(|root| imports.get(&root)) {
             if progress.rejected || progress.execution == Some(PayloadValidationStatus::Invalid) {
                 return Some(false);

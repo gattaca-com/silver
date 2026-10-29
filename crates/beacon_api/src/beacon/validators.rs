@@ -21,14 +21,33 @@ const MAX_VALIDATOR_IDS: usize = 32 * 1024;
 const VALIDATORS_PER_BATCH: usize = 512;
 
 pub(crate) fn get_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
-    respond_selection(req, ctx, resp, Selection::from_query(req.query), Selection::render);
+    respond_validators(req, ctx, resp, Selection::from_query(req.query));
 }
 
 pub(crate) fn post_state_validators(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     let selection = serde_json::from_slice::<SelectionBody>(req.body)
         .map_err(|_| Rejection::bad_request("invalid request body"))
         .and_then(|body| Selection::from_body(&body));
-    respond_selection(req, ctx, resp, selection, Selection::render);
+    respond_validators(req, ctx, resp, selection);
+}
+
+/// A status filter alone selects the registry it admits, as helix's relay
+/// asks for `active,pending`. On mainnet that body is over 500 MB, so it is
+/// streamed.
+fn respond_validators(
+    req: &Request<'_>,
+    ctx: &ApiCtx,
+    resp: &mut Response<'_>,
+    selection: Result<Selection, Rejection>,
+) {
+    match selection {
+        Ok(selection) if selection.ids.is_empty() && selection.statuses.filters() => {
+            if let Some(pin) = ctx.pin_state(req, resp) {
+                resp.begin_registry_download(RegistryStream::new(pin, selection.statuses));
+            }
+        }
+        selection => respond_selection(req, ctx, resp, selection, Selection::render),
+    }
 }
 
 pub(crate) fn get_state_validator_balances(
@@ -62,9 +81,7 @@ impl Rejection {
 
 /// The whole registry is a valid selection the schema allows and no validator
 /// client sends: each one names the validators it runs, and the one library
-/// that wants every validator downloads the SSZ state instead. A status filter
-/// alone selects the registry it admits, as helix's relay asks for
-/// `active,pending`; on mainnet that body is over 500 MB, so it is streamed.
+/// that wants every validator downloads the SSZ state instead.
 fn respond_selection(
     req: &Request<'_>,
     ctx: &ApiCtx,
@@ -72,8 +89,11 @@ fn respond_selection(
     selection: Result<Selection, Rejection>,
     render: fn(&Selection, &StateReadView<'_>, &mut Json<'_>),
 ) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     let mut selection = match selection {
-        Ok(selection) if !selection.ids.is_empty() || selection.statuses.filters() => selection,
+        Ok(selection) if !selection.ids.is_empty() => selection,
         Ok(_) => {
             resp.error(400, "at least one id is required");
             return;
@@ -83,12 +103,6 @@ fn respond_selection(
             return;
         }
     };
-    if selection.ids.is_empty() {
-        if let Some(pin) = ctx.pin_state(req, resp) {
-            resp.begin_registry_download(RegistryStream::new(pin, selection.statuses));
-        }
-        return;
-    }
     selection.ids.sort_unstable();
     selection.ids.dedup();
     ctx.state_response(req, resp, |view, json| render(&selection, view, json));
@@ -119,36 +133,43 @@ impl RegistryStream {
     /// Appends the next batch of the body to `out`. `Superseded` means a
     /// finalize ended the pinned state, and the body can no longer be whole.
     pub(crate) fn render_next(&mut self, ctx: &ApiCtx, out: &mut Vec<u8>) -> Batch {
-        let last = ctx.state.read_pinned(self.pin, |view| {
-            let current_epoch = view.slot.current_epoch();
-            let count = view.validators.count();
+        let rendered = ctx.state.read_pinned(self.pin, |view| {
             if self.next == 0 {
                 let mut json = Json::new(out);
                 json.begin_flagged_envelope(read_flags(ctx.node_status, &view));
                 json.begin_array();
             }
-            let end = count.min(self.next + VALIDATORS_PER_BATCH);
-            for ix in self.next..end {
-                let record = ValidatorRecord::read(&view, current_epoch, ix);
-                if !self.statuses.admits(record.status) {
-                    continue;
-                }
+            self.render_batch(&view, out);
+            self.next == view.validators.count()
+        });
+        match rendered {
+            None => Batch::Superseded,
+            Some(true) => Batch::Last,
+            Some(false) => Batch::More,
+        }
+    }
+
+    /// Batches are framed apart, so `rendered_any` carries the separator
+    /// across them.
+    fn render_batch(&mut self, view: &StateReadView<'_>, out: &mut Vec<u8>) {
+        let current_epoch = view.slot.current_epoch();
+        let count = view.validators.count();
+        let end = count.min(self.next + VALIDATORS_PER_BATCH);
+        for index in self.next..end {
+            let record = ValidatorRecord::read(view, current_epoch, index);
+            if self.statuses.admits(record.status) {
                 if self.rendered_any {
                     out.push(b',');
                 }
                 Json::new(out).validator(&record);
                 self.rendered_any = true;
             }
-            self.next = end;
-            if end == count {
-                out.extend_from_slice(b"]}");
-            }
-            end == count
-        });
-        match last {
-            None => Batch::Superseded,
-            Some(true) => Batch::Last,
-            Some(false) => Batch::More,
+        }
+        self.next = end;
+        if end == count {
+            let mut json = Json::new(out);
+            json.end_array();
+            json.end_object();
         }
     }
 }

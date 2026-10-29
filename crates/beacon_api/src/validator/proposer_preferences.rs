@@ -12,6 +12,9 @@ use crate::{
 };
 
 pub(crate) fn post_proposer_preferences(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
+    if !ctx.follows_chain(resp) {
+        return;
+    }
     if req.eth_consensus_version != Some("gloas") {
         resp.error(400, "Eth-Consensus-Version must name gloas");
         return;

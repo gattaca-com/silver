@@ -26,7 +26,7 @@ pub(super) struct PayloadContext {
 pub(super) struct PayloadProposer {
     slot: Slot,
     index: u64,
-    pub(super) local: bool,
+    local: bool,
     fee_recipient: Option<ExecutionAddress>,
     target_gas_limit: Option<u64>,
 }
@@ -45,22 +45,21 @@ pub(super) struct PayloadBasis {
     pub(super) context: PayloadContext,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct PayloadInputs {
     pub(super) prev_randao: B256,
     pub(super) withdrawals: PayloadWithdrawals,
 }
 
-/// `inputs` are the last computed, filled in place, so a preparation following
-/// an announcement on the same parent reads them back. Slots no local
-/// validator proposes are announced only while the API has
-/// `payload_attributes` subscribers.
+/// Every basis is announced once while the API has `payload_attributes`
+/// subscribers. `inputs` are kept for the basis they were computed on, so a
+/// slot both prepared and announced is swept once.
 #[derive(Default)]
 pub(super) struct PayloadAttributes {
     pub(super) wanted: bool,
     announced: Option<PayloadBasis>,
     computed_for: Option<PayloadBasis>,
-    pub(super) inputs: PayloadInputs,
+    inputs: PayloadInputs,
 }
 
 impl PayloadBasis {
@@ -101,9 +100,14 @@ impl BeaconStateTile {
     pub(super) fn payload_basis(
         &self,
         proposer: PayloadProposer,
-        fallback_fee_recipient: ExecutionAddress,
+        fallback_fee_recipient: Option<ExecutionAddress>,
     ) -> Result<PayloadBasis, ProduceBlockFailure> {
         let slot = proposer.slot;
+        // A proposer known only from the network is built for only on a fallback.
+        let fee_recipient = (proposer.local || fallback_fee_recipient.is_some())
+            .then(|| proposer.fee_recipient.or(fallback_fee_recipient))
+            .flatten()
+            .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
         let (head_root, head_block_hash, safe_block_hash, finalized_block_hash) =
             self.fork_choice.fcu_execution_hashes();
         if head_root != self.head_block_root() {
@@ -136,7 +140,7 @@ impl BeaconStateTile {
             timestamp: head.imm.genesis_time + slot * self.spec.seconds_per_slot(),
             context: PayloadContext {
                 head_block_hash,
-                fee_recipient: proposer.fee_recipient.unwrap_or(fallback_fee_recipient),
+                fee_recipient,
                 target_gas_limit,
                 is_gloas,
                 full_parent,
@@ -161,19 +165,14 @@ impl BeaconStateTile {
         }
     }
 
-    /// Leaves `self.payload_attributes.inputs` holding `basis`'s inputs.
-    pub(super) fn fill_payload_inputs(
+    pub(super) fn payload_inputs(
         &mut self,
         basis: &PayloadBasis,
-    ) -> Result<(), ProduceBlockFailure> {
-        if self
-            .payload_attributes
-            .computed_for
-            .is_some_and(|computed| computed.shares_inputs_with(basis))
-        {
-            return Ok(());
+    ) -> Result<PayloadInputs, ProduceBlockFailure> {
+        let cache = &self.payload_attributes;
+        if cache.computed_for.is_some_and(|computed| computed.shares_inputs_with(basis)) {
+            return Ok(cache.inputs);
         }
-        self.payload_attributes.computed_for = None;
         let PayloadBasis { slot, head_root, context, .. } = *basis;
         let state_id = self.epoch_start_state(self.last_applied, slot);
         // Never committed: the ring slots it rolls are freed with the tail.
@@ -181,28 +180,82 @@ impl BeaconStateTile {
         if context.is_gloas {
             stf::process_slots(&self.spec, &mut fork, slot, &mut self.stf_scratch);
         }
-        let inputs = &mut self.payload_attributes.inputs;
-        inputs.prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
-        match (context.is_gloas, context.full_parent) {
-            (false, _) => inputs.withdrawals = get_expected_withdrawals(&fork.view).withdrawals,
+        let prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
+        let withdrawals = match (context.is_gloas, context.full_parent) {
+            (false, _) => get_expected_withdrawals(&fork.view).withdrawals,
             (true, true) => {
                 let requests = self.payload_execution_requests.get(&head_root);
-                inputs.withdrawals =
-                    withdrawals_after_parent_payload(&mut fork, &self.spec, requests, slot)?;
+                withdrawals_after_parent_payload(&mut fork, &self.spec, requests, slot)?
             }
-            (true, false) => copy_withdrawals_owed_by_empty_parent(&fork, &mut inputs.withdrawals),
-        }
+            (true, false) => withdrawals_owed_by_empty_parent(&fork),
+        };
+        let inputs = PayloadInputs { prev_randao, withdrawals };
         self.payload_attributes.computed_for = Some(*basis);
-        Ok(())
+        self.payload_attributes.inputs = inputs;
+        Ok(inputs)
     }
 
-    /// Publishes `basis` with the inputs [`Self::fill_payload_inputs`] left.
+    /// The EL builds for a local proposer; subscribers hear of every slot.
+    pub(super) fn prepare_or_announce_payload(&mut self, slot: Slot, producers: &mut Producers) {
+        let Ok(proposer) = self.payload_proposer(slot) else { return };
+        if !proposer.local {
+            return self.announce_payload_attributes(proposer, producers);
+        }
+        if let Ok(basis) = self.payload_basis(proposer, None) {
+            let _ = self.prepare_payload_on(basis, producers);
+        }
+    }
+
+    pub(super) fn set_payload_attributes_wanted(
+        &mut self,
+        wanted: bool,
+        producers: &mut Producers,
+    ) {
+        self.payload_attributes.wanted = wanted;
+        self.payload_attributes.announced = None;
+        if let Ok(proposer) = self.payload_proposer(self.ticker.current_slot() + 1) {
+            self.announce_payload_attributes(proposer, producers);
+        }
+    }
+
+    /// Moves the announced slot onto a new head.
+    pub(super) fn refresh_payload_attributes(&mut self, producers: &mut Producers) {
+        let Some(announced) = self.payload_attributes.announced else { return };
+        if announced.slot >= self.ticker.current_slot() &&
+            let Ok(proposer) = self.payload_proposer(announced.slot)
+        {
+            self.announce_payload_attributes(proposer, producers);
+        }
+    }
+
+    fn announce_payload_attributes(
+        &mut self,
+        proposer: PayloadProposer,
+        producers: &mut Producers,
+    ) {
+        if !self.payload_attributes.wanted {
+            return;
+        }
+        // Consumers are told to ignore the fee recipient, so zero may stand in.
+        let fallback_fee_recipient = Some(self.default_fee_recipient.unwrap_or_default());
+        if let Ok(basis) = self.payload_basis(proposer, fallback_fee_recipient) &&
+            let Ok(inputs) = self.payload_inputs(&basis)
+        {
+            self.publish_payload_attributes(&basis, &inputs, producers);
+        }
+    }
+
+    /// Publishes each basis once, and only to subscribers.
     pub(super) fn publish_payload_attributes(
         &mut self,
         basis: &PayloadBasis,
+        inputs: &PayloadInputs,
         producers: &mut Producers,
     ) {
-        let inputs = &self.payload_attributes.inputs;
+        let attributes = &mut self.payload_attributes;
+        if !attributes.wanted || attributes.announced == Some(*basis) {
+            return;
+        }
         let mut withdrawals = None;
         if !inputs.withdrawals.is_empty() {
             withdrawals =
@@ -211,6 +264,7 @@ impl BeaconStateTile {
                 return;
             }
         }
+        attributes.announced = Some(*basis);
         producers.produce(BeaconStateEvent::PayloadAttributes(PreparedPayloadAttributes {
             proposal_slot: basis.slot,
             proposer_index: basis.proposer,
@@ -223,66 +277,6 @@ impl BeaconStateTile {
             target_gas_limit: basis.context.target_gas_limit,
             withdrawals,
         }));
-    }
-
-    /// The EL builds only for a local proposer; any other slot's attributes
-    /// are computed only for subscribers.
-    pub(super) fn prepare_or_announce_payload(&mut self, slot: Slot, producers: &mut Producers) {
-        let Ok(proposer) = self.payload_proposer(slot) else { return };
-        if !proposer.local && !self.payload_attributes.wanted {
-            return;
-        }
-        let Some(basis) = self.feed_basis(proposer) else { return };
-        if proposer.local {
-            let _ = self.prepare_payload_on(basis, producers);
-        } else {
-            self.announce_payload_attributes(basis, producers);
-        }
-    }
-
-    pub(super) fn set_payload_attributes_wanted(
-        &mut self,
-        wanted: bool,
-        producers: &mut Producers,
-    ) {
-        self.payload_attributes.wanted = wanted;
-        self.payload_attributes.announced = None;
-        if wanted &&
-            let Ok(proposer) = self.payload_proposer(self.ticker.current_slot() + 1) &&
-            let Some(basis) = self.feed_basis(proposer)
-        {
-            self.announce_payload_attributes(basis, producers);
-        }
-    }
-
-    /// A slot the EL is building for is refreshed with its preparation.
-    pub(super) fn refresh_payload_attributes(&mut self, producers: &mut Producers) {
-        let Some(announced) = self.payload_attributes.announced else { return };
-        let slot = announced.slot;
-        let current = slot >= self.ticker.current_slot();
-        if current &&
-            self.block_production.prepared_slot() != Some(slot) &&
-            let Ok(proposer) = self.payload_proposer(slot) &&
-            let Some(basis) = self.feed_basis(proposer)
-        {
-            self.announce_payload_attributes(basis, producers);
-        }
-    }
-
-    /// The fee recipient falls back to the default, then to zero: consumers
-    /// are told to ignore it.
-    fn feed_basis(&self, proposer: PayloadProposer) -> Option<PayloadBasis> {
-        self.payload_basis(proposer, self.default_fee_recipient.unwrap_or_default()).ok()
-    }
-
-    fn announce_payload_attributes(&mut self, basis: PayloadBasis, producers: &mut Producers) {
-        if self.payload_attributes.announced == Some(basis) ||
-            self.fill_payload_inputs(&basis).is_err()
-        {
-            return;
-        }
-        self.payload_attributes.announced = Some(basis);
-        self.publish_payload_attributes(&basis, producers);
     }
 }
 
@@ -305,11 +299,12 @@ fn withdrawals_after_parent_payload(
     Ok(stf::get_expected_withdrawals_gloas(&fork.view).withdrawals)
 }
 
-fn copy_withdrawals_owed_by_empty_parent(fork: &ForkWriter<'_>, out: &mut PayloadWithdrawals) {
-    out.clear();
+fn withdrawals_owed_by_empty_parent(fork: &ForkWriter<'_>) -> PayloadWithdrawals {
+    let mut withdrawals = PayloadWithdrawals::new();
     for withdrawal in &fork.view.slot.state().payload_expected_withdrawals {
-        out.push(*withdrawal);
+        withdrawals.push(*withdrawal);
     }
+    withdrawals
 }
 
 fn post_withdrawals(
