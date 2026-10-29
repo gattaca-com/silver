@@ -1,6 +1,6 @@
 [package]
 name = "silver_crypto_simd"
-description = "BLS12-381 and KZG primitives for Ethereum consensus, optimized for modern x86-64 CPUs with AVX-512 IFMA"
+description = "BLS12-381 and KZG for Ethereum consensus, optimized for x86-64 CPUs with AVX-512 IFMA"
 edition.workspace = true
 exclude = ["proof/"]
 license = "MIT"
