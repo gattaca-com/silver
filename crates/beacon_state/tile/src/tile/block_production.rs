@@ -458,7 +458,7 @@ impl BeaconStateTile {
         fallback_fee_recipient: Option<ExecutionAddress>,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
-        let basis = self.payload_basis(self.payload_proposer(slot)?, fallback_fee_recipient)?;
+        let basis = self.payload_basis(slot, fallback_fee_recipient)?;
         self.prepare_payload_on(basis, producers)
     }
 

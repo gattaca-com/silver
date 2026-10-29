@@ -157,7 +157,9 @@ impl PendingSubmission {
     }
 
     fn settled(&self) -> bool {
-        self.unanswered == 0 && (!self.failures.is_empty() || self.integration.is_settled())
+        let integration_known =
+            matches!(self.integration, Integration::Integrated | Integration::BroadcastOnly);
+        self.unanswered == 0 && (!self.failures.is_empty() || integration_known)
     }
 
     fn respond(&self, resp: &mut Response<'_>) {
@@ -1213,7 +1215,11 @@ impl BeaconApi {
                 BeaconApiResponse::PayloadEnvelopeValidation { consensus_valid, .. },
                 Pending::Submission(pending),
             ) => {
-                pending.integration = Integration::of(consensus_valid);
+                pending.integration = if consensus_valid {
+                    Integration::Integrated
+                } else {
+                    Integration::BroadcastOnly
+                };
                 let settled = pending.settled();
                 if settled {
                     pending.respond(&mut resp);

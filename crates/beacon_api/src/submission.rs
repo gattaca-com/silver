@@ -120,76 +120,61 @@ pub(crate) enum Integration {
     Integrated,
     BroadcastOnly,
     AwaitingEnvelopeCheck,
-    AwaitingImport(AwaitedImport),
+    /// A published block, whose root comes with its verdict.
+    AwaitingImport {
+        block_root: Option<B256>,
+        awaits_execution: bool,
+        deadline: Instant,
+    },
 }
 
 impl Integration {
-    pub(crate) fn of(integrated: bool) -> Self {
-        if integrated { Self::Integrated } else { Self::BroadcastOnly }
-    }
-
-    pub(crate) fn is_settled(&self) -> bool {
-        matches!(self, Self::Integrated | Self::BroadcastOnly)
-    }
-
-    pub(crate) fn awaits_import(&self) -> bool {
-        matches!(self, Self::AwaitingImport(_))
-    }
-
-    /// An import is settled by what `imports` holds for its block, or by
-    /// its deadline.
-    pub(crate) fn update(&mut self, imports: &RecentImports, now: Instant) {
-        if let Self::AwaitingImport(import) = self &&
-            let Some(integrated) = import.integrated(imports, now)
-        {
-            *self = Self::of(integrated);
-        }
-    }
-
-    /// A published block's verdict names it; one that names none cannot be
-    /// followed, so it is known only to be broadcast.
-    pub(crate) fn on_published(&mut self, block_root: Option<B256>) {
-        if let Self::AwaitingImport(import) = self {
-            match block_root {
-                Some(block_root) => import.block_root = Some(block_root),
-                None => *self = Self::BroadcastOnly,
-            }
-        }
-    }
-}
-
-/// Its root comes with the block's verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AwaitedImport {
-    block_root: Option<B256>,
-    awaits_execution: bool,
-    deadline: Instant,
-}
-
-impl AwaitedImport {
     /// A quarter slot answers within helix's 4 s publish timeout and
     /// Lighthouse's half slot, so a late import reaches them as a 202. A Gloas
     /// block carries no payload.
-    pub(crate) fn of_block(slot: Slot, spec: &SpecConfig, now: Instant) -> Self {
-        Self {
+    pub(crate) fn import_of_block(slot: Slot, spec: &SpecConfig, now: Instant) -> Self {
+        Self::AwaitingImport {
             block_root: None,
             awaits_execution: !spec.is_gloas_at_slot(slot),
             deadline: now + Duration::from_millis(spec.seconds_per_slot() * 1000 / 4),
         }
     }
 
-    /// `Some(true)` once integrated, `Some(false)` once it cannot be in time.
-    /// An EL still syncing leaves the block optimistically imported.
-    fn integrated(&self, imports: &RecentImports, now: Instant) -> Option<bool> {
-        if let Some(progress) = self.block_root.and_then(|root| imports.get(&root)) {
+    pub(crate) fn awaits_import(&self) -> bool {
+        matches!(self, Self::AwaitingImport { .. })
+    }
+
+    /// An import is integrated once imported and, before Gloas, executed;
+    /// an EL still syncing leaves it optimistically imported. It is only
+    /// broadcast once rejected, or once its deadline passes.
+    pub(crate) fn update(&mut self, imports: &RecentImports, now: Instant) {
+        let Self::AwaitingImport { block_root, awaits_execution, deadline } = *self else {
+            return;
+        };
+        if let Some(progress) = block_root.and_then(|root| imports.get(&root)) {
             if progress.rejected || progress.execution == Some(PayloadValidationStatus::Invalid) {
-                return Some(false);
+                *self = Self::BroadcastOnly;
+                return;
             }
-            if progress.imported && (progress.execution.is_some() || !self.awaits_execution) {
-                return Some(true);
+            if progress.imported && (progress.execution.is_some() || !awaits_execution) {
+                *self = Self::Integrated;
+                return;
             }
         }
-        (now >= self.deadline).then_some(false)
+        if now >= deadline {
+            *self = Self::BroadcastOnly;
+        }
+    }
+
+    /// A published block's verdict names it; one that names none cannot be
+    /// followed, so it is known only to be broadcast.
+    pub(crate) fn on_published(&mut self, published_root: Option<B256>) {
+        if let Self::AwaitingImport { block_root, .. } = self {
+            match published_root {
+                Some(root) => *block_root = Some(root),
+                None => *self = Self::BroadcastOnly,
+            }
+        }
     }
 }
 
@@ -318,8 +303,13 @@ pub(crate) mod tests {
             .expect("the fixture posts a shuffling")
     }
 
-    fn awaited(awaits_execution: bool, deadline: Instant) -> AwaitedImport {
-        AwaitedImport { block_root: Some([1; 32]), awaits_execution, deadline }
+    fn awaited(awaits_execution: bool, deadline: Instant) -> Integration {
+        Integration::AwaitingImport { block_root: Some([1; 32]), awaits_execution, deadline }
+    }
+
+    fn updated(mut import: Integration, imports: &RecentImports, now: Instant) -> Integration {
+        import.update(imports, now);
+        import
     }
 
     #[test]
@@ -329,24 +319,25 @@ pub(crate) mod tests {
 
         let mut imports = RecentImports::default();
         imports.on_imported(&[1; 32]);
-        assert_eq!(import.integrated(&imports, now), None, "the EL has not answered");
+        assert_eq!(updated(import, &imports, now), import, "the EL has not answered");
         imports.on_execution(&[1; 32], PayloadValidationStatus::Syncing);
-        assert_eq!(import.integrated(&imports, now), Some(true), "optimistic import counts");
+        let integrated = updated(import, &imports, now);
+        assert_eq!(integrated, Integration::Integrated, "optimistic import counts");
 
         let mut imports = RecentImports::default();
         imports.on_execution(&[1; 32], PayloadValidationStatus::Valid);
-        assert_eq!(import.integrated(&imports, now), None, "not yet imported");
+        assert_eq!(updated(import, &imports, now), import, "not yet imported");
         imports.on_imported(&[1; 32]);
-        assert_eq!(import.integrated(&imports, now), Some(true));
+        assert_eq!(updated(import, &imports, now), Integration::Integrated);
 
         let mut imports = RecentImports::default();
         imports.on_imported(&[1; 32]);
         let gloas = awaited(false, now + Duration::from_secs(1));
-        assert_eq!(gloas.integrated(&imports, now), Some(true), "Gloas waits on no EL");
+        assert_eq!(updated(gloas, &imports, now), Integration::Integrated, "Gloas waits on no EL");
 
         let mut imports = RecentImports::default();
         imports.on_already_known(&[1; 32]);
-        assert_eq!(import.integrated(&imports, now), Some(true));
+        assert_eq!(updated(import, &imports, now), Integration::Integrated);
     }
 
     #[test]
@@ -357,18 +348,22 @@ pub(crate) mod tests {
 
         let mut imports = RecentImports::default();
         imports.on_rejected(&[1; 32]);
-        assert_eq!(import.integrated(&imports, now), Some(false));
+        assert_eq!(updated(import, &imports, now), Integration::BroadcastOnly);
 
         let mut imports = RecentImports::default();
         imports.on_imported(&[1; 32]);
         imports.on_execution(&[1; 32], PayloadValidationStatus::Invalid);
-        assert_eq!(import.integrated(&imports, now), Some(false));
+        assert_eq!(updated(import, &imports, now), Integration::BroadcastOnly);
 
         let imports = RecentImports::default();
-        assert_eq!(import.integrated(&imports, now), None);
-        assert_eq!(import.integrated(&imports, later), Some(false), "out of time");
-        let unnamed = AwaitedImport { block_root: None, ..import };
-        assert_eq!(unnamed.integrated(&imports, now), None, "its verdict has not come");
+        assert_eq!(updated(import, &imports, now), import);
+        assert_eq!(updated(import, &imports, later), Integration::BroadcastOnly, "out of time");
+        let unnamed = Integration::AwaitingImport {
+            block_root: None,
+            awaits_execution: true,
+            deadline: later,
+        };
+        assert_eq!(updated(unnamed, &imports, now), unnamed, "its verdict has not come");
     }
 
     #[test]

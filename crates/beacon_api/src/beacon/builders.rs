@@ -30,68 +30,66 @@ pub(crate) fn post_state_builders(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Re
 }
 
 /// `{ids, statuses}`; the body, either list, or an empty list selects all.
-/// The lists stay slices of the body, so neither is collected.
+/// The lists stay slices of the body, checked at parse and read again to
+/// render. Ids are answered in the order named: the schema promises no
+/// order, and each entry carries both index and pubkey.
 #[derive(Deserialize, Default)]
-struct FilterBody<'a> {
+struct BuilderFilter<'a> {
     #[serde(borrow, default)]
     ids: Option<&'a RawValue>,
     #[serde(borrow, default)]
     statuses: Option<&'a RawValue>,
 }
 
-/// Ids are answered in the order named: the schema promises no order, and
-/// each entry carries both index and pubkey.
-struct BuilderFilter<'a> {
-    /// Every entry parses; `None` when the list names no builder.
-    ids: Option<&'a [u8]>,
-    statuses: u8,
-}
-
 impl<'a> BuilderFilter<'a> {
     fn parse(body: &'a [u8]) -> Result<Self, &'static str> {
-        let body = if body.is_empty() {
-            FilterBody::default()
+        let filter: Self = if body.is_empty() {
+            Self::default()
         } else {
             serde_json::from_slice(body).map_err(|_| "invalid request body")?
         };
-        let mut statuses = 0;
-        if let Some(list) = body.statuses {
-            each_body_entry(list.get().as_bytes(), |_, status: BuilderStatus| {
-                statuses |= status.bit()
-            })?;
-        }
-        let mut ids = body.ids.map(|list| list.get().as_bytes());
-        if let Some(list) = ids &&
-            each_body_entry(list, |_, _: BuilderId| {})? == 0
-        {
-            ids = None;
-        }
-        Ok(Self { ids, statuses })
+        filter.status_set()?;
+        each_listed(filter.ids, |_: BuilderId| {})?;
+        Ok(filter)
+    }
+
+    /// One bit per status; none set admits every status.
+    fn status_set(&self) -> Result<u8, &'static str> {
+        let mut set = 0;
+        each_listed(self.statuses, |status: BuilderStatus| set |= status.bit())?;
+        Ok(set)
     }
 
     fn render(&self, view: &StateReadView<'_>, json: &mut Json<'_>) {
+        let statuses = self.status_set().expect("checked at parse");
         let finalized_epoch = view.epoch.state().finalized_checkpoint.epoch;
         let builders = &view.builders;
         json.begin_array();
         let mut render = |index: usize| {
             let builder = builders.get(index).expect("resolved within the registry");
             let status = BuilderStatus::of(builder, finalized_epoch);
-            if self.statuses == 0 || self.statuses & status.bit() != 0 {
+            if statuses == 0 || statuses & status.bit() != 0 {
                 json.builder(index as u64, status.name(), builder);
             }
         };
-        match self.ids {
-            None => (0..builders.len()).for_each(render),
-            Some(ids) => {
-                let _ = each_body_entry(ids, |_, id: BuilderId| {
-                    if let Some(index) = id.resolve(builders) {
-                        render(index);
-                    }
-                });
+        let named = each_listed(self.ids, |id: BuilderId| {
+            if let Some(index) = id.resolve(builders) {
+                render(index);
             }
+        })
+        .expect("checked at parse");
+        if named == 0 {
+            (0..builders.len()).for_each(render);
         }
         json.end_array();
     }
+}
+
+fn each_listed<'a, T: Deserialize<'a>>(
+    list: Option<&'a RawValue>,
+    mut each: impl FnMut(T),
+) -> Result<usize, &'static str> {
+    list.map_or(Ok(0), |list| each_body_entry(list.get().as_bytes(), |_, entry| each(entry)))
 }
 
 enum BuilderId {

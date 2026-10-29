@@ -20,17 +20,6 @@ pub(super) struct PayloadContext {
     pub(super) full_parent: bool,
 }
 
-/// Who proposes `slot` on the head and what they asked for, resolved before
-/// the execution parent or the head state is read.
-#[derive(Clone, Copy)]
-pub(super) struct PayloadProposer {
-    slot: Slot,
-    index: u64,
-    local: bool,
-    fee_recipient: Option<ExecutionAddress>,
-    target_gas_limit: Option<u64>,
-}
-
 /// What resolves without touching state, so a repeat is caught before the
 /// withdrawal sweep.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -73,60 +62,55 @@ impl PayloadBasis {
 }
 
 impl BeaconStateTile {
-    pub(super) fn payload_proposer(
+    /// `fallback_fee_recipient` pays when the proposer named none. Who
+    /// proposes is resolved first, so a slot with no one to pay is refused
+    /// before the execution parent or the head state is read.
+    pub(super) fn payload_basis(
         &self,
         slot: Slot,
-    ) -> Result<PayloadProposer, ProduceBlockFailure> {
+        fallback_fee_recipient: Option<ExecutionAddress>,
+    ) -> Result<PayloadBasis, ProduceBlockFailure> {
         if slot <= self.last_applied_block_slot() {
             return Err(ProduceBlockFailure::SlotNotProposable);
         }
-        let index = self.proposer_on_head(slot).ok_or(ProduceBlockFailure::Internal)?;
-        let dependent_root = self.preferences_dependent_root(slot, self.head_block_root());
+        let proposer = self.proposer_on_head(slot).ok_or(ProduceBlockFailure::Internal)?;
+        let is_gloas = self.spec.is_gloas_at_slot(slot);
+        // Before Gloas there are no proposer preferences.
+        let dependent_root = is_gloas
+            .then(|| {
+                self.fork_choice
+                    .shuffling_dependent_root(&self.head_block_root(), slot / SLOTS_PER_EPOCH)
+            })
+            .flatten();
         let preferences =
             dependent_root.and_then(|root| self.seen_proposer_preferences.get(slot, &root));
         let local_preferences =
             dependent_root.is_some_and(|root| self.seen_proposer_preferences.is_local(slot, &root));
-        let registered = self.proposer_preparations.fee_recipient(index);
-        Ok(PayloadProposer {
-            slot,
-            index,
-            local: local_preferences || registered.is_some(),
-            fee_recipient: preferences.map(|prefs| prefs.fee_recipient).or(registered),
-            target_gas_limit: preferences.map(|prefs| prefs.target_gas_limit),
-        })
-    }
-
-    /// `fallback_fee_recipient` pays when the proposer named none.
-    pub(super) fn payload_basis(
-        &self,
-        proposer: PayloadProposer,
-        fallback_fee_recipient: Option<ExecutionAddress>,
-    ) -> Result<PayloadBasis, ProduceBlockFailure> {
-        let slot = proposer.slot;
+        let registered = self.proposer_preparations.fee_recipient(proposer);
         // A proposer known only from the network is built for only on a fallback.
-        if !proposer.local && fallback_fee_recipient.is_none() {
+        if !local_preferences && registered.is_none() && fallback_fee_recipient.is_none() {
             return Err(ProduceBlockFailure::NoFeeRecipient);
         }
-        let fee_recipient = proposer
-            .fee_recipient
+        let fee_recipient = preferences
+            .map(|prefs| prefs.fee_recipient)
+            .or(registered)
             .or(fallback_fee_recipient)
             .ok_or(ProduceBlockFailure::NoFeeRecipient)?;
+
         let (head_root, head_block_hash, safe_block_hash, finalized_block_hash) =
             self.fork_choice.fcu_execution_hashes();
         if head_root != self.head_block_root() {
             silver_log::warn!(slot, "head state does not follow fork choice; payload not prepared");
             return Err(ProduceBlockFailure::Internal);
         }
-
-        let is_gloas = self.spec.is_gloas_at_slot(slot);
         let (head_block_hash, full_parent) = if is_gloas {
             self.execution_parent(slot, head_root)?
         } else {
             (head_block_hash, true)
         };
-        let target_gas_limit = match proposer.target_gas_limit {
+        let target_gas_limit = match preferences {
             _ if !is_gloas => 0,
-            Some(target_gas_limit) => target_gas_limit,
+            Some(prefs) => prefs.target_gas_limit,
             None => self.head_gas_limit(),
         };
 
@@ -135,7 +119,7 @@ impl BeaconStateTile {
             (!is_gloas).then(|| head.slot.state().latest_execution_payload_header.block_number);
         Ok(PayloadBasis {
             slot,
-            proposer: proposer.index,
+            proposer,
             head_root,
             safe_block_hash,
             finalized_block_hash,
@@ -149,14 +133,6 @@ impl BeaconStateTile {
                 full_parent,
             },
         })
-    }
-
-    /// `None` before Gloas, which has no proposer preferences.
-    fn preferences_dependent_root(&self, slot: Slot, head_root: B256) -> Option<B256> {
-        if !self.spec.is_gloas_at_slot(slot) {
-            return None;
-        }
-        self.fork_choice.shuffling_dependent_root(&head_root, slot / SLOTS_PER_EPOCH)
     }
 
     fn head_gas_limit(&self) -> u64 {
@@ -200,12 +176,14 @@ impl BeaconStateTile {
 
     /// The EL builds for a local proposer; subscribers hear of every slot.
     pub(super) fn prepare_or_announce_payload(&mut self, slot: Slot, producers: &mut Producers) {
-        let Ok(proposer) = self.payload_proposer(slot) else { return };
-        if !proposer.local {
-            return self.announce_payload_attributes(proposer, producers);
-        }
-        if let Ok(basis) = self.payload_basis(proposer, None) {
-            let _ = self.prepare_payload_on(basis, producers);
+        match self.payload_basis(slot, None) {
+            Ok(basis) => {
+                let _ = self.prepare_payload_on(basis, producers);
+            }
+            Err(ProduceBlockFailure::NoFeeRecipient) => {
+                self.announce_payload_attributes(slot, producers)
+            }
+            Err(_) => {}
         }
     }
 
@@ -216,32 +194,24 @@ impl BeaconStateTile {
     ) {
         self.payload_attributes.wanted = wanted;
         self.payload_attributes.announced = None;
-        if let Ok(proposer) = self.payload_proposer(self.ticker.current_slot() + 1) {
-            self.announce_payload_attributes(proposer, producers);
-        }
+        self.announce_payload_attributes(self.ticker.current_slot() + 1, producers);
     }
 
     /// Moves the announced slot onto a new head.
     pub(super) fn refresh_payload_attributes(&mut self, producers: &mut Producers) {
         let Some(announced) = self.payload_attributes.announced else { return };
-        if announced.slot >= self.ticker.current_slot() &&
-            let Ok(proposer) = self.payload_proposer(announced.slot)
-        {
-            self.announce_payload_attributes(proposer, producers);
+        if announced.slot >= self.ticker.current_slot() {
+            self.announce_payload_attributes(announced.slot, producers);
         }
     }
 
-    fn announce_payload_attributes(
-        &mut self,
-        proposer: PayloadProposer,
-        producers: &mut Producers,
-    ) {
+    fn announce_payload_attributes(&mut self, slot: Slot, producers: &mut Producers) {
         if !self.payload_attributes.wanted {
             return;
         }
         // Consumers are told to ignore the fee recipient, so zero may stand in.
         let fallback_fee_recipient = Some(self.default_fee_recipient.unwrap_or_default());
-        if let Ok(basis) = self.payload_basis(proposer, fallback_fee_recipient) &&
+        if let Ok(basis) = self.payload_basis(slot, fallback_fee_recipient) &&
             let Ok(inputs) = self.payload_inputs(&basis)
         {
             self.publish_payload_attributes(&basis, &inputs, producers);
