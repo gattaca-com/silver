@@ -1,18 +1,19 @@
-use std::{ffi::c_int, sync::LazyLock};
+use std::sync::LazyLock;
 
 type HashFn = unsafe extern "C" fn(output: *mut u8, input: *const u8, count: u64);
 
 unsafe extern "C" {
-    /// `None` keeps hashtree's own CPU detection.
-    fn hashtree_init(backend: Option<HashFn>) -> c_int;
+    /// `None` keeps hashtree's own CPU detection, which always settles on a
+    /// backend. The C function returns `void`, so there is no status to
+    /// check.
+    fn hashtree_init(backend: Option<HashFn>);
 }
 
 /// Serializes backend installation before either hashing entry point uses
 /// hashtree's unsynchronized global function pointer.
 static HASHTREE_READY: LazyLock<()> = LazyLock::new(|| {
     // SAFETY: `avx512_groups::backend` checked the CPU for every kernel it calls.
-    let rc = unsafe { hashtree_init(avx512_groups::backend()) };
-    debug_assert_eq!(rc, 1, "hashtree_init() failed");
+    unsafe { hashtree_init(avx512_groups::backend()) };
 });
 
 #[cfg(target_arch = "x86_64")]
