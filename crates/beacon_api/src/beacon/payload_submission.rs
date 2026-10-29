@@ -111,6 +111,30 @@ mod tests {
         }
     }
 
+    /// `BeaconClient::publish_execution_payload_envelope` in helix.
+    #[test]
+    fn helix_reveal_publishes_contents_under_consensus_and_equivocation() {
+        let mut ctx = ctx();
+        ctx.spec.gloas_fork_epoch = 0;
+        let body = contents(&empty_signed_envelope(SLOT, [3; 32]));
+        let req = ParsedRequest {
+            query: "broadcast_validation=consensus_and_equivocation",
+            ..request(&body, true)
+        };
+        let mut producer = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
+        let (outcome, response) = dispatch_into(&ctx, &req, &mut producer);
+        assert!(response.is_empty(), "answered only once validation settles");
+        let Outcome::AwaitingVerdicts(submission) = outcome else { panic!("await publication") };
+        assert_eq!(
+            submission.envelope,
+            Some(EnvelopePublication {
+                blob_data_included: true,
+                validation: BroadcastValidation::ConsensusAndEquivocation,
+            })
+        );
+        assert_eq!(producer.read_buffer(submission.accepted[0].ssz).unwrap(), body);
+    }
+
     #[test]
     fn publication_checks_headers_fork_and_requested_validation() {
         let mut ctx = ctx();
