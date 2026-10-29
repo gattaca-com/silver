@@ -12,9 +12,7 @@ use silver_common::{
     ELSyncStatus, EngineResp, Enr, ForkName, GossipTopic, HeadChange, Identify, Keypair,
     LocalGossipFailure, LocalGossipResult, PayloadValidationStatus, PeerEvent,
     PreparedPayloadAttributes, SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead,
-    TCacheReader, TCacheTable, TProducer, TReadMode, TileId,
-    block_contents::SignedBlockContents,
-    block_root,
+    TCacheReader, TCacheTable, TProducer, TReadMode, TileId, block_root,
     column_util::kzg_commitments_from_sidecar,
     ssz_view::{SignedBeaconBlockView, StatusView},
 };
@@ -40,7 +38,8 @@ use crate::{
     node::peers::Peer,
     routes::ROUTES,
     submission::{
-        AcceptedEntry, AwaitedImport, BuilderForward, SubmissionFailure, failure_message,
+        AcceptedEntry, AwaitedImport, BuilderForward, RecentImports, SubmissionFailure,
+        failure_message,
     },
     validator::{
         aggregate_attestation::AggregateRequest, execution_payload_envelope::EnvelopeRequest,
@@ -131,20 +130,36 @@ impl PendingSubmission {
         self.body_index(request_id).is_some()
     }
 
-    /// Whether this was the last answer awaited.
-    fn record(&mut self, request_id: u64, result: LocalGossipResult) -> bool {
+    /// Whether this was the last answer awaited. A block published without
+    /// a root, as one already on the network, leaves no import to await.
+    fn record(
+        &mut self,
+        request_id: u64,
+        result: LocalGossipResult,
+        block_root: Option<B256>,
+        imports: &RecentImports,
+    ) -> bool {
         let body_index = self.body_index(request_id).expect("awaited");
         self.unanswered -= 1;
-        if let Err(failure) = result &&
-            !self.failures.iter().any(|failed| failed.body_index == body_index)
-        {
-            self.failures.push(SubmissionFailure { body_index, message: failure_message(failure) });
+        match (result, block_root) {
+            (Err(failure), _) => {
+                if !self.failures.iter().any(|failed| failed.body_index == body_index) {
+                    let message = failure_message(failure);
+                    self.failures.push(SubmissionFailure { body_index, message });
+                }
+            }
+            (Ok(()), Some(block_root)) => {
+                if let Some(import) = &mut self.import {
+                    import.name(block_root);
+                }
+            }
+            (Ok(()), None) => self.import = None,
         }
-        self.settled(Instant::now())
+        self.settled(imports, Instant::now())
     }
 
-    fn settled(&mut self, now: Instant) -> bool {
-        if let Some(integrated) = self.import.as_ref().and_then(|import| import.integrated(now)) {
+    fn settled(&mut self, imports: &RecentImports, now: Instant) -> bool {
+        if let Some(integrated) = self.import.and_then(|import| import.integrated(imports, now)) {
             self.broadcast_only |= !integrated;
             self.import = None;
         }
@@ -173,15 +188,10 @@ impl PendingSubmission {
 impl Pending {
     /// Emits the requests `outcome` waits on, numbered from `first_id`, and
     /// returns how many ids they took.
-    /// A published block's root is hashed only after its request is emitted, so
-    /// the hash never delays publication.
     fn defer(
         outcome: Outcome,
         first_id: u64,
         emit: &mut impl FnMut(BeaconApiRequest),
-        submissions: &TProducer,
-        spec: &SpecConfig,
-        now: Instant,
     ) -> (Self, u64) {
         match outcome {
             Outcome::AwaitingBlock(block) => {
@@ -221,11 +231,6 @@ impl Pending {
                     });
                 }
                 let body_len = submission.body_len();
-                let import = submission
-                    .accepted
-                    .iter()
-                    .find(|entry| entry.topic == GossipTopic::BeaconBlock)
-                    .and_then(|entry| awaited_import(submissions, entry.ssz, spec, now));
                 let pending = PendingSubmission {
                     first_id,
                     body_len,
@@ -234,7 +239,7 @@ impl Pending {
                     awaits_envelope_validation: submission.envelope.is_some(),
                     failures: submission.failures,
                     forward: submission.forward,
-                    import,
+                    import: submission.import,
                 };
                 (Self::Submission(pending), body_len as u64)
             }
@@ -299,10 +304,6 @@ impl Connection {
             State::Requests(requests) => requests.pending.as_ref(),
             State::Subscription(_) | State::Download(_) => None,
         }
-    }
-
-    fn pending_mut(&mut self) -> Option<&mut Pending> {
-        self.requests_mut()?.pending.as_mut()
     }
 
     fn awaits(&self, request_id: u64) -> bool {
@@ -626,6 +627,7 @@ pub struct BeaconApi {
     payload_attributes_wanted: bool,
     /// Connections whose published block still awaits its import.
     awaiting_import: Vec<Token>,
+    recent_imports: RecentImports,
 }
 
 impl BeaconApi {
@@ -686,6 +688,7 @@ impl BeaconApi {
             reader: TCacheReader::new(tcaches),
             payload_attributes_wanted: false,
             awaiting_import: Vec::new(),
+            recent_imports: RecentImports::default(),
         }
     }
 
@@ -785,14 +788,22 @@ impl BeaconApi {
                 stage: BlockStage::Applied,
                 ..
             } => {
-                self.on_awaited_import(&block_root, AwaitedImport::on_imported);
+                if let Some(imports) = self.watched_imports() {
+                    imports.on_imported(&block_root);
+                }
                 self.publish_block(slot, &block_root)
             }
             BeaconStateEvent::BlockReceived {
                 block_root, stage: BlockStage::AlreadyKnown, ..
-            } => self.on_awaited_import(&block_root, AwaitedImport::on_already_known),
+            } => {
+                if let Some(imports) = self.watched_imports() {
+                    imports.on_already_known(&block_root);
+                }
+            }
             BeaconStateEvent::BlockRejected { block_root, .. } => {
-                self.on_awaited_import(&block_root, AwaitedImport::on_rejected)
+                if let Some(imports) = self.watched_imports() {
+                    imports.on_rejected(&block_root);
+                }
             }
             BeaconStateEvent::AttestersShuffling { id, indices } => {
                 let posted = self.reader.acquire(indices);
@@ -851,7 +862,9 @@ impl BeaconApi {
 
     pub fn handle_engine_resp(&mut self, resp: EngineResp) {
         let EngineResp::NewPayload(r) = resp else { return };
-        self.on_awaited_import(&r.block_root, |import| import.on_execution(r.status));
+        if let Some(imports) = self.watched_imports() {
+            imports.on_execution(&r.block_root, r.status);
+        }
         let gloas_head = self.ctx.spec.is_gloas_at_slot(self.ctx.node_status.head.slot);
         if !self.ctx.node_status.is_following() || gloas_head {
             return;
@@ -861,15 +874,9 @@ impl BeaconApi {
         self.publish_head(&head);
     }
 
-    fn on_awaited_import(&mut self, block_root: &B256, mut update: impl FnMut(&mut AwaitedImport)) {
-        for token in &self.awaiting_import {
-            if let Some(Pending::Submission(PendingSubmission { import: Some(import), .. })) =
-                self.connections.get_mut(token).and_then(Connection::pending_mut) &&
-                import.names(block_root)
-            {
-                update(import);
-            }
-        }
+    /// Imports are recorded only while a published block awaits its own.
+    fn watched_imports(&mut self) -> Option<&mut RecentImports> {
+        (!self.awaiting_import.is_empty()).then_some(&mut self.recent_imports)
     }
 
     /// Answers published blocks whose import settled or ran out of time.
@@ -888,7 +895,7 @@ impl BeaconApi {
                 self.awaiting_import.swap_remove(i);
                 continue;
             };
-            if !pending.settled(now) {
+            if !pending.settled(&self.recent_imports, now) {
                 if pending.import.is_none() {
                     self.awaiting_import.swap_remove(i);
                 } else {
@@ -1140,7 +1147,7 @@ impl BeaconApi {
             return;
         };
 
-        let Self { connections, reader, ctx, .. } = self;
+        let Self { connections, reader, ctx, recent_imports, .. } = self;
         let requests = connections
             .get_mut(&token)
             .and_then(Connection::requests_mut)
@@ -1213,17 +1220,17 @@ impl BeaconApi {
             ) => {
                 pending.broadcast_only = !consensus_valid;
                 pending.awaits_envelope_validation = false;
-                let settled = pending.settled(Instant::now());
+                let settled = pending.settled(recent_imports, Instant::now());
                 if settled {
                     forward = pending.respond(&mut resp);
                 }
                 settled
             }
             (
-                BeaconApiResponse::LocalGossipResponse { response, .. },
+                BeaconApiResponse::LocalGossipResponse { response, block_root, .. },
                 Pending::Submission(pending),
             ) => {
-                let settled = pending.record(request_id, response);
+                let settled = pending.record(request_id, response, block_root, recent_imports);
                 if settled {
                     forward = pending.respond(&mut resp);
                 } else if pending.published() {
@@ -1479,14 +1486,7 @@ impl BeaconApi {
                     }
                 }
                 deferred => {
-                    let (pending, ids_used) = Pending::defer(
-                        deferred,
-                        self.next_request_id,
-                        emit,
-                        submissions,
-                        &self.ctx.spec,
-                        now,
-                    );
+                    let (pending, ids_used) = Pending::defer(deferred, self.next_request_id, emit);
                     self.next_request_id += ids_used;
                     if matches!(&pending, Pending::Submission(p) if p.import.is_some()) {
                         self.awaiting_import.push(token);
@@ -1560,26 +1560,6 @@ impl BeaconApi {
         });
         connections.len() != before
     }
-}
-
-/// Two slots is past any import the node completes, and past any publisher's
-/// own timeout.
-fn awaited_import(
-    submissions: &TProducer,
-    ssz: TCacheRead,
-    spec: &SpecConfig,
-    now: Instant,
-) -> Option<AwaitedImport> {
-    let bytes = submissions.read_buffer(ssz).ok()?;
-    let signed_block = if SignedBeaconBlockView::check_size(bytes) {
-        bytes
-    } else {
-        SignedBlockContents::signed_block(bytes)?
-    };
-    let is_gloas = spec.is_gloas_at_slot(SignedBeaconBlockView::slot(signed_block));
-    let root = block_root(signed_block, is_gloas);
-    let deadline = now + Duration::from_secs(2 * spec.seconds_per_slot());
-    Some(AwaitedImport::new(root, !is_gloas, deadline))
 }
 
 fn would_block(err: &io::Error) -> bool {
@@ -2771,8 +2751,6 @@ mod tests {
             parent_block_root: [1; 32],
             parent_block_hash: [2; 32],
             parent_block_number: Some(100),
-            safe_block_hash: [7; 32],
-            finalized_block_hash: [8; 32],
             timestamp: 1_000,
             prev_randao: [3; 32],
             fee_recipient: [6; 20],
@@ -2804,8 +2782,6 @@ mod tests {
                     "proposal_slot": "64",
                     "parent_block_root": hex(1, 32),
                     "parent_block_hash": hex(2, 32),
-                    "safe_block_hash": hex(7, 32),
-                    "finalized_block_hash": hex(8, 32),
                     "payload_attributes": {
                         "timestamp": "1000",
                         "prev_randao": hex(3, 32),
@@ -3424,15 +3400,18 @@ mod tests {
         };
         assert_eq!(server.submissions.read_buffer(ssz).unwrap(), block);
         assert!(server.sidecar.is_empty(), "nothing reaches the sidecar before the lock");
-        server.answer(BeaconApiResponse::LocalGossipResponse { request_id, response: lock });
+        server.answer(BeaconApiResponse::LocalGossipResponse {
+            request_id,
+            response: lock,
+            block_root: None,
+        });
         client
     }
 
-    /// A Gloas block goes to the builder the VC names once it is published,
-    /// and not when it is refused.
+    /// The builder gets the block at its verdict, and not when it is refused.
+    /// The answer waits on the import the verdict names, which may come first:
+    /// 200 once imported, 202 once broadcast but not integrated.
     #[test]
-    /// The builder gets the block at its verdict; the answer waits on the
-    /// import: 200 once imported, 202 once broadcast but not integrated.
     fn published_gloas_block_is_forwarded_to_its_builder() {
         let block = gloas_block();
         let root = block_root(&block, true);
@@ -3452,11 +3431,13 @@ mod tests {
             latest_valid_hash: None,
         });
         let refused = Err(LocalGossipFailure::ConflictingProposal);
-        for (verdict, import, forwarded, status) in [
-            (Ok(()), Some(Ok(received)), true, "HTTP/1.1 200 OK\r\n"),
-            (Ok(()), Some(Ok(rejected)), true, "HTTP/1.1 202 Accepted\r\n"),
-            (Ok(()), Some(Err(refused_by_el)), true, "HTTP/1.1 202 Accepted\r\n"),
-            (refused, None, false, "HTTP/1.1 400 Bad Request\r\n"),
+        for (verdict, block_root, import, import_first, status) in [
+            (Ok(()), Some(root), Some(Ok(received)), false, "200 OK"),
+            (Ok(()), Some(root), Some(Ok(received)), true, "200 OK"),
+            (Ok(()), Some(root), Some(Ok(rejected)), false, "202 Accepted"),
+            (Ok(()), Some(root), Some(Err(refused_by_el)), true, "202 Accepted"),
+            (Ok(()), None, None, false, "200 OK"),
+            (refused, None, None, false, "400 Bad Request"),
         ] {
             let mut server = server_with(64, LONG_TIMEOUT);
             server.api.ctx = submission::ctx();
@@ -3476,23 +3457,32 @@ mod tests {
             else {
                 panic!("the block is published locally")
             };
-            assert!(server.forwarded.is_empty(), "nothing is forwarded before the verdict");
-            server.answer(BeaconApiResponse::LocalGossipResponse { request_id, response: verdict });
-            let expected = forwarded.then(|| ("http://b:18550".to_owned(), block.clone()));
-            assert_eq!(server.forwarded, Vec::from_iter(expected), "{verdict:?}");
-            if import.is_some() {
-                server.pump();
-                let token = server.api.awaiting_import[0];
-                assert!(server.api.connections[&token].pending().is_some(), "awaits the import");
-            }
-            match import {
+            let deliver = |server: &mut Server| match import {
                 Some(Ok(event)) => server.api.handle_beacon_state_event(event),
                 Some(Err(resp)) => server.api.handle_engine_resp(resp),
                 None => {}
+            };
+            if import_first {
+                deliver(&mut server);
+            }
+            assert!(server.forwarded.is_empty(), "nothing is forwarded before the verdict");
+            server.answer(BeaconApiResponse::LocalGossipResponse {
+                request_id,
+                response: verdict,
+                block_root,
+            });
+            let expected = verdict.is_ok().then(|| ("http://b:18550".to_owned(), block.clone()));
+            assert_eq!(server.forwarded, Vec::from_iter(expected), "{verdict:?}");
+            if import.is_some() && !import_first {
+                server.pump();
+                let token = server.api.awaiting_import[0];
+                assert!(server.api.connections[&token].pending().is_some(), "awaits the import");
+                deliver(&mut server);
             }
             let reader = std::thread::spawn(move || read_to_eof(client));
             let response = String::from_utf8(serve(&mut server, reader, "verdict")).unwrap();
-            assert!(response.starts_with(status), "{verdict:?}: {response}");
+            let status = format!("HTTP/1.1 {status}\r\n");
+            assert!(response.starts_with(&status), "{verdict:?}: {response}");
             assert!(server.api.awaiting_import.is_empty());
         }
     }
@@ -3587,6 +3577,7 @@ mod tests {
             server.answer(BeaconApiResponse::LocalGossipResponse {
                 request_id: request_id(request),
                 response,
+                block_root: None,
             });
         }
 
@@ -3633,9 +3624,6 @@ mod tests {
             Outcome::AwaitingVerdicts(Submission { accepted, failures, ..Submission::default() }),
             10,
             &mut |request| ids.push(request_id(&request)),
-            &submissions(),
-            &SpecConfig::mainnet(),
-            Instant::now(),
         );
         assert_eq!(ids, [10, 10, 11]);
         assert_eq!(ids_used, 3);
@@ -4272,7 +4260,11 @@ mod tests {
             assert_eq!(server.submissions.read_buffer(ssz).unwrap(), signed);
             let validation =
                 BeaconApiResponse::PayloadEnvelopeValidation { request_id, consensus_valid };
-            let broadcast = BeaconApiResponse::LocalGossipResponse { request_id, response: Ok(()) };
+            let broadcast = BeaconApiResponse::LocalGossipResponse {
+                request_id,
+                response: Ok(()),
+                block_root: None,
+            };
             let responses =
                 if validation_first { [validation, broadcast] } else { [broadcast, validation] };
             server.answer(responses[0]);

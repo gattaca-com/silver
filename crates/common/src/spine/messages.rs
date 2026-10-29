@@ -241,6 +241,8 @@ pub enum BeaconApiResponse {
     LocalGossipResponse {
         request_id: u64,
         response: LocalGossipResult,
+        /// A block's root, when Beacon State relayed it or already had it.
+        block_root: Option<[u8; 32]>,
     },
     /// `ssz` points into the `beacon_state` tcache.
     AggregateAttestation {
@@ -362,6 +364,9 @@ pub struct NewGossipMsg {
     /// Originating fork domain: fixed at receipt, never rewritten.
     pub domain: GossipDomain,
     pub ssz_cache: SszCache,
+    /// What a local block must pass before it is relayed; anything else is
+    /// relayed once it passes gossip validation.
+    pub validation: BroadcastValidation,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -370,9 +375,6 @@ pub struct NewGossipMsg {
     /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
     pub protobuf: TCacheRead,
-    /// What a local block must pass before it is relayed; anything else is
-    /// relayed once it passes gossip validation.
-    pub validation: BroadcastValidation,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1267,6 +1269,8 @@ pub enum BeaconStateEvent {
     LocalGossipVerdict {
         hash: MessageId,
         result: LocalGossipResult,
+        /// A block's root, when it was relayed or already known.
+        block_root: Option<[u8; 32]>,
     },
     Status {
         ssz: [u8; STATUS_V2_SIZE],
@@ -1329,8 +1333,6 @@ pub struct PreparedPayloadAttributes {
     pub parent_block_hash: B256,
     /// `None` for a Gloas proposal: the event no longer carries it.
     pub parent_block_number: Option<u64>,
-    pub safe_block_hash: B256,
-    pub finalized_block_hash: B256,
     pub timestamp: u64,
     pub prev_randao: B256,
     pub fee_recipient: ExecutionAddress,

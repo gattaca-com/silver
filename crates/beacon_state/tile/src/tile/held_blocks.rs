@@ -3,7 +3,8 @@ use std::collections::hash_map::Entry;
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{B256, Slot, StateId};
 use silver_common::{
-    BlockSource, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TRead, hex32,
+    BlockSource, BroadcastValidation, NewGossipMsg, P2pStreamId, PayloadValidationStatus, TRead,
+    hex32,
 };
 use silver_config::PendingBounds;
 
@@ -39,6 +40,15 @@ impl BlockSourceMsg {
         match self {
             Self::Gossip(..) => BlockSource::Gossip,
             Self::Rpc(..) => BlockSource::Rpc,
+        }
+    }
+
+    /// A block parked after it parsed was relayed then, unless its broadcast
+    /// validation waits for the state transition.
+    pub(super) fn relayed_once_parsed(&self) -> bool {
+        match self {
+            Self::Gossip(m, _) => m.validation == BroadcastValidation::Gossip,
+            Self::Rpc(..) => true,
         }
     }
 }

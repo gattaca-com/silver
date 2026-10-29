@@ -442,3 +442,27 @@ fn equivocation_check_refuses_another_root_from_the_same_proposer_and_slot() {
     rig.tile.relay_once_applied(&m, &block_ssz, applied, &mut rig.adapter.producers);
     assert_eq!(rig.drain().verdicts(), [Ok(())], "plain consensus does not check equivocation");
 }
+
+/// `drain_awaiting_payload` relays a retried block only if its broadcast
+/// level held the relay back at parse.
+#[test]
+fn payload_parked_block_is_relayed_on_retry_only_if_parse_did_not_relay_it() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+    let pin = rig
+        .tile
+        .reader
+        .acquire(gossip_msg(&mut rig.gossip, &block_ssz, GossipTopic::BeaconBlock).ssz);
+    for (validation, relayed) in [
+        (BroadcastValidation::Gossip, true),
+        (BroadcastValidation::Consensus, false),
+        (BroadcastValidation::ConsensusAndEquivocation, false),
+    ] {
+        let m = NewGossipMsg {
+            validation,
+            ..gossip_msg(&mut rig.gossip, &block_ssz, GossipTopic::BeaconBlock)
+        };
+        let parked = BlockSourceMsg::Gossip(m, pin.clone());
+        assert_eq!(parked.relayed_once_parsed(), relayed, "{validation:?}");
+    }
+}

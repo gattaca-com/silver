@@ -683,8 +683,8 @@ impl Tile<SilverSpine> for Controller {
                     self.slashing_protection.on_status(StatusView::head_slot(&ssz), wall_slot);
                     latest_status_event = Some((ssz, latest_block_slot, wall_slot));
                 }
-                BeaconStateEvent::LocalGossipVerdict { hash, result } => {
-                    self.local_gossip.complete(hash, result, producers)
+                BeaconStateEvent::LocalGossipVerdict { hash, result, block_root } => {
+                    self.local_gossip.complete(hash, result, block_root, producers)
                 }
                 // PM keeps the reject for peer eviction (Status backing a
                 // rejected chain); the engine owns target invalidation.

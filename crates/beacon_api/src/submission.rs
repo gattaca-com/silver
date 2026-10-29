@@ -1,7 +1,7 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use silver_beacon_state_data::B256;
+use silver_beacon_state_data::{B256, Slot, SpecConfig};
 use silver_common::{
     BroadcastValidation, GossipTopic, LocalGossipFailure, PayloadValidationStatus, TCacheRead,
 };
@@ -97,6 +97,7 @@ pub(crate) struct Submission {
     pub(crate) forward: Option<BuilderForward>,
     pub(crate) validation: BroadcastValidation,
     pub(crate) envelope: Option<EnvelopePublication>,
+    pub(crate) import: Option<AwaitedImport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,55 +116,98 @@ pub(crate) fn requested_validation(req: &Request<'_>) -> Option<BroadcastValidat
 }
 
 /// A published block's import, which its 200 waits on: a block broadcast but
-/// not integrated is answered 202.
-#[derive(Debug)]
+/// not integrated is answered 202. Its root comes with its verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AwaitedImport {
-    block_root: B256,
-    imported: bool,
-    /// `None` until the EL answers; a Gloas block carries no payload.
-    execution: Option<PayloadValidationStatus>,
-    rejected: bool,
+    block_root: Option<B256>,
+    awaits_execution: bool,
     deadline: Instant,
 }
 
 impl AwaitedImport {
-    pub(crate) fn new(block_root: B256, awaits_execution: bool, deadline: Instant) -> Self {
-        let execution = (!awaits_execution).then_some(PayloadValidationStatus::Valid);
-        Self { block_root, imported: false, execution, rejected: false, deadline }
+    /// Two slots is past any import the node completes, and past any
+    /// publisher's own timeout. A Gloas block carries no payload.
+    pub(crate) fn of_block(slot: Slot, spec: &SpecConfig, now: Instant) -> Self {
+        Self {
+            block_root: None,
+            awaits_execution: !spec.is_gloas_at_slot(slot),
+            deadline: now + Duration::from_secs(2 * spec.seconds_per_slot()),
+        }
     }
 
-    pub(crate) fn names(&self, block_root: &B256) -> bool {
-        self.block_root == *block_root
-    }
-
-    pub(crate) fn on_imported(&mut self) {
-        self.imported = true;
-    }
-
-    /// Imported before it was published, so its execution was settled then.
-    pub(crate) fn on_already_known(&mut self) {
-        self.imported = true;
-        self.execution.get_or_insert(PayloadValidationStatus::Valid);
-    }
-
-    pub(crate) fn on_rejected(&mut self) {
-        self.rejected = true;
-    }
-
-    pub(crate) fn on_execution(&mut self, status: PayloadValidationStatus) {
-        self.execution = Some(status);
+    pub(crate) fn name(&mut self, block_root: B256) {
+        self.block_root = Some(block_root);
     }
 
     /// `Some(true)` once integrated, `Some(false)` once it cannot be in time.
     /// An EL still syncing leaves the block optimistically imported.
-    pub(crate) fn integrated(&self, now: Instant) -> Option<bool> {
-        if self.rejected || self.execution == Some(PayloadValidationStatus::Invalid) {
-            return Some(false);
-        }
-        if self.imported && self.execution.is_some() {
-            return Some(true);
+    pub(crate) fn integrated(&self, imports: &RecentImports, now: Instant) -> Option<bool> {
+        if let Some(progress) = self.block_root.and_then(|root| imports.get(&root)) {
+            if progress.rejected || progress.execution == Some(PayloadValidationStatus::Invalid) {
+                return Some(false);
+            }
+            if progress.imported && (progress.execution.is_some() || !self.awaits_execution) {
+                return Some(true);
+            }
         }
         (now >= self.deadline).then_some(false)
+    }
+}
+
+const RECENT_IMPORTS: usize = 32;
+
+/// What happened to the last blocks seen while a publication awaits its
+/// import. Its verdict, which names the block, can trail these events.
+#[derive(Default)]
+pub(crate) struct RecentImports {
+    blocks: [ImportProgress; RECENT_IMPORTS],
+    next: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ImportProgress {
+    block_root: B256,
+    imported: bool,
+    execution: Option<PayloadValidationStatus>,
+    rejected: bool,
+}
+
+impl RecentImports {
+    pub(crate) fn on_imported(&mut self, block_root: &B256) {
+        self.entry(block_root).imported = true;
+    }
+
+    /// Imported before it was published, so its execution was settled then.
+    pub(crate) fn on_already_known(&mut self, block_root: &B256) {
+        let progress = self.entry(block_root);
+        progress.imported = true;
+        progress.execution.get_or_insert(PayloadValidationStatus::Valid);
+    }
+
+    pub(crate) fn on_rejected(&mut self, block_root: &B256) {
+        self.entry(block_root).rejected = true;
+    }
+
+    pub(crate) fn on_execution(&mut self, block_root: &B256, status: PayloadValidationStatus) {
+        self.entry(block_root).execution = Some(status);
+    }
+
+    fn get(&self, block_root: &B256) -> Option<&ImportProgress> {
+        self.blocks.iter().find(|progress| progress.block_root == *block_root)
+    }
+
+    /// The oldest entry gives way to a block not yet seen.
+    fn entry(&mut self, block_root: &B256) -> &mut ImportProgress {
+        let at = match self.blocks.iter().position(|progress| progress.block_root == *block_root) {
+            Some(at) => at,
+            None => {
+                let at = self.next;
+                self.next = (at + 1) % RECENT_IMPORTS;
+                self.blocks[at] = ImportProgress { block_root: *block_root, ..Default::default() };
+                at
+            }
+        };
+        &mut self.blocks[at]
     }
 }
 
@@ -235,46 +279,67 @@ pub(crate) mod tests {
             .expect("the fixture posts a shuffling")
     }
 
+    fn awaited(awaits_execution: bool, deadline: Instant) -> AwaitedImport {
+        AwaitedImport { block_root: Some([1; 32]), awaits_execution, deadline }
+    }
+
     #[test]
     fn block_is_integrated_once_imported_and_executed_in_either_order() {
         let now = Instant::now();
-        let later = now + Duration::from_secs(1);
-        let mut import = AwaitedImport::new([1; 32], true, later);
-        import.on_imported();
-        assert_eq!(import.integrated(now), None, "the EL has not answered");
-        import.on_execution(PayloadValidationStatus::Syncing);
-        assert_eq!(import.integrated(now), Some(true), "optimistic import counts");
+        let import = awaited(true, now + Duration::from_secs(1));
 
-        let mut import = AwaitedImport::new([1; 32], true, later);
-        import.on_execution(PayloadValidationStatus::Valid);
-        assert_eq!(import.integrated(now), None, "not yet imported");
-        import.on_imported();
-        assert_eq!(import.integrated(now), Some(true));
+        let mut imports = RecentImports::default();
+        imports.on_imported(&[1; 32]);
+        assert_eq!(import.integrated(&imports, now), None, "the EL has not answered");
+        imports.on_execution(&[1; 32], PayloadValidationStatus::Syncing);
+        assert_eq!(import.integrated(&imports, now), Some(true), "optimistic import counts");
 
-        let mut gloas = AwaitedImport::new([1; 32], false, later);
-        gloas.on_imported();
-        assert_eq!(gloas.integrated(now), Some(true), "Gloas waits on no EL");
+        let mut imports = RecentImports::default();
+        imports.on_execution(&[1; 32], PayloadValidationStatus::Valid);
+        assert_eq!(import.integrated(&imports, now), None, "not yet imported");
+        imports.on_imported(&[1; 32]);
+        assert_eq!(import.integrated(&imports, now), Some(true));
 
-        let mut known = AwaitedImport::new([1; 32], true, later);
-        known.on_already_known();
-        assert_eq!(known.integrated(now), Some(true));
+        let mut imports = RecentImports::default();
+        imports.on_imported(&[1; 32]);
+        let gloas = awaited(false, now + Duration::from_secs(1));
+        assert_eq!(gloas.integrated(&imports, now), Some(true), "Gloas waits on no EL");
+
+        let mut imports = RecentImports::default();
+        imports.on_already_known(&[1; 32]);
+        assert_eq!(import.integrated(&imports, now), Some(true));
     }
 
     #[test]
     fn refused_or_late_import_is_not_integrated() {
         let now = Instant::now();
         let later = now + Duration::from_secs(1);
-        let mut rejected = AwaitedImport::new([1; 32], true, later);
-        rejected.on_rejected();
-        assert_eq!(rejected.integrated(now), Some(false));
+        let import = awaited(true, later);
 
-        let mut refused = AwaitedImport::new([1; 32], true, later);
-        refused.on_imported();
-        refused.on_execution(PayloadValidationStatus::Invalid);
-        assert_eq!(refused.integrated(now), Some(false));
+        let mut imports = RecentImports::default();
+        imports.on_rejected(&[1; 32]);
+        assert_eq!(import.integrated(&imports, now), Some(false));
 
-        let waiting = AwaitedImport::new([1; 32], true, later);
-        assert_eq!(waiting.integrated(now), None);
-        assert_eq!(waiting.integrated(later), Some(false), "out of time");
+        let mut imports = RecentImports::default();
+        imports.on_imported(&[1; 32]);
+        imports.on_execution(&[1; 32], PayloadValidationStatus::Invalid);
+        assert_eq!(import.integrated(&imports, now), Some(false));
+
+        let imports = RecentImports::default();
+        assert_eq!(import.integrated(&imports, now), None);
+        assert_eq!(import.integrated(&imports, later), Some(false), "out of time");
+        let unnamed = AwaitedImport { block_root: None, ..import };
+        assert_eq!(unnamed.integrated(&imports, now), None, "its verdict has not come");
+    }
+
+    #[test]
+    fn oldest_import_gives_way_to_a_new_block() {
+        let mut imports = RecentImports::default();
+        for fill in 0..=RECENT_IMPORTS as u8 {
+            imports.on_imported(&[fill; 32]);
+        }
+        assert!(imports.get(&[0; 32]).is_none());
+        assert!(imports.get(&[1; 32]).is_some_and(|progress| progress.imported));
+        assert!(imports.get(&[RECENT_IMPORTS as u8; 32]).is_some());
     }
 }

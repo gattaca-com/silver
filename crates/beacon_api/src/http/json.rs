@@ -509,12 +509,6 @@ impl Json<'_> {
         self.hex(&attributes.parent_block_root);
         self.key("parent_block_hash");
         self.hex(&attributes.parent_block_hash);
-        if gloas {
-            self.key("safe_block_hash");
-            self.hex(&attributes.safe_block_hash);
-            self.key("finalized_block_hash");
-            self.hex(&attributes.finalized_block_hash);
-        }
         self.key("payload_attributes");
         self.begin_object();
         self.key("timestamp");

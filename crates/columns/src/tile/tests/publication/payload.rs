@@ -160,7 +160,7 @@ fn misplaced_proofs_release_neither_columns_nor_envelope() {
         });
         let mut failures = Vec::new();
         rig.inj.consume(|response: BeaconApiResponse, _| {
-            if let BeaconApiResponse::LocalGossipResponse { request_id, response } = response {
+            if let BeaconApiResponse::LocalGossipResponse { request_id, response, .. } = response {
                 failures.push((request_id, response));
             }
         });

@@ -30,6 +30,7 @@ impl BeaconStateTile {
             producers.produce(BeaconApiResponse::LocalGossipResponse {
                 request_id,
                 response: Err(failure),
+                block_root: None,
             });
         }
     }

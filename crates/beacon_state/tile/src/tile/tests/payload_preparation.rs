@@ -138,6 +138,7 @@ fn preparation_publishes_the_attributes_it_asks_the_el_for() {
         view.slot.state_mut().payload_expected_withdrawals =
             vec![Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 }];
     });
+    rig.tile.payload_attributes.wanted = true;
     let proposer = rig.register(1);
     let request = rig.prepare(1);
     let [attributes] = rig.payload_attributes()[..] else { panic!("one event per preparation") };
@@ -145,8 +146,6 @@ fn preparation_publishes_the_attributes_it_asks_the_el_for() {
     assert_eq!(attributes.parent_block_root, request.attrs_parent_beacon_block_root);
     assert_eq!(attributes.parent_block_hash, request.head_block_hash);
     assert_eq!(attributes.parent_block_number, None, "removed from Gloas");
-    assert_eq!(attributes.safe_block_hash, request.safe_block_hash);
-    assert_eq!(attributes.finalized_block_hash, request.finalized_block_hash);
     assert_eq!(attributes.target_gas_limit, request.attrs_target_gas_limit);
     assert_eq!(attributes.timestamp, request.attrs_timestamp);
     assert_eq!(attributes.prev_randao, request.attrs_prev_randao);
@@ -159,6 +158,11 @@ fn preparation_publishes_the_attributes_it_asks_the_el_for() {
     rig.tile.publish_status(&mut rig.adapter.producers);
     assert!(engine_requests(&mut rig.sink).is_empty());
     assert!(rig.payload_attributes().is_empty(), "an unchanged preparation is not republished");
+
+    let mut unsubscribed = PreparationRig::gloas(|_| {});
+    unsubscribed.register(1);
+    unsubscribed.prepare(1);
+    assert!(unsubscribed.payload_attributes().is_empty(), "published only to subscribers");
 }
 
 #[test]
@@ -408,6 +412,7 @@ fn first_gloas_slot_prepares_on_the_last_fulu_payload() {
     assert!(!head.is_gloas());
     let parent = head.slot.state().latest_execution_payload_header.clone();
     rig.register(slot);
+    rig.tile.payload_attributes.wanted = true;
     let request = rig.prepare(slot);
     assert!(request.is_gloas);
     assert_eq!(request.head_block_hash, parent.block_hash);

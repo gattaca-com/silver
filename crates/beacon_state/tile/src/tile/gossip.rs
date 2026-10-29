@@ -531,7 +531,7 @@ impl BeaconStateTile {
             committed_ptc |= matches!(p, PreparedVote::Ptc(_));
             match self.commit_vote(&p, &sig) {
                 Feedback::Accept => {
-                    Self::relay_gossip(&m, producers);
+                    Self::relay_gossip(&m, None, producers);
                     accepted = true;
                 }
                 feedback => {
@@ -1780,7 +1780,7 @@ impl BeaconStateTile {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
                 match self.parse_and_verify_block(data, pre_verified) {
                     Ok(parsed) if do_relay && parsed.relay_eligible => {
-                        Self::relay_gossip(&m, producers)
+                        Self::relay_gossip(&m, Some(parsed.block_root), producers)
                     }
                     Err(err) if matches!(err.feedback(), Feedback::Reject { .. }) => producers
                         .produce(PeerEvent::P2pGossipInvalidMsg {
@@ -1800,9 +1800,9 @@ impl BeaconStateTile {
                     BlockSource::Gossip,
                     pre_verified,
                     producers,
-                    |p| {
+                    |block_root, p| {
                         if do_relay && relay_once_parsed {
-                            Self::relay_gossip(&m, p);
+                            Self::relay_gossip(&m, Some(block_root), p);
                         }
                     },
                 );
@@ -1835,7 +1835,7 @@ impl BeaconStateTile {
             Feedback::Reject { reason, .. } => self.reject_gossip(&m, data, reason, producers),
             Feedback::Accept => {
                 if do_relay {
-                    Self::relay_gossip(&m, producers);
+                    Self::relay_gossip(&m, None, producers);
                 }
                 self.publish_status(producers);
             }
@@ -1845,9 +1845,9 @@ impl BeaconStateTile {
                 data,
                 producers,
             ),
-            Feedback::AwaitParentPayload { .. } => {
+            Feedback::AwaitParentPayload { block_root, .. } => {
                 if do_relay {
-                    Self::relay_gossip(&m, producers);
+                    Self::relay_gossip(&m, Some(block_root), producers);
                 }
                 self.park_block(
                     feedback,
@@ -1888,10 +1888,15 @@ impl BeaconStateTile {
             self.equivocates(slot, proposer_index, &block_root)
         {
             let result = Err(LocalGossipFailure::ConflictingProposal);
-            producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
+            let hash = m.msg_hash;
+            producers.produce(BeaconStateEvent::LocalGossipVerdict {
+                hash,
+                result,
+                block_root: None,
+            });
             return;
         }
-        Self::relay_gossip(m, producers);
+        Self::relay_gossip(m, Some(block_root), producers);
     }
 
     /// Another block in fork choice from the same proposer for the same slot.
@@ -1909,7 +1914,7 @@ impl BeaconStateTile {
         })
     }
 
-    fn relay_gossip(m: &NewGossipMsg, producers: &mut Producers) {
+    fn relay_gossip(m: &NewGossipMsg, block_root: Option<B256>, producers: &mut Producers) {
         producers.produce(PeerEvent::SendGossip {
             originator_stream_id: m.stream_id,
             topic: m.topic,
@@ -1920,7 +1925,14 @@ impl BeaconStateTile {
             protobuf: m.protobuf,
             ssz: m.ssz,
         });
-        Self::local_verdict(m, Feedback::Accept, producers);
+        if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
+            let hash = m.msg_hash;
+            producers.produce(BeaconStateEvent::LocalGossipVerdict {
+                hash,
+                result: Ok(()),
+                block_root,
+            });
+        }
     }
 
     fn reject_gossip(
@@ -1968,7 +1980,15 @@ impl BeaconStateTile {
             Feedback::Future => Err(LocalGossipFailure::Future),
             _ => Err(LocalGossipFailure::Unverifiable),
         };
-        producers.produce(BeaconStateEvent::LocalGossipVerdict { hash: m.msg_hash, result });
+        let block_root = match feedback {
+            Feedback::BlockKnown(block_root) => Some(block_root),
+            _ => None,
+        };
+        producers.produce(BeaconStateEvent::LocalGossipVerdict {
+            hash: m.msg_hash,
+            result,
+            block_root,
+        });
     }
 }
 

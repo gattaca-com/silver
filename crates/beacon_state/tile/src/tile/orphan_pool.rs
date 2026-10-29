@@ -118,7 +118,8 @@ impl BeaconStateTile {
         producers: &mut Producers,
     ) {
         for child in self.held.payload_orphans.take(&verified_root) {
-            self.replay_pending_block(child, false, false, producers);
+            let do_relay = !child.msg.relayed_once_parsed();
+            self.replay_pending_block(child, do_relay, false, producers);
         }
     }
 
@@ -240,7 +241,7 @@ impl BeaconStateTile {
         }
 
         let feedback =
-            self.apply_block(data, &acquired, BlockSource::Rpc, pre_verified, producers, |_| {});
+            self.apply_block(data, &acquired, BlockSource::Rpc, pre_verified, producers, |_, _| {});
         match feedback {
             Feedback::Reject { .. } => producers.produce(PeerEvent::RpcMisbehaviour {
                 p2p_peer: sender.peer(),

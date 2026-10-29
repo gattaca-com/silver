@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use silver_beacon_state_data::{BodyFork, BodyOffsets};
 use silver_common::{
     block_contents::SignedBlockContents,
@@ -7,7 +9,7 @@ use silver_common::{
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
-    submission::requested_validation,
+    submission::{AwaitedImport, requested_validation},
 };
 
 const MAX_BUILDER_URL_SIZE: usize = 2048;
@@ -51,7 +53,7 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
         return resp.error(400, "Eth-Consensus-Version must name the block's fork");
     }
 
-    resp.await_block(body, validation);
+    resp.await_block(body, validation, AwaitedImport::of_block(slot, &ctx.spec, Instant::now()));
     if let Some(url) = req.eth_builder_url.filter(|_| SignedBeaconBlockView::check_size(body)) {
         if url.starts_with("http://") && url.len() <= MAX_BUILDER_URL_SIZE {
             resp.forward_to_builder(url);

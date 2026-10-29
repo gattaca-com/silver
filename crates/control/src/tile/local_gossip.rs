@@ -72,11 +72,15 @@ impl LocalGossipHandler {
         &mut self,
         msg_id: MessageId,
         response: LocalGossipResult,
+        block_root: Option<[u8; 32]>,
         producers: &mut SilverSpineProducers,
     ) {
         if let Some(requests) = self.pending.remove(&msg_id) {
             for request in requests {
-                produce_response(producers, request.request_id, response);
+                let request_id = request.request_id;
+                let verdict =
+                    BeaconApiResponse::LocalGossipResponse { request_id, response, block_root };
+                producers.beacon_api_responses.produce(&verdict.into());
             }
             if self.pending.is_empty() {
                 self.next_deadline = None;
@@ -123,9 +127,9 @@ pub(super) fn produce_response(
     request_id: u64,
     response: LocalGossipResult,
 ) {
-    producers
-        .beacon_api_responses
-        .produce(&BeaconApiResponse::LocalGossipResponse { request_id, response }.into());
+    let response =
+        BeaconApiResponse::LocalGossipResponse { request_id, response, block_root: None };
+    producers.beacon_api_responses.produce(&response.into());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -197,7 +201,7 @@ pub(super) mod tests {
         pub(in crate::tile) fn responses(&mut self) -> Vec<(u64, LocalGossipResult)> {
             let mut responses = Vec::new();
             self.adapter.consume(|response: BeaconApiResponse, _| match response {
-                BeaconApiResponse::LocalGossipResponse { request_id, response } => {
+                BeaconApiResponse::LocalGossipResponse { request_id, response, .. } => {
                     responses.push((request_id, response));
                 }
                 BeaconApiResponse::AggregateAttestation { .. } |
@@ -211,7 +215,7 @@ pub(super) mod tests {
         }
 
         pub(in crate::tile) fn complete(&mut self, msg_id: MessageId, response: LocalGossipResult) {
-            self.local_gossip.complete(msg_id, response, &mut self.adapter.producers);
+            self.local_gossip.complete(msg_id, response, None, &mut self.adapter.producers);
         }
     }
 

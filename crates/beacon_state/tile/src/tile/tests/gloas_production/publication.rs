@@ -37,7 +37,7 @@ impl ProductionRig {
             BlockSource::Gossip,
             false,
             &mut rig.adapter.producers,
-            |_| {},
+            |_, _| {},
         );
         assert_eq!(feedback, Feedback::BlockImported(root));
         let payload = PayloadFrame::parse(&frame).unwrap();
@@ -101,7 +101,9 @@ impl ProductionRig {
     fn publication_result(&mut self) -> Vec<Result<(), LocalGossipFailure>> {
         let mut results = Vec::new();
         self.sink.consume(|response: BeaconApiResponse, _| {
-            if let BeaconApiResponse::LocalGossipResponse { request_id: 42, response } = response {
+            if let BeaconApiResponse::LocalGossipResponse { request_id: 42, response, .. } =
+                response
+            {
                 results.push(response);
             }
         });

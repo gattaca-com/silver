@@ -235,6 +235,7 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
                 capture.observer.produce(BeaconStateEvent::LocalGossipVerdict {
                     hash: msg.msg_hash,
                     result: expected,
+                    block_root: None,
                 });
                 capture.crank();
             } else {
@@ -242,7 +243,9 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
             }
             let mut responses = Vec::new();
             capture.observer.consume(|response: BeaconApiResponse, _| {
-                if let BeaconApiResponse::LocalGossipResponse { request_id, response } = response {
+                if let BeaconApiResponse::LocalGossipResponse { request_id, response, .. } =
+                    response
+                {
                     responses.push((request_id, response));
                 }
             });
@@ -634,13 +637,16 @@ fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
     assert_eq!(message.ssz.id(), TCacheId::ControlProcessing);
     assert_ne!(message.ssz, ssz);
     capture.observer.consume(|_: BeaconApiResponse, _| panic!("validation is pending"));
-    capture
-        .observer
-        .produce(BeaconStateEvent::LocalGossipVerdict { hash: message.msg_hash, result: Ok(()) });
+    capture.observer.produce(BeaconStateEvent::LocalGossipVerdict {
+        hash: message.msg_hash,
+        result: Ok(()),
+        block_root: None,
+    });
     capture.crank();
     let mut completed = false;
     capture.observer.consume(|response: BeaconApiResponse, _| {
-        if let BeaconApiResponse::LocalGossipResponse { request_id: 7, response: Ok(()) } = response
+        if let BeaconApiResponse::LocalGossipResponse { request_id: 7, response: Ok(()), .. } =
+            response
         {
             completed = true;
         }

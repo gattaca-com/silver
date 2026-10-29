@@ -458,10 +458,11 @@ impl BeaconStateTile {
         fallback_fee_recipient: Option<ExecutionAddress>,
         producers: &mut Producers,
     ) -> Result<(), ProduceBlockFailure> {
-        let basis = self.payload_basis(slot, fallback_fee_recipient.unwrap_or_default())?;
-        if !basis.local_proposer && fallback_fee_recipient.is_none() {
+        let proposer = self.payload_proposer(slot)?;
+        if !proposer.local && fallback_fee_recipient.is_none() {
             return Err(ProduceBlockFailure::NoFeeRecipient);
         }
+        let basis = self.payload_basis(proposer, fallback_fee_recipient.unwrap_or_default())?;
         self.prepare_payload_on(basis, producers)
     }
 
@@ -500,7 +501,9 @@ impl BeaconStateTile {
         }));
         silver_log::info!(slot, proposer = basis.proposer, "payload preparation requested");
 
-        self.publish_payload_attributes(&basis, producers);
+        if self.payload_attributes.wanted {
+            self.publish_payload_attributes(&basis, producers);
+        }
         Ok(())
     }
 
