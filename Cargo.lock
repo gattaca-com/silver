@@ -5071,7 +5071,7 @@ dependencies = [
 
 [[package]]
 name = "silver_crypto_simd"
-version = "0.1.0-alpha.6"
+version = "0.1.0"
 dependencies = [
  "blst",
  "c-kzg",

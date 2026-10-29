@@ -1,10 +1,12 @@
 [package]
 name = "silver_crypto_simd"
+description = "BLS12-381 and KZG primitives for Ethereum consensus, optimized for modern x86-64 CPUs with AVX-512 IFMA"
 edition.workspace = true
-license = "MIT AND CC0-1.0"
+exclude = ["proof/"]
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
-version.workspace = true
+version = "0.1.0"
 
 [features]
 default = ["simd"]
@@ -13,7 +15,8 @@ simd = []
 spec_vectors = []
 
 [dependencies]
-blst.workspace = true
+# Not the workspace's blst: its `no-threads` would reach every consumer's blst.
+blst = "0.3.16"
 
 [dev-dependencies]
 c-kzg.workspace = true
