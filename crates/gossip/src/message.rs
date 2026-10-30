@@ -93,7 +93,19 @@ pub(super) fn handle_incoming(
 
     let msg_id = decompress_to_reservation(publish, snappy_data, &mut reservation, topic_string)
         .inspect_err(|e| {
-            silver_log::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg")
+            if !matches!(e, Error::SnappyError(_)) {
+                silver_log::error!(?stream_id, ?e, topic_string, "failed to decompress gossip msg");
+                return;
+            }
+            let hash = msg_id_invalid_snappy(topic_string, snappy_data);
+            if dedup_cache.insert(fast_id, hash) {
+                silver_log::warn!(?stream_id, ?topic, ?e, "gossip rejected: bad snappy body");
+                emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
+                    p2p_peer: stream_id.peer(),
+                    topic,
+                    hash,
+                }));
+            }
         })?;
 
     if !dedup_cache.insert(fast_id, msg_id) {
@@ -289,6 +301,45 @@ mod tests {
             read_message_length(&snappy_length_prefix(topic.max_uncompressed_size() + 1), &topic),
             Err(Error::GossipPayloadTooLarge)
         ));
+    }
+
+    #[test]
+    fn corrupt_snappy_body_is_penalised_once_then_deduped() {
+        let topic = GossipTopic::BeaconBlock;
+        let mut corrupt = snappy_length_prefix(topic.min_uncompressed_size() + 64);
+        corrupt.extend_from_slice(&[0xFF; 16]);
+        let mut ssz = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let mut protobuf = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let stream = P2pStreamId::new(1, 3, StreamProtocol::GossipSubV13, true);
+        let domains = ActiveDomains::new(Some(GossipDomain::new([0; 4], ForkName::Fulu)));
+        let wire = topic.to_wire("00000000");
+        let mut dedup = DedupCache::default();
+
+        let mut deliver = || {
+            let mut events = Vec::new();
+            let _ = handle_incoming(
+                &wire,
+                domains.parse(&wire),
+                &corrupt,
+                &stream,
+                Nanos::now(),
+                &mut dedup,
+                &mut ssz,
+                None,
+                &mut protobuf,
+                &mut |event| events.push(event),
+            );
+            events
+        };
+
+        let first = deliver();
+        assert!(matches!(first.as_slice(), [GossipHandlerEvent::PeerEvent(
+            PeerEvent::P2pGossipInvalidMsg { p2p_peer: 1, .. }
+        )]));
+        let replay = deliver();
+        assert!(matches!(replay.as_slice(), [GossipHandlerEvent::PeerEvent(
+            PeerEvent::GossipDuplicate { p2p_peer: 1, .. }
+        )]));
     }
 
     #[test]
