@@ -557,6 +557,15 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn execution_payload_available_event(&mut self, slot: u64, block_root: &[u8; 32]) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.key("block_root");
+        self.hex(block_root);
+        self.end_object();
+    }
+
     pub(crate) fn voluntary_exit(&mut self, ssz: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE]) {
         self.begin_object();
         self.key("message");

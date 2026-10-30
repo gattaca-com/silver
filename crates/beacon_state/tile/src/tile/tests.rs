@@ -359,7 +359,7 @@ fn seed_immutable(_tile: &BeaconStateTile) -> Immutable {
 fn slot_advance_skip_multiple() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    tile.on_slot_start(15);
+    tile.on_slot_start(15, |_| {});
     assert_eq!(tile.head_state_slot(), 15);
 }
 
@@ -367,7 +367,7 @@ fn slot_advance_skip_multiple() {
 fn slot_advance_noop_past_slot() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    tile.on_slot_start(5);
+    tile.on_slot_start(5, |_| {});
     assert_eq!(tile.head_state_slot(), 10);
 }
 
@@ -375,7 +375,7 @@ fn slot_advance_noop_past_slot() {
 fn slot_advance_crosses_epoch_boundary() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 30);
-    tile.on_slot_start(34);
+    tile.on_slot_start(34, |_| {});
     assert_eq!(tile.head_state_slot(), 34);
     // Crossing into epoch 1 allocated the head fork its own epoch delta.
     assert!(tile.last_applied.epoch_idx.is_some());
@@ -384,7 +384,7 @@ fn slot_advance_crosses_epoch_boundary() {
 fn inline_tile_at(slot: Slot) -> BeaconStateTile {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 31);
-    tile.on_slot_start(slot);
+    tile.on_slot_start(slot, |_| {});
     tile
 }
 
@@ -394,7 +394,7 @@ fn precomputed_epoch_matches_an_inline_advance() {
     seed_tile(&mut tile, 4, 31);
 
     tile.epoch_start_state(tile.last_applied, 32);
-    tile.on_slot_start(32);
+    tile.on_slot_start(32, |_| {});
 
     assert_eq!(tile.head_state_root(), inline_tile_at(32).head_state_root());
 }
@@ -405,7 +405,7 @@ fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
     seed_tile(&mut tile, 4, 31);
 
     tile.epoch_start_state(tile.last_applied, 32);
-    tile.on_slot_start(33);
+    tile.on_slot_start(33, |_| {});
 
     assert_eq!(tile.head_state_root(), inline_tile_at(33).head_state_root());
 }
@@ -453,7 +453,7 @@ fn slot_advance_grows_rings_under_non_finality() {
     seed_tile(&mut tile, 4, 0);
     let target = SLOTS_RING_N as u64 * 2 + 3 * SLOTS_PER_EPOCH;
     for s in 1..=target {
-        tile.on_slot_start(s);
+        tile.on_slot_start(s, |_| {});
         assert_eq!(tile.head_state_slot(), s);
     }
 }
@@ -486,7 +486,7 @@ fn empty_slot_advance_preserves_parent_lookahead() {
     let before = tile.state.state().epoch.view(anchor_epoch_idx).state().proposer_lookahead;
 
     // Advance across the epoch 0 -> 1 boundary on empty slots.
-    tile.on_slot_start(32);
+    tile.on_slot_start(32, |_| {});
     assert_eq!(tile.head_state_slot(), 32);
 
     // Head forked onto a private epoch delta; the anchor's is untouched.
@@ -500,7 +500,7 @@ fn empty_slot_advance_preserves_parent_lookahead() {
 fn slot_advance_crosses_two_epoch_boundaries() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 30);
-    tile.on_slot_start(66);
+    tile.on_slot_start(66, |_| {});
     assert_eq!(tile.head_state_slot(), 66);
 }
 
@@ -4419,7 +4419,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
 /// The slot tick prunes the memo through the same floor as the pool.
 #[test]
 fn att_root_memo_pruned_on_slot_tick() {
-    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    let (mut tile, _gossip, _rpc, _spine, mut adapter) = tile_with_producers(30);
     seed_tile(&mut tile, 4, 30);
     let domain = [0xD0u8; 32];
     let mut expired = [0u8; ATTESTATION_DATA_SIZE];
@@ -4431,8 +4431,26 @@ fn att_root_memo_pruned_on_slot_tick() {
     tile.attestation_root_memo.roots(&kept, &domain);
     assert_eq!(tile.attestation_root_memo.len(), 2);
 
-    tile.slot_tick(34);
+    tile.slot_tick(34, &mut adapter.producers);
     assert_eq!(tile.attestation_root_memo.len(), 1);
+}
+
+#[test]
+fn next_epoch_shuffling_is_posted_before_the_rolled_state_is_published() {
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    seed_tile(&mut tile, 4, 30);
+    let reader = tile.state.reader();
+    let published_epoch = || reader.read(|view| view.slot.current_epoch()).unwrap();
+
+    let mut posted = Vec::new();
+    tile.on_slot_start(SLOTS_PER_EPOCH + 2, |event| {
+        if let BeaconStateEvent::AttestersShuffling { id, .. } = event {
+            posted.push((id.epoch, published_epoch()));
+        }
+    });
+
+    assert!(posted.contains(&(2, 0)), "{posted:?}");
+    assert_eq!(published_epoch(), 1);
 }
 
 #[test]
@@ -4796,7 +4814,7 @@ fn epoch_transition_keeps_base_until_finality() {
         pw.commit()
     };
 
-    tile.on_slot_start(SLOTS_PER_EPOCH);
+    tile.on_slot_start(SLOTS_PER_EPOCH, |_| {});
 
     // Base unchanged; the new validator lives on the head fork's delta.
     assert_eq!(
@@ -5464,7 +5482,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
         [epoch, epoch + 1].map(|epoch| ShufflingId::from_state(&view, epoch).unwrap())
     };
     let original = selected_ids(&rig.tile);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "unchanged selection is already posted");
 
     for branch in 10..20 {
@@ -5472,7 +5490,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
         let view = rig.tile.state.read_view(fork);
         rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
     }
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "eviction does not change the published selection");
 
     let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
@@ -5484,19 +5502,19 @@ fn shufflings_follow_head_selection_across_reorgs() {
     };
     let view = rig.tile.state.read_view(fork);
     rig.tile.shuffling_cache.precompute(&view, view.slot.current_epoch() + 1);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "computing a losing branch cannot replace API duties");
 
     rig.tile.last_applied = fork;
     let fork_ids = selected_ids(&rig.tile);
     assert_ne!(original, fork_ids, "fixture has different decision roots");
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert_eq!(posted(rig.drain()), fork_ids);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty());
 
     rig.tile.last_applied = rig.anchor;
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert_eq!(posted(rig.drain()), original, "restored branch must be reposted");
 }
 
@@ -5550,7 +5568,7 @@ fn published_shuffling_uses_the_selected_branches_active_set() {
         assert_eq!(original.randao_mixes.seed_mix(epoch), selected.randao_mixes.seed_mix(epoch));
     }
     rig.tile.last_applied = fork;
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     let published = rig.drain();
     let mut epochs = Vec::new();
     for event in published.0 {
@@ -5583,6 +5601,25 @@ fn engine_requests(sink: &mut SpineAdapter<SilverSpine>) -> Vec<EngineReq> {
     let mut requests = Vec::new();
     sink.consume(|request: EngineReq, _| requests.push(request));
     requests
+}
+
+#[test]
+fn api_request_sent_during_the_first_sync_is_handled_once_following() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(10);
+    seed_tile(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::default();
+    tile.on_attach(&mut adapter);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    tile.loop_body(&mut adapter);
+
+    sink.produce(BeaconApiRequest::PayloadAttributesWanted(true));
+    tile.loop_body(&mut adapter);
+    assert!(!tile.payload_attributes.wanted, "the syncing loop leaves requests queued");
+
+    sink.produce(SyncUpdate::Following);
+    tile.loop_body(&mut adapter);
+    tile.loop_body(&mut adapter);
+    assert!(tile.payload_attributes.wanted);
 }
 
 /// Seeded states name validator 0 in every lookahead seat.

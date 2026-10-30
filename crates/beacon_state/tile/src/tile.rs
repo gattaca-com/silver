@@ -716,7 +716,11 @@ impl BeaconStateTile {
         producers.produce(BeaconApiResponse::SyncCommitteeContribution { request_id, ssz });
     }
 
-    fn record_proposer_preparations(&mut self, preparations: TCacheRead) {
+    fn record_proposer_preparations(
+        &mut self,
+        preparations: TCacheRead,
+        producers: &mut Producers,
+    ) {
         let acquired = self.reader.acquire(preparations);
         let Ok((encoded, _)) = acquired.buffer() else {
             silver_log::error!(
@@ -727,12 +731,13 @@ impl BeaconStateTile {
         };
         let epoch = self.ticker.current_slot() / SLOTS_PER_EPOCH;
         self.proposer_preparations.record(encoded, epoch);
+        self.refresh_payload_preparation(producers);
+        self.refresh_payload_attributes(producers);
     }
 
-    fn post_shufflings(&mut self, producers: &mut Producers) {
+    fn post_shufflings(&mut self, emit: impl FnMut(BeaconStateEvent)) {
         let view = self.state.read_view(self.last_applied);
-        let producer = &mut self.events_producer;
-        self.shuffling_cache.post_fresh(&view, producer, |event| producers.produce(event));
+        self.shuffling_cache.post_fresh(&view, &mut self.events_producer, emit);
     }
 
     /// Covers changes since the last Status, including execution verdicts.
@@ -746,7 +751,7 @@ impl BeaconStateTile {
     /// Returns `true` iff at least one slot was processed (so head_slot
     /// definitely advanced, and finalized may have advanced via an epoch
     /// transition along the way).
-    fn on_slot_start(&mut self, target_slot: Slot) -> bool {
+    fn on_slot_start(&mut self, target_slot: Slot, emit: impl FnMut(BeaconStateEvent)) -> bool {
         let curr_slot = self.slot_state_at(self.last_applied).slot;
         if target_slot <= curr_slot {
             return false;
@@ -755,6 +760,8 @@ impl BeaconStateTile {
         let new_id = self.state_at(self.last_applied, target_slot);
         self.last_applied = new_id;
         self.shuffling_cache.protect_head(&self.state.read_view(new_id));
+        // Duties are served off the published state, so its shufflings go first.
+        self.post_shufflings(emit);
         self.state.publish_state_id(new_id);
         // Empty-slot epoch transitions can advance justified/finalized in the
         // head post-state; reflect that in fork choice before finalizing.
@@ -815,8 +822,8 @@ impl BeaconStateTile {
     /// Per-slot fork-choice tick (spec `on_tick_per_slot`): advance the head
     /// state across empty slots, then run the fork-choice tick. Returns whether
     /// a state advance occurred.
-    fn slot_tick(&mut self, slot: Slot) -> bool {
-        let advanced = self.on_slot_start(slot);
+    fn slot_tick(&mut self, slot: Slot, producers: &mut Producers) -> bool {
+        let advanced = self.on_slot_start(slot, |event| producers.produce(event));
         if advanced {
             // Head-derived epoch, never the wall clock (wall-clock epochs
             // diverge from the head during sync and poison the cache).
@@ -907,7 +914,7 @@ impl BeaconStateTile {
                 self.expire_orphans(slot, &mut adapter.producers);
                 self.block_production.prune_before(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
-                let advanced = self.slot_tick(slot);
+                let advanced = self.slot_tick(slot, &mut adapter.producers);
                 if advanced || self.fork_choice.find_head() != prev_head {
                     self.publish_status(&mut adapter.producers);
                 }
@@ -955,7 +962,7 @@ impl BeaconStateTile {
                 producers,
             ),
             BeaconApiRequest::ProposerPreparations { preparations } => {
-                self.record_proposer_preparations(preparations)
+                self.record_proposer_preparations(preparations, producers)
             }
             BeaconApiRequest::PayloadAttributesWanted(wanted) => {
                 self.set_payload_attributes_wanted(wanted, producers)
@@ -991,7 +998,7 @@ impl BeaconStateTile {
         self.flush_votes(&mut adapter.producers);
         self.reader.free();
 
-        self.post_shufflings(&mut adapter.producers);
+        self.post_shufflings(|event| adapter.producers.produce(event));
     }
 
     /// Per-validator votes (attestations, sync committee messages, PTC
@@ -1301,6 +1308,8 @@ impl Tile<SilverSpine> for BeaconStateTile {
     fn on_attach(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.subscribe_broadcast::<SyncUpdate>();
         adapter.subscribe_broadcast::<ReplayBlock>();
+        // Read only once Following; requests made while syncing must wait.
+        adapter.subscribe_broadcast::<BeaconApiRequest>();
     }
 
     fn try_init(&mut self, adapter: &mut SpineAdapter<SilverSpine>) -> bool {

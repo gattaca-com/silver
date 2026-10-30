@@ -642,6 +642,8 @@ pub struct BeaconApi {
     reader: TCacheReader,
     payload_attributes_wanted: bool,
     latest_payload_attributes: LatestPayloadAttributes,
+    /// The tile repeats an envelope that arrives again.
+    last_available_payload: B256,
     /// Connections whose published block still awaits its import.
     awaiting_import: Vec<Token>,
     recent_imports: RecentImports,
@@ -705,6 +707,7 @@ impl BeaconApi {
             reader: TCacheReader::new(tcaches),
             payload_attributes_wanted: false,
             latest_payload_attributes: LatestPayloadAttributes::default(),
+            last_available_payload: [0; 32],
             awaiting_import: Vec::new(),
             recent_imports: RecentImports::default(),
         }
@@ -847,6 +850,9 @@ impl BeaconApi {
             }
             BeaconStateEvent::PayloadAttributes(attributes) => {
                 self.publish_payload_attributes(&attributes)
+            }
+            BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
+                self.publish_execution_payload_available(slot, &block_root)
             }
             _ => {}
         }
@@ -1076,6 +1082,16 @@ impl BeaconApi {
     fn publish_head_v2(&mut self, head: &HeadEvent) {
         let fork_name = self.ctx.spec.fork_at_slot(head.slot).name();
         self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
+    }
+
+    fn publish_execution_payload_available(&mut self, slot: u64, block_root: &B256) {
+        if !self.ctx.node_status.is_following() || self.last_available_payload == *block_root {
+            return;
+        }
+        self.last_available_payload = *block_root;
+        self.publish(Channel::ExecutionPayloadAvailable, "execution_payload_available", |json| {
+            json.execution_payload_available_event(slot, block_root)
+        });
     }
 
     /// Repeated roots are not deduplicated.
@@ -2667,6 +2683,46 @@ mod tests {
         assert_eq!(events[0].topic, "block_gossip");
         assert_eq!(events[0].data["slot"], (submission::SLOT + 1).to_string());
         assert_eq!(events[0].data["block"], format!("0x{}", hex::encode(root)));
+    }
+
+    #[test]
+    fn available_envelope_is_announced_once_per_block() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "execution_payload_available");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let ssz = server.submissions.write_with(1, |out| out[0] = 0).unwrap();
+        for (slot, block_root) in [(10, [0xab; 32]), (10, [0xab; 32]), (11, [0xcd; 32])] {
+            server.api.handle_beacon_state_event(BeaconStateEvent::EnvelopeAvailable {
+                ssz,
+                source: BlockSource::Gossip,
+                slot,
+                block_root,
+            });
+        }
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "execution_payload_available events");
+        let announced: Vec<_> = events
+            .iter()
+            .map(|event| {
+                (event.topic.as_str(), event.data["slot"].clone(), event.data["block_root"].clone())
+            })
+            .collect();
+        assert_eq!(announced, [
+            (
+                "execution_payload_available",
+                "10".into(),
+                format!("0x{}", hex::encode([0xab; 32])).into()
+            ),
+            (
+                "execution_payload_available",
+                "11".into(),
+                format!("0x{}", hex::encode([0xcd; 32])).into()
+            ),
+        ]);
     }
 
     #[test]

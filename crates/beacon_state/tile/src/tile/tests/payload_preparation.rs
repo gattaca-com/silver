@@ -20,7 +20,7 @@ struct PreparationRig {
     adapter: SpineAdapter<SilverSpine>,
     sink: SpineAdapter<SilverSpine>,
     _spine: TestSpine,
-    _gossip: TProducer,
+    gossip: TProducer,
     _rpc: TProducer,
 }
 
@@ -30,7 +30,7 @@ impl PreparationRig {
         let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
         engine_requests(&mut sink);
         sink.consume(|_: BeaconStateEvent, _| {});
-        Self { tile, adapter, sink, _spine: spine, _gossip: gossip, _rpc: rpc }
+        Self { tile, adapter, sink, _spine: spine, gossip, _rpc: rpc }
     }
 
     fn gloas(change: impl FnOnce(&mut StateWriterView)) -> Self {
@@ -86,6 +86,11 @@ impl PreparationRig {
             }
         });
         published
+    }
+
+    fn announced_parents(&mut self) -> Vec<(Slot, B256, ExecutionAddress)> {
+        let events = self.payload_attributes();
+        events.iter().map(|a| (a.proposal_slot, a.parent_block_hash, a.fee_recipient)).collect()
     }
 
     fn mark_full(&mut self) {
@@ -163,6 +168,67 @@ fn preparation_publishes_the_attributes_it_asks_the_el_for() {
     unsubscribed.register(1);
     unsubscribed.prepare(1);
     assert!(unsubscribed.payload_attributes().is_empty(), "published only to subscribers");
+}
+
+#[test]
+fn head_change_announces_before_the_preparation_tick() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+    assert!(engine_requests(&mut rig.sink).is_empty(), "announcing does not prepare");
+
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert!(rig.payload_attributes().is_empty(), "an unchanged basis is not announced again");
+}
+
+#[test]
+fn parent_payload_flips_are_announced_again() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+
+    rig.mark_full();
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, FULL_HASH, [0; 20])]);
+
+    let parent_root = rig.tile.head_block_root();
+    for index in 0..257 {
+        rig.tile.fork_choice.record_ptc_vote(&parent_root, index, true, false);
+    }
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+}
+
+#[test]
+fn missed_slot_moves_the_announcement_to_the_current_slot() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+
+    rig.tile.ticker.set_current_slot(2);
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    let [attributes] = rig.payload_attributes()[..] else { panic!("one event for slot 2") };
+    assert_eq!(attributes.proposal_slot, 2);
+}
+
+#[test]
+fn late_registration_announces_its_fee_recipient() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+
+    let head = rig.tile.state.read_view(rig.tile.last_applied);
+    let epoch_start = head.slot.state().slot / SLOTS_PER_EPOCH * SLOTS_PER_EPOCH;
+    let validator_index = head.epoch.proposer_at((1 - epoch_start) as usize).unwrap();
+    let mut encoded = [0; ProposerPreparation::SIZE];
+    ProposerPreparation { validator_index, fee_recipient: [7; 20] }.encode(&mut encoded);
+    let preparations = tcache_write(&mut rig.gossip, &encoded);
+    rig.tile.record_proposer_preparations(preparations, &mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [7; 20])]);
 }
 
 #[test]
