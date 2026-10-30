@@ -8,8 +8,9 @@ open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 open scoped EthLib.Cryptography.Bls.Fr
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 
@@ -35,14 +36,15 @@ theorem cell_vector_refinement (cell : Array U8 2048#usize) (values : _root_.Arr
       Normalized element ∧
       ∀ lane : Fin 8, laneValue element lane = values[8 * v.val + lane.val]! := by
   obtain ⟨element, mask, hcall, hn, he, _⟩ := from_bytes_refinement
-    (Array.to_slice cell) offset (by simp only [Array.to_slice, cell.property, UScalar.ofNatCore_val_eq]; omega)
+    (Array.to_slice cell) offset (by simp only [Array.to_slice, Slice.from_val, cell.property, UScalar.ofNatCore_val_eq]; omega)
   refine ⟨element, mask, hcall, hn, ?_⟩
   intro lane
   have hj : 8 * v.val + lane.val < 64 := by omega
   have hstart : offset.val + 32 * lane.val = 32 * (8 * v.val + lane.val) := by omega
   have hstop : offset.val + 32 * (lane.val + 1) = 32 * (8 * v.val + lane.val + 1) := by omega
   rw [laneValue, (he lane).1, hstart, hstop]
-  exact decoded_value _ _ (hcell.2 ⟨8 * v.val + lane.val, hj⟩)
+  simpa only [Array.to_slice, Slice.from_val, arrayBytes] using
+    decoded_value _ _ (hcell.2 ⟨8 * v.val + lane.val, hj⟩)
 
 private theorem normalise_product (product : fr8.Fr8) (values : Fin 8 → Fr)
     (hp : LazyRep 2 32 product values) :
@@ -83,8 +85,8 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
     refine ⟨data, ?_, by simpa only [he] using hp, fun _ _ => rfl⟩
     rw [interpolation_kernel.InterpolationKernel.add_cell_loop, loop.eq_1]
     simp only [interpolation_kernel.InterpolationKernel.add_cell_loop.body,
-      vectors_per_cell_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, he,
-      lt_self_iff_false, if_false]
+      vectors_per_cell_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, he,
+      lt_self_iff_false, ite_false]
   | succ rem ih =>
     have hvt : v.val < 8 := by omega
     let offset : Usize := UScalar.ofNatCore (v.val * 256) (by scalar_tac)
@@ -98,16 +100,16 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
       cases hf : first with
       | false =>
         have hold := hp.2 ⟨v.val, hvt⟩
-        simp only [lt_self_iff_false, if_false, hf] at hold
+        simp only [lt_self_iff_false, ite_false, hf] at hold
         obtain ⟨result, hresult, hr⟩ := add_lazy_representation _ _ _ _ (hold True.intro).lazy hpr
           (by decide) (by decide)
-        refine ⟨result, by simpa only [hf, Bool.false_eq_true, if_false] using hresult, ?_⟩
+        refine ⟨result, by simpa only [hf, Bool.false_eq_true, ite_false] using hresult, ?_⟩
         refine ⟨hr.1, fun lane => ?_⟩
         rw [hr.2]
         simp [weightedCell, show 8 * v.val + lane.val < 64 by omega, mul_comm]
       | true =>
         obtain ⟨result, hresult, hr⟩ := normalise_product product _ hpr
-        refine ⟨result, by simpa only [hf, if_true] using hresult, ?_⟩
+        refine ⟨result, by simpa only [hf, ite_true] using hresult, ?_⟩
         refine ⟨hr.1, fun lane => ?_⟩
         rw [hr.2]
         simp [weightedCell, show 8 * v.val + lane.val < 64 by omega,
@@ -122,23 +124,23 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
     have hil : index.val < data.val.length := by rw [hp.1, hi]; omega
     let next := alloc.vec.Vec.set data index result
     have hnext : AddCellPrefix next column.val v'.val first old values power := by
-      refine ⟨by simpa [next, alloc.vec.Vec.set] using hp.1, ?_⟩
+      refine ⟨by simpa [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val] using hp.1, ?_⟩
       intro j
       by_cases he : j.val = v.val
       · have hje : j = ⟨v.val, hvt⟩ := Fin.ext he
         subst j
-        simpa [next, alloc.vec.Vec.set, hi, hv', List.getElem!_set, hp.1,
+        simpa [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val, hi, hv', List.set_getElem!_eq, hp.1,
           show column.val * 8 + v.val < 1024 by omega] using hr
       · have hlt : (j.val < v'.val) = (j.val < v.val) := propext (by omega)
-        simpa only [next, alloc.vec.Vec.set, hi,
-          List.getElem!_set_ne data.val (column.val * 8 + v.val) (column.val * 8 + j.val) result (by omega), hlt]
-          using hp.2 j
+        simpa only [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val, hi,
+          List.set_getElem!_ne data.val (column.val * 8 + v.val) (column.val * 8 + j.val) result (by omega), hlt]
+          using! hp.2 j
     have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice fr8.Fr8) data index =
         ok data.val[index.val]! := by
       simp [alloc.vec.Vec.index_usize, getElem!_pos, hil]
     have hmut : alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice fr8.Fr8) data index =
         ok (data.val[index.val]!, alloc.vec.Vec.set data index) := by
-      simp [alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hil]
+      simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hil]
     have hbody : interpolation_kernel.InterpolationKernel.add_cell_loop.body cell column weight first data v =
         ok (cont (next, v')) := by
       have hoff : v * 256#usize = ok offset := scalar_mul_ok v 256#usize (by scalar_tac)
@@ -146,18 +148,19 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
       have hadd : base + v = ok index := by simpa only [hb] using scalar_add_ok base v (by scalar_tac)
       have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
       simp only [interpolation_kernel.InterpolationKernel.add_cell_loop.body,
-        vectors_per_cell_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hvt, if_true,
+        vectors_per_cell_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hvt, ite_true,
         lift, bytes_per_vector_eq, hoff, helement, hproduct, hbase, hadd, hmut, hinc,
-        Function.uncurry_apply_pair]
-      cases first <;> simp only [Bool.false_eq_true, if_false, if_true] at hresult ⊢ <;>
-        simp only [hindex, bind_tc_ok, hi, hresult, next]
+        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      cases first <;> simp only [Bool.false_eq_true, ite_false, ite_true] at hresult ⊢ <;>
+        simp only [hindex, bind_tc_ok, bind_ok, hi, hresult, next]
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hnext (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.add_cell_loop, loop.eq_1]
-      simpa only [hbody] using hout
+      simpa only [hbody, bind_ok] using! hout
     · intro i hiout
       rw [hframe i hiout]
-      exact List.getElem!_set_ne data.val index.val i result (by omega)
+      simpa only [next, alloc.vec.Vec.set_val_eq] using
+        List.set_getElem!_ne data.val index.val i result (by omega)
 
 theorem add_cell_refinement
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
@@ -182,7 +185,7 @@ theorem add_cell_refinement
   have hp : AddCellPrefix kernel.columns column.val 0 (!kernel.used.val[column.val]!) old values power := by
     refine ⟨hk.2.2.1, ?_⟩
     intro v
-    simp only [Nat.not_lt_zero, if_false]
+    simp only [Nat.not_lt_zero, ite_false]
     intro hf
     apply hold
     simpa using hf
@@ -195,16 +198,16 @@ theorem add_cell_refinement
     simp [alloc.vec.Vec.index_usize, getElem!_pos, hk.2.2.2.1, hc]
   have hmut : alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Bool) kernel.used column =
       ok (kernel.used.val[column.val]!, alloc.vec.Vec.set kernel.used column) := by
-    simp [alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hk.2.2.2.1, hc]
-  refine ⟨next, ?_, ?_, ⟨rfl, rfl⟩, rfl, ?_, hframe⟩
+    simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hk.2.2.2.1, hc]
+  refine ⟨next, ?_, ?_, ⟨rfl, rfl⟩, by simp [next, used, alloc.vec.Vec.set_val_eq], ?_, hframe⟩
   · have hnot : decide (¬ kernel.used.val[column.val]! = true) = !kernel.used.val[column.val]! := by
       cases kernel.used.val[column.val]! <;> rfl
     simp only [interpolation_kernel.InterpolationKernel.add_cell,
-      (multiplier_refinement power).1, bind_tc_ok, hweight, hindex, hmut,
-      Function.uncurry_apply_pair, hnot, hloop, next, used]
-  · exact ⟨hk.1, hk.2.1, ho.1, by simpa [next, used, alloc.vec.Vec.set] using hk.2.2.2.1,
+      (multiplier_refinement power).1, bind_tc_ok, bind_ok, hweight, hindex, hmut,
+      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hnot, hloop, next, used]
+  · exact ⟨hk.1, hk.2.1, ho.1, by simpa [next, used, alloc.vec.Vec.set, alloc.vec.Vec.from_val] using hk.2.2.2.1,
       hk.2.2.2.2⟩
   · intro v
-    simpa only [v.isLt, if_true] using ho.2 v
+    simpa only [v.isLt, ite_true] using ho.2 v
 
 end LeanBlsSimd.Kzg.InterpolationKernel

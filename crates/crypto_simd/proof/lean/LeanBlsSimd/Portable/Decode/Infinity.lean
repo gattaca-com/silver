@@ -18,7 +18,7 @@ private theorem scan (b : Encoding) (i : Usize) (hi : i.val ≤ 48) :
     refine ⟨48#usize,?_,?_⟩
     · rw [portable.decompress.extraordinary_loop,loop.eq_1]
       simp only [portable.decompress.extraordinary_loop.body,bls.COMPRESSED_LEN,
-        lt_self_iff_false,if_false]
+        lt_self_iff_false,ite_false, bind_ok]
     · simp only [true_iff]
       intro k hlo hhi
       omega
@@ -29,12 +29,12 @@ private theorem scan (b : Encoding) (i : Usize) (hi : i.val ≤ 48) :
       rfl
     rw [portable.decompress.extraordinary_loop,loop.eq_1]
     simp only [portable.decompress.extraordinary_loop.body,bls.COMPRESSED_LEN,
-      UScalar.lt_equiv,show (48#usize).val = 48 from rfl,hlt,if_true]
-    simp (disch := omega) only [index_usize_toArray,bind_tc_ok]
+      UScalar.lt_equiv,show (48#usize).val = 48 from rfl,hlt,ite_true, bind_ok]
+    simp (disch := omega) only [index_usize_toArray,bind_tc_ok, bind_ok]
     rw [show (0#u8) = toU8 0 from rfl]
     simp only [toU8_inj]
     by_cases hz : b[i.val] = 0
-    · simp only [hz,if_true,hstep,bind_tc_ok]
+    · simp only [hz,ite_true,hstep,bind_tc_ok, bind_ok]
       obtain ⟨j,hj,hs⟩ := ih (UScalar.ofNatCore (i.val+1) (by scalar_tac)) (by simp; omega) (by simp; omega)
       refine ⟨j,?_,?_⟩
       · simpa only [portable.decompress.extraordinary_loop,portable.decompress.extraordinary_loop.body,
@@ -49,8 +49,8 @@ private theorem scan (b : Encoding) (i : Usize) (hi : i.val ≤ 48) :
         · exact h k (by omega) hk
       · intro h k hlo hk
         exact h k (by omega) hk
-    · simp only [hz,if_false]
-      refine ⟨i,rfl,?_⟩
+    · simp only [hz,ite_false]
+      refine ⟨i, by simp only [bind_ok, bind_tc_ok], ?_⟩
       constructor
       · intro he
         have := congrArg UScalar.val he
@@ -80,19 +80,20 @@ theorem extraordinary_refines (b : Encoding) :
       ok (if b = G1Spec.infinity then
         some (toBlstP1Affine (point (.replicate 6 0) (.replicate 6 0))) else none) := by
   obtain ⟨j,hj,hs⟩ := scan b 1#usize (by decide)
-  simp only [portable.decompress.extraordinary,hj,bind_tc_ok]
-  simp (disch := decide) only [index_usize_toArray,bind_tc_ok]
+  simp only [portable.decompress.extraordinary,hj,bind_tc_ok, bind_ok]
+  simp (disch := decide) only [index_usize_toArray,bind_tc_ok, bind_ok]
   rw [DecompressG2.FLAG_COMPRESSED_refines,DecompressG2.FLAG_INFINITY_refines]
-  simp only [lift,bind_tc_ok,toU8_or,toU8_inj,bls.COMPRESSED_LEN]
+  simp only [lift,bind_tc_ok, bind_ok,toU8_or,toU8_inj,bls.COMPRESSED_LEN]
   change (if b[0] = 192 then (if j = 48#usize then _ else _) else _) = _
   by_cases hb : b = G1Spec.infinity
   · obtain ⟨h0,ht⟩ := (infinity_iff b).mp hb
     have hj48 : j = 48#usize := hs.mpr ht
-    simp only [h0,hj48,hb,if_true,default_refines,bind_tc_ok]
-    rfl
+    simp only [h0,hj48,ite_true,default_refines,bind_tc_ok, bind_ok,
+      bls.g1_point.G1Point.from_trusted]
+    simp only [hb, ite_true] <;> rfl
   · by_cases h0 : b[0] = 192
     · have hj48 : j ≠ 48#usize := fun h => hb ((infinity_iff b).mpr ⟨h0,hs.mp h⟩)
-      simp only [h0,hj48,hb,if_true,if_false]
-    · simp only [h0,hb,if_false]
+      simp only [h0,hj48,hb,ite_true,ite_false]
+    · simp only [h0,hb,ite_false]
 
 end LeanBlsSimd.Portable.Decode

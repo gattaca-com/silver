@@ -111,9 +111,9 @@ theorem timesMinusZ_eq (px py : Fp2Field) :
   funext s bit
   unfold chainStep
   by_cases hb : bit ∈ Z_BITS
-  · rw [if_pos (List.contains_iff_mem.mpr hb), if_pos hb]
+  · rw [ite_eq_left (List.contains_iff_mem.mpr hb), ite_eq_left hb]
     rfl
-  · rw [if_neg (fun h => hb (List.contains_iff_mem.mp h)), if_neg hb]
+  · rw [ite_eq_right (fun h => hb (List.contains_iff_mem.mp h)), ite_eq_right hb]
     rfl
 
 theorem foldl_stepOf_spec (h : E'.Nonsingular px py) :

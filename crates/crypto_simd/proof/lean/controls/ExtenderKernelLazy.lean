@@ -40,7 +40,7 @@ theorem missing_reduction_breaks_output_bound :
   refine ⟨input, good, bad, hi, ?_, hgood.1, ?_, ?_⟩
   · change fr8.Fr8.add input input = ok good
     exact hg
-  · simp only [addWithReduction, hr, hb, bind_tc_ok, Bool.false_eq_true, if_false]
+  · simp only [addWithReduction, hr, hb, bind_tc_ok, bind_ok, Bool.false_eq_true, ite_false]
   · intro hbad
     have he := (hbe (0 : Fin 8)).1
     rw [hre, laneInt_eq_laneNat hn, hv'] at he

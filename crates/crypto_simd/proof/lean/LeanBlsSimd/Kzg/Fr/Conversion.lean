@@ -16,7 +16,6 @@ theorem montgomery_field_refines (a b : Array U64 4#usize)
   refine ⟨out,hr,hbound,?_⟩
   have hpow : (radix : ZMod Fr.modulus)^4 = (2^256 : ZMod Fr.modulus) := by norm_num [radix]
   have h := congrArg (fun n : ℤ => (n : ZMod Fr.modulus)) hvalue
-  dsimp only at h
   simpa only [Int.cast_mul,Int.cast_add,Int.cast_pow,Int.cast_natCast,
     ZMod.natCast_self,mul_zero,add_zero,hpow] using h
 
@@ -25,7 +24,6 @@ theorem array_eq_of_field (a b : Array U64 4#usize)
     (h : (value a : ZMod Fr.modulus) = (value b : ZMod Fr.modulus)) : a = b := by
   apply value_injective
   have hval := congrArg (fun z : ZMod Fr.modulus => (z.val : ℤ)) h
-  dsimp only at hval
   rw [ZMod.val_intCast,ZMod.val_intCast] at hval
   rw [Int.emod_eq_of_lt (value_bounds a).1 ha,Int.emod_eq_of_lt (value_bounds b).1 hb] at hval
   exact hval

@@ -13,7 +13,7 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (hlen : out.val.length = inputs.val.length) (hlt : start.val < inputs.val.length)
     (halign : start.val % 8 = 0) :
     ∃ next result, next.val = start.val + min 8 (inputs.val.length - start.val) ∧
-      uncompress_in_g2_loop0.body inputs out simd start = ok (cont (result, simd, next)) ∧
+      uncompress_in_g2_loop0.body inputs simd out start = ok (cont (result, next)) ∧
       result.val.length = out.val.length ∧
       ∀ i, i < inputs.val.length → result.val[i]! =
         if start.val ≤ i ∧ i < next.val then (rawOutput simd inputs)[i]! else out.val[i]! := by
@@ -38,7 +38,7 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
   cases simd
   · obtain ⟨result, hr, hrl, hrv⟩ := scalar_chunk_refines_false inputs out start len hlen hnextlen
     refine ⟨next, result, by omega, ?_, hrl, ?_⟩
-    · simp only [uncompress_in_g2_loop0.body, hlt', if_true, hsub, bind_tc_ok, hchoose, hr, hadd, Bool.false_eq_true, if_false]
+    · simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok, hchoose, hr, hadd, Bool.false_eq_true, ite_false]
     · intro i hi
       rw [hrv i (by omega)]
       simp only [hn]
@@ -47,18 +47,19 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
       · rfl
   · by_cases hk : 3 ≤ len.val
     · let ss : Slice (Array U8 96#usize) :=
-        ⟨inputs.val.slice start.val next.val,
-          le_trans (List.slice_length_le _ _ _) inputs.property⟩
+        Slice.from (inputs.val.slice start.val next.val)
+          (le_trans (List.slice_length_le _ _ _) inputs.property)
       let os : Slice (Option blst.blst_p2_affine) :=
-        ⟨out.val.slice start.val next.val, le_trans (List.slice_length_le _ _ _) out.property⟩
+        Slice.from (out.val.slice start.val next.val)
+          (le_trans (List.slice_length_le _ _ _) out.property)
       have hss : ss.val.length = len.val := by
-        simp only [ss, List.slice_length]
+        simp only [ss, Slice.from_val, List.slice_length]
         omega
       have hos : os.val.length = len.val := by
-        simp only [os, List.slice_length]
+        simp only [os, Slice.from_val, List.slice_length]
         omega
       obtain ⟨r, hr, hrv⟩ := chunk_slice_refines inputs start next (by omega) halign hlt
-        (by omega) ss rfl os (hos.trans hss.symm)
+        (by omega) ss (Slice.from_val _ _) os (hos.trans hss.symm)
       let result := out.setSlice! start.val r.val
       refine ⟨next, result, by omega, ?_, ?_, ?_⟩
       · have hindex : core.slice.index.Slice.index
@@ -70,30 +71,30 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
             { start, «end» := next } = ok (os, fun s => out.setSlice! start.val s.val) := by
           simp only [core.slice.index.Slice.index_mut,
             core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
-          rw [if_pos (by simp only [Slice.length]; constructor <;> omega)]
+          rw [ite_eq_left (by simp only [Slice.length]; constructor <;> omega)]
           rfl
         have hk' : len >= MIN_KERNEL_LANES := by simpa [MIN_KERNEL_LANES] using hk
-        simp only [uncompress_in_g2_loop0.body, hlt', if_true, hsub, bind_tc_ok,
-          hchoose, hk', hadd, hindex, hmut, Function.uncurry_apply_pair, hr, result]
+        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok,
+          hchoose, hk', hadd, hindex, hmut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hr, result]
       · simp [result, Slice.setSlice!]
       · intro i hi
         simp only [result, Slice.setSlice!_val, hrv]
         by_cases h : start.val ≤ i ∧ i < next.val
-        · rw [if_pos h, List.getElem!_setSlice!_middle]
+        · rw [ite_eq_left h, List.getElem!_setSlice!_middle]
           · rw [List.getElem!_slice _ _ _ _ (by simp; omega)]
             congr 1
             omega
           · rw [List.slice_length, rawOutput_length]
             omega
-        · rw [if_neg h]
+        · rw [ite_eq_right h]
           apply List.getElem!_setSlice!_same
           rw [List.slice_length, rawOutput_length]
           omega
     · obtain ⟨result, hr, hrl, hrv⟩ := scalar_chunk_refines inputs out start len hlen hnextlen
       refine ⟨next, result, by omega, ?_, hrl, ?_⟩
       · have hk' : ¬ len >= MIN_KERNEL_LANES := by simpa [MIN_KERNEL_LANES] using hk
-        simp only [uncompress_in_g2_loop0.body, hlt', if_true, hsub, bind_tc_ok,
-          hchoose, hk', if_false, hr, hadd]
+        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok,
+          hchoose, hk', ite_false, hr, hadd]
       · intro i hi
         rw [hrv i (by omega)]
         simp only [hn]
@@ -117,7 +118,7 @@ private theorem loop_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     by_cases heq : start.val = inputs.val.length
     · refine ⟨out, ?_, rfl, ?_⟩
       · rw [uncompress_in_g2_loop0, loop.eq_1]
-        simp [uncompress_in_g2_loop0.body, heq]
+        simp [uncompress_in_g2_loop0.body, heq, bind_ok]
       · intro i hi
         simp [show ¬ start.val ≤ i by omega]
     · obtain ⟨next, middle, hn, hb, hml, hmv⟩ :=
@@ -129,7 +130,7 @@ private theorem loop_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
       refine ⟨result, ?_, hrl.trans hml, ?_⟩
       · unfold uncompress_in_g2_loop0 at *
         rw [loop.eq_1]
-        simp only [hb]
+        simp only [hb, bind_ok]
         exact hr
       · intro i hi
         rw [hrv i hi, hmv i hi]
@@ -145,7 +146,7 @@ theorem uncompress_refines [RuntimeFeatures] [BlsExternals] (inputs : Slice (Arr
   refine ⟨result, ?_, ?_⟩
   · have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
     simp only [silver_crypto_simd.bls.uncompress_in_g2, heq, massert, ↓reduceIte,
-      bind_tc_ok, ifma_available, hr]
+      bind_tc_ok, bind_ok, ifma_available, hr]
   · change result.val = rawOutput RuntimeFeatures.simdAvailable inputs
     apply List.ext_getElem
     · rw [hrl, hlen, rawOutput_length]

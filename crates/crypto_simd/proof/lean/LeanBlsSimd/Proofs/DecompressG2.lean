@@ -29,21 +29,21 @@ namespace DecompressG2
 theorem fromBytesBE_ok {B : ByteArray} {v : ℕ} (hs : B.size = 48) (hv : Fp.bytesBEToNat B = v)
     (hp : v < Fp.modulus) : Fp.fromBytesBE B = .ok ⟨v, hp⟩ := by
   unfold Fp.fromBytesBE
-  rw [if_neg (by rw [hs]; decide)]
+  rw [ite_eq_right (by rw [hs]; decide)]
   subst hv
-  rw [dif_pos hp]
+  rw [dite_eq_left hp]
 
 theorem fromBytesBE_error {B : ByteArray} {v : ℕ} (hv : Fp.bytesBEToNat B = v)
     (hp : ¬v < Fp.modulus) : ∀ c, Fp.fromBytesBE B ≠ .ok c := by
   intro c h
   unfold Fp.fromBytesBE at h
   by_cases hs : B.size ≠ 48
-  · rw [if_pos hs] at h
+  · rw [ite_eq_left hs] at h
     cases h
-  · rw [if_neg hs] at h
+  · rw [ite_eq_right hs] at h
     dsimp only at h
     subst hv
-    rw [dif_neg hp] at h
+    rw [dite_eq_right hp] at h
     cases h
 
 /-- `G2.uncompress` on a compressed, finite encoding with both coordinates below p, up to its
@@ -62,7 +62,7 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
           else -yPos, Fp2.one⟩ := by
   unfold G2.uncompress
   generalize Fp2.sqrt = sq
-  rw [if_neg (by rw [size_toBytes]; decide)]
+  rw [ite_eq_right (by rw [size_toBytes]; decide)]
   dsimp only
   have e1 := bytesBEToNat_c1 b
   have e0 := bytesBEToNat_c0 b
@@ -72,7 +72,7 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
     rw [ByteArray.size_extract, show ((toBytes b).set! 0 _).size = 96 from by
       simp [toBytes, ByteArray.set!, ByteArray.size, G2_COMPRESSED_LEN]]
     omega
-  rw [if_neg (by simpa using hc), if_neg hi, fromBytesBE_ok (hsz 0 48 (by decide)) e1 h1,
+  rw [ite_eq_right (by simpa using hc), ite_eq_right hi, fromBytesBE_ok (hsz 0 48 (by decide)) e1 h1,
     fromBytesBE_ok (hsz 48 96 le_rfl) e0 h0]
   dsimp only
   split <;> rename_i heq <;> rw [heq]
@@ -80,8 +80,8 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
   dsimp only
   congr 2
   by_cases hs : Fp2.signBit yPos = decide (b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x20 ≠ 0)
-  · rw [if_pos hs, if_pos (by rw [hs]; simp)]
-  · rw [if_neg hs, if_neg (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
+  · rw [ite_eq_left hs, ite_eq_left (by rw [hs]; simp)]
+  · rw [ite_eq_right hs, ite_eq_right (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
 
 /-- An encoding that `decode` marks invalid, and not undecided, fails `G2.uncompress`. -/
 theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
@@ -90,7 +90,7 @@ theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
   intro P hP
   unfold G2.uncompress at hP
   generalize Fp2.sqrt = sq at hP
-  rw [if_neg (by rw [size_toBytes]; decide)] at hP
+  rw [ite_eq_right (by rw [size_toBytes]; decide)] at hP
   dsimp only at hP
   have e1 := bytesBEToNat_c1 b
   have e0 := bytesBEToNat_c0 b
@@ -98,17 +98,17 @@ theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
   unfold decodeLane at hu hv
   dsimp only at hu hv
   by_cases hc : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x80 = 0
-  · rw [if_pos (by simpa using hc)] at hP
+  · rw [ite_eq_left (by simpa using hc)] at hP
     cases hP
-  rw [if_neg hc] at hu hv
-  rw [if_neg (by simpa using hc)] at hP
+  rw [ite_eq_right hc] at hu hv
+  rw [ite_eq_right (by simpa using hc)] at hP
   by_cases hi : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv hP
+  rw [ite_eq_right hi] at hv hP
   by_cases hok : bytesVal (clearFlags (split_at b).1).toList < Fp.modulus ∧
       bytesVal (split_at b).2.toList < Fp.modulus
-  · rw [if_pos hok] at hv
+  · rw [ite_eq_left hok] at hv
     cases hv
   rcases not_and_or.mp hok with h | h
   · revert hP
@@ -133,18 +133,18 @@ theorem decodeLane_ok {b : Vector UInt8 G2_COMPRESSED_LEN}
   unfold decodeLane at hu hv ⊢
   dsimp only at hu hv ⊢
   by_cases hc : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x80 = 0
-  · rw [if_pos hc] at hv
+  · rw [ite_eq_left hc] at hv
     cases hv
-  rw [if_neg hc] at hu hv ⊢
+  rw [ite_eq_right hc] at hu hv ⊢
   by_cases hi : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv ⊢
+  rw [ite_eq_right hi] at hv ⊢
   by_cases hok : bytesVal (clearFlags (split_at b).1).toList < Fp.modulus ∧
       bytesVal (split_at b).2.toList < Fp.modulus
-  · rw [if_pos hok]
+  · rw [ite_eq_left hok]
     exact ⟨hc, hi, hok.1, hok.2, rfl⟩
-  · rw [if_neg hok] at hv
+  · rw [ite_eq_right hok] at hv
     cases hv
 
 theorem fp_mk_eq_natCast {v : ℕ} (h : v < Fp.modulus) :
@@ -394,7 +394,7 @@ theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
       (M.members &&& (has &&& ~~~(D.invalid ||| D.undecided)) &&&
         ~~~(D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
       (D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
-  rw [if_pos (List.mem_finRange l)] at hpts
+  rw [ite_eq_left (List.mem_finRange l)] at hpts
   simp only [pointsLoop] at hmasks hpts
   have hund : (D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))).toNat.testBit
       l = laneUndecided b := by

@@ -13,7 +13,7 @@ set_option exponentiation.threshold 4096
 
 theorem mul_eq_product [RuntimeFeatures] (a b : portable.fp.Fp) :
     portable.fp.Fp.mul a b = portable.fp.Fp.product a b := by
-  simp only [portable.fp.Fp.mul,bmi2_available,bind_tc_ok]
+  simp only [portable.fp.Fp.mul,bmi2_available,bind_tc_ok, bind_ok]
   split <;> rfl
 
 theorem montgomery_field_refines (a b : Array U64 6#usize)
@@ -25,7 +25,6 @@ theorem montgomery_field_refines (a b : Array U64 6#usize)
   refine ⟨out,hr,hbound,?_⟩
   have hpow : (radix : ZMod Bls.Fp.modulus)^6 = (2^384 : ZMod Bls.Fp.modulus) := by norm_num [radix]
   have h := congrArg (fun n : ℤ => (n : ZMod Bls.Fp.modulus)) hvalue
-  dsimp only at h
   simpa only [Int.cast_mul,Int.cast_add,Int.cast_pow,Int.cast_natCast,
     ZMod.natCast_self,mul_zero,add_zero,hpow] using h
 
@@ -34,7 +33,6 @@ theorem array_eq_of_field (a b : Array U64 6#usize)
     (h : (value a : ZMod Bls.Fp.modulus) = (value b : ZMod Bls.Fp.modulus)) : a = b := by
   apply value_injective
   have hval := congrArg (fun z : ZMod Bls.Fp.modulus => (z.val : ℤ)) h
-  dsimp only at hval
   rw [ZMod.val_intCast,ZMod.val_intCast] at hval
   rw [Int.emod_eq_of_lt (value_bounds a).1 ha,Int.emod_eq_of_lt (value_bounds b).1 hb] at hval
   exact hval

@@ -6,13 +6,15 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.Extender
 
 local instance extenderWriteRawFrInhabited : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 
 def storeChunk (cells : Cells) (j : Nat) (bs : Aeneas.Std.Array U8 32#usize) : Cells :=
-  ⟨cells.val.set (64+j/64)
-    (Aeneas.Std.Array.setSlice! cells.val[64+j/64]! ((j%64)*32) bs.val), by simp [cells.property]⟩
+  Array.make 128#usize (cells.val.set (64+j/64)
+    (Aeneas.Std.Array.setSlice! cells.val[64+j/64]! ((j%64)*32) bs.val)) (by simp [cells.property])
 
 theorem write_chunk_body
     (v : cell_extender.CellExtender) (values : _root_.Array Fr)
@@ -37,7 +39,7 @@ theorem write_chunk_body
   obtain ⟨quot, hquot, hquotval⟩ := UScalar.div_spec iter.start
     (y := FIELD_ELEMENTS_PER_CELL) (by simp [FIELD_ELEMENTS_PER_CELL])
   have hquotval' : quot.val = iter.start.val / 64 := by simpa [FIELD_ELEMENTS_PER_CELL] using hquotval
-  obtain ⟨rem, hrem, hremval⟩ := WP.spec_imp_exists (UScalar.rem_spec iter.start
+  obtain ⟨rem, hrem, hremval⟩ := spec_imp_exists (UScalar.rem_spec iter.start
     (y := FIELD_ELEMENTS_PER_CELL) (by simp [FIELD_ELEMENTS_PER_CELL]))
   have hremval' : rem.val = iter.start.val % 64 := by simpa [FIELD_ELEMENTS_PER_CELL] using hremval
   let cell : Usize := UScalar.ofNatCore (64 + iter.start.val / 64) (by scalar_tac)
@@ -58,15 +60,15 @@ theorem write_chunk_body
       List.getElem?_eq_getElem hcell, getElem!_pos cells.val (64 + iter.start.val / 64) hcell]
   have hbounds : (iter.start.val % 64) * 32 + 32 ≤ 2048 := by omega
   have hroom : 32 ≤ 2048 - (iter.start.val % 64) * 32 := by omega
-  simp only [cell_extender.CellExtender.write_extension_loop.body, hn, bind_tc_ok,
-    Function.uncurry_apply_pair, reverse_bits_blob, hindex,
+  simp only [cell_extender.CellExtender.write_extension_loop.body, hn, bind_tc_ok, bind_ok,
+    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, reverse_bits_blob, hindex,
     hserialize, cells_per_ext_blob_eq, hhalf, hquot, haddCell, hrem, hmul,
     hcellIndex, haddStop]
   simp [core.array.Array.index_mut, core.ops.index.IndexMutSlice,
     core.slice.index.Slice.index_mut, core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
-    atByte, stop, Array.to_slice, Slice.length, UScalar.le_equiv, hbounds,
+    atByte, stop, Array.to_slice, Slice.from_val, Slice.length, UScalar.le_equiv, hbounds,
     core.slice.Slice.copy_from_slice, Slice.len, List.slice, bs.property,
-    Array.from_slice, Aeneas.Std.Array.set, Aeneas.Std.Array.setSlice!, storeChunk, cell, old,
-    lift, bind_tc_ok, Nat.min_eq_left hroom]
+    Array.from_slice, Aeneas.Std.Array.set, Aeneas.Std.Array.setSlice!, storeChunk, Array.make, Array.from_val, cell, old,
+    lift, bind_tc_ok, bind_ok, Nat.min_eq_left hroom]
 
 end LeanBlsSimd.Kzg.Extender

@@ -23,7 +23,7 @@ theorem mul_refinement (a b : fr8.Fr8) (ha : Normalized a) (hb : Normalized b)
         simpa only [laneNat_eq_val, FrModel.R, FrModel.LIMBS, FrModel.LIMB_BITS] using hab lane)
   have hl (lane : Fin 8) (j : Fin 5) : (out.val[j.val]!)[lane].toNat < 2 ^ 57 := by
     rw [← getElem_lane_ofFr8]
-    simpa only [out, FrModel.ofFr8_toFr8] using (h lane).1 j
+    simpa only [out, FrModel.ofFr8_toFr8] using! (h lane).1 j
   have he lane : laneInt out lane = (laneNat out lane : ℤ) := by
     unfold laneInt laneNat
     rw [Fin.sum_univ_def]
@@ -38,7 +38,7 @@ theorem mul_refinement (a b : fr8.Fr8) (ha : Normalized a) (hb : Normalized b)
   · refine ⟨by rw [he]; positivity, ?_, fun j => ?_⟩
     · rw [he, laneNat_eq_val]
       have hv := (h lane).2.1
-      simpa only [out, FrModel.ofFr8_toFr8] using (show
+      simpa only [out, FrModel.ofFr8_toFr8] using! (show
         (FrModel.val (((FrModel.ofFr8 a).mulRaw (FrModel.ofFr8 b)).lane lane) : ℤ) <
           2 * Fr.modulus by exact_mod_cast hv)
     · rw [SignedLimbs.limb_eq_nat (by have := hl lane j; omega),
@@ -49,7 +49,7 @@ theorem mul_refinement (a b : fr8.Fr8) (ha : Normalized a) (hb : Normalized b)
   · rw [lazyLaneValue, he, Int.cast_natCast, Fr.inverse_eq_inv]
     simpa only [laneValue, laneNat_eq_val, out, FrModel.ofFr8_toFr8,
       Fr.ofNat_eq_natCast, FrModel.R, FrModel.LIMBS, FrModel.LIMB_BITS, Nat.reduceMul]
-      using (h lane).2.2
+      using! (h lane).2.2
 
 private theorem mul_scale_cancel (x y r : Fr) (hr : r ≠ 0) :
     x * (y * r) * r.inverse = x * y := by

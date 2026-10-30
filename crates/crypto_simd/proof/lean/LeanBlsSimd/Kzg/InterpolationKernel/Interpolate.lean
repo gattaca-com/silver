@@ -7,6 +7,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 
 open Extender Extender.Kernel
@@ -32,9 +34,9 @@ private theorem columns_loop (kernel : interpolation_kernel.InterpolationKernel)
     refine ⟨kernel, sums, ?_, hk, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop2, loop.eq_1]
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop2.body,
-        cells_per_ext_blob_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hc128, lt_self_iff_false, if_false]
-    · simpa only [hc128, List.length_range, List.drop_length, List.foldl_nil] using hs
+        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        hc128, lt_self_iff_false, ite_false]
+    · simpa only [hc128, show (List.range 128).drop 128 = [] from (by simpa only [List.length_range] using (List.drop_length (l := List.range 128))), List.foldl_nil] using hs
   | succ rem ih =>
     have hct : c.val < 128 := by omega
     have hcl : c.val < kernel.used.val.length := by rw [hk.2.2.2.1]; exact hct
@@ -49,15 +51,15 @@ private theorem columns_loop (kernel : interpolation_kernel.InterpolationKernel)
           DataRep (Array.to_slice sumsAfter) (Interpolation.totalStep columns used total c.val).toArray := by
       cases hflag : used[c.val]! with
       | false =>
-        refine ⟨kernel, sums, by simp only [Bool.false_eq_true, if_false], hk,
+        refine ⟨kernel, sums, by simp only [Bool.false_eq_true, ite_false], hk,
           ⟨hr.1, fun d hd hu => hr.2 d (by omega) hu⟩, ?_⟩
-        simpa only [Interpolation.totalStep, hflag, Bool.false_eq_true, if_false] using hs
+        simpa only [Interpolation.totalStep, hflag, Bool.false_eq_true, ite_false] using hs
       | true =>
         obtain ⟨next, sums', hcall, hn, _, hu, hframe, hrep⟩ :=
           add_column_refinement kernel c sums (Interpolation.columnView columns c.val) total.toArray
             hk hct (Interpolation.columnView_size columns c.val) cell_roots_valid.2
             (hr.2 ⟨c.val, hct⟩ (Nat.le_refl _) hflag) hs
-        refine ⟨next, sums', by simpa only [hflag, if_true] using hcall, hn, ?_, ?_⟩
+        refine ⟨next, sums', by simpa only [hflag, ite_true] using hcall, hn, ?_, ?_⟩
         · refine ⟨by rw [hu]; exact hr.1, ?_⟩
           intro d hd hused v
           rw [hframe (d.val*8+v.val) (Or.inr (by omega))]
@@ -73,15 +75,15 @@ private theorem columns_loop (kernel : interpolation_kernel.InterpolationKernel)
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop2.body kernel c sums =
         ok (cont (after, c', sumsAfter)) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop2.body,
-        cells_per_ext_blob_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hct, if_true, hindex, hstep, Function.uncurry_apply_pair, hinc]
+        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        hct, ite_true, hindex, hstep, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hinc]
     obtain ⟨next, sums', hloop, hn, hrep⟩ := ih after ha
       (Interpolation.totalStep columns used total c.val)
       (Interpolation.totalStep_length columns used total c.val ht) c' (by omega)
       hremaining sumsAfter hsum (by omega)
     refine ⟨next, sums', ?_, hn, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop2, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons (by simp only [List.length_range]; exact hct)]
       simpa only [List.foldl_cons, List.getElem_range, hc'] using hrep
 
@@ -89,13 +91,12 @@ private theorem zero_sums (zero : fr8.Fr8) (hz : Represents zero (fun _ => 0)) :
     DataRep (Array.to_slice (Array.repeat 8#usize zero))
       (List.replicate 64 Fr.zero).toArray := by
   constructor
-  · simp only [Array.to_slice, Array.repeat, List.length_replicate, List.size_toArray]
-    rfl
+  · simp only [Array.to_slice, Slice.from_val, Array.repeat, Array.from_val, UScalar.ofNatCore_val_eq, List.length_replicate, List.size_toArray]
   · intro v
-    have hv : v.val < 8 := by simpa only [Array.to_slice, Array.repeat, List.length_replicate] using v.isLt
+    have hv : v.val < 8 := by simpa only [Array.to_slice, Slice.from_val, Array.repeat, Array.from_val, UScalar.ofNatCore_val_eq, List.length_replicate] using v.isLt
     have hi (lane : Fin 8) : 8*v.val+lane.val < 64 := by omega
-    simpa only [Array.to_slice, Array.repeat, List.getElem_replicate,
-      List.getElem!_toArray, List.getElem!_replicate, hi] using hz
+    simpa only [Array.to_slice, Slice.from_val, Array.repeat, Array.from_val, List.getElem_replicate,
+      List.getElem!_toArray, List.getElem!_replicate, hi] using! hz
 
 theorem interpolate_refinement
     (kernel : interpolation_kernel.InterpolationKernel) (hk : StateInvariant kernel)
@@ -140,6 +141,6 @@ theorem interpolate_refinement
   obtain ⟨out, hstore, hout⟩ := store_canonical_refinement sums _ hrep coefficients ho
   refine ⟨next, out, ?_, hn, hout⟩
   simp only [interpolation_kernel.InterpolationKernel.interpolate, hclear, hacc,
-    hzero, hloop, hstore, bind_tc_ok, Function.uncurry_apply_pair]
+    hzero, hloop, hstore, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
 
 end LeanBlsSimd.Kzg.InterpolationKernel

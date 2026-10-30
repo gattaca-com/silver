@@ -8,6 +8,8 @@ noncomputable section
 namespace LeanBlsSimd.Msm8
 open EthLib.Cryptography.Bls
 
+attribute [local implicit_reducible] ZMod Fp.modulus
+
 def laneZero (p : G1x8) : blst.blst_p1 :=
   ⟨⟨toArray toU64 p.x.to_blst_limbs[0]⟩,
    ⟨toArray toU64 p.y.to_blst_limbs[0]⟩,
@@ -15,7 +17,8 @@ def laneZero (p : G1x8) : blst.blst_p1 :=
 
 theorem lane_zero_in_blst_refines (p : g1x8.G1x8) :
     msm8.lane_zero_in_blst p = ok (laneZero (ofG1x8 p)) := by
-  simp only [msm8.lane_zero_in_blst, Fp8.to_blst_limbs_refines, bind_tc_ok]
+  simp only [msm8.lane_zero_in_blst, Fp8.to_blst_limbs_refines, bind_tc_ok, bind_ok]
+  simp (disch := decide) only [index_usize_toArray, bind_ok]
   rfl
 
 
@@ -27,10 +30,12 @@ theorem fp_to_blst_eq {x : Fp8} {l : Fin 8} {a : Fp} (h : x.Holds l a) :
 theorem laneZero_eq {p : G1x8} {P : G1} (h : p.Holds 0 P) :
     laneZero p = Kzg.g1Jacobian P := by
   unfold laneZero Kzg.g1Jacobian
-  congr 1
-  · exact fp_to_blst_eq (G1x8.Holds.x h)
-  · exact fp_to_blst_eq (G1x8.Holds.y h)
-  · exact fp_to_blst_eq (G1x8.Holds.z h)
+  exact congrArg₂
+    (fun (xy : blst.blst_fp × blst.blst_fp) (z : blst.blst_fp) =>
+      blst.blst_p1.mk xy.1 xy.2 z)
+    (congrArg₂ Prod.mk (fp_to_blst_eq (G1x8.Holds.x h))
+      (fp_to_blst_eq (G1x8.Holds.y h)))
+    (fp_to_blst_eq (G1x8.Holds.z h))
 
 theorem lane_zero_in_blst_rep (p : g1x8.G1x8) (P : G1) (h : (ofG1x8 p).Holds 0 P) :
     msm8.lane_zero_in_blst p = ok (Kzg.g1Jacobian P) ∧

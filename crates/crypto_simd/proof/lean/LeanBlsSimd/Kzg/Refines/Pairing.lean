@@ -48,10 +48,10 @@ theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
   have hpowers0e : powers0.val = [] := by simpa [List.resize] using hpowers0v
   obtain ⟨powersV, hpowers, hpowersv⟩ := powers_loop r Fr.one powers0
     { start := 0#usize, «end» := Slice.len indices } (by simp)
-    (by simpa only [hpowers0e, List.length_nil, UScalar.ofNatCore_val_eq,
+    (by simpa only [hpowers0e, List.length_nil, Slice.len, Usize.ofNatCore_val_eq, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, Nat.zero_add] using indices.property)
   have hpowersE : powersV.val = powers.toList.map frEncode := by
-    simpa only [hpowers0e, List.nil_append, UScalar.ofNatCore_val_eq, Nat.sub_zero,
+    simpa only [hpowers0e, List.nil_append, Slice.len, Usize.ofNatCore_val_eq, UScalar.ofNatCore_val_eq, Nat.sub_zero,
       powers, computePowers, List.toList_toArray] using hpowersv
   obtain ⟨ll, scratchL, hll, hllrep⟩ := verify_lincomb_refinement v.proof_points powersV
     proofs powers hp hpowersE (by omega) hvalid.2 v.curve_work
@@ -92,10 +92,10 @@ theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
   obtain ⟨shiftedV, hshifted, hshiftedv⟩ := shifts_loop after.cosets hafter.2.1 after.r_powers
     shifted0 powers.toList hafterPowers indices (by simpa using hplen.ge) hindices
     { start := 0#usize, «end» := Slice.len indices } (by simp) (by simp)
-    (by simpa only [hshifted0e, List.length_nil, UScalar.ofNatCore_val_eq,
+    (by simpa only [hshifted0e, List.length_nil, Slice.len, Usize.ofNatCore_val_eq, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, Nat.zero_add] using indices.property)
   have hshiftedE : shiftedV.val = shifted.map frEncode := by
-    simpa only [hshifted0e, List.nil_append, UScalar.ofNatCore_val_eq, List.drop_zero,
+    simpa only [hshifted0e, List.nil_append, Slice.len, Usize.ofNatCore_val_eq, UScalar.ofNatCore_val_eq, List.drop_zero,
       shifted] using hshiftedv
   obtain ⟨rlp, scratchP, hrlp, hrlprep⟩ := verify_lincomb_refinement after.proof_points shiftedV
     proofs shifted.toArray hafterProofs (by simpa using hshiftedE) (by simp [hproofs, hslen])
@@ -131,13 +131,13 @@ theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
     rw [← setup_model_points_eq, ← hwmodel, ← hsmodel]
   let next := { after with scalars := shiftedV, curve_work := scratchP }
   have hfinish := congrArg (fun result : Result Bool => do let b ← result; ok (b, next)) hpair
-  simp only [bind_tc_ok, bind_assoc_eq] at hfinish
+  simp only [bind_tc_ok, bind_ok, bind_assoc_eq] at hfinish
   refine ⟨next, ?_, hafter.1, hafter.2.1, hafter.2.2.1, hworkP⟩
   rw [hmodel]
   unfold verify.CellBatchVerifier.pairing_holds
   simp only [hzero, hone, hpowers0, hpowers, hll, hweights0, hweights0', hweights,
     hrlc, hinterpolation, hshifted0, hshifted, hrlp,
-    bind_tc_ok, Function.uncurry_apply_pair]
+    bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   exact hfinish
 
 end LeanBlsSimd.Kzg.Pairing

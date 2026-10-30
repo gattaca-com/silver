@@ -62,7 +62,7 @@ theorem valFrom_eq (t : Acc) (lo : ℕ) (hlo : lo < 2 * LIMBS + 1) :
 
 theorem valFrom_top (t : Acc) : valFrom t (2 * LIMBS + 1) = 0 := by
   unfold valFrom
-  exact Finset.sum_eq_zero fun k _ => if_neg (by omega)
+  exact Finset.sum_eq_zero fun k _ => ite_eq_right (by omega)
 
 set_option exponentiation.threshold 1000 in
 theorem valFrom_LIMBS (t : Acc) :

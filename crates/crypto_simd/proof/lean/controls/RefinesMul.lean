@@ -90,10 +90,10 @@ local macro "mul_proof" : tactic => `(tactic| (
   obtain ⟨B, rfl⟩ : ∃ B : Vector M512 LIMBS, rhs = toArray id B :=
     ⟨ofArray id rhs, (toArray_ofArray (fun _ => rfl) rhs _ _).symm⟩
   unfold mulWith
-  simp only [Simd.zero_refines, bind_tc_ok]
+  simp only [Simd.zero_refines, bind_tc_ok, bind_ok]
   rw [repeat_eq_toArray_id Simd.zero (show (17#usize).val = 2 * LIMBS + 1 from rfl)]
   simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines,
-    bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
+    bind_tc_ok, bind_ok, ofArray_toArray_id, laneOf_fromLanes]
   rw [Fp8.reduce_refines]
   simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8,
     ofArray_toArray_id, laneOf_fromLanes]
@@ -133,7 +133,7 @@ example : ¬ ∀ self rhs : fp8.Fp8,
     mulWith 6#usize self rhs = ok (toFp8 ((ofFp8 self).mul (ofFp8 rhs))) := by
   intro h
   let x := toFp8 (Fp8.splat_limbs (.ofList R2_MOD_P))
-  have e := congrArg ofFp8 (Result.ok.inj ((mulWith_six_refines x x).symm.trans (h x x)))
+  have e := congrArg ofFp8 (Result.ok_injective ((mulWith_six_refines x x).symm.trans (h x x)))
   simp only [ofFp8_toFp8] at e
   have e0 := congrArg (Fp8.lane · 0) e
   simp only [Fp8.mul, Fp8.lane_ofLanes, Vector.getElem_ofFn, x, ofFp8_toFp8,

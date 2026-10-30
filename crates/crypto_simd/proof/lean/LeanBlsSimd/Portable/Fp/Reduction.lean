@@ -36,14 +36,14 @@ private theorem select_loop_eq (mask : U64) (a b out target : Array U64 6#usize)
     have hje : j.val = 6 := by omega
     have hstop : ¬j < 6#usize := by change ¬j.val < 6; omega
     have heq : out = target := by
-      apply Subtype.ext
+      ext1
       apply List.ext_getElem
       · rw [out.property,target.property]
       · intro i hi ht
-        have hi6 : i < 6 := by simpa only [out.property] using hi
+        have hi6 : i < 6 := by simpa only [out.property] using! hi
         exact hp i hi6 (by omega)
     rw [portable.fp.select_loop,loop.eq_1]
-    simp [portable.fp.select_loop.body,hstop,heq]
+    simp [portable.fp.select_loop.body,hstop,heq, bind_ok]
   | succ n ih =>
     have hjlt : j.val < 6 := by omega
     let next : Usize := UScalar.ofNatCore (j.val+1)
@@ -52,23 +52,23 @@ private theorem select_loop_eq (mask : U64) (a b out target : Array U64 6#usize)
     have hnxt : next.val = j.val+1 := rfl
     have hbody : portable.fp.select_loop.body mask a b out j = ok (cont (out.set j word,next)) := by
       have hj' : j < 6#usize := hjlt
-      simp only [portable.fp.select_loop.body,hj',if_true]
+      simp only [portable.fp.select_loop.body,hj',ite_true]
       rw [index_usize_eq a j hjlt,index_usize_eq b j hjlt]
-      simp only [lift,bind_tc_ok,hw j.val hjlt]
+      simp only [lift,bind_tc_ok, bind_ok,hw j.val hjlt]
       rw [update_eq out j word hjlt,usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     have hp' : ∀ i (hi : i < 6), i < next.val →
       (out.set j word).val[i]'(by rw [(out.set j word).property]; exact hi) =
         target.val[i]'(by rw [target.property]; exact hi) := by
       intro i hi hij
-      change (out.val.set j.val word)[i]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       by_cases h : j.val = i
       · subst i
         rw [List.getElem_set_self]
       · rw [List.getElem_set_ne h]
         exact hp i hi (by omega)
     rw [portable.fp.select_loop,loop.eq_1]
-    simpa only [hbody] using ih (out.set j word) next (by omega) hp' (by omega)
+    simpa only [hbody, bind_ok] using! ih (out.set j word) next (by omega) hp' (by omega)
 
 theorem select_zero (a b : Array U64 6#usize) : portable.fp.select 0#u64 a b = ok b :=
   select_loop_eq _ a b _ b 0#usize (by decide) (by intro i hi; exact select_zero_word _ _)
@@ -114,22 +114,22 @@ theorem negative_mask_refines (d : Array U64 6#usize) :
     rfl
   simp only [portable.fp.negative_mask]
   rw [index_usize_eq d 5#usize (by decide)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do let bit ← high >>> 63#i32; ok (core.num.U64.wrapping_sub 0#u64 bit)) = _
   rw [hshift]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   by_cases h : value d < 2^383
   · have he : (⟨high.bv.ushiftRight 63⟩ : U64) = 0#u64 := by
       apply UScalar.eq_of_val_eq
-      rw [hbval,hbit,if_pos h]
+      rw [hbval,hbit,ite_eq_left h]
       rfl
-    rw [he,if_pos h]
+    rw [he,ite_eq_left h]
     rfl
   · have he : (⟨high.bv.ushiftRight 63⟩ : U64) = 1#u64 := by
       apply UScalar.eq_of_val_eq
-      rw [hbval,hbit,if_neg h]
+      rw [hbval,hbit,ite_eq_right h]
       rfl
-    rw [he,if_neg h]
+    rw [he,ite_eq_right h]
     rfl
 
 theorem below_p_refines (t : Array U64 6#usize) (ht : value t < 2*Bls.Fp.modulus) :
@@ -143,18 +143,18 @@ theorem below_p_refines (t : Array U64 6#usize) (ht : value t < 2*Bls.Fp.modulus
       norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
     refine ⟨t,?_,(Int.emod_eq_of_lt ht0 hsmall).symm⟩
-    simp only [portable.fp.below_p,he,bind_tc_ok]
+    simp only [portable.fp.below_p,he,bind_tc_ok, bind_ok]
     change (do let mask ← portable.fp.negative_mask d; portable.fp.select mask t d) = _
     rw [hneg]
-    simp only [if_neg hhigh,bind_tc_ok,select_ones]
+    simp only [ite_eq_right hhigh,bind_tc_ok, bind_ok,select_ones]
   · have hlow : value d < 2^383 := by
       norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
     refine ⟨d,?_,?_⟩
-    · simp only [portable.fp.below_p,he,bind_tc_ok]
+    · simp only [portable.fp.below_p,he,bind_tc_ok, bind_ok]
       change (do let mask ← portable.fp.negative_mask d; portable.fp.select mask t d) = _
       rw [hneg]
-      simp only [if_pos hlow,bind_tc_ok,select_zero]
+      simp only [ite_eq_left hlow,bind_tc_ok, bind_ok,select_zero]
     · norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
 
@@ -176,20 +176,22 @@ private theorem p_if_loop_eq_select (mask : U64) (out : Array U64 6#usize) (j : 
   funext state
   rcases state with ⟨out,j⟩
   by_cases hj : j < 6#usize
-  · simp only [portable.fp.p_if_loop.body,portable.fp.select_loop.body,hj,if_true]
+  · simp only [portable.fp.p_if_loop.body,portable.fp.select_loop.body,hj,ite_true]
     rw [index_usize_eq bls.constants.P_U64 j hj,
       index_usize_eq (Array.repeat 6#usize 0#u64) j hj]
-    simp only [lift,bind_tc_ok,Array.repeat,List.getElem_replicate,zero_and,or_zero]
+    simp only [lift,bind_tc_ok, bind_ok,Array.repeat_val,List.getElem_replicate,zero_and,or_zero]
   · simp [portable.fp.p_if_loop.body,portable.fp.select_loop.body,hj]
 
 theorem p_if_refines (borrowed : Bool) :
     portable.fp.p_if borrowed = ok (if borrowed then bls.constants.P_U64 else Array.repeat 6#usize 0#u64) := by
   cases borrowed with
   | false =>
+    simp only [portable.fp.p_if, lift, bind_ok]
     change portable.fp.p_if_loop 0#u64 (Array.repeat 6#usize 0#u64) 0#usize = _
     rw [p_if_loop_eq_select]
     exact select_zero _ _
   | true =>
+    simp only [portable.fp.p_if, lift, bind_ok]
     change portable.fp.p_if_loop 18446744073709551615#u64 (Array.repeat 6#usize 0#u64) 0#usize = _
     rw [p_if_loop_eq_select]
     exact select_ones _ _

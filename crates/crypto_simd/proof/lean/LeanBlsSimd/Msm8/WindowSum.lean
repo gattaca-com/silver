@@ -7,6 +7,8 @@ open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
 namespace LeanBlsSimd.WindowSums
+
+attribute [local implicit_reducible] LIMBS ZMod EthLib.Cryptography.Bls.Fp.modulus
 open EthLib.Cryptography.Bls
 
 structure Entry where
@@ -56,12 +58,12 @@ theorem joinEntry_correct (running : G1x8) (entry : Entry) (l : Fin 8)
     (joinEntry running entry).PointRep l (P + Q) := by
   obtain ⟨p, hp, hvp, hpp⟩ := hp
   by_cases hbit : entry.present.toNat.testBit l = true
-  · obtain ⟨x, y, hx, hy, hvq, hqp⟩ := (if_pos hbit).mp hq
+  · obtain ⟨x, y, hx, hy, hvq, hqp⟩ := (ite_eq_left hbit).mp hq
     refine ⟨G1.add p ⟨x, y, Fp.one⟩, ?_, G1.valid_add hvp hvq, ?_⟩
     · apply G1x8.select_true_holds _ _ _ _ _ hbit
       exact G1x8.add_affine_complete_correct _ _ _ _ _ _ _ hp hx hy hvp hvq
     · rw [G1.toPoint_add hvp hvq, hpp, hqp]
-  · have hzero : Q = 0 := (if_neg hbit).mp hq
+  · have hzero : Q = 0 := (ite_eq_right hbit).mp hq
     refine ⟨p, ?_, hvp, ?_⟩
     · apply G1x8.select_false_holds _ _ _ _ _ (by simpa using hbit) hp
     · simpa [hzero] using hpp
@@ -134,10 +136,10 @@ theorem joinBucket_refines (self : msm8.buckets.Buckets) (store : msm8.store.Poi
       omega
     refine ⟨UScalar.ofNatCore (c.val + 1) hadd, by simp [hc], ?_⟩
     simp only [body, msm8.buckets.Buckets.window_sums_loop0_loop0.body,
-      UScalar.lt_equiv, hl, if_true, hraw, bind_tc_ok, hload,
+      UScalar.lt_equiv, hl, ite_true, hraw, bind_tc_ok, bind_ok, hload,
       G1x8.add_affine_complete_refines, G1x8.select_refines, ofG1x8_toG1x8]
     rw [add_ok _ _ hadd]
-    simp only [bind_tc_ok, hmask, hc, joinEntry, UScalar.ofNatCore_val_eq]
+    simp only [bind_tc_ok, bind_ok, hmask, hc, joinEntry, UScalar.ofNatCore_val_eq]
     change ok (cont (toG1x8 (G1x8.select (entries j.val).present r
       (r.add_affine_complete (ofFp8 (toFp8 (entries j.val).x)) (ofFp8 (toFp8 (entries j.val).y)))),
       UScalar.ofNatCore (j.val + 1) _)) = _
@@ -171,7 +173,7 @@ theorem windowSum_loop_refines (self : msm8.buckets.Buckets) (store : msm8.store
     unfold msm8.buckets.Buckets.window_sums_loop0
     rw [loop.eq_1]
     simp only [msm8.buckets.Buckets.window_sums_loop0.body, UScalar.lt_equiv, hb,
-      UScalar.ofNatCore_val_eq, Nat.lt_irrefl, if_false, windowSum_zero]
+      UScalar.ofNatCore_val_eq, Nat.lt_irrefl, ite_false, windowSum_zero, bind_ok]
   | succ b ih =>
     have hpos : 0 < bucket.val := by omega
     have hlong := hc.longest bucket hpos (by omega)
@@ -190,15 +192,15 @@ theorem windowSum_loop_refines (self : msm8.buckets.Buckets) (store : msm8.store
         ok (cont (toG1x8 (joinBucket (entries bucket.val) (lengths bucket.val).val running),
           toG1x8 (sum.add_complete (joinBucket (entries bucket.val) (lengths bucket.val).val running)), next)) := by
       simp only [msm8.buckets.Buckets.window_sums_loop0.body, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, hpos, if_true, hlong, bind_tc_ok, hjoin,
+        UScalar.ofNatCore_val_eq, hpos, ite_true, hlong, bind_tc_ok, bind_ok, hjoin,
         G1x8.add_complete_refines, ofG1x8_toG1x8]
       rw [sub_ok bucket 1#usize (by change 1 ≤ bucket.val; omega)]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     unfold msm8.buckets.Buckets.window_sums_loop0
     change loop (fun p => msm8.buckets.Buckets.window_sums_loop0.body self.window_bits self.windows
       self.refs self.starts self.lens store group p.1 p.2.1 p.2.2)
       (toG1x8 running, toG1x8 sum, bucket) = _
-    rw [loop.eq_1, hbody]
+    rw [loop.eq_1, hbody, bind_ok]
     change msm8.buckets.Buckets.window_sums_loop0 self.window_bits self.windows self.refs self.starts
       self.lens store group _ _ next = _
     rw [htail, hb, windowSum_succ]
@@ -218,7 +220,7 @@ theorem bucketCount_refines (bits : Usize) (hlo : 1 ≤ bits.val) (hhi : bits.va
   let maximum : Usize := UScalar.ofNatCore (2 ^ (bits.val - 1)) hsmall
   refine ⟨maximum, by simp [maximum], ?_⟩
   rw [sub_ok bits 1#usize hlo]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [shiftLeft_ok _ _ (by
     have h : 32 ≤ UScalarTy.Usize.numBits := by
       rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
@@ -246,9 +248,10 @@ theorem window_sums_refines (self : msm8.buckets.Buckets) (store : msm8.store.Po
   obtain ⟨maximum, hm, hinit⟩ := bucketCount_refines self.window_bits hlo hhi
   have hc' : WindowCalls self store group maximum.val entries lengths := hm.symm ▸ hc
   have hloop := windowSum_loop_refines self store group maximum entries lengths hc' G1x8.infinity G1x8.infinity
-  simp only [msm8.buckets.Buckets.window_sums, G1x8.infinity_refines, bind_tc_ok]
-  rw [← bind_assoc_eq, hinit]
-  simpa only [bind_tc_ok, hm] using hloop
+  simp only [msm8.buckets.Buckets.window_sums, G1x8.infinity_refines, bind_tc_ok, bind_ok]
+  simp -failIfUnchanged only [bind_tc_eq] at *
+  rw [← Aeneas.Std.bind_assoc, hinit]
+  simpa only [bind_tc_ok, bind_ok, hm] using hloop
 
 theorem window_sums_correct (self : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (group : Usize) (entries : ℕ → ℕ → Entry) (lengths : ℕ → Usize)
@@ -335,7 +338,7 @@ theorem groupSum_refines (self : msm8.buckets.Buckets) (store : msm8.store.Point
     unfold msm8.buckets.Buckets.sum_loop
     rw [loop.eq_1]
     simp only [msm8.buckets.Buckets.sum_loop.body, UScalar.lt_equiv, hg,
-      UScalar.ofNatCore_val_eq, Nat.lt_irrefl, if_false, groupSum_zero]
+      UScalar.ofNatCore_val_eq, Nat.lt_irrefl, ite_false, groupSum_zero, bind_ok]
   | succ g ih =>
     have hpos : 0 < group.val := by omega
     let next : Usize := UScalar.ofNatCore (group.val - 1) (by have := group.hBounds; omega)
@@ -349,23 +352,23 @@ theorem groupSum_refines (self : msm8.buckets.Buckets) (store : msm8.store.Point
         self.starts self.lens store group (toG1x8 total) =
         ok (cont (next, toG1x8 ((total.times_two_pow (8 * self.window_bits.val)).add_complete (vectors next.val)))) := by
       simp only [msm8.buckets.Buckets.sum_loop.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hpos, if_true, limbs.LANES]
+        hpos, ite_true, limbs.LANES]
       rw [sub_ok group 1#usize (by change 1 ≤ group.val; omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [mul_ok _ _ hmul]
-      simp only [bind_tc_ok, G1x8.times_two_pow_refines, ofG1x8_toG1x8, UScalar.ofNatCore_val_eq]
+      simp only [bind_tc_ok, bind_ok, G1x8.times_two_pow_refines, ofG1x8_toG1x8, UScalar.ofNatCore_val_eq]
       change (do
         let window ← msm8.buckets.Buckets.window_sums self store next
         g1x8.G1x8.add_complete (toG1x8 (total.times_two_pow (8 * self.window_bits.val))) window >>= fun v =>
           ok (cont (next, v))) = _
       rw [hwindow]
-      simp only [bind_tc_ok, G1x8.add_complete_refines, ofG1x8_toG1x8]
+      simp only [bind_tc_ok, bind_ok, G1x8.add_complete_refines, ofG1x8_toG1x8]
     have htail := ih next ((total.times_two_pow (8 * self.window_bits.val)).add_complete (vectors next.val))
       (fun k hk => hw k (by omega)) hn
     unfold msm8.buckets.Buckets.sum_loop
     change loop (fun p => msm8.buckets.Buckets.sum_loop.body self.window_bits self.windows self.refs
       self.starts self.lens store p.1 p.2) (group, toG1x8 total) = _
-    rw [loop.eq_1, hbody]
+    rw [loop.eq_1, hbody, bind_ok]
     change msm8.buckets.Buckets.sum_loop self.window_bits self.windows self.refs self.starts self.lens
       store next _ = _
     rw [htail, hn, groupSum_succ]
@@ -383,11 +386,11 @@ theorem topGroup_refines (windows : Usize) (hw : 1 ≤ windows.val) :
   let group : Usize := UScalar.ofNatCore ((windows.val - 1) / 8) (by omega)
   refine ⟨group, by simp [group], ?_⟩
   rw [sub_ok windows 1#usize hw]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [div_ok _ 8#usize (by decide)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [add_ok _ 1#usize (by simpa only [UScalar.ofNatCore_val_eq] using hq)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [sub_ok _ 1#usize (by simp only [UScalar.ofNatCore_val_eq]; omega)]
   congr 1
 
@@ -402,11 +405,13 @@ theorem buckets_sum_refines (self : msm8.buckets.Buckets) (store : msm8.store.Po
   have hwindow := hw group (by omega)
   have hloop := groupSum_refines self store group (vectors group.val) vectors hbits (fun g h => hw g (by omega))
   simp only [msm8.buckets.Buckets.sum, limbs.LANES]
-  rw [← bind_assoc_eq, ← bind_assoc_eq] at hinit
-  rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, hinit]
-  simp only [bind_tc_ok, hwindow]
+  simp -failIfUnchanged only [bind_tc_eq] at *
+  rw [← Aeneas.Std.bind_assoc, ← Aeneas.Std.bind_assoc] at hinit
+  simp -failIfUnchanged only [bind_tc_eq] at *
+  rw [← Aeneas.Std.bind_assoc, ← Aeneas.Std.bind_assoc, ← Aeneas.Std.bind_assoc, hinit]
+  simp only [bind_tc_ok, bind_ok, hwindow]
   rw [hloop]
-  simp only [bind_tc_ok, G1x8.sum_lanes_shifted_refines _ _ hbits, ofG1x8_toG1x8, hg]
+  simp only [bind_tc_ok, bind_ok, G1x8.sum_lanes_shifted_refines _ _ hbits, ofG1x8_toG1x8, hg]
 
 theorem buckets_sum_correct (self : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (vectors : ℕ → G1x8) (hbits : self.window_bits.val ≤ 255) (hwin : 1 ≤ self.windows.val)
@@ -454,10 +459,10 @@ theorem len_refines (state : msm8.buckets.Buckets) (window bucket : Usize)
       unfold listIndex at hiv
       rw [Nat.add_mul, Nat.one_mul] at hmul
       omega
-    simp only [msm8.buckets.Buckets.len, UScalar.lt_equiv, hw, if_true, hindex, bind_tc_ok,
+    simp only [msm8.buckets.Buckets.len, UScalar.lt_equiv, hw, ite_true, hindex, bind_tc_ok, bind_ok,
       vec_index_eq _ _ hil, bucketLength]
     simp only [← hiv, getElem!_pos state.lens.val index.val hil]
-  · simp only [msm8.buckets.Buckets.len, UScalar.lt_equiv, hw, if_false, bucketLength]
+  · simp only [msm8.buckets.Buckets.len, UScalar.lt_equiv, hw, ite_false, bucketLength]
     congr 1
     apply UScalar.eq_of_val_eq
     simp only [UScalar.ofNatCore_val_eq, cast_Usize_val]
@@ -486,7 +491,7 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
     let window : Usize := UScalar.ofNatCore (group.val * 8 + c.val) hadd
     have hwindow : (do let g ← group * 8#usize; g + c) = ok window := by
       rw [mul_ok _ _ hmul]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [add_ok _ _ (by simpa only [UScalar.ofNatCore_val_eq] using hadd)]
       rfl
     have hnext : c.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
@@ -494,11 +499,12 @@ theorem longest_refines (state : msm8.buckets.Buckets) (group bucket : Usize)
       omega
     refine ⟨UScalar.ofNatCore (c.val + 1) hnext, by simp [hc], ?_⟩
     simp only [body, msm8.buckets.Buckets.longest_loop.body, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-      hl, if_true]
-    rw [← bind_assoc_eq, hwindow]
-    simp only [bind_tc_ok, len_refines state window bucket hshape hb hbmax]
-    split <;> simp only [bind_tc_ok] <;> rw [add_ok _ _ hnext] <;>
-      simp_all only [bind_tc_ok, step, maxScalar, UScalar.lt_equiv, window, UScalar.ofNatCore_val_eq, if_true, if_false]
+      hl, ite_true]
+    simp -failIfUnchanged only [bind_tc_eq] at *
+    rw [← Aeneas.Std.bind_assoc, hwindow]
+    simp only [bind_tc_ok, bind_ok, len_refines state window bucket hshape hb hbmax]
+    split <;> simp only [bind_tc_ok, bind_ok] <;> rw [add_ok _ _ hnext] <;>
+      simp_all only [bind_tc_ok, bind_ok, step, maxScalar, UScalar.lt_equiv, window, UScalar.ofNatCore_val_eq, ite_true, ite_false]
   have h := loop_up_inv body (fun m c => (m, c)) step id (fun _ => True) (by intros; trivial)
     hd hs 0#usize 0#usize (by simp) trivial
   simpa only [msm8.buckets.Buckets.longest, msm8.buckets.Buckets.longest_loop, body,
@@ -530,7 +536,7 @@ theorem reference_branch_refines (state : msm8.buckets.Buckets) (window bucket c
   by_cases here : cursor.val < (bucketLength state window.val bucket.val).val
   · have hw : window.val < state.windows.val := by
       by_contra h
-      simp only [bucketLength, h, if_false, UScalar.ofNatCore_val_eq] at here
+      simp only [bucketLength, h, ite_false, UScalar.ofNatCore_val_eq] at here
       omega
     have hmul : (window.val + 1) * 2 ^ (state.window_bits.val - 1) ≤
         state.windows.val * 2 ^ (state.window_bits.val - 1) := Nat.mul_le_mul_right _ (by omega)
@@ -542,7 +548,7 @@ theorem reference_branch_refines (state : msm8.buckets.Buckets) (window bucket c
       omega
     have hist : index.val < state.starts.val.length := by have := hshape.starts_bound; omega
     have hlen : (bucketLength state window.val bucket.val).val = state.lens.val[index.val]!.val := by
-      simp only [bucketLength, hw, if_true, hiv]
+      simp only [bucketLength, hw, ite_true, hiv]
     have hstart : state.starts.val[index.val] = state.starts.val[index.val]! :=
       (getElem!_pos state.starts.val index.val hist).symm
     have hbounds : state.starts.val[index.val].val + cursor.val < state.refs.val.length := by
@@ -553,13 +559,13 @@ theorem reference_branch_refines (state : msm8.buckets.Buckets) (window bucket c
         2 ^ UScalarTy.Usize.numBits := by
       rw [cast_Usize_val]
       exact lt_trans hbounds (vec_length_bound state.refs)
-    simp only [here, if_true, decide_true, hindex, bind_tc_ok, vec_index_eq _ _ hist, lift]
+    simp only [here, ite_true, decide_true, hindex, bind_tc_ok, bind_ok, vec_index_eq _ _ hist, lift]
     rw [add_ok _ _ hadd]
-    simp only [bind_tc_ok, vec_index_eq state.refs (UScalar.ofNatCore _ hadd) (by simpa only [UScalar.ofNatCore_val_eq, cast_Usize_val] using hbounds)]
-    simp only [referenceAt, here, if_true]
+    simp only [bind_tc_ok, bind_ok, vec_index_eq state.refs (UScalar.ofNatCore _ hadd) (by simpa only [UScalar.ofNatCore_val_eq, cast_Usize_val] using hbounds)]
+    simp only [referenceAt, here, ite_true]
     simp only [UScalar.ofNatCore_val_eq, cast_Usize_val, ← hiv, ← hstart,
       getElem!_pos state.refs.val (state.starts.val[index.val].val + cursor.val) hbounds]
-  · simp only [here, if_false, decide_false, referenceAt]
+  · simp only [here, ite_false, decide_false, referenceAt]
 
 structure EntryAccumulator where
   indices : Vector U32 8
@@ -610,7 +616,7 @@ theorem entries_body (state : msm8.buckets.Buckets) (group bucket cursor lane : 
   let window : Usize := UScalar.ofNatCore (group.val * 8 + lane.val) hadd
   have hwindow : (do let g ← group * 8#usize; g + lane) = ok window := by
     rw [mul_ok _ _ hmul]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [add_ok _ _ (by simpa only [UScalar.ofNatCore_val_eq] using hadd)]
     rfl
   have hnext : lane.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
@@ -620,14 +626,31 @@ theorem entries_body (state : msm8.buckets.Buckets) (group bucket cursor lane : 
   have hshift (r : U32) : r >>> 31#i32 = ok (⟨r.bv.ushiftRight 31⟩ : U32) := rfl
   refine ⟨UScalar.ofNatCore (lane.val + 1) hnext, by simp [hl], ?_⟩
   simp only [msm8.buckets.Buckets.entries_loop.body, limbs.LANES, UScalar.lt_equiv,
-    UScalar.ofNatCore_val_eq, hlt, if_true]
-  rw [← bind_assoc_eq, hwindow]
-  simp only [bind_tc_ok, len_refines state window bucket hshape hb hbmax]
+    UScalar.ofNatCore_val_eq, hlt, ite_true]
+  simp -failIfUnchanged only [bind_tc_eq] at *
+  rw [← Aeneas.Std.bind_assoc, hwindow]
+  simp only [bind_tc_ok, bind_ok, len_refines state window bucket hshape hb hbmax]
   have href := reference_branch_refines state window bucket cursor hshape hb hbmax
   simp only [UScalar.lt_equiv] at href
-  rw [href]
-  simp only [bind_tc_ok, hmask, lift, show (~~~2147483648#u32) = 2147483647#u32 from rfl,
-    ]
+  have hrefPair :
+      (if cursor.val < (UScalar.cast .Usize (bucketLength state window.val bucket.val)).val then do
+        let index ← msm8.buckets.Buckets.list state window bucket
+        let start ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice U32) state.starts index
+        let offset ← lift (UScalar.cast .Usize start)
+        let at1 ← offset + cursor
+        let reference ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice U32) state.refs at1
+        ok (state, reference)
+      else ok (state, 0#u32)) = ok (state, referenceAt state window.val bucket.val cursor.val) := by
+    by_cases here : cursor.val < (UScalar.cast .Usize (bucketLength state window.val bucket.val)).val
+    all_goals
+      have h := congrArg
+        (fun r : Result (msm8.buckets.Buckets × Bool × U32) =>
+          Std.bind r (fun p => ok (p.1, p.2.2))) href
+      simpa only [here, ite_true, ite_false, bind_tc_eq, Aeneas.Std.bind_assoc,
+        bind_ok, lift] using! h
+  rw [hrefPair]
+  simp only [bind_tc_ok, bind_ok, hmask, lift, aeneas_uncurry_def, cast_Usize_val,
+    show (~~~2147483648#u32) = 2147483647#u32 from rfl]
   change (do
     let a1 ← (toArray (n := 8#usize) id entry.indices).update lane
       (referenceAt state window.val bucket.val cursor.val &&& 2147483647#u32)
@@ -637,18 +660,17 @@ theorem entries_body (state : msm8.buckets.Buckets) (group bucket cursor lane : 
     let next ← lane + 1#usize
     ok (cont (state, a1, entry.present ||| i8, entry.negated ||| i12, next))) = _
   rw [update_eq (toArray (n := 8#usize) id entry.indices) lane _ hlt]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [shiftLeft_ok _ lane (by change lane.val < 8; exact hlt)]
-  simp only [bind_tc_ok, hshift]
+  simp only [bind_tc_ok, bind_ok, hshift]
   rw [shiftLeft_ok _ lane (by change lane.val < 8; exact hlt)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [add_ok _ _ hnext]
-  simp only [bind_tc_ok, entriesStep, encodeEntries, window, UScalar.ofNatCore_val_eq, hl,
+  simp only [bind_tc_ok, bind_ok, entriesStep, encodeEntries, window, UScalar.ofNatCore_val_eq, hl,
     clearSign, referenceSign]
   rw [toArray_set_of_eq (n := 8#usize) id entry.indices rfl lane l.val l.isLt
     (referenceAt state (group.val * 8 + l.val) bucket.val cursor.val &&& 2147483647#u32)
     (referenceAt state (group.val * 8 + l.val) bucket.val cursor.val &&& 2147483647#u32) hl rfl]
-  rfl
 
 theorem entries_refines (state : msm8.buckets.Buckets) (group bucket cursor : Usize)
     (hshape : BucketShape state) (hb : 1 ≤ bucket.val)
@@ -672,7 +694,7 @@ theorem entries_refines (state : msm8.buckets.Buckets) (group bucket cursor : Us
     let result ← loop body (enc emptyEntries 0#usize)
     ok ({ indices := result.1, present := result.2.1, negated := result.2.2 } : msm8.buckets.Entries)) = _
   rw [h]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
@@ -791,7 +813,7 @@ theorem groupLoads_of_references (state : msm8.buckets.Buckets) (store : msm8.st
   intro b hb hbm j hj l
   have h := href b hb hbm j hj l
   change 2 * (pointIndices (encodeEntries (entriesModel state group b j)).indices)[l.val] + 1 < _
-  simpa only [encodeEntries, pointIndices, getElem_ofArray, toArray, List.getElem_map, Vector.getElem_toList, id_eq,
+  simpa only [encodeEntries, pointIndices, getElem_ofArray, toArray, Array.from_val, List.getElem_map, Vector.getElem_toList, id_eq,
     entriesModel_indices, Vector.getElem_ofFn] using h
 
 @[simp] theorem ofU8_or (a b : U8) : ofU8 (a ||| b) = ofU8 a ||| ofU8 b := rfl
@@ -857,7 +879,7 @@ theorem longest_ge_lane (state : msm8.buckets.Buckets) (group bucket : ℕ) (l :
   have h := fold_max_ge_member
     (fun l : Fin 8 => UScalar.cast .Usize (bucketLength state (group * 8 + l.val) bucket))
     (List.finRange 8) 0#usize l (List.mem_finRange l)
-  simpa only [cast_Usize_val] using h
+  simpa only [cast_Usize_val] using! h
 
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
@@ -954,9 +976,9 @@ theorem packed_bucketLength (state : msm8.buckets.Buckets) (base capacity : ℕ 
     (window bucket : ℕ) (hb : 1 ≤ bucket) (hbm : bucket ≤ 2 ^ (state.window_bits.val - 1)) :
     (bucketLength state window bucket).val = (windowReferences state contents window bucket).length := by
   by_cases hw : window < state.windows.val
-  · simp only [bucketLength, windowReferences, hw, if_true]
+  · simp only [bucketLength, windowReferences, hw, ite_true]
     exact hp.counts.values _ (listIndex_lt _ _ _ _ hw hb hbm)
-  · simp only [bucketLength, windowReferences, hw, if_false, List.length_nil, UScalar.ofNatCore_val_eq]
+  · simp only [bucketLength, windowReferences, hw, ite_false, List.length_nil, UScalar.ofNatCore_val_eq]
 
 theorem packed_referenceAt (state : msm8.buckets.Buckets) (base capacity : ℕ → ℕ)
     (contents : BucketLists)
@@ -968,13 +990,13 @@ theorem packed_referenceAt (state : msm8.buckets.Buckets) (base capacity : ℕ �
   unfold referenceAt
   rw [packed_bucketLength state base capacity contents hp window bucket hb hbm]
   by_cases hw : window < state.windows.val
-  · simp only [windowReferences, hw, if_true]
+  · simp only [windowReferences, hw, ite_true]
     have hi := listIndex_lt state.window_bits.val window state.windows.val bucket hw hb hbm
     rw [hp.starts_values _ hi]
     split
     · exact hp.entries _ hi cursor (by assumption)
     · rfl
-  · simp only [windowReferences, hw, if_false, List.length_nil, Nat.not_lt_zero, if_false]
+  · simp only [windowReferences, hw, ite_false, List.length_nil, Nat.not_lt_zero, ite_false]
 
 theorem packed_groupLoads (state : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (base capacity : ℕ → ℕ) (contents : BucketLists)
@@ -990,9 +1012,9 @@ theorem packed_groupLoads (state : msm8.buckets.Buckets) (store : msm8.store.Poi
   · rename_i hj
     have hw : group * 8 + l.val < state.windows.val := by
       by_contra h
-      simp only [windowReferences, h, if_false, List.length_nil] at hj
+      simp only [windowReferences, h, ite_false, List.length_nil] at hj
       omega
-    simp only [windowReferences, hw, if_true] at hj ⊢
+    simp only [windowReferences, hw, ite_true] at hj ⊢
     apply href _ (listIndex_lt _ _ _ _ hw hb hbm) _
     rw [getElem!_pos (contents (listIndex state.window_bits.val (group * 8 + l.val) b)) j hj]
     exact List.getElem_mem hj

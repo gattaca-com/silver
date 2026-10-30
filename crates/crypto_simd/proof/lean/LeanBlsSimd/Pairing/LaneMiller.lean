@@ -25,7 +25,7 @@ theorem miller_loop_refines (factors z : fp8.Fp8) (v : Factors) (hv : FactorsRep
   have hdone : ∀ x step bit, bit.val = 0 → body (x, step, bit) = ok (done x) := by
     intro x step bit hb
     simp only [body, pairing.MillerLines.miller_loop_loop.body,
-      UScalar.lt_equiv, hb, Nat.not_lt_zero, if_false]
+      UScalar.lt_equiv, hb, Nat.not_lt_zero, ite_false]
   exact loop_refines body Rep v (maskPresence present) hdone
     (fun n x f step bit hx hs hb hfirst => miller_body factors z v hv present n x f hx step bit hs hb hfirst)
     n hn x f step bit hx hs hb hfirst
@@ -46,16 +46,16 @@ theorem miller_refines (raw : g1x8.G1x8) (points : Fin 8 → Bls.G1) (hp : Point
     rw [Z_BITS_index 0#usize (by decide)]
     rfl
   refine ⟨out, ?_, rout⟩
-  simp only [pairing.MillerLines.miller_loop, Fp8.is_zero_mask_refines, lift, bind_tc_ok]
+  simp only [pairing.MillerLines.miller_loop, Fp8.is_zero_mask_refines, lift, bind_tc_ok, bind_ok]
   have hxz := Fp8.mul_refines raw.x raw.z
   have hfac := Fp8.permute2_refines (toFp8 ((ofFp8 raw.x).mul (ofFp8 raw.z))) raw.y factorIndices
   have hzz := Fp8.square_refines raw.z
   have hz := Fp8.mul_refines (toFp8 (ofFp8 raw.z).square) raw.z
-  simp only [hxz, hfac, hzz, hz, bind_tc_ok] at hprep
-  have he := Result.ok.inj hprep
+  simp only [hxz, hfac, hzz, hz, bind_tc_ok, bind_ok] at hprep
+  have he := Result.ok_injective hprep
   obtain ⟨hfac', hz'⟩ := Prod.mk.inj he
   dsimp only [factorIndices] at hfac hfac'
   dsimp only [present] at hloop
-  simp only [hxz, hfac, hzz, hz, bind_tc_ok, hfac', hz', hone, hbit, hloop, hout]
+  simp only [hxz, hfac, hzz, hz, bind_tc_ok, bind_ok, hfac', hz', hone, hbit, hloop, hout]
 
 end LeanBlsSimd.Pairing.LaneLines

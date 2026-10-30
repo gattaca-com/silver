@@ -14,7 +14,10 @@ def halfWord (a b : U64) : U64 := ⟨(a.bv.ushiftRight 1) ||| (b.bv <<< 63)⟩
 
 theorem half_word_run (a b : U64) :
     (do let low ← a >>> 1#i32; let high ← b <<< 63#i32; lift (low ||| high)) =
-      ok (halfWord a b) := rfl
+      ok (halfWord a b) := by
+  simp only [show a >>> 1#i32 = ok ⟨a.bv.ushiftRight 1⟩ from rfl,
+    show b <<< 63#i32 = ok ⟨b.bv <<< 63⟩ from rfl, bind_tc_ok, bind_ok, lift]
+  rfl
 
 theorem half_word_value (a b : U64) :
     (halfWord a b).val = a.val/2+2^63*(b.val%2) := by
@@ -37,7 +40,7 @@ theorem half_word_equation (a b : U64) :
 private theorem exists_words6 (a : portable.fp.Fp) :
     ∃ a0 a1 a2 a3 a4 a5 : U64, a = Array.make 6#usize [a0,a1,a2,a3,a4,a5] (by rfl) := by
   refine ⟨a.val[0]'(by rw [a.property]; decide),a.val[1]'(by rw [a.property]; decide),a.val[2]'(by rw [a.property]; decide),a.val[3]'(by rw [a.property]; decide),a.val[4]'(by rw [a.property]; decide),a.val[5]'(by rw [a.property]; decide),?_⟩
-  apply Subtype.ext
+  ext1
   exact list_6 a
 
 def halfWords (a : portable.fp.Fp) (top : U64) : portable.fp.Fp :=
@@ -50,14 +53,16 @@ theorem halve_run (a : portable.fp.Fp) (top : U64) :
     portable.fp.halve a top = ok (halfWords a top) := by
   obtain ⟨a0,a1,a2,a3,a4,a5,rfl⟩ := exists_words6 a
   simp (disch := decide) only [portable.fp.halve,portable.fp.halve_loop,
-    loop.eq_1,portable.fp.halve_loop.body,if_pos,if_neg,index_usize_eq,
-    usize_add_ok,update_eq,shr_one,shl_63,lift,bind_tc_ok]
-  rfl
+    loop_eq_loopStep,loopStep_cont,loopStep_done,portable.fp.halve_loop.body,ite_eq_left,ite_eq_right,index_usize_eq,
+    usize_add_ok,update_eq,shr_one,shl_63,lift,bind_tc_ok, bind_ok]
+  refine congrArg ok (Aeneas.Std.Array.ext _ _ ?_)
+  simp [halfWords, halfWord, Array.make, Array.from_val, Array.set_val_eq]
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem value_mod_two (a : portable.fp.Fp) :
     value a % (2 : ℤ) = (((a.val[0]'(by rw [a.property]; decide)).val % 2 : Nat) : ℤ) := by
   obtain ⟨a0,a1,a2,a3,a4,a5,rfl⟩ := exists_words6 a
-  norm_num [value,wordsValue,Array.make,radix,Int.add_emod,Int.mul_emod]
+  norm_num [value,wordsValue,Array.make, Array.from_val,radix,Int.add_emod,Int.mul_emod]
 
 theorem halfWords_equation (a : portable.fp.Fp) (top : U64) (ht : top.val ≤ 1) :
     2*value (halfWords a top)+value a%2 = value a+top.val*(radix : ℤ)^6 := by
@@ -71,7 +76,7 @@ theorem halfWords_equation (a : portable.fp.Fp) (top : U64) (ht : top.val ≤ 1)
   have h5 : (2 : ℤ)*(halfWord a5 top).val+(a5.val%2 : Nat) = a5.val+(radix : ℤ)*(top.val%2 : Nat) := by exact_mod_cast half_word_equation a5 top
   rw [htmod] at h5
   rw [value_mod_two]
-  simp only [halfWords,value,Array.make,wordsValue]
+  simp only [halfWords,value,Array.make, Array.from_val,wordsValue]
   norm_num only [List.getElem_cons_zero,List.getElem_cons_succ,Nat.cast_zero]
   linear_combination h0*(radix : ℤ)^0+h1*(radix : ℤ)^1+h2*(radix : ℤ)^2+h3*(radix : ℤ)^3+h4*(radix : ℤ)^4+h5*(radix : ℤ)^5
 
@@ -94,7 +99,7 @@ theorem is_even_refines (a : portable.fp.Fp) :
     rw [word_eq_value,hand,value_mod_two]
     change lo.val%2 = 0 ↔ ((lo.val%2 : Nat) : ℤ) = 0
     omega
-  simp (disch := decide) only [portable.fp.is_even,index_usize_eq,bind_tc_ok,lift]
+  simp (disch := decide) only [portable.fp.is_even,index_usize_eq,bind_tc_ok, bind_ok,lift]
   change ok (decide ((lo &&& 1#u64) = 0#u64)) = _
   simp only [heven]
 
@@ -111,10 +116,10 @@ theorem is_one_refines (a : portable.fp.Fp) :
   have hv : value (Array.make 6#usize [a0,a1,a2,a3,a4,a5] (by rfl)) = 1 ↔
       a0 = 1#u64 ∧ a1 = 0#u64 ∧ a2 = 0#u64 ∧ a3 = 0#u64 ∧ a4 = 0#u64 ∧ a5 = 0#u64 := by
     simp only [word_eq_value]
-    norm_num [value,wordsValue,Array.make,radix]
+    norm_num [value,wordsValue,Array.make, Array.from_val,radix]
     omega
   simp only [hv]
-  simp (disch := decide) only [portable.fp.is_one,index_usize_eq,bind_tc_ok,lift]
+  simp (disch := decide) only [portable.fp.is_one,index_usize_eq,bind_tc_ok, bind_ok,lift]
   change (if a0 = 1#u64 then ok (decide (((((a1 ||| a2) ||| a3) ||| a4) ||| a5) = 0#u64))
     else ok false) = _
   simp only [hh]
@@ -132,7 +137,8 @@ theorem geq_refines (a b : portable.fp.Fp) :
 theorem zero_eq_refines (a : portable.fp.Fp) :
     core.array.equality.PartialEqArray.eq core.cmp.PartialEqU64 a
       (Array.repeat 6#usize 0#u64) = ok (decide (value a = 0)) := by
-  have hz : value (Array.repeat 6#usize 0#u64) = 0 := wordsValue_repeat_zero 6
+  have hz : value (Array.repeat 6#usize 0#u64) = 0 := by
+    rw [value, Array.repeat_val]; exact wordsValue_repeat_zero 6
   have he : a.val = (Array.repeat 6#usize 0#u64).val ↔ value a = 0 := by
     constructor
     · intro h
@@ -141,7 +147,7 @@ theorem zero_eq_refines (a : portable.fp.Fp) :
       exact hz
     · intro h
       have ha := value_injective a (Array.repeat 6#usize 0#u64) (h.trans hz.symm)
-      exact congrArg Subtype.val ha
+      exact congrArg (fun x : Array U64 6#usize => x.val) ha
   simp only [array_eq_refines,he]
 
 theorem halve_mod_p_refines (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus) :
@@ -153,8 +159,8 @@ theorem halve_mod_p_refines (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus)
   · obtain ⟨out,he,hv⟩ := halve_refines x 0#u64 (by decide)
     simp only [heven,show (0#u64).val = 0 from rfl,Nat.cast_zero,zero_mul,add_zero] at hv
     refine ⟨out,?_,by omega,?_⟩
-    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_true,bind_tc_ok,if_true,he]
-    · simpa only [heven,if_true,add_zero] using hv
+    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_true,bind_tc_ok, bind_ok,ite_true,he]
+    · simpa only [heven,ite_true,add_zero] using hv
   · have hxodd : value x % (2 : ℤ) = 1 := by omega
     obtain ⟨sum,ha,hs⟩ := add_words_refines x bls.constants.P_U64
     have hfit : 0 ≤ value x+(Bls.Fp.modulus : ℤ) ∧
@@ -172,9 +178,9 @@ theorem halve_mod_p_refines (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus)
       omega
     simp only [hsum_even,show (0#u64).val = 0 from rfl,Nat.cast_zero,zero_mul,add_zero] at hv
     refine ⟨out,?_,by omega,?_⟩
-    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_false,bind_tc_ok,ha,lift]
+    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_false,bind_tc_ok, bind_ok,ha,lift]
       exact he
-    · simpa only [heven,if_false,hs] using hv
+    · simpa only [heven,ite_false,hs] using hv
 
 def coefficientSub (a b : portable.fp.Fp) : Result portable.fp.Fp := do
   let (d,borrow) ← portable.fp.sub_words a b
@@ -187,21 +193,22 @@ theorem coefficientSub_eq_sub (a b : portable.fp.Fp) :
     coefficientSub a b = portable.fp.Fp.sub a b := by
   obtain ⟨d,hs,hv⟩ := sub_words_refines a b
   by_cases hb : value a < value b
-  · simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok,hb,decide_true,
+  · simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok, bind_ok,hb,decide_true,
       p_if_refines]
     rfl
   · obtain ⟨out,ha,hout⟩ := add_words_refines d (Array.repeat 6#usize 0#u64)
-    have hz : value (Array.repeat 6#usize 0#u64) = 0 := wordsValue_repeat_zero 6
+    have hz : value (Array.repeat 6#usize 0#u64) = 0 := by
+      simp only [value, Array.repeat_val]; exact wordsValue_repeat_zero 6
     have hd := value_bounds d
     change 0 ≤ value d ∧ value d < (radix : ℤ)^6 at hd
     rw [hz,add_zero,Int.emod_eq_of_lt hd.1 hd.2] at hout
     have ho : out = d := value_injective out d hout
     subst out
-    simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok,hb,decide_false,
+    simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok, bind_ok,hb,decide_false,
       p_if_refines]
     change ok d = (do let (out,_) ← portable.fp.add_words d (Array.repeat 6#usize 0#u64); ok out)
     rw [ha]
-    rfl
+    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem coefficientSub_refines (a b : portable.fp.Fp)
     (ha : value a < Bls.Fp.modulus) (hb : value b < Bls.Fp.modulus) :

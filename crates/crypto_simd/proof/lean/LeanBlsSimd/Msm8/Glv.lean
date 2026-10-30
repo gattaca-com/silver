@@ -36,38 +36,36 @@ theorem inner_step (k : Array U64 4#usize) (p : Array U64 7#usize)
     (lt_of_lt_of_le (by omega : j.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   refine ⟨t, ij, j', rfl, rfl, rfl, ?_⟩
   have hj' : j < 3#usize := by exact hj
-  simp only [glv.times_z2_over_r_loop0_loop0.body, hj', if_true]
+  simp only [glv.times_z2_over_r_loop0_loop0.body, hj', ite_true]
   rw [index_usize_eq k i (by exact hi), index_usize_eq glv.Z2_OVER_R j (by exact hj)]
-  simp only [lift, bind_tc_ok]
+  simp only [lift, bind_tc_ok, bind_ok]
   rw [mul_ok _ _ (by rw [cast128_val, cast128_val]; change a.val * b.val < 2 ^ 128; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [usize_add_ok i j (by omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do
     let old' ← Array.index_usize p ij
-    let old'' ← lift (UScalar.cast .U128 old')
-    let subtotal ← UScalar.ofNatCore (a.val * b.val) _ + old''
+    let subtotal ← (UScalar.ofNatCore (a.val * b.val) _ : U128) + UScalar.cast .U128 old'
     let total ← subtotal + c
-    let lo ← lift (UScalar.cast .U64 total)
-    let p' ← Array.update p ij lo
+    let p' ← Array.update p ij (UScalar.cast .U64 total)
     let c' ← total >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
   rw [index_usize_eq p ij (by change i.val + j.val < 7; omega)]
-  simp only [lift, bind_tc_ok]
-  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
-  simp only [bind_tc_ok]
+  simp only [lift, bind_tc_ok, bind_ok]
+  rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
+  simp only [bind_tc_ok, bind_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact ht)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do
     let p' ← Array.update p ij (UScalar.cast .U64 t)
     let c' ← t >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
   rw [update_eq p ij _ (by change i.val + j.val < 7; omega), shiftRight_64_i32]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [usize_add_ok j 1#usize (by change j.val + 1 < 2 ^ 32; omega)]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 def coefficientTail (j : ℕ) : ℤ := wordsValue (glv.Z2_OVER_R.val.drop j)
 
@@ -100,7 +98,7 @@ theorem inner_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
     have hjge : ¬j < 3#usize := by change ¬j.val < 3; omega
     refine ⟨p, c, ?_, hc, ?_, fun _ _ _ => rfl⟩
     · rw [glv.times_z2_over_r_loop0_loop0, loop.eq_1]
-      simp [glv.times_z2_over_r_loop0_loop0.body, hjge]
+      simp [glv.times_z2_over_r_loop0_loop0.body, hjge, bind_ok]
     · rw [hj3, coefficientTail_three]
       ring
   | succ n ih =>
@@ -110,7 +108,7 @@ theorem inner_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
       ⟨t.bv.ushiftRight 64⟩ (by omega) (high_bound t) (by omega)
     refine ⟨out, carry, ?_, hcarry, ?_, ?_⟩
     · rw [glv.times_z2_over_r_loop0_loop0, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq, value_set p ij _ (by change ij.val < 7; omega)]
       simp only [hij, cast64_val, high_val, hj', coefficientTail_step j.val hjlt]
       have ht' : (t.val : ℤ) =
@@ -124,7 +122,7 @@ theorem inner_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
       linear_combination (hdiv + ht') * (radix : ℤ) ^ (i.val + j.val)
     · intro q hq hqi
       rw [htail q hq hqi]
-      change (p.val.set ij.val (UScalar.cast .U64 t))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega)]
 
 def sourceTail (k : Array U64 4#usize) (i : ℕ) : ℤ := wordsValue (k.val.drop i)
@@ -152,7 +150,7 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
     have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
     refine ⟨p, ?_, ?_⟩
     · rw [glv.times_z2_over_r_loop0, loop.eq_1]
-      simp [glv.times_z2_over_r_loop0.body, hige]
+      simp [glv.times_z2_over_r_loop0.body, hige, bind_ok]
     · rw [hi4, sourceTail_four]
       ring
   | succ n ih =>
@@ -180,7 +178,7 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
     have hz' : ∀ q (hq : q < 7), next.val + 3 ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
-      change (row.val.set last.val (UScalar.cast .U64 carry))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega), htail q hq (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, hloop, hout⟩ := ih p' next (by omega) hz' (by omega)
@@ -188,18 +186,18 @@ theorem outer_exact (k : Array U64 4#usize) (p : Array U64 7#usize)
     · rw [glv.times_z2_over_r_loop0, loop.eq_1]
       have hbody : glv.times_z2_over_r_loop0.body k p i = ok (cont (p', next)) := by
         simp only [glv.times_z2_over_r_loop0.body, show i < 4#usize from hilt,
-          if_true, hinner, bind_tc_ok]
+          ite_true, hinner, bind_tc_ok, bind_ok]
         rw [usize_add_ok i 3#usize (by change i.val + 3 < 2 ^ 32; omega)]
-        simp only [bind_tc_ok, lift]
+        simp only [bind_tc_ok, bind_ok, lift]
         change (do
           let a ← Array.update row last (UScalar.cast .U64 carry)
           let i3 ← i + 1#usize
           ok (cont (a, i3))) = _
         rw [update_eq row last _ (by change last.val < 7; omega)]
-        simp only [bind_tc_ok]
+        simp only [bind_tc_ok, bind_ok]
         rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
-        rfl
-      simpa only [hbody] using hloop
+        (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      simpa only [hbody, bind_ok] using! hloop
     · rw [hout, hp', hnext, sourceTail_step k i.val hilt, pow_succ]
       ring
 
@@ -208,7 +206,7 @@ theorem times_z2_over_r_refines (k : Array U64 4#usize) :
       glv.times_z2_over_r k = ok product ∧
       value product = value k * 505667019974147811778249931229775261232 := by
   obtain ⟨product, hp, hv⟩ := outer_exact k (Array.repeat 7#usize 0#u64) 0#usize
-    (by decide) (by intro q hq _; change (List.replicate 7 (0#u64))[q]' _ = _; simp only [List.getElem_replicate])
+    (by decide) (by intro q hq _; simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨product, hp, ?_⟩
   simpa [sourceTail, value, Array.repeat, wordsValue,
     show coefficientTail 0 = 505667019974147811778249931229775261232 from by decide +kernel] using hv
@@ -230,11 +228,11 @@ def roundedPrefix (product : Array U64 7#usize) : Result (Array U64 2#usize) := 
 
 theorem array7_eta (p : Array U64 7#usize) :
     p = Array.make 7#usize [p.val[0], p.val[1], p.val[2], p.val[3], p.val[4], p.val[5], p.val[6]] (by rfl) := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
   · exact p.property
   · intro i hi hi'
-    have hi7 : i < 7 := by simpa only [p.property] using hi
+    have hi7 : i < 7 := by simpa only [p.property] using! hi
     interval_cases i <;> rfl
 
 theorem shift63_val (a : U64) : (⟨a.bv.ushiftRight 63⟩ : U64).val = a.val / 2 ^ 63 := by
@@ -279,25 +277,25 @@ theorem roundedPrefix_refines (p : Array U64 7#usize)
   refine ⟨Array.make 2#usize [UScalar.cast .U64 low, high] (by rfl), ?_, ?_⟩
   · simp only [roundedPrefix]
     rw [index_usize_eq _ 4#usize (by decide), index_usize_eq _ 3#usize (by decide)]
-    simp only [Array.make, show (3#usize).val = 3 from rfl,
-      show (4#usize).val = 4 from rfl, List.getElem_cons_succ, List.getElem_cons_zero, lift, bind_tc_ok]
+    simp only [Array.make, Array.from_val, show (3#usize).val = 3 from rfl,
+      show (4#usize).val = 4 from rfl, List.getElem_cons_succ, List.getElem_cons_zero, lift, bind_tc_ok, bind_ok]
     rw [show d >>> 63#i32 = ok (⟨d.bv.ushiftRight 63⟩ : U64) from rfl]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [add_ok _ _ (by rw [cast128_val, cast128_val, shift63_val]; exact hlow)]
-    simp only [bind_tc_ok, cast128_val, shift63_val]
+    simp only [bind_tc_ok, bind_ok, cast128_val, shift63_val]
     change (do
       let f' ← Array.index_usize (Array.make 7#usize [a, b, c, d, e, f, g] (by rfl)) 5#usize
       let h ← low >>> 64#i32
       let high' ← f' + UScalar.cast .U64 h
       ok (Array.make 2#usize [UScalar.cast .U64 low, high'] (by rfl))) = _
     rw [index_usize_eq _ 5#usize (by decide), shiftRight_64_i32]
-    simp only [Array.make, show (5#usize).val = 5 from rfl,
-      List.getElem_cons_succ, List.getElem_cons_zero, bind_tc_ok]
+    simp only [Array.make, Array.from_val, show (5#usize).val = 5 from rfl,
+      List.getElem_cons_succ, List.getElem_cons_zero, bind_tc_ok, bind_ok]
     have hcast : (UScalar.cast .U64 (⟨low.bv.ushiftRight 64⟩ : U128)).val = low.val / radix := by
       rw [cast64_val, high_val, Nat.mod_eq_of_lt]
       exact (high_val low) ▸ high_bound low
     rw [add_ok _ _ (by rw [hcast]; exact hhigh)]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     simp only [hcast]
     rfl
   · change (UScalar.cast .U64 low).val + (radix : ℤ) * (high.val + (radix : ℤ) * 0) = _
@@ -332,7 +330,8 @@ theorem decompose_prefix (k : Array U64 4#usize) :
         (Array.make 4#usize [i10, i11, 0#u64, 0#u64] (by rfl)) 0#u64
         (Array.make 2#usize [c2, 0#u64] (by rfl)) glv.Z2
       ok (k1, k2)) := by
-  simp only [glv.decompose, roundedPrefix, bind_assoc, bind_tc_ok]
+  simp only [glv.decompose, roundedPrefix, bind_assoc, bind_assoc_eq, Aeneas.Std.bind_assoc,
+    bind_tc_ok, bind_ok, lift]
 
 
 theorem compare_loop_step (k : Array U64 4#usize) (i j : Usize)
@@ -342,15 +341,15 @@ theorem compare_loop_step (k : Array U64 4#usize) (i j : Usize)
           (glv.HALF_R_UP.val[j.val]'(by rw [glv.HALF_R_UP.property]; exact hj))
       then glv.at_least_half_r_loop k j else ok i := by
   rw [glv.at_least_half_r_loop, loop.eq_1]
-  simp only [glv.at_least_half_r_loop.body, hi, if_true, hsub, bind_tc_ok]
+  simp only [glv.at_least_half_r_loop.body, hi, ite_true, hsub, bind_tc_ok, bind_ok]
   rw [index_usize_eq k j hj, index_usize_eq glv.HALF_R_UP j hj]
-  simp only [bind_tc_ok]
-  split_ifs <;> rfl
+  simp only [bind_tc_ok, bind_ok]
+  split_ifs <;> (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem compare_loop_zero (k : Array U64 4#usize) :
     glv.at_least_half_r_loop k 0#usize = ok 0#usize := by
-  rw [glv.at_least_half_r_loop, loop.eq_1]
-  rfl
+  rw [glv.at_least_half_r_loop, loop_eq_loopStep]
+  simp [glv.at_least_half_r_loop.body]
 
 theorem at_least_half_r_eval (a b c d : U64) :
     glv.at_least_half_r (Array.make 4#usize [a, b, c, d] (by rfl)) =
@@ -366,18 +365,22 @@ theorem at_least_half_r_eval (a b c d : U64) :
   rw [compare_loop_step _ 2#usize 1#usize (by decide) (by decide) (by simp [sub_ok])]
   rw [compare_loop_step _ 1#usize 0#usize (by decide) (by decide) (by simp [sub_ok])]
   rw [compare_loop_zero]
-  simp only [glv.HALF_R_UP, Array.make, show (3#usize).val = 3 from rfl,
+  simp only [glv.HALF_R_UP, Array.make, Array.from_val, show (3#usize).val = 3 from rfl,
     show (2#usize).val = 2 from rfl, show (1#usize).val = 1 from rfl,
     show (0#usize).val = 0 from rfl, List.getElem_cons_succ, List.getElem_cons_zero]
   split_ifs <;> simp_all [Array.index_usize, sub_ok]
   omega
 
+theorem array4_eq_make (k : Array U64 4#usize) :
+    ∃ a b c d : U64, k = Array.make 4#usize [a, b, c, d] (by rfl) := by
+  obtain ⟨a, b, c, d, h⟩ := List.length_eq_four.mp k.property
+  refine ⟨a, b, c, d, Aeneas.Std.Array.ext _ _ ?_⟩
+  simpa only [Array.make, Array.from_val] using h
+
 theorem at_least_half_r_refines (k : Array U64 4#usize) :
     glv.at_least_half_r k =
       ok (decide (26217937587563095239723870254092982918845276250263818911301829349969290592257 ≤ value k)) := by
-  rcases k with ⟨xs, hxs⟩
-  obtain ⟨a, b, c, d, rfl⟩ := List.length_eq_four.mp hxs
-  change glv.at_least_half_r (Array.make 4#usize [a, b, c, d] (by rfl)) = _
+  obtain ⟨a, b, c, d, rfl⟩ := array4_eq_make k
   rw [at_least_half_r_eval]
   apply congrArg Result.ok
   have ha := a.hBounds
@@ -405,20 +408,20 @@ theorem negated_step (words p : Array U64 4#usize) (c : U128) (i : Usize)
   · change radix - 1 - a.val + c.val ≤ radix
     norm_num [radix]
     omega
-  · simp only [glv.negated_loop.body, show i < 4#usize from hi, if_true]
+  · simp only [glv.negated_loop.body, show i < 4#usize from hi, ite_true]
     rw [index_usize_eq words i hi]
-    simp only [lift, bind_tc_ok]
+    simp only [lift, bind_tc_ok, bind_ok]
     rw [add_ok _ _ (by rw [cast128_val, complement_val]; exact ht)]
-    simp only [bind_tc_ok, cast128_val, complement_val]
+    simp only [bind_tc_ok, bind_ok, cast128_val, complement_val]
     change (do
       let a ← Array.update p i (UScalar.cast .U64 t)
       let c' ← t >>> 64#i32
       let i' ← i + 1#usize
       ok (cont (a, c', i'))) = _
     rw [update_eq p i _ hi, shiftRight_64_i32]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
-    rfl
+    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
     (hi : i.val ≤ 4) (hc : c.val ≤ 1)
@@ -434,7 +437,7 @@ theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
     have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
     refine ⟨p, c, ?_, hc, ?_⟩
     · rw [glv.negated_loop, loop.eq_1]
-      simp [glv.negated_loop.body, hige]
+      simp [glv.negated_loop.body, hige, bind_ok]
     · rw [hi4, sourceTail_four]
       norm_num
   | succ n ih =>
@@ -449,13 +452,13 @@ theorem negated_loop_exact (words p : Array U64 4#usize) (c : U128) (i : Usize)
     have hz' : ∀ q (hq : q < 4), next.val ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
-      change (p.val.set i.val (UScalar.cast .U64 t))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, carry, hloop, hcarry, heq⟩ := ih p' c' next (by omega) hc' hz' (by omega)
     refine ⟨out, carry, ?_, hcarry, ?_⟩
     · rw [glv.negated_loop, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq, value_set p i _ hilt, hz i.val hilt (by omega), cast64_val]
       have ht' : (t.val : ℤ) = (radix : ℤ) - 1 -
           (words.val[i.val]'(by rw [words.property]; exact hilt)).val + c.val := by
@@ -474,7 +477,7 @@ theorem negated_refines (words : Array U64 4#usize) :
       value out = (-value words) % 2 ^ 256 := by
   obtain ⟨out, carry, hloop, hcarry, heq⟩ := negated_loop_exact words
     (Array.repeat 4#usize 0#u64) 1#u128 0#usize (by decide) (by decide)
-    (by intro q hq _; change (List.replicate 4 (0#u64))[q]'_ = _; simp only [List.getElem_replicate])
+    (by intro q hq _; simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨out, hloop, ?_⟩
   have hb := value_bounds out
   have hz : value (Array.repeat 4#usize 0#u64) = 0 := by
@@ -515,7 +518,7 @@ theorem subtraction_run {α : Type} (x y z borrow : U64) (hb : borrow.val ≤ 2)
   obtain ⟨hsum, hsub1, hsub2, hsub3, htb, htint⟩ := subtraction_facts x y z borrow hb
   obtain ⟨s1, hs1, hv1⟩ := add_value 36893488147419103232#u128 (UScalar.cast .U128 x)
     (by rw [cast128_val]; exact hsum)
-  have hv1' : s1.val = 36893488147419103232 + x.val := by simpa only [cast128_val] using hv1
+  have hv1' : s1.val = 36893488147419103232 + x.val := by simpa only [cast128_val] using! hv1
   obtain ⟨s2, hs2, hv2⟩ := sub_value s1 (UScalar.cast .U128 y)
     (by rw [cast128_val, hv1']; exact hsub1)
   have hv2' : s2.val = 36893488147419103232 + x.val - y.val := by simpa only [cast128_val, hv1'] using hv2
@@ -530,7 +533,7 @@ theorem subtraction_run {α : Type} (x y z borrow : U64) (hb : borrow.val ≤ 2)
   · rw [hvt']; exact htint
   · rw [hvt']; exact htb
   · rw [twice_radix_shift]
-    simp only [bind_tc_ok, hs1, hs2, hs3, hst]
+    simp only [bind_tc_ok, bind_ok, hs1, hs2, hs3, hst]
 
 theorem subtract_step (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize)
     (hi : i.val < 4) (hb : borrow.val ≤ 2) :
@@ -557,9 +560,9 @@ theorem subtract_step (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize
   let next : Usize := UScalar.ofNatCore (i.val + 1)
     (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   refine ⟨t, b, next, htint, htb, rfl, rfl, ?_⟩
-  simp only [glv.signed_difference_loop1.body, show i < 4#usize from hi, if_true]
+  simp only [glv.signed_difference_loop1.body, show i < 4#usize from hi, ite_true]
   simp only [index_usize_eq a i hi, index_usize_eq sub i hi, index_usize_eq cd i hi,
-    bind_tc_ok, lift]
+    bind_tc_ok, bind_ok, lift]
   change (do
     let base ← 2#u128 <<< 64#i32
     let s ← base + UScalar.cast .U128 x
@@ -567,17 +570,17 @@ theorem subtract_step (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize
     let s ← s - UScalar.cast .U128 z
     let t ← s - UScalar.cast .U128 borrow
     f t) = _
-  rw [hrun]
+  refine hrun.trans ?_
   dsimp only [f]
   rw [update_eq p i _ hi, shiftRight_64_i32]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   have hcast : (UScalar.cast .U64 (⟨t.bv.ushiftRight 64⟩ : U128)).val = t.val / radix := by
     rw [cast64_val, high_val, Nat.mod_eq_of_lt]
     exact (high_val t) ▸ high_bound t
   rw [sub_ok _ _ (by rw [hcast]; exact hq)]
-  simp only [bind_tc_ok, hcast]
+  simp only [bind_tc_ok, bind_ok, hcast]
   rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i : Usize)
     (hi : i.val ≤ 4) (hb : borrow.val ≤ 2)
@@ -593,7 +596,7 @@ theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i :
     have hige : ¬i < 4#usize := by change ¬i.val < 4; omega
     refine ⟨p, borrow, ?_, hb, ?_⟩
     · rw [glv.signed_difference_loop1, loop.eq_1]
-      simp [glv.signed_difference_loop1.body, hige]
+      simp [glv.signed_difference_loop1.body, hige, bind_ok]
     · rw [hi4, sourceTail_four, sourceTail_four, sourceTail_four]
       ring
   | succ n ih =>
@@ -604,13 +607,13 @@ theorem subtract_loop_exact (a cd sub p : Array U64 4#usize) (borrow : U64) (i :
     have hz' : ∀ q (hq : q < 4), next.val ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
-      change (p.val.set i.val (UScalar.cast .U64 t))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, carry, hloop, hcarry, heq⟩ := ih p' b next (by omega) hb' hz' (by omega)
     refine ⟨out, carry, ?_, hcarry, ?_⟩
     · rw [glv.signed_difference_loop1, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq, value_set p i _ hilt, hz i.val hilt (by omega), cast64_val]
       have hdiv : ((t.val % radix : ℕ) : ℤ) + (radix : ℤ) * (t.val / radix : ℕ) = t.val := by
         exact_mod_cast Nat.mod_add_div t.val radix
@@ -629,7 +632,7 @@ theorem subtract_refines (a cd sub : Array U64 4#usize) :
       b.val ≤ 2 ∧ value out - (b.val : ℤ) * 2 ^ 256 = value a - value sub - value cd := by
   obtain ⟨out, b, hloop, hb, heq⟩ := subtract_loop_exact a cd sub
     (Array.repeat 4#usize 0#u64) 0#u64 0#usize (by decide) (by decide)
-    (by intro q hq _; change (List.replicate 4 (0#u64))[q]'_ = _; simp only [List.getElem_replicate])
+    (by intro q hq _; simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨out, b, hloop, hb, ?_⟩
   have hz : value (Array.repeat 4#usize 0#u64) = 0 := rfl
   rw [hz] at heq
@@ -661,38 +664,36 @@ theorem mul2_inner_step (k d : Array U64 2#usize) (p : Array U64 4#usize)
     (lt_of_lt_of_le (by omega : j.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   refine ⟨t, ij, j', rfl, rfl, rfl, ?_⟩
   have hj' : j < 2#usize := by exact hj
-  simp only [glv.signed_difference_loop0_loop0.body, hj', if_true]
+  simp only [glv.signed_difference_loop0_loop0.body, hj', ite_true]
   rw [index_usize_eq k i (by exact hi), index_usize_eq d j (by exact hj)]
-  simp only [lift, bind_tc_ok]
+  simp only [lift, bind_tc_ok, bind_ok]
   rw [mul_ok _ _ (by rw [cast128_val, cast128_val]; change a.val * b.val < 2 ^ 128; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [usize_add_ok i j (by omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do
     let old' ← Array.index_usize p ij
-    let old'' ← lift (UScalar.cast .U128 old')
-    let subtotal ← UScalar.ofNatCore (a.val * b.val) _ + old''
+    let subtotal ← (UScalar.ofNatCore (a.val * b.val) _ : U128) + UScalar.cast .U128 old'
     let total ← subtotal + c
-    let lo ← lift (UScalar.cast .U64 total)
-    let p' ← Array.update p ij lo
+    let p' ← Array.update p ij (UScalar.cast .U64 total)
     let c' ← total >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
   rw [index_usize_eq p ij (by change i.val + j.val < 4; omega)]
-  simp only [lift, bind_tc_ok]
-  rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
-  simp only [bind_tc_ok]
+  simp only [lift, bind_tc_ok, bind_ok]
+  rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq, cast128_val]; change a.val * b.val + old.val < 2 ^ 128; omega)]
+  simp only [bind_tc_ok, bind_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact ht)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do
     let p' ← Array.update p ij (UScalar.cast .U64 t)
     let c' ← t >>> 64#i32
     let j'' ← j + 1#usize
     ok (cont (p', c', j''))) = _
   rw [update_eq p ij _ (by change i.val + j.val < 4; omega), shiftRight_64_i32]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [usize_add_ok j 1#usize (by change j.val + 1 < 2 ^ 32; omega)]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 def mul2_tail (d : Array U64 2#usize) (j : ℕ) : ℤ := wordsValue (d.val.drop j)
 
@@ -725,7 +726,7 @@ theorem mul2_inner_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
     have hjge : ¬j < 2#usize := by change ¬j.val < 2; omega
     refine ⟨p, c, ?_, hc, ?_, fun _ _ _ => rfl⟩
     · rw [glv.signed_difference_loop0_loop0, loop.eq_1]
-      simp [glv.signed_difference_loop0_loop0.body, hjge]
+      simp [glv.signed_difference_loop0_loop0.body, hjge, bind_ok]
     · rw [hj2, mul2_tail_two d]
       ring
   | succ n ih =>
@@ -735,7 +736,7 @@ theorem mul2_inner_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
       ⟨t.bv.ushiftRight 64⟩ (by omega) (high_bound t) (by omega)
     refine ⟨out, carry, ?_, hcarry, ?_, ?_⟩
     · rw [glv.signed_difference_loop0_loop0, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq, value_set p ij _ (by change ij.val < 4; omega)]
       simp only [hij, cast64_val, high_val, hj', mul2_tail_step d j.val hjlt]
       have ht' : (t.val : ℤ) =
@@ -749,7 +750,7 @@ theorem mul2_inner_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
       linear_combination (hdiv + ht') * (radix : ℤ) ^ (i.val + j.val)
     · intro q hq hqi
       rw [htail q hq hqi]
-      change (p.val.set ij.val (UScalar.cast .U64 t))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega)]
 
 theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
@@ -765,7 +766,7 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
     have hige : ¬i < 2#usize := by change ¬i.val < 2; omega
     refine ⟨p, ?_, ?_⟩
     · rw [glv.signed_difference_loop0, loop.eq_1]
-      simp [glv.signed_difference_loop0.body, hige]
+      simp [glv.signed_difference_loop0.body, hige, bind_ok]
     · rw [hi2, mul2_tail_two]
       ring
   | succ n ih =>
@@ -793,7 +794,7 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
     have hz' : ∀ q (hq : q < 4), next.val + 2 ≤ q →
         p'.val[q]'(by rw [p'.property]; exact hq) = 0#u64 := by
       intro q hq hqi
-      change (row.val.set last.val (UScalar.cast .U64 carry))[q]'_ = _
+      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
       rw [List.getElem_set_ne (by omega), htail q hq (by omega)]
       exact hz q hq (by omega)
     obtain ⟨out, hloop, hout⟩ := ih p' next (by omega) hz' (by omega)
@@ -801,18 +802,18 @@ theorem mul2_outer_exact (k d : Array U64 2#usize) (p : Array U64 4#usize)
     · rw [glv.signed_difference_loop0, loop.eq_1]
       have hbody : glv.signed_difference_loop0.body k d p i = ok (cont (p', next)) := by
         simp only [glv.signed_difference_loop0.body, show i < 2#usize from hilt,
-          if_true, hinner, bind_tc_ok]
+          ite_true, hinner, bind_tc_ok, bind_ok]
         rw [usize_add_ok i 2#usize (by change i.val + 2 < 2 ^ 32; omega)]
-        simp only [bind_tc_ok, lift]
+        simp only [bind_tc_ok, bind_ok, lift]
         change (do
           let a ← Array.update row last (UScalar.cast .U64 carry)
           let i3 ← i + 1#usize
           ok (cont (a, i3))) = _
         rw [update_eq row last _ (by change last.val < 4; omega)]
-        simp only [bind_tc_ok]
+        simp only [bind_tc_ok, bind_ok]
         rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
-        rfl
-      simpa only [hbody] using hloop
+        (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      simpa only [hbody, bind_ok] using! hloop
     · rw [hout, hp', hnext, mul2_tail_step k i.val hilt, pow_succ]
       ring
 
@@ -823,8 +824,7 @@ theorem mul2_refines (c d : Array U64 2#usize) :
   obtain ⟨cd, hp, hv⟩ := mul2_outer_exact c d (Array.repeat 4#usize 0#u64) 0#usize
     (by decide) (by
       intro q hq _
-      change (List.replicate 4 (0#u64))[q]'_ = _
-      simp only [List.getElem_replicate])
+      simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨cd, hp, ?_⟩
   simpa [mul2_tail, value, Array.repeat, wordsValue] using hv
 
@@ -844,8 +844,7 @@ def finishHalf (magnitude : Array U64 4#usize) (negative : Bool) : Result glv.Ha
 
 theorem finishHalf_ok (m : Array U64 4#usize) (negative : Bool) (hm : value m < 2 ^ 127) :
     finishHalf m negative = ok ⟨m, negative⟩ := by
-  rcases m with ⟨xs, hxs⟩
-  obtain ⟨a, b, c, d, rfl⟩ := List.length_eq_four.mp hxs
+  obtain ⟨a, b, c, d, rfl⟩ := array4_eq_make m
   have hc : c = 0#u64 := by
     apply UScalar.eq_of_val_eq
     norm_num [value, wordsValue, radix] at hm
@@ -869,13 +868,9 @@ theorem finishHalf_ok (m : Array U64 4#usize) (negative : Bool) (hm : value m < 
   simp only [finishHalf]
   rw [index_usize_eq _ 2#usize (by decide), index_usize_eq _ 3#usize (by decide),
     index_usize_eq _ 1#usize (by decide)]
-  change (do
-    massert ((0#u64) = 0#u64)
-    massert ((0#u64) = 0#u64)
-    let b' ← b >>> 63#i32
-    massert (b' = 0#u64)
-    ok _) = _
-  simp only [hshift, massert, if_true, bind_tc_ok]
+  simp only [Array.make, Array.from_val, show (2#usize).val = 2 from rfl,
+    show (3#usize).val = 3 from rfl, show (1#usize).val = 1 from rfl, List.getElem_cons_succ,
+    List.getElem_cons_zero, hshift, massert, ite_true, bind_tc_ok, bind_ok]
 
 def signedValue (h : glv.Half) : ℤ := if h.negative then -value h.magnitude else value h.magnitude
 
@@ -898,13 +893,12 @@ theorem signed_difference_refines (a : Array U64 4#usize) (b : U64) (c d : Array
     have hsize : value out < 2 ^ 127 := by omega
     refine ⟨⟨out, false⟩, ?_, ?_, hsize⟩
     · rw [glv.signed_difference, hcd]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [hsub]
-      simp only [bind_tc_ok]
-      change ((if borrow != 0#u64 then
-          (glv.negated out >>= fun magnitude => ok (true, magnitude))
-        else ok (false, out)) >>= fun (negative, magnitude) => finishHalf magnitude negative) = _
-      simp only [hb0, bne_self_eq_false, Bool.false_eq_true, if_false, bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
+      change ((if borrow != 0#u64 then glv.negated out else ok out) >>= fun magnitude =>
+        finishHalf magnitude (borrow != 0#u64)) = _
+      simp only [hb0, bne_self_eq_false, Bool.false_eq_true, ite_false, bind_tc_ok, bind_ok]
       exact finishHalf_ok out false hsize
     · exact heq
   · have hbval : borrow.val ≠ 0 := by
@@ -922,15 +916,13 @@ theorem signed_difference_refines (a : Array U64 4#usize) (b : U64) (c d : Array
     have hsize : value mag < 2 ^ 127 := by omega
     refine ⟨⟨mag, true⟩, ?_, ?_, hsize⟩
     · rw [glv.signed_difference, hcd]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [hsub]
-      simp only [bind_tc_ok]
-      change ((if borrow != 0#u64 then
-          (glv.negated out >>= fun magnitude => ok (true, magnitude))
-        else ok (false, out)) >>= fun (negative, magnitude) => finishHalf magnitude negative) = _
-      simp only [bne_iff_ne, if_pos hb0]
-      rw [hmag]
-      change finishHalf mag true = _
+      simp only [bind_tc_ok, bind_ok]
+      change ((if borrow != 0#u64 then glv.negated out else ok out) >>= fun magnitude =>
+        finishHalf magnitude (borrow != 0#u64)) = _
+      have hbne : (borrow != 0#u64) = true := bne_iff_ne.mpr hb0
+      simp only [hbne, ite_true, hmag, bind_tc_ok, bind_ok]
       exact finishHalf_ok mag true hsize
     · change -value mag = _
       rw [hmagval, neg_neg]
@@ -948,10 +940,8 @@ def extendTwo (a : Array U64 2#usize) : Array U64 4#usize :=
   Array.make 4#usize [a.val[0], a.val[1], 0#u64, 0#u64] (by rfl)
 
 theorem extendTwo_value (a : Array U64 2#usize) : value (extendTwo a) = value a := by
-  rcases a with ⟨xs, hxs⟩
-  obtain ⟨a, b, rfl⟩ := List.length_eq_two.mp hxs
-  change wordsValue [a, b, 0#u64, 0#u64] = wordsValue [a, b]
-  simp [wordsValue]
+  obtain ⟨a0, a1, h⟩ := List.length_eq_two.mp a.property
+  simp [extendTwo, value, Array.make, Array.from_val, h, wordsValue]
 
 theorem boolCast_value (b : Bool) : (UScalar.cast_fromBool .U64 b).val = if b then 1 else 0 := by
   cases b <;> rfl
@@ -984,7 +974,7 @@ theorem decompose_refines (k : Array U64 4#usize) (hk : value k < 2 ^ 255) :
   obtain ⟨h2, hh2, hv2, hm2⟩ := signed_difference_refines (extendTwo c1) 0#u64 bwords glv.Z2 (hs ▸ hsecond)
   refine ⟨h1, h2, ?_, hv1.trans hf, hv2.trans hs, hm1, hm2⟩
   rw [decompose_prefix, hprod]
-  simp only [bind_tc_ok, hprefix, at_least_half_r_refines, lift]
+  simp only [bind_tc_ok, bind_ok, hprefix, at_least_half_r_refines, lift]
   change (do
     let h1 ← glv.signed_difference k b c1 glv.LAMBDA
     let i10 ← Array.index_usize c1 0#usize
@@ -992,11 +982,11 @@ theorem decompose_refines (k : Array U64 4#usize) (hk : value k < 2 ^ 255) :
     let h2 ← glv.signed_difference (Array.make 4#usize [i10, i11, 0#u64, 0#u64] (by rfl)) 0#u64 bwords glv.Z2
     ok (h1, h2)) = _
   rw [hh1]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [index_usize_eq c1 0#usize (by decide), index_usize_eq c1 1#usize (by decide)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do let h2 ← glv.signed_difference (extendTwo c1) 0#u64 bwords glv.Z2; ok (h1, h2)) = _
   rw [hh2]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 end LeanBlsSimd.GlvRefines

@@ -1,6 +1,7 @@
 import LeanBlsSimd.Kzg.Extender.SpecMath
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
@@ -142,18 +143,20 @@ theorem model_spec (blob : ByteArray) :
         apply congrArg (Array.ofFn : (Fin 128 → Cell) → Array Cell)
         funext i
         by_cases hi : i.val < 64
-        · rw [if_pos hi, specCell_original blob a hd i.val hi]
-        · rw [if_neg hi]
+        · rw [ite_eq_left hi, specCell_original blob a hd i.val hi]
+        · rw [ite_eq_right hi]
           exact specCell_extension a (size_blobToPolynomial blob a hd)
             i.val (by omega) i.isLt
-      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte,
-        pure_bind, hd, liftM_eq_liftE]
-      change ((pure a : KzgM (Array Fr)) >>= _) = liftE (Model.extend blob)
-      rw [pure_bind]
-      change (Array.range 128).mapM _ = liftE (Model.extend blob)
-      have hcells := spec_cells_eq a
-      simp only [liftM_eq_liftE] at hcells
-      rw [hcells, hout]
+      obtain ⟨cells, hcompute, hsize, hcell⟩ := computeCells_ok_spec hd
+      have hcells : cells = Array.ofFn (fun i : Fin 128 => specCell a i.val) := by
+        apply Array.ext
+        · simpa only [Constants.CELLS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_BLOB,
+            Constants.FIELD_ELEMENTS_PER_CELL, Array.size_ofFn] using hsize
+        · intro i hi hi'
+          have hi128 : i < 128 := by simpa only [Array.size_ofFn] using hi'
+          rw [← getElem!_pos cells i hi, hcell i _ (cosetForCell_eq i hi128), Array.getElem_ofFn]
+          rfl
+      rw [hcompute, hcells, hout]
       simp only [Model.extend, hd, bind, Except.bind, pure, Except.pure]
       rfl
   · have hd : blobToPolynomial blob = .error (.badBlobSize blob.size) := by

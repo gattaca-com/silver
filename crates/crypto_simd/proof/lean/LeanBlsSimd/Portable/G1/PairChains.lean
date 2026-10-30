@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.G1.Pair
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
@@ -42,16 +44,16 @@ theorem affine_loop_encoded [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s : State)
     simp [portable.g1_pair.G1Pair.in_g1_loop0.body,hc]
   · intro s c c' hc _
     simp only [portable.g1_pair.G1Pair.in_g1_loop0.body]
-    rw [if_pos (by simp; omega),sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega),sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [encodeState,bind_tc_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_encoded,
+    simp only [encodeState,bind_tc_ok, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_encoded,
       flags_zero,flags_one,affinePairStep,affineStep]
     cases hb : G1x8.is_lower_z_bit c'.val <;>
       cases h0 : s.1.1 <;> cases h1 : s.2.1 <;>
-        simp_all only [Bool.false_eq_true,if_false,if_true,Bool.false_or,Bool.true_or,
-          bind_tc_ok] <;> rfl
+        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or,
+          bind_tc_ok, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> (simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem projective_loop_encoded [RuntimeFeatures] (P Q : Bls.G1) (s : State) (c : U32) (n : Nat)
     (hcn : c.val = n) :
@@ -65,27 +67,27 @@ theorem projective_loop_encoded [RuntimeFeatures] (P Q : Bls.G1) (s : State) (c 
     simp [portable.g1_pair.G1Pair.in_g1_loop1.body,hc]
   · intro s c c' hc _
     simp only [portable.g1_pair.G1Pair.in_g1_loop1.body]
-    rw [if_pos (by simp; omega),sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega),sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [encodeState,bind_tc_ok,double_encoded,G1x8.is_lower_z_bit_refines,
+    simp only [encodeState,bind_tc_ok, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,
       add_encoded (Kzg.PortableG1.doubleValues s.1.2) (Kzg.PortableG1.doubleValues s.2.2) P Q,
       flags_zero,flags_one,pairStep,step]
     cases hb : G1x8.is_lower_z_bit c'.val <;>
       cases h0 : s.1.1 <;> cases h1 : s.2.1 <;>
-        simp_all only [Bool.false_eq_true,if_false,if_true,Bool.false_or,Bool.true_or,
-          bind_tc_ok] <;> rfl
+        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or,
+          bind_tc_ok, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> (simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem step_unflagged (P : Bls.G1) (s : LaneState) (bit : Nat) (h : (step P s bit).1 = false) :
     s.1 = false ∧ (step P s bit).2 = G1.chainStep P s.2 bit := by
   unfold step at h ⊢
   unfold G1.chainStep
   split <;> rename_i hb
-  · simp only [hb,if_true] at h
+  · simp only [hb,ite_true] at h
     have he := Bool.or_eq_false_iff.mp h
     exact ⟨he.1,sum_eq_add _ _ he.2⟩
-  · simp only [hb,if_false] at h
+  · simp only [hb,ite_false] at h
     exact ⟨h,rfl⟩
 
 theorem affineStep_unflagged (x y : Bls.Fp) (s : LaneState) (bit : Nat)
@@ -94,10 +96,10 @@ theorem affineStep_unflagged (x y : Bls.Fp) (s : LaneState) (bit : Nat)
   unfold affineStep at h ⊢
   unfold G1.chainStep
   split <;> rename_i hb
-  · simp only [hb,if_true] at h
+  · simp only [hb,ite_true] at h
     have he := Bool.or_eq_false_iff.mp h
     exact ⟨he.1,affineSum_eq_add _ _ _ he.2⟩
-  · simp only [hb,if_false] at h
+  · simp only [hb,ite_false] at h
     exact ⟨h,rfl⟩
 
 private theorem fold_unflagged (f : LaneState → Nat → LaneState) (g : Bls.G1 → Nat → Bls.G1)
@@ -146,13 +148,13 @@ theorem affine_chains_encoded [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) :
   have h := affine_loop_encoded x0 x1 y0 y1
     ((false,⟨x0,y0,Bls.Fp.one⟩),(false,⟨x1,y1,Bls.Fp.one⟩))
     startBit Z_BITS[0]! (by simp [startBit])
-  simpa only [affinePairStep,fold_pair,affineChain] using h
+  simpa only [affinePairStep,fold_pair,affineChain] using! h
 
 theorem projective_chains_encoded [RuntimeFeatures] (s0 s1 : LaneState) :
     portable.g1_pair.G1Pair.in_g1_loop1 (flags s0.1 s1.1) (encode s0.2 s1.2)
       startBit (fields s0.2.x s1.2.x) (fields s0.2.y s1.2.y) (fields s0.2.z s1.2.z) =
       ok (encodeState (projectiveChain s0,projectiveChain s1)) := by
   have h := projective_loop_encoded s0.2 s1.2 (s0,s1) startBit Z_BITS[0]! (by simp [startBit])
-  simpa only [pairStep,fold_pair,projectiveChain] using h
+  simpa only [pairStep,fold_pair,projectiveChain] using! h
 
 end LeanBlsSimd.Portable.G1.Pair

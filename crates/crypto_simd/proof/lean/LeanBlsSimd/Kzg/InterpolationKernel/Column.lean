@@ -7,9 +7,16 @@ open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open silver_crypto_simd silver_crypto_simd.kzg
 open scoped EthLib.Cryptography.Bls.Fr
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fr.modulus
+
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 
 open Extender Extender.Kernel
+
+private theorem vec_setSlice_val {α : Type} (v : alloc.vec.Vec α) (i : Nat) (xs : List α) :
+    (v.setSlice! i xs).val = v.val.setSlice! i xs := by
+  simp only [alloc.vec.Vec.setSlice!, alloc.vec.Vec.val, Slice.setSlice!_val]
 
 def columnCoefficients (values : _root_.Array Fr) : _root_.Array Fr :=
   fftFieldAux (bitReversalPermutation values) (Model.inverseRoots (Model.roots 6))
@@ -41,10 +48,10 @@ private theorem sum_loop (kernel : interpolation_kernel.InterpolationKernel)
     have he : i.val = 8 := by omega
     refine ⟨sums, ?_, by simpa only [he] using hs⟩
     rw [interpolation_kernel.InterpolationKernel.add_column_loop, loop.eq_1]
-    simp [interpolation_kernel.InterpolationKernel.add_column_loop.body, UScalar.lt_equiv, he]
+    simp [interpolation_kernel.InterpolationKernel.add_column_loop.body, UScalar.lt_equiv, he, bind_ok]
   | succ rem ih =>
     have hit : i.val < 8 := by omega
-    have hil : i.val < sums.val.length := by simpa only [sums.property] using hit
+    have hil : i.val < sums.val.length := by simpa only [sums.property] using! hit
     let index : Usize := UScalar.ofNatCore (column.val*8+i.val) (by scalar_tac)
     have hindexval : index.val = column.val*8+i.val := UScalar.ofNatCore_val_eq _
     have hindexbound : index.val < data.val.length := by rw [hdlen, hindexval]; omega
@@ -55,21 +62,22 @@ private theorem sum_loop (kernel : interpolation_kernel.InterpolationKernel)
       (fun lane => shiftFactor column.val (8*i.val+lane.val))
       (hd ⟨i.val, hit⟩) (by decide) (by decide) (hk.2.2.2.2 ⟨column.val, hc⟩ ⟨i.val, hit⟩)
     have hsrep : Represents sums.val[i.val]! (fun lane => totals[8*i.val+lane.val]!) := by
-      simpa only [lt_self_iff_false, if_false] using hs ⟨i.val, hit⟩
+      simpa only [lt_self_iff_false, ite_false] using hs ⟨i.val, hit⟩
     obtain ⟨sum, hsum, hsumrep⟩ := add_lazy_representation _ _ _ _ hsrep.lazy hscaled
       (by decide) (by decide)
     let next := sums.set i sum
     have hnext : SumPrefix next column.val totals values (i.val+1) := by
+      simp only [SumPrefix, next, Array.set_val_eq]
       intro v
       by_cases he : v.val = i.val
       · have hve : v = ⟨i.val, hit⟩ := Fin.ext he
         subst v
         change Represents ((sums.val.set i.val sum)[i.val]!) _
-        rw [List.getElem!_set _ _ _ hil]
+        rw [List.set_getElem!_eq _ _ _ _ ⟨hil, rfl⟩]
         simpa using hsumrep
       · have heq : (v.val < i.val+1) = (v.val < i.val) := propext (by omega)
         change Represents ((sums.val.set i.val sum)[v.val]!) _
-        rw [List.getElem!_set_ne _ _ _ _ (by omega)]
+        rw [List.set_getElem!_ne _ _ _ _ (by omega)]
         simpa only [heq] using hs v
     let i' : Usize := UScalar.ofNatCore (i.val+1) (by scalar_tac)
     have hi' : i'.val = i.val+1 := UScalar.ofNatCore_val_eq _
@@ -90,12 +98,15 @@ private theorem sum_loop (kernel : interpolation_kernel.InterpolationKernel)
     have hupdate : Array.update sums i sum = ok next := by
       simp [Array.update, next, List.getElem?_eq_getElem hil]
       rfl
-    have hlt : i < 8#usize := by simpa only [UScalar.lt_equiv] using hit
+    have hlt : i < 8#usize := by simpa only [UScalar.lt_equiv, UScalar.ofNatCore_val_eq] using hit
     refine ⟨out, ?_, ho⟩
+    have hbody : interpolation_kernel.InterpolationKernel.add_column_loop.body
+        8#usize kernel.shift data at1 sums i = ok (cont (next, i')) := by
+      simp only [interpolation_kernel.InterpolationKernel.add_column_loop.body,
+        hlt, ite_true, hatadd, hdataindex, hnorm, hshiftindex, hmul, hsindex, hsum,
+        hupdate, hadd, bind_tc_ok, bind_ok]
     rw [interpolation_kernel.InterpolationKernel.add_column_loop, loop.eq_1]
-    simpa only [interpolation_kernel.InterpolationKernel.add_column_loop.body,
-      hlt, if_true, hatadd, hdataindex, hnorm, hshiftindex, hmul, hsindex, hsum,
-      hupdate, hadd, bind_tc_ok] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel)
     (column : Usize) (sums : Array fr8.Fr8 8#usize) (columnValues totals : _root_.Array Fr)
@@ -115,18 +126,19 @@ theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel
   let stop : Usize := UScalar.ofNatCore (column.val*8+8) (by scalar_tac)
   have hat : at1.val = column.val*8 := UScalar.ofNatCore_val_eq _
   have hstop : stop.val = column.val*8+8 := UScalar.ofNatCore_val_eq _
-  let block : Slice fr8.Fr8 := ⟨kernel.columns.val.slice at1.val stop.val,
-    le_trans (List.slice_length_le _ _ _) kernel.columns.property⟩
+  let block : Slice fr8.Fr8 := Slice.from (kernel.columns.val.slice at1.val stop.val)
+    (le_trans (List.slice_length_le _ _ _) kernel.columns.property)
   have hblocklen : block.val.length = 8 := by
-    simp only [block, List.slice, List.length_take, List.length_drop, hk.2.2.1, hat, hstop]
+    simp only [block, Slice.from_val, List.slice, List.length_take, List.length_drop, hk.2.2.1, hat, hstop]
     omega
   have hblockrep : DataRep block columnValues := by
     refine ⟨by rw [hsize, hblocklen], ?_⟩
     intro v
     have hv : v.val < 8 := by simpa only [hblocklen] using v.isLt
     have he : block.val[v.val] = kernel.columns.val[column.val*8+v.val]! := by
-      simp only [block, List.slice, List.getElem_take, List.getElem_drop, hat]
-      exact (getElem!_pos _ _ (by rw [hk.2.2.1]; omega)).symm
+      simp only [block, Slice.from_val, List.slice, List.getElem_take, List.getElem_drop, hat]
+      exact (getElem!_pos kernel.columns.val (column.val*8+v.val)
+        (by simpa only [hk.2.2.1] using (show column.val*8+v.val < 1024 by omega))).symm
     rw [he]
     exact hcolumn ⟨v.val, hv⟩
   have hrootsize : (Model.inverseRoots (Model.roots 6)).size = 64 := by
@@ -139,13 +151,13 @@ theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel
     omega
   let data := kernel.columns.setSlice! at1.val transformed.val
   have hdlen : data.val.length = 1024 := by
-    simp only [data, alloc.vec.Vec.setSlice!, List.length_setSlice!, hk.2.2.1]
+    simp only [data, vec_setSlice_val, List.length_setSlice!, hk.2.2.1]
   have hd : ∀ v : Fin 8, LazyRep 34 370 data.val[column.val*8+v.val]!
       (fun lane => (columnCoefficients columnValues)[8*v.val+lane.val]!) := by
     intro v
     have hv : v.val < transformed.val.length := by rw [htlen]; exact v.isLt
     have he : data.val[column.val*8+v.val]! = transformed.val[v.val] := by
-      simp only [data, alloc.vec.Vec.setSlice!, hat]
+      simp only [data, vec_setSlice_val, hat]
       rw [List.getElem!_setSlice!_middle _ _ _ _ (by rw [htlen, hk.2.2.1]; omega)]
       simp only [Nat.add_sub_cancel_left, getElem!_pos transformed.val v.val hv]
     rw [he]
@@ -153,9 +165,9 @@ theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel
   have hs : SumPrefix sums column.val totals (columnCoefficients columnValues) 0 := by
     intro v
     have hv : v.val < (Array.to_slice sums).val.length := by
-      simpa only [Array.to_slice, sums.property] using v.isLt
-    simpa only [Nat.not_lt_zero, if_false, Array.to_slice, getElem!_pos sums.val v.val hv]
-      using hsums.2 ⟨v.val, hv⟩
+      simpa only [Array.to_slice, Slice.from_val, sums.property] using! v.isLt
+    simpa only [Nat.not_lt_zero, ite_false, Array.to_slice, Slice.from_val, getElem!_pos sums.val v.val (by simpa only [Array.to_slice, Slice.from_val] using hv)]
+      using! hsums.2 ⟨v.val, hv⟩
   obtain ⟨sums', hloop, hs'⟩ := sum_loop kernel hk column hc data hdlen
     (columnCoefficients columnValues) totals hd sums at1 0#usize hat (by decide) hs
   let next := { kernel with columns := data }
@@ -163,27 +175,31 @@ theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel
     exact ⟨hk.1, hk.2.1, hdlen, hk.2.2.2⟩
   have hmul : column*8#usize = ok at1 := scalar_mul_ok column 8#usize (by scalar_tac)
   have hadd : at1+8#usize = ok stop := by
-    simpa only [hat, stop] using scalar_add_ok at1 8#usize (by scalar_tac)
+    simpa only [hat, stop] using! scalar_add_ok at1 8#usize (by scalar_tac)
   have hmut : alloc.vec.Vec.index_mut (core.slice.index.SliceIndexRangeUsizeSlice fr8.Fr8)
       kernel.columns { start := at1, «end» := stop } =
       ok (block, fun s => kernel.columns.setSlice! at1.val s.val) := by
     simp only [alloc.vec.Vec.index_mut, core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
       UScalar.le_equiv]
-    rw [if_pos (by simp only [Slice.length, hat, hstop, hk.2.2.1]; omega)]
-    rfl
+    rw [ite_eq_left (by
+      change at1.val ≤ stop.val ∧ stop.val ≤ kernel.columns.val.length
+      rw [hat, hstop, hk.2.2.1]
+      omega)]
+    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
   refine ⟨next, sums', ?_, hnext, ⟨rfl, rfl⟩, rfl, ?_, ?_⟩
   · simp only [interpolation_kernel.InterpolationKernel.add_column, vectors_per_cell_eq,
-      hmul, hadd, hmut, bind_tc_ok]
+      hmul, hadd, hmut, bind_tc_ok, bind_ok]
     dsimp only [data] at hloop
-    simp only [Function.uncurry_apply_pair, hfft, hloop, bind_tc_ok, next, data]
+    simp only [Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hfft, hloop, bind_tc_ok, bind_ok, next, data]
   · intro i hi
+    simp only [next, data, vec_setSlice_val]
     change (kernel.columns.val.setSlice! at1.val transformed.val)[i]! = _
     exact List.getElem!_setSlice!_same _ _ _ _ (by simpa only [hat, htlen] using hi)
-  · refine ⟨by simp only [columnStep, _root_.Array.size_ofFn, Array.to_slice, sums'.property]; rfl, ?_⟩
+  · refine ⟨by simp only [columnStep, _root_.Array.size_ofFn, Array.to_slice, Slice.from_val, sums'.property]; rfl, ?_⟩
     intro v
-    have hv : v.val < 8 := by simpa only [Array.to_slice, sums'.property] using v.isLt
+    have hv : v.val < 8 := by simpa only [Array.to_slice, Slice.from_val, sums'.property] using! v.isLt
     have hindex (lane : Fin 8) : 8*v.val+lane.val < 64 := by omega
-    simpa only [hv, if_true, columnStep, _root_.Array.getElem!_ofFn, hindex,
-      _root_.dite_true, Array.to_slice, getElem!_pos sums'.val v.val v.isLt] using hs' ⟨v.val, hv⟩
+    simpa only [hv, ite_true, columnStep, _root_.Array.getElem!_ofFn, hindex,
+      _root_.dite_true, Array.to_slice, Slice.from_val, getElem!_pos sums'.val v.val (by simpa only [Array.to_slice, Slice.from_val] using v.isLt)] using! hs' ⟨v.val, hv⟩
 
 end LeanBlsSimd.Kzg.InterpolationKernel

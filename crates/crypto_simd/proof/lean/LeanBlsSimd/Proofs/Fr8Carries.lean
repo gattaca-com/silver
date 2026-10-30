@@ -101,8 +101,8 @@ theorem val_eq_zero_iff {a : Limbs} : val a = 0 ↔ a = .replicate _ 0 := by
   · intro h
     rw [val_eq] at h
     ext j hj
+    rw [Vector.getElem_replicate]
     simp only [LIMBS] at hj
-    simp only [Vector.getElem_replicate]
     interval_cases j <;> simp <;> omega
   · rintro rfl
     exact val_replicate_zero
@@ -222,10 +222,10 @@ theorem addStep_spec (a b : Limbs) (st : Limbs × UInt64) (c : Bool) (hc : st.2 
     rw [toNat_srli52, ht]
     have := c.toNat_le
     by_cases h : 2 ^ 52 ≤ a[j.val].toNat + b[j.val].toNat + c.toNat
-    · simp only [h, decide_true, carryOf, if_true]
+    · simp only [h, decide_true, carryOf, ite_true]
       simp only [UInt64.toNat_one]
       omega
-    · simp only [h, decide_false, carryOf, Bool.false_eq_true, if_false, UInt64.toNat_zero]
+    · simp only [h, decide_false, carryOf, Bool.false_eq_true, ite_false, UInt64.toNat_zero]
       omega
   refine ⟨(a[j.val] + b[j.val] + carryOf c) &&& splat (.ofNat MASK52),
     decide (2 ^ 52 ≤ a[j.val].toNat + b[j.val].toNat + c.toNat),

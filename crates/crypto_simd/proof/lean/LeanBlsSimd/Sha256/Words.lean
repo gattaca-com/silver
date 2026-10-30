@@ -3,11 +3,6 @@ import LeanBlsSimd.Spec.Sha256
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd
-open private EthLib.Cryptography.Bls.Sha256.rotr
-  EthLib.Cryptography.Bls.Sha256.ch EthLib.Cryptography.Bls.Sha256.maj
-  EthLib.Cryptography.Bls.Sha256.bigSigma0 EthLib.Cryptography.Bls.Sha256.bigSigma1
-  EthLib.Cryptography.Bls.Sha256.smallSigma0 EthLib.Cryptography.Bls.Sha256.smallSigma1
-  from EthLib.Cryptography.Bls.Sha256
 
 namespace LeanBlsSimd.Sha256
 
@@ -39,31 +34,45 @@ theorem words_set {n : Usize} (a : Array U32 n) (i : Usize) (x : U32) :
 namespace Portable
 
 theorem choose_refines (x y z : UInt32) :
-    sha256.portable.ch (word x) (word y) (word z) = ok (word (Spec.choose x y z)) := rfl
+    sha256.portable.ch (word x) (word y) (word z) = ok (word (Spec.choose x y z)) := by
+  simp only [sha256.portable.ch, lift, bind_ok]
+  rfl
 
 theorem majority_refines (x y z : UInt32) :
-    sha256.portable.maj (word x) (word y) (word z) = ok (word (Spec.majority x y z)) := rfl
+    sha256.portable.maj (word x) (word y) (word z) = ok (word (Spec.majority x y z)) := by
+  simp only [sha256.portable.maj, lift, bind_ok]
+  rfl
 
 theorem bigSigma0_refines (x : UInt32) :
     sha256.portable.big_sigma0 (word x) = ok (word (Spec.bigSigma0 x)) := by
+  simp only [sha256.portable.big_sigma0, lift, bind_ok]
   change ok (⟨(x.toBitVec.rotateRight 2 ^^^ x.toBitVec.rotateRight 13) ^^^ x.toBitVec.rotateRight 22⟩ : U32) = _
   simp only [BitVec.rotateRight_def]
   rfl
 
 theorem bigSigma1_refines (x : UInt32) :
     sha256.portable.big_sigma1 (word x) = ok (word (Spec.bigSigma1 x)) := by
+  simp only [sha256.portable.big_sigma1, lift, bind_ok]
   change ok (⟨(x.toBitVec.rotateRight 6 ^^^ x.toBitVec.rotateRight 11) ^^^ x.toBitVec.rotateRight 25⟩ : U32) = _
   simp only [BitVec.rotateRight_def]
   rfl
 
 theorem smallSigma0_refines (x : UInt32) :
     sha256.portable.small_sigma0 (word x) = ok (word (Spec.smallSigma0 x)) := by
+  have hshift : word x >>> 3#i32 = ok ⟨(word x).bv.ushiftRight 3⟩ := by
+    show UScalar.shiftRight_IScalar (word x) 3#i32 = _
+    simp [UScalar.shiftRight_IScalar, UScalar.shiftRight]
+  simp only [sha256.portable.small_sigma0, lift, bind_ok, hshift]
   change ok (⟨(x.toBitVec.rotateRight 7 ^^^ x.toBitVec.rotateRight 18) ^^^ (x.toBitVec >>> 3)⟩ : U32) = _
   simp only [BitVec.rotateRight_def]
   rfl
 
 theorem smallSigma1_refines (x : UInt32) :
     sha256.portable.small_sigma1 (word x) = ok (word (Spec.smallSigma1 x)) := by
+  have hshift : word x >>> 10#i32 = ok ⟨(word x).bv.ushiftRight 10⟩ := by
+    show UScalar.shiftRight_IScalar (word x) 10#i32 = _
+    simp [UScalar.shiftRight_IScalar, UScalar.shiftRight]
+  simp only [sha256.portable.small_sigma1, lift, bind_ok, hshift]
   change ok (⟨(x.toBitVec.rotateRight 17 ^^^ x.toBitVec.rotateRight 19) ^^^ (x.toBitVec >>> 10)⟩ : U32) = _
   simp only [BitVec.rotateRight_def]
   rfl

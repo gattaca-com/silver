@@ -14,15 +14,13 @@ theorem dit_zero_step (t : Array fr8.Fr8 8#usize) (h : Usize) (input : fr8.Fr8) 
   unfold fft8.Fft8.dit_short_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : fft8.Fft8.dit_short_loop0.body h input t group with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1⟩
+    rfl
+  | done result => rfl
 
 
 theorem dit_pipeline_step (v : alloc.vec.Vec fr8.Fr8) (t : Array fr8.Fr8 8#usize)
@@ -36,15 +34,13 @@ theorem dit_pipeline_step (v : alloc.vec.Vec fr8.Fr8) (t : Array fr8.Fr8 8#usize
   unfold fft8.Fft8.dit_short_loop1
   rw [loop.eq_1]
   dsimp only
-  cases hflow : fft8.Fft8.dit_short_loop1.body v h bound t at1 pending group j with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2,x3,x4⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2,x3,x4⟩
+    rfl
+  | done result => rfl
 
 
 theorem dit_outer_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usize)
@@ -57,15 +53,13 @@ theorem dit_outer_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usiz
   unfold dit_short_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : dit_short_loop0.body h input product table t group with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2⟩
+    rfl
+  | done result => rfl
 
 
 theorem dit_inner_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usize)
@@ -78,15 +72,13 @@ theorem dit_inner_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usiz
   unfold dit_short_loop0_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : dit_short_loop0_loop0.body h input product group table t j with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2⟩
+    rfl
+  | done result => rfl
 
 
 theorem dif_zero_step (t : Array fr8.Fr8 8#usize) (h : Usize) (group : Usize) :
@@ -98,15 +90,13 @@ theorem dif_zero_step (t : Array fr8.Fr8 8#usize) (h : Usize) (group : Usize) :
   unfold fft8.Fft8.dif_short_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : fft8.Fft8.dif_short_loop0.body h t group with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1⟩
+    rfl
+  | done result => rfl
 
 
 theorem dif_pipeline_step (v : alloc.vec.Vec fr8.Fr8) (t : Array fr8.Fr8 8#usize)
@@ -120,15 +110,13 @@ theorem dif_pipeline_step (v : alloc.vec.Vec fr8.Fr8) (t : Array fr8.Fr8 8#usize
   unfold fft8.Fft8.dif_short_loop1
   rw [loop.eq_1]
   dsimp only
-  cases hflow : fft8.Fft8.dif_short_loop1.body v h bound t at1 pending group j with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2,x3,x4⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2,x3,x4⟩
+    rfl
+  | done result => rfl
 
 
 theorem dif_outer_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usize)
@@ -141,15 +129,13 @@ theorem dif_outer_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usiz
   unfold dif_short_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : dif_short_loop0.body h input table t group with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2⟩
+    rfl
+  | done result => rfl
 
 
 theorem dif_inner_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usize)
@@ -162,15 +148,13 @@ theorem dif_inner_step (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize) (h : Usiz
   unfold dif_short_loop0_loop0
   rw [loop.eq_1]
   dsimp only
-  cases hflow : dif_short_loop0_loop0.body h input group table t j with
-  | ok flow =>
-    cases flow with
-    | cont state =>
-      rcases state with ⟨x0,x1,x2⟩
-      rfl
-    | done result => rfl
-  | fail error => rfl
-  | div => rfl
+  congr 1
+  funext flow
+  cases flow with
+  | cont state =>
+    rcases state with ⟨x0,x1,x2⟩
+    rfl
+  | done result => rfl
 
 
 end LeanBlsSimd.Kzg.Extender.Kernel.ShortModel

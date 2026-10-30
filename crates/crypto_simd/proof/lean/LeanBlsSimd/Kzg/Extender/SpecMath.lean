@@ -5,8 +5,7 @@ import Mathlib.Algebra.BigOperators.Intervals
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.Extender
 
@@ -56,18 +55,18 @@ theorem reverseBits_half_split (b j : Nat) (hb : b < 2) (hj : j < 4096) :
   rw [testBit_reverseBits, Nat.testBit_two_pow_mul_add _ hb']
   by_cases hi : i = 0
   · subst i
-    simp only [show 0 < 13 by decide, if_true, Nat.sub_zero,
+    simp only [show 0 < 13 by decide, ite_true, Nat.sub_zero,
       show 0 < 1 by decide]
     rw [Nat.testBit_two_pow_mul_add _ hj']
     simp
   · by_cases hi13 : i < 13
-    · rw [if_pos hi13, if_neg (by omega : ¬i < 1),
-        Nat.testBit_two_pow_mul_add _ hj', if_pos (by omega : 13 - 1 - i < 12),
-        testBit_reverseBits, if_pos (by omega : i - 1 < 12)]
+    · rw [ite_eq_left hi13, ite_eq_right (by omega : ¬i < 1),
+        Nat.testBit_two_pow_mul_add _ hj', ite_eq_left (by omega : 13 - 1 - i < 12),
+        testBit_reverseBits, ite_eq_left (by omega : i - 1 < 12)]
       congr 1
       omega
-    · rw [if_neg hi13, if_neg (by omega : ¬i < 1), testBit_reverseBits,
-        if_neg (by omega : ¬i - 1 < 12)]
+    · rw [ite_eq_right hi13, ite_eq_right (by omega : ¬i < 1), testBit_reverseBits,
+        ite_eq_right (by omega : ¬i - 1 < 12)]
 
 theorem coeff_size (a : Array Fr) (ha : a.size = 4096) :
     (polynomialEvalToCoeff a).size = 4096 := by
@@ -77,7 +76,7 @@ theorem inverseFft_eq_coeff (a : Array Fr) (ha : a.size = 4096) :
     Kzg.Model.inverseFft (bitReversalPermutation a)
       (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) (Fr.ofNat 4096).inverse =
       polynomialEvalToCoeff a := by
-  simp only [polynomialEvalToCoeff, fftField_def, if_true,
+  simp only [polynomialEvalToCoeff, fftField_def, ite_true,
     size_bitReversalPermutation, ha, Kzg.Model.inverseFft, Kzg.Model.inverseRoots,
     Kzg.Model.roots, Constants.FIELD_ELEMENTS_PER_BLOB]
 
@@ -126,9 +125,9 @@ theorem coeff_eval_original (a : Array Fr) (ha : a.size = 4096)
       bitReversalPermutation a := by
     exact fftField_inv_fftField (k := 12) domainRoot_4096_primitive
       (bitReversalPermutation a) (computeRootsOfUnity 4096)
-      (by simpa only [size_bitReversalPermutation] using ha)
+      (by simpa only [size_bitReversalPermutation] using! ha)
       (size_computeRootsOfUnity 4096) hroots
-  rw [hround, getElem!_pos _ _ (by simpa only [size_bitReversalPermutation, ha] using hrev),
+  rw [hround, getElem!_pos _ _ (by simpa only [size_bitReversalPermutation, ha] using! hrev),
     getElem_bitReversalPermutation, ha, reverseBits_reverseBits (k := 12) hj]
 
 theorem coeff_eval_extension (a : Array Fr) (ha : a.size = 4096)

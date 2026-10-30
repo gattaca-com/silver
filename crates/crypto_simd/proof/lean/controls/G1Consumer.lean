@@ -26,5 +26,5 @@ example [RuntimeFeatures] (a b : Aeneas.Std.Array U8 48#usize)
   rw [Portable.Decode.g1_decoder_correct.pair]
   intro h
   have hfirst := congrArg (fun xs : Aeneas.Std.Array (Option g1_point.G1Point) 2#usize =>
-    xs.val[0]!) (Result.ok.inj h)
-  exact hne (by simpa [Aeneas.Std.Array.make] using hfirst)
+    xs.val[0]!) (Result.ok_injective h)
+  exact hne (by simpa [Aeneas.Std.Array.make, Array.from_val] using hfirst)

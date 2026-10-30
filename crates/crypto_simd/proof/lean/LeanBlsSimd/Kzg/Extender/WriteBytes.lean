@@ -20,7 +20,8 @@ theorem arrayBytes_get {n : Usize} (xs : Aeneas.Std.Array U8 n)
 theorem storeChunk_first (cells : Cells) (j k : Nat)
     (bs : Aeneas.Std.Array U8 32#usize) (hk : k < 64) :
     (storeChunk cells j bs).val[k]! = cells.val[k]! := by
-  exact List.getElem!_set_ne _ _ _ _ (by omega)
+  simp only [storeChunk, Array.make, Array.from_val]
+  exact List.set_getElem!_ne _ _ _ _ (by omega)
 
 theorem storeChunk_current (cells : Cells) (j b : Nat) (hj : j < 4096)
     (bs : Aeneas.Std.Array U8 32#usize) (hb : b < 32) :
@@ -29,9 +30,11 @@ theorem storeChunk_current (cells : Cells) (j b : Nat) (hj : j < 4096)
   have hc : 64+j/64 < cells.val.length := by
     simp only [cells.property, UScalar.ofNatCore_val_eq]; omega
   have hat : (j%64)*32+b < 2048 := by omega
+  simp only [storeChunk, Array.make, Array.from_val]
   change (arrayBytes ((cells.val.set (64+j/64) _)[64+j/64]!))[_]! = _
-  rw [List.getElem!_set _ _ _ hc, arrayBytes_get _ _ hat, arrayBytes_get bs b hb]
+  rw [List.set_getElem!_eq _ _ _ _ ⟨hc, rfl⟩, arrayBytes_get _ _ hat, arrayBytes_get bs b hb]
   apply congrArg (fun x : U8 => UInt8.ofBitVec x.bv)
+  rw [Array.setSlice!_val]
   change (cells.val[64+j/64]!.val.setSlice! ((j%64)*32) bs.val)[(j%64)*32+b]! = bs.val[b]!
   rw [List.getElem!_setSlice!_middle cells.val[64+j/64]!.val bs.val
     ((j%64)*32) ((j%64)*32+b) (by
@@ -47,15 +50,18 @@ theorem storeChunk_previous (cells : Cells) (j i b : Nat) (hj : j < 4096)
   · have hc : 64+j/64 < cells.val.length := by
       simp only [cells.property, UScalar.ofNatCore_val_eq]; omega
     have hat : (i%64)*32+b < 2048 := by omega
+    simp only [storeChunk, Array.make, Array.from_val]
     change (arrayBytes ((cells.val.set (64+j/64) _)[64+i/64]!))[_]! = _
-    rw [he, List.getElem!_set _ _ _ hc,
+    rw [he, List.set_getElem!_eq _ _ _ _ ⟨hc, rfl⟩,
       arrayBytes_get _ _ hat, arrayBytes_get _ _ hat]
     apply congrArg (fun x : U8 => UInt8.ofBitVec x.bv)
+    rw [Array.setSlice!_val]
     exact List.getElem!_setSlice!_prefix cells.val[64+j/64]!.val bs.val
       ((j%64)*32) ((i%64)*32+b) (by omega)
   · have hne : 64+j/64 ≠ 64+i/64 := by omega
+    simp only [storeChunk, Array.make, Array.from_val]
     change (arrayBytes ((cells.val.set (64+j/64) _)[64+i/64]!))[_]! = _
-    rw [List.getElem!_set_ne cells.val (64+j/64) (64+i/64) _ (by omega)]
+    rw [List.set_getElem!_ne cells.val (64+j/64) (64+i/64) _ (by omega)]
 
 def Written (values : _root_.Array Fr) (initial : Cells) (n : Nat) (cells : Cells) : Prop :=
   (∀ k, k < 64 → cells.val[k]! = initial.val[k]!) ∧

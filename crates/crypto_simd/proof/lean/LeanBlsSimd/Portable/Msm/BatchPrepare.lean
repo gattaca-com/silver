@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Msm.Batch
 open BatchedRefines
 set_option maxRecDepth 4096
@@ -20,7 +22,7 @@ private theorem isZero_false (x : ChainField) (h : x ≠ 0) : Bls.Fp.isZero x = 
   intro he
   apply h
   apply ZMod.val_injective
-  simpa only [Bls.Fp.isZero,beq_iff_eq,ZMod.val_zero] using he
+  simpa only [Bls.Fp.isZero,beq_iff_eq,ZMod.val_zero] using! he
 
 theorem prepare_step [RuntimeFeatures]
     (a b out : alloc.vec.Vec U32) (dx prefixes : alloc.vec.Vec portable.fp.Fp)
@@ -65,14 +67,14 @@ theorem prepare_step [RuntimeFeatures]
     rw [chainArray_index _ _ _ hklt, hkey]
     rfl
   refine ⟨next, by simp [next], ?_⟩
-  simp only [portable.msm.pairs.BatchedAdds.run_loop0.body, UScalar.lt_equiv,hi,if_true,
-    index_of_some _ _ _ hb,index_of_some _ _ _ ha,bind_tc_ok,
+  simp only [portable.msm.pairs.BatchedAdds.run_loop0.body, UScalar.lt_equiv,hi,ite_true,
+    index_of_some _ _ _ hb,index_of_some _ _ _ ha,bind_tc_ok, bind_ok,
     Store.x_refines store rb xb yb hxb,Store.x_refines store ra xa ya hxa,
-    hsub,Fp.is_zero_encoded,isZero_false _ hnz,Bool.false_eq_true,if_false,
+    hsub,Fp.is_zero_encoded,isZero_false _ hnz,Bool.false_eq_true,ite_false,
     portable.msm.pairs.CHAINS,rem_four]
   simp only [k] at hread hwrite hprefix
-  simp only [hread,bind_tc_ok,hmul,hwrite,hprefix,
+  simp only [hread,bind_tc_ok, bind_ok,hmul,hwrite,hprefix,
     BucketsRefines.vec_index_mut _ _ hdx,BucketsRefines.vec_index_mut _ _ hpref,
-    Function.uncurry_def,hnext]
+    Function.uncurry_def, aeneas_uncurry_def,hnext]
 
 end LeanBlsSimd.Portable.Msm.Batch

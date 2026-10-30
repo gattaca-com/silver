@@ -77,7 +77,7 @@ theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
         rw [show i.val / 8 * 8 + i.val % 8 = i.val by omega,
           getElem!_pos _ _ (by simp), List.getElem_map]
       simp only [usesKernelAt] at hk
-      rw [if_pos hk]
+      rw [ite_eq_left hk]
       simp only [getElem!_pos (decompress (chunkAt (inputs.val.map (ofArray ofU8)) i.val)).points
         (i.val % 8) (Nat.mod_lt i.val (by decide : 0 < 8))]
       have he := decompress_eq_verdict _ ⟨i.val % 8, Nat.mod_lt _ (by decide)⟩ hu

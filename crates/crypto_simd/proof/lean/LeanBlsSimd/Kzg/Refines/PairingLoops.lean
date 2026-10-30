@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.Refines.Roots
 import LeanBlsSimd.Kzg.Refines.Interpolation
 import LeanBlsSimd.Kzg.Refines.InterpolationCommitment
+import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
@@ -79,7 +80,7 @@ theorem weights_loop [RuntimeFeatures]
     refine ⟨acc, ?_, by simpa [hs] using ha⟩
     rw [verify.CellBatchVerifier.pairing_holds_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.pairing_holds_loop1.body, hnext,
-      bind_tc_ok, Function.uncurry_apply_pair]
+      bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   | succ k ih =>
     have hj : iter.start.val < n := by omega
     obtain ⟨iter', hs', he', hnext⟩ := Refinement.next_lt iter (by omega)
@@ -101,7 +102,7 @@ theorem weights_loop [RuntimeFeatures]
     have hbody : verify.CellBatchVerifier.pairing_holds_loop1.body mapping vp iter acc =
         ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.pairing_holds_loop1.body, hnext,
-        bind_tc_ok, Function.uncurry_apply_pair, hindex, hweight, hpower,
+        bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hindex, hweight, hpower,
         FrScalar.fr_add_refines, hmut, acc']
     obtain ⟨result, hloop, hr⟩ := ih acc'
       (weightStep mapping.val powers weights iter.start.val) ha'
@@ -109,7 +110,7 @@ theorem weights_loop [RuntimeFeatures]
       (by simpa only [he'] using he) (by omega)
     refine ⟨result, ?_, ?_⟩
     · rw [verify.CellBatchVerifier.pairing_holds_loop1, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · rw [List.drop_eq_getElem_cons (by simp [hj])]
       simpa only [List.foldl_cons, List.getElem_range, hs'] using hr
@@ -147,7 +148,7 @@ theorem shifts_loop [RuntimeFeatures]
     refine ⟨acc, ?_, by simp [hs]⟩
     rw [verify.CellBatchVerifier.pairing_holds_loop2, loop.eq_1]
     simp only [verify.CellBatchVerifier.pairing_holds_loop2.body, hnext,
-      bind_tc_ok, Function.uncurry_apply_pair]
+      bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   | succ k ih =>
     have hj : iter.start.val < indices.val.length := by omega
     obtain ⟨iter', hs', he', hnext⟩ := Refinement.next_lt iter (by omega)
@@ -168,34 +169,31 @@ theorem shifts_loop [RuntimeFeatures]
     have hx : x = powers[iter.start.val]! * Fr.powNat (Model.cosetShift raw.val) 64 := by
       simp only [x, shiftedScalar, getElem!_pos indices.val iter.start.val hj, raw]
     have hlen : acc.val.length + 1 ≤ Usize.max := by omega
-    let acc' : alloc.vec.Vec blst.blst_fr := ⟨acc.val ++ [frEncode x], by simpa using hlen⟩
+    let acc' : alloc.vec.Vec blst.blst_fr := alloc.vec.Vec.from (acc.val ++ [frEncode x]) (by simpa using hlen)
     have hpush : alloc.vec.Vec.push acc (frEncode x) = ok acc' := by
       simp [alloc.vec.Vec.push, hlen, acc']
     have hbody : verify.CellBatchVerifier.pairing_holds_loop2.body c vp indices iter acc =
         ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.pairing_holds_loop2.body, hnext,
-        bind_tc_ok, Function.uncurry_apply_pair, hindex, lift, hshift, hpower,
+        bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hindex, lift, hshift, hpower,
         FrScalar.fr_mul_refines, ← hx, hpush, i]
     obtain ⟨out, hloop, hout⟩ := ih acc' iter' (by omega) (by simpa only [he'] using he)
-      (by simp only [acc', List.length_append, List.length_singleton]; omega) (by omega)
+      (by simp only [acc', alloc.vec.Vec.from_val, List.length_append, List.length_singleton]; omega) (by omega)
     refine ⟨out, ?_, ?_⟩
     · rw [verify.CellBatchVerifier.pairing_holds_loop2, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · have hdrop : (List.range indices.val.length).drop iter.start.val =
           iter.start.val :: (List.range indices.val.length).drop (iter.start.val + 1) := by
         rw [List.drop_eq_getElem_cons (by simp [hj])]
         simp only [List.getElem_range]
       rw [hout, hdrop]
-      simp only [List.map_cons, hs', acc', x, List.append_assoc,
+      simp only [List.map_cons, hs', acc', alloc.vec.Vec.from_val, x, List.append_assoc,
         List.singleton_append]
 
 private theorem bind_ok_exists {α β : Type} (x : Result α) (f : α → Result β) (y : β)
     (h : (do let a ← x; f a) = ok y) : ∃ a, x = ok a ∧ f a = ok y := by
-  cases x with
-  | ok a => exact ⟨a, rfl, h⟩
-  | fail err => cases h
-  | div => cases h
+  exact bind_eq_ok (by simpa only [bind_tc_eq] using h)
 
 theorem interpolation_frame [RuntimeFeatures]
     (v next : verify.CellBatchVerifier) (indices : Slice U64)
@@ -219,21 +217,21 @@ theorem interpolation_frame [RuntimeFeatures]
     obtain ⟨coefficients0, _, hrun⟩ := bind_ok_exists _ _ _ hrun
     obtain ⟨⟨cosets, column, coefficients, interpolation⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
     obtain ⟨⟨point', scratch⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-    cases hrun
+    cases Result.ok_injective hrun
     exact ⟨rfl, rfl⟩
   | some kernel =>
     simp only [hk] at hrun
     obtain ⟨interpolation, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-    simp only [lift, bind_tc_ok, alloc.vec.Vec.deref_mut, Function.uncurry_apply_pair] at hrun
+    simp only [lift, bind_tc_ok, bind_ok, alloc.vec.Vec.deref_mut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair] at hrun
     obtain ⟨⟨nextKernel, output⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
     obtain ⟨⟨point', scratch⟩, _, hrun⟩ := bind_ok_exists _ _ _ hrun
-    cases hrun
+    cases Result.ok_injective hrun
     exact ⟨rfl, rfl⟩
 
 theorem resize_fields (v : alloc.vec.Vec blst.blst_fr) (n : Usize) (x : blst.blst_fr) :
     ∃ out, alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v n x = ok out ∧
       out.val = v.val.resize n.val x := by
-  apply WP.spec_imp_exists
+  apply spec_imp_exists
   apply alloc.vec.Vec.resize_spec
   simp [blst.blst_fr.Insts.CoreCloneClone.clone]
 

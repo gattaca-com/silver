@@ -1,4 +1,4 @@
-import LeanBlsSimd.Extracted.Funs
+import LeanBlsSimd.Refines.Basic
 
 /-!
 # Loops
@@ -21,29 +21,19 @@ open core.iter.range core.ops.range
 theorem next_lt (r : Range Usize) (h : r.start.val < r.end.val) :
     ∃ r' : Range Usize, r'.start.val = r.start.val + 1 ∧ r'.end = r.end ∧
       IteratorRange.next StepUsize r = ok (some r.start, r') := by
-  have hs := core.num.checked_add_UScalar_bv_spec r.start 1#usize
-  cases hc : core.num.checked_add_UScalar r.start 1#usize with
-  | none =>
-    simp only [hc] at hs
-    have := r.end.hBounds
-    simp only [UScalar.max, UScalarTy.numBits] at hs this
-    simp at hs
-    omega
-  | some n =>
-    simp only [hc] at hs
-    refine ⟨{ r with start := n }, by simp [hs.2.1], rfl, ?_⟩
-    simp only [IteratorRange.next, liftFun2, bind_tc_ok]
-    simp [core.cmp.impls.PartialOrdUsize.lt, h, StepUsize.forward_checked, Usize.checked_add, hc,
-      core.clone.impls.CloneUsize.clone]
+  obtain ⟨⟨o, r'⟩, hnext, ho, hs, he⟩ := spec_imp_exists (IteratorRange.next_Usize_some_spec r h)
+  subst ho
+  exact ⟨r', hs, he, hnext⟩
 
 theorem next_ge (r : Range Usize) (h : r.end.val ≤ r.start.val) :
     IteratorRange.next StepUsize r = ok (none, r) := by
-  simp only [IteratorRange.next, liftFun2, bind_tc_ok]
-  simp [core.cmp.impls.PartialOrdUsize.lt, Nat.not_lt.mpr h]
+  obtain ⟨⟨o, r'⟩, hnext, ho, hr⟩ := spec_imp_exists (IteratorRange.next_Usize_none_spec r h)
+  subst ho hr
+  exact hnext
 
 /-- Unfolds one iteration of a loop body `body` whose range step is `hn`. -/
 macro "simp_body" body:ident hn:ident : tactic =>
-  `(tactic| simp only [$body:ident, $hn:ident, bind_tc_ok, Function.uncurry_apply_pair])
+  `(tactic| (simp only [$body:ident, $hn:ident, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]; try dsimp only))
 
 theorem loop_range_inv {S β M : Type} {n : ℕ}
     (body : Range Usize × S → Result (ControlFlow (Range Usize × S) β))
@@ -62,13 +52,13 @@ theorem loop_range_inv {S β M : Type} {n : ℕ}
   | zero =>
     have hs : start.val = n := by omega
     have hnext := next_ge { start, «end» := stop } (by simp [hstop, hs])
-    rw [loop.eq_1, hdone _ m rfl hs (hs ▸ hm) hnext]
+    rw [loop.eq_1, hdone _ m rfl hs (hs ▸ hm) hnext, bind_ok]
     simp [hs]
   | succ k ih =>
     have hlt : start.val < n := by omega
     obtain ⟨r', hr's, hr'e, hnext⟩ := next_lt { start, «end» := stop } (by simp [hstop, hlt])
     have hbody := hcont _ r' m ⟨start.val, hlt⟩ rfl rfl hr'e hr's hm hnext
-    rw [loop.eq_1, hbody]
+    rw [loop.eq_1, hbody, bind_ok]
     simp only
     obtain ⟨s', e'⟩ := r'
     simp only at hr's hr'e
@@ -123,11 +113,11 @@ theorem loop_countdown {S β M : Type} {ty : UScalarTy}
     (c : UScalar ty) (m : M) (hc : c.val = n) :
     loop body (enc m c) = ok (fin ((List.range n).reverse.foldl g m)) := by
   induction n generalizing c m with
-  | zero => rw [loop.eq_1, hdone m c hc]; rfl
+  | zero => rw [loop.eq_1, hdone m c hc, bind_ok]; rfl
   | succ n ih =>
     let c' : UScalar ty := UScalar.ofNatCore n (by have := c.hBounds; omega)
     have hc' : c'.val = n := UScalar.ofNatCore_val_eq _
-    rw [loop.eq_1, hcont m c c' (by omega) (by omega)]
+    rw [loop.eq_1, hcont m c c' (by omega) (by omega), bind_ok]
     simp only
     rw [ih (fun m c c' h1 h2 => hcont m c c' h1 (by omega)) c' _ hc']
     simp [List.range_succ, hc']

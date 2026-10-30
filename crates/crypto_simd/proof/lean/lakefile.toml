@@ -1,5 +1,7 @@
 name = "lean_bls_simd"
-defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms", "controls.Refines"]
+defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms", "controls.Refines", "controls.AxiomInventory", "controls.GuardImported"]
+# Mathlib and Aeneas use the module system; most of this package does not.
+allowNonModules = true
 
 [leanOptions]
 autoImplicit = false
@@ -9,19 +11,18 @@ relaxedAutoImplicit = false
 [[require]]
 name = "mathlib"
 git = "https://github.com/leanprover-community/mathlib4.git"
-rev = "v4.29.1"
+rev = "v4.35.0"
 
-# total-pairing-definitions: total powers and a structurally recursive Miller loop.
 [[require]]
 name = "EthLib"
-git = "https://github.com/gattaca-com/EthLib"
-rev = "5d7ab0f648619d29da9637f8bd57b5e5aa093865"
+git = "https://github.com/ethereum/EthLib"
+rev = "98395150e9eb6a11fd85022bee7ea9da9a8e3760"
 
 # The Aeneas release whose Charon and Aeneas generate `LeanBlsSimd/Extracted/`.
 [[require]]
 name = "aeneas"
 git = "https://github.com/AeneasVerif/aeneas"
-rev = "d973341320c1d5c947a95992db2aa6f70b658ea2"
+rev = "nightly-2026.10.30-de16f3c"
 subDir = "backends/lean"
 
 [[lean_lib]]

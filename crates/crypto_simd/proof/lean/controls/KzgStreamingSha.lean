@@ -14,7 +14,7 @@ theorem corrupted_finish_rejected {S : Type}
     (s : S) (pre : List U8)
     (digest : Aeneas.Std.Array U8 32#usize)
     (hfinish : finish s = ok digest)
-    (hbad : arrayBytes digest ≠ Bls.sha256 (bytes pre)) :
+    (hbad : arrayBytes digest ≠ Hash.sha256 (bytes pre)) :
     ¬ ShaRep update finish s pre := by
   intro h
   obtain ⟨actual, hactual, hbytes⟩ := h []

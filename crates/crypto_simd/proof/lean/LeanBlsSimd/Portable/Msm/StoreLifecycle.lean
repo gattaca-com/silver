@@ -27,7 +27,8 @@ theorem allocate_refines (s : portable.msm.store.PointStore)
   simp only [portable.msm.store.PointStore.allocate, UScalar.lt_equiv,
     alloc.vec.Vec.len_val, hcap, massert]
   rw [add_ok _ _ hsum]
-  change (do let i ← n - 1#usize; let j ← lift (UScalar.cast .U32 i); ok (j, {s with len := n})) = _
+  simp only [ite_true, bind_ok, lift]
+  change (do let i ← n - 1#usize; let j := UScalar.cast .U32 i; ok (j, {s with len := n})) = _
   rw [hsub]
   simp [hcast, lift]
 
@@ -37,18 +38,18 @@ theorem sum_slot_refines (reference : U32) (s : portable.msm.store.PointStore) (
     ∃ out, portable.msm.buckets.sum_slot reference s originals =
         ok ((slot originals.val s.len.val reference).1, out) ∧
       out.len.val = (slot originals.val s.len.val reference).2 ∧ out.points = s.points := by
-  simp only [portable.msm.buckets.sum_slot, negative_mask, bind_tc_ok, lift,
+  simp only [portable.msm.buckets.sum_slot, negative_mask, bind_tc_ok, bind_ok, lift,
     show (~~~2147483648#u32 : U32) = 2147483647#u32 from rfl,
     UScalar.lt_equiv, cast_Usize_val]
   change ∃ out, (if (clearSign reference).val < originals.val then s.allocate else ok (clearSign reference,s)) = _ ∧ _
   by_cases h : (clearSign reference).val < originals.val
   · obtain ⟨n, hn, ha⟩ := allocate_refines s (halloc h).1 (halloc h).2
     refine ⟨{s with len := n}, ?_, ?_, rfl⟩
-    · simp only [h, if_true, ha, slot]
+    · simp only [h, ite_true, ha, slot]
       congr 2
       apply UScalar.eq_of_val_eq
       exact (Nat.mod_eq_of_lt (halloc h).2).symm
-    · simpa only [slot, h, if_true] using hn
+    · simpa only [slot, h, ite_true] using hn
   · exact ⟨s, by simp [h, slot], by simp [slot,h], rfl⟩
 
 def zeroRow : Array portable.fp.Fp 2#usize := Array.repeat 2#usize portable.fp.Fp.ZERO
@@ -59,19 +60,19 @@ theorem reset_refines (s : portable.msm.store.PointStore) (capacity : Usize) :
       out.len = 0#usize := by
   by_cases h : s.points.val.length < capacity.val
   · have hc : core.array.CloneArray.clone portable.fp.Fp.Insts.CoreCloneClone zeroRow = ok zeroRow := by
-      obtain ⟨row, he, hr⟩ := WP.spec_imp_exists
+      obtain ⟨row, he, hr⟩ := spec_imp_exists
         (core.array.CloneArray.clone_spec portable.fp.Fp.Insts.CoreCloneClone zeroRow
           (by intro x hx; rfl))
       simpa only [←hr] using he
-    obtain ⟨v,hv,hval⟩ := WP.spec_imp_exists (alloc.vec.Vec.resize_spec
+    obtain ⟨v,hv,hval⟩ := spec_imp_exists (alloc.vec.Vec.resize_spec
       (core.clone.CloneArray 2#usize portable.fp.Fp.Insts.CoreCloneClone) s.points capacity zeroRow hc)
     refine ⟨{points := v, len := 0#usize}, ?_, ?_, rfl⟩
     · simp only [portable.msm.store.PointStore.reset, UScalar.lt_equiv, alloc.vec.Vec.len_val,
-        h, if_true]
+        h, ite_true]
       change (do let points ← alloc.vec.Vec.resize _ s.points capacity zeroRow
                  ok ({points, len := 0#usize} : portable.msm.store.PointStore)) = _
       rw [hv]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     · rw [hval]
       simp [List.resize, List.take_of_length_le (Nat.le_of_lt h)]
   · refine ⟨{s with len := 0#usize}, ?_, ?_, rfl⟩

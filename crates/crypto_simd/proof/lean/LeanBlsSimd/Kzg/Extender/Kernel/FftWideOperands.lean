@@ -20,7 +20,7 @@ theorem Valid.half_pos {s : WideStage} (h : s.Valid) : 0 < s.half.val := by
   exact Nat.two_pow_pos stage
 
 theorem add_eq (a b c : Usize) (hc : c.val = a.val + b.val) : a + b = ok c := by
-  obtain ⟨out, hout, hv⟩ := WP.spec_imp_exists
+  obtain ⟨out, hout, hv⟩ := spec_imp_exists
     (Usize.add_spec (x := a) (y := b) (by scalar_tac))
   have heq : out = c := UScalar.eq_of_val_eq (hv.trans hc.symm)
   simpa only [heq] using hout
@@ -59,7 +59,7 @@ private theorem table_address (s : WideStage) (h : s.Valid) (n : Usize) :
       mask + (n &&& mask) = ok wi ∧
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice fr8.Fr8)
         s.table.wide wi = ok (s.factor n.val) := by
-  obtain ⟨mask, hm, hmv, _⟩ := WP.spec_imp_exists
+  obtain ⟨mask, hm, hmv, _⟩ := spec_imp_exists
     (Usize.sub_spec (x := s.half) (y := 1#usize)
       (by simp only [UScalar.ofNatCore_val_eq]; exact h.half_pos))
   simp only [UScalar.ofNatCore_val_eq] at hmv
@@ -71,7 +71,7 @@ private theorem table_address (s : WideStage) (h : s.Valid) (n : Usize) :
     have := h.wide_length
     have := h.half_pos
     omega
-  obtain ⟨wi, hw, hwv⟩ := WP.spec_imp_exists
+  obtain ⟨wi, hw, hwv⟩ := spec_imp_exists
     (Usize.add_spec (x := mask) (y := n &&& mask)
       (by have := s.table.wide.property; omega))
   refine ⟨mask, wi, hm, hw, ?_⟩
@@ -145,7 +145,7 @@ theorem pair_refines (s : WideStage) (n : Nat) :
   have hmul (a b : fr8.Fr8) : fr8.Fr8.mul a b =
       ok (FrModel.Fr8.reduceValue (FrModel.Fr8.productValue a b)) := by
     rw [FrModel.Fr8.mul_eq_reduce_product, FrModel.Fr8.product_refines]
-    simp only [bind_tc_ok, FrModel.Fr8.reduce_refines]
+    simp only [bind_tc_ok, bind_ok, FrModel.Fr8.reduce_refines]
   cases hd : s.dit <;>
     simp [widePairRun, fr8.Fr8.add, FrModel.Fr8.add_raw_refines,
       FrModel.Fr8.sub_raw_refines, FrModel.Fr8.normalise_refines,

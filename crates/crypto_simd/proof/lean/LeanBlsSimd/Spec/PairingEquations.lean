@@ -12,7 +12,7 @@ theorem fp2_powNat_step (a : Fp2) (n : Nat) (hn : n ≠ 0) :
     Fp2.powNat a n =
       if n % 2 = 1 then a * Fp2.powNat (a * a) (n / 2)
       else Fp2.powNat (a * a) (n / 2) := by
-  rw [Fp2.powNat, if_neg hn]
+  rw [Fp2.powNat, ite_eq_right hn]
 
 theorem fp12_powNat_zero (a : Fp12) : Fp12.powNat a 0 = Fp12.one := by
   rw [Fp12.powNat]
@@ -22,7 +22,7 @@ theorem fp12_powNat_step (a : Fp12) (n : Nat) (hn : n ≠ 0) :
     Fp12.powNat a n =
       if n % 2 = 1 then a * Fp12.powNat (a * a) (n / 2)
       else Fp12.powNat (a * a) (n / 2) := by
-  rw [Fp12.powNat, if_neg hn]
+  rw [Fp12.powNat, ite_eq_right hn]
 
 theorem millerSteps_zero (s : Nat) (R P T : Embedded.Point) (f : Fp12) :
     millerSteps s R P 0 T f = f := rfl
@@ -39,9 +39,6 @@ theorem millerLoop_eq (s : Nat) (R P : Embedded.Point) :
 
 theorem millerLoop_zero (R P : Embedded.Point) :
     millerLoop 0 R P = Fp12.one := rfl
-
-theorem finalExponentiation_eq (f : Fp12) :
-    finalExponentiation f = Fp12.powNat f ((Fp.modulus ^ 12 - 1) / Fr.modulus) := rfl
 
 /-- Accumulate a single pair, preserving the specification's identity skip. -/
 def pairingFoldStep (acc : Fp12) (pair : G1 × G2) : Fp12 :=

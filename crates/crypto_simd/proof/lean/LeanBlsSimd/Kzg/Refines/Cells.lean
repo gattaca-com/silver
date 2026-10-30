@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg
 
 set_option maxHeartbeats 2000000
@@ -29,9 +31,9 @@ private theorem cell_mul_ok {ty : UScalarTy} (a b : UScalar ty)
 
 private def cellChunk (cell : Aeneas.Std.Array U8 2048#usize) (j : Nat) (hj : j < 64) :
     Aeneas.Std.Array U8 32#usize :=
-  ⟨cell.val.slice (32*j) (32*(j+1)), by
+  Array.make 32#usize (cell.val.slice (32*j) (32*(j+1))) (by
     simp [List.slice, cell.property]
-    omega⟩
+    omega)
 
 private theorem cellChunk_bytes (cell : Aeneas.Std.Array U8 2048#usize)
     (j : Nat) (hj : j < 64) :
@@ -39,7 +41,7 @@ private theorem cellChunk_bytes (cell : Aeneas.Std.Array U8 2048#usize)
   apply ByteArray.ext
   rw [ByteArray.data_extract]
   apply _root_.Array.toList_inj.mp
-  simp only [arrayBytes, bytes, cellChunk, List.toList_toArray, _root_.Array.toList_extract]
+  simp only [arrayBytes, bytes, cellChunk, Array.make, Array.from_val, List.toList_toArray, _root_.Array.toList_extract]
   simp [List.extract_eq_take_drop, List.slice, List.map_take, List.map_drop]
 
 private theorem decode_cell_body
@@ -72,24 +74,24 @@ private theorem decode_cell_body
     have hstopn : 32 * (j.val + 1) ≤ 2048 := by omega
     simp [core.array.Array.index, core.ops.index.IndexSlice, core.slice.index.Slice.index,
       core.slice.index.SliceIndexRangeUsizeSlice.index, start, stop,
-      hj', src, chunk, cellChunk, Array.to_slice, Nat.mul_comm, hstopn]
+      hj', src, chunk, cellChunk, Array.make, Array.from_val, Array.to_slice, Slice.from_val, Nat.mul_comm, hstopn]
   have hcopy : core.slice.Slice.copy_from_slice core.marker.CopyU8
       (Array.to_slice (Array.repeat 32#usize 0#u8)) src = ok src := by
     simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src,
-      Array.to_slice, chunk.property]
+      Array.to_slice, Slice.from_val, chunk.property]
   have hback : Array.from_slice (Array.repeat 32#usize 0#u8) src = chunk := by
-    apply Subtype.ext
-    simp [src, Array.to_slice, chunk.property]
+    ext1
+    simp [src, Array.to_slice, Slice.from_val, chunk.property]
   have hdecode := FrScalar.fr_from_bytes_refines chunk
   dsimp only [chunk] at hdecode
   rw [cellChunk_bytes] at hdecode
   unfold verify.CellBatchVerifier.decode_cell_loop.body
   simp only [FIELD_ELEMENTS_PER_CELL, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-    hj, if_true, lift, bind_tc_ok, Array.to_slice_mut, Function.uncurry_apply_pair,
+    hj, ite_true, lift, bind_tc_ok, bind_ok, Array.to_slice_mut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
     hstart, hadd, hstop, hindex, hcopy, hback]
   rw [hdecode]
   unfold cellVerdict
-  cases (bytesToBlsField ((arrayBytes cell).extract (32*j.val) (32*(j.val+1)))).toOption <;> rfl
+  cases (bytesToBlsField ((arrayBytes cell).extract (32*j.val) (32*(j.val+1)))).toOption <;> (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 private def cellAccepted (xs : List (Option Fr)) : List blst.blst_fr :=
   ((xs.takeWhile Option.isSome).filterMap id).map frEncode
@@ -134,7 +136,7 @@ private theorem decode_cell_loop_eq
     have hstop : ¬ j < FIELD_ELEMENTS_PER_CELL := by simp [FIELD_ELEMENTS_PER_CELL, he]
     refine ⟨self, j, ?_, ?_, ?_, rfl, rfl, rfl⟩
     · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
-      simp only [verify.CellBatchVerifier.decode_cell_loop.body, hstop, if_false]
+      simp only [verify.CellBatchVerifier.decode_cell_loop.body, hstop, ite_false, bind_ok]
     · simp [cellVerdicts, he, FIELD_ELEMENTS_PER_CELL, UScalar.eq_equiv]
     · simp [cellVerdicts, he, cellAccepted]
   | succ k ih =>
@@ -150,7 +152,7 @@ private theorem decode_cell_loop_eq
     | none =>
       refine ⟨self, j, ?_, ?_, ?_, rfl, rfl, rfl⟩
       · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
-        simp only [hbody, hv]
+        simp only [hbody, hv, bind_ok]
       · have hne : j ≠ FIELD_ELEMENTS_PER_CELL := by
           intro he
           have := congrArg UScalar.val he
@@ -161,7 +163,7 @@ private theorem decode_cell_loop_eq
     | some f =>
       have hpushBound : self.evaluations.val.length + 1 ≤ Usize.max := by omega
       let vs : alloc.vec.Vec blst.blst_fr :=
-        ⟨self.evaluations.val ++ [frEncode f], by simpa using hpushBound⟩
+        alloc.vec.Vec.from (self.evaluations.val ++ [frEncode f]) (by simpa using hpushBound)
       let self' := { self with evaluations := vs }
       have hpush : alloc.vec.Vec.push self.evaluations (frEncode f) = ok vs := by
         simp [alloc.vec.Vec.push, hpushBound, vs]
@@ -169,7 +171,7 @@ private theorem decode_cell_loop_eq
         (by simp [self', vs]; omega) (by omega)
       refine ⟨next, stop, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
-        simp only [hbody, hv, hpush, bind_tc_ok]
+        simp only [hbody, hv, hpush, bind_tc_ok, bind_ok]
         exact hloop
       · simpa [hdrop, hv] using hresult
       · simpa [self', vs, hdrop, hv, cellAccepted, List.append_assoc] using hval
@@ -186,7 +188,7 @@ private theorem decode_cell_eq
   refine ⟨next, ?_, by simpa using hval, hs, hc, hkernel⟩
   unfold verify.CellBatchVerifier.decode_cell
   rw [hloop]
-  simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
+  simpa only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
     List.drop_zero] using congrArg (fun b => ok (b, next)) hresult
 
 private theorem decode_cells_loop_eq
@@ -205,7 +207,7 @@ private theorem decode_cells_loop_eq
     have hstop : ¬ k < Slice.len cells := by simp [he]
     refine ⟨self, k, ?_, ?_, ?_, rfl, rfl, rfl⟩
     · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
-      simp only [verify.CellBatchVerifier.decode_cells_loop.body, hstop, if_false]
+      simp only [verify.CellBatchVerifier.decode_cells_loop.body, hstop, ite_false, bind_ok]
     · simp [he, decodedCellElements, UScalar.eq_equiv]
     · simp [he, decodedCellElements, cellAccepted]
   | succ n ih =>
@@ -234,9 +236,9 @@ private theorem decode_cells_loop_eq
     | false =>
       refine ⟨afterCell, k, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
-        simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, if_true,
-          hindex, bind_tc_ok, hdecode, Function.uncurry_apply_pair, hsuccess, Bool.false_eq_true,
-          if_false]
+        simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, ite_true,
+          hindex, bind_tc_ok, bind_ok, hdecode, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hsuccess, Bool.false_eq_true,
+          ite_false]
       · have hne : k ≠ Slice.len cells := by
           intro he
           have := congrArg UScalar.val he
@@ -249,8 +251,8 @@ private theorem decode_cells_loop_eq
         (by rw [hvals, List.length_append]; omega) (by omega)
       refine ⟨next, stop, ?_, ?_, ?_, hs'.trans hs, hc'.trans hc, hkernel'.trans hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
-        simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, if_true,
-          hindex, bind_tc_ok, hdecode, Function.uncurry_apply_pair, hsuccess, hadd]
+        simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, ite_true,
+          hindex, bind_tc_ok, bind_ok, hdecode, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hsuccess, hadd]
         exact hloop
       · simpa [hdrop, hsuccess] using hresult
       · simpa [hvals, hdrop, cellAccepted_append, hsuccess, List.append_assoc] using hval
@@ -287,11 +289,11 @@ theorem decode_cells_refinement
         (by simpa [initial, empty, alloc.vec.Vec.new] using hcapacity)
     refine ⟨next, ?_, ?_, hs, hc, by simpa [initial, hkernelCase] using hkernel⟩
     · unfold verify.CellBatchVerifier.decode_cells
-      simp only [hkernelCase, fr_zero_eq, bind_tc_ok, hclear]
+      simp only [hkernelCase, fr_zero_eq, bind_tc_ok, bind_ok, hclear]
       dsimp only [initial] at hloop
       simp only [hkernelCase] at hloop
       rw [hloop]
-      simpa only [bind_tc_ok, Function.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
+      simpa only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, UScalar.ofNatCore_val_eq,
         List.drop_zero] using congrArg (fun b => ok (b, next)) hresult
     · intro _
       simpa [initial, empty, alloc.vec.Vec.new, cellAccepted] using hval

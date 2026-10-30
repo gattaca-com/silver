@@ -30,7 +30,7 @@ example [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect] (inputs 
     (hcall : uncompress_in_g1 inputs out = ok result)
     (p : g1_point.G1Point) (hp : some p ∈ result.val) : Kzg.G1AffineValid p := by
   obtain ⟨actual, ha, _, hv⟩ := UncompressG1.uncompress_in_g1_eq_spec_list inputs out hlen
-  have heq : actual = result := Result.ok.inj (ha.symm.trans hcall)
+  have heq : actual = result := Result.ok_injective (ha.symm.trans hcall)
   subst result
   exact hv p hp
 
@@ -40,7 +40,7 @@ example [RuntimeFeatures] [BlsExternals] (hblst : UncompressG2.BlstMatchesSpec)
     (hcall : uncompress_in_g2 inputs out = ok result)
     (p : g2_point.G2Point) (hp : some p ∈ result.val) : Kzg.G2AffineValid p := by
   obtain ⟨actual, ha, _, hv⟩ := UncompressG2.uncompress_in_g2_eq_spec_list hblst inputs out hlen
-  have heq : actual = result := Result.ok.inj (ha.symm.trans hcall)
+  have heq : actual = result := Result.ok_injective (ha.symm.trans hcall)
   subst result
   exact hv p hp
 

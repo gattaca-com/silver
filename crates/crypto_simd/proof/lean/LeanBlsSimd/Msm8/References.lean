@@ -55,7 +55,7 @@ private theorem references_body_refines (refs : Slice U32) (g : Usize)
     rfl
   refine ⟨next, by simp [next, hj], ?_⟩
   simp only [msm8.pairs.references_loop.body, limbs.LANES, UScalar.lt_equiv,
-    UScalar.ofNatCore_val_eq, hl, ↓reduceIte, hbase, bind_tc_ok, hk, hidx, hneg,
+    UScalar.ofNatCore_val_eq, hl, ↓reduceIte, hbase, bind_tc_ok, bind_ok, hk, hidx, hneg,
     lift, update_eq (n := 8#usize) _ lane _ hl, hsign,
     shiftLeft_ok (ty := .U8) _ lane (by exact hl), hn]
   have hget : refs.val[g.val * 8 + j.val]! = refs.val[k.val] := by

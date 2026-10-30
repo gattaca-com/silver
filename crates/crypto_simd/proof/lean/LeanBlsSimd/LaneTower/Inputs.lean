@@ -18,7 +18,7 @@ theorem raw2_clear {k : P ℕ} {m : ℕ} {x : fp2x8.Fp2x8} {a : P F} (hx : Raw2 
   obtain ⟨z, hz, rz⟩ := raw2_zero
   obtain ⟨out, hout, rout⟩ := raw2_select 192#u8 hx rz.raw
   refine ⟨out, ?_, rout⟩
-  simp only [fp12.clear_free_lanes, hz, hout, bind_tc_ok]
+  simp only [fp12.clear_free_lanes, hz, hout, bind_tc_ok, bind_ok]
 
 def slices {α : Type} [Add α] (is : Array (Array I64 8#usize) 2#usize) (acc a b : P α) : P α :=
   add2 (add2 acc (shuffle2 is.val[0] a b)) (shuffle2 is.val[1] a b)
@@ -36,7 +36,7 @@ theorem raw2_slices {k ka kb : P ℕ} {m ma mb : ℕ}
   refine ⟨out, ?_, rout⟩
   simp only [fp12.add_slices, index_usize_eq is 0#usize (by decide),
     index_usize_eq is 1#usize (by decide), UScalar.ofNatCore_val_eq,
-    hs0, ho0, hs1, hout, bind_tc_ok]
+    hs0, ho0, hs1, hout, bind_tc_ok, bind_ok]
 
 def baseWord (h : Fin 2) : I64 := ![0#i64, 3#i64] h
 
@@ -74,7 +74,7 @@ theorem karatsuba_lanes {k m : ℕ} {x : fp2x8.Fp2x8} {a : P F}
         [fp12.Z, fp12.Z, fp12.Z, ![1#i64, 4#i64] h, ![2#i64, 5#i64] h,
           ![2#i64, 5#i64] h, fp12.Z, fp12.Z] (by rfl) = karaSecond h := by
       fin_cases h <;> simp [karaSecond, fp12.Z]
-    simp only [fp12.karatsuba_lanes, hz, h1, h2, hf, hs, hfirst, hsecond, hout, bind_tc_ok]
+    simp only [fp12.karatsuba_lanes, hz, h1, h2, hf, hs, hfirst, hsecond, hout, bind_tc_ok, bind_ok]
   · intro l
     dsimp [add2, shuffle2, shuffle]
     constructor <;> split_ifs <;> omega
@@ -86,7 +86,7 @@ theorem fp2_operands {k m : ℕ} {x : fp2x8.Fp2x8} {a : P F}
     ∃ out, fp12.fp2_operands x = ok out ∧ RowsRaw (2 * k) (2 * m) out (operands a) := by
   obtain ⟨s, hs, rs⟩ := raw_add hx.1 hx.2 (by omega)
   refine ⟨Array.make 3#usize [x.c0, x.c1, s] (by rfl), ?_, ?_⟩
-  · simp only [fp12.fp2_operands, hs, bind_tc_ok]
+  · simp only [fp12.fp2_operands, hs, bind_tc_ok, bind_ok]
   · intro j
     fin_cases j
     · intro l
@@ -123,19 +123,19 @@ theorem product_operands {k : ℕ} {x : fp2x8.Fp2x8} {a : P F}
   have hr : RowsRaw (8 * k) 8 rows (productInputs a) := by
     intro j
     fin_cases j
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl0 ⟨0, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl0 ⟨1, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl0 ⟨2, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl1 ⟨0, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl1 ⟨1, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl1 ⟨2, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl2 ⟨0, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl2 ⟨1, by decide⟩
-    · simpa [rows, ofArray, Array.make, productInputs, ← Nat.mul_assoc] using rl2 ⟨2, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl0 ⟨0, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl0 ⟨1, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl0 ⟨2, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl1 ⟨0, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl1 ⟨1, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl1 ⟨2, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl2 ⟨0, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl2 ⟨1, by decide⟩
+    · simpa [rows, ofArray, Array.make, Array.from_val, productInputs, ← Nat.mul_assoc] using rl2 ⟨2, by decide⟩
   obtain ⟨out, hout, rout⟩ := pack_nine hr (by omega) (by decide)
   refine ⟨out, ?_, rout⟩
   simp only [baseWord, Matrix.cons_val_zero, Matrix.cons_val_one] at hk0 hk1
-  simp only [fp12.product_operands, hk0, hk1, hk01, hl0, hl1, hl2, bind_tc_ok,
+  simp only [fp12.product_operands, hk0, hk1, hk01, hl0, hl1, hl2, bind_tc_ok, bind_ok,
     index_usize_eq l0 0#usize (by decide), index_usize_eq l0 1#usize (by decide),
     index_usize_eq l0 2#usize (by decide), index_usize_eq l1 0#usize (by decide),
     index_usize_eq l1 1#usize (by decide), index_usize_eq l1 2#usize (by decide),

@@ -43,24 +43,15 @@ noncomputable def decode (xi : R) (x : Coeffs R) := assemble (omega xi) (ca xi x
 
 theorem raw_a (xi : R) (x : Coeffs R) :
     ca xi (raw xi x) = 3 * (ca xi x) ^ 2 - 2 * star (ca xi x) := by
-  have h2 : (2 : Q xi) = ⟨2, 0⟩ := rfl
-  have h3 : (3 : Q xi) = ⟨3, 0⟩ := rfl
-  rw [h2, h3]
-  ext <;> simp [ca, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
+  ext <;> simp [QuadraticAlgebra.re_ofNat, QuadraticAlgebra.im_ofNat, ca, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
 
 theorem raw_b (xi : R) (x : Coeffs R) :
     cb xi (raw xi x) = 3 * omega xi * (cc xi x) ^ 2 + 2 * star (cb xi x) := by
-  have h2 : (2 : Q xi) = ⟨2, 0⟩ := rfl
-  have h3 : (3 : Q xi) = ⟨3, 0⟩ := rfl
-  rw [h2, h3]
-  ext <;> simp [cb, cc, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
+  ext <;> simp [QuadraticAlgebra.re_ofNat, QuadraticAlgebra.im_ofNat, cb, cc, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
 
 theorem raw_c (xi : R) (x : Coeffs R) :
     cc xi (raw xi x) = 3 * (cb xi x) ^ 2 - 2 * star (cc xi x) := by
-  have h2 : (2 : Q xi) = ⟨2, 0⟩ := rfl
-  have h3 : (3 : Q xi) = ⟨3, 0⟩ := rfl
-  rw [h2, h3]
-  ext <;> simp [cb, cc, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
+  ext <;> simp [QuadraticAlgebra.re_ofNat, QuadraticAlgebra.im_ofNat, cb, cc, raw, fp4Square, less, plus, pow_two, QuadraticAlgebra.star_mk] <;> ring
 
 theorem raw_decode (xi : R) (x : Coeffs R) :
     decode xi (raw xi x) = assemble (omega xi) (3 * (ca xi x) ^ 2 - 2 * star (ca xi x))

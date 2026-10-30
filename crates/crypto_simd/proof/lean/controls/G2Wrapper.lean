@@ -124,7 +124,6 @@ example [RuntimeFeatures] [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) (h : out.val.length ≠ inputs.val.length) :
     silver_crypto_simd.bls.uncompress_in_g2 inputs out ≠ ok out := by
   rw [uncompress_in_g2_length_mismatch inputs out h]
-  intro hbad
-  cases hbad
+  exact fail_not_ok
 
 end LeanBlsSimd.G2WrapperControls

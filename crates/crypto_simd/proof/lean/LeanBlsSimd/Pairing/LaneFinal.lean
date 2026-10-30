@@ -43,6 +43,6 @@ theorem final_verdict {x : fp2x8.Fp2x8} {a : Bls.Fp12} (hx : Rep x a) :
     (do let out ← fp12.Fp12.final_exponentiation x
         fp12.Fp12.is_one out) = ok (finalExponentiation a).isOne := by
   obtain ⟨out, hout, rout⟩ := final_cube_refines hx
-  simp only [hout, bind_tc_ok, is_one_refines rout, verdict]
+  simp only [hout, bind_tc_ok, bind_ok, is_one_refines rout, verdict]
 
 end LeanBlsSimd.Pairing.FinalExponent.Lanes

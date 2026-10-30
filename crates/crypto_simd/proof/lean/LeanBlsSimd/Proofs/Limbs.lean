@@ -91,7 +91,7 @@ def valFrom (t : Acc) (lo : ℕ) : ℕ :=
 
 theorem sum_ite_val_eq (n k : ℕ) (hk : k < n) (c : ℕ) :
     (∑ k' : Fin n, if k'.val = k then c else 0) = c := by
-  rw [Finset.sum_eq_single ⟨k, hk⟩ (fun b _ hb => if_neg fun h => hb (Fin.ext h)) (by simp)]
+  rw [Finset.sum_eq_single ⟨k, hk⟩ (fun b _ hb => ite_eq_right fun h => hb (Fin.ext h)) (by simp)]
   simp
 
 theorem valFrom_set (t : Acc) (lo k : ℕ) (hk : k < 2 * LIMBS + 1) (hlo : lo ≤ k) (v : UInt64)
@@ -119,7 +119,7 @@ theorem valFrom_eq (t : Acc) (lo : ℕ) (hlo : lo < 2 * LIMBS + 1) :
 
 theorem valFrom_top (t : Acc) : valFrom t (2 * LIMBS + 1) = 0 := by
   unfold valFrom
-  exact Finset.sum_eq_zero fun k _ => if_neg (by omega)
+  exact Finset.sum_eq_zero fun k _ => ite_eq_right (by omega)
 
 set_option exponentiation.threshold 1000 in
 theorem valFrom_LIMBS (t : Acc) :

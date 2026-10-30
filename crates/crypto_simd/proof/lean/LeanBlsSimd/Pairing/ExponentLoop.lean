@@ -58,11 +58,11 @@ theorem power_loop_refines {Raw : Type}
     (hx : rep x f) (hf : Good f) (hb : bit.val = n) :
     ∃ out, loop body (x, bit) = ok out ∧ rep out (powerLoop a f n) := by
   induction n generalizing x f bit with
-  | zero => exact ⟨x, by rw [loop.eq_1, hdone x bit hb], hx⟩
+  | zero => exact ⟨x, by rw [loop.eq_1, hdone x bit hb, bind_ok], hx⟩
   | succ n ih =>
     obtain ⟨out, bit', hbody, hb', hout⟩ := hstep ⟨n, by omega⟩ x f bit hx hf hb
     obtain ⟨last, hlast, rlast⟩ := ih (by omega) out (powerStep a f n) bit' hout
       (power_step_good ha hf n) hb'
-    exact ⟨last, by rw [loop.eq_1, hbody]; exact hlast, rlast⟩
+    exact ⟨last, by rw [loop.eq_1, hbody, bind_ok]; exact hlast, rlast⟩
 
 end LeanBlsSimd.Pairing.FinalExponent

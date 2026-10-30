@@ -1,4 +1,5 @@
 import LeanBlsSimd.Spec.PairingEquations
+import LeanBlsSimd.Spec.FinalExponentiation
 
 #print axioms LeanBlsSimd.SpecPairing.fp2_powNat_zero
 #print axioms LeanBlsSimd.SpecPairing.fp2_powNat_step

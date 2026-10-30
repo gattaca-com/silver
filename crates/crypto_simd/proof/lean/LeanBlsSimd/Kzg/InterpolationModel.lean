@@ -60,11 +60,11 @@ private theorem column_fold_get (evaluations powers columns : List Fr) (k c d j 
       have hjn : j = n := by omega
       subst d
       subst j
-      simp only [if_true]
+      simp only [ite_true]
       rw [ih (by omega)]
       simp
     · have hne : ¬(d = c ∧ j = n) := by omega
-      simp only [hsame, if_false]
+      simp only [hsame, ite_false]
       rw [← getElem!_pos _ _ (by simpa only [hlen'] using hjb), hold]
       by_cases hdc : d = c
       · simp only [hdc, true_and]
@@ -190,7 +190,7 @@ private theorem aggregate_projection_prefix
     unfold modelColumnStep
     simp only [Array.getElem!_toList]
     by_cases heq : indices[n]! = c
-    · simp only [heq, if_true]
+    · simp only [heq, ite_true]
       congr 1
       funext j
       rw [flat_evals_get evals.toList (by simpa using hi.2.2.2) n j.val
@@ -245,8 +245,8 @@ theorem fftField_zero (n : Nat) (roots : Array Fr) (inv : Bool) :
     fftField (Array.replicate n Fr.zero) roots inv = Array.replicate n Fr.zero := by
   rw [fftField_def]
   cases inv
-  · simp only [Bool.false_eq_true, if_false, fftFieldAux_zero]
-  · simp only [if_true, fftFieldAux_zero]
+  · simp only [Bool.false_eq_true, ite_false, fftFieldAux_zero]
+  · simp only [ite_true, fftFieldAux_zero]
     apply Array.ext
     · simp
     · intro j hj hj'
@@ -272,11 +272,11 @@ private theorem aggregate_unused_fold (evaluations powers : List Fr) (indices ks
       intro heq
       simp [heq, getElem!_pos, hu, hc] at hfalse
     rw [columnView_aggregateCell evaluations powers columns k indices[k]! c
-      hlen (hks k (by simp)) hc, if_neg (Ne.symm hne)]
+      hlen (hks k (by simp)) hc, ite_eq_right (Ne.symm hne)]
     apply hz
     simpa only [getElem!_pos (used.set indices[k]! true) c
       (by simpa only [List.length_set, hu] using hc),
-      List.getElem_set, hne, if_false,
+      List.getElem_set, hne, ite_false,
       getElem!_pos used c (by simpa only [hu] using hc)]
       using hfalse
 
@@ -332,13 +332,13 @@ theorem shiftAdd_eq (shift : Fr) (coeffs old : List Fr)
       addPolynomialcoeff old.toArray (shiftVals coeffs.toArray shift) := by
   have hs : (shiftVals coeffs.toArray shift).size = old.toArray.size := by simp [hlen]
   unfold addPolynomialcoeff
-  rw [if_pos (Nat.le_of_eq hs)]
+  rw [ite_eq_left (Nat.le_of_eq hs)]
   apply Array.ext
   · simp only [List.size_toArray, Array.size_ofFn, shiftAdd_length _ _ _ _ hlen]
   · intro j hj hj'
     have hjold : j < old.length := by simpa only [Array.size_ofFn, List.size_toArray] using hj'
     have hjcoef : j < coeffs.length := by omega
-    simp only [Array.getElem_ofFn, hs, List.size_toArray, hjold, if_true]
+    simp only [Array.getElem_ofFn, hs, List.size_toArray, hjold, ite_true]
     rw [← getElem!_pos (shiftAdd shift (Fr.ofNat 1) coeffs old).toArray j hj]
     simp only [shiftVals, Array.getElem!_eq_toList_getElem!]
     exact shiftAdd_get shift Fr.one coeffs old hlen j hjold
@@ -354,11 +354,11 @@ private theorem shiftVals_zero (n : Nat) (factor : Fr) :
 private theorem addPolynomialcoeff_zero (total : Array Fr) :
     addPolynomialcoeff total (Array.replicate total.size Fr.zero) = total := by
   unfold addPolynomialcoeff
-  simp only [Array.size_replicate, le_refl, if_true]
+  simp only [Array.size_replicate, le_refl, ite_true]
   apply Array.ext
   · simp
   · intro j hj hj'
-    simp only [Array.getElem_ofFn, hj', if_true,
+    simp only [Array.getElem_ofFn, hj', ite_true,
       getElem!_pos total j hj', show Fr.zero = (0 : Fr) from rfl, getElem!_zero, Fin.add_zero]
 
 private theorem bitReversal_zero (n : Nat) :
@@ -399,9 +399,9 @@ private theorem totalStep_eq_model (indices : Array Nat) (evals : Array (Array F
     rw [hzero, bitReversal_zero, fftField_zero, shiftVals_zero]
     have hts : total.toArray.size = 64 := by simpa only [List.size_toArray] using ht
     rw [← hts, addPolynomialcoeff_zero]
-    simp only [totalStep, hflag, Bool.false_eq_true, if_false]
+    simp only [totalStep, hflag, Bool.false_eq_true, ite_false]
   | true =>
-    simp only [totalStep, hflag, if_true]
+    simp only [totalStep, hflag, ite_true]
     rw [shiftAdd_eq _ _ _ (by simp only [Array.length_toList, size_fftField,
       List.size_toArray, reversedColumn_length, ht])]
     simp only [Array.toArray_toList, reversedColumn_eq]

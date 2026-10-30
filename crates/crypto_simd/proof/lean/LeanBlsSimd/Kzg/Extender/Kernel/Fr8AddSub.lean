@@ -24,7 +24,7 @@ theorem add_lazy_refinement {m m' : Nat} (a b : fr8.Fr8)
     rw [← (hne lane).1] at hv
     exact_mod_cast hv)
   refine ⟨out, ?_, ⟨hbnd, fun lane => ?_⟩, fun lane => ?_⟩
-  · simp only [fr8.Fr8.add, hr, hn, hout, bind_tc_ok]
+  · simp only [fr8.Fr8.add, hr, hn, hout, bind_tc_ok, bind_ok]
   · rw [(hval lane).2, (hne lane).2]
   · rw [(hval lane).1]
     push_cast
@@ -55,7 +55,7 @@ theorem sub_lazy_refinement {m m' : Nat} (a b : fr8.Fr8)
     rw [← (hne lane).1] at hv
     exact_mod_cast hv)
   refine ⟨out, ?_, ⟨hbnd, fun lane => ?_⟩, fun lane => ?_⟩
-  · simp only [fr8.Fr8.sub, ho, hr, hn, hout, bind_tc_ok]
+  · simp only [fr8.Fr8.sub, ho, hr, hn, hout, bind_tc_ok, bind_ok]
   · rw [(hval lane).2, (hne lane).2]
   · rw [(hval lane).1]
     push_cast

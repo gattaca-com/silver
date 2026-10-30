@@ -1,4 +1,5 @@
 import LeanBlsSimd.Extracted.Funs
+import LeanBlsSimd.Refines.Basic
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
@@ -22,14 +23,14 @@ theorem sum_frame [RuntimeFeatures]
     isLanes next = isLanes self := by
   cases self with
   | Lanes msm words =>
-    simp only [verify.CurveWork.sum, bind_success, Function.uncurry] at hcall
+    simp only [verify.CurveWork.sum, bind_success, Function.uncurry, aeneas_uncurry_def] at hcall
     obtain ⟨words', _, ⟨point', msm'⟩, _, he⟩ := hcall
-    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj he)
+    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok_injective he)
     rfl
   | Scalar msm words =>
-    simp only [verify.CurveWork.sum, bind_success, Function.uncurry] at hcall
+    simp only [verify.CurveWork.sum, bind_success, Function.uncurry, aeneas_uncurry_def] at hcall
     obtain ⟨words', _, words'', _, ⟨point', msm'⟩, _, he⟩ := hcall
-    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok.inj he)
+    obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok_injective he)
     rfl
 
 end LeanBlsSimd.Kzg.CurveWork

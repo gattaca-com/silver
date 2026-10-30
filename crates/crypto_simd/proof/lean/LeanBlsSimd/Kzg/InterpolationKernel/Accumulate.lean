@@ -39,7 +39,7 @@ private theorem accumulate_loop
     refine ⟨kernel, ?_, hk, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop1, loop.eq_1]
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop1.body,
-        UScalar.lt_equiv, Slice.len_val, Slice.length, he, lt_self_iff_false, if_false]
+        UScalar.lt_equiv, Slice.len_val, Slice.length, he, lt_self_iff_false, ite_false, bind_ok]
     · have hdrop : (List.range cells.val.length).drop cells.val.length = [] :=
         List.drop_eq_nil_of_le (by simp only [List.length_range, le_refl])
       simpa only [he, hdrop, List.foldl_nil] using hcolumns
@@ -80,14 +80,14 @@ private theorem accumulate_loop
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop1.body cells indices powers kernel k =
         ok (cont (next, k')) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop1.body,
-        UScalar.lt_equiv, Slice.len_val, Slice.length, hkt, if_true, hcellindex, hindex,
-        bind_tc_ok, lift, hpower, hcellcall, hinc, column]
+        UScalar.lt_equiv, Slice.len_val, Slice.length, hkt, ite_true, hcellindex, hindex,
+        bind_tc_ok, bind_ok, lift, hpower, hcellcall, hinc, column]
     obtain ⟨out, hout, ho, houtrep⟩ := ih next hn
       (Interpolation.aggregateCell (values.toList.flatMap _root_.Array.toList) weights k.val column.val columns)
       (used.set column.val true) hrep k' (by omega) (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop1, loop.eq_1]
-      simpa only [hbody] using hout
+      simpa only [hbody, bind_ok] using! hout
     · have hget : (indices.val.map (·.val))[k.val]! = column.val := by
         simp [getElem!_pos, hki, hcval, raw]
       rw [List.drop_eq_getElem_cons (by simp only [List.length_range]; exact hkt)]

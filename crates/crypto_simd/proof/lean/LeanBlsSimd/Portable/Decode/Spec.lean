@@ -6,6 +6,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Decode
 open DecompressG1
 set_option maxRecDepth 4096
@@ -21,7 +23,7 @@ theorem ordinary_eq (b : Encoding) : ordinary b =
 
 theorem ordinary_some {b : Encoding} (ho : Ordinary b) :
     ordinary b = some (words b,(decodeLane b).largerRoot) := by
-  rw [ordinary_eq,if_pos ho]
+  rw [ordinary_eq,ite_eq_left ho]
 
 private theorem undecided_zero {b : Encoding} {P : Bls.G1}
     (hu : (decodeLane b).undecided = true) (hd : Bls.G1.uncompress (G1Spec.toBytes b) = .ok P) :
@@ -32,7 +34,7 @@ private theorem undecided_zero {b : Encoding} {P : Bls.G1}
     split_ifs at hu <;> simp_all
   unfold Bls.G1.uncompress at hd
   generalize Bls.Fp.sqrt = sq at hd
-  rw [if_neg (by rw [size_toBytes]; decide)] at hd
+  rw [ite_eq_right (by rw [size_toBytes]; decide)] at hd
   dsimp only at hd
   rw [get!_toBytes_zero] at hd
   split at hd
@@ -57,8 +59,8 @@ private theorem zero_x_verdict {b : Encoding} (hu : (decodeLane b).undecided = f
     have he : laneX b = 0 := by simp only [laneX,hx,Nat.cast_zero]
     have hs : Bls.G1.inSubgroup (lanePoint b) = false := by
       simpa only [lanePoint,he] using G1.x_zero_not_in_subgroup (laneY b)
-        (by simpa only [lanePoint,he] using hp)
-    simp only [hs,Bool.false_eq_true,if_false]
+        (by simpa only [lanePoint,he] using! hp)
+    simp only [hs,Bool.false_eq_true,ite_false]
   · rfl
 
 theorem nonordinary_verdict {b : Encoding} (ho : ¬Ordinary b) :
@@ -66,8 +68,8 @@ theorem nonordinary_verdict {b : Encoding} (ho : ¬Ordinary b) :
       some (point (.replicate 6 0) (.replicate 6 0)) else none := by
   by_cases hb : b = G1Spec.infinity
   · subst b
-    rw [if_pos rfl,G1Spec.infinity_verdict]
-  rw [if_neg hb]
+    rw [ite_eq_left rfl,G1Spec.infinity_verdict]
+  rw [ite_eq_right hb]
   by_cases hv : (decodeLane b).invalid = true
   · exact invalid_verdict hv
   have hvf : (decodeLane b).invalid = false := Bool.eq_false_iff.mpr hv

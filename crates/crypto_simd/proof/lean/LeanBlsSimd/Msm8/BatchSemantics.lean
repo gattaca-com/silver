@@ -342,7 +342,7 @@ theorem runModel_success_rows (self : msm8.pairs.BatchedAdds) (store : msm8.stor
   have hstop : ¬prepared.2.2 < groups := by
     intro h
     simp only [runModel, show (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from h,
-      if_true, Bool.false_eq_true] at hsuccess
+      ite_true, Bool.false_eq_true] at hsuccess
   have hcomplete : prepared.2.2 = groups := by
     have hr := (prepareFrom_range store groups self (Vector.replicate 4 Fp8.one) 0).2
     change prepared.2.2 ≤ 0 + groups at hr
@@ -378,7 +378,7 @@ theorem runModel_success_rows (self : msm8.pairs.BatchedAdds) (store : msm8.stor
   have hout := executeFrom_rows_correct prepared.1 store values n prepared.2.1
     (Msm8.batchInverse prepared.2.1) hins hgeo hbounds hchain hinv
   simp only [runModel, show ¬(prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop,
-    if_false, show groups / 2 = n by omega]
+    ite_false, show groups / 2 = n by omega]
   intro g hlow hg lane
   have h := hout g hlow (by omega) lane
   simpa only [ho, sumValue, ha, hbrefs] using h
@@ -402,8 +402,8 @@ theorem runModel_rep_frame (self : msm8.pairs.BatchedAdds) (store : msm8.store.P
   have ho := (prepareFrom_references store groups self (Vector.replicate 4 Fp8.one) 0).2.2
   change prepared.1.out = self.out at ho
   by_cases hstop : prepared.2.2 < groups
-  · simpa only [runModel, show (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop, if_true] using hrep
-  · simp only [runModel, show ¬(prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop, if_false]
+  · simpa only [runModel, show (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop, ite_true] using hrep
+  · simp only [runModel, show ¬(prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop, ite_false]
     apply executeFrom_rep_frame prepared.1 store (groups / 2) _ p P hrep
     intro g hg lane
     rw [ho]
@@ -429,9 +429,9 @@ theorem runModel_metadata (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
     (runModel self store groups).2.1.out = self.out := by
   have href := prepareFrom_references store groups self (Vector.replicate 4 Fp8.one) 0
   by_cases h : (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups
-  · simp only [runModel, h, if_true]
+  · simp only [runModel, h, ite_true]
     exact ⟨trivial, trivial, href⟩
-  · simp only [runModel, h, if_false]
+  · simp only [runModel, h, ite_false]
     exact ⟨(executeFrom_metadata _ _ _ _).1, (executeFrom_metadata _ _ _ _).2, href⟩
 
 theorem run_rows_correct (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
@@ -540,7 +540,7 @@ theorem paddedAdds_job (self : msm8.pairs.BatchedAdds) (jobs : List Job)
     (paddedAdds self groups entries).b.val[g * 8 + lane]! = (paddedJob jobs hpos g lane).second ∧
     (paddedAdds self groups entries).out.val[g * 8 + lane]! = (paddedJob jobs hpos g lane).output := by
   have hindex : g * 8 + lane.val < entries.val := by have := lane.isLt; omega
-  simp only [paddedAdds, resizeVec, ha, hb, ho, List.length_map]
+  simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, ha, hb, ho, List.length_map]
   exact ⟨resize_map_get jobs Job.first _ _ hpos hindex,
     resize_map_get jobs Job.second _ _ hpos hindex,
     resize_map_get jobs Job.output _ _ hpos hindex⟩
@@ -635,15 +635,15 @@ theorem paddedAdds_bounds (self : msm8.pairs.BatchedAdds) (jobs : List Job)
       2 * pointIndex job.second + 1 < store.rows.val.length ∧ 2 * job.output.val + 1 < store.rows.val.length) :
     ExecutionBounds (paddedAdds self groups entries) store groups.val := by
   have haLen : groups.val * 8 ≤ (paddedAdds self groups entries).a.val.length := by
-    simp only [paddedAdds, resizeVec, List.resize_length, he, le_refl]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length, he, le_refl]
   have hbLen : groups.val * 8 ≤ (paddedAdds self groups entries).b.val.length := by
-    simp only [paddedAdds, resizeVec, List.resize_length, he, le_refl]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length, he, le_refl]
   have hoLen : groups.val * 8 ≤ (paddedAdds self groups entries).out.val.length := by
-    simp only [paddedAdds, resizeVec, List.resize_length, he, le_refl]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length, he, le_refl]
   have hdx : groups.val ≤ (paddedAdds self groups entries).dx.val.length := by
-    simp only [paddedAdds, resizeVec, List.resize_length, le_refl]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length, le_refl]
   have hprefix : groups.val ≤ (paddedAdds self groups entries).prefix.val.length := by
-    simp only [paddedAdds, resizeVec, List.resize_length, le_refl]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length, le_refl]
   refine ⟨⟨haLen, hbLen, hdx, hprefix, ?_, ?_⟩, hoLen, ?_⟩
   · intro g hg lane
     rw [(paddedAdds_indices self jobs groups entries hpos ha hb ho he hout g hg lane).1]
@@ -723,7 +723,7 @@ theorem run_jobs_correct (self : msm8.pairs.BatchedAdds) (jobs : List Job)
   · intro hs
     exact OutputsRep.jobs self jobs groups entries hpos ha hb ho hg he hout _ values (hrun.2.1 hs)
   · rw [hmeta.2.2.1]
-    simp only [paddedAdds, resizeVec, List.resize_length]
+    simp only [paddedAdds, resizeVec, alloc.vec.Vec.from_val, List.resize_length]
   · intro p P hrep hne
     apply hrun.2.2.2 p P hrep
     intro g hlg lane

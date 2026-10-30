@@ -36,7 +36,7 @@ theorem product_loop {n : Usize} {k k' : ℕ} {left right : Array fp8.Fp8 n}
       simp only [productBody, UScalar.lt_equiv, hi', Nat.lt_irrefl, ↓reduceIte]
     refine ⟨q, ?_, fun j => hq j (by omega)⟩
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
   | succ t ih =>
     have hlt : i.val < n.val := by omega
     let j : Fin n.val := ⟨i.val, hlt⟩
@@ -57,14 +57,14 @@ theorem product_loop {n : Usize} {k k' : ℕ} {left right : Array fp8.Fp8 n}
     have hb : productBody n left right q i = ok (cont (q', i')) := by
       simp only [getElem_ofArray, id_eq, j] at hz
       simp only [productBody, UScalar.lt_equiv, hlt, ↓reduceIte,
-        index_usize_eq left i hlt, index_usize_eq right i hlt, hz, bind_tc_ok,
+        index_usize_eq left i hlt, index_usize_eq right i hlt, hz, bind_tc_ok, bind_ok,
         update_eq q i z hlt]
       rw [add_ok _ _ (by scalar_tac)]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     obtain ⟨out, hout, rout⟩ := ih q' i' (by omega) hq' (by omega)
     refine ⟨out, ?_, rout⟩
     rw [loop.eq_1]
-    simpa only [hb] using hout
+    simpa only [hb, bind_ok] using hout
 
 theorem mul_loop_eq (left right q : Array fp8.Fp8 7#usize) (i : Usize) :
     fp12.Fp12.mul_loop left right q i = productLoop 7#usize left right q i := by

@@ -18,12 +18,12 @@ theorem compress_refines (state : Array U32 8#usize) (data : Slice U8) (offset :
       words out = Spec.compressBlock (words state) (Spec.bytes (data.val.map ofU8)) offset.val := by
   obtain ⟨w,hschedule,hw⟩ := schedule_refines data offset hdata
   rw [sha256.portable.compress,hschedule]
-  simp (disch := scalar_tac) only [index_word,bind_tc_ok]
+  simp (disch := scalar_tac) only [index_word,bind_tc_ok, bind_ok]
   have hr := rounds_refines w (Spec.stateWords (words state)) 0#usize (by decide)
   dsimp only [Spec.stateWords] at hr
   norm_num only [UScalar.ofNatCore_val_eq] at hr ⊢
   rw [hr]
-  simp only [bind_tc_ok,roundArgs,lift]
+  simp only [bind_tc_ok, bind_ok,roundArgs,lift]
   refine ⟨_,rfl,?_⟩
   rw [Spec.compressBlock_eq,← hw]
   unfold words Spec.feedForward
@@ -43,11 +43,11 @@ theorem compress_blocks_step (state : Array U32 8#usize) (data : Slice U8)
   obtain ⟨out,hout,hwords⟩ := compress_refines state data pos (by simp only [pos,UScalar.ofNatCore_val_eq]; omega)
   refine ⟨out,next,?_,hwords,rfl⟩
   have hb : block < blocks := hblock
-  simp only [sha256.portable.compress_blocks_loop.body,hb,if_true,sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq]
+  simp only [sha256.portable.compress_blocks_loop.body,hb,ite_true,sha256.BLOCK]
+  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
   change (do let s ← sha256.portable.compress state data pos; ok (cont (s,next))) = _
   rw [hout]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem compress_blocks_loop_refines (state : Array U32 8#usize) (data : Slice U8)
     (offset blocks block : Usize) (hblock : block.val ≤ blocks.val)
@@ -60,13 +60,13 @@ theorem compress_blocks_loop_refines (state : Array U32 8#usize) (data : Slice U
     have hstop : ¬ block < blocks := by change ¬ block.val < blocks.val; omega
     refine ⟨state,?_,rfl⟩
     rw [sha256.portable.compress_blocks_loop,loop.eq_1]
-    simp only [sha256.portable.compress_blocks_loop.body,hstop,if_false]
+    simp only [sha256.portable.compress_blocks_loop.body,hstop,ite_false, bind_ok]
   | succ n ih =>
     obtain ⟨out,next,hbody,hout,hnext⟩ := compress_blocks_step state data offset blocks block (by omega) hdata
     obtain ⟨final,hfinal,hmodel⟩ := ih out next (by omega) (by omega)
     refine ⟨final,?_,?_⟩
     · rw [sha256.portable.compress_blocks_loop,loop.eq_1]
-      simpa only [hbody] using hfinal
+      simpa only [hbody, bind_ok] using! hfinal
     · rw [hmodel,hout,hnext]
       unfold Spec.compressBlocks
       rw [List.range']

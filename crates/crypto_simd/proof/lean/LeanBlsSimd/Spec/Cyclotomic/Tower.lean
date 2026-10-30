@@ -73,7 +73,8 @@ theorem assemble_pow_qq (a b c : S) :
   rw [sq, pow_mul, assemble_pow_q, assemble_pow_q]
   have hd : star d = d := by
     change star (⟨delta, 0⟩ : S) = ⟨delta, 0⟩
-    simp [QuadraticAlgebra.star_mk]
+    rw [QuadraticAlgebra.star_mk]
+    simp
   simp only [star_mul, star_pow, star_star, hd]
   congr 1 <;> ring
 
@@ -134,7 +135,8 @@ theorem assemble_pow_p6 (a b c : S) :
   rw [hexp, pow_mul, assemble_pow_qq, assemble_pow_q]
   have hd : star d = d := by
     change star (⟨delta, 0⟩ : S) = ⟨delta, 0⟩
-    simp [QuadraticAlgebra.star_mk]
+    rw [QuadraticAlgebra.star_mk]
+    simp
   simp only [star_mul, star_pow, hd]
   congr 1
   · calc

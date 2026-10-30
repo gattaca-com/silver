@@ -6,6 +6,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.PairingProduct.Lanes
 
 set_option maxRecDepth 8000
@@ -17,7 +19,7 @@ private def coordinate (p : pairing_product.AffinePair) : Fin 6 → blst.blst_fp
   ![p.p.x, p.p.y, p.q.x.fp.val[0], p.q.x.fp.val[1], p.q.y.fp.val[0], p.q.y.fp.val[1]]
 
 private def encodeWords (w : Words) : Array (Array (Array U64 6#usize) 8#usize) 6#usize :=
-  ⟨[w 0, w 1, w 2, w 3, w 4, w 5], rfl⟩
+  Array.make 6#usize [w 0, w 1, w 2, w 3, w 4, w 5] (by rfl)
 
 private def writeWords (w : Words) (i : Usize) (p : pairing_product.AffinePair) : Words :=
   fun c => (w c).set i (coordinate p c).l
@@ -29,10 +31,19 @@ private theorem write_body (pairs : Slice pairing_product.AffinePair)
       ok (some r.start, r')) :
     lane_pairs.LanePairs.new_loop.body pairs r (encodeWords w) =
       ok (cont (r', encodeWords (writeWords w r.start pairs.val[r.start.val]))) := by
-  simp [lane_pairs.LanePairs.new_loop.body, hn, Slice.index_usize, hi,
-    encodeWords, coordinate, writeWords, Array.index_mut_usize,
-    Array.index_usize, Array.update, h8]
-  rfl
+  simp only [lane_pairs.LanePairs.new_loop.body, hn, bind_ok,
+    Aeneas.Std.uncurry_apply_pair, Slice.index_usize, Slice.getElem?_Usize_eq, List.getElem?_eq_getElem hi]
+  simp (disch := (simp -failIfUnchanged only [UScalar.ofNatCore_val_eq]; omega)) only
+    [encodeWords, Array.make, Array.from_val, Array.index_mut_usize,
+      index_usize_eq, update_eq, bind_ok, bind_tc_ok, bind_tc_eq, aeneas_uncurry_def, Aeneas.Std.uncurry_apply_pair,
+      Array.set_val_eq, List.set_cons_zero, List.set_cons_succ,
+      List.getElem_cons_zero, List.getElem_cons_succ, UScalar.ofNatCore_val_eq,
+      writeWords, coordinate]
+  refine congrArg
+    (fun data : Array (Array (Array U64 6#usize) 8#usize) 6#usize =>
+      ok (cont (r', data))) ?_
+  apply Aeneas.Std.Array.ext
+  simp [Array.set_val_eq, Array.from_val]
 
 private def Filled (pairs : Slice pairing_product.AffinePair) (n : Nat) (w : Words) : Prop :=
   ∀ (c : Fin 6) (l : Fin 8) (hl : l.val < n) (hp : l.val < pairs.val.length),
@@ -59,7 +70,7 @@ private theorem fill_loop (pairs : Slice pairing_product.AffinePair)
     refine ⟨w, ?_, hs ▸ hw⟩
     unfold lane_pairs.LanePairs.new_loop
     rw [loop.eq_1]
-    simp [lane_pairs.LanePairs.new_loop.body, next_ge r (by omega)]
+    simp [lane_pairs.LanePairs.new_loop.body, next_ge r (by omega), bind_ok]
   | succ d ih =>
     have hs : r.start.val < pairs.val.length := by omega
     obtain ⟨r', hr's, hr'e, hn⟩ := next_lt r (by omega)
@@ -69,14 +80,14 @@ private theorem fill_loop (pairs : Slice pairing_product.AffinePair)
     refine ⟨out, ?_, hf⟩
     unfold lane_pairs.LanePairs.new_loop at ho ⊢
     rw [loop.eq_1]
-    simp only [write_body pairs r r' w hs (by omega) hn]
+    simp only [write_body pairs r r' w hs (by omega) hn, bind_ok]
     exact ho
 
 private theorem packed_holds (values : Array (Array U64 6#usize) 8#usize)
     (l : Fin 8) (raw : blst.blst_fp) (he : values.val[l.val] = raw.l)
     (hr : Kzg.FpReduced raw) : (Kzg.packedFromBlst values).Holds l (Kzg.fpRead raw) := by
   apply Fp8.from_blst_holds (ofArray (m := 8) (ofArray (m := 6) ofU64) values) l
-  simpa only [Fin.getElem_fin, getElem_ofArray, he] using
+  simpa only [Fin.getElem_fin, getElem_ofArray, he] using!
     Kzg.fpRead_montgomery_value raw hr
 
 private theorem coordinate_reduced (p : pairing_product.AffinePair)

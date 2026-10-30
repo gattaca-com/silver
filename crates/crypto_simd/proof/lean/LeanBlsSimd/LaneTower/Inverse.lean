@@ -25,7 +25,7 @@ theorem inverse_schedule (x : fp2x8.Fp2x8) : fp12.Fp12.inverse x = inverseRun x 
   have h6 := Fp8.multiple_of_p_refines 6#u64 (by decide)
   simp only [fp12.Fp12.inverse, inverseRun, adjugateRun, determinantRun,
     inverseEmbedRun, determinantInverseRun, invLeft, invRight, invSub, invDet,
-    invComponents, invSwap, invEmbed, h6, bind_assoc, bind_tc_ok]
+    invComponents, invSwap, invEmbed, h6, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def]
 
 theorem inverse_raw_tower {x : fp2x8.Fp2x8} {a : P F} (hx : Strict2 256 x a) :
     ∃ out, fp12.Fp12.inverse x = ok out ∧
@@ -43,6 +43,6 @@ theorem inverse_raw_tower {x : fp2x8.Fp2x8} {a : P F} (hx : Strict2 256 x a) :
     rni.mono (by intro l; norm_num)
   obtain ⟨out, hout, rout⟩ := mul_raw rc.normal rni'
   refine ⟨out, ?_, rout⟩
-  simp only [inverse_schedule, inverseRun, hc, hn, ht, hd, hni, hout, bind_tc_ok]
+  simp only [inverse_schedule, inverseRun, hc, hn, ht, hd, hni, hout, bind_tc_ok, bind_ok]
 
 end LeanBlsSimd.LaneTower

@@ -20,6 +20,8 @@ ENTRY_POINTS = (
 )
 NAMESPACE = "namespace silver_crypto_simd\n"
 END_NAMESPACE = "end silver_crypto_simd"
+FUNS_EXTERNAL_IMPORT = "public import LeanBlsSimd.Extracted.FunsExternal\n"
+LITERALS_IMPORT = "public import LeanBlsSimd.Extracted.Literals\n"
 ARRAY_START = re.compile(r"Array\.make (\d+)#usize\s*\[")
 LEAF = re.compile(r"\d+#(u8|u64)\b")
 WHITESPACE = re.compile(r"\s*")
@@ -142,7 +144,7 @@ def hoist(source, name, leaf_tag, levels):
                     f"_{label}_{index}" for label, index in zip(levels, child_path)
                 )
                 body = visit(child, child_path)
-                definitions.append(f"private def {child_name} : {child.lean_type} :=\n  {body}\n")
+                definitions.append(f"def {child_name} : {child.lean_type} :=\n  {body}\n")
                 replacements.append((child.start, child.end, child_name))
             body = source[node.start:node.end]
             for left, right, replacement in reversed(replacements):
@@ -174,17 +176,20 @@ def prepare(source):
         raise ValueError(f"expected eight generated full identifiers, found {full_count}")
     source = adapt_lengths(source)
     header = source[:source.index(NAMESPACE)]
+    if len(re.findall("^" + re.escape(FUNS_EXTERNAL_IMPORT), header, re.M)) != 1:
+        raise ValueError("expected exactly one public import of FunsExternal")
     header = header.replace("-- [silver_crypto_simd]: function definitions",
                             "-- [silver_crypto_simd]: hoisted setup literals")
-    header = header.replace("import LeanBlsSimd.Extracted.FunsExternal\n", "")
+    header = header.replace(FUNS_EXTERNAL_IMPORT, "")
     blocks = []
     for name, (leaf_tag, levels) in LITERALS.items():
         source, block = hoist(source, name, leaf_tag, levels)
         blocks.append(block)
     literals = header + NAMESPACE + "\n" + "\n".join(blocks) + "\n" + END_NAMESPACE + "\n"
-    source = source.replace("import LeanBlsSimd.Extracted.FunsExternal\n",
-                            "import LeanBlsSimd.Extracted.FunsExternal\n"
-                            "import LeanBlsSimd.Extracted.Literals\n", 1)
+    source = source.replace(FUNS_EXTERNAL_IMPORT, FUNS_EXTERNAL_IMPORT + LITERALS_IMPORT, 1)
+    # Rust symbol names retain double underscores.
+    source = source.replace(NAMESPACE,
+                            "set_option linter.style.nameCheck false\n\n" + NAMESPACE, 1)
     # Portable and SIMD functions interleave in the extraction. Lean only binds
     # a section variable when the generated definition actually uses it.
     source = source.replace(NAMESPACE, NAMESPACE + "\nsection RuntimeScope\n\n"

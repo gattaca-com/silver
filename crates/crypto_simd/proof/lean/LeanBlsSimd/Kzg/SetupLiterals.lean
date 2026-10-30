@@ -11,7 +11,7 @@ set_option maxRecDepth 16000
 set_option maxHeartbeats 2000000
 
 local instance {α : Type} [DecidableEq α] (n : Usize) : DecidableEq (Array α n) := fun a b =>
-  decidable_of_iff (a.val = b.val) ⟨Subtype.ext,congrArg Subtype.val⟩
+  decidable_of_iff (a.val = b.val) (Array.eq_iff a b).symm
 
 local instance : DecidableEq blst.blst_fp := fun a b =>
   decidable_of_iff (a.l = b.l) (by cases a; cases b; simp)

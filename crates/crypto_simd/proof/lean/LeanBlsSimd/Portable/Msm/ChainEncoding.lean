@@ -49,12 +49,12 @@ theorem chainArray_update (values : ℕ → ChainField) (i : ℕ) (k : Usize) (h
 theorem encodeVector_four (v : Vector ChainField 4) :
     toArray (n := 4#usize) (fun x : ChainField => (Kzg.fpEncode x).l) v =
       Fp.encodeFour v[0] v[1] v[2] v[3] := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
-  · simp [toArray,Fp.encodeFour,Array.make]
+  · simp [toArray,Fp.encodeFour,Array.make, Array.from_val]
   · intro i hi hj
     have hb : i < 4 := by simpa [toArray] using hi
-    interval_cases i <;> simp [toArray,Fp.encodeFour,Array.make] <;> rfl
+    interval_cases i <;> simp [toArray,Fp.encodeFour,Array.make, Array.from_val] <;> rfl
 
 theorem batch_inverse_chains [RuntimeFeatures] (values : ℕ → ChainField) (n : ℕ)
     (hn : ∀ j < n, values j ≠ 0) :
@@ -84,9 +84,9 @@ theorem inverseVector_step (values : ℕ → ChainField) (i : ℕ)
   simp only [Vector.getElem_set,Vector.getElem_map,chainVector,Vector.getElem_ofFn]
   by_cases h : i%4 = k
   · subst k
-    simp only [if_pos rfl]
+    simp only [ite_eq_left rfl]
     exact advanced_inverse values i hn
-  · rw [if_neg h,chainValues_step_ne values i ⟨k,hk⟩ h]
+  · rw [ite_eq_right h,chainValues_step_ne values i ⟨k,hk⟩ h]
 
 theorem inverseArray_update (values : ℕ → ChainField) (i : ℕ) (k : Usize) (hk : k.val = i%4)
     (hn : ∀ j < i+1, values j ≠ 0) :

@@ -1,10 +1,16 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Decode
 import LeanBlsSimd.Kzg.Extender.Acceptance
+import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
+open private EthLib.Cryptography.Kzg.bytesBEToNatAux_eq_fromBytesBEAux
+  from EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
@@ -43,7 +49,7 @@ private theorem decode_loop (blob : Blob) (data : alloc.vec.Vec fr8.Fr8)
     refine ⟨data, valid, ?_, by simpa only [he] using hd, ?_⟩
     · rw [extension_kernel.ExtensionKernel.decode_loop, loop.eq_1]
       simp [extension_kernel.ExtensionKernel.decode_loop.body, alloc.vec.Vec.len,
-        UScalar.lt_equiv, hd.1, he]
+        UScalar.lt_equiv, hd.1, he, bind_ok]
     · simpa only [he, canonical_prefix_full] using hc
   | succ rem ih =>
     have hit : i.val < 512 := by omega
@@ -51,33 +57,33 @@ private theorem decode_loop (blob : Blob) (data : alloc.vec.Vec fr8.Fr8)
     let block : Usize := UScalar.ofNatCore (i.val * 8) (by scalar_tac)
     let atByte : Usize := UScalar.ofNatCore (i.val * 8 * 32) (by scalar_tac)
     have hblock : i * fr8.LANES = ok block := by
-      simpa only [fr8.LANES] using scalar_mul_ok i 8#usize (by scalar_tac)
+      simpa only [fr8.LANES] using! scalar_mul_ok i 8#usize (by scalar_tac)
     have hat : block * BYTES_PER_FIELD_ELEMENT = ok atByte := by
       simpa only [BYTES_PER_FIELD_ELEMENT, block, atByte, UScalar.ofNatCore_val_eq] using
         scalar_mul_ok block 32#usize (by scalar_tac)
     have hbytes : atByte.val + 256 ≤ (Array.to_slice blob).val.length := by
-      simp only [atByte, UScalar.ofNatCore_val_eq, Array.to_slice, blob.property]
+      simp only [atByte, UScalar.ofNatCore_val_eq, Array.to_slice, Slice.from_val, blob.property]
       omega
     obtain ⟨vector, mask, hfrom, hnormal, hraw, hmask⟩ :=
       from_bytes_refinement (Array.to_slice blob) atByte hbytes
     have hraw' (lane : Fin 8) : laneNat vector lane = rawField blob i.val lane := by
-      simpa only [rawField, atByte, UScalar.ofNatCore_val_eq, Array.to_slice, arrayBytes,
+      simpa only [rawField, atByte, UScalar.ofNatCore_val_eq, Array.to_slice, Slice.from_val, arrayBytes,
         Nat.mul_add, Nat.add_mul, Nat.mul_comm, Nat.mul_left_comm, Nat.mul_assoc,
-        Nat.add_assoc] using (hraw lane).1
+        Nat.add_assoc] using! (hraw lane).1
     have hmask' : mask = 255#u8 ↔ ∀ lane, rawField blob i.val lane < Fr.modulus := by
       simpa only [hraw'] using hmask
     let next := alloc.vec.Vec.set data i vector
     let nextValid : Bool := if mask != 255#u8 then false else valid
     have hprefix : RawPrefix next blob (i.val + 1) := by
-      refine ⟨by simpa [next, alloc.vec.Vec.set] using hd.1, ?_⟩
+      refine ⟨by simpa [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val] using hd.1, ?_⟩
       intro v hv
       by_cases he : v.val = i.val
       · have hve : v = ⟨i.val, hit⟩ := Fin.ext he
         subst v
-        simpa [next, alloc.vec.Vec.set, List.getElem!_set, hil] using ⟨hnormal, hraw'⟩
-      · simpa only [next, alloc.vec.Vec.set,
-          List.getElem!_set_ne data.val i.val v.val vector (by omega)]
-          using hd.2 v (by omega)
+        simpa [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val, List.set_getElem!_eq, hil] using ⟨hnormal, hraw'⟩
+      · simpa only [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val,
+          List.set_getElem!_ne data.val i.val v.val vector (by omega)]
+          using! hd.2 v (by omega)
     have hcanonical : nextValid = true ↔ CanonicalPrefix blob (i.val + 1) := by
       have hp : CanonicalPrefix blob (i.val + 1) ↔
           CanonicalPrefix blob i.val ∧ ∀ lane, rawField blob i.val lane < Fr.modulus := by
@@ -95,17 +101,17 @@ private theorem decode_loop (blob : Blob) (data : alloc.vec.Vec fr8.Fr8)
     have hadd : i + 1#usize = ok i' := scalar_add_ok i 1#usize (by scalar_tac)
     have hmut : alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice fr8.Fr8)
         data i = ok (data.val[i.val]!, alloc.vec.Vec.set data i) := by
-      simp [alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize,
+      simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize,
         List.getElem?_eq_getElem hil]
     obtain ⟨out, verdict, hout, ho, hv⟩ := ih next nextValid i' (by omega)
       (by simpa only [hi'] using hprefix) (by simpa only [hi'] using hcanonical) (by omega)
     refine ⟨out, verdict, ?_, ho, hv⟩
     have hlt : i < alloc.vec.Vec.len data := by
-      simpa only [UScalar.lt_equiv, alloc.vec.Vec.len, UScalar.ofNatCore_val_eq] using hil
+      simpa only [UScalar.lt_equiv, alloc.vec.Vec.len, UScalar.ofNatCore_val_eq] using! hil
     have hbody : extension_kernel.ExtensionKernel.decode_loop.body blob data valid i =
         ok (cont (next, nextValid, i')) := by
-      simp only [extension_kernel.ExtensionKernel.decode_loop.body, hlt, if_true,
-        lift, bind_tc_ok, hblock, hat, hfrom, hmut, hadd]
+      simp only [extension_kernel.ExtensionKernel.decode_loop.body, hlt, ite_true,
+        lift, bind_tc_ok, bind_ok, hblock, hat, hfrom, hmut, hadd]
       by_cases hm : mask = 255#u8
       · simp [hm, nextValid, next]
       · have hmv : mask.val ≠ 255 := by
@@ -114,7 +120,7 @@ private theorem decode_loop (blob : Blob) (data : alloc.vec.Vec fr8.Fr8)
           exact UScalar.eq_of_val_eq he
         simp [hm, hmv, nextValid, next]
     rw [extension_kernel.ExtensionKernel.decode_loop, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
     (hk : StateInvariant kernel) (blob : Blob) :
@@ -136,7 +142,7 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
     (fun v => (hd.2 v v.isLt).1), (fun v => (hd.2 v v.isLt).2), ?_⟩
   · have hlen : alloc.vec.Vec.len kernel.data = 512#usize := by
       apply UScalar.eq_of_val_eq
-      simpa only [alloc.vec.Vec.len, UScalar.ofNatCore_val_eq] using hk.2.2.2.1
+      simpa only [alloc.vec.Vec.len, UScalar.ofNatCore_val_eq] using! hk.2.2.2.1
     have hmul1 : 512#usize * 8#usize = ok 4096#usize := by
       rw [scalar_mul_ok 512#usize 8#usize (by scalar_tac)]
       rfl
@@ -145,7 +151,7 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
       rfl
     simp only [extension_kernel.ExtensionKernel.decode, hlen, fr8.LANES,
       BYTES_PER_FIELD_ELEMENT, BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB, hmul1, hmul2,
-      bind_tc_ok, massert, _root_.ite_true, hloop, next]
+      bind_tc_ok, bind_ok, massert, _root_.ite_true, hloop, next]
     rfl
   · intro hv
     have hcanonical := hc.mp hv
@@ -153,15 +159,17 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
     have hsize : values.size = 4096 := size_blobToPolynomial _ _ hvalues
     refine ⟨values, hvalues, ?_⟩
     change DataRep (alloc.vec.Vec.deref data) values
-    refine ⟨by simp only [hsize, alloc.vec.Vec.deref, hd.1], ?_⟩
+    simp only [DataRep, alloc.vec.Vec.deref, Slice.from_val]
+    refine ⟨by simp only [hsize, hd.1], ?_⟩
     intro v
     change Represents data.val[v.val] (fun lane => values[8 * v.val + lane.val]!)
-    have hvt : v.val < 512 := by simpa only [alloc.vec.Vec.deref, hd.1] using v.isLt
+    have hvt : v.val < 512 := by simpa only [alloc.vec.Vec.deref, Slice.from_val, hd.1] using v.isLt
+    have hvd : v.val < data.val.length := by rw [hd.1]; exact hvt
     have hraw := hd.2 ⟨v.val, hvt⟩ hvt
     have hrawEq (lane : Fin 8) : laneNat data.val[v.val] lane = rawField blob v.val lane := by
-      simpa only [getElem!_pos data.val v.val v.isLt] using hraw.2 lane
+      simpa only [getElem!_pos data.val v.val hvd] using hraw.2 lane
     refine ⟨⟨?_, ?_⟩, ?_⟩
-    · simpa only [getElem!_pos data.val v.val v.isLt] using hraw.1
+    · simpa only [getElem!_pos data.val v.val hvd] using hraw.1
     · intro lane
       have hi : 8 * v.val + lane.val < 4096 := by omega
       have hlt := hcanonical ⟨8 * v.val + lane.val, hi⟩
@@ -172,19 +180,9 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
     · intro lane
       have hi : 8 * v.val + lane.val < values.size := by omega
       have hfield := getElem_blobToPolynomial _ _ hvalues (8 * v.val + lane.val) hi
-      have hfr : Fr.fromBytesBE ((arrayBytes blob).extract
-          ((8 * v.val + lane.val) * 32) ((8 * v.val + lane.val + 1) * 32)) =
-          .ok values[8 * v.val + lane.val] := by
-        simp only [bytesToBlsField, Constants.BYTES_PER_FIELD_ELEMENT] at hfield
-        split at hfield
-        · cases hfield
-        · cases hh : Fr.fromBytesBE ((arrayBytes blob).extract
-              ((8 * v.val + lane.val) * 32) ((8 * v.val + lane.val + 1) * 32)) with
-          | error err => simp only [hh] at hfield; cases hfield
-          | ok f =>
-            simp only [hh, Except.ok.injEq] at hfield
-            simp only [hfield]
-      have hval := (Fr.fromBytesBE_ok hfr).2.1
+      have hval := (bytesToBlsField_ok hfield).2.1
+      simp only [bytesBEToNat, EthLib.Cryptography.Kzg.bytesBEToNatAux_eq_fromBytesBEAux,
+        EthLib.Cryptography.Kzg.Constants.BYTES_PER_FIELD_ELEMENT] at hval
       change laneValue data.val[v.val] lane = values[8 * v.val + lane.val]!
       simp only [laneValue, hrawEq, getElem!_pos values (8 * v.val + lane.val) hi]
       apply Fin.ext

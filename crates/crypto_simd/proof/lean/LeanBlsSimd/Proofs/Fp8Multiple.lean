@@ -58,7 +58,7 @@ theorem multiple_of_p_spec (c : UInt64) (hc : c.toNat < 4096) (l : Fin 8) :
     fin_cases j
     all_goals change (UInt64.ofNat _ &&& UInt64.ofNat MASK52).toNat < 2 ^ 52
     all_goals rw [multiple_digit]; exact Nat.mod_lt _ (by norm_num)
-  · rw [val, sum_fin_limbs]
+  · unfold LeanBlsSimd.val; rw [sum_fin_limbs]
     simp only [val_fin_LIMBS, LIMB_BITS, Nat.reduceMul, pow_zero, mul_one]
     change (UInt64.ofNat n0 &&& UInt64.ofNat MASK52).toNat +
       (UInt64.ofNat n1 &&& UInt64.ofNat MASK52).toNat * 2 ^ 52 +

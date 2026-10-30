@@ -79,7 +79,7 @@ theorem decompress_lane (inputs : Vector Encoding 8) (l : Fin 8) : LaneFacts inp
   · change ((List.finRange 8).foldl (fun (v : Vector BlstP1Affine 8) (i : Fin 8) => v.set i
       (point (xOf inputs).to_blst_limbs[i] (yOf inputs).to_blst_limbs[i]))
       (.replicate 8 default))[l] = _
-    rw [points_get, if_pos (List.mem_finRange l), blstLimbs_lanePoint]
+    rw [points_get, ite_eq_left (List.mem_finRange l), blstLimbs_lanePoint]
     unfold point
     rw [DecompressG2.blstFp_eq hx.val64_to_blst_limbs,
       DecompressG2.blstFp_eq hy.val64_to_blst_limbs]

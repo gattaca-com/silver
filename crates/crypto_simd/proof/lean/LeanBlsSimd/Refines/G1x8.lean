@@ -88,7 +88,7 @@ theorem add_refines (self q : g1x8.G1x8) :
 
 theorem is_lower_z_bit_refines (bit : U32) :
     constants.is_lower_z_bit bit = ok (is_lower_z_bit bit.val) := by
-  simp (disch := decide) only [constants.is_lower_z_bit, Z_BITS_index, bind_tc_ok,
+  simp (disch := decide) only [constants.is_lower_z_bit, Z_BITS_index, bind_tc_ok, bind_ok,
     UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
   simp [is_lower_z_bit, Z_BITS]
   split_ifs <;> simp_all
@@ -108,11 +108,11 @@ theorem times_z_affine_loop_refines (px py : fp8.Fp8) (m : G1x8 × Mmask8) (c : 
     obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
     obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add_affine (ofFp8 px) (ofFp8 py) = a := ⟨_, rfl⟩
     simp only [g1x8.G1x8.times_z_affine_loop.body]
-    rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [bind_tc_ok, double_refines, Function.uncurry_def, Prod.map_fst,
+    simp only [bind_tc_ok, bind_ok, double_refines, Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst,
       Prod.map_snd, ofG1x8_toG1x8, lift, is_lower_z_bit_refines, toU8_or, add_affine_refines]
     simp only [affineChainStep, hd, ha]
     cases is_lower_z_bit c'.val <;> simp
@@ -132,11 +132,11 @@ theorem times_z_loop_refines (q : g1x8.G1x8) (m : G1x8 × Mmask8) (c : U32) (n :
     obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
     obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add (ofG1x8 q) = a := ⟨_, rfl⟩
     simp only [g1x8.G1x8.times_z_loop.body]
-    rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [bind_tc_ok, double_refines, Function.uncurry_def, Prod.map_fst,
+    simp only [bind_tc_ok, bind_ok, double_refines, Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst,
       Prod.map_snd, ofG1x8_toG1x8, lift, is_lower_z_bit_refines, toU8_or, add_refines]
     simp only [chainStep, hd, ha]
     cases is_lower_z_bit c'.val <;> simp
@@ -145,26 +145,26 @@ theorem times_z_affine_refines (px py : fp8.Fp8) :
     g1x8.G1x8.times_z_affine px py =
       ok (Prod.map toG1x8 toU8 (times_z_affine (ofFp8 px) (ofFp8 py))) := by
   unfold g1x8.G1x8.times_z_affine
-  simp only [from_affine_refines, bind_tc_ok, Z_BITS_index 0#usize (by decide)]
+  simp only [from_affine_refines, bind_tc_ok, bind_ok, Z_BITS_index 0#usize (by decide)]
   exact times_z_affine_loop_refines px py (from_affine (ofFp8 px) (ofFp8 py), 0)
     _ Z_BITS[0]! (by simp)
 
 theorem times_z_refines (self : g1x8.G1x8) :
     g1x8.G1x8.times_z self = ok (Prod.map toG1x8 toU8 (ofG1x8 self).times_z) := by
   unfold g1x8.G1x8.times_z
-  simp only [bind_tc_ok, Z_BITS_index 0#usize (by decide)]
+  simp only [bind_tc_ok, bind_ok, Z_BITS_index 0#usize (by decide)]
   have h := times_z_loop_refines self (ofG1x8 self, 0)
     (UScalar.ofNatCore Z_BITS[(0#usize).val]! (by decide)) Z_BITS[0]! (by simp)
-  simpa only [toG1x8_ofG1x8] using h
+  simpa only [toG1x8_ofG1x8] using! h
 
 theorem scott_membership_refines (px py : fp8.Fp8) :
     g1x8.G1x8.scott_membership px py =
       ok (toMembership (scott_membership (ofFp8 px) (ofFp8 py))) := by
-  simp only [g1x8.G1x8.scott_membership, times_z_affine_refines, bind_tc_ok,
-    Function.uncurry_def, scott_membership]
+  simp only [g1x8.G1x8.scott_membership, times_z_affine_refines, bind_tc_ok, bind_ok,
+    Function.uncurry_def, aeneas_uncurry_def, scott_membership]
   generalize times_z_affine (ofFp8 px) (ofFp8 py) = T
   obtain ⟨zp, u1⟩ := T
-  simp only [Prod.map_fst, Prod.map_snd, times_z_refines, ofG1x8_toG1x8, bind_tc_ok]
+  simp only [Prod.map_fst, Prod.map_snd, times_z_refines, ofG1x8_toG1x8, bind_tc_ok, bind_ok]
   generalize zp.times_z = T
   obtain ⟨zzp, u2⟩ := T
   simp [Fp8.is_zero_mask_refines, lift, BETA_MONT_refines, Fp8.splat_limbs_refines,

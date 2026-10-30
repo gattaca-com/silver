@@ -59,6 +59,6 @@ theorem from_square_lanes {q : Array fp8.Fp8 5#usize} {a : Fin 5 → V F}
     index_usize_eq m 2#usize (by decide), index_usize_eq m 3#usize (by decide),
     index_usize_eq m 4#usize (by decide), index_usize_eq m 5#usize (by decide),
     UScalar.ofNatCore_val_eq, ht, hs, hu0, hu1, hu, htc, hxt, hxu, hz,
-    hpos0, hpos1, htp, hpos2, hpos3, hneg0, hneg1, htn, hneg2, hneg3, hraw, hout, bind_tc_ok]
+    hpos0, hpos1, htp, hpos2, hpos3, hneg0, hneg1, htn, hneg2, hneg3, hraw, hout, bind_tc_ok, bind_ok]
 
 end LeanBlsSimd.LaneTower

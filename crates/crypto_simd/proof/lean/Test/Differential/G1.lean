@@ -155,11 +155,11 @@ def compareBatch (t : Tally) (b : Batch) : IO Tally := do
   let model := DecompressG1.decompress inputs
   let mut t ← compareKernel t "model" b model.valid model.undecided
     (model.points.toArray.map wordsOfPoint)
-  match silver_crypto_simd.bls.decompress.decompress (toArray (toArray toU8) inputs) with
+  match (silver_crypto_simd.bls.decompress.decompress (toArray (toArray toU8) inputs)).match with
   | .ok got =>
     t ← compareKernel t "extraction" b (UInt8.ofBitVec got.valid.bv)
       (UInt8.ofBitVec got.undecided.bv) (got.points.val.toArray.map wordsOfExtracted)
-  | .fail e => t ← failed t s!"G1 extraction batch {b.index}" s!"fail {repr e}"
+  | .vis (.fail e) _ => t ← failed t s!"G1 extraction batch {b.index}" s!"fail {repr e}"
   | .div => t ← failed t s!"G1 extraction batch {b.index}" "div"
   for lane in List.range 8 do
     let spec := (G1Spec.verdict (encoding b.inputs[lane]!)).map wordsOfPoint
@@ -187,13 +187,13 @@ def compareWrapper (t : Tally) (batches : Array Batch) (w : Wrapper) (simd : Boo
     pairingCheck := fun _ _ _ _ => false }
   let extracted : List (Std.Array Std.U8 48#usize) := inputs.map (toArray toU8)
   if h : extracted.length ≤ Std.Usize.max then do
-    let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := ⟨extracted, h⟩
+    let inputSlice : Aeneas.Std.Slice (Std.Array Std.U8 48#usize) := Aeneas.Std.Slice.from extracted h
     let sentinel := toBlstP1Affine (modelPoint ((Array.replicate 6 0xfeed) ++ Array.replicate 6 0xbeef))
     let out : Aeneas.Std.Slice (Option silver_crypto_simd.blst.blst_p1_affine) :=
-      ⟨List.replicate extracted.length (some sentinel), by simpa using h⟩
-    match silver_crypto_simd.bls.uncompress_in_g1 inputSlice out with
+      Aeneas.Std.Slice.from (List.replicate extracted.length (some sentinel)) (by simpa using h)
+    match (silver_crypto_simd.bls.uncompress_in_g1 inputSlice out).match with
     | .ok got => check t s!"{context} extraction" want (got.val.toArray.map (Option.map wordsOfExtracted))
-    | .fail e => failed t s!"{context} extraction" s!"fail {repr e}"
+    | .vis (.fail e) _ => failed t s!"{context} extraction" s!"fail {repr e}"
     | .div => failed t s!"{context} extraction" "div"
   else do
     failed t context "input length exceeds usize"

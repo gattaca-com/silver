@@ -57,12 +57,12 @@ private theorem inner_prefix (xs : Array Fr) (value : Fr) (i : Nat)
       refine ⟨out, ?_, ?_, ?_⟩
       · rw [List.range_succ, List.foldlM_append, hcurrent]
         simp only [Bind.bind, Except.bind, List.foldlM_cons, innerStep, ne_eq, hni,
-          not_false_eq_true, if_true, hcall, List.foldlM_nil, Pure.pure, Except.pure]
+          not_false_eq_true, ite_true, hcall, List.foldlM_nil, Pure.pure, Except.pure]
       · change out.size = current.size + 2 - 1 at houtsize
         rw [houtsize, hsize]
         split <;> split <;> omega
       · rw [houtpoly, hpoly, factor_polynomial]
-        simp only [basisProduct, Finset.prod_range_succ, hni, if_false]
+        simp only [basisProduct, Finset.prod_range_succ, hni, ite_false]
         ring
 
 private theorem basisProduct_eq (xs : Array Fr) (i : Fin 64) :
@@ -81,7 +81,7 @@ private theorem basisProduct_eq (xs : Array Fr) (i : Fin 64) :
   have hji : j.val ≠ i.val := by
     intro he
     exact (Finset.mem_erase.mp hj).1 (Fin.ext he)
-  simp only [f, hji, if_false]
+  simp only [f, hji, ite_false]
 
 private def outerStep (xs ys : Array Fr) (acc : Array Fr) (i : Nat) :
     Except KzgError (Array Fr) := do
@@ -98,7 +98,7 @@ private theorem outer_prefix (xs ys : Array Fr) (n : Nat) (hn : n ≤ 64) :
   | succ n ih =>
     obtain ⟨current, hcurrent, hsize, hpoly⟩ := ih (by omega)
     obtain ⟨summand, hsummand, hssize, hspoly⟩ := inner_prefix xs ys[n]! n 64 (by omega)
-    have hssize' : summand.size = 64 := by simpa only [if_pos (by omega : n < 64)] using hssize
+    have hssize' : summand.size = 64 := by simpa only [ite_eq_left (by omega : n < 64)] using hssize
     refine ⟨addPolynomialcoeff current summand, ?_, ?_, ?_⟩
     · rw [List.range_succ, List.foldlM_append, hcurrent]
       simp only [Bind.bind, Except.bind, List.foldlM_cons, outerStep, hsummand,
@@ -119,9 +119,9 @@ theorem interpolatePolynomialcoeff_eq (xs ys : Array Fr)
   obtain ⟨out, hcall, hsize, hpoly⟩ := PolynomialInterpolation.outer_prefix xs ys 64 (by omega)
   refine ⟨out, ?_, by simpa using hsize, ?_⟩
   · simpa only [interpolatePolynomialcoeff, hxs, hys, ne_eq, not_true_eq_false,
-      if_false, Bind.bind, Except.bind, Pure.pure, Except.pure, ← Array.foldlM_toList,
+      ite_false, Bind.bind, Except.bind, Pure.pure, Except.pure, ← Array.foldlM_toList,
       Array.toList_range, PolynomialInterpolation.outerStep,
-      PolynomialInterpolation.innerStep] using hcall
+      PolynomialInterpolation.innerStep] using! hcall
   · rw [hpoly, Lagrange.interpolate_apply, Finset.sum_range]
     apply Finset.sum_congr rfl
     intro i _

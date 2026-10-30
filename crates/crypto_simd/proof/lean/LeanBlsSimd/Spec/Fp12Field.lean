@@ -36,8 +36,8 @@ def fromQuotient : AdjoinRoot polynomial →ₐ[Fp6Field] Fp12Field :=
 
 def toQuotient : Fp12Field →ₐ[Fp6Field] AdjoinRoot polynomial := by
   refine QuadraticAlgebra.lift ⟨AdjoinRoot.root polynomial, ?_⟩
-  simpa only [Algebra.smul_def, map_zero, zero_mul, mul_one, add_zero, pow_two] using
-    (root_X_pow_sub_C_pow 2 Fp6Field.v)
+  simp only [Algebra.smul_def, map_zero, zero_mul, mul_one, add_zero, ← pow_two]
+  exact root_X_pow_sub_C_pow 2 Fp6Field.v
 
 def quotientEquiv : AdjoinRoot polynomial ≃ₐ[Fp6Field] Fp12Field :=
   AlgEquiv.ofAlgHom fromQuotient toQuotient

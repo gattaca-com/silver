@@ -97,7 +97,8 @@ private theorem inv_mk (a b : ZMod Fp.modulus) :
 /-- Both sides send 0 to 0: the spec inverts the norm by a Fermat power, and 0 ^ (p − 2) = 0. -/
 theorem toField_inverse (x : Fp2) : toField x.inverse = (toField x)⁻¹ := by
   have h : ∀ n : ZMod Fp.modulus, Fp.inverse n = n⁻¹ := Fp.inverse_eq_inv
-  rw [show toField x = ⟨x.c0, x.c1⟩ from rfl, inv_mk, ← h]
+  refine Eq.trans ?_ (inv_mk x.c0 x.c1).symm
+  rw [← h]
   rfl
 
 theorem isZero_iff (x : Fp2) : x.isZero = true ↔ toField x = 0 := by
@@ -110,7 +111,8 @@ theorem beq_iff (x y : Fp2) : x.beq y = true ↔ toField x = toField y := by
 
 theorem toField_conjugate (x : Fp2) : toField x.conjugate = star (toField x) := by
   ext
-  · simp [Fp2.conjugate]
+  · simp only [Fp2.conjugate, re_toField, QuadraticAlgebra.re_star, im_toField]
+    exact (by simp : ∀ a b : ZMod Fp.modulus, a = a + 0 * b) x.c0 x.c1
   · rfl
 
 /-- The right side is the spec's own expression for the norm in `Fp2.inverse` and `Fp2.sqrt`, in

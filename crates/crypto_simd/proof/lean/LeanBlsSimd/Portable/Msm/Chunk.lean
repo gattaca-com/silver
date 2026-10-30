@@ -9,13 +9,26 @@ open LeanBlsSimd.Msm8
 
 private theorem bind_success {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
     (do let x ← r; f x) = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
-  cases r <;> simp
+  constructor
+  · intro h
+    exact bind_eq_ok (by simpa only [bind_tc_eq] using h)
+  · rintro ⟨x, rfl, h⟩
+    simpa only [bind_tc_ok, bind_ok] using h
+
+private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
+    Std.bind r f = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
+  simpa only [bind_tc_eq] using bind_success r f v
+
+private theorem uncurry_eq_fun {α β γ : Type} (f : α → β → γ) :
+    Aeneas.Std.uncurry f = fun p => f p.1 p.2 := by
+  funext ⟨a, b⟩
+  rfl
 
 private theorem split_points (self next : portable.msm.Msm)
     (h : self.split_scalars = ok next) : next.finite_points = self.finite_points := by
-  simp only [portable.msm.Msm.split_scalars, bind_success] at h
+  simp only [portable.msm.Msm.split_scalars, bind_success, bind_success_std] at h
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, h⟩ := h
-  cases h
+  cases Result.ok_injective h
   rfl
 
 private def generatedAfterFilter [RuntimeFeatures] (self : portable.msm.Msm) : Result (portable.g1.G1 × portable.msm.Msm) := do
@@ -59,7 +72,7 @@ private theorem chunk_sum_eq_afterFilter [RuntimeFeatures] (self : portable.msm.
     self.chunk_sum points scalars = (do
       let filtered ← Input.filterPrefix self points scalars
       generatedAfterFilter filtered) := by
-  simp only [portable.msm.Msm.chunk_sum,Input.filterPrefix,generatedAfterFilter,bind_assoc_eq,bind_tc_ok]
+  simp only [portable.msm.Msm.chunk_sum,Input.filterPrefix,generatedAfterFilter,bind_tc_eq, Aeneas.Std.bind_assoc, uncurry_eq_fun,bind_tc_ok, bind_ok]
 
 private theorem afterFilter_of_initialise [RuntimeFeatures] (self prepared : portable.msm.Msm)
     (hn : alloc.vec.Vec.len self.finite_points ≠ 0#usize)
@@ -68,16 +81,21 @@ private theorem afterFilter_of_initialise [RuntimeFeatures] (self prepared : por
     generatedAfterFilter self = (do
       let (next, out) ← finish prepared
       ok (out, next)) := by
-  simp only [initialise, bind_success] at hinit
+  simp only [initialise, bind_success, bind_success_std] at hinit
   obtain ⟨split, hsplit, buckets, hfill, store, hprep, he⟩ := hinit
-  cases he
+  cases Result.ok_injective he
   have hp := split_points self split hsplit
   have hmul : 2#usize * alloc.vec.Vec.len self.finite_points = ok store.len := by
     rw [mul_ok _ _ (by change 2 * self.finite_points.val.length < _; rw [← hlen]; exact store.len.hBounds)]
     congr 1
     apply UScalar.eq_of_val_eq
     exact hlen.symm
-  simp only [Store.prepareStore, hp] at hprep
+  have hsliceLen : Slice.len (alloc.vec.Vec.deref self.finite_points) =
+      alloc.vec.Vec.len self.finite_points := by
+    apply UScalar.eq_of_val_eq
+    simp only [Slice.len, alloc.vec.Vec.len, Usize.ofNatCore_val_eq,
+      alloc.vec.Vec.deref, Slice.from_val]
+  simp only [Store.prepareStore, hp, hsliceLen] at hprep
   change (do
     let count ← 2#usize * alloc.vec.Vec.len self.finite_points
     let extra ← buckets.windows * alloc.vec.Vec.len self.finite_points
@@ -88,14 +106,14 @@ private theorem afterFilter_of_initialise [RuntimeFeatures] (self prepared : por
     first.push_blst (alloc.vec.Vec.deref self.finite_points)
       (alloc.vec.Vec.deref split.second_signs) true) = ok store at hprep
   rw [hmul] at hprep
-  simp only [bind_tc_ok, bind_success] at hprep
+  simp only [bind_tc_ok, bind_ok, bind_success, bind_success_std] at hprep
   obtain ⟨extra, hextra, capacity, hcapacity, reset, hreset, first, hfirst, hsecond⟩ := hprep
-  simp only [generatedAfterFilter, hn, if_false, hsplit, bind_tc_ok,
+  simp only [generatedAfterFilter, hn, ite_false, hsplit, bind_tc_ok, bind_ok,
     glv.HALF_SCALAR_BITS, hfill, hmul, portable.msm.buckets.Buckets.impl.windows,
     hextra, hcapacity, hreset, hp, hfirst, hsecond]
-  simp only [finish, bind_assoc_eq]
-  apply (bind_eq_iff _ _ _).mpr
-  intro result _
+  simp only [finish, bind_tc_eq, Aeneas.Std.bind_assoc, uncurry_eq_fun]
+  apply congrArg (Std.bind _)
+  funext result
   rcases result with ⟨flag, next⟩
   cases flag <;> simp
 
@@ -114,13 +132,12 @@ theorem chunk_sum_eq_finiteCore [RuntimeFeatures]
     Input.filter_prefix_correct state points scalars halign hp hs (by unfold portable.msm.CHUNK at hchunk; change points.val.length ≤ 4096 at hchunk; omega)
   let filtered : portable.msm.Msm := {state with finite_points := ps, finite_scalars := ss}
   rw [chunk_sum_eq_afterFilter state points scalars]
-  simp only [finiteCore, hfilter, bind_tc_ok]
+  simp only [finiteCore, hfilter, bind_tc_ok, bind_ok]
   by_cases hz : ps.val.length = 0
   · have hn : alloc.vec.Vec.len ps = 0#usize := by
       apply UScalar.eq_of_val_eq
       exact hz
-    simp only [generatedAfterFilter, hn, if_true, bind_assoc_eq, bind_tc_ok]
-    rfl
+    simp only [generatedAfterFilter, hn, ite_true, bind_tc_eq, Aeneas.Std.bind_assoc, uncurry_eq_fun, bind_tc_ok, bind_ok]
   · have hn : alloc.vec.Vec.len ps ≠ 0#usize := by
       intro he
       exact hz (congrArg UScalar.val he)
@@ -147,12 +164,13 @@ theorem chunk_sum_eq_finiteCore [RuntimeFeatures]
           change Kzg.limbs ss.val[i]!.val < 2 ^ 255
           rw [getElem!_pos ss.val i hi]
           exact hscalars _ (List.getElem_mem hi))
-    simp only [hn, if_false, bind_assoc_eq]
+    simp only [hn, ite_false, bind_tc_eq, Aeneas.Std.bind_assoc, uncurry_eq_fun]
     change generatedAfterFilter filtered = (do
       let prepared ← initialise filtered
       let (next, out) ← finish prepared
       ok (out, next))
     rw [hinit]
+    simp only [bind_ok]
     apply afterFilter_of_initialise filtered prepared hn hinit
     have h := hinitialised.store_len
     simpa only [filtered, haligned] using h
@@ -168,6 +186,6 @@ theorem chunk_sum_refinement [RuntimeFeatures]
   obtain ⟨next, out, hcore, hrep⟩ := finiteCore_correct state points scalars halign hp hs255 hchunk
   refine ⟨next, out, ?_, hrep⟩
   rw [chunk_sum_eq_finiteCore state points scalars halign hp hs255 hchunk, hcore]
-  rfl
+  simp only [bind_tc_ok, bind_ok, Aeneas.Std.uncurry_apply_pair]
 
 end LeanBlsSimd.Portable.Msm

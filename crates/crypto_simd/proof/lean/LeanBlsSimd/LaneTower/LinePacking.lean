@@ -41,7 +41,7 @@ theorem line_operands {x y : fp2x8.Fp2x8} {a b : P F}
   refine ⟨Array.make 5#usize [r0, r1, r2, r3, r4] (by rfl), ?_, ?_⟩
   · simp only [getElem_ofArray, id_eq] at hr0 hr1 hr2 hp0 hp1
     dsimp only [linePack0, linePack1] at hp0 hp1
-    simp only [fp12.line_operands, hr, hs, bind_tc_ok,
+    simp only [fp12.line_operands, hr, hs, bind_tc_ok, bind_ok,
       index_usize_eq r 0#usize (by decide), index_usize_eq r 1#usize (by decide),
       index_usize_eq r 2#usize (by decide), index_usize_eq s 0#usize (by decide),
       index_usize_eq s 1#usize (by decide), index_usize_eq s 2#usize (by decide),

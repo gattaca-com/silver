@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
 set_option maxRecDepth 8000
@@ -26,7 +28,7 @@ private theorem factors_loop
     refine ⟨factors, ?_, by simpa only [he] using hf⟩
     rw [extension_kernel.ExtensionKernel.new_loop0_loop0, loop.eq_1]
     simp [extension_kernel.ExtensionKernel.new_loop0_loop0.body, fr8.LANES,
-      UScalar.lt_equiv, he]
+      UScalar.lt_equiv, he, bind_ok]
   | succ rem ih =>
     have hlt : lane.val < 8 := by omega
     let base : Usize := UScalar.ofNatCore (v.val * 8) (by scalar_tac)
@@ -53,7 +55,7 @@ private theorem factors_loop
     let next := Aeneas.Std.Array.set factors lane (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16))
     have hupdate : Array.update factors lane
         (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16)) = ok next := by
-      have hb : lane.val < factors.val.length := by simpa only [factors.property] using hlt
+      have hb : lane.val < factors.val.length := by simpa only [factors.property] using! hlt
       simp [Array.update, List.getElem?_eq_getElem hb, next, Aeneas.Std.Array.set]
     have hprefix : Factors next v.val lane'.val := by
       intro j hj
@@ -61,18 +63,18 @@ private theorem factors_loop
       · rw [he]
         simp [next, Aeneas.Std.Array.set, factors.property, hlt]
       · rw [show next.val = factors.val.set lane.val
-          (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16)) from rfl,
-          List.getElem!_set_ne _ _ _ _ (by omega)]
+          (frEncode (shiftFactor (8 * v.val + lane.val) * Fr.ofNat 16)) from Array.set_val_eq ..,
+          List.set_getElem!_ne _ _ _ _ (by omega)]
         exact hf j (by omega)
     obtain ⟨out, hout, ho⟩ := ih next lane' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho⟩
     have hbody : extension_kernel.ExtensionKernel.new_loop0_loop0.body shifts
         (frEncode (Fr.ofNat 4096).inverse) v factors lane = ok (cont (next, lane')) := by
       simp only [extension_kernel.ExtensionKernel.new_loop0_loop0.body, fr8.LANES,
-        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, if_true, hmul, hadd, hindex,
-        hproduct, hmultiplier, hupdate, hinc, bind_tc_ok]
+        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hmul, hadd, hindex,
+        hproduct, hmultiplier, hupdate, hinc, bind_tc_ok, bind_ok]
     rw [extension_kernel.ExtensionKernel.new_loop0_loop0, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 private def ConstructorPrefix (shift data : alloc.vec.Vec fr8.Fr8) (count : Nat) : Prop :=
   shift.val.length = count ∧ data.val.length = count ∧
@@ -108,13 +110,13 @@ private theorem constructor_loop
       factors 0#usize (by decide) (by intro lane h; exact (Nat.not_lt_zero _ h).elim)
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice factors') 0#usize (fun lane => shiftFactor (8 * v.val + lane.val))
-      (by simp [Array.to_slice, factors'.property])
-      (by intro lane; simpa only [Array.to_slice, UScalar.ofNatCore_val_eq, Nat.zero_add] using hf lane lane.isLt)
+      (by simp [Array.to_slice, Slice.from_val, factors'.property])
+      (by intro lane; simpa only [Array.to_slice, Slice.from_val, UScalar.ofNatCore_val_eq, Nat.zero_add] using! hf lane lane.isLt)
     obtain ⟨zero, hzero, hzeroRep⟩ := zero_refinement
     have hshiftBound : shift.val.length + 1 ≤ Usize.max := by rw [hp.1]; scalar_tac
     have hdataBound : data.val.length + 1 ≤ Usize.max := by rw [hp.2.1]; scalar_tac
-    let shift' : alloc.vec.Vec fr8.Fr8 := ⟨shift.val ++ [factor], by simpa using hshiftBound⟩
-    let data' : alloc.vec.Vec fr8.Fr8 := ⟨data.val ++ [zero], by simpa using hdataBound⟩
+    let shift' : alloc.vec.Vec fr8.Fr8 := alloc.vec.Vec.from (shift.val ++ [factor]) (by simpa using hshiftBound)
+    let data' : alloc.vec.Vec fr8.Fr8 := alloc.vec.Vec.from (data.val ++ [zero]) (by simpa using hdataBound)
     let v' : Usize := UScalar.ofNatCore (v.val + 1) (by scalar_tac)
     have hv' : v'.val = v.val + 1 := UScalar.ofNatCore_val_eq _
     have hpushShift : alloc.vec.Vec.push shift factor = ok shift' := by
@@ -123,6 +125,7 @@ private theorem constructor_loop
       simp [alloc.vec.Vec.push, hdataBound, data']
     have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
     have hprefix : ConstructorPrefix shift' data' v'.val := by
+      simp only [ConstructorPrefix, shift', data', alloc.vec.Vec.from_val]
       refine ⟨by simp [shift', hp.1, hv'], by simp [data', hp.2.1, hv'], ?_, ?_⟩
       · intro j
         by_cases hj : j.val < v.val
@@ -149,11 +152,11 @@ private theorem constructor_loop
     have hbody : extension_kernel.ExtensionKernel.new_loop0.body shifts
         (frEncode (Fr.ofNat 4096).inverse) 4096#usize shift data factors v =
         ok (cont (shift', data', factors', v')) := by
-      simp only [extension_kernel.ExtensionKernel.new_loop0.body, hdiv, bind_tc_ok,
-        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, if_true, hfactors, lift,
+      simp only [extension_kernel.ExtensionKernel.new_loop0.body, hdiv, bind_tc_ok, bind_ok,
+        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hfactors, lift,
         hload, hpushShift, hzero, hpushData, hinc]
     rw [extension_kernel.ExtensionKernel.new_loop0, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 private theorem sample_blob (roots : _root_.Array Fr) (hsize : roots.size = 4096) :
     sampleRoots roots 4096 = roots := by
@@ -202,20 +205,20 @@ theorem new_refinement
   refine ⟨initial, ?_, ⟨hiInv, hfInv, hp.1, hp.2.1, hp.2.2.1⟩, ?_⟩
   · have hlength : Slice.len shifts = 4096#usize := by
       apply UScalar.eq_of_val_eq
-      simpa only [Slice.len, UScalar.ofNatCore_val_eq] using hlen
+      simpa only [Slice.len, Usize.ofNatCore_val_eq] using! hlen
     dsimp only [empty, factors] at hconstruct
-    simp only [extension_kernel.ExtensionKernel.new, hlength, vector_count, bind_tc_ok,
+    simp only [extension_kernel.ExtensionKernel.new, hlength, vector_count, bind_tc_ok, bind_ok,
       fr_zero_eq,
       show Fr.ofNat 0 = 0 from rfl, hconstruct, hiNew, hfNew,
-      Function.uncurry_apply_pair, initial]
-  · refine ⟨by simp [initial, alloc.vec.Vec.deref, hp.2.1], ?_⟩
+      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, initial]
+  · refine ⟨by simp [initial, alloc.vec.Vec.deref, Slice.from_val, hp.2.1], ?_⟩
     intro v
-    have hv : v.val < 512 := by simpa only [initial, alloc.vec.Vec.deref, hp.2.1] using v.isLt
+    have hv : v.val < 512 := by simpa only [initial, alloc.vec.Vec.deref, Slice.from_val, hp.2.1] using! v.isLt
     have hi (lane : Fin 8) : 8 * v.val + lane.val < 4096 := by omega
     have hr := hp.2.2.2 ⟨v.val, hv⟩
-    rw [getElem!_pos data.val v.val v.isLt] at hr
+    rw [getElem!_pos data.val v.val (by rw [hp.2.1]; exact hv)] at hr
+    simp only [initial, alloc.vec.Vec.deref, Slice.from_val]
     refine ⟨hr.1, fun lane => ?_⟩
-    simp only [initial, alloc.vec.Vec.deref]
-    simpa only [_root_.Array.getElem!_replicate, hi, if_true] using hr.2 lane
+    simpa only [_root_.Array.getElem!_replicate, hi, ite_true] using hr.2 lane
 
 end LeanBlsSimd.Kzg.Extender.Kernel

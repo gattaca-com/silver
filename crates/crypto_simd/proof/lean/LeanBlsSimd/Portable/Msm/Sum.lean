@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Portable.Msm.Sums
 open QueueRefines BucketsRefines BatchedRefines
 
@@ -17,7 +19,7 @@ theorem double_loop [RuntimeFeatures] (bits cursor : Usize) (total : portable.g1
     refine ⟨total,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.sum_loop0_loop0,loop.eq_1]
       simp only [portable.msm.buckets.Buckets.sum_loop0_loop0.body,UScalar.lt_equiv,
-        show ¬cursor.val < bits.val by omega,if_false]
+        show ¬cursor.val < bits.val by omega,ite_false, bind_ok]
     · simpa only [pow_zero,one_nsmul] using hp
   | succ remaining ih =>
     have hlt : cursor.val < bits.val := by omega
@@ -27,9 +29,12 @@ theorem double_loop [RuntimeFeatures] (bits cursor : Usize) (total : portable.g1
     obtain ⟨doubled,hd,hdp⟩ := Group.double total P hp
     obtain ⟨out,hloop,hrep⟩ := ih next doubled (P+P) (by omega) hdp (by omega)
     refine ⟨out,?_,?_⟩
-    · rw [portable.msm.buckets.Buckets.sum_loop0_loop0,loop.eq_1]
-      simpa only [portable.msm.buckets.Buckets.sum_loop0_loop0.body,UScalar.lt_equiv,hlt,if_true,
-        hd,bind_tc_ok,add_ok cursor (1#usize) hnext] using hloop
+    · have hbody : portable.msm.buckets.Buckets.sum_loop0_loop0.body bits total cursor =
+          ok (cont (doubled, next)) := by
+        simp only [portable.msm.buckets.Buckets.sum_loop0_loop0.body, UScalar.lt_equiv,
+          hlt, ite_true, hd, bind_tc_ok, bind_ok, add_ok cursor (1#usize) hnext, next] <;> rfl
+      rw [portable.msm.buckets.Buckets.sum_loop0_loop0,loop.eq_1]
+      simpa only [hbody, bind_ok] using! hloop
     · simpa only [pow_succ,mul_nsmul,two_nsmul,nsmul_add] using hrep
 
 noncomputable def windowValue (width window : ℕ) (contents : BucketLists)
@@ -56,7 +61,7 @@ theorem sum_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     refine ⟨total,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.sum_loop0,loop.eq_1]
       simp only [portable.msm.buckets.Buckets.sum_loop0.body,UScalar.lt_equiv,hcount,
-        show (0#usize).val = 0 from rfl,Nat.lt_irrefl,if_false]
+        show (0#usize).val = 0 from rfl,Nat.lt_irrefl,ite_false, bind_ok]
     · simpa only [Nat.zero_mul,pow_zero,one_nsmul,Finset.sum_range_zero,add_zero] using hrep
   | succ w ih =>
     have hpos : 1 ≤ window.val := by omega
@@ -70,15 +75,15 @@ theorem sum_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     have hbody : portable.msm.buckets.Buckets.sum_loop0.body state.window_bits state.windows
         state.refs state.starts state.lens store window total = ok (cont (next,joined)) := by
       simp only [portable.msm.buckets.Buckets.sum_loop0.body,UScalar.lt_equiv,
-        show (0#usize).val < window.val by change 0 < window.val; omega,if_true,
-        sub_ok window (1#usize) hpos,bind_tc_ok,hd]
+        show (0#usize).val < window.val by change 0 < window.val; omega,ite_true,
+        sub_ok window (1#usize) hpos,bind_tc_ok, bind_ok,hd]
       change (do let g ← state.window_sum store next
                  let total ← doubled.add_complete g
                  ok (cont (next,total))) = _
-      simp only [hpart,hadd,bind_tc_ok]
+      simp only [hpart,hadd,bind_tc_ok, bind_ok]
     refine ⟨out,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.sum_loop0,loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [Finset.sum_range_succ,WindowSums.horner_step]
       simpa only [hn,windowValue] using hout
 
@@ -101,10 +106,11 @@ theorem sum_correct [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
   obtain ⟨out,hloop,hout⟩ := sum_loop state store base capacity contents values hpacked hlo hhi htotal hp top htop first _ hrep
   refine ⟨out,?_,?_⟩
   · rw [portable.msm.buckets.Buckets.sum,sub_ok state.windows (1#usize) hwin]
+    simp only [bind_ok]
     change (do let first ← state.window_sum store top
                portable.msm.buckets.Buckets.sum_loop0 state.window_bits state.windows
                  state.refs state.starts state.lens store top first) = _
-    simp only [hfirst,bind_tc_ok,hloop]
+    simp only [hfirst,bind_tc_ok, bind_ok,hloop]
   · have hw : state.windows.val = top.val+1 := by omega
     rw [hw,Finset.sum_range_succ,add_comm]
     exact hout

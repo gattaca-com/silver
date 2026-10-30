@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
 open FftMath
@@ -35,14 +37,14 @@ private theorem prefix_set {dit : Bool} (data : Slice fr8.Fr8) (values output : 
     (hvalue : BlockOutput dit value (fun lane => output[8*i.val+lane.val]!))
     (hp : BlockPrefix dit data values output n i.val) :
     BlockPrefix dit (data.set i value) values output n (i.val+1) := by
-  refine ⟨by simpa [Slice.set, Slice.setAtNat] using hp.1, ?_⟩
+  refine ⟨by simpa [Slice.set, Slice.setAtNat, Slice.from_val] using hp.1, ?_⟩
   intro j
   by_cases hj : j.val = i.val
   · have hib : i.val < data.val.length := by rw [hp.1]; exact hi
-    simpa [Slice.set, Slice.setAtNat, hj, hib] using hvalue
+    simpa [Slice.set, Slice.setAtNat, Slice.from_val, hj, hib] using hvalue
   · have hiff : (j.val < i.val+1) = (j.val < i.val) := propext (by omega)
-    simpa only [Slice.set, Slice.setAtNat,
-      List.getElem!_set_ne data.val i.val j.val value (by omega), hiff] using hp.2 j
+    simpa only [Slice.set, Slice.setAtNat, Slice.from_val,
+      List.set_getElem!_ne data.val i.val j.val value (by omega), hiff] using! hp.2 j
 
 private theorem set_block_loop_prefix (dit : Bool)
     (block : Array fr8.Fr8 8#usize) (values output : _root_.Array Fr) (n : Nat)
@@ -60,7 +62,7 @@ private theorem set_block_loop_prefix (dit : Bool)
     have hk8 : k.val = 8 := by omega
     refine ⟨data, ?_, by simpa [hk8] using hp⟩
     rw [fft8.set_block_loop, loop.eq_1]
-    simp [fft8.set_block_loop.body, fr8.LANES, UScalar.lt_equiv, hk8]
+    simp [fft8.set_block_loop.body, fr8.LANES, UScalar.lt_equiv, hk8, bind_ok]
   | succ remaining ih =>
     intro data k hk hp
     have hk8 : k.val < 8 := by omega
@@ -70,12 +72,12 @@ private theorem set_block_loop_prefix (dit : Bool)
     have hnext : next.val = k.val+1 := UScalar.ofNatCore_val_eq _
     have hadd : offset+k = ok i := scalar_add_ok offset k (by scalar_tac)
     have hinc : k+1#usize = ok next := by
-      simpa only [next] using scalar_add_ok k 1#usize (by scalar_tac)
+      simpa only [next] using! scalar_add_ok k 1#usize (by scalar_tac)
     have hindex : Array.index_usize block k = ok block.val[k.val]! := by
       simp [Array.index_usize, hk8, block.property]
     have hiData : i.val < data.val.length := by rw [hp.1, hi]; omega
     have hupdate : Slice.update data i block.val[k.val]! = ok (data.set i block.val[k.val]!) := by
-      simp [Slice.update, Slice.set, Slice.setAtNat, hiData]
+      simp [Slice.update, Slice.set, Slice.setAtNat, Slice.from_val, hiData]
     have hnew : BlockPrefix dit (data.set i block.val[k.val]!) values output n (offset.val+next.val) := by
       rw [hnext, show offset.val+(k.val+1) = i.val+1 by omega]
       apply prefix_set data values output n i (by omega) _
@@ -86,9 +88,9 @@ private theorem set_block_loop_prefix (dit : Bool)
     have hbody : fft8.set_block_loop.body offset block data k =
         ok (cont (data.set i block.val[k.val]!, next)) := by
       simp only [fft8.set_block_loop.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, hk8, if_true, hindex, hadd, hupdate, hinc, bind_tc_ok]
+        UScalar.ofNatCore_val_eq, hk8, ite_true, hindex, hadd, hupdate, hinc, bind_tc_ok, bind_ok]
     rw [fft8.set_block_loop, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 private theorem set_block_prefix (dit : Bool)
     (data : Slice fr8.Fr8) (block : Array fr8.Fr8 8#usize)
@@ -125,15 +127,15 @@ private theorem transpose_back (dit : Bool) (t : Array fr8.Fr8 8#usize)
   | false =>
     apply transpose_representation (Array.to_slice t) 0#usize
       (fun row lane => values[8*(offset+lane.val)+row.val]!)
-    · simp [Array.to_slice, t.property]
+    · simp [Array.to_slice, Slice.from_val, t.property]
     · intro row
-      simpa [Array.to_slice, getElem!_pos, row.isLt, t.property] using ht row
+      simpa [Array.to_slice, Slice.from_val, getElem!_pos, row.isLt, t.property] using! ht row
   | true =>
     apply lazy_transpose_representation 16 73 (Array.to_slice t) 0#usize
       (fun row lane => values[8*(offset+lane.val)+row.val]!)
-    · simp [Array.to_slice, t.property]
+    · simp [Array.to_slice, Slice.from_val, t.property]
     · intro row
-      simpa [Array.to_slice, getElem!_pos, row.isLt, t.property] using ht row
+      simpa [Array.to_slice, Slice.from_val, getElem!_pos, row.isLt, t.property] using! ht row
 
 theorem block_run_representation
     (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : Usize)
@@ -165,8 +167,8 @@ theorem block_run_representation
     norm_num at ht3
     obtain ⟨out, hout, ho⟩ := transpose_back false t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
-    simp only [blockRun, Bool.false_eq_true, if_false, htranspose, bind_tc_ok] at *
-    simp only [h1, h2, h3, hout, bind_tc_ok]
+    simp only [blockRun, Bool.false_eq_true, ite_false, htranspose, bind_tc_ok, bind_ok] at *
+    simp only [h1, h2, h3, hout, bind_tc_ok, bind_ok]
   · obtain ⟨t,htranspose,ht⟩ := transpose_representation data offset
       (fun row lane => values[8*(offset.val+row.val)+lane.val]!) hat hdata
     have htr : TransposedRep (ShortInput true 1) t values offset.val := fun row => (ht row).lazy
@@ -186,8 +188,8 @@ theorem block_run_representation
     norm_num at ht3
     obtain ⟨out, hout, ho⟩ := transpose_back true t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
-    simp only [blockRun, if_true, htranspose, bind_tc_ok] at *
-    simp only [h1, h2, h3, hout, bind_tc_ok]
+    simp only [blockRun, ite_true, htranspose, bind_tc_ok, bind_ok] at *
+    simp only [h1, h2, h3, hout, bind_tc_ok, bind_ok]
 
 def blockBody (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : Usize) :
     Result (ControlFlow (Slice fr8.Fr8 × Usize) (Slice fr8.Fr8)) :=
@@ -233,7 +235,7 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
     have hrows : ∀ row : Fin 8, BlockInput dit data.val[offset.val+row.val]!
         (fun lane => values[8*(offset.val+row.val)+lane.val]!) := by
       intro row
-      simpa only [show ¬offset.val+row.val<offset.val by omega, if_false] using
+      simpa only [show ¬offset.val+row.val<offset.val by omega, ite_false] using
         hp.2 ⟨offset.val+row.val, by omega⟩
     obtain ⟨block, hrun, hb⟩ := block_run_representation dit table data offset values roots
       htable hsize hunit (by rw [hp.1]; exact hat) (by omega) hrows
@@ -244,8 +246,8 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
     rw [loop.eq_1]
     dsimp only
     rw [block_body_run dit table data offset next (by omega) hnext]
-    simp only [hrun, hstore, bind_tc_ok]
-    exact hout
+    simp only [hrun, hstore, bind_tc_ok, bind_ok]
+    simpa only [bind_ok] using! hout
 
 theorem blocks_refinement (dit : Bool) (table : fft8.Fft8)
     (data : Slice fr8.Fr8) (values roots : _root_.Array Fr)
@@ -268,17 +270,17 @@ theorem blocks_refinement (dit : Bool) (table : fft8.Fft8)
   have hp : BlockPrefix dit data values (shortStages dit values roots) data.val.length 0 := by
     refine ⟨rfl, ?_⟩
     intro v
-    simpa only [getElem!_pos data.val v.val v.isLt, Nat.not_lt_zero, if_false] using hdata.2 v
+    simpa only [getElem!_pos data.val v.val v.isLt, Nat.not_lt_zero, ite_false] using hdata.2 v
   obtain ⟨out, hout, ho⟩ := block_loops dit table values roots htable hsize hunit
     data.val.length hdata.1 (by omega) hvectors (2^(k-6)) data 0#usize
     (by simpa using hlen) hp
   refine ⟨out, ?_, ?_, ?_⟩
-  · cases dit <;> simpa only [blockBody, Bool.false_eq_true, Bool.true_eq, if_true, if_false,
+  · cases dit <;> simpa only [blockBody, Bool.false_eq_true, Bool.true_eq, ite_true, ite_false,
       fft8.Fft8.dit_loop0, fft8.Fft8.dif_loop1] using hout
   · rw [size_shortStages, ho.1]
     exact hdata.1
   · intro v
     have hv : v.val < data.val.length := by simpa only [ho.1] using v.isLt
-    simpa only [getElem!_pos out.val v.val v.isLt, hv, if_true] using ho.2 ⟨v.val,hv⟩
+    simpa only [getElem!_pos out.val v.val v.isLt, hv, ite_true] using ho.2 ⟨v.val,hv⟩
 
 end LeanBlsSimd.Kzg.Extender.Kernel

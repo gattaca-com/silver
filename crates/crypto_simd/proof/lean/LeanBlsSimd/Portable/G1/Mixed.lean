@@ -37,7 +37,7 @@ theorem mixed_new_refines [RuntimeFeatures] (p : portable.g1.G1) (qx qy : portab
   obtain ⟨r,er,hr⟩ := f.sub hs hp.y
   obtain ⟨rr,err,hrr⟩ := f.double hr
   refine ⟨⟨zz,h,rr⟩,?_,⟨hzz,hh,hrr⟩⟩
-  simp only [portable.g1.MixedTerms.new,ezz,eu,eh,eyz,es,er,err,bind_tc_ok]
+  simp only [portable.g1.MixedTerms.new,ezz,eu,eh,eyz,es,er,err,bind_tc_ok, bind_ok]
 
 def mixedSum (t : MixedValues) (P : Bls.G1) : Bls.G1 :=
   let hh := t.h*t.h
@@ -73,7 +73,7 @@ theorem mixed_sum_refines [RuntimeFeatures] (p : portable.g1.G1) (raw : portable
   obtain ⟨z,ez,hz⟩ := f.sub hz0 hhh
   refine ⟨⟨x,y,z⟩,?_,⟨hx,hy,hz⟩⟩
   simp only [portable.g1.MixedTerms.sum,ehh,eh2,ei,ej,ev,err,ex0,ev2,ex,evx,ervx,
-    eyj,ey2,ey,ezh,ezh2,ez0,ez,bind_tc_ok]
+    eyj,ey2,ey,ezh,ezh2,ez0,ez,bind_tc_ok, bind_ok]
 
 private theorem fp_mul_one (x : Bls.Fp) : x*Bls.Fp.one = x :=
   (show ∀ x : ZMod Bls.Fp.modulus, x*1=x from mul_one) x
@@ -118,7 +118,7 @@ theorem mixed_add_eq (P : Bls.G1) (x y : Bls.Fp) :
   have hs := mixed_sum_eq P x y
   rw [terms_affine] at hs
   simp only [mixedAddValues,Kzg.PortableG1.addValues,terms_affine,
-    show Bls.Fp.one.isZero = false from rfl,Bool.false_eq_true,if_false]
+    show Bls.Fp.one.isZero = false from rfl,Bool.false_eq_true,ite_false]
   split_ifs <;> first | rfl | exact hs
 
 theorem add_affine_complete_coords [RuntimeFeatures] (p : portable.g1.G1) (qx qy : portable.fp.Fp)
@@ -133,7 +133,7 @@ theorem add_affine_complete_coords [RuntimeFeatures] (p : portable.g1.G1) (qx qy
   · rename_i hpz
     refine ⟨⟨qx,qy,portable.constants.ONE⟩,?_,⟨hx,hy,Kzg.portableFpRep_one⟩⟩
     simp only [portable.g1.G1.add_affine_complete,portable.g1.G1.is_infinity,hz,
-      hpz,bind_tc_ok,if_true,portable.g1.G1.from_affine]
+      hpz,bind_tc_ok, bind_ok,ite_true,portable.g1.G1.from_affine]
   · rename_i hpz
     obtain ⟨t,ht,htr⟩ := mixed_new_refines p qx qy P x y hp hx hy
     have hh := Fp.portable_fp_correct.is_zero htr.h
@@ -146,16 +146,16 @@ theorem add_affine_complete_coords [RuntimeFeatures] (p : portable.g1.G1) (qx qy
         obtain ⟨out,he,hc⟩ := Kzg.PortableG1.doubleValues_refines hp
         refine ⟨out,?_,hc⟩
         simp only [portable.g1.G1.add_affine_complete,portable.g1.G1.is_infinity,hz,
-          hpz,bind_tc_ok,Bool.false_eq_true,if_false,ht,hh,hr,hzero,rzero,if_true,he]
+          hpz,bind_tc_ok, bind_ok,Bool.false_eq_true,ite_false,ht,hh,hr,hzero,rzero,ite_true,he]
       · rename_i rzero
         refine ⟨portable.g1.G1.INFINITY,?_,Kzg.PortableG1.infinity_coords⟩
         simp only [portable.g1.G1.add_affine_complete,portable.g1.G1.is_infinity,hz,
-          hpz,bind_tc_ok,Bool.false_eq_true,if_false,ht,hh,hr,hzero,rzero,if_true]
+          hpz,bind_tc_ok, bind_ok,Bool.false_eq_true,ite_false,ht,hh,hr,hzero,rzero,ite_true]
     · rename_i hzero
       obtain ⟨out,he,hc⟩ := mixed_sum_refines p t P (mixedValues P x y) hp htr
       refine ⟨out,?_,hc⟩
       simp only [portable.g1.G1.add_affine_complete,portable.g1.G1.is_infinity,hz,
-        hpz,bind_tc_ok,Bool.false_eq_true,if_false,ht,hh,hzero,he]
+        hpz,bind_tc_ok, bind_ok,Bool.false_eq_true,ite_false,ht,hh,hzero,he]
 
 theorem add_affine_complete_encoded [RuntimeFeatures] (P : Bls.G1) (x y : Bls.Fp) :
     portable.g1.G1.add_affine_complete (encode P) (Kzg.fpEncode x).l (Kzg.fpEncode y).l =

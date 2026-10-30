@@ -45,7 +45,7 @@ private theorem check_cell_loop_refinement
     have he : v.val = 8 := by omega
     refine ⟨v, ?_, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.check_cell_loop, loop.eq_1]
-      simp [interpolation_kernel.InterpolationKernel.check_cell_loop.body, vectors_per_cell_eq, he]
+      simp [interpolation_kernel.InterpolationKernel.check_cell_loop.body, vectors_per_cell_eq, he, bind_ok]
     · simp [UScalar.eq_equiv, he]
       omega
   | succ n ih =>
@@ -55,7 +55,7 @@ private theorem check_cell_loop_refinement
       exact tryMk_ok _ _
     obtain ⟨out, mask, hfrom, _, hlanes, hmask⟩ :=
       Extender.Kernel.from_bytes_refinement (Array.to_slice cell) offset
-        (by simp [offset, Array.to_slice, cell.property]; omega)
+        (by simp [offset, Array.to_slice, Slice.from_val, cell.property]; omega)
     have hmask' : mask = 255#u8 ↔
         ∀ j, 8*v.val ≤ j → j < 8*(v.val+1) → canonical cell j := by
       rw [hmask]
@@ -65,14 +65,14 @@ private theorem check_cell_loop_refinement
         have hl : j - 8*v.val < 8 := by omega
         have he : j = 8*v.val + (j - 8*v.val) := by omega
         have hh := h ⟨j - 8*v.val, hl⟩
-        simpa [canonical, offset, Array.to_slice, arrayBytes,
+        simpa [canonical, offset, Array.to_slice, Slice.from_val, arrayBytes,
           show v.val*256 + 32*(j-8*v.val) = 32*j by omega,
           show v.val*256 + 32*(j-8*v.val+1) = 32*(j+1) by omega] using hh
       · intro h lane
         have hh := h (8*v.val + lane.val) (by omega) (by omega)
-        simpa only [canonical, offset, Array.to_slice, arrayBytes, UScalar.ofNatCore_val_eq,
+        simpa only [canonical, offset, Array.to_slice, Slice.from_val, arrayBytes, UScalar.ofNatCore_val_eq,
           show 32*(8*v.val+lane.val) = v.val*256+32*lane.val by omega,
-          show 32*(8*v.val+lane.val+1) = v.val*256+32*(lane.val+1) by omega] using hh
+          show 32*(8*v.val+lane.val+1) = v.val*256+32*(lane.val+1) by omega] using! hh
     let v' : Usize := UScalar.ofNatCore (v.val + 1) (by scalar_tac)
     have hv' : v'.val = v.val + 1 := rfl
     have hbody : interpolation_kernel.InterpolationKernel.check_cell_loop.body cell v =
@@ -83,7 +83,7 @@ private theorem check_cell_loop_refinement
     · obtain ⟨stop, hstop, hs⟩ := ih v' (by omega) (by omega)
       refine ⟨stop, ?_, ?_⟩
       · rw [interpolation_kernel.InterpolationKernel.check_cell_loop, loop.eq_1]
-        simpa [hbody, hm] using hstop
+        simpa [hbody, hm] using! hstop
       · rw [hs]
         have hc := hmask'.mp hm
         constructor
@@ -95,7 +95,7 @@ private theorem check_cell_loop_refinement
           exact h j (by omega) hj'
     · refine ⟨v, ?_, ?_⟩
       · rw [interpolation_kernel.InterpolationKernel.check_cell_loop, loop.eq_1]
-        simp [hbody, hm]
+        simp [hbody, hm, bind_ok]
       · have hvne : v ≠ 8#usize := by simpa [UScalar.eq_equiv] using (show v.val ≠ 8 by omega)
         simp only [hvne, false_iff]
         intro h
@@ -109,7 +109,7 @@ theorem check_cell_refinement (kernel : interpolation_kernel.InterpolationKernel
     interpolation_kernel.InterpolationKernel.check_cell kernel cell =
       ok ((decodedCellElements [cell]).all Option.isSome) := by
   obtain ⟨stop, hstop, hs⟩ := check_cell_loop_refinement cell 0#usize (by decide)
-  simp only [interpolation_kernel.InterpolationKernel.check_cell, hstop, bind_tc_ok, vectors_per_cell_eq]
+  simp only [interpolation_kernel.InterpolationKernel.check_cell, hstop, bind_tc_ok, bind_ok, vectors_per_cell_eq]
   congr 1
   apply Bool.eq_iff_iff.mpr
   simp only [decide_eq_true_eq, hs, UScalar.ofNatCore_val_eq, Nat.mul_zero, Nat.zero_le,
@@ -133,7 +133,7 @@ private theorem check_loop_refinement (kernel : interpolation_kernel.Interpolati
     have he : k.val = cells.val.length := by omega
     refine ⟨k, ?_, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.check_loop, loop.eq_1]
-      simp [interpolation_kernel.InterpolationKernel.check_loop.body, he]
+      simp [interpolation_kernel.InterpolationKernel.check_loop.body, he, bind_ok]
     · simp [he, decodedCellElements, UScalar.eq_equiv]
   | succ n ih =>
     have hlt : k.val < cells.val.length := by omega
@@ -156,13 +156,13 @@ private theorem check_loop_refinement (kernel : interpolation_kernel.Interpolati
       rfl
     have hbody : interpolation_kernel.InterpolationKernel.check_loop.body kernel cells k =
         if (decodedCellElements [cell]).all Option.isSome then ok (cont k') else ok (done k) := by
-      simp only [interpolation_kernel.InterpolationKernel.check_loop.body, htest, if_true,
-        hindex, bind_tc_ok, check_cell_refinement, add_ok k hkBound, k']
+      simp only [interpolation_kernel.InterpolationKernel.check_loop.body, htest, ite_true,
+        hindex, bind_tc_ok, bind_ok, check_cell_refinement, add_ok k hkBound, k']
     cases hsuccess : (decodedCellElements [cell]).all Option.isSome with
     | false =>
       refine ⟨k, ?_, ?_⟩
       · rw [interpolation_kernel.InterpolationKernel.check_loop, loop.eq_1]
-        simp only [hbody, hsuccess, Bool.false_eq_true, if_false]
+        simp only [hbody, hsuccess, Bool.false_eq_true, ite_false, bind_ok]
       · have hne : k ≠ Slice.len cells := by
           simpa [UScalar.eq_equiv] using (show k.val ≠ cells.val.length by omega)
         simp [hdrop, hsuccess, hne]
@@ -170,7 +170,7 @@ private theorem check_loop_refinement (kernel : interpolation_kernel.Interpolati
       obtain ⟨stop, hstop, hs⟩ := ih k' (by omega) (by omega)
       refine ⟨stop, ?_, ?_⟩
       · rw [interpolation_kernel.InterpolationKernel.check_loop, loop.eq_1]
-        simp only [hbody, hsuccess, if_true]
+        simp only [hbody, hsuccess, ite_true, bind_ok]
         exact hstop
       · simpa [hdrop, hsuccess] using hs
 

@@ -4,8 +4,7 @@ import LeanBlsSimd.Kzg.Extender.SpecMath
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
@@ -72,18 +71,18 @@ theorem reverseBits_high_split (k b j : Nat) (hb : b < 2) (hj : j < 2^k) :
   conv_rhs => rw [Nat.testBit_two_pow_mul_add _ (show b < 2^1 from hb)]
   by_cases hi : i = 0
   · subst i
-    simp only [Nat.zero_lt_succ, if_true, Nat.add_sub_cancel, Nat.sub_zero,
+    simp only [Nat.zero_lt_succ, ite_true, Nat.add_sub_cancel, Nat.sub_zero,
       show 0 < 1 by decide]
     rw [Nat.testBit_two_pow_mul_add _ hj]
     simp
   · by_cases hik : i < k+1
-    · rw [if_pos hik, if_neg (by omega : ¬i < 1),
-        Nat.testBit_two_pow_mul_add _ hj, if_pos (by omega : k+1-1-i < k),
-        testBit_reverseBits, if_pos (by omega : i-1 < k)]
+    · rw [ite_eq_left hik, ite_eq_right (by omega : ¬i < 1),
+        Nat.testBit_two_pow_mul_add _ hj, ite_eq_left (by omega : k+1-1-i < k),
+        testBit_reverseBits, ite_eq_left (by omega : i-1 < k)]
       congr 1
       omega
-    · rw [if_neg hik, if_neg (by omega : ¬i < 1), testBit_reverseBits,
-        if_neg (by omega : ¬i-1 < k)]
+    · rw [ite_eq_right hik, ite_eq_right (by omega : ¬i < 1), testBit_reverseBits,
+        ite_eq_right (by omega : ¬i-1 < k)]
 
 theorem reverseBits_low_split (k b j : Nat) (hb : b < 2) (hj : j < 2^k) :
     reverseBits (2*j+b) (2^(k+1)) = b*2^k+reverseBits j (2^k) := by
@@ -95,7 +94,6 @@ theorem reverseBits_low_split (k b j : Nat) (hb : b < 2) (hj : j < 2^k) :
     rw [pow_succ]
     nlinarith
   have hh := congrArg (fun i => reverseBits i (2^(k+1))) h
-  dsimp only at hh
   rw [reverseBits_reverseBits hx] at hh
   simpa [Nat.mul_comm b] using hh.symm
 
@@ -202,7 +200,7 @@ theorem dit_eq_recursive (k : Nat) (values roots : Array Fr)
   induction k generalizing values roots with
   | zero =>
     simp only [iterativeDit, List.range_zero, List.foldl_nil]
-    rw [fftFieldAux, if_pos (by simpa using (le_of_eq hv : values.size ≤ 1))]
+    rw [fftFieldAux, ite_eq_left (by simpa using (le_of_eq hv : values.size ≤ 1))]
     apply Array.ext
     · simp
     · intro i hi hi'
@@ -248,13 +246,13 @@ theorem dit_eq_recursive (k : Nat) (values roots : Array Fr)
         getElem_fftFieldAux_step _ _ (by rw [size_bitReversalPermutation,hv']; omega) i
           (by simpa using hi')]
       simp only [hvsize,hv',size_bitReversalPermutation,hi0,him,Nat.zero_mul,Nat.zero_add,
-        show (2*(2^k))/2 = 2^k by omega, Nat.div_self (by omega : 0 < 2*(2^k)), Nat.mul_one, if_true]
+        show (2*(2^k))/2 = 2^k by omega, Nat.div_self (by omega : 0 < 2*(2^k)), Nat.mul_one, ite_true]
       rw [hleft _ hq, hright _ hq]
       by_cases hit : i < 2^k
-      · simp only [hit,if_true,Nat.mod_eq_of_lt hit]
+      · simp only [hit,ite_true,Nat.mod_eq_of_lt hit]
       · have hmod : i%2^k = i-2^k := by
           rw [Nat.mod_eq_sub_mod (by omega : 2^k ≤ i), Nat.mod_eq_of_lt (by omega)]
-        simp only [hit,if_false,hmod]
+        simp only [hit,ite_false,hmod]
 
 theorem dif_stage_block_get (values roots : Array Fr) (n b i : Nat)
     (hv : values.size = 2*n) (hp : 0 < n) (hb : b < 2) (hi : i < n) :
@@ -267,7 +265,7 @@ theorem dif_stage_block_get (values roots : Array Fr) (n b i : Nat)
   have hp2 : 0 < 2*n := by omega
   have hlow : (b*n+i)%n = i := by simp [Nat.add_mod, Nat.mod_eq_of_lt hi]
   simp only [Nat.div_eq_of_lt hbig, Nat.mod_eq_of_lt hbig, hlow, Nat.zero_mul,
-    Nat.zero_add, hv, Nat.div_self hp2, Nat.mul_one, Bool.false_eq_true, if_false]
+    Nat.zero_add, hv, Nat.div_self hp2, Nat.mul_one, Bool.false_eq_true, ite_false]
   interval_cases b <;> simp [hi, show ¬n+i<n by omega]
 
 theorem half_dft {F : Type*} [Field F] (f : Nat → F) (ω : F) (n r b : Nat)
@@ -279,12 +277,12 @@ theorem half_dft {F : Type*} [Field F] (f : Nat → F) (ω : F) (n r b : Nat)
   apply Finset.sum_congr rfl
   intro t ht
   interval_cases b
-  · simp only [Nat.add_zero, if_true]
+  · simp only [Nat.add_zero, ite_true]
     rw [← pow_mul, show 2*(t*r) = t*(2*r) by ring,
       show (n+t)*(2*r) = (2*n)*r+t*(2*r) by ring, pow_add,
       pow_mul ω (2*n) r, hpow, one_pow, one_mul, Nat.add_comm n t]
     ring
-  · simp only [show ¬(1:Nat)=0 by decide, if_false]
+  · simp only [show ¬(1:Nat)=0 by decide, ite_false]
     rw [← pow_mul, show 2*(t*r) = t*(2*r) by ring,
       show t*(2*r+1) = t*(2*r)+t by ring,
       show (n+t)*(2*r+1) = (2*n)*r+n+(t*(2*r)+t) by ring]
@@ -334,7 +332,6 @@ theorem dif_eq_dft (k : Nat) (values roots : Array Fr) (ω : Fr)
       exact block_stages false k ((List.range k).reverse) z roots b hz hr' hb
         (fun s hs => List.mem_range.mp (List.mem_reverse.mp hs))
     have hout := congrArg (fun xs : Array Fr => xs[q]!) hrec
-    dsimp only at hout
     rw [getElem!_block _ _ _ _ hq, hjb,
       ih _ _ _ (size_block _ _ _) hrhalf hω2 hroots2 q hq] at hout
     rw [hout, ← hjb, Nat.mul_comm b (2^k), reverseBits_high_split k b q hb hq, hpow]

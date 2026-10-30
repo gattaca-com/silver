@@ -37,13 +37,13 @@ theorem encodeAffine_chord (t q : Fp2Field × Fp2Field) (m : Fp2Field) :
 theorem double_slope_spec (t : Point) :
     Fp12.toField (Line.tangentSlope (untwist (affine t)).x (untwist (affine t)).y) =
       fp2Embed (doubleSlope t) * Fp12Field.w⁻¹ := by
-  simpa [affine, encodeAffine, doubleSlope, div_eq_mul_inv] using tangent_slope (affine t)
+  simpa [affine, encodeAffine, doubleSlope, div_eq_mul_inv] using! tangent_slope (affine t)
 
 theorem add_slope_spec (t : Point) (q : Fp2Field × Fp2Field) :
     Fp12.toField (Line.addSlope (untwist (affine t)).x (untwist (affine t)).y
         (untwist (encodeAffine q)).x (untwist (encodeAffine q)).y) =
       fp2Embed (addSlope t q) * Fp12Field.w⁻¹ := by
-  simpa [affine, encodeAffine, addSlope, div_eq_mul_inv] using
+  simpa [affine, encodeAffine, addSlope, div_eq_mul_inv] using!
     add_slope (affine t) (encodeAffine q)
 
 theorem line_of_coefficients (o : Output) (t : Fp2Field × Fp2Field)
@@ -90,7 +90,7 @@ theorem double_next (t : Point) (h : (double t).point 2 ≠ 0) :
       embeddedChord (untwist (affine t)) (untwist (affine t))
         (Line.tangentSlope (untwist (affine t)).x (untwist (affine t)).y) := by
   rw [chord_untwist _ _ (Fp2.toField.symm (doubleSlope t)) _
-    (by simpa using double_slope_spec t)]
+    (by simpa using! double_slope_spec t)]
   exact congrArg untwist ((congrArg encodeAffine (double_point t h)).trans
     (encodeAffine_chord (affineField t) (affineField t) (doubleSlope t)))
 
@@ -100,7 +100,7 @@ theorem add_next (t : Point) (q : Fp2Field × Fp2Field) (h : (add t q).point 2 �
         (Line.addSlope (untwist (affine t)).x (untwist (affine t)).y
           (untwist (encodeAffine q)).x (untwist (encodeAffine q)).y) := by
   rw [chord_untwist _ _ (Fp2.toField.symm (addSlope t q)) _
-    (by simpa using add_slope_spec t q)]
+    (by simpa using! add_slope_spec t q)]
   exact congrArg untwist ((congrArg encodeAffine (add_point t q h)).trans
     (encodeAffine_chord (affineField t) q (addSlope t q)))
 

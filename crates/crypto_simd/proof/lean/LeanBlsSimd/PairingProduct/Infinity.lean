@@ -35,15 +35,15 @@ private theorem component_loop (q : blst.blst_p2_affine) (j : Usize) (hj : j.val
   refine loop_range _ 2#usize rfl id (fun b c => b ||| qWord q ⟨j.val, hj⟩ c)
     (fun b => (q, b)) b _ ?_ ?_ rfl
   · intro r m he hs hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     rfl
   · intro r r' m c he hs he' hs' hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     try dsimp only
     have hc : r.start.val < 2 := by rw [hs]; exact c.isLt
     simp (disch := (simp only [UScalar.ofNatCore_val_eq]; omega)) only
       [index_usize_eq q.x.fp r.start hc, index_usize_eq q.y.fp r.start hc,
-        index_usize_eq, bind_tc_ok, lift, hs]
+        index_usize_eq, bind_tc_ok, bind_ok, lift, hs]
     rfl
 
 private theorem pair_loop (p : pairing_product.AffinePair) (b : U64 × U64) :
@@ -54,20 +54,20 @@ private theorem pair_loop (p : pairing_product.AffinePair) (b : U64 × U64) :
   refine loop_range _ pairing_product.BLST_LIMBS (by simp [pairing_product.BLST_LIMBS])
     (fun b : U64 × U64 => (p, b)) (pairBits p) id b _ ?_ ?_ rfl
   · intro r m he hs hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     rfl
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < 6 := by omega
-    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     try dsimp only
     rw [index_usize_eq p.p.x.l r.start hj]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [index_usize_eq p.p.y.l r.start hj]
-    simp only [bind_tc_ok, lift]
+    simp only [bind_tc_ok, bind_ok, lift]
     rw [component_loop p.q r.start hj]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     try dsimp only
-    simp only [pairBits, pWord, hs, Function.uncurry_apply_pair]
+    simp only [pairBits, pWord, hs, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
 
 private theorem or_zero_iff (a b : U64) :
     (a ||| b) = 0#u64 ↔ a = 0#u64 ∧ b = 0#u64 := by
@@ -106,24 +106,34 @@ private theorem infinity_raw (p : pairing_product.AffinePair) :
   simp only [List.mem_finRange, forall_true_left, true_and] at hp hq
   simp only [pWord, or_zero_iff] at hp
   rw [pairing_product.AffinePair.is_infinite, pair_loop p (0#u64, 0#u64)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (if ((List.finRange 6).foldl (pairBits p) (0#u64, 0#u64)).1 = 0#u64
     then ok true else ok (decide (((List.finRange 6).foldl (pairBits p) (0#u64, 0#u64)).2 = 0#u64))) = _
-  simp only [hp, hq, qZeroWords, Msm8.zeroWord]
-  split <;> simp_all
+  change _ ↔ (∀ j, Msm8.zeroWord p.p j) at hp
+  change _ ↔ qZeroWords p.q at hq
+  split_ifs with h
+  · simp only [decide_eq_true (hp.mp h), Bool.true_or]
+  · have hn : ¬∀ j, Msm8.zeroWord p.p j := fun hz => h (hp.mpr hz)
+    rw [decide_eq_false hn, Bool.false_or]
+    exact congrArg ok (Bool.decide_congr hq)
 
 private theorem fp2_ext (a b : blst.blst_fp2)
     (h : ∀ c : Fin 2, a.fp.val[c.val]'(by rw [a.fp.property]; exact c.isLt) =
       b.fp.val[c.val]'(by rw [b.fp.property]; exact c.isLt)) : a = b := by
   have he : a.fp = b.fp := by
-    apply Subtype.ext
+    ext1
     apply List.ext_getElem
     · rw [a.fp.property, b.fp.property]
     · intro i hi hi'
-      exact h ⟨i, by simpa only [a.fp.property] using hi⟩
+      exact h ⟨i, by simpa only [a.fp.property] using! hi⟩
   cases a
   cases b
   exact congrArg blst.blst_fp2.mk he
+
+private theorem fp2Encode_zero_get (c : Fin 2) :
+    (Kzg.fp2Encode Fp2.zero).fp.val[c.val]'(by
+      rw [(Kzg.fp2Encode Fp2.zero).fp.property]; exact c.isLt) = Kzg.fpEncode Fp.zero := by
+  fin_cases c <;> rfl
 
 private theorem q_zero_iff (q : blst.blst_p2_affine) :
     qZeroWords q ↔ q = ⟨Kzg.fp2Encode Fp2.zero, Kzg.fp2Encode Fp2.zero⟩ := by
@@ -142,12 +152,12 @@ private theorem q_zero_iff (q : blst.blst_p2_affine) :
       apply fp2_ext
       intro c
       have hc := congrArg blst.blst_p1_affine.x (h c)
-      fin_cases c <;> simpa [Kzg.fp2Encode, Fp2.zero] using hc
+      exact hc.trans (fp2Encode_zero_get c).symm
     have hy : q.y = Kzg.fp2Encode Fp2.zero := by
       apply fp2_ext
       intro c
       have hc := congrArg blst.blst_p1_affine.y (h c)
-      fin_cases c <;> simpa [Kzg.fp2Encode, Fp2.zero] using hc
+      exact hc.trans (fp2Encode_zero_get c).symm
     cases q
     exact congrArg₂ blst.blst_p2_affine.mk hx hy
   · intro h c
@@ -162,7 +172,7 @@ private theorem q_zero_read_infinity (q : blst.blst_p2_affine)
   · intro h
     rw [h]
     simp only [Kzg.g2ReadAffine, Kzg.fp2Read_fp2Encode,
-      show Fp2.zero.isZero = true from rfl, Bool.and_self, if_true]
+      show Fp2.zero.isZero = true from rfl, Bool.and_self, ite_true]
     rfl
   · intro h
     calc

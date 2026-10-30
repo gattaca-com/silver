@@ -8,6 +8,8 @@ noncomputable section
 
 open Aeneas Aeneas.Std Result ControlFlow Error
 noncomputable section
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax LeanBlsSimd.LIMBS ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.BatchedRefines
 open silver_crypto_simd.bls
 open G1x8.Offsets
@@ -43,12 +45,12 @@ theorem slope_loop_refines (inv ya yb initial : Vector Fp8 2) (o : G1x8.Offsets)
       (lt_of_lt_of_le (by omega : s.val + 1 < 2 ^ 32) two_pow_32_le_usize)
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [msm8.pairs.BatchedAdds.finish_pair_loop1.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true,
+      show s < 2#usize from hlt, ite_true,
       index_usize_toArray (n := 2#usize) toFp8 yb rfl s hlt, index_usize_toArray (n := 2#usize) toFp8 ya rfl s hlt,
-      index_usize_toArray (n := 2#usize) toFp8 inv rfl s hlt, bind_tc_ok, Fp8.sub_raw_refines,
+      index_usize_toArray (n := 2#usize) toFp8 inv rfl s hlt, bind_tc_ok, bind_ok, Fp8.sub_raw_refines,
       Fp8.normalise_refines, Fp8.mul_refines, ofFp8_toFp8, toOffsets]
     rw [update_eq (toArray (n := 2#usize) toFp8 m) s _ hlt]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
     rw [set_toArray toFp8 m rfl s _ hlt]
     simp [next, slope, hs]
@@ -67,11 +69,11 @@ theorem square_loop_refines (slopes initial : Vector Fp8 2) :
       (lt_of_lt_of_le (by omega : s.val + 1 < 2 ^ 32) two_pow_32_le_usize)
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [msm8.pairs.BatchedAdds.finish_pair_loop2.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true,
+      show s < 2#usize from hlt, ite_true,
       index_usize_toArray (n := 2#usize) toFp8 slopes rfl s hlt,
-      bind_tc_ok, Fp8.square_refines, ofFp8_toFp8]
+      bind_tc_ok, bind_ok, Fp8.square_refines, ofFp8_toFp8]
     rw [update_eq (toArray (n := 2#usize) toFp8 m) s _ hlt]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
     rw [set_toArray toFp8 m rfl s _ hlt]
     simp [next, hs]
@@ -94,14 +96,14 @@ theorem x_loop_refines (xa xb squared initial : Vector Fp8 2) (o : G1x8.Offsets)
       (lt_of_lt_of_le (by omega : s.val + 1 < 2 ^ 32) two_pow_32_le_usize)
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [msm8.pairs.BatchedAdds.finish_pair_loop3.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true,
+      show s < 2#usize from hlt, ite_true,
       index_usize_toArray (n := 2#usize) toFp8 squared rfl s hlt,
       index_usize_toArray (n := 2#usize) toFp8 xa rfl s hlt,
       index_usize_toArray (n := 2#usize) toFp8 xb rfl s hlt,
-      bind_tc_ok, Fp8.sub_raw_refines, G1x8.Offsets.reduced_from_8p_refines,
+      bind_tc_ok, bind_ok, Fp8.sub_raw_refines, G1x8.Offsets.reduced_from_8p_refines,
       ofFp8_toFp8, toOffsets]
     rw [update_eq (toArray (n := 2#usize) toFp8 m) s _ hlt]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
     rw [set_toArray toFp8 m rfl s _ hlt]
     simp [next, xCoordinate, hs, ofOffsets]
@@ -124,14 +126,14 @@ theorem product_loop_refines (xa slopes x3 initial : Vector Fp8 2) (o : G1x8.Off
       (lt_of_lt_of_le (by omega : s.val + 1 < 2 ^ 32) two_pow_32_le_usize)
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [msm8.pairs.BatchedAdds.finish_pair_loop4.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true,
+      show s < 2#usize from hlt, ite_true,
       index_usize_toArray (n := 2#usize) toFp8 slopes rfl s hlt,
       index_usize_toArray (n := 2#usize) toFp8 xa rfl s hlt,
       index_usize_toArray (n := 2#usize) toFp8 x3 rfl s hlt,
-      bind_tc_ok, Fp8.sub_raw_refines, Fp8.normalise_refines, Fp8.mul_refines,
+      bind_tc_ok, bind_ok, Fp8.sub_raw_refines, Fp8.normalise_refines, Fp8.mul_refines,
       ofFp8_toFp8, toOffsets]
     rw [update_eq (toArray (n := 2#usize) toFp8 m) s _ hlt]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
     rw [set_toArray toFp8 m rfl s _ hlt]
     simp [next, yProduct, hs]
@@ -183,28 +185,29 @@ theorem write_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.P
       simpa only [indicesInBounds, hlength] using hbound j
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [msm8.pairs.BatchedAdds.finish_pair_loop5.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true,
+      show s < 2#usize from hlt, ite_true,
       index_usize_toArray (n := 2#usize) toFp8 product rfl s hlt,
       index_usize_toArray (n := 2#usize) toFp8 ya rfl s hlt,
-      bind_tc_ok, Fp8.sub_raw_refines, G1x8.Offsets.reduced_from_4p_refines,
+      bind_tc_ok, bind_ok, Fp8.sub_raw_refines, G1x8.Offsets.reduced_from_4p_refines,
       ofFp8_toFp8, toOffsets]
     rw [usize_add_ok g s (by omega)]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [hr]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [index_usize_toArray (n := 2#usize) toFp8 x3 rfl s hlt]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     cases hpair : refs j with
     | mk indices negated =>
       simp only [hpair] at hb ⊢
       simp only [ofOffsets, ofFp8_toFp8]
+      simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
       change (do
         let store1 ← current.store_points indices (toFp8 x3[s.val])
           (toFp8 (yCoordinate o ya[s.val] product[s.val]))
         let s2 ← s + 1#usize
         ok (cont (store1, s2))) = _
       rw [store_points_fold _ _ _ _ hb]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
       simp [next, hs, writeCoordinates, yCoordinate]
 
@@ -215,7 +218,7 @@ def quadArray (f : Quad → Fp8) (m : Vector Quad 2) : Array fp8.Fp8 2#usize :=
 
 theorem quadArray_ofFn (f : Quad → Fp8) (m : Fin 2 → Quad) :
     quadArray f (Vector.ofFn m) = toArray toFp8 (Vector.ofFn fun j => f (m j)) := by
-  apply Subtype.ext
+  ext1
   simp [quadArray, toArray, Vector.toList, Vector.ofFn]
 
 theorem load_pair_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
@@ -261,10 +264,10 @@ theorem load_pair_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
     have hrb := hrefb j group (by simp [group, hs])
     refine ⟨next, by simp [next, hs], ?_⟩
     simp only [enc, msm8.pairs.BatchedAdds.finish_pair_loop0.body, msm8.pairs.PAIR,
-      show s < 2#usize from hlt, if_true]
+      show s < 2#usize from hlt, ite_true]
     rw [usize_add_ok g s (by omega)]
     dsimp [group] at hra hrb
-    simp only [bind_tc_ok, hra, hrb]
+    simp only [bind_tc_ok, bind_ok, hra, hrb]
     cases hpa : ra j with
     | mk ia na =>
       cases hpb : rb j with
@@ -272,6 +275,7 @@ theorem load_pair_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
         have hla := hloada j
         have hlb := hloadb j
         simp only [hpa, hpb] at hla hlb ⊢
+        simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
         change (do
           let (x, y) ← store.load_signed ia na
           let aa ← Array.update (quadArray (fun q => q.1) m) s x
@@ -282,14 +286,14 @@ theorem load_pair_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
           let s' ← s + 1#usize
           ok (cont (aa, ab, ac, ad, s'))) = _
         rw [hla, hlb]
-        simp only [bind_tc_ok]
-        simp only [update_eq _ s _ (show s.val < (2#usize).val from hlt), bind_tc_ok]
+        simp only [bind_tc_ok, bind_ok]
+        simp only [update_eq _ s _ (show s.val < (2#usize).val from hlt), bind_tc_ok, bind_ok]
         rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
-        simp only [bind_tc_ok]
+        simp only [bind_tc_ok, bind_ok]
         congr 2
         simp [quadArray, f, next, hs]
         refine ⟨?_, ?_, ?_, ?_⟩
-        all_goals apply Subtype.ext; simp [toArray, List.map_set, Vector.toList_set, hs]
+        all_goals apply Aeneas.Std.Array.ext; simp [toArray, List.map_set, Vector.toList_set, hs]
 
 theorem vector_ofFn_fin {α : Type} {n : ℕ} (f : Fin n → α) (j : Fin n) :
     (Vector.ofFn f)[j] = f j := by simp
@@ -316,10 +320,11 @@ theorem finish_pair_schedule (self : msm8.pairs.BatchedAdds) (store : msm8.store
         writeCoordinates store (rout j).1 x3[j] (yCoordinate o ya[j] products[j])) store) := by
   unfold msm8.pairs.BatchedAdds.finish_pair
   rw [G1x8.Offsets.new_refines, Fp8.zero_refines]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [load_pair_refines self store g hg xa ya xb yb ra rb hrefa hrefb hloada hloadb]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [← toArray_replicate toFp8 Fp8.zero (show (2#usize).val = 2 from rfl)]
+  simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
   change (do
     let (o1, slope1) ← msm8.pairs.BatchedAdds.finish_pair_loop1 (toArray toFp8 inv)
       (toOffsets G1x8.Offsets.new) (toArray toFp8 ya) (toArray toFp8 yb) 0#usize
@@ -331,7 +336,7 @@ theorem finish_pair_schedule (self : msm8.pairs.BatchedAdds) (store : msm8.store
     let (o3, product1) ← msm8.pairs.BatchedAdds.finish_pair_loop4 o2 (toArray toFp8 xa)
       0#usize slope1 x31 (toArray toFp8 (Vector.replicate 2 Fp8.zero))
     self.finish_pair_loop5 store g o3 (toArray toFp8 ya) 0#usize x31 product1) = _
-  simp only [slope_loop_refines, square_loop_refines, x_loop_refines, product_loop_refines, bind_tc_ok]
+  simp only [slope_loop_refines, square_loop_refines, x_loop_refines, product_loop_refines, bind_tc_ok, bind_ok]
   rw [write_loop_refines self store g hg _ _ _ _ rout hrefo hbound]
 
 section
@@ -368,6 +373,13 @@ end
 def referencesAt (refs : List U32) (group : ℕ) : Array U32 8#usize × U8 :=
   (toArray id (Msm8.referenceBatch refs group).1, (Msm8.referenceBatch refs group).2)
 
+private theorem referencesAt_refines (refs : alloc.vec.Vec U32) (g : Usize)
+    (h : g.val * 8 + 8 ≤ refs.val.length) :
+    msm8.pairs.references refs.deref g = ok (referencesAt refs.val g.val) := by
+  simpa only [alloc.vec.Vec.deref, Slice.from_val, referencesAt] using!
+    Msm8.references_refines refs.deref g
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using h)
+
 def signedCoordinates (store : msm8.store.PointStore) (refs : Array U32 8#usize × U8) : Fp8 × Fp8 :=
   (loadedCoordinate store refs.1 0,
     Fp8.select (ofU8 refs.2) (loadedCoordinate store refs.1 1) (loadedCoordinate store refs.1 1).neg)
@@ -398,8 +410,8 @@ theorem finish_pair_concrete (self : msm8.pairs.BatchedAdds) (store : msm8.store
   have refs (v : alloc.vec.Vec U32) (hv : (g.val + 2) * 8 ≤ v.val.length)
       (j : Fin 2) (group : Usize) (hgroup : group.val = g.val + j.val) :
       msm8.pairs.references v.deref group = ok (referencesAt v.val (g.val + j.val)) := by
-    rw [Msm8.references_refines _ _ (by change group.val * 8 + 8 ≤ v.val.length; omega)]
-    simp only [referencesAt, hgroup, alloc.vec.Vec.deref]
+    rw [Msm8.references_refines _ _ (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using (by omega : group.val * 8 + 8 ≤ v.val.length))]
+    simp only [referencesAt, hgroup, alloc.vec.Vec.deref, Slice.from_val]
   have result := finish_pair_refines self store g hg xa ya xb yb inv ra rb rout
     (refs self.a ha) (refs self.b hb) (refs self.out ho)
     (fun j => by simpa [xa, ya, signedCoordinates] using load_signed_refines store (ra j).1 (ra j).2 (hba j))
@@ -419,16 +431,11 @@ theorem extend_chain_zero (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
   have hm : toU8 (xb.sub xa).is_zero_mask ≠ 0#u8 := by
     intro h
     exact hzero ((toU8_inj _ 0).mp h)
-  simp only [msm8.pairs.BatchedAdds.extend_chain, hra, hrb, bind_tc_ok]
-  change (do
-    let a ← store.load_x ia
-    let b ← store.load_x ib
-    let dx ← fp8.Fp8.sub b a
-    let mask ← fp8.Fp8.is_zero_mask dx
-    if mask != 0#u8 then ok (false, self, products) else _) = _
+  simp only [msm8.pairs.BatchedAdds.extend_chain, hra, hrb, bind_tc_ok, bind_ok]
+  simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
   rw [hla, hlb]
-  simp only [bind_tc_ok, Fp8.sub_refines, Fp8.is_zero_mask_refines, ofFp8_toFp8, bne_iff_ne]
-  rw [if_pos hm]
+  simp only [bind_tc_ok, bind_ok, Fp8.sub_refines, Fp8.is_zero_mask_refines, ofFp8_toFp8, bne_iff_ne]
+  rw [ite_eq_left hm]
 
 theorem equal_x_zero_mask (xa xb : Fp8) (lane : Fin 8)
     (ha : Fp8Inv (xa.lane lane)) (hb : Fp8Inv (xb.lane lane))
@@ -451,8 +458,8 @@ theorem extend_chain_equal_x (self : msm8.pairs.BatchedAdds) (store : msm8.store
       decode ((loadedCoordinate store (referencesAt self.b.val g.val).1 0).lane lane)) :
     self.extend_chain store g products = ok (false, self, products) := by
   exact extend_chain_zero self store g products _ _ _ _ _ _
-    (Msm8.references_refines _ _ ha) (Msm8.references_refines _ _ hb)
-    (load_x_refines store _ hba) (load_x_refines store _ hbb)
+    (referencesAt_refines self.a g ha) (referencesAt_refines self.b g hb)
+    (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.a.val g.val).1 hba) (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.b.val g.val).1 hbb)
     (equal_x_zero_mask _ _ lane hxa hxb heq)
 
 def chainIndex (g : Usize) : Usize :=
@@ -461,13 +468,13 @@ def chainIndex (g : Usize) : Usize :=
 
 theorem rem_four (g : Usize) : g % 4#usize = ok (chainIndex g) := by
   change UScalar.rem g 4#usize = _
-  simp only [UScalar.rem, show ((4#usize).val != 0) = true from rfl, if_true]
+  simp only [UScalar.rem, show ((4#usize).val != 0) = true from rfl, ite_true]
   apply congrArg Result.ok
   apply UScalar.eq_of_val_eq
   exact BitVec.toNat_umod (x := g.bv) (y := (4#usize).bv)
 
 def setFp8Entry (v : alloc.vec.Vec fp8.Fp8) (i : ℕ) (x : Fp8) : alloc.vec.Vec fp8.Fp8 :=
-  ⟨v.val.set i (toFp8 x), by simpa using v.property⟩
+  alloc.vec.Vec.from (v.val.set i (toFp8 x)) (by simpa using v.property)
 
 theorem extend_chain_nonzero (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (g : Usize) (products : Vector Fp8 4)
@@ -486,23 +493,19 @@ theorem extend_chain_nonzero (self : msm8.pairs.BatchedAdds) (store : msm8.store
         «prefix» := setFp8Entry self.prefix g.val product },
         toArray toFp8 (products.set k product)) := by
   have hk : (chainIndex g).val < (4#usize).val := by change g.val % 4 < 4; omega
-  simp only [msm8.pairs.BatchedAdds.extend_chain, hra, hrb, bind_tc_ok]
-  change (do
-    let a ← store.load_x ia
-    let b ← store.load_x ib
-    let dx ← fp8.Fp8.sub b a
-    let mask ← fp8.Fp8.is_zero_mask dx
-    if mask != 0#u8 then ok (false, self, toArray (n := 4#usize) toFp8 products) else _) = _
+  simp only [msm8.pairs.BatchedAdds.extend_chain, hra, hrb, bind_tc_ok, bind_ok]
+  simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
   rw [hla, hlb]
-  simp only [bind_tc_ok, Fp8.sub_refines, Fp8.is_zero_mask_refines, ofFp8_toFp8, hzero]
-  simp only [show (toU8 (0 : UInt8) != 0#u8) = false from rfl, Bool.false_eq_true, if_false]
+  simp only [bind_tc_ok, bind_ok, Fp8.sub_refines, Fp8.is_zero_mask_refines, ofFp8_toFp8, hzero]
+  simp only [show (toU8 (0 : UInt8) != 0#u8) = false from rfl, Bool.false_eq_true, ite_false]
   rw [msm8.pairs.CHAINS, rem_four]
-  simp only [bind_tc_ok, index_usize_toArray (n := 4#usize) toFp8 products rfl (chainIndex g) hk,
+  simp only [bind_tc_ok, bind_ok, index_usize_toArray (n := 4#usize) toFp8 products rfl (chainIndex g) hk,
     Fp8.mul_refines, ofFp8_toFp8]
   rw [update_eq _ (chainIndex g) _ hk]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [vec_index_mut_eq self.dx g hdx]
   rw [set_toArray toFp8 products rfl (chainIndex g) _ hk]
+  simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
   change (do
     let f2 ← Array.index_usize (toArray (n := 4#usize) toFp8
       (products.set (chainIndex g).val ((products[(chainIndex g).val]'hk).mul (xb.sub xa)) hk)) (chainIndex g)
@@ -515,7 +518,7 @@ theorem extend_chain_nonzero (self : msm8.pairs.BatchedAdds) (store : msm8.store
     (products.set (chainIndex g).val ((products[(chainIndex g).val]'hk).mul (xb.sub xa)) hk)
     rfl (chainIndex g) hk]
   rw [vec_index_mut_eq self.prefix g hpref]
-  simp only [bind_tc_ok, Vector.getElem_set_self]
+  simp only [bind_tc_ok, bind_ok, Vector.getElem_set_self]
   rfl
 
 
@@ -544,16 +547,16 @@ theorem unwind_pick (self : msm8.pairs.BatchedAdds) (group : Usize) (inv : Vecto
   have hk : (chainIndex group).val < (4#usize).val := by change group.val % 4 < 4; omega
   by_cases h : group.val < 4
   · have hh : group < 4#usize := h
-    simp only [hh, if_true, index_usize_toArray (n := 4#usize) toFp8 inv rfl (chainIndex group) hk,
-      bind_tc_ok, unwindValue, h]
+    simp only [hh, ite_true, index_usize_toArray (n := 4#usize) toFp8 inv rfl (chainIndex group) hk,
+      bind_tc_ok, bind_ok, unwindValue, h]
     rfl
   · have hh : ¬group < 4#usize := h
-    simp only [hh, if_false, index_usize_toArray (n := 4#usize) toFp8 inv rfl (chainIndex group) hk,
-      bind_tc_ok, unwindValue, h]
+    simp only [hh, ite_false, index_usize_toArray (n := 4#usize) toFp8 inv rfl (chainIndex group) hk,
+      bind_tc_ok, bind_ok, unwindValue, h]
     rw [sub_ok group 4#usize (by change 4 ≤ group.val; omega)]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [vec_index_eq _ _ (by simpa using hb)]
-    simp only [bind_tc_ok, Fp8.mul_refines, ofFp8_toFp8]
+    simp only [bind_tc_ok, bind_ok, Fp8.mul_refines, ofFp8_toFp8]
     simp only [getElem!_pos self.prefix.val (group.val - 4) hb]
     rfl
 
@@ -577,11 +580,12 @@ theorem unwind_body_refines (self : msm8.pairs.BatchedAdds) (g : Usize)
   have hpick := unwind_pick self group state.1 (by simp only [group, UScalar.ofNatCore_val_eq]; omega)
   refine ⟨next, by simp [next, hs], ?_⟩
   simp only [msm8.pairs.BatchedAdds.unwind_chains_loop.body, msm8.pairs.PAIR,
-    show s < 2#usize from hlt, if_true, hgroup, bind_tc_ok]
+    show s < 2#usize from hlt, ite_true, hgroup, bind_tc_ok, bind_ok]
   rw [msm8.pairs.CHAINS, rem_four]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [hpick]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
+  simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
   change (do
     let a ← Array.update (toArray (n := 2#usize) toFp8 state.2) s (toFp8 (unwindValue self group.val state.1))
     let f1 ← Array.index_usize (toArray (n := 4#usize) toFp8 state.1) (chainIndex group)
@@ -591,12 +595,12 @@ theorem unwind_body_refines (self : msm8.pairs.BatchedAdds) (g : Usize)
     let s1 ← s + 1#usize
     ok (cont (self, a1, a, s1))) = _
   rw [update_eq (n := 2#usize) _ s _ hlt]
-  simp only [bind_tc_ok, index_usize_toArray (n := 4#usize) toFp8 state.1 rfl (chainIndex group) hk,
+  simp only [bind_tc_ok, bind_ok, index_usize_toArray (n := 4#usize) toFp8 state.1 rfl (chainIndex group) hk,
     vec_index_eq self.dx group hdxg, Fp8.mul_refines, ofFp8_toFp8]
   rw [update_eq _ (chainIndex group) _ hk]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [usize_add_ok s 1#usize (by change s.val + 1 < 2 ^ 32; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [set_toArray toFp8 state.2 rfl s _ hlt, set_toArray toFp8 state.1 rfl (chainIndex group) _ hk]
   simp only [unwindStep, group, chainIndex, next, UScalar.ofNatCore_val_eq, hs]
   simp only [getElem!_pos self.dx.val (g.val + j.val) (show g.val + j.val < self.dx.val.length by omega)]
@@ -613,7 +617,7 @@ theorem unwind_chains_refines (self : msm8.pairs.BatchedAdds) (g : Usize)
     self.unwind_chains g (toArray toFp8 inverses) =
       ok (toArray toFp8 (unwindChains self g.val inverses).1,
         toArray toFp8 (unwindChains self g.val inverses).2) := by
-  simp only [msm8.pairs.BatchedAdds.unwind_chains, Fp8.zero_refines, bind_tc_ok]
+  simp only [msm8.pairs.BatchedAdds.unwind_chains, Fp8.zero_refines, bind_tc_ok, bind_ok]
   rw [← toArray_replicate toFp8 Fp8.zero (show (2#usize).val = 2 from rfl)]
   unfold msm8.pairs.BatchedAdds.unwind_chains_loop
   refine loop_up_inv (n := 2)
@@ -624,7 +628,7 @@ theorem unwind_chains_refines (self : msm8.pairs.BatchedAdds) (g : Usize)
     (inverses, Vector.replicate 2 Fp8.zero) 0#usize (by decide) trivial
   · intro state s hs _
     have hn : ¬s < 2#usize := by change ¬s.val < 2; omega
-    simp only [msm8.pairs.BatchedAdds.unwind_chains_loop.body, msm8.pairs.PAIR, hn, if_false]
+    simp only [msm8.pairs.BatchedAdds.unwind_chains_loop.body, msm8.pairs.PAIR, hn, ite_false]
   · intro state s j hs _
     exact unwind_body_refines self g hg hdx hpref state s j hs
 
@@ -657,14 +661,14 @@ theorem extend_chain_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
       let result := prepareStep self store g.val products
       ok (result.1, result.2.1, toArray toFp8 result.2.2) := by
   by_cases hzero : (difference self store g.val).is_zero_mask = 0
-  · simp only [prepareStep, hzero, if_true, preparedUpdate]
+  · simp only [prepareStep, hzero, ite_true, preparedUpdate]
     exact extend_chain_nonzero self store g products _ _ _ _ _ _
-      (Msm8.references_refines _ _ ha) (Msm8.references_refines _ _ hb)
-      (load_x_refines store _ hba) (load_x_refines store _ hbb) hdx hpref hzero
-  · simp only [prepareStep, hzero, if_false]
+      (referencesAt_refines self.a g ha) (referencesAt_refines self.b g hb)
+      (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.a.val g.val).1 hba) (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.b.val g.val).1 hbb) hdx hpref hzero
+  · simp only [prepareStep, hzero, ite_false]
     exact extend_chain_zero self store g (toArray toFp8 products) _ _ _ _ _ _
-      (Msm8.references_refines _ _ ha) (Msm8.references_refines _ _ hb)
-      (load_x_refines store _ hba) (load_x_refines store _ hbb) hzero
+      (referencesAt_refines self.a g ha) (referencesAt_refines self.b g hb)
+      (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.a.val g.val).1 hba) (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.b.val g.val).1 hbb) hzero
 
 structure PreparationBounds (adds : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore) (groups : ℕ) : Prop where
   aLength : groups * 8 ≤ adds.a.val.length
@@ -717,7 +721,7 @@ theorem prepare_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
     have hge : ¬g < groups := by change ¬g.val < groups.val; omega
     refine ⟨g, rfl, ?_⟩
     rw [loop.eq_1]
-    simp only [msm8.pairs.BatchedAdds.run_loop0.body, hge, if_false, prepareFrom]
+    simp only [msm8.pairs.BatchedAdds.run_loop0.body, hge, ite_false, prepareFrom, bind_ok]
   | succ n ih =>
     have hlt : g < groups := by change g.val < groups.val; omega
     have hstep := extend_chain_refines self store g products
@@ -735,18 +739,18 @@ theorem prepare_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
         (hb.updated g.val products (difference self store g.val))
         (by simp only [next, UScalar.ofNatCore_val_eq]; omega)
       refine ⟨counter, ?_, ?_⟩
-      · simpa only [prepareFrom, prepareStep, hz, if_true, next, UScalar.ofNatCore_val_eq] using hcounter
+      · simpa only [prepareFrom, prepareStep, hz, ite_true, next, UScalar.ofNatCore_val_eq] using hcounter
       · rw [loop.eq_1]
-        simp only [msm8.pairs.BatchedAdds.run_loop0.body, hlt, if_true, hstep, bind_tc_ok,
+        simp only [msm8.pairs.BatchedAdds.run_loop0.body, hlt, ite_true, hstep, bind_tc_ok, bind_ok,
           prepareStep, hz, prepareFrom]
         rw [usize_add_ok g 1#usize (by change g.val + 1 < 2 ^ 32; change g.val < groups.val at hlt; omega)]
-        simpa only [bind_tc_ok, updated, next] using hloop
+        simpa only [bind_tc_ok, bind_ok, aeneas_uncurry_def, ite_true, UScalar.ofNatCore_val_eq, updated, next] using! hloop
     · refine ⟨g, ?_, ?_⟩
-      · simp only [prepareFrom, prepareStep, hz, if_false, Bool.false_eq_true]
+      · simp only [prepareFrom, prepareStep, hz, ite_false, Bool.false_eq_true]
       · rw [loop.eq_1]
-        simp only [msm8.pairs.BatchedAdds.run_loop0.body, hlt, if_true, hstep, bind_tc_ok,
-          prepareFrom, prepareStep, hz, if_false]
-        rfl
+        simp only [msm8.pairs.BatchedAdds.run_loop0.body, hlt, ite_true, hstep, bind_tc_ok, bind_ok,
+          prepareFrom, prepareStep, hz, ite_false]
+        simp only [bind_ok, aeneas_uncurry_def, ite_false, Bool.false_eq_true]
 
 open EthLib.Cryptography.Bls
 
@@ -846,13 +850,13 @@ theorem prepareFrom_chainInvariant (store : msm8.store.PointStore) (n : ℕ)
   | zero => exact hi
   | succ n ih =>
     by_cases hz : (difference self store g).is_zero_mask = 0
-    · simp only [prepareFrom, prepareStep, hz, if_true]
+    · simp only [prepareFrom, prepareStep, hz, ite_true]
       apply ih _ _ (g + 1) (by omega) (hb.updated g products (difference self store g))
       · exact hi.updated _ (hdiff g (by omega))
           (mask_clear_nonzero _ lane _ (hdiff g (by omega)) hz)
           (by have := hb.dxLength; omega) (by have := hb.prefixLength; omega)
       · exact hdiff
-    · simpa only [prepareFrom, prepareStep, hz, if_false, Bool.false_eq_true] using hi
+    · simpa only [prepareFrom, prepareStep, hz, ite_false, Bool.false_eq_true] using hi
 
 theorem chainValues_step_ne (a : ℕ → ChainField) (g : ℕ) (k : Fin 4)
     (hne : g % 4 ≠ k.val) : chainValues a (g + 1) k = chainValues a g k := by
@@ -864,7 +868,7 @@ theorem chainValues_previous (a : ℕ → ChainField) (g : ℕ) :
     chainValues a g k = if g < 4 then 1 else chainValues a (g - 3) k := by
   by_cases hg : g < 4
   · interval_cases g <;> simp [chainValues]
-  · simp only [hg, if_false]
+  · simp only [hg, ite_false]
     have h1 := chainValues_step_ne a (g - 1) ⟨g % 4, by omega⟩ (by simp only; omega)
     have h2 := chainValues_step_ne a (g - 2) ⟨g % 4, by omega⟩ (by simp only; omega)
     have h3 := chainValues_step_ne a (g - 3) ⟨g % 4, by omega⟩ (by simp only; omega)
@@ -884,16 +888,16 @@ theorem unwindValue_correct (self : msm8.pairs.BatchedAdds) (products inv : Vect
   have hprevious := chainValues_previous a g
   change chainValues a g key = _ at hprevious
   by_cases hsmall : g < 4
-  · rw [if_pos hsmall] at hprevious
-    simpa only [unwindValue, hsmall, if_true, ← show key = ⟨g % 4, by omega⟩ from rfl,
+  · rw [ite_eq_left hsmall] at hprevious
+    simpa only [unwindValue, hsmall, ite_true, ← show key = ⟨g % 4, by omega⟩ from rfl,
       hcurrent, hprevious, one_mul] using hinv
-  · rw [if_neg hsmall] at hprevious
+  · rw [ite_eq_right hsmall] at hprevious
     have hkey : (⟨(g - 4) % 4, by omega⟩ : Fin 4) = key := by apply Fin.ext; simp only [key]; omega
     have hprior := hstate.savedPrefix (g - 4) (by omega)
     rw [show g - 4 + 1 = g - 3 by omega, hkey, ← hprevious] at hprior
     have hnonzero := chainValues_nonzero a g (fun i hi => hstate.nonzero i (by omega)) key
     have hout := hinv.mul hprior
-    apply Fp8.Holds.of_eq (by simpa only [unwindValue, hsmall, if_false, key] using hout)
+    apply Fp8.Holds.of_eq (by simpa only [unwindValue, hsmall, ite_false, key] using hout)
     rw [hcurrent, mul_inv_rev, mul_assoc, inv_mul_cancel₀ hnonzero, mul_one]
 
 section
@@ -982,9 +986,9 @@ theorem prepareFrom_rejected (store : msm8.store.PointStore) (n : ℕ)
   | zero => simp only [prepareFrom] at hstopped; omega
   | succ n ih =>
     by_cases hz : (difference self store g).is_zero_mask = 0
-    · simp only [prepareFrom, prepareStep, hz, if_true] at hstopped ⊢
+    · simp only [prepareFrom, prepareStep, hz, ite_true] at hstopped ⊢
       exact ih _ _ (g + 1) (by omega)
-    · simp only [prepareFrom, prepareStep, hz, if_false, Bool.false_eq_true]
+    · simp only [prepareFrom, prepareStep, hz, ite_false, Bool.false_eq_true]
       exact hz
 
 theorem prepareFrom_references (store : msm8.store.PointStore) (n : ℕ)
@@ -995,10 +999,10 @@ theorem prepareFrom_references (store : msm8.store.PointStore) (n : ℕ)
   | zero => simp [prepareFrom]
   | succ n ih =>
     by_cases hz : (difference self store g).is_zero_mask = 0
-    · simpa only [prepareFrom, prepareStep, hz, if_true, preparedUpdate] using
+    · simpa only [prepareFrom, prepareStep, hz, ite_true, preparedUpdate] using
         ih (preparedUpdate self g products (difference self store g)).1
           (preparedUpdate self g products (difference self store g)).2 (g + 1)
-    · simp only [prepareFrom, prepareStep, hz, if_false, Bool.false_eq_true, and_self]
+    · simp only [prepareFrom, prepareStep, hz, ite_false, Bool.false_eq_true, and_self]
 
 section
 attribute [local irreducible] writeCoordinates Msm8.affineAdd signedCoordinates
@@ -1050,7 +1054,7 @@ theorem execute_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
   | zero =>
     have hz : ¬g > 0#usize := by change ¬0 < g.val; omega
     rw [loop.eq_1]
-    simp only [msm8.pairs.BatchedAdds.run_loop1.body, hz, if_false, executeFrom]
+    simp only [msm8.pairs.BatchedAdds.run_loop1.body, hz, ite_false, executeFrom, bind_ok]
   | succ n ih =>
     have hpos : g > 0#usize := by change 0 < g.val; omega
     let group : Usize := UScalar.ofNatCore (2 * n)
@@ -1076,14 +1080,15 @@ theorem execute_loop_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store
     have hbody : msm8.pairs.BatchedAdds.run_loop1.body self store g (toArray toFp8 inv) =
         ok (cont (finishPair self store group.val (unwindChains self group.val inv).1,
           group, toArray (n := 4#usize) toFp8 (unwindChains self group.val inv).2)) := by
-      simp only [msm8.pairs.BatchedAdds.run_loop1.body, hpos, if_true, hsub, bind_tc_ok, hunwind]
+      simp only [msm8.pairs.BatchedAdds.run_loop1.body, hpos, ite_true, hsub, bind_tc_ok, bind_ok, hunwind]
+      simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def]
       change (do
         let store1 ← self.finish_pair store group (toArray toFp8 (unwindChains self group.val inv).1)
         ok (cont (store1, group, toArray (n := 4#usize) toFp8 (unwindChains self group.val inv).2))) = _
       rw [hfinish]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, aeneas_uncurry_def] <;> rfl)
     rw [loop.eq_1]
-    simp only [hbody]
+    simp only [hbody, bind_ok]
     rw [ih _ _ group (by simp [group]) (by simp [group]; omega)
       (hb.with_store _ (finishPair_length _ _ _ _))]
     rfl
@@ -1112,13 +1117,13 @@ theorem executeFrom_invariant (self : msm8.pairs.BatchedAdds) (products : Vector
     · exact fun lane => (hu lane).2
 
 def resizeVec {α : Type} (v : alloc.vec.Vec α) (n : Usize) (x : α) : alloc.vec.Vec α :=
-  ⟨v.val.resize n.val x, by simp only [List.resize_length]; scalar_tac⟩
+  alloc.vec.Vec.from (v.val.resize n.val x) (by simp only [List.resize_length]; scalar_tac)
 
 theorem resizeVec_refines {α : Type} (v : alloc.vec.Vec α) (n : Usize) (x : α)
     (clone : core.clone.Clone α) (hc : clone.clone x = ok x) :
     alloc.vec.Vec.resize clone v n x = ok (resizeVec v n x) := by
-  obtain ⟨out, ho, hv⟩ := WP.spec_imp_exists (alloc.vec.Vec.resize_spec clone v n x hc)
-  have heq : out = resizeVec v n x := Subtype.ext hv
+  obtain ⟨out, ho, hv⟩ := spec_imp_exists (alloc.vec.Vec.resize_spec clone v n x hc)
+  have heq : out = resizeVec v n x := alloc.vec.Vec.ext _ _ (by simpa only [resizeVec, alloc.vec.Vec.from_val] using hv)
   exact heq ▸ ho
 
 def paddedAdds (self : msm8.pairs.BatchedAdds) (groups entries : Usize) : msm8.pairs.BatchedAdds :=
@@ -1142,9 +1147,9 @@ theorem prepareFrom_bounds (store : msm8.store.PointStore) (n : ℕ)
   | zero => exact hb
   | succ n ih =>
     by_cases hz : (difference self store g).is_zero_mask = 0
-    · simp only [prepareFrom, prepareStep, hz, if_true]
+    · simp only [prepareFrom, prepareStep, hz, ite_true]
       exact ih _ _ _ (hb.updated _ _ _)
-    · simpa only [prepareFrom, prepareStep, hz, if_false, Bool.false_eq_true] using hb
+    · simpa only [prepareFrom, prepareStep, hz, ite_false, Bool.false_eq_true] using hb
 
 def runBody (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore) (groups : Usize) :
     Result (Bool × msm8.pairs.BatchedAdds × msm8.store.PointStore) := do
@@ -1176,7 +1181,7 @@ theorem run_initializes (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poin
     rfl
   have hdiv : last / 16#usize = ok q := by rw [div_ok _ _ (by decide)]; rfl
   have hadd : q + 1#usize = ok q1 := by
-    rw [add_ok _ _ (by simpa only [q, UScalar.ofNatCore_val_eq] using q1.hBounds)]
+    rw [add_ok _ _ (by simpa only [q, UScalar.ofNatCore_val_eq] using! q1.hBounds)]
     rfl
   have hgroups : q1 * msm8.pairs.PAIR = ok groups := by
     rw [msm8.pairs.PAIR, mul_ok _ _ (by
@@ -1194,14 +1199,14 @@ theorem run_initializes (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poin
   have hib := vec_index_eq self.b last (by simp only [last, UScalar.ofNatCore_val_eq]; omega)
   have hio := vec_index_eq self.out last (by simp only [last, UScalar.ofNatCore_val_eq]; omega)
   have hnonempty : self.a.val.isEmpty = false := List.isEmpty_eq_false_iff.mpr (List.ne_nil_of_length_pos ha)
-  simp only [msm8.pairs.BatchedAdds.run, alloc.vec.Vec.is_empty, hnonempty, bind_tc_ok,
-    Bool.false_eq_true, not_false_eq_true, massert, if_true, hlast, hpair, hdiv, hadd, hgroups,
+  simp only [msm8.pairs.BatchedAdds.run, alloc.vec.Vec.is_empty, hnonempty, bind_tc_ok, bind_ok,
+    Bool.false_eq_true, not_false_eq_true, massert, ite_true, hlast, hpair, hdiv, hadd, hgroups,
     hia, hib, hio, hentries]
   rw [resizeVec_refines _ _ _ _ (by rfl), resizeVec_refines _ _ _ _ (by rfl),
     resizeVec_refines _ _ _ _ (by rfl)]
-  simp only [bind_tc_ok, Fp8.zero_refines]
+  simp only [bind_tc_ok, bind_ok, Fp8.zero_refines]
   rw [resizeVec_refines _ _ _ _ (by rfl), resizeVec_refines _ _ _ _ (by rfl)]
-  simp only [bind_tc_ok, Fp8.one_refines]
+  simp only [bind_tc_ok, bind_ok, Fp8.one_refines]
   rw [← toArray_replicate toFp8 Fp8.one (show (4#usize).val = 4 by simp)]
   have hla : self.a.val[self.a.val.length - 1]! = self.a.val[self.a.val.length - 1] :=
     getElem!_pos self.a.val (self.a.val.length - 1) (by omega)
@@ -1231,21 +1236,22 @@ theorem runBody_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.Poin
   change prepared.2.2 ≤ 0 + groups.val at hrange
   unfold runBody
   rw [hprep]
+  simp only [bind_ok, aeneas_uncurry_def]
   change (if counter < groups then ok (false, prepared.1, store) else do
     let inv ← msm8.pairs.batch_inverse (toArray toFp8 prepared.2.1)
     let out ← prepared.1.run_loop1 store counter inv
     ok (true, prepared.1, out)) = ok (runModel self store groups.val)
   by_cases hlt : prepared.2.2 < groups.val
   · have hlt' : counter < groups := by change counter.val < groups.val; omega
-    simp only [hlt', if_true, runModel, hlt, prepared]
+    simp only [hlt', ite_true, runModel, hlt, prepared]
   · have heq : counter.val = groups.val := by omega
     have hn : groups.val / 2 = n := by omega
     have hlt' : ¬counter < groups := by change ¬counter.val < groups.val; omega
-    rw [if_neg hlt', Msm8.batchInverse_refines]
-    simp only [ofArray_toArray ofFp8_toFp8, bind_tc_ok]
+    rw [ite_eq_right hlt', Msm8.batchInverse_refines]
+    simp only [ofArray_toArray ofFp8_toFp8, bind_tc_ok, bind_ok]
     rw [execute_loop_refines prepared.1 store groups.val (Msm8.batchInverse prepared.2.1)
       counter n hgroups (heq.trans heven) (by omega) hbounds]
-    simp only [bind_tc_ok, runModel, hlt, if_false, hn, prepared]
+    simp only [bind_tc_ok, bind_ok, runModel, hlt, ite_false, hn, prepared]
 
 theorem run_refines (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (groups entries : Usize)
@@ -1265,9 +1271,9 @@ theorem runModel_rejected (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
       let prepared := prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0
       (difference prepared.1 store prepared.2.2).is_zero_mask ≠ 0 := by
   by_cases h : (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups
-  · simp only [runModel, h, if_true]
+  · simp only [runModel, h, ite_true]
     exact ⟨True.intro, prepareFrom_rejected store groups self (Vector.replicate 4 Fp8.one) 0 (by omega)⟩
-  · simp only [runModel, h, if_false, Bool.true_eq_false] at hrejected
+  · simp only [runModel, h, ite_false, Bool.true_eq_false] at hrejected
 
 theorem run_rejects_first (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (groups entries : Usize)
@@ -1282,8 +1288,8 @@ theorem run_rejects_first (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
   have hpositive : 0 < groups.val := by omega
   obtain ⟨n, hn⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : groups.val ≠ 0)
   rw [hn]
-  simp only [runModel, prepareFrom, prepareStep, hzero, if_false, Bool.false_eq_true,
-    Nat.succ_pos, if_true]
+  simp only [runModel, prepareFrom, prepareStep, hzero, ite_false, Bool.false_eq_true,
+    Nat.succ_pos, ite_true]
 
 theorem runModel_success_invariant (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (groups n : ℕ) (heven : groups = 2 * n) (hb : PreparationBounds self store groups)
@@ -1300,7 +1306,7 @@ theorem runModel_success_invariant (self : msm8.pairs.BatchedAdds) (store : msm8
   have hstop : ¬prepared.2.2 < groups := by
     intro h
     simp only [runModel, show (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from h,
-      if_true, Bool.false_eq_true] at hsuccess
+      ite_true, Bool.false_eq_true] at hsuccess
   have hcomplete : prepared.2.2 = groups := by
     have hr := (prepareFrom_range store groups self (Vector.replicate 4 Fp8.one) 0).2
     change prepared.2.2 ≤ 0 + groups at hr
@@ -1319,7 +1325,7 @@ theorem runModel_success_invariant (self : msm8.pairs.BatchedAdds) (store : msm8
   have hfinal := executeFrom_invariant prepared.1 prepared.2.1 a groups hstate P hstep n store
     (Msm8.batchInverse prepared.2.1) (by omega) hstart hinv
   simpa only [runModel, show ¬(prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop,
-    if_false, show groups / 2 = n by omega] using hfinal
+    ite_false, show groups / 2 = n by omega] using hfinal
 
 theorem run_equal_x_first (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (groups entries : Usize)
@@ -1425,10 +1431,10 @@ theorem storeLane_row_self (store : msm8.store.PointStore) (indices : Vector ℕ
   have hy : 2 * indices[j] + 1 < ((pointRows store).set (2 * indices[j]) xs[j]).length := by
     simp only [List.length_set, pointRows, List.length_map]; exact hb
   fin_cases c
-  · simp only [pointRows_storeLane, Nat.add_zero, if_true]
-    rw [List.getElem!_set_ne _ _ _ _ (by omega), List.getElem!_set _ _ _ hx]
-  · simp only [pointRows_storeLane, show ¬(1 : ℕ) = 0 by decide, if_false]
-    exact List.getElem!_set _ _ _ hy
+  · simp only [pointRows_storeLane, Nat.add_zero, ite_true]
+    rw [List.set_getElem!_ne _ _ _ _ (by omega), List.set_getElem!_eq _ _ _ _ ⟨hx, rfl⟩]
+  · simp only [pointRows_storeLane, show ¬(1 : ℕ) = 0 by decide, ite_false]
+    exact List.set_getElem!_eq _ _ _ _ ⟨hy, rfl⟩
 
 theorem storeLane_fold_value (store : msm8.store.PointStore) (indices : Vector ℕ 8)
     (xs ys : Vector M512 8) (lanes : List (Fin 8)) (p : ℕ) (c : Fin 2) (value : M512)

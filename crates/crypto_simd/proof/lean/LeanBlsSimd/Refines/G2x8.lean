@@ -112,12 +112,12 @@ theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c
     obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
     obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add_affine (ofFp2x8 px) (ofFp2x8 py) = a := ⟨_, rfl⟩
     simp only [g2x8.G2x8.times_minus_z_loop.body]
-    rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' :=
       UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp (disch := decide) only [bind_tc_ok, double_refines, Function.uncurry_def, Prod.map_fst,
+    simp (disch := decide) only [bind_tc_ok, bind_ok, double_refines, Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst,
       Prod.map_snd, ofG2x8_toG2x8, lift, Z_BITS_index, toU8_or, add_affine_refines,
       UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
     simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
@@ -125,7 +125,7 @@ theorem times_minus_z_loop_refines (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c
     simp only [chainStep, hd, ha]
     by_cases h : c'.val = 62 ∨ c'.val = 60 ∨ c'.val = 57 ∨ c'.val = 48 ∨ c'.val = 16
     · have hz : Z_BITS.contains c'.val := by simp [Z_BITS]; omega
-      rw [if_pos hz]
+      rw [ite_eq_left hz]
       rcases h with h | h | h | h | h <;> simp [h]
     · have hz : c'.val ∉ Z_BITS := by simp [Z_BITS]; omega
       simp only [not_or] at h
@@ -135,7 +135,7 @@ theorem times_minus_z_refines (px py : fp2x8.Fp2x8) :
     g2x8.G2x8.times_minus_z px py =
       ok (Prod.map toG2x8 toU8 (G2x8.times_minus_z (ofFp2x8 px) (ofFp2x8 py))) := by
   unfold g2x8.G2x8.times_minus_z
-  simp only [Fp2x8.one_refines, bind_tc_ok, Z_BITS_index 0#usize (by decide)]
+  simp only [Fp2x8.one_refines, bind_tc_ok, bind_ok, Z_BITS_index 0#usize (by decide)]
   have h := times_minus_z_loop_refines px py (⟨ofFp2x8 px, ofFp2x8 py, Fp2x8.one⟩, 0)
     (UScalar.ofNatCore Z_BITS[(0#usize).val]! (by decide)) Z_BITS[0]! (by simp) (by decide)
   simp only [toG2x8, toFp2x8_ofFp2x8] at h
@@ -144,7 +144,7 @@ theorem times_minus_z_refines (px py : fp2x8.Fp2x8) :
 theorem scott_membership_refines (px py : fp2x8.Fp2x8) :
     g2x8.G2x8.scott_membership px py =
       ok (toMembership (G2x8.scott_membership (ofFp2x8 px) (ofFp2x8 py))) := by
-  simp only [g2x8.G2x8.scott_membership, times_minus_z_refines, bind_tc_ok, Function.uncurry_def,
+  simp only [g2x8.G2x8.scott_membership, times_minus_z_refines, bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def,
     G2x8.scott_membership]
   generalize G2x8.times_minus_z (ofFp2x8 px) (ofFp2x8 py) = T
   obtain ⟨mzp, cu⟩ := T

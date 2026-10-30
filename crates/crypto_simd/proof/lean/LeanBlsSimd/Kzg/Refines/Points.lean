@@ -23,7 +23,7 @@ private theorem decode_points_loop_eq
     have hstop : ¬ i < Slice.len encodings := by simp [hn]
     refine ⟨points, i, ?_, ?_, by simp⟩
     · rw [verify.decode_points_loop, loop.eq_1]
-      simp only [verify.decode_points_loop.body, hstop, if_false]
+      simp only [verify.decode_points_loop.body, hstop, ite_false, bind_ok]
     · simp [UScalar.eq_equiv, hn]
   | cons verdict remaining ih =>
     have hlt : i.val < encodings.val.length := by simp [hd, hi] at hlen ⊢; omega
@@ -37,7 +37,7 @@ private theorem decode_points_loop_eq
       refine ⟨points, i, ?_, ?_, by simp⟩
       · rw [verify.decode_points_loop, loop.eq_1]
         simp only [verify.decode_points_loop.body, htest,
-          if_true, hindex, bind_tc_ok]
+          ite_true, hindex, bind_tc_ok, bind_ok]
       · have hne : i ≠ Slice.len encodings := by
           intro h
           have hval := congrArg UScalar.val h
@@ -50,7 +50,7 @@ private theorem decode_points_loop_eq
         simp only [hd, List.length_append, List.length_map, List.length_cons] at hlen
         omega
       let points' : alloc.vec.Vec blst.blst_p1_affine :=
-        ⟨points.val ++ [p], by simpa using hb⟩
+        alloc.vec.Vec.from (points.val ++ [p]) (by simpa using hb)
       have hpush : alloc.vec.Vec.push points p = ok points' := by
         simp [alloc.vec.Vec.push, hb, points']
       have hib : i.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
@@ -66,14 +66,16 @@ private theorem decode_points_loop_eq
       have hd' : decoded.val = points'.val.map some ++ remaining := by
         simp only [points', List.map_append, List.map_cons, List.map_nil,
           List.append_assoc, List.cons_append, List.nil_append]
-        exact hd
+        simpa only [alloc.vec.Vec.from_val, List.map_append, List.map_cons, List.map_nil, List.append_assoc, List.singleton_append] using hd
       obtain ⟨out, j, hloop, hresult, hval⟩ := ih points' i' hd'
         (by simp [points', hi', hi])
       refine ⟨out, j, ?_, by simpa using hresult, ?_⟩
-      · rw [verify.decode_points_loop, loop.eq_1]
-        simp only [verify.decode_points_loop.body, htest,
-          if_true, hindex, g1_point.G1Point.into_blst, bind_tc_ok, hpush, hadd]
-        exact hloop
+      · have hbody : verify.decode_points_loop.body encodings decoded points i =
+            ok (cont (points', i')) := by
+          simp only [verify.decode_points_loop.body, htest, ite_true, hindex,
+            g1_point.G1Point.into_blst, bind_tc_ok, bind_ok, hpush, hadd]
+        rw [verify.decode_points_loop, loop.eq_1]
+        simpa only [hbody, bind_ok] using! hloop
       · simpa [points', List.append_assoc] using hval
 
 theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
@@ -92,13 +94,13 @@ theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, alloc.vec.Vec.new]
   let initial : alloc.vec.Vec (Option g1_point.G1Point) :=
-    ⟨List.replicate encodings.val.length none, by simpa using encodings.property⟩
+    alloc.vec.Vec.from (List.replicate encodings.val.length none) (by simpa using encodings.property)
   have hresize : alloc.vec.Vec.resize optionClone emptyDecoded (Slice.len encodings) none =
       ok initial := by
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, initial]
   obtain ⟨output, houtput, houtputVal, _⟩ := g1_decode_refinement encodings (alloc.vec.Vec.deref_mut initial).1
-    (by simp [initial, alloc.vec.Vec.deref_mut])
+    (by simp [initial, alloc.vec.Vec.deref_mut, alloc.vec.Vec.from, Slice.from_val])
   let resultDecoded := (alloc.vec.Vec.deref_mut initial).2 output
   have hdecoded : resultDecoded.val = encodings.val.map specVerdict := houtputVal
   let emptyPoints := alloc.vec.Vec.new blst.blst_p1_affine
@@ -114,14 +116,14 @@ theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.
   refine ⟨resultDecoded, resultPoints, ?_, hdecoded, ?_⟩
   · unfold verify.decode_points
     dsimp only [optionClone] at hclear hresize
-    simp only [hclear, hresize, bind_tc_ok, lift, alloc.vec.Vec.deref_mut,
-      Function.uncurry_apply_pair]
+    simp only [hclear, hresize, bind_tc_ok, bind_ok, lift, alloc.vec.Vec.deref_mut,
+      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     dsimp only [alloc.vec.Vec.deref_mut] at houtput
     rw [houtput]
-    simp only [bind_tc_ok, blst.blst_p1_affine.Insts.CoreDefaultDefault.default, hpoints]
+    simp only [bind_tc_ok, bind_ok, blst.blst_p1_affine.Insts.CoreDefaultDefault.default, hpoints]
     dsimp only [resultDecoded, alloc.vec.Vec.deref_mut] at hloop ⊢
     rw [hloop]
-    simp only [bind_tc_ok, Function.uncurry_apply_pair, hresult]
+    simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hresult]
   · simpa [emptyPoints, alloc.vec.Vec.new] using hval
 
 end LeanBlsSimd.Kzg

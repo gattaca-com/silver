@@ -3,6 +3,8 @@ import LeanBlsSimd.Spec.Cyclotomic.Field
 
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.LaneTower
 
 noncomputable def embed (x : Fp2Field) : Fp12Field :=
@@ -19,8 +21,7 @@ theorem lane_basis (h : Fin 2) (k : Fin 3) (x : Fp2Field) :
   all_goals
     apply QuadraticAlgebra.ext
     all_goals
-      norm_num [value, single, embed, Fp12.toField, Fp6.toField, Fp2.toField,
+      norm_num [value, single, embed, Fp12.toField_mk, Fp6.toField_mk, Fp2.toField_mk,
         Fp6Field.assemble, Fp12Field.w, pow_succ, QuadraticAlgebra.omega]
-      simp [show (⟨0, 0⟩ : Fp2Field) = 0 from rfl]
 
 end LeanBlsSimd.LaneTower

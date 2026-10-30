@@ -9,6 +9,8 @@ namespace LeanBlsSimd.Kzg
 set_option maxHeartbeats 1000000
 set_option maxRecDepth 4000
 
+attribute [local implicit_reducible] ZMod Fr.modulus
+
 private def columnAdd (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (c : Nat) (acc : Array Fr) (k : Nat) : Array Fr :=
   if indices[k]! = c then
@@ -71,7 +73,7 @@ theorem columnValues_get (indices : Array Nat) (evals : Array CosetEvals)
   trans (List.range indices.size |>.map fun k =>
     if indices[k]! = c then powers[k]! * (evals[k]!)[j.val]! else (0 : Fr)).sum
   · exact zero_add _
-  simpa only [List.toFinset_range] using
+  simpa only [List.toFinset_range] using!
     (List.sum_toFinset (fun k => if indices[k]! = c then powers[k]! * (evals[k]!)[j.val]! else (0 : Fr))
       (List.nodup_range (n := indices.size))).symm
 
@@ -85,10 +87,8 @@ theorem cellInterpolant_add (c : Nat) (a b : Fin 64 → Fr) :
 theorem cellInterpolant_mul (c : Nat) (r : Fr) (a : Fin 64 → Fr) :
     cellInterpolant c (fun j => r * a j) =
       _root_.Polynomial.C r * cellInterpolant c a := by
-  simp only [cellInterpolant, Lagrange.interpolate_apply, map_mul, Finset.mul_sum]
-  apply Finset.sum_congr rfl
-  intro j _
-  rw [mul_assoc]
+  simpa only [Pi.smul_def, smul_eq_mul, _root_.Polynomial.smul_eq_C_mul] using
+    (cellInterpolant c).map_smul r a
 
 private theorem cellInterpolant_sum (c : Nat) (ks : Finset Nat) (values : Nat → Fin 64 → Fr) :
     cellInterpolant c (fun j => ∑ k ∈ ks, values k j) =
@@ -111,8 +111,8 @@ theorem columnValues_interpolant (indices : Array Nat) (evals : Array CosetEvals
   apply Finset.sum_congr rfl
   intro k _
   by_cases hc : indices[k]! = c
-  · simp only [hc, if_true, cellInterpolant_mul]
-  · simp only [hc, if_false, cellInterpolant_zero]
+  · simp only [hc, ite_true, cellInterpolant_mul]
+  · simp only [hc, ite_false, cellInterpolant_zero]
 
 theorem sum_columnValues_interpolant (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (hi : ∀ c ∈ indices, c < 128) :
@@ -148,6 +148,27 @@ private theorem column_fold_polynomial
     simp only [List.map_cons, List.sum_cons]
     exact add_assoc _ _ _
 
+private theorem column_range_polynomial
+    (hifft : ∀ c, c < 128 → ∀ values : Array Fr, values.size = 64 →
+      coeffPolynomial (cellIfft c values) = cellInterpolant c (fun j => values[j.val]!))
+    (indices : Array Nat) (evals : Array CosetEvals) (powers : Array Fr)
+    (n : Nat) (hcs : ∀ c, c < n → c < 128) :
+    coeffPolynomial ((Array.range n).foldl
+      (fun total c => addPolynomialcoeff total (cellIfft c (columnValues indices evals powers c)))
+      (Array.replicate 64 Fr.zero)) =
+      ∑ c ∈ Finset.range n,
+        cellInterpolant c (fun j => (columnValues indices evals powers c)[j.val]!) := by
+  conv_lhs =>
+    arg 1
+    rw [← Array.foldl_toList, Array.toList_range]
+  have hfold := column_fold_polynomial hifft indices evals powers (List.range n)
+    (fun c hc => hcs c (List.mem_range.mp hc)) (Array.replicate 64 Fr.zero)
+  rw [hfold, coeffPolynomial_replicate_zero, zero_add]
+  have hsum := List.sum_toFinset
+    (fun c => cellInterpolant c (fun j => (columnValues indices evals powers c)[j.val]!))
+    (List.nodup_range (n := n))
+  rw [← hsum, List.toFinset_range]
+
 theorem columnRli_polynomial
     (hifft : ∀ c, c < 128 → ∀ values : Array Fr, values.size = 64 →
       coeffPolynomial (cellIfft c values) = cellInterpolant c (fun j => values[j.val]!))
@@ -159,10 +180,7 @@ theorem columnRli_polynomial
   change coeffPolynomial ((Array.range 128).foldl
     (fun total c => addPolynomialcoeff total (cellIfft c (columnValues indices evals powers c)))
     (Array.replicate 64 Fr.zero)) = _
-  rw [← Array.foldl_toList, Array.toList_range,
-    column_fold_polynomial hifft indices evals powers _ (fun c hc => List.mem_range.mp hc),
-    coeffPolynomial_replicate_zero, zero_add]
-  rw [← List.sum_toFinset _ List.nodup_range]
-  exact sum_columnValues_interpolant indices evals powers hi
+  exact (column_range_polynomial hifft indices evals powers 128 (fun _ hc => hc)).trans
+    (sum_columnValues_interpolant indices evals powers hi)
 
 end LeanBlsSimd.Kzg

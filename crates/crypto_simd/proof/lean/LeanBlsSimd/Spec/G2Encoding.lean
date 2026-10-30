@@ -49,7 +49,7 @@ private theorem zeroLoop (b : ByteArray) (l : List Nat) (v : Bool) :
       if b.get! i ≠ 0 then ForInStep.yield false else ForInStep.yield r)) = true ↔
       v = true ∧ ∀ i ∈ l, b.get! i = 0 := by
   induction l generalizing v with
-  | nil => simp [List.forIn_nil, id_pure]; rfl
+  | nil => simp [List.forIn_nil, id_pure]
   | cons i l ih =>
     rw [List.forIn_cons]
     by_cases h : b.get! i = 0

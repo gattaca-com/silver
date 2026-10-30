@@ -12,7 +12,8 @@ private theorem get_reverse {α : Type} [Inhabited α] (xs : List α) (i : Nat)
 theorem to_le_bytes_swapWord (word : UInt64) :
     core.num.U64.to_le_bytes (toU64 (swapWord word)) =
       core.num.U64.to_be_bytes (toU64 word) := by
-  apply Subtype.ext
+  ext1
+  simp only [core.num.U64.to_le_bytes, core.num.U64.to_be_bytes, Array.from_val]
   change (swapWord word).toBitVec.toLEBytes.map _ = word.toBitVec.toBEBytes.map _
   apply congrArg (List.map (@UScalar.mk .U8))
   apply List.ext_getElem
@@ -24,7 +25,7 @@ theorem to_le_bytes_swapWord (word : UInt64) :
     rw [← getElem!_pos _ i hi, ← getElem!_pos _ i hi']
     simp only [BitVec.toBEBytes]
     rw [get_reverse _ i (by simpa using hi8)]
-    simp only [BitVec.toLEBytes_length word.toBitVec (by decide)]
+    simp only [BitVec.toLEBytes_length word.toBitVec, Nat.reduceAdd, Nat.reduceDiv]
     rw [BitVec.toLEBytes_getElem!_testBit _ _ _ hj,
       BitVec.toLEBytes_getElem!_testBit _ _ _ hj]
     simp only [BitVec.getElem!_eq_testBit_toNat, UInt64.toNat_toBitVec, Nat.reduceDiv]

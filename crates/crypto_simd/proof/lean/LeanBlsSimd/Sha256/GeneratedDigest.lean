@@ -9,12 +9,14 @@ set_option maxRecDepth 2048
 attribute [local irreducible] Spec.digest
 
 def writtenBytes (state : Array U32 8#usize) : Array U8 32#usize :=
-  ⟨List.ofFn (fun i : Fin 32 => (core.num.U32.to_be_bytes state.val[i.val/4]!).val[i.val%4]!),by simp⟩
+  Array.make 32#usize
+    (List.ofFn (fun i : Fin 32 => (core.num.U32.to_be_bytes state.val[i.val/4]!).val[i.val%4]!))
+    (by simp)
 
 theorem writtenBytes_get (state : Array U32 8#usize) (w b : Nat) (hw : w < 8) (hb : b < 4) :
     (writtenBytes state).val[4*w+b]! = (core.num.U32.to_be_bytes state.val[w]!).val[b]! := by
   rw [getElem!_pos _ _ (by rw [(writtenBytes state).property]; change 4*w+b < 32; omega)]
-  simp only [writtenBytes,List.getElem_ofFn]
+  simp only [writtenBytes,Array.make,Array.from_val,List.getElem_ofFn]
   have hd : (4*w+b)/4 = w := by omega
   have hm : (4*w+b)%4 = b := by omega
   rw [hd,hm]
@@ -26,21 +28,22 @@ theorem digest_step (state : Array U32 8#usize) (digest : Array U8 32#usize)
         ok (cont (digest.setSlice! (4*i.val) (core.num.U32.to_be_bytes state.val[i.val]!).val,next)) := by
   let next : Usize := UScalar.ofNatCore (i.val+1) (by scalar_tac)
   refine ⟨next,rfl,?_⟩
-  simp only [sha256.portable.Sha256.finish_loop.body,show i < 8#usize from hi,if_true]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq]
+  simp only [sha256.portable.Sha256.finish_loop.body,show i < 8#usize from hi,ite_true]
+  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
   rw [index_mut_range _ _ _ (by scalar_tac) (by scalar_tac)]
-  simp only [bind_tc_ok,Function.uncurry_apply_pair]
+  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   rw [Portable.index_word state i hi]
-  simp only [bind_tc_ok,lift]
+  simp only [bind_tc_ok, bind_ok,lift]
   rw [copy_eq _ _ (by
-    rw [range_length _ _ _ (by simp only [Array.to_slice,digest.property,UScalar.ofNatCore_val_eq]; scalar_tac)]
-    simp only [Array.to_slice,(core.num.U32.to_be_bytes _).property,UScalar.ofNatCore_val_eq]
-    change 4*i.val+4-4*i.val = 4
+    rw [range_length _ _ _ (by
+      simp only [Array.to_slice,Slice.from_val,digest.property,UScalar.ofNatCore_val_eq]; scalar_tac)]
+    simp only [Array.to_slice,Slice.from_val,(core.num.U32.to_be_bytes _).property,
+      UScalar.ofNatCore_val_eq]
     omega)]
-  simp (disch := scalar_tac) only [bind_tc_ok,add_ok]
+  simp (disch := scalar_tac) only [bind_tc_ok, bind_ok,add_ok]
   congr 1
   rw [words_get state i.val hi,← getElem!_pos state.val i.val (by rw [state.property]; exact hi),word_ofWord]
-  rfl
+  simp only [Array.to_slice,Slice.from_val,UScalar.ofNatCore_val_eq] <;> rfl
 
 theorem digest_loop_refines (state : Array U32 8#usize) (digest : Array U8 32#usize)
     (i : Usize) (hi : i.val ≤ 8)
@@ -50,14 +53,14 @@ theorem digest_loop_refines (state : Array U32 8#usize) (digest : Array U8 32#us
   | zero =>
     have he : i.val = 8 := by omega
     have hd : digest = writtenBytes state := by
-      apply Subtype.ext
+      ext1
       apply List.ext_getElem
       · rw [digest.property,(writtenBytes state).property]
       · intro k hk hk'
         rw [← getElem!_pos digest.val k hk,← getElem!_pos (writtenBytes state).val k hk']
         exact hpre k (by rw [digest.property] at hk; change k < 32 at hk; omega)
     rw [sha256.portable.Sha256.finish_loop,loop.eq_1]
-    simp [sha256.portable.Sha256.finish_loop.body,show ¬i < 8#usize by change ¬i.val < 8; omega,hd]
+    simp [sha256.portable.Sha256.finish_loop.body,show ¬i < 8#usize by change ¬i.val < 8; omega,hd, bind_ok]
   | succ n ih =>
     obtain ⟨next,hnext,hbody⟩ := digest_step state digest i (by omega)
     let chunk := (core.num.U32.to_be_bytes state.val[i.val]!).val
@@ -65,7 +68,7 @@ theorem digest_loop_refines (state : Array U32 8#usize) (digest : Array U8 32#us
     let digest' := digest.setSlice! (4*i.val) chunk
     have hpre' : ∀ k < 4*next.val, digest'.val[k]! = (writtenBytes state).val[k]! := by
       intro k hk
-      change (digest.val.setSlice! (4*i.val) chunk)[k]! = _
+      rw [show digest'.val = digest.val.setSlice! (4*i.val) chunk from Array.setSlice!_val _ _ _]
       by_cases hold : k < 4*i.val
       · rw [List.getElem!_setSlice!_prefix _ _ _ _ hold]
         exact hpre k hold
@@ -76,7 +79,7 @@ theorem digest_loop_refines (state : Array U32 8#usize) (digest : Array U8 32#us
         · rw [hchunk,digest.property]; change 4*i.val ≤ k ∧ k-4*i.val < 4 ∧ k < 32; omega
     have hr := ih digest' next (by omega) hpre' (by omega)
     rw [sha256.portable.Sha256.finish_loop,loop.eq_1]
-    simpa only [hbody] using hr
+    simpa only [hbody, bind_ok] using! hr
 
 
 private theorem bytes_ext (a b : ByteArray) (hs : a.size=b.size)

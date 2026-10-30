@@ -54,15 +54,25 @@ theorem g1Lincomb_eq (points : Array KZGCommitment) (scalars : Array Fr) :
     | rfl
     | (congr!
        rename_i x
+       unfold uncompressG1
        cases G1.uncompress x <;> rfl)
+
+theorem uncompressG1_eq (b : Bytes48) : uncompressG1 b = liftE (Model.uncompress b) := by
+  unfold uncompressG1 Model.uncompress
+  try (cases G1.uncompress b <;> rfl)
+
+theorem g1LincombPoints_eq (points : Array G1) (scalars : Array Fr) :
+    g1LincombPoints points scalars = liftE (Model.lincombPoints points scalars) := by
+  unfold g1LincombPoints Model.lincombPoints
+  simp only [liftE_bind, liftE_pure, liftE_throw, apply_ite liftE]
 
 theorem verifyWith_pure (s : TrustedSetup) (rli : Model.RliStep)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
     Model.verifyWith (pure s) rli cs indices cells ps =
       liftE (Model.verifyPure s rli cs indices cells ps) := by
   unfold Model.verifyWith Model.verifyPure Model.implWith Model.implPure
-  simp only [g1Lincomb_eq, liftM_eq_liftE, liftE_bind, liftE_pure, liftE_throw, liftE_arrayMapM,
-    apply_ite liftE]
+  simp only [g1Lincomb_eq, uncompressG1_eq, g1LincombPoints_eq, liftM_eq_liftE, liftE_bind,
+    liftE_pure, liftE_throw, liftE_arrayMapM, apply_ite liftE]
   congr! with x
 
 theorem front_decomposition
@@ -84,8 +94,9 @@ theorem front_decomposition
 theorem impl_decomposition :
     verifyCellKzgProofBatchImpl = Model.implWith (monadLift TrustedSetup.get!) Model.specRli := by
   funext cs ci indices evals ps
-  unfold verifyCellKzgProofBatchImpl Model.implWith Model.specRli
-  simp only [liftM_eq_liftE, liftE_bind, liftE_pure, liftE_arrayFoldlM]
+  unfold verifyCellKzgProofBatchImpl Model.implWith Model.specRli Model.shiftOf
+  simp only [liftM_eq_liftE, liftE_bind, liftE_pure, liftE_throw, liftE_arrayFoldlM,
+    liftE_arrayMapM, apply_ite liftE]
   rfl
 
 theorem upstream_eq_verifyWith

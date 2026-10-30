@@ -38,7 +38,7 @@ theorem schedule_four (w : Array UInt32) (t : Nat) (hlo : 16 ≤ t) (hi : t+4 �
     norm_num only [quad,Vector.getElem_mk,List.getElem_toArray,List.getElem_cons_zero,List.getElem_cons_succ]
   all_goals
     simp (disch := (simp (failIfUnchanged := false) only [Array.set!_eq_setIfInBounds,Array.size_setIfInBounds]; omega)) only
-      [Spec.scheduleStep,read_set,if_pos,if_neg,if_true]
+      [Spec.scheduleStep,read_set,ite_eq_left,ite_eq_right,ite_true]
   all_goals
     have hsub (k : Nat) (hk : k < 16) : t-k = t-16+(16-k) := by omega
     have hadd (j k : Nat) (hj : 0 < j) (hk : k ≤ 16) : t+j-k = t-16+(16+j-k) := by omega

@@ -33,19 +33,19 @@ namespace silver_bls
 namespace Bridge
 
 def toFp2 (p : blst.blst_fp2) : _root_.silver_crypto_simd.blst.blst_fp2 :=
-  ⟨⟨p.fp.val.map (fun fp => ⟨fp.l⟩), by simp⟩⟩
+  ⟨Array.make 2#usize (p.fp.val.map (fun fp => ⟨fp.l⟩)) (by simp)⟩
 
 def fromFp2 (p : _root_.silver_crypto_simd.blst.blst_fp2) : blst.blst_fp2 :=
-  ⟨⟨p.fp.val.map (fun fp => ⟨fp.l⟩), by simp⟩⟩
+  ⟨Array.make 2#usize (p.fp.val.map (fun fp => ⟨fp.l⟩)) (by simp)⟩
 
 @[simp] theorem from_to_fp2 (p : blst.blst_fp2) : fromFp2 (toFp2 p) = p := by
   cases p
-  simp [fromFp2, toFp2, List.map_map, Function.comp_def]
+  simp [fromFp2, toFp2, Array.make, Array.from_val, List.map_map, Function.comp_def]
 
 @[simp] theorem to_from_fp2 (p : _root_.silver_crypto_simd.blst.blst_fp2) :
     toFp2 (fromFp2 p) = p := by
   cases p
-  simp [fromFp2, toFp2, List.map_map, Function.comp_def]
+  simp [fromFp2, toFp2, Array.make, Array.from_val, List.map_map, Function.comp_def]
 
 def toUpstream (p : blst.blst_p2_affine) : _root_.silver_crypto_simd.blst.blst_p2_affine :=
   ⟨toFp2 p.x, toFp2 p.y⟩
@@ -62,11 +62,11 @@ def fromUpstream (p : _root_.silver_crypto_simd.blst.blst_p2_affine) : blst.blst
 
 def toUpstreamSlice (s : Slice (Option blst.blst_p2_affine)) :
     Slice (Option _root_.silver_crypto_simd.blst.blst_p2_affine) :=
-  ⟨s.val.map (Option.map toUpstream), by simpa using s.property⟩
+  Slice.from (s.val.map (Option.map toUpstream)) (by simpa using s.property)
 
 def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p2_affine)) :
     Slice (Option blst.blst_p2_affine) :=
-  ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
+  Slice.from (s.val.map (Option.map fromUpstream)) (by simpa using s.property)
 
 def uncompress (cpu : _root_.silver_crypto_simd.RuntimeFeatures) (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (inputs : Slice (Array Std.U8 96#usize)) (out : Slice (Option blst.blst_p2_affine)) :
@@ -86,10 +86,10 @@ theorem Bridge.uncompress_eq_spec_list (cpu : _root_.silver_crypto_simd.RuntimeF
     ∃ result, Bridge.uncompress cpu upstream inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hr, hv, _⟩ := @LeanBlsSimd.UncompressG2.uncompress_in_g2_eq_spec_list
-    cpu upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
+    cpu upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice, Slice.from_val] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
-  · simp only [Bridge.uncompress, hr, bind_tc_ok]
-  · simp [Bridge.fromUpstreamSlice, hv, List.map_map, specVerdict, Function.comp_def]
+  · simp only [Bridge.uncompress, hr, bind_tc_ok, bind_ok]
+  · simp [Bridge.fromUpstreamSlice, Slice.from_val, hv, List.map_map, specVerdict, Function.comp_def]
 
 namespace Fixed
 
@@ -140,11 +140,15 @@ theorem caller_eq_spec_list [Fixed.Externals] (h : Fixed.UncompressMatchesSpec)
     (inputs : Slice (Array Std.U8 96#usize)) (out : Slice (Option blst.blst_p2_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, caller inputs out = ok result ∧ result.val = inputs.val.map specVerdict :=
-  h inputs out hlen
+  by
+    simpa only [caller, silver_crypto_simd.bls.COMPRESSED_LEN,
+      silver_crypto_simd.bls.uncompress_in_g2, bind_tc_ok, bind_ok] using h inputs out hlen
 
 example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) :
-    @caller external inputs out = external.uncompress inputs out := rfl
+    @caller external inputs out = external.uncompress inputs out := by
+  simp only [caller, silver_crypto_simd.bls.COMPRESSED_LEN,
+    silver_crypto_simd.bls.uncompress_in_g2, bind_tc_ok, bind_ok]
 
 example (cpu : _root_.silver_crypto_simd.RuntimeFeatures) (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (hblst : @LeanBlsSimd.UncompressG2.BlstMatchesSpec upstream)

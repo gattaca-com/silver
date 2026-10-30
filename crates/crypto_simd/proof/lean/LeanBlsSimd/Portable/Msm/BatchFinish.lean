@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Msm.Batch
 
 abbrev Field := ZMod Bls.Fp.modulus
@@ -33,9 +35,8 @@ theorem finish_encoded [RuntimeFeatures]
   have heo : adds.out.val[i.val] = output := by simpa only [List.getElem?_eq_getElem hio, Option.some.injEq] using ho
   simp only [portable.msm.pairs.BatchedAdds.finish, BucketsRefines.vec_index _ _ hia, hea,
     BucketsRefines.vec_index _ _ hib, heb, BucketsRefines.vec_index _ _ hio, heo,
-    hsa,hsb,bind_tc_ok,Function.uncurry_def,Fp.sub_encoded,Fp.mul_encoded,Fp.square_encoded,Store.set_refines _ _ _ _ hbound]
+    hsa,hsb,bind_tc_ok, bind_ok,Function.uncurry_def, aeneas_uncurry_def,Fp.sub_encoded,Fp.mul_encoded,Fp.square_encoded,Store.set_refines _ _ _ _ hbound]
   simp only [finishValues, pow_two]
-  rfl
 
 theorem finishValues_nonsingular {xa ya xb yb : Field}
     (ha : G1Spec.E.Nonsingular xa ya) (hb : G1Spec.E.Nonsingular xb yb) (hne : xa ≠ xb) :

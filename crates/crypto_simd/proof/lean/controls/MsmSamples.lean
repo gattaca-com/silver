@@ -17,7 +17,7 @@ def samePoint (a b : G1) : Bool :=
 #eval
   letI : RuntimeFeatures := ⟨false,false,false⟩
   (do
-    let .ok initial := portable.msm.Msm.Insts.CoreDefaultDefault.default
+    let .ok initial := portable.msm.Msm.Insts.CoreDefaultDefault.default.match
       | throw (IO.userError "portable MSM default failed")
     let mut state := initial
     let cases := [([G1.generator], [1]), ([G1.generator,G1.generator], [2,3]),
@@ -26,8 +26,8 @@ def samePoint (a b : G1) : Bool :=
     for (ps,ks) in cases do
       check "MSM fixture alignment" (ps.length == ks.length)
       check "MSM fixture scalars" (ks.all (fun k => decide (k < Fr.modulus)))
-      let .ok (point,next) := state.msm (slice (ps.map g1Affine))
-          (slice (ks.map (words 4#usize)))
+      let .ok (point,next) := (state.msm (slice (ps.map g1Affine))
+          (slice (ks.map (words 4#usize)))).match
         | throw (IO.userError "portable MSM failed")
       state := next
       let want := G1.msm (ps.map (fun p => g1ReadAffine (g1Affine p))).toArray
@@ -36,18 +36,18 @@ def samePoint (a b : G1) : Bool :=
     let repeated := slice [g1Affine G1.generator, g1Affine G1.generator]
     let ones := slice [words 4#usize 1, words 4#usize 1]
     -- Chunk.lean ties this prefix to generated chunk_sum; observe its actual round verdict.
-    let .ok filtered := filterPrefix state repeated ones
+    let .ok filtered := (filterPrefix state repeated ones).match
       | throw (IO.userError "rejection fixture filtering failed")
-    let .ok prepared := initialise filtered
+    let .ok prepared := (initialise filtered).match
       | throw (IO.userError "rejection fixture initialization failed")
-    let .ok (roundsOk,_) := prepared.pair_rounds prepared.store.len
+    let .ok (roundsOk,_) := (prepared.pair_rounds prepared.store.len).match
       | throw (IO.userError "rejection fixture rounds failed")
     check "equal-point fixture must reject a batch round" (!roundsOk)
-    let .ok (point,next) := state.msm repeated ones
+    let .ok (point,next) := (state.msm repeated ones).match
       | throw (IO.userError "MSM rejected-round fallback failed")
     state := next
     check "MSM rejected-round fallback sum" (samePoint (g1ReadJacobian point) (G1.mul G1.generator 2))
-    let .ok (wrong,_) := state.msm (slice [g1Affine G1.generator]) (slice [words 4#usize 2])
+    let .ok (wrong,_) := (state.msm (slice [g1Affine G1.generator]) (slice [words 4#usize 2])).match
       | throw (IO.userError "MSM mutation failed before comparison")
     check "wrong MSM weight accepted" (!(samePoint (g1ReadJacobian wrong) G1.generator))
     IO.println "generated portable MSM: reused-scratch samples, rejected-round fallback and negative control passed"

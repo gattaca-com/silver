@@ -7,8 +7,9 @@ open EthLib.Cryptography Bls Kzg
 open scoped EthLib.Cryptography.Bls.Fr
 open silver_crypto_simd silver_crypto_simd.kzg
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
@@ -49,7 +50,7 @@ private theorem wide_tables_loop
     have he : stage = logSize := by omega
     refine ⟨wide, ?_, by simpa only [he] using hw⟩
     rw [fft8.Fft8.new_loop1, loop.eq_1]
-    simp [fft8.Fft8.new_loop1.body, UScalar.lt_equiv, hh, hn, he]
+    simp [fft8.Fft8.new_loop1.body, UScalar.lt_equiv, hh, hn, he, bind_ok]
   | succ rem ih =>
     have hst : stage < logSize := by omega
     have hhalf : 8 ≤ half.val := by
@@ -86,9 +87,9 @@ private theorem wide_tables_loop
       simp only [UScalar.lt_equiv, hh, hn]
       exact Nat.pow_lt_pow_right (by decide) hst
     have hbody : fft8.Fft8.new_loop1.body input n stride wide half = ok (cont (next, half')) := by
-      simp only [fft8.Fft8.new_loop1.body, hlt, if_true, hstage, hmul, bind_tc_ok]
+      simp only [fft8.Fft8.new_loop1.body, hlt, ite_true, hstage, hmul, bind_tc_ok, bind_ok]
     rw [fft8.Fft8.new_loop1, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 private theorem short_tables_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
@@ -118,28 +119,28 @@ private theorem short_tables_refinement
     simpa using scalar_mul_ok 4#usize 2#usize (by scalar_tac)
   have hstop : fft8.Fft8.new_loop0 input n stride s4 8#usize = ok s4 := by
     rw [fft8.Fft8.new_loop0, loop.eq_1]
-    simp [fft8.Fft8.new_loop0.body, fr8.LANES]
+    simp [fft8.Fft8.new_loop0.body, fr8.LANES, bind_ok]
   have hloop4 : fft8.Fft8.new_loop0 input n stride s2 4#usize = ok s4 := by
     have hbody : fft8.Fft8.new_loop0.body input n stride s2 4#usize =
         ok (cont (s4, 8#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 4 < 8 by decide, if_true, hs4, hm4, bind_tc_ok]
+        UScalar.ofNatCore_val_eq, show 4 < 8 by decide, ite_true, hs4, hm4, bind_tc_ok, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
-    simpa only [hbody] using hstop
+    simpa only [hbody, bind_ok] using! hstop
   have hloop2 : fft8.Fft8.new_loop0 input n stride s1 2#usize = ok s4 := by
     have hbody : fft8.Fft8.new_loop0.body input n stride s1 2#usize =
         ok (cont (s2, 4#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 2 < 8 by decide, if_true, hs2, hm2, bind_tc_ok]
+        UScalar.ofNatCore_val_eq, show 2 < 8 by decide, ite_true, hs2, hm2, bind_tc_ok, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
-    simpa only [hbody] using hloop4
+    simpa only [hbody, bind_ok] using! hloop4
   refine ⟨s4, ?_, by simpa using hl4, ?_⟩
   · have hbody : fft8.Fft8.new_loop0.body input n stride (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) 1#usize =
         ok (cont (s1, 2#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 1 < 8 by decide, if_true, hs1, hm1, bind_tc_ok]
+        UScalar.ofNatCore_val_eq, show 1 < 8 by decide, ite_true, hs1, hm1, bind_tc_ok, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
-    simpa only [hbody] using hloop2
+    simpa only [hbody, bind_ok] using! hloop2
   · intro h hh j
     rcases hh with rfl | rfl | rfl
     · rw [hf4 _ (by have := j.isLt; simp only [UScalar.ofNatCore_val_eq]; omega),
@@ -179,7 +180,7 @@ theorem fft_new_refinement
     simp only [hinput, List.length_map, _root_.Array.length_toList]
   have hmax : roots.size ≤ Usize.max := hlen ▸ input.property
   have hlenVal : (Slice.len input).val = roots.size := by
-    simpa only [Slice.len, UScalar.ofNatCore_val_eq] using hlen
+    simpa only [Slice.len, Usize.ofNatCore_val_eq] using! hlen
   obtain ⟨stride, hstride, hstrideval⟩ := UScalar.div_spec (Slice.len input) (y := n) (by omega)
   rw [hlenVal] at hstrideval
   have hproduct : stride.val * n.val = roots.size := by
@@ -205,20 +206,20 @@ theorem fft_new_refinement
     hinput n stride hproduct hn64 hnmax hrootN
   let table : fft8.Fft8 := ⟨vectors, wide, short⟩
   refine ⟨table, ?_, ?_⟩
-  · obtain ⟨sub, hsub, hsubval, _⟩ := WP.spec_imp_exists
+  · obtain ⟨sub, hsub, hsubval, _⟩ := spec_imp_exists
       (Usize.sub_spec (x := n) (y := 1#usize) (by simp only [UScalar.ofNatCore_val_eq]; omega))
     have hand : n &&& sub = 0#usize := by
       apply UScalar.eq_of_val_eq
       simp only [UScalar.val_and, hnpow, hsubval, UScalar.ofNatCore_val_eq]
       simp
-    obtain ⟨rem, hrem, hremval⟩ := WP.spec_imp_exists
+    obtain ⟨rem, hrem, hremval⟩ := spec_imp_exists
       (UScalar.rem_spec (Slice.len input) (y := n) (by omega))
     have he : rem = 0#usize := UScalar.eq_of_val_eq (by simpa only [hlenVal, hdiv, UScalar.ofNatCore_val_eq] using hremval)
     subst rem
     have hblock : fr8.LANES * fr8.LANES = ok 64#usize := by
-      simpa only [fr8.LANES] using scalar_mul_ok 8#usize 8#usize (by scalar_tac)
+      simpa only [fr8.LANES] using! scalar_mul_ok 8#usize 8#usize (by scalar_tac)
     have hcapacity : fr8.LANES - 1#usize = ok 7#usize := by
-      obtain ⟨capacity, hc, hcv, _⟩ := WP.spec_imp_exists
+      obtain ⟨capacity, hc, hcv, _⟩ := spec_imp_exists
         (Usize.sub_spec (x := fr8.LANES) (y := 1#usize) (by simp [fr8.LANES]))
       have heq : capacity = 7#usize := UScalar.eq_of_val_eq (by simpa [fr8.LANES] using hcv)
       simpa only [heq] using hc
@@ -227,14 +228,14 @@ theorem fft_new_refinement
       simpa only [UScalar.le_equiv, UScalar.ofNatCore_val_eq] using hnmax
     have hshift : 1#usize <<< 12#i32 = ok 4096#usize := by
       have hbits := System.Platform.le_numBits
-      obtain ⟨shift, hs, hv, _⟩ := WP.spec_imp_exists
+      obtain ⟨shift, hs, hv, _⟩ := spec_imp_exists
         (Usize.ShiftLeft_IScalar_spec 1#usize 12#i32 (by scalar_tac) (by scalar_tac))
       have he : shift = 4096#usize := by
         apply UScalar.eq_of_val_eq
         simpa [IScalar.toNat, Nat.mod_eq_of_lt (show 4096 < Usize.size by scalar_tac)] using hv
       simpa only [he] using hs
     dsimp only [empty] at hwide
-    simp only [fft8.Fft8.new, hblock, hge, hshift, hle, massert, if_true, bind_tc_ok,
+    simp only [fft8.Fft8.new, hblock, hge, hshift, hle, massert, ite_true, bind_tc_ok, bind_ok,
       hsub, lift, hand, hrem, hstride, hvectors, hwide, hcapacity, hshort, table]
   · have hsize : (sampleRoots roots n.val).size = n.val := _root_.Array.size_ofFn
     refine ⟨by rw [hsize]; exact ⟨logSize, hk6, hk12, hnpow⟩,

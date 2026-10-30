@@ -26,7 +26,7 @@ theorem msm_loop_refinement [RuntimeFeatures]
     · refine ⟨state, total, ?_, ?_⟩
       · rw [portable.msm.Msm.msm_loop, loop.eq_1]
         simp only [portable.msm.Msm.msm_loop.body, UScalar.lt_equiv, Slice.len,
-          Usize.ofNatCore_val_eq, Nat.not_lt.mpr hdone, if_false]
+          Usize.ofNatCore_val_eq, Nat.not_lt.mpr hdone, ite_false, bind_ok]
       · simpa only [List.drop_eq_nil_of_le hdone, List.zip_nil_left, List.map_nil, List.sum_nil,
           add_zero] using htotal
     · have hlt : start.val < points.val.length := by omega
@@ -60,8 +60,8 @@ theorem msm_loop_refinement [RuntimeFeatures]
       have hbody : portable.msm.Msm.msm_loop.body points scalars state total start =
           ok (cont (mid, acc, finish)) := by
         simp only [portable.msm.Msm.msm_loop.body, UScalar.lt_equiv, Slice.len,
-          Usize.ofNatCore_val_eq, hlt, if_true]
-        rw [← bind_assoc_eq]
+          Usize.ofNatCore_val_eq, hlt, ite_true]
+        rw [← Aeneas.Std.bind_assoc]
         change (do
           let finish ← (do
             let rest ← Slice.len points - start
@@ -73,14 +73,15 @@ theorem msm_loop_refinement [RuntimeFeatures]
           let (part, mid) ← state.chunk_sum ps ss
           let total ← portable.g1.G1.add_complete total part
           ok (cont (mid, total, finish))) = _
+        simp only [bind_tc_eq] at hend ⊢
         rw [hend]
-        simp only [bind_tc_ok, hps, hss, hpart, hadd]
+        simp only [bind_tc_ok, bind_ok, hps, hss, hpart, hadd, Aeneas.Std.uncurry_apply_pair]
       obtain ⟨next, out, hloop, hout⟩ := ih (points.val.length - finish.val) (by omega)
         mid acc finish _ hfinishle haccrep rfl
       refine ⟨next, out, ?_, ?_⟩
       · rw [portable.msm.Msm.msm_loop, loop.eq_1]
         dsimp only
-        rw [hbody]
+        rw [hbody, bind_ok]
         exact hloop
       · have heq : start.val + (finish.val - start.val) = finish.val := by omega
         rw [input_sum_split points.val scalars.val start.val (finish.val - start.val), heq,
@@ -121,10 +122,10 @@ theorem msm_refinement [RuntimeFeatures]
     apply UScalar.eq_of_val_eq
     exact halign
   refine ⟨encoded,next,?_,hresult⟩
-  simp only [portable.msm.Msm.msm,halign',massert,if_true,bind_tc_ok,hloop]
+  simp only [portable.msm.Msm.msm,halign',massert,ite_true,bind_tc_ok, bind_ok,hloop]
   change (do let encoded ← out.to_blst; ok (encoded,next)) = _
   rw [hencoded]
-  rfl
+  simp only [bind_tc_ok, bind_ok]
 
 theorem portable_msm_correct [RuntimeFeatures] : Kzg.PortableMsmCorrect :=
   ⟨msm_refinement⟩

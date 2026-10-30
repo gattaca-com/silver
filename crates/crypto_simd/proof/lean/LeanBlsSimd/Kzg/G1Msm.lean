@@ -98,14 +98,14 @@ private theorem msm_related (points points' : Array G1) (scalars : Array Fr)
   rw [← hsize]
   dsimp only
   by_cases h0 : (if points.size ≤ scalars.size then points.size else scalars.size) = 0
-  · simp only [h0, if_true]
+  · simp only [h0, ite_true]
     exact related_zero
-  · simp only [h0, if_false]
+  · simp only [h0, ite_false]
     by_cases h1 : G1.msmMaxBits scalars
         (if points.size ≤ scalars.size then points.size else scalars.size) = 0
-    · simp only [h1, if_true]
+    · simp only [h1, ite_true]
       exact related_zero
-    · simp only [h1, if_false]
+    · simp only [h1, ite_false]
       apply List.foldl_rel related_zero
       intro kk _ a b hab
       exact window_related points points' scalars _ _ hp hab kk

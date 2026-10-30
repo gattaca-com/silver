@@ -76,7 +76,7 @@ theorem execute_loop [RuntimeFeatures]
   | zero =>
     have hz : ¬ i > 0#usize := by simpa only [UScalar.lt_equiv] using Nat.not_lt_of_ge (by change i.val ≤ 0; omega)
     rw [portable.msm.pairs.BatchedAdds.run_loop0_loop0,loop.eq_1]
-    simp only [portable.msm.pairs.BatchedAdds.run_loop0_loop0.body,hz,if_false,execute]
+    simp only [portable.msm.pairs.BatchedAdds.run_loop0_loop0.body,hz,ite_false,execute, bind_ok]
   | succ n ih =>
     let j : Usize := UScalar.ofNatCore n (by have := i.hBounds; omega)
     have hj : j.val = n := rfl
@@ -101,7 +101,7 @@ theorem execute_loop [RuntimeFeatures]
       (fun k hk => hprep k (by omega)) (fun k hk => hnz k (by omega))
     simp only [hj] at hstep
     rw [portable.msm.pairs.BatchedAdds.run_loop0_loop0,loop.eq_1]
-    simp only [hstep]
+    simp only [hstep, bind_ok]
     exact hnext
 
 theorem execute_length (jobs : ℕ → Job) (coords : ℕ → ChainField × ChainField)
@@ -109,7 +109,7 @@ theorem execute_length (jobs : ℕ → Job) (coords : ℕ → ChainField × Chai
     (execute jobs coords n store).points.val.length = store.points.val.length := by
   induction n generalizing store with
   | zero => rfl
-  | succ n ih => simp only [execute,ih,Store.write,List.length_set]
+  | succ n ih => simp only [execute,ih,Store.write,alloc.vec.Vec.from_val,List.length_set]
 
 theorem execute_len (jobs : ℕ → Job) (coords : ℕ → ChainField × ChainField)
     (n : ℕ) (store : portable.msm.store.PointStore) :

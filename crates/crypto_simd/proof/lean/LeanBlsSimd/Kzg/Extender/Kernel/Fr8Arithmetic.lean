@@ -15,7 +15,7 @@ theorem canonical_refinement (a : fr8.Fr8) (ha : Bounded a) :
   have h lane := FrModel.Fr8.lane_canonical ((bounded_iff_model a).mp ha lane)
   refine ⟨out, FrModel.Fr8.canonical_refines a, (normalized_iff_model out).mpr ?_, ?_⟩
   · intro lane
-    simpa only [out, FrModel.ofFr8_toFr8] using (h lane).1.normal
+    simpa only [out, FrModel.ofFr8_toFr8, FrModel.LIMB_BITS] using (h lane).1.normal
   · intro lane
     simpa only [laneNat_eq_val, out, FrModel.ofFr8_toFr8] using (h lane).2
 

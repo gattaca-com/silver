@@ -10,6 +10,8 @@ namespace LeanBlsSimd.Kzg.Extender.Kernel
 
 open scoped EthLib.Cryptography.Bls.Fr
 
+attribute [local implicit_reducible] FrModel.LIMBS
+
 theorem getElem_lane_ofFr8 (x : fr8.Fr8) (j : Fin 5) (lane : Fin 8) :
     ((FrModel.ofFr8 x).lane lane)[j.val] = (x.val[j.val]!)[lane] := by
   have hj : j.val < x.val.length := by rw [x.property]; exact j.isLt

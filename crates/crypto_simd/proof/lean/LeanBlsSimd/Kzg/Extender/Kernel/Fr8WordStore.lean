@@ -15,6 +15,7 @@ def wordBytes (w : UInt64) : List U8 := (core.num.U64.to_be_bytes (toU64 w)).val
 private theorem from_to_be_bytes (w : U64) :
     core.num.U64.from_be_bytes (core.num.U64.to_be_bytes w) = w := by
   have hm : (core.num.U64.to_be_bytes w).val.map U8.bv = w.bv.toBEBytes := by
+    simp only [core.num.U64.to_be_bytes, Array.from_val]
     change (w.bv.toBEBytes.map (@UScalar.mk .U8)).map U8.bv = _
     simp only [List.map_map, Function.comp_def, U8.bv]
     exact List.map_id _
@@ -97,11 +98,11 @@ theorem slice_index_mut_ok (s : Slice U8) (a b : Usize) (hab : a.val ≤ b.val)
     (hb : b.val ≤ s.val.length) :
     core.slice.index.Slice.index_mut (core.slice.index.SliceIndexRangeUsizeSlice U8) s
       { start := a, «end» := b } =
-      ok (⟨s.val.slice a.val b.val, le_trans (List.slice_length_le _ _ _) s.property⟩,
+      ok (Slice.from (s.val.slice a.val b.val) (le_trans (List.slice_length_le _ _ _) s.property),
         fun t => s.setSlice! a.val t.val) := by
   simp only [core.slice.index.Slice.index_mut,
     core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
-  rw [if_pos (by simp only [Slice.length]; exact ⟨hab, hb⟩)]
+  rw [ite_eq_left (by simp only [Slice.length]; exact ⟨hab, hb⟩)]
   rfl
 
 theorem wordsBytes_get (w : Vector UInt64 4) (k b : Nat) (hk : k < 4) (hb : b < 8) :
@@ -143,7 +144,7 @@ theorem writeBlocks_eq_setSlice (n width start : Nat) (chunks : Nat → List U8)
     (hget : ∀ k < n, ∀ b < width, xs[width*k+b]! = (chunks k)[b]!) :
     writeBlocks n width start chunks input = input.setSlice! start xs := by
   have h := writeBlocks_spec n width start chunks input hlen hsize
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
   · simpa using h.1
   · intro i hi hi'
@@ -177,7 +178,7 @@ theorem store_block_loop_refines (block : M512) (input : Slice U8) (offset : Usi
         (fun k => (core.num.U64.to_le_bytes (toU64 block[k]!)).val) input) := by
   unfold fr8.u256x8.store_block
   rw [Simd.lanes_refines]
-  simp only [bind_tc_ok, Simd.lanes]
+  simp only [bind_tc_ok, bind_ok, Simd.lanes]
   unfold fr8.u256x8.store_block_loop writeBlocks
   rw [fr8.LANES]
   refine loop_range_inv (n := 8) _ 8#usize rfl id
@@ -199,15 +200,16 @@ theorem store_block_loop_refines (block : M512) (input : Slice U8) (offset : Usi
     simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
     simp_body fr8.u256x8.store_block_loop.body hn
     simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_mul_ok, add_ok,
-      bind_tc_ok, UScalar.ofNatCore_val_eq]
+      bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
     rw [slice_index_mut_ok _ _ _ (by simp) (by simp; omega)]
-    simp only [bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     rw [index_usize_toArray toU64 block rfl _ hk]
-    simp only [bind_tc_ok, lift]
+    simp only [bind_tc_ok, bind_ok, lift]
     rw [copy_from_slice_ok]
-    · simp only [bind_tc_ok]
+    · simp only [bind_tc_ok, bind_ok]
       simp [hs]
-    · change (out.val.slice (offset.val + 8*r.start.val)
+    · simp only [Array.to_slice, Slice.from_val, UScalar.ofNatCore_val_eq]
+      change (out.val.slice (offset.val + 8*r.start.val)
         (offset.val + 8*r.start.val + 8)).length =
           (core.num.U64.to_le_bytes (toU64 block[r.start.val])).val.length
       rw [(core.num.U64.to_le_bytes (toU64 block[r.start.val])).property]

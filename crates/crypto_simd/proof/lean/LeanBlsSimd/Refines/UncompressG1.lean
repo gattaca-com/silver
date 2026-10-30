@@ -64,7 +64,7 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] [KzgExternals] [Fallb
         simp only [chunkAt, Vector.getElem_ofFn]
         rw [show i.val / 8 * 8 + i.val % 8 = i.val by omega, getElem!_pos _ _ (by simp), List.getElem_map]
       simp only [usesKernelAt] at hk
-      rw [if_pos hk, decompress_eq_spec _ _ hu]
+      rw [ite_eq_left hk, decompress_eq_spec _ _ hu]
       simp only [Fin.getElem_fin, hc, specVerdict, usesKernelAt, hk, ↓reduceIte]
     · have hf : usesKernelAt inputs i.val = false := Bool.eq_false_iff.mpr hk
       simp only [usesKernelAt] at hf

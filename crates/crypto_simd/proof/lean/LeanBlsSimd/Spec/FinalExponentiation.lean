@@ -1,4 +1,5 @@
 import LeanBlsSimd.Spec.Fp12
+import LeanBlsSimd.Spec.Cyclotomic.Field
 import Mathlib.RingTheory.RootsOfUnity.Basic
 
 /-! Final exponentiation is multiplicative on the field and has a group-valued nonzero restriction. -/
@@ -18,9 +19,21 @@ theorem finalExpExponent_mul_r :
     Fp12.toField f = 0 ↔ f = Fp12.zero := by
   rw [← Fp12.toField_zero, Fp12.toField.injective.eq_iff]
 
+/-- The spec computes the power in three factors, `(p⁶ − 1) · (p² + 1) · finalExpHard`. -/
 @[simp] theorem toField_finalExponentiation (f : Fp12) :
-    Fp12.toField (finalExponentiation f) = Fp12.toField f ^ finalExpExponent :=
-  Fp12.toField_powNat f finalExpExponent
+    Fp12.toField (finalExponentiation f) = Fp12.toField f ^ finalExpExponent := by
+  have hfactors : (Fp.modulus ^ 6 - 1) * (Fp.modulus ^ 2 + 1) * finalExpHard = finalExpExponent := by
+    decide +kernel
+  simp only [finalExponentiation, Fp12.toField_powNat, map_mul, Cyclotomic.spec_conjugate,
+    Fp12.toField_inverse]
+  rw [← hfactors]
+  by_cases hx : Fp12.toField f = 0
+  · rw [hx, zero_pow (by decide +kernel), zero_pow (by decide +kernel), inv_zero, mul_zero,
+      zero_pow (by decide +kernel), zero_mul, zero_pow (by decide +kernel)]
+  · have heasy : Fp12.toField f ^ (Fp.modulus ^ 6) * (Fp12.toField f)⁻¹ =
+        Fp12.toField f ^ (Fp.modulus ^ 6 - 1) := by
+      rw [pow_sub₀ _ hx (by decide +kernel : 1 ≤ Fp.modulus ^ 6), pow_one]
+    rw [heasy, ← pow_succ, ← pow_mul, ← pow_mul, Nat.mul_assoc]
 
 /-- Multiplicativity holds even when a factor is zero. -/
 theorem finalExponentiation_mul (f g : Fp12) :
@@ -49,7 +62,7 @@ theorem finalExponentiation_pow_r (f : Fp12) (hf : f ≠ Fp12.zero) :
   exact FiniteField.pow_card_sub_one_eq_one _ (mt (Fp12.toField_eq_zero_iff f).mp hf)
 
 theorem target_pow_r (x : rootsOfUnity Fr.modulus Fp12Field) : x ^ Fr.modulus = 1 := by
-  apply Subtype.ext
+  ext1
   exact x.property
 
 /-- The nonzero hypothesis is required because the roots of unity consist of units. -/
@@ -75,3 +88,15 @@ theorem finalExponentiation_zero_not_isOne : (finalExponentiation Fp12.zero).isO
 end
 
 end LeanBlsSimd
+
+namespace LeanBlsSimd.SpecPairing
+
+open EthLib.Cryptography.Bls
+
+theorem finalExponentiation_eq (f : Fp12) :
+    finalExponentiation f = Fp12.powNat f ((Fp.modulus ^ 12 - 1) / Fr.modulus) := by
+  apply Fp12.toField.injective
+  rw [toField_finalExponentiation, Fp12.toField_powNat]
+  rfl
+
+end LeanBlsSimd.SpecPairing

@@ -1,12 +1,14 @@
-import Aeneas
-import LeanBlsSimd.Extracted.Types
-import LeanBlsSimd.Model.Intrinsics
+module
+public import Aeneas
+public import LeanBlsSimd.Extracted.Types
+public import LeanBlsSimd.Model.Intrinsics
+@[expose] public section
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 
 def Aeneas.Std.alloc.vec.Vec.clear (_Allocator : Type) {α : Type} (_ : alloc.vec.Vec α) :
     Result (alloc.vec.Vec α) :=
-  ok ⟨[], by simp⟩
+  ok (alloc.vec.Vec.new α)
 
 def Aeneas.Std.alloc.vec.Vec.is_empty (_Allocator : Type) {α : Type}
     (v : alloc.vec.Vec α) : Result Bool :=
@@ -245,23 +247,9 @@ def blst.blst_p2_affine.Insts.CoreDefaultDefault.default : Result blst.blst_p2_a
     Source: 'crates/crypto_simd/src/bls/fp8.rs', lines 50:0-54:1 -/
 def silver_crypto_simd.bls.fp8.lanes (v : core.core_arch.x86.__m512i) : Result (Array Std.U64 8#usize) :=
   -- A `transmute`: element `l` of the array is lane `l` of `v`.
-  ok ⟨v.toList.map fun x => ⟨x.toBitVec⟩, by simp⟩
+  ok (Array.make 8#usize (v.toList.map fun x => ⟨x.toBitVec⟩))
 
 namespace silver_crypto_simd
-
-def U32.Insts.CoreIterRangeStep.backward_checked (a : Std.U32) (n : Usize) :
-    Result (Option Std.U32) :=
-  ok (if n.val ≤ a.val then some ⟨BitVec.ofNat 32 (a.val - n.val)⟩ else none)
-
-def U32.Insts.CoreIterRangeStep.forward_checked (a : Std.U32) (n : Usize) :
-    Result (Option Std.U32) :=
-  ok (if a.val + n.val < 2^32 then some ⟨BitVec.ofNat 32 (a.val + n.val)⟩ else none)
-
-def U32.Insts.CoreIterRangeStep.steps_between (a b : Std.U32) :
-    Result (Usize × Option Usize) :=
-  ok (if a.val ≤ b.val then
-    (⟨BitVec.ofNat _ (b.val - a.val)⟩, some ⟨BitVec.ofNat _ (b.val - a.val)⟩)
-    else (0#usize, none))
 
 def core.option.Option.Insts.CoreCloneClone.clone {T : Type} (inst : core.clone.Clone T)
     (x : Option T) : Result (Option T) :=
@@ -275,16 +263,24 @@ def alloc.vec.Vec.Insts.CoreDefaultDefault.default (T : Type) : Result (alloc.ve
 def blst.blst_fr.Insts.CoreCloneClone.clone (x : blst.blst_fr) : Result blst.blst_fr := ok x
 def blst.blst_p1_affine.Insts.CoreCloneClone.clone (x : blst.blst_p1_affine) :
     Result blst.blst_p1_affine := ok x
+def blst.blst_p2_affine.Insts.CoreCloneClone.clone (x : blst.blst_p2_affine) :
+    Result blst.blst_p2_affine := ok x
+set_option linter.style.nameCheck false in
+def core.core_arch.x86.__m128i.Insts.CoreCloneClone.clone (x : core.core_arch.x86.__m128i) :
+    Result core.core_arch.x86.__m128i := ok x
+set_option linter.style.nameCheck false in
+def core.core_arch.x86.__m512i.Insts.CoreCloneClone.clone (x : core.core_arch.x86.__m512i) :
+    Result core.core_arch.x86.__m512i := ok x
 
-def core.option.Option.Insts.CoreOpsTry_traitTryTOptionInfallible.branch {T : Type}
+def core.option.Option.Insts.CoreOpsTry_traitTry.branch {T : Type}
     (x : Option T) :
-    Result (core.ops.control_flow.ControlFlow (Option core.convert.Infallible) T) :=
+    Result (core.ops.control_flow.ControlFlow (Option Never) T) :=
   match x with
   | none => ok (.Break none)
   | some a => ok (.Continue a)
 
-def core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionInfallible.from_residual
-    (T : Type) (residual : Option core.convert.Infallible) : Result (Option T) :=
+def core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionNever.from_residual
+    (T : Type) (residual : Option Never) : Result (Option T) :=
   match residual with
   | none => ok none
   | some impossible => nomatch impossible
@@ -356,4 +352,4 @@ def silver_crypto_simd.sha256.extensions.load_words (words : Array Std.U32 4#usi
 
 def silver_crypto_simd.sha256.extensions.store_words (v : core.core_arch.x86.__m128i) :
     Result (Array Std.U32 4#usize) :=
-  ok ⟨v.toList.map fun x => ⟨x.toBitVec⟩, by simp⟩
+  ok (Array.make 4#usize (v.toList.map fun x => ⟨x.toBitVec⟩))

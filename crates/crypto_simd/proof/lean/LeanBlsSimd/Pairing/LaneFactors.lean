@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Pairing.LaneLines
 
 open LaneTower
@@ -45,10 +47,10 @@ theorem factors_refines (raw : g1x8.G1x8) (points : Fin 8 → Bls.G1) (hp : Poin
   have hzz : fp8.Fp8.square raw.z = ok zz := Fp8.square_refines raw.z
   have rzz : Normal (fun _ => 2) zz (fun l => (points l).z * (points l).z) := by
     intro l
-    simpa only [zz, ofFp8_toFp8, sq] using (hp l).2.2.square.capped
+    simpa only [zz, ofFp8_toFp8, sq] using! (hp l).2.2.square.capped
   obtain ⟨z, hz, rz⟩ := raw_mul rzz (fun l => (hp l).2.2.capped) (by intro l; decide)
   refine ⟨factors, z, ?_, rfac, _, rz, rfl, rfl⟩
-  simp only [hxz, hfac, hzz, hz, bind_tc_ok]
+  simp only [hxz, hfac, hzz, hz, bind_tc_ok, bind_ok]
 
 theorem mask_bit (m : UInt8) (l : Fin 8) :
     (toU8 m &&& toU8 (1 <<< l.val.toUInt8) != 0#u8) = m.toNat.testBit l := by

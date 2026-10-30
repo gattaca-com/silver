@@ -4,8 +4,7 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open scoped EthLib.Cryptography.Bls.Fr
 open silver_crypto_simd silver_crypto_simd.kzg
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
 theorem butterfly_pair_get (dit : Bool) (values roots : _root_.Array Fr)

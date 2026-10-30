@@ -67,15 +67,15 @@ theorem action_step (step : Fin 68) (pair : Fin 2) (xp yp : Fp2) (f : Fp12) :
   have hp := point_step step pair
   unfold action
   split_ifs with h
-  · simp only [h, if_true, specSlope] at hp
+  · simp only [h, ite_true, specSlope] at hp
     rw [add_untwist]
     rw [hp]
-    simp only [evaluatedLine, specSlope, h, if_true]
+    simp only [evaluatedLine, specSlope, h, ite_true]
     rfl
-  · simp only [h, Bool.false_eq_true, if_false, specSlope] at hp
+  · simp only [h, Bool.false_eq_true, ite_false, specSlope] at hp
     rw [double_untwist]
     rw [hp]
-    simp only [evaluatedLine, specSlope, h, Bool.false_eq_true, if_false]
+    simp only [evaluatedLine, specSlope, h, Bool.false_eq_true, ite_false]
     rfl
 
 end FixedTable

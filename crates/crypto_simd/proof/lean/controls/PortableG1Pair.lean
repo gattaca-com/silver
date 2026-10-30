@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.G1.Pair.Controls
 set_option maxRecDepth 4096
 set_option exponentiation.threshold 4096
@@ -19,7 +21,7 @@ theorem only_equal_lane_is_exceptional [RuntimeFeatures] :
   rw [add_affine_encoded]
   have he : affineExceptional g g.x g.y = true := by decide +kernel
   have hn : affineExceptional (Bls.G1.double g) g.x g.y = false := by decide +kernel
-  simp only [bind_tc_ok,he,hn]
+  simp only [bind_tc_ok, bind_ok,he,hn]
   rfl
 
 theorem one_flagged_lane_recomputed [RuntimeFeatures] :
@@ -40,7 +42,7 @@ theorem flagged_infinity_requires_fallback [RuntimeFeatures] :
   have h : G1.comparisonBool Bls.G1.zero.x Bls.G1.zero.y Bls.G1.zero.z g.x g.y = false := aux _ _
   rw [h]
   intro he
-  cases Result.ok.inj he
+  cases Result.ok_injective he
 
 theorem pair_accepts_generators [RuntimeFeatures] :
     portable.g1_pair.G1Pair.in_g1 (fields g.x g.x) (fields g.y g.y) = ok (flags true true) := by

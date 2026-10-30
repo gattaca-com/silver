@@ -72,15 +72,15 @@ private theorem interpolation_fold (indices : Array Nat) (evals : Array CosetEva
     · rw [hopoly, hnpoly]
       simp only [List.map_cons, List.sum_cons, add_assoc]
 
-theorem specRli_polynomial (indices : Array Nat) (evals : Array CosetEvals)
+theorem lagrangeRli_polynomial (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (hs : Model.RliInputs indices evals powers) :
-    ∃ out, Model.specRli indices evals powers = .ok out ∧ out.size = 64 ∧
+    ∃ out, Model.lagrangeRli indices evals powers = .ok out ∧ out.size = 64 ∧
       coeffPolynomial out = ∑ k ∈ Finset.range indices.size,
         _root_.Polynomial.C powers[k]! * cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!) := by
   obtain ⟨out, hcall, hsize, hpoly⟩ := interpolation_fold indices evals powers hs
     (List.range indices.size) (fun _ hk => List.mem_range.mp hk) (Array.replicate 64 Fr.zero) (by simp)
   refine ⟨out, ?_, hsize, ?_⟩
-  · simpa only [Model.specRli, ← Array.foldlM_toList, Array.toList_range, interpolationStep] using hcall
+  · simpa only [Model.lagrangeRli, ← Array.foldlM_toList, Array.toList_range, interpolationStep] using! hcall
   · rw [hpoly, coeffPolynomial_replicate_zero, zero_add]
     simpa only [List.toFinset_range] using
       (List.sum_toFinset (fun k => _root_.Polynomial.C powers[k]! *
@@ -106,8 +106,8 @@ theorem columnRli_size (indices : Array Nat) (evals : Array CosetEvals) (powers 
 
 theorem column_ifft_interpolation (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (hs : Model.RliInputs indices evals powers) :
-    Model.specRli indices evals powers = .ok (Model.columnRli indices evals powers) := by
-  obtain ⟨out, hcall, hsize, hpoly⟩ := specRli_polynomial indices evals powers hs
+    Model.lagrangeRli indices evals powers = .ok (Model.columnRli indices evals powers) := by
+  obtain ⟨out, hcall, hsize, hpoly⟩ := lagrangeRli_polynomial indices evals powers hs
   rw [hcall]
   congr 1
   apply coeffPolynomial_injective

@@ -76,15 +76,15 @@ theorem tail_matches (s : State) (pre : List UInt8) (hs : Represents s pre)
   simp only [bytes_size]
   rw [hs.2.2, bitLength_eq]
   by_cases hlt : i < s.pending.length
-  · rw [if_pos (by omega), if_pos hlt, hs.2.1]
+  · rw [ite_eq_left (by omega), ite_eq_left hlt, hs.2.1]
     exact bytes_drop_get pre (64*(pre.length/64)) i
-  · rw [if_neg (by omega), if_neg hlt]
+  · rw [ite_eq_right (by omega), ite_eq_right hlt]
     by_cases he : i = s.pending.length
-    · rw [if_pos (by omega), if_pos he]
-    · rw [if_neg (by omega), if_neg he]
+    · rw [ite_eq_left (by omega), ite_eq_left he]
+    · rw [ite_eq_right (by omega), ite_eq_right he]
       by_cases hlast : paddedLength s.pending.length-8 ≤ i
-      · rw [if_pos (by omega), if_pos hlast, hindex]
-      · rw [if_neg (by omega), if_neg hlast]
+      · rw [ite_eq_left (by omega), ite_eq_left hlast, hindex]
+      · rw [ite_eq_right (by omega), ite_eq_right hlast]
 
 def finish (s : State) : ByteArray :=
   digest (compressBlocks s.state
@@ -92,7 +92,7 @@ def finish (s : State) : ByteArray :=
     (tailBlocks s.pending.length))
 
 theorem finish_eq_hash (s : State) (pre : List UInt8) (hs : Represents s pre) :
-    finish s = EthLib.Cryptography.Bls.sha256 (bytes pre) := by
+    finish s = EthLib.Cryptography.Hash.sha256 (bytes pre) := by
   have hp := pending_length s pre hs
   have hshort := pending_lt s pre hs
   have htail : paddedLength s.pending.length = 64*tailBlocks s.pending.length :=
@@ -108,9 +108,9 @@ theorem finish_eq_hash (s : State) (pre : List UInt8) (hs : Represents s pre) :
     intro i hi
     simp only [Nat.zero_add]
     rw [padded_get _ i (by rw [bytes_size]; unfold paddedLength; omega)]
-    rw [if_pos (by rw [bytes_size]; omega)]
+    rw [ite_eq_left (by rw [bytes_size]; omega)]
   unfold finish
-  rw [hash_eq, padded_size, bytes_size, hcount, compressBlocks_append, hprefix]
+  rw [Spec.hash_eq, padded_size, bytes_size, hcount, compressBlocks_append, hprefix]
   apply congrArg digest
   symm
   apply compressBlocks_congr

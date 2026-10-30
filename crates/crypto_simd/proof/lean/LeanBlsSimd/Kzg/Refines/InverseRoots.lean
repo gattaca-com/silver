@@ -8,8 +8,7 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Refinement
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : List blst.blst_fr)
     (hrlen : roots.val.length = n.val) (htlen : target.length = n.val)
@@ -22,7 +21,7 @@ private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : 
     have he : i.val = n.val := by omega
     refine ⟨acc, ?_, ?_⟩
     · rw [domain.inverse_roots_loop, loop.eq_1]
-      simp [domain.inverse_roots_loop.body, UScalar.lt_equiv, he]
+      simp [domain.inverse_roots_loop.body, UScalar.lt_equiv, he, bind_ok]
     · simpa [he, ← htlen] using ha
   | succ k ih =>
     have hil : i.val < n.val := by omega
@@ -33,7 +32,7 @@ private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : 
     have hi' : i'.val = i.val + 1 := UScalar.ofNatCore_val_eq _
     have hsub : n - i = ok j := by
       show UScalar.sub _ _ = _
-      simp only [UScalar.sub, Nat.not_lt.mpr hi.2, if_false,
+      simp only [UScalar.sub, Nat.not_lt.mpr hi.2, ite_false,
         Result.ok.injEq]
       apply (UScalar.eq_equiv_bv_eq _ _).mpr
       exact (UScalar.ofNatCore_bv _ _).symm
@@ -49,11 +48,11 @@ private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : 
       have hnmax : n.val ≤ Usize.max := by scalar_tac
       omega
     let acc' : alloc.vec.Vec blst.blst_fr :=
-      ⟨acc.val ++ [target[i.val]!], by simpa using hsize⟩
+      alloc.vec.Vec.from (acc.val ++ [target[i.val]!]) (by simpa using hsize)
     have hpush : alloc.vec.Vec.push acc target[i.val]! = ok acc' := by
       simp [alloc.vec.Vec.push, hsize, acc']
     have ha' : acc'.val = target.take i'.val := by
-      simp only [acc', ha, hi']
+      simp only [acc', alloc.vec.Vec.from_val, ha, hi']
       rw [List.take_add_one, List.getElem?_eq_getElem (by omega : i.val < target.length)]
       simp only [getElem!_pos target i.val (by omega)]
       rfl
@@ -61,7 +60,7 @@ private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : 
     refine ⟨out, ?_, hval⟩
     rw [domain.inverse_roots_loop, loop.eq_1]
     simp only [domain.inverse_roots_loop.body, UScalar.lt_equiv,
-      hil, if_true, hsub, hindex, hpush, hadd, bind_tc_ok]
+      hil, ite_true, hsub, hindex, hpush, hadd, bind_tc_ok, bind_ok]
     exact hout
 
 theorem inverse_roots_refinement (n : Usize) (hn0 : 0 < n.val) (roots : Slice blst.blst_fr)
@@ -82,16 +81,16 @@ theorem inverse_roots_refinement (n : Usize) (hn0 : 0 < n.val) (roots : Slice bl
     rw [hr, getElem!_pos _ j (by simp [hv]; omega)]
     simp [getElem!_pos values j (by omega)]
   have hzero : roots.val[0]! = target[0]! := by rw [hlookup 0 hn0, htarget 0 hn0]; rfl
-  let initial : alloc.vec.Vec blst.blst_fr := ⟨[target[0]!], by simp; scalar_tac⟩
+  let initial : alloc.vec.Vec blst.blst_fr := alloc.vec.Vec.from ([target[0]!]) (by simp; scalar_tac)
   have hinitial : initial.val = target.take (1#usize).val := by
-    simp only [UScalar.ofNatCore_val_eq, initial]
+    simp only [UScalar.ofNatCore_val_eq, initial, alloc.vec.Vec.from_val]
     rw [show (1 : Nat) = 0 + 1 by rfl, List.take_add_one,
       List.getElem?_eq_getElem (by omega : 0 < target.length)]
     simp [getElem!_pos target 0 (by omega)]
   obtain ⟨out, hout, hval⟩ := inverse_loop n roots target hlen htlen
     (by
       intro j hj hjn
-      rw [hlookup (n.val-j) (by omega), htarget j hjn, if_neg (by omega)])
+      rw [hlookup (n.val-j) (by omega), htarget j hjn, ite_eq_right (by omega)])
     initial 1#usize (by change 0 < 1 ∧ 1 ≤ n.val; omega) hinitial
   refine ⟨out, ?_, hval⟩
   have hlength : Slice.len roots = n := by apply UScalar.eq_of_val_eq; simpa using hlen
@@ -104,7 +103,7 @@ theorem inverse_roots_refinement (n : Usize) (hn0 : 0 < n.val) (roots : Slice bl
     simp [alloc.vec.Vec.push, alloc.vec.Vec.with_capacity, initial, U32.max_eq]
   unfold domain.inverse_roots
   dsimp only
-  simp only [hlength, hindex, hpush, bind_tc_ok]
+  simp only [hlength, hindex, hpush, bind_tc_ok, bind_ok]
   exact hout
 
 
@@ -123,7 +122,7 @@ theorem inverse_roots_get_inverse (n : Nat) (hn : 0 < n)
   simp only [Model.inverseRoots, _root_.Array.getElem_ofFn, hsize]
   by_cases hz : i = 0
   · simp [hz, hroot 0 (by omega), Fr.inverse_eq_inv]
-  · rw [if_neg hz, hroot (n-i) (by omega), hroot i hi, Fr.inverse_eq_inv]
+  · rw [ite_eq_right hz, hroot (n-i) (by omega), hroot i hi, Fr.inverse_eq_inv]
     have hp : domainRoot n ^ i * domainRoot n ^ (n-i) = 1 := by
       exact (pow_add (domainRoot n) i (n-i)).symm.trans
         (by rw [Nat.add_sub_of_le (by omega : i ≤ n)]; exact hprim.pow_eq_one)

@@ -5,10 +5,16 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open scoped EthLib.Cryptography.Bls.Fr
 open silver_crypto_simd silver_crypto_simd.kzg
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
+
+private theorem uncurry_eq_fun {α β γ : Type} (f : α → β → γ) :
+    Aeneas.Std.uncurry f = fun p => f p.1 p.2 := by
+  funext ⟨a, b⟩
+  rfl
 
 def shortLimbBound (h : Nat) : Nat :=
   if h = 1 then 1 else if h = 2 then 3 else if h = 4 then 36 else 73
@@ -95,17 +101,17 @@ private theorem short_pair_representation (dit : Bool) (h : Nat)
       have hm' : shortLimbBound h+shortLimbBound h+1 ≤ shortLimbBound (2*h) := by
         rcases hh with rfl | rfl | rfl <;> decide
       refine ⟨first,second,by simp [shortPairRun,hj,hf,hs],?_,?_⟩
-      · simpa only [ShortOutput,if_true,hunit hj,Fin.mul_one] using hrf.mono hk' (by omega)
-      · simpa only [ShortOutput,if_true,hunit hj,Fin.mul_one] using hrs.mono hk' hm'
+      · simpa only [ShortOutput,ite_true,hunit hj,Fin.mul_one] using hrf.mono hk' (by omega)
+      · simpa only [ShortOutput,ite_true,hunit hj,Fin.mul_one] using hrs.mono hk' hm'
     | false =>
       obtain ⟨first,hf,hrf⟩ := add_lazy_representation a b av bv ha hb (by decide) (by decide)
       obtain ⟨second,hs,hrs⟩ := sub_lazy_representation a b av bv ha hb (by decide) (by decide)
       refine ⟨first,second,by simp [shortPairRun,hj,hf,hs],?_,?_⟩
-      · simp only [ShortOutput,Bool.false_eq_true,if_false]
+      · simp only [ShortOutput,Bool.false_eq_true,ite_false]
         split_ifs
         · exact hrf
         · exact hrf.lazy.mono (by decide) (by decide)
-      · simp only [ShortOutput,Bool.false_eq_true,if_false,hunit hj,Fin.mul_one]
+      · simp only [ShortOutput,Bool.false_eq_true,ite_false,hunit hj,Fin.mul_one]
         split_ifs
         · exact hrs
         · exact hrs.lazy.mono (by decide) (by decide)
@@ -128,7 +134,7 @@ private theorem short_pair_representation (dit : Bool) (h : Nat)
         2 32 input a b w av bv factors (by decide) (by decide)
         (by simp) hbounds.1 hbounds.2.1 ha hb hw
       exact ⟨first,second,by simpa [shortPairRun,hj] using hrun,
-        by simpa [ShortOutput,hne] using hfirst,by simpa [ShortOutput,hne] using hsecond⟩
+        by simpa [ShortOutput,WideOutput,hne] using! hfirst,by simpa [ShortOutput,WideOutput,hne] using! hsecond⟩
 
 private theorem short_prefix_set {dit : Bool} (t : Aeneas.Std.Array fr8.Fr8 8#usize)
     (values output : _root_.Array Fr) (offset h group count : Nat) (i i1 : Usize)
@@ -144,22 +150,22 @@ private theorem short_prefix_set {dit : Bool} (t : Aeneas.Std.Array fr8.Fr8 8#us
   have hi1b : i1.val < t.val.length := by have := t.property; simp only [UScalar.ofNatCore_val_eq] at this; omega
   by_cases hv : row.val=i.val
   · have hdone : row.val < group+(count+1) ∨ group+h ≤ row.val ∧ row.val < group+h+(count+1) := by omega
-    simp only [hdone,if_true,Array.set_val_eq]
-    rw [hv,List.getElem!_set_ne _ i1.val i.val second (by omega),
-      List.getElem!_set _ i.val first hib]
+    simp only [hdone,ite_true,Array.set_val_eq]
+    rw [hv,List.set_getElem!_ne _ i1.val i.val second (by omega),
+      List.set_getElem!_eq _ i.val i.val first ⟨hib, rfl⟩]
     exact hfirst
   · by_cases hv1 : row.val=i1.val
     · have hdone : row.val < group+(count+1) ∨ group+h ≤ row.val ∧ row.val < group+h+(count+1) := by omega
-      simp only [hdone,if_true,Array.set_val_eq]
-      rw [hv1,List.getElem!_set _ i1.val second (by simpa using hi1b)]
+      simp only [hdone,ite_true,Array.set_val_eq]
+      rw [hv1,List.set_getElem!_eq _ i1.val i1.val second ⟨(by simpa using hi1b), rfl⟩]
       exact hsecond
     · have he :
           (row.val < group+(count+1) ∨ group+h ≤ row.val ∧ row.val < group+h+(count+1)) =
           (row.val < group+count ∨ group+h ≤ row.val ∧ row.val < group+h+count) :=
         propext (by omega)
       simpa only [Array.set_val_eq,
-        List.getElem!_set_ne (t.val.set i.val first) i1.val row.val second (by omega),
-        List.getElem!_set_ne t.val i.val row.val first (by omega),he] using hp row
+        List.set_getElem!_ne (t.val.set i.val first) i1.val row.val second (by omega),
+        List.set_getElem!_ne t.val i.val row.val first (by omega),he] using hp row
 
 private theorem short_add (a b c : Usize) (hc : c.val = a.val+b.val) :
     a+b = ok c := by
@@ -195,8 +201,8 @@ private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : 
   let prev : Usize := UScalar.ofNatCore (h.val-1) (Nat.lt_of_le_of_lt (Nat.sub_le _ _) h.hmax)
   have hprev : prev.val=h.val-1 := UScalar.ofNatCore_val_eq _
   have hsub : h-1#usize = ok prev := by
-    obtain ⟨out,hout,hv⟩ := WP.spec_imp_exists
-      (UScalar.sub_spec (x:=h) (y:=1#usize) (by simpa using hhalf))
+    obtain ⟨out,hout,hv⟩ := spec_imp_exists
+      (UScalar.sub_spec (x:=h) (y:=1#usize) (by change 1 ≤ h.val; omega))
     rw [hout]
     congr 1
     apply UScalar.eq_of_val_eq
@@ -215,14 +221,15 @@ private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : 
     simp [Array.update,Aeneas.Std.Array.set,
       List.getElem?_eq_getElem (show i1.val < (t.val.set i.val x).length by simpa using hi1b)]
   cases dit <;>
-    simp only [shortBody,Bool.false_eq_true,if_false,if_true,
+    simp only [shortBody,Bool.false_eq_true,ite_false,ite_true,
       ShortModel.dit_short_loop0_loop0.body,ShortModel.dif_short_loop0_loop0.body,
       UScalar.lt_equiv,hj,hadd,hadd1,haddj,hsub,haddw,ha,hb,hw,hu,hu1,
-      bind_tc_ok]
+      bind_tc_ok, bind_ok]
   all_goals by_cases hz : j = 0#usize <;>
     simp only [shortPairRun,widePairRun,hz,
-      bind_tc_ok,bind_assoc_eq,Function.uncurry_apply_pair,Bool.false_eq_true,
-      if_true,if_false]
+      bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun,
+      aeneas_uncurry_def, Function.uncurry_def, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,Bool.false_eq_true,
+      ite_true,ite_false]
 
 private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
     (roots values : _root_.Array Fr) (offset : Nat)
@@ -263,10 +270,10 @@ private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table :
     have hwib : wi.val < table.short.val.length := by rw [htable.2.2.2.2.1]; omega
     have ha : ShortInput dit h.val t.val[i.val]! (fun lane => values[8*(offset+lane.val)+i.val]!) := by
       have hf : ¬(i.val < group.val+j.val ∨ group.val+h.val ≤ i.val ∧ i.val < group.val+h.val+j.val) := by omega
-      simpa only [hf,if_false] using hp ⟨i.val,hi0⟩
+      simpa only [hf,ite_false] using hp ⟨i.val,hi0⟩
     have hb : ShortInput dit h.val t.val[i1.val]! (fun lane => values[8*(offset+lane.val)+i1.val]!) := by
       have hf : ¬(i1.val < group.val+j.val ∨ group.val+h.val ≤ i1.val ∧ i1.val < group.val+h.val+j.val) := by omega
-      simpa only [hf,if_false] using hp ⟨i1.val,hi1b⟩
+      simpa only [hf,ite_false] using hp ⟨i1.val,hi1b⟩
     have hw : MultiplierRep table.short.val[wi.val]!
         (fun _ => roots[j.val*(roots.size/(2*h.val))]!) := by
       rw [hwi]
@@ -300,8 +307,8 @@ private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table :
     refine ⟨out,?_,ho⟩
     rw [loop.eq_1]
     dsimp only
-    rw [short_body_pair dit input product table t h group j i i1 wi j1 hjlt hi (by omega) hwi hj1 hi1b hwib,hrun]
-    exact hout
+    rw [short_body_pair dit input product table t h group j i i1 wi j1 hjlt hi (by omega) hwi hj1 hi1b hwib,hrun, bind_ok]
+    simpa only [bind_ok, bind_tc_ok, aeneas_uncurry_def] using! hout
 
 private def shortOuterBody (dit : Bool) (input product : fr8.Fr8) (h : Usize) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (group : Usize) :=
@@ -341,10 +348,11 @@ private theorem short_outer_loop (dit : Bool) (input product : fr8.Fr8) (table :
     refine ⟨t,?_,?_⟩
     · rw [loop.eq_1]
       dsimp only
-      rw [short_outer_body,if_neg (by simp [UScalar.lt_equiv,fr8.LANES,he])]
+      rw [short_outer_body,ite_eq_right (by simp [UScalar.lt_equiv,fr8.LANES,he])]
+      simp only [bind_ok]
     · intro row
       have hv := row.isLt
-      simpa only [he,Nat.add_zero,hv,true_or,if_true] using hp row
+      simpa only [he,Nat.add_zero,hv,true_or,ite_true] using hp row
   | succ remaining ih =>
     intro t group hn hg hp
     have hgroup : group.val < 8 := by nlinarith
@@ -375,9 +383,9 @@ private theorem short_outer_loop (dit : Bool) (input product : fr8.Fr8) (table :
     refine ⟨out,?_,ho⟩
     rw [loop.eq_1]
     dsimp only
-    rw [short_outer_body,if_pos (by simpa only [UScalar.lt_equiv,fr8.LANES] using hgroup),hm]
-    simp only [bind_tc_ok,hmstep,hanext]
-    exact hout
+    rw [short_outer_body,ite_eq_left (by simpa only [UScalar.lt_equiv,fr8.LANES] using! hgroup),hm]
+    simp only [bind_tc_ok, bind_ok,hmstep,hanext]
+    simpa only [bind_ok, bind_tc_ok, aeneas_uncurry_def] using! hout
 
 theorem short_refinement (dit : Bool) (table : fft8.Fft8)
     (t : Aeneas.Std.Array fr8.Fr8 8#usize) (values roots : _root_.Array Fr) (offset : Nat)
@@ -396,7 +404,7 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
   have hp : ShortPrefix dit t values (butterflyStage dit values roots h.val) offset h.val 0 0 := by
     intro row
     have hf : ¬ (row.val < 0+0 ∨ 0+h.val ≤ row.val ∧ row.val < 0+h.val+0) := by omega
-    simpa only [hf,if_false] using ht row
+    simpa only [hf,ite_false] using ht row
   obtain ⟨out,hout,ho⟩ := short_outer_loop dit input product table roots values offset htable hsize hbound hunit h hh hbounds
     (8/(2*h.val)) t 0#usize
     (by rcases hh with hh | hh | hh <;> simp [hh]) (by simp) hp
@@ -405,8 +413,8 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
   | false =>
     have hi' : fr8.Fr8.multiple_of_r 2#u64 = ok input := by simpa using hi
     rw [dif_short_eq_model table t h hh htable.2.2.2.2.1]
-    simpa only [ShortModel.dif_short,hi',bind_tc_ok,ShortModel.dif_short_loop0,shortOuterBody,
-      Bool.false_eq_true,if_false] using hout
+    simpa only [ShortModel.dif_short,hi',bind_tc_ok, bind_ok,ShortModel.dif_short_loop0,shortOuterBody,
+      Bool.false_eq_true,ite_false] using hout
   | true =>
     have hcast : UScalar.cast .U64 h = UScalar.ofNatCore (ty := .U64) h.val (by scalar_tac) := by
       apply UScalar.eq_of_val_eq
@@ -418,7 +426,7 @@ theorem short_refinement (dit : Bool) (table : fft8.Fft8)
         (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac)) = ok input := by
       simpa using hi
     rw [dit_short_eq_model table t h hh htable.2.2.2.2.1]
-    simpa only [ShortModel.dit_short,hcast,lift,bind_tc_ok,hmul,hi',hproduct,
-      ShortModel.dit_short_loop0,shortOuterBody,if_true] using hout
+    simpa only [ShortModel.dit_short,hcast,lift,bind_tc_ok, bind_ok,hmul,hi',hproduct,
+      ShortModel.dit_short_loop0,shortOuterBody,ite_true] using hout
 
 end LeanBlsSimd.Kzg.Extender.Kernel

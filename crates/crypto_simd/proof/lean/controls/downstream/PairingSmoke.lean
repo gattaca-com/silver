@@ -1,6 +1,7 @@
 import LeanBlsSimd.PairingProduct.Headline
 import LeanBlsSimd.Kzg.SetupValidity
 import LeanBlsSimd.Kzg.PointValidity
+import EthLib.Cryptography.Proofs.Bls.G2Compress
 
 open Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
@@ -42,7 +43,7 @@ example (features : RuntimeFeatures) (external : PairingExternals)
     (do let empty ← pairing_product.PairingProduct.clear owner
         @pairing_product.PairingProduct.is_one features external empty) = ok true := by
   rw [clear_empty]
-  exact @is_one_empty features external emptyOwner rfl
+  simpa only [bind_tc_ok, bind_ok] using! @is_one_empty features external emptyOwner rfl
 
 private instance : RuntimeFeatures := ⟨true, false, false⟩
 
@@ -59,7 +60,10 @@ private def concretePairs := [finiteExample, infinityExample]
 
 private theorem infinity_decoded :
     G2.uncompress ⟨G2Spec.infinity.toArray⟩ = .ok G2.zero := by
-  decide +kernel
+  have hbytes : (⟨G2Spec.infinity.toArray⟩ : ByteArray) = G2.infinityBytes := by
+    decide +kernel
+  rw [hbytes]
+  exact G2.uncompress_infinityBytes
 
 example : finitePair finiteExample = true := by
   unfold finitePair finiteExample

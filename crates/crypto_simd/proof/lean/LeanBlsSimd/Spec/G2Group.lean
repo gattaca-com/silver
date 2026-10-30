@@ -83,7 +83,7 @@ theorem toPoint_neg {P : G2} (h : Valid P) : toPoint (G2.neg P) = -toPoint P := 
 
 theorem rep_double {P : G2} (hz : ¬P.z.isZero = true) :
     rep (G2.double P) = curve.dblXYZ (rep P) := by
-  rw [G2.double, if_neg hz]
+  rw [G2.double, ite_eq_right hz]
   funext i
   fin_cases i <;>
   · simp only [rep, dblXYZ, dblX, dblY, dblZ, negDblY, dblU_eq, negY_eq, Fin.zero_eta,
@@ -95,7 +95,7 @@ theorem rep_double {P : G2} (hz : ¬P.z.isZero = true) :
 
 theorem valid_double {P : G2} (h : Valid P) : Valid (G2.double P) := by
   by_cases hz : P.z.isZero = true
-  · rw [G2.double, if_pos hz]
+  · rw [G2.double, ite_eq_left hz]
     exact h
   · rw [Valid, rep_double hz, ← add_of_equiv (Setoid.refl (rep P))]
     exact nonsingular_add h h
@@ -105,7 +105,7 @@ theorem toPoint_double {P : G2} (h : Valid P) :
   by_cases hz : P.z.isZero = true
   · have h0 : toPoint P = 0 :=
       Point.toAffine_of_Z_eq_zero ((Fp2.isZero_iff P.z).mp hz)
-    rw [G2.double, if_pos hz, h0, add_zero]
+    rw [G2.double, ite_eq_left hz, h0, add_zero]
   · rw [toPoint, rep_double hz, ← add_of_equiv (Setoid.refl (rep P))]
     exact Point.toAffine_add h h
 
@@ -120,26 +120,26 @@ theorem valid_equation {P : G2} (h : Valid P) :
 
 private theorem add_of_left_zero {P Q : G2} (hz1 : P.z.isZero = true) : G2.add P Q = Q := by
   rw [G2.add]
-  exact if_pos hz1
+  exact ite_eq_left hz1
 
 private theorem add_of_right_zero {P Q : G2} (hz1 : ¬P.z.isZero = true)
     (hz2 : Q.z.isZero = true) : G2.add P Q = P := by
-  rw [G2.add, if_neg hz1]
-  exact if_pos hz2
+  rw [G2.add, ite_eq_right hz1]
+  exact ite_eq_left hz2
 
 private theorem add_of_dbl {P Q : G2} (hz1 : ¬P.z.isZero = true) (hz2 : ¬Q.z.isZero = true)
     (hu : (P.x * (Q.z * Q.z)).beq (Q.x * (P.z * P.z)) = true)
     (hs : (P.y * Q.z * (Q.z * Q.z)).beq (Q.y * P.z * (P.z * P.z)) = true) :
     G2.add P Q = G2.double P := by
-  rw [G2.add, if_neg hz1, if_neg hz2]
-  exact (if_pos hu).trans (if_pos hs)
+  rw [G2.add, ite_eq_right hz1, ite_eq_right hz2]
+  exact (ite_eq_left hu).trans (ite_eq_left hs)
 
 private theorem add_of_opp {P Q : G2} (hz1 : ¬P.z.isZero = true) (hz2 : ¬Q.z.isZero = true)
     (hu : (P.x * (Q.z * Q.z)).beq (Q.x * (P.z * P.z)) = true)
     (hs : ¬(P.y * Q.z * (Q.z * Q.z)).beq (Q.y * P.z * (P.z * P.z)) = true) :
     G2.add P Q = G2.zero := by
-  rw [G2.add, if_neg hz1, if_neg hz2]
-  exact (if_pos hu).trans (if_neg hs)
+  rw [G2.add, ite_eq_right hz1, ite_eq_right hz2]
+  exact (ite_eq_left hu).trans (ite_eq_right hs)
 
 /-- add-2007-bl over the field: the spec's `G2.add` where Z₁ ≠ 0, Z₂ ≠ 0 and U₁ ≠ U₂. -/
 def addBL (P Q : Fin 3 → Fp2Field) : Fin 3 → Fp2Field :=
@@ -212,9 +212,9 @@ theorem toAffine_dblXYZ {P : Fin 3 → Fp2Field} (hP : curve.Nonsingular P) :
 private theorem rep_add_general {P Q : G2} (hz1 : ¬P.z.isZero = true) (hz2 : ¬Q.z.isZero = true)
     (hu : ¬(P.x * (Q.z * Q.z)).beq (Q.x * (P.z * P.z)) = true) :
     rep (G2.add P Q) = addBL (rep P) (rep Q) := by
-  rw [G2.add, if_neg hz1, if_neg hz2]
+  rw [G2.add, ite_eq_right hz1, ite_eq_right hz2]
   dsimp only
-  rw [if_neg hu]
+  rw [ite_eq_right hu]
   funext i
   fin_cases i <;>
     simp only [rep, addBL, Fin.zero_eta, Fin.mk_one, Fin.reduceFinMk, Fin.isValue,
@@ -329,9 +329,9 @@ theorem inSubgroup_iff {P : G2} (h : Valid P) :
     G2.inSubgroup P = true ↔ Fr.modulus • toPoint P = 0 := by
   rw [G2.inSubgroup, G2.isInfinity, G2.isInfinity]
   by_cases hz : P.z.isZero = true
-  · rw [if_pos hz, (toPoint_eq_zero_iff h).mpr hz, nsmul_zero]
+  · rw [ite_eq_left hz, (toPoint_eq_zero_iff h).mpr hz, nsmul_zero]
     exact iff_of_true rfl rfl
-  · rw [if_neg hz, ← toPoint_mulNat h, toPoint_eq_zero_iff (valid_mulNat h _)]
+  · rw [ite_eq_right hz, ← toPoint_mulNat h, toPoint_eq_zero_iff (valid_mulNat h _)]
 
 theorem inSubgroup_of_psi {P : G2} (h : Valid P) (hψ : psi (toPoint P) = z • toPoint P) :
     G2.inSubgroup P = true :=

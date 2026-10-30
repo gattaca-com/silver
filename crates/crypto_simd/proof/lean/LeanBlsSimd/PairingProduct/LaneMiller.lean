@@ -8,6 +8,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.PairingProduct.LaneMiller
 
 noncomputable section
@@ -93,10 +95,10 @@ theorem operation_lines {s : Lanes.State} {xs : Miller.Entries}
   have hcount := h.count
   have hlen : l.val < xs.length := by omega
   obtain ⟨xp, yp, hx, hy, hn⟩ := (operation_entry (h.lanes l hlen) h.upper hl add).2
-  simp only [coefficients, dif_pos hlen, Matrix.cons_val_zero, Matrix.cons_val_one,
+  simp only [coefficients, dite_eq_left hlen, Matrix.cons_val_zero, Matrix.cons_val_one,
     Matrix.cons_val_two, hx, hy]
   exact ⟨hn.l0, by simpa only [scalar_neg_two] using hn.l1,
-    by simpa only [scalar_two] using hn.l2⟩
+    by simpa only [scalar_two, Matrix.cons_val, Matrix.head_cons, Matrix.tail_cons] using! hn.l2⟩
 
 theorem coefficients_product (xs : Miller.Entries) (add : Bool) :
     ((List.range xs.length).map fun n =>
@@ -109,7 +111,7 @@ theorem coefficients_product (xs : Miller.Entries) (add : Bool) :
   · simp
   · intro n hn hm
     have hlen : n < xs.length := by simpa using hn
-    simp only [List.getElem_map, List.getElem_range, coefficients, dif_pos hlen,
+    simp only [List.getElem_map, List.getElem_range, coefficients, dite_eq_left hlen,
       Matrix.cons_val_zero, Matrix.cons_val_one, Matrix.cons_val_two]
     rfl
 
@@ -161,8 +163,8 @@ theorem miller_body (s : Lanes.State) (xs : Miller.Entries) (h : Holds s xs)
         FieldRep square (f * f) := by
     by_cases hpos : bit' < 62#u32
     · obtain ⟨out, hout, hr⟩ := FieldRep.square hf
-      exact ⟨out, by rw [if_pos hpos]; exact hout, hr⟩
-    · refine ⟨raw, by rw [if_neg hpos], ?_⟩
+      exact ⟨out, by rw [ite_eq_left hpos]; exact hout, hr⟩
+    · refine ⟨raw, by rw [ite_eq_right hpos], ?_⟩
       have hn : n.val + 1 = 63 := by
         simp only [UScalar.lt_equiv] at hpos
         change ¬n.val < 62 at hpos
@@ -189,34 +191,34 @@ theorem miller_body (s : Lanes.State) (xs : Miller.Entries) (h : Holds s xs)
     change lane_pairs.Lines.multiply_into (Lanes.toLines (Lanes.add (Lanes.double s).2).1)
       first (Lanes.double s).2.count = ok out at hlines2
     refine ⟨(Lanes.add (Lanes.double s).2).2, out, bit', ?_, rfl, ?_, ?_, rfl⟩
-    · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, if_true, hdec,
-        hstart, bind_tc_ok, hsquare, hd, hbit, hbitset]
+    · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, ite_true, hdec,
+        hstart, bind_tc_ok, bind_ok, hsquare, hd, hbit, hbitset]
       change (do
         let value2 ← lane_pairs.Lines.multiply_into (Lanes.toLines (Lanes.double s).1) square s.count
         let (l1, self2) ← lane_pairs.LanePairs.add (Lanes.toState (Lanes.double s).2)
         let value3 ← lane_pairs.Lines.multiply_into l1 value2 self2.count
         ok (cont (self2, value3, bit'))) = _
       rw [hlines]
-      simp only [bind_tc_ok, ha]
+      simp only [bind_tc_ok, bind_ok, ha]
       change (do let value3 ← lane_pairs.Lines.multiply_into
                     (Lanes.toLines (Lanes.add (Lanes.double s).2).1) first (Lanes.double s).2.count
                  ok (cont (Lanes.toState (Lanes.add (Lanes.double s).2).2, value3, bit'))) = _
       rw [hlines2]
-      simp only [bind_tc_ok]
-    · simpa only [Miller.sharedBitStep, hbitset, if_true, Miller.sharedStep] using
+      simp only [bind_tc_ok, bind_ok]
+    · simpa only [Miller.sharedBitStep, hbitset, ite_true, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using!
         operation_holds hdouble true
-    · simpa only [Miller.sharedBitStep, hbitset, if_true, Miller.sharedStep] using rout
+    · simpa only [Miller.sharedBitStep, hbitset, ite_true, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! rout
   · refine ⟨(Lanes.double s).2, first, bit', ?_, rfl, ?_, ?_, rfl⟩
-    · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, if_true, hdec,
-        hstart, bind_tc_ok, hsquare, hd, hbit, hbitset,
-        Bool.false_eq_true, if_false]
+    · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, ite_true, hdec,
+        hstart, bind_tc_ok, bind_ok, hsquare, hd, hbit, hbitset,
+        Bool.false_eq_true, ite_false]
       change (do let value2 ← lane_pairs.Lines.multiply_into
                     (Lanes.toLines (Lanes.double s).1) square s.count
                  ok (cont (Lanes.toState (Lanes.double s).2, value2, bit'))) = _
       rw [hlines]
-      simp only [bind_tc_ok]
-    · simpa only [Miller.sharedBitStep, hbitset, if_false, Miller.sharedStep] using hdouble
-    · simpa only [Miller.sharedBitStep, hbitset, if_false, Miller.sharedStep] using rfirst
+      simp only [bind_tc_ok, bind_ok]
+    · simpa only [Miller.sharedBitStep, hbitset, ite_false, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! hdouble
+    · simpa only [Miller.sharedBitStep, hbitset, ite_false, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! rfirst
 
 theorem miller_loop_refines (n : Nat) (hn : n ≤ 63)
     (s : Lanes.State) (xs : Miller.Entries) (h : Holds s xs)
@@ -231,7 +233,7 @@ theorem miller_loop_refines (n : Nat) (hn : n ≤ 63)
     refine ⟨s, raw, ?_, h, hf, rfl⟩
     rw [lane_pairs.LanePairs.miller_loop_loop, loop.eq_1]
     simp only [lane_pairs.LanePairs.miller_loop_loop.body, UScalar.lt_equiv, hb,
-      Nat.not_lt_zero, if_false]
+      Nat.not_lt_zero, ite_false, bind_ok]
   | succ n ih =>
     obtain ⟨s', raw', bit', hbody, hb', hs', hr', hcount⟩ :=
       miller_body hpack s xs h ⟨n, by omega⟩ raw f hf bit hb hfirst
@@ -241,7 +243,7 @@ theorem miller_loop_refines (n : Nat) (hn : n ≤ 63)
     refine ⟨s'', out, ?_, ?_, ?_, hcount'.trans hcount⟩
     · rw [lane_pairs.LanePairs.miller_loop_loop, loop.eq_1]
       dsimp only
-      rw [hbody]
+      rw [hbody, bind_ok]
       exact hloop
     · rw [Miller.sharedRun_bits]
       exact hs''
@@ -262,11 +264,11 @@ theorem miller_refines_with_packing (raw : lane_pairs.LanePairs) (inputs : List 
     rw [Z_BITS_index 0#usize (by decide)]
     rfl
   refine ⟨⟨out, toU8 s'.degenerate⟩, ?_, rout, ?_⟩
-  · simp only [lane_pairs.LanePairs.miller_loop, hone, hbit, bind_tc_ok, hloop]
+  · simp only [lane_pairs.LanePairs.miller_loop, hone, hbit, bind_tc_ok, bind_ok, hloop]
     change (do let f ← fp12.Fp12.conjugate value
                ok (lane_pairs.MillerProduct.mk f (toU8 s'.degenerate))) = _
     rw [hout]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
   · intro hz
     apply clear hs'
     exact congrArg ofU8 hz

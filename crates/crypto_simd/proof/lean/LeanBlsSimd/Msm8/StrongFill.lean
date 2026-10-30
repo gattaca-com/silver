@@ -70,9 +70,9 @@ theorem fillCore_packed (state : buckets.Buckets) (scalars : Slice (Array U64 4#
     (by change 0 + scalars.val.length = scalars.val.length; omega) rfl htrace hplace
   refine ⟨out, ?_, how, hon, ?_⟩
   · unfold fillCore
-    simp only [Vec.clear, bind_tc_ok]
+    simp only [Vec.clear, bind_tc_ok, bind_ok]
     rw [hlens]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok, lift]
     change (do
       let (i4, i5, v2, v3, v4) ← buckets.Buckets.fill_loop0 counted.window_bits counted.windows
         counted.refs counted.starts counted.lens scalars width 0#usize
@@ -81,17 +81,17 @@ theorem fillCore_packed (state : buckets.Buckets) (scalars : Slice (Array U64 4#
       let (i7, i8, v10, v11, v12) ← buckets.Buckets.fill_loop2 i4 i5 v9 v6 v7 scalars width 0#usize
       ok ({window_bits := i7, windows := i8, refs := v10, starts := v11, lens := v12} : buckets.Buckets)) = _
     rw [hcountLoop]
-    simp only [bind_tc_ok, fields, hcw, hcn]
+    simp only [bind_tc_ok, bind_ok, fields, hcw, hcn]
     rw [hprefix]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [hrefs]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok, lift]
     change (do
       let (i7, i8, v10, v11, v12) ← buckets.Buckets.fill_loop2 placed.window_bits placed.windows
         placed.refs placed.starts placed.lens scalars width 0#usize
       ok ({window_bits := i7, windows := i8, refs := v10, starts := v11, lens := v12} : buckets.Buckets)) = _
     rw [hplaceLoop]
-    rfl
+    simp only [bind_tc_ok, bind_ok, fields]
   · simpa only [hlists] using hrecover
 
 theorem fill127_packed (state : buckets.Buckets) (scalars : Slice (Array U64 4#usize))
@@ -119,6 +119,6 @@ theorem fill127_packed (state : buckets.Buckets) (scalars : Slice (Array U64 4#u
   refine ⟨events, out, htrace, ?_, hlen, how, hon, ?_⟩
   · rw [fill127_setup]
     exact hout
-  · simpa only [how, hon] using hrecovery
+  · simpa only [how, hon] using! hrecovery
 
 end LeanBlsSimd.BucketsRefines

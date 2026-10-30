@@ -22,7 +22,7 @@ theorem add_value_refines (a b : blst.blst_fr)
   rw [Int.emod_eq_of_lt (by omega) hfit] at hvalue
   obtain ⟨out,hbelow,hout⟩ := below_r_refines sum (by omega)
   refine ⟨out,?_,?_⟩
-  · simp only [fr.fr_add,hadd,hbelow,bind_tc_ok]
+  · simp only [fr.fr_add,hadd,hbelow,bind_tc_ok, bind_ok]
   · simpa only [hvalue] using hout
 
 theorem sub_value_refines (a b : blst.blst_fr)
@@ -81,7 +81,6 @@ theorem fr_mul_refines (x y : Fr) :
   have hfield : (value out : ZMod Fr.modulus)*(2^256 : ZMod Fr.modulus) =
       (value (Kzg.frEncode x).l : ZMod Fr.modulus)*(value (Kzg.frEncode y).l : ZMod Fr.modulus) := by
     have h := congrArg (fun n : ℤ => (n : ZMod Fr.modulus)) hvalue
-    dsimp only at h
     simpa only [Int.cast_mul,Int.cast_add,Int.cast_pow,Int.cast_natCast,
       ZMod.natCast_self,mul_zero,add_zero,hpow] using h
   rw [encode_field,encode_field] at hfield
@@ -91,7 +90,7 @@ theorem fr_mul_refines (x y : Fr) :
     apply mul_right_cancel₀ hne
     rw [hfield,encode_field,map_mul]
     ring
-  simp only [fr.fr_mul,hr,bind_tc_ok]
+  simp only [fr.fr_mul,hr,bind_tc_ok, bind_ok]
   rw [heq]
 
 theorem fr_correct : Kzg.FrCorrect :=

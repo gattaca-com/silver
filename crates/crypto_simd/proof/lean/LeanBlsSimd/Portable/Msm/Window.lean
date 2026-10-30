@@ -32,8 +32,8 @@ theorem window_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     refine ⟨sum,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.window_sum_loop0,loop.eq_1]
       simp only [portable.msm.buckets.Buckets.window_sum_loop0.body,UScalar.lt_equiv,
-        hcount,show (0#usize).val = 0 from rfl,Nat.lt_irrefl,if_false]
-    · simpa only [hcount,Finset.sum_range_zero,zero_nsmul,add_zero] using hs
+        hcount,show (0#usize).val = 0 from rfl,Nat.lt_irrefl,ite_false, bind_ok]
+    · simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, hcount,Finset.sum_range_zero,zero_nsmul,add_zero] using hs
   | succ b ih =>
     have hpos : 1 ≤ bucket.val := by omega
     have hbound : (window.val+1)*2^(state.window_bits.val-1) < 2^32 :=
@@ -47,25 +47,25 @@ theorem window_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
       hpacked index hi running R hr (hp index.val hi)
     have hjoined' : Group.PointRep joined
         (R+bucketValue state.window_bits.val window.val (b+1) contents values) := by
-      simpa only [bucketValue,hiv,hcount] using hjoined
+      simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, bucketValue,hiv,hcount] using! hjoined
     obtain ⟨total,hadd,htotalrep⟩ := Group.add_complete sum joined _ _ hs hjoined'
     let next : Usize := UScalar.ofNatCore (bucket.val-1) (by have := bucket.hBounds; omega)
     have hn : next.val = b := by change bucket.val-1=b; omega
     have hbody : portable.msm.buckets.Buckets.window_sum_loop0.body state.window_bits state.windows
         state.refs state.starts state.lens store window running sum bucket = ok (cont (joined,total,next)) := by
       simp only [portable.msm.buckets.Buckets.window_sum_loop0.body,UScalar.lt_equiv,
-        show (0#usize).val < bucket.val by change 0 < bucket.val; omega,if_true,hlist,bind_tc_ok]
+        show (0#usize).val < bucket.val by change 0 < bucket.val; omega,ite_true,hlist,bind_tc_ok, bind_ok]
       have h := congrArg (fun value : Result portable.g1.G1 => value >>= fun running1 => do
         let sum1 ← sum.add_complete running1
         let next ← bucket-1#usize
         ok (cont (β := portable.g1.G1) (running1,sum1,next))) hjoin
-      simpa only [joinBucket,bind_assoc_eq,bind_tc_ok,hadd,sub_ok bucket (1#usize) hpos] using h
+      simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, joinBucket,bind_assoc_eq,bind_tc_ok, bind_ok,hadd,sub_ok bucket (1#usize) hpos] using! h
     obtain ⟨out,hloop,hrep⟩ := ih next (by omega) joined total _ _ hjoined' htotalrep hn
     refine ⟨out,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.window_sum_loop0,loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, hbody, bind_ok] using! hloop
     · rw [Finset.sum_range_succ,WindowSums.weighted_step]
-      simpa only [hn] using hrep
+      simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, hn] using hrep
 
 theorem window_correct [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     (store : portable.msm.store.PointStore) (base capacity : ℕ → ℕ)
@@ -87,7 +87,7 @@ theorem window_correct [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     have h := congrArg (fun value : Result Usize => value >>= fun bucket =>
       portable.msm.buckets.Buckets.window_sum_loop0 state.window_bits state.windows state.refs state.starts
         state.lens store window portable.g1.G1.INFINITY portable.g1.G1.INFINITY bucket) hcall
-    simpa only [bind_assoc_eq,bind_tc_ok,hloop] using h
-  · simpa only [hm,nsmul_zero,zero_add] using hrep
+    simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, bind_assoc_eq,bind_tc_ok, bind_ok,hloop] using! h
+  · simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, Buckets.toLane, hm,nsmul_zero,zero_add] using hrep
 
 end LeanBlsSimd.Portable.Msm.Sums

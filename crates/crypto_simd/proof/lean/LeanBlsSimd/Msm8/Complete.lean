@@ -9,6 +9,8 @@ namespace LeanBlsSimd
 open EthLib.Cryptography.Bls
 namespace G1x8
 
+attribute [local implicit_reducible] ZMod Fp.modulus
+
 
 
 
@@ -48,11 +50,11 @@ theorem double_complete_correct (self : G1x8) (l : Fin 8) (P : G1)
     (h : self.Holds l P) : self.double_complete.Holds l (G1.double P) := by
   by_cases hz : P.z.isZero = true
   · have hk : self.z.is_zero_mask.toNat.testBit l = true := by
-      simpa only [(Holds.z h).testBit_is_zero_mask, decide_eq_true_eq] using G1.isZero_iff.mp hz
+      simpa only [(Holds.z h).testBit_is_zero_mask, decide_eq_true_eq] using! G1.isZero_iff.mp hz
     simpa only [double_complete, G1.double, hz, ↓reduceIte] using
       select_true_holds self.z.is_zero_mask self.double.1 self l P hk h
   · have hk : self.z.is_zero_mask.toNat.testBit l = false := by
-      simpa only [(Holds.z h).testBit_is_zero_mask, decide_eq_false_iff_not] using G1.isZero_iff.not.mp hz
+      simpa only [(Holds.z h).testBit_is_zero_mask, decide_eq_false_iff_not] using! G1.isZero_iff.not.mp hz
     exact select_false_holds self.z.is_zero_mask self.double.1 self l (G1.double P) hk
       (double_finite_correct self l P h hz)
 
@@ -106,24 +108,24 @@ theorem add_complete_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
     have hqzi := (Holds.z hq).testBit_is_zero_mask
     by_cases hz : (P.z : ZMod Fp.modulus) = 0
     · have hz' := G1.isZero_iff.mpr hz
-      rw [G1.add, if_pos hz']
+      rw [G1.add_eq_addSpec, G1.addSpec, ite_eq_left hz']
       apply select_true_holds _ _ _ _ _ ?_ hq
-      simpa only [hzi, decide_eq_true_eq] using hz
+      simpa only [hzi, decide_eq_true_eq] using! hz
     · have hz' := G1.isZero_iff.not.mpr hz
       have hzi_false : self.z.is_zero_mask.toNat.testBit l = false := by
-        simpa only [hzi, decide_eq_false_iff_not] using hz
+        simpa only [hzi, decide_eq_false_iff_not] using! hz
       apply select_false_holds _ _ _ _ _
-      · simpa only [hzi, decide_eq_false_iff_not] using hz
+      · simpa only [hzi, decide_eq_false_iff_not] using! hz
       · by_cases hqz : (Q.z : ZMod Fp.modulus) = 0
         · have hqz' := G1.isZero_iff.mpr hqz
-          rw [G1.add, if_neg hz', if_pos hqz']
+          rw [G1.add_eq_addSpec, G1.addSpec, ite_eq_right hz', ite_eq_left hqz']
           apply select_true_holds _ _ _ _ _ ?_ h
-          simpa only [hqzi, decide_eq_true_eq] using hqz
+          simpa only [hqzi, decide_eq_true_eq] using! hqz
         · have hqz' := G1.isZero_iff.not.mpr hqz
           have hqzi_false : q.z.is_zero_mask.toNat.testBit l = false := by
-            simpa only [hqzi, decide_eq_false_iff_not] using hqz
+            simpa only [hqzi, decide_eq_false_iff_not] using! hqz
           apply select_false_holds _ _ _ _ _
-          · simpa only [hqzi, decide_eq_false_iff_not] using hqz
+          · simpa only [hqzi, decide_eq_false_iff_not] using! hqz
           · let sx := (self.add q).2 &&& ~~~(self.z.is_zero_mask ||| q.z.is_zero_mask)
             have hsx : sx.toNat.testBit l =
                 decide ((P.x : ZMod Fp.modulus) * ((Q.z : ZMod Fp.modulus) * Q.z) = (Q.x : ZMod Fp.modulus) * ((P.z : ZMod Fp.modulus) * P.z)) := by
@@ -147,7 +149,7 @@ theorem add_complete_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
                 have hc := coincident_true_holds self (self.add q).1 sx
                   (((self.y.mul q.z).mul q.z.square).eq_mask ((q.y.mul self.z).mul self.z.square))
                   l P h hz' hsx'
-                rw [G1.add, if_neg hz', if_neg hqz', if_pos heq']
+                rw [G1.add_eq_addSpec, G1.addSpec, ite_eq_right hz', ite_eq_right hqz', ite_eq_left heq']
                 convert hc using 1
                 simp only [hsy, sq, G1.beq_iff, decide_eq_true_eq]
                 rfl
@@ -184,14 +186,14 @@ theorem add_affine_complete_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8)
   · have hzi := (Holds.z h).testBit_is_zero_mask
     by_cases hz : (P.z : ZMod Fp.modulus) = 0
     · have hz' := G1.isZero_iff.mpr hz
-      rw [G1.add, if_pos hz']
+      rw [G1.add_eq_addSpec, G1.addSpec, ite_eq_left hz']
       apply select_true_holds _ _ _ _ _ ?_ ⟨hx, hy, Fp8.holds_one l⟩
-      simpa only [hzi, decide_eq_true_eq] using hz
+      simpa only [hzi, decide_eq_true_eq] using! hz
     · have hz' := G1.isZero_iff.not.mpr hz
       have hzi_false : self.z.is_zero_mask.toNat.testBit l = false := by
-        simpa only [hzi, decide_eq_false_iff_not] using hz
+        simpa only [hzi, decide_eq_false_iff_not] using! hz
       apply select_false_holds _ _ _ _ _
-      · simpa only [hzi, decide_eq_false_iff_not] using hz
+      · simpa only [hzi, decide_eq_false_iff_not] using! hz
       · let sx := (self.add_affine qx qy).2 &&& ~~~self.z.is_zero_mask
         have hsx : sx.toNat.testBit l =
             decide ((P.x : ZMod Fp.modulus) = (x : ZMod Fp.modulus) * ((P.z : ZMod Fp.modulus) * P.z)) := by
@@ -214,7 +216,7 @@ theorem add_affine_complete_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8)
             have hsy := ((hy.mul (Holds.z h)).mul (Holds.z h).square).testBit_eq_mask (Holds.y h)
             have hc := coincident_true_holds self (self.add_affine qx qy).1 sx
               (((qy.mul self.z).mul self.z.square).eq_mask self.y) l P h hz' hsx'
-            rw [G1.add, if_neg hz', if_neg (show ¬Fp.one.isZero = true from by decide), if_pos heq']
+            rw [G1.add_eq_addSpec, G1.addSpec, ite_eq_right hz', ite_eq_right (show ¬Fp.one.isZero = true from by decide), ite_eq_left heq']
             convert hc using 1
             simp only [hsy, sq, G1.beq_iff, decide_eq_true_eq]
             let Y : ZMod Fp.modulus := P.y
@@ -258,8 +260,8 @@ theorem coincident_refines (self sum : g1x8.G1x8) (sx sy : U8) :
 theorem add_affine_complete_refines (self : g1x8.G1x8) (qx qy : fp8.Fp8) :
     g1x8.G1x8.add_affine_complete self qx qy =
       ok (toG1x8 ((ofG1x8 self).add_affine_complete (ofFp8 qx) (ofFp8 qy))) := by
-  simp only [g1x8.G1x8.add_affine_complete, add_affine_refines, bind_tc_ok,
-    Function.uncurry_def, Prod.map_fst, Prod.map_snd,
+  simp only [g1x8.G1x8.add_affine_complete, add_affine_refines, bind_tc_ok, bind_ok,
+    Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
     show (0#u8) = toU8 0 from rfl, toU8_inj, add_affine_complete,
     Fp8.is_zero_mask_refines, Fp8.mul_refines, Fp8.square_refines, Fp8.eq_mask_refines,
     lift, toU8_not, toU8_and, coincident_refines, from_affine_refines, select_refines,
@@ -269,8 +271,8 @@ theorem add_affine_complete_refines (self : g1x8.G1x8) (qx qy : fp8.Fp8) :
 theorem add_complete_refines (self q : g1x8.G1x8) :
     g1x8.G1x8.add_complete self q =
       ok (toG1x8 ((ofG1x8 self).add_complete (ofG1x8 q))) := by
-  simp only [g1x8.G1x8.add_complete, add_refines, bind_tc_ok,
-    Function.uncurry_def, Prod.map_fst, Prod.map_snd,
+  simp only [g1x8.G1x8.add_complete, add_refines, bind_tc_ok, bind_ok,
+    Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
     show (0#u8) = toU8 0 from rfl, toU8_inj, add_complete,
     Fp8.is_zero_mask_refines, Fp8.mul_refines, Fp8.square_refines, Fp8.eq_mask_refines,
     lift, toU8_not, toU8_and, toU8_or, coincident_refines, select_refines,

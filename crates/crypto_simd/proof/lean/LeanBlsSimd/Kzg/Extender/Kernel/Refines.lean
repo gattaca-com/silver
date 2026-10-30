@@ -13,6 +13,11 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
+private theorem deref_slice {α : Type} (s : Slice α) :
+    alloc.vec.Vec.deref (⟨s⟩ : alloc.vec.Vec α) = s := by
+  simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from]
+
+
 theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
     (hk : StateInvariant kernel) (values : _root_.Array Fr) (hsize : values.size = 4096)
     (hdata : DataRep (alloc.vec.Vec.deref kernel.data) values) (cells : Cells) :
@@ -29,8 +34,8 @@ theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
     (alloc.vec.Vec.deref kernel.data) values (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) hk.1
     (by simpa [Kzg.Model.inverseRoots, Kzg.Model.roots] using hsize)
     blob_roots_valid.2 hdata
-  let inverseVec : alloc.vec.Vec fr8.Fr8 := ⟨inverse.val, inverse.property⟩
-  obtain ⟨shifted, hshift, hsrep⟩ := shift_refinement kernel hk inverseVec inverseValues hiSize hirep
+  let inverseVec : alloc.vec.Vec fr8.Fr8 := ⟨inverse⟩
+  obtain ⟨shifted, hshift, hsrep⟩ := shift_refinement kernel hk inverseVec inverseValues hiSize (by simpa only [inverseVec, deref_slice] using hirep)
   obtain ⟨evaluations, hforward, herep⟩ := dif_refinement kernel.forward
     (alloc.vec.Vec.deref shifted) (shiftedValues inverseValues) (Kzg.Model.roots 12) hk.2.1
     (by simp only [shiftedValues, _root_.Array.size_ofFn, Kzg.Model.roots, size_computeRootsOfUnity])
@@ -59,7 +64,7 @@ theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
     simp only [Model.extension, size_bitReversalPermutation, size_fftFieldAux,
       _root_.Array.size_ofFn]
   let next : extension_kernel.ExtensionKernel :=
-    { kernel with data := ⟨evaluations.val, evaluations.property⟩ }
+    { kernel with data := ⟨evaluations⟩ }
   have hlen : next.data.val.length = 512 := by
     have h := herep.1
     rw [heSize] at h
@@ -67,21 +72,22 @@ theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
     change evaluations.val.length = 512
     omega
   obtain ⟨out, hencode, hout, hframe⟩ := encode_refinement next.data
-    (bitReversalPermutation (Model.extension values)) heSize herep cells
+    (bitReversalPermutation (Model.extension values)) heSize (by simpa only [next, deref_slice] using herep) cells
   refine ⟨next, out, ?_, ⟨hk.1, hk.2.1, hk.2.2.1, hlen, hk.2.2.2.2⟩,
-    ⟨rfl, rfl, rfl⟩, herep, hout, hframe⟩
+    ⟨rfl, rfl, rfl⟩, (by simpa only [next, deref_slice] using herep), hout, hframe⟩
   simp only [extension_kernel.ExtensionKernel.extend, alloc.vec.Vec.deref_mut, lift,
-    bind_tc_ok, Function.uncurry_apply_pair]
-  simp only [alloc.vec.Vec.deref] at hinverse
+    bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hinverse
   rw [hinverse]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   change (do
     let shifted ← extension_kernel.ExtensionKernel.extend_loop0 kernel.shift inverseVec 0#usize
-    let evaluations ← fft8.Fft8.dif kernel.forward (alloc.vec.Vec.deref shifted)
+    let evaluations ← fft8.Fft8.dif kernel.forward shifted.slice
     let out ← extension_kernel.ExtensionKernel.extend_loop1
-      ⟨evaluations.val, evaluations.property⟩ cells 0#usize
-    ok ({ kernel with data := ⟨evaluations.val, evaluations.property⟩ }, out)) = _
-  simp only [hshift, bind_tc_ok, hforward, hencode, next]
+      ⟨evaluations⟩ cells 0#usize
+    ok ({ kernel with data := ⟨evaluations⟩ }, out)) = _
+  simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hforward
+  simp only [hshift, bind_tc_ok, bind_ok, hforward, hencode, next]
 
 /-- The generated Some branch needs no correctness law for any external operation.
 `compute` dispatches on the stored kernel without reading `simdAvailable`. -/
@@ -112,13 +118,13 @@ theorem compute_refinement
     obtain ⟨err, herr⟩ := herror
     refine ⟨false, { v with kernel := some decoded }, cells, ?_, hstate decoded hdi,
       ?_, (fun _ => rfl), decoded, rfl, hdt⟩
-    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok,
-        Function.uncurry_apply_pair, Bool.false_eq_true, if_false]
+    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
+        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
     · simp [Model.compute, Model.extend, herr]
   | true =>
     obtain ⟨values, hblob, hdata⟩ := hvalues rfl
     have hsize : values.size = 4096 := by
-      simpa only [alloc.vec.Vec.deref, hdi.2.2.2.1] using hdata.1
+      simpa only [alloc.vec.Vec.deref, Slice.from_val, hdi.2.2.2.1] using hdata.1
     obtain ⟨copied, hcopy, hcopied⟩ := copy_first_half blob cells
     obtain ⟨next, out, hextend, hn, ht, _, hout, _⟩ :=
       extend_refinement decoded hdi values hsize hdata copied
@@ -126,8 +132,8 @@ theorem compute_refinement
       (by simp), next, rfl, ht.1.trans hdt.1, ht.2.1.trans hdt.2.1, ht.2.2.trans hdt.2.2⟩
     · have hcount : CELLS_PER_EXT_BLOB = ok 128#usize := cells_per_ext_blob_eq
       have hhalf : 128#usize / 2#usize = ok 64#usize := rfl
-      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok,
-        Function.uncurry_apply_pair, if_true, cell_extender.copy_blob, hcount, hhalf, hcopy, hextend]
+      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
+        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, hcount, hhalf, hcopy, hextend]
     · simp only [Model.compute, Model.extend, hblob]
       change (true, cellBytes out) = (true, _)
       rw [hout]

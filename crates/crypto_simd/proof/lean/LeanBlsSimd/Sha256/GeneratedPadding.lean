@@ -11,9 +11,9 @@ theorem array_read_set {α : Type} [Inhabited α] {n : Usize} (a : Array α n)
     (p : Usize) (x : α) (i : Nat) (hp : p.val < n.val) :
     (a.set p x).val[i]! = if i=p.val then x else a.val[i]! := by
   by_cases he : i=p.val
-  · rw [if_pos he,← Array.getElem!_Nat_eq,Array.getElem!_Nat_set_eq _ _ _ _
+  · rw [ite_eq_left he,← Array.getElem!_Nat_eq,Array.getElem!_Nat_set_eq _ _ _ _
       ⟨he.symm,by change i < a.val.length; rw [a.property]; omega⟩]
-  · rw [if_neg he,← Array.getElem!_Nat_eq,Array.getElem!_Nat_set_ne _ _ _ _ (by omega),Array.getElem!_Nat_eq]
+  · rw [ite_eq_right he,← Array.getElem!_Nat_eq,Array.getElem!_Nat_set_ne _ _ _ _ (by omega),Array.getElem!_Nat_eq]
 
 theorem paddedBytes_get (pending : Array U8 64#usize) (p : Usize) (length : U64)
     (hp : p.val < 64) (i : Nat) (hi : i < 64*Spec.tailBlocks p.val) :
@@ -31,12 +31,13 @@ theorem paddedBytes_get (pending : Array U8 64#usize) (p : Usize) (length : U64)
     rw [List.length_take,pending.property]; change min p.val 64 = p.val; omega
   let a := (Array.repeat 128#usize 0#u8).setSlice! 0 (pending.val.take p.val)
   let marked := a.set p 128#u8
+  simp only [paddedBytes, Array.setSlice!_val]
   change ofU8 ((marked.val.setSlice! (64*Spec.tailBlocks p.val-8)
     (core.num.U64.to_be_bytes (bitLength length)).val)[i]!) = _
   by_cases hlast : 64*Spec.tailBlocks p.val-8 ≤ i
   · rw [List.getElem!_setSlice!_middle]
     · rw [be_u64 _ _ (by rcases hblocks with h | h <;> rw [h] at hi hlast ⊢ <;> omega)]
-      rw [if_neg (by omega),if_neg (by omega),if_pos hlast]
+      rw [ite_eq_right (by omega),ite_eq_right (by omega),ite_eq_left hlast]
       rfl
     · rw [(core.num.U64.to_be_bytes _).property,marked.property]
       change 64*Spec.tailBlocks p.val-8 ≤ i ∧ i-(64*Spec.tailBlocks p.val-8) < 8 ∧ i < 128
@@ -45,16 +46,17 @@ theorem paddedBytes_get (pending : Array U8 64#usize) (p : Usize) (length : U64)
     change ofU8 (a.set p 128#u8).val[i]! = _
     rw [array_read_set _ _ _ _ (by change p.val < 128; omega)]
     by_cases he : i=p.val
-    · rw [if_pos he,if_neg (by omega),if_pos he]
+    · rw [ite_eq_left he,ite_eq_right (by omega),ite_eq_left he]
       rfl
-    · rw [if_neg he,if_neg he,if_neg hlast]
+    · rw [ite_eq_right he,ite_eq_right he,ite_eq_right hlast]
+      simp only [a, Array.setSlice!_val, Array.repeat_val]
       change ofU8 (((List.replicate 128 0#u8).setSlice! 0 (pending.val.take p.val))[i]!) = _
       by_cases hpre : i<p.val
-      · rw [if_pos hpre,List.getElem!_setSlice!_middle]
+      · rw [ite_eq_left hpre,List.getElem!_setSlice!_middle]
         · rw [Nat.sub_zero,getElem!_pos _ _ (by rw [hlen]; exact hpre),List.getElem_take,
             ← getElem!_pos pending.val i (by rw [pending.property]; change i < 64; omega)]
         · rw [hlen,List.length_replicate]; omega
-      · rw [if_neg hpre,List.getElem!_setSlice!_same _ _ _ _ (by right; rw [hlen]; omega)]
+      · rw [ite_eq_right hpre,List.getElem!_setSlice!_same _ _ _ _ (by right; rw [hlen]; omega)]
         rw [List.getElem!_replicate _ hi128]
         rfl
 
@@ -75,10 +77,10 @@ theorem paddedBytes_matches (pending : Array U8 64#usize) (p : Usize) (length : 
       (by rw [(paddedBytes pending p length).property]; exact hi128),paddedBytes_get _ _ _ hp i hi,
     Spec.padWithBits_get _ _ i (by rw [hpad]; exact hi),hsize,Spec.paddedLength_short _ hp]
   by_cases hpre : i<p.val
-  · rw [if_pos hpre,if_pos hpre,Spec.bytes_get,
+  · rw [ite_eq_left hpre,ite_eq_left hpre,Spec.bytes_get,
       getElem!_pos ((pending.val.take p.val).map ofU8) i (by rw [List.length_map,hlen]; exact hpre),List.getElem_map,List.getElem_take,
       getElem!_pos pending.val i (by rw [pending.property]; change i < 64; omega)]
-  · rw [if_neg hpre,if_neg hpre]
+  · rw [ite_eq_right hpre,ite_eq_right hpre]
 
 theorem finish_refines (compress : Compressor) (hc : CompressorRefines compress)
     (state : Array U32 8#usize) (pending : Array U8 64#usize) (p : Usize) (length : U64)

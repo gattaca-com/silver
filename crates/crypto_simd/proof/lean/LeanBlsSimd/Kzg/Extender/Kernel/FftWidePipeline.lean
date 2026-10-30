@@ -46,12 +46,12 @@ def right (s : WideStage) (n : Nat) : fr8.Fr8 :=
   else s.product n
 
 def state (s : WideStage) (count : Nat) (prepared : Bool) : Slice fr8.Fr8 :=
-  ⟨s.input.val.mapIdx (fun v original =>
+  Slice.from (s.input.val.mapIdx (fun v original =>
     let n := pairNumber s.half.val v
     if n < count then
       if v % (2*s.half.val) < s.half.val then s.left n else s.right n
     else if prepared ∧ n = count ∧ v % (2*s.half.val) < s.half.val then s.left n
-    else original), by simpa using s.input.property⟩
+    else original)) (by simpa using s.input.property)
 
 @[simp] theorem state_length (s : WideStage) (count : Nat) (prepared : Bool) :
     (s.state count prepared).val.length = s.input.val.length := by simp [state]
@@ -67,7 +67,7 @@ theorem state_get (s : WideStage) (count : Nat) (prepared : Bool) (v : Nat)
   simp [state, hv]
 
 @[simp] theorem state_zero (s : WideStage) : s.state 0 false = s.input := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem (by simp)
   intro i hi hi'
   simp [state]
@@ -82,8 +82,8 @@ theorem slice_read (data : Slice fr8.Fr8) (i : Usize)
 
 theorem set_comm (data : Slice fr8.Fr8) (i j : Usize) (a b : fr8.Fr8) (hne : i ≠ j) :
     (data.set i a).set j b = (data.set j b).set i a := by
-  apply Subtype.ext
-  simp only [Slice.set, Slice.setAtNat]
+  ext1
+  simp only [Slice.set, Slice.setAtNat, Slice.from_val]
   exact List.set_comm a b (fun h => hne (UScalar.eq_of_val_eq h))
 
 theorem state_first (s : WideStage) (count n : Nat) (prepared : Bool)
@@ -125,7 +125,7 @@ private theorem second_iff (half n v : Nat) (hhalf : 0 < half) :
 theorem state_prepare (s : WideStage) (n : Nat) (i : Usize)
     (hhalf : 0 < s.half.val) (hi : i.val = pairFirst s.half.val n) :
     (s.state n false).set i (s.left n) = s.state n true := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem (by simp [Slice.set, Slice.setAtNat])
   intro v hv hv'
   simp only [Slice.set, Slice.setAtNat, state, List.getElem_set, List.getElem_mapIdx]
@@ -142,7 +142,7 @@ theorem state_prepare (s : WideStage) (n : Nat) (i : Usize)
 theorem state_finish_prepared (s : WideStage) (n : Nat) (i : Usize)
     (hhalf : 0 < s.half.val) (hi : i.val = pairFirst s.half.val n + s.half.val) :
     (s.state n true).set i (s.right n) = s.state (n + 1) false := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem (by simp [Slice.set, Slice.setAtNat])
   intro v hv hv'
   simp only [Slice.set, Slice.setAtNat, state, List.getElem_set, List.getElem_mapIdx]
@@ -155,7 +155,8 @@ theorem state_finish_prepared (s : WideStage) (n : Nat) (i : Usize)
       simp [← hv, hnum, hlo]
   · have hv : v ≠ i.val := by intro h; apply hnum; exact (he.mpr (h.trans hi)).1
     have hlt : pairNumber s.half.val v < n + 1 ↔ pairNumber s.half.val v < n := by omega
-    simp [hnum, Ne.symm hv, hlt]
+    simp only [Slice.from_val] at *
+    simp [hnum, Ne.symm hv, show pairNumber s.half.val v ≤ n ↔ pairNumber s.half.val v < n by omega]
 
 theorem state_complete (s : WideStage) (n : Nat) (i j : Usize)
     (hhalf : 0 < s.half.val) (hi : i.val = pairFirst s.half.val n)

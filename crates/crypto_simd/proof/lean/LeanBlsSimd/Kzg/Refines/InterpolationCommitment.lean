@@ -84,13 +84,13 @@ private theorem setup_lincomb_inputs
       (∀ x ∈ (alloc.vec.Vec.deref v).val, FrReduced x) := by
   have hsize : (alloc.vec.Vec.deref s.g1_monomial).val.length =
       (alloc.vec.Vec.deref v).val.length := by
-    simp only [alloc.vec.Vec.deref, setup_points_size s hs, hv, List.length_map, hcoeffs]
+    simp only [alloc.vec.Vec.deref, Slice.from_val, setup_points_size s hs, hv, List.length_map, hcoeffs]
   have hscalars : ∀ x ∈ (alloc.vec.Vec.deref v).val, FrReduced x := by
     intro x hx
-    simp only [alloc.vec.Vec.deref, hv] at hx
+    simp only [alloc.vec.Vec.deref, Slice.from_val, hv] at hx
     obtain ⟨f, _, rfl⟩ := List.mem_map.mp hx
     exact frEncode_reduced f
-  exact ⟨hsize, setup_points_valid s hs, hscalars⟩
+  exact ⟨hsize, by simpa only [alloc.vec.Vec.deref, Slice.from_val] using setup_points_valid s hs, hscalars⟩
 
 theorem setup_lincomb [cpu : RuntimeFeatures]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
@@ -104,7 +104,7 @@ theorem setup_lincomb [cpu : RuntimeFeatures]
   obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement scratch
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
-  simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
+  simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
 theorem setup_verify_lincomb [cpu : RuntimeFeatures]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
@@ -119,7 +119,7 @@ theorem setup_verify_lincomb [cpu : RuntimeFeatures]
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
     hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
-  simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
+  simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
 
 
 theorem setup_verify_lincomb_kernel [cpu : RuntimeFeatures]
@@ -135,14 +135,14 @@ theorem setup_verify_lincomb_kernel [cpu : RuntimeFeatures]
     (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
     hpoints hscalars
   refine ⟨point, scratch', hcall, ?_, ?_⟩
-  · simpa only [alloc.vec.Vec.deref, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
+  · simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
   · exact hnext
 
 
 private theorem inverseFft_eq (values : _root_.Array Fr) (hvalues : values.size = 64) :
     Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse =
       fftField values (computeRootsOfUnity 64) true := by
-  simp only [fftField_def, if_true, hvalues, Model.inverseFft, Model.inverseRoots, Model.roots]
+  simp only [fftField_def, ite_true, hvalues, Model.inverseFft, Model.inverseRoots, Model.roots]
 
 private theorem transform_step_length (columns total : List Fr) (used : List Bool) (c : Nat)
     (hlen : total.length = 64) : (totalStep columns used total c).length = 64 := by
@@ -175,7 +175,7 @@ private theorem transform_columns_loop
     refine ⟨vcol, vcoeff, acc, ?_, hcol, hcoeff, by simpa [hstart] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1.body,
-      hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hlt : iter.start.val < 128 := by omega
     obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
@@ -187,17 +187,17 @@ private theorem transform_columns_loop
       have hbody : verify.CellBatchVerifier.interpolation_commitment_loop1.body
           cs v flags iter vcol vcoeff acc = ok (cont (iter', vcol, vcoeff, acc)) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1.body,
-          hnext, bind_tc_ok, Function.uncurry_apply_pair, hflag, hb, Bool.false_eq_true, if_false]
+          hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hflag, hb, Bool.false_eq_true, ite_false]
       obtain ⟨col, coeff, result, hloop, hcol', hcoeff', hr⟩ := ih
         total vcol vcoeff acc ha htotal hcol hcoeff iter'
         (by omega) (by simpa only [hend'] using hend) (by omega)
       refine ⟨col, coeff, result, ?_, hcol', hcoeff', ?_⟩
       · rw [verify.CellBatchVerifier.interpolation_commitment_loop1, loop.eq_1]
-        simp only [hbody]
+        simp only [hbody, bind_ok]
         exact hloop
       · rw [List.drop_eq_getElem_cons (by simp [hlt])]
         simpa only [List.foldl_cons, List.getElem_range, hi', totalStep, hb,
-          Bool.false_eq_true, if_false] using hr
+          Bool.false_eq_true, ite_false] using hr
     | true =>
       obtain ⟨copied, hcopy, hcopied⟩ := copy_column columns vcol.val v vcol hv rfl
         hcolumns hcol iter.start hlt
@@ -205,8 +205,10 @@ private theorem transform_columns_loop
       have hvalues : values.size = 64 := by simp [values]
       obtain ⟨decoded, hdecode, hdecoded⟩ := inverse_fft_refinement
         (alloc.vec.Vec.deref vcoeff) (alloc.vec.Vec.deref copied)
-        (alloc.vec.Vec.deref cs.inverse_roots) values hcoeff hvalues
-        (by simpa [values, alloc.vec.Vec.deref] using hcopied) hcs.1
+        (alloc.vec.Vec.deref cs.inverse_roots) values
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hcoeff) hvalues
+        (by simpa [values, alloc.vec.Vec.deref] using hcopied)
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hcs.1)
       have hdecode' : fft.inverse_fft (alloc.vec.Vec.deref vcoeff) (alloc.vec.Vec.deref copied)
           (alloc.vec.Vec.deref cs.inverse_roots) cs.inverse_size = ok decoded := by
         simpa only [hcs.2.1] using hdecode
@@ -215,29 +217,29 @@ private theorem transform_columns_loop
       have hdecoded' : decoded.val = coeffValues.map frEncode := by
         rw [inverseFft_eq values hvalues] at hdecoded
         exact hdecoded
-      let decodedVec : alloc.vec.Vec blst.blst_fr := ⟨decoded.val, decoded.property⟩
+      let decodedVec : alloc.vec.Vec blst.blst_fr := ⟨decoded⟩
       let shifts := (List.range 128).map (fun j => (Model.cosetShift j).inverse)
       have hshifts : cs.shift_inverse.val = shifts.map frEncode := by
         simpa only [shifts, List.map_map, Function.comp_def] using hcs.2.2.1
       have hshift : shifts[iter.start.val]! = (Model.cosetShift iter.start.val).inverse := by
         simp [shifts, getElem!_pos, hlt]
       obtain ⟨nextAcc, hshiftLoop, hnextAcc⟩ := shift_add_loop shifts [] coeffValues [] total
-        cs.shift_inverse decodedVec acc hshifts (by simpa [decodedVec] using hdecoded')
+        cs.shift_inverse decodedVec acc hshifts (by simpa only [decodedVec, alloc.vec.Vec.val, List.nil_append] using hdecoded')
         (by simpa using ha) (by omega) rfl iter.start (by simp [shifts, hlt]) (Fr.ofNat 1)
         { start := 0#usize, «end» := FIELD_ELEMENTS_PER_CELL }
         (by simp) (by simp [FIELD_ELEMENTS_PER_CELL, hcoeffValues])
       have hnextVal : nextAcc.val = (totalStep columns used total iter.start.val).map frEncode := by
-        simpa only [List.nil_append, hshift, totalStep, hb, if_true,
+        simpa only [List.nil_append, hshift, totalStep, hb, ite_true,
           coeffValues, values] using hnextAcc
       have hcopiedLen : copied.val.length = 64 := by simp [hcopied]
-      have hdecodedLen : decodedVec.val.length = 64 := by simp [decodedVec, hdecoded', hcoeffValues]
-      simp only [alloc.vec.Vec.deref] at hdecode'
+      have hdecodedLen : decodedVec.val.length = 64 := by simp [decodedVec, alloc.vec.Vec.val, hdecoded', hcoeffValues]
+      simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hdecode'
       dsimp only [decodedVec] at hshiftLoop
       have hbody : verify.CellBatchVerifier.interpolation_commitment_loop1.body
           cs v flags iter vcol vcoeff acc = ok (cont (iter', copied, decodedVec, nextAcc)) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1.body,
-          hnext, bind_tc_ok, Function.uncurry_apply_pair, hflag, hb, if_true,
-          hcopy, lift, alloc.vec.Vec.deref_mut, alloc.vec.Vec.deref,
+          hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hflag, hb, ite_true,
+          hcopy, lift, alloc.vec.Vec.deref_mut, alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from,
           hdecode', fr_one_eq, hshiftLoop, decodedVec]
       obtain ⟨col, coeff, result, hloop, hcol', hcoeff', hr⟩ := ih
         (totalStep columns used total iter.start.val) copied decodedVec nextAcc hnextVal
@@ -245,7 +247,7 @@ private theorem transform_columns_loop
         iter' (by omega) (by simpa only [hend'] using hend) (by omega)
       refine ⟨col, coeff, result, ?_, hcol', hcoeff', ?_⟩
       · rw [verify.CellBatchVerifier.interpolation_commitment_loop1, loop.eq_1]
-        simp only [hbody]
+        simp only [hbody, bind_ok]
         exact hloop
       · rw [List.drop_eq_getElem_cons (by simp [hlt])]
         simpa only [List.foldl_cons, List.getElem_range, hi'] using hr
@@ -254,14 +256,14 @@ private theorem transform_columns_loop
 private theorem resize_fields (v : alloc.vec.Vec blst.blst_fr) (n : Usize) (x : blst.blst_fr) :
     ∃ out, alloc.vec.Vec.resize blst.blst_fr.Insts.CoreCloneClone v n x = ok out ∧
       out.val = v.val.resize n.val x := by
-  apply WP.spec_imp_exists
+  apply spec_imp_exists
   apply alloc.vec.Vec.resize_spec
   simp [blst.blst_fr.Insts.CoreCloneClone.clone]
 
 private theorem resize_flags (v : alloc.vec.Vec Bool) (n : Usize) :
     ∃ out, alloc.vec.Vec.resize core.clone.CloneBool v n false = ok out ∧
       out.val = v.val.resize n.val false := by
-  apply WP.spec_imp_exists
+  apply spec_imp_exists
   apply alloc.vec.Vec.resize_spec
   rfl
 
@@ -385,8 +387,8 @@ private theorem interpolation_commitment_execution [cpu : RuntimeFeatures]
     simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, hb]
   have hwork := curveWorkInvariant_sum _ _ _ _ _ hlincomb hv.2.2.2
   refine ⟨point, next, ?_, ⟨hv.1, hv.2.1, hv.2.2.1, hwork⟩, hpoint⟩
-  simp only [verify.CellBatchVerifier.interpolation_commitment, hzero, hkernel, bind_tc_ok,
-    Function.uncurry_apply_pair, hcolumns0, cells_per_ext_blob_eq, hmul, hcolumns,
+  simp only [verify.CellBatchVerifier.interpolation_commitment, hzero, hkernel, bind_tc_ok, bind_ok,
+    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hcolumns0, cells_per_ext_blob_eq, hmul, hcolumns,
     hflags0, hflags, haggregate, htotal0, htotal, hcol, hcoeff, htransform, hlincomb, next]
 
 end LeanBlsSimd.Kzg.Interpolation
@@ -422,20 +424,22 @@ theorem interpolation_commitment_refinement [cpu : RuntimeFeatures]
       simp [hbufferVal, FIELD_ELEMENTS_PER_CELL]
     obtain ⟨kernel', out, hcall, hkernel', hout⟩ := InterpolationKernel.interpolate_refinement
       kernel hk cells indices (alloc.vec.Vec.deref v.r_powers) (alloc.vec.Vec.deref buffer)
-      evals powers hcell hs hp hbufferLen
-    let result : alloc.vec.Vec blst.blst_fr := ⟨out.val, out.property⟩
+      evals powers hcell hs
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hp)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hbufferLen)
+    let result : alloc.vec.Vec blst.blst_fr := ⟨out⟩
     let coefficients := (Model.columnRli (indices.val.map (·.val)).toArray evals powers).toList
     have hcoefficients : coefficients.length = 64 := by
       simp only [coefficients, _root_.Array.length_toList, columnRli_size]
     obtain ⟨point, scratch, hlincomb, hpoint⟩ := Interpolation.setup_verify_lincomb v.setup hv.1
       coefficients hcoefficients result hout v.curve_work
     let next := { v with interpolation := result, curve_work := scratch, kernel := some kernel' }
-    simp only [alloc.vec.Vec.deref, result] at hcall hlincomb
+    simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from, result] at hcall hlincomb
     have hwork := curveWorkInvariant_sum _ _ _ _ _ hlincomb hv.2.2.2
     refine ⟨point, next, ?_, ⟨hv.1, hv.2.1, hkernel', hwork⟩, ?_⟩
-    · simp only [verify.CellBatchVerifier.interpolation_commitment, fr_zero_eq, show Fr.ofNat 0 = Fr.zero from rfl, hkernel, bind_tc_ok,
-        hbuffer, alloc.vec.Vec.deref_mut, alloc.vec.Vec.deref, lift, hcall,
-        Function.uncurry_apply_pair, hlincomb,
+    · simp only [verify.CellBatchVerifier.interpolation_commitment, fr_zero_eq, show Fr.ofNat 0 = Fr.zero from rfl, hkernel, bind_tc_ok, bind_ok,
+        hbuffer, alloc.vec.Vec.deref_mut, alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from, lift, hcall,
+        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hlincomb,
         next, result]
     · simpa only [coefficients, _root_.Array.toArray_toList] using hpoint
 

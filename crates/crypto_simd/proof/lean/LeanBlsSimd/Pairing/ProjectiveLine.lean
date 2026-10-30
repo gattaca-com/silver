@@ -47,12 +47,12 @@ theorem g1_scale_relations (p : G1) (hp : p.isInfinity = false) :
   let z : ZMod Fp.modulus := p.z
   have hzz : z ≠ 0 := hz
   have hx : p.x * p.z = (p.z * p.z * p.z) * p.toAffine.1 := by
-    simp only [G1.toAffine, show p.z.isZero = false from hp, Bool.false_eq_true, if_false,
+    simp only [G1.toAffine, show p.z.isZero = false from hp, Bool.false_eq_true, ite_false,
       Fp.inverse_eq_inv]
     change x * z = (z * z * z) * (x * (z⁻¹ * z⁻¹))
     field_simp [hzz]
   have hy : p.y = (p.z * p.z * p.z) * p.toAffine.2 := by
-    simp only [G1.toAffine, show p.z.isZero = false from hp, Bool.false_eq_true, if_false,
+    simp only [G1.toAffine, show p.z.isZero = false from hp, Bool.false_eq_true, ite_false,
       Fp.inverse_eq_inv]
     change y = (z * z * z) * (y * (z⁻¹ * z⁻¹ * z⁻¹))
     field_simp [hzz]
@@ -79,7 +79,7 @@ theorem g1_line_final_eq (step : Fin 68) (pair : Fin 2) (points : Fin 2 → G1)
 
 theorem ofG1_evaluationPoint (p : G1) (hp : p.isInfinity = false) :
     Embedded.ofG1 p = evaluationPoint (Fp2.ofFp p.toAffine.1) (Fp2.ofFp p.toAffine.2) := by
-  simp only [Embedded.ofG1, hp, Bool.false_eq_true, if_false]
+  simp only [Embedded.ofG1, hp, Bool.false_eq_true, ite_false]
   rfl
 
 end

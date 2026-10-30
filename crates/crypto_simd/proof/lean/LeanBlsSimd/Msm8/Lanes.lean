@@ -43,7 +43,7 @@ theorem times_two_pow_loop_refines (k i : Usize) (r : G1x8) (hi : i.val ≤ k.va
   | zero =>
     have hge : ¬i < k := by simp only [UScalar.lt_equiv]; omega
     rw [loop.eq_1]
-    simp [g1x8.G1x8.times_two_pow_loop.body, hge, times_two_pow]
+    simp [g1x8.G1x8.times_two_pow_loop.body, hge, times_two_pow, bind_ok]
   | succ n ih =>
     have hlt : i < k := by simp only [UScalar.lt_equiv]; omega
     let i' : Usize := UScalar.ofNatCore (i.val + 1) (by have := k.hBounds; omega)
@@ -51,11 +51,11 @@ theorem times_two_pow_loop_refines (k i : Usize) (r : G1x8) (hi : i.val ≤ k.va
     have hb : g1x8.G1x8.times_two_pow_loop.body k (toG1x8 r) i =
         ok (cont (toG1x8 r.double_complete, i')) := by
       simp only [g1x8.G1x8.times_two_pow_loop.body, hlt, ↓reduceIte,
-        double_complete_refines, ofG1x8_toG1x8, bind_tc_ok]
+        double_complete_refines, ofG1x8_toG1x8, bind_tc_ok, bind_ok]
       rw [add_ok _ _ (by have := k.hBounds; simp at *; omega)]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     change loop _ (toG1x8 r.double_complete, i') = _
     rw [ih i' r.double_complete (by omega) (by omega)]
     rw [times_two_pow_succ]
@@ -106,7 +106,7 @@ theorem index_vector_refines (indices : Array I64 8#usize) :
     index_usize_eq (n := 8#usize) _ 2#usize (by decide), index_usize_eq (n := 8#usize) _ 3#usize (by decide),
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),
     index_usize_eq (n := 8#usize) _ 6#usize (by decide), index_usize_eq (n := 8#usize) _ 7#usize (by decide),
-    bind_tc_ok, core.core_arch.x86.avx512f._mm512_set_epi64]
+    bind_tc_ok, bind_ok, core.core_arch.x86.avx512f._mm512_set_epi64]
   congr 1
   ext l hl
   interval_cases l <;> simp [ofArray, _mm512_set_epi64]
@@ -127,7 +127,7 @@ theorem permute_loop_refines (self : fp8.Fp8) (index : M512)
       simp only [fp8.Fp8.permute_loop.body, LIMBS_refines, UScalar.lt_equiv,
         hi8, UScalar.ofNatCore_val_eq, Nat.lt_irrefl, ↓reduceIte]
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply congrArg ok
     apply congrArg (toArray id)
     apply Vector.ext
@@ -145,13 +145,13 @@ theorem permute_loop_refines (self : fp8.Fp8) (index : M512)
         ok (cont (self, toArray id v', i')) := by
       simp only [fp8.Fp8.permute_loop.body, LIMBS_refines, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-        index_usize_eq self i hlt, bind_tc_ok,
+        index_usize_eq self i hlt, bind_tc_ok, bind_ok,
         core.core_arch.x86.avx512f._mm512_permutex2var_epi64, update_eq (n := 8#usize) _ i _ hlt]
       rw [add_ok _ _ (by scalar_tac)]
       simp [v', value, i']
       exact set_toArray id v rfl i _ hlt
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply ih v' i' (by omega) ?_ (by omega)
     intro j hj
     by_cases hji : j.val = i.val
@@ -161,12 +161,12 @@ theorem permute_loop_refines (self : fp8.Fp8) (index : M512)
 theorem permute_refines (self : fp8.Fp8) (indices : Array I64 8#usize) :
     fp8.Fp8.permute self indices =
       ok (toFp8 ((ofFp8 self).permute (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp8.Fp8.permute, index_vector_refines, Simd.zero_refines, bind_tc_ok]
+  simp only [fp8.Fp8.permute, index_vector_refines, Simd.zero_refines, bind_tc_ok, bind_ok]
   have hre : Array.repeat 8#usize Simd.zero = toArray id (Vector.replicate 8 Simd.zero) :=
     (toArray_replicate id Simd.zero rfl).symm
   rw [hre]
   rw [permute_loop_refines self _ _ 0#usize (by decide) (by simp)]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 end Fp8
 
@@ -265,7 +265,7 @@ theorem lanesAbove_loop_refines (distance : Usize) (hd : distance.val ≤ 4)
         ok (done (toArray toI64 v)) := by
       simp [g1x8.lanes_above_loop.body, limbs.LANES, UScalar.lt_equiv, hi8]
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     congr 2
     ext j hj
     exact hv ⟨j, hj⟩ (by omega)
@@ -279,19 +279,19 @@ theorem lanesAbove_loop_refines (distance : Usize) (hd : distance.val ≤ 4)
       simp only [g1x8.lanes_above_loop.body, limbs.LANES, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte]
       rw [add_ok _ _ (by omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [rem_ok _ _ (by decide)]
-      simp only [bind_tc_ok, lift, hcast_usize_i64, UScalar.ofNatCore_val_eq]
+      simp only [bind_tc_ok, bind_ok, lift, hcast_usize_i64, UScalar.ofNatCore_val_eq]
       rw [update_eq _ _ _ hlt,
         add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       congr 2
       apply Prod.ext
       · simpa [v', lanesAbove] using (set_toArray (n := 8#usize) toI64 v rfl i
           (Int64.ofNat ((i.val + distance.val) % 8)) hlt)
       · rfl
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply ih v' i' (by omega) ?_ (by omega)
     intro j hj
     by_cases hji : j.val = i.val
@@ -317,11 +317,11 @@ private theorem sum_body_refines (bits : Usize) (hb : bits.val ≤ 255)
   simp only [g1x8.G1x8.sum_lanes_shifted_loop.body, limbs.LANES, UScalar.lt_equiv,
     UScalar.ofNatCore_val_eq, show distance.val < 8 by omega, ↓reduceIte]
   rw [mul_ok _ _ hm]
-  simp only [bind_tc_ok, times_two_pow_refines, ofG1x8_toG1x8,
+  simp only [bind_tc_ok, bind_ok, times_two_pow_refines, ofG1x8_toG1x8,
     UScalar.ofNatCore_val_eq, lanesAbove_refines distance hd, permute_refines,
     add_complete_refines]
   rw [mul_ok _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega)]
-  simp only [bind_tc_ok, joinLanes]
+  simp only [bind_tc_ok, bind_ok, joinLanes]
   rw [ofArray_toArray (f := fun i : I64 => Int64.ofBitVec i.bv) (g := toI64)
     (fun _ => rfl)]
   rfl
@@ -334,18 +334,18 @@ theorem sum_lanes_shifted_refines (self : g1x8.G1x8) (bits : Usize)
   rw [← toG1x8_ofG1x8 self]
   rw [loop.eq_1]
   dsimp only
-  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega)]
+  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega), bind_ok]
   simp only
   rw [loop.eq_1]
   dsimp only
-  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega)]
+  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega), bind_ok]
   simp only
   rw [loop.eq_1]
   dsimp only
-  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega)]
+  rw [sum_body_refines bits hb _ _ (by simp only [UScalar.ofNatCore_val_eq]; omega), bind_ok]
   simp only
   rw [loop.eq_1]
   simp [g1x8.G1x8.sum_lanes_shifted_loop.body, limbs.LANES,
-    sum_lanes_shifted]
+    sum_lanes_shifted, bind_ok]
 
 end LeanBlsSimd.G1x8

@@ -22,23 +22,26 @@ theorem simd_body_runs [RuntimeFeatures]
       ∀ i, i < out.val.length → result.val[i]! =
         if start.val ≤ i ∧ i < next.val then target[i]! else out.val[i]! := by
   let ss : Slice (Array U8 48#usize) :=
-    ⟨inputs.val.slice start.val next.val,
-      le_trans (List.slice_length_le _ _ _) inputs.property⟩
+    Slice.from (inputs.val.slice start.val next.val)
+      (le_trans (List.slice_length_le _ _ _) inputs.property)
   let os : Slice (Option blst.blst_p1_affine) :=
-    ⟨out.val.slice start.val next.val, le_trans (List.slice_length_le _ _ _) out.property⟩
+    Slice.from (out.val.slice start.val next.val)
+      (le_trans (List.slice_length_le _ _ _) out.property)
   have hss : ss.val.length = 8 := by
-    dsimp [ss]
+    simp only [ss, Slice.from_val]
     rw [List.slice_length]
     omega
   have hos : os.val.length = 8 := by
-    dsimp [os]
+    simp only [os, Slice.from_val]
     rw [List.slice_length]
     omega
   let initial : Array (Array U8 48#usize) 8#usize :=
     Array.repeat 8#usize (Array.repeat 48#usize 0#u8)
   let c := Array.from_slice initial ss
   have hc : c.val = inputs.val.slice start.val next.val := by
-    simp [c, Array.from_slice, hss, ss]
+    have hss' := hss
+    simp only [ss, Slice.from_val] at hss'
+    simp [c, Array.from_slice, hss', ss, Slice.from_val]
   obtain ⟨r, hr, hrv⟩ := hchunk c os hc hos
   let result := out.setSlice! start.val r.val
   refine ⟨result, ?_, ?_, ?_⟩
@@ -61,28 +64,28 @@ theorem simd_body_runs [RuntimeFeatures]
         { start, «end» := next } = ok (os, fun s => out.setSlice! start.val s.val) := by
       simp only [core.slice.index.Slice.index_mut,
         core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
-      rw [if_pos (by simp only [Slice.length]; constructor <;> omega)]
+      rw [ite_eq_left (by simp only [Slice.length]; constructor <;> omega)]
       rfl
     simp only [silver_crypto_simd.bls.uncompress_in_g1_loop.body, show start < stop from hlt,
-      if_true, Array.to_slice_mut, lift, bind_tc_ok, hadd, hindex, hmut]
-    simp only [Function.uncurry_apply_pair]
+      ite_true, Array.to_slice_mut, lift, bind_tc_ok, bind_ok, hadd, hindex, hmut]
+    simp only [Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     rw [hcopy]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     change (do let r ← silver_crypto_simd.bls.decompress_g1_chunk c os
                ok (cont (out.setSlice! start.val r.val, next))) = _
     rw [hr]
-    rfl
+    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
   · simp [result, Slice.setSlice!]
   · intro i hi
     simp only [result, Slice.setSlice!_val, hrv]
     by_cases h : start.val ≤ i ∧ i < next.val
-    · rw [if_pos h, List.getElem!_setSlice!_middle]
+    · rw [ite_eq_left h, List.getElem!_setSlice!_middle]
       · rw [List.getElem!_slice _ _ _ _ (by omega)]
         congr 1
         omega
       · rw [List.slice_length]
         omega
-    · rw [if_neg h]
+    · rw [ite_eq_right h]
       apply List.getElem!_setSlice!_same
       rw [List.slice_length]
       omega

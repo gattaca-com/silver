@@ -49,7 +49,7 @@ example : True := by
       have h2 : Fp2.toField (Fp2.ofFp (Fp.ofNat 2)) = 2 := by decide +kernel
       have h3 : Fp2.toField (Fp2.ofFp (Fp.ofNat 3)) = 3 := by decide +kernel
       have h4 : Fp2.toField (Fp2.ofFp (Fp.ofNat 4)) = 4 := by decide +kernel
-      rw [doubleBad, if_neg hz]
+      rw [doubleBad, ite_eq_right hz]
       funext i
       fin_cases i <;>
       · simp only [G2.rep, dblXYZ, dblX, dblY, dblZ, negDblY, dblU_eq, negY_eq, Fin.zero_eta,
@@ -100,9 +100,9 @@ example : True := by
       have h2 : Fp2.toField (Fp2.ofFp (Fp.ofNat 2)) = 2 := by decide +kernel
       have hP' := G2.valid_equation hP
       have hQ' := G2.valid_equation hQ
-      rw [addBad, if_neg hz1, if_neg hz2]
+      rw [addBad, ite_eq_right hz1, ite_eq_right hz2]
       dsimp only
-      rw [if_neg hu, smul_fin3]
+      rw [ite_eq_right hu, smul_fin3]
       funext i
       fin_cases i <;>
         simp only [G2.rep, addXYZ, addX, addY, negAddY, addZ, negY_eq, Fin.zero_eta, Fin.mk_one,
@@ -182,10 +182,10 @@ theorem nonsingular_generator :
 
 example : G2.toPoint (mulNatBad G2.generator 2) ≠ 2 • G2.toPoint G2.generator := by
   have h1 : mulNatBad G2.generator 1 = G2.generator := by
-    rw [mulNatBad_def, if_neg one_ne_zero, if_pos rfl, mulNatBad_def, if_pos rfl]
+    rw [mulNatBad_def, ite_eq_right one_ne_zero, ite_eq_left rfl, mulNatBad_def, ite_eq_left rfl]
     rfl
   have h2 : mulNatBad G2.generator 2 = G2.generator := by
-    rw [mulNatBad_def, if_neg two_ne_zero, if_neg (by decide), h1]
+    rw [mulNatBad_def, ite_eq_right two_ne_zero, ite_eq_right (by decide), h1]
   have hG : G2.toPoint G2.generator ≠ 0 := by
     rw [show G2.generator = ⟨G2.generator.x, G2.generator.y, Fp2.one⟩ from rfl,
       G2.toPoint_mk_one nonsingular_generator]
@@ -212,12 +212,12 @@ theorem mulNat_of_isZero (k : ℕ) {Q : G2} (hQ : Q.z.isZero = true) :
   induction k using Nat.strongRecOn generalizing Q with
   | _ k ih =>
     rw [G2.mulNat_def]
-    have hd : G2.double Q = Q := by rw [G2.double, if_pos hQ]
+    have hd : G2.double Q = Q := by rw [G2.double, ite_eq_left hQ]
     split
     · rfl
     · rw [hd]
       split
-      · rw [G2.add, if_pos hQ]
+      · rw [G2.add, ite_eq_left hQ]
         exact ih (k / 2) (by omega) hQ
       · exact ih (k / 2) (by omega) hQ
 
@@ -227,9 +227,9 @@ theorem inSubgroup_offCurve : G2.inSubgroup offCurve = false := by
   have hodd : Fr.modulus % 2 = 1 := by decide +kernel
   have hz : ¬offCurve.z.isZero = true := by decide +kernel
   have hm : G2.mulNat offCurve Fr.modulus = offCurve := by
-    rw [G2.mulNat_def, if_neg hr, if_pos hodd, G2.add, if_neg hz,
-      if_pos (mulNat_of_isZero _ hd)]
-  rw [G2.inSubgroup, G2.isInfinity, if_neg hz, G2.isInfinity, hm]
+    rw [G2.mulNat_def, ite_eq_right hr, ite_eq_left hodd, G2.add, ite_eq_right hz,
+      ite_eq_left (mulNat_of_isZero _ hd)]
+  rw [G2.inSubgroup, G2.isInfinity, ite_eq_right hz, G2.isInfinity, hm]
   decide +kernel
 
 example : ¬∀ P : G2, Fr.modulus • G2.toPoint P = 0 → G2.inSubgroup P = true := fun h => by

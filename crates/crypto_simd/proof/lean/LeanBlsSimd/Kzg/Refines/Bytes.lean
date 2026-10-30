@@ -39,7 +39,7 @@ private theorem same_bytes_loop_eq (a b : Aeneas.Std.Array U8 48#usize)
       simpa only [getElem!_pos a.val j ha, getElem!_pos b.val j hb] using hp j hj
     refine ⟨i, ?_, ?_⟩
     · rw [loop.eq_1]
-      simp [verify.same_bytes_loop.body, bls.COMPRESSED_LEN, he]
+      simp [verify.same_bytes_loop.body, bls.COMPRESSED_LEN, he, bind_ok]
     · simp [heq, UScalar.eq_equiv, he]
   | succ k ih =>
     have hlt : i.val < 48 := by omega
@@ -64,16 +64,16 @@ private theorem same_bytes_loop_eq (a b : Aeneas.Std.Array U8 48#usize)
       obtain ⟨j, hj, hfin⟩ := ih i' (by omega) hp' (by omega)
       refine ⟨j, ?_, hfin⟩
       rw [loop.eq_1]
-      simp only [verify.same_bytes_loop.body, bls.COMPRESSED_LEN]
-      simp only [UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, if_true,
-        same_bytes_index a i hlt, same_bytes_index b i hlt, bind_tc_ok,
+      simp only [verify.same_bytes_loop.body, bls.COMPRESSED_LEN, bind_ok]
+      simp only [UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true,
+        same_bytes_index a i hlt, same_bytes_index b i hlt, bind_tc_ok, bind_ok,
         heq, hadd]
       exact hj
     · refine ⟨i, ?_, ?_⟩
       · rw [loop.eq_1]
-        simp only [verify.same_bytes_loop.body, bls.COMPRESSED_LEN, bind_tc_ok,
-          UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, if_true,
-          same_bytes_index a i hlt, same_bytes_index b i hlt, heq, if_false]
+        simp only [verify.same_bytes_loop.body, bls.COMPRESSED_LEN, bind_tc_ok, bind_ok,
+          UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true,
+          same_bytes_index a i hlt, same_bytes_index b i hlt, heq, ite_false]
       · have hi48 : i ≠ 48#usize := by
           intro h
           have := congrArg UScalar.val h
@@ -90,7 +90,7 @@ theorem same_bytes_refinement (a b : Aeneas.Std.Array U8 48#usize) :
     (by intro j hj; simp at hj)
   unfold verify.same_bytes verify.same_bytes_loop
   rw [hj]
-  simp only [bind_tc_ok, bls.COMPRESSED_LEN]
+  simp only [bind_tc_ok, bind_ok, bls.COMPRESSED_LEN]
   rw [arrayBytes, arrayBytes, bytes_beq_eq]
   congr 1
   apply Bool.eq_iff_iff.mpr

@@ -38,11 +38,11 @@ def splitPoint (points : List blst.blst_p1_affine) (fs ss : List Bool) (i : ℕ)
 theorem splitPoint_first (points : List blst.blst_p1_affine) (fs ss : List Bool)
     (i : ℕ) (hi : i < points.length) :
     splitPoint points fs ss i = transformedPoint points[i]! false fs[i]! := by
-  simp only [splitPoint, hi, if_true]
+  simp only [splitPoint, hi, ite_true]
 
 theorem splitPoint_second (points : List blst.blst_p1_affine) (fs ss : List Bool) (i : ℕ) :
     splitPoint points fs ss (points.length + i) = transformedPoint points[i]! true ss[i]! := by
-  simp only [splitPoint, show ¬points.length + i < points.length by omega, if_false,
+  simp only [splitPoint, show ¬points.length + i < points.length by omega, ite_false,
     Nat.add_sub_cancel_left]
 
 theorem split_points_rep (points : List blst.blst_p1_affine) (fs ss : List Bool)
@@ -102,8 +102,8 @@ theorem split_sum_contribution (points : List blst.blst_p1_affine) (scalars : Li
       transformedPoint points[i]! true ss.val[i]! := by
     rw [← halign, splitPoint_second]
   rw [ha, hb, splitPoint_first _ _ _ _ hip, hpt, hf, hs]
-  simpa only [transformedPoint, if_false, if_true, List.getElem!_eq_getElem?_getD,
-    List.getElem?_eq_getElem hi', Option.getD_some] using
+  simpa only [transformedPoint, ite_false, ite_true, List.getElem!_eq_getElem?_getD,
+    List.getElem?_eq_getElem hi', Option.getD_some] using!
     split_scalar_contribution points[i]! scalars[i] (first ⟨i, hi'⟩) (second ⟨i, hi'⟩)
       (hp i hip) (hfirst ⟨i, hi'⟩) (hsecond ⟨i, hi'⟩)
 

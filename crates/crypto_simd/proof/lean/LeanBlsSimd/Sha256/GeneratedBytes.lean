@@ -8,9 +8,12 @@ theorem be_byte {w : Nat} (x : BitVec w) (hw : w%8=0) (i : Nat) (hi : i < w/8) :
     x.toBEBytes[i]! = BitVec.ofNat 8 (x.toNat >>> (8*(w/8-1-i))) := by
   apply (Byte.eq_iff _ _).mpr
   intro j hj
-  have hil : i < x.toLEBytes.length := by simpa only [BitVec.toLEBytes_length x hw] using hi
+  have hlen : x.toLEBytes.length = w / 8 := by
+    rw [BitVec.toLEBytes_length]
+    omega
+  have hil : i < x.toLEBytes.length := by simpa only [hlen] using! hi
   simp only [BitVec.toBEBytes,List.getElem!_eq_getElem?_getD,List.getElem?_reverse hil,
-    BitVec.toLEBytes_length x hw]
+    hlen]
   rw [← List.getElem!_eq_getElem?_getD]
   rw [BitVec.toLEBytes_getElem!_testBit _ _ _ hj]
   simp only [BitVec.getElem!_eq_testBit_toNat,Byte.testBit,BitVec.toNat_ofNat,
@@ -21,6 +24,7 @@ theorem be_u32 (x : U32) (i : Nat) (hi : i < 4) :
       UInt8.ofNat (x.bv.toNat >>> (8*(3-i))) := by
   have hlen : (core.num.U32.to_be_bytes x).val.length = 4 := (core.num.U32.to_be_bytes x).property
   rw [getElem!_pos _ i (by omega)]
+  simp only [core.num.U32.to_be_bytes,Array.from_val]
   change UInt8.ofBitVec ((x.bv.toBEBytes.map (@UScalar.mk .U8))[i]'(by simpa [BitVec.toBEBytes_length] using hi)).bv = _
   rw [List.getElem_map]
   change UInt8.ofBitVec (x.bv.toBEBytes[i]'(by simpa [BitVec.toBEBytes_length] using hi)) = _
@@ -31,6 +35,7 @@ theorem be_u64 (x : U64) (i : Nat) (hi : i < 8) :
     ofU8 (core.num.U64.to_be_bytes x).val[i]! = Spec.wordByte (ofU64 x) i := by
   have hlen : (core.num.U64.to_be_bytes x).val.length = 8 := (core.num.U64.to_be_bytes x).property
   rw [getElem!_pos _ i (by omega)]
+  simp only [core.num.U64.to_be_bytes,Array.from_val]
   change UInt8.ofBitVec ((x.bv.toBEBytes.map (@UScalar.mk .U8))[i]'(by simpa [BitVec.toBEBytes_length] using hi)).bv = _
   rw [List.getElem_map]
   change UInt8.ofBitVec (x.bv.toBEBytes[i]'(by simpa [BitVec.toBEBytes_length] using hi)) = _

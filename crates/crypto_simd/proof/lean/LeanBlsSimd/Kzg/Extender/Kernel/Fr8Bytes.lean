@@ -7,6 +7,8 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel.BytePacking
 
+attribute [local implicit_reducible] FrModel.LIMBS FrModel.LIMB_BITS
+
 set_option exponentiation.threshold 1000
 set_option maxRecDepth 4000
 set_option maxHeartbeats 2000000
@@ -32,7 +34,7 @@ def valWords (x : Vector UInt64 4) : Nat :=
 theorem unpack_spec (x : Vector UInt64 4) :
     (∀ j : Fin 5, (unpack x)[j].toNat < 2^52) ∧ val52 (unpack x) = valWords x := by
   have l0 : (unpack x)[0].toNat = x[0].toNat % 2^52 := by
-    simpa using toNat_limb_one x[0] 0 (by decide)
+    simpa using! toNat_limb_one x[0] 0 (by decide)
   have l1 : (unpack x)[1].toNat =
       (x[0].toNat / 2^52 + x[1].toNat % 2^52 * 2^12) % 2^52 :=
     toNat_limb_two x[0] x[1] 52 (by decide) (by decide)
@@ -60,10 +62,11 @@ theorem unpack_refines (x : Array U64 4#usize) :
   have hm : fr8.MASK52 = ok (toU64 (UInt64.ofNat MASK52)) := by
     unfold fr8.MASK52
     rw [fr8.LIMB_BITS]
+    simp (disch := decide) only [shiftLeft_ok, bind_ok, sub_ok]
     rfl
   unfold fr8.unpack52
   simp only [hm, index_usize_eq x 0#usize (by decide), index_usize_eq x 1#usize (by decide),
-    index_usize_eq x 2#usize (by decide), index_usize_eq x 3#usize (by decide), bind_tc_ok,
+    index_usize_eq x 2#usize (by decide), index_usize_eq x 3#usize (by decide), bind_tc_ok, bind_ok,
     lift]
   simp only [HShiftRight.hShiftRight, HShiftLeft.hShiftLeft, UScalar.shiftRight_IScalar,
     UScalar.shiftLeft_IScalar, UScalar.shiftRight, UScalar.shiftLeft, IScalar.toNat]
@@ -71,16 +74,16 @@ theorem unpack_refines (x : Array U64 4#usize) :
     show (40#i32).val = 40 by rfl, show (24#i32).val = 24 by rfl,
     show (28#i32).val = 28 by rfl, show (36#i32).val = 36 by rfl,
     show (16#i32).val = 16 by rfl]
-  norm_num only [UScalarTy.U64_numBits_eq, Int.reduceLT, Nat.reduceLT, ↓reduceIte,
-    bind_tc_ok, if_true]
+  norm_num only [UScalarTy.U64_numBits_eq, Int.reduceLT, Int.toNat, Nat.reduceLT, ↓reduceIte,
+    bind_tc_ok, bind_ok, ite_true]
   apply congrArg ok
-  apply Subtype.ext
+  ext1
   have hinj : Function.Injective (List.map ofU64) := by
     intro a b h
     have hh := congrArg (List.map toU64) h
     simpa [List.map_map, Function.comp_def] using hh
   apply hinj
-  simp [Array.make, toArray, unpack]
+  simp [Array.make, Array.from_val, toArray, unpack]
 
 def transpose (lanes : Vector (Vector UInt64 5) 8) : Vector M512 5 :=
   Vector.ofFn fun j => Vector.ofFn fun lane => lanes[lane][j]
@@ -89,7 +92,7 @@ theorem transpose_refines (values : Array (Array U64 5#usize) 8#usize) :
     fr8.transpose_in values = ok (toArray id (transpose (ofArray (ofArray ofU64) values))) := by
   unfold fr8.transpose_in fr8.transpose_in_loop
   have hz : fr8.zero = ok Simd.zero := rfl
-  simp only [hz, bind_tc_ok, fr8.LIMBS]
+  simp only [hz, bind_tc_ok, bind_ok, fr8.LIMBS]
   rw [repeat_eq_toArray_id Simd.zero (show (5#usize).val = 5 from rfl)]
   refine loop_range (n := 5) _ 5#usize rfl (toArray id)
     (fun v j => v.set j (transpose (ofArray (ofArray ofU64) values))[j]) (toArray id)
@@ -103,10 +106,10 @@ theorem transpose_refines (values : Array (Array U64 5#usize) 8#usize) :
       index_usize_eq values 5#usize (by decide), index_usize_eq values 4#usize (by decide),
       index_usize_eq values 3#usize (by decide), index_usize_eq values 2#usize (by decide),
       index_usize_eq values 1#usize (by decide), index_usize_eq values 0#usize (by decide),
-      index_usize_eq _ _ hj, bind_tc_ok, lift, update_eq _ _ _ hj,
+      index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_set_epi64, ofBitVec_hcast_I64]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp only [Aeneas.Std.Array.set_val_eq, hs, toArray_val, List.map_set, Vector.toList_set, transpose,
       Vector.getElem_ofFn, getElem_ofArray, Fin.getElem_fin, List.map_id]
     apply congrArg (m.toList.set j.val)
@@ -141,15 +144,15 @@ theorem load_loop_refines (input : Slice blst.blst_fr) (offset : Usize)
       omega
     simp_body fr8.Fr8.load_loop.body hn
     rw [add_ok _ _ hadd]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [show Slice.index_usize input (UScalar.ofNatCore (offset.val + r.start.val) hadd) =
         ok input.val[offset.val + r.start.val]! by
       simp [Slice.index_usize, show offset.val + r.start.val < input.val.length by omega]]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [unpack_refines]
-    simp only [bind_tc_ok, update_eq _ r.start _ (show r.start.val < (8#usize).val from hl)]
+    simp only [bind_tc_ok, bind_ok, update_eq _ r.start _ (show r.start.val < (8#usize).val from hl)]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set, loadedLanes]
   · simp [loadedLanes, foldl_set_ofFn]
 
@@ -167,25 +170,17 @@ theorem laneNat_transpose (lanes : Vector (Vector UInt64 5) 8) (lane : Fin 8) :
   rw [laneNat_eq_val, FrModel.val, FrModel.sum_fin_limbs]
   simp [FrModel.ofFr8, FrModel.Fr8.lane, transpose, val52, FrModel.LIMB_BITS, FrModel.LIMBS,
     Function.comp_def]
-  rfl
 
 theorem limbs_ofArray (x : Array U64 4#usize) :
     valWords (ofArray ofU64 x) = limbs x.val := by
-  obtain ⟨xs, hxs⟩ := x
-  change xs.length = 4 at hxs
-  cases xs with
-  | nil => simp at hxs
-  | cons a xs => cases xs with
-    | nil => simp at hxs
-    | cons b xs => cases xs with
-      | nil => simp at hxs
-      | cons c xs => cases xs with
-        | nil => simp at hxs
-        | cons d xs =>
-          have : xs = [] := by simpa using hxs
-          subst xs
-          simp [valWords, limbs, ofArray]
-          ring
+  obtain ⟨a, b, c, d, h⟩ := List.length_eq_four.mp x.property
+  have hx : x = Array.make 4#usize [a, b, c, d] (by rfl) := by
+    apply Aeneas.Std.Array.ext
+    simpa only [Array.make, Array.from_val] using h
+  rw [hx]
+  simp [valWords, limbs, ofArray, Array.make, Array.from_val]
+  ring
+
 
 
 end LeanBlsSimd.Kzg.Extender.Kernel.BytePacking

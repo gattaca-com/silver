@@ -9,6 +9,9 @@ noncomputable section
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd.kzg
 open LeanBlsSimd
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fr.modulus
+  UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.PlainWords
 
 abbrev Word := Aeneas.Std.Array U64 4#usize
@@ -29,12 +32,12 @@ theorem push_loop_refines (w : Array (Aeneas.Std.Array U64 8#usize) 4#usize)
     unfold fr8.u256x8.U256x8.push_words_loop
     rw [loop.eq_1]
     have h : ¬lane.val < count.val := by omega
-    simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, h, if_false]
+    simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, h, ite_false, bind_ok]
   | succ n ih =>
     have hlt : lane.val < count.val := by omega
     have h8 : lane.val < 8 := by omega
     have hpush : words.val.length < Usize.max := by omega
-    obtain ⟨nextWords, hpush, hw⟩ := WP.spec_imp_exists (alloc.vec.Vec.push_spec words (rawWord w lane.val) hpush)
+    obtain ⟨nextWords, hpush, hw⟩ := spec_imp_exists (alloc.vec.Vec.push_spec words (rawWord w lane.val) hpush)
     have hadd : lane.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
       have := two_pow_32_le_usize
       omega
@@ -42,27 +45,27 @@ theorem push_loop_refines (w : Array (Aeneas.Std.Array U64 8#usize) 4#usize)
     have hv : next.val = lane.val + 1 := rfl
     have hbody : fr8.u256x8.U256x8.push_words_loop.body count w words lane =
         ok (cont (nextWords, next)) := by
-      simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, hlt, if_true]
+      simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, hlt, ite_true]
       simp only [index_usize_eq w 0#usize (by decide), index_usize_eq w 1#usize (by decide),
-        index_usize_eq w 2#usize (by decide), index_usize_eq w 3#usize (by decide), bind_tc_ok]
+        index_usize_eq w 2#usize (by decide), index_usize_eq w 3#usize (by decide), bind_tc_ok, bind_ok]
       have hix (r : Aeneas.Std.Array U64 8#usize) :
           Array.index_usize r lane = ok r.val[lane.val]! := by
         rw [index_usize_eq r lane h8]
         rw [getElem!_pos r.val lane.val (by rw [r.property]; exact h8)]
-      simp only [hix, bind_tc_ok, UScalar.ofNatCore_val_eq]
+      simp only [hix, bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
       have he : (Array.make 4#usize [w.val[0].val[lane.val]!, w.val[1].val[lane.val]!,
           w.val[2].val[lane.val]!, w.val[3].val[lane.val]!] (by rfl)) = rawWord w lane.val := by
         simp [rawWord, getElem!_pos, w.property]
       rw [he, hpush]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [add_ok _ _ hadd]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     obtain ⟨out, hout, hval⟩ := ih nextWords next (by omega)
       (by rw [hw, List.length_append, List.length_singleton]; omega) (by omega)
     refine ⟨out, ?_, ?_⟩
     · unfold fr8.u256x8.U256x8.push_words_loop
       change loop (fun p => fr8.u256x8.U256x8.push_words_loop.body count w p.1 p.2) (words, lane) = _
-      rw [loop.eq_1, hbody]
+      rw [loop.eq_1, hbody, bind_ok]
       exact hout
     · rw [hval, hw, List.range'_succ, List.map_cons]
       simp only [hv, List.append_assoc, List.singleton_append]
@@ -80,16 +83,16 @@ theorem push_words_refines (v : fr8.u256x8.U256x8)
   simp only [fr8.u256x8.U256x8.push_words,
     index_usize_eq v 0#usize (by decide), index_usize_eq v 1#usize (by decide),
     index_usize_eq v 2#usize (by decide), index_usize_eq v 3#usize (by decide),
-    Simd.lanes_refines, bind_tc_ok]
+    Simd.lanes_refines, bind_tc_ok, bind_ok]
   convert hout using 1
   congr 1
-  apply Subtype.ext
+  ext1
   simp only [wordsMatrix, toArray, ofArray, Vector.toList, List.map_map, Simd.lanes]
   have h : v.val.length = 4 := v.property
   exact (List.ext_getElem (by simp [h]) (by
     intro i hi hi'
     have hi4 : i < 4 := by simpa using hi
-    interval_cases i <;> simp [Array.make]))
+    interval_cases i <;> simp [Array.make, Array.from_val]))
 
 end LeanBlsSimd.PlainWords
 namespace LeanBlsSimd.PlainWords
@@ -104,7 +107,7 @@ def sixteenVector : fr8.Fr8 :=
   toArray id (transpose (Vector.replicate 8 (#v[16, 0, 0, 0, 0] : Vector UInt64 5)))
 
 theorem sixteen_refines : fr8.Fr8.splat sixteenLiteral = ok sixteenVector := by
-  simp only [fr8.Fr8.splat, unpack_refines, bind_tc_ok, FrModel.Simd.splat_limbs_refines]
+  simp only [fr8.Fr8.splat, unpack_refines, bind_tc_ok, bind_ok, FrModel.Simd.splat_limbs_refines]
   congr 1
 
 theorem sixteen_normalized : Normalized sixteenVector := by
@@ -171,11 +174,11 @@ theorem convert_refinement (input : Slice blst.blst_fr) (hsize : 8 ≤ input.val
     rw [← (hnv l).1] at h
     exact_mod_cast h
   obtain ⟨out, hcanonical, hout, houtv⟩ := canonical_refinement normal hbounded
-  refine ⟨out, by simp only [hload, hmul, hnorm, hcanonical, bind_tc_ok], hout, ?_⟩
+  refine ⟨out, by simp only [hload, hmul, hnorm, hcanonical, bind_tc_ok, bind_ok], hout, ?_⟩
   intro l
   rw [houtv]
   have h := congrArg (fun x : Fr => x.val) (hnv l).2
-  simpa only [laneValue, Fr.ofNat] using h
+  simpa only [laneValue, Fr.ofNat] using! h
 
 end LeanBlsSimd.PlainWords
 namespace LeanBlsSimd.PlainWords
@@ -205,7 +208,7 @@ theorem gather_loop_refines (input : Slice blst.blst_fr) (base count lane : Usiz
     have he : lane.val = count.val := by omega
     unfold fr8.Fr8.plain_words_loop0_loop0
     rw [loop.eq_1]
-    simp only [fr8.Fr8.plain_words_loop0_loop0.body, UScalar.lt_equiv, he, Nat.lt_irrefl, if_false]
+    simp only [fr8.Fr8.plain_words_loop0_loop0.body, UScalar.lt_equiv, he, Nat.lt_irrefl, ite_false, bind_ok]
   | succ n ih =>
     have hlt : lane.val < count.val := by omega
     have h8 : lane.val < 8 := by omega
@@ -223,14 +226,14 @@ theorem gather_loop_refines (input : Slice blst.blst_fr) (base count lane : Usiz
     have hbody : fr8.Fr8.plain_words_loop0_loop0.body input base count
         (toArray id (chunkPrefix input base.val lane.val initial)) lane =
         ok (cont (toArray id (chunkPrefix input base.val next.val initial), next)) := by
-      simp only [fr8.Fr8.plain_words_loop0_loop0.body, UScalar.lt_equiv, hlt, if_true]
+      simp only [fr8.Fr8.plain_words_loop0_loop0.body, UScalar.lt_equiv, hlt, ite_true]
       rw [add_ok _ _ hadd]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [show Slice.index_usize input (UScalar.ofNatCore _ hadd) = ok input.val[base.val + lane.val] from by
         simp [Slice.index_usize, hi]]
-      simp only [bind_tc_ok, update_eq (toArray (n := 8#usize) id (chunkPrefix input base.val lane.val initial)) lane _ h8]
+      simp only [bind_tc_ok, bind_ok, update_eq (toArray (n := 8#usize) id (chunkPrefix input base.val lane.val initial)) lane _ h8]
       rw [add_ok _ _ hnext]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       have he : input.val[base.val + lane.val] = input.val[base.val + lane.val]! :=
         (getElem!_pos input.val _ hi).symm
       rw [he]
@@ -238,7 +241,7 @@ theorem gather_loop_refines (input : Slice blst.blst_fr) (base count lane : Usiz
       rfl
     unfold fr8.Fr8.plain_words_loop0_loop0
     change loop (fun p => fr8.Fr8.plain_words_loop0_loop0.body input base count p.1 p.2) _ = _
-    rw [loop.eq_1, hbody]
+    rw [loop.eq_1, hbody, bind_ok]
     exact ih next (by omega) (by omega)
 
 def zeroFr : blst.blst_fr := ⟨Array.repeat 4#usize 0#u64⟩
@@ -265,13 +268,13 @@ open LeanBlsSimd.Kzg Kzg.Extender.Kernel Kzg.Extender.Kernel.BytePacking
 theorem rawWord_packed (v : Vector M512 5) (l : Fin 8) :
     rawWord (wordsMatrix (toArray id (vectorPack v))) l.val =
       toArray toU64 (pack (laneOf v l)) := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
-  · simp [rawWord, toArray, Array.make]
+  · simp [rawWord, toArray, Array.make, Array.from_val]
   · intro i hi hi'
-    have hi4 : i < 4 := by simpa [rawWord, Array.make] using hi
+    have hi4 : i < 4 := by simpa [rawWord, Array.make, Array.from_val] using hi
     interval_cases i <;>
-      simp [rawWord, wordsMatrix, vectorPack, laneOf, toArray, ofArray, Array.make,
+      simp [rawWord, wordsMatrix, vectorPack, laneOf, toArray, ofArray, Array.make, Array.from_val,
         getElem!_pos, l.isLt]
 
 theorem packed_word_value (a : fr8.Fr8) (hn : Normalized a) (l : Fin 8)
@@ -299,7 +302,7 @@ theorem pack_append_refinement (a : fr8.Fr8) (hn : Normalized a)
     toArray_ofArray (f := @id M512) (g := @id M512) (fun _ => rfl) a rfl rfl
   erw [he] at hpack
   obtain ⟨out, hout, hval⟩ := push_words_refines (toArray id (vectorPack (ofArray id a))) words count hc hroom
-  refine ⟨out, by simp only [hpack, hout, bind_tc_ok], ?_, ?_⟩
+  refine ⟨out, by simp only [hpack, hout, bind_tc_ok, bind_ok], ?_, ?_⟩
   · simp [hval]
   · rw [hval, List.map_append, List.map_map]
     congr 1
@@ -349,12 +352,12 @@ theorem gathered_values (input : Slice blst.blst_fr) (base count : ℕ) (hc : co
     (List.finRange count).map (fun l => f (gathered input base count).val[l.val]!) =
       (List.range' base count).map (fun i => f input.val[i]!) := by
   have hidx : List.range' base count = (List.range count).map (base + ·) := by
-    simpa only [List.range_eq_range'] using (List.map_add_range' (a := base) 0 count 1).symm
+    simpa only [List.range_eq_range'] using! (List.map_add_range' (a := base) 0 count 1).symm
   rw [hidx, ← List.map_coe_finRange_eq_range, List.map_map, List.map_map]
   apply List.map_congr_left
   intro l _
   have he := gathered_lane input base count (⟨l.val, by omega⟩ : Fin 8)
-  simp only [l.isLt, if_true] at he
+  simp only [l.isLt, ite_true] at he
   exact congrArg f he
 
 theorem batch_refines (input : Slice blst.blst_fr) (base count : Usize) (words : alloc.vec.Vec Word)
@@ -377,11 +380,11 @@ theorem batch_refines (input : Slice blst.blst_fr) (base count : Usize) (words :
   refine ⟨out, ?_, hlen, ?_⟩
   · unfold plainBatch
     rw [gather_refines input base count hc hb]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     change (convertBatch (Array.to_slice chunk) >>= fun a => packWords a words count) = _
     change convertBatch (Array.to_slice chunk) = ok canonical at hconvert
     rw [hconvert]
-    exact hout
+    simpa only [bind_ok, bind_tc_ok] using! hout
   · rw [hval]
     congr 1
     calc
@@ -427,7 +430,7 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
           let rest ← Slice.len input - base
           if rest < fr8.LANES then Slice.len input - base else ok fr8.LANES) = ok count := by
         rw [sub_ok _ _ hb]
-        simp only [bind_tc_ok, fr8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len, Usize.ofNatCore_val_eq]
+        simp only [bind_tc_ok, bind_ok, fr8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len, Usize.ofNatCore_val_eq]
         split
         · congr 1
           apply UScalar.eq_of_val_eq
@@ -444,26 +447,27 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
       have hnv : next.val = base.val + count.val := rfl
       have hbody : fr8.Fr8.plain_words_loop0.body input sixteenVector words base =
           ok (cont (nextWords, next)) := by
-        simp only [fr8.Fr8.plain_words_loop0.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq, hlt, if_true]
-        simp only [UScalar.lt_equiv, Slice.len] at hcount
+        simp only [fr8.Fr8.plain_words_loop0.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq, hlt, ite_true]
+        simp only [UScalar.lt_equiv, Slice.len, ← bind_tc_eq] at hcount
+        simp only [← bind_tc_eq]
         rw [← bind_assoc_eq, hcount]
-        simp only [bind_tc_ok, lift]
+        simp only [bind_tc_ok, bind_ok, lift]
         unfold plainBatch convertBatch packWords zeroFr at hbatch
-        simp only [bind_assoc_eq] at hbatch
+        simp only [← bind_tc_eq, bind_assoc_eq] at hbatch
         rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq,
           ← bind_assoc_eq, ← bind_assoc_eq]
         rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq,
           ← bind_assoc_eq] at hbatch
         rw [hbatch]
-        simp only [bind_tc_ok]
+        simp only [bind_tc_ok, bind_ok]
         rw [add_ok _ _ hadd]
-        rfl
+        simp only [bind_tc_ok, bind_ok] <;> rfl
       obtain ⟨out, hout, houtlen, houtval⟩ := ih (input.val.length - next.val) (by omega)
         nextWords next (by omega) (by omega) rfl
       refine ⟨out, ?_, by omega, ?_⟩
       · unfold fr8.Fr8.plain_words_loop0
         change loop (fun p => fr8.Fr8.plain_words_loop0.body input sixteenVector p.1 p.2) _ = _
-        rw [loop.eq_1, hbody]
+        rw [loop.eq_1, hbody, bind_ok]
         exact hout
       · rw [houtval, hval, List.append_assoc, hnv, scalarValues_append]
         congr 2
@@ -472,7 +476,7 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
       refine ⟨words, ?_, by omega, ?_⟩
       · unfold fr8.Fr8.plain_words_loop0
         rw [loop.eq_1]
-        simp only [fr8.Fr8.plain_words_loop0.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq, hlt, if_false]
+        simp only [fr8.Fr8.plain_words_loop0.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq, hlt, ite_false, bind_ok]
       · have hz : remaining = 0 := by omega
         simp [hz, scalarValues]
 
@@ -492,7 +496,7 @@ theorem scalarValues_all (input : Slice blst.blst_fr) :
 
 theorem clone_word (word : Word) :
     core.array.CloneArray.clone core.clone.CloneU64 word = ok word := by
-  obtain ⟨out, h, he⟩ := WP.spec_imp_exists
+  obtain ⟨out, h, he⟩ := spec_imp_exists
     (core.array.CloneArray.clone_spec core.clone.CloneU64 word (by intro x hx; rfl))
   simpa only [he] using h
 
@@ -500,16 +504,16 @@ theorem plain_words_correct (input : Slice blst.blst_fr) (words : alloc.vec.Vec 
     (hr : ∀ x ∈ input.val, FrReduced x) :
     ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length ∧
       out.val.map (fun word => limbs word.val) = input.val.map (fun x => (frRead x).val) := by
-  let empty : alloc.vec.Vec Word := ⟨[], by simp⟩
+  let empty : alloc.vec.Vec Word := alloc.vec.Vec.from [] (by simp)
   have hempty : empty.val = [] := rfl
   obtain ⟨out, hout, hlen, hval⟩ := plain_loop_refines input empty 0#usize (by simp) hr
     (by simpa [hempty] using input.property)
   refine ⟨out, ?_, by simpa [hempty] using hlen, ?_⟩
   · simp only [fr8.Fr8.plain_words]
     change (do let sixteen ← fr8.Fr8.splat sixteenLiteral
-               let empty ← alloc.vec.Vec.clear Global words
+               let empty ← alloc.vec.Vec.clear alloc.alloc.Global words
                fr8.Fr8.plain_words_loop0 input empty sixteen 0#usize) = _
-    simpa only [sixteen_refines, alloc.vec.Vec.clear, bind_tc_ok] using hout
+    simpa only [sixteen_refines, alloc.vec.Vec.clear, bind_tc_ok, bind_ok] using hout
   · simpa only [hempty, List.map_nil, List.nil_append, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, scalarValues_all] using hval
 

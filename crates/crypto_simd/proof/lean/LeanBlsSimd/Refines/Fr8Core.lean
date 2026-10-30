@@ -9,7 +9,10 @@ namespace LeanBlsSimd.FrModel
 theorem LIMBS_refines : fr8.LIMBS = 5#usize := by rw [fr8.LIMBS]
 
 theorem MASK52_refines : fr8.MASK52 = ok (toU64 (.ofNat MASK52)) := by
-  rw [fr8.MASK52, fr8.LIMB_BITS]; rfl
+  rw [fr8.MASK52, fr8.LIMB_BITS]
+  simp only [show (1#u64 <<< 52#u32 : Result U64) = ok ⟨(1#u64).bv <<< 52⟩ from rfl, bind_tc_ok,
+    bind_ok]
+  rfl
 
 theorem P_refines : fr8.R = toArray toU64 (Limbs.ofList P) := by rw [fr8.R]; rfl
 
@@ -33,17 +36,19 @@ theorem Fr8.limbs_ofLanes_ofFn (lanes : Fin 8 → Limbs) :
   ext j hj l hl
   simp [Fr8.ofLanes, fromLanes]
 
-theorem Simd.splat_refines (x : U64) : fr8.splat x = ok (Simd.splat (ofU64 x)) := rfl
+theorem Simd.splat_refines (x : U64) : fr8.splat x = ok (Simd.splat (ofU64 x)) := by
+  rw [fr8.splat]; (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem Simd.zero_refines : fr8.zero = ok Simd.zero := rfl
 
 theorem Simd.borrowed_refines (borrow : M512) :
-    fr8.borrowed borrow = ok (toU8 (Simd.borrowed borrow)) := rfl
+    fr8.borrowed borrow = ok (toU8 (Simd.borrowed borrow)) := by
+  rw [fr8.borrowed, Simd.splat_refines]; (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem Simd.splat_limbs_refines (limbs : Array U64 5#usize) :
     fr8.splat_limbs limbs = ok (toArray id (Simd.splat_limbs (ofArray ofU64 limbs))) := by
   unfold fr8.splat_limbs fr8.splat_limbs_loop
-  simp only [Simd.zero_refines, bind_tc_ok, LIMBS_refines]
+  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (5#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 5#usize rfl (toArray id)
     (fun v j => v.set j (Simd.splat (ofArray ofU64 limbs)[j])) (toArray id)
@@ -53,9 +58,9 @@ theorem Simd.splat_limbs_refines (limbs : Array U64 5#usize) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (5#usize).val := by rw [hs]; exact j.isLt
     simp_body fr8.splat_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, Simd.splat_refines, update_eq _ _ _ hj]
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, Simd.splat_refines, update_eq _ _ _ hj]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [Simd.splat_limbs, foldl_set_ofFn]
 
@@ -63,7 +68,7 @@ theorem Simd.sub_limbs_refines (a b : Array M512 5#usize) :
     fr8.sub_limbs a b =
       ok (Prod.map (toArray id) id (Simd.sub_limbs (ofArray id a) (ofArray id b))) := by
   unfold fr8.sub_limbs fr8.sub_limbs_loop
-  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_tc_ok, LIMBS_refines,
+  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines,
     ofU64_toU64]
   rw [repeat_eq_toArray_id Simd.zero (show (5#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 5#usize rfl (Prod.map (toArray id) id)
@@ -77,19 +82,19 @@ theorem Simd.sub_limbs_refines (a b : Array M512 5#usize) :
     have hj : r.start.val < (5#usize).val := by rw [hs]; exact j.isLt
     obtain ⟨d, borrow⟩ := m
     simp_body fr8.sub_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, update_eq _ _ _ hj,
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_sub_epi64, core.core_arch.x86.avx512f._mm512_add_epi64,
       core.core_arch.x86.avx512f._mm512_srai_epi64, core.core_arch.x86.avx512f._mm512_and_si512,
       Prod.map, id]
     refine congrArg (fun s => ok (cont (r', s))) (Prod.ext ?_ ?_)
-    · apply Subtype.ext
+    · ext1
       simp [hs, List.map_set, Vector.toList_set]
     · simp [hs]
 
 theorem Simd.select_borrowed_refines (borrow : M512) (b a : Array M512 5#usize) :
     fr8.select_borrowed borrow b a = ok (toArray id (Simd.blend (Simd.borrowed borrow) (ofArray id a) (ofArray id b))) := by
   unfold fr8.select_borrowed fr8.select_borrowed_loop
-  simp only [Simd.borrowed_refines, bind_tc_ok, Simd.zero_refines, LIMBS_refines]
+  simp only [Simd.borrowed_refines, bind_tc_ok, bind_ok, Simd.zero_refines, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (5#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 5#usize rfl (toArray id)
     (fun v j => v.set j (_mm512_mask_blend_epi64 (Simd.borrowed borrow) (ofArray id a)[j] (ofArray id b)[j]))
@@ -99,10 +104,10 @@ theorem Simd.select_borrowed_refines (borrow : M512) (b a : Array M512 5#usize) 
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (5#usize).val := by rw [hs]; exact j.isLt
     simp_body fr8.select_borrowed_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok,
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok,
       core.core_arch.x86.avx512f._mm512_mask_blend_epi64, ofU8_toU8, update_eq _ _ _ hj]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [Simd.blend, foldl_set_ofFn]
 
@@ -129,7 +134,7 @@ theorem Lane.muladd_row_refines (t : Array M512 11#usize) (a : Array M512 5#usiz
     have hi8 : i.val < 5 := hi
     have hj8 : r.start.val < 5 := by rw [hs]; exact j.isLt
     simp_body fr8.muladd_row_loop.body hn
-    simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, index_usize_eq, update_eq,
+    simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
       core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
       core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) ?_
@@ -176,7 +181,7 @@ theorem Lane.reduce_low_refines (t : Array M512 11#usize) (p : Array M512 5#usiz
       have hi' : i.val < 5 := hi
       have hj' : r.start.val < 5 := by rw [hs]; exact j.isLt
       simp_body fr8.reduce_row_loop0.body hn
-      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, index_usize_eq, update_eq,
+      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
         core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64, UScalar.ofNatCore_val_eq]
       refine congrArg (fun s => ok (cont (r', s))) ?_
       exact toArray_set_of_eq id m _ _ (i.val + j.val) (hij j)
@@ -217,7 +222,7 @@ theorem Lane.reduce_high_refines (t : Array M512 11#usize) (p : Array M512 5#usi
       have hi' : i.val < 5 := hi
       have hj' : r.start.val < 5 := by rw [hs]; exact j.isLt
       simp_body fr8.reduce_row_loop1.body hn
-      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, index_usize_eq, update_eq,
+      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
         core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
       refine congrArg (fun s => ok (cont (r', s))) ?_
       exact toArray_set_of_eq id m _ _ (i.val + j.val + 1) (hij j)
@@ -245,13 +250,13 @@ theorem Lane.reduce_row_refines (t : Array M512 11#usize) (p : Array M512 5#usiz
     ⟨ofArray id p, (toArray_ofArray (fun _ => rfl) p _ _).symm⟩
   have hi' : i.val < 5 := hi
   unfold fr8.reduce_row
-  simp (disch := (simp; omega)) only [Simd.zero_refines, bind_tc_ok, index_usize_toArray,
+  simp (disch := (simp; omega)) only [Simd.zero_refines, bind_tc_ok, bind_ok, index_usize_toArray,
     core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
     core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64,
     core.core_arch.x86.avx512f._mm512_add_epi64, LeanBlsSimd.Simd.carry_of_cleared_refines,
     usize_add_ok, update_eq, set_toArray_id, UScalar.ofNatCore_val_eq]
   rw [Lane.reduce_low_refines _ _ _ hi]
-  simp (disch := (simp; omega)) only [bind_tc_ok, index_usize_toArray, set_toArray_id,
+  simp (disch := (simp; omega)) only [bind_tc_ok, bind_ok, index_usize_toArray, set_toArray_id,
     UScalar.ofNatCore_val_eq]
   rw [Lane.reduce_high_refines _ _ _ hi]
   simp only [ofArray_toArray_id, laneOf_set, laneOf_fromLanes]
@@ -266,6 +271,6 @@ theorem Lane.splat_limbs_eq (x : Limbs) : Lane.splat_limbs x = x := by
 theorem Fr8.canonical_refines (self : fr8.Fr8) :
     fr8.Fr8.canonical self = ok (toFr8 (ofFr8 self).canonical) := by
   simp [fr8.Fr8.canonical, P_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines,
-    Fr8.canonical, Function.uncurry_def, Simd.select_borrowed_refines, toFr8]
+    Fr8.canonical, Function.uncurry_def, aeneas_uncurry_def, Simd.select_borrowed_refines, toFr8]
 
 end LeanBlsSimd.FrModel

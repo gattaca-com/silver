@@ -45,7 +45,7 @@ theorem list_refines (self : buckets.Buckets) (window magnitude : Usize)
     (lt_of_le_of_lt (Nat.sub_le _ _) (lt_of_lt_of_le hsum two_pow_32_le_usize)), ?_, ?_⟩
   · simp only [buckets.Buckets.list]
     rw [sub_ok self.window_bits 1#usize hwl]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     change (do
       let i1 ← window <<< sh
       let i2 ← i1 + magnitude
@@ -55,12 +55,12 @@ theorem list_refines (self : buckets.Buckets) (window magnitude : Usize)
         rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
       change self.window_bits.val - 1 < _
       omega)]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     change (do
       let i2 ← shifted + magnitude
       i2 - 1#usize) = _
     rw [usize_add_ok shifted magnitude hsum]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     exact sub_ok (UScalar.ofNatCore (shifted.val + magnitude.val)
       (lt_of_lt_of_le hsum two_pow_32_le_usize) : Usize) 1#usize hsub
   · change shifted.val + magnitude.val - 1 = _
@@ -77,12 +77,12 @@ theorem count_at (self : buckets.Buckets) (window magnitude i : Usize)
     (hc : self.lens.val[i.val].val + 1 < 2 ^ 32) :
     self.count window magnitude = ok {self with lens := self.lens.set i (UScalar.ofNatCore (self.lens.val[i.val].val + 1) hc)} := by
   simp only [buckets.Buckets.count]
-  rw [if_pos (by simpa only [bne_iff_ne, ne_eq] using hm)]
-  simp only [hi, bind_tc_ok]
+  rw [ite_eq_left (by simpa only [bne_iff_ne, ne_eq] using hm)]
+  simp only [hi, bind_tc_ok, bind_ok]
   rw [vec_index_mut self.lens i hil]
-  simp only [bind_tc_ok, Function.uncurry_def]
+  simp only [bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def]
   rw [add_ok _ 1#u32 hc]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 theorem place_zero (self : buckets.Buckets) (window : Usize) (reference : U32) :
     self.place window 0#usize reference = ok self := by
@@ -99,20 +99,20 @@ theorem place_at (self : buckets.Buckets) (window magnitude i : Usize) (referenc
         (UScalar.ofNatCore (self.starts.val[i.val].val + self.lens.val[i.val].val) hsum : U32)) reference,
       lens := self.lens.set i (UScalar.ofNatCore (self.lens.val[i.val].val + 1) hc)} := by
   simp only [buckets.Buckets.place]
-  rw [if_pos (by simpa only [bne_iff_ne, ne_eq] using hm)]
-  simp only [hi, bind_tc_ok]
+  rw [ite_eq_left (by simpa only [bne_iff_ne, ne_eq] using hm)]
+  simp only [hi, bind_tc_ok, bind_ok]
   rw [vec_index self.starts i his]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [vec_index self.lens i hil]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [add_ok _ _ hsum]
-  simp only [bind_tc_ok, lift]
+  simp only [bind_tc_ok, bind_ok, lift]
   rw [vec_index_mut self.refs _ (by simpa only [cast_Usize_val, UScalar.ofNatCore_val_eq] using href)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [vec_index_mut self.lens i hil]
-  simp only [bind_tc_ok, Function.uncurry_def]
+  simp only [bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def]
   rw [add_ok _ 1#u32 hc]
-  rfl
+  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
 
 end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
@@ -150,11 +150,11 @@ theorem counts_update (self : buckets.Buckets) (n : ℕ) (contents : BucketLists
   intro k hk
   by_cases he : k = i.val
   · subst k
-    simp only [Vec.set, appendReference, Function.update_self, List.length_append, List.length_singleton]
-    rw [List.getElem!_set _ _ _ (by rw [h.length]; exact hi)]
+    simp only [Vec.set, Vec.from_val, appendReference, Function.update_self, List.length_append, List.length_singleton]
+    rw [List.set_getElem!_eq _ _ _ _ ⟨(by rw [h.length]; exact hi), rfl⟩]
     exact hc
-  · simp only [Vec.set, appendReference, Function.update_of_ne he]
-    rw [List.getElem!_set_ne self.lens.val i.val k count (by omega)]
+  · simp only [Vec.set, Vec.from_val, appendReference, Function.update_of_ne he]
+    rw [List.set_getElem!_ne self.lens.val i.val k count (by omega)]
     exact h.values k hk
 
 theorem count_preserves (self : buckets.Buckets) (n : ℕ) (contents : BucketLists)
@@ -197,7 +197,7 @@ theorem packed_update (self : buckets.Buckets) (n : ℕ) (base capacity : ℕ �
     · simp only [appendReference, Function.update_of_ne he]
       exact h.capacity_bound k hk
   · intro k hk j hj
-    change (self.refs.val.set address.val reference)[base k + j]! = _
+    simp +zetaDelta only [Vec.set, Vec.from_val, Array.set_val_eq, UScalar.ofNatCore_val_eq]
     by_cases he : k = i.val
     · subst k
       simp only [appendReference, Function.update_self] at hj ⊢
@@ -206,11 +206,11 @@ theorem packed_update (self : buckets.Buckets) (n : ℕ) (base capacity : ℕ �
         omega
       by_cases heq : j = (contents i.val).length
       · subst j
-        rw [← ha, List.getElem!_set _ _ _ ha_bound]
+        rw [← ha, List.set_getElem!_eq _ _ _ _ ⟨ha_bound, rfl⟩]
         simp only [List.getElem!_append_right _ _ _ (by omega), Nat.sub_self,
           List.getElem!_cons_zero]
       · have hjlt : j < (contents i.val).length := by omega
-        rw [List.getElem!_set_ne _ _ _ _ (by omega)]
+        rw [List.set_getElem!_ne _ _ _ _ (by omega)]
         rw [List.getElem!_append_left _ _ _ hjlt]
         exact h.entries i.val hi j hjlt
     · simp only [appendReference, Function.update_of_ne he] at hj ⊢
@@ -218,7 +218,7 @@ theorem packed_update (self : buckets.Buckets) (n : ℕ) (base capacity : ℕ �
         rw [ha]
         exact hd i.val hi k hk (Ne.symm he) _ hroom _
           (lt_of_lt_of_le hj (h.capacity_bound k hk))
-      rw [List.getElem!_set_ne self.refs.val address.val (base k + j) reference (by omega)]
+      rw [List.set_getElem!_ne self.refs.val address.val (base k + j) reference (by omega)]
       exact h.entries k hk j hj
 
 theorem place_preserves (self : buckets.Buckets) (n : ℕ) (base capacity : ℕ → ℕ)
@@ -305,10 +305,10 @@ theorem prefix_step (starts lens : Vec U32) (total : U32) (i lists : Usize)
     have := two_pow_32_le_usize
     have := h.starts_length
     omega
-  obtain ⟨starts', hpush, hstarts⟩ := WP.spec_imp_exists (Vec.push_spec starts total hmax)
+  obtain ⟨starts', hpush, hstarts⟩ := spec_imp_exists (Vec.push_spec starts total hmax)
   have hil : i.val < lens.val.length := by rw [h.lens_length]; exact hi
   have hv : lens.val[i.val].val = capacity i.val := by
-    simpa only [getElem!_pos lens.val i.val hil, Nat.lt_irrefl, if_false] using h.lens_values i.val hi
+    simpa only [getElem!_pos lens.val i.val hil, Nat.lt_irrefl, ite_false] using h.lens_values i.val hi
   have hs : total.val + lens.val[i.val].val = prefixSum capacity (i.val + 1) := by
     rw [h.total_value, hv, prefixSum]
   have hsum : total.val + lens.val[i.val].val < 2 ^ 32 := by
@@ -319,16 +319,16 @@ theorem prefix_step (starts lens : Vec U32) (total : U32) (i lists : Usize)
     (lt_of_lt_of_le (by omega : i.val + 1 < 2 ^ 32) two_pow_32_le_usize)
   have hi' : i'.val = i.val + 1 := rfl
   refine ⟨starts', lens.set i 0#u32, total', i', ?_, hi', ?_⟩
-  · simp only [buckets.Buckets.fill_loop1.body, show i < lists from hi, if_true,
-      hpush, bind_tc_ok]
+  · simp only [buckets.Buckets.fill_loop1.body, show i < lists from hi, ite_true,
+      hpush, bind_tc_ok, bind_ok]
     rw [vec_index lens i hil]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [add_ok total lens.val[i.val] hsum]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [vec_index_mut lens i hil]
-    simp only [bind_tc_ok, Function.uncurry_def]
+    simp only [bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def]
     rw [usize_add_ok i 1#usize (by change i.val + 1 < 2 ^ 32; omega)]
-    rfl
+    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
   · refine ⟨?_, ?_, ?_, ?_, ?_⟩
     · rw [hstarts, List.length_append, List.length_singleton, h.starts_length, hi']
     · simpa [Vec.set] using h.lens_length
@@ -343,16 +343,15 @@ theorem prefix_step (starts lens : Vec U32) (total : U32) (i lists : Usize)
         rw [List.getElem!_append_left _ _ _ (by rw [h.starts_length]; exact hjlt)]
         exact h.starts_values j hjlt
     · intro j hj
-      change (lens.val.set i.val 0#u32)[j]!.val = _
+      simp +zetaDelta only [Vec.set, Vec.from_val, Array.set_val_eq, UScalar.ofNatCore_val_eq]
       by_cases he : j = i.val
       · subst j
-        rw [List.getElem!_set _ _ _ hil, if_pos (by omega)]
+        rw [List.set_getElem!_eq _ _ _ _ ⟨hil, rfl⟩, ite_eq_left (by omega)]
         rfl
-      · rw [List.getElem!_set_ne _ _ _ _ (by omega), h.lens_values j hj]
-        rw [hi']
+      · rw [List.set_getElem!_ne _ _ _ _ (by omega), h.lens_values j hj]
         by_cases hjlt : j < i.val
-        · simp only [hjlt, show j < i.val + 1 by omega, if_true]
-        · simp only [hjlt, show ¬ j < i.val + 1 by omega, if_false]
+        · simp only [hjlt, show j < i.val + 1 by omega, ite_true]
+        · simp only [hjlt, show ¬ j < i.val + 1 by omega, ite_false]
     · change total.val + lens.val[i.val].val = _
       rw [hs, hi']
 
@@ -368,7 +367,7 @@ theorem prefix_loop_refines (starts lens : Vec U32) (total : U32) (i lists : Usi
     have hv : i.val = lists.val := by omega
     refine ⟨starts, lens, total, ?_, hv ▸ h⟩
     rw [buckets.Buckets.fill_loop1, loop.eq_1]
-    simp [buckets.Buckets.fill_loop1.body, show ¬ i < lists from by simp only [UScalar.lt_equiv]; omega]
+    simp [buckets.Buckets.fill_loop1.body, show ¬ i < lists from by simp only [UScalar.lt_equiv]; omega, bind_ok]
   | succ n ih =>
     obtain ⟨starts', lens', total', i', hstep, hi', hstate⟩ :=
       prefix_step starts lens total i lists capacity h (by omega) hn ht
@@ -376,7 +375,7 @@ theorem prefix_loop_refines (starts lens : Vec U32) (total : U32) (i lists : Usi
       ih starts' lens' total' i' hstate (by omega) (by omega)
     refine ⟨outStarts, outLens, outTotal, ?_, hout⟩
     rw [buckets.Buckets.fill_loop1, loop.eq_1]
-    simpa only [hstep] using hloop
+    simpa only [hstep, bind_ok] using! hloop
 
 theorem prefix_initial (self : buckets.Buckets) (n : ℕ) (contents : BucketLists)
     (h : Counts self n contents) :
@@ -384,7 +383,7 @@ theorem prefix_initial (self : buckets.Buckets) (n : ℕ) (contents : BucketList
   refine ⟨rfl, h.length, ?_, ?_, rfl⟩
   · intro j hj; omega
   · intro j hj
-    simpa only [Nat.not_lt_zero, if_false] using h.values j hj
+    simpa only [Nat.not_lt_zero, ite_false] using h.values j hj
 
 theorem prefix_from_counts (self : buckets.Buckets) (lists : Usize) (contents : BucketLists)
     (h : Counts self lists.val contents) (hn : lists.val < 2 ^ 32)
@@ -402,7 +401,7 @@ theorem prefix_packed_empty (self : buckets.Buckets) (n : ℕ) (capacity : ℕ �
     Packed self n (prefixSum capacity) capacity (fun _ => []) := by
   refine ⟨⟨h.lens_length, ?_⟩, h.starts_length, h.starts_values, ?_, ?_, ?_, ?_⟩
   · intro j hj
-    simpa only [hj, if_true, List.length_nil] using h.lens_values j hj
+    simpa only [hj, ite_true, List.length_nil] using h.lens_values j hj
   · rw [hrefs]
     exact total.hBounds
   · intro j hj
@@ -546,8 +545,8 @@ theorem countEvents_refines (state : buckets.Buckets) (contents : BucketLists) (
           simp only [List.length_cons] at this
           omega)
       refine ⟨out, ?_, ?_, hw, hn', hr, hs⟩
-      · simp only [countEvents, hm, count_zero, bind_tc_ok, hout]
-      · simpa only [collect, List.foldl_cons, collectOne, hm, if_true] using hc
+      · simp only [countEvents, hm, count_zero, bind_tc_ok, bind_ok, hout]
+      · simpa only [collect, List.foldl_cons, collectOne, hm, ite_true] using hc
     · obtain ⟨i, hlist, hiv, hi⟩ := event_index_refines state event hwl hwh hfit hn hm
       obtain ⟨next, hcount, hc, hw, hn', hr, hs⟩ := count_preserves state _ contents h
         event.window event.magnitude i event.reference hm hlist hi (by
@@ -556,7 +555,7 @@ theorem countEvents_refines (state : buckets.Buckets) (contents : BucketLists) (
           omega)
       have hc' : Counts next (next.windows.val * 2 ^ (next.window_bits.val - 1))
           (collectOne state.window_bits contents event) := by
-        simpa only [hw, hn', collectOne, hm, if_false, hiv] using hc
+        simpa only [hw, hn', collectOne, hm, ite_false, hiv] using hc
       have hb' : ∀ k < next.windows.val * 2 ^ (next.window_bits.val - 1),
           (collectOne state.window_bits contents event k).length + rest.length < 2 ^ 32 := by
         intro k hk
@@ -570,7 +569,7 @@ theorem countEvents_refines (state : buckets.Buckets) (contents : BucketLists) (
         (by simpa only [hw, hn'] using hn)
         (by intro e he; simpa only [hw, hn'] using hfits e (by simp [he])) hc' hb'
       refine ⟨out, ?_, ?_, hwout.trans hw, hnout.trans hn', hrout.trans hr, hsout.trans hs⟩
-      · simp only [countEvents, hcount, bind_tc_ok, hout]
+      · simp only [countEvents, hcount, bind_tc_ok, bind_ok, hout]
       · simpa only [hw, hn', collect, List.foldl_cons] using hcout
 
 theorem placeEvents_refines (state : buckets.Buckets) (base capacity : ℕ → ℕ)
@@ -594,22 +593,22 @@ theorem placeEvents_refines (state : buckets.Buckets) (base capacity : ℕ → �
     · obtain ⟨out, hout, hc, hw, hn', hs⟩ := ih state contents hwl hwh hn
         (by intro e he; exact hfits e (by simp [he])) h hd (by
           intro i hi
-          simpa only [eventReferences, hm, ne_eq, not_true_eq_false, false_and, if_false,
+          simpa only [eventReferences, hm, ne_eq, not_true_eq_false, false_and, ite_false,
             List.nil_append] using hspace i hi)
       refine ⟨out, ?_, ?_, hw, hn', hs⟩
-      · simp only [placeEvents, hm, place_zero, bind_tc_ok, hout]
-      · simpa only [collect, List.foldl_cons, collectOne, hm, if_true] using hc
+      · simp only [placeEvents, hm, place_zero, bind_tc_ok, bind_ok, hout]
+      · simpa only [collect, List.foldl_cons, collectOne, hm, ite_true] using hc
     · obtain ⟨i, hlist, hiv, hi⟩ := event_index_refines state event hwl hwh hfit hn hm
       have hroom : (contents i.val).length < capacity i.val := by
         have hb := hspace i.val hi
-        rw [eventReferences, if_pos ⟨hm, hiv.symm⟩] at hb
+        rw [eventReferences, ite_eq_left ⟨hm, hiv.symm⟩] at hb
         simp only [List.length_append, List.length_singleton] at hb
         omega
       obtain ⟨next, hplace, hc, hw, hn', hs⟩ := place_preserves state _ base capacity contents h hd
         event.window event.magnitude i event.reference hm hlist hi hroom
       have hc' : Packed next (next.windows.val * 2 ^ (next.window_bits.val - 1)) base capacity
           (collectOne state.window_bits contents event) := by
-        simpa only [hw, hn', collectOne, hm, if_false, hiv] using hc
+        simpa only [hw, hn', collectOne, hm, ite_false, hiv] using hc
       have hspace' : ∀ k < next.windows.val * 2 ^ (next.window_bits.val - 1),
           (collectOne state.window_bits contents event k).length +
           (eventReferences next.window_bits rest k).length ≤ capacity k := by
@@ -625,7 +624,7 @@ theorem placeEvents_refines (state : buckets.Buckets) (base capacity : ℕ → �
         (by intro e he; simpa only [hw, hn'] using hfits e (by simp [he])) hc'
         (by simpa only [hw, hn'] using hd) hspace'
       refine ⟨out, ?_, ?_, hwout.trans hw, hnout.trans hn', hsout.trans hs⟩
-      · simp only [placeEvents, hplace, bind_tc_ok, hout]
+      · simp only [placeEvents, hplace, bind_tc_ok, bind_ok, hout]
       · simpa only [hw, hn', collect, List.foldl_cons] using hcout
 
 end LeanBlsSimd.BucketsRefines
@@ -645,9 +644,9 @@ theorem prefixSum_appendReference (contents : BucketLists) (i n : ℕ) (referenc
       omega
     · simp only [appendReference, Function.update_of_ne he]
       by_cases hi : i < n
-      · simp only [hi, show i < n + 1 by omega, if_true]
+      · simp only [hi, show i < n + 1 by omega, ite_true]
         omega
-      · simp only [hi, show ¬ i < n + 1 by omega, if_false]
+      · simp only [hi, show ¬ i < n + 1 by omega, ite_false]
         omega
 
 theorem prefixSum_collect_bound (width : Usize) (contents : BucketLists) (events : List Event) (n : ℕ) :
@@ -659,10 +658,10 @@ theorem prefixSum_collect_bound (width : Usize) (contents : BucketLists) (events
     change prefixSum (fun k => (collect width (collectOne width contents event) rest k).length) n ≤ _
     have hh := ih (collectOne width contents event)
     by_cases hm : event.magnitude = 0#usize
-    · simp only [collectOne, hm, if_true] at hh ⊢
+    · simp only [collectOne, hm, ite_true] at hh ⊢
       simp only [List.length_cons]
       omega
-    · simp only [collectOne, hm, if_false] at hh ⊢
+    · simp only [collectOne, hm, ite_false] at hh ⊢
       rw [prefixSum_appendReference] at hh
       simp only [List.length_cons]
       split_ifs at hh <;> omega
@@ -738,8 +737,10 @@ theorem signedReference_refines (i : Usize) (negative : Bool) :
       lift (index ||| sign)) = ok (signedReference i negative) := by
   have hmask : pairs.NEGATED = ok 2147483648#u32 := by unfold pairs.NEGATED; rfl
   cases negative <;>
-    simp only [signedReference, Bool.false_eq_true, if_false, if_true, lift,
-      bind_tc_ok, hmask, UScalar.cast_fromBool] <;> rfl
+    simp only [signedReference, Bool.false_eq_true, ite_false, ite_true, lift,
+      bind_tc_ok, bind_ok, hmask, UScalar.cast_fromBool] <;>
+    rw [mul_ok _ _ (by first | decide | simp | scalar_tac)] <;>
+    exact (bind_tc_ok _ _).trans rfl
 
 theorem signedReference_value (i : Usize) (negative : Bool) (hi : i.val < 2 ^ 31) :
     (signedReference i negative).val = i.val + if negative then 2 ^ 31 else 0 := by
@@ -750,10 +751,10 @@ theorem signedReference_value (i : Usize) (negative : Bool) (hi : i.val < 2 ^ 31
     intro a b
     exact BitVec.toNat_or a.bv b.bv
   cases negative with
-  | false => simp only [signedReference, Bool.false_eq_true, if_false, hor, hic,
+  | false => simp only [signedReference, Bool.false_eq_true, ite_false, hor, hic,
       show (0#u32).val = 0 from rfl, Nat.or_zero, Nat.add_zero]
   | true =>
-    simp only [signedReference, if_true, hor, hic, show (2147483648#u32).val = 2 ^ 31 from rfl]
+    simp only [signedReference, ite_true, hor, hic, show (2147483648#u32).val = 2 ^ 31 from rfl]
     have hh := Nat.two_pow_add_eq_or_of_lt hi 1
     simpa only [Nat.mul_one, Nat.or_comm, Nat.add_comm] using hh.symm
 

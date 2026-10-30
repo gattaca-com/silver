@@ -2,12 +2,11 @@ import LeanBlsSimd.Sha256.ByteWord
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
-open private EthLib.Cryptography.Bls.Sha256.big32 from EthLib.Cryptography.Bls.Sha256
 
 namespace LeanBlsSimd.Sha256.Portable
 
 def loadChunk (data : Slice U8) (start : Nat) (h : start+4 ≤ data.val.length) : Array U8 4#usize :=
-  ⟨data.val.slice start (start+4),by simp [List.slice]; omega⟩
+  Array.from (data.val.slice start (start+4)) (by simp [List.slice]; omega)
 
 theorem loadChunk_get (data : Slice U8) (start : Nat) (h : start+4 ≤ data.val.length)
     (i : Nat) (hi : i < 4) :
@@ -22,7 +21,7 @@ theorem loadChunk_model (data : Slice U8) (start : Nat) (h : start+4 ≤ data.va
     ofWord (core.num.U32.from_be_bytes (loadChunk data start h)) =
       Spec.big32 (Spec.bytes (data.val.map ofU8)) start := by
   rw [from_be_bytes_model]
-  simp only [Spec.big32,EthLib.Cryptography.Bls.Sha256.big32,Nat.zero_add]
+  simp only [Spec.big32,EthLib.Cryptography.Hash.Sha256.big32,Nat.zero_add]
   rw [loadChunk_get data start h 0 (by decide),loadChunk_get data start h 1 (by decide),
     loadChunk_get data start h 2 (by decide),loadChunk_get data start h 3 (by decide),Nat.add_zero]
 
@@ -51,9 +50,9 @@ theorem schedule_load_step (data : Slice U8) (offset : Usize) (w : Array U32 64#
     simp [Array.from_slice,src,Array.to_slice,chunk.property]
   refine ⟨out,next,?_,?_,rfl⟩
   · have ht' : t < 16#usize := ht
-    simp only [sha256.portable.schedule_loop0.body,ht',if_true,lift,Array.to_slice_mut,
-      bind_tc_ok,Function.uncurry_apply_pair]
-    simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq]
+    simp only [sha256.portable.schedule_loop0.body,ht',ite_true,lift,Array.to_slice_mut,
+      bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
     change (do
       let s1 ← core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
         data {start, «end» := stop}
@@ -62,9 +61,9 @@ theorem schedule_load_step (data : Slice U8) (offset : Usize) (w : Array U32 64#
       let a ← Array.update w t (core.num.U32.from_be_bytes (Array.from_slice (Array.repeat 4#usize 0#u8) s2))
       ok (cont (a,next))) = _
     rw [hindex]
-    simp only [bind_tc_ok,hcopy,hback]
+    simp only [bind_tc_ok, bind_ok,hcopy,hback]
     rw [update_eq _ _ _ (by change t.val < 64; omega)]
-    rfl
+    exact bind_ok _ _
   · change words (w.set t _) = _
     rw [words_set,loadChunk_model]
 
@@ -80,23 +79,23 @@ theorem schedule_expand_step (w : Array U32 64#usize) (t : Usize)
     (words w)[t.val-7]! + Spec.smallSigma1 (words w)[t.val-2]!))
   refine ⟨out,next,?_,?_,rfl⟩
   · have ht : t < 64#usize := hi
-    simp only [sha256.portable.schedule_loop1.body,ht,if_true]
-    simp (disch := scalar_tac) only [sub_ok,bind_tc_ok,UScalar.ofNatCore_val_eq,index_usize_eq]
+    simp only [sha256.portable.schedule_loop1.body,ht,ite_true]
+    simp (disch := scalar_tac) only [sub_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq,index_usize_eq]
     have h16 := words_get w (t.val-16) (by change _ < 64; omega)
     have h15 := words_get w (t.val-15) (by change _ < 64; omega)
     have h7 := words_get w (t.val-7) (by change _ < 64; omega)
     have h2 := words_get w (t.val-2) (by change _ < 64; omega)
     rw [← word_ofWord (w.val[t.val-15]'_), ← h15, smallSigma0_refines]
-    simp only [bind_tc_ok,lift]
+    simp only [bind_tc_ok, bind_ok,lift]
     rw [← word_ofWord (w.val[t.val-2]'_), ← h2, smallSigma1_refines]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [← word_ofWord (w.val[t.val-16]'_), ← h16,
       ← word_ofWord (w.val[t.val-7]'_), ← h7]
     simp only [wrapping_add_word]
     rw [update_eq _ _ _ hi]
-    simp only [bind_tc_ok]
+    simp only [bind_tc_ok, bind_ok]
     rw [add_ok _ _ (by scalar_tac)]
-    rfl
+    exact bind_ok _ _
   · change words (w.set t _) = _
     rw [words_set,ofWord_word]
     unfold Spec.scheduleStep
@@ -112,14 +111,14 @@ theorem schedule_expand_refines (w : Array U32 64#usize) (t : Usize)
     have hstop : ¬ t < 64#usize := by change ¬ t.val < 64; omega
     refine ⟨w,?_,?_⟩
     · rw [sha256.portable.schedule_loop1,loop.eq_1]
-      simp only [sha256.portable.schedule_loop1.body,hstop,if_false]
+      simp only [sha256.portable.schedule_loop1.body,hstop,ite_false, bind_ok]
     · rfl
   | succ n ih =>
     obtain ⟨out,next,hbody,hout,hnext⟩ := schedule_expand_step w t hlo (by omega)
     obtain ⟨final,hfinal,hmodel⟩ := ih out next (by omega) (by omega) (by omega)
     refine ⟨final,?_,?_⟩
     · rw [sha256.portable.schedule_loop1,loop.eq_1]
-      simpa only [hbody] using hfinal
+      simpa only [hbody, bind_ok] using! hfinal
     · rw [hmodel,hnext,hout,List.range']
       rfl
 
@@ -136,13 +135,13 @@ theorem schedule_load_refines (data : Slice U8) (offset : Usize) (w : Array U32 
     subst t
     refine ⟨w,?_,rfl⟩
     rw [sha256.portable.schedule_loop0,loop.eq_1]
-    simp only [sha256.portable.schedule_loop0.body,lt_self_iff_false,if_false]
+    simp only [sha256.portable.schedule_loop0.body,lt_self_iff_false,ite_false, bind_ok]
   | succ n ih =>
     obtain ⟨out,next,hbody,hout,hnext⟩ := schedule_load_step data offset w t (by omega) hdata
     obtain ⟨final,hfinal,hmodel⟩ := ih out next (by omega) (by omega)
     refine ⟨final,?_,?_⟩
     · rw [sha256.portable.schedule_loop0,loop.eq_1]
-      simpa only [hbody] using hfinal
+      simpa only [hbody, bind_ok] using! hfinal
     · rw [hmodel,hnext,hout,List.range']
       rfl
 
@@ -154,7 +153,7 @@ theorem schedule_refines (data : Slice U8) (offset : Usize)
     (Array.repeat 64#usize 0#u32) 0#usize (by decide) hdata
   obtain ⟨out,hout,hwords⟩ := schedule_expand_refines loaded 16#usize (by decide) (by decide)
   refine ⟨out,?_,?_⟩
-  · rw [sha256.portable.schedule,hload]
+  · rw [sha256.portable.schedule,hload,bind_ok]
     exact hout
   · rw [hwords,hloaded]
     have hz : words (Array.repeat 64#usize 0#u32) = _root_.Array.replicate 64 0 := by

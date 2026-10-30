@@ -39,8 +39,9 @@ theorem pointStore_allocate_refines (s : msm8.store.PointStore)
     simp only [UScalar.cast_val_eq, UScalar.ofNatCore_val_eq]
     exact Nat.mod_eq_of_lt h32
   simp only [msm8.store.PointStore.allocate, pointStore_capacity_refines,
-    bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
+    bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
   rw [add_ok _ _ hsum]
+  simp only [ite_true, bind_tc_ok, bind_ok]
   change (do let i ← n - 1#usize; let j ← lift (UScalar.cast .U32 i); ok (j, { s with len := n })) = _
   rw [hsub]
   simp [hcast, lift]
@@ -48,7 +49,7 @@ theorem pointStore_allocate_refines (s : msm8.store.PointStore)
 
 theorem clone_limbs_eq (row : Array U64 8#usize) :
     core.array.CloneArray.clone core.clone.CloneU64 row = ok row := by
-  obtain ⟨a, ha, he⟩ := WP.spec_imp_exists
+  obtain ⟨a, ha, he⟩ := spec_imp_exists
     (core.array.CloneArray.clone_spec core.clone.CloneU64 row (by intro x hx; rfl))
   simpa only [← he] using ha
 
@@ -68,17 +69,17 @@ theorem pointStore_reset_raw (s : msm8.store.PointStore) (capacity : Usize)
     rw [mul_ok (2#usize) capacity hcap]
     rfl
   by_cases h : s.rows.val.length < 2 * capacity.val
-  · obtain ⟨v, hv, hval⟩ := WP.spec_imp_exists (alloc.vec.Vec.resize_spec
+  · obtain ⟨v, hv, hval⟩ := spec_imp_exists (alloc.vec.Vec.resize_spec
       (core.clone.CloneArray 8#usize core.clone.CloneU64) s.rows n
       zeroRow (clone_limbs_eq _))
     refine ⟨{ rows := v, len := 0#usize }, ?_, ?_, rfl⟩
-    · simp only [msm8.store.PointStore.reset, hmul, bind_tc_ok, UScalar.lt_equiv,
-        alloc.vec.Vec.len_val, hn, h, if_true]
+    · simp only [msm8.store.PointStore.reset, hmul, bind_tc_ok, bind_ok, UScalar.lt_equiv,
+        alloc.vec.Vec.len_val, hn, h, ite_true]
       change (do
         let rows ← alloc.vec.Vec.resize (core.clone.CloneArray 8#usize core.clone.CloneU64) s.rows n zeroRow
         ok ({ rows := rows, len := 0#usize } : msm8.store.PointStore)) = _
       rw [hv]
-      rfl
+      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
     · rw [hval]
       simp [List.resize, hn, List.take_of_length_le (Nat.le_of_lt h)]
   · refine ⟨{ s with len := 0#usize }, ?_, ?_, rfl⟩

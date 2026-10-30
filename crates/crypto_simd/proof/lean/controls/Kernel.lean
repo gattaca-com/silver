@@ -21,6 +21,8 @@ namespace LeanBlsSimd
 
 open EthLib.Cryptography.Bls DecompressG2 Kernel
 
+attribute [local implicit_reducible] DecompressG2.G2_COMPRESSED_LEN
+
 local notation "gx" => Fp2.toField G2.generator.x
 local notation "gy" => Fp2.toField G2.generator.y
 
@@ -57,7 +59,7 @@ theorem sqrt_genBytes : (sqrt (rhs (laneX genBytes))).2 = true := by
 theorem laneY_genBytes : laneY genBytes = gy := by
   have h : (sqrt (rhs (laneX genBytes))).1 ^ 2 = gy ^ 2 := by
     rw [sqrt_fst_sq sqrt_genBytes, laneX_genBytes, rhs_gx]
-  rw [laneY, selectRoot_eq h, genBytes_flags.2.2, if_pos rfl]
+  rw [laneY, selectRoot_eq h, genBytes_flags.2.2, ite_eq_left rfl]
 
 theorem laneOnCurve_genBytes : laneOnCurve genBytes = true := by
   rw [laneOnCurve, sqrt_genBytes, genBytes_flags.1, genBytes_flags.2.1]
@@ -122,10 +124,10 @@ example (l : Fin 8) :
   have hg : G2.inSubgroup G2.generator = true :=
     G2.inSubgroup_of_psi (G2.valid_mk_one (x := G2.generator.x) (y := G2.generator.y)
       nonsingular_generator) psi_generator
-  rw [hv, if_pos rfl, hpt, hl, uncompress_genBytes]
+  rw [hv, ite_eq_left rfl, hpt, hl, uncompress_genBytes]
   refine ⟨rfl, ?_⟩
   dsimp only
-  rw [if_pos hg]
+  rw [ite_eq_left hg]
 
 /-! ## A rejected lane: zero bytes -/
 

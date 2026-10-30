@@ -30,7 +30,7 @@ theorem sum_list_padded {A G : Type} [Inhabited A] [AddCommMonoid G]
       apply Finset.sum_congr rfl
       intro j hj
       simp only [Finset.mem_range] at hj
-      simp only [hj, if_true]
+      simp only [hj, ite_true]
     _ = _ := sum_list_indices xs f
 
 theorem sum_range_blocks {G : Type} [AddCommMonoid G] (f : ℕ → G) (groups : ℕ) :
@@ -95,7 +95,7 @@ theorem packed_entryPoint (state : msm8.buckets.Buckets) (base capacity : ℕ �
   rw [packed_bucketLength state base capacity contents hp _ bucket hb hbm]
   split
   · rename_i hj
-    rw [packed_referenceAt state base capacity contents hp _ bucket cursor hb hbm, if_pos hj]
+    rw [packed_referenceAt state base capacity contents hp _ bucket cursor hb hbm, ite_eq_left hj]
     simp only [signedPoint, clearSign_val]
   · rfl
 
@@ -140,7 +140,7 @@ theorem packed_windowBucketWeight (state : msm8.buckets.Buckets) (base capacity 
   intro b hb
   simp only [Finset.mem_range] at hb
   rw [packed_recovers state _ base capacity contents hp _ (listIndex_lt _ _ _ _ hw (by omega) (by omega))]
-  simp only [windowReferences, hw, if_true]
+  simp only [windowReferences, hw, ite_true]
 
 theorem packed_nested_sum_flatten (state : msm8.buckets.Buckets) (base capacity : ℕ → ℕ)
     (contents : BucketLists)
@@ -171,12 +171,12 @@ theorem packed_present_reference (state : msm8.buckets.Buckets) (base capacity :
       referenceAt state window bucket cursor ∈ contents i := by
   have hw : window < state.windows.val := by
     by_contra h
-    simp only [bucketLength, h, if_false, UScalar.ofNatCore_val_eq] at hj
+    simp only [bucketLength, h, ite_false, UScalar.ofNatCore_val_eq] at hj
     omega
   refine ⟨listIndex state.window_bits.val window bucket, listIndex_lt _ _ _ _ hw hb hbm, ?_⟩
   rw [packed_bucketLength state base capacity contents hp window bucket hb hbm] at hj
-  rw [packed_referenceAt state base capacity contents hp window bucket cursor hb hbm, if_pos hj]
-  simp only [windowReferences, hw, if_true] at hj ⊢
+  rw [packed_referenceAt state base capacity contents hp window bucket cursor hb hbm, ite_eq_left hj]
+  simp only [windowReferences, hw, ite_true] at hj ⊢
   rw [getElem!_pos (contents (listIndex state.window_bits.val window bucket)) cursor hj]
   exact List.getElem_mem hj
 

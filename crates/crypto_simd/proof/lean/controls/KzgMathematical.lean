@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.CosetPolynomial
+import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
@@ -6,8 +7,7 @@ open scoped EthLib.Cryptography.Bls.Fr BigOperators
 open private getElem!_reversedRoots getElem!_map_mul
   from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.Controls
 

@@ -37,14 +37,14 @@ theorem updatedValues_job (jobs : List Job) (values : ℕ → G1Spec.E.Point)
     updatedValues jobs values job.output.val =
       signedReferenceValue values job.first + signedReferenceValue values job.second := by
   have h : ∃j ∈ jobs, j.output.val = job.output.val := ⟨job, hjob, rfl⟩
-  rw [updatedValues, dif_pos h]
+  rw [updatedValues, dite_eq_left h]
   have he := jobs_output_injective jobs hind (Classical.choose h) job
     (Classical.choose_spec h).1 hjob (Classical.choose_spec h).2
   rw [he]
 
 theorem updatedValues_frame (jobs : List Job) (values : ℕ → G1Spec.E.Point) (p : ℕ)
     (hne : ∀job ∈ jobs, p ≠ job.output.val) : updatedValues jobs values p = values p := by
-  rw [updatedValues, dif_neg]
+  rw [updatedValues, dite_eq_right]
   rintro ⟨job, hjob, hp⟩
   exact hne job hjob hp.symm
 

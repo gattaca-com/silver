@@ -62,7 +62,7 @@ theorem prepare_store_correct [RuntimeFeatures] (store : portable.msm.store.Poin
     have hsum : count+extra = ok capacity := by
       rw [add_ok count extra hc]
       rfl
-    simp only [prepareStore,hmul2,hmulw,hsum,bind_tc_ok,hreset,hpush,hout]
+    simp only [prepareStore,hmul2,hmulw,hsum,bind_tc_ok, bind_ok,hreset,hpush,hout]
   · intro j hj
     have hr := (hfirst j hj).frame (hframe (reset.len.val+j) (by omega))
     simpa only [hrzero,Nat.zero_add] using hr

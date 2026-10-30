@@ -10,7 +10,7 @@ namespace LeanBlsSimd.Sha256
 
 open Generated
 
-attribute [local irreducible] Streaming.finish EthLib.Cryptography.Bls.sha256
+attribute [local irreducible] Streaming.finish EthLib.Cryptography.Hash.sha256
 
 private theorem bytes_bridge (xs : List U8) : Spec.bytes (xs.map ofU8) = Kzg.bytes xs := by
   apply ByteArray.ext
@@ -43,7 +43,7 @@ private theorem finish_represents (compress : Compressor) (hc : CompressorRefine
     (state : Array U32 8#usize) (pending : Array U8 64#usize) (p : Usize) (length : U64)
     (pre : List U8) (h : Represents state pending p length pre) :
     ∃ out, finish compress state pending p length = ok out ∧
-      Kzg.arrayBytes out = EthLib.Cryptography.Bls.sha256 (Kzg.bytes pre) := by
+      Kzg.arrayBytes out = EthLib.Cryptography.Hash.sha256 (Kzg.bytes pre) := by
   obtain ⟨out,he,hm⟩ := finish_refines compress hc state pending p length h.1
   refine ⟨out,he,?_⟩
   have heq := hm.trans (Streaming.finish_eq_hash _ _ h.2)

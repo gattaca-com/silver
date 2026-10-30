@@ -4,8 +4,7 @@ import EthLib.Cryptography.Proofs.Kzg.Polynomials
 open EthLib.Cryptography Bls Kzg
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg
 
@@ -23,8 +22,8 @@ theorem coeffPolynomial_coeff_ge (a : Array Fr) (i : Nat) (hi : a.size ≤ i) :
 theorem coeffPolynomial_coeff (a : Array Fr) (i : Nat) :
     (coeffPolynomial a).coeff i = if i < a.size then a[i]! else 0 := by
   by_cases hi : i < a.size
-  · rw [if_pos hi, coeffPolynomial_coeff_lt a i hi, getElem!_pos a i hi]
-  · rw [if_neg hi, coeffPolynomial_coeff_ge a i (by omega)]
+  · rw [ite_eq_left hi, coeffPolynomial_coeff_lt a i hi, getElem!_pos a i hi]
+  · rw [ite_eq_right hi, coeffPolynomial_coeff_ge a i (by omega)]
 
 theorem coeffPolynomial_injective (a b : Array Fr) (hs : a.size = b.size)
     (hp : coeffPolynomial a = coeffPolynomial b) : a = b := by
@@ -79,21 +78,21 @@ private theorem add_longer (a b : Array Fr) (h : b.size ≤ a.size) :
   rw [_root_.Polynomial.coeff_add]
   by_cases ha : i < a.size
   · rw [coeffPolynomial_coeff_lt _ i (by simpa using ha), Array.getElem_ofFn,
-      coeffPolynomial_coeff, coeffPolynomial_coeff, if_pos ha]
+      coeffPolynomial_coeff, coeffPolynomial_coeff, ite_eq_left ha]
     rfl
   · have hb : ¬ i < b.size := by omega
     rw [coeffPolynomial_coeff_ge _ i (by simpa using Nat.le_of_not_lt ha),
       coeffPolynomial_coeff_ge a i (by omega), coeffPolynomial_coeff_ge b i (by omega)]
-    simp
+    exact (add_zero _).symm
 
 theorem coeffPolynomial_add (a b : Array Fr) :
     coeffPolynomial (addPolynomialcoeff a b) = coeffPolynomial a + coeffPolynomial b := by
   by_cases h : b.size ≤ a.size
   · unfold addPolynomialcoeff
-    rw [if_pos h]
+    rw [ite_eq_left h]
     exact add_longer a b h
   · unfold addPolynomialcoeff
-    rw [if_neg h]
+    rw [ite_eq_right h]
     exact (add_longer b a (by omega)).trans (add_comm _ _)
 
 theorem coeffPolynomial_map_mul (a : Array Fr) (r : Fr) :
@@ -116,10 +115,10 @@ theorem coeffPolynomial_prepend_zero (n : Nat) (a : Array Fr) :
   intro i
   rw [_root_.Polynomial.coeff_X_pow_mul']
   by_cases hin : i < n
-  · rw [if_neg (by omega), coeffPolynomial_coeff_lt _ i (by simp; omega),
+  · rw [ite_eq_right (by omega), coeffPolynomial_coeff_lt _ i (by simp; omega),
       Array.getElem_append_left (by simpa using hin), Array.getElem_replicate]
     rfl
-  · rw [if_pos (by omega)]
+  · rw [ite_eq_left (by omega)]
     by_cases hia : i - n < a.size
     · rw [coeffPolynomial_coeff_lt _ i (by simp; omega),
         Array.getElem_append_right (by simp; omega)]
@@ -157,7 +156,7 @@ private theorem product_fold_size (a b : Array Fr) (hb : 0 < b.size) (n : Nat) :
   | succ n ih =>
     simp only [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil,
       productStep, size_addPolynomialcoeff, Array.size_append, Array.size_replicate,
-      Array.size_map, ih, Nat.add_eq_zero_iff, Nat.one_ne_zero, and_false, if_false]
+      Array.size_map, ih, Nat.add_eq_zero_iff, Nat.one_ne_zero, and_false, ite_false]
     split <;> omega
 
 theorem coeffPolynomial_multiply (a b : Array Fr)
@@ -168,10 +167,10 @@ theorem coeffPolynomial_multiply (a b : Array Fr)
   refine ⟨out, ?_, ?_, ?_⟩
   · simp only [multiplyPolynomialcoeff, Constants.FIELD_ELEMENTS_PER_EXT_BLOB,
       Constants.FIELD_ELEMENTS_PER_BLOB, Nat.reduceMul,
-      show ¬ a.size + b.size > 8192 from Nat.not_lt.mpr hlen, if_false,
+      show ¬ a.size + b.size > 8192 from Nat.not_lt.mpr hlen, ite_false,
       Bind.bind, Except.bind, Pure.pure, Except.pure, ← Array.foldl_toList, Array.toList_range]
     rfl
-  · simpa only [out, if_neg (by omega : a.size ≠ 0)] using product_fold_size a b hb a.size
+  · simpa only [out, ite_eq_right (by omega : a.size ≠ 0)] using product_fold_size a b hb a.size
   · rw [show out = (List.range a.size).foldl (productStep a b) #[Fr.zero] from rfl,
       product_fold_polynomial, ← coeffPolynomial_sum]
 

@@ -38,7 +38,7 @@ theorem minusOne_raw_wrong : decode xi (raw xi minusOne) ≠ decode xi minusOne 
     have hone : assemble u 1 0 0 = (1 : T) := by simp [assemble]
     rw [hone]
     simpa only [ha,hb,hc,neg_one_sq,star_neg,star_one,star_zero,zero_pow (by decide : 2 ≠ 0),
-      mul_zero,add_zero,sub_zero,sub_neg_eq_add,mul_one,show (3:S)+2=5 by norm_num] using h
+      mul_zero,add_zero,sub_zero,sub_neg_eq_add,mul_one,show (3:S)+2=5 by norm_num] using! h
   have h5 := (assemble_injective u 5 0 0 1 0 0 hcoords).1
   have hK := congrArg QuadraticAlgebra.re h5
   have hFp := congrArg QuadraticAlgebra.re hK

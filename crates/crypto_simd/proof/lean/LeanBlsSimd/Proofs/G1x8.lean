@@ -62,16 +62,20 @@ theorem double_finite_correct (self : G1x8) (l : Fin 8) (P : G1)
   let z : ZMod Fp.modulus := P.z
   refine ⟨hx3.of_eq ?_, hy3.of_eq ?_, hz3.of_eq ?_⟩
   all_goals
-    simp only [G1.double, if_neg hz]
+    rw [G1.double_eq_doubleSpec]
+    simp only [G1.doubleSpec, ite_eq_right hz]
   · change _ = (3 * (x * x)) * (3 * (x * x)) -
       2 * (2 * ((x + y*y)*(x+y*y) - x*x - (y*y)*(y*y)))
+    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
     ring
   · change _ = (3 * (x*x)) *
       (2 * ((x+y*y)*(x+y*y)-x*x-(y*y)*(y*y)) -
         ((3*(x*x))*(3*(x*x))-2*(2*((x+y*y)*(x+y*y)-x*x-(y*y)*(y*y))))) -
       8*((y*y)*(y*y))
+    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
     ring
   · change _ = 2 * y * z
+    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
     ring
 
 theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)
@@ -123,7 +127,8 @@ theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y
   have heq : ¬(P.x * (Fp.one * Fp.one)).beq (x * (P.z * P.z)) = true := by
     rw [G1.beq_iff]
     change ¬(P.x : ZMod Fp.modulus) * (1 * 1) = (x : ZMod Fp.modulus) * (P.z * P.z)
-    simpa [sq, sub_eq_zero, eq_comm] using hu'.1
+    exact (fun (a b c : ZMod Fp.modulus) (h : ¬b * c ^ 2 - a = 0)
+      (h' : a * (1 * 1) = b * (c * c)) => h (by linear_combination -h')) P.x x P.z hu'.1
   let X : ZMod Fp.modulus := P.x
   let Y : ZMod Fp.modulus := P.y
   let Z : ZMod Fp.modulus := P.z
@@ -136,15 +141,22 @@ theorem add_affine_correct (self : G1x8) (qx qy : Fp8) (l : Fin 8) (P : G1) (x y
   let V := (X * (1 * 1)) * I
   let outX := r * r - J - 2 * V
   refine ⟨hx3.of_eq ?_, hy3.of_eq ?_, hz3.of_eq ?_⟩
-  all_goals simp only [G1.add, if_neg hz, show ¬Fp.one.isZero = true from by decide, heq]
+  all_goals
+    rw [G1.add_eq_addSpec]
+    simp only [G1.addSpec, ite_eq_right hz, show ¬Fp.one.isZero = true from by decide, heq]
   · change _ = outX
     dsimp [outX, r, J, H, V, I]
+    simp only [show P.x = X from rfl, show P.y = Y from rfl, show P.z = Z from rfl,
+      show x = qX from rfl, show y = qY from rfl]
     ring
   · change _ = r * (V - outX) - 2 * (Y * 1 * (1 * 1)) * J
     dsimp [outX, r, J, H, V, I]
+    simp only [show P.x = X from rfl, show P.y = Y from rfl, show P.z = Z from rfl,
+      show x = qX from rfl, show y = qY from rfl]
     ring
   · change _ = ((Z + 1) * (Z + 1) - Z * Z - 1 * 1) * H
     dsimp [H]
+    simp only [show P.x = X from rfl, show P.z = Z from rfl, show x = qX from rfl]
     ring
 
 theorem add_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
@@ -190,7 +202,8 @@ theorem add_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
   have hqz : ¬Q.z.isZero = true := G1.isZero_iff.not.mpr hu'.2
   have heq : ¬(P.x * (Q.z * Q.z)).beq (Q.x * (P.z * P.z)) = true := by
     rw [G1.beq_iff]
-    simpa only [sq, sub_ne_zero, ne_eq, eq_comm] using hu'.1.1
+    exact (fun (a b c d : ZMod Fp.modulus) (h : ¬b * c ^ 2 - a * d ^ 2 = 0)
+      (h' : a * (d * d) = b * (c * c)) => h (by linear_combination -h')) P.x Q.x P.z Q.z hu'.1.1
   let X : ZMod Fp.modulus := P.x
   let Y : ZMod Fp.modulus := P.y
   let Z : ZMod Fp.modulus := P.z
@@ -204,15 +217,23 @@ theorem add_correct (self q : G1x8) (l : Fin 8) (P Q : G1)
   let V := (X * (qZ * qZ)) * I
   let outX := r * r - J - 2 * V
   refine ⟨hx3.of_eq ?_, hy3.of_eq ?_, hz3.of_eq ?_⟩
-  all_goals simp only [G1.add, if_neg hz, if_neg hqz, if_neg heq]
+  all_goals
+    rw [G1.add_eq_addSpec]
+    simp only [G1.addSpec, ite_eq_right hz, ite_eq_right hqz, ite_eq_right heq]
   · change _ = outX
     dsimp [outX, r, J, H, V, I]
+    simp only [show P.x = X from rfl, show P.y = Y from rfl, show P.z = Z from rfl,
+      show Q.x = qX from rfl, show Q.y = qY from rfl, show Q.z = qZ from rfl]
     ring
   · change _ = r * (V - outX) - 2 * (Y * qZ * (qZ * qZ)) * J
     dsimp [outX, r, J, H, V, I]
+    simp only [show P.x = X from rfl, show P.y = Y from rfl, show P.z = Z from rfl,
+      show Q.x = qX from rfl, show Q.y = qY from rfl, show Q.z = qZ from rfl]
     ring
   · change _ = ((Z + qZ) * (Z + qZ) - Z * Z - qZ * qZ) * H
     dsimp [H]
+    simp only [show P.x = X from rfl, show P.z = Z from rfl,
+      show Q.x = qX from rfl, show Q.z = qZ from rfl]
     ring
 
 private def scalarStep (n bit : ℕ) : ℕ :=

@@ -34,8 +34,8 @@ theorem old_message_dependency_rejected :
 private def byteInput : Array U8 16#usize := Array.make 16#usize
   [0#u8,1#u8,2#u8,3#u8,4#u8,5#u8,6#u8,7#u8,8#u8,9#u8,10#u8,11#u8,12#u8,13#u8,14#u8,15#u8] (by rfl)
 
-private def firstWord : Result M128 → Option UInt32
-  | ok v => some v[0]
+private def firstWord (r : Result M128) : Option UInt32 := match r.match with
+  | .ok v => some v[0]
   | _ => none
 
 theorem omitted_byte_swap_rejected :

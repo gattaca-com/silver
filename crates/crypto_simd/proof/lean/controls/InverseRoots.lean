@@ -9,18 +9,17 @@ open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Controls.InverseRoots
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 def values : _root_.Array Fr := #[Fr.ofNat 1,Fr.ofNat 2,Fr.ofNat 3,Fr.ofNat 4]
-def input : Slice blst.blst_fr := ⟨values.toList.map frEncode,by simp [values]; scalar_tac⟩
-def forwardTable : alloc.vec.Vec blst.blst_fr := ⟨values.toList.map frEncode,by simp [values]; scalar_tac⟩
+def input : Slice blst.blst_fr := Slice.from (values.toList.map frEncode) (by simp [values]; scalar_tac)
+def forwardTable : alloc.vec.Vec blst.blst_fr := alloc.vec.Vec.from (values.toList.map frEncode) (by simp [values]; scalar_tac)
 
 theorem forward_table_rejected : domain.inverse_roots input ≠ ok forwardTable := by
   intro h
   obtain ⟨out,hr,hvalue⟩ := Refinement.inverse_roots_refinement 4#usize (by decide)
     input values (by rfl) (by rfl)
-  have heq := Result.ok.inj (hr.symm.trans h)
+  have heq := Result.ok_injective (hr.symm.trans h)
   subst out
   have hval := congrArg (fun xs : List blst.blst_fr => value (xs[1]!).l) hvalue
   have hne : value (frEncode (Fr.ofNat 2)).l ≠ value (frEncode (Fr.ofNat 4)).l := by decide +kernel

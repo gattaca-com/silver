@@ -3,6 +3,7 @@ import LeanBlsSimd.Kzg.RepresentationLemmas
 
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
+open private rhs0 norm0Root from LeanBlsSimd.Kzg.SetupPoints
 
 namespace LeanBlsSimd.Kzg
 
@@ -35,8 +36,20 @@ private def negGeneratorBytes : ByteArray :=
 
 theorem setup_g2_neg_zero_decoded :
     G2.uncompress negGeneratorBytes = .ok (G2.neg SetupPoints.g2Point0) := by
-  rw [G2.uncompress]
-  simp only [Fp2.sqrt, SetupArithmetic.sqrt_eq, SetupArithmetic.inverse_eq]
+  have hs : Fp.sqrt (rhs0.c0 * rhs0.c0 + rhs0.c1 * rhs0.c1) = .ok norm0Root := by
+    simp only [SetupArithmetic.sqrt_eq]
+    decide +kernel
+  have hc : Fp.sqrt ((rhs0.c0 + norm0Root) * (Fp.ofNat 2).inverse) =
+      .ok SetupPoints.g2Point0.y.c0 := by
+    simp only [SetupArithmetic.sqrt_eq, SetupArithmetic.inverse_eq]
+    decide +kernel
+  rw [SetupArithmetic.g2_uncompress_of negGeneratorBytes
+    SetupPoints.g2Point0.x.c0 SetupPoints.g2Point0.x.c1 _
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    (by simp only [Fp.fromBytesBE, SetupArithmetic.bytesBEToNat_eq]; decide +kernel)
+    (by simp only [Fp.fromBytesBE, SetupArithmetic.bytesBEToNat_eq]; decide +kernel)
+    (SetupArithmetic.fp2_sqrt_of_plus rhs0 _ _ (by decide +kernel) hs hc)]
+  simp only [SetupArithmetic.inverse_eq]
   decide +kernel
 
 theorem setup_g2_neg_zero_subgroup : (G2.neg SetupPoints.g2Point0).inSubgroup = true := by

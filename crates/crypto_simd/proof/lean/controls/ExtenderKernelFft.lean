@@ -5,8 +5,9 @@ open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 open silver_crypto_simd silver_crypto_simd.kzg
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fr.modulus
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelFft
 
@@ -33,16 +34,16 @@ private theorem sampled_layout : sampleRoots layoutRoots 64 = layoutRoots := by
     exact getElem!_pos layoutRoots i hj
 
 def layoutInput : Slice blst.blst_fr :=
-  ⟨layoutRoots.toList.map frEncode, by
+  Slice.from (layoutRoots.toList.map frEncode) (by
     simp only [List.length_map, _root_.Array.length_toList, layoutRoots_size]
-    scalar_tac⟩
+    scalar_tac)
 
 private theorem layout_table_exists :
     ∃ table, fft8.Fft8.new layoutInput 64#usize = ok table ∧
       FftInvariant table layoutRoots := by
   obtain ⟨table, hnew, ht⟩ := fft_new_refinement
     layoutInput layoutRoots 64#usize ⟨6, by decide, by decide, rfl⟩
-    (by rw [layoutRoots_size]; decide) (by rw [layoutRoots_size]; decide) rfl
+    (by rw [layoutRoots_size]; decide) (by rw [layoutRoots_size]; decide) (by simp only [layoutInput, Slice.from_val])
   exact ⟨table, hnew, by simpa only [UScalar.ofNatCore_val_eq, sampled_layout] using ht⟩
 
 def swapShortTwiddles (table : fft8.Fft8) : fft8.Fft8 :=
@@ -59,8 +60,8 @@ theorem swapped_short_twiddles_violates_generated_table :
   intro hmut
   have hlen : table.short.val.length = 7 := ht.2.2.2.2.1
   have hset : (swapShortTwiddles table).short.val[2]! = table.short.val[4]! := by
-    change ((table.short.val.set 2 table.short.val[4]!).set 4 table.short.val[2]!)[2]! = _
-    rw [List.getElem!_set_ne _ 4 2 _ (by decide), List.getElem!_set _ _ _ (by omega)]
+    simp only [swapShortTwiddles, alloc.vec.Vec.set_val_eq, UScalar.ofNatCore_val_eq]
+    rw [List.set_getElem!_ne _ 4 2 _ (by decide), List.set_getElem!_eq _ _ _ _ ⟨(by omega), rfl⟩]
   have hgood := (ht.2.2.2.2.2 4 (by simp) ⟨1, by decide⟩).1.2 ⟨0, by decide⟩
   have hbad := (hmut.2.2.2.2.2 2 (by simp) ⟨1, by decide⟩).1.2 ⟨0, by decide⟩
   change laneValue (swapShortTwiddles table).short.val[2]! ⟨0, by decide⟩ = _ at hbad
@@ -83,8 +84,8 @@ theorem reading_next_wide_vector_violates_generated_table :
   have hlen : table.wide.val.length = 7 := by
     simpa only [layoutRoots_size] using ht.2.2.1
   have hset : (readNextWideVector table).wide.val[0]! = table.wide.val[1]! := by
-    change (table.wide.val.set 0 table.wide.val[1]!)[0]! = _
-    exact List.getElem!_set _ _ _ (by omega)
+    simp only [swapShortTwiddles, readNextWideVector, alloc.vec.Vec.set_val_eq, UScalar.ofNatCore_val_eq]
+    exact List.set_getElem!_eq _ _ _ _ ⟨(by omega), rfl⟩
   have hgood := (ht.2.2.2.1 4 (by decide) (by rw [layoutRoots_size]; decide)
     ⟨0, by decide⟩).1.2 ⟨1, by decide⟩
   have hbad := (hmut.2.2.2.1 3 (by decide) (by rw [layoutRoots_size]; decide)
@@ -159,7 +160,7 @@ private theorem impulse_fft_get (roots : _root_.Array Fr) (ω : Fr)
   · apply Finset.sum_congr rfl
     intro i hi
     rw [impulse_get t i (Finset.mem_range.mp hi)]
-  · simp only [ite_mul, zero_mul, Finset.sum_ite_eq', Finset.mem_range, ht, if_true]
+  · simp only [ite_mul, zero_mul, Finset.sum_ite_eq', Finset.mem_range, ht, ite_true]
     exact one_mul _
 
 private theorem dit_ne_dif (roots : _root_.Array Fr) (hsize : roots.size = 16)
@@ -174,7 +175,6 @@ private theorem dit_ne_dif (roots : _root_.Array Fr) (hsize : roots.size = 16)
     iterative_dif_eq_spec_pow _ _ 4 ((impulse_size 1).trans hsize.symm) hs hv,
     reversed_impulse] at he
   have hi := congrArg (fun xs : _root_.Array Fr => xs[2]!) he
-  dsimp only at hi
   rw [impulse_fft_get roots ω hsize hω (by simpa only [hsize] using hpowers) 8 2
       (by decide) (by decide),
     getElem!_pos (bitReversalPermutation (fftFieldAux (impulse 1) roots)) 2

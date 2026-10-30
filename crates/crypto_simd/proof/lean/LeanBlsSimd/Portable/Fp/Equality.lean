@@ -18,7 +18,7 @@ private theorem list_eq_refines (xs ys : List U64) (h : xs.length = ys.length) :
     | nil => simp_all
     | cons y ys =>
       have hl : xs.length = ys.length := by simpa using h
-      simp only [List.zip_cons_cons,List.allM_cons,bind_tc_ok]
+      simp only [List.zip_cons_cons,List.allM_cons,bind_tc_ok, bind_ok]
       by_cases he : x=y
       · subst y
         simpa only [decide_true,ite_true,List.cons.injEq,true_and] using ih ys hl
@@ -28,14 +28,18 @@ private theorem list_eq_refines (xs ys : List U64) (h : xs.length = ys.length) :
 theorem array_eq_refines {n : Usize} (a b : Array U64 n) :
     core.array.equality.PartialEqArray.eq core.cmp.PartialEqU64 a b =
       ok (decide (a.val=b.val)) := by
-  simp only [core.array.equality.PartialEqArray.eq,Array.length,a.property,b.property,if_true,
+  simp only [core.array.equality.PartialEqArray.eq,Array.length,a.property,b.property,ite_true,
     liftFun2]
-  exact list_eq_refines a.val b.val (a.property.trans b.property.symm)
+  refine Eq.trans ?_ (list_eq_refines a.val b.val (a.property.trans b.property.symm))
+  congr 1
+  funext ⟨x, y⟩
+  simp [core.cmp.impls.PartialEqU64.ne]
+  exact ⟨fun h => UScalar.eq_of_val_eq h, fun h => h ▸ rfl⟩
 
 theorem encoded_eq_iff (x y : Bls.Fp) : (Kzg.fpEncode x).l.val = (Kzg.fpEncode y).l.val ↔ x=y := by
   constructor
   · intro h
-    have he : (Kzg.fpEncode x).l = (Kzg.fpEncode y).l := Subtype.ext h
+    have he : (Kzg.fpEncode x).l = (Kzg.fpEncode y).l := Aeneas.Std.Array.ext _ _ h
     have hr := (Kzg.portableFpRep_encode x).2
     rw [he,Kzg.portableFpRep_encode y |>.2] at hr
     exact hr.symm

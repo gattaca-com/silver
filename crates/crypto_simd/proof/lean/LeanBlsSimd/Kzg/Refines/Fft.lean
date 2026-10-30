@@ -28,7 +28,7 @@ private theorem scale_loop
     have hn := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [fft.inverse_fft_loop, loop.eq_1]
-    simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   | cons a remaining ih =>
     obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
     have hindex : Slice.index_usize out iter.start = ok (frEncode a) := by
@@ -36,18 +36,19 @@ private theorem scale_loop
     have hlen : ((doneValues ++ [a * factor] ++ remaining).map frEncode).length =
         out.val.length := by simp [ho]
     let out' : Slice blst.blst_fr :=
-      ⟨(doneValues ++ [a * factor] ++ remaining).map frEncode, by rw [hlen]; exact out.property⟩
+      Slice.from ((doneValues ++ [a * factor] ++ remaining).map frEncode)
+        (by rw [hlen]; exact out.property)
     have hupdate : Slice.update out iter.start (frEncode (a * factor)) = ok out' := by
       simp [Slice.update, ho, hi, out', List.set_append_right]
     have hbody : fft.inverse_fft_loop.body (frEncode factor) iter out =
         ok (cont (iter', out')) := by
-      simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair,
+      simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
         hindex, FrScalar.fr_mul_refines, hupdate]
-    obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * factor]) out' rfl iter'
+    obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * factor]) out' (Slice.from_val _ _) iter'
       (by simp [hi', hi]) (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
     refine ⟨result, ?_, ?_⟩
     · rw [fft.inverse_fft_loop, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · simpa [List.append_assoc] using hr
 
@@ -64,7 +65,7 @@ private theorem slice_update_middle (s : Slice blst.blst_fr)
   have hb : (before ++ b :: after).length ≤ Usize.max := by
     have := s.property
     simpa [hs] using this
-  refine ⟨⟨before ++ b :: after, hb⟩, ?_, rfl⟩
+  refine ⟨Slice.from (before ++ b :: after) hb, ?_, Slice.from_val _ _⟩
   simp [Slice.update, hs, hi, List.set_append_right]
 
 private abbrev ButterflyInput := Fr × Fr × Fr
@@ -115,7 +116,7 @@ private theorem butterfly_spec (values roots : _root_.Array Fr) (n : Nat)
   conv_rhs => rw [fftFieldAux]
   have hlarge : ¬ values.size ≤ 1 := by omega
   have hhalf : values.size / 2 = n := by omega
-  simp only [hlarge, if_false, size_fftFieldAux, size_fftHalve, hhalf]
+  simp only [hlarge, ite_false, size_fftFieldAux, size_fftHalve, hhalf]
   apply List.ext_getElem (by simp [upperOutputs, lowerOutputs, butterflyInputs, hv])
   intro i hi hx
   by_cases h : i < n
@@ -141,7 +142,7 @@ private theorem butterfly_suffix
     have hnext := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, ?_⟩
     · rw [fft.transform_loop, loop.eq_1]
-      simp only [fft.transform_loop.body, hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [fft.transform_loop.body, hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     · simpa [leftInputs, rightInputs, upperOutputs, lowerOutputs] using ho
   | cons p remaining ih =>
     rcases p with ⟨a, b, w⟩
@@ -155,13 +156,13 @@ private theorem butterfly_suffix
       simp only [houtlen] at this
       rw [he] at hnextBound
       omega
-    obtain ⟨oddIndex, hadd, hoddIndex⟩ := WP.spec_imp_exists
+    obtain ⟨oddIndex, hadd, hoddIndex⟩ := spec_imp_exists
       (Usize.add_spec (x := half) (y := iter.start) haddBound)
     have hrootlt : iter.start.val * stride.val < roots.val.length := by
       have hlt := Nat.mul_lt_mul_of_pos_right (show iter.start.val < half.val by
         simpa [he] using hnextBound) hs
       omega
-    obtain ⟨rootIndex, hmul, hrootIndex⟩ := WP.spec_imp_exists
+    obtain ⟨rootIndex, hmul, hrootIndex⟩ := spec_imp_exists
       (Usize.mul_spec (x := iter.start) (y := stride)
         (Nat.le_trans (Nat.le_of_lt hrootlt) roots.property))
     have hroot : Slice.index_usize roots rootIndex = ok (frEncode w) := by
@@ -199,7 +200,7 @@ private theorem butterfly_suffix
           (doneRight ++ [a - b * w]) ++ rightInputs remaining).map frEncode := by
       simp [hout2, beforeEven, afterEven, List.append_assoc]
     have hbody : fft.transform_loop.body roots stride half iter out = ok (cont (iter', out2)) := by
-      simp only [fft.transform_loop.body, hnext, bind_tc_ok, Function.uncurry_apply_pair,
+      simp only [fft.transform_loop.body, hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
         hadd, hodd, hmul, hroot, FrScalar.fr_mul_refines, heven,
         FrScalar.fr_sub_refines, hupdateOdd, heven1,
         FrScalar.fr_add_refines, hupdateEven]
@@ -212,7 +213,7 @@ private theorem butterfly_suffix
         simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hx)
     refine ⟨result, ?_, ?_⟩
     · rw [fft.transform_loop, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · simpa [upperOutputs, lowerOutputs, List.append_assoc] using hresult
 
@@ -249,7 +250,7 @@ private theorem transform_refinement
       simp [getElem!_pos values 0 (by omega)]
     refine ⟨result, ?_, ?_⟩
     · rw [fft.transform]
-      simp only [hlen, if_true, hindex, bind_tc_ok, hupdate]
+      simp only [hlen, ite_true, hindex, bind_tc_ok, bind_ok, hupdate]
     · rw [fftFieldAux]
       simpa [hv, hvals] using hresult
   | succ k ih =>
@@ -269,10 +270,10 @@ private theorem transform_refinement
     obtain ⟨half, hdiv, hhalf⟩ := UScalar.div_spec (Slice.len out) (y := 2#usize) (by simp)
     have hhalf' : half.val = n := by simpa [Slice.len_val, ho'] using hhalf
     obtain ⟨⟨leftSlice, leftBack⟩, hleft, hleftVal, hleftLen, hleftBack⟩ :=
-      WP.spec_imp_exists
+      spec_imp_exists
         (core.slice.index.SliceIndexRangeToUsizeSlice.index_mut.step_spec
           { «end» := half } out (by simp [Slice.length, hhalf', ho']))
-    obtain ⟨twice, hmul, htwice⟩ := WP.spec_imp_exists
+    obtain ⟨twice, hmul, htwice⟩ := spec_imp_exists
       (Usize.mul_spec (x := 2#usize) (y := stride) (by simp; scalar_tac))
     have htwice' : twice.val = 2 * stride.val := by simpa using htwice
     have hcapHalf : 2^k * twice.val = capacity := by
@@ -299,10 +300,10 @@ private theorem transform_refinement
     have hout1 : out1.val = out.val.setSlice! 0 leftResult.val := hleftBack _
     have hout1Len : out1.val.length = n + n := by simp [hout1, ho']
     obtain ⟨⟨rightSlice, rightBack⟩, hright, hrightVal, hrightLen, hrightBack⟩ :=
-      WP.spec_imp_exists
+      spec_imp_exists
         (core.slice.index.SliceIndexRangeFromUsizeSlice.index_mut.step_spec
           { start := half } out1 (by simp [Slice.length, hhalf', hout1Len]))
-    obtain ⟨nextStart, hadd, hnextStart⟩ := WP.spec_imp_exists
+    obtain ⟨nextStart, hadd, hnextStart⟩ := spec_imp_exists
       (Usize.add_spec (x := start) (y := stride) (by scalar_tac))
     obtain ⟨rightResult, hrightRun, hrightResult⟩ := ih rightSlice nextStart twice
       (fftHalve values 1) (fftHalve rvalues 0)
@@ -348,7 +349,7 @@ private theorem transform_refinement
     dsimp only [out1] at hright
     refine ⟨result, ?_, ?_⟩
     · rw [fft.transform]
-      simp only [if_neg hnNe, hdiv, bind_tc_ok, Function.uncurry_apply_pair,
+      simp only [ite_eq_right hnNe, hdiv, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
         Slice.index_mut_SliceIndexRangeToUsizeSliceInst, hleft, hmul, hleftRun,
         Slice.index_mut_SliceIndexRangeFromUsizeSliceInst, hright, hadd, hrightRun]
       exact hloop
@@ -390,13 +391,13 @@ theorem fft_refinement_of_blst
         rw [getElem!_pos roots.val j hjr, getElem!_pos rvalues j hjv]
         simp [hr]
       simpa using hget)
-  obtain ⟨sub, hsub, hsubval, _⟩ := WP.spec_imp_exists
+  obtain ⟨sub, hsub, hsubval, _⟩ := spec_imp_exists
     (Usize.sub_spec (x := n) (y := 1#usize) (by simp [hn]))
   have hand : (n &&& sub) = 0#usize := by
     apply UScalar.eq_of_val_eq
     simp only [UScalar.val_and, hn, hsubval, UScalar.ofNatCore_val_eq]
     simp
-  obtain ⟨rem, hrem, hremval⟩ := WP.spec_imp_exists
+  obtain ⟨rem, hrem, hremval⟩ := spec_imp_exists
     (UScalar.rem_spec n (y := n) (by simp [hn]))
   have hremeq : rem = 0#usize := UScalar.eq_of_val_eq (by simpa using hremval)
   subst rem
@@ -406,7 +407,7 @@ theorem fft_refinement_of_blst
   refine ⟨transformed, ?_, htransformed⟩
   have hnpos : n > 0#usize := by simp [UScalar.lt_equiv, hn]
   simp only [fft.fft, show Slice.len out = n from rfl, hnpos, hinLen, hrootsLen,
-    hsub, lift, bind_tc_ok, hand, hrem, hquot, htransform]
+    hsub, lift, bind_tc_ok, bind_ok, hand, hrem, hquot, htransform]
   simp [massert]
 
 theorem inverse_fft_refinement_of_blst
@@ -424,7 +425,7 @@ theorem inverse_fft_refinement_of_blst
     { start := 0#usize, «end» := Slice.len transformed } (by simp)
     (by simp [htransformed])
   refine ⟨result, ?_, ?_⟩
-  · simp only [fft.inverse_fft, hfft, bind_tc_ok, hscale]
+  · simp only [fft.inverse_fft, hfft, bind_tc_ok, bind_ok, hscale]
   · simpa [Model.inverseFft] using hresult
 
 theorem inverse_fft_refinement

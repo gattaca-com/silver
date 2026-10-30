@@ -34,7 +34,7 @@ private theorem validated_fold {α σ ε : Type} (xs : List α) (p : α → Bool
   | nil => rfl
   | cons x xs ih =>
     simp only [List.foldlM_cons, toOption_bind, List.all_cons, List.foldl_cons]
-    cases hp : p x <;> cases ht : xs.all p <;> simp [ih, ht]
+    by_cases hp : p x <;> by_cases ht : xs.all p <;> simp [hp, ih, ht]
 
 private theorem validated_map {α β ε : Type} (xs : List α) (p : α → Bool)
     (f : α → β) (err : α → ε) :
@@ -44,7 +44,7 @@ private theorem validated_map {α β ε : Type} (xs : List α) (p : α → Bool)
   | nil => rfl
   | cons x xs ih =>
     simp only [List.mapM_cons, toOption_bind, List.all_cons, List.map_cons]
-    cases hp : p x <;> cases ht : xs.all p <;> simp [ih, ht]
+    by_cases hp : p x <;> by_cases ht : xs.all p <;> simp [hp, ih, ht]
 
 private theorem enumerate_array {α : Type} [Inhabited α] (xs : Array α) :
     (List.range xs.size).map (fun i => xs[i]!) = xs.toList := by
@@ -148,12 +148,13 @@ theorem frontHalf_option (cs : Array Bytes48) (indices : Array Nat)
   have hiAny : indices.any (· ≥ Constants.CELLS_PER_EXT_BLOB) = false := by
     simp only [Array.any_eq_false', Constants.CELLS_PER_EXT_BLOB]
     intro i hi
-    simpa using hindices i hi
+    simpa [Constants.FIELD_ELEMENTS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_BLOB,
+      Constants.FIELD_ELEMENTS_PER_CELL] using hindices i hi
   have hcl : ¬ cells.size ≠ cs.size := not_not.mpr hlen.1
   have hpl : ¬ ps.size ≠ cs.size := not_not.mpr hlen.2.1
   have hil : ¬ indices.size ≠ cs.size := not_not.mpr hlen.2.2
   unfold Model.frontHalf
-  simp only [hcl, hpl, hil, if_false, hcsFind, hcellFind,
+  simp only [hcl, hpl, hil, ite_false, hcsFind, hcellFind,
     hpsFind, hiAny, Bool.false_eq_true, pure, Except.pure, Bind.bind, Except.bind]
   change ((Array.range cs.size).foldlM (checkCommitmentStep cs) (#[], #[]) >>= fun state =>
     cells.mapM cellToCosetEvals >>= fun evals =>
@@ -190,7 +191,7 @@ theorem cell_decode_option (cell : ByteArray) (hs : cell.size = 2048) :
     (cellToCosetEvals cell).toOption =
       if (fieldOptions cell).all Option.isSome then some (fieldValues cell) else none := by
   unfold cellToCosetEvals
-  simp only [Constants.BYTES_PER_CELL, Constants.FIELD_ELEMENTS_PER_CELL, Constants.BYTES_PER_FIELD_ELEMENT, hs, ne_self_iff_false, if_false]
+  simp only [Constants.BYTES_PER_CELL, Constants.FIELD_ELEMENTS_PER_CELL, Constants.BYTES_PER_FIELD_ELEMENT, hs, ne_self_iff_false, ite_false]
   simp only [pure, Except.pure, bind, Except.bind]
   rw [Array.mapM_eq_mapM_toList, toOption_map, list_mapM_toOption]
   simp only [Array.toList_range]
@@ -257,7 +258,7 @@ theorem frontHalf_ok (cs : Array Bytes48) (indices : Array Nat)
     Model.frontHalf cs indices cells ps =
       .ok ((Model.deduplicate cs).1, (Model.deduplicate cs).2, evals, ps) := by
   have h := frontHalf_option cs indices cells ps hlen hcs hcell hps hindices
-  simp only [hcvalid, hpvalid, hdecode, if_true, Except.toOption, Option.bind_some] at h
+  simp only [hcvalid, hpvalid, hdecode, ite_true, Except.toOption, Option.bind_some] at h
   cases hf : Model.frontHalf cs indices cells ps with
   | error e => simp [hf] at h
   | ok front => simpa [hf] using h
@@ -275,9 +276,9 @@ theorem verify_of_bad_index (setup : TrustedSetup) (cs : Array Bytes48) (indices
   have hcl : ¬ cells.size ≠ cs.size := not_not.mpr hlen.1
   have hpl : ¬ ps.size ≠ cs.size := not_not.mpr hlen.2.1
   have hil : ¬ indices.size ≠ cs.size := not_not.mpr hlen.2.2
-  simp only [Model.frontHalf, hcl, hpl, hil, if_false, hcsFind,
-    show Constants.CELLS_PER_EXT_BLOB = 128 from rfl, hi, if_true,
-    Bind.bind, Except.bind, pure, Except.pure, toOption_error]
+  simp only [Model.frontHalf, hcl, hpl, hil, ite_false, hcsFind,
+    show Constants.CELLS_PER_EXT_BLOB = 128 from rfl, hi, ite_true,
+    Bind.bind, Except.bind, pure, Except.pure, toOption_error, throw, throwThe, MonadExceptOf.throw]
 
 end ModelFront
 end LeanBlsSimd.Kzg

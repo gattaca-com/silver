@@ -19,7 +19,7 @@ theorem previous_prefix (values : ℕ → ChainField) (i : ℕ) :
   · simp [hi]
   · have hcount : i-4+1 = i-3 := by omega
     have hkey : chainKey (i-4) = chainKey i := by apply Fin.ext; simp only [chainKey]; omega
-    simp only [hi,if_false,chainPrefix,hcount,hkey]
+    simp only [hi,ite_false,chainPrefix,hcount,hkey]
     rfl
 
 theorem recovered_inverse (values : ℕ → ChainField) (i : ℕ)

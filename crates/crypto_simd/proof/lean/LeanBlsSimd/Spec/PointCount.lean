@@ -26,8 +26,10 @@ theorem card_solution_pairs {F : Type*} [Field F] [Fintype F] [DecidableEq F]
     Nat.card_eq_fintype_card, Fintype.card_sigma, Nat.cast_sum]
   have hroot (x : F) : (Fintype.card {y : F // y ^ 2 = x ^ 3 + b} : ℤ) =
       quadraticChar F (x ^ 3 + b) + 1 := by
-    simpa only [Set.toFinset_card, Nat.card_eq_fintype_card] using
-      quadraticChar_card_sqrts hF (x ^ 3 + b)
+    have h := quadraticChar_card_sqrts hF (x ^ 3 + b)
+    rw [Set.toFinset_card] at h
+    rw [← h]
+    congr 1
   simp only [hroot, Finset.sum_add_distrib, Finset.sum_const, Finset.card_univ,
     nsmul_eq_mul, mul_one]
   ring

@@ -108,7 +108,7 @@ def toField : Fp6 ≃+* Fp6Field where
       (Fp2.toField (mul a b).c2) = _
     simp only [Fp6.mul, map_add, map_mul, Fp2.toField_sub, Fp2.toField_mulByOnePlusI]
     rw [assemble_mul]
-    congr 1 <;> dsimp only [xi] <;> ring
+    congr 1 <;> (try dsimp only [xi]) <;> ring
 
 @[simp] theorem toField_mk (a b c : Fp2) :
     toField ⟨a, b, c⟩ = assemble (Fp2.toField a) (Fp2.toField b) (Fp2.toField c) := rfl

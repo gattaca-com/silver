@@ -24,43 +24,44 @@ theorem finish_compress (compress : Compressor) (hc : CompressorRefines compress
   have hn : n.val = Spec.tailBlocks p.val := by dsimp [n,Spec.tailBlocks]; split <;> rfl
   have hb : 1 ≤ n.val ∧ n.val ≤ 2 := by dsimp [n]; split <;> decide
   obtain ⟨out,hout,hm⟩ := hc state (paddedBytes pending p length).to_slice 0#usize n
-    (by simp only [Array.to_slice,(paddedBytes pending p length).property]; change 0+64*n.val ≤ 128; omega)
-  refine ⟨out,?_,by simpa only [Array.to_slice,hn] using hm⟩
+    (by simp only [Array.to_slice, Slice.from_val,(paddedBytes pending p length).property]; change 0+64*n.val ≤ 128; omega)
+  refine ⟨out,?_,by simpa only [Array.to_slice, Slice.from_val,hn, UScalar.ofNatCore_val_eq] using hm⟩
   simp only [finish]
   rw [index_mut_to _ _ (by change p.val ≤ 128; omega)]
-  simp only [bind_tc_ok,Function.uncurry_apply_pair]
+  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   rw [array_index_to _ _ (by change p.val ≤ 64; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [copy_eq _ _ (by
-    rw [range_length _ _ _ (by simp only [Array.to_slice,(Array.repeat 128#usize 0#u8).property]; change p.val ≤ 128; omega),
-      range_length _ _ _ (by simp only [Array.to_slice,pending.property]; change p.val ≤ 64; omega)])]
-  simp only [bind_tc_ok,range,Array.to_slice,List.slice,List.drop_zero,Nat.sub_zero]
+    rw [range_length _ _ _ (by simp only [Array.to_slice, Slice.from_val,(Array.repeat 128#usize 0#u8).property]; change p.val ≤ 128; omega),
+      range_length _ _ _ (by simp only [Array.to_slice, Slice.from_val,pending.property]; change p.val ≤ 64; omega)])]
+  simp only [bind_tc_ok, bind_ok,range,Array.to_slice, Slice.from_val,List.slice,List.drop_zero,Nat.sub_zero]
   rw [update_eq _ _ _ (by change p.val < 128; omega)]
-  simp only [bind_tc_ok,sha256.BLOCK]
+  simp only [bind_tc_ok, bind_ok,sha256.BLOCK]
   rw [show 64#usize-8#usize = ok 56#usize by simp (disch := scalar_tac) only [sub_ok]; rfl]
-  simp only [bind_tc_ok,UScalar.lt_equiv]
+  simp only [bind_tc_ok, bind_ok,UScalar.lt_equiv]
   have hnres : (if p.val < (56#usize).val then ok 1#usize else ok 2#usize) = ok n := by
     change (if p.val < 56 then ok 1#usize else ok 2#usize) = ok n
     by_cases h : p.val < 56 <;> simp [n,h]
   rw [hnres]
-  simp (disch := scalar_tac) only [bind_tc_ok,mul_ok,sub_ok]
+  simp (disch := scalar_tac) only [bind_tc_ok, bind_ok,mul_ok,sub_ok]
   rw [index_mut_range _ _ _ (by scalar_tac) (by scalar_tac)]
-  simp only [bind_tc_ok,Function.uncurry_apply_pair]
+  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   rw [show length <<< 3#i32 = ok (bitLength length) from rfl]
-  simp only [bind_tc_ok,lift]
+  simp only [bind_tc_ok, bind_ok,lift]
   rw [copy_eq _ _ (by
     rw [range_length _ _ _ (by
-      simp only [UScalar.ofNatCore_val_eq,Array.to_slice]
+      simp only [UScalar.ofNatCore_val_eq,Array.to_slice, Slice.from_val]
       rw [(((Array.repeat 128#usize 0#u8).setSlice! 0 (pending.val.take p.val)).set p 128#u8).property]
       change 64*n.val ≤ 128
       omega)]
-    simp only [UScalar.ofNatCore_val_eq,Array.to_slice,(core.num.U64.to_be_bytes _).property]
+    simp only [UScalar.ofNatCore_val_eq,Array.to_slice, Slice.from_val,(core.num.U64.to_be_bytes _).property]
     change 64*n.val-(64*n.val-8) = 8; omega)]
-  simp only [bind_tc_ok,lift,UScalar.ofNatCore_val_eq,hn]
+  simp only [bind_tc_ok, bind_ok,lift,UScalar.ofNatCore_val_eq,hn]
+  simp only [Slice.from_val]
   change (do
     let s ← compress state (paddedBytes pending p length).to_slice 0#usize n
     sha256.portable.Sha256.finish_loop s (Array.repeat 32#usize 0#u8) 0#usize) = _
   rw [hout]
-  rfl
+  exact bind_ok _ _
 
 end LeanBlsSimd.Sha256.Generated

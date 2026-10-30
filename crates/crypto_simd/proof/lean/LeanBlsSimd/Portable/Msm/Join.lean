@@ -6,6 +6,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Portable.Msm.Sums
 open QueueRefines BucketsRefines BatchedRefines
 
@@ -24,7 +26,7 @@ theorem join_loop [RuntimeFeatures] (refs : alloc.vec.Vec U32) (store : portable
     refine ⟨running,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.window_sum_loop0_loop0,loop.eq_1]
       simp only [portable.msm.buckets.Buckets.window_sum_loop0_loop0.body,UScalar.lt_equiv,
-        hz,Nat.lt_irrefl,if_false]
+        hz,Nat.lt_irrefl,ite_false, bind_ok]
     · simpa only [hz,Finset.Ico_self,Finset.sum_empty,add_zero] using hr
   | succ remaining ih =>
     have hlt : cursor.val < len.val := by omega
@@ -42,19 +44,19 @@ theorem join_loop [RuntimeFeatures] (refs : alloc.vec.Vec U32) (store : portable
       simpa only [List.getElem?_eq_getElem hi,Option.some.injEq] using h
     have hbody : portable.msm.buckets.Buckets.window_sum_loop0_loop0.body refs store start len running cursor =
         ok (cont (joined,next)) := by
-      simp only [portable.msm.buckets.Buckets.window_sum_loop0_loop0.body,UScalar.lt_equiv,hlt,if_true]
+      simp only [portable.msm.buckets.Buckets.window_sum_loop0_loop0.body,UScalar.lt_equiv,hlt,ite_true]
       rw [add_ok start cursor hab]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       rw [vec_index refs address hi,hindex]
-      simp only [bind_tc_ok]
+      simp only [bind_tc_ok, bind_ok]
       have h := congrArg (fun r : Result portable.g1.G1 => r >>= fun p => do
         let c ← cursor+1#usize
         ok (cont (β := portable.g1.G1) (p,c))) hjoin
-      simpa only [bind_assoc_eq,bind_tc_ok,add_ok cursor (1#usize) hnext] using h
+      simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, next, bind_assoc_eq,bind_tc_ok, bind_ok,add_ok cursor (1#usize) hnext] using! h
     obtain ⟨out,hloop,hrep⟩ := ih next joined _ (by omega) hjoined (by omega)
     refine ⟨out,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.window_sum_loop0_loop0,loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [Finset.sum_eq_sum_Ico_succ_bot hlt]
       simpa only [hn,add_assoc] using hrep
 
@@ -104,7 +106,7 @@ theorem join_packed [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
         List.getElem_mem (l := contents index.val) (n := j) (by omega)))
   refine ⟨out,?_,?_⟩
   · simp only [joinBucket,vec_index state.starts index his,vec_index state.lens index hil,
-      bind_tc_ok,lift]
+      bind_tc_ok, bind_ok,lift]
     exact hcall
   · simpa only [show (0#usize).val = 0 from rfl,Nat.Ico_zero_eq_range,hl,
       WindowSums.sum_list_indices] using hrep

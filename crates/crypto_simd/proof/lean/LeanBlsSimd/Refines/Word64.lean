@@ -46,6 +46,7 @@ theorem value_set {n : Usize} (p : Array U64 n) (i : Usize) (x : U64)
     value (p.set i x) = value p +
       ((x.val : ℤ) - (p.val[i.val]'(by rw [p.property]; exact hi)).val) *
       (radix : ℤ) ^ i.val := by
+  rw [value, value, Array.set_val_eq]
   exact wordsValue_set p.val i.val x (by rw [p.property]; exact hi)
 
 theorem cast64_val (t : U128) : (UScalar.cast .U64 t).val = t.val % radix := by
@@ -126,7 +127,7 @@ theorem wordsValue_injective (xs ys : List U64) (hlen : xs.length = ys.length)
       omega
 
 theorem value_injective {n : Usize} (a b : Array U64 n) (h : value a = value b) : a = b := by
-  apply Subtype.ext
+  ext1
   exact wordsValue_injective a.val b.val (by rw [a.property,b.property]) h
 
 end LeanBlsSimd.Word64

@@ -3,6 +3,8 @@ import LeanBlsSimd.Portable.Decode.Scalar
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Decode
 open DecompressG1
 set_option maxRecDepth 4096
@@ -63,7 +65,8 @@ private def pairSelection [RuntimeFeatures] (x ys : Array portable.fp.Fp 2#usize
       let f8 ← Array.index_usize x 0#usize
       let f9 ← Array.index_usize (ys) 0#usize
       let bpa ← portable.decompress.point f8 f9
-      ok (some bpa)
+      let gp ← bls.g1_point.G1Point.from_trusted bpa
+      ok (some gp)
     else ok none
   let b7 ← Array.index_usize members 1#usize
   if b7
@@ -71,7 +74,8 @@ private def pairSelection [RuntimeFeatures] (x ys : Array portable.fp.Fp 2#usize
     let f8 ← Array.index_usize x 1#usize
     let f9 ← Array.index_usize (ys) 1#usize
     let bpa ← portable.decompress.point f8 f9
-    ok (Array.make 2#usize [ o2, some bpa ] (by rfl))
+    let gp ← bls.g1_point.G1Point.from_trusted bpa
+    ok (Array.make 2#usize [ o2, some gp ] (by rfl))
   else ok (Array.make 2#usize [ o2, none ] (by rfl))
 
 private def pairRoots [RuntimeFeatures] (x roots : Array portable.fp.Fp 2#usize) (has_roots : Array Bool 2#usize) (larger_a larger_b : Bool) : Result (Array (Option blst.blst_p1_affine) 2#usize) := do
@@ -119,6 +123,7 @@ private theorem pair_some [RuntimeFeatures] (a b : Array U8 48#usize)
     (hb : portable.decompress.ordinary b = ok (some (wb,lb))) :
     portable.decompress.uncompress_pair_in_g1 a b = pairCore wa wb la lb := by
   rw [portable.decompress.uncompress_pair_in_g1,ha,hb]
+  simp only [bind_ok]
   rfl
 
 private theorem pairSelection_refines [RuntimeFeatures] (a b : Encoding) :
@@ -132,12 +137,12 @@ private theorem pairSelection_refines [RuntimeFeatures] (a b : Encoding) :
       portable.g1_pair.G1Pair.in_g1 (Fp.pairEncode (laneX a) (laneX b)) (Fp.pairEncode (laneY a) (laneY b)) =
         ok (G1.Pair.flags (Bls.G1.inSubgroup (lanePoint a)) (Bls.G1.inSubgroup (lanePoint b))) :=
     G1.Pair.in_g1_encoded _ _ _ _ (curvePoint_valid ha) (curvePoint_valid hb)
-  simp only [pairSelection,pair_bool_zero,pair_bool_one,Fp.pair_index_zero,Fp.pair_index_one,bind_tc_ok]
+  simp only [pairSelection, bls.g1_point.G1Point.from_trusted,pair_bool_zero,pair_bool_one,Fp.pair_index_zero,Fp.pair_index_one,bind_tc_ok, bind_ok]
   by_cases ha : curvePoint a = true <;> by_cases hb : curvePoint b = true
-  all_goals simp only [ha,hb,if_true,if_false,Bool.false_eq_true]
-  all_goals simp (disch := assumption) only [hpair,hscalar,bind_tc_ok,G1.Pair.flags_zero,G1.Pair.flags_one,
-    pair_bool_zero,pair_bool_one,point_lane,curveVerdict,ha,hb,if_true,if_false,Bool.false_eq_true]
-  all_goals split_ifs <;> simp only [bind_tc_ok]
+  all_goals simp only [ha,hb,ite_true,ite_false,Bool.false_eq_true]
+  all_goals simp (disch := assumption) only [hpair,hscalar,bind_tc_ok, bind_ok,G1.Pair.flags_zero,G1.Pair.flags_one,
+    pair_bool_zero,pair_bool_one,point_lane,curveVerdict,ha,hb,ite_true,ite_false,Bool.false_eq_true]
+  all_goals split_ifs <;> simp only [bind_tc_ok, bind_ok]
 
 private abbrev chosenRoot (x : ZMod Bls.Fp.modulus) (s : Bool) : ZMod Bls.Fp.modulus :=
   if Kernel.isLargerRootFp x ^^ s then -x else x
@@ -158,10 +163,10 @@ private theorem pairRoots_fields [RuntimeFeatures] (x0 x1 r0 r1 : ZMod Bls.Fp.mo
       pairSelection (Fp.pairEncode x0 x1) (Fp.pairEncode (chosenRoot r0 s0) (chosenRoot r1 s1))
         (G1.Pair.flags (h0 && !Bls.Fp.isZero (chosenRoot r0 s0))
           (h1 && !Bls.Fp.isZero (chosenRoot r1 s1))) := by
-  simp only [pairRoots,Fp.pair_index_zero,Fp.pair_index_one,signed_encoded,bind_tc_ok,
+  simp only [pairRoots,Fp.pair_index_zero,Fp.pair_index_one,signed_encoded,bind_tc_ok, bind_ok,
     G1.Pair.flags_zero,G1.Pair.flags_one]
-  simp only [pair_field_zero,pair_field_one,Fp.is_zero_encoded,bind_tc_ok,decide_not,Bool.decide_coe]
-  cases h0 <;> cases h1 <;> rfl
+  simp only [pair_field_zero,pair_field_one,Fp.is_zero_encoded,bind_tc_ok, bind_ok,decide_not,Bool.decide_coe]
+  cases h0 <;> cases h1 <;> simp only [Bool.false_eq_true, ite_false, ite_true, bind_ok] <;> rfl
 
 private theorem pairCore_fields [RuntimeFeatures] (wa wb : Array U64 6#usize)
     (x0 x1 : ZMod Bls.Fp.modulus) (s0 s1 : Bool)
@@ -172,12 +177,12 @@ private theorem pairCore_fields [RuntimeFeatures] (wa wb : Array U64 6#usize)
         (Fp.pairEncode (Kernel.sqrtCandidate (x0^2*x0+4)) (Kernel.sqrtCandidate (x1^2*x1+4)))
         (G1.Pair.flags (decide (Kernel.sqrtCandidate (x0^2*x0+4)^2 = x0^2*x0+4))
           (decide (Kernel.sqrtCandidate (x1^2*x1+4)^2 = x1^2*x1+4))) s0 s1 := by
-  simp only [pairCore,hw,Fp.mul_pair_encoded,Fp.pair_index_zero,Fp.pair_index_one,add_four_encoded,bind_tc_ok]
+  simp only [pairCore,hw,Fp.mul_pair_encoded,Fp.pair_index_zero,Fp.pair_index_one,add_four_encoded,bind_tc_ok, bind_ok]
   change (do let (r,h) ← portable.fp.Fp.sqrt_pair
                (Fp.pairEncode ((x0*x0)*x0+(4 : ZMod Bls.Fp.modulus)) ((x1*x1)*x1+(4 : ZMod Bls.Fp.modulus)))
              pairRoots (Fp.pairEncode x0 x1) r h s0 s1) = _
   rw [Fp.sqrt_pair_refines]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   simp only [sq]
   rfl
 
@@ -197,9 +202,9 @@ theorem pair_refines [RuntimeFeatures] (a b : Encoding) :
   · by_cases hb : Ordinary b
     · exact pair_ordinary a b ha hb
     · simp only [portable.decompress.uncompress_pair_in_g1,ordinary_refines,ordinary_eq,ha,hb,
-        if_true,if_false,bind_tc_ok,scalar_refines]
+        ite_true,ite_false,bind_tc_ok, bind_ok,scalar_refines]
       split <;> rfl
   · simp only [portable.decompress.uncompress_pair_in_g1,ordinary_refines,ordinary_eq,ha,
-      if_false,bind_tc_ok,scalar_refines]
+      ite_false,bind_tc_ok, bind_ok,scalar_refines]
 
 end LeanBlsSimd.Portable.Decode
