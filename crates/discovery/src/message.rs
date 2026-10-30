@@ -224,7 +224,7 @@ impl Message {
                     16 => IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(ip_bytes.as_ref()).ok()?)),
                     _ => return None,
                 };
-                let port = u64::decode(&mut payload).ok()? as u16;
+                let port = u16::decode(&mut payload).ok()?;
                 Some(Message::Pong { request_id, enr_seq, ip, port })
             }
             0x03 => {
@@ -417,7 +417,7 @@ impl<'a> Packet<'a> {
             }
             FLAG_HANDSHAKE => {
                 // 32 src_id + 1 sig_size + 1 key_size + 64 sig + 33 pubkey = 131
-                if auth_data.len() < 131 {
+                if auth_data.len() < 131 || auth_data[32] != 64 || auth_data[33] != 33 {
                     return Err(PacketError::InvalidAuthDataSize);
                 }
                 let id = NodeId::new(
@@ -836,6 +836,53 @@ mod tests {
                 assert_eq!(port, 30303);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn pong_port_above_u16_is_rejected() {
+        let request_id = RequestId::from(1u64);
+        let ip = [127u8, 0, 0, 1];
+        let port = 70_000u64;
+        let mut buf = vec![0x02];
+        Header {
+            list: true,
+            payload_length: request_id.length() + 0u64.length() + ip.length() + port.length(),
+        }
+        .encode(&mut buf);
+        request_id.encode(&mut buf);
+        0u64.encode(&mut buf);
+        ip.encode(&mut buf);
+        port.encode(&mut buf);
+        assert!(Message::decode(&buf).is_none());
+    }
+
+    #[test]
+    fn handshake_with_non_v4_key_sizes_is_rejected() {
+        let dst_id = node_id_2();
+        let encoded = Packet {
+            iv: rand::random(),
+            src_id: node_id_1(),
+            nonce: rand::random(),
+            kind: MessageKind::Handshake {
+                id_nonce_sig: [13u8; 64],
+                ephem_pubkey: [11u8; 33],
+                enr_record: None,
+            },
+            message: &[],
+        }
+        .encode(&dst_id);
+
+        // The header is AES-CTR masked, so flipping ciphertext bits flips the
+        // same plaintext bits.
+        let size_bytes = IV_LENGTH + STATIC_HEADER_LENGTH + 32;
+        for (offset, flip) in [(0, 64 ^ 65), (1, 33 ^ 32)] {
+            let mut tampered = encoded.to_vec();
+            tampered[size_bytes + offset] ^= flip;
+            assert!(matches!(
+                Packet::decode(&dst_id, &tampered),
+                Err(PacketError::InvalidAuthDataSize)
+            ));
         }
     }
 
