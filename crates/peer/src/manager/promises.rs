@@ -15,6 +15,9 @@ use super::PeerManager;
 use crate::{counters::GossipFlowCounters, scoring};
 
 const MESH_MESSAGE_DELIVERIES_WINDOW_NS: u64 = 2_000_000_000;
+// Several times an honest mesh peer's per-heartbeat rate of large messages,
+// the only ones IDONTWANT is sent for.
+const MAX_IDONTWANT_IDS_PER_HEARTBEAT: u16 = 1000;
 
 pub(super) struct RecentDelivery {
     pub(super) topic: GossipTopic,
@@ -107,6 +110,10 @@ impl PeerManager {
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
+        // A compliant peer asks for at most `max_ihave_length` ids per heartbeat.
+        if peer.iwant_ids_served >= self.params.max_ihave_length {
+            return;
+        }
         if peer.msg_cache_insert(hash) > 2 {
             // exceeds retransmission threshold
             return;
@@ -114,6 +121,7 @@ impl PeerManager {
         if peer.gossip_gate_score() < self.params.gossip_threshold {
             return;
         }
+        peer.iwant_ids_served += 1;
         if let Some(slot) = traffic.topic_slot() {
             GossipFlowCounters::iwant_served(slot);
         }
@@ -130,6 +138,10 @@ impl PeerManager {
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
         };
+        if peer.idontwant_ids_received >= MAX_IDONTWANT_IDS_PER_HEARTBEAT {
+            return;
+        }
+        peer.idontwant_ids_received += 1;
         peer.msg_cache_insert(hash);
     }
 
@@ -1096,6 +1108,74 @@ mod tests {
             "expected no ForwardMsg for below-threshold peer, got {:?}",
             cap.0
         );
+    }
+
+    fn dont_want(mgr: &mut PeerManager, cap: &mut Captured, hash: MessageId, now: Instant) {
+        mgr.handle_event(PeerEvent::P2pGossipDontWant { p2p_peer: 1, hash }, now, &mut |c| {
+            cap.0.push(c)
+        });
+    }
+
+    fn sprayed_id(round: u32, index: u32) -> MessageId {
+        let mut id = [0xEE; 20];
+        id[..4].copy_from_slice(&round.to_le_bytes());
+        id[4..8].copy_from_slice(&index.to_le_bytes());
+        MessageId { id }
+    }
+
+    #[test]
+    fn idontwant_evictions_cannot_lift_iwant_serving_past_the_budget() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_ihave_length = 10;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        cap.0.clear();
+
+        let wanted = MessageId { id: [3; 20] };
+        for round in 0..20 {
+            for index in 0..8192 {
+                dont_want(&mut mgr, &mut cap, sprayed_id(round, index), now);
+            }
+            for _ in 0..3 {
+                mgr.handle_event(
+                    PeerEvent::P2pGossipWant {
+                        p2p_peer: 1,
+                        hash: wanted,
+                        tcache: mk_tcache_read(),
+                        traffic: GossipTraffic::CONTROL,
+                    },
+                    now,
+                    &mut |c| cap.0.push(c),
+                );
+            }
+        }
+
+        let served = cap
+            .0
+            .iter()
+            .filter(|e| matches!(e, PeerControl::P2pSend(P2pSend::Gossip(GossipMsgOut { .. }))))
+            .count();
+        assert!(served <= 10, "served {served} IWANTs in one heartbeat");
+    }
+
+    #[test]
+    fn idontwant_over_the_heartbeat_cap_is_not_recorded() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        for index in 0..u32::from(MAX_IDONTWANT_IDS_PER_HEARTBEAT) {
+            dont_want(&mut mgr, &mut cap, sprayed_id(0, index), now);
+        }
+        let over_cap = MessageId { id: [3; 20] };
+        dont_want(&mut mgr, &mut cap, over_cap, now);
+        assert!(!mgr.peers[&1].msg_cache_contains(&over_cap));
+
+        let next_heartbeat = now + Duration::from_secs(1);
+        mgr.run_tick(next_heartbeat, &mut |c| cap.0.push(c));
+        dont_want(&mut mgr, &mut cap, over_cap, next_heartbeat);
+        assert!(mgr.peers[&1].msg_cache_contains(&over_cap));
     }
 
     #[test]

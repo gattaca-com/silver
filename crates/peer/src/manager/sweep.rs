@@ -178,6 +178,8 @@ impl PeerManager {
             if work.reset_heartbeat {
                 peer.ihaves_received = 0;
                 peer.iwant_ids_sent = 0;
+                peer.iwant_ids_served = 0;
+                peer.idontwant_ids_received = 0;
             }
             if work.decay {
                 scoring::decay(peer, params);
