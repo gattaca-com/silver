@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::{Decodable, Encodable, decode_exact};
 use flux::utils::ArrayVec;
 use rand::RngCore as _;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -671,7 +671,7 @@ impl DiscV5 {
                     }
                 };
 
-                let enr = match Enr::decode(&mut raw.as_slice()) {
+                let enr = match decode_exact::<Enr>(raw.as_slice()) {
                     Ok(e) => e,
                     Err(_) => {
                         warn!(%src_id, %src_addr, "handshake contains invalid ENR");
@@ -725,7 +725,7 @@ impl DiscV5 {
         // Update enr_raw if a fresher record was provided in this Handshake.
         if let Some(raw) = enr_record {
             if stored_enr_raw != Some(raw) {
-                if let Ok(enr) = Enr::decode(&mut raw.as_slice()) {
+                if let Ok(enr) = decode_exact::<Enr>(raw.as_slice()) {
                     if enr.node_id() == src_id {
                         let _ = self.kbuckets.insert_or_update(
                             &Key::from(src_id),
@@ -2442,6 +2442,19 @@ mod tests {
         b.handle(a_addr, &genuine, now);
         assert_eq!(collect_sends(&mut b).len(), 1, "genuine Ping answered with a Pong");
         assert_eq!(b.sessions[&a.local_id].last_active, now);
+    }
+
+    #[test]
+    fn handshake_enr_with_trailing_bytes_is_rejected() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19231);
+        let (mut b, b_addr) = make_node(19232);
+        a.local_enr_raw.extend([0xc1, 0x80]);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+
+        assert!(b.kbuckets.get(&Key::from(a.local_id)).is_none(), "padded ENR stored");
+        assert!(!b.sessions.contains_key(&a.local_id));
     }
 
     #[test]
