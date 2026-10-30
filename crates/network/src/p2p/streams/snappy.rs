@@ -199,6 +199,9 @@ impl SnappyDecoder {
                     return Err(SnappyError::FrameTooLarge);
                 }
                 self.need = FRAME_HDR_LEN + payload_len;
+                if payload_len == 0 {
+                    self.skip_empty_frame()?;
+                }
                 // Fall through to try filling payload from remaining input.
             } else {
                 // Full frame in buf[0..self.need]. Process it.
@@ -217,6 +220,15 @@ impl SnappyDecoder {
         }
 
         Ok((in_pos, out_pos))
+    }
+
+    /// An empty frame is complete with its header, yet `need` would still
+    /// read as a pending header and no further input would be requested.
+    fn skip_empty_frame(&mut self) -> Result<(), SnappyError> {
+        self.process_frame(&mut [])?;
+        self.frames += 1;
+        self.buf_len = 0;
+        Ok(())
     }
 
     fn process_frame(&mut self, out: &mut [u8]) -> Result<usize, SnappyError> {
@@ -370,6 +382,9 @@ impl SnappyDecoder {
                 self.parsing_uncompressed = true;
             } else {
                 self.need = FRAME_HDR_LEN + payload_len;
+                if payload_len == 0 {
+                    self.skip_empty_frame()?;
+                }
             }
             Ok(0)
         } else {
@@ -616,6 +631,38 @@ mod tests {
     use snap::read::FrameEncoder;
 
     use super::*;
+
+    #[test]
+    fn decoder_skips_empty_padding_frames() {
+        let mut framed = STREAM_IDENTIFIER.to_vec();
+        framed.extend_from_slice(&[0xfe, 0, 0, 0]);
+        framed.extend_from_slice(&[CHUNK_UNCOMPRESSED, 5, 0, 0, 0, 0, 0, 0, 0xab]);
+
+        let mut decoder = SnappyDecoder::default();
+        let mut out = [0u8; 1];
+        let mut in_pos = 0;
+        let mut decoded = 0;
+        for _ in 0..framed.len() {
+            let buf = decoder.decompress_buffer();
+            let take = buf.len().min(framed.len() - in_pos);
+            buf[..take].copy_from_slice(&framed[in_pos..in_pos + take]);
+            in_pos += take;
+            decoded += decoder.decompress_written(take, &mut out[decoded..]).unwrap();
+            if decoded == out.len() {
+                break;
+            }
+        }
+        assert_eq!((in_pos, out), (framed.len(), [0xab]));
+
+        let mut decoder = SnappyDecoder::default();
+        assert_eq!(decoder.decompress(&framed, &mut out).unwrap(), (framed.len(), 1));
+
+        let mut decoder = SnappyDecoder::default();
+        assert!(matches!(
+            decoder.decompress(&[CHUNK_STREAM_ID, 0, 0, 0, 0], &mut out),
+            Err(SnappyError::BadStreamId)
+        ));
+    }
 
     /// Direct mode: incompressible data is framed as CHUNK_UNCOMPRESSED, then
     /// decoded via the streaming API a reader uses — `direct_remaining()`
