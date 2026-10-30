@@ -32,6 +32,8 @@ const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
 const MAX_LOGGED_FORK_DIGESTS: usize = 20;
+/// Any signed ENR in a NODES reply adds a digest, so the tally is bounded.
+const MAX_TRACKED_FORK_DIGESTS: usize = 64;
 const TABLE_LOG_INTERVAL: Duration = Duration::from_secs(12);
 
 fn fork_digest_hex(d: &[u8; 4]) -> String {
@@ -119,7 +121,10 @@ impl DiscV5 {
                 BANNED_NODES_CAPACITY,
                 Default::default(),
             ),
-            seen_fork_digests: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            seen_fork_digests: FxHashMap::with_capacity_and_hasher(
+                MAX_TRACKED_FORK_DIGESTS,
+                Default::default(),
+            ),
             seen_scratch: Vec::with_capacity(128),
             whoareyou_per_ip: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             whoareyou_global: (0, Instant::now()),
@@ -781,7 +786,11 @@ impl DiscV5 {
             return;
         };
         let digest: [u8; 4] = eth2[..4].try_into().expect("eth2 field >= 4 bytes");
-        *self.seen_fork_digests.entry(digest).or_default() += 1;
+        if let Some(count) = self.seen_fork_digests.get_mut(&digest) {
+            *count += 1;
+        } else if self.seen_fork_digests.len() < MAX_TRACKED_FORK_DIGESTS {
+            self.seen_fork_digests.insert(digest, 1);
+        }
     }
 
     fn log_table_state(&mut self, now: Instant) {
@@ -2383,6 +2392,20 @@ mod tests {
         pong_vote(&mut a, NodeId::random(), new_addr, now);
         pong_vote(&mut a, NodeId::random(), new_addr, now);
         assert!(external_addr_changed(&mut a), "three live votes still move the address");
+    }
+
+    #[test]
+    fn seen_fork_digests_is_bounded() {
+        let (mut a, _) = make_node(19211);
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        for i in 0..MAX_TRACKED_FORK_DIGESTS as u32 + 10 {
+            let mut eth2 = [0u8; 16];
+            eth2[..4].copy_from_slice(&i.to_be_bytes());
+            let mut enr = Enr::builder().build(&sk).unwrap();
+            enr.set_eth2(eth2, &sk).unwrap();
+            a.record_fork_digest(&enr);
+        }
+        assert_eq!(a.seen_fork_digests.len(), MAX_TRACKED_FORK_DIGESTS);
     }
 
     #[test]
