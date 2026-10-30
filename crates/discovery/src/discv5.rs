@@ -275,10 +275,10 @@ impl DiscV5 {
         src_addr: SocketAddr,
         request_id: RequestId,
         enr_seq: u64,
-        stored_enr_seq: u64,
+        stored_enr_seq: Option<u64>,
     ) {
         // Compute rid before borrowing sessions to avoid &mut self conflict.
-        let enr_rid = (enr_seq > stored_enr_seq).then(|| self.next_id());
+        let enr_rid = stored_enr_seq.is_some_and(|s| enr_seq > s).then(|| self.next_id());
         let Some(s) = self.sessions.get(&src_id) else { return };
 
         let pong = Message::Pong {
@@ -477,8 +477,7 @@ impl DiscV5 {
     }
 
     /// Drop all per-peer state for a node evicted from the routing table so it
-    /// does not outlive its kbuckets entry. Called whenever an insert displaces
-    /// the bucket LRU — both forced session inserts and pending promotions.
+    /// does not outlive its kbuckets entry.
     fn evict_peer(&mut self, id: NodeId) {
         if self.sessions.remove(&id).is_some() {
             debug!(%id, "evicted live peer from routing table");
@@ -499,39 +498,39 @@ impl DiscV5 {
             }
         };
 
-        let existing = match self.kbuckets.get(&Key::from(src_id)).map(|n| n.value) {
-            Some(e) => e,
-            None => {
-                warn!(%src_id, %src_addr, "message from peer with no kbuckets entry");
-                return;
-            }
-        };
+        // A session peer may be outside the table: its ENR does not advertise
+        // the address it talks from, or its bucket is full. It still gets
+        // answers, which is how a node behind NAT learns its external address.
+        let existing = self.kbuckets.get(&Key::from(src_id)).map(|n| n.value);
 
-        let msg_enr_seq = match &msg {
-            Message::Ping { enr_seq, .. } | Message::Pong { enr_seq, .. } => *enr_seq,
-            _ => existing.enr_seq,
-        };
+        if let Some(existing) = existing {
+            let msg_enr_seq = match &msg {
+                Message::Ping { enr_seq, .. } | Message::Pong { enr_seq, .. } => *enr_seq,
+                _ => existing.enr_seq,
+            };
 
-        let _ = self.kbuckets.insert_or_update(
-            &Key::from(src_id),
-            NodeEntry {
-                addr: src_addr,
-                enr_seq: msg_enr_seq,
-                pubkey: existing.pubkey,
-                enr_raw: existing.enr_raw,
-            },
-            now,
-        );
+            let _ = self.kbuckets.insert_or_update(
+                &Key::from(src_id),
+                NodeEntry {
+                    addr: src_addr,
+                    enr_seq: msg_enr_seq,
+                    pubkey: existing.pubkey,
+                    enr_raw: existing.enr_raw,
+                },
+                now,
+            );
+        }
 
         match msg {
             Message::Ping { request_id, enr_seq } => {
-                self.on_ping(src_id, src_addr, request_id, enr_seq, existing.enr_seq);
+                let stored_enr_seq = existing.map(|e| e.enr_seq);
+                self.on_ping(src_id, src_addr, request_id, enr_seq, stored_enr_seq);
             }
             Message::Pong { request_id, ip, port, .. } => {
                 self.on_pong(src_id, request_id, ip, port, now);
             }
             Message::FindNode { request_id, distances } => {
-                if existing.addr == src_addr {
+                if existing.is_none_or(|e| e.addr == src_addr) {
                     self.send_nodes_response(src_id, src_addr, request_id, &distances);
                 }
             }
@@ -687,7 +686,7 @@ impl DiscV5 {
                 }
 
                 let pk_bytes = enr.public_key().serialize();
-                (pk_bytes, Some(raw), Some((pk_bytes, enr.seq(), raw)))
+                (pk_bytes, Some(raw), Some((enr, raw)))
             }
         };
 
@@ -703,21 +702,22 @@ impl DiscV5 {
             return;
         }
 
-        if let Some((pk_bytes, enr_seq, raw)) = new_peer {
-            match self.kbuckets.insert_or_update_evicting(
-                &Key::from(src_id),
-                NodeEntry { addr: src_addr, enr_seq, pubkey: pk_bytes, enr_raw: Some(raw) },
-                now,
-            ) {
-                Ok(evicted) => {
-                    if let Some(node) = evicted {
-                        self.evict_peer(*node.key.preimage());
-                    }
+        if let Some((enr, raw)) = &new_peer {
+            if src_id == self.local_id {
+                warn!(%src_id, %src_addr, "handshake carries local node id; dropping");
+                return;
+            }
+            if enr_advertises(enr, src_addr) {
+                let entry = NodeEntry {
+                    addr: src_addr,
+                    enr_seq: enr.seq(),
+                    pubkey: remote_pubkey,
+                    enr_raw: Some(*raw),
+                };
+                if self.kbuckets.insert_or_update(&Key::from(src_id), entry, now) ==
+                    InsertResult::Inserted
+                {
                     self.log_table_state(now);
-                }
-                Err(_) => {
-                    warn!(%src_id, %src_addr, "handshake carries local node id; dropping");
-                    return;
                 }
             }
         }
@@ -771,7 +771,7 @@ impl DiscV5 {
 
         self.request_nonces.forget(&src_id);
 
-        if let Some(enr) = self.decode_enr_for(src_id) {
+        if let Some(enr) = new_peer.map(|(enr, _)| enr).or_else(|| self.decode_enr_for(src_id)) {
             self.emit_node_found(enr);
         }
     }
@@ -1265,6 +1265,15 @@ impl Discovery for DiscV5 {
                 self.flush_pending_findnode(src_id, src_addr);
             }
         }
+    }
+}
+
+/// Compares ip and port only: a received IPv6 address may carry a flowinfo or
+/// scope id that an ENR never has.
+fn enr_advertises(enr: &Enr, addr: SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => enr.ip4() == Some(ip) && enr.udp4() == Some(addr.port()),
+        IpAddr::V6(ip) => enr.ip6() == Some(ip) && enr.udp6() == Some(addr.port()),
     }
 }
 
@@ -2535,6 +2544,57 @@ mod tests {
             a.handle(SocketAddr::new(ip, 30000), &undecryptable_message(src_id, a.local_id), now);
         }
         assert_eq!(collect_sends(&mut a).len(), limit as usize);
+    }
+
+    #[test]
+    fn handshake_from_unadvertised_address_gets_session_but_not_table_slot() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19251);
+        let (mut b, b_addr) = make_node(19252);
+        let nat_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40_000);
+
+        do_handshake(&mut a, nat_addr, &mut b, b_addr, now);
+        assert!(b.sessions.contains_key(&a.local_id));
+        assert!(b.kbuckets.get(&Key::from(a.local_id)).is_none(), "unverified address in table");
+
+        inject_message(
+            &mut a,
+            &mut b,
+            nat_addr,
+            Message::Ping { request_id: RequestId::from(1u64), enr_seq: 0 },
+            now,
+        );
+        let replies = collect_sends(&mut b);
+        assert!(replies.iter().any(|(to, _)| *to == nat_addr), "peer outside table got no Pong");
+    }
+
+    #[test]
+    fn handshake_into_full_bucket_does_not_evict_live_peer() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19253);
+        let (mut b, b_addr) = make_node(19254);
+        let b_key = Key::from(b.local_id);
+        let a_bucket = b_key.distance(&Key::from(a.local_id)).log2();
+
+        let mut incumbents = Vec::new();
+        while incumbents.len() < MAX_NODES_PER_BUCKET {
+            let id = NodeId::random();
+            if b_key.distance(&Key::from(id)).log2() != a_bucket {
+                continue;
+            }
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 30_000);
+            let entry = NodeEntry { addr, enr_seq: 1, pubkey: [2; 33], enr_raw: None };
+            b.kbuckets.insert_or_update(&Key::from(id), entry, now);
+            incumbents.push(id);
+        }
+        let lru = incumbents[0];
+        let lru_addr = b.kbuckets.get(&Key::from(lru)).unwrap().value.addr;
+        b.sessions.insert(lru, Session::new([1; 16], [2; 16], lru_addr, now));
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        assert!(b.sessions.contains_key(&a.local_id));
+        assert!(b.kbuckets.get(&Key::from(lru)).is_some(), "live LRU evicted");
+        assert!(b.sessions.contains_key(&lru), "live LRU session dropped");
     }
 
     #[test]
