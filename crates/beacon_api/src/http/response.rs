@@ -182,6 +182,10 @@ impl<'a> Response<'a> {
 
     pub(crate) fn notify(&mut self, request: BeaconApiRequest) {
         self.ok();
+        self.attach_request(request);
+    }
+
+    pub(crate) fn attach_request(&mut self, request: BeaconApiRequest) {
         self.outcome = Outcome::Response(Some(request));
     }
 

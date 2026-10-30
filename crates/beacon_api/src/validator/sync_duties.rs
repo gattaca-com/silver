@@ -1,6 +1,8 @@
 use silver_beacon_state_data::{
-    BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, SYNC_COMMITTEE_SIZE, StateReadView,
+    BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE,
+    SYNC_SUBCOMMITTEE_SIZE, StateReadView,
 };
+use silver_common::{BeaconApiRequest, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     ctx::ApiCtx,
@@ -33,6 +35,11 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
             );
         });
     });
+
+    let wall_epoch = ctx.node_status.wall_slot / SLOTS_PER_EPOCH;
+    if let Some(until_epochs) = seats.subscriptions(&indices, epoch, wall_epoch) {
+        resp.attach_request(BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs });
+    }
 }
 
 /// Which of the two committees the head state holds answers for an epoch.
@@ -111,6 +118,31 @@ impl Seats {
         })
     }
 
+    /// Prysm's VC never posts `sync_committee_subscriptions` and relies on this
+    /// request subscribing its members. A coming period is subscribed only in
+    /// the last `SYNC_COMMITTEE_SUBNETS` epochs before it, as Prysm's BN does.
+    fn subscriptions(
+        &self,
+        indices: &[u64],
+        epoch: Epoch,
+        wall_epoch: Epoch,
+    ) -> Option<[u64; SYNC_COMMITTEE_SUBNETS]> {
+        let period_start = epoch - epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        if wall_epoch + (SYNC_COMMITTEE_SUBNETS as u64) < period_start {
+            return None;
+        }
+
+        let until_epoch = period_start + EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let mut until_epochs = [0; SYNC_COMMITTEE_SUBNETS];
+        for &index in indices {
+            let Ok(index) = u32::try_from(index) else { continue };
+            for seat in self.held_by(index) {
+                until_epochs[seat.position as usize / SYNC_SUBCOMMITTEE_SIZE] = until_epoch;
+            }
+        }
+        (until_epochs != [0; SYNC_COMMITTEE_SUBNETS]).then_some(until_epochs)
+    }
+
     fn held_by(&self, validator_index: u32) -> &[Seat] {
         let seats = &self.seats[..self.len];
         let from = seats.partition_point(|seat| seat.validator_index < validator_index);
@@ -143,7 +175,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         ctx::test_ctx,
-        testing::{answer, field, indices_body, json, posting, pubkey, status_code},
+        http::router::Outcome,
+        testing::{answer, dispatch, field, indices_body, json, posting, pubkey, status_code},
     };
 
     const VALIDATORS: u64 = 6;
@@ -255,6 +288,43 @@ pub(crate) mod tests {
         }
         for body in ["", "{}", "[]", "[0]", "[\"-1\"]", "[\"a\"]"] {
             assert_eq!(status_code(&post(&ctx, STATE_EPOCH, body)), "400", "{body:?}");
+        }
+    }
+
+    fn subscription(ctx: &ApiCtx, epoch: u64, indices: &[u64]) -> Outcome {
+        let path = format!("/eth/v1/validator/duties/sync/{epoch}");
+        let (outcome, response) =
+            dispatch(ctx, &posting(&path, &indices_body(indices.iter().copied())));
+        assert_eq!(status_code(&response), "200");
+        outcome
+    }
+
+    fn subscribed_until(until_epoch: u64) -> Outcome {
+        Outcome::Response(Some(BeaconApiRequest::SyncCommitteeSubscriptions {
+            until_epochs: [until_epoch; SYNC_COMMITTEE_SUBNETS],
+        }))
+    }
+
+    /// Every member holds a seat in each subcommittee, so it joins all four.
+    #[test]
+    fn members_are_subscribed_until_the_end_of_their_period() {
+        let mut ctx = ctx();
+        ctx.node_status.wall_slot = STATE_SLOT;
+        assert_eq!(subscription(&ctx, STATE_EPOCH, &[2]), subscribed_until(next_period_epoch()));
+        assert_eq!(subscription(&ctx, STATE_EPOCH, &[5]), Outcome::Response(None));
+    }
+
+    #[test]
+    fn coming_period_is_subscribed_only_in_its_lead_epochs() {
+        let mut ctx = ctx();
+        let next = next_period_epoch();
+        let end = next + EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let lead = SYNC_COMMITTEE_SUBNETS as u64;
+        for (wall_epoch, outcome) in
+            [(next - lead - 1, Outcome::Response(None)), (next - lead, subscribed_until(end))]
+        {
+            ctx.node_status.wall_slot = wall_epoch * SLOTS_PER_EPOCH;
+            assert_eq!(subscription(&ctx, next, &[0, 1]), outcome, "{wall_epoch}");
         }
     }
 

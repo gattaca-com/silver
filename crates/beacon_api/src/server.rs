@@ -3821,6 +3821,24 @@ mod tests {
     }
 
     #[test]
+    fn filterless_header_list_answers_the_head_as_its_only_entry() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.node_status.head_root = [0x77; 32];
+        let client = connect(tcp_addr(&server));
+        get(&client, "/eth/v1/beacon/headers");
+        let request_id = request_id(&deferred_request(&mut server));
+        server.serve_block(request_id, 10, [0x77; 32], &block_bytes(10, 0xef));
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "header list answer");
+
+        let list: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
+        let headers = list["data"].as_array().unwrap();
+        assert_eq!(headers.len(), 1, "{list}");
+        assert_eq!(headers[0]["root"], root_hex(0x77));
+        assert_eq!(headers[0]["header"]["message"]["slot"], "10");
+    }
+
+    #[test]
     fn block_storage_does_not_hold_is_a_404() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
