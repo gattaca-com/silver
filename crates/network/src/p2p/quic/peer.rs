@@ -671,8 +671,11 @@ impl Peer {
 
         if let SpinResult::Protocol(protocol) = result {
             silver_log::debug!(?id, ?protocol, "incoming stream negotiated");
-            if protocol.is_gossip() {
-                self.inbound_gossip.replace(id);
+            if protocol.is_gossip() &&
+                let Some(superseded) = self.inbound_gossip.replace(id) &&
+                superseded != id
+            {
+                self.remove_stream(superseded, rpc_codec_pool);
             }
         }
     }
@@ -868,8 +871,13 @@ where
 
         if let SpinResult::Protocol(protocol) = result {
             silver_log::debug!(?id, ?protocol, "incoming stream negotiated");
-            if protocol.is_gossip() {
-                inbound_gossip.replace(*id);
+            // A slot is free: `to_remove` was checked before this spin and
+            // nothing else was pushed for this stream.
+            if protocol.is_gossip() &&
+                let Some(superseded) = inbound_gossip.replace(*id) &&
+                superseded != *id
+            {
+                to_remove.push(superseded);
             }
         }
     }
@@ -2101,6 +2109,7 @@ mod tests {
         let mut pair = PeerPair::new();
 
         let sid = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        pair.client_peer.outbound_gossip = Some(sid);
         let stream_id = P2pStreamId::new(
             pair.client_peer.id.connection,
             sid.into(),
@@ -2143,6 +2152,44 @@ mod tests {
 
         assert!(server_peer.connection.is_closed(), "stall must close the connection");
         assert!(server_peer.streams.is_empty(), "closing drops every stream");
+    }
+
+    #[test]
+    fn superseded_inbound_gossip_stream_releases_its_reservation() {
+        use crate::p2p::streams::{gossip_in::GossipReadState, gossip_out::GossipWriteState};
+
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+
+        let first = pair.client_peer.open_stream(StreamProtocol::GossipSub).unwrap();
+        wait_for(&mut pair, &mut client_h, &mut server_h, 50, |_, _| false);
+        assert_eq!(pair.server_peer.inbound_gossip, Some(first));
+
+        let reservation = server_h.context.gossip_producer.reserve(1024, false).expect("reserve");
+        let stream = pair.server_peer.streams.get_mut(&first).unwrap();
+        stream.state.replace(StreamState::Gossip {
+            read: GossipReadState::ReadingBody {
+                reservation,
+                remaining: 1024,
+                last_read: Instant::now() + Duration::from_secs(60),
+            },
+            write: GossipWriteState::Idle,
+        });
+
+        let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, false);
+        client_h.send_gossip(stream_id, b"ping", &mut pair.client_peer);
+        let second = pair.client_peer.outbound_gossip.unwrap();
+        wait_for(&mut pair, &mut client_h, &mut server_h, 200, |_, s| {
+            s.received.values().any(|bytes| bytes.ends_with(b"ping"))
+        });
+
+        assert!(
+            server_h.received.values().any(|bytes| bytes.ends_with(b"ping")),
+            "a pinned reservation blocks delivery behind it"
+        );
+        assert_eq!(pair.server_peer.inbound_gossip, Some(second));
+        assert!(!pair.server_peer.streams.contains_key(&first));
     }
 
     #[test]
