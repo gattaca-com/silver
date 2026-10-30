@@ -36,6 +36,9 @@ fn transport_config() -> Arc<quinn_proto::TransportConfig> {
     let mut tc = quinn_proto::TransportConfig::default();
     tc.max_idle_timeout(Some(quinn_proto::IdleTimeout::try_from(IDLE_TIMEOUT).unwrap()));
     tc.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
+    tc.receive_window(CONNECTION_RECEIVE_WINDOW);
+    tc.max_concurrent_uni_streams(VarInt::from_u32(0));
+    tc.datagram_receive_buffer_size(None);
 
     let mut ack_config = AckFrequencyConfig::default();
     ack_config.ack_eliciting_threshold(VarInt::from_u32(16));
@@ -48,6 +51,9 @@ fn transport_config() -> Arc<quinn_proto::TransportConfig> {
 
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// Quinn's default is unbounded. Throughput caps at window / RTT, so this
+/// must stay above the bandwidth-delay product.
+const CONNECTION_RECEIVE_WINDOW: VarInt = VarInt::from_u32(16 * 1024 * 1024);
 
 /// QUIC client config with libp2p TLS authentication.
 pub fn create_client_config(

@@ -1282,7 +1282,10 @@ mod tests {
     use crate::{
         p2p::{
             ClusterNodes, P2p,
-            quic::leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
+            quic::{
+                CONNECTION_RECEIVE_WINDOW,
+                leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
+            },
         },
         socket::Socket,
     };
@@ -1853,6 +1856,30 @@ mod tests {
 
         assert!(!pair.client_peer.connection.is_closed());
         assert!(!pair.client_peer.streams.contains_key(&stream));
+    }
+
+    #[test]
+    fn transport_refuses_uni_streams_and_datagrams() {
+        let mut pair = PeerPair::new();
+        let connection = &mut pair.client_peer.connection;
+
+        assert!(connection.streams().open(Dir::Uni).is_none());
+        assert!(connection.datagrams().max_size().is_none());
+    }
+
+    #[test]
+    fn transport_caps_connection_receive_window() {
+        let mut pair = PeerPair::new();
+        let connection = &mut pair.client_peer.connection;
+        connection.set_send_window(u64::MAX);
+
+        let chunk = vec![0u8; 1 << 20];
+        let mut accepted = 0;
+        for _ in 0..32 {
+            let id = connection.streams().open(Dir::Bi).unwrap();
+            accepted += connection.send_stream(id).write(&chunk).unwrap_or(0);
+        }
+        assert_eq!(accepted as u64, CONNECTION_RECEIVE_WINDOW.into_inner());
     }
 
     #[test]
