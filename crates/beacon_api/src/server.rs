@@ -401,17 +401,10 @@ impl Requests {
         if event.is_readable() {
             // A full buffer always leaves something to answer with: a body
             // declared past the cap is answered from headers already buffered,
-            // and a head that outgrows the whole buffer is answered 431. The
-            // answer, not the exhaustion, is what ends the connection.
-            let mut exhausted = false;
+            // and a head past its limit is answered 431 long before the cap.
+            // The answer, not the exhaustion, is what ends the connection.
             loop {
-                let space = match self.http.read_space() {
-                    Ok(space) => space,
-                    Err(_) => {
-                        exhausted = true;
-                        break;
-                    }
-                };
+                let Ok(space) = self.http.read_space() else { break };
                 match stream.read(space) {
                     Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
                     Ok(n) => {
@@ -424,12 +417,7 @@ impl Requests {
                 }
             }
 
-            let mut answered = self.http.dispatch(request_handler);
-            if !answered && exhausted {
-                self.http.reject_exhausted();
-                answered = true;
-            }
-            if answered {
+            if self.http.dispatch(request_handler) {
                 registry.reregister(stream, event.token(), Interest::WRITABLE)?;
             }
             return Ok(false);
@@ -2071,12 +2059,12 @@ mod tests {
         assert_identity_ok(&response);
     }
 
-    /// A head that outgrows the whole read buffer declares no length to
-    /// answer from, so filling the buffer is the verdict: a 431, delivered
-    /// like every other reject, where dropping the socket mid-send would be
-    /// the reset that costs a client its node.
+    /// A head with no end declares no length to answer from, so passing the
+    /// head limit is the verdict: a 431, delivered like every other reject,
+    /// where dropping the socket mid-send would be the reset that costs a
+    /// client its node.
     #[test]
-    fn head_that_outgrows_the_read_buffer_is_answered_with_431() {
+    fn head_past_its_limit_is_answered_with_431() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 

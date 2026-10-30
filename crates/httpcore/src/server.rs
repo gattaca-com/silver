@@ -11,6 +11,9 @@ const READ_BUF_MAX: usize = 16 << 20;
 const READ_BUF_INIT: usize = 4096;
 const WRITE_BUF_INIT: usize = 4096;
 
+// Long enough for a GET whose query lists validators by pubkey.
+pub const REQUEST_HEAD_MAX: usize = 4 << 20;
+
 pub struct ParsedRequest<'a> {
     pub method: &'a str,
     pub path: &'a str,
@@ -25,12 +28,13 @@ pub struct ParsedRequest<'a> {
     pub keep_alive: bool,
 }
 
-/// `Incomplete` means "no verdict yet, feed me more bytes"; `Malformed` and
-/// `TooLarge` mean the bytes can never become a request this connection
-/// serves, so no amount of waiting helps.
+/// `Incomplete` and `AwaitingBody` mean "no verdict yet, feed me more bytes";
+/// `Malformed` and `TooLarge` mean the bytes can never become a request this
+/// connection serves, so no amount of waiting helps.
 enum ParseOutcome<'a> {
     Complete { consumed: usize, request: ParsedRequest<'a> },
     Incomplete,
+    AwaitingBody { request_len: usize },
     Malformed,
     TooLarge,
 }
@@ -82,7 +86,7 @@ impl<'a> ParsedRequest<'a> {
             return ParseOutcome::TooLarge;
         }
         if buf.len() < total {
-            return ParseOutcome::Incomplete;
+            return ParseOutcome::AwaitingBody { request_len: total };
         }
 
         ParseOutcome::Complete {
@@ -127,10 +131,49 @@ enum Continuation {
     Linger,
 }
 
+/// Offsets count from the first unconsumed byte. Without them, a request
+/// arriving in many small reads is parsed from its start on every read.
+enum Awaiting {
+    /// No end of head starts before `searched`. Parsing again each time the
+    /// bytes double still rejects a malformed head early, at linear cost.
+    Head {
+        searched: usize,
+        parsed_len: usize,
+    },
+    Body {
+        request_len: usize,
+    },
+}
+
+impl Awaiting {
+    const HEAD: Self = Self::Head { searched: 0, parsed_len: 0 };
+
+    fn worth_parsing(&mut self, buffered: &[u8]) -> bool {
+        match self {
+            Self::Body { request_len } => buffered.len() >= *request_len,
+            Self::Head { searched, parsed_len } => {
+                let head = &buffered[..buffered.len().min(REQUEST_HEAD_MAX)];
+                // httparse also ends a line on a bare LF.
+                let ended = (*searched..head.len()).any(|at| {
+                    head[at] == b'\n' && matches!(head[at + 1..], [b'\n', ..] | [b'\r', b'\n', ..])
+                });
+                *searched = (*searched).max(head.len().saturating_sub(2));
+                let doubled = buffered.len() >= 2 * *parsed_len;
+                if !ended && (buffered.len() > REQUEST_HEAD_MAX || !doubled) {
+                    return false;
+                }
+                *parsed_len = buffered.len();
+                true
+            }
+        }
+    }
+}
+
 pub struct ServerConnection {
     read_buf: Vec<u8>,
     read_pos: usize,
     read_end: usize,
+    awaiting: Awaiting,
     write_buf: Vec<u8>,
     write_pos: usize,
     continuation: Continuation,
@@ -142,6 +185,7 @@ impl ServerConnection {
             read_buf: vec![0u8; READ_BUF_INIT],
             read_pos: 0,
             read_end: 0,
+            awaiting: Awaiting::HEAD,
             write_buf: Vec::with_capacity(WRITE_BUF_INIT),
             write_pos: 0,
             continuation: Continuation::KeepAlive,
@@ -185,19 +229,39 @@ impl ServerConnection {
             &[("Connection", "close")],
             &[],
         );
-        self.read_pos = 0;
-        self.read_end = 0;
+        self.consume(self.read_end - self.read_pos);
         true
     }
 
-    /// The buffer is full yet holds no complete request: the head alone
-    /// outgrew it, which is the one overrun `dispatch` cannot answer — a body
-    /// declared past the cap is a 413 from its headers and garbage is a 400,
-    /// both before the cap is spent. RFC 6585's 431 covers a head with no end
-    /// in sight.
-    pub fn reject_exhausted(&mut self) {
-        debug_assert!(self.read_end == READ_BUF_MAX, "space to read from remains");
-        self.reject("431 Request Header Fields Too Large");
+    fn consume(&mut self, n: usize) {
+        self.read_pos += n;
+        self.awaiting = Awaiting::HEAD;
+        if self.read_pos == self.read_end {
+            self.read_pos = 0;
+            self.read_end = 0;
+        }
+    }
+
+    /// httparse skips these too. Dropping them first keeps every later end of
+    /// head a real one, so a run of them is never parsed over and over.
+    fn skip_empty_lines(&mut self) {
+        loop {
+            let line_len = match self.read_buf[self.read_pos..self.read_end] {
+                [b'\n', ..] => 1,
+                [b'\r', b'\n', ..] => 2,
+                _ => return,
+            };
+            self.consume(line_len);
+        }
+    }
+
+    /// RFC 6585's 431 covers a head with no end in sight.
+    fn wait_for_more(&mut self) -> bool {
+        let head_unended = matches!(self.awaiting, Awaiting::Head { .. });
+        if head_unended && self.read_end - self.read_pos > REQUEST_HEAD_MAX {
+            return self.reject("431 Request Header Fields Too Large");
+        }
+        false
     }
 
     /// Scratch for a lingering connection's drain: the bytes are read only to
@@ -211,13 +275,21 @@ impl ServerConnection {
         &mut self,
         handler: &mut F,
     ) -> bool {
-        let (consumed, req) =
-            match ParsedRequest::parse(&self.read_buf[self.read_pos..self.read_end]) {
-                ParseOutcome::Complete { consumed, request } => (consumed, request),
-                ParseOutcome::Incomplete => return false,
-                ParseOutcome::Malformed => return self.reject("400 Bad Request"),
-                ParseOutcome::TooLarge => return self.reject("413 Payload Too Large"),
-            };
+        self.skip_empty_lines();
+        let buffered = &self.read_buf[self.read_pos..self.read_end];
+        if !self.awaiting.worth_parsing(buffered) {
+            return self.wait_for_more();
+        }
+        let (consumed, req) = match ParsedRequest::parse(buffered) {
+            ParseOutcome::Complete { consumed, request } => (consumed, request),
+            ParseOutcome::Incomplete => return self.wait_for_more(),
+            ParseOutcome::AwaitingBody { request_len } => {
+                self.awaiting = Awaiting::Body { request_len };
+                return false;
+            }
+            ParseOutcome::Malformed => return self.reject("400 Bad Request"),
+            ParseOutcome::TooLarge => return self.reject("413 Payload Too Large"),
+        };
         if req.version != 1 {
             silver_log::warn!("rejecting HTTP/1.0 request");
             self.continuation = Continuation::Close;
@@ -227,11 +299,7 @@ impl ServerConnection {
                 if req.keep_alive { Continuation::KeepAlive } else { Continuation::Close };
             handler(&req, &mut self.write_buf);
         }
-        self.read_pos += consumed;
-        if self.read_pos == self.read_end {
-            self.read_pos = 0;
-            self.read_end = 0;
-        }
+        self.consume(consumed);
         true
     }
 
@@ -326,7 +394,7 @@ pub fn frame_response_with_headers(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::{cell::RefCell, time::Duration};
 
     use super::*;
 
@@ -370,9 +438,6 @@ mod tests {
                 }
                 Err(e) => return e,
             }
-            assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| {
-                panic!("incomplete request must not dispatch")
-            }));
         }
     }
 
@@ -390,6 +455,9 @@ mod tests {
         match ParsedRequest::parse(buf) {
             ParseOutcome::Complete { consumed, request } => (consumed, request),
             ParseOutcome::Incomplete => panic!("expected a complete request, got Incomplete"),
+            ParseOutcome::AwaitingBody { .. } => {
+                panic!("expected a complete request, got AwaitingBody")
+            }
             ParseOutcome::Malformed => panic!("expected a complete request, got Malformed"),
             ParseOutcome::TooLarge => panic!("expected a complete request, got TooLarge"),
         }
@@ -463,7 +531,13 @@ mod tests {
             body.len()
         );
         let mut buf = req.into_bytes();
-        assert!(matches!(ParsedRequest::parse(&buf), ParseOutcome::Incomplete), "body not arrived");
+        assert!(
+            matches!(
+                ParsedRequest::parse(&buf),
+                ParseOutcome::AwaitingBody { request_len } if request_len == buf.len() + body.len()
+            ),
+            "body not arrived"
+        );
         buf.extend_from_slice(body);
         let (consumed, r) = parsed(&buf);
         assert_eq!(r.method, "POST");
@@ -592,30 +666,24 @@ mod tests {
         }
     }
 
-    /// A head that never ends reaches no verdict `dispatch` can deliver, so
-    /// the buffer filling up is itself the verdict: the 431 of RFC 6585,
-    /// answered and lingered like every other reject rather than a bare drop.
     #[test]
-    fn exhausted_buffer_holding_no_request_writes_431_then_lingers() {
+    fn head_without_end_past_the_limit_writes_431_then_lingers() {
         let mut conn = ServerConnection::new();
-        feed(&mut conn, b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ");
+        let start = b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ";
+        feed(&mut conn, start);
+        let chunk = vec![b'c'; 64 << 10];
+        let mut buffered = start.len();
         loop {
-            match conn.read_space() {
-                Ok(space) => {
-                    let n = space.len();
-                    space.fill(b'c');
-                    conn.commit_read(n);
-                }
-                Err(_) => break,
+            feed_all(&mut conn, &chunk);
+            buffered += chunk.len();
+            let answered =
+                conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("no request can reach the handler"));
+            assert_eq!(answered, buffered > REQUEST_HEAD_MAX, "{buffered} bytes buffered");
+            if answered {
+                break;
             }
         }
 
-        assert!(
-            !conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("no request can reach the handler")),
-            "an unfinished head must not dispatch"
-        );
-
-        conn.reject_exhausted();
         assert_eq!(
             conn.pending_write(),
             b"HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\
@@ -624,6 +692,55 @@ mod tests {
         );
         drain(&mut conn);
         assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Linger);
+    }
+
+    #[test]
+    fn whole_head_past_the_limit_writes_431() {
+        let mut request = b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ".to_vec();
+        request.resize(REQUEST_HEAD_MAX + 1, b'c');
+        request.extend_from_slice(b"\r\n\r\n");
+        let mut conn = ServerConnection::new();
+        feed_all(&mut conn, &request);
+
+        assert!(
+            conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("no request can reach the handler"))
+        );
+        assert!(conn.pending_write().starts_with(b"HTTP/1.1 431 "));
+    }
+
+    #[test]
+    fn query_near_the_head_limit_dispatches() {
+        let query = "id=1,".repeat((REQUEST_HEAD_MAX - 1024) / "id=1,".len());
+        let request =
+            get_req(&format!("/eth/v1/beacon/states/head/validators?{query}"), "HTTP/1.1");
+        let (last, unended) = request.split_last().unwrap();
+        let mut conn = ServerConnection::new();
+        for chunk in unended.chunks(64 << 10) {
+            feed_all(&mut conn, chunk);
+            assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("the head has no end yet")));
+        }
+        feed(&mut conn, &[*last]);
+        assert!(
+            conn.dispatch(&mut |_, out: &mut Vec<u8>| frame_response(out, "200 OK", None, b""))
+        );
+        assert!(conn.pending_write().starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+
+    #[test]
+    fn empty_lines_before_a_request_are_skipped() {
+        let mut conn = ServerConnection::new();
+        for _ in 0..1024 {
+            feed(&mut conn, b"\r\n");
+            assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("no request has arrived")));
+        }
+        feed(&mut conn, b"\n\r\nGET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(conn.dispatch(&mut echo_path));
+        assert_eq!(conn.pending_write(), b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n/metrics");
+    }
+
+    #[test]
+    fn bytes_that_cannot_start_a_request_are_rejected_before_any_line_ends() {
+        reject_and_linger(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03", "400 Bad Request");
     }
 
     /// The body the client is still sending is read for one reason only — to
@@ -962,5 +1079,22 @@ mod tests {
             frame_response(out, "200 OK", None, b"");
         }));
         assert_eq!(*seen.borrow(), request[header_len..]);
+    }
+
+    /// Parsing the whole head again on each of 64Ki reads costs about 64 GiB
+    /// of scanning, which no machine finishes inside the bound.
+    #[test]
+    fn head_arriving_in_small_reads_is_parsed_in_linear_time() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"GET /eth/v1/node/health HTTP/1.1\r\nCookie: ");
+        let started = Instant::now();
+        for _ in 0..(2 << 20) / 32 {
+            feed_all(&mut conn, &[b'c'; 32]);
+            assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("the head has no end yet")));
+        }
+        feed_all(&mut conn, b"\r\n\r\n");
+        assert!(conn.dispatch(&mut echo_path));
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
     }
 }
