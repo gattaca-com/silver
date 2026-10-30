@@ -280,7 +280,7 @@ pub(crate) mod tests {
     use crate::{
         http::router::Outcome,
         submission::{
-            SubmissionFailure,
+            MAX_SUBMISSION_ENTRIES, SubmissionFailure,
             tests::{SLOT, ctx, posted_committees},
         },
         testing::{body, dispatch, dispatch_into, posting, status_code, submissions},
@@ -342,6 +342,22 @@ pub(crate) mod tests {
         assert_eq!(SingleAttestationView::target_epoch(ssz), 300);
         assert_eq!(SingleAttestationView::target_root(ssz), &[0x33; 32]);
         assert_eq!(SingleAttestationView::signature(ssz), &[0x44; 96]);
+    }
+
+    #[test]
+    fn body_past_the_submission_entry_cap_is_a_400() {
+        let ctx = ctx();
+        let at_cap = format!("[{}]", vec![entry(1, 0); MAX_SUBMISSION_ENTRIES].join(","));
+        assert!(matches!(submit(&ctx, &at_cap).0, Outcome::AwaitingVerdicts(_)));
+
+        let past_cap = format!("[{}]", vec![entry(1, 0); MAX_SUBMISSION_ENTRIES + 1].join(","));
+        let (outcome, response) = submit(&ctx, &past_cap);
+        assert_eq!(outcome, Outcome::Response(None));
+        assert_eq!(status_code(&response), "400");
+        assert_eq!(
+            body(&response),
+            b"{\"code\":400,\"message\":\"too many entries in request body\"}"
+        );
     }
 
     /// Entries the posted shuffling cannot place are reported by their place

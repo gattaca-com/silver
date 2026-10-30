@@ -38,8 +38,8 @@ use crate::{
     node::peers::Peer,
     routes::{ROUTES, SERVED_WHILE_SYNCING},
     submission::{
-        AcceptedEntry, BuilderForward, Integration, RecentImports, SubmissionFailure,
-        failure_message,
+        AcceptedEntry, BuilderForward, Integration, MAX_SUBMISSION_ENTRIES, RecentImports,
+        Submission, SubmissionFailure, failure_message,
     },
     validator::{
         aggregate_attestation::AggregateRequest, execution_payload_envelope::EnvelopeRequest,
@@ -52,6 +52,10 @@ const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 // A body at the read cap needs about 2.2 Mbit/s to arrive in time. Bodies
 // that matter, such as blocks, are useless after one 12 s slot anyway.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Two of the largest bodies at once: half the `beacon_api_requests` queue,
+/// leaving the rest to the blocks and requests that share it.
+const MAX_OUTSTANDING_SUBMISSIONS: usize = 2 * MAX_SUBMISSION_ENTRIES;
 
 /// nginx's `lingering_close` caps: how long a connection that has already
 /// answered may wait between the peer's bytes, and how long the whole drain
@@ -1506,14 +1510,23 @@ impl BeaconApi {
                         self.want_payload_attributes(true, emit);
                     }
                 }
+                Outcome::AwaitingVerdicts(submission) if !self.admits(&submission) => {
+                    silver_log::warn!(
+                        entries = submission.accepted.len(),
+                        "submission refused: too many entries awaiting their verdicts"
+                    );
+                    let requests = self.deferring(token);
+                    let mut resp = Response::new(requests.http.write_buf_mut(), submissions);
+                    resp.error(503, "too many submissions awaiting publication, retry shortly");
+                    self.resume_writing(token);
+                }
                 deferred => {
                     let (pending, ids_used) = Pending::defer(deferred, self.next_request_id, emit);
                     self.next_request_id += ids_used;
                     if matches!(&pending, Pending::Submission(p) if p.integration.awaits_import()) {
                         self.awaiting_import.push(token);
                     }
-                    let requests = conn.requests_mut().expect("only a request handler defers");
-                    requests.pending = Some(pending);
+                    self.deferring(token).pending = Some(pending);
                 }
             },
             Ok(true) => {
@@ -1527,6 +1540,33 @@ impl BeaconApi {
             }
         };
         true
+    }
+
+    fn deferring(&mut self, token: Token) -> &mut Requests {
+        self.connections
+            .get_mut(&token)
+            .and_then(Connection::requests_mut)
+            .expect("only a request handler defers")
+    }
+
+    /// A body of one entry is admitted past the budget: the connection cap
+    /// bounds those, and a refused block would cost its proposal.
+    fn admits(&self, submission: &Submission) -> bool {
+        submission.body_len() == 1 ||
+            self.outstanding_submissions() + submission.accepted.len() <=
+                MAX_OUTSTANDING_SUBMISSIONS
+    }
+
+    /// Counted from the connections' own waits, so a connection that closes
+    /// or times out gives its share back with it.
+    fn outstanding_submissions(&self) -> usize {
+        self.connections
+            .values()
+            .filter_map(|conn| match conn.pending()? {
+                Pending::Submission(pending) => Some(pending.unanswered),
+                _ => None,
+            })
+            .sum()
     }
 
     /// Connections close in any order while the cursor only advances, so the
@@ -3784,6 +3824,70 @@ mod tests {
              [{\"index\":1,\"message\":\"this validator already attested to another block \
              for the slot\"}]}"
         );
+    }
+
+    const ATTESTATIONS: &str = "/eth/v2/beacon/pool/attestations";
+
+    fn post_attestations(server: &mut Server, count: usize) -> TcpStream {
+        let client = connect(tcp_addr(server));
+        let body = format!("[{}]", vec![entry(1, 0); count].join(","));
+        let writer = client.try_clone().unwrap();
+        std::thread::spawn(move || post(writer, ATTESTATIONS, &body));
+        client
+    }
+
+    fn submitted_after(server: &mut Server, count: usize, msg: &str) {
+        pump_until(server, msg, |s| s.requests.len() == count);
+    }
+
+    fn refused(server: &mut Server, count: usize) -> Vec<u8> {
+        let client = post_attestations(server, count);
+        let response = serve(server, std::thread::spawn(move || read_to_eof(client)), "refusal");
+        assert!(response.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"), "{response:?}");
+        response
+    }
+
+    /// A body's share of the budget comes back when its entries are answered
+    /// or when its connection is reaped.
+    #[test]
+    fn submissions_past_the_outstanding_budget_are_answered_503() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx = submission::ctx();
+        server.submissions = TCache::producer(TCacheId::BoundaryProcessing, 1 << 24);
+
+        let first = post_attestations(&mut server, MAX_SUBMISSION_ENTRIES);
+        submitted_after(&mut server, MAX_SUBMISSION_ENTRIES, "the first body");
+        let second = post_attestations(&mut server, MAX_SUBMISSION_ENTRIES);
+        submitted_after(&mut server, MAX_OUTSTANDING_SUBMISSIONS, "the second body");
+
+        let response = refused(&mut server, 2);
+        assert!(body(&response).starts_with(b"{\"code\":503,"));
+        assert_eq!(server.requests.len(), MAX_OUTSTANDING_SUBMISSIONS, "none of it was sent");
+
+        let _lone = post_attestations(&mut server, 1);
+        submitted_after(&mut server, MAX_OUTSTANDING_SUBMISSIONS + 1, "a body of one entry");
+
+        let first_ids: Vec<_> =
+            server.requests.drain(..MAX_SUBMISSION_ENTRIES).map(|r| request_id(&r)).collect();
+        for request_id in first_ids {
+            server.answer(BeaconApiResponse::LocalGossipResponse {
+                request_id,
+                response: Ok(()),
+                block_root: None,
+            });
+        }
+        let response = serve(&mut server, std::thread::spawn(move || read_to_eof(first)), "200");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"), "{response:?}");
+        let _admitted = post_attestations(&mut server, 2);
+        submitted_after(&mut server, MAX_SUBMISSION_ENTRIES + 3, "a body within the budget");
+
+        refused(&mut server, MAX_SUBMISSION_ENTRIES);
+        drop(second);
+        server.api.idle.timeout = Duration::ZERO;
+        pump_until(&mut server, "idle connections reaped", |s| s.api.connections.is_empty());
+        server.api.idle.timeout = LONG_TIMEOUT;
+        let _largest = post_attestations(&mut server, MAX_SUBMISSION_ENTRIES);
+        submitted_after(&mut server, 2 * MAX_SUBMISSION_ENTRIES + 3, "the largest body");
     }
 
     #[test]
