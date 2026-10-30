@@ -53,7 +53,7 @@ pub struct DiscV5 {
     challenges: FxHashMap<NodeId, PendingChallenge>,
     /// FINDNODE to send once a session with the given peer is established.
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
-    pending_probe_nonces: FxHashMap<NodeId, [u8; 12]>,
+    request_nonces: RequestNonces,
     pending_pings: FxHashMap<RequestId, (NodeId, Instant)>,
     event_queue: Vec<DiscoveryEvent>,
 
@@ -111,10 +111,7 @@ impl DiscV5 {
                 PENDING_PROBES_CAPACITY,
                 Default::default(),
             ),
-            pending_probe_nonces: FxHashMap::with_capacity_and_hasher(
-                PENDING_PROBES_CAPACITY,
-                Default::default(),
-            ),
+            request_nonces: RequestNonces::default(),
             pending_pings: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             event_queue: Vec::with_capacity(target),
             ip_votes: FxHashMap::with_capacity_and_hasher(target, Default::default()),
@@ -157,14 +154,21 @@ impl DiscV5 {
     }
 
     fn flush_pending_findnode(&mut self, node_id: NodeId, dest_addr: SocketAddr) {
-        if let Some((rid, distances)) = self.pending_findnodes.remove(&node_id) &&
-            let Some(s) = self.sessions.get(&node_id) &&
-            let Some(data) =
-                Packet::encode_message(self.local_id, node_id, &s.enc, Message::FindNode {
-                    request_id: RequestId::from(rid),
-                    distances,
-                })
+        if let Some((rid, distances)) = self.pending_findnodes.remove(&node_id) {
+            self.send_request(node_id, dest_addr, Message::FindNode {
+                request_id: RequestId::from(rid),
+                distances,
+            });
+        }
+    }
+
+    fn send_request(&mut self, node_id: NodeId, dest_addr: SocketAddr, msg: Message) {
+        let Some(s) = self.sessions.get(&node_id) else { return };
+        let nonce = rand::random();
+        if let Some(data) =
+            Packet::encode_message_with_nonce(self.local_id, node_id, &s.enc, nonce, msg)
         {
+            self.request_nonces.record(nonce, node_id, dest_addr, Instant::now());
             self.event_queue.push(DiscoveryEvent::SendMessage { to: dest_addr, data });
         }
     }
@@ -198,7 +202,7 @@ impl DiscV5 {
             }
             .encode(&dest_id);
 
-            self.pending_probe_nonces.insert(dest_id, nonce);
+            self.request_nonces.record(nonce, dest_id, dest_addr, Instant::now());
             self.event_queue.push(DiscoveryEvent::SendMessage { to: dest_addr, data });
         }
     }
@@ -481,7 +485,7 @@ impl DiscV5 {
             debug!(%id, "evicted live peer from routing table");
         }
         self.pending_findnodes.remove(&id);
-        self.pending_probe_nonces.remove(&id);
+        self.request_nonces.forget(&id);
         self.challenges.remove(&id);
         self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
@@ -539,39 +543,22 @@ impl DiscV5 {
 
     fn handle_whoareyou(
         &mut self,
-        probe_nonce: [u8; 12],
+        request_nonce: [u8; 12],
         src_addr: SocketAddr,
         aad: &[u8],
         peer_enr_seq: u64,
         now: Instant,
     ) {
-        let (remote_id, remote_pubkey) = match self
-            .kbuckets
-            .iter_ref()
-            .find(|n| n.value.addr == src_addr)
-            .map(|n| (*n.key.preimage(), n.value.pubkey))
-        {
-            Some(v) => v,
-            None => {
-                debug!(%src_addr, peer_enr_seq, "WhoAreYou from unknown addr, no kbuckets entry");
-                return;
-            }
+        let Some(remote_id) = self.request_nonces.take(&request_nonce, src_addr) else {
+            debug!(%src_addr, peer_enr_seq, "WhoAreYou matches no recent request");
+            return;
         };
 
-        // Verify the WhoAreYou echoes the nonce from our probe. For stale-session
-        // re-challenges (we already have a session) we skip this check since the
-        // challenged packet was a regular Message, not a probe.
-        if !self.sessions.contains_key(&remote_id) {
-            match self.pending_probe_nonces.remove(&remote_id) {
-                Some(n) if n == probe_nonce => {}
-                _ => {
-                    warn!(%remote_id, %src_addr, peer_enr_seq, "WhoAreYou nonce mismatch or no pending probe");
-                    return;
-                }
-            }
-        } else {
-            self.pending_probe_nonces.remove(&remote_id);
-        }
+        let Some(remote_pubkey) = self.kbuckets.get(&Key::from(remote_id)).map(|n| n.value.pubkey)
+        else {
+            debug!(%remote_id, %src_addr, peer_enr_seq, "WhoAreYou from peer with no kbuckets entry");
+            return;
+        };
 
         // TODO @nina: pre-generate ephemeral keypairs at idle time?
         let (ephem_pk_bytes, enc_key, dec_key) = match ecdh_generate_and_derive(
@@ -782,7 +769,7 @@ impl DiscV5 {
             return;
         }
 
-        self.pending_probe_nonces.remove(&src_id);
+        self.request_nonces.forget(&src_id);
 
         if let Some(enr) = self.decode_enr_for(src_id) {
             self.emit_node_found(enr);
@@ -898,16 +885,10 @@ impl DiscV5 {
                 let (node_id, addr) = with_session[idx];
                 let rid = self.next_id();
                 let distances = Self::random_distances(self.config.lookup_distances, false);
-                if let Some(s) = self.sessions.get(&node_id) &&
-                    let Some(data) = Packet::encode_message(
-                        self.local_id,
-                        node_id,
-                        &s.enc,
-                        Message::FindNode { request_id: RequestId::from(rid), distances },
-                    )
-                {
-                    self.event_queue.push(DiscoveryEvent::SendMessage { to: addr, data });
-                }
+                self.send_request(node_id, addr, Message::FindNode {
+                    request_id: RequestId::from(rid),
+                    distances,
+                });
             }
         }
     }
@@ -1012,6 +993,7 @@ impl DiscV5 {
 
         let request_timeout = self.config.request_timeout();
         self.pending_pings.retain(|_, (_, sent_at)| sent_at.elapsed() < request_timeout);
+        self.request_nonces.expire(request_timeout);
 
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
@@ -1100,7 +1082,7 @@ impl Discovery for DiscV5 {
         self.kbuckets.remove(&Key::from(id));
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
-        self.pending_probe_nonces.remove(&id);
+        self.request_nonces.forget(&id);
         self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
@@ -1155,14 +1137,22 @@ impl Discovery for DiscV5 {
                 if Self::is_banned(&mut self.banned_nodes, &node_id) {
                     continue;
                 }
+                let nonce = rand::random();
                 if let Some(s) = self.sessions.get(&node_id) &&
-                    let Some(data) =
-                        Packet::encode_message(self.local_id, node_id, &s.enc, Message::Ping {
+                    let Some(data) = Packet::encode_message_with_nonce(
+                        self.local_id,
+                        node_id,
+                        &s.enc,
+                        nonce,
+                        Message::Ping {
                             request_id: RequestId::from(rid),
                             enr_seq: self.local_enr.seq(),
-                        })
+                        },
+                    )
                 {
-                    self.pending_pings.insert(RequestId::from(rid), (node_id, Instant::now()));
+                    let now = Instant::now();
+                    self.pending_pings.insert(RequestId::from(rid), (node_id, now));
+                    self.request_nonces.record(nonce, node_id, addr, now);
                     rid = rid.wrapping_add(1);
                     f(DiscoveryEvent::SendMessage { to: addr, data });
                     sent += 1;
@@ -1266,6 +1256,40 @@ impl Discovery for DiscV5 {
                 self.flush_pending_findnode(src_id, src_addr);
             }
         }
+    }
+}
+
+struct SentRequest {
+    to_id: NodeId,
+    to_addr: SocketAddr,
+    sent_at: Instant,
+}
+
+/// Nonces of requests we sent recently. Per the wire spec, a WHOAREYOU must
+/// echo one of them.
+#[derive(Default)]
+struct RequestNonces(FxHashMap<[u8; 12], SentRequest>);
+
+impl RequestNonces {
+    fn record(&mut self, nonce: [u8; 12], to_id: NodeId, to_addr: SocketAddr, sent_at: Instant) {
+        self.0.insert(nonce, SentRequest { to_id, to_addr, sent_at });
+    }
+
+    /// Leaves the entry in place on an address mismatch, so a WHOAREYOU from
+    /// another address cannot cancel the matching one.
+    fn take(&mut self, nonce: &[u8; 12], from: SocketAddr) -> Option<NodeId> {
+        if self.0.get(nonce)?.to_addr != from {
+            return None;
+        }
+        self.0.remove(nonce).map(|r| r.to_id)
+    }
+
+    fn forget(&mut self, id: &NodeId) {
+        self.0.retain(|_, r| r.to_id != *id);
+    }
+
+    fn expire(&mut self, ttl: Duration) {
+        self.0.retain(|_, r| r.sent_at.elapsed() < ttl);
     }
 }
 
@@ -2201,6 +2225,110 @@ mod tests {
             "unverified handshake must not insert into kbuckets"
         );
         assert!(!b.sessions.contains_key(&a.local_id), "no session for unverified peer");
+    }
+
+    fn whoareyou_packet(to: NodeId, nonce: [u8; 12]) -> Vec<u8> {
+        Packet {
+            iv: rand::random(),
+            src_id: NodeId::new(&[0; 32]),
+            nonce,
+            kind: MessageKind::WhoAreYou { id_nonce: rand::random(), enr_seq: 0 },
+            message: &[],
+        }
+        .encode(&to)
+        .to_vec()
+    }
+
+    #[test]
+    fn whoareyou_on_live_session_without_matching_request_is_ignored() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19191);
+        let (mut b, b_addr) = make_node(19192);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        collect_sends(&mut a);
+
+        a.handle(b_addr, &whoareyou_packet(a.local_id, rand::random()), now);
+        assert!(collect_sends(&mut a).is_empty(), "stray WhoAreYou must not trigger a handshake");
+
+        // The original session still carries traffic both ways.
+        inject_message(
+            &mut a,
+            &mut b,
+            a_addr,
+            Message::Ping { request_id: RequestId::from(7u64), enr_seq: 0 },
+            now,
+        );
+        let pong = collect_sends(&mut b);
+        assert_eq!(pong.len(), 1);
+        a.handle(b_addr, &pong[0].1, now);
+        assert!(collect_sends(&mut a).is_empty(), "A decrypted the Pong without re-challenging");
+    }
+
+    #[test]
+    fn whoareyou_with_wrong_nonce_keeps_pending_probe() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19193);
+        let (mut b, b_addr) = make_node(19194);
+
+        a.add_enr(&b.local_enr, now);
+        a.find_nodes();
+        let probe = collect_sends(&mut a).into_iter().find(|(to, _)| *to == b_addr).unwrap().1;
+        b.handle(a_addr, &probe, now);
+        let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        a.handle(b_addr, &whoareyou_packet(a.local_id, rand::random()), now);
+        assert!(collect_sends(&mut a).is_empty());
+        assert!(!a.sessions.contains_key(&b.local_id));
+
+        a.handle(b_addr, &wru, now);
+        assert!(a.sessions.contains_key(&b.local_id), "genuine WhoAreYou still completes");
+    }
+
+    #[test]
+    fn whoareyou_from_other_address_keeps_pending_probe() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19195);
+        let (mut b, b_addr) = make_node(19196);
+        let other_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 9, 9, 9)), 19196);
+
+        a.add_enr(&b.local_enr, now);
+        a.find_nodes();
+        let probe = collect_sends(&mut a).into_iter().find(|(to, _)| *to == b_addr).unwrap().1;
+        b.handle(a_addr, &probe, now);
+        let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        a.handle(other_addr, &wru, now);
+        assert!(collect_sends(&mut a).is_empty());
+
+        a.handle(b_addr, &wru, now);
+        assert!(a.sessions.contains_key(&b.local_id));
+    }
+
+    #[test]
+    fn whoareyou_for_recent_ping_re_establishes_session() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19197);
+        let (mut b, b_addr) = make_node(19198);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        collect_sends(&mut a);
+
+        // B forgets the session, so it challenges A's next Ping.
+        b.sessions.remove(&a.local_id);
+        a.last_ping = Instant::now() - a.config.ping_frequency() - Duration::from_secs(1);
+        for (to, data) in collect_sends(&mut a) {
+            if to == b_addr {
+                b.handle(a_addr, &data, now);
+            }
+        }
+        let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        a.handle(b_addr, &wru, now);
+        for (to, data) in collect_sends(&mut a) {
+            if to == b_addr {
+                b.handle(a_addr, &data, now);
+            }
+        }
+        assert!(b.sessions.contains_key(&a.local_id), "B re-established the session with A");
     }
 
     #[test]

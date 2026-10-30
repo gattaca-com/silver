@@ -312,9 +312,17 @@ impl<'a> Packet<'a> {
         cipher: &SessionCipher,
         msg: Message,
     ) -> Option<ArrayVec<u8, MAX_PACKET_SIZE>> {
-        let rng_buf: [u8; 28] = rand::random();
-        let nonce: [u8; 12] = rng_buf[..12].try_into().unwrap();
-        let iv: u128 = u128::from_be_bytes(rng_buf[12..].try_into().unwrap());
+        Self::encode_message_with_nonce(src_id, dst_id, cipher, rand::random(), msg)
+    }
+
+    pub fn encode_message_with_nonce(
+        src_id: NodeId,
+        dst_id: NodeId,
+        cipher: &SessionCipher,
+        nonce: [u8; 12],
+        msg: Message,
+    ) -> Option<ArrayVec<u8, MAX_PACKET_SIZE>> {
+        let iv: u128 = rand::random();
 
         // max plaintext = MAX_PACKET_SIZE - IV(16) - header(23) - auth_data(32) - GCM
         // tag(16)
