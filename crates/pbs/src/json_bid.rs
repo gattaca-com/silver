@@ -10,6 +10,13 @@ use silver_ssz::ssz_view::{
     BUILDER_BID_FULU_FIXED, EXECUTION_PAYLOAD_HEADER_FIXED, MAX_EXTRA_DATA_BYTES,
 };
 
+use crate::CONSENSUS_VERSION;
+
+pub(crate) struct DecodedBid<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) version: Option<&'a [u8]>,
+}
+
 /// Re-encodes a JSON `SignedBuilderBid` (Fulu) as SSZ. Commit-Boost answers
 /// SSZ when asked, but a sidecar may answer JSON whatever `Accept` says
 /// (Vouch's blockrelay does). The buffers are reused across bids.
@@ -23,6 +30,7 @@ pub(crate) struct JsonBid {
     pubkey: [u8; 48],
     signature: [u8; 96],
     ssz: Vec<u8>,
+    version: Option<String>,
 }
 
 impl JsonBid {
@@ -37,19 +45,31 @@ impl JsonBid {
             pubkey: [0; 48],
             signature: [0; 96],
             ssz: Vec::new(),
+            version: None,
         }
     }
 
     /// The response's `SignedBuilderBid` as SSZ, empty when a JSON body does
     /// not decode.
-    pub(crate) fn ssz_bid<'s>(&'s mut self, response: ClientResponse<'s>) -> &'s [u8] {
+    pub(crate) fn ssz_bid<'s>(&'s mut self, response: ClientResponse<'s>) -> DecodedBid<'s> {
+        self.version = None;
+        let version = response.header(CONSENSUS_VERSION);
         let is_json = response
             .header("Content-Type")
             .is_some_and(|value| value.starts_with(b"application/json"));
-        if is_json { self.reencode(response.body).unwrap_or_default() } else { response.body }
+        if !is_json {
+            return DecodedBid { bytes: response.body, version };
+        }
+        if self.reencode(response.body, version.is_none()).is_none() {
+            return DecodedBid { bytes: &[], version };
+        }
+        DecodedBid {
+            bytes: &self.ssz,
+            version: version.or_else(|| self.version.as_deref().map(str::as_bytes)),
+        }
     }
 
-    fn reencode(&mut self, json: &[u8]) -> Option<&[u8]> {
+    fn reencode(&mut self, json: &[u8], capture_version: bool) -> Option<&[u8]> {
         for buffer in [
             &mut self.header,
             &mut self.commitments,
@@ -61,11 +81,14 @@ impl JsonBid {
             buffer.clear();
         }
         let mut deserializer = serde_json::Deserializer::from_slice(json);
-        if let Err(error) = Envelope(SignedBid(self)).deserialize(&mut deserializer) {
+        let mut version = None;
+        let capture = capture_version.then_some(&mut version);
+        if let Err(error) = Envelope(SignedBid(self), capture).deserialize(&mut deserializer) {
             silver_log::warn!(%error, "sidecar bid is not a Fulu SignedBuilderBid");
             return None;
         }
         self.encode();
+        self.version = version;
         Some(&self.ssz)
     }
 
@@ -99,9 +122,9 @@ impl JsonBid {
 }
 
 /// `{ "version": .., "data": <signed bid> }`
-pub(crate) struct Envelope<S>(pub(crate) S);
+pub(crate) struct Envelope<'a, S>(pub(crate) S, pub(crate) Option<&'a mut Option<String>>);
 
-impl<'de, S: DeserializeSeed<'de, Value = ()>> DeserializeSeed<'de> for Envelope<S> {
+impl<'de, S: DeserializeSeed<'de, Value = ()>> DeserializeSeed<'de> for Envelope<'_, S> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -109,7 +132,7 @@ impl<'de, S: DeserializeSeed<'de, Value = ()>> DeserializeSeed<'de> for Envelope
     }
 }
 
-impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<S> {
+impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<'_, S> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -118,11 +141,19 @@ impl<'de, S: DeserializeSeed<'de, Value = ()>> Visitor<'de> for Envelope<S> {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut data = Some(self.0);
+        let mut version = self.1;
         while let Some(key) = map.next_key::<&str>()? {
             if key == "data" &&
                 let Some(seed) = data.take()
             {
                 map.next_value_seed(seed)?;
+            } else if key == "version" &&
+                let Some(output) = version.as_mut()
+            {
+                if output.is_some() {
+                    return Err(de::Error::duplicate_field("version"));
+                }
+                **output = Some(map.next_value::<String>()?);
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
@@ -457,7 +488,7 @@ mod tests {
     fn json_bid_reencodes_as_canonical_ssz() {
         let json = bid_json();
         let mut decoder = JsonBid::new();
-        let ssz = decoder.reencode(json.as_bytes()).unwrap().to_vec();
+        let ssz = decoder.reencode(json.as_bytes(), false).unwrap().to_vec();
         assert!(SignedBuilderBidFuluView::check_canonical(&ssz));
         assert_eq!(SignedBuilderBidFuluView::signature(&ssz), &[0x99; 96]);
 
@@ -485,7 +516,7 @@ mod tests {
         assert!(ExecutionRequestsFuluView::check_canonical(requests));
         assert_eq!(requests.len(), 12 + 192 + 76 + 116);
 
-        let again = decoder.reencode(json.as_bytes()).unwrap();
+        let again = decoder.reencode(json.as_bytes(), false).unwrap();
         assert_eq!(again, &ssz[..], "reused buffers start clean");
     }
 
@@ -493,8 +524,10 @@ mod tests {
     fn json_that_is_not_a_bid_is_refused() {
         let mut decoder = JsonBid::new();
         assert!(
-            decoder.reencode(br#"{"version":"fulu","data":{"message":{"header":{}}}}"#).is_none()
+            decoder
+                .reencode(br#"{"version":"fulu","data":{"message":{"header":{}}}}"#, false)
+                .is_none()
         );
-        assert!(decoder.reencode(b"not json").is_none());
+        assert!(decoder.reencode(b"not json", false).is_none());
     }
 }

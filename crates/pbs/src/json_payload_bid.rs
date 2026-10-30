@@ -62,7 +62,7 @@ impl JsonPayloadBid {
         ssz.clear();
         ssz.resize(MESSAGE_AT + EXECUTION_PAYLOAD_BID_MIN, 0);
         let mut deserializer = serde_json::Deserializer::from_slice(json);
-        if let Err(error) = Envelope(SignedBid(ssz)).deserialize(&mut deserializer) {
+        if let Err(error) = Envelope(SignedBid(ssz), None).deserialize(&mut deserializer) {
             silver_log::warn!(%error, "builder bid is not a Gloas SignedExecutionPayloadBid");
             return None;
         }
@@ -219,6 +219,24 @@ pub(crate) mod tests {
         let empty = bid_json(&[]);
         let again = decoder.reencode(empty.as_bytes()).unwrap();
         assert_eq!(again.len(), 100 + EXECUTION_PAYLOAD_BID_MIN, "reused buffers start clean");
+    }
+
+    #[test]
+    fn envelope_version_remains_ignored() {
+        let json = bid_json(&[]);
+        let mut decoder = JsonPayloadBid::new();
+        let expected = decoder.reencode(json.as_bytes()).unwrap().to_vec();
+        for version in ["null", "42", "{}", r#""fulu","version":false"#] {
+            let mut body = json
+                .replace(r#""version":"gloas""#, &format!(r#""version":{version}"#))
+                .into_bytes();
+            let decoded = decoder.ssz_bid(ClientResponse {
+                status: 200,
+                headers: b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+                body: &mut body,
+            });
+            assert_eq!(decoded, expected);
+        }
     }
 
     #[test]

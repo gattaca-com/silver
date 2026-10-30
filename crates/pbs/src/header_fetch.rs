@@ -10,7 +10,6 @@ use silver_ssz::ssz_view::{
 };
 
 use crate::{
-    CONSENSUS_VERSION,
     bid::{BidRefusal, BidRequest, builder_domain},
     json_bid::JsonBid,
 };
@@ -93,10 +92,9 @@ impl HeaderFetch {
             let request = pending.take().expect("a response answers the pending request");
             let signed_bid = match response {
                 Ok(response) if response.status == 200 => {
-                    let version = response.header(CONSENSUS_VERSION);
-                    let signed_bid = json_bid.ssz_bid(response);
-                    let checked = request.check(signed_bid, version, builder_domain);
-                    bid_passes(&request, checked, signed_bid).then_some(signed_bid)
+                    let decoded = json_bid.ssz_bid(response);
+                    let checked = request.check(decoded.bytes, decoded.version, builder_domain);
+                    bid_passes(&request, checked, decoded.bytes).then_some(decoded.bytes)
                 }
                 Ok(response) if response.status == 204 => {
                     silver_log::debug!(slot, "sidecar has no bid");
