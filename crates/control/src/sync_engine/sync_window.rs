@@ -174,7 +174,8 @@ impl SyncWindow {
             e.seen_blocks.count += 1;
         });
         if let Some(parent) = parent_slot {
-            for empty in (parent + 1)..slot {
+            let first = parent.max(self.tail).saturating_add(1);
+            for empty in first..slot.min(self.ceiling() + 1) {
                 self.mark_empty(empty);
             }
         }
@@ -253,6 +254,15 @@ mod tests {
             BlockState::Applied,
             "the next range down is tracked, not discarded"
         );
+    }
+
+    #[test]
+    fn far_future_block_marks_only_window_slots_empty() {
+        let mut window = SyncWindow::new();
+        window.set_tail(9);
+        window.block_received(u64::MAX, [1; 32], Some(10), false);
+        assert_eq!(window.coverage(11).block, BlockState::Empty);
+        assert_eq!(window.coverage(window.ceiling()).block, BlockState::Empty);
     }
 
     #[test]
