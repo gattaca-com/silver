@@ -177,7 +177,7 @@ impl RpcReadResponse {
                         Err(e) => return Err(e.into()),
                     }
                 } else {
-                    alloc_error_response(buf[0], length)
+                    alloc_error_response(buf[0], length)?
                 };
 
                 // Plumb the wire fork_digest from the prefix into the
@@ -327,7 +327,7 @@ mod tests {
 
     use quinn_proto::StreamId;
     use silver_common::{
-        StreamProtocol, TCache, TCacheId, ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN,
+        StreamProtocol, TCache, TCacheId, encode_varint, ssz_view::DATA_COLUMN_SIDECAR_GLOAS_MIN,
     };
 
     use super::*;
@@ -433,6 +433,31 @@ mod tests {
                 other => panic!("cap {cap}: expected error response, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn oversized_error_message_is_rejected() {
+        let msg = [b'x'; 256];
+        let mut body = Vec::new();
+        let mut enc = SnappyEncoder::new();
+        enc.compress(&msg, &mut body).unwrap();
+
+        let mut wire = vec![3u8; 11];
+        let varint_len = encode_varint(msg.len() as u64 + 1, &mut wire[1..]).unwrap();
+        wire.truncate(1 + varint_len);
+        wire.extend_from_slice(&body);
+
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
+        let mut dec = SnappyDecoder::new_direct();
+        let mut io = WireIo { data: wire, pos: 0, cap: usize::MAX };
+        let state = RpcReadResponse::new(7, 0, Instant::now(), &mut dec);
+        let err =
+            state.spin(&mut io, &p2p_id, Instant::now(), &mut producer, &mut dec).unwrap_err();
+        assert!(
+            matches!(&err, StreamError::IoError(e) if e.kind() == ErrorKind::InvalidData),
+            "expected InvalidData, got {err:?}"
+        );
     }
 
     /// Direct-decode bounds guard. A `CHUNK_UNCOMPRESSED` frame whose data

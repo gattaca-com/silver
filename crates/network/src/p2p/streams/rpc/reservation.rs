@@ -205,15 +205,21 @@ pub fn alloc_incoming_rpc(
     Ok(RpcReservation { inbound, offset: 0, tcache })
 }
 
-/// `length` is the chunk's varint payload length — the decoded error
-/// message lands in `msg`, capped at the spec's 256-byte ErrorMessage
-/// limit.
-pub fn alloc_error_response(error: u8, length: usize) -> RpcReservation {
-    RpcReservation {
-        inbound: Rpc::Response(RpcResponse::Error { error, msg: [0u8; 256], len: length.min(256) }),
+const MAX_ERROR_MESSAGE_LEN: usize = 256;
+
+pub fn alloc_error_response(error: u8, length: usize) -> Result<RpcReservation, Error> {
+    if length > MAX_ERROR_MESSAGE_LEN {
+        return Err(ErrorKind::InvalidData.into());
+    }
+    Ok(RpcReservation {
+        inbound: Rpc::Response(RpcResponse::Error {
+            error,
+            msg: [0u8; MAX_ERROR_MESSAGE_LEN],
+            len: length,
+        }),
         offset: 0,
         tcache: None,
-    }
+    })
 }
 
 pub fn rpc_response_context_length(protocol: StreamProtocol) -> usize {
