@@ -1,3 +1,4 @@
+mod admission;
 mod context;
 mod quic;
 mod streams;
@@ -9,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use admission::{Admission, InboundAdmission};
 use buffa::{Message, MessageView};
 pub use context::{ClusterNodes, Context};
 use fxhash::{FxHashMap, FxHashSet};
@@ -16,7 +18,7 @@ use mio::{Poll, net::UdpSocket};
 use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
-use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint};
+use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, Incoming};
 use silver_common::{
     CacheFrameRef, ClusterMsgOut, GossipMsgOut, GossipTraffic, Identify, Keypair,
     P2pConnectionStats, P2pSend, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
@@ -121,10 +123,7 @@ pub struct P2p {
     timeout: Option<Duration>,
     recv_count: usize,
     stats_cursor: usize,
-    /// Hard transport-level connection cap; inbound accepts refused beyond
-    /// it. Outbound dials are bounded separately by the peer manager.
-    max_connections: usize,
-    trusted_ips: FxHashSet<IpAddr>,
+    admission: InboundAdmission,
 }
 
 impl P2p {
@@ -144,8 +143,7 @@ impl P2p {
             timeout: Some(Duration::ZERO),
             recv_count: 0,
             stats_cursor: 0,
-            max_connections,
-            trusted_ips,
+            admission: InboundAdmission::new(max_connections, trusted_ips),
         }
     }
 
@@ -245,42 +243,55 @@ impl P2p {
                     peer.event(conn_event);
                 }
             }
-            DatagramEvent::NewConnection(incoming) => {
-                // Hard population cap: refuse at the QUIC layer (pre-TLS,
-                // cheap) — the peer manager's score-based trim only polices
-                // quality inside the band below this.
-                // Skip the capcacity check for connections from IPs of trusted peers.
-                let is_trusted_ip = self.trusted_ips.contains(&incoming.remote_address().ip());
-                if is_trusted_ip {
-                    silver_log::info!(peer_addr=?incoming.remote_address(), "inbound connection from trusted peer");
-                }
-
-                if !is_trusted_ip && self.peers.len() >= self.max_connections {
-                    crate::NetworkCounters::InboundRefused.inc();
-                    let rsp = self.endpoint.refuse(incoming, scratch);
-                    let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
-                    return true;
-                }
-                match self.endpoint.accept(incoming, now, scratch, None) {
-                    Ok((handle, conn)) => {
-                        crate::NetworkCounters::InboundAccepted.inc();
-                        let peer = Peer::new(handle, conn, PeerId::default());
-
-                        self.peers.insert(handle, peer);
-                    }
-                    Err(e) => {
-                        silver_log::error!(cause=?e.cause, "accept");
-                        if let Some(rsp) = e.response {
-                            let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
-                        }
-                    }
-                }
-            }
+            DatagramEvent::NewConnection(incoming) => self.admit(incoming, now, scratch, socket),
             DatagramEvent::Response(rsp) => {
                 let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
             }
         }
         true
+    }
+
+    /// Hard population cap: refuse at the QUIC layer (pre-TLS, cheap) — the
+    /// peer manager's score-based trim only polices quality inside the band
+    /// below this.
+    fn admit(
+        &mut self,
+        incoming: Incoming,
+        now: Instant,
+        scratch: &mut Vec<u8>,
+        socket: &UdpSocket,
+    ) {
+        let validated = incoming.remote_address_validated();
+        match self.admission.decide(incoming.remote_address(), validated, self.peers.len()) {
+            Admission::Refuse => {
+                NetworkCounters::InboundRefused.inc();
+                let rsp = self.endpoint.refuse(incoming, scratch);
+                let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
+            }
+            Admission::Retry => {
+                NetworkCounters::InboundRetried.inc();
+                match self.endpoint.retry(incoming, scratch) {
+                    Ok(rsp) => {
+                        let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
+                    }
+                    Err(e) => self.endpoint.ignore(e.into_incoming()),
+                }
+            }
+            Admission::Accept => match self.endpoint.accept(incoming, now, scratch, None) {
+                Ok((handle, conn)) => {
+                    NetworkCounters::InboundAccepted.inc();
+                    let peer = Peer::new(handle, conn, PeerId::default());
+
+                    self.peers.insert(handle, peer);
+                }
+                Err(e) => {
+                    silver_log::error!(cause=?e.cause, "accept");
+                    if let Some(rsp) = e.response {
+                        let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
+                    }
+                }
+            },
+        }
     }
 
     /// Drive the network. `data` handles byte movement for streams;
@@ -531,4 +542,84 @@ fn drain_transmits(peer: &mut Peer, socket: &mut Socket, poll: &Poll, now: Insta
         })
     {}
     did_work
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::UdpSocket as ClientSocket, sync::Arc};
+
+    use bytes::BytesMut;
+    use quinn_proto::{Connection, EndpointConfig};
+
+    use super::*;
+
+    struct Handshake {
+        server: P2p,
+        server_socket: UdpSocket,
+        client_endpoint: Endpoint,
+        client: Connection,
+        client_socket: ClientSocket,
+        now: Instant,
+    }
+
+    impl Handshake {
+        fn new(max_connections: usize, trusted_ips: FxHashSet<IpAddr>) -> Self {
+            let now = Instant::now();
+            let server_keypair = Keypair::from_secret(&[1; 32]).unwrap();
+            let client_keypair = Keypair::from_secret(&[2; 32]).unwrap();
+            let server_config = create_server_config(&server_keypair).unwrap();
+            let server_peer_id = server_keypair.peer_id();
+            let endpoint = create_endpoint(Some(Arc::new(server_config))).unwrap();
+            let server = P2p::new(server_keypair, endpoint, max_connections, trusted_ips);
+
+            let server_socket = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let client_socket = ClientSocket::bind("127.0.0.1:0").unwrap();
+            client_socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+
+            let mut client_endpoint =
+                Endpoint::new(Arc::new(EndpointConfig::default()), None, false, None);
+            let client_config =
+                create_client_config(&client_keypair, Some(server_peer_id)).unwrap();
+            let server_addr = server_socket.local_addr().unwrap();
+            let (_, client) =
+                client_endpoint.connect(now, client_config, server_addr, "x").unwrap();
+
+            Self { server, server_socket, client_endpoint, client, client_socket, now }
+        }
+
+        fn send_initial(&mut self) {
+            let mut buf = Vec::new();
+            let tx = self.client.poll_transmit(self.now, 1, &mut buf).unwrap();
+            let client_addr = self.client_socket.local_addr().unwrap();
+            let data = BytesMut::from(&buf[..tx.size]);
+            self.server.recv(self.now, data, client_addr, &mut Vec::new(), &self.server_socket);
+        }
+
+        fn receive_response(&mut self) {
+            let mut buf = [0; 2048];
+            let (len, from) = self.client_socket.recv_from(&mut buf).unwrap();
+            let data = BytesMut::from(&buf[..len]);
+            let event =
+                self.client_endpoint.handle(self.now, from, None, None, data, &mut Vec::new());
+            let Some(DatagramEvent::ConnectionEvent(_, event)) = event else {
+                panic!("server response not routed to the client connection");
+            };
+            self.client.handle_event(event);
+        }
+    }
+
+    #[test]
+    fn trusted_bypass_over_cap_validates_address_with_retry() {
+        let trusted = FxHashSet::from_iter([IpAddr::from([127, 0, 0, 1])]);
+        let mut handshake = Handshake::new(1, trusted);
+        let dialled = Keypair::from_secret(&[3; 32]).unwrap().peer_id();
+        handshake.server.connect(dialled, "127.0.0.1:1".parse().unwrap(), handshake.now).unwrap();
+
+        handshake.send_initial();
+        assert_eq!(handshake.server.peers.len(), 1, "unvalidated Initial must not allocate state");
+
+        handshake.receive_response();
+        handshake.send_initial();
+        assert_eq!(handshake.server.peers.len(), 2);
+    }
 }
