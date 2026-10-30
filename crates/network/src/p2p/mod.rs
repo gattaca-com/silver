@@ -280,7 +280,7 @@ impl P2p {
             Admission::Accept => match self.endpoint.accept(incoming, now, scratch, None) {
                 Ok((handle, conn)) => {
                     NetworkCounters::InboundAccepted.inc();
-                    self.admission.accepted();
+                    self.admission.accepted(conn.remote_address().ip());
                     let peer = Peer::new(handle, conn, PeerId::default());
 
                     self.peers.insert(handle, peer);
@@ -361,6 +361,9 @@ impl P2p {
 
             if peer.is_drained() {
                 silver_log::debug!(peer_id=?peer.id().peer_id, addr=?peer.id().addr, "peer is drained");
+                if peer.is_inbound() {
+                    self.admission.closed(peer.id().addr.ip());
+                }
                 dead_peers.push(peer.id().clone());
                 on_event(NetEvent::PeerDisconnected { peer: peer.id().clone() });
             }

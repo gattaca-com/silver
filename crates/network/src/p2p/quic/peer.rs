@@ -134,6 +134,10 @@ impl Peer {
         self.connection.is_closed()
     }
 
+    pub(crate) fn is_inbound(&self) -> bool {
+        self.connection.side() == Side::Server
+    }
+
     /// True once per inbound connection, when its handshake completes or the
     /// connection dies first.
     pub(crate) fn take_inbound_handshake_end(&mut self) -> bool {
