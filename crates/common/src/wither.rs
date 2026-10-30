@@ -1,32 +1,32 @@
 use std::{
-    hash::{Hash, Hasher},
+    hash::{BuildHasher, Hash, Hasher},
     marker::PhantomData,
 };
 
-pub struct CountingWitherFilter<T, H, const N: usize>
+pub struct CountingWitherFilter<T, S, const N: usize>
 where
     T: Copy + Default + Hash + Eq,
-    H: Default + Hasher,
+    S: Default + BuildHasher,
 {
     slots: Box<[(T, u32)]>,
-    _hasher: PhantomData<H>,
+    hash_state: S,
 }
 
-impl<T, H, const N: usize> Default for CountingWitherFilter<T, H, N>
+impl<T, S, const N: usize> Default for CountingWitherFilter<T, S, N>
 where
     T: Copy + Default + Hash + Eq,
-    H: Default + Hasher,
+    S: Default + BuildHasher,
 {
     fn default() -> Self {
         assert!(N.is_power_of_two());
-        Self { slots: vec![(T::default(), 0); N].into_boxed_slice(), _hasher: PhantomData }
+        Self { slots: vec![(T::default(), 0); N].into_boxed_slice(), hash_state: S::default() }
     }
 }
 
-impl<T, H, const N: usize> CountingWitherFilter<T, H, N>
+impl<T, S, const N: usize> CountingWitherFilter<T, S, N>
 where
     T: Copy + Default + Hash + Eq,
-    H: Default + Hasher,
+    S: Default + BuildHasher,
 {
     /// Insert or update count for the specified key, returning the previous
     /// value.
@@ -50,10 +50,7 @@ where
     }
 
     fn index(&self, val: &T) -> usize {
-        let mut hasher = H::default();
-        val.hash(&mut hasher);
-        let hash = hasher.finish();
-        (hash as usize) & (N - 1)
+        (self.hash_state.hash_one(val) as usize) & (N - 1)
     }
 }
 
@@ -118,9 +115,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MessageId, MessageIdHasher};
+    use crate::{MessageId, MessageIdHashState};
 
-    type F = CountingWitherFilter<MessageId, MessageIdHasher, 4096>;
+    type F = CountingWitherFilter<MessageId, MessageIdHashState, 4096>;
 
     fn id(b0: u8, b1: u8, tail: u8) -> MessageId {
         let mut bytes = [tail; 20];
@@ -148,13 +145,12 @@ mod tests {
 
     #[test]
     fn collision_overwrites_old_key() {
-        // MessageIdHasher reads bytes[0..8] as native-endian u64; index is the
-        // low 12 bits of that. On x86_64 (LE) that's all of byte[0] + low 4
-        // bits of byte[1]. Two ids sharing those bits collide.
         let mut f = F::default();
         let a = id(0x42, 0x07, 0x11);
-        let b = id(0x42, 0x07, 0x22);
-        assert_ne!(a, b);
+        let b = (0..=u8::MAX)
+            .flat_map(|b0| (0..=u8::MAX).map(move |b1| id(b0, b1, 0x22)))
+            .find(|b| f.index(b) == f.index(&a))
+            .unwrap();
 
         f.upsert(a);
         f.upsert(a);
@@ -169,9 +165,9 @@ mod tests {
     #[test]
     fn non_colliding_keys_are_independent() {
         let mut f = F::default();
-        // Different byte[0] → different low-12-bit index.
         let a = id(0x42, 0x07, 0xAA);
-        let b = id(0x99, 0x08, 0xBB);
+        let b =
+            (0..=u8::MAX).map(|b0| id(b0, 0x08, 0xBB)).find(|b| f.index(b) != f.index(&a)).unwrap();
         f.upsert(a);
         f.upsert(b);
         f.upsert(b);

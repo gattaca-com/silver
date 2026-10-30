@@ -1,13 +1,12 @@
 use std::{
     collections::HashMap,
-    hash::BuildHasherDefault,
     slice,
     time::{Duration, Instant},
 };
 
 use silver_common::{
-    GossipDomain, GossipTopic, GossipTraffic, MessageId, MessageIdHasher, TCacheRead, TCacheReader,
-    TRead, Wheel,
+    GossipDomain, GossipTopic, GossipTraffic, MessageId, MessageIdHashState, TCacheRead,
+    TCacheReader, TRead, Wheel,
 };
 
 /// Another rotating bucket cache. Each bucket optionally maps a message id to
@@ -21,7 +20,7 @@ const IHAVE_GENERATION_INTERVAL: Duration = Duration::from_millis(700);
 
 #[derive(Clone)]
 struct Bucket {
-    messages: HashMap<MessageId, (TRead, GossipTraffic), BuildHasherDefault<MessageIdHasher>>,
+    messages: HashMap<MessageId, (TRead, GossipTraffic), MessageIdHashState>,
     ihaves: HashMap<(GossipTopic, GossipDomain), Vec<MessageId>>,
     tcache_min_seq: u64,
 }

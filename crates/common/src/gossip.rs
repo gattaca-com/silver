@@ -28,7 +28,7 @@ mod hash;
 mod traffic;
 
 pub use hash::{
-    MESSAGE_ID_LEN, MessageId, MessageIdHasher, msg_id_invalid_snappy, msg_id_valid_snappy,
+    MESSAGE_ID_LEN, MessageId, MessageIdHashState, msg_id_invalid_snappy, msg_id_valid_snappy,
 };
 pub use traffic::{GossipTraffic, GossipTrafficBytes};
 

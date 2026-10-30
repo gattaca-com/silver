@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    hash::{BuildHasherDefault, Hash, Hasher},
+    hash::BuildHasher,
     time::{Duration, Instant},
 };
 
-use fxhash::FxHasher;
-use silver_common::{MessageId, MessageIdHasher};
+use foldhash::fast::RandomState;
+use silver_common::{MessageId, MessageIdHashState};
 
 const ROTATION_INTERVAL: Duration = Duration::from_secs(48);
 const FAST_ROTATION_INTERVAL: Duration = Duration::from_secs(12);
@@ -15,14 +15,16 @@ pub(crate) struct DedupCache {
     /// Rotating sets of message ids for deduplicating. We must keep
     /// 2 epocks worth of messages = 768s.
     /// 768s / 16 = 48s per bucket.
-    dedup_sets: Box<[HashSet<MessageId, BuildHasherDefault<MessageIdHasher>>; BUCKETS]>,
+    dedup_sets: Box<[HashSet<MessageId, MessageIdHashState>; BUCKETS]>,
     last_rotation: Instant,
     current_bucket: usize,
     /// Rotating set of pre-decompress fast hash maps. These are shorter lived
     /// and used for pre-decompression fast duplicate checking.
-    fast_sets: Box<[HashMap<u64, MessageId, BuildHasherDefault<MessageIdHasher>>; 16]>,
+    fast_sets: Box<[HashMap<u64, MessageId, RandomState>; 16]>,
     last_fast_rotation: Instant,
     current_fast_bucket: usize,
+    // Keyed, because a hit counts as a duplicate without comparing content.
+    fast_hash_state: RandomState,
 }
 
 impl DedupCache {
@@ -41,10 +43,7 @@ impl DedupCache {
     /// the stored canonical id if it was already present across any
     /// rotation bucket (= duplicate).
     pub(crate) fn contains_fast(&self, topic: &str, data: &[u8]) -> Result<u64, MessageId> {
-        let mut hasher = FxHasher::default();
-        topic.hash(&mut hasher);
-        data.hash(&mut hasher);
-        let fh = hasher.finish();
+        let fh = self.fast_hash_state.hash_one((topic, data));
         match self.fast_sets.iter().find_map(|fs| fs.get(&fh)) {
             Some(msg_id) => Err(*msg_id),
             None => Ok(fh),
@@ -78,6 +77,18 @@ impl Default for DedupCache {
             fast_sets: Default::default(),
             last_fast_rotation: Instant::now(),
             current_fast_bucket: 0,
+            fast_hash_state: RandomState::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_hash_is_keyed_per_cache() {
+        let (a, b) = (DedupCache::default(), DedupCache::default());
+        assert_ne!(a.contains_fast("topic", b"payload"), b.contains_fast("topic", b"payload"));
     }
 }

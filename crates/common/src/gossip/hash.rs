@@ -4,8 +4,12 @@
 //! Per phase0/p2p-interface.md:403-404 clients MUST reject msg ids whose
 //! length is not [`MESSAGE_ID_LEN`].
 
-use std::{hash::Hasher, ops::Deref};
+use std::{
+    hash::{Hash, Hasher},
+    ops::Deref,
+};
 
+use foldhash::fast::RandomState;
 use ring::digest::{Context, SHA256};
 
 /// 4-byte domain tag for successfully-decompressed snappy payloads.
@@ -17,11 +21,25 @@ pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// Truncated SHA-256 output length used as the wire message-id.
 pub const MESSAGE_ID_LEN: usize = 20;
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
 pub struct MessageId {
     pub id: [u8; MESSAGE_ID_LEN],
 }
+
+// Two fixed-width writes rather than the derived length prefix and slice:
+// foldhash then needs half the multiplies on the dedup lookup path.
+impl Hash for MessageId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let (head, tail) = self.id.split_at(16);
+        state.write_u128(u128::from_le_bytes(head.try_into().unwrap()));
+        state.write_u32(u32::from_le_bytes(tail.try_into().unwrap()));
+    }
+}
+
+// Seeded per process: IHAVE and IDONTWANT ids come from peers, so their bits
+// are not guaranteed to be uniformly distributed.
+pub type MessageIdHashState = RandomState;
 
 impl Deref for MessageId {
     type Target = [u8; MESSAGE_ID_LEN];
@@ -59,24 +77,10 @@ fn hash_id(domain: &[u8; 4], topic: &[u8], body: &[u8]) -> MessageId {
     MessageId { id: out }
 }
 
-// MessageId = [u8; 20] is already a SHA-256 truncation — skip re-hashing and
-// take the first 8 bytes as the u64. `Hasher::write` is also invoked via
-// `write_u64` when the hashed key is a plain u64 (e.g. the fast-dedup cache),
-// so accept both 8- and 20-byte writes.
-#[derive(Default)]
-pub struct MessageIdHasher(pub u64);
-impl Hasher for MessageIdHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        debug_assert!(bytes.len() >= 8, "MessageIdHasher: write of <8 bytes");
-        self.0 = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
-    }
-    fn finish(&self) -> u64 {
-        self.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, hash::BuildHasher};
+
     use super::*;
 
     const TOPIC: &str = "/eth2/6a95a1a9/beacon_block/ssz_snappy";
@@ -113,6 +117,19 @@ mod tests {
         let id = msg_id_valid_snappy("", b"");
         let expected = hex_to_bytes("ca888f40c3caca805b37a5434c75de5550616e07");
         assert_eq!(id.deref(), expected.as_slice());
+    }
+
+    #[test]
+    fn hash_mixes_bytes_past_the_prefix() {
+        let state = MessageIdHashState::default();
+        let hashes: HashSet<_> = (0..=u8::MAX)
+            .map(|last| {
+                let mut id = [0xAB; MESSAGE_ID_LEN];
+                id[MESSAGE_ID_LEN - 1] = last;
+                state.hash_one(MessageId { id })
+            })
+            .collect();
+        assert_eq!(hashes.len(), 256);
     }
 
     fn hex_to_bytes(s: &str) -> Vec<u8> {
