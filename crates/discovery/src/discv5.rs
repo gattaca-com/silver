@@ -30,6 +30,9 @@ use crate::{
 
 const NONCE_RING_SIZE: usize = 64;
 const FINDNODE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A WHOAREYOU comes back a full round trip after the request it answers,
+/// so this must exceed any realistic round trip, unlike `request_timeout`.
+const REQUEST_NONCE_TTL: Duration = Duration::from_secs(2);
 const PENDING_PROBES_CAPACITY: usize = 64;
 const BANNED_NODES_CAPACITY: usize = 32;
 
@@ -1020,7 +1023,7 @@ impl DiscV5 {
 
         let request_timeout = self.config.request_timeout();
         self.pending_pings.retain(|_, (_, sent_at)| sent_at.elapsed() < request_timeout);
-        self.request_nonces.expire(request_timeout);
+        self.request_nonces.expire(REQUEST_NONCE_TTL);
         self.findnode_requests.expire(FINDNODE_TIMEOUT);
         self.ip_votes.expire(now);
 
@@ -2366,6 +2369,39 @@ mod tests {
             }
         }
         let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        a.handle(b_addr, &wru, now);
+        for (to, data) in collect_sends(&mut a) {
+            if to == b_addr {
+                b.handle(a_addr, &data, now);
+            }
+        }
+        assert!(b.sessions.contains_key(&a.local_id), "B re-established the session with A");
+    }
+
+    #[test]
+    fn whoareyou_slower_than_request_timeout_re_establishes_session() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19199);
+        let (mut b, b_addr) = make_node(19200);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        collect_sends(&mut a);
+
+        b.sessions.remove(&a.local_id);
+        a.last_ping = Instant::now() - a.config.ping_frequency() - Duration::from_secs(1);
+        for (to, data) in collect_sends(&mut a) {
+            if to == b_addr {
+                b.handle(a_addr, &data, now);
+            }
+        }
+        let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        let round_trip = a.config.request_timeout() + Duration::from_millis(500);
+        assert!(round_trip < REQUEST_NONCE_TTL);
+        for request in a.request_nonces.0.values_mut() {
+            request.sent_at -= round_trip;
+        }
+        a.cleanup();
 
         a.handle(b_addr, &wru, now);
         for (to, data) in collect_sends(&mut a) {
