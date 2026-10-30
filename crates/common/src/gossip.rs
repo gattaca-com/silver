@@ -393,28 +393,28 @@ impl TryFrom<&str> for GossipTopic {
             "proposer_preferences" => Self::ProposerPreferences,
             other => {
                 if let Some(id) = other.strip_prefix("beacon_attestation_") {
-                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
-                    if subnet >= 64 {
-                        return Err(Error::ParseTopicError);
-                    }
-                    Self::BeaconAttestation(subnet)
+                    Self::BeaconAttestation(parse_subnet(id, 64)?)
                 } else if let Some(id) = other.strip_prefix("sync_committee_") {
-                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
-                    if subnet >= 4 {
-                        return Err(Error::ParseTopicError);
-                    }
-                    Self::SyncCommittee(subnet)
+                    Self::SyncCommittee(parse_subnet(id, 4)?)
                 } else if let Some(id) = other.strip_prefix("data_column_sidecar_") {
-                    let subnet = id.parse().map_err(|_| Error::ParseTopicError)?;
-                    if subnet >= 128 {
-                        return Err(Error::ParseTopicError);
-                    }
-                    Self::DataColumnSidecar(subnet)
+                    Self::DataColumnSidecar(parse_subnet(id, 128)?)
                 } else {
                     return Err(Error::ParseTopicError);
                 }
             }
         })
+    }
+}
+
+// Only the canonical spelling: message ids hash the raw topic string, so
+// another spelling would get a distinct id and a topic no other client uses.
+fn parse_subnet(id: &str, count: u64) -> Result<u64, Error> {
+    let canonical = !id.is_empty() &&
+        id.bytes().all(|b| b.is_ascii_digit()) &&
+        (id == "0" || !id.starts_with('0'));
+    match id.parse() {
+        Ok(subnet) if canonical && subnet < count => Ok(subnet),
+        _ => Err(Error::ParseTopicError),
     }
 }
 
@@ -478,6 +478,30 @@ mod tests {
         assert!(GossipTopic::try_from("nope").is_err());
         assert!(GossipTopic::try_from("beacon_attestation_").is_err());
         assert!(GossipTopic::try_from("beacon_attestation_abc").is_err());
+    }
+
+    #[test]
+    fn non_canonical_subnet_ids_reject() {
+        for name in [
+            "beacon_attestation_05",
+            "beacon_attestation_00",
+            "beacon_attestation_+5",
+            "beacon_attestation_ 5",
+            "sync_committee_01",
+            "sync_committee_+1",
+            "data_column_sidecar_007",
+            "data_column_sidecar_+127",
+        ] {
+            assert!(GossipTopic::try_from(name).is_err(), "{name} parsed");
+        }
+        assert_eq!(
+            GossipTopic::try_from("beacon_attestation_0").unwrap(),
+            GossipTopic::BeaconAttestation(0)
+        );
+        assert_eq!(
+            GossipTopic::try_from("data_column_sidecar_10").unwrap(),
+            GossipTopic::DataColumnSidecar(10)
+        );
     }
 
     #[test]
