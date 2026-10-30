@@ -9,6 +9,8 @@ use crate::chunked_response::ChunkedResponse;
 // production maximums (21 blobs × 128 KiB plus block fields).
 const READ_BUF_MAX: usize = 16 << 20;
 const READ_BUF_INIT: usize = 4096;
+// Typical request bodies fit, so they never pay to regrow the buffer.
+const READ_BUF_KEPT_MAX: usize = 64 << 10;
 const WRITE_BUF_INIT: usize = 4096;
 
 // Long enough for a GET whose query lists validators by pubkey.
@@ -239,6 +241,12 @@ impl ServerConnection {
         if self.read_pos == self.read_end {
             self.read_pos = 0;
             self.read_end = 0;
+            // The connection outlives the request that grew the buffer, and
+            // keeping its peak would pin up to the read cap per connection.
+            if self.read_buf.len() > READ_BUF_KEPT_MAX {
+                self.read_buf.truncate(READ_BUF_INIT);
+                self.read_buf.shrink_to(READ_BUF_INIT);
+            }
         }
     }
 
@@ -1054,6 +1062,41 @@ mod tests {
             "{} bytes still held",
             conn.write_buf.capacity()
         );
+    }
+
+    #[test]
+    fn large_request_does_not_leave_the_connection_inflated() {
+        let mut conn = ServerConnection::new();
+        let mut request = oversized_post(1 << 20);
+        request.resize(request.len() + (1 << 20), b'p');
+        feed_all(&mut conn, &request);
+        assert!(conn.read_buf.len() > READ_BUF_KEPT_MAX, "the body was buffered whole");
+
+        assert!(conn.dispatch(&mut echo_path));
+        assert!(
+            conn.read_buf.capacity() <= READ_BUF_INIT,
+            "{} bytes still held",
+            conn.read_buf.capacity()
+        );
+
+        drain(&mut conn);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::AwaitRequest);
+        feed(&mut conn, &get_req("/next", "HTTP/1.1"));
+        assert!(conn.dispatch(&mut echo_path));
+        assert_eq!(drain(&mut conn), b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n/next");
+    }
+
+    #[test]
+    fn request_buffer_within_the_kept_size_is_reused() {
+        let mut conn = ServerConnection::new();
+        let mut request = oversized_post(READ_BUF_KEPT_MAX / 2);
+        request.resize(request.len() + READ_BUF_KEPT_MAX / 2, b'p');
+        feed_all(&mut conn, &request);
+        let grown = conn.read_buf.len();
+        assert!(grown > READ_BUF_INIT);
+
+        assert!(conn.dispatch(&mut echo_path));
+        assert_eq!(conn.read_buf.len(), grown);
     }
 
     #[test]
