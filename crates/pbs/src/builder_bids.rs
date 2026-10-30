@@ -14,7 +14,7 @@ use silver_ssz::ssz_view::SignedExecutionPayloadBidView;
 
 use crate::{
     CONSENSUS_VERSION,
-    builder_config::{BuilderConfig, MAX_BUILDER_ENTRIES},
+    builder_config::{BuilderConfig, MAX_BUILDER_ENTRIES, plain_http_url},
     builder_pools::{BuilderCall, BuilderPools, MAX_REQUESTS},
     builder_preferences::{
         BuilderPreferencesEntry, MAX_PREFERENCES, PreferenceFailures, PreferencesBody,
@@ -138,8 +138,12 @@ impl BuilderBids {
         ];
 
         for (entry, builder) in config.entries().enumerate() {
-            let Some(url) = str::from_utf8(builder.url()).ok().filter(|url| !url.is_empty()) else {
-                silver_log::warn!(slot, entry, "builder url is not utf-8; no bid asked");
+            let Some(url) = plain_http_url(builder.url()) else {
+                silver_log::warn!(
+                    slot,
+                    entry,
+                    "builder url is not a plain http(s) url; no bid asked"
+                );
                 continue;
             };
             if builder.auth_slot() != slot {
@@ -329,8 +333,7 @@ impl RequestBuffers {
         id: u64,
         entry: BuilderPreferencesEntry<'_>,
     ) -> Result<(), &'static str> {
-        let url = str::from_utf8(entry.url()).ok().filter(|url| !url.is_empty());
-        let url = url.ok_or("url is empty or not utf-8")?;
+        let url = plain_http_url(entry.url()).ok_or("url is not a plain http(s) url")?;
         write_base_path(&mut self.path, url);
         self.path.push_str("/eth/v1/builder/builder_preferences/");
         write_hex(&mut self.path, entry.proposer_pubkey());
@@ -524,7 +527,7 @@ mod tests {
     use super::*;
     use crate::{
         builder_config::tests::{Entry, auth_ssz, config},
-        builder_pools::{PREFERENCE_CONNECTIONS, PoolUnavailable},
+        builder_pools::PREFERENCE_CONNECTIONS,
         builder_preferences::tests::{entry as preferences_entry, list},
         json_payload_bid::tests::{bid_json, hex_of},
     };
@@ -850,8 +853,8 @@ mod tests {
         messages.sort_unstable();
         assert_eq!(messages, [
             (1, r#"slot "9" has already passed"#),
-            (2, "url is empty or not utf-8"),
-            (3, PoolUnavailable::Scheme.reason()),
+            (2, "url is not a plain http(s) url"),
+            (3, "url is not a plain http(s) url"),
         ]);
 
         let mut requests: Vec<_> = (0..2).map(|_| received.recv().unwrap()).collect();
@@ -864,6 +867,26 @@ mod tests {
         let auth = auth_ssz(b"builder.example", 9);
         let request = [&7u64.to_le_bytes()[..], &12u32.to_le_bytes(), &auth].concat();
         assert!(requests[0].ends_with(&request), "the auth goes out as the VC sent it");
+    }
+
+    #[test]
+    fn preferences_without_a_plain_url_fail_unsent() {
+        let (url, received) = builder(false);
+        let body = list(&[
+            preferences_entry(1, &format!("{url}/prefs x"), 0),
+            preferences_entry(2, &format!("{url}/prefs\r\nX: 1"), 0),
+            preferences_entry(3, "http://:1/prefs", 0),
+            preferences_entry(4, &format!("{url}/prefs"), 0),
+        ]);
+        let mut readiness = Readiness::new(64);
+        let mut bids =
+            BuilderBids::new(readiness.registry(), TokenRange::whole(), Duration::from_secs(2));
+
+        bids.submit_preferences(5, PreferencesBody::parse(&body, false).unwrap());
+        let refused = "url is not a plain http(s) url".to_owned();
+        let expected = (0..3).map(|index| (index, refused.clone())).collect();
+        assert_eq!(preference_failures(&mut bids, &mut readiness), (5, expected));
+        assert_eq!(received.try_iter().count(), 1);
     }
 
     /// Preferences take `PREFERENCE_CONNECTIONS` of a builder's connections at

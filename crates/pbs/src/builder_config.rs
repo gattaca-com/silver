@@ -15,6 +15,23 @@ const AUTH_FIXED: usize = 4 + 96;
 /// `BuilderRequestAuth`: `data` offset, `slot`.
 const AUTH_MESSAGE_FIXED: usize = 4 + 8;
 
+/// `url` when it is printable ASCII, `http://` or `https://`, and names a
+/// host: then it frames into a request line and `Host` header as written.
+pub fn plain_http_url(url: &[u8]) -> Option<&str> {
+    if url.len() > MAX_BUILDER_URL_SIZE || !url.iter().all(u8::is_ascii_graphic) {
+        return None;
+    }
+    let url = str::from_utf8(url).expect("ascii");
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match host.rsplit_once(':') {
+        Some((host, port)) if !port.contains(']') => host,
+        _ => host,
+    };
+    (!host.is_empty()).then_some(url)
+}
+
 /// An SSZ `BuilderConfig` from a `produceBlockV4` body. `parse` checks every
 /// offset and list bound, so the accessors index without failing. What the
 /// entries say (an empty `url`, another slot) is left to their consumer: the
@@ -336,6 +353,35 @@ pub(crate) mod tests {
         ];
         for (i, body) in bodies.iter().enumerate() {
             assert!(BuilderConfig::parse(body).is_none(), "case {i}");
+        }
+    }
+
+    #[test]
+    fn only_plain_http_urls_pass() {
+        for url in [
+            "http://b:18550",
+            "https://relay.example/builder/",
+            "https://0xabc@relay.example?x=1",
+            "http://[::1]:9000",
+        ] {
+            assert_eq!(plain_http_url(url.as_bytes()), Some(url));
+        }
+        let long_url = format!("http://{}", "a".repeat(MAX_BUILDER_URL_SIZE));
+        for url in [
+            "",
+            "ftp://builder",
+            "http://",
+            "https:///builder",
+            "http://:9000",
+            "http://0xabc@",
+            "http://b /x",
+            "http://b\r\nX: 1",
+            "http://b\t",
+            "http://b\x7f",
+            "http://bé",
+            &long_url,
+        ] {
+            assert_eq!(plain_http_url(url.as_bytes()), None, "{url:?}");
         }
     }
 }

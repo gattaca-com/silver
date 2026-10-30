@@ -24,7 +24,7 @@ mod json_payload_bid;
 mod registrations;
 
 pub use builder_bids::{BuilderBids, BuilderEvent};
-pub use builder_config::{BuilderConfig, BuilderEntry};
+pub use builder_config::{BuilderConfig, BuilderEntry, plain_http_url};
 pub use builder_preferences::{PreferenceFailures, PreferencesBody};
 
 const CONSENSUS_VERSION: &str = "Eth-Consensus-Version";
