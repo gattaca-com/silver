@@ -4,6 +4,7 @@
 mod crypto;
 mod discovery;
 mod discv5;
+mod findnode_requests;
 mod ip_votes;
 mod kbucket;
 mod message;

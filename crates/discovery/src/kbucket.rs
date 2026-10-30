@@ -68,7 +68,6 @@ impl AsRef<Key> for Key {
 #[derive(Copy, Clone, PartialEq, Eq, Default, PartialOrd, Ord, Debug)]
 pub struct Distance(U256);
 
-#[cfg(test)]
 impl Distance {
     /// log2 distance (FindNode bucket index, 1..=256); 0 for identical keys.
     pub fn log2(&self) -> u64 {
