@@ -33,26 +33,37 @@ pub(crate) fn post_register_validator(req: &Request<'_>, ctx: &ApiCtx, resp: &mu
     resp.await_sidecar(SidecarCall::RegisterValidators);
 }
 
+/// An index past the registry is dropped, as Lighthouse drops it: it cannot
+/// propose within the epochs a preparation is kept, and clients resend each
+/// epoch.
 pub(crate) fn post_prepare_beacon_proposer(
     req: &Request<'_>,
-    _ctx: &ApiCtx,
+    ctx: &ApiCtx,
     resp: &mut Response<'_>,
 ) {
     let Some(preparations) = received(req.body, resp, ProposerPreparation::well_formed) else {
         return;
     };
-    silver_log::debug!(count = preparations.len(), "proposer preparations received");
-    if preparations.is_empty() {
+    let registry_len = ctx.read_state(|view| view.validators.count()) as u64;
+    let records: Vec<_> = preparations
+        .iter()
+        .map(ProposerPreparation::record)
+        .filter(|record| record.validator_index < registry_len)
+        .collect();
+    silver_log::debug!(
+        count = preparations.len(),
+        registered = records.len(),
+        "proposer preparations received"
+    );
+    if records.is_empty() {
         return resp.ok();
     }
 
     resp.submit(
-        preparations.len() * PreparationRecord::SIZE,
+        records.len() * PreparationRecord::SIZE,
         |out| {
-            for (record, preparation) in
-                out.chunks_exact_mut(PreparationRecord::SIZE).zip(&preparations)
-            {
-                preparation.record().encode(record);
+            for (chunk, record) in out.chunks_exact_mut(PreparationRecord::SIZE).zip(&records) {
+                record.encode(chunk);
             }
         },
         |preparations| BeaconApiRequest::ProposerPreparations { preparations },
@@ -100,13 +111,15 @@ impl ProposerPreparation<'_> {
 
 #[cfg(test)]
 mod tests {
-    use silver_beacon_state_data::SLOTS_PER_EPOCH;
+    use silver_beacon_state_data::{
+        BeaconState, BeaconStateOwner, EpochStateFinalized, SLOTS_PER_EPOCH, SpecConfig, ValSeed,
+    };
     use silver_common::TCacheProducer;
     use silver_httpcore::ParsedRequest;
 
     use super::*;
     use crate::{
-        ctx::anchor_ctx,
+        ctx::{anchor_ctx, test_ctx},
         http::{ids::MAX_BODY_IDS, router::Outcome},
         testing::{dispatch, dispatch_into, posting, submissions},
     };
@@ -154,9 +167,8 @@ mod tests {
     }
 
     /// Every receipt endpoint answers the same bodyless 200: neither schema
-    /// declares content under it. Neither reads beacon state, so
-    /// the whole suite runs against a node that has published none — which is
-    /// when a validator client first sends these.
+    /// declares content under it. The suite runs against an empty anchor,
+    /// which is when a validator client first sends these.
     #[test]
     fn well_formed_body_is_acknowledged_with_a_bodyless_200() {
         for (path, entry) in entries() {
@@ -238,16 +250,28 @@ mod tests {
         assert_bad_request(&json_post(PREPARE, &at_cap), "invalid entry in request body");
     }
 
+    fn ctx_with_validators(count: usize) -> ApiCtx {
+        let seeds: Vec<_> = (0..count).map(|_| ValSeed::default()).collect();
+        let state = BeaconState::for_test(EpochStateFinalized::default(), &seeds, 0);
+        let mut owner = BeaconStateOwner::new(state);
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        test_ctx(&SpecConfig::mainnet(), owner.reader())
+    }
+
+    fn preparation_of(validator_index: u64, fee_recipient: u8) -> String {
+        format!(
+            "{{\"validator_index\":\"{validator_index}\",\"fee_recipient\":\"0x{}\"}}",
+            hex::encode([fee_recipient; 20])
+        )
+    }
+
     #[test]
     fn preparations_are_forwarded_through_the_cache() {
-        let other = format!(
-            "{{\"validator_index\":\"9\",\"fee_recipient\":\"0x{}\"}}",
-            hex::encode([0x11; 20])
-        );
-        let body = format!("[{},{other}]", preparation());
+        let body = format!("[{},{}]", preparation(), preparation_of(9, 0x11));
         let mut submissions = submissions();
         let (outcome, response) =
-            dispatch_into(&anchor_ctx(), &posting(PREPARE, &body), &mut submissions);
+            dispatch_into(&ctx_with_validators(10), &posting(PREPARE, &body), &mut submissions);
         assert_eq!(response, BODYLESS_OK);
         let Outcome::Response(Some(BeaconApiRequest::ProposerPreparations { preparations })) =
             outcome
@@ -259,6 +283,30 @@ mod tests {
             PreparationRecord { validator_index: 1, fee_recipient: [0xab; 20] },
             PreparationRecord { validator_index: 9, fee_recipient: [0x11; 20] },
         ]));
+    }
+
+    #[test]
+    fn preparations_past_the_registry_are_dropped() {
+        let body = format!("[{},{}]", preparation_of(10, 0x11), preparation_of(9, 0x22));
+        let mut submissions = submissions();
+        let (outcome, response) =
+            dispatch_into(&ctx_with_validators(10), &posting(PREPARE, &body), &mut submissions);
+        assert_eq!(response, BODYLESS_OK);
+        let Outcome::Response(Some(BeaconApiRequest::ProposerPreparations { preparations })) =
+            outcome
+        else {
+            panic!("{outcome:?}")
+        };
+        let written = submissions.read_buffer(preparations).unwrap();
+        assert!(
+            PreparationRecord::decode_all(written)
+                .eq([PreparationRecord { validator_index: 9, fee_recipient: [0x22; 20] }])
+        );
+
+        let body = format!("[{},{}]", preparation_of(10, 0x11), preparation_of(u64::MAX, 0x22));
+        let (outcome, response) = dispatch(&ctx_with_validators(10), &posting(PREPARE, &body));
+        assert_eq!(response, BODYLESS_OK);
+        assert_eq!(outcome, Outcome::Response(None), "nothing reaches the state tile");
     }
 
     #[test]
