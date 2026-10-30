@@ -118,7 +118,7 @@ Charon and Aeneas translate the x86-64 Rust implementation into Lean 4. The proo
 
 These results rely on the translation, CPU intrinsic models and specification described in the proof guide's [trust list](https://github.com/gattaca-com/silver/blob/main/crates/crypto_simd/proof/README.md#what-a-reader-must-trust). They do not prove full BLS signature verification, hash-to-G2 correctness or the aarch64 build. They cover the committed code; a modified implementation needs fresh extraction and proof builds.
 
-The Lean project is dedicated to the public domain under CC0. Other client teams and EthLib can reuse its field tower, pairing results and other proofs without attribution.
+The Lean project is dedicated to the public domain under CC0. Other client teams and EthLib can reuse its proofs without attribution.
 
 ## License
 
