@@ -64,6 +64,7 @@ pub(crate) struct Peer {
     /// A connection that dies with this still false is a "zombie" — the
     /// peer never responded to our handshake.
     handshake_completed: bool,
+    awaiting_inbound_handshake: bool,
     inbound_rpc_limits: RpcRateLimitSet,
     /// Earliest rpc read-response deadline across streams. A silent peer
     /// emits no event to trip the timeout, so lapse triggers a full sweep.
@@ -93,6 +94,7 @@ impl Peer {
     /// handshake reveals it.
     pub(crate) fn new(handle: ConnectionHandle, connection: Connection, peer_id: PeerId) -> Self {
         let now = Instant::now();
+        let inbound = connection.side() == Side::Server;
         Self {
             id: RemotePeer { peer_id, connection: handle.0, addr: connection.remote_address() },
             handle,
@@ -103,6 +105,7 @@ impl Peer {
             cluster_stream: None,
             created_at: now,
             handshake_completed: false,
+            awaiting_inbound_handshake: inbound,
             inbound_rpc_limits: RpcRateLimitSet::default(),
             next_deadline: None,
             // Born dirty: a dial must emit its handshake, an accept its
@@ -129,6 +132,14 @@ impl Peer {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.connection.is_closed()
+    }
+
+    /// True once per inbound connection, when its handshake completes or the
+    /// connection dies first.
+    pub(crate) fn take_inbound_handshake_end(&mut self) -> bool {
+        let ended = self.awaiting_inbound_handshake && !self.connection.is_handshaking();
+        self.awaiting_inbound_handshake &= !ended;
+        ended
     }
 
     /// Needs a transmit+spin cycle now: un-polled inputs, a lapsed wake
@@ -2215,6 +2226,14 @@ mod tests {
             1,
             "timed-out rpc stream must return its codec"
         );
+    }
+
+    #[test]
+    fn inbound_handshake_end_is_reported_once() {
+        let mut pair = PeerPair::new();
+        assert!(!pair.client_peer.take_inbound_handshake_end());
+        assert!(pair.server_peer.take_inbound_handshake_end());
+        assert!(!pair.server_peer.take_inbound_handshake_end());
     }
 
     /// Negotiation completion is observed indirectly by sending a tiny
