@@ -92,6 +92,7 @@ impl RpcReadRequest {
                     }
                     Err(e) => return Err(e.into()),
                 };
+                decoder.expect_payload_len(length);
 
                 // Decode any body bytes read along with the prefix. Output
                 // must be the full remaining buffer — see response_in.
@@ -149,13 +150,14 @@ mod tests {
     use quinn_proto::StreamId;
     use silver_common::{
         StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode,
+        ssz_view::PING_SIZE,
     };
 
     use super::*;
     use crate::p2p::streams::{
         StreamIo,
         rpc::AcquiredRpcOutbound,
-        snappy::{SnappyDecoder, SnappyEncoder},
+        snappy::{SnappyDecoder, SnappyEncoder, SnappyError},
     };
 
     /// Serves a fixed byte stream in `cap`-sized reads; sinks writes.
@@ -247,5 +249,35 @@ mod tests {
             let (buf, _) = acquired.buffer().unwrap();
             assert_eq!(buf, &ssz[..], "cap {cap}: committed body mismatch");
         }
+    }
+
+    #[test]
+    fn endless_padding_frames_fail_the_request() {
+        const STREAM_IDENTIFIER: [u8; 10] =
+            [0xff, 0x06, 0x00, 0x00, b's', b'N', b'a', b'P', b'p', b'Y'];
+        const PADDING_FRAME: [u8; 5] = [0xfe, 1, 0, 0, 0];
+
+        let mut wire = vec![PING_SIZE as u8];
+        wire.extend_from_slice(&STREAM_IDENTIFIER);
+        for _ in 0..1000 {
+            wire.extend_from_slice(&PADDING_FRAME);
+        }
+
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::Ping, true);
+        let mut dec = SnappyDecoder::default();
+        let mut io = WireIo { data: wire, pos: 0, cap: 64 };
+        let mut state = RpcReadRequest::default();
+        let err = loop {
+            match state.spin(&mut io, &p2p_id, &mut producer, &mut dec) {
+                Ok(next) => state = next,
+                Err(e) => break e,
+            }
+            assert!(io.pos < io.data.len(), "padding consumed without error");
+        };
+        assert!(
+            matches!(err, StreamError::SnappyError(SnappyError::ExceedsMaxCompressedLen)),
+            "got {err:?}"
+        );
     }
 }

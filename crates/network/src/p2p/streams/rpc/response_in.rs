@@ -179,6 +179,7 @@ impl RpcReadResponse {
                 } else {
                     alloc_error_response(buf[0], length)?
                 };
+                decoder.expect_payload_len(length);
 
                 // Plumb the wire fork_digest from the prefix into the
                 // response's 4-byte fork_digest slot. `RpcReservation`

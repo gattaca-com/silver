@@ -16,6 +16,10 @@ const BUF_CAP: usize = FRAME_HDR_LEN + CHECKSUM_LEN + 76500;
 /// Worst-case compressed block size for `MAX_UNCOMPRESSED_BLOCK` input.
 const MAX_COMPRESS_BLOCK: usize = 76490;
 
+const fn max_compressed_len(n: usize) -> usize {
+    32 + n + n / 6
+}
+
 const CHUNK_COMPRESSED: u8 = 0x00;
 const CHUNK_UNCOMPRESSED: u8 = 0x01;
 const CHUNK_STREAM_ID: u8 = 0xff;
@@ -30,6 +34,7 @@ pub(crate) enum SnappyError {
     Decompress,
     FrameTooLarge,
     OutputTooSmall,
+    ExceedsMaxCompressedLen,
 }
 
 impl fmt::Display for SnappyError {
@@ -68,6 +73,7 @@ pub(crate) struct SnappyDecoder {
     /// mid-stream.
     consumed: u64,
     frames: u32,
+    max_consumed: u64,
 }
 
 impl Debug for SnappyDecoder {
@@ -80,6 +86,7 @@ impl Debug for SnappyDecoder {
             .field("parsing_uncompressed", &self.parsing_uncompressed)
             .field("consumed", &self.consumed)
             .field("frames", &self.frames)
+            .field("max_consumed", &self.max_consumed)
             .field("decoder", &self.decoder)
             .finish()
     }
@@ -98,6 +105,7 @@ impl Default for SnappyDecoder {
             parsing_uncompressed: false,
             consumed: 0,
             frames: 0,
+            max_consumed: 0,
         }
     }
 }
@@ -127,6 +135,25 @@ impl SnappyDecoder {
         self.parsing_uncompressed = false;
         self.consumed = 0;
         self.frames = 0;
+        self.max_consumed = 0;
+    }
+
+    /// The consensus spec bounds the encoding of `n` bytes by
+    /// `max_compressed_len(n)`. Framing adds the stream identifier, and a
+    /// header and CRC per frame. Unbounded, padding frames would keep a
+    /// stream alive forever.
+    pub fn expect_payload_len(&mut self, uncompressed_len: usize) {
+        let frames = uncompressed_len / MAX_UNCOMPRESSED_BLOCK + 1;
+        let framing = STREAM_IDENTIFIER.len() + frames * (FRAME_HDR_LEN + CHECKSUM_LEN);
+        self.max_consumed = (max_compressed_len(uncompressed_len) + framing) as u64;
+    }
+
+    #[inline]
+    fn check_frame_budget(&self, payload_len: usize) -> Result<(), SnappyError> {
+        if self.consumed + payload_len as u64 > self.max_consumed {
+            return Err(SnappyError::ExceedsMaxCompressedLen);
+        }
+        Ok(())
     }
 
     /// Reset all stream-local state and select the mode required by the next
@@ -198,6 +225,7 @@ impl SnappyDecoder {
                     );
                     return Err(SnappyError::FrameTooLarge);
                 }
+                self.check_frame_budget(payload_len)?;
                 self.need = FRAME_HDR_LEN + payload_len;
                 if payload_len == 0 {
                     self.skip_empty_frame()?;
@@ -369,6 +397,7 @@ impl SnappyDecoder {
                 );
                 return Err(SnappyError::FrameTooLarge);
             }
+            self.check_frame_budget(payload_len)?;
             // Direct path for uncompressed data frames: stage only header+CRC,
             // then stream the data. Guarded by `got_stream_id` and a non-empty
             // data region so malformed/empty frames still take the staging path
@@ -639,6 +668,7 @@ mod tests {
         framed.extend_from_slice(&[CHUNK_UNCOMPRESSED, 5, 0, 0, 0, 0, 0, 0, 0xab]);
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(1);
         let mut out = [0u8; 1];
         let mut in_pos = 0;
         let mut decoded = 0;
@@ -655,12 +685,46 @@ mod tests {
         assert_eq!((in_pos, out), (framed.len(), [0xab]));
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(1);
         assert_eq!(decoder.decompress(&framed, &mut out).unwrap(), (framed.len(), 1));
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(1);
         assert!(matches!(
             decoder.decompress(&[CHUNK_STREAM_ID, 0, 0, 0, 0], &mut out),
             Err(SnappyError::BadStreamId)
+        ));
+    }
+
+    fn padded_one_byte_payload(padding: usize) -> Vec<u8> {
+        const CHUNK_PADDING: u8 = 0xfe;
+        let mut framed = STREAM_IDENTIFIER.to_vec();
+        framed.extend_from_slice(&[CHUNK_PADDING, padding as u8, 0, 0]);
+        framed.extend(std::iter::repeat_n(0, padding));
+        framed.extend_from_slice(&[CHUNK_UNCOMPRESSED, 5, 0, 0, 0, 0, 0, 0, 0xab]);
+        framed
+    }
+
+    #[test]
+    fn decoder_accepts_skippable_frames_up_to_the_compressed_len_bound() {
+        let budget =
+            (max_compressed_len(1) + STREAM_IDENTIFIER.len() + FRAME_HDR_LEN + CHECKSUM_LEN) as u64;
+        let unpadded = padded_one_byte_payload(0).len() as u64;
+        let max_padding = (budget - unpadded) as usize;
+
+        let mut out = [0u8; 1];
+        let framed = padded_one_byte_payload(max_padding);
+        let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(1);
+        assert_eq!(decoder.decompress(&framed, &mut out).unwrap(), (framed.len(), 1));
+        assert_eq!(out, [0xab]);
+
+        let framed = padded_one_byte_payload(max_padding + 1);
+        let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(1);
+        assert!(matches!(
+            decoder.decompress(&framed, &mut out),
+            Err(SnappyError::ExceedsMaxCompressedLen)
         ));
     }
 
@@ -681,6 +745,7 @@ mod tests {
         assert_eq!(pending, 0);
 
         let mut dec = SnappyDecoder::new_direct();
+        dec.expect_payload_len(raw.len());
         let mut out = vec![0u8; raw.len()];
         let mut out_pos = 0;
         let mut in_pos = 0;
@@ -736,6 +801,7 @@ mod tests {
         assert_eq!(pending, 0);
 
         let mut dec = SnappyDecoder::new_direct();
+        dec.expect_payload_len(raw.len());
         let mut out = vec![0u8; raw.len()];
         let mut out_pos = 0;
         let mut in_pos = 0;
@@ -784,6 +850,7 @@ mod tests {
         FrameEncoder::new(raw.as_slice()).read_to_end(&mut compressed).unwrap();
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(raw.len());
         let mut out = vec![0u8; raw.len()];
         let mut in_off = 0;
         let mut out_off = 0;
@@ -837,6 +904,7 @@ mod tests {
         assert_eq!(pending, 0);
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(raw.len());
         let mut out = vec![0u8; raw.len()];
         let (_, produced) = decoder.decompress(&compressed, &mut out).unwrap();
         assert_eq!(produced, raw.len());
@@ -857,6 +925,7 @@ mod tests {
         assert_eq!(pending, 0);
 
         let mut decoder = SnappyDecoder::default();
+        decoder.expect_payload_len(raw.len());
         let mut out = vec![0u8; raw.len()];
         let mut in_off = 0;
         let mut out_off = 0;
@@ -1070,6 +1139,7 @@ mod tests {
 
             // Receiver: response_in::ReadingBody loop.
             let mut decoder = SnappyDecoder::default();
+            decoder.expect_payload_len(size);
             let mut out = vec![0u8; size];
             let mut remaining = size;
             let mut stream_pos = 0usize;
