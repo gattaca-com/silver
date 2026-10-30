@@ -274,6 +274,16 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn gloas_bid_with_out_of_range_commitments_offset_is_a_400() {
+        let mut block = gloas_block();
+        let at = 184 + BEACON_BLOCK_BODY_FIXED + 100 + 188;
+        block[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let (outcome, out) = dispatch(&gloas_ctx(), &publishing(&block, "gloas"));
+        assert_eq!(outcome, Outcome::Response(None));
+        assert_eq!(status_code(&out), "400");
+    }
+
     const BLINDED_PATH: &str = "/eth/v2/beacon/blinded_blocks";
 
     /// A Fulu `SignedBlindedBeaconBlock` with no operations: the header and

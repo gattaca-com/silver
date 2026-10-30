@@ -8,9 +8,9 @@ use crate::{
     ssz_view::{
         AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BYTES_PER_KZG_COMMITMENT,
         BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, DEPOSIT_SIZE, DepositView,
-        MAX_BLOB_COMMITMENTS_PER_BLOCK, PAYLOAD_ATTESTATION_SIZE, PROPOSER_SLASHING_SIZE,
-        PayloadAttestationView, ProposerSlashingView, SIGNED_BLS_CHANGE_SIZE,
-        SIGNED_EXECUTION_PAYLOAD_BID_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
+        ExecutionPayloadBidView, MAX_BLOB_COMMITMENTS_PER_BLOCK, PAYLOAD_ATTESTATION_SIZE,
+        PROPOSER_SLASHING_SIZE, PayloadAttestationView, ProposerSlashingView,
+        SIGNED_BLS_CHANGE_SIZE, SIGNED_EXECUTION_PAYLOAD_BID_MIN, SIGNED_VOLUNTARY_EXIT_SIZE,
         SignedBlsToExecutionChangeView, SignedExecutionPayloadBidView, SignedVoluntaryExitView,
         fixed_list_ok, offsets_ok, variable_field, variable_list_ok,
     },
@@ -38,6 +38,7 @@ impl BeaconBlockBodyGloasView {
             fixed_list_ok(field(4), SIGNED_VOLUNTARY_EXIT_SIZE, UNCAPPED) &&
             fixed_list_ok(field(5), SIGNED_BLS_CHANGE_SIZE, UNCAPPED) &&
             SignedExecutionPayloadBidView::check_size(bid) &&
+            ExecutionPayloadBidView::check_size(SignedExecutionPayloadBidView::message(bid)) &&
             fixed_list_ok(
                 &bid[SIGNED_EXECUTION_PAYLOAD_BID_MIN..],
                 BYTES_PER_KZG_COMMITMENT,
