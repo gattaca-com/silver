@@ -1698,6 +1698,9 @@ pub const DC_BY_ROOT_ID_MAX: usize = DC_BY_ROOT_ID_MIN + NUMBER_OF_COLUMNS * 8;
 // elements, so a leading offset table (u32 LE per element) precedes the
 // element payloads. `offsets[0] / 4` is the element count.
 
+pub const DC_BY_ROOT_REQ_MAX: usize =
+    MAX_REQUEST_BLOCKS_DENEB * (size_of::<u32>() + DC_BY_ROOT_ID_MAX);
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DataColumnsByRootRequestView;

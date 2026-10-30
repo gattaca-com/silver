@@ -7,11 +7,11 @@ use silver_common::{
     P2pStreamId, RpcRequest, RpcResponse, StreamProtocol, TCacheProducer, TProducer, TReservation,
     ssz_view::{
         BLOCKS_BY_RANGE_REQ_SIZE, BLOCKS_BY_ROOT_REQ_MAX, DATA_COLUMN_SIDECAR_GLOAS_MIN,
-        DATA_COLUMN_SIDECAR_MAX, DC_BY_RANGE_REQ_MAX, DC_BY_RANGE_REQ_MIN, DC_BY_ROOT_SINGLE_SIZE,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, EXECUTION_PAYLOAD_ENVELOPES_BY_ROOT_REQ_MAX,
-        GOODBYE_SIZE, MAX_PAYLOAD_SIZE, METADATA_SIZE, PING_SIZE, SIGNED_BEACON_BLOCK_MAX,
-        SIGNED_BEACON_BLOCK_MIN, SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, STATUS_V1_SIZE,
-        STATUS_V2_SIZE,
+        DATA_COLUMN_SIDECAR_MAX, DC_BY_RANGE_REQ_MAX, DC_BY_RANGE_REQ_MIN, DC_BY_ROOT_REQ_MAX,
+        DC_BY_ROOT_SINGLE_SIZE, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_ROOT_REQ_MAX, GOODBYE_SIZE, MAX_PAYLOAD_SIZE, METADATA_SIZE,
+        PING_SIZE, SIGNED_BEACON_BLOCK_MAX, SIGNED_BEACON_BLOCK_MIN,
+        SIGNED_EXECUTION_PAYLOAD_ENVELOPE_MIN, STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
 
@@ -34,8 +34,7 @@ fn payload_bounds(id: &P2pStreamId) -> RangeInclusive<usize> {
             StreamProtocol::ExecutionPayloadEnvelopesByRoot => {
                 32..=EXECUTION_PAYLOAD_ENVELOPES_BY_ROOT_REQ_MAX
             }
-            // Variable-size identifiers, so only the tcache caps the total.
-            StreamProtocol::DataColumnSidecarsByRoot => DC_BY_ROOT_SINGLE_SIZE..=MAX_PAYLOAD_SIZE,
+            StreamProtocol::DataColumnSidecarsByRoot => DC_BY_ROOT_SINGLE_SIZE..=DC_BY_ROOT_REQ_MAX,
             _ => 0..=0,
         }
     } else {

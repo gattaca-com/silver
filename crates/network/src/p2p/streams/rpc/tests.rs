@@ -1,6 +1,12 @@
 use std::io::Write;
 
-use silver_common::{TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode};
+use silver_common::{
+    TCache, TCacheId, TCacheProducer, TCacheReader, TReadMode,
+    ssz_view::{
+        DC_BY_ROOT_REQ_MAX, DataColumnsByRootRequestView, MAX_REQUEST_BLOCKS_DENEB,
+        NUMBER_OF_COLUMNS,
+    },
+};
 
 use super::*;
 
@@ -46,4 +52,25 @@ fn recovered_cached_requests_keep_the_original_descriptor() {
         let acquired = consumer.acquire_strict(*recovered.tcache_read().unwrap()).unwrap();
         assert_eq!(acquired.buffer().unwrap().0, &[7; 32]);
     }
+}
+
+#[test]
+fn data_columns_by_root_request_bound_fits_the_largest_valid_request() {
+    let identifier = [&[0u8; 32][..], &36u32.to_le_bytes(), &[0u8; NUMBER_OF_COLUMNS * 8]].concat();
+    let count = MAX_REQUEST_BLOCKS_DENEB;
+    let mut request = Vec::new();
+    for i in 0..count {
+        let offset = count * 4 + i * identifier.len();
+        request.extend_from_slice(&(offset as u32).to_le_bytes());
+    }
+    for _ in 0..count {
+        request.extend_from_slice(&identifier);
+    }
+    assert!(DataColumnsByRootRequestView::check_size(&request));
+    assert_eq!(request.len(), DC_BY_ROOT_REQ_MAX);
+
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 20);
+    let id = P2pStreamId::new(0, 0, StreamProtocol::DataColumnSidecarsByRoot, true);
+    assert!(alloc_incoming_rpc(&mut producer, &id, DC_BY_ROOT_REQ_MAX).is_ok());
+    assert!(alloc_incoming_rpc(&mut producer, &id, DC_BY_ROOT_REQ_MAX + 1).is_err());
 }
