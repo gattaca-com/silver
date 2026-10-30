@@ -125,10 +125,7 @@ pub(super) struct P2pCertificate<'a> {
 }
 
 struct P2pExtension {
-    key_type: u64,
-    public_key: Vec<u8>,
-    /// Protobuf-encoded public key (used for PeerId derivation).
-    encoded_pubkey: Vec<u8>,
+    public_key: [u8; 33],
     signature: Vec<u8>,
 }
 
@@ -162,7 +159,12 @@ fn parse_unverified(der: &[u8]) -> Result<P2pCertificate<'_>, Error> {
             let (encoded_pubkey, signature): (Vec<u8>, Vec<u8>) =
                 yasna::decode_der(ext.value).map_err(|_| Error::BadExtension)?;
             let (key_type, public_key) = decode_protobuf_pubkey(&encoded_pubkey)?;
-            libp2p_ext = Some(P2pExtension { key_type, public_key, encoded_pubkey, signature });
+            if key_type != KEY_TYPE_SECP256K1 {
+                return Err(Error::UnsupportedKeyType);
+            }
+            // Only the 33-byte compressed form, so one key maps to one PeerId.
+            let public_key = public_key.try_into().map_err(|_| Error::BadPublicKey)?;
+            libp2p_ext = Some(P2pExtension { public_key, signature });
             continue;
         }
         if ext.critical {
@@ -175,7 +177,7 @@ fn parse_unverified(der: &[u8]) -> Result<P2pCertificate<'_>, Error> {
 
 impl P2pCertificate<'_> {
     pub(super) fn peer_id(&self) -> PeerId {
-        PeerId::from_protobuf_encoded(&self.extension.encoded_pubkey)
+        PeerId::from_secp256k1_pubkey(&self.extension.public_key)
     }
 
     /// Verify a TLS handshake signature using the cert's public key.
@@ -253,12 +255,7 @@ impl P2pCertificate<'_> {
         msg.extend_from_slice(&P2P_SIGNING_PREFIX);
         msg.extend_from_slice(spki_raw);
 
-        verify_host_key_signature(
-            self.extension.key_type,
-            &self.extension.public_key,
-            &msg,
-            &self.extension.signature,
-        )
+        verify_host_key_signature(&self.extension.public_key, &msg, &self.extension.signature)
     }
 }
 
@@ -267,21 +264,54 @@ impl P2pCertificate<'_> {
 // ---------------------------------------------------------------------------
 
 fn verify_host_key_signature(
-    key_type: u64,
-    public_key: &[u8],
+    public_key: &[u8; 33],
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), Error> {
-    match key_type {
-        KEY_TYPE_SECP256K1 => {
-            let pk =
-                secp256k1::PublicKey::from_slice(public_key).map_err(|_| Error::BadPublicKey)?;
-            let sig = secp256k1::ecdsa::Signature::from_der(signature)
-                .map_err(|_| Error::BadSignature)?;
-            let digest = sha256::Hash::hash(message);
-            let msg = secp256k1::Message::from_digest(digest.to_byte_array());
-            secp256k1::SECP256K1.verify_ecdsa(&msg, &sig, &pk).map_err(|_| Error::BadSignature)
-        }
-        _ => Err(Error::UnsupportedKeyType),
+    let pk = secp256k1::PublicKey::from_slice(public_key).map_err(|_| Error::BadPublicKey)?;
+    let sig = secp256k1::ecdsa::Signature::from_der(signature).map_err(|_| Error::BadSignature)?;
+    let digest = sha256::Hash::hash(message);
+    let msg = secp256k1::Message::from_digest(digest.to_byte_array());
+    secp256k1::SECP256K1.verify_ecdsa(&msg, &sig, &pk).map_err(|_| Error::BadSignature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cert_with_host_key(keypair: &Keypair, encoded_pubkey: Vec<u8>) -> Vec<u8> {
+        let cert_kp = rcgen::KeyPair::generate_for(P2P_SIGNATURE_ALGORITHM).unwrap();
+        let mut msg = P2P_SIGNING_PREFIX.to_vec();
+        msg.extend_from_slice(&P256_SPKI_PREFIX);
+        msg.extend_from_slice(cert_kp.public_key_raw());
+        let ext_content = yasna::encode_der(&(encoded_pubkey, keypair.sign(&msg)));
+        let mut ext = rcgen::CustomExtension::from_oid_content(&P2P_EXT_OID, ext_content);
+        ext.set_criticality(true);
+
+        let mut params = rcgen::CertificateParams::default();
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params.custom_extensions.push(ext);
+        params.self_signed(&cert_kp).unwrap().der().to_vec()
+    }
+
+    #[test]
+    fn compressed_host_key_yields_keypair_peer_id() {
+        let keypair = Keypair::from_secret(&[3u8; 32]).unwrap();
+        let der = cert_with_host_key(
+            &keypair,
+            encode_secp256k1_protobuf(keypair.public_key_compressed()),
+        );
+        assert_eq!(parse_der(&der).unwrap().peer_id(), keypair.peer_id());
+    }
+
+    #[test]
+    fn uncompressed_host_key_is_rejected() {
+        let keypair = Keypair::from_secret(&[3u8; 32]).unwrap();
+        let uncompressed =
+            keypair.secret_key().public_key(secp256k1::SECP256K1).serialize_uncompressed();
+        let mut encoded_pubkey = vec![0x08, 0x02, 0x12, 65];
+        encoded_pubkey.extend_from_slice(&uncompressed);
+        let der = cert_with_host_key(&keypair, encoded_pubkey);
+        assert!(matches!(parse_der(&der), Err(Error::BadPublicKey)));
     }
 }

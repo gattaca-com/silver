@@ -530,12 +530,9 @@ fn read_tag(data: &[u8], pos: usize) -> Result<(u32, u8, usize), Error> {
 
 fn read_len_delim<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Error> {
     let (len, p) = decode_varint(data, *pos)?;
-    let len = len as usize;
-    if p + len > data.len() {
-        return Err(Error::BadDer);
-    }
-    let slice = &data[p..p + len];
-    *pos = p + len;
+    let end = (len as usize).checked_add(p).ok_or(Error::BadDer)?;
+    let slice = data.get(p..end).ok_or(Error::BadDer)?;
+    *pos = end;
     Ok(slice)
 }
 
@@ -663,11 +660,8 @@ pub fn parse_eth2_multiaddr(data: &[u8]) -> Option<Eth2Addr> {
             // the bytes through `from_protobuf_encoded` — those expect the
             // inner protobuf pubkey, not an already-formed multihash.
             let (len, p) = decode_varint(data, pos).ok()?;
-            let len = len as usize;
-            if p + len > data.len() {
-                return None;
-            }
-            let peer_id = PeerId::from_multihash_bytes(&data[p..p + len])?;
+            let end = (len as usize).checked_add(p)?;
+            let peer_id = PeerId::from_multihash_bytes(data.get(p..end)?)?;
             return Some(Eth2Addr::PeerId(peer_id));
         }
         _ => return None,
@@ -1014,6 +1008,24 @@ mod tests {
         assert_eq!(dst.tcp_ipv4, src.tcp_ipv4);
         assert_eq!(dst.udp_ipv4, src.udp_ipv4);
         assert_eq!(dst.protocols, src.protocols, "protocols bitset must round-trip");
+    }
+
+    #[test]
+    fn wrapping_field_lengths_are_rejected() {
+        let mut huge = vi(u64::MAX);
+        huge.push(0);
+
+        let mut envelope = vi(1 << 3 | 2);
+        envelope.extend(&huge);
+        assert!(fresh_identify().verify_signed_record(&envelope).is_err());
+
+        let mut pubkey = vi(2 << 3 | 2);
+        pubkey.extend(&huge);
+        assert!(decode_protobuf_pubkey(&pubkey).is_err());
+
+        let mut multiaddr = vi(MA_P2P);
+        multiaddr.extend(&huge);
+        assert!(parse_eth2_multiaddr(&multiaddr).is_none());
     }
 
     #[test]
