@@ -286,7 +286,7 @@ impl P2p {
                     self.peers.insert(handle, peer);
                 }
                 Err(e) => {
-                    silver_log::error!(cause=?e.cause, "accept");
+                    silver_log::debug!(cause=?e.cause, "accept");
                     if let Some(rsp) = e.response {
                         let _ = socket.send_to(&scratch[..rsp.size], rsp.destination);
                     }
