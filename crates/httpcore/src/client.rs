@@ -54,6 +54,15 @@ pub struct ClientRequest<'a> {
     pub headers: &'a [(&'a str, &'a str)],
 }
 
+impl ClientRequest<'_> {
+    fn has_line_break(&self, host: &str) -> bool {
+        let optional = [self.authorization, self.accept, self.content_type].into_iter().flatten();
+        let headers = self.headers.iter().flat_map(|&(name, value)| [name, value]);
+        let mut fields = [self.path, host].into_iter().chain(optional).chain(headers);
+        fields.any(|field| field.bytes().any(|byte| matches!(byte, b'\r' | b'\n')))
+    }
+}
+
 enum Framing {
     Head,
     Length { body_start: usize, total: usize },
@@ -217,7 +226,16 @@ fn parse_response_head(buf: &[u8]) -> io::Result<Option<(u16, Framing)>> {
     }
 }
 
-pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>, keep_alive: bool) {
+/// Writes nothing when a head field would carry a CR or LF.
+pub fn frame_request(
+    out: &mut Vec<u8>,
+    host: &str,
+    request: &ClientRequest<'_>,
+    keep_alive: bool,
+) -> Result<(), &'static str> {
+    if request.has_line_break(host) {
+        return Err("request head carries a CR or LF");
+    }
     let method = match request.method {
         Method::Get => "GET",
         Method::Post => "POST",
@@ -242,6 +260,7 @@ pub fn frame_request(out: &mut Vec<u8>, host: &str, request: &ClientRequest<'_>,
     let connection = if keep_alive { "keep-alive" } else { "close" };
     write!(out, "Connection: {connection}\r\n\r\n").unwrap();
     out.extend_from_slice(request.body);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -316,7 +335,8 @@ mod tests {
     #[test]
     fn golden_request_bytes_keep_alive() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true)
+            .unwrap();
         let expected: Vec<u8> = [
             b"POST / HTTP/1.1\r\nHost: localhost:8551\r\nContent-Type: application/json\r\n\
               Content-Length: 59\r\nAuthorization: Bearer aGVhZGVy.cGF5bG9hZA.c2ln\r\n\
@@ -331,7 +351,8 @@ mod tests {
     #[test]
     fn golden_request_bytes_connection_close() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), false);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), false)
+            .unwrap();
         let expected: Vec<u8> = [
             b"POST / HTTP/1.1\r\nHost: localhost:8551\r\nContent-Type: application/json\r\n\
               Content-Length: 59\r\nAuthorization: Bearer aGVhZGVy.cGF5bG9hZA.c2ln\r\n\
@@ -346,10 +367,31 @@ mod tests {
     #[test]
     fn frame_request_without_authorization_omits_header() {
         let mut out = Vec::new();
-        frame_request(&mut out, "localhost:8551", &post(b"{}", None), true);
+        frame_request(&mut out, "localhost:8551", &post(b"{}", None), true).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(!text.contains("Authorization"));
         assert!(text.contains("Content-Length: 2\r\n"));
+    }
+
+    #[test]
+    fn frame_request_refuses_line_breaks_in_head_fields() {
+        let base = post(b"{}", Some(BEARER));
+        let refused = [
+            ("h", ClientRequest { path: "/a\r\nX: 1", ..base }),
+            ("h\nX: 1", post(b"{}", Some(BEARER))),
+            ("h", ClientRequest { authorization: Some("Bearer a\r"), ..base }),
+            ("h", ClientRequest { accept: Some("a\n"), ..base }),
+            ("h", ClientRequest { content_type: Some("a\r\nX: 1"), ..base }),
+            ("h", ClientRequest { headers: &[("X\r\nY", "1")], ..base }),
+            ("h", ClientRequest { headers: &[("X", "1\nY: 2")], ..base }),
+        ];
+        for (case, (host, request)) in refused.iter().enumerate() {
+            let mut out = Vec::new();
+            assert!(frame_request(&mut out, host, request, true).is_err(), "case {case}");
+            assert!(out.is_empty(), "case {case}: nothing is written");
+        }
+        let tab_and_space = ClientRequest { headers: &[("X", "a\tb c")], ..base };
+        assert!(frame_request(&mut Vec::new(), "h", &tab_and_space, true).is_ok());
     }
 
     #[test]
@@ -364,7 +406,7 @@ mod tests {
             content_type: None,
             headers: &[],
         };
-        frame_request(&mut out, "localhost:18550", &request, true);
+        frame_request(&mut out, "localhost:18550", &request, true).unwrap();
         assert_eq!(
             out,
             b"GET /eth/v1/builder/status HTTP/1.1\r\nHost: localhost:18550\r\n\
@@ -384,7 +426,7 @@ mod tests {
             content_type: Some("application/json"),
             headers: &[],
         };
-        frame_request(&mut out, "h", &request, true);
+        frame_request(&mut out, "h", &request, true).unwrap();
         assert!(out.starts_with(b"POST /eth/v1/builder/validators HTTP/1.1\r\n"));
         assert!(out.ends_with(b"Content-Length: 2\r\nConnection: keep-alive\r\n\r\n[]"));
     }
@@ -401,7 +443,7 @@ mod tests {
             content_type: Some("application/octet-stream"),
             headers: &[("Eth-Consensus-Version", "fulu")],
         };
-        frame_request(&mut out, "h", &request, true);
+        frame_request(&mut out, "h", &request, true).unwrap();
         assert_eq!(
             out,
             b"POST /eth/v2/builder/blinded_blocks HTTP/1.1\r\nHost: h\r\n\
@@ -421,7 +463,8 @@ mod tests {
     #[test]
     fn request_drained_in_small_chunks() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true);
+        frame_request(conn.begin_request(), "localhost:8551", &post(BODY, Some(BEARER)), true)
+            .unwrap();
         let expected = conn.pending_write().to_vec();
 
         let mut wire = Vec::new();
@@ -570,7 +613,7 @@ mod tests {
     fn keep_alive_connection_serves_second_request() {
         let mut conn = machine();
         for body in [br#"{"id":1}"#.as_ref(), br#"{"id":2}"#.as_ref()] {
-            frame_request(conn.begin_request(), "h", &post(body, None), true);
+            frame_request(conn.begin_request(), "h", &post(body, None), true).unwrap();
             while !conn.pending_write().is_empty() {
                 let n = conn.pending_write().len();
                 conn.commit_write(n);
@@ -584,8 +627,8 @@ mod tests {
     fn two_connections_complete_out_of_order() {
         let mut first = machine();
         let mut second = machine();
-        frame_request(first.begin_request(), "h", &post(br#"{"id":1}"#, None), true);
-        frame_request(second.begin_request(), "h", &post(br#"{"id":2}"#, None), true);
+        frame_request(first.begin_request(), "h", &post(br#"{"id":1}"#, None), true).unwrap();
+        frame_request(second.begin_request(), "h", &post(br#"{"id":2}"#, None), true).unwrap();
 
         feed(&mut second, &make_response(br#"{"id":2,"result":"b"}"#)).unwrap();
         assert!(first.take_response().is_none());
@@ -598,7 +641,7 @@ mod tests {
     #[test]
     fn reset_clears_partial_state_but_keeps_capacity() {
         let mut conn = machine();
-        frame_request(conn.begin_request(), "h", &post(b"{}", None), true);
+        frame_request(conn.begin_request(), "h", &post(b"{}", None), true).unwrap();
         feed(&mut conn, b"HTTP/1.1 200 OK\r\nContent-Le").unwrap();
 
         conn.reset();
