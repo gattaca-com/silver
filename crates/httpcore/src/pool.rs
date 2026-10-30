@@ -70,6 +70,9 @@ struct PooledConnection {
     machine: ClientConnection,
     in_flight: Option<u64>,
     pending_id: Option<u64>,
+    /// Why `pending_id` was never written; it holds the connection until the
+    /// next sweep answers it, so callers gating on capacity do not resend it.
+    unframed: Option<&'static str>,
     request_deadline: Option<Instant>,
 }
 
@@ -81,6 +84,7 @@ impl PooledConnection {
             machine: ClientConnection::with_capacity(capacity.read, capacity.write),
             in_flight: None,
             pending_id: None,
+            unframed: None,
             request_deadline: None,
         }
     }
@@ -107,8 +111,11 @@ impl PooledConnection {
         registry: &Registry,
     ) {
         debug_assert!(self.is_free(), "enqueue on busy connection");
-        frame_request(self.machine.begin_request(), host, request, true);
         self.pending_id = Some(id);
+        if let Err(error) = frame_request(self.machine.begin_request(), host, request, true) {
+            self.unframed = Some(error);
+            return;
+        }
         self.request_deadline = Some(Instant::now() + timeout);
 
         match self.conn {
@@ -342,7 +349,8 @@ impl HttpPool {
         self.connections.iter().all(PooledConnection::is_free)
     }
 
-    /// The request fails once `timeout` has passed since this call.
+    /// The request fails once `timeout` has passed since this call, or at
+    /// the next dispatch when its head would carry a CR or LF.
     pub fn enqueue(
         &mut self,
         id: u64,
@@ -400,6 +408,12 @@ impl HttpPool {
     {
         let mut now = None;
         for conn in &mut self.connections {
+            if let Some(error) = conn.unframed.take() {
+                let id = conn.pending_id.take().expect("an unframed request is pending");
+                silver_log::warn!(id, error, "request not sent");
+                on_complete(id, Err(error));
+                continue;
+            }
             // Disconnected with a request pending means connect() could not
             // even start (connect/register error): no event will ever arrive
             // for it, so fail the rpc here or it is stranded forever.
@@ -556,6 +570,36 @@ mod tests {
 
         server.received = 0;
         pool.enqueue(2, &post(b"{}"), timeout, readiness.registry());
+        let completed = complete(&mut pool, &mut readiness, || {
+            server.pump();
+            if std::mem::take(&mut server.received) > 0 {
+                server.answer_ok();
+            }
+        });
+        assert_eq!(completed, (2, Some(200)), "the next request is served");
+    }
+
+    #[test]
+    fn request_with_a_line_break_in_its_head_fails_unsent() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1).unwrap();
+        let mut readiness = Readiness::new(1);
+
+        let split = ClientRequest { path: "/a\r\nX-Split: 1", ..post(b"{}") };
+        pool.enqueue(1, &split, LONG_TIMEOUT, readiness.registry());
+        assert!(!pool.has_capacity(), "the refusal holds its connection until answered");
+        let mut failed = None;
+        pool.dispatch_events(readiness.events(), readiness.registry(), &mut |id, response| {
+            failed = Some((id, response.err().map(str::to_owned)));
+        });
+        assert_eq!(failed, Some((1, Some("request head carries a CR or LF".to_owned()))));
+        server.pump();
+        assert_eq!(server.received, 0);
+
+        pool.enqueue(2, &post(b"{}"), LONG_TIMEOUT, readiness.registry());
         let completed = complete(&mut pool, &mut readiness, || {
             server.pump();
             if std::mem::take(&mut server.received) > 0 {

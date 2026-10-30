@@ -359,7 +359,7 @@ mod tests {
             content_type: Some("application/json"),
             headers: &[],
         };
-        frame_request(conn.begin_request(), "localhost", &post, true);
+        frame_request(conn.begin_request(), "localhost", &post, true).unwrap();
         while !conn.pending_write().is_empty() {
             match stream.write(conn.pending_write()) {
                 Ok(n) => conn.commit_write(n),
