@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, BufWriter, Write},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
@@ -53,7 +53,7 @@ pub struct DiscV5 {
 
     sessions: FxHashMap<NodeId, Session>,
 
-    challenges: FxHashMap<NodeId, PendingChallenge>,
+    challenges: FxHashMap<(NodeId, SocketAddr), PendingChallenge>,
     /// FINDNODE to send once a session with the given peer is established.
     pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
     request_nonces: RequestNonces,
@@ -218,11 +218,11 @@ impl DiscV5 {
         nonce: [u8; 12],
         now: Instant,
     ) {
-        if self.challenges.contains_key(&src_id) {
+        if self.challenges.contains_key(&(src_id, src_addr)) {
             return;
         }
 
-        let ip = src_addr.ip();
+        let ip = rate_limit_key(src_addr.ip());
         let whoareyou_window = self.config.whoareyou_window();
         let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
         if now.duration_since(entry.1) > whoareyou_window {
@@ -265,7 +265,7 @@ impl DiscV5 {
 
         let wire = wru.encode(&src_id);
 
-        self.challenges.insert(src_id, PendingChallenge { data, sent_at: now });
+        self.challenges.insert((src_id, src_addr), PendingChallenge { data, sent_at: now });
         self.event_queue.push(DiscoveryEvent::SendMessage { to: src_addr, data: wire });
     }
 
@@ -486,7 +486,7 @@ impl DiscV5 {
         self.pending_findnodes.remove(&id);
         self.request_nonces.forget(&id);
         self.ip_votes.remove(&id);
-        self.challenges.remove(&id);
+        self.challenges.retain(|(nid, _), _| *nid != id);
         self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
@@ -649,7 +649,7 @@ impl DiscV5 {
         message: &[u8],
         now: Instant,
     ) {
-        let challenge = match self.challenges.remove(&src_id) {
+        let challenge = match self.challenges.remove(&(src_id, src_addr)) {
             Some(c) => c,
             None => {
                 warn!(%src_id, %src_addr, "handshake from peer with no pending challenge");
@@ -1268,6 +1268,14 @@ impl Discovery for DiscV5 {
     }
 }
 
+/// One IPv6 holder usually controls a whole /64.
+fn rate_limit_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & !(u64::MAX as u128))),
+    }
+}
+
 struct SentRequest {
     to_id: NodeId,
     to_addr: SocketAddr,
@@ -1467,7 +1475,7 @@ mod tests {
 
         assert!(a.sessions.contains_key(&b.local_id), "A missing session for B");
         assert!(b.sessions.contains_key(&a.local_id), "B missing session for A");
-        assert!(!b.challenges.contains_key(&a.local_id), "B still has challenge for A");
+        assert!(!b.challenges.contains_key(&(a.local_id, a_addr)), "B still has challenge for A");
     }
 
     #[test]
@@ -1926,7 +1934,7 @@ mod tests {
         collect_sends(&mut b); // drain WhoAreYou
 
         // Challenge was recorded in B.
-        assert!(b.challenges.contains_key(&a.local_id), "challenge should be present");
+        assert!(b.challenges.contains_key(&(a.local_id, a_addr)), "challenge should be present");
         // Session is not yet established (handshake not completed).
         assert!(!b.sessions.contains_key(&a.local_id));
     }
@@ -1987,14 +1995,17 @@ mod tests {
 
         b.handle(a_addr, &probe, now);
         collect_sends(&mut b);
-        assert!(b.challenges.contains_key(&a.local_id));
+        assert!(b.challenges.contains_key(&(a.local_id, a_addr)));
 
-        b.challenges.get_mut(&a.local_id).unwrap().sent_at = Instant::now()
+        b.challenges.get_mut(&(a.local_id, a_addr)).unwrap().sent_at = Instant::now()
             .checked_sub(b.config.challenge_ttl() + Duration::from_secs(1))
             .expect("system uptime > challenge_ttl");
 
         b.cleanup();
-        assert!(!b.challenges.contains_key(&a.local_id), "expired challenge should be removed");
+        assert!(
+            !b.challenges.contains_key(&(a.local_id, a_addr)),
+            "expired challenge should be removed"
+        );
     }
 
     #[test]
@@ -2208,7 +2219,7 @@ mod tests {
 
         // Corrupt B's stored challenge: A signs over the original nonce, so
         // verification against the tampered copy fails.
-        b.challenges.get_mut(&a.local_id).unwrap().data[0] ^= 0xff;
+        b.challenges.get_mut(&(a.local_id, a_addr)).unwrap().data[0] ^= 0xff;
 
         // A produces a validly-signed Handshake in response to the WhoAreYou.
         a.handle(b_addr, &wru, now);
@@ -2455,6 +2466,75 @@ mod tests {
 
         assert!(b.kbuckets.get(&Key::from(a.local_id)).is_none(), "padded ENR stored");
         assert!(!b.sessions.contains_key(&a.local_id));
+    }
+
+    fn undecryptable_message(src_id: NodeId, dst_id: NodeId) -> Vec<u8> {
+        let ping = Message::Ping { request_id: RequestId::from(1u64), enr_seq: 0 };
+        Packet::encode_message(src_id, dst_id, &make_cipher(&[0xAA; 16]), ping).unwrap().to_vec()
+    }
+
+    #[test]
+    fn challenge_for_other_address_does_not_block_peer() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19241);
+        let (mut b, b_addr) = make_node(19242);
+        let other_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 6, 6, 6)), 1);
+
+        b.handle(other_addr, &undecryptable_message(a.local_id, b.local_id), now);
+        collect_sends(&mut b);
+
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        assert!(b.sessions.contains_key(&a.local_id), "peer handshake was suppressed");
+    }
+
+    #[test]
+    fn handshake_from_other_address_keeps_peer_challenge() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19243);
+        let (mut b, b_addr) = make_node(19244);
+        let other_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 6, 6, 6)), 1);
+
+        a.add_enr(&b.local_enr, now);
+        a.find_nodes();
+        let probe = collect_sends(&mut a).into_iter().find(|(to, _)| *to == b_addr).unwrap().1;
+        b.handle(a_addr, &probe, now);
+        let wru = collect_sends(&mut b).into_iter().find(|(to, _)| *to == a_addr).unwrap().1;
+
+        let bogus = Packet {
+            iv: rand::random(),
+            src_id: a.local_id,
+            nonce: rand::random(),
+            kind: MessageKind::Handshake {
+                id_nonce_sig: [1; 64],
+                ephem_pubkey: [2; 33],
+                enr_record: None,
+            },
+            message: &[],
+        }
+        .encode(&b.local_id);
+        b.handle(other_addr, &bogus, now);
+
+        a.handle(b_addr, &wru, now);
+        for (to, data) in collect_sends(&mut a) {
+            if to == b_addr {
+                b.handle(a_addr, &data, now);
+            }
+        }
+        assert!(b.sessions.contains_key(&a.local_id), "peer challenge was cancelled");
+    }
+
+    #[test]
+    fn whoareyou_per_ip_limit_groups_ipv6_by_64() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19245);
+        let limit = a.config.whoareyou_per_ip_limit;
+        let prefix = 0x2001_0db8_0000_0001_u128 << 64;
+        for i in 0..limit + 3 {
+            let ip = IpAddr::V6(Ipv6Addr::from_bits(prefix | (i as u128 + 1)));
+            let src_id = NodeId::random();
+            a.handle(SocketAddr::new(ip, 30000), &undecryptable_message(src_id, a.local_id), now);
+        }
+        assert_eq!(collect_sends(&mut a).len(), limit as usize);
     }
 
     #[test]
