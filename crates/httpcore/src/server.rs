@@ -272,6 +272,11 @@ impl ServerConnection {
         false
     }
 
+    pub fn reject_timed_out(&mut self) {
+        debug_assert!(self.write_buf.is_empty(), "a response is already framed");
+        self.reject("408 Request Timeout");
+    }
+
     /// Scratch for a lingering connection's drain: the bytes are read only to
     /// be dropped, so the buffer is reused as it stands and never grows.
     pub fn discard_space(&mut self) -> &mut [u8] {
@@ -749,6 +754,21 @@ mod tests {
     #[test]
     fn bytes_that_cannot_start_a_request_are_rejected_before_any_line_ends() {
         reject_and_linger(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03", "400 Bad Request");
+    }
+
+    #[test]
+    fn timed_out_request_writes_408_then_lingers() {
+        let mut conn = ServerConnection::new();
+        feed(&mut conn, b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\nhalf");
+        assert!(!conn.dispatch(&mut |_, _: &mut Vec<u8>| panic!("the body has not arrived")));
+
+        conn.reject_timed_out();
+        assert_eq!(
+            conn.pending_write(),
+            b"HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+        drain(&mut conn);
+        assert_eq!(conn.after_response(&mut echo_path), AfterResponse::Linger);
     }
 
     /// The body the client is still sending is read for one reason only — to
