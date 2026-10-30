@@ -900,13 +900,16 @@ impl PeerManager {
         // `set_backoff` keeps any longer deadline already recorded, and a
         // shorter advertisement would invite a re-GRAFT we then penalise.
         // Round up so the advertised instant never precedes ours.
-        let backoff_seconds = self
-            .backoff_deadline(conn, topic)
-            .map(|deadline| deadline.saturating_duration_since(now).as_secs_f64().ceil() as u64);
+        let backoff_seconds = self.backoff_deadline(conn, topic).map(|deadline| {
+            let remaining = deadline.saturating_duration_since(now);
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+        });
+        // A peer-chosen backoff can leave the deadline within a second of
+        // `Instant`'s limit.
         if let Some(secs) = backoff_seconds &&
+            let Some(advertised) = now.checked_add(Duration::from_secs(secs)) &&
             let Some(peer) = self.peers.get_mut(&conn)
         {
-            let advertised = now + Duration::from_secs(secs);
             peer.advertised_backoffs
                 .entry(topic)
                 .and_modify(|current| *current = (*current).max(advertised))
@@ -2045,6 +2048,40 @@ mod tests {
             &mut |event| cap.0.push(event),
         );
         assert!(!mgr.peers[&2].backoffs.contains_key(&topic));
+    }
+
+    #[test]
+    fn our_prune_after_near_max_remote_backoff_does_not_overflow() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
+        let (mut mgr, mut cap) = fixture(vec![topic], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        let (mut fits, mut overflows) = (0u64, u64::MAX);
+        while overflows - fits > 1 {
+            let mid = fits + (overflows - fits) / 2;
+            match now.checked_add(Duration::from_secs(mid)) {
+                Some(_) => fits = mid,
+                None => overflows = mid,
+            }
+        }
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicPrune {
+                p2p_peer: 1,
+                topic,
+                digest: [0; 4],
+                backoff_seconds: Some(fits),
+            },
+            now,
+            &mut |event| cap.0.push(event),
+        );
+        assert!(mgr.peers[&1].backoffs.contains_key(&topic));
+
+        let later = now + Duration::from_nanos(1);
+        let backoff = mgr.params.prune_backoff;
+        mgr.do_prune(1, peer_id(1), topic, [0; 4], later, backoff, "test", &mut |event| {
+            cap.0.push(event)
+        });
     }
 
     #[test]
