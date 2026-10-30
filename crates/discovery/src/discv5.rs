@@ -1214,13 +1214,16 @@ impl Discovery for DiscV5 {
         match packet.kind {
             MessageKind::Message => {
                 if let Some(s) = self.sessions.get_mut(&src_id) {
-                    if !s.check_and_record_nonce(&nonce, now) {
+                    if s.seen_nonces.contains(&nonce) {
                         warn!(%src_id, %src_addr, ?nonce, "replayed nonce, dropping message");
                         self.metrics.failed_nodes += 1;
                         return;
                     }
 
                     let plain = decrypt_message(&s.dec, &nonce, &aad, packet.message);
+                    if plain.is_some() {
+                        s.record_authenticated(nonce, now);
+                    }
                     let addr_matches = s.addr == src_addr;
 
                     match (plain, addr_matches) {
@@ -1310,17 +1313,16 @@ impl NonceRing {
         Self { buf: [[0u8; 12]; NONCE_RING_SIZE], head: 0, len: 0 }
     }
 
-    fn insert(&mut self, nonce: [u8; 12]) -> bool {
-        let valid = self.len.min(NONCE_RING_SIZE);
-        if self.buf[..valid].contains(&nonce) {
-            return false;
-        }
+    fn contains(&self, nonce: &[u8; 12]) -> bool {
+        self.buf[..self.len].contains(nonce)
+    }
+
+    fn push(&mut self, nonce: [u8; 12]) {
         self.buf[self.head] = nonce;
         self.head = (self.head + 1) % NONCE_RING_SIZE;
         if self.len < NONCE_RING_SIZE {
             self.len += 1;
         }
-        true
     }
 }
 
@@ -1343,12 +1345,9 @@ impl Session {
         }
     }
 
-    fn check_and_record_nonce(&mut self, nonce: &[u8; 12], now: Instant) -> bool {
-        if !self.seen_nonces.insert(*nonce) {
-            return false;
-        }
+    fn record_authenticated(&mut self, nonce: [u8; 12], now: Instant) {
+        self.seen_nonces.push(nonce);
         self.last_active = now;
-        true
     }
 }
 
@@ -2406,6 +2405,43 @@ mod tests {
             a.record_fork_digest(&enr);
         }
         assert_eq!(a.seen_fork_digests.len(), MAX_TRACKED_FORK_DIGESTS);
+    }
+
+    #[test]
+    fn unauthenticated_packet_neither_burns_nonce_nor_refreshes_session() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19221);
+        let (mut b, b_addr) = make_node(19222);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+
+        let stale = now.checked_sub(Duration::from_secs(60)).unwrap();
+        b.sessions.get_mut(&a.local_id).unwrap().last_active = stale;
+
+        let nonce = rand::random();
+        let ping = Message::Ping { request_id: RequestId::from(1u64), enr_seq: 0 };
+        let unauthenticated = Packet::encode_message_with_nonce(
+            a.local_id,
+            b.local_id,
+            &make_cipher(&[0xAA; 16]),
+            nonce,
+            ping.clone(),
+        )
+        .unwrap();
+        b.handle(a_addr, &unauthenticated, now);
+        collect_sends(&mut b);
+        assert_eq!(b.sessions[&a.local_id].last_active, stale, "invalid packet refreshed session");
+
+        let genuine = Packet::encode_message_with_nonce(
+            a.local_id,
+            b.local_id,
+            &a.sessions[&b.local_id].enc,
+            nonce,
+            ping,
+        )
+        .unwrap();
+        b.handle(a_addr, &genuine, now);
+        assert_eq!(collect_sends(&mut b).len(), 1, "genuine Ping answered with a Pong");
+        assert_eq!(b.sessions[&a.local_id].last_active, now);
     }
 
     #[test]
