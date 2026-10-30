@@ -368,7 +368,9 @@ impl<'a> Packet<'a> {
         let nonce: [u8; 12] = static_header[9..21].try_into().unwrap();
         let auth_data_size = u16::from_be_bytes([static_header[21], static_header[22]]) as usize;
 
-        if auth_data_size > data.len() - (IV_LENGTH + STATIC_HEADER_LENGTH) {
+        if auth_data_size > MAX_HEADER_SIZE - STATIC_HEADER_LENGTH ||
+            auth_data_size > data.len() - (IV_LENGTH + STATIC_HEADER_LENGTH)
+        {
             return Err(PacketError::InvalidAuthDataSize);
         }
 
@@ -771,6 +773,27 @@ mod tests {
 
         let data = [0u8; MIN_PACKET_SIZE - 1];
         assert!(matches!(Packet::decode(&src_id, &data), Err(PacketError::TooSmall)));
+    }
+
+    #[test]
+    fn packet_decode_rejects_oversized_auth_data() {
+        let dst_id = node_id_1();
+        for auth_data_size in [MAX_HEADER_SIZE - STATIC_HEADER_LENGTH + 1, 474, 1000] {
+            let mut data = vec![0u8; IV_LENGTH + STATIC_HEADER_LENGTH + auth_data_size];
+            let header = &mut data[IV_LENGTH..IV_LENGTH + STATIC_HEADER_LENGTH];
+            header[..6].copy_from_slice(&PROTOCOL_ID);
+            header[6..8].copy_from_slice(&PROTOCOL_VERSION);
+            header[8] = FLAG_HANDSHAKE;
+            header[21..23].copy_from_slice(&(auth_data_size as u16).to_be_bytes());
+            let mut cipher =
+                Aes128Ctr::new_from_slices(&dst_id.raw()[..16], &[0u8; IV_LENGTH]).unwrap();
+            cipher.apply_keystream(&mut data[IV_LENGTH..]);
+
+            assert!(matches!(
+                Packet::decode(&dst_id, &data),
+                Err(PacketError::InvalidAuthDataSize)
+            ));
+        }
     }
 
     #[test]
