@@ -62,17 +62,18 @@ impl ReadIdentifyResponse {
                             }
 
                             let mut buffer = vec![0u8; length as usize];
-                            if offset < read {
-                                // copy remainder into the response buffer
-                                buffer[..(read - offset)].copy_from_slice(&buf[offset..read]);
-                            }
+                            let body = &buf[offset..read];
+                            buffer
+                                .get_mut(..body.len())
+                                .ok_or(StreamError::InvalidIdentify)?
+                                .copy_from_slice(body);
 
-                            return Ok(Spin::Next(Self::ReadingBody {
-                                buffer,
-                                read: read - offset,
-                            }));
+                            return Ok(Spin::Next(Self::ReadingBody { buffer, read: body.len() }));
                         }
                     }
+                }
+                if read == buf.len() {
+                    return Err(StreamError::InvalidIdentify);
                 }
                 Ok(Spin::Ok(Self::ReadingLength { buf, read }))
             }
@@ -91,5 +92,78 @@ impl ReadIdentifyResponse {
                 Ok(Spin::Ok(Self::Complete { identify }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use quinn_proto::StreamId;
+    use silver_common::{StreamProtocol, TRead};
+
+    use super::*;
+    use crate::p2p::{
+        quic::{Leased, OutboundGossip},
+        streams::AcquiredRpcOutbound,
+    };
+
+    struct MockIo {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl StreamIo for MockIo {
+        fn write_to_stream(&mut self, _id: StreamId, _data: &[u8]) -> Result<usize, StreamError> {
+            unreachable!("read-only test io")
+        }
+
+        fn read_from_stream(
+            &mut self,
+            _id: StreamId,
+            buf: &mut [u8],
+        ) -> Result<usize, StreamError> {
+            let n = (self.data.len() - self.pos).min(buf.len());
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+
+        fn close_write(&mut self, _id: StreamId) -> Result<(), StreamError> {
+            Ok(())
+        }
+
+        fn rpc_next(&mut self) -> Option<AcquiredRpcOutbound> {
+            None
+        }
+
+        fn gossip_next(&mut self) -> Option<OutboundGossip> {
+            None
+        }
+
+        fn remote_addr(&self) -> SocketAddr {
+            "127.0.0.1:0".parse().unwrap()
+        }
+
+        fn cluster_next(&mut self) -> Option<Leased<TRead>> {
+            None
+        }
+    }
+
+    fn spin(data: Vec<u8>) -> Result<ReadIdentifyResponse, StreamError> {
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::Identity, false);
+        ReadIdentifyResponse::default().spin(&mut MockIo { data, pos: 0 }, &p2p_id)
+    }
+
+    #[test]
+    fn body_longer_than_declared_length_is_rejected() {
+        let mut wire = vec![0u8];
+        wire.extend_from_slice(&[0x41; 9]);
+        assert!(matches!(spin(wire), Err(StreamError::InvalidIdentify)));
+    }
+
+    #[test]
+    fn unterminated_length_is_rejected() {
+        assert!(matches!(spin(vec![0x80; 10]), Err(StreamError::InvalidIdentify)));
     }
 }

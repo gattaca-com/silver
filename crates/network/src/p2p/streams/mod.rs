@@ -46,6 +46,7 @@ pub enum StreamError {
     ProtobufDecodeError(#[from] DecodeError),
     InvalidPubkey(#[from] TryFromSliceError),
     IdentifyTooBig,
+    InvalidIdentify,
     ReadResponseTimeout,
     ReadStall,
     ClusterFrameTooLarge,
