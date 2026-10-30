@@ -19,6 +19,7 @@ use crate::{
         ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
     },
     discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics},
+    ip_votes::IpVotes,
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
     message::{
         Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet,
@@ -57,8 +58,7 @@ pub struct DiscV5 {
     pending_pings: FxHashMap<RequestId, (NodeId, Instant)>,
     event_queue: Vec<DiscoveryEvent>,
 
-    ip_votes: FxHashMap<NodeId, (IpAddr, u16)>,
-    ip_vote_counts: FxHashMap<(IpAddr, u16), u32>,
+    ip_votes: IpVotes,
 
     banned_nodes: FxHashSet<NodeId>,
 
@@ -114,8 +114,7 @@ impl DiscV5 {
             request_nonces: RequestNonces::default(),
             pending_pings: FxHashMap::with_capacity_and_hasher(target, Default::default()),
             event_queue: Vec::with_capacity(target),
-            ip_votes: FxHashMap::with_capacity_and_hasher(target, Default::default()),
-            ip_vote_counts: FxHashMap::with_capacity_and_hasher(8, Default::default()),
+            ip_votes: IpVotes::default(),
             banned_nodes: FxHashSet::with_capacity_and_hasher(
                 BANNED_NODES_CAPACITY,
                 Default::default(),
@@ -302,39 +301,34 @@ impl DiscV5 {
         }
     }
 
-    fn on_pong(&mut self, src_id: NodeId, request_id: RequestId, ip: IpAddr, port: u16) {
+    fn on_pong(
+        &mut self,
+        src_id: NodeId,
+        request_id: RequestId,
+        ip: IpAddr,
+        port: u16,
+        now: Instant,
+    ) {
         match self.pending_pings.remove(&request_id) {
             Some((expected, _)) if expected == src_id => {}
             _ => return,
         }
 
-        let addr = (ip, port);
-        let old = self.ip_votes.insert(src_id, addr);
-        if old == Some(addr) {
+        let socket = SocketAddr::new(ip, port);
+        self.ip_votes.cast(src_id, socket, now);
+        if !self.ip_votes.has_majority(socket, self.config.ip_vote_threshold, now) {
             return;
         }
 
-        if let Some(old_addr) = old {
-            if let Some(c) = self.ip_vote_counts.get_mut(&old_addr) {
-                *c = c.saturating_sub(1);
-            }
-        }
+        let changed = match ip {
+            IpAddr::V4(a) => self.local_enr.ip4() != Some(a),
+            IpAddr::V6(a) => self.local_enr.ip6() != Some(a),
+        };
 
-        let count = self.ip_vote_counts.entry(addr).or_insert(0);
-        *count += 1;
-
-        if *count >= self.config.ip_vote_threshold {
-            let changed = match ip {
-                IpAddr::V4(a) => self.local_enr.ip4() != Some(a),
-                IpAddr::V6(a) => self.local_enr.ip6() != Some(a),
-            };
-
-            if changed {
-                let socket = SocketAddr::new(ip, port);
-                if let Ok(seq) = self.local_enr.set_udp_socket(socket, &self.local_key) {
-                    self.reencode_local_enr();
-                    self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket, seq));
-                }
+        if changed {
+            if let Ok(seq) = self.local_enr.set_udp_socket(socket, &self.local_key) {
+                self.reencode_local_enr();
+                self.event_queue.push(DiscoveryEvent::ExternalAddrChanged(socket, seq));
             }
         }
     }
@@ -486,6 +480,7 @@ impl DiscV5 {
         }
         self.pending_findnodes.remove(&id);
         self.request_nonces.forget(&id);
+        self.ip_votes.remove(&id);
         self.challenges.remove(&id);
         self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
@@ -528,7 +523,7 @@ impl DiscV5 {
                 self.on_ping(src_id, src_addr, request_id, enr_seq, existing.enr_seq);
             }
             Message::Pong { request_id, ip, port, .. } => {
-                self.on_pong(src_id, request_id, ip, port);
+                self.on_pong(src_id, request_id, ip, port, now);
             }
             Message::FindNode { request_id, distances } => {
                 if existing.addr == src_addr {
@@ -994,6 +989,7 @@ impl DiscV5 {
         let request_timeout = self.config.request_timeout();
         self.pending_pings.retain(|_, (_, sent_at)| sent_at.elapsed() < request_timeout);
         self.request_nonces.expire(request_timeout);
+        self.ip_votes.expire(now);
 
         let whoareyou_window = self.config.whoareyou_window();
         self.whoareyou_per_ip.retain(|_, (_, t)| t.elapsed() < whoareyou_window);
@@ -1083,6 +1079,7 @@ impl Discovery for DiscV5 {
         self.sessions.remove(&id);
         self.pending_findnodes.remove(&id);
         self.request_nonces.forget(&id);
+        self.ip_votes.remove(&id);
         self.pending_pings.retain(|_, (nid, _)| *nid != id);
     }
 
@@ -1473,7 +1470,7 @@ mod tests {
 
         do_handshake(&mut a, a_addr, &mut b, b_addr, now);
 
-        let votes_before = a.ip_votes.len();
+        assert!(!a.ip_votes.has_majority(a_addr, 1, now));
 
         // A sends Ping; B replies with Pong. Register the pending ping so A
         // accepts the PONG.
@@ -1493,8 +1490,7 @@ mod tests {
         }
         collect_events(&mut a);
 
-        let votes_after = a.ip_votes.len();
-        assert!(votes_after > votes_before, "ip_votes not updated after Pong");
+        assert!(a.ip_votes.has_majority(a_addr, 1, now), "ip_votes not updated after Pong");
     }
 
     #[test]
@@ -2329,6 +2325,64 @@ mod tests {
             }
         }
         assert!(b.sessions.contains_key(&a.local_id), "B re-established the session with A");
+    }
+
+    fn pong_vote(node: &mut DiscV5, voter: NodeId, addr: SocketAddr, now: Instant) {
+        let rid = RequestId::from(node.next_id());
+        node.pending_pings.insert(rid, (voter, now));
+        node.on_pong(voter, rid, addr.ip(), addr.port(), now);
+    }
+
+    fn external_addr_changed(node: &mut DiscV5) -> bool {
+        collect_events(node).iter().any(|e| matches!(e, DiscoveryEvent::ExternalAddrChanged(..)))
+    }
+
+    #[test]
+    fn ip_vote_minority_cannot_move_external_addr() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19201);
+        let voted_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 6, 6, 6)), 1);
+
+        for _ in 0..4 {
+            pong_vote(&mut a, NodeId::random(), a_addr, now);
+        }
+        for _ in 0..3 {
+            pong_vote(&mut a, NodeId::random(), voted_addr, now);
+        }
+        assert!(!external_addr_changed(&mut a));
+        assert_eq!(a.local_enr.ip4(), Some(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn ip_vote_expires() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19202);
+        let new_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 6, 6, 6)), 1);
+
+        pong_vote(&mut a, NodeId::random(), new_addr, now);
+        pong_vote(&mut a, NodeId::random(), new_addr, now);
+        let much_later = now + Duration::from_secs(2 * 60 * 60);
+        pong_vote(&mut a, NodeId::random(), new_addr, much_later);
+        assert!(!external_addr_changed(&mut a));
+    }
+
+    #[test]
+    fn ip_vote_dropped_on_ban_and_evict() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19203);
+        let new_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 6, 6, 6)), 1);
+        let (banned, evicted) = (NodeId::random(), NodeId::random());
+
+        pong_vote(&mut a, banned, new_addr, now);
+        pong_vote(&mut a, evicted, new_addr, now);
+        a.ban_node(banned);
+        a.evict_peer(evicted);
+        pong_vote(&mut a, NodeId::random(), new_addr, now);
+        assert!(!external_addr_changed(&mut a));
+
+        pong_vote(&mut a, NodeId::random(), new_addr, now);
+        pong_vote(&mut a, NodeId::random(), new_addr, now);
+        assert!(external_addr_changed(&mut a), "three live votes still move the address");
     }
 
     #[test]
