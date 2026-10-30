@@ -49,6 +49,10 @@ use crate::{
 
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
+// A body at the read cap needs about 2.2 Mbit/s to arrive in time. Bodies
+// that matter, such as blocks, are useless after one 12 s slot anyway.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
+
 /// nginx's `lingering_close` caps: how long a connection that has already
 /// answered may wait between the peer's bytes, and how long the whole drain
 /// may run before the slot is taken back.
@@ -90,6 +94,7 @@ enum State {
 struct Requests {
     http: ServerConnection,
     last_activity: Instant,
+    receiving_since: Option<Instant>,
     linger_since: Option<Instant>,
     pending: Option<Pending>,
 }
@@ -357,9 +362,28 @@ impl Requests {
         Self {
             http: ServerConnection::new(),
             last_activity: now,
+            receiving_since: None,
             linger_since: None,
             pending: None,
         }
+    }
+
+    fn overdue(&self, now: Instant, deadline: Duration) -> bool {
+        self.receiving_since.is_some_and(|since| now.duration_since(since) > deadline)
+    }
+
+    /// A 408 can always be framed: the deadline runs only while a request is
+    /// arriving, before anything is framed for it.
+    fn time_out(
+        &mut self,
+        stream: &mut Stream,
+        registry: &Registry,
+        token: Token,
+    ) -> io::Result<()> {
+        debug_assert!(self.pending.is_none(), "an answered request is not arriving");
+        self.receiving_since = None;
+        self.http.reject_timed_out();
+        registry.reregister(stream, token, Interest::WRITABLE)
     }
 
     /// A lingering connection has answered already, so it lives by the linger
@@ -401,21 +425,15 @@ impl Requests {
         if event.is_readable() {
             // A full buffer always leaves something to answer with: a body
             // declared past the cap is answered from headers already buffered,
-            // and a head that outgrows the whole buffer is answered 431. The
-            // answer, not the exhaustion, is what ends the connection.
-            let mut exhausted = false;
+            // and a head past its limit is answered 431 long before the cap.
+            // The answer, not the exhaustion, is what ends the connection.
             loop {
-                let space = match self.http.read_space() {
-                    Ok(space) => space,
-                    Err(_) => {
-                        exhausted = true;
-                        break;
-                    }
-                };
+                let Ok(space) = self.http.read_space() else { break };
                 match stream.read(space) {
                     Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
                     Ok(n) => {
                         self.last_activity = now;
+                        self.receiving_since.get_or_insert(now);
                         self.http.commit_read(n);
                     }
                     Err(e) if would_block(&e) => break,
@@ -424,12 +442,8 @@ impl Requests {
                 }
             }
 
-            let mut answered = self.http.dispatch(request_handler);
-            if !answered && exhausted {
-                self.http.reject_exhausted();
-                answered = true;
-            }
-            if answered {
+            if self.http.dispatch(request_handler) {
+                self.receiving_since = None;
                 registry.reregister(stream, event.token(), Interest::WRITABLE)?;
             }
             return Ok(false);
@@ -628,6 +642,7 @@ pub struct BeaconApi {
     listeners: Vec<Listener>,
     max_connections: usize,
     idle: IdleSweep,
+    request_deadline: Duration,
     linger: Linger,
     streams: StreamLimits,
     last_keep_alive: Instant,
@@ -690,6 +705,7 @@ impl BeaconApi {
             tokens,
             max_connections,
             idle: IdleSweep::new(idle_timeout),
+            request_deadline: REQUEST_DEADLINE,
             linger: Linger::default(),
             streams: StreamLimits::default(),
             last_keep_alive: Instant::now(),
@@ -1359,6 +1375,7 @@ impl BeaconApi {
         }
 
         if self.idle.due(now) {
+            did_work |= self.time_out_requests(now);
             did_work |= self.close_expired(now);
             // Subscribers also leave on failed writes and reads, so the
             // last one is noticed here, within a sweep interval.
@@ -1530,6 +1547,30 @@ impl BeaconApi {
                 return token;
             }
         }
+    }
+
+    /// Any byte refreshes the idle deadline, so only this bounds a request
+    /// that keeps arriving a little at a time.
+    fn time_out_requests(&mut self, now: Instant) -> bool {
+        let Self { connections, registry, request_deadline, .. } = self;
+        let mut timed_out = false;
+        connections.retain(|token, conn| {
+            let State::Requests(requests) = &mut conn.state else { return true };
+            if !requests.overdue(now, *request_deadline) {
+                return true;
+            }
+            timed_out = true;
+            silver_log::warn!(
+                "beacon api request still incomplete after {request_deadline:?}, answering 408"
+            );
+            if let Err(e) = requests.time_out(&mut conn.stream, registry, *token) {
+                silver_log::warn!("beacon api 408 could not be queued, closing: {e}");
+                let _ = registry.deregister(&mut conn.stream);
+                return false;
+            }
+            true
+        });
+        timed_out
     }
 
     fn close_expired(&mut self, now: Instant) -> bool {
@@ -2071,12 +2112,12 @@ mod tests {
         assert_identity_ok(&response);
     }
 
-    /// A head that outgrows the whole read buffer declares no length to
-    /// answer from, so filling the buffer is the verdict: a 431, delivered
-    /// like every other reject, where dropping the socket mid-send would be
-    /// the reset that costs a client its node.
+    /// A head with no end declares no length to answer from, so passing the
+    /// head limit is the verdict: a 431, delivered like every other reject,
+    /// where dropping the socket mid-send would be the reset that costs a
+    /// client its node.
     #[test]
-    fn head_that_outgrows_the_read_buffer_is_answered_with_431() {
+    fn head_past_its_limit_is_answered_with_431() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let addr = tcp_addr(&server);
 
@@ -2277,6 +2318,82 @@ mod tests {
         );
 
         assert_eq!(server.api.connections.len(), 1, "an active connection must survive the sweep");
+    }
+
+    /// Each byte refreshes the idle deadline, so only the request deadline
+    /// can end this request.
+    #[test]
+    fn request_still_arriving_at_its_deadline_is_answered_408() {
+        let mut server = server_with(64, Duration::from_millis(400));
+        let deadline = Duration::from_millis(300);
+        server.api.request_deadline = deadline;
+        let addr = tcp_addr(&server);
+
+        let (received, sending_for) = serve(
+            &mut server,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+                let started = Instant::now();
+                write!(
+                    stream,
+                    "POST /eth/v1/beacon/pool/attestations HTTP/1.1\r\nHost: x\r\n\
+                     Content-Length: 4096\r\n\r\n"
+                )
+                .unwrap();
+                let mut received = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while started.elapsed() < Duration::from_secs(5) {
+                    if stream.write_all(b" ").is_err() {
+                        break;
+                    }
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => received.extend_from_slice(&chunk[..n]),
+                        Err(e) if would_block(&e) => {}
+                        Err(_) => break,
+                    }
+                }
+                (received, started.elapsed())
+            }),
+            "request answered at its deadline",
+        );
+
+        assert_eq!(
+            received,
+            b"HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            "{}",
+            String::from_utf8_lossy(&received)
+        );
+        assert!(sending_for >= deadline, "answered after {sending_for:?}");
+        pump_until(&mut server, "timed out connection closed", |server| {
+            server.api.connections.is_empty()
+        });
+    }
+
+    #[test]
+    fn keep_alive_wait_between_requests_is_not_held_to_the_request_deadline() {
+        let mut server = server_with(64, Duration::from_secs(2));
+        server.api.request_deadline = Duration::from_millis(100);
+        let addr = tcp_addr(&server);
+
+        let _still_open = serve(
+            &mut server,
+            std::thread::spawn(move || {
+                let mut stream = connect(addr);
+                let mut chunk = [0u8; 1024];
+                for i in 0..2 {
+                    write!(stream, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(chunk[..n].starts_with(b"HTTP/1.1 200 OK\r\n"), "request #{i}");
+                    std::thread::sleep(Duration::from_millis(600));
+                }
+                stream
+            }),
+            "keep-alive client served across a wait past the request deadline",
+        );
+
+        assert_eq!(server.api.connections.len(), 1);
     }
 
     /// Connection exhaustion scenario end to end: a hung client owns the only
