@@ -1,9 +1,9 @@
-// Home page, votes card: for the last reported slot, per client, two bars on
+// Home page, votes card: for the last reported slot, per client, three bars on
 // one scale for votes naming the slot's own block. "silver": the singles the
-// node held at the slot's aggregate due time in the client's colour, then
-// those added by the slot's end in grey. "recv": stacked per subscribed
-// committee in its own hue, the largest valid aggregate received during the
-// slot, largest first.
+// node held at the slot's aggregate due time, in the client's colour. "recv":
+// stacked per subscribed committee in its own hue, the largest valid
+// aggregate received during the slot, largest first. "end": the singles held
+// at the slot's end, in light grey.
 
 import { escape, shortId } from './view.js';
 
@@ -31,8 +31,7 @@ function bars(inst, slot) {
   if (!r) return [];
   const aggregates = [...r.largest].sort((a, b) => b[1] - a[1]);
   const atDue = r.atDue ?? 0;
-  const late = Math.max((r.atEnd ?? atDue) - atDue, 0);
-  return [{ root, atDue, late, aggregates }];
+  return [{ root, atDue, atEnd: r.atEnd ?? atDue, aggregates }];
 }
 
 /** Fixed per committee, so one committee matches across clients and slots;
@@ -52,36 +51,41 @@ function stack(x, segments, scale, title) {
     .join('');
 }
 
+const END_FILL = 'color-mix(in srgb, var(--muted) 60%, #ffffff)';
+
 function svg(groups, slot) {
   const sum = (b) => b.aggregates.reduce((t, [, v]) => t + v, 0);
-  const total = (b) => Math.max(b.atDue + b.late, sum(b));
+  const total = (b) => Math.max(b.atDue, b.atEnd, sum(b));
   const max = Math.max(1, ...groups.flatMap((g) => g.bars.map(total)));
   const scale = (H - LABEL_H - TOP_H) / max;
-  const totalAbove = (x, v) =>
-    `<text class="total" x="${x + BAR_W / 2}" y="${H - LABEL_H - v * scale - 4}">${v}</text>`;
   let x = AXIS_W;
   const marks = [];
   for (const { inst, colour, bars: rootBars } of groups) {
     for (const b of rootBars) {
       const who = `${inst.label} block ${shortId(b.root)}`;
-      const silver = [
-        { value: b.atDue, fill: colour, label: `${b.atDue} aggregated at deadline` },
-        { value: b.late, fill: 'var(--muted)', label: `+${b.late} by slot end, ${b.atDue + b.late} total` },
+      const columns = [
+        { name: 'silver', total: b.atDue, segments: [{ value: b.atDue, fill: colour, label: `${b.atDue} aggregated at deadline` }] },
+        {
+          name: 'recv',
+          total: sum(b),
+          title: `${b.aggregates.length} committees`,
+          segments: b.aggregates.map(([committee, v]) => ({
+            value: v,
+            fill: committeeColour(committee),
+            label: `committee ${committee}: ${v}`,
+          })),
+        },
+        { name: 'end', total: b.atEnd, segments: [{ value: b.atEnd, fill: END_FILL, label: `${b.atEnd} aggregated at slot end` }] },
       ];
-      const received = b.aggregates.map(([committee, v]) => ({
-        value: v,
-        fill: committeeColour(committee),
-        label: `committee ${committee}: ${v}`,
-      }));
-      marks.push(stack(x, silver, scale, `${who} silver`));
-      marks.push(stack(x + BAR_W + PAIR_GAP, received, scale, `${who} recv (${b.aggregates.length} committees, ${sum(b)})`));
-      marks.push(totalAbove(x, b.atDue + b.late));
-      marks.push(totalAbove(x + BAR_W + PAIR_GAP, sum(b)));
-      const mid = x + BAR_W + PAIR_GAP / 2;
-      marks.push(`<text class="sub" x="${x + BAR_W / 2}" y="${H - LABEL_H + 12}">silver</text>`);
-      marks.push(`<text class="sub" x="${x + BAR_W * 1.5 + PAIR_GAP}" y="${H - LABEL_H + 12}">recv</text>`);
-      marks.push(`<text x="${mid}" y="${H - LABEL_H + 26}" style="fill:${colour}">${escape(inst.label)}</text>`);
-      x += 2 * BAR_W + PAIR_GAP + GROUP_GAP;
+      columns.forEach((c, i) => {
+        const cx = x + i * (BAR_W + PAIR_GAP);
+        marks.push(stack(cx, c.segments, scale, `${who} ${c.name}${c.title ? ` (${c.title})` : ''}`));
+        marks.push(`<text class="total" x="${cx + BAR_W / 2}" y="${H - LABEL_H - c.total * scale - 4}">${c.total}</text>`);
+        marks.push(`<text class="sub" x="${cx + BAR_W / 2}" y="${H - LABEL_H + 12}">${c.name}</text>`);
+      });
+      const width = columns.length * BAR_W + (columns.length - 1) * PAIR_GAP;
+      marks.push(`<text x="${x + width / 2}" y="${H - LABEL_H + 26}" style="fill:${colour}">${escape(inst.label)}</text>`);
+      x += width + GROUP_GAP;
     }
   }
   const base = H - LABEL_H;
