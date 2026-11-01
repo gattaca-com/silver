@@ -77,10 +77,15 @@ impl VoteReport {
         }
     }
 
-    /// Emits the ended slot's due-time singles and largest aggregates, then
-    /// tracks `next`. A slot not ended by its successor's start, as after a
-    /// stall, is not reported.
-    pub(super) fn end_slot(&mut self, next: Slot, mut emit: impl FnMut(VoteStats)) {
+    /// Emits the ended slot's singles and the largest aggregates of
+    /// `subscribed` committees (bit per index), then tracks `next`. A slot not
+    /// ended by its successor's start, as after a stall, is not reported.
+    pub(super) fn end_slot(
+        &mut self,
+        next: Slot,
+        subscribed: u64,
+        mut emit: impl FnMut(VoteStats),
+    ) {
         if let Some(slot) = self.slot.filter(|&s| s + 1 == next) {
             for r in &self.roots {
                 let block_root = r.block_root;
@@ -91,7 +96,7 @@ impl VoteReport {
                     emit(VoteStats::SinglesAtEnd { block_root, slot, count });
                 }
                 for (committee, &count) in r.largest_aggregate.iter().enumerate() {
-                    if count > 0 {
+                    if count > 0 && subscribed & 1 << committee != 0 {
                         let committee = committee as u8;
                         emit(VoteStats::LargestAggregate { block_root, slot, committee, count });
                     }
@@ -110,12 +115,12 @@ mod tests {
 
     fn ended(report: &mut VoteReport, next: Slot) -> Vec<String> {
         let mut out = Vec::new();
-        report.end_slot(next, |stats| out.push(format!("{stats:?}")));
+        report.end_slot(next, u64::MAX, |stats| out.push(format!("{stats:?}")));
         out
     }
 
     #[test]
-    fn reports_due_singles_and_largest_aggregate_per_committee_at_slot_end() {
+    fn reports_singles_and_largest_aggregate_of_subscribed_committees_at_slot_end() {
         let mut report = VoteReport::new();
         assert!(ended(&mut report, 5).is_empty());
 
@@ -123,11 +128,12 @@ mod tests {
         report.aggregate_received(&[1; 32], 5, 3, 40);
         report.aggregate_received(&[1; 32], 5, 3, 20);
         report.aggregate_received(&[1; 32], 4, 7, 99);
+        report.aggregate_received(&[1; 32], 5, 9, 50);
         report.singles_at_due(&[1; 32], 30);
         report.singles_at_end(&[1; 32], 35);
 
         let mut emitted = Vec::new();
-        report.end_slot(6, |stats| emitted.push(stats));
+        report.end_slot(6, 1 << 3, |stats| emitted.push(stats));
         assert!(matches!(emitted[..], [
             VoteStats::SinglesAtDue { slot: 5, count: 30, .. },
             VoteStats::SinglesAtEnd { slot: 5, count: 35, .. },

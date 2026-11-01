@@ -291,6 +291,14 @@ impl AttestationPool {
         }
     }
 
+    /// Bit per committee index of `slot` holding a single for any candidate.
+    pub(super) fn committees_with_singles(&self, slot: Slot) -> u64 {
+        self.candidates
+            .committees_of(slot)
+            .filter(|&committee| !self.store.singles(committee).is_empty())
+            .fold(0, |mask, committee| mask | 1 << committee.index())
+    }
+
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.candidates.prune_before(floor, |committee| self.store.close(committee));
@@ -861,6 +869,9 @@ mod tests {
         got.clear();
         pool.singles_by_block_root(SLOT + 1, |root, count| got.push((*root, count)));
         assert!(got.is_empty());
+
+        assert_eq!(pool.committees_with_singles(SLOT), 0b11);
+        assert_eq!(pool.committees_with_singles(SLOT + 1), 0);
     }
 
     #[test]

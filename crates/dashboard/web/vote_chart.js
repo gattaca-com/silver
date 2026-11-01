@@ -1,7 +1,7 @@
-// Home page, votes card: for the last reported slot, per client and voted
-// block root, two bars on one scale. "silver": the singles the node held at
-// the slot's aggregate due time in the client's colour, then those added by
-// the slot's end in grey. "recv": stacked per
+// Home page, votes card: for the last reported slot, per client, two bars on
+// one scale for votes naming the slot's own block. "silver": the singles the
+// node held at the slot's aggregate due time in the client's colour, then
+// those added by the slot's end in grey. "recv": stacked per subscribed
 // committee in its own hue, the largest valid aggregate received during the
 // slot, largest first.
 
@@ -16,8 +16,6 @@ const TOP_H = 18;
 const BAR_W = 40;
 const PAIR_GAP = 8;
 const GROUP_GAP = 24;
-/** Roots per client past this, by fewest votes, are not drawn. */
-const ROOTS_MAX = 3;
 
 /** Each client reports a slot whole at its end, so the newest is complete. */
 function shownSlot(instances) {
@@ -25,19 +23,16 @@ function shownSlot(instances) {
   return slots.length ? Math.max(...slots) : null;
 }
 
+/** Votes for the block the client received for `slot`; none when it saw no
+ *  block for it, as on a missed slot. */
 function bars(inst, slot) {
-  const roots = inst.votes.slots.get(slot);
-  if (!roots) return [];
-  const blockRoot = inst.traces.find((t) => t.slot === slot)?.root ?? null;
-  return [...roots]
-    .map(([root, r]) => {
-      const aggregates = [...r.largest].sort((a, b) => b[1] - a[1]);
-      const atDue = r.atDue ?? 0;
-      const late = Math.max((r.atEnd ?? atDue) - atDue, 0);
-      return { root, isBlock: root === blockRoot, atDue, late, aggregates };
-    })
-    .sort((a, b) => b.atDue - a.atDue)
-    .slice(0, ROOTS_MAX);
+  const root = inst.traces.find((t) => t.slot === slot)?.root;
+  const r = root === undefined ? undefined : inst.votes.slots.get(slot)?.get(root);
+  if (!r) return [];
+  const aggregates = [...r.largest].sort((a, b) => b[1] - a[1]);
+  const atDue = r.atDue ?? 0;
+  const late = Math.max((r.atEnd ?? atDue) - atDue, 0);
+  return [{ root, atDue, late, aggregates }];
 }
 
 /** Fixed per committee, so one committee matches across clients and slots;
@@ -68,7 +63,7 @@ function svg(groups, slot) {
   const marks = [];
   for (const { inst, colour, bars: rootBars } of groups) {
     for (const b of rootBars) {
-      const who = `${inst.label} ${b.isBlock ? 'block' : 'root'} ${shortId(b.root)}`;
+      const who = `${inst.label} block ${shortId(b.root)}`;
       const silver = [
         { value: b.atDue, fill: colour, label: `${b.atDue} aggregated at deadline` },
         { value: b.late, fill: 'var(--muted)', label: `+${b.late} by slot end, ${b.atDue + b.late} total` },
@@ -85,7 +80,7 @@ function svg(groups, slot) {
       const mid = x + BAR_W + PAIR_GAP / 2;
       marks.push(`<text class="sub" x="${x + BAR_W / 2}" y="${H - LABEL_H + 12}">silver</text>`);
       marks.push(`<text class="sub" x="${x + BAR_W * 1.5 + PAIR_GAP}" y="${H - LABEL_H + 12}">recv</text>`);
-      marks.push(`<text x="${mid}" y="${H - LABEL_H + 26}" style="fill:${colour}">${escape(b.isBlock ? 'block' : shortId(b.root))}</text>`);
+      marks.push(`<text x="${mid}" y="${H - LABEL_H + 26}" style="fill:${colour}">${escape(inst.label)}</text>`);
       x += 2 * BAR_W + PAIR_GAP + GROUP_GAP;
     }
   }
@@ -93,7 +88,7 @@ function svg(groups, slot) {
   const axis = `<line x1="${AXIS_W - 6}" x2="${Math.max(x, W)}" y1="${base}" y2="${base}"/>
     <text class="axis" x="${AXIS_W - 8}" y="${base - max * scale}" dy="0.35em">${max}</text>
     <text class="axis" x="${AXIS_W - 8}" y="${base}" dy="0.35em">0</text>`;
-  return `<svg viewBox="0 0 ${Math.max(x, W)} ${H}" role="img" aria-label="votes per block root, slot ${slot}">${axis}${marks.join('')}</svg>`;
+  return `<svg viewBox="0 0 ${Math.max(x, W)} ${H}" role="img" aria-label="votes for the block of slot ${slot}">${axis}${marks.join('')}</svg>`;
 }
 
 /** The card; empty until a client reports votes. */
@@ -105,5 +100,6 @@ export function voteChart(fleet) {
   const groups = instances
     .map((inst, i) => ({ inst, colour: `var(--series-${i + 1})`, bars: bars(inst, slot) }))
     .filter((g) => g.bars.length);
+  if (!groups.length) return `<div class="votes"><p class="meta">${title}, slot ${slot}</p><p class="empty">no block seen for slot ${slot}</p></div>`;
   return `<div class="votes"><p class="meta">${title}, slot ${slot}</p>${svg(groups, slot)}</div>`;
 }

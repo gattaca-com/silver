@@ -813,10 +813,12 @@ impl BeaconStateTile {
 
     fn end_vote_slot(&mut self, next: Slot, producers: &mut Producers) {
         let Self { attestation_pool, vote_report, .. } = self;
-        attestation_pool.singles_by_block_root(next.saturating_sub(1), |root, count| {
-            vote_report.singles_at_end(root, count)
-        });
-        vote_report.end_slot(next, |stats| producers.produce(stats));
+        let slot = next.saturating_sub(1);
+        attestation_pool
+            .singles_by_block_root(slot, |root, count| vote_report.singles_at_end(root, count));
+        // Singles arrive only on subscribed subnets, one committee each.
+        let subscribed = attestation_pool.committees_with_singles(slot);
+        vote_report.end_slot(next, subscribed, |stats| producers.produce(stats));
     }
 
     fn take_singles_at_due(&mut self) {
