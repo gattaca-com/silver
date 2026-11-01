@@ -1,8 +1,8 @@
 //! Streams the node's metrics to the dashboard as `silver_observe_wire`
 //! datagrams: shmem sources as one bucket per second, the newest spine peer
-//! stats every five seconds, stage events as they arrive, descriptors every
-//! ten seconds. A node restart reopens every shmem source under a new
-//! `boot_id`.
+//! stats every five seconds, stage events and vote stats as they arrive,
+//! descriptors every ten seconds. A node restart reopens every shmem source
+//! under a new `boot_id`.
 
 use std::{
     net::{SocketAddr, UdpSocket},
@@ -11,12 +11,16 @@ use std::{
 
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
-use silver_common::{APP_NAME, Nanos, NodeChain, PeerStats, SilverSpine};
+use silver_common::{APP_NAME, Nanos, NodeChain, PeerStats, SilverSpine, VoteStats};
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 use silver_stages::StageEvent;
 
-use crate::exporter::{peers::LatestPeerStats, sources::ExportSources, streams::stage_record};
+use crate::exporter::{
+    peers::LatestPeerStats,
+    sources::ExportSources,
+    streams::{stage_record, vote_record},
+};
 
 mod peers;
 mod sources;
@@ -111,6 +115,10 @@ impl Exporter {
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.sources.drain();
         adapter.consume(|stats: PeerStats, _| self.peers.record(&stats));
+        let Self { encoder, sink, .. } = self;
+        adapter.consume(|stats: VoteStats, _| {
+            encoder.vote(Nanos::now().0, &vote_record(&stats), &mut |d| sink.send(d))
+        });
 
         let now = Nanos::now();
 
@@ -178,6 +186,7 @@ impl Exporter {
             peer_scores_bps = rate(Kind::PeerScores),
             peer_topic_bps = rate(Kind::PeerTopic),
             stage_bps = rate(Kind::Stages),
+            vote_bps = rate(Kind::Votes),
             descriptor_bps = rate(Kind::Sources) +
                 rate(Kind::SlotNames) +
                 rate(Kind::BuildInfo) +

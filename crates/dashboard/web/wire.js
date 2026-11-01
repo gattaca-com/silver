@@ -20,6 +20,7 @@ export const Kind = {
   PeerTopic: 11,
   Stages: 12,
   CounterChanges: 13,
+  Votes: 14,
 };
 
 export const SourceClass = { Counters: 0, TCache: 1, Timing: 2, Tile: 3 };
@@ -243,6 +244,9 @@ export function decode(buf) {
         r.skip(6);
         return e;
       });
+      break;
+    case Kind.Votes:
+      d.entries = r.entries(() => ({ root: r.hex(32), slot: r.u64(), dueSlot: r.u64(), count: r.u64() }));
       break;
     default:
       return null;

@@ -24,7 +24,9 @@ use committee_bits::{CommitteeBits, MAX_COMMITTEE_MEMBERS};
 use committee_store::{CommitteeId, CommitteeStore};
 use selection::{CommitteeAttestation, Selection};
 pub(super) use unknown_root_votes::UnknownRootVotes;
-use vote_candidates::{MAX_CANDIDATES, RETAINED_SLOTS, VoteCandidate, VoteCandidates};
+use vote_candidates::{
+    MAX_CANDIDATES, MAX_SLOT_CANDIDATES, RETAINED_SLOTS, VoteCandidate, VoteCandidates,
+};
 
 const MAX_COMMITTEE_CANDIDATES: usize = MAX_CANDIDATES * MAX_COMMITTEES_PER_SLOT;
 /// The 16 aggregators each committee expects across the 65-slot window,
@@ -266,6 +268,27 @@ impl AttestationPool {
         let mut out = vec![0u8; aggregate.ssz_len()];
         aggregate.write_ssz(&mut out);
         Some(out)
+    }
+
+    /// Members of `slot`'s committees held as singles, summed per voted block
+    /// root; several candidates can name one root.
+    pub(super) fn singles_by_block_root(&self, slot: Slot, mut emit: impl FnMut(&B256, u32)) {
+        let mut roots = [([0u8; 32], 0u32); MAX_SLOT_CANDIDATES];
+        let mut len = 0;
+        for committee in self.candidates.committees_of(slot) {
+            let root = self.candidates[committee.candidate()].data().beacon_block_root();
+            let count = self.store.singles(committee).count();
+            match roots[..len].iter_mut().find(|(r, _)| r == root) {
+                Some((_, total)) => *total += count,
+                None => {
+                    roots[len] = (*root, count);
+                    len += 1;
+                }
+            }
+        }
+        for (root, count) in &roots[..len] {
+            emit(root, *count);
+        }
     }
 
     #[timed]
@@ -817,6 +840,27 @@ mod tests {
 
     fn at_slot(slot: Slot, sk_idx: usize) -> ([u8; SINGLE_ATT_SIZE], VerifiedSingleAttestation) {
         single_with(sk_idx, |buf| buf[16..24].copy_from_slice(&slot.to_le_bytes()))
+    }
+
+    #[test]
+    fn singles_by_block_root_sums_committees_and_ignores_aggregates() {
+        let mut pool = AttestationPool::new();
+        let (a, va) = verified_single(0);
+        let (b, vb) = single_with(1, |buf| buf[0..8].copy_from_slice(&1u64.to_le_bytes()));
+        let (c, vc) = single_with(2, |buf| buf[32..64].copy_from_slice(&[0xCD; 32]));
+        assert_eq!(pool.insert_verified(&a, 0, 4, &va), InsertOutcome::Inserted);
+        assert_eq!(pool.insert_verified(&b, 1, 4, &vb), InsertOutcome::Inserted);
+        assert_eq!(pool.insert_verified(&c, 2, 4, &vc), InsertOutcome::Inserted);
+        assert_eq!(insert_aggregate(&mut pool, &[(4, 2), (5, 3)], 4), InsertOutcome::Inserted);
+
+        let mut got = Vec::new();
+        pool.singles_by_block_root(SLOT, |root, count| got.push((*root, count)));
+        got.sort();
+        assert_eq!(got, [([0xAB; 32], 2), ([0xCD; 32], 1)]);
+
+        got.clear();
+        pool.singles_by_block_root(SLOT + 1, |root, count| got.push((*root, count)));
+        assert!(got.is_empty());
     }
 
     #[test]

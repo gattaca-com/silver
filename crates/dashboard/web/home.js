@@ -6,6 +6,7 @@ import { fmtNanos } from './events.js';
 import { queuesDiagram } from './flow.js';
 import { trafficChart } from './gossip_traffic.js';
 import { attestationsChart } from './slot_charts.js';
+import { voteChart } from './vote_chart.js';
 import { escape } from './view.js';
 
 export const renderMs = 100;
@@ -86,6 +87,7 @@ export function render(fleet, root, _now, ui) {
       <thead><tr><th>instance</th>${head}<th class="num">slots</th></tr></thead>
       <tbody>${all.map((inst, i) => stfRow(inst, colour(i))).join('')}</tbody>
     </table></section>
+    ${voteChart(fleet)}
     <div class="home-card home-wide" data-goto="events">
       <h3>${attestations}</h3><div class="chart" data-chart="home-attestations"></div></div>
     <h2>gossip traffic <span class="meta">bytes per 100 ms</span></h2>

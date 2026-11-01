@@ -125,3 +125,12 @@ pub struct StageRecord {
     pub stage: StageCode,
     pub detail: u8,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoteRecord {
+    pub block_root: [u8; 32],
+    pub slot: u64,
+    /// `None` for a received aggregate.
+    pub due_slot: Option<u64>,
+    pub count: u64,
+}

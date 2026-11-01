@@ -4,7 +4,7 @@ use crate::{
     header::{HEADER_LEN, Header, Kind, MAX_DATAGRAM},
     records::{
         PEER_ID_MAX, PeerP2p, PeerScores, PeerTopic, Source, StageRecord, TileUtil, TimingStats,
-        USER_AGENT_MAX,
+        USER_AGENT_MAX, VoteRecord,
     },
 };
 
@@ -22,6 +22,7 @@ const PEER_P2P_LEN: usize = PEER_LEN + 8 + 24 + 8 * 8;
 const PEER_SCORES_LEN: usize = PEER_LEN + 8 + USER_AGENT_MAX + 8 + 9 * 8;
 const PEER_TOPIC_LEN: usize = PEER_LEN + 8 + 3 * 8 + 4 * 8;
 const STAGE_LEN: usize = 32 + 3 * 8 + 8;
+const VOTE_LEN: usize = 32 + 3 * 8;
 
 /// Splits each call's records across as many datagrams as needed, handing
 /// each to `emit` as it fills. Streamed kinds (peers, stages) stay in an open
@@ -146,6 +147,13 @@ impl Encoder {
                 r.column_index.unwrap_or(u64::MAX),
             ]);
             enc.put(&[r.stage as u8, r.detail, 0, 0, 0, 0, 0, 0]);
+        });
+    }
+
+    pub fn vote(&mut self, ts_ns: u64, r: &VoteRecord, emit: &mut impl FnMut(&[u8])) {
+        self.stream(Kind::Votes, ts_ns, VOTE_LEN, emit, |enc| {
+            enc.put(&r.block_root);
+            enc.put_u64s(&[r.slot, r.due_slot.unwrap_or(u64::MAX), r.count]);
         });
     }
 
@@ -803,6 +811,36 @@ mod tests {
         }
         assert_eq!(got, (0..31).map(stage_record).collect::<Vec<_>>());
         assert_eq!(dgrams[0].len(), HEADER_LEN + ALIGNED_PREFIX + 21 * STAGE_LEN, "full");
+    }
+
+    #[test]
+    fn vote_entries_round_trip_with_absent_due_slot() {
+        let records = [
+            VoteRecord { block_root: [1; 32], slot: 10, due_slot: Some(11), count: 300 },
+            VoteRecord { block_root: [2; 32], slot: 11, due_slot: None, count: 7 },
+        ];
+        let dgrams = collect(|enc, emit| {
+            for r in &records {
+                enc.vote(1, r, &mut |d| emit(d));
+            }
+            enc.flush(&mut |d| emit(d));
+        });
+        assert_eq!(dgrams.len(), 1);
+        assert_eq!(Header::parse(&dgrams[0]).unwrap().kind, Kind::Votes);
+        let mut r = Reader::payload(&dgrams[0]);
+        assert_eq!(r.u16(), 2);
+        r.bytes(6);
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            got.push(VoteRecord {
+                block_root: r.bytes(32).try_into().unwrap(),
+                slot: r.u64(),
+                due_slot: Some(r.u64()).filter(|&v| v != u64::MAX),
+                count: r.u64(),
+            });
+        }
+        r.done();
+        assert_eq!(got, records);
     }
 
     #[test]

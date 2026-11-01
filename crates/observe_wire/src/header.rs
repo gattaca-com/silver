@@ -21,10 +21,11 @@ pub enum Kind {
     PeerTopic = 11,
     Stages = 12,
     CounterChanges = 13,
+    Votes = 14,
 }
 
 impl Kind {
-    pub const LAST: Kind = Kind::CounterChanges;
+    pub const LAST: Kind = Kind::Votes;
 
     fn from_u16(v: u16) -> Option<Self> {
         Some(match v {
@@ -41,6 +42,7 @@ impl Kind {
             11 => Kind::PeerTopic,
             12 => Kind::Stages,
             13 => Kind::CounterChanges,
+            14 => Kind::Votes,
             _ => return None,
         })
     }

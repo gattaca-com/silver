@@ -9,8 +9,15 @@ pub const BASIS_POINTS: u64 = 10_000;
 pub const ATTESTATION_DUE_BPS: u64 = 3333;
 pub const ATTESTATION_DUE_BPS_GLOAS: u64 = 2500;
 
+pub const AGGREGATE_DUE_BPS: u64 = 6667;
+pub const AGGREGATE_DUE_BPS_GLOAS: u64 = 5000;
+
 pub fn attestation_due_bps(is_gloas: bool) -> u64 {
     if is_gloas { ATTESTATION_DUE_BPS_GLOAS } else { ATTESTATION_DUE_BPS }
+}
+
+pub fn aggregate_due_bps(is_gloas: bool) -> u64 {
+    if is_gloas { AGGREGATE_DUE_BPS_GLOAS } else { AGGREGATE_DUE_BPS }
 }
 
 // slot/24 before next slot = 500ms on mainnet.
@@ -183,6 +190,12 @@ impl SlotTicker {
     pub fn is_before_attesting_interval(&self, is_gloas: bool) -> bool {
         let due_ms = self.slot_ms * attestation_due_bps(is_gloas) / BASIS_POINTS;
         self.millis_since_genesis() % self.slot_ms < due_ms
+    }
+
+    pub fn is_past_aggregate_due(&self, slot: Slot, is_gloas: bool) -> bool {
+        let due_ms =
+            slot * self.slot_ms + self.slot_ms * aggregate_due_bps(is_gloas) / BASIS_POINTS;
+        self.millis_since_genesis() >= due_ms
     }
 
     #[cfg(any(test, feature = "test-util"))]

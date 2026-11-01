@@ -85,4 +85,6 @@ pub struct SilverSpine {
 
     #[queue(size(2usize.pow(12)))]
     pub peer_stats: SpineQueue<PeerStats>,
+    #[queue(size(2usize.pow(12)))]
+    pub vote_stats: SpineQueue<VoteStats>,
 }

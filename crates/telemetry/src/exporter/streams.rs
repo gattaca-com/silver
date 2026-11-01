@@ -1,10 +1,11 @@
-//! Wire records for spine-side sources: peer stats and per-block stage
-//! events. Stage events come from the tile's one `StageReader`, shared with
-//! the other sinks.
+//! Wire records for spine-side sources: peer stats, vote stats and per-block
+//! stage events. Stage events come from the tile's one `StageReader`, shared
+//! with the other sinks.
 use silver_common::{
     BlockSource, ColumnOrigin, P2pConnectionStats, PeerScores as NodePeerScores, PeerTopicScores,
+    VoteStats,
 };
-use silver_observe_wire::{PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord};
+use silver_observe_wire::{PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord, VoteRecord};
 use silver_stages::{Stage, StageEvent};
 
 pub(super) fn p2p_record(s: &P2pConnectionStats) -> PeerP2p<'_> {
@@ -88,5 +89,16 @@ pub(super) fn stage_record(e: &StageEvent) -> StageRecord {
         column_index,
         stage,
         detail,
+    }
+}
+
+pub(super) fn vote_record(s: &VoteStats) -> VoteRecord {
+    match *s {
+        VoteStats::Singles { block_root, slot, due_slot, count } => {
+            VoteRecord { block_root, slot, due_slot: Some(due_slot), count: count as u64 }
+        }
+        VoteStats::Aggregate { block_root, slot, count } => {
+            VoteRecord { block_root, slot, due_slot: None, count: count as u64 }
+        }
     }
 }

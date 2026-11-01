@@ -16,6 +16,8 @@ const TRACES_CAP = 64;
 /** `fast:` sources also summed per slot, and the completed slots kept. */
 const SLOT_TOTAL_SOURCES = new Set(['fast:gossip_bytes_recv', 'fast:gossip_bytes_sent']);
 const SLOT_TOTALS_CAP = 64;
+/** Vote slots kept per instance. */
+const VOTE_SLOTS_CAP = 4;
 
 /** Per-slot value and rate over consecutive completed buckets, columns
  *  aligned with `ts` (unix seconds). A slot first seen late is null-padded
@@ -154,6 +156,31 @@ export function tcacheLength(values) {
   return Math.max(0, (values[1] ?? 0) - tcacheMinTail(values));
 }
 
+/** Per vote slot and block root: singles held at the aggregate due time of
+ *  the slot and of the next, and the size of every admitted aggregate. */
+export class VoteSlots {
+  constructor() {
+    /** Slot → root → `{ singles: Map<dueSlot, count>, aggregates: [] }`. */
+    this.slots = new Map();
+  }
+
+  push(e) {
+    let roots = this.slots.get(e.slot);
+    if (!roots) {
+      if (this.slots.size === VOTE_SLOTS_CAP) {
+        const oldest = Math.min(...this.slots.keys());
+        if (e.slot < oldest) return;
+        this.slots.delete(oldest);
+      }
+      this.slots.set(e.slot, (roots = new Map()));
+    }
+    let root = roots.get(e.root);
+    if (!root) roots.set(e.root, (root = { singles: new Map(), aggregates: [] }));
+    if (e.dueSlot === null) root.aggregates.push(e.count);
+    else root.singles.set(e.dueSlot, e.count);
+  }
+}
+
 /** One exporter's view. A `bootId` change invalidates every source id and
  *  every connection, so both reset with it; block traces survive. */
 export class Instance {
@@ -167,6 +194,7 @@ export class Instance {
     this.nowNs = 0;
     /** Oldest first. */
     this.traces = [];
+    this.votes = new VoteSlots();
     this.resetBoot();
   }
 
@@ -305,6 +333,9 @@ export class Instance {
         break;
       case Kind.Stages:
         for (const e of d.entries) this.applyStage(e);
+        break;
+      case Kind.Votes:
+        for (const e of d.entries) this.votes.push(e);
         break;
     }
   }

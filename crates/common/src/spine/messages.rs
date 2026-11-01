@@ -1711,6 +1711,16 @@ pub enum PeerStats {
     Topic(PeerTopicScores),
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub enum VoteStats {
+    /// Members voting for `block_root` in `slot` that the pool holds as
+    /// singles, at the aggregate due time of `due_slot`.
+    Singles { block_root: [u8; 32], slot: u64, due_slot: u64, count: u32 },
+    /// A received aggregate the pool admitted: not covered by one it holds.
+    Aggregate { block_root: [u8; 32], slot: u64, count: u32 },
+}
+
 /// Fixed-size copy of an identify user-agent, sized to match
 /// `Identify::user_agent`.
 #[derive(Clone, Copy, Debug)]

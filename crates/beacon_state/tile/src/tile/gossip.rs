@@ -1282,6 +1282,15 @@ impl BeaconStateTile {
             parsed.aggregation_bits,
             &signature,
         );
+        if outcome == InsertOutcome::Inserted {
+            // Less the bitlist's length delimiter.
+            let count = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
+            self.vote_report.aggregate_admitted(
+                parsed.agg_data.beacon_block_root(),
+                parsed.agg_slot,
+                count,
+            );
+        }
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
             silver_log::debug!(

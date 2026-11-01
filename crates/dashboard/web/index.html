@@ -193,6 +193,14 @@
   .home-pair { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .home-card.flow svg { width: 100%; height: auto; display: block; }
   .gossip-flow svg { width: 100%; max-width: 1200px; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+  .votes { margin-bottom: 14px; }
+  .votes .meta { margin: 0 0 2px; }
+  .votes svg { width: 100%; max-width: 1200px; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+  .votes rect { stroke: var(--panel); stroke-width: 0.5px; }
+  .votes line { stroke: var(--line); }
+  .votes text { font-size: 11px; fill: var(--fg); text-anchor: middle; }
+  .votes text.sub, .votes text.axis { fill: var(--muted); }
+  .votes text.axis { text-anchor: end; }
   .gossip-flow .band { opacity: 0.35; }
   .gossip-flow .band:hover { opacity: 0.6; }
   .gossip-flow text { font-size: 12px; fill: var(--fg); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }

@@ -16,7 +16,7 @@ use silver_common::{
     Origin, PayloadResolution, PayloadValidationStatus, PtcObservation, ReplayBlock, RequestId,
     RpcInbound, RpcResponse, RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncNeed,
     SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
-    TProducer, TReadMode, TileId, hex32,
+    TProducer, TReadMode, TileId, VoteStats, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -49,6 +49,7 @@ use crate::{
         seen_validators::{SeenIndices, SeenValidators},
         shuffling_cache::ShufflingCache,
         sync_contribution_pool::SyncContributionPool,
+        vote_report::VoteReport,
     },
     weak_subjectivity::{weak_subjectivity_period_fulu, weak_subjectivity_period_gloas},
 };
@@ -80,6 +81,7 @@ mod seen_proposer_preferences;
 mod seen_validators;
 mod shuffling_cache;
 mod sync_contribution_pool;
+mod vote_report;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Feedback {
@@ -258,6 +260,7 @@ pub struct BeaconStateTile {
     payload_execution_requests: PayloadExecutionRequests,
     payload_attestation_pool: PayloadAttestationPool,
     seen_proposer_preferences: SeenProposerPreferences,
+    vote_report: VoteReport,
     /// Resolved pending-buffer admission / eviction / fallback bounds.
     pending_bounds: PendingBounds,
 
@@ -344,6 +347,7 @@ impl BeaconStateTile {
             payload_execution_requests: PayloadExecutionRequests::default(),
             payload_attestation_pool: PayloadAttestationPool::default(),
             seen_proposer_preferences: SeenProposerPreferences::default(),
+            vote_report: VoteReport::new(),
             pending_bounds: syncing.pending,
             verify_weak_subjectivity,
             reader: TCacheReader::new(tcaches),
@@ -807,6 +811,20 @@ impl BeaconStateTile {
         // TODO: implement pre-computation
     }
 
+    /// At the aggregate due time of slot `S`, the singles held for `S` and
+    /// for the late votes of `S - 1`.
+    fn report_votes(&mut self, producers: &mut Producers) {
+        self.vote_report.drain(|stats| producers.produce(stats));
+        let Some(due_slot) = self.vote_report.due_tally(&self.ticker, &self.spec) else {
+            return;
+        };
+        for slot in [due_slot.saturating_sub(1), due_slot] {
+            self.attestation_pool.singles_by_block_root(slot, |root, count| {
+                producers.produce(VoteStats::Singles { block_root: *root, slot, due_slot, count })
+            });
+        }
+    }
+
     fn on_fc_lookahead(&mut self, _slot: Slot) {
         // Pre-emptive get_head for next slot.
         // TODO: self.get_head() and cache result
@@ -919,6 +937,7 @@ impl BeaconStateTile {
             }
             TickEvent::None => {}
         }
+        self.report_votes(&mut adapter.producers);
         self.expire_payload_waits(&mut adapter.producers);
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
