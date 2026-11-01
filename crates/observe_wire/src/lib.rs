@@ -41,7 +41,8 @@
 //! - `agent[72]`: len u8, pad[7], utf-8 bytes[64] zero-padded.
 //! - `slot`, `column_index`: u64::MAX when absent.
 //! - `kind`: 0 singles held at the slot's aggregate due time, 1 the largest
-//!   valid aggregate received for `committee` during the slot.
+//!   valid aggregate received for `committee` during the slot, 2 singles held
+//!   at the slot's end.
 //!
 //! `CounterChanges` carries only the slots that moved since the source's
 //! previous datagram; every source re-sends all its values as

@@ -1,6 +1,7 @@
 // Home page, votes card: for the last reported slot, per client and voted
-// block root, two bars on one scale. "silver", in the client's colour: the
-// singles the node held at the slot's aggregate due time. "recv": stacked per
+// block root, two bars on one scale. "silver": the singles the node held at
+// the slot's aggregate due time in the client's colour, then those added by
+// the slot's end in grey. "recv": stacked per
 // committee in its own hue, the largest valid aggregate received during the
 // slot, largest first.
 
@@ -10,6 +11,8 @@ const W = 760;
 const H = 200;
 const AXIS_W = 48;
 const LABEL_H = 34;
+/** Above the tallest bar, for its total. */
+const TOP_H = 18;
 const BAR_W = 40;
 const PAIR_GAP = 8;
 const GROUP_GAP = 24;
@@ -29,7 +32,9 @@ function bars(inst, slot) {
   return [...roots]
     .map(([root, r]) => {
       const aggregates = [...r.largest].sort((a, b) => b[1] - a[1]);
-      return { root, isBlock: root === blockRoot, atDue: r.atDue ?? 0, aggregates };
+      const atDue = r.atDue ?? 0;
+      const late = Math.max((r.atEnd ?? atDue) - atDue, 0);
+      return { root, isBlock: root === blockRoot, atDue, late, aggregates };
     })
     .sort((a, b) => b.atDue - a.atDue)
     .slice(0, ROOTS_MAX);
@@ -54,15 +59,20 @@ function stack(x, segments, scale, title) {
 
 function svg(groups, slot) {
   const sum = (b) => b.aggregates.reduce((t, [, v]) => t + v, 0);
-  const total = (b) => Math.max(b.atDue, sum(b));
+  const total = (b) => Math.max(b.atDue + b.late, sum(b));
   const max = Math.max(1, ...groups.flatMap((g) => g.bars.map(total)));
-  const scale = (H - LABEL_H - 8) / max;
+  const scale = (H - LABEL_H - TOP_H) / max;
+  const totalAbove = (x, v) =>
+    `<text class="total" x="${x + BAR_W / 2}" y="${H - LABEL_H - v * scale - 4}">${v}</text>`;
   let x = AXIS_W;
   const marks = [];
   for (const { inst, colour, bars: rootBars } of groups) {
     for (const b of rootBars) {
       const who = `${inst.label} ${b.isBlock ? 'block' : 'root'} ${shortId(b.root)}`;
-      const silver = [{ value: b.atDue, fill: colour, label: `${b.atDue} aggregated at deadline` }];
+      const silver = [
+        { value: b.atDue, fill: colour, label: `${b.atDue} aggregated at deadline` },
+        { value: b.late, fill: 'var(--muted)', label: `+${b.late} by slot end, ${b.atDue + b.late} total` },
+      ];
       const received = b.aggregates.map(([committee, v]) => ({
         value: v,
         fill: committeeColour(committee),
@@ -70,6 +80,8 @@ function svg(groups, slot) {
       }));
       marks.push(stack(x, silver, scale, `${who} silver`));
       marks.push(stack(x + BAR_W + PAIR_GAP, received, scale, `${who} recv (${b.aggregates.length} committees, ${sum(b)})`));
+      marks.push(totalAbove(x, b.atDue + b.late));
+      marks.push(totalAbove(x + BAR_W + PAIR_GAP, sum(b)));
       const mid = x + BAR_W + PAIR_GAP / 2;
       marks.push(`<text class="sub" x="${x + BAR_W / 2}" y="${H - LABEL_H + 12}">silver</text>`);
       marks.push(`<text class="sub" x="${x + BAR_W * 1.5 + PAIR_GAP}" y="${H - LABEL_H + 12}">recv</text>`);

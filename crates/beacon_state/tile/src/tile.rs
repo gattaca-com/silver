@@ -811,6 +811,14 @@ impl BeaconStateTile {
         // TODO: implement pre-computation
     }
 
+    fn end_vote_slot(&mut self, next: Slot, producers: &mut Producers) {
+        let Self { attestation_pool, vote_report, .. } = self;
+        attestation_pool.singles_by_block_root(next.saturating_sub(1), |root, count| {
+            vote_report.singles_at_end(root, count)
+        });
+        vote_report.end_slot(next, |stats| producers.produce(stats));
+    }
+
     fn take_singles_at_due(&mut self) {
         let Some(slot) = self.vote_report.take_due_slot(&self.ticker, &self.spec) else {
             return;
@@ -917,7 +925,7 @@ impl BeaconStateTile {
 
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
-                self.vote_report.end_slot(slot, |stats| adapter.producers.produce(stats));
+                self.end_vote_slot(slot, &mut adapter.producers);
                 self.expire_orphans(slot, &mut adapter.producers);
                 self.block_production.prune_before(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();

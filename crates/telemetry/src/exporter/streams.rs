@@ -99,6 +99,9 @@ pub(super) fn vote_record(s: &VoteStats) -> VoteRecord {
         VoteStats::SinglesAtDue { block_root, slot, count } => {
             (block_root, slot, count, VoteKind::SinglesAtDue, 0)
         }
+        VoteStats::SinglesAtEnd { block_root, slot, count } => {
+            (block_root, slot, count, VoteKind::SinglesAtEnd, 0)
+        }
         VoteStats::LargestAggregate { block_root, slot, committee, count } => {
             (block_root, slot, count, VoteKind::LargestAggregate, committee)
         }

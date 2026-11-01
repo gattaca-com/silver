@@ -851,7 +851,8 @@ mod tests {
             let count = u32::from_le_bytes(r.bytes(4).try_into().unwrap());
             let kind = match r.u8() {
                 0 => VoteKind::SinglesAtDue,
-                _ => VoteKind::LargestAggregate,
+                1 => VoteKind::LargestAggregate,
+                _ => VoteKind::SinglesAtEnd,
             };
             let committee = r.u8();
             r.bytes(2);

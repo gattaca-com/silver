@@ -1717,6 +1717,8 @@ pub enum PeerStats {
 pub enum VoteStats {
     /// Members held as singles at the slot's aggregate due time.
     SinglesAtDue { block_root: [u8; 32], slot: u64, count: u32 },
+    /// Members held as singles at the slot's end.
+    SinglesAtEnd { block_root: [u8; 32], slot: u64, count: u32 },
     /// Members of the largest valid aggregate received for `committee`.
     LargestAggregate { block_root: [u8; 32], slot: u64, committee: u8, count: u32 },
 }

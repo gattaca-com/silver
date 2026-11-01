@@ -131,6 +131,7 @@ pub struct StageRecord {
 pub enum VoteKind {
     SinglesAtDue = 0,
     LargestAggregate = 1,
+    SinglesAtEnd = 2,
 }
 
 /// `committee` is 0 unless `kind` is `LargestAggregate`.

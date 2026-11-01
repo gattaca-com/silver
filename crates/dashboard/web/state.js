@@ -157,10 +157,10 @@ export function tcacheLength(values) {
 }
 
 /** Per vote slot and block root: singles held at the slot's aggregate due
- *  time, and the largest received aggregate per committee. */
+ *  time and at its end, and the largest received aggregate per committee. */
 export class VoteSlots {
   constructor() {
-    /** Slot → root → `{ atDue, largest: Map<committee, count> }`. */
+    /** Slot → root → `{ atDue, atEnd, largest: Map<committee, count> }`. */
     this.slots = new Map();
   }
 
@@ -175,8 +175,9 @@ export class VoteSlots {
       this.slots.set(e.slot, (roots = new Map()));
     }
     let root = roots.get(e.root);
-    if (!root) roots.set(e.root, (root = { atDue: null, largest: new Map() }));
+    if (!root) roots.set(e.root, (root = { atDue: null, atEnd: null, largest: new Map() }));
     if (e.kind === VoteKind.SinglesAtDue) root.atDue = e.count;
+    else if (e.kind === VoteKind.SinglesAtEnd) root.atEnd = e.count;
     else root.largest.set(e.committee, e.count);
   }
 }
