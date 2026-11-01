@@ -1256,6 +1256,14 @@ impl BeaconStateTile {
             data_root,
             parsed.aggregation_bits,
         );
+        // Less the bitlist's length delimiter.
+        let members = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
+        self.vote_report.aggregate_received(
+            parsed.agg_data.beacon_block_root(),
+            parsed.agg_slot,
+            committee_index,
+            members,
+        );
         self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
         if !attested.is_ready() {
             let new_data = self.unknown_root_votes.insert(
@@ -1282,15 +1290,6 @@ impl BeaconStateTile {
             parsed.aggregation_bits,
             &signature,
         );
-        if outcome == InsertOutcome::Inserted {
-            // Less the bitlist's length delimiter.
-            let count = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
-            self.vote_report.aggregate_admitted(
-                parsed.agg_data.beacon_block_root(),
-                parsed.agg_slot,
-                count,
-            );
-        }
         if outcome == InsertOutcome::Full {
             BeaconStateCounters::AttestationPoolFull.inc();
             silver_log::debug!(

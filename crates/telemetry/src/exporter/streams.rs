@@ -5,7 +5,9 @@ use silver_common::{
     BlockSource, ColumnOrigin, P2pConnectionStats, PeerScores as NodePeerScores, PeerTopicScores,
     VoteStats,
 };
-use silver_observe_wire::{PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord, VoteRecord};
+use silver_observe_wire::{
+    PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord, VoteKind, VoteRecord,
+};
 use silver_stages::{Stage, StageEvent};
 
 pub(super) fn p2p_record(s: &P2pConnectionStats) -> PeerP2p<'_> {
@@ -93,12 +95,13 @@ pub(super) fn stage_record(e: &StageEvent) -> StageRecord {
 }
 
 pub(super) fn vote_record(s: &VoteStats) -> VoteRecord {
-    match *s {
-        VoteStats::Singles { block_root, slot, due_slot, count } => {
-            VoteRecord { block_root, slot, due_slot: Some(due_slot), count: count as u64 }
+    let (block_root, slot, count, kind, committee) = match *s {
+        VoteStats::SinglesAtDue { block_root, slot, count } => {
+            (block_root, slot, count, VoteKind::SinglesAtDue, 0)
         }
-        VoteStats::Aggregate { block_root, slot, count } => {
-            VoteRecord { block_root, slot, due_slot: None, count: count as u64 }
+        VoteStats::LargestAggregate { block_root, slot, committee, count } => {
+            (block_root, slot, count, VoteKind::LargestAggregate, committee)
         }
-    }
+    };
+    VoteRecord { block_root, slot, count, kind, committee }
 }

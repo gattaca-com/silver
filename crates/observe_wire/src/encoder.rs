@@ -22,7 +22,7 @@ const PEER_P2P_LEN: usize = PEER_LEN + 8 + 24 + 8 * 8;
 const PEER_SCORES_LEN: usize = PEER_LEN + 8 + USER_AGENT_MAX + 8 + 9 * 8;
 const PEER_TOPIC_LEN: usize = PEER_LEN + 8 + 3 * 8 + 4 * 8;
 const STAGE_LEN: usize = 32 + 3 * 8 + 8;
-const VOTE_LEN: usize = 32 + 3 * 8;
+const VOTE_LEN: usize = 32 + 8 + 4 + 4;
 
 /// Splits each call's records across as many datagrams as needed, handing
 /// each to `emit` as it fills. Streamed kinds (peers, stages) stay in an open
@@ -153,7 +153,9 @@ impl Encoder {
     pub fn vote(&mut self, ts_ns: u64, r: &VoteRecord, emit: &mut impl FnMut(&[u8])) {
         self.stream(Kind::Votes, ts_ns, VOTE_LEN, emit, |enc| {
             enc.put(&r.block_root);
-            enc.put_u64s(&[r.slot, r.due_slot.unwrap_or(u64::MAX), r.count]);
+            enc.put_u64s(&[r.slot]);
+            enc.put(&r.count.to_le_bytes());
+            enc.put(&[r.kind as u8, r.committee, 0, 0]);
         });
     }
 
@@ -422,7 +424,7 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::records::{SourceClass, StageCode, TimingChannel};
+    use crate::records::{SourceClass, StageCode, TimingChannel, VoteKind};
 
     /// Independent reading of the layout table in `lib.rs`, standing in for
     /// the dashboard's JS decoder.
@@ -814,10 +816,22 @@ mod tests {
     }
 
     #[test]
-    fn vote_entries_round_trip_with_absent_due_slot() {
+    fn vote_entries_round_trip() {
         let records = [
-            VoteRecord { block_root: [1; 32], slot: 10, due_slot: Some(11), count: 300 },
-            VoteRecord { block_root: [2; 32], slot: 11, due_slot: None, count: 7 },
+            VoteRecord {
+                block_root: [1; 32],
+                slot: 10,
+                count: 300,
+                kind: VoteKind::SinglesAtDue,
+                committee: 0,
+            },
+            VoteRecord {
+                block_root: [2; 32],
+                slot: 10,
+                count: 7,
+                kind: VoteKind::LargestAggregate,
+                committee: 63,
+            },
         ];
         let dgrams = collect(|enc, emit| {
             for r in &records {
@@ -832,12 +846,16 @@ mod tests {
         r.bytes(6);
         let mut got = Vec::new();
         for _ in 0..2 {
-            got.push(VoteRecord {
-                block_root: r.bytes(32).try_into().unwrap(),
-                slot: r.u64(),
-                due_slot: Some(r.u64()).filter(|&v| v != u64::MAX),
-                count: r.u64(),
-            });
+            let block_root = r.bytes(32).try_into().unwrap();
+            let slot = r.u64();
+            let count = u32::from_le_bytes(r.bytes(4).try_into().unwrap());
+            let kind = match r.u8() {
+                0 => VoteKind::SinglesAtDue,
+                _ => VoteKind::LargestAggregate,
+            };
+            let committee = r.u8();
+            r.bytes(2);
+            got.push(VoteRecord { block_root, slot, count, kind, committee });
         }
         r.done();
         assert_eq!(got, records);

@@ -16,7 +16,7 @@ use silver_common::{
     Origin, PayloadResolution, PayloadValidationStatus, PtcObservation, ReplayBlock, RequestId,
     RpcInbound, RpcResponse, RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncNeed,
     SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
-    TProducer, TReadMode, TileId, VoteStats, hex32,
+    TProducer, TReadMode, TileId, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -811,18 +811,13 @@ impl BeaconStateTile {
         // TODO: implement pre-computation
     }
 
-    /// At the aggregate due time of slot `S`, the singles held for `S` and
-    /// for the late votes of `S - 1`.
-    fn report_votes(&mut self, producers: &mut Producers) {
-        self.vote_report.drain(|stats| producers.produce(stats));
-        let Some(due_slot) = self.vote_report.due_tally(&self.ticker, &self.spec) else {
+    fn take_singles_at_due(&mut self) {
+        let Some(slot) = self.vote_report.take_due_slot(&self.ticker, &self.spec) else {
             return;
         };
-        for slot in [due_slot.saturating_sub(1), due_slot] {
-            self.attestation_pool.singles_by_block_root(slot, |root, count| {
-                producers.produce(VoteStats::Singles { block_root: *root, slot, due_slot, count })
-            });
-        }
+        let Self { attestation_pool, vote_report, .. } = self;
+        attestation_pool
+            .singles_by_block_root(slot, |root, count| vote_report.singles_at_due(root, count));
     }
 
     fn on_fc_lookahead(&mut self, _slot: Slot) {
@@ -922,6 +917,7 @@ impl BeaconStateTile {
 
         match self.ticker.tick() {
             TickEvent::SlotStart(slot) => {
+                self.vote_report.end_slot(slot, |stats| adapter.producers.produce(stats));
                 self.expire_orphans(slot, &mut adapter.producers);
                 self.block_production.prune_before(slot, &mut adapter.producers);
                 let prev_head = self.fork_choice.find_head();
@@ -937,7 +933,7 @@ impl BeaconStateTile {
             }
             TickEvent::None => {}
         }
-        self.report_votes(&mut adapter.producers);
+        self.take_singles_at_due();
         self.expire_payload_waits(&mut adapter.producers);
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {

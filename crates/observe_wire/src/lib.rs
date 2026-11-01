@@ -31,7 +31,7 @@
 //! | PeerTopic     | count u16, pad[6]                               | peer[48], topic_slot u16, p3_scored u8, mesh_active u8, pad[4], meshed_secs u64, fanout_total u64, fanout_sent u64, first_deliveries f64, mesh_deliveries f64, mesh_failure_penalty f64, invalid_deliveries f64 |
 //! | Stages        | count u16, pad[6]                               | block_root[32], ts_ns u64, slot u64, column_index u64, stage u8, detail u8, pad[6] |
 //! | CounterChanges | source_id u16, count u16, pad[4]               | slot u32, pad[4], value u64                                           |
-//! | Votes         | count u16, pad[6]                               | block_root[32], slot u64, due_slot u64, count u64                     |
+//! | Votes         | count u16, pad[6]                               | block_root[32], slot u64, count u32, kind u8, committee u8, pad[2]    |
 //!
 //! Composite fields:
 //!
@@ -40,8 +40,8 @@
 //!   in the first 4 bytes).
 //! - `agent[72]`: len u8, pad[7], utf-8 bytes[64] zero-padded.
 //! - `slot`, `column_index`: u64::MAX when absent.
-//! - `due_slot`: the slot whose aggregate due time tallied `count` singles;
-//!   u64::MAX for a received aggregate of `count` members.
+//! - `kind`: 0 singles held at the slot's aggregate due time, 1 the largest
+//!   valid aggregate received for `committee` during the slot.
 //!
 //! `CounterChanges` carries only the slots that moved since the source's
 //! previous datagram; every source re-sends all its values as
@@ -62,5 +62,5 @@ pub use encoder::Encoder;
 pub use header::{HEADER_LEN, Header, Kind, MAGIC, MAX_DATAGRAM, VERSION};
 pub use records::{
     PEER_ID_MAX, PeerP2p, PeerScores, PeerTopic, Source, SourceClass, StageCode, StageRecord,
-    TileUtil, TimingChannel, TimingStats, USER_AGENT_MAX, VoteRecord,
+    TileUtil, TimingChannel, TimingStats, USER_AGENT_MAX, VoteKind, VoteRecord,
 };

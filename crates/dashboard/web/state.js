@@ -1,5 +1,5 @@
 import { BlockTrace, SlotClock } from './trace.js';
-import { Kind, Stage, TimingChannel } from './wire.js';
+import { Kind, Stage, TimingChannel, VoteKind } from './wire.js';
 
 /** Datagram silence after which an instance renders as stale. */
 const STALE_MS = 5000;
@@ -156,11 +156,11 @@ export function tcacheLength(values) {
   return Math.max(0, (values[1] ?? 0) - tcacheMinTail(values));
 }
 
-/** Per vote slot and block root: singles held at the aggregate due time of
- *  the slot and of the next, and the size of every admitted aggregate. */
+/** Per vote slot and block root: singles held at the slot's aggregate due
+ *  time, and the largest received aggregate per committee. */
 export class VoteSlots {
   constructor() {
-    /** Slot → root → `{ singles: Map<dueSlot, count>, aggregates: [] }`. */
+    /** Slot → root → `{ atDue, largest: Map<committee, count> }`. */
     this.slots = new Map();
   }
 
@@ -175,9 +175,9 @@ export class VoteSlots {
       this.slots.set(e.slot, (roots = new Map()));
     }
     let root = roots.get(e.root);
-    if (!root) roots.set(e.root, (root = { singles: new Map(), aggregates: [] }));
-    if (e.dueSlot === null) root.aggregates.push(e.count);
-    else root.singles.set(e.dueSlot, e.count);
+    if (!root) roots.set(e.root, (root = { atDue: null, largest: new Map() }));
+    if (e.kind === VoteKind.SinglesAtDue) root.atDue = e.count;
+    else root.largest.set(e.committee, e.count);
   }
 }
 

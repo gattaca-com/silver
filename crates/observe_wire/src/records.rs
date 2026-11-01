@@ -126,11 +126,19 @@ pub struct StageRecord {
     pub detail: u8,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoteKind {
+    SinglesAtDue = 0,
+    LargestAggregate = 1,
+}
+
+/// `committee` is 0 unless `kind` is `LargestAggregate`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoteRecord {
     pub block_root: [u8; 32],
     pub slot: u64,
-    /// `None` for a received aggregate.
-    pub due_slot: Option<u64>,
-    pub count: u64,
+    pub count: u32,
+    pub kind: VoteKind,
+    pub committee: u8,
 }

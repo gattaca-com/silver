@@ -25,6 +25,7 @@ export const Kind = {
 
 export const SourceClass = { Counters: 0, TCache: 1, Timing: 2, Tile: 3 };
 export const TimingChannel = { Latency: 0, Processing: 1 };
+export const VoteKind = { SinglesAtDue: 0, LargestAggregate: 1 };
 export const Stage = {
   Received: 0,
   ColumnRecv: 1,
@@ -246,7 +247,13 @@ export function decode(buf) {
       });
       break;
     case Kind.Votes:
-      d.entries = r.entries(() => ({ root: r.hex(32), slot: r.u64(), dueSlot: r.u64(), count: r.u64() }));
+      d.entries = r.entries(() => {
+        const e = { root: r.hex(32), slot: r.u64(), count: r.u32() };
+        e.kind = r.u8();
+        e.committee = r.u8();
+        r.skip(2);
+        return e;
+      });
       break;
     default:
       return null;
