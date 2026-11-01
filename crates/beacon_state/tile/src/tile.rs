@@ -16,7 +16,7 @@ use silver_common::{
     Origin, PayloadResolution, PayloadValidationStatus, PtcObservation, ReplayBlock, RequestId,
     RpcInbound, RpcResponse, RpcResponseInbound, SidecarBidResponse, SilverSpine, SyncNeed,
     SyncUpdate, TCacheError, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
-    TProducer, TReadMode, TileId, hex32,
+    TProducer, TReadMode, TileId, VoteStats, hex32,
     ssz_view::{STATUS_V2_SIZE, SYNC_COMMITTEE_CONTRIBUTION_SIZE},
     ticker::{MAXIMUM_GOSSIP_CLOCK_DISPARITY, SlotTicker, TickEvent},
 };
@@ -812,22 +812,22 @@ impl BeaconStateTile {
     }
 
     fn end_vote_slot(&mut self, next: Slot, producers: &mut Producers) {
-        let Self { attestation_pool, vote_report, .. } = self;
-        let slot = next.saturating_sub(1);
-        attestation_pool
-            .singles_by_block_root(slot, |root, count| vote_report.singles_at_end(root, count));
-        // Singles arrive only on subscribed subnets, one committee each.
-        let subscribed = attestation_pool.committees_with_singles(slot);
-        vote_report.end_slot(next, subscribed, |stats| producers.produce(stats));
+        let Some(slot) = self.vote_report.end_slot(next) else {
+            return;
+        };
+        self.attestation_pool.singles_by_block_root(slot, |root, count| {
+            producers.produce(VoteStats::SinglesAtEnd { block_root: *root, slot, count })
+        });
     }
 
-    fn take_singles_at_due(&mut self) {
+    fn report_votes(&mut self, producers: &mut Producers) {
+        self.vote_report.drain(|stats| producers.produce(stats));
         let Some(slot) = self.vote_report.take_due_slot(&self.ticker, &self.spec) else {
             return;
         };
-        let Self { attestation_pool, vote_report, .. } = self;
-        attestation_pool
-            .singles_by_block_root(slot, |root, count| vote_report.singles_at_due(root, count));
+        self.attestation_pool.singles_by_block_root(slot, |root, count| {
+            producers.produce(VoteStats::SinglesAtDue { block_root: *root, slot, count })
+        });
     }
 
     fn on_fc_lookahead(&mut self, _slot: Slot) {
@@ -943,7 +943,7 @@ impl BeaconStateTile {
             }
             TickEvent::None => {}
         }
-        self.take_singles_at_due();
+        self.report_votes(&mut adapter.producers);
         self.expire_payload_waits(&mut adapter.producers);
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {

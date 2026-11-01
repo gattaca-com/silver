@@ -1256,14 +1256,17 @@ impl BeaconStateTile {
             data_root,
             parsed.aggregation_bits,
         );
-        // Less the bitlist's length delimiter.
-        let members = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
-        self.vote_report.aggregate_received(
-            parsed.agg_data.beacon_block_root(),
-            parsed.agg_slot,
-            committee_index,
-            members,
-        );
+        // Singles arrive only on subscribed subnets, one committee each.
+        if self.attestation_pool.holds_single(parsed.agg_slot, committee_index) {
+            // Less the bitlist's length delimiter.
+            let members = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
+            self.vote_report.aggregate_received(
+                parsed.agg_data.beacon_block_root(),
+                parsed.agg_slot,
+                committee_index,
+                members,
+            );
+        }
         self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
         if !attested.is_ready() {
             let new_data = self.unknown_root_votes.insert(

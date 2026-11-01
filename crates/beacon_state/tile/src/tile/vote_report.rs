@@ -1,45 +1,29 @@
 use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, Slot, SpecConfig};
 use silver_common::{VoteStats, ssz_view::MAX_COMMITTEES_PER_SLOT, ticker::SlotTicker};
 
-/// Voted roots tracked per slot; votes for further roots are not reported.
+/// Voted roots tracked per slot; aggregates for further roots are not reported.
 const ROOTS_MAX: usize = 8;
+/// Reports between two loop iterations; past it they are dropped.
+const PENDING_CAP: usize = 1024;
 
-struct RootVotes {
-    block_root: B256,
-    singles_at_due: Option<u32>,
-    singles_at_end: Option<u32>,
-    largest_aggregate: [u32; MAX_COMMITTEES_PER_SLOT],
-}
-
-/// Vote telemetry of the current slot, reported once at its end: per voted
-/// root, the singles held at the aggregate due time and at the end, and the
-/// largest valid aggregate received per committee.
+/// Vote telemetry of the current slot: each new largest aggregate per
+/// committee, buffered until the loop can publish it, and the slot whose
+/// aggregate due time is still to be reported.
 pub(super) struct VoteReport {
     slot: Option<Slot>,
     due_taken: bool,
-    roots: Vec<RootVotes>,
+    largest: Vec<(B256, [u32; MAX_COMMITTEES_PER_SLOT])>,
+    pending: Vec<VoteStats>,
 }
 
 impl VoteReport {
     pub(super) fn new() -> Self {
-        Self { slot: None, due_taken: false, roots: Vec::with_capacity(ROOTS_MAX) }
-    }
-
-    fn root(&mut self, block_root: &B256) -> Option<&mut RootVotes> {
-        let i = match self.roots.iter().position(|r| r.block_root == *block_root) {
-            Some(i) => i,
-            None if self.roots.len() < ROOTS_MAX => {
-                self.roots.push(RootVotes {
-                    block_root: *block_root,
-                    singles_at_due: None,
-                    singles_at_end: None,
-                    largest_aggregate: [0; MAX_COMMITTEES_PER_SLOT],
-                });
-                self.roots.len() - 1
-            }
-            None => return None,
-        };
-        Some(&mut self.roots[i])
+        Self {
+            slot: None,
+            due_taken: false,
+            largest: Vec::with_capacity(ROOTS_MAX),
+            pending: Vec::with_capacity(PENDING_CAP),
+        }
     }
 
     pub(super) fn aggregate_received(
@@ -52,8 +36,30 @@ impl VoteReport {
         if self.slot != Some(slot) {
             return;
         }
-        if let Some(r) = self.root(block_root) {
-            r.largest_aggregate[committee] = r.largest_aggregate[committee].max(count);
+        let i = match self.largest.iter().position(|(root, _)| root == block_root) {
+            Some(i) => i,
+            None if self.largest.len() < ROOTS_MAX => {
+                self.largest.push((*block_root, [0; MAX_COMMITTEES_PER_SLOT]));
+                self.largest.len() - 1
+            }
+            None => return,
+        };
+        let largest = &mut self.largest[i].1[committee];
+        if count > *largest && self.pending.len() < PENDING_CAP {
+            *largest = count;
+            let committee = committee as u8;
+            self.pending.push(VoteStats::LargestAggregate {
+                block_root: *block_root,
+                slot,
+                committee,
+                count,
+            });
+        }
+    }
+
+    pub(super) fn drain(&mut self, mut emit: impl FnMut(VoteStats)) {
+        for stats in self.pending.drain(..) {
+            emit(stats);
         }
     }
 
@@ -65,47 +71,14 @@ impl VoteReport {
         self.due_taken.then_some(slot)
     }
 
-    pub(super) fn singles_at_due(&mut self, block_root: &B256, count: u32) {
-        if let Some(r) = self.root(block_root) {
-            r.singles_at_due = Some(count);
-        }
-    }
-
-    pub(super) fn singles_at_end(&mut self, block_root: &B256, count: u32) {
-        if let Some(r) = self.root(block_root) {
-            r.singles_at_end = Some(count);
-        }
-    }
-
-    /// Emits the ended slot's singles and the largest aggregates of
-    /// `subscribed` committees (bit per index), then tracks `next`. A slot not
-    /// ended by its successor's start, as after a stall, is not reported.
-    pub(super) fn end_slot(
-        &mut self,
-        next: Slot,
-        subscribed: u64,
-        mut emit: impl FnMut(VoteStats),
-    ) {
-        if let Some(slot) = self.slot.filter(|&s| s + 1 == next) {
-            for r in &self.roots {
-                let block_root = r.block_root;
-                if let Some(count) = r.singles_at_due {
-                    emit(VoteStats::SinglesAtDue { block_root, slot, count });
-                }
-                if let Some(count) = r.singles_at_end {
-                    emit(VoteStats::SinglesAtEnd { block_root, slot, count });
-                }
-                for (committee, &count) in r.largest_aggregate.iter().enumerate() {
-                    if count > 0 && subscribed & 1 << committee != 0 {
-                        let committee = committee as u8;
-                        emit(VoteStats::LargestAggregate { block_root, slot, committee, count });
-                    }
-                }
-            }
-        }
+    /// Tracks `next`; returns the slot it ends. A slot not ended by its
+    /// successor's start, as after a stall, is not returned.
+    pub(super) fn end_slot(&mut self, next: Slot) -> Option<Slot> {
+        let ended = self.slot.filter(|&s| s + 1 == next);
         self.slot = Some(next);
         self.due_taken = false;
-        self.roots.clear();
+        self.largest.clear();
+        ended
     }
 }
 
@@ -113,32 +86,29 @@ impl VoteReport {
 mod tests {
     use super::*;
 
-    fn ended(report: &mut VoteReport, next: Slot) -> Vec<String> {
+    fn drained(report: &mut VoteReport) -> Vec<VoteStats> {
         let mut out = Vec::new();
-        report.end_slot(next, u64::MAX, |stats| out.push(format!("{stats:?}")));
+        report.drain(|stats| out.push(stats));
         out
     }
 
     #[test]
-    fn reports_singles_and_largest_aggregate_of_subscribed_committees_at_slot_end() {
+    fn reports_each_new_largest_aggregate_of_the_tracked_slot() {
         let mut report = VoteReport::new();
-        assert!(ended(&mut report, 5).is_empty());
+        assert_eq!(report.end_slot(5), None);
 
         report.aggregate_received(&[1; 32], 5, 3, 10);
         report.aggregate_received(&[1; 32], 5, 3, 40);
         report.aggregate_received(&[1; 32], 5, 3, 20);
         report.aggregate_received(&[1; 32], 4, 7, 99);
-        report.aggregate_received(&[1; 32], 5, 9, 50);
-        report.singles_at_due(&[1; 32], 30);
-        report.singles_at_end(&[1; 32], 35);
-
-        let mut emitted = Vec::new();
-        report.end_slot(6, 1 << 3, |stats| emitted.push(stats));
-        assert!(matches!(emitted[..], [
-            VoteStats::SinglesAtDue { slot: 5, count: 30, .. },
-            VoteStats::SinglesAtEnd { slot: 5, count: 35, .. },
+        assert!(matches!(drained(&mut report)[..], [
+            VoteStats::LargestAggregate { slot: 5, committee: 3, count: 10, .. },
             VoteStats::LargestAggregate { slot: 5, committee: 3, count: 40, .. },
         ]));
-        assert!(ended(&mut report, 6).is_empty(), "a slot not ended by its successor");
+
+        assert_eq!(report.end_slot(6), Some(5));
+        report.aggregate_received(&[1; 32], 6, 3, 5);
+        assert_eq!(drained(&mut report).len(), 1, "largest restarts per slot");
+        assert_eq!(report.end_slot(8), None, "a slot not ended by its successor");
     }
 }

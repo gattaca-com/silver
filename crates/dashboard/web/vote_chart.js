@@ -1,4 +1,5 @@
-// Home page, votes card: for the last reported slot, per client, three bars on
+// Home page, votes card: for the newest slot, filled as its reports arrive
+// (deadline, each new largest aggregate, slot end), per client, three bars on
 // one scale for votes naming the slot's own block. "silver": the singles the
 // node held at the slot's aggregate due time, in the client's colour. "recv":
 // stacked per subscribed committee in its own hue, the largest valid
@@ -17,7 +18,6 @@ const BAR_W = 40;
 const PAIR_GAP = 8;
 const GROUP_GAP = 24;
 
-/** Each client reports a slot whole at its end, so the newest is complete. */
 function shownSlot(instances) {
   const slots = instances.flatMap((inst) => [...inst.votes.slots.keys()]);
   return slots.length ? Math.max(...slots) : null;
@@ -31,7 +31,7 @@ function bars(inst, slot) {
   if (!r) return [];
   const aggregates = [...r.largest].sort((a, b) => b[1] - a[1]);
   const atDue = r.atDue ?? 0;
-  return [{ root, atDue, atEnd: r.atEnd ?? atDue, aggregates }];
+  return [{ root, atDue, atEnd: r.atEnd, aggregates }];
 }
 
 /** Fixed per committee, so one committee matches across clients and slots;
@@ -55,7 +55,7 @@ const END_FILL = 'color-mix(in srgb, var(--muted) 60%, #ffffff)';
 
 function svg(groups, slot) {
   const sum = (b) => b.aggregates.reduce((t, [, v]) => t + v, 0);
-  const total = (b) => Math.max(b.atDue, b.atEnd, sum(b));
+  const total = (b) => Math.max(b.atDue, b.atEnd ?? 0, sum(b));
   const max = Math.max(1, ...groups.flatMap((g) => g.bars.map(total)));
   const scale = (H - LABEL_H - TOP_H) / max;
   let x = AXIS_W;
@@ -75,12 +75,18 @@ function svg(groups, slot) {
             label: `committee ${committee}: ${v}`,
           })),
         },
-        { name: 'end', total: b.atEnd, segments: [{ value: b.atEnd, fill: END_FILL, label: `${b.atEnd} aggregated at slot end` }] },
+        {
+          name: 'end',
+          total: b.atEnd,
+          segments: b.atEnd === null ? [] : [{ value: b.atEnd, fill: END_FILL, label: `${b.atEnd} aggregated at slot end` }],
+        },
       ];
       columns.forEach((c, i) => {
         const cx = x + i * (BAR_W + PAIR_GAP);
         marks.push(stack(cx, c.segments, scale, `${who} ${c.name}${c.title ? ` (${c.title})` : ''}`));
-        marks.push(`<text class="total" x="${cx + BAR_W / 2}" y="${H - LABEL_H - c.total * scale - 4}">${c.total}</text>`);
+        if (c.total !== null) {
+          marks.push(`<text class="total" x="${cx + BAR_W / 2}" y="${H - LABEL_H - c.total * scale - 4}">${c.total}</text>`);
+        }
         marks.push(`<text class="sub" x="${cx + BAR_W / 2}" y="${H - LABEL_H + 12}">${c.name}</text>`);
       });
       const width = columns.length * BAR_W + (columns.length - 1) * PAIR_GAP;

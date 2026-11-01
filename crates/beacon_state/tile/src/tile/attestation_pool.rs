@@ -291,12 +291,12 @@ impl AttestationPool {
         }
     }
 
-    /// Bit per committee index of `slot` holding a single for any candidate.
-    pub(super) fn committees_with_singles(&self, slot: Slot) -> u64 {
-        self.candidates
-            .committees_of(slot)
-            .filter(|&committee| !self.store.singles(committee).is_empty())
-            .fold(0, |mask, committee| mask | 1 << committee.index())
+    /// Whether committee `committee_index` of `slot` holds a single for any
+    /// candidate.
+    pub(super) fn holds_single(&self, slot: Slot, committee_index: usize) -> bool {
+        self.candidates.committees_of(slot).any(|committee| {
+            committee.index() == committee_index && !self.store.singles(committee).is_empty()
+        })
     }
 
     #[timed]
@@ -870,8 +870,8 @@ mod tests {
         pool.singles_by_block_root(SLOT + 1, |root, count| got.push((*root, count)));
         assert!(got.is_empty());
 
-        assert_eq!(pool.committees_with_singles(SLOT), 0b11);
-        assert_eq!(pool.committees_with_singles(SLOT + 1), 0);
+        assert!(pool.holds_single(SLOT, 0) && pool.holds_single(SLOT, 1));
+        assert!(!pool.holds_single(SLOT, 2) && !pool.holds_single(SLOT + 1, 0));
     }
 
     #[test]
