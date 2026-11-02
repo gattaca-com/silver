@@ -7,11 +7,14 @@ const ROOTS_MAX: usize = 8;
 const PENDING_CAP: usize = 1024;
 
 /// Vote telemetry of the current slot: each new largest aggregate per
-/// committee, buffered until the loop can publish it, and the slot whose
-/// aggregate due time is still to be reported.
+/// subscribed committee, buffered until the loop can publish it, and the slot
+/// whose aggregate due time is still to be reported.
 pub(super) struct VoteReport {
     slot: Option<Slot>,
     due_taken: bool,
+    /// Bit per committee index a gossip single arrived for: singles arrive
+    /// only on subscribed subnets, one committee each.
+    subscribed: u64,
     largest: Vec<(B256, [u32; MAX_COMMITTEES_PER_SLOT])>,
     pending: Vec<VoteStats>,
 }
@@ -21,8 +24,15 @@ impl VoteReport {
         Self {
             slot: None,
             due_taken: false,
+            subscribed: 0,
             largest: Vec::with_capacity(ROOTS_MAX),
             pending: Vec::with_capacity(PENDING_CAP),
+        }
+    }
+
+    pub(super) fn gossip_single(&mut self, slot: Slot, committee: usize) {
+        if self.slot == Some(slot) {
+            self.subscribed |= 1 << committee;
         }
     }
 
@@ -33,7 +43,7 @@ impl VoteReport {
         committee: usize,
         count: u32,
     ) {
-        if self.slot != Some(slot) {
+        if self.slot != Some(slot) || self.subscribed & 1 << committee == 0 {
             return;
         }
         let i = match self.largest.iter().position(|(root, _)| root == block_root) {
@@ -77,6 +87,7 @@ impl VoteReport {
         let ended = self.slot.filter(|&s| s + 1 == next);
         self.slot = Some(next);
         self.due_taken = false;
+        self.subscribed = 0;
         self.largest.clear();
         ended
     }
@@ -93,9 +104,12 @@ mod tests {
     }
 
     #[test]
-    fn reports_each_new_largest_aggregate_of_the_tracked_slot() {
+    fn reports_each_new_largest_aggregate_of_subscribed_committees() {
         let mut report = VoteReport::new();
         assert_eq!(report.end_slot(5), None);
+        report.gossip_single(5, 3);
+        report.gossip_single(4, 7);
+        report.aggregate_received(&[1; 32], 5, 7, 60);
 
         report.aggregate_received(&[1; 32], 5, 3, 10);
         report.aggregate_received(&[1; 32], 5, 3, 40);
@@ -107,6 +121,9 @@ mod tests {
         ]));
 
         assert_eq!(report.end_slot(6), Some(5));
+        report.aggregate_received(&[1; 32], 6, 3, 5);
+        assert!(drained(&mut report).is_empty(), "subscriptions restart per slot");
+        report.gossip_single(6, 3);
         report.aggregate_received(&[1; 32], 6, 3, 5);
         assert_eq!(drained(&mut report).len(), 1, "largest restarts per slot");
         assert_eq!(report.end_slot(8), None, "a slot not ended by its successor");

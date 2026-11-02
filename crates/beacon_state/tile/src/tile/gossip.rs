@@ -528,6 +528,12 @@ impl BeaconStateTile {
                 self.reject_gossip(&m, p.message(), "vote bad signature", producers);
                 continue;
             }
+            if let PreparedVote::Attestation(a) = &p &&
+                m.stream_id != LOCAL_GOSSIP_STREAM_ID
+            {
+                let committee = SingleAttestationView::committee_index(&a.buf) as usize;
+                self.vote_report.gossip_single(a.target.attestation_slot, committee);
+            }
             committed_ptc |= matches!(p, PreparedVote::Ptc(_));
             match self.commit_vote(&p, &sig) {
                 Feedback::Accept => {
@@ -1256,17 +1262,14 @@ impl BeaconStateTile {
             data_root,
             parsed.aggregation_bits,
         );
-        // Singles arrive only on subscribed subnets, one committee each.
-        if self.attestation_pool.holds_single(parsed.agg_slot, committee_index) {
-            // Less the bitlist's length delimiter.
-            let members = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
-            self.vote_report.aggregate_received(
-                parsed.agg_data.beacon_block_root(),
-                parsed.agg_slot,
-                committee_index,
-                members,
-            );
-        }
+        // Less the bitlist's length delimiter.
+        let members = parsed.aggregation_bits.iter().map(|b| b.count_ones()).sum::<u32>() - 1;
+        self.vote_report.aggregate_received(
+            parsed.agg_data.beacon_block_root(),
+            parsed.agg_slot,
+            committee_index,
+            members,
+        );
         self.seen_aggregators.mark(parsed.att_epoch, parsed.aggregator_index);
         if !attested.is_ready() {
             let new_data = self.unknown_root_votes.insert(

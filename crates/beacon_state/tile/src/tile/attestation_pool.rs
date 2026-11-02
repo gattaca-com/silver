@@ -291,14 +291,6 @@ impl AttestationPool {
         }
     }
 
-    /// Whether committee `committee_index` of `slot` holds a single for any
-    /// candidate.
-    pub(super) fn holds_single(&self, slot: Slot, committee_index: usize) -> bool {
-        self.candidates.committees_of(slot).any(|committee| {
-            committee.index() == committee_index && !self.store.singles(committee).is_empty()
-        })
-    }
-
     #[timed]
     pub(super) fn prune_before(&mut self, floor: Slot) {
         self.candidates.prune_before(floor, |committee| self.store.close(committee));
@@ -869,9 +861,6 @@ mod tests {
         got.clear();
         pool.singles_by_block_root(SLOT + 1, |root, count| got.push((*root, count)));
         assert!(got.is_empty());
-
-        assert!(pool.holds_single(SLOT, 0) && pool.holds_single(SLOT, 1));
-        assert!(!pool.holds_single(SLOT, 2) && !pool.holds_single(SLOT + 1, 0));
     }
 
     #[test]
