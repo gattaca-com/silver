@@ -51,7 +51,8 @@ impl<'a> ParsedRequest<'a> {
         else {
             return ParseOutcome::Malformed;
         };
-        let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
+        let target = origin_form(raw_path);
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let keep_alive = version == 1 &&
             !headers.iter().any(|h| {
                 h.name.eq_ignore_ascii_case("connection") && h.value.eq_ignore_ascii_case(b"close")
@@ -102,6 +103,18 @@ impl<'a> ParsedRequest<'a> {
             },
         }
     }
+}
+
+/// Servers must accept an absolute-form target (RFC 9112 §3.2.2), as some
+/// clients send through proxies.
+fn origin_form(target: &str) -> &str {
+    let Some((scheme, rest)) = target.split_once("://") else {
+        return target;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return target;
+    }
+    rest.find('/').map_or("/", |path_start| &rest[path_start..])
 }
 
 fn trimmed_utf8(value: &[u8]) -> Option<&str> {
@@ -453,6 +466,16 @@ mod tests {
         let (_, r) = parsed(&req);
         assert_eq!(r.path, "/eth/v1/beacon/states/head/validators");
         assert_eq!(r.query, "status=active");
+    }
+
+    #[test]
+    fn absolute_form_target_routes_its_path() {
+        let req = get_req("http://127.0.0.1:5052/eth/v1/node/version?x=1", "HTTP/1.1");
+        let (_, r) = parsed(&req);
+        assert_eq!((r.path, r.query), ("/eth/v1/node/version", "x=1"));
+
+        let req = get_req("HTTPS://localhost:5052", "HTTP/1.1");
+        assert_eq!(parsed(&req).1.path, "/");
     }
 
     #[test]

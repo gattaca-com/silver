@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use silver_common::{BeaconApiRequest, TCacheRead, TProducer};
-use silver_httpcore::{ParsedRequest, Query, frame_response};
+use silver_httpcore::{ParsedRequest, Query};
 use silver_pbs::SidecarCall;
 
 use crate::{
@@ -236,7 +236,7 @@ impl Router {
             Response::new(out, submissions).error(405, "method not allowed");
         } else {
             silver_log::warn!("unknown path: {}", req.path);
-            frame_response(out, "404 Not Found", None, b"");
+            Response::new(out, submissions).error(404, "unknown path");
         }
         Outcome::Response(None)
     }
@@ -394,13 +394,14 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_path_gets_bare_404() {
+    fn unmatched_path_gets_404() {
         let router = Router::new(
             &[(Method::Get, "/eth/v1/beacon/states/{state_id}/finality_checkpoints", echo_params)],
             &[],
         );
-        let expected: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        assert_eq!(dispatch(&router, "GET", "/not/real"), expected);
+        let expected = dispatch(&router, "GET", "/not/real");
+        assert!(expected.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(body(&expected), br#"{"code":404,"message":"unknown path"}"#);
         assert_eq!(dispatch(&router, "GET", "/eth/v1/beacon/states/head"), expected, "prefix");
         assert_eq!(
             dispatch(&router, "GET", "/eth/v1/beacon/states/head/finality_checkpoints/x"),
