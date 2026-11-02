@@ -932,6 +932,9 @@ impl BeaconStateTile {
                     self.publish_status(&mut adapter.producers);
                 }
             }
+            TickEvent::AnnouncePayload(slot) => {
+                self.announce_payload_attributes(slot + 1, &mut adapter.producers)
+            }
             TickEvent::StateAdvance(slot) => self.on_state_advance(slot),
             TickEvent::ForkChoiceLookahead(slot) => self.on_fc_lookahead(slot),
             TickEvent::PreparePayload(slot) => {

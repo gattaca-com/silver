@@ -173,11 +173,7 @@ impl ColumnsRig {
         let rpc = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
         let engine = TCache::producer(TCacheId::BoundaryProcessing, 1 << 16);
         let handoff = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 16);
-        let ticker = SlotTicker::new(
-            0,
-            Duration::from_millis(spec.slot_duration_ms()),
-            Duration::from_secs(4),
-        );
+        let ticker = SlotTicker::new(0, &spec, Duration::from_secs(4));
         let mut tile = DataColumnsTile::new(
             TCacheTable::from_iter(
                 [&gossip, &frames, &rpc, &engine, &handoff].map(|p| p.cache_ref()),

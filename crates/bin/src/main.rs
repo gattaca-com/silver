@@ -158,11 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let spec = Arc::new(chain_config.spec.clone());
     sleep_until_genesis(genesis.unix_secs);
-    let ticker = SlotTicker::new(
-        genesis.unix_secs,
-        chain_config.slot_duration(),
-        chain_config.playload_lookahead(),
-    );
+    let ticker = SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead());
 
     // Long-lived subnets: advertised from boot (peer retention exempts us
     // from excess-peer pruning); the gossip subscriptions themselves
@@ -351,11 +347,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state_reader,
         das_custody_groups,
         spec.clone(),
-        SlotTicker::new(
-            genesis.unix_secs,
-            chain_config.slot_duration(),
-            chain_config.playload_lookahead(),
-        ),
+        SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead()),
         proposed_columns_producer,
     )
     .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)

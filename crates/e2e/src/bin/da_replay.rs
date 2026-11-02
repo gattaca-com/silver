@@ -106,11 +106,7 @@ impl Node {
 
         let state =
             BeaconState::from_checkpoint(state_ssz, &spec, &[]).expect("decompose anchor state");
-        let ticker = SlotTicker::new(
-            state.immutable.genesis_time,
-            Duration::from_millis(spec.slot_duration_ms()),
-            Duration::from_secs(4),
-        );
+        let ticker = SlotTicker::new(state.immutable.genesis_time, &spec, Duration::from_secs(4));
         let mut owner = BeaconStateOwner::new(state);
         // Readers see nothing until a state id is published.
         let anchor = owner.roll_fresh();

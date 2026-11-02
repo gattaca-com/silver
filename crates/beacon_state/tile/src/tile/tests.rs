@@ -124,7 +124,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
-    let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+    let ticker = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let event_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
     let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
@@ -167,7 +167,7 @@ fn make_tile_with_producers(
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
-    let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+    let ticker = SlotTicker::new(genesis, &spec, Duration::from_secs(4));
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let event_p = TCache::producer(TCacheId::NetworkProcessing, TEST_RING_BYTES);
     let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);

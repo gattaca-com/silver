@@ -241,7 +241,7 @@ fn gloas_from_genesis() -> SpecConfig {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8], gloas: bool) -> Self {
         let spec = if gloas { gloas_from_genesis() } else { fulu_from_genesis() };
-        let mut h = Self::build(wall_slot, |ticker, tcaches| {
+        let mut h = Self::build(wall_slot, &spec, |ticker, tcaches| {
             BeaconStateTile::new(
                 ticker,
                 Arc::new(spec.clone()),
@@ -258,7 +258,7 @@ impl Harness {
         h
     }
 
-    fn build<F>(wall_slot: u64, build_tile: F) -> Self
+    fn build<F>(wall_slot: u64, spec: &SpecConfig, build_tile: F) -> Self
     where
         F: FnOnce(SlotTicker, TCacheTable) -> BeaconStateTile,
     {
@@ -269,7 +269,7 @@ impl Harness {
         // construction.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let genesis = now.saturating_sub(wall_slot * 12);
-        let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+        let ticker = SlotTicker::new(genesis, spec, Duration::from_secs(4));
 
         let gossip_in_producer = TCache::producer(TCacheId::ControlProcessing, 1 << 24);
         let rpc_in_producer = TCache::producer(TCacheId::NetworkProcessing, RPC_RING_BYTES);

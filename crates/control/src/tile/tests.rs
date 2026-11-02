@@ -341,7 +341,7 @@ fn gossip_cutover_uses_clock_despite_delayed_status_and_keeps_old_routing_until_
     let old = GossipDomain::new(spec.fork_digest_at(9, &[0; 32]), ForkName::Fulu);
     let new = GossipDomain::new(spec.fork_digest_at(10, &[0; 32]), ForkName::Gloas);
     capture.controller.spec = Arc::new(spec);
-    let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+    let mut ticker = SlotTicker::new(0, &capture.controller.spec, Duration::from_secs(3));
     ticker.set_current_slot(9 * SLOTS_PER_EPOCH);
     capture.controller.set_gossip_clock(ticker, &[0; 32]);
     capture.crank();
