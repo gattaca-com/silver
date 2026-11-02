@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use silver_chain_spec::SpecConfig;
+
 type Slot = u64;
 
 /// Consensus-spec clock-skew allowance for slot-scoped gossip validation.
@@ -18,12 +20,13 @@ const FORK_CHOICE_LOOKAHEAD_DIVISOR: u64 = 24;
 // slot/4 before next slot = 3s on mainnet, state advance fires at 3/4.
 const STATE_ADVANCE_DIVISOR: u64 = 4;
 
-const NUM_PHASES: usize = 4;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickEvent {
     /// Slot boundary. Fork choice, cache pruning.
     SlotStart(Slot),
+    /// Announce the next slot on the current head, so builders learn of
+    /// a missed slot in time.
+    AnnouncePayload(Slot),
     /// slot - prepare_payload_lookahead. Notify EL to start building.
     PreparePayload(Slot),
     /// 3/4 slot. Advance head state one slot.
@@ -36,15 +39,26 @@ pub enum TickEvent {
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     SlotStart,
+    AnnouncePayload,
     PreparePayload,
     StateAdvance,
     ForkChoiceLookahead,
 }
 
+/// The phases of a slot, in firing order.
+const PHASES: [Phase; 5] = [
+    Phase::SlotStart,
+    Phase::AnnouncePayload,
+    Phase::PreparePayload,
+    Phase::StateAdvance,
+    Phase::ForkChoiceLookahead,
+];
+
 impl Phase {
     fn event(self, slot: Slot) -> TickEvent {
         match self {
             Self::SlotStart => TickEvent::SlotStart(slot),
+            Self::AnnouncePayload => TickEvent::AnnouncePayload(slot),
             Self::PreparePayload => TickEvent::PreparePayload(slot),
             Self::StateAdvance => TickEvent::StateAdvance(slot),
             Self::ForkChoiceLookahead => TickEvent::ForkChoiceLookahead(slot),
@@ -58,19 +72,20 @@ pub struct SlotTicker {
     anchor_genesis_ms: u64,
     frozen: bool,
     slot_ms: u64,
-    /// (offset_ms_from_slot_start, phase), sorted by offset.
-    phases: [(u64, Phase); NUM_PHASES],
-    /// Last emitted: (slot, index into phases). None = nothing emitted yet.
+    payload_off: u64,
+    gloas_fork_slot: Slot,
+    /// Last emitted: (slot, index into `PHASES`). None = nothing emitted yet.
     last: Option<(Slot, usize)>,
 }
 
 impl SlotTicker {
     pub fn new(
         genesis_unix_secs: u64,
-        slot_duration: Duration,
+        spec: &SpecConfig,
         prepare_payload_lookahead: Duration,
     ) -> Self {
-        assert!(slot_duration.as_millis() > 0);
+        let slot_ms = spec.slot_duration_ms();
+        assert!(slot_ms > 0);
 
         let now_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -84,29 +99,36 @@ impl SlotTicker {
             genesis_ms
         );
 
-        let slot_ms = slot_duration.as_millis() as u64;
-        let payload_off = slot_ms.saturating_sub(prepare_payload_lookahead.as_millis() as u64);
-
-        let state_advance_off = slot_ms - slot_ms / STATE_ADVANCE_DIVISOR;
-        let fc_lookahead_off = slot_ms - slot_ms / FORK_CHOICE_LOOKAHEAD_DIVISOR;
-
-        debug_assert!(payload_off <= state_advance_off);
-        debug_assert!(state_advance_off <= fc_lookahead_off);
-
-        let phases = [
-            (0, Phase::SlotStart),
-            (payload_off, Phase::PreparePayload),
-            (state_advance_off, Phase::StateAdvance),
-            (fc_lookahead_off, Phase::ForkChoiceLookahead),
-        ];
-
-        Self {
+        let ticker = Self {
             anchor: Instant::now(),
             anchor_genesis_ms: now_unix_ms.saturating_sub(genesis_ms),
             frozen: false,
             slot_ms,
-            phases,
+            payload_off: slot_ms.saturating_sub(prepare_payload_lookahead.as_millis() as u64),
+            gloas_fork_slot: spec.gloas_fork_slot(),
             last: None,
+        };
+        // Pre-Gloas has the later attestation deadline, so it bounds both forks.
+        assert!(
+            PHASES.windows(2).all(|w| ticker.offset(w[0], 0) <= ticker.offset(w[1], 0)),
+            "prepare_payload_lookahead must prepare between the attestation deadline and the \
+             state advance"
+        );
+        ticker
+    }
+
+    /// Milliseconds into `slot` at which `phase` fires. Only the announcement
+    /// moves with the fork: it follows the attestation deadline.
+    fn offset(&self, phase: Phase, slot: Slot) -> u64 {
+        let slot_ms = self.slot_ms;
+        match phase {
+            Phase::SlotStart => 0,
+            Phase::AnnouncePayload => {
+                slot_ms * attestation_due_bps(slot >= self.gloas_fork_slot) / BASIS_POINTS
+            }
+            Phase::PreparePayload => self.payload_off,
+            Phase::StateAdvance => slot_ms - slot_ms / STATE_ADVANCE_DIVISOR,
+            Phase::ForkChoiceLookahead => slot_ms - slot_ms / FORK_CHOICE_LOOKAHEAD_DIVISOR,
         }
     }
 
@@ -217,16 +239,10 @@ impl SlotTicker {
 
         if crossed {
             // Advance past any non-SlotStart phases whose offset <= into so
-            // they won't fire later in this slot. phases[0] is SlotStart at
+            // they won't fire later in this slot. PHASES[0] is SlotStart at
             // offset 0 and is always the emitted event here.
-            let mut consumed = 0;
-            for i in 1..NUM_PHASES {
-                if self.phases[i].0 <= into {
-                    consumed = i;
-                } else {
-                    break;
-                }
-            }
+            let consumed =
+                PHASES[1..].iter().take_while(|&&phase| self.offset(phase, slot) <= into).count();
             self.last = Some((slot, consumed));
             return TickEvent::SlotStart(slot);
         }
@@ -234,8 +250,8 @@ impl SlotTicker {
         // Same slot, advance to the next phase if its offset has been reached.
         let last_idx = self.last.unwrap().1;
         let next = last_idx + 1;
-        if let Some(&(offset, phase)) = self.phases.get(next) &&
-            offset <= into
+        if let Some(&phase) = PHASES.get(next) &&
+            self.offset(phase, slot) <= into
         {
             self.last = Some((slot, next));
             return phase.event(slot);
@@ -248,27 +264,32 @@ impl SlotTicker {
 mod tests {
     use super::*;
 
+    fn spec(slot_ms: u64, gloas_fork_epoch: u64) -> SpecConfig {
+        SpecConfig { slot_duration_ms: Some(slot_ms), gloas_fork_epoch, ..SpecConfig::mainnet() }
+    }
+
     fn genesis_secs_ago(secs: u64) -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - secs
     }
 
     #[test]
     fn fires_slot_start_at_boundary() {
-        let slot_dur = Duration::from_secs(12);
         let genesis = genesis_secs_ago(12);
-        let mut t = SlotTicker::new(genesis, slot_dur, Duration::from_secs(4));
+        let mut t = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
 
         // 12s since genesis = slot 1, ~0ms into slot. SlotStart should fire.
         assert!(matches!(t.tick(), TickEvent::SlotStart(1)));
-        // Next phase (PreparePayload at 8s) is in the future.
+        // Next phase (AnnouncePayload at 4s) is in the future.
         assert!(t.tick() == TickEvent::None);
     }
 
     #[test]
     fn slot_start_uses_the_same_anchor_as_the_wall_slot() {
-        let slot_duration = Duration::from_millis(1250);
-        let mut ticker =
-            SlotTicker::new(genesis_secs_ago(20), slot_duration, Duration::from_millis(500));
+        let mut ticker = SlotTicker::new(
+            genesis_secs_ago(20),
+            &spec(1250, u64::MAX),
+            Duration::from_millis(500),
+        );
         ticker.set_since_genesis_ms(10 * 1250 + 750);
         let (slot, start) = ticker.current_slot_start();
         assert_eq!(slot, 10);
@@ -277,13 +298,12 @@ mod tests {
 
     #[test]
     fn skips_stale_phases_on_catchup() {
-        let slot_dur = Duration::from_secs(12);
         // 22s since genesis → slot 1, ~10s in.
-        // Overdue offsets: Payload(8s), StateAdv(9s).
+        // Overdue offsets: Announce(4s), Payload(8s), StateAdv(9s).
         // FCLookahead(11.5s) not yet reached.
         // Expect: only SlotStart(1) emitted; stale phases dropped.
         let genesis = genesis_secs_ago(22);
-        let mut t = SlotTicker::new(genesis, slot_dur, Duration::from_secs(4));
+        let mut t = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
 
         assert!(matches!(t.tick(), TickEvent::SlotStart(1)));
         assert_eq!(t.tick(), TickEvent::None);
@@ -291,10 +311,9 @@ mod tests {
 
     #[test]
     fn skips_fully_passed_slots() {
-        let slot_dur = Duration::from_secs(12);
         // 36s since genesis → slot 3, ~0ms in.
         let genesis = genesis_secs_ago(36);
-        let mut t = SlotTicker::new(genesis, slot_dur, Duration::from_secs(4));
+        let mut t = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
 
         // Should fire events for slot 3, not replay slots 0-2.
         let ev = t.tick();
@@ -302,8 +321,34 @@ mod tests {
     }
 
     #[test]
+    fn announces_at_the_attestation_deadline_of_each_fork() {
+        // Gloas from slot 32: the deadline moves from 1/3 to 1/4 of the slot.
+        let mut t = SlotTicker::new(0, &spec(12_000, 1), Duration::from_secs(4));
+        t.set_since_genesis_ms(31 * 12_000);
+        let mut at = |ms| {
+            t.anchor_genesis_ms = ms;
+            t.tick()
+        };
+        assert_eq!(at(31 * 12_000), TickEvent::SlotStart(31));
+        assert_eq!(at(31 * 12_000 + 3_998), TickEvent::None);
+        assert_eq!(at(31 * 12_000 + 3_999), TickEvent::AnnouncePayload(31));
+        assert_eq!(at(31 * 12_000 + 8_000), TickEvent::PreparePayload(31));
+
+        assert_eq!(at(32 * 12_000), TickEvent::SlotStart(32));
+        assert_eq!(at(32 * 12_000 + 2_999), TickEvent::None);
+        assert_eq!(at(32 * 12_000 + 3_000), TickEvent::AnnouncePayload(32));
+        assert_eq!(at(32 * 12_000 + 8_000), TickEvent::PreparePayload(32));
+    }
+
+    #[test]
+    #[should_panic(expected = "prepare_payload_lookahead")]
+    fn rejects_preparing_before_the_announcement() {
+        SlotTicker::new(0, &SpecConfig::mainnet(), Duration::from_secs(10));
+    }
+
+    #[test]
     fn current_slot_disparity_covers_both_boundary_sides() {
-        let mut t = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4));
+        let mut t = SlotTicker::new(0, &SpecConfig::mainnet(), Duration::from_secs(4));
         let disparity = Duration::from_millis(500);
 
         t.set_since_genesis_ms(12_000 + 499);

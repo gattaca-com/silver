@@ -209,7 +209,7 @@ impl BeaconStateTile {
         self.announce_payload_attributes(slot, producers);
     }
 
-    fn announce_payload_attributes(&mut self, slot: Slot, producers: &mut Producers) {
+    pub(super) fn announce_payload_attributes(&mut self, slot: Slot, producers: &mut Producers) {
         if !self.payload_attributes.wanted {
             return;
         }

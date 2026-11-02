@@ -299,7 +299,7 @@ fn enabled_subscriptions_keep_request_flags_across_the_live_fork_cutover() {
         .controller
         .with_data_columns_cache(config, columns, 0, Instant::now(), PartialColumnsMode::Enabled)
         .unwrap();
-    let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+    let mut ticker = SlotTicker::new(0, &spec, Duration::from_secs(3));
     ticker.set_current_slot(8 * SLOTS_PER_EPOCH);
     capture.controller.set_gossip_clock(ticker, &[0; 32]);
     for epoch in [8, 9, 10] {

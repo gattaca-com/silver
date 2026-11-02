@@ -1097,6 +1097,7 @@ mod tests {
             let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
             let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1024 * 1024);
             let state_p = TCache::producer(TCacheId::BeaconStateHandoff, 1024 * 1024);
+            let ticker = SlotTicker::new(0, &spec, Duration::from_secs(4));
 
             let mut tile = DataColumnsTile::new(
                 TCacheTable::from_iter(
@@ -1105,7 +1106,7 @@ mod tests {
                 beacon_state,
                 custody,
                 Arc::new(spec),
-                SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(4)),
+                ticker,
                 TCache::producer(TCacheId::ProposedColumns, 1 << 20),
             );
             tile.open_tcaches().unwrap();

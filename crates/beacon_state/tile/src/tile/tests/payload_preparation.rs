@@ -215,6 +215,38 @@ fn missed_slot_moves_the_announcement_to_the_current_slot() {
 }
 
 #[test]
+fn attestation_deadline_announces_the_slot_after_a_missing_block() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+
+    // Block 1 has not arrived by its attestation deadline: slot 2 builds on
+    // the old head, announced now rather than at the preparation tick.
+    rig.tile.announce_payload_attributes(2, &mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(2, EMPTY_HASH, [0; 20])]);
+
+    rig.tile.prepare_or_announce_payload(2, &mut rig.adapter.producers);
+    assert!(rig.payload_attributes().is_empty(), "preparation repeats no announcement");
+    rig.tile.ticker.set_current_slot(2);
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert!(rig.payload_attributes().is_empty(), "slot start repeats no announcement");
+}
+
+#[test]
+fn attestation_deadline_is_silent_once_the_block_was_announced() {
+    let mut rig = PreparationRig::gloas(|_| {});
+    rig.tile.payload_attributes.wanted = true;
+    // Block 0 is the head during slot 0: its import announced slot 1.
+    rig.tile.ticker.set_current_slot(0);
+    rig.tile.publish_status(&mut rig.adapter.producers);
+    assert_eq!(rig.announced_parents(), [(1, EMPTY_HASH, [0; 20])]);
+
+    rig.tile.announce_payload_attributes(1, &mut rig.adapter.producers);
+    assert!(rig.payload_attributes().is_empty(), "an unchanged basis is not announced again");
+}
+
+#[test]
 fn late_registration_announces_its_fee_recipient() {
     let mut rig = PreparationRig::gloas(|_| {});
     rig.tile.payload_attributes.wanted = true;

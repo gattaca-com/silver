@@ -120,7 +120,7 @@ mod tests {
         spec.fulu_fork_epoch = 0;
         spec.gloas_fork_epoch = 10;
         spec.blob_schedule = vec![BlobParameters { epoch: 20, max_blobs_per_block: 21 }];
-        let mut ticker = SlotTicker::new(0, Duration::from_secs(12), Duration::from_secs(3));
+        let mut ticker = SlotTicker::new(0, &spec, Duration::from_secs(3));
         ticker.set_current_slot(0);
         GossipSchedule::new(&spec, &[0; 32], ticker)
     }

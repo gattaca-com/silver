@@ -433,8 +433,7 @@ pub fn ef_tile_with_spec(
     use silver_common::{TCache, TCacheProducer, TCacheTable};
     use silver_config::{EngineConfig, SyncingConfig};
 
-    let ticker =
-        SlotTicker::new(0, std::time::Duration::from_secs(12), std::time::Duration::from_secs(4));
+    let ticker = SlotTicker::new(0, &spec, std::time::Duration::from_secs(4));
     // Producers stay bound through `new`; the tile's consumers keep their caches
     // alive afterward (mirrors the `make_tile` unit-test harness).
     let (gp, rp, ep, yp, cp) = (

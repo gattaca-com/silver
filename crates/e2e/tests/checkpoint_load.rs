@@ -153,7 +153,7 @@ fn finalized_state_loads() {
     // Keep the checkpoint recent and every fixture block in the past,
     // independent of the date on which the test runs.
     let genesis_time = u64::from_le_bytes(ssz[0..8].try_into().unwrap());
-    let mut ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
+    let mut ticker = SlotTicker::new(genesis_time, &SpecConfig::mainnet(), Duration::from_secs(4));
     ticker.set_current_slot(last_slot + 1);
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let rpc_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
@@ -305,7 +305,7 @@ fn tile_apply_block_ef_fixture() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let ticker = SlotTicker::new(
         now.saturating_sub((block_slot + 1) * 12),
-        Duration::from_secs(12),
+        &SpecConfig::mainnet(),
         Duration::from_secs(4),
     );
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
