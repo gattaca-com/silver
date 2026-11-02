@@ -6,6 +6,12 @@
 <title>Gattaca Silver</title>
 <link rel="stylesheet" href="vendor/uPlot.min.css">
 <script src="vendor/uPlot.iife.min.js"></script>
+<script>
+  // Before first paint, so a saved light theme never flashes dark.
+  try {
+    if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light';
+  } catch {}
+</script>
 <style>
   /* Dark by default, after gattaca.com: greyscale chrome, one yellow accent.
      Series are the brand hues stepped into the validated lightness band. */
@@ -20,13 +26,13 @@
     --seq-0: #184f95; --seq-1: #1c5cab; --seq-2: #256abf; --seq-3: #2a78d6; --seq-4: #3987e5; --seq-5: #5598e7; --seq-6: #6da7ec; --seq-7: #86b6ef; --seq-8: #9ec5f4; --seq-9: #b7d3f6;
   }
   :root[data-theme="light"] {
-    --bg: #efefef; --fg: #222222; --muted: #565656; --line: #d4d4d4; --idle: #b3b3b3;
-    --panel: #f8f8f8; --accent: #b88a00; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
+    --bg: #eceef1; --fg: #1d1d1b; --muted: #5f6267; --line: #d7dade; --idle: #b3b7bd;
+    --panel: #ffffff; --accent: #2b7bb9; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
     --c-da: #0c8599; --c-custody: #ae3ec9; --c-stf: #e67700; --c-validate: #4dabf7;
     --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700;
-    --hover: #f6e7b0; --sel: #cfe2f7; --open: #e3effb;
-    --series-1: #2a80c2; --series-2: #a97b00; --series-3: #9a52b6; --series-4: #13906a;
-    --series-5: #d4541f; --series-6: #5b6fd6; --series-7: #c94375; --series-8: #77861c;
+    --hover: #fcdcae; --sel: #cfe2f7; --open: #e3effb;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
     --seq-0: #86b6ef; --seq-1: #6da7ec; --seq-2: #5598e7; --seq-3: #3987e5; --seq-4: #2a78d6; --seq-5: #256abf; --seq-6: #1c5cab; --seq-7: #184f95; --seq-8: #104281; --seq-9: #0d366b;
   }
   * { box-sizing: border-box; }
@@ -49,6 +55,12 @@
   }
   nav button.active { color: var(--accent); border-color: var(--line); background: var(--bg); }
   #status { margin-left: auto; font-size: 12px; }
+  #theme {
+    font: inherit; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); background: none; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px;
+  }
+  #theme:hover { color: var(--accent); }
   #status.live { color: var(--ok); }
   #status.down { color: var(--bad); }
   /* Every render replaces the pane's nodes, so there is nothing stable to
@@ -238,6 +250,7 @@
     <button data-pane="flow">Data flow</button>
   </nav>
   <span id="status" class="down">connecting</span>
+  <button id="theme" type="button" title="Switch theme"></button>
 </header>
 <main id="pane"></main>
 <script type="module" src="app.js"></script>

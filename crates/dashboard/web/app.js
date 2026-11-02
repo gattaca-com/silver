@@ -129,6 +129,25 @@ document.querySelector('header').addEventListener('click', (e) => {
   if (pane && PANES[pane]) switchPane(pane);
 });
 
+const themeButton = document.getElementById('theme');
+
+/** The button names the theme a click switches to. */
+function renderThemeButton() {
+  themeButton.textContent = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+}
+
+// Charts key their plots on the palette, so the next render rebuilds them.
+themeButton.addEventListener('click', () => {
+  const light = document.documentElement.dataset.theme !== 'light';
+  if (light) document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+  try {
+    localStorage.setItem('theme', light ? 'light' : 'dark');
+  } catch {}
+  renderThemeButton();
+  render();
+});
+
 // The server replays every ring on connect, so a reconnect starts from an
 // empty fleet rather than merging a second replay into the first. The last
 // render stays up until the replay's text-frame marker; datagrams are binary.
@@ -169,6 +188,7 @@ function connect() {
 }
 
 renderTabs();
+renderThemeButton();
 connect();
 setInterval(() => {
   if (performance.now() - lastRender >= (PANES[active].renderMs ?? RENDER_MS) - TICK_MS / 2) render();
