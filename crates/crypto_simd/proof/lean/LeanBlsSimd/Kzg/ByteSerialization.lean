@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import Mathlib.Data.List.Forall2
-import Aeneas
+import LeanBlsSimd.Aeneas
 
 open EthLib.Cryptography Bls Kzg
 

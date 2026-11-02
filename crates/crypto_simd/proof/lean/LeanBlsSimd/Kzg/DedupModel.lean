@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Model
-import Aeneas
+import LeanBlsSimd.Aeneas
 import Mathlib.Data.List.Nodup
 
 namespace LeanBlsSimd.Kzg

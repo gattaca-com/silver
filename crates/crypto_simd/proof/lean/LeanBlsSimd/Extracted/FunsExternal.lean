@@ -1,5 +1,5 @@
 module
-public import Aeneas
+public import LeanBlsSimd.Aeneas
 public import LeanBlsSimd.Extracted.Types
 public import LeanBlsSimd.Model.Intrinsics
 @[expose] public section

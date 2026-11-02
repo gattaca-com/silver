@@ -15,12 +15,14 @@ private theorem select_zero_word (a b : U64) :
   apply (UScalar.eq_equiv_bv_eq _ _).2
   change (a.bv &&& 0) ||| (b.bv &&& ~~~0) = b.bv
   simp
+  exact BitVec.and_allOnes
 
 private theorem select_ones_word (a b : U64) :
     (a &&& 18446744073709551615#u64) ||| (b &&& ~~~18446744073709551615#u64) = a := by
   apply (UScalar.eq_equiv_bv_eq _ _).2
   change (a.bv &&& ~~~0) ||| (b.bv &&& ~~~~~~0) = a.bv
   simp
+  exact BitVec.and_allOnes
 
 private theorem select_loop_eq (mask : U64) (a b out target : Array U64 6#usize) (j : Usize)
     (hj : j.val ≤ 6)

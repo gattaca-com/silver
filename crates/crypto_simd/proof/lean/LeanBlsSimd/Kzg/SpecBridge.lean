@@ -1,4 +1,4 @@
-import Aeneas
+import LeanBlsSimd.Aeneas
 import LeanBlsSimd.Kzg.Model
 import LeanBlsSimd.Kzg.IOLawful
 

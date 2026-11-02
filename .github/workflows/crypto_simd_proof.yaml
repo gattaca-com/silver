@@ -128,7 +128,7 @@ jobs:
       # Runs `lake exe cache get` and `lake build`.
       # The theorem guard permits only propext, Classical.choice and Quot.sound.
       # Plain `lake build` also checks the import environment against the pinned
-      # axiom inventory.
+      # 15-name axiom inventory.
       - uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
         with:
           lake-package-directory: ${{ env.PROOF_DIR }}

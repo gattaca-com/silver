@@ -1,5 +1,5 @@
 name = "lean_bls_simd"
-defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms", "controls.Refines", "controls.AxiomInventory", "controls.GuardImported"]
+defaultTargets = ["LeanBlsSimd", "controls.KzgStrictAxioms", "controls.Refines", "controls.AxiomInventory", "controls.AxiomInventoryDropped", "controls.GuardImported"]
 # Mathlib and Aeneas use the module system; most of this package does not.
 allowNonModules = true
 

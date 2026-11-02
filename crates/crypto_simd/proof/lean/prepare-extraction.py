@@ -171,6 +171,7 @@ def prepare(source):
             raise ValueError(f"expected exactly one generated entry point: {entry_point}")
     if "sorry" in source:
         raise ValueError("sorry in generated functions")
+    source = source.replace("public import Aeneas\n", "public import LeanBlsSimd.Aeneas\n")
     source, full_count = re.subn(r"\bfull\b", "«full»", source)
     if full_count != 8:
         raise ValueError(f"expected eight generated full identifiers, found {full_count}")
@@ -205,6 +206,9 @@ def main():
         functions, literals = prepare(path.read_text())
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    types = path.with_name("Types.lean")
+    types.write_text(types.read_text().replace(
+        "public import Aeneas\n", "public import LeanBlsSimd.Aeneas\n"))
     path.with_name("Literals.lean").write_text(literals)
     path.write_text(functions)
 

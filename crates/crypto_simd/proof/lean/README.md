@@ -62,9 +62,11 @@ After changing any import, rebuild its artifacts before running controls. The pa
 
 ### Controls and axioms
 
-`acceptedAxioms` is empty. The per-theorem allow-list contains only `propext`, `Classical.choice` and `Quot.sound`. The separate default-target inventory pins exactly 27 declared axiom names. The [trust section](../README.md#what-a-reader-must-trust) lists the fifteen Aeneas declarations and the imported-cache residuals.
+`acceptedAxioms` is empty. The per-theorem allow-list contains only `propext`, `Classical.choice` and `Quot.sound`. The separate default-target inventory pins exactly 15 declared axiom names. The [trust section](../README.md#what-a-reader-must-trust) lists the three Aeneas declarations and the imported-cache residuals.
 
-`controls/Guard.lean` rejects `native_decide`, `bv_decide` and an in-module constructor cycle. `GuardImported.lean` rejects imported type-only and explicit-constructor cycles. Ownership follows defining modules, so private names and exposed generated bodies are traversed directly. `GuardPartialPermission.lean` checks partial permission for one theorem's two axioms. `AxiomInventoryExtra.lean` rejects an unused extra declaration. `AxiomInventoryMissing.lean` rejects the fifteen Aeneas names absent from its Lean-only import. The inventory checks names only, not statements.
+`controls/Guard.lean` rejects `native_decide`, `bv_decide` and an in-module constructor cycle. `GuardImported.lean` rejects imported type-only and explicit-constructor cycles. Ownership follows defining modules, so private names and exposed generated bodies are traversed directly. `GuardPartialPermission.lean` checks partial permission for one theorem's two axioms. `AxiomInventoryExtra.lean` rejects an unused extra declaration. `AxiomInventoryMissing.lean` rejects the three Aeneas names absent from its Lean-only import. The default target `AxiomInventoryDropped.lean` rejects a reimported `PanicInfo` axiom. It also builds that control's dependency for standalone checks. The inventory checks names only, not statements.
+
+Use `LeanBlsSimd.Aeneas` for handwritten Aeneas imports. `prepare-extraction.py` selects this facade for generated types, literals and functions. Its 21 named modules can require import maintenance when Aeneas modules change.
 
 Fixed generated Rust names have narrow name-style linter exemptions. `Portable/Msm/Initialise.lean` scopes an unused-variable exemption to the public theorem retaining its named positivity premise. These exceptions preserve extraction names and the theorem interface.
 

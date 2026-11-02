@@ -325,27 +325,17 @@ The constructor establishes the invariant, and each returned state preserves it 
 7. **Signature pairing through blst.** `PairingProduct.BlstMatchesSpec` trusts the whole opaque `PairingInputs::blst_is_one` wrapper on finite canonical subgroup pairs. This includes chunking, null-padded pointers, accumulator setup, multi-Miller calls, multiplication, final exponentiation and the identity test. The binding assumes totality. Raw multi-Miller calls do not skip G2 infinity. The law applies only after the proved filter. KZG and decoder headlines exclude the dictionary and law.
 8. **Runtime setup for literal-upstream corollaries.** `verify_eq_upstream`, `verify_eq_upstream_ifma` and `LeanBlsSimd.Kzg.model_eq_spec` require `TrustedSetup.get! = pure embeddedSetup`, including that no importer changes the public `TrustedSetup.globalRef`. The initialized reference and `ST.Prim.Ref.get` are opaque in Lean. The embedded-setup theorem instead uses the explicit value and the proved embedded-byte certificates.
 
-The production import environment declares exactly 27 axioms: 12 Lean core declarations and the 15 Aeneas declarations below. `LeanBlsSimd/AxiomInventory.lean` pins their names and defining modules for diagnostics. `controls/AxiomInventory.lean` checks the exact name set as a default build target. Both unexpected and missing names fail, so inventory changes require review. The check compares names only, not axiom statements.
+The production import environment declares exactly 15 axioms: 12 Lean core declarations and the three Aeneas declarations below. `LeanBlsSimd/AxiomInventory.lean` pins their names and defining modules for diagnostics. `controls/AxiomInventory.lean` checks the exact name set as a default build target. Both unexpected and missing names fail, so inventory changes require review. The check compares names only, not axiom statements.
 
-Lean core contributes the three standard axioms, `sorryAx` and eight unsafe compiler primitives. The Aeneas declarations comprise six native certificates, six Rust model/contract axioms and three test axioms. They are declared in the environment, but the per-theorem allow-list remains only `propext`, `Classical.choice` and `Quot.sound`.
+`LeanBlsSimd/Aeneas.lean` imports 21 named Aeneas modules. Handwritten modules and prepared extraction use this facade. An Aeneas upgrade that renames or splits a named module breaks the build. The inventory rejects returning axioms outside its pinned set.
+
+Lean core contributes the three standard axioms, `sorryAx` and eight unsafe compiler primitives. Aeneas contributes two test recovery stubs and one Rust contract. They are declared in the environment, but the per-theorem allow-list remains only `propext`, `Classical.choice` and `Quot.sound`.
 
 | Aeneas axiom | Role | Purpose |
 |---|---|---|
 | `Aeneas.Data.ListN.Test.E2` | Test axiom | Recovery stub from a rejected positivity test. |
 | `Aeneas.Data.ListN.Test.E3` | Test axiom | Recovery stub from a rejected positivity test. |
-| `Aeneas.Std.core.panic.panic_info.PanicInfo` | Rust model | Opaque panic-information type. |
-| `Aeneas.Std.core.pin.Pin` | Rust model | Opaque Pin type. |
-| `Aeneas.Std.core.pin.helper.PinHelper` | Rust model | Opaque Pin helper type. |
 | `Aeneas.Std.core.slice.Slice.get_unchecked_SliceIndexUsizeSlice_spec` | Rust contract | Unchecked-slice indexing specification. |
-| `Aeneas.Std.core.sync.atomic.AtomicBool` | Rust model | Opaque atomic Boolean type. |
-| `Aeneas.Std.core.sync.atomic.AtomicU32` | Rust model | Opaque atomic U32 type. |
-| `_private.Aeneas.Command.Decompose.TestsRec.0.Aeneas.Command.Decompose.TestsRec.recAxOp` | Test axiom | Recursive-decomposition test operation. |
-| `_private.Aeneas.Tactic.Solver.BvTac.Lemmas.0.Aeneas.Std.U128.bv_mod_size._native.bv_decide.ax_1_5` | Native certificate | U128 modular-size bit-vector lemma. |
-| `_private.Aeneas.Tactic.Solver.BvTac.Lemmas.0.Aeneas.Std.U16.bv_mod_size._native.bv_decide.ax_1_5` | Native certificate | U16 modular-size bit-vector lemma. |
-| `_private.Aeneas.Tactic.Solver.BvTac.Lemmas.0.Aeneas.Std.U32.bv_mod_size._native.bv_decide.ax_1_5` | Native certificate | U32 modular-size bit-vector lemma. |
-| `_private.Aeneas.Tactic.Solver.BvTac.Lemmas.0.Aeneas.Std.U64.bv_mod_size._native.bv_decide.ax_1_5` | Native certificate | U64 modular-size bit-vector lemma. |
-| `_private.Aeneas.Tactic.Solver.BvTac.Lemmas.0.Aeneas.Std.U8.bv_mod_size._native.bv_decide.ax_1_5` | Native certificate | U8 modular-size bit-vector lemma. |
-| `_private.Aeneas.Tactic.Step.StepArraySpec.0.Aeneas.StepArraySpec.Tests.const_array_spec._native.native_decide.ax_1_1` | Native certificate | Constant-array specification test. |
 
 The guard classifies Silver constants by their defining modules, including private helpers and exposed generated code. It walks their kernel types, bodies and inductive constructors with a visited set, without caching per-constant axiom sets. All authored Silver theorems, including private ones, are roots alongside the checked generated definitions. At foreign constants, the walk uses Lean's exported per-declaration axiom lists. The separate per-theorem `collectAxioms` check also remains active. `GuardImported.lean` checks imported type-only and explicit-constructor cycles through an axiom declared in another Silver module.
 
@@ -385,7 +375,7 @@ lake build
 
 `lake exe cache get` fetches Mathlib's prebuilt files; run it from `lean/`. Lean imports those files without rechecking Mathlib's proofs. Building Mathlib from source avoids reliance on those prebuilt artifacts.
 
-`lake build` compiles Aeneas's Lean library and the proof, then runs the axiom guard. The guard rejects proof placeholders in checked dependencies, even if unrelated dependency modules contain them. Default targets include refinement controls, both per-theorem guards and the exact axiom inventory. The inventory reports `axiom inventory: exactly 27 declarations`. Their reports give theorem counts, the generated-entry inventory and `axioms used: [propext, Quot.sound, Classical.choice]`. `lake build --wfail` additionally rejects warnings. CI runs the same default targets with `lake build`; its artifact consumer checks `lake build --no-build`. A cold build also compiles uncached dependencies.
+`lake build` compiles Aeneas's Lean library and the proof, then runs the axiom guard. The guard rejects proof placeholders in checked dependencies, even if unrelated dependency modules contain them. Default targets include refinement controls, both per-theorem guards and the exact axiom inventory. The inventory reports `axiom inventory: exactly 15 declarations`. Their reports give theorem counts, the generated-entry inventory and `axioms used: [propext, Quot.sound, Classical.choice]`. `lake build --wfail` additionally rejects warnings. CI runs the same default targets with `lake build`; its artifact consumer checks `lake build --no-build`. A cold build also compiles uncached dependencies.
 
 Negative controls check that selected mutations are rejected. Other controls check concrete inputs and the axiom list. Every top-level control must exit 0:
 
@@ -612,7 +602,7 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | File | Shows |
 |---|---|
 | `Guard.lean`, `GuardPartialPermission.lean`, `GuardImported.lean` | The guard rejects native evaluation, local and imported constructor cycles, and partial permission for a theorem's two axioms. |
-| `AxiomInventory.lean`, `AxiomInventoryExtra.lean`, `AxiomInventoryMissing.lean` | The production axiom-name set passes. An unused extra axiom fails; a Lean-only import rejects all fifteen missing Aeneas names. |
+| `AxiomInventory.lean`, `AxiomInventoryExtra.lean`, `AxiomInventoryMissing.lean`, `AxiomInventoryDropped.lean` | The production axiom-name set passes. An unused extra axiom fails; a Lean-only import rejects all three missing Aeneas names. Reimporting the dropped `PanicInfo` axiom fails. |
 | `G1.lean` | Concrete G1 constants, routing flags, signs and limb order; skipping canonicality makes the kernel accept a noncanonical encoding of 2G. Also covers full chunks, scalar tails, empty output and arbitrary fallback. |
 | `downstream/` | Transports both groups' list results across independently extracted structs and checks a generated-spelling caller using downstream externals. Guards root-name collisions and proof axioms. |
 | `G2Wrapper.lean` | Wrong SIMD routing, thresholds, ignoring undecided lanes and dropping accepted kernel results change observable verdicts (the accepted-result mutation is a compiled `#eval`). Tail controls distinguish scalar and kernel routing after a full chunk; reading the chunk's first input on fallback changes the verdict. Rejecting infinity, accepting malformed infinity or returning wrong affine limbs violates `BlstMatchesSpec`; unequal lengths fail. These controls do not claim to observe padding contents. |
