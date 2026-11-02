@@ -3,11 +3,10 @@
 use std::{sync::Arc, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_state::{
-    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
-    tile::BeaconStateTile,
+use silver_beacon_state::{ssz_hash::hash_tree_root_body_fulu, tile::BeaconStateTile};
+use silver_beacon_state_data::{
+    BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig, hash_tree_root_block_header,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,

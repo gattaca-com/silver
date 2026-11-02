@@ -29,7 +29,6 @@ pub use parsed::ParsedAggregateAndProof;
 pub use pending::{
     PendingGroup, PendingId, PendingView, PendingWriteView, QueueItem, QueueView, QueueWriteView,
 };
-pub use ring::{Id, Reset};
 pub use silver_chain_spec::{BlobParameters, ForkName, SpecConfig};
 pub use silver_ssz::body_offsets::{BlockBodyError, BodyFork, BodyOffsets, OperationKind, Payload};
 pub(crate) use silver_ssz::{merkle, progressive};
@@ -47,6 +46,9 @@ pub use view::{
     BeaconStateOwner, BeaconStateReader, CheckpointChunk, CheckpointCursor, PinnedState,
 };
 
+pub use self::ring::{Id, Reset};
+
+pub mod bls;
 mod builder_registry;
 mod builders;
 mod checkpoint_state;

@@ -1,4 +1,4 @@
-use silver_beacon_state_data::{B256, ShufflingId, Slot};
+use silver_beacon_state_data::{B256, ShufflingId, Slot, bls::Signature};
 use silver_common::ssz_view::{AttestationDataView, MAX_COMMITTEES_PER_SLOT};
 
 use super::{
@@ -7,7 +7,7 @@ use super::{
     committee_store::{CommitteeId, CommitteeStore},
     vote_candidates::{MAX_SLOT_CANDIDATES, VoteCandidates},
 };
-use crate::{bls::Signature, counters::BeaconStateCounters};
+use crate::counters::BeaconStateCounters;
 
 const BUFFERED_SLOTS: usize = 3;
 const MAX_BUFFERED_CANDIDATES: usize = BUFFERED_SLOTS * MAX_SLOT_CANDIDATES;

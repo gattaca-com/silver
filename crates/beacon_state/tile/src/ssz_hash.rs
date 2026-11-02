@@ -1,24 +1,12 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    BeaconBlockHeader, Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR,
-    ExecutionPayloadHeader, Fork, SLOTS_PER_HISTORICAL_ROOT, StateReadView,
+    Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, ExecutionPayloadHeader,
+    Fork, SLOTS_PER_HISTORICAL_ROOT, StateReadView, hash_tree_root_block_header,
 };
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
 
 use crate::ssz_hash_gloas::BeaconStateGloas;
-
-#[timed]
-pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader) -> B256 {
-    let chunks = [
-        uint64_chunk(hdr.slot),
-        uint64_chunk(hdr.proposer_index),
-        hdr.parent_root,
-        hdr.state_root,
-        hdr.body_root,
-    ];
-    merkleize(&chunks)
-}
 
 pub fn hash_tree_root_sync_contribution(
     slot: u64,

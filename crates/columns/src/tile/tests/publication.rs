@@ -181,6 +181,7 @@ impl Rig {
                 ssz: read,
                 protobuf,
                 validation: silver_common::BroadcastValidation::Gossip,
+                signature_verified: false,
             },
             &mut self.conn.producers,
         );

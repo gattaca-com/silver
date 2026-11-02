@@ -5,12 +5,11 @@ use std::fs;
 mod ef_common;
 
 use ef_common::{snappy_decode, spec_tests_dir};
-use silver_beacon_state::{
-    ssz_hash::{self},
-    stf,
-};
+use silver_beacon_state::ssz_hash;
+use silver_beacon_state_data::hash_tree_root_block_header;
 use silver_common::{
     merkle::FixedContainer,
+    ssz_hash::HashedBody,
     ssz_hash_gloas::ExecutionRequestsView,
     ssz_view::{
         AttestationView, AttesterSlashingView, BEACON_BLOCK_BODY_FIXED, BeaconBlockBodyFuluView,
@@ -141,7 +140,7 @@ fn gloas_beacon_block_body_hashes_as_production_does() {
         let mut encoded = vec![0; body.ssz_len()];
         body.encode(&mut encoded);
         let offsets = BodyOffsets::validated(&encoded, BodyFork::Gloas).unwrap();
-        stf::hash_body(&offsets).0
+        HashedBody::of(&offsets).root
     });
 }
 
@@ -310,6 +309,6 @@ fn fulu_beacon_block_header() {
             state_root: ssz[48..80].try_into().unwrap(),
             body_root: ssz[80..112].try_into().unwrap(),
         };
-        ssz_hash::hash_tree_root_block_header(&h)
+        hash_tree_root_block_header(&h)
     });
 }

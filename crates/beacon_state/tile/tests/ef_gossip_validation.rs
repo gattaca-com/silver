@@ -25,6 +25,7 @@ use serde::Deserialize;
 use silver_beacon_state::{BeaconStateTile, Feedback, SlotTicker, ssz_hash};
 use silver_beacon_state_data::{
     BeaconBlockHeader, BeaconState, BlobParameters, Checkpoint, SLOTS_PER_EPOCH, SpecConfig,
+    hash_tree_root_block_header,
 };
 use silver_columns::tile::{DataColumnsTile, EfVerdict};
 use silver_common::{
@@ -228,7 +229,7 @@ fn block_root(ssz: &[u8], is_gloas: bool) -> [u8; 32] {
         state_root: *SignedBeaconBlockView::state_root(ssz),
         body_root: ssz_hash::hash_tree_root_body(SignedBeaconBlockView::body(ssz), is_gloas),
     };
-    ssz_hash::hash_tree_root_block_header(&header)
+    hash_tree_root_block_header(&header)
 }
 
 fn payload_status(s: &str) -> Option<PayloadValidationStatus> {

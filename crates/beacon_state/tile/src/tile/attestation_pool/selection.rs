@@ -246,11 +246,10 @@ impl CommitteeSelection {
 
 #[cfg(test)]
 mod tests {
+    use silver_beacon_state_data::bls::Signature;
+
     use super::*;
-    use crate::{
-        bls::Signature,
-        tile::attestation_pool::{MAX_POOLED_AGGREGATES, MAX_POOLED_SINGLES},
-    };
+    use crate::tile::attestation_pool::{MAX_POOLED_AGGREGATES, MAX_POOLED_SINGLES};
 
     const BLANK_SIGNATURE: Signature = unsafe { std::mem::zeroed() };
 

@@ -11,7 +11,7 @@ use silver_beacon_state::stf::{self, BlockInput, BlockVotes, ShufflingRef, StfSc
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BodyFork, BodyOffsets, SLOTS_PER_EPOCH, SpecConfig,
 };
-use silver_common::ssz_view::SignedBeaconBlockView;
+use silver_common::{ssz_hash::HashedBody, ssz_view::SignedBeaconBlockView};
 
 #[test]
 fn fulu_sanity_blocks() {
@@ -65,7 +65,7 @@ fn proposal_state_root(
     let slot = SignedBeaconBlockView::slot(block);
     let body = SignedBeaconBlockView::body(block);
     let offsets = BodyOffsets::validated(body, BodyFork::Fulu).map_err(|e| e.to_string())?;
-    let (body_root, fork) = stf::hash_body(&offsets);
+    let HashedBody { root: body_root, fork } = HashedBody::of(&offsets);
     let header = BeaconBlockHeader {
         slot,
         proposer_index: SignedBeaconBlockView::proposer_index(block),

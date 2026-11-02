@@ -4,10 +4,12 @@ use serde::Deserialize;
 use silver_beacon_state_data::{B256, Slot, SpecConfig};
 use silver_common::{
     BroadcastValidation, GossipTopic, LocalGossipFailure, PayloadValidationStatus, TCacheRead,
+    ssz_hash::HashedBody,
 };
 
 use crate::{
     ctx::ApiCtx,
+    entry_signatures::SignatureCheck,
     http::{ids::each_body_entry, response::Response, router::Request},
 };
 
@@ -22,10 +24,11 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     let parsed =
         each_body_entry(req.body, |body_index, entry: T| submit(ctx, resp, body_index, entry));
     match parsed {
-        Err(message) => resp.error(400, message),
-        Ok(0) => resp.error(400, "the body must name at least one entry"),
+        Err(message) => return resp.error(400, message),
+        Ok(0) => return resp.error(400, "the body must name at least one entry"),
         Ok(_) => {}
     }
+    resp.fail_forged();
 }
 
 /// For endpoints whose body is one entry, not an array. It answers as entry 0
@@ -38,10 +41,11 @@ pub(crate) fn post_single_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     if !reads_submission(req, resp) {
         return;
     }
-    match serde_json::from_slice::<T>(req.body) {
-        Ok(entry) => submit(ctx, resp, 0, entry),
-        Err(_) => resp.error(400, "invalid request body"),
-    }
+    let Ok(entry) = serde_json::from_slice::<T>(req.body) else {
+        return resp.error(400, "invalid request body");
+    };
+    submit(ctx, resp, 0, entry);
+    resp.fail_forged();
 }
 
 fn reads_submission(req: &Request<'_>, resp: &mut Response<'_>) -> bool {
@@ -53,18 +57,32 @@ fn reads_submission(req: &Request<'_>, resp: &mut Response<'_>) -> bool {
 }
 
 fn submit(ctx: &ApiCtx, resp: &mut Response<'_>, body_index: usize, entry: impl SubmittedEntry) {
-    match entry.accept(ctx) {
-        Ok(topics) => {
-            resp.await_verdicts(body_index, topics, entry.ssz_len(), |out| entry.encode(out))
-        }
-        Err(message) => resp.fail_entry(body_index, message),
+    let topics = match entry.accept(ctx) {
+        Ok(topics) => topics,
+        Err(message) => return resp.fail_entry(body_index, message),
+    };
+    let check = match entry.signature_check(ctx) {
+        Ok(check) => check,
+        Err(message) => return resp.fail_entry(body_index, message),
+    };
+    let signature_verified = check.is_some();
+    let encode = |out: &mut [u8]| entry.encode(out);
+    if resp.await_verdicts(body_index, topics, signature_verified, entry.ssz_len(), encode) &&
+        let Some(check) = check
+    {
+        resp.await_signature(body_index, check);
     }
 }
 
-/// A body entry this node can publish.
 pub(crate) trait SubmittedEntry {
     /// The topics the entry is published on, or why it is not.
     fn accept(&self, ctx: &ApiCtx) -> Result<impl IntoIterator<Item = GossipTopic>, &'static str>;
+
+    /// The signature to verify before the entry reaches a slashing-protection
+    /// lock.
+    fn signature_check(&self, _ctx: &ApiCtx) -> Result<Option<SignatureCheck>, &'static str> {
+        Ok(None)
+    }
 
     fn ssz_len(&self) -> usize;
 
@@ -79,6 +97,7 @@ pub(crate) struct AcceptedEntry {
     pub(crate) body_index: usize,
     pub(crate) topic: GossipTopic,
     pub(crate) ssz: TCacheRead,
+    pub(crate) signature_verified: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -95,6 +114,7 @@ pub(crate) struct Submission {
     pub(crate) validation: BroadcastValidation,
     pub(crate) envelope: Option<EnvelopePublication>,
     pub(crate) integration: Integration,
+    pub(crate) hashed_body: Option<HashedBody>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +264,18 @@ pub(crate) struct BuilderForward {
 }
 
 impl Submission {
+    /// `body_indices` ascend, as entries are accepted in body order.
+    pub(crate) fn fail_accepted(&mut self, body_indices: &[usize], message: &'static str) {
+        debug_assert!(body_indices.is_sorted());
+        if body_indices.is_empty() {
+            return;
+        }
+        self.accepted.retain(|entry| body_indices.binary_search(&entry.body_index).is_err());
+        let failures =
+            body_indices.iter().map(|&body_index| SubmissionFailure { body_index, message });
+        self.failures.extend(failures);
+    }
+
     pub(crate) fn body_len(&self) -> usize {
         let accepted = self.accepted.iter().map(|entry| entry.body_index);
         let failed = self.failures.iter().map(|failure| failure.body_index);
@@ -276,7 +308,14 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
 pub(crate) mod tests {
     use std::time::Duration;
 
-    use silver_beacon_state_data::{BeaconStateOwner, SLOTS_PER_EPOCH, ShufflingId, SpecConfig};
+    use silver_beacon_state_data::{
+        BeaconState, BeaconStateOwner, EpochStateFinalized, Immutable, SLOTS_PER_EPOCH,
+        ShufflingId, SpecConfig, ValSeed,
+        bls::{
+            self,
+            test_keys::{privkey, sign},
+        },
+    };
     use silver_common::SyncUpdate;
 
     use super::*;
@@ -285,9 +324,42 @@ pub(crate) mod tests {
     const ACTIVE: usize = 4;
     pub(crate) const SLOT: u64 = 300 * SLOTS_PER_EPOCH + 5;
 
+    /// `ACTIVE` validators that sign with [`validator_signature`].
+    pub(crate) fn signing_state(slot: u64) -> BeaconStateOwner {
+        let seeds: Vec<_> = (0..ACTIVE)
+            .map(|index| ValSeed {
+                pubkey: privkey(index).sk_to_pk().to_bytes(),
+                activation_epoch: 0,
+                ..ValSeed::default()
+            })
+            .collect();
+        let mut owner = BeaconStateOwner::new(BeaconState::for_test(
+            EpochStateFinalized::default(),
+            &seeds,
+            slot,
+        ));
+        let anchor = owner.roll_fresh();
+        owner.publish_state_id(anchor);
+        owner
+    }
+
+    pub(crate) fn validator_signature(
+        spec: &SpecConfig,
+        index: u64,
+        domain_type: u32,
+        epoch: u64,
+        object_root: &B256,
+    ) -> [u8; 96] {
+        let genesis_validators_root = Immutable::default().genesis_validators_root;
+        let domain =
+            bls::compute_domain(domain_type, spec.fork_version_at(epoch), &genesis_validators_root);
+        let signing_root = bls::compute_signing_root(object_root, &domain);
+        sign(index as usize, &signing_root)
+    }
+
     /// A following node with the submitted slot's shuffling posted.
     pub(crate) fn ctx() -> ApiCtx {
-        let owner = BeaconStateOwner::published_empty_test(SLOT);
+        let owner = signing_state(SLOT);
         let mut ctx = test_ctx(&SpecConfig::mainnet(), owner.reader());
         ctx.node_status.target = Some(SyncUpdate::Following);
         let id =

@@ -8,13 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use silver_beacon_state::{
-    ssz_hash::hash_tree_root_block_header,
-    tile::{BeaconStateTile, Feedback},
-};
+use silver_beacon_state::tile::{BeaconStateTile, Feedback};
 use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, CheckpointChunk, CheckpointState, SpecConfig,
-    decode_checkpoint_pubkeys,
+    decode_checkpoint_pubkeys, hash_tree_root_block_header,
 };
 use silver_common::{TCache, TCacheId, TCacheProducer, TCacheTable, ticker::SlotTicker};
 use silver_e2e::{mainnet_api::fetch_canonical_state_root, perf::BlockFixtures};

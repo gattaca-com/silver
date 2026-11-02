@@ -47,6 +47,55 @@ pub fn hash_tree_root_body_fulu(body: &[u8]) -> B256 {
         .map_or(ZERO_HASH, |offsets| hash_tree_root_body_fulu_with_roots(&offsets).0)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFork {
+    Fulu { payload_roots: PayloadRoots },
+    FuluBlinded,
+    Gloas,
+}
+
+impl BlockFork {
+    pub fn is_gloas(self) -> bool {
+        matches!(self, Self::Gloas)
+    }
+
+    pub fn body_fork(self) -> BodyFork {
+        match self {
+            Self::Fulu { .. } => BodyFork::Fulu,
+            Self::FuluBlinded => BodyFork::FuluBlinded,
+            Self::Gloas => BodyFork::Gloas,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HashedBody {
+    pub root: B256,
+    pub fork: BlockFork,
+}
+
+impl HashedBody {
+    pub fn of(offsets: &BodyOffsets<'_>) -> Self {
+        match offsets.fork() {
+            BodyFork::Gloas => {
+                let body = offsets.serialized().expect("a Gloas body is parsed whole");
+                Self {
+                    root: BeaconBlockBodyGloasView::hash_tree_root(body),
+                    fork: BlockFork::Gloas,
+                }
+            }
+            BodyFork::Fulu => {
+                let (root, payload_roots) = hash_tree_root_body_fulu_with_roots(offsets);
+                Self { root, fork: BlockFork::Fulu { payload_roots } }
+            }
+            BodyFork::FuluBlinded => Self {
+                root: hash_tree_root_body_fulu_with_roots(offsets).0,
+                fork: BlockFork::FuluBlinded,
+            },
+        }
+    }
+}
+
 #[timed]
 pub fn hash_tree_root_body_fulu_with_roots(offsets: &BodyOffsets<'_>) -> (B256, PayloadRoots) {
     let roots = field_roots(offsets);

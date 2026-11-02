@@ -4,13 +4,12 @@ use silver_beacon_state_data::{
     B256, BUILDER_INDEX_SELF_BUILD, BidBuilderError, BuilderPendingPayment,
     BuilderPendingWithdrawal, BuilderRegistry, BuildersView, Epoch, EpochView, ExecutionPayloadBid,
     Immutable, SLOTS_PER_EPOCH, SpecConfig, StateWriterView, bid_signing_root,
+    bls::{self, G2_POINT_AT_INFINITY, SigBatch},
 };
 use silver_common::ssz_view::{ExecutionPayloadBidView, SignedExecutionPayloadBidView};
 
 use crate::{
-    bls::{self, G2_POINT_AT_INFINITY, SigBatch},
-    error::ExecutionPayloadBidError as E,
-    ssz_hash_gloas::hash_execution_payload_bid,
+    error::ExecutionPayloadBidError as E, ssz_hash_gloas::hash_execution_payload_bid,
     stf::get_beacon_proposer_index,
 };
 

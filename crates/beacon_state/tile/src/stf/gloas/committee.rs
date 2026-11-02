@@ -1,10 +1,11 @@
 use silver_beacon_state_data::{
     Epoch, EpochView, EpochWriteView, MIN_SEED_LOOKAHEAD, RandaoMixesView, SLOTS_PER_EPOCH,
     StateWriterView, ValidatorsView,
+    bls::DOMAIN_PTC_ATTESTER,
     gloas::{PTC_SIZE, PtcCommittee},
 };
 
-use crate::{bls::DOMAIN_PTC_ATTESTER, shuffling::Seed, stf::EpochShuffling};
+use crate::{shuffling::Seed, stf::EpochShuffling};
 
 const SPE: usize = SLOTS_PER_EPOCH as usize;
 

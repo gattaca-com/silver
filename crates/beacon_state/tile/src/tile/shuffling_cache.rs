@@ -1,9 +1,9 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView};
+use silver_beacon_state_data::{B256, Epoch, SLOTS_PER_EPOCH, ShufflingId, StateReadView, bls};
 use silver_common::{BeaconStateEvent, TCacheProducer, TProducer};
 
-use crate::{bls, stf};
+use crate::stf;
 
 // Steady state holds {E-1, E, E+1} plus reorg/precompute transients.
 const MAX_SHUFFLING_CACHE: usize = 8;

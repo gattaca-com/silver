@@ -7,6 +7,7 @@ use silver_pbs::SidecarCall;
 use crate::{
     beacon::{blocks::BlockRequest, validators::RegistryStream},
     ctx::ApiCtx,
+    entry_signatures::EntrySignatures,
     events::ChannelSet,
     http::response::Response,
     submission::Submission,
@@ -204,6 +205,7 @@ impl Router {
         req: &ParsedRequest<'_>,
         ctx: &ApiCtx,
         submissions: &mut TProducer,
+        signatures: &mut EntrySignatures,
         out: &mut Vec<u8>,
     ) -> Outcome {
         let method = Method::parse(req.method);
@@ -226,7 +228,7 @@ impl Router {
                 eth_blob_data_included: req.eth_blob_data_included,
                 body: req.body,
             };
-            let mut response = Response::new(out, submissions);
+            let mut response = Response::for_handler(out, submissions, signatures);
             if route.served_while_syncing || ctx.follows_chain(&mut response) {
                 (route.handler)(&request, ctx, &mut response);
             }
@@ -296,7 +298,13 @@ mod tests {
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(
-            router.dispatch(&request(method, path), &anchor_ctx(), &mut submissions(), &mut out),
+            router.dispatch(
+                &request(method, path),
+                &anchor_ctx(),
+                &mut submissions(),
+                &mut EntrySignatures::new(),
+                &mut out,
+            ),
             Outcome::Response(None)
         );
         out
@@ -350,7 +358,13 @@ mod tests {
             keep_alive: true,
         };
         assert_eq!(
-            router.dispatch(&req, &anchor_ctx(), &mut submissions(), &mut out),
+            router.dispatch(
+                &req,
+                &anchor_ctx(),
+                &mut submissions(),
+                &mut EntrySignatures::new(),
+                &mut out,
+            ),
             Outcome::Response(None)
         );
         out

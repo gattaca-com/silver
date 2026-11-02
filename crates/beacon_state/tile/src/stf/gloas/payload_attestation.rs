@@ -1,7 +1,9 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
-    Epoch, EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView, gloas::PTC_SIZE,
+    Epoch, EpochView, Immutable, SLOTS_PER_EPOCH, StateWriterView, ValidatorsView,
+    bls::{self, DOMAIN_PTC_ATTESTER, SigBatch},
+    gloas::PTC_SIZE,
 };
 use silver_common::ssz_view::{
     PAYLOAD_ATTESTATION_SIZE, PayloadAttestationDataView, PayloadAttestationView,
@@ -9,7 +11,6 @@ use silver_common::ssz_view::{
 
 use super::committee::get_ptc;
 use crate::{
-    bls::{self, DOMAIN_PTC_ATTESTER, SigBatch},
     error::PayloadAttestationError as E,
     merkle::{merkleize, uint64_chunk},
 };

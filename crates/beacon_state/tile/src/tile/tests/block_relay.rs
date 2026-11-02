@@ -302,6 +302,25 @@ fn a_block_with_a_bad_signature_reports_nothing() {
     }
 }
 
+/// The API checked a local block's signature, so a forgery is caught there,
+/// not here.
+#[test]
+fn local_block_skips_its_signature_check() {
+    let (pre_ssz, block_ssz) = sanity_fixture("attestation");
+    let mut forged = block_ssz.clone();
+    forged[4] ^= 0xFF;
+
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+    rig.on_gossip(&forged);
+    assert!(rig.drain().relays.is_empty(), "from the network, the forgery is caught");
+
+    let mut rig = BlockPublications::new(&pre_ssz, &block_ssz, SyncUpdate::Following);
+    rig.on_local(&forged, BroadcastValidation::Gossip);
+    let published = rig.drain();
+    assert_eq!(published.relays, [fulu_relayed(&block_ssz)]);
+    assert_eq!(published.verdicts(), [Ok(())]);
+}
+
 #[test]
 fn a_replayed_block_reports_no_gossip() {
     let (pre_ssz, block_ssz) = sanity_fixture("attestation");
@@ -324,6 +343,7 @@ impl BlockPublications {
         let m = NewGossipMsg {
             stream_id: LOCAL_GOSSIP_STREAM_ID,
             validation,
+            signature_verified: true,
             ..gossip_msg(&mut self.gossip, block_ssz, GossipTopic::BeaconBlock)
         };
         self.tile.on_gossip(m, &mut self.adapter.producers);

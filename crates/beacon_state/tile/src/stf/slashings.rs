@@ -5,6 +5,8 @@ use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR, EpochBalancesRow,
     EpochView, Immutable, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView,
     StateWriterView, ValidatorsView,
+    bls::{self, SigBatch},
+    hash_tree_root_block_header,
 };
 use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, BEACON_BLOCK_HEADER_SIZE, BeaconBlockHeaderView,
@@ -13,9 +15,8 @@ use silver_common::ssz_view::{
 use silver_ssz::ssz_view::{IndexedAttestationView, MAX_ATTESTING_INDICES};
 
 use crate::{
-    bls::{self, SigBatch},
     error::{AttesterSlashingError, ProposerSlashingError, Result},
-    ssz_hash::{self, hash_tree_root_block_header},
+    ssz_hash,
     stf::{for_each_ssz_list_item, get_beacon_proposer_index, initiate_validator_exit},
     validate,
 };

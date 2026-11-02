@@ -4,11 +4,11 @@ use silver_beacon_state_data::{
     B256, Checkpoint, Epoch, EpochView, Immutable, PARTICIPATION_WEIGHTS, ParticipationWriteView,
     SLOTS_PER_EPOCH, Slot, SlotStateWriteView, StateWriterView, TIMELY_HEAD_FLAG,
     TIMELY_SOURCE_FLAG, TIMELY_TARGET_FLAG, TreeSpec, ValidatorsView,
+    bls::{self, SigBatch},
 };
 use silver_common::ssz_view::{AttestationDataView, AttestationView};
 
 use crate::{
-    bls::{self, SigBatch},
     error::{AttestationError, Result},
     merkle, ssz_hash,
     stf::{

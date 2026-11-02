@@ -136,6 +136,8 @@ fn cached_and_submitted_blobs_publish_every_gloas_column() {
             topic: GossipTopic::ExecutionPayload,
             ssz: proposal.ssz,
             validation: silver_common::BroadcastValidation::Gossip,
+            signature_verified: false,
+            hashed_body: None,
         }]);
         rig.inj.consume(|_: BeaconApiResponse, _| panic!("Control must confirm the broadcast"));
     }

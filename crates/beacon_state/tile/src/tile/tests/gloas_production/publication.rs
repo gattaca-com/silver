@@ -173,6 +173,8 @@ fn blobless_envelope_reaches_engine_and_storage_through_gossip() {
             topic: GossipTopic::ExecutionPayload,
             ssz,
             validation: BroadcastValidation::Gossip,
+            signature_verified: false,
+            hashed_body: None,
         },
     ] = requests[..]
     else {

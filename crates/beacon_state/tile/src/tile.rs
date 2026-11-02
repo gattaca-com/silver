@@ -9,6 +9,8 @@ use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BeaconStateOwner, BeaconStateReader, Checkpoint, CheckpointState,
     Epoch, ExecutionAddress, SLOTS_PER_EPOCH, Slot, SlotState, SpecConfig, StateId,
+    bls::{self, CheckedSignature, SignatureChecker},
+    hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiRequest, BeaconApiResponse, BeaconStateEvent, BlockSource, BuilderBidsResponse,
@@ -24,7 +26,6 @@ use silver_config::{PendingBounds, SyncingConfig};
 use silver_slashing::SlashingPool;
 
 use crate::{
-    bls::{self, CheckedSignature, SignatureChecker},
     fork_choice::{ExecutionStatus, FORK_CHOICE_NODES_HINT, ForkChoice},
     ssz_hash, stf,
     tile::{
@@ -443,7 +444,7 @@ impl BeaconStateTile {
         if header.state_root == [0u8; 32] {
             header.state_root = ssz_hash::hash_tree_root_state(&rv);
         }
-        let real_root = ssz_hash::hash_tree_root_block_header(&header);
+        let real_root = hash_tree_root_block_header(&header);
         if let Some(expected) = expected_root {
             assert_eq!(
                 real_root,
@@ -958,6 +959,9 @@ impl BeaconStateTile {
                     validation,
                     producers,
                 );
+            }
+            BeaconApiRequest::LocalGossip { ssz, hashed_body: Some(body), .. } => {
+                self.hold_submitted_body(ssz, body)
             }
             BeaconApiRequest::AggregateAttestation {
                 request_id,

@@ -9,7 +9,6 @@ use blst::min_pk::{AggregatePublicKey, AggregateSignature, PublicKey, SecretKey,
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use silver_beacon_state::{
-    bls::{self, CheckedSignature, DOMAIN_BEACON_ATTESTER, DST, SigBatch, SignatureChecker},
     ssz_hash::hash_attestation_data,
     stf::{
         self, ShufflingRef, collect_sigs_attestations, collect_sigs_attester_slashings,
@@ -17,7 +16,10 @@ use silver_beacon_state::{
         collect_sigs_randao, collect_sigs_sync_aggregate, collect_sigs_voluntary_exits,
     },
 };
-use silver_beacon_state_data::{B256, SLOTS_PER_EPOCH, SpecConfig};
+use silver_beacon_state_data::{
+    B256, SLOTS_PER_EPOCH, SpecConfig,
+    bls::{self, CheckedSignature, DOMAIN_BEACON_ATTESTER, DST, SigBatch, SignatureChecker},
+};
 use silver_common::ssz_view::{
     BLOCK_SYNC_AGGREGATE_SIZE, BeaconBlockBodyFuluView, SINGLE_ATT_SIZE, SignedBeaconBlockView,
 };

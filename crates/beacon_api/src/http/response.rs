@@ -3,13 +3,14 @@ use std::{io::Write, mem, str};
 use serde::Deserialize;
 use silver_common::{
     BeaconApiRequest, BroadcastValidation, GossipTopic, LocalGossipFailure, TCacheProducer,
-    TCacheRead, TProducer,
+    TCacheRead, TProducer, ssz_hash::HashedBody,
 };
 use silver_httpcore::{ClientResponse, frame_chunked_head, frame_response_with_headers};
 use silver_pbs::{PreferenceFailures, SidecarCall};
 
 use crate::{
     beacon::validators::RegistryStream,
+    entry_signatures::{EntrySignatures, SignatureCheck},
     events::ChannelSet,
     http::{json::Json, router::Outcome},
     submission::{
@@ -25,13 +26,24 @@ const CONTENT_LENGTH_WIDTH: usize = u64::MAX.ilog10() as usize + 1;
 pub(crate) struct Response<'a> {
     out: &'a mut Vec<u8>,
     submissions: &'a mut TProducer,
+    /// Only a handler checks the signatures of what it publishes.
+    signatures: Option<&'a mut EntrySignatures>,
     outcome: Outcome,
 }
 
 impl<'a> Response<'a> {
     /// `submissions` carries what a handler publishes for another tile to read.
     pub(crate) fn new(out: &'a mut Vec<u8>, submissions: &'a mut TProducer) -> Self {
-        Self { out, submissions, outcome: Outcome::Response(None) }
+        Self { out, submissions, signatures: None, outcome: Outcome::Response(None) }
+    }
+
+    pub(crate) fn for_handler(
+        out: &'a mut Vec<u8>,
+        submissions: &'a mut TProducer,
+        signatures: &'a mut EntrySignatures,
+    ) -> Self {
+        signatures.clear();
+        Self { out, submissions, signatures: Some(signatures), outcome: Outcome::Response(None) }
     }
 
     /// Encodes one body entry straight into the submissions tcache and awaits
@@ -41,14 +53,37 @@ impl<'a> Response<'a> {
         &mut self,
         body_index: usize,
         topics: impl IntoIterator<Item = GossipTopic>,
+        signature_verified: bool,
         len: usize,
         encode: impl FnOnce(&mut [u8]),
-    ) {
+    ) -> bool {
         let Some(ssz) = self.submissions.write_with(len, encode) else {
-            return self.fail_entry(body_index, failure_message(LocalGossipFailure::Internal));
+            self.fail_entry(body_index, failure_message(LocalGossipFailure::Internal));
+            return false;
         };
         let accepted = &mut self.submission().accepted;
-        accepted.extend(topics.into_iter().map(|topic| AcceptedEntry { body_index, topic, ssz }));
+        accepted.extend(topics.into_iter().map(|topic| AcceptedEntry {
+            body_index,
+            topic,
+            ssz,
+            signature_verified,
+        }));
+        true
+    }
+
+    /// The entry accepted at `body_index` stays published only if `check`
+    /// verifies in [`Self::fail_forged`].
+    pub(crate) fn await_signature(&mut self, body_index: usize, check: SignatureCheck) {
+        let signatures = self.signatures.as_deref_mut().expect("only a handler publishes entries");
+        signatures.push(body_index, check);
+    }
+
+    pub(crate) fn fail_forged(&mut self) {
+        let signatures = self.signatures.as_deref_mut().expect("only a handler publishes entries");
+        let forged = signatures.verify();
+        if let Outcome::AwaitingVerdicts(submission) = &mut self.outcome {
+            submission.fail_accepted(forged, "invalid signature");
+        }
     }
 
     /// The block the last [`Self::await_verdicts`] wrote also goes to `url`.
@@ -64,7 +99,7 @@ impl<'a> Response<'a> {
         publication: EnvelopePublication,
         validation: BroadcastValidation,
     ) {
-        self.await_published(GossipTopic::ExecutionPayload, body, validation);
+        self.await_published(GossipTopic::ExecutionPayload, body, false, validation);
         let submission = self.submission();
         submission.envelope = Some(publication);
         submission.integration = Integration::AwaitingEnvelopeCheck;
@@ -75,18 +110,23 @@ impl<'a> Response<'a> {
         body: &[u8],
         validation: BroadcastValidation,
         import: Integration,
+        hashed_body: Option<HashedBody>,
     ) {
-        self.await_published(GossipTopic::BeaconBlock, body, validation);
-        self.submission().integration = import;
+        self.await_published(GossipTopic::BeaconBlock, body, true, validation);
+        let submission = self.submission();
+        submission.integration = import;
+        submission.hashed_body = hashed_body;
     }
 
     fn await_published(
         &mut self,
         topic: GossipTopic,
         body: &[u8],
+        signature_verified: bool,
         validation: BroadcastValidation,
     ) {
-        self.await_verdicts(0, [topic], body.len(), |out| out.copy_from_slice(body));
+        let encode = |out: &mut [u8]| out.copy_from_slice(body);
+        self.await_verdicts(0, [topic], signature_verified, body.len(), encode);
         self.submission().validation = validation;
     }
 

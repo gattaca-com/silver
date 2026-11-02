@@ -17,9 +17,9 @@ pub use attestation::{
     hash_tree_root_aggregate_and_proof,
 };
 pub use block_body::{
-    body_root_and_commitments_proof, hash_eth1_data_bytes, hash_sync_aggregate,
-    hash_tree_root_body, hash_tree_root_body_fulu, hash_tree_root_body_fulu_with_roots,
-    kzg_commitments_inclusion_proof,
+    BlockFork, HashedBody, body_root_and_commitments_proof, hash_eth1_data_bytes,
+    hash_sync_aggregate, hash_tree_root_body, hash_tree_root_body_fulu,
+    hash_tree_root_body_fulu_with_roots, kzg_commitments_inclusion_proof,
 };
 pub use builder_bid::hash_builder_bid_fulu;
 pub use execution_payload::{

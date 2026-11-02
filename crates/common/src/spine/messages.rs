@@ -12,13 +12,17 @@ use silver_beacon_state_data::{
 
 use crate::{
     CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify, MessageId,
-    Origin, P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
+    Origin, P2pStreamId, PayloadFrame, PeerId, StreamProtocol, TCacheProducer, TCacheRead,
+    TProducer,
+    block_contents::BLOCK_CONTENTS_FIXED,
     column_util::columns_of,
+    ssz_hash::HashedBody,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, EXECUTION_PAYLOAD_ENVELOPE_MIN,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
-        SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
+        BEACON_BLOCK_FIXED, BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPE_MIN, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        GOODBYE_SIZE, METADATA_SIZE, PING_SIZE, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+        SszView, StatusView,
     },
 };
 
@@ -85,6 +89,10 @@ pub enum BeaconApiRequest {
         topic: GossipTopic,
         ssz: TCacheRead,
         validation: BroadcastValidation,
+        signature_verified: bool,
+        /// The body the API hashed to check a block's signature, so Beacon
+        /// State need not hash it again.
+        hashed_body: Option<HashedBody>,
     },
     AggregateAttestation {
         request_id: u64,
@@ -305,6 +313,44 @@ pub struct ProducedBlock {
     pub consensus_block_value: [u8; 32],
     /// The `BuilderEntry` whose bid the block commits to.
     pub builder_entry: Option<u32>,
+    /// A blinded body shares its full body's root.
+    pub body_root: B256,
+}
+
+impl ProducedBlock {
+    /// Compares `body` part by part against what `header` and `payload` read,
+    /// without assembling the produced body.
+    pub fn has_body(&self, header: &[u8], payload: Option<&[u8]>, body: &[u8]) -> bool {
+        let Some(parts) = self.body_parts(header, payload) else { return false };
+        let mut rest = body;
+        for part in parts {
+            let Some(after) = rest.strip_prefix(part) else { return false };
+            rest = after;
+        }
+        rest.is_empty()
+    }
+
+    fn body_parts<'a>(&self, header: &'a [u8], payload: Option<&'a [u8]>) -> Option<[&'a [u8]; 4]> {
+        let Some(payload) = payload.filter(|_| self.splices_payload()) else {
+            return Some([header.get(BEACON_BLOCK_FIXED..)?, &[], &[], &[]]);
+        };
+        let frame = PayloadFrame::parse(payload)?;
+        let (before_payload, bls_changes) = header.split_at_checked(self.payload_at as usize)?;
+        let body_head = before_payload.get(BLOCK_CONTENTS_FIXED + BEACON_BLOCK_FIXED..)?;
+        let tail_len = frame.commitments.len() + frame.execution_requests.len();
+        Some([
+            body_head,
+            frame.execution_payload,
+            bls_changes,
+            frame.after_payload.get(..tail_len)?,
+        ])
+    }
+
+    /// Only a Fulu block with its payload is framed as contents; Gloas and
+    /// blinded blocks are whole in `header`.
+    pub fn splices_payload(&self) -> bool {
+        self.payload.is_some() && self.envelope_header.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, TypeHash)]
@@ -369,6 +415,9 @@ pub struct NewGossipMsg {
     /// What a local block must pass before it is relayed; anything else is
     /// relayed once it passes gossip validation.
     pub validation: BroadcastValidation,
+    /// The API checked a local message's signature before its
+    /// slashing-protection lock, so Beacon State need not check it again.
+    pub signature_verified: bool,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
