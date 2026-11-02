@@ -440,7 +440,6 @@ theorem decode_holds (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : F
   refine (foldl_decodeStep inputs _ decodeInit l (List.nodup_finRange 8)).2
     (List.mem_finRange l) ?_
   simp [Decoded.lane, decodeInit, initLane, Limbs, LIMBS]
-  exact Vector.getElem_replicate ..
 
 /-! ## The spec's bytes -/
 

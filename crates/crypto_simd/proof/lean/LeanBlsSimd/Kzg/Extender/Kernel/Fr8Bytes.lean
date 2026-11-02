@@ -7,7 +7,6 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel.BytePacking
 
-attribute [local implicit_reducible] FrModel.LIMBS FrModel.LIMB_BITS
 
 set_option exponentiation.threshold 1000
 set_option maxRecDepth 4000

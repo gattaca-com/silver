@@ -6,7 +6,7 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
-attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax LeanBlsSimd.DecompressG2.FP_BYTES LeanBlsSimd.DecompressG2.G2_COMPRESSED_LEN
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Portable.Decode
 open DecompressG1 DecompressG2

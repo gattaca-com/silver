@@ -10,7 +10,6 @@ namespace LeanBlsSimd.Msm8
 
 open EthLib.Cryptography Bls
 
-attribute [local implicit_reducible] LIMBS
 
 theorem loadedCoordinate_lane (store : msm8.store.PointStore)
     (indices : Array U32 8#usize) (coordinate : ℕ) (l : Fin 8) :

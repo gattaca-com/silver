@@ -25,7 +25,6 @@ set_option linter.unusedTactic false
 
 namespace DecompressG2
 
-attribute [local implicit_reducible] FP_BYTES G2_COMPRESSED_LEN
 
 /-! ## `decode`: the order of the coordinates
 

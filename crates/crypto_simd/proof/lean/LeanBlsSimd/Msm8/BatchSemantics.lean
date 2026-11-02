@@ -66,7 +66,6 @@ theorem transposeToFp8_lane (x : Fp8) (lane : Fin 8) :
   apply Vector.ext
   intro i hi
   simp [toFp8, transpose8, Fp8.lane, Fin.getElem_fin]
-  exact (Vector.getElem_map (fun row : M512 => row[lane]) (xs := x.limbs) hi).symm
 
 theorem storeLane_rep (store : msm8.store.PointStore) (indices : Vector ℕ 8)
     (xs ys : Vector M512 8) (j : Fin 8) (P : G1Spec.E.Point)

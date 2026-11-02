@@ -21,8 +21,6 @@ namespace LeanBlsSimd
 
 open EthLib.Cryptography.Bls DecompressG2 Kernel
 
-attribute [local implicit_reducible] DecompressG2.G2_COMPRESSED_LEN
-
 local notation "gx" => Fp2.toField G2.generator.x
 local notation "gy" => Fp2.toField G2.generator.y
 

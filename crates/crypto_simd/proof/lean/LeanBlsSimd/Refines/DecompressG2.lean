@@ -22,8 +22,7 @@ namespace LeanBlsSimd
 
 namespace DecompressG2
 
-attribute [local implicit_reducible] FP_BYTES G2_COMPRESSED_LEN
-  UScalar.cMax UScalar.rMax U32.rMax
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 def ofBlstFp (a : blst.blst_fp) : BlstFp := ⟨ofArray ofU64 a.l⟩
 

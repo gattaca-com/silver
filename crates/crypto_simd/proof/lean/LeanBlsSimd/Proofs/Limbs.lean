@@ -403,7 +403,7 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
       val r = ∑ k : Fin LIMBS, t[LIMBS + k.val].toNat * 2 ^ (52 * k.val) := by
   unfold carryStep
   intro r
-  have hfin : List.finRange (LIMBS - 1) = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
+  have hfin : List.finRange 7 = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
       ⟨3, by decide⟩, ⟨4, by decide⟩, ⟨5, by decide⟩, ⟨6, by decide⟩] := by decide
   have hb : ∀ k (hk : k < 2 * LIMBS + 1), t[k].toNat ≤ 2 ^ 60 := fun k hk => ht ⟨k, hk⟩
   have h0 := hb LIMBS (by decide)
@@ -422,14 +422,14 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
   set u5 := t[LIMBS + 5] + srli 52 u4
   set u6 := t[LIMBS + 6] + srli 52 u5
   set u7 := t[LIMBS + 7] + srli 52 u6
-  have e0 : r[0] = u0 &&& mask := by simp [r, hfin, u0]
-  have e1 : r[1] = u1 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1]
-  have e2 : r[2] = u2 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2]
-  have e3 : r[3] = u3 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3]
-  have e4 : r[4] = u4 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4]
-  have e5 : r[5] = u5 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4, u5]
-  have e6 : r[6] = u6 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4, u5, u6]
-  have e7 : r[7] = u7 := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4, u5, u6, u7]
+  have e0 : r[0] = u0 &&& mask := by simp [r, hfin, LIMBS, u0]
+  have e1 : r[1] = u1 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1]
+  have e2 : r[2] = u2 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2]
+  have e3 : r[3] = u3 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3]
+  have e4 : r[4] = u4 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3, u4]
+  have e5 : r[5] = u5 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3, u4, u5]
+  have e6 : r[6] = u6 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3, u4, u5, u6]
+  have e7 : r[7] = u7 := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3, u4, u5, u6, u7]
   have n1 : u1.toNat = t[LIMBS + 1].toNat + u0.toNat / 2 ^ 52 := toNat_add_srli52 _ u0 h1
   have n2 : u2.toNat = t[LIMBS + 2].toNat + u1.toNat / 2 ^ 52 := toNat_add_srli52 _ u1 h2
   have n3 : u3.toNat = t[LIMBS + 3].toNat + u2.toNat / 2 ^ 52 := toNat_add_srli52 _ u2 h3

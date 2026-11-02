@@ -9,7 +9,6 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
-attribute [local implicit_reducible] LeanBlsSimd.FrModel.LIMBS
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel.BytePacking
 

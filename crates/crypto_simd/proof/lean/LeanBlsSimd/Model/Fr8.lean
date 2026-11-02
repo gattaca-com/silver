@@ -6,8 +6,8 @@ The intrinsic operations retain their UInt64 wrapping semantics. -/
 
 namespace LeanBlsSimd.FrModel
 
-def LIMBS : Nat := 5
-def LIMB_BITS : Nat := 52
+@[implicit_reducible] def LIMBS : Nat := 5
+@[implicit_reducible] def LIMB_BITS : Nat := 52
 def MASK52 : Nat := 2 ^ 52 - 1
 def P : List Nat := [0xfffff00000001, 0x2fffe5bfefff, 0x9a1d80553bda4,
   0x7d483339d8080, 0x73eda753299d]

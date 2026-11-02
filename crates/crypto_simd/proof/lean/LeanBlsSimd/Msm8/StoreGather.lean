@@ -272,14 +272,10 @@ theorem pointIndices_encodeGathered (b : GatheredBatch)
 theorem loadGathered_x (b : GatheredBatch) :
     fp8.Fp8.load (encodeGathered b).1 = ok (toFp8 (Fp8.load b.xs)) := by
   simp [Fp8.load_refines, encodeGathered, LIMBS]
-  exact congrArg (fun v : Vector Limbs 8 => toFp8 (Fp8.load v))
-    (ofArray_toArray_ofArray_ofU64 (k := 8#usize) (n := 8#usize) b.xs rfl rfl rfl rfl)
 
 theorem loadGathered_y (b : GatheredBatch) :
     fp8.Fp8.load (encodeGathered b).2.1 = ok (toFp8 (Fp8.load b.ys)) := by
   simp [Fp8.load_refines, encodeGathered, LIMBS]
-  exact congrArg (fun v : Vector Limbs 8 => toFp8 (Fp8.load v))
-    (ofArray_toArray_ofArray_ofU64 (k := 8#usize) (n := 8#usize) b.ys rfl rfl rfl rfl)
 
 theorem push_batch_generated (s : msm8.store.PointStore) (offset count : Usize)
     (points : Slice blst.blst_p1_affine) (negated : Slice Bool)

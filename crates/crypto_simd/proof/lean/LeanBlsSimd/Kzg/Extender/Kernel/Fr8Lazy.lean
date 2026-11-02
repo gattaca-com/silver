@@ -9,7 +9,6 @@ open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
-attribute [local implicit_reducible] FrModel.LIMBS
 
 theorem laneInt_eq_val (x : fr8.Fr8) (lane : Fin 8) :
     laneInt x lane = SignedLimbs.val ((FrModel.ofFr8 x).lane lane) := by

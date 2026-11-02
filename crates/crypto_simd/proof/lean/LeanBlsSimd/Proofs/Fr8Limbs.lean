@@ -20,7 +20,6 @@ theorem sum_fin_limbs (f : Fin LIMBS → ℕ) :
     ∑ j, f j = f 0 + f 1 + f 2 + f 3 + f 4 := by
   change ∑ j : Fin 5, f j = _
   simp [Fin.sum_univ_succ, Nat.add_assoc]
-  rfl
 
 theorem val_fin_LIMBS :
     ((0 : Fin LIMBS) : ℕ) = 0 ∧ ((1 : Fin LIMBS) : ℕ) = 1 ∧ ((2 : Fin LIMBS) : ℕ) = 2 ∧
@@ -324,7 +323,7 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
       val r = ∑ k : Fin LIMBS, t[LIMBS + k.val].toNat * 2 ^ (52 * k.val) := by
   unfold carryStep
   intro r
-  have hfin : List.finRange (LIMBS - 1) = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
+  have hfin : List.finRange 4 = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
       ⟨3, by decide⟩] := by decide
   have hb : ∀ k (hk : k < 2 * LIMBS + 1), t[k].toNat ≤ 2 ^ 60 := fun k hk => ht ⟨k, hk⟩
   have h0 := hb LIMBS (by decide)
@@ -337,11 +336,11 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
   set u2 := t[LIMBS + 2] + srli 52 u1
   set u3 := t[LIMBS + 3] + srli 52 u2
   set u4 := t[LIMBS + 4] + srli 52 u3
-  have e0 : r[0] = u0 &&& mask := by simp [r, hfin, u0]
-  have e1 : r[1] = u1 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1]
-  have e2 : r[2] = u2 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2]
-  have e3 : r[3] = u3 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3]
-  have e4 : r[4] = u4 := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4]
+  have e0 : r[0] = u0 &&& mask := by simp [r, hfin, LIMBS, u0]
+  have e1 : r[1] = u1 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1]
+  have e2 : r[2] = u2 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2]
+  have e3 : r[3] = u3 &&& mask := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3]
+  have e4 : r[4] = u4 := by simp [r, hfin, LIMBS, Nat.add_assoc, u0, u1, u2, u3, u4]
   have n1 : u1.toNat = t[LIMBS + 1].toNat + u0.toNat / 2 ^ 52 := toNat_add_srli52 _ u0 h1
   have n2 : u2.toNat = t[LIMBS + 2].toNat + u1.toNat / 2 ^ 52 := toNat_add_srli52 _ u1 h2
   have n3 : u3.toNat = t[LIMBS + 3].toNat + u2.toNat / 2 ^ 52 := toNat_add_srli52 _ u2 h3

@@ -115,7 +115,6 @@ theorem load_x_body (s : msm8.store.PointStore) (indices : Array U32 8#usize)
       (indexedRows (pointRows s) (pointIndices indices) 0)[j] := by
     refine Eq.trans ?_ (indexedRows_get _ _ _ j).symm
     simp [pointRows, hix, hat, show 2 * ix.val < s.rows.val.length by omega]
-    rfl
   rw [hr]
   congr 1
   exact toArray_set_of_eq (n := 8#usize) id xs rfl lane j.val j.isLt _ _ hj rfl
@@ -211,12 +210,10 @@ theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usiz
       (indexedRows (pointRows s) (pointIndices indices) 0)[j] := by
     refine Eq.trans ?_ (indexedRows_get _ _ _ j).symm
     simp [pointRows, hix, hat, show 2 * ix.val < s.rows.val.length by omega]
-    rfl
   have hyrow : ofArray ofU64 s.rows.val[yat.val] =
       (indexedRows (pointRows s) (pointIndices indices) 1)[j] := by
     refine Eq.trans ?_ (indexedRows_get _ _ _ j).symm
     simp [pointRows, hix, hyat, hbound]
-    rfl
   apply congrArg (fun p => ok (cont p))
   apply Prod.ext
   · exact toArray_set_of_eq (n := 8#usize) id xs rfl lane j.val j.isLt _ _ hj hxrow

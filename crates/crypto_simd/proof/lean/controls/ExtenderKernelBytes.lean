@@ -4,7 +4,7 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
-attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax LeanBlsSimd.FrModel.LIMBS
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelBytes
 

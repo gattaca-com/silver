@@ -8,7 +8,7 @@ noncomputable section
 
 namespace LeanBlsSimd.WindowSums
 
-attribute [local implicit_reducible] LIMBS ZMod EthLib.Cryptography.Bls.Fp.modulus
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
 open EthLib.Cryptography.Bls
 
 structure Entry where

@@ -8,7 +8,7 @@ noncomputable section
 
 open Aeneas Aeneas.Std Result ControlFlow Error
 noncomputable section
-attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax LeanBlsSimd.LIMBS ZMod EthLib.Cryptography.Bls.Fp.modulus
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax ZMod EthLib.Cryptography.Bls.Fp.modulus
 
 namespace LeanBlsSimd.BatchedRefines
 open silver_crypto_simd.bls

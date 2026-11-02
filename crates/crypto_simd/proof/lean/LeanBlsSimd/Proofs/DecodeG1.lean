@@ -6,7 +6,6 @@ namespace LeanBlsSimd.DecompressG1
 open EthLib.Cryptography.Bls
 open DecompressG2 (FP_BYTES fp_words flag_compressed flag_infinity flag_larger_root inv_replicate_zero)
 
-attribute [local implicit_reducible] LIMBS DecompressG2.FP_BYTES DecompressG2.G2_COMPRESSED_LEN
 
 /-- What `decode` records for one lane's bytes, with its x coordinate as an integer. -/
 structure LaneDecode where

@@ -26,7 +26,7 @@ open EthLib.Cryptography EthLib.Cryptography.Bls
 /-- The BLS12-381 parameter, whose absolute value the spec calls `blsX`. -/
 def z : ℤ := -blsX
 
-def LIMBS : ℕ := 8
+@[implicit_reducible] def LIMBS : ℕ := 8
 
 def LIMB_BITS : ℕ := 52
 

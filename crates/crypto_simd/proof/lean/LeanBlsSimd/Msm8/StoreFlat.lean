@@ -54,7 +54,6 @@ theorem storeRows_padded (rows : List Limbs) (base count : ℕ) (point : ℕ →
 theorem transpose8_fp8_lane (x : Fp8) (l : Fin 8) : (transpose8 x.limbs)[l] = x.lane l := by
   ext j hj
   simp [transpose8, Fp8.lane, LIMBS]
-  exact congrArg UInt64.toNat (Vector.getElem_map (fun v : Vector UInt64 8 => v[l]) (xs := x.limbs) hj).symm
 
 theorem store_convertedBatch (points : List (Vector UInt64 6 × Vector UInt64 6))
     (negated : List Bool) (base offset count : ℕ) (endomorphism : Bool) (rows : List Limbs)

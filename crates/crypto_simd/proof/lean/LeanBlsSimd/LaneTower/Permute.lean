@@ -6,7 +6,6 @@ open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Fp8
 
-attribute [local implicit_reducible] LIMBS
 
 def permute2 (self other : Fp8) (indices : Vector Int64 8) : Fp8 :=
   ⟨Vector.ofFn fun j => _mm512_permutex2var_epi64 self.limbs[j]
