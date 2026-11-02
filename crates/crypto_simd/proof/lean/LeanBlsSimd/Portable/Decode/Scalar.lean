@@ -53,9 +53,9 @@ private theorem scalarCore_fields [RuntimeFeatures] (w : Array U64 6#usize)
         if m then do let p ← portable.decompress.point (Kzg.fpEncode x).l y; ok (some p)
         else ok none
     else ok none := by
-  simp only [scalarCore,hw,bind_tc_ok, bind_ok,square_encoded,mul_encoded,add_four_encoded,←sq,Fp.sqrt_refines, bls.g1_point.G1Point.from_trusted]
+  simp only [scalarCore,hw, bind_ok,square_encoded,mul_encoded,add_four_encoded,←sq,Fp.sqrt_refines, bls.g1_point.G1Point.from_trusted]
   split_ifs <;> simp only [core.option.Option.Insts.CoreOpsTry_traitTry.branch,
-    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionNever.from_residual,bind_tc_ok, bind_ok]
+    core.option.Option.Insts.CoreOpsTry_traitFromResidualOptionNever.from_residual, bind_ok]
 
 theorem scalar_refines [RuntimeFeatures] (b : Encoding) :
     portable.decompress.uncompress_in_g1 (toArray toU8 b) =
@@ -66,20 +66,19 @@ theorem scalar_refines [RuntimeFeatures] (b : Encoding) :
     rw [show Kernel.sqrtCandidate (laneX b ^ 2 * laneX b + 4) = laneRoot b from rfl]
     rw [G1Spec.verdict_eq_decode,uncompress_decoded ho.1 ho.2.1]
     by_cases hr : laneRoot b ^ 2 = laneX b ^ 2 * laneX b + 4
-    · simp only [hr,ite_true,
-        bind_tc_ok, bind_ok,
+    · simp only [hr,ite_true, bind_ok,
         signed_root,Fp.is_zero_encoded]
       have hp := lanePoint_valid hr
       by_cases hy : Bls.Fp.isZero (laneY b) = true
       · rw [ite_eq_left hy]
         simp only [y_zero_rejected b hp hy,Bool.false_eq_true,ite_false,Option.map_none]
       · rw [ite_eq_right hy,G1.in_g1_encoded _ _ hp]
-        simp only [bind_tc_ok, bind_ok,point_lane]
+        simp only [bind_ok,point_lane]
         cases hm : Bls.G1.inSubgroup (lanePoint b) <;> simp only [lanePoint] at hm <;> simp only [hm,ite_true,Bool.false_eq_true,
           ite_false,Option.map_some,Option.map_none]
     · simp only [hr,ite_false,Option.map_none]
   · rw [portable.decompress.uncompress_in_g1,ordinary_refines,ordinary_eq,ite_eq_right ho]
-    simp only [bind_tc_ok, bind_ok,extraordinary_refines,nonordinary_verdict ho]
+    simp only [bind_ok,extraordinary_refines,nonordinary_verdict ho]
     split_ifs <;> rfl
 
 end LeanBlsSimd.Portable.Decode

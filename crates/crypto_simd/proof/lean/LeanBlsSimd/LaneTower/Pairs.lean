@@ -37,7 +37,7 @@ theorem raw2_zero : ∃ out, fp12.zero2 = ok out ∧
     Normal2 (fun _ => 0, fun _ => 0) out (fun _ => 0, fun _ => 0) := by
   obtain ⟨z, hz, hr⟩ := raw_zero
   refine ⟨⟨z, z⟩, ?_, hr, hr⟩
-  simp only [fp12.zero2, hz, bind_tc_ok, bind_ok]
+  simp only [fp12.zero2, hz, bind_ok]
 
 theorem raw2_add (hx : Raw2 k m x a) (hy : Raw2 k' m' y b) (hm : m + m' ≤ 1024) :
     ∃ out, fp2x8.Fp2x8.add_raw x y = ok out ∧
@@ -45,7 +45,7 @@ theorem raw2_add (hx : Raw2 k m x a) (hy : Raw2 k' m' y b) (hm : m + m' ≤ 1024
   obtain ⟨o0, h0, r0⟩ := raw_add hx.1 hy.1 hm
   obtain ⟨o1, h1, r1⟩ := raw_add hx.2 hy.2 hm
   refine ⟨⟨o0, o1⟩, ?_, r0, r1⟩
-  simp only [fp2x8.Fp2x8.add_raw, h0, h1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.add_raw, h0, h1, bind_ok]
 
 theorem raw2_sub {c : ℕ} {o : fp8.Fp8} (hx : Raw2 k m x a) (hy : Raw2 k' m' y b)
     (ho : offset c o) (hc : ∀ l, k'.1 l ≤ c ∧ k'.2 l ≤ c) (hm : m + m' + 1 ≤ 1024) :
@@ -54,14 +54,14 @@ theorem raw2_sub {c : ℕ} {o : fp8.Fp8} (hx : Raw2 k m x a) (hy : Raw2 k' m' y 
   obtain ⟨o0, h0, r0⟩ := raw_sub hx.1 hy.1 ho (fun l => (hc l).1) hm
   obtain ⟨o1, h1, r1⟩ := raw_sub hx.2 hy.2 ho (fun l => (hc l).2) hm
   refine ⟨⟨o0, o1⟩, ?_, r0, r1⟩
-  simp only [fp2x8.Fp2x8.sub_raw, h0, h1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.sub_raw, h0, h1, bind_ok]
 
 theorem raw2_normalise (hx : Raw2 k m x a) (hk : ∀ l, k.1 l ≤ 5120 ∧ k.2 l ≤ 5120)
     (hm : m ≤ 1024) : ∃ out, fp2x8.Fp2x8.normalise x = ok out ∧ Normal2 k out a := by
   obtain ⟨o0, h0, r0⟩ := raw_normalise hx.1 (fun l => (hk l).1) hm
   obtain ⟨o1, h1, r1⟩ := raw_normalise hx.2 (fun l => (hk l).2) hm
   refine ⟨⟨o0, o1⟩, ?_, r0, r1⟩
-  simp only [fp2x8.Fp2x8.normalise, h0, h1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.normalise, h0, h1, bind_ok]
 
 theorem raw2_select (mask : U8) (hx : Raw2 k m x a) (hy : Raw2 k' m' y b) :
     ∃ out, fp2x8.Fp2x8.select mask x y = ok out ∧
@@ -69,7 +69,7 @@ theorem raw2_select (mask : U8) (hx : Raw2 k m x a) (hy : Raw2 k' m' y b) :
   obtain ⟨o0, h0, r0⟩ := raw_select mask hx.1 hy.1
   obtain ⟨o1, h1, r1⟩ := raw_select mask hx.2 hy.2
   refine ⟨⟨o0, o1⟩, ?_, r0, r1⟩
-  simp only [fp2x8.Fp2x8.select, h0, h1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.select, h0, h1, bind_ok]
 
 theorem raw2_permute2 (is : Array I64 8#usize) (hx : Raw2 k m x a) (hy : Raw2 k' m' y b) :
     ∃ out, fp2x8.Fp2x8.permute2 x y is = ok out ∧
@@ -77,7 +77,7 @@ theorem raw2_permute2 (is : Array I64 8#usize) (hx : Raw2 k m x a) (hy : Raw2 k'
   obtain ⟨o0, h0, r0⟩ := raw_permute2 is hx.1 hy.1
   obtain ⟨o1, h1, r1⟩ := raw_permute2 is hx.2 hy.2
   refine ⟨⟨o0, o1⟩, ?_, r0, r1⟩
-  simp only [fp2x8.Fp2x8.permute2, h0, h1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.permute2, h0, h1, bind_ok]
 
 theorem raw2_xi {c : ℕ} {o : fp8.Fp8} (hx : Raw2 k m x a)
     (ho : offset c o) (hc : ∀ l, k.2 l ≤ c) (hm : m + m + 1 ≤ 1024) :
@@ -87,7 +87,7 @@ theorem raw2_xi {c : ℕ} {o : fp8.Fp8} (hx : Raw2 k m x a)
   obtain ⟨o0, h0, r0⟩ := raw_sub hx.1 hx.2 ho hc hm
   obtain ⟨o1, h1, r1⟩ := raw_add hx.1 hx.2 (by omega)
   refine ⟨⟨o0, o1⟩, ?_, r0, ?_⟩
-  · simp only [fp2x8.Fp2x8.mul_by_xi_raw, h0, h1, bind_tc_ok, bind_ok]
+  · simp only [fp2x8.Fp2x8.mul_by_xi_raw, h0, h1, bind_ok]
   · exact fun l => (r1 l).mono le_rfl (by omega)
 
 theorem raw_from_products (c : U64) (hc : c.val < 2048) {m : ℕ}
@@ -106,7 +106,7 @@ theorem raw_from_products (c : U64) (hc : c.val < 2048) {m : ℕ}
   obtain ⟨o2, ho2, ro2⟩ := raw_offset c2 (by omega)
   obtain ⟨im, him, rim⟩ := raw_sub h2 rsum ro2 (by intro l; simp only [hc2]; omega) (by omega)
   refine ⟨⟨re, im⟩, ?_, ?_, ?_⟩
-  · simp only [fp12.fp2_from_products, ho, hre, hsum, hmul, ho2, him, bind_tc_ok, bind_ok]
+  · simp only [fp12.fp2_from_products, ho, hre, hsum, hmul, ho2, him, bind_ok]
   · intro l
     exact (rre l).mono (by dsimp; omega) (by omega)
   · intro l
@@ -130,7 +130,7 @@ theorem raw2_products (hx : Normal2 k x a) (hy : Normal2 k' y b)
   obtain ⟨r, hr, rr⟩ := raw_from_products 2#u64 (by decide) rm0.raw rm1.raw rm2.raw (by decide)
   obtain ⟨out, hout, rout⟩ := raw2_normalise rr (by intro l; dsimp; decide) (by decide)
   refine ⟨out, ?_, ?_⟩
-  · simp only [fp12.fp2_products, hm0, hm1, hsx, hnx, hsy, hny, hm2, hr, hout, bind_tc_ok, bind_ok]
+  · simp only [fp12.fp2_products, hm0, hm1, hsx, hnx, hsy, hny, hm2, hr, hout, bind_ok]
   · have he : (fun l => a.1 l * b.1 l - a.2 l * b.2 l,
         fun l => (a.1 l + a.2 l) * (b.1 l + b.2 l) - (a.1 l * b.1 l + a.2 l * b.2 l)) =
         mul2 a b := by

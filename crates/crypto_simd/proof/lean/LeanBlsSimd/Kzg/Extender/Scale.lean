@@ -24,8 +24,7 @@ private theorem shift_loop
     have hn := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
-    simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok, bind_ok,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons p remaining ih =>
     rcases p with ⟨a, w⟩
     obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
@@ -40,7 +39,7 @@ private theorem shift_loop
       have hindex' : alloc.vec.Vec.index_usize out iter.start = ok (frEncode a) := by
         simpa only [alloc.vec.Vec.index_slice_index] using hindex
       simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hindex',
-        bind_tc_ok, bind_ok]
+        bind_tc_ok]
     let out' := alloc.vec.Vec.set out iter.start (frEncode (a * w))
     have hout' : out'.val = ((doneValues ++ [a * w]) ++ remaining.map Prod.fst).map frEncode := by
       simp [out', alloc.vec.Vec.set, ho, hi, List.set_append_right]
@@ -48,8 +47,7 @@ private theorem shift_loop
       simpa only [List.map_cons, List.append_assoc, List.singleton_append] using hs
     have hbody : cell_extender.CellExtender.compute_loop.body shifts iter out =
         ok (cont (iter', out')) := by
-      simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hindex, hshift, FrScalar.fr_mul_refines, hmut, out']
+      simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair, hindex, hshift, FrScalar.fr_mul_refines, hmut, out']
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * w]) (shiftPrefix ++ [w]) out'
       hout' hs' (by simpa using hp) iter' (by simp [hi', hi])
       (by simp [he', he, Nat.add_comm, Nat.add_left_comm])

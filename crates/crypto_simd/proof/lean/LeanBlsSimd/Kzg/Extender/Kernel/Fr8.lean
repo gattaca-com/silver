@@ -26,7 +26,7 @@ theorem encoded_multiplier_limbs (w : Fr) :
 
 theorem zero_refinement :
     ∃ out, fr8.Fr8.zero = ok out ∧ Represents out (fun _ => 0) := by
-  refine ⟨Array.repeat 5#usize Simd.zero, by simp [fr8.Fr8.zero, fr8.zero, core.core_arch.x86.avx512f._mm512_setzero_si512, Simd.zero, lift, bind_ok], ?_⟩
+  refine ⟨Array.repeat 5#usize Simd.zero, by simp [fr8.Fr8.zero, fr8.zero, core.core_arch.x86.avx512f._mm512_setzero_si512, Simd.zero, bind_ok], ?_⟩
   have hlimb (j : Fin 5) (lane : Fin 8) :
       ((Array.repeat 5#usize Simd.zero).val[j.val]!)[lane].toNat = 0 := by
     fin_cases j <;> simp [Array.repeat, Simd.zero, _mm512_setzero_si512]

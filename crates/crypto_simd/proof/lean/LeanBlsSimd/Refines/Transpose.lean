@@ -60,8 +60,7 @@ theorem transpose8_refines (rows : Array M512 8#usize) :
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),
     index_usize_eq (n := 8#usize) _ 6#usize (by decide), index_usize_eq (n := 8#usize) _ 7#usize (by decide),
     core.core_arch.x86.avx512f._mm512_set_epi64,
-    core.core_arch.x86.avx512f._mm512_permutex2var_epi64,
-    bind_tc_ok, bind_ok, Array.make, shuffle0, shuffle1, shuffle2, shuffle3, shuffle4, shuffle5]
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_ok, Array.make, shuffle0, shuffle1, shuffle2, shuffle3, shuffle4, shuffle5]
   ext1
   simp [toArray, transpose8, ofFn_eight]
 

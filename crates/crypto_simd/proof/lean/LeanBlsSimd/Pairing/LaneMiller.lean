@@ -46,16 +46,16 @@ theorem miller_refines (raw : g1x8.G1x8) (points : Fin 8 → Bls.G1) (hp : Point
     rw [Z_BITS_index 0#usize (by decide)]
     rfl
   refine ⟨out, ?_, rout⟩
-  simp only [pairing.MillerLines.miller_loop, Fp8.is_zero_mask_refines, lift, bind_tc_ok, bind_ok]
+  simp only [pairing.MillerLines.miller_loop, Fp8.is_zero_mask_refines, lift, bind_ok]
   have hxz := Fp8.mul_refines raw.x raw.z
   have hfac := Fp8.permute2_refines (toFp8 ((ofFp8 raw.x).mul (ofFp8 raw.z))) raw.y factorIndices
   have hzz := Fp8.square_refines raw.z
   have hz := Fp8.mul_refines (toFp8 (ofFp8 raw.z).square) raw.z
-  simp only [hxz, hfac, hzz, hz, bind_tc_ok, bind_ok] at hprep
+  simp only [hxz, hfac, hzz, hz, bind_ok] at hprep
   have he := Result.ok_injective hprep
   obtain ⟨hfac', hz'⟩ := Prod.mk.inj he
   dsimp only [factorIndices] at hfac hfac'
   dsimp only [present] at hloop
-  simp only [hxz, hfac, hzz, hz, bind_tc_ok, bind_ok, hfac', hz', hone, hbit, hloop, hout]
+  simp only [hxz, hfac, hzz, hz, bind_ok, hfac', hz', hone, hbit, hloop, hout]
 
 end LeanBlsSimd.Pairing.LaneLines

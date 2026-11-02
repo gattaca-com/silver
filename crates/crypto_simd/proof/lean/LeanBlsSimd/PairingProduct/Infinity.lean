@@ -35,15 +35,14 @@ private theorem component_loop (q : blst.blst_p2_affine) (j : Usize) (hj : j.val
   refine loop_range _ 2#usize rfl id (fun b c => b ||| qWord q ⟨j.val, hj⟩ c)
     (fun b => (q, b)) b _ ?_ ?_ rfl
   · intro r m he hs hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     rfl
   · intro r r' m c he hs he' hs' hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
-    try dsimp only
+    simp only [pairing_product.AffinePair.is_infinite_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     have hc : r.start.val < 2 := by rw [hs]; exact c.isLt
     simp (disch := (simp only [UScalar.ofNatCore_val_eq]; omega)) only
       [index_usize_eq q.x.fp r.start hc, index_usize_eq q.y.fp r.start hc,
-        index_usize_eq, bind_tc_ok, bind_ok, lift, hs]
+        index_usize_eq, bind_ok, lift, hs]
     rfl
 
 private theorem pair_loop (p : pairing_product.AffinePair) (b : U64 × U64) :
@@ -54,20 +53,18 @@ private theorem pair_loop (p : pairing_product.AffinePair) (b : U64 × U64) :
   refine loop_range _ pairing_product.BLST_LIMBS (by simp [pairing_product.BLST_LIMBS])
     (fun b : U64 × U64 => (p, b)) (pairBits p) id b _ ?_ ?_ rfl
   · intro r m he hs hn
-    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     rfl
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < 6 := by omega
-    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
-    try dsimp only
+    simp only [pairing_product.AffinePair.is_infinite_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     rw [index_usize_eq p.p.x.l r.start hj]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [index_usize_eq p.p.y.l r.start hj]
-    simp only [bind_tc_ok, bind_ok, lift]
+    simp only [bind_ok, lift]
     rw [component_loop p.q r.start hj]
-    simp only [bind_tc_ok, bind_ok]
-    try dsimp only
-    simp only [pairBits, pWord, hs, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [bind_ok]
+    simp only [pairBits, pWord, hs, Aeneas.Std.uncurry_apply_pair]
 
 private theorem or_zero_iff (a b : U64) :
     (a ||| b) = 0#u64 ↔ a = 0#u64 ∧ b = 0#u64 := by
@@ -106,7 +103,7 @@ private theorem infinity_raw (p : pairing_product.AffinePair) :
   simp only [List.mem_finRange, forall_true_left, true_and] at hp hq
   simp only [pWord, or_zero_iff] at hp
   rw [pairing_product.AffinePair.is_infinite, pair_loop p (0#u64, 0#u64)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (if ((List.finRange 6).foldl (pairBits p) (0#u64, 0#u64)).1 = 0#u64
     then ok true else ok (decide (((List.finRange 6).foldl (pairBits p) (0#u64, 0#u64)).2 = 0#u64))) = _
   change _ ↔ (∀ j, Msm8.zeroWord p.p j) at hp

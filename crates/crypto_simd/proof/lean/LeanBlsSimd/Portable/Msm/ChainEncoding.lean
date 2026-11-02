@@ -54,7 +54,7 @@ theorem encodeVector_four (v : Vector ChainField 4) :
   · simp [toArray,Fp.encodeFour,Array.make, Array.from_val]
   · intro i hi hj
     have hb : i < 4 := by simpa [toArray] using hi
-    interval_cases i <;> simp [toArray,Fp.encodeFour,Array.make, Array.from_val] <;> rfl
+    interval_cases i <;> simp [toArray,Fp.encodeFour,Array.make, Array.from_val]
 
 theorem batch_inverse_chains [RuntimeFeatures] (values : ℕ → ChainField) (n : ℕ)
     (hn : ∀ j < n, values j ≠ 0) :
@@ -84,7 +84,7 @@ theorem inverseVector_step (values : ℕ → ChainField) (i : ℕ)
   simp only [Vector.getElem_set,Vector.getElem_map,chainVector,Vector.getElem_ofFn]
   by_cases h : i%4 = k
   · subst k
-    simp only [ite_eq_left rfl]
+    simp only []
     exact advanced_inverse values i hn
   · rw [ite_eq_right h,chainValues_step_ne values i ⟨k,hk⟩ h]
 

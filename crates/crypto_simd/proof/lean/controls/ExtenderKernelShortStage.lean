@@ -91,32 +91,30 @@ private theorem original_first : firstLane (run 1#usize) = 0 := by
   unfold run shortBodyWithOffset
   simp (disch := scalar_tac) only [FrModel.Fr8.normalise_refines,
     FrModel.Fr8.reduce_while_multiplying_refines, FrModel.Fr8.add_raw_refines,
-    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_tc_ok, bind_ok,
+    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_ok,
     usize_add_ok, usize_mul_ok, sub_ok, index_usize_eq,
     UScalar.ofNatCore_val_eq, Array.to_slice_mut, lift,
     show 2#usize ≠ 4#usize by scalar_tac, ite_eq_right,
     List.replicate, List.set_cons_zero, List.set_cons_succ,
     List.getElem?_cons_zero, List.getElem?_cons_succ, Nat.reduceAdd, Nat.reduceSub,
-    table, inputs, Array.repeat, Array.from_val, Array.repeat_val, Array.set_val_eq,
+    table, inputs, Array.repeat, Array.from_val, Array.set_val_eq,
     alloc.vec.Vec.getElem?_Nat_eq, Slice.getElem?_Usize_eq, alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, alloc.vec.Vec.from_val, Slice.from_val,
-    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
+    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
   decide +kernel
 
 private theorem mutated_first : firstLane (run 2#usize) = 1 := by
   unfold run shortBodyWithOffset
   simp (disch := scalar_tac) only [FrModel.Fr8.normalise_refines,
     FrModel.Fr8.reduce_while_multiplying_refines, FrModel.Fr8.add_raw_refines,
-    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_tc_ok, bind_ok,
+    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_ok,
     usize_add_ok, usize_mul_ok, sub_ok, index_usize_eq,
     UScalar.ofNatCore_val_eq, Array.to_slice_mut, lift,
     show 2#usize ≠ 4#usize by scalar_tac, ite_eq_right,
     List.replicate, List.set_cons_zero, List.set_cons_succ,
     List.getElem?_cons_zero, List.getElem?_cons_succ, Nat.reduceAdd, Nat.reduceSub,
-    table, inputs, Array.repeat, Array.from_val, Array.repeat_val, Array.set_val_eq,
+    table, inputs, Array.repeat, Array.from_val, Array.set_val_eq,
     alloc.vec.Vec.getElem?_Nat_eq, Slice.getElem?_Usize_eq, alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, alloc.vec.Vec.from_val, Slice.from_val,
-    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
+    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
   decide +kernel
 
 example : shortBodyWithOffset 2#usize ≠ fft8.Fft8.dit_short_loop1.body := by

@@ -58,6 +58,8 @@ structure Initialised (state : portable.msm.Msm) (n : ℕ) (values : ℕ → G1S
   bucket_sum : bucketContributions state.buckets.window_bits.val state.buckets.windows.val values
     (bucketSlice (Buckets.toLane state.buckets)) = contribution
 
+-- Callers supply the positive chunk-length contract through `hn`.
+set_option linter.unusedVariables false in
 theorem initialise_correct [RuntimeFeatures] (self : portable.msm.Msm)
     (halign : self.finite_points.val.length = self.finite_scalars.val.length)
     (hn : 1 ≤ self.finite_scalars.val.length) (hchunk : self.finite_scalars.val.length ≤ portable.msm.CHUNK.val)
@@ -88,7 +90,6 @@ theorem initialise_correct [RuntimeFeatures] (self : portable.msm.Msm)
   have hsize : (alloc.vec.Vec.deref halves).val.length *
       (windows127 (selectedWidth (alloc.vec.Vec.deref halves).val.length)).val < 2 ^ 32 := by
     simp only [alloc.vec.Vec.deref, Slice.from_val]
-    change halves.val.length * (windows127 (selectedWidth halves.val.length)).val < 2 ^ 32
     rw [hinv.1]
     exact hres.references32
   obtain ⟨b, capacity, contents, hfill, hw, hwin, hpacked, hdisjoint, hshape, hpositive,
@@ -115,13 +116,12 @@ theorem initialise_correct [RuntimeFeatures] (self : portable.msm.Msm)
   obtain ⟨store, hstore, hstorelen, _, hcapacity, hfirst, hsecond⟩ :=
     Store.prepare_store_correct self.store (alloc.vec.Vec.deref self.finite_points)
       (alloc.vec.Vec.deref fs) (alloc.vec.Vec.deref ss) b.windows
-      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; change fs.val.length = self.finite_points.val.length; rw [hinv.2.1, halign])
-      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; change ss.val.length = self.finite_points.val.length; rw [hinv.2.2.1, halign])
+      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; rw [hinv.2.1, halign])
+      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; rw [hinv.2.2.1, halign])
       (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hp)
       (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hfinite)
       (by
         simp only [alloc.vec.Vec.deref, Slice.from_val]
-        change 2*self.finite_points.val.length+b.windows.val*self.finite_points.val.length < 2^32
         have hh := hresources.capacity31
         dsimp only [n] at hh
         simp only [halign,Nat.mul_comm b.windows.val]
@@ -130,14 +130,14 @@ theorem initialise_correct [RuntimeFeatures] (self : portable.msm.Msm)
   have hscalarSum := split_sum_contribution self.finite_points.val self.finite_scalars.val halign
     first second halves fs ss hinv hp (fun j => (hhalf j).1) (fun j => (hhalf j).2.1)
   refine ⟨out, values, capacity, contents, ?_, rfl, rfl, rfl, ?_⟩
-  · simp only [initialise, hsplit, bind_tc_ok, bind_ok]
+  · simp only [initialise, hsplit, bind_ok]
     change (do
       let b ← self.buckets.fill (alloc.vec.Vec.deref halves) 127#usize
       let store ← Store.prepareStore self.store (alloc.vec.Vec.deref self.finite_points)
         (alloc.vec.Vec.deref fs) (alloc.vec.Vec.deref ss) b.windows
       ok ({self with halves, first_signs := fs, second_signs := ss, buckets := b, store} : portable.msm.Msm)) = _
     rw [hfill]
-    simp only [bind_tc_ok, bind_ok, hstore]
+    simp only [bind_tc_ok, hstore]
     rfl
   · refine {
       store_len := by simpa only [alloc.vec.Vec.deref, Slice.from_val, halign, out] using hstorelen

@@ -54,14 +54,14 @@ private theorem select_loop_eq (mask : U64) (a b out target : Array U64 6#usize)
       have hj' : j < 6#usize := hjlt
       simp only [portable.fp.select_loop.body,hj',ite_true]
       rw [index_usize_eq a j hjlt,index_usize_eq b j hjlt]
-      simp only [lift,bind_tc_ok, bind_ok,hw j.val hjlt]
+      simp only [lift, bind_ok,hw j.val hjlt]
       rw [update_eq out j word hjlt,usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_ok] ; rfl)
     have hp' : ∀ i (hi : i < 6), i < next.val →
       (out.set j word).val[i]'(by rw [(out.set j word).property]; exact hi) =
         target.val[i]'(by rw [target.property]; exact hi) := by
       intro i hi hij
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       by_cases h : j.val = i
       · subst i
         rw [List.getElem_set_self]
@@ -105,7 +105,8 @@ theorem negative_mask_refines (d : Array U64 6#usize) :
   have hh := high.hBounds
   have hbit : high.val / 2^63 = if value d < 2^383 then 0 else 1 := by
     change value d = wordsValue (d.val.take 5)+(radix : ℤ)^5*high.val at hsplit
-    norm_num [radix,UScalarTy.numBits] at hsplit hlow hh ⊢
+    set_option exponentiation.threshold 512 in
+      norm_num [radix,UScalarTy.numBits] at hsplit hlow hh ⊢
     split <;> omega
   have hshift : high >>> 63#i32 = ok ⟨high.bv.ushiftRight 63⟩ := rfl
   have hbval : (⟨high.bv.ushiftRight 63⟩ : U64).val = high.val/2^63 := by
@@ -114,10 +115,10 @@ theorem negative_mask_refines (d : Array U64 6#usize) :
     rfl
   simp only [portable.fp.negative_mask]
   rw [index_usize_eq d 5#usize (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do let bit ← high >>> 63#i32; ok (core.num.U64.wrapping_sub 0#u64 bit)) = _
   rw [hshift]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   by_cases h : value d < 2^383
   · have he : (⟨high.bv.ushiftRight 63⟩ : U64) = 0#u64 := by
       apply UScalar.eq_of_val_eq
@@ -140,21 +141,23 @@ theorem below_p_refines (t : Array U64 6#usize) (ht : value t < 2*Bls.Fp.modulus
   have hneg := negative_mask_refines d
   by_cases hsmall : value t < Bls.Fp.modulus
   · have hhigh : ¬value d < 2^383 := by
-      norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
+      set_option exponentiation.threshold 512 in
+        norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
     refine ⟨t,?_,(Int.emod_eq_of_lt ht0 hsmall).symm⟩
-    simp only [portable.fp.below_p,he,bind_tc_ok, bind_ok]
+    simp only [portable.fp.below_p,he, bind_ok]
     change (do let mask ← portable.fp.negative_mask d; portable.fp.select mask t d) = _
     rw [hneg]
-    simp only [ite_eq_right hhigh,bind_tc_ok, bind_ok,select_ones]
+    simp only [ite_eq_right hhigh,bind_tc_ok,select_ones]
   · have hlow : value d < 2^383 := by
-      norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
+      set_option exponentiation.threshold 512 in
+        norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
     refine ⟨d,?_,?_⟩
-    · simp only [portable.fp.below_p,he,bind_tc_ok, bind_ok]
+    · simp only [portable.fp.below_p,he, bind_ok]
       change (do let mask ← portable.fp.negative_mask d; portable.fp.select mask t d) = _
       rw [hneg]
-      simp only [ite_eq_left hlow,bind_tc_ok, bind_ok,select_zero]
+      simp only [ite_eq_left hlow,bind_tc_ok,select_zero]
     · norm_num [radix,Bls.Fp.modulus] at ht hd hsmall ⊢
       omega
 
@@ -179,7 +182,7 @@ private theorem p_if_loop_eq_select (mask : U64) (out : Array U64 6#usize) (j : 
   · simp only [portable.fp.p_if_loop.body,portable.fp.select_loop.body,hj,ite_true]
     rw [index_usize_eq bls.constants.P_U64 j hj,
       index_usize_eq (Array.repeat 6#usize 0#u64) j hj]
-    simp only [lift,bind_tc_ok, bind_ok,Array.repeat_val,List.getElem_replicate,zero_and,or_zero]
+    simp only [lift, bind_ok,Array.repeat_val,List.getElem_replicate,zero_and,or_zero]
   · simp [portable.fp.p_if_loop.body,portable.fp.select_loop.body,hj]
 
 theorem p_if_refines (borrowed : Bool) :

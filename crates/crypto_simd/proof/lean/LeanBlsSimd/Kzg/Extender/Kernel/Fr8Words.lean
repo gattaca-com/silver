@@ -90,7 +90,7 @@ theorem from_blocks_refines (blocks : Vector M512 4) :
     index_usize_eq (n := 4#usize) _ 0#usize (by decide), index_usize_eq (n := 4#usize) _ 1#usize (by decide),
     index_usize_eq (n := 4#usize) _ 2#usize (by decide), index_usize_eq (n := 4#usize) _ 3#usize (by decide),
     core.core_arch.x86.avx512f._mm512_set_epi64,
-    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_tc_ok, bind_ok, Array.make, lowWords, highWords, firstHalves, secondHalves]
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_ok, Array.make, lowWords, highWords, firstHalves, secondHalves]
 
   ext1
   apply List.ext_getElem
@@ -113,7 +113,7 @@ theorem blocks_refines (w : Vector M512 4) :
     index_usize_eq (n := 4#usize) _ 0#usize (by decide), index_usize_eq (n := 4#usize) _ 1#usize (by decide),
     index_usize_eq (n := 4#usize) _ 2#usize (by decide), index_usize_eq (n := 4#usize) _ 3#usize (by decide),
     core.core_arch.x86.avx512f._mm512_set_epi64,
-    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_tc_ok, bind_ok, Array.make, firstHalves, secondHalves, evenBlock, oddBlock]
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_ok, Array.make, firstHalves, secondHalves, evenBlock, oddBlock]
 
   ext1
   apply List.ext_getElem
@@ -192,7 +192,7 @@ theorem vectorUnpack_refines (w : Vector M512 4) :
     core.core_arch.x86.avx512f._mm512_and_si512,
     core.core_arch.x86.avx512f._mm512_add_epi64,
     core.core_arch.x86.avx512f._mm512_slli_epi64,
-    core.core_arch.x86.avx512f._mm512_srli_epi64, bind_tc_ok, bind_ok, Array.make]
+    core.core_arch.x86.avx512f._mm512_srli_epi64, bind_ok, Array.make]
   ext1
   apply List.ext_getElem
   · simp [toArray]
@@ -214,7 +214,7 @@ theorem vectorPack_refines (v : Vector M512 5)
     index_usize_eq (n := 5#usize) _ 3#usize (by decide), index_usize_eq (n := 5#usize) _ 4#usize (by decide),
     core.core_arch.x86.avx512f._mm512_add_epi64,
     core.core_arch.x86.avx512f._mm512_slli_epi64,
-    core.core_arch.x86.avx512f._mm512_srli_epi64, bind_tc_ok, bind_ok, Array.make]
+    core.core_arch.x86.avx512f._mm512_srli_epi64, bind_ok, Array.make]
   ext1
   apply List.ext_getElem
   · simp [toArray]

@@ -60,15 +60,14 @@ theorem write_chunk_body
       List.getElem?_eq_getElem hcell, getElem!_pos cells.val (64 + iter.start.val / 64) hcell]
   have hbounds : (iter.start.val % 64) * 32 + 32 ≤ 2048 := by omega
   have hroom : 32 ≤ 2048 - (iter.start.val % 64) * 32 := by omega
-  simp only [cell_extender.CellExtender.write_extension_loop.body, hn, bind_tc_ok, bind_ok,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, reverse_bits_blob, hindex,
+  simp only [cell_extender.CellExtender.write_extension_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair, reverse_bits_blob, hindex,
     hserialize, cells_per_ext_blob_eq, hhalf, hquot, haddCell, hrem, hmul,
     hcellIndex, haddStop]
   simp [core.array.Array.index_mut, core.ops.index.IndexMutSlice,
     core.slice.index.Slice.index_mut, core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
     atByte, stop, Array.to_slice, Slice.from_val, Slice.length, UScalar.le_equiv, hbounds,
     core.slice.Slice.copy_from_slice, Slice.len, List.slice, bs.property,
-    Array.from_slice, Aeneas.Std.Array.set, Aeneas.Std.Array.setSlice!, storeChunk, Array.make, Array.from_val, cell, old,
+    Array.from_slice, Aeneas.Std.Array.set, Aeneas.Std.Array.setSlice!, storeChunk, Array.make, cell, old,
     lift, bind_tc_ok, bind_ok, Nat.min_eq_left hroom]
 
 end LeanBlsSimd.Kzg.Extender

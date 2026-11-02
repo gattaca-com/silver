@@ -38,8 +38,7 @@ private theorem compute_scalar_core
     simp only [hm] at hr
     subst verdict
     refine ⟨false, decoded, cells, ?_, hd, ?_, (fun _ => rfl), ?_⟩
-    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
+    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
     · simp [Model.compute, Model.extend, hm]
     · rw [hframe]
       exact hkernel
@@ -95,13 +94,12 @@ private theorem compute_scalar_core
           decoded.inverse_size = ok inverse := by
         rw [hd.2.2.1]
         exact hinverse
-      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, cells_per_extended_blob, hhalf, hcopy]
-      simp only [alloc.vec.Vec.deref_mut, lift, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, cells_per_extended_blob, hhalf, hcopy]
+      simp only [alloc.vec.Vec.deref_mut, lift, bind_ok, Aeneas.Std.uncurry_apply_pair]
       simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hinverse' hfft
       simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from]
       rw [hinverse']
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       change (do
         let shifted ← cell_extender.CellExtender.compute_loop
           { start := 0#usize, «end» := FIELD_ELEMENTS_PER_BLOB }
@@ -115,11 +113,11 @@ private theorem compute_scalar_core
         ok (true, { decoded with
           coefficients := shifted
           evaluations := ⟨evaluations⟩ }, out)) = _
-      simp only [hshift, bind_tc_ok, bind_ok, hfft]
+      simp only [hshift, bind_tc_ok, hfft]
       change (do
         let result ← cell_extender.CellExtender.write_extension next copied
         ok (true, next, result)) = _
-      simp only [hwrite, bind_tc_ok, bind_ok]
+      simp only [hwrite, bind_tc_ok]
     · simp only [Model.compute, Model.extend, hm]
       change (true, cellBytes out) = (true, _)
       rw [hout]

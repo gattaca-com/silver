@@ -61,7 +61,7 @@ private theorem square_next (i : Fin 6) :
       ok (some (squareIter i.val).start, squareIter (i.val + 1)) := by
   fin_cases i <;>
     simp [IteratorRange.next, StepU32, UScalarStep, UScalarStep.forward_checked,
-      squareIter, core.cmp.impls.PartialOrdU32.lt, UScalar.max, U32.max, U32.numBits, bind_ok] <;> rfl
+      squareIter, core.cmp.impls.PartialOrdU32.lt, U32.max, U32.numBits, bind_ok] <;> rfl
 
 private theorem square_step
     (i : Fin 6) (x : Fr) :
@@ -70,8 +70,7 @@ private theorem square_step
     loop (fun (it, p) => cosets.Cosets.new_loop0_loop0.body it p)
       (squareIter (i.val + 1), frEncode (x * x)) := by
   rw [loop.eq_1]
-  simp only [cosets.Cosets.new_loop0_loop0.body, square_next i, bind_tc_ok, bind_ok,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, FrScalar.fr_mul_refines]
+  simp only [cosets.Cosets.new_loop0_loop0.body, square_next i, bind_ok, Aeneas.Std.uncurry_apply_pair, FrScalar.fr_mul_refines]
 
 private theorem six_squares (x : Fr) :
     cosets.Cosets.new_loop0_loop0 { start := 0#u32, «end» := cosets.LOG_CELL }
@@ -84,9 +83,9 @@ private theorem six_squares (x : Fr) :
     square_step ⟨4, by decide⟩, square_step ⟨5, by decide⟩]
   have hn : IteratorRange.next StepU32 (squareIter 6) =
       ok (none, squareIter 6) := by
-    simp [IteratorRange.next, StepU32, UScalarStep, squareIter, core.cmp.impls.PartialOrdU32.lt, UScalar.max, U32.max, U32.numBits, bind_ok]
+    simp [IteratorRange.next, StepU32, UScalarStep, squareIter, core.cmp.impls.PartialOrdU32.lt, bind_ok]
   rw [loop.eq_1]
-  simp only [cosets.Cosets.new_loop0_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [cosets.Cosets.new_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   simp [Fr.powNat]
 
 private def inverseShifts : List blst.blst_fr :=
@@ -123,7 +122,7 @@ private theorem shifts_loop
     have hn := Refinement.next_ge iter (by simp [he, hj])
     refine ⟨si, sp, ?_, ?_, ?_⟩
     · rw [cosets.Cosets.new_loop0, loop.eq_1]
-      simp only [cosets.Cosets.new_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · simpa [hj, inverseShifts] using! hi
     · simpa [hj, shiftPowers] using! hp
   | succ d ih =>
@@ -188,7 +187,7 @@ private theorem shifts_loop
       si' sp' hi' hp' (by omega)
     refine ⟨si'', sp'', ?_, hvalI, hvalP⟩
     rw [cosets.Cosets.new_loop0, loop.eq_1]
-    simp only [cosets.Cosets.new_loop0.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+    simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair,
       hmul, hrev, hget, hinverse, hpushI, six_squares, hpushP]
     exact hout
 
@@ -202,7 +201,7 @@ theorem cells_per_ext_blob_eq : CELLS_PER_EXT_BLOB = ok 128#usize := by
     simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, hb']
   unfold CELLS_PER_EXT_BLOB
   rw [hm]
-  simp only [bind_tc_ok, bind_ok, FIELD_ELEMENTS_PER_CELL]
+  simp only [bind_ok, FIELD_ELEMENTS_PER_CELL]
   obtain ⟨z, hz, hv, _⟩ := UScalar.div_bv_spec 8192#usize (y := 64#usize) (by decide)
   rw [hz]
   congr 1
@@ -237,9 +236,9 @@ theorem cosets_new_refinement :
   refine ⟨⟨inv, frEncode (Fr.ofNat 64).inverse, si, sp⟩, ?_, ?_⟩
   · unfold cosets.Cosets.new
     rw [hext]
-    simp only [bind_tc_ok, bind_ok, hinverseExt, cells_per_ext_blob_eq]
+    simp only [bind_ok, hinverseExt, cells_per_ext_blob_eq]
     rw [hshifts, hrs]
-    simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hinv, inverse_cell_size_eq]
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, hinv, inverse_cell_size_eq]
   · exact ⟨hinvval, rfl, hsi, hsp⟩
 
 end LeanBlsSimd.Kzg

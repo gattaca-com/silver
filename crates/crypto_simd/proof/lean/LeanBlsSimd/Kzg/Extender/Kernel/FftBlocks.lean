@@ -77,7 +77,7 @@ private theorem set_block_loop_prefix (dit : Bool)
       simp [Array.index_usize, hk8, block.property]
     have hiData : i.val < data.val.length := by rw [hp.1, hi]; omega
     have hupdate : Slice.update data i block.val[k.val]! = ok (data.set i block.val[k.val]!) := by
-      simp [Slice.update, Slice.set, Slice.setAtNat, Slice.from_val, hiData]
+      simp [Slice.update, Slice.set, Slice.setAtNat, hiData]
     have hnew : BlockPrefix dit (data.set i block.val[k.val]!) values output n (offset.val+next.val) := by
       rw [hnext, show offset.val+(k.val+1) = i.val+1 by omega]
       apply prefix_set data values output n i (by omega) _
@@ -88,7 +88,7 @@ private theorem set_block_loop_prefix (dit : Bool)
     have hbody : fft8.set_block_loop.body offset block data k =
         ok (cont (data.set i block.val[k.val]!, next)) := by
       simp only [fft8.set_block_loop.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, hk8, ite_true, hindex, hadd, hupdate, hinc, bind_tc_ok, bind_ok]
+        UScalar.ofNatCore_val_eq, hk8, ite_true, hindex, hadd, hupdate, hinc, bind_ok]
     rw [fft8.set_block_loop, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -167,8 +167,8 @@ theorem block_run_representation
     norm_num at ht3
     obtain ⟨out, hout, ho⟩ := transpose_back false t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
-    simp only [blockRun, Bool.false_eq_true, ite_false, htranspose, bind_tc_ok, bind_ok] at *
-    simp only [h1, h2, h3, hout, bind_tc_ok, bind_ok]
+    simp only [blockRun, Bool.false_eq_true, ite_false, htranspose, bind_ok] at *
+    simp only [h1, h2, h3, hout, bind_ok]
   · obtain ⟨t,htranspose,ht⟩ := transpose_representation data offset
       (fun row lane => values[8*(offset.val+row.val)+lane.val]!) hat hdata
     have htr : TransposedRep (ShortInput true 1) t values offset.val := fun row => (ht row).lazy
@@ -188,8 +188,8 @@ theorem block_run_representation
     norm_num at ht3
     obtain ⟨out, hout, ho⟩ := transpose_back true t3 _ offset.val ht3
     refine ⟨out, ?_, ho⟩
-    simp only [blockRun, ite_true, htranspose, bind_tc_ok, bind_ok] at *
-    simp only [h1, h2, h3, hout, bind_tc_ok, bind_ok]
+    simp only [blockRun, ite_true, htranspose, bind_ok] at *
+    simp only [h1, h2, h3, hout, bind_ok]
 
 def blockBody (dit : Bool) (table : fft8.Fft8) (data : Slice fr8.Fr8) (offset : Usize) :
     Result (ControlFlow (Slice fr8.Fr8 × Usize) (Slice fr8.Fr8)) :=
@@ -246,7 +246,7 @@ private theorem block_loops (dit : Bool) (table : fft8.Fft8)
     rw [loop.eq_1]
     dsimp only
     rw [block_body_run dit table data offset next (by omega) hnext]
-    simp only [hrun, hstore, bind_tc_ok, bind_ok]
+    simp only [hrun, hstore, bind_ok]
     simpa only [bind_ok] using! hout
 
 theorem blocks_refinement (dit : Bool) (table : fft8.Fft8)

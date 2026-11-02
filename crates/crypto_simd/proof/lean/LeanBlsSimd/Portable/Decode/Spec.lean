@@ -31,7 +31,7 @@ private theorem undecided_zero {b : Encoding} {P : Bls.G1}
   have hi : b[0] &&& 0x40 ≠ 0 := by
     unfold decodeLane at hu
     dsimp only at hu
-    split_ifs at hu <;> simp_all
+    split_ifs at hu ; simp_all
   unfold Bls.G1.uncompress at hd
   generalize Bls.Fp.sqrt = sq at hd
   rw [ite_eq_right (by rw [size_toBytes]; decide)] at hd

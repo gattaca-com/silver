@@ -11,7 +11,7 @@ attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelFft
 
-open Kernel
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel
 
 set_option maxHeartbeats 2000000
 set_option exponentiation.threshold 1000
@@ -84,7 +84,7 @@ theorem reading_next_wide_vector_violates_generated_table :
   have hlen : table.wide.val.length = 7 := by
     simpa only [layoutRoots_size] using ht.2.2.1
   have hset : (readNextWideVector table).wide.val[0]! = table.wide.val[1]! := by
-    simp only [swapShortTwiddles, readNextWideVector, alloc.vec.Vec.set_val_eq, UScalar.ofNatCore_val_eq]
+    simp only [readNextWideVector, alloc.vec.Vec.set_val_eq, UScalar.ofNatCore_val_eq]
     exact List.set_getElem!_eq _ _ _ _ ⟨(by omega), rfl⟩
   have hgood := (ht.2.2.2.1 4 (by decide) (by rw [layoutRoots_size]; decide)
     ⟨0, by decide⟩).1.2 ⟨1, by decide⟩

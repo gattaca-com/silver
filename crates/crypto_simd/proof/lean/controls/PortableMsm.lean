@@ -74,7 +74,7 @@ theorem dropped_count_rejected : buckets.count 0#usize 1#usize ≠ ok buckets :=
   have hc := BucketsRefines.count_at (Buckets.toLane buckets) 0#usize 1#usize 0#usize
     (by decide) hi (by decide) (by decide)
   rw [Buckets.count_eq, hc]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   intro h
   have hl := congrArg (fun b : portable.msm.buckets.Buckets => b.lens.val.map UScalar.val)
     (Result.ok_injective h)
@@ -272,8 +272,8 @@ theorem rejected_pair_round_exits [RuntimeFeatures] :
   refine ⟨next,?_,ha⟩
   rw [portable.msm.Msm.pair_rounds_loop,Aeneas.Std.loop.eq_1]
   simp only [portable.msm.Msm.pair_rounds_loop.body,Rounds.adds_is_empty,
-    show adds.a.val.isEmpty = false from rfl,bind_tc_ok, bind_ok,Bool.false_eq_true,ite_false,hr]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift, Bool.false_eq_true, ite_false] <;> rfl)
+    show adds.a.val.isEmpty = false from rfl, bind_ok,Bool.false_eq_true,ite_false,hr]
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false] )
 
 theorem rejected_round_is_not_empty [RuntimeFeatures]
     (next : portable.msm.pairs.BatchedAdds) (hempty : next.a.val.isEmpty = true) :

@@ -67,7 +67,7 @@ theorem load_store_words :
       silver_crypto_simd.sha256.extensions.store_words) =
     ok (Array.make 4#usize [1#u32, 2#u32, 3#u32, 4#u32]) := by
   simp only [silver_crypto_simd.sha256.extensions.load_words, bind_tc_ok,
-    silver_crypto_simd.sha256.extensions.store_words] <;> rfl
+    silver_crypto_simd.sha256.extensions.store_words] ; rfl
 
 open Aeneas Aeneas.Std Result in
 theorem byte_binding :

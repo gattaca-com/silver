@@ -124,8 +124,8 @@ private theorem encode_loop (sums : Array fr8.Fr8 8#usize) (values : _root_.Arra
     have hbody : interpolation_kernel.store_canonical_loop0.body sums buffer i =
         ok (cont (written, i')) := by
       simp only [interpolation_kernel.store_canonical_loop0.body, vectors_per_cell_eq, hlt, ite_true,
-        hindex, Array.to_slice_mut, lift, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, bytes_per_vector_eq, hmul,
-        hserialize, hadd, hback, bind_tc_ok, bind_ok]
+        hindex, Array.to_slice_mut, lift, Aeneas.Std.uncurry_apply_pair, bytes_per_vector_eq, hmul,
+        hserialize, hadd, hback, bind_ok]
     simpa only [hbody, bind_ok] using! hout
 
 private def fieldChunk (buffer : Array U8 2048#usize) (i : Nat) (hi : i < 64) :
@@ -227,9 +227,9 @@ private theorem decode_loop
       intro j hj
       by_cases heq : j = i.val
       · subst j
-        simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val, UScalar.ofNatCore_val_eq]
+        simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val]
         exact List.set_getElem!_eq _ _ _ _ ⟨(by omega), rfl⟩
-      · simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val, UScalar.ofNatCore_val_eq]
+      · simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val]
         rw [List.set_getElem!_ne _ _ _ _ (by omega)]
         exact hp j (by omega)
     obtain ⟨out', hout, ho⟩ := ih next hnextlen i' (by omega) hnext (by omega)
@@ -246,8 +246,8 @@ private theorem decode_loop
     have hbody : interpolation_kernel.store_canonical_loop1.body buffer out i =
         ok (cont (next, i')) := by
       simp only [interpolation_kernel.store_canonical_loop1.body, hlt, ite_true,
-        Array.to_slice_mut, lift, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hstart, hadd, hstop,
-        hindex, hcopy, hback, hdecode, hupdate, bind_tc_ok, bind_ok]
+        Array.to_slice_mut, lift, Aeneas.Std.uncurry_apply_pair, hstart, hadd, hstop,
+        hindex, hcopy, hback, hdecode, hupdate, bind_ok]
     rw [interpolation_kernel.store_canonical_loop1, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -264,6 +264,6 @@ theorem store_canonical_refinement
     (Array.repeat 2048#usize 0#u8) 0#usize (by decide) (by intro j hj; simp only [UScalar.ofNatCore_val_eq] at hj; omega)
   obtain ⟨out', hout, ho⟩ := decode_loop buffer values hsize he out hlen 0#usize
     (by decide) (by intro j hj; simp only [UScalar.ofNatCore_val_eq] at hj; omega)
-  exact ⟨out', by simp only [interpolation_kernel.store_canonical, hb, hout, bind_tc_ok, bind_ok], ho⟩
+  exact ⟨out', by simp only [interpolation_kernel.store_canonical, hb, hout, bind_ok], ho⟩
 
 end LeanBlsSimd.Kzg.InterpolationKernel

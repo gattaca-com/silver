@@ -34,7 +34,7 @@ private theorem columns_loop (kernel : interpolation_kernel.InterpolationKernel)
     refine ⟨kernel, sums, ?_, hk, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop2, loop.eq_1]
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop2.body,
-        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
         hc128, lt_self_iff_false, ite_false]
     · simpa only [hc128, show (List.range 128).drop 128 = [] from (by simpa only [List.length_range] using (List.drop_length (l := List.range 128))), List.foldl_nil] using hs
   | succ rem ih =>
@@ -75,8 +75,8 @@ private theorem columns_loop (kernel : interpolation_kernel.InterpolationKernel)
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop2.body kernel c sums =
         ok (cont (after, c', sumsAfter)) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop2.body,
-        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hct, ite_true, hindex, hstep, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hinc]
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        hct, ite_true, hindex, hstep, Aeneas.Std.uncurry_apply_pair, hinc]
     obtain ⟨next, sums', hloop, hn, hrep⟩ := ih after ha
       (Interpolation.totalStep columns used total c.val)
       (Interpolation.totalStep_length columns used total c.val ht) c' (by omega)
@@ -141,6 +141,6 @@ theorem interpolate_refinement
   obtain ⟨out, hstore, hout⟩ := store_canonical_refinement sums _ hrep coefficients ho
   refine ⟨next, out, ?_, hn, hout⟩
   simp only [interpolation_kernel.InterpolationKernel.interpolate, hclear, hacc,
-    hzero, hloop, hstore, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    hzero, hloop, hstore, bind_ok, Aeneas.Std.uncurry_apply_pair]
 
 end LeanBlsSimd.Kzg.InterpolationKernel

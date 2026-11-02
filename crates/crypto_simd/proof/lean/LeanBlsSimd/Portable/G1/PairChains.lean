@@ -48,12 +48,11 @@ theorem affine_loop_encoded [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s : State)
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [encodeState,bind_tc_ok, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_encoded,
+    simp only [encodeState, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_encoded,
       flags_zero,flags_one,affinePairStep,affineStep]
     cases hb : G1x8.is_lower_z_bit c'.val <;>
       cases h0 : s.1.1 <;> cases h1 : s.2.1 <;>
-        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or,
-          bind_tc_ok, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> (simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> ( rfl)
 
 theorem projective_loop_encoded [RuntimeFeatures] (P Q : Bls.G1) (s : State) (c : U32) (n : Nat)
     (hcn : c.val = n) :
@@ -71,13 +70,12 @@ theorem projective_loop_encoded [RuntimeFeatures] (P Q : Bls.G1) (s : State) (c 
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [encodeState,bind_tc_ok, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,
+    simp only [encodeState, bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,
       add_encoded (Kzg.PortableG1.doubleValues s.1.2) (Kzg.PortableG1.doubleValues s.2.2) P Q,
       flags_zero,flags_one,pairStep,step]
     cases hb : G1x8.is_lower_z_bit c'.val <;>
       cases h0 : s.1.1 <;> cases h1 : s.2.1 <;>
-        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or,
-          bind_tc_ok, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> (simp -failIfUnchanged only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+        simp_all only [Bool.false_eq_true,ite_false,ite_true,Bool.false_or,Bool.true_or, bind_ok, aeneas_uncurry_def, flags_zero, flags_one] <;> ( rfl)
 
 theorem step_unflagged (P : Bls.G1) (s : LaneState) (bit : Nat) (h : (step P s bit).1 = false) :
     s.1 = false ∧ (step P s bit).2 = G1.chainStep P s.2 bit := by
@@ -87,7 +85,7 @@ theorem step_unflagged (P : Bls.G1) (s : LaneState) (bit : Nat) (h : (step P s b
   · simp only [hb,ite_true] at h
     have he := Bool.or_eq_false_iff.mp h
     exact ⟨he.1,sum_eq_add _ _ he.2⟩
-  · simp only [hb,ite_false] at h
+  · simp only [hb] at h
     exact ⟨h,rfl⟩
 
 theorem affineStep_unflagged (x y : Bls.Fp) (s : LaneState) (bit : Nat)
@@ -99,7 +97,7 @@ theorem affineStep_unflagged (x y : Bls.Fp) (s : LaneState) (bit : Nat)
   · simp only [hb,ite_true] at h
     have he := Bool.or_eq_false_iff.mp h
     exact ⟨he.1,affineSum_eq_add _ _ _ he.2⟩
-  · simp only [hb,ite_false] at h
+  · simp only [hb] at h
     exact ⟨h,rfl⟩
 
 private theorem fold_unflagged (f : LaneState → Nat → LaneState) (g : Bls.G1 → Nat → Bls.G1)

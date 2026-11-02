@@ -25,9 +25,9 @@ theorem block_step (state : _root_.Array UInt32) (data : Slice U8)
   refine ⟨next,?_,rfl⟩
   have hb' : block < blocks := hb
   simp only [sha256.extensions.compress_blocks_loop0.body,hb',ite_true,hload]
-  simp only [bind_tc_ok, bind_ok,hquad,core.core_arch.x86.sse2._mm_add_epi32]
+  simp only [bind_ok,hquad,core.core_arch.x86.sse2._mm_add_epi32]
   rw [add_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [Spec.compressBlock_eq]
   exact congrArg (fun p : M128 × M128 => ok (cont (p.1,p.2,next)))
     (feed_forward state (Spec.rounds (Spec.schedule (Spec.bytes (data.val.map ofU8)) (64*block.val))
@@ -100,21 +100,21 @@ theorem compress_blocks_refines (state : Array U32 8#usize) (data : Slice U8)
   dsimp only [Spec.stateWords] at hf hlow hhigh
   rw [sha256.extensions.compress_blocks]
   simp only [sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   rw [hindex]
-  simp only [bind_tc_ok, bind_ok,hswap]
-  simp (disch := scalar_tac) only [Portable.index_word,bind_tc_ok, bind_ok]
+  simp only [bind_ok,hswap]
+  simp (disch := scalar_tac) only [Portable.index_word, bind_ok]
   norm_num only [UScalar.ofNatCore_val_eq]
-  simp only [load_words_four,bind_tc_ok, bind_ok,core.core_arch.x86.sse2._mm_shuffle_epi32,
+  simp only [load_words_four, bind_ok,core.core_arch.x86.sse2._mm_shuffle_epi32,
     core.core_arch.x86.ssse3._mm_alignr_epi8,core.core_arch.x86.sse41._mm_blend_epi16]
   simp only [show (I32.bv 177#i32).toNat = 177 by decide +kernel,
     show (I32.bv 27#i32).toNat = 27 by decide +kernel,
     show (I32.bv 8#i32).toNat = 8 by decide +kernel,
     show (I32.bv 240#i32).toNat = 240 by decide +kernel]
   rw [hilo,hihi,hf]
-  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [hlow,hhigh]
-  simp only [store_words_refines,bind_tc_ok, bind_ok]
+  simp only [store_words_refines, bind_ok]
   refine ⟨_,rfl,?_⟩
   have hsize : result.size = 8 := by
     dsimp only [result]

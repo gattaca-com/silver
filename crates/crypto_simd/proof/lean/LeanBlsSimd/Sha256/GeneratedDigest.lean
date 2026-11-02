@@ -29,21 +29,21 @@ theorem digest_step (state : Array U32 8#usize) (digest : Array U8 32#usize)
   let next : Usize := UScalar.ofNatCore (i.val+1) (by scalar_tac)
   refine ⟨next,rfl,?_⟩
   simp only [sha256.portable.Sha256.finish_loop.body,show i < 8#usize from hi,ite_true]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   rw [index_mut_range _ _ _ (by scalar_tac) (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [Portable.index_word state i hi]
-  simp only [bind_tc_ok, bind_ok,lift]
+  simp only [bind_ok,lift]
   rw [copy_eq _ _ (by
     rw [range_length _ _ _ (by
       simp only [Array.to_slice,Slice.from_val,digest.property,UScalar.ofNatCore_val_eq]; scalar_tac)]
     simp only [Array.to_slice,Slice.from_val,(core.num.U32.to_be_bytes _).property,
       UScalar.ofNatCore_val_eq]
     omega)]
-  simp (disch := scalar_tac) only [bind_tc_ok, bind_ok,add_ok]
+  simp (disch := scalar_tac) only [bind_ok]
   congr 1
   rw [words_get state i.val hi,← getElem!_pos state.val i.val (by rw [state.property]; exact hi),word_ofWord]
-  simp only [Array.to_slice,Slice.from_val,UScalar.ofNatCore_val_eq] <;> rfl
+  simp only [Array.to_slice,Slice.from_val,UScalar.ofNatCore_val_eq] ; rfl
 
 theorem digest_loop_refines (state : Array U32 8#usize) (digest : Array U8 32#usize)
     (i : Usize) (hi : i.val ≤ 8)

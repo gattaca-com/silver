@@ -35,7 +35,7 @@ private theorem write_body (pairs : Slice pairing_product.AffinePair)
     Aeneas.Std.uncurry_apply_pair, Slice.index_usize, Slice.getElem?_Usize_eq, List.getElem?_eq_getElem hi]
   simp (disch := (simp -failIfUnchanged only [UScalar.ofNatCore_val_eq]; omega)) only
     [encodeWords, Array.make, Array.from_val, Array.index_mut_usize,
-      index_usize_eq, update_eq, bind_ok, bind_tc_ok, bind_tc_eq, aeneas_uncurry_def, Aeneas.Std.uncurry_apply_pair,
+      index_usize_eq, update_eq, bind_ok, bind_tc_eq, aeneas_uncurry_def,
       Array.set_val_eq, List.set_cons_zero, List.set_cons_succ,
       List.getElem_cons_zero, List.getElem_cons_succ, UScalar.ofNatCore_val_eq,
       writeWords, coordinate]

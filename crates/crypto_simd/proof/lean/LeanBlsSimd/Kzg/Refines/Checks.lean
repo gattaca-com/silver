@@ -45,17 +45,16 @@ private theorem indices_loop (indices : Slice U64) (remaining before : List U64)
       · have hbody : verify.CellBatchVerifier.verify_loop.body indices (Slice.len indices) i =
             ok (cont i') := by
           simp only [verify.CellBatchVerifier.verify_loop.body, htest, ite_true,
-            hindex, bind_tc_ok, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', hadd]
+            hindex, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', hadd]
         rw [verify.CellBatchVerifier.verify_loop, loop.eq_1, hbody, bind_ok]
         exact hloop
-      · simp only [List.findIdx_cons, show decide (128 ≤ x.val) = false by simp; omega,
-          cond_false, Bool.false_eq_true, ite_false]
+      · simp only [List.findIdx_cons, show decide (128 ≤ x.val) = false by simp; omega, Bool.false_eq_true, ite_false]
         omega
     · have hx' : ¬ x < 128#u64 := by simpa using hx
       refine ⟨i, ?_, ?_⟩
       · rw [verify.CellBatchVerifier.verify_loop, loop.eq_1]
         simp only [verify.CellBatchVerifier.verify_loop.body, htest, ite_true,
-          hindex, bind_tc_ok, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', ite_false]
+          hindex, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', ite_false]
       · simp [List.findIdx_cons, show 128 ≤ x.val by omega]
 
 theorem verify_indices_refinement (indices : Slice U64) :

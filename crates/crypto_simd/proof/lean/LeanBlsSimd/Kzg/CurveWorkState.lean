@@ -23,12 +23,12 @@ theorem sum_frame [RuntimeFeatures]
     isLanes next = isLanes self := by
   cases self with
   | Lanes msm words =>
-    simp only [verify.CurveWork.sum, bind_success, Function.uncurry, aeneas_uncurry_def] at hcall
+    simp only [verify.CurveWork.sum, bind_success, aeneas_uncurry_def] at hcall
     obtain ⟨words', _, ⟨point', msm'⟩, _, he⟩ := hcall
     obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok_injective he)
     rfl
   | Scalar msm words =>
-    simp only [verify.CurveWork.sum, bind_success, Function.uncurry, aeneas_uncurry_def] at hcall
+    simp only [verify.CurveWork.sum, bind_success, aeneas_uncurry_def] at hcall
     obtain ⟨words', _, words'', _, ⟨point', msm'⟩, _, he⟩ := hcall
     obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok_injective he)
     rfl

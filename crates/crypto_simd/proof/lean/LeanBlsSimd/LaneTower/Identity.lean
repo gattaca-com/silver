@@ -17,7 +17,7 @@ def oneValues : P F := (fun l => if l = 0 then 1 else 0, fun _ => 0)
 
 theorem one_exact : fp12.Fp12.one = ok ⟨toFp8 oneReal, toFp8 Fp8.zero⟩ := by
   simp only [fp12.Fp12.one, Fp8.zero_refines, Fp8.one_refines, Fp8.permute2_refines,
-    ofFp8_toFp8, bind_tc_ok, bind_ok]
+    ofFp8_toFp8, bind_ok]
   rfl
 
 theorem one_real_holds (l : Fin 8) : oneReal.Holds l (oneValues.1 l) := by
@@ -64,7 +64,7 @@ theorem is_one_run (x : fp2x8.Fp2x8) :
     fp12.Fp12.is_one x = ok (decide ((oneMask x &&& 63) = 63)) := by
   have ho : fp8.Fp8.splat_limbs constants.R_MOD_P = ok (toFp8 Fp8.one) := Fp8.one_refines
   simp only [fp12.Fp12.is_one, ho, one_exact, Fp8.mul_refines, Fp8.eq_mask_refines,
-    ofFp8_toFp8, lift, bind_tc_ok, bind_ok, show 63#u8 = toU8 63 from rfl, toU8_and, toU8_inj]
+    ofFp8_toFp8, lift, bind_ok, show 63#u8 = toU8 63 from rfl, toU8_and, toU8_inj]
   rfl
 
 theorem one_mask_bits {x : fp2x8.Fp2x8} {a : P F} (hx : Strict2 256 x a) (l : Fin 8) :

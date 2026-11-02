@@ -112,11 +112,11 @@ theorem store_refines (data : Slice fr8.Fr8) (offset : Usize)
       simp [Slice.index_usize, show offset.val < data.val.length by omega]
     simp_body fr8.Fr8.transpose_loop0.body hn
     simp only [hx0, hi1, hi2, hi3, hi4, hi5, hi6, hi7,
-      hx1, hx2, hx3, hx4, hx5, hx6, hx7, bind_tc_ok, bind_ok, index_usize_eq _ _ hj]
+      hx1, hx2, hx3, hx4, hx5, hx6, hx7, bind_ok, index_usize_eq _ _ hj]
     rw [transpose8_refines]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [store_inner_refines _ _ hj]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     refine congrArg (fun out => ok (cont (r', toArray (toArray id) out))) ?_
     congr 1
     funext out row
@@ -124,18 +124,18 @@ theorem store_refines (data : Slice fr8.Fr8) (offset : Usize)
     simp [columns, LeanBlsSimd.transpose8, hs]
     congr 1
     ext lane
-    fin_cases lane <;> simp [Array.make, Array.from_val]
+    fin_cases lane <;> simp []
 
 theorem transpose_refines (data : Slice fr8.Fr8) (offset : Usize)
     (hsize : offset.val + 8 ≤ data.val.length) :
     fr8.Fr8.transpose data offset = ok (toArray (toArray id) (store (columns data offset))) := by
   unfold fr8.Fr8.transpose
   have hz : fr8.zero = ok Simd.zero := rfl
-  simp only [hz, bind_tc_ok, bind_ok, store_refines data offset hsize]
+  simp only [hz, bind_ok, store_refines data offset hsize]
   simp only [index_usize_eq (n := 8#usize) _ 0#usize (by decide), index_usize_eq (n := 8#usize) _ 1#usize (by decide),
     index_usize_eq (n := 8#usize) _ 2#usize (by decide), index_usize_eq (n := 8#usize) _ 3#usize (by decide),
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),
-    index_usize_eq (n := 8#usize) _ 6#usize (by decide), index_usize_eq (n := 8#usize) _ 7#usize (by decide), bind_tc_ok, bind_ok]
+    index_usize_eq (n := 8#usize) _ 6#usize (by decide), index_usize_eq (n := 8#usize) _ 7#usize (by decide), bind_ok]
   apply congrArg ok
   ext1
   apply List.ext_getElem

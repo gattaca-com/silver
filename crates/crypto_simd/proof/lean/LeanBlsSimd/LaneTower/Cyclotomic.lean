@@ -56,7 +56,7 @@ theorem strict2_cond_sub {k c : ℕ} {x : fp2x8.Fp2x8} {o : fp8.Fp8} {a : P F}
   obtain ⟨x0, hx0, rx0⟩ := strict_cond_sub hx.1 ho hk
   obtain ⟨x1, hx1, rx1⟩ := strict_cond_sub hx.2 ho hk
   refine ⟨⟨x0, x1⟩, ?_, rx0, rx1⟩
-  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_ok]
 
 noncomputable def cyclePrepare (x : fp2x8.Fp2x8) :
     Result (fp2x8.Fp2x8 × fp2x8.Fp2x8 × fp8.Fp8) := do
@@ -108,8 +108,7 @@ theorem cycle_schedule (x : fp2x8.Fp2x8) :
       fp2x8.Fp2x8.cond_sub r1 p256) := by
   have h512 : 2#u64 * fp12.BOUND = ok 512#u64 := by unfold fp12.BOUND; rfl
   simp only [fp12.Fp12.cyclotomic_square, cycleProducts, cyclePrepare, cycleQProduct,
-    cycleMProduct, h512, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, Aeneas.Std.bind_pure,
-    aeneas_uncurry_def, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    cycleMProduct, h512, Aeneas.Std.bind_assoc, bind_ok, Aeneas.Std.bind_pure]
   rfl
 
 theorem cycle_prepare_raw {x : fp2x8.Fp2x8} {a : P F}
@@ -130,7 +129,7 @@ theorem cycle_prepare_raw {x : fp2x8.Fp2x8} {a : P F}
     rs.mono (by intro l; fin_cases l <;> decide +kernel) (by decide)
   obtain ⟨p512, hp512, rp512⟩ := raw_offset 512#u64 (by decide)
   refine ⟨u, s, p512, ?_, ru', rs', rp512⟩
-  simp only [cyclePrepare, hz, hu0, hu1, hu, hs0, hs1, hs, hp512, bind_tc_ok, bind_ok]
+  simp only [cyclePrepare, hz, hu0, hu1, hu, hs0, hs1, hs, hp512, bind_ok]
 
 theorem quadratic_real_raw {u : fp2x8.Fp2x8} {p : fp8.Fp8} {a : P F}
     (hu : Raw2 (fun _ => 512, fun _ => 512) 2 u a) (hp : offset 512 p) :
@@ -147,8 +146,8 @@ theorem quadratic_real_raw {u : fp2x8.Fp2x8} {p : fp8.Fp8} {a : P F}
   have rns' : Normal (fun _ => 1024) ns (fun l => a.1 l + a.2 l) := rns
   have rnd' : Normal (fun _ => 1024) nd (fun l => a.1 l - a.2 l) := rnd
   obtain ⟨re, hre, rre⟩ := raw_mul rns' rnd' (by intro l; decide)
-  exact ⟨ns, nd, re, by simp only [hs, hns, bind_tc_ok, bind_ok],
-    by simp only [hd, hnd, bind_tc_ok, bind_ok], hre, rre⟩
+  exact ⟨ns, nd, re, by simp only [hs, hns, bind_tc_ok],
+    by simp only [hd, hnd, bind_tc_ok], hre, rre⟩
 
 theorem quadratic_imag_raw {u : fp2x8.Fp2x8} {a : P F}
     (hu : Raw2 (fun _ => 512, fun _ => 512) 2 u a) :
@@ -163,7 +162,7 @@ theorem quadratic_imag_raw {u : fp2x8.Fp2x8} {a : P F}
   have rnr' : Normal (fun _ => 512) nr a.1 := rnr
   have rnt' : Normal (fun _ => 1024) nt (fun l => a.2 l + a.2 l) := rnt
   obtain ⟨prod, hprod, rprod⟩ := raw_mul rnr' rnt' (by intro l; decide)
-  exact ⟨nr, nt, prod, hnr, by simp only [ht, hnt, bind_tc_ok, bind_ok], hprod, rprod⟩
+  exact ⟨nr, nt, prod, hnr, by simp only [ht, hnt, bind_tc_ok], hprod, rprod⟩
 
 theorem cycle_q_raw {u : fp2x8.Fp2x8} {p512 : fp8.Fp8} {a : P F}
     (ru' : Raw2 (fun _ => 512, fun _ => 512) 2 u a) (rp512 : offset 512 p512) :
@@ -196,7 +195,7 @@ theorem cycle_m_raw {s : fp2x8.Fp2x8} {p512 : fp8.Fp8} {a : P F}
   obtain ⟨right, hright, rright⟩ := raw_normalise rpr' (by intro l; decide) (by decide)
   obtain ⟨m, hm, rm⟩ := raw_mul rleft rright (by intro l; dsimp; decide)
   refine ⟨m, ?_, rm⟩
-  simp only [cycleMProduct, hssum, hsdiff, hstwice, hpl, hleft, hpr, hright, hm, bind_tc_ok, bind_ok]
+  simp only [cycleMProduct, hssum, hsdiff, hstwice, hpl, hleft, hpr, hright, hm, bind_ok]
 
 theorem cycle_products_raw {x : fp2x8.Fp2x8} {a : P F}
     (hx : Normal2 (fun _ => 256, fun _ => 256) x a) :
@@ -206,7 +205,7 @@ theorem cycle_products_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨q, hq, rq⟩ := cycle_q_raw ru rp
   obtain ⟨m, hm, rm⟩ := cycle_m_raw rs rp
   refine ⟨q, m, ?_, rq, rm⟩
-  simp only [cycleProducts, hp, hq, hm, bind_tc_ok, bind_ok]
+  simp only [cycleProducts, hp, hq, hm, bind_ok]
 
 theorem cyclotomic_raw {x : fp2x8.Fp2x8} {a : P F}
     (hx : Normal2 (fun _ => 256, fun _ => 256) x a) :
@@ -219,6 +218,6 @@ theorem cyclotomic_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨out, hout, rout⟩ := strict2_cond_sub rr1 rp256 (by decide)
   refine ⟨out, ?_, rout⟩
   rw [cycle_schedule]
-  simp only [hprod, hr, hp512, hr1, fp12.BOUND, hp256, hout, bind_tc_ok, bind_ok]
+  simp only [hprod, hr, hp512, hr1, fp12.BOUND, hp256, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

@@ -87,8 +87,7 @@ theorem decode_commitments_step [cpu : RuntimeFeatures] [KzgExternals] [Uncompre
   obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement
     (alloc.vec.Vec.deref v.commitments.unique) v.decoded v.commitment_points
   refine ⟨decoded, points, ?_, by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hpoints⟩
-  simp only [verify.CellBatchVerifier.decode_commitments, hcall, bind_tc_ok, bind_ok,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [verify.CellBatchVerifier.decode_commitments, hcall, bind_ok, Aeneas.Std.uncurry_apply_pair]
   simp only [alloc.vec.Vec.deref, Slice.from_val]
 
 theorem decode_proofs_step [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
@@ -100,8 +99,7 @@ theorem decode_proofs_step [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.
       points.val = ((ps.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
   obtain ⟨decoded, points, hcall, _, hpoints⟩ := decode_points_refinement ps v.decoded v.proof_points
   refine ⟨decoded, points, ?_, hpoints⟩
-  simp only [verify.CellBatchVerifier.decode_proofs, hcall, bind_tc_ok, bind_ok,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [verify.CellBatchVerifier.decode_proofs, hcall, bind_ok, Aeneas.Std.uncurry_apply_pair]
 
 theorem cells_decode_option (cells : List (Aeneas.Std.Array U8 2048#usize)) :
     (((cells.map arrayBytes).toArray).mapM cellToCosetEvals).toOption =
@@ -196,7 +194,7 @@ theorem verify_rejects_indices [RuntimeFeatures] [KzgExternals] (v : verify.Cell
     simpa using hbad
   rw [hi] at hcall
   simp only [verify.CellBatchVerifier.verify, hi, hc, hp, bne_self_eq_false,
-    Bool.false_eq_true, ite_false, hcall, bind_tc_ok, bind_ok, hstop, ite_true]
+    Bool.false_eq_true, ite_false, hcall, bind_ok, hstop, ite_true]
 
 
 
@@ -314,8 +312,8 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
           rfl
         refine ⟨v1, ?_, hv1⟩
         simp only [verify.CellBatchVerifier.verify, hiLen, hbLen, hpLen, bne_self_eq_false,
-          Bool.false_eq_true, ite_false, hcheck, bind_tc_ok, bind_ok, hstop, hfill,
-          hcommit', hc, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hfalse]
+          Bool.false_eq_true, ite_false, hcheck, bind_ok, hstop, hfill,
+          hcommit', hc, Aeneas.Std.uncurry_apply_pair, hfalse]
       | true =>
         obtain ⟨v2, hcells, hevals, hs2, hcosets2, hkernel2⟩ := decode_cells_refinement v1 cells hb
         have hframe := decode_cells_frame v1 cells _ v2 hcells
@@ -339,8 +337,8 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
             rfl
           refine ⟨v2, ?_, hv2⟩
           simp only [verify.CellBatchVerifier.verify, hiLen, hbLen, hpLen, bne_self_eq_false,
-            Bool.false_eq_true, ite_false, hcheck, bind_tc_ok, bind_ok, hstop, hfill,
-            hcommit', hc, ite_true, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hfalse]
+            Bool.false_eq_true, ite_false, hcheck, bind_ok, hstop, hfill,
+            hcommit', hc, ite_true, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hfalse]
         | true =>
           obtain ⟨hdecode, heSize, heFlat, heShapes⟩ := cells_decode_facts cells.val hcb
           obtain ⟨pd, pp, hproof, hpp⟩ := decode_proofs_step v2 ps
@@ -358,8 +356,8 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
               simp
             refine ⟨v3, ?_, hv3⟩
             simp only [verify.CellBatchVerifier.verify, hiLen, hbLen, hpLen, bne_self_eq_false,
-              Bool.false_eq_true, ite_false, hcheck, bind_tc_ok, bind_ok, hstop, hfill,
-              hcommit', hc, ite_true, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hproof', hp, hfalse]
+              Bool.false_eq_true, ite_false, hcheck, bind_ok, hstop, hfill,
+              hcommit', hc, ite_true, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hproof', hp, hfalse]
           | true =>
             let unique := (Model.deduplicate C).1
             let mapping := (Model.deduplicate C).2
@@ -415,7 +413,7 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
               rw [pointValues_size]
               apply deduplicate_indices C
               rw [← hdi]
-              simp only [_root_.Array.mem_toArray, List.mem_map]
+              simp only [_root_.List.mem_toArray, List.mem_map]
               exact ⟨i, hi, rfl⟩
             obtain ⟨next, hpair, hvnext⟩ := hpairs v3 (by simpa only [v3, v1] using hwork2) hv3 indices cells
               (pointValues unique) (pointValues P) evals r (by omega) hs hpc hpp' hcellRep hev
@@ -437,15 +435,15 @@ theorem glue_of_contracts [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.F
               exact rejectErrors_of_ok hmodelOk
             refine ⟨next, ?_, hvnext⟩
             simp only [verify.CellBatchVerifier.verify, hiLen, hbLen, hpLen, bne_self_eq_false,
-              Bool.false_eq_true, ite_false, hcheck, bind_tc_ok, bind_ok, hstop, hfill,
-              hcommit', hc, ite_true, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hproof', hp, hv3d,
+              Bool.false_eq_true, ite_false, hcheck, bind_ok, hstop, hfill,
+              hcommit', hc, ite_true, Aeneas.Std.uncurry_apply_pair, hcells, hcb, hproof', hp,
               hchallenge']
             simpa only [hv3d, hdi, hmodelVal] using hpair
     · have hbad : ∃ x ∈ indices.val, 128 ≤ x.val := by simpa only [not_forall, exists_prop, not_lt] using hindices
       have hiAny : I.any (· ≥ 128) = true := by
         rw [_root_.Array.any_eq_true']
         obtain ⟨x, hx, hxb⟩ := hbad
-        exact ⟨x.val, by simp only [I, _root_.Array.mem_toArray, List.mem_map]; exact ⟨x, hx, rfl⟩, by simpa using hxb⟩
+        exact ⟨x.val, by simp only [I, _root_.List.mem_toArray, List.mem_map]; exact ⟨x, hx, rfl⟩, by simpa using hxb⟩
       have hm := ModelFront.verify_of_bad_index embeddedSetup C I B P hshape hcsize hiAny
       refine ⟨v, ?_, hv⟩
       rw [hm]

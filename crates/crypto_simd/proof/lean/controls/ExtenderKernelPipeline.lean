@@ -19,9 +19,9 @@ private theorem firstWithStride_eval (stride n expected : Usize)
     (he : expected.val = stride.val * n.val - (n.val &&& 1)) :
     firstWithStride stride n 2#usize = ok expected := by
   rw [firstWithStride, LeanBlsSimd.mul_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [LeanBlsSimd.sub_ok _ _ (by decide)]
-  simp only [bind_tc_ok, bind_ok, lift]
+  simp only [bind_ok, lift]
   rw [LeanBlsSimd.sub_ok _ _ (by simpa using hsub)]
   simp only [Result.ok.injEq]
   apply UScalar.eq_of_val_eq

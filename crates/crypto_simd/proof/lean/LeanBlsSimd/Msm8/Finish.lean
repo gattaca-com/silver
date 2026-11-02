@@ -131,7 +131,7 @@ theorem finish_correct (state : msm8.Msm8) (n : ℕ) (values : ℕ → G1Spec.E.
         simpa only [ctx, signedReferenceValue_eq_referencePoint] using hc.sums i hi
       · exact h.bucket_sum
     refine ⟨next, out, ?_, ?_⟩
-    · simp only [finish, hround, hf, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, ite_true, hsum]
+    · simp only [finish, hround, hf, bind_ok, Aeneas.Std.uncurry_apply_pair, ite_true, hsum]
     · rwa [heq] at hrep
   | false =>
     simp only [hf, Bool.false_eq_true, ite_false] at houtcome
@@ -184,7 +184,7 @@ theorem finish_correct (state : msm8.Msm8) (n : ℕ) (values : ℕ → G1Spec.E.
       rw [hsum]
       simpa only [alloc.vec.Vec.deref, Slice.from_val, hhalves] using h.scalar_sum
     refine ⟨{next with buckets := b}, out, ?_, ?_⟩
-    · simp only [finish, hround, hf, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false, hfill, hout]
+    · simp only [finish, hround, hf, bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false, hfill, hout]
     · rwa [heq] at hrep
 
 end LeanBlsSimd.Msm8

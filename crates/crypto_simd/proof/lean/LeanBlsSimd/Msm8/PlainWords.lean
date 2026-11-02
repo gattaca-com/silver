@@ -47,19 +47,19 @@ theorem push_loop_refines (w : Array (Aeneas.Std.Array U64 8#usize) 4#usize)
         ok (cont (nextWords, next)) := by
       simp only [fr8.u256x8.U256x8.push_words_loop.body, UScalar.lt_equiv, hlt, ite_true]
       simp only [index_usize_eq w 0#usize (by decide), index_usize_eq w 1#usize (by decide),
-        index_usize_eq w 2#usize (by decide), index_usize_eq w 3#usize (by decide), bind_tc_ok, bind_ok]
+        index_usize_eq w 2#usize (by decide), index_usize_eq w 3#usize (by decide), bind_ok]
       have hix (r : Aeneas.Std.Array U64 8#usize) :
           Array.index_usize r lane = ok r.val[lane.val]! := by
         rw [index_usize_eq r lane h8]
         rw [getElem!_pos r.val lane.val (by rw [r.property]; exact h8)]
-      simp only [hix, bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
+      simp only [hix, bind_ok, UScalar.ofNatCore_val_eq]
       have he : (Array.make 4#usize [w.val[0].val[lane.val]!, w.val[1].val[lane.val]!,
           w.val[2].val[lane.val]!, w.val[3].val[lane.val]!] (by rfl)) = rawWord w lane.val := by
         simp [rawWord, getElem!_pos, w.property]
       rw [he, hpush]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [add_ok _ _ hadd]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_ok] ; rfl)
     obtain ⟨out, hout, hval⟩ := ih nextWords next (by omega)
       (by rw [hw, List.length_append, List.length_singleton]; omega) (by omega)
     refine ⟨out, ?_, ?_⟩
@@ -83,7 +83,7 @@ theorem push_words_refines (v : fr8.u256x8.U256x8)
   simp only [fr8.u256x8.U256x8.push_words,
     index_usize_eq v 0#usize (by decide), index_usize_eq v 1#usize (by decide),
     index_usize_eq v 2#usize (by decide), index_usize_eq v 3#usize (by decide),
-    Simd.lanes_refines, bind_tc_ok, bind_ok]
+    Simd.lanes_refines, bind_ok]
   convert hout using 1
   congr 1
   ext1
@@ -107,7 +107,7 @@ def sixteenVector : fr8.Fr8 :=
   toArray id (transpose (Vector.replicate 8 (#v[16, 0, 0, 0, 0] : Vector UInt64 5)))
 
 theorem sixteen_refines : fr8.Fr8.splat sixteenLiteral = ok sixteenVector := by
-  simp only [fr8.Fr8.splat, unpack_refines, bind_tc_ok, bind_ok, FrModel.Simd.splat_limbs_refines]
+  simp only [fr8.Fr8.splat, unpack_refines, bind_ok, FrModel.Simd.splat_limbs_refines]
   congr 1
 
 theorem sixteen_normalized : Normalized sixteenVector := by
@@ -174,7 +174,7 @@ theorem convert_refinement (input : Slice blst.blst_fr) (hsize : 8 ≤ input.val
     rw [← (hnv l).1] at h
     exact_mod_cast h
   obtain ⟨out, hcanonical, hout, houtv⟩ := canonical_refinement normal hbounded
-  refine ⟨out, by simp only [hload, hmul, hnorm, hcanonical, bind_tc_ok, bind_ok], hout, ?_⟩
+  refine ⟨out, by simp only [hload, hmul, hnorm, hcanonical, bind_ok], hout, ?_⟩
   intro l
   rw [houtv]
   have h := congrArg (fun x : Fr => x.val) (hnv l).2
@@ -228,12 +228,12 @@ theorem gather_loop_refines (input : Slice blst.blst_fr) (base count lane : Usiz
         ok (cont (toArray id (chunkPrefix input base.val next.val initial), next)) := by
       simp only [fr8.Fr8.plain_words_loop0_loop0.body, UScalar.lt_equiv, hlt, ite_true]
       rw [add_ok _ _ hadd]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [show Slice.index_usize input (UScalar.ofNatCore _ hadd) = ok input.val[base.val + lane.val] from by
         simp [Slice.index_usize, hi]]
-      simp only [bind_tc_ok, bind_ok, update_eq (toArray (n := 8#usize) id (chunkPrefix input base.val lane.val initial)) lane _ h8]
+      simp only [bind_ok, update_eq (toArray (n := 8#usize) id (chunkPrefix input base.val lane.val initial)) lane _ h8]
       rw [add_ok _ _ hnext]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       have he : input.val[base.val + lane.val] = input.val[base.val + lane.val]! :=
         (getElem!_pos input.val _ hi).symm
       rw [he]
@@ -303,7 +303,7 @@ theorem pack_append_refinement (a : fr8.Fr8) (hn : Normalized a)
     toArray_ofArray (f := @id M512) (g := @id M512) (fun _ => rfl) a rfl rfl
   rw [he] at hpack
   obtain ⟨out, hout, hval⟩ := push_words_refines (toArray id (vectorPack (ofArray id a))) words count hc hroom
-  refine ⟨out, by simp only [hpack, hout, bind_tc_ok, bind_ok], ?_, ?_⟩
+  refine ⟨out, by simp only [hpack, hout, bind_ok], ?_, ?_⟩
   · simp [hval]
   · rw [hval, List.map_append, List.map_map]
     congr 1
@@ -381,7 +381,7 @@ theorem batch_refines (input : Slice blst.blst_fr) (base count : Usize) (words :
   refine ⟨out, ?_, hlen, ?_⟩
   · unfold plainBatch
     rw [gather_refines input base count hc hb]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     change (convertBatch (Array.to_slice chunk) >>= fun a => packWords a words count) = _
     change convertBatch (Array.to_slice chunk) = ok canonical at hconvert
     rw [hconvert]
@@ -431,7 +431,7 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
           let rest ← Slice.len input - base
           if rest < fr8.LANES then Slice.len input - base else ok fr8.LANES) = ok count := by
         rw [sub_ok _ _ hb]
-        simp only [bind_tc_ok, bind_ok, fr8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len, Usize.ofNatCore_val_eq]
+        simp only [bind_ok, fr8.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len, Usize.ofNatCore_val_eq]
         split
         · congr 1
           apply UScalar.eq_of_val_eq
@@ -452,7 +452,7 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
         simp only [UScalar.lt_equiv, Slice.len, ← bind_tc_eq] at hcount
         simp only [← bind_tc_eq]
         rw [← bind_assoc_eq, hcount]
-        simp only [bind_tc_ok, bind_ok, lift]
+        simp only [bind_tc_ok, lift]
         unfold plainBatch convertBatch packWords zeroFr at hbatch
         simp only [← bind_tc_eq, bind_assoc_eq] at hbatch
         rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq,
@@ -460,9 +460,9 @@ theorem plain_loop_refines (input : Slice blst.blst_fr) (words : alloc.vec.Vec W
         rw [← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq, ← bind_assoc_eq,
           ← bind_assoc_eq] at hbatch
         rw [hbatch]
-        simp only [bind_tc_ok, bind_ok]
+        simp only [bind_tc_ok]
         rw [add_ok _ _ hadd]
-        simp only [bind_tc_ok, bind_ok] <;> rfl
+        simp only [bind_tc_ok] ; rfl
       obtain ⟨out, hout, houtlen, houtval⟩ := ih (input.val.length - next.val) (by omega)
         nextWords next (by omega) (by omega) rfl
       refine ⟨out, ?_, by omega, ?_⟩
@@ -508,7 +508,7 @@ theorem plain_words_correct (input : Slice blst.blst_fr) (words : alloc.vec.Vec 
   let empty : alloc.vec.Vec Word := alloc.vec.Vec.from [] (by simp)
   have hempty : empty.val = [] := rfl
   obtain ⟨out, hout, hlen, hval⟩ := plain_loop_refines input empty 0#usize (by simp) hr
-    (by simpa [hempty] using input.property)
+    (by simp [hempty])
   refine ⟨out, ?_, by simpa [hempty] using hlen, ?_⟩
   · simp only [fr8.Fr8.plain_words]
     change (do let sixteen ← fr8.Fr8.splat sixteenLiteral

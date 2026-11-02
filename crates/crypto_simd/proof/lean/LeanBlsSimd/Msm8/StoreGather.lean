@@ -84,7 +84,7 @@ theorem push_gather_body (i offset count lane : Usize)
       simp [k, batchSource, Nat.min_eq_left (show lane.val ≤ count.val - 1 by omega)]
     · simp only [UScalar.lt_equiv, hlc, ite_false]
       rw [add_ok offset count (by omega)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [sub_ok _ 1#usize (by simp; omega)]
       congr 1
       apply UScalar.eq_of_val_eq
@@ -108,13 +108,13 @@ theorem push_gather_body (i offset count lane : Usize)
     UScalar.lt_equiv, hl, ite_true]
   simp only [UScalar.lt_equiv] at hchoice
   rw [hchoice]
-  simp only [bind_tc_ok, bind_ok, slice_index_eq points k (by omega), unpack52_refines,
+  simp only [bind_ok, slice_index_eq points k (by omega), unpack52_refines,
     update_eq _ lane _ hl, slice_index_eq negated k (by omega), lift,
     shiftLeft_ok (ty := .U8) _ lane (by change lane.val < 8; exact hl), hik, hix,
     cast_natIndex, hnxt]
   have hpoint : (blstPointWords points)[k.val]! =
       (ofArray ofU64 points.val[k.val].x.l, ofArray ofU64 points.val[k.val].y.l) := by
-    simp [blstPointWords, show k.val < points.val.length by omega] <;> exact ⟨rfl, rfl⟩
+    simp [blstPointWords, show k.val < points.val.length by omega]
   have hsign : negated.val[k.val]! = negated.val[k.val] := by
     simp [show k.val < negated.val.length by omega]
   simp only [encodeGathered, gatherStep]
@@ -232,7 +232,7 @@ theorem batch_count_refines (points : Slice blst.blst_p1_affine) (offset count :
         if remaining < limbs.LANES then Slice.len points - offset else ok limbs.LANES) = ok count := by
   have hsub := sub_ok (Slice.len points) offset ho
   rw [hsub]
-  simp only [bind_tc_ok, bind_ok, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
+  simp only [bind_ok, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
   by_cases h : points.val.length - offset.val < 8
   · simp only [h, ite_true]
     congr 1
@@ -307,7 +307,7 @@ theorem push_batch_generated (s : msm8.store.PointStore) (offset count : Usize)
     rw [← Aeneas.Std.bind_assoc, hcount, bind_ok]
   refine (hcount' _).trans ?_
   rw [hg]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let fx ← fp8.Fp8.load (encodeGathered batch).1
     let x ← fp8.Fp8.mul fx (toFp8 fromBlst)
@@ -322,14 +322,14 @@ theorem push_batch_generated (s : msm8.store.PointStore) (offset count : Usize)
     ok (cont (self.rows, n, k))) = _
   have hxload := loadGathered_x batch
   have hyload := loadGathered_y batch
-  simp only [hxload, hyload, bind_tc_ok, bind_ok, Fp8.mul_refines,
+  simp only [hxload, hyload, bind_tc_ok, Fp8.mul_refines,
     ofFp8_toFp8, Fp8.neg_refines, Fp8.select_refines]
   have hx : (if endomorphism then
       ok (toFp8 (((Fp8.load batch.xs).mul fromBlst).mul beta))
     else ok (toFp8 ((Fp8.load batch.xs).mul fromBlst))) = ok (toFp8 (convertedBatch batch fromBlst beta endomorphism).1) := by
     cases endomorphism <;> rfl
   rw [hx]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   rfl
 
 theorem transpose_encoded_fp8 (x : Fp8) :

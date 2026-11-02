@@ -56,7 +56,7 @@ theorem row_load (step : Usize) (hs : step.val < 68) :
     (do
       let row ← Array.index_usize kzg.pairing_lines.PAIRING_LINES step
       fp8.Fp8.load row) = ok (loadedRow ⟨step.val, hs⟩) := by
-  simp only [index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_tc_ok, bind_ok, Fp8.load_refines]
+  simp only [index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_ok, Fp8.load_refines]
   rfl
 
 end LeanBlsSimd.Pairing.LaneLines

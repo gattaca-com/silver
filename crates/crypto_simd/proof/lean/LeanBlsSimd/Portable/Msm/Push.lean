@@ -71,10 +71,10 @@ theorem push_step [RuntimeFeatures] (s : portable.msm.store.PointStore)
     simp only [portable.msm.store.PointStore.push_blst_loop.body,UScalar.lt_equiv,Slice.len_val,hk,ite_true]
     rw [show Slice.index_usize points k = ok point from by
       simp [Slice.index_usize,hk,point]]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [show Slice.index_usize negated k = ok negative from by
       simp [Slice.index_usize,hkn,negative]]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_ok] )
   have hxc : (if endomorphism then portable.fp.Fp.mul point.x.l portable.constants.BETA
       else ok point.x.l) = ok (Kzg.fpEncode (show ZMod Bls.Fp.modulus from if endomorphism then x*(beta : ZMod Bls.Fp.modulus) else x)).l := by
     rw [show point.x.l = (Kzg.fpEncode x).l from congrArg blst.blst_fp.l hx,G1.beta_encoded]
@@ -89,12 +89,12 @@ theorem push_step [RuntimeFeatures] (s : portable.msm.store.PointStore)
     · exact Fp.neg_encoded y
   refine ⟨next,cursor,rfl,rfl,?_⟩
   rw [he,hxc]
-  simp only [bind_tc_ok, bind_ok,hyc]
+  simp only [bind_ok,hyc]
   rw [vec_index_mut _ _ hcap]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ his]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ hks]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair] ; rfl)
 
 end LeanBlsSimd.Portable.Msm.Store

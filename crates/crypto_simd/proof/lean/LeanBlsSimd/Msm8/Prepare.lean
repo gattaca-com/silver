@@ -106,7 +106,7 @@ theorem prepareStore_of_calls (store reset pushed out : msm8.store.PointStore)
     apply congrArg Result.ok
     apply UScalar.eq_of_val_eq
     exact hcapacity.symm
-  simp only [prepareStore, hmul2, hmulw, hsum, bind_tc_ok, bind_ok, hreset, hpush, hout]
+  simp only [prepareStore, hmul2, hmulw, hsum, bind_ok, hreset, hpush, hout]
 
 theorem prepare_store_correct (store : msm8.store.PointStore)
     (points : Slice blst.blst_p1_affine) (first second : Slice Bool) (windows : Usize)

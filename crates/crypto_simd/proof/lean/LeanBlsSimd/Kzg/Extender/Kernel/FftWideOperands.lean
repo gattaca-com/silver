@@ -145,7 +145,7 @@ theorem pair_refines (s : WideStage) (n : Nat) :
   have hmul (a b : fr8.Fr8) : fr8.Fr8.mul a b =
       ok (FrModel.Fr8.reduceValue (FrModel.Fr8.productValue a b)) := by
     rw [FrModel.Fr8.mul_eq_reduce_product, FrModel.Fr8.product_refines]
-    simp only [bind_tc_ok, bind_ok, FrModel.Fr8.reduce_refines]
+    simp only [bind_ok, FrModel.Fr8.reduce_refines]
   cases hd : s.dit <;>
     simp [widePairRun, fr8.Fr8.add, FrModel.Fr8.add_raw_refines,
       FrModel.Fr8.sub_raw_refines, FrModel.Fr8.normalise_refines,

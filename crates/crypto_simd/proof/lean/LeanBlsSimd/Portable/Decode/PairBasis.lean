@@ -46,19 +46,19 @@ theorem mul_words_pair [RuntimeFeatures] {a b : Encoding} (ha : Ordinary a) (hb 
     portable.fp.Fp.mul_pair (Array.make 2#usize [words a,words b] (by rfl))
       (Array.make 2#usize [portable.constants.R2,portable.constants.R2] (by rfl)) =
       ok (Fp.pairEncode (laneX a) (laneX b)) := by
-  simp (disch := decide) only [portable.fp.Fp.mul_pair,index_usize_eq,bind_tc_ok, bind_ok]
+  simp (disch := decide) only [portable.fp.Fp.mul_pair,index_usize_eq, bind_ok]
   change (do let x ← portable.fp.Fp.mul (words a) portable.constants.R2
              let y ← portable.fp.Fp.mul (words b) portable.constants.R2
              ok (Array.make 2#usize [x,y] (by rfl))) = _
   simp only [Fp.mul_eq_product,Fp.canonical_words_refines _ (words_bound ha.1 ha.2.1),
     Fp.canonical_words_refines _ (words_bound hb.1 hb.2.1),words_field ha.1 ha.2.1,
-    words_field hb.1 hb.2.1,bind_tc_ok, bind_ok,Fp.pairEncode]
+    words_field hb.1 hb.2.1,bind_tc_ok,Fp.pairEncode]
 
 theorem curve_check [RuntimeFeatures] (b : Encoding) :
     (if decide (laneRoot b ^ 2 = laneX b ^ 2 * laneX b + 4) then
       do let z ← portable.fp.Fp.is_zero (Kzg.fpEncode (laneY b)).l; ok (!z)
     else ok false) = ok (curvePoint b) := by
-  simp only [Fp.is_zero_encoded,bind_tc_ok, bind_ok,curvePoint]
+  simp only [Fp.is_zero_encoded, bind_ok,curvePoint]
   split <;> simp_all
 
 theorem pair_bool_zero (a b : Bool) :

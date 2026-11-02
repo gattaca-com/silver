@@ -29,24 +29,24 @@ theorem divide_step (low : Array U64 4#usize) (m : U64)
   have hj' : j < 4#usize := hj
   simp only [fr.divide_out_word_loop.body,hj',ite_true]
   rw [index_usize_eq low j hj,index_usize_eq fr.R j hj]
-  simp only [lift,bind_tc_ok, bind_ok]
+  simp only [lift, bind_ok]
   rw [mul_ok _ _ (by rw [cast128_val,cast128_val]; change m.val*y.val < 2^128; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; change x.val+m.val*y.val < 2^128; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq]; exact hs)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [sub_ok j 1#usize hj0]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let out ← Array.update quotient prev (UScalar.cast .U64 s)
     let high ← s >>> 64#i32
     let next' ← j+1#usize
     ok (cont (out,high,next'))) = _
   rw [update_eq quotient prev _ (by change j.val-1 < 4; omega),shiftRight_64_i32]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem divide_loop_exact (low : Array U64 4#usize) (m : U64)
     (quotient : Array U64 4#usize) (carry : U128) (j : Usize)
@@ -74,7 +74,7 @@ theorem divide_loop_exact (low : Array U64 4#usize) (m : U64)
     have hz' : ∀ i (hi : i < 4), next.val-1 ≤ i →
         quotient'.val[i]'(by rw [quotient'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,hzero,heq⟩ := ih quotient' carry' next (by omega)
@@ -117,12 +117,12 @@ theorem divide_run (low : Array U64 4#usize) (top : U64)
     fr.divide_out_word low top = ok (q.set 3#usize (UScalar.cast .U64 n)) := by
   simp only [fr.divide_out_word]
   rw [index_usize_eq low 0#usize (by decide),index_usize_eq fr.R 0#usize (by decide)]
-  simp only [show (0#usize).val = 0 from rfl,lift,bind_tc_ok, bind_ok,hp,hv,hs,shiftRight_64_i32,hl]
+  simp only [show (0#usize).val = 0 from rfl,lift, bind_ok,hp,hv,hs,shiftRight_64_i32,hl]
   change (do
     let n' ← (UScalar.cast .U128 top)+c
     Array.update q 3#usize (UScalar.cast .U64 n')) = _
   rw [hn]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   exact update_eq q 3#usize _ (by decide)
 
 theorem divide_arithmetic (low : Array U64 4#usize) (top m : U64)

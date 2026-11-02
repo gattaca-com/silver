@@ -14,7 +14,7 @@ def emptyOwner : pairing_product.PairingProduct := ⟨alloc.vec.Vec.new _⟩
 theorem default_empty :
     pairing_product.PairingProduct.Insts.CoreDefaultDefault.default = ok emptyOwner := by
   simp only [pairing_product.PairingProduct.Insts.CoreDefaultDefault.default,
-    alloc.vec.Vec.Insts.CoreDefaultDefault.default, bind_tc_ok, bind_ok]
+    alloc.vec.Vec.Insts.CoreDefaultDefault.default, bind_ok]
   rfl
 
 theorem with_capacity_empty (capacity : Usize) :
@@ -22,7 +22,7 @@ theorem with_capacity_empty (capacity : Usize) :
 
 theorem clear_empty (self : pairing_product.PairingProduct) :
     pairing_product.PairingProduct.clear self = ok emptyOwner := by
-  simp only [pairing_product.PairingProduct.clear, Aeneas.Std.alloc.vec.Vec.clear, bind_tc_ok,
+  simp only [pairing_product.PairingProduct.clear, Aeneas.Std.alloc.vec.Vec.clear,
     bind_ok]
   rfl
 
@@ -31,7 +31,7 @@ theorem emptyOwner_pairs : emptyOwner.pairs.val = [] := rfl
 theorem affinePair_new (p : g1_point.G1Point) (q : g2_point.G2Point) :
     pairing_product.AffinePair.new p q = ok ⟨p, q⟩ := by
   simp only [pairing_product.AffinePair.new, g1_point.G1Point.into_blst,
-    g2_point.G2Point.into_blst, bind_tc_ok, bind_ok]
+    g2_point.G2Point.into_blst, bind_ok]
 
 theorem push_refines (self : pairing_product.PairingProduct)
     (p : g1_point.G1Point) (q : g2_point.G2Point)
@@ -40,9 +40,9 @@ theorem push_refines (self : pairing_product.PairingProduct)
     ∃ next, pairing_product.PairingProduct.push self p q = ok next ∧
       next.pairs.val = self.pairs.val ++ [⟨p, q⟩].filter finitePair := by
   rw [pairing_product.PairingProduct.push, affinePair_new]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [affinePair_is_infinite ⟨p, q⟩ hp hq]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   by_cases hi : ((Kzg.g1ReadAffine p).isInfinity || (Kzg.g2ReadAffine q).isInfinity) = true
   · refine ⟨self, ?_, ?_⟩
     · simp only [hi, ite_true]
@@ -51,7 +51,7 @@ theorem push_refines (self : pairing_product.PairingProduct)
       simpa [finitePair, hi] using hroom
     obtain ⟨ps, hps, hval⟩ := spec_imp_exists (alloc.vec.Vec.push_spec self.pairs ⟨p, q⟩ hbound)
     refine ⟨⟨ps⟩, ?_, ?_⟩
-    · simp only [hi, Bool.false_eq_true, ite_false, hps, bind_tc_ok, bind_ok]
+    · simp only [hi, Bool.false_eq_true, ite_false, hps, bind_ok]
     · simpa [finitePair, hi] using hval
 
 theorem push_preserves_valid (self : pairing_product.PairingProduct)
@@ -124,7 +124,7 @@ private theorem two_loop_refines (a b : pairing_product.AffinePair)
       rw [loop.eq_1]
       simp (disch := decide) only [
       pairing_product.PairingProduct.two_pairs_are_one_loop.body,
-      next_zero_two, next_one_two, next_two_two, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+      next_zero_two, next_one_two, next_two_two, bind_ok, Aeneas.Std.uncurry_apply_pair,
       index_usize_eq, update_eq, twoArray, Array.make, Array.from_val, List.getElem_cons_zero,
       List.getElem_cons_succ,
       UScalar.ofNatCore_val_eq, hia, hib, hfa, hfb, Bool.false_eq_true, ite_true, ite_false, Aeneas.Std.Array.set,
@@ -147,8 +147,7 @@ theorem two_pairs_filter [RuntimeFeatures] [PairingExternals]
         ⟨filteredTwo ⟨first.1, first.2⟩ ⟨second.1, second.2⟩⟩ := by
   rcases first with ⟨p, q⟩
   rcases second with ⟨p', q'⟩
-  simp only [pairing_product.PairingProduct.two_pairs_are_one, affinePair_new,
-    bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [pairing_product.PairingProduct.two_pairs_are_one, affinePair_new, bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [show Array.make 2#usize [⟨p, q⟩, ⟨p', q'⟩] (by rfl) =
     twoArray ⟨p, q⟩ ⟨p', q'⟩ from rfl]
   rw [two_loop_refines _ _ hp hq hp' hq']

@@ -9,7 +9,7 @@ open silver_crypto_simd silver_crypto_simd.bls LeanBlsSimd
   ⟨CheckedPoints.g1Spec, CheckedPoints.g2Spec⟩
 
 example : @CheckedPoints.ConstructorsMatchSpec pointSpecExternals := by
-  letI : PointExternals := pointSpecExternals
+  let : PointExternals := pointSpecExternals
   exact ⟨fun _ => rfl, fun _ => rfl⟩
 
 private def zeroFp : blst.blst_fp :=

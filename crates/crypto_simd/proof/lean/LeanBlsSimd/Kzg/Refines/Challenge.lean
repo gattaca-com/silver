@@ -189,8 +189,7 @@ private theorem challenge_extensions_loop0_eq
     obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) (by simpa only [Array.to_slice, Slice.from_val] using hs) i' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
     · have hbody : challenge.challenge_in_parts_loop0.body unique self i = ok (cont (s, i')) := by
-        simp only [challenge.challenge_in_parts_loop0.body, htest, ite_true, hindex,
-          bind_tc_ok, bind_ok, lift, hup, hadd]
+        simp only [challenge.challenge_in_parts_loop0.body, htest, ite_true, hindex, bind_ok, lift, hup, hadd]
       rw [challenge.challenge_in_parts_loop0, loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons hlt]
@@ -254,7 +253,7 @@ private theorem challenge_extensions_loop1_eq
     · have hbody : challenge.challenge_in_parts_loop1.body ci indices cells ps self k =
           ok (cont (s4, k')) := by
         simp only [challenge.challenge_in_parts_loop1.body, htest, ite_true,
-          hindex0, hindex1, hindex2, hindex3, bind_tc_ok, bind_ok, lift, hup1, hup2,
+          hindex0, hindex1, hindex2, hindex3, bind_ok, lift, hup1, hup2,
           hup3, hup4, hadd]
       rw [challenge.challenge_in_parts_loop1, loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
@@ -294,7 +293,7 @@ theorem challenge_refinement
   simp only [UScalar.ofNatCore_val_eq, List.drop_zero] at hdigest
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts
-  simp only [hnew, bind_tc_ok, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
+  simp only [hnew, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
   rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
@@ -331,8 +330,7 @@ private theorem challenge_portable_loop0_eq
     obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) (by simpa only [Array.to_slice, Slice.from_val] using hs) i' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
     · have hbody : challenge.challenge_in_parts_portable_loop0.body unique self i = ok (cont (s, i')) := by
-        simp only [challenge.challenge_in_parts_portable_loop0.body, htest, ite_true, hindex,
-          bind_tc_ok, bind_ok, lift, hup, hadd]
+        simp only [challenge.challenge_in_parts_portable_loop0.body, htest, ite_true, hindex, bind_ok, lift, hup, hadd]
       rw [challenge.challenge_in_parts_portable_loop0, loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons hlt]
@@ -396,7 +394,7 @@ private theorem challenge_portable_loop1_eq
     · have hbody : challenge.challenge_in_parts_portable_loop1.body ci indices cells ps self k =
           ok (cont (s4, k')) := by
         simp only [challenge.challenge_in_parts_portable_loop1.body, htest, ite_true,
-          hindex0, hindex1, hindex2, hindex3, bind_tc_ok, bind_ok, lift, hup1, hup2,
+          hindex0, hindex1, hindex2, hindex3, bind_ok, lift, hup1, hup2,
           hup3, hup4, hadd]
       rw [challenge.challenge_in_parts_portable_loop1, loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
@@ -436,7 +434,7 @@ theorem challenge_portable_refinement
   simp only [UScalar.ofNatCore_val_eq, List.drop_zero] at hdigest
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts_portable
-  simp only [hnew, bind_tc_ok, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
+  simp only [hnew, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
   rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
@@ -455,7 +453,7 @@ theorem verifier_challenge_refinement [RuntimeFeatures]
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
   unfold verify.CellBatchVerifier.challenge
-  simp only [sha_available, bind_tc_ok, bind_ok]
+  simp only [sha_available, bind_ok]
   split
   · simpa only [alloc.vec.Vec.deref, Slice.from_val] using
       challenge_refinement (alloc.vec.Vec.deref self.commitments.unique)

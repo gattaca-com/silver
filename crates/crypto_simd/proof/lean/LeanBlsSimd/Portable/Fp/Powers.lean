@@ -62,7 +62,7 @@ theorem power_table_loop [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) (table : Ar
       have hj' : j < 16#usize := hjlt
       simp only [portable.fp.Fp.pow_p_minus_3_over_4_loop0.body,hj',ite_true]
       rw [sub_ok _ _ (by change 1 ≤ j.val; omega)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       change (do
         let f ← Array.index_usize table prev
         let f1 ← portable.fp.Fp.mul f (Kzg.fpEncode x).l
@@ -70,18 +70,18 @@ theorem power_table_loop [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) (table : Ar
         let j1 ← j + 1#usize
         ok (cont (a,j1))) = _
       rw [index_usize_eq table prev (by change j.val-1 < 16; omega)]
-      simp only [bind_tc_ok, bind_ok,hp prev.val (by change j.val-1 < 16; omega) (by change j.val-1 < j.val; omega),mul_encoded (x^prev.val) x]
+      simp only [bind_tc_ok,hp prev.val (by change j.val-1 < 16; omega) (by change j.val-1 < j.val; omega),mul_encoded (x^prev.val) x]
       have he : x^prev.val*x = x^j.val := by rw [←pow_succ,hprev,show j.val-1+1 = j.val by omega]
       change (do
         let a ← Array.update table j (Kzg.fpEncode ((x^prev.val*x) : ZMod Bls.Fp.modulus)).l
         let j1 ← j + 1#usize
         ok (cont (a,j1))) = _
       rw [he,update_eq table j word hjlt,usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_tc_ok] ; rfl)
     have hp' : ∀ i (hi : i < 16), i < next.val →
       (table.set j word).val[i]'(by rw [(table.set j word).property]; exact hi) = (Kzg.fpEncode (x^i)).l := by
       intro i hi hij
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       by_cases h : j.val = i
       · subst i; rw [List.getElem_set_self]
       · rw [List.getElem_set_ne h]
@@ -117,15 +117,15 @@ theorem power_windows_refines [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) (e : N
     have hc'v : c'.val < 95 := by omega
     have he : (UScalar.ofNatCore (c.val-(1#usize).val) (by have := c.hBounds; omega) : Usize) = c' :=
       UScalar.eq_of_val_eq (by simp; omega)
-    simp only [he,bind_tc_ok, bind_ok,square_encoded,P_MINUS_3_OVER_4_WINDOWS_index c' hc'v,lift,cast_Usize_ofNatCore]
+    simp only [he, bind_ok,square_encoded,P_MINUS_3_OVER_4_WINDOWS_index c' hc'v,lift,cast_Usize_ofNatCore]
     rw [powerTable_index x _ (by simp only [UScalar.ofNatCore_val_eq]; exact windows_lt c'.val (List.mem_range.mpr hc'v))]
-    simp only [bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+    simp only [bind_ok,UScalar.ofNatCore_val_eq]
     let t : ZMod Bls.Fp.modulus := (x^m*x^m)*(x^m*x^m)
     have hmul := mul_encoded_zmod ((t*t)*(t*t)) (x^P_MINUS_3_OVER_4_WINDOWS[c'.val]!)
     refine (congrArg (fun result : Result portable.fp.Fp => do
       let f ← result
       (ok (cont (f,c')) : Result (ControlFlow (portable.fp.Fp × Usize) portable.fp.Fp))) hmul).trans ?_
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     apply congrArg (fun y : ZMod Bls.Fp.modulus => ok (cont ((Kzg.fpEncode y).l,c')))
     show (((x^m*x^m)*(x^m*x^m))*((x^m*x^m)*(x^m*x^m)))*
       (((x^m*x^m)*(x^m*x^m))*((x^m*x^m)*(x^m*x^m)))*x^P_MINUS_3_OVER_4_WINDOWS[c'.val]! = _
@@ -137,7 +137,7 @@ theorem pow_p_minus_3_over_4_refines [RuntimeFeatures] (x : ZMod Bls.Fp.modulus)
     portable.fp.Fp.pow_p_minus_3_over_4 (Kzg.fpEncode x).l =
       ok (Kzg.fpEncode (x^((Bls.Fp.modulus-3)/4))).l := by
   unfold portable.fp.Fp.pow_p_minus_3_over_4
-  simp only [power_table_refines,bind_tc_ok, bind_ok,lift]
+  simp only [power_table_refines, bind_ok,lift]
   have h94 : P_MINUS_3_OVER_4_WINDOWS[94]! < 16 := windows_lt 94 (by simp)
   have hlen : Slice.len (Array.to_slice bls.constants.P_MINUS_3_OVER_4_WINDOWS) = 95#usize := by
     apply UScalar.eq_of_val_eq
@@ -149,9 +149,9 @@ theorem pow_p_minus_3_over_4_refines [RuntimeFeatures] (x : ZMod Bls.Fp.modulus)
     let result ← Array.index_usize (powerTable x) (UScalar.cast .Usize i1)
     portable.fp.Fp.pow_p_minus_3_over_4_loop1 (powerTable x) result i) = _
   rw [show 95#usize-1#usize = ok 94#usize by rw [sub_ok _ _ (by decide)]; rfl]
-  simp only [bind_tc_ok, bind_ok,P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide),cast_Usize_ofNatCore]
+  simp only [bind_tc_ok,P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide),cast_Usize_ofNatCore]
   rw [powerTable_index x _ (by simp only [UScalar.ofNatCore_val_eq]; exact h94)]
-  simp only [bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp only [bind_tc_ok,UScalar.ofNatCore_val_eq]
   rw [power_windows_refines _ _ _ 94 rfl (by decide),windows_horner]
 
 end LeanBlsSimd.Portable.Fp

@@ -89,9 +89,9 @@ theorem update_refines {S : Type} (mk : Array U32 8#usize → Array U8 64#usize 
     · have hz : p.val = 0 := by omega
       have he : update mk compress state pending p length data =
           updateBlocks mk compress state pending 0#usize (absorbedLength length data) data := by
-        simp only [update,lift,bind_tc_ok, bind_ok,sha256.BLOCK]
+        simp only [update,lift, bind_ok,sha256.BLOCK]
         rw [sub_ok _ _ (by scalar_tac)]
-        simp only [bind_tc_ok, bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
+        simp only [bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
           hshort,ite_false,show ¬p > 0#usize from hpos]
         rfl
       obtain ⟨out,next,he',hm,hn⟩ := update_blocks mk compress hc state pending 0#usize

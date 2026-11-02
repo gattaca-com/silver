@@ -28,7 +28,7 @@ theorem to_le_bytes_swapWord (word : UInt64) :
     simp only [BitVec.toLEBytes_length word.toBitVec, Nat.reduceAdd, Nat.reduceDiv]
     rw [BitVec.toLEBytes_getElem!_testBit _ _ _ hj,
       BitVec.toLEBytes_getElem!_testBit _ _ _ hj]
-    simp only [BitVec.getElem!_eq_testBit_toNat, UInt64.toNat_toBitVec, Nat.reduceDiv]
+    simp only [BitVec.getElem!_eq_testBit_toNat, UInt64.toNat_toBitVec]
     rw [swapWord_testBit word (8*i+j) (by omega)]
     congr 1
     omega

@@ -174,7 +174,7 @@ theorem scalar_events_contribution (n : ℕ) (scalars : Slice (Array U64 4#usize
     have hil : index.val < scalars.val.length := by omega
     simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, aeneas_uncurry_def, bind_success_std] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
     cases Result.ok_injective hevents
     have hwordsEq : words = scalars.val[index.val] := by
@@ -248,7 +248,7 @@ theorem scalar_events_references (n : ℕ) (scalars : Slice (Array U64 4#usize))
   | succ n ih =>
     simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, aeneas_uncurry_def, bind_success_std] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
     cases Result.ok_injective hevents
     have hindexv : index'.val = index.val + 1 := by

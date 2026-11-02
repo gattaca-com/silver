@@ -46,7 +46,7 @@ theorem coeffPolynomial_sum (a : Array Fr) :
 theorem coeffPolynomial_eval (a : Array Fr) (z : Fr) :
     (coeffPolynomial a).eval z = ∑ i ∈ Finset.range a.size, a[i]! * z^i := by
   rw [coeffPolynomial_sum]
-  simp only [_root_.Polynomial.eval_finset_sum, _root_.Polynomial.eval_monomial]
+  simp only [_root_.Polynomial.eval_finsetSum, _root_.Polynomial.eval_monomial]
   rfl
 
 @[simp] theorem coeffPolynomial_replicate_zero (n : Nat) :

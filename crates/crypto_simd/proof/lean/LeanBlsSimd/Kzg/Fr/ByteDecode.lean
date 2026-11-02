@@ -41,9 +41,8 @@ theorem read_word_step (be : Array U8 32#usize) (words : Array U64 4#usize)
     simp [Array.from_slice,src,Array.to_slice, Slice.from_val,chunk.property]
   refine ⟨next,rfl,?_⟩
   have hw' : w < 4#usize := hw
-  simp only [fr.words_from_be_bytes_loop.body,hw',ite_true,lift,Array.to_slice_mut,
-    bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
-  simp (disch := scalar_tac) only [add_ok,mul_ok,sub_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp only [fr.words_from_be_bytes_loop.body,hw',ite_true,lift,Array.to_slice_mut, bind_ok, Aeneas.Std.uncurry_apply_pair]
+  simp (disch := scalar_tac) only [add_ok,mul_ok,sub_ok, bind_ok,UScalar.ofNatCore_val_eq]
   change (do
     let s1 ← core.array.Array.index
       (core.ops.index.IndexSlice (core.slice.index.SliceIndexRangeUsizeSlice U8)) be
@@ -54,9 +53,9 @@ theorem read_word_step (be : Array U8 32#usize) (words : Array U64 4#usize)
       (core.num.U64.from_be_bytes (Array.from_slice (Array.repeat 8#usize 0#u8) s2))
     ok (cont (out,next))) = _
   rw [hindex]
-  simp only [bind_tc_ok, bind_ok,hcopy,hback]
+  simp only [bind_tc_ok,hcopy,hback]
   rw [update_eq words w _ hw]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] ; rfl)
 
 def readWords (be : Array U8 32#usize) : Array U64 4#usize :=
   toArray id (Vector.ofFn fun i : Fin 4 => readWord be i.val i.isLt)
@@ -89,7 +88,7 @@ theorem read_words_loop_refines (be : Array U8 32#usize) (words : Array U64 4#us
     have hprefix' : ∀ i (hi : i < 4), i < next.val →
         words'.val[i]'(by rw [words'.property]; exact hi) = readWord be i hi := by
       intro i hi hiw
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       by_cases heq : i = w.val
       · subst i
         rw [List.getElem_set_self]
@@ -111,7 +110,7 @@ theorem readWord_model (be : Array U8 32#usize) (w : Nat) (hw : w < 4) :
       (inputChunk (Array.to_slice be) (8*(3-w)))) := by
   have hend : 8*(3-w)+8 = 8*(4-w) := by omega
   have hs := slice_to_chunk (Array.to_slice be) (8*(3-w))
-    (by simp only [Array.to_slice, Slice.from_val]; change 8*(3-w)+8 ≤ be.val.length; rw [be.property]; change 8*(3-w)+8 ≤ 32; omega)
+    (by simp only [Array.to_slice, Slice.from_val]; rw [be.property]; change 8*(3-w)+8 ≤ 32; omega)
   have hchunk : wordChunk be w hw = toArray toU8 (inputChunk (Array.to_slice be) (8*(3-w))) := by
     ext1
     apply (List.map_injective_iff.mpr (fun a b h => by simpa using congrArg toU8 h) :
@@ -167,7 +166,7 @@ theorem readWords_limbs (be : Array U8 32#usize) :
 theorem fr_from_bytes_reduced_refines (be : Array U8 32#usize) :
     fr.fr_from_bytes_reduced be =
       ok (Kzg.frEncode (Fr.ofNat (Fr.bytesBEToNat (Kzg.arrayBytes be)))) := by
-  simp only [fr.fr_from_bytes_reduced,words_from_be_bytes_refines,bind_tc_ok, bind_ok,
+  simp only [fr.fr_from_bytes_reduced,words_from_be_bytes_refines, bind_ok,
     reduce_words_refines,readWords_limbs]
 
 theorem fr_from_bytes_refines (be : Array U8 32#usize) :

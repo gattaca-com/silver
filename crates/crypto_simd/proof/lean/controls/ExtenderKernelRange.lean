@@ -7,7 +7,7 @@ open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.ShortRange
 
-open Kernel
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel
 
 private def nearInput : fr8.Fr8 :=
   Array.make 5#usize (List.ofFn (fun j : Fin 5 => Vector.replicate 8

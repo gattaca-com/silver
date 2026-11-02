@@ -62,11 +62,11 @@ def fromUpstream (p : _root_.silver_crypto_simd.blst.blst_p2_affine) : blst.blst
 
 def toUpstreamSlice (s : Slice (Option blst.blst_p2_affine)) :
     Slice (Option _root_.silver_crypto_simd.blst.blst_p2_affine) :=
-  Slice.from (s.val.map (Option.map toUpstream)) (by simpa using s.property)
+  Slice.from (s.val.map (Option.map toUpstream)) (by simp)
 
 def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p2_affine)) :
     Slice (Option blst.blst_p2_affine) :=
-  Slice.from (s.val.map (Option.map fromUpstream)) (by simpa using s.property)
+  Slice.from (s.val.map (Option.map fromUpstream)) (by simp)
 
 def uncompress (cpu : _root_.silver_crypto_simd.RuntimeFeatures) (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (inputs : Slice (Array Std.U8 96#usize)) (out : Slice (Option blst.blst_p2_affine)) :
@@ -88,7 +88,7 @@ theorem Bridge.uncompress_eq_spec_list (cpu : _root_.silver_crypto_simd.RuntimeF
   obtain ⟨result, hr, hv, _⟩ := @LeanBlsSimd.UncompressG2.uncompress_in_g2_eq_spec_list
     cpu upstream hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice, Slice.from_val] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
-  · simp only [Bridge.uncompress, hr, bind_tc_ok, bind_ok]
+  · simp only [Bridge.uncompress, hr, bind_ok]
   · simp [Bridge.fromUpstreamSlice, Slice.from_val, hv, List.map_map, specVerdict, Function.comp_def]
 
 namespace Fixed
@@ -148,7 +148,7 @@ example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) :
     @caller external inputs out = external.uncompress inputs out := by
   simp only [caller, silver_crypto_simd.bls.COMPRESSED_LEN,
-    silver_crypto_simd.bls.uncompress_in_g2, bind_tc_ok, bind_ok]
+    silver_crypto_simd.bls.uncompress_in_g2, bind_ok]
 
 example (cpu : _root_.silver_crypto_simd.RuntimeFeatures) (upstream : _root_.silver_crypto_simd.bls.BlsExternals)
     (hblst : @LeanBlsSimd.UncompressG2.BlstMatchesSpec upstream)

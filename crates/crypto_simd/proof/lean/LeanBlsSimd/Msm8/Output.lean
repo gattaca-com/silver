@@ -17,7 +17,7 @@ def laneZero (p : G1x8) : blst.blst_p1 :=
 
 theorem lane_zero_in_blst_refines (p : g1x8.G1x8) :
     msm8.lane_zero_in_blst p = ok (laneZero (ofG1x8 p)) := by
-  simp only [msm8.lane_zero_in_blst, Fp8.to_blst_limbs_refines, bind_tc_ok, bind_ok]
+  simp only [msm8.lane_zero_in_blst, Fp8.to_blst_limbs_refines, bind_ok]
   simp (disch := decide) only [index_usize_toArray, bind_ok]
   rfl
 

@@ -50,7 +50,7 @@ theorem is_minus_sigma_squared_fields [RuntimeFeatures] (T : Bls.G1) (x y : ZMod
   let ty : ZMod Bls.Fp.modulus := T.y
   let tz : ZMod Bls.Fp.modulus := T.z
   simp only [portable.g1.G1.is_minus_sigma_squared,portable.g1.G1.is_infinity,encode,
-    beta_encoded,is_zero_field,square_field,mul_field,neg_field,eq_field,bind_tc_ok, bind_ok]
+    beta_encoded,is_zero_field,square_field,mul_field,neg_field,eq_field, bind_ok]
   change (if decide (tz=0) then ok false else
     if decide (tx=(x*beta*beta)*(tz*tz)) then ok (decide (-ty=y*((tz*tz)*tz))) else ok false) = _
   change _ = ok (decide (scottComparison tx ty tz x y))
@@ -112,7 +112,7 @@ theorem in_g1_encoded [RuntimeFeatures] (x y : Bls.Fp) (hp : Bls.G1.Valid ⟨x,y
   have hscalar : Bls.G1.toPoint (timesZ (timesZ P)) =
       (LeanBlsSimd.z^2) • Bls.G1.toPoint P := by
     rw [htp,hqp,LeanBlsSimd.z,neg_sq,←Nat.cast_pow,natCast_zsmul,pow_two,mul_nsmul]
-  simp only [portable.g1.G1.in_g1,times_z_affine_encoded,times_z_encoded,bind_tc_ok, bind_ok]
+  simp only [portable.g1.G1.in_g1,times_z_affine_encoded,times_z_encoded, bind_ok]
   rw [is_minus_sigma_squared_spec _ x y ht hp]
   congr 1
   apply Bool.eq_iff_iff.mpr

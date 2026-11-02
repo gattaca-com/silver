@@ -30,7 +30,7 @@ theorem Prepared.step (dx prefixes : alloc.vec.Vec portable.fp.Fp)
   by_cases he : i.val = j
   · subst j
     exact ⟨List.getElem?_set_self hdx,List.getElem?_set_self hpref⟩
-  · simp only [alloc.vec.Vec.set,List.getElem?_set_ne he]
+  · simp only [List.getElem?_set_ne he]
     exact h j (by omega)
 
 /-- Traverse any nonzero prefix while retaining the actual continuation of the generated loop. -/
@@ -122,8 +122,8 @@ theorem prepare_all [RuntimeFeatures]
   refine ⟨finalDx,finalPrefixes,hp,hd,hpr,heq.trans ?_⟩
   rw [portable.msm.pairs.BatchedAdds.run_loop0,loop.eq_1]
   simp only [portable.msm.pairs.BatchedAdds.run_loop0.body,lt_self_iff_false,ite_false,
-    batch_inverse_chains values n.val hnz,bind_tc_ok, bind_ok]
-  simp only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok]
+    batch_inverse_chains values n.val hnz, bind_ok]
+  simp only [Aeneas.Std.bind_assoc, bind_ok]
 
 theorem run_rejects_at [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)
     (store : portable.msm.store.PointStore) (values : ℕ → ChainField) (stop : Usize)
@@ -143,12 +143,12 @@ theorem run_rejects_at [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)
   refine ⟨{adds with dx := finalDx, «prefix» := finalPrefixes},?_,rfl,rfl,rfl⟩
   rw [chainArray_zero] at hr
   simp only [portable.msm.pairs.BatchedAdds.run,
-    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone,bind_tc_ok, bind_ok]
+    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone, bind_ok]
   change (do
     let result ← portable.msm.pairs.BatchedAdds.run_loop0 adds.a adds.b adds.out
       dx prefixes store n (Array.repeat 4#usize portable.constants.ONE) 0#usize
     ok (result.1,{adds with dx := result.2.1, «prefix» := result.2.2.1},result.2.2.2)) = _
   rw [hr]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd.Portable.Msm.Batch

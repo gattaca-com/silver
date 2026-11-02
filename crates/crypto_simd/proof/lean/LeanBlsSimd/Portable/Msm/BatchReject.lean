@@ -24,7 +24,7 @@ theorem equal_x_rejects_step [RuntimeFeatures]
   have hea : a.val[i.val] = ra := by simpa only [List.getElem?_eq_getElem hia, Option.some.injEq] using ha
   have heb : b.val[i.val] = rb := by simpa only [List.getElem?_eq_getElem hib, Option.some.injEq] using hb
   simp only [portable.msm.pairs.BatchedAdds.run_loop0.body, UScalar.lt_equiv, hi, ite_true,
-    BucketsRefines.vec_index _ _ hib, heb, Store.x_refines store rb x yb hxb, bind_tc_ok, bind_ok,
+    BucketsRefines.vec_index _ _ hib, heb, Store.x_refines store rb x yb hxb, bind_ok,
     BucketsRefines.vec_index _ _ hia, hea, Store.x_refines store ra x ya hxa,
     Fp.sub_encoded, sub_self, Fp.is_zero_encoded, show EthLib.Cryptography.Bls.Fp.isZero 0 = true from rfl, ite_true]
 
@@ -57,7 +57,7 @@ theorem run_rejects_first [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAd
   have hi : (0#usize).val < (alloc.vec.Vec.len adds.a).val := by
     simpa only [alloc.vec.Vec.len_val] using! (List.getElem?_eq_some_iff.mp ha).choose
   refine ⟨{adds with dx, «prefix» := prefixes}, ?_, rfl,rfl,rfl⟩
-  simp only [portable.msm.pairs.BatchedAdds.run, hdx,hp,bind_tc_ok, bind_ok,Function.uncurry_def, aeneas_uncurry_def,
+  simp only [portable.msm.pairs.BatchedAdds.run, hdx,hp, bind_ok, aeneas_uncurry_def,
     equal_x_rejects_loop _ _ _ _ _ _ _ _ _ ra rb x ya yb hi ha hb hxa hxb]
 
 end LeanBlsSimd.Portable.Msm.Batch

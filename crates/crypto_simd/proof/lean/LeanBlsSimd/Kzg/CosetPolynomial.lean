@@ -86,7 +86,7 @@ theorem cosetForCell_eq (c : Nat) (hc : c < 128) :
     cosetForCell c = .ok (Array.ofFn (fun j : Fin 64 => (rootsOfUnityBrp 8192)[64*c+j.val]!)) := by
   simp [cosetForCell, Constants.CELLS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_CELL,
     Constants.FIELD_ELEMENTS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_BLOB,
-    show ¬128 ≤ c by omega, Pure.pure, Except.pure, Bind.bind, Except.bind]
+    show ¬128 ≤ c by omega, Pure.pure, Except.pure]
 
 theorem size_cellIfft (c : Nat) (ys : Array Fr) : (cellIfft c ys).size = ys.size := by
   simp [cellIfft, size_bitReversalPermutation]

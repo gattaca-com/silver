@@ -38,10 +38,9 @@ theorem pointStore_allocate_refines (s : msm8.store.PointStore)
     apply UScalar.eq_of_val_eq
     simp only [UScalar.cast_val_eq, UScalar.ofNatCore_val_eq]
     exact Nat.mod_eq_of_lt h32
-  simp only [msm8.store.PointStore.allocate, pointStore_capacity_refines,
-    bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
+  simp only [msm8.store.PointStore.allocate, pointStore_capacity_refines, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
   rw [add_ok _ _ hsum]
-  simp only [ite_true, bind_tc_ok, bind_ok]
+  simp only [ite_true, bind_ok]
   change (do let i ← n - 1#usize; let j ← lift (UScalar.cast .U32 i); ok (j, { s with len := n })) = _
   rw [hsub]
   simp [hcast, lift]
@@ -73,13 +72,13 @@ theorem pointStore_reset_raw (s : msm8.store.PointStore) (capacity : Usize)
       (core.clone.CloneArray 8#usize core.clone.CloneU64) s.rows n
       zeroRow (clone_limbs_eq _))
     refine ⟨{ rows := v, len := 0#usize }, ?_, ?_, rfl⟩
-    · simp only [msm8.store.PointStore.reset, hmul, bind_tc_ok, bind_ok, UScalar.lt_equiv,
+    · simp only [msm8.store.PointStore.reset, hmul, bind_ok, UScalar.lt_equiv,
         alloc.vec.Vec.len_val, hn, h, ite_true]
       change (do
         let rows ← alloc.vec.Vec.resize (core.clone.CloneArray 8#usize core.clone.CloneU64) s.rows n zeroRow
         ok ({ rows := rows, len := 0#usize } : msm8.store.PointStore)) = _
       rw [hv]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_tc_ok] )
     · rw [hval]
       simp [List.resize, hn, List.take_of_length_le (Nat.le_of_lt h)]
   · refine ⟨{ s with len := 0#usize }, ?_, ?_, rfl⟩

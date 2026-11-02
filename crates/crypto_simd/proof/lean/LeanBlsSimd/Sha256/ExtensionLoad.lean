@@ -80,7 +80,7 @@ theorem load_swapped_words (x : Array U8 16#usize) :
         Spec.big32 (Spec.bytes (x.val.map ofU8)) 8,
         Spec.big32 (Spec.bytes (x.val.map ofU8)) 12] := by
   rw [load_bytes_refines]
-  simp only [bind_tc_ok, bind_ok,core.core_arch.x86.ssse3._mm_shuffle_epi8,byte_swap_words]
+  simp only [bind_ok,core.core_arch.x86.ssse3._mm_shuffle_epi8,byte_swap_words]
   have hb (i : Nat) (hi : i < 16) :
       (Spec.bytes (x.val.map ofU8))[i]! = (ofArray ofU8 x : Vector UInt8 16)[i] := by
     rw [Spec.bytes_get,getElem!_pos _ i (by simp only [List.length_map,x.property]; exact hi)]

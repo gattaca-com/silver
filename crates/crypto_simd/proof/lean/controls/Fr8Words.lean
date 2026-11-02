@@ -152,18 +152,11 @@ theorem wrong_shift_rejected :
   have rejected : observedWord 1 (limbsWithShift 13#u32 (toArray id shiftInput)) ≠
       observedWord (n := 5#usize) 1 (ok (toArray id
         (transpose (Vector.ofFn fun lane => unpack (wordLane shiftInput lane))))) := by
-    simp (disch := scalar_tac) only [observedWord, limbsWithShift, blocksWithIndex,
-      encodeBlocksWithIndex, kzg.fr8.u256x8.half_selectors, FrModel.MASK52_refines,
+    simp (disch := scalar_tac) only [observedWord, limbsWithShift, FrModel.MASK52_refines,
       FrModel.Simd.splat_refines, core.core_arch.x86.avx512f._mm512_add_epi64,
       core.core_arch.x86.avx512f._mm512_and_si512,
-      core.core_arch.x86.avx512f._mm512_permutex2var_epi64,
-      core.core_arch.x86.avx512f._mm512_slli_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
-      index_usize_toArray, index_usize_eq, Array.make, Array.from_val, Array.getElem?_Usize_eq,
-      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id,
-      core.core_arch.x86.avx512f._mm512_set1_epi64, bls.fp8.index_vector,
-      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_tc_ok, bind_ok, lift,
-      aeneas_uncurry_def, Result.match.ok, shiftLeft_ok, sub_ok, List.getElem?_cons_zero,
-      List.getElem?_cons_succ, List.getElem?_map]
+      core.core_arch.x86.avx512f._mm512_slli_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, toArray, bind_ok, Result.match.ok]
     decide +kernel
   exact rejected observed
 
@@ -174,18 +167,11 @@ theorem wrong_permutation_rejected :
   have observed := congrArg (observedWord 0) h
   have rejected : observedWord 0 (blocksWithIndex 2#i64 (toArray id permutationInput)) ≠
       observedWord (n := 4#usize) 0 (ok (toArray id (fromBlocks permutationInput))) := by
-    simp (disch := scalar_tac) only [observedWord, limbsWithShift, blocksWithIndex,
-      encodeBlocksWithIndex, kzg.fr8.u256x8.half_selectors, FrModel.MASK52_refines,
-      FrModel.Simd.splat_refines, core.core_arch.x86.avx512f._mm512_add_epi64,
-      core.core_arch.x86.avx512f._mm512_and_si512,
-      core.core_arch.x86.avx512f._mm512_permutex2var_epi64,
-      core.core_arch.x86.avx512f._mm512_slli_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
-      index_usize_toArray, index_usize_eq, Array.make, Array.from_val, Array.getElem?_Usize_eq,
-      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id,
-      core.core_arch.x86.avx512f._mm512_set1_epi64, bls.fp8.index_vector,
-      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_tc_ok, bind_ok, lift,
-      aeneas_uncurry_def, Result.match.ok, shiftLeft_ok, sub_ok, List.getElem?_cons_zero,
-      List.getElem?_cons_succ, List.getElem?_map]
+    simp (disch := scalar_tac) only [observedWord, blocksWithIndex, kzg.fr8.u256x8.half_selectors,
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, bls.fp8.index_vector,
+      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_ok,
+      aeneas_uncurry_def, Result.match.ok]
     decide +kernel
   exact rejected observed
 
@@ -196,18 +182,12 @@ theorem wrong_encode_permutation_rejected :
   have observed := congrArg (observedWord 0) h
   have rejected : observedWord 0 (encodeBlocksWithIndex 13#i64 (toArray id permutationInput)) ≠
       observedWord (n := 4#usize) 0 (ok (toArray id (wordBlocks permutationInput))) := by
-    simp (disch := scalar_tac) only [observedWord, limbsWithShift, blocksWithIndex,
-      encodeBlocksWithIndex, kzg.fr8.u256x8.half_selectors, FrModel.MASK52_refines,
-      FrModel.Simd.splat_refines, core.core_arch.x86.avx512f._mm512_add_epi64,
-      core.core_arch.x86.avx512f._mm512_and_si512,
-      core.core_arch.x86.avx512f._mm512_permutex2var_epi64,
-      core.core_arch.x86.avx512f._mm512_slli_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
-      index_usize_toArray, index_usize_eq, Array.make, Array.from_val, Array.getElem?_Usize_eq,
-      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id,
-      core.core_arch.x86.avx512f._mm512_set1_epi64, bls.fp8.index_vector,
-      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_tc_ok, bind_ok, lift,
-      aeneas_uncurry_def, Result.match.ok, shiftLeft_ok, sub_ok, List.getElem?_cons_zero,
-      List.getElem?_cons_succ, List.getElem?_map]
+    simp (disch := scalar_tac) only [observedWord,
+      encodeBlocksWithIndex, kzg.fr8.u256x8.half_selectors,
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, bls.fp8.index_vector,
+      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_ok,
+      aeneas_uncurry_def, Result.match.ok]
     decide +kernel
   exact rejected observed
 

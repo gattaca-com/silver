@@ -69,7 +69,7 @@ private theorem factors_loop
         ok (cont (next, frEncode (shiftFactor column.val i'.val), i')) := by
       simp only [interpolation_kernel.InterpolationKernel.new_loop0_loop0.body,
         FIELD_ELEMENTS_PER_CELL, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true,
-        hmultiplier, hupdate, hlookup, hproduct, hinc, bind_tc_ok, bind_ok]
+        hmultiplier, hupdate, hlookup, hproduct, hinc, bind_ok]
     rw [interpolation_kernel.InterpolationKernel.new_loop0_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -118,11 +118,11 @@ private theorem vectors_loop
     have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
     have hprefix : Prefix shift' columns' (column * 8 + v'.val) := by
       simp only [Prefix, shift', columns', alloc.vec.Vec.from_val]
-      refine ⟨by simp [shift', hp.1, hv', Nat.add_assoc],
-        by simp [columns', hp.2.1, hv', Nat.add_assoc], ?_⟩
+      refine ⟨by simp [hp.1, hv', Nat.add_assoc],
+        by simp [hp.2.1, hv', Nat.add_assoc], ?_⟩
       intro c w hw
       by_cases hj : c.val * 8 + w.val < column * 8 + v.val
-      · change MultiplierRep (shift.val ++ [factor])[c.val * 8 + w.val]! _
+      ·
         rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; exact hj)]
         exact hp.2.2 c w hj
       · have he : c.val * 8 + w.val = column * 8 + v.val := by omega
@@ -137,7 +137,7 @@ private theorem vectors_loop
     have hbody : interpolation_kernel.InterpolationKernel.new_loop0_loop1.body
         8#usize factors shift columns v = ok (cont (shift', columns', v')) := by
       simp only [interpolation_kernel.InterpolationKernel.new_loop0_loop1.body,
-        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, lift, bind_tc_ok, bind_ok,
+        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, lift, bind_ok,
         hmul, hload, hsPush, hzero, hdPush, hinc]
     rw [interpolation_kernel.InterpolationKernel.new_loop0_loop1, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
@@ -187,8 +187,7 @@ private theorem columns_loop
         128#usize 8#usize cs shift columns used factors c =
         ok (cont (shift', columns', used', factors', c')) := by
       simp only [interpolation_kernel.InterpolationKernel.new_loop0.body,
-        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hfactors, hvectors,
-        bind_tc_ok, bind_ok, huPush, hinc, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hfactors, hvectors, bind_ok, huPush, hinc, Aeneas.Std.uncurry_apply_pair]
     rw [interpolation_kernel.InterpolationKernel.new_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -235,10 +234,8 @@ theorem new_refinement
         using hout
     have hcapacity : 128#usize * 8#usize = ok 1024#usize := by
       simpa using scalar_mul_ok 128#usize 8#usize (by scalar_tac)
-    simp only [interpolation_kernel.InterpolationKernel.new, hcells, vectors_per_cell_eq, hcapacity,
-      bind_tc_ok, bind_ok, fr_zero_eq, UScalar.ofNatCore_val_eq,
-      show Fr.ofNat 0 = 0 from rfl, hconstruct, FIELD_ELEMENTS_PER_CELL, hiNew,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, kernel]
+    simp only [interpolation_kernel.InterpolationKernel.new, hcells, vectors_per_cell_eq, hcapacity, bind_ok, fr_zero_eq,
+      show Fr.ofNat 0 = 0 from rfl, hconstruct, FIELD_ELEMENTS_PER_CELL, hiNew, Aeneas.Std.uncurry_apply_pair, kernel]
   · intro c v
     exact hp.2.2 c v (by omega)
 

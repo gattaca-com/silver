@@ -122,7 +122,7 @@ theorem uncompress_in_g1_eq_spec_list_ifma [RuntimeFeatures] [KzgExternals]
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = inputs.val.map specVerdict ∧
       ∀ p, some p ∈ result.val → Kzg.G1AffineValid p := by
-  letI := fallbackCorrect_ifma hifma
+  let := fallbackCorrect_ifma hifma
   exact uncompress_in_g1_eq_spec_list inputs out hlen
 
 end LeanBlsSimd.UncompressG1

@@ -44,7 +44,7 @@ theorem inverse_encoded [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) :
     apply mul_right_cancel₀ (by decide +kernel : (2^384 : ZMod Bls.Fp.modulus) ≠ 0)
     rw [hom,hf,r_cubed_field,encode_field,encode_field]
     exact inverse_scale x _ (by decide +kernel)
-  simp only [portable.fp.Fp.inverse,hi,bind_tc_ok, bind_ok,mul_eq_product,hm,hout]
+  simp only [portable.fp.Fp.inverse,hi, bind_ok,mul_eq_product,hm,hout]
 
 theorem inverse_zero [RuntimeFeatures] :
     portable.fp.Fp.inverse (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l =

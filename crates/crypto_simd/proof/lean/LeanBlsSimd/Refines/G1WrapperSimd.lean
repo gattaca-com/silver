@@ -67,14 +67,14 @@ theorem simd_body_runs [RuntimeFeatures]
       rw [ite_eq_left (by simp only [Slice.length]; constructor <;> omega)]
       rfl
     simp only [silver_crypto_simd.bls.uncompress_in_g1_loop.body, show start < stop from hlt,
-      ite_true, Array.to_slice_mut, lift, bind_tc_ok, bind_ok, hadd, hindex, hmut]
-    simp only [Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      ite_true, Array.to_slice_mut, lift, bind_ok, hadd, hindex, hmut]
+    simp only [Aeneas.Std.uncurry_apply_pair]
     rw [hcopy]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     change (do let r ← silver_crypto_simd.bls.decompress_g1_chunk c os
                ok (cont (out.setSlice! start.val r.val, next))) = _
     rw [hr]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   · simp [result, Slice.setSlice!]
   · intro i hi
     simp only [result, Slice.setSlice!_val, hrv]

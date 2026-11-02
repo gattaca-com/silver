@@ -95,8 +95,7 @@ theorem impl_decomposition :
     verifyCellKzgProofBatchImpl = Model.implWith (monadLift TrustedSetup.get!) Model.specRli := by
   funext cs ci indices evals ps
   unfold verifyCellKzgProofBatchImpl Model.implWith Model.specRli Model.shiftOf
-  simp only [liftM_eq_liftE, liftE_bind, liftE_pure, liftE_throw, liftE_arrayFoldlM,
-    liftE_arrayMapM, apply_ite liftE]
+  simp only [liftM_eq_liftE, liftE_bind, liftE_pure, liftE_throw, liftE_arrayFoldlM, apply_ite liftE]
   rfl
 
 theorem upstream_eq_verifyWith

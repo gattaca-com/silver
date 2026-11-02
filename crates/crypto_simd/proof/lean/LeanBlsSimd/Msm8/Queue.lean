@@ -145,13 +145,12 @@ theorem pointStore_allocate_refines (s : store.PointStore)
     apply UScalar.eq_of_val_eq
     simp only [UScalar.cast_val_eq, UScalar.ofNatCore_val_eq]
     exact Nat.mod_eq_of_lt h32
-  simp only [store.PointStore.allocate, pointStore_capacity_refines,
-    bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
+  simp only [store.PointStore.allocate, pointStore_capacity_refines, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hcap, massert]
   rw [add_ok _ _ hsum]
-  simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+  simp -failIfUnchanged only [bind_ok, lift, ite_true]
   change (do let i ← n - 1#usize; let j := UScalar.cast .U32 i; ok (j, { s with len := n })) = _
   rw [hsub]
-  simp [hcast, lift]
+  simp [hcast]
 
 
 
@@ -165,7 +164,7 @@ theorem sum_slot_reuse (reference : U32) (s : store.PointStore) (originals : Usi
     buckets.sum_slot reference s originals = ok (clearSign reference, s) := by
   have hn : pairs.NEGATED = ok 2147483648#u32 := by unfold pairs.NEGATED; rfl
   have hm : (~~~ (2147483648#u32) : U32) = 2147483647#u32 := by decide
-  simp only [buckets.sum_slot, hn, bind_tc_ok, bind_ok, lift, hm]
+  simp only [buckets.sum_slot, hn, bind_ok, lift, hm]
   simp only [UScalar.lt_equiv, cast_Usize_val]
   change (if (clearSign reference).val < originals.val then s.allocate else ok (clearSign reference, s)) = _
   rw [ite_eq_right (by omega)]
@@ -180,7 +179,7 @@ theorem sum_slot_allocate (reference : U32) (s : store.PointStore) (originals : 
   refine ⟨n, hn, ?_⟩
   have hneg : pairs.NEGATED = ok 2147483648#u32 := by unfold pairs.NEGATED; rfl
   have hm : (~~~ (2147483648#u32) : U32) = 2147483647#u32 := by decide
-  simp only [buckets.sum_slot, hneg, bind_tc_ok, bind_ok, lift, hm]
+  simp only [buckets.sum_slot, hneg, bind_ok, lift, hm]
   simp only [UScalar.lt_equiv, cast_Usize_val]
   change (if (clearSign reference).val < originals.val then s.allocate else ok (clearSign reference, s)) = _
   rw [ite_eq_left h]
@@ -277,9 +276,9 @@ theorem queue_step_refines
   refine ⟨refs.set dest output, adds', s', next, ?_, ?_, rfl, hrows, hdx, hprefix⟩
   · simp only [buckets.Buckets.queue_pairs_loop.body]
     rw [add_ok _ _ hinc]
-    simp only [bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hactive, ite_true]
+    simp only [bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hactive, ite_true]
     rw [add_ok _ _ hfirst]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_ok]
     change (do
       let first ← Vec.index (core.slice.index.SliceIndexUsizeSlice U32) refs ix
       let (out, store1) ← buckets.sum_slot first s originals
@@ -292,11 +291,11 @@ theorem queue_step_refines
       let at2 ← cursor + 2#usize
       ok (cont (back out, adds1, store1, at2))) = _
     rw [vec_index refs ix hix]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [hslot]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok ix (1#usize) hsecond]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_tc_ok]
     change (do
       let second ← Vec.index (core.slice.index.SliceIndexUsizeSlice U32) refs iy
       let adds1 ← adds.push first second output
@@ -306,21 +305,21 @@ theorem queue_step_refines
       let at2 ← cursor + 2#usize
       ok (cont (back output, adds1, s', at2))) = _
     rw [vec_index refs iy hiy]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [hpush]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [div_ok cursor (2#usize) (by decide)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok _ _ hwrite]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_tc_ok]
     change (do
       let (_, back) ← Vec.index_mut (core.slice.index.SliceIndexUsizeSlice U32) refs dest
       let at2 ← cursor + 2#usize
       ok (cont (back output, adds', s', at2))) = _
     rw [vec_index_mut refs dest hdest]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok _ _ hnext]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   · have hf : first = refs.val[start.val + cursor.val]! := by
       simp only [first, ix, UScalar.ofNatCore_val_eq]
       exact (getElem!_pos refs.val _ (by omega)).symm
@@ -375,9 +374,9 @@ theorem queue_loop_refines (n : ℕ)
       change cursor.val + 1 < _
       omega
     rw [buckets.Buckets.queue_pairs_loop, loop.eq_1]
-    simp only [buckets.Buckets.queue_pairs_loop.body, bind_ok]
+    simp only [buckets.Buckets.queue_pairs_loop.body]
     rw [add_ok _ _ hsum]
-    simp only [bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
+    simp only [bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
     rw [ite_eq_right (by omega)]
     simp only [bind_ok]
   | succ n ih =>
@@ -484,7 +483,7 @@ theorem oddCopy_refines (start len : Usize) (refs : Vec U32)
   have hdiv : start.val + len.val / 2 < 2 ^ UScalarTy.Usize.numBits := by omega
   unfold oddCopyCode
   rw [rem_ok len (2#usize) (by decide)]
-  simp only [bind_tc_ok, bind_ok, UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
   change (∃ result, (if len.val % 2 = 1 then _ else ok refs) = ok result ∧ result.val = _)
   by_cases hodd : len.val % 2 = 1
   · let source : Usize := UScalar.ofNatCore (start.val + len.val - 1) (by omega)
@@ -493,9 +492,9 @@ theorem oddCopy_refines (start len : Usize) (refs : Vec U32)
     have hdest : dest.val < refs.val.length := by simp only [dest, UScalar.ofNatCore_val_eq]; omega
     refine ⟨refs.set dest refs.val[source.val], ?_, ?_⟩
     · rw [ite_eq_left hodd, add_ok _ _ hsum]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [sub_ok _ _ (by change 1 ≤ start.val + len.val; omega)]
-      simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+      simp -failIfUnchanged only [bind_ok]
       change (do
         let value ← Vec.index (core.slice.index.SliceIndexUsizeSlice U32) refs source
         let half ← len / 2#usize
@@ -503,16 +502,16 @@ theorem oddCopy_refines (start len : Usize) (refs : Vec U32)
         let (_, back) ← Vec.index_mut (core.slice.index.SliceIndexUsizeSlice U32) refs dest
         ok (back value)) = _
       rw [vec_index refs source hsource]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_tc_ok]
       rw [div_ok _ _ (by decide)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_tc_ok]
       rw [add_ok _ _ hdiv]
-      simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+      simp -failIfUnchanged only [bind_tc_ok]
       change (do
         let (_, back) ← Vec.index_mut (core.slice.index.SliceIndexUsizeSlice U32) refs dest
         ok (back refs.val[source.val])) = _
       rw [vec_index_mut refs dest hdest]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_tc_ok] )
     · simp only [oddCopy, hodd, ite_true, Vec.set, Vec.from_val, dest, source, UScalar.ofNatCore_val_eq]
       rw [getElem!_pos refs.val (start.val + len.val - 1) (by omega)]
   · exact ⟨refs, by rw [ite_eq_right hodd], by simp only [oddCopy, hodd, ite_false]⟩
@@ -577,20 +576,20 @@ theorem finishBucket_refines (state : buckets.Buckets) (list start len : Usize)
   refine ⟨refs', newLen, ?_, hv, rfl⟩
   simp only [oddCopyCode] at hc
   rw [rem_ok len (2#usize) (by decide)] at hc
-  simp only [bind_tc_ok, bind_ok] at hc
+  simp only [bind_ok] at hc
   simp only [finishBucketCode]
   rw [rem_ok len (2#usize) (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [hc]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [div_ok len (2#usize) (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   simp only [show (2#usize).val = 2 from rfl]
   rw [add_ok (UScalar.ofNatCore (len.val / 2) (by have := len.hBounds; omega) : Usize)
     (UScalar.ofNatCore (len.val % 2) (by have := len.hBounds; omega) : Usize) hsum]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [vec_index_mut state.lens list hlist]
-  simp only [bind_tc_ok, bind_ok, lift]
+  simp only [bind_ok, lift]
   have hcast : UScalar.cast .U32 (UScalar.ofNatCore (len.val / 2 + len.val % 2) hsum : Usize) = newLen := by
     apply UScalar.eq_of_val_eq
     simp only [UScalar.cast_val_eq, UScalar.ofNatCore_val_eq, newLen]
@@ -639,10 +638,9 @@ theorem queue_pairs_refines (state : buckets.Buckets) (list : Usize)
   refine ⟨{ state with refs := refs'', lens := state.lens.set list newLen }, adds', s', newLen,
     ?_, ?_, rfl, rfl, rfl, rfl, by simpa only [hl] using hnew, hrows, hdx, hprefix⟩
   · rw [queue_pairs_split, vec_index state.starts list hstart]
-    simp only [bind_tc_ok, bind_ok, lift]
+    simp only [bind_ok, lift]
     rw [vec_index state.lens list hlist]
-    simp only [bind_tc_ok, bind_ok]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp only [bind_ok]
     change (do
       let (refs, adds', s') ← buckets.Buckets.queue_pairs_loop state.refs adds s originals start len 0#usize
       finishBucketCode state list start len refs adds' s') = _
@@ -851,7 +849,7 @@ theorem queue_round_loop_refines (remaining : List U32)
       ?_, hr'.trans hr, hdx'.trans hdx, hp'.trans hp⟩
     · rw [buckets.Buckets.queue_round_loop, loop.eq_1]
       have hactive : index < Vec.len state.lens := by simp only [UScalar.lt_equiv, Vec.len_val]; exact hlist
-      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hpair, bind_tc_ok, bind_ok]
+      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hpair, bind_ok]
       rw [add_ok index (1#usize) hnextBound]
       simpa only [bind_ok, aeneas_uncurry_def] using! hloop
     · simpa only [queueRound, hs, hnval, hq'] using hmodel
@@ -890,14 +888,13 @@ theorem queue_round_refines (state : buckets.Buckets) (adds : pairs.BatchedAdds)
       hrefs (by simpa [fresh, Vec.new] using hbudget) (by simpa [fresh, Vec.new] using hbudget)
       (by simpa [fresh, Vec.new] using hbudget) hcap h32
   refine ⟨result, adds', s', ?_, hmodel, hw, hn, hs, hl, hr, hdx, hp⟩
-  simp only [buckets.Buckets.queue_round, adds_clear, bind_tc_ok, bind_ok]
-  simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+  simp only [buckets.Buckets.queue_round, adds_clear, bind_ok]
   change (do
     let (i, j, refs, starts, lens, adds', s') ← state.queue_round_loop fresh s originals 0#usize
     ok (({window_bits := i, windows := j, refs := refs, starts := starts, lens := lens} : buckets.Buckets),
       adds', s')) = _
   rw [hloop]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] ; rfl)
 
 end LeanBlsSimd.QueueRefines
 
@@ -1112,7 +1109,7 @@ theorem packed_replace (state result : buckets.Buckets) (n : ℕ) (base capacity
   · rw [hlens]; simpa only [Vec.set, Vec.from_val, List.length_set] using! h.counts.length
   · intro i hil
     rw [hlens]
-    simp +zetaDelta only [Vec.set, Vec.from_val, UScalar.ofNatCore_val_eq]
+    simp +zetaDelta only [Vec.set, Vec.from_val]
     by_cases he : i = index.val
     · subst i
       rw [List.set_getElem!_eq _ _ _ _ ⟨(by rw [h.counts.length]; exact hi), rfl⟩, Function.update_self]
@@ -1447,7 +1444,7 @@ theorem queue_round_loop_packed (chunks : List (List U32))
         change index.val < state.lens.val.length
         rw [h.counts.length]; exact hi
       rw [buckets.Buckets.queue_round_loop, loop.eq_1]
-      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hcall, bind_tc_ok, bind_ok]
+      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hcall, bind_ok]
       rw [add_ok index (1#usize) hnextBound]
       simpa only [bind_ok, aeneas_uncurry_def] using! hloop
     · simpa only [reduceChunks, replaceContents, updated, hnval, hlen] using hpacked'
@@ -1542,13 +1539,12 @@ theorem queue_round_packed (state : buckets.Buckets) (n : ℕ) (base capacity : 
       fresh s originals hchunkSize (by simpa [fresh, Vec.new] using hbudget)
       (by simpa [fresh, Vec.new] using hbudget) (by simpa [fresh, Vec.new] using hbudget) hcap h32
   refine ⟨result, adds', s', ?_, hp, ?_, ?_, ?_, hlen, hw, hn, hs, hr, hdx, hprefix⟩
-  · simp only [buckets.Buckets.queue_round, adds_clear, bind_tc_ok, bind_ok]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+  · simp only [buckets.Buckets.queue_round, adds_clear, bind_ok]
     change (do
       let (i, j, refs, starts, lens, adds', s') ← state.queue_round_loop fresh s originals 0#usize
       ok (({window_bits := i, windows := j, refs := refs, starts := starts, lens := lens} : buckets.Buckets), adds', s')) = _
     rw [hloop]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! ha
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! hb
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! ho
@@ -1561,7 +1557,7 @@ theorem packed_round_sums {G : Type} [AddMonoid G]
     (hpairs : PairValues before after (reduceChunks originals next (bucketChunks n contents)).2.1)
     (hodd : ∀ i < n, ∀ r ∈ unpaired (contents i), after r = before r) :
     ∀ i < n, ((bucketSlice result i).map after).sum = ((contents i).map before).sum := by
-  letI : Inhabited G := ⟨0⟩
+  let : Inhabited G := ⟨0⟩
   have hlength : (reduceChunks originals next (bucketChunks n contents)).1.length = n :=
     (reduceChunks_lengths originals next (bucketChunks n contents)).1.trans (bucketChunks_length n contents)
   have hsum := reduceChunks_sums before after originals next (bucketChunks n contents) hpairs (by
@@ -1748,9 +1744,9 @@ theorem queue_step_refines_conditional
   refine ⟨refs.set dest output, adds', s', next, ?_, ?_, rfl, hrows, hdx, hprefix⟩
   · simp only [buckets.Buckets.queue_pairs_loop.body]
     rw [add_ok _ _ hinc]
-    simp only [bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hactive, ite_true]
+    simp only [bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hactive, ite_true]
     rw [add_ok _ _ hfirst]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_ok]
     change (do
       let first ← Vec.index (core.slice.index.SliceIndexUsizeSlice U32) refs ix
       let (out, store1) ← buckets.sum_slot first s originals
@@ -1763,11 +1759,11 @@ theorem queue_step_refines_conditional
       let at2 ← cursor + 2#usize
       ok (cont (back out, adds1, store1, at2))) = _
     rw [vec_index refs ix hix]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [hslot]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok ix (1#usize) hsecond]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_tc_ok]
     change (do
       let second ← Vec.index (core.slice.index.SliceIndexUsizeSlice U32) refs iy
       let adds1 ← adds.push first second output
@@ -1777,21 +1773,21 @@ theorem queue_step_refines_conditional
       let at2 ← cursor + 2#usize
       ok (cont (back output, adds1, s', at2))) = _
     rw [vec_index refs iy hiy]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [hpush]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [div_ok cursor (2#usize) (by decide)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok _ _ hwrite]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp -failIfUnchanged only [bind_tc_ok]
     change (do
       let (_, back) ← Vec.index_mut (core.slice.index.SliceIndexUsizeSlice U32) refs dest
       let at2 ← cursor + 2#usize
       ok (cont (back output, adds', s', at2))) = _
     rw [vec_index_mut refs dest hdest]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [add_ok _ _ hnext]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   · have hf : first = refs.val[start.val + cursor.val]! := by
       simp only [first, ix, UScalar.ofNatCore_val_eq]
       exact (getElem!_pos refs.val _ (by omega)).symm
@@ -1829,9 +1825,9 @@ theorem queue_loop_refines_capacity (n : ℕ)
       change cursor.val + 1 < _
       omega
     rw [buckets.Buckets.queue_pairs_loop, loop.eq_1]
-    simp only [buckets.Buckets.queue_pairs_loop.body, bind_ok]
+    simp only [buckets.Buckets.queue_pairs_loop.body]
     rw [add_ok _ _ hsum]
-    simp only [bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
+    simp only [bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
     rw [ite_eq_right (by omega)]
     simp only [bind_ok]
   | succ n ih =>
@@ -2053,10 +2049,9 @@ theorem queue_pairs_refines_capacity (state : buckets.Buckets) (list : Usize)
   refine ⟨{ state with refs := refs'', lens := state.lens.set list newLen }, adds', s', newLen,
     ?_, ?_, rfl, rfl, rfl, rfl, by simpa only [hl] using hnew, hrows, hdx, hprefix⟩
   · rw [queue_pairs_split, vec_index state.starts list hstart]
-    simp only [bind_tc_ok, bind_ok, lift]
+    simp only [bind_ok, lift]
     rw [vec_index state.lens list hlist]
-    simp only [bind_tc_ok, bind_ok]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+    simp only [bind_ok]
     change (do
       let (refs, adds', s') ← buckets.Buckets.queue_pairs_loop state.refs adds s originals start len 0#usize
       finishBucketCode state list start len refs adds' s') = _
@@ -2207,7 +2202,7 @@ theorem queue_round_loop_packed_capacity (chunks : List (List U32))
         change index.val < state.lens.val.length
         rw [h.counts.length]; exact hi
       rw [buckets.Buckets.queue_round_loop, loop.eq_1]
-      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hcall, bind_tc_ok, bind_ok]
+      simp only [buckets.Buckets.queue_round_loop.body, hactive, ite_true, hcall, bind_ok]
       rw [add_ok index (1#usize) hnextBound]
       simpa only [bind_ok, aeneas_uncurry_def] using! hloop
     · simpa only [reduceChunks, replaceContents, updated, hnval, hlen] using hpacked'
@@ -2251,13 +2246,12 @@ theorem queue_round_packed_capacity (state : buckets.Buckets) (n : ℕ) (base ca
       fresh s originals hchunkSize (by simpa [fresh, Vec.new] using hbudget)
       (by simpa [fresh, Vec.new] using hbudget) (by simpa [fresh, Vec.new] using hbudget) hcap h32
   refine ⟨result, adds', s', ?_, hp, ?_, ?_, ?_, hlen, hw, hn, hs, hr, hdx, hprefix⟩
-  · simp only [buckets.Buckets.queue_round, adds_clear, bind_tc_ok, bind_ok]
-    simp -failIfUnchanged only [bind_ok, bind_tc_ok, lift, massert, ite_true]
+  · simp only [buckets.Buckets.queue_round, adds_clear, bind_ok]
     change (do
       let (i, j, refs, starts, lens, adds', s') ← state.queue_round_loop fresh s originals 0#usize
       ok (({window_bits := i, windows := j, refs := refs, starts := starts, lens := lens} : buckets.Buckets), adds', s')) = _
     rw [hloop]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! ha
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! hb
   · simpa only [fresh, Vec.new, Vec.from_val, List.nil_append] using! ho

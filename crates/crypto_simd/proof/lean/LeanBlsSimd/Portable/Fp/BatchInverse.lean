@@ -30,7 +30,7 @@ private theorem prefix_run [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus) :
   simp (disch := decide) only [portable.msm.pairs.batch_inverse_loop0,loop_eq_loopStep,loopStep_cont,loopStep_done,
     portable.msm.pairs.batch_inverse_loop0.body,portable.msm.pairs.CHAINS,ite_eq_left,ite_eq_right,encodeFour,Array.make, Array.from_val,
     Aeneas.Std.Array.set,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
-    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceAdd,Nat.reduceSub,sub_ok,usize_add_ok,update_eq,mul_field_encoded,bind_tc_ok, bind_ok,Aeneas.Std.uncurry_apply_pair]
+    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceAdd,Nat.reduceSub,sub_ok,usize_add_ok,update_eq,mul_field_encoded, bind_ok]
 
 
 private theorem zero_encoded : portable.fp.Fp.ZERO = (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l :=
@@ -44,21 +44,21 @@ private theorem suffix_run [RuntimeFeatures] (a b c d i : ZMod Bls.Fp.modulus) :
   simp (disch := decide) only [portable.msm.pairs.batch_inverse_loop1,
     portable.msm.pairs.batch_inverse_loop1.body,zero_encoded,Array.repeat,List.replicate,loop_eq_loopStep,loopStep_cont,loopStep_done,ite_eq_left,ite_eq_right,encodeFour,Array.make, Array.from_val,
     Aeneas.Std.Array.set,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
-    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceSub,sub_ok,update_eq,mul_field_encoded,bind_tc_ok, bind_ok,Aeneas.Std.uncurry_apply_pair]
+    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceSub,sub_ok,update_eq,mul_field_encoded, bind_ok]
 
 theorem batch_inverse_schedule [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus) :
     portable.msm.pairs.batch_inverse (encodeFour a b c d) =
       ok (encodeFour (((a*b*c*d)⁻¹*d)*c*b) (((a*b*c*d)⁻¹*d)*c*a)
         (((a*b*c*d)⁻¹*d)*(a*b)) ((a*b*c*d)⁻¹*(a*b*c))) := by
   simp (disch := decide) only [portable.msm.pairs.batch_inverse,prefix_run,
-    portable.msm.pairs.CHAINS,sub_four_one,index_usize_eq,bind_tc_ok, bind_ok,Aeneas.Std.uncurry_apply_pair]
+    portable.msm.pairs.CHAINS,sub_four_one,index_usize_eq, bind_ok]
   change (do let i ← portable.fp.Fp.inverse (Kzg.fpEncode (a*b*c*d)).l
              let (i',out) ← portable.msm.pairs.batch_inverse_loop1 (encodeFour a b c d)
                (encodeFour a (a*b) (a*b*c) (a*b*c*d)) 3#usize i
                (Array.repeat 4#usize portable.fp.Fp.ZERO)
              Array.update out 0#usize i') = _
   rw [inverse_encoded]
-  simp only [bind_tc_ok, bind_ok,suffix_run]
+  simp only [bind_tc_ok,suffix_run]
   simp (disch := decide) only [update_eq]
   rfl
 

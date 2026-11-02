@@ -88,7 +88,7 @@ theorem determinant_inverse_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨im1, him1, rim1⟩ := raw_mul rim' rinv' (by intro l; norm_num)
   refine ⟨⟨re1, im1⟩, ?_, rre1, rim1⟩
   simp only [determinantInverseRun, hc, hsq, hsw, hs, hnorm, hi, hinv, hre, hre1,
-    hz, hp30, hni, hni1, him, him1, bind_tc_ok, bind_ok]
+    hz, hp30, hni, hni1, him, him1, bind_ok]
 
 theorem inverse_embed_raw {t d : fp2x8.Fp2x8} {a b : P F}
     (ht : Normal2 (fun _ => 18, fun _ => 18) t a)
@@ -100,7 +100,7 @@ theorem inverse_embed_raw {t d : fp2x8.Fp2x8} {a b : P F}
   obtain ⟨z, hz, rz⟩ := raw2_zero
   obtain ⟨out, hout, rout⟩ := normal2_permute2 invEmbed rr rz
   refine ⟨out, ?_, rout.mono ?_⟩
-  · simp only [inverseEmbedRun, hdi, hr, hz, hout, bind_tc_ok, bind_ok]
+  · simp only [inverseEmbedRun, hdi, hr, hz, hout, bind_ok]
   · intro l; dsimp [shuffle2, shuffle]; split_ifs <;> decide
 
 end LeanBlsSimd.LaneTower

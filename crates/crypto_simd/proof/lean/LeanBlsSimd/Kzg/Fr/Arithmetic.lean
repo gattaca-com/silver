@@ -22,7 +22,7 @@ theorem add_value_refines (a b : blst.blst_fr)
   rw [Int.emod_eq_of_lt (by omega) hfit] at hvalue
   obtain ⟨out,hbelow,hout⟩ := below_r_refines sum (by omega)
   refine ⟨out,?_,?_⟩
-  · simp only [fr.fr_add,hadd,hbelow,bind_tc_ok, bind_ok]
+  · simp only [fr.fr_add,hadd,hbelow, bind_ok]
   · simpa only [hvalue] using hout
 
 theorem sub_value_refines (a b : blst.blst_fr)
@@ -90,7 +90,7 @@ theorem fr_mul_refines (x y : Fr) :
     apply mul_right_cancel₀ hne
     rw [hfield,encode_field,map_mul]
     ring
-  simp only [fr.fr_mul,hr,bind_tc_ok, bind_ok]
+  simp only [fr.fr_mul,hr, bind_ok]
   rw [heq]
 
 theorem fr_correct : Kzg.FrCorrect :=

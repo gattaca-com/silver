@@ -58,20 +58,20 @@ theorem chunk_refines [RuntimeFeatures] (inputs : Array (Array U8 48#usize) 8#us
   let enc := fun v : Vector (Option blst.blst_p1_affine) 8 => vectorSlice v hb
   have ho : enc (ofSlice id out hlen) = out := by
     ext1
-    simp [enc, vectorSlice, Slice.from_val]
+    simp [enc, vectorSlice]
   refine ⟨enc target, ?_, by simp [enc, vectorSlice, Slice.from_val, target, Vector.toList_map]⟩
   rw [silver_crypto_simd.bls.decompress_g1_chunk, decompress_refines]
-  simp only [bind_tc_ok, bind_ok, decompress_g1_chunk_loop]
+  simp only [bind_ok, decompress_g1_chunk_loop]
   rw [← ho]
   apply loop_range (n := 8) _ LANES (by simp [LANES]) enc
     (fun v j => v.set j (target[j])) enc (ofSlice id out hlen) (enc target)
   · intro r v he hs hn
-    simp only [decompress_g1_chunk_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [decompress_g1_chunk_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   · intro r r' v j he hs he' hs' hn
     have hj : r.start.val < 8 := by omega
-    simp only [decompress_g1_chunk_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [decompress_g1_chunk_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     rw [toU8_shiftLeft_one _ hj]
-    simp only [lift, bind_tc_ok, bind_ok, toBatch]
+    simp only [lift, bind_ok, toBatch]
     rw [show r.start.val = j.val from hs, mask_bit]
     have ht : target[j] =
         if b.undecided.toNat.testBit j then specVerdict (inputs.val[j.val]'(by simp [inputs.property]))
@@ -84,21 +84,20 @@ theorem chunk_refines [RuntimeFeatures] (inputs : Array (Array U8 48#usize) 8#us
     · simp only [Bool.false_eq_true, ↓reduceIte]
       rw [mask_bit]
       cases hv : b.valid.toNat.testBit j
-      · simp only [Bool.false_eq_true, ↓reduceIte, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      · simp only [Bool.false_eq_true, ↓reduceIte, bind_ok, Aeneas.Std.uncurry_apply_pair]
         rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
-        simp only [bind_tc_ok, bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
+        simp only [bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
       · simp only [↓reduceIte]
         rw [index_usize_toArray _ _ _ _ hj]
-        simp only [g1_point.G1Point.from_trusted, bind_tc_ok, bind_ok,
-          Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        simp only [g1_point.G1Point.from_trusted, bind_ok, Aeneas.Std.uncurry_apply_pair]
         rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
-        simp only [bind_tc_ok, bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
+        simp only [bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ hj]
-      simp only [g1_decoder_correct.singleton, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [g1_decoder_correct.singleton, bind_ok, Aeneas.Std.uncurry_apply_pair]
       rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
-      simp only [bind_tc_ok, bind_ok, enc, ht, hu, hs, ↓reduceIte]
+      simp only [bind_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]
     congr 1
     ext i hi
@@ -268,13 +267,12 @@ theorem uncompress_refines [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
           core.slice.index.SliceIndexRangeUsizeSlice.index_mut, UScalar.le_equiv]
         rw [ite_eq_left (by simp only [Slice.length]; constructor <;> simp [n] <;> omega)]
         rfl
-      simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte,
-        bind_tc_ok, bind_ok, ifma_available, hcpu, show Slice.len inputs = n from rfl,
-        hd, hmul, hm, hindex, hmut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [silver_crypto_simd.bls.uncompress_in_g1, heq, massert, ↓reduceIte, bind_ok, ifma_available, hcpu, show Slice.len inputs = n from rfl,
+        hd, hmul, hm, hindex, hmut, Aeneas.Std.uncurry_apply_pair]
       change (do let tail ← portable.decompress.uncompress_all_in_g1 ss os
                  ok (middle.setSlice! stop.val tail.val)) = ok result
       rw [ht]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rfl
     · change result.val = rawOutput true inputs
       apply List.ext_getElem
@@ -296,7 +294,6 @@ theorem uncompress_refines [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
           change specVerdict ss.val[i - stop.val] = _
           rw [← getElem!_pos ss.val (i - stop.val) hidx]
           simp only [ss, Slice.from_val]
-          change specVerdict ((inputs.val.slice stop.val n.val)[i-stop.val]!) = _
           rw [List.getElem!_slice _ _ _ _ (by simp [n]; omega)]
           have hadd : stop.val + (i - stop.val) = i := by omega
           rw [hadd]

@@ -28,7 +28,7 @@ theorem pairingCheck_eq (s : Slice pairing_product.AffinePair) :
   apply Bool.eq_iff_iff.mpr
   rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation, toField_pairingFold]
   simp only [specPairs, List.toList_toArray, List.map_map, Function.comp_def,
-    factorProduct, decide_eq_true_eq]
+    factorProduct]
   constructor
   · exact decide_eq_true
   · exact of_decide_eq_true
@@ -113,7 +113,7 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
         simp only [pairing_product.PairingInputs.lane_is_one_loop.body, UScalar.lt_equiv,
           Slice.len, Usize.ofNatCore_val_eq, hlt, ite_true]
         rw [sub_ok _ _ hstart]
-        simp only [bind_tc_ok, bind_ok]
+        simp only [bind_ok]
         have hlen : (if s.val.length - start.val < 8 then
             ok (UScalar.ofNatCore (s.val.length - start.val)
               (by have := slice_length_lt s; omega)) else ok limbs.LANES) = ok countU := by
@@ -121,7 +121,7 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
             simp [countU, count, limbs.LANES] <;> omega
         simp only [UScalar.ofNatCore_val_eq, Usize.ofNatCore_val_eq, limbs.LANES] at hlen ⊢
         rw [hlen]
-        simp only [bind_tc_ok, bind_ok]
+        simp only [bind_ok]
         rw [add_ok _ _ (by change start.val + count < _; have := slice_length_lt s; omega)]
         simp only [bind_ok]
         change (do
@@ -135,7 +135,7 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
           ok (cont (product1, flags, next))) = _
         rw [chunk_index s start next (by omega) (by omega)]
         have he : next.val - start.val = count := by omega
-        simp only [he, bind_tc_ok, bind_ok, hlp, hmiller, hmul, lift]
+        simp only [he, bind_tc_ok, hlp, hmiller, hmul, lift]
       obtain ⟨out, flags, result, hloop, hout, hpower⟩ :=
         ih (s.val.length - next.val) (by omega) next (by omega) product'
           (degenerate ||| setResult.degenerate) (value * setValue) rep' rfl
@@ -169,8 +169,7 @@ theorem lane_is_one_refines [PairingExternals] (sets : SingleSetCorrect)
   obtain ⟨one, hone, hrep⟩ := FieldRep.one
   obtain ⟨out, flags, value, hloop, rep, hpower⟩ := lane_loop_refines sets inputs.pairs valid finite
     0#usize (by simp) one 0#u8 1 hrep
-  simp only [pairing_product.PairingInputs.lane_is_one, hone, bind_tc_ok, bind_ok, hloop,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [pairing_product.PairingInputs.lane_is_one, hone, bind_ok, hloop, Aeneas.Std.uncurry_apply_pair]
   by_cases hz : flags = 0#u8
   · simp only [hz, bne_self_eq_false, Bool.false_eq_true, ite_false]
     rw [FieldRep.final_verdict rep, pairingCheck_eq]
@@ -190,7 +189,7 @@ theorem check_refines [RuntimeFeatures] [PairingExternals] (sets : SingleSetCorr
       hempty, specPairs, pairingCheck_empty]
   · have hlen : inputs.pairs.val.length ≠ 0 := by simpa using hempty
     simp only [pairing_product.PairingInputs.check, core.slice.Slice.is_empty,
-      Slice.length, hlen, decide_false, bind_tc_ok, bind_ok, Bool.false_eq_true, ite_false, ifma_available]
+      Slice.length, hlen, decide_false, bind_ok, Bool.false_eq_true, ite_false, ifma_available]
     split
     · exact lane_is_one_refines sets blst inputs valid finite
     · exact blst_is_one_eq_spec blst inputs valid finite

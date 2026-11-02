@@ -52,9 +52,9 @@ theorem split_scalar_step (scalars halves : alloc.vec.Vec ScalarWords)
   let f := first ⟨i.val, hi⟩
   let s := second ⟨i.val, hi⟩
   let mid : alloc.vec.Vec ScalarWords :=
-    alloc.vec.Vec.from (halves.val.set i.val f.magnitude) (by simpa using halves.property)
+    alloc.vec.Vec.from (halves.val.set i.val f.magnitude) (by simp)
   let out : alloc.vec.Vec ScalarWords :=
-    alloc.vec.Vec.from (mid.val.set (n.val + i.val) s.magnitude) (by simpa using mid.property)
+    alloc.vec.Vec.from (mid.val.set (n.val + i.val) s.magnitude) (by simp)
   let at2 : Usize := UScalar.ofNatCore (n.val + i.val) (by omega)
   let next : Usize := UScalar.ofNatCore (i.val + 1) (by omega)
   have hat : n + i = ok at2 := by
@@ -76,7 +76,7 @@ theorem split_scalar_step (scalars halves : alloc.vec.Vec ScalarWords)
   obtain ⟨ss', hss', hssval⟩ := spec_imp_exists (alloc.vec.Vec.push_spec ss s.negative hss)
   refine ⟨out, fs', ss', next, rfl, ?_, ?_⟩
   · simp only [msm8.Msm8.split_scalars_loop.body, UScalar.lt_equiv, hi, ite_true,
-      scalar_vec_index scalars i (by omega), hd, bind_tc_ok, bind_ok,
+      scalar_vec_index scalars i (by omega), hd, bind_ok,
       scalar_vec_index_mut halves i (by omega)]
     change (do
       let at2 ← n + i
@@ -86,7 +86,7 @@ theorem split_scalar_step (scalars halves : alloc.vec.Vec ScalarWords)
       let next ← i + 1#usize
       ok (cont (back s.magnitude, fs', ss', next))) = _
     rw [hat]
-    simp only [bind_tc_ok, bind_ok, scalar_vec_index_mut mid at2 (by simp [mid, at2, hh]; omega),
+    simp only [bind_tc_ok, scalar_vec_index_mut mid at2 (by simp [mid, at2, hh]; omega),
       hfs', hss', hnext]
     rfl
   · refine ⟨by simp [out, mid, hh], ?_, ?_, ?_⟩
@@ -178,14 +178,14 @@ theorem split_scalars_exact (self : msm8.Msm8)
   have hcount : 2#usize * n = ok count := by
     rw [mul_ok (2#usize) n hcap]
     rfl
-  simp only [msm8.Msm8.split_scalars, alloc.vec.Vec.clear, bind_tc_ok, bind_ok]
+  simp only [msm8.Msm8.split_scalars, alloc.vec.Vec.clear, bind_ok]
   change (do
     let count ← 2#usize * n
     let initial ← alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64) empty count zero
     let (halves, fs, ss) ← msm8.Msm8.split_scalars_loop self.finite_scalars initial signs signs n 0#usize
     ok { self with halves := halves, first_signs := fs, second_signs := ss }) = _
   rw [hcount]
-  simp only [bind_tc_ok, bind_ok, hinit, hloop]
+  simp only [bind_tc_ok, hinit, hloop]
 
 theorem split_scalars_refines (self : msm8.Msm8)
     (hcap : 2 * self.finite_scalars.val.length < 2 ^ UScalarTy.Usize.numBits)

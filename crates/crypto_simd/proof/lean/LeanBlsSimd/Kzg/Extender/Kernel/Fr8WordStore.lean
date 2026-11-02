@@ -178,7 +178,7 @@ theorem store_block_loop_refines (block : M512) (input : Slice U8) (offset : Usi
         (fun k => (core.num.U64.to_le_bytes (toU64 block[k]!)).val) input) := by
   unfold fr8.u256x8.store_block
   rw [Simd.lanes_refines]
-  simp only [bind_tc_ok, bind_ok, Simd.lanes]
+  simp only [bind_ok, Simd.lanes]
   unfold fr8.u256x8.store_block_loop writeBlocks
   rw [fr8.LANES]
   refine loop_range_inv (n := 8) _ 8#usize rfl id
@@ -199,14 +199,13 @@ theorem store_block_loop_refines (block : M512) (input : Slice U8) (offset : Usi
     have hplatform := two_pow_32_le_usize
     simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
     simp_body fr8.u256x8.store_block_loop.body hn
-    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_mul_ok, add_ok,
-      bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
+    simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_mul_ok, add_ok, bind_ok, UScalar.ofNatCore_val_eq]
     rw [slice_index_mut_ok _ _ _ (by simp) (by simp; omega)]
-    simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
     rw [index_usize_toArray toU64 block rfl _ hk]
-    simp only [bind_tc_ok, bind_ok, lift]
+    simp only [bind_ok, lift]
     rw [copy_from_slice_ok]
-    · simp only [bind_tc_ok, bind_ok]
+    · simp only [bind_ok]
       simp [hs]
     · simp only [Array.to_slice, Slice.from_val, UScalar.ofNatCore_val_eq]
       change (out.val.slice (offset.val + 8*r.start.val)

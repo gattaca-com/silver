@@ -65,7 +65,7 @@ theorem pair_power_table_loop [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus) (tab
         let j1 ← j + 1#usize
         ok (cont (a,j1))) = _
       rw [index_usize_eq table prev (by change j.val-1 < 16; omega)]
-      simp only [bind_tc_ok, bind_ok,hp prev.val (by change j.val-1 < 16; omega) (by change j.val-1 < j.val; omega),mul_pair_encoded]
+      simp only [bind_tc_ok,hp prev.val (by change j.val-1 < 16; omega) (by change j.val-1 < j.val; omega),mul_pair_encoded]
       have he : x^prev.val*x = x^j.val := by rw [←pow_succ,hprev,show j.val-1+1 = j.val by omega]
       have hf : y^prev.val*y = y^j.val := by rw [←pow_succ,hprev,show j.val-1+1 = j.val by omega]
       rw [he,hf,update_eq table j word hjlt,usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
@@ -73,7 +73,7 @@ theorem pair_power_table_loop [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus) (tab
     have hp' : ∀ i (hi : i < 16), i < next.val →
       (table.set j word).val[i]'(by rw [(table.set j word).property]; exact hi) = pairEncode (x^i) (y^i) := by
       intro i hi hij
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       by_cases h : j.val = i
       · subst i; rw [List.getElem_set_self]
       · rw [List.getElem_set_ne h]
@@ -109,9 +109,9 @@ theorem pair_power_windows_refines [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus)
     have hc'v : c'.val < 95 := by omega
     have he : (UScalar.ofNatCore (c.val-(1#usize).val) (by have := c.hBounds; omega) : Usize) = c' :=
       UScalar.eq_of_val_eq (by simp; omega)
-    simp only [he,bind_tc_ok, bind_ok,pair_square_four,P_MINUS_3_OVER_4_WINDOWS_index c' hc'v,lift,cast_Usize_ofNatCore]
+    simp only [he, bind_ok,pair_square_four,P_MINUS_3_OVER_4_WINDOWS_index c' hc'v,lift,cast_Usize_ofNatCore]
     rw [pairPowerTable_index x y _ (by simp only [UScalar.ofNatCore_val_eq]; exact windows_lt c'.val (List.mem_range.mpr hc'v))]
-    simp only [bind_tc_ok, bind_ok,mul_pair_encoded,UScalar.ofNatCore_val_eq]
+    simp only [bind_ok,mul_pair_encoded,UScalar.ofNatCore_val_eq]
     have hx : (x^m)^16*x^P_MINUS_3_OVER_4_WINDOWS[c'.val]! = x^(16*m+P_MINUS_3_OVER_4_WINDOWS[c'.val]!) := by
       rw [←pow_mul,←pow_add,mul_comm m 16]
     have hy : (y^m)^16*y^P_MINUS_3_OVER_4_WINDOWS[c'.val]! = y^(16*m+P_MINUS_3_OVER_4_WINDOWS[c'.val]!) := by
@@ -122,7 +122,7 @@ theorem pow_p_minus_3_over_4_pair_refines [RuntimeFeatures] (x y : ZMod Bls.Fp.m
     portable.fp.Fp.pow_p_minus_3_over_4_pair (pairEncode x y) =
       ok (pairEncode (x^((Bls.Fp.modulus-3)/4)) (y^((Bls.Fp.modulus-3)/4))) := by
   unfold portable.fp.Fp.pow_p_minus_3_over_4_pair
-  simp only [pair_power_table_refines,bind_tc_ok, bind_ok,lift]
+  simp only [pair_power_table_refines, bind_ok,lift]
   have h94 : P_MINUS_3_OVER_4_WINDOWS[94]! < 16 := windows_lt 94 (by simp)
   have hlen : Slice.len (Array.to_slice bls.constants.P_MINUS_3_OVER_4_WINDOWS) = 95#usize := by
     apply UScalar.eq_of_val_eq
@@ -134,9 +134,9 @@ theorem pow_p_minus_3_over_4_pair_refines [RuntimeFeatures] (x y : ZMod Bls.Fp.m
     let result ← Array.index_usize (pairPowerTable x y) (UScalar.cast .Usize i1)
     portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1 (pairPowerTable x y) result i) = _
   rw [show 95#usize-1#usize = ok 94#usize by rw [sub_ok _ _ (by decide)]; rfl]
-  simp only [bind_tc_ok, bind_ok,P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide),cast_Usize_ofNatCore]
+  simp only [bind_tc_ok,P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide),cast_Usize_ofNatCore]
   rw [pairPowerTable_index x y _ (by simp only [UScalar.ofNatCore_val_eq]; exact h94)]
-  simp only [bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp only [bind_tc_ok,UScalar.ofNatCore_val_eq]
   rw [pair_power_windows_refines _ _ _ _ 94 rfl (by decide),windows_horner]
 
 end LeanBlsSimd.Portable.Fp

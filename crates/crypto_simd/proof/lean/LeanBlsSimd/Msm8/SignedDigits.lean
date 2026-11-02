@@ -151,27 +151,27 @@ theorem unsigned_window_raw (self : signed_digits.SignedDigits)
     simp only [show (1#u64).bv.toNat = 1 from rfl, Nat.one_shiftLeft]
     exact Nat.mod_eq_of_lt hp
   rw [signed_digits.SignedDigits.unsigned_window, div_ok _ _ (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [show (UScalar.ofNatCore (self.bit.val / (64#usize).val)
     (lt_of_le_of_lt (Nat.div_le_self _ _) self.bit.hBounds) : Usize) = q from rfl]
   rw [usize_add_ok q 1#usize (by change q.val + 1 < 2 ^ 32; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [show (UScalar.ofNatCore (q.val + (1#usize).val)
     (by change q.val + 1 < 2 ^ UScalarTy.Usize.numBits; exact lt_of_lt_of_le (by omega : q.val + 1 < 2 ^ 32) two_pow_32_le_usize) : Usize) = next from rfl]
   rw [high_refines, index_usize_eq self.words q hq]
-  simp only [bind_tc_ok, bind_ok, lift]
+  simp only [bind_ok, lift]
   rw [show (UScalar.cast .U128 (wordAt self.words.val next.val)) <<< 64#i32 =
     ok (⟨(UScalar.cast .U128 (wordAt self.words.val next.val)).bv.shiftLeft 64⟩ : U128) from rfl,
     rem_ok _ _ (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [show (UScalar.ofNatCore (self.bit.val % (64#usize).val)
     (lt_of_le_of_lt (Nat.mod_le _ _) self.bit.hBounds) : Usize) = r from rfl]
   rw [shiftRight_ok (ty := .U128) _ r hr]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [shiftLeft_ok _ _ hw]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [sub_ok _ _ (by rw [hshift]; exact Nat.one_le_pow _ _ (by decide))]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   simp only [hshift]
   rw [← wordAt_eq self.words q hq]
   have hmask : (UScalar.ofNatCore (2 ^ self.window_bits.val - 1) (by change _ < 2 ^ 64; omega) : U64) =
@@ -242,21 +242,21 @@ theorem next_digit_refines (self : signed_digits.SignedDigits)
   · change 2 ^ (self.window_bits.val - 1) < u.val + self.carry.val at hn
     let mag : U64 := UScalar.ofNatCore (2 ^ self.window_bits.val - v.val) (by change _ < 2 ^ 64; omega)
     refine ⟨UScalar.cast .Usize mag, true, { self with bit := bit', carry := 1#u64 }, ?_, rfl, rfl, rfl, rfl, ?_, ?_, ?_⟩
-    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_tc_ok, bind_ok]
+    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_ok]
       rw [add_ok _ _ hv64]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [sub_ok self.window_bits 1#usize hwl]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [one_shiftLeft _ (by change self.window_bits.val - 1 < 64; omega)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       simp only [UScalar.lt_equiv, UScalar.ofNatCore_val_eq, show (1#usize).val = 1 from rfl]
       rw [ite_eq_left hn, one_shiftLeft self.window_bits (by omega)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [sub_ok (UScalar.ofNatCore (2 ^ self.window_bits.val)
         (show 2 ^ self.window_bits.val < 2 ^ 64 from by omega) : U64) v hv]
-      simp only [bind_tc_ok, bind_ok, lift]
+      simp only [bind_ok, lift]
       rw [usize_add_ok self.bit self.window_bits (by omega)]
-      (simp only [bind_ok, bind_tc_ok, lift, decide_eq_true hn] <;> rfl)
+      (simp only [bind_ok, decide_eq_true hn] ; rfl)
     · simp [← huv, hn]
     · rw [cast_usize_val mag (by change 2 ^ self.window_bits.val - v.val < 2 ^ 32; omega)]
       change 2 ^ self.window_bits.val - v.val ≤ _
@@ -269,18 +269,18 @@ theorem next_digit_refines (self : signed_digits.SignedDigits)
       ring
   · change ¬2 ^ (self.window_bits.val - 1) < u.val + self.carry.val at hn
     refine ⟨UScalar.cast .Usize v, false, { self with bit := bit', carry := 0#u64 }, ?_, rfl, rfl, rfl, rfl, ?_, ?_, ?_⟩
-    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_tc_ok, bind_ok]
+    · simp only [signed_digits.SignedDigits.next_digit, hu, bind_ok]
       rw [add_ok _ _ hv64]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [sub_ok self.window_bits 1#usize hwl]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [one_shiftLeft _ (by change self.window_bits.val - 1 < 64; omega)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       simp only [UScalar.lt_equiv, UScalar.ofNatCore_val_eq, show (1#usize).val = 1 from rfl]
       rw [ite_eq_right hn]
-      simp only [bind_tc_ok, bind_ok, lift]
+      simp only [bind_ok, lift]
       rw [usize_add_ok self.bit self.window_bits (by omega)]
-      (simp only [bind_ok, bind_tc_ok, lift, decide_eq_false hn] <;> rfl)
+      (simp only [bind_ok, decide_eq_false hn] ; rfl)
     · simp [← huv, hn]
     · rw [cast_usize_val v (by change u.val + self.carry.val < 2 ^ 32; omega)]
       omega
@@ -336,7 +336,7 @@ theorem run_refines (self : signed_digits.SignedDigits) (n : ℕ)
     have hlastcarry : last.carry.val ≤ 1 := by rw [hlcarry]; cases neg <;> decide
     refine ⟨ds ++ [(mag, neg)], last, ?_, by simp [hlen], hlwords.trans hwords,
       hlwidth.trans hwidth, ?_, hlastcarry, ?_, ?_⟩
-    · simp only [run, hr, bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def, hs]
+    · simp only [run, hr, bind_ok, aeneas_uncurry_def, hs]
     · rw [hlbit, hbit, hwidth]
       ring
     · intro d hd
@@ -402,7 +402,7 @@ theorem run_complete (words : Array U64 4#usize) (width : Usize)
   have hnfalse : neg = false := by rw [hneg]; exact decide_eq_false hsmall
   have hc0 : last.carry.val = 0 := by rw [hlcarry, hnfalse]; rfl
   have hrun : run (k + 1) (initial words width) = ok (ds ++ [(mag, neg)], last) := by
-    simp only [run, hr, bind_tc_ok, bind_ok, Function.uncurry_def, aeneas_uncurry_def, hs]
+    simp only [run, hr, bind_ok, aeneas_uncurry_def, hs]
   obtain ⟨out, final, hfull, hlength, _, _, _, _, hbounds, hsum⟩ :=
     run_refines (initial words width) (k + 1)
       (by change 0 + width.val * (k + 1) ≤ 256; nlinarith) hwl hwh (by change 0 ≤ 1; decide)

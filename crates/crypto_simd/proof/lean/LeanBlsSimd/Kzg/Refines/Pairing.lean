@@ -131,13 +131,12 @@ theorem pairing_holds_composition [RuntimeFeatures] [KzgExternals]
     rw [← setup_model_points_eq, ← hwmodel, ← hsmodel]
   let next := { after with scalars := shiftedV, curve_work := scratchP }
   have hfinish := congrArg (fun result : Result Bool => do let b ← result; ok (b, next)) hpair
-  simp only [bind_tc_ok, bind_ok, bind_assoc_eq] at hfinish
+  simp only [bind_tc_ok] at hfinish
   refine ⟨next, ?_, hafter.1, hafter.2.1, hafter.2.2.1, hworkP⟩
   rw [hmodel]
   unfold verify.CellBatchVerifier.pairing_holds
   simp only [hzero, hone, hpowers0, hpowers, hll, hweights0, hweights0', hweights,
-    hrlc, hinterpolation, hshifted0, hshifted, hrlp,
-    bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    hrlc, hinterpolation, hshifted0, hshifted, hrlp, bind_ok, Aeneas.Std.uncurry_apply_pair]
   exact hfinish
 
 end LeanBlsSimd.Kzg.Pairing

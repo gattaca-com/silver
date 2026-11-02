@@ -26,22 +26,22 @@ theorem multiply_add_step (t a : Array U64 4#usize) (w : U64)
   have hj' : j < 4#usize := hj
   simp only [fr.multiply_add_loop.body,hj',ite_true]
   rw [index_usize_eq t j hj,index_usize_eq a j hj]
-  simp only [lift,bind_tc_ok, bind_ok]
+  simp only [lift, bind_ok]
   rw [mul_ok _ _ (by rw [cast128_val,cast128_val]; change y.val*w.val < 2^128; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; change x.val+y.val*w.val < 2^128; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq]; exact hs)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let out ← Array.update sum j (UScalar.cast .U64 s)
     let high ← s >>> 64#i32
     let next' ← j+1#usize
     ok (cont (out,high,next'))) = _
   rw [update_eq sum j _ hj,shiftRight_64_i32]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem multiply_add_loop_exact (t a : Array U64 4#usize) (w : U64)
     (sum : Array U64 4#usize) (carry : U128) (j : Usize)
@@ -68,7 +68,7 @@ theorem multiply_add_loop_exact (t a : Array U64 4#usize) (w : U64)
     have hz' : ∀ i (hi : i < 4), next.val ≤ i →
         sum'.val[i]'(by rw [sum'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,heq⟩ := ih sum' carry' next (by omega) (high_bound s) hz' (by omega)
@@ -95,8 +95,8 @@ theorem multiply_add_refines (t a : Array U64 4#usize) (w : U64) :
       intro i hi _
       simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨out,UScalar.cast .U64 top,?_,?_⟩
-  · simp only [fr.multiply_add,hr,bind_tc_ok, bind_ok]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  · simp only [fr.multiply_add,hr, bind_ok]
+    (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, lift] )
   · rw [cast64_val,Nat.mod_eq_of_lt ht]
     change value out+(top.val : ℤ)*(radix : ℤ)^4 =
       0+(value t+value a*w.val+0)*(radix : ℤ)^0 at heq

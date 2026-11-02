@@ -37,7 +37,7 @@ theorem split_scalars_exact (self : portable.msm.Msm)
     (core.clone.CloneArray 4#usize core.clone.CloneU64) empty count zero (clone_scalar_words zero))
   have hlength : initial.val.length = 2 * n.val := by
     rw [hinitial]
-    simp [count, UScalar.ofNatCore_val_eq]
+    simp [count]
     exact UScalar.ofNatCore_val_eq _
   have hinv : SplitInv n.val first second initial signs signs 0 :=
     ⟨hlength, rfl, rfl, by intro j hj; omega⟩
@@ -48,14 +48,14 @@ theorem split_scalars_exact (self : portable.msm.Msm)
   have hcount : 2#usize * n = ok count := by
     rw [mul_ok (2#usize) n hcap]
     rfl
-  simp only [portable.msm.Msm.split_scalars, alloc.vec.Vec.clear, bind_tc_ok, bind_ok]
+  simp only [portable.msm.Msm.split_scalars, alloc.vec.Vec.clear, bind_ok]
   change (do
     let count ← 2#usize * n
     let initial ← alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64) empty count zero
     let (halves, fs, ss) ← portable.msm.Msm.split_scalars_loop self.finite_scalars initial signs signs n 0#usize
     ok { self with halves := halves, first_signs := fs, second_signs := ss }) = _
   rw [hcount]
-  simp only [bind_tc_ok, bind_ok, hinit, split_loop_eq, hloop]
+  simp only [bind_tc_ok, hinit, split_loop_eq, hloop]
 
 theorem split_scalars_refines (self : portable.msm.Msm)
     (hcap : 2 * self.finite_scalars.val.length < 2 ^ UScalarTy.Usize.numBits)

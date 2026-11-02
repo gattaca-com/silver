@@ -57,10 +57,10 @@ theorem product_loop {n : Usize} {k k' : ℕ} {left right : Array fp8.Fp8 n}
     have hb : productBody n left right q i = ok (cont (q', i')) := by
       simp only [getElem_ofArray, id_eq, j] at hz
       simp only [productBody, UScalar.lt_equiv, hlt, ↓reduceIte,
-        index_usize_eq left i hlt, index_usize_eq right i hlt, hz, bind_tc_ok, bind_ok,
+        index_usize_eq left i hlt, index_usize_eq right i hlt, hz, bind_ok,
         update_eq q i z hlt]
       rw [add_ok _ _ (by scalar_tac)]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_ok] ; rfl)
     obtain ⟨out, hout, rout⟩ := ih q' i' (by omega) hq' (by omega)
     refine ⟨out, ?_, rout⟩
     rw [loop.eq_1]

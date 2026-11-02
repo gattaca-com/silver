@@ -361,7 +361,7 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
 
 end Lane
 
-open Lane in
+open _root_.LeanBlsSimd.FrModel.Lane in
 set_option exponentiation.threshold 1000 in
 theorem mul_spec {a b : Limbs} (ha : Fr8Inv a) (hb : Fr8Inv b) :
     Fr8Inv (Lane.mul a b) ∧

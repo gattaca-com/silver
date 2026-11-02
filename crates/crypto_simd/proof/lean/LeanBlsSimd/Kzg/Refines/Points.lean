@@ -37,7 +37,7 @@ private theorem decode_points_loop_eq
       refine ⟨points, i, ?_, ?_, by simp⟩
       · rw [verify.decode_points_loop, loop.eq_1]
         simp only [verify.decode_points_loop.body, htest,
-          ite_true, hindex, bind_tc_ok, bind_ok]
+          ite_true, hindex, bind_ok]
       · have hne : i ≠ Slice.len encodings := by
           intro h
           have hval := congrArg UScalar.val h
@@ -64,8 +64,7 @@ private theorem decode_points_loop_eq
         have hb' : i.val + 1 < 2 ^ System.Platform.numBits := hib
         simp [UScalar.tryMk, UScalar.tryMkOpt, hb', Result.ofOption, i']
       have hd' : decoded.val = points'.val.map some ++ remaining := by
-        simp only [points', List.map_append, List.map_cons, List.map_nil,
-          List.append_assoc, List.cons_append, List.nil_append]
+        simp only [points']
         simpa only [alloc.vec.Vec.from_val, List.map_append, List.map_cons, List.map_nil, List.append_assoc, List.singleton_append] using hd
       obtain ⟨out, j, hloop, hresult, hval⟩ := ih points' i' hd'
         (by simp [points', hi', hi])
@@ -73,7 +72,7 @@ private theorem decode_points_loop_eq
       · have hbody : verify.decode_points_loop.body encodings decoded points i =
             ok (cont (points', i')) := by
           simp only [verify.decode_points_loop.body, htest, ite_true, hindex,
-            g1_point.G1Point.into_blst, bind_tc_ok, bind_ok, hpush, hadd]
+            g1_point.G1Point.into_blst, bind_ok, hpush, hadd]
         rw [verify.decode_points_loop, loop.eq_1]
         simpa only [hbody, bind_ok] using! hloop
       · simpa [points', List.append_assoc] using hval
@@ -94,7 +93,7 @@ theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
       List.resize, emptyDecoded, alloc.vec.Vec.new]
   let initial : alloc.vec.Vec (Option g1_point.G1Point) :=
-    alloc.vec.Vec.from (List.replicate encodings.val.length none) (by simpa using encodings.property)
+    alloc.vec.Vec.from (List.replicate encodings.val.length none) (by simp)
   have hresize : alloc.vec.Vec.resize optionClone emptyDecoded (Slice.len encodings) none =
       ok initial := by
     simp [alloc.vec.Vec.resize, optionClone, core.option.Option.Insts.CoreCloneClone.clone,
@@ -116,14 +115,13 @@ theorem decode_points_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.
   refine ⟨resultDecoded, resultPoints, ?_, hdecoded, ?_⟩
   · unfold verify.decode_points
     dsimp only [optionClone] at hclear hresize
-    simp only [hclear, hresize, bind_tc_ok, bind_ok, lift, alloc.vec.Vec.deref_mut,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [hclear, hresize, bind_ok, lift, alloc.vec.Vec.deref_mut, Aeneas.Std.uncurry_apply_pair]
     dsimp only [alloc.vec.Vec.deref_mut] at houtput
     rw [houtput]
-    simp only [bind_tc_ok, bind_ok, blst.blst_p1_affine.Insts.CoreDefaultDefault.default, hpoints]
+    simp only [bind_ok, blst.blst_p1_affine.Insts.CoreDefaultDefault.default, hpoints]
     dsimp only [resultDecoded, alloc.vec.Vec.deref_mut] at hloop ⊢
     rw [hloop]
-    simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hresult]
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, hresult]
   · simpa [emptyPoints, alloc.vec.Vec.new] using hval
 
 end LeanBlsSimd.Kzg

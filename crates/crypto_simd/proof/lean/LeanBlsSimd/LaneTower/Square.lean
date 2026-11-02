@@ -86,7 +86,7 @@ theorem square_raw {x : fp2x8.Fp2x8} {a : P F}
     index_usize_eq rt 0#usize (by decide), index_usize_eq rt 1#usize (by decide),
     index_usize_eq rt 2#usize (by decide), index_usize_eq rs' 0#usize (by decide),
     index_usize_eq rs' 1#usize (by decide), index_usize_eq rs' 2#usize (by decide),
-    UScalar.ofNatCore_val_eq, hleft, hright, hq, hout, bind_tc_ok, bind_ok]
+    UScalar.ofNatCore_val_eq, hleft, hright, hq, hout, bind_ok]
 
 
 

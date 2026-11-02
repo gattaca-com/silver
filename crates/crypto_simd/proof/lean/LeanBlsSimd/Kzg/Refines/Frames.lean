@@ -30,7 +30,7 @@ private theorem decode_cell_loop_frame
     have hj' : j'.val = j.val + 1 := UScalar.ofNatCore_val_eq _
     have hbody := LeanBlsSimd.Kzg.decode_cell_body cell self j j' hlt hj'
     rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1] at hcall
-    simp only [hbody, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok] at hcall
+    simp only [hbody] at hcall
     cases hv : LeanBlsSimd.Kzg.cellVerdict cell j.val with
     | none =>
       simp only [hv, bind_ok] at hcall
@@ -40,13 +40,13 @@ private theorem decode_cell_loop_frame
     | some f =>
       cases hp : alloc.vec.Vec.push self.evaluations (frEncode f) using Result.cases with
       | vis e k =>
-        simp only [hv, hp, bind_tc_eq, bind_vis] at hcall
+        simp only [hv, hp, bind_vis] at hcall
         exact (vis_not_ok hcall).elim
       | div =>
-        simp only [hv, hp, bind_tc_eq, bind_div] at hcall
+        simp only [hv, hp, bind_div] at hcall
         exact (div_not_ok hcall).elim
       | ret vs =>
-        simp only [hv, hp, bind_tc_ok, bind_ok] at hcall
+        simp only [hv, hp, bind_ok] at hcall
         have hf := ih { self with evaluations := vs } j' (by omega) (by simpa only [verify.CellBatchVerifier.decode_cell_loop,
           verify.CellBatchVerifier.decode_cell_loop.body] using! hcall) (by omega)
         exact hf
@@ -59,14 +59,14 @@ private theorem decode_cell_frame
   unfold verify.CellBatchVerifier.decode_cell at hcall
   cases hc : verify.CellBatchVerifier.decode_cell_loop self cell 0#usize using Result.cases with
   | vis e k =>
-    simp only [hc, bind_tc_eq, bind_vis] at hcall
+    simp only [hc, bind_vis] at hcall
     exact (vis_not_ok hcall).elim
   | div =>
-    simp only [hc, bind_tc_eq, bind_div] at hcall
+    simp only [hc, bind_div] at hcall
     exact (div_not_ok hcall).elim
   | ret pair =>
     rcases pair with ⟨out, stop⟩
-    simp only [hc, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Result.ok.injEq,
+    simp only [hc, bind_ok, Aeneas.Std.uncurry_apply_pair, Result.ok.injEq,
       Prod.mk.injEq] at hcall
     rcases hcall with ⟨_, rfl⟩
     exact decode_cell_loop_frame self cell 0#usize (by decide) out stop hc
@@ -101,26 +101,26 @@ private theorem decode_cells_loop_frame
       simp [Slice.index_usize, hlt, cell]
     rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1] at hcall
     simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, ite_true,
-      hindex, bind_tc_ok, bind_ok] at hcall
+      hindex, bind_ok] at hcall
     cases hc : verify.CellBatchVerifier.decode_cell self cell using Result.cases with
     | vis e l =>
-      simp only [hc, bind_tc_eq, bind_vis] at hcall
+      simp only [hc, bind_vis] at hcall
       exact (vis_not_ok hcall).elim
     | div =>
-      simp only [hc, bind_tc_eq, bind_div] at hcall
+      simp only [hc, bind_div] at hcall
       exact (div_not_ok hcall).elim
     | ret pair =>
       rcases pair with ⟨b, out⟩
       have hf := decode_cell_frame self cell b out hc
       cases b with
       | false =>
-        simp only [hc, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true,
+        simp only [hc, bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true,
           ite_false, bind_ok] at hcall
         have he := Result.ok_injective hcall
         cases he
         exact hf
       | true =>
-        simp only [hc, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, ite_true, hadd] at hcall
+        simp only [hc, bind_ok, Aeneas.Std.uncurry_apply_pair, ite_true, hadd] at hcall
         have hrec := ih out k' (by omega) (by simpa only [verify.CellBatchVerifier.decode_cells_loop,
           verify.CellBatchVerifier.decode_cells_loop.body, bind_tc_ok, bind_ok] using! hcall) (by omega)
         rw [hf] at hrec
@@ -134,7 +134,7 @@ theorem decode_cells_frame
   cases hkernel : self.kernel with
   | some kernel =>
     simp only [verify.CellBatchVerifier.decode_cells, hkernel,
-      InterpolationKernel.check_refinement, bind_tc_ok, bind_ok, Result.ok.injEq,
+      InterpolationKernel.check_refinement, bind_ok, Result.ok.injEq,
       Prod.mk.injEq] at hcall
     rcases hcall with ⟨_, rfl⟩
     rw [← hkernel]
@@ -147,21 +147,21 @@ theorem decode_cells_frame
         List.resize, empty, alloc.vec.Vec.new]
     let initial := { self with evaluations := empty }
     unfold verify.CellBatchVerifier.decode_cells at hcall
-    simp only [hkernel, fr_zero_eq, bind_tc_ok, bind_ok, hclear] at hcall
+    simp only [hkernel, fr_zero_eq, bind_ok, hclear] at hcall
     have hcall' : (do
       let (out, stop) ← verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize
       ok (decide (stop = Slice.len cells), out)) = ok (b, next) := by
       simpa only [initial, hkernel] using hcall
     cases hc : verify.CellBatchVerifier.decode_cells_loop initial cells 0#usize using Result.cases with
     | vis e k =>
-      simp only [hc, bind_tc_eq, bind_vis] at hcall'
+      simp only [hc, bind_vis] at hcall'
       exact (vis_not_ok hcall').elim
     | div =>
-      simp only [hc, bind_tc_eq, bind_div] at hcall'
+      simp only [hc, bind_div] at hcall'
       exact (div_not_ok hcall').elim
     | ret pair =>
       rcases pair with ⟨out, stop⟩
-      simp only [hc, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Result.ok.injEq,
+      simp only [hc, bind_ok, Aeneas.Std.uncurry_apply_pair, Result.ok.injEq,
         Prod.mk.injEq] at hcall'
       rcases hcall' with ⟨_, rfl⟩
       simpa only [initial, hkernel] using

@@ -29,15 +29,15 @@ theorem exponent_body (base x : fp2x8.Fp2x8) (a f : Bls.Fp12) (ha : Rep base a) 
   by_cases h : G1x8.is_lower_z_bit n.val = true
   · obtain ⟨out, hout, rout⟩ := mul_refines rsq ha
     refine ⟨out, bit', rfl, ?_, ?_⟩
-    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_tc_ok, bind_ok, hsq,
+    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_ok, hsq,
         G1x8.is_lower_z_bit_refines]
       change (if G1x8.is_lower_z_bit n.val then do
         let r ← fp12.Fp12.mul sq base
         ok (cont (r, bit')) else ok (cont (sq, bit'))) = _
-      simp only [h, ite_true, hout, bind_tc_ok, bind_ok]
+      simp only [h, ite_true, hout, bind_ok]
     · simpa only [powerStep, h, ite_true] using! rout
   · refine ⟨sq, bit', rfl, ?_, ?_⟩
-    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_tc_ok, bind_ok, hsq,
+    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_ok, hsq,
         G1x8.is_lower_z_bit_refines]
       change (if G1x8.is_lower_z_bit n.val then do
         let r ← fp12.Fp12.mul sq base
@@ -63,9 +63,9 @@ theorem exponent_refines (base : fp2x8.Fp2x8) (a : Bls.Fp12) (ha : Rep base a) (
   have hbit : Array.index_usize constants.Z_BITS 0#usize = ok 63#u32 := by
     rw [Z_BITS_index 0#usize (by decide)]; rfl
   refine ⟨last, ?_, rlast⟩
-  simp only [fp12.Fp12.cyclotomic_exp, hbit, bind_tc_ok, bind_ok]
+  simp only [fp12.Fp12.cyclotomic_exp, hbit, bind_ok]
   change (do let out ← loop body (base, 63#u32); fp12.Fp12.conjugate out) = _
   rw [hout]
-  simp only [bind_tc_ok, bind_ok, hlast]
+  simp only [bind_tc_ok, hlast]
 
 end LeanBlsSimd.Pairing.FinalExponent.Lanes

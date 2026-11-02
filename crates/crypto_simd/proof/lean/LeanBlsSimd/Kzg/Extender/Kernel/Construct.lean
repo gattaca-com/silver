@@ -72,7 +72,7 @@ private theorem factors_loop
         (frEncode (Fr.ofNat 4096).inverse) v factors lane = ok (cont (next, lane')) := by
       simp only [extension_kernel.ExtensionKernel.new_loop0_loop0.body, fr8.LANES,
         UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hmul, hadd, hindex,
-        hproduct, hmultiplier, hupdate, hinc, bind_tc_ok, bind_ok]
+        hproduct, hmultiplier, hupdate, hinc, bind_ok]
     rw [extension_kernel.ExtensionKernel.new_loop0_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -126,10 +126,10 @@ private theorem constructor_loop
     have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
     have hprefix : ConstructorPrefix shift' data' v'.val := by
       simp only [ConstructorPrefix, shift', data', alloc.vec.Vec.from_val]
-      refine ⟨by simp [shift', hp.1, hv'], by simp [data', hp.2.1, hv'], ?_, ?_⟩
+      refine ⟨by simp [hp.1, hv'], by simp [hp.2.1, hv'], ?_, ?_⟩
       · intro j
         by_cases hj : j.val < v.val
-        · change MultiplierRep (shift.val ++ [factor])[j.val]! _
+        ·
           rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; exact hj)]
           exact hp.2.2.1 ⟨j.val, hj⟩
         · have he : j.val = v.val := by omega
@@ -138,7 +138,7 @@ private theorem constructor_loop
           simpa only [hp.1, he, Nat.sub_self, List.getElem!_cons_zero] using hfactor
       · intro j
         by_cases hj : j.val < v.val
-        · change Represents (data.val ++ [zero])[j.val]! _
+        ·
           rw [List.getElem!_append_left _ _ _ (by rw [hp.2.1]; exact hj)]
           exact hp.2.2.2 ⟨j.val, hj⟩
         · have he : j.val = v.val := by omega
@@ -152,7 +152,7 @@ private theorem constructor_loop
     have hbody : extension_kernel.ExtensionKernel.new_loop0.body shifts
         (frEncode (Fr.ofNat 4096).inverse) 4096#usize shift data factors v =
         ok (cont (shift', data', factors', v')) := by
-      simp only [extension_kernel.ExtensionKernel.new_loop0.body, hdiv, bind_tc_ok, bind_ok,
+      simp only [extension_kernel.ExtensionKernel.new_loop0.body, hdiv, bind_ok,
         UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hlt, ite_true, hfactors, lift,
         hload, hpushShift, hzero, hpushData, hinc]
     rw [extension_kernel.ExtensionKernel.new_loop0, loop.eq_1]
@@ -207,10 +207,9 @@ theorem new_refinement
       apply UScalar.eq_of_val_eq
       simpa only [Slice.len, Usize.ofNatCore_val_eq] using! hlen
     dsimp only [empty, factors] at hconstruct
-    simp only [extension_kernel.ExtensionKernel.new, hlength, vector_count, bind_tc_ok, bind_ok,
+    simp only [extension_kernel.ExtensionKernel.new, hlength, vector_count, bind_ok,
       fr_zero_eq,
-      show Fr.ofNat 0 = 0 from rfl, hconstruct, hiNew, hfNew,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, initial]
+      show Fr.ofNat 0 = 0 from rfl, hconstruct, hiNew, hfNew, Aeneas.Std.uncurry_apply_pair, initial]
   · refine ⟨by simp [initial, alloc.vec.Vec.deref, Slice.from_val, hp.2.1], ?_⟩
     intro v
     have hv : v.val < 512 := by simpa only [initial, alloc.vec.Vec.deref, Slice.from_val, hp.2.1] using! v.isLt

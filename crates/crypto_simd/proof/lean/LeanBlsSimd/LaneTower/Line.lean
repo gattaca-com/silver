@@ -99,6 +99,6 @@ theorem mul_by_line_raw {x y : fp2x8.Fp2x8} {a b : P F}
   dsimp only [lineRightSum] at hrighttail
   dsimp only [lineRightB0] at hrightb0
   dsimp only [lineRightB1] at hrightb1
-  simp only [fp12.Fp12.mul_by_line, hz, hlefta0, hlefta1, hlefta, hlefttail, hleftsum, hleftb0, hleftb1, hleftb, hleft, hrighta0, hrighta1, hrighta, hrighttail, hrightsum, hrightb0, hrightb1, hrightb, hright, hz0, line_loop_eq, hq, hout, bind_tc_ok, bind_ok]
+  simp only [fp12.Fp12.mul_by_line, hz, hlefta0, hlefta1, hlefta, hlefttail, hleftsum, hleftb0, hleftb1, hleftb, hleft, hrighta0, hrighta1, hrighta, hrighttail, hrightsum, hrightb0, hrightb1, hrightb, hright, hz0, line_loop_eq, hq, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

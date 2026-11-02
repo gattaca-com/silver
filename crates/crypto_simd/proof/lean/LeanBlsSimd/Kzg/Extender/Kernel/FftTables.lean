@@ -87,7 +87,7 @@ private theorem wide_tables_loop
       simp only [UScalar.lt_equiv, hh, hn]
       exact Nat.pow_lt_pow_right (by decide) hst
     have hbody : fft8.Fft8.new_loop1.body input n stride wide half = ok (cont (next, half')) := by
-      simp only [fft8.Fft8.new_loop1.body, hlt, ite_true, hstage, hmul, bind_tc_ok, bind_ok]
+      simp only [fft8.Fft8.new_loop1.body, hlt, ite_true, hstage, hmul, bind_ok]
     rw [fft8.Fft8.new_loop1, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -124,21 +124,21 @@ private theorem short_tables_refinement
     have hbody : fft8.Fft8.new_loop0.body input n stride s2 4#usize =
         ok (cont (s4, 8#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 4 < 8 by decide, ite_true, hs4, hm4, bind_tc_ok, bind_ok]
+        UScalar.ofNatCore_val_eq, show 4 < 8 by decide, ite_true, hs4, hm4, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hstop
   have hloop2 : fft8.Fft8.new_loop0 input n stride s1 2#usize = ok s4 := by
     have hbody : fft8.Fft8.new_loop0.body input n stride s1 2#usize =
         ok (cont (s2, 4#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 2 < 8 by decide, ite_true, hs2, hm2, bind_tc_ok, bind_ok]
+        UScalar.ofNatCore_val_eq, show 2 < 8 by decide, ite_true, hs2, hm2, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hloop4
   refine ⟨s4, ?_, by simpa using hl4, ?_⟩
   · have hbody : fft8.Fft8.new_loop0.body input n stride (alloc.vec.Vec.with_capacity fr8.Fr8 7#usize) 1#usize =
         ok (cont (s1, 2#usize)) := by
       simp only [fft8.Fft8.new_loop0.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, show 1 < 8 by decide, ite_true, hs1, hm1, bind_tc_ok, bind_ok]
+        UScalar.ofNatCore_val_eq, show 1 < 8 by decide, ite_true, hs1, hm1, bind_ok]
     rw [fft8.Fft8.new_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hloop2
   · intro h hh j
@@ -235,7 +235,7 @@ theorem fft_new_refinement
         simpa [IScalar.toNat, Nat.mod_eq_of_lt (show 4096 < Usize.size by scalar_tac)] using hv
       simpa only [he] using hs
     dsimp only [empty] at hwide
-    simp only [fft8.Fft8.new, hblock, hge, hshift, hle, massert, ite_true, bind_tc_ok, bind_ok,
+    simp only [fft8.Fft8.new, hblock, hge, hshift, hle, massert, ite_true, bind_ok,
       hsub, lift, hand, hrem, hstride, hvectors, hwide, hcapacity, hshort, table]
   · have hsize : (sampleRoots roots n.val).size = n.val := _root_.Array.size_ofFn
     refine ⟨by rw [hsize]; exact ⟨logSize, hk6, hk12, hnpow⟩,

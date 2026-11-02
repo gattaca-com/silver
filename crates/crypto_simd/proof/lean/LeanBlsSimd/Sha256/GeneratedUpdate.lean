@@ -30,17 +30,17 @@ theorem update_short {S : Type} (mk : Array U32 8#usize → Array U8 64#usize �
         ok (mk state (pending.setSlice! p.val data.val) next (absorbedLength length data)) := by
   let next : Usize := UScalar.ofNatCore (p.val+data.val.length) (by scalar_tac)
   refine ⟨next,rfl,?_⟩
-  simp only [update,lift,bind_tc_ok, bind_ok,sha256.BLOCK]
+  simp only [update,lift, bind_ok,sha256.BLOCK]
   rw [sub_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
+  simp only [bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
     hshort,ite_true]
-  simp (disch := scalar_tac) only [add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq,Slice.len_val]
+  simp (disch := scalar_tac) only [add_ok, bind_ok,Slice.len_val]
   rw [index_mut_range _ _ _ (by scalar_tac) (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [copy_eq _ data (by
-    rw [range_length _ _ _ (by simp only [UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,Array.to_slice,Slice.from_val,pending.property]; omega)]
-    simp only [UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length]; omega)]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    rw [range_length _ _ _ (by simp only [UScalar.ofNatCore_val_eq,Slice.length,Array.to_slice,Slice.from_val,pending.property]; omega)]
+    simp only [UScalar.ofNatCore_val_eq,Slice.length]; omega)]
+  (simp only [bind_ok] ; rfl)
 
 theorem update_blocks {S : Type} (mk : Array U32 8#usize → Array U8 64#usize → Usize → U64 → S)
     (compress : Compressor) (hc : CompressorRefines compress) (state : Array U32 8#usize)
@@ -63,7 +63,7 @@ theorem update_blocks {S : Type} (mk : Array U32 8#usize → Array U8 64#usize �
   obtain ⟨out,hout,hmodel⟩ := hc state data start blocks (by simp only [blocks,UScalar.ofNatCore_val_eq]; omega)
   refine ⟨out,next,?_,hmodel,hnext⟩
   simp only [updateBlocks,sha256.BLOCK]
-  simp (disch := scalar_tac) only [sub_ok,div_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq,Slice.len_val]
+  simp (disch := scalar_tac) only [sub_ok,div_ok, bind_ok,UScalar.ofNatCore_val_eq,Slice.len_val]
   change (do
     let a2 ← compress state data start blocks
     let i6 ← 64#usize * blocks
@@ -76,7 +76,7 @@ theorem update_blocks {S : Type} (mk : Array U32 8#usize → Array U8 64#usize �
     let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
     ok (mk a2 (back s2) i8 length)) = _
   rw [hout]
-  simp (disch := scalar_tac) only [bind_tc_ok, bind_ok,mul_ok,add_ok,sub_ok,UScalar.ofNatCore_val_eq,Slice.len_val]
+  simp (disch := scalar_tac) only [bind_tc_ok,mul_ok,add_ok,sub_ok,UScalar.ofNatCore_val_eq,Slice.len_val]
   change (do
     let (s, back) ← core.array.Array.index_mut (core.ops.index.IndexMutSlice
       (core.slice.index.SliceIndexRangeToUsizeSlice U8)) pending {«end» := next}
@@ -84,12 +84,12 @@ theorem update_blocks {S : Type} (mk : Array U32 8#usize → Array U8 64#usize �
     let s2 ← core.slice.Slice.copy_from_slice core.marker.CopyU8 s s1
     ok (mk out (back s2) next length)) = _
   rw [index_mut_to _ _ (by change next.val ≤ 64; omega)]
-  simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,index_from _ _ hstop]
+  simp only [bind_tc_ok,index_from _ _ hstop]
   rw [copy_eq _ _ (by
     rw [range_length _ _ _ (by simpa only [Array.to_slice,Slice.from_val,pending.property] using!
       (show next.val ≤ 64 by omega)),range_length _ _ _ (by omega)]
     simp only [Nat.sub_zero,next,UScalar.ofNatCore_val_eq])]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   have hr : (range data stop.val data.val.length).val = data.val.drop stop.val := by
     simpa only [range,Slice.from_val,List.slice,List.length_drop] using! (@List.take_length U8 (data.val.drop stop.val))
   rw [hr]
@@ -126,22 +126,22 @@ theorem update_fill {S : Type} (mk : Array U32 8#usize → Array U8 64#usize →
   obtain ⟨out,hout,hm⟩ := hc state filled.to_slice 0#usize 1#usize
     (by simp only [Array.to_slice,Slice.from_val,filled.property]; decide)
   refine ⟨out,room,rfl,?_,?_⟩
-  · simp only [update,lift,bind_tc_ok, bind_ok,sha256.BLOCK]
+  · simp only [update,lift, bind_ok,sha256.BLOCK]
     rw [sub_ok _ _ (by scalar_tac)]
-    simp only [bind_tc_ok, bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
+    simp only [bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
       show ¬data.val.length < 64-p.val by omega,ite_false]
     rw [ite_eq_left (by scalar_tac),index_mut_from _ _ (by change p.val ≤ 64; omega)]
-    simp only [bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
     rw [index_to _ _ (by simpa only [UScalar.ofNatCore_val_eq] using hlong)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [copy_eq _ _ (by
       simp only [UScalar.ofNatCore_val_eq]
       rw [range_length _ _ _ (by simp only [Array.to_slice,Slice.from_val,pending.property]; exact Nat.le_refl _),
         range_length _ _ _ hlong]
       rfl)]
-    simp only [bind_tc_ok, bind_ok,range,Slice.from_val,List.slice,List.drop_zero,Nat.sub_zero,UScalar.ofNatCore_val_eq]
+    simp only [bind_ok,range,Slice.from_val,List.slice,List.drop_zero,Nat.sub_zero,UScalar.ofNatCore_val_eq]
     rw [hout]
-    simp only [bind_tc_ok,bind_ok]
+    simp only [bind_ok]
     rfl
   · simpa only [Array.to_slice,Slice.from_val,filled,filled_pending pending p data hp hlong,
       UScalar.ofNatCore_val_eq] using hm

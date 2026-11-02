@@ -15,7 +15,7 @@ theorem LaneLines.pairing_check (raw : bls.g1x8.G1x8)
       ok (Bls.pairingCheck #[(points 0, Kzg.SetupPoints.g2Point64),
         (points 1, G2.neg Kzg.SetupPoints.g2Point0)]) := by
   obtain ⟨out, hout, hrep⟩ := LaneLines.miller_refines raw points hp
-  simp only [bls.pairing.MillerLines.pairing_check, hout, bind_tc_ok, bind_ok]
+  simp only [bls.pairing.MillerLines.pairing_check, hout, bind_ok]
   rw [FinalExponent.Lanes.final_verdict hrep, combined_verdict]
   rfl
 

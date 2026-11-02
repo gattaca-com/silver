@@ -51,7 +51,7 @@ private theorem encoded_step (values : _root_.Array Fr) (initial cells : Cells)
   simp only [Encoded, Array.set_val_eq]
   constructor
   · intro k hk
-    simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq, Array.make, Array.from_val]
+    simp +zetaDelta only [UScalar.ofNatCore_val_eq, Array.make]
     exact (List.set_getElem!_ne _ _ _ _ (by omega)).trans (hw.1 k hk)
   · intro j hj b hb
     by_cases hjn : j < 8*n
@@ -195,9 +195,9 @@ private theorem encode_loop (data : alloc.vec.Vec fr8.Fr8) (values : _root_.Arra
     have hbody : extension_kernel.ExtensionKernel.extend_loop1.body data cells i =
         ok (cont (next, i')) := by
       simp only [extension_kernel.ExtensionKernel.extend_loop1.body, hlt, ite_true,
-        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, hhalf, hvectors, hquot, hcelladd, hrest,
-        hblock, hoffset, hindex, hmut, Array.to_slice_mut, lift, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
-      simp only [hs, bind_tc_ok, bind_ok, hadd, hback, next]
+        cells_per_ext_blob_eq, bind_ok, hhalf, hvectors, hquot, hcelladd, hrest,
+        hblock, hoffset, hindex, hmut, Array.to_slice_mut, lift, Aeneas.Std.uncurry_apply_pair]
+      simp only [hs, bind_ok, hadd, hback, next]
     rw [extension_kernel.ExtensionKernel.extend_loop1, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 

@@ -101,7 +101,7 @@ private theorem portable_words_loop
       (by simp [hw, hsize, hi']) (by omega)
     refine ⟨out, ?_, ?_⟩
     · rw [verify.CurveWork.sum_loop, loop.eq_1]
-      simp only [verify.CurveWork.sum_loop.body, htest, ite_true, hindex, bind_tc_ok, bind_ok,
+      simp only [verify.CurveWork.sum_loop.body, htest, ite_true, hindex, bind_ok,
         hword, hpush, hadd]
       exact hloop
     · rw [List.drop_eq_getElem_cons hlt]
@@ -171,7 +171,7 @@ private theorem lincomb_sum_kernel [RuntimeFeatures]
     (by simpa only [alloc.vec.Vec.deref, Slice.from_val, hwlen] using hlen) hpv
     (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hwbound)
   refine ⟨point, .Lanes next ws, ?_, ?_⟩
-  · simp only [verify.CurveWork.sum, hwords, bind_tc_ok, bind_ok, hcall]
+  · simp only [verify.CurveWork.sum, hwords, bind_ok, hcall]
     rfl
   · simpa only [alloc.vec.Vec.deref, Slice.from_val, hvalues] using hrep
 
@@ -189,8 +189,8 @@ private theorem lincomb_sum_portable [RuntimeFeatures]
     (by simpa only [alloc.vec.Vec.deref, Slice.from_val, hwlen] using hlen) hpv
     (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hwbound)
   refine ⟨point, .Scalar next ws, ?_, ?_⟩
-  · simp only [alloc.vec.Vec.clear, bind_tc_ok, bind_ok] at hwords
-    simp only [verify.CurveWork.sum, alloc.vec.Vec.clear, bind_tc_ok, bind_ok, hwords, hcall]
+  · simp only [alloc.vec.Vec.clear, bind_ok] at hwords
+    simp only [verify.CurveWork.sum, alloc.vec.Vec.clear, bind_ok, hwords, hcall]
     rfl
   · simpa only [alloc.vec.Vec.deref, Slice.from_val, hvalues] using hrep
 
@@ -231,15 +231,15 @@ private theorem lincomb_encoded [RuntimeFeatures]
       (alloc.vec.Vec.deref fs) = ok (point, scratch') ∧
       G1Rep point (G1.msm points scalars) := by
   have hlen : ps.val.length = fs.val.length := by
-    simp only [alloc.vec.Vec.deref, Slice.from_val, hps, hfs, List.length_map, _root_.Array.length_toList, hsize]
+    simp only [hps, hfs, List.length_map, _root_.Array.length_toList, hsize]
   have hpv : ∀ p ∈ ps.val, G1AffineValid p := by
     intro p hp
-    simp only [alloc.vec.Vec.deref, Slice.from_val, hps] at hp
+    simp only [hps] at hp
     obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
     exact g1Affine_valid (hvalid q (_root_.Array.mem_toList_iff.mp hq))
   have hfv : ∀ f ∈ fs.val, FrReduced f := by
     intro f hf
-    simp only [alloc.vec.Vec.deref, Slice.from_val, hfs] at hf
+    simp only [hfs] at hf
     obtain ⟨q, _, rfl⟩ := List.mem_map.mp hf
     exact frEncode_reduced q
   obtain ⟨point, scratch', hcall, hrep⟩ := hsum hlen hpv hfv

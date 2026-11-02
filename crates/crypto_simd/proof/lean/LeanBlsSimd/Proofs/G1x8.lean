@@ -66,16 +66,16 @@ theorem double_finite_correct (self : G1x8) (l : Fin 8) (P : G1)
     simp only [G1.doubleSpec, ite_eq_right hz]
   · change _ = (3 * (x * x)) * (3 * (x * x)) -
       2 * (2 * ((x + y*y)*(x+y*y) - x*x - (y*y)*(y*y)))
-    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
+    simp only [show P.x = x from rfl, show P.y = y from rfl]
     ring
   · change _ = (3 * (x*x)) *
       (2 * ((x+y*y)*(x+y*y)-x*x-(y*y)*(y*y)) -
         ((3*(x*x))*(3*(x*x))-2*(2*((x+y*y)*(x+y*y)-x*x-(y*y)*(y*y))))) -
       8*((y*y)*(y*y))
-    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
+    simp only [show P.x = x from rfl, show P.y = y from rfl]
     ring
   · change _ = 2 * y * z
-    simp only [show P.x = x from rfl, show P.y = y from rfl, show P.z = z from rfl]
+    simp only [show P.y = y from rfl, show P.z = z from rfl]
     ring
 
 theorem double_correct (self : G1x8) (l : Fin 8) (P : G1)

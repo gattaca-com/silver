@@ -53,23 +53,23 @@ theorem laneOf_replicate {n : ℕ} (x : M512) (l : Fin 8) :
   simp [_mm512_madd52hi_epu64]
 
 theorem Simd.splat_refines (x : U64) : fp8.splat x = ok (Simd.splat (ofU64 x)) := by
-  simp only [fp8.splat, lift, bind_ok, core.core_arch.x86.avx512f._mm512_set1_epi64] <;> rfl
+  simp only [fp8.splat, lift, bind_ok, core.core_arch.x86.avx512f._mm512_set1_epi64] ; rfl
 
 theorem Simd.zero_refines : fp8.zero = ok Simd.zero := by
-  simp only [fp8.zero, lift, bind_ok, core.core_arch.x86.avx512f._mm512_setzero_si512] <;> rfl
+  simp only [fp8.zero, core.core_arch.x86.avx512f._mm512_setzero_si512] ; rfl
 
 theorem Simd.lanes_refines (v : M512) : fp8.lanes v = ok (toArray toU64 (Simd.lanes v)) := by
-  simp only [fp8.lanes, lift, bind_ok] <;> rfl
+  simp only [fp8.lanes] ; rfl
 
 theorem Simd.borrowed_refines (borrow : M512) :
     fp8.borrowed borrow = ok (toU8 (Simd.borrowed borrow)) := by
-  simp only [fp8.borrowed, Simd.splat_refines, lift, bind_ok,
-    core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask] <;> rfl
+  simp only [fp8.borrowed, Simd.splat_refines, bind_ok,
+    core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask] ; rfl
 
 theorem Simd.splat_limbs_refines (limbs : Array U64 8#usize) :
     fp8.splat_limbs limbs = ok (toArray id (Simd.splat_limbs (ofArray ofU64 limbs))) := by
   unfold fp8.splat_limbs fp8.splat_limbs_loop
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines]
+  simp only [Simd.zero_refines, bind_ok, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (toArray id)
     (fun v j => v.set j (Simd.splat (ofArray ofU64 limbs)[j])) (toArray id)
@@ -79,7 +79,7 @@ theorem Simd.splat_limbs_refines (limbs : Array U64 8#usize) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body fp8.splat_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, Simd.splat_refines, update_eq _ _ _ hj]
+    simp only [index_usize_eq _ _ hj, bind_ok, Simd.splat_refines, update_eq _ _ _ hj]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
     simp [hs, List.map_set, Vector.toList_set]
@@ -89,7 +89,7 @@ theorem Simd.sub_limbs_refines (a b : Array M512 8#usize) :
     fp8.sub_limbs a b =
       ok (Prod.map (toArray id) id (Simd.sub_limbs (ofArray id a) (ofArray id b))) := by
   unfold fp8.sub_limbs fp8.sub_limbs_loop
-  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines,
+  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_ok, LIMBS_refines,
     ofU64_toU64]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (Prod.map (toArray id) id)
@@ -103,7 +103,7 @@ theorem Simd.sub_limbs_refines (a b : Array M512 8#usize) :
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     obtain ⟨d, borrow⟩ := m
     simp_body fp8.sub_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, update_eq _ _ _ hj,
+    simp only [index_usize_eq _ _ hj, bind_ok, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_sub_epi64, core.core_arch.x86.avx512f._mm512_add_epi64,
       core.core_arch.x86.avx512f._mm512_srai_epi64, core.core_arch.x86.avx512f._mm512_and_si512,
       Prod.map, id]
@@ -115,7 +115,7 @@ theorem Simd.sub_limbs_refines (a b : Array M512 8#usize) :
 theorem Simd.add_limbs_refines (a b : Array M512 8#usize) :
     fp8.add_limbs a b = ok (toArray id (Simd.add_limbs (ofArray id a) (ofArray id b))) := by
   unfold fp8.add_limbs fp8.add_limbs_loop
-  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines,
+  simp only [MASK52_refines, Simd.splat_refines, Simd.zero_refines, bind_ok, LIMBS_refines,
     ofU64_toU64]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (Prod.map (toArray id) id)
@@ -130,7 +130,7 @@ theorem Simd.add_limbs_refines (a b : Array M512 8#usize) :
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     obtain ⟨s, carry⟩ := m
     simp_body fp8.add_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, update_eq _ _ _ hj,
+    simp only [index_usize_eq _ _ hj, bind_ok, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_add_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
       core.core_arch.x86.avx512f._mm512_and_si512, Prod.map, id]
     refine congrArg (fun s => ok (cont (r', s))) (Prod.ext ?_ ?_)
@@ -141,7 +141,7 @@ theorem Simd.add_limbs_refines (a b : Array M512 8#usize) :
 theorem Simd.blend_refines (k : U8) (a b : Array M512 8#usize) :
     fp8.blend k a b = ok (toArray id (Simd.blend (ofU8 k) (ofArray id a) (ofArray id b))) := by
   unfold fp8.blend fp8.blend_loop
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines]
+  simp only [Simd.zero_refines, bind_ok, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (toArray id)
     (fun v j => v.set j (_mm512_mask_blend_epi64 (ofU8 k) (ofArray id a)[j] (ofArray id b)[j]))
@@ -151,7 +151,7 @@ theorem Simd.blend_refines (k : U8) (a b : Array M512 8#usize) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body fp8.blend_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok,
+    simp only [index_usize_eq _ _ hj, bind_ok,
       core.core_arch.x86.avx512f._mm512_mask_blend_epi64, update_eq _ _ _ hj]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
@@ -161,7 +161,7 @@ theorem Simd.blend_refines (k : U8) (a b : Array M512 8#usize) :
 theorem Fp8.normalise_refines (a : fp8.Fp8) :
     fp8.Fp8.normalise a = ok (toFp8 (ofFp8 a).normalise) := by
   unfold fp8.Fp8.normalise fp8.Fp8.normalise_loop
-  simp only [MASK52_refines, Simd.splat_refines, bind_tc_ok, bind_ok, LIMBS_refines,
+  simp only [MASK52_refines, Simd.splat_refines, bind_ok, LIMBS_refines,
     ofU64_toU64]
   have hsub : 8#usize - 1#usize = ok 7#usize := by
     change UScalar.sub _ _ = _
@@ -169,21 +169,21 @@ theorem Fp8.normalise_refines (a : fp8.Fp8) :
     apply UScalar.eq_of_val_eq
     exact usize_ofNat_val 7 (by decide)
   rw [hsub]
-  simp only [bind_tc_ok, bind_ok, bind_return]
+  simp only [bind_ok, bind_return]
   simpa only [toFp8, Fp8.normalise, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8]
     using! SignedLimbs.normalise_loop_refines (n := 8#usize) 7#usize rfl (by decide) a
 
 theorem Fp8.add_raw_refines (a b : fp8.Fp8) :
     fp8.Fp8.add_raw a b = ok (toFp8 ((ofFp8 a).add_raw (ofFp8 b))) := by
   unfold fp8.Fp8.add_raw fp8.Fp8.add_raw_loop
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines, bind_return]
+  simp only [Simd.zero_refines, bind_ok, LIMBS_refines, bind_return]
   simpa only [Fp8.add_raw, toFp8, ofFp8] using! SignedLimbs.add_raw_loop_refines a b
 
 theorem Fp8.sub_raw_refines (a b offset : fp8.Fp8) :
     fp8.Fp8.sub_raw a b offset =
       ok (toFp8 ((ofFp8 a).sub_raw (ofFp8 b) (ofFp8 offset))) := by
   unfold fp8.Fp8.sub_raw fp8.Fp8.sub_raw_loop
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines, bind_return]
+  simp only [Simd.zero_refines, bind_ok, LIMBS_refines, bind_return]
   simpa only [Fp8.sub_raw, toFp8, ofFp8] using! SignedLimbs.sub_raw_loop_refines a b offset
 
 private theorem multiple_of_p_bounds (c carry : Nat) (j : Fin LIMBS) (hc : c < 4096)
@@ -214,7 +214,7 @@ theorem Fp8.multiple_of_p_refines (c : U64) (hc : c.val < 4096) :
   have hshift : 1#u64 <<< 12#i32 = ok 4096#u64 := by rfl
   rw [hshift]
   have hc' : c < 4096#u64 := by scalar_tac
-  simp only [massert, hc', ite_true, bind_tc_ok, bind_ok, Simd.zero_refines,
+  simp only [massert, hc', ite_true, bind_ok, Simd.zero_refines,
     LIMBS_refines]
   try simp only [bind_return]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
@@ -232,7 +232,6 @@ theorem Fp8.multiple_of_p_refines (c : U64) (hc : c.val < 4096) :
     0#usize (Vector.replicate LIMBS Simd.zero, 0) (by decide) (by decide)
   · intro r m hr hs hm hnext
     simp_body fp8.Fp8.multiple_of_p_loop.body hnext
-    try rfl
   · intro r r' m j hr hs hr' hs' hm hnext
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     have hn := multiple_of_p_bounds c.val m.2 j hc hm
@@ -241,25 +240,25 @@ theorem Fp8.multiple_of_p_refines (c : U64) (hc : c.val < 4096) :
     simp_body fp8.Fp8.multiple_of_p_loop.body hnext
     simp only [enc, P_refines]
     rw [index_usize_toArray _ _ _ _ (show r.start.val < LIMBS from hj)]
-    simp only [bind_tc_ok, bind_ok, hs]
+    simp only [bind_ok, hs]
     have hpMul : (toU64 (Limbs.ofList P)[j.val]).val * c.val < 2^64 := by
       change (Limbs.ofList P)[j].toNat * c.val < 2^64
       omega
     rw [mul_ok _ _ hpMul]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [add_ok _ _ (by
       simp only [UScalar.ofNatCore_val_eq, val_toU64, UInt64.toNat_ofNat',
         Nat.mod_eq_of_lt hm64]
       exact (hn.trans_le (by norm_num)))]
-    simp only [bind_tc_ok, bind_ok, MASK52_refines, Simd.splat_refines,
+    simp only [bind_ok, MASK52_refines, Simd.splat_refines,
       constants.LIMB_BITS]
-    simp only [lift, bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq, val_toU64,
+    simp only [lift, bind_ok, UScalar.ofNatCore_val_eq, val_toU64,
       UInt64.toNat_ofNat', Nat.mod_eq_of_lt hm64]
     rw [update_eq _ _ _ hj]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     simp only [u64_ofNatCore]
     rw [shift_ofNat52 _ (by exact hn.trans_le (by norm_num))]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     refine congrArg (fun st => ok (cont (r', st))) (Prod.ext ?_ ?_)
     · ext1
       simp [Fp8.multipleStep, hs, List.map_set, Vector.toList_set]
@@ -288,7 +287,7 @@ theorem Lane.muladd_row_refines (t : Array M512 17#usize) (a : Array M512 8#usiz
     have hi8 : i.val < 8 := hi
     have hj8 : r.start.val < 8 := by rw [hs]; exact j.isLt
     simp_body fp8.muladd_row_loop.body hn
-    simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+    simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, index_usize_eq, update_eq,
       core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
       core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) ?_
@@ -316,7 +315,7 @@ theorem set_toArray_id {α : Type} {n : Usize} {m : Nat} (v : Vector α m)
 
 theorem Simd.carry_of_cleared_refines (t : M512) :
     fp8.carry_of_cleared t = ok (.ofFn fun l => srli 52 (t[l] + .ofNat (2^52 - 1))) := by
-  simp only [fp8.carry_of_cleared, MASK52_refines, Simd.splat_refines, bind_tc_ok, bind_ok,
+  simp only [fp8.carry_of_cleared, MASK52_refines, Simd.splat_refines, bind_ok,
     core.core_arch.x86.avx512f._mm512_add_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
     ofU64_toU64]
   apply congrArg ok
@@ -348,7 +347,7 @@ theorem Lane.reduce_low_refines (t : Array M512 17#usize) (p : Array M512 8#usiz
       have hi' : i.val < 8 := hi
       have hj' : r.start.val < 8 := by rw [hs]; exact j.isLt
       simp_body fp8.reduce_row_loop0.body hn
-      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+      simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, index_usize_eq, update_eq,
         core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64, UScalar.ofNatCore_val_eq]
       refine congrArg (fun s => ok (cont (r', s))) ?_
       exact toArray_set_of_eq id m _ _ (i.val + j.val) (hij j)
@@ -389,7 +388,7 @@ theorem Lane.reduce_high_refines (t : Array M512 17#usize) (p : Array M512 8#usi
       have hi' : i.val < 8 := hi
       have hj' : r.start.val < 8 := by rw [hs]; exact j.isLt
       simp_body fp8.reduce_row_loop1.body hn
-      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+      simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, index_usize_eq, update_eq,
         core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
       refine congrArg (fun s => ok (cont (r', s))) ?_
       exact toArray_set_of_eq id m _ _ (i.val + j.val + 1) (hij j)
@@ -417,13 +416,13 @@ theorem Lane.reduce_row_refines (t : Array M512 17#usize) (p : Array M512 8#usiz
     ⟨ofArray id p, (toArray_ofArray (fun _ => rfl) p _ _).symm⟩
   have hi' : i.val < 8 := hi
   unfold fp8.reduce_row
-  simp (disch := (simp; omega)) only [Simd.zero_refines, bind_tc_ok, bind_ok, index_usize_toArray,
+  simp (disch := (simp; omega)) only [Simd.zero_refines, bind_ok, index_usize_toArray,
     core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
     core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64,
     core.core_arch.x86.avx512f._mm512_add_epi64, Simd.carry_of_cleared_refines,
     usize_add_ok, update_eq, set_toArray_id, UScalar.ofNatCore_val_eq]
   rw [Lane.reduce_low_refines _ _ _ hi]
-  simp (disch := (simp; omega)) only [bind_tc_ok, bind_ok, index_usize_toArray, set_toArray_id,
+  simp (disch := (simp; omega)) only [bind_ok, index_usize_toArray, set_toArray_id,
     UScalar.ofNatCore_val_eq]
   rw [Lane.reduce_high_refines _ _ _ hi]
   simp only [ofArray_toArray_id, laneOf_set, laneOf_fromLanes]
@@ -449,7 +448,7 @@ theorem Fp8.one_refines : fp8.Fp8.one = ok (toFp8 Fp8.one) := by
 theorem Fp8.load_refines (values : Array (Array U64 8#usize) 8#usize) :
     fp8.Fp8.load values = ok (toFp8 (Fp8.load (ofArray (ofArray ofU64) values))) := by
   unfold fp8.Fp8.load fp8.Fp8.load_loop
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines, bind_ok_eq]
+  simp only [Simd.zero_refines, bind_ok, LIMBS_refines, bind_ok_eq]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (toArray id)
     (fun v j => v.set j (Fp8.load (ofArray (ofArray ofU64) values)).limbs[j]) (toArray id)
@@ -463,7 +462,7 @@ theorem Fp8.load_refines (values : Array (Array U64 8#usize) 8#usize) :
       index_usize_eq values 5#usize (by decide), index_usize_eq values 4#usize (by decide),
       index_usize_eq values 3#usize (by decide), index_usize_eq values 2#usize (by decide),
       index_usize_eq values 1#usize (by decide), index_usize_eq values 0#usize (by decide),
-      index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift, update_eq _ _ _ hj,
+      index_usize_eq _ _ hj, bind_ok, lift, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_set_epi64, ofBitVec_hcast_I64]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
@@ -509,14 +508,13 @@ theorem Fp8.store_refines (self : fp8.Fp8) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.store_loop0.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, Simd.lanes_refines]
+    simp only [index_usize_eq _ _ hj, bind_ok, Simd.lanes_refines]
     rw [Fp8.store_inner_refines _ _ (by rw [hs]; exact j.isLt)]
     simp [hs]
 
 theorem Fp8.cond_sub_refines (self c : fp8.Fp8) :
     fp8.Fp8.cond_sub self c = ok (toFp8 ((ofFp8 self).cond_sub (ofFp8 c))) := by
-  simp [fp8.Fp8.cond_sub, Simd.sub_limbs_refines, Fp8.cond_sub,
-    Function.uncurry_def, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
+  simp [fp8.Fp8.cond_sub, Simd.sub_limbs_refines, Fp8.cond_sub, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8]
 
 theorem Fp8.canonical_refines (self : fp8.Fp8) :
     fp8.Fp8.canonical self = ok (toFp8 (ofFp8 self).canonical) := by
@@ -526,13 +524,13 @@ theorem Fp8.canonical_refines (self : fp8.Fp8) :
 theorem Fp8.add_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.add self rhs = ok (toFp8 ((ofFp8 self).add (ofFp8 rhs))) := by
   simp [fp8.Fp8.add, Simd.add_limbs_refines, Fp8.multiple_of_p_refines 2#u64 (by decide), Simd.sub_limbs_refines,
-    Fp8.add, Function.uncurry_def, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
+    Fp8.add, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
     show ofU64 2#u64 = 2 from rfl]
 
 theorem Fp8.sub_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.sub self rhs = ok (toFp8 ((ofFp8 self).sub (ofFp8 rhs))) := by
   simp [fp8.Fp8.sub, Simd.add_limbs_refines, Fp8.multiple_of_p_refines 2#u64 (by decide), Simd.sub_limbs_refines,
-    Fp8.sub, Function.uncurry_def, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
+    Fp8.sub, aeneas_uncurry_def, Simd.borrowed_refines, Simd.blend_refines, toFp8,
     show ofU64 2#u64 = 2 from rfl]
 
 theorem Fp8.neg_refines (self : fp8.Fp8) :
@@ -545,7 +543,7 @@ theorem Fp8.select_refines (k : U8) (a b : fp8.Fp8) :
 
 theorem Fp8.eq_mask_refines (self rhs : fp8.Fp8) :
     fp8.Fp8.eq_mask self rhs = ok (toU8 ((ofFp8 self).eq_mask (ofFp8 rhs))) := by
-  simp only [fp8.Fp8.eq_mask, fp8.Fp8.eq_mask_loop, Fp8.canonical_refines, bind_tc_ok, bind_ok,
+  simp only [fp8.Fp8.eq_mask, fp8.Fp8.eq_mask_loop, Fp8.canonical_refines, bind_ok,
     LIMBS_refines]
   refine loop_range (n := LIMBS) _ 8#usize rfl
     (fun k => (toFp8 (ofFp8 self).canonical, toFp8 (ofFp8 rhs).canonical, toU8 k))
@@ -556,13 +554,13 @@ theorem Fp8.eq_mask_refines (self rhs : fp8.Fp8) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.eq_mask_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift,
+    simp only [index_usize_eq _ _ hj, bind_ok, lift,
       core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask]
     simp [toFp8, hs]
 
 theorem Fp8.is_zero_mask_refines (self : fp8.Fp8) :
     fp8.Fp8.is_zero_mask self = ok (toU8 (ofFp8 self).is_zero_mask) := by
-  simp only [fp8.Fp8.is_zero_mask, fp8.Fp8.is_zero_mask_loop, Fp8.canonical_refines, bind_tc_ok, bind_ok,
+  simp only [fp8.Fp8.is_zero_mask, fp8.Fp8.is_zero_mask_loop, Fp8.canonical_refines, bind_ok,
     LIMBS_refines]
   refine loop_range (n := LIMBS) _ 8#usize rfl (fun k => (toFp8 (ofFp8 self).canonical, toU8 k))
     (fun k j => k &&& _mm512_cmpeq_epi64_mask (ofFp8 self).canonical.limbs[j] Simd.zero) toU8
@@ -572,7 +570,7 @@ theorem Fp8.is_zero_mask_refines (self : fp8.Fp8) :
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.is_zero_mask_loop.body hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift, Simd.zero_refines,
+    simp only [index_usize_eq _ _ hj, bind_ok, lift, Simd.zero_refines,
       core.core_arch.x86.avx512f._mm512_cmpeq_epi64_mask]
     simp [toFp8, hs]
 
@@ -637,7 +635,6 @@ theorem pack64_refines (x : Array U64 8#usize) :
     simp
   · intro r s he hs _ hn
     simp_body limbs.pack64_loop.body hn
-    try rfl
   · intro r r' s j he hs he' hs' hi hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     obtain rfl : j = ⟨r.start.val, hj⟩ := Fin.ext hs.symm
@@ -649,7 +646,7 @@ theorem pack64_refines (x : Array U64 8#usize) :
     rcases usize_lt_8 r.start hj with h | h | h | h | h | h | h | h <;>
     · simp only [h, enc, step, packStep, UScalar.ofNatCore_val_eq, LIMB_BITS, Fin.getElem_fin, X,
         getElem_ofArray]
-      simp (disch := decide) only [lift, bind_tc_ok, bind_ok, LIMB_BITS_refines, index_usize_eq,
+      simp (disch := decide) only [lift, bind_ok, LIMB_BITS_refines, index_usize_eq,
         shiftLeft_ok, add_ok, sub_ok, UScalar.ofNatCore_val_eq, u32_ofNat_val, Nat.reduceAdd,
         Nat.reduceMul, Nat.reduceMod, Nat.reduceDiv, Nat.reduceSub, ge_iff_le, UScalar.le_equiv,
         Nat.reduceLeDiff, ite_true, ite_false, shiftRight_64_i32,
@@ -692,7 +689,7 @@ theorem Fp8.reduce_loop_refines (t : Array M512 17#usize) (mask : M512) (r : Arr
     have hj7 : r.start.val < 7 := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.reduce_loop.body hn
     simp only [LIMBS_refines]
-    simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+    simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, index_usize_eq, update_eq,
       core.core_arch.x86.avx512f._mm512_add_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64,
       core.core_arch.x86.avx512f._mm512_and_si512, UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) ?_
@@ -729,14 +726,14 @@ theorem Fp8.reduce_refines (t : Array M512 17#usize) :
       Lane.reduce (laneOf (ofArray id t) l))) := by
   unfold fp8.Fp8.reduce
   simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines,
-    Simd.zero_refines, MASK52_refines, bind_tc_ok, bind_ok, LIMBS_refines]
+    Simd.zero_refines, MASK52_refines, bind_ok, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
-  simp (disch := decide) only [Lane.reduce_row_refines, bind_tc_ok, bind_ok,
+  simp (disch := decide) only [Lane.reduce_row_refines, bind_ok,
     ofArray_toArray_id, laneOf_fromLanes]
-  simp (disch := decide) only [index_usize_toArray, bind_tc_ok, bind_ok, update_eq, set_toArray, sub_ok,
+  simp (disch := decide) only [index_usize_toArray, bind_ok, update_eq, set_toArray, sub_ok,
     show (8#usize).val = LIMBS from rfl]
   rw [Fp8.reduce_loop_refines _ _ _ _ rfl]
-  simp only [bind_tc_ok, bind_ok, ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
+  simp only [bind_ok, ofArray_toArray_id, laneOf_fromLanes, laneOf_set]
   refine congrArg (fun F => ok (toArray id (fromLanes F) rfl)) (funext fun l => ?_)
   simp only [laneOf_replicate, Fin.getElem_fin, Simd.getElem_zero, Simd.getElem_splat,
     UScalar.ofNatCore_val_eq, ofU64_toU64,
@@ -755,10 +752,9 @@ theorem Fp8.mul_refines (self rhs : fp8.Fp8) :
   obtain ⟨B, rfl⟩ : ∃ B : Vector M512 LIMBS, rhs = toArray id B :=
     ⟨ofArray id rhs, (toArray_ofArray (fun _ => rfl) rhs _ _).symm⟩
   unfold fp8.Fp8.mul
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok]
+  simp only [Simd.zero_refines, bind_ok]
   rw [repeat_eq_toArray_id Simd.zero (show (17#usize).val = 2 * LIMBS + 1 from rfl)]
-  simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines,
-    bind_tc_ok, bind_ok, ofArray_toArray_id, laneOf_fromLanes]
+  simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines, bind_ok, ofArray_toArray_id, laneOf_fromLanes]
   rw [Fp8.reduce_refines]
   simp only [toFp8, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8,
     ofArray_toArray_id, laneOf_fromLanes]
@@ -774,7 +770,7 @@ theorem Lane.square_row_refines (t : Array M512 17#usize) (a : Array M512 8#usiz
       Lane.square_row (laneOf (ofArray id t) l) (laneOf (ofArray id a) l) ⟨i.val, hi⟩)) := by
   unfold fp8.square_row fp8.square_row_loop
   have hi' : i.val < 8 := hi
-  simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, LIMBS_refines]
+  simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, LIMBS_refines]
   let A : Vector M512 LIMBS := ofArray id a
   have hij : ∀ j : Fin LIMBS, i.val + j.val + 1 < 2 * LIMBS + 1 := by
     intro j; have := j.isLt; unfold LIMBS at *; omega
@@ -792,7 +788,7 @@ theorem Lane.square_row_refines (t : Array M512 17#usize) (a : Array M512 8#usiz
     · intro r r' m j he hs he' hs' _ hn
       have hj' : r.start.val < 8 := by rw [hs]; exact j.isLt
       simp_body fp8.square_row_loop.body hn
-      simp (disch := (simp; omega)) only [usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+      simp (disch := (simp; omega)) only [usize_add_ok, bind_ok, index_usize_eq, update_eq,
         core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
         core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
       refine congrArg (fun s => ok (cont (r', s))) ?_
@@ -848,7 +844,7 @@ theorem Fp8.square_double_refines (t : Array M512 17#usize) (stop : Usize)
   · intro r r' m k he hs he' hs' hn
     have hk : r.start.val < (17#usize).val := by rw [hs]; exact k.isLt
     simp_body fp8.Fp8.square_loop0.body hn
-    simp only [index_usize_eq _ _ hk, bind_tc_ok, bind_ok,
+    simp only [index_usize_eq _ _ hk, bind_ok,
       core.core_arch.x86.avx512f._mm512_add_epi64, update_eq _ _ _ hk]
     exact congrArg (fun s => ok (cont (r', s)))
       (toArray_set_of_eq id m _ _ k.val k.isLt (_mm512_add_epi64 m[k] m[k]) _ hs (by simp [hs]))
@@ -877,7 +873,7 @@ theorem Fp8.square_diag_refines (t : Array M512 17#usize) (a : Array M512 8#usiz
   · intro r r' m j he hs he' hs' hn
     have hj' : r.start.val < 8 := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.square_loop1.body hn
-    simp (disch := (simp; omega)) only [usize_mul_ok, usize_add_ok, bind_tc_ok, bind_ok, index_usize_eq, update_eq,
+    simp (disch := (simp; omega)) only [usize_mul_ok, usize_add_ok, bind_ok, index_usize_eq, update_eq,
       core.core_arch.x86.avx512ifma._mm512_madd52lo_epu64,
       core.core_arch.x86.avx512ifma._mm512_madd52hi_epu64, UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) ?_
@@ -901,14 +897,14 @@ attribute [local irreducible] Lane.square_row Lane.square_diag Lane.reduce in
 theorem Fp8.square_refines (self : fp8.Fp8) :
     fp8.Fp8.square self = ok (toFp8 (ofFp8 self).square) := by
   unfold fp8.Fp8.square
-  simp only [Simd.zero_refines, bind_tc_ok, bind_ok]
+  simp only [Simd.zero_refines, bind_ok]
   rw [repeat_eq_toArray_id Simd.zero (show (17#usize).val = 2 * LIMBS + 1 from rfl)]
-  simp (disch := decide) only [Lane.square_row_refines, bind_tc_ok, bind_ok,
+  simp (disch := decide) only [Lane.square_row_refines, bind_ok,
     ofArray_toArray_id, laneOf_fromLanes, LIMBS_refines, usize_mul_ok, usize_add_ok]
   rw [Fp8.square_double_refines _ _ (by simp [LIMBS])]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [Fp8.square_diag_refines]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [Fp8.reduce_refines]
   simp only [ofArray_toArray_id, laneOf_fromLanes, laneOf_replicate, Fin.getElem_fin, Simd.getElem_zero]
   simp only [toFp8, Fp8.square, Fp8.mul, Fp8.limbs_ofLanes_ofFn, Fp8.lane_eq, limbs_ofFp8]
@@ -954,7 +950,7 @@ theorem Fp8.to_blst_limbs_loop_refines (t : Array (Array U64 8#usize) 8#usize) :
   · intro r r' m lane he hs he' hs' hn
     have hl : r.start.val < (8#usize).val := by rw [hs]; exact lane.isLt
     simp_body fp8.Fp8.to_blst_limbs_loop.body hn
-    simp only [index_usize_eq _ _ hl, bind_tc_ok, bind_ok, pack64_refines, update_eq _ _ _ hl]
+    simp only [index_usize_eq _ _ hl, bind_ok, pack64_refines, update_eq _ _ _ hl]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
     simp [hs, List.map_set, Vector.toList_set]
@@ -969,7 +965,7 @@ theorem Fp8.to_blst_limbs_refines (self : fp8.Fp8) :
 theorem Fp8.is_larger_root_mask_refines (self : fp8.Fp8) :
     fp8.Fp8.is_larger_root_mask self = ok (toU8 (ofFp8 self).is_larger_root_mask) := by
   simp [fp8.Fp8.is_larger_root_mask, Fp8.to_plain_refines, Fp8.load_refines,
-    HALF_P_MINUS_1_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines, Function.uncurry_def, aeneas_uncurry_def,
+    HALF_P_MINUS_1_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines, aeneas_uncurry_def,
     Simd.borrowed_refines, Fp8.is_larger_root_mask, toFp8]
 
 theorem Fp8.pow_table_refines (self : fp8.Fp8) (T : Vector Fp8 16) :
@@ -989,9 +985,9 @@ theorem Fp8.pow_table_refines (self : fp8.Fp8) (T : Vector Fp8 16) :
     have hj : r.start.val < 16 := by rw [hs]; exact j.isLt
     simp_body fp8.Fp8.pow_p_minus_3_over_4_loop0.body hn
     rw [sub_ok _ _ (by simp; omega)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [index_usize_toArray _ _ _ _ (by simp; omega)]
-    simp only [bind_tc_ok, bind_ok, Fp8.mul_refines, ofFp8_toFp8, UScalar.ofNatCore_val_eq]
+    simp only [bind_ok, Fp8.mul_refines, ofFp8_toFp8, UScalar.ofNatCore_val_eq]
     rw [update_eq _ _ _ hj, bind_ok]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     exact toArray_set_of_eq _ _ _ _ _ j.isLt _ _ hs (by simp [hs])
@@ -1011,29 +1007,29 @@ theorem Fp8.pow_windows_refines (T : Vector Fp8 16) (r : Fp8) (w : Usize) (n : �
     have e : (UScalar.ofNatCore (c.val - (1#usize).val) (by have := c.hBounds; omega) : Usize) =
         c' :=
       UScalar.eq_of_val_eq (by simp; omega)
-    simp only [e, bind_tc_ok, bind_ok, Fp8.square_refines, ofFp8_toFp8,
+    simp only [e, bind_ok, Fp8.square_refines, ofFp8_toFp8,
       P_MINUS_3_OVER_4_WINDOWS_index c' hc'v, lift]
     have hd := windows_lt c'.val (List.mem_range.mpr hc'v)
     simp only [Fp8.windowStep, cast_Usize_ofNatCore, usize_ofNatCore_bne_zero, decide_eq_true_eq]
     split_ifs with hd0
     · rw [index_usize_toArray _ _ _ _ (by rw [UScalar.ofNatCore_val_eq]; exact hd)]
-      simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq, Fp8.mul_refines, ofFp8_toFp8,
+      simp only [bind_ok, UScalar.ofNatCore_val_eq, Fp8.mul_refines, ofFp8_toFp8,
         getElem!_pos T P_MINUS_3_OVER_4_WINDOWS[c'.val]! hd]
     · rfl
 
 theorem Fp8.pow_p_minus_3_over_4_refines (self : fp8.Fp8) :
     fp8.Fp8.pow_p_minus_3_over_4 self = ok (toFp8 (ofFp8 self).pow_p_minus_3_over_4) := by
   unfold fp8.Fp8.pow_p_minus_3_over_4
-  simp only [Fp8.one_refines, bind_tc_ok, bind_ok]
+  simp only [Fp8.one_refines, bind_ok]
   rw [← toArray_replicate toFp8 Fp8.one (show (16#usize).val = 16 from rfl),
     update_eq _ _ _ (by decide),
     toArray_set_of_eq toFp8 _ _ 1#usize 1 (by decide) (ofFp8 self) self rfl (by simp)]
-  simp only [bind_tc_ok, bind_ok, Fp8.pow_table_refines]
+  simp only [bind_ok, Fp8.pow_table_refines]
   have h94 : P_MINUS_3_OVER_4_WINDOWS[94]! < 16 := windows_lt 94 (by simp)
-  simp only [bind_tc_ok, bind_ok, P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide), lift,
+  simp only [bind_ok, P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide), lift,
     cast_Usize_ofNatCore]
   rw [index_usize_toArray _ _ _ _ (by rw [UScalar.ofNatCore_val_eq]; exact h94)]
-  simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, UScalar.ofNatCore_val_eq]
   rw [Fp8.pow_windows_refines _ _ _ _ rfl (by decide),
     ← getElem!_pos _ P_MINUS_3_OVER_4_WINDOWS[94]! h94]
   simp only [Fp8.pow_p_minus_3_over_4, UScalar.ofNatCore_val_eq]

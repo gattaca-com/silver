@@ -192,31 +192,31 @@ theorem miller_body (s : Lanes.State) (xs : Miller.Entries) (h : Holds s xs)
       first (Lanes.double s).2.count = ok out at hlines2
     refine ⟨(Lanes.add (Lanes.double s).2).2, out, bit', ?_, rfl, ?_, ?_, rfl⟩
     · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, ite_true, hdec,
-        hstart, bind_tc_ok, bind_ok, hsquare, hd, hbit, hbitset]
+        hstart, bind_ok, hsquare, hd, hbit, hbitset]
       change (do
         let value2 ← lane_pairs.Lines.multiply_into (Lanes.toLines (Lanes.double s).1) square s.count
         let (l1, self2) ← lane_pairs.LanePairs.add (Lanes.toState (Lanes.double s).2)
         let value3 ← lane_pairs.Lines.multiply_into l1 value2 self2.count
         ok (cont (self2, value3, bit'))) = _
       rw [hlines]
-      simp only [bind_tc_ok, bind_ok, ha]
+      simp only [bind_tc_ok, ha]
       change (do let value3 ← lane_pairs.Lines.multiply_into
                     (Lanes.toLines (Lanes.add (Lanes.double s).2).1) first (Lanes.double s).2.count
                  ok (cont (Lanes.toState (Lanes.add (Lanes.double s).2).2, value3, bit'))) = _
       rw [hlines2]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_tc_ok]
     · simpa only [Miller.sharedBitStep, hbitset, ite_true, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using!
         operation_holds hdouble true
     · simpa only [Miller.sharedBitStep, hbitset, ite_true, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! rout
   · refine ⟨(Lanes.double s).2, first, bit', ?_, rfl, ?_, ?_, rfl⟩
     · simp only [lane_pairs.LanePairs.miller_loop_loop.body, hrun, ite_true, hdec,
-        hstart, bind_tc_ok, bind_ok, hsquare, hd, hbit, hbitset,
+        hstart, bind_ok, hsquare, hd, hbit, hbitset,
         Bool.false_eq_true, ite_false]
       change (do let value2 ← lane_pairs.Lines.multiply_into
                     (Lanes.toLines (Lanes.double s).1) square s.count
                  ok (cont (Lanes.toState (Lanes.double s).2, value2, bit'))) = _
       rw [hlines]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_tc_ok]
     · simpa only [Miller.sharedBitStep, hbitset, ite_false, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! hdouble
     · simpa only [Miller.sharedBitStep, hbitset, ite_false, Miller.sharedStep, operation, Bool.false_eq_true, ite_false, ite_true] using! rfirst
 
@@ -264,11 +264,11 @@ theorem miller_refines_with_packing (raw : lane_pairs.LanePairs) (inputs : List 
     rw [Z_BITS_index 0#usize (by decide)]
     rfl
   refine ⟨⟨out, toU8 s'.degenerate⟩, ?_, rout, ?_⟩
-  · simp only [lane_pairs.LanePairs.miller_loop, hone, hbit, bind_tc_ok, bind_ok, hloop]
+  · simp only [lane_pairs.LanePairs.miller_loop, hone, hbit, bind_ok, hloop]
     change (do let f ← fp12.Fp12.conjugate value
                ok (lane_pairs.MillerProduct.mk f (toU8 s'.degenerate))) = _
     rw [hout]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
   · intro hz
     apply clear hs'
     exact congrArg ofU8 hz

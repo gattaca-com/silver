@@ -181,8 +181,7 @@ private theorem implPure_eq
     (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
       indices.size)
   have hshifts := ModelSpec.mapM_shiftOf indices hi
-  simp only [Constants.FIELD_ELEMENTS_PER_CELL, Bind.bind, Except.bind, Pure.pure,
-    Except.pure] at hshift
+  simp only [Constants.FIELD_ELEMENTS_PER_CELL] at hshift
   simp only [Model.implPure, hlen1, hlen2, hlen3, ite_false, hbounds, hdups,
     Bool.false_eq_true, Constants.FIELD_ELEMENTS_PER_CELL, hL, hC, hI, hP,
     Bind.bind, Except.bind, Pure.pure, Except.pure, hdL, hdC, hdP,

@@ -96,10 +96,10 @@ private theorem from_blst_loop (values : Array (Array U64 6#usize) 8#usize)
         ok (cont (toArray (toArray toU64) v', i')) := by
       simp only [fp8.Fp8.from_blst_limbs_loop.body, limbs.LANES, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-        index_usize_eq values i hlt, bind_tc_ok, bind_ok, unpack52_refines,
+        index_usize_eq values i hlt, bind_ok, unpack52_refines,
         update_eq (n := 8#usize) _ i _ hlt]
       rw [add_ok _ _ (by scalar_tac)]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       congr 2
       apply Prod.ext
       · exact set_toArray (toArray toU64) v rfl i value hlt
@@ -123,7 +123,7 @@ theorem from_blst_limbs_refinement (values : Array (Array U64 6#usize) 8#usize) 
     from_blst_loop values (Vector.replicate 8 (Vector.replicate 8 0))
       0#usize (by decide) (by simp)
   rw [hl]
-  simp only [bind_tc_ok, bind_ok, Fp8.load_refines, Fp8.splat_limbs_refines, Fp8.mul_refines,
+  simp only [bind_ok, Fp8.load_refines, Fp8.splat_limbs_refines, Fp8.mul_refines,
     ofFp8_toFp8, ofArray_toArray_ofArray_ofU64]
   change ok (toFp8 ((Fp8.load ((ofArray (m := 8) (ofArray (m := 6) ofU64) values).map unpack52)).mul
     (Fp8.splat_limbs (ofArray ofU64 constants.TWO_POW_448_MOD_P)))) = _
@@ -182,7 +182,7 @@ private def negLanePoint (a : g1x8.G1x8) : g1x8.G1x8 :=
 
 private theorem negLanePoint_refines (a : g1x8.G1x8) :
     g1x8.G1x8.neg a = ok (negLanePoint a) := by
-  simp only [g1x8.G1x8.neg, Fp8.neg_refines, bind_tc_ok, bind_ok, negLanePoint]
+  simp only [g1x8.G1x8.neg, Fp8.neg_refines, bind_ok, negLanePoint]
 
 private theorem LaneG1Rep.neg {a : g1x8.G1x8} {l : Fin 8} {P : G1}
     (ha : LaneG1Rep a l P) (hP : G1Valid P) :
@@ -236,7 +236,7 @@ private theorem two_lanes_eq (a b : blst.blst_p1) :
   unfold verify.two_lanes
   dsimp only
   simp only [update_eq (n := 8#usize) _ 0#usize _ (by decide),
-    update_eq (n := 8#usize) _ 1#usize _ (by decide), bind_tc_ok, bind_ok,
+    update_eq (n := 8#usize) _ 1#usize _ (by decide), bind_ok,
     from_blst_limbs_refinement]
   rfl
 
@@ -278,7 +278,7 @@ private theorem twoLanePoint_holds (a b : blst.blst_p1)
     simpa only [pairValue, h0, ite_true, twoLanePoint, ofG1x8, ofFp8_toFp8,
       g1ReadJacobian] using (G1x8.Holds.mk hx hy hz)
   · by_cases h1 : l.val = 1
-    · simp only [h0, h1, ite_false, ite_true] at hx hy hz
+    · simp only [h1, ite_true] at hx hy hz
       simpa only [pairValue, h0, h1, ite_false, ite_true, twoLanePoint, ofG1x8,
         ofFp8_toFp8, g1ReadJacobian, show (1:Nat) ≠ 0 by decide] using (G1x8.Holds.mk hx hy hz)
     · simp only [h0, h1, ite_false, zero_words_read] at hx hy hz
@@ -344,8 +344,7 @@ theorem pairing_points_in_lanes_refinement (sums : verify.PairingSums)
   let difference := toG1x8 ((ofG1x8 base).add_complete (ofG1x8 negDelta))
   let out := toG1x8 ((ofG1x8 difference).add_complete (ofG1x8 plus))
   refine ⟨out, ?_, ?_⟩
-  · simp only [verify.PairingSums.points_in_lanes, blst.blst_p1.Insts.CoreDefaultDefault.default,
-      bind_tc_ok, bind_ok, show (let z : blst.blst_fp := ⟨Array.repeat 6#usize 0#u64⟩; blst.blst_p1.mk z z z) = rawInfinity from rfl,
+  · simp only [verify.PairingSums.points_in_lanes, blst.blst_p1.Insts.CoreDefaultDefault.default, bind_ok, show (let z : blst.blst_fp := ⟨Array.repeat 6#usize 0#u64⟩; blst.blst_p1.mk z z z) = rawInfinity from rfl,
       hb, hd, hp, negLanePoint_refines, G1x8.add_complete_refines]
     rfl
   · intro lane

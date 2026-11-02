@@ -74,7 +74,7 @@ private theorem dit_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
     refine ⟨out, ?_, ?_⟩
     · rw [fft8.Fft8.dit_loop1, loop.eq_1]
       simp only [fft8.Fft8.dit_loop1.body, UScalar.lt_equiv, hlt, ite_true,
-        hstage, bind_tc_ok, bind_ok, hmul]
+        hstage, bind_ok, hmul]
       exact hrun
     · simpa only [List.range'_succ, List.foldl_cons, Nat.add_assoc,
         Nat.add_left_comm, Nat.add_comm] using hout
@@ -115,7 +115,7 @@ private theorem dif_wide_steps (table : fft8.Fft8) (roots : _root_.Array Fr)
     refine ⟨out, ?_, ?_⟩
     · rw [fft8.Fft8.dif_loop0, loop.eq_1]
       simp only [fft8.Fft8.dif_loop0.body, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hp, ite_true, hstage, bind_tc_ok, bind_ok, hdiv]
+        hp, ite_true, hstage, bind_ok, hdiv]
       exact hrun
     · simpa only [List.range'_1_concat, List.reverse_append,
         List.reverse_cons, List.reverse_nil, List.nil_append, List.singleton_append,

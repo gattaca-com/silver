@@ -40,7 +40,7 @@ theorem push_list_refines (pairs : List pairing_product.AffinePair)
       rw [hnext', List.append_assoc]
       simpa only [← List.filter_append, List.singleton_append] using room)
     refine ⟨result, ?_, ?_⟩
-    · simp only [List.foldlM_cons, hpush, bind_tc_ok, bind_ok]
+    · simp only [List.foldlM_cons, hpush, bind_tc_ok]
       exact hloop
     · rw [hresult, hnext', List.append_assoc, ← List.filter_append]
       rfl
@@ -84,7 +84,7 @@ private theorem list_pairingCheck_eq (pairs : List pairing_product.AffinePair) :
       decide (factorProduct pairs ^ finalExpExponent = 1) := by
   apply Bool.eq_iff_iff.mpr
   rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation, toField_pairingFold]
-  simp only [List.map_map, Function.comp_def, factorProduct, decide_eq_true_eq]
+  simp only [List.map_map, Function.comp_def, factorProduct]
   constructor
   · exact decide_eq_true
   · exact of_decide_eq_true
@@ -151,7 +151,6 @@ theorem built_owner_correct [RuntimeFeatures] [PairingExternals]
   refine ⟨owner, hbuild, hval, ?_⟩
   rw [is_one_correct blst owner hvalid hfinite, ProductLoop.pairingCheck_eq, list_pairingCheck_eq]
   simp only [alloc.vec.Vec.deref, Slice.from_val]
-  change ok (decide (factorProduct owner.pairs.val ^ finalExpExponent = 1)) = _
   rw [hval, factorProduct_filter]
 
 theorem build_is_one_correct [RuntimeFeatures] [PairingExternals]

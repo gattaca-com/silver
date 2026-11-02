@@ -30,7 +30,7 @@ private theorem powers_loop
     have hn := next_ge iter he
     refine ⟨rs, ?_, ?_⟩
     · rw [loop.eq_1]
-      simp only [domain.roots_of_unity_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [domain.roots_of_unity_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · simp [computePowersAux]
   | succ k ih =>
     have hlt : iter.start.val < iter.end.val := by omega
@@ -75,7 +75,7 @@ private theorem primitive_bits (i : Fin 256) :
     (UScalar.sub_spec (x := bit32 (i.val + 1)) (y := 1#u32) (by simp [hib]))
   obtain ⟨q, hq, hqv⟩ := UScalar.div_spec bit1 (y := 64#u32) (by simp)
   obtain ⟨w, hw, hwv⟩ := spec_imp_exists (Aeneas.Std.Array.index_usize_spec domain.R_MINUS_ONE
-    (UScalar.cast .Usize q) (by simp [U32.cast_Usize_val_eq, hqv, hv1.1, hib]; omega))
+    (UScalar.cast .Usize q) (by simp [hqv, hv1.1, hib]; omega))
   obtain ⟨r, hr, hrv⟩ := spec_imp_exists (UScalar.rem_spec bit1 (y := 64#u32) (by simp))
   obtain ⟨s, hs, hsv⟩ := spec_imp_exists (UScalar.ShiftRight_spec w r (by simp [hrv]; omega))
   simp only [primitiveBits, h1, hq, lift, bind_ok, hw, hr, hs, Result.ok.injEq, Prod.mk.injEq]
@@ -87,7 +87,7 @@ private theorem primitive_bits (i : Fin 256) :
     have hqv' : q.val = i.val / 64 := by simp [hqv, hv1']
     have hsv' : s.val = (domain.R_MINUS_ONE.val[i.val / 64]!).val / 2 ^ (i.val % 64) := by
       rw [hsv.1, Nat.shiftRight_eq_div_pow, hrv', hwv]
-      simp [U32.cast_Usize_val_eq, hqv', getElem!_pos, show i.val / 64 < 4 by omega]
+      simp [hqv', getElem!_pos, show i.val / 64 < 4 by omega]
     rw [← hbit i, ← hsv', Bool.eq_iff_iff, beq_iff_eq, decide_eq_true_iff, UScalar.eq_equiv,
       UScalar.val_and]
     simp [Nat.and_one_is_mod]
@@ -126,11 +126,11 @@ private theorem primitive_step
       let (b, flag) ← primitiveBits (bit32 (i.val + 1))
       ok (cont (frEncode (if flag then x * x * Fr.ofNat 7 else x * x), b))) := by
     simp only [domain.primitive_root_loop.body, primitive_root_of_unity_eq, hc, ite_true, primitiveBits,
-      FrScalar.fr_mul_refines, bind_tc_eq, bind_ok, Aeneas.Std.bind_assoc, Aeneas.Std.uncurry_apply_pair]
+      FrScalar.fr_mul_refines, bind_ok, Aeneas.Std.bind_assoc, Aeneas.Std.uncurry_apply_pair]
     congr! with bit1 _ _ _ _ _ i5
     by_cases h : i5 = 1#u64 <;> simp [h]
   rw [he, primitive_bits]
-  simp only [bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, decide_eq_true_eq]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, decide_eq_true_eq]
 
 private theorem primitive_loop
     (logOrder : U32) (n : Nat) (hl : logOrder.val ≤ n) (hn : n ≤ 256) :
@@ -212,7 +212,7 @@ theorem roots_refinement_of_blst (logOrder : U32)
   refine ⟨rs, ?_, ?_⟩
   · unfold domain.roots_of_unity
     rw [hshift, primitive_root_refinement_of_blst logOrder (by omega)]
-    simp only [fr_one_eq, bind_tc_ok, bind_ok]
+    simp only [fr_one_eq, bind_ok]
     exact hr
   · simpa [alloc.vec.Vec.with_capacity, hv, model_roots _ hl, computePowers] using hval
 

@@ -68,8 +68,7 @@ theorem copy_cell_body (blob : Blob) (cells : Cells)
     rw [scalar_mul_ok 64#usize 32#usize (by scalar_tac)]
     congr 1
   dsimp only [k] at hindex hadd hstart hcopy hback
-  simp only [cell_extender.copy_blob_loop.body, hn, bind_tc_ok, bind_ok,
-    Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hindex, Array.to_slice_mut, lift, hbytes,
+  simp only [cell_extender.copy_blob_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair, hindex, Array.to_slice_mut, lift, hbytes,
     hstart, hadd, hstop, hsrc, hcopy, hback]
   rfl
 
@@ -87,7 +86,7 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
     refine ⟨cells, ?_, by simpa [hs'] using hc⟩
     rw [cell_extender.copy_blob_loop, loop.eq_1]
     simp only [cell_extender.copy_blob_loop.body,
-      Refinement.next_ge iter (by omega), bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hk : iter.start.val < 64 := by omega
     obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
@@ -98,7 +97,6 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
       by_cases hke : k = iter.start.val
       · subst k
         simp only [cells', Array.set_val_eq]
-        change arrayBytes ((cells.val.set iter.start.val _)[iter.start.val]!) = _
         rw [List.set_getElem!_eq _ _ _ _ ⟨by rw [cells.property]; exact Nat.lt_trans hk (by decide), rfl⟩]
         exact blobCell_bytes blob iter.start.val hk
       · simpa [cells', Array.set, Array.from_val, List.set_getElem!_ne, Ne.symm hke] using hc k (by omega)
@@ -130,7 +128,7 @@ theorem write_cells_loop
     refine ⟨cells, ?_, by simpa [hs'] using hw⟩
     rw [cell_extender.CellExtender.write_extension_loop, loop.eq_1]
     simp only [cell_extender.CellExtender.write_extension_loop.body,
-      Refinement.next_ge iter (by omega), bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hj : iter.start.val < 4096 := by omega
     obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)

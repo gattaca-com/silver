@@ -35,15 +35,15 @@ theorem round_step (w : Array U32 64#usize) (s : Spec.RoundState) (t : Usize)
   rw [constants_refines] at hk
   have hw := words_get w t.val ht
   simp only [sha256.portable.compress_loop.body,ht',ite_true,bigSigma1_refines,
-    choose_refines,majority_refines,bigSigma0_refines,wrapping_add_word,lift,bind_tc_ok, bind_ok]
+    choose_refines,majority_refines,bigSigma0_refines,wrapping_add_word,lift, bind_ok]
   rw [index_usize_eq _ _ ht]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [← word_ofWord (sha256.K.val[t.val]'_), ← hk,wrapping_add_word,index_usize_eq _ _ ht]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [← word_ofWord (w.val[t.val]'_), ← hw]
   simp only [wrapping_add_word]
   rw [add_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   unfold loopArgs Spec.round
   rfl
 

@@ -85,7 +85,7 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
     refine ⟨data, ?_, by simpa only [he] using hp, fun _ _ => rfl⟩
     rw [interpolation_kernel.InterpolationKernel.add_cell_loop, loop.eq_1]
     simp only [interpolation_kernel.InterpolationKernel.add_cell_loop.body,
-      vectors_per_cell_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, he,
+      vectors_per_cell_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, he,
       lt_self_iff_false, ite_false]
   | succ rem ih =>
     have hvt : v.val < 8 := by omega
@@ -148,11 +148,10 @@ private theorem add_cell_loop (data : alloc.vec.Vec fr8.Fr8)
       have hadd : base + v = ok index := by simpa only [hb] using scalar_add_ok base v (by scalar_tac)
       have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
       simp only [interpolation_kernel.InterpolationKernel.add_cell_loop.body,
-        vectors_per_cell_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hvt, ite_true,
-        lift, bytes_per_vector_eq, hoff, helement, hproduct, hbase, hadd, hmut, hinc,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        vectors_per_cell_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, hvt, ite_true,
+        lift, bytes_per_vector_eq, hoff, helement, hproduct, hbase, hadd, hmut, hinc, Aeneas.Std.uncurry_apply_pair]
       cases first <;> simp only [Bool.false_eq_true, ite_false, ite_true] at hresult ⊢ <;>
-        simp only [hindex, bind_tc_ok, bind_ok, hi, hresult, next]
+        simp only [hindex, bind_ok, hi, hresult, next]
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hnext (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.add_cell_loop, loop.eq_1]
@@ -203,8 +202,7 @@ theorem add_cell_refinement
   · have hnot : decide (¬ kernel.used.val[column.val]! = true) = !kernel.used.val[column.val]! := by
       cases kernel.used.val[column.val]! <;> rfl
     simp only [interpolation_kernel.InterpolationKernel.add_cell,
-      (multiplier_refinement power).1, bind_tc_ok, bind_ok, hweight, hindex, hmut,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hnot, hloop, next, used]
+      (multiplier_refinement power).1, bind_ok, hweight, hindex, hmut, Aeneas.Std.uncurry_apply_pair, hnot, hloop, next, used]
   · exact ⟨hk.1, hk.2.1, ho.1, by simpa [next, used, alloc.vec.Vec.set, alloc.vec.Vec.from_val] using hk.2.2.2.1,
       hk.2.2.2.2⟩
   · intro v

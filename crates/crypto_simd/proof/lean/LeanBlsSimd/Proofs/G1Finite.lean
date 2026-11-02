@@ -175,7 +175,7 @@ theorem uncompress_decoded {b : Encoding}
   clear hu hv hc hi hd hx hsign hroot hroot'
   generalize hsg : Fp.signBit root = sign
   generalize decide (b[0] &&& 0x20 ≠ 0) = desired
-  cases sign <;> cases desired <;> split_ifs <;> first | rfl | contradiction | (simp [hsg] <;> rfl)
+  cases sign <;> cases desired <;> split_ifs <;> first | rfl | contradiction | (simp [hsg] )
 
 theorem invalid_undecided {b : Encoding} (h : (decodeLane b).invalid = true) :
     (decodeLane b).undecided = false := by

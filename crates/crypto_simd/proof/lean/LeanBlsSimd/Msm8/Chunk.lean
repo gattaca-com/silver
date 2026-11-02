@@ -69,7 +69,7 @@ private theorem chunk_sum_eq_afterFilter (self : msm8.Msm8)
     apply UScalar.eq_of_val_eq
     exact halign
   simp only [msm8.Msm8.chunk_sum, filterPrefix, he, massert, ite_true,
-    generatedAfterFilter, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def]
+    generatedAfterFilter, Aeneas.Std.bind_assoc, bind_ok]
 
 private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
     (hn : alloc.vec.Vec.len self.finite_points ≠ 0#usize)
@@ -105,10 +105,10 @@ private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
   rw [hmul] at hprep
   simp only [bind_ok, bind_success_std] at hprep
   obtain ⟨extra, hextra, capacity, hcapacity, reset, hreset, first, hfirst, hsecond⟩ := hprep
-  simp only [generatedAfterFilter, hn, ite_false, hsplit, bind_tc_ok, bind_ok,
+  simp only [generatedAfterFilter, hn, ite_false, hsplit, bind_ok,
     glv.HALF_SCALAR_BITS, hfill, hmul, msm8.buckets.Buckets.impl.windows,
     hextra, hcapacity, hreset, hp, hfirst, hsecond]
-  simp only [finish, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok]
+  simp only [finish, Aeneas.Std.bind_assoc]
   congr 1
   funext result
   rcases result with ⟨flag, next⟩
@@ -129,13 +129,13 @@ theorem chunk_sum_eq_finiteCore
     filter_prefix_correct state points scalars halign hp hs (by omega)
   let filtered : msm8.Msm8 := {state with finite_points := ps, finite_scalars := ss}
   rw [chunk_sum_eq_afterFilter state points scalars halign]
-  simp only [finiteCore, hfilter, bind_tc_ok, bind_ok]
+  simp only [finiteCore, hfilter, bind_ok]
   by_cases hz : ps.val.length = 0
   · have hn : alloc.vec.Vec.len ps = 0#usize := by
       apply UScalar.eq_of_val_eq
       exact hz
-    simp only [generatedAfterFilter, hn, ite_true, bind_assoc_eq, bind_tc_ok, bind_ok]
-    simp only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def]
+    simp only [generatedAfterFilter, hn, ite_true]
+    simp only [Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def]
   · have hn : alloc.vec.Vec.len ps ≠ 0#usize := by
       intro he
       exact hz (congrArg UScalar.val he)
@@ -168,7 +168,7 @@ theorem chunk_sum_eq_finiteCore
       let (next, out) ← finish prepared
       ok (out, next))
     rw [hinit]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     apply afterFilter_of_initialise filtered prepared hn hinit
     have h := hinitialised.store_len
     simpa only [filtered, haligned] using h
@@ -184,6 +184,6 @@ theorem chunk_sum_refinement
   obtain ⟨next, out, hcore, hrep⟩ := finiteCore_correct state points scalars halign hp hs255 hchunk
   refine ⟨next, out, ?_, hrep⟩
   rw [chunk_sum_eq_finiteCore state points scalars halign hp hs255 hchunk, hcore]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair] )
 
 end LeanBlsSimd.Msm8

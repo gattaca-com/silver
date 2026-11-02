@@ -43,7 +43,7 @@ theorem chunk_end (points : Slice blst.blst_p1_affine) (start : Usize)
       finish.val = start.val + min 4096 (points.val.length - start.val) := by
   have hsub : start.val ≤ (Slice.len points).val := by simpa using Nat.le_of_lt hstart
   rw [sub_ok _ _ hsub]
-  simp only [bind_tc_ok, bind_ok, msm8.CHUNK, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, msm8.CHUNK, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
   by_cases hsmall : points.val.length - start.val < 4096
   · simp only [Slice.len, Usize.ofNatCore_val_eq, hsmall, ite_true]
     exact ⟨_, rfl, by change points.val.length = start.val + min 4096 (points.val.length - start.val); omega⟩
@@ -117,7 +117,7 @@ private theorem msm_loop_refinement
           ok (cont (mid, total, finish))) = _
         simp only [← bind_tc_eq] at hend
         rw [hend]
-        simp only [bind_tc_ok, bind_ok, hps, hss, hpart, G1x8.add_complete_refines, ofG1x8_toG1x8]
+        simp only [bind_tc_ok, hps, hss, hpart, G1x8.add_complete_refines, ofG1x8_toG1x8]
       obtain ⟨next, out, hloop, hout⟩ := ih (points.val.length - finish.val) (by omega)
         mid (total.add_complete part) finish _ hfinishle (htotal.add_complete hpartrep) rfl
       refine ⟨next, out, ?_, ?_⟩
@@ -156,10 +156,10 @@ theorem msm_refinement
     apply UScalar.eq_of_val_eq
     simpa only [Slice.len, Usize.ofNatCore_val_eq] using halign
   refine ⟨encoded, next, ?_, hresult⟩
-  simp only [msm8.Msm8.msm, halign', massert, ite_true, bind_tc_ok, bind_ok,
+  simp only [msm8.Msm8.msm, halign', massert, ite_true, bind_ok,
     G1x8.infinity_refines, hloop]
   change (do let encoded ← msm8.lane_zero_in_blst (toG1x8 out); ok (encoded, next)) = _
   rw [hencoded]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd.Msm8

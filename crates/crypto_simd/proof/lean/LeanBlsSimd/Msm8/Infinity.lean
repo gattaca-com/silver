@@ -47,8 +47,7 @@ private theorem infinity_loop_refines (p : blst.blst_p1_affine) (k : Usize)
         · rw [loop.eq_1]
           simp only [msm8.is_infinity_loop.body, UScalar.lt_equiv,
             UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-            index_usize_eq p.x.l k hlt, index_usize_eq p.y.l k hlt,
-            bind_tc_ok, bind_ok, hx, hy]
+            index_usize_eq p.x.l k hlt, index_usize_eq p.y.l k hlt, bind_ok, hx, hy]
           rw [add_ok _ _ (by
             have := two_pow_32_le_usize
             simp only [UScalar.ofNatCore_val_eq]
@@ -84,7 +83,7 @@ theorem is_infinity_refines (p : blst.blst_p1_affine) :
     msm8.is_infinity p = ok (decide (∀ j : Fin 6, zeroWord p j)) := by
   obtain ⟨out, hout, hz⟩ := infinity_loop_refines p 0#usize (by decide)
   simp only [UScalar.ofNatCore_val_eq, Nat.zero_le, forall_true_left] at hz
-  simp only [msm8.is_infinity, hout, bind_tc_ok, bind_ok]
+  simp only [msm8.is_infinity, hout, bind_ok]
   apply congrArg ok
   exact decide_eq_decide.mpr hz
 

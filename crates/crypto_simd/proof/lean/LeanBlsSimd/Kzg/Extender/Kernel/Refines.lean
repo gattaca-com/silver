@@ -75,11 +75,10 @@ theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
     (bitReversalPermutation (Model.extension values)) heSize (by simpa only [next, deref_slice] using herep) cells
   refine ⟨next, out, ?_, ⟨hk.1, hk.2.1, hk.2.2.1, hlen, hk.2.2.2.2⟩,
     ⟨rfl, rfl, rfl⟩, (by simpa only [next, deref_slice] using herep), hout, hframe⟩
-  simp only [extension_kernel.ExtensionKernel.extend, alloc.vec.Vec.deref_mut, lift,
-    bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [extension_kernel.ExtensionKernel.extend, alloc.vec.Vec.deref_mut, lift, bind_ok, Aeneas.Std.uncurry_apply_pair]
   simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hinverse
   rw [hinverse]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let shifted ← extension_kernel.ExtensionKernel.extend_loop0 kernel.shift inverseVec 0#usize
     let evaluations ← fft8.Fft8.dif kernel.forward shifted.slice
@@ -87,7 +86,7 @@ theorem extend_refinement (kernel : extension_kernel.ExtensionKernel)
       ⟨evaluations⟩ cells 0#usize
     ok ({ kernel with data := ⟨evaluations⟩ }, out)) = _
   simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hforward
-  simp only [hshift, bind_tc_ok, bind_ok, hforward, hencode, next]
+  simp only [hshift, bind_tc_ok, hforward, hencode, next]
 
 /-- The generated Some branch needs no correctness law for any external operation.
 `compute` dispatches on the stored kernel without reading `simdAvailable`. -/
@@ -118,8 +117,7 @@ theorem compute_refinement
     obtain ⟨err, herr⟩ := herror
     refine ⟨false, { v with kernel := some decoded }, cells, ?_, hstate decoded hdi,
       ?_, (fun _ => rfl), decoded, rfl, hdt⟩
-    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
+    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
     · simp [Model.compute, Model.extend, herr]
   | true =>
     obtain ⟨values, hblob, hdata⟩ := hvalues rfl
@@ -132,8 +130,7 @@ theorem compute_refinement
       (by simp), next, rfl, ht.1.trans hdt.1, ht.2.1.trans hdt.2.1, ht.2.2.trans hdt.2.2⟩
     · have hcount : CELLS_PER_EXT_BLOB = ok 128#usize := cells_per_ext_blob_eq
       have hhalf : 128#usize / 2#usize = ok 64#usize := rfl
-      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, hcount, hhalf, hcopy, hextend]
+      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, hcount, hhalf, hcopy, hextend]
     · simp only [Model.compute, Model.extend, hblob]
       change (true, cellBytes out) = (true, _)
       rw [hout]

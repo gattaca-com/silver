@@ -28,7 +28,7 @@ private theorem scale_loop
     have hn := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [fft.inverse_fft_loop, loop.eq_1]
-    simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [fft.inverse_fft_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons a remaining ih =>
     obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
     have hindex : Slice.index_usize out iter.start = ok (frEncode a) := by
@@ -42,7 +42,7 @@ private theorem scale_loop
       simp [Slice.update, ho, hi, out', List.set_append_right]
     have hbody : fft.inverse_fft_loop.body (frEncode factor) iter out =
         ok (cont (iter', out')) := by
-      simp only [fft.inverse_fft_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+      simp only [fft.inverse_fft_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair,
         hindex, FrScalar.fr_mul_refines, hupdate]
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * factor]) out' (Slice.from_val _ _) iter'
       (by simp [hi', hi]) (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
@@ -142,7 +142,7 @@ private theorem butterfly_suffix
     have hnext := Refinement.next_ge iter (by simp_all)
     refine ⟨out, ?_, ?_⟩
     · rw [fft.transform_loop, loop.eq_1]
-      simp only [fft.transform_loop.body, hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [fft.transform_loop.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · simpa [leftInputs, rightInputs, upperOutputs, lowerOutputs] using ho
   | cons p remaining ih =>
     rcases p with ⟨a, b, w⟩
@@ -200,7 +200,7 @@ private theorem butterfly_suffix
           (doneRight ++ [a - b * w]) ++ rightInputs remaining).map frEncode := by
       simp [hout2, beforeEven, afterEven, List.append_assoc]
     have hbody : fft.transform_loop.body roots stride half iter out = ok (cont (iter', out2)) := by
-      simp only [fft.transform_loop.body, hnext, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+      simp only [fft.transform_loop.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair,
         hadd, hodd, hmul, hroot, FrScalar.fr_mul_refines, heven,
         FrScalar.fr_sub_refines, hupdateOdd, heven1,
         FrScalar.fr_add_refines, hupdateEven]
@@ -250,7 +250,7 @@ private theorem transform_refinement
       simp [getElem!_pos values 0 (by omega)]
     refine ⟨result, ?_, ?_⟩
     · rw [fft.transform]
-      simp only [hlen, ite_true, hindex, bind_tc_ok, bind_ok, hupdate]
+      simp only [hlen, ite_true, hindex, bind_ok, hupdate]
     · rw [fftFieldAux]
       simpa [hv, hvals] using hresult
   | succ k ih =>
@@ -349,7 +349,7 @@ private theorem transform_refinement
     dsimp only [out1] at hright
     refine ⟨result, ?_, ?_⟩
     · rw [fft.transform]
-      simp only [ite_eq_right hnNe, hdiv, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+      simp only [ite_eq_right hnNe, hdiv, bind_ok, Aeneas.Std.uncurry_apply_pair,
         Slice.index_mut_SliceIndexRangeToUsizeSliceInst, hleft, hmul, hleftRun,
         Slice.index_mut_SliceIndexRangeFromUsizeSliceInst, hright, hadd, hrightRun]
       exact hloop
@@ -407,7 +407,7 @@ theorem fft_refinement_of_blst
   refine ⟨transformed, ?_, htransformed⟩
   have hnpos : n > 0#usize := by simp [UScalar.lt_equiv, hn]
   simp only [fft.fft, show Slice.len out = n from rfl, hnpos, hinLen, hrootsLen,
-    hsub, lift, bind_tc_ok, bind_ok, hand, hrem, hquot, htransform]
+    hsub, lift, bind_ok, hand, hrem, hquot, htransform]
   simp [massert]
 
 theorem inverse_fft_refinement_of_blst
@@ -425,7 +425,7 @@ theorem inverse_fft_refinement_of_blst
     { start := 0#usize, «end» := Slice.len transformed } (by simp)
     (by simp [htransformed])
   refine ⟨result, ?_, ?_⟩
-  · simp only [fft.inverse_fft, hfft, bind_tc_ok, bind_ok, hscale]
+  · simp only [fft.inverse_fft, hfft, bind_ok, hscale]
   · simpa [Model.inverseFft] using hresult
 
 theorem inverse_fft_refinement

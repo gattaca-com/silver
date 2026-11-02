@@ -18,7 +18,7 @@ private theorem list_eq_refines (xs ys : List U64) (h : xs.length = ys.length) :
     | nil => simp_all
     | cons y ys =>
       have hl : xs.length = ys.length := by simpa using h
-      simp only [List.zip_cons_cons,List.allM_cons,bind_tc_ok, bind_ok]
+      simp only [List.zip_cons_cons,List.allM_cons,bind_tc_ok]
       by_cases he : x=y
       · subst y
         simpa only [decide_true,ite_true,List.cons.injEq,true_and] using ih ys hl

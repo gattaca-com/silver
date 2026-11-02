@@ -44,7 +44,7 @@ theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
   have hindex : core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
       data {start, «end» := stop} = ok src := by
     simp [core.slice.index.Slice.index,core.slice.index.SliceIndexRangeUsizeSlice.index,
-      start,stop,src,chunk,loadChunk,Array.to_slice,Array.from_val,hchunk]
+      start,stop,src,chunk,loadChunk,Array.to_slice,hchunk]
   have hcopy : core.slice.Slice.copy_from_slice core.marker.CopyU8
       (Array.to_slice (Array.repeat 16#usize 0#u8)) src = ok src := by
     simp [core.slice.Slice.copy_from_slice,UScalar.eq_equiv,src,Array.to_slice,chunk.property]
@@ -68,8 +68,8 @@ theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
   refine ⟨next,?_,rfl⟩
   have hi' : i < 4#usize := hi
   simp only [sha256.extensions.compress_blocks_loop0_loop0.body,hi',ite_true,
-    lift,Array.to_slice_mut,bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+    lift,Array.to_slice_mut, bind_ok, Aeneas.Std.uncurry_apply_pair,sha256.BLOCK]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   change (do
     let s1 ← core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
       data {start, «end» := stop}
@@ -80,10 +80,10 @@ theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
     let a ← Array.update w i v1
     ok (cont (a,next))) = _
   rw [hindex]
-  simp only [bind_tc_ok, bind_ok,hcopy,hback]
+  simp only [bind_tc_ok,hcopy,hback]
   simp only [bind_tc_eq] at hload ⊢
   rw [← Std.bind_assoc,hload]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [update_eq _ _ _ hi]
   simp only [bind_ok]
 

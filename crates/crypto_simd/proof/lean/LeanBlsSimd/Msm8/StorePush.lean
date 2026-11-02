@@ -124,17 +124,17 @@ theorem push_blst_refines (s : msm8.store.PointStore)
     simp only [Slice.len_val]
     change s.len.val + points.val.length < _
     omega
-  simp only [msm8.store.PointStore.push_blst, hsign, massert, ite_true, bind_tc_ok, bind_ok]
+  simp only [msm8.store.PointStore.push_blst, hsign, massert, ite_true, bind_ok]
   rw [add_ok _ _ hadd]
-  simp only [bind_tc_ok, bind_ok, pointStore_capacity_refines, UScalar.le_equiv,
+  simp only [bind_ok, pointStore_capacity_refines, UScalar.le_equiv,
     UScalar.ofNatCore_val_eq, Slice.len_val]
   have hcap' : s.len.val + points.length ≤ s.rows.val.length / 2 := hcap
-  simp only [hcap', ite_true, bind_tc_ok, bind_ok, Fp8.splat_limbs_refines]
+  simp only [hcap', ite_true, bind_ok, Fp8.splat_limbs_refines]
   change (do
     let result ← msm8.store.PointStore.push_blst_loop0 s.rows s.len points negated
       endomorphism (toFp8 fromBlstFactor) (toFp8 endomorphismFactor) 0#usize
     ok ({ rows := result.1, len := result.2 } : msm8.store.PointStore)) = _
   rw [hloop]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd

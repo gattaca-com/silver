@@ -20,7 +20,7 @@ theorem mul_raw {x y : fp2x8.Fp2x8} {a b : P F}
   obtain ⟨q, hq, rq⟩ := product_loop_start rleft rright (by decide) (Array.repeat 7#usize z)
   obtain ⟨out, hout, rout⟩ := from_product_lanes rq
   refine ⟨out, ?_, rout⟩
-  simp only [fp12.Fp12.mul, hleft, hright, hz, mul_loop_eq, hq, hout, bind_tc_ok, bind_ok]
+  simp only [fp12.Fp12.mul, hleft, hright, hz, mul_loop_eq, hq, hout, bind_ok]
 
 /-- The six active lanes are ordered by cubic coordinate within each quadratic half. -/
 def value (a : P F) : Bls.Fp12 :=

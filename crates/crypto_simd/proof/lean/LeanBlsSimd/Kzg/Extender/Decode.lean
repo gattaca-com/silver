@@ -70,7 +70,7 @@ def chunkVerdict (blob : Blob) (j : Nat) : Option Fr :=
 def storeEvaluation (v : cell_extender.CellExtender) (j : Nat) (f : Fr) :
     cell_extender.CellExtender :=
   { v with evaluations := alloc.vec.Vec.from (v.evaluations.val.set (rev j) (frEncode f)) (by
-      simpa using v.evaluations.property) }
+      simp) }
 
 theorem storeEvaluation_invariant (v : cell_extender.CellExtender)
     (hv : StateInvariant v) (j : Nat) (f : Fr) :
@@ -116,14 +116,14 @@ theorem decode_blob_body
   rw [blobChunk_bytes] at hdecode
   unfold cell_extender.CellExtender.decode_blob_loop.body
   simp only [FIELD_ELEMENTS_PER_BLOB, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-    hj, ite_true, lift, bind_tc_ok, bind_ok, Array.to_slice_mut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+    hj, ite_true, lift, bind_ok, Array.to_slice_mut, Aeneas.Std.uncurry_apply_pair,
     hstart, hadd, hstop, hindex, hcopy, hback]
   rw [hdecode]
   have hlen := hv.2.2.2.2.1
   cases hd : bytesToBlsField ((arrayBytes blob).extract (32*j.val) (32*(j.val+1))) with
   | error err => simp [chunkVerdict, Nat.mul_comm, hd, Except.toOption]
   | ok value =>
-    simp only [Except.toOption, Option.map_some, reverse_bits_blob, bind_tc_ok, bind_ok]
+    simp only [Except.toOption, Option.map_some, reverse_bits_blob, bind_ok]
     simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize,
       alloc.vec.Vec.index_usize, hlen, rev_lt, storeEvaluation, chunkVerdict,
       Nat.mul_comm, hd, Except.toOption, bind_tc_ok, bind_ok, alloc.vec.Vec.set]
@@ -218,8 +218,7 @@ theorem decode_blob_refinement
   obtain ⟨next, stop, hloop, hn, hf, _, hr⟩ :=
     decode_blob_loop_eq self hv blob 0#usize (by decide)
   refine ⟨decide (stop = FIELD_ELEMENTS_PER_BLOB), next, ?_, hn, hf, ?_⟩
-  · simp only [cell_extender.CellExtender.decode_blob, hloop, bind_tc_ok, bind_ok,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  · simp only [cell_extender.CellExtender.decode_blob, hloop, bind_ok, Aeneas.Std.uncurry_apply_pair]
   · have hsize : (arrayBytes blob).size = 131072 := by
       simp [arrayBytes, bytes, ByteArray.size, blob.property]
     simp only [UScalar.ofNatCore_val_eq, Nat.sub_zero, Nat.zero_add] at hr
@@ -252,7 +251,6 @@ theorem decode_blob_refinement
       rw [getElem!_pos next.evaluations.val j hj] at hget
       rw [List.getElem_map]
       conv_rhs => rw [_root_.Array.getElem_toList, getElem_bitReversalPermutation]
-      change next.evaluations.val[j] = frEncode xs.toArray[reverseBits j xs.toArray.size]!
       simpa only [List.size_toArray, hlen, rev, List.getElem!_toArray] using hget
 
 end LeanBlsSimd.Kzg.Extender

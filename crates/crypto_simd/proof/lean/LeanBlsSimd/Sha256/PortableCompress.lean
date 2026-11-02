@@ -18,12 +18,12 @@ theorem compress_refines (state : Array U32 8#usize) (data : Slice U8) (offset :
       words out = Spec.compressBlock (words state) (Spec.bytes (data.val.map ofU8)) offset.val := by
   obtain ⟨w,hschedule,hw⟩ := schedule_refines data offset hdata
   rw [sha256.portable.compress,hschedule]
-  simp (disch := scalar_tac) only [index_word,bind_tc_ok, bind_ok]
+  simp (disch := scalar_tac) only [index_word, bind_ok]
   have hr := rounds_refines w (Spec.stateWords (words state)) 0#usize (by decide)
   dsimp only [Spec.stateWords] at hr
   norm_num only [UScalar.ofNatCore_val_eq] at hr ⊢
   rw [hr]
-  simp only [bind_tc_ok, bind_ok,roundArgs,lift]
+  simp only [bind_ok,roundArgs,lift]
   refine ⟨_,rfl,?_⟩
   rw [Spec.compressBlock_eq,← hw]
   unfold words Spec.feedForward
@@ -44,10 +44,10 @@ theorem compress_blocks_step (state : Array U32 8#usize) (data : Slice U8)
   refine ⟨out,next,?_,hwords,rfl⟩
   have hb : block < blocks := hblock
   simp only [sha256.portable.compress_blocks_loop.body,hb,ite_true,sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   change (do let s ← sha256.portable.compress state data pos; ok (cont (s,next))) = _
   rw [hout]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] )
 
 theorem compress_blocks_loop_refines (state : Array U32 8#usize) (data : Slice U8)
     (offset blocks block : Usize) (hblock : block.val ≤ blocks.val)

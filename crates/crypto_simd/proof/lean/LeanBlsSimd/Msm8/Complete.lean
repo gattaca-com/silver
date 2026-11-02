@@ -260,8 +260,7 @@ theorem coincident_refines (self sum : g1x8.G1x8) (sx sy : U8) :
 theorem add_affine_complete_refines (self : g1x8.G1x8) (qx qy : fp8.Fp8) :
     g1x8.G1x8.add_affine_complete self qx qy =
       ok (toG1x8 ((ofG1x8 self).add_affine_complete (ofFp8 qx) (ofFp8 qy))) := by
-  simp only [g1x8.G1x8.add_affine_complete, add_affine_refines, bind_tc_ok, bind_ok,
-    Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
+  simp only [g1x8.G1x8.add_affine_complete, add_affine_refines, bind_ok, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
     show (0#u8) = toU8 0 from rfl, toU8_inj, add_affine_complete,
     Fp8.is_zero_mask_refines, Fp8.mul_refines, Fp8.square_refines, Fp8.eq_mask_refines,
     lift, toU8_not, toU8_and, coincident_refines, from_affine_refines, select_refines,
@@ -271,8 +270,7 @@ theorem add_affine_complete_refines (self : g1x8.G1x8) (qx qy : fp8.Fp8) :
 theorem add_complete_refines (self q : g1x8.G1x8) :
     g1x8.G1x8.add_complete self q =
       ok (toG1x8 ((ofG1x8 self).add_complete (ofG1x8 q))) := by
-  simp only [g1x8.G1x8.add_complete, add_refines, bind_tc_ok, bind_ok,
-    Function.uncurry_def, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
+  simp only [g1x8.G1x8.add_complete, add_refines, bind_ok, aeneas_uncurry_def, Prod.map_fst, Prod.map_snd,
     show (0#u8) = toU8 0 from rfl, toU8_inj, add_complete,
     Fp8.is_zero_mask_refines, Fp8.mul_refines, Fp8.square_refines, Fp8.eq_mask_refines,
     lift, toU8_not, toU8_and, toU8_or, coincident_refines, select_refines,

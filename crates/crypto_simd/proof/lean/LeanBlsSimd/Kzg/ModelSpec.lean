@@ -11,7 +11,7 @@ theorem cell_decode_size (cell : Cell) (evals : CosetEvals)
   unfold cellToCosetEvals at h
   split at h
   · simp [bind, Except.bind] at h
-  · simp only [pure, Except.pure, bind, Except.bind] at h
+  · simp only [pure, Except.pure] at h
     simpa [Constants.FIELD_ELEMENTS_PER_CELL] using array_mapM_ok_size _ _ _ h
 
 theorem cells_decode_shape (cells : Array Cell) (evals : Array CosetEvals)
@@ -75,7 +75,7 @@ theorem frontHalf_shape
 theorem shiftOf_ok (c : Nat) (hc : c < 128) : Model.shiftOf c = .ok (Model.cosetShift c) := by
   have hc' : ¬c ≥ Constants.CELLS_PER_EXT_BLOB := by
     rw [show Constants.CELLS_PER_EXT_BLOB = 128 from rfl]; omega
-  simp only [Model.shiftOf, hc', if_false]
+  simp only [Model.shiftOf, hc', ite_false]
   rfl
 
 theorem mapM_shiftOf (indices : Array Nat) (h : ∀ i ∈ indices, i < 128) :

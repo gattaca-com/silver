@@ -35,10 +35,10 @@ theorem keep_if_finite_refines (self : portable.msm.Msm)
         let ss ← alloc.vec.Vec.push self.finite_scalars scalar
         ok { self with finite_points := ps, finite_scalars := ss }) := by
     rw [portable.msm.Msm.keep_if_finite, index_usize_eq scalar 3#usize (by decide)]
-    simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
+    simp only [bind_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
     simp only [massert, ite_true, bind_ok]
   rw [hcall, is_infinity_correct point hp]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   by_cases hz : (Kzg.g1ReadAffine point).isInfinity = true
   · simp only [hz, ite_true, List.append_nil]
     exact ⟨self.finite_points, self.finite_scalars, rfl, rfl, rfl⟩
@@ -49,7 +49,7 @@ theorem keep_if_finite_refines (self : portable.msm.Msm)
       (alloc.vec.Vec.push_spec self.finite_scalars scalar hsl)
     refine ⟨ps, ss, ?_, hpsval, hssval⟩
     rw [hps]
-    simp only [bind_tc_ok, bind_ok, hss]
+    simp only [bind_ok, hss]
 
 
 theorem filter_loop_refines (state : portable.msm.Msm) (points : Slice blst.blst_p1_affine)
@@ -98,11 +98,11 @@ theorem filter_loop_refines (state : portable.msm.Msm) (points : Slice blst.blst
       have hix {A : Type} (xs : Slice A) (hx : i.val < xs.val.length) :
           Slice.index_usize xs i = ok xs.val[i.val] := by simp [Slice.index_usize, hx]
       rw [hix points hil]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [hix scalars his]
-      simp only [bind_tc_ok, bind_ok, hkeep]
+      simp only [bind_ok, hkeep]
       rw [add_ok _ _ hadd]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_ok] ; rfl)
     obtain ⟨ps', ss', hloop, hps', hss'⟩ := ih mid next (by omega) (by dsimp [mid]; omega)
       (by dsimp [mid]; omega) (by omega)
     refine ⟨ps', ss', ?_, ?_, ?_⟩
@@ -149,11 +149,11 @@ theorem filter_prefix_refines (state : portable.msm.Msm) (points : Slice blst.bl
     omega
   obtain ⟨ps, ss, hloop, hps, hss⟩ := filter_loop_refines
     {state with finite_points := emptyP, finite_scalars := emptyS} points scalars 0#usize
-    halign (by simp) hp hs (by simpa [emptyP] using hroom) (by simpa [emptyS] using hroom)
+    halign (by simp) hp hs (by simp [emptyP]) (by simp [emptyS])
   refine ⟨ps, ss, ?_, ?_, ?_⟩
-  · simp only [filterPrefix, bind_tc_ok, bind_ok, alloc.vec.Vec.clear]
+  · simp only [filterPrefix, bind_ok, alloc.vec.Vec.clear]
     rw [hloop]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_ok] )
   · simpa only [emptyP, List.nil_append] using! hps
   · simpa only [emptyS, List.nil_append] using! hss
 

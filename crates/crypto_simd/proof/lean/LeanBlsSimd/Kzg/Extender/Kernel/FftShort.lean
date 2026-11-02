@@ -223,12 +223,9 @@ private theorem short_body_pair (dit : Bool) (input product : fr8.Fr8) (table : 
   cases dit <;>
     simp only [shortBody,Bool.false_eq_true,ite_false,ite_true,
       ShortModel.dit_short_loop0_loop0.body,ShortModel.dif_short_loop0_loop0.body,
-      UScalar.lt_equiv,hj,hadd,hadd1,haddj,hsub,haddw,ha,hb,hw,hu,hu1,
-      bind_tc_ok, bind_ok]
+      UScalar.lt_equiv,hj,hadd,hadd1,haddj,hsub,haddw,ha,hb,hw,hu,hu1, bind_ok]
   all_goals by_cases hz : j = 0#usize <;>
-    simp only [shortPairRun,widePairRun,hz,
-      bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun,
-      aeneas_uncurry_def, Function.uncurry_def, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,Bool.false_eq_true,
+    simp only [shortPairRun,widePairRun,hz, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun,Bool.false_eq_true,
       ite_true,ite_false]
 
 private theorem short_inner_loop (dit : Bool) (input product : fr8.Fr8) (table : fft8.Fft8)
@@ -384,7 +381,7 @@ private theorem short_outer_loop (dit : Bool) (input product : fr8.Fr8) (table :
     rw [loop.eq_1]
     dsimp only
     rw [short_outer_body,ite_eq_left (by simpa only [UScalar.lt_equiv,fr8.LANES] using! hgroup),hm]
-    simp only [bind_tc_ok, bind_ok,hmstep,hanext]
+    simp only [bind_ok,hmstep,hanext]
     simpa only [bind_ok, bind_tc_ok, aeneas_uncurry_def] using! hout
 
 theorem short_refinement (dit : Bool) (table : fft8.Fft8)

@@ -92,8 +92,7 @@ theorem from_bytes_blocks_refines (input : Slice U8) (hsize : 256 ≤ input.val.
     have hplatform := two_pow_32_le_usize
     simp only [UScalarTy.Usize_numBits_eq] at hm hplatform
     simp_body fr8.u256x8.U256x8.from_bytes_loop.body hn
-    simp (disch := (simp; omega)) only [usize_mul_ok, UScalar.ofNatCore_val_eq,
-      bind_tc_ok, bind_ok, load_block_refines, swap_bytes_refines]
+    simp (disch := (simp; omega)) only [usize_mul_ok, UScalar.ofNatCore_val_eq, bind_ok, load_block_refines, swap_bytes_refines]
     have hv : (Vector.ofFn fun lane => swapWord (littleBlock input (64*r.start.val))[lane]) =
         (decodedBlocks input)[block] := by
       ext lane hlane
@@ -131,14 +130,14 @@ theorem vector_from_bytes_refines (input : Slice U8) (offset : Usize)
   unfold fr8.u256x8.U256x8.from_bytes
   simp only [fr8.LANES]
   rw [usize_mul_ok 32#usize 8#usize (by decide)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by
     change offset.val + 256 < 2^UScalarTy.Usize.numBits
     simp only [UScalarTy.Usize_numBits_eq]
     omega)]
-  simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, UScalar.ofNatCore_val_eq]
   rw [slice_index_ok input _ _ (by simp) (by simp; omega)]
-  simp only [bind_tc_ok, bind_ok, FrModel.Simd.zero_refines, UScalar.ofNatCore_val_eq,
+  simp only [bind_ok, FrModel.Simd.zero_refines, UScalar.ofNatCore_val_eq,
     fr8.u256x8.WORDS]
   rw [show Array.repeat 4#usize FrModel.Simd.zero =
     toArray id (Vector.replicate 4 FrModel.Simd.zero) by simp [toArray_replicate]]
@@ -148,7 +147,7 @@ theorem vector_from_bytes_refines (input : Slice U8) (offset : Usize)
       (toArray id (Vector.replicate 4 FrModel.Simd.zero))
     fr8.u256x8.U256x8.from_blocks b) = _
   rw [from_bytes_blocks_refines window (by omega)]
-  simp only [bind_tc_ok, bind_ok, from_blocks_refines]
+  simp only [bind_tc_ok, from_blocks_refines]
   apply congrArg (fun v : Vector M512 4 =>
     (ok (toArray (n := 4#usize) id v) : Result fr8.u256x8.U256x8))
   ext k hk lane hlane

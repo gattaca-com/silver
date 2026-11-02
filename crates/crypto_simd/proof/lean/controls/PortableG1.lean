@@ -12,7 +12,7 @@ theorem doubling_infinity_retains_zero_z [RuntimeFeatures] :
     (do let out ← portable.g1.G1.double (encode Bls.G1.zero)
         ok out.z) = ok (Kzg.fpEncode Bls.Fp.zero).l := by
   rw [double_encoded]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_ok] ; rfl)
 
 theorem complete_add_opposites [RuntimeFeatures] :
     portable.g1.G1.add_complete (encode Bls.G1.generator) (encode (Bls.G1.neg Bls.G1.generator)) =

@@ -50,10 +50,9 @@ theorem add_carry_refines (a b carry : U64) (hc : carry.val ≤ 1) :
   have ha := a.hBounds
   have hb := b.hBounds
   rcases hc01 with rfl | rfl <;>
-    simp only [portable.fp.add_carry,lift,bind_tc_ok, bind_ok,
+    simp only [portable.fp.add_carry,lift, bind_ok,
       core.core_arch.x86_64.adx._addcarry_u64,LeanBlsSimd._addcarry_u64] <;>
-    refine ⟨_,_,rfl,?_,?_⟩ <;>
-    (try dsimp only) <;>
+    refine ⟨_,_,rfl,?_,?_⟩  <;>
     rw [UScalar.cast_val_eq]
   all_goals
     simp only [UScalar.val,UInt8.toBitVec_ofNat',UInt64.toBitVec_ofNat']
@@ -74,9 +73,9 @@ theorem wide_mul_refines (a b : U64) :
     ∃ lo hi, portable.fp.wide_mul a b = ok (lo,hi) ∧
       lo.val+radix*hi.val = a.val*b.val := by
   obtain ⟨p,hp,hv⟩ := multiply_wide a b
-  simp only [portable.fp.wide_mul,lift,bind_tc_ok, bind_ok,hp]
+  simp only [portable.fp.wide_mul,lift, bind_ok,hp]
   rw [shiftRight_64_i32]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   refine ⟨_,_,rfl,?_⟩
   have hhigh : p.val / radix < radix := by simpa only [high_val] using high_bound p
   rw [cast64_val,cast64_val,high_val,Nat.mod_eq_of_lt hhigh]
@@ -112,16 +111,16 @@ theorem sub_step {N : Usize} (a b d : Array U64 N) (carry : U64) (j : Usize)
   · have hj' : j < N := hj
     simp only [portable.fp.sub_words_loop.body,hj',ite_true]
     rw [index_usize_eq a j hj,index_usize_eq b j hj]
-    simp only [lift,bind_tc_ok, bind_ok]
+    simp only [lift, bind_ok]
     change (do
       let (s,c) ← portable.fp.add_carry x (~~~y) carry
       let out ← Array.update d j s
       let next ← j+1#usize
       ok (cont (out,c,next))) = _
     rw [he]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [update_eq d j s hj,add_ok j 1#usize hnext]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
 
 theorem sub_loop_exact {N : Usize} (a b d : Array U64 N) (carry : U64) (j : Usize)
     (hj : j.val ≤ N.val) (hc : carry.val ≤ 1)
@@ -144,7 +143,7 @@ theorem sub_loop_exact {N : Usize} (a b d : Array U64 N) (carry : U64) (j : Usiz
     let d' := d.set j s
     have hz' : ∀ i (hi : i < N.val), next.val ≤ i → d'.val[i]'(by rw [d'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,heq⟩ := ih d' c next (by omega) hc' hz' (by omega)
@@ -189,7 +188,7 @@ theorem sub_words_refines {N : Usize} (a b : Array U64 N) :
         simp only [Nat.cast_one,sub_self,zero_mul,add_zero] at hv
         omega
   refine ⟨out,?_,?_⟩
-  · simp only [portable.fp.sub_words,he,bind_tc_ok, bind_ok]
+  · simp only [portable.fp.sub_words,he, bind_ok]
     change ok (out,decide (top = 0#u64)) = _
     simp only [hborrow]
   · have hm := congrArg (fun z : ℤ => z % (radix : ℤ)^N.val) hv
@@ -212,16 +211,16 @@ theorem add_step (a b s : Array U64 6#usize) (carry : U64) (j : Usize)
   have hj' : j < 6#usize := hj
   simp only [portable.fp.add_words_loop.body,hj',ite_true]
   rw [index_usize_eq a j hj,index_usize_eq b j hj]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let (word,c) ← portable.fp.add_carry x y carry
     let out ← Array.update s j word
     let next ← j+1#usize
     ok (cont (out,c,next))) = _
   rw [he]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   rw [update_eq s j word hj,usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-  (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem add_loop_exact (a b s : Array U64 6#usize) (carry : U64) (j : Usize)
     (hj : j.val ≤ 6) (hc : carry.val ≤ 1)
@@ -246,7 +245,7 @@ theorem add_loop_exact (a b s : Array U64 6#usize) (carry : U64) (j : Usize)
     let s' := s.set j word
     have hz' : ∀ i (hi : i < 6), next.val ≤ i → s'.val[i]'(by rw [s'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      simp +zetaDelta only [Array.set_val_eq, UScalar.ofNatCore_val_eq]
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,heq⟩ := ih s' c next (by omega) hc' hz' (by omega)
@@ -280,7 +279,7 @@ theorem add_words_refines (a b : Array U64 6#usize) :
       norm_num [radix] at ho hv h
       omega
   refine ⟨out,?_,?_⟩
-  · simp only [portable.fp.add_words,he,bind_tc_ok, bind_ok]
+  · simp only [portable.fp.add_words,he, bind_ok]
     change ok (out,decide (top = 1#u64)) = _
     simp only [hcarry]
   · norm_num [radix] at ho hv ⊢

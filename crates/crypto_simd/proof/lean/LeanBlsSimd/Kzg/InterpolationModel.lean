@@ -340,7 +340,7 @@ theorem shiftAdd_eq (shift : Fr) (coeffs old : List Fr)
     have hjcoef : j < coeffs.length := by omega
     simp only [Array.getElem_ofFn, hs, List.size_toArray, hjold, ite_true]
     rw [← getElem!_pos (shiftAdd shift (Fr.ofNat 1) coeffs old).toArray j hj]
-    simp only [shiftVals, Array.getElem!_eq_toList_getElem!]
+    simp only [shiftVals, ← Array.getElem!_toList]
     exact shiftAdd_get shift Fr.one coeffs old hlen j hjold
 
 private theorem shiftVals_zero (n : Nat) (factor : Fr) :

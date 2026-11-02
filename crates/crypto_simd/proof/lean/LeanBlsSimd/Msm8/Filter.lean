@@ -81,11 +81,11 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
       have hix {A : Type} (xs : Slice A) (hx : i.val < xs.val.length) :
           Slice.index_usize xs i = ok xs.val[i.val] := by simp [Slice.index_usize, hx]
       rw [hix points hil]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [hix scalars his]
-      simp only [bind_tc_ok, bind_ok, hkeep]
+      simp only [bind_ok, hkeep]
       rw [add_ok _ _ hadd]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_ok] ; rfl)
     obtain ⟨ps', ss', hloop, hps', hss'⟩ := ih mid next (by omega) (by dsimp [mid]; omega)
       (by dsimp [mid]; omega) (by omega)
     refine ⟨ps', ss', ?_, ?_, ?_⟩
@@ -159,14 +159,14 @@ theorem filter_prefix_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_a
     omega
   obtain ⟨ps, ss, hloop, hps, hss⟩ := filter_loop_refines
     {state with finite_points := emptyP, finite_scalars := emptyS} points scalars 0#usize
-    halign (by simp) hp hs (by simpa [emptyP] using hroom) (by simpa [emptyS] using hroom)
+    halign (by simp) hp hs (by simp [emptyP]) (by simp [emptyS])
   refine ⟨ps, ss, ?_, ?_, ?_⟩
   · have he : Slice.len points = Slice.len scalars := by
       apply UScalar.eq_of_val_eq
       simpa only [Slice.len, Usize.ofNatCore_val_eq] using halign
-    simp only [filterPrefix, he, massert, ite_true, bind_tc_ok, bind_ok, alloc.vec.Vec.clear]
+    simp only [filterPrefix, he, massert, ite_true, bind_ok, alloc.vec.Vec.clear]
     rw [hloop]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_ok] )
   · simpa only [emptyP, List.nil_append] using! hps
   · simpa only [emptyS, List.nil_append] using! hss
 

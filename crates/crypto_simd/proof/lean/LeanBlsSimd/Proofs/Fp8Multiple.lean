@@ -27,7 +27,7 @@ private theorem multiple_of_p_lane (c : UInt64) (l : Fin 8) :
   simp only [multiple_of_p, hf, List.foldl_cons, List.foldl_nil, multipleStep]
   ext j hj
   change j < 8 at hj
-  interval_cases j <;> simp [lane, Limbs.ofList, P, LIMBS] <;> rfl
+  interval_cases j <;> simp [lane, Limbs.ofList, P, LIMBS]
 
 private theorem multiple_digit (n : ℕ) :
     (UInt64.ofNat n &&& UInt64.ofNat MASK52).toNat = n % 2 ^ 52 := by

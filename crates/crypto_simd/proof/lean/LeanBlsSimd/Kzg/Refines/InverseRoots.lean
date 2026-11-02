@@ -60,7 +60,7 @@ private theorem inverse_loop (n : Usize) (roots : Slice blst.blst_fr) (target : 
     refine ⟨out, ?_, hval⟩
     rw [domain.inverse_roots_loop, loop.eq_1]
     simp only [domain.inverse_roots_loop.body, UScalar.lt_equiv,
-      hil, ite_true, hsub, hindex, hpush, hadd, bind_tc_ok, bind_ok]
+      hil, ite_true, hsub, hindex, hpush, hadd, bind_ok]
     exact hout
 
 theorem inverse_roots_refinement (n : Usize) (hn0 : 0 < n.val) (roots : Slice blst.blst_fr)
@@ -103,7 +103,7 @@ theorem inverse_roots_refinement (n : Usize) (hn0 : 0 < n.val) (roots : Slice bl
     simp [alloc.vec.Vec.push, alloc.vec.Vec.with_capacity, initial, U32.max_eq]
   unfold domain.inverse_roots
   dsimp only
-  simp only [hlength, hindex, hpush, bind_tc_ok, bind_ok]
+  simp only [hlength, hindex, hpush, bind_ok]
   exact hout
 
 

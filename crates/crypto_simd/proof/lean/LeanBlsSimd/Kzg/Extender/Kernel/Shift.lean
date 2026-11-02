@@ -69,7 +69,7 @@ private theorem shift_loop (kernel : extension_kernel.ExtensionKernel)
         data i = ok (data.val[i.val]!, alloc.vec.Vec.set data i) := by
       have hindex' : alloc.vec.Vec.index_usize data i = ok data.val[i.val]! := by
         simpa only [alloc.vec.Vec.index_slice_index] using hindex
-      simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hindex', bind_tc_ok, bind_ok]
+      simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hindex', bind_tc_ok]
     obtain ⟨out, hout, ho⟩ := ih next i' (by omega) (by simpa only [hi'] using hprefix) (by omega)
     refine ⟨out, ?_, ho⟩
     have hlt : i < alloc.vec.Vec.len data := by
@@ -77,8 +77,7 @@ private theorem shift_loop (kernel : extension_kernel.ExtensionKernel)
     have hbody : extension_kernel.ExtensionKernel.extend_loop0.body kernel.shift data i =
         ok (cont (next, i')) := by
       simp only [extension_kernel.ExtensionKernel.extend_loop0.body, hlt, ite_true,
-        hindex, hnormal, hshift, hmul, hmut, hadd, bind_tc_ok, bind_ok, next,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        hindex, hnormal, hshift, hmul, hmut, hadd, bind_ok, next, Aeneas.Std.uncurry_apply_pair]
     rw [extension_kernel.ExtensionKernel.extend_loop0, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -102,7 +101,7 @@ theorem shift_refinement (kernel : extension_kernel.ExtensionKernel)
   refine ⟨out, hout, ?_⟩
   simp only [LazyDataRep, alloc.vec.Vec.deref, Slice.from_val]
   refine ⟨?_, ?_⟩
-  · simp only [shiftedValues, _root_.Array.size_ofFn, alloc.vec.Vec.deref, Slice.from_val, ho.1]
+  · simp only [shiftedValues, _root_.Array.size_ofFn, ho.1]
   · intro v
     have hv : v.val < 512 := by simpa only [alloc.vec.Vec.deref, Slice.from_val, ho.1] using! v.isLt
     have hvout : v.val < out.val.length := by rw [ho.1]; exact hv

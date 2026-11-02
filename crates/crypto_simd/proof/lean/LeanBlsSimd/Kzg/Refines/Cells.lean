@@ -87,11 +87,11 @@ private theorem decode_cell_body
   rw [cellChunk_bytes] at hdecode
   unfold verify.CellBatchVerifier.decode_cell_loop.body
   simp only [FIELD_ELEMENTS_PER_CELL, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-    hj, ite_true, lift, bind_tc_ok, bind_ok, Array.to_slice_mut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
+    hj, ite_true, lift, bind_ok, Array.to_slice_mut, Aeneas.Std.uncurry_apply_pair,
     hstart, hadd, hstop, hindex, hcopy, hback]
   rw [hdecode]
   unfold cellVerdict
-  cases (bytesToBlsField ((arrayBytes cell).extract (32*j.val) (32*(j.val+1)))).toOption <;> (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+  cases (bytesToBlsField ((arrayBytes cell).extract (32*j.val) (32*(j.val+1)))).toOption <;> (simp only [bind_ok] ; rfl)
 
 private def cellAccepted (xs : List (Option Fr)) : List blst.blst_fr :=
   ((xs.takeWhile Option.isSome).filterMap id).map frEncode
@@ -171,7 +171,7 @@ private theorem decode_cell_loop_eq
         (by simp [self', vs]; omega) (by omega)
       refine ⟨next, stop, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cell_loop, loop.eq_1]
-        simp only [hbody, hv, hpush, bind_tc_ok, bind_ok]
+        simp only [hbody, hv, hpush, bind_ok]
         exact hloop
       · simpa [hdrop, hv] using hresult
       · simpa [self', vs, hdrop, hv, cellAccepted, List.append_assoc] using hval
@@ -237,7 +237,7 @@ private theorem decode_cells_loop_eq
       refine ⟨afterCell, k, ?_, ?_, ?_, hs, hc, hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
         simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, ite_true,
-          hindex, bind_tc_ok, bind_ok, hdecode, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hsuccess, Bool.false_eq_true,
+          hindex, bind_ok, hdecode, Aeneas.Std.uncurry_apply_pair, hsuccess, Bool.false_eq_true,
           ite_false]
       · have hne : k ≠ Slice.len cells := by
           intro he
@@ -252,7 +252,7 @@ private theorem decode_cells_loop_eq
       refine ⟨next, stop, ?_, ?_, ?_, hs'.trans hs, hc'.trans hc, hkernel'.trans hkernel⟩
       · rw [verify.CellBatchVerifier.decode_cells_loop, loop.eq_1]
         simp only [verify.CellBatchVerifier.decode_cells_loop.body, htest, ite_true,
-          hindex, bind_tc_ok, bind_ok, hdecode, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hsuccess, hadd]
+          hindex, bind_ok, hdecode, Aeneas.Std.uncurry_apply_pair, hsuccess, hadd]
         exact hloop
       · simpa [hdrop, hsuccess] using hresult
       · simpa [hvals, hdrop, cellAccepted_append, hsuccess, List.append_assoc] using hval
@@ -289,7 +289,7 @@ theorem decode_cells_refinement
         (by simpa [initial, empty, alloc.vec.Vec.new] using hcapacity)
     refine ⟨next, ?_, ?_, hs, hc, by simpa [initial, hkernelCase] using hkernel⟩
     · unfold verify.CellBatchVerifier.decode_cells
-      simp only [hkernelCase, fr_zero_eq, bind_tc_ok, bind_ok, hclear]
+      simp only [hkernelCase, fr_zero_eq, bind_ok, hclear]
       dsimp only [initial] at hloop
       simp only [hkernelCase] at hloop
       rw [hloop]

@@ -119,7 +119,7 @@ private theorem body_cont (lines : lane_pairs.Lines)
     lane_pairs.Lines.multiply_into_loop.body lines r value =
       (do let out ← multiplyPair lines value ⟨r.start.val, hl⟩
           ok (cont (r', out))) := by
-  simp only [lane_pairs.Lines.multiply_into_loop.body, hn, bind_tc_ok, bind_ok, aeneas_uncurry_def, lift]
+  simp only [lane_pairs.Lines.multiply_into_loop.body, hn, bind_ok, aeneas_uncurry_def, lift]
   change (do
     let i1 ← 8#i64 + UScalar.hcast .I64 r.start
     let fx ← fp2x8.Fp2x8.permute2 lines.l0 lines.l1
@@ -131,7 +131,7 @@ private theorem body_cont (lines : lane_pairs.Lines)
       (Array.make 8#usize [0#i64, 1#i64, i1, 0#i64, 0#i64, 0#i64, 0#i64, 0#i64] (by rfl))
     let out ← fp12.Fp12.mul_by_line value packed
     ok (cont (r', out))) = _
-  simp only [bind_tc_ok, bind_ok, G1x8.hcast_usize_i64, index_add r.start.val hl,
+  simp only [bind_ok, G1x8.hcast_usize_i64, index_add r.start.val hl,
     multiplyPair, firstIndices, secondIndices, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok]
 
 theorem multiply_loop_refines (lines : Lines) (count : Usize)
@@ -153,7 +153,7 @@ theorem multiply_loop_refines (lines : Lines) (count : Usize)
     have hn := next_ge { start, «end» := count } (by simp [hc, he])
     refine ⟨value, ?_, ?_⟩
     · rw [loop.eq_1]
-      simp only [lane_pairs.Lines.multiply_into_loop.body, hn, bind_tc_ok, bind_ok, aeneas_uncurry_def, lift]
+      simp only [lane_pairs.Lines.multiply_into_loop.body, hn, bind_ok, aeneas_uncurry_def, lift]
     · simpa only [he, List.drop_length, List.map_nil, List.prod_nil, mul_one] using hv
   | succ n ih =>
     have hlt : start.val < coefficients.length := by omega

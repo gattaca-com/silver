@@ -84,10 +84,9 @@ theorem scalar_chunk_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     let i : Usize := UScalar.ofNatCore (start.val + r.start.val) hbound
     have hi : i.val = start.val + r.start.val := by simp [i]
     refine ⟨s.set i (BlsExternals.uncompressG2 inputs.val[i.val]!), ?_, ?_⟩
-    · simp only [uncompress_in_g2_loop0_loop0.body, hn, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    · simp only [uncompress_in_g2_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
       rw [add_ok _ _ hbound]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       exact scalar_index inputs s i (by omega) (by have := hinv.1; omega)
         (fun s => ok (cont (r', s)))
     · have h := scalarWrites_step inputs out s start.val i (by omega) (by omega)

@@ -28,7 +28,7 @@ theorem apply_line {x z : fp8.Fp8} (step : Fin 68) (pair : Fin 2) (v : Factors) 
   obtain ⟨line, hline, rline⟩ := line_refines step pair v zs hx hz hz0 hz1
   obtain ⟨out, hout, rout⟩ := mul_by_line_refines ha rline
   refine ⟨out, ?_, ?_⟩
-  · simp only [hline, bind_tc_ok, bind_ok, hout]
+  · simp only [hline, bind_ok, hout]
   · rw [line_value] at rout
     exact rout
 
@@ -71,8 +71,8 @@ theorem times_lines (step : Usize) (hs : step.val < 68)
         exact rfirst
   refine ⟨second, ?_, rsecond⟩
   simp only [pairing.MillerLines.times_lines,
-    index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_tc_ok, bind_ok, Fp8.load_refines]
+    index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_ok, Fp8.load_refines]
   dsimp only [loadedRow, tableRow] at hprod
-  simp only [hprod, lift, bind_tc_ok, bind_ok, hfirst, hsecond]
+  simp only [hprod, lift, bind_ok, hfirst, hsecond]
 
 end LeanBlsSimd.Pairing.LaneLines

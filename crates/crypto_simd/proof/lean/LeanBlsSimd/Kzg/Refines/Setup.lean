@@ -42,7 +42,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
     have hn := Refinement.next_ge iter (by simp [he, hi])
     refine ⟨acc, ?_, ?_⟩
     · rw [setup.Setup.decode_loop, loop.eq_1]
-      simp only [setup.Setup.decode_loop.body, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [setup.Setup.decode_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · simpa [hi, ← hlen] using ha
   | succ k ih =>
     have hi : iter.start.val < 64 := by omega
@@ -67,7 +67,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
         decoded iter.start = ok (some p) := by
       simp [alloc.vec.Vec.index_usize, hd, hp, p]
     have hbody : setup.Setup.decode_loop.body decoded iter acc = ok (cont (iter', acc')) := by
-      simp only [setup.Setup.decode_loop.body, hn, bind_tc_ok, bind_ok,
+      simp only [setup.Setup.decode_loop.body, hn, bind_ok,
         Aeneas.Std.uncurry_apply_pair, hindex, g1_point.G1Point.into_blst, hpush]
     rw [setup.Setup.decode_loop, loop.eq_1]
     simp only [hbody, bind_ok]
@@ -107,12 +107,12 @@ theorem setup_decode_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.F
   unfold setup.Setup.decode
   dsimp only
   rw [hresize]
-  simp only [bind_tc_ok, bind_ok, lift, alloc.vec.Vec.deref_mut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+  simp only [bind_ok, lift, alloc.vec.Vec.deref_mut, Aeneas.Std.uncurry_apply_pair]
   dsimp [inputs, alloc.vec.Vec.deref_mut] at hdecoded hg1s
   rw [hdecoded]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   have hg1s' := hg1s
   simp only [FIELD_ELEMENTS_PER_CELL] at hg1s'
-  simp only [FIELD_ELEMENTS_PER_CELL, hg1s', bind_tc_ok, bind_ok]
+  simp only [FIELD_ELEMENTS_PER_CELL, hg1s', bind_ok]
 
 end LeanBlsSimd.Kzg

@@ -59,9 +59,9 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] :
       else ok scalar) := by
     unfold cell_extender.CellExtender.new
     rw [hrs]
-    simp only [bind_tc_ok, bind_ok, fr_zero_eq]
+    simp only [bind_ok, fr_zero_eq]
     rw [hext]
-    simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq, hshift, hscratch, hinv, inverse_blob_size_eq, ifma_available, lift, bind_ok]
+    simp only [bind_ok, hshift, hscratch, hinv, inverse_blob_size_eq, ifma_available, bind_ok]
     rfl
   cases hsimd : cpu.simdAvailable with
   | false =>
@@ -75,7 +75,7 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] :
       (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hinvval)
       (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hshiftmodel) rfl
     refine ⟨{ scalar with kernel := some kernel }, ?_, ?_, ?_⟩
-    · simp only [hnew, hsimd, ite_true, hkernel, bind_tc_ok, bind_ok]
+    · simp only [hnew, hsimd, ite_true, hkernel, bind_ok]
     · exact ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, hki⟩
     · rfl
 

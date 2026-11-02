@@ -29,7 +29,7 @@ theorem normal2_permute {k : P ℕ} {x : fp2x8.Fp2x8} {a : P F}
       Normal2 (shuffle2 is k k) out (shuffle2 is a a) := by
   obtain ⟨r, hr, rr⟩ := normal_permute is hx.1
   obtain ⟨i, hi, ri⟩ := normal_permute is hx.2
-  exact ⟨⟨r, i⟩, by simp only [fp2x8.Fp2x8.permute, hr, hi, bind_tc_ok, bind_ok], rr, ri⟩
+  exact ⟨⟨r, i⟩, by simp only [fp2x8.Fp2x8.permute, hr, hi, bind_ok], rr, ri⟩
 
 theorem normal2_permute2 {k k' : P ℕ} {x y : fp2x8.Fp2x8} {a b : P F}
     (is : Array I64 8#usize) (hx : Normal2 k x a) (hy : Normal2 k' y b) :
@@ -37,7 +37,7 @@ theorem normal2_permute2 {k k' : P ℕ} {x y : fp2x8.Fp2x8} {a b : P F}
       Normal2 (shuffle2 is k k') out (shuffle2 is a b) := by
   obtain ⟨r, hr, rr⟩ := normal_permute2 is hx.1 hy.1
   obtain ⟨i, hi, ri⟩ := normal_permute2 is hx.2 hy.2
-  exact ⟨⟨r, i⟩, by simp only [fp2x8.Fp2x8.permute2, hr, hi, bind_tc_ok, bind_ok], rr, ri⟩
+  exact ⟨⟨r, i⟩, by simp only [fp2x8.Fp2x8.permute2, hr, hi, bind_ok], rr, ri⟩
 
 def invLeft : Array I64 8#usize := Array.make 8#usize
   [0#i64, 10#i64, 1#i64, 1#i64, 0#i64, 0#i64, 0#i64, 0#i64] (by rfl)
@@ -115,7 +115,7 @@ theorem adjugate_raw {f : fp2x8.Fp2x8} {a : P F}
   obtain ⟨out, hout, rout⟩ := raw2_normalise rt' (by intro l; norm_num) (by decide)
   refine ⟨out, ?_, rout⟩
   simp only [adjugateRun, fp12.BOUND, hp256, hx0, hxn, hl, hr, hp, hp6, hxp, hxpn,
-    hs, hp12, ht, hout, bind_tc_ok, bind_ok]
+    hs, hp12, ht, hout, bind_ok]
 
 theorem determinant_raw {f t : fp2x8.Fp2x8} {a b : P F}
     (hf : Normal2 (fun _ => 256, fun _ => 256) f a)
@@ -144,6 +144,6 @@ theorem determinant_raw {f t : fp2x8.Fp2x8} {a b : P F}
     rs2.mono (by intro l; dsimp [add2]; decide) (by decide)
   obtain ⟨out, hout, rout⟩ := raw2_normalise rs2' (by intro l; norm_num) (by decide)
   refine ⟨out, ?_, rout⟩
-  simp only [determinantRun, hfp, hd, hp6, hxd, hxdn, hd1, hs1, hd2, hs2, hout, bind_tc_ok, bind_ok]
+  simp only [determinantRun, hfp, hd, hp6, hxd, hxdn, hd1, hs1, hd2, hs2, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

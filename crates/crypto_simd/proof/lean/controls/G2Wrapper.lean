@@ -117,8 +117,7 @@ example : ¬ @BlstMatchesSpec wrongLimbs := by
   change some (toBlstP2Affine sentinel) = specVerdict _ at hi
   simp [specVerdict, ofArray_toArray, G2Spec.infinity_verdict] at hi
   have hx := congrArg (fun p => (ofBlstP2Affine p).x.fp[0].l[0]) hi
-  have hbad : (1 : UInt64) = 0 := by simpa [sentinel, point] using hx
-  exact (by decide : (1 : UInt64) ≠ 0) hbad
+  simp [sentinel, point] at hx
 
 example [RuntimeFeatures] [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) (h : out.val.length ≠ inputs.val.length) :

@@ -30,7 +30,7 @@ theorem allocate_refines (s : portable.msm.store.PointStore)
   simp only [ite_true, bind_ok, lift]
   change (do let i ← n - 1#usize; let j := UScalar.cast .U32 i; ok (j, {s with len := n})) = _
   rw [hsub]
-  simp [hcast, lift]
+  simp [hcast]
 
 theorem sum_slot_refines (reference : U32) (s : portable.msm.store.PointStore) (originals : Usize)
     (halloc : (clearSign reference).val < originals.val →
@@ -38,7 +38,7 @@ theorem sum_slot_refines (reference : U32) (s : portable.msm.store.PointStore) (
     ∃ out, portable.msm.buckets.sum_slot reference s originals =
         ok ((slot originals.val s.len.val reference).1, out) ∧
       out.len.val = (slot originals.val s.len.val reference).2 ∧ out.points = s.points := by
-  simp only [portable.msm.buckets.sum_slot, negative_mask, bind_tc_ok, bind_ok, lift,
+  simp only [portable.msm.buckets.sum_slot, negative_mask, bind_ok, lift,
     show (~~~2147483648#u32 : U32) = 2147483647#u32 from rfl,
     UScalar.lt_equiv, cast_Usize_val]
   change ∃ out, (if (clearSign reference).val < originals.val then s.allocate else ok (clearSign reference,s)) = _ ∧ _
@@ -72,7 +72,7 @@ theorem reset_refines (s : portable.msm.store.PointStore) (capacity : Usize) :
       change (do let points ← alloc.vec.Vec.resize _ s.points capacity zeroRow
                  ok ({points, len := 0#usize} : portable.msm.store.PointStore)) = _
       rw [hv]
-      (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+      (simp only [bind_tc_ok] )
     · rw [hval]
       simp [List.resize, List.take_of_length_le (Nat.le_of_lt h)]
   · refine ⟨{s with len := 0#usize}, ?_, ?_, rfl⟩

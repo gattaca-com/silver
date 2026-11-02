@@ -448,7 +448,8 @@ theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 
     rw [sum_fin_limbs, sum_fin_limbs]
     simp only [Fin.getElem_fin, val_fin_LIMBS, add_zero, e0, e1, e2, e3, e4, e5, e6, e7, m,
       LIMB_BITS, ← hu0]
-    norm_num
+    set_option exponentiation.threshold 512 in
+      norm_num
     omega
 
 end Lane

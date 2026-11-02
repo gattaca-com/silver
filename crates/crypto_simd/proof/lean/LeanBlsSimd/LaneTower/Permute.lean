@@ -50,7 +50,7 @@ theorem permute2_loop_refines (self other : fp8.Fp8) (index : M512)
         ok (cont (self, other, toArray id v', i')) := by
       simp only [fp8.Fp8.permute2_loop.body, LIMBS_refines, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-        index_usize_eq self i hlt, index_usize_eq other i hlt, bind_tc_ok, bind_ok,
+        index_usize_eq self i hlt, index_usize_eq other i hlt, bind_ok,
         core.core_arch.x86.avx512f._mm512_permutex2var_epi64, update_eq (n := 8#usize) _ i _ hlt]
       rw [add_ok _ _ (by scalar_tac)]
       simp [v', value, i']
@@ -66,7 +66,7 @@ theorem permute2_loop_refines (self other : fp8.Fp8) (index : M512)
 theorem permute2_refines (self other : fp8.Fp8) (indices : Array I64 8#usize) :
     fp8.Fp8.permute2 self other indices =
       ok (toFp8 ((ofFp8 self).permute2 (ofFp8 other) (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp8.Fp8.permute2, index_vector_refines, Simd.zero_refines, bind_tc_ok, bind_ok]
+  simp only [fp8.Fp8.permute2, index_vector_refines, Simd.zero_refines, bind_ok]
   have hre : Array.repeat 8#usize Simd.zero = toArray id (Vector.replicate 8 Simd.zero) :=
     (toArray_replicate id Simd.zero rfl).symm
   rw [hre]
@@ -88,14 +88,14 @@ theorem permute2_refines (self other : fp2x8.Fp2x8) (indices : Array I64 8#usize
     fp2x8.Fp2x8.permute2 self other indices =
       ok (toFp2x8 ((ofFp2x8 self).permute2 (ofFp2x8 other)
         (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp2x8.Fp2x8.permute2, Fp8.permute2_refines, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.permute2, Fp8.permute2_refines, bind_ok]
   rfl
 
 theorem permute_refines (self : fp2x8.Fp2x8) (indices : Array I64 8#usize) :
     fp2x8.Fp2x8.permute self indices =
       ok (toFp2x8 ((ofFp2x8 self).permute
         (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp2x8.Fp2x8.permute, Fp8.permute_refines, bind_tc_ok, bind_ok]
+  simp only [fp2x8.Fp2x8.permute, Fp8.permute_refines, bind_ok]
   rfl
 
 end LeanBlsSimd.Fp2x8

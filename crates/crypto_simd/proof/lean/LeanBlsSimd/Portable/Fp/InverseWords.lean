@@ -16,7 +16,7 @@ theorem half_word_run (a b : U64) :
     (do let low ← a >>> 1#i32; let high ← b <<< 63#i32; lift (low ||| high)) =
       ok (halfWord a b) := by
   simp only [show a >>> 1#i32 = ok ⟨a.bv.ushiftRight 1⟩ from rfl,
-    show b <<< 63#i32 = ok ⟨b.bv <<< 63⟩ from rfl, bind_tc_ok, bind_ok, lift]
+    show b <<< 63#i32 = ok ⟨b.bv <<< 63⟩ from rfl, bind_ok, lift]
   rfl
 
 theorem half_word_value (a b : U64) :
@@ -54,7 +54,7 @@ theorem halve_run (a : portable.fp.Fp) (top : U64) :
   obtain ⟨a0,a1,a2,a3,a4,a5,rfl⟩ := exists_words6 a
   simp (disch := decide) only [portable.fp.halve,portable.fp.halve_loop,
     loop_eq_loopStep,loopStep_cont,loopStep_done,portable.fp.halve_loop.body,ite_eq_left,ite_eq_right,index_usize_eq,
-    usize_add_ok,update_eq,shr_one,shl_63,lift,bind_tc_ok, bind_ok]
+    usize_add_ok,update_eq,shr_one,shl_63,lift, bind_ok]
   refine congrArg ok (Aeneas.Std.Array.ext _ _ ?_)
   simp [halfWords, halfWord, Array.make, Array.from_val, Array.set_val_eq]
   exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
@@ -99,7 +99,7 @@ theorem is_even_refines (a : portable.fp.Fp) :
     rw [word_eq_value,hand,value_mod_two]
     change lo.val%2 = 0 ↔ ((lo.val%2 : Nat) : ℤ) = 0
     omega
-  simp (disch := decide) only [portable.fp.is_even,index_usize_eq,bind_tc_ok, bind_ok,lift]
+  simp (disch := decide) only [portable.fp.is_even,index_usize_eq, bind_ok,lift]
   change ok (decide ((lo &&& 1#u64) = 0#u64)) = _
   simp only [heven]
 
@@ -119,7 +119,7 @@ theorem is_one_refines (a : portable.fp.Fp) :
     norm_num [value,wordsValue,Array.make, Array.from_val,radix]
     omega
   simp only [hv]
-  simp (disch := decide) only [portable.fp.is_one,index_usize_eq,bind_tc_ok, bind_ok,lift]
+  simp (disch := decide) only [portable.fp.is_one,index_usize_eq, bind_ok,lift]
   change (if a0 = 1#u64 then ok (decide (((((a1 ||| a2) ||| a3) ||| a4) ||| a5) = 0#u64))
     else ok false) = _
   simp only [hh]
@@ -159,7 +159,7 @@ theorem halve_mod_p_refines (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus)
   · obtain ⟨out,he,hv⟩ := halve_refines x 0#u64 (by decide)
     simp only [heven,show (0#u64).val = 0 from rfl,Nat.cast_zero,zero_mul,add_zero] at hv
     refine ⟨out,?_,by omega,?_⟩
-    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_true,bind_tc_ok, bind_ok,ite_true,he]
+    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_true, bind_ok,ite_true,he]
     · simpa only [heven,ite_true,add_zero] using hv
   · have hxodd : value x % (2 : ℤ) = 1 := by omega
     obtain ⟨sum,ha,hs⟩ := add_words_refines x bls.constants.P_U64
@@ -178,7 +178,7 @@ theorem halve_mod_p_refines (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus)
       omega
     simp only [hsum_even,show (0#u64).val = 0 from rfl,Nat.cast_zero,zero_mul,add_zero] at hv
     refine ⟨out,?_,by omega,?_⟩
-    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_false,bind_tc_ok, bind_ok,ha,lift]
+    · simp only [portable.fp.halve_mod_p,is_even_refines,heven,decide_false, bind_ok,ha,lift]
       exact he
     · simpa only [heven,ite_false,hs] using hv
 
@@ -193,7 +193,7 @@ theorem coefficientSub_eq_sub (a b : portable.fp.Fp) :
     coefficientSub a b = portable.fp.Fp.sub a b := by
   obtain ⟨d,hs,hv⟩ := sub_words_refines a b
   by_cases hb : value a < value b
-  · simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok, bind_ok,hb,decide_true,
+  · simp only [coefficientSub,portable.fp.Fp.sub,hs, bind_ok,hb,decide_true,
       p_if_refines]
     rfl
   · obtain ⟨out,ha,hout⟩ := add_words_refines d (Array.repeat 6#usize 0#u64)
@@ -204,11 +204,11 @@ theorem coefficientSub_eq_sub (a b : portable.fp.Fp) :
     rw [hz,add_zero,Int.emod_eq_of_lt hd.1 hd.2] at hout
     have ho : out = d := value_injective out d hout
     subst out
-    simp only [coefficientSub,portable.fp.Fp.sub,hs,bind_tc_ok, bind_ok,hb,decide_false,
+    simp only [coefficientSub,portable.fp.Fp.sub,hs, bind_ok,hb,decide_false,
       p_if_refines]
     change ok d = (do let (out,_) ← portable.fp.add_words d (Array.repeat 6#usize 0#u64); ok out)
     rw [ha]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair] )
 
 theorem coefficientSub_refines (a b : portable.fp.Fp)
     (ha : value a < Bls.Fp.modulus) (hb : value b < Bls.Fp.modulus) :

@@ -79,7 +79,7 @@ private theorem clear_loop (kernel : interpolation_kernel.InterpolationKernel)
     refine ⟨kernel, ?_, hk, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop0, loop.eq_1]
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop0.body,
-        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
         he, lt_self_iff_false, ite_false]
     · apply List.ext_getElem
       · simpa using hk.2.2.2.1
@@ -114,8 +114,8 @@ private theorem clear_loop (kernel : interpolation_kernel.InterpolationKernel)
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop0.body kernel c =
         ok (cont (next, c')) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop0.body,
-        cells_per_ext_blob_eq, bind_tc_ok, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hct, ite_true, hmut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hinc, next]
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        hct, ite_true, hmut, Aeneas.Std.uncurry_apply_pair, hinc, next]
     simpa only [hbody, bind_ok] using! hout
 
 theorem clear_refinement (kernel : interpolation_kernel.InterpolationKernel)

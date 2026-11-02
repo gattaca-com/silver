@@ -128,8 +128,7 @@ theorem model_spec (blob : ByteArray) :
   by_cases hs : blob.size = Constants.BYTES_PER_BLOB
   · cases hd : blobToPolynomial blob with
     | error e =>
-      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte,
-        pure_bind, hd, liftM_eq_liftE]
+      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte, hd, liftM_eq_liftE]
       change ((throw e : KzgM (Array Fr)) >>= _) = liftE (Model.extend blob)
       rw [ExceptT.bind_throw]
       simp only [Model.extend, hd, bind, Except.bind]

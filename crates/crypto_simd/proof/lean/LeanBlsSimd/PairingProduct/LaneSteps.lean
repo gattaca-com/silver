@@ -101,7 +101,7 @@ theorem active_mask_refines (s : lane_pairs.LanePairs)
     lane_pairs.LanePairs.active_mask s = ok (toU8 (activeMask s.count)) := by
   unfold lane_pairs.LanePairs.active_mask
   rw [sub_ok _ _ (by simpa [limbs.LANES] using hhi)]
-  simp only [limbs.LANES, bind_tc_ok, bind_ok]
+  simp only [limbs.LANES, bind_ok]
   change UScalar.shiftRight core.num.U8.MAX (8 - s.count.val) = _
   interval_cases hv : s.count.val <;>
     simp [activeMask, hv, UScalar.shiftRight, core.num.U8.MAX, toU8]

@@ -80,8 +80,7 @@ private theorem accumulate_loop
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop1.body cells indices powers kernel k =
         ok (cont (next, k')) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop1.body,
-        UScalar.lt_equiv, Slice.len_val, Slice.length, hkt, ite_true, hcellindex, hindex,
-        bind_tc_ok, bind_ok, lift, hpower, hcellcall, hinc, column]
+        UScalar.lt_equiv, Slice.len_val, Slice.length, hkt, ite_true, hcellindex, hindex, bind_ok, lift, hpower, hcellcall, hinc, column]
     obtain ⟨out, hout, ho, houtrep⟩ := ih next hn
       (Interpolation.aggregateCell (values.toList.flatMap _root_.Array.toList) weights k.val column.val columns)
       (used.set column.val true) hrep k' (by omega) (by omega)

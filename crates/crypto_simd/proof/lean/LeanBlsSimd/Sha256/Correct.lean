@@ -14,7 +14,7 @@ attribute [local irreducible] Streaming.finish EthLib.Cryptography.Hash.sha256
 
 private theorem bytes_bridge (xs : List U8) : Spec.bytes (xs.map ofU8) = Kzg.bytes xs := by
   apply ByteArray.ext
-  simp [Spec.bytes,Kzg.bytes,ofU8]
+  simp [Spec.bytes,Kzg.bytes]
 
 private def Represents (state : Array U32 8#usize) (pending : Array U8 64#usize)
     (p : Usize) (length : U64) (pre : List U8) : Prop :=

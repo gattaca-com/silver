@@ -58,15 +58,15 @@ theorem interpolation_commitment_route [RuntimeFeatures] (self next : verify.Cel
     (indices : Slice U64) (cells : Slice (Array U8 2048#usize)) (point : blst.blst_p1)
     (h : self.interpolation_commitment indices cells = ok (point, next)) :
     route next = route self := by
-  simp only [verify.CellBatchVerifier.interpolation_commitment, bind_success, Result.ok.injEq] at h
+  simp only [verify.CellBatchVerifier.interpolation_commitment] at h
   cases hk : self.kernel with
   | none =>
-    simp only [hk, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+    simp only [hk, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
     repeat obtain ⟨x, hx, h⟩ := h
     have hr := lincomb_sum_route self.curve_work x.2 _ _ x.1 hx
     simp only [route, hk, Option.isSome_none, hr]
   | some kernel =>
-    simp only [hk, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+    simp only [hk, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
     repeat obtain ⟨x, hx, h⟩ := h
     have hr := lincomb_sum_route self.curve_work x.2 _ _ x.1 hx
     simp only [route, hk, Option.isSome_some, hr]
@@ -74,7 +74,7 @@ theorem interpolation_commitment_route [RuntimeFeatures] (self next : verify.Cel
 theorem pairing_holds_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (r : blst.blst_fr) (indices : Slice U64) (cells : Slice (Array U8 2048#usize)) (b : Bool)
     (h : self.pairing_holds r indices cells = ok (b, next)) : route next = route self := by
-  simp only [verify.CellBatchVerifier.pairing_holds, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  simp only [verify.CellBatchVerifier.pairing_holds, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
   obtain ⟨v, _, powers, _, ll, hll, v2, _, v3, _, scalars, _,
     rlc, hrlc, mid, hmid, v5, _, cv6, _, rlp, hrlp, result, _, h⟩ := h
   obtain ⟨rfl, rfl⟩ := Prod.mk.inj h
@@ -100,7 +100,7 @@ private theorem decode_cell_body_route [RuntimeFeatures] (self : verify.CellBatc
     flowRoute r = route self := by
   unfold verify.CellBatchVerifier.decode_cell_loop.body at h
   split at h
-  · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  · simp only [bind_success, aeneas_uncurry_def] at h
     repeat obtain ⟨x, hx, h⟩ := h
     cases x <;> simp only [bind_success, Result.ok.injEq] at h
     all_goals repeat obtain ⟨x, hx, h⟩ := h
@@ -122,7 +122,7 @@ private theorem decode_cell_loop_route [RuntimeFeatures] (self next : verify.Cel
 theorem decode_cell_route [RuntimeFeatures] (self next : verify.CellBatchVerifier)
     (cell : Array U8 2048#usize) (b : Bool)
     (h : self.decode_cell cell = ok (b, next)) : route next = route self := by
-  simp only [verify.CellBatchVerifier.decode_cell, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  simp only [verify.CellBatchVerifier.decode_cell, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
   obtain ⟨x, hx, h⟩ := h
   obtain ⟨_, rfl⟩ := Prod.mk.inj h
   exact decode_cell_loop_route self x.1 cell 0#usize x.2 hx
@@ -133,7 +133,7 @@ private theorem decode_cells_body_route [RuntimeFeatures] (self : verify.CellBat
     flowRoute r = route self := by
   simp only [verify.CellBatchVerifier.decode_cells_loop.body] at h
   split at h
-  · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  · simp only [bind_success, aeneas_uncurry_def] at h
     obtain ⟨cell, _, x, hx, h⟩ := h
     have hr := decode_cell_route self x.2 cell x.1 hx
     split at h
@@ -162,7 +162,7 @@ theorem decode_cells_route [RuntimeFeatures] (self next : verify.CellBatchVerifi
     (h : self.decode_cells cells = ok (b, next)) : route next = route self := by
   cases hk : self.kernel with
   | none =>
-    simp only [verify.CellBatchVerifier.decode_cells, hk, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+    simp only [verify.CellBatchVerifier.decode_cells, hk, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
     obtain ⟨v, _, x, hx, h⟩ := h
     obtain ⟨_, rfl⟩ := Prod.mk.inj h
     simpa only [route, hk] using
@@ -176,14 +176,14 @@ theorem decode_cells_route [RuntimeFeatures] (self next : verify.CellBatchVerifi
 theorem decode_proofs_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier)
     (proofs : Slice (Array U8 48#usize)) (b : Bool)
     (h : self.decode_proofs proofs = ok (b, next)) : route next = route self := by
-  simp only [verify.CellBatchVerifier.decode_proofs, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  simp only [verify.CellBatchVerifier.decode_proofs, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
   obtain ⟨_, _, h⟩ := h
   obtain ⟨_, rfl⟩ := Prod.mk.inj h
   rfl
 
 theorem decode_commitments_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBatchVerifier) (b : Bool)
     (h : self.decode_commitments = ok (b, next)) : route next = route self := by
-  simp only [verify.CellBatchVerifier.decode_commitments, bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+  simp only [verify.CellBatchVerifier.decode_commitments, bind_success, Result.ok.injEq, aeneas_uncurry_def] at h
   obtain ⟨_, _, h⟩ := h
   obtain ⟨_, rfl⟩ := Prod.mk.inj h
   rfl
@@ -202,24 +202,24 @@ theorem verify_route [RuntimeFeatures] [KzgExternals] (self next : verify.CellBa
     · split at h
       · ok_cases h
         rfl
-      · simp only [bind_success, Result.ok.injEq] at h
+      · simp only [bind_success] at h
         obtain ⟨k, _, h⟩ := h
         split at h
         · ok_cases h
           rfl
-        · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+        · simp only [bind_success, aeneas_uncurry_def] at h
           obtain ⟨d, _, first, hfirst, h⟩ := h
           have h1 : route first.2 = route self := decode_commitments_route {self with commitments := d} first.2 first.1 hfirst
           split at h
-          · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+          · simp only [bind_success, aeneas_uncurry_def] at h
             obtain ⟨second, hsecond, h⟩ := h
             have h2 := (decode_cells_route first.2 second.2 cells second.1 hsecond).trans h1
             split at h
-            · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+            · simp only [bind_success, aeneas_uncurry_def] at h
               obtain ⟨third, hthird, h⟩ := h
               have h3 := (decode_proofs_route second.2 third.2 proofs third.1 hthird).trans h2
               split at h
-              · simp only [bind_success, Result.ok.injEq, Function.uncurry, aeneas_uncurry_def] at h
+              · simp only [bind_success] at h
                 obtain ⟨challenge, _, h⟩ := h
                 exact (pairing_holds_route _ next challenge indices cells b h).trans h3
               · obtain ⟨_, rfl⟩ := Prod.mk.inj (Result.ok_injective h)

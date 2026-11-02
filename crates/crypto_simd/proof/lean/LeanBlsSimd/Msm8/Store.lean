@@ -14,8 +14,7 @@ theorem row_vector_refines (row : Array U64 8#usize) :
     index_usize_eq row 7#usize (by decide), index_usize_eq row 6#usize (by decide),
     index_usize_eq row 5#usize (by decide), index_usize_eq row 4#usize (by decide),
     index_usize_eq row 3#usize (by decide), index_usize_eq row 2#usize (by decide),
-    index_usize_eq row 1#usize (by decide), index_usize_eq row 0#usize (by decide),
-    bind_tc_ok, bind_ok, lift, core.core_arch.x86.avx512f._mm512_set_epi64,
+    index_usize_eq row 1#usize (by decide), index_usize_eq row 0#usize (by decide), bind_ok, lift, core.core_arch.x86.avx512f._mm512_set_epi64,
     ofBitVec_hcast_I64]
   congr 1
   ext i hi
@@ -99,7 +98,7 @@ theorem load_x_body (s : msm8.store.PointStore) (indices : Array U32 8#usize)
     rw [add_ok _ _ hadd]; rfl
   have hat : at1.val = 2 * ix.val := by simp [at1]
   simp only [msm8.store.PointStore.load_x_loop.body, limbs.LANES,
-    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_tc_ok, bind_ok, lift]
+    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
     let row ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array U64 8#usize)) s.rows at2
@@ -108,7 +107,7 @@ theorem load_x_body (s : msm8.store.PointStore) (indices : Array U32 8#usize)
     let c ← lane + 1#usize
     ok (cont (a, c))) = _
   rw [hmul']
-  simp only [bind_tc_ok, bind_ok, vec_index_eq s.rows at1 (by omega), row_vector_refines,
+  simp only [bind_tc_ok, vec_index_eq s.rows at1 (by omega), row_vector_refines,
     update_eq _ lane _ hl, hadd']
   congr 2
   have hr : ofArray ofU64 s.rows.val[at1.val] =
@@ -144,12 +143,11 @@ theorem load_x_refines (s : msm8.store.PointStore) (indices : Array U32 8#usize)
       (fun xs c j hc _ => load_x_body s indices hb (vec_length_bound s.rows) xs c j hc)
       (Vector.replicate 8 Simd.zero) 0#usize (by simp) trivial]
     simp [target, indexedRows, foldl_set_ofFn]
-  simp only [msm8.store.PointStore.load_x, core.core_arch.x86.avx512f._mm512_setzero_si512,
-    bind_tc_ok, bind_ok, ← show Simd.zero = _mm512_setzero_si512 from rfl]
+  simp only [msm8.store.PointStore.load_x, core.core_arch.x86.avx512f._mm512_setzero_si512, bind_ok, ← show Simd.zero = _mm512_setzero_si512 from rfl]
   have hz : Array.repeat 8#usize Simd.zero = toArray id (Vector.replicate 8 Simd.zero) := by
     exact (toArray_replicate (n := 8#usize) (m := 8) id Simd.zero rfl).symm
   rw [hz, hloop]
-  simp only [bind_tc_ok, bind_ok, transpose8_refines, ofArray_toArray_id]
+  simp only [bind_ok, transpose8_refines, ofArray_toArray_id]
   rfl
 
 theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usize)
@@ -190,7 +188,7 @@ theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usiz
     rw [add_ok _ _ hyadd]
     congr 1
   simp only [msm8.store.PointStore.load_points_loop.body, limbs.LANES,
-    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_tc_ok, bind_ok, lift]
+    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
     let row ← alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice (Array U64 8#usize)) s.rows at2
@@ -203,7 +201,7 @@ theorem load_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usiz
     let c ← lane + 1#usize
     ok (cont (a, ay, c))) = _
   rw [hmul']
-  simp only [bind_tc_ok, bind_ok, vec_index_eq s.rows at1 (by omega), row_vector_refines,
+  simp only [bind_tc_ok, vec_index_eq s.rows at1 (by omega), row_vector_refines,
     update_eq _ lane _ hl, hyadd',
     vec_index_eq s.rows yat (by omega), hadd']
   have hxrow : ofArray ofU64 s.rows.val[at1.val] =
@@ -261,10 +259,9 @@ theorem load_points_refines (s : msm8.store.PointStore) (indices : Array U32 8#u
     simp
   have hz : Array.repeat 8#usize Simd.zero = toArray id zero := by
     exact (toArray_replicate (n := 8#usize) (m := 8) id Simd.zero rfl).symm
-  simp only [msm8.store.PointStore.load_points, core.core_arch.x86.avx512f._mm512_setzero_si512,
-    bind_tc_ok, bind_ok, ← show Simd.zero = _mm512_setzero_si512 from rfl]
+  simp only [msm8.store.PointStore.load_points, core.core_arch.x86.avx512f._mm512_setzero_si512, bind_ok, ← show Simd.zero = _mm512_setzero_si512 from rfl]
   rw [hz, hloop]
-  simp only [bind_tc_ok, bind_ok, transpose8_refines]
+  simp only [bind_ok, transpose8_refines]
   rfl
 
 
@@ -277,7 +274,7 @@ theorem load_signed_refines (s : msm8.store.PointStore) (indices : Array U32 8#u
       ok (toFp8 (loadedCoordinate s indices 0),
         toFp8 (Fp8.select (ofU8 negated) (loadedCoordinate s indices 1)
           (loadedCoordinate s indices 1).neg)) := by
-  simp only [msm8.store.PointStore.load_signed, load_points_refines s indices hb, bind_tc_ok, bind_ok,
+  simp only [msm8.store.PointStore.load_signed, load_points_refines s indices hb, bind_ok,
     Fp8.neg_refines, Fp8.select_refines, ofFp8_toFp8]
   rfl
 
@@ -338,7 +335,7 @@ theorem store_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usi
     rw [add_ok _ _ hyadd]
     congr 1
   simp only [msm8.store.PointStore.store_points_loop.body, limbs.LANES,
-    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_tc_ok, bind_ok, lift]
+    UScalar.lt_equiv, hl, ite_true, index_usize_eq indices lane hl, bind_ok, lift]
   change (do
     let at2 ← (2#usize * UScalar.cast .Usize ix : Result Usize)
     let mx ← Array.index_usize (toArray (n := 8#usize) id xs) lane
@@ -354,11 +351,11 @@ theorem store_points_body (s : msm8.store.PointStore) (indices : Array U32 8#usi
     let c ← lane + 1#usize
     ok (cont ({ s with rows := backy y }, c))) = _
   rw [hmul']
-  simp only [bind_tc_ok, bind_ok, index_usize_toArray (n := 8#usize) id xs rfl lane hl,
+  simp only [bind_tc_ok, index_usize_toArray (n := 8#usize) id xs rfl lane hl,
     index_usize_toArray (n := 8#usize) id ys rfl lane hl, Simd.lanes_refines, Simd.lanes,
     vec_index_mut_eq s.rows at1 (by omega), hyadd', hadd']
   rw [vec_index_mut_eq _ yat (by simp [hyat]; omega)]
-  simp only [bind_tc_ok, bind_ok, Aeneas.Std.uncurry_apply_pair]
+  simp only [bind_tc_ok]
   simp [storeLane, hat, hyat, ← hix, hj]
 
 
@@ -367,7 +364,7 @@ theorem store_points_fold (s : msm8.store.PointStore) (indices : Array U32 8#usi
     msm8.store.PointStore.store_points s indices x y =
       ok ((List.finRange 8).foldl (fun s j => storeLane s (pointIndices indices)
         (transpose8 (ofArray id x)) (transpose8 (ofArray id y)) j) s) := by
-  simp only [msm8.store.PointStore.store_points, transpose8_refines, bind_tc_ok, bind_ok]
+  simp only [msm8.store.PointStore.store_points, transpose8_refines, bind_ok]
   unfold msm8.store.PointStore.store_points_loop
   rw [loop_up_inv (n := 8)
     (fun p => msm8.store.PointStore.store_points_loop.body indices

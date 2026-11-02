@@ -70,7 +70,7 @@ theorem quad_step (buf : ByteArray) (off : Nat) (s : Spec.RoundState) (q : Usize
   refine ⟨next,?_,rfl⟩
   have hq' : q < 16#usize := hq
   simp only [sha256.extensions.compress_blocks_loop0_loop1.body,hq',ite_true]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq,
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq,
     Portable.index_word]
   rw [Portable.constants_refines]
   have hk : (Array.make 4#usize [word Spec.constants[4*q.val]!,word Spec.constants[4*q.val+1]!,
@@ -78,11 +78,11 @@ theorem quad_step (buf : ByteArray) (off : Nat) (s : Spec.RoundState) (q : Usize
       toArray word (quad Spec.constants (4*q.val)) := by
     apply Aeneas.Std.Array.ext; simp [Array.make, Array.from_val, toArray, quad]
   rw [hk,load_words_refines]
-  simp (disch := scalar_tac) only [bind_tc_ok, bind_ok,index_usize_eq]
+  simp (disch := scalar_tac) only [bind_ok,index_usize_eq]
   norm_num only [UScalar.ofNatCore_val_eq]
   simp only [window,Array.make,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,
     core.core_arch.x86.sse2._mm_add_epi32,core.core_arch.x86.sha._mm_sha256rnds2_epu32,
-    core.core_arch.x86.sse2._mm_shuffle_epi32,bind_tc_ok, bind_ok]
+    core.core_arch.x86.sse2._mm_shuffle_epi32, bind_ok]
   have hw0 : min q.val 15 = q.val := Nat.min_eq_left (by omega)
   simp only [hw0]
   have hr := quad_rounds (Spec.schedule buf off) q.val s
@@ -97,13 +97,12 @@ theorem quad_step (buf : ByteArray) (off : Nat) (s : Spec.RoundState) (q : Usize
   by_cases he : q.val < 12
   · have he' : q < 12#usize := he
     simp only [he',ite_true,core.core_arch.x86.sha._mm_sha256msg1_epu32,
-      core.core_arch.x86.sha._mm_sha256msg2_epu32,core.core_arch.x86.ssse3._mm_alignr_epi8,
-      bind_tc_ok, bind_ok]
+      core.core_arch.x86.sha._mm_sha256msg2_epu32,core.core_arch.x86.ssse3._mm_alignr_epi8, bind_ok]
     simp only [Array.make,Array.from_val,List.getElem!_cons_zero,List.getElem!_cons_succ,he,ite_true,hw0] at hn
     simp only [show (I32.bv 4#i32).toNat = 4 by decide +kernel]
     rw [hn]
   · have he' : ¬ q < 12#usize := he
-    simp only [he',ite_false,bind_tc_ok, bind_ok]
+    simp only [he',ite_false, bind_ok]
     simp only [Array.make,Array.from_val,List.getElem!_cons_zero,List.getElem!_cons_succ,he,ite_false,hw0] at hn
     rw [hn]
 

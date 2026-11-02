@@ -104,7 +104,7 @@ private theorem sum_loop (kernel : interpolation_kernel.InterpolationKernel)
         8#usize kernel.shift data at1 sums i = ok (cont (next, i')) := by
       simp only [interpolation_kernel.InterpolationKernel.add_column_loop.body,
         hlt, ite_true, hatadd, hdataindex, hnorm, hshiftindex, hmul, hsindex, hsum,
-        hupdate, hadd, bind_tc_ok, bind_ok]
+        hupdate, hadd, bind_ok]
     rw [interpolation_kernel.InterpolationKernel.add_column_loop, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -185,15 +185,14 @@ theorem add_column_refinement (kernel : interpolation_kernel.InterpolationKernel
       change at1.val ≤ stop.val ∧ stop.val ≤ kernel.columns.val.length
       rw [hat, hstop, hk.2.2.1]
       omega)]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, lift] <;> rfl)
+    (simp only [bind_tc_ok] ; rfl)
   refine ⟨next, sums', ?_, hnext, ⟨rfl, rfl⟩, rfl, ?_, ?_⟩
   · simp only [interpolation_kernel.InterpolationKernel.add_column, vectors_per_cell_eq,
-      hmul, hadd, hmut, bind_tc_ok, bind_ok]
+      hmul, hadd, hmut, bind_ok]
     dsimp only [data] at hloop
-    simp only [Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hfft, hloop, bind_tc_ok, bind_ok, next, data]
+    simp only [Aeneas.Std.uncurry_apply_pair, hfft, hloop, bind_ok, next, data]
   · intro i hi
     simp only [next, data, vec_setSlice_val]
-    change (kernel.columns.val.setSlice! at1.val transformed.val)[i]! = _
     exact List.getElem!_setSlice!_same _ _ _ _ (by simpa only [hat, htlen] using hi)
   · refine ⟨by simp only [columnStep, _root_.Array.size_ofFn, Array.to_slice, Slice.from_val, sums'.property]; rfl, ?_⟩
     intro v

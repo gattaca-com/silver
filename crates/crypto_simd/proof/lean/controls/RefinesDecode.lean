@@ -162,7 +162,7 @@ example : fpWordsWith ok = encoding.fp_words := by
   congr 1
   funext ⟨iter, words⟩
   simp only [fpWordsBodyWith, encoding.fp_words_loop.body, bind_tc_eq,
-    Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, lift] <;> rfl
+    Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, lift] ; rfl
 
 set_option hygiene false in
 /-- The proof of `fp_words_refines`, over `fpWordsWith`. -/

@@ -32,7 +32,7 @@ theorem double_loop [RuntimeFeatures] (bits cursor : Usize) (total : portable.g1
     · have hbody : portable.msm.buckets.Buckets.sum_loop0_loop0.body bits total cursor =
           ok (cont (doubled, next)) := by
         simp only [portable.msm.buckets.Buckets.sum_loop0_loop0.body, UScalar.lt_equiv,
-          hlt, ite_true, hd, bind_tc_ok, bind_ok, add_ok cursor (1#usize) hnext, next] <;> rfl
+          hlt, ite_true, hd, bind_ok, add_ok cursor (1#usize) hnext, next] ; rfl
       rw [portable.msm.buckets.Buckets.sum_loop0_loop0,loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
     · simpa only [pow_succ,mul_nsmul,two_nsmul,nsmul_add] using hrep
@@ -76,11 +76,11 @@ theorem sum_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
         state.refs state.starts state.lens store window total = ok (cont (next,joined)) := by
       simp only [portable.msm.buckets.Buckets.sum_loop0.body,UScalar.lt_equiv,
         show (0#usize).val < window.val by change 0 < window.val; omega,ite_true,
-        sub_ok window (1#usize) hpos,bind_tc_ok, bind_ok,hd]
+        sub_ok window (1#usize) hpos, bind_ok,hd]
       change (do let g ← state.window_sum store next
                  let total ← doubled.add_complete g
                  ok (cont (next,total))) = _
-      simp only [hpart,hadd,bind_tc_ok, bind_ok]
+      simp only [hpart,hadd,bind_tc_ok]
     refine ⟨out,?_,?_⟩
     · rw [portable.msm.buckets.Buckets.sum_loop0,loop.eq_1]
       simpa only [hbody, bind_ok] using! hloop
@@ -110,7 +110,7 @@ theorem sum_correct [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     change (do let first ← state.window_sum store top
                portable.msm.buckets.Buckets.sum_loop0 state.window_bits state.windows
                  state.refs state.starts state.lens store top first) = _
-    simp only [hfirst,bind_tc_ok, bind_ok,hloop]
+    simp only [hfirst,bind_tc_ok,hloop]
   · have hw : state.windows.val = top.val+1 := by omega
     rw [hw,Finset.sum_range_succ,add_comm]
     exact hout

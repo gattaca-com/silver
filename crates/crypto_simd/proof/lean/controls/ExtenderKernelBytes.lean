@@ -8,7 +8,7 @@ attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelBytes
 
-open Kernel Kernel.BytePacking
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel Kernel.BytePacking
 
 set_option maxHeartbeats 2000000
 set_option maxRecDepth 4096
@@ -93,7 +93,7 @@ private theorem withoutCanonical_refines (a : fr8.Fr8) (hn : Normalized a) (inpu
   rw [toArray_ofArray (f := id) (g := id) (m := 5) (fun _ => rfl) a rfl rfl] at hpack
   unfold withoutCanonical
   rw [hpack]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [vector_to_bytes_refines _ input 0#usize hlen]
   apply congrArg ok
   unfold rawEncoding writeBlocks

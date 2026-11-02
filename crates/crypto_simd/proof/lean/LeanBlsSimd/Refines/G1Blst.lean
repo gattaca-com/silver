@@ -42,15 +42,13 @@ theorem blst_list_refines [KzgExternals]
     apply loop_range (n := inputs.val.length) _ (Slice.len inputs) rfl enc
       (fun v j => v.set j (target j)) enc (ofSlice id out hlen) (enc (Vector.ofFn target))
     · intro r v he hs hn
-      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · intro r r' v j he hs he' hs' hn
       have hj : r.start.val < inputs.val.length := by omega
-      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_tc_ok, bind_ok,
-        Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
       rw [show Slice.index_usize inputs r.start = ok inputs.val[r.start.val] by
         simp [Slice.index_usize, hj]]
-      simp only [uncompress_in_g1_blst, bind_tc_ok, bind_ok]
+      simp only [uncompress_in_g1_blst, bind_ok]
       have hupdate : ∀ x, Slice.update (enc v) r.start x = ok ((enc v).set r.start x) := by
         intro x
         simp [Slice.update, enc, vectorSlice, hj, Slice.set, Slice.setAtNat]
@@ -58,7 +56,7 @@ theorem blst_list_refines [KzgExternals]
         simp only [target, hs]
       rw [htarget]
       cases KzgExternals.uncompressG1 inputs.val[r.start.val] <;>
-        simp only [g1_point.G1Point.from_trusted, bind_tc_ok, bind_ok, hupdate,
+        simp only [g1_point.G1Point.from_trusted, bind_ok, hupdate,
           vectorSlice_set v inputs.property r.start hj, enc, hs]
     · rw [foldl_set_ofFn]
   · apply List.ext_getElem (by simp [enc, vectorSlice])

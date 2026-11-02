@@ -46,9 +46,9 @@ theorem join_loop [RuntimeFeatures] (refs : alloc.vec.Vec U32) (store : portable
         ok (cont (joined,next)) := by
       simp only [portable.msm.buckets.Buckets.window_sum_loop0_loop0.body,UScalar.lt_equiv,hlt,ite_true]
       rw [add_ok start cursor hab]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       rw [vec_index refs address hi,hindex]
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_ok]
       have h := congrArg (fun r : Result portable.g1.G1 => r >>= fun p => do
         let c ← cursor+1#usize
         ok (cont (β := portable.g1.G1) (p,c))) hjoin
@@ -105,8 +105,7 @@ theorem join_packed [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
       exact hp _ (by simpa only [getElem!_pos (contents index.val) j (by omega)] using
         List.getElem_mem (l := contents index.val) (n := j) (by omega)))
   refine ⟨out,?_,?_⟩
-  · simp only [joinBucket,vec_index state.starts index his,vec_index state.lens index hil,
-      bind_tc_ok, bind_ok,lift]
+  · simp only [joinBucket,vec_index state.starts index his,vec_index state.lens index hil, bind_ok,lift]
     exact hcall
   · simpa only [show (0#usize).val = 0 from rfl,Nat.Ico_zero_eq_range,hl,
       WindowSums.sum_list_indices] using hrep

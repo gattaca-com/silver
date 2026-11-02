@@ -50,9 +50,8 @@ theorem schedule_load_step (data : Slice U8) (offset : Usize) (w : Array U32 64#
     simp [Array.from_slice,src,Array.to_slice,chunk.property]
   refine ⟨out,next,?_,?_,rfl⟩
   · have ht' : t < 16#usize := ht
-    simp only [sha256.portable.schedule_loop0.body,ht',ite_true,lift,Array.to_slice_mut,
-      bind_tc_ok, bind_ok,Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
-    simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+    simp only [sha256.portable.schedule_loop0.body,ht',ite_true,lift,Array.to_slice_mut, bind_ok, Aeneas.Std.uncurry_apply_pair]
+    simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
     change (do
       let s1 ← core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
         data {start, «end» := stop}
@@ -61,7 +60,7 @@ theorem schedule_load_step (data : Slice U8) (offset : Usize) (w : Array U32 64#
       let a ← Array.update w t (core.num.U32.from_be_bytes (Array.from_slice (Array.repeat 4#usize 0#u8) s2))
       ok (cont (a,next))) = _
     rw [hindex]
-    simp only [bind_tc_ok, bind_ok,hcopy,hback]
+    simp only [bind_tc_ok,hcopy,hback]
     rw [update_eq _ _ _ (by change t.val < 64; omega)]
     exact bind_ok _ _
   · change words (w.set t _) = _
@@ -80,20 +79,20 @@ theorem schedule_expand_step (w : Array U32 64#usize) (t : Usize)
   refine ⟨out,next,?_,?_,rfl⟩
   · have ht : t < 64#usize := hi
     simp only [sha256.portable.schedule_loop1.body,ht,ite_true]
-    simp (disch := scalar_tac) only [sub_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq,index_usize_eq]
+    simp (disch := scalar_tac) only [sub_ok, bind_ok,UScalar.ofNatCore_val_eq,index_usize_eq]
     have h16 := words_get w (t.val-16) (by change _ < 64; omega)
     have h15 := words_get w (t.val-15) (by change _ < 64; omega)
     have h7 := words_get w (t.val-7) (by change _ < 64; omega)
     have h2 := words_get w (t.val-2) (by change _ < 64; omega)
     rw [← word_ofWord (w.val[t.val-15]'_), ← h15, smallSigma0_refines]
-    simp only [bind_tc_ok, bind_ok,lift]
+    simp only [bind_ok,lift]
     rw [← word_ofWord (w.val[t.val-2]'_), ← h2, smallSigma1_refines]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [← word_ofWord (w.val[t.val-16]'_), ← h16,
       ← word_ofWord (w.val[t.val-7]'_), ← h7]
     simp only [wrapping_add_word]
     rw [update_eq _ _ _ hi]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [add_ok _ _ (by scalar_tac)]
     exact bind_ok _ _
   · change words (w.set t _) = _

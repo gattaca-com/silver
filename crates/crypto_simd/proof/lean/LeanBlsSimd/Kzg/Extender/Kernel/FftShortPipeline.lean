@@ -31,7 +31,7 @@ private theorem short_seven (v : alloc.vec.Vec fr8.Fr8) (hv : v.val.length = 7) 
 private theorem reduced_success (a : fr8.Fr8) : ∃ r, fr8.Fr8.reduced a = ok r := by
   obtain ⟨offset, ho, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   simp only [fr8.Fr8.reduced, ho, FrModel.Simd.sub_limbs_refines,
-    FrModel.Simd.select_borrowed_refines, bind_tc_ok, bind_ok, Prod.map]
+    FrModel.Simd.select_borrowed_refines, bind_ok, Prod.map]
   exact ⟨_, rfl⟩
 
 private noncomputable def reducedValue (a : fr8.Fr8) := (reduced_success a).choose
@@ -81,10 +81,10 @@ private theorem dit_two_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize)
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨input, hi, _, _⟩ := multiple_of_r_refinement
     (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac))
     (by simp only [UScalar.ofNatCore_val_eq]; omega)
@@ -163,10 +163,10 @@ private theorem dit_four_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨input, hi, _, _⟩ := multiple_of_r_refinement
     (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac))
     (by simp only [UScalar.ofNatCore_val_eq]; omega)
@@ -241,10 +241,10 @@ private theorem dif_two_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize)
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨product, hp, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   obtain ⟨reduced, hreduced⟩ : ∃ f : fr8.Fr8 → fr8.Fr8,
       ∀ a, fr8.Fr8.reduced a = ok (f a) :=
@@ -316,10 +316,10 @@ private theorem dif_four_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok, bind_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨product, hp, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   obtain ⟨reduced, hreduced⟩ : ∃ f : fr8.Fr8 → fr8.Fr8,
       ∀ a, fr8.Fr8.reduced a = ok (f a) :=

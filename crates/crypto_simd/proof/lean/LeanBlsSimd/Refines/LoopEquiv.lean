@@ -12,11 +12,11 @@ def mapLoopState {α β γ : Type} (f : α → γ) (r : Result (ControlFlow α �
 
 @[simp] theorem mapLoopState_cont {α β γ : Type} (f : α → γ) (s : α) :
     mapLoopState (β := β) f (ok (cont s)) = ok (cont (f s)) := by
-  simp only [mapLoopState, bind_tc_ok, bind_ok]
+  simp only [mapLoopState, bind_tc_ok]
 
 @[simp] theorem mapLoopState_done {α β γ : Type} (f : α → γ) (r : β) :
     mapLoopState f (ok (done r)) = ok (done r) := by
-  simp only [mapLoopState, bind_tc_ok, bind_ok]
+  simp only [mapLoopState, bind_tc_ok]
 
 @[simp] theorem mapLoopState_bind {α β γ δ : Type} (f : α → γ)
     (r : Result δ) (k : δ → Result (ControlFlow α β)) :
@@ -53,7 +53,7 @@ private theorem loop_transfer_le {α β γ : Type}
     cases flow with
     | cont next => simpa only [bind_tc_ok, bind_ok] using ih next
     | done result =>
-      simp only [bind_tc_ok, bind_ok]
+      simp only [bind_tc_ok]
       exact Lean.Order.PartialOrder.rel_refl
 
 /-- Renaming loop state preserves failure and divergence as well as successful results. -/

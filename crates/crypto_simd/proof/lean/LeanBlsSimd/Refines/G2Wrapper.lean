@@ -38,7 +38,7 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
   cases simd
   · obtain ⟨result, hr, hrl, hrv⟩ := scalar_chunk_refines_false inputs out start len hlen hnextlen
     refine ⟨next, result, by omega, ?_, hrl, ?_⟩
-    · simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok, hchoose, hr, hadd, Bool.false_eq_true, ite_false]
+    · simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_ok, hchoose, hr, hadd, Bool.false_eq_true, ite_false]
     · intro i hi
       rw [hrv i (by omega)]
       simp only [hn]
@@ -74,8 +74,8 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
           rw [ite_eq_left (by simp only [Slice.length]; constructor <;> omega)]
           rfl
         have hk' : len >= MIN_KERNEL_LANES := by simpa [MIN_KERNEL_LANES] using hk
-        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok,
-          hchoose, hk', hadd, hindex, hmut, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair, hr, result]
+        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_ok,
+          hchoose, hk', hadd, hindex, hmut, Aeneas.Std.uncurry_apply_pair, hr, result]
       · simp [result, Slice.setSlice!]
       · intro i hi
         simp only [result, Slice.setSlice!_val, hrv]
@@ -93,7 +93,7 @@ private theorem step_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     · obtain ⟨result, hr, hrl, hrv⟩ := scalar_chunk_refines inputs out start len hlen hnextlen
       refine ⟨next, result, by omega, ?_, hrl, ?_⟩
       · have hk' : ¬ len >= MIN_KERNEL_LANES := by simpa [MIN_KERNEL_LANES] using hk
-        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_tc_ok, bind_ok,
+        simp only [uncompress_in_g2_loop0.body, hlt', ite_true, hsub, bind_ok,
           hchoose, hk', ite_false, hr, hadd]
       · intro i hi
         rw [hrv i (by omega)]
@@ -145,8 +145,7 @@ theorem uncompress_refines [RuntimeFeatures] [BlsExternals] (inputs : Slice (Arr
     hlen (by simp) (Or.inl (by simp))
   refine ⟨result, ?_, ?_⟩
   · have heq : Slice.len out = Slice.len inputs := UScalar.eq_of_val_eq (by simpa using hlen)
-    simp only [silver_crypto_simd.bls.uncompress_in_g2, heq, massert, ↓reduceIte,
-      bind_tc_ok, bind_ok, ifma_available, hr]
+    simp only [silver_crypto_simd.bls.uncompress_in_g2, heq, massert, ↓reduceIte, bind_ok, ifma_available, hr]
   · change result.val = rawOutput RuntimeFeatures.simdAvailable inputs
     apply List.ext_getElem
     · rw [hrl, hlen, rawOutput_length]

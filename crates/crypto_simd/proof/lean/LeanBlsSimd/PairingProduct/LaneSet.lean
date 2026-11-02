@@ -91,7 +91,7 @@ theorem single_set_correct : ProductLoop.SingleSetCorrect := by
   obtain ⟨result, hloop, hrep, hclear⟩ :=
     LaneMiller.miller_refines raw (pairs.val.map input) hraw
   refine ⟨result, ?_, Miller.sharedFactor (pairs.val.map input), hrep, ?_⟩
-  · simp only [hnew, bind_tc_ok, bind_ok, hloop]
+  · simp only [hnew, bind_ok, hloop]
   · intro hc
     exact factor_spec pairs.val finite (hclear hc)
 

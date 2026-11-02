@@ -51,7 +51,7 @@ def state (s : WideStage) (count : Nat) (prepared : Bool) : Slice fr8.Fr8 :=
     if n < count then
       if v % (2*s.half.val) < s.half.val then s.left n else s.right n
     else if prepared ∧ n = count ∧ v % (2*s.half.val) < s.half.val then s.left n
-    else original)) (by simpa using s.input.property)
+    else original)) (by simp)
 
 @[simp] theorem state_length (s : WideStage) (count : Nat) (prepared : Bool) :
     (s.state count prepared).val.length = s.input.val.length := by simp [state]
@@ -128,7 +128,7 @@ theorem state_prepare (s : WideStage) (n : Nat) (i : Usize)
   ext1
   apply List.ext_getElem (by simp [Slice.set, Slice.setAtNat])
   intro v hv hv'
-  simp only [Slice.set, Slice.setAtNat, state, List.getElem_set, List.getElem_mapIdx]
+  simp only [Slice.set, Slice.setAtNat, state]
   have he := first_iff s.half.val n v hhalf
   by_cases hnum : pairNumber s.half.val v = n
   · by_cases hlo : v % (2 * s.half.val) < s.half.val
@@ -145,7 +145,7 @@ theorem state_finish_prepared (s : WideStage) (n : Nat) (i : Usize)
   ext1
   apply List.ext_getElem (by simp [Slice.set, Slice.setAtNat])
   intro v hv hv'
-  simp only [Slice.set, Slice.setAtNat, state, List.getElem_set, List.getElem_mapIdx]
+  simp only [Slice.set, Slice.setAtNat, state]
   have he := second_iff s.half.val n v hhalf
   by_cases hnum : pairNumber s.half.val v = n
   · by_cases hlo : v % (2 * s.half.val) < s.half.val

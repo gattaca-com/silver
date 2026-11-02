@@ -25,7 +25,7 @@ theorem pair_index_one (x y : ZMod Bls.Fp.modulus) :
 
 theorem mul_pair_encoded [RuntimeFeatures] (x0 x1 y0 y1 : ZMod Bls.Fp.modulus) :
     portable.fp.Fp.mul_pair (pairEncode x0 x1) (pairEncode y0 y1) = ok (pairEncode (x0*y0) (x1*y1)) := by
-  simp only [portable.fp.Fp.mul_pair,pair_index_zero,pair_index_one,bind_tc_ok, bind_ok,mul_encoded]
+  simp only [portable.fp.Fp.mul_pair,pair_index_zero,pair_index_one, bind_ok,mul_encoded]
   rfl
 
 theorem pair_square_four [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus) :
@@ -38,16 +38,16 @@ theorem pair_square_four [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus) :
   unfold portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0
   rw [loop.eq_1]
   simp only [portable.fp.Fp.pow_p_minus_3_over_4_pair_loop1_loop0.body,
-    show 0#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded,bind_tc_ok, bind_ok,ha0]
+    show 0#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded, bind_ok,ha0]
   rw [loop.eq_1]
   simp only [
-    show 1#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded,bind_tc_ok, bind_ok,ha1]
+    show 1#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded, bind_ok,ha1]
   rw [loop.eq_1]
   simp only [
-    show 2#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded,bind_tc_ok, bind_ok,ha2]
+    show 2#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded, bind_ok,ha2]
   rw [loop.eq_1]
   simp only [
-    show 3#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded,bind_tc_ok, bind_ok,ha3]
+    show 3#i32 < 4#i32 from by decide,ite_true,mul_pair_encoded, bind_ok,ha3]
   rw [loop.eq_1]
   simp only [lt_self_iff_false,ite_false, bind_ok]
   have hx : (((x*x)*(x*x))*((x*x)*(x*x)))*(((x*x)*(x*x))*((x*x)*(x*x))) = x^16 := by ring

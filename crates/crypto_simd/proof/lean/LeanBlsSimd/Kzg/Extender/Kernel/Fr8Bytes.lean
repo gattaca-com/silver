@@ -65,7 +65,7 @@ theorem unpack_refines (x : Array U64 4#usize) :
     rfl
   unfold fr8.unpack52
   simp only [hm, index_usize_eq x 0#usize (by decide), index_usize_eq x 1#usize (by decide),
-    index_usize_eq x 2#usize (by decide), index_usize_eq x 3#usize (by decide), bind_tc_ok, bind_ok,
+    index_usize_eq x 2#usize (by decide), index_usize_eq x 3#usize (by decide), bind_ok,
     lift]
   simp only [HShiftRight.hShiftRight, HShiftLeft.hShiftLeft, UScalar.shiftRight_IScalar,
     UScalar.shiftLeft_IScalar, UScalar.shiftRight, UScalar.shiftLeft, IScalar.toNat]
@@ -91,7 +91,7 @@ theorem transpose_refines (values : Array (Array U64 5#usize) 8#usize) :
     fr8.transpose_in values = ok (toArray id (transpose (ofArray (ofArray ofU64) values))) := by
   unfold fr8.transpose_in fr8.transpose_in_loop
   have hz : fr8.zero = ok Simd.zero := rfl
-  simp only [hz, bind_tc_ok, bind_ok, fr8.LIMBS]
+  simp only [hz, bind_ok, fr8.LIMBS]
   rw [repeat_eq_toArray_id Simd.zero (show (5#usize).val = 5 from rfl)]
   refine loop_range (n := 5) _ 5#usize rfl (toArray id)
     (fun v j => v.set j (transpose (ofArray (ofArray ofU64) values))[j]) (toArray id)
@@ -105,7 +105,7 @@ theorem transpose_refines (values : Array (Array U64 5#usize) 8#usize) :
       index_usize_eq values 5#usize (by decide), index_usize_eq values 4#usize (by decide),
       index_usize_eq values 3#usize (by decide), index_usize_eq values 2#usize (by decide),
       index_usize_eq values 1#usize (by decide), index_usize_eq values 0#usize (by decide),
-      index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift, update_eq _ _ _ hj,
+      index_usize_eq _ _ hj, bind_ok, lift, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_set_epi64, ofBitVec_hcast_I64]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
@@ -143,13 +143,13 @@ theorem load_loop_refines (input : Slice blst.blst_fr) (offset : Usize)
       omega
     simp_body fr8.Fr8.load_loop.body hn
     rw [add_ok _ _ hadd]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [show Slice.index_usize input (UScalar.ofNatCore (offset.val + r.start.val) hadd) =
         ok input.val[offset.val + r.start.val]! by
       simp [Slice.index_usize, show offset.val + r.start.val < input.val.length by omega]]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [unpack_refines]
-    simp only [bind_tc_ok, bind_ok, update_eq _ r.start _ (show r.start.val < (8#usize).val from hl)]
+    simp only [bind_ok, update_eq _ r.start _ (show r.start.val < (8#usize).val from hl)]
     refine congrArg (fun s => ok (cont (r', s))) ?_
     ext1
     simp [hs, List.map_set, Vector.toList_set, loadedLanes]

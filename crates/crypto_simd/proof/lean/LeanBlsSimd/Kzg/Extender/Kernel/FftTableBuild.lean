@@ -81,7 +81,7 @@ private theorem twiddle_loop
         ok (cont (next, m')) := by
       simp only [fft8.stage_twiddles_loop.body, fr8.LANES, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hml, ite_true, hmod, hadd, hmul, hlookup,
-        hmultiplier, hupdate, hinc, bind_tc_ok, bind_ok, value]
+        hmultiplier, hupdate, hinc, bind_ok, value]
     rw [fft8.stage_twiddles_loop, loop.eq_1]
     simpa only [hbody, bind_ok] using! hout
 
@@ -174,7 +174,7 @@ private theorem wide_stage_loop
       intro j
       simp only [next, alloc.vec.Vec.from_val]
       by_cases hj : j.val < v.val
-      · change MultiplierRep (wide.val ++ [factor])[half.val / 8 - 1 + j.val]! _
+      ·
         rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)]
         exact hp.2 ⟨j.val, hj⟩
       · have he : j.val = v.val := by omega
@@ -184,7 +184,7 @@ private theorem wide_stage_loop
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · have hbody : fft8.Fft8.new_loop1_loop0.body input n stride half wide v = ok (cont (next, v')) := by
-        simp only [fft8.Fft8.new_loop1_loop0.body, hcount, bind_tc_ok, bind_ok,
+        simp only [fft8.Fft8.new_loop1_loop0.body, hcount, bind_ok,
           UScalar.lt_equiv, hcval, hvt, ite_true, htotal, htwice, hdiv,
           hstart, htwiddles, lift, hload, hpush, hinc]
       rw [fft8.Fft8.new_loop1_loop0, loop.eq_1]
@@ -278,7 +278,7 @@ private theorem short_stage_loop
       intro j
       simp only [next, alloc.vec.Vec.from_val]
       by_cases hj : j.val < v.val
-      · change MultiplierRep (short.val ++ [factor])[half.val - 1 + j.val]! _
+      ·
         rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)]
         exact hp.2 ⟨j.val, hj⟩
       · have he : j.val = v.val := by omega
@@ -288,7 +288,7 @@ private theorem short_stage_loop
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · have hbody : fft8.Fft8.new_loop0_loop0.body input n stride half short v = ok (cont (next, v')) := by
-        simp only [fft8.Fft8.new_loop0_loop0.body, bind_tc_ok, bind_ok,
+        simp only [fft8.Fft8.new_loop0_loop0.body, bind_ok,
           UScalar.lt_equiv, hvt, ite_true, htotal, htwice, hdiv,
           htwiddles, lift, hload, hpush, hinc]
       rw [fft8.Fft8.new_loop0_loop0, loop.eq_1]

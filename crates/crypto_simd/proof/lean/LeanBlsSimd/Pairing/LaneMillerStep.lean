@@ -70,7 +70,7 @@ theorem miller_body (factors z : fp8.Fp8) (v : Factors) (hv : FactorsRep factors
     obtain ⟨out, hlines2, rout⟩ := times_lines next hnext factors z v hv present rfirst
     refine ⟨out, next2, bit', ?_, ?_, rfl, ?_⟩
     · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, ite_true,
-        hdec, bind_tc_ok, bind_ok, hsquare, hlines, hinc, hbit, h, hlines2, hinc2]
+        hdec, bind_ok, hsquare, hlines, hinc, hbit, h, hlines2, hinc2]
     · change step.val + 1 + 1 = consumed n.val
       rw [consumed_step, hs, h]
       rfl
@@ -79,7 +79,7 @@ theorem miller_body (factors z : fp8.Fp8) (v : Factors) (hv : FactorsRep factors
       exact rout
   · refine ⟨first, next, bit', ?_, ?_, rfl, ?_⟩
     · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, ite_true,
-        hdec, bind_tc_ok, bind_ok, hsquare, hlines, hinc, hbit, h, Bool.false_eq_true, ite_false]
+        hdec, bind_ok, hsquare, hlines, hinc, hbit, h, Bool.false_eq_true, ite_false]
     · change step.val + 1 = consumed n.val
       rw [consumed_step, hs, ite_eq_right h, Nat.add_zero]
     · rw [bit_step_eq, dite_eq_right h]

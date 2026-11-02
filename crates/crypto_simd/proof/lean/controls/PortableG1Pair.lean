@@ -21,7 +21,7 @@ theorem only_equal_lane_is_exceptional [RuntimeFeatures] :
   rw [add_affine_encoded]
   have he : affineExceptional g g.x g.y = true := by decide +kernel
   have hn : affineExceptional (Bls.G1.double g) g.x g.y = false := by decide +kernel
-  simp only [bind_tc_ok, bind_ok,he,hn]
+  simp only [bind_ok,he,hn]
   rfl
 
 theorem one_flagged_lane_recomputed [RuntimeFeatures] :

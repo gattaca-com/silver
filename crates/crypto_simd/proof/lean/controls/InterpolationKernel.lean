@@ -118,7 +118,7 @@ theorem wrong_used_column_rejected
     1#usize 1 values (_root_.Array.replicate 64 0) (by decide) hcell
     (by simp [hflags]) (by intro _ j; simp [j.isLt])
   refine ⟨next, { next with used := alloc.vec.Vec.set kernel.used 0#usize true },
-    hcall, hused, by simp only [addCellWrongUsed, hcall, bind_tc_ok, bind_ok], ?_⟩
+    hcall, hused, by simp only [addCellWrongUsed, hcall, bind_ok], ?_⟩
   intro hwrong
   have he := congrArg (fun flags : List Bool => flags[1]!) (hwrong.trans hused)
   simp [alloc.vec.Vec.set_val_eq, hflags] at he
@@ -140,7 +140,7 @@ private theorem noncanonical_first :
       (by
         intro i hi
         simp only [Slice.from_val, hval, Nat.zero_add, List.getElem!_replicate,
-          show i < 2048 by omega, hi, ite_true])
+          show i < 2048 by omega, hi])
     simpa only [arrayBytes, Slice.from_val] using he
   rw [hextract]
   decide +kernel

@@ -109,7 +109,7 @@ theorem check_cell_refinement (kernel : interpolation_kernel.InterpolationKernel
     interpolation_kernel.InterpolationKernel.check_cell kernel cell =
       ok ((decodedCellElements [cell]).all Option.isSome) := by
   obtain ⟨stop, hstop, hs⟩ := check_cell_loop_refinement cell 0#usize (by decide)
-  simp only [interpolation_kernel.InterpolationKernel.check_cell, hstop, bind_tc_ok, bind_ok, vectors_per_cell_eq]
+  simp only [interpolation_kernel.InterpolationKernel.check_cell, hstop, bind_ok, vectors_per_cell_eq]
   congr 1
   apply Bool.eq_iff_iff.mpr
   simp only [decide_eq_true_eq, hs, UScalar.ofNatCore_val_eq, Nat.mul_zero, Nat.zero_le,
@@ -157,7 +157,7 @@ private theorem check_loop_refinement (kernel : interpolation_kernel.Interpolati
     have hbody : interpolation_kernel.InterpolationKernel.check_loop.body kernel cells k =
         if (decodedCellElements [cell]).all Option.isSome then ok (cont k') else ok (done k) := by
       simp only [interpolation_kernel.InterpolationKernel.check_loop.body, htest, ite_true,
-        hindex, bind_tc_ok, bind_ok, check_cell_refinement, add_ok k hkBound, k']
+        hindex, bind_ok, check_cell_refinement, add_ok k hkBound, k']
     cases hsuccess : (decodedCellElements [cell]).all Option.isSome with
     | false =>
       refine ⟨k, ?_, ?_⟩

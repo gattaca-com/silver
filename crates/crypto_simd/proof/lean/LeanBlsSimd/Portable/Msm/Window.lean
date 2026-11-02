@@ -54,7 +54,7 @@ theorem window_loop [RuntimeFeatures] (state : portable.msm.buckets.Buckets)
     have hbody : portable.msm.buckets.Buckets.window_sum_loop0.body state.window_bits state.windows
         state.refs state.starts state.lens store window running sum bucket = ok (cont (joined,total,next)) := by
       simp only [portable.msm.buckets.Buckets.window_sum_loop0.body,UScalar.lt_equiv,
-        show (0#usize).val < bucket.val by change 0 < bucket.val; omega,ite_true,hlist,bind_tc_ok, bind_ok]
+        show (0#usize).val < bucket.val by change 0 < bucket.val; omega,ite_true,hlist, bind_ok]
       have h := congrArg (fun value : Result portable.g1.G1 => value >>= fun running1 => do
         let sum1 ← sum.add_complete running1
         let next ← bucket-1#usize

@@ -56,7 +56,7 @@ theorem swap_bytes_refines (x : M512) :
   simp only [core.core_arch.x86.avx512f._mm512_slli_epi64,
     core.core_arch.x86.avx512f._mm512_srli_epi64,
     core.core_arch.x86.avx512f._mm512_and_si512,
-    core.core_arch.x86.avx512f._mm512_add_epi64, FrModel.Simd.splat_refines, bind_tc_ok, bind_ok]
+    core.core_arch.x86.avx512f._mm512_add_epi64, FrModel.Simd.splat_refines, bind_ok]
   apply congrArg ok
   apply Vector.ext
   intro lane hl

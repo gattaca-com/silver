@@ -56,18 +56,18 @@ theorem add_step (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
   have hj' : j < 4#usize := hj
   simp only [fr.add_words_loop.body, hj', ite_true]
   rw [index_usize_eq a j hj, index_usize_eq b j hj]
-  simp only [lift, bind_tc_ok, bind_ok]
+  simp only [lift, bind_ok]
   rw [add_ok _ _ (by rw [cast128_val, cast128_val]; change x.val+y.val < 2^128; omega)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact hs128)]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   change (do
     let out ← Array.update sum j (UScalar.cast .U64 s)
     let high ← s >>> 64#i32
     let next ← j + 1#usize
     ok (cont (out, high, next))) = _
   rw [update_eq sum j _ hj, shiftRight_64_i32]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_tc_ok]
   rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
   exact bind_ok _ _
 
@@ -179,15 +179,15 @@ theorem sub_step (a b difference : Array U64 4#usize) (borrow : U64) (j : Usize)
   · have hj' : j < 4#usize := hj
     simp only [fr.sub_words_loop.body, hj', ite_true]
     rw [radix_shift]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [index_usize_eq a j hj, index_usize_eq b j hj]
-    simp only [lift, bind_tc_ok, bind_ok]
+    simp only [lift, bind_ok]
     rw [add_ok _ _ (by rw [cast128_val]; exact hsafe.1)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [sub_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; exact hsafe.2.1)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     rw [sub_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; exact hsafe.2.2.1)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_ok]
     change (do
       let out ← Array.update difference j (UScalar.cast .U64 s)
       let high' ← s >>> 64#i32
@@ -195,9 +195,9 @@ theorem sub_step (a b difference : Array U64 4#usize) (borrow : U64) (j : Usize)
       let next' ← j+1#usize
       ok (cont (out,borrow'',next'))) = _
     rw [update_eq difference j _ hj, shiftRight_64_i32]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [sub_ok 1#u64 high (by change high.val ≤ 1; omega)]
-    simp only [bind_tc_ok, bind_ok]
+    simp only [bind_tc_ok]
     rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
     exact bind_ok _ _
 
@@ -270,7 +270,7 @@ theorem sub_words_refines (a b : Array U64 4#usize) :
       norm_num [radix] at hout heq
       omega
   refine ⟨out,?_,?_⟩
-  · simp only [fr.sub_words,hr,bind_tc_ok, bind_ok]
+  · simp only [fr.sub_words,hr, bind_ok]
     change ok (out,decide (top = 1#u64)) = _
     simp only [hborrow]
   · norm_num [radix] at hout heq ⊢

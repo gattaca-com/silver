@@ -44,7 +44,7 @@ theorem finiteCore_correct [RuntimeFeatures]
       rw [← hsum, List.length_eq_zero_iff.mp hz]
       rfl
     refine ⟨filtered, portable.g1.G1.INFINITY, ?_, ?_⟩
-    · simp only [finiteCore, hfilter, bind_tc_ok, bind_ok, hn, ite_true]
+    · simp only [finiteCore, hfilter, bind_ok, hn, ite_true]
       rfl
     · rw [hzero]
       exact Group.infinity_rep
@@ -78,7 +78,7 @@ theorem finiteCore_correct [RuntimeFeatures]
     obtain ⟨next, out, hfinishEq, hrep⟩ :=
       finish_correct prepared filtered.finite_scalars.val.length values capacity contents _ hinitialised
     refine ⟨next, out, ?_, ?_⟩
-    · simp only [finiteCore, hfilter, bind_tc_ok, bind_ok, hn, ite_false]
+    · simp only [finiteCore, hfilter, bind_ok, hn, ite_false]
       change (do let prepared ← initialise filtered; finish prepared) = _
       rw [hinit]
       simpa only [bind_tc_ok, bind_ok] using! hfinishEq

@@ -78,13 +78,12 @@ theorem push_blst_refines [RuntimeFeatures] (s : portable.msm.store.PointStore)
   obtain ⟨out,he,hlen,hsize,hpoints,hframe⟩ := push_loop_refines s points negated endomorphism
     0#usize (by simp) hn (by simpa using hcap) hp hf
   refine ⟨out,?_,by simpa using hlen,hsize,?_,hframe⟩
-  · simp only [portable.msm.store.PointStore.push_blst,hcount,massert,ite_true,bind_tc_ok, bind_ok]
+  · simp only [portable.msm.store.PointStore.push_blst,hcount,massert,ite_true, bind_ok]
     rw [add_ok _ _ hb]
-    simp only [bind_tc_ok, bind_ok,UScalar.le_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,
-      hcap,ite_true]
+    simp only [bind_ok,UScalar.le_equiv,UScalar.ofNatCore_val_eq,Slice.len_val]
     rw [he]
-    simp only [Slice.len_val, alloc.vec.Vec.len_val, hcap, ite_true, bind_ok]
-    (simp only [bind_ok, bind_tc_ok, Aeneas.Std.uncurry_apply_pair, aeneas_uncurry_def, lift] <;> rfl)
+    simp only [alloc.vec.Vec.len_val, hcap, ite_true, bind_ok]
+    (simp only [aeneas_uncurry_def] )
   · intro j hj
     simpa only [UScalar.ofNatCore_val_eq,Nat.sub_zero] using hpoints j (Nat.zero_le _) hj
 

@@ -17,7 +17,7 @@ theorem Fr8.reduced_refines (a : fr8.Fr8) :
     have h := (Kzg.Extender.Kernel.multiple_of_r_nat_refinement 2 (by decide)).1
     exact h.trans (congrArg Result.ok (by rfl))
   simp [fr8.Fr8.reduced, htwo, Simd.sub_limbs_refines, Simd.select_borrowed_refines,
-    Fr8.reduced, ofFr8, toFr8, Function.uncurry_def, aeneas_uncurry_def]
+    Fr8.reduced, ofFr8, toFr8, aeneas_uncurry_def]
 
 theorem Fr8.lane_reduced {x : Fr8} {l : Fin 8}
     (hn : ∀ j : Fin LIMBS, (x.lane l)[j].toNat < 2 ^ 52)

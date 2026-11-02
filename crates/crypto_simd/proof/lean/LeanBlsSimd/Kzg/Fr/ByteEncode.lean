@@ -37,7 +37,7 @@ theorem write_word_step (words : Array U64 4#usize) (be : Array U8 32#usize)
   refine ⟨next,rfl,?_⟩
   have hw' : w < 4#usize := hw
   simp only [fr.be_bytes_from_words_loop.body,hw',ite_true]
-  simp (disch := scalar_tac) only [add_ok,mul_ok,sub_ok,bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
+  simp (disch := scalar_tac) only [add_ok,mul_ok,sub_ok, bind_ok,UScalar.ofNatCore_val_eq]
   rw [index_usize_eq words w hw]
   simp [core.array.Array.index_mut,core.ops.index.IndexMutSlice,
     core.slice.index.Slice.index_mut,core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
@@ -75,7 +75,6 @@ theorem write_words_loop_refines (words : Array U64 4#usize) (be : Array U8 32#u
         be'.val[i]! = (writtenBytes words).val[i]! := by
       intro i hi hlow
       simp only [be', Array.setSlice!_val]
-      change (be.val.setSlice! (8*(3-w.val)) chunk)[i]! = _
       by_cases hold : 8*(4-w.val) ≤ i
       · rw [List.getElem!_setSlice!_same]
         · exact hsuffix i hi hold
@@ -112,7 +111,7 @@ theorem fr_to_bytes_refines (x : Fr) :
     ∃ result, fr.fr_to_bytes (Kzg.frEncode x) = ok result ∧
       Kzg.arrayBytes result = EthLib.Cryptography.Kzg.blsFieldToBytes x := by
   refine ⟨writtenBytes (Kzg.words 4#usize x.val),?_,writtenBytes_field x⟩
-  simp only [fr.fr_to_bytes,fr_to_words_refines,bind_tc_ok, bind_ok,be_bytes_from_words_refines]
+  simp only [fr.fr_to_bytes,fr_to_words_refines, bind_ok,be_bytes_from_words_refines]
 
 theorem fr_bytes_correct : Kzg.FrBytesCorrect :=
   ⟨fr_from_bytes_refines,fr_from_bytes_reduced_refines,fr_to_bytes_refines,fr_to_words_refines⟩

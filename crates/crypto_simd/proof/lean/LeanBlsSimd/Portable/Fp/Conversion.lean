@@ -13,7 +13,7 @@ set_option exponentiation.threshold 4096
 
 theorem mul_eq_product [RuntimeFeatures] (a b : portable.fp.Fp) :
     portable.fp.Fp.mul a b = portable.fp.Fp.product a b := by
-  simp only [portable.fp.Fp.mul,bmi2_available,bind_tc_ok, bind_ok]
+  simp only [portable.fp.Fp.mul,bmi2_available, bind_ok]
   split <;> rfl
 
 theorem montgomery_field_refines (a b : Array U64 6#usize)

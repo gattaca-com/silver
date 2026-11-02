@@ -169,9 +169,7 @@ theorem scalar_tail_refines [RuntimeFeatures]
       rw [← hn]
       exact scalarWrites_step inputs out middle 0 pairs (by omega) (by omega) hmv
     refine ⟨result, ?_, finish result hv⟩
-    simp only [portable.decompress.uncompress_all_in_g1, heq, massert, ↓reduceIte,
-      bind_tc_ok, bind_ok, show Slice.len inputs = n from rfl, hd, hmul, hm,
-      Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+    simp only [portable.decompress.uncompress_all_in_g1, heq, massert, ↓reduceIte, bind_ok, show Slice.len inputs = n from rfl, hd, hmul, hm, Aeneas.Std.uncurry_apply_pair]
     rw [ite_eq_left (by simpa [n] using hodd)]
     exact scalar_index inputs middle pairs hodd (by have := hmv.1; omega)
   · have hn : pairs.val = inputs.val.length := by omega

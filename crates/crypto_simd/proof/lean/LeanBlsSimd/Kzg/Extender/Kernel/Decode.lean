@@ -111,7 +111,7 @@ private theorem decode_loop (blob : Blob) (data : alloc.vec.Vec fr8.Fr8)
     have hbody : extension_kernel.ExtensionKernel.decode_loop.body blob data valid i =
         ok (cont (next, nextValid, i')) := by
       simp only [extension_kernel.ExtensionKernel.decode_loop.body, hlt, ite_true,
-        lift, bind_tc_ok, bind_ok, hblock, hat, hfrom, hmut, hadd]
+        lift, bind_ok, hblock, hat, hfrom, hmut, hadd]
       by_cases hm : mask = 255#u8
       · simp [hm, nextValid, next]
       · have hmv : mask.val ≠ 255 := by
@@ -150,8 +150,7 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
       rw [scalar_mul_ok 4096#usize 32#usize (by scalar_tac)]
       rfl
     simp only [extension_kernel.ExtensionKernel.decode, hlen, fr8.LANES,
-      BYTES_PER_FIELD_ELEMENT, BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB, hmul1, hmul2,
-      bind_tc_ok, bind_ok, massert, _root_.ite_true, hloop, next]
+      BYTES_PER_FIELD_ELEMENT, BYTES_PER_BLOB, FIELD_ELEMENTS_PER_BLOB, hmul1, hmul2, bind_ok, massert, _root_.ite_true, hloop, next]
     rfl
   · intro hv
     have hcanonical := hc.mp hv

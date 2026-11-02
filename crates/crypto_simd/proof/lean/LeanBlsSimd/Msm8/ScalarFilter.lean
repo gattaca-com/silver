@@ -50,10 +50,10 @@ theorem keep_if_finite_refines (self : msm8.Msm8)
         let ss ← alloc.vec.Vec.push self.finite_scalars scalar
         ok { self with finite_points := ps, finite_scalars := ss }) := by
     rw [msm8.Msm8.keep_if_finite, index_usize_eq scalar 3#usize (by decide)]
-    simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
-    (simp only [massert, ↓reduceIte, bind_ok, bind_tc_ok] <;> rfl)
+    simp only [bind_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
+    (simp only [massert, ↓reduceIte, bind_ok] )
   rw [hcall, is_infinity_correct point hp]
-  simp only [bind_tc_ok, bind_ok]
+  simp only [bind_ok]
   by_cases hz : (Kzg.g1ReadAffine point).isInfinity = true
   · simp only [hz, ite_true, List.append_nil]
     exact ⟨self.finite_points, self.finite_scalars, rfl, rfl, rfl⟩
@@ -64,6 +64,6 @@ theorem keep_if_finite_refines (self : msm8.Msm8)
       (alloc.vec.Vec.push_spec self.finite_scalars scalar hsl)
     refine ⟨ps, ss, ?_, hpsval, hssval⟩
     rw [hps]
-    simp only [bind_tc_ok, bind_ok, hss]
+    simp only [bind_ok, hss]
 
 end LeanBlsSimd.Msm8

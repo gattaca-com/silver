@@ -192,7 +192,7 @@ theorem cell_decode_option (cell : ByteArray) (hs : cell.size = 2048) :
       if (fieldOptions cell).all Option.isSome then some (fieldValues cell) else none := by
   unfold cellToCosetEvals
   simp only [Constants.BYTES_PER_CELL, Constants.FIELD_ELEMENTS_PER_CELL, Constants.BYTES_PER_FIELD_ELEMENT, hs, ne_self_iff_false, ite_false]
-  simp only [pure, Except.pure, bind, Except.bind]
+  simp only [pure, Except.pure]
   rw [Array.mapM_eq_mapM_toList, toOption_map, list_mapM_toOption]
   simp only [Array.toList_range]
   calc

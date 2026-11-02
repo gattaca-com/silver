@@ -32,7 +32,7 @@ theorem is_zero_value_refines (a : portable.fp.Fp) :
     conv_rhs => unfold value; rw [list_6 a]
     norm_num [wordsValue,radix]
     omega
-  simp (disch := decide) only [portable.fp.Fp.is_zero,index_usize_eq,lift,bind_tc_ok, bind_ok]
+  simp (disch := decide) only [portable.fp.Fp.is_zero,index_usize_eq,lift, bind_ok]
   simp only [show (0#usize).val = 0 from rfl,show (1#usize).val = 1 from rfl,
     show (2#usize).val = 2 from rfl,show (3#usize).val = 3 from rfl,
     show (4#usize).val = 4 from rfl,show (5#usize).val = 5 from rfl,hz]

@@ -43,11 +43,9 @@ theorem g1_rep_affine_equiv {p : G1} (hz : p.isInfinity ≠ true) :
     rw [Fp.inverse_eq_inv]
     exact mul_inv_cancel₀ hzne
   refine equiv_of_X_eq_of_Y_eq one_ne_zero hzne ?_ ?_
-  · simp only [G1.rep, G1.toAffine, ite_eq_right hz, Matrix.cons_val_zero,
-      Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons]
+  · simp only [G1.rep, G1.toAffine, ite_eq_right hz]
     exact x_scaled p.x p.z p.z.inverse hw
-  · simp only [G1.rep, G1.toAffine, ite_eq_right hz, Matrix.cons_val_zero,
-      Matrix.cons_val_one, Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons]
+  · simp only [G1.rep, G1.toAffine, ite_eq_right hz]
     exact y_scaled p.y p.z p.z.inverse hw
 
 theorem g1_valid_of_affine {p : G1} (hz : p.isInfinity ≠ true)

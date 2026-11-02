@@ -20,18 +20,18 @@ def encode (P Q : Bls.G1) : portable.g1_pair.G1Pair :=
 
 theorem add_fields (a b c d : Bls.Fp) :
     portable.g1_pair.add (fields a b) (fields c d) = ok (fields (a+c) (b+d)) := by
-  simp only [portable.g1_pair.add,Fp.pair_index_zero,Fp.pair_index_one,Fp.add_encoded,bind_tc_ok, bind_ok]
+  simp only [portable.g1_pair.add,Fp.pair_index_zero,Fp.pair_index_one,Fp.add_encoded, bind_ok]
   rfl
 
 theorem sub_fields (a b c d : Bls.Fp) :
     portable.g1_pair.sub (fields a b) (fields c d) = ok (fields (a-c) (b-d)) := by
-  simp only [portable.g1_pair.sub,Fp.pair_index_zero,Fp.pair_index_one,Fp.sub_encoded,bind_tc_ok, bind_ok]
+  simp only [portable.g1_pair.sub,Fp.pair_index_zero,Fp.pair_index_one,Fp.sub_encoded, bind_ok]
   rfl
 
 theorem double_fields (a b : Bls.Fp) :
     portable.g1_pair.double (fields a b) = ok (fields (a+a) (b+b)) := by
   simp only [portable.g1_pair.double,portable.fp.Fp.double,
-    Fp.pair_index_zero,Fp.pair_index_one,Fp.add_encoded,bind_tc_ok, bind_ok]
+    Fp.pair_index_zero,Fp.pair_index_one,Fp.add_encoded, bind_ok]
   rfl
 
 theorem mul_fields [RuntimeFeatures] (a b c d : Bls.Fp) :
@@ -46,7 +46,7 @@ theorem double_encoded [RuntimeFeatures] (P Q : Bls.G1) :
     portable.g1_pair.G1Pair.double (encode P Q) =
       ok (encode (Kzg.PortableG1.doubleValues P) (Kzg.PortableG1.doubleValues Q)) := by
   simp only [portable.g1_pair.G1Pair.double,encode,square_fields,add_fields,sub_fields,
-    double_fields,mul_fields,bind_tc_ok, bind_ok]
+    double_fields,mul_fields, bind_ok]
   rfl
 
 theorem from_affine_encoded (x0 x1 y0 y1 : Bls.Fp) :
@@ -58,12 +58,12 @@ theorem from_affine_encoded (x0 x1 y0 y1 : Bls.Fp) :
 
 theorem lane_zero (P Q : Bls.G1) :
     portable.g1_pair.G1Pair.lane (encode P Q) 0#usize = ok (G1.encode P) := by
-  simp only [portable.g1_pair.G1Pair.lane,encode,Fp.pair_index_zero,bind_tc_ok, bind_ok]
+  simp only [portable.g1_pair.G1Pair.lane,encode,Fp.pair_index_zero, bind_ok]
   rfl
 
 theorem lane_one (P Q : Bls.G1) :
     portable.g1_pair.G1Pair.lane (encode P Q) 1#usize = ok (G1.encode Q) := by
-  simp only [portable.g1_pair.G1Pair.lane,encode,Fp.pair_index_one,bind_tc_ok, bind_ok]
+  simp only [portable.g1_pair.G1Pair.lane,encode,Fp.pair_index_one, bind_ok]
   rfl
 
 theorem flags_zero (a b : Bool) : Array.index_usize (flags a b) 0#usize = ok a := by
@@ -92,7 +92,7 @@ private theorem flags_body_zero [RuntimeFeatures] (z0 z1 w0 w1 h0 h1 : Bls.Fp) (
       (flags a b) 0#usize =
       ok (cont (flags (h0.isZero || (z0.isZero || w0.isZero)) b,1#usize)) := by
   simp only [portable.g1_pair.G1Pair.add_loop.body,show 0#usize < 2#usize from by decide,ite_true,
-    Fp.pair_index_zero,Fp.is_zero_encoded,bind_tc_ok, bind_ok,bool_or_result,flags_update_zero,
+    Fp.pair_index_zero,Fp.is_zero_encoded, bind_ok,bool_or_result,flags_update_zero,
     show 0#usize+1#usize = ok 1#usize from by rw [usize_add_ok _ _ (by decide)]; rfl]
 
 private theorem flags_body_one [RuntimeFeatures] (z0 z1 w0 w1 h0 h1 : Bls.Fp) (a b : Bool) :
@@ -100,7 +100,7 @@ private theorem flags_body_one [RuntimeFeatures] (z0 z1 w0 w1 h0 h1 : Bls.Fp) (a
       (flags a b) 1#usize =
       ok (cont (flags a (h1.isZero || (z1.isZero || w1.isZero)),2#usize)) := by
   simp only [portable.g1_pair.G1Pair.add_loop.body,show 1#usize < 2#usize from by decide,ite_true,
-    Fp.pair_index_one,Fp.is_zero_encoded,bind_tc_ok, bind_ok,bool_or_result,flags_update_one,
+    Fp.pair_index_one,Fp.is_zero_encoded, bind_ok,bool_or_result,flags_update_one,
     show 1#usize+1#usize = ok 2#usize from by rw [usize_add_ok _ _ (by decide)]; rfl]
 
 private theorem flags_loop_step (a b h : Array portable.fp.Fp 2#usize) (e e' : Array Bool 2#usize)
@@ -146,7 +146,7 @@ theorem add_encoded [RuntimeFeatures] (P0 P1 Q0 Q1 : Bls.G1) :
     portable.g1_pair.G1Pair.add (encode P0 P1) (encode Q0 Q1) =
       ok (encode (sum P0 Q0) (sum P1 Q1),flags (addExceptional P0 Q0) (addExceptional P1 Q1)) := by
   simp only [portable.g1_pair.G1Pair.add,encode,square_fields,add_fields,sub_fields,
-    double_fields,mul_fields,bind_tc_ok, bind_ok,flags_loop]
+    double_fields,mul_fields, bind_ok,flags_loop]
   rfl
 
 theorem add_affine_encoded [RuntimeFeatures] (P0 P1 : Bls.G1) (x0 x1 y0 y1 : Bls.Fp) :
@@ -154,7 +154,7 @@ theorem add_affine_encoded [RuntimeFeatures] (P0 P1 : Bls.G1) (x0 x1 y0 y1 : Bls
       ok (encode (affineSum P0 x0 y0) (affineSum P1 x1 y1),
         flags (affineExceptional P0 x0 y0) (affineExceptional P1 x1 y1)) := by
   simp only [portable.g1_pair.G1Pair.add_affine,encode,square_fields,add_fields,sub_fields,
-    double_fields,mul_fields,bind_tc_ok, bind_ok,Fp.pair_index_zero,Fp.pair_index_one,Fp.is_zero_encoded,
+    double_fields,mul_fields, bind_ok,Fp.pair_index_zero,Fp.pair_index_one,Fp.is_zero_encoded,
     bool_or_result]
   split <;> rename_i h
   · simp only [affineSum,affineExceptional,G1.mixedValues,G1.mixedSum,flags,h,
