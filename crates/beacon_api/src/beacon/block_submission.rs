@@ -5,14 +5,13 @@ use silver_common::{
     block_contents::SignedBlockContents,
     ssz_view::{BeaconBlockBodyGloasView, ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
 };
+use silver_pbs::plain_http_url;
 
 use crate::{
     ctx::ApiCtx,
     http::{response::Response, router::Request},
     submission::{Integration, requested_validation},
 };
-
-const MAX_BUILDER_URL_SIZE: usize = 2048;
 
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.body_is_ssz() {
@@ -56,10 +55,12 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
         Integration::import_of_block(slot, &ctx.spec, Instant::now()),
     );
     if let Some(url) = req.eth_builder_url.filter(|_| SignedBeaconBlockView::check_size(body)) {
-        if url.starts_with("http://") && url.len() <= MAX_BUILDER_URL_SIZE {
-            resp.forward_to_builder(url);
-        } else {
-            silver_log::warn!(url, "only http:// builder urls are served; block not forwarded");
+        match plain_http_url(url.as_bytes()).filter(|url| url.starts_with("http://")) {
+            Some(url) => resp.forward_to_builder(url),
+            None => silver_log::warn!(
+                url,
+                "only plain http:// builder urls are served; block not forwarded"
+            ),
         }
     }
 }
@@ -255,6 +256,25 @@ pub(crate) mod tests {
         let [entry] = &submission.accepted[..] else { panic!("one entry") };
         assert_eq!(entry.topic, GossipTopic::BeaconBlock);
         assert_eq!(submissions.read_buffer(entry.ssz).unwrap(), body);
+    }
+
+    #[test]
+    fn only_a_plain_http_builder_url_is_forwarded() {
+        let body = gloas_block();
+        for (url, forwarded) in [
+            ("http://b:18550/relay", true),
+            ("http://b:18550/relay x", false),
+            ("http://b:18550/relay\x0b", false),
+            ("http://b:18550/relayé", false),
+            ("http://", false),
+            ("https://b:18550", false),
+        ] {
+            let request =
+                ParsedRequest { eth_builder_url: Some(url), ..publishing(&body, "gloas") };
+            let (outcome, _) = dispatch_into(&gloas_ctx(), &request, &mut submissions());
+            let Outcome::AwaitingVerdicts(submission) = outcome else { panic!("{outcome:?}") };
+            assert_eq!(submission.forward.is_some(), forwarded, "{url:?}");
+        }
     }
 
     #[test]
