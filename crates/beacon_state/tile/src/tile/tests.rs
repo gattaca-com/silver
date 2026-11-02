@@ -815,7 +815,7 @@ impl HeadRig {
             is_gloas: payload.is_gloas,
         });
         self.tile.last_applied = state_id;
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
         self.tile.publish_status(&mut self.adapter.producers);
         state_id
     }
@@ -836,7 +836,7 @@ impl HeadRig {
     /// performed after committing PTC votes.
     fn ptc_majority(&mut self, block_root: B256) {
         self.tile.fork_choice.record_ptc_votes(&block_root, &[u64::MAX; 8], true, true);
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
     }
 
     fn vote_for(&mut self, block_root: B256, validators: std::ops::Range<u32>) {
@@ -1213,7 +1213,7 @@ fn a_status_that_already_named_the_new_head_does_not_hide_the_reorg() {
     let _ = rig.crank();
 
     rig.vote_for(B_ROOT, 0..8);
-    rig.tile.recompute_head();
+    rig.tile.recompute_head(|_| {});
     rig.tile.publish_status(&mut rig.adapter.producers);
     let events = rig.crank();
     assert_eq!(events.reorgs(), [70], "the reorg is reported anyway");
@@ -1251,7 +1251,7 @@ fn block_unknown_parent_rejected() {
     let head_before = tile.last_applied;
     let nodes_before = tile.fork_choice.nodes.len();
 
-    let _ = tile.try_apply_block(&buf);
+    let _ = tile.try_apply_block(&buf, |_| {});
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -2143,7 +2143,7 @@ fn replayed_envelope_before_its_block_imports_parks() {
     seed_tile(&mut tile, 4, 10);
 
     let waiting_root = [0xE6u8; 32];
-    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root));
+    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root), |_| {});
     assert!(tile.pending_envelopes.holds(&waiting_root));
 }
 
@@ -2844,7 +2844,7 @@ fn block_known_parent_bad_sig_rejected() {
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-    let _ = tile.try_apply_block(&buf);
+    let _ = tile.try_apply_block(&buf, |_| {});
 
     assert_eq!(tile.fork_choice.nodes.len(), 1);
 }
@@ -4194,7 +4194,7 @@ fn node_weight(tile: &BeaconStateTile, root: B256) -> u64 {
 }
 
 fn voted_weight(tile: &mut BeaconStateTile, root: B256) -> u64 {
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
     node_weight(tile, root)
 }
 
@@ -4206,7 +4206,7 @@ fn votes_weigh_justified_effective_balances() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
     assert_eq!(node_weight(&tile, anchor), 8 * MAX_EFFECTIVE_BALANCE);
 
     tile.fork_choice.set_proposer_boost(anchor);
@@ -4225,7 +4225,7 @@ fn justified_moves_between_recomputes_weigh_latest_snapshot() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
 
     let mut fork = tile.state.apply_block_view(tile.last_applied);
     fork.view.validators.set_effective_balance(2, MAX_EFFECTIVE_BALANCE / 2);
@@ -4439,6 +4439,7 @@ fn att_root_memo_pruned_on_slot_tick() {
 fn next_epoch_shuffling_is_posted_before_the_rolled_state_is_published() {
     let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
     seed_tile(&mut tile, 4, 30);
+    tile.sync_target = SyncUpdate::Following;
     let reader = tile.state.reader();
     let published_epoch = || reader.read(|view| view.slot.current_epoch()).unwrap();
 
@@ -4451,6 +4452,19 @@ fn next_epoch_shuffling_is_posted_before_the_rolled_state_is_published() {
 
     assert!(posted.contains(&(2, 0)), "{posted:?}");
     assert_eq!(published_epoch(), 1);
+}
+
+#[test]
+fn syncing_publishes_the_rolled_state_without_posting_shufflings() {
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    seed_tile(&mut tile, 4, 30);
+    tile.sync_target = SyncUpdate::default();
+
+    let mut posted = 0;
+    tile.on_slot_start(SLOTS_PER_EPOCH + 2, |_| posted += 1);
+
+    assert_eq!(posted, 0);
+    assert_eq!(tile.state.reader().read(|view| view.slot.current_epoch()).unwrap(), 1);
 }
 
 #[test]

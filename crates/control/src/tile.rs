@@ -633,7 +633,9 @@ impl Tile<SilverSpine> for Controller {
                 }
             }
             BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs } => {
-                self.subnet_duties.add_sync(until_epochs)
+                if let Some(wall_slot) = wall_slot {
+                    self.subnet_duties.add_sync(until_epochs, wall_slot);
+                }
             }
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |

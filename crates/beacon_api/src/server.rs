@@ -642,8 +642,6 @@ pub struct BeaconApi {
     reader: TCacheReader,
     payload_attributes_wanted: bool,
     latest_payload_attributes: LatestPayloadAttributes,
-    /// The tile repeats an envelope that arrives again.
-    last_available_payload: B256,
     /// Connections whose published block still awaits its import.
     awaiting_import: Vec<Token>,
     recent_imports: RecentImports,
@@ -707,7 +705,6 @@ impl BeaconApi {
             reader: TCacheReader::new(tcaches),
             payload_attributes_wanted: false,
             latest_payload_attributes: LatestPayloadAttributes::default(),
-            last_available_payload: [0; 32],
             awaiting_import: Vec::new(),
             recent_imports: RecentImports::default(),
         }
@@ -851,9 +848,9 @@ impl BeaconApi {
             BeaconStateEvent::PayloadAttributes(attributes) => {
                 self.publish_payload_attributes(&attributes)
             }
-            BeaconStateEvent::EnvelopeAvailable { slot, block_root, .. } => {
-                self.publish_execution_payload_available(slot, &block_root)
-            }
+            BeaconStateEvent::EnvelopeAvailable {
+                slot, block_root, newly_verified: true, ..
+            } => self.publish_execution_payload_available(slot, &block_root),
             _ => {}
         }
     }
@@ -1085,10 +1082,9 @@ impl BeaconApi {
     }
 
     fn publish_execution_payload_available(&mut self, slot: u64, block_root: &B256) {
-        if !self.ctx.node_status.is_following() || self.last_available_payload == *block_root {
+        if !self.ctx.node_status.is_following() {
             return;
         }
-        self.last_available_payload = *block_root;
         self.publish(Channel::ExecutionPayloadAvailable, "execution_payload_available", |json| {
             json.execution_payload_available_event(slot, block_root)
         });
@@ -2694,12 +2690,15 @@ mod tests {
         pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
 
         let ssz = server.submissions.write_with(1, |out| out[0] = 0).unwrap();
-        for (slot, block_root) in [(10, [0xab; 32]), (10, [0xab; 32]), (11, [0xcd; 32])] {
+        for (slot, block_root, newly_verified) in
+            [(10, [0xab; 32], true), (11, [0xcd; 32], true), (10, [0xab; 32], false)]
+        {
             server.api.handle_beacon_state_event(BeaconStateEvent::EnvelopeAvailable {
                 ssz,
                 source: BlockSource::Gossip,
                 slot,
                 block_root,
+                newly_verified,
             });
         }
 

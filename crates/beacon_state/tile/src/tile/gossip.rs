@@ -546,7 +546,7 @@ impl BeaconStateTile {
         // PTC votes all dirty the same fork-choice structure; fold the whole
         // flush in one head recomputation rather than once per message.
         if committed_ptc {
-            self.recompute_head();
+            self.recompute_head(|event| producers.produce(event));
         }
 
         if accepted {
@@ -1332,6 +1332,7 @@ impl BeaconStateTile {
         source: BlockSource,
         slot: u64,
         block_root: B256,
+        newly_verified: bool,
         producers: &mut Producers,
     ) {
         producers.produce(BeaconStateEvent::EnvelopeAvailable {
@@ -1339,6 +1340,7 @@ impl BeaconStateTile {
             source,
             slot,
             block_root,
+            newly_verified,
         });
     }
 
@@ -1373,7 +1375,7 @@ impl BeaconStateTile {
         let slot_state = rv.slot;
 
         if self.fork_choice.is_payload_verified(&block_root) {
-            Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
+            Self::emit_envelope_available(&acquired, source, slot, block_root, false, producers);
             return Feedback::AlreadySeen;
         }
 
@@ -1399,10 +1401,10 @@ impl BeaconStateTile {
             versioned_hashes,
         }));
 
-        Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
+        Self::emit_envelope_available(&acquired, source, slot, block_root, true, producers);
 
         self.drain_awaiting_payload(block_root, producers);
-        self.recompute_head();
+        self.recompute_head(|event| producers.produce(event));
 
         Feedback::Accept
     }
@@ -1428,7 +1430,7 @@ impl BeaconStateTile {
         };
 
         if parked.from_disk {
-            return self.apply_disk_envelope(parked.read);
+            return self.apply_disk_envelope(parked.read, |event| producers.produce(event));
         }
         self.handle_execution_payload_envelope(
             parked.read.clone(),
@@ -2047,7 +2049,7 @@ impl BeaconStateTile {
             return Feedback::reject("vote bad signature");
         }
         let feedback = self.commit_vote(&prepared, &sig);
-        self.recompute_head();
+        self.recompute_head(|_| {});
         feedback
     }
 }

@@ -1,3 +1,5 @@
+use std::slice;
+
 use silver_beacon_state_data::BeaconBlockHeader;
 use silver_common::{
     BeaconApiRequest, BlockLookup, ServedBlock, TCacheReader, body_root_at,
@@ -8,7 +10,7 @@ use crate::{
     ctx::ApiCtx,
     http::{
         ids::parse_root,
-        json::{ReadFlags, SignedHeader},
+        json::{Json, ReadFlags, SignedHeader},
         response::Response,
         router::{Outcome, Request, SSZ_MEDIA_TYPE},
     },
@@ -54,8 +56,12 @@ pub(crate) fn head_headers(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<
     if !req.query.is_empty() {
         return resp.error(400, "slot and parent_root filters are not served");
     }
-    let lookup = BlockLookup::Root(ctx.node_status.head_root);
+    let lookup = head_block(ctx);
     resp.defer(Outcome::AwaitingBlock(BlockRequest { lookup, kind: Kind::HeaderList }));
+}
+
+fn head_block(ctx: &ApiCtx) -> BlockLookup {
+    BlockLookup::Root(ctx.node_status.head_root)
 }
 
 fn requested_block(
@@ -65,7 +71,7 @@ fn requested_block(
 ) -> Option<BlockLookup> {
     let block_id = req.params.get("block_id").expect("{block_id} in the route pattern");
     let lookup = match block_id {
-        "head" => Some(BlockLookup::Root(ctx.node_status.head_root)),
+        "head" => Some(head_block(ctx)),
         "genesis" | "finalized" | "justified" => None,
         _ => match (parse_root(block_id), parse_uint64(block_id)) {
             (Some(root), _) => Some(BlockLookup::Root(root)),
@@ -114,23 +120,27 @@ impl Kind {
                     bytes,
                 ]);
             }),
-            Self::Header | Self::HeaderList => with_bytes(resp, &block, reader, |resp, bytes| {
-                let signed =
-                    SignedHeader::read(&block, bytes, ctx.spec.is_gloas_at_slot(block.slot));
-                resp.json_body(|json| {
-                    json.flagged_envelope(flags, |json| {
-                        if self == Self::HeaderList {
-                            json.begin_array();
-                            json.signed_header(&signed);
-                            json.end_array();
-                        } else {
-                            json.signed_header(&signed);
-                        }
-                    })
-                });
+            Self::Header => with_header(resp, &block, reader, ctx, |json, signed| {
+                json.flagged_envelope(flags, |json| json.signed_header(signed))
+            }),
+            Self::HeaderList => with_header(resp, &block, reader, ctx, |json, signed| {
+                json.flagged_envelope(flags, |json| json.signed_headers(slice::from_ref(signed)))
             }),
         }
     }
+}
+
+fn with_header(
+    resp: &mut Response<'_>,
+    block: &ServedBlock,
+    reader: &mut TCacheReader,
+    ctx: &ApiCtx,
+    render: impl FnOnce(&mut Json<'_>, &SignedHeader),
+) {
+    with_bytes(resp, block, reader, |resp, bytes| {
+        let signed = SignedHeader::read(block, bytes, ctx.spec.is_gloas_at_slot(block.slot));
+        resp.json_body(|json| render(json, &signed));
+    });
 }
 
 fn with_bytes(

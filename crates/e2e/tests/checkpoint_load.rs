@@ -243,7 +243,7 @@ fn finalized_state_loads() {
             hex(&prev_block_root),
         );
 
-        let feedback = tile.try_apply_block(&block_ssz);
+        let feedback = tile.try_apply_block(&block_ssz, |_| {});
         let Feedback::BlockImported(block_root) = feedback else {
             panic!("block at slot {block_slot} not accepted (got {feedback:?})");
         };
@@ -330,7 +330,7 @@ fn tile_apply_block_ef_fixture() {
     );
     tile.open_tcaches().unwrap();
 
-    let fb = tile.try_apply_block(&block_ssz);
+    let fb = tile.try_apply_block(&block_ssz, |_| {});
     assert!(
         matches!(fb, Feedback::BlockImported(_)),
         "EF block rejected through tile (bootstrap or apply path is buggy, independent of mainnet scale)",

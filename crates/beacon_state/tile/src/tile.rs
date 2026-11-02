@@ -740,6 +740,14 @@ impl BeaconStateTile {
         self.shuffling_cache.post_fresh(&view, &mut self.events_producer, emit);
     }
 
+    /// Duties are served off the published state, so its shufflings go first.
+    fn publish_head_state(&mut self, emit: impl FnMut(BeaconStateEvent)) {
+        if !self.sync_target.is_syncing() {
+            self.post_shufflings(emit);
+        }
+        self.state.publish_state_id(self.last_applied);
+    }
+
     /// Covers changes since the last Status, including execution verdicts.
     fn publish_status_on_head_change(&mut self, producers: &mut Producers) {
         let head = self.selected_head();
@@ -760,9 +768,7 @@ impl BeaconStateTile {
         let new_id = self.state_at(self.last_applied, target_slot);
         self.last_applied = new_id;
         self.shuffling_cache.protect_head(&self.state.read_view(new_id));
-        // Duties are served off the published state, so its shufflings go first.
-        self.post_shufflings(emit);
-        self.state.publish_state_id(new_id);
+        self.publish_head_state(emit);
         // Empty-slot epoch transitions can advance justified/finalized in the
         // head post-state; reflect that in fork choice before finalizing.
         self.lift_checkpoints();
@@ -831,7 +837,7 @@ impl BeaconStateTile {
             let state_epoch = self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH;
             self.precompute_next_epoch_shuffling(state_epoch);
         }
-        self.fork_choice_tick();
+        self.fork_choice_tick(|event| producers.produce(event));
         let floor = slot.saturating_sub(1);
         let inclusion_floor = (slot / SLOTS_PER_EPOCH).saturating_sub(1) * SLOTS_PER_EPOCH;
         self.attestation_pool.prune_before(inclusion_floor);
@@ -868,7 +874,12 @@ impl BeaconStateTile {
                     }
                     StagedVerdict::Kept => {}
                     StagedVerdict::NotStaged => {
-                        self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
+                        self.on_payload_verdict(
+                            &r.block_root,
+                            r.latest_valid_hash,
+                            r.status,
+                            |event| producers.produce(event),
+                        );
                         if r.status == PayloadValidationStatus::Valid {
                             self.promote_unknown_root_votes(producers);
                         }
@@ -876,7 +887,9 @@ impl BeaconStateTile {
                 }
             }
             EngineResp::Fcu(r) => {
-                self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status);
+                self.on_payload_verdict(&r.block_root, r.latest_valid_hash, r.status, |event| {
+                    producers.produce(event)
+                });
                 if r.status == PayloadValidationStatus::Valid {
                     self.promote_unknown_root_votes(producers);
                 }
@@ -1102,10 +1115,10 @@ impl BeaconStateTile {
     fn on_replay(&mut self, m: ReplayBlock, producers: &mut Producers) {
         match m {
             ReplayBlock::Block { ssz } => {
-                self.replay_block(ssz);
+                self.replay_block(ssz, |event| producers.produce(event));
             }
             ReplayBlock::Envelope { ssz } => {
-                self.replay_envelope(ssz);
+                self.replay_envelope(ssz, |event| producers.produce(event));
             }
             ReplayBlock::Done => {
                 producers.produce(BeaconStateEvent::ReplayComplete);
@@ -1125,11 +1138,11 @@ impl BeaconStateTile {
 
     pub fn ef_tick(&mut self, since_genesis_ms: u64) {
         self.ticker.set_since_genesis_ms(since_genesis_ms);
-        self.fork_choice_tick();
+        self.fork_choice_tick(|_| {});
     }
 
     pub fn ef_apply_block(&mut self, ssz: &[u8]) -> Option<B256> {
-        match self.try_apply_block(ssz) {
+        match self.try_apply_block(ssz, |_| {}) {
             Feedback::BlockImported(r) => Some(r),
             _ => None,
         }
@@ -1137,12 +1150,12 @@ impl BeaconStateTile {
 
     pub fn ef_apply_attestation(&mut self, ssz: &[u8]) {
         self.apply_attestation(ssz);
-        self.recompute_head();
+        self.recompute_head(|_| {});
     }
 
     pub fn ef_apply_attester_slashing(&mut self, ssz: &[u8]) {
         if self.handle_attester_slashing(ssz) == Feedback::Accept {
-            self.recompute_head();
+            self.recompute_head(|_| {});
         }
     }
 
@@ -1152,7 +1165,7 @@ impl BeaconStateTile {
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
         self.mark_envelope_verified(block_root, ssz);
         self.fork_choice.on_payload_valid(&block_root);
-        self.recompute_head();
+        self.recompute_head(|_| {});
         true
     }
 
@@ -1177,7 +1190,7 @@ impl BeaconStateTile {
                     return false;
                 };
                 self.commit_ptc(&p, &signature);
-                self.recompute_head();
+                self.recompute_head(|_| {});
                 true
             }
             Err(_) => false,
@@ -1190,7 +1203,7 @@ impl BeaconStateTile {
         status: PayloadValidationStatus,
         latest_valid_hash: Option<B256>,
     ) {
-        self.on_payload_verdict(&block_root, latest_valid_hash, status);
+        self.on_payload_verdict(&block_root, latest_valid_hash, status, |_| {});
     }
 
     /// An envelope seen on gossip and verified against its bid, with the EL
@@ -1198,13 +1211,13 @@ impl BeaconStateTile {
     pub fn ef_receive_execution_payload(&mut self, ssz: &[u8]) -> bool {
         let Some(block_root) = self.ef_processable_envelope(ssz) else { return false };
         self.mark_envelope_verified(block_root, ssz);
-        self.recompute_head();
+        self.recompute_head(|_| {});
         true
     }
 
     pub fn ef_set_finalized_checkpoint(&mut self, cp: Checkpoint) {
         self.fork_choice.lift_finalized(cp);
-        self.recompute_head();
+        self.recompute_head(|_| {});
     }
 
     /// Overwrites `block_root`'s post-state `finalized_checkpoint` in a new
@@ -1293,7 +1306,7 @@ impl BeaconStateTile {
                     return Feedback::AlreadySeen;
                 }
                 self.mark_envelope_verified(block_root, ssz);
-                self.recompute_head();
+                self.recompute_head(|_| {});
                 Feedback::Accept
             }
             gossip::EnvelopeCheck::AwaitBlock(_) | gossip::EnvelopeCheck::Ignore => {

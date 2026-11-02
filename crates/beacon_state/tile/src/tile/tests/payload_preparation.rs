@@ -96,7 +96,7 @@ impl PreparationRig {
     fn mark_full(&mut self) {
         let root = self.tile.head_block_root();
         self.tile.fork_choice.mark_payload_verified(&root);
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
     }
 
     fn state_root(&self) -> B256 {
