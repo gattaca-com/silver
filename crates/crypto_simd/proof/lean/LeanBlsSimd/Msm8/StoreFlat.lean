@@ -75,14 +75,14 @@ theorem store_convertedBatch (points : List (Vector UInt64 6 × Vector UInt64 6)
     apply Vector.ext
     intro j hj
     have h := congrArg Prod.fst (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
-    conv_rhs => erw [Vector.getElem_ofFn]
+    refine Eq.trans ?_ (getElem_ofFn_limbs _ j hj).symm
     simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using! h
   have hy : transpose8 converted.2.limbs = Vector.ofFn (fun l : Fin 8 =>
       (convertedPoint points[batchSource offset count l]! negated[batchSource offset count l]! endomorphism).2) := by
     apply Vector.ext
     intro j hj
     have h := congrArg Prod.snd (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
-    conv_rhs => erw [Vector.getElem_ofFn]
+    refine Eq.trans ?_ (getElem_ofFn_limbs _ j hj).symm
     simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using! h
   change storeRows rows gathered.indices (transpose8 converted.1.limbs) (transpose8 converted.2.limbs) = _
   rw [hi, hx, hy]

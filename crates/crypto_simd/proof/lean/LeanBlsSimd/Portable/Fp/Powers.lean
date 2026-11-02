@@ -120,7 +120,11 @@ theorem power_windows_refines [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) (e : N
     simp only [he,bind_tc_ok, bind_ok,square_encoded,P_MINUS_3_OVER_4_WINDOWS_index c' hc'v,lift,cast_Usize_ofNatCore]
     rw [powerTable_index x _ (by simp only [UScalar.ofNatCore_val_eq]; exact windows_lt c'.val (List.mem_range.mpr hc'v))]
     simp only [bind_tc_ok, bind_ok,UScalar.ofNatCore_val_eq]
-    erw [mul_encoded_zmod]
+    let t : ZMod Bls.Fp.modulus := (x^m*x^m)*(x^m*x^m)
+    have hmul := mul_encoded_zmod ((t*t)*(t*t)) (x^P_MINUS_3_OVER_4_WINDOWS[c'.val]!)
+    refine (congrArg (fun result : Result portable.fp.Fp => do
+      let f ← result
+      (ok (cont (f,c')) : Result (ControlFlow (portable.fp.Fp × Usize) portable.fp.Fp))) hmul).trans ?_
     simp only [bind_tc_ok, bind_ok]
     apply congrArg (fun y : ZMod Bls.Fp.modulus => ok (cont ((Kzg.fpEncode y).l,c')))
     show (((x^m*x^m)*(x^m*x^m))*((x^m*x^m)*(x^m*x^m)))*

@@ -49,11 +49,11 @@ theorem swapWord_from_le_bytes (bytes : Vector UInt8 8) :
     simp only [core.num.U64.from_le_bytes, core.num.U64.from_be_bytes, U64.bv,
       BitVec.fromBEBytes]
     conv_lhs =>
-      erw [BitVec.getElem!_cast]
+      rw [BitVec.getElem!_cast]
       rw [BitVec.fromLEBytes_getElem!]
     conv_rhs =>
-      erw [BitVec.getElem!_cast]
-      erw [BitVec.getElem!_cast]
+      rw [BitVec.getElem!_cast]
+      rw [BitVec.getElem!_cast]
       rw [BitVec.fromLEBytes_getElem!]
     rw [get_reverse _ _ (by simp [toArray]; omega)]
     simp only [toArray_val, List.length_map, Vector.length_toList]

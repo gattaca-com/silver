@@ -237,7 +237,8 @@ theorem gather_loop_refines (input : Slice blst.blst_fr) (base count lane : Usiz
       have he : input.val[base.val + lane.val] = input.val[base.val + lane.val]! :=
         (getElem!_pos input.val _ hi).symm
       rw [he]
-      erw [set_toArray (n := 8#usize) id (chunkPrefix input base.val lane.val initial) rfl lane input.val[base.val + lane.val]! h8, chunkPrefix_step input base.val lane.val initial h8]
+      rw [toArray_set_of_eq (n := 8#usize) id _ rfl lane lane.val h8 _ input.val[base.val + lane.val]! rfl rfl,
+        chunkPrefix_step input base.val lane.val initial h8]
       rfl
     unfold fr8.Fr8.plain_words_loop0_loop0
     change loop (fun p => fr8.Fr8.plain_words_loop0_loop0.body input base count p.1 p.2) _ = _
@@ -300,7 +301,7 @@ theorem pack_append_refinement (a : fr8.Fr8) (hn : Normalized a)
   have hpack := vectorPack_refines (ofArray id a) hnormal
   have he : toArray (n := 5#usize) id (ofArray id a) = a :=
     toArray_ofArray (f := @id M512) (g := @id M512) (fun _ => rfl) a rfl rfl
-  erw [he] at hpack
+  rw [he] at hpack
   obtain ⟨out, hout, hval⟩ := push_words_refines (toArray id (vectorPack (ofArray id a))) words count hc hroom
   refine ⟨out, by simp only [hpack, hout, bind_tc_ok, bind_ok], ?_, ?_⟩
   · simp [hval]
