@@ -1,16 +1,19 @@
-use std::time::Duration;
+use std::{ops::Range, time::Duration};
 
 use silver_common::{
-    ATTESTATION_SUBNETS, GossipTopic, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS, SlotSubnets,
-    SubnetsBySlot,
+    ATTESTATION_SUBNETS, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, GossipTopic, SLOTS_PER_EPOCH,
+    SYNC_COMMITTEE_SUBNETS, SlotSubnets, SubnetsBySlot,
 };
 
 const LEAD_SLOTS: u64 = 4;
+/// Members sign from the slot before their period, so the mesh must form ahead
+/// of it.
+const SYNC_LEAD_EPOCHS: u64 = 4;
 
 #[derive(Default)]
 pub(super) struct SubnetDuties {
     duties: SubnetsBySlot,
-    sync_until_epochs: [u64; SYNC_COMMITTEE_SUBNETS],
+    sync_epochs: [Range<u64>; SYNC_COMMITTEE_SUBNETS],
     long_lived: Subnets,
     joined: Subnets,
     attesting: u64,
@@ -77,9 +80,20 @@ impl SubnetDuties {
         self.evaluated_at = None;
     }
 
-    pub(super) fn add_sync(&mut self, until_epochs: [u64; SYNC_COMMITTEE_SUBNETS]) {
-        for (held, added) in self.sync_until_epochs.iter_mut().zip(until_epochs) {
-            *held = added.max(*held);
+    /// A range still running absorbs the added one; consecutive periods
+    /// overlap by the lead, so membership stays continuous.
+    pub(super) fn add_sync(&mut self, until_epochs: [u64; SYNC_COMMITTEE_SUBNETS], wall_slot: u64) {
+        let wall_epoch = wall_slot / SLOTS_PER_EPOCH;
+        for (held, until) in self.sync_epochs.iter_mut().zip(until_epochs) {
+            if until <= wall_epoch {
+                continue;
+            }
+            let added = sync_join_epoch(until)..until;
+            *held = if held.end > wall_epoch {
+                held.start.min(added.start)..held.end.max(added.end)
+            } else {
+                added
+            };
         }
         self.evaluated_at = None;
     }
@@ -114,7 +128,7 @@ impl SubnetDuties {
         let attnets = (due | self.joined.attnets & due_before_rejoin) & !self.long_lived.attnets;
         let wall_epoch = wall_slot / SLOTS_PER_EPOCH;
         let syncnets = (0..SYNC_COMMITTEE_SUBNETS)
-            .filter(|&subnet| wall_epoch < self.sync_until_epochs[subnet])
+            .filter(|&subnet| self.sync_epochs[subnet].contains(&wall_epoch))
             .fold(0, |mask, subnet| mask | 1 << subnet) &
             !self.long_lived.syncnets;
         Subnets { attnets, syncnets }
@@ -130,6 +144,11 @@ impl SubnetDuties {
         let last = wall_slot + LEAD_SLOTS + extra_lead_slots;
         self.duties.subnets_in(first..=last, subnets)
     }
+}
+
+fn sync_join_epoch(until_epoch: u64) -> u64 {
+    let last = until_epoch - 1;
+    (last - last % EPOCHS_PER_SYNC_COMMITTEE_PERIOD).saturating_sub(SYNC_LEAD_EPOCHS)
 }
 
 fn attestation_topics(mask: u64) -> impl Iterator<Item = GossipTopic> {
@@ -220,20 +239,64 @@ mod tests {
     fn sync_subnet_is_joined_until_its_epoch() {
         let epoch = |epoch: u64| epoch * SLOTS_PER_EPOCH;
         let mut duties = SubnetDuties::default();
-        duties.add_sync([12, 0, 10, 0]);
+        duties.add_sync([12, 0, 10, 0], epoch(9));
 
         assert_eq!(duties.advance(epoch(9)), sync_changes(0b0101, 0));
         assert_eq!(duties.advance(epoch(9) + 1), None);
         assert_eq!(duties.advance(epoch(10)), sync_changes(0, 0b0100));
-        duties.add_sync([0, 0, 0, 20]);
+        duties.add_sync([0, 0, 0, 20], epoch(10));
         assert_eq!(duties.advance(epoch(11)), sync_changes(0b1000, 0));
         assert_eq!(duties.advance(epoch(12)), sync_changes(0, 0b0001));
     }
 
     #[test]
+    fn coming_period_is_joined_only_in_its_lead_epochs() {
+        let epoch = |epoch: u64| epoch * SLOTS_PER_EPOCH;
+        let next = EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let mut duties = SubnetDuties::default();
+        duties.add_sync([next + EPOCHS_PER_SYNC_COMMITTEE_PERIOD, 0, 0, 0], 0);
+
+        assert_eq!(duties.advance(epoch(next - SYNC_LEAD_EPOCHS - 1)), None);
+        assert_eq!(duties.advance(epoch(next - SYNC_LEAD_EPOCHS)), sync_changes(0b0001, 0));
+    }
+
+    #[test]
+    fn next_period_extends_the_current_one() {
+        let epoch = |epoch: u64| epoch * SLOTS_PER_EPOCH;
+        let period = EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let mut duties = SubnetDuties::default();
+        duties.add_sync([period, 0, 0, 0], 0);
+        duties.add_sync([2 * period, 0, 0, 0], 0);
+
+        assert_eq!(duties.advance(epoch(1)), sync_changes(0b0001, 0));
+        assert_eq!(duties.advance(epoch(period)), None);
+        assert_eq!(duties.advance(epoch(2 * period)), sync_changes(0, 0b0001));
+    }
+
+    #[test]
+    fn expired_period_does_not_pull_a_later_one_forward() {
+        let epoch = |epoch: u64| epoch * SLOTS_PER_EPOCH;
+        let period = EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let mut duties = SubnetDuties::default();
+        duties.add_sync([period, 0, 0, 0], 0);
+        duties.add_sync([4 * period, 0, 0, 0], epoch(2 * period));
+
+        assert_eq!(duties.advance(epoch(2 * period)), None);
+        assert_eq!(duties.advance(epoch(3 * period)), sync_changes(0b0001, 0));
+    }
+
+    #[test]
+    fn subscription_already_over_is_ignored() {
+        let epoch = |epoch: u64| epoch * SLOTS_PER_EPOCH;
+        let mut duties = SubnetDuties::default();
+        duties.add_sync([10, 0, 0, 0], epoch(10));
+        assert_eq!(duties.advance(epoch(10)), None);
+    }
+
+    #[test]
     fn long_lived_sync_subnets_are_never_joined_or_left() {
         let mut duties = SubnetDuties::new(Subnets { attnets: 0, syncnets: 0b1111 });
-        duties.add_sync([12, 12, 12, 12]);
+        duties.add_sync([12, 12, 12, 12], 9 * SLOTS_PER_EPOCH);
         assert_eq!(duties.advance(9 * SLOTS_PER_EPOCH), None);
         assert_eq!(duties.advance(12 * SLOTS_PER_EPOCH), None);
     }

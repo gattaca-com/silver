@@ -1291,6 +1291,7 @@ pub enum BeaconStateEvent {
         source: BlockSource,
         slot: u64,
         block_root: [u8; 32],
+        newly_verified: bool,
     },
     AttestersShuffling {
         id: ShufflingId,

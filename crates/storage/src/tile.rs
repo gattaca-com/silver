@@ -318,7 +318,7 @@ impl StorageTile {
                     }
                 }
             }
-            BeaconStateEvent::EnvelopeAvailable { ssz, source, slot, block_root } => {
+            BeaconStateEvent::EnvelopeAvailable { ssz, source, slot, block_root, .. } => {
                 if !self.store.is_envelope_owed(&block_root, slot) {
                     return None;
                 }

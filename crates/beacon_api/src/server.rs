@@ -848,6 +848,9 @@ impl BeaconApi {
             BeaconStateEvent::PayloadAttributes(attributes) => {
                 self.publish_payload_attributes(&attributes)
             }
+            BeaconStateEvent::EnvelopeAvailable {
+                slot, block_root, newly_verified: true, ..
+            } => self.publish_execution_payload_available(slot, &block_root),
             _ => {}
         }
     }
@@ -1076,6 +1079,15 @@ impl BeaconApi {
     fn publish_head_v2(&mut self, head: &HeadEvent) {
         let fork_name = self.ctx.spec.fork_at_slot(head.slot).name();
         self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
+    }
+
+    fn publish_execution_payload_available(&mut self, slot: u64, block_root: &B256) {
+        if !self.ctx.node_status.is_following() {
+            return;
+        }
+        self.publish(Channel::ExecutionPayloadAvailable, "execution_payload_available", |json| {
+            json.execution_payload_available_event(slot, block_root)
+        });
     }
 
     /// Repeated roots are not deduplicated.
@@ -2670,6 +2682,49 @@ mod tests {
     }
 
     #[test]
+    fn available_envelope_is_announced_once_per_block() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "execution_payload_available");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let ssz = server.submissions.write_with(1, |out| out[0] = 0).unwrap();
+        for (slot, block_root, newly_verified) in
+            [(10, [0xab; 32], true), (11, [0xcd; 32], true), (10, [0xab; 32], false)]
+        {
+            server.api.handle_beacon_state_event(BeaconStateEvent::EnvelopeAvailable {
+                ssz,
+                source: BlockSource::Gossip,
+                slot,
+                block_root,
+                newly_verified,
+            });
+        }
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "execution_payload_available events");
+        let announced: Vec<_> = events
+            .iter()
+            .map(|event| {
+                (event.topic.as_str(), event.data["slot"].clone(), event.data["block_root"].clone())
+            })
+            .collect();
+        assert_eq!(announced, [
+            (
+                "execution_payload_available",
+                "10".into(),
+                format!("0x{}", hex::encode([0xab; 32])).into()
+            ),
+            (
+                "execution_payload_available",
+                "11".into(),
+                format!("0x{}", hex::encode([0xcd; 32])).into()
+            ),
+        ]);
+    }
+
+    #[test]
     fn relayed_attestations_render_as_the_posted_json() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let mut gossip = TCache::producer(TCacheId::ControlProcessing, 1 << 16);
@@ -3818,6 +3873,24 @@ mod tests {
                 root_hex(0x99)
             )
         );
+    }
+
+    #[test]
+    fn filterless_header_list_answers_the_head_as_its_only_entry() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.node_status.head_root = [0x77; 32];
+        let client = connect(tcp_addr(&server));
+        get(&client, "/eth/v1/beacon/headers");
+        let request_id = request_id(&deferred_request(&mut server));
+        server.serve_block(request_id, 10, [0x77; 32], &block_bytes(10, 0xef));
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "header list answer");
+
+        let list: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
+        let headers = list["data"].as_array().unwrap();
+        assert_eq!(headers.len(), 1, "{list}");
+        assert_eq!(headers[0]["root"], root_hex(0x77));
+        assert_eq!(headers[0]["header"]["message"]["slot"], "10");
     }
 
     #[test]

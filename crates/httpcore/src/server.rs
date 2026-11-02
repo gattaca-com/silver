@@ -105,8 +105,6 @@ impl<'a> ParsedRequest<'a> {
     }
 }
 
-/// Servers must accept an absolute-form target (RFC 9112 §3.2.2), as some
-/// clients send through proxies.
 fn origin_form(target: &str) -> &str {
     let Some((scheme, rest)) = target.split_once("://") else {
         return target;

@@ -1,6 +1,8 @@
 use silver_beacon_state_data::{
-    BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, SYNC_COMMITTEE_SIZE, StateReadView,
+    BLSPubkey, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, SYNC_COMMITTEE_SIZE,
+    SYNC_SUBCOMMITTEE_SIZE, StateReadView,
 };
+use silver_common::{BeaconApiRequest, SYNC_COMMITTEE_SUBNETS};
 
 use crate::{
     ctx::ApiCtx,
@@ -33,6 +35,10 @@ pub(crate) fn post_sync_duties(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Respo
             );
         });
     });
+
+    if let Some(until_epochs) = seats.subscriptions(&indices, epoch) {
+        resp.attach_request(BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs });
+    }
 }
 
 /// Which of the two committees the head state holds answers for an epoch.
@@ -111,6 +117,25 @@ impl Seats {
         })
     }
 
+    /// Prysm's VC never posts `sync_committee_subscriptions` and relies on this
+    /// request subscribing its members.
+    fn subscriptions(
+        &self,
+        indices: &[u64],
+        epoch: Epoch,
+    ) -> Option<[u64; SYNC_COMMITTEE_SUBNETS]> {
+        let until_epoch =
+            epoch - epoch % EPOCHS_PER_SYNC_COMMITTEE_PERIOD + EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        let mut until_epochs = [0; SYNC_COMMITTEE_SUBNETS];
+        for &index in indices {
+            let Ok(index) = u32::try_from(index) else { continue };
+            for seat in self.held_by(index) {
+                until_epochs[seat.position as usize / SYNC_SUBCOMMITTEE_SIZE] = until_epoch;
+            }
+        }
+        (until_epochs != [0; SYNC_COMMITTEE_SUBNETS]).then_some(until_epochs)
+    }
+
     fn held_by(&self, validator_index: u32) -> &[Seat] {
         let seats = &self.seats[..self.len];
         let from = seats.partition_point(|seat| seat.validator_index < validator_index);
@@ -143,7 +168,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         ctx::test_ctx,
-        testing::{answer, field, indices_body, json, posting, pubkey, status_code},
+        http::router::Outcome,
+        testing::{dispatch, field, indices_body, json, posting, pubkey, status_code},
     };
 
     const VALIDATORS: u64 = 6;
@@ -191,8 +217,9 @@ pub(crate) mod tests {
         ctx
     }
 
+    /// The response alone; [`subscription`] covers the request it carries.
     fn post(ctx: &ApiCtx, epoch: u64, body: &str) -> Vec<u8> {
-        answer(ctx, &posting(&format!("/eth/v1/validator/duties/sync/{epoch}"), body))
+        dispatch(ctx, &posting(&format!("/eth/v1/validator/duties/sync/{epoch}"), body)).1
     }
 
     fn next_period_epoch() -> u64 {
@@ -256,6 +283,32 @@ pub(crate) mod tests {
         for body in ["", "{}", "[]", "[0]", "[\"-1\"]", "[\"a\"]"] {
             assert_eq!(status_code(&post(&ctx, STATE_EPOCH, body)), "400", "{body:?}");
         }
+    }
+
+    fn subscription(ctx: &ApiCtx, epoch: u64, indices: &[u64]) -> Outcome {
+        let path = format!("/eth/v1/validator/duties/sync/{epoch}");
+        let (outcome, response) =
+            dispatch(ctx, &posting(&path, &indices_body(indices.iter().copied())));
+        assert_eq!(status_code(&response), "200");
+        outcome
+    }
+
+    fn subscribed_until(until_epoch: u64) -> Outcome {
+        Outcome::Response(Some(BeaconApiRequest::SyncCommitteeSubscriptions {
+            until_epochs: [until_epoch; SYNC_COMMITTEE_SUBNETS],
+        }))
+    }
+
+    /// Every member holds a seat in each subcommittee, so it joins all four.
+    #[test]
+    fn members_are_subscribed_until_the_end_of_their_period() {
+        let ctx = ctx();
+        assert_eq!(subscription(&ctx, STATE_EPOCH, &[2]), subscribed_until(next_period_epoch()));
+        assert_eq!(subscription(&ctx, STATE_EPOCH, &[5]), Outcome::Response(None));
+
+        let next = next_period_epoch();
+        let end = next + EPOCHS_PER_SYNC_COMMITTEE_PERIOD;
+        assert_eq!(subscription(&ctx, next, &[0, 1]), subscribed_until(end));
     }
 
     #[test]

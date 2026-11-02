@@ -53,7 +53,7 @@ impl ProductionRig {
 
     fn use_full_parent(&mut self) -> EnginePreparePayloadReq {
         self.tile.fork_choice.mark_payload_verified(&self.proposal.parent_root);
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
         self.tile.refresh_payload_preparation(&mut self.adapter.producers);
         let [EngineReq::PreparePayload(request)] = engine_requests(&mut self.sink)[..] else {
             panic!("full parent needs a new payload");

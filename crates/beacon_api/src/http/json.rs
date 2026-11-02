@@ -315,6 +315,14 @@ impl Json<'_> {
         self.end_object();
     }
 
+    pub(crate) fn signed_headers(&mut self, headers: &[SignedHeader]) {
+        self.begin_array();
+        for signed in headers {
+            self.signed_header(signed);
+        }
+        self.end_array();
+    }
+
     pub(crate) fn signed_header(&mut self, signed: &SignedHeader) {
         self.begin_object();
         self.key("root");
@@ -553,6 +561,15 @@ impl Json<'_> {
         self.key("slot");
         self.quoted_u64(slot);
         self.key("block");
+        self.hex(block_root);
+        self.end_object();
+    }
+
+    pub(crate) fn execution_payload_available_event(&mut self, slot: u64, block_root: &[u8; 32]) {
+        self.begin_object();
+        self.key("slot");
+        self.quoted_u64(slot);
+        self.key("block_root");
         self.hex(block_root);
         self.end_object();
     }

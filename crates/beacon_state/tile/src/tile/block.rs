@@ -116,10 +116,10 @@ impl StagedBlock {
 }
 
 impl BeaconStateTile {
-    pub fn try_apply_block(&mut self, data: &[u8]) -> Feedback {
+    pub fn try_apply_block(&mut self, data: &[u8], emit: impl FnMut(BeaconStateEvent)) -> Feedback {
         match self.parse_and_verify_block(data, false) {
             Ok(parsed) => {
-                let feedback = self.apply_and_import(parsed, data, None);
+                let feedback = self.apply_and_import(parsed, data, None, emit);
                 self.maybe_finalize();
                 feedback
             }
@@ -205,7 +205,7 @@ impl BeaconStateTile {
 
         let block_root = parsed.block_root;
         let hold = waits_for_columns.then(|| (ssz.clone(), source));
-        let f = self.apply_and_import(parsed, data, hold);
+        let f = self.apply_and_import(parsed, data, hold, |event| producers.produce(event));
         match f {
             Feedback::BlockImported(_) => {
                 self.announce_imported(block_root, slot, data, ssz.to_read(), source, producers)
@@ -305,7 +305,7 @@ impl BeaconStateTile {
         self.da_required() && !self.held.is_available(block_root)
     }
 
-    pub(super) fn replay_block(&mut self, read: TCacheRead) {
+    pub(super) fn replay_block(&mut self, read: TCacheRead, emit: impl FnMut(BeaconStateEvent)) {
         let acquired = self.reader.acquire(read);
         let Some((data, _)) = acquired.buffer().ok() else {
             return;
@@ -317,7 +317,7 @@ impl BeaconStateTile {
         }
 
         let block_slot = SignedBeaconBlockView::slot(data);
-        let feedback = self.try_apply_block(data);
+        let feedback = self.try_apply_block(data, emit);
 
         match feedback {
             Feedback::Reject { block_root, reason } => silver_log::error!(
@@ -339,12 +339,16 @@ impl BeaconStateTile {
         }
     }
 
-    pub(super) fn replay_envelope(&mut self, read: TCacheRead) {
+    pub(super) fn replay_envelope(&mut self, read: TCacheRead, emit: impl FnMut(BeaconStateEvent)) {
         let acquired = self.reader.acquire(read);
-        self.apply_disk_envelope(acquired);
+        self.apply_disk_envelope(acquired, emit);
     }
 
-    pub(super) fn apply_disk_envelope(&mut self, acquired: TRead) {
+    pub(super) fn apply_disk_envelope(
+        &mut self,
+        acquired: TRead,
+        emit: impl FnMut(BeaconStateEvent),
+    ) {
         let Some((data, _)) = acquired.buffer().ok() else {
             return;
         };
@@ -357,7 +361,7 @@ impl BeaconStateTile {
                     return;
                 }
                 self.mark_envelope_verified(block_root, data);
-                self.recompute_head();
+                self.recompute_head(emit);
             }
             EnvelopeCheck::AwaitBlock(block_root) => {
                 silver_log::info!(
@@ -407,6 +411,7 @@ impl BeaconStateTile {
         parsed: ParsedBlock,
         data: &[u8],
         hold: Option<(TRead, BlockSource)>,
+        emit: impl FnMut(BeaconStateEvent),
     ) -> Feedback {
         let applied = match self.apply_or_reject(&parsed, data) {
             Ok(applied) => applied,
@@ -419,7 +424,7 @@ impl BeaconStateTile {
                 Feedback::AwaitData(block_root)
             }
             None => {
-                self.import_block(parsed, applied, data);
+                self.import_block(parsed, applied, data, emit);
                 Feedback::BlockImported(block_root)
             }
         }
@@ -472,7 +477,7 @@ impl BeaconStateTile {
             return;
         };
 
-        self.import_block(parsed, applied, data);
+        self.import_block(parsed, applied, data, |event| producers.produce(event));
         if el_valid {
             self.fork_choice.on_payload_valid(&block_root);
         }
@@ -549,7 +554,13 @@ impl BeaconStateTile {
     /// Fork-choice import and head publish; the tick-to-attestable window
     /// ends when this returns.
     #[timed]
-    fn import_block(&mut self, parsed: ParsedBlock, applied: AppliedBlock, block_data: &[u8]) {
+    fn import_block(
+        &mut self,
+        parsed: ParsedBlock,
+        applied: AppliedBlock,
+        block_data: &[u8],
+        mut emit: impl FnMut(BeaconStateEvent),
+    ) {
         let AppliedBlock {
             id: new_id,
             justified,
@@ -633,9 +644,9 @@ impl BeaconStateTile {
             self.notify_ptc_from_block(block_data);
         }
 
-        self.recompute_head();
+        self.recompute_head(&mut emit);
         if self.last_applied == new_id {
-            self.state.publish_state_id(new_id);
+            self.publish_head_state(emit);
         }
         self.fork_choice.lift_finalized(self.head_finalized_checkpoint());
     }
