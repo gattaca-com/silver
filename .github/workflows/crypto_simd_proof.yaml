@@ -125,8 +125,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Runs `lake exe cache get` and `lake build`, whose axiom guard fails the
-      # build on any axiom beyond propext, Classical.choice and Quot.sound.
+      # Runs `lake exe cache get` and `lake build`.
+      # The theorem guard permits only propext, Classical.choice and Quot.sound.
+      # Plain `lake build` also checks the import environment against the pinned
+      # axiom inventory.
       - uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
         with:
           lake-package-directory: ${{ env.PROOF_DIR }}
