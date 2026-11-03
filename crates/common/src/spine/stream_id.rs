@@ -1,5 +1,6 @@
 use std::{hash::Hash, ptr::addr_of, slice};
 
+use flux::type_hash_derive::TypeHash;
 use quinn_proto::{ConnectionHandle, StreamId, VarInt};
 
 use crate::StreamProtocol;
@@ -12,7 +13,7 @@ pub const LOCAL_GOSSIP_STREAM_ID: P2pStreamId =
 
 /// P2p stream id.
 /// N.B. for PartialEq and Hash only connection and stream fields are used.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct P2pStreamId {
     connection: usize,

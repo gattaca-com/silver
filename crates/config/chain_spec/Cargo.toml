@@ -9,6 +9,8 @@ version.workspace = true
 serde.workspace = true
 hex.workspace = true
 silver_ssz.workspace = true
+type-hash.workspace = true
+type-hash-derive.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

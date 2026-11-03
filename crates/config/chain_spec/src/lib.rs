@@ -3,6 +3,7 @@ use silver_ssz::{
     merkle::{B256, sha256},
     ssz_hash::hash_tree_root_fork_data,
 };
+use type_hash_derive::TypeHash;
 
 const fn default_u64<const V: u64>() -> u64 {
     V
@@ -35,7 +36,7 @@ pub struct BlobParameters {
 /// Every fork silver's config can name, in activation order. The set is
 /// closed and minted upstream, so it is an enum rather than a table
 /// (ADR-0003); forks past Gloas are added here as the spec schedules them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, TypeHash)]
 pub enum ForkName {
     Phase0,
     Altair,

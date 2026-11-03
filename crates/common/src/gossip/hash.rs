@@ -9,6 +9,7 @@ use std::{
     ops::Deref,
 };
 
+use flux::type_hash_derive::TypeHash;
 use foldhash::fast::RandomState;
 use ring::digest::{Context, SHA256};
 
@@ -21,7 +22,7 @@ pub const MESSAGE_DOMAIN_INVALID_SNAPPY: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 /// Truncated SHA-256 output length used as the wire message-id.
 pub const MESSAGE_ID_LEN: usize = 20;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, TypeHash)]
 #[repr(C)]
 pub struct MessageId {
     pub id: [u8; MESSAGE_ID_LEN],

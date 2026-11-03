@@ -4,6 +4,8 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
+use flux::type_hash_derive::TypeHash;
+
 use super::{
     AcquiredRange, AcquiredRead, Producer, Reservation, Slot, TCacheProducer, TCacheRead,
     TCacheReader, TCacheRef,
@@ -100,7 +102,7 @@ impl Header {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct SubReservationRef {
     pub(super) read: TCacheRead,
     pub(super) header_bytes: usize,
@@ -494,7 +496,7 @@ impl Drop for SubWrite<'_> {
 
 /// Copyable queue descriptor, not a pin. Retention boundaries or acquired
 /// owners must protect it until handoff or expiry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct PendingSubReservation {
     reservation: SubReservationRef,
     part: usize,

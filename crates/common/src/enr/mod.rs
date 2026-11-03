@@ -13,6 +13,7 @@ use alloy_rlp::{Decodable, Encodable, Error as DecoderError, Header};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use builder::Error;
 use bytes::{Buf, BytesMut};
+use flux::type_hash_derive::TypeHash;
 pub use node_id::{
     EPOCHS_PER_SUBNET_SUBSCRIPTION, NUMBER_OF_CUSTODY_GROUPS, NodeId, SAMPLES_PER_SLOT,
     SUBNETS_PER_NODE, attnet_subnets,
@@ -44,11 +45,13 @@ pub const CGC_ENR_KEY: &[u8] = b"cgc";
 ///
 /// Fields are the standard ENR fields relevant to discovery. Unknown fields
 /// from decoded records are verified against the signature and then dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TypeHash)]
 pub struct Enr {
     seq: u64,
     node_id: NodeId,
+    #[type_hash(literal = "Option<Ipv4Addr>")]
     ip4: Option<Ipv4Addr>,
+    #[type_hash(literal = "Option<Ipv6Addr>")]
     ip6: Option<Ipv6Addr>,
     udp4: Option<u16>,
     udp6: Option<u16>,
@@ -65,6 +68,7 @@ pub struct Enr {
     syncnets: Option<u8>,
     /// Data column custody group count
     cgc: Option<u64>,
+    #[type_hash(literal = "secp256k1::PublicKey")]
     public_key: PublicKey,
     signature: [u8; 64],
 }

@@ -1,3 +1,5 @@
+use flux::type_hash_derive::TypeHash;
+
 use crate::{
     RpcRequest, StreamProtocol, TCacheError, TCacheProducer,
     ssz_view::{
@@ -6,7 +8,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]
 #[repr(u8)]
 pub enum DataKind {
     Block = 0,
@@ -22,7 +24,7 @@ impl DataKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum Origin {
     Live = 0,

@@ -1,3 +1,5 @@
+use flux::type_hash_derive::TypeHash;
+
 use crate::rpc_rate_limit::RpcQuota;
 
 pub const MULTISTREAM_V1: &[u8] = b"\x13/multistream/1.0.0\n";
@@ -6,7 +8,7 @@ pub const REJECT_RESPONSE: &[u8] = b"\x13/multistream/1.0.0\n\x03na\n";
 const MAX_SIDECAR_RATE_LIMIT_TOKENS: u64 = 16384;
 const MAX_BLOCK_RATE_LIMIT_TOKENS: u64 = 128;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TypeHash)]
 #[repr(u8)]
 pub enum StreamProtocol {
     GossipSub,

@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use flux::type_hash_derive::TypeHash;
 use silver_ssz::ssz_view::MAX_COMMITTEES_PER_SLOT;
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
 /// Identifies an attester shuffling by its epoch and attester-duty decision
 /// root. Blocks after that decision can share the same shuffling across
 /// branches.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 pub struct ShufflingId {
     pub epoch: Epoch,
     pub dependent_root: B256,

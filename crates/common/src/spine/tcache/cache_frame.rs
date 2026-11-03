@@ -1,5 +1,7 @@
 use std::{io::Write, ops::Range, time::Instant};
 
+use flux::type_hash_derive::TypeHash;
+
 use super::{
     AcquiredRange, AcquiredRead, Producer, SubReservationRef, TCacheId, TCacheProducer, TCacheRead,
     TCacheReader,
@@ -53,9 +55,10 @@ pub enum CacheSegment {
 // from typed cache descriptors, never from network input.
 // Pointer identities and trusted layout metadata make this an in-process
 // format.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct CacheFrameRef {
     descriptor: TCacheRead,
+    #[type_hash(literal = "Instant")]
     expires: Instant,
 }
 
