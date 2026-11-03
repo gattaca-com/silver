@@ -25,7 +25,7 @@ pub use flat_hashing::{FlatTree, TreeFormat, TreeReader};
 use flat_hashing::{MAX_SEGS, seg_off};
 pub use merkle::B256;
 #[cfg(feature = "multi-owner")]
-pub use multi_owner::SharedList;
+pub use multi_owner::{ListError, SharedList};
 pub use scalar::SszScalar;
 pub use single_owner::{PagePool, PageSnapshot};
 pub use storage::{PageAlloc, PageArray, PageId, PageStore, PageTable};
