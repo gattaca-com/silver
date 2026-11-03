@@ -42,12 +42,12 @@ use crate::stf::{self, BlockInput, decode_bid, get_expected_withdrawals};
 mod attestation_rewards;
 mod bid_weight;
 mod local_payloads;
-mod submitted_bodies;
+mod submitted_body;
 
 use attestation_rewards::AttestationRewards;
 use bid_weight::BidWeight;
 use local_payloads::LocalPayloads;
-use submitted_bodies::SubmittedBodies;
+use submitted_body::SubmittedBody;
 
 /// Requests with equal proposals are served one block.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -235,7 +235,7 @@ pub(super) struct BlockProduction {
     pending: Vec<(u64, Proposal)>,
     pending_gloas: Vec<PendingGloas>,
     built: Option<BuiltBlock>,
-    submitted: SubmittedBodies,
+    submitted: SubmittedBody,
     local_payloads: LocalPayloads,
     next_engine_id: u64,
     packed: PackedOperations,
@@ -256,7 +256,7 @@ impl BlockProduction {
             pending: Vec::new(),
             pending_gloas: Vec::new(),
             built: None,
-            submitted: SubmittedBodies::default(),
+            submitted: SubmittedBody::default(),
             local_payloads: LocalPayloads::default(),
             next_engine_id: 0,
             packed: PackedOperations::default(),
@@ -984,7 +984,7 @@ impl BeaconStateTile {
 
     pub(super) fn hold_submitted_body(&mut self, submission: TCacheRead, hashed: HashedBody) {
         let submission = self.reader.acquire(submission);
-        self.block_production.submitted.insert(submission, hashed);
+        self.block_production.submitted.hold(submission, hashed);
     }
 
     #[timed]

@@ -167,14 +167,32 @@ impl SignatureChecker {
         sigs: impl IntoIterator<Item = &'a [u8; 96]>,
         mut emit: impl FnMut(Option<CheckedSignature>),
     ) {
+        self.decode(sigs);
+        for point in self.points.drain(..) {
+            emit(point.map(CheckedSignature));
+        }
+    }
+
+    /// [`Self::check_all`] over `items`, handing each the result for its own
+    /// signature.
+    pub fn check_each<T>(
+        &mut self,
+        items: &mut [T],
+        signature: impl Fn(&T) -> &[u8; 96],
+        mut emit: impl FnMut(&mut T, Option<CheckedSignature>),
+    ) {
+        self.decode(items.iter().map(signature));
+        for (item, point) in items.iter_mut().zip(self.points.drain(..)) {
+            emit(item, point.map(CheckedSignature));
+        }
+    }
+
+    fn decode<'a>(&mut self, sigs: impl IntoIterator<Item = &'a [u8; 96]>) {
         self.inputs.clear();
         self.inputs.extend(sigs.into_iter().copied());
         self.points.clear();
         self.points.resize(self.inputs.len(), None);
         uncompress_in_g2(&self.inputs, &mut self.points);
-        for point in self.points.drain(..) {
-            emit(point.map(CheckedSignature));
-        }
     }
 }
 

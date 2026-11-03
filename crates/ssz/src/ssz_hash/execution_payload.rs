@@ -1,3 +1,4 @@
+use flux::type_hash_derive::TypeHash;
 use flux_profiler::timed;
 
 use crate::{
@@ -30,7 +31,7 @@ impl FixedContainer for WithdrawalView {
 
 /// Most of a payload's hashing cost; surfaced so the STF's payload header
 /// reuses them instead of hashing the same bytes twice.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 pub struct PayloadRoots {
     pub transactions: B256,
     pub withdrawals: B256,

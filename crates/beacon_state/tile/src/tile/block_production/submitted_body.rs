@@ -4,38 +4,38 @@ use silver_common::{
     ssz_view::SignedBeaconBlockView,
 };
 
-/// Bodies the API hashed for blocks it publishes, held until the block comes
-/// back through gossip. Comparing a body costs a memcmp; hashing it costs
-/// about a millisecond.
+/// The body the API last hashed for a block it publishes, held until the
+/// block comes back through gossip. Comparing a body costs a memcmp; hashing
+/// it costs about a millisecond.
 #[derive(Default)]
-pub(super) struct SubmittedBodies(Vec<SubmittedBody>);
+pub(super) struct SubmittedBody(Option<HeldSubmission>);
 
-struct SubmittedBody {
+struct HeldSubmission {
     slot: Slot,
     submission: TRead,
     hashed: HashedBody,
 }
 
-impl SubmittedBodies {
-    pub(super) fn insert(&mut self, submission: TRead, hashed: HashedBody) {
+impl SubmittedBody {
+    pub(super) fn hold(&mut self, submission: TRead, hashed: HashedBody) {
         let Some(slot) = signed_block(&submission).map(SignedBeaconBlockView::slot) else {
             return;
         };
-        self.0.push(SubmittedBody { slot, submission, hashed });
+        self.0 = Some(HeldSubmission { slot, submission, hashed });
     }
 
-    /// A match is removed, as a block is imported once.
+    /// A match is released, as a block is imported once.
     pub(super) fn take(&mut self, slot: Slot, body: &[u8]) -> Option<HashedBody> {
-        let at = self.0.iter().position(|submitted| {
-            submitted.slot == slot &&
-                signed_block(&submitted.submission)
+        let held = self.0.take_if(|held| {
+            held.slot == slot &&
+                signed_block(&held.submission)
                     .is_some_and(|block| SignedBeaconBlockView::body(block) == body)
         })?;
-        Some(self.0.swap_remove(at).hashed)
+        Some(held.hashed)
     }
 
     pub(super) fn prune_before(&mut self, slot: Slot) {
-        self.0.retain(|submitted| submitted.slot >= slot);
+        self.0.take_if(|held| held.slot < slot);
     }
 }
 
@@ -72,16 +72,21 @@ mod tests {
         let submission = cache.write_with(block.len(), |out| out.copy_from_slice(&block)).unwrap();
         cache.loop_start();
 
-        let mut bodies = SubmittedBodies::default();
-        bodies.insert(reader.acquire(submission), hashed(1));
+        let mut submitted = SubmittedBody::default();
+        submitted.hold(reader.acquire(submission), hashed(1));
         let body = SignedBeaconBlockView::body(&block);
-        assert_eq!(bodies.take(8, body), None, "another slot is hashed");
-        assert_eq!(bodies.take(7, &body[1..]), None, "another body is hashed");
-        assert_eq!(bodies.take(7, body), Some(hashed(1)));
-        assert_eq!(bodies.take(7, body), None, "a block imports once");
+        assert_eq!(submitted.take(8, body), None, "another slot is hashed");
+        assert_eq!(submitted.take(7, &body[1..]), None, "another body is hashed");
+        assert_eq!(submitted.take(7, body), Some(hashed(1)));
+        assert_eq!(submitted.take(7, body), None, "a block imports once");
 
-        bodies.insert(reader.acquire(submission), hashed(2));
-        bodies.prune_before(8);
-        assert_eq!(bodies.take(7, body), None, "a past slot's body is dropped");
+        submitted.hold(reader.acquire(submission), hashed(2));
+        submitted.hold(reader.acquire(submission), hashed(3));
+        submitted.prune_before(7);
+        assert_eq!(submitted.take(7, body), Some(hashed(3)), "the last submission is held");
+
+        submitted.hold(reader.acquire(submission), hashed(4));
+        submitted.prune_before(8);
+        assert_eq!(submitted.take(7, body), None, "a past slot's body is dropped");
     }
 }

@@ -1,3 +1,4 @@
+use flux::type_hash_derive::TypeHash;
 use flux_profiler::timed;
 
 use super::{
@@ -47,7 +48,7 @@ pub fn hash_tree_root_body_fulu(body: &[u8]) -> B256 {
         .map_or(ZERO_HASH, |offsets| hash_tree_root_body_fulu_with_roots(&offsets).0)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub enum BlockFork {
     Fulu { payload_roots: PayloadRoots },
     FuluBlinded,
@@ -68,7 +69,7 @@ impl BlockFork {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub struct HashedBody {
     pub root: B256,
     pub fork: BlockFork,

@@ -20,7 +20,6 @@ pub(crate) fn signing_key(view: &StateReadView<'_>, index: u64) -> Option<Public
 /// fail.
 pub(crate) struct EntrySignatures {
     pending: Vec<PendingCheck>,
-    checked: Vec<Option<CheckedSignature>>,
     forged: Vec<usize>,
     checker: SignatureChecker,
     batch: SigBatch,
@@ -29,13 +28,14 @@ pub(crate) struct EntrySignatures {
 struct PendingCheck {
     body_index: usize,
     check: SignatureCheck,
+    /// Decompressed and subgroup-checked; `None` for a malformed signature.
+    signature: Option<CheckedSignature>,
 }
 
 impl EntrySignatures {
     pub(crate) fn new() -> Self {
         Self {
             pending: Vec::new(),
-            checked: Vec::new(),
             forged: Vec::new(),
             checker: SignatureChecker::with_capacity(0),
             batch: SigBatch::new(),
@@ -47,29 +47,29 @@ impl EntrySignatures {
     }
 
     pub(crate) fn push(&mut self, body_index: usize, check: SignatureCheck) {
-        self.pending.push(PendingCheck { body_index, check });
+        self.pending.push(PendingCheck { body_index, check, signature: None });
     }
 
     /// The body indices of the pending entries whose signature fails, in the
     /// order they were pushed.
     pub(crate) fn verify(&mut self) -> &[usize] {
-        let Self { pending, checked, forged, checker, batch } = self;
-        checked.clear();
-        checker.check_all(pending.iter().map(|entry| &entry.check.signature), |signature| {
-            checked.push(signature)
-        });
+        let Self { pending, forged, checker, batch } = self;
+        checker.check_each(
+            pending,
+            |entry| &entry.check.signature,
+            |entry, signature| entry.signature = signature,
+        );
 
         batch.clear();
-        for (entry, signature) in pending.iter().zip(checked.iter()) {
-            if let Some(signature) = signature {
-                batch.push_parsed(&entry.check.pubkey, *signature, entry.check.signing_root);
+        for entry in pending.iter() {
+            if let Some(signature) = entry.signature {
+                batch.push_parsed(&entry.check.pubkey, signature, entry.check.signing_root);
             }
         }
         let batch_valid = batch.verify_all();
 
         forged.clear();
-        for (PendingCheck { body_index, check }, signature) in pending.drain(..).zip(checked.iter())
-        {
+        for PendingCheck { body_index, check, signature } in pending.drain(..) {
             let valid = signature.is_some_and(|signature| {
                 batch_valid || batch.verify_one(&check.pubkey, &signature, &check.signing_root)
             });
