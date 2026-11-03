@@ -510,7 +510,7 @@ G2's double and affine-add formulas use the same componentwise bounds as G1, wit
 
 ### G1 Scott criterion
 
-The Scott lemmas use σ(x, y) = (βx, y), with β fixed by the kernel's `BETA_MONT`, and the identity σ²(P) = [−z²]P. Completeness uses the spec's generator-order proof and the elementary bound `Nat.card E.Point ≤ 2 * p + 1 < r²`. Formula correctness is conditional on a clear undecided bit; the headline theorem does not require proving that subgroup members always avoid exceptional formulas.
+The Scott lemmas use σ(x, y) = (βx, y), with β fixed by the kernel's `BETA_MONT`, and the identity σ²(P) = [−z²]P. Completeness uses EthLib's `G1.exists_nsmul_generator_of_modulus_smul_eq_zero` to express every rational r-torsion point as a generator multiple. EthLib proves this span from the bound `Nat.card E.Point ≤ 2 * p + 1 < r²`. Formula correctness is conditional on a clear undecided bit; the headline theorem does not require proving that subgroup members always avoid exceptional formulas.
 
 ### G2 wrapper refinement
 
