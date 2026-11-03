@@ -2,6 +2,7 @@ import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Write
+import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
@@ -9,6 +10,8 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 open private bytesBEToNatAux_eq_fromBytesBEAux
   from EthLib.Cryptography.Proofs.Kzg.Polynomials
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 
@@ -44,8 +47,8 @@ private theorem encoded_step (values : _root_.Array Fr)
         blsFieldToBytes values[8*i+lane.val]!)
     (hframe : ∀ j : Fin 2048, j.val < i*256 ∨ i*256+256 ≤ j.val →
       serialized.val[j.val]? = buffer.val[j.val]?) :
-    Encoded values (i+1) ⟨serialized.val, hlen⟩ := by
-  let written : Array U8 2048#usize := ⟨serialized.val, hlen⟩
+    Encoded values (i+1) (Array.make 2048#usize serialized.val hlen) := by
+  let written : Array U8 2048#usize := (Array.make 2048#usize serialized.val hlen)
   intro j hj b hb
   by_cases hjprev : j < 8*i
   · have hat : 32*j+b < 2048 := by omega
@@ -57,7 +60,8 @@ private theorem encoded_step (values : _root_.Array Fr)
     unfold byteAt at hprev ⊢
     rw [arrayBytes_get buffer _ hat] at hprev
     rw [arrayBytes_get written _ hat]
-    exact (congrArg (fun x : U8 => UInt8.ofBitVec x.bv) hg).trans hprev
+    simpa only [written, Array.make, Array.from_val] using
+      (congrArg (fun x : U8 => UInt8.ofBitVec x.bv) hg).trans hprev
   · have hl : j-8*i < 8 := by omega
     have hfield := hfields ⟨j-8*i, hl⟩
     have hjval : 8*i+(j-8*i) = j := by omega
@@ -66,7 +70,7 @@ private theorem encoded_step (values : _root_.Array Fr)
     have hh := extract_get (bytes serialized.val) _ _ _ b hfield
       (by rw [field_bytes_size]; exact hb)
     rw [hat] at hh
-    simpa only [arrayBytes] using hh
+    simpa only [arrayBytes, Array.make, Array.from_val] using hh
 
 private theorem encode_loop (sums : Array fr8.Fr8 8#usize) (values : _root_.Array Fr)
     (hs : DataRep (Array.to_slice sums) values)
@@ -79,29 +83,29 @@ private theorem encode_loop (sums : Array fr8.Fr8 8#usize) (values : _root_.Arra
     have hi8 : i.val = 8 := by omega
     refine ⟨buffer, ?_, by simpa only [hi8] using he⟩
     rw [interpolation_kernel.store_canonical_loop0, loop.eq_1]
-    simp [interpolation_kernel.store_canonical_loop0.body, vectors_per_cell_eq, UScalar.lt_equiv, hi8]
+    simp [interpolation_kernel.store_canonical_loop0.body, vectors_per_cell_eq, UScalar.lt_equiv, hi8, bind_ok]
   | succ rem ih =>
     have hit : i.val < 8 := by omega
-    have hil : i.val < sums.val.length := by simpa only [sums.property] using hit
+    have hil : i.val < sums.val.length := by simpa only [sums.property] using! hit
     have hp : Represents sums.val[i.val]! (fun lane => values[8*i.val+lane.val]!) := by
-      simpa only [Array.to_slice, getElem!_pos sums.val i.val hil] using hs.2 ⟨i.val, hil⟩
+      simpa only [Array.to_slice, Slice.from_val, getElem!_pos sums.val i.val hil] using hs.2 ⟨i.val, by simpa only [Array.to_slice, Slice.from_val] using hil⟩
     let offset : Usize := UScalar.ofNatCore (i.val*256) (by scalar_tac)
     have hoff : offset.val = i.val*256 := UScalar.ofNatCore_val_eq _
     have hbound : offset.val+256 ≤ (Array.to_slice buffer).val.length := by
-      simp only [hoff, Array.to_slice, buffer.property, UScalar.ofNatCore_val_eq]; omega
+      simp only [hoff, Array.to_slice, Slice.from_val, buffer.property, UScalar.ofNatCore_val_eq]; omega
     obtain ⟨serialized, hserialize, hlen, hfields, hframe⟩ :=
       to_bytes_refinement sums.val[i.val]! hp.1 (Array.to_slice buffer) offset hbound
     have hlen' : serialized.val.length = 2048 := by
-      simpa only [Array.to_slice, buffer.property] using hlen
-    let written : Array U8 2048#usize := ⟨serialized.val, hlen'⟩
+      simpa only [Array.to_slice, Slice.from_val, buffer.property] using! hlen
+    let written : Array U8 2048#usize := (Array.make 2048#usize serialized.val hlen')
     have hencoded : Encoded values (i.val+1) written := by
       apply encoded_step values buffer i.val hit he serialized hlen'
       · intro lane
         simpa only [hoff, hp.2 lane] using hfields lane
       · intro j hj
         have hj' : j.val < (Array.to_slice buffer).val.length := by
-          simpa only [Array.to_slice, buffer.property] using j.isLt
-        simpa only [Array.to_slice] using hframe ⟨j.val, hj'⟩
+          simpa only [Array.to_slice, Slice.from_val, buffer.property] using! j.isLt
+        simpa only [Array.to_slice, Slice.from_val] using! hframe ⟨j.val, hj'⟩
           (by simpa only [hoff] using hj)
     let i' : Usize := UScalar.ofNatCore (i.val+1) (by scalar_tac)
     have hi' : i'.val = i.val+1 := UScalar.ofNatCore_val_eq _
@@ -112,21 +116,21 @@ private theorem encode_loop (sums : Array fr8.Fr8 8#usize) (values : _root_.Arra
     have hmul : i*256#usize = ok offset := scalar_mul_ok i 256#usize (by scalar_tac)
     have hadd : i+1#usize = ok i' := scalar_add_ok i 1#usize (by scalar_tac)
     have hback : Array.from_slice buffer serialized = written := by
-      apply Subtype.ext
-      simp only [Array.from_slice, hlen', UScalar.ofNatCore_val_eq, ↓reduceDIte, written]
+      ext1
+      simp only [Array.from_slice, hlen', UScalar.ofNatCore_val_eq, ↓reduceDIte, written, Array.make, Array.from_val]
     refine ⟨out, ?_, ho⟩
     rw [interpolation_kernel.store_canonical_loop0, loop.eq_1]
-    have hlt : i < 8#usize := by simpa only [UScalar.lt_equiv] using hit
+    have hlt : i < 8#usize := by simpa only [UScalar.lt_equiv] using! hit
     have hbody : interpolation_kernel.store_canonical_loop0.body sums buffer i =
         ok (cont (written, i')) := by
-      simp only [interpolation_kernel.store_canonical_loop0.body, vectors_per_cell_eq, hlt, if_true,
-        hindex, Array.to_slice_mut, lift, Function.uncurry_apply_pair, bytes_per_vector_eq, hmul,
-        hserialize, hadd, hback, bind_tc_ok]
-    simpa only [hbody] using hout
+      simp only [interpolation_kernel.store_canonical_loop0.body, vectors_per_cell_eq, hlt, ite_true,
+        hindex, Array.to_slice_mut, lift, Aeneas.Std.uncurry_apply_pair, bytes_per_vector_eq, hmul,
+        hserialize, hadd, hback, bind_ok]
+    simpa only [hbody, bind_ok] using! hout
 
 private def fieldChunk (buffer : Array U8 2048#usize) (i : Nat) (hi : i < 64) :
     Array U8 32#usize :=
-  ⟨buffer.val.slice (32*i) (32*(i+1)), by simp [List.slice, buffer.property]; omega⟩
+  Array.make 32#usize (buffer.val.slice (32*i) (32*(i+1))) (by simp [List.slice, buffer.property]; omega)
 
 private theorem byteArray_ext_get (a b : ByteArray) (hs : a.size = b.size)
     (hg : ∀ i, i < a.size → byteAt a i = byteAt b i) : a = b := by
@@ -145,7 +149,7 @@ private theorem fieldChunk_get (buffer : Array U8 2048#usize)
   congr 2
   rw [getElem!_pos (fieldChunk buffer i hi).val b
     (by rw [(fieldChunk buffer i hi).property]; exact hb)]
-  simp only [fieldChunk, List.slice, List.getElem_take, List.getElem_drop]
+  simp only [fieldChunk, Array.make, Array.from_val, List.slice, List.getElem_take, List.getElem_drop]
   exact (getElem!_pos buffer.val (32*i+b) (by rw [buffer.property]; exact hat)).symm
 
 private theorem fieldChunk_bytes (buffer : Array U8 2048#usize)
@@ -156,7 +160,7 @@ private theorem fieldChunk_bytes (buffer : Array U8 2048#usize)
   · rw [arrayBytes_size, field_bytes_size]
     rfl
   · intro b hb
-    have hb' : b < 32 := by simpa only [arrayBytes_size] using hb
+    have hb' : b < 32 := by simpa only [arrayBytes_size] using! hb
     rw [fieldChunk_get buffer i b hi hb']
     exact he i (by omega) b hb'
 
@@ -167,7 +171,7 @@ private theorem decode_field_bytes (value : Fr) :
     bytesBEToNat_intToBytesBE_of_lt hb
   have hv' : Fr.bytesBEToNat (blsFieldToBytes value) = value.val := by
     simpa only [bytesBEToNat, Fr.bytesBEToNat, bytesBEToNatAux_eq_fromBytesBEAux] using hv
-  simp only [bytesToBlsField, field_bytes_size, Constants.BYTES_PER_FIELD_ELEMENT,
+  simp only [bytesToBlsField, field_bytes_size, EthLib.Cryptography.Kzg.Constants.BYTES_PER_FIELD_ELEMENT,
     ne_eq, not_true_eq_false, ↓reduceIte, Fr.fromBytesBE, hv', value.isLt, ↓reduceDIte]
 
 private theorem decode_loop
@@ -184,7 +188,7 @@ private theorem decode_loop
     refine ⟨out, ?_, ?_⟩
     · rw [interpolation_kernel.store_canonical_loop1, loop.eq_1]
       simp [interpolation_kernel.store_canonical_loop1.body, FIELD_ELEMENTS_PER_CELL,
-        UScalar.lt_equiv, hi64]
+        UScalar.lt_equiv, hi64, bind_ok]
     · apply List.ext_getElem
       · simp [hlen, hvalues]
       · intro j hj ht
@@ -206,27 +210,27 @@ private theorem decode_loop
       have hstopn : 32*(i.val+1) ≤ 2048 := by omega
       simp [core.array.Array.index, core.ops.index.IndexSlice, core.slice.index.Slice.index,
         core.slice.index.SliceIndexRangeUsizeSlice.index, start, stop, src, chunk,
-        fieldChunk, Array.to_slice, hstopn]
+        fieldChunk, Array.make, Array.from_val, Array.to_slice, Slice.from_val, hstopn]
     have hcopy : core.slice.Slice.copy_from_slice core.marker.CopyU8
         (Array.to_slice (Array.repeat 32#usize 0#u8)) src = ok src := by
-      simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src, Array.to_slice, chunk.property]
+      simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src, Array.to_slice, Slice.from_val, chunk.property]
     have hback : Array.from_slice (Array.repeat 32#usize 0#u8) src = chunk := by
-      apply Subtype.ext
-      simp [src, Array.to_slice, chunk.property]
+      ext1
+      simp [src, Array.to_slice, Slice.from_val, chunk.property]
     have hdecode : fr.fr_from_bytes chunk = ok (some (frEncode values[i.val]!)) := by
       rw [FrScalar.fr_from_bytes_refines, fieldChunk_bytes buffer values he i.val hit,
         decode_field_bytes]
       rfl
     let next := out.set i (frEncode values[i.val]!)
-    have hnextlen : next.val.length = 64 := by simp [next, Slice.set, Slice.setAtNat, hlen]
+    have hnextlen : next.val.length = 64 := by simp [next, Slice.set, Slice.setAtNat, Slice.from_val, hlen]
     have hnext : ∀ j, j < i'.val → next.val[j]! = frEncode values[j]! := by
       intro j hj
       by_cases heq : j = i.val
       · subst j
-        change (out.val.set i.val (frEncode values[i.val]!))[i.val]! = _
-        exact List.getElem!_set _ _ _ (by omega)
-      · change (out.val.set i.val (frEncode values[i.val]!))[j]! = _
-        rw [List.getElem!_set_ne _ _ _ _ (by omega)]
+        simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val]
+        exact List.set_getElem!_eq _ _ _ _ ⟨(by omega), rfl⟩
+      · simp +zetaDelta only [Slice.set, Slice.setAtNat, Slice.from_val]
+        rw [List.set_getElem!_ne _ _ _ _ (by omega)]
         exact hp j (by omega)
     obtain ⟨out', hout, ho⟩ := ih next hnextlen i' (by omega) hnext (by omega)
     have hadd : i+1#usize = ok i' := scalar_add_ok i 1#usize (by scalar_tac)
@@ -238,11 +242,14 @@ private theorem decode_loop
       simp [Slice.update, List.getElem?_eq_getElem (show i.val < out.val.length by omega)]
       rfl
     refine ⟨out', ?_, ho⟩
+    have hlt : i < FIELD_ELEMENTS_PER_CELL := by simpa only [FIELD_ELEMENTS_PER_CELL, UScalar.lt_equiv] using! hit
+    have hbody : interpolation_kernel.store_canonical_loop1.body buffer out i =
+        ok (cont (next, i')) := by
+      simp only [interpolation_kernel.store_canonical_loop1.body, hlt, ite_true,
+        Array.to_slice_mut, lift, Aeneas.Std.uncurry_apply_pair, hstart, hadd, hstop,
+        hindex, hcopy, hback, hdecode, hupdate, bind_ok]
     rw [interpolation_kernel.store_canonical_loop1, loop.eq_1]
-    have hlt : i < FIELD_ELEMENTS_PER_CELL := by simpa only [FIELD_ELEMENTS_PER_CELL, UScalar.lt_equiv] using hit
-    simpa only [interpolation_kernel.store_canonical_loop1.body, hlt, if_true,
-      Array.to_slice_mut, lift, Function.uncurry_apply_pair, hstart, hadd, hstop,
-      hindex, hcopy, hback, hdecode, hupdate, bind_tc_ok] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 theorem store_canonical_refinement
     (sums : Array fr8.Fr8 8#usize) (values : _root_.Array Fr)
@@ -252,11 +259,11 @@ theorem store_canonical_refinement
       out'.val = values.toList.map frEncode := by
   have hsize : values.size = 64 := by
     have hh := hs.1
-    simpa only [Array.to_slice, sums.property] using hh
+    simpa only [Array.to_slice, Slice.from_val, sums.property] using! hh
   obtain ⟨buffer, hb, he⟩ := encode_loop sums values hs
     (Array.repeat 2048#usize 0#u8) 0#usize (by decide) (by intro j hj; simp only [UScalar.ofNatCore_val_eq] at hj; omega)
   obtain ⟨out', hout, ho⟩ := decode_loop buffer values hsize he out hlen 0#usize
     (by decide) (by intro j hj; simp only [UScalar.ofNatCore_val_eq] at hj; omega)
-  exact ⟨out', by simp only [interpolation_kernel.store_canonical, hb, hout, bind_tc_ok], ho⟩
+  exact ⟨out', by simp only [interpolation_kernel.store_canonical, hb, hout, bind_ok], ho⟩
 
 end LeanBlsSimd.Kzg.InterpolationKernel

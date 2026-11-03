@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Pairing.LaneLines
 
 open LaneTower
@@ -26,7 +28,7 @@ theorem apply_line {x z : fp8.Fp8} (step : Fin 68) (pair : Fin 2) (v : Factors) 
   obtain ⟨line, hline, rline⟩ := line_refines step pair v zs hx hz hz0 hz1
   obtain ⟨out, hout, rout⟩ := mul_by_line_refines ha rline
   refine ⟨out, ?_, ?_⟩
-  · simp only [hline, bind_tc_ok, hout]
+  · simp only [hline, bind_ok, hout]
   · rw [line_value] at rout
     exact rout
 
@@ -45,11 +47,11 @@ theorem times_lines (step : Usize) (hs : step.val < 68)
         fp12.Fp12.mul_by_line f line else ok f) = ok first ∧
       Rep first (pairApply ⟨step.val, hs⟩ v (maskPresence present) 0 a) := by
     by_cases h : (present &&& 1#u8 != 0#u8) = true
-    · simpa only [h, if_true, pairApply, maskPresence, Array.make, List.getElem_cons_zero] using h0
+    · simpa only [h, ite_true, pairApply, maskPresence, Array.make, Array.from_val, List.getElem_cons_zero, h, ite_true] using! h0
     · refine ⟨f, ?_, ?_⟩
-      · rw [if_neg h]
+      · rw [ite_eq_right h]
       · change Rep f (if present &&& 1#u8 != 0#u8 then a * factorLine ⟨step.val, hs⟩ 0 v else a)
-        rw [if_neg h]
+        rw [ite_eq_right h]
         exact ha
   obtain ⟨second, hsecond, rsecond⟩ : ∃ second,
       (if present &&& 2#u8 != 0#u8 then do
@@ -57,20 +59,20 @@ theorem times_lines (step : Usize) (hs : step.val < 68)
         fp12.Fp12.mul_by_line first line else ok first) = ok second ∧
       Rep second (applyLines v (maskPresence present) ⟨step.val, hs⟩ a) := by
     by_cases h : (present &&& 2#u8 != 0#u8) = true
-    · simpa only [h, if_true, applyLines, pairApply, maskPresence, Array.make,
-        List.getElem_cons_succ, List.getElem_cons_zero] using
+    · simpa only [h, ite_true, applyLines, pairApply, maskPresence, Array.make, Array.from_val,
+        List.getElem_cons_succ, List.getElem_cons_zero, h, ite_true] using!
         apply_line ⟨step.val, hs⟩ 1 v zs rprod hz hz0 hz1 rfirst
     · refine ⟨first, ?_, ?_⟩
-      · rw [if_neg h]
+      · rw [ite_eq_right h]
       · change Rep first (if present &&& 2#u8 != 0#u8 then
           pairApply ⟨step.val, hs⟩ v (maskPresence present) 0 a * factorLine ⟨step.val, hs⟩ 1 v
           else pairApply ⟨step.val, hs⟩ v (maskPresence present) 0 a)
-        rw [if_neg h]
+        rw [ite_eq_right h]
         exact rfirst
   refine ⟨second, ?_, rsecond⟩
   simp only [pairing.MillerLines.times_lines,
-    index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_tc_ok, Fp8.load_refines]
+    index_usize_eq kzg.pairing_lines.PAIRING_LINES step hs, bind_ok, Fp8.load_refines]
   dsimp only [loadedRow, tableRow] at hprod
-  simp only [hprod, lift, bind_tc_ok, hfirst, hsecond]
+  simp only [hprod, lift, bind_ok, hfirst, hsecond]
 
 end LeanBlsSimd.Pairing.LaneLines

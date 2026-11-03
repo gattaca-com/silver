@@ -5,6 +5,9 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.bls
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+  UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.PairingProduct.ProductLoop
 
 noncomputable section
@@ -25,7 +28,10 @@ theorem pairingCheck_eq (s : Slice pairing_product.AffinePair) :
   apply Bool.eq_iff_iff.mpr
   rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation, toField_pairingFold]
   simp only [specPairs, List.toList_toArray, List.map_map, Function.comp_def,
-    factorProduct, decide_eq_true_eq]
+    factorProduct]
+  constructor
+  · exact decide_eq_true
+  · exact of_decide_eq_true
 
 private theorem or_zero_iff (a b : U8) :
     (a ||| b) = 0#u8 ↔ a = 0#u8 ∧ b = 0#u8 := by
@@ -44,10 +50,10 @@ private theorem factorProduct_split (pairs : List pairing_product.AffinePair) (s
 
 private def chunk (s : Slice pairing_product.AffinePair) (start count : Nat) :
     Slice pairing_product.AffinePair :=
-  ⟨s.val.slice start (start + count), by
+  Slice.from (s.val.slice start (start + count)) (by
     have := s.property
     simp only [List.slice, List.length_take, List.length_drop]
-    omega⟩
+    omega)
 
 private theorem chunk_index (s : Slice pairing_product.AffinePair) (start stop : Usize)
     (hstart : start.val ≤ stop.val) (hstop : stop.val ≤ s.val.length) :
@@ -89,27 +95,25 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
         (by have := slice_length_lt s; omega)
       have hnext : next.val = start.val + count := rfl
       have hsize : (chunk s start.val count).val.length = count := by
-        simp [chunk, List.slice]
+        simp [chunk, Slice.from_val, List.slice]
         omega
       have hmem : ∀ p ∈ (chunk s start.val count).val, p ∈ s.val := by
         intro p hp
+        simp only [chunk, Slice.from_val, List.slice] at hp
         exact List.mem_of_mem_drop (List.mem_of_mem_take hp)
       obtain ⟨setResult, hset, setValue, setRep, setPower⟩ := sets (chunk s start.val count)
         (by omega) (by omega) (fun p hp => valid p (hmem p hp)) (fun p hp => finite p (hmem p hp))
       obtain ⟨lp, hlp, hmiller⟩ : ∃ lp,
           lane_pairs.LanePairs.new (chunk s start.val count) = ok lp ∧
           lane_pairs.LanePairs.miller_loop lp = ok setResult := by
-        cases he : lane_pairs.LanePairs.new (chunk s start.val count) with
-        | ok lp => exact ⟨lp, rfl, by simpa only [he, bind_tc_ok] using hset⟩
-        | fail e => simp [he] at hset
-        | div => simp [he] at hset
+        exact bind_eq_ok (by simpa only [bind_tc_eq] using hset)
       obtain ⟨product', hmul, rep'⟩ := FieldRep.mul rep setRep
       have hbody : pairing_product.PairingInputs.lane_is_one_loop.body s product degenerate start =
           ok (cont (product', degenerate ||| setResult.degenerate, next)) := by
         simp only [pairing_product.PairingInputs.lane_is_one_loop.body, UScalar.lt_equiv,
-          Slice.len, Usize.ofNatCore_val_eq, hlt, if_true]
+          Slice.len, Usize.ofNatCore_val_eq, hlt, ite_true]
         rw [sub_ok _ _ hstart]
-        simp only [bind_tc_ok]
+        simp only [bind_ok]
         have hlen : (if s.val.length - start.val < 8 then
             ok (UScalar.ofNatCore (s.val.length - start.val)
               (by have := slice_length_lt s; omega)) else ok limbs.LANES) = ok countU := by
@@ -117,8 +121,9 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
             simp [countU, count, limbs.LANES] <;> omega
         simp only [UScalar.ofNatCore_val_eq, Usize.ofNatCore_val_eq, limbs.LANES] at hlen ⊢
         rw [hlen]
-        simp only [bind_tc_ok]
+        simp only [bind_ok]
         rw [add_ok _ _ (by change start.val + count < _; have := slice_length_lt s; omega)]
+        simp only [bind_ok]
         change (do
           let part ← core.slice.index.Slice.index
             (core.slice.index.SliceIndexRangeUsizeSlice pairing_product.AffinePair)
@@ -137,21 +142,21 @@ theorem lane_loop_refines (sets : SingleSetCorrect)
       refine ⟨out, flags, result, ?_, hout, ?_⟩
       · unfold pairing_product.PairingInputs.lane_is_one_loop
         rw [loop.eq_1]
-        simp only [hbody]
+        simp only [hbody, bind_ok]
         exact hloop
       · intro hz
         obtain ⟨hflags, he⟩ := hpower hz
         obtain ⟨hdeg, hsetdeg⟩ := or_zero_iff _ _ |>.mp hflags
         refine ⟨hdeg, ?_⟩
         rw [he, factorProduct_split s.val start.val count, hnext]
+        simp only [chunk, Slice.from_val] at setPower
         simp only [mul_pow, mul_assoc, setPower hsetdeg]
-        rfl
     · have hs : start.val = s.val.length := by omega
       refine ⟨product, degenerate, value, ?_, rep, ?_⟩
       · unfold pairing_product.PairingInputs.lane_is_one_loop
         rw [loop.eq_1]
         simp only [pairing_product.PairingInputs.lane_is_one_loop.body, UScalar.lt_equiv,
-          Slice.len, Usize.ofNatCore_val_eq, hlt, if_false]
+          Slice.len, Usize.ofNatCore_val_eq, hlt, ite_false, bind_ok]
       · intro hz
         refine ⟨hz, ?_⟩
         simp [hs, factorProduct]
@@ -164,15 +169,14 @@ theorem lane_is_one_refines [PairingExternals] (sets : SingleSetCorrect)
   obtain ⟨one, hone, hrep⟩ := FieldRep.one
   obtain ⟨out, flags, value, hloop, rep, hpower⟩ := lane_loop_refines sets inputs.pairs valid finite
     0#usize (by simp) one 0#u8 1 hrep
-  simp only [pairing_product.PairingInputs.lane_is_one, hone, bind_tc_ok, hloop,
-    Function.uncurry_apply_pair]
+  simp only [pairing_product.PairingInputs.lane_is_one, hone, bind_ok, hloop, Aeneas.Std.uncurry_apply_pair]
   by_cases hz : flags = 0#u8
-  · simp only [hz, bne_self_eq_false, Bool.false_eq_true, if_false]
+  · simp only [hz, bne_self_eq_false, Bool.false_eq_true, ite_false]
     rw [FieldRep.final_verdict rep, pairingCheck_eq]
     have he := (hpower hz).2
     simpa using congrArg (fun x : Fp12Field => ok (decide (x = 1))) he
   · simp only [bne_iff_ne]
-    rw [if_pos hz]
+    rw [ite_eq_left hz]
     exact blst_is_one_eq_spec blst inputs valid finite
 
 theorem check_refines [RuntimeFeatures] [PairingExternals] (sets : SingleSetCorrect)
@@ -185,7 +189,7 @@ theorem check_refines [RuntimeFeatures] [PairingExternals] (sets : SingleSetCorr
       hempty, specPairs, pairingCheck_empty]
   · have hlen : inputs.pairs.val.length ≠ 0 := by simpa using hempty
     simp only [pairing_product.PairingInputs.check, core.slice.Slice.is_empty,
-      Slice.length, hlen, decide_false, bind_tc_ok, Bool.false_eq_true, if_false, ifma_available]
+      Slice.length, hlen, decide_false, bind_ok, Bool.false_eq_true, ite_false, ifma_available]
     split
     · exact lane_is_one_refines sets blst inputs valid finite
     · exact blst_is_one_eq_spec blst inputs valid finite

@@ -1,48 +1,17 @@
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import Mathlib.Data.List.Forall2
-import Aeneas
+import LeanBlsSimd.Aeneas
 
 open EthLib.Cryptography Bls Kzg
 
-open private bytesBEToNatAux_linear
-  from EthLib.Cryptography.Proofs.Kzg.Polynomials
-
 namespace LeanBlsSimd.Kzg
-
-private theorem bytesBEToNatAux_injective (xs ys : List UInt8)
-    (hlen : xs.length = ys.length)
-    (hval : bytesBEToNatAux 0 xs = bytesBEToNatAux 0 ys) : xs = ys := by
-  induction xs generalizing ys with
-  | nil => simpa using hlen.symm
-  | cons x xs ih =>
-    cases ys with
-    | nil => simp at hlen
-    | cons y ys =>
-      have hlen' : xs.length = ys.length := by simpa using hlen
-      have hx : bytesBEToNatAux 0 xs < 256 ^ xs.length := by
-        simpa [bytesBEToNat] using bytesBEToNat_lt ⟨xs.toArray⟩
-      have hy : bytesBEToNatAux 0 ys < 256 ^ xs.length := by
-        simpa [bytesBEToNat, hlen'] using bytesBEToNat_lt ⟨ys.toArray⟩
-      simp only [bytesBEToNatAux, Nat.zero_shiftLeft, Nat.zero_or] at hval
-      rw [bytesBEToNatAux_linear x.toNat xs, bytesBEToNatAux_linear y.toNat ys,
-        ← hlen'] at hval
-      have hxy : x.toNat = y.toNat := by
-        have hd := congrArg (fun n => n / 256 ^ xs.length) hval
-        simpa [Nat.add_div, Nat.div_eq_of_lt hx, Nat.div_eq_of_lt hy,
-          Nat.mod_eq_of_lt hx, Nat.mod_eq_of_lt hy,
-          Nat.not_le.mpr hx, Nat.not_le.mpr hy] using hd
-      have ht : bytesBEToNatAux 0 xs = bytesBEToNatAux 0 ys := by
-        rw [hxy] at hval
-        exact Nat.add_left_cancel hval
-      have he : x = y := UInt8.toNat_inj.mp hxy
-      simp only [he, ih ys hlen' ht]
 
 theorem bytesBEToNat_injective_of_size_eq (a b : ByteArray)
     (hlen : a.size = b.size) (hval : bytesBEToNat a = bytesBEToNat b) : a = b := by
   apply ByteArray.ext
   apply Array.toList_inj.mp
-  exact bytesBEToNatAux_injective _ _ (by simpa using hlen) hval
+  exact bytesBEToNatAux_inj (by simpa using hlen) hval
 
 theorem intToBytesBE_bytesBEToNat (b : ByteArray) :
     intToBytesBE (bytesBEToNat b) b.size = b := by
@@ -145,13 +114,13 @@ theorem cell_encoding_of_decode (cell : Cell) (evals : CosetEvals)
         | ok g =>
           rw [hd] at hf
           cases hf
-          dsimp only
           rw [blsFieldToBytes_of_decode _ _ hd]) ByteArray.empty
     rw [← Array.foldl_toList, ← hfold]
     simp only [Array.toList_range, Kzg.Constants.FIELD_ELEMENTS_PER_CELL]
     rw [join_cell_chunks]
     have hsize : cell.size = 2048 := by
-      simpa [Kzg.Constants.BYTES_PER_CELL] using hs
+      simpa [Kzg.Constants.BYTES_PER_CELL, Kzg.Constants.FIELD_ELEMENTS_PER_CELL,
+        Kzg.Constants.BYTES_PER_FIELD_ELEMENT] using hs
     simp [← hsize]
 
 theorem cell_encoding_of_decode_prefix (cell : Cell) (evals : CosetEvals)

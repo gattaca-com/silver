@@ -81,9 +81,7 @@ private theorem branch_sq {a0 a1 s c w d : ZMod Fp.modulus} (ha1 : a1 ≠ 0)
     exact branch_sq_add ha1 (by rw [neg_mul_neg]; exact hs) hc
 
 private theorem twoInv_eq : (2 : ZMod Fp.modulus)⁻¹ = Fp.inverse (Fp.ofNat 2) := by
-  have h : ∀ n : ZMod Fp.modulus, Fp.inverse n = n⁻¹ := Fp.inverse_eq_inv
-  rw [h]
-  rfl
+  exact (Fp.inverse_eq_inv (Fp.ofNat 2)).symm
 
 private theorem c1_eq (a1 c : ZMod Fp.modulus) :
     a1 * (2 * c)⁻¹ = Fp.mul a1 (Fp.inverse (Fp.mul (Fp.ofNat 2) c)) := by
@@ -186,14 +184,16 @@ private theorem eq_or_eq_neg_of_mul_self {s q : ZMod Fp.modulus} (h : s * s = q 
 /-- Completeness: the spec returns a root of every square. -/
 theorem sqrt_complete {a : Fp2} (h : IsSquare (toField a)) : ∃ y, Fp2.sqrt a = .ok y := by
   obtain ⟨r, hr⟩ := h
-  have ha0 : (a.c0 : ZMod Fp.modulus) = r.re * r.re - r.im * r.im := by
+  have ha0 : @Eq (ZMod Fp.modulus) a.c0 (r.re * r.re - r.im * r.im) := by
     have := congrArg QuadraticAlgebra.re hr
     simp only [re_toField, QuadraticAlgebra.re_mul] at this
-    linear_combination this
-  have ha1 : (a.c1 : ZMod Fp.modulus) = (2 : ZMod Fp.modulus) * (r.re * r.im) := by
+    exact (fun (x u v : ZMod Fp.modulus) (h : x = u * u + -1 * v * v) =>
+      (by rw [h]; ring : x = u * u - v * v)) _ _ _ this
+  have ha1 : @Eq (ZMod Fp.modulus) a.c1 (2 * (r.re * r.im)) := by
     have := congrArg QuadraticAlgebra.im hr
     simp only [im_toField, QuadraticAlgebra.im_mul] at this
-    linear_combination this
+    exact (fun (x u v : ZMod Fp.modulus) (h : x = u * v + v * u + 0 * v * v) =>
+      (by rw [h]; ring : x = 2 * (u * v))) _ _ _ this
   unfold Fp2.sqrt
   -- `Fp.sqrt` stays a variable, as in `sqrt_sound`.
   generalize hsq : Fp.sqrt = sq
@@ -262,12 +262,12 @@ theorem signBit_neg {y : Fp2} (hy : toField y ≠ 0) : Fp2.signBit (-y) = !Fp2.s
     have hz' : (-y).c1.isZero = true :=
       Fp.isZero_iff.mpr (show -(y.c1 : ZMod Fp.modulus) = 0 by rw [h1, neg_zero])
     have h0 : y.c0 ≠ 0 := fun h0 => hy (QuadraticAlgebra.ext h0 h1)
-    rw [if_neg (by simp [hz']), if_neg (by simp [hz])]
+    rw [ite_eq_right (by simp [hz']), ite_eq_right (by simp [hz])]
     exact G1.signBit_neg h0
   · have hz : ¬ y.c1.isZero = true := fun h => h1 (Fp.isZero_iff.mp h)
     have hz' : ¬ (-y).c1.isZero = true := fun h =>
       h1 (neg_eq_zero.mp (Fp.isZero_iff.mp h : -(y.c1 : ZMod Fp.modulus) = 0))
-    rw [if_pos (by simp [hz']), if_pos (by simp [hz])]
+    rw [ite_eq_left (by simp [hz']), ite_eq_left (by simp [hz])]
     exact G1.signBit_neg fun h => h1 h
 
 end Fp2
@@ -350,9 +350,9 @@ theorem isLargerRoot_toField (y : Fp2) : isLargerRoot (Fp2.toField y) = Fp2.sign
       unfold Fp.signBit
       rw [show y.c1.val = 0 from congrArg Fin.val h1]
       decide
-    rw [if_neg (by simp [hz]), hs, decide_eq_true h1, Bool.false_or, Bool.and_true]
+    rw [ite_eq_right (by simp [hz]), hs, decide_eq_true h1, Bool.false_or, Bool.and_true]
   · have hz : ¬ y.c1.isZero = true := fun h => h1 (Fp.isZero_iff.mp h)
-    rw [if_pos (by simp [hz]), decide_eq_false h1, Bool.and_false, Bool.or_false]
+    rw [ite_eq_left (by simp [hz]), decide_eq_false h1, Bool.and_false, Bool.or_false]
 
 /-- Where two roots of one value meet the sign step, the kernel's step picks the spec's. -/
 theorem selectRoot_eq {root : Fp2Field} {yPos : Fp2} (h : root ^ 2 = Fp2.toField yPos ^ 2)

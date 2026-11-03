@@ -37,7 +37,8 @@ theorem signed_bind {α : Type} (store : portable.msm.store.PointStore)
     (f : portable.fp.Fp × portable.fp.Fp → Result α) :
     (store.signed r >>= f) =
       f ((Kzg.fpEncode x).l,(Kzg.fpEncode (if 2^31 ≤ r.val then -y else y)).l) := by
-  exact congrArg (fun value => value >>= f) (Store.signed_refines store r x y hc)
+  simpa only [bind_tc_ok] using
+    congrArg (fun value => value >>= f) (Store.signed_refines store r x y hc)
 
 theorem add_signed_encoded [RuntimeFeatures] (store : portable.msm.store.PointStore)
     (r : U32) (a : Bls.G1) (x y : ZMod Bls.Fp.modulus)

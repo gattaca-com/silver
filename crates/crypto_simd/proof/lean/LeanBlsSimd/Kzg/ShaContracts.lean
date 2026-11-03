@@ -22,7 +22,7 @@ def ShaRep {S : Type} (update : S → Slice U8 → Result S)
     (finish : S → Result (Aeneas.Std.Array U8 32#usize))
     (s : S) (pre : List U8) : Prop :=
   ∀ chunks, ∃ digest, shaContinue update finish s chunks = ok digest ∧
-    arrayBytes digest = EthLib.Cryptography.Bls.sha256
+    arrayBytes digest = EthLib.Cryptography.Hash.sha256
       (bytes (pre ++ chunks.flatMap (·.val)))
 
 /-- Primitive streaming laws, with no bound on the accumulated prefix length. -/
@@ -35,7 +35,7 @@ structure ShaPathCorrect {S : Type} (new : Result S)
       ShaRep update finish next (pre ++ chunk.val)
   finish_spec : ∀ s pre, ShaRep update finish s pre →
     ∃ digest, finish s = ok digest ∧
-      arrayBytes digest = EthLib.Cryptography.Bls.sha256 (bytes pre)
+      arrayBytes digest = EthLib.Cryptography.Hash.sha256 (bytes pre)
 
 /-- Correctness premises for the actual SHA-extension and portable functions. -/
 structure ShaCorrect : Prop where

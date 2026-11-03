@@ -98,12 +98,12 @@ local macro "times_minus_z_loop_proof" : tactic => `(tactic| (
     obtain ⟨⟨d, du⟩, hd⟩ : ∃ d, r.double = d := ⟨_, rfl⟩
     obtain ⟨⟨a, au⟩, ha⟩ : ∃ a, d.add_affine (ofFp2x8 px) (ofFp2x8 py) = a := ⟨_, rfl⟩
     simp only [timesMinusZBodyWith]
-    rw [if_pos (by simp; omega), sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega), sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val - (1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' :=
       UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp (disch := decide) only [bind_tc_ok, G2x8.double_refines, Function.uncurry_def,
+    simp (disch := decide) only [bind_tc_ok, bind_ok, G2x8.double_refines, Function.uncurry_def, aeneas_uncurry_def,
       Prod.map_fst, Prod.map_snd, ofG2x8_toG2x8, lift, Z_BITS_index, toU8_or,
       G2x8.add_affine_refines, UScalar.eq_equiv, UScalar.ofNatCore_val_eq]
     simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
@@ -111,7 +111,7 @@ local macro "times_minus_z_loop_proof" : tactic => `(tactic| (
     simp only [G2x8.chainStep, hd, ha]
     by_cases h : c'.val = 62 ∨ c'.val = 60 ∨ c'.val = 57 ∨ c'.val = 48 ∨ c'.val = 16
     · have hz : Z_BITS.contains c'.val := by simp [Z_BITS]; omega
-      rw [if_pos hz]
+      rw [ite_eq_left hz]
       rcases h with h | h | h | h | h <;> simp [h]
     · have hz : c'.val ∉ Z_BITS := by simp [Z_BITS]; omega
       simp only [not_or] at h
@@ -145,7 +145,8 @@ theorem add_affine_zero_mask :
   have hc : ∀ m : Mmask8, ~~~m = 0 → m = 255 := by
     intro m h
     have h' := congrArg (fun x : Mmask8 => ~~~x) h
-    simpa using h'
+    have hm : m = (-1 : Mmask8) := by simpa using h'
+    exact hm.trans (by decide +kernel)
   apply hc
   apply Mmask8.eq_zero_of_testBit
   intro l
@@ -169,16 +170,16 @@ example : ¬ ∀ (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c c' : U32),
   have e := h (toFp2x8 ⟨Fp8.zero, Fp8.zero⟩) (toFp2x8 ⟨Fp8.zero, Fp8.zero⟩) (zeroOneOne, 0) 17#u32
     16#u32 (by decide) (by decide)
   simp only [timesMinusZBodyWith] at e
-  rw [if_pos (by decide), sub_ok _ _ (by decide)] at e
-  simp (disch := decide) only [bind_tc_ok, G2x8.double_refines, Function.uncurry_def,
+  rw [ite_eq_left (by decide), sub_ok _ _ (by decide)] at e
+  simp (disch := decide) only [bind_tc_ok, bind_ok, G2x8.double_refines, Function.uncurry_def, aeneas_uncurry_def,
     Prod.map_fst, Prod.map_snd, ofG2x8_toG2x8, lift, Z_BITS_index, toU8_or,
     UScalar.eq_equiv, UScalar.ofNatCore_val_eq] at e
   simp only [show Z_BITS[1]! = 62 from rfl, show Z_BITS[2]! = 60 from rfl,
     show Z_BITS[3]! = 57 from rfl, show Z_BITS[4]! = 48 from rfl] at e
-  rw [if_neg (by decide), if_neg (by decide), if_neg (by decide), if_neg (by decide),
-    if_neg (by decide)] at e
+  rw [ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide), ite_eq_right (by decide),
+    ite_eq_right (by decide)] at e
   have hz : Z_BITS.contains 16 = true := by decide
-  simp only [G2x8.chainStep, hz, if_true, ofFp2x8_toFp2x8, double_zeroOneOne_mask,
+  simp only [G2x8.chainStep, hz, ite_true, ofFp2x8_toFp2x8, double_zeroOneOne_mask,
     add_affine_zero_mask, ok.injEq, cont.injEq, Prod.mk.injEq] at e
   exact absurd e.1 (by decide)
 

@@ -12,7 +12,8 @@ private def dependencies (env : Environment) (roots : Array Name) : NameSet := I
     todo := todo.pop
     unless visited.contains declName do
       visited := visited.insert declName
-      todo := todo ++ LeanBlsSimd.collectDeps env declName
+      if let some info := env.checked.get.find? declName then
+        todo := todo ++ info.getUsedConstantsAsSet.toArray
   return visited
 
 run_cmd do

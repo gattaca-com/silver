@@ -12,7 +12,8 @@ theorem LIMBS_refines : constants.LIMBS = 8#usize := by rw [constants.LIMBS]
 theorem LIMB_BITS_refines : constants.LIMB_BITS = 52#u32 := by rw [constants.LIMB_BITS]
 
 theorem MASK52_refines : constants.MASK52 = ok (toU64 (.ofNat MASK52)) := by
-  rw [constants.MASK52, constants.LIMB_BITS]; rfl
+  rw [constants.MASK52, constants.LIMB_BITS, shiftLeft_ok _ _ (by decide), bind_ok]
+  rfl
 
 theorem P_refines : constants.P = toArray toU64 (Limbs.ofList P) := by rw [constants.P]; rfl
 

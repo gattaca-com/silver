@@ -13,8 +13,8 @@ theorem slice_range {α : Type} (xs : Slice α) (start finish : Usize)
       ys.val = (xs.val.drop start.val).take (finish.val - start.val) := by
   simp only [core.slice.index.Slice.index,
     core.slice.index.SliceIndexRangeUsizeSlice.index, UScalar.le_equiv, Slice.length,
-    hstart, hfinish, and_self, if_true]
-  exact ⟨_, rfl, rfl⟩
+    hstart, hfinish, and_self, ite_true]
+  exact ⟨_, rfl, by simp [Slice.from_val, List.slice]⟩
 
 theorem input_sum_split (ps : List blst.blst_p1_affine)
     (words : List ScalarWords) (start count : ℕ) :
@@ -27,7 +27,7 @@ theorem input_sum_split (ps : List blst.blst_p1_affine)
       ((ps.drop start).take count).zip ((words.drop start).take count) := List.take_zipWith
   have hdrop : ((ps.drop start).zip (words.drop start)).drop count =
       (ps.drop (start + count)).zip (words.drop (start + count)) := by
-    simpa only [List.drop_drop, Nat.add_comm] using
+    simpa only [List.drop_drop, Nat.add_comm] using!
       (List.drop_zipWith (f := Prod.mk) (l := ps.drop start) (l' := words.drop start)
         (i := count))
   have hsplit := List.take_append_drop count ((ps.drop start).zip (words.drop start))
@@ -43,16 +43,16 @@ theorem chunk_end (points : Slice blst.blst_p1_affine) (start : Usize)
       finish.val = start.val + min 4096 (points.val.length - start.val) := by
   have hsub : start.val ≤ (Slice.len points).val := by simpa using Nat.le_of_lt hstart
   rw [sub_ok _ _ hsub]
-  simp only [bind_tc_ok, msm8.CHUNK, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, msm8.CHUNK, UScalar.lt_equiv, UScalar.ofNatCore_val_eq]
   by_cases hsmall : points.val.length - start.val < 4096
-  · simp only [Slice.len, Usize.ofNatCore_val_eq, hsmall, if_true]
+  · simp only [Slice.len, Usize.ofNatCore_val_eq, hsmall, ite_true]
     exact ⟨_, rfl, by change points.val.length = start.val + min 4096 (points.val.length - start.val); omega⟩
   · have hsize := (Slice.len points).hBounds
     have hadd : start.val + (4096#usize).val < 2 ^ UScalarTy.Usize.numBits := by
       change points.val.length < _ at hsize
       change start.val + 4096 < _
       omega
-    simp only [Slice.len, Usize.ofNatCore_val_eq, hsmall, if_false]
+    simp only [Slice.len, Usize.ofNatCore_val_eq, hsmall, ite_false]
     rw [add_ok _ _ hadd]
     exact ⟨_, rfl, by change start.val + 4096 = start.val + min 4096 (points.val.length - start.val); omega⟩
 
@@ -73,7 +73,7 @@ private theorem msm_loop_refinement
     · refine ⟨state, total, ?_, ?_⟩
       · rw [msm8.Msm8.msm_loop, loop.eq_1]
         simp only [msm8.Msm8.msm_loop.body, UScalar.lt_equiv, Slice.len,
-          Usize.ofNatCore_val_eq, Nat.not_lt.mpr hdone, if_false]
+          Usize.ofNatCore_val_eq, Nat.not_lt.mpr hdone, ite_false, bind_ok]
       · simpa only [List.drop_eq_nil_of_le hdone, List.zip_nil_left, List.map_nil, List.sum_nil,
           add_zero] using htotal
     · have hlt : start.val < points.val.length := by omega
@@ -101,7 +101,8 @@ private theorem msm_loop_refinement
       have hbody : msm8.Msm8.msm_loop.body points scalars state (toG1x8 total) start =
           ok (cont (mid, toG1x8 (total.add_complete part), finish)) := by
         simp only [msm8.Msm8.msm_loop.body, UScalar.lt_equiv, Slice.len,
-          Usize.ofNatCore_val_eq, hlt, if_true]
+          Usize.ofNatCore_val_eq, hlt, ite_true]
+        simp only [← bind_tc_eq]
         rw [← bind_assoc_eq]
         change (do
           let finish ← (do
@@ -114,6 +115,7 @@ private theorem msm_loop_refinement
           let (part, mid) ← state.chunk_sum ps ss
           let total ← g1x8.G1x8.add_complete (toG1x8 total) part
           ok (cont (mid, total, finish))) = _
+        simp only [← bind_tc_eq] at hend
         rw [hend]
         simp only [bind_tc_ok, hps, hss, hpart, G1x8.add_complete_refines, ofG1x8_toG1x8]
       obtain ⟨next, out, hloop, hout⟩ := ih (points.val.length - finish.val) (by omega)
@@ -121,7 +123,7 @@ private theorem msm_loop_refinement
       refine ⟨next, out, ?_, ?_⟩
       · rw [msm8.Msm8.msm_loop, loop.eq_1]
         dsimp only
-        rw [hbody]
+        rw [hbody, bind_ok]
         exact hloop
       · have heq : start.val + (finish.val - start.val) = finish.val := by omega
         rw [input_sum_split points.val scalars.val start.val (finish.val - start.val), heq,
@@ -154,10 +156,10 @@ theorem msm_refinement
     apply UScalar.eq_of_val_eq
     simpa only [Slice.len, Usize.ofNatCore_val_eq] using halign
   refine ⟨encoded, next, ?_, hresult⟩
-  simp only [msm8.Msm8.msm, halign', massert, if_true, bind_tc_ok,
+  simp only [msm8.Msm8.msm, halign', massert, ite_true, bind_ok,
     G1x8.infinity_refines, hloop]
   change (do let encoded ← msm8.lane_zero_in_blst (toG1x8 out); ok (encoded, next)) = _
   rw [hencoded]
-  rfl
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd.Msm8

@@ -7,11 +7,11 @@ open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.ShortRange
 
-open Kernel
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel
 
 private def nearInput : fr8.Fr8 :=
-  ⟨List.ofFn (fun j : Fin 5 => Vector.replicate 8
-    (UInt64.ofNat ((2 * Fr.modulus - 1) / 2 ^ (52 * j.val) % 2 ^ 52))), by simp⟩
+  Array.make 5#usize (List.ofFn (fun j : Fin 5 => Vector.replicate 8
+    (UInt64.ofNat ((2 * Fr.modulus - 1) / 2 ^ (52 * j.val) % 2 ^ 52)))) (by simp)
 
 private theorem nearInput_valid :
     ShortInput true 1 nearInput (lazyLaneValue nearInput) := by

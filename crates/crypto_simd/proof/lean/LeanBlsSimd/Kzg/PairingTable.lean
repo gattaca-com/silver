@@ -9,8 +9,8 @@ namespace LeanBlsSimd.Kzg
 
 /-- Decode a lane of the fixed table from its radix-2^52, Montgomery-2^416 form. -/
 def pairingLineValue (step : Fin 68) (lane : Fin 8) : Fp :=
-  let row := pairing_lines.PAIRING_LINES.val[step.val]'(by simpa using step.isLt)
-  let raw := row.val[lane.val]'(by simpa using lane.isLt)
+  let row := pairing_lines.PAIRING_LINES.val[step.val]'(by simp)
+  let raw := row.val[lane.val]'(by simp)
   Fp.ofNat (raw.val.foldr (fun word acc => word.val + 2^52 * acc) 0) *
     (Fp.ofNat (2^416)).inverse
 

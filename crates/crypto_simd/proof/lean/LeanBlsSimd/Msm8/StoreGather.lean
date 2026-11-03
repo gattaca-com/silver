@@ -77,14 +77,14 @@ theorem push_gather_body (i offset count lane : Usize)
         let t ← offset + count
         t - 1#usize) = ok k := by
     by_cases hlc : lane.val < count.val
-    · simp only [UScalar.lt_equiv, hlc, if_true]
+    · simp only [UScalar.lt_equiv, hlc, ite_true]
       rw [add_ok offset lane (by omega)]
       congr 1
       apply UScalar.eq_of_val_eq
       simp [k, batchSource, Nat.min_eq_left (show lane.val ≤ count.val - 1 by omega)]
-    · simp only [UScalar.lt_equiv, hlc, if_false]
+    · simp only [UScalar.lt_equiv, hlc, ite_false]
       rw [add_ok offset count (by omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       rw [sub_ok _ 1#usize (by simp; omega)]
       congr 1
       apply UScalar.eq_of_val_eq
@@ -105,17 +105,16 @@ theorem push_gather_body (i offset count lane : Usize)
     rfl
   refine ⟨next, by simp [next, hj], ?_⟩
   simp only [msm8.store.PointStore.push_blst_loop0_loop0.body, limbs.LANES,
-    UScalar.lt_equiv, hl, if_true]
+    UScalar.lt_equiv, hl, ite_true]
   simp only [UScalar.lt_equiv] at hchoice
   rw [hchoice]
-  simp only [bind_tc_ok, slice_index_eq points k (by omega), unpack52_refines,
+  simp only [bind_ok, slice_index_eq points k (by omega), unpack52_refines,
     update_eq _ lane _ hl, slice_index_eq negated k (by omega), lift,
     shiftLeft_ok (ty := .U8) _ lane (by change lane.val < 8; exact hl), hik, hix,
     cast_natIndex, hnxt]
   have hpoint : (blstPointWords points)[k.val]! =
       (ofArray ofU64 points.val[k.val].x.l, ofArray ofU64 points.val[k.val].y.l) := by
     simp [blstPointWords, show k.val < points.val.length by omega]
-    exact ⟨rfl, rfl⟩
   have hsign : negated.val[k.val]! = negated.val[k.val] := by
     simp [show k.val < negated.val.length by omega]
   simp only [encodeGathered, gatherStep]
@@ -233,15 +232,15 @@ theorem batch_count_refines (points : Slice blst.blst_p1_affine) (offset count :
         if remaining < limbs.LANES then Slice.len points - offset else ok limbs.LANES) = ok count := by
   have hsub := sub_ok (Slice.len points) offset ho
   rw [hsub]
-  simp only [bind_tc_ok, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
+  simp only [bind_ok, limbs.LANES, UScalar.lt_equiv, UScalar.ofNatCore_val_eq, Slice.len_val]
   by_cases h : points.val.length - offset.val < 8
-  · simp only [h, if_true]
+  · simp only [h, ite_true]
     congr 1
     apply UScalar.eq_of_val_eq
     simp only [UScalar.ofNatCore_val_eq, hc]
     change points.val.length - offset.val = min 8 (points.val.length - offset.val)
     omega
-  · simp only [h, if_false]
+  · simp only [h, ite_false]
     congr 1
     apply UScalar.eq_of_val_eq
     simp only [hc]
@@ -273,14 +272,10 @@ theorem pointIndices_encodeGathered (b : GatheredBatch)
 theorem loadGathered_x (b : GatheredBatch) :
     fp8.Fp8.load (encodeGathered b).1 = ok (toFp8 (Fp8.load b.xs)) := by
   simp [Fp8.load_refines, encodeGathered, LIMBS]
-  exact congrArg (fun v : Vector Limbs 8 => toFp8 (Fp8.load v))
-    (ofArray_toArray_ofArray_ofU64 (k := 8#usize) (n := 8#usize) b.xs rfl rfl rfl rfl)
 
 theorem loadGathered_y (b : GatheredBatch) :
     fp8.Fp8.load (encodeGathered b).2.1 = ok (toFp8 (Fp8.load b.ys)) := by
   simp [Fp8.load_refines, encodeGathered, LIMBS]
-  exact congrArg (fun v : Vector Limbs 8 => toFp8 (Fp8.load v))
-    (ofArray_toArray_ofArray_ofU64 (k := 8#usize) (n := 8#usize) b.ys rfl rfl rfl rfl)
 
 theorem push_batch_generated (s : msm8.store.PointStore) (offset count : Usize)
     (points : Slice blst.blst_p1_affine) (negated : Slice Bool)
@@ -301,12 +296,18 @@ theorem push_batch_generated (s : msm8.store.PointStore) (offset count : Usize)
         ok (cont (stored.rows, newlen, next))) := by
   have hcount := batch_count_refines points offset count (Nat.le_of_lt ho) hc
   simp only [msm8.store.PointStore.push_blst_loop0.body, Slice.len_val, UScalar.lt_equiv,
-    ho, if_true]
+    ho, ite_true]
   simp only [UScalar.lt_equiv] at hcount
-  rw [← bind_assoc_eq, hcount]
-  simp only [bind_tc_ok]
+  have hcount' : ∀ {β : Type} (k : Usize → Result β),
+      (do let remaining ← Slice.len points - offset
+          let c ← if remaining.val < limbs.LANES.val then Slice.len points - offset
+            else ok limbs.LANES
+          k c) = k count := by
+    intro β k
+    rw [← Aeneas.Std.bind_assoc, hcount, bind_ok]
+  refine (hcount' _).trans ?_
   rw [hg]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   change (do
     let fx ← fp8.Fp8.load (encodeGathered batch).1
     let x ← fp8.Fp8.mul fx (toFp8 fromBlst)
@@ -403,7 +404,7 @@ theorem push_batch_body (s : msm8.store.PointStore) (offset count : Usize)
         (Array.repeat 8#usize (Array.repeat 8#usize 0#u64))
         (Array.repeat 8#usize (Array.repeat 8#usize 0#u64))
         (Array.repeat 8#usize 0#u32) 0#u8 0#usize = ok (encodeGathered gathered) := by
-      simpa only [hzero] using hg
+      simpa only [hzero] using! hg
     rw [push_batch_generated s offset count points negated endomorphism fromBlst beta
       gathered ho hc hg']
     rw [hstored]

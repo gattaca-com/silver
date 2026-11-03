@@ -20,7 +20,7 @@ private theorem zeroLoop (b : ByteArray) (l : List Nat) (v : Bool) :
       if b.get! i ≠ 0 then ForInStep.yield false else ForInStep.yield r)) = true ↔
       v = true ∧ ∀ i ∈ l, b.get! i = 0 := by
   induction l generalizing v with
-  | nil => simp [List.forIn_nil, id_pure]; rfl
+  | nil => simp [List.forIn_nil, id_pure]
   | cons i l ih =>
     rw [List.forIn_cons]
     by_cases h : b.get! i = 0
@@ -131,10 +131,10 @@ theorem validate_eq_decode (b : ByteArray) : Kzg.validateKzgG1 b =
   unfold Kzg.validateKzgG1
   by_cases hb : b = Kzg.Constants.G1_POINT_AT_INFINITY
   · subst b
-    rw [if_pos ((byteArray_beq_iff _ _).mpr rfl), uncompress_infinity]
+    rw [ite_eq_left ((byteArray_beq_iff _ _).mpr rfl), uncompress_infinity]
     rfl
-  · rw [if_neg (mt (byteArray_beq_iff _ _).mp hb)]
-    unfold G1.keyValidate
+  · rw [ite_eq_right (mt (byteArray_beq_iff _ _).mp hb)]
+    unfold G1.keyValidate G1.keyValidatePoint
     cases hd : G1.uncompress b with
     | error e => rfl
     | ok P =>
@@ -143,9 +143,8 @@ theorem validate_eq_decode (b : ByteArray) : Kzg.validateKzgG1 b =
         have hp := uncompress_eq_zero_of_infinity hd (Bool.eq_true_of_not_eq_false hc)
         subst P
         exact hb (uncompress_infinity_only b hd)
-      change (if P.isInfinity then _ else _ : Except BlsError Unit).isOk = _
-      simp only [hi, Bool.false_eq_true, ↓reduceIte]
-      cases hg : G1.inSubgroup P <;> simp <;> rfl
+      cases hg : G1.inSubgroup P <;> simp [hi, hg, Bind.bind, Except.bind, Pure.pure,
+        Except.pure, throw, throwThe, MonadExceptOf.throw, Except.isOk, Except.toBool]
 
 /-- `toAffine` maps infinity to (0, 0), the blst affine infinity sentinel. -/
 def blstLimbs (P : G1) : BlstP1Affine :=

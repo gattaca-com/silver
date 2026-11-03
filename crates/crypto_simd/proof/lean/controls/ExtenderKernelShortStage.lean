@@ -61,11 +61,12 @@ def shortBodyWithOffset (offset : Usize)
 example : shortBodyWithOffset 1#usize = fft8.Fft8.dit_short_loop1.body := rfl
 
 private def splatNat (n : Nat) : fr8.Fr8 :=
-  ⟨List.ofFn (fun j : Fin 5 => Vector.replicate 8 (UInt64.ofNat (n / 2^(52*j.val) % 2^52))),
-    by simp⟩
+  Array.make 5#usize
+    (List.ofFn (fun j : Fin 5 => Vector.replicate 8 (UInt64.ofNat (n / 2^(52*j.val) % 2^52))))
+    (by simp)
 
 private def table : alloc.vec.Vec fr8.Fr8 :=
-  ⟨(List.replicate 7 (splatNat 0)).set 4 (splatNat 1), by simp; scalar_tac⟩
+  alloc.vec.Vec.from ((List.replicate 7 (splatNat 0)).set 4 (splatNat 1)) (by simp; scalar_tac)
 
 private def inputs : Array fr8.Fr8 8#usize :=
   (Array.repeat 8#usize (splatNat 0)).set 6#usize (splatNat 1)
@@ -73,7 +74,7 @@ private def inputs : Array fr8.Fr8 8#usize :=
 private def firstLane (r : Result (ControlFlow
     (Array fr8.Fr8 8#usize × Usize × Array M512 11#usize × Usize × Usize)
     (Array fr8.Fr8 8#usize × Usize × Array M512 11#usize))) : UInt64 :=
-  match r with
+  match r.match with
   | .ok (.cont (_, _, next, _, _)) => (next.val[0]!)[0]
   | _ => 42
 
@@ -90,26 +91,30 @@ private theorem original_first : firstLane (run 1#usize) = 0 := by
   unfold run shortBodyWithOffset
   simp (disch := scalar_tac) only [FrModel.Fr8.normalise_refines,
     FrModel.Fr8.reduce_while_multiplying_refines, FrModel.Fr8.add_raw_refines,
-    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_tc_ok,
+    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_ok,
     usize_add_ok, usize_mul_ok, sub_ok, index_usize_eq,
     UScalar.ofNatCore_val_eq, Array.to_slice_mut, lift,
-    show 2#usize ≠ 4#usize by scalar_tac, if_neg,
-    table, inputs, Array.repeat,
-    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update,
-    Function.uncurry_apply_pair]
+    show 2#usize ≠ 4#usize by scalar_tac, ite_eq_right,
+    List.replicate, List.set_cons_zero, List.set_cons_succ,
+    List.getElem?_cons_zero, List.getElem?_cons_succ, Nat.reduceAdd, Nat.reduceSub,
+    table, inputs, Array.repeat, Array.from_val, Array.set_val_eq,
+    alloc.vec.Vec.getElem?_Nat_eq, Slice.getElem?_Usize_eq, alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, alloc.vec.Vec.from_val, Slice.from_val,
+    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
   decide +kernel
 
 private theorem mutated_first : firstLane (run 2#usize) = 1 := by
   unfold run shortBodyWithOffset
   simp (disch := scalar_tac) only [FrModel.Fr8.normalise_refines,
     FrModel.Fr8.reduce_while_multiplying_refines, FrModel.Fr8.add_raw_refines,
-    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_tc_ok,
+    FrModel.Fr8.sub_raw_refines, fft8.dit_finish, bind_ok,
     usize_add_ok, usize_mul_ok, sub_ok, index_usize_eq,
     UScalar.ofNatCore_val_eq, Array.to_slice_mut, lift,
-    show 2#usize ≠ 4#usize by scalar_tac, if_neg,
-    table, inputs, Array.repeat,
-    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update,
-    Function.uncurry_apply_pair]
+    show 2#usize ≠ 4#usize by scalar_tac, ite_eq_right,
+    List.replicate, List.set_cons_zero, List.set_cons_succ,
+    List.getElem?_cons_zero, List.getElem?_cons_succ, Nat.reduceAdd, Nat.reduceSub,
+    table, inputs, Array.repeat, Array.from_val, Array.set_val_eq,
+    alloc.vec.Vec.getElem?_Nat_eq, Slice.getElem?_Usize_eq, alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, alloc.vec.Vec.from_val, Slice.from_val,
+    Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update, Aeneas.Std.uncurry_apply_pair, firstLane, Result.match.ok]
   decide +kernel
 
 example : shortBodyWithOffset 2#usize ≠ fft8.Fft8.dit_short_loop1.body := by

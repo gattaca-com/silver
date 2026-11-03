@@ -45,9 +45,9 @@ theorem lane_canonical {x : Fr8} {l : Fin 8} (h : Fr8Inv (x.lane l)) :
   rw [val_ofList_P] at hv
   have hx := h.bound
   by_cases hlt : val (x.lane l) < Fr.modulus
-  · simp only [hlt, decide_true, if_true]
+  · simp only [hlt, decide_true, ite_true]
     exact ⟨h, (Nat.mod_eq_of_lt hlt).symm⟩
-  · simp only [hlt, decide_false, Bool.false_eq_true, if_false, Bool.toNat_false, zero_mul,
+  · simp only [hlt, decide_false, Bool.false_eq_true, ite_false, Bool.toNat_false, zero_mul,
       add_zero] at hv ⊢
     refine ⟨⟨fun j => hdn j, by omega⟩, ?_⟩
     rw [Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
@@ -79,9 +79,9 @@ theorem lane_add {x y : Fr8} {l : Fin 8} (hx : Fr8Inv (x.lane l)) (hy : Fr8Inv (
   rw [Simd.laneOf_blend, Simd.testBit_borrowed, hb, Lane.decide_borrowOf, val_two_p]
   rw [val_two_p] at hv
   by_cases hlt : val (laneOf s l) < 2 * Fr.modulus
-  · simp only [hlt, decide_true, if_true]
+  · simp only [hlt, decide_true, ite_true]
     exact ⟨⟨hsn, hlt⟩, by rw [← hsv, Nat.mod_eq_of_lt hlt], by rw [hsv]; push_cast; rfl⟩
-  · simp only [hlt, decide_false, Bool.false_eq_true, if_false, Bool.toNat_false, zero_mul,
+  · simp only [hlt, decide_false, Bool.false_eq_true, ite_false, Bool.toNat_false, zero_mul,
       add_zero] at hv ⊢
     refine ⟨⟨hdn, by omega⟩, ?_⟩
     have : val (laneOf d l) = val (x.lane l) + val (y.lane l) - 2 * Fr.modulus := by omega
@@ -117,7 +117,7 @@ theorem lane_sub {x y : Fr8} {l : Fin 8} (hx : Fr8Inv (x.lane l)) (hy : Fr8Inv (
   have hR := four_mul_p_lt_R
   have hdR := Lane.val_lt_R hdn
   by_cases hlt : val (x.lane l) < val (y.lane l)
-  · simp only [hlt, decide_true, if_true, Bool.toNat_true, one_mul] at hv ⊢
+  · simp only [hlt, decide_true, ite_true, Bool.toNat_true, one_mul] at hv ⊢
     have hw' : val (laneOf (Simd.add_limbs d Simd.two_p) l) =
         val (x.lane l) + 2 * Fr.modulus - val (y.lane l) := by
       rw [hwv, show val (laneOf d l) + 2 * Fr.modulus =
@@ -130,7 +130,7 @@ theorem lane_sub {x y : Fr8} {l : Fin 8} (hx : Fr8Inv (x.lane l)) (hy : Fr8Inv (
       push_cast
       rw [ZMod.natCast_self]
       ring
-  · simp only [hlt, decide_false, Bool.false_eq_true, if_false, Bool.toNat_false, zero_mul,
+  · simp only [hlt, decide_false, Bool.false_eq_true, ite_false, Bool.toNat_false, zero_mul,
       add_zero] at hv ⊢
     refine ⟨⟨hdn, by omega⟩, ?_⟩
     constructor

@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Extender.SpecMath
+import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
@@ -6,10 +7,11 @@ open scoped EthLib.Cryptography.Bls.Fr BigOperators
 open private getElem!_reversedRoots getElem!_map_mul
   from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.Extender.Controls
+
+attribute [local implicit_reducible] ZMod Fr.modulus
 
 private theorem roots4096 (i : Nat) (hi : i < 2 ^ 12) :
     (computeRootsOfUnity 4096)[i]! = domainRoot 4096 ^ i :=
@@ -22,7 +24,7 @@ def inverse4096 (values : Array Fr) : Array Fr :=
 private theorem inverse4096_eq (values : Array Fr) (hs : values.size = 4096) :
     inverse4096 values = fftField values (computeRootsOfUnity 4096) true := by
   simp only [inverse4096, Kzg.Model.inverseFft, Kzg.Model.inverseRoots, Kzg.Model.roots,
-    fftField_def, if_true, hs]
+    fftField_def, ite_true, hs]
 
 def inputWitness : Array Fr := Array.ofFn (fun i : Fin 4096 => Fr.ofNat i.val)
 
@@ -45,11 +47,9 @@ theorem omitting_input_bit_reversal_changes_coefficients :
     fftField_inv_fftField (k := 12) domainRoot_4096_primitive a
       (computeRootsOfUnity 4096) ha (size_computeRootsOfUnity 4096) roots4096
   have he := congrArg (fun a => fftField a (computeRootsOfUnity 4096) false) h
-  dsimp only at he
   rw [hround _ (by rw [size_bitReversalPermutation, inputWitness_size]),
     hround _ inputWitness_size] at he
   have hi := congrArg (fun a : Array Fr => a[1]!) he
-  dsimp only at hi
   rw [getElem!_pos (bitReversalPermutation inputWitness) 1
       (by rw [size_bitReversalPermutation, inputWitness_size]; decide),
     getElem_bitReversalPermutation, inputWitness_size,
@@ -73,7 +73,7 @@ private theorem linearCoefficients_eval (z : Fr) :
       rw [linearCoefficients_size]; exact Finset.mem_range.mp hi)]
     simp only [linearCoefficients, Array.getElem_ofFn]
   · simp only [ite_mul, zero_mul, Finset.sum_ite_eq', Finset.mem_range,
-      show 1 < 4096 by decide, if_true, pow_one]
+      show 1 < 4096 by decide, ite_true, pow_one]
     exact one_mul z
 
 def linearInput : Array Fr :=
@@ -104,7 +104,7 @@ private theorem linear_extension_get (j : Nat) (hj : j < 4096) :
     shifted_linear_get _ j hj]
 
 private theorem shift_ne_one : domainRoot 8192 ≠ (1 : Fr) := by
-  simpa only [pow_one] using
+  simpa only [pow_one] using!
     domainRoot_8192_primitive.pow_ne_one_of_pos_of_lt (by decide : 1 ≠ 0)
       (by decide : 1 < 8192)
 
@@ -112,7 +112,6 @@ theorem omitting_coset_shift_changes_extension :
     Model.extension linearInput ≠ fftField linearCoefficients (computeRootsOfUnity 4096) false := by
   intro h
   have hi := congrArg (fun a : Array Fr => a[0]!) h
-  dsimp only at hi
   rw [linear_extension_get 0 (by decide),
     ← fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive
       linearCoefficients (computeRootsOfUnity 4096) linearCoefficients_size
@@ -136,7 +135,6 @@ theorem reversing_coset_shift_changes_extension :
         (computeRootsOfUnity 4096) false := by
   intro h
   have hi := congrArg (fun a : Array Fr => a[0]!) h
-  dsimp only at hi
   rw [linear_extension_get 0 (by decide), shifted_linear_get _ 0 (by decide), pow_zero] at hi
   exact shift_ne_inverse ((mul_one _).symm.trans (hi.trans (mul_one _)))
 
@@ -153,7 +151,7 @@ private theorem shifted_linear_inverse_get (factor : Fr) (j : Nat) (hj : j < 409
     (fun i hi => getElem!_reversedRoots (k := 12) domainRoot_4096_primitive
       (computeRootsOfUnity 4096) (size_computeRootsOfUnity 4096) roots4096 i hi) j hj
   rw [coeffPolynomial_shiftVals_eval, linearCoefficients_eval] at h
-  simp only [fftField_def, Bool.false_eq_true, if_false] at h
+  simp only [fftField_def, Bool.false_eq_true, ite_false] at h
   exact h.symm
 
 theorem reversing_forward_fft_roots_changes_extension :
@@ -162,7 +160,6 @@ theorem reversing_forward_fft_roots_changes_extension :
         (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) := by
   intro h
   have hi := congrArg (fun a : Array Fr => a[1]!) h
-  dsimp only at hi
   rw [linear_extension_get 1 (by decide), shifted_linear_inverse_get _ 1 (by decide)] at hi
   simp only [pow_one] at hi
   have hnz := domainRoot_8192_primitive.ne_zero (by decide : 8192 ≠ 0)
@@ -184,7 +181,6 @@ theorem omitting_output_bit_reversal_changes_extension_order :
     bitReversalPermutation (Model.extension linearInput) ≠ Model.extension linearInput := by
   intro h
   have hi := congrArg (fun a : Array Fr => a[1]!) h
-  dsimp only at hi
   rw [getElem!_pos (bitReversalPermutation (Model.extension linearInput)) 1
       (by rw [size_bitReversalPermutation, extension_size linearInput linearInput_size]; decide),
     getElem_bitReversalPermutation, extension_size linearInput linearInput_size,

@@ -28,9 +28,9 @@ namespace LeanBlsSimd
 
 namespace DecompressG2
 
-def G2_COMPRESSED_LEN : ℕ := 96
+@[implicit_reducible] def G2_COMPRESSED_LEN : ℕ := 96
 
-def FP_BYTES : ℕ := G2_COMPRESSED_LEN / 2
+@[implicit_reducible] def FP_BYTES : ℕ := G2_COMPRESSED_LEN / 2
 
 def FLAG_COMPRESSED : UInt8 := 0x80
 

@@ -155,7 +155,7 @@ theorem BoundRep.mul (hx : BoundRep k x l a) (hy : BoundRep k' y l b)
 
 theorem BoundRep.square (hx : BoundRep k x l a) (hk : k * k ≤ 1024) :
     x.square.Holds l (a ^ 2) := by
-  simpa only [square, sq] using hx.mul hx hk
+  simpa only [square, sq] using! hx.mul hx hk
 
 theorem BoundRep.cond_sub (hx : BoundRep k x l a) (ho : Offset c offset l)
     (hk : k ≤ 2 * c) : BoundRep c (x.cond_sub offset) l a := by

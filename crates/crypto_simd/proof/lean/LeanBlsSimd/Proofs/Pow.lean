@@ -56,38 +56,38 @@ theorem table_fold {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
     intro k
     obtain ⟨h1, h2⟩ := ht k
     refine ⟨h1, ?_⟩
-    rw [List.foldl_nil, h2, if_pos (by omega)]
+    rw [List.foldl_nil, h2, ite_eq_left (by omega)]
   | k :: ks, m, table, hm, hks, ht => by
     obtain ⟨hk, hks'⟩ := drop_finRange_cons hks.symm
     rw [List.foldl_cons]
     refine table_fold hx ks (m + 1) _ (by omega) hks' fun j => ?_
     obtain ⟨hprev, hprevd⟩ := ht ⟨k.val - 1, by omega⟩
-    rw [if_pos (by simp; omega)] at hprevd
+    rw [ite_eq_left (by simp; omega)] at hprevd
     simp only [Fin.getElem_fin] at hprev hprevd ⊢
     rw [Vector.getElem_set]
     by_cases hjk : k.val = j.val
-    · rw [if_pos hjk, if_pos (by omega)]
+    · rw [ite_eq_left hjk, ite_eq_left (by omega)]
       refine ⟨inv_mul hprev hx, ?_⟩
       rw [decode_lane_mul hprev hx, hprevd, ← hjk, ← pow_succ]
       congr 1
       omega
-    · rw [if_neg hjk]
+    · rw [ite_eq_right hjk]
       obtain ⟨h1, h2⟩ := ht j
       simp only [Fin.getElem_fin] at h1 h2
       refine ⟨h1, ?_⟩
       rw [h2]
       by_cases hjm : j.val ≤ m
-      · rw [if_pos hjm, if_pos (by omega)]
-      · rw [if_neg hjm, if_neg (by omega)]
+      · rw [ite_eq_left hjm, ite_eq_left (by omega)]
+      · rw [ite_eq_right hjm, ite_eq_right (by omega)]
 
 theorem part_table_init {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
     PartTable x l 1 ((Vector.replicate 16 one).set 1 x) := by
   intro k
   simp only [Fin.getElem_fin, Vector.getElem_set, Vector.getElem_replicate]
   by_cases hk : 1 = k.val
-  · rw [if_pos hk, if_pos (by omega), ← hk, pow_one]
+  · rw [ite_eq_left hk, ite_eq_left (by omega), ← hk, pow_one]
     exact ⟨hx, rfl⟩
-  · rw [if_neg hk]
+  · rw [ite_eq_right hk]
     refine ⟨inv_one l, ?_⟩
     rw [decode_lane_one]
     split_ifs with h

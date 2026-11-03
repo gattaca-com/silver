@@ -3,15 +3,15 @@ import LeanBlsSimd.Sha256.ExtensionLoop
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
-open private EthLib.Cryptography.Bls.Sha256.big32 from EthLib.Cryptography.Bls.Sha256
 
 namespace LeanBlsSimd.Sha256.Extensions
 
 set_option maxRecDepth 2048
 attribute [local irreducible] Spec.schedule
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 def loadChunk (data : Slice U8) (start : Nat) (h : start+16 ≤ data.val.length) : Array U8 16#usize :=
-  ⟨data.val.slice start (start+16),by simp [List.slice]; omega⟩
+  Array.make 16#usize (data.val.slice start (start+16)) (by simp [List.slice]; omega)
 
 theorem loadChunk_get (data : Slice U8) (start : Nat) (h : start+16 ≤ data.val.length)
     (i : Nat) (hi : i < 16) :
@@ -26,7 +26,7 @@ theorem loadChunk_big32 (data : Slice U8) (start : Nat) (h : start+16 ≤ data.v
     (i : Nat) (hi : i+4 ≤ 16) :
     Spec.big32 (Spec.bytes ((loadChunk data start h).val.map ofU8)) i =
       Spec.big32 (Spec.bytes (data.val.map ofU8)) (start+i) := by
-  simp only [Spec.big32,EthLib.Cryptography.Bls.Sha256.big32]
+  simp only [Spec.big32,EthLib.Cryptography.Hash.Sha256.big32]
   simp (disch := omega) only [loadChunk_get,Nat.add_assoc]
 
 theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
@@ -67,9 +67,9 @@ theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
       omega
   refine ⟨next,?_,rfl⟩
   have hi' : i < 4#usize := hi
-  simp only [sha256.extensions.compress_blocks_loop0_loop0.body,hi',if_true,
-    lift,Array.to_slice_mut,bind_tc_ok,Function.uncurry_apply_pair,sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq]
+  simp only [sha256.extensions.compress_blocks_loop0_loop0.body,hi',ite_true,
+    lift,Array.to_slice_mut, bind_ok, Aeneas.Std.uncurry_apply_pair,sha256.BLOCK]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   change (do
     let s1 ← core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
       data {start, «end» := stop}
@@ -81,10 +81,11 @@ theorem load_step (data : Slice U8) (block : Usize) (w : Array M128 4#usize)
     ok (cont (a,next))) = _
   rw [hindex]
   simp only [bind_tc_ok,hcopy,hback]
-  rw [← bind_assoc,hload]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_eq] at hload ⊢
+  rw [← Std.bind_assoc,hload]
+  simp only [bind_ok]
   rw [update_eq _ _ _ hi]
-  rfl
+  simp only [bind_ok]
 
 theorem window_get (w : _root_.Array UInt32) (q j : Nat) (hj : j < 4) :
     (window w q)[j]! = quad w (4*min (q+j) 15) := by
@@ -100,11 +101,11 @@ theorem load_loop_refines (data : Slice U8) (block : Usize) (w : Array M128 4#us
   | zero =>
     have hstop : ¬ i < 4#usize := by change ¬ i.val < 4; omega
     have hw : w = window (Spec.schedule (Spec.bytes (data.val.map ofU8)) (64*block.val)) 0 := by
-      apply Subtype.ext
+      ext1
       apply List.ext_getElem
       · simp only [w.property,(window _ _).property]
       · intro j hj hj'
-        have hj4 : j < 4 := by simpa only [w.property] using hj
+        have hj4 : j < 4 := by simpa only [w.property] using! hj
         have h := hp j (by omega)
         have hh := window_get (Spec.schedule (Spec.bytes (data.val.map ofU8)) (64*block.val)) 0 j hj4
         simp only [Nat.zero_add,Nat.min_eq_left (by omega : j ≤ 15)] at hh
@@ -113,7 +114,7 @@ theorem load_loop_refines (data : Slice U8) (block : Usize) (w : Array M128 4#us
         rw [getElem!_pos (window _ _).val j hj'] at hh
         exact h.trans hh.symm
     rw [sha256.extensions.compress_blocks_loop0_loop0,loop.eq_1]
-    simp only [sha256.extensions.compress_blocks_loop0_loop0.body,hstop,if_false,hw]
+    simp only [sha256.extensions.compress_blocks_loop0_loop0.body,hstop,ite_false,hw, bind_ok]
   | succ n ih =>
     obtain ⟨next,hbody,hnext⟩ := load_step data block w i (by omega) hdata
     have hp' : ∀ j : Nat, j < next.val →
@@ -126,6 +127,6 @@ theorem load_loop_refines (data : Slice U8) (block : Usize) (w : Array M128 4#us
         exact hp j (by omega)
     have hr := ih _ next (by omega) hp' (by omega)
     rw [sha256.extensions.compress_blocks_loop0_loop0,loop.eq_1]
-    simpa only [hbody] using hr
+    simpa only [hbody, bind_ok] using! hr
 
 end LeanBlsSimd.Sha256.Extensions

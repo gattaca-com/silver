@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.SetupPoints
 import LeanBlsSimd.Kzg.Model
 import LeanBlsSimd.Kzg.CosetsRep
 import LeanBlsSimd.Kzg.InterpolationKernel.Basic
+import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
@@ -26,7 +27,7 @@ def rustG2CellBytes : ByteArray := arrayBytes SetupPoints.g2Bytes64
 theorem specPoint_of_decoded (b : ByteArray) (p : G1)
     (hd : G1.uncompress b = .ok p) (hi : p.isInfinity = false)
     (hs : p.inSubgroup = true) : specPoint b = some p := by
-  simp [specPoint, bytesToKzgProof, validateKzgG1, G1.keyValidate, hd, hi, hs,
+  simp [specPoint, bytesToKzgProof, validateKzgG1, G1.keyValidate, G1.keyValidatePoint, hd, hi, hs,
     Bind.bind, Except.bind, Pure.pure, Except.pure, Except.isOk, Except.toBool, Except.toOption]
 
 theorem g1_setup_specPoint (i : Fin 64) :
@@ -43,11 +44,28 @@ def SetupMatches (s : TrustedSetup) : Prop :=
   s.g2Monomial[0]!.inSubgroup = true ∧ s.g2Monomial[64]!.inSubgroup = true ∧
   ∀ b ∈ rustG1Bytes, ∃ p, specPoint b = some p
 
-theorem embedded_g1_bytes : embeddedSetup.g1MonomialBytes.extract 0 64 = rustG1Bytes := by
-  apply _root_.Array.toList_inj.mp
-  rw [_root_.Array.toList_extract, List.extract_eq_take_drop]
-  simp only [embeddedSetup, buildEmbedded, _root_.Array.toList_map]
+private theorem embedded_g1_bytes_size : embeddedSetup.g1MonomialBytes.size = 4096 := by
+  simp only [embeddedSetup, buildEmbedded, _root_.Array.size_map]
   decide +kernel
+
+private theorem embedded_g1_byte_row (i : Fin 64) :
+    embeddedSetup.g1MonomialBytes[i.val]! = arrayBytes trusted_setup.G1_MONOMIAL.val[i.val]! := by
+  rw [getElem!_pos embeddedSetup.g1MonomialBytes i.val (by rw [embedded_g1_bytes_size]; omega)]
+  simp only [embeddedSetup, buildEmbedded, _root_.Array.getElem_map]
+  fin_cases i <;> decide +kernel
+
+theorem embedded_g1_bytes : embeddedSetup.g1MonomialBytes.extract 0 64 = rustG1Bytes := by
+  have hrust : rustG1Bytes.size = 64 := by simp [rustG1Bytes]
+  apply _root_.Array.ext
+  · simp only [_root_.Array.size_extract, embedded_g1_bytes_size, hrust]
+    decide
+  · intro i hi hj
+    have hib : i < 64 := by simpa only [hrust] using hj
+    rw [_root_.Array.getElem_extract]
+    have he := embedded_g1_byte_row ⟨i, hib⟩
+    simpa only [rustG1Bytes, List.getElem_toArray, List.getElem_map,
+      getElem!_pos embeddedSetup.g1MonomialBytes i (by rw [embedded_g1_bytes_size]; omega),
+      getElem!_pos trusted_setup.G1_MONOMIAL.val i (by simpa using hib), Nat.zero_add] using he
 
 theorem embedded_g2_size : embeddedSetup.g2Monomial.size = 65 := by
   simp only [embeddedSetup, buildEmbedded, Array.size_map]

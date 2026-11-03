@@ -60,16 +60,7 @@ def blocksWithIndex (index : Std.I64)
     core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi4 low_words mi5
   let mi7 ←
     core.core_arch.x86.avx512f._mm512_permutex2var_epi64 mi4 high_words mi5
-  let first_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        0#i64, 1#i64, 2#i64, 3#i64, 8#i64, 9#i64, 10#i64, 11#i64
-        ] (by rfl))
-  let second_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        4#i64, 5#i64, 6#i64, 7#i64, 12#i64, 13#i64, 14#i64, 15#i64
-        ] (by rfl))
+  let (first_halves, second_halves) ← kzg.fr8.u256x8.half_selectors
   let mi8 ←
     Array.index_usize (Array.make 4#usize [ mi2, mi3, mi6, mi7 ] (by rfl)) 0#usize
   let mi9 ←
@@ -94,16 +85,7 @@ def encodeBlocksWithIndex (index : Std.I64)
   (self : kzg.fr8.u256x8.U256x8) :
   Result (Array core.core_arch.x86.__m512i 4#usize)
   := do
-  let first_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        0#i64, 1#i64, 2#i64, 3#i64, 8#i64, 9#i64, 10#i64, 11#i64
-        ] (by rfl))
-  let second_halves ←
-    bls.fp8.index_vector
-      (Array.make 8#usize [
-        4#i64, 5#i64, 6#i64, 7#i64, 12#i64, 13#i64, 14#i64, 15#i64
-        ] (by rfl))
+  let (first_halves, second_halves) ← kzg.fr8.u256x8.half_selectors
   let mi ← Array.index_usize self 0#usize
   let mi1 ← Array.index_usize self 1#usize
   let mi2 ←
@@ -158,7 +140,7 @@ private def permutationInput : Vector M512 4 :=
   Vector.ofFn fun block => Vector.ofFn fun lane => UInt64.ofNat (8 * block.val + lane.val)
 
 private def observedWord {n : Usize} (word : Nat) (result : Result (Array M512 n)) : UInt64 :=
-  match result with
+  match result.match with
   | .ok out => (out.val[word]!)[0]
   | _ => 0
 
@@ -170,6 +152,11 @@ theorem wrong_shift_rejected :
   have rejected : observedWord 1 (limbsWithShift 13#u32 (toArray id shiftInput)) ≠
       observedWord (n := 5#usize) 1 (ok (toArray id
         (transpose (Vector.ofFn fun lane => unpack (wordLane shiftInput lane))))) := by
+    simp (disch := scalar_tac) only [observedWord, limbsWithShift, FrModel.MASK52_refines,
+      FrModel.Simd.splat_refines, core.core_arch.x86.avx512f._mm512_add_epi64,
+      core.core_arch.x86.avx512f._mm512_and_si512,
+      core.core_arch.x86.avx512f._mm512_slli_epi64, core.core_arch.x86.avx512f._mm512_srli_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, toArray, bind_ok, Result.match.ok]
     decide +kernel
   exact rejected observed
 
@@ -180,6 +167,11 @@ theorem wrong_permutation_rejected :
   have observed := congrArg (observedWord 0) h
   have rejected : observedWord 0 (blocksWithIndex 2#i64 (toArray id permutationInput)) ≠
       observedWord (n := 4#usize) 0 (ok (toArray id (fromBlocks permutationInput))) := by
+    simp (disch := scalar_tac) only [observedWord, blocksWithIndex, kzg.fr8.u256x8.half_selectors,
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, bls.fp8.index_vector,
+      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_ok,
+      aeneas_uncurry_def, Result.match.ok]
     decide +kernel
   exact rejected observed
 
@@ -190,6 +182,12 @@ theorem wrong_encode_permutation_rejected :
   have observed := congrArg (observedWord 0) h
   have rejected : observedWord 0 (encodeBlocksWithIndex 13#i64 (toArray id permutationInput)) ≠
       observedWord (n := 4#usize) 0 (ok (toArray id (wordBlocks permutationInput))) := by
+    simp (disch := scalar_tac) only [observedWord,
+      encodeBlocksWithIndex, kzg.fr8.u256x8.half_selectors,
+      core.core_arch.x86.avx512f._mm512_permutex2var_epi64, index_usize_eq, Array.make, Array.from_val,
+      Vector.getElem_toList, UScalar.ofNatCore_val_eq, List.map_id, bls.fp8.index_vector,
+      core.core_arch.x86.avx512f._mm512_set_epi64, toArray, bind_ok,
+      aeneas_uncurry_def, Result.match.ok]
     decide +kernel
   exact rejected observed
 

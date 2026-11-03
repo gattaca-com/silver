@@ -31,7 +31,7 @@ theorem normal2_cond_sub {k c : ℕ} {x : fp2x8.Fp2x8} {o : fp8.Fp8} {a : P F}
   obtain ⟨x0, hx0, rx0⟩ := normal_cond_sub hx.1 ho hk
   obtain ⟨x1, hx1, rx1⟩ := normal_cond_sub hx.2 ho hk
   refine ⟨⟨x0, x1⟩, ?_, rx0, rx1⟩
-  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_tc_ok]
+  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_ok]
 
 theorem strict_select {k : ℕ} {x y : fp8.Fp8} {a b : V F} (mask : U8)
     (hx : Strict k x a) (hy : Strict k y b) :
@@ -41,11 +41,11 @@ theorem strict_select {k : ℕ} {x y : fp8.Fp8} {a b : V F} (mask : U8)
   simp only [ofFp8_toFp8, select]
   split_ifs with h
   · have he : (Fp8.select (ofU8 mask) (ofFp8 x) (ofFp8 y)).lane l = (ofFp8 y).lane l := by
-      simp only [Fp8.lane_select, if_pos h]
+      simp only [Fp8.lane_select, ite_eq_left h]
     constructor <;> rw [he]
     exacts [(hy l).normal, (hy l).bound, (hy l).value]
   · have he : (Fp8.select (ofU8 mask) (ofFp8 x) (ofFp8 y)).lane l = (ofFp8 x).lane l := by
-      simp only [Fp8.lane_select, if_neg h]
+      simp only [Fp8.lane_select, ite_eq_right h]
     constructor <;> rw [he]
     exacts [(hx l).normal, (hx l).bound, (hx l).value]
 
@@ -55,7 +55,7 @@ theorem strict2_select {k : ℕ} {x y : fp2x8.Fp2x8} {a b : P F} (mask : U8)
   obtain ⟨x0, hx0, rx0⟩ := strict_select mask hx.1 hy.1
   obtain ⟨x1, hx1, rx1⟩ := strict_select mask hx.2 hy.2
   refine ⟨⟨x0, x1⟩, ?_, rx0, rx1⟩
-  simp only [fp2x8.Fp2x8.select, hx0, hx1, bind_tc_ok]
+  simp only [fp2x8.Fp2x8.select, hx0, hx1, bind_ok]
 
 def conjugateValues (a : P F) : P F :=
   select2 56#u8 a (sub2 (fun _ => 0, fun _ => 0) a)
@@ -69,7 +69,7 @@ theorem conjugate_raw {x : fp2x8.Fp2x8} {a : P F} (hx : Strict2 256 x a) :
   obtain ⟨neg, hneg, rneg⟩ := normal2_cond_sub (k := 256) rn rp (by decide)
   obtain ⟨out, hout, rout⟩ := strict2_select 56#u8 hx rneg
   refine ⟨out, ?_, rout⟩
-  simp only [fp12.Fp12.conjugate, fp12.BOUND, hp, hz, hs, hn, hneg, hout, bind_tc_ok]
+  simp only [fp12.Fp12.conjugate, fp12.BOUND, hp, hz, hs, hn, hneg, hout, bind_ok]
 
 theorem conjugate_value (a : P F) : value (conjugateValues a) = (value a).conjugate := by
   apply fp12_ext <;> apply fp6_ext <;> apply fp2_ext
@@ -89,7 +89,7 @@ theorem one_refines : ∃ out, fp12.Fp12.one = ok out ∧ Rep out Bls.Fp12.one :
   obtain ⟨r, hr, rr⟩ := normal_permute2 is rz ro
   refine ⟨⟨r, z⟩, ?_, (shuffle is (fun _ => 0) (fun _ => 1), fun _ => 0), ?_, ?_, ?_⟩
   · dsimp only [is] at hr
-    simp only [fp12.Fp12.one, hz, ho, hr, bind_tc_ok]
+    simp only [fp12.Fp12.one, hz, ho, hr, bind_ok]
   · intro l
     exact (rr l).boundRep (by fin_cases l <;> decide +kernel)
   · intro l

@@ -36,7 +36,7 @@ theorem pair_rounds_loop_correct (originals : Usize)
     by_cases he : adds.a.val.isEmpty = true
     · refine ⟨(ps, b, adds), ?_, Or.inl ⟨he, hempty _ hready he⟩⟩
       rw [Msm8.pair_rounds_loop, loop.eq_1]
-      simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he, bind_tc_ok, if_true]
+      simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he, bind_ok, ite_true]
     · have he' : adds.a.val.isEmpty = false := Bool.eq_false_iff.mpr he
       obtain ⟨flag, adds', ps', hrunEq, hrunPost⟩ := hrun (ps, b, adds) hready he'
       cases flag with
@@ -44,9 +44,9 @@ theorem pair_rounds_loop_correct (originals : Usize)
         obtain ⟨hreject, hnonempty⟩ := hrunPost
         refine ⟨(ps', b, adds'), ?_, Or.inr ⟨hnonempty, hreject⟩⟩
         rw [Msm8.pair_rounds_loop, loop.eq_1]
-        simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he', bind_tc_ok,
-          Bool.false_eq_true, if_false, hrunEq]
-        rfl
+        simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he', bind_ok,
+          Bool.false_eq_true, ite_false, hrunEq]
+        (simp -failIfUnchanged only [bind_ok, aeneas_uncurry_def, Bool.false_eq_true, ite_false] )
       | true =>
         obtain ⟨b', adds'', ps'', hqueueEq, hready', hmeasure⟩ := hqueue (ps', b, adds') hrunPost
         have hpos : 0 < adds.a.val.length := by
@@ -60,15 +60,15 @@ theorem pair_rounds_loop_correct (originals : Usize)
           (ps'', b', adds'') hready' rfl
         refine ⟨result, ?_, hpost⟩
         have hbody : Msm8.pair_rounds_loop.body originals ps b adds = ok (cont (ps'', b', adds'')) := by
-          simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he', bind_tc_ok,
-            Bool.false_eq_true, if_false, hrunEq]
+          simp only [Msm8.pair_rounds_loop.body, adds_is_empty, he', bind_ok,
+            Bool.false_eq_true, ite_false, hrunEq]
           change (do
             let (bucket, batch, points) ← b.queue_round adds' ps' originals
             ok (cont (points, bucket, batch))) = _
           rw [hqueueEq]
-          rfl
+          (simp -failIfUnchanged only [bind_tc_ok] )
         rw [Msm8.pair_rounds_loop, loop.eq_1]
-        simpa only [hbody] using hloop
+        simpa only [hbody, bind_ok] using! hloop
 
 theorem pair_rounds_correct (originals : Usize)
     (Ready Completed Success Rejected : RoundState → Prop)
@@ -94,17 +94,17 @@ theorem pair_rounds_correct (originals : Usize)
   refine ⟨result.2.2.a.val.isEmpty,
     {state with store := result.1, buckets := result.2.1, adds := result.2.2}, ?_, ?_,
     rfl, rfl, rfl, rfl, rfl⟩
-  · simp only [Msm8.pair_rounds, hqueueEq, bind_tc_ok]
+  · simp only [Msm8.pair_rounds, hqueueEq, bind_ok]
     change (do
       let (ps1, b1, ba1) ← Msm8.pair_rounds_loop ps b adds originals
       let flag ← ba1.is_empty
       ok (flag, {state with store := ps1, buckets := b1, adds := ba1})) = _
     rw [hloop]
     rcases result with ⟨ps1, b1, ba1⟩
-    rfl
+    (simp -failIfUnchanged only [bind_tc_ok, adds_is_empty] )
   · rcases hpost with ⟨he, hp⟩ | ⟨he, hp⟩
-    · simp only [he, if_true]; exact hp
-    · simp only [he, Bool.false_eq_true, if_false]; exact hp
+    · simp only [he, ite_true]; exact hp
+    · simp only [he, Bool.false_eq_true, ite_false]; exact hp
 
 end LeanBlsSimd.PairRoundsRefines
 
@@ -560,7 +560,7 @@ theorem run_pending (ctx : Context) (state : RoundState) (hpending : Pending ctx
   refine ⟨result.1, result.2.1, result.2.2, hrun, ?_⟩
   cases hflag : result.1 with
   | false =>
-    simp only [Bool.false_eq_true, if_false]
+    simp only [Bool.false_eq_true, ite_false]
     constructor
     · have hr : result.2.2 = state.1 := hfailed hflag
       have hf := hq.frame hc.frame
@@ -571,7 +571,7 @@ theorem run_pending (ctx : Context) (state : RoundState) (hpending : Pending ctx
       apply List.ne_nil_of_length_pos
       omega
   | true =>
-    simp only [if_true]
+    simp only [ite_true]
     have houtput := houtputs hflag
     have hupdated := jobs_rows_updated jobs values hind state.1 result.2.2 houtput hframe
     refine ⟨replaceContents contents 0 (reduceChunks ctx.originals.val source.1.len.val
@@ -582,7 +582,7 @@ theorem run_pending (ctx : Context) (state : RoundState) (hpending : Pending ctx
       apply hupdated.2
       simpa only [pointRows, hq.rows] using hc.refs r hr
     · intro job hj
-      rw [signedReferenceValue_eq_sign, if_neg (by have := hout job hj; omega),
+      rw [signedReferenceValue_eq_sign, ite_eq_right (by have := hout job hj; omega),
         Nat.mod_eq_of_lt (hout job hj)]
       exact updatedValues_job jobs values hind job hj
     · intro r hr

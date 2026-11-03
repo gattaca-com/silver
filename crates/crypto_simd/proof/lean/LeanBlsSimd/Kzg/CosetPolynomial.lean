@@ -6,8 +6,7 @@ import EthLib.Cryptography.Proofs.Kzg.FftInverse
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg
 
@@ -25,19 +24,19 @@ theorem reverseBits_cell_split (c j : Nat) (hj : j < 64) :
   intro i
   rw [testBit_reverseBits, Nat.testBit_two_pow_mul_add _ hc']
   by_cases hi7 : i < 7
-  · rw [if_pos (by omega : i < 13), if_pos hi7,
-      Nat.testBit_two_pow_mul_add _ hj', if_neg (by omega : ¬13 - 1 - i < 6),
-      testBit_reverseBits, if_pos hi7]
+  · rw [ite_eq_left (by omega : i < 13), ite_eq_left hi7,
+      Nat.testBit_two_pow_mul_add _ hj', ite_eq_right (by omega : ¬13 - 1 - i < 6),
+      testBit_reverseBits, ite_eq_left hi7]
     congr 1
     omega
   · by_cases hi13 : i < 13
-    · rw [if_pos hi13, if_neg hi7, Nat.testBit_two_pow_mul_add _ hj',
-        if_pos (by omega : 13 - 1 - i < 6), testBit_reverseBits,
-        if_pos (by omega : i - 7 < 6)]
+    · rw [ite_eq_left hi13, ite_eq_right hi7, Nat.testBit_two_pow_mul_add _ hj',
+        ite_eq_left (by omega : 13 - 1 - i < 6), testBit_reverseBits,
+        ite_eq_left (by omega : i - 7 < 6)]
       congr 1
       omega
-    · rw [if_neg hi13, if_neg hi7, testBit_reverseBits,
-        if_neg (by omega : ¬i - 7 < 6)]
+    · rw [ite_eq_right hi13, ite_eq_right hi7, testBit_reverseBits,
+        ite_eq_right (by omega : ¬i - 7 < 6)]
 
 theorem domainRoot_8192_pow_128 : domainRoot 8192 ^ (128 : Nat) = domainRoot 64 := by
   unfold domainRoot
@@ -87,7 +86,7 @@ theorem cosetForCell_eq (c : Nat) (hc : c < 128) :
     cosetForCell c = .ok (Array.ofFn (fun j : Fin 64 => (rootsOfUnityBrp 8192)[64*c+j.val]!)) := by
   simp [cosetForCell, Constants.CELLS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_CELL,
     Constants.FIELD_ELEMENTS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_BLOB,
-    show ¬128 ≤ c by omega, Pure.pure, Except.pure, Bind.bind, Except.bind]
+    show ¬128 ≤ c by omega, Pure.pure, Except.pure]
 
 theorem size_cellIfft (c : Nat) (ys : Array Fr) : (cellIfft c ys).size = ys.size := by
   simp [cellIfft, size_bitReversalPermutation]
@@ -130,7 +129,7 @@ theorem cellIfft_eval (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 
   let vals := bitReversalPermutation ys
   let roots := computeRootsOfUnity 64
   let coeff := fftField vals roots true
-  have hv : vals.size = 2 ^ 6 := by simpa only [vals, size_bitReversalPermutation] using hys
+  have hv : vals.size = 2 ^ 6 := by simpa only [vals, size_bitReversalPermutation] using! hys
   have hr : roots.size = 2 ^ 6 := size_computeRootsOfUnity 64
   have hcoeff : coeff.size = 2 ^ 6 := by simpa only [coeff, size_fftField] using hv
   have hroots : ∀ i, i < 2 ^ 6 → roots[i]! = domainRoot 64 ^ i :=
@@ -154,7 +153,7 @@ theorem cellIfft_eval (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 
   rw [fftField_coeffPolynomial_eval (k := 6) domainRoot_64_primitive coeff roots hcoeff hr hroots _ hrev,
     hround]
   rw [getElem!_pos (bitReversalPermutation ys) (reverseBits j 64)
-      (by simpa only [size_bitReversalPermutation, hys] using hrev),
+      (by simpa only [size_bitReversalPermutation, hys] using! hrev),
     getElem_bitReversalPermutation, hys, reverseBits_reverseBits (k := 6) hj]
 
 theorem cellIfft_interpolant (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 64) :

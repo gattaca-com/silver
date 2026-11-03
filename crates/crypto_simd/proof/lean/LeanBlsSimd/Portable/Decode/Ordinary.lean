@@ -6,6 +6,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Portable.Decode
 open DecompressG1 DecompressG2
 set_option maxRecDepth 4096
@@ -30,11 +32,11 @@ private theorem words_zero (b : Encoding) :
     rfl
   constructor
   · intro h
-    have he := congrArg Word64.value (Subtype.ext h)
+    have he := congrArg Word64.value (Aeneas.Std.Array.ext _ _ h)
     rw [words_value,hz] at he
     exact_mod_cast he
   · intro h
-    apply congrArg Subtype.val
+    apply congrArg Array.val
     apply Word64.value_injective
     rw [words_value,h,hz]
     rfl
@@ -42,33 +44,32 @@ private theorem words_zero (b : Encoding) :
 theorem ordinary_refines (b : Encoding) :
     portable.decompress.ordinary (toArray toU8 b) = ok (ordinary b) := by
   simp only [portable.decompress.ordinary]
-  simp (disch := decide) only [index_usize_toArray,bind_tc_ok]
+  simp (disch := decide) only [index_usize_toArray, bind_ok]
   rw [show (224#u8) = toU8 0xe0 from rfl,show (0#u8) = toU8 0 from rfl,
     FLAG_COMPRESSED_refines,FLAG_INFINITY_refines,FLAG_LARGER_ROOT_refines]
-  simp only [lift,toU8_and,toU8_inj,bne_iff_ne,ne_eq,bind_tc_ok,
+  simp only [lift,toU8_and,toU8_inj,bne_iff_ne,ne_eq, bind_ok,
     flag_compressed,flag_infinity,flag_larger_root]
   simp only [show (0#usize).val = 0 from rfl]
   unfold ordinary
   simp only [ne_eq]
   by_cases hc : b[0] &&& 0x80 = 0
-  · simp only [hc,if_true]
-  simp only [hc,if_false]
+  · simp only [hc,ite_true]
+  simp only [hc,ite_false]
   by_cases hi : b[0] &&& 0x40 = 0
   swap
-  · simp only [hi,if_true,not_false_eq_true]
-  simp only [hi,not_true_eq_false,if_false]
-  simp (disch := simp [Array.to_slice,FP_BYTES,G2_COMPRESSED_LEN]) only [fp_words_refines,bind_tc_ok]
+  · simp only [hi,ite_true,not_false_eq_true]
+  simp only [hi,not_true_eq_false,ite_false]
+  simp (disch := simp [Array.to_slice, Slice.from_val,FP_BYTES,G2_COMPRESSED_LEN]) only [fp_words_refines, bind_ok]
   simp only [FP_BYTES,G2_COMPRESSED_LEN,Nat.reduceDiv,ofSlice_toArray]
   rw [show (2305843009213693951#u64) = toU64 0x1fffffffffffffff from rfl]
-  simp (disch := first | omega | decide | (simp; omega)) only [index_usize_toArray,
-    bind_tc_ok,toU64_and,update_eq,set_toArray,less_than_p_refines]
+  simp (disch := first | omega | decide | (simp; omega)) only [index_usize_toArray, bind_ok,toU64_and,update_eq,set_toArray,less_than_p_refines]
   simp only [ofArray_toArray_ofU64,show (5#usize).val = 5 from rfl,fp_words_clear_flags,
     less_than_p_iff,val64_fp_words,decide_eq_true_eq]
   simp only [FP_BYTES,G2_COMPRESSED_LEN,Nat.reduceDiv]
   have hs : (toU8 (b[0] &&& 0x20) != toU8 0) = decide (b[0] &&& 0x20 ≠ 0) := by
     apply Bool.eq_iff_iff.mpr
     simp only [bne_iff_ne,ne_eq,toU8_inj,decide_eq_true_eq]
-  simp only [Fp.array_eq_refines,bind_tc_ok,hs]
+  simp only [Fp.array_eq_refines, bind_ok,hs]
   have hz := words_zero b
   change (if bytesVal (clearFlags b).toList < Bls.Fp.modulus then
       (if decide ((words b).val = (Array.repeat 6#usize 0#u64).val) then ok none else

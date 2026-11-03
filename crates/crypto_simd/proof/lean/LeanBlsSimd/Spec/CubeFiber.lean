@@ -61,7 +61,7 @@ theorem card_cube_fiber_of_cube {ζ : F} (hζ : IsPrimitiveRoot ζ 3) {t : F} (h
     (h : ∃ a, a ^ 3 = t) : Nat.card {x : F // x ^ 3 = t} = 3 := by
   classical
   have hcard := hζ.card_nthRoots t
-  rw [if_pos h] at hcard
+  rw [ite_eq_left h] at hcard
   have e : {x : F // x ^ 3 = t} ≃ {x : F // x ∈ (Polynomial.nthRoots 3 t).toFinset} :=
     Equiv.subtypeEquivRight fun x => by
       rw [Multiset.mem_toFinset, Polynomial.mem_nthRoots (by norm_num)]

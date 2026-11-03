@@ -14,7 +14,7 @@ theorem scalar_high_word (scalar : Array U64 4#usize)
   obtain ⟨a, b, c, d, hs⟩ := List.length_eq_four.mp scalar.property
   simp only [Kzg.limbs, hs, List.foldr_cons, List.foldr_nil] at h
   norm_num at h ⊢
-  simpa only [hs] using (show d.val < 9223372036854775808 by omega)
+  simpa only [hs] using! (show d.val < 9223372036854775808 by omega)
 
 theorem scalar_high_bit (scalar : Array U64 4#usize)
     (h : Kzg.limbs scalar.val < 2 ^ 255) :
@@ -50,20 +50,20 @@ theorem keep_if_finite_refines (self : msm8.Msm8)
         let ss ← alloc.vec.Vec.push self.finite_scalars scalar
         ok { self with finite_points := ps, finite_scalars := ss }) := by
     rw [msm8.Msm8.keep_if_finite, index_usize_eq scalar 3#usize (by decide)]
-    simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
-    rfl
+    simp only [bind_ok, UScalar.ofNatCore_val_eq, scalar_high_bit scalar hs]
+    (simp only [massert, ↓reduceIte, bind_ok] )
   rw [hcall, is_infinity_correct point hp]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   by_cases hz : (Kzg.g1ReadAffine point).isInfinity = true
-  · simp only [hz, if_true, List.append_nil]
+  · simp only [hz, ite_true, List.append_nil]
     exact ⟨self.finite_points, self.finite_scalars, rfl, rfl, rfl⟩
-  · simp only [hz, Bool.false_eq_true, if_false]
-    obtain ⟨ps, hps, hpsval⟩ := WP.spec_imp_exists
+  · simp only [hz, Bool.false_eq_true, ite_false]
+    obtain ⟨ps, hps, hpsval⟩ := spec_imp_exists
       (alloc.vec.Vec.push_spec self.finite_points point hpl)
-    obtain ⟨ss, hss, hssval⟩ := WP.spec_imp_exists
+    obtain ⟨ss, hss, hssval⟩ := spec_imp_exists
       (alloc.vec.Vec.push_spec self.finite_scalars scalar hsl)
     refine ⟨ps, ss, ?_, hpsval, hssval⟩
     rw [hps]
-    simp only [bind_tc_ok, hss]
+    simp only [bind_ok, hss]
 
 end LeanBlsSimd.Msm8

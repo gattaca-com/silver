@@ -46,7 +46,7 @@ theorem raw_offset (c : U64) (hc : c.val < 4096) :
   refine ⟨toFp8 (Fp8.multiple_of_p (ofU64 c)), Fp8.multiple_of_p_refines c hc, ?_⟩
   intro l
   obtain ⟨hn, hv⟩ := Fp8.multiple_of_p_spec (ofU64 c) hc l
-  exact ⟨by simpa only [ofFp8_toFp8] using hn, by simpa only [ofFp8_toFp8] using hv⟩
+  exact ⟨by simpa only [ofFp8_toFp8] using hn, by simpa only [ofFp8_toFp8] using! hv⟩
 
 variable {k k' : V ℕ} {m m' : ℕ} {x y : fp8.Fp8} {a b : V F}
 
@@ -89,9 +89,9 @@ theorem raw_select (mask : U8) (hx : Raw k m x a) (hy : Raw k' m' y b) :
   simp only [ofFp8_toFp8, select]
   split_ifs with h
   · exact ((hy l).mono le_rfl (le_max_right _ _)).of_lane_eq (by
-      simpa only [Fp8.lane_select, ofU8] using if_pos (by simpa only [ofU8] using h))
+      simpa only [Fp8.lane_select, ofU8] using ite_eq_left (by simpa only [ofU8] using h))
   · exact ((hx l).mono le_rfl (le_max_left _ _)).of_lane_eq (by
-      simpa only [Fp8.lane_select, ofU8] using if_neg (by simpa only [ofU8] using h))
+      simpa only [Fp8.lane_select, ofU8] using ite_eq_right (by simpa only [ofU8] using h))
 
 theorem raw_permute2 (is : Array I64 8#usize) (hx : Raw k m x a) (hy : Raw k' m' y b) :
     ∃ out, fp8.Fp8.permute2 x y is = ok out ∧

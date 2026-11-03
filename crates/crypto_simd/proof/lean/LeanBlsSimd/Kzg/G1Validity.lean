@@ -43,11 +43,9 @@ theorem g1_rep_affine_equiv {p : G1} (hz : p.isInfinity ≠ true) :
     rw [Fp.inverse_eq_inv]
     exact mul_inv_cancel₀ hzne
   refine equiv_of_X_eq_of_Y_eq one_ne_zero hzne ?_ ?_
-  · simp only [G1.rep, G1.toAffine, if_neg hz, Matrix.cons_val_zero,
-      Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons]
+  · simp only [G1.rep, G1.toAffine, ite_eq_right hz]
     exact x_scaled p.x p.z p.z.inverse hw
-  · simp only [G1.rep, G1.toAffine, if_neg hz, Matrix.cons_val_zero,
-      Matrix.cons_val_one, Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons]
+  · simp only [G1.rep, G1.toAffine, ite_eq_right hz]
     exact y_scaled p.y p.z p.z.inverse hw
 
 theorem g1_valid_of_affine {p : G1} (hz : p.isInfinity ≠ true)
@@ -71,8 +69,8 @@ theorem g1_inSubgroup_iff {p : G1} (hp : G1.Valid p) :
     p.inSubgroup = true ↔ Fr.modulus • G1.toPoint p = 0 := by
   unfold G1.inSubgroup
   by_cases hz : p.isInfinity = true
-  · simp only [hz, if_true, (g1_toPoint_eq_zero_iff hp).mpr hz, nsmul_zero]
-  · simp only [hz, Bool.false_eq_true, if_false]
+  · simp only [hz, ite_true, (g1_toPoint_eq_zero_iff hp).mpr hz, nsmul_zero]
+  · simp only [hz, Bool.false_eq_true, ite_false]
     rw [← g1_toPoint_eq_zero_iff (G1.valid_mulNat hp Fr.modulus), G1.toPoint_mulNat hp]
 
 theorem g1Valid_transport {p q : G1} (hinf : p.isInfinity = q.isInfinity)
@@ -82,7 +80,7 @@ theorem g1Valid_transport {p q : G1} (hinf : p.isInfinity = q.isInfinity)
     simpa only [hinf, haff] using hq.1
   refine ⟨hcurve, ?_⟩
   by_cases hpz : p.isInfinity = true
-  · simp only [G1.inSubgroup, hpz, if_true]
+  · simp only [G1.inSubgroup, hpz, ite_true]
   · have hqz : q.isInfinity ≠ true := by simpa only [hinf] using hpz
     have hpv := g1_valid_of_affine hpz (hcurve.resolve_left hpz)
     have hqv := g1_valid_of_affine hqz (hq.1.resolve_left hqz)
@@ -104,7 +102,7 @@ private theorem affine_one_aux (x y one : ZMod Fp.modulus) (ho : one = 1) :
 theorem g1_toAffine_of_one (x y : Fp) :
     (G1.mk x y Fp.one).toAffine = (x, y) := by
   simp only [G1.toAffine, show Fp.one.isZero = false from rfl, Bool.false_eq_true,
-    if_false, Fp.inverse_eq_inv]
+    ite_false, Fp.inverse_eq_inv]
   exact affine_one_aux x y Fp.one rfl
 
 theorem g1ReadAffine_g1Affine {p : G1} (hp : G1Valid p) :
@@ -114,8 +112,8 @@ theorem g1ReadAffine_g1Affine {p : G1} (hp : G1Valid p) :
   simp only [fpRead_fpEncode]
   by_cases hz : p.isInfinity = true
   · have haff : p.toAffine = (Fp.zero, Fp.zero) := by
-      simp only [G1.toAffine, show p.z.isZero = true from hz, if_true]
-    simp only [haff, show Fp.zero.isZero = true from rfl, Bool.and_self, if_true, hz]
+      simp only [G1.toAffine, show p.z.isZero = true from hz, ite_true]
+    simp only [haff, show Fp.zero.isZero = true from rfl, Bool.and_self, ite_true, hz]
   · have hn : ¬(p.toAffine.1.isZero && p.toAffine.2.isZero) = true := by
       rw [Bool.and_eq_true]
       rintro ⟨hx, hy⟩
@@ -125,21 +123,20 @@ theorem g1ReadAffine_g1Affine {p : G1} (hp : G1Valid p) :
       change (p.toAffine.2 : ZMod Fp.modulus) * p.toAffine.2 =
         p.toAffine.1 * p.toAffine.1 * p.toAffine.1 + 4 at hc
       rw [hx', hy'] at hc
-      norm_num at hc
-      exact (by decide : (0 : ZMod Fp.modulus) ≠ 4) hc
-    simp only [hn, hz, Bool.false_eq_true, if_false]
+      exact absurd hc (by decide)
+    simp only [hn, hz, Bool.false_eq_true, ite_false]
 
 theorem g1ReadAffine_g1Affine_matches {p : G1} (hp : G1Valid p) :
     (g1ReadAffine (g1Affine p)).isInfinity = p.isInfinity ∧
       (g1ReadAffine (g1Affine p)).toAffine = p.toAffine := by
   rw [g1ReadAffine_g1Affine hp]
   by_cases hz : p.isInfinity = true
-  · simp only [hz, if_true]
+  · simp only [hz, ite_true]
     constructor
     · rfl
     · simp only [G1.toAffine, G1.zero, show Fp.zero.isZero = true from rfl,
-        show p.z.isZero = true from hz, if_true]
-  · simp only [hz, Bool.false_eq_true, if_false]
+        show p.z.isZero = true from hz, ite_true]
+  · simp only [hz, Bool.false_eq_true, ite_false]
     constructor
     · rfl
     · exact g1_toAffine_of_one _ _

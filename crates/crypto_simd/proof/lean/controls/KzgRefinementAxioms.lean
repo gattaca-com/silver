@@ -42,7 +42,7 @@ run_cmd do
       ``LeanBlsSimd.Kzg.ModelFront.verify_of_bad_index,
       ``LeanBlsSimd.Kzg.Verify.glue_of_contracts,
       ``LeanBlsSimd.Kzg.ModelPairing.array_mapM_ok,
-      ``LeanBlsSimd.Kzg.ModelPairing.cosetShift_eq,
+      ``LeanBlsSimd.Kzg.ModelSpec.mapM_shiftOf,
       ``LeanBlsSimd.Kzg.ModelPairing.weighted_powers_eq,
       ``LeanBlsSimd.Kzg.model_pairing_refinement,
       ``LeanBlsSimd.Kzg.glue_refinement,

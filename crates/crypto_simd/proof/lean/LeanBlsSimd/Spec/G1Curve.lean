@@ -118,7 +118,7 @@ theorem sigma_polynomial (P : E.Point) : P + sigma P + sigma (sigma P) = 0 := by
       exact absurd hb (by decide +kernel)
     have h2P : Point.some 0 y h + Point.some 0 y h = -Point.some 0 y h := by
       rw [Point.add_self_of_Y_ne hy, Point.neg_some, Point.some.injEq]
-      simp [slope_of_Y_ne rfl hy]
+      simp [slope_of_Y_ne rfl hy, Affine.addY, Affine.negAddY, Affine.addX]
     rw [hφ, hφ, h2P, neg_add_cancel]
   · have hxζ : x ≠ beta * x := by
       intro hxζ
@@ -181,17 +181,20 @@ private theorem generatorMulAux_eq (fuel : Nat) (p : G1) (k : Nat)
     · have h2 : k / 2 < 2 ^ fuel := by
         rw [Nat.pow_succ] at hk
         omega
-      rw [if_neg h0, if_neg h0, ih (G1.double p) (k / 2) h2]
+      rw [ite_eq_right h0, ite_eq_right h0, ih (G1.double p) (k / 2) h2]
 
 theorem nonsingular_generator :
     E.Nonsingular G1.generator.x G1.generator.y := by
+  change E.Nonsingular (Fp.toZMod G1.generator.x) (Fp.toZMod G1.generator.y)
   rw [nonsingular_iff]
   decide +kernel
 
 theorem toPoint_generator :
     G1.toPoint G1.generator = .some _ _ nonsingular_generator := by
+  change G1.toPoint G1.generator =
+    .some (Fp.toZMod G1.generator.x) (Fp.toZMod G1.generator.y) _
   rw [G1.toPoint, Jacobian.Point.toAffine_of_Z_ne_zero G1.valid_generator (by decide +kernel)]
-  congr 1
+  congr 1 <;> decide +kernel
 
 -- Kernel evaluation of the 128-bit generator multiplication needs deeper recursion
 -- and more heartbeats than symbolic curve proofs.
@@ -214,11 +217,10 @@ theorem sigma2_generator :
       G1.toPoint_mulNat G1.valid_generator, ← natCast_zsmul, hk, neg_zsmul]
   rw [← htarget, toPoint_generator]
   simp only [sigma]
-  rw [G1.toPoint, Jacobian.Point.toAffine_of_Z_ne_zero hq (by decide +kernel), Point.some.injEq]
-  constructor
-  · decide +kernel
-  · change (G1.generator.y : ZMod Fp.modulus) = _
-    decide +kernel
+  rw [G1.toPoint, Jacobian.Point.toAffine_of_Z_ne_zero hq (by decide +kernel)]
+  change Point.some ((beta : ZMod Fp.modulus) * (beta * Fp.toZMod G1.generator.x))
+      (Fp.toZMod G1.generator.y) _ = Point.some _ _ _
+  congr 1 <;> decide +kernel
 
 instance : Finite E.Point :=
   Finite.of_equiv (Option {xy : ZMod Fp.modulus × ZMod Fp.modulus // E.Nonsingular xy.1 xy.2})
@@ -300,8 +302,8 @@ theorem inSubgroup_iff (P : G1) (h : G1.Valid P) :
     G1.inSubgroup P = true ↔ Fr.modulus • G1.toPoint P = 0 := by
   rw [G1.inSubgroup, G1.isInfinity, G1.isInfinity]
   by_cases hz : P.z.isZero = true
-  · rw [if_pos hz, (toPoint_eq_zero_iff h).mpr hz, nsmul_zero]
+  · rw [ite_eq_left hz, (toPoint_eq_zero_iff h).mpr hz, nsmul_zero]
     exact iff_of_true rfl rfl
-  · rw [if_neg hz, ← G1.toPoint_mulNat h, toPoint_eq_zero_iff (G1.valid_mulNat h _)]
+  · rw [ite_eq_right hz, ← G1.toPoint_mulNat h, toPoint_eq_zero_iff (G1.valid_mulNat h _)]
 
 end LeanBlsSimd.G1Spec

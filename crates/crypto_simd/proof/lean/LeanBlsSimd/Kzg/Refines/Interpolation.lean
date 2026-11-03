@@ -71,22 +71,22 @@ theorem aggregate_column_loop
     refine ⟨acc, ?_, by simpa [hs] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body,
-      hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hj : iter.start.val < 64 := by omega
     obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
     have hev : evaluations.length ≤ Usize.max := by simpa [he] using v.property
     have hac : columns.length ≤ Usize.max := by simpa [ha] using acc.property
-    obtain ⟨eb, heb, hebv⟩ := WP.spec_imp_exists
+    obtain ⟨eb, heb, hebv⟩ := spec_imp_exists
       (@Usize.mul_spec k FIELD_ELEMENTS_PER_CELL (by simp [FIELD_ELEMENTS_PER_CELL]; omega))
     have hebv' : eb.val = k.val*64 := by simpa [FIELD_ELEMENTS_PER_CELL] using hebv
-    obtain ⟨ei, hei, heiv⟩ := WP.spec_imp_exists
+    obtain ⟨ei, hei, heiv⟩ := spec_imp_exists
       (@Usize.add_spec eb iter.start (by omega))
     have heiv' : ei.val = k.val*64 + iter.start.val := by omega
-    obtain ⟨cb, hcb, hcbv⟩ := WP.spec_imp_exists
+    obtain ⟨cb, hcb, hcbv⟩ := spec_imp_exists
       (@Usize.mul_spec c FIELD_ELEMENTS_PER_CELL (by simp [FIELD_ELEMENTS_PER_CELL]; omega))
     have hcbv' : cb.val = c.val*64 := by simpa [FIELD_ELEMENTS_PER_CELL] using hcbv
-    obtain ⟨target, hat, hatv⟩ := WP.spec_imp_exists
+    obtain ⟨target, hat, hatv⟩ := spec_imp_exists
       (@Usize.add_spec cb iter.start (by omega))
     have hatv' : target.val = c.val*64 + iter.start.val := by omega
     have hpow := index_encoded vp powers hp k hk
@@ -101,7 +101,7 @@ theorem aggregate_column_loop
     have hbody : verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body
         v vp k c iter acc = ok (cont (iter', acc')) := by
       simp only [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body,
-        hnext, bind_tc_ok, Function.uncurry_apply_pair, hpow, heb, hei, heval,
+        hnext, bind_ok, Aeneas.Std.uncurry_apply_pair, hpow, heb, hei, heval,
         FrScalar.fr_mul_refines, hcb, hat, hacc,
         FrScalar.fr_add_refines, hmut, acc', x]
     obtain ⟨result, hloop, hr⟩ := ih
@@ -109,7 +109,7 @@ theorem aggregate_column_loop
       (by simpa using hc) iter' (by omega) (by simpa only [hend'] using hend) (by omega)
     refine ⟨result, ?_, ?_⟩
     · rw [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · rw [List.drop_eq_getElem_cons (by simp [hj])]
       simpa only [List.foldl_cons, List.getElem_range, hi'] using hr
@@ -161,7 +161,7 @@ theorem aggregate_columns_loop
     refine ⟨(acc, flags), ?_, by simpa [hs] using And.intro ha hf⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop0.body,
-      hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hk : iter.start.val < indices.val.length := by omega
     obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
@@ -184,15 +184,14 @@ theorem aggregate_columns_loop
       he hp ha iter.start c (by omega) (by omega) (by omega)
     have hbody : verify.CellBatchVerifier.interpolation_commitment_loop0.body
         v vp indices iter acc flags = ok (cont (iter', acc', flags')) := by
-      simp only [verify.CellBatchVerifier.interpolation_commitment_loop0.body, hnext,
-        bind_tc_ok, Function.uncurry_apply_pair, hindex, lift, hused, hcell, flags', c]
+      simp only [verify.CellBatchVerifier.interpolation_commitment_loop0.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair, hindex, lift, hused, hcell, flags', c]
     obtain ⟨result, hloop, hr⟩ := ih
       (aggregateCell evaluations powers iter.start.val c.val columns) (used.set c.val true)
       acc' flags' ha' hf' (by simpa [aggregateCell_length] using hc) (by simpa using hu)
       iter' (by omega) (by simpa only [hend'] using hend) (by omega)
     refine ⟨result, ?_, ?_⟩
     · rw [verify.CellBatchVerifier.interpolation_commitment_loop0, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · have hget : (indices.val.map (·.val))[iter.start.val]! = c.val := by
         simp [getElem!_pos, hk, hcv, raw]
@@ -257,7 +256,7 @@ theorem shift_add_loop
     refine ⟨acc, ?_, by simpa [shiftAdd] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body,
-      hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons a remaining ih =>
     cases oldValues with
     | nil => simp at hlen
@@ -273,7 +272,7 @@ theorem shift_add_loop
           acc iter.start = ok (frEncode b, alloc.vec.Vec.set acc iter.start) := by
         have hacc' : alloc.vec.Vec.index_usize acc iter.start = ok (frEncode b) := by
           simpa only [alloc.vec.Vec.index_slice_index] using hacc
-        simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hacc']
+        simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hacc', bind_tc_ok]
       have hshift := index_encoded vs shifts hs c hci
       let acc' := alloc.vec.Vec.set acc iter.start (frEncode (b + a*factor))
       have ha' : acc'.val = ((doneValues ++ [b + a*factor]) ++ oldValues).map frEncode := by
@@ -282,7 +281,7 @@ theorem shift_add_loop
           vs vc c iter acc (frEncode factor) =
           ok (cont (iter', acc', frEncode (factor*shifts[c.val]!))) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body,
-          hnext, bind_tc_ok, Function.uncurry_apply_pair, hcoeff,
+          hnext, bind_ok, Aeneas.Std.uncurry_apply_pair, hcoeff,
           FrScalar.fr_mul_refines, hacc, FrScalar.fr_add_refines, hmut, hshift, acc']
       obtain ⟨result, hloop, hr⟩ := ih (coeffPrefix ++ [a])
         (doneValues ++ [b+a*factor]) oldValues acc'
@@ -291,7 +290,7 @@ theorem shift_add_loop
         iter' (by simp [hi', hi]) (by simp [hend', hend]; omega)
       refine ⟨result, ?_, ?_⟩
       · rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1, loop.eq_1]
-        simp only [hbody]
+        simp only [hbody, bind_ok]
         exact hloop
       · simpa only [shiftAdd, List.append_assoc, List.singleton_append] using hr
 
@@ -329,7 +328,7 @@ private theorem copy_column_loop
     refine ⟨acc, ?_, by simpa using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body,
-      hnext, bind_tc_ok, Function.uncurry_apply_pair]
+      hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons a remaining ih =>
     cases oldValues with
     | nil => simp at hold
@@ -347,13 +346,13 @@ private theorem copy_column_loop
           reverse_bits_refinement iter.start verify.LOG_CELL (by
             simp only [verify.LOG_CELL, UScalar.ofNatCore_val_eq]
             rcases System.Platform.numBits_eq with hh | hh <;> simp [Usize.numBits, hh])
-      obtain ⟨base, hbase, hbaseval⟩ := WP.spec_imp_exists
+      obtain ⟨base, hbase, hbaseval⟩ := spec_imp_exists
         (@Usize.mul_spec c FIELD_ELEMENTS_PER_CELL (by
           simp only [FIELD_ELEMENTS_PER_CELL, UScalar.ofNatCore_val_eq]
           scalar_tac))
       have hbaseval' : base.val = c.val*64 := by
         simpa only [FIELD_ELEMENTS_PER_CELL, UScalar.ofNatCore_val_eq] using hbaseval
-      obtain ⟨source, hsum, hsourceval⟩ := WP.spec_imp_exists
+      obtain ⟨source, hsum, hsourceval⟩ := spec_imp_exists
         (@Usize.add_spec base rev (by scalar_tac))
       have hsourceval' : source.val = c.val*64 + BitReversal.reverseBitsAux iter.start.val 0 6 := by
         omega
@@ -372,14 +371,14 @@ private theorem copy_column_loop
       have hbody : verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body
           v c iter acc = ok (cont (iter', acc')) := by
         simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body,
-          hnext, bind_tc_ok, Function.uncurry_apply_pair, hbase, hrev, hsum, hread, hmut, acc']
+          hnext, bind_ok, Aeneas.Std.uncurry_apply_pair, hbase, hrev, hsum, hread, hmut, acc']
       obtain ⟨result, hloop, hr⟩ := ih (before ++ [a]) oldValues acc' ha'
         (by simp at hlen ⊢; omega) (by simpa using hold)
         (by simpa only [List.append_assoc, List.singleton_append] using hsource)
         iter' (by simp [hi', hi]) (by simpa only [hend'] using hend)
       refine ⟨result, ?_, ?_⟩
       · rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0, loop.eq_1]
-        simp only [hbody]
+        simp only [hbody, bind_ok]
         exact hloop
       · simpa only [List.append_assoc, List.singleton_append] using hr
 

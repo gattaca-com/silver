@@ -17,7 +17,8 @@ theorem storeRows_length (rows : List Limbs) (indices : Vector ℕ 8)
     | nil => intro rows; rfl
     | cons j lanes ih =>
       intro rows
-      simp only [List.foldl_cons, ih, List.length_set]
+      simp only [List.foldl_cons, ih]
+      exact (List.length_set ..).trans (List.length_set ..)
   exact h _ _
 
 @[simp] theorem pointRows_length (s : msm8.store.PointStore) :
@@ -81,17 +82,17 @@ theorem push_loop_refines (points : Slice blst.blst_p1_affine) (negated : Slice 
         change loop (fun p => msm8.store.PointStore.push_blst_loop0.body points negated
           endomorphism (toFp8 fromBlst) (toFp8 beta) p.1 p.2.1 p.2.2)
           (s.rows, s.len, offset) = _
-        rw [loop.eq_1, hbody]
+        rw [loop.eq_1, hbody, bind_ok]
         exact hout
       · rw [hmodel, hrows]
         conv_rhs => rw [pushRowsModel]
-        simp only [blstPointWords_length, hlt, if_true]
+        simp only [blstPointWords_length, hlt, ite_true]
         rw [hlen, hnext, hc]
     · have heq : offset.val = points.val.length := by omega
       refine ⟨s, ?_, ?_, by omega, rfl⟩
       · unfold msm8.store.PointStore.push_blst_loop0
         rw [loop.eq_1]
-        simp [msm8.store.PointStore.push_blst_loop0.body, UScalar.lt_equiv, heq]
+        simp [msm8.store.PointStore.push_blst_loop0.body, UScalar.lt_equiv, heq, bind_ok]
       · rw [pushRowsModel]
         simp [heq]
 
@@ -123,17 +124,17 @@ theorem push_blst_refines (s : msm8.store.PointStore)
     simp only [Slice.len_val]
     change s.len.val + points.val.length < _
     omega
-  simp only [msm8.store.PointStore.push_blst, hsign, massert, if_true, bind_tc_ok]
+  simp only [msm8.store.PointStore.push_blst, hsign, massert, ite_true, bind_ok]
   rw [add_ok _ _ hadd]
-  simp only [bind_tc_ok, pointStore_capacity_refines, UScalar.le_equiv,
+  simp only [bind_ok, pointStore_capacity_refines, UScalar.le_equiv,
     UScalar.ofNatCore_val_eq, Slice.len_val]
   have hcap' : s.len.val + points.length ≤ s.rows.val.length / 2 := hcap
-  simp only [hcap', if_true, bind_tc_ok, Fp8.splat_limbs_refines]
+  simp only [hcap', ite_true, bind_ok, Fp8.splat_limbs_refines]
   change (do
     let result ← msm8.store.PointStore.push_blst_loop0 s.rows s.len points negated
       endomorphism (toFp8 fromBlstFactor) (toFp8 endomorphismFactor) 0#usize
     ok ({ rows := result.1, len := result.2 } : msm8.store.PointStore)) = _
   rw [hloop]
-  rfl
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd

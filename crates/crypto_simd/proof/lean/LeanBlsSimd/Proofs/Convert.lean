@@ -160,7 +160,7 @@ theorem foldl_pack_keep (x : Limbs) (out : Vector UInt64 6) (N b w : ℕ) (j : F
   rw [List.foldl_cons]
   congr 1
   simp only [packStep, LIMB_BITS, or_limb N b x[j] hN (by omega)]
-  rw [if_neg (by omega)]
+  rw [ite_eq_right (by omega)]
 
 theorem foldl_pack_emit (x : Limbs) (out : Vector UInt64 6) (N b w : ℕ) (j : Fin LIMBS)
     (js : List (Fin LIMBS)) (hN : N < 2 ^ b) (hb : b < 64) (hb' : 64 ≤ b + 52) :
@@ -170,7 +170,7 @@ theorem foldl_pack_emit (x : Limbs) (out : Vector UInt64 6) (N b w : ℕ) (j : F
   rw [List.foldl_cons]
   congr 1
   simp only [packStep, LIMB_BITS, or_limb N b x[j] hN hb]
-  rw [if_pos (by omega)]
+  rw [ite_eq_left (by omega)]
   have hyb := limb_shift_lt x[j] hb
   have hb2 : 2 ^ b < 2 ^ 64 := Nat.pow_lt_pow_right (by norm_num) hb
   have hlt : N + x[j].toNat * 2 ^ b < 2 ^ 128 := by omega
@@ -197,7 +197,7 @@ theorem pack64_spec {a : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52) :
   rw [foldl_pack_keep, foldl_pack_emit, foldl_pack_emit, foldl_pack_emit, foldl_pack_emit,
     foldl_pack_keep, foldl_pack_emit, foldl_pack_emit, List.foldl_nil]
   · dsimp only
-    rw [dif_neg (by norm_num), val64_eq, val_eq]
+    rw [dite_eq_right (by norm_num), val64_eq, val_eq]
     simp only [set!_eq, Vector.getElem_setIfInBounds, Vector.getElem_replicate, Fin.getElem_fin,
       val_fin_LIMBS] at h0 h1 h2 h3 h4 h5 h6 h7 ⊢
     norm_num

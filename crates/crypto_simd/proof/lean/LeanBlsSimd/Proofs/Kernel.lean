@@ -109,7 +109,7 @@ theorem decompress_eq_spec (hC : ScottComplete)
   | ok P =>
     dsimp only
     by_cases hg : G2.inSubgroup P = true
-    · rw [if_pos (valid_complete hC inputs l hu ⟨P, hd, hg⟩), if_pos hg,
+    · rw [ite_eq_left (valid_complete hC inputs l hu ⟨P, hd, hg⟩), ite_eq_left hg,
         (decode_lane inputs l hu).2 P hd]
     · have hv : (decompress inputs).valid.toNat.testBit l = false := by
         cases hv : (decompress inputs).valid.toNat.testBit l
@@ -118,7 +118,7 @@ theorem decompress_eq_spec (hC : ScottComplete)
           rw [hd] at hQ
           cases hQ
           exact absurd hQg hg
-      rw [hv, if_neg hg]
+      rw [hv, ite_eq_right hg]
       rfl
 
 end DecompressG2

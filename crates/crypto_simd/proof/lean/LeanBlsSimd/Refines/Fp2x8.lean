@@ -106,14 +106,13 @@ theorem sqrt_refines (self : fp2x8.Fp2x8) :
     fp2x8.Fp2x8.sqrt self = ok (Prod.map toFp2x8 toU8 (ofFp2x8 self).sqrt) := by
   unfold fp2x8.Fp2x8.sqrt Fp2x8.sqrt
   simp only [Fp8.square_refines, Fp8.mul_refines, Fp8.square, Fp8.add_refines,
-    Fp8.sqrt_candidate_refines, bind_tc_ok, ofFp8_toFp8, ofFp2x8]
+    Fp8.sqrt_candidate_refines, bind_ok, ofFp8_toFp8, ofFp2x8]
   generalize (((ofFp8 self.c0).mul (ofFp8 self.c0)).add
     ((ofFp8 self.c1).mul (ofFp8 self.c1))).sqrt_candidate = n
-  simp only [Fp8.is_zero_mask_refines, Fp8.sub_refines, Fp8.select_refines, Fp8.half_refines,
-    bind_tc_ok, ofU8_toU8, ofFp8_toFp8]
+  simp only [Fp8.is_zero_mask_refines, Fp8.sub_refines, Fp8.select_refines, Fp8.half_refines, bind_ok, ofU8_toU8, ofFp8_toFp8]
   generalize (Fp8.select ((ofFp8 self.c0).add n).is_zero_mask ((ofFp8 self.c0).add n)
     ((ofFp8 self.c0).sub n)).half = t
-  simp only [Fp8.pow_p_minus_3_over_4_refines, bind_tc_ok, ofFp8_toFp8]
+  simp only [Fp8.pow_p_minus_3_over_4_refines, bind_ok, ofFp8_toFp8]
   generalize t.pow_p_minus_3_over_4 = r
   generalize t.mul r = real
   generalize (ofFp8 self.c1).half.mul r = imag

@@ -5,7 +5,7 @@ import LeanBlsSimd.Refines.FrobeniusConstants
 namespace LeanBlsSimd.Controls.Tower
 
 open EthLib.Cryptography.Bls
-open Cyclotomic
+open _root_.LeanBlsSimd.Cyclotomic
 
 noncomputable section
 

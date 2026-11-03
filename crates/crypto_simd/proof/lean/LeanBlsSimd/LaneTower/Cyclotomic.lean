@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.LaneTower
 
 def cycleInput0 : Array I64 8#usize := Array.make 8#usize
@@ -54,7 +56,7 @@ theorem strict2_cond_sub {k c : ℕ} {x : fp2x8.Fp2x8} {o : fp8.Fp8} {a : P F}
   obtain ⟨x0, hx0, rx0⟩ := strict_cond_sub hx.1 ho hk
   obtain ⟨x1, hx1, rx1⟩ := strict_cond_sub hx.2 ho hk
   refine ⟨⟨x0, x1⟩, ?_, rx0, rx1⟩
-  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_tc_ok]
+  simp only [fp2x8.Fp2x8.cond_sub, hx0, hx1, bind_ok]
 
 noncomputable def cyclePrepare (x : fp2x8.Fp2x8) :
     Result (fp2x8.Fp2x8 × fp2x8.Fp2x8 × fp8.Fp8) := do
@@ -106,7 +108,7 @@ theorem cycle_schedule (x : fp2x8.Fp2x8) :
       fp2x8.Fp2x8.cond_sub r1 p256) := by
   have h512 : 2#u64 * fp12.BOUND = ok 512#u64 := by unfold fp12.BOUND; rfl
   simp only [fp12.Fp12.cyclotomic_square, cycleProducts, cyclePrepare, cycleQProduct,
-    cycleMProduct, h512, bind_tc_ok, bind_assoc, bind_return]
+    cycleMProduct, h512, Aeneas.Std.bind_assoc, bind_ok, Aeneas.Std.bind_pure]
   rfl
 
 theorem cycle_prepare_raw {x : fp2x8.Fp2x8} {a : P F}
@@ -127,7 +129,7 @@ theorem cycle_prepare_raw {x : fp2x8.Fp2x8} {a : P F}
     rs.mono (by intro l; fin_cases l <;> decide +kernel) (by decide)
   obtain ⟨p512, hp512, rp512⟩ := raw_offset 512#u64 (by decide)
   refine ⟨u, s, p512, ?_, ru', rs', rp512⟩
-  simp only [cyclePrepare, hz, hu0, hu1, hu, hs0, hs1, hs, hp512, bind_tc_ok]
+  simp only [cyclePrepare, hz, hu0, hu1, hu, hs0, hs1, hs, hp512, bind_ok]
 
 theorem quadratic_real_raw {u : fp2x8.Fp2x8} {p : fp8.Fp8} {a : P F}
     (hu : Raw2 (fun _ => 512, fun _ => 512) 2 u a) (hp : offset 512 p) :
@@ -170,6 +172,7 @@ theorem cycle_q_raw {u : fp2x8.Fp2x8} {p512 : fp8.Fp8} {a : P F}
   obtain ⟨r, i, im, hr, hi, him, ri⟩ := quadratic_imag_raw ru'
   refine ⟨⟨re, im⟩, ?_, rr, ri⟩
   unfold cycleQProduct
+  simp only [← bind_tc_eq] at hs hd hre hr hi him ⊢
   rw [← bind_assoc, hs, bind_tc_ok, ← bind_assoc, hd, bind_tc_ok, hre, bind_tc_ok,
     hr, bind_tc_ok, ← bind_assoc, hi, bind_tc_ok, him, bind_tc_ok]
 
@@ -192,7 +195,7 @@ theorem cycle_m_raw {s : fp2x8.Fp2x8} {p512 : fp8.Fp8} {a : P F}
   obtain ⟨right, hright, rright⟩ := raw_normalise rpr' (by intro l; decide) (by decide)
   obtain ⟨m, hm, rm⟩ := raw_mul rleft rright (by intro l; dsimp; decide)
   refine ⟨m, ?_, rm⟩
-  simp only [cycleMProduct, hssum, hsdiff, hstwice, hpl, hleft, hpr, hright, hm, bind_tc_ok]
+  simp only [cycleMProduct, hssum, hsdiff, hstwice, hpl, hleft, hpr, hright, hm, bind_ok]
 
 theorem cycle_products_raw {x : fp2x8.Fp2x8} {a : P F}
     (hx : Normal2 (fun _ => 256, fun _ => 256) x a) :
@@ -202,7 +205,7 @@ theorem cycle_products_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨q, hq, rq⟩ := cycle_q_raw ru rp
   obtain ⟨m, hm, rm⟩ := cycle_m_raw rs rp
   refine ⟨q, m, ?_, rq, rm⟩
-  simp only [cycleProducts, hp, hq, hm, bind_tc_ok]
+  simp only [cycleProducts, hp, hq, hm, bind_ok]
 
 theorem cyclotomic_raw {x : fp2x8.Fp2x8} {a : P F}
     (hx : Normal2 (fun _ => 256, fun _ => 256) x a) :
@@ -215,6 +218,6 @@ theorem cyclotomic_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨out, hout, rout⟩ := strict2_cond_sub rr1 rp256 (by decide)
   refine ⟨out, ?_, rout⟩
   rw [cycle_schedule]
-  simp only [hprod, hr, hp512, hr1, fp12.BOUND, hp256, hout, bind_tc_ok]
+  simp only [hprod, hr, hp512, hr1, fp12.BOUND, hp256, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

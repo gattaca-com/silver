@@ -6,7 +6,7 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 namespace LeanBlsSimd.Kzg
 
 def mapSlice {α β : Type} (f : α → β) (xs : Slice α) : Slice β :=
-  ⟨xs.val.map f, by simpa using xs.property⟩
+  Slice.from (xs.val.map f) (by simp)
 
 def transportDecoder {ForeignAffine : Type}
     (toLocal : ForeignAffine → blst.blst_p1_affine)
@@ -32,9 +32,9 @@ theorem decoder_transport {ForeignAffine : Type}
     ∃ result, transportDecoder toLocal fromLocal decode inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hcall, hresult⟩ := hdecode inputs (mapSlice (Option.map fromLocal) out)
-    (by simpa only [mapSlice, List.length_map] using hlen)
+    (by simpa only [mapSlice, Slice.from_val, List.length_map] using hlen)
   refine ⟨mapSlice (Option.map toLocal) result, ?_, ?_⟩
-  · simp only [transportDecoder, hcall, bind_tc_ok]
-  · simp only [mapSlice, hresult, List.map_map, Function.comp_def, hverdict]
+  · simp only [transportDecoder, hcall, bind_ok]
+  · simp only [mapSlice, Slice.from_val, hresult, List.map_map, Function.comp_def, hverdict]
 
 end LeanBlsSimd.Kzg

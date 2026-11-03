@@ -26,7 +26,7 @@ private theorem g2_toAffine_one (x y : Fp2) :
   have hz : Fp2.one.isZero = false := by
     apply Bool.eq_false_iff.mpr
     simp [Fp2.isZero_iff]
-  simp only [G2.toAffine, hz, Bool.false_eq_true, if_false]
+  simp only [G2.toAffine, hz, Bool.false_eq_true, ite_false]
   apply Prod.ext <;> apply Fp2.toField.injective <;>
     simp [map_mul, Fp2.toField_inverse]
 
@@ -58,13 +58,13 @@ theorem g2ReadAffine_decoded {bytes : ByteArray} {p : G2}
             have hne : Fp2.toField y ≠ 0 := by
               intro hz
               have hrhs : Kernel.rhs (Fp2.toField (⟨c0, c1⟩ : Fp2)) = 0 := by
-                simpa [Kernel.rhs, map_add, map_mul, G2.bTwist, hz, pow_succ] using hroot.symm
+                simpa [Kernel.rhs, map_add, map_mul, G2.bTwist, hz, pow_succ] using! hroot.symm
               exact Kernel.rhs_ne_zero _ hrhs
             have hn (choice : Prop) [Decidable choice] :
                 (if choice then y else -y).isZero = false := by
               apply Bool.eq_false_iff.mpr
               split <;> simpa [Fp2.isZero_iff] using hne
-            simp only [hn, Bool.and_false, Bool.false_eq_true, if_false]
+            simp only [hn, Bool.and_false, Bool.false_eq_true, ite_false]
         · cases hd
 
 theorem g2Affine_decoded_valid {bytes : ByteArray} {p : G2}

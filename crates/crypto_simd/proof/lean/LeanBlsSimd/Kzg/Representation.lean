@@ -14,7 +14,7 @@ def limbs (xs : List U64) : Nat :=
   xs.foldr (fun x acc => x.val + 2^64 * acc) 0
 
 def words (n : Usize) (x : Nat) : Aeneas.Std.Array U64 n :=
-  ⟨(List.range n.val).map (fun i => ⟨BitVec.ofNat 64 (x / 2^(64*i))⟩), by simp⟩
+  Array.from ((List.range n.val).map (fun i => ⟨BitVec.ofNat 64 (x / 2^(64*i))⟩)) (by simp)
 
 def frEncode (x : Fr) : blst.blst_fr := ⟨words 4#usize ((x.val * 2^256) % Fr.modulus)⟩
 instance rawFrInhabited : Inhabited blst.blst_fr := ⟨frEncode 0⟩
@@ -23,7 +23,7 @@ def fpEncode (x : Fp) : blst.blst_fp := ⟨words 6#usize ((x.val * 2^384) % Fp.m
 def fpRead (x : blst.blst_fp) : Fp := Fp.ofNat (limbs x.l.val) * (Fp.ofNat (2^384)).inverse
 
 def fp2Encode (x : Fp2) : blst.blst_fp2 :=
-  ⟨⟨[fpEncode x.c0, fpEncode x.c1], by simp⟩⟩
+  ⟨Array.make 2#usize [fpEncode x.c0, fpEncode x.c1]⟩
 
 def fp2Read (x : blst.blst_fp2) : Fp2 :=
   ⟨fpRead x.fp.val[0], fpRead x.fp.val[1]⟩

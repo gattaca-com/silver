@@ -22,23 +22,25 @@ private theorem scalarWrites_step [BlsExternals] (inputs : Slice (Array U8 96#us
     (h : ScalarWrites inputs original out start i.val) :
     ScalarWrites inputs original
       (out.set i (BlsExternals.uncompressG2 inputs.val[i.val]!)) start (i.val + 1) := by
-  refine ⟨by simpa [Slice.set, Slice.setAtNat] using h.1, ?_⟩
+  refine ⟨by simpa [Slice.set, Slice.setAtNat, Slice.from_val] using h.1, ?_⟩
   intro j hj
-  simp only [Slice.set, Slice.setAtNat]
+  simp only [Slice.set, Slice.setAtNat, Slice.from_val]
   by_cases heq : i.val = j
   · subst j
-    rw [List.getElem!_set _ _ _ (by have := h.1; omega)]
+    rw [List.set_getElem!_eq _ _ _ _ ⟨(by have := h.1; omega), rfl⟩]
     simp [hstart]
-  · rw [List.getElem!_set_ne out.val i.val j _ (Or.inl heq), h.2 j hj]
+  · rw [List.set_getElem!_ne out.val i.val j _ (Or.inl heq), h.2 j hj]
     have hc : (start ≤ j ∧ j < i.val) ↔ (start ≤ j ∧ j < i.val + 1) := by omega
     simp only [hc]
 
 private theorem scalar_index [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) (i : Usize)
-    (hi : i.val < inputs.val.length) (ho : i.val < out.val.length) :
+    (hi : i.val < inputs.val.length) (ho : i.val < out.val.length) {β : Type}
+    (k : Slice (Option blst.blst_p2_affine) → Result β) :
     (do let a ← Slice.index_usize inputs i
         let v ← uncompress_in_g2_blst a
-        Slice.update out i v) = ok (out.set i (BlsExternals.uncompressG2 inputs.val[i.val]!)) := by
+        let s ← Slice.update out i v
+        k s) = k (out.set i (BlsExternals.uncompressG2 inputs.val[i.val]!)) := by
   simp [Slice.index_usize, hi, uncompress_in_g2_blst,
     Slice.update, ho, Slice.set, Slice.setAtNat]
 
@@ -56,13 +58,13 @@ private theorem range_runs {S : Type}
   | zero =>
     have hs : r.start.val = stop.val := by omega
     have hn := next_ge r (by rw [he]; omega)
-    exact ⟨s, by rw [loop.eq_1, hdone r s he hs hi hn], hs ▸ hi⟩
+    exact ⟨s, by rw [loop.eq_1, hdone r s he hs hi hn, bind_ok], hs ▸ hi⟩
   | succ k ih =>
     have hlt : r.start.val < stop.val := by omega
     obtain ⟨r', hs', he', hn⟩ := next_lt r (by rw [he]; omega)
     obtain ⟨s', hb, hi'⟩ := hstep r r' s he hlt hi hn
     obtain ⟨v, hv, hi''⟩ := ih r' s' (he'.trans he) (by omega) (hs' ▸ hi') (by omega)
-    exact ⟨v, by rw [loop.eq_1, hb]; exact hv, hi''⟩
+    exact ⟨v, by rw [loop.eq_1, hb, bind_ok]; exact hv, hi''⟩
 
 theorem scalar_chunk_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     (out : Slice (Option blst.blst_p2_affine)) (start len : Usize)
@@ -82,13 +84,11 @@ theorem scalar_chunk_refines [BlsExternals] (inputs : Slice (Array U8 96#usize))
     let i : Usize := UScalar.ofNatCore (start.val + r.start.val) hbound
     have hi : i.val = start.val + r.start.val := by simp [i]
     refine ⟨s.set i (BlsExternals.uncompressG2 inputs.val[i.val]!), ?_, ?_⟩
-    · simp only [uncompress_in_g2_loop0_loop0.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair]
+    · simp only [uncompress_in_g2_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
       rw [add_ok _ _ hbound]
-      simp only [bind_tc_ok]
-      have heq := scalar_index inputs s i (by omega) (by have := hinv.1; omega)
-      simpa only [bind_assoc, bind_tc_ok] using congrArg
-        (fun x => x >>= fun s => ok (cont (r', s))) heq
+      simp only [bind_ok]
+      exact scalar_index inputs s i (by omega) (by have := hinv.1; omega)
+        (fun s => ok (cont (r', s)))
     · have h := scalarWrites_step inputs out s start.val i (by omega) (by omega)
         (by simpa [hi] using hinv)
       simpa [hi, Nat.add_assoc] using h

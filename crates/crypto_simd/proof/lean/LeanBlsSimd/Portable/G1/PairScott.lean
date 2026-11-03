@@ -4,13 +4,15 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.G1.Pair
 set_option maxRecDepth 4096
 
 theorem scalar_comparison [RuntimeFeatures] (x y : Bls.Fp) (hp : Bls.G1.Valid ⟨x,y,Bls.Fp.one⟩) :
     portable.g1.G1.is_minus_sigma_squared (G1.encode (G1.timesZ (G1.timesZ ⟨x,y,Bls.Fp.one⟩)))
       (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Bls.G1.inSubgroup ⟨x,y,Bls.Fp.one⟩) := by
-  simpa only [portable.g1.G1.in_g1,G1.times_z_affine_encoded,G1.times_z_encoded,bind_tc_ok]
+  simpa only [portable.g1.G1.in_g1,G1.times_z_affine_encoded,G1.times_z_encoded,bind_tc_ok, bind_ok]
     using G1.in_g1_encoded x y hp
 
 theorem finish_lane [RuntimeFeatures] (x y : Bls.Fp) (s : LaneState)
@@ -20,9 +22,9 @@ theorem finish_lane [RuntimeFeatures] (x y : Bls.Fp) (s : LaneState)
       portable.g1.G1.is_minus_sigma_squared (G1.encode s.2) (Kzg.fpEncode x).l (Kzg.fpEncode y).l) =
       ok (Bls.G1.inSubgroup ⟨x,y,Bls.Fp.one⟩) := by
   cases hb : s.1
-  · simp only [Bool.false_eq_true,if_false,hs hb]
+  · simp only [Bool.false_eq_true,ite_false,hs hb]
     exact scalar_comparison x y hp
-  · simp only [if_true]
+  · simp only [ite_true]
     exact G1.in_g1_encoded x y hp
 
 private theorem finish_body_zero [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s0 s1 : LaneState)
@@ -32,9 +34,9 @@ private theorem finish_body_zero [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s0 s1
       (flags s0.1 s1.1) (encode s0.2 s1.2) (flags a b) 0#usize =
       ok (cont (flags (Bls.G1.inSubgroup ⟨x0,y0,Bls.Fp.one⟩) b,1#usize)) := by
   simp only [portable.g1_pair.G1Pair.in_g1_loop2.body,
-    show 0#usize < 2#usize from by decide,if_true,flags_zero,Fp.pair_index_zero,lane_zero,bind_tc_ok]
+    show 0#usize < 2#usize from by decide,ite_true,flags_zero,Fp.pair_index_zero,lane_zero, bind_ok]
   rw [finish_lane x0 y0 s0 hp hs]
-  simp only [bind_tc_ok,flags_update_zero,
+  simp only [bind_ok,flags_update_zero,
     show 0#usize+1#usize = ok 1#usize from by rw [usize_add_ok _ _ (by decide)]; rfl]
 
 private theorem finish_body_one [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s0 s1 : LaneState)
@@ -44,9 +46,9 @@ private theorem finish_body_one [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s0 s1 
       (flags s0.1 s1.1) (encode s0.2 s1.2) (flags a b) 1#usize =
       ok (cont (flags a (Bls.G1.inSubgroup ⟨x1,y1,Bls.Fp.one⟩),2#usize)) := by
   simp only [portable.g1_pair.G1Pair.in_g1_loop2.body,
-    show 1#usize < 2#usize from by decide,if_true,flags_one,Fp.pair_index_one,lane_one,bind_tc_ok]
+    show 1#usize < 2#usize from by decide,ite_true,flags_one,Fp.pair_index_one,lane_one, bind_ok]
   rw [finish_lane x1 y1 s1 hp hs]
-  simp only [bind_tc_ok,flags_update_one,
+  simp only [bind_ok,flags_update_one,
     show 1#usize+1#usize = ok 2#usize from by rw [usize_add_ok _ _ (by decide)]; rfl]
 
 private theorem finish_step [RuntimeFeatures] (px py : Array portable.fp.Fp 2#usize)
@@ -56,14 +58,14 @@ private theorem finish_step [RuntimeFeatures] (px py : Array portable.fp.Fp 2#us
       portable.g1_pair.G1Pair.in_g1_loop2 px py e r m' k' := by
   rw [portable.g1_pair.G1Pair.in_g1_loop2,loop.eq_1]
   dsimp only
-  rw [hb]
+  rw [hb, bind_ok]
   rfl
 
 private theorem finish_two [RuntimeFeatures] (px py : Array portable.fp.Fp 2#usize)
     (e : Array Bool 2#usize) (r : portable.g1_pair.G1Pair) (m : Array Bool 2#usize) :
     portable.g1_pair.G1Pair.in_g1_loop2 px py e r m 2#usize = ok m := by
   rw [portable.g1_pair.G1Pair.in_g1_loop2,loop.eq_1]
-  simp only [portable.g1_pair.G1Pair.in_g1_loop2.body,lt_self_iff_false,if_false]
+  simp only [portable.g1_pair.G1Pair.in_g1_loop2.body,lt_self_iff_false,ite_false, bind_ok]
 
 theorem finish_encoded [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp) (s0 s1 : LaneState)
     (hp0 : Bls.G1.Valid ⟨x0,y0,Bls.Fp.one⟩) (hp1 : Bls.G1.Valid ⟨x1,y1,Bls.Fp.one⟩)
@@ -82,7 +84,7 @@ theorem in_g1_encoded [RuntimeFeatures] (x0 x1 y0 y1 : Bls.Fp)
       ok (flags (Bls.G1.inSubgroup ⟨x0,y0,Bls.Fp.one⟩) (Bls.G1.inSubgroup ⟨x1,y1,Bls.Fp.one⟩)) := by
   have hflags : Array.repeat 2#usize false = flags false false := rfl
   simp only [portable.g1_pair.G1Pair.in_g1,from_affine_encoded,
-    Z_BITS_index 0#usize (by decide),hflags,bind_tc_ok]
+    Z_BITS_index 0#usize (by decide),hflags, bind_ok]
   change (do let (e,r) ← portable.g1_pair.G1Pair.in_g1_loop0 (fields x0 x1) (fields y0 y1)
                        (flags false false) (encode ⟨x0,y0,Bls.Fp.one⟩ ⟨x1,y1,Bls.Fp.one⟩) startBit
              let (e',r') ← portable.g1_pair.G1Pair.in_g1_loop1 e r startBit r.x r.y r.z

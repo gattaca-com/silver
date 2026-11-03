@@ -11,9 +11,7 @@ open silver_crypto_simd silver_crypto_simd.kzg
 namespace LeanBlsSimd.Kzg.Extender
 
 private theorem cells_per_extended_blob : CELLS_PER_EXT_BLOB = ok 128#usize := by
-  simp only [CELLS_PER_EXT_BLOB, FIELD_ELEMENTS_PER_BLOB, FIELD_ELEMENTS_PER_CELL]
-  rw [scalar_mul_ok 2#usize 4096#usize (by scalar_tac)]
-  rfl
+  exact cells_per_ext_blob_eq
 
 private theorem compute_scalar_core
     (houtput : ∀ (blob : Blob) (cells : Cells) (values : _root_.Array Fr)
@@ -40,8 +38,7 @@ private theorem compute_scalar_core
     simp only [hm] at hr
     subst verdict
     refine ⟨false, decoded, cells, ?_, hd, ?_, (fun _ => rfl), ?_⟩
-    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok,
-        Function.uncurry_apply_pair, Bool.false_eq_true, if_false]
+    · simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false]
     · simp [Model.compute, Model.extend, hm]
     · rw [hframe]
       exact hkernel
@@ -57,9 +54,10 @@ private theorem compute_scalar_core
       (alloc.vec.Vec.deref decoded.inverse_roots)
       (bitReversalPermutation values) (Kzg.Model.inverseRoots (Kzg.Model.roots 12))
       (Fr.ofNat 4096).inverse
-      hd.2.2.2.2.2.1 (by simpa [size_bitReversalPermutation] using hvalues)
-      (by simp [Kzg.Model.inverseRoots, Kzg.Model.roots]) hdecoded hd.2.1
-    let inverseVec : alloc.vec.Vec blst.blst_fr := ⟨inverse.val, inverse.property⟩
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val, show (2 : Nat)^12 = 4096 by decide] using hd.2.2.2.2.2.1) (by simpa [size_bitReversalPermutation] using hvalues)
+      (by simp [Kzg.Model.inverseRoots, Kzg.Model.roots]) (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hdecoded)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hd.2.1)
+    let inverseVec : alloc.vec.Vec blst.blst_fr := ⟨inverse⟩
     obtain ⟨shifted, hshift, hshiftVal⟩ := shift_refinement inverseVec
       decoded.shift_powers coefficients hcoeffSize hinverseVal hd.2.2.2.1
     let shiftedValues := _root_.Array.ofFn (n := 4096) fun i =>
@@ -68,11 +66,14 @@ private theorem compute_scalar_core
     obtain ⟨evaluations, hfft, hevaluations⟩ := fft_refinement_of_blst 12
       (alloc.vec.Vec.deref decoded.evaluations) (alloc.vec.Vec.deref shifted)
       (alloc.vec.Vec.deref decoded.roots) shiftedValues (Kzg.Model.roots 12)
-      hd.2.2.2.2.1 hshiftSize (by simp [Kzg.Model.roots]) hshiftVal hd.1
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val, show (2 : Nat)^12 = 4096 by decide] using hd.2.2.2.2.1)
+      hshiftSize (by simp [Kzg.Model.roots])
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hshiftVal)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hd.1)
     let next : cell_extender.CellExtender :=
       { decoded with
         coefficients := shifted
-        evaluations := ⟨evaluations.val, evaluations.property⟩ }
+        evaluations := ⟨evaluations⟩ }
     have hnextValues : next.evaluations.val = (Model.extension values).toList.map frEncode :=
       hevaluations
     have hextSize : (Model.extension values).size = 4096 := by
@@ -93,26 +94,25 @@ private theorem compute_scalar_core
           decoded.inverse_size = ok inverse := by
         rw [hd.2.2.1]
         exact hinverse
-      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_tc_ok,
-        Function.uncurry_apply_pair, if_true, cell_extender.copy_blob, cells_per_extended_blob, hhalf, hcopy]
-      simp only [alloc.vec.Vec.deref_mut, lift, bind_tc_ok, Function.uncurry_apply_pair]
-      simp only [alloc.vec.Vec.deref] at hinverse'
-      simp only [alloc.vec.Vec.deref]
+      simp only [cell_extender.CellExtender.compute, hkernel, hdecode, bind_ok, Aeneas.Std.uncurry_apply_pair, ite_true, cell_extender.copy_blob, cells_per_extended_blob, hhalf, hcopy]
+      simp only [alloc.vec.Vec.deref_mut, lift, bind_ok, Aeneas.Std.uncurry_apply_pair]
+      simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from] at hinverse' hfft
+      simp only [alloc.vec.Vec.deref, alloc.vec.Vec.val, Slice.val_from]
       rw [hinverse']
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let shifted ← cell_extender.CellExtender.compute_loop
           { start := 0#usize, «end» := FIELD_ELEMENTS_PER_BLOB }
           decoded.shift_powers inverseVec
-        let evaluations ← fft.fft (alloc.vec.Vec.deref decoded.evaluations)
-          (alloc.vec.Vec.deref shifted) (alloc.vec.Vec.deref decoded.roots)
+        let evaluations ← fft.fft decoded.evaluations.slice
+          shifted.slice decoded.roots.slice
         let out ← cell_extender.CellExtender.write_extension
           { decoded with
             coefficients := shifted
-            evaluations := ⟨evaluations.val, evaluations.property⟩ } copied
+            evaluations := ⟨evaluations⟩ } copied
         ok (true, { decoded with
           coefficients := shifted
-          evaluations := ⟨evaluations.val, evaluations.property⟩ }, out)) = _
+          evaluations := ⟨evaluations⟩ }, out)) = _
       simp only [hshift, bind_tc_ok, hfft]
       change (do
         let result ← cell_extender.CellExtender.write_extension next copied

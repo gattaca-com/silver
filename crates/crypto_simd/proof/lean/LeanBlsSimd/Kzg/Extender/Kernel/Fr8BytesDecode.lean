@@ -92,25 +92,24 @@ theorem from_bytes_blocks_refines (input : Slice U8) (hsize : 256 ≤ input.val.
     have hplatform := two_pow_32_le_usize
     simp only [UScalarTy.Usize_numBits_eq] at hm hplatform
     simp_body fr8.u256x8.U256x8.from_bytes_loop.body hn
-    simp (disch := (simp; omega)) only [usize_mul_ok, UScalar.ofNatCore_val_eq,
-      bind_tc_ok, load_block_refines, swap_bytes_refines]
+    simp (disch := (simp; omega)) only [usize_mul_ok, UScalar.ofNatCore_val_eq, bind_ok, load_block_refines, swap_bytes_refines]
     have hv : (Vector.ofFn fun lane => swapWord (littleBlock input (64*r.start.val))[lane]) =
         (decodedBlocks input)[block] := by
       ext lane hlane
       simp [littleBlock, decodedBlocks, swapWord_from_le_bytes, hs]
-    rw [hv, update_eq _ r.start _ (show r.start.val < (4#usize).val from hb)]
+    rw [hv, update_eq _ r.start _ (show r.start.val < (4#usize).val from hb), bind_ok]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [decodedBlocks, foldl_set_ofFn]
 
 theorem inputChunk_slice (input : Slice U8) (start size pos : Nat)
     (hpos : pos + 8 ≤ size) :
-    inputChunk ⟨input.val.slice start (start+size),
-      le_trans (List.slice_length_le _ _ _) input.property⟩ pos =
+    inputChunk (Slice.from (input.val.slice start (start+size))
+      (le_trans (List.slice_length_le _ _ _) input.property)) pos =
       inputChunk input (start+pos) := by
   ext i hi
-  simp [inputChunk, List.slice, show pos+i < size by omega, Nat.add_assoc]
+  simp [inputChunk, Slice.from_val, List.slice, show pos+i < size by omega, Nat.add_assoc]
 
 def decodedVectors (input : Slice U8) (offset : Nat) : Vector M512 4 :=
   Vector.ofFn fun k => Vector.ofFn fun lane => (decodedWords input (offset+32*lane.val))[k]
@@ -124,21 +123,21 @@ theorem vector_from_bytes_refines (input : Slice U8) (offset : Usize)
     simp only [Usize.max, Usize.numBits] at hp
     have := Nat.two_pow_pos UScalarTy.Usize.numBits
     omega
-  let window : Slice U8 := ⟨input.val.slice offset.val (offset.val+256),
-    le_trans (List.slice_length_le _ _ _) input.property⟩
+  let window : Slice U8 := Slice.from (input.val.slice offset.val (offset.val+256))
+    (le_trans (List.slice_length_le _ _ _) input.property)
   have hw : window.val.length = 256 := by simp [window, List.slice_length]; omega
   simp only [UScalarTy.Usize_numBits_eq] at hm
   unfold fr8.u256x8.U256x8.from_bytes
   simp only [fr8.LANES]
   rw [usize_mul_ok 32#usize 8#usize (by decide)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by
     change offset.val + 256 < 2^UScalarTy.Usize.numBits
     simp only [UScalarTy.Usize_numBits_eq]
     omega)]
-  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, UScalar.ofNatCore_val_eq]
   rw [slice_index_ok input _ _ (by simp) (by simp; omega)]
-  simp only [bind_tc_ok, FrModel.Simd.zero_refines, UScalar.ofNatCore_val_eq,
+  simp only [bind_ok, FrModel.Simd.zero_refines, UScalar.ofNatCore_val_eq,
     fr8.u256x8.WORDS]
   rw [show Array.repeat 4#usize FrModel.Simd.zero =
     toArray id (Vector.replicate 4 FrModel.Simd.zero) by simp [toArray_replicate]]

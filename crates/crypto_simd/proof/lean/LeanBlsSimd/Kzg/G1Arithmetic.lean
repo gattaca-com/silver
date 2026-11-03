@@ -6,7 +6,7 @@ open WeierstrassCurve.Jacobian
 namespace LeanBlsSimd.Kzg
 
 theorem g1Valid_of_infinity {p : G1} (hp : p.isInfinity = true) : G1Valid p := by
-  exact ⟨Or.inl hp, by simp only [G1.inSubgroup, hp, if_true]⟩
+  exact ⟨Or.inl hp, by simp only [G1.inSubgroup, hp, ite_true]⟩
 
 theorem g1Valid_zero : G1Valid G1.zero := g1Valid_of_infinity rfl
 
@@ -68,7 +68,7 @@ theorem g1_toPoint_eq_iff {p q : G1} (hp : G1Valid p) (hq : G1Valid q) :
   by_cases hpz : p.isInfinity = true
   · have hqz : q.isInfinity = true := hinf ▸ hpz
     change q.z.isZero = true at hqz
-    simp only [G1.toAffine, show p.z.isZero = true from hpz, hqz, if_true]
+    simp only [G1.toAffine, show p.z.isZero = true from hpz, hqz, ite_true]
   · have hqz : q.isInfinity ≠ true := by simpa only [hinf] using hpz
     apply affine_toPoint_injective (hp.1.resolve_left hpz) (hq.1.resolve_left hqz)
     rwa [G1.toPoint_affine_normalize hpz, G1.toPoint_affine_normalize hqz]
@@ -88,12 +88,12 @@ theorem g1_toPoint_neg {p : G1} (hp : G1Valid p) :
 
 theorem g1_add_of_infinity_left {p q : G1} (hp : p.isInfinity = true) :
     G1.add p q = q := by
-  simp only [G1.add, show p.z.isZero = true from hp, if_true]
+  simp only [G1.add, show p.z.isZero = true from hp, ite_true]
 
 theorem g1_add_of_infinity_right {p q : G1} (hp : p.isInfinity ≠ true)
     (hq : q.isInfinity = true) : G1.add p q = p := by
-  simp only [G1.add, show p.z.isZero ≠ true from hp, Bool.false_eq_true, if_false,
-    show q.z.isZero = true from hq, if_true]
+  simp only [G1.add, show p.z.isZero ≠ true from hp, Bool.false_eq_true, ite_false,
+    show q.z.isZero = true from hq, ite_true]
 
 theorem g1Valid_add {p q : G1} (hp : G1Valid p) (hq : G1Valid q) :
     G1Valid (G1.add p q) := by
@@ -120,7 +120,7 @@ theorem g1_toPoint_add {p q : G1} (hp : G1Valid p) (hq : G1Valid q) :
 
 theorem g1_double_of_infinity {p : G1} (hp : p.isInfinity = true) :
     G1.double p = p := by
-  simp only [G1.double, show p.z.isZero = true from hp, if_true]
+  simp only [G1.double, show p.z.isZero = true from hp, ite_true]
 
 theorem g1Valid_double {p : G1} (hp : G1Valid p) : G1Valid (G1.double p) := by
   by_cases hz : p.isInfinity = true
@@ -141,8 +141,8 @@ theorem g1_mulNat_of_infinity {p : G1} (hp : p.isInfinity = true) (k : Nat) :
   | h k ih =>
     rw [G1.mulNat_def]
     by_cases hk : k = 0
-    · simp only [hk, if_true]
-    · simp only [hk, if_false]
+    · simp only [hk, ite_true]
+    · simp only [hk, ite_false]
       rw [g1_double_of_infinity hp, ih (k / 2) (by omega)]
       split
       · exact g1_add_of_infinity_left hp

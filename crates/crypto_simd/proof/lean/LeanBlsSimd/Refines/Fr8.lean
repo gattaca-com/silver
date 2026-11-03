@@ -9,12 +9,12 @@ namespace LeanBlsSimd.FrModel
 private theorem raw_array (T : Vector M512 (2 * LIMBS + 1)) :
     Array.make 5#usize [T[5], T[6], T[7], T[8], T[9]] (by rfl) =
     toArray id (Vector.ofFn fun j : Fin LIMBS => T[LIMBS + j.val]) := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
-  · simp [Array.make, toArray, LIMBS]
+  · simp [Array.make, Array.from_val, toArray, LIMBS]
   intro j hj hj'
-  have hj5 : j < 5 := by simpa [Array.make] using hj
-  interval_cases j <;> simp [Array.make, toArray, LIMBS] <;> rfl
+  have hj5 : j < 5 := by simpa [Array.make, Array.from_val] using hj
+  interval_cases j <;> simp [Array.make, Array.from_val, toArray, LIMBS]
 
 private theorem raw_fromLanes (T : Fin 8 → Lane.Acc) :
     (Vector.ofFn fun j : Fin LIMBS => (fromLanes T)[LIMBS + j.val]) =
@@ -30,14 +30,13 @@ theorem Fr8.mul_refines (self rhs : fr8.Fr8) :
   obtain ⟨B, rfl⟩ : ∃ B : Vector M512 LIMBS, rhs = toArray id B :=
     ⟨ofArray id rhs, (toArray_ofArray (fun _ => rfl) rhs _ _).symm⟩
   unfold fr8.Fr8.mul fr8.Fr8.product
-  simp only [Simd.zero_refines, bind_tc_ok]
+  simp only [Simd.zero_refines, bind_ok]
   unfold fr8.Fr8.reduce
-  simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines,
-    bind_tc_ok, LIMBS_refines]
+  simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines, bind_ok, LIMBS_refines]
   rw [repeat_eq_toArray_id Simd.zero (show (11#usize).val = 2 * LIMBS + 1 from rfl)]
   simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines,
-    Lane.reduce_row_refines, bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
-  simp (disch := decide) only [usize_add_ok, bind_tc_ok, UScalar.ofNatCore_val_eq,
+    Lane.reduce_row_refines, bind_ok, ofArray_toArray_id, laneOf_fromLanes]
+  simp (disch := decide) only [usize_add_ok, bind_ok, UScalar.ofNatCore_val_eq,
     index_usize_toArray]
   simp only [id_eq, Nat.reduceAdd, laneOf_replicate, ofU64_toU64,
     Simd.laneOf_splat_limbs, ofArray_toArray_ofU64]
@@ -52,7 +51,7 @@ theorem Fr8.mul_refines (self rhs : fr8.Fr8) :
     Simd.getElem_splat, Lane.mulRaw]
   simpa only [Reduction.earlyRows, Lane.finRange_LIMBS, List.foldl_cons,
     List.foldl_nil, Lane.productAcc, Lane.zero, getElem_laneOf, Fin.getElem_fin,
-    Fin.val_zero, Fin.val_one, Fin.val_ofNat] using
+    Fin.val_zero, Fin.val_one, Fin.val_ofNat] using!
     Lane.earlyRows_productAcc (laneOf A l) (laneOf B l) (LIMBS + j) (by omega) (by omega)
 
 def Fr8.productValue (a b : fr8.Fr8) : Array M512 11#usize :=
@@ -69,10 +68,9 @@ theorem Fr8.product_refines (a b : fr8.Fr8) :
   obtain ⟨B, rfl⟩ : ∃ B : Vector M512 LIMBS, b = toArray id B :=
     ⟨ofArray id b, (toArray_ofArray (fun _ => rfl) b _ _).symm⟩
   unfold fr8.Fr8.product
-  simp only [Simd.zero_refines, bind_tc_ok]
+  simp only [Simd.zero_refines, bind_ok]
   rw [repeat_eq_toArray_id Simd.zero (show (11#usize).val = 2 * LIMBS + 1 from rfl)]
-  simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines,
-    bind_tc_ok, ofArray_toArray_id, laneOf_fromLanes]
+  simp (disch := decide) only [index_usize_toArray, Lane.muladd_row_refines, bind_ok, ofArray_toArray_id, laneOf_fromLanes]
   simp only [Fr8.productValue, Lane.productAcc, Fr8.lane_eq, limbs_ofFr8,
     laneOf_replicate, Simd.getElem_zero, Lane.zero, getElem_laneOf, Fin.getElem_fin,
     ofArray_toArray_id, id_eq]
@@ -82,9 +80,8 @@ attribute [local irreducible] Reduction.earlyRow in
 theorem Fr8.reduce_refines (t : Array M512 11#usize) :
     fr8.Fr8.reduce t = ok (Fr8.reduceValue t) := by
   unfold fr8.Fr8.reduce
-  simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines,
-    bind_tc_ok, LIMBS_refines]
-  simp (disch := decide) only [Lane.reduce_row_refines, bind_tc_ok,
+  simp only [Simd.splat_limbs_refines, P_refines, Simd.splat_refines, P_INV52_refines, bind_ok, LIMBS_refines]
+  simp (disch := decide) only [Lane.reduce_row_refines, bind_ok,
     ofArray_toArray_id, laneOf_fromLanes, usize_add_ok, UScalar.ofNatCore_val_eq,
     index_usize_toArray]
   simp only [id_eq, Nat.reduceAdd]
@@ -116,7 +113,7 @@ theorem Fr8.mul_eq_reduce_product (a b : fr8.Fr8) :
 theorem Fr8.reduceValue_productValue (a b : fr8.Fr8) :
     Fr8.reduceValue (Fr8.productValue a b) = toFr8 ((ofFr8 a).mulRaw (ofFr8 b)) := by
   have h := Fr8.mul_refines a b
-  simpa only [fr8.Fr8.mul, Fr8.product_refines, bind_tc_ok, Fr8.reduce_refines,
+  simpa only [fr8.Fr8.mul, Fr8.product_refines, bind_tc_ok, bind_ok, Fr8.reduce_refines,
     Result.ok.injEq] using h
 
 attribute [local irreducible] Lane.muladd_row Reduction.earlyRow in
@@ -150,16 +147,15 @@ theorem Fr8.reduce_while_multiplying_eq (t : Array M512 11#usize) (a b : fr8.Fr8
     ⟨_, Lane.muladd_row_refines p4 a b.val[4] 4#usize (by decide)⟩
   dsimp only [r, rinv, next] at ht1 ht2 ht3 ht4 ht5 hp1 hp2 hp3 hp4 hp5
   unfold fr8.Fr8.reduce_while_multiplying fr8.Fr8.reduce fr8.Fr8.product
-  simp only [Simd.splat_limbs_refines, Simd.splat_refines, Simd.zero_refines, bind_tc_ok]
+  simp only [Simd.splat_limbs_refines, Simd.splat_refines, Simd.zero_refines, bind_ok]
   simp (disch := decide) only [Lane.reduce_row_multiplying_refines,
-    ht1, ht2, ht3, ht4, ht5, hp1, hp2, hp3, hp4, hp5,
-    bind_tc_ok, Function.uncurry_apply_pair, index_usize_eq, LIMBS_refines,
+    ht1, ht2, ht3, ht4, ht5, hp1, hp2, hp3, hp4, hp5, bind_ok, Aeneas.Std.uncurry_apply_pair, index_usize_eq, LIMBS_refines,
     usize_add_ok, UScalar.ofNatCore_val_eq]
 
 theorem Fr8.reduce_while_multiplying_refines (t : Array M512 11#usize) (a b : fr8.Fr8) :
     fr8.Fr8.reduce_while_multiplying t a b =
       ok (Fr8.reduceValue t, Fr8.productValue a b) := by
   simp only [Fr8.reduce_while_multiplying_eq, Fr8.reduce_refines,
-    Fr8.product_refines, bind_tc_ok]
+    Fr8.product_refines, bind_ok]
 
 end LeanBlsSimd.FrModel

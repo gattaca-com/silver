@@ -172,7 +172,7 @@ private theorem challenge_extensions_loop0_eq
     have hstop : ¬ i < Slice.len unique := by simp [he]
     refine ⟨self, ?_, by simpa [he] using hself⟩
     rw [challenge.challenge_in_parts_loop0, loop.eq_1]
-    simp only [challenge.challenge_in_parts_loop0.body, hstop, if_false]
+    simp only [challenge.challenge_in_parts_loop0.body, hstop, ite_false, bind_ok]
   | succ n ih =>
     have hlt : i.val < unique.val.length := by omega
     have htest : i < Slice.len unique := by simpa using hlt
@@ -186,12 +186,12 @@ private theorem challenge_extensions_loop0_eq
     let a := unique.val[i.val]'hlt
     have hindex : Slice.index_usize unique i = ok a := by simp [Slice.index_usize, hlt, a]
     obtain ⟨s, hup, hs⟩ := h.update_spec self pre (Array.to_slice a) hself
-    obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) hs i' (by omega) (by omega)
+    obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) (by simpa only [Array.to_slice, Slice.from_val] using hs) i' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
-    · rw [challenge.challenge_in_parts_loop0, loop.eq_1]
-      simp only [challenge.challenge_in_parts_loop0.body, htest, if_true, hindex,
-        bind_tc_ok, lift, hup, hadd]
-      exact hloop
+    · have hbody : challenge.challenge_in_parts_loop0.body unique self i = ok (cont (s, i')) := by
+        simp only [challenge.challenge_in_parts_loop0.body, htest, ite_true, hindex, bind_ok, lift, hup, hadd]
+      rw [challenge.challenge_in_parts_loop0, loop.eq_1]
+      simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons hlt]
       simpa only [List.flatMap_cons, hi', List.append_assoc] using hrep
 
@@ -216,7 +216,7 @@ private theorem challenge_extensions_loop1_eq
     have hstop : ¬ k < Slice.len indices := by simp [he]
     refine ⟨self, ?_, by simpa [he] using hself⟩
     rw [challenge.challenge_in_parts_loop1, loop.eq_1]
-    simp only [challenge.challenge_in_parts_loop1.body, hstop, if_false]
+    simp only [challenge.challenge_in_parts_loop1.body, hstop, ite_false, bind_ok]
   | succ n ih =>
     have hlt : k.val < indices.val.length := by omega
     have htest : k < Slice.len indices := by simpa using hlt
@@ -239,7 +239,7 @@ private theorem challenge_extensions_loop1_eq
     obtain ⟨s4, hup4, hs4⟩ := h.update_spec s3 _ (Array.to_slice ps.val[k.val]!) hs3
     have hs : ShaRep sha256.extensions.Sha256.update sha256.extensions.Sha256.finish s4
         (pre ++ challengeRow ci indices cells ps k.val) := by
-      simpa only [Array.to_slice, challenge_to_be_bytes, challengeRow, List.append_assoc] using hs4
+      simpa only [Array.to_slice, Slice.from_val, challenge_to_be_bytes, challengeRow, List.append_assoc] using hs4
     have hin : k.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
       have := (Slice.len indices).hBounds
       simp only [Slice.len_val, Slice.length] at this
@@ -250,11 +250,13 @@ private theorem challenge_extensions_loop1_eq
     obtain ⟨next, hloop, hrep⟩ := ih s4 (pre ++ challengeRow ci indices cells ps k.val)
       hs k' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
-    · rw [challenge.challenge_in_parts_loop1, loop.eq_1]
-      simp only [challenge.challenge_in_parts_loop1.body, htest, if_true,
-        hindex0, hindex1, hindex2, hindex3, bind_tc_ok, lift, hup1, hup2,
-        hup3, hup4, hadd]
-      exact hloop
+    · have hbody : challenge.challenge_in_parts_loop1.body ci indices cells ps self k =
+          ok (cont (s4, k')) := by
+        simp only [challenge.challenge_in_parts_loop1.body, htest, ite_true,
+          hindex0, hindex1, hindex2, hindex3, bind_ok, lift, hup1, hup2,
+          hup3, hup4, hadd]
+      rw [challenge.challenge_in_parts_loop1, loop.eq_1]
+      simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
@@ -283,7 +285,7 @@ theorem challenge_refinement
     (Array.to_slice (core.num.U64.to_be_bytes (UScalar.cast .U64 (Slice.len indices)))) hs4
   have hs : ShaRep sha256.extensions.Sha256.update sha256.extensions.Sha256.finish s5
       (challengeHeader (Slice.len unique) (Slice.len indices)) := by
-    simpa only [Array.to_slice, List.nil_append, challenge_to_be_bytes, challengeHeader] using hs5
+    simpa only [Array.to_slice, Slice.from_val, List.nil_append, challenge_to_be_bytes, challengeHeader] using hs5
   obtain ⟨s6, hl0, hs6⟩ := challenge_extensions_loop0_eq h s5 _ hs unique 0#usize (by simp)
   obtain ⟨s7, hl1, hs7⟩ := challenge_extensions_loop1_eq h s6 _ hs6 ci indices cells ps
     0#usize hlen (by simp)
@@ -291,7 +293,7 @@ theorem challenge_refinement
   simp only [UScalar.ofNatCore_val_eq, List.drop_zero] at hdigest
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts
-  simp only [hnew, bind_tc_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
+  simp only [hnew, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
   rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
@@ -311,7 +313,7 @@ private theorem challenge_portable_loop0_eq
     have hstop : ¬ i < Slice.len unique := by simp [he]
     refine ⟨self, ?_, by simpa [he] using hself⟩
     rw [challenge.challenge_in_parts_portable_loop0, loop.eq_1]
-    simp only [challenge.challenge_in_parts_portable_loop0.body, hstop, if_false]
+    simp only [challenge.challenge_in_parts_portable_loop0.body, hstop, ite_false, bind_ok]
   | succ n ih =>
     have hlt : i.val < unique.val.length := by omega
     have htest : i < Slice.len unique := by simpa using hlt
@@ -325,12 +327,12 @@ private theorem challenge_portable_loop0_eq
     let a := unique.val[i.val]'hlt
     have hindex : Slice.index_usize unique i = ok a := by simp [Slice.index_usize, hlt, a]
     obtain ⟨s, hup, hs⟩ := h.update_spec self pre (Array.to_slice a) hself
-    obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) hs i' (by omega) (by omega)
+    obtain ⟨next, hloop, hrep⟩ := ih s (pre ++ a.val) (by simpa only [Array.to_slice, Slice.from_val] using hs) i' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
-    · rw [challenge.challenge_in_parts_portable_loop0, loop.eq_1]
-      simp only [challenge.challenge_in_parts_portable_loop0.body, htest, if_true, hindex,
-        bind_tc_ok, lift, hup, hadd]
-      exact hloop
+    · have hbody : challenge.challenge_in_parts_portable_loop0.body unique self i = ok (cont (s, i')) := by
+        simp only [challenge.challenge_in_parts_portable_loop0.body, htest, ite_true, hindex, bind_ok, lift, hup, hadd]
+      rw [challenge.challenge_in_parts_portable_loop0, loop.eq_1]
+      simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons hlt]
       simpa only [List.flatMap_cons, hi', List.append_assoc] using hrep
 
@@ -355,7 +357,7 @@ private theorem challenge_portable_loop1_eq
     have hstop : ¬ k < Slice.len indices := by simp [he]
     refine ⟨self, ?_, by simpa [he] using hself⟩
     rw [challenge.challenge_in_parts_portable_loop1, loop.eq_1]
-    simp only [challenge.challenge_in_parts_portable_loop1.body, hstop, if_false]
+    simp only [challenge.challenge_in_parts_portable_loop1.body, hstop, ite_false, bind_ok]
   | succ n ih =>
     have hlt : k.val < indices.val.length := by omega
     have htest : k < Slice.len indices := by simpa using hlt
@@ -378,7 +380,7 @@ private theorem challenge_portable_loop1_eq
     obtain ⟨s4, hup4, hs4⟩ := h.update_spec s3 _ (Array.to_slice ps.val[k.val]!) hs3
     have hs : ShaRep sha256.portable.Sha256.update sha256.portable.Sha256.finish s4
         (pre ++ challengeRow ci indices cells ps k.val) := by
-      simpa only [Array.to_slice, challenge_to_be_bytes, challengeRow, List.append_assoc] using hs4
+      simpa only [Array.to_slice, Slice.from_val, challenge_to_be_bytes, challengeRow, List.append_assoc] using hs4
     have hin : k.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
       have := (Slice.len indices).hBounds
       simp only [Slice.len_val, Slice.length] at this
@@ -389,11 +391,13 @@ private theorem challenge_portable_loop1_eq
     obtain ⟨next, hloop, hrep⟩ := ih s4 (pre ++ challengeRow ci indices cells ps k.val)
       hs k' (by omega) (by omega)
     refine ⟨next, ?_, ?_⟩
-    · rw [challenge.challenge_in_parts_portable_loop1, loop.eq_1]
-      simp only [challenge.challenge_in_parts_portable_loop1.body, htest, if_true,
-        hindex0, hindex1, hindex2, hindex3, bind_tc_ok, lift, hup1, hup2,
-        hup3, hup4, hadd]
-      exact hloop
+    · have hbody : challenge.challenge_in_parts_portable_loop1.body ci indices cells ps self k =
+          ok (cont (s4, k')) := by
+        simp only [challenge.challenge_in_parts_portable_loop1.body, htest, ite_true,
+          hindex0, hindex1, hindex2, hindex3, bind_ok, lift, hup1, hup2,
+          hup3, hup4, hadd]
+      rw [challenge.challenge_in_parts_portable_loop1, loop.eq_1]
+      simpa only [hbody, bind_ok] using! hloop
     · rw [List.drop_eq_getElem_cons (by simp [hlt])]
       simpa only [List.flatMap_cons, List.getElem_range, hk', List.append_assoc] using hrep
 
@@ -422,7 +426,7 @@ theorem challenge_portable_refinement
     (Array.to_slice (core.num.U64.to_be_bytes (UScalar.cast .U64 (Slice.len indices)))) hs4
   have hs : ShaRep sha256.portable.Sha256.update sha256.portable.Sha256.finish s5
       (challengeHeader (Slice.len unique) (Slice.len indices)) := by
-    simpa only [Array.to_slice, List.nil_append, challenge_to_be_bytes, challengeHeader] using hs5
+    simpa only [Array.to_slice, Slice.from_val, List.nil_append, challenge_to_be_bytes, challengeHeader] using hs5
   obtain ⟨s6, hl0, hs6⟩ := challenge_portable_loop0_eq h s5 _ hs unique 0#usize (by simp)
   obtain ⟨s7, hl1, hs7⟩ := challenge_portable_loop1_eq h s6 _ hs6 ci indices cells ps
     0#usize hlen (by simp)
@@ -430,7 +434,7 @@ theorem challenge_portable_refinement
   simp only [UScalar.ofNatCore_val_eq, List.drop_zero] at hdigest
   rw [challenge_model_bytes unique ci indices cells ps hlen] at hdigest
   unfold challenge.challenge_in_parts_portable
-  simp only [hnew, bind_tc_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
+  simp only [hnew, bind_ok, lift, hup1, hup2, hup3, hup4, hup5, hl0, hl1, hfinish]
   rw [FrScalar.fr_from_bytes_reduced_refines, hdigest]
   rfl
 
@@ -449,9 +453,15 @@ theorem verifier_challenge_refinement [RuntimeFeatures]
         (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
         (ps.val.map arrayBytes).toArray))) := by
   unfold verify.CellBatchVerifier.challenge
-  simp only [sha_available, bind_tc_ok]
+  simp only [sha_available, bind_ok]
   split
-  · exact challenge_refinement _ _ _ _ _ hlen
-  · exact challenge_portable_refinement _ _ _ _ _ hlen
+  · simpa only [alloc.vec.Vec.deref, Slice.from_val] using
+      challenge_refinement (alloc.vec.Vec.deref self.commitments.unique)
+        (alloc.vec.Vec.deref self.commitments.index_of_cell) indices cells ps
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hlen)
+  · simpa only [alloc.vec.Vec.deref, Slice.from_val] using
+      challenge_portable_refinement (alloc.vec.Vec.deref self.commitments.unique)
+        (alloc.vec.Vec.deref self.commitments.index_of_cell) indices cells ps
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hlen)
 
 end LeanBlsSimd.Kzg

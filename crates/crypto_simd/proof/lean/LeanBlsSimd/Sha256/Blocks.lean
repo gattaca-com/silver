@@ -1,39 +1,14 @@
 import LeanBlsSimd.Spec.Sha256
 
-open private EthLib.Cryptography.Bls.Sha256.big32 from EthLib.Cryptography.Bls.Sha256
-
 namespace LeanBlsSimd.Sha256.Spec
 
 attribute [local irreducible] compressBlock schedule round rounds feedForward
 
-theorem foldl_congr_on {α β : Type} (xs : List α) (f g : β → α → β) (init : β)
-    (h : ∀ i ∈ xs, ∀ s, f s i = g s i) : xs.foldl f init = xs.foldl g init := by
-  induction xs generalizing init with
-  | nil => rfl
-  | cons x xs ih =>
-    rw [List.foldl_cons, List.foldl_cons, h x (by simp)]
-    exact ih _ (fun i hi s => h i (by simp [hi]) s)
-
-theorem schedule_congr (b c : ByteArray) (off off' : Nat)
-    (h : ∀ i < 64, b[off+i]! = c[off'+i]!) : schedule b off = schedule c off' := by
-  have hfirst := foldl_congr_on (List.range' 0 16)
-    (fun (w : Array UInt32) t => w.set! t (big32 b (off+4*t)))
-    (fun (w : Array UInt32) t => w.set! t (big32 c (off'+4*t)))
-    (Array.replicate 64 0) (by
-      intro t ht w
-      have ht' : t < 16 := (List.mem_range'_1.mp ht).2
-      have hb : big32 b (off+4*t) = big32 c (off'+4*t) := by
-        simp only [big32, EthLib.Cryptography.Bls.Sha256.big32, Nat.add_assoc]
-        rw [h (4*t) (by omega), h (4*t+1) (by omega),
-          h (4*t+2) (by omega), h (4*t+3) (by omega)]
-      exact congrArg (w.set! t) hb)
-  unfold schedule
-  exact congrArg (fun w => (List.range' 16 48).foldl scheduleStep w) hfirst
-
 theorem compressBlock_congr (s : Array UInt32) (b c : ByteArray) (off off' : Nat)
     (h : ∀ i < 64, b[off+i]! = c[off'+i]!) :
     compressBlock s b off = compressBlock s c off' := by
-  rw [compressBlock_eq, compressBlock_eq, schedule_congr b c off off' h]
+  unfold compressBlock
+  rw [EthLib.Cryptography.Hash.Sha256.compress_congr _ b c off off' h]
 
 theorem compressBlocks_zero (s : Array UInt32) (b : ByteArray) (off : Nat) :
     compressBlocks s b off 0 = s := rfl

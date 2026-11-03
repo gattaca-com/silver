@@ -203,14 +203,13 @@ example [RuntimeFeatures] [KzgExternals] [FallbackCorrect]
 example [cpu : RuntimeFeatures] [KzgExternals] (inputs : Slice (Aeneas.Std.Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (hi : inputs.val = []) (ho : out.val = []) :
     silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok out := by
-  rcases inputs with ⟨ins, hins⟩
-  rcases out with ⟨outs, houts⟩
-  change ins = [] at hi
-  change outs = [] at ho
-  subst ins
-  subst outs
+  have hi' : inputs = Slice.from [] (by simp) :=
+    Slice.ext _ _ (by simpa only [Slice.from_val] using hi)
+  have ho' : out = Slice.from [] (by simp) :=
+    Slice.ext _ _ (by simpa only [Slice.from_val] using ho)
+  rw [hi', ho']
   have hlen (α : Type) (h : ([] : List α).length ≤ Usize.max) :
-      Slice.len (⟨[], h⟩ : Slice α) = 0#usize := by
+      Slice.len (Slice.from [] h : Slice α) = 0#usize := by
     apply UScalar.eq_of_val_eq
     rfl
   have hd2 : (0#usize / 2#usize) = ok 0#usize := by rfl
@@ -226,29 +225,34 @@ example [cpu : RuntimeFeatures] [KzgExternals] (inputs : Slice (Aeneas.Std.Array
       portable.decompress.uncompress_all_in_g1_loop i o 0#usize 0#usize = ok (o, 0#usize) := by
     unfold portable.decompress.uncompress_all_in_g1_loop
     rw [loop.eq_1]
-    rfl
+    simp [portable.decompress.uncompress_all_in_g1_loop.body, bind_tc_ok, bind_ok]
   have hbLoop (i : Slice (Aeneas.Std.Array U8 48#usize))
       (o : Slice (Option blst.blst_p1_affine)) :
       uncompress_in_g1_loop i o 0#usize 0#usize = ok o := by
     unfold uncompress_in_g1_loop
     rw [loop.eq_1]
-    rfl
+    simp [uncompress_in_g1_loop.body, bind_tc_ok, bind_ok]
   have hs : portable.decompress.uncompress_all_in_g1
-      (⟨[], by simp⟩ : Slice (Aeneas.Std.Array U8 48#usize))
-      (⟨[], by simp⟩ : Slice (Option blst.blst_p1_affine)) = ok ⟨[], by simp⟩ := by
+      (Slice.from [] (by simp) : Slice (Aeneas.Std.Array U8 48#usize))
+      (Slice.from [] (by simp) : Slice (Option blst.blst_p1_affine)) =
+        ok (Slice.from [] (by simp)) := by
     simp [portable.decompress.uncompress_all_in_g1, hlen, hd2, hm2, hpLoop]
   have hblst : uncompress_all_in_g1_blst
-      (⟨[], by simp⟩ : Slice (Aeneas.Std.Array U8 48#usize))
-      (⟨[], by simp⟩ : Slice (Option blst.blst_p1_affine)) = ok ⟨[], by simp⟩ := by
+      (Slice.from [] (by simp) : Slice (Aeneas.Std.Array U8 48#usize))
+      (Slice.from [] (by simp) : Slice (Option blst.blst_p1_affine)) =
+        ok (Slice.from [] (by simp)) := by
     unfold uncompress_all_in_g1_blst uncompress_all_in_g1_blst_loop
     rw [loop.eq_1]
-    rfl
+    simp [uncompress_all_in_g1_blst_loop.body, core.iter.range.IteratorRange.next,
+      core.iter.range.StepUsize, core.iter.range.UScalarStep, core.cmp.impls.PartialOrdUsize.lt,
+      hlen, bind_tc_ok, bind_ok]
   cases hcpu : cpu.simdAvailable
-  · simpa [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu] using hblst
+  · simpa [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu,
+      hlen, massert, bind_tc_ok, bind_ok] using hblst
   · simp [silver_crypto_simd.bls.uncompress_in_g1, ifma_available, hcpu, hlen,
       LANES, hd8, hm8, hbLoop,
       core.slice.index.SliceIndexRangeUsizeSlice.index,
       core.slice.index.SliceIndexRangeUsizeSlice.index_mut,
-      Slice.length, List.slice, List.setSlice!, hs]
+      Slice.length, Slice.from_val, List.slice, List.setSlice!, hs, massert, bind_tc_ok, bind_ok]
 
 end LeanBlsSimd.G1Controls

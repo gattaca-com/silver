@@ -54,7 +54,9 @@ def Input.generated [RuntimeFeatures] [KzgExternals] (i : Input) (v : verify.Cel
 theorem column_ifft_eq_interpolation
     (indices : _root_.Array Nat) (evals : _root_.Array (_root_.Array Fr))
     (powers : _root_.Array Fr) (h : Model.RliInputs indices evals powers) :
-    Model.specRli indices evals powers = .ok (Model.columnRli indices evals powers) := by
+    Model.specRli indices (indices.map Model.cosetShift) evals powers =
+      .ok (Model.columnRli indices evals powers) := by
+  rw [ModelSpec.specRli_eq_lagrangeRli indices evals powers h]
   exact column_ifft_interpolation indices evals powers h
 
 theorem spec_eq_column_ifft
@@ -96,16 +98,16 @@ theorem new_returns_ok_route [cpu : RuntimeFeatures] [KzgExternals] [UncompressG
   obtain ⟨work, hw, hwork, hwroute⟩ := curveWork_new_refinement
   cases hsimd : cpu.simdAvailable with
   | false =>
-    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
-      bind_tc_ok, Bool.false_eq_true, if_false,
-      verify.Deduplicated.Insts.CoreDefaultDefault.default, hw]
+    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd, bind_ok, Bool.false_eq_true, ite_false,
+      verify.Deduplicated.Insts.CoreDefaultDefault.default,
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default, hw]
     exact ⟨_, rfl, ⟨hsrep, hcrep, trivial, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
   | true =>
     obtain ⟨kernel, hkernel, hki⟩ := InterpolationKernel.new_refinement c hcrep
-    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd,
-      bind_tc_ok, if_true, hkernel,
-      verify.Deduplicated.Insts.CoreDefaultDefault.default, hw]
+    simp only [verify.CellBatchVerifier.new, hs, hc, ifma_available, hsimd, bind_ok, ite_true, hkernel,
+      verify.Deduplicated.Insts.CoreDefaultDefault.default,
+      alloc.vec.Vec.Insts.CoreDefaultDefault.default, hw]
     exact ⟨_, rfl, ⟨hsrep, hcrep, hki, hwork⟩,
       by simpa only [hsimd] using hwroute, rfl⟩
 
@@ -193,7 +195,7 @@ theorem verify_eq_spec_ifma [cpu : RuntimeFeatures] [KzgExternals]
         i.generated v = ok (verdict, next) ∧ StateInvariant next ∧
         CurveWork.isLanes next.curve_work = true ∧
         Model.rejectErrors i.embeddedSpec = verdict := by
-  letI := UncompressG1.fallbackCorrect_ifma hifma
+  let := UncompressG1.fallbackCorrect_ifma hifma
   obtain ⟨initial, hnew, hinv, hroute, _⟩ := new_returns_ok_route
   refine ⟨initial, hnew, hinv, hroute.trans hifma, fun v hv hr i hi => ?_⟩
   obtain ⟨next, hgen, hnext, hrouteNext⟩ :=

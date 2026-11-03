@@ -17,12 +17,12 @@ theorem fallbackCorrect_ifma [RuntimeFeatures] [KzgExternals]
   ⟨by simp [hifma]⟩
 
 private def vectorSlice {α : Type} {n : ℕ} (v : Vector α n) (h : n ≤ Usize.max) : Slice α :=
-  ⟨v.toList, by simpa using h⟩
+  Slice.from v.toList (by simpa using h)
 
 private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n ≤ Usize.max)
     (i : Usize) (hi : i.val < n) (x : α) :
     (vectorSlice v h).set i x = vectorSlice (v.set i.val x hi) h := by
-  apply Subtype.ext
+  ext1
   simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
 
 theorem blst_list_refines [KzgExternals]
@@ -35,22 +35,20 @@ theorem blst_list_refines [KzgExternals]
   let enc := fun v : Vector (Option blst.blst_p1_affine) inputs.val.length =>
     vectorSlice v inputs.property
   have ho : enc (ofSlice id out hlen) = out := by
-    apply Subtype.ext
+    ext1
     simp [enc, vectorSlice]
   refine ⟨enc (Vector.ofFn target), ?_, ?_⟩
   · rw [uncompress_all_in_g1_blst, uncompress_all_in_g1_blst_loop, ← ho]
     apply loop_range (n := inputs.val.length) _ (Slice.len inputs) rfl enc
       (fun v j => v.set j (target j)) enc (ofSlice id out hlen) (enc (Vector.ofFn target))
     · intro r v he hs hn
-      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair]
+      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · intro r r' v j he hs he' hs' hn
       have hj : r.start.val < inputs.val.length := by omega
-      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair]
+      simp only [uncompress_all_in_g1_blst_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
       rw [show Slice.index_usize inputs r.start = ok inputs.val[r.start.val] by
         simp [Slice.index_usize, hj]]
-      simp only [uncompress_in_g1_blst, bind_tc_ok]
+      simp only [uncompress_in_g1_blst, bind_ok]
       have hupdate : ∀ x, Slice.update (enc v) r.start x = ok ((enc v).set r.start x) := by
         intro x
         simp [Slice.update, enc, vectorSlice, hj, Slice.set, Slice.setAtNat]
@@ -58,7 +56,7 @@ theorem blst_list_refines [KzgExternals]
         simp only [target, hs]
       rw [htarget]
       cases KzgExternals.uncompressG1 inputs.val[r.start.val] <;>
-        simp only [g1_point.G1Point.from_trusted, bind_tc_ok, hupdate,
+        simp only [g1_point.G1Point.from_trusted, bind_ok, hupdate,
           vectorSlice_set v inputs.property r.start hj, enc, hs]
     · rw [foldl_set_ofFn]
   · apply List.ext_getElem (by simp [enc, vectorSlice])

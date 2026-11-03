@@ -19,14 +19,14 @@ private theorem inverse_one : Fp2.one.inverse = Fp2.one := by
 
 theorem g2_affine_of_z_one (q : G2) (hq : q.z = Fp2.one) : q.toAffine = (q.x, q.y) := by
   simp only [G2.toAffine, hq, show Fp2.one.isZero = false from by decide +kernel,
-    Bool.false_eq_true, if_false, inverse_one, fp2_mul_one]
+    Bool.false_eq_true, ite_false, inverse_one, fp2_mul_one]
 
 theorem ofG2_untwist (q : G2) (hq : q.z = Fp2.one) :
     Embedded.ofG2 q = untwist (q.x, q.y) := by
   have hi : q.isInfinity = false := by
     simp only [G2.isInfinity, hq]
     decide +kernel
-  simp only [Embedded.ofG2, hi, Bool.false_eq_true, if_false, g2_affine_of_z_one q hq]
+  simp only [Embedded.ofG2, hi, Bool.false_eq_true, ite_false, g2_affine_of_z_one q hq]
   rfl
 
 theorem setup_z (pair : Fin 2) : (setupPoint pair).z = Fp2.one := by

@@ -34,7 +34,6 @@ theorem eq_encode_of_field (a : Array U64 4#usize) (x : Fr)
     a = (Kzg.frEncode x).l := by
   apply value_injective
   have hval := congrArg (fun z : ZMod Fr.modulus => (z.val : ℤ)) h
-  dsimp only at hval
   rw [ZMod.val_intCast,ZMod.val_intCast] at hval
   rw [Int.emod_eq_of_lt (value_bounds a).1 ha,
     Int.emod_eq_of_lt (value_bounds (Kzg.frEncode x).l).1 (encode_bound x)] at hval

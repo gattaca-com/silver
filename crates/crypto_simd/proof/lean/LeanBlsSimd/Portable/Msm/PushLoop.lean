@@ -24,7 +24,7 @@ theorem push_loop_refines [RuntimeFeatures] (s : portable.msm.store.PointStore)
     refine ⟨s,?_,by omega,rfl,?_,fun _ _ => rfl⟩
     · rw [portable.msm.store.PointStore.push_blst_loop,loop.eq_1]
       simp only [portable.msm.store.PointStore.push_blst_loop.body,UScalar.lt_equiv,Slice.len_val,
-        he,Nat.lt_irrefl,if_false]
+        he,Nat.lt_irrefl,ite_false, bind_ok]
     · intro j hj hlt
       omega
   | succ remaining ih =>
@@ -40,7 +40,7 @@ theorem push_loop_refines [RuntimeFeatures] (s : portable.msm.store.PointStore)
     obtain ⟨out,hloop,hlen,hsize,hpoints,hframe⟩ := ih mid cursor (by omega) hcap' (by omega)
     refine ⟨out,?_,by omega,hsize.trans hmidsize,?_,?_⟩
     · rw [portable.msm.store.PointStore.push_blst_loop,loop.eq_1]
-      simp only [hstep]
+      simp only [hstep, bind_ok]
       exact hloop
     · intro j hj hjlt
       by_cases he : j = k.val
@@ -78,12 +78,12 @@ theorem push_blst_refines [RuntimeFeatures] (s : portable.msm.store.PointStore)
   obtain ⟨out,he,hlen,hsize,hpoints,hframe⟩ := push_loop_refines s points negated endomorphism
     0#usize (by simp) hn (by simpa using hcap) hp hf
   refine ⟨out,?_,by simpa using hlen,hsize,?_,hframe⟩
-  · simp only [portable.msm.store.PointStore.push_blst,hcount,massert,if_true,bind_tc_ok]
+  · simp only [portable.msm.store.PointStore.push_blst,hcount,massert,ite_true, bind_ok]
     rw [add_ok _ _ hb]
-    simp only [bind_tc_ok,UScalar.le_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,
-      hcap,if_true]
+    simp only [bind_ok,UScalar.le_equiv,UScalar.ofNatCore_val_eq,Slice.len_val]
     rw [he]
-    rfl
+    simp only [alloc.vec.Vec.len_val, hcap, ite_true, bind_ok]
+    (simp only [aeneas_uncurry_def] )
   · intro j hj
     simpa only [UScalar.ofNatCore_val_eq,Nat.sub_zero] using hpoints j (Nat.zero_le _) hj
 

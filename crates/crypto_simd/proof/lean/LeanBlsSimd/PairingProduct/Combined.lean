@@ -44,7 +44,7 @@ theorem advance_product (xs : Entries) (add : Bool) :
   | cons x xs ih =>
     simp only [advance, List.map_cons, valueProduct, List.prod_cons] at ih ⊢
     rw [ih]
-    cases add <;> simp only [State.step, Bool.false_eq_true, if_false, if_true,
+    cases add <;> simp only [State.step, Bool.false_eq_true, ite_false, ite_true,
       lineProduct, List.map_cons, List.prod_cons] <;> ring
 
 theorem sharedRun_product (xs : Entries) (f : Fp12Field) (kinds : List Bool)
@@ -106,7 +106,7 @@ theorem sharedMiller_clear (inputs : List Input)
 theorem sharedFactor_product (inputs : List Input) :
     sharedFactor inputs = (inputs.map Input.factor).prod := by
   rw [sharedFactor, sharedMiller_value]
-  simpa only [List.map_map, Function.comp_def, Input.factor, powMonoidHom_apply] using
+  simpa only [List.map_map, Function.comp_def, Input.factor, powMonoidHom_apply] using!
     (List.prod_hom (inputs.map fun i => i.miller.value)
       (powMonoidHom (Fp.modulus ^ 6))).symm
 
@@ -138,7 +138,7 @@ theorem finite_sharedFactor_spec (pairs : List (G1 × G2))
   intro pair hm
   simp only [Function.comp_def, ofPoints_base _ _ (hq pair hm),
     ofPoints_evaluation _ _ (hp pair hm), pairingFactor, hp pair hm, hq pair hm,
-    Bool.or_self, Bool.false_eq_true, if_false]
+    Bool.or_self, Bool.false_eq_true, ite_false]
 
 end
 

@@ -36,18 +36,18 @@ theorem canonical_infinity_accepted [RuntimeFeatures] :
 
 theorem nonzero_infinity_tail_rejected [RuntimeFeatures] :
     portable.decompress.uncompress_in_g1 (toArray toU8 (G1Spec.infinity.set 47 1)) = ok none := by
-  rw [scalar_refines,nonordinary_verdict (by decide +kernel),if_neg (by decide +kernel)]
+  rw [scalar_refines,nonordinary_verdict (by decide +kernel),ite_eq_right (by decide +kernel)]
   rfl
 
 theorem zero_x_decoder_rejected [RuntimeFeatures] :
     portable.decompress.uncompress_in_g1 (toArray toU8 (finiteBytes 0)) = ok none := by
-  rw [scalar_refines,nonordinary_verdict (by decide +kernel),if_neg (by decide +kernel)]
+  rw [scalar_refines,nonordinary_verdict (by decide +kernel),ite_eq_right (by decide +kernel)]
   rfl
 
 theorem pair_keeps_lane_order [RuntimeFeatures] :
     portable.decompress.uncompress_pair_in_g1 (toArray toU8 G1Spec.infinity) (toArray toU8 (finiteBytes 0)) =
       ok (Array.make 2#usize [some (toBlstP1Affine (point (.replicate 6 0) (.replicate 6 0))),none] (by rfl)) := by
-  rw [pair_refines,G1Spec.infinity_verdict,nonordinary_verdict (by decide +kernel),if_neg (by decide +kernel)]
+  rw [pair_refines,G1Spec.infinity_verdict,nonordinary_verdict (by decide +kernel),ite_eq_right (by decide +kernel)]
   rfl
 
 #print axioms pair_refines

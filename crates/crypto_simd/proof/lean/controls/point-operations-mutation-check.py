@@ -49,7 +49,7 @@ namespace PointOperationMutation
         source = prefix + definition + body(contracts, sum_theorem).replace(method, "weightedSum")
         cases.append((f"{group.upper()}Scalars", source, "weightedSum",
                       rf"PointOperationExternals\.sum{group.upper()}\s+points\s+scalars",
-                      f"PointOperationExternals.sum{group.upper()} points ⟨[], by simp⟩",
+                      f"PointOperationExternals.sum{group.upper()} points (Slice.from [] (by simp))",
                       ((sum_theorem, "unsolved goals"),)))
 
     method = "g2_point.G2Point.hash_to_curve"

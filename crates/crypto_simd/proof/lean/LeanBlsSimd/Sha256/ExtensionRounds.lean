@@ -2,9 +2,6 @@ import LeanBlsSimd.Sha256.Words
 
 open Aeneas Aeneas.Std Result
 
-open private EthLib.Cryptography.Bls.Sha256.bigSigma0 EthLib.Cryptography.Bls.Sha256.bigSigma1
-  EthLib.Cryptography.Bls.Sha256.ch EthLib.Cryptography.Bls.Sha256.maj from EthLib.Cryptography.Bls.Sha256
-
 namespace LeanBlsSimd.Sha256.Extensions
 
 def abef (s : Spec.RoundState) : M128 :=
@@ -20,8 +17,8 @@ theorem smallSigma1_eq (x : UInt32) : ShaIntrinsics.smallSigma1 x = Spec.smallSi
 theorem choose_eq (x y z : UInt32) : ShaIntrinsics.choose x y z = Spec.choose x y z := rfl
 theorem majority_eq (x y z : UInt32) : ShaIntrinsics.majority x y z = Spec.majority x y z := rfl
 
-attribute [local irreducible] EthLib.Cryptography.Bls.Sha256.bigSigma0
-  EthLib.Cryptography.Bls.Sha256.bigSigma1 EthLib.Cryptography.Bls.Sha256.ch EthLib.Cryptography.Bls.Sha256.maj
+attribute [local irreducible] EthLib.Cryptography.Hash.Sha256.bigSigma0
+  EthLib.Cryptography.Hash.Sha256.bigSigma1 EthLib.Cryptography.Hash.Sha256.ch EthLib.Cryptography.Hash.Sha256.maj
 
 theorem two_rounds (s : Spec.RoundState) (k0 k1 w0 w1 u v : UInt32) :
     _mm_sha256rnds2_epu32 (cdgh s) (abef s) #v[k0+w0,k1+w1,u,v] =

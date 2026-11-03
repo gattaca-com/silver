@@ -11,17 +11,17 @@ open FrModel
 private theorem array_eight (t : Array fr8.Fr8 8#usize) :
     t = Array.make 8#usize [t.val[0]!, t.val[1]!, t.val[2]!, t.val[3]!,
       t.val[4]!, t.val[5]!, t.val[6]!, t.val[7]!] (by rfl) := by
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
   · exact t.property
   intro i hi hi'
   have hib : i < 8 := by simpa using hi'
-  interval_cases i <;> simp [Array.make]
+  interval_cases i <;> simp [Array.make, Array.from_val]
 
 private theorem short_seven (v : alloc.vec.Vec fr8.Fr8) (hv : v.val.length = 7) :
-    v = ⟨[v.val[0]!, v.val[1]!, v.val[2]!, v.val[3]!, v.val[4]!, v.val[5]!, v.val[6]!],
-      by simp; scalar_tac⟩ := by
-  apply Subtype.ext
+    v = alloc.vec.Vec.from [v.val[0]!, v.val[1]!, v.val[2]!, v.val[3]!, v.val[4]!, v.val[5]!, v.val[6]!]
+      (by simp; scalar_tac) := by
+  ext1
   apply List.ext_getElem
   · simpa using hv
   intro i hi hi'
@@ -31,7 +31,7 @@ private theorem short_seven (v : alloc.vec.Vec fr8.Fr8) (hv : v.val.length = 7) 
 private theorem reduced_success (a : fr8.Fr8) : ∃ r, fr8.Fr8.reduced a = ok r := by
   obtain ⟨offset, ho, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   simp only [fr8.Fr8.reduced, ho, FrModel.Simd.sub_limbs_refines,
-    FrModel.Simd.select_borrowed_refines, bind_tc_ok, Prod.map]
+    FrModel.Simd.select_borrowed_refines, bind_ok, Prod.map]
   exact ⟨_, rfl⟩
 
 private noncomputable def reducedValue (a : fr8.Fr8) := (reduced_success a).choose
@@ -51,15 +51,15 @@ scoped macro "short_stage_eval" "[" hs:term,* "]" : conv =>
       ShortModel.dif_short_loop0.body, ShortModel.dif_short_loop0_loop0.body,
       fft8.dit_finish, fr8.LANES, fr8.Fr8.add, fr8.Fr8.sub,
       usize_add_ok, usize_mul_ok, mul_ok, sub_ok, UScalar.ofNatCore_val_eq,
-      Array.make, Array.getElem?_Usize_eq, Slice.getElem?_Usize_eq,
+      Array.make, Array.from_val, Slice.from_val, alloc.vec.Vec.from_val, Array.getElem?_Usize_eq, Slice.getElem?_Usize_eq,
       alloc.vec.Vec.getElem?_Nat_eq, Array.index_usize, Array.update, Array.to_slice_mut,
       Array.to_slice, Array.from_slice, Slice.index_usize, Slice.update,
-      alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, lift, bind_tc_ok,
-      bind_assoc_eq, Function.uncurry_apply_pair,
+      alloc.vec.Vec.index_slice_index, alloc.vec.Vec.index_usize, lift, bind_tc_ok, bind_ok,
+      bind_assoc_eq, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair,
       UScalar.lt_equiv, UScalar.le_equiv, UScalar.eq_equiv,
       List.getElem?_cons_zero, List.getElem?_cons_succ, List.set_cons_zero, List.set_cons_succ,
       List.length_cons, List.length_nil, Nat.reduceAdd, Nat.reduceMul,
-      Nat.reduceSub, Nat.reduceLT, if_pos, if_neg, ↓reduceIte, ↓reduceDIte])
+      Nat.reduceSub, Nat.reduceLT, ite_eq_left, ite_eq_right, ↓reduceIte, ↓reduceDIte])
 
 private theorem dit_two_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize)
     (h : Usize) (hh : h.val=2)
@@ -81,10 +81,10 @@ private theorem dit_two_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize)
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨input, hi, _, _⟩ := multiple_of_r_refinement
     (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac))
     (by simp only [UScalar.ofNatCore_val_eq]; omega)
@@ -163,10 +163,10 @@ private theorem dit_four_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨input, hi, _, _⟩ := multiple_of_r_refinement
     (UScalar.ofNatCore (ty := .U64) (2*h.val) (by scalar_tac))
     (by simp only [UScalar.ofNatCore_val_eq]; omega)
@@ -241,10 +241,10 @@ private theorem dif_two_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize)
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨product, hp, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   obtain ⟨reduced, hreduced⟩ : ∃ f : fr8.Fr8 → fr8.Fr8,
       ∀ a, fr8.Fr8.reduced a = ok (f a) :=
@@ -316,10 +316,10 @@ private theorem dif_four_eq_model (table : fft8.Fft8) (t : Array fr8.Fr8 8#usize
       ∀ p, fr8.Fr8.reduce p = ok (f p) :=
     ⟨Fr8.reduceValue, Fr8.reduce_refines⟩
   have hm (a b : fr8.Fr8) : fr8.Fr8.mul a b = ok (reduceFn (productFn a b)) := by
-    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_tc_ok]
+    simp only [Fr8.mul_eq_reduce_product, hprod, hred, bind_ok]
   have hc (p : Array M512 11#usize) (a b : fr8.Fr8) :
       fr8.Fr8.reduce_while_multiplying p a b = ok (reduceFn p, productFn a b) := by
-    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_tc_ok]
+    simp only [Fr8.reduce_while_multiplying_eq, hprod, hred, bind_ok]
   obtain ⟨product, hp, _, _⟩ := multiple_of_r_refinement 2#u64 (by decide)
   obtain ⟨reduced, hreduced⟩ : ∃ f : fr8.Fr8 → fr8.Fr8,
       ∀ a, fr8.Fr8.reduced a = ok (f a) :=

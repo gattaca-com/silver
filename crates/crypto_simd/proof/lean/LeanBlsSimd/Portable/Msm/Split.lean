@@ -3,6 +3,8 @@ import LeanBlsSimd.Msm8.SplitGroup
 open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Portable.Msm.Split
 open LeanBlsSimd.Msm8 silver_crypto_simd.bls
 
@@ -13,7 +15,7 @@ theorem split_loop_eq (scalars halves : alloc.vec.Vec ScalarWords)
 
 private theorem clone_scalar_words (words : ScalarWords) :
     (core.clone.CloneArray 4#usize core.clone.CloneU64).clone words = ok words := by
-  obtain ⟨out, hout, heq⟩ := WP.spec_imp_exists
+  obtain ⟨out, hout, heq⟩ := spec_imp_exists
     (core.array.CloneArray.clone_spec core.clone.CloneU64 words (by intro x hx; rfl))
   simpa only [← heq] using hout
 
@@ -28,14 +30,15 @@ theorem split_scalars_exact (self : portable.msm.Msm)
         self.finite_scalars.val.length := by
   let n := alloc.vec.Vec.len self.finite_scalars
   let count : Usize := UScalar.ofNatCore (2 * n.val) hcap
-  let empty : alloc.vec.Vec ScalarWords := ⟨[], by simp⟩
-  let signs : alloc.vec.Vec Bool := ⟨[], by simp⟩
+  let empty : alloc.vec.Vec ScalarWords := alloc.vec.Vec.from [] (by simp)
+  let signs : alloc.vec.Vec Bool := alloc.vec.Vec.from [] (by simp)
   let zero : ScalarWords := Array.repeat 4#usize 0#u64
-  obtain ⟨initial, hinit, hinitial⟩ := WP.spec_imp_exists (alloc.vec.Vec.resize_spec
+  obtain ⟨initial, hinit, hinitial⟩ := spec_imp_exists (alloc.vec.Vec.resize_spec
     (core.clone.CloneArray 4#usize core.clone.CloneU64) empty count zero (clone_scalar_words zero))
   have hlength : initial.val.length = 2 * n.val := by
     rw [hinitial]
     simp [count]
+    exact UScalar.ofNatCore_val_eq _
   have hinv : SplitInv n.val first second initial signs signs 0 :=
     ⟨hlength, rfl, rfl, by intro j hj; omega⟩
   obtain ⟨halves, fs, ss, hloop, hout⟩ :=
@@ -45,7 +48,7 @@ theorem split_scalars_exact (self : portable.msm.Msm)
   have hcount : 2#usize * n = ok count := by
     rw [mul_ok (2#usize) n hcap]
     rfl
-  simp only [portable.msm.Msm.split_scalars, alloc.vec.Vec.clear, bind_tc_ok]
+  simp only [portable.msm.Msm.split_scalars, alloc.vec.Vec.clear, bind_ok]
   change (do
     let count ← 2#usize * n
     let initial ← alloc.vec.Vec.resize (core.clone.CloneArray 4#usize core.clone.CloneU64) empty count zero

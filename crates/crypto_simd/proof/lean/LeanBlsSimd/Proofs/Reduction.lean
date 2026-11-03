@@ -111,12 +111,12 @@ private theorem productRow_at_start {n : Nat} (t : Acc n) (p : Vector UInt64 n)
     apply List.sum_eq_zero
     intro x hx
     obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hx
-    exact if_neg (by have := tail_pos j hj; omega)
+    exact ite_eq_right (by have := tail_pos j hj; omega)
   have hhi : (((List.finRange n).drop 1).map fun j => highTerm p q i j i.val).sum = 0 := by
     apply List.sum_eq_zero
     intro x hx
     obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hx
-    exact if_neg (by omega)
+    exact ite_eq_right (by omega)
   unfold productRow
   rw [finRange_head hn, List.foldl_cons, get_productFold]
   rw [hlo, hhi]

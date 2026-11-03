@@ -1,14 +1,16 @@
 import LeanBlsSimd.Kzg.InterpolationKernel.AddCell
 import LeanBlsSimd.Kzg.InterpolationKernel.Check
 import LeanBlsSimd.Kzg.InterpolationKernel.Column
+import LeanBlsSimd.Kzg.Extender.Kernel.Fr8BytesSerialize
 
 open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 open scoped EthLib.Cryptography.Bls.Fr
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fr.modulus
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel.Controls
 
@@ -35,8 +37,8 @@ theorem omitting_inverse_size_rejects_multiplier :
     (Fr.ofNat 64).inverse * Fr.ofNat (2^260) ≠ (1 : Fr) * Fr.ofNat (2^260)) he
 
 private def batch (n : Nat) : fr8.Fr8 :=
-  ⟨List.ofFn (fun j : Fin 5 => Vector.replicate 8
-    (UInt64.ofNat (n / 2 ^ (52 * j.val) % 2 ^ 52))), by simp⟩
+  Array.make 5#usize (List.ofFn (fun j : Fin 5 => Vector.replicate 8
+    (UInt64.ofNat (n / 2 ^ (52 * j.val) % 2 ^ 52)))) (by simp)
 
 private def input : fr8.Fr8 := batch (Fr.modulus - 1)
 private def weight : fr8.Fr8 := batch (2 ^ 260 % Fr.modulus)
@@ -58,7 +60,7 @@ private theorem product_limb : (product.val[0]!)[0].toNat = 27021593469255680 :=
   decide +kernel
 
 private def repeated (value : fr8.Fr8) : Slice fr8.Fr8 :=
-  ⟨List.replicate 8 value, by simp; scalar_tac⟩
+  Slice.from (List.replicate 8 value) (by simp; scalar_tac)
 
 private def productValues : _root_.Array Fr :=
   _root_.Array.replicate 64 (Fr.ofNat (Fr.modulus - 1) * (1 : Fr))
@@ -73,7 +75,7 @@ theorem missing_first_normalise_rejects_dit_input :
   have hmul : fr8.Fr8.mul input weight = ok product := FrModel.Fr8.mul_refines input weight
   obtain ⟨out, hout, hrep⟩ := mul_multiplier_refinement input weight
     (fun _ => Fr.ofNat (Fr.modulus - 1)) (fun _ => 1) input_normal input_value weight_valid
-  have he : out = product := Result.ok.inj (hout.symm.trans hmul)
+  have he : out = product := Result.ok_injective (hout.symm.trans hmul)
   subst out
   obtain ⟨normal, hnormal, hn, hv⟩ := normalise_lazy_refinement product _ hrep
     (by decide) (by decide)
@@ -83,16 +85,16 @@ theorem missing_first_normalise_rejects_dit_input :
     rw [← (hv lane).1] at hl
     exact_mod_cast hl
   refine ⟨normal, input_normal, weight_valid, hmul, hnormal, ?_, ?_⟩
-  · refine ⟨by simp [repeated, productValues], ?_⟩
+  · refine ⟨by simp [repeated, Slice.from_val, productValues], ?_⟩
     intro v
-    have hvi : v.val < 8 := by simpa only [repeated, List.length_replicate] using v.isLt
-    simp only [repeated, List.getElem_replicate]
+    have hvi : v.val < 8 := by simpa only [repeated, Slice.from_val, List.length_replicate] using v.isLt
+    simp only [repeated, Slice.from_val, List.getElem_replicate]
     refine ⟨hb, fun lane => ?_⟩
     rw [(hv lane).2]
     simp only [productValues, _root_.Array.getElem!_replicate, show 8*v.val+lane.val < 64 by omega]
   · intro hraw
-    have hbound := (hraw.2 ⟨0, by simp [repeated]⟩).1.1 (0 : Fin 5) (0 : Fin 8)
-    simp only [repeated, List.getElem_replicate, Fin.getElem_fin, Fin.val_zero] at hbound
+    have hbound := (hraw.2 ⟨0, by simp [repeated, Slice.from_val]⟩).1.1 (0 : Fin 5) (0 : Fin 8)
+    simp only [repeated, Slice.from_val, List.getElem_replicate, Fin.getElem_fin, Fin.val_zero] at hbound
     rw [product_limb] at hbound
     norm_num at hbound
 
@@ -116,16 +118,31 @@ theorem wrong_used_column_rejected
     1#usize 1 values (_root_.Array.replicate 64 0) (by decide) hcell
     (by simp [hflags]) (by intro _ j; simp [j.isLt])
   refine ⟨next, { next with used := alloc.vec.Vec.set kernel.used 0#usize true },
-    hcall, hused, by simp only [addCellWrongUsed, hcall, bind_tc_ok], ?_⟩
+    hcall, hused, by simp only [addCellWrongUsed, hcall, bind_ok], ?_⟩
   intro hwrong
   have he := congrArg (fun flags : List Bool => flags[1]!) (hwrong.trans hused)
-  simp [alloc.vec.Vec.set, hflags] at he
+  simp [alloc.vec.Vec.set_val_eq, hflags] at he
 
 private def noncanonicalCell : Array U8 2048#usize :=
-  ⟨List.replicate 2048 255#u8, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 2048#usize (List.replicate 2048 255#u8) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
 
 private theorem noncanonical_first :
     (bytesToBlsField ((arrayBytes noncanonicalCell).extract 0 32)).toOption.isSome = false := by
+  have hval : noncanonicalCell.val = List.replicate 2048 255#u8 := by
+    unfold noncanonicalCell Array.make
+    exact Array.from_val ..
+  have hextract : (arrayBytes noncanonicalCell).extract 0 32 =
+      bytes (List.replicate 32 255#u8) := by
+    have he := BytePacking.extract_eq_bytes
+      (Slice.from noncanonicalCell.val (by rw [hval, List.length_replicate]; scalar_tac))
+      (List.replicate 32 255#u8) 0 32 (List.length_replicate ..)
+      (by simp only [Slice.from_val, hval, List.length_replicate]; decide)
+      (by
+        intro i hi
+        simp only [Slice.from_val, hval, Nat.zero_add, List.getElem!_replicate,
+          show i < 2048 by omega, hi])
+    simpa only [arrayBytes, Slice.from_val] using he
+  rw [hextract]
   decide +kernel
 
 theorem canonical_cell_accepted (kernel : interpolation_kernel.InterpolationKernel)
@@ -157,7 +174,7 @@ theorem noncanonical_cell_rejected (kernel : interpolation_kernel.InterpolationK
   have hfalse : (decodedCellElements [noncanonicalCell]).all Option.isSome = false :=
     Bool.eq_false_iff.mpr hnot
   rw [check_cell_refinement, hfalse]
-  exact ⟨rfl, by intro h; cases h⟩
+  exact ⟨rfl, by intro h; exact Bool.noConfusion (Result.ok_injective h)⟩
 
 #print axioms omitting_inverse_size_rejects_multiplier
 #print axioms missing_first_normalise_rejects_dit_input

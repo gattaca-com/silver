@@ -83,7 +83,7 @@ theorem montgomery_loop_exact (a b t : Array U64 4#usize) (i : Usize)
     have hstop : ¬ i < 4#usize := by change ¬i.val < 4; omega
     refine ⟨t,?_,ht,?_⟩
     · rw [fr.montgomery_product_loop,loop.eq_1]
-      simp [fr.montgomery_product_loop.body,hstop]
+      simp [fr.montgomery_product_loop.body,hstop, bind_ok]
     · simpa only [hi4,prefixValue_four] using hcong
   | succ n ih =>
     have hilt : i.val < 4 := by omega
@@ -101,9 +101,9 @@ theorem montgomery_loop_exact (a b t : Array U64 4#usize) (i : Usize)
     obtain ⟨result,hr,hrbound,hrcong⟩ := ih out next (by omega) hbound hcong' (by omega)
     have hbody : fr.montgomery_product_loop.body a b t i = ok (cont (out,next)) := by
       have hilt' : i < 4#usize := hilt
-      simp only [fr.montgomery_product_loop.body,hilt',if_true]
+      simp only [fr.montgomery_product_loop.body,hilt',ite_true]
       rw [index_usize_eq b i hilt]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let (lo,hi) ← fr.multiply_add t a w
         let result ← fr.divide_out_word lo hi
@@ -114,10 +114,10 @@ theorem montgomery_loop_exact (a b t : Array U64 4#usize) (i : Usize)
       rw [hdiv]
       simp only [bind_tc_ok]
       rw [usize_add_ok i 1#usize (by change i.val+1 < 2^32; omega)]
-      rfl
+      (simp only [bind_tc_ok] ; rfl)
     refine ⟨result,?_,hrbound,hrcong⟩
     rw [fr.montgomery_product_loop,loop.eq_1]
-    simpa only [hbody] using hr
+    simpa only [hbody, bind_ok] using! hr
 
 theorem below_r_refines (t : Array U64 4#usize) (ht : value t < 2*Fr.modulus) :
     ∃ out, fr.below_r t = ok out ∧ value out = value t % (Fr.modulus : ℤ) := by
@@ -150,7 +150,7 @@ theorem montgomery_product_refines (a b : Array U64 4#usize)
       ring)
   obtain ⟨out,hbelow,hvalue⟩ := below_r_refines t (by omega)
   refine ⟨out,?_,?_,k-(value t/(Fr.modulus : ℤ))*(radix : ℤ)^4,?_⟩
-  · simp only [fr.montgomery_product,hloop,bind_tc_ok]
+  · simp only [fr.montgomery_product,hloop, bind_ok]
     exact hbelow
   · rw [hvalue]
     exact Int.emod_lt_of_pos _ (by decide)

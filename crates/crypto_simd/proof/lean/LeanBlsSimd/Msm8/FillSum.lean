@@ -6,6 +6,10 @@ noncomputable section
 
 namespace LeanBlsSimd.BucketsRefines
 
+private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (out : β) :
+    Std.bind r f = ok out ↔ ∃ a, r = ok a ∧ f a = ok out := by
+  simpa only [bind_tc_eq] using bind_success r f out
+
 variable {A : Type} [AddCommGroup A]
 
 def referencePoint (points : ℕ → A) (reference : U32) : A :=
@@ -106,10 +110,10 @@ theorem eventReferences_contributions (width windows : Usize) (events : List Eve
           _ = _ := by
             by_cases hw : event.window.val = w
             · simp only [hw, true_and, Finset.sum_ite_eq, Finset.mem_range, hm,
-                if_true, Nat.sub_add_cancel hmv]
-            · simp only [hw, false_and, if_false, Finset.sum_const_zero]
+                ite_true, Nat.sub_add_cancel hmv]
+            · simp only [hw, false_and, ite_false, Finset.sum_const_zero]
       simp_rw [hinner, smul_ite, smul_zero]
-      simp only [Finset.sum_ite_eq, Finset.mem_range, hfit.1, if_true, eventContribution]
+      simp only [Finset.sum_ite_eq, Finset.mem_range, hfit.1, ite_true, eventContribution]
 
 theorem indexed_events_contribution (width start index : ℕ) (events : List Event)
     (points : ℕ → A)
@@ -164,27 +168,27 @@ theorem scalar_events_contribution (n : ℕ) (scalars : Slice (Array U64 4#usize
   induction n generalizing index events with
   | zero =>
     simp only [scalarEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp
   | succ n ih =>
     have hil : index.val < scalars.val.length := by omega
-    simp only [scalarEvents, bind_success] at hevents
+    simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, bind_success] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     have hwordsEq : words = scalars.val[index.val] := by
       simp [Slice.index_usize, List.getElem?_eq_getElem hil] at hwords
       exact hwords.symm
     have hdigitsEq : digits = SignedDigits.initial words width := by
       rw [SignedDigits.new_refines] at hdigits
-      exact (Result.ok.inj hdigits).symm
+      exact (Result.ok_injective hdigits).symm
     have hindexv : index'.val = index.val + 1 := by
       rw [add_ok index 1#usize (by
         change index.val + 1 < 2 ^ UScalarTy.Usize.numBits
         have := two_pow_32_le_usize
         omega)] at hindex
-      cases Result.ok.inj hindex
+      cases Result.ok_injective hindex
       rfl
     have hvalue : SignedDigits.value words = values index.val := hwordsEq ▸ hv index.val hil
     have hfirstSum := window_events_contribution words width index first last points hwl hwh
@@ -239,20 +243,20 @@ theorem scalar_events_references (n : ℕ) (scalars : Slice (Array U64 4#usize))
   induction n generalizing index events with
   | zero =>
     simp only [scalarEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp
   | succ n ih =>
-    simp only [scalarEvents, bind_success] at hevents
+    simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, bind_success] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     have hindexv : index'.val = index.val + 1 := by
       rw [add_ok index 1#usize (by
         change index.val + 1 < 2 ^ UScalarTy.Usize.numBits
         have := two_pow_32_le_usize
         omega)] at hindex
-      cases Result.ok.inj hindex
+      cases Result.ok_injective hindex
       rfl
     intro e he
     rcases List.mem_append.mp he with he | he
@@ -276,7 +280,7 @@ theorem fill127_contribution (state : silver_crypto_simd.bls.msm8.buckets.Bucket
   obtain ⟨events', htrace', _, hfits⟩ := scalarEvents_succeeds scalars.val.length scalars
     (selectedWidth scalars.val.length) (windows127 (selectedWidth scalars.val.length)) 0#usize
     hwl hwh (windows127_bits _ hwh) (by change 0 + scalars.val.length ≤ scalars.val.length; omega)
-  have heq := Result.ok.inj (htrace.symm.trans htrace')
+  have heq := Result.ok_injective (htrace.symm.trans htrace')
   subst events'
   have hsum := scalar_events_contribution scalars.val.length scalars _ 0#usize events values points
     hwl hwh (by change 0 + scalars.val.length ≤ scalars.val.length; omega) hlen hv hb htrace
@@ -294,7 +298,7 @@ theorem fill127_contribution (state : silver_crypto_simd.bls.msm8.buckets.Bucket
         intro b hb'
         rw [hrecover _ (by
           have hm := Nat.mul_le_mul_right (2 ^ (out.window_bits.val - 1))
-            (show w + 1 ≤ out.windows.val from by simpa only [Finset.mem_range] using hw)
+            (show w + 1 ≤ out.windows.val from by simpa only [Finset.mem_range] using! hw)
           simp only [Finset.mem_range] at hb'
           unfold listIndex
           rw [Nat.add_mul, Nat.one_mul] at hm

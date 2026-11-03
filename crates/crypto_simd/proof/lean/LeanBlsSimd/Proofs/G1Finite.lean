@@ -6,6 +6,8 @@ namespace LeanBlsSimd.DecompressG1
 open EthLib.Cryptography.Bls
 open G1Spec (toBytes)
 
+attribute [local implicit_reducible] ZMod Fp.modulus
+
 theorem size_toBytes (bytes : Encoding) : (toBytes bytes).size = 48 := by
   simp [toBytes, ByteArray.size]
 
@@ -34,21 +36,21 @@ theorem uncompress_eq {b : Encoding}
           else -yPos, Fp.one⟩ := by
   unfold G1.uncompress
   generalize Fp.sqrt = sq
-  rw [if_neg (by rw [size_toBytes]; decide)]
+  rw [ite_eq_right (by rw [size_toBytes]; decide)]
   dsimp only
   have e1 := bytesBEToNat_x b
   rw [get!_toBytes_zero] at e1 ⊢
   have hsz : ((toBytes b).set! 0 (b[0] &&& 0x1f)).size = 48 := by
     simp [toBytes, ByteArray.set!, ByteArray.size]
-  rw [if_neg (by simpa using hc), if_neg hi, DecompressG2.fromBytesBE_ok hsz e1 h1]
+  rw [ite_eq_right (by simpa using hc), ite_eq_right hi, DecompressG2.fromBytesBE_ok hsz e1 h1]
   dsimp only
   split <;> rename_i heq <;> rw [heq]
   rename_i yPos
   dsimp only
   congr 2
   by_cases hs : Fp.signBit yPos = decide (b[0] &&& 0x20 ≠ 0)
-  · rw [if_pos hs, if_pos (by rw [hs]; simp)]
-  · rw [if_neg hs, if_neg (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
+  · rw [ite_eq_left hs, ite_eq_left (by rw [hs]; simp)]
+  · rw [ite_eq_right hs, ite_eq_right (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
 
 /-- An encoding that `decode` marks invalid, and not undecided, fails `G1.uncompress`. -/
 theorem uncompress_of_invalid {b : Encoding}
@@ -57,23 +59,23 @@ theorem uncompress_of_invalid {b : Encoding}
   intro P hP
   unfold G1.uncompress at hP
   generalize Fp.sqrt = sq at hP
-  rw [if_neg (by rw [size_toBytes]; decide)] at hP
+  rw [ite_eq_right (by rw [size_toBytes]; decide)] at hP
   dsimp only at hP
   have e1 := bytesBEToNat_x b
   rw [get!_toBytes_zero] at e1 hP
   unfold decodeLane at hu hv
   dsimp only at hu hv
   by_cases hc : b[0] &&& 0x80 = 0
-  · rw [if_pos (by simpa using hc)] at hP
+  · rw [ite_eq_left (by simpa using hc)] at hP
     cases hP
-  rw [if_neg hc] at hu hv
-  rw [if_neg (by simpa using hc)] at hP
+  rw [ite_eq_right hc] at hu hv
+  rw [ite_eq_right (by simpa using hc)] at hP
   by_cases hi : b[0] &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv hP
+  rw [ite_eq_right hi] at hv hP
   by_cases hok : bytesVal (clearFlags b).toList < Fp.modulus
-  · rw [if_pos hok] at hv
+  · rw [ite_eq_left hok] at hv
     cases hv
   revert hP
   cases hf : Fp.fromBytesBE ((toBytes b).set! 0 (b[0] &&& 0x1f)) with
@@ -90,17 +92,17 @@ theorem decodeLane_ok {b : Encoding}
   unfold decodeLane at hu hv ⊢
   dsimp only at hu hv ⊢
   by_cases hc : b[0] &&& 0x80 = 0
-  · rw [if_pos hc] at hv
+  · rw [ite_eq_left hc] at hv
     cases hv
-  rw [if_neg hc] at hu hv ⊢
+  rw [ite_eq_right hc] at hu hv ⊢
   by_cases hi : b[0] &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv ⊢
+  rw [ite_eq_right hi] at hv ⊢
   by_cases hok : bytesVal (clearFlags b).toList < Fp.modulus
-  · rw [if_pos hok]
+  · rw [ite_eq_left hok]
     exact ⟨hc, hi, hok, rfl⟩
-  · rw [if_neg hok] at hv
+  · rw [ite_eq_right hok] at hv
     cases hv
 
 def laneX (b : Encoding) : ZMod Fp.modulus := (decodeLane b).x
@@ -140,7 +142,6 @@ private theorem fp_rhs_eq (x : Fp) :
     (x * x * x + Fp.ofNat 4 : Fp) = (fun t : ZMod Fp.modulus => t ^ 2 * t + 4) x := by
   change (fun t : ZMod Fp.modulus => t * t * t + 4) x = _
   simp only [sq]
-  rfl
 
 theorem uncompress_decoded {b : Encoding}
     (hu : (decodeLane b).undecided = false) (hv : (decodeLane b).invalid = false) :
@@ -174,7 +175,7 @@ theorem uncompress_decoded {b : Encoding}
   clear hu hv hc hi hd hx hsign hroot hroot'
   generalize hsg : Fp.signBit root = sign
   generalize decide (b[0] &&& 0x20 ≠ 0) = desired
-  cases sign <;> cases desired <;> split_ifs <;> first | rfl | contradiction | (simp [hsg] <;> rfl)
+  cases sign <;> cases desired <;> split_ifs <;> first | rfl | contradiction | (simp [hsg] )
 
 theorem invalid_undecided {b : Encoding} (h : (decodeLane b).invalid = true) :
     (decodeLane b).undecided = false := by
@@ -204,7 +205,7 @@ private theorem blstLimbs_mk_one (x y : ZMod Fp.modulus) :
     change (1 : ZMod Fp.modulus)⁻¹ = 1
     exact inv_one
   unfold G1Spec.blstLimbs G1.toAffine
-  rw [show Fp.one.isZero = false by decide, if_neg (by decide), hi]
+  rw [show Fp.one.isZero = false by decide, ite_eq_right (by decide), hi]
   change (⟨DecompressG2.blstFp (x * (1 * 1)),
     DecompressG2.blstFp (y * (1 * 1 * 1))⟩ : BlstP1Affine) = _
   simp only [mul_one]

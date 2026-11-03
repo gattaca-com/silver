@@ -1,9 +1,9 @@
 import LeanBlsSimd.Sha256.ExtensionBytes
 import LeanBlsSimd.Sha256.ByteWord
+import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result
 open private LeanBlsSimd.Sha256.four_bytes from LeanBlsSimd.Sha256.ByteWord
-open private EthLib.Cryptography.Bls.Sha256.big32 from EthLib.Cryptography.Bls.Sha256
 
 namespace LeanBlsSimd.Sha256.Extensions
 
@@ -14,7 +14,7 @@ private theorem appendNat {m n : Nat} (x : BitVec m) (y : BitVec n) :
 theorem big32_four (a b c d : UInt8) :
     Spec.big32 (Spec.bytes [a,b,c,d]) 0 = littleWord d c b a := by
   have hr := from_be_bytes_model (Array.make 4#usize [toU8 a,toU8 b,toU8 c,toU8 d] (by rfl))
-  simp only [Array.make,List.map_cons,List.map_nil,ofU8_toU8] at hr
+  simp only [Array.make,Array.from_val,List.map_cons,List.map_nil,ofU8_toU8] at hr
   rw [← hr]
   apply UInt32.toNat_inj.mp
   change (BitVec.fromBEBytes [a.toBitVec,b.toBitVec,c.toBitVec,d.toBitVec]).toNat = _
@@ -37,7 +37,7 @@ theorem big32_four (a b c d : UInt8) :
 theorem big32_littleWord (bytes : ByteArray) (off : Nat) :
     Spec.big32 bytes off = littleWord bytes[off+3]! bytes[off+2]! bytes[off+1]! bytes[off]! := by
   rw [← big32_four]
-  simp only [Spec.big32,EthLib.Cryptography.Bls.Sha256.big32,Spec.bytes_get,
+  simp only [Spec.big32,EthLib.Cryptography.Hash.Sha256.big32,Spec.bytes_get,
     List.getElem!_cons_zero,List.getElem!_cons_succ,Nat.zero_add]
 
 def byteSwap : M128 := _mm_set_epi64x 0x0c0d0e0f08090a0b 0x0405060700010203
@@ -80,7 +80,7 @@ theorem load_swapped_words (x : Array U8 16#usize) :
         Spec.big32 (Spec.bytes (x.val.map ofU8)) 8,
         Spec.big32 (Spec.bytes (x.val.map ofU8)) 12] := by
   rw [load_bytes_refines]
-  simp only [bind_tc_ok,core.core_arch.x86.ssse3._mm_shuffle_epi8,byte_swap_words]
+  simp only [bind_ok,core.core_arch.x86.ssse3._mm_shuffle_epi8,byte_swap_words]
   have hb (i : Nat) (hi : i < 16) :
       (Spec.bytes (x.val.map ofU8))[i]! = (ofArray ofU8 x : Vector UInt8 16)[i] := by
     rw [Spec.bytes_get,getElem!_pos _ i (by simp only [List.length_map,x.property]; exact hi)]

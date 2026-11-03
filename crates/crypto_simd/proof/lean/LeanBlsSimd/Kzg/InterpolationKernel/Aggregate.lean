@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 
 open Extender Extender.Kernel
@@ -52,13 +54,15 @@ theorem add_cell_columns
   rw [weighted_column evaluations powers columns k column.val c.val values hcolumns.1 hc c.isLt hvalues]
   by_cases he : c.val = column.val
   · have hused : (used.set column.val true)[c.val]! = true := by
-      simp only [List.getElem!_set, he, hcolumns.2.1, hc]
+      rw [he]
+      exact List.set_getElem!_eq used column.val column.val true
+        ⟨by rw [hcolumns.2.1]; exact hc, rfl⟩
     rw [hused]
-    simp only [he, if_true, Bool.true_eq_false, false_implies, true_implies, and_true]
+    simp only [he, ite_true, Bool.true_eq_false, false_implies, true_implies, and_true]
     exact hr
   · have hused : (used.set column.val true)[c.val]! = used[c.val]! :=
-      List.getElem!_set_ne used column.val c.val true (by omega)
-    simp only [he, if_false, hused]
+      List.set_getElem!_ne used column.val c.val true (by omega)
+    simp only [he, ite_false, hused]
     refine ⟨?_, (hcolumns.2.2.2 c).2⟩
     intro htrue v
     rw [hframe (c.val * 8 + v.val) (by omega)]
@@ -75,8 +79,8 @@ private theorem clear_loop (kernel : interpolation_kernel.InterpolationKernel)
     refine ⟨kernel, ?_, hk, ?_⟩
     · rw [interpolation_kernel.InterpolationKernel.interpolate_loop0, loop.eq_1]
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop0.body,
-        cells_per_ext_blob_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        he, lt_self_iff_false, if_false]
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        he, lt_self_iff_false, ite_false]
     · apply List.ext_getElem
       · simpa using hk.2.2.2.1
       · intro i hi hj
@@ -90,18 +94,19 @@ private theorem clear_loop (kernel : interpolation_kernel.InterpolationKernel)
     let c' : Usize := UScalar.ofNatCore (c.val + 1) (by scalar_tac)
     have hc' : c'.val = c.val + 1 := UScalar.ofNatCore_val_eq _
     have hn : StateInvariant next :=
-      ⟨hk.1, hk.2.1, hk.2.2.1, by simpa [next, alloc.vec.Vec.set] using hk.2.2.2.1,
+      ⟨hk.1, hk.2.1, hk.2.2.1, by simpa [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val, alloc.vec.Vec.from_val] using hk.2.2.2.1,
         hk.2.2.2.2⟩
     have hp : ∀ i : Fin 128, i.val < c'.val → next.used.val[i.val]! = false := by
       intro i hi
       by_cases he : i.val = c.val
-      · simp only [next, alloc.vec.Vec.set, he, List.getElem!_set, hcl]
-      · rw [show next.used.val = kernel.used.val.set c.val false from rfl,
-          List.getElem!_set_ne kernel.used.val c.val i.val false (by omega)]
+      · simp only [next, alloc.vec.Vec.set, alloc.vec.Vec.from_val, he]
+        exact List.set_getElem!_eq kernel.used.val c.val c.val false ⟨hcl, rfl⟩
+      · rw [show next.used.val = kernel.used.val.set c.val false from alloc.vec.Vec.set_val_eq _ _ _,
+          List.set_getElem!_ne kernel.used.val c.val i.val false (by omega)]
         exact hclear i (by omega)
     have hmut : alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Bool) kernel.used c =
         ok (kernel.used.val[c.val]!, alloc.vec.Vec.set kernel.used c) := by
-      simp [alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hcl]
+      simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, alloc.vec.Vec.index_usize, getElem!_pos, hcl]
     have hinc : c + 1#usize = ok c' := scalar_add_ok c 1#usize (by scalar_tac)
     obtain ⟨out, hout, ho, hu⟩ := ih next hn c' (by omega) hp (by omega)
     refine ⟨out, ?_, ho, hu⟩
@@ -109,9 +114,9 @@ private theorem clear_loop (kernel : interpolation_kernel.InterpolationKernel)
     have hbody : interpolation_kernel.InterpolationKernel.interpolate_loop0.body kernel c =
         ok (cont (next, c')) := by
       simp only [interpolation_kernel.InterpolationKernel.interpolate_loop0.body,
-        cells_per_ext_blob_eq, bind_tc_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-        hct, if_true, hmut, Function.uncurry_apply_pair, hinc, next]
-    simpa only [hbody] using hout
+        cells_per_ext_blob_eq, bind_ok, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
+        hct, ite_true, hmut, Aeneas.Std.uncurry_apply_pair, hinc, next]
+    simpa only [hbody, bind_ok] using! hout
 
 theorem clear_refinement (kernel : interpolation_kernel.InterpolationKernel)
     (hk : StateInvariant kernel) :

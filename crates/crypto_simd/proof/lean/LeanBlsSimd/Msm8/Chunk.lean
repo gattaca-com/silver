@@ -8,13 +8,18 @@ open EthLib.Cryptography Bls
 
 private theorem bind_success {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
     (do let x ← r; f x) = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
-  cases r <;> simp
+  exact BucketsRefines.bind_success r f v
+
+private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
+    Std.bind r f = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
+  simpa only [bind_tc_eq] using bind_success r f v
 
 private theorem split_points (self next : msm8.Msm8)
     (h : self.split_scalars = ok next) : next.finite_points = self.finite_points := by
-  simp only [msm8.Msm8.split_scalars, bind_success] at h
+  simp only [msm8.Msm8.split_scalars, bind_success_std] at h
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, h⟩ := h
-  cases h
+  have he := Result.ok_injective h
+  cases he
   rfl
 
 private def generatedAfterFilter (self : msm8.Msm8) : Result (g1x8.G1x8 × msm8.Msm8) := do
@@ -63,8 +68,8 @@ private theorem chunk_sum_eq_afterFilter (self : msm8.Msm8)
   have he : Slice.len points = Slice.len scalars := by
     apply UScalar.eq_of_val_eq
     exact halign
-  simp only [msm8.Msm8.chunk_sum, filterPrefix, he, massert, if_true,
-    generatedAfterFilter, bind_assoc_eq, bind_tc_ok]
+  simp only [msm8.Msm8.chunk_sum, filterPrefix, he, massert, ite_true,
+    generatedAfterFilter, Aeneas.Std.bind_assoc, bind_ok]
 
 private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
     (hn : alloc.vec.Vec.len self.finite_points ≠ 0#usize)
@@ -73,16 +78,21 @@ private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
     generatedAfterFilter self = (do
       let (next, out) ← finish prepared
       ok (out, next)) := by
-  simp only [initialise, bind_success] at hinit
+  simp only [initialise, bind_success_std] at hinit
   obtain ⟨split, hsplit, buckets, hfill, store, hprep, he⟩ := hinit
-  cases he
+  have heq := Result.ok_injective he
+  cases heq
   have hp := split_points self split hsplit
   have hmul : 2#usize * alloc.vec.Vec.len self.finite_points = ok store.len := by
     rw [mul_ok _ _ (by change 2 * self.finite_points.val.length < _; rw [← hlen]; exact store.len.hBounds)]
     congr 1
     apply UScalar.eq_of_val_eq
     exact hlen.symm
-  simp only [prepareStore, hp] at hprep
+  have hderef : Slice.len (alloc.vec.Vec.deref self.finite_points) =
+      alloc.vec.Vec.len self.finite_points := by
+    apply UScalar.eq_of_val_eq
+    simp [alloc.vec.Vec.deref, Slice.from_val]
+  simp only [prepareStore, hp, hderef] at hprep
   change (do
     let count ← 2#usize * alloc.vec.Vec.len self.finite_points
     let extra ← buckets.windows * alloc.vec.Vec.len self.finite_points
@@ -93,14 +103,14 @@ private theorem afterFilter_of_initialise (self prepared : msm8.Msm8)
     first.push_blst (alloc.vec.Vec.deref self.finite_points)
       (alloc.vec.Vec.deref split.second_signs) true) = ok store at hprep
   rw [hmul] at hprep
-  simp only [bind_tc_ok, bind_success] at hprep
+  simp only [bind_ok, bind_success_std] at hprep
   obtain ⟨extra, hextra, capacity, hcapacity, reset, hreset, first, hfirst, hsecond⟩ := hprep
-  simp only [generatedAfterFilter, hn, if_false, hsplit, bind_tc_ok,
+  simp only [generatedAfterFilter, hn, ite_false, hsplit, bind_ok,
     glv.HALF_SCALAR_BITS, hfill, hmul, msm8.buckets.Buckets.impl.windows,
     hextra, hcapacity, hreset, hp, hfirst, hsecond]
-  simp only [finish, bind_assoc_eq]
-  apply (bind_eq_iff _ _ _).mpr
-  intro result _
+  simp only [finish, Aeneas.Std.bind_assoc]
+  congr 1
+  funext result
   rcases result with ⟨flag, next⟩
   cases flag <;> simp
 
@@ -119,13 +129,13 @@ theorem chunk_sum_eq_finiteCore
     filter_prefix_correct state points scalars halign hp hs (by omega)
   let filtered : msm8.Msm8 := {state with finite_points := ps, finite_scalars := ss}
   rw [chunk_sum_eq_afterFilter state points scalars halign]
-  simp only [finiteCore, hfilter, bind_tc_ok]
+  simp only [finiteCore, hfilter, bind_ok]
   by_cases hz : ps.val.length = 0
   · have hn : alloc.vec.Vec.len ps = 0#usize := by
       apply UScalar.eq_of_val_eq
       exact hz
-    simp only [generatedAfterFilter, hn, if_true, bind_assoc_eq, bind_tc_ok]
-    rfl
+    simp only [generatedAfterFilter, hn, ite_true]
+    simp only [Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def]
   · have hn : alloc.vec.Vec.len ps ≠ 0#usize := by
       intro he
       exact hz (congrArg UScalar.val he)
@@ -152,12 +162,13 @@ theorem chunk_sum_eq_finiteCore
           change Kzg.limbs ss.val[i]!.val < 2 ^ 255
           rw [getElem!_pos ss.val i hi]
           exact hscalars _ (List.getElem_mem hi))
-    simp only [hn, if_false, bind_assoc_eq]
+    simp only [hn, ite_false, ← bind_tc_eq, bind_assoc_eq]
     change generatedAfterFilter filtered = (do
       let prepared ← initialise filtered
       let (next, out) ← finish prepared
       ok (out, next))
     rw [hinit]
+    simp only [bind_ok]
     apply afterFilter_of_initialise filtered prepared hn hinit
     have h := hinitialised.store_len
     simpa only [filtered, haligned] using h
@@ -173,6 +184,6 @@ theorem chunk_sum_refinement
   obtain ⟨next, out, hcore, hrep⟩ := finiteCore_correct state points scalars halign hp hs255 hchunk
   refine ⟨next, out, ?_, hrep⟩
   rw [chunk_sum_eq_finiteCore state points scalars halign hp hs255 hchunk, hcore]
-  rfl
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair] )
 
 end LeanBlsSimd.Msm8

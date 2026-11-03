@@ -62,15 +62,15 @@ theorem double_holds {s : State} {l : Fin 8} {t : Step.Point}
   have hl2 := scalar_mul_holds (hz3.mul hzz) h.py
   refine ⟨⟨⟨?_, ?_, ?_⟩, ?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, ?_⟩
   · simpa only [double, Step.double, Matrix.cons_val_zero, pow_two] using hx3
-  · simpa only [double, Step.double, Matrix.cons_val_one, pow_two] using hy3
-  · simpa only [double, Step.double, Matrix.cons_val_two, pow_two] using hz3
+  · simpa only [double, Step.double, Matrix.cons_val_one, pow_two] using! hy3
+  · simpa only [double, Step.double, Matrix.cons_val_two, pow_two] using! hz3
   · exact h.qx
   · exact h.qy
   · exact h.px
   · exact h.py
   · simpa only [double, atP, Step.double, Matrix.cons_val_zero, pow_two] using hl0
-  · simpa only [double, atP, Step.double, Matrix.cons_val_one, pow_two] using hl1
-  · simpa only [double, atP, Step.double, Matrix.cons_val_two, pow_two] using hl2
+  · simpa only [double, atP, Step.double, Matrix.cons_val_one, pow_two] using! hl1
+  · simpa only [double, atP, Step.double, Matrix.cons_val_two, pow_two] using! hl2
   · simp only [double, Mmask8.testBit_or, Mmask8.testBit_and,
       hz3.testBit_is_zero_mask, activeMask_testBit s.count hhi,
       Step.double, Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons, pow_two]
@@ -104,15 +104,15 @@ theorem add_holds {s : State} {l : Fin 8} {t : Step.Point}
   have hl2 := scalar_mul_holds hz3 h.py
   refine ⟨⟨⟨?_, ?_, ?_⟩, ?_, ?_, ?_, ?_⟩, ⟨?_, ?_, ?_⟩, ?_⟩
   · simpa only [add, Step.add, Matrix.cons_val_zero, pow_two] using hx3
-  · simpa only [add, Step.add, Matrix.cons_val_one, pow_two] using hy3
-  · simpa only [add, Step.add, Matrix.cons_val_two, pow_two] using hz3
+  · simpa only [add, Step.add, Matrix.cons_val_one, pow_two] using! hy3
+  · simpa only [add, Step.add, Matrix.cons_val_two, pow_two] using! hz3
   · exact h.qx
   · exact h.qy
   · exact h.px
   · exact h.py
   · simpa only [add, atP, Step.add, Matrix.cons_val_zero, pow_two] using hl0
-  · simpa only [add, atP, Step.add, Matrix.cons_val_one, pow_two] using hl1
-  · simpa only [add, atP, Step.add, Matrix.cons_val_two, pow_two] using hl2
+  · simpa only [add, atP, Step.add, Matrix.cons_val_one, pow_two] using! hl1
+  · simpa only [add, atP, Step.add, Matrix.cons_val_two, pow_two] using! hl2
   · simp only [add, Mmask8.testBit_or, Mmask8.testBit_and,
       hz3.testBit_is_zero_mask, activeMask_testBit s.count hhi,
       Step.add, Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons, pow_two]

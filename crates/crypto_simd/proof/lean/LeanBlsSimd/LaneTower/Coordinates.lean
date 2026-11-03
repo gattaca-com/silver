@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.LaneTower
 
 theorem shuffle_Z0_POS_0 {α : Type} (a b : V α) :

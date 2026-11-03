@@ -31,7 +31,7 @@ theorem pairing_points_refinement [RuntimeFeatures]
   obtain ⟨right,hr,hrr⟩ := PortableG1.add_complete_refines difference lp
     (G1.add rlc (G1.neg rli)) rlp hdr hlpr (g1Valid_add hvlc (g1Valid_neg hvli)) hvlp
   refine ⟨Array.make 2#usize [left,right] (by rfl), ?_, ?_⟩
-  · simp only [verify.PairingSums.points, hlc,hli,hnli,hd,hl,hlp,hr,bind_tc_ok]
+  · simp only [verify.PairingSums.points, hlc,hli,hnli,hd,hl,hlp,hr, bind_ok]
   · intro lane
     fin_cases lane
     · exact hlr

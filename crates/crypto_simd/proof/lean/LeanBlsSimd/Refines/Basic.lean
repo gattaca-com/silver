@@ -15,8 +15,44 @@ open Aeneas Aeneas.Std Result
 
 namespace LeanBlsSimd
 
-theorem bind_return {α : Type} (x : Result α) : (x >>= ok) = x := by
-  cases x <;> rfl
+theorem bind_return {α : Type} (x : Result α) : Std.bind x ok = x :=
+  Aeneas.Std.bind_pure x
+
+theorem spec_imp_exists {α : Type} {m : Result α} {P : WP.Post α} (h : WP.spec m P) :
+    ∃ y, m = ok y ∧ P y := by
+  cases m using Result.cases with
+  | ret y => exact ⟨y, rfl, (WP.spec_ok y).mp h⟩
+  | vis e k => exact ((WP.spec_vis e k).mp h).elim
+  | div => exact (WP.spec_div.mp h).elim
+
+theorem bind_eq_ok {α β : Type} {x : Result α} {f : α → Result β} {y : β}
+    (h : Std.bind x f = ok y) : ∃ a, x = ok a ∧ f a = ok y := by
+  cases x using Result.cases with
+  | ret a => exact ⟨a, rfl, by rwa [bind_ok] at h⟩
+  | vis e k => rw [bind_vis] at h; exact (vis_not_ok h).elim
+  | div => rw [bind_div] at h; exact (div_not_ok h).elim
+
+/-- The continuation of one `loop` iteration, named so that `simp` does not unfold the next
+iteration before the current body has run. -/
+def loopStep {α β : Type} (body : α → Result (ControlFlow α β)) : ControlFlow α β → Result β
+  | .cont y => loop body y
+  | .done b => ok b
+
+@[simp] theorem loopStep_cont {α β : Type} (body : α → Result (ControlFlow α β)) (y : α) :
+    loopStep body (.cont y) = loop body y := rfl
+
+@[simp] theorem loopStep_done {α β : Type} (body : α → Result (ControlFlow α β)) (b : β) :
+    loopStep body (.done b) = ok b := rfl
+
+theorem loop_eq_loopStep {α β : Type} (body : α → Result (ControlFlow α β)) (x : α) :
+    loop body x = Std.bind (body x) (loopStep body) := by
+  rw [loop.eq_1]
+  rfl
+
+-- Not `:= rfl`: `simp` would use a reflexivity lemma by definitional unfolding, and the kernel would
+-- then reduce the pair argument, which can be a whole computation.
+theorem aeneas_uncurry_def {α β γ : Type} (f : α → β → γ) (p : α × β) :
+    Aeneas.Std.uncurry f p = f p.1 p.2 := id rfl
 
 abbrev ofU64 (x : U64) : UInt64 := .ofBitVec x.bv
 abbrev toU64 (x : UInt64) : U64 := ⟨x.toBitVec⟩
@@ -51,13 +87,15 @@ theorem eq_toU64_iff (y : U64) (x : UInt64) : y = toU64 x ↔ ofU64 y = x := by
 @[simp] theorem ofBitVec_hcast_I64 (x : U64) :
     Int64.ofBitVec (UScalar.hcast .I64 x).bv = (ofU64 x).toInt64 := rfl
 
+-- `id rfl`, not `rfl`: a nested proof is typed by inference, and `rfl` would give `n.val = n.val`,
+-- which `rw` and `simp` reject where `n.val = m` is expected.
 def ofArray {α β : Type} {n : Usize} {m : ℕ} (f : α → β) (a : Array α n)
-    (h : n.val = m := by rfl) : Vector β m :=
+    (h : n.val = m := by exact id rfl) : Vector β m :=
   ⟨(a.val.map f).toArray, by simp [a.property, h]⟩
 
 def toArray {α β : Type} {n : Usize} {m : ℕ} (f : β → α) (v : Vector β m)
-    (h : n.val = m := by rfl) : Array α n :=
-  ⟨v.toList.map f, by simp [h]⟩
+    (h : n.val = m := by exact id rfl) : Array α n :=
+  Array.from (v.toList.map f) (by simp [h])
 
 def ofSlice {α β : Type} {m : ℕ} (f : α → β) (s : Slice α) (h : s.val.length = m) :
     Vector β m :=
@@ -68,7 +106,7 @@ section Arrays
 variable {α β : Type} {n : Usize} {m : ℕ}
 
 @[simp] theorem toArray_val (f : β → α) (v : Vector β m) (h : n.val = m) :
-    (toArray f v h).val = v.toList.map f := rfl
+    (toArray f v h).val = v.toList.map f := by simp [toArray]
 
 @[simp] theorem toList_ofArray (f : α → β) (a : Array α n) (h : n.val = m) :
     (ofArray f a h).toList = a.val.map f := by
@@ -86,7 +124,7 @@ variable {α β : Type} {n : Usize} {m : ℕ}
 
 @[simp] theorem toArray_ofArray {f : α → β} {g : β → α} (hgf : ∀ x, g (f x) = x)
     (a : Array α n) (h : n.val = m) (h' : n.val = m) : toArray g (ofArray f a h) h' = a := by
-  apply Subtype.ext
+  apply Aeneas.Std.Array.ext
   simp [Function.comp_def, hgf]
 
 @[simp] theorem ofArray_toArray_id (v : Vector α m) (h : n.val = m) (h' : n.val = m) :
@@ -112,7 +150,7 @@ theorem update_eq (a : Array α n) (j : Usize) (x : α) (hj : j.val < n.val) :
 
 theorem toArray_replicate (f : β → α) (x : β) (h : n.val = m) :
     toArray f (Vector.replicate m x) h = Array.repeat n (f x) := by
-  apply Subtype.ext
+  apply Aeneas.Std.Array.ext
   simp [h]
 
 end Arrays
@@ -120,7 +158,7 @@ end Arrays
 @[simp] theorem set_toArray {α β : Type} {n : Usize} {m : ℕ} (f : β → α) (v : Vector β m)
     (h : n.val = m) (i : Usize) (x : β) (hi : i.val < m) :
     (toArray f v h).set i (f x) = toArray f (v.set i.val x hi) h := by
-  apply Subtype.ext
+  apply Aeneas.Std.Array.ext
   simp [List.map_set, Vector.toList_set]
 
 theorem toArray_set_of_eq {α β : Type} {n : Usize} {m : ℕ} (f : β → α) (v : Vector β m)
@@ -191,7 +229,7 @@ theorem add_ok (x y : UScalar ty) (h : x.val + y.val < 2 ^ ty.numBits) :
 theorem sub_ok (x y : UScalar ty) (h : y.val ≤ x.val) :
     x - y = ok (UScalar.ofNatCore (x.val - y.val) (by have := x.hBounds; omega)) := by
   show UScalar.sub x y = _
-  simp only [UScalar.sub, Nat.not_lt.mpr h, if_false]
+  simp only [UScalar.sub, Nat.not_lt.mpr h, ite_false]
   congr 1; apply UScalar.eq_of_val_eq
   simp only [UScalar.ofNatCore_val_eq]
   simp only [UScalar.val, BitVec.toNat_ofNat]
@@ -207,14 +245,14 @@ theorem div_ok (x y : UScalar ty) (h : y.val ≠ 0) :
       (lt_of_le_of_lt (Nat.div_le_self _ _) x.hBounds)) := by
   show UScalar.div x y = _
   have hy : y.bv ≠ 0 := by intro e; apply h; simp [UScalar.val, e]
-  simp only [UScalar.div, bne_iff_ne, ne_eq, hy, not_false_eq_true, if_true]
+  simp only [UScalar.div, bne_iff_ne, ne_eq, hy, not_false_eq_true, ite_true]
   congr 1
 
 theorem rem_ok (x y : UScalar ty) (h : y.val ≠ 0) :
     x % y = ok (UScalar.ofNatCore (x.val % y.val)
       (lt_of_le_of_lt (Nat.mod_le _ _) x.hBounds)) := by
   show UScalar.rem x y = _
-  simp only [UScalar.rem, bne_iff_ne, ne_eq, h, not_false_eq_true, if_true]
+  simp only [UScalar.rem, bne_iff_ne, ne_eq, h, not_false_eq_true, ite_true]
   congr 1
 
 theorem shiftRight_ok {tys : UScalarTy} (x : UScalar ty) (s : UScalar tys)
@@ -351,7 +389,8 @@ theorem slice_index_ok {α : Type} (s : Slice α) (a b : Usize) (hab : a.val ≤
     (hb : b.val ≤ s.val.length) :
     core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice α) s
         { start := a, «end» := b } =
-      ok ⟨s.val.slice a.val b.val, le_trans (List.slice_length_le _ _ _) s.property⟩ := by
+      ok (Slice.from (s.val.slice a.val b.val)
+        (le_trans (List.slice_length_le _ _ _) s.property)) := by
   simp [core.slice.index.Slice.index, core.slice.index.SliceIndexRangeUsizeSlice.index, hab, hb]
 
 theorem copy_from_slice_ok {α : Type} (inst : core.marker.Copy α) (s src : Slice α)
@@ -360,11 +399,11 @@ theorem copy_from_slice_ok {α : Type} (inst : core.marker.Copy α) (s src : Sli
 
 theorem split_at_ok {α : Type} (s : Slice α) (n : Usize) (h : n.val ≤ s.val.length) :
     core.slice.Slice.split_at s n =
-      ok (⟨s.val.take n.val, by have := s.property; simp; omega⟩,
-        ⟨s.val.drop n.val, by have := s.property; simp; omega⟩) := by
+      ok (Slice.from (s.val.take n.val) (by have := s.property; simp only [List.length_take]; omega),
+        Slice.from (s.val.drop n.val) (by have := s.property; simp only [List.length_drop]; omega)) := by
   simp [core.slice.Slice.split_at, h]
 
-@[simp] theorem bind_ok_eq {α : Type} (x : Result α) : (do let v ← x; ok v) = x := by
-  cases x <;> rfl
+@[simp] theorem bind_ok_eq {α : Type} (x : Result α) : (do let v ← x; ok v) = x :=
+  Aeneas.Std.bind_pure x
 
 end LeanBlsSimd

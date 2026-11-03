@@ -4,6 +4,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.bls
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.LaneTower
 
 theorem shuffle_cycleRe {α : Type} (a b : V α) :
@@ -99,7 +101,7 @@ theorem cyclotomic_coefficients (a : P F) :
       shuffle_cycleInput1, shuffle_cycleSum0, shuffle_cycleSum1, shuffle_cyclePack,
       Matrix.cons_val, zero_add, add_zero, zero_mul, mul_zero]
     simp [Cyclotomic.Schedule.raw, Cyclotomic.Schedule.fp4Square,
-      Cyclotomic.Schedule.less, Cyclotomic.Schedule.plus, Fp2.toField, Fp6Field.xi,
+      Cyclotomic.Schedule.less, Cyclotomic.Schedule.plus, Fp2.toField_mk, Fp6Field.xi,
       show (1 : Fp2Field).re = 1 from rfl, show (1 : Fp2Field).im = 0 from rfl]
     ring
 
@@ -116,8 +118,7 @@ theorem cyclotomic_value (a : P F)
     simp [Cyclotomic.specCoeffs, Cyclotomic.Schedule.raw, Cyclotomic.Schedule.fp4Square,
       Cyclotomic.Schedule.less, Cyclotomic.Schedule.plus, Cyclotomic.fieldDecode,
       Bls.Fp12.zero, Bls.Fp6.zero, Fp6Field.assemble]
-    change (0 : Fp12Field) = 0 ^ 2
-    simp
+
   · exact Cyclotomic.field_cyclotomic_square _ hphi
 
 theorem cyclotomic_square_refines {x : fp2x8.Fp2x8} {a : Bls.Fp12}

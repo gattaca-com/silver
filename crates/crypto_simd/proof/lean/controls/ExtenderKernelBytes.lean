@@ -4,11 +4,14 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelBytes
 
-open Kernel Kernel.BytePacking
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel Kernel.BytePacking
 
 set_option maxHeartbeats 2000000
+set_option maxRecDepth 4096
 set_option exponentiation.threshold 1000
 
 private def splat (limbs : FrModel.Limbs) : fr8.Fr8 :=
@@ -56,10 +59,10 @@ private theorem oneBatch_value (lane : Fin 8) : laneValue oneBatch lane = 1 := b
   rfl
 
 @[irreducible] def byteBuffer : Slice U8 :=
-  ⟨List.replicate 256 0#u8, by simp only [List.length_replicate]; scalar_tac⟩
+  Slice.from (List.replicate 256 0#u8) (by simp only [List.length_replicate]; scalar_tac)
 
 private theorem byteBuffer_length : byteBuffer.val.length = 256 := by
-  simp only [byteBuffer, List.length_replicate]
+  simp only [byteBuffer, Slice.from_val, List.length_replicate]
 
 /-- The generated output body with its call to `canonical` omitted. -/
 def withoutCanonical (a : fr8.Fr8) (input : Slice U8) : Result (Slice U8) := do
@@ -90,7 +93,7 @@ private theorem withoutCanonical_refines (a : fr8.Fr8) (hn : Normalized a) (inpu
   rw [toArray_ofArray (f := id) (g := id) (m := 5) (fun _ => rfl) a rfl rfl] at hpack
   unfold withoutCanonical
   rw [hpack]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [vector_to_bytes_refines _ input 0#usize hlen]
   apply congrArg ok
   unfold rawEncoding writeBlocks
@@ -116,7 +119,7 @@ private theorem rawEncoding_first (a : fr8.Fr8) (input : Slice U8)
     rw [hs.1]
     omega
   · intro i hi
-    simpa only [Nat.mul_zero, Nat.zero_add] using hs.2.1 0 (by decide) i hi
+    simpa only [Nat.mul_zero, Nat.zero_add] using! hs.2.1 0 (by decide) i hi
 
 theorem omitting_canonicalization_changes_generated_bytes :
     fr8.Fr8.to_bytes modulusBatch byteBuffer 0#usize ≠ withoutCanonical modulusBatch byteBuffer := by
@@ -124,7 +127,7 @@ theorem omitting_canonicalization_changes_generated_bytes :
     byteBuffer 0#usize (by rw [byteBuffer_length]; decide)
   rw [hout, withoutCanonical_refines _ modulusBatch_bounded.1 _ (by rw [byteBuffer_length])]
   intro he
-  have heq := Result.ok.inj he
+  have heq := Result.ok_injective he
   have hfirst := hb ⟨0, by decide⟩
   change (bytes out.val).extract 0 32 = blsFieldToBytes (laneValue modulusBatch ⟨0, by decide⟩) at hfirst
   rw [heq, modulusBatch_value, rawEncoding_first _ _ (by rw [byteBuffer_length])] at hfirst
@@ -150,7 +153,7 @@ theorem reversing_byte_order_changes_generated_bytes :
     byteBuffer 0#usize (by rw [byteBuffer_length]; decide)
   rw [hout]
   intro he
-  have heq := Result.ok.inj he
+  have heq := Result.ok_injective he
   have hfirst := hb ⟨0, by decide⟩
   change (bytes out.val).extract 0 32 = blsFieldToBytes (laneValue oneBatch ⟨0, by decide⟩) at hfirst
   have hs := writeBlocks_spec 8 32 0
@@ -179,18 +182,35 @@ theorem reversing_byte_order_changes_generated_bytes :
       (blsFieldToBytes (1 : Fr))[0]!) hbyte
 
 @[irreducible] def filledCell (b : U8) : CellArray :=
-  ⟨List.replicate 2048 b, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 2048#usize (List.replicate 2048 b) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
 
 @[irreducible] def filledCells (b : U8) : Cells :=
-  ⟨List.replicate 128 (filledCell b), by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 128#usize (List.replicate 128 (filledCell b)) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
+
+private theorem filledCell_val (b : U8) :
+    (filledCell b).val = List.replicate 2048 b := by
+  unfold filledCell Array.make
+  exact Array.from_val ..
+
+private theorem filledCells_val (b : U8) :
+    (filledCells b).val = List.replicate 128 (filledCell b) := by
+  simp only [filledCells, Array.make, Array.from_val]
+
+private theorem filledCell_byte (b : U8) (i : Nat) (hi : i < 2048) :
+    (arrayBytes (filledCell b))[i]! = ofU8 b := by
+  rw [arrayBytes_get (filledCell b) i hi, filledCell_val,
+    getElem!_pos (List.replicate 2048 b) i (by simpa only [List.length_replicate] using hi),
+    List.getElem_replicate]
 
 private theorem filledCells_byte (b : U8) (i : Nat) (hi : i < 2048) :
     ((cellBytes (filledCells b))[0]!)[i]! = ofU8 b := by
-  rw [cellBytes_get _ 0 (by decide), arrayBytes_get (filledCells b).val[0]! i hi]
-  simp [-List.reduceReplicate, filledCells, filledCell, ofU8, hi]
+  rw [cellBytes_get _ 0 (by decide), filledCells_val,
+    getElem!_pos (List.replicate 128 (filledCell b)) 0 (by simp only [List.length_replicate]; decide),
+    List.getElem_replicate]
+  exact filledCell_byte b i hi
 
 @[irreducible] def oneData : alloc.vec.Vec fr8.Fr8 :=
-  ⟨List.replicate 512 oneBatch, by simp only [List.length_replicate]; scalar_tac⟩
+  alloc.vec.Vec.from (List.replicate 512 oneBatch) (by simp only [List.length_replicate]; scalar_tac)
 
 def oneValues : _root_.Array Fr := _root_.Array.replicate 4096 1
 
@@ -198,12 +218,12 @@ private theorem oneValues_size : oneValues.size = 4096 := by simp only [oneValue
 
 theorem oneData_represents : DataRep (alloc.vec.Vec.deref oneData) oneValues := by
   constructor
-  · simp only [alloc.vec.Vec.deref, oneData, oneValues, _root_.Array.size_replicate,
+  · simp only [alloc.vec.Vec.deref, Slice.from_val, oneData, alloc.vec.Vec.from_val, oneValues, _root_.Array.size_replicate,
       List.length_replicate]
   · intro v
     have hv : v.val < 512 := by
-      simpa only [alloc.vec.Vec.deref, oneData, List.length_replicate] using v.isLt
-    simp only [alloc.vec.Vec.deref, oneData, List.getElem_replicate]
+      simpa only [alloc.vec.Vec.deref, Slice.from_val, oneData, alloc.vec.Vec.from_val, List.length_replicate] using v.isLt
+    simp only [alloc.vec.Vec.deref, Slice.from_val, oneData, alloc.vec.Vec.from_val, List.getElem_replicate]
     refine ⟨oneBatch_bounded, ?_⟩
     intro lane
     change laneValue oneBatch lane = oneValues[8*v.val+lane.val]!
@@ -240,7 +260,6 @@ theorem omitting_output_offset_changes_generated_cells :
   refine ⟨out, hout, ?_⟩
   intro he
   have hbyte := congrArg (fun xs : _root_.Array Cell => (xs[0]!)[31]!) (hb.symm.trans he)
-  dsimp only at hbyte
   rw [extensionCells_first, filledCells_byte _ 31 (by decide), omitOutputOffset_first] at hbyte
   exact (by decide : (0 : UInt8) ≠ 1) hbyte
 
@@ -257,12 +276,9 @@ theorem clearing_first_half_changes_generated_cells :
   refine ⟨out, hout, ?_⟩
   intro he
   have hbyte := congrArg (fun xs : _root_.Array Cell => (xs[0]!)[0]!) (hb.symm.trans he)
-  dsimp only at hbyte
   have hclear : (clearFirstHalf (filledCells 255#u8) oneValues)[0]! =
       arrayBytes (filledCell 0#u8) := by simp [clearFirstHalf]
-  rw [extensionCells_first, filledCells_byte _ 0 (by decide), hclear,
-    arrayBytes_get _ 0 (by decide)] at hbyte
-  simp only [filledCell] at hbyte
+  rw [extensionCells_first, filledCells_byte _ 0 (by decide), hclear, filledCell_byte _ 0 (by decide)] at hbyte
   exact (by decide : (255 : UInt8) ≠ 0) hbyte
 
 def addWithoutReduction (a b : fr8.Fr8) : fr8.Fr8 :=
@@ -282,7 +298,7 @@ theorem omitting_twice_modulus_reduction_changes_generated_add :
   rw [hout]
   intro he
   have hb := hbound.2 ⟨0, by decide⟩
-  rw [Result.ok.inj he, addWithoutReduction_modulus_nat] at hb
+  rw [Result.ok_injective he, addWithoutReduction_modulus_nat] at hb
   exact Nat.lt_irrefl _ hb
 
 end LeanBlsSimd.Kzg.Extender.Controls.KernelBytes

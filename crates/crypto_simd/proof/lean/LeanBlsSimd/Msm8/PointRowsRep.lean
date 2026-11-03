@@ -10,6 +10,7 @@ namespace LeanBlsSimd.Msm8
 
 open EthLib.Cryptography Bls
 
+
 theorem loadedCoordinate_lane (store : msm8.store.PointStore)
     (indices : Array U32 8#usize) (coordinate : ℕ) (l : Fin 8) :
     (loadedCoordinate store indices coordinate).lane l =
@@ -40,7 +41,7 @@ theorem signed_affine_valid (x y : Fp) (negative : Bool)
     G1.Valid ⟨x, if negative then -y else y, Fp.one⟩ := by
   cases negative
   · exact h
-  · simpa only [G1.neg, if_true] using (G1.valid_neg (P := ⟨x, y, Fp.one⟩) h)
+  · simpa only [G1.neg, ite_true] using (G1.valid_neg (P := ⟨x, y, Fp.one⟩) h)
 
 theorem signed_affine_toPoint (x y : Fp) (negative : Bool)
     (h : G1.Valid ⟨x, y, Fp.one⟩) :
@@ -48,7 +49,7 @@ theorem signed_affine_toPoint (x y : Fp) (negative : Bool)
       if negative then -G1.toPoint ⟨x, y, Fp.one⟩ else G1.toPoint ⟨x, y, Fp.one⟩ := by
   cases negative
   · rfl
-  · simpa only [G1.neg, if_true] using (G1.toPoint_neg (P := ⟨x, y, Fp.one⟩) h)
+  · simpa only [G1.neg, ite_true] using (G1.toPoint_neg (P := ⟨x, y, Fp.one⟩) h)
 
 theorem load_signed_point (store : msm8.store.PointStore)
     (indices : Array U32 8#usize) (negated : Mmask8) (l : Fin 8) (P : G1Spec.E.Point)

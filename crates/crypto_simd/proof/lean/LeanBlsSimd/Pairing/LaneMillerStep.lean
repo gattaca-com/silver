@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls
 open silver_crypto_simd silver_crypto_simd.bls
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Pairing.LaneLines
 
 open LaneTower
@@ -38,11 +40,11 @@ theorem miller_body (factors z : fp8.Fp8) (v : Factors) (hv : FactorsRep factors
       (if step > 0#usize then fp12.Fp12.square x else ok x) = ok square ∧ Rep square (f * f) := by
     by_cases hpos : step > 0#usize
     · obtain ⟨out, hout, rout⟩ := square_refines hx
-      exact ⟨out, by rw [if_pos hpos]; exact hout, rout⟩
-    · refine ⟨x, by rw [if_neg hpos], ?_⟩
-      have hc : ¬ consumed (n.val + 1) > 0 := by simpa only [UScalar.lt_equiv, hs] using hpos
+      exact ⟨out, by rw [ite_eq_left hpos]; exact hout, rout⟩
+    · refine ⟨x, by rw [ite_eq_right hpos], ?_⟩
+      have hc : ¬ consumed (n.val + 1) > 0 := by simpa only [UScalar.lt_equiv, hs, show (0#usize).val = 0 from rfl] using! hpos
       have he := initial_square n f hfirst
-      simp only [if_neg hc] at he
+      simp only [ite_eq_right hc] at he
       exact he ▸ hx
   have hdrow : (⟨step.val, hstep⟩ : Fin 68) = doubleRow n := Fin.ext hs
   obtain ⟨first, hlines, rfirst⟩ := times_lines step hstep factors z v hv present rsquare
@@ -67,20 +69,20 @@ theorem miller_body (factors z : fp8.Fp8) (v : Factors) (hv : FactorsRep factors
       rw [hs]
     obtain ⟨out, hlines2, rout⟩ := times_lines next hnext factors z v hv present rfirst
     refine ⟨out, next2, bit', ?_, ?_, rfl, ?_⟩
-    · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, if_true,
-        hdec, bind_tc_ok, hsquare, hlines, hinc, hbit, h, hlines2, hinc2]
+    · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, ite_true,
+        hdec, bind_ok, hsquare, hlines, hinc, hbit, h, hlines2, hinc2]
     · change step.val + 1 + 1 = consumed n.val
       rw [consumed_step, hs, h]
       rfl
-    · rw [bit_step_eq, dif_pos h]
+    · rw [bit_step_eq, dite_eq_left h]
       rw [harow] at rout
       exact rout
   · refine ⟨first, next, bit', ?_, ?_, rfl, ?_⟩
-    · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, if_true,
-        hdec, bind_tc_ok, hsquare, hlines, hinc, hbit, h, Bool.false_eq_true, if_false]
+    · simp only [pairing.MillerLines.miller_loop_loop.body, hrun, ite_true,
+        hdec, bind_ok, hsquare, hlines, hinc, hbit, h, Bool.false_eq_true, ite_false]
     · change step.val + 1 = consumed n.val
-      rw [consumed_step, hs, if_neg h, Nat.add_zero]
-    · rw [bit_step_eq, dif_neg h]
+      rw [consumed_step, hs, ite_eq_right h, Nat.add_zero]
+    · rw [bit_step_eq, dite_eq_right h]
       exact rfirst
 
 end LeanBlsSimd.Pairing.LaneLines

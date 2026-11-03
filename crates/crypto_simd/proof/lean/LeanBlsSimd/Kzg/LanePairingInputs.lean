@@ -80,7 +80,7 @@ private theorem from_blst_loop (values : Array (Array U64 6#usize) 8#usize)
     have hi8 : i.val = 8 := by omega
     rw [loop.eq_1]
     simp only [fp8.Fp8.from_blst_limbs_loop.body, limbs.LANES, UScalar.lt_equiv,
-      UScalar.ofNatCore_val_eq, hi8, Nat.lt_irrefl, ↓reduceIte]
+      UScalar.ofNatCore_val_eq, hi8, Nat.lt_irrefl, ↓reduceIte, bind_ok]
     apply congrArg ok
     apply congrArg (toArray (toArray toU64))
     apply Vector.ext
@@ -96,16 +96,16 @@ private theorem from_blst_loop (values : Array (Array U64 6#usize) 8#usize)
         ok (cont (toArray (toArray toU64) v', i')) := by
       simp only [fp8.Fp8.from_blst_limbs_loop.body, limbs.LANES, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-        index_usize_eq values i hlt, bind_tc_ok, unpack52_refines,
+        index_usize_eq values i hlt, bind_ok, unpack52_refines,
         update_eq (n := 8#usize) _ i _ hlt]
       rw [add_ok _ _ (by scalar_tac)]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       congr 2
       apply Prod.ext
       · exact set_toArray (toArray toU64) v rfl i value hlt
       · rfl
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply ih v' i' (by omega) ?_ (by omega)
     intro j hj
     by_cases hji : j.val = i.val
@@ -123,7 +123,7 @@ theorem from_blst_limbs_refinement (values : Array (Array U64 6#usize) 8#usize) 
     from_blst_loop values (Vector.replicate 8 (Vector.replicate 8 0))
       0#usize (by decide) (by simp)
   rw [hl]
-  simp only [bind_tc_ok, Fp8.load_refines, Fp8.splat_limbs_refines, Fp8.mul_refines,
+  simp only [bind_ok, Fp8.load_refines, Fp8.splat_limbs_refines, Fp8.mul_refines,
     ofFp8_toFp8, ofArray_toArray_ofArray_ofU64]
   change ok (toFp8 ((Fp8.load ((ofArray (m := 8) (ofArray (m := 6) ofU64) values).map unpack52)).mul
     (Fp8.splat_limbs (ofArray ofU64 constants.TWO_POW_448_MOD_P)))) = _
@@ -145,9 +145,9 @@ private theorem add_complete_holds {a b : G1x8} {l : Fin 8} {P Q : G1}
       intro he
       have := Mmask8.testBit_of_eq_zero he l
       simp only [hm, Bool.true_eq_false] at this
-    rw [G1x8.add_complete, if_neg hn, g1_add_of_infinity_left hz]
+    rw [G1x8.add_complete, ite_eq_right hn, g1_add_of_infinity_left hz]
     apply G1x8.select_true_holds _ _ _ _ _ ?_ hb
-    simpa only [(G1x8.Holds.z ha).testBit_is_zero_mask, decide_eq_true_eq] using hpz
+    simpa only [(G1x8.Holds.z ha).testBit_is_zero_mask, decide_eq_true_eq] using! hpz
   · by_cases hqz : Q.isInfinity = true
     · have hqz' : (Q.z : ZMod Fp.modulus) = 0 := G1.isZero_iff.mp hqz
       have hpz : (P.z : ZMod Fp.modulus) ≠ 0 := G1.isZero_iff.not.mp hz
@@ -157,11 +157,11 @@ private theorem add_complete_holds {a b : G1x8} {l : Fin 8} {P Q : G1}
         intro he
         have := Mmask8.testBit_of_eq_zero he l
         simp only [hm, Bool.true_eq_false] at this
-      rw [G1x8.add_complete, if_neg hn, g1_add_of_infinity_right hz hqz]
+      rw [G1x8.add_complete, ite_eq_right hn, g1_add_of_infinity_right hz hqz]
       apply G1x8.select_false_holds
-      · simpa only [(G1x8.Holds.z ha).testBit_is_zero_mask, decide_eq_false_iff_not] using hpz
+      · simpa only [(G1x8.Holds.z ha).testBit_is_zero_mask, decide_eq_false_iff_not] using! hpz
       · apply G1x8.select_true_holds _ _ _ _ _ ?_ ha
-        simpa only [(G1x8.Holds.z hb).testBit_is_zero_mask, decide_eq_true_eq] using hqz'
+        simpa only [(G1x8.Holds.z hb).testBit_is_zero_mask, decide_eq_true_eq] using! hqz'
     · exact G1x8.add_complete_correct a b l P Q ha hb
         (g1_groupValid_of_noninfinity hP hz) (g1_groupValid_of_noninfinity hQ hqz)
 
@@ -182,7 +182,7 @@ private def negLanePoint (a : g1x8.G1x8) : g1x8.G1x8 :=
 
 private theorem negLanePoint_refines (a : g1x8.G1x8) :
     g1x8.G1x8.neg a = ok (negLanePoint a) := by
-  simp only [g1x8.G1x8.neg, Fp8.neg_refines, bind_tc_ok, negLanePoint]
+  simp only [g1x8.G1x8.neg, Fp8.neg_refines, bind_ok, negLanePoint]
 
 private theorem LaneG1Rep.neg {a : g1x8.G1x8} {l : Fin 8} {P : G1}
     (ha : LaneG1Rep a l P) (hP : G1Valid P) :
@@ -191,7 +191,7 @@ private theorem LaneG1Rep.neg {a : g1x8.G1x8} {l : Fin 8} {P : G1}
   have hm := g1_neg_matches (g1Valid_transport hpi hpa hP) hP hpi hpa
   refine ⟨G1.neg p, ?_, hm⟩
   rcases hp with ⟨hx,hy,hz⟩
-  exact ⟨hx, by simpa only [negLanePoint, ofG1x8, ofFp8_toFp8, G1.neg] using hy.neg, hz⟩
+  exact ⟨hx, by simpa only [negLanePoint, ofG1x8, ofFp8_toFp8, G1.neg] using! hy.neg, hz⟩
 
 private theorem packedFromBlst_holds_value (values : Array (Array U64 6#usize) 8#usize)
     (l : Fin 8) (a : ZMod Fp.modulus)
@@ -224,7 +224,7 @@ private theorem packedFromBlst_holds (values : Array (Array U64 6#usize) 8#usize
 
 private def pairWords (a b : Array U64 6#usize) : Array (Array U64 6#usize) 8#usize :=
   let z := Array.repeat 6#usize 0#u64
-  ⟨[a,b,z,z,z,z,z,z],by rfl⟩
+  Array.make 8#usize [a,b,z,z,z,z,z,z] (by rfl)
 
 private def twoLanePoint (a b : blst.blst_p1) : g1x8.G1x8 :=
   ⟨toFp8 (packedFromBlst (pairWords a.x.l b.x.l)),
@@ -236,7 +236,7 @@ private theorem two_lanes_eq (a b : blst.blst_p1) :
   unfold verify.two_lanes
   dsimp only
   simp only [update_eq (n := 8#usize) _ 0#usize _ (by decide),
-    update_eq (n := 8#usize) _ 1#usize _ (by decide), bind_tc_ok,
+    update_eq (n := 8#usize) _ 1#usize _ (by decide), bind_ok,
     from_blst_limbs_refinement]
   rfl
 
@@ -274,15 +274,15 @@ private theorem twoLanePoint_holds (a b : blst.blst_p1)
     (pairWords_reduced a.z b.z ha.2.2 hb.2.2 l)
   simp only [pairWords_read] at hx hy hz
   by_cases h0 : l.val = 0
-  · simp only [h0, if_true] at hx hy hz
-    simpa only [pairValue, h0, if_true, twoLanePoint, ofG1x8, ofFp8_toFp8,
+  · simp only [h0, ite_true] at hx hy hz
+    simpa only [pairValue, h0, ite_true, twoLanePoint, ofG1x8, ofFp8_toFp8,
       g1ReadJacobian] using (G1x8.Holds.mk hx hy hz)
   · by_cases h1 : l.val = 1
-    · simp only [h0, h1, if_false, if_true] at hx hy hz
-      simpa only [pairValue, h0, h1, if_false, if_true, twoLanePoint, ofG1x8,
+    · simp only [h1, ite_true] at hx hy hz
+      simpa only [pairValue, h0, h1, ite_false, ite_true, twoLanePoint, ofG1x8,
         ofFp8_toFp8, g1ReadJacobian, show (1:Nat) ≠ 0 by decide] using (G1x8.Holds.mk hx hy hz)
-    · simp only [h0, h1, if_false, zero_words_read] at hx hy hz
-      simpa only [pairValue, h0, h1, if_false, twoLanePoint,
+    · simp only [h0, h1, ite_false, zero_words_read] at hx hy hz
+      simpa only [pairValue, h0, h1, ite_false, twoLanePoint,
         ofG1x8, ofFp8_toFp8] using (G1x8.Holds.mk hx hy hz)
 
 theorem two_lanes_refinement (a b : blst.blst_p1) (P Q : G1)
@@ -293,10 +293,10 @@ theorem two_lanes_refinement (a b : blst.blst_p1) (P Q : G1)
   refine ⟨pairValue (g1ReadJacobian a) (g1ReadJacobian b) l,
     twoLanePoint_holds a b ha.1 hb.1 l, ?_⟩
   by_cases h0 : l.val = 0
-  · simpa only [pairValue, h0, if_true] using ha.2
+  · simpa only [pairValue, h0, ite_true] using ha.2
   · by_cases h1 : l.val = 1
-    · simpa only [pairValue, h0, h1, if_true, if_false] using hb.2
-    · simp only [pairValue, h0, h1, if_false]
+    · simpa only [pairValue, h0, h1, ite_true, ite_false] using! hb.2
+    · simp only [pairValue, h0, h1, ite_false]
       exact ⟨rfl,rfl⟩
 
 private def rawInfinity : blst.blst_p1 :=
@@ -344,8 +344,7 @@ theorem pairing_points_in_lanes_refinement (sums : verify.PairingSums)
   let difference := toG1x8 ((ofG1x8 base).add_complete (ofG1x8 negDelta))
   let out := toG1x8 ((ofG1x8 difference).add_complete (ofG1x8 plus))
   refine ⟨out, ?_, ?_⟩
-  · simp only [verify.PairingSums.points_in_lanes, blst.blst_p1.Insts.CoreDefaultDefault.default,
-      bind_tc_ok, show (let z : blst.blst_fp := ⟨Array.repeat 6#usize 0#u64⟩; blst.blst_p1.mk z z z) = rawInfinity from rfl,
+  · simp only [verify.PairingSums.points_in_lanes, blst.blst_p1.Insts.CoreDefaultDefault.default, bind_ok, show (let z : blst.blst_fp := ⟨Array.repeat 6#usize 0#u64⟩; blst.blst_p1.mk z z z) = rawInfinity from rfl,
       hb, hd, hp, negLanePoint_refines, G1x8.add_complete_refines]
     rfl
   · intro lane
@@ -368,11 +367,11 @@ theorem pairing_points_in_lanes_refinement (sums : verify.PairingSums)
     rw [g1_toPoint_add (g1Valid_add vb (g1Valid_neg vd)) vp,
       g1_toPoint_add vb (g1Valid_neg vd), g1_toPoint_neg vd]
     by_cases h0 : lane.val = 0
-    · simp only [pairTarget, h0, if_true, G1.toPoint_zero, neg_zero, add_zero]
+    · simp only [pairTarget, h0, ite_true, G1.toPoint_zero, neg_zero, add_zero]
     · by_cases h1 : lane.val = 1
-      · simp only [pairTarget, h1, show (1 : Nat) ≠ 0 by decide, if_false, if_true]
+      · simp only [pairTarget, h1, show (1 : Nat) ≠ 0 by decide, ite_false, ite_true]
         rw [g1_toPoint_add (g1Valid_add hvlc (g1Valid_neg hvli)) hvlp,
           g1_toPoint_add hvlc (g1Valid_neg hvli), g1_toPoint_neg hvli]
-      · simp only [pairTarget, h0, h1, if_false, G1.toPoint_zero, neg_zero, add_zero]
+      · simp only [pairTarget, h0, h1, ite_false, G1.toPoint_zero, neg_zero, add_zero]
 
 end LeanBlsSimd.Kzg

@@ -17,16 +17,16 @@ theorem cellBytes_get (cells : Cells) (k : Nat) (hk : k < 128) :
   simp [cellBytes, List.getElem?_eq_getElem hl]
 
 def blobCell (blob : Blob) (k : Nat) (hk : k < 64) : CellArray :=
-  ⟨blob.val.slice (k*2048) ((k+1)*2048), by
+  Array.make 2048#usize (blob.val.slice (k*2048) ((k+1)*2048)) (by
     simp [List.slice, blob.property]
-    omega⟩
+    omega)
 
 theorem blobCell_bytes (blob : Blob) (k : Nat) (hk : k < 64) :
     arrayBytes (blobCell blob k hk) = (arrayBytes blob).extract (k*2048) ((k+1)*2048) := by
   apply ByteArray.ext
   rw [ByteArray.data_extract]
   apply _root_.Array.toList_inj.mp
-  simp only [arrayBytes, bytes, blobCell, List.toList_toArray, _root_.Array.toList_extract]
+  simp only [arrayBytes, bytes, blobCell, Array.make, Array.from_val, List.toList_toArray, _root_.Array.toList_extract]
   simp [List.extract_eq_take_drop, List.slice, List.map_take, List.map_drop]
 
 theorem copy_cell_body (blob : Blob) (cells : Cells)
@@ -54,22 +54,21 @@ theorem copy_cell_body (blob : Blob) (cells : Cells)
     have hstopn : (k.val+1)*2048 ≤ 131072 := by omega
     simp [core.array.Array.index, core.ops.index.IndexSlice, core.slice.index.Slice.index,
       core.slice.index.SliceIndexRangeUsizeSlice.index, start, stop,
-      src, chunk, blobCell, Array.to_slice, hstopn]
+      src, chunk, blobCell, Array.make, Array.from_val, Array.to_slice, Slice.from_val, hstopn]
   have hcopy : core.slice.Slice.copy_from_slice core.marker.CopyU8
       (Array.to_slice cells.val[k.val]!) src = ok src := by
-    simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src, Array.to_slice,
+    simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src, Array.to_slice, Slice.from_val,
       chunk.property]
   have hback : Array.from_slice cells.val[k.val]! src = chunk := by
-    apply Subtype.ext
-    simp [src, Array.to_slice, chunk.property]
+    ext1
+    simp [src, Array.to_slice, Slice.from_val, chunk.property]
   have hbytes : BYTES_PER_CELL = ok 2048#usize := by
     unfold BYTES_PER_CELL
     simp only [FIELD_ELEMENTS_PER_CELL, BYTES_PER_FIELD_ELEMENT]
     rw [scalar_mul_ok 64#usize 32#usize (by scalar_tac)]
     congr 1
   dsimp only [k] at hindex hadd hstart hcopy hback
-  simp only [cell_extender.copy_blob_loop.body, hn, bind_tc_ok,
-    Function.uncurry_apply_pair, hindex, Array.to_slice_mut, lift, hbytes,
+  simp only [cell_extender.copy_blob_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair, hindex, Array.to_slice_mut, lift, hbytes,
     hstart, hadd, hstop, hsrc, hcopy, hback]
   rfl
 
@@ -87,7 +86,7 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
     refine ⟨cells, ?_, by simpa [hs'] using hc⟩
     rw [cell_extender.copy_blob_loop, loop.eq_1]
     simp only [cell_extender.copy_blob_loop.body,
-      Refinement.next_ge iter (by omega), bind_tc_ok, Function.uncurry_apply_pair]
+      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hk : iter.start.val < 64 := by omega
     obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
@@ -97,15 +96,14 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
       intro k hkl
       by_cases hke : k = iter.start.val
       · subst k
-        change arrayBytes ((cells.val.set iter.start.val _)[iter.start.val]!) = _
-        rw [List.getElem!_set]
-        · exact blobCell_bytes blob iter.start.val hk
-        · rw [cells.property]; exact Nat.lt_trans hk (by decide)
-      · simpa [cells', Array.set, List.getElem!_set_ne, Ne.symm hke] using hc k (by omega)
+        simp only [cells', Array.set_val_eq]
+        rw [List.set_getElem!_eq _ _ _ _ ⟨by rw [cells.property]; exact Nat.lt_trans hk (by decide), rfl⟩]
+        exact blobCell_bytes blob iter.start.val hk
+      · simpa [cells', Array.set, Array.from_val, List.set_getElem!_ne, Ne.symm hke] using hc k (by omega)
     obtain ⟨out, ho, hp⟩ := ih cells' iter' (by simp [he', he]) (by omega) hc' (by omega)
     refine ⟨out, ?_, hp⟩
     rw [cell_extender.copy_blob_loop, loop.eq_1]
-    simpa only [copy_cell_body blob cells iter iter' hk hn] using ho
+    simpa only [copy_cell_body blob cells iter iter' hk hn, bind_ok] using! ho
 
 theorem copy_first_half (blob : Blob) (cells : Cells) :
     ∃ out, cell_extender.copy_blob_loop
@@ -130,7 +128,7 @@ theorem write_cells_loop
     refine ⟨cells, ?_, by simpa [hs'] using hw⟩
     rw [cell_extender.CellExtender.write_extension_loop, loop.eq_1]
     simp only [cell_extender.CellExtender.write_extension_loop.body,
-      Refinement.next_ge iter (by omega), bind_tc_ok, Function.uncurry_apply_pair]
+      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hj : iter.start.val < 4096 := by omega
     obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
@@ -140,7 +138,7 @@ theorem write_cells_loop
       (by simp [he', he]) (by omega) (by simpa only [hs'] using hw') (by omega)
     refine ⟨out, ?_, hp⟩
     rw [cell_extender.CellExtender.write_extension_loop, loop.eq_1]
-    simpa only [hb] using ho
+    simpa only [hb, bind_ok] using! ho
 
 theorem written_cell (values : _root_.Array Fr) (hsize : values.size = 4096)
     (initial cells : Cells) (hw : Written values initial 4096 cells)
@@ -190,8 +188,8 @@ theorem write_extension_refinement
     rw [getElem!_pos (cellBytes out) k hk] at hg
     rw [hg, _root_.Array.getElem_ofFn]
     by_cases hkl : k < 64
-    · simp only [hkl, if_true, hp.1 k hkl, cellBytes_get cells k hk']
-    · simp only [hkl, if_false]
+    · simp only [hkl, ite_true, hp.1 k hkl, cellBytes_get cells k hk']
+    · simp only [hkl, ite_false]
       exact written_cell values hsize cells out hp k hk' (by omega)
 
 theorem output_refinement

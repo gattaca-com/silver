@@ -32,7 +32,7 @@ private theorem search_suffix
     have hend : i.val = v.val.length := by simp [hv, hi]
     refine ⟨alloc.vec.Vec.len v, ?_, ?_⟩
     · rw [verify.Deduplicated.fill_loop0_loop0, loop.eq_1]
-      simp [verify.Deduplicated.fill_loop0_loop0.body, hend]
+      simp [verify.Deduplicated.fill_loop0_loop0.body, hend, bind_ok]
     · simp [hend]
   | cons a remaining ih =>
     have hlt : i.val < v.val.length := by simp [hv, hi]
@@ -46,8 +46,8 @@ private theorem search_suffix
     | true =>
       refine ⟨i, ?_, ?_⟩
       · rw [verify.Deduplicated.fill_loop0_loop0, loop.eq_1]
-        simp only [verify.Deduplicated.fill_loop0_loop0.body, htest, if_true,
-          hindex, htarget, bind_tc_ok, same_bytes_refinement, hb]
+        simp only [verify.Deduplicated.fill_loop0_loop0.body, htest, ite_true,
+          hindex, htarget, bind_ok, same_bytes_refinement, hb]
       · simp [List.findIdx_cons, hb]
     | false =>
       obtain ⟨i', hadd, hi'⟩ := usize_succ i (alloc.vec.Vec.len v) (by simpa using hlt)
@@ -56,12 +56,12 @@ private theorem search_suffix
       refine ⟨j, ?_, ?_⟩
       · have hbody : verify.Deduplicated.fill_loop0_loop0.body v cs k
             (alloc.vec.Vec.len v) i = ok (cont i') := by
-          simp only [verify.Deduplicated.fill_loop0_loop0.body, htest, if_true,
-            hindex, htarget, bind_tc_ok, same_bytes_refinement, hb, Bool.false_eq_true,
-            if_false, hadd]
-        rw [verify.Deduplicated.fill_loop0_loop0, loop.eq_1, hbody]
+          simp only [verify.Deduplicated.fill_loop0_loop0.body, htest, ite_true,
+            hindex, htarget, bind_ok, same_bytes_refinement, hb, Bool.false_eq_true,
+            ite_false, hadd]
+        rw [verify.Deduplicated.fill_loop0_loop0, loop.eq_1, hbody, bind_ok]
         exact hloop
-      · simp only [List.findIdx_cons, hb, cond_false]
+      · simp only [List.findIdx_cons, hb, Bool.false_eq_true, ite_false]
         omega
 
 private def dedupStep (state : _root_.Array ByteArray × _root_.Array Nat) (c : ByteArray) :=
@@ -121,8 +121,7 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
     have hnext := Refinement.next_ge iter (by simp [hend, hcs, hi])
     refine ⟨v, indices, ?_, by simp⟩
     rw [verify.Deduplicated.fill_loop0, loop.eq_1]
-    simp only [verify.Deduplicated.fill_loop0.body, hnext, bind_tc_ok,
-      Function.uncurry_apply_pair]
+    simp only [verify.Deduplicated.fill_loop0.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons c remaining ih =>
     have hk : iter.start.val < cs.val.length := by simp [hcs, hi]
     have htarget : cs.val[iter.start.val] = c := by
@@ -137,9 +136,9 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
       omega
     have hvCap : v.val.length + 1 ≤ Usize.max := by omega
     have hiCap : indices.val.length + 1 ≤ Usize.max := by omega
-    let pushed : alloc.vec.Vec Commitment := ⟨v.val ++ [c], by simpa using hvCap⟩
+    let pushed : alloc.vec.Vec Commitment := alloc.vec.Vec.from (v.val ++ [c]) (by simpa using hvCap)
     let nextV := if j = alloc.vec.Vec.len v then pushed else v
-    let nextIndices : alloc.vec.Vec Usize := ⟨indices.val ++ [j], by simpa using hiCap⟩
+    let nextIndices : alloc.vec.Vec Usize := alloc.vec.Vec.from (indices.val ++ [j]) (by simpa using hiCap)
     have hpush : alloc.vec.Vec.push v c = ok pushed := by
       simp [alloc.vec.Vec.push, hvCap, pushed]
     have hpushIndices : alloc.vec.Vec.push indices j = ok nextIndices := by
@@ -150,7 +149,7 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
       else ok v) = ok nextV := by
       have hindex : Slice.index_usize cs iter.start = ok c := by
         simp [Slice.index_usize, hk, htarget]
-      simp only [hindex, bind_tc_ok, hpush, nextV]
+      simp only [hindex, bind_ok, hpush, nextV]
       split <;> rfl
     have hstep : dedupState nextV nextIndices =
         dedupStep (dedupState v indices) (arrayBytes c) := by
@@ -168,10 +167,9 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
     refine ⟨out, outIndices, ?_, ?_⟩
     · have hbody : verify.Deduplicated.fill_loop0.body cs iter v indices =
           ok (cont (iter', nextV, nextIndices)) := by
-        simp only [verify.Deduplicated.fill_loop0.body, hnext, bind_tc_ok,
-          Function.uncurry_apply_pair, hsearch, hunique, hpushIndices]
+        simp only [verify.Deduplicated.fill_loop0.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair, hsearch, hunique, hpushIndices]
       rw [verify.Deduplicated.fill_loop0, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · simpa only [List.map_cons, List.foldl_cons, hstep] using hval
 
@@ -184,7 +182,7 @@ theorem deduplicate_refinement (old : verify.Deduplicated) (cs : Slice Commitmen
   let emptyIndices := alloc.vec.Vec.new Usize
   have hclone : core.array.CloneArray.clone core.clone.CloneU8
       (Array.repeat 48#usize 0#u8) = ok (Array.repeat 48#usize 0#u8) := by
-    obtain ⟨a, ha, he⟩ := WP.spec_imp_exists (core.array.CloneArray.clone_spec
+    obtain ⟨a, ha, he⟩ := spec_imp_exists (core.array.CloneArray.clone_spec
       core.clone.CloneU8 (Array.repeat 48#usize 0#u8) (by intro x hx; rfl))
     simpa only [← he] using ha
   have hclear : alloc.vec.Vec.resize (core.clone.CloneArray 48#usize core.clone.CloneU8)
@@ -198,7 +196,7 @@ theorem deduplicate_refinement (old : verify.Deduplicated) (cs : Slice Commitmen
     (by simp [emptyV]) (by simp [emptyIndices])
   refine ⟨⟨out, outIndices⟩, ?_, ?_⟩
   · unfold verify.Deduplicated.fill
-    simp only [hclear, hclearIndices, bind_tc_ok, hloop, Function.uncurry_apply_pair]
+    simp only [hclear, hclearIndices, bind_ok, hloop, Aeneas.Std.uncurry_apply_pair]
   · change dedupState out outIndices = _
     rw [hval]
     simp only [Model.deduplicate, ← _root_.Array.foldl_toList]

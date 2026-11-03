@@ -122,6 +122,7 @@ example : True := by
       exact QuadraticAlgebra.ext (re x.c0 x.c1 y.c0 y.c1) (im x.c0 x.c1 y.c0 y.c1)
   trivial
 
+attribute [local implicit_reducible] ZMod Fp.modulus in
 example :
     ((Fp2.i * Fp2.i).c0 : ZMod Fp.modulus) ≠
       (⟨0, 1⟩ * ⟨0, 1⟩ : QuadraticAlgebra (ZMod Fp.modulus) 1 0).re := by

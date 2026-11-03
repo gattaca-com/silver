@@ -1,4 +1,6 @@
-import Std
+module
+public import Std
+@[expose] public section
 
 /-!
 The x86 SHA/SSE intrinsics and scalar carry used by `sha256/extensions.rs` and

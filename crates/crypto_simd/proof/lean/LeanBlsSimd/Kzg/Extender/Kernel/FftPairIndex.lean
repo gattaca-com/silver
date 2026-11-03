@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.Basic
+import LeanBlsSimd.Refines.Basic
 
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd silver_crypto_simd.kzg
@@ -149,15 +150,15 @@ theorem first_of_pair_refinement (n half : Usize) (stage : Nat)
     (hhalf : half.val = 2 ^ stage) (hn : n.val < 512) :
     ∃ i, fft8.first_of_pair n half = ok i ∧ i.val = pairFirst half.val n.val := by
   have hp : 0 < half.val := by rw [hhalf]; exact Nat.two_pow_pos stage
-  obtain ⟨twice, htwice, htwiceval⟩ := WP.spec_imp_exists
+  obtain ⟨twice, htwice, htwiceval⟩ := spec_imp_exists
     (Usize.mul_spec (x := 2#usize) (y := n) (by scalar_tac))
   simp only [UScalar.ofNatCore_val_eq] at htwiceval
-  obtain ⟨mask, hmask, hmaskval, _⟩ := WP.spec_imp_exists
+  obtain ⟨mask, hmask, hmaskval, _⟩ := spec_imp_exists
     (Usize.sub_spec (x := half) (y := 1#usize)
       (by simp only [UScalar.ofNatCore_val_eq]; omega))
   simp only [UScalar.ofNatCore_val_eq] at hmaskval
   have hand := twiddle_mask_val n mask half.val stage hhalf hmaskval
-  obtain ⟨i, hi, hival, _⟩ := WP.spec_imp_exists
+  obtain ⟨i, hi, hival, _⟩ := spec_imp_exists
     (Usize.sub_spec (x := twice) (y := n &&& mask)
       (by rw [htwiceval, hand]; have := Nat.mod_le n.val half.val; omega))
   refine ⟨i, ?_, ?_⟩

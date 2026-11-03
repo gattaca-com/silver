@@ -133,7 +133,7 @@ theorem convertedBatch_lane (points : List (Vector UInt64 6 × Vector UInt64 6))
     Fp8.lane_mul, Fp8.lane_load, gatherBatch_xs, gatherBatch_ys,
     fromBlstFactor_eq, endomorphismFactor_eq, Fp8.lane_splat_limbs, Fin.getElem_fin, Vector.getElem_ofFn]
   cases endomorphism <;>
-    simp only [Bool.false_eq_true, if_false, if_true, Fp8.lane_mul, Fp8.lane_load,
+    simp only [Bool.false_eq_true, ite_false, ite_true, Fp8.lane_mul, Fp8.lane_load,
       Fp8.lane_splat_limbs, convertedPoint, Fin.getElem_fin, Vector.getElem_ofFn]
 
 end LeanBlsSimd

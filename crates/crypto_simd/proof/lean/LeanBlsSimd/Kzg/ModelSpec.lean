@@ -1,5 +1,6 @@
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
+import EthLib.Cryptography.Proofs.Kzg.CosetInterpolation
 
 open EthLib.Cryptography Bls Kzg
 
@@ -10,8 +11,8 @@ theorem cell_decode_size (cell : Cell) (evals : CosetEvals)
   unfold cellToCosetEvals at h
   split at h
   · simp [bind, Except.bind] at h
-  · simp only [pure, Except.pure, bind, Except.bind] at h
-    simpa using array_mapM_ok_size _ _ _ h
+  · simp only [pure, Except.pure] at h
+    simpa [Constants.FIELD_ELEMENTS_PER_CELL] using array_mapM_ok_size _ _ _ h
 
 theorem cells_decode_shape (cells : Array Cell) (evals : Array CosetEvals)
     (h : cells.mapM cellToCosetEvals = .ok evals) :
@@ -32,7 +33,7 @@ theorem frontHalf_shape
     indices.size = evals.size ∧ (∀ i ∈ indices, i < 128) ∧
       (∀ ys ∈ evals, ys.size = 64) := by
   unfold Model.frontHalf at h
-  simp only [pure, Except.pure, bind, Except.bind] at h
+  simp only [pure, Except.pure, bind, Except.bind, throw, throwThe, MonadExceptOf.throw] at h
   split at h
   · simp at h
   rename_i hcells
@@ -67,12 +68,70 @@ theorem frontHalf_shape
   refine ⟨by omega, ?_, hrows⟩
   have hb : indices.any (fun i => decide (i ≥ Constants.CELLS_PER_EXT_BLOB)) = false :=
     Bool.eq_false_iff.mpr hbounded
-  simpa only [Array.any_eq_false', decide_eq_true_eq, not_le] using hb
+  simp only [Array.any_eq_false', decide_eq_true_eq, not_le] at hb
+  intro i hi
+  exact (show Constants.CELLS_PER_EXT_BLOB = 128 from rfl) ▸ hb i hi
+
+theorem shiftOf_ok (c : Nat) (hc : c < 128) : Model.shiftOf c = .ok (Model.cosetShift c) := by
+  have hc' : ¬c ≥ Constants.CELLS_PER_EXT_BLOB := by
+    rw [show Constants.CELLS_PER_EXT_BLOB = 128 from rfl]; omega
+  simp only [Model.shiftOf, hc', ite_false]
+  rfl
+
+theorem mapM_shiftOf (indices : Array Nat) (h : ∀ i ∈ indices, i < 128) :
+    indices.mapM Model.shiftOf = .ok (indices.map Model.cosetShift) := by
+  rw [Array.mapM_eq_mapM_toList]
+  have hl : ∀ xs : List Nat, (∀ i ∈ xs, i < 128) →
+      xs.mapM Model.shiftOf = .ok (xs.map Model.cosetShift) := by
+    intro xs hxs
+    induction xs with
+    | nil => rfl
+    | cons x xs ih =>
+      simp only [List.mapM_cons, shiftOf_ok x (hxs x (by simp)),
+        ih (fun y hy => hxs y (by simp [hy])), List.map_cons]
+      rfl
+  rw [hl indices.toList (fun i hi => h i (Array.mem_toList_iff.mp hi))]
+  change Except.ok (List.map Model.cosetShift indices.toList).toArray = _
+  exact congrArg Except.ok (Array.toList_inj.mp (by simp))
+
+private theorem list_foldlM_congr {α β ε : Type} (f g : β → α → Except ε β) (xs : List α)
+    (init : β) (h : ∀ a ∈ xs, ∀ b, f b a = g b a) : xs.foldlM f init = xs.foldlM g init := by
+  induction xs generalizing init with
+  | nil => rfl
+  | cons a xs ih =>
+    simp only [List.foldlM_cons, h a (by simp)]
+    congr 1
+    funext b
+    exact ih b (fun a' ha' => h a' (by simp [ha']))
+
+/-- Upstream's coset interpolation agrees with Lagrange interpolation on every cell. -/
+theorem specRli_eq_lagrangeRli (indices : Array Nat) (evals : Array (Array Fr)) (powers : Array Fr)
+    (h : Model.RliInputs indices evals powers) :
+    Model.specRli indices (indices.map Model.cosetShift) evals powers =
+      Model.lagrangeRli indices evals powers := by
+  obtain ⟨hsize, _, hbounds, hrows⟩ := h
+  unfold Model.specRli Model.lagrangeRli
+  rw [← Array.foldlM_toList, ← Array.foldlM_toList]
+  apply list_foldlM_congr
+  intro k hk acc
+  have hk' : k < indices.size := by simpa using hk
+  have hidx : indices[k]! < 128 := hbounds _ (by simp [getElem!_pos indices k hk'])
+  have hev : evals[k]!.size = Constants.FIELD_ELEMENTS_PER_CELL :=
+    hrows _ (by simp [getElem!_pos evals k (hsize ▸ hk')])
+  obtain ⟨coset, hcoset, _, _⟩ := cosetForCell_ok_of_lt (cellIndex := indices[k]!) hidx
+  obtain ⟨p, hspec, hlag, _⟩ := interpolateCosetEvals_eq_interpolatePolynomialcoeff hcoset hev
+  have hshift : (indices.map Model.cosetShift)[k]! =
+      (rootsOfUnityBrp Constants.FIELD_ELEMENTS_PER_EXT_BLOB)[
+        Constants.FIELD_ELEMENTS_PER_CELL * indices[k]!]! := by
+    rw [getElem!_pos _ k (by simpa using hk'), Array.getElem_map, ← getElem!_pos indices k hk']
+    rfl
+  simp only [hshift, hspec, hcoset, hlag, bind, Except.bind]
 
 /-- The reviewed column interpolation identity, with its exact input contract. -/
 abbrev ColumnIdentity : Prop :=
   ∀ indices evals powers, Model.RliInputs indices evals powers →
-    Model.specRli indices evals powers = .ok (Model.columnRli indices evals powers)
+    Model.specRli indices (indices.map Model.cosetShift) evals powers =
+      .ok (Model.columnRli indices evals powers)
 
 theorem frontHalf_rli_inputs
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48)
@@ -90,12 +149,14 @@ theorem implPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : Trust
       (∀ ys ∈ evals, ys.size = 64)) :
     Model.implPure setup Model.specRli unique ci indices evals proofs =
       Model.implPure setup Model.columnStep unique ci indices evals proofs := by
-  have hr := columnIdentity indices evals
-    (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-      indices.size) ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hin : Model.RliInputs indices evals
+      (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
+        indices.size) := ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hr := columnIdentity _ _ _ hin
+  have hm : indices.mapM Model.shiftOf = pure (indices.map Model.cosetShift) :=
+    mapM_shiftOf indices h.2.1
   unfold Model.implPure Model.columnStep
-  dsimp only
-  rw [hr]
+  simp only [hm, pure_bind, hr]
 
 theorem implWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : KzgM TrustedSetup)
     (unique : Array KZGCommitment) (ci indices : Array Nat) (evals : Array CosetEvals)
@@ -104,12 +165,16 @@ theorem implWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : Kz
       (∀ ys ∈ evals, ys.size = 64)) :
     Model.implWith getSetup Model.specRli unique ci indices evals proofs =
       Model.implWith getSetup Model.columnStep unique ci indices evals proofs := by
-  have hr := columnIdentity indices evals
-    (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-      indices.size) ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hin : Model.RliInputs indices evals
+      (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
+        indices.size) := ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hr := columnIdentity _ _ _ hin
+  have hm : (indices.mapM fun c => ExceptT.mk (pure (Model.shiftOf c)) : KzgM (Array Fr)) =
+      pure (indices.map Model.cosetShift) := by
+    rw [← liftE_arrayMapM, mapM_shiftOf indices h.2.1]
+    rfl
   unfold Model.implWith Model.columnStep
-  dsimp only
-  rw [hr]
+  simp only [hm, pure_bind, hr]
 
 theorem verifyPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :

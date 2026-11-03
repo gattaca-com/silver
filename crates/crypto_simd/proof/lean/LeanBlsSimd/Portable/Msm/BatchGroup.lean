@@ -6,6 +6,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Msm.Batch
 open QueueRefines BatchedRefines
 
@@ -25,10 +27,10 @@ theorem signed_coordinates (store : portable.msm.store.PointStore)
   rw [pointIndex_mod] at h
   obtain ⟨_,hv,hp⟩ := h.coordinates
   constructor
-  · simpa only [signedPair,decide_eq_true_eq] using
+  · simpa only [signedPair,decide_eq_true_eq] using!
       Msm8.signed_affine_valid _ _ (decide (2^31 ≤ r.val)) hv
   · rw [BatchedRefines.signedReferenceValue_eq_sign]
-    simpa only [signedPair,decide_eq_true_eq,hp] using
+    simpa only [signedPair,decide_eq_true_eq,hp] using!
       Msm8.signed_affine_toPoint _ _ (decide (2^31 ≤ r.val)) hv
 
 theorem jobResult_point (store : portable.msm.store.PointStore) (jobs : ℕ → Job)

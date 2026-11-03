@@ -53,7 +53,7 @@ theorem absent_fold (steps : List (Fin 68)) (v : Factors) (present : Array Bool 
   | cons step steps ih =>
     rw [List.foldl_cons]
     have hs : activeStep v present pair Fp12.one step = Fp12.one := by
-      simp only [activeStep, pairApply, hp, Bool.false_eq_true, if_false]
+      simp only [activeStep, pairApply, hp, Bool.false_eq_true, ite_false]
       split_ifs <;> simp only [one_square]
     rw [hs, ih]
 
@@ -63,10 +63,10 @@ theorem active_miller (points : Fin 2 → G1) (pair : Fin 2) :
   cases hp : (points pair).isInfinity
   · have hstep : activeStep (g1Factors points) (presence points) pair = jacobianStep points pair := by
       funext f step
-      simp only [activeStep, pairApply, presence_entry, hp, Bool.not_false, if_true]
+      simp only [activeStep, pairApply, presence_entry, hp, Bool.not_false, ite_true]
       rfl
-    simp only [Bool.false_eq_true, if_false, hstep, jacobianMiller]
-  · simp only [if_true]
+    simp only [Bool.false_eq_true, ite_false, hstep, jacobianMiller]
+  · simp only [ite_true]
     exact absent_fold _ _ _ pair (by rw [presence_entry, hp]; rfl)
 
 def combinedMiller (points : Fin 2 → G1) : Fp12 :=
@@ -83,7 +83,7 @@ theorem combined_miller_field (points : Fin 2 → G1) :
   rw [hf, mul_pow]
   unfold jacobianFactor
   cases h0 : (points 0).isInfinity <;> cases h1 : (points 1).isInfinity <;>
-    simp only [Bool.false_eq_true, if_false, if_true, Cyclotomic.spec_conjugate,
+    simp only [Bool.false_eq_true, ite_false, ite_true, Cyclotomic.spec_conjugate,
       Fp12.toField_one, one_pow]
 
 theorem combined_final_eq (points : Fin 2 → G1) :

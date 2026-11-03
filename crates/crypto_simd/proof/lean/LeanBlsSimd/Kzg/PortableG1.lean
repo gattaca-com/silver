@@ -1,6 +1,7 @@
 import LeanBlsSimd.Portable.Fp.Correct
 import LeanBlsSimd.Kzg.PortableFp
 import LeanBlsSimd.Kzg.G1Arithmetic
+import EthLib.Cryptography.Proofs.Bls.G1Group
 
 open LeanBlsSimd.Portable.Fp (portable_fp_correct)
 
@@ -93,7 +94,7 @@ theorem termsValues_refines [RuntimeFeatures]
   obtain ⟨f4, e_f4, h_f4⟩ := portable_fp_correct.sub h_f3 h_s1
   obtain ⟨r, e_r, h_r⟩ := portable_fp_correct.double h_f4
   refine ⟨⟨z1z1, z2z2, u1, s1, h, r⟩, ?_, ⟨h_z1z1, h_z2z2, h_u1, h_s1, h_h, h_r⟩⟩
-  simp only [portable.g1.Terms.new, e_z1z1, e_z2z2, e_u1, e_f, e_s1, e_f1, e_h, e_f2, e_f3, e_f4, e_r, bind_tc_ok]
+  simp only [portable.g1.Terms.new, e_z1z1, e_z2z2, e_u1, e_f, e_s1, e_f1, e_h, e_f2, e_f3, e_f4, e_r, bind_ok]
 
 def doubleValues (P : G1) : G1 :=
   let a := P.x * P.x
@@ -144,7 +145,7 @@ theorem doubleValues_refines [RuntimeFeatures]
   obtain ⟨f12, e_f12, h_f12⟩ := portable_fp_correct.mul hp.y hp.z
   obtain ⟨z3, e_z3, h_z3⟩ := portable_fp_correct.double h_f12
   refine ⟨⟨x3, y3, z3⟩, ?_, ⟨h_x3, h_y3, h_z3⟩⟩
-  simp only [portable.g1.G1.double, e_a, e_b, e_c, e_f, e_f1, e_f2, e_f3, e_d, e_f4, e_e, e_f5, e_f6, e_x3, e_f7, e_f8, e_f9, e_f10, e_f11, e_y3, e_f12, e_z3, bind_tc_ok]
+  simp only [portable.g1.G1.double, e_a, e_b, e_c, e_f, e_f1, e_f2, e_f3, e_d, e_f4, e_e, e_f5, e_f6, e_x3, e_f7, e_f8, e_f9, e_f10, e_f11, e_y3, e_f12, e_z3, bind_ok]
 
 def sumValues (T : TermValues) (P Q : G1) : G1 :=
   let f := T.h + T.h
@@ -190,7 +191,7 @@ theorem sumValues_refines [RuntimeFeatures]
   obtain ⟨f11, e_f11, h_f11⟩ := portable_fp_correct.sub h_f10 ht.z2z2
   obtain ⟨z3, e_z3, h_z3⟩ := portable_fp_correct.mul h_f11 ht.h
   refine ⟨⟨x3, y3, z3⟩, ?_, ⟨h_x3, h_y3, h_z3⟩⟩
-  simp only [portable.g1.Terms.sum, e_f, e_i, e_j, e_v, e_f1, e_f2, e_f3, e_x3, e_f4, e_f5, e_f6, e_f7, e_y3, e_f8, e_f9, e_f10, e_f11, e_z3, bind_tc_ok]
+  simp only [portable.g1.Terms.sum, e_f, e_i, e_j, e_v, e_f1, e_f2, e_f3, e_x3, e_f4, e_f5, e_f6, e_f7, e_y3, e_f8, e_f9, e_f10, e_f11, e_z3, bind_ok]
 
 private def doublePoly (x y z : ZMod Fp.modulus) : ZMod Fp.modulus × ZMod Fp.modulus × ZMod Fp.modulus :=
   let a := x * x
@@ -235,7 +236,8 @@ private theorem doublePoly_eq (x y z : ZMod Fp.modulus) : doublePoly x y z = dou
 
 theorem doubleValues_eq_double (P : G1) (hz : P.z.isZero ≠ true) :
     doubleValues P = G1.double P := by
-  simp only [doubleValues, G1.double, if_neg hz, Fp.ofNat_eq_natCast]
+  rw [G1.double_eq_doubleSpec]
+  simp only [doubleValues, G1.doubleSpec, ite_eq_right hz, Fp.ofNat_eq_natCast]
   have h := doublePoly_eq P.x P.y P.z
   exact congrArg (fun t => (⟨t.1, t.2.1, t.2.2⟩ : G1)) h
 
@@ -307,18 +309,19 @@ private theorem sumPoly_eq (h r u s a b z w : ZMod Fp.modulus) : sumPoly h r u s
   · apply Prod.ext <;> ring
 
 theorem addValues_eq_add (P Q : G1) : addValues P Q = G1.add P Q := by
+  rw [G1.add_eq_addSpec]
   unfold addValues
   split
   · rename_i hp
-    simp only [G1.add, hp, if_true]
+    simp only [G1.addSpec, hp, ite_true]
   · rename_i hp
     split
     · rename_i hq
-      simp only [G1.add, if_neg hp, hq, if_true]
+      simp only [G1.addSpec, ite_eq_right hp, hq, ite_true]
     · rename_i hq
       simp only [termsValues, isZero_sub, isZero_double_sub]
-      unfold G1.add
-      simp only [if_neg hp, if_neg hq]
+      unfold G1.addSpec
+      simp only [ite_eq_right hp, ite_eq_right hq]
       split
       · split
         · exact doubleValues_eq_double P hp

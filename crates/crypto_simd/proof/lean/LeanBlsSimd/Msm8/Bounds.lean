@@ -105,6 +105,10 @@ end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.BucketsRefines
 open silver_crypto_simd.bls.msm8
 
+private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (out : β) :
+    Std.bind r f = ok out ↔ ∃ a, r = ok a ∧ f a = ok out := by
+  simpa only [bind_tc_eq] using bind_success r f out
+
 theorem eventReferences_append (width : Usize) (left right : List Event) (i : ℕ) :
     eventReferences width (left ++ right) i = eventReferences width left i ++ eventReferences width right i := by
   induction left with
@@ -129,7 +133,7 @@ private theorem eventReferences_before (width : Usize) (events : List Event) (fl
       have hlo := hfloor e (by simp)
       simp only [eventIndex, listIndex] at he
       omega
-    simp only [eventReferences, hnot, if_false, List.nil_append]
+    simp only [eventReferences, hnot, ite_false, List.nil_append]
     exact ih (fun e he => hfloor e (List.mem_cons_of_mem _ he))
 
 theorem eventReferences_window_bound (width : Usize) (events : List Event) (start i : ℕ)
@@ -139,7 +143,7 @@ theorem eventReferences_window_bound (width : Usize) (events : List Event) (star
   induction events generalizing start with
   | nil => simp [eventReferences]
   | cons e rest ih =>
-    have hew : e.window.val = start := by simpa using hcoords 0 (by simp)
+    have hew : e.window.val = start := by simpa using! hcoords 0 (by simp)
     have hrest : ∀ j (hj : j < rest.length), (rest[j]'hj).window.val = start + 1 + j := by
       intro j hj
       have h := hcoords (j + 1) (by simpa using Nat.succ_lt_succ hj)
@@ -173,18 +177,18 @@ theorem scalarEvents_bucket_bound (n : ℕ) (scalars : Slice (Array U64 4#usize)
   induction n generalizing index events with
   | zero =>
     simp only [scalarEvents] at htrace
-    cases Result.ok.inj htrace
+    cases Result.ok_injective htrace
     simp [eventReferences]
   | succ n ih =>
-    simp only [scalarEvents, bind_success] at htrace
+    simp only [scalarEvents, bind_success_std] at htrace
     obtain ⟨words, _, digits, _, ⟨first, last⟩, hfirst, htrace⟩ := htrace
-    simp only [Function.uncurry_def, bind_success] at htrace
+    simp only [aeneas_uncurry_def, bind_success_std] at htrace
     obtain ⟨index', hindex, rest, hrest, htrace⟩ := htrace
-    cases Result.ok.inj htrace
+    cases Result.ok_injective htrace
     have hindexv : index'.val = index.val + 1 := by
       have hsize := two_pow_32_le_usize
       rw [add_ok index 1#usize (by change index.val + 1 < _; omega)] at hindex
-      cases Result.ok.inj hindex
+      cases Result.ok_injective hindex
       rfl
     have hcoords := windowEvents_coordinates windows.val index 0#usize digits last first
       (by omega) (by simpa using hw) hfirst
@@ -204,46 +208,44 @@ private theorem mutable_back_length {A : Type} (v : Vec A) (index : Usize)
     (value : A) (back : A → Vec A)
     (h : Vec.index_mut (core.slice.index.SliceIndexUsizeSlice A) v index = ok (value, back))
     (replacement : A) : (back replacement).val.length = v.val.length := by
-  rw [Vec.index_mut_slice_index] at h
-  unfold Vec.index_mut_usize at h
-  split at h
-  · cases Result.ok.inj h
-    simp [Vec.set]
-  · cases h
-  · cases h
+  simp only [Vec.index_mut_slice_index, Vec.index_mut_usize] at h
+  obtain ⟨x, _, heq⟩ := bind_eq_ok h
+  cases Result.ok_injective heq
+  simp [Vec.set]
 
 theorem place_refs_length (state next : buckets.Buckets) (window magnitude : Usize) (reference : U32)
     (h : state.place window magnitude reference = ok next) :
     next.refs.val.length = state.refs.val.length := by
   simp only [buckets.Buckets.place] at h
   split at h
-  · rw [bind_success] at h
+  · rw [bind_success_std] at h
     obtain ⟨i, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨start, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨len, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨address, _, h⟩ := h
-    simp only [lift, bind_tc_ok] at h
-    rw [bind_success] at h
+    simp only [lift, bind_ok] at h
+    rw [bind_success_std] at h
     obtain ⟨⟨value, refsBack⟩, hback, h⟩ := h
-    simp only [Function.uncurry_def] at h
-    rw [bind_success] at h
+    simp only [aeneas_uncurry_def] at h
+    rw [bind_success_std] at h
     obtain ⟨⟨value, lensBack⟩, _, h⟩ := h
-    rw [bind_success] at h
+    simp only [aeneas_uncurry_def] at h
+    rw [bind_success_std] at h
     obtain ⟨count, _, h⟩ := h
-    cases Result.ok.inj h
+    cases Result.ok_injective h
     exact mutable_back_length _ _ _ _ hback _
-  · cases Result.ok.inj h
+  · cases Result.ok_injective h
     rfl
 
 theorem placeEvents_refs_length (events : List Event) (state out : buckets.Buckets)
     (h : placeEvents events state = ok out) : out.refs.val.length = state.refs.val.length := by
   induction events generalizing state with
-  | nil => cases Result.ok.inj h; rfl
+  | nil => cases Result.ok_injective h; rfl
   | cons event rest ih =>
-    simp only [placeEvents, bind_success] at h
+    simp only [placeEvents, bind_success_std] at h
     obtain ⟨next, hnext, hrest⟩ := h
     exact (ih next hrest).trans (place_refs_length _ _ _ _ _ hnext)
 
@@ -290,9 +292,9 @@ theorem fillCore_size (state : buckets.Buckets) (scalars : Slice (Array U64 4#us
     (by change 0 + scalars.val.length = scalars.val.length; omega) rfl htrace hplace
   refine ⟨out, ?_, how, hon, ?_, ?_⟩
   · unfold fillCore
-    simp only [Vec.clear, bind_tc_ok]
+    simp only [Vec.clear, bind_ok]
     rw [hlens]
-    simp only [bind_tc_ok]
+    simp only [bind_ok, lift]
     change (do
       let (i4, i5, v2, v3, v4) ← buckets.Buckets.fill_loop0 counted.window_bits counted.windows
         counted.refs counted.starts counted.lens scalars width 0#usize
@@ -311,7 +313,7 @@ theorem fillCore_size (state : buckets.Buckets) (scalars : Slice (Array U64 4#us
         placed.refs placed.starts placed.lens scalars width 0#usize
       ok ({window_bits := i7, windows := i8, refs := v10, starts := v11, lens := v12} : buckets.Buckets)) = _
     rw [hplaceLoop]
-    rfl
+    simp only [bind_tc_ok, fields]
   · simpa only [hlists] using hrecover
 
   · rw [placeEvents_refs_length events placed out hplace]

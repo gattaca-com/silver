@@ -33,11 +33,11 @@ def pack6 {α : Type} (a : Fin 6 → V α) : Fin 5 → V α :=
   ![packPair 0 (a 0) (a 5), packPair 1 (a 1) (a 5), packPair 2 (a 2) (a 5), a 3, a 4]
 
 def RowsRaw {n : Usize} {N : ℕ} (k m : ℕ) (xs : Array fp8.Fp8 n)
-    (a : Fin N → V F) (hn : n.val = N := by rfl) : Prop :=
+    (a : Fin N → V F) (hn : n.val = N := by exact id rfl) : Prop :=
   ∀ j, Raw (fun _ => k) m (ofArray id xs hn)[j.val] (a j)
 
 def RowsNormal {n : Usize} {N : ℕ} (k : ℕ) (xs : Array fp8.Fp8 n)
-    (a : Fin N → V F) (hn : n.val = N := by rfl) : Prop :=
+    (a : Fin N → V F) (hn : n.val = N := by exact id rfl) : Prop :=
   ∀ j, Normal (fun _ => k) (ofArray id xs hn)[j.val] (a j)
 
 private theorem pack_pair {k m : ℕ} {x y : fp8.Fp8} {a b : V F}
@@ -73,9 +73,8 @@ theorem pack_nine {k m : ℕ} {xs : Array fp8.Fp8 9#usize} {a : Fin 9 → V F}
       index_usize_eq xs 5#usize (by decide),
       index_usize_eq xs 6#usize (by decide),
       index_usize_eq xs 7#usize (by decide),
-      index_usize_eq xs 8#usize (by decide),
-      bind_tc_ok]
-    simp only [hp0, bind_tc_ok, ho0, hp1, ho1, hp2, ho2, hp3, ho3, hp4, ho4, hp5, ho5, ho6]
+      index_usize_eq xs 8#usize (by decide), bind_ok]
+    simp only [hp0, bind_ok, ho0, hp1, ho1, hp2, ho2, hp3, ho3, hp4, ho4, hp5, ho5, ho6]
   · intro j
     fin_cases j
     · exact ro0
@@ -103,9 +102,8 @@ theorem pack_six {k m : ℕ} {xs : Array fp8.Fp8 6#usize} {a : Fin 6 → V F}
       index_usize_eq xs 2#usize (by decide),
       index_usize_eq xs 3#usize (by decide),
       index_usize_eq xs 4#usize (by decide),
-      index_usize_eq xs 5#usize (by decide),
-      bind_tc_ok]
-    simp only [hp0, bind_tc_ok, ho0, hp1, ho1, hp2, ho2, ho3, ho4]
+      index_usize_eq xs 5#usize (by decide), bind_ok]
+    simp only [hp0, bind_ok, ho0, hp1, ho1, hp2, ho2, ho3, ho4]
   · intro j
     fin_cases j
     · exact ro0
@@ -170,9 +168,8 @@ theorem unpack_nine {k : ℕ} {xs : Array fp8.Fp8 7#usize} {a : Fin 7 → V F}
       index_usize_eq xs 3#usize (by decide),
       index_usize_eq xs 4#usize (by decide),
       index_usize_eq xs 5#usize (by decide),
-      index_usize_eq xs 6#usize (by decide),
-      bind_tc_ok]
-    simp only [hp7, bind_tc_ok, hp8, ho7, ho8]
+      index_usize_eq xs 6#usize (by decide), bind_ok]
+    simp only [hp7, bind_ok, hp8, ho7, ho8]
     simp only [getElem_ofArray, id_eq]
   · intro j
     fin_cases j
@@ -198,9 +195,8 @@ theorem unpack_six {k : ℕ} {xs : Array fp8.Fp8 5#usize} {a : Fin 5 → V F}
       index_usize_eq xs 1#usize (by decide),
       index_usize_eq xs 2#usize (by decide),
       index_usize_eq xs 3#usize (by decide),
-      index_usize_eq xs 4#usize (by decide),
-      bind_tc_ok]
-    simp only [hp5, bind_tc_ok, ho5]
+      index_usize_eq xs 4#usize (by decide), bind_ok]
+    simp only [hp5, bind_ok, ho5]
     simp only [getElem_ofArray, id_eq]
   · intro j
     fin_cases j

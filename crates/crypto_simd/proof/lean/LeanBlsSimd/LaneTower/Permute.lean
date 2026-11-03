@@ -6,6 +6,7 @@ open silver_crypto_simd silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Fp8
 
+
 def permute2 (self other : Fp8) (indices : Vector Int64 8) : Fp8 :=
   ⟨Vector.ofFn fun j => _mm512_permutex2var_epi64 self.limbs[j]
     (indices.map Int64.toUInt64) other.limbs[j]⟩
@@ -33,12 +34,12 @@ theorem permute2_loop_refines (self other : fp8.Fp8) (index : M512)
       simp only [fp8.Fp8.permute2_loop.body, LIMBS_refines, UScalar.lt_equiv,
         hi8, UScalar.ofNatCore_val_eq, Nat.lt_irrefl, ↓reduceIte]
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply congrArg ok
     apply congrArg (toArray id)
     apply Vector.ext
     intro j hj
-    simpa only [Vector.getElem_ofFn] using hv ⟨j, hj⟩ (by omega)
+    simpa only [Vector.getElem_ofFn, Fin.getElem_fin] using hv ⟨j, hj⟩ (by omega)
   | succ n ih =>
     have hlt : i.val < 8 := by omega
     let i' : Usize := UScalar.ofNatCore (i.val + 1) (by scalar_tac)
@@ -49,13 +50,13 @@ theorem permute2_loop_refines (self other : fp8.Fp8) (index : M512)
         ok (cont (self, other, toArray id v', i')) := by
       simp only [fp8.Fp8.permute2_loop.body, LIMBS_refines, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq, hlt, ↓reduceIte,
-        index_usize_eq self i hlt, index_usize_eq other i hlt, bind_tc_ok,
+        index_usize_eq self i hlt, index_usize_eq other i hlt, bind_ok,
         core.core_arch.x86.avx512f._mm512_permutex2var_epi64, update_eq (n := 8#usize) _ i _ hlt]
       rw [add_ok _ _ (by scalar_tac)]
       simp [v', value, i']
       exact set_toArray id v rfl i _ hlt
     rw [loop.eq_1]
-    simp only [hb]
+    simp only [hb, bind_ok]
     apply ih v' i' (by omega) ?_ (by omega)
     intro j hj
     by_cases hji : j.val = i.val
@@ -65,11 +66,12 @@ theorem permute2_loop_refines (self other : fp8.Fp8) (index : M512)
 theorem permute2_refines (self other : fp8.Fp8) (indices : Array I64 8#usize) :
     fp8.Fp8.permute2 self other indices =
       ok (toFp8 ((ofFp8 self).permute2 (ofFp8 other) (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp8.Fp8.permute2, index_vector_refines, Simd.zero_refines, bind_tc_ok]
+  simp only [fp8.Fp8.permute2, index_vector_refines, Simd.zero_refines, bind_ok]
   have hre : Array.repeat 8#usize Simd.zero = toArray id (Vector.replicate 8 Simd.zero) :=
     (toArray_replicate id Simd.zero rfl).symm
   rw [hre]
   rw [permute2_loop_refines self other _ _ 0#usize (by decide) (by simp)]
+  simp only [bind_ok]
   rfl
 
 end LeanBlsSimd.Fp8
@@ -86,14 +88,14 @@ theorem permute2_refines (self other : fp2x8.Fp2x8) (indices : Array I64 8#usize
     fp2x8.Fp2x8.permute2 self other indices =
       ok (toFp2x8 ((ofFp2x8 self).permute2 (ofFp2x8 other)
         (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp2x8.Fp2x8.permute2, Fp8.permute2_refines, bind_tc_ok]
+  simp only [fp2x8.Fp2x8.permute2, Fp8.permute2_refines, bind_ok]
   rfl
 
 theorem permute_refines (self : fp2x8.Fp2x8) (indices : Array I64 8#usize) :
     fp2x8.Fp2x8.permute self indices =
       ok (toFp2x8 ((ofFp2x8 self).permute
         (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp2x8.Fp2x8.permute, Fp8.permute_refines, bind_tc_ok]
+  simp only [fp2x8.Fp2x8.permute, Fp8.permute_refines, bind_ok]
   rfl
 
 end LeanBlsSimd.Fp2x8

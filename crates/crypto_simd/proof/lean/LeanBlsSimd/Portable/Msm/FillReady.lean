@@ -32,7 +32,7 @@ theorem fill127_ready (state : portable.msm.buckets.Buckets)
     BucketsRefines.fill127_ready (toLane state) scalars values points hsize hlen hv hb
   refine ⟨fromLane out, capacity, contents, ?_, hrest⟩
   rw [fill_eq, hcall]
-  rfl
+  (simp only [bind_ok] )
 
 theorem chunk_resources (n : ℕ) (hn : n ≤ portable.msm.CHUNK.val) :
     MsmBounds.Resources n (windows127 (selectedWidth (2*n))).val := by
@@ -59,6 +59,6 @@ theorem fill_chunk_bounds (state : portable.msm.buckets.Buckets) (scalars : Slic
   obtain ⟨out,he,hrest⟩ := MsmBounds.fill_chunk_bounds (toLane state) scalars n hscalars hb
   refine ⟨fromLane out,?_,hrest⟩
   rw [fill_eq,he]
-  rfl
+  (simp only [bind_ok] )
 
 end LeanBlsSimd.Portable.Msm.Buckets

@@ -26,11 +26,11 @@ theorem times_z_loop_encoded [RuntimeFeatures] (P Q : Bls.G1) (c : U32) (n : Nat
     simp [portable.g1.G1.times_z_loop.body,hc]
   · intro Q c c' hc _
     simp only [portable.g1.G1.times_z_loop.body]
-    rw [if_pos (by simp; omega),sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega),sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [bind_tc_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_complete_encoded,chainStep]
+    simp only [bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_complete_encoded,chainStep]
     cases G1x8.is_lower_z_bit c'.val <;> simp
 
 theorem times_z_affine_loop_encoded [RuntimeFeatures] (x y : Bls.Fp) (Q : Bls.G1) (c : U32) (n : Nat)
@@ -44,23 +44,23 @@ theorem times_z_affine_loop_encoded [RuntimeFeatures] (x y : Bls.Fp) (Q : Bls.G1
     simp [portable.g1.G1.times_z_affine_loop.body,hc]
   · intro Q c c' hc _
     simp only [portable.g1.G1.times_z_affine_loop.body]
-    rw [if_pos (by simp; omega),sub_ok _ _ (by simp; omega)]
+    rw [ite_eq_left (by simp; omega),sub_ok _ _ (by simp; omega)]
     have e : (UScalar.ofNatCore (c.val-(1#u32).val) (by have := c.hBounds; omega) : U32) =
         c' := UScalar.eq_of_val_eq (by simp; omega)
     rw [e]
-    simp only [bind_tc_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_complete_encoded,chainStep]
+    simp only [bind_ok,double_encoded,G1x8.is_lower_z_bit_refines,add_affine_complete_encoded,chainStep]
     cases G1x8.is_lower_z_bit c'.val <;> simp
 
 theorem times_z_encoded [RuntimeFeatures] (P : Bls.G1) :
     portable.g1.G1.times_z (encode P) = ok (encode (timesZ P)) := by
-  simp only [portable.g1.G1.times_z,Z_BITS_index 0#usize (by decide),bind_tc_ok]
+  simp only [portable.g1.G1.times_z,Z_BITS_index 0#usize (by decide), bind_ok]
   exact times_z_loop_encoded P P _ Z_BITS[0]! (by simp)
 
 theorem times_z_affine_encoded [RuntimeFeatures] (x y : Bls.Fp) :
     portable.g1.G1.times_z_affine (Kzg.fpEncode x).l (Kzg.fpEncode y).l =
       ok (encode (timesZ ⟨x,y,Bls.Fp.one⟩)) := by
   simp only [portable.g1.G1.times_z_affine,from_affine_encoded,
-    Z_BITS_index 0#usize (by decide),bind_tc_ok]
+    Z_BITS_index 0#usize (by decide), bind_ok]
   exact times_z_affine_loop_encoded x y _ _ Z_BITS[0]! (by simp)
 
 private def scalarStep (n bit : Nat) : Nat :=
@@ -79,11 +79,11 @@ theorem timesZ_valid_point (P : Bls.G1) (hp : Bls.G1.Valid P) :
     have hd := double_values_valid hq
     have hdp := double_values_point hq
     by_cases hb : G1x8.is_lower_z_bit bit = true
-    · simp only [chainStep,scalarStep,hb,if_true]
+    · simp only [chainStep,scalarStep,hb,ite_true]
       refine ⟨Bls.G1.valid_add hd hp,?_⟩
       rw [Bls.G1.toPoint_add hd hp,hdp,hqn]
       simp [add_nsmul,mul_nsmul,two_nsmul,nsmul_add]
-    · simp only [chainStep,scalarStep,hb,Bool.false_eq_true,if_false]
+    · simp only [chainStep,scalarStep,hb,Bool.false_eq_true,ite_false]
       refine ⟨hd,?_⟩
       rw [hdp,hqn]
       simp [mul_nsmul,two_nsmul,nsmul_add]

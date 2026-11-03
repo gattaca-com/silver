@@ -1,5 +1,7 @@
 import LeanBlsSimd.Refines.G1Wrapper
 
+attribute [local implicit_reducible] Aeneas.Std.UScalar.cMax Aeneas.Std.UScalar.rMax Aeneas.Std.U32.rMax
+
 namespace LeanBlsSimd
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -52,7 +54,8 @@ def chunkBodyWith (fallback : Array U8 48#usize → Result (Option blst.blst_p1_
           if i1 != 0#u8
           then do
                let bpa ← Array.index_usize batch.points lane
-               ok (some bpa)
+               let gp ← g1_point.G1Point.from_trusted bpa
+               ok (some gp)
           else ok none
         ok (iter1, o2)
     let s ← Slice.update out lane o1
@@ -79,7 +82,7 @@ private theorem mask_bit (m : UInt8) (l : Fin 8) :
   exact Mmask8.and_one_shiftLeft_ne_zero m l
 
 private def vectorSlice {α : Type} {n : ℕ} (v : Vector α n) (h : n ≤ Usize.max) : Slice α :=
-  ⟨v.toList, by simpa using h⟩
+  Slice.from v.toList (by simpa using h)
 
 private theorem slice_update_ok {α : Type} (s : Slice α) (i : Usize) (x : α)
     (h : i.val < s.val.length) : Slice.update s i x = ok (s.set i x) := by
@@ -88,8 +91,8 @@ private theorem slice_update_ok {α : Type} (s : Slice α) (i : Usize) (x : α)
 private theorem vectorSlice_set {α : Type} {n : ℕ} (v : Vector α n) (h : n ≤ Usize.max)
     (i : Usize) (hi : i.val < n) (x : α) :
     (vectorSlice v h).set i x = vectorSlice (v.set i.val x hi) h := by
-  apply Subtype.ext
-  simp [vectorSlice, Slice.set, Slice.setAtNat, Vector.toList_set]
+  ext1
+  simp [vectorSlice, Slice.from_val, Slice.set, Slice.setAtNat, Vector.toList_set]
 
 private theorem modelBlst_roundtrip (a : Array U8 48#usize) :
     (modelBlst (ofArray ofU8 a)).map toBlstP1Affine = UncompressG1.specVerdict a := by
@@ -104,21 +107,21 @@ local macro "chunk_proof" : tactic => `(tactic| (
   have hb : 8 ≤ Usize.max := by scalar_tac
   let enc := fun v : Vector (Option blst.blst_p1_affine) 8 => vectorSlice v hb
   have ho : enc (ofSlice id out hlen) = out := by
-    apply Subtype.ext
-    simp [enc, vectorSlice]
-  refine ⟨enc target, ?_, by simp [enc, vectorSlice, target, Vector.toList_map]⟩
+    ext1
+    simp [enc, vectorSlice, Slice.from_val]
+  refine ⟨enc target, ?_, by simp [enc, vectorSlice, Slice.from_val, target, Vector.toList_map]⟩
   rw [chunkWith, decompress_refines]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, bind_ok]
   rw [← ho]
   apply loop_range (n := 8) _ LANES (by simp [LANES]) enc
     (fun v j => v.set j (target[j])) enc (ofSlice id out hlen) (enc target)
   · intro r v he hs hn
-    simp only [chunkBodyWith, id_eq, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [chunkBodyWith, id_eq, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   · intro r r' v j he hs he' hs' hn
     have hj : r.start.val < 8 := by omega
-    simp only [chunkBodyWith, id_eq, hn, bind_tc_ok, Function.uncurry_apply_pair]
+    simp only [chunkBodyWith, id_eq, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
     rw [toU8_shiftLeft_one _ hj]
-    simp only [lift, bind_tc_ok, toBatch]
+    simp only [lift, bind_tc_ok, bind_ok, toBatch]
     rw [show r.start.val = j.val from hs, mask_bit]
     have ht : target[j] =
         if b.undecided.toNat.testBit j then UncompressG1.specVerdict (inputs.val[j.val]'(by simp [inputs.property]))
@@ -131,20 +134,20 @@ local macro "chunk_proof" : tactic => `(tactic| (
     · simp only [Bool.false_eq_true, ↓reduceIte]
       rw [mask_bit]
       cases hv : b.valid.toNat.testBit j
-      · simp only [Bool.false_eq_true, ↓reduceIte, bind_tc_ok, Function.uncurry_apply_pair]
-        rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
-        simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
+      · simp only [Bool.false_eq_true, ↓reduceIte, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
+        simp only [bind_tc_ok, bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
       · simp only [↓reduceIte]
         rw [index_usize_toArray _ _ _ _ hj]
-        simp only [bind_tc_ok, Function.uncurry_apply_pair]
-        rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
-        simp only [bind_tc_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
+        simp only [g1_point.G1Point.from_trusted, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+        rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
+        simp only [bind_tc_ok, bind_ok, enc, ht, hu, hv, hs, Bool.false_eq_true, ↓reduceIte]
         rfl
     · simp only [↓reduceIte]
       rw [index_usize_eq _ _ (by first | exact hj | decide)]
-      simp only [Portable.Decode.g1_decoder_correct.singleton, bind_tc_ok, Function.uncurry_apply_pair]
-      rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, hs]), vectorSlice_set v hb r.start hj]
-      simp only [bind_tc_ok, enc, ht, hu, hs, ↓reduceIte]
+      simp only [Portable.Decode.g1_decoder_correct.singleton, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
+      rw [slice_update_ok _ _ _ (by simp [enc, vectorSlice, Slice.from_val, hs]), vectorSlice_set v hb r.start hj]
+      simp only [bind_tc_ok, bind_ok, enc, ht, hu, hs, ↓reduceIte]
   · rw [foldl_set_ofFn]
     congr 1
     ext i hi
@@ -185,17 +188,26 @@ def emptyOutput : Slice (Option blst.blst_p1_affine) :=
 def laneOneVerdict (result : Result (ControlFlow
     (core.ops.range.Range Usize × Slice (Option blst.blst_p1_affine))
     (Slice (Option blst.blst_p1_affine)))) : Bool :=
-  match result with
-  | ok (cont (_, out)) => out.val[1]!.isSome
+  match result.match with
+  | .ok (.cont (_, out)) => out.val[1]!.isSome
   | _ => false
 
 set_option hygiene false in
 local macro "lane_one_proof" : tactic => `(tactic| (
   obtain ⟨next, _, _, hn⟩ := next_lt
     { start := 1#usize, «end» := 8#usize } (by decide)
-  simp only [chunkBodyWith, hn, bind_tc_ok, Function.uncurry_apply_pair]
+  simp only [chunkBodyWith, hn, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair]
   rw [toU8_shiftLeft_one _ (by decide)]
-  rfl))
+  have hmask : (undecidedBatch.undecided &&& toU8 (1 <<< (1 : Nat).toUInt8) != 0#u8) = true := by
+    decide +kernel
+  simp only [bind_ok, bind_tc_ok, lift, show (1#usize).val = 1 from rfl,
+    hmask, ite_true, id_eq]
+  rw [index_usize_eq _ _ (by decide)]
+  simp only [bind_ok, bind_tc_ok, Function.uncurry_apply_pair,
+    Aeneas.Std.uncurry_apply_pair]
+  rw [slice_update_ok _ _ _ (by decide)]
+  simp only [bind_ok, bind_tc_ok, laneOneVerdict, Result.match.ok]
+  decide +kernel))
 
 theorem original_lane_one : laneOneVerdict
     (chunkBodyWith distinguishingFallback id distinctInputs undecidedBatch

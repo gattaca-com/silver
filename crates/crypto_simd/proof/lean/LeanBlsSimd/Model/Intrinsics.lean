@@ -1,3 +1,5 @@
+module
+@[expose] public section
 /-!
 # The AVX-512 intrinsics of `fp8.rs` and `fr8.rs`
 

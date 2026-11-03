@@ -1,5 +1,6 @@
 import LeanBlsSimd.Kzg.G1Msm
 import EthLib.Cryptography.Proofs.IdLoops
+import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg
 open WeierstrassCurve.Jacobian
@@ -30,7 +31,7 @@ private theorem tail_zero (b : ByteArray) (start : Nat)
     induction is generalizing acc with
     | nil => rfl
     | cons i is ih =>
-      simp only [List.foldl_cons, h i (by simp), ne_self_iff_false, if_false]
+      simp only [List.foldl_cons, h i (by simp), ne_self_iff_false, ite_false]
       exact ih (fun i hi => h i (by simp [hi])) acc
   apply hf
   intro i hi
@@ -45,10 +46,10 @@ theorem g1_uncompress_infinity : G1.uncompress G1.infinityBytes = .ok G1.zero :=
   have ht : tailAllZero G1.infinityBytes 1 = true := by
     apply tail_zero
     intro i hi hib
-    have hi48 : i < 48 := by simpa only [hs] using hib
+    have hi48 : i < 48 := by simpa only [hs] using! hib
     change ((Array.replicate 48 (0 : UInt8)).set! 0 0xc0)[i]! = 0
     simp [getElem!_pos, hi48, show i ≠ 0 by omega]
-  simp only [G1.uncompress, hs, ne_self_iff_false, if_false, hh, ht]
+  simp only [G1.uncompress, hs, ne_self_iff_false, ite_false, hh, ht]
   decide
 
 theorem g1_uncompress_curve {b : ByteArray} {p : G1} (hd : G1.uncompress b = .ok p) :
@@ -126,18 +127,18 @@ private theorem g1_group_uncompress_compress {p : G1} (h : Valid p) :
       intro i hi0
       rw [hcp]; dsimp only
       by_cases hs : Fp.signBit ya
-      · rw [if_pos hs, ba_get!_set!_ne _ _ hi0, ba_get!_set!_ne _ _ hi0]
-      · rw [if_neg hs, ba_get!_set!_ne _ _ hi0]
+      · rw [ite_eq_left hs, ba_get!_set!_ne _ _ hi0, ba_get!_set!_ne _ _ hi0]
+      · rw [ite_eq_right hs, ba_get!_set!_ne _ _ hi0]
     have hsize : (compress p).size = 48 := by
       rw [hcp]; dsimp only
       by_cases hs : Fp.signBit ya
-      · rw [if_pos hs, ba_size_set!, ba_size_set!, hsz48]
-      · rw [if_neg hs, ba_size_set!, hsz48]
+      · rw [ite_eq_left hs, ba_size_set!, ba_size_set!, hsz48]
+      · rw [ite_eq_right hs, ba_size_set!, hsz48]
     refine ⟨⟨xa, ya, Fp.one⟩, ?_, ?_⟩
     · by_cases hs : Fp.signBit ya
       · have hhead : (compress p).get! 0 = B0 ||| 0x80 ||| 0x20 := by
           rw [hcp]; dsimp only
-          rw [if_pos hs, ba_get!_set!_self _ _ (by rw [ba_size_set!, hsz48]; decide),
+          rw [ite_eq_left hs, ba_get!_set!_self _ _ (by rw [ba_size_set!, hsz48]; decide),
             ba_get!_set!_self _ _ (by rw [hsz48]; decide)]
         refine uncompress_of_facts hsize (by rw [hhead]; exact hsc)
           (by rw [hhead]; exact hsi) ?_ ?_ hsqrt hysq
@@ -152,7 +153,7 @@ private theorem g1_group_uncompress_compress {p : G1} (h : Valid p) :
           · rw [ba_get!_set!_ne _ _ hi0, hother i hi0]
       · have hhead : (compress p).get! 0 = B0 ||| 0x80 := by
           rw [hcp]; dsimp only
-          rw [if_neg hs, ba_get!_set!_self _ _ (by rw [hsz48]; decide)]
+          rw [ite_eq_right hs, ba_get!_set!_self _ _ (by rw [hsz48]; decide)]
         refine uncompress_of_facts hsize (by rw [hhead]; exact huc)
           (by rw [hhead]; exact hui) ?_ ?_ hsqrt hysq
         · rw [hhead]
@@ -176,7 +177,7 @@ theorem g1_uncompress_compress {p : G1} (hp : G1Valid p) :
     · rw [compress_inf hinf]
       exact g1_uncompress_infinity
     · exact hinf.symm
-    · simp only [G1.toAffine, show p.z.isZero = true from hinf, if_true]
+    · simp only [G1.toAffine, show p.z.isZero = true from hinf, ite_true]
       rfl
   · obtain ⟨q, hdecode, hpoint⟩ :=
       g1_group_uncompress_compress (g1_groupValid_of_noninfinity hp hinf)
@@ -192,11 +193,12 @@ theorem g1_uncompress_compress {p : G1} (hp : G1Valid p) :
 private theorem keyValidate_facts (b : ByteArray) (h : (G1.keyValidate b).isOk = true) :
     ∃ p, G1.uncompress b = .ok p ∧ G1Valid p := by
   cases hd : G1.uncompress b with
-  | error err => simp [G1.keyValidate, hd, Bind.bind, Except.bind, Except.isOk, Except.toBool] at h
+  | error err => simp [G1.keyValidate, G1.keyValidatePoint, hd, Bind.bind, Except.bind, Except.isOk,
+      Except.toBool] at h
   | ok p =>
     cases hinf : p.isInfinity <;> cases hsub : p.inSubgroup <;>
-      simp [G1.keyValidate, hd, hinf, hsub, Bind.bind, Except.bind, Except.isOk,
-        Except.toBool, Pure.pure, Except.pure] at h
+      simp [G1.keyValidate, G1.keyValidatePoint, hd, hinf, hsub, Bind.bind, Except.bind,
+        Except.isOk, Except.toBool, Pure.pure, Except.pure, throw, throwThe, MonadExceptOf.throw] at h
     exact ⟨p, rfl, g1_uncompress_curve hd, hsub⟩
 
 theorem validateKzgG1_facts (b : ByteArray) (h : validateKzgG1 b = true) :
@@ -224,7 +226,7 @@ theorem specPoint_uncompress {b : ByteArray} {p : G1} (h : specPoint b = some p)
   | false => simp [specPoint, bytesToKzgProof, hv, Except.toOption] at h
   | true =>
     obtain ⟨q, hd, _⟩ := validateKzgG1_facts b hv
-    simp only [specPoint, bytesToKzgProof, hv, if_true, Except.toOption, Option.bind_some, hd,
+    simp only [specPoint, bytesToKzgProof, hv, ite_true, Except.toOption, Option.bind_some, hd,
       Option.some.injEq] at h
     exact h ▸ hd
 

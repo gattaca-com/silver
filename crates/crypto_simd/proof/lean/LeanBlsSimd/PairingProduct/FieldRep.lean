@@ -6,6 +6,8 @@ open Aeneas.Std Result
 open EthLib.Cryptography Bls
 open silver_crypto_simd.bls
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.PairingProduct
 
 def FieldRep (raw : fp12.Fp12) (value : Fp12Field) : Prop :=
@@ -23,7 +25,7 @@ theorem mul {x y : fp12.Fp12} {a b : Fp12Field}
     ∃ out, fp12.Fp12.mul x y = ok out ∧ FieldRep out (a * b) := by
   obtain ⟨out, hout, hrep⟩ := LaneTower.mul_refines hx hy
   refine ⟨out, hout, ?_⟩
-  simpa only [FieldRep, map_mul] using hrep
+  simpa only [FieldRep, map_mul] using! hrep
 
 theorem square {x : fp12.Fp12} {a : Fp12Field} (hx : FieldRep x a) :
     ∃ out, fp12.Fp12.square x = ok out ∧ FieldRep out (a * a) := by

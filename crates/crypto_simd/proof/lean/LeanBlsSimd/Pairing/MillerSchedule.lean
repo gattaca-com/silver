@@ -102,9 +102,9 @@ theorem bit_step_eq (v : Factors) (present : Array Bool 2#usize) (n : Fin 63) (f
   unfold bitStep bitRows
   split_ifs with h
   · simp only [List.foldl_cons, List.foldl_nil, combinedStep, activeStep,
-      double_row_kind, add_row_kind, Bool.false_eq_true, if_false, if_true, applyLines]
+      double_row_kind, add_row_kind, Bool.false_eq_true, ite_false, ite_true, applyLines]
   · simp only [List.foldl_cons, List.foldl_nil, combinedStep, activeStep,
-      double_row_kind, Bool.false_eq_true, if_false, applyLines]
+      double_row_kind, Bool.false_eq_true, ite_false, applyLines]
 
 theorem initial_square (n : Fin 63) (f : Fp12) (h : n.val + 1 = 63 → f = Fp12.one) :
     (if consumed (n.val + 1) > 0 then f.square else f) = f * f := by

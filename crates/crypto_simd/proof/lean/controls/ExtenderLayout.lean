@@ -4,33 +4,54 @@ open Aeneas Aeneas.Std Result
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.Kzg.Extender.Controls
 
 private def layoutFieldBytes (x : Fr) : Aeneas.Std.Array U8 32#usize :=
-  ⟨x.toBytesBE.data.toList.map (fun b => ⟨b.toBitVec⟩), by simp [Fr.toBytesBE]⟩
+  Array.make 32#usize (x.toBytesBE.data.toList.map (fun b => ⟨b.toBitVec⟩)) (by simp [Fr.toBytesBE])
 
 @[irreducible] def layoutBlob (b : U8) : Blob :=
-  ⟨List.replicate 131072 b, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 131072#usize (List.replicate 131072 b) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
 
 def layoutChunk (b : U8) : Aeneas.Std.Array U8 32#usize :=
-  ⟨List.replicate 32 b, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 32#usize (List.replicate 32 b) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
 
 @[irreducible] def layoutCell (b : U8) : CellArray :=
-  ⟨List.replicate 2048 b, by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 2048#usize (List.replicate 2048 b) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
 
 @[irreducible] def layoutCells (b : U8) : Cells :=
-  ⟨List.replicate 128 (layoutCell b), by simp only [List.length_replicate, UScalar.ofNatCore_val_eq]⟩
+  Array.make 128#usize (List.replicate 128 (layoutCell b)) (by simp only [List.length_replicate, UScalar.ofNatCore_val_eq])
+
+private theorem layoutBlob_val (b : U8) :
+    (layoutBlob b).val = List.replicate 131072 b := by
+  unfold layoutBlob Array.make
+  exact Array.from_val ..
+
+private theorem layoutCell_val (b : U8) :
+    (layoutCell b).val = List.replicate 2048 b := by
+  unfold layoutCell Array.make
+  exact Array.from_val ..
+
+private theorem layoutCells_val (b : U8) :
+    (layoutCells b).val = List.replicate 128 (layoutCell b) := by
+  unfold layoutCells Array.make
+  exact Array.from_val ..
 
 private theorem layout_blob_chunk (b : U8) (i : Nat) (hi : i < 4096) :
     blobChunk (layoutBlob b) i hi = layoutChunk b := by
-  apply Subtype.ext
-  simp [-List.reduceReplicate, blobChunk, layoutBlob, layoutChunk, List.slice]
+  apply Aeneas.Std.Array.ext
+  simp only [blobChunk, layoutChunk, Array.make, Array.from_val, layoutBlob_val,
+    List.slice, List.drop_replicate, List.take_replicate]
+  congr 1
   omega
 
 private theorem layout_cell_byte (b : U8) :
     ((cellBytes (layoutCells b))[0]!)[0]! = UInt8.ofBitVec b.bv := by
   rw [cellBytes_get _ 0 (by decide), arrayBytes_get _ 0 (by decide)]
-  simp [-List.reduceReplicate, layoutCells, layoutCell]
+  rw [layoutCells_val, getElem!_pos (List.replicate 128 (layoutCell b)) 0 (by simp),
+    List.getElem_replicate, layoutCell_val]
+  rfl
 
 theorem layout_zero_blob_canonical : Canonical (layoutBlob 0#u8) := by
   intro i
@@ -77,7 +98,8 @@ private theorem blob_first_cell_byte (blob : Blob) :
 private theorem layout_blob_byte (b : U8) :
     (arrayBytes (layoutBlob b))[0]! = UInt8.ofBitVec b.bv := by
   rw [arrayBytes_get _ 0 (by decide)]
-  simp [-List.reduceReplicate, layoutBlob]
+  rw [layoutBlob_val]
+  rfl
 
 def omitFirstHalfCopy (_blob : Blob) (cells : Cells) : Result Cells := ok cells
 
@@ -88,9 +110,8 @@ private theorem copy_changes_first_byte (blob : Blob) (cells : Cells)
   obtain ⟨out, hout, hfirst⟩ := copy_first_half blob cells
   intro he
   rw [hout] at he
-  have heq : out = cells := Result.ok.inj he
+  have heq : out = cells := Result.ok_injective he
   have hbyte := congrArg (fun b : ByteArray => b[0]!) (hfirst 0 (by decide))
-  dsimp only at hbyte
   rw [heq, blob_first_cell_byte] at hbyte
   exact hdiff hbyte
 
@@ -146,26 +167,25 @@ theorem clearCellsOnRejection_rejected :
   apply hmut _ _ err hm
   intro he
   have hc := congrArg (fun cells : _root_.Array Cell => (cells[0]!)[0]!) he
-  dsimp only at hc
   rw [layout_cell_byte, layout_cell_byte] at hc
   exact (by decide : (0 : UInt8) ≠ 255) hc
 
 def omitExtensionOffset (cells : Cells) (j : Nat) (bs : Aeneas.Std.Array U8 32#usize) : Cells :=
-  ⟨cells.val.set (j/64)
-    (Aeneas.Std.Array.setSlice! cells.val[j/64]! ((j%64)*32) bs.val), by simp [cells.property]⟩
+  Array.make 128#usize (cells.val.set (j/64)
+    (Aeneas.Std.Array.setSlice! cells.val[j/64]! ((j%64)*32) bs.val)) (by simp [cells.property])
 
 theorem omitExtensionOffset_rejected :
     omitExtensionOffset (layoutCells 0#u8) 0 (layoutFieldBytes 1) ≠
       storeChunk (layoutCells 0#u8) 0 (layoutFieldBytes 1) := by
   intro he
   have hc := congrArg (fun cells : Cells => (arrayBytes cells.val[0]!)[31]!) he
-  dsimp only at hc
   rw [storeChunk_first _ _ 0 _ (by decide)] at hc
   have hleft :
       (arrayBytes (omitExtensionOffset (layoutCells 0#u8) 0 (layoutFieldBytes 1)).val[0]!)[31]! =
         1 := by
-    simp only [omitExtensionOffset, Nat.zero_div, Nat.zero_mod, Nat.zero_mul]
-    rw [List.getElem!_set _ _ _ (by simp [-List.reduceReplicate, layoutCells]), arrayBytes_get _ 31 (by decide)]
+    simp only [omitExtensionOffset, Array.make, Array.from_val, Nat.zero_div, Nat.zero_mod, Nat.zero_mul]
+    rw [List.set_getElem!_eq _ _ _ _ ⟨(by simp only [layoutCells_val, List.length_replicate]; decide), rfl⟩, arrayBytes_get _ 31 (by decide)]
+    rw [Array.setSlice!_val]
     change UInt8.ofBitVec
       (((layoutCells 0#u8).val[0]!.val.setSlice! 0 (layoutFieldBytes 1).val)[31]!).bv = 1
     rw [List.getElem!_setSlice!_middle _ _ 0 31 (by
@@ -174,7 +194,8 @@ theorem omitExtensionOffset_rejected :
       decide)]
     decide +kernel
   rw [hleft, arrayBytes_get _ 31 (by decide)] at hc
-  simp [-List.reduceReplicate, layoutCells, layoutCell] at hc
+  rw [layoutCells_val, getElem!_pos (List.replicate 128 (layoutCell 0#u8)) 0 (by simp),
+    List.getElem_replicate, layoutCell_val] at hc
   exact (by decide : (1 : UInt8) ≠ 0) hc
 
 end LeanBlsSimd.Kzg.Extender.Controls

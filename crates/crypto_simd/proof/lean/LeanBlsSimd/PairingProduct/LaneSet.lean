@@ -19,7 +19,7 @@ private theorem g1_affine_coordinates (p : blst.blst_p1_affine)
   by_cases hz : ((Kzg.fpRead p.x).isZero && (Kzg.fpRead p.y).isZero) = true
   · simp [Kzg.g1ReadAffine, hz, G1.zero, G1.isInfinity] at hp
     cases hp
-  · simpa only [Kzg.g1ReadAffine, hz, if_false] using
+  · simpa only [Kzg.g1ReadAffine, hz, Bool.false_eq_true, ite_false] using
       Kzg.g1_toAffine_of_one (Kzg.fpRead p.x) (Kzg.fpRead p.y)
 
 private theorem g2_affine_coordinates (q : blst.blst_p2_affine)
@@ -28,7 +28,7 @@ private theorem g2_affine_coordinates (q : blst.blst_p2_affine)
   by_cases hz : ((Kzg.fp2Read q.x).isZero && (Kzg.fp2Read q.y).isZero) = true
   · simp [Kzg.g2ReadAffine, hz, G2.zero, G2.isInfinity] at hq
     cases hq
-  · simpa only [Kzg.g2ReadAffine, hz, if_false] using
+  · simpa only [Kzg.g2ReadAffine, hz, Bool.false_eq_true, ite_false] using
       Pairing.g2_affine_of_z_one ⟨Kzg.fp2Read q.x, Kzg.fp2Read q.y, Fp2.one⟩ rfl
 
 private def input (p : pairing_product.AffinePair) : Miller.Input :=
@@ -80,9 +80,9 @@ private theorem factor_spec (pairs : List pairing_product.AffinePair)
     simpa [finitePair] using finite p hp
   have hc : Miller.flags (Miller.sharedMiller
       (points.map fun pair => Miller.Input.ofPoints pair.1 pair.2)).1 = false := by
-    simpa only [points, List.map_map, Function.comp_def, input] using clear
+    simpa only [points, List.map_map, Function.comp_def, input] using! clear
   simpa only [points, List.map_map, Function.comp_def, input, ProductLoop.factorProduct]
-    using Miller.finite_sharedFactor_spec points
+    using! Miller.finite_sharedFactor_spec points
       (fun p hp => (hf p hp).1) (fun p hp => (hf p hp).2) hc
 
 theorem single_set_correct : ProductLoop.SingleSetCorrect := by
@@ -91,7 +91,7 @@ theorem single_set_correct : ProductLoop.SingleSetCorrect := by
   obtain ⟨result, hloop, hrep, hclear⟩ :=
     LaneMiller.miller_refines raw (pairs.val.map input) hraw
   refine ⟨result, ?_, Miller.sharedFactor (pairs.val.map input), hrep, ?_⟩
-  · simp only [hnew, bind_tc_ok, hloop]
+  · simp only [hnew, bind_ok, hloop]
   · intro hc
     exact factor_spec pairs.val finite (hclear hc)
 

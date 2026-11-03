@@ -46,7 +46,7 @@ private theorem reverse_bits_loop_eq (bits bit : U32) (rest : Usize) (r : Nat)
   | zero =>
     have hstop : ¬ bit < bits := by simp only [UScalar.lt_equiv]; omega
     rw [loop.eq_1]
-    simp [domain.reverse_bits_loop.body, hstop, BitReversal.reverseBitsAux]
+    simp [domain.reverse_bits_loop.body, hstop, BitReversal.reverseBitsAux, bind_ok]
   | succ k ih =>
     have hlt : bit < bits := by simp only [UScalar.lt_equiv]; omega
     have hbound : bit.val + 1 < 2 ^ UScalarTy.U32.numBits := by
@@ -64,11 +64,11 @@ private theorem reverse_bits_loop_eq (bits bit : U32) (rest : Usize) (r : Nat)
     have hrec := ih bit' rest' ((r <<< 1) ||| (rest.val &&& 1)) (by omega) (by omega)
     have hbody : domain.reverse_bits_loop.body bits rest (bitsUsize r) bit =
         ok (cont (rest', bitsUsize ((r <<< 1) ||| (rest.val &&& 1)), bit')) := by
-      simp only [domain.reverse_bits_loop.body, hlt, if_true, bits_shift_left,
-        bits_shift_right, lift, bind_tc_ok, bits_step, hadd]
-      rfl
+      simp only [domain.reverse_bits_loop.body, hlt, ite_true, bits_shift_left,
+        bits_shift_right, lift, hadd, bind_ok]
+      exact congrArg (fun y => ok (cont (rest', y, bit'))) (bits_step rest r)
     rw [loop.eq_1]
-    simp only [hbody]
+    simp only [hbody, bind_ok]
     change loop _ (rest', bitsUsize ((r <<< 1) ||| (rest.val &&& 1)), bit') = _
     rw [hrec]
     simp only [BitReversal.reverseBitsAux, hrest']
@@ -77,7 +77,8 @@ theorem reverse_bits_refinement (index : Usize) (bits : U32)
     (_hb : bits.val ≤ Usize.numBits) :
     domain.reverse_bits index bits =
       ok ⟨BitVec.ofNat _ (BitReversal.reverseBitsAux index.val 0 bits.val)⟩ := by
-  simpa [domain.reverse_bits, domain.reverse_bits_loop] using
-    reverse_bits_loop_eq bits 0#u32 index 0 (by simp)
+  have h := reverse_bits_loop_eq bits 0#u32 index 0 (by simp)
+  simp only [domain.reverse_bits, domain.reverse_bits_loop]
+  exact h
 
 end LeanBlsSimd.Kzg

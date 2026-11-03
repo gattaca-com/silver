@@ -23,7 +23,7 @@ theorem loop_refines {Raw : Type}
   induction n generalizing x f step bit with
   | zero =>
     refine ⟨x, ?_, ?_⟩
-    · rw [loop.eq_1, hdone x step bit hb]
+    · rw [loop.eq_1, hdone x step bit hb, bind_ok]
     · simpa only [remainingMiller, remaining_zero, List.foldl_nil] using hx
   | succ n ih =>
     obtain ⟨x', step', bit', hbody, hs', hb', hx'⟩ :=
@@ -31,7 +31,7 @@ theorem loop_refines {Raw : Type}
     obtain ⟨out, hout, hrep⟩ := ih (by omega) x' (bitStep v present ⟨n, by omega⟩ f)
       step' bit' hx' hs' hb' (by intro he; omega)
     refine ⟨out, ?_, ?_⟩
-    · rw [loop.eq_1, hbody]
+    · rw [loop.eq_1, hbody, bind_ok]
       exact hout
     · rw [show n + 1 = (⟨n, by omega⟩ : Fin 63).val + 1 from rfl, remaining_miller_step]
       exact hrep

@@ -34,7 +34,7 @@ theorem fill127_ready (state : msm8.buckets.Buckets)
         ∀ r ∈ contents i, r.val % 2 ^ 31 < scalars.val.length := by
   obtain ⟨events, out, _, hcall, hevents, hw, hn, hp⟩ := fill127_packed state scalars hsize
   obtain ⟨other, hother, hsum, href⟩ := fill127_contribution state scalars values points hsize hlen hv hb
-  have heq : other = out := Result.ok.inj (hother.symm.trans hcall)
+  have heq : other = out := Result.ok_injective (hother.symm.trans hcall)
   subst other
   let contents := eventReferences (selectedWidth scalars.val.length) events
   let capacity := fun i => (contents i).length

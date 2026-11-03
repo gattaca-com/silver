@@ -27,17 +27,17 @@ theorem divide_step (low : Array U64 4#usize) (m : U64)
     (lt_of_lt_of_le (by omega : j.val+1 < 2^32) two_pow_32_le_usize)
   refine ⟨s,prev,next,rfl,rfl,rfl,?_⟩
   have hj' : j < 4#usize := hj
-  simp only [fr.divide_out_word_loop.body,hj',if_true]
+  simp only [fr.divide_out_word_loop.body,hj',ite_true]
   rw [index_usize_eq low j hj,index_usize_eq fr.R j hj]
-  simp only [lift,bind_tc_ok]
+  simp only [lift, bind_ok]
   rw [mul_ok _ _ (by rw [cast128_val,cast128_val]; change m.val*y.val < 2^128; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; change x.val+m.val*y.val < 2^128; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by simp only [UScalar.ofNatCore_val_eq]; exact hs)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [sub_ok j 1#usize hj0]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   change (do
     let out ← Array.update quotient prev (UScalar.cast .U64 s)
     let high ← s >>> 64#i32
@@ -46,7 +46,7 @@ theorem divide_step (low : Array U64 4#usize) (m : U64)
   rw [update_eq quotient prev _ (by change j.val-1 < 4; omega),shiftRight_64_i32]
   simp only [bind_tc_ok]
   rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-  rfl
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem divide_loop_exact (low : Array U64 4#usize) (m : U64)
     (quotient : Array U64 4#usize) (carry : U128) (j : Usize)
@@ -63,7 +63,7 @@ theorem divide_loop_exact (low : Array U64 4#usize) (m : U64)
     have hstop : ¬ j < 4#usize := by change ¬j.val < 4; omega
     refine ⟨quotient,carry,?_,hc,hz 3 (by decide) (by omega),?_⟩
     · rw [fr.divide_out_word_loop,loop.eq_1]
-      simp [fr.divide_out_word_loop.body,hstop]
+      simp [fr.divide_out_word_loop.body,hstop, bind_ok]
     · rw [hj4,tail_four,tail_four]
       ring
   | succ n ih =>
@@ -74,14 +74,14 @@ theorem divide_loop_exact (low : Array U64 4#usize) (m : U64)
     have hz' : ∀ i (hi : i < 4), next.val-1 ≤ i →
         quotient'.val[i]'(by rw [quotient'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      change (quotient.val.set prev.val (UScalar.cast .U64 s))[i]'_ = _
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,hzero,heq⟩ := ih quotient' carry' next (by omega)
       (by omega) (high_bound s) hz' (by omega)
     refine ⟨out,top,?_,htop,hzero,?_⟩
     · rw [fr.divide_out_word_loop,loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq,value_set quotient prev _ (by change prev.val < 4; omega),hz prev.val (by omega) (by omega),cast64_val]
       have hs' : (s.val : ℤ) =
           (low.val[j.val]'(by rw [low.property]; exact hjlt)).val+
@@ -101,7 +101,7 @@ theorem cancellation (x : U64) :
     ((x.val : ℤ)+(((x.val*fr.R_INV64.val)%radix : Nat) : ℤ)*
       (fr.R.val[0]'(by rw [fr.R.property]; decide)).val) % radix = 0 := by
   have h := Nat.mod_add_div (x.val*fr.R_INV64.val) radix
-  norm_num [fr.R_INV64,fr.R,radix,Array.make] at h ⊢
+  norm_num [fr.R_INV64,fr.R,radix,Array.make, Array.from_val] at h ⊢
   omega
 
 theorem divide_run (low : Array U64 4#usize) (top : U64)
@@ -117,7 +117,7 @@ theorem divide_run (low : Array U64 4#usize) (top : U64)
     fr.divide_out_word low top = ok (q.set 3#usize (UScalar.cast .U64 n)) := by
   simp only [fr.divide_out_word]
   rw [index_usize_eq low 0#usize (by decide),index_usize_eq fr.R 0#usize (by decide)]
-  simp only [show (0#usize).val = 0 from rfl,lift,bind_tc_ok,hp,hv,hs,shiftRight_64_i32,hl]
+  simp only [show (0#usize).val = 0 from rfl,lift, bind_ok,hp,hv,hs,shiftRight_64_i32,hl]
   change (do
     let n' ← (UScalar.cast .U128 top)+c
     Array.update q 3#usize (UScalar.cast .U64 n')) = _
@@ -215,8 +215,7 @@ theorem divide_out_word_refines (low : Array U64 4#usize) (top : U64) :
     (Array.repeat 4#usize 0#u64) carry 1#usize (by decide) (by decide)
     (high_bound s) (by
       intro i hi _
-      change (List.replicate 4 0#u64)[i]'_ = _
-      simp only [List.getElem_replicate])
+      simp only [Array.repeat_val, List.getElem_replicate])
   have hn : top.val+c.val < 2^128 := by
     have ht := top.hBounds
     norm_num [UScalarTy.numBits,radix] at ht hc ⊢
@@ -225,7 +224,7 @@ theorem divide_out_word_refines (low : Array U64 4#usize) (top : U64) :
   let out := quotient.set 3#usize (UScalar.cast .U64 n)
   refine ⟨out,m,?_,?_,?_⟩
   · exact divide_run low top product v s quotient c n hproduct hv hs hloop
-      (add_ok _ _ (by simpa only [cast128_val] using hn))
+      (add_ok _ _ (by simpa only [cast128_val] using! hn))
   all_goals
     change value quotient+(c.val : ℤ)*(radix : ℤ)^3 =
       0+(tail low 1+tail fr.R 1*m.val+carry.val)*(radix : ℤ)^(1-1) at heq

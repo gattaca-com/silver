@@ -14,8 +14,10 @@ theorem reversed_load_rejected :
 private def seed : Array U32 64#usize :=
   (Array.repeat 64#usize 0#u32).set 1#usize (word 1)
 
-private def observedCont {α β : Type} (f : α → UInt32) : Result (ControlFlow α β) → Option UInt32
-  | ok (cont v) => some (f v)
+private def observedCont {α β : Type} (f : α → UInt32) (r : Result (ControlFlow α β)) :
+    Option UInt32 :=
+  match r.match with
+  | .ok (cont v) => some (f v)
   | _ => none
 
 private theorem zero_words : words (Array.repeat 64#usize 0#u32) = _root_.Array.replicate 64 0 := by

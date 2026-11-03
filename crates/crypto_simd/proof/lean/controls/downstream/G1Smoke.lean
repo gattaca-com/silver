@@ -42,11 +42,11 @@ def fromUpstream (p : _root_.silver_crypto_simd.blst.blst_p1_affine) : blst.blst
 
 def toUpstreamSlice (s : Slice (Option blst.blst_p1_affine)) :
     Slice (Option _root_.silver_crypto_simd.blst.blst_p1_affine) :=
-  ⟨s.val.map (Option.map toUpstream), by simpa using s.property⟩
+  Slice.from (s.val.map (Option.map toUpstream)) (by simp)
 
 def fromUpstreamSlice (s : Slice (Option _root_.silver_crypto_simd.blst.blst_p1_affine)) :
     Slice (Option blst.blst_p1_affine) :=
-  ⟨s.val.map (Option.map fromUpstream), by simpa using s.property⟩
+  Slice.from (s.val.map (Option.map fromUpstream)) (by simp)
 
 def uncompress (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
     (external : _root_.silver_crypto_simd.KzgExternals)
@@ -68,10 +68,10 @@ theorem Bridge.uncompress_eq_spec_list (upstream : _root_.silver_crypto_simd.Run
     ∃ result, Bridge.uncompress upstream external inputs out = ok result ∧
       result.val = inputs.val.map specVerdict := by
   obtain ⟨result, hr, hv, _⟩ := @LeanBlsSimd.UncompressG1.uncompress_in_g1_eq_spec_list
-    upstream external hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice] using hlen)
+    upstream external hblst inputs (Bridge.toUpstreamSlice out) (by simpa [Bridge.toUpstreamSlice, Slice.from_val] using hlen)
   refine ⟨Bridge.fromUpstreamSlice result, ?_, ?_⟩
-  · simp only [Bridge.uncompress, hr, bind_tc_ok]
-  · simp [Bridge.fromUpstreamSlice, hv, List.map_map, specVerdict, Function.comp_def]
+  · simp only [Bridge.uncompress, hr, bind_ok]
+  · simp [Bridge.fromUpstreamSlice, Slice.from_val, hv, List.map_map, specVerdict, Function.comp_def]
 
 namespace Fixed
 
@@ -122,11 +122,15 @@ theorem caller_eq_spec_list [Fixed.Externals] (h : Fixed.UncompressMatchesSpec)
     (inputs : Slice (Array Std.U8 48#usize)) (out : Slice (Option blst.blst_p1_affine))
     (hlen : out.val.length = inputs.val.length) :
     ∃ result, caller inputs out = ok result ∧ result.val = inputs.val.map specVerdict :=
-  h inputs out hlen
+  by
+    simpa only [caller, silver_crypto_simd.bls.COMPRESSED_LEN,
+      silver_crypto_simd.bls.uncompress_in_g1, bind_tc_ok, bind_ok] using h inputs out hlen
 
 example (external : Fixed.Externals) (inputs : Slice (Array Std.U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) :
-    @caller external inputs out = external.uncompress inputs out := rfl
+    @caller external inputs out = external.uncompress inputs out := by
+  simp only [caller, silver_crypto_simd.bls.COMPRESSED_LEN,
+    silver_crypto_simd.bls.uncompress_in_g1, bind_ok]
 
 example (upstream : _root_.silver_crypto_simd.RuntimeFeatures)
     (external : _root_.silver_crypto_simd.KzgExternals)

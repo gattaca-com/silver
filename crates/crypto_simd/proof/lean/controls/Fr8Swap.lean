@@ -32,25 +32,38 @@ example : swapWord 0x0102030405060708 = 0x0807060504030201 := by decide +kernel
 private def sample : M512 := Vector.replicate 8 0x0102030405060708
 
 private def firstLane (result : Result M512) : UInt64 :=
-  match result with
+  match result.match with
   | .ok out => out[0]
   | _ => 0
 
+/-- The kernel cannot run `Result`'s bind, so expose the `ok` value first. -/
+local macro "first_lane_value" : tactic => `(tactic|
+  simp only [firstLane, swapWithMask, core.core_arch.x86.avx512f._mm512_slli_epi64,
+    core.core_arch.x86.avx512f._mm512_srli_epi64, core.core_arch.x86.avx512f._mm512_add_epi64,
+    core.core_arch.x86.avx512f._mm512_and_si512, LeanBlsSimd.FrModel.Simd.splat_refines, bind_tc_ok, bind_ok,
+    Result.match.ok])
+
 example : firstLane (swapWithMask 0x00ff00ff00ff00ff#u64 sample) =
-    0x0807060504030201 := by decide +kernel
+    0x0807060504030201 := by
+  first_lane_value
+  decide +kernel
 
 example : swapWithMask 0x00f700ff00ff00ff#u64 sample ≠
     ok (Vector.replicate 8 0x0807060504030201) := by
   intro h
   have observed := congrArg firstLane h
   have rejected : firstLane (swapWithMask 0x00f700ff00ff00ff#u64 sample) ≠
-      0x0807060504030201 := by decide +kernel
-  exact rejected observed
+      0x0807060504030201 := by
+    first_lane_value
+    decide +kernel
+  exact rejected (observed.trans (by simp [firstLane]))
 
 example : True := by
   fail_if_success
     have : firstLane (swapWithMask 0x00f700ff00ff00ff#u64 sample) =
-        0x0807060504030201 := by decide +kernel
+        0x0807060504030201 := by
+      first_lane_value
+      decide +kernel
   trivial
 
 #print axioms swap_bytes_refines

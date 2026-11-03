@@ -75,15 +75,15 @@ theorem store_convertedBatch (points : List (Vector UInt64 6 × Vector UInt64 6)
     apply Vector.ext
     intro j hj
     have h := congrArg Prod.fst (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
-    conv_rhs => erw [Vector.getElem_ofFn]
-    simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using h
+    refine Eq.trans ?_ (getElem_ofFn_limbs _ j hj).symm
+    simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using! h
   have hy : transpose8 converted.2.limbs = Vector.ofFn (fun l : Fin 8 =>
       (convertedPoint points[batchSource offset count l]! negated[batchSource offset count l]! endomorphism).2) := by
     apply Vector.ext
     intro j hj
     have h := congrArg Prod.snd (convertedBatch_lane points negated base offset count endomorphism ⟨j, hj⟩)
-    conv_rhs => erw [Vector.getElem_ofFn]
-    simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using h
+    refine Eq.trans ?_ (getElem_ofFn_limbs _ j hj).symm
+    simpa only [← transpose8_fp8_lane, Fin.getElem_fin] using! h
   change storeRows rows gathered.indices (transpose8 converted.1.limbs) (transpose8 converted.2.limbs) = _
   rw [hi, hx, hy]
   exact storeRows_padded rows base count
@@ -110,7 +110,7 @@ theorem pushRowsModel_flat (points : List (Vector UInt64 6 × Vector UInt64 6))
       have hc8 : count ≤ 8 := Nat.min_le_left _ _
       have hcle : count ≤ points.length - offset := Nat.min_le_right _ _
       have hdlt : points.length - (offset + count) < d := by omega
-      rw [pushRowsModel, if_pos hlt]
+      rw [pushRowsModel, ite_eq_left hlt]
       change pushRowsModel points negated endomorphism fromBlstFactor endomorphismFactor
         (storeRows _ _ _ _) (base + count) (offset + count) = _
       rw [store_convertedBatch points negated base offset count endomorphism rows hc hc8]
@@ -119,7 +119,7 @@ theorem pushRowsModel_flat (points : List (Vector UInt64 6 × Vector UInt64 6))
       conv_rhs => rw [show points.length - offset = count + (points.length - (offset + count)) by omega]
       rw [List.range_add, List.foldl_append, List.foldl_map]
       simp only [Nat.add_assoc]
-    · rw [pushRowsModel, if_neg hlt]
+    · rw [pushRowsModel, ite_eq_right hlt]
       have hz : points.length - offset = 0 := by omega
       simp only [pushFlatModel, hz, List.range_zero, List.foldl_nil]
 
