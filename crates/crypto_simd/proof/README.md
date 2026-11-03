@@ -945,6 +945,6 @@ Paths below are relative to `lean/controls/`.
 
 For layer-specific build commands, see the [KZG scoped checks](lean/README.md#scoped-checks).
 
-`Spec/PairingEquations.lean` proves unfolding equations for the total `Fp2.powNat`, `Fp12.powNat`, `millerSteps`, `millerLoop` and final exponentiation, and expresses `pairingCheck` as an array fold. `controls/PairingEquations.lean` prints their axioms.
+`Spec/PairingEquations.lean` states unfolding equations for `millerSteps` and `millerLoop`, and expresses `pairingCheck` as an array fold. `Spec/FinalExponentiation.lean` relates final exponentiation to the total field power. `controls/PairingEquations.lean` prints these axioms and the Fp2 power transport's axioms.
 
 The extender's mathematical controls distinguish the actual 4096-element transform stages using field-array witnesses. Its layout controls compare the generated copy loop and output-update function, plus mutations of the model's error branches. A further control constructs an extender and proves its generated decoder rejects an all-`ff` blob. They do not rerun a mutated Rust implementation.

@@ -1,4 +1,5 @@
 import LeanBlsSimd.Spec.FinalExponentiation
+import LeanBlsSimd.Spec.PairingEquations
 import Mathlib.Algebra.BigOperators.Group.List.Basic
 
 /-! The actual pairing-check loop equals a product of individually reduced single-pair values. -/
@@ -21,7 +22,9 @@ theorem eSpec_def (p : G1) (q : G2) :
     eSpec p q = if p.isInfinity || q.isInfinity then Fp12.one
       else finalExponentiation ((millerLoop blsX (Embedded.ofG2 q) (Embedded.ofG1 p)).conjugate) := by
   unfold eSpec pairingFactor
-  split <;> simp
+  split
+  · exact finalExponentiation_one
+  · rfl
 
 theorem eSpec_of_left_infinity (p : G1) (q : G2) (hp : p.isInfinity = true) :
     eSpec p q = Fp12.one := by simp [eSpec_def, hp]

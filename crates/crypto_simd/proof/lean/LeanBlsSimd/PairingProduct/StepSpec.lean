@@ -57,7 +57,7 @@ theorem line_of_coefficients (o : Output) (t : Fp2Field × Fp2Field)
         (includeFp2 (Fp2.toField.symm xp)) (includeFp2 (Fp2.toField.symm yp))) * scale c := by
   have h1' : o.line 1 * (-2 * xp) = -(c * m) * xp := by rw [← mul_assoc, h1]
   have h2' : o.line 2 * (2 * yp) = c * yp := by rw [← mul_assoc, h2]
-  simp only [evaluatedLine, h0, h1', h2', Line.evalAt, Fp12.toField_sub, map_mul,
+  simp only [evaluatedLine, h0, h1', h2', Line.evalAt, map_mul,
     untwist_x, untwist_y, hs, includeFp2_field, encodeAffine, RingEquiv.apply_symm_apply,
     scale, map_sub, map_neg]
   field_simp [w_ne_zero]

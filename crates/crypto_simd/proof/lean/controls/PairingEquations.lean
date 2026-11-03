@@ -1,10 +1,7 @@
 import LeanBlsSimd.Spec.PairingEquations
 import LeanBlsSimd.Spec.FinalExponentiation
 
-#print axioms LeanBlsSimd.SpecPairing.fp2_powNat_zero
-#print axioms LeanBlsSimd.SpecPairing.fp2_powNat_step
-#print axioms LeanBlsSimd.SpecPairing.fp12_powNat_zero
-#print axioms LeanBlsSimd.SpecPairing.fp12_powNat_step
+#print axioms LeanBlsSimd.Fp2.toField_powNat
 #print axioms LeanBlsSimd.SpecPairing.millerSteps_zero
 #print axioms LeanBlsSimd.SpecPairing.millerSteps_succ
 #print axioms LeanBlsSimd.SpecPairing.millerLoop_eq

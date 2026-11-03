@@ -34,7 +34,7 @@ theorem verdict (a : Bls.Fp12) : (optimized a).isOne = (finalExponentiation a).i
   rw [Bool.eq_iff_iff, Fp12.isOne_iff, Fp12.isOne_iff, optimized_cube]
   by_cases hz : a = Bls.Fp12.zero
   · subst a
-    simp
+    simp only [finalExponentiation_zero, Fp12.toField_zero, zero_pow (by decide : 3 ≠ 0)]
   · exact cube_one_iff _ (finalExponentiation_pow_r a hz)
 
 end LeanBlsSimd.Pairing.FinalExponent

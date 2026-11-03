@@ -259,13 +259,13 @@ theorem signBit_neg {y : Fp2} (hy : toField y ≠ 0) : Fp2.signBit (-y) = !Fp2.s
   unfold Fp2.signBit
   by_cases h1 : (y.c1 : ZMod Fp.modulus) = 0
   · have hz : y.c1.isZero = true := Fp.isZero_iff.mpr h1
-    have hz' : (-y).c1.isZero = true :=
+    have hz' : (-y.c1).isZero = true :=
       Fp.isZero_iff.mpr (show -(y.c1 : ZMod Fp.modulus) = 0 by rw [h1, neg_zero])
     have h0 : y.c0 ≠ 0 := fun h0 => hy (QuadraticAlgebra.ext h0 h1)
     rw [ite_eq_right (by simp [hz']), ite_eq_right (by simp [hz])]
     exact G1.signBit_neg h0
   · have hz : ¬ y.c1.isZero = true := fun h => h1 (Fp.isZero_iff.mp h)
-    have hz' : ¬ (-y).c1.isZero = true := fun h =>
+    have hz' : ¬ (-y.c1).isZero = true := fun h =>
       h1 (neg_eq_zero.mp (Fp.isZero_iff.mp h : -(y.c1 : ZMod Fp.modulus) = 0))
     rw [ite_eq_left (by simp [hz']), ite_eq_left (by simp [hz])]
     exact G1.signBit_neg fun h => h1 h

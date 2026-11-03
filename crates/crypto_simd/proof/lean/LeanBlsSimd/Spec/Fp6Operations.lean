@@ -14,23 +14,13 @@ open EthLib.Cryptography.Bls.Fp6
 
 open Fp6Field
 
-@[simp] theorem toField_neg (a : Fp6) : toField (-a) = -toField a := by
-  change assemble (Fp2.toField (-a.c0)) (Fp2.toField (-a.c1)) (Fp2.toField (-a.c2)) =
-    -assemble (Fp2.toField a.c0) (Fp2.toField a.c1) (Fp2.toField a.c2)
-  simp only [Fp2.toField_neg, assemble, map_neg]
-  ring
+@[simp] theorem toField_neg (a : Fp6) : toField (-a) = -toField a := map_neg toField a
 
-@[simp] theorem toField_sub (a b : Fp6) : toField (a - b) = toField a - toField b := by
-  change assemble (Fp2.toField (a.c0 - b.c0)) (Fp2.toField (a.c1 - b.c1))
-    (Fp2.toField (a.c2 - b.c2)) =
-      assemble (Fp2.toField a.c0) (Fp2.toField a.c1) (Fp2.toField a.c2) -
-        assemble (Fp2.toField b.c0) (Fp2.toField b.c1) (Fp2.toField b.c2)
-  simp only [Fp2.toField_sub, assemble, map_sub]
-  ring
+@[simp] theorem toField_sub (a b : Fp6) : toField (a - b) = toField a - toField b :=
+  map_sub toField a b
 
-@[simp] theorem toField_div (a b : Fp6) : toField (a / b) = toField a / toField b := by
-  change toField (a * b.inverse) = _
-  rw [map_mul, toField_inverse, div_eq_mul_inv]
+@[simp] theorem toField_div (a b : Fp6) : toField (a / b) = toField a / toField b :=
+  map_div₀ toField a b
 
 @[simp] theorem toField_v : toField Fp6.v = Fp6Field.v := by
   change assemble 0 1 0 = _
@@ -52,14 +42,10 @@ open Fp6Field
   linear_combination -of (Fp2.toField a.c2) * v_cube
 
 theorem isZero_iff (a : Fp6) : a.isZero = true ↔ toField a = 0 := by
-  change _ ↔ assemble (Fp2.toField a.c0) (Fp2.toField a.c1) (Fp2.toField a.c2) = 0
-  simp [isZero, Bool.and_eq_true, Fp2.isZero_iff, assemble_eq_zero_iff, and_assoc]
+  rw [EthLib.Cryptography.Bls.Fp6.isZero_iff, ← map_zero toField, toField.injective.eq_iff]
 
 theorem beq_iff (a b : Fp6) : a.beq b = true ↔ toField a = toField b := by
-  rw [toField.injective.eq_iff]
-  cases a
-  cases b
-  simp [beq, Bool.and_eq_true, Fp2.beq_iff, Fp2.toField.injective.eq_iff, and_assoc]
+  rw [EthLib.Cryptography.Bls.Fp6.beq_iff_eq, toField.injective.eq_iff]
 
 end Fp6
 

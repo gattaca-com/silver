@@ -13,7 +13,7 @@ def blstLimbs (P : G2) : BlstP2Affine :=
 /-- The kernel's direct-coordinate conversion agrees with affine conversion at z = 1. -/
 theorem blstLimbs_eq_of_z_one {P : G2} (hz : P.z = Fp2.one) :
     blstLimbs P = DecompressG2.blstLimbs P := by
-  have hnonzero : ¬ Fp2.one.isZero = true := by
+  have hnonzero : ¬ (1 : Fp2).isZero = true := by
     rw [Fp2.isZero_iff]
     simp
   simp [blstLimbs, DecompressG2.blstLimbs, G2.toAffine, hz, hnonzero,

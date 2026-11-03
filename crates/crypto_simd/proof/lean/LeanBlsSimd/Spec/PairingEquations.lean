@@ -4,26 +4,6 @@ namespace LeanBlsSimd.SpecPairing
 
 open EthLib.Cryptography.Bls
 
-theorem fp2_powNat_zero (a : Fp2) : Fp2.powNat a 0 = Fp2.one := by
-  rw [Fp2.powNat]
-  rfl
-
-theorem fp2_powNat_step (a : Fp2) (n : Nat) (hn : n ≠ 0) :
-    Fp2.powNat a n =
-      if n % 2 = 1 then a * Fp2.powNat (a * a) (n / 2)
-      else Fp2.powNat (a * a) (n / 2) := by
-  rw [Fp2.powNat, ite_eq_right hn]
-
-theorem fp12_powNat_zero (a : Fp12) : Fp12.powNat a 0 = Fp12.one := by
-  rw [Fp12.powNat]
-  rfl
-
-theorem fp12_powNat_step (a : Fp12) (n : Nat) (hn : n ≠ 0) :
-    Fp12.powNat a n =
-      if n % 2 = 1 then a * Fp12.powNat (a * a) (n / 2)
-      else Fp12.powNat (a * a) (n / 2) := by
-  rw [Fp12.powNat, ite_eq_right hn]
-
 theorem millerSteps_zero (s : Nat) (R P T : Embedded.Point) (f : Fp12) :
     millerSteps s R P 0 T f = f := rfl
 

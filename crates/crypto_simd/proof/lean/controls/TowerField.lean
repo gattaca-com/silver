@@ -11,19 +11,19 @@ noncomputable section
 
 theorem fp6_inverse_zero : Fp6.zero.inverse = Fp6.zero := by
   apply Fp6.toField.injective
-  simp [Fp6.toField_inverse]
+  simp only [Fp6.toField_inverse, Fp6.toField_zero, inv_zero]
 
 theorem fp6_inverse_one : Fp6.one.inverse = Fp6.one := by
   apply Fp6.toField.injective
-  simp [Fp6.toField_inverse]
+  simp only [Fp6.toField_inverse, Fp6.toField_one, inv_one]
 
 theorem fp12_inverse_zero : Fp12.zero.inverse = Fp12.zero := by
   apply Fp12.toField.injective
-  simp [Fp12.toField_inverse]
+  simp only [Fp12.toField_inverse, Fp12.toField_zero, inv_zero]
 
 theorem fp12_inverse_one : Fp12.one.inverse = Fp12.one := by
   apply Fp12.toField.injective
-  simp [Fp12.toField_inverse]
+  simp only [Fp12.toField_inverse, Fp12.toField_one, inv_one]
 
 theorem fp12_zero_pow_zero : Fp12.powNat Fp12.zero 0 = Fp12.one := by
   apply Fp12.toField.injective
