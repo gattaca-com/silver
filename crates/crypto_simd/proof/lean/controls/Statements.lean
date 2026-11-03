@@ -186,19 +186,10 @@ example : True := by
       exact torsion_of_psi_eq_zsmul (z + 1) P h
   trivial
 
-/-! ## The spec's root: completeness without its −a₀ fallback
+/-! ## The spec's root: the pure imaginary fallback
 
-Where a₁ = 0, the root may be pure imaginary: a₀ = −d² is a square in Fp2 but not in Fp. The case
-split of `Fp2.sqrt_complete`, asked for a root of a₀ in Fp alone, fails at c = 0. -/
-
-example : True := by
-  fail_if_success
-    have : ∀ a0 c d : ZMod Fp.modulus, a0 = c * c - d * d → c * d = 0 → ∃ b, b * b = a0 := by
-      intro a0 c d h0 hcd
-      rcases mul_eq_zero.mp hcd with hc | hd
-      · exact ⟨d, by rw [h0, hc]; ring1⟩
-      · exact ⟨c, by rw [h0, hd]; ring1⟩
-  trivial
+When a₁ = 0, `Fp2.sqrt` can need its −a₀ fallback: a square in `Fp2Field` need not be a square
+in Fp. -/
 
 example : IsSquare (-1 : Fp2Field) ∧ ¬IsSquare (-1 : ZMod Fp.modulus) :=
   ⟨⟨QuadraticAlgebra.omega, by rw [← sq, Fp2Field.omega_sq]⟩,
