@@ -994,6 +994,8 @@ pub enum RpcOffence {
     InvalidColumn,
     KzgProof,
     InvalidBackfillColumn,
+    InboundStreamRateLimit,
+    InboundGossipRateLimit,
 }
 
 impl RpcOffence {
@@ -1006,6 +1008,8 @@ impl RpcOffence {
             Self::InvalidColumn => "invalid data column",
             Self::KzgProof => "data column kzg proof failed",
             Self::InvalidBackfillColumn => "invalid backfill data column",
+            Self::InboundStreamRateLimit => "inbound stream rate limit exceeded",
+            Self::InboundGossipRateLimit => "inbound gossip rate limit exceeded",
         }
     }
 }

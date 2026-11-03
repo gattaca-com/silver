@@ -13,15 +13,16 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    CacheFrameRef, GossipTraffic, P2pConnectionStats, P2pStreamId, PeerId, StreamProtocol, TRead,
-    rpc_rate_limit::RpcRateLimitSet,
+    CacheFrameRef, GossipTraffic, P2pConnectionStats, P2pStreamId, PeerId, RpcOffence, RpcSeverity,
+    StreamProtocol, TRead,
 };
 
 use crate::{
-    RemotePeer,
+    NetworkCounters, RemotePeer,
     p2p::{
         NetEvent,
         context::Context,
+        inbound_rate_limits::{InboundLimits, InboundRateLimits},
         quic::{
             Leased, OutboundGossip, SegmentedGossipLimits, SendResult,
             leased::OutboundLeaseWheel,
@@ -47,6 +48,7 @@ const GOODBYE_LINGER: Duration = Duration::from_secs(1);
 /// as `RemoteResponseTimeout`).
 const STREAM_ERR_CODE_PROTOCOL: u32 = 1;
 const STREAM_ERR_CODE_RESPONSE_TIMEOUT: u32 = 2;
+const STREAM_ERR_CODE_RATE_LIMIT: u32 = 3;
 const INBOUND_RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Peer {
@@ -65,7 +67,7 @@ pub(crate) struct Peer {
     /// peer never responded to our handshake.
     handshake_completed: bool,
     awaiting_inbound_handshake: bool,
-    inbound_rpc_limits: RpcRateLimitSet,
+    inbound_limits: InboundRateLimits,
     /// Earliest rpc read-response deadline across streams. A silent peer
     /// emits no event to trip the timeout, so lapse triggers a full sweep.
     next_deadline: Option<Instant>,
@@ -92,7 +94,12 @@ impl Peer {
     /// `peer_id`: the dialed identity for outbound connections (known
     /// up-front and TLS-pinned); `PeerId::default()` for inbound until the
     /// handshake reveals it.
-    pub(crate) fn new(handle: ConnectionHandle, connection: Connection, peer_id: PeerId) -> Self {
+    pub(crate) fn new(
+        handle: ConnectionHandle,
+        connection: Connection,
+        peer_id: PeerId,
+        inbound_limits: InboundLimits,
+    ) -> Self {
         let now = Instant::now();
         let inbound = connection.side() == Side::Server;
         Self {
@@ -106,7 +113,7 @@ impl Peer {
             created_at: now,
             handshake_completed: false,
             awaiting_inbound_handshake: inbound,
-            inbound_rpc_limits: RpcRateLimitSet::default(),
+            inbound_limits: InboundRateLimits::new(inbound_limits, now),
             next_deadline: None,
             // Born dirty: a dial must emit its handshake, an accept its
             // response — neither has a quinn event to trigger the first poll.
@@ -288,7 +295,8 @@ impl Peer {
         }
         if let Some(retained) = self.outbound_lease_wheel.expire(now) {
             silver_log::warn!(id = ?self.id, retained, "outbound gossip delivery timeout");
-            self.disconnect_on_stall(now, rpc_codec_pool);
+            NetworkCounters::GossipStallDisconnect.inc();
+            self.disconnect_on_gossip_failure(now, rpc_codec_pool);
             return true;
         }
         false
@@ -359,13 +367,12 @@ impl Peer {
         self.clear_streams(rpc_codec_pool);
     }
 
-    /// A stalled gossip stream costs the connection, not just the stream:
+    /// A failed gossip stream costs the connection, not just the stream:
     /// reopening on the same connection spends one of rust-libp2p's five
     /// per-connection substream attempts, after which the remote disables
     /// gossipsub on it silently. A redial gives both sides a fresh budget.
-    fn disconnect_on_stall(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
-        crate::NetworkCounters::GossipStallDisconnect.inc();
-        silver_log::warn!(id = ?self.id, "gossip stall: closing connection");
+    fn disconnect_on_gossip_failure(&mut self, now: Instant, rpc_codec_pool: &mut RpcCodecPool) {
+        silver_log::warn!(id = ?self.id, "gossip stream failed: closing connection");
         self.shutdown(now, rpc_codec_pool);
     }
 
@@ -601,12 +608,12 @@ impl Peer {
 
         // Drive only streams flagged for non-event work; quinn-I/O parks are
         // re-driven by Readable/Writable via `handle_stream_event`.
-        let (to_remove, stalled) = spin_streams(
+        let (to_remove, disconnect) = spin_streams(
             now,
             &mut self.connection,
             context,
             &mut self.streams,
-            &mut self.inbound_rpc_limits,
+            &mut self.inbound_limits,
             &mut self.next_deadline,
             &mut self.inbound_gossip,
             rpc_codec_pool,
@@ -616,20 +623,20 @@ impl Peer {
         for id in to_remove {
             self.end_stream(id, now, rpc_codec_pool);
         }
-        if stalled {
-            self.disconnect_on_stall(now, rpc_codec_pool);
+        if disconnect {
+            self.disconnect_on_gossip_failure(now, rpc_codec_pool);
         }
 
         // Read-response timeouts only fire inside a spin; sweep everything
         // when the earliest deadline lapses.
         if self.next_deadline.is_some_and(|d| now >= d) {
             self.next_deadline = None;
-            let (to_remove, stalled) = spin_streams(
+            let (to_remove, disconnect) = spin_streams(
                 now,
                 &mut self.connection,
                 context,
                 &mut self.streams,
-                &mut self.inbound_rpc_limits,
+                &mut self.inbound_limits,
                 &mut self.next_deadline,
                 &mut self.inbound_gossip,
                 rpc_codec_pool,
@@ -639,8 +646,8 @@ impl Peer {
             for id in to_remove {
                 self.end_stream(id, now, rpc_codec_pool);
             }
-            if stalled {
-                self.disconnect_on_stall(now, rpc_codec_pool);
+            if disconnect {
+                self.disconnect_on_gossip_failure(now, rpc_codec_pool);
             }
         }
     }
@@ -665,11 +672,11 @@ impl Peer {
             context,
             rpc_codec_pool,
             now,
-            &mut self.inbound_rpc_limits,
+            &mut self.inbound_limits,
             on_event,
         );
-        if let SpinResult::Stalled = result {
-            self.disconnect_on_stall(now, rpc_codec_pool);
+        if let SpinResult::Disconnect = result {
+            self.disconnect_on_gossip_failure(now, rpc_codec_pool);
             return;
         }
         if let SpinResult::End = result {
@@ -710,6 +717,19 @@ impl Peer {
             quinn_proto::StreamEvent::Opened { dir } => {
                 silver_log::debug!("stream open event");
                 while let Some(id) = self.connection.streams().accept(dir) {
+                    if !self.inbound_limits.admit_stream(now) {
+                        let code = VarInt::from_u32(STREAM_ERR_CODE_RATE_LIMIT);
+                        let _ = self.connection.recv_stream(id).stop(code);
+                        let _ = self.connection.send_stream(id).reset(code);
+                        NetworkCounters::InboundStreamRateLimited.inc();
+                        silver_log::debug!(id = ?self.id, ?id, "inbound stream rate limited");
+                        on_event(NetEvent::InboundRateLimited {
+                            p2p_peer: self.id.connection,
+                            severity: RpcSeverity::LowTolerance,
+                            offence: RpcOffence::InboundStreamRateLimit,
+                        });
+                        continue;
+                    }
                     let p2p_id = P2pStreamId::new(
                         self.id.connection,
                         id.into(),
@@ -844,7 +864,7 @@ fn spin_streams<E>(
     connection: &mut Connection,
     context: &mut Context,
     streams: &mut FxHashMap<StreamId, Stream>,
-    inbound_rpc_limits: &mut RpcRateLimitSet,
+    inbound_limits: &mut InboundRateLimits,
     next_deadline: &mut Option<Instant>,
     inbound_gossip: &mut Option<StreamId>,
     rpc_codec_pool: &mut RpcCodecPool,
@@ -855,7 +875,7 @@ where
     E: FnMut(crate::NetEvent),
 {
     let mut to_remove = ArrayVec::new();
-    let mut stalled = false;
+    let mut disconnect = false;
     for (id, stream) in streams {
         if !all && !stream.needs_spin {
             continue;
@@ -866,9 +886,9 @@ where
         }
 
         let result =
-            stream.spin(connection, context, rpc_codec_pool, now, inbound_rpc_limits, on_event);
-        if let SpinResult::Stalled = result {
-            stalled = true;
+            stream.spin(connection, context, rpc_codec_pool, now, inbound_limits, on_event);
+        if let SpinResult::Disconnect = result {
+            disconnect = true;
             to_remove.push(*id);
             continue;
         }
@@ -896,7 +916,7 @@ where
             }
         }
     }
-    (to_remove, stalled)
+    (to_remove, disconnect)
 }
 
 /// Bucket a `ConnectionLost` reason into the `NetworkCounters` disconnect
@@ -974,8 +994,9 @@ struct Stream {
 enum SpinResult {
     Ok,
     End,
-    /// Gossip stream stalled: the owner closes the whole connection.
-    Stalled,
+    /// Gossip stream stalled or over its rate limit: the owner closes the
+    /// whole connection.
+    Disconnect,
     Protocol(StreamProtocol),
 }
 
@@ -986,7 +1007,7 @@ impl Stream {
         context: &mut Context,
         rpc_codec_pool: &mut RpcCodecPool,
         now: Instant,
-        inbound_rpc_limits: &mut RpcRateLimitSet,
+        inbound_limits: &mut InboundRateLimits,
         on_event: &mut E,
     ) -> SpinResult
     where
@@ -1027,7 +1048,7 @@ impl Stream {
             context,
             self.rpc_codec.as_deref_mut(),
             now,
-            inbound_rpc_limits,
+            inbound_limits,
             on_event,
         );
         let result = match result {
@@ -1058,7 +1079,7 @@ impl Stream {
                     context,
                     self.rpc_codec.as_deref_mut(),
                     now,
-                    inbound_rpc_limits,
+                    inbound_limits,
                     on_event,
                 )
             }
@@ -1090,18 +1111,36 @@ impl Stream {
                 result
             }
             Err(e) => {
-                silver_log::error!(
-                    id = ?self.p2p_id,
-                    protocol = ?self.p2p_id.protocol(),
-                    state = state_name,
-                    ?e,
-                    "stream error"
-                );
-                let id = self.p2p_id.stream_id();
-                let code = if matches!(e, StreamError::ReadResponseTimeout) {
-                    STREAM_ERR_CODE_RESPONSE_TIMEOUT
+                if let StreamError::GossipRateLimited { frame_bytes, bytes_per_second } = e {
+                    silver_log::warn!(
+                        id = ?self.p2p_id,
+                        remote = %connection.remote_address(),
+                        frame_bytes,
+                        bytes_per_second,
+                        "inbound gossip rate limit exceeded"
+                    );
+                    NetworkCounters::GossipRateLimitDisconnect.inc();
+                    on_event(NetEvent::InboundRateLimited {
+                        p2p_peer: self.p2p_id.peer(),
+                        // Only an abusive peer exceeds the gossip backstop:
+                        // ban outright rather than on a redial.
+                        severity: RpcSeverity::Fatal,
+                        offence: RpcOffence::InboundGossipRateLimit,
+                    });
                 } else {
-                    STREAM_ERR_CODE_PROTOCOL
+                    silver_log::error!(
+                        id = ?self.p2p_id,
+                        protocol = ?self.p2p_id.protocol(),
+                        state = state_name,
+                        ?e,
+                        "stream error"
+                    );
+                }
+                let id = self.p2p_id.stream_id();
+                let code = match e {
+                    StreamError::ReadResponseTimeout => STREAM_ERR_CODE_RESPONSE_TIMEOUT,
+                    StreamError::GossipRateLimited { .. } => STREAM_ERR_CODE_RATE_LIMIT,
+                    _ => STREAM_ERR_CODE_PROTOCOL,
                 };
                 // reset, not finish: see the setup-timeout teardown above.
                 let _ = connection.send_stream(id).reset(VarInt::from_u32(code));
@@ -1109,10 +1148,13 @@ impl Stream {
 
                 // TODO error info.
                 on_event(NetEvent::StreamClosed { stream: self.p2p_id });
-                if matches!(e, StreamError::ReadStall) {
-                    SpinResult::Stalled
-                } else {
-                    SpinResult::End
+                match e {
+                    StreamError::ReadStall => {
+                        NetworkCounters::GossipStallDisconnect.inc();
+                        SpinResult::Disconnect
+                    }
+                    StreamError::GossipRateLimited { .. } => SpinResult::Disconnect,
+                    _ => SpinResult::End,
                 }
             }
         }
@@ -1296,9 +1338,9 @@ mod tests {
     use quinn_proto::{DatagramEvent, Endpoint, EndpointConfig};
     use silver_common::{
         CacheFrameError, CacheSegment, Enr, GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME, GossipMsgOut,
-        Keypair, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound, TCache, TCacheId,
-        TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer, TReadMode,
-        test_util::follow_producer_floor,
+        Keypair, MAX_GOSSIP_FRAME_SIZE, P2pSend, RpcOutbound, RpcResponse, RpcResponseOutbound,
+        TCache, TCacheId, TCacheProducer, TCacheReader, TCacheTable, TConsumer, TProducer,
+        TReadMode, test_util::follow_producer_floor,
     };
 
     use super::*;
@@ -1570,7 +1612,13 @@ mod tests {
     impl PeerPair {
         fn into_client(self) -> P2p {
             let keypair = Keypair::from_secret(&[2u8; 32]).unwrap();
-            let mut endpoint = P2p::new(keypair, self.client_ep, 16, FxHashSet::default());
+            let mut endpoint = P2p::new(
+                keypair,
+                self.client_ep,
+                16,
+                FxHashSet::default(),
+                InboundLimits::default(),
+            );
             endpoint.peers.insert(self.client_peer.handle, self.client_peer);
             endpoint
         }
@@ -1598,7 +1646,8 @@ mod tests {
                 super::super::create_client_config(&client_kp, Some(server_kp.peer_id())).unwrap();
             let (client_handle, client_conn) =
                 client_ep.connect(now, client_config, server_addr, "x").unwrap();
-            let mut client_peer = Peer::new(client_handle, client_conn, PeerId::default());
+            let mut client_peer =
+                Peer::new(client_handle, client_conn, PeerId::default(), InboundLimits::default());
 
             let mut buf = Vec::new();
             let mut scratch = vec![0u8; 2048];
@@ -1614,7 +1663,12 @@ mod tests {
                         DatagramEvent::NewConnection(incoming) => {
                             let (handle, conn) =
                                 server_ep.accept(incoming, now, &mut scratch, None).unwrap();
-                            server_peer = Some(Peer::new(handle, conn, PeerId::default()));
+                            server_peer = Some(Peer::new(
+                                handle,
+                                conn,
+                                PeerId::default(),
+                                InboundLimits::default(),
+                            ));
                         }
                         DatagramEvent::ConnectionEvent(_, ce) => {
                             if let Some(ref mut p) = server_peer {
@@ -2016,7 +2070,13 @@ mod tests {
             }
 
             let PeerPair { client_ep, client_peer, .. } = pair;
-            let mut p2p = P2p::new(client_keypair, client_ep, 16, FxHashSet::default());
+            let mut p2p = P2p::new(
+                client_keypair,
+                client_ep,
+                16,
+                FxHashSet::default(),
+                InboundLimits::default(),
+            );
             p2p.peers.insert(handle, client_peer);
             if local_close {
                 p2p.disconnect(handle.0, now);
@@ -2110,6 +2170,66 @@ mod tests {
         assert!(pair.server_peer.streams.is_empty(), "connection loss drops the server's streams");
     }
 
+    #[test]
+    fn gossip_rate_limit_closes_connection_and_reports_misbehaviour() {
+        let before = NetworkCounters::GossipRateLimitDisconnect.get();
+        for protocol in [StreamProtocol::GossipSub, StreamProtocol::GossipSubV13] {
+            let mut client_h = PeerHarness::new();
+            let mut server_h = PeerHarness::new();
+            let mut pair = PeerPair::new();
+            let now = Instant::now();
+            let announcement = if protocol == StreamProtocol::GossipSubV13 {
+                GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len()
+            } else {
+                0
+            };
+            pair.server_peer.inbound_limits = InboundRateLimits::new(
+                InboundLimits { gossip_bytes_per_second: 100, ..InboundLimits::default() },
+                now,
+            );
+            assert!(
+                pair.server_peer
+                    .inbound_limits
+                    .admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - announcement - 6, now,)
+            );
+            let first = pair.client_peer.open_stream(protocol).unwrap();
+            pair.client_peer.outbound_gossip = Some(first);
+            let stream_id = P2pStreamId::new(0, first.into(), protocol, false);
+            client_h.send_gossip(stream_id, b"first", &mut pair.client_peer);
+            for _ in 0..200 {
+                pair.step(now, &mut client_h, &mut server_h, &mut |_| {}, &mut |_| {});
+                if server_h.received.values().any(|bytes| bytes.ends_with(b"first")) {
+                    break;
+                }
+            }
+            assert!(server_h.received.values().any(|bytes| bytes.ends_with(b"first")));
+            let admitted = server_h.context.gossip_producer.next_seq();
+
+            let mut limited = Vec::new();
+            client_h.send_gossip(stream_id, b"excess", &mut pair.client_peer);
+            for _ in 0..200 {
+                pair.step(now, &mut client_h, &mut server_h, &mut |_| {}, &mut |event| {
+                    if let NetEvent::InboundRateLimited {
+                        p2p_peer,
+                        severity: RpcSeverity::Fatal,
+                        offence: RpcOffence::InboundGossipRateLimit,
+                    } = event
+                    {
+                        limited.push(p2p_peer);
+                    }
+                });
+                if !limited.is_empty() {
+                    break;
+                }
+            }
+            assert_eq!(limited, [pair.server_peer.id.connection], "{protocol:?}");
+            assert!(pair.server_peer.connection.is_closed(), "breach closes the connection");
+            assert!(pair.server_peer.streams.is_empty());
+            assert_eq!(server_h.context.gossip_producer.next_seq(), admitted);
+        }
+        assert!(NetworkCounters::GossipRateLimitDisconnect.get() >= before + 2);
+    }
+
     /// A gossip stall (here: the server's inbound frame parked mid-body past
     /// the window) closes the connection rather than just the stream.
     #[test]
@@ -2167,6 +2287,48 @@ mod tests {
 
         assert!(server_peer.connection.is_closed(), "stall must close the connection");
         assert!(server_peer.streams.is_empty(), "closing drops every stream");
+    }
+
+    #[test]
+    fn inbound_streams_over_quota_are_reset_at_accept() {
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+        let t0 = Instant::now();
+        pair.server_peer.inbound_limits = InboundRateLimits::new(
+            InboundLimits { streams_per_second: 2, ..InboundLimits::default() },
+            t0,
+        );
+        let before = NetworkCounters::InboundStreamRateLimited.get();
+
+        for _ in 0..3 {
+            pair.client_peer.open_stream(StreamProtocol::Ping).unwrap();
+        }
+        let mut limited = Vec::new();
+        let mut ready = 0;
+        for i in 0..50 {
+            pair.step(
+                t0 + Duration::from_millis(i),
+                &mut client_h,
+                &mut server_h,
+                &mut |_| {},
+                &mut |event| match event {
+                    NetEvent::InboundRateLimited {
+                        p2p_peer,
+                        severity: RpcSeverity::LowTolerance,
+                        offence: RpcOffence::InboundStreamRateLimit,
+                    } => limited.push(p2p_peer),
+                    NetEvent::StreamReady { .. } => ready += 1,
+                    _ => {}
+                },
+            );
+        }
+
+        assert_eq!(limited, [pair.server_peer.id.connection]);
+        assert_eq!(ready, 2);
+        assert!(NetworkCounters::InboundStreamRateLimited.get() > before);
+        assert!(!pair.server_peer.connection.is_closed());
+        assert!(!pair.client_peer.connection.is_closed());
     }
 
     #[test]

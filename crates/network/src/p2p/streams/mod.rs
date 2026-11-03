@@ -35,6 +35,7 @@ pub enum StreamError {
     InvalidRpc,
     InvalidGossipFrame,
     GossipFrameTooLarge,
+    GossipRateLimited { frame_bytes: usize, bytes_per_second: u64 },
     StreamRejected,
     StreamClosed,
     StreamEOF,

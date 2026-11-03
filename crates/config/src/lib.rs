@@ -14,8 +14,9 @@ pub use peer_score_params::ScoreParams;
 use serde::{Deserialize, Serialize};
 pub use silver_common::cell_store::PartialColumnsMode;
 use silver_common::{
-    Enr, Error, GossipTopic, Identify, Keypair, MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT,
-    SYNC_COMMITTEE_SUBNETS, StreamProtocol,
+    DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND, Enr, Error, GossipTopic, Identify, Keypair,
+    MAX_BLOBS_PER_BLOCK, PeerId, SAMPLES_PER_SLOT, SYNC_COMMITTEE_SUBNETS, StreamProtocol,
+    rpc_rate_limit::DEFAULT_MAX_INBOUND_STREAMS_PER_SECOND,
 };
 pub use syncing_config::{PendingBounds, SyncingConfig};
 
@@ -146,6 +147,10 @@ pub struct Config {
     supported_protocols: Vec<String>,
     #[serde(default = "default_gossip_topics")]
     gossip_topics: Vec<String>,
+    #[serde(default = "default_u64::<DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND>")]
+    gossip_max_bytes_per_second: u64,
+    #[serde(default = "default_u64::<DEFAULT_MAX_INBOUND_STREAMS_PER_SECOND>")]
+    max_inbound_streams_per_second: u64,
     #[serde(default)]
     chain_config: ChainOverrides,
     #[serde(default)]
@@ -251,6 +256,14 @@ impl Config {
 
     fn from_toml(text: &str, overrides: Overrides) -> Result<Self, Error> {
         let mut config: Self = toml::from_str(text)?;
+        if config.gossip_max_bytes_per_second == 0 {
+            return Err(Error::ConfigError("gossip_max_bytes_per_second must be positive".into()));
+        }
+        if config.max_inbound_streams_per_second == 0 {
+            return Err(Error::ConfigError(
+                "max_inbound_streams_per_second must be positive".into(),
+            ));
+        }
         config.apply(overrides);
         Ok(config)
     }
@@ -373,6 +386,14 @@ impl Config {
         self.peer_score_params.max_connections()
     }
 
+    pub fn gossip_max_bytes_per_second(&self) -> u64 {
+        self.gossip_max_bytes_per_second
+    }
+
+    pub fn max_inbound_streams_per_second(&self) -> u64 {
+        self.max_inbound_streams_per_second
+    }
+
     pub fn peer_score_params(&self) -> ScoreParams {
         self.peer_score_params.clone()
     }
@@ -479,6 +500,35 @@ mod tests {
         assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);
+        assert_eq!(cfg.gossip_max_bytes_per_second(), 50_000_000);
+        assert_eq!(cfg.max_inbound_streams_per_second(), 50);
+    }
+
+    #[test]
+    fn gossip_byte_rate_is_configurable_and_positive() {
+        let cfg =
+            Config::from_toml("gossip_max_bytes_per_second = 25_000_000", Overrides::default())
+                .unwrap();
+        assert_eq!(cfg.gossip_max_bytes_per_second(), 25_000_000);
+        for value in ["0", "-1", "1.5", "\"10000000\""] {
+            assert!(
+                Config::from_toml(
+                    &format!("gossip_max_bytes_per_second = {value}"),
+                    Overrides::default()
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_stream_rate_is_configurable_and_positive() {
+        let cfg =
+            Config::from_toml("max_inbound_streams_per_second = 50", Overrides::default()).unwrap();
+        assert_eq!(cfg.max_inbound_streams_per_second(), 50);
+        assert!(
+            Config::from_toml("max_inbound_streams_per_second = 0", Overrides::default()).is_err()
+        );
     }
 
     #[test]
