@@ -36,7 +36,7 @@ use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
-use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
+use silver_network::{ClusterNodes, Context, InboundLimits, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::tile::StorageTile;
 
@@ -217,6 +217,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         config.max_connections(),
         trusted_ips,
+        InboundLimits {
+            gossip_bytes_per_second: config.gossip_max_bytes_per_second(),
+            streams_per_second: config.max_inbound_streams_per_second(),
+        },
     );
     let identify = config.identify(&keypair)?;
 

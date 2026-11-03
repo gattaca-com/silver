@@ -17,7 +17,9 @@ use silver_common::{
     TCacheReader, TCacheTable,
 };
 use silver_discovery::Discovery;
-use silver_network::{Context, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult};
+use silver_network::{
+    Context, InboundLimits, NetEvent, NetworkTileEvent, NetworkTileInner, P2p, SendResult,
+};
 use tracing_subscriber::filter::LevelFilter;
 
 const BATCH_SIZE: usize = 8192 * 10;
@@ -81,7 +83,13 @@ pub fn broadcast(c: &mut Criterion) {
                                 reader: TCacheReader::new(tcaches),
                             };
 
-                            let p2p = P2p::new(keypair, server_endpoint, 1024, Default::default());
+                            let p2p = P2p::new(
+                                keypair,
+                                server_endpoint,
+                                1024,
+                                Default::default(),
+                                InboundLimits::UNLIMITED,
+                            );
                             {
                                 let mut tile = NetworkTileInner::new(
                                     "0.0.0.0:20001".parse().unwrap(),
@@ -151,8 +159,13 @@ pub fn broadcast(c: &mut Criterion) {
                             };
 
                             let addr = format!("127.0.0.1:{}", 20002 + n);
-                            let mut p2p =
-                                P2p::new(keypair, client_endpoint, 1024, Default::default());
+                            let mut p2p = P2p::new(
+                                keypair,
+                                client_endpoint,
+                                1024,
+                                Default::default(),
+                                InboundLimits::UNLIMITED,
+                            );
                             p2p.connect(
                                 server_id.clone(),
                                 "127.0.0.1:20001".parse().unwrap(),

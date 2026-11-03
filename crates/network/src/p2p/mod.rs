@@ -1,5 +1,6 @@
 mod admission;
 mod context;
+mod inbound_rate_limits;
 mod quic;
 mod streams;
 pub(crate) mod tls;
@@ -14,6 +15,7 @@ use admission::{Admission, InboundAdmission};
 use buffa::{Message, MessageView};
 pub use context::{ClusterNodes, Context};
 use fxhash::{FxHashMap, FxHashSet};
+pub use inbound_rate_limits::InboundLimits;
 use mio::{Poll, net::UdpSocket};
 use quic::SegmentedGossipLimits;
 pub(crate) use quic::{Peer, create_client_config};
@@ -101,6 +103,13 @@ pub enum NetEvent {
         p2p_peer: usize,
         severity: silver_common::RpcSeverity,
     },
+    /// A per-connection inbound quota was exceeded; the offending stream
+    /// was reset.
+    InboundRateLimited {
+        p2p_peer: usize,
+        severity: silver_common::RpcSeverity,
+        offence: silver_common::RpcOffence,
+    },
     Gossip {
         stream: P2pStreamId,
         msg: TCacheRead,
@@ -124,6 +133,7 @@ pub struct P2p {
     recv_count: usize,
     stats_cursor: usize,
     admission: InboundAdmission,
+    inbound_limits: InboundLimits,
 }
 
 impl P2p {
@@ -132,7 +142,10 @@ impl P2p {
         endpoint: Endpoint,
         max_connections: usize,
         trusted_ips: FxHashSet<IpAddr>,
+        inbound_limits: InboundLimits,
     ) -> Self {
+        assert!(inbound_limits.gossip_bytes_per_second > 0, "gossip byte rate must be positive");
+        assert!(inbound_limits.streams_per_second > 0, "inbound stream rate must be positive");
         Self {
             keypair,
             endpoint,
@@ -144,6 +157,7 @@ impl P2p {
             recv_count: 0,
             stats_cursor: 0,
             admission: InboundAdmission::new(max_connections, trusted_ips),
+            inbound_limits,
         }
     }
 
@@ -185,7 +199,7 @@ impl P2p {
         let (handle, connection) =
             self.endpoint.connect(now, client_config, addr, "x").map_err(Error::other)?;
 
-        let peer = Peer::new(handle, connection, peer_id);
+        let peer = Peer::new(handle, connection, peer_id, self.inbound_limits);
         self.peers.insert(handle, peer);
         Ok(())
     }
@@ -281,7 +295,7 @@ impl P2p {
                 Ok((handle, conn)) => {
                     NetworkCounters::InboundAccepted.inc();
                     self.admission.accepted(conn.remote_address().ip());
-                    let peer = Peer::new(handle, conn, PeerId::default());
+                    let peer = Peer::new(handle, conn, PeerId::default(), self.inbound_limits);
 
                     self.peers.insert(handle, peer);
                 }
@@ -582,7 +596,13 @@ mod tests {
             client_socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
 
             Self {
-                server: P2p::new(server_keypair, endpoint, max_connections, trusted_ips),
+                server: P2p::new(
+                    server_keypair,
+                    endpoint,
+                    max_connections,
+                    trusted_ips,
+                    InboundLimits::default(),
+                ),
                 server_socket: UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap(),
                 client_endpoint: Endpoint::new(
                     Arc::new(EndpointConfig::default()),

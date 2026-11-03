@@ -122,6 +122,26 @@ data_column_custody_group_count = 128  # default 8
 attestation_subnet_count = 64          # default 2
 ```
 
+Incoming gossip is limited per connection. Set the sustained rate in bytes per second:
+
+```toml
+gossip_max_bytes_per_second = 50_000_000  # default 50 MB/s; must be positive
+```
+
+The allowance covers encoded gossip frames, including their length prefixes, before decompression.
+Its burst capacity is the larger of one second's allowance and the maximum frame size plus its prefix.
+Exceeding the allowance closes the connection, logs a warning, and increments `network.GossipRateLimitDisconnect`.
+Each breach reports a `Fatal` misbehaviour to the peer manager, which bans the peer.
+
+Inbound stream opens are limited per connection, with a burst of one second's allowance:
+
+```toml
+max_inbound_streams_per_second = 50  # default 50; must be positive
+```
+
+A stream over the limit is reset at accept with application error code 3.
+Each reset increments `network.InboundStreamRateLimited` and reports a `LowTolerance` misbehaviour to the peer manager.
+
 ### Overriding a network's defaults
 
 These `[chain_config]` keys replace the network's own values:

@@ -36,6 +36,7 @@ pub const MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE: usize = MAX_PAYLOAD_SIZE;
 pub const MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE: usize =
     32 + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE + MAX_GOSSIP_UNCOMPRESSED_PAYLOAD_SIZE / 6;
 pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 1024;
+pub const DEFAULT_GOSSIP_MAX_BYTES_PER_SECOND: u64 = 50_000_000;
 
 /// One fork-qualified gossip domain: the digest names the wire topics,
 /// the format fixes every schema decision for messages carrying it. A

@@ -5,6 +5,7 @@ use crate::StreamProtocol;
 pub const N_STREAM_PROTOCOLS: usize = StreamProtocol::Unset as usize + 1;
 pub const RPC_ERR_RATE_LIMITED: u8 = 0x8b;
 pub const RPC_RATE_LIMITED_MSG: &[u8] = b"rate limit exceeded";
+pub const DEFAULT_MAX_INBOUND_STREAMS_PER_SECOND: u64 = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcQuota {
