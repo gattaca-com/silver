@@ -13,8 +13,11 @@ SUPPORT = runpy.run_path(str(LEAN / "controls/mutation-support.py"))
 
 def main():
     literals = (LEAN / "LeanBlsSimd/Extracted/Literals.lean").read_text()
-    first = literals.index("private def kzg.pairing_lines.PAIRING_LINES_step_0_lane_0")
-    table = literals[first:literals.rindex("end silver_crypto_simd")]
+    first = re.search(SUPPORT["DECLARATION"]
+                      + r"kzg\.pairing_lines\.PAIRING_LINES_step_0_lane_0\b", literals, re.M)
+    if first is None:
+        raise AssertionError("missing generated pairing table")
+    table = literals[first.start():literals.rindex("end silver_crypto_simd")]
     table = table.replace("kzg.pairing_lines.PAIRING_LINES", "proofPairingTable")
     word = re.search(r"\d+#u64", table)[0]
     changed_word = str(int(word.removesuffix("#u64")) + 1) + "#u64"

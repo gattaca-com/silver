@@ -31,7 +31,8 @@ def main():
          "56#u8", "7#u8", "conjugate_raw"),
         ("Frobenius", "Frobenius", "bls.fp12.Fp12.times_coefficients_loop.body",
          "Array.index_usize bls.fp12.POWER_OF_LANE lane",
-         "Array.index_usize bls.fp12.POWER_OF_LANE 0#usize", "coefficient_body_step"),
+         "Array.index_usize bls.fp12.POWER_OF_LANE "
+         "(if lane = 1#usize then 0#usize else lane)", "coefficient_body_step"),
         ("Line", "LineRecombine", "bls.fp12.Fp12.from_line_lanes",
          "66#u64", "65#u64", "from_line_lanes"),
         ("Cyclotomic", "CyclotomicSum", "bls.fp12.Fp12.cyclotomic_sum",
