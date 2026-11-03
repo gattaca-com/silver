@@ -5,8 +5,8 @@ import LeanBlsSimd.Spec.Membership
 
 `ScottComplete` states ψ(P) = [z]P for every point P with [r]P = O.
 `psi_generator` proves the generator case, and `generator_torsion` shows that [r]G = O.
-`scottComplete_of_cyclic` and `Spec/ScottCardinality.lean` extend the identity to all rational
-r-torsion points once the cardinality bounds are established in `Spec/CubicHasse.lean`.
+`scottComplete_of_cyclic` and `Spec/ScottCardinality.lean` reduce completeness to a point count.
+`Spec/G2Cardinality.lean` supplies the exact count and extends the identity to all rational r-torsion points.
 A wrong ψ constant or the opposite sign of z would break the proof of `psi_generator`,
 and hence the proof of `scott_complete`.
 

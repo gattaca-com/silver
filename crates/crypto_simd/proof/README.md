@@ -464,7 +464,7 @@ All adaptations run before drift comparison. Only numeric source spans are maske
 |---|---|
 | `lean-toolchain`, `lakefile.toml`, `lake-manifest.json` | Lean and dependency pins: Lean v4.35.0, Mathlib v4.35.0, upstream EthLib at `98395150` and Aeneas at `nightly-2026.10.30-de16f3c` (`backends/lean`). `lakefile.toml` also sets `autoImplicit` and `relaxedAutoImplicit` to `false`. The manifest records exact resolved revisions; `extract.sh` reads the Aeneas pin from it. |
 | `LeanBlsSimd/Constants.lean` | p, r, z, R, and the Rust's constant tables proved equal to their derivations. |
-| `LeanBlsSimd/Spec/` | G1 and G2 Scott equivalence, point-count bounds, generator identities, field and group laws, and square roots. Includes KZG encoding and affine-layout bridges. |
+| `LeanBlsSimd/Spec/` | G1 and G2 Scott equivalence, upstream point-count facts, generator identities, field and group laws, and square roots. Includes KZG encoding and affine-layout bridges. |
 | `LeanBlsSimd/Extracted/` | Generated `Types.lean`, `Literals.lean` and `Funs.lean`; regenerate these files. Handwritten external definitions live in `TypesExternal.lean` and `FunsExternal.lean`. |
 | `LeanBlsSimd/Model/` | The Rust, transcribed by hand: the proved intermediate step between the generated code and the specification. |
 | `LeanBlsSimd/Proofs/` | The model against the specification, including G1's `DecompressG1.lean`, G2's `Kernel.lean` and the G2 wrapper verdict bridge in `UncompressG2.lean`. |
@@ -480,7 +480,7 @@ All adaptations run before drift comparison. Only numeric source spans are maske
 
 ## BLS proof internals
 
-The proof has two parts. Generated code returns exactly the handwritten model's result. The model agrees with the specification on every lane the kernel decides. G2's Scott completeness uses a character-sum bound on the curve's point count; G1 uses the elementary finite point-count bound described below. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
+The proof has two parts. Generated code returns exactly the handwritten model's result. The model agrees with the specification on every lane the kernel decides. G2's Scott completeness uses EthLib's exact twist point count, transported to E′. G1 uses the elementary finite point-count bound described below. Recorded test vectors also compare the generated code and model with the compiled Rust. Those tests check the translation on particular inputs; they are not a proof of the translation itself.
 
 Silver-defined dimension constants carry `@[implicit_reducible]` at their definitions. Imported arithmetic constants receive only file-local attributes. These elaboration attributes add no axioms. Staged kernel certificates check large closed computations before their results enter composed proofs.
 
@@ -547,11 +547,11 @@ The supporting theorems that mention `decompress` refer to the model function an
 | `decode_lane` | On a decided lane, `on_curve` is set exactly when `G2.uncompress` succeeds. |
 | `psi_generator` | ψ(G) = [z]G for the specification's generator G, in `Spec/Generator.lean`. |
 
-`psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. `ScottCardinality.lean` and `CubicHasse.lean` extend this identity to every rational r-torsion point.
+`psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. `Spec/G2Cardinality.lean` extends this identity to every rational r-torsion point.
 
-`Spec/ScottCardinality.lean` proves that G has exact order r, using the spec dependency's primality certificate for r. If r² does not divide the curve's point count, the quotient by G's cyclic subgroup has order coprime to r. Every rational r-torsion point is then a multiple of G. The numerical Hasse interval `(p - 1)² ≤ Nat.card E'.Point ≤ (p + 1)²` contains no multiple of r². Lean's kernel checks both exclusions.
+`Spec/ScottCardinality.lean` proves that G has exact order r, using EthLib's primality certificate for r. EthLib's `G2SubgroupSpan` proves the exact curve order r · h. Lean's kernel checks coprimality of h and r. `Spec/G2Cardinality.lean` transports that order from EthLib's curve over `Fp2` to E′ over `Fp2Field`. The transport uses `Fp2.toField` on affine coordinates and preserves the point at infinity. It needs only a point equivalence; the Scott proofs retain Silver's G2 group model.
 
-`Spec/CubicHasse.lean` proves these Hasse bounds and concludes `scott_complete : ScottComplete`. `PointCount.lean` expresses the count as p² + 1 plus a quadratic-character sum. `CubeFiber.lean` and `CharacterSum.lean` express that sum as two weighted Jacobi sums, each with a coefficient of norm one. `JacobiNorm.lean` proves that a Jacobi sum has norm √q over a field of size q when both characters and their product are nontrivial. The character-order arguments and `cubic_mul_quadratic_ne_one` establish these conditions for both sums here. With q = p², the triangle inequality then gives the required bound of 2p. This proves the bounds for the existing twist; it does not compute its exact point count. The conditional cardinality and cyclicity APIs remain available.
+The quotient by G's cyclic subgroup has order h and therefore has no nonzero r-torsion. Every rational r-torsion point is then a multiple of G, so the generator identity gives `scott_complete : ScottComplete`. The conditional cardinality and cyclicity APIs remain available. `Spec/Fp2Tower.lean` supplies the field cardinality and characteristic facts used by the quotient tower and pairing proofs. These field facts do not import the G2 order certificates.
 
 ### Vector evidence
 
@@ -617,8 +617,8 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `G2Lazy.lean` | Dropping the final conditional subtraction leaves nonreduced components. Replacing the double formula's `8p` offset with `4p` makes a valid intermediate difference negative. |
 | `Reduction.lean` | Both widths retain the stale dead limb; dropping the inverse premise can change a surviving limb. The valid inverse case agrees above the row index. |
 | `Generator.lean` | −z, or a wrong ψ constant, breaks `psi_generator`. |
-| `ScottCardinality.lean` | The generator's order is not r²; dropping either Hasse bound makes the numerical exclusion of multiples of r² false. |
-| `CharacterSums.lean` | Checks Scott soundness and completeness, cubic fibers over F₇ and the affine point count over F₅. Trivial characters refute the Jacobi norm identity. |
+| `ScottCardinality.lean` | The generator's order is not r². A group of order four shows why the cardinality argument needs both its exact count and coprimality premises. |
+| `G2Cardinality.lean` | Checks the transported exact order, Scott soundness and completeness, the conditional cardinality API and their standard axiom lists. |
 | `Kernel.lean` | Checks the input premises and conclusions on concrete batches, including the generator's batch. These examples need no Scott completeness assumption, but do not prove completeness for arbitrary inputs. |
 | `Refines.lean` | Mutated generated functions fail their refinement proofs, including G1's chunk fallback reading lane zero instead of the current lane. Concrete refutations cover five complete G2 refinements and the required loop steps for `times_minus_z` and G1's fallback. |
 | `AxiomLog.lean` | Prints Lean's recorded axiom lists for public library theorems and checked generated definitions. |
