@@ -1,5 +1,6 @@
 use std::{fmt, ops::RangeInclusive};
 
+use flux::type_hash_derive::TypeHash;
 pub use silver_beacon_state_data::SYNC_COMMITTEE_SUBNETS;
 use silver_beacon_state_data::{ForkName, SLOTS_PER_EPOCH};
 
@@ -40,7 +41,7 @@ pub const MAX_GOSSIP_FRAME_SIZE: usize = MAX_GOSSIP_COMPRESSED_PAYLOAD_SIZE + 10
 /// One fork-qualified gossip domain: the digest names the wire topics,
 /// the format fixes every schema decision for messages carrying it. A
 /// BPO transition changes the digest without changing the format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]
 pub struct GossipDomain {
     digest: [u8; 4],
     format: ForkName,
@@ -71,7 +72,7 @@ pub const GOSSIP_PARTIAL_EXTENSIONS_ANNOUNCEMENT_FRAME: &[u8] = &[6, 0x1A, 4, 0x
 /// Eth2 gossipsub topic name. Wire topic is
 /// `/eth2/{fork_digest_hex}/{name}/ssz_snappy`; this enum covers the `{name}`
 /// portion. Subnet ids travel inline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TypeHash)]
 #[repr(C, u8)]
 pub enum GossipTopic {
     BeaconBlock,

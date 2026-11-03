@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use flux::{Timer, timing::Nanos};
+use flux::{Timer, timing::Nanos, type_hash_derive::TypeHash};
 
 use crate::{
     GossipMsgOut, TCacheError, TCacheId, TCacheRef,
@@ -11,7 +11,7 @@ use crate::{
 
 /// Descriptor of one TCache msg. `emitter` and `floor` carry the stamping
 /// party's promise: no later read from `emitter` has `seq < floor`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct TCacheRead {
     pub(super) id: TCacheId,

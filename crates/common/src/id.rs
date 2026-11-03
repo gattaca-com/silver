@@ -6,6 +6,7 @@ use std::{
     path::Path,
 };
 
+use flux::type_hash_derive::TypeHash;
 use rand::RngCore;
 use secp256k1::{
     SECP256K1, SecretKey,
@@ -15,7 +16,7 @@ use secp256k1::{
 use crate::{Error, util::decode_varint};
 
 /// libp2p peer identity (multihash-encoded).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TypeHash)]
 #[repr(C)]
 pub struct PeerId {
     // Maximum id length is theoretically 44 bytes - pad out to 48.

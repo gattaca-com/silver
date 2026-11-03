@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-use flux::timing::Nanos;
+use flux::{timing::Nanos, type_hash_derive::TypeHash};
 use secp256k1::{
     Message, PublicKey, SECP256K1,
     ecdsa::Signature,
@@ -34,7 +34,7 @@ const MA_P2P: u64 = 421;
 /// secp256k1 KeyType in the libp2p PublicKey protobuf.
 const KEY_TYPE_SECP256K1: u64 = 2;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct Identify {
     pub user_agent: [u8; 64],
     pub user_agent_len: usize,
@@ -43,11 +43,16 @@ pub struct Identify {
     /// Stream protocol bitset. Bits map to indices in ALL_PROTOCOLS.
     pub protocols: u32,
     /// p2p addresses
+    #[type_hash(literal = "Option<SocketAddr>")]
     pub tcp_ipv4: Option<SocketAddr>,
+    #[type_hash(literal = "Option<SocketAddr>")]
     pub tcp_ipv6: Option<SocketAddr>,
+    #[type_hash(literal = "Option<SocketAddr>")]
     pub udp_ipv4: Option<SocketAddr>,
+    #[type_hash(literal = "Option<SocketAddr>")]
     pub udp_ipv6: Option<SocketAddr>,
     /// Observed addr of peer.
+    #[type_hash(literal = "Option<SocketAddr>")]
     pub observed: Option<SocketAddr>,
     /// Peer id, present if the Identify response was sent by the connection
     /// dialler.

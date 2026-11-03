@@ -1,5 +1,6 @@
 // Adapted from https://github.com/sigp/enr (MIT License)
 
+use flux::type_hash_derive::TypeHash;
 use secp256k1::{
     Error as KeyError, PublicKey,
     hashes::{Hash, sha256},
@@ -29,7 +30,7 @@ pub const EPOCHS_PER_SUBNET_SUBSCRIPTION: u64 = 256;
 
 const ATTESTATION_SUBNET_COUNT: u64 = 64;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TypeHash)]
 #[serde(transparent)]
 pub struct NodeId {
     #[serde(with = "serde_hex_prfx")]
