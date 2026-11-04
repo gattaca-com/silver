@@ -142,6 +142,16 @@ impl ColumnValidator {
         self.partial_parents.remember(block_root, Some(*SignedBeaconBlockView::state_root(buffer)));
     }
 
+    /// A block that arrived with no blob commitments.
+    pub fn note_columnless(&mut self, block_root: BlockRoot) {
+        self.partial_parents.mark_columnless(block_root);
+    }
+
+    /// Whether `block_root` arrived without blob commitments.
+    pub fn is_columnless(&self, block_root: &BlockRoot) -> bool {
+        self.partial_parents.is_columnless(block_root)
+    }
+
     pub fn is_validated(&self, block_root: &BlockRoot) -> bool {
         self.validated_block_roots.contains(block_root)
     }

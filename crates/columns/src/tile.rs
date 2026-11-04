@@ -196,7 +196,8 @@ impl DataColumnsTile {
         self.validator.cache_parent_state_root(block_root, buffer);
 
         if !has_columns {
-            self.tracker.record_columnless(block_root, slot, producers);
+            // recorded once the beacon state accepts the block
+            self.validator.note_columnless(block_root);
             return None;
         }
 
@@ -819,6 +820,10 @@ impl DataColumnsTile {
                 ..
             } => {
                 self.publish_proposed_columns(&block_root, producers);
+                // before note_staged_block, so a columnless block starts no chase
+                if self.validator.is_columnless(&block_root) {
+                    self.tracker.record_columnless(block_root, slot, producers);
+                }
                 self.note_staged_block(block_root, slot, producers);
             }
             BeaconStateEvent::BlockRejected { block_root, .. } => {

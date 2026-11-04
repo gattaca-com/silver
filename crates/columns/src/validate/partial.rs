@@ -25,6 +25,7 @@ pub(super) struct PartialParents {
 
 struct ParentInfo {
     state_root: Option<BlockRoot>,
+    columnless: bool,
     expires: Instant,
 }
 
@@ -44,9 +45,27 @@ impl PartialParents {
             return;
         }
         if self.entries.len() < 256 || self.entries.contains_key(&root) {
-            self.entries
-                .insert(root, ParentInfo { state_root, expires: Instant::now() + self.retention });
+            self.entries.insert(
+                root,
+                ParentInfo {
+                    state_root,
+                    columnless: false,
+                    expires: Instant::now() + self.retention,
+                },
+            );
         }
+    }
+
+    /// Marks a remembered root as having arrived without blob commitments.
+    pub(super) fn mark_columnless(&mut self, root: BlockRoot) {
+        if let Some(info) = self.entries.get_mut(&root) {
+            info.columnless = true;
+        }
+    }
+
+    /// Whether `root` arrived without blob commitments.
+    pub(super) fn is_columnless(&self, root: &BlockRoot) -> bool {
+        self.entries.get(root).is_some_and(|info| info.columnless)
     }
 
     pub(super) fn prune(&mut self, now: Instant) {
