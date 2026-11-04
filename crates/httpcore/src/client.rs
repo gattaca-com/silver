@@ -8,6 +8,9 @@ use crate::chunked_decoder::ChunkedDecoder;
 // 4096 covers any realistic HTTP response header block; once headers are
 // parsed, reads are sized to exactly the remaining Content-Length.
 const HEADER_READ_LEN: usize = 4096;
+// About 5x the largest getPayload with a full blobs bundle; a larger
+// declaration is a broken or hostile server.
+const MAX_RESPONSE: usize = 128 << 20;
 
 pub struct ClientConnection {
     write_buf: Vec<u8>,
@@ -139,17 +142,22 @@ impl ClientConnection {
     pub fn commit_read(&mut self, n: usize) -> io::Result<()> {
         debug_assert!(self.read_end + n <= self.read_buf.len());
         self.read_end += n;
-        if matches!(self.framing, Framing::Head) {
-            match parse_response_head(&self.read_buf[self.read_offset..self.read_end])? {
-                Some((status, framing)) => {
-                    self.status = status;
-                    self.framing = framing;
-                }
-                None => return Ok(()),
-            }
+        if matches!(self.framing, Framing::Head) &&
+            let Some((status, framing)) =
+                parse_response_head(&self.read_buf[self.read_offset..self.read_end])?
+        {
+            self.status = status;
+            self.framing = framing;
         }
         if let Framing::Chunked(decoder) = &mut self.framing {
             decoder.decode(&mut self.read_buf[self.read_offset..self.read_end])?;
+        }
+        // Checked before `read_space` sizes the buffer for the rest.
+        let buffered = self.read_end - self.read_offset;
+        if self.framing.complete_body(buffered).is_none() &&
+            buffered + self.framing.read_len(buffered) > MAX_RESPONSE
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "response over its size limit"));
         }
         Ok(())
     }
@@ -731,5 +739,23 @@ mod tests {
         let err = feed_all(&mut conn, &vec![b'0'; 2048]).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "chunk size line too long");
+    }
+
+    #[test]
+    fn response_over_the_limit_fails_before_its_buffer_grows() {
+        let mut heads = [MAX_RESPONSE as u64, u64::MAX / 2]
+            .map(|length| {
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n").into_bytes()
+            })
+            .to_vec();
+        let mut chunked = CHUNKED_HEAD.to_vec();
+        chunked.extend_from_slice(format!("{MAX_RESPONSE:x}\r\n").as_bytes());
+        heads.push(chunked);
+        for head in heads {
+            let mut conn = machine();
+            let err = feed(&mut conn, &head).unwrap_err();
+            assert_eq!(err.to_string(), "response over its size limit");
+            assert_eq!(conn.read_buf.len(), HEADER_READ_LEN);
+        }
     }
 }
