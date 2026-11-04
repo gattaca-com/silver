@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.RepresentationLemmas
-import EthLib.Cryptography.Proofs.Bls.Compress
+import EthLib.Cryptography.Proofs.Bls.G1SubgroupSpan
 
 open EthLib.Cryptography Bls
 open WeierstrassCurve.Jacobian
@@ -54,25 +54,6 @@ theorem g1_valid_of_affine {p : G1} (hz : p.isInfinity ≠ true)
     G1.Valid p :=
   (nonsingular_of_equiv (g1_rep_affine_equiv hz)).mp (g1_valid_affine h)
 
-theorem g1_toPoint_eq_zero_iff {p : G1} (hp : G1.Valid p) :
-    G1.toPoint p = 0 ↔ p.isInfinity = true := by
-  by_cases hz : p.isInfinity = true
-  · have he : G1.toPoint p = 0 :=
-      Point.toAffine_of_Z_eq_zero (G1.isZero_iff.mp hz)
-    simp only [he, hz]
-  · have hzne : (p.z : ZMod Fp.modulus) ≠ 0 :=
-      fun hh => hz (G1.isZero_iff.mpr hh)
-    rw [G1.toPoint, Point.toAffine_of_Z_ne_zero hp hzne]
-    exact iff_of_false (WeierstrassCurve.Affine.Point.some_ne_zero _) hz
-
-theorem g1_inSubgroup_iff {p : G1} (hp : G1.Valid p) :
-    p.inSubgroup = true ↔ Fr.modulus • G1.toPoint p = 0 := by
-  unfold G1.inSubgroup
-  by_cases hz : p.isInfinity = true
-  · simp only [hz, ite_true, (g1_toPoint_eq_zero_iff hp).mpr hz, nsmul_zero]
-  · simp only [hz, Bool.false_eq_true, ite_false]
-    rw [← g1_toPoint_eq_zero_iff (G1.valid_mulNat hp Fr.modulus), G1.toPoint_mulNat hp]
-
 theorem g1Valid_transport {p q : G1} (hinf : p.isInfinity = q.isInfinity)
     (haff : p.toAffine = q.toAffine) (hq : G1Valid q) : G1Valid p := by
   have hcurve : p.isInfinity = true ∨ p.toAffine.2 * p.toAffine.2 =
@@ -86,9 +67,9 @@ theorem g1Valid_transport {p q : G1} (hinf : p.isInfinity = q.isInfinity)
     have hqv := g1_valid_of_affine hqz (hq.1.resolve_left hqz)
     have hpoint : G1.toPoint p = G1.toPoint q := by
       rw [← G1.toPoint_affine_normalize hpz, ← G1.toPoint_affine_normalize hqz, haff]
-    apply (g1_inSubgroup_iff hpv).mpr
+    apply (EthLib.Cryptography.Bls.G1.inSubgroup_iff_modulus_smul_eq_zero hpv).mpr
     rw [hpoint]
-    exact (g1_inSubgroup_iff hqv).mp hq.2
+    exact (EthLib.Cryptography.Bls.G1.inSubgroup_iff_modulus_smul_eq_zero hqv).mp hq.2
 
 theorem g1Valid_of_rep {p : silver_crypto_simd.blst.blst_p1} {q : G1}
     (hrep : G1Rep p q) (hq : G1Valid q) : G1Valid (g1ReadJacobian p) :=
