@@ -204,9 +204,7 @@ impl Pending {
                 (Self::Envelope { request_id: first_id, request }, 1)
             }
             Outcome::AwaitingVerdicts(submission) => {
-                for &AcceptedEntry { body_index, topic, ssz, signature_verified } in
-                    &submission.accepted
-                {
+                for &AcceptedEntry { body_index, topic, ssz } in &submission.accepted {
                     let request_id = first_id + body_index as u64;
                     let validation = submission.validation;
                     emit(match submission.envelope {
@@ -221,7 +219,6 @@ impl Pending {
                             topic,
                             ssz,
                             validation,
-                            signature_verified,
                             hashed_body: submission.hashed_body,
                         },
                     });
@@ -3749,7 +3746,6 @@ mod tests {
                 body_index,
                 topic: GossipTopic::SyncCommittee(subnet),
                 ssz,
-                signature_verified: false,
             })
             .into();
         let failures = vec![SubmissionFailure { body_index: 2, message: "refused" }];

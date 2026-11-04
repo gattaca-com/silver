@@ -1178,7 +1178,6 @@ mod tests {
                 ssz,
                 protobuf,
                 validation: silver_common::BroadcastValidation::Gossip,
-                signature_verified: false,
             };
             self.tile.gossip_sidecar(index, gossip, &mut self.conn.producers);
         }

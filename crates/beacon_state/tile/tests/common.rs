@@ -383,7 +383,6 @@ impl Harness {
             ssz: tcache,
             protobuf: tcache,
             validation: silver_common::BroadcastValidation::Gossip,
-            signature_verified: false,
         });
     }
 

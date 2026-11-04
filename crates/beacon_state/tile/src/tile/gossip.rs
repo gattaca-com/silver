@@ -524,7 +524,7 @@ impl BeaconStateTile {
             }
             let (pk, root) = p.pubkey_and_root();
             let valid =
-                m.signature_verified || batch_ok || self.sig_batch.verify_one(pk, &sig, root);
+                m.is_api_verified() || batch_ok || self.sig_batch.verify_one(pk, &sig, root);
             if !valid {
                 self.reject_gossip(&m, p.message(), "vote bad signature", producers);
                 continue;
@@ -615,7 +615,7 @@ impl BeaconStateTile {
             let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
-            if !paired && !vote.signature_verified {
+            if !paired && !vote.is_api_verified() {
                 self.sig_batch.push_parsed(pk, sig, *root);
             }
             self.votes.pending.push((vote, p, sig));
@@ -1778,7 +1778,7 @@ impl BeaconStateTile {
     ) -> bool {
         let acquired = self.reader.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
-        let pre_verified = pre_verified || m.signature_verified;
+        let pre_verified = pre_verified || m.is_api_verified();
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {

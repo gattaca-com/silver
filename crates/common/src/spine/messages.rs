@@ -11,9 +11,9 @@ use silver_beacon_state_data::{
 };
 
 use crate::{
-    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify, MessageId,
-    Origin, P2pStreamId, PayloadFrame, PeerId, StreamProtocol, TCacheProducer, TCacheRead,
-    TProducer,
+    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify,
+    LOCAL_GOSSIP_STREAM_ID, MessageId, Origin, P2pStreamId, PayloadFrame, PeerId, StreamProtocol,
+    TCacheProducer, TCacheRead, TProducer,
     block_contents::BLOCK_CONTENTS_FIXED,
     column_util::columns_of,
     ssz_hash::HashedBody,
@@ -89,7 +89,6 @@ pub enum BeaconApiRequest {
         topic: GossipTopic,
         ssz: TCacheRead,
         validation: BroadcastValidation,
-        signature_verified: bool,
         /// The body the API hashed to check a block's signature, so Beacon
         /// State need not hash it again.
         hashed_body: Option<HashedBody>,
@@ -415,9 +414,6 @@ pub struct NewGossipMsg {
     /// What a local block must pass before it is relayed; anything else is
     /// relayed once it passes gossip validation.
     pub validation: BroadcastValidation,
-    /// The API checked a local message's signature before its
-    /// slashing-protection lock, so Beacon State need not check it again.
-    pub signature_verified: bool,
     pub msg_hash: MessageId,
     pub recv_ts: Nanos,
     /// Decompressed message SSZ
@@ -426,6 +422,15 @@ pub struct NewGossipMsg {
     /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
     pub protobuf: TCacheRead,
+}
+
+impl NewGossipMsg {
+    /// A local block or attestation takes a slashing-protection lock, so the
+    /// API verifies its signature first.
+    pub fn is_api_verified(&self) -> bool {
+        self.stream_id == LOCAL_GOSSIP_STREAM_ID &&
+            matches!(self.topic, GossipTopic::BeaconBlock | GossipTopic::BeaconAttestation(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, TypeHash)]

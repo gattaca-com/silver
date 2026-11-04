@@ -25,7 +25,6 @@ pub(super) struct LocalMessage<'a> {
     pub(super) ssz_read: Option<TCacheRead>,
     pub(super) slot: u64,
     pub(super) validation: BroadcastValidation,
-    pub(super) signature_verified: bool,
 }
 
 impl LocalGossipHandler {
@@ -36,18 +35,8 @@ impl LocalGossipHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        let LocalMessage { request_id, topic, ssz, ssz_read, slot, validation, signature_verified } =
-            message;
-        let recv_ts = Nanos::now();
-        let injected = gossip_handler.inject_local(
-            topic,
-            ssz,
-            ssz_read,
-            validation,
-            signature_verified,
-            recv_ts,
-        );
-        match injected {
+        let LocalMessage { request_id, topic, ssz, ssz_read, slot, validation } = message;
+        match gossip_handler.inject_local(topic, ssz, ssz_read, validation, Nanos::now()) {
             Ok(Some(msg_id)) => {
                 let request =
                     PendingValidationRequest { request_id, deadline: now + VALIDATION_TIMEOUT };
@@ -241,7 +230,6 @@ pub(super) mod tests {
             ssz_read: None,
             slot: 0,
             validation: BroadcastValidation::Gossip,
-            signature_verified: false,
         };
         let Harness { local_gossip, gossip, adapter, .. } = harness;
         local_gossip.submit(message, Instant::now(), gossip, &mut adapter.producers);
@@ -279,7 +267,6 @@ pub(super) mod tests {
                 ssz_read: None,
                 slot: 0,
                 validation: BroadcastValidation::Gossip,
-                signature_verified: false,
             };
             let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
             local_gossip.submit(message, at, gossip, &mut adapter.producers);

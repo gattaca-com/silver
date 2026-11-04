@@ -160,7 +160,6 @@ pub(super) fn handle_incoming(
         ssz: ssz_read,
         protobuf: mcache_read,
         validation: BroadcastValidation::Gossip,
-        signature_verified: false,
     }));
 
     // Pre-encode an IDONTWANT control frame carrying this single id; the

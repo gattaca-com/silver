@@ -110,7 +110,6 @@ impl PendingBlock {
                     ssz_read: Some(self.contents.to_read()),
                     slot: self.key.slot,
                     validation,
-                    signature_verified: true,
                 },
                 now,
                 gossip_handler,
@@ -682,7 +681,6 @@ mod tests {
 
         submit_block(handler, harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
         let first = harness.pop_gossip();
-        assert!(first.signature_verified, "only a verified block takes its lock");
         assert_eq!(locked_proposals(harness), 1, "the accepted contents follow");
         submit_block(handler, harness, &mut submissions, 2, &block_bytes(11, 4, 1), now);
         assert_eq!(harness.pop_gossip().msg_hash, first.msg_hash, "a resubmission rejoins");
@@ -930,7 +928,6 @@ mod tests {
 
         standalone.submit(1, 11, 7, 1, now);
         let message = standalone.harness.pop_gossip();
-        assert!(message.signature_verified, "only a verified attestation takes its lock");
         assert!(standalone.harness.responses().is_empty());
         assert!(standalone.handler.cluster.is_none());
         assert!(standalone.handler.pending_attestations.is_empty());
@@ -1171,15 +1168,7 @@ fn block_message(
     validation: BroadcastValidation,
 ) -> LocalMessage<'_> {
     let topic = GossipTopic::BeaconBlock;
-    LocalMessage {
-        request_id,
-        topic,
-        ssz,
-        ssz_read: None,
-        slot,
-        validation,
-        signature_verified: true,
-    }
+    LocalMessage { request_id, topic, ssz, ssz_read: None, slot, validation }
 }
 
 fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
@@ -1211,7 +1200,6 @@ impl AttestationLockCommand {
             ssz_read: None,
             slot: self.key.slot,
             validation: BroadcastValidation::Gossip,
-            signature_verified: true,
         }
     }
 }

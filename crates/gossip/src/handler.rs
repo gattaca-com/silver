@@ -197,7 +197,6 @@ impl GossipHandler {
         ssz: &[u8],
         ssz_read: Option<TCacheRead>,
         validation: BroadcastValidation,
-        signature_verified: bool,
         recv_ts: Nanos,
     ) -> Result<Option<MessageId>, Error> {
         let Some((domain, wire)) = self.domains.current_wire(topic) else {
@@ -256,7 +255,6 @@ impl GossipHandler {
             ssz: ssz_read,
             protobuf,
             validation,
-            signature_verified,
         }));
         Ok(Some(msg_id))
     }
@@ -856,7 +854,7 @@ mod tests {
         let ssz = [42; SINGLE_ATT_SIZE];
 
         let msg_id = handler
-            .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, false, Nanos::now())
+            .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, Nanos::now())
             .expect("local injection")
             .expect("new message");
         let message = match handler.pop_event().expect("new gossip event") {
@@ -878,7 +876,7 @@ mod tests {
 
         assert_eq!(
             handler
-                .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, false, Nanos::now())
+                .inject_local(topic, &ssz, None, BroadcastValidation::Gossip, Nanos::now())
                 .unwrap(),
             Some(msg_id)
         );

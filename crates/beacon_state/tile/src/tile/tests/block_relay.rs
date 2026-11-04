@@ -343,7 +343,6 @@ impl BlockPublications {
         let m = NewGossipMsg {
             stream_id: LOCAL_GOSSIP_STREAM_ID,
             validation,
-            signature_verified: true,
             ..gossip_msg(&mut self.gossip, block_ssz, GossipTopic::BeaconBlock)
         };
         self.tile.on_gossip(m, &mut self.adapter.producers);

@@ -133,7 +133,6 @@ impl BeaconStateTile {
                 topic: GossipTopic::ExecutionPayload,
                 ssz,
                 validation: BroadcastValidation::Gossip,
-                signature_verified: false,
                 hashed_body: None,
             });
         } else {

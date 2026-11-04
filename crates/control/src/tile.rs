@@ -145,24 +145,15 @@ impl Controller {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn on_local_gossip(
         &mut self,
         request_id: u64,
         topic: GossipTopic,
         ssz_read: TCacheRead,
         validation: BroadcastValidation,
-        signature_verified: bool,
         now: Instant,
         producers: &mut SilverSpineProducers,
     ) {
-        // A lock taken on a forged signature would refuse the validator's
-        // genuine message for the same duty.
-        let locked = matches!(topic, GossipTopic::BeaconBlock | GossipTopic::BeaconAttestation(_));
-        if locked && !signature_verified {
-            silver_log::error!(request_id, ?topic, "submitted message is unverified");
-            return produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
-        }
         let acquired = self.reader.acquire(ssz_read);
         let Ok((ssz, _)) = acquired.buffer() else {
             silver_log::error!(
@@ -294,7 +285,7 @@ impl Controller {
             }
         };
         self.local_gossip.submit(
-            LocalMessage { request_id, topic, ssz, ssz_read, slot, validation, signature_verified },
+            LocalMessage { request_id, topic, ssz, ssz_read, slot, validation },
             now,
             &mut self.gossip_handler,
             producers,
@@ -622,22 +613,9 @@ impl Tile<SilverSpine> for Controller {
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
-            BeaconApiRequest::LocalGossip {
-                request_id,
-                topic,
-                ssz,
-                validation,
-                signature_verified,
-                ..
-            } => self.on_local_gossip(
-                request_id,
-                topic,
-                ssz,
-                validation,
-                signature_verified,
-                now,
-                producers,
-            ),
+            BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation, .. } => {
+                self.on_local_gossip(request_id, topic, ssz, validation, now, producers)
+            }
             BeaconApiRequest::LockBlindedBlock { request_id, ssz } => {
                 self.slashing_protection.on_local_block(
                     request_id,

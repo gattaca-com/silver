@@ -65,9 +65,8 @@ fn submit(ctx: &ApiCtx, resp: &mut Response<'_>, body_index: usize, entry: impl 
         Ok(check) => check,
         Err(message) => return resp.fail_entry(body_index, message),
     };
-    let signature_verified = check.is_some();
     let encode = |out: &mut [u8]| entry.encode(out);
-    if resp.await_verdicts(body_index, topics, signature_verified, entry.ssz_len(), encode) &&
+    if resp.await_verdicts(body_index, topics, entry.ssz_len(), encode) &&
         let Some(check) = check
     {
         resp.await_signature(body_index, check);
@@ -97,7 +96,6 @@ pub(crate) struct AcceptedEntry {
     pub(crate) body_index: usize,
     pub(crate) topic: GossipTopic,
     pub(crate) ssz: TCacheRead,
-    pub(crate) signature_verified: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]

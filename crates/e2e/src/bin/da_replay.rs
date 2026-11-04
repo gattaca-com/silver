@@ -180,7 +180,6 @@ impl Node {
             // decompressed bytes stand in for the wire form.
             protobuf: ssz,
             validation: silver_common::BroadcastValidation::Gossip,
-            signature_verified: false,
         });
     }
 

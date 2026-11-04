@@ -219,7 +219,6 @@ fn gossip_pending(
             ssz: read,
             protobuf: read,
             validation: silver_common::BroadcastValidation::Gossip,
-            signature_verified: false,
         },
         pin,
     )
@@ -3111,7 +3110,6 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
         ssz,
         protobuf,
         validation: silver_common::BroadcastValidation::Gossip,
-        signature_verified: false,
     }
 }
 
@@ -3144,7 +3142,6 @@ fn gossip_att_msg(
         ssz: read,
         protobuf: read,
         validation: silver_common::BroadcastValidation::Gossip,
-        signature_verified: false,
     }
 }
 
@@ -3226,7 +3223,6 @@ fn local_attestation_skips_the_batch_verify() {
     let (forged, forged_subnet) = batched_att(&tile, 2, 1);
     let local = NewGossipMsg {
         stream_id: LOCAL_GOSSIP_STREAM_ID,
-        signature_verified: true,
         ..gossip_att_msg(&mut gp, &unchecked, local_subnet)
     };
     tile.defer_vote(local, &mut adapter.producers);

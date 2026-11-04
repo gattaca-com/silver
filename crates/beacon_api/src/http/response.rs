@@ -53,7 +53,6 @@ impl<'a> Response<'a> {
         &mut self,
         body_index: usize,
         topics: impl IntoIterator<Item = GossipTopic>,
-        signature_verified: bool,
         len: usize,
         encode: impl FnOnce(&mut [u8]),
     ) -> bool {
@@ -62,12 +61,7 @@ impl<'a> Response<'a> {
             return false;
         };
         let accepted = &mut self.submission().accepted;
-        accepted.extend(topics.into_iter().map(|topic| AcceptedEntry {
-            body_index,
-            topic,
-            ssz,
-            signature_verified,
-        }));
+        accepted.extend(topics.into_iter().map(|topic| AcceptedEntry { body_index, topic, ssz }));
         true
     }
 
@@ -99,7 +93,7 @@ impl<'a> Response<'a> {
         publication: EnvelopePublication,
         validation: BroadcastValidation,
     ) {
-        self.await_published(GossipTopic::ExecutionPayload, body, false, validation);
+        self.await_published(GossipTopic::ExecutionPayload, body, validation);
         let submission = self.submission();
         submission.envelope = Some(publication);
         submission.integration = Integration::AwaitingEnvelopeCheck;
@@ -112,7 +106,7 @@ impl<'a> Response<'a> {
         import: Integration,
         hashed_body: Option<HashedBody>,
     ) {
-        self.await_published(GossipTopic::BeaconBlock, body, true, validation);
+        self.await_published(GossipTopic::BeaconBlock, body, validation);
         let submission = self.submission();
         submission.integration = import;
         submission.hashed_body = hashed_body;
@@ -122,11 +116,9 @@ impl<'a> Response<'a> {
         &mut self,
         topic: GossipTopic,
         body: &[u8],
-        signature_verified: bool,
         validation: BroadcastValidation,
     ) {
-        let encode = |out: &mut [u8]| out.copy_from_slice(body);
-        self.await_verdicts(0, [topic], signature_verified, body.len(), encode);
+        self.await_verdicts(0, [topic], body.len(), |out| out.copy_from_slice(body));
         self.submission().validation = validation;
     }
 

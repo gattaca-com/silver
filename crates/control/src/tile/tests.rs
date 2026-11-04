@@ -7,10 +7,8 @@ use silver_common::{
     MessageId, Nanos, NewGossipMsg, P2pStreamId, PayloadResolution, PeerId, SszCache,
     StreamProtocol, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheReader, TCacheTable,
     TProducer, TReadMode,
-    ssz_view::{
-        PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE, SINGLE_ATT_SIZE,
-    },
-    test_util::{ShmemDir, SynthBid, SynthBlock, empty_signed_envelope},
+    ssz_view::{PAYLOAD_ATTESTATION_MESSAGE_SIZE, SIGNED_PROPOSER_PREFERENCES_SIZE},
+    test_util::{ShmemDir, empty_signed_envelope},
 };
 use silver_peer::SyncingConfig;
 
@@ -224,7 +222,6 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
                 topic,
                 ssz,
                 validation: BroadcastValidation::Gossip,
-                signature_verified: false,
                 hashed_body: None,
             });
             capture.crank();
@@ -255,41 +252,6 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
             });
             assert_eq!(responses, [(7, expected)], "{topic:?}, len={len}");
         }
-    }
-}
-
-/// A lock taken on an unchecked signature would refuse the validator's own
-/// message, so Control never locks one.
-#[test]
-fn unverified_block_or_attestation_never_reaches_its_lock() {
-    let block = SynthBlock::gloas(1, SynthBid::new(&[])).into_bytes();
-    let attestation = [0; SINGLE_ATT_SIZE];
-    for (topic, bytes) in
-        [(GossipTopic::BeaconBlock, &block[..]), (GossipTopic::BeaconAttestation(0), &attestation)]
-    {
-        let mut capture = GossipPublications::attach(topic, &[]);
-        capture.crank();
-        capture.observer.consume(|_: NewGossipMsg, _| {});
-        capture.observer.consume(|_: BeaconApiResponse, _| {});
-        let ssz = write_bytes(&mut capture.boundary, bytes);
-        capture.observer.produce(BeaconApiRequest::LocalGossip {
-            request_id: 7,
-            topic,
-            ssz,
-            validation: BroadcastValidation::Gossip,
-            signature_verified: false,
-            hashed_body: None,
-        });
-        capture.crank();
-
-        capture.observer.consume(|_: NewGossipMsg, _| panic!("{topic:?} was published"));
-        let mut responses = Vec::new();
-        capture.observer.consume(|response: BeaconApiResponse, _| {
-            if let BeaconApiResponse::LocalGossipResponse { request_id, response, .. } = response {
-                responses.push((request_id, response));
-            }
-        });
-        assert_eq!(responses, [(7, Err(LocalGossipFailure::Internal))], "{topic:?}");
     }
 }
 
@@ -666,7 +628,6 @@ fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
         topic,
         ssz,
         validation: BroadcastValidation::Gossip,
-        signature_verified: false,
         hashed_body: None,
     });
     capture.crank();
