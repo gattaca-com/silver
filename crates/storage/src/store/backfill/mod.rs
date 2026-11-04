@@ -5,7 +5,10 @@ use silver_beacon_state_data::SpecConfig;
 use silver_common::{
     block_root,
     merkle::B256,
-    ssz_view::{ExecutionPayloadBidView, SignedBeaconBlockView},
+    ssz_view::{
+        BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, ExecutionPayloadBidView,
+        SignedBeaconBlockView,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,6 +74,18 @@ impl BlockFacts {
         }
         let slot = SignedBeaconBlockView::slot(buffer);
         let is_gloas = spec.is_gloas_at_slot(slot);
+        let body = SignedBeaconBlockView::body(buffer);
+        let canonical = if is_gloas {
+            BeaconBlockBodyGloasView::check_canonical(body)
+        } else {
+            BeaconBlockBodyFuluView::check_canonical(body)
+        };
+        // the root hashes some malformed bodies like a valid one, so linkage alone does
+        // not pin the bytes
+        if !canonical {
+            silver_log::warn!(slot, "backfill block has non-canonical body");
+            return None;
+        }
         Some(Self {
             slot,
             block_root: block_root(buffer, is_gloas),
@@ -116,15 +131,8 @@ pub(in crate::store) mod fixtures {
         crate::store::test_spec(GLOAS_FORK_EPOCH)
     }
 
-    /// Synthetic `SignedBeaconBlock`: message at 100, slot at [100..108),
-    /// parent_root at [116..148), body at 184.
     pub(in crate::store) fn block_bytes(slot: u64, parent_root: B256) -> Vec<u8> {
-        let mut b = vec![0u8; 784];
-        b[0..4].copy_from_slice(&100u32.to_le_bytes());
-        b[100..108].copy_from_slice(&slot.to_le_bytes());
-        b[116..148].copy_from_slice(&parent_root);
-        b[180..184].copy_from_slice(&84u32.to_le_bytes());
-        b
+        SynthBlock::fulu(slot, &[]).parent_root(parent_root).into_bytes()
     }
 
     fn gloas_bid(commitments: &[u8]) -> SynthBid {

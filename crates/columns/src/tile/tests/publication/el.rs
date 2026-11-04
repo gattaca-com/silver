@@ -143,14 +143,15 @@ fn block_context_waits_for_validation_and_works_in_either_arrival_order() {
                 rig.block(&block);
             }
             assert_eq!(rig.drain().engine, 0);
-            if approval_first {
-                rig.block(&block);
-            } else {
-                rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            match (format, approval_first) {
+                // A Gloas block's commitments come only with its acceptance.
+                (ForkName::Gloas, _) => rig.persist(&block),
+                (_, true) => rig.block(&block),
+                (_, false) => rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers),
             }
             assert_eq!(rig.drain().engine, 1, "{format:?}, approval_first={approval_first}");
             rig.block(&block);
-            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            rig.persist(&block);
             assert_eq!(rig.drain().engine, 0);
         }
     }
@@ -183,7 +184,7 @@ fn incomplete_el_rows_wait_for_allocation_and_merge_with_gossip_on_both_forks() 
         rig.follow([0; 32]);
         rig.turn();
         rig.block(&block);
-        rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+        rig.persist(&block);
         assert_eq!(rig.drain().engine, 1);
         rig.engine_blobs(root, SLOT, &response);
         rig.turn();
@@ -281,7 +282,7 @@ fn complete_el_response_uses_assemblies_for_current_and_late_contexts_on_both_fo
             rig.follow([0; 32]);
             rig.turn();
             rig.block(&block);
-            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            rig.persist(&block);
             assert_eq!(rig.drain().engine, 1);
             if current_slot != SLOT {
                 assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
@@ -328,7 +329,7 @@ fn failed_assembly_allocation_retries_without_publishing_unwritten_columns() {
     rig.follow([0; 32]);
     rig.turn();
     rig.block(&block);
-    rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.engine_blobs(root, SLOT, &blobs[0].el_frame());
     rig.turn();
     assert_eq!(rig.drain().validated, 0);
@@ -363,7 +364,7 @@ fn el_cannot_overwrite_claimed_gossip_cells() {
     rig.follow([0; 32]);
     rig.turn();
     rig.block(&block);
-    rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.allocate_cells(&mut allocator);
     let pending = allocator
         .stage(
@@ -412,7 +413,7 @@ fn invalid_el_proof_releases_the_claim_without_penalizing_a_peer() {
     rig.follow([0; 32]);
     rig.turn();
     rig.block(&block);
-    rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.allocate_cells(&mut allocator);
     let mut response = blobs[0].el_frame();
     response[6 + 3 * BYTES_PER_KZG_PROOF..6 + 4 * BYTES_PER_KZG_PROOF]

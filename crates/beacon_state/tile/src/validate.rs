@@ -104,7 +104,7 @@ pub fn validate_proposer_slashing(data: &[u8]) -> Result<(), ProposerSlashingErr
 pub fn validate_voluntary_exit(
     cfg: &SpecConfig,
     validators: &ValidatorsView,
-    vi: u32,
+    vi: u64,
     exit_epoch: Epoch,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
@@ -123,21 +123,20 @@ pub fn validate_voluntary_exit(
 pub fn validate_exit_eligibility(
     cfg: &SpecConfig,
     validators: &ValidatorsView,
-    vi: u32,
+    vi: u64,
     current_epoch: Epoch,
 ) -> Result<(), VoluntaryExitError> {
     let count = validators.count();
-    if (vi as usize) >= count {
+    if vi >= count as u64 {
         return Err(VoluntaryExitError::ValidatorOutOfRange { vi: vi as usize, count });
     }
     let pubkey = *validators.pubkey(vi as usize);
     let act = validators.activation_epoch(vi as usize);
-    let exit = validators.exit_epoch(vi as usize);
-    if act > current_epoch || current_epoch >= exit {
-        return Err(VoluntaryExitError::NotActive { vi: vi as usize, pubkey, epoch: current_epoch });
-    }
-    if exit != u64::MAX {
+    if validators.exit_epoch(vi as usize) != u64::MAX {
         return Err(VoluntaryExitError::AlreadyExiting { vi: vi as usize, pubkey });
+    }
+    if act > current_epoch {
+        return Err(VoluntaryExitError::NotActive { vi: vi as usize, pubkey, epoch: current_epoch });
     }
     if current_epoch < act + cfg.shard_committee_period {
         return Err(VoluntaryExitError::TooEarly { vi: vi as usize, pubkey });
@@ -147,11 +146,11 @@ pub fn validate_exit_eligibility(
 
 pub fn validate_bls_to_execution_change(
     validators: &ValidatorsView,
-    vi: u32,
+    vi: u64,
     from_pubkey: &[u8; 48],
 ) -> Result<(), BlsToExecutionChangeError> {
     let count = validators.count();
-    if (vi as usize) >= count {
+    if vi >= count as u64 {
         return Err(BlsToExecutionChangeError::ValidatorOutOfRange { vi: vi as usize, count });
     }
     let creds = *validators.credentials(vi as usize);

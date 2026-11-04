@@ -193,15 +193,13 @@ impl DataColumnsTile {
         silver_log::info!(slot, has_columns, "beacon block recv");
 
         let block_root = block_root(buffer, is_gloas);
-        self.validator.cache_parent_state_root(block_root, buffer);
 
         if !has_columns {
-            self.tracker.record_columnless(block_root, slot, producers);
+            // recorded once the beacon state accepts the block
             return None;
         }
 
         if is_gloas {
-            self.validator.cache_gloas_commitments(block_root, buffer);
             self.gloas_context(block_root, slot, producers);
         } else if self.sync_state.is_synced() &&
             let Some(domain) = self.validator.domain_at(slot)
@@ -749,8 +747,13 @@ impl DataColumnsTile {
         let block = self.reader.acquire(ssz);
         if let Ok((buf, _)) = block.buffer() {
             let slot = SignedBeaconBlockView::slot(buf);
-            let root = block_root(buf, self.spec.is_gloas_at_slot(slot));
+            let is_gloas = self.spec.is_gloas_at_slot(slot);
+            let root = block_root(buf, is_gloas);
             self.validator.note_validated(root, slot);
+            self.validator.cache_parent_state_root(root, buf);
+            if is_gloas {
+                self.validator.cache_gloas_commitments(root, buf);
+            }
         }
         let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, true);
         self.handle_beacon_block(block, stream_id, producers);
@@ -813,7 +816,7 @@ impl DataColumnsTile {
                 latest_status_event = Some(ssz);
             }
             BeaconStateEvent::BlockReceived {
-                stage: BlockStage::AwaitData | BlockStage::Applied | BlockStage::AlreadyKnown,
+                stage: BlockStage::AwaitData,
                 block_root,
                 slot,
                 ..
@@ -821,6 +824,13 @@ impl DataColumnsTile {
                 self.publish_proposed_columns(&block_root, producers);
                 self.note_staged_block(block_root, slot, producers);
             }
+            // The `PersistBlock` that follows stages it, after recording a columnless block, so
+            // that block starts no chase.
+            BeaconStateEvent::BlockReceived {
+                stage: BlockStage::Applied | BlockStage::AlreadyKnown,
+                block_root,
+                ..
+            } => self.publish_proposed_columns(&block_root, producers),
             BeaconStateEvent::BlockRejected { block_root, .. } => {
                 self.proposed.drop_held(&block_root);
                 self.el_fetcher.reject(&block_root);
@@ -1216,6 +1226,21 @@ mod tests {
             self.tile.handle_beacon_block(
                 read,
                 P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+                &mut self.conn.producers,
+            );
+        }
+
+        fn persist(&mut self, bytes: &[u8]) {
+            let slot = SignedBeaconBlockView::slot(bytes);
+            let block_root = block_root(bytes, self.tile.spec.is_gloas_at_slot(slot));
+            let ssz = tcache_write(&mut self.gossip_p, bytes);
+            self.tile.handle_beacon_state_event(
+                BeaconStateEvent::PersistBlock {
+                    ssz,
+                    source: BlockSource::Gossip,
+                    slot,
+                    block_root,
+                },
                 &mut self.conn.producers,
             );
         }
@@ -1774,7 +1799,8 @@ mod tests {
     }
 
     /// No peer can serve columns for a block without blobs, so its custody set
-    /// is complete on sight and the later import report must not chase it.
+    /// is complete once the beacon state accepts it, and the import must not
+    /// chase it. Before that, the block is untrusted and leaves no record.
     #[test]
     fn blobless_block_completes_custody_without_a_chase() {
         let mut rig = Rig::new(CUSTODY_COLUMNS);
@@ -1791,13 +1817,22 @@ mod tests {
             read,
             &mut rig.conn.producers,
         );
-        rig.tile.handle_beacon_state_event(
-            block_received(BlockStage::Applied, root, 42),
-            &mut rig.conn.producers,
-        );
+        assert!(ret.is_none());
+        assert_eq!(rig.drain().available, 0, "an unvalidated block records nothing");
+
+        let persisted = tcache_write(&mut rig.gossip_p, &block_bytes);
+        for event in
+            [block_received(BlockStage::Applied, root, 42), BeaconStateEvent::PersistBlock {
+                ssz: persisted,
+                source: BlockSource::Rpc,
+                slot: 42,
+                block_root: root,
+            }]
+        {
+            rig.tile.handle_beacon_state_event(event, &mut rig.conn.producers);
+        }
         let out = rig.drain();
 
-        assert!(ret.is_none());
         assert_eq!(out.available, 1);
         assert_eq!(out.custody_complete, 1, "the sync window learns the slot is covered");
         assert!(out.missing.is_empty(), "no chase for columns that do not exist");
