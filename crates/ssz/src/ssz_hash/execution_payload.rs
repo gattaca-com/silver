@@ -126,7 +126,7 @@ fn hash_transactions(data: &[u8]) -> B256 {
     const EMPTY_LIST_ROOT: B256 = MerkleStack::empty_root(MAX_TRANSACTIONS_PER_PAYLOAD);
     let tx_chunk_capacity = MAX_BYTES_PER_TRANSACTION.div_ceil(32);
 
-    if data.is_empty() {
+    if data.len() < 4 {
         return mix_in_length(&EMPTY_LIST_ROOT, 0);
     }
 
