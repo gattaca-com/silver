@@ -4,9 +4,6 @@ namespace LeanBlsSimd.SpecPairing
 
 open EthLib.Cryptography.Bls
 
-theorem millerSteps_zero (s : Nat) (R P T : Embedded.Point) (f : Fp12) :
-    millerSteps s R P 0 T f = f := rfl
-
 theorem millerSteps_succ (s n : Nat) (R P T : Embedded.Point) (f : Fp12) :
     millerSteps s R P (n + 1) T f =
       let doubled := millerDouble T P f
@@ -16,9 +13,6 @@ theorem millerSteps_succ (s n : Nat) (R P T : Embedded.Point) (f : Fp12) :
 
 theorem millerLoop_eq (s : Nat) (R P : Embedded.Point) :
     millerLoop s R P = millerSteps s R P s.log2 R Fp12.one := rfl
-
-theorem millerLoop_zero (R P : Embedded.Point) :
-    millerLoop 0 R P = Fp12.one := rfl
 
 /-- Accumulate a single pair, preserving the specification's identity skip. -/
 def pairingFoldStep (acc : Fp12) (pair : G1 × G2) : Fp12 :=
@@ -43,11 +37,5 @@ theorem pairingCheck_eq (pairs : Array (G1 × G2)) :
   simp only [Bool.or_eq_true] at step
   simp only [step, Array.forIn_pure_yield_eq_foldl]
   rfl
-
-theorem pairingFold_empty : pairingFold #[] = Fp12.one := rfl
-
-theorem pairingFold_push (pairs : Array (G1 × G2)) (pair : G1 × G2) :
-    pairingFold (pairs.push pair) = pairingFoldStep (pairingFold pairs) pair := by
-  exact Array.foldl_push
 
 end LeanBlsSimd.SpecPairing

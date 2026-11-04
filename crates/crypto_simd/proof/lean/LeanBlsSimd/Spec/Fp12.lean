@@ -61,9 +61,6 @@ theorem toField_mk_zero (a : Fp6) :
   · rfl
   · exact Fp6.toField_zero
 
-theorem toField_w : toField ⟨Fp6.zero, Fp6.one⟩ = Fp12Field.w := by
-  exact QuadraticAlgebra.ext Fp6.toField_zero Fp6.toField_one
-
 theorem toField_inverse (a : Fp12) : toField a.inverse = (toField a)⁻¹ := map_inv₀ toField a
 
 theorem toField_conjugate (a : Fp12) : toField a.conjugate = star (toField a) := by
@@ -74,9 +71,6 @@ theorem toField_conjugate (a : Fp12) : toField a.conjugate = star (toField a) :=
 @[simp] theorem toField_powNat (a : Fp12) (n : ℕ) :
     toField (powNat a n) = toField a ^ n := by
   rw [EthLib.Cryptography.Bls.Fp12.powNat_eq_pow, map_pow]
-
-theorem beq_iff (a b : Fp12) : a.beq b = true ↔ toField a = toField b := by
-  rw [EthLib.Cryptography.Bls.Fp12.beq_iff_eq, toField.injective.eq_iff]
 
 theorem isOne_iff (a : Fp12) : a.isOne = true ↔ toField a = 1 := by
   rw [EthLib.Cryptography.Bls.Fp12.isOne_iff, ← map_one toField, toField.injective.eq_iff]

@@ -18,20 +18,6 @@ def pairingFactor (pair : G1 × G2) : Fp12 :=
 /-- The executable single-pair value; this definition does not assert pairing laws. -/
 def eSpec (p : G1) (q : G2) : Fp12 := finalExponentiation (pairingFactor (p, q))
 
-theorem eSpec_def (p : G1) (q : G2) :
-    eSpec p q = if p.isInfinity || q.isInfinity then Fp12.one
-      else finalExponentiation ((millerLoop blsX (Embedded.ofG2 q) (Embedded.ofG1 p)).conjugate) := by
-  unfold eSpec pairingFactor
-  split
-  · exact finalExponentiation_one
-  · rfl
-
-theorem eSpec_of_left_infinity (p : G1) (q : G2) (hp : p.isInfinity = true) :
-    eSpec p q = Fp12.one := by simp [eSpec_def, hp]
-
-theorem eSpec_of_right_infinity (p : G1) (q : G2) (hq : q.isInfinity = true) :
-    eSpec p q = Fp12.one := by simp [eSpec_def, hq]
-
 theorem toField_pairingStep (acc : Fp12) (pair : G1 × G2) :
     Fp12.toField (SpecPairing.pairingFoldStep acc pair) = Fp12.toField acc * Fp12.toField (pairingFactor pair) := by
   unfold SpecPairing.pairingFoldStep pairingFactor
@@ -66,41 +52,8 @@ theorem pairingCheck_iff (pairs : Array (G1 × G2)) :
       (pairs.toList.map (fun pair => Fp12.toField (eSpec pair.1 pair.2))).prod = 1 := by
   rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation_pairingFold]
 
-/-- Group-valued factors require an explicit nonvanishing hypothesis for each contributing value. -/
-def pairingTargets (pairs : Array (G1 × G2))
-    (h : ∀ pair ∈ pairs.toList, pairingFactor pair ≠ Fp12.zero) :
-    List (rootsOfUnity Fr.modulus Fp12Field) :=
-  pairs.toList.attach.map fun pair => finalExponentiationTarget (pairingFactor pair.1) (h _ pair.2)
-
-theorem pairingTargets_prod_val (pairs : Array (G1 × G2))
-    (h : ∀ pair ∈ pairs.toList, pairingFactor pair ≠ Fp12.zero) :
-    (((pairingTargets pairs h).prod : Fp12Fieldˣ) : Fp12Field) =
-      (pairs.toList.map (fun pair => Fp12.toField (eSpec pair.1 pair.2))).prod := by
-  let val := (Units.coeHom Fp12Field).comp (rootsOfUnity Fr.modulus Fp12Field).subtype
-  change val (pairingTargets pairs h).prod = _
-  rw [← List.prod_hom]
-  simp only [pairingTargets, List.map_map, Function.comp_def]
-  change (pairs.toList.attach.map (fun pair => Fp12.toField (eSpec pair.1.1 pair.1.2))).prod = _
-  rw [List.attach_map_val (f := fun pair : G1 × G2 => Fp12.toField (eSpec pair.1 pair.2))]
-
-theorem pairingCheck_iff_target_product (pairs : Array (G1 × G2))
-    (h : ∀ pair ∈ pairs.toList, pairingFactor pair ≠ Fp12.zero) :
-    pairingCheck pairs = true ↔ (pairingTargets pairs h).prod = 1 := by
-  rw [pairingCheck_iff, ← pairingTargets_prod_val pairs h]
-  constructor
-  · intro hp
-    exact Subtype.ext (Units.ext hp)
-  · intro hp
-    rw [hp]
-    rfl
-
 theorem pairingCheck_empty : pairingCheck #[] = true := by
   rw [pairingCheck_iff]
-  simp
-
-theorem pairingCheck_singleton (p : G1) (q : G2) :
-    pairingCheck #[(p, q)] = true ↔ (eSpec p q).isOne = true := by
-  rw [pairingCheck_iff, Fp12.isOne_iff]
   simp
 
 end

@@ -34,9 +34,6 @@ theorem Fp2Field.natCast_modulus : (Fp.modulus : Fp2Field) = 0 := by
 theorem Fp.isZero_iff {a : Fp} : a.isZero = true ↔ (a : ZMod Fp.modulus) = 0 :=
   EthLib.Cryptography.Bls.G1.isZero_iff
 
-theorem Fp.beq_iff {a b : Fp} : a.beq b = true ↔ (a : ZMod Fp.modulus) = b :=
-  EthLib.Cryptography.Bls.G1.beq_iff
-
 private theorem re_mul_eq (a b c d : ZMod Fp.modulus) : a * c - b * d = a * c + -1 * b * d := by
   ring
 
@@ -65,8 +62,6 @@ namespace Fp2
 @[simp] theorem toField_mk (a b : Fp) :
     toField ⟨a, b⟩ = ⟨(a : ZMod Fp.modulus), (b : ZMod Fp.modulus)⟩ := rfl
 
-theorem toField_i : toField Fp2.i = QuadraticAlgebra.omega := rfl
-
 @[simp] theorem toField_zero : toField Fp2.zero = 0 := rfl
 
 @[simp] theorem toField_one : toField Fp2.one = 1 := rfl
@@ -85,20 +80,6 @@ theorem isZero_iff (x : Fp2) : x.isZero = true ↔ toField x = 0 := by
 
 theorem beq_iff (x y : Fp2) : x.beq y = true ↔ toField x = toField y := by
   rw [EthLib.Cryptography.Bls.Fp2.beq_iff_eq, toField.injective.eq_iff]
-
-theorem toField_conjugate (x : Fp2) : toField x.conjugate = star (toField x) := by
-  ext
-  · simp only [Fp2.conjugate, re_toField, QuadraticAlgebra.re_star, im_toField]
-    exact (by simp : ∀ a b : ZMod Fp.modulus, a = a + 0 * b) x.c0 x.c1
-  · rfl
-
-/-- The right side is the spec's own expression for the norm in `Fp2.inverse` and `Fp2.sqrt`, in
-`Fp` arithmetic, so `rw` matches it there. -/
-theorem norm_toField (x : Fp2) :
-    (toField x).norm = (x.c0 * x.c0 + x.c1 * x.c1 : ZMod Fp.modulus) := by
-  rw [QuadraticAlgebra.norm_def, re_toField, im_toField]
-  have h (a b : ZMod Fp.modulus) : a * a + 0 * a * b - -1 * b * b = a * a + b * b := by ring
-  exact h x.c0 x.c1
 
 end Fp2
 

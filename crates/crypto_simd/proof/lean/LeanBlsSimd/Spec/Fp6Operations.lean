@@ -41,12 +41,6 @@ open Fp6Field
     of (Fp2.toField a.c2) * Fp6Field.v ^ 2) * Fp6Field.v
   linear_combination -of (Fp2.toField a.c2) * v_cube
 
-theorem isZero_iff (a : Fp6) : a.isZero = true ↔ toField a = 0 := by
-  rw [EthLib.Cryptography.Bls.Fp6.isZero_iff, ← map_zero toField, toField.injective.eq_iff]
-
-theorem beq_iff (a b : Fp6) : a.beq b = true ↔ toField a = toField b := by
-  rw [EthLib.Cryptography.Bls.Fp6.beq_iff_eq, toField.injective.eq_iff]
-
 end Fp6
 
 instance Fp6Field.instFintype : Fintype Fp6Field :=

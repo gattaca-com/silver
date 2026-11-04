@@ -146,30 +146,4 @@ theorem assemble_pow_p6 (a b c : S) :
       d ^ 2 * (star c * d ^ 4) = d ^ 6 * star c := by ring
       _ = star c := by rw [d_sixth, one_mul]
 
-theorem tower_period (g : T) : g ^ (p ^ 12) = g := by
-  obtain ⟨a, b, c, rfl⟩ := assemble_surjective u g
-  rw [show p ^ 12 = p ^ 6 * p ^ 6 by ring, pow_mul, assemble_pow_p6, assemble_pow_p6]
-  simp only [star_star, star_neg, neg_neg]
-
-theorem unit_period (g : Tˣ) : g ^ (p ^ 12 - 1) = 1 := by
-  have hperiod : g ^ (p ^ 12) = g := by
-    apply Units.ext
-    simpa only [Units.val_pow_eq_pow_val] using tower_period (g : T)
-  apply mul_left_cancel (a := g)
-  calc
-    g * g ^ (p ^ 12 - 1) = g ^ (p ^ 12) := by
-      rw [← pow_succ', Nat.sub_add_cancel (by decide +kernel : 1 ≤ p ^ 12)]
-    _ = g := hperiod
-    _ = g * 1 := (mul_one _).symm
-
-theorem easy_cyclotomic (g : Tˣ) : LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 4 - p ^ 2 + 1) = 1 :=
-  easyPart_cyclotomic g p (by decide +kernel) (unit_period g)
-
-theorem easy_unitary (g : Tˣ) : LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 6 + 1) = 1 :=
-  cyclotomic_unitary _ p (by decide +kernel) (easy_cyclotomic g)
-
-theorem easy_conjugate_inverse (g : Tˣ) :
-    LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 6) = (LeanBlsSimd.Cyclotomic.easyPart g p)⁻¹ :=
-  conjugate_inverse _ _ (easy_unitary g)
-
 end LeanBlsSimd.Cyclotomic.Bls

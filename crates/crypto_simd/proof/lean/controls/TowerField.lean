@@ -41,12 +41,9 @@ theorem fp2_zero_pow_one : Fp2.powNat Fp2.zero 1 = Fp2.zero := by
   apply Fp2.toField.injective
   simp
 
-theorem field_coordinates_roundtrip (x : Fp12) :
-    fieldEquiv.symm (Schedule.decode LeanBlsSimd.Fp6Field.xi (specCoeffs x)) = Fp12.toField x := by
-  rw [← spec_toCubic, RingEquiv.symm_apply_apply]
-
-theorem zero_final_exponent_rejected : (finalExponentiation Fp12.zero).isOne = false :=
-  finalExponentiation_zero_not_isOne
+theorem zero_final_exponent_rejected : (finalExponentiation Fp12.zero).isOne = false := by
+  rw [finalExponentiation_zero]
+  rfl
 
 theorem zero_easy_part_rejected : fieldEasyPart 0 ^ (Bls.p^4-Bls.p^2+1) ≠ 1 := by
   rw [field_easy_zero, zero_pow (by decide +kernel)]
@@ -65,7 +62,6 @@ theorem tower_cardinality : Fintype.card Fp6Field = Fp.modulus^6 ∧
 #print axioms Fp6.toField_inverse
 #print axioms Fp12.toField_inverse
 #print axioms Fp12.toField_powNat
-#print axioms fieldEquiv
 #print axioms field_cyclotomic_square
 #print axioms field_frobenius
 #print axioms field_star
