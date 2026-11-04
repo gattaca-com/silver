@@ -204,12 +204,6 @@ private theorem packedFromBlst_holds_value (values : Array (Array U64 6#usize) 8
   rw [he]
   exact hh
 
-private theorem packedFromBlst_radix (values : Array (Array U64 6#usize) 8#usize)
-    (l : Fin 8) (hr : FpReduced ⟨values.val[l.val]⟩) :
-    val64 (ofArray (m := 6) ofU64 values.val[l.val]) =
-      fpMontgomeryValue (fpRead ⟨values.val[l.val]⟩) :=
-  fpRead_montgomery_value ⟨values.val[l.val]⟩ hr
-
 private theorem packedFromBlst_holds_raw (values : Array (Array U64 6#usize) 8#usize)
     (l : Fin 8) (raw : blst.blst_fp) (he : values.val[l.val] = raw.l)
     (hr : FpReduced raw) : (packedFromBlst values).Holds l (fpRead raw) := by

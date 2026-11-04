@@ -216,12 +216,6 @@ theorem roots_refinement_of_blst (logOrder : U32)
     exact hr
   · simpa [alloc.vec.Vec.with_capacity, hv, model_roots _ hl, computePowers] using hval
 
-theorem Refinement.primitive_root_refinement
-    (logOrder : U32) (hl : logOrder.val ≤ 256) :
-    domain.primitive_root logOrder = ok (frEncode
-      (Fr.powNat (Fr.ofNat 7) ((Fr.modulus - 1) / 2^logOrder.val))) :=
-  Refinement.primitive_root_refinement_of_blst logOrder hl
-
 theorem roots_refinement (logOrder : U32)
     (hl : logOrder.val = 6 ∨ logOrder.val = 13) :
     ∃ rs, domain.roots_of_unity logOrder = ok rs ∧

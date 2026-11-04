@@ -19,9 +19,6 @@ def BlstMatchesSpec [KzgExternals] : Prop :=
       Bls.pairingCheck #[(g1ReadJacobian p1, SetupPoints.g2Point64),
         (g1ReadJacobian p2, G2.neg SetupPoints.g2Point0)]
 
-class Correct [KzgExternals] : Prop where
-  matchesSpec : BlstMatchesSpec
-
 /-- Only a stored scalar workspace calls the external pairing operation. -/
 def CorrectFor [KzgExternals] (work : verify.CurveWork) : Prop :=
   CurveWork.isLanes work = false → BlstMatchesSpec

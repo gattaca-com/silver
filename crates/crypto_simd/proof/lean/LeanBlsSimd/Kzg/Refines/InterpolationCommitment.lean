@@ -92,20 +92,6 @@ private theorem setup_lincomb_inputs
     exact frEncode_reduced f
   exact ⟨hsize, by simpa only [alloc.vec.Vec.deref, Slice.from_val] using setup_points_valid s hs, hscalars⟩
 
-theorem setup_lincomb [cpu : RuntimeFeatures]
-    (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
-    (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
-    (scratch : verify.CurveWork) :
-    ∃ point scratch',
-      scratch.sum (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) =
-        ok (point, scratch') ∧
-      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) := by
-  obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hrep⟩ := verify_lincomb_raw_refinement scratch
-    (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize hpoints hscalars
-  refine ⟨point, scratch', hcall, ?_⟩
-  simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
-
 theorem setup_verify_lincomb [cpu : RuntimeFeatures]
     (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
     (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
@@ -120,23 +106,6 @@ theorem setup_verify_lincomb [cpu : RuntimeFeatures]
     hpoints hscalars
   refine ⟨point, scratch', hcall, ?_⟩
   simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
-
-
-theorem setup_verify_lincomb_kernel [cpu : RuntimeFeatures]
-    (s : setup.Setup) (hs : SetupRep s) (coeffs : List Fr) (hcoeffs : coeffs.length = 64)
-    (v : alloc.vec.Vec blst.blst_fr) (hv : v.val = coeffs.map frEncode)
-    (scratch : verify.CurveWork) (hroute : CurveWork.isLanes scratch = true) :
-    ∃ point scratch',
-      scratch.sum (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) =
-        ok (point, scratch') ∧
-      G1Rep point (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs.toArray) ∧ CurveWork.isLanes scratch' = true := by
-  obtain ⟨hsize, hpoints, hscalars⟩ := setup_lincomb_inputs s hs coeffs hcoeffs v hv
-  obtain ⟨point, scratch', hcall, hnext, hrep⟩ := verify_lincomb_raw_kernel_refinement scratch hroute
-    (alloc.vec.Vec.deref s.g1_monomial) (alloc.vec.Vec.deref v) hsize
-    hpoints hscalars
-  refine ⟨point, scratch', hcall, ?_, ?_⟩
-  · simpa only [alloc.vec.Vec.deref, Slice.from_val, setup_points_read s hs, encoded_scalars_read coeffs v hv] using hrep
-  · exact hnext
 
 
 private theorem inverseFft_eq (values : _root_.Array Fr) (hvalues : values.size = 64) :

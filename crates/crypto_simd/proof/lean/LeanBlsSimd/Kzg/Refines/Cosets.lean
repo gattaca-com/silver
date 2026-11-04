@@ -39,20 +39,6 @@ private theorem coset_shift_eq (k : Nat) (hk : k < 128) :
   simp only [size_computeRootsOfUnity]
   rfl
 
-open scoped EthLib.Cryptography.Bls.Fr in
-private theorem coset_shift_ne_zero (k : Nat) (hk : k < 128) : Model.cosetShift k ≠ 0 := by
-  rw [coset_shift_eq k hk]
-  simp only [Model.roots, computeRootsOfUnity_def]
-  let root : Fr := (Fr.ofNat Constants.PRIMITIVE_ROOT_OF_UNITY) ^
-    (Fr.ofNat ((Constants.BLS_MODULUS - 1) / 8192))
-  change (computePowers root 8192)[cosetIndex k]! ≠ 0
-  rw [getElem!_pos (computePowers root 8192) (cosetIndex k)
-    (by simpa using coset_index_lt k), getElem_computePowers, Fr.powNat_eq_pow]
-  apply pow_ne_zero
-  change Fr.powNat (Fr.ofNat 7) _ ≠ 0
-  rw [Fr.powNat_eq_pow]
-  exact pow_ne_zero _ (by decide)
-
 private def squareIter (i : Nat) : Range U32 :=
   { start := ⟨BitVec.ofNat 32 i⟩, «end» := 6#u32 }
 

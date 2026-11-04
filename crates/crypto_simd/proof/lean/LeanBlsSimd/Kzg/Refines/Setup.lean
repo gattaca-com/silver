@@ -19,12 +19,6 @@ theorem setup_g2_zero_roundtrip :
     Fp2.inverse, SetupArithmetic.inverse_eq]
   decide +kernel
 
-theorem setup_g2_cell_roundtrip :
-    g2ReadAffine (g2Affine SetupPoints.g2Point64) = SetupPoints.g2Point64 := by
-  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead, G2.toAffine,
-    Fp2.inverse, SetupArithmetic.inverse_eq]
-  decide +kernel
-
 theorem setup_g2_zero_valid : G2AffineValid (g2Affine SetupPoints.g2Point0) := by
   rw [G2AffineValid, setup_g2_zero_roundtrip]
   exact ⟨rfl, arrayBytes SetupPoints.g2Bytes0,

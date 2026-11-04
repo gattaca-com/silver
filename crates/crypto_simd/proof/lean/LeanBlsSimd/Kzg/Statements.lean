@@ -59,13 +59,6 @@ theorem column_ifft_eq_interpolation
   rw [ModelSpec.specRli_eq_lagrangeRli indices evals powers h]
   exact column_ifft_interpolation indices evals powers h
 
-theorem spec_eq_column_ifft
-    (cs : _root_.Array Bytes48) (indices : _root_.Array Nat)
-    (cells : _root_.Array Cell) (ps : _root_.Array Bytes48) :
-    verifyCellKzgProofBatch cs indices cells ps =
-      Model.verifyWith (monadLift TrustedSetup.get!) Model.columnStep cs indices cells ps := by
-  exact ModelSpec.upstream_spec_eq_column column_ifft_eq_interpolation cs indices cells ps
-
 theorem model_eq_embedded_spec (i : Input) :
     Model.rejectErrors i.embeddedSpec = i.model := by
   exact ModelSpec.rejectErrors_spec_eq_model column_ifft_eq_interpolation embeddedSetup
@@ -115,19 +108,6 @@ theorem new_returns_ok [cpu : RuntimeFeatures] [KzgExternals] [UncompressG1.Fall
     ∃ v, verify.CellBatchVerifier.new = ok v ∧ StateInvariant v := by
   obtain ⟨v, hnew, hinv, _, _⟩ := new_returns_ok_route
   exact ⟨v, hnew, hinv⟩
-
-/-- Replacing curve scratch preserves the setup and interpolation invariant. -/
-theorem stateInvariant_curveWork (v : verify.CellBatchVerifier) (work : verify.CurveWork)
-    (hwork : CurveWorkInvariant work) (hv : StateInvariant v) :
-    StateInvariant {v with curve_work := work} :=
-  ⟨hv.1, hv.2.1, hv.2.2.1, hwork⟩
-
-theorem stateInvariant_allows_scalar [RuntimeFeatures]
-    (v : verify.CellBatchVerifier) (hv : StateInvariant v) :
-    ∃ next, StateInvariant next ∧ next.kernel = v.kernel ∧
-      CurveWork.isLanes next.curve_work = false := by
-  obtain ⟨work, _, hwork, hroute⟩ := curveWork_scalar_refinement
-  exact ⟨{v with curve_work := work}, stateInvariant_curveWork v work hwork hv, rfl, hroute⟩
 
 theorem default_eq_new [RuntimeFeatures] [KzgExternals] :
     verify.CellBatchVerifier.Insts.CoreDefaultDefault.default =

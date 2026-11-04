@@ -42,7 +42,13 @@ theorem laws_satisfiable : ∃ external : KzgExternals,
   intro p1 p2 _ _ _ _
   change Bls.pairingCheck #[(g1ReadJacobian p1, g2ReadAffine (g2Affine SetupPoints.g2Point64)),
     (g1ReadJacobian p2, g2ReadAffine (g2Affine (G2.neg SetupPoints.g2Point0)))] = _
-  rw [setup_g2_cell_roundtrip, setup_g2_neg_zero_roundtrip]
+  rw [g2ReadAffine_decoded SetupPoints.g2_64_decoded]
+  have hneg : g2ReadAffine (g2Affine (G2.neg SetupPoints.g2Point0)) =
+      G2.neg SetupPoints.g2Point0 := by
+    simp only [g2ReadAffine, g2Affine, fp2Read_fp2Encode, G2.toAffine,
+      Fp2.inverse, SetupArithmetic.inverse_eq]
+    decide +kernel
+  rw [hneg]
 
 /-- An arbitrary external dictionary still permits IFMA construction and repeated calls. -/
 example [cpu : RuntimeFeatures] [KzgExternals] (h : cpu.simdAvailable = true) :
@@ -58,6 +64,9 @@ example [cpu : RuntimeFeatures] [KzgExternals] (h : cpu.simdAvailable = true) :
 /-- Scalar work remains admissible independently of the interpolation route and CPU features. -/
 example [RuntimeFeatures] (v : verify.CellBatchVerifier) (h : StateInvariant v) :
     ∃ next, StateInvariant next ∧ next.kernel = v.kernel ∧
-      CurveWork.isLanes next.curve_work = false := stateInvariant_allows_scalar v h
+      CurveWork.isLanes next.curve_work = false := by
+  obtain ⟨work, _, _, hroute⟩ := curveWork_scalar_refinement
+  refine ⟨{v with curve_work := work}, ?_, rfl, hroute⟩
+  simpa only [StateInvariant, CurveWorkInvariant] using h
 
 end LeanBlsSimd.Controls.KzgBlstBoundary

@@ -133,15 +133,6 @@ abbrev ColumnIdentity : Prop :=
     Model.specRli indices (indices.map Model.cosetShift) evals powers =
       .ok (Model.columnRli indices evals powers)
 
-theorem frontHalf_rli_inputs
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48)
-    (unique : Array KZGCommitment) (ci : Array Nat) (evals : Array CosetEvals)
-    (proofs : Array KZGProof)
-    (h : Model.frontHalf cs indices cells ps = .ok (unique, ci, evals, proofs)) (r : Fr) :
-    Model.RliInputs indices evals (computePowers r indices.size) := by
-  obtain ⟨hsize, hbounds, hrows⟩ := frontHalf_shape cs indices cells ps unique ci evals proofs h
-  exact ⟨hsize, by simp, hbounds, hrows⟩
-
 theorem implPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (unique : Array KZGCommitment) (ci indices : Array Nat) (evals : Array CosetEvals)
     (proofs : Array KZGProof)
@@ -158,24 +149,6 @@ theorem implPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : Trust
   unfold Model.implPure Model.columnStep
   simp only [hm, pure_bind, hr]
 
-theorem implWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : KzgM TrustedSetup)
-    (unique : Array KZGCommitment) (ci indices : Array Nat) (evals : Array CosetEvals)
-    (proofs : Array KZGProof)
-    (h : indices.size = evals.size ∧ (∀ i ∈ indices, i < 128) ∧
-      (∀ ys ∈ evals, ys.size = 64)) :
-    Model.implWith getSetup Model.specRli unique ci indices evals proofs =
-      Model.implWith getSetup Model.columnStep unique ci indices evals proofs := by
-  have hin : Model.RliInputs indices evals
-      (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-        indices.size) := ⟨h.1, by simp, h.2.1, h.2.2⟩
-  have hr := columnIdentity _ _ _ hin
-  have hm : (indices.mapM fun c => ExceptT.mk (pure (Model.shiftOf c)) : KzgM (Array Fr)) =
-      pure (indices.map Model.cosetShift) := by
-    rw [← liftE_arrayMapM, mapM_shiftOf indices h.2.1]
-    rfl
-  unfold Model.implWith Model.columnStep
-  simp only [hm, pure_bind, hr]
-
 theorem verifyPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
     Model.verifyPure setup Model.specRli cs indices cells ps =
@@ -187,28 +160,6 @@ theorem verifyPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : Tru
     rcases front with ⟨unique, ci, evals, proofs⟩
     exact implPure_spec_eq_column columnIdentity setup unique ci indices evals proofs
       (frontHalf_shape cs indices cells ps unique ci evals proofs hf)
-
-theorem verifyWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : KzgM TrustedSetup)
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
-    Model.verifyWith getSetup Model.specRli cs indices cells ps =
-      Model.verifyWith getSetup Model.columnStep cs indices cells ps := by
-  unfold Model.verifyWith
-  cases hf : Model.frontHalf cs indices cells ps with
-  | error e =>
-    simp only [liftM_eq_liftE, show liftE (Except.error e : Except KzgError Model.Front) =
-      throw e from rfl, ExceptT.bind_throw]
-  | ok front =>
-    rcases front with ⟨unique, ci, evals, proofs⟩
-    simp only [liftM_eq_liftE, show liftE (Except.ok (unique, ci, evals, proofs)) =
-      pure (unique, ci, evals, proofs) from rfl, pure_bind]
-    exact implWith_spec_eq_column columnIdentity getSetup unique ci indices evals proofs
-      (frontHalf_shape cs indices cells ps unique ci evals proofs hf)
-
-theorem upstream_spec_eq_column (columnIdentity : ColumnIdentity)
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
-    verifyCellKzgProofBatch cs indices cells ps =
-      Model.verifyWith (monadLift TrustedSetup.get!) Model.columnStep cs indices cells ps := by
-  rw [upstream_eq_verifyWith, verifyWith_spec_eq_column columnIdentity]
 
 theorem rejectErrors_spec_eq_model (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :

@@ -241,14 +241,6 @@ theorem doubleValues_eq_double (P : G1) (hz : P.z.isZero ≠ true) :
   have h := doublePoly_eq P.x P.y P.z
   exact congrArg (fun t => (⟨t.1, t.2.1, t.2.2⟩ : G1)) h
 
-private theorem isZero_iff {x : Fp} : x.isZero = true ↔ x = 0 := by
-  simp only [Fp.isZero, beq_iff_eq]
-  exact ⟨fun h => Fin.ext h, fun h => congrArg Fin.val h⟩
-
-private theorem beq_iff {x y : Fp} : x.beq y = true ↔ x = y := by
-  simp only [Fp.beq, beq_iff_eq]
-  exact ⟨fun h => Fin.ext h, fun h => congrArg Fin.val h⟩
-
 private theorem isZero_sub (x y : Fp) : (y - x).isZero = x.beq y := by
   apply Bool.eq_iff_iff.mpr
   rw [G1.isZero_iff, G1.beq_iff]

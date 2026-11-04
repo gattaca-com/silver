@@ -9,8 +9,6 @@ namespace LeanBlsSimd.Kzg
 /-- `Except` lifted into `KzgM`. -/
 abbrev liftE {α : Type} (x : Except KzgError α) : KzgM α := ExceptT.mk (pure x)
 
-theorem run_liftE {α : Type} (x : Except KzgError α) : (liftE x).run = pure x := rfl
-
 theorem liftE_bind {α β : Type} (x : Except KzgError α) (f : α → Except KzgError β) :
     liftE (x >>= f) = liftE x >>= fun a => liftE (f a) := by
   cases x <;> rfl

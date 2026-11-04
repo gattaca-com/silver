@@ -177,32 +177,4 @@ theorem g1_msm_congr (points points' : Array G1) (scalars : Array Fr)
       g1_toPoint_eq_of_matches (hinf j hj) (haff j hj)⟩)
   exact ⟨hrel.1, hrel.2.1, (g1_toPoint_eq_iff hrel.1 hrel.2.1).mp hrel.2.2⟩
 
-theorem g1_msm_rep (raw : Array silver_crypto_simd.blst.blst_p1) (points : Array G1)
-    (scalars : Array Fr) (hsize : raw.size = points.size)
-    (hrep : ∀ j (hj : j < raw.size), G1Rep raw[j] points[j]!)
-    (hval : ∀ j, j < points.size → G1Valid points[j]!) :
-    G1Valid (G1.msm points scalars) ∧
-      G1Rep (g1Jacobian (G1.msm (raw.map g1ReadJacobian) scalars))
-        (G1.msm points scalars) := by
-  have hn : (if points.size ≤ scalars.size then points.size else scalars.size) ≤
-      points.size := by split <;> omega
-  have hget : ∀ j (hj : j < raw.size),
-      (raw.map g1ReadJacobian)[j]! = g1ReadJacobian raw[j] := by
-    intro j hj
-    rw [getElem!_pos _ j (by simpa using hj), Array.getElem_map]
-  obtain ⟨hp, hr, hinf, haff⟩ := g1_msm_congr points (raw.map g1ReadJacobian) scalars
-    (by simpa using hsize.symm)
-    (fun j hj => hval j (Nat.lt_of_lt_of_le hj hn))
-    (fun j hj => by
-      have hjr : j < raw.size := by have := Nat.lt_of_lt_of_le hj hn; omega
-      rw [hget j hjr]
-      exact (hrep j hjr).2.1.symm)
-    (fun j hj => by
-      have hjr : j < raw.size := by have := Nat.lt_of_lt_of_le hj hn; omega
-      rw [hget j hjr]
-      exact (hrep j hjr).2.2.symm)
-  refine ⟨hp, g1Jacobian_reduced _, ?_, ?_⟩
-  · simpa only [g1ReadJacobian_g1Jacobian] using hinf.symm
-  · simpa only [g1ReadJacobian_g1Jacobian] using haff.symm
-
 end LeanBlsSimd.Kzg

@@ -16,10 +16,7 @@ run_cmd do
       ``LeanBlsSimd.Kzg.columnRli_size, ``LeanBlsSimd.Kzg.column_ifft_interpolation,
       ``LeanBlsSimd.Kzg.ModelSpec.shiftOf_ok, ``LeanBlsSimd.Kzg.ModelSpec.mapM_shiftOf,
       ``LeanBlsSimd.Kzg.ModelSpec.specRli_eq_lagrangeRli,
-      ``LeanBlsSimd.Kzg.ModelSpec.frontHalf_rli_inputs,
       ``LeanBlsSimd.Kzg.ModelSpec.verifyPure_spec_eq_column,
-      ``LeanBlsSimd.Kzg.ModelSpec.verifyWith_spec_eq_column,
-      ``LeanBlsSimd.Kzg.ModelSpec.upstream_spec_eq_column,
       ``LeanBlsSimd.Kzg.ModelSpec.rejectErrors_spec_eq_model] do
     let axioms ← collectAxioms c
     unless axioms.all allowed.contains do
