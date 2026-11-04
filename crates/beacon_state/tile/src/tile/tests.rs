@@ -411,6 +411,38 @@ fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
     assert_eq!(tile.head_state_root(), inline_tile_at(33).head_state_root());
 }
 
+fn keyed_tile_at(start_slot: Slot) -> BeaconStateTile {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, start_slot);
+    tile
+}
+
+/// An empty last slot leaves the boundary to the state-advance tick: it warms
+/// the next epoch's start state and, on it, the epoch after's shuffling, so
+/// the slot start publishes next-epoch duties without computing either.
+#[test]
+fn state_advance_on_an_epoch_s_last_slot_precomputes_the_boundary() {
+    let mut tile = keyed_tile_at(31);
+    tile.on_state_advance(31);
+    assert_eq!(tile.precomputed_epochs.state_ids_mut().count(), 1);
+
+    let start = tile.epoch_start_state(tile.last_applied, 32);
+    let next = ShufflingId::from_state(&tile.state.read_view(start), 2).unwrap();
+    assert!(tile.shuffling_cache.find(next).is_some(), "epoch 2 shuffling not warmed");
+
+    tile.on_slot_start(32, |_| {});
+    let mut inline = keyed_tile_at(31);
+    inline.on_slot_start(32, |_| {});
+    assert_eq!(tile.head_state_root(), inline.head_state_root());
+}
+
+#[test]
+fn state_advance_within_an_epoch_precomputes_nothing() {
+    let mut tile = keyed_tile_at(10);
+    tile.on_state_advance(10);
+    assert_eq!(tile.precomputed_epochs.state_ids_mut().count(), 0);
+}
+
 #[test]
 fn precomputed_epoch_survives_finalization() {
     let mut forks = ThreeForks::new();
