@@ -248,33 +248,6 @@ theorem dif_refinement (table : fft8.Fft8) (data : Slice fr8.Fr8)
     ⟨ω, k, hrs, hω, hpow⟩] at hrep
   exact hrep
 
-theorem sampled_roots_valid (roots : _root_.Array Fr) (n : Nat)
-    (hn : TransformSize n) (hroots : RootsValid roots)
-    (hsize : 0 < roots.size) (hdiv : roots.size % n = 0) :
-    RootsValid (sampleRoots roots n) := by
-  obtain ⟨k, hk4, hk12, hn⟩ := hn
-  obtain ⟨ω, l, hrs, hω, hroots⟩ := hroots
-  have hnpos : 0 < n := by rw [hn]; positivity
-  have hdiv' : n ∣ roots.size := Nat.dvd_of_mod_eq_zero hdiv
-  have hprod : roots.size = roots.size / n * n := (Nat.div_mul_cancel hdiv').symm
-  refine ⟨ω ^ (roots.size / n), k, ?_, ?_, ?_⟩
-  · simpa only [sampleRoots, Array.size_ofFn] using hn
-  · apply IsPrimitiveRoot.pow (by positivity : 0 < 2 ^ l) hω
-    rw [← hrs, ← hn]
-    exact hprod
-  · intro i hi
-    have hin : i < n := by simpa only [sampleRoots, Array.size_ofFn] using hi
-    have hi' : i * (roots.size / n) < roots.size := by
-      have hq : 0 < roots.size / n := by
-        rw [hprod] at hsize
-        exact Nat.pos_of_mul_pos_right hsize
-      calc
-        i * (roots.size / n) < n * (roots.size / n) := Nat.mul_lt_mul_of_pos_right hin hq
-        _ = roots.size := by rw [Nat.mul_comm]; exact hprod.symm
-    rw [getElem!_pos _ i hi]
-    simp only [sampleRoots, _root_.Array.getElem_ofFn]
-    rw [hroots _ hi', Nat.mul_comm i (roots.size / n), pow_mul]
-
 theorem inverse_roots_valid (roots : _root_.Array Fr) (hroots : RootsValid roots) :
     RootsValid (Kzg.Model.inverseRoots roots) := by
   obtain ⟨ω, k, hrs, hω, hroots⟩ := hroots

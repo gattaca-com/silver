@@ -11,8 +11,6 @@ theorem field_bytes_size (x : Fr) : (blsFieldToBytes x).size = 32 := by
 private def encodePrefix (a : Array Fr) (n : Nat) : Cell :=
   (List.range n).foldl (fun b i => b ++ blsFieldToBytes a[i]!) ByteArray.empty
 
-private theorem encodePrefix_zero (a : Array Fr) : encodePrefix a 0 = ByteArray.empty := rfl
-
 private theorem encodePrefix_succ (a : Array Fr) (n : Nat) :
     encodePrefix a (n + 1) = encodePrefix a n ++ blsFieldToBytes a[n]! := by
   simp only [encodePrefix, List.range_succ, List.foldl_append, List.foldl_cons,

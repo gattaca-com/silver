@@ -94,13 +94,6 @@ theorem pair_partition_upper (half v : Nat) (hhalf : 0 < half)
   rw [Nat.mul_comm (2 * half)] at hd
   omega
 
-theorem pair_partition (half v : Nat) (hhalf : 0 < half) :
-    v = pairFirst half (pairNumber half v) ∨
-    v = pairFirst half (pairNumber half v) + half := by
-  by_cases hlo : v % (2 * half) < half
-  · exact Or.inl (pair_partition_lower half v hhalf hlo)
-  · exact Or.inr (pair_partition_upper half v hhalf (by omega))
-
 theorem pairs_disjoint (half n m : Nat) (hhalf : 0 < half) (hne : n ≠ m) :
     pairFirst half n ≠ pairFirst half m ∧
     pairFirst half n ≠ pairFirst half m + half ∧

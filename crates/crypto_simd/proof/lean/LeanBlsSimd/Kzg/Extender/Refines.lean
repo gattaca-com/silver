@@ -164,15 +164,4 @@ theorem compute_refinement_with_rejection
       (verdict = false → out = cells) := by
   exact compute_core (output_refinement) v hv blob cells
 
-theorem compute_refinement
-    (v : cell_extender.CellExtender) (hv : StateInvariant v)
-    (blob : Blob) (cells : Cells) :
-    ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
-      cell_extender.CellExtender.compute v blob cells = ok (verdict, next, out) ∧
-      StateInvariant next ∧
-      (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  obtain ⟨verdict, next, out, hr, hi, hm, _⟩ :=
-    compute_refinement_with_rejection v hv blob cells
-  exact ⟨verdict, next, out, hr, hi, hm⟩
-
 end LeanBlsSimd.Kzg.Extender

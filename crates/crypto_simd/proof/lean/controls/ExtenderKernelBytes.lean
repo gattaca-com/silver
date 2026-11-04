@@ -293,11 +293,13 @@ private theorem addWithoutReduction_modulus_nat :
 
 theorem omitting_twice_modulus_reduction_changes_generated_add :
     fr8.Fr8.add modulusBatch modulusBatch ≠ ok (addWithoutReduction modulusBatch modulusBatch) := by
-  obtain ⟨out, hout, hbound, _⟩ := add_refinement modulusBatch modulusBatch
-    modulusBatch_bounded modulusBatch_bounded
+  have hin : Represents modulusBatch (laneValue modulusBatch) :=
+    ⟨modulusBatch_bounded, fun _ => rfl⟩
+  obtain ⟨out, hout, hrep⟩ := add_lazy_representation modulusBatch modulusBatch _ _
+    hin.lazy hin.lazy (by decide) (by decide)
   rw [hout]
   intro he
-  have hb := hbound.2 ⟨0, by decide⟩
+  have hb := hrep.1.2 ⟨0, by decide⟩
   rw [Result.ok_injective he, addWithoutReduction_modulus_nat] at hb
   exact Nat.lt_irrefl _ hb
 

@@ -69,17 +69,4 @@ theorem model_acceptance (blob : Blob) :
   cases h : blobToPolynomial (arrayBytes blob) <;>
     simp [Model.extend, h, Except.isOk, Except.toBool]
 
-theorem cellBytes_injective : Function.Injective cellBytes := by
-  intro a b h
-  ext1
-  apply List.ext_getElem (by simp [a.property, b.property])
-  intro i hi hj
-  have hab : arrayBytes a.val[i] = arrayBytes b.val[i] := by
-    have hx := congrArg (fun xs : _root_.Array Cell => xs[i]!) h
-    simpa [cellBytes, List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hj] using hx
-  ext1
-  have hx := congrArg (fun bs : ByteArray =>
-    bs.data.toList.map (fun x : UInt8 => (⟨x.toBitVec⟩ : U8))) hab
-  simpa [arrayBytes, bytes, List.map_map, Function.comp_def] using hx
-
 end LeanBlsSimd.Kzg.Extender

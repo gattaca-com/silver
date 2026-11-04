@@ -93,34 +93,6 @@ private theorem specCell_extension (a : Array Fr) (ha : a.size = 4096)
       simp only [size_bitReversalPermutation, extension_size a ha]
       omega)]
 
-private theorem list_mapM_pure_of {α β : Type} (xs : List α)
-    (f : α → KzgM β) (g : α → β) (h : ∀ x ∈ xs, f x = pure (g x)) :
-    xs.mapM f = pure (xs.map g) := by
-  induction xs with
-  | nil => simp
-  | cons x xs ih =>
-    rw [List.mapM_cons, h x (by simp), pure_bind,
-      ih (fun y hy => h y (by simp [hy]))]
-    simp
-
-private theorem spec_cells_eq (a : Array Fr) :
-    (Array.range 128).mapM (fun i => do
-      let coset ← (cosetForCell i : Except KzgError Coset)
-      pure (cosetEvalsToCell (coset.map (evaluatePolynomialcoeff (polynomialEvalToCoeff a)))))
-        = (pure (Array.ofFn (fun i : Fin 128 => specCell a i.val)) : KzgM (Array Cell)) := by
-  rw [Array.mapM_eq_mapM_toList]
-  rw [list_mapM_pure_of _ _ (specCell a)]
-  · simp only [map_pure]
-    apply congrArg (pure : Array Cell → KzgM (Array Cell))
-    apply Array.ext
-    · simp
-    · intro i hi hi'
-      simp
-  · intro i hi
-    have hi128 : i < 128 := by simpa only [Array.toList_range, List.mem_range] using hi
-    rw [cosetForCell_eq i hi128]
-    rfl
-
 theorem model_spec (blob : ByteArray) :
     (EthLib.Cryptography.Kzg.computeCells blob).run = pure (Model.extend blob) := by
   suffices h : computeCells blob = liftE (Model.extend blob) by
