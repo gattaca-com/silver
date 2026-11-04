@@ -1,6 +1,7 @@
 mod beacon;
 mod config;
 mod ctx;
+mod entry_signatures;
 mod events;
 mod http;
 mod node;

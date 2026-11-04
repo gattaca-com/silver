@@ -5,6 +5,7 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
+    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     gloas::PTC_SIZE,
 };
 use silver_common::{
@@ -37,7 +38,6 @@ use super::{
     shuffling_cache::ShufflingRequest,
 };
 use crate::{
-    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
     fork_choice::{
         ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
@@ -523,7 +523,8 @@ impl BeaconStateTile {
                 continue;
             }
             let (pk, root) = p.pubkey_and_root();
-            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
+            let valid =
+                m.is_api_verified() || batch_ok || self.sig_batch.verify_one(pk, &sig, root);
             if !valid {
                 self.reject_gossip(&m, p.message(), "vote bad signature", producers);
                 continue;
@@ -614,7 +615,7 @@ impl BeaconStateTile {
             let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
-            if !paired {
+            if !paired && !vote.is_api_verified() {
                 self.sig_batch.push_parsed(pk, sig, *root);
             }
             self.votes.pending.push((vote, p, sig));
@@ -1777,6 +1778,7 @@ impl BeaconStateTile {
     ) -> bool {
         let acquired = self.reader.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
+        let pre_verified = pre_verified || m.is_api_verified();
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {

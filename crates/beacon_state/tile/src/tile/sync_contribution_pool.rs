@@ -294,10 +294,11 @@ impl ContributionEntry {
 #[cfg(test)]
 mod tests {
     use blst::BLST_ERROR;
+    use silver_beacon_state_data::bls;
     use silver_common::ssz_view::SyncCommitteeContributionView;
 
     use super::*;
-    use crate::{bls, test_signing};
+    use crate::test_signing;
 
     impl SyncContributionPool {
         pub(in crate::tile) fn contribution_ssz(

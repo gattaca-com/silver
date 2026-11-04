@@ -21,6 +21,9 @@ silver_pbs.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]
+# Enable the IFMA decoder in this crate's tests on supported CPUs.
+silver_crypto_simd = { workspace = true, features = ["simd"] }
+silver_beacon_state_data = { workspace = true, features = ["test-util"] }
 silver_common = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 toml.workspace = true

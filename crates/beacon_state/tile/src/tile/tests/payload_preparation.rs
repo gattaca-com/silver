@@ -1,5 +1,5 @@
 use silver_beacon_state_data::{
-    BuilderPendingPayment, BuilderPendingWithdrawal, StateWriterView, Withdrawal,
+    BuilderPendingPayment, BuilderPendingWithdrawal, StateWriterView, Withdrawal, bls,
 };
 use silver_common::{
     EnginePreparePayloadReq, PreparedPayloadAttributes,
@@ -10,7 +10,7 @@ use silver_common::{
 };
 
 use super::*;
-use crate::{bls, tile::seen_proposer_preferences::ProposerPreferences};
+use crate::tile::seen_proposer_preferences::ProposerPreferences;
 
 const FULL_HASH: B256 = [0x22; 32];
 const EMPTY_HASH: B256 = [0x11; 32];

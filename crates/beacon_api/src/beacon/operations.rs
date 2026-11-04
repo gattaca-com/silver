@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use silver_beacon_state_data::SLOTS_PER_EPOCH;
+use silver_beacon_state_data::{SLOTS_PER_EPOCH, bls};
 use silver_common::{
     GossipTopic, compute_subnet_for_attestation,
     json_fields::{bytes, uint64},
@@ -11,6 +11,7 @@ use silver_common::{
 
 use crate::{
     ctx::ApiCtx,
+    entry_signatures::{SignatureCheck, signing_key},
     http::{ids::uint64_list, response::Response, router::Request},
     submission::{SubmittedEntry, post_single_submission, post_submission},
     validator::attestation_data::AttestationData,
@@ -43,6 +44,18 @@ impl SubmittedEntry for SubmittedAttestation {
         let subnet =
             compute_subnet_for_attestation(committees_per_slot, slot, self.committee_index);
         Ok([GossipTopic::BeaconAttestation(subnet)])
+    }
+
+    fn signature_check(&self, ctx: &ApiCtx) -> Result<Option<SignatureCheck>, &'static str> {
+        let pubkey = ctx
+            .read_state(|view| signing_key(&view, self.attester_index))
+            .ok_or("attester_index is past the validator count")?;
+        let domain = ctx.domain(bls::DOMAIN_BEACON_ATTESTER, self.data.target.epoch);
+        Ok(Some(SignatureCheck {
+            pubkey,
+            signature: self.signature,
+            signing_root: bls::compute_signing_root(&self.data.hash_tree_root(), &domain),
+        }))
     }
 
     fn ssz_len(&self) -> usize {
@@ -267,8 +280,10 @@ impl SubmittedEntry for SubmittedAttesterSlashing {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use silver_beacon_state_data::SpecConfig;
     use silver_common::{
         TCacheProducer,
+        ssz_hash::hash_attestation_data,
         ssz_view::{
             AttesterSlashingView, ProposerSlashingView, SignedBlsToExecutionChangeView,
             SignedVoluntaryExitView, SingleAttestationView,
@@ -281,7 +296,7 @@ pub(crate) mod tests {
         http::router::Outcome,
         submission::{
             SubmissionFailure,
-            tests::{SLOT, ctx, posted_committees},
+            tests::{SLOT, ctx, posted_committees, validator_signature},
         },
         testing::{body, dispatch, dispatch_into, posting, status_code, submissions},
     };
@@ -289,6 +304,10 @@ pub(crate) mod tests {
     /// One entry of the array a validator client posts, spelled as the
     /// schemas do.
     pub(crate) fn entry(attester_index: u64, committee_index: u64) -> String {
+        entry_signed_by(attester_index, committee_index, attester_index)
+    }
+
+    fn entry_signed_by(attester_index: u64, committee_index: u64, signer: u64) -> String {
         format!(
             "{{\"committee_index\":\"{committee_index}\",\"attester_index\":\"{attester_index}\",\
              \"data\":{{\"slot\":\"{SLOT}\",\"index\":\"0\",\
@@ -299,8 +318,21 @@ pub(crate) mod tests {
             "11".repeat(32),
             "22".repeat(32),
             "33".repeat(32),
-            "44".repeat(96),
+            hex::encode(signature(signer)),
         )
+    }
+
+    pub(crate) fn signature(signer: u64) -> [u8; 96] {
+        let mut data = [0; ATTESTATION_DATA_SIZE];
+        data[0..8].copy_from_slice(&SLOT.to_le_bytes());
+        data[16..48].copy_from_slice(&[0x11; 32]);
+        data[48..56].copy_from_slice(&298u64.to_le_bytes());
+        data[56..88].copy_from_slice(&[0x22; 32]);
+        data[88..96].copy_from_slice(&300u64.to_le_bytes());
+        data[96..128].copy_from_slice(&[0x33; 32]);
+        let data_root = hash_attestation_data(&data);
+        let spec = SpecConfig::mainnet();
+        validator_signature(&spec, signer, bls::DOMAIN_BEACON_ATTESTER, 300, &data_root)
     }
 
     fn submit(ctx: &ApiCtx, body: &str) -> (Outcome, Vec<u8>) {
@@ -341,7 +373,33 @@ pub(crate) mod tests {
         assert_eq!(SingleAttestationView::source_root(ssz), &[0x22; 32]);
         assert_eq!(SingleAttestationView::target_epoch(ssz), 300);
         assert_eq!(SingleAttestationView::target_root(ssz), &[0x33; 32]);
-        assert_eq!(SingleAttestationView::signature(ssz), &[0x44; 96]);
+        assert_eq!(SingleAttestationView::signature(ssz), &signature(2));
+    }
+
+    /// A forged signature fails its entry alone, before it can take the
+    /// attester's lock.
+    #[test]
+    fn forged_signature_fails_its_entry_while_the_others_are_published() {
+        let ctx = ctx();
+        let body = format!("[{},{},{}]", entry(1, 0), entry_signed_by(2, 0, 3), entry(3, 0));
+        let Outcome::AwaitingVerdicts(submission) = submit(&ctx, &body).0 else {
+            panic!("the genuine entries defer")
+        };
+        let accepted: Vec<_> = submission.accepted.iter().map(|entry| entry.body_index).collect();
+        assert_eq!(accepted, [0, 2]);
+        assert_eq!(submission.failures, [SubmissionFailure {
+            body_index: 1,
+            message: "invalid signature"
+        }]);
+    }
+
+    #[test]
+    fn unknown_attester_fails_its_entry() {
+        let ctx = ctx();
+        let body = format!("[{}]", entry_signed_by(4, 0, 0));
+        let response = submit(&ctx, &body).1;
+        let failures = json_failures(&response);
+        assert_eq!(failures[0]["message"], "attester_index is past the validator count");
     }
 
     /// Entries the posted shuffling cannot place are reported by their place

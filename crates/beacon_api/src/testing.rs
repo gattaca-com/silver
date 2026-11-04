@@ -4,6 +4,7 @@ use silver_httpcore::ParsedRequest;
 
 use crate::{
     ctx::ApiCtx,
+    entry_signatures::EntrySignatures,
     http::router::{Outcome, Router},
     routes::{ROUTES, SERVED_WHILE_SYNCING},
 };
@@ -51,8 +52,14 @@ pub(crate) fn dispatch_into(
     submissions: &mut TProducer,
 ) -> (Outcome, Vec<u8>) {
     let mut out = Vec::new();
-    let outcome =
-        Router::new(ROUTES, SERVED_WHILE_SYNCING).dispatch(req, ctx, submissions, &mut out);
+    let signatures = &mut EntrySignatures::new();
+    let outcome = Router::new(ROUTES, SERVED_WHILE_SYNCING).dispatch(
+        req,
+        ctx,
+        submissions,
+        signatures,
+        &mut out,
+    );
     (outcome, out)
 }
 

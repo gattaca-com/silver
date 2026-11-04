@@ -8,11 +8,11 @@ use silver_beacon_state_data::{
     LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS,
     PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
     SYNC_COMMITTEE_SIZE, SlotStateWriteView, SpecConfig, StateWriterView, SyncCommittees,
-    TIMELY_TARGET_FLAG, ValidatorsView,
+    TIMELY_TARGET_FLAG, ValidatorsView, bls,
 };
 
 use crate::{
-    bls, merkle,
+    merkle,
     shuffling::{self, DOMAIN_BEACON_PROPOSER},
     stf::{
         common::StfScratch,

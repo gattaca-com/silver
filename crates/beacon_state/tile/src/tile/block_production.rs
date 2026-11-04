@@ -8,18 +8,21 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BUILDER_INDEX_SELF_BUILD, BeaconBlockHeader, BodyFork, BodyOffsets, ExecutionAddress,
-    ExecutionPayloadBid, SLOTS_PER_EPOCH, Slot, StateId,
+    ExecutionPayloadBid, SLOTS_PER_EPOCH, Slot, StateId, bls::G2_POINT_AT_INFINITY,
+    hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BuilderBid, BuilderBidsRequest, BuilderBidsResponse,
     EngineGetPayloadReq, EngineGetPayloadResp, EnginePreparePayloadReq, EnginePreparePayloadResp,
     EngineReq, PayloadFrame, ProduceBlockFailure, ProducedBlock, ProducedEnvelope,
     SidecarBidRequest, SidecarBidResponse, TCacheProducer, TCacheRead, TRead,
+    block_contents::BLOCK_CONTENTS_FIXED,
+    ssz_hash::{BlockFork, HashedBody},
     ssz_hash_gloas::{
         EMPTY_EXECUTION_REQUESTS, EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView,
     },
     ssz_view::{
-        BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE, BuilderBidFuluView,
+        BEACON_BLOCK_BODY_FIXED, BEACON_BLOCK_FIXED, BLOCK_SYNC_AGGREGATE_SIZE, BuilderBidFuluView,
         ExecutionPayloadEnvelopeView, ExecutionPayloadView, SignedBuilderBidFuluView,
         SignedExecutionPayloadBidView,
     },
@@ -34,24 +37,17 @@ use super::{
     block::AppliedBlock,
     payload_attributes::{PayloadBasis, PayloadContext},
 };
-use crate::{
-    bls::G2_POINT_AT_INFINITY,
-    ssz_hash,
-    stf::{self, BlockFork, BlockInput, decode_bid, get_expected_withdrawals},
-};
+use crate::stf::{self, BlockInput, decode_bid, get_expected_withdrawals};
 
 mod attestation_rewards;
 mod bid_weight;
 mod local_payloads;
+mod submitted_body;
 
 use attestation_rewards::AttestationRewards;
 use bid_weight::BidWeight;
 use local_payloads::LocalPayloads;
-
-/// Offsets of `block`, `kzg_proofs` and `blobs`.
-const BLOCK_CONTENTS_FIXED: usize = 3 * 4;
-/// `slot`, `proposer_index`, `parent_root`, `state_root` and the body offset.
-const BEACON_BLOCK_FIXED: usize = 8 + 8 + 32 + 32 + 4;
+use submitted_body::SubmittedBody;
 
 /// Requests with equal proposals are served one block.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -221,7 +217,6 @@ struct BuiltBlock {
     proposal: Proposal,
     block: ProducedBlock,
     payload: Option<TRead>,
-    body_root: B256,
     block_fork: BlockFork,
     block_root: B256,
     post_state: Option<AppliedBlock>,
@@ -240,6 +235,7 @@ pub(super) struct BlockProduction {
     pending: Vec<(u64, Proposal)>,
     pending_gloas: Vec<PendingGloas>,
     built: Option<BuiltBlock>,
+    submitted: SubmittedBody,
     local_payloads: LocalPayloads,
     next_engine_id: u64,
     packed: PackedOperations,
@@ -260,6 +256,7 @@ impl BlockProduction {
             pending: Vec::new(),
             pending_gloas: Vec::new(),
             built: None,
+            submitted: SubmittedBody::default(),
             local_payloads: LocalPayloads::default(),
             next_engine_id: 0,
             packed: PackedOperations::default(),
@@ -370,6 +367,7 @@ impl BlockProduction {
             answer(producers, request_id, Err(ProduceBlockFailure::PayloadUnavailable));
         }
         self.local_payloads.prune_before(slot);
+        self.submitted.prune_before(slot);
         for pending in self.pending_gloas.extract_if(.., |pending| pending.proposal.slot < slot) {
             answer(producers, pending.request_id, Err(ProduceBlockFailure::PayloadUnavailable));
         }
@@ -969,27 +967,24 @@ impl BeaconStateTile {
         }
     }
 
-    /// The built block's `(body_root, fork)` when `body` is its body. Comparing
-    /// the bytes is cheaper than hashing the payload again.
+    /// `body`'s `(body_root, fork)` when this node built it or the API hashed
+    /// it. Comparing the bytes is cheaper than hashing the payload again.
     #[timed]
-    pub(super) fn built_body_hash(&mut self, slot: Slot, body: &[u8]) -> Option<(B256, BlockFork)> {
-        let built = self.block_production.built.as_ref().filter(|b| b.proposal.slot == slot)?;
-        let contents = self.events_producer.read_buffer(built.block.header).ok()?;
-        if built.block_fork.is_gloas() {
-            let built_body = contents.get(BEACON_BLOCK_FIXED..)?;
-            return (built_body == body).then_some((built.body_root, built.block_fork));
+    pub(super) fn built_body_hash(&mut self, slot: Slot, body: &[u8]) -> Option<HashedBody> {
+        if let Some(built) =
+            self.block_production.built.as_ref().filter(|b| b.proposal.slot == slot) &&
+            let Ok(header) = self.events_producer.read_buffer(built.block.header) &&
+            let Ok(payload) = built.payload.as_ref().map(TRead::buffer).transpose() &&
+            built.block.has_body(header, payload.map(|(payload, _)| payload), body)
+        {
+            return Some(HashedBody { root: built.block.body_root, fork: built.block_fork });
         }
-        let frame = PayloadFrame::parse(built.payload.as_ref()?.buffer().ok()?.0)?;
+        self.block_production.submitted.take(slot, body)
+    }
 
-        let (before_payload, bls_changes) = contents.split_at(built.block.payload_at as usize);
-        let body_head = &before_payload[BLOCK_CONTENTS_FIXED + BEACON_BLOCK_FIXED..];
-        let body_tail =
-            &frame.after_payload[..frame.commitments.len() + frame.execution_requests.len()];
-        let mut rest = body;
-        for part in [body_head, frame.execution_payload, bls_changes, body_tail] {
-            rest = rest.strip_prefix(part)?;
-        }
-        rest.is_empty().then_some((built.body_root, built.block_fork))
+    pub(super) fn hold_submitted_body(&mut self, submission: TCacheRead, hashed: HashedBody) {
+        let submission = self.reader.acquire(submission);
+        self.block_production.submitted.hold(submission, hashed);
     }
 
     #[timed]
@@ -1044,6 +1039,11 @@ impl BeaconStateTile {
             })?;
 
         let block = built.block;
+        debug_assert_eq!(
+            block.splices_payload(),
+            matches!(built.block_fork, BlockFork::Fulu { .. }),
+            "only a full Fulu block splices its payload into the contents"
+        );
         self.block_production.built = Some(built);
         Ok(block)
     }
@@ -1432,7 +1432,7 @@ impl BeaconStateTile {
             silver_log::warn!(?e, slot, "assembled body is over its limits");
             ProduceBlockFailure::Invalid
         })?;
-        let (body_root, block_fork) = stf::hash_body(&offsets);
+        let HashedBody { root: body_root, fork: block_fork } = HashedBody::of(&offsets);
         let mut header = BeaconBlockHeader {
             slot,
             proposer_index,
@@ -1455,9 +1455,9 @@ impl BeaconStateTile {
                 execution_payload_value: frame.block_value,
                 consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: None,
+                body_root,
             },
             payload: Some(acquired),
-            body_root,
             block_fork,
             block_root,
             post_state: Some(post_state),
@@ -1497,7 +1497,7 @@ impl BeaconStateTile {
             silver_log::warn!(?e, slot, "assembled body is over its limits");
             ProduceBlockFailure::Invalid
         })?;
-        let (body_root, block_fork) = stf::hash_body(&offsets);
+        let HashedBody { root: body_root, fork: block_fork } = HashedBody::of(&offsets);
         let mut header = BeaconBlockHeader {
             slot,
             proposer_index,
@@ -1550,9 +1550,9 @@ impl BeaconStateTile {
                 execution_payload_value: commitment.value,
                 consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: commitment.builder_entry,
+                body_root,
             },
             payload,
-            body_root,
             block_fork,
             block_root,
             post_state: Some(post_state),
@@ -1595,7 +1595,7 @@ impl BeaconStateTile {
             silver_log::warn!(?e, slot, "assembled blinded body is over its limits");
             ProduceBlockFailure::Invalid
         })?;
-        let (body_root, block_fork) = stf::hash_body(&offsets);
+        let HashedBody { root: body_root, fork: block_fork } = HashedBody::of(&offsets);
         let mut header = BeaconBlockHeader {
             slot,
             proposer_index,
@@ -1620,9 +1620,9 @@ impl BeaconStateTile {
                 execution_payload_value: *BuilderBidFuluView::value(bid),
                 consensus_block_value: wei_from_gwei(post_state.proposer_reward().into()),
                 builder_entry: None,
+                body_root,
             },
             payload: None,
-            body_root,
             block_fork,
             block_root,
             post_state: Some(post_state),
@@ -1709,7 +1709,7 @@ impl BeaconStateTile {
         };
 
         // The root commits to the state root, so the transition ran without it.
-        let block_root = ssz_hash::hash_tree_root_block_header(header);
+        let block_root = hash_tree_root_block_header(header);
         fork.view.slot.state_mut().latest_block_root = block_root;
         Ok((block_root, AppliedBlock::commit(fork, header, block_fork, votes)))
     }

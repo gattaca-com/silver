@@ -7,6 +7,7 @@ use silver_beacon_state_data::{
     PENDING_PARTIAL_WITHDRAWALS_LIMIT, PendingConsolidation, PendingDeposit,
     PendingPartialWithdrawal, PendingWriteView, SLOTS_PER_EPOCH, SpecConfig, StateWriterView,
     ValidatorsView, ValidatorsWriteView, Withdrawals,
+    bls::{self, SigBatch},
 };
 use silver_common::ssz_view::{
     CONSOLIDATION_REQUEST_SIZE, ConsolidationRequestView, DEPOSIT_REQUEST_SIZE, DepositRequestView,
@@ -15,7 +16,6 @@ use silver_common::ssz_view::{
 };
 
 use crate::{
-    bls::{self, SigBatch},
     error::{BlsToExecutionChangeError, Result, VoluntaryExitError},
     ssz_hash,
     stf::{

@@ -9,12 +9,13 @@ use ef_common::{
     spec_tests_dir,
 };
 use silver_beacon_state::{
-    bls::SigBatch,
     error::ExecutionPayloadBidError,
     ssz_hash::PayloadRoots,
     stf::{self, ShufflingRef},
 };
-use silver_beacon_state_data::{BeaconBlockHeader, Payload, SLOTS_PER_EPOCH};
+use silver_beacon_state_data::{
+    BeaconBlockHeader, Payload, SLOTS_PER_EPOCH, bls::SigBatch, hash_tree_root_block_header,
+};
 use silver_common::ssz_view::SignedExecutionPayloadBidView;
 
 fn operations_handler(
@@ -599,7 +600,7 @@ fn fulu_block_header() {
             state_root: [0u8; 32],
             body_root,
         };
-        let block_root = silver_beacon_state::ssz_hash::hash_tree_root_block_header(&header);
+        let block_root = hash_tree_root_block_header(&header);
         s.with_view_and_epoch(|view, e| {
             stf::process_block_header(view, e, &header, block_root).is_ok()
         })

@@ -222,6 +222,7 @@ fn local_gloas_messages_reach_beacon_state_and_wait_for_its_verdict() {
                 topic,
                 ssz,
                 validation: BroadcastValidation::Gossip,
+                hashed_body: None,
             });
             capture.crank();
             let mut messages = Vec::new();
@@ -627,6 +628,7 @@ fn local_execution_envelope_is_copied_into_gossip_and_waits_for_validation() {
         topic,
         ssz,
         validation: BroadcastValidation::Gossip,
+        hashed_body: None,
     });
     capture.crank();
     let mut messages = Vec::new();

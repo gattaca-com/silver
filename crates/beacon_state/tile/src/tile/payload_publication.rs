@@ -133,6 +133,7 @@ impl BeaconStateTile {
                 topic: GossipTopic::ExecutionPayload,
                 ssz,
                 validation: BroadcastValidation::Gossip,
+                hashed_body: None,
             });
         } else {
             let commitments = self

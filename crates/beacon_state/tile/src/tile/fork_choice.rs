@@ -1,6 +1,9 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Checkpoint, SLOTS_PER_EPOCH, StateId};
+use silver_beacon_state_data::{
+    B256, Checkpoint, SLOTS_PER_EPOCH, StateId,
+    bls::{self, CheckedSignature},
+};
 use silver_common::{
     BeaconStateEvent, PayloadValidationStatus, hex32,
     ssz_view::{
@@ -14,7 +17,6 @@ use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
 use crate::{
-    bls::{self, CheckedSignature},
     stf,
     tile::{Feedback, gossip::PreparedPtc},
 };

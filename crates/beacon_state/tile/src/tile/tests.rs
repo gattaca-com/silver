@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
     EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
     PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, TreeGroup, TreeSpec,
-    ValSeed, Withdrawals,
+    ValSeed, Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
@@ -16,6 +16,7 @@ use silver_common::{
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
     TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE,
         BYTES_PER_KZG_COMMITMENT, EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED,
@@ -1426,7 +1427,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
         state_root: [0u8; 32],
         body_root: ssz_hash::hash_tree_root_body(SignedBeaconBlockView::body(&bytes), false),
     };
-    let block_root = ssz_hash::hash_tree_root_block_header(&header);
+    let block_root = hash_tree_root_block_header(&header);
     tile.fork_choice.on_block(anchor_child(block_root, tile.last_applied));
 
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
@@ -1716,7 +1717,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
             &data,
             &pinned,
             BlockSource::Gossip,
-            true, // pre_verified: the signature is not what these cases are about
+            true, // the signature is not what these cases are about
             &mut adapter.producers,
             |_, _| relayed = true,
         );
@@ -2822,7 +2823,7 @@ fn block_known_parent_bad_sig_rejected() {
         };
         tile.last_applied.slot_idx = new_slot_idx;
     }
-    let parent_root = ssz_hash::hash_tree_root_block_header(&genesis_header);
+    let parent_root = hash_tree_root_block_header(&genesis_header);
 
     let cp = Checkpoint { epoch: 0, root: parent_root };
     tile.fork_choice = ForkChoice::init(
@@ -2937,7 +2938,7 @@ fn anchor_at_header_root(tile: &mut BeaconStateTile) -> B256 {
         let mut sw = g.slot_states.roll_from(base.slot_idx);
         let state = sw.state_mut();
         state.latest_block_header.state_root = ANCHOR_STATE_ROOT;
-        let root = ssz_hash::hash_tree_root_block_header(&state.latest_block_header);
+        let root = hash_tree_root_block_header(&state.latest_block_header);
         state.latest_block_root = root;
         (root, StateId { slot_idx: sw.commit(), ..base })
     };
@@ -3208,6 +3209,27 @@ fn attestation_batch_fallback_rejects_only_forged() {
 
     tile.flush_votes(&mut adapter.producers);
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE, "forged vote dropped");
+}
+
+/// The API checked a local attestation's signature, so it stays out of the
+/// batch; a forgery from the network beside it is still dropped.
+#[test]
+fn local_attestation_skips_the_batch_verify() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.head_block_root();
+
+    let (unchecked, local_subnet) = batched_att(&tile, 2, 0);
+    let (forged, forged_subnet) = batched_att(&tile, 2, 1);
+    let local = NewGossipMsg {
+        stream_id: LOCAL_GOSSIP_STREAM_ID,
+        ..gossip_att_msg(&mut gp, &unchecked, local_subnet)
+    };
+    tile.defer_vote(local, &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &forged, forged_subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE, "only the local vote counts");
 }
 
 #[test]
@@ -4953,7 +4975,7 @@ impl ThreeForks {
             block_root: root,
             has_data_columns: true,
             parent_state_id: parent,
-            fork: stf::BlockFork::Fulu { payload_roots: Default::default() },
+            fork: BlockFork::Fulu { payload_roots: Default::default() },
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
@@ -6517,7 +6539,7 @@ fn blinded_block_on_a_bid_matches_the_full_block() {
     let offsets = BodyOffsets::validated(&message[84..], BodyFork::FuluBlinded).unwrap();
     assert_eq!(offsets.payload_header(), &header[..]);
     assert_eq!(offsets.blob_commitments_fulu(), frame.commitments);
-    let (body_root, _) = stf::hash_body(&offsets);
+    let body_root = HashedBody::of(&offsets).root;
     assert_eq!(body_root, ssz_hash::hash_tree_root_body_fulu(&full_message[84..]));
 }
 
@@ -7151,7 +7173,7 @@ fn fulu_block_rejecting_an_exit_drops_every_operation() {
     for (i, body_root) in [[1u8; 32], [2u8; 32]].into_iter().enumerate() {
         let header =
             BeaconBlockHeader { slot, proposer_index: offender, body_root, ..Default::default() };
-        let root = ssz_hash::hash_tree_root_block_header(&header);
+        let root = hash_tree_root_block_header(&header);
         let signing_root = bls::compute_signing_root(&root, &domain);
         let signature = fixture_secret_key(offender as usize).sign(&signing_root, bls::DST, &[]);
         let signed = &mut slashing[i * 208..(i + 1) * 208];
@@ -7179,7 +7201,7 @@ fn fulu_block_rejecting_an_exit_drops_every_operation() {
     );
 }
 
-fn block_with_columns(tile: &BeaconStateTile, fork: stf::BlockFork) -> ParsedBlock {
+fn block_with_columns(tile: &BeaconStateTile, fork: BlockFork) -> ParsedBlock {
     ParsedBlock {
         header: BeaconBlockHeader {
             slot: 11,
@@ -7201,7 +7223,7 @@ fn block_with_columns(tile: &BeaconStateTile, fork: stf::BlockFork) -> ParsedBlo
 fn fulu_block_with_blobs_waits_for_its_columns() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    let fulu = stf::BlockFork::Fulu { payload_roots: Default::default() };
+    let fulu = BlockFork::Fulu { payload_roots: Default::default() };
     assert!(tile.waits_for_columns(&block_with_columns(&tile, fulu)));
 }
 
@@ -7209,7 +7231,7 @@ fn fulu_block_with_blobs_waits_for_its_columns() {
 fn gloas_block_with_bid_commitments_imports_without_its_columns() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    assert!(!tile.waits_for_columns(&block_with_columns(&tile, stf::BlockFork::Gloas)));
+    assert!(!tile.waits_for_columns(&block_with_columns(&tile, BlockFork::Gloas)));
 }
 
 /// The envelope's availability wait ends at `DataColumnsAvailable` for a block

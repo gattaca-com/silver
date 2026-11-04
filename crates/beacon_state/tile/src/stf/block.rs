@@ -1,22 +1,26 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-#[cfg(feature = "ef_tests")]
-use silver_beacon_state_data::ValidatorsView;
 use silver_beacon_state_data::{
-    B256, BeaconBlockHeader, BodyFork, BodyOffsets, Epoch, EpochView, EpochWriteView, Eth1Data,
+    B256, BeaconBlockHeader, BodyOffsets, Epoch, EpochView, EpochWriteView, Eth1Data,
     Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId, SLOTS_PER_EPOCH,
     SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateReadView,
     StateWriterView,
+    bls::{self, SigBatch},
+    hash_tree_root_block_header,
 };
-use silver_common::ssz_view::{BeaconBlockBodyGloasView, Eth1DataView};
 #[cfg(feature = "ef_tests")]
-use silver_common::ssz_view::{SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView};
+use silver_beacon_state_data::{BodyFork, ValidatorsView};
+use silver_common::ssz_view::Eth1DataView;
+#[cfg(feature = "ef_tests")]
+use silver_common::{
+    ssz_hash::HashedBody,
+    ssz_view::{SIGNED_BEACON_BLOCK_MIN, SignedBeaconBlockView},
+};
 
 use crate::{
-    bls::{self, SigBatch},
     error::{BlockError, Error, Result},
     merkle,
-    ssz_hash::{self, PayloadRoots, hash_tree_root_block_header},
+    ssz_hash::{self, BlockFork},
     stf::{
         BlockAttestations, BlockVotes, EPOCHS_PER_ETH1_VOTING_PERIOD, ShufflingRef, StfScratch,
         collect_sigs_attestations, collect_sigs_attester_slashings,
@@ -30,27 +34,6 @@ use crate::{
         process_withdrawals_gloas, upgrade_to_gloas,
     },
 };
-
-#[derive(Clone, Copy)]
-pub enum BlockFork {
-    Fulu { payload_roots: PayloadRoots },
-    FuluBlinded,
-    Gloas,
-}
-
-impl BlockFork {
-    pub fn is_gloas(self) -> bool {
-        matches!(self, Self::Gloas)
-    }
-
-    pub(crate) fn body_fork(self) -> BodyFork {
-        match self {
-            Self::Fulu { .. } => BodyFork::Fulu,
-            Self::FuluBlinded => BodyFork::FuluBlinded,
-            Self::Gloas => BodyFork::Gloas,
-        }
-    }
-}
 
 pub struct BlockInput<'a> {
     pub header: &'a BeaconBlockHeader,
@@ -67,22 +50,6 @@ impl<'a> BlockInput<'a> {
 
     pub fn invalid(&self, kind: BlockError) -> Error {
         Error::invalid_block(self.header.state_root, kind)
-    }
-}
-
-pub fn hash_body(offsets: &BodyOffsets<'_>) -> (B256, BlockFork) {
-    match offsets.fork() {
-        BodyFork::Gloas => {
-            let body = offsets.serialized().expect("a Gloas body is parsed whole");
-            (BeaconBlockBodyGloasView::hash_tree_root(body), BlockFork::Gloas)
-        }
-        BodyFork::Fulu => {
-            let (root, payload_roots) = ssz_hash::hash_tree_root_body_fulu_with_roots(offsets);
-            (root, BlockFork::Fulu { payload_roots })
-        }
-        BodyFork::FuluBlinded => {
-            (ssz_hash::hash_tree_root_body_fulu_with_roots(offsets).0, BlockFork::FuluBlinded)
-        }
     }
 }
 
@@ -208,7 +175,7 @@ pub fn apply_signed_block_debug(
         BodyFork::Fulu
     };
     let offsets = BodyOffsets::validated(body, body_fork).map_err(|e| wrap(e.into()))?;
-    let (body_root, block_fork) = hash_body(&offsets);
+    let HashedBody { root: body_root, fork: block_fork } = HashedBody::of(&offsets);
     if !verify_block_sig(
         view.imm,
         &epoch_view,

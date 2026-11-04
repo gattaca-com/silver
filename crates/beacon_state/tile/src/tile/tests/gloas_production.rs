@@ -1,9 +1,10 @@
 use silver_beacon_state_data::{
     BUILDER_INDEX_SELF_BUILD, BodyFork, BodyOffsets, ExecutionPayloadBid, PayloadWithdrawals,
-    Withdrawal,
+    Withdrawal, bls::G2_POINT_AT_INFINITY, hash_tree_root_block_header,
 };
 use silver_common::{
     BuilderBidsRequest, BuilderBidsResponse, EnginePreparePayloadReq, PayloadFrame,
+    ssz_hash::HashedBody,
     ssz_hash_gloas::{
         EMPTY_EXECUTION_REQUESTS, EMPTY_EXECUTION_REQUESTS_ROOT, ExecutionRequestsView,
     },
@@ -14,7 +15,7 @@ use silver_common::{
 };
 
 use super::*;
-use crate::{bls::G2_POINT_AT_INFINITY, tile::block_production::BlockProduction};
+use crate::tile::block_production::BlockProduction;
 
 mod publication;
 
@@ -43,8 +44,7 @@ impl ProductionRig {
         if header.state_root == [0; 32] {
             header.state_root = ssz_hash::hash_tree_root_state(&fork.read());
         }
-        fork.view.slot.state_mut().latest_block_root =
-            ssz_hash::hash_tree_root_block_header(&header);
+        fork.view.slot.state_mut().latest_block_root = hash_tree_root_block_header(&header);
         let id = fork.commit();
         self.tile.last_applied = id;
         self.tile.seed_anchor(id, header, self.tile.head_validator_count());
@@ -228,7 +228,7 @@ fn self_build_commits_payload_fields_and_caches_its_unsigned_envelope() {
         *ExecutionPayloadEnvelopeView::parent_beacon_block_root(&encoded),
         rig.proposal.parent_root
     );
-    let (body_root, _) = stf::hash_body(&body);
+    let body_root = HashedBody::of(&body).root;
     let header = BeaconBlockHeader {
         slot: rig.proposal.slot,
         proposer_index: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
@@ -236,7 +236,7 @@ fn self_build_commits_payload_fields_and_caches_its_unsigned_envelope() {
         state_root: bytes[48..80].try_into().unwrap(),
         body_root,
     };
-    assert_eq!(root, ssz_hash::hash_tree_root_block_header(&header));
+    assert_eq!(root, hash_tree_root_block_header(&header));
     assert!(rig.tile.local_payload_envelope(rig.proposal.slot, &[99; 32]).is_none());
     assert!(rig.tile.local_payload_envelope(rig.proposal.slot + 1, &root).is_none());
 

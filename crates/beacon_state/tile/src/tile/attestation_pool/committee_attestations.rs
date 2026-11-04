@@ -1,3 +1,4 @@
+use silver_beacon_state_data::bls::{AggregateSignature, EMPTY_AGGREGATE, Signature};
 use slab::Slab;
 
 use super::{
@@ -5,7 +6,6 @@ use super::{
     committee_bits::{CommitteeBits, bit_positions},
     selection::MAX_AGGREGATES,
 };
-use crate::bls::{AggregateSignature, EMPTY_AGGREGATE, Signature};
 
 const NO_SINGLE: u32 = u32::MAX;
 

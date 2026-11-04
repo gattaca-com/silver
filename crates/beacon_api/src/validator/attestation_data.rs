@@ -3,6 +3,7 @@ use silver_beacon_state_data::{B256, Checkpoint, Epoch, SLOTS_PER_EPOCH, Slot, S
 use silver_common::{
     PayloadResolution,
     json_fields::{bytes, parse_uint64, uint64},
+    ssz_hash::hash_attestation_data,
     ssz_view::{ATTESTATION_DATA_SIZE, AttestationDataView},
 };
 
@@ -132,6 +133,12 @@ impl AttestationData {
 }
 
 impl AttestationData {
+    pub(crate) fn hash_tree_root(&self) -> B256 {
+        let mut ssz = [0; ATTESTATION_DATA_SIZE];
+        self.encode(&mut ssz);
+        hash_attestation_data(&ssz)
+    }
+
     pub(crate) fn encode(&self, out: &mut [u8; ATTESTATION_DATA_SIZE]) {
         out[0..8].copy_from_slice(&self.slot.to_le_bytes());
         out[8..16].copy_from_slice(&self.index.to_le_bytes());

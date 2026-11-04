@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 #[cfg(test)]
 use silver_beacon_state_data::BeaconStateOwner;
 use silver_beacon_state_data::{
-    BeaconStateReader, PinnedState, SLOTS_PER_EPOCH, SpecConfig, StateReadView,
+    B256, BeaconStateReader, Epoch, PinnedState, SLOTS_PER_EPOCH, SpecConfig, StateReadView, bls,
 };
 #[cfg(test)]
 use silver_common::SyncUpdate;
@@ -12,7 +12,10 @@ use silver_common::{Enr, Identify, Keypair};
 
 use crate::{
     NodeStatus,
-    beacon::{pools::OperationPools, proposer_preferences::ProposerPreferences},
+    beacon::{
+        block_submission::ProducedBody, pools::OperationPools,
+        proposer_preferences::ProposerPreferences,
+    },
     config::spec_body,
     http::{
         ids::is_recognized_id,
@@ -35,6 +38,8 @@ pub(crate) struct ApiCtx {
     pub(crate) pools: OperationPools,
     pub(crate) proposer_preferences: ProposerPreferences,
     pub(crate) registry_downloads: usize,
+    genesis_validators_root: B256,
+    pub(crate) produced_body: ProducedBody,
 }
 
 impl ApiCtx {
@@ -46,10 +51,15 @@ impl ApiCtx {
         state: BeaconStateReader,
         has_sidecar: bool,
     ) -> Self {
-        let (head_slot, anchor_root, anchor_epoch) = state
+        let (head_slot, anchor_root, anchor_epoch, genesis_validators_root) = state
             .read(|view: StateReadView<'_>| {
                 let slot = view.slot.state();
-                (slot.latest_block_header.slot, slot.latest_block_root, slot.slot / SLOTS_PER_EPOCH)
+                (
+                    slot.latest_block_header.slot,
+                    slot.latest_block_root,
+                    slot.slot / SLOTS_PER_EPOCH,
+                    view.imm.genesis_validators_root,
+                )
             })
             .expect("beacon api needs the anchor state published");
         Self {
@@ -63,7 +73,14 @@ impl ApiCtx {
             pools: OperationPools::default(),
             proposer_preferences: ProposerPreferences::default(),
             registry_downloads: 0,
+            genesis_validators_root,
+            produced_body: ProducedBody::default(),
         }
+    }
+
+    pub(crate) fn domain(&self, domain_type: u32, epoch: Epoch) -> B256 {
+        let fork_version = self.spec.fork_version_at(epoch);
+        bls::compute_domain(domain_type, fork_version, &self.genesis_validators_root)
     }
 
     pub(crate) fn read_state<R>(&self, read: impl FnMut(StateReadView<'_>) -> R) -> R {

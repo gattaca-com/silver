@@ -104,10 +104,11 @@ fn slot_of(data: &[u8; PAYLOAD_ATTESTATION_DATA_SIZE]) -> Slot {
 #[cfg(test)]
 mod tests {
     use blst::BLST_ERROR;
+    use silver_beacon_state_data::bls::DST;
     use silver_common::ssz_view::{PAYLOAD_ATTESTATION_SIZE, PayloadAttestationView};
 
     use super::*;
-    use crate::{bls::DST, test_signing::privkey};
+    use crate::test_signing::privkey;
 
     const ROOT: B256 = [3; 32];
     const MESSAGE: B256 = [9; 32];

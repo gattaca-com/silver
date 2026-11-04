@@ -4,13 +4,13 @@ use blst::{BLST_ERROR, MultiPoint, blst_p2_affine_is_inf};
 use flux_profiler::timed;
 use ring::rand::{SecureRandom, SystemRandom};
 use rustc_hash::FxHashMap;
-use silver_beacon_state_data::B256;
 use silver_crypto_simd::bls::{G1Point, G2Point, PairingProduct};
 
 use super::{
     CheckedSignature, DST, G2_POINT_AT_INFINITY, PublicKey, Signature,
-    aggregator::PubkeyAggregator, trusted_key,
+    aggregator::PubkeyAggregator, trusted_key, verify_hashed,
 };
+use crate::B256;
 
 // N.B. batching is only safe where NBITS < 144-bit GLS threshold.
 const NBITS: usize = 64;
@@ -200,6 +200,13 @@ impl SigBatch {
         self.push_aggregate(participants, sig, signing_root);
     }
 
+    /// The per-entry fallback of a failed batch: its entries mostly share a
+    /// few signing roots, so each root is hashed to G2 once.
+    #[timed]
+    pub fn verify_one(&mut self, pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
+        verify_hashed(pk, sig, &self.hashed_msgs.get(message))
+    }
+
     /// Verify all collected entries.
     ///
     /// - 0 entries → trivially true.
@@ -339,12 +346,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        bls::{
-            SignatureChecker,
-            aggregator::{pk_affine, sig_affine},
-        },
-        test_signing::{pubkey_pk, sign},
+    use crate::bls::{
+        SignatureChecker,
+        aggregator::{pk_affine, sig_affine},
+        test_keys::{pubkey_pk, sign},
     };
 
     fn hex(s: &str) -> Vec<u8> {

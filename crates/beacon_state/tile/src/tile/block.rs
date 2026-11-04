@@ -2,11 +2,12 @@ use flux::spine::SpineProducers;
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BodyFork, BodyOffsets, Checkpoint, Epoch, ForkWriter, SLOTS_PER_EPOCH,
-    Slot, StateId, StateReadView,
+    Slot, StateId, StateReadView, bls, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconStateEvent, BlockSource, BlockStage, EngineFcuReq, EngineNewPayloadReq, EngineReq,
     SyncNeed, SyncUpdate, TCacheRead, TRead, hex32,
+    ssz_hash::{BlockFork, HashedBody},
     ssz_view::{self, BeaconBlockBodyFuluView, BeaconBlockBodyGloasView, SignedBeaconBlockView},
 };
 
@@ -14,11 +15,10 @@ use super::{
     BeaconStateTile, Feedback, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers, gossip::EnvelopeCheck,
 };
 use crate::{
-    Error, bls,
+    Error,
     error::{BlockError, PrecheckError, RejectReason},
     fork_choice::{BlockImport, ExecutionStatus, ForkChoiceNode, PayloadStatus},
-    ssz_hash,
-    stf::{self, BlockFork, BlockInput},
+    stf::{self, BlockInput},
 };
 
 pub(super) struct ParsedBlock {
@@ -687,10 +687,8 @@ impl BeaconStateTile {
         let body_fork = if is_gloas { BodyFork::Gloas } else { BodyFork::Fulu };
         let offsets = BodyOffsets::validated(body, body_fork)
             .map_err(|kind| PrecheckError::BodyOverLimits { block_slot, kind })?;
-        let (body_root, fork) = match self.built_body_hash(block_slot, body) {
-            Some(hashed) => hashed,
-            None => stf::hash_body(&offsets),
-        };
+        let HashedBody { root: body_root, fork } =
+            self.built_body_hash(block_slot, body).unwrap_or_else(|| HashedBody::of(&offsets));
 
         let block_header = BeaconBlockHeader {
             slot: block_slot,
@@ -700,7 +698,7 @@ impl BeaconStateTile {
             body_root,
         };
 
-        let block_root = ssz_hash::hash_tree_root_block_header(&block_header);
+        let block_root = hash_tree_root_block_header(&block_header);
         if self.fork_choice.find_node_idx(&block_root).is_some() {
             return Err(PrecheckError::BlockKnown { block_root });
         }

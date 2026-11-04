@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 pub use silver_hashing::HashFormat;
 
 use crate::{
@@ -289,6 +290,18 @@ impl BeaconBlockHeader {
             body_root: b256(s, 80),
         }
     }
+}
+
+#[timed]
+pub fn hash_tree_root_block_header(hdr: &BeaconBlockHeader) -> B256 {
+    let chunks = [
+        uint64_chunk(hdr.slot),
+        uint64_chunk(hdr.proposer_index),
+        hdr.parent_root,
+        hdr.state_root,
+        hdr.body_root,
+    ];
+    merkleize(&chunks)
 }
 
 #[derive(Clone, Copy)]

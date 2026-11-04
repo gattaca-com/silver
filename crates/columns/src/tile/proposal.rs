@@ -294,6 +294,7 @@ impl DataColumnsTile {
             topic: GossipTopic::ExecutionPayload,
             ssz: signed_read.to_read(),
             validation: BroadcastValidation::Gossip,
+            hashed_body: None,
         });
         Ok(())
     }

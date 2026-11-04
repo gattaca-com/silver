@@ -12,10 +12,9 @@ use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use silver_beacon_state::{
-    bls::{self, DOMAIN_BEACON_ATTESTER},
-    ssz_hash::hash_attestation_data,
-    tile::attestation_root_memo::AttestationRootMemo,
+    ssz_hash::hash_attestation_data, tile::attestation_root_memo::AttestationRootMemo,
 };
+use silver_beacon_state_data::bls::{self, DOMAIN_BEACON_ATTESTER};
 use silver_common::ssz_view::ATTESTATION_DATA_SIZE;
 
 const MESSAGES: usize = 50_000;

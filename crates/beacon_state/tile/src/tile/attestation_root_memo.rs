@@ -1,8 +1,8 @@
 use rustc_hash::FxHashMap;
-use silver_beacon_state_data::{B256, Slot};
+use silver_beacon_state_data::{B256, Slot, bls};
 use silver_common::ssz_view::ATTESTATION_DATA_SIZE;
 
-use crate::{bls, counters::BeaconStateCounters, ssz_hash};
+use crate::{counters::BeaconStateCounters, ssz_hash};
 
 /// Honest gossip converges on 1-3 distinct AttestationData per slot and the
 /// floor retains two slots; the rest is headroom. Adversarial distinct-value
