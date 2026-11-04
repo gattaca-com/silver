@@ -61,11 +61,11 @@ pub fn collect_sigs_voluntary_exits(
             .unwrap();
         let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
         let vi_u = SignedVoluntaryExitView::validator_index(exit);
-        let vi = vi_u as u32;
-        if (vi as usize) >= validator_count {
+        if vi_u >= validator_count as u64 {
             sig_batch.poison();
             return;
         }
+        let vi = vi_u as u32;
         let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch_msg, vi_u);
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(exit);
@@ -91,7 +91,7 @@ pub fn process_voluntary_exits(
             .try_into()
             .unwrap();
         let exit_epoch_msg = SignedVoluntaryExitView::epoch(exit);
-        let vi = SignedVoluntaryExitView::validator_index(exit) as u32;
+        let vi = SignedVoluntaryExitView::validator_index(exit);
         validate::validate_voluntary_exit(
             cfg,
             &view.validators.reader(),
@@ -99,6 +99,7 @@ pub fn process_voluntary_exits(
             exit_epoch_msg,
             current_epoch,
         )?;
+        let vi = vi as u32;
         if get_pending_balance_to_withdraw(&view.pending.reader(), vi) != 0 {
             return Err(VoluntaryExitError::HasPendingBalance {
                 vi: vi as usize,
@@ -383,10 +384,10 @@ pub fn collect_sigs_bls_to_execution_changes(
         let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
         let sig = SignedBlsToExecutionChangeView::signature(c);
 
-        if (validator_index_u as usize) < validator_count {
+        if validator_index_u < validator_count as u64 {
             validate::validate_bls_to_execution_change(
                 validators,
-                validator_index_u as u32,
+                validator_index_u,
                 from_bls_pubkey,
             )?;
         }
@@ -418,7 +419,7 @@ pub fn process_bls_to_execution_changes(
     for i in 0..count {
         let c: &[u8; SIGNED_BLS_CHANGE_SIZE] =
             data[i * SIGNED_BLS_CHANGE_SIZE..(i + 1) * SIGNED_BLS_CHANGE_SIZE].try_into().unwrap();
-        let validator_index = SignedBlsToExecutionChangeView::validator_index(c) as u32;
+        let validator_index = SignedBlsToExecutionChangeView::validator_index(c);
         let from_bls_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(c);
         let to_execution_address = SignedBlsToExecutionChangeView::to_execution_address(c);
 
@@ -428,7 +429,7 @@ pub fn process_bls_to_execution_changes(
             from_bls_pubkey,
         )?;
         let creds = Withdrawals::eth1(to_execution_address);
-        validators.set_credentials(validator_index, creds);
+        validators.set_credentials(validator_index as u32, creds);
     }
     Ok(())
 }
@@ -464,7 +465,9 @@ mod tests {
     use silver_beacon_state_data::{FinalizedValidators, HashFormat, ValidatorsGroup};
 
     use super::*;
-    use crate::test_signing::{INVALID_PUBKEYS, sign_bls_to_execution_change};
+    use crate::test_signing::{
+        INVALID_PUBKEYS, pubkey_bytes, pubkey_pk, sign_bls_to_execution_change,
+    };
 
     /// An empty registry skips the credential check, so the change reaches the
     /// key decode whatever its `from_bls_pubkey`.
@@ -495,5 +498,32 @@ mod tests {
                 Err(BlsToExecutionChangeError::BadPubkey { from_pubkey }) if from_pubkey == pubkey
             ));
         }
+    }
+
+    #[test]
+    fn validator_index_is_range_checked_before_narrowing_to_u32() {
+        let empty = FinalizedValidators::try_new(&[], None).unwrap();
+        let mut group = ValidatorsGroup::new(empty, HashFormat::Fixed);
+        let mut validators = group.roll_fresh();
+        validators.append(pubkey_bytes(0), pubkey_pk(0), Withdrawals::eth1(&[1; 20]));
+        let alias = 1 << 32;
+
+        assert!(matches!(
+            validate::validate_exit_eligibility(
+                &SpecConfig::mainnet(),
+                &validators.reader(),
+                alias,
+                0
+            ),
+            Err(VoluntaryExitError::ValidatorOutOfRange { .. })
+        ));
+        assert!(matches!(
+            validate::validate_bls_to_execution_change(
+                &validators.reader(),
+                alias,
+                &pubkey_bytes(0)
+            ),
+            Err(BlsToExecutionChangeError::ValidatorOutOfRange { .. })
+        ));
     }
 }

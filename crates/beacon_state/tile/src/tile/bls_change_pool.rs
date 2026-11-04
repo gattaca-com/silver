@@ -87,5 +87,5 @@ impl BlsChangePool {
 
 fn applies(state: &StateReadView, vi: u32, ssz: &[u8; SIGNED_BLS_CHANGE_SIZE]) -> bool {
     let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(ssz);
-    validate::validate_bls_to_execution_change(&state.validators, vi, from_pubkey).is_ok()
+    validate::validate_bls_to_execution_change(&state.validators, vi.into(), from_pubkey).is_ok()
 }

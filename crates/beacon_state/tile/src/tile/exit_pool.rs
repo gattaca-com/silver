@@ -60,7 +60,7 @@ impl ExitPool {
                     validate::validate_voluntary_exit(
                         spec,
                         &pre_state.validators,
-                        vi,
+                        vi.into(),
                         SignedVoluntaryExitView::epoch(ssz),
                         current_epoch,
                     )

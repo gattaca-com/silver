@@ -39,6 +39,7 @@ use super::{
 };
 use crate::{
     counters::BeaconStateCounters,
+    error::VoluntaryExitError,
     fork_choice::{
         ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
         compute_shuffling_lookahead_start_slot,
@@ -1581,10 +1582,9 @@ impl BeaconStateTile {
         let buf: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] =
             data[..SIGNED_VOLUNTARY_EXIT_SIZE].try_into().unwrap();
         let exit_epoch = SignedVoluntaryExitView::epoch(buf);
-        let vi_u = SignedVoluntaryExitView::validator_index(buf);
-        let vi = vi_u as usize;
+        let vi = SignedVoluntaryExitView::validator_index(buf);
 
-        if self.seen_exits.contains(vi) {
+        if self.seen_exits.contains(vi as usize) {
             return Feedback::AlreadySeen;
         }
         let exit_start = exit_epoch.saturating_mul(SLOTS_PER_EPOCH);
@@ -1593,24 +1593,17 @@ impl BeaconStateTile {
         }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
-        if vi >= view.validators.count() {
-            return Feedback::reject("exit validator out of range");
-        }
-        if view.validators.exit_epoch(vi) != u64::MAX {
-            return Feedback::Ignore;
-        }
         let current_epoch = view.slot.current_epoch();
-        if let Err(e) = validate::validate_exit_eligibility(
-            &self.spec,
-            &view.validators,
-            vi_u as u32,
-            current_epoch,
-        ) {
-            silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
-            return Feedback::reject("exit invalid");
+        match validate::validate_exit_eligibility(&self.spec, &view.validators, vi, current_epoch) {
+            Ok(()) => {}
+            Err(VoluntaryExitError::AlreadyExiting { .. }) => return Feedback::Ignore,
+            Err(e) => {
+                silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
+                return Feedback::reject("exit invalid");
+            }
         }
 
-        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
+        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi);
         let imm = view.imm;
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
@@ -1619,10 +1612,10 @@ impl BeaconStateTile {
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
-        if !bls::verify_one(view.validators.pubkey_decompressed(vi), sig, &signing_root) {
+        if !bls::verify_one(view.validators.pubkey_decompressed(vi as usize), sig, &signing_root) {
             return Feedback::reject("exit bad signature");
         }
-        self.seen_exits.mark(vi);
+        self.seen_exits.mark(vi as usize);
         self.exit_pool.insert(buf);
         Feedback::Accept
     }
@@ -1743,7 +1736,7 @@ impl BeaconStateTile {
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
         if let Err(e) =
-            validate::validate_bls_to_execution_change(&view.validators, vi_u as u32, from_pubkey)
+            validate::validate_bls_to_execution_change(&view.validators, vi_u, from_pubkey)
         {
             silver_log::debug!(error = %e, "bls_to_execution_change gossip rejected");
             return Feedback::reject("bls change invalid");

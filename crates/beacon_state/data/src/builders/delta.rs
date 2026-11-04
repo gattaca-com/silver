@@ -99,10 +99,7 @@ impl<'a> BuildersView<'a> {
 
     #[inline]
     pub fn get(&self, i: usize) -> Option<&'a Builder> {
-        if i >= self.len() {
-            return None;
-        }
-        if let Some(b) = self.delta.edits.get(i as u32) {
+        if let Some(b) = self.delta.edits.get(i) {
             return Some(b);
         }
         if i < self.delta.base_count {
@@ -203,6 +200,7 @@ impl<'a> BuildersWriteView<'a> {
 
     #[inline]
     pub fn set_builder(&mut self, i: usize, builder: Builder) {
+        assert!(i < self.len(), "set_builder: index out of range");
         self.fork.edits.merge_in_place(&[(i as u32, builder)]);
         self.refresh_leaf(i);
     }

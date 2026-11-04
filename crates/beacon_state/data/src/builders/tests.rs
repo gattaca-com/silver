@@ -192,3 +192,13 @@ fn descendant_survives_finalize() {
     assert_eq!(wv.hash_root(), child_before);
     assert_eq!(wv.hash_root(), naive_root(&wv.reader()));
 }
+
+#[test]
+fn get_rejects_u32_alias_of_edited_builder() {
+    let base: Vec<_> = (0..4).map(builder).collect();
+    let mut g = BuildersGroup::new(base_with(&base));
+    let mut wv = g.roll_fresh();
+    wv.add_balance(2, 5_000);
+
+    assert!(wv.reader().get((1 << 32) + 2).is_none());
+}

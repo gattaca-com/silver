@@ -42,7 +42,8 @@ impl<V> Edits<V> {
     }
 
     #[inline]
-    pub fn get(&self, idx: u32) -> Option<&V> {
+    pub fn get(&self, idx: usize) -> Option<&V> {
+        let idx = u32::try_from(idx).ok()?;
         self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
     }
 
