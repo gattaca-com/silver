@@ -64,7 +64,7 @@ impl<'a, C: TreeSpec> TreeWriteView<'a, C> {
         &mut self,
         other: &mut TreeWriteView<'_, D>,
     ) {
-        other.group.tree_mut().rehash();
+        other.group.rehash();
         self.group.tree_mut().copy_from(other.group.tree());
     }
 
@@ -85,7 +85,7 @@ impl<'a, C: TreeSpec> TreeWriteView<'a, C> {
     }
 
     pub fn hashed_reader(&mut self) -> TreeView<'_, C> {
-        self.group.tree_mut().rehash();
+        self.group.rehash();
         self.reader()
     }
 

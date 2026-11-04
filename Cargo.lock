@@ -5219,7 +5219,6 @@ name = "silver_hashing"
 version = "0.1.0-alpha.11"
 dependencies = [
  "bytesize",
- "flux-profiler",
  "hashtree-rs",
  "rand 0.8.6",
  "sha2-const-stable",

@@ -1,3 +1,4 @@
+use flux_profiler::timed;
 use silver_hashing::{FlatTree, PagePool, PageSnapshot, PageTable};
 
 use super::{TreeGroup, TreeSpec};
@@ -31,6 +32,7 @@ impl<C: TreeSpec> Committed<C> {
 
 impl<C: TreeSpec> HashingWriter<C> {
     /// The writer, and `tree` committed as the base it matches.
+    #[timed]
     pub(super) fn new(mut tree: FlatTree<C>, pool: &mut PagePool<C::Page>) -> (Self, PageSnapshot) {
         let base = PageSnapshot::from_tree(&mut tree, pool);
         (Self { tree, loaded: Some(Committed::Base) }, base)
@@ -46,6 +48,7 @@ impl<C: TreeSpec> HashingWriter<C> {
         &mut self.tree
     }
 
+    #[timed]
     pub(super) fn load(
         &mut self,
         pool: &PagePool<C::Page>,
