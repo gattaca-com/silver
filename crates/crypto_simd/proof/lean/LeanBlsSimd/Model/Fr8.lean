@@ -61,18 +61,6 @@ def mulAcc (self rhs : Limbs) : Acc :=
   let t := reduce_row t p pinv 3
   reduce_row t p pinv 4
 
-/-- The body of the carry loop that ends `Fr8::mul`. -/
-def carryStep (t : Acc) (mask : UInt64) (r : Limbs) (j : Fin (LIMBS - 1)) : Limbs :=
-  let r := r.set (j.val + 1) (t[LIMBS + j.val + 1] + srli 52 r[j.val])
-  r.set j.val (r[j.val] &&& mask)
-
-def mul (self rhs : Limbs) : Limbs :=
-  let t := mulAcc self rhs
-  let mask := splat (.ofNat MASK52)
-  let r : Limbs := .replicate _ zero
-  let r := r.set 0 t[LIMBS]
-  (List.finRange (LIMBS - 1)).foldl (carryStep t mask) r
-
 end Lane
 
 /-! ## The free functions on `__m512i` -/
@@ -84,9 +72,6 @@ def splat (x : UInt64) : M512 := _mm512_set1_epi64 x.toInt64
 def zero : M512 := _mm512_setzero_si512
 
 def splat_limbs (limbs : Limbs) : Vector M512 LIMBS := .ofFn fun j => splat limbs[j]
-
-/-- The `transmute` of `lanes`: element `l` of `[u64; 8]` is lane `l`, as `M512` lays it out. -/
-def lanes (v : M512) : Vector UInt64 8 := v
 
 def sub_limbs (a b : Vector M512 LIMBS) : Vector M512 LIMBS × M512 :=
   let mask := splat (.ofNat MASK52)
@@ -125,25 +110,9 @@ def lane (x : Fr8) (l : Fin 8) : Limbs := x.limbs.map (·[l])
 
 def ofLanes (lanes : Vector Limbs 8) : Fr8 := ⟨.ofFn fun j => .ofFn fun l => lanes[l][j]⟩
 
-def splat_limbs (limbs : Limbs) : Fr8 := ⟨Simd.splat_limbs limbs⟩
-
-def zero : Fr8 := ⟨.replicate _ Simd.zero⟩
-
-def mul (self rhs : Fr8) : Fr8 := ofLanes (.ofFn fun l => Lane.mul (self.lane l) (rhs.lane l))
-
 def canonical (self : Fr8) : Fr8 :=
   let (d, borrow) := Simd.sub_limbs self.limbs (Simd.splat_limbs (.ofList P))
   ⟨Simd.blend (Simd.borrowed borrow) d self.limbs⟩
-
-def add (self rhs : Fr8) : Fr8 :=
-  let s := Simd.add_limbs self.limbs rhs.limbs
-  let (d, borrow) := Simd.sub_limbs s Simd.two_p
-  ⟨Simd.blend (Simd.borrowed borrow) d s⟩
-
-def sub (self rhs : Fr8) : Fr8 :=
-  let (d, borrow) := Simd.sub_limbs self.limbs rhs.limbs
-  let wrapped := Simd.add_limbs d Simd.two_p
-  ⟨Simd.blend (Simd.borrowed borrow) d wrapped⟩
 
 
 end Fr8
