@@ -28,14 +28,23 @@ pub struct SharedList<C: TreeSpec> {
 
 type Reader<'a, C> = TreeReader<'a, C, SharedPool<<C as TreeSpec>::Page>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListError {
+    OutOfBounds { index: usize, len: usize },
+    Full { limit: usize },
+}
+
 impl<C: TreeSpec> SharedList<C> {
-    pub fn new(vals: &[C::Val], format: HashFormat) -> Self {
+    pub fn new(vals: &[C::Val], format: HashFormat) -> Result<Self, ListError> {
+        if vals.len() > C::SSZ_LIMIT {
+            return Err(ListError::Full { limit: C::SSZ_LIMIT });
+        }
         let pool = Arc::new(ListPool::default());
         let bytes = C::Val::as_ssz_bytes(vals);
         let mut flat = FlatTree::from_leaves(vals.len(), vals.len(), byte_chunks(&bytes), format);
         let mut table = PageTable::default();
         flat.commit(&mut &pool.pages, &mut table, None, None);
-        Self { pool, table, flat: Some(Box::new(flat)) }
+        Ok(Self { pool, table, flat: Some(Box::new(flat)) })
     }
 
     #[inline]
@@ -49,9 +58,9 @@ impl<C: TreeSpec> SharedList<C> {
     }
 
     #[inline]
-    pub fn get(&self, ix: usize) -> C::Val {
-        debug_assert!(ix < self.len(), "index out of range");
-        self.reader().get(ix)
+    pub fn get(&self, ix: usize) -> Option<C::Val> {
+        let reader = self.reader();
+        (ix < reader.len()).then(|| reader.get(ix))
     }
 
     /// One tree walk per leaf row, not per value.
@@ -68,16 +77,24 @@ impl<C: TreeSpec> SharedList<C> {
     }
 
     #[inline]
-    pub fn set(&mut self, ix: usize, v: C::Val) {
-        debug_assert!(ix < self.len(), "index out of range");
+    pub fn set(&mut self, ix: usize, v: C::Val) -> Result<(), ListError> {
+        let len = self.len();
+        if ix >= len {
+            return Err(ListError::OutOfBounds { index: ix, len });
+        }
         self.flat_mut().set_val(ix as u32, v);
+        Ok(())
     }
 
-    pub fn push(&mut self, v: C::Val) {
+    pub fn push(&mut self, v: C::Val) -> Result<(), ListError> {
         debug_assert!(C::IS_LIST, "a vector has fixed length");
+        if self.len() >= C::SSZ_LIMIT {
+            return Err(ListError::Full { limit: C::SSZ_LIMIT });
+        }
         let flat = self.flat_mut();
         let ix = flat.append_empty();
         flat.set_val(ix, v);
+        Ok(())
     }
 
     pub fn format(&self) -> HashFormat {
@@ -93,7 +110,7 @@ impl<C: TreeSpec> SharedList<C> {
     }
 
     pub fn hash_root(&self) -> B256 {
-        debug_assert!(self.is_committed(), "commit before hash_root");
+        assert!(self.is_committed(), "commit before hash_root");
         self.reader().hash_root()
     }
 
