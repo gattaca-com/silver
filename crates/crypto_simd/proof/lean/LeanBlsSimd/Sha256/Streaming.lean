@@ -11,15 +11,10 @@ structure State where
   pending : List UInt8
   length : UInt64
 
-def initial : State := ⟨initialState, [], 0⟩
-
 def Represents (s : State) (pre : List UInt8) : Prop :=
   s.state = compressBlocks initialState (bytes pre) 0 (pre.length/64) ∧
   s.pending = pre.drop (64*(pre.length/64)) ∧
   s.length = UInt64.ofNat pre.length
-
-theorem initial_represents : Represents initial [] := by
-  exact ⟨rfl,rfl,rfl⟩
 
 theorem pending_length (s : State) (pre : List UInt8) (h : Represents s pre) :
     s.pending.length = pre.length%64 := by
@@ -116,24 +111,5 @@ theorem finish_eq_hash (s : State) (pre : List UInt8) (hs : Represents s pre) :
   apply compressBlocks_congr
   intro i hi
   simpa only [Nat.zero_add] using tail_matches s pre hs i (by omega)
-
-theorem represents_unique (s t : State) (pre : List UInt8)
-    (hs : Represents s pre) (ht : Represents t pre) : s = t := by
-  cases s
-  cases t
-  simp only [State.mk.injEq]
-  exact ⟨hs.1.trans ht.1.symm, hs.2.1.trans ht.2.1.symm, hs.2.2.trans ht.2.2.symm⟩
-
-theorem update_empty (s : State) (pre : List UInt8) (hs : Represents s pre) :
-    update s [] = s := by
-  apply represents_unique _ _ pre _ hs
-  simpa only [List.append_nil] using update_append s pre [] hs
-
-theorem update_split (s : State) (pre a b : List UInt8) (hs : Represents s pre) :
-    update (update s a) b = update s (a++b) := by
-  apply represents_unique _ _ (pre++(a++b))
-  · simpa only [List.append_assoc] using
-      update_append (update s a) (pre++a) b (update_append s pre a hs)
-  · exact update_append s pre (a++b) hs
 
 end LeanBlsSimd.Sha256.Streaming

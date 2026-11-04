@@ -13,8 +13,6 @@ length wraps modulo 2⁶⁴ in both, so neither needs the specification's `size 
 namespace LeanBlsSimd.Sha256.Spec
 
 open EthLib.Cryptography
-
-abbrev rotr := Hash.Sha256.rotr
 abbrev choose := Hash.Sha256.ch
 abbrev majority := Hash.Sha256.maj
 abbrev bigSigma0 := Hash.Sha256.bigSigma0

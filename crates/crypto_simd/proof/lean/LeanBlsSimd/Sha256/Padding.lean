@@ -61,10 +61,6 @@ def padWithBits (msg : ByteArray) (bits : UInt64) : ByteArray :=
       0 msg.size (fun i => msg[i]!)).set! msg.size 128)
     (paddedLength msg.size-8) 8 (wordByte bits)
 
-theorem padWithBits_size (msg : ByteArray) (bits : UInt64) : (padWithBits msg bits).size = paddedLength msg.size := by
-  rw [padWithBits, writeBytes_size, set_size, writeBytes_size]
-  exact Array.size_replicate
-
 theorem padWithBits_get (msg : ByteArray) (bits : UInt64) (i : Nat) (hi : i < paddedLength msg.size) :
     (padWithBits msg bits)[i]! =
       if i < msg.size then msg[i]!
