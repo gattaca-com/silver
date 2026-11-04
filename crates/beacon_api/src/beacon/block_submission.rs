@@ -182,7 +182,6 @@ pub(crate) mod tests {
     use silver_common::{
         BroadcastValidation, GossipTopic, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer,
         TReadMode,
-        ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
         ssz_view::{
             BEACON_BLOCK_BODY_FIXED, BEACON_BLOCK_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
             EXECUTION_PAYLOAD_HEADER_FIXED,
@@ -434,11 +433,8 @@ pub(crate) mod tests {
         ctx
     }
 
-    /// The synthetic block with an empty `parent_execution_requests`, which
-    /// a canonical body still frames.
     pub(crate) fn gloas_block() -> Vec<u8> {
-        let mut block = SynthBlock::gloas(SLOT + 1, SynthBid::new(&[])).into_bytes();
-        block.extend_from_slice(&EMPTY_EXECUTION_REQUESTS);
+        let block = SynthBlock::gloas(SLOT + 1, SynthBid::new(&[])).into_bytes();
         signed_by_proposer(block, BodyFork::Gloas, &gloas_spec())
     }
 

@@ -33,7 +33,7 @@ fn load_gloas(store_dir: String) -> super::Store {
     super::Store::load(store_dir, super::test_spec(0), 0).unwrap()
 }
 
-use silver_common::{block_root, block_root_fulu};
+use silver_common::{block_root, block_root_fulu, test_util::SynthBlock};
 
 use crate::tile::IoEvent;
 
@@ -865,20 +865,8 @@ fn envelope_already_on_disk_is_not_written_again() {
     drain(&mut store).unwrap();
 }
 
-/// Synthetic fulu `SignedBeaconBlock` carrying blob commitments, so the
-/// coverage needs it a custody set. Message at 100, body at 184, commitments
-/// spanning body[396..404).
 fn blob_block(slot: u64, parent_root: [u8; 32]) -> Vec<u8> {
-    let (body_start, body_len) = (184usize, 404usize);
-    let mut block = vec![0u8; body_start + body_len];
-    block[0..4].copy_from_slice(&100u32.to_le_bytes());
-    block[180..184].copy_from_slice(&84u32.to_le_bytes());
-    block[100..108].copy_from_slice(&slot.to_le_bytes());
-    block[108..116].copy_from_slice(&11u64.to_le_bytes());
-    block[116..148].copy_from_slice(&parent_root);
-    block[body_start + 388..body_start + 392].copy_from_slice(&396u32.to_le_bytes());
-    block[body_start + 392..body_start + 396].copy_from_slice(&404u32.to_le_bytes());
-    block
+    SynthBlock::fulu(slot, &[0u8; 48]).parent_root(parent_root).into_bytes()
 }
 
 fn following(store: &mut super::Store, finalized_slot: u64, finalized_root: [u8; 32]) {
@@ -909,14 +897,9 @@ fn bit(prefill: &Prefill, field: u32, slot: u64) -> bool {
     field & (1u32 << (slot - prefill.start)) != 0
 }
 
-/// A header-only block: no body, so no bid, no blobs, no envelope.
+/// No operations, no blobs, no bid, so no envelope.
 fn bare_block(slot: u64, parent_root: [u8; 32]) -> Vec<u8> {
-    let mut block = vec![0u8; 184];
-    block[0..4].copy_from_slice(&100u32.to_le_bytes());
-    block[180..184].copy_from_slice(&84u32.to_le_bytes());
-    block[100..108].copy_from_slice(&slot.to_le_bytes());
-    block[116..148].copy_from_slice(&parent_root);
-    block
+    SynthBlock::fulu(slot, &[]).parent_root(parent_root).into_bytes()
 }
 
 /// The bug this rework set out to close: a block finalizes without its

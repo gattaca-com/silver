@@ -45,14 +45,11 @@ impl PartialParents {
             return;
         }
         if self.entries.len() < 256 || self.entries.contains_key(&root) {
-            self.entries.insert(
-                root,
-                ParentInfo {
-                    state_root,
-                    columnless: false,
-                    expires: Instant::now() + self.retention,
-                },
-            );
+            self.entries.insert(root, ParentInfo {
+                state_root,
+                columnless: false,
+                expires: Instant::now() + self.retention,
+            });
         }
     }
 
