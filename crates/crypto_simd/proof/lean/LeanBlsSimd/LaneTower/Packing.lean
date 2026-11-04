@@ -207,15 +207,6 @@ theorem unpack_six {k : ℕ} {xs : Array fp8.Fp8 5#usize} {a : Fin 5 → V F}
     · exact hx ⟨4, by decide⟩
     · exact ro5
 
-/-- Packing ignores the two unused input lanes; unpacking restores every active lane. -/
-theorem unpack9_pack9 {α : Type} (a : Fin 9 → V α) (j : Fin 9) (l : Fin 8) (hl : l.val < 6) :
-    unpack9 (pack9 a) j l = a j l := by
-  fin_cases j <;> fin_cases l <;> first | rfl | norm_num at hl
-
-theorem unpack6_pack6 {α : Type} (a : Fin 6 → V α) (j : Fin 6) (l : Fin 8) (hl : l.val < 6) :
-    unpack6 (pack6 a) j l = a j l := by
-  fin_cases j <;> fin_cases l <;> first | rfl | norm_num at hl
-
 theorem unpack9_products (a b : Fin 9 → V F) (j : Fin 9) (l : Fin 8) (hl : l.val < 6) :
     unpack9 (fun j l => pack9 a j l * pack9 b j l) j l = a j l * b j l := by
   fin_cases j <;> fin_cases l <;> first | rfl | norm_num at hl

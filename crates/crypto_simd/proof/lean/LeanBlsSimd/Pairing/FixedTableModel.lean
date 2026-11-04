@@ -17,8 +17,6 @@ def lineKinds : Nat → List Bool
   | 0 => []
   | n + 1 => false :: ((if blsX.testBit n then [true] else []) ++ lineKinds n)
 
-theorem lineKinds_length : (lineKinds 63).length = 68 := by decide +kernel
-
 def lineKind (step : Fin 68) : Bool := (lineKinds 63)[step.val]!
 
 def slopeDenominator (add : Bool) (q t : Affine) : Fp2 :=

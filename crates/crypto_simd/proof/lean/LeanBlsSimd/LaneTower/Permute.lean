@@ -81,21 +81,11 @@ namespace LeanBlsSimd.Fp2x8
 def permute2 (self other : Fp2x8) (indices : Vector Int64 8) : Fp2x8 :=
   ⟨self.c0.permute2 other.c0 indices, self.c1.permute2 other.c1 indices⟩
 
-def permute (self : Fp2x8) (indices : Vector Int64 8) : Fp2x8 :=
-  ⟨self.c0.permute indices, self.c1.permute indices⟩
-
 theorem permute2_refines (self other : fp2x8.Fp2x8) (indices : Array I64 8#usize) :
     fp2x8.Fp2x8.permute2 self other indices =
       ok (toFp2x8 ((ofFp2x8 self).permute2 (ofFp2x8 other)
         (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
   simp only [fp2x8.Fp2x8.permute2, Fp8.permute2_refines, bind_ok]
-  rfl
-
-theorem permute_refines (self : fp2x8.Fp2x8) (indices : Array I64 8#usize) :
-    fp2x8.Fp2x8.permute self indices =
-      ok (toFp2x8 ((ofFp2x8 self).permute
-        (ofArray (fun i => Int64.ofBitVec i.bv) indices))) := by
-  simp only [fp2x8.Fp2x8.permute, Fp8.permute_refines, bind_ok]
   rfl
 
 end LeanBlsSimd.Fp2x8
