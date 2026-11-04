@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use flux_profiler::timed;
-use silver_hashing::{FlatTree, PagePool, PageTable, TreeReader};
+use silver_state_hashing::{FlatTree, PagePool, PageTable, TreeReader};
 
 use super::{TreeGroup, TreeSpec};
 use crate::{ring::Id, types::B256};

@@ -4964,9 +4964,9 @@ dependencies = [
  "serde",
  "silver_chain_spec",
  "silver_crypto_simd",
- "silver_hashing",
  "silver_log",
  "silver_ssz",
+ "silver_state_hashing",
  "snap 1.1.1",
  "thiserror 1.0.69",
 ]
@@ -5215,16 +5215,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "silver_hashing"
-version = "0.1.0-alpha.13"
-dependencies = [
- "bytesize",
- "hashtree-rs",
- "rand 0.8.6",
- "sha2-const-stable",
-]
-
-[[package]]
 name = "silver_httpcore"
 version = "0.1.0-alpha.13"
 dependencies = [
@@ -5369,7 +5359,7 @@ dependencies = [
  "flux-profiler",
  "sha2",
  "sha2-const-stable",
- "silver_hashing",
+ "silver_state_hashing",
  "thiserror 1.0.69",
 ]
 
@@ -5387,6 +5377,16 @@ dependencies = [
  "silver_network",
  "silver_peer",
  "silver_storage",
+]
+
+[[package]]
+name = "silver_state_hashing"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "hashtree-rs",
+ "rand 0.8.6",
+ "sha2-const-stable",
 ]
 
 [[package]]

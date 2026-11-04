@@ -1,9 +1,9 @@
 //! `B256`, chunk encoders and merkle-branch verification, over the `hashtree`
-//! backend and zero-subtree table of `silver_hashing`.
+//! backend and zero-subtree table of `silver_state_hashing`.
 
 use flux_profiler::timed;
 use sha2::{Digest, Sha256};
-pub use silver_hashing::merkle::{ZERO_HASHES, hash_concat, hash_concat_many, mix_in_length};
+pub use silver_state_hashing::merkle::{ZERO_HASHES, hash_concat, hash_concat_many, mix_in_length};
 
 pub type B256 = [u8; 32];
 

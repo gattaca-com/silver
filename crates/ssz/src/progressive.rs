@@ -5,7 +5,7 @@
 //! [`ProgressiveHasher`] as the [`Merkleizer`](crate::merkle::Merkleizer).
 
 use flux::utils::ArrayVec;
-pub use silver_hashing::progressive::{
+pub use silver_state_hashing::progressive::{
     PROGRESSIVE_SEGMENT_START, PROGRESSIVE_SEGMENTS, fold_progressive_spine,
     progressive_segment_of_chunk, progressive_segments_for,
 };
