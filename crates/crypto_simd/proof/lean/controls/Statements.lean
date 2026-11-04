@@ -47,21 +47,6 @@ example :
     mulFp2 (0, psiX + 1) (powBy mulFp2 (1, 0) 381 (1, 1) ((Fp.modulus - 1) / 3)) ≠ (1, 0) := by
   decide +kernel
 
-/-! ## A cube in place of the non-cube 32, under the proof of its Euler fact -/
-
-example : True := by
-  fail_if_success
-    have : (8 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-      have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 381 8 ((Fp.modulus - 1) / 3)
-        (by decide +kernel)).not.mpr (by decide +kernel)
-      rwa [Nat.cast_ofNat] at h
-  trivial
-
-example : PowMod.powModAux 381 Fp.modulus 8 ((Fp.modulus - 1) / 3) = 1 % Fp.modulus := by
-  decide +kernel
-
-example : ¬∀ x : ZMod Fp.modulus, x ^ 3 ≠ 8 := fun h => h 2 (by norm_num)
-
 /-! ## A square in place of the non-square −1 -/
 
 example : True := by
@@ -70,20 +55,7 @@ example : True := by
       ZMod.exists_sq_eq_neg_one_iff.mp ⟨x, by rw [← hx, sq]⟩ p_mod_four
   trivial
 
-/-! ## Fuel: (p − 1)/3 and (p − 1)/2 need 380 bits -/
-
-example : True := by
-  fail_if_success
-    have : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-      have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 379 32 ((Fp.modulus - 1) / 3)
-        (by decide +kernel)).not.mpr (by decide +kernel)
-      rwa [Nat.cast_ofNat] at h
-  trivial
-
-example : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-  have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 380 32 ((Fp.modulus - 1) / 3)
-    (by decide +kernel)).not.mpr (by decide +kernel)
-  rwa [Nat.cast_ofNat] at h
+/-! ## Fuel: (p − 1)/2 needs 380 bits -/
 
 example : mulFp2 psiY (powBy mulFp2 (1, 0) 379 (1, 1) ((Fp.modulus - 1) / 2)) ≠ (1, 0) := by
   decide +kernel
@@ -250,30 +222,13 @@ example : Kernel.sqrtT (-1) = -1 ∧ quadraticChar (ZMod Fp.modulus) (-1) = -1 �
   ext <;> simp [Kernel.rootCandidate, ht, hr, Kernel.half, QuadraticAlgebra.re_one,
     QuadraticAlgebra.im_one]
 
-/-! ## rhs ≠ 0: 2(1 + i) in place of 4(1 + i)
+/-! ## A changed twist coefficient admits a root
 
-N(−2(1 + i)) = 8 is a cube, so the proof of `Kernel.rhs_ne_zero` fails at its last step, and
-1 − i is a root. t vanishes at 0, so `Kernel.sqrtT_rhs_ne_zero` needs rhs ≠ 0. -/
-
-example : True := by
-  fail_if_success
-    have : ∀ x : Fp2Field, x ^ 2 * x + ⟨2, 2⟩ ≠ 0 := by
-      intro x h
-      have h3 : x ^ 3 = ⟨-2, -2⟩ := by
-        have : x ^ 3 = -⟨2, 2⟩ := by linear_combination h
-        rw [this]
-        ext <;> simp
-      apply thirtytwo_not_cube (QuadraticAlgebra.norm x)
-      rw [← map_pow, h3, QuadraticAlgebra.norm_def]
-      norm_num
-  trivial
+Replacing 4(1 + i) with 2(1 + i) admits the root 1 − i. -/
 
 example : (⟨1, -1⟩ : Fp2Field) ^ 2 * ⟨1, -1⟩ + ⟨2, 2⟩ = 0 := by
   rw [sq]
   ext <;> simp <;> norm_num
-
-example : Kernel.sqrtT 0 = 0 := by
-  simp [Kernel.sqrtT, Kernel.sqrtCandidate, Kernel.half]
 
 /-! ## The sign step with its branches swapped
 

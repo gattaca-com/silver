@@ -261,23 +261,6 @@ theorem map_powBy {α : Type} {M : Type*} [Monoid M] {mul : α → α → α} {o
 
 /-! ## Facts in Fp -/
 
-theorem thirtytwo_pow_ne_one : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-  have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 381 32 ((Fp.modulus - 1) / 3)
-    (by decide +kernel)).not.mpr (by decide +kernel)
-  rwa [Nat.cast_ofNat] at h
-
-/-- Euler's criterion for cubes, in the direction that rules a cube out. -/
-theorem not_cube_of_pow_ne_one {a : ZMod Fp.modulus} (ha : a ≠ 0)
-    (h : a ^ ((Fp.modulus - 1) / 3) ≠ 1) (x : ZMod Fp.modulus) : x ^ 3 ≠ a := by
-  rintro rfl
-  apply h
-  rw [← pow_mul, show 3 * ((Fp.modulus - 1) / 3) = Fp.modulus - 1 by decide +kernel]
-  exact ZMod.pow_card_sub_one_eq_one fun hx => ha (by rw [hx, zero_pow three_ne_zero])
-
-/-- `x ^ 3 + 4 (1 + i)` therefore never vanishes in Fp2: a root's norm would cube to 32. -/
-theorem thirtytwo_not_cube : ∀ x : ZMod Fp.modulus, x ^ 3 ≠ 32 :=
-  not_cube_of_pow_ne_one (by decide +kernel) thirtytwo_pow_ne_one
-
 /-- X² + 1 is therefore irreducible over Fp, and Fp2 = Fp[i] is a field. -/
 theorem neg_one_not_square : ∀ x : ZMod Fp.modulus, x ^ 2 ≠ -1 := fun x hx =>
   ZMod.exists_sq_eq_neg_one_iff.mp ⟨x, by rw [← hx, sq]⟩ p_mod_four

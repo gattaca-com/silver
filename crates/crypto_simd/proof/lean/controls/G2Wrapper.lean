@@ -70,9 +70,21 @@ example : (uncompress true distinguishing [rejected, G2Spec.infinity, G2Spec.inf
 example : (uncompress true fallback (List.replicate 3 G2Spec.infinity)).map Option.isSome ≠
     (uncompressWith 3 true false true fallback (List.replicate 3 G2Spec.infinity)).map Option.isSome := by decide +kernel
 
-example : G2Spec.verdict G2Spec.infinity = some
-    (point (.replicate 6 0) (.replicate 6 0) (.replicate 6 0) (.replicate 6 0)) :=
-  G2Spec.infinity_verdict
+private theorem infinity_verdict : G2Spec.verdict G2Spec.infinity = some
+    (point (.replicate 6 0) (.replicate 6 0) (.replicate 6 0) (.replicate 6 0)) := by
+  have hd : EthLib.Cryptography.Bls.G2.uncompress (toBytes G2Spec.infinity) =
+      .ok EthLib.Cryptography.Bls.G2.zero :=
+    EthLib.Cryptography.Bls.G2.uncompress_infinityBytes
+  have hz : blstFp (0 : ZMod EthLib.Cryptography.Bls.Fp.modulus) = ⟨.replicate 6 0⟩ := by
+    unfold blstFp
+    apply congrArg BlstFp.mk
+    apply Vector.ext
+    intro i hi
+    simp
+  rw [G2Spec.verdict, hd]
+  change some (blstPoint (0 : Fp2Field) 0) = _
+  simp only [blstPoint, QuadraticAlgebra.re_zero, QuadraticAlgebra.im_zero, hz]
+  rfl
 
 theorem malformed_infinity_verdict : G2Spec.verdict (G2Spec.infinity.set 95 1) = none := by
   unfold G2Spec.verdict EthLib.Cryptography.Bls.G2.uncompress
@@ -97,7 +109,7 @@ example : ¬ @BlstMatchesSpec rejecting := by
   intro h
   have hi := h (toArray toU8 G2Spec.infinity)
   change (none : Option blst.blst_p2_affine) = specVerdict _ at hi
-  simp [specVerdict, ofArray_toArray, G2Spec.infinity_verdict] at hi
+  simp [specVerdict, ofArray_toArray, infinity_verdict] at hi
 
 @[reducible] def accepting : BlsExternals := ⟨fun _ =>
   some (toBlstP2Affine (point (.replicate 6 0) (.replicate 6 0)
@@ -115,7 +127,7 @@ example : ¬ @BlstMatchesSpec wrongLimbs := by
   intro h
   have hi := h (toArray toU8 G2Spec.infinity)
   change some (toBlstP2Affine sentinel) = specVerdict _ at hi
-  simp [specVerdict, ofArray_toArray, G2Spec.infinity_verdict] at hi
+  simp [specVerdict, ofArray_toArray, infinity_verdict] at hi
   have hx := congrArg (fun p => (ofBlstP2Affine p).x.fp[0].l[0]) hi
   simp [sentinel, point] at hx
 

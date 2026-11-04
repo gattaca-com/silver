@@ -32,7 +32,7 @@ theorem uncompress_in_g1_eq_spec [RuntimeFeatures] [KzgExternals] [FallbackCorre
 
 An index uses IFMA when SIMD is available, it belongs to a complete eight-input chunk, and its undecided bit is clear. `Portable.Decode.g1_decoder_correct` proves the portable singleton and pair decoders used for undecided IFMA lanes and short tails. Without IFMA, the wrapper calls `KzgExternals.uncompressG1` per input. `UncompressG1.FallbackCorrect` requires exact specification agreement only when `simdAvailable = false`. `uncompress_in_g1_eq_spec_list_ifma` gives the same list result for an arbitrary external dictionary with no agreement law. The compatibility name `uncompress_in_g1_eq_spec_or_blst` carries the same scoped decoder premise.
 
-The G1 specification verdict calls `bytesToKzgProof`, decodes accepted bytes with `G1.uncompress`, and normalizes through `G1.toAffine`. Each coordinate has six little-endian Montgomery words with R = 2^384. Infinity has both coordinates zero. The bridge lemmas relate acceptance to both `bytesToKzgProof` and `bytesToKzgCommitment`.
+The G1 specification verdict calls `bytesToKzgProof`, decodes accepted bytes with `G1.uncompress`, and normalizes through `G1.toAffine`. Each coordinate has six little-endian Montgomery words with R = 2^384. Infinity has both coordinates zero. `G1Spec.verdict_some_iff` relates acceptance and exact limbs to `bytesToKzgProof` and successful decoding.
 
 ### G2 wrapper
 
@@ -54,7 +54,7 @@ theorem uncompress_in_g2_eq_spec_or_blst [RuntimeFeatures] [BlsExternals]
 
 Under `UncompressG2.BlstMatchesSpec`, `uncompress_in_g2_eq_spec_list` returns `inputs.val.map specVerdict`, and `uncompress_in_g2_eq_spec_model_list` expresses the result in model types as `inputs.val.map (G2Spec.verdict ∘ ofArray ofU8)`. The pointwise corollary and `uncompress_in_g2_eq_blst` are also available. The premise requires exact agreement on every 96-byte input, including acceptance, affine limbs and infinity.
 
-`G2Spec.verdict` calls the pinned specification's `G2.uncompress` and `G2.inSubgroup`. Its affine conversion calls `G2.toAffine` before writing the coordinates in blst's layout. `G2Spec.verdict_some_iff` and `UncompressG2.specVerdict_some_iff` characterize acceptance and exact limbs. `G2Spec.infinity_verdict` proves that canonical compressed infinity returns `some` of the all-zero affine limbs. The decided-lane bridge `decompress_eq_verdict` uses `G2Spec.blstLimbs_eq_of_z_one` to relate this affine conversion to the kernel's conversion of decoded finite points.
+`G2Spec.verdict` calls the pinned specification's `G2.uncompress` and `G2.inSubgroup`. Its affine conversion calls `G2.toAffine` before writing the coordinates in blst's layout. `G2Spec.verdict_some_iff` and `UncompressG2.specVerdict_some_iff` characterize acceptance and exact limbs. `controls/G2Wrapper.lean` checks canonical infinity's all-zero affine result and uses it to reject scalar externals with wrong verdicts or limbs. The decided-lane bridge `decompress_eq_verdict` uses `G2Spec.blstLimbs_eq_of_z_one` to relate this affine conversion to the kernel's conversion of decoded finite points.
 
 ### G2 kernel
 

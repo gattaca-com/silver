@@ -61,41 +61,9 @@ theorem uncompress_infinity : G1.uncompress Kzg.Constants.G1_POINT_AT_INFINITY =
 
 theorem uncompress_infinity_only (b : ByteArray)
     (h : G1.uncompress b = .ok G1.zero) : b = Kzg.Constants.G1_POINT_AT_INFINITY := by
-  unfold G1.uncompress at h
-  generalize Fp.sqrt = sq at h
-  split at h
-  · contradiction
-  rename_i hs
-  have hsize : b.size = 48 := by simpa using hs
-  dsimp only at h
-  split at h
-  · contradiction
-  split at h
-  · split at h
-    · contradiction
-    rename_i hf
-    have hz : b.get! 0 = 192 ∧ tailZero b 1 = true := by
-      change ¬ (decide (b.get! 0 &&& 32 ≠ 0) || decide (b.get! 0 ≠ 192) || !tailZero b 1) = true at hf
-      have hf' : (b.get! 0 &&& 32 = 0 ∧ b.get! 0 = 192) ∧ tailZero b 1 = true := by simpa using hf
-      exact ⟨hf'.1.2, hf'.2⟩
-    apply ByteArray.ext
-    apply Array.ext
-    · simpa [Kzg.Constants.G1_POINT_AT_INFINITY] using hsize
-    · intro i hi hj
-      have hget : b.get! i = b.data[i] := by rw [ByteArray.get!, getElem!_pos]
-      rw [← hget]
-      by_cases hi0 : i = 0
-      · subst i
-        simpa [Kzg.Constants.G1_POINT_AT_INFINITY] using hz.1
-      · have hi48 : i < 48 := by change i < b.size at hi; omega
-        rw [(tailZero_iff b 1).mp hz.2 i (by omega) hi]
-        simp [Kzg.Constants.G1_POINT_AT_INFINITY, hi48, show 0 ≠ i from Ne.symm hi0]
-  · split at h
-    · contradiction
-    split at h
-    · contradiction
-    have hz := congrArg (fun p : G1 => p.z.val) (Except.ok.inj h)
-    norm_num [G1.zero, Fp.one, Fp.zero, Fp.ofNat] at hz
+  calc
+    b = G1.compress G1.zero := (EthLib.Cryptography.Bls.G1.compress_uncompress h).symm
+    _ = Kzg.Constants.G1_POINT_AT_INFINITY := rfl
 
 theorem uncompress_eq_zero_of_infinity {b : ByteArray} {P : G1}
     (hd : G1.uncompress b = .ok P) (hi : P.isInfinity = true) : P = G1.zero := by
@@ -183,23 +151,6 @@ theorem verdict_some_iff (bytes : Encoding) (p : BlstP1Affine) :
     dsimp only
     by_cases hg : G1.inSubgroup P = true <;> simp [hg, Except.isOk, Except.toBool]
     exact eq_comm
-
-theorem verdict_accepts_iff (bytes : Encoding) :
-    (verdict bytes).isSome = (Kzg.bytesToKzgProof (toBytes bytes)).isOk := by
-  rw [verdict_eq_decode]
-  unfold Kzg.bytesToKzgProof
-  rw [validate_eq_decode]
-  cases hd : G1.uncompress (toBytes bytes) with
-  | error e => rfl
-  | ok P =>
-    dsimp only
-    by_cases hg : G1.inSubgroup P = true <;> simp only [hg, ↓reduceIte] <;> rfl
-
-theorem commitment_accepts_iff (bytes : Encoding) :
-    (Kzg.bytesToKzgCommitment (toBytes bytes)).isOk = (verdict bytes).isSome := by
-  rw [verdict_accepts_iff]
-  unfold Kzg.bytesToKzgCommitment Kzg.bytesToKzgProof
-  cases Kzg.validateKzgG1 (toBytes bytes) <;> rfl
 
 def infinity : Encoding := (Vector.replicate 48 0).set 0 0xc0
 

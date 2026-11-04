@@ -48,14 +48,7 @@ theorem sqrt_complete {a : Fp2} (h : IsSquare (toField a)) : ∃ y, Fp2.sqrt a =
   apply toField.injective
   simpa only [map_mul, toField.apply_symm_apply] using hr.symm
 
-/-! ## Roots agree up to sign, and the sign rules agree -/
-
-/-- Two square roots of one value agree up to sign. -/
-theorem eq_or_eq_neg_of_sq_eq {y₁ y₂ : Fp2} (h : toField y₁ ^ 2 = toField y₂ ^ 2) :
-    y₁ = y₂ ∨ y₁ = -y₂ := by
-  rcases sq_eq_sq_iff_eq_or_eq_neg.mp h with h | h
-  · exact Or.inl (toField.injective h)
-  · exact Or.inr (toField.injective (by rw [h, toField_neg]))
+/-! ## The sign rule under negation -/
 
 theorem signBit_neg {y : Fp2} (hy : toField y ≠ 0) : Fp2.signBit (-y) = !Fp2.signBit y :=
   EthLib.Cryptography.Bls.Fp2.signBit_neg (toField.map_ne_zero_iff.mp hy)
@@ -285,25 +278,6 @@ theorem sqrt_fst_sq {x : Fp2Field} (h : (sqrt x).2 = true) : (sqrt x).1 ^ 2 = x 
     rw [mul_pow, hneg, hω]
     ring
   · exact h.resolve_right hneg
-
-/-! ### Neither rhs nor t vanishes on the kernel's path -/
-
-/-- Were rhs zero, x³ = −4(1 + i) would give N(x)³ = 32, which is not a cube in Fp. -/
-theorem rhs_ne_zero (x : Fp2Field) : rhs x ≠ 0 := by
-  intro h
-  have h3 : x ^ 3 = ⟨-4, -4⟩ := by
-    have : x ^ 3 = -⟨4, 4⟩ := by
-      rw [rhs] at h
-      linear_combination h
-    rw [this]
-    ext <;> simp
-  apply thirtytwo_not_cube (QuadraticAlgebra.norm x)
-  rw [← map_pow, h3, QuadraticAlgebra.norm_def]
-  norm_num
-
-/-- t is nonzero on every rhs the kernel computes. -/
-theorem sqrtT_rhs_ne_zero (x : Fp2Field) : sqrtT (rhs x) ≠ 0 := fun h =>
-  rhs_ne_zero x (eq_zero_of_sqrtT_eq_zero h)
 
 /-! ### The two algorithms agree -/
 
