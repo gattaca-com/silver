@@ -27,7 +27,7 @@ def dblFormula (t : Fin 3 → Fp2Field) : Fin 3 → Fp2Field :=
   let x' := 9 * t 0 ^ 4 - 8 * t 0 * t 1 ^ 2
   ![x', 3 * t 0 ^ 2 * (4 * t 0 * t 1 ^ 2 - x') - 8 * t 1 ^ 4, 2 * t 1 * t 2]
 
-theorem dblXYZ_eq_dblFormula (t : Fin 3 → Fp2Field) : G2.curve.dblXYZ t = dblFormula t := by
+theorem dblXYZ_eq_dblFormula (t : Fin 3 → Fp2Field) : curve.dblXYZ t = dblFormula t := by
   funext i
   fin_cases i <;>
     simp only [dblFormula, dblXYZ, dblX, dblY, dblZ, negDblY, dblU_eq, negY, E'.a₁_eq,

@@ -518,6 +518,8 @@ The wrapper model uses SIMD availability, a threshold of three inputs per chunk,
 
 ### G2 kernel proof and completeness
 
+`Spec/G2Group.lean` defines silver's `G2.toPoint` through upstream's map and an additive equivalence induced by `Fp2.toField`. Validity uses `EthLib.Cryptography.Bls.G2.Valid` directly. The same equivalence transports the exact point count to E′. The Scott argument stays on E′ over the quotient tower. `Spec/Membership.lean` owns the field addition formula and its lemmas on arbitrary `Fp2Field` triples.
+
 `decompress_eq_spec` states the model result used by the [G2 kernel claim](#g2-kernel):
 
 ```lean
@@ -549,7 +551,7 @@ The supporting theorems that mention `decompress` refer to the model function an
 
 `psi_generator` proves the Scott identity at G without assuming completeness. Its controls reject the opposite sign of z and two wrong ψ constants. `Spec/G2Cardinality.lean` extends this identity to every rational r-torsion point.
 
-`Spec/ScottCardinality.lean` proves that G has exact order r, using EthLib's primality certificate for r. EthLib's `G2SubgroupSpan` proves the exact curve order r · h. Lean's kernel checks coprimality of h and r. `Spec/G2Cardinality.lean` transports that order from EthLib's curve over `Fp2` to E′ over `Fp2Field`. The transport uses `Fp2.toField` on affine coordinates and preserves the point at infinity. It needs only a point equivalence; the Scott proofs retain Silver's G2 group model.
+`Spec/ScottCardinality.lean` proves that G has exact order r, using EthLib's primality certificate for r. EthLib's `G2SubgroupSpan` proves the exact curve order r · h. Lean's kernel checks coprimality of h and r. `Spec/G2Cardinality.lean` transports that order from EthLib's curve over `Fp2` to E′ over `Fp2Field`. The transport uses `Fp2.toField` on affine coordinates and preserves the point at infinity.
 
 The quotient by G's cyclic subgroup has order h and therefore has no nonzero r-torsion. Every rational r-torsion point is then a multiple of G, so the generator identity gives `scott_complete : ScottComplete`. The conditional cardinality and cyclicity APIs remain available. `Spec/Fp2Tower.lean` supplies the field cardinality and characteristic facts used by the quotient tower and pairing proofs. These field facts do not import the G2 order certificates.
 
@@ -609,7 +611,8 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `G2Consumer.lean` | Applies G2 list, model and length-mismatch corollaries from a separate module. A specification-backed external satisfies the universal premise at both SIMD settings. |
 | `G1Consumer.lean` | A downstream module applies the general G1 theorem under its scoped decoder law. It applies the IFMA result with no blst agreement premise. |
 | `Statements.lean` | Changed constants and formulas break their proof scripts, including G1's Scott-membership proof when the model drops the y negation. |
-| `Limbs.lean`, `Fp8.lean`, `G2Group.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also shows that the early-carry model expression depends on its shift. |
+| `Limbs.lean`, `Fp8.lean`, `Decompress.lean` | A mutated constant, formula, carry or mask breaks the proof that uses it. `Limbs.lean` also shows that the early-carry model expression depends on its shift. |
+| `G2Group.lean` | An off-curve point shows that the subgroup implications require validity. |
 | `EarlyCarry.lean` | Both modulus constants satisfy the carry identity; omitting or decreasing MASK52 and replacing the wrapping sum by a natural-number sum give concrete counterexamples. |
 | `Square.lean` | The triangular square accumulator equals the full product; omitting cross-term doubling fails on an input with two nonzero limbs. |
 | `Fp8Lazy.lean` | Missing conditional subtraction violates the reduced bound; an insufficient offset makes a difference negative; a tighter lazy bound fails. Normalized operands alone do not guarantee a reduced product. |

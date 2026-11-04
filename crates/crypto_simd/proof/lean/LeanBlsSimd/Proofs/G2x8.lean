@@ -126,7 +126,7 @@ theorem Holds.add_affine (hP : P.Holds l t) {qx qy : Fp2x8} {vx vy : Fp2Field}
   · rw [G2x8.add_affine, Mmask8.testBit_or, hh.testBit_is_zero_mask, hP.z.testBit_is_zero_mask]
     rfl
   all_goals
-    simp only [Kernel.addAffine, G2.addBL, Matrix.cons_val_zero, Matrix.cons_val_one,
+    simp only [Kernel.addAffine, Kernel.addBL, Matrix.cons_val_zero, Matrix.cons_val_one,
       Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons]
     ring1
 
