@@ -6,12 +6,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-flux = ["dep:flux-profiler"]
 multi-owner = []
 
 [dependencies]
 bytesize.workspace = true
-flux-profiler = { workspace = true, optional = true }
 hashtree-rs.workspace = true
 sha2-const-stable.workspace = true
 

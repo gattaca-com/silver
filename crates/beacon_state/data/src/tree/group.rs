@@ -54,6 +54,7 @@ impl<C: TreeSpec> TreeGroup<C> {
             .expect("a zeroed buffer is exactly the vector length")
     }
 
+    #[timed]
     pub fn from_leaves(
         cap: usize,
         count: usize,
@@ -96,9 +97,14 @@ impl<C: TreeSpec> TreeGroup<C> {
         TreeWriteView::new(self, Some(parent))
     }
 
+    #[timed]
+    pub(super) fn rehash(&mut self) {
+        self.writer.tree_mut().rehash();
+    }
+
     pub(super) fn commit_writer(&mut self, parent: Option<Id<Self>>) -> Id<Self> {
+        self.rehash();
         let Self { pool, finalized, finalized_id, ring, writer, .. } = self;
-        writer.tree_mut().rehash();
 
         ring.grow_if_full_with(PageSnapshot::default, |src, dst| *dst = src.clone_for_grow());
         let parent_in_ring = parent.filter(|&p| Some(p) != *finalized_id);

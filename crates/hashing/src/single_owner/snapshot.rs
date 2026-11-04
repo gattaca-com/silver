@@ -17,7 +17,6 @@ pub struct PageSnapshot {
 
 impl PageSnapshot {
     /// `tree` committed as a base: it owns every page.
-    #[cfg_attr(feature = "flux", flux_profiler::timed)]
     pub fn from_tree<C: TreeSpec>(tree: &mut FlatTree<C>, pool: &mut PagePool<C::Page>) -> Self {
         let mut snapshot = Self::default();
         tree.commit(pool, &mut snapshot.table, None, None);
