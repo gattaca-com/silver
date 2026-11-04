@@ -463,7 +463,7 @@ All adaptations run before drift comparison. Only numeric source spans are maske
 | Path under `lean/` | Content |
 |---|---|
 | `lean-toolchain`, `lakefile.toml`, `lake-manifest.json` | Lean and dependency pins: Lean v4.35.0, Mathlib v4.35.0, upstream EthLib at `98395150` and Aeneas at `nightly-2026.10.30-de16f3c` (`backends/lean`). `lakefile.toml` also sets `autoImplicit` and `relaxedAutoImplicit` to `false`. The manifest records exact resolved revisions; `extract.sh` reads the Aeneas pin from it. |
-| `LeanBlsSimd/Constants.lean` | p, r, z, R, and the Rust's constant tables proved equal to their derivations. |
+| `LeanBlsSimd/Constants.lean` | p, r, z, R, the Rust constant tables, and parameter, ψ and chain facts for the specification bridges. |
 | `LeanBlsSimd/Spec/` | G1 and G2 Scott equivalence, upstream point-count facts, generator identities, field and group laws, and square roots. Includes KZG encoding and affine-layout bridges. |
 | `LeanBlsSimd/Extracted/` | Generated `Types.lean`, `Literals.lean` and `Funs.lean`; regenerate these files. Handwritten external definitions live in `TypesExternal.lean` and `FunsExternal.lean`. |
 | `LeanBlsSimd/Model/` | The Rust, transcribed by hand: the proved intermediate step between the generated code and the specification. |
@@ -477,6 +477,8 @@ All adaptations run before drift comparison. Only numeric source spans are maske
 | `Test/Main.lean`, `Test/Differential/` | The differential CLI, shared parser and separate G1/G2 checks; the G1/G2 module docstrings describe the formats. |
 | `Test/check_g1_controls.py`, `Test/check_g2_controls.py` | Positive formatting and negative value/parser controls for both differential runners; the G1 entry point runs both groups for CI. |
 | `extract.sh` | Regenerates `LeanBlsSimd/Extracted/Types.lean`, `Literals.lean` and `Funs.lean`, or checks them for drift. |
+
+`Refines/Constants.lean` binds the extracted Rust constants to the Lean tables. Their values are checked at their consumers in `Proofs/Fp8.lean`, `Proofs/Fp8Holds.lean`, `Proofs/Limbs.lean`, `Proofs/Pow.lean`, `Proofs/Decode.lean` and `Portable/Fp/Words.lean`.
 
 ## BLS proof internals
 
@@ -539,6 +541,8 @@ The model theorem takes two hypotheses; the headline theorem keeps only the firs
 
 - The undecided bit is clear (`hu` in `decompress_eq_spec`): the kernel decides the lane. `mod.rs` sends undecided lanes to blst. The theorem gives no specification result for those lanes, although unconditional refinement still covers their computed fields. The canonical infinity encoding is one such lane.
 - `hC : ScottComplete`: every point P of E′ with [r]P = O satisfies ψ(P) = [z]P. The model theorem retains this parameter; `scott_complete` proves it and supplies it to the headline theorem.
+
+The proof does not show that valid subgroup points always take the SIMD fast path rather than the blst fallback. Wrapper correctness covers fallback lanes through `BlstMatchesSpec`.
 
 The supporting theorems that mention `decompress` refer to the model function and are stated in `lean/LeanBlsSimd/Proofs/Kernel.lean`. Through `decompress_refines`, they also apply to the generated `decompress`, with its result converted by `ofBatch`.
 

@@ -126,13 +126,15 @@ Set up the [toolchain and cache](../README.md#reproducing-the-proof-and-checks) 
 | `mod.rs` (shared `Membership` and G2 length) | `Model/G2x8.lean` (`Membership`), `Model/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Refines/G2x8.lean` (`ofMembership`, `toMembership` and their uses), `Refines/DecompressG2.lean` (`G2_COMPRESSED_LEN`) | `Proofs/G2x8.lean` and `Proofs/DecompressG2.lean` (`Membership`); `Proofs/Decode.lean`, `Proofs/DecompressG2.lean` and `Proofs/Kernel.lean` (`G2_COMPRESSED_LEN`) |
 | `mod.rs` (G1 chunk and wrapper) | `Model/UncompressG1.lean` | `Refines/G1Wrapper*.lean`, `Refines/UncompressG1.lean` | `Spec/G1Encoding.lean` and the G1 kernel proof |
 | `mod.rs` (G2 chunk and wrapper) | `Model/UncompressG2.lean` | `Refines/G2Wrapper*.lean`, `Refines/UncompressG2.lean` | `Spec/G2Encoding.lean`, `Proofs/UncompressG2.lean` and the G2 kernel proof |
-| `constants.rs` | `LeanBlsSimd/Constants.lean`, which also proves each table equal to its derivation | `Refines/Constants.lean` | every file |
+| `constants.rs` | `LeanBlsSimd/Constants.lean`, with parameter, ψ and chain facts for the specification bridges | `Refines/Constants.lean` | every file |
 | `fp8.rs` | `LeanBlsSimd/Model/Fp8.lean`, over the intrinsics in `Model/Intrinsics.lean` | `Refines/Fp8.lean`, `Refines/Transpose.lean` | `Proofs/Limbs.lean` (`mul`), `Proofs/EarlyCarry.lean`, `Proofs/Reduction.lean`, `Proofs/Square.lean`, `Proofs/Vector.lean`, `Proofs/Carries.lean`, `Proofs/Fp8.lean` (the other operations), `Proofs/Pow.lean`, `Proofs/Convert.lean` |
 | `fp2x8.rs` | `LeanBlsSimd/Model/Fp2x8.lean` | `Refines/Fp2x8.lean` | `Proofs/Fp2x8.lean`, which relates the computed square root to `Kernel.sqrt` in `Spec/Sqrt.lean` |
 | `g1x8.rs` | `Model/G1x8.lean` | `Refines/G1x8.lean` | `Proofs/G1x8.lean`, against `Spec/G1Curve.lean` |
 | `decompress.rs` | `Model/DecompressG1.lean` | `Refines/DecompressG1.lean` | `Proofs/DecodeG1.lean`, `G1Finite.lean`, `G1KernelFacts.lean`, `DecompressG1.lean` |
 | `g2x8.rs` | `LeanBlsSimd/Model/G2x8.lean` | `Refines/G2x8.lean` | `Proofs/G2x8.lean`, against the field-level chain and Scott test in `Spec/Membership.lean` |
 | `decompress_g2.rs` | `LeanBlsSimd/Model/DecompressG2.lean` | `Refines/DecompressG2.lean`, then `Refines/Kernel.lean` and `Refines/Complete.lean` with the headline | `Proofs/Decode.lean` (bytes and flags), `Proofs/DecompressG2.lean` (lanes and early returns), `Proofs/Kernel.lean` |
+
+`Refines/Constants.lean` binds the extracted Rust constants to the Lean tables. Their values are checked at their consumers in `Proofs/Fp8.lean`, `Proofs/Fp8Holds.lean`, `Proofs/Limbs.lean`, `Proofs/Pow.lean`, `Proofs/Decode.lean` and `Portable/Fp/Words.lean`.
 
 Abbreviated paths such as `Model/Intrinsics.lean` and `Proofs/Limbs.lean` are relative to `LeanBlsSimd/`. `Refines/Basic.lean` contains conversions between Aeneas's values and the model's values, plus lemmas for evaluating Aeneas's primitives. `Refines/Loop.lean` equates Aeneas's loops with folds: `loop_range` for a `for` over a range, `loop_countdown` for a `while` that counts down. Changes to either wrapper, `Membership` or `G2_COMPRESSED_LEN` in `mod.rs` follow the extraction and refinement process above. The public wrappers' length checks are proved in `Refines/WrapperLengths.lean`.
 

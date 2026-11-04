@@ -16,22 +16,7 @@ open EthLib.Cryptography EthLib.Cryptography.Bls
 -- A mutated proof stops at its first failing step, so the linter flags the steps after it.
 set_option linter.unreachableTactic false
 
-/-! ## Tables -/
-
-example : True := by
-  fail_if_success
-    have : [0xeffffffffaaab, 0xfeb153ffffb9f, 0x6b0f6241eabff, 0x12bf6730d2a0f, 0x764774b84f385,
-        0x1ba7b6434bacd, 0x1ea397fe69a4b, 0x000000001a012] = limbs52 Fp.modulus := by
-      decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success have : R_MOD_P = limbs52 (toMont 2) := by decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success have : (Fp.modulus - 3) / 4 < 2 ^ (4 * 94) := by decide +kernel
-  trivial
+/-! ## Scalar modulus -/
 
 example : True := by
   fail_if_success have : (Fr.modulus : ℤ) = (z + 1) ^ 4 - (z + 1) ^ 2 + 1 := by decide +kernel
@@ -43,10 +28,6 @@ example : True := by
   fail_if_success have : powBy mulFp2 (1, 0) 381 (0, psiX + 1) 3 = (0, 1) := by decide +kernel
   trivial
 
-example :
-    mulFp2 (0, psiX + 1) (powBy mulFp2 (1, 0) 381 (1, 1) ((Fp.modulus - 1) / 3)) ≠ (1, 0) := by
-  decide +kernel
-
 /-! ## A square in place of the non-square −1 -/
 
 example : True := by
@@ -55,25 +36,10 @@ example : True := by
       ZMod.exists_sq_eq_neg_one_iff.mp ⟨x, by rw [← hx, sq]⟩ p_mod_four
   trivial
 
-/-! ## Fuel: (p − 1)/2 needs 380 bits -/
-
-example : mulFp2 psiY (powBy mulFp2 (1, 0) 379 (1, 1) ((Fp.modulus - 1) / 2)) ≠ (1, 0) := by
-  decide +kernel
-
-example : mulFp2 psiY (powBy mulFp2 (1, 0) 380 (1, 1) ((Fp.modulus - 1) / 2)) = (1, 0) := by
-  decide +kernel
-
-/-! ## The chain and its exceptions -/
+/-! ## The chain -/
 
 example : True := by
   fail_if_success have : Step.run chainSteps 1 = blsX + 1 := by decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success
-    have : [13, 23, 2713, 11953, 262069].map g2MeetsException =
-        [false, false, false, false, false] := by
-      decide +kernel
   trivial
 
 /-! ## Fp2: the bridge into ω² = 1 in place of ω² = −1

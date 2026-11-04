@@ -327,11 +327,11 @@ def from_plainWith (table : List ℕ) (values : Vector Limbs 8) : Fp8 :=
 example : from_plainWith R2_MOD_P = Fp8.from_plain := rfl
 
 example : val ((from_plainWith R2_MOD_P distinct).lane 1) % Fp.modulus =
-    toMont (val distinct[1]) := by
+    val distinct[1] * R % Fp.modulus := by
   decide +kernel
 
 example : val ((from_plainWith R_MOD_P distinct).lane 1) % Fp.modulus ≠
-    toMont (val distinct[1]) := by
+    val distinct[1] * R % Fp.modulus := by
   decide +kernel
 
 def to_plainWith (canon : Fp8 → Fp8) (self : Fp8) : Vector Limbs 8 :=

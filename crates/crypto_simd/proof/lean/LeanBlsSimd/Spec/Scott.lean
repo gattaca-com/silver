@@ -215,9 +215,9 @@ theorem scott_sound (P : E'.Point) (h : psi P = z • P) : Fr.modulus • P = 0 
 
 /-- Scott completeness, proved by `scott_complete` in `Spec/G2Cardinality.lean`.
 
-No theorem here fixes the sign of `cy`: `cy_sq` and `norm_cy` hold for −cy too, and flipping
-the signs of both `cy` and `z` keeps this statement true. `PSI_Y_MONT_eq` and `p_eq` pin each
-of them, and `psi_generator` checks the pair on the spec's generator. -/
+No theorem here fixes the sign of `cy`: `cy_sq` and `norm_cy` hold for −cy too. Flipping both
+`cy` and `z` keeps this statement true. `psi_generator` checks the pair on the spec's
+generator. -/
 def ScottComplete : Prop := ∀ P : E'.Point, Fr.modulus • P = 0 → psi P = z • P
 
 end LeanBlsSimd
