@@ -200,7 +200,6 @@ impl DataColumnsTile {
         }
 
         if is_gloas {
-            self.validator.cache_gloas_commitments(block_root, buffer);
             self.gloas_context(block_root, slot, producers);
         } else if self.sync_state.is_synced() &&
             let Some(domain) = self.validator.domain_at(slot)
@@ -748,9 +747,13 @@ impl DataColumnsTile {
         let block = self.reader.acquire(ssz);
         if let Ok((buf, _)) = block.buffer() {
             let slot = SignedBeaconBlockView::slot(buf);
-            let root = block_root(buf, self.spec.is_gloas_at_slot(slot));
+            let is_gloas = self.spec.is_gloas_at_slot(slot);
+            let root = block_root(buf, is_gloas);
             self.validator.note_validated(root, slot);
             self.validator.cache_parent_state_root(root, buf);
+            if is_gloas {
+                self.validator.cache_gloas_commitments(root, buf);
+            }
         }
         let stream_id = P2pStreamId::new(0, 0, StreamProtocol::GossipSub, true);
         self.handle_beacon_block(block, stream_id, producers);
@@ -1223,6 +1226,21 @@ mod tests {
             self.tile.handle_beacon_block(
                 read,
                 P2pStreamId::new(1, 0, StreamProtocol::GossipSub, true),
+                &mut self.conn.producers,
+            );
+        }
+
+        fn persist(&mut self, bytes: &[u8]) {
+            let slot = SignedBeaconBlockView::slot(bytes);
+            let block_root = block_root(bytes, self.tile.spec.is_gloas_at_slot(slot));
+            let ssz = tcache_write(&mut self.gossip_p, bytes);
+            self.tile.handle_beacon_state_event(
+                BeaconStateEvent::PersistBlock {
+                    ssz,
+                    source: BlockSource::Gossip,
+                    slot,
+                    block_root,
+                },
                 &mut self.conn.producers,
             );
         }

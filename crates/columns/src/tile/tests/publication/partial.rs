@@ -143,7 +143,7 @@ fn pending_sparse_cells_join_full_sidecars_in_the_kzg_batch_and_isolate_invalid_
         if format == ForkName::Gloas {
             rig.block(&block);
             assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
-            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            rig.persist(&block);
         } else {
             let data = ContextData::Fulu {
                 signed_header: &header,
