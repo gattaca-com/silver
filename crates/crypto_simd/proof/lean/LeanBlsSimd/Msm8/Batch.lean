@@ -433,31 +433,6 @@ theorem extend_chain_zero (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
   simp only [bind_ok, Fp8.sub_refines, Fp8.is_zero_mask_refines, ofFp8_toFp8, bne_iff_ne]
   rw [ite_eq_left hm]
 
-theorem equal_x_zero_mask (xa xb : Fp8) (lane : Fin 8)
-    (ha : Fp8Inv (xa.lane lane)) (hb : Fp8Inv (xb.lane lane))
-    (heq : decode (xa.lane lane) = decode (xb.lane lane)) :
-    (xb.sub xa).is_zero_mask ≠ 0 := by
-  have h := Fp8.testBit_is_zero_mask (Fp8.lane_sub hb ha).1
-  rw [Fp8.decode_lane_sub hb ha, heq, sub_self] at h
-  intro hz
-  simp [hz] at h
-
-theorem extend_chain_equal_x (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
-    (g : Usize) (products : Array fp8.Fp8 4#usize)
-    (ha : g.val * 8 + 8 ≤ self.a.val.length) (hb : g.val * 8 + 8 ≤ self.b.val.length)
-    (hba : indicesInBounds store (referencesAt self.a.val g.val).1)
-    (hbb : indicesInBounds store (referencesAt self.b.val g.val).1)
-    (lane : Fin 8)
-    (hxa : Fp8Inv ((loadedCoordinate store (referencesAt self.a.val g.val).1 0).lane lane))
-    (hxb : Fp8Inv ((loadedCoordinate store (referencesAt self.b.val g.val).1 0).lane lane))
-    (heq : decode ((loadedCoordinate store (referencesAt self.a.val g.val).1 0).lane lane) =
-      decode ((loadedCoordinate store (referencesAt self.b.val g.val).1 0).lane lane)) :
-    self.extend_chain store g products = ok (false, self, products) := by
-  exact extend_chain_zero self store g products _ _ _ _ _ _
-    (referencesAt_refines self.a g ha) (referencesAt_refines self.b g hb)
-    (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.a.val g.val).1 hba) (by simpa only [loadedCoordinate, toFp8] using! load_x_refines store (referencesAt self.b.val g.val).1 hbb)
-    (equal_x_zero_mask _ _ lane hxa hxb heq)
-
 def chainIndex (g : Usize) : Usize :=
   UScalar.ofNatCore (g.val % 4)
     (lt_of_lt_of_le (by omega : g.val % 4 < 2 ^ 32) two_pow_32_le_usize)
@@ -1269,74 +1244,6 @@ theorem runModel_rejected (self : msm8.pairs.BatchedAdds) (store : msm8.store.Po
     exact ⟨True.intro, prepareFrom_rejected store groups self (Vector.replicate 4 Fp8.one) 0 (by omega)⟩
   · simp only [runModel, h, ite_false, Bool.true_eq_false] at hrejected
 
-theorem run_rejects_first (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
-    (groups entries : Usize)
-    (ha : 0 < self.a.val.length) (hb : self.a.val.length ≤ self.b.val.length)
-    (ho : self.a.val.length ≤ self.out.val.length)
-    (hg : groups.val = ((self.a.val.length - 1) / 16 + 1) * 2)
-    (he : entries.val = groups.val * 8) (hsize : entries.val < 2 ^ 32)
-    (hbound : ExecutionBounds (paddedAdds self groups entries) store groups.val)
-    (hzero : (difference (paddedAdds self groups entries) store 0).is_zero_mask ≠ 0) :
-    self.run store = ok (false, paddedAdds self groups entries, store) := by
-  rw [run_refines self store groups entries ha hb ho hg he hsize hbound]
-  have hpositive : 0 < groups.val := by omega
-  obtain ⟨n, hn⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : groups.val ≠ 0)
-  rw [hn]
-  simp only [runModel, prepareFrom, prepareStep, hzero, ite_false, Bool.false_eq_true,
-    Nat.succ_pos, ite_true]
-
-theorem runModel_success_invariant (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
-    (groups n : ℕ) (heven : groups = 2 * n) (hb : PreparationBounds self store groups)
-    (a : Fin 8 → ℕ → ChainField)
-    (hdiff : ∀ lane i, i < groups → (difference self store i).Holds lane (a lane i))
-    (P : ℕ → msm8.store.PointStore → Prop) (hstart : P n store)
-    (hstep : ∀ m current recovered, 2 * (m + 1) ≤ groups → P (m + 1) current →
-      (∀ lane (j : Fin 2), recovered[j].Holds lane (a lane (2 * m + j.val))⁻¹) →
-      P m (finishPair (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).1
-        current (2 * m) recovered))
-    (hsuccess : (runModel self store groups).1 = true) :
-    P 0 (runModel self store groups).2.2 := by
-  let prepared := prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0
-  have hstop : ¬prepared.2.2 < groups := by
-    intro h
-    simp only [runModel, show (prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from h,
-      ite_true, Bool.false_eq_true] at hsuccess
-  have hcomplete : prepared.2.2 = groups := by
-    have hr := (prepareFrom_range store groups self (Vector.replicate 4 Fp8.one) 0).2
-    change prepared.2.2 ≤ 0 + groups at hr
-    omega
-  have hstate (lane : Fin 8) : ChainInvariant prepared.1 prepared.2.1 (a lane) groups lane := by
-    have h := prepareFrom_chainInvariant store groups self (Vector.replicate 4 Fp8.one)
-      0 groups (a lane) lane (by omega) hb (ChainInvariant.initial self (a lane) lane) (hdiff lane)
-    change ChainInvariant prepared.1 prepared.2.1 (a lane) prepared.2.2 lane at h
-    rw [hcomplete] at h
-    exact h
-  have hinv (lane : Fin 8) (k : Fin 4) :
-      (Msm8.batchInverse prepared.2.1)[k].Holds lane (chainValues (a lane) (2 * n) k)⁻¹ := by
-    rw [← heven]
-    exact Msm8.batchInverse_correct prepared.2.1 (chainValues (a lane) groups) lane
-      (hstate lane).product (chainValues_nonzero _ _ (hstate lane).nonzero) k
-  have hfinal := executeFrom_invariant prepared.1 prepared.2.1 a groups hstate P hstep n store
-    (Msm8.batchInverse prepared.2.1) (by omega) hstart hinv
-  simpa only [runModel, show ¬(prepareFrom store groups self (Vector.replicate 4 Fp8.one) 0).2.2 < groups from hstop,
-    ite_false, show groups / 2 = n by omega] using hfinal
-
-theorem run_equal_x_first (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
-    (groups entries : Usize)
-    (ha : 0 < self.a.val.length) (hb : self.a.val.length ≤ self.b.val.length)
-    (ho : self.a.val.length ≤ self.out.val.length)
-    (hg : groups.val = ((self.a.val.length - 1) / 16 + 1) * 2)
-    (he : entries.val = groups.val * 8) (hsize : entries.val < 2 ^ 32)
-    (hbound : ExecutionBounds (paddedAdds self groups entries) store groups.val)
-    (lane : Fin 8)
-    (hxa : Fp8Inv ((loadedCoordinate store (referencesAt (paddedAdds self groups entries).a.val 0).1 0).lane lane))
-    (hxb : Fp8Inv ((loadedCoordinate store (referencesAt (paddedAdds self groups entries).b.val 0).1 0).lane lane))
-    (heq : decode ((loadedCoordinate store (referencesAt (paddedAdds self groups entries).a.val 0).1 0).lane lane) =
-      decode ((loadedCoordinate store (referencesAt (paddedAdds self groups entries).b.val 0).1 0).lane lane)) :
-    self.run store = ok (false, paddedAdds self groups entries, store) :=
-  run_rejects_first self store groups entries ha hb ho hg he hsize hbound
-    (equal_x_zero_mask _ _ lane hxa hxb heq)
-
 theorem storeLane_frame (store : msm8.store.PointStore) (indices : Vector ℕ 8)
     (xs ys : Vector M512 8) (j : Fin 8) (p : ℕ) (c : Fin 2) (hne : p ≠ indices[j]) :
     (pointRows (storeLane store indices xs ys j))[2 * p + c.val]! =
@@ -1410,12 +1317,6 @@ theorem writeCoordinates_len (store : msm8.store.PointStore) (indices : Array U3
     (x y : Fp8) : (writeCoordinates store indices x y).len = store.len :=
   storeLane_fold_len store _ _ _ _
 
-theorem writeCoordinates_rows (store : msm8.store.PointStore) (indices : Array U32 8#usize)
-    (x y : Fp8) :
-    pointRows (writeCoordinates store indices x y) = storeRows (pointRows store) (pointIndices indices)
-      (transpose8 (ofArray id (toFp8 x))) (transpose8 (ofArray id (toFp8 y))) :=
-  storeLane_fold_rows store _ _ _ _
-
 theorem storeLane_row_self (store : msm8.store.PointStore) (indices : Vector ℕ 8)
     (xs ys : Vector M512 8) (j : Fin 8) (c : Fin 2)
     (hb : 2 * indices[j] + 1 < store.rows.val.length) :
@@ -1429,48 +1330,6 @@ theorem storeLane_row_self (store : msm8.store.PointStore) (indices : Vector ℕ
     rw [List.set_getElem!_ne _ _ _ _ (by omega), List.set_getElem!_eq _ _ _ _ ⟨hx, rfl⟩]
   · simp only [pointRows_storeLane, show ¬(1 : ℕ) = 0 by decide, ite_false]
     exact List.set_getElem!_eq _ _ _ _ ⟨hy, rfl⟩
-
-theorem storeLane_fold_value (store : msm8.store.PointStore) (indices : Vector ℕ 8)
-    (xs ys : Vector M512 8) (lanes : List (Fin 8)) (p : ℕ) (c : Fin 2) (value : M512)
-    (hb : 2 * p + 1 < store.rows.val.length)
-    (hsame : ∀j : Fin 8, indices[j] = p → (if c.val = 0 then xs[j] else ys[j]) = value)
-    (hstart : (pointRows store)[2 * p + c.val]! = value ∨ ∃j ∈ lanes, indices[j] = p) :
-    (pointRows (lanes.foldl (fun current j => storeLane current indices xs ys j) store))[2 * p + c.val]! = value := by
-  induction lanes generalizing store with
-  | nil =>
-    rcases hstart with h|⟨j, hj, _⟩
-    · exact h
-    · simp only [List.not_mem_nil] at hj
-  | cons j lanes ih =>
-    simp only [List.foldl_cons]
-    apply ih _ (by simpa only [storeLane_length] using hb) hsame
-    by_cases hj : indices[j] = p
-    · left
-      have hv := storeLane_row_self store indices xs ys j c (by simpa only [hj] using hb)
-      rw [hj, hsame j hj] at hv
-      exact hv
-    · rcases hstart with h|⟨k, hk, hkp⟩
-      · left
-        exact (storeLane_frame store indices xs ys j p c (Ne.symm hj)).trans h
-      · right
-        refine ⟨k, ?_, hkp⟩
-        simp only [List.mem_cons] at hk
-        rcases hk with rfl|hk
-        · exact False.elim (hj hkp)
-        · exact hk
-
-theorem writeCoordinates_value (store : msm8.store.PointStore) (indices : Array U32 8#usize)
-    (x y : Fp8) (p : ℕ) (c : Fin 2) (value : M512)
-    (hb : 2 * p + 1 < store.rows.val.length)
-    (hsame : ∀j : Fin 8, (pointIndices indices)[j] = p →
-      (if c.val = 0 then (transpose8 (ofArray id (toFp8 x)))[j]
-       else (transpose8 (ofArray id (toFp8 y)))[j]) = value)
-    (hwritten : ∃j : Fin 8, (pointIndices indices)[j] = p) :
-    (pointRows (writeCoordinates store indices x y))[2 * p + c.val]! = value := by
-  apply storeLane_fold_value store _ _ _ _ p c value hb hsame
-  right
-  obtain ⟨j, hj⟩ := hwritten
-  exact ⟨j, List.mem_finRange j, hj⟩
 
 def pairResult (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (g : ℕ) (inv : Vector Fp8 2) (j : Fin 2) : Fp8 × Fp8 :=
@@ -1495,29 +1354,6 @@ theorem finishPair_eq (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointS
 theorem finishPair_len (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (g : ℕ) (inv : Vector Fp8 2) : (finishPair self store g inv).len = store.len := by
   rw [finishPair_eq, writeCoordinates_len, writeCoordinates_len]
-
-theorem finishPair_value (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
-    (g : ℕ) (inv : Vector Fp8 2) (p : ℕ) (c : Fin 2) (value : M512)
-    (hb : 2 * p + 1 < store.rows.val.length)
-    (hsame : ∀ (j : Fin 2) (lane : Fin 8),
-      (pointIndices (referencesAt self.out.val (g + j.val)).1)[lane] = p →
-      (if c.val = 0 then (transpose8 (ofArray id (toFp8 (pairResult self store g inv j).1)))[lane]
-       else (transpose8 (ofArray id (toFp8 (pairResult self store g inv j).2)))[lane]) = value)
-    (hwritten : ∃ (j : Fin 2) (lane : Fin 8),
-      (pointIndices (referencesAt self.out.val (g + j.val)).1)[lane] = p) :
-    (pointRows (finishPair self store g inv))[2 * p + c.val]! = value := by
-  rw [finishPair_eq]
-  by_cases hlast : ∃ lane : Fin 8, (pointIndices (referencesAt self.out.val (g + 1)).1)[lane] = p
-  · exact writeCoordinates_value _ _ _ _ p c value
-      (by simpa only [writeCoordinates_length] using hb) (hsame 1) hlast
-  · have hfirst : ∃ lane : Fin 8, (pointIndices (referencesAt self.out.val g).1)[lane] = p := by
-      obtain ⟨j, lane, hj⟩ := hwritten
-      fin_cases j
-      · exact ⟨lane, hj⟩
-      · exact False.elim (hlast ⟨lane, hj⟩)
-    rw [writeCoordinates_frame _ _ _ _ p c
-      (fun lane h => hlast ⟨lane, h.symm⟩)]
-    exact writeCoordinates_value _ _ _ _ p c value hb (hsame 0) hfirst
 
 end
 

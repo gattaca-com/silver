@@ -661,22 +661,6 @@ theorem pair_rounds_initial (ctx : Context) (state : silver_crypto_simd.bls.msm8
   pair_rounds_concrete ctx state (initial_completed ctx (state.store, state.buckets, state.adds)
     contents hp hlen hrows hactive hlive hframe hsums)
 
-theorem Success.buckets {ctx : Context} {state : RoundState} (h : Success ctx state) :
-    ∃ values : ℕ → G1Spec.E.Point,
-      (∀ i < ctx.total, ∀ r ∈ bucketSlice state.2.1 i,
-        RowRep (pointRows state.1) (pointIndex r) (values (pointIndex r))) ∧
-      (∀ i < ctx.total, ((bucketSlice state.2.1 i).map (signedReferenceValue values)).sum = ctx.target i) ∧
-      (∀ i < ctx.total, (bucketSlice state.2.1 i).length ≤ 1) ∧ Frame ctx state := by
-  obtain ⟨⟨contents, values, hc⟩, hs⟩ := h
-  refine ⟨values, ?_, ?_, hs, hc.frame⟩
-  · intro i hi r hr
-    rw [packed_recovers state.2.1 ctx.total ctx.base ctx.capacity contents hc.layout.packed i hi] at hr
-    apply hc.refs r
-    exact List.mem_flatten.mpr ⟨contents i, List.mem_map.mpr ⟨i, List.mem_range.mpr hi, rfl⟩, hr⟩
-  · intro i hi
-    rw [packed_recovers state.2.1 ctx.total ctx.base ctx.capacity contents hc.layout.packed i hi]
-    exact hc.sums i hi
-
 end LeanBlsSimd.PairRoundsRefines
 
 namespace LeanBlsSimd.PairRoundsRefines

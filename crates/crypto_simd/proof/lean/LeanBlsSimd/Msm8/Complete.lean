@@ -36,13 +36,6 @@ theorem select_true_holds (k : Mmask8) (a b : G1x8) (l : Fin 8) (P : G1)
     constructor <;> simp only [select, Fp8.lane_select, hk, ↓reduceIte]
   exacts [hx.inv, hx.eq, hy.inv, hy.eq, hz.inv, hz.eq]
 
-theorem Holds.select {a b : G1x8} {l : Fin 8} {P Q : G1}
-    (k : Mmask8) (ha : a.Holds l P) (hb : b.Holds l Q) :
-    (select k a b).Holds l (if k.toNat.testBit l then Q else P) := by
-  cases hk : k.toNat.testBit l
-  · exact select_false_holds k a b l P hk ha
-  · exact select_true_holds k a b l Q hk hb
-
 
 
 

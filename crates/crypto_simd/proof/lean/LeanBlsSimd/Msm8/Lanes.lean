@@ -13,14 +13,6 @@ theorem times_two_pow_succ (self : G1x8) (k : ℕ) :
     self.times_two_pow (k + 1) = self.double_complete.times_two_pow k := by
   simp only [times_two_pow, List.foldl_const, List.length_range, Function.iterate_succ_apply]
 
-theorem times_two_pow_holds (self : G1x8) (k : ℕ) (l : Fin 8) (P : G1)
-    (h : self.Holds l P) : (self.times_two_pow k).Holds l ((G1.double^[k]) P) := by
-  induction k generalizing self P with
-  | zero => exact h
-  | succ k ih =>
-    rw [times_two_pow_succ, Function.iterate_succ_apply]
-    exact ih self.double_complete (G1.double P) (double_complete_correct self l P h)
-
 theorem times_two_pow_correct (self : G1x8) (k : ℕ) (l : Fin 8) (P : G1)
     (h : self.Holds l P) (hP : G1.Valid P) :
     ∃ Q, (self.times_two_pow k).Holds l Q ∧ G1.Valid Q ∧

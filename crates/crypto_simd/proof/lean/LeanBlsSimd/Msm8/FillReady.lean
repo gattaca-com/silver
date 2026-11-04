@@ -56,15 +56,4 @@ theorem fill127_ready (state : msm8.buckets.Buckets)
     rw [packed_recovers out _ (prefixSum capacity) capacity contents hp i hi]
     exact hr
 
-theorem chunksActive_range (contents : BucketLists) (n : ℕ) :
-    QueueRefines.chunksActive ((List.range n).map contents) =
-      prefixSum (fun i => (contents i).length) n := by
-  induction n with
-  | zero => rfl
-  | succ n ih =>
-    simp only [List.range_succ, List.map_append, List.map_cons, List.map_nil,
-      QueueRefines.chunksActive, List.sum_append, List.sum_cons, List.sum_nil,
-      Nat.add_zero, prefixSum]
-    exact congrArg (fun k => k + (contents n).length) ih
-
 end LeanBlsSimd.BucketsRefines

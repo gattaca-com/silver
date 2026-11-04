@@ -67,9 +67,4 @@ theorem split_scalar_contribution (point : blst.blst_p1_affine) (scalar : Scalar
   rw [glv_value_eq_limbs]
   simp [inputContribution]
 
-theorem chunk_sums (chunks : List (List (blst.blst_p1_affine × ScalarWords))) :
-    (chunks.map (fun chunk => (chunk.map inputContribution).sum)).sum =
-      (chunks.flatten.map inputContribution).sum := by
-  simp only [List.map_flatten, List.sum_flatten, List.map_map, Function.comp_def]
-
 end LeanBlsSimd.Msm8

@@ -139,10 +139,4 @@ theorem prepare_store_correct (store : msm8.store.PointStore)
   · rw [pointRows_length]
     omega
 
-theorem prepared_signed_reference_bound (out : msm8.store.PointStore) (n : ℕ)
-    (hrows : ∀ i, i < 2 * n → 2 * i + 1 < (pointRows out).length)
-    (reference : U32) (href : reference.val % 2 ^ 31 < 2 * n) :
-    2 * (reference.val % 2 ^ 31) + 1 < (pointRows out).length :=
-  hrows _ href
-
 end LeanBlsSimd.Msm8
