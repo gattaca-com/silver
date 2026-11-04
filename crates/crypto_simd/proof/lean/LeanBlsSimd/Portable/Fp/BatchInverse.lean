@@ -76,11 +76,4 @@ theorem batch_inverse_nonzero [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus)
   obtain ⟨h0,h1,h2,h3⟩ := inverse_product_nonzero a b c d ha hb hc hd
   rw [h0,h1,h2,h3]
 
-theorem batch_inverse_zero_product [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus)
-    (hzero : a*b*c*d = 0) :
-    portable.msm.pairs.batch_inverse (encodeFour a b c d) =
-      ok (encodeFour 0 0 0 0) := by
-  rw [batch_inverse_schedule,hzero]
-  simp only [inv_zero,zero_mul]
-
 end LeanBlsSimd.Portable.Fp

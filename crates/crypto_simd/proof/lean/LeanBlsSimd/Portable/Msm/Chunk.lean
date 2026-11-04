@@ -15,10 +15,6 @@ private theorem bind_success {α β : Type} (r : Result α) (f : α → Result �
   · rintro ⟨x, rfl, h⟩
     simpa only [bind_tc_ok, bind_ok] using h
 
-private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (v : β) :
-    Std.bind r f = ok v ↔ ∃ x, r = ok x ∧ f x = ok v := by
-  simpa only [bind_tc_eq] using bind_success r f v
-
 private theorem uncurry_eq_fun {α β γ : Type} (f : α → β → γ) :
     Aeneas.Std.uncurry f = fun p => f p.1 p.2 := by
   funext ⟨a, b⟩

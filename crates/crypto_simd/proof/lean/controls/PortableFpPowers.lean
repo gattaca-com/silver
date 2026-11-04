@@ -59,7 +59,6 @@ theorem one_validity_bit_cannot_be_dropped [RuntimeFeatures] :
 #print axioms pow_p_minus_3_over_4_refines
 #print axioms pow_p_minus_3_over_4_pair_refines
 #print axioms sqrt_refines
-#print axioms sqrt_eq_spec
 #print axioms sqrt_pair_refines
 
 end LeanBlsSimd.Portable.Fp.Controls

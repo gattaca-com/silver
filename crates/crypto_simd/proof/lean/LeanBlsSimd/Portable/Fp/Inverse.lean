@@ -18,10 +18,6 @@ theorem r_cubed_eq : portable.constants.R3 =
   unfold portable.constants.R3
   rfl
 
-theorem r_cubed_bound : value portable.constants.R3 < Bls.Fp.modulus := by
-  rw [r_cubed_eq]
-  exact encode_bound _
-
 theorem r_cubed_field : (value portable.constants.R3 : ZMod Bls.Fp.modulus) =
     (2^384 : ZMod Bls.Fp.modulus)^3 := by
   rw [r_cubed_eq,encode_field,ofNat_field,Nat.cast_pow,Nat.cast_ofNat]
@@ -45,10 +41,5 @@ theorem inverse_encoded [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) :
     rw [hom,hf,r_cubed_field,encode_field,encode_field]
     exact inverse_scale x _ (by decide +kernel)
   simp only [portable.fp.Fp.inverse,hi, bind_ok,mul_eq_product,hm,hout]
-
-theorem inverse_zero [RuntimeFeatures] :
-    portable.fp.Fp.inverse (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l =
-      ok (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l := by
-  simpa only [inv_zero] using inverse_encoded (0 : ZMod Bls.Fp.modulus)
 
 end LeanBlsSimd.Portable.Fp

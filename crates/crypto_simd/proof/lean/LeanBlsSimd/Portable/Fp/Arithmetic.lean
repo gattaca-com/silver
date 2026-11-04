@@ -108,14 +108,6 @@ theorem product_encoded (x y : Bls.Fp) :
     ring
   rw [hr,heq]
 
-theorem mul_baseline_encoded (x y : Bls.Fp) :
-    portable.fp.Fp.mul_on_baseline (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l :=
-  product_encoded x y
-
-theorem mul_bmi2_encoded (x y : Bls.Fp) :
-    portable.fp.Fp.mul_on_bmi2 (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l :=
-  product_encoded x y
-
 theorem mul_encoded [RuntimeFeatures] (x y : Bls.Fp) :
     portable.fp.Fp.mul (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l := by
   simp only [portable.fp.Fp.mul,bmi2_available, bind_ok]

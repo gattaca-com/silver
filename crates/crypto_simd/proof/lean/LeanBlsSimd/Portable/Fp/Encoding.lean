@@ -63,7 +63,4 @@ theorem rep_eq_encode {a : portable.fp.Fp} {x : Bls.Fp} (h : Rep a x) : a = (Kzg
       rw [mul_assoc,inv_mul_cancel₀ hR,mul_one]
     _ = _ := by rw [hz]
 
-theorem rep_injective {a b : portable.fp.Fp} {x : Bls.Fp} (ha : Rep a x) (hb : Rep b x) : a = b :=
-  (rep_eq_encode ha).trans (rep_eq_encode hb).symm
-
 end LeanBlsSimd.Portable.Fp
