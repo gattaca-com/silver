@@ -99,6 +99,9 @@ impl<'a> BuildersView<'a> {
 
     #[inline]
     pub fn get(&self, i: usize) -> Option<&'a Builder> {
+        if i >= self.len() {
+            return None;
+        }
         if let Some(b) = self.delta.edits.get(i as u32) {
             return Some(b);
         }
