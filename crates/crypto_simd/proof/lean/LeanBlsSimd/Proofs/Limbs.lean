@@ -4,7 +4,7 @@ import LeanBlsSimd.Model.Fp8
 # `Fp8::mul` is a Montgomery product
 
 For inputs satisfying `Fp8Inv`, `mul_spec` proves that `Lane.mul` preserves that invariant
-and computes a · b · R⁻¹ modulo p. `Fp8.mul_spec` lifts this result to eight lanes.
+and computes a · b · R⁻¹ modulo p.
 
 Under these input bounds, no addition in `Lane.mul` overflows: every intermediate sum stays
 below 2^64. The lemmas below show this step by step, each giving its
@@ -513,14 +513,6 @@ namespace Fp8
 theorem lane_ofLanes (lanes : Vector Limbs 8) (l : Fin 8) : (ofLanes lanes).lane l = lanes[l] := by
   ext j hj
   simp [lane, ofLanes]
-
-theorem mul_spec {x y : Fp8} (hx : ∀ l, Fp8Inv (x.lane l)) (hy : ∀ l, Fp8Inv (y.lane l))
-    (l : Fin 8) :
-    Fp8Inv ((x.mul y).lane l) ∧ (val ((x.mul y).lane l) : ZMod Fp.modulus) =
-      val (x.lane l) * val (y.lane l) * (R : ZMod Fp.modulus)⁻¹ := by
-  rw [Fp8.mul, lane_ofLanes]
-  simp only [Fin.getElem_fin, Vector.getElem_ofFn]
-  exact LeanBlsSimd.mul_spec (hx l) (hy l)
 
 end Fp8
 

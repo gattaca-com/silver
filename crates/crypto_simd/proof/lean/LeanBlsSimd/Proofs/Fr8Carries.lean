@@ -81,32 +81,6 @@ theorem val_eq (a : Limbs) : val a = a[0].toNat + a[1].toNat * 2 ^ 52 + a[2].toN
   rw [sum_fin_limbs]
   simp only [Fin.getElem_fin, val_fin_LIMBS, LIMB_BITS, Nat.reduceMul, pow_zero, mul_one]
 
-theorem eq_of_val_eq {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52)
-    (hb : ∀ j : Fin LIMBS, b[j].toNat < 2 ^ 52) (h : val a = val b) : a = b := by
-  rw [val_eq, val_eq] at h
-  have := ha 0; have := ha 1; have := ha 2; have := ha 3
-  have := ha 4
-  have := hb 0; have := hb 1; have := hb 2; have := hb 3
-  have := hb 4
-  simp only [Fin.getElem_fin, val_fin_LIMBS] at *
-  ext j hj
-  simp only [LIMBS] at hj
-  interval_cases j <;> omega
-
-set_option exponentiation.threshold 1000 in
-theorem val_replicate_zero : val (.replicate LIMBS 0 : Limbs) = 0 := by decide
-
-theorem val_eq_zero_iff {a : Limbs} : val a = 0 ↔ a = .replicate _ 0 := by
-  constructor
-  · intro h
-    rw [val_eq] at h
-    ext j hj
-    rw [Vector.getElem_replicate]
-    simp only [LIMBS] at hj
-    interval_cases j <;> simp <;> omega
-  · rintro rfl
-    exact val_replicate_zero
-
 namespace Lane
 
 open LeanBlsSimd.Lane

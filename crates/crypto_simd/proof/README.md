@@ -516,7 +516,7 @@ The Scott lemmas use σ(x, y) = (βx, y), with β fixed by the kernel's `BETA_MO
 
 ### G2 wrapper refinement
 
-The wrapper model uses SIMD availability, a threshold of three inputs per chunk, and padding that repeats the last input. `DecompressG2.decompress_lane_independent` proves that padding contents are unobservable in the public result. `UncompressG2.chunk_slice_refines` proves padding accesses stay in bounds and the generated padded chunk equals `chunkAt` exactly.
+The wrapper model uses SIMD availability, a threshold of three inputs per chunk, and padding that repeats the last input. `DecompressG2.decompress_lane` expresses each lane result using that lane's bytes. `UncompressG2.chunk_slice_refines` proves padding accesses stay in bounds and the generated padded chunk equals `chunkAt` exactly.
 
 ### G2 kernel proof and completeness
 
@@ -737,7 +737,7 @@ The portable compressor proves byte loading, all 64 schedule words and rounds, f
 | Reduced (`Bounded`) | In `[0, 2r)` | Normalized |
 | `Lazy k m` | In `[0, k*r)` | Each has magnitude below `m*2^52` |
 
-`Model/SignedLimbs.lean` and `Proofs/SignedLimbs.lean` provide signed carry and raw arithmetic facts. `normalise` preserves the integer value when its limbs have magnitude below `2^62` and its value lies below `2^260`. `Refines/Fr8.lean` equates uncarried products with `Fr8.mulRaw`, using the [shared early-carry reduction proof](#montgomery-multiplication-and-squaring). `Reduction.rows_agree` transfers the surviving limbs to the reference accumulator. `Refines/Fr8Interleaving.lean` equates each combined row with independent reduction and product rows, including their wrapping additions. `Fr8.reduce_while_multiplying_eq` composes the rows into exactly `(reduce t, product a b)`. `Fr8.product_bound` bounds every unreduced accumulator limb below `2^56`, for arbitrary inputs. `Proofs/Fr8Product.lean` bounds the reduced product limbs below `2^57`. It bounds their value below `2r`, assuming normalized operands with `a*b < r*2^260`.
+`Model/SignedLimbs.lean` and `Proofs/SignedLimbs.lean` provide signed carry and raw arithmetic facts. `normalise` preserves the integer value when its limbs have magnitude below `2^62` and its value lies below `2^260`. `Refines/Fr8.lean` equates uncarried products with `Fr8.mulRaw`, using the [shared early-carry reduction proof](#montgomery-multiplication-and-squaring). `Reduction.rows_agree` transfers the surviving limbs to the reference accumulator. `Refines/Fr8Interleaving.lean` equates each combined row with independent reduction and product rows, including their wrapping additions. `Fr8.reduce_while_multiplying_eq` composes the rows into exactly `(reduce t, product a b)`. `FrModel.Lane.mulAcc_bound` bounds the combined product/reduction accumulator limbs below `2^57` for arbitrary inputs. `FrModel.Lane.mulRaw_bound` transfers this bound to the output limbs. `FrModel.Fr8.mulRaw_spec` also bounds each lane's value below `2r`, assuming normalized operands with `a*b < r*2^260`.
 
 Multiplication constants carry `R = 2^260` and have canonical representatives below `r`. `MultiplierRep` records both properties. `FftInvariant` requires this representation for all wide and short twiddles; `StateInvariant` also requires it for shift multipliers. The constructors establish these invariants through `load_multiplier_refinement`, which proves canonicality from the exact modulo-`r` packing equation, without an additional external premise.
 

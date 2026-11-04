@@ -91,6 +91,4 @@ theorem Z_BITS_index (k : Usize) (hk : k.val < 6) :
 
 theorem LANES_refines : limbs.LANES = 8#usize := by rw [limbs.LANES]
 
-theorem U64_MAX_refines : core.num.U64.MAX = toU64 0xffffffffffffffff := rfl
-
 end LeanBlsSimd

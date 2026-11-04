@@ -305,7 +305,7 @@ example : True := by
 
 /-! ## `sqrt_candidate` multiplies the power by `self`
 
-Without that product the exponent stays (p − 3)/4, and `lane_sqrt_candidate`'s last step fails. -/
+Without that product the exponent stays (p − 3)/4 instead of (p + 1)/4. -/
 
 example : True := by
   fail_if_success

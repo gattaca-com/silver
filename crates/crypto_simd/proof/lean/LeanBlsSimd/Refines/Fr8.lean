@@ -91,30 +91,8 @@ theorem Fr8.reduce_refines (t : Array M512 11#usize) :
     ofArray_toArray_ofU64, Fin.getElem_fin, Simd.getElem_splat]
   rfl
 
-theorem Fr8.product_success (a b : fr8.Fr8) :
-    ∃ p, fr8.Fr8.product a b = ok p := ⟨_, Fr8.product_refines a b⟩
-
-attribute [local irreducible] Lane.productAcc in
-theorem Fr8.product_bound (a b : fr8.Fr8) :
-    ∃ p, fr8.Fr8.product a b = ok p ∧
-      ∀ (k : Fin (2 * LIMBS + 1)) (l : Fin 8),
-        (laneOf (ofArray id p (m := 2 * LIMBS + 1)) l)[k].toNat < 2 ^ 56 := by
-  refine ⟨_, Fr8.product_refines a b, ?_⟩
-  intro k l
-  simpa only [Fr8.productValue, ofArray_toArray_id, laneOf_fromLanes] using
-    Lane.productAcc_bound ((ofFr8 a).lane l) ((ofFr8 b).lane l) k
-
-theorem Fr8.reduce_success (t : Array M512 11#usize) :
-    ∃ r, fr8.Fr8.reduce t = ok r := ⟨_, Fr8.reduce_refines t⟩
-
 theorem Fr8.mul_eq_reduce_product (a b : fr8.Fr8) :
     fr8.Fr8.mul a b = (do let p ← fr8.Fr8.product a b; fr8.Fr8.reduce p) := rfl
-
-theorem Fr8.reduceValue_productValue (a b : fr8.Fr8) :
-    Fr8.reduceValue (Fr8.productValue a b) = toFr8 ((ofFr8 a).mulRaw (ofFr8 b)) := by
-  have h := Fr8.mul_refines a b
-  simpa only [fr8.Fr8.mul, Fr8.product_refines, bind_tc_ok, bind_ok, Fr8.reduce_refines,
-    Result.ok.injEq] using h
 
 attribute [local irreducible] Lane.muladd_row Reduction.earlyRow in
 theorem Fr8.reduce_while_multiplying_eq (t : Array M512 11#usize) (a b : fr8.Fr8) :

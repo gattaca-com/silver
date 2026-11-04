@@ -64,11 +64,4 @@ theorem transpose8_refines (rows : Array M512 8#usize) :
   ext1
   simp [toArray, transpose8, ofFn_eight]
 
-theorem transpose8_lanes (rows : Array M512 8#usize) :
-    ∃ out, fp8.transpose8 rows = ok out ∧
-      ∀ row lane : Fin 8, (out.val[row.val]!)[lane] = (rows.val[lane.val]!)[row] := by
-  refine ⟨toArray id (transpose8 (ofArray id rows)), transpose8_refines rows, ?_⟩
-  intro row lane
-  simp [transpose8, getElem!_pos, row.isLt, lane.isLt, rows.property]
-
 end LeanBlsSimd
