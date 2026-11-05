@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.SetupBytes
-import LeanBlsSimd.Kzg.SetupArithmetic
+import LeanBlsSimd.Kzg.SetupDecoding
 
-open EthLib.Cryptography Bls Kzg LeanBlsSimd.Kzg.SetupArithmetic silver_crypto_simd silver_crypto_simd.kzg
+open EthLib.Cryptography Bls Kzg LeanBlsSimd.Kzg.SetupDecoding silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.SetupPoints
 
@@ -144,7 +144,6 @@ theorem g1_decoded (i : Fin 64) :
   fin_cases i <;> decide +kernel
 
 theorem g1_subgroup (i : Fin 64) : g1Points[i.val]!.inSubgroup = true := by
-  rw [G1.inSubgroup, ← g1Mul_eq 256 _ Fr.modulus (by decide)]
   fin_cases i <;> decide +kernel
 
 theorem g1_finite (i : Fin 64) : g1Points[i.val]!.isInfinity = false := by
@@ -166,13 +165,11 @@ theorem g2_0_decoded :
   have hc : Fp.sqrt ((rhs0.c0 + norm0Root) * (Fp.ofNat 2).inverse) = .ok g2Point0.y.c0 := by
     decide +kernel
   rw [g2_uncompress_of _ g2Point0.x.c0 g2Point0.x.c1 _ (by decide +kernel) (by decide +kernel)
-    (by decide +kernel) (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
-    (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
     (fp2_sqrt_of_plus rhs0 _ _ (by decide +kernel) hs hc)]
   decide +kernel
 
 theorem g2_0_subgroup : g2Point0.inSubgroup = true := by
-  rw [G2.inSubgroup, ← g2Mul_eq 256 _ Fr.modulus (by decide)]
   decide +kernel
 
 def g2Point64 : G2 := ⟨⟨Fp.ofNat 2849539466732689850758132220706875553388401185684505071715538058468444005376395226189061312147129574578958884556560,
@@ -193,13 +190,11 @@ theorem g2_64_decoded :
   have hc : Fp.sqrt ((rhs64.c0 - norm64Root) * (Fp.ofNat 2).inverse) = .ok g2Point64.y.c0 := by
     decide +kernel
   rw [g2_uncompress_of _ g2Point64.x.c0 g2Point64.x.c1 _ (by decide +kernel) (by decide +kernel)
-    (by decide +kernel) (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
-    (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
+    (by decide +kernel) (by decide +kernel) (by decide +kernel)
     (fp2_sqrt_of_minus rhs64 _ _ _ (by decide +kernel) hs hp hc)]
   decide +kernel
 
 theorem g2_64_subgroup : g2Point64.inSubgroup = true := by
-  rw [G2.inSubgroup, ← g2Mul_eq 256 _ Fr.modulus (by decide)]
   decide +kernel
 
 end LeanBlsSimd.Kzg.SetupPoints

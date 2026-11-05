@@ -1,6 +1,5 @@
 import LeanBlsSimd.Kzg.Representation
 import LeanBlsSimd.Extracted.Funs
-import EthLib.Cryptography.Proofs.IdLoops
 
 open EthLib.Cryptography Bls LeanBlsSimd.Kzg silver_crypto_simd silver_crypto_simd.kzg
 deriving instance DecidableEq for BlsError
@@ -8,63 +7,7 @@ deriving instance DecidableEq for Fp2
 deriving instance DecidableEq for G1
 deriving instance DecidableEq for G2
 
-namespace LeanBlsSimd.Kzg.SetupArithmetic
-
-def g1Mul : Nat → G1 → Nat → G1
-  | 0, _, _ => G1.zero
-  | fuel + 1, p, k =>
-    if k = 0 then G1.zero
-    else
-      let half := g1Mul fuel (G1.double p) (k / 2)
-      if k % 2 = 1 then G1.add p half else half
-
-theorem g1Mul_eq (fuel : Nat) (p : G1) (k : Nat)
-    (hk : k < 2 ^ fuel) : g1Mul fuel p k = G1.mulNat p k := by
-  induction fuel generalizing p k with
-  | zero =>
-    have : k = 0 := by simpa using hk
-    subst this
-    rw [g1Mul, G1.mulNat]
-    simp
-  | succ fuel ih =>
-    rw [g1Mul, G1.mulNat]
-    by_cases h0 : k = 0
-    · simp [h0]
-    · have h2 : k / 2 < 2 ^ fuel := by
-        rw [Nat.pow_succ] at hk
-        omega
-      rw [ite_eq_right h0, ite_eq_right h0, ih (G1.double p) (k / 2) h2]
-
-def g2Mul : Nat → G2 → Nat → G2
-  | 0, _, _ => G2.zero
-  | fuel + 1, p, k =>
-    if k = 0 then G2.zero
-    else
-      let half := g2Mul fuel (G2.double p) (k / 2)
-      if k % 2 = 1 then G2.add p half else half
-
-theorem g2Mul_eq (fuel : Nat) (p : G2) (k : Nat)
-    (hk : k < 2 ^ fuel) : g2Mul fuel p k = G2.mulNat p k := by
-  induction fuel generalizing p k with
-  | zero =>
-    have : k = 0 := by simpa using hk
-    subst this
-    rw [g2Mul, G2.mulNat]
-    simp
-  | succ fuel ih =>
-    rw [g2Mul, G2.mulNat]
-    by_cases h0 : k = 0
-    · simp [h0]
-    · have h2 : k / 2 < 2 ^ fuel := by
-        rw [Nat.pow_succ] at hk
-        omega
-      rw [ite_eq_right h0, ite_eq_right h0, ih (G2.double p) (k / 2) h2]
-
-/-- The spec's `for` loop recurses on a well-founded measure, which the kernel evaluates slowly. -/
-theorem bytesBEToNat_eq (b : ByteArray) :
-    Fp.bytesBEToNat b = (List.range' 0 b.size).foldl (fun acc i => (acc <<< 8) ||| b[i]!.toNat) 0 := by
-  change forIn (m := Id) [:b.size] 0 (fun i acc => ForInStep.yield ((acc <<< 8) ||| b[i]!.toNat)) = _
-  exact IdLoops.forIn_range_yield _ _ _
+namespace LeanBlsSimd.Kzg.SetupDecoding
 
 /-! The kernel evaluates `Fp.sqrt` and `Fp.inverse` on a symbolic argument when it compares two
 unfoldings of `Fp2.sqrt` or `G2.uncompress`; the exponent is concrete, so that evaluation does not
@@ -115,4 +58,4 @@ theorem g2_uncompress_of (bytes : ByteArray) (c0 c1 : Fp) (y : Fp2)
   congr 2
   by_cases hp : bytes.get! 0 &&& 32 = 0 <;> cases y.signBit <;> simp [hp]
 
-end LeanBlsSimd.Kzg.SetupArithmetic
+end LeanBlsSimd.Kzg.SetupDecoding

@@ -690,7 +690,7 @@ If a file fails, find its proved version with `git log --all --find-object=<blob
 | `Model.lean` | Spec decomposition, column-aggregated IFFT and intermediate computations |
 | `IOLawful.lean` | Lawful `EST` and IO instances for monadic specification rewrites |
 | `SpecBridge.lean` | Full-result correspondence between the pure model and upstream |
-| `SetupArithmetic.lean`, `SetupPoints.lean`, `SetupValidity.lean` | Staged kernel certificates for embedded decoding, subgroup membership and affine validity |
+| `SetupDecoding.lean`, `SetupPoints.lean`, `SetupValidity.lean` | Staged kernel certificates for embedded decoding, subgroup membership and affine validity |
 | `Setup.lean` | Embedded-byte connection and persistent-state invariant |
 | `PolynomialModel.lean`, `PolynomialArithmetic.lean` | Cell interpolants and inverse FFT; coefficient-array injectivity, addition and constants as Mathlib polynomials |
 | `CosetPolynomial.lean`, `ColumnPolynomial.lean`, `InterpolationIdentity.lean` | Coset IFFT correctness and weighted column interpolation |
@@ -868,7 +868,7 @@ The manual blst v0.3.16 audit covers Fr arithmetic and input-conversion wrappers
 
 `embeddedSetup` is the pinned spec's private `TrustedSetup.buildEmbedded` value, accessed with Batteries' `open private`. `embedded_setup_matches` equates the verifier's 64 compressed G1 encodings and proves G1 validation. It also proves successful G2 decoding and subgroup membership at indices 0 and 64.
 
-The proof compares G1 Rust constants with the pinned specification using separate kernel checks for each row. Generated setup stores the G1 vector; IFMA pairing uses the fixed line table. Scalar pairing uses certified extracted affine G2 literals. `SetupPoints.lean` certifies all 64 G1 points and both G2 points with explicit witnesses. `SetupArithmetic.lean` supplies structural scalar multiplication, a byte-decoding fold and decoding equations parameterized by square-root results. The kernel evaluates EthLib's `Fp.sqrt` and `Fp.inverse` directly on closed arguments. Each numerical square root is checked separately before composing the decoder proof. `SetupValidity.lean` proves `setup_g1_affine_valid` from the G1 certificates. These stages avoid reducing the closed G2 decoder and its square roots together. Certificates use only the three standard axioms and require no separate setup-file assumption. The specification's connection to Ethereum's intended ceremony remains trusted.
+The proof compares G1 Rust constants with the pinned specification using separate kernel checks for each row. Generated setup stores the G1 vector; IFMA pairing uses the fixed line table. Scalar pairing uses certified extracted affine G2 literals. `SetupPoints.lean` certifies all 64 G1 points and both G2 points with explicit witnesses. `SetupDecoding.lean` supplies decoding equations parameterized by square-root results. The kernel evaluates EthLib's field powers, scalar multiplication and byte conversion directly on closed arguments. Each numerical square root is checked separately before composing the decoder proof. `SetupValidity.lean` proves `setup_g1_affine_valid` from the G1 certificates. These stages avoid reducing the closed G2 decoder and its square roots together. Certificates use only the three standard axioms and require no separate setup-file assumption. The specification's connection to Ethereum's intended ceremony remains trusted.
 
 ### Specification target and evidence
 
