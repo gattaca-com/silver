@@ -781,7 +781,7 @@ For source changes, follow the [KZG maintenance guide](lean/README.md#kzg-mainte
 
 `LaneTower/Upper.lean` tracks inclusive bounds on signed, nonnegative limb values and their decoded field elements. Zero-valued contributions retain bound zero. `Vectors.lean` and `Pairs.lean` compose generated addition, offset subtraction, normalization, multiplication and lane permutations. The capacity lemmas cover the tower's operands above `1024p`; the existing reduced and lazy arithmetic contracts keep their statements.
 
-`Packing.lean` proves the generated six- and nine-row packing and unpacking, including recovery of all six active lanes after pointwise multiplication. `Products.lean` gives one array-width-generic product-loop proof. `Inputs.lean`, `Recombine.lean` and `Mul.lean:mul_raw` compose the generated multiplication schedule from inputs bounded by `256p` to outputs bounded by `108p`. `Layout.lean:lane_basis` identifies lane `3h+k` with the field basis element `w^(2k+h)`.
+`Packing.lean` proves the generated six- and nine-row packing and unpacking, including recovery of all six active lanes after pointwise multiplication. `Products.lean` gives one array-width-generic product-loop proof. `Inputs.lean`, `Recombine.lean` and `Mul.lean:mul_raw` compose the generated multiplication schedule from inputs bounded by `256p` to outputs bounded by `108p`.
 
 `Coordinates.lean:product_value` identifies that coordinate schedule with specification multiplication. `Representation.lean:Rep` requires normalized representatives below `256p` in all eight lanes; `value` reads the six active lanes. The multiplication refinement preserves this representation.
 

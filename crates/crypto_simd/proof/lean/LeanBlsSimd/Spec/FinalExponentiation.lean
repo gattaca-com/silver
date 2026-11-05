@@ -48,10 +48,6 @@ theorem finalExponentiation_pow_r (f : Fp12) (hf : f ≠ Fp12.zero) :
   rw [toField_finalExponentiation, ← pow_mul, finalExpExponent_mul_r, ← Fp12Field.card_eq]
   exact FiniteField.pow_card_sub_one_eq_one _ (mt (Fp12.toField_eq_zero_iff f).mp hf)
 
-theorem target_pow_r (x : rootsOfUnity Fr.modulus Fp12Field) : x ^ Fr.modulus = 1 := by
-  ext1
-  exact x.property
-
 /-- The nonzero hypothesis is required because the roots of unity consist of units. -/
 def finalExponentiationTarget (f : Fp12) (hf : f ≠ Fp12.zero) :
     rootsOfUnity Fr.modulus Fp12Field :=
