@@ -171,7 +171,7 @@ The lane proof establishes the variable-Q steps, flags, sequential lane-set prod
 
 Random-weight batching, public-key admission and hash-to-G2 correctness are not proved here. Neither is their composition into full signature verification. Hardware support for the selected route remains a runtime obligation. The verdict theorem does not cover route choice, fallback frequency or performance.
 
-`controls/downstream/PairingSmoke.lean` applies the public results with an external defined by the specification. Its concrete list contains a finite setup pair and a pair with only its G2 point at infinity. The example discharges every premise. `controls/pairing-product-mutation-check.py` checks refinement proofs against mutations of generated declarations. The original and reformatted declarations serve as positive controls.
+`controls/downstream/PairingSmoke.lean` applies the owner and fixed-two-pair headlines under their point-validity and blst-agreement premises. It also checks the empty-owner result after clearing. `controls/pairing-product-mutation-check.py` checks refinement proofs against mutations of generated declarations. The original and reformatted declarations serve as positive controls.
 
 ### KZG verifier
 
@@ -406,10 +406,10 @@ python3 -I controls/pairing-loop-mutation-check.py
 python3 -I controls/final-exponent-mutation-check.py
 ```
 
-Build the independent downstream package from its own root:
+Build the independent downstream package from its own root. Its four targets apply the BLS, KZG and pairing-product results; separate field-algebra interfaces are outside this consumer check:
 
 ```sh
-(cd controls/downstream && lake update && lake build)
+(cd controls/downstream && lake update && lake build --wfail)
 ```
 
 The Lean side of the vector test, also from `lean/`:
@@ -610,7 +610,7 @@ Paths below are relative to `lean/controls/`. The common reproduction commands r
 | `Guard.lean`, `GuardPartialPermission.lean`, `GuardImported.lean` | The guard rejects native evaluation, local and imported constructor cycles, and partial permission for a theorem's two axioms. |
 | `AxiomInventory.lean`, `AxiomInventoryExtra.lean`, `AxiomInventoryMissing.lean`, `AxiomInventoryDropped.lean` | The production axiom-name set passes. An unused extra axiom fails; a Lean-only import rejects all three missing Aeneas names. Reimporting the dropped `PanicInfo` axiom fails. |
 | `G1.lean` | Concrete G1 constants, routing flags, signs and limb order; skipping canonicality makes the kernel accept a noncanonical encoding of 2G. Also covers full chunks, scalar tails, empty output and arbitrary fallback. |
-| `downstream/` | Transports both groups' list results across independently extracted structs and checks a generated-spelling caller using downstream externals. Guards root-name collisions and proof axioms. |
+| `downstream/` | Four targets apply the BLS, KZG and pairing-product results. BLS adapters transport list results across independently extracted structs and check a generated-spelling caller using downstream externals. Guards root-name collisions and proof axioms. |
 | `G2Wrapper.lean` | Wrong SIMD routing, thresholds, ignoring undecided lanes and dropping accepted kernel results change observable verdicts (the accepted-result mutation is a compiled `#eval`). Tail controls distinguish scalar and kernel routing after a full chunk; reading the chunk's first input on fallback changes the verdict. Rejecting infinity, accepting malformed infinity or returning wrong affine limbs violates `BlstMatchesSpec`; unequal lengths fail. These controls do not claim to observe padding contents. |
 | `G2Consumer.lean` | Applies G2 list, model and length-mismatch corollaries from a separate module. A specification-backed external satisfies the universal premise at both SIMD settings. |
 | `G1Consumer.lean` | A downstream module applies the general G1 theorem under its scoped decoder law. It applies the IFMA result with no blst agreement premise. |

@@ -219,10 +219,10 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Downstream package
+      - name: Downstream BLS, KZG and pairing-product consumers
         if: matrix.test == 'downstream'
         working-directory: ${{ env.PROOF_DIR }}/controls/downstream
-        run: lake update && lake build
+        run: lake update && lake build --wfail
 
       - name: Report downstream disk usage
         if: always() && matrix.test == 'downstream'
