@@ -1,13 +1,13 @@
 use std::{
     collections::VecDeque,
     error::Error,
-    fmt, io,
+    fmt, io, mem,
     time::{Duration, Instant},
 };
 
 use raft::{
     Config, RawNode, SnapshotStatus, StateRole,
-    eraftpb::{Entry, EntryType, Message},
+    eraftpb::{Entry, EntryType, Message, MessageType},
 };
 
 #[cfg(any(target_os = "linux", test))]
@@ -26,9 +26,15 @@ use super::{
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_HEARTBEAT_TICKS: usize = 2;
 const DEFAULT_ELECTION_TICKS: usize = 20;
-const DEFAULT_PROPOSAL_TIMEOUT: Duration = Duration::from_millis(100);
+// Block import stalls the Control loop; a 3-node kurtosis cluster saw
+// follower-origin commits take up to 145 ms then.
+const DEFAULT_PROPOSAL_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_ELAPSED_TICKS_PER_SPIN: usize = 32;
 const PROPOSAL_CONTEXT_LEN: usize = 32;
+const MAX_APPEND_BYTES: u64 = 1024 * 1024;
+// Below the 128-message cluster stream queue, which overwrites its oldest
+// message when full.
+const MAX_INFLIGHT_APPENDS: usize = 64;
 
 /// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
@@ -99,6 +105,9 @@ impl SlashingProtectionConfig {
             election_tick: self.election_ticks,
             check_quorum: true,
             pre_vote: true,
+            max_size_per_msg: MAX_APPEND_BYTES,
+            max_inflight_msgs: MAX_INFLIGHT_APPENDS,
+            batch_append: true,
             ..Config::default()
         }
     }
@@ -191,7 +200,6 @@ pub enum ProposeError {
     Failed,
     SequenceExhausted,
     DeadlineOverflow,
-    Raft(raft::Error),
 }
 
 impl fmt::Display for ProposeError {
@@ -202,7 +210,6 @@ impl fmt::Display for ProposeError {
             Self::Failed => f.write_str("Raft processing has stopped after a failure"),
             Self::SequenceExhausted => f.write_str("Raft proposal sequence exhausted"),
             Self::DeadlineOverflow => f.write_str("Raft proposal deadline overflowed"),
-            Self::Raft(error) => write!(f, "Raft rejected proposal: {error}"),
         }
     }
 }
@@ -211,7 +218,6 @@ impl Error for ProposeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Admission(error) => Some(error),
-            Self::Raft(error) => Some(error),
             Self::NotReady | Self::Failed | Self::SequenceExhausted | Self::DeadlineOverflow => {
                 None
             }
@@ -294,6 +300,7 @@ pub struct SlashingProtectionCluster {
     next_proposal_sequence: u64,
     next_tick: Instant,
     pending_proposals: VecDeque<PendingProposal>,
+    unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
 }
@@ -333,6 +340,7 @@ impl SlashingProtectionCluster {
             next_proposal_sequence: 1,
             next_tick,
             pending_proposals: VecDeque::new(),
+            unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
         }
@@ -456,7 +464,9 @@ impl SlashingProtectionCluster {
         if self.failed {
             return Err(ProposeError::Failed);
         }
-        let node = self.node.as_mut().ok_or(ProposeError::NotReady)?;
+        if self.node.is_none() {
+            return Err(ProposeError::NotReady);
+        }
         self.admission.validate(slot, wall_slot).map_err(ProposeError::Admission)?;
 
         if slot < self.state.minimum_slot() {
@@ -482,8 +492,11 @@ impl SlashingProtectionCluster {
             "proposal timestamps must be monotonic"
         );
 
-        node.propose(proposal_id.encode(), command.encode()).map_err(ProposeError::Raft)?;
-
+        self.unsubmitted_entries.push(Entry {
+            context: proposal_id.encode().into(),
+            data: command.encode().into(),
+            ..Entry::default()
+        });
         self.pending_proposals.push_back(PendingProposal { id: proposal_id, deadline });
 
         Ok(proposal_id)
@@ -525,6 +538,7 @@ impl SlashingProtectionCluster {
         if let Some(node) = self.node.as_mut() {
             self.snapshot_transfers.expire(node, now);
         }
+        self.submit_entries(emit)?;
         self.tick_elapsed(now);
         self.maybe_propose_minimum_slot(wall_slot)?;
 
@@ -572,6 +586,38 @@ impl SlashingProtectionCluster {
             // A long-stalled tile does not need to replay an unbounded number of
             // obsolete heartbeat intervals in one invocation.
             self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
+        }
+    }
+
+    /// One proposal message per spin, so a burst of local requests costs a
+    /// follower one forwarded message and the leader one append per peer.
+    fn submit_entries(&mut self, emit: &mut impl FnMut(ClusterEvent)) -> Result<(), ClusterError> {
+        if self.unsubmitted_entries.is_empty() {
+            return Ok(());
+        }
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        let count = self.unsubmitted_entries.len();
+        let mut message = Message::default();
+        message.set_msg_type(MessageType::MsgPropose);
+        message.from = self.config.node_id;
+        message.set_entries(mem::take(&mut self.unsubmitted_entries).into());
+        match node.step(message) {
+            Ok(()) => Ok(()),
+            Err(raft::Error::ProposalDropped) => {
+                silver_log::warn!(
+                    count,
+                    leader_id = node.raft.leader_id,
+                    "Raft dropped local proposals"
+                );
+                let first_dropped = self.next_proposal_sequence - count as u64;
+                while self.pending_proposals.back().is_some_and(|p| p.id.sequence >= first_dropped)
+                {
+                    let proposal = self.pending_proposals.pop_back().expect("back exists");
+                    emit(ClusterEvent::ProposalTimedOut(proposal.id));
+                }
+                Ok(())
+            }
+            Err(error) => Err(ClusterError::Raft(error)),
         }
     }
 
@@ -918,10 +964,9 @@ mod tests {
     }
 
     #[test]
-    fn proposal_times_out_at_one_hundred_milliseconds_and_remains_locked() {
+    fn proposal_times_out_at_its_deadline_and_remains_locked() {
         let now = Instant::now();
         let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
-        assert_eq!(cluster.config.proposal_timeout, Duration::from_millis(100));
         cluster.campaign().unwrap();
 
         let proposal_id = cluster.propose_attestation(command(10, 1), 10, now).unwrap();
@@ -930,7 +975,7 @@ mod tests {
         let mut committed = Vec::new();
         let mut timed_out = Vec::new();
         cluster
-            .spin(now + Duration::from_millis(100), 10, |event| match event {
+            .spin(now + DEFAULT_PROPOSAL_TIMEOUT, 10, |event| match event {
                 ClusterEvent::AttestationCommitted(decision) => committed.push(decision),
                 ClusterEvent::ProposalTimedOut(proposal_id) => {
                     timed_out.push(proposal_id);
@@ -1094,5 +1139,64 @@ mod tests {
             admission: Ok(()),
         })]);
         assert!(clusters.iter().all(|cluster| cluster.state().len() == 1));
+    }
+
+    #[test]
+    fn proposal_burst_sends_few_messages_per_peer() {
+        const BURST: u64 = 1000;
+        let mut now = Instant::now();
+        let voters = vec![1, 2, 3];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        let mut decisions = Vec::new();
+
+        clusters[0].campaign().unwrap();
+        for _ in 0..20 {
+            pump(&mut clusters, now, 10, &mut decisions);
+            now += Duration::from_millis(1);
+        }
+        assert!(clusters[0].is_leader());
+
+        for (proposer, attester_index) in (0..BURST).map(|i| (i as usize % 3, i)) {
+            let mut command = command(10, 4);
+            command.key.attester_index = attester_index;
+            clusters[proposer].propose_attestation(command, 10, now).unwrap();
+        }
+
+        for _ in 0..20 {
+            let mut messages = Vec::new();
+            for cluster in &mut clusters {
+                let node_id = cluster.node_id();
+                cluster
+                    .spin(now, 10, |event| match event {
+                        ClusterEvent::SendRaftMessage(message) => messages.push(message),
+                        ClusterEvent::AttestationCommitted(decision) => {
+                            decisions.push((node_id, decision));
+                        }
+                        other => panic!("unexpected event {other:?}"),
+                    })
+                    .unwrap();
+            }
+            for from in &voters {
+                for to in &voters {
+                    let sent = messages.iter().filter(|m| m.from == *from && m.to == *to).count();
+                    assert!(sent <= 2, "{from} sent {sent} messages to {to} in one spin");
+                }
+            }
+            for message in messages {
+                clusters
+                    .iter_mut()
+                    .find(|c| c.node_id() == message.to)
+                    .unwrap()
+                    .step(message)
+                    .unwrap();
+            }
+            now += Duration::from_millis(1);
+        }
+
+        assert_eq!(decisions.len() as u64, BURST);
+        assert!(clusters.iter().all(|cluster| cluster.state().len() as u64 == BURST));
     }
 }

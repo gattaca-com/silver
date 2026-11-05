@@ -815,10 +815,25 @@ impl BeaconStateTile {
         fork.commit()
     }
 
-    fn on_state_advance(&mut self, _slot: Slot) {
-        // Pre-compute state for next slot (optimization).
-        // Copy current SlotData + advance one slot on the copy.
-        // TODO: implement pre-computation
+    /// 3/4 into `slot`. Covers a boundary the block path did not reach
+    /// because the epoch's last slot is empty.
+    fn on_state_advance(&mut self, slot: Slot) {
+        self.precompute_epoch_start(slot + 1);
+    }
+
+    /// When `slot` opens a later epoch than the head state's: its epoch start
+    /// state, and on it the next epoch's shuffling. Publishing that state at
+    /// the boundary posts both shufflings first, so without this the epoch
+    /// transition and a full shuffle run between the tick and the publish,
+    /// and next-epoch duties asked for at the boundary meet the old state.
+    fn precompute_epoch_start(&mut self, slot: Slot) {
+        let epoch = slot / SLOTS_PER_EPOCH;
+        if epoch <= self.slot_state_at(self.last_applied).slot / SLOTS_PER_EPOCH {
+            return;
+        }
+        let start = self.epoch_start_state(self.last_applied, slot);
+        let view = self.state.read_view(start);
+        self.shuffling_cache.precompute(&view, epoch + 1);
     }
 
     fn on_fc_lookahead(&mut self, _slot: Slot) {

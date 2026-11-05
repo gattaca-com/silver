@@ -89,7 +89,7 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
     let mut other = command(10, 2);
     other.key.attester_index = 8;
     let second = cluster.propose_attestation(other, 10, now).unwrap();
-    let later = now + Duration::from_millis(100);
+    let later = now + cluster.config.proposal_timeout;
     let expired = events(&mut cluster, later);
     assert!(matches!(&expired[..], [
         ClusterEvent::ProposalTimedOut(a), ClusterEvent::ProposalTimedOut(b)

@@ -1177,8 +1177,7 @@ fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
         ProposeError::NotReady |
         ProposeError::Failed |
         ProposeError::SequenceExhausted |
-        ProposeError::DeadlineOverflow |
-        ProposeError::Raft(_) => LocalGossipFailure::Internal,
+        ProposeError::DeadlineOverflow => LocalGossipFailure::Internal,
     }
 }
 

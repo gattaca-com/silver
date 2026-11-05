@@ -276,7 +276,7 @@ impl BeaconStateTile {
     fn precompute_for_next_block(&mut self) {
         let block_slot = self.last_applied_block_slot();
         self.precompute_next_epoch_shuffling(block_slot / SLOTS_PER_EPOCH);
-        self.epoch_start_state(self.last_applied, block_slot + 1);
+        self.precompute_epoch_start(block_slot + 1);
         self.precompute_justified_balances();
     }
 
