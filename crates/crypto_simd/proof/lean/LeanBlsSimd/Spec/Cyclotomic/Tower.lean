@@ -23,13 +23,9 @@ noncomputable abbrev d : S := j delta
 instance : CharP S p := (CharP.charP_iff_prime_eq_zero (Fact.out : p.Prime)).2 (by
   rw [← map_natCast j, LeanBlsSimd.Fp2Field.natCast_modulus, map_zero])
 
-theorem embed_injective : Function.Injective (embed u) := by
-  intro a b h
-  have ha : assemble u a 0 0 = embed u a := by simp [assemble]
-  have hb : assemble u b 0 0 = embed u b := by simp [assemble]
-  exact (assemble_injective u a 0 0 b 0 0 (by rw [ha, hb, h])).1
-
-instance : Nontrivial T := Function.Injective.nontrivial embed_injective
+instance : Nontrivial T :=
+  (AdjoinRoot.nontrivial_iff_of_monic (Polynomial.monic_X_pow_sub_C u (by decide))).2
+    (by rw [Polynomial.degree_X_pow_sub_C (by decide)]; decide)
 
 instance : CharP T p := (CharP.charP_iff_prime_eq_zero (Fact.out : p.Prime)).2 (by
   rw [← map_natCast (embed u), CharP.cast_eq_zero S p, map_zero])
