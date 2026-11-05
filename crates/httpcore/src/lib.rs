@@ -16,7 +16,8 @@ pub use pool::{BufferCapacity, Endpoint, HttpPool};
 pub use query::Query;
 pub use readiness::Readiness;
 pub use server::{
-    AfterResponse, ParsedRequest, ServerConnection, frame_response, frame_response_with_headers,
+    AfterResponse, ParsedRequest, REQUEST_HEAD_MAX, ServerConnection, frame_response,
+    frame_response_with_headers,
 };
 pub use stream::{Bind, Listener, Stream};
 pub use token_range::TokenRange;

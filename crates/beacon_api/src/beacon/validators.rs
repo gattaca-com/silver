@@ -3,7 +3,7 @@ use silver_beacon_state_data::{
     BLSPubkey, Epoch, FAR_FUTURE_EPOCH, PinnedState, StateReadView, ValidatorsView, Withdrawals,
 };
 use silver_common::json_fields::parse_uint64;
-use silver_httpcore::{ChunkedResponse, Query};
+use silver_httpcore::{ChunkedResponse, Query, REQUEST_HEAD_MAX};
 
 use crate::{
     ctx::{ApiCtx, read_flags},
@@ -16,6 +16,10 @@ use crate::{
 };
 
 const MAX_VALIDATOR_IDS: usize = 32 * 1024;
+
+// A GET may name every id by pubkey.
+const _: () =
+    assert!(MAX_VALIDATOR_IDS * ("&id=0x".len() + 2 * size_of::<BLSPubkey>()) < REQUEST_HEAD_MAX);
 
 /// About 0.25 MB of JSON and 40 µs of rendering per batch.
 const VALIDATORS_PER_BATCH: usize = 512;
