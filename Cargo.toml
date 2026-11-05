@@ -16,6 +16,7 @@ members = [
   "crates/e2e",
   "crates/gossip",
   "crates/hashing",
+  "crates/hashing/bench",
   "crates/httpcore",
   "crates/log",
   "crates/engine_api",
@@ -152,6 +153,7 @@ httparse = "1"
 itoa = "1"
 libc = "0.2"
 linkme = "0.3.36"
+milhouse = { version = "0.9", default-features = false }
 # v2: pin the stable mimalloc 2.x line. The crate defaults to v3, whose
 # exit-time `mi_process_done` force-collect races mimalloc's background purge
 # thread on the shared arena → SIGSEGV on shutdown. v2 has no such race.
@@ -167,6 +169,7 @@ ratatui = "0.29"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
 rand_core = "0.6.4"
+rayon = "1"
 rcgen = "0.14.7"
 ring = "0.17"
 rustc-hash = "2"
@@ -188,9 +191,11 @@ snap = "1.1.1"
 socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
+tree_hash = "0.12"
 tracing = "0.1.40"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+typenum = "1"
 uint = "0.9"
 ureq = { version = "2", default-features = false }
 x509-parser = { version = "0.17", features = ["verify"] }
