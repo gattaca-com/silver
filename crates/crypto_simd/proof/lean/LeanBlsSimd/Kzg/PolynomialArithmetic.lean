@@ -8,128 +8,94 @@ attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg
 
-set_option maxHeartbeats 3000000
-set_option maxRecDepth 2000
-
-theorem coeffPolynomial_coeff_lt (a : Array Fr) (i : Nat) (hi : i < a.size) :
-    (coeffPolynomial a).coeff i = a[i] :=
-  _root_.Polynomial.ofFn_coeff_eq_val_of_lt _ hi
-
-theorem coeffPolynomial_coeff_ge (a : Array Fr) (i : Nat) (hi : a.size ≤ i) :
-    (coeffPolynomial a).coeff i = 0 :=
-  _root_.Polynomial.ofFn_coeff_eq_zero_of_ge _ hi
-
-theorem coeffPolynomial_coeff (a : Array Fr) (i : Nat) :
-    (coeffPolynomial a).coeff i = if i < a.size then a[i]! else 0 := by
-  by_cases hi : i < a.size
-  · rw [ite_eq_left hi, coeffPolynomial_coeff_lt a i hi, getElem!_pos a i hi]
-  · rw [ite_eq_right hi, coeffPolynomial_coeff_ge a i (by omega)]
-
-theorem coeffPolynomial_injective (a b : Array Fr) (hs : a.size = b.size)
-    (hp : coeffPolynomial a = coeffPolynomial b) : a = b := by
+theorem coefficientPolynomial_injective (a b : Array Fr) (hs : a.size = b.size)
+    (hp : EthLib.Cryptography.Kzg.coefficientPolynomial a =
+      EthLib.Cryptography.Kzg.coefficientPolynomial b) : a = b := by
   apply Array.ext hs
   intro i hi hi'
   have he := congrArg (fun p : _root_.Polynomial Fr => p.coeff i) hp
-  simpa only [coeffPolynomial_coeff_lt a i hi, coeffPolynomial_coeff_lt b i hi'] using he
+  simpa only [EthLib.Cryptography.Kzg.coeff_coefficientPolynomial,
+    getElem!_pos a i hi, getElem!_pos b i hi'] using he
 
-theorem coeffPolynomial_degree_lt_size (a : Array Fr) :
-    (coeffPolynomial a).degree < a.size := _root_.Polynomial.ofFn_degree_lt _
-
-theorem coeffPolynomial_sum (a : Array Fr) :
-    coeffPolynomial a = ∑ i ∈ Finset.range a.size, _root_.Polynomial.monomial i a[i]! := by
-  rw [coeffPolynomial, _root_.Polynomial.ofFn_eq_sum_monomial]
+theorem coefficientPolynomial_sum (a : Array Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial a =
+      ∑ i ∈ Finset.range a.size, _root_.Polynomial.monomial i a[i]! := by
+  rw [EthLib.Cryptography.Kzg.coefficientPolynomial, _root_.Polynomial.ofFn_eq_sum_monomial]
   simp only [Finset.sum_range]
   apply Finset.sum_congr rfl
   intro i _
   rw [getElem!_pos a i.val i.isLt]
 
-theorem coeffPolynomial_eval (a : Array Fr) (z : Fr) :
-    (coeffPolynomial a).eval z = ∑ i ∈ Finset.range a.size, a[i]! * z^i := by
-  rw [coeffPolynomial_sum]
-  simp only [_root_.Polynomial.eval_finsetSum, _root_.Polynomial.eval_monomial]
-  rfl
-
-@[simp] theorem coeffPolynomial_replicate_zero (n : Nat) :
-    coeffPolynomial (Array.replicate n Fr.zero) = 0 := by
+@[simp] theorem coefficientPolynomial_replicate_zero (n : Nat) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial (Array.replicate n Fr.zero) = 0 := by
   apply _root_.Polynomial.ext
   intro i
-  rw [coeffPolynomial_coeff]
-  split <;> simp_all
+  rw [EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
+  by_cases hi : i < n
+  · rw [getElem!_pos _ i (by simpa using hi), Array.getElem_replicate]
+    rfl
+  · rw [getElem!_neg _ i (by simpa using hi)]
+    rfl
 
-@[simp] theorem coeffPolynomial_singleton (r : Fr) :
-    coeffPolynomial #[r] = _root_.Polynomial.C r := by
+@[simp] theorem coefficientPolynomial_singleton (r : Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial #[r] = _root_.Polynomial.C r := by
   apply _root_.Polynomial.ext
   intro i
   cases i with
-  | zero => simp [coeffPolynomial_coeff]
-  | succ i => simp [coeffPolynomial_coeff]
+  | zero => simp [EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
+  | succ i => simp [EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
 
-@[simp] theorem coeffPolynomial_pair (a b : Fr) :
-    coeffPolynomial #[a, b] = _root_.Polynomial.C a + _root_.Polynomial.C b * _root_.Polynomial.X := by
-  rw [coeffPolynomial_sum]
+@[simp] theorem coefficientPolynomial_pair (a b : Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial #[a, b] =
+      _root_.Polynomial.C a + _root_.Polynomial.C b * _root_.Polynomial.X := by
+  rw [coefficientPolynomial_sum]
   simp [← _root_.Polynomial.C_mul_X_pow_eq_monomial, Finset.sum_range_succ]
 
-private theorem add_longer (a b : Array Fr) (h : b.size ≤ a.size) :
-    coeffPolynomial (Array.ofFn (n := a.size) fun i =>
-      a[i.val]! + if i.val < b.size then b[i.val]! else Fr.zero) =
-      coeffPolynomial a + coeffPolynomial b := by
+theorem coefficientPolynomial_add (a b : Array Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial (addPolynomialcoeff a b) =
+      EthLib.Cryptography.Kzg.coefficientPolynomial a +
+        EthLib.Cryptography.Kzg.coefficientPolynomial b := by
   apply _root_.Polynomial.ext
   intro i
-  rw [_root_.Polynomial.coeff_add]
-  by_cases ha : i < a.size
-  · rw [coeffPolynomial_coeff_lt _ i (by simpa using ha), Array.getElem_ofFn,
-      coeffPolynomial_coeff, coeffPolynomial_coeff, ite_eq_left ha]
-    rfl
-  · have hb : ¬ i < b.size := by omega
-    rw [coeffPolynomial_coeff_ge _ i (by simpa using Nat.le_of_not_lt ha),
-      coeffPolynomial_coeff_ge a i (by omega), coeffPolynomial_coeff_ge b i (by omega)]
-    exact (add_zero _).symm
+  simp only [_root_.Polynomial.coeff_add, EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
+  exact EthLib.Cryptography.Kzg.addPolynomialcoeff_getElem! a b i
 
-theorem coeffPolynomial_add (a b : Array Fr) :
-    coeffPolynomial (addPolynomialcoeff a b) = coeffPolynomial a + coeffPolynomial b := by
-  by_cases h : b.size ≤ a.size
-  · unfold addPolynomialcoeff
-    rw [ite_eq_left h]
-    exact add_longer a b h
-  · unfold addPolynomialcoeff
-    rw [ite_eq_right h]
-    exact (add_longer b a (by omega)).trans (add_comm _ _)
-
-theorem coeffPolynomial_map_mul (a : Array Fr) (r : Fr) :
-    coeffPolynomial (a.map (· * r)) = coeffPolynomial a * _root_.Polynomial.C r := by
+theorem coefficientPolynomial_map_mul (a : Array Fr) (r : Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial (a.map (· * r)) =
+      EthLib.Cryptography.Kzg.coefficientPolynomial a * _root_.Polynomial.C r := by
   apply _root_.Polynomial.ext
   intro i
-  rw [_root_.Polynomial.coeff_mul_C]
+  rw [_root_.Polynomial.coeff_mul_C, EthLib.Cryptography.Kzg.coeff_coefficientPolynomial,
+    EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
   by_cases hi : i < a.size
-  · rw [coeffPolynomial_coeff_lt _ i (by simpa using hi), Array.getElem_map,
-      coeffPolynomial_coeff_lt a i hi]
+  · rw [getElem!_pos _ i (by simpa using hi), Array.getElem_map, getElem!_pos a i hi]
     rfl
-  · rw [coeffPolynomial_coeff_ge _ i (by simpa using Nat.le_of_not_lt hi),
-      coeffPolynomial_coeff_ge a i (by omega)]
+  · rw [getElem!_neg _ i (by simpa using hi), getElem!_neg a i hi]
     exact (zero_mul r).symm
 
-theorem coeffPolynomial_prepend_zero (n : Nat) (a : Array Fr) :
-    coeffPolynomial (Array.replicate n Fr.zero ++ a) =
-      _root_.Polynomial.X ^ n * coeffPolynomial a := by
+theorem coefficientPolynomial_prepend_zero (n : Nat) (a : Array Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial (Array.replicate n Fr.zero ++ a) =
+      _root_.Polynomial.X ^ n * EthLib.Cryptography.Kzg.coefficientPolynomial a := by
   apply _root_.Polynomial.ext
   intro i
   rw [_root_.Polynomial.coeff_X_pow_mul']
+  simp only [EthLib.Cryptography.Kzg.coeff_coefficientPolynomial]
   by_cases hin : i < n
-  · rw [ite_eq_right (by omega), coeffPolynomial_coeff_lt _ i (by simp; omega),
+  · rw [ite_eq_right (by omega), getElem!_pos _ i (by simp; omega),
       Array.getElem_append_left (by simpa using hin), Array.getElem_replicate]
     rfl
   · rw [ite_eq_left (by omega)]
     by_cases hia : i - n < a.size
-    · rw [coeffPolynomial_coeff_lt _ i (by simp; omega),
+    · rw [getElem!_pos _ i (by simp; omega),
         Array.getElem_append_right (by simp; omega)]
-      simpa only [Array.size_replicate] using (coeffPolynomial_coeff_lt a (i-n) hia).symm
-    · rw [coeffPolynomial_coeff_ge _ i (by simp; omega),
-        coeffPolynomial_coeff_ge a (i-n) (by omega)]
+      simpa only [Array.size_replicate] using (getElem!_pos a (i-n) hia).symm
+    · rw [getElem!_neg (Array.replicate n Fr.zero ++ a) i (Nat.not_lt.mpr (by simp; omega)),
+        getElem!_neg a (i-n) (Nat.not_lt.mpr (by omega))]
 
-theorem coeffPolynomial_monomial_summand (a : Array Fr) (n : Nat) (r : Fr) :
-    coeffPolynomial (Array.replicate n Fr.zero ++ a.map (· * r)) =
-      _root_.Polynomial.monomial n r * coeffPolynomial a := by
-  rw [coeffPolynomial_prepend_zero, coeffPolynomial_map_mul,
+theorem coefficientPolynomial_monomial_summand (a : Array Fr) (n : Nat) (r : Fr) :
+    EthLib.Cryptography.Kzg.coefficientPolynomial (Array.replicate n Fr.zero ++ a.map (· * r)) =
+      _root_.Polynomial.monomial n r * EthLib.Cryptography.Kzg.coefficientPolynomial a := by
+  rw [coefficientPolynomial_prepend_zero, coefficientPolynomial_map_mul,
     ← _root_.Polynomial.C_mul_X_pow_eq_monomial]
   ring
 
@@ -137,49 +103,48 @@ private def productStep (a b : Array Fr) (r : Array Fr) (k : Nat) : Array Fr :=
   addPolynomialcoeff r (Array.replicate k Fr.zero ++ b.map (· * a[k]!))
 
 private theorem product_fold_polynomial (a b : Array Fr) (n : Nat) :
-    coeffPolynomial ((List.range n).foldl (productStep a b) #[Fr.zero]) =
-      (∑ k ∈ Finset.range n, _root_.Polynomial.monomial k a[k]!) * coeffPolynomial b := by
+    EthLib.Cryptography.Kzg.coefficientPolynomial
+        ((List.range n).foldl (productStep a b) #[Fr.zero]) =
+      (∑ k ∈ Finset.range n, _root_.Polynomial.monomial k a[k]!) *
+        EthLib.Cryptography.Kzg.coefficientPolynomial b := by
   induction n with
   | zero => simp
   | succ n ih =>
     simp only [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil,
-      productStep, coeffPolynomial_add, coeffPolynomial_monomial_summand,
+      productStep, coefficientPolynomial_add, coefficientPolynomial_monomial_summand,
       Finset.sum_range_succ]
     rw [ih]
     ring
 
-private theorem product_fold_size (a b : Array Fr) (hb : 0 < b.size) (n : Nat) :
-    ((List.range n).foldl (productStep a b) #[Fr.zero]).size =
-      if n = 0 then 1 else n + b.size - 1 := by
-  induction n with
-  | zero => simp
-  | succ n ih =>
-    simp only [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil,
-      productStep, size_addPolynomialcoeff, Array.size_append, Array.size_replicate,
-      Array.size_map, ih, Nat.add_eq_zero_iff, Nat.one_ne_zero, and_false, ite_false]
-    split <;> omega
-
-theorem coeffPolynomial_multiply (a b : Array Fr)
+theorem coefficientPolynomial_multiply (a b : Array Fr)
     (ha : 0 < a.size) (hb : 0 < b.size) (hlen : a.size + b.size ≤ 8192) :
     ∃ out, multiplyPolynomialcoeff a b = .ok out ∧
-      out.size = a.size + b.size - 1 ∧ coeffPolynomial out = coeffPolynomial a * coeffPolynomial b := by
+      out.size = a.size + b.size - 1 ∧
+      EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        EthLib.Cryptography.Kzg.coefficientPolynomial a *
+          EthLib.Cryptography.Kzg.coefficientPolynomial b := by
   let out := (List.range a.size).foldl (productStep a b) #[Fr.zero]
-  refine ⟨out, ?_, ?_, ?_⟩
-  · simp only [multiplyPolynomialcoeff, Constants.FIELD_ELEMENTS_PER_EXT_BLOB,
+  have hcall : multiplyPolynomialcoeff a b = .ok out := by
+    simp only [multiplyPolynomialcoeff, Constants.FIELD_ELEMENTS_PER_EXT_BLOB,
       Constants.FIELD_ELEMENTS_PER_BLOB, Nat.reduceMul,
       show ¬ a.size + b.size > 8192 from Nat.not_lt.mpr hlen, ite_false,
       Bind.bind, Except.bind, Pure.pure, Except.pure, ← Array.foldl_toList, Array.toList_range]
     rfl
-  · simpa only [out, ite_eq_right (by omega : a.size ≠ 0)] using product_fold_size a b hb a.size
+  refine ⟨out, hcall, ?_, ?_⟩
+  · have hne : ¬ a.isEmpty :=
+      fun h => Nat.ne_of_gt ha (Array.isEmpty_iff_size_eq_zero.mp h)
+    rw [EthLib.Cryptography.Kzg.size_multiplyPolynomialcoeff hcall, ite_eq_right hne]
+    exact Nat.max_eq_left (by omega)
   · rw [show out = (List.range a.size).foldl (productStep a b) #[Fr.zero] from rfl,
-      product_fold_polynomial, ← coeffPolynomial_sum]
+      product_fold_polynomial, ← coefficientPolynomial_sum]
 
 theorem multiply_scalar64 (r : Fr) (a : Array Fr) (ha : a.size = 64) :
     ∃ out, multiplyPolynomialcoeff #[r] a = .ok out ∧
-      out.size = 64 ∧ coeffPolynomial out = r • coeffPolynomial a := by
-  obtain ⟨out, hcall, hs, hp⟩ := coeffPolynomial_multiply #[r] a (by simp)
+      out.size = 64 ∧ EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        r • EthLib.Cryptography.Kzg.coefficientPolynomial a := by
+  obtain ⟨out, hcall, hs, hp⟩ := coefficientPolynomial_multiply #[r] a (by simp)
     (by omega) (by simp [ha])
   refine ⟨out, hcall, by simpa [ha] using hs, ?_⟩
-  simpa only [coeffPolynomial_singleton, _root_.Polynomial.smul_eq_C_mul] using hp
+  simpa only [coefficientPolynomial_singleton, _root_.Polynomial.smul_eq_C_mul] using hp
 
 end LeanBlsSimd.Kzg

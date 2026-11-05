@@ -64,8 +64,10 @@ private theorem linearCoefficients_size : linearCoefficients.size = 4096 := by
   simp only [linearCoefficients, Array.size_ofFn]
 
 private theorem linearCoefficients_eval (z : Fr) :
-    (coeffPolynomial linearCoefficients).eval z = z := by
-  rw [coeffPolynomial_eval, linearCoefficients_size]
+    EthLib.Cryptography.Kzg.evalPolyAt linearCoefficients z = z := by
+  rw [EthLib.Cryptography.Kzg.evalPolyAt, EthLib.Cryptography.Kzg.evalCoeffPoly,
+    EthLib.Cryptography.Kzg.evalCoeffPolyAux_eq_sum,
+    linearCoefficients_size]
   trans ∑ i ∈ Finset.range 4096, (if i = 1 then (1 : Fr) else 0) * z ^ i
   · apply Finset.sum_congr rfl
     intro i hi
@@ -92,11 +94,11 @@ private theorem linearInput_coefficients : polynomialEvalToCoeff linearInput = l
 private theorem shifted_linear_get (factor : Fr) (j : Nat) (hj : j < 4096) :
     (fftField (shiftVals linearCoefficients factor) (computeRootsOfUnity 4096) false)[j]! =
       factor * domainRoot 4096 ^ j := by
-  rw [← fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive
+  rw [EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
     (shiftVals linearCoefficients factor) (computeRootsOfUnity 4096)
     (by rw [size_shiftVals, linearCoefficients_size]; rfl)
     (size_computeRootsOfUnity 4096) roots4096 j hj,
-    coeffPolynomial_shiftVals_eval, linearCoefficients_eval]
+    EthLib.Cryptography.Kzg.evalPolyAt_shiftVals, linearCoefficients_eval]
 
 private theorem linear_extension_get (j : Nat) (hj : j < 4096) :
     (Model.extension linearInput)[j]! = domainRoot 8192 * domainRoot 4096 ^ j := by
@@ -113,7 +115,7 @@ theorem omitting_coset_shift_changes_extension :
   intro h
   have hi := congrArg (fun a : Array Fr => a[0]!) h
   rw [linear_extension_get 0 (by decide),
-    ← fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive
+    EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       linearCoefficients (computeRootsOfUnity 4096) linearCoefficients_size
       (size_computeRootsOfUnity 4096) roots4096 0 (by decide),
     linearCoefficients_eval, pow_zero] at hi
@@ -144,15 +146,15 @@ private theorem shifted_linear_inverse_get (factor : Fr) (j : Nat) (hj : j < 409
       factor * (domainRoot 4096)⁻¹ ^ j := by
   unfold Kzg.Model.roots
   simp only [show (2 : Nat) ^ 12 = 4096 by decide]
-  have h := fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive.inv
+  have h := EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive.inv
     (shiftVals linearCoefficients factor) (Kzg.Model.inverseRoots (computeRootsOfUnity 4096))
     (by rw [size_shiftVals, linearCoefficients_size]; rfl)
     (by simp [Kzg.Model.inverseRoots])
     (fun i hi => getElem!_reversedRoots (k := 12) domainRoot_4096_primitive
       (computeRootsOfUnity 4096) (size_computeRootsOfUnity 4096) roots4096 i hi) j hj
-  rw [coeffPolynomial_shiftVals_eval, linearCoefficients_eval] at h
+  rw [EthLib.Cryptography.Kzg.evalPolyAt_shiftVals, linearCoefficients_eval] at h
   simp only [fftField_def, Bool.false_eq_true, ite_false] at h
-  exact h.symm
+  exact h
 
 theorem reversing_forward_fft_roots_changes_extension :
     Model.extension linearInput ≠
@@ -247,3 +249,4 @@ end LeanBlsSimd.Kzg.Extender.Controls
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.reversing_coset_shift_changes_extension
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.reversing_forward_fft_roots_changes_extension
 #print axioms LeanBlsSimd.Kzg.Extender.Controls.omitting_inverse_scaling_changes_coefficients
+#print axioms LeanBlsSimd.Kzg.Extender.coeff_eval_extension

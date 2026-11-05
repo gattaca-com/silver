@@ -5,9 +5,8 @@ open Lean Elab Command
 
 run_cmd do
   let allowed := [``propext, ``Classical.choice, ``Quot.sound]
-  for c in #[``LeanBlsSimd.Kzg.coeffPolynomial_coeff, ``LeanBlsSimd.Kzg.coeffPolynomial_injective,
-      ``LeanBlsSimd.Kzg.coeffPolynomial_degree_lt_size, ``LeanBlsSimd.Kzg.coeffPolynomial_eval,
-      ``LeanBlsSimd.Kzg.coeffPolynomial_add, ``LeanBlsSimd.Kzg.coeffPolynomial_multiply,
+  for c in #[``LeanBlsSimd.Kzg.coefficientPolynomial_injective,
+      ``LeanBlsSimd.Kzg.coefficientPolynomial_add, ``LeanBlsSimd.Kzg.coefficientPolynomial_multiply,
       ``LeanBlsSimd.Kzg.multiply_scalar64, ``LeanBlsSimd.Kzg.interpolatePolynomialcoeff_eq,
       ``LeanBlsSimd.Kzg.cellNode_layout, ``LeanBlsSimd.Kzg.cellNodes_injective,
       ``LeanBlsSimd.Kzg.cosetForCell_eq, ``LeanBlsSimd.Kzg.cellIfft_eval,

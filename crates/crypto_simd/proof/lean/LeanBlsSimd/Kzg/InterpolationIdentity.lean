@@ -18,7 +18,8 @@ private theorem cell_interpolation (c : Nat) (hc : c < 128)
     (ys : Array Fr) (hys : ys.size = 64) :
     ∃ nodes out, cosetForCell c = .ok nodes ∧
       interpolatePolynomialcoeff nodes ys = .ok out ∧ out.size = 64 ∧
-      coeffPolynomial out = cellInterpolant c (fun j => ys[j.val]!) := by
+      EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        cellInterpolant c (fun j => ys[j.val]!) := by
   let nodes := Array.ofFn (fun j : Fin 64 => (rootsOfUnityBrp 8192)[64*c+j.val]!)
   obtain ⟨out, hcall, hsize, hpoly⟩ := interpolatePolynomialcoeff_eq nodes ys
     (by simp [nodes]) hys
@@ -35,7 +36,8 @@ private theorem interpolationStep_eq (indices : Array Nat) (evals : Array CosetE
     (powers : Array Fr) (hs : Model.RliInputs indices evals powers)
     (k : Nat) (hk : k < indices.size) (acc : Array Fr) (ha : acc.size = 64) :
     ∃ out, interpolationStep indices evals powers acc k = .ok out ∧ out.size = 64 ∧
-      coeffPolynomial out = coeffPolynomial acc +
+      EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        EthLib.Cryptography.Kzg.coefficientPolynomial acc +
         _root_.Polynomial.C powers[k]! * cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!) := by
   have hc : indices[k]! < 128 := by
     rw [getElem!_pos indices k hk]
@@ -51,13 +53,14 @@ private theorem interpolationStep_eq (indices : Array Nat) (evals : Array CosetE
     rw [hnodes]
     simp only [Bind.bind, Except.bind, hcall, hscale, Pure.pure, Except.pure]
   · simp only [size_addPolynomialcoeff, ha, hssize, max_self]
-  · rw [coeffPolynomial_add, hspoly, _root_.Polynomial.smul_eq_C_mul, hipoly]
+  · rw [coefficientPolynomial_add, hspoly, _root_.Polynomial.smul_eq_C_mul, hipoly]
 
 private theorem interpolation_fold (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (hs : Model.RliInputs indices evals powers)
     (ks : List Nat) (hks : ∀ k ∈ ks, k < indices.size) (acc : Array Fr) (ha : acc.size = 64) :
     ∃ out, ks.foldlM (interpolationStep indices evals powers) acc = .ok out ∧ out.size = 64 ∧
-      coeffPolynomial out = coeffPolynomial acc +
+      EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        EthLib.Cryptography.Kzg.coefficientPolynomial acc +
         (ks.map fun k => _root_.Polynomial.C powers[k]! *
           cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!)).sum := by
   induction ks generalizing acc with
@@ -75,13 +78,13 @@ private theorem interpolation_fold (indices : Array Nat) (evals : Array CosetEva
 theorem lagrangeRli_polynomial (indices : Array Nat) (evals : Array CosetEvals)
     (powers : Array Fr) (hs : Model.RliInputs indices evals powers) :
     ∃ out, Model.lagrangeRli indices evals powers = .ok out ∧ out.size = 64 ∧
-      coeffPolynomial out = ∑ k ∈ Finset.range indices.size,
+      EthLib.Cryptography.Kzg.coefficientPolynomial out = ∑ k ∈ Finset.range indices.size,
         _root_.Polynomial.C powers[k]! * cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!) := by
   obtain ⟨out, hcall, hsize, hpoly⟩ := interpolation_fold indices evals powers hs
     (List.range indices.size) (fun _ hk => List.mem_range.mp hk) (Array.replicate 64 Fr.zero) (by simp)
   refine ⟨out, ?_, hsize, ?_⟩
   · simpa only [Model.lagrangeRli, ← Array.foldlM_toList, Array.toList_range, interpolationStep] using! hcall
-  · rw [hpoly, coeffPolynomial_replicate_zero, zero_add]
+  · rw [hpoly, coefficientPolynomial_replicate_zero, zero_add]
     simpa only [List.toFinset_range] using
       (List.sum_toFinset (fun k => _root_.Polynomial.C powers[k]! *
         cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!))
@@ -110,7 +113,7 @@ theorem column_ifft_interpolation (indices : Array Nat) (evals : Array CosetEval
   obtain ⟨out, hcall, hsize, hpoly⟩ := lagrangeRli_polynomial indices evals powers hs
   rw [hcall]
   congr 1
-  apply coeffPolynomial_injective
+  apply coefficientPolynomial_injective
   · rw [hsize, columnRli_size]
   · rw [hpoly, columnRli_polynomial cellIfft_interpolant indices evals powers hs.2.2.1]
 

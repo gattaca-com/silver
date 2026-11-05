@@ -26,15 +26,17 @@ private theorem factor_identity {F : Type*} [Field F] (x y : F) :
   ring
 
 private theorem factor_polynomial (x y : Fr) :
-    coeffPolynomial #[(-(x-y).inverse) * y, (x-y).inverse] = Lagrange.basisDivisor x y := by
-  rw [coeffPolynomial_pair, Fr.inverse_eq_inv]
+    EthLib.Cryptography.Kzg.coefficientPolynomial #[(-(x-y).inverse) * y, (x-y).inverse] =
+      Lagrange.basisDivisor x y := by
+  rw [coefficientPolynomial_pair, Fr.inverse_eq_inv]
   exact factor_identity x y
 
 private theorem inner_prefix (xs : Array Fr) (value : Fr) (i : Nat)
     (n : Nat) (hn : n ≤ 64) :
     ∃ out, (List.range n).foldlM (innerStep xs i) #[value] = .ok out ∧
       out.size = (if i < n then n else n+1) ∧
-      coeffPolynomial out = _root_.Polynomial.C value * basisProduct xs i n := by
+      EthLib.Cryptography.Kzg.coefficientPolynomial out =
+        _root_.Polynomial.C value * basisProduct xs i n := by
   induction n with
   | zero =>
     refine ⟨#[value], rfl, by simp, ?_⟩
@@ -51,7 +53,7 @@ private theorem inner_prefix (xs : Array Fr) (value : Fr) (i : Nat)
         simp [hni]
       · rw [hpoly]
         simp [basisProduct, Finset.prod_range_succ, hni]
-    · obtain ⟨out, hcall, houtsize, houtpoly⟩ := coeffPolynomial_multiply current
+    · obtain ⟨out, hcall, houtsize, houtpoly⟩ := coefficientPolynomial_multiply current
         #[(-(xs[i]! - xs[n]!).inverse) * xs[n]!, (xs[i]! - xs[n]!).inverse]
         hpos (by simp) (by simpa using hbound)
       refine ⟨out, ?_, ?_, ?_⟩
@@ -91,7 +93,7 @@ private def outerStep (xs ys : Array Fr) (acc : Array Fr) (i : Nat) :
 private theorem outer_prefix (xs ys : Array Fr) (n : Nat) (hn : n ≤ 64) :
     ∃ out, (List.range n).foldlM (outerStep xs ys) #[Fr.zero] = .ok out ∧
       out.size = (if n = 0 then 1 else 64) ∧
-      coeffPolynomial out = ∑ i ∈ Finset.range n,
+      EthLib.Cryptography.Kzg.coefficientPolynomial out = ∑ i ∈ Finset.range n,
         _root_.Polynomial.C ys[i]! * basisProduct xs i 64 := by
   induction n with
   | zero => exact ⟨#[Fr.zero], rfl, rfl, by simp⟩
@@ -105,7 +107,7 @@ private theorem outer_prefix (xs ys : Array Fr) (n : Nat) (hn : n ≤ 64) :
         List.foldlM_nil, Pure.pure, Except.pure]
     · rw [size_addPolynomialcoeff, hsize, hssize']
       split <;> simp_all
-    · rw [coeffPolynomial_add, hpoly, hspoly, Finset.sum_range_succ]
+    · rw [coefficientPolynomial_add, hpoly, hspoly, Finset.sum_range_succ]
 
 end LeanBlsSimd.Kzg.PolynomialInterpolation
 
@@ -114,7 +116,7 @@ namespace LeanBlsSimd.Kzg
 theorem interpolatePolynomialcoeff_eq (xs ys : Array Fr)
     (hxs : xs.size = 64) (hys : ys.size = 64) :
     ∃ out, interpolatePolynomialcoeff xs ys = .ok out ∧ out.size = 64 ∧
-      coeffPolynomial out = Lagrange.interpolate Finset.univ
+      EthLib.Cryptography.Kzg.coefficientPolynomial out = Lagrange.interpolate Finset.univ
         (fun i : Fin 64 => xs[i.val]!) (fun i : Fin 64 => ys[i.val]!) := by
   obtain ⟨out, hcall, hsize, hpoly⟩ := PolynomialInterpolation.outer_prefix xs ys 64 (by omega)
   refine ⟨out, ?_, by simpa using hsize, ?_⟩

@@ -10,9 +10,6 @@ attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg
 
-set_option maxHeartbeats 2000000
-set_option maxRecDepth 16000
-
 theorem reverseBits_cell_split (c j : Nat) (hj : j < 64) :
     reverseBits (64 * c + j) 8192 =
       128 * reverseBits j 64 + reverseBits c 128 := by
@@ -91,33 +88,6 @@ theorem cosetForCell_eq (c : Nat) (hc : c < 128) :
 theorem size_cellIfft (c : Nat) (ys : Array Fr) : (cellIfft c ys).size = ys.size := by
   simp [cellIfft, size_bitReversalPermutation]
 
-theorem coeffPolynomial_shiftVals_eval (a : Array Fr) (factor z : Fr) :
-    (coeffPolynomial (shiftVals a factor)).eval z =
-      (coeffPolynomial a).eval (factor * z) := by
-  rw [coeffPolynomial_eval, coeffPolynomial_eval, size_shiftVals]
-  apply Finset.sum_congr rfl
-  intro i hi
-  have hia : i < a.size := Finset.mem_range.mp hi
-  have his : i < (shiftVals a factor).size := by simpa only [size_shiftVals] using hia
-  rw [getElem!_pos (shiftVals a factor) i his, getElem_shiftVals,
-    ← getElem!_pos a i hia, Fr.powNat_eq_pow]
-  calc
-    a[i]! * factor ^ i * z ^ i = a[i]! * (factor ^ i * z ^ i) := mul_assoc _ _ _
-    _ = a[i]! * (factor * z) ^ i := congrArg (fun x : Fr => a[i]! * x) (mul_pow factor z i).symm
-
-theorem fftField_coeffPolynomial_eval {k : Nat} {ω : Fr}
-    (hω : IsPrimitiveRoot ω (2 ^ k)) (a roots : Array Fr)
-    (ha : a.size = 2 ^ k) (hrs : roots.size = 2 ^ k)
-    (hroots : ∀ i, i < 2 ^ k → roots[i]! = ω ^ i) (j : Nat) (hj : j < 2 ^ k) :
-    (coeffPolynomial a).eval (ω ^ j) = (fftField a roots false)[j]! := by
-  rw [fftField_def]
-  change _ = (fftFieldAux a roots)[j]!
-  rw [getElem!_fftFieldAux_dft hω a roots ha hrs hroots j hj, coeffPolynomial_eval, ha]
-  apply Finset.sum_congr rfl
-  intro i _
-  have hpow : (ω ^ j) ^ i = ω ^ (i * j) := by rw [← pow_mul, Nat.mul_comm j i]
-  exact congrArg (fun x : Fr => a[i]! * x) hpow
-
 theorem getElem!_computeRootsOfUnity_pow (n i : Nat) (hi : i < n) :
     (computeRootsOfUnity n)[i]! = domainRoot n ^ i := by
   have hb : i < (computeRootsOfUnity n).size := by simpa only [size_computeRootsOfUnity] using hi
@@ -125,7 +95,8 @@ theorem getElem!_computeRootsOfUnity_pow (n i : Nat) (hi : i < n) :
 
 theorem cellIfft_eval (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 64)
     (j : Nat) (hj : j < 64) :
-    (coeffPolynomial (cellIfft c ys)).eval ((rootsOfUnityBrp 8192)[64 * c + j]!) = ys[j]! := by
+    (EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c ys)).eval
+      ((rootsOfUnityBrp 8192)[64 * c + j]!) = ys[j]! := by
   let vals := bitReversalPermutation ys
   let roots := computeRootsOfUnity 64
   let coeff := fftField vals roots true
@@ -148,20 +119,24 @@ theorem cellIfft_eval (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 
           domainRoot 64 ^ reverseBits j 64 := (mul_assoc _ _ _).symm
       _ = _ := by rw [hmul]; exact one_mul _
   unfold cellIfft
-  rw [coeffPolynomial_shiftVals_eval, cellNode_layout c hc j hj, hcancel]
-  change (coeffPolynomial coeff).eval (domainRoot 64 ^ reverseBits j 64) = ys[j]!
-  rw [fftField_coeffPolynomial_eval (k := 6) domainRoot_64_primitive coeff roots hcoeff hr hroots _ hrev,
+  rw [EthLib.Cryptography.Kzg.eval_coefficientPolynomial,
+    EthLib.Cryptography.Kzg.evalPolyAt_shiftVals, cellNode_layout c hc j hj, hcancel]
+  change EthLib.Cryptography.Kzg.evalPolyAt coeff (domainRoot 64 ^ reverseBits j 64) = ys[j]!
+  rw [← EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 6)
+    domainRoot_64_primitive coeff roots hcoeff hr hroots _ hrev,
     hround]
   rw [getElem!_pos (bitReversalPermutation ys) (reverseBits j 64)
       (by simpa only [size_bitReversalPermutation, hys] using! hrev),
     getElem_bitReversalPermutation, hys, reverseBits_reverseBits (k := 6) hj]
 
 theorem cellIfft_interpolant (c : Nat) (hc : c < 128) (ys : Array Fr) (hys : ys.size = 64) :
-    coeffPolynomial (cellIfft c ys) = cellInterpolant c (fun j : Fin 64 => ys[j.val]!) := by
+    EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c ys) =
+      cellInterpolant c (fun j : Fin 64 => ys[j.val]!) := by
   unfold cellInterpolant
   apply Lagrange.eq_interpolate_of_eval_eq (fun j : Fin 64 => ys[j.val]!)
     ((cellNodes_injective c hc).injOn)
-  · have hdeg := coeffPolynomial_degree_lt_size (cellIfft c ys)
+  · have hdeg : (EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c ys)).degree <
+        (cellIfft c ys).size := _root_.Polynomial.ofFn_degree_lt _
     simpa only [size_cellIfft, hys, Finset.card_univ, Fintype.card_fin] using hdeg
   · intro j _
     exact cellIfft_eval c hc ys hys j.val j.isLt

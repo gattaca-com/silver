@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Extender.Model
 import LeanBlsSimd.Kzg.CosetPolynomial
-import Mathlib.Algebra.BigOperators.Intervals
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
@@ -8,32 +8,6 @@ open scoped EthLib.Cryptography.Bls.Fr BigOperators
 attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.Extender
-
-private theorem horner_fold (f : Nat → Fr) (z : Fr) (n : Nat) :
-    (List.range n).foldl (fun y i => y * z + f i) 0 =
-      ∑ i ∈ Finset.range n, f i * z ^ (n - 1 - i) := by
-  induction n with
-  | zero => simp
-  | succ n ih =>
-    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, ih,
-      Finset.sum_range_succ, Finset.sum_mul]
-    simp only [Nat.add_sub_cancel, Nat.sub_self, pow_zero]
-    congr 1
-    · apply Finset.sum_congr rfl
-      intro i hi
-      have hi' := Finset.mem_range.mp hi
-      rw [show n - i = (n - 1 - i) + 1 by omega, pow_succ, mul_assoc]
-      rfl
-    · exact (mul_one _).symm
-
-theorem evaluatePolynomialcoeff_eq (a : Array Fr) (z : Fr) :
-    evaluatePolynomialcoeff a z = (coeffPolynomial a).eval z := by
-  unfold evaluatePolynomialcoeff
-  rw [← Array.foldl_toList]
-  simp only [Array.toList_range]
-  change (List.range a.size).foldl (fun y i => y * z + a[a.size - 1 - i]!) 0 = _
-  rw [horner_fold, coeffPolynomial_eval]
-  exact Finset.sum_range_reflect (fun i => a[i]! * z ^ i) a.size
 
 theorem domainRoot_8192_sq : domainRoot 8192 ^ (2 : Nat) = domainRoot 4096 := by
   unfold domainRoot
@@ -117,8 +91,8 @@ theorem coeff_eval_original (a : Array Fr) (ha : a.size = 4096)
     have hr := reverseBits_half_split 0 j (by decide) hj
     simp only [Nat.mul_zero, Nat.zero_add, Nat.add_zero] at hr
     rw [hr, pow_mul, domainRoot_8192_sq]
-  rw [hnode, evaluatePolynomialcoeff_eq,
-    fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive
+  rw [hnode, EthLib.Cryptography.Kzg.evaluatePolynomialcoeff_eq_evalPolyAt,
+    ← EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       (polynomialEvalToCoeff a) (computeRootsOfUnity 4096)
       (coeff_size a ha) (size_computeRootsOfUnity 4096) hroots _ hrev]
   have hround : fftField (polynomialEvalToCoeff a) (computeRootsOfUnity 4096) false =
@@ -146,8 +120,9 @@ theorem coeff_eval_extension (a : Array Fr) (ha : a.size = 4096)
     simp only [Nat.mul_one] at hr
     rw [hr, pow_add, pow_mul, domainRoot_8192_sq, pow_one, mul_comm]
     rfl
-  rw [hnode, evaluatePolynomialcoeff_eq, ← coeffPolynomial_shiftVals_eval,
-    fftField_coeffPolynomial_eval (k := 12) domainRoot_4096_primitive
+  rw [hnode, EthLib.Cryptography.Kzg.evaluatePolynomialcoeff_eq_evalPolyAt,
+    ← EthLib.Cryptography.Kzg.evalPolyAt_shiftVals,
+    ← EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       (shiftVals (polynomialEvalToCoeff a) (domainRoot 8192)) (computeRootsOfUnity 4096)
       (by rw [size_shiftVals]; exact coeff_size a ha)
       (size_computeRootsOfUnity 4096) hroots _ hrev,
