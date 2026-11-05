@@ -20,17 +20,19 @@ pub enum Pane {
     Timings,
     Tiles,
     Peers,
+    Cluster,
     Gossip,
     Events,
     Flamegraph,
 }
 
-pub const PANES: [Pane; 8] = [
+pub const PANES: [Pane; 9] = [
     Pane::Counters,
     Pane::TCaches,
     Pane::Timings,
     Pane::Tiles,
     Pane::Peers,
+    Pane::Cluster,
     Pane::Gossip,
     Pane::Events,
     Pane::Flamegraph,
@@ -44,6 +46,7 @@ impl Pane {
             Pane::Timings => "Timings",
             Pane::Tiles => "Tiles",
             Pane::Peers => "Peers",
+            Pane::Cluster => "Cluster",
             Pane::Gossip => "Gossip",
             Pane::Events => "Events",
             Pane::Flamegraph => "Flamegraph",
@@ -56,7 +59,8 @@ impl Pane {
             Pane::TCaches => Pane::Timings,
             Pane::Timings => Pane::Tiles,
             Pane::Tiles => Pane::Peers,
-            Pane::Peers => Pane::Gossip,
+            Pane::Peers => Pane::Cluster,
+            Pane::Cluster => Pane::Gossip,
             Pane::Gossip => Pane::Events,
             Pane::Events => Pane::Flamegraph,
             Pane::Flamegraph => Pane::Counters,
@@ -70,7 +74,8 @@ impl Pane {
             Pane::Timings => Pane::TCaches,
             Pane::Tiles => Pane::Timings,
             Pane::Peers => Pane::Tiles,
-            Pane::Gossip => Pane::Peers,
+            Pane::Cluster => Pane::Peers,
+            Pane::Gossip => Pane::Cluster,
             Pane::Events => Pane::Gossip,
             Pane::Flamegraph => Pane::Events,
         }
@@ -326,6 +331,7 @@ impl App {
             Pane::Tiles => self.move_tile_selection(dir),
             Pane::Peers => self.move_peer_selection(dir),
             Pane::Gossip => self.move_gossip_selection(dir),
+            Pane::Cluster => {}
             Pane::Events => self.events.move_selection(dir),
             Pane::Flamegraph => self.flamegraph.scroll_by(dir),
         }
@@ -361,6 +367,7 @@ impl App {
                 .map(|id| self.peers.get(id).map_or_else(String::new, |row| row.search_text(id)))
                 .collect(),
             Pane::Gossip => self.gossip_display_order.iter().map(ToString::to_string).collect(),
+            Pane::Cluster => Vec::new(),
             Pane::Events => self.events.rows_text(),
             Pane::Flamegraph => self.flamegraph.tree().lines().map(str::to_string).collect(),
         }
@@ -388,6 +395,7 @@ impl App {
                 .gossip_selected
                 .and_then(|t| self.gossip_display_order.iter().position(|x| *x == t))
                 .unwrap_or(0),
+            Pane::Cluster => 0,
             Pane::Events => self.events.selected_row(),
             Pane::Flamegraph => self.flamegraph.scroll() as usize,
         }
@@ -401,6 +409,7 @@ impl App {
             Pane::Tiles => self.tiles_selection = pos,
             Pane::Peers => self.peers_selected = Some(self.peers_display_order[pos]),
             Pane::Gossip => self.gossip_selected = Some(self.gossip_display_order[pos]),
+            Pane::Cluster => {}
             Pane::Events => self.events.select_row(pos),
             Pane::Flamegraph => self.flamegraph.scroll_to(pos),
         }

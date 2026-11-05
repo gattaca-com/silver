@@ -64,7 +64,7 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
     node.set_startup_wall_slot(99);
     node.persistence.paused = true;
-    node.step(snapshot_message(snapshot(10))).unwrap();
+    node.step(snapshot_message(snapshot(10)), now).unwrap();
     node.spin(now, 100, |_| panic!("snapshot acknowledged before sync")).unwrap();
     assert_eq!(node.state.len(), 0);
     assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 0);
@@ -93,7 +93,7 @@ fn invalid_snapshot_payload_or_membership_stops_participation() {
         } else {
             snapshot.data = vec![0; 20].into();
         }
-        node.step(snapshot_message(snapshot)).unwrap();
+        node.step(snapshot_message(snapshot), now).unwrap();
         assert!(matches!(
             node.spin(now, 100, |_| panic!("released invalid snapshot")),
             Err(ClusterError::Snapshot(_))
@@ -176,7 +176,7 @@ impl Network {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message)
+                    .step(message, self.now)
                     .unwrap();
             }
             if self.nodes.iter().all(quiet) {

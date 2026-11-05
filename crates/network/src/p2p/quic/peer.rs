@@ -13,8 +13,8 @@ use quinn_proto::{
     VarInt,
 };
 use silver_common::{
-    CacheFrameRef, GossipTraffic, P2pConnectionStats, P2pStreamId, PeerId, RpcOffence, RpcSeverity,
-    StreamProtocol, TRead,
+    CacheFrameRef, ClusterLinkStats, GossipTraffic, P2pConnectionStats, P2pStreamId, PeerId,
+    RpcOffence, RpcSeverity, StreamProtocol, TRead,
 };
 
 use crate::{
@@ -65,6 +65,7 @@ pub(crate) struct Peer {
     inbound_gossip: Option<StreamId>,
     outbound_gossip: Option<StreamId>,
     cluster_stream: Option<StreamId>,
+    cluster_overwrites: u64,
     /// When the connection object was created (dial initiated / inbound
     /// accepted). Used to report connection age on disconnect.
     created_at: Instant,
@@ -116,6 +117,7 @@ impl Peer {
             inbound_gossip: None,
             outbound_gossip: None,
             cluster_stream: None,
+            cluster_overwrites: 0,
             created_at: now,
             handshake_completed: false,
             awaiting_inbound_handshake: inbound,
@@ -283,7 +285,11 @@ impl Peer {
             if let OutboundBuffer::Cluster(buffer) = &mut stream.out_buffer {
                 let dropped = buffer.add_msg(msg);
                 stream.needs_spin = true;
-                return dropped.map_or(SendResult::Ok, |_| SendResult::Dropped(None));
+                if dropped.is_none() {
+                    return SendResult::Ok;
+                }
+                self.cluster_overwrites += 1;
+                return SendResult::Dropped(None);
             }
         }
         SendResult::StreamCreationError
@@ -449,6 +455,19 @@ impl Peer {
                 inbound: self.connection.side() == Side::Server,
             }
         })
+    }
+
+    pub(crate) fn cluster_link_stats(&self, node_id: u64) -> ClusterLinkStats {
+        ClusterLinkStats {
+            node_id,
+            connected: !self.connection.is_closed(),
+            rtt: self.connection.stats().path.rtt,
+            out_queue_len: self
+                .cluster_stream
+                .and_then(|id| self.streams.get(&id))
+                .map_or(0, |stream| stream.out_buffer.len() as u64),
+            overwrites: self.cluster_overwrites,
+        }
     }
 
     /// Open an outbound stream with the given protocol. Returns `None` if

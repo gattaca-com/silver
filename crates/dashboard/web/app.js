@@ -3,6 +3,7 @@ import { Fleet } from './state.js';
 import * as events from './events.js';
 import * as flow from './flow.js';
 import * as gossip from './gossip.js';
+import * as cluster from './cluster.js';
 import * as home from './home.js';
 import * as peers from './peers.js';
 
@@ -13,7 +14,7 @@ const RECONNECT_MS = 2000;
 /** A relay that predates the replay marker never sends it. */
 const REPLAY_TIMEOUT_MS = 5000;
 
-const PANES = { home, events, peers, gossip, flow };
+const PANES = { home, events, peers, cluster, gossip, flow };
 /** Per-pane view state (selected instance, sort, expanded rows); survives
  *  re-renders and reconnects. */
 const ui = Object.fromEntries(Object.keys(PANES).map((p) => [p, {}]));

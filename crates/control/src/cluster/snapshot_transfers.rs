@@ -5,7 +5,7 @@ use raft::{
     eraftpb::{Message, MessageType},
 };
 
-use super::raft_storage::RaftStorage;
+use super::{metrics::ClusterCounters, raft_storage::RaftStorage};
 
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -24,6 +24,7 @@ impl SnapshotTransfers {
         if message.msg_type != MessageType::MsgSnapshot {
             return;
         }
+        ClusterCounters::SnapshotsSent.inc();
         if let Some(transfer) = self.pending.iter_mut().find(|transfer| transfer.peer == message.to)
         {
             transfer.started = now;
@@ -46,6 +47,7 @@ impl SnapshotTransfers {
                 return true;
             }
             node.report_snapshot(transfer.peer, SnapshotStatus::Failure);
+            ClusterCounters::SnapshotTransferTimeouts.inc();
             silver_log::warn!(peer = transfer.peer, "Raft snapshot transfer timed out");
             false
         });

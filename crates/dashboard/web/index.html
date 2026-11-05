@@ -19,7 +19,7 @@
     --bg: #1b1b1d; --fg: #eaeaea; --muted: #888888; --line: #2e2e31; --idle: #5a5a5e;
     --panel: #161618; --accent: #fac105; --fill: #98d2f1; --mark: #ff8787; --ok: #69db7c; --bad: #ff6b6b;
     --c-da: #3bc9db; --c-custody: #da77f2; --c-stf: #ffd43b; --c-validate: #74c0fc;
-    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ff922b; --c-payload: #69db7c;
+    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ff922b; --c-payload: #69db7c; --c-lock: #f783ac;
     --hover: #2f2a14; --sel: #26374a; --open: #1e2a38;
     --series-1: #3d9bd8; --series-2: #bd8a00; --series-3: #aa65c5; --series-4: #199e70;
     --series-5: #d95926; --series-6: #7486e8; --series-7: #d55181; --series-8: #8a9a2a;
@@ -29,7 +29,7 @@
     --bg: #d3d6db; --fg: #121212; --muted: #3f4246; --line: #bfc3c9; --idle: #9da2a9;
     --panel: #eceef1; --accent: #2b7bb9; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
     --c-da: #0c8599; --c-custody: #ae3ec9; --c-stf: #e67700; --c-validate: #4dabf7;
-    --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700; --c-payload: #2b8a3e;
+    --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700; --c-payload: #2b8a3e; --c-lock: #c2255c;
     --hover: #fcdcae; --sel: #c2d7ef; --open: #d6e3f2;
     --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
     --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
@@ -70,6 +70,64 @@
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 6px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .badge { font-weight: normal; font-size: 11px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }
   .badge.stale { color: var(--bad); border-color: var(--bad); }
+  .badge.ok, span.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: var(--accent); border-color: var(--accent); }
+  .badge.bad, span.bad { color: var(--bad); border-color: var(--bad); font-weight: bold; }
+  .cluster-pair { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); align-items: start; margin-bottom: 12px; }
+  span.warn { color: var(--c-warn); }
+  .csection { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px 10px; margin-bottom: 14px; min-width: 0; }
+  .csection .caption { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+  .csection .meta { font-size: 12px; }
+  .csection .home-legend { font-size: 13px; }
+  .csection .chart .u-legend { font-size: 13px; }
+  .csection svg .axis { font-size: 11px; }
+  .csection .lane-axis { font-size: 11px; }
+  .csection section { margin-bottom: 0; }
+  table.health th, table.health td { padding: 4px 10px; white-space: nowrap; }
+  table.health thead th { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; cursor: help; }
+  table.health tbody th { text-align: left; }
+  td.hcell { font-weight: bold; border-left: 4px solid var(--line); cursor: help; }
+  td.hcell.ok { border-left-color: var(--ok); }
+  td.hcell.warn { border-left-color: var(--c-warn); color: var(--c-warn); }
+  td.hcell.bad { border-left-color: var(--bad); color: var(--bad); }
+  td.hcell.info { border-left-color: var(--idle); }
+  .ccols { display: flex; flex-wrap: wrap; gap: 12px; }
+  .ccol { flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; }
+  .ctopo { width: 100%; height: 400px; display: block; }
+  .ctopo .edge path.hit { stroke: transparent; stroke-width: 14; fill: none; }
+  .ctopo .edge.hl path:not(.hit) { stroke-width: 5; }
+  table.cpeers th, table.cpeers td { padding: 7px 10px; }
+  table.cpeers td { font-size: 14px; }
+  .cluster-pair.even { align-items: stretch; }
+  table.cpeers tr.hl td { background: var(--hover); }
+  svg.cbars rect.seg:hover { opacity: 0.7; }
+  .ccol > .csection:last-child { flex: 1; }
+  .meta.cpeers-key { font-size: 14px; line-height: 1.6; }
+  .home-legend.cbars-legend { font-size: 14px; }
+  .meta.ctip { min-height: 1.4em; font-size: 15px; text-align: center; color: var(--fg); }
+  .ctopo .edge path { fill: none; stroke-width: 2.5; }
+  .ctopo .edge text { font-size: 12px; fill: var(--fg); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+  .ctopo .tnode text { font-size: 13px; fill: var(--fg); }
+  .ctopo .tnode text.sub { font-size: 12px; fill: var(--muted); }
+  i.applied { background: var(--ok); }
+  i.committed { background: var(--fill); }
+  i.uncommitted { background: var(--idle); }
+  i.missing { background: var(--bad); }
+  table.heatmap { border-collapse: separate; border-spacing: 2px; font-size: 11px; }
+  table.heatmap th { font-weight: normal; color: var(--muted); padding: 0 4px; text-align: right; }
+  td.hm { min-width: 38px; height: 22px; text-align: center; border-radius: 2px; cursor: help; color: #111; }
+  td.hm.ok { background: color-mix(in srgb, var(--ok) 55%, var(--panel)); }
+  td.hm.warn { background: var(--c-warn); }
+  td.hm.bad { background: var(--bad); font-weight: bold; }
+  td.hm.none { background: var(--line); }
+  svg.cbars { width: 100%; display: block; }
+  svg.cbars { max-width: 460px; }
+  .leader-line { position: relative; height: 20px; background: var(--line); border-radius: 2px; margin-top: 4px; }
+  .leader-line i { position: absolute; top: 0; bottom: 0; cursor: help; }
+  .lane-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); }
+  svg .axis { font-size: 10px; fill: var(--muted); }
+  svg .grid { stroke: var(--line); stroke-width: 1; }
+  .csection .swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line); }
   .meta { font-weight: normal; color: var(--muted); font-size: 11px; }
   table { border-collapse: collapse; width: 100%; background: var(--panel); border: 1px solid var(--line); }
   th, td { padding: 3px 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
@@ -233,6 +291,7 @@
   .c-stf { color: var(--c-stf); }
   .c-validate { color: var(--c-validate); }
   .c-apply { color: var(--c-apply); }
+  .c-lock { color: var(--c-lock); }
   .c-dawait { color: var(--c-dawait); }
   .c-payload { color: var(--c-payload); }
   .c-valid { color: var(--ok); }
@@ -247,6 +306,7 @@
   <nav>
     <button data-pane="events">Slots</button>
     <button data-pane="peers">Peers</button>
+    <button data-pane="cluster">Cluster</button>
     <button data-pane="gossip">Gossip</button>
     <button data-pane="flow">Data flow</button>
   </nav>

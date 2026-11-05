@@ -13,7 +13,7 @@ use silver_common::{
     SilverSpine,
 };
 
-use crate::render::peers_pane::short_id;
+use crate::{render::peers_pane::short_id, sources::cluster::ClusterRows};
 
 /// Rows not re-sampled within this window are dropped — covers a full
 /// round-robin sweep of a large peer set plus slack.
@@ -48,17 +48,20 @@ impl PeerRow {
 #[derive(Default)]
 struct PeersTile {
     rows: HashMap<PeerId, PeerRow>,
+    cluster: ClusterRows,
 }
 
 impl Tile<SilverSpine> for PeersTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         adapter.consume(|stats: PeerStats, _| {
+            let now = Nanos::now();
             let id = match &stats {
                 PeerStats::P2p(s) => s.id,
                 PeerStats::Scores(s) => s.id,
                 PeerStats::Topic(s) => s.id,
+                PeerStats::Cluster(s) => return self.cluster.record_raft(*s, now),
+                PeerStats::ClusterLink(s) => return self.cluster.record_link(*s, now),
             };
-            let now = Nanos::now();
             let row = self.rows.entry(id).or_default();
             row.seen = now;
             match stats {
@@ -70,6 +73,7 @@ impl Tile<SilverSpine> for PeersTile {
                 PeerStats::Topic(s) => {
                     row.topics.insert(s.topic, (s, now));
                 }
+                PeerStats::Cluster(_) | PeerStats::ClusterLink(_) => unreachable!("recorded above"),
             }
         });
     }
@@ -91,6 +95,7 @@ impl Peers {
     pub fn sample(&mut self) {
         self.tile.loop_body(&mut self.adapter);
         let now = Nanos::now();
+        self.tile.cluster.expire(now);
         self.tile.rows.retain(|_, r| now.saturating_sub(r.seen) < STALE_NS);
         for r in self.tile.rows.values_mut() {
             r.topics.retain(|_, (_, seen)| now.saturating_sub(*seen) < STALE_NS);
@@ -104,6 +109,10 @@ impl Peers {
 
     pub fn rows(&self) -> impl Iterator<Item = (&PeerId, &PeerRow)> {
         self.tile.rows.iter()
+    }
+
+    pub fn cluster(&self) -> &ClusterRows {
+        &self.tile.cluster
     }
 
     pub fn get(&self, id: &PeerId) -> Option<&PeerRow> {

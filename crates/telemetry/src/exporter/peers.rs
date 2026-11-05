@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
-use silver_common::{P2pConnectionStats, PeerId, PeerScores, PeerStats, PeerTopicScores};
+use silver_common::{
+    ClusterLinkStats, ClusterPeerStats, P2pConnectionStats, PeerId, PeerScores, PeerStats,
+    PeerTopicScores,
+};
 use silver_observe_wire::Encoder;
 
-use crate::exporter::streams::{p2p_record, scores_record, topic_record};
+use crate::exporter::streams::{cluster_peer_record, p2p_record, scores_record, topic_record};
 
 /// Newest peer stats per key since the last `encode`. The node reports p2p
 /// stats every 100 ms and scores every peer-manager tick; the dashboard shows
@@ -13,6 +16,10 @@ pub(super) struct LatestPeerStats {
     p2p: HashMap<(PeerId, usize), P2pConnectionStats>,
     scores: HashMap<PeerId, PeerScores>,
     topics: HashMap<(PeerId, usize), PeerTopicScores>,
+    cluster: HashMap<u64, ClusterPeerStats>,
+    /// Kept across encodes: a Raft row joins the newest link sample, which
+    /// arrives from another tile on its own schedule.
+    cluster_links: HashMap<u64, ClusterLinkStats>,
 }
 
 impl LatestPeerStats {
@@ -26,6 +33,12 @@ impl LatestPeerStats {
             }
             PeerStats::Topic(s) => {
                 self.topics.insert((s.id, s.topic.counter_slot()), *s);
+            }
+            PeerStats::Cluster(s) => {
+                self.cluster.insert(s.node_id, *s);
+            }
+            PeerStats::ClusterLink(s) => {
+                self.cluster_links.insert(s.node_id, *s);
             }
         }
     }
@@ -41,6 +54,10 @@ impl LatestPeerStats {
         }
         for (_, s) in self.topics.drain() {
             enc.peer_topic(ts_ns, &topic_record(&s), emit);
+        }
+        for (node_id, s) in self.cluster.drain() {
+            let record = cluster_peer_record(&s, self.cluster_links.get(&node_id));
+            enc.cluster_peer(ts_ns, &record, emit);
         }
     }
 }

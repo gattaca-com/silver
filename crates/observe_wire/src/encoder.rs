@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use crate::{
     header::{HEADER_LEN, Header, Kind, MAX_DATAGRAM},
     records::{
-        PEER_ID_MAX, PeerP2p, PeerScores, PeerTopic, Source, StageRecord, TileUtil, TimingStats,
-        USER_AGENT_MAX,
+        ClusterCommit, ClusterLink, ClusterPeer, PEER_ID_MAX, PeerP2p, PeerScores, PeerTopic,
+        Source, StageRecord, TileUtil, TimingStats, USER_AGENT_MAX,
     },
 };
 
@@ -22,6 +22,8 @@ const PEER_P2P_LEN: usize = PEER_LEN + 8 + 24 + 8 * 8;
 const PEER_SCORES_LEN: usize = PEER_LEN + 8 + USER_AGENT_MAX + 8 + 9 * 8;
 const PEER_TOPIC_LEN: usize = PEER_LEN + 8 + 3 * 8 + 4 * 8;
 const STAGE_LEN: usize = 32 + 3 * 8 + 8;
+const CLUSTER_PEER_LEN: usize = 8 + 8 + 10 * 8;
+const CLUSTER_COMMIT_LEN: usize = 6 * 8 + 8;
 
 /// Splits each call's records across as many datagrams as needed, handing
 /// each to `emit` as it fills. Streamed kinds (peers, stages) stay in an open
@@ -147,6 +149,54 @@ impl Encoder {
                 r.column_index.unwrap_or(u64::MAX),
             ]);
             enc.put(&[r.stage as u8, r.detail, 0, 0, 0, 0, 0, 0]);
+        });
+    }
+
+    pub fn cluster_peer(&mut self, ts_ns: u64, p: &ClusterPeer, emit: &mut impl FnMut(&[u8])) {
+        self.stream(Kind::ClusterPeer, ts_ns, CLUSTER_PEER_LEN, emit, |enc| {
+            let link = p.link.unwrap_or(ClusterLink {
+                connected: false,
+                rtt_us: 0,
+                out_queue_len: 0,
+                overwrites: 0,
+            });
+            enc.put_u64s(&[p.node_id]);
+            enc.put(&[
+                p.is_leader as u8,
+                p.progress as u8,
+                p.link.is_some() as u8,
+                link.connected as u8,
+                0,
+                0,
+                0,
+                0,
+            ]);
+            enc.put_u64s(&[
+                p.last_contact_us.unwrap_or(u64::MAX),
+                p.match_index,
+                p.next_index,
+                p.inflight,
+                p.raft_rtt_us.unwrap_or(u64::MAX),
+                p.messages_out,
+                p.messages_in,
+                link.rtt_us,
+                link.out_queue_len,
+                link.overwrites,
+            ]);
+        });
+    }
+
+    pub fn cluster_commit(&mut self, ts_ns: u64, c: &ClusterCommit, emit: &mut impl FnMut(&[u8])) {
+        self.stream(Kind::ClusterCommit, ts_ns, CLUSTER_COMMIT_LEN, emit, |enc| {
+            enc.put_u64s(&[
+                c.slot,
+                c.slot_offset_us,
+                c.total_us,
+                c.append_us.unwrap_or(u64::MAX),
+                c.persist_us.unwrap_or(u64::MAX),
+                c.quorum_us.unwrap_or(u64::MAX),
+            ]);
+            enc.put(&[c.duty as u8, c.leader_origin as u8, c.outcome as u8, 0, 0, 0, 0, 0]);
         });
     }
 
@@ -415,7 +465,10 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::records::{SourceClass, StageCode, TimingChannel};
+    use crate::records::{
+        ClusterDutyCode, ClusterOutcomeCode, ClusterProgressCode, SourceClass, StageCode,
+        TimingChannel,
+    };
 
     /// Independent reading of the layout table in `lib.rs`, standing in for
     /// the dashboard's JS decoder.
@@ -903,6 +956,106 @@ mod tests {
         assert_eq!((r.u64(), r.u64(), r.u64()), (60, 10, 4));
         let got: Vec<_> = (0..4).map(|_| f64(&mut r)).collect();
         assert_eq!(got, [1.25, 2.25, 3.25, 4.25]);
+        r.done();
+    }
+
+    #[test]
+    fn cluster_peer_entries_round_trip() {
+        let leader = ClusterPeer {
+            node_id: 2,
+            is_leader: true,
+            progress: ClusterProgressCode::Replicate,
+            last_contact_us: Some(12_000),
+            match_index: 92_514,
+            next_index: 92_515,
+            inflight: 1,
+            raft_rtt_us: Some(900),
+            messages_out: 10,
+            messages_in: 11,
+            link: Some(ClusterLink {
+                connected: true,
+                rtt_us: 300,
+                out_queue_len: 4,
+                overwrites: 7,
+            }),
+        };
+        let unseen = ClusterPeer {
+            node_id: 3,
+            is_leader: false,
+            progress: ClusterProgressCode::Follower,
+            last_contact_us: None,
+            match_index: 0,
+            next_index: 0,
+            inflight: 0,
+            raft_rtt_us: None,
+            messages_out: 0,
+            messages_in: 0,
+            link: None,
+        };
+        let dgrams = collect(|enc, emit| {
+            enc.cluster_peer(1, &leader, &mut |d| emit(d));
+            enc.cluster_peer(1, &unseen, &mut |d| emit(d));
+            enc.flush(&mut |d| emit(d));
+        });
+        headers(&dgrams, Kind::ClusterPeer);
+
+        let mut r = Reader::payload(&dgrams[0]);
+        assert_eq!(r.u16(), 2);
+        r.bytes(6);
+        assert_eq!(r.u64(), 2);
+        assert_eq!((r.u8(), r.u8(), r.u8(), r.u8()), (1, 2, 1, 1));
+        r.bytes(4);
+        let rest: Vec<_> = (0..10).map(|_| r.u64()).collect();
+        assert_eq!(rest, [12_000, 92_514, 92_515, 1, 900, 10, 11, 300, 4, 7]);
+
+        assert_eq!(r.u64(), 3);
+        assert_eq!((r.u8(), r.u8(), r.u8(), r.u8()), (0, 0, 0, 0));
+        r.bytes(4);
+        let rest: Vec<_> = (0..10).map(|_| r.u64()).collect();
+        assert_eq!(rest, [u64::MAX, 0, 0, 0, u64::MAX, 0, 0, 0, 0, 0]);
+        r.done();
+    }
+
+    #[test]
+    fn cluster_commit_entries_round_trip() {
+        let committed = ClusterCommit {
+            slot: 523,
+            slot_offset_us: 4_100_000,
+            total_us: 28_000,
+            append_us: Some(20_000),
+            persist_us: Some(3_000),
+            quorum_us: Some(5_000),
+            duty: ClusterDutyCode::Attestation,
+            leader_origin: false,
+            outcome: ClusterOutcomeCode::Accepted,
+        };
+        let timed_out = ClusterCommit {
+            append_us: None,
+            persist_us: None,
+            quorum_us: None,
+            duty: ClusterDutyCode::Block,
+            leader_origin: true,
+            outcome: ClusterOutcomeCode::TimedOut,
+            ..committed
+        };
+        let dgrams = collect(|enc, emit| {
+            enc.cluster_commit(1, &committed, &mut |d| emit(d));
+            enc.cluster_commit(1, &timed_out, &mut |d| emit(d));
+            enc.flush(&mut |d| emit(d));
+        });
+        headers(&dgrams, Kind::ClusterCommit);
+
+        let mut r = Reader::payload(&dgrams[0]);
+        assert_eq!(r.u16(), 2);
+        r.bytes(6);
+        let values: Vec<_> = (0..6).map(|_| r.u64()).collect();
+        assert_eq!(values, [523, 4_100_000, 28_000, 20_000, 3_000, 5_000]);
+        assert_eq!((r.u8(), r.u8(), r.u8()), (0, 0, 0));
+        r.bytes(5);
+        let values: Vec<_> = (0..6).map(|_| r.u64()).collect();
+        assert_eq!(values, [523, 4_100_000, 28_000, u64::MAX, u64::MAX, u64::MAX]);
+        assert_eq!((r.u8(), r.u8(), r.u8()), (1, 1, 6));
+        r.bytes(5);
         r.done();
     }
 }

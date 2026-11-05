@@ -7,7 +7,7 @@
 
 import { LineCharts } from './chart.js';
 import { legendClick, slotCharts } from './slot_charts.js';
-import { BLOCK_SOURCE, EL_VERDICT } from './wire.js';
+import { BLOCK_SOURCE, CLUSTER_OUTCOME, EL_VERDICT } from './wire.js';
 import { Origin, Verdict, colsOrigin, colsSpan } from './trace.js';
 import { escape } from './view.js';
 
@@ -17,7 +17,8 @@ const NUMBER_OF_COLUMNS = 128;
 const FOLD = { leaf: '  ', closed: '▸ ', open: '▾ ' };
 
 const GROUP_CHILDREN = {
-  block: ['da', 'custody', 'stf', 'el'],
+  block: ['lock', 'da', 'custody', 'stf', 'el'],
+  lock: ['lockAppend', 'lockPersist', 'lockQuorum'],
   da: [Origin.Gossip, Origin.El, Origin.Rpc, Origin.Assembly].map(colsSpan),
   stf: ['validate', 'apply', 'daWait'],
   payload: ['da', 'custody', 'el'],
@@ -37,13 +38,17 @@ const SPAN_LABEL = {
   daWait: 'da wait',
   el: 'el',
   payload: 'payload',
+  lock: 'raft lock',
+  lockAppend: 'into log',
+  lockPersist: 'journal write',
+  lockQuorum: 'quorum',
   [colsSpan(Origin.Gossip)]: 'gossip cols',
   [colsSpan(Origin.Rpc)]: 'rpc cols',
   [colsSpan(Origin.El)]: 'el cols',
   [colsSpan(Origin.Assembly)]: 'cells',
 };
-const SPAN_OPENS = { strip: 'block', da: 'da', custody: 'da', stf: 'stf', payload: 'payload' };
-const GROUP_OPENER = { block: 'strip', da: 'da', stf: 'stf', payload: 'payload' };
+const SPAN_OPENS = { strip: 'block', da: 'da', custody: 'da', stf: 'stf', payload: 'payload', lock: 'lock' };
+const GROUP_OPENER = { block: 'strip', da: 'da', stf: 'stf', payload: 'payload', lock: 'lock' };
 
 const isCols = (span) => span.startsWith('cols:');
 
@@ -65,6 +70,7 @@ function hidden(span, trace) {
   if (span === 'custody') return !trace.columns.length;
   if (span === 'validate' || span === 'apply') return trace.gloas;
   if (span === 'daWait') return !trace.parked();
+  if (span.startsWith('lock')) return trace.interval(span) === null;
   return false;
 }
 
@@ -209,6 +215,9 @@ function attributes(node, trace) {
     return `${batch.length} cols${trace.openedGate(batch) ? ' DA' : ''}`;
   }
   if (node.span === 'el' && trace.verdict) return EL_VERDICT[trace.verdict.status] ?? '';
+  if (node.span === 'lock' && trace.lock) {
+    return `${CLUSTER_OUTCOME[trace.lock.outcome] ?? ''}, ${trace.lock.leaderOrigin ? 'as leader' : 'via leader'}`;
+  }
   return '';
 }
 
@@ -221,6 +230,10 @@ const SPAN_CLASS = {
   apply: 'c-apply',
   daWait: 'c-dawait',
   payload: 'c-payload',
+  lock: 'c-lock',
+  lockAppend: 'c-lock',
+  lockPersist: 'c-lock',
+  lockQuorum: 'c-lock',
 };
 
 function verdictClass(trace) {
@@ -267,7 +280,7 @@ function cells(row, clock) {
     split: splits && trace.available !== null ? trace.offsetInSlot(clock, trace.available) : null,
     duration,
     margin: node.span ? trace.deadlineMargin(clock, node.span) : null,
-    source: strip && trace.source !== null ? BLOCK_SOURCE[trace.source] : '',
+    source: strip ? (trace.lock ? 'proposed' : trace.source !== null ? BLOCK_SOURCE[trace.source] : '') : '',
     bar: barClasses(node, trace),
   };
 }

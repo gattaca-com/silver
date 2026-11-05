@@ -186,7 +186,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .cluster_config()
         .map(|cluster| ClusterStartup::new(cluster, &local_enr, Path::new(&chain_config.data_dir)))
         .transpose()?;
-    let cluster_nodes = config.cluster_config().map(|cluster| cluster.nodes.clone());
+    let cluster_nodes = config.cluster_config().map(|cluster| {
+        let mut nodes = cluster.nodes.clone();
+        nodes.retain(|_, enr| enr.node_id() != local_enr.node_id());
+        nodes
+    });
 
     let discv5_addr = config.discovery_bind_addr().expect("no discovery port");
     let p2p_addr = config.p2p_bind_addr().expect("no p2p port");

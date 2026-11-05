@@ -22,7 +22,7 @@ pub(crate) use quic::{Peer, create_client_config};
 pub use quic::{SendResult, create_endpoint, create_server_config};
 use quinn_proto::{ConnectionHandle, DatagramEvent, Endpoint, Incoming};
 use silver_common::{
-    CacheFrameRef, ClusterMsgOut, GossipMsgOut, GossipTraffic, Identify, Keypair,
+    CacheFrameRef, ClusterLinkStats, ClusterMsgOut, GossipMsgOut, GossipTraffic, Identify, Keypair,
     P2pConnectionStats, P2pSend, P2pStreamId, PeerId, ProtoIdentify, ProtoIdentifyView,
     RpcOutbound, RpcRequestOutbound, TCacheRead,
 };
@@ -185,6 +185,27 @@ impl P2p {
             if let Some(stats) = peer.stats(now) {
                 emit(stats);
             }
+        }
+    }
+
+    pub fn sample_cluster_links(&self, context: &Context, emit: &mut impl FnMut(ClusterLinkStats)) {
+        let Some(nodes) = &context.cluster_nodes else {
+            return;
+        };
+        for node_id in nodes.raft_ids() {
+            let peer = nodes
+                .connection_id(node_id)
+                .and_then(|connection| self.peers.get(&ConnectionHandle(connection)));
+            emit(peer.map_or(
+                ClusterLinkStats {
+                    node_id,
+                    connected: false,
+                    rtt: Duration::ZERO,
+                    out_queue_len: 0,
+                    overwrites: 0,
+                },
+                |peer| peer.cluster_link_stats(node_id),
+            ));
         }
     }
 

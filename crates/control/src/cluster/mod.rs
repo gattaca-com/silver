@@ -5,7 +5,10 @@ mod command;
 #[rustfmt::skip]
 mod generated;
 mod lock_store;
+mod metrics;
 mod node;
+mod peers;
+mod pending;
 mod persistence;
 mod raft_storage;
 mod snapshot_transfers;
@@ -20,6 +23,8 @@ pub use command::{
 };
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
+pub use metrics::ClusterCounters;
+pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{
     AttestationDecision, BlockDecision, ClusterError, ClusterEvent, ProposalId, ProposeError,
     SlashingProtectionCluster, SlashingProtectionConfig,

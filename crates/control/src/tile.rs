@@ -191,7 +191,7 @@ impl Controller {
                     );
                 };
                 return self.slashing_protection.on_local_attestation(
-                    PendingAttestation::new(request_id, subnet, ssz),
+                    PendingAttestation::new(request_id, subnet, ssz, now),
                     now,
                     &mut self.local_gossip,
                     &mut self.gossip_handler,
@@ -366,6 +366,7 @@ impl Controller {
     pub fn set_gossip_clock(&mut self, ticker: SlotTicker, genesis_validators_root: &[u8; 32]) {
         self.subnet_duties
             .set_rejoin_wait(self.peer_manager.topic_rejoin_wait(), ticker.slot_duration());
+        self.slashing_protection.set_clock(ticker.clone());
         self.gossip_schedule =
             Some(GossipSchedule::new(&self.spec, genesis_validators_root, ticker));
     }

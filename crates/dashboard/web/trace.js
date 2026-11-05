@@ -78,6 +78,27 @@ export class BlockTrace {
     this.stfDone = null;
     this.attestable = null;
     this.verdict = null;
+    /** This node's Raft lock on its own block, in trace time. */
+    this.lock = null;
+  }
+
+  /** Stages stay null when a timeout came before them. */
+  setLock(commit, clock) {
+    if (!clock) return;
+    const us = (v) => (v === null ? null : v * 1e3);
+    const toTrace = Number(clock.slotStart(this.slot) - this.base);
+    const end = us(commit.offsetUs) + toTrace;
+    const start = end - us(commit.totalUs);
+    const appended = commit.appendUs === null ? null : start + us(commit.appendUs);
+    const persisted = appended === null || commit.persistUs === null ? null : appended + us(commit.persistUs);
+    this.lock = {
+      start,
+      end,
+      appended,
+      persisted,
+      outcome: commit.outcome,
+      leaderOrigin: commit.leaderOrigin,
+    };
   }
 
   /** First-wins: duplicate sidecars and re-announced imports re-emit. */
@@ -201,10 +222,11 @@ export class BlockTrace {
   interval(span) {
     switch (span) {
       case 'strip': {
-        const start = this.receivedAt ?? (this.gloas ? null : this.firstColumnAt());
+        const arrival = this.receivedAt ?? (this.gloas ? null : this.firstColumnAt());
+        const start = this.lock ? Math.min(this.lock.start, arrival ?? this.lock.start) : arrival;
         if (start === null) return null;
         const end = this.attestableAt() ?? this.lastEvent() ?? start;
-        return iv(start, Math.max(end, start));
+        return iv(start, Math.max(end, arrival ?? start, this.lock?.end ?? start));
       }
       case 'da': {
         const start = this.firstColumnAt() ?? this.available;
@@ -241,6 +263,14 @@ export class BlockTrace {
         return this.stfDone === null || this.attestable === null ? null : iv(this.stfDone, this.attestable);
       case 'el':
         return this.verdict ? iv(this.elSentAt ?? this.verdict.at, this.verdict.at) : null;
+      case 'lock':
+        return this.lock ? iv(this.lock.start, this.lock.end) : null;
+      case 'lockAppend':
+        return this.lock?.appended == null ? null : iv(this.lock.start, this.lock.appended);
+      case 'lockPersist':
+        return this.lock?.persisted == null ? null : iv(this.lock.appended, this.lock.persisted);
+      case 'lockQuorum':
+        return this.lock?.persisted == null ? null : iv(this.lock.persisted, this.lock.end);
       default: {
         const origin = colsOrigin(span);
         const cols = this.ofOrigin(origin).map(([, c]) => c);

@@ -70,6 +70,9 @@ silver_common::declare_counters! {
         PartialFramesWritten,
         PartialResponsesSent,
         PartialCellsServed,
+        ClusterOutboundSendFailed,
+        // The cluster stream queue was full and evicted its oldest message.
+        ClusterOutboundOverwritten,
     }
 }
 

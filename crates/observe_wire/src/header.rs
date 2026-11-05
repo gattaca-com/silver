@@ -21,10 +21,12 @@ pub enum Kind {
     PeerTopic = 11,
     Stages = 12,
     CounterChanges = 13,
+    ClusterPeer = 14,
+    ClusterCommit = 15,
 }
 
 impl Kind {
-    pub const LAST: Kind = Kind::CounterChanges;
+    pub const LAST: Kind = Kind::ClusterCommit;
 
     fn from_u16(v: u16) -> Option<Self> {
         Some(match v {
@@ -41,6 +43,8 @@ impl Kind {
             11 => Kind::PeerTopic,
             12 => Kind::Stages,
             13 => Kind::CounterChanges,
+            14 => Kind::ClusterPeer,
+            15 => Kind::ClusterCommit,
             _ => return None,
         })
     }

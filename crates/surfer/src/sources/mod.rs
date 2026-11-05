@@ -1,3 +1,4 @@
+pub mod cluster;
 pub mod counters;
 pub mod events;
 pub mod peers;

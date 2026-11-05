@@ -24,8 +24,8 @@ pub const DDL: &str = "CREATE TABLE IF NOT EXISTS counters (
 ) ENGINE = MergeTree
 ORDER BY (meta_client_name, component, name, slot)";
 
-const EXPORTED: [&str; 7] =
-    ["beacon_state", "columns", "control", "network", "peer", "storage", "tcache"];
+const EXPORTED: [&str; 8] =
+    ["beacon_state", "cluster", "columns", "control", "network", "peer", "storage", "tcache"];
 
 #[derive(Serialize)]
 pub struct CounterRow<'a> {
