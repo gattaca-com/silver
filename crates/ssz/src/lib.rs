@@ -8,4 +8,4 @@ pub mod ssz_hash;
 pub mod ssz_hash_gloas;
 pub mod ssz_view;
 
-pub use silver_hashing::scalar;
+pub use silver_state_hashing::scalar;

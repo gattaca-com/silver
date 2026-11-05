@@ -1,5 +1,5 @@
 use flux_profiler::timed;
-pub use silver_hashing::HashFormat;
+pub use silver_state_hashing::HashFormat;
 
 use crate::{
     BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,

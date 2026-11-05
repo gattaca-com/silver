@@ -1,5 +1,5 @@
 use flux_profiler::timed;
-use silver_hashing::{FlatTree, PagePool, PageSnapshot, PageTable};
+use silver_state_hashing::{FlatTree, PagePool, PageSnapshot, PageTable};
 
 use super::{TreeGroup, TreeSpec};
 use crate::ring::{Id, Ring};

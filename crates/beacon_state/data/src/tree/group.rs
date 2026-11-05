@@ -4,7 +4,7 @@ use std::{
 };
 
 use flux_profiler::timed;
-use silver_hashing::{FlatTree, PagePool, PageSnapshot, merkle::byte_chunks};
+use silver_state_hashing::{FlatTree, PagePool, PageSnapshot, merkle::byte_chunks};
 
 use super::{
     TreeSpec, TreeView, TreeWriteView,

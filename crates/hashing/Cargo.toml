@@ -1,9 +1,11 @@
 [package]
-name = "silver_hashing"
+name = "silver_state_hashing"
+description = "Merkle hashing for Ethereum beacon states: rehashes only changed paths in batched SIMD calls, and forks share unchanged data in copy-on-write pages"
 edition.workspace = true
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
-version.workspace = true
+version = "0.1.0"
 
 [features]
 multi-owner = []
