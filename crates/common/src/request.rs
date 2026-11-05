@@ -3,8 +3,8 @@ use flux::type_hash_derive::TypeHash;
 use crate::{
     RpcRequest, StreamProtocol, TCacheError, TCacheProducer,
     ssz_view::{
-        BeaconBlocksByRangeRequestView, DataColumnSidecarsByRangeRequestView,
-        ExecutionPayloadEnvelopesByRangeRequestView,
+        BeaconBlocksByRangeRequestView, DC_BY_ROOT_ID_MIN, DataColumnSidecarsByRangeRequestView,
+        DataColumnsByRootRequestView, ExecutionPayloadEnvelopesByRangeRequestView,
     },
 };
 
@@ -111,7 +111,7 @@ impl RpcRequest {
                 }
             }
             RpcRequest::DataColumnsByRoot(read) => {
-                data_columns_by_root_tokens_from_len(rpc_in.read_buffer(*read)?.len())
+                data_columns_by_root_tokens(rpc_in.read_buffer(*read)?)
             }
             RpcRequest::ExecutionPayloadEnvelopesByRange(ssz) => {
                 ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
@@ -128,10 +128,16 @@ fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
     len.div_ceil(width) as u64
 }
 
-/// One `DataColumnsByRootIdentifier`: 4B outer-list offset + 32B block root +
-/// 4B inner-list offset + N*8B column indices.
-fn data_columns_by_root_tokens_from_len(len: usize) -> u64 {
-    len.saturating_sub(4 + 32 + 4).div_ceil(8) as u64
+/// Columns asked for, summed over identifiers. Each identifier is a 4B
+/// outer-list offset + 36B fixed part + 8B per column, and `offsets[0] / 4` is
+/// the identifier count. A buffer that lies about it fails `check_size` and is
+/// not served.
+fn data_columns_by_root_tokens(buf: &[u8]) -> u64 {
+    if buf.len() < 4 {
+        return 1;
+    }
+    let ids = DataColumnsByRootRequestView::count(buf);
+    (buf.len().saturating_sub(ids.saturating_mul(4 + DC_BY_ROOT_ID_MIN)) / 8) as u64
 }
 
 /// A request's correlation id — `application_id` on the wire.
@@ -242,6 +248,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn data_columns_by_root_charges_columns_not_identifier_overhead() {
+        let (ids, columns) = (16usize, 128usize);
+        let id_len = DC_BY_ROOT_ID_MIN + columns * 8;
+        let mut buf = Vec::new();
+        for i in 0..ids {
+            buf.extend_from_slice(&((ids * 4 + i * id_len) as u32).to_le_bytes());
+        }
+        for _ in 0..ids {
+            buf.extend_from_slice(&[0xAB; 32]);
+            buf.extend_from_slice(&(DC_BY_ROOT_ID_MIN as u32).to_le_bytes());
+            for c in 0..columns as u64 {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        assert!(DataColumnsByRootRequestView::check_size(&buf));
+        assert_eq!(data_columns_by_root_tokens(&buf), (ids * columns) as u64);
     }
 
     #[test]
