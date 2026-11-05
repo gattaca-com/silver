@@ -12,12 +12,11 @@ set_option maxHeartbeats 2000000
 
 theorem setup_g1_roundtrip (i : Fin 64) :
     g1ReadAffine (g1Affine SetupPoints.g1Points[i.val]!) = SetupPoints.g1Points[i.val]! := by
-  simp only [g1ReadAffine, g1Affine, fpRead_fpEncode, G1.toAffine, SetupArithmetic.inverse_eq]
+  simp only [g1ReadAffine, g1Affine, fpRead_fpEncode]
   fin_cases i <;> decide +kernel
 
 theorem setup_g1_valid (i : Fin 64) : G1Valid SetupPoints.g1Points[i.val]! := by
   refine ⟨Or.inr ?_, SetupPoints.g1_subgroup i⟩
-  simp only [G1.toAffine, SetupArithmetic.inverse_eq]
   fin_cases i <;> decide +kernel
 
 theorem setup_g1_affine_valid (i : Fin 64) :

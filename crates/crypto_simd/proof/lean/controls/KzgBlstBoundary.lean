@@ -45,8 +45,7 @@ theorem laws_satisfiable : ∃ external : KzgExternals,
   rw [g2ReadAffine_decoded SetupPoints.g2_64_decoded]
   have hneg : g2ReadAffine (g2Affine (G2.neg SetupPoints.g2Point0)) =
       G2.neg SetupPoints.g2Point0 := by
-    simp only [g2ReadAffine, g2Affine, fp2Read_fp2Encode, G2.toAffine,
-      Fp2.inverse, SetupArithmetic.inverse_eq]
+    simp only [g2ReadAffine, g2Affine, fp2Read_fp2Encode]
     decide +kernel
   rw [hneg]
 

@@ -141,7 +141,7 @@ def g1Points : Array G1 := #[
 
 theorem g1_decoded (i : Fin 64) :
     G1.uncompress (arrayBytes trusted_setup.G1_MONOMIAL.val[i.val]!) = .ok g1Points[i.val]! := by
-  fin_cases i <;> rw [G1.uncompress] <;> simp only [sqrt_eq] <;> decide +kernel
+  fin_cases i <;> decide +kernel
 
 theorem g1_subgroup (i : Fin 64) : g1Points[i.val]!.inSubgroup = true := by
   rw [G1.inSubgroup, ← g1Mul_eq 256 _ Fr.modulus (by decide)]
@@ -162,14 +162,13 @@ private def norm0Root : Fp := Fp.ofNat 36165594601249072338830464324769973841266
 theorem g2_0_decoded :
     G2.uncompress (arrayBytes SetupPoints.g2Bytes0) = .ok g2Point0 := by
   have hs : Fp.sqrt (rhs0.c0 * rhs0.c0 + rhs0.c1 * rhs0.c1) = .ok norm0Root := by
-    simp only [sqrt_eq]; decide +kernel
+    decide +kernel
   have hc : Fp.sqrt ((rhs0.c0 + norm0Root) * (Fp.ofNat 2).inverse) = .ok g2Point0.y.c0 := by
-    simp only [sqrt_eq, inverse_eq]; decide +kernel
+    decide +kernel
   rw [g2_uncompress_of _ g2Point0.x.c0 g2Point0.x.c1 _ (by decide +kernel) (by decide +kernel)
     (by decide +kernel) (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
     (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
     (fp2_sqrt_of_plus rhs0 _ _ (by decide +kernel) hs hc)]
-  simp only [inverse_eq]
   decide +kernel
 
 theorem g2_0_subgroup : g2Point0.inSubgroup = true := by
@@ -188,16 +187,15 @@ private def norm64Root : Fp := Fp.ofNat 1140125979225390935265462046957230585037
 theorem g2_64_decoded :
     G2.uncompress (arrayBytes SetupPoints.g2Bytes64) = .ok g2Point64 := by
   have hs : Fp.sqrt (rhs64.c0 * rhs64.c0 + rhs64.c1 * rhs64.c1) = .ok norm64Root := by
-    simp only [sqrt_eq]; decide +kernel
+    decide +kernel
   have hp : Fp.sqrt ((rhs64.c0 + norm64Root) * (Fp.ofNat 2).inverse) = .error .notASquare := by
-    simp only [sqrt_eq, inverse_eq]; decide +kernel
+    decide +kernel
   have hc : Fp.sqrt ((rhs64.c0 - norm64Root) * (Fp.ofNat 2).inverse) = .ok g2Point64.y.c0 := by
-    simp only [sqrt_eq, inverse_eq]; decide +kernel
+    decide +kernel
   rw [g2_uncompress_of _ g2Point64.x.c0 g2Point64.x.c1 _ (by decide +kernel) (by decide +kernel)
     (by decide +kernel) (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
     (by simp only [Fp.fromBytesBE, bytesBEToNat_eq]; decide +kernel)
     (fp2_sqrt_of_minus rhs64 _ _ _ (by decide +kernel) hs hp hc)]
-  simp only [inverse_eq]
   decide +kernel
 
 theorem g2_64_subgroup : g2Point64.inSubgroup = true := by

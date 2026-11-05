@@ -9,35 +9,6 @@ deriving instance DecidableEq for G1
 deriving instance DecidableEq for G2
 
 namespace LeanBlsSimd.Kzg.SetupArithmetic
-set_option maxRecDepth 16000
-set_option exponentiation.threshold 512
-set_option maxHeartbeats 2000000
-
-/-- Structural evaluation for kernel checking the embedded setup. -/
-def fpPow : Nat → Fp → Nat → Fp
-  | 0, _, _ => Fp.one
-  | fuel + 1, p, k =>
-    if k = 0 then Fp.one
-    else
-      let half := fpPow fuel (p * p) (k / 2)
-      if k % 2 = 1 then p * half else half
-
-theorem fpPow_eq (fuel : Nat) (p : Fp) (k : Nat)
-    (hk : k < 2 ^ fuel) : fpPow fuel p k = Fp.powNat p k := by
-  induction fuel generalizing p k with
-  | zero =>
-    have : k = 0 := by simpa using hk
-    subst this
-    rw [fpPow, Fp.powNat]
-    simp
-  | succ fuel ih =>
-    rw [fpPow, Fp.powNat]
-    by_cases h0 : k = 0
-    · simp [h0]
-    · have h2 : k / 2 < 2 ^ fuel := by
-        rw [Nat.pow_succ] at hk
-        omega
-      rw [ite_eq_right h0, ite_eq_right h0, ih (p * p) (k / 2) h2]
 
 def g1Mul : Nat → G1 → Nat → G1
   | 0, _, _ => G1.zero
@@ -88,15 +59,6 @@ theorem g2Mul_eq (fuel : Nat) (p : G2) (k : Nat)
         rw [Nat.pow_succ] at hk
         omega
       rw [ite_eq_right h0, ite_eq_right h0, ih (G2.double p) (k / 2) h2]
-
-theorem sqrt_eq (a : Fp) : Fp.sqrt a =
-    (let cand := fpPow 384 a ((Fp.modulus + 1) / 4)
-     if (cand * cand).beq a then .ok cand else .error .notASquare) := by
-  unfold Fp.sqrt
-  rw [fpPow_eq 384 a _ (by decide)]
-
-theorem inverse_eq (a : Fp) : a.inverse = fpPow 384 a (Fp.modulus - 2) := by
-  exact (fpPow_eq 384 a _ (by decide)).symm
 
 /-- The spec's `for` loop recurses on a well-founded measure, which the kernel evaluates slowly. -/
 theorem bytesBEToNat_eq (b : ByteArray) :

@@ -15,8 +15,7 @@ set_option maxHeartbeats 2000000
 
 theorem setup_g2_zero_roundtrip :
     g2ReadAffine (g2Affine SetupPoints.g2Point0) = SetupPoints.g2Point0 := by
-  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead, G2.toAffine,
-    Fp2.inverse, SetupArithmetic.inverse_eq]
+  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead]
   decide +kernel
 
 theorem setup_g2_zero_valid : G2AffineValid (g2Affine SetupPoints.g2Point0) := by
