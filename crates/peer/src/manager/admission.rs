@@ -126,13 +126,20 @@ impl PeerManager {
 
     /// The sole dial issuer: connects disconnected-but-known peers from the
     /// database up to `target_peers`, or `max_priority_peers` for candidates
-    /// covering a subnet/custody column we need. Discovery only feeds the
-    /// database; this loop dials on the next tick.
+    /// covering a subnet/custody column we need. Below
+    /// `target_dialled_peers`, any candidate dials up to `max_connections`:
+    /// inbound peers cannot crowd out our own choices. Discovery only feeds
+    /// the database; this loop dials on the next tick.
     #[timed]
     pub fn redial_known_peers(&mut self, now: Instant, emit: &mut impl FnMut(PeerControl)) {
         let mut connected = self.peers.len() + self.dialing.len();
+        let mut dialled = self.dialled_peer_count() + self.dialing.len();
         let deficit_cap = self.params.max_priority_peers + self.params.max_priority_peers / 10;
-        if connected >= deficit_cap {
+        let dialled_deficit_cap = self.params.max_connections();
+        let target_dialled = self.params.target_dialled_peers;
+        if connected >= deficit_cap &&
+            (dialled >= target_dialled || connected >= dialled_deficit_cap)
+        {
             return;
         }
         for record in self.database.redial_candidates(now) {
@@ -183,6 +190,7 @@ impl PeerManager {
             } else {
                 self.params.target_peers
             };
+            let cap = if dialled < target_dialled { cap.max(dialled_deficit_cap) } else { cap };
             if connected >= cap {
                 continue;
             }
@@ -190,7 +198,8 @@ impl PeerManager {
             self.dialing.insert(peer_id, now);
             emit(PeerControl::P2pDial { p2p: peer_id, enr: *enr });
             connected += 1;
-            if connected >= deficit_cap {
+            dialled += 1;
+            if connected >= deficit_cap && dialled >= target_dialled {
                 break;
             }
         }
@@ -223,6 +232,7 @@ impl PeerManager {
 
         let budget = excess.min(MAX_GOODBYES_PER_BEAT);
         let mut sent = 0;
+        let mut dialled = self.dialled_peer_count();
         for (id, _) in candidates.iter() {
             if sent == budget {
                 break;
@@ -232,6 +242,7 @@ impl PeerManager {
                 continue;
             }
             peer.goodbye_sent = true;
+            dialled -= usize::from(peer.local_dialler);
 
             let goodbye = RpcOutbound::Request(RpcRequestOutbound {
                 application_id: 0,
@@ -255,11 +266,13 @@ impl PeerManager {
                 if peer.goodbye_sent ||
                     peer.cached_score > IDLE_PEER_MAX_SCORE ||
                     now.saturating_duration_since(peer.connected_at) <= IDLE_PEER_MIN_AGE ||
-                    peer.topic_stats.values().any(|stats| stats.meshed_since.is_some())
+                    peer.topic_stats.values().any(|stats| stats.meshed_since.is_some()) ||
+                    (peer.local_dialler && dialled <= self.params.target_dialled_peers)
                 {
                     continue;
                 }
                 peer.goodbye_sent = true;
+                dialled -= usize::from(peer.local_dialler);
                 let goodbye = RpcOutbound::Request(RpcRequestOutbound {
                     application_id: 0,
                     peer: *id,
@@ -290,6 +303,11 @@ impl PeerManager {
         emit(PeerControl::P2pDisconnect { p2p: peer_id, p2p_connection: conn });
     }
 
+    /// Excludes peers already sent a Goodbye.
+    fn dialled_peer_count(&self) -> usize {
+        self.peers.iter().filter(|(_, p)| p.counts_as_dialled() && !p.goodbye_sent).count()
+    }
+
     fn has_subnet_deficit(&self) -> bool {
         self.deficit_attnets.iter().any(|&subnets| subnets != 0) || self.deficit_syncnets != 0
     }
@@ -299,7 +317,10 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
-        if self.peers.len() >= self.params.target_peers && !self.has_subnet_deficit() {
+        if self.peers.len() >= self.params.target_peers &&
+            self.dialled_peer_count() >= self.params.target_dialled_peers &&
+            !self.has_subnet_deficit()
+        {
             return;
         }
         if now.saturating_duration_since(self.last_discovery) < self.params.discovery_query_interval
@@ -1167,6 +1188,7 @@ mod tests {
         let mut now = Instant::now();
         let mut params = ScoreParams::default();
         params.target_peers = 1;
+        params.target_dialled_peers = 0;
         let (mut mgr, mut cap) = fixture(vec![], params);
         connect(&mut mgr, &mut cap, 1, 1, now);
         cap.0.clear();
@@ -1550,6 +1572,7 @@ mod tests {
         params.d = 2;
         params.target_peers = 1;
         params.max_priority_peers = 10;
+        params.target_dialled_peers = 0;
         let starved = GossipTopic::BeaconAttestation(5);
         let covered = GossipTopic::BeaconAttestation(6);
         let (mut mgr, mut cap) = fixture(vec![starved, covered], params);
@@ -1594,6 +1617,67 @@ mod tests {
             })
             .collect();
         assert_eq!(dialled, vec![peer_id(77)], "only the deficit-covering peer clears the cap");
+    }
+
+    #[test]
+    fn dialled_deficit_dials_past_target_peers() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.target_peers = 1;
+        params.max_priority_peers = 10;
+        params.target_dialled_peers = 0;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for conn in 1..=3usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+        }
+        let enr =
+            test_enr_with(77, std::net::Ipv4Addr::new(10, 0, 0, 77), Some([0u8; 16]), None, None);
+        mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+            cap.0.push(c)
+        });
+        cap.0.clear();
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 0, "inbound peers already fill target_peers");
+
+        mgr.params.target_dialled_peers = 1;
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+        assert_eq!(dials(&cap), 1);
+    }
+
+    #[test]
+    fn idle_trim_spares_dialled_peers_at_target() {
+        let now = Instant::now();
+        let mut params = ScoreParams::default();
+        params.max_priority_peers = 3;
+        params.target_dialled_peers = 2;
+        let (mut mgr, mut cap) = fixture(vec![], params);
+        for conn in 1..=5usize {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+            mgr.peers.get_mut(&conn).unwrap().application_score = IDLE_PEER_MAX_SCORE;
+        }
+        mgr.peers.get_mut(&1).unwrap().local_dialler = true;
+        mgr.peers.get_mut(&2).unwrap().local_dialler = true;
+        let aged = now + IDLE_PEER_MIN_AGE + Duration::from_secs(1);
+        mgr.last_decay = aged;
+        cap.0.clear();
+
+        mgr.run_tick(aged, &mut |c| cap.0.push(c));
+
+        let goodbyes: Vec<usize> = cap
+            .0
+            .iter()
+            .filter_map(|event| match event {
+                PeerControl::P2pSend(P2pSend::Rpc(RpcOutbound::Request(RpcRequestOutbound {
+                    application_id: _,
+                    peer,
+                    request: RpcRequest::Goodbye(_),
+                }))) => Some(*peer),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(goodbyes.len(), 2);
+        assert!(goodbyes.iter().all(|conn| *conn > 2), "dialled peers spared: {goodbyes:?}");
     }
 
     #[test]

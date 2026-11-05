@@ -1106,11 +1106,12 @@ impl PeerManager {
     ) {
         let current =
             self.mesh.get(&topic).and_then(|m| m.get(digest)).map(|m| m.peers.len()).unwrap_or(0);
-        let d = self.params.d as usize;
-        if current >= d {
+        let mut needed = (self.params.d as usize).saturating_sub(current);
+        let mut dialled_needed =
+            (self.params.d_out as usize).saturating_sub(self.mesh_dialled_count(topic, digest));
+        if needed == 0 && dialled_needed == 0 {
             return;
         }
-        let needed = d - current;
         // Sort requires a buffer; the emit isn't what forces it.
         let mut candidates: Vec<usize> = self
             .subscribers
@@ -1128,12 +1129,34 @@ impl PeerManager {
             })
             .collect();
         candidates.shuffle(&mut rand::thread_rng());
-        for conn in candidates.into_iter().take(needed) {
-            let Some(peer_id) = self.peers.get(&conn).map(|p| p.peer_id) else {
+        // A dialled deficit grafts past `d`; `ensure_mesh_capped` keeps them.
+        for conn in candidates {
+            if needed == 0 && dialled_needed == 0 {
+                break;
+            }
+            let Some(peer) = self.peers.get(&conn) else { continue };
+            if dialled_needed > 0 && peer.counts_as_dialled() {
+                dialled_needed -= 1;
+            } else if needed == 0 {
                 continue;
-            };
+            }
+            needed = needed.saturating_sub(1);
+            let peer_id = peer.peer_id;
             self.do_graft(conn, peer_id, topic, digest, now, false, emit);
         }
+    }
+
+    fn mesh_dialled_count(&self, topic: GossipTopic, digest: [u8; 4]) -> usize {
+        self.mesh
+            .get(&topic)
+            .and_then(|m| m.get(digest))
+            .map(|mesh| {
+                mesh.peers
+                    .iter()
+                    .filter(|conn| self.peers.get(conn).is_some_and(|p| p.counts_as_dialled()))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     fn ensure_mesh_capped(
@@ -1168,7 +1191,7 @@ impl PeerManager {
         // set can never dominate the mesh the way blanket grace exemption
         // did.
         // Sort requires a buffer; the emit isn't what forces it.
-        let mut ranked: Vec<(usize, f64, PeerId)> = self
+        let mut ranked: Vec<(usize, f64, PeerId, bool)> = self
             .mesh
             .get(&topic)
             .and_then(|m| m.get(digest))
@@ -1187,13 +1210,27 @@ impl PeerManager {
                             *conn,
                             scoring::selection_score(p, &topic, &self.params, now),
                             p.peer_id,
+                            p.local_dialler,
                         ))
                     })
                     .collect()
             })
             .unwrap_or_default();
         ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (conn, _, peer_id) in ranked.into_iter().take(excess) {
+        let d_out = self.params.d_out as usize;
+        let mut dialled = self.mesh_dialled_count(topic, digest);
+        let mut pruned = 0;
+        for (conn, _, peer_id, local_dialler) in ranked {
+            if pruned == excess {
+                break;
+            }
+            if local_dialler {
+                if dialled <= d_out {
+                    continue;
+                }
+                dialled -= 1;
+            }
+            pruned += 1;
             self.do_prune(
                 conn,
                 peer_id,
@@ -1720,6 +1757,56 @@ mod tests {
                 .count(),
             5
         );
+    }
+
+    #[test]
+    fn capping_keeps_d_out_dialled_members_counting_trusted() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
+        let params = ScoreParams { d: 8, d_low: 0, d_high: 12, d_out: 2, ..Default::default() };
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
+        for conn in 1..=13 {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+            mgr.do_graft(conn, peer_id(conn as u8), topic, [0; 4], now, false, &mut |event| {
+                cap.0.push(event)
+            });
+            mgr.peers.get_mut(&conn).unwrap().cached_score = conn as f64;
+        }
+        mgr.peers.get_mut(&1).unwrap().is_trusted = true;
+        mgr.peers.get_mut(&2).unwrap().local_dialler = true;
+        mgr.peers.get_mut(&3).unwrap().local_dialler = true;
+        cap.0.clear();
+
+        mgr.ensure_mesh_capped(topic, [0; 4], now, &mut |event| cap.0.push(event));
+
+        let mut mesh = mgr.test_mesh(topic).to_vec();
+        mesh.sort_unstable();
+        assert_eq!(mesh, [1, 3, 8, 9, 10, 11, 12, 13], "trusted 1 + dialled 3 hold d_out");
+    }
+
+    #[test]
+    fn filling_grafts_dialled_subscribers_past_d() {
+        let now = Instant::now();
+        let topic = GossipTopic::BeaconBlock;
+        let params = ScoreParams { d: 2, d_low: 0, d_high: 12, d_out: 2, ..Default::default() };
+        let (mut mgr, mut cap) = fixture(vec![topic], params);
+        for conn in 1..=6 {
+            connect(&mut mgr, &mut cap, conn, conn as u8, now);
+            mgr.handle_event(
+                PeerEvent::P2pGossipTopicSubscribe { p2p_peer: conn, topic, digest: [0; 4] },
+                now,
+                &mut |c| cap.0.push(c),
+            );
+        }
+        mgr.test_mesh_extend(topic, [1, 2]);
+        mgr.peers.get_mut(&5).unwrap().local_dialler = true;
+        mgr.peers.get_mut(&6).unwrap().local_dialler = true;
+
+        mgr.ensure_mesh_filled(topic, [0; 4], now, &mut |event| cap.0.push(event));
+
+        let mut mesh = mgr.test_mesh(topic).to_vec();
+        mesh.sort_unstable();
+        assert_eq!(mesh, [1, 2, 5, 6]);
     }
 
     #[test]
