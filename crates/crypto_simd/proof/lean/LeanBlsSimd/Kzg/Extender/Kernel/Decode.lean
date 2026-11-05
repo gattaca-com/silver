@@ -1,16 +1,12 @@
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Decode
 import LeanBlsSimd.Kzg.Extender.Acceptance
-import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
 attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
-
-open private EthLib.Cryptography.Kzg.bytesBEToNatAux_eq_fromBytesBEAux
-  from EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
@@ -179,14 +175,26 @@ theorem decode_refinement (kernel : extension_kernel.ExtensionKernel)
     · intro lane
       have hi : 8 * v.val + lane.val < values.size := by omega
       have hfield := getElem_blobToPolynomial _ _ hvalues (8 * v.val + lane.val) hi
-      have hval := (bytesToBlsField_ok hfield).2.1
-      simp only [bytesBEToNat, EthLib.Cryptography.Kzg.bytesBEToNatAux_eq_fromBytesBEAux,
-        EthLib.Cryptography.Kzg.Constants.BYTES_PER_FIELD_ELEMENT] at hval
+      let chunk := (arrayBytes blob).extract ((8 * v.val + lane.val) * 32)
+        ((8 * v.val + lane.val + 1) * 32)
+      have hval : (values[8 * v.val + lane.val]).val = Fr.bytesBEToNat chunk := by
+        change bytesToBlsField chunk = .ok _ at hfield
+        have hs := (bytesToBlsField_ok hfield).1
+        simp only [Constants.BYTES_PER_FIELD_ELEMENT] at hs hfield
+        cases hf : Fr.fromBytesBE chunk with
+        | error e => simp [bytesToBlsField, hs, Constants.BYTES_PER_FIELD_ELEMENT, hf] at hfield
+        | ok f =>
+          have he : f = values[8 * v.val + lane.val] := by
+            simpa only [bytesToBlsField, hs, ne_eq, not_true_eq_false, ↓reduceIte,
+              Constants.BYTES_PER_FIELD_ELEMENT, hf, Except.ok.injEq] using hfield
+          subst f
+          exact (Fr.fromBytesBE_ok hf).2.1
       change laneValue data.val[v.val] lane = values[8 * v.val + lane.val]!
       simp only [laneValue, hrawEq, getElem!_pos values (8 * v.val + lane.val) hi]
       apply Fin.ext
       change rawField blob v.val lane % Fr.modulus = (values[8 * v.val + lane.val]).val
-      simp only [rawField, Fr.bytesBEToNat, Nat.mul_comm 32, ← hval,
+      dsimp only [chunk] at hval
+      simp only [rawField, Nat.mul_comm 32, ← hval,
         Nat.mod_eq_of_lt (values[8 * v.val + lane.val]).isLt]
 
 end LeanBlsSimd.Kzg.Extender.Kernel

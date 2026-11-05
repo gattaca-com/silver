@@ -1,12 +1,10 @@
 import LeanBlsSimd.Kzg.Extender.Model
 import EthLib.Cryptography.Proofs.Kzg.BitReversal
+import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
 namespace LeanBlsSimd.Kzg.Extender
-
-theorem field_bytes_size (x : Fr) : (blsFieldToBytes x).size = 32 := by
-  simp only [blsFieldToBytes, Fr.toBytesBE, ByteArray.size, Array.size_ofFn]
 
 private def encodePrefix (a : Array Fr) (n : Nat) : Cell :=
   (List.range n).foldl (fun b i => b ++ blsFieldToBytes a[i]!) ByteArray.empty
@@ -20,7 +18,10 @@ private theorem encodePrefix_size (a : Array Fr) (n : Nat) :
     (encodePrefix a n).size = 32 * n := by
   induction n with
   | zero => rfl
-  | succ n ih => rw [encodePrefix_succ, ByteArray.size_append, ih, field_bytes_size]; omega
+  | succ n ih =>
+    rw [encodePrefix_succ, ByteArray.size_append, ih, size_blsFieldToBytes,
+      Constants.BYTES_PER_FIELD_ELEMENT]
+    omega
 
 private theorem encodePrefix_get (a : Array Fr) (n k : Nat) (hk : k < 32 * n) :
     (encodePrefix a n)[k]! = (blsFieldToBytes a[k / 32]!)[k % 32]! := by
@@ -28,7 +29,8 @@ private theorem encodePrefix_get (a : Array Fr) (n k : Nat) (hk : k < 32 * n) :
   | zero => omega
   | succ n ih =>
     rw [encodePrefix_succ, getElem!_pos _ k (by
-      rw [ByteArray.size_append, encodePrefix_size, field_bytes_size]
+      rw [ByteArray.size_append, encodePrefix_size, size_blsFieldToBytes,
+        Constants.BYTES_PER_FIELD_ELEMENT]
       omega)]
     by_cases hkn : k < 32 * n
     · rw [ByteArray.getElem_append_left (by rwa [encodePrefix_size]),
@@ -38,7 +40,7 @@ private theorem encodePrefix_get (a : Array Fr) (n k : Nat) (hk : k < 32 * n) :
       have hdiv : k / 32 = n := by omega
       have hmod : k % 32 = k - 32 * n := by omega
       rw [hdiv, hmod, getElem!_pos (blsFieldToBytes a[n]!) (k - 32 * n)
-        (by rw [field_bytes_size]; omega)]
+        (by rw [size_blsFieldToBytes, Constants.BYTES_PER_FIELD_ELEMENT]; omega)]
       simp only [encodePrefix_size]
 
 theorem cosetEvalsToCell_size (a : Array Fr) : (cosetEvalsToCell a).size = 2048 := by

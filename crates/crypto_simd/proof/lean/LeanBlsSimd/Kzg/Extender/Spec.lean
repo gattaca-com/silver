@@ -7,27 +7,6 @@ open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
 namespace LeanBlsSimd.Kzg.Extender
 
-private theorem foldl_congr_mem {α β : Type} (xs : List α) (f g : β → α → β)
-    (hf : ∀ x ∈ xs, ∀ acc, f acc x = g acc x) (init : β) :
-    xs.foldl f init = xs.foldl g init := by
-  induction xs generalizing init with
-  | nil => rfl
-  | cons x xs ih =>
-    simp only [List.foldl_cons, hf x (by simp)]
-    exact ih (fun x hx => hf x (by simp [hx])) _
-
-private theorem join_chunks (blob : ByteArray) (start n : Nat) :
-    (List.range n).foldl
-      (fun b i => b ++ blob.extract (32 * (start + i)) (32 * (start + i + 1)))
-        ByteArray.empty = blob.extract (32 * start) (32 * (start + n)) := by
-  induction n with
-  | zero => simp
-  | succ n ih =>
-    simp only [List.range_succ, List.foldl_append, ih, List.foldl_cons, List.foldl_nil]
-    rw [ByteArray.extract_append_extract]
-    rw [Nat.min_eq_left (by omega), Nat.max_eq_right (by omega)]
-    rfl
-
 theorem original_cell_eq (blob : ByteArray) (a : Array Fr)
     (hdecode : blobToPolynomial blob = .ok a) (c : Nat) (hc : c < 64) :
     cosetEvalsToCell (Array.ofFn (fun j : Fin 64 => a[64 * c + j.val]!)) =
@@ -39,8 +18,8 @@ theorem original_cell_eq (blob : ByteArray) (a : Array Fr)
   trans (List.range 64).foldl
     (fun b i => b ++ blob.extract (32 * (64 * c + i)) (32 * (64 * c + i + 1)))
       ByteArray.empty
-  · apply foldl_congr_mem
-    intro i hi b
+  · apply List.foldl_ext
+    intro b i hi
     have hi' : i < 64 := List.mem_range.mp hi
     rw [getElem!_pos _ i (by simpa only [Array.size_ofFn] using hi'), Array.getElem_ofFn]
     have hij : 64 * c + i < a.size := by omega

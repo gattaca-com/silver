@@ -79,7 +79,7 @@ private theorem encoded_step (values : _root_.Array Fr) (initial cells : Cells)
       change (arrayBytes ((cells.val.set (64+n/8) written)[64+j/64]!))[_]! = _
       rw [hcell, List.set_getElem!_eq _ _ _ _ ⟨hc, rfl⟩, hat, hwritten]
       exact (extract_get (bytes out.val) _ _ _ b (hbytes ⟨j-8*n, hl⟩)
-        (by rw [field_bytes_size]; exact hb)).trans (by rw [← he])
+        (by rw [size_blsFieldToBytes]; exact hb)).trans (by rw [← he])
 
 private theorem encoded_cell (values : _root_.Array Fr) (hsize : values.size = 4096)
     (initial cells : Cells) (hw : Encoded values initial 512 cells)
