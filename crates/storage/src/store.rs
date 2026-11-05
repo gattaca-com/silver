@@ -13,6 +13,7 @@ use silver_common::{
     RpcOutbound, RpcRequestInbound, RpcResponse, RpcResponseOutbound, ServedBlock, SyncUpdate,
     TCacheRead, TCacheReader, TRead,
     merkle::B256,
+    rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
         BeaconBlocksByRangeRequestView, BeaconBlocksByRootRequestView,
         DataColumnSidecarsByRangeRequestView, DataColumnsByRootIdentifierView,
@@ -47,10 +48,14 @@ use unfinalized::{PayloadKey, UnfinalizedBlocks, UnfinalizedColumns, Unfinalized
 const MAX_REQUEST_BLOCKS: u64 = MAX_REQUEST_BLOCKS_DENEB as u64;
 
 /// Cap on concurrent in-flight read requests. Past this, a new request is
-/// answered with an empty (Complete-only) response — sheds load under a peer
-/// flood and bounds the count of unit-bearing `query_queue` entries (each
-/// entry's `units` is already capped by the range limits above).
+/// answered with a rate-limited error — sheds load under a peer flood and
+/// bounds the count of unit-bearing `query_queue` entries (each entry's
+/// `units` is already capped by the range limits above).
 const MAX_INFLIGHT_QUERIES: usize = 256;
+
+/// Per-peer share of `MAX_INFLIGHT_QUERIES`, so one peer cannot hold the whole
+/// queue and starve the rest.
+const MAX_INFLIGHT_QUERIES_PER_PEER: usize = 8;
 
 /// Slots per on-disk group directory (`slot & !(SLOTS_PER_DIR - 1)`).
 /// 128 keeps per-directory file counts (~128 slots × (block + columns))
@@ -283,6 +288,8 @@ struct PendingQuery {
     first_chunk_at: Option<Instant>,
     units_total: u32,
     units_sent: u32,
+    /// Refused at admission: no units, finishes with a rate-limited error.
+    rate_limited: bool,
 }
 
 impl PendingQuery {
@@ -294,7 +301,12 @@ impl PendingQuery {
             units_total: units.len() as u32,
             units_sent: 0,
             units,
+            rate_limited: false,
         }
+    }
+
+    fn rate_limited(source: RequestSource) -> Self {
+        Self { rate_limited: true, ..Self::new(source, VecDeque::new()) }
     }
 
     fn deliver(
@@ -342,7 +354,15 @@ impl PendingQuery {
     fn finish(&self, missing: bool, emit: &mut impl FnMut(IoEvent)) {
         match self.source {
             RequestSource::Peer(stream_id) => {
-                let response = if missing {
+                let response = if self.rate_limited {
+                    let mut msg = [0u8; 256];
+                    msg[..RPC_RATE_LIMITED_MSG.len()].copy_from_slice(RPC_RATE_LIMITED_MSG);
+                    RpcResponse::Error {
+                        error: RPC_ERR_RATE_LIMITED,
+                        msg,
+                        len: RPC_RATE_LIMITED_MSG.len(),
+                    }
+                } else if missing {
                     let error = "resource unavailable".as_bytes();
                     let mut msg = [0u8; 256];
                     msg[..error.len()].copy_from_slice(error);
@@ -722,15 +742,20 @@ impl Store {
         request: RpcRequestInbound,
     ) {
         let stream_id = request.stream_id;
-        // Shed load past the in-flight cap: an empty `units` drains straight to
-        // a `Complete`, giving the peer a clean empty response without letting
-        // the unit-bearing `query_queue` entries grow without bound.
-
-        // TODO should not return 'Complete' should return rate limit error
-        if self.query_queue.len() >= MAX_INFLIGHT_QUERIES {
-            silver_log::warn!(?stream_id, "queries at capacity");
-            self.query_queue
-                .push_back(PendingQuery::new(RequestSource::Peer(stream_id), VecDeque::new()));
+        // Shed load past the in-flight caps: the refused entry has no units and
+        // drains straight to a rate-limited error. A `Complete` would read as
+        // "nothing stored" and get us penalised.
+        let peer = stream_id.peer();
+        let of_peer = self
+            .query_queue
+            .iter()
+            .filter(|q| matches!(q.source, RequestSource::Peer(id) if id.peer() == peer))
+            .count();
+        if of_peer >= MAX_INFLIGHT_QUERIES_PER_PEER ||
+            self.query_queue.len() >= MAX_INFLIGHT_QUERIES
+        {
+            silver_log::warn!(?stream_id, of_peer, "queries at capacity");
+            self.query_queue.push_back(PendingQuery::rate_limited(RequestSource::Peer(stream_id)));
             return;
         }
 
