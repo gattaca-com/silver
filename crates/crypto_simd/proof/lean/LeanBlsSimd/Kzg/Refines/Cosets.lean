@@ -100,7 +100,7 @@ private theorem shifts_loop
   induction hk : 128 - iter.start.val generalizing iter si sp with
   | zero =>
     have hj : iter.start.val = 128 := by omega
-    have hn := Refinement.next_ge iter (by simp [he, hj])
+    have hn := next_ge iter (by simp [he, hj])
     refine ⟨si, sp, ?_, ?_, ?_⟩
     · rw [cosets.Cosets.new_loop0, loop.eq_1]
       simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -108,7 +108,7 @@ private theorem shifts_loop
     · simpa [hj, shiftPowers] using! hp
   | succ d ih =>
     have hj : iter.start.val < 128 := by omega
-    obtain ⟨iter', hj', he', hn⟩ := Refinement.next_lt iter (by simp [he, hj])
+    obtain ⟨iter', hj', he', hn⟩ := next_lt iter (by simp [he, hj])
     have hbound : 8192 < 2^UScalarTy.Usize.numBits := by
       rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
     let offset : Usize := UScalar.ofNatCore (64*iter.start.val) (by omega)

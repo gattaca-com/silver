@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Bls.Fr

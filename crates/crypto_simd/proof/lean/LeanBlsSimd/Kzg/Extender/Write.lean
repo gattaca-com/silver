@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.Extender.Decode
 import LeanBlsSimd.Kzg.Extender.WriteBytes
 import LeanBlsSimd.Kzg.Extender.SpecBytes
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
@@ -86,10 +86,10 @@ theorem copy_cells_loop (blob : Blob) (cells : Cells)
     refine ⟨cells, ?_, by simpa [hs'] using hc⟩
     rw [cell_extender.copy_blob_loop, loop.eq_1]
     simp only [cell_extender.copy_blob_loop.body,
-      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
+      next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hk : iter.start.val < 64 := by omega
-    obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hs', he', hn⟩ := next_lt iter (by omega)
     let cells' := cells.set iter.start (blobCell blob iter.start.val hk)
     have hc' : ∀ k, k < iter'.start.val → arrayBytes cells'.val[k]! =
         (arrayBytes blob).extract (k*2048) ((k+1)*2048) := by
@@ -128,10 +128,10 @@ theorem write_cells_loop
     refine ⟨cells, ?_, by simpa [hs'] using hw⟩
     rw [cell_extender.CellExtender.write_extension_loop, loop.eq_1]
     simp only [cell_extender.CellExtender.write_extension_loop.body,
-      Refinement.next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
+      next_ge iter (by omega), bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ rem ih =>
     have hj : iter.start.val < 4096 := by omega
-    obtain ⟨iter', hs', he', hn⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hs', he', hn⟩ := next_lt iter (by omega)
     obtain ⟨bs, hbs, hb⟩ := write_chunk_body v values hsize hvals cells iter iter' hj hn
     have hw' := Written.step values initial cells iter.start.val hj hw bs hbs
     obtain ⟨out, ho, hp⟩ := ih (storeChunk cells iter.start.val bs) iter'

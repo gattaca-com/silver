@@ -1,7 +1,7 @@
 import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.Setup
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
@@ -33,7 +33,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
   induction hk : 64 - iter.start.val generalizing iter acc with
   | zero =>
     have hi : iter.start.val = 64 := by omega
-    have hn := Refinement.next_ge iter (by simp [he, hi])
+    have hn := next_ge iter (by simp [he, hi])
     refine ⟨acc, ?_, ?_⟩
     · rw [setup.Setup.decode_loop, loop.eq_1]
       simp only [setup.Setup.decode_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -41,7 +41,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
   | succ k ih =>
     have hi : iter.start.val < 64 := by omega
     have hp : iter.start.val < ps.length := by omega
-    obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp [he, hi])
+    obtain ⟨iter', hi', he', hn⟩ := next_lt iter (by simp [he, hi])
     let p := ps[iter.start.val]'hp
     have hb : acc.val.length + 1 ≤ Usize.max := by
       rw [ha, List.length_take, hlen]

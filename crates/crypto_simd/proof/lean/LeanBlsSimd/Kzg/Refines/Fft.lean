@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Kzg.Fft
@@ -25,12 +25,12 @@ private theorem scale_loop
       result.val = (doneValues ++ remaining.map (· * factor)).map frEncode := by
   induction remaining generalizing doneValues out iter with
   | nil =>
-    have hn := Refinement.next_ge iter (by simp_all)
+    have hn := next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [fft.inverse_fft_loop, loop.eq_1]
     simp only [fft.inverse_fft_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons a remaining ih =>
-    obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
+    obtain ⟨iter', hi', he', hn⟩ := next_lt iter (by simp_all)
     have hindex : Slice.index_usize out iter.start = ok (frEncode a) := by
       simp [Slice.index_usize, ho, hi, List.getElem_append_right]
     have hlen : ((doneValues ++ [a * factor] ++ remaining).map frEncode).length =
@@ -139,7 +139,7 @@ private theorem butterfly_suffix
         (doneLeft ++ upperOutputs remaining ++ doneRight ++ lowerOutputs remaining).map frEncode := by
   induction remaining generalizing doneLeft doneRight out iter with
   | nil =>
-    have hnext := Refinement.next_ge iter (by simp_all)
+    have hnext := next_ge iter (by simp_all)
     refine ⟨out, ?_, ?_⟩
     · rw [fft.transform_loop, loop.eq_1]
       simp only [fft.transform_loop.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -147,7 +147,7 @@ private theorem butterfly_suffix
   | cons p remaining ih =>
     rcases p with ⟨a, b, w⟩
     have hnextBound : iter.start.val < iter.end.val := by simp [he, hn, hi]
-    obtain ⟨iter', hi', he', hnext⟩ := Refinement.next_lt iter hnextBound
+    obtain ⟨iter', hi', he', hnext⟩ := next_lt iter hnextBound
     have houtlen : out.val.length = 2 * half.val := by
       simp [ho, leftInputs, rightInputs, hd, hn]
       omega

@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Refines.Bytes
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.Model
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -118,7 +118,7 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
         (remaining.map arrayBytes).foldl dedupStep (dedupState v indices) := by
   induction remaining generalizing prior iter v indices with
   | nil =>
-    have hnext := Refinement.next_ge iter (by simp [hend, hcs, hi])
+    have hnext := next_ge iter (by simp [hend, hcs, hi])
     refine ⟨v, indices, ?_, by simp⟩
     rw [verify.Deduplicated.fill_loop0, loop.eq_1]
     simp only [verify.Deduplicated.fill_loop0.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -126,7 +126,7 @@ private theorem fill_suffix (cs : Slice Commitment) (remaining prior : List Comm
     have hk : iter.start.val < cs.val.length := by simp [hcs, hi]
     have htarget : cs.val[iter.start.val] = c := by
       simp [hcs, hi, List.getElem_append_right]
-    obtain ⟨iter', hi', he', hnext⟩ := Refinement.next_lt iter (by simpa [hend] using hk)
+    obtain ⟨iter', hi', he', hnext⟩ := next_lt iter (by simpa [hend] using hk)
     obtain ⟨j, hsearch, hj⟩ := search_suffix v cs iter.start hk c htarget v.val [] rfl
       0#usize (by decide)
     simp only [UScalar.ofNatCore_val_eq, Nat.zero_add] at hj

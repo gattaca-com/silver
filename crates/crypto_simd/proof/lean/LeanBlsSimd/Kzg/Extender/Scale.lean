@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Extender.Basic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -21,13 +21,13 @@ private theorem shift_loop
       result.val = (doneValues ++ remaining.map (fun p => p.1 * p.2)).map frEncode := by
   induction remaining generalizing doneValues shiftPrefix out iter with
   | nil =>
-    have hn := Refinement.next_ge iter (by simp_all)
+    have hn := next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
     simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons p remaining ih =>
     rcases p with ⟨a, w⟩
-    obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
+    obtain ⟨iter', hi', he', hn⟩ := next_lt iter (by simp_all)
     have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         out iter.start = ok (frEncode a) := by
       simp [alloc.vec.Vec.index_usize, ho, hi, List.getElem_append_right]

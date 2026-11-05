@@ -140,14 +140,14 @@ private theorem transform_columns_loop
   induction hn : 128 - iter.start.val generalizing total vcol vcoeff acc iter with
   | zero =>
     have hstart : iter.start.val = 128 := by omega
-    have hnext := Refinement.next_ge iter (by omega)
+    have hnext := next_ge iter (by omega)
     refine ⟨vcol, vcoeff, acc, ?_, hcol, hcoeff, by simpa [hstart] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1.body,
       hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hlt : iter.start.val < 128 := by omega
-    obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hi', hend', hnext⟩ := next_lt iter (by omega)
     have hflag : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Bool) flags iter.start =
         ok used[iter.start.val]! := by
       simp [alloc.vec.Vec.index_usize, hf, getElem!_pos, hused, hlt]
