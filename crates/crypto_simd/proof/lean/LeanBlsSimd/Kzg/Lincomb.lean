@@ -278,17 +278,4 @@ theorem verify_lincomb_refinement [RuntimeFeatures]
     (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using
       verify_lincomb_raw_refinement scratch (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs))
 
-theorem verify_lincomb_raw_kernel_refinement [RuntimeFeatures]
-    (self : verify.CurveWork) (hstate : CurveWork.isLanes self = true)
-    (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
-    (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
-    (hfv : ∀ f ∈ fs.val, FrReduced f) :
-    ∃ point next, self.sum ps fs = ok (point, next) ∧ CurveWork.isLanes next = true ∧
-      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
-  cases self with
-  | Lanes state ws =>
-    obtain ⟨point, next, hcall, hrep⟩ := lincomb_sum_kernel state ws ps fs hlen hpv hfv
-    exact ⟨point, next, hcall, (CurveWork.sum_frame _ next ps fs point hcall), hrep⟩
-  | Scalar state ws => cases hstate
-
 end LeanBlsSimd.Kzg

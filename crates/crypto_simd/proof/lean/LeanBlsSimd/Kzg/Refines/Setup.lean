@@ -13,16 +13,6 @@ namespace LeanBlsSimd.Kzg
 set_option maxRecDepth 16000
 set_option maxHeartbeats 2000000
 
-theorem setup_g2_zero_roundtrip :
-    g2ReadAffine (g2Affine SetupPoints.g2Point0) = SetupPoints.g2Point0 := by
-  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead]
-  decide +kernel
-
-theorem setup_g2_zero_valid : G2AffineValid (g2Affine SetupPoints.g2Point0) := by
-  rw [G2AffineValid, setup_g2_zero_roundtrip]
-  exact ⟨rfl, arrayBytes SetupPoints.g2Bytes0,
-    SetupPoints.g2_0_decoded, SetupPoints.g2_0_subgroup⟩
-
 private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
     (ps : List blst.blst_p1_affine) (hlen : ps.length = 64)
     (hd : decoded.val = ps.map some)
