@@ -162,7 +162,7 @@ mio = { version = "1.0.4", features = ["net", "os-poll"] }
 parking_lot = "0.12"
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 proc-macro2 = "1"
-quinn-proto = "0.11.14"
+quinn-proto = "0.11.19"
 quote = "1"
 raft = "0.7.0"
 ratatui = "0.29"
@@ -187,7 +187,7 @@ sha2 = "0.10"
 sha2-const-stable = "0.1"
 sha3 = "0.10"
 slab = "0.4.12"
-snap = "1.1.1"
+snap = "1.1.2"
 socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
