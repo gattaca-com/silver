@@ -14,8 +14,6 @@ use silver_state_hashing::{B256, HashFormat, SharedList, TreeSpec};
 use tree_hash::TreeHash;
 use typenum::U1099511627776;
 
-// Keeps freed memory warm for both. Under glibc, whether a build reuses
-// freed pages depends on run order.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
