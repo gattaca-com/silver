@@ -63,10 +63,6 @@ theorem r_squared_eq : portable.constants.R2 = (Kzg.fpEncode (Bls.Fp.ofNat (2^38
   unfold portable.constants.R2
   rfl
 
-theorem r_squared_bound : value portable.constants.R2 < Bls.Fp.modulus := by
-  rw [r_squared_eq]
-  exact encode_bound _
-
 theorem ofNat_field (n : Nat) : Bls.Fp.toZMod (Bls.Fp.ofNat n) = (n : ZMod Bls.Fp.modulus) := by rfl
 
 theorem ordinary_field (a : Array U64 6#usize) :
@@ -76,16 +72,6 @@ theorem ordinary_field (a : Array U64 6#usize) :
 theorem r_squared_field : (value portable.constants.R2 : ZMod Bls.Fp.modulus) = (2^384 : ZMod Bls.Fp.modulus)^2 := by
   rw [r_squared_eq,encode_field,ofNat_field,Nat.cast_pow,Nat.cast_ofNat]
   ring
-
-theorem reduce_words_refines (a : Array U64 6#usize) :
-    portable.fp.Fp.product portable.constants.R2 a = ok (Kzg.fpEncode (Bls.Fp.ofNat (Kzg.limbs a.val))).l := by
-  obtain ⟨out,hr,hbound,hfield⟩ := montgomery_field_refines portable.constants.R2 a r_squared_bound
-  have heq : out = (Kzg.fpEncode (Bls.Fp.ofNat (Kzg.limbs a.val))).l := by
-    apply eq_encode_of_field out _ hbound
-    apply mul_right_cancel₀ (by decide +kernel : (2^384 : ZMod Bls.Fp.modulus) ≠ 0)
-    rw [hfield,r_squared_field,ordinary_field,encode_field]
-    ring
-  rw [hr,heq]
 
 theorem canonical_words_refines (a : Array U64 6#usize) (ha : value a < Bls.Fp.modulus) :
     portable.fp.Fp.product a portable.constants.R2 = ok (Kzg.fpEncode (Bls.Fp.ofNat (Kzg.limbs a.val))).l := by

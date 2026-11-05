@@ -252,23 +252,6 @@ theorem window_sums_refines (self : msm8.buckets.Buckets) (store : msm8.store.Po
   rw [← Aeneas.Std.bind_assoc, hinit]
   simpa only [bind_tc_ok, bind_ok, hm] using hloop
 
-theorem window_sums_correct (self : msm8.buckets.Buckets) (store : msm8.store.PointStore)
-    (group : Usize) (entries : ℕ → ℕ → Entry) (lengths : ℕ → Usize)
-    (hlo : 1 ≤ self.window_bits.val) (hhi : self.window_bits.val ≤ 8)
-    (hc : WindowCalls self store group (2 ^ (self.window_bits.val - 1)) entries lengths)
-    (Q : ℕ → ℕ → Fin 8 → G1.curve.toAffine.Point)
-    (hq : ∀ b, 1 ≤ b → b ≤ 2 ^ (self.window_bits.val - 1) →
-      ∀ j, j < (lengths b).val → ∀ l, EntryRep (entries b j) l (Q b j l)) :
-    ∃ out, msm8.buckets.Buckets.window_sums self store group = ok (toG1x8 out) ∧
-      ∀ l, out.PointRep l (∑ b ∈ Finset.range (2 ^ (self.window_bits.val - 1)),
-        (b + 1) • ∑ j ∈ Finset.range (lengths (b + 1)).val, Q (b + 1) j l) := by
-  refine ⟨_, window_sums_refines self store group entries lengths hlo hhi hc, ?_⟩
-  intro l
-  have h := windowSum_correct entries (fun b => (lengths b).val) _ G1x8.infinity G1x8.infinity
-    l 0 0 (fun b j => Q b j l) (infinity_pointRep l) (infinity_pointRep l)
-    (fun b hb hbm j hj => hq b hb hbm j hj l)
-  simpa only [nsmul_zero, zero_add] using h
-
 end LeanBlsSimd.WindowSums
 namespace LeanBlsSimd.WindowSums
 open EthLib.Cryptography.Bls
@@ -737,17 +720,6 @@ theorem concrete_window_refines (state : msm8.buckets.Buckets) (store : msm8.sto
   window_sums_refines state store group _ _ hshape.width_lower hshape.width_upper
     (concrete_windowCalls state store group hshape hg hload)
 
-theorem concrete_sum_refines (state : msm8.buckets.Buckets) (store : msm8.store.PointStore)
-    (hshape : BucketShape state) (hwin : 1 ≤ state.windows.val)
-    (hgroups : (state.windows.val - 1) / 8 * 8 + 7 < 2 ^ UScalarTy.Usize.numBits)
-    (hload : ∀ g, g ≤ (state.windows.val - 1) / 8 → GroupLoads state store g) :
-    msm8.buckets.Buckets.sum state store =
-      ok (toG1x8 ((groupSum (windowVector state store) state.window_bits.val
-        ((state.windows.val - 1) / 8) (windowVector state store ((state.windows.val - 1) / 8))).sum_lanes_shifted state.window_bits.val)) := by
-  apply buckets_sum_refines state store _ (by have := hshape.width_upper; omega) hwin
-  intro g hg
-  exact concrete_window_refines state store g hshape (by omega) (hload g.val hg)
-
 def windowWeight (state : msm8.buckets.Buckets)
     (Q : ℕ → ℕ → ℕ → Fin 8 → G1.curve.toAffine.Point) (g : ℕ) (l : Fin 8) :=
   ∑ b ∈ Finset.range (2 ^ (state.window_bits.val - 1)),
@@ -790,14 +762,6 @@ theorem entriesModel_indices (state : msm8.buckets.Buckets) (group bucket cursor
     | nil => rfl
     | cons l ls ih => simpa only [List.foldl_cons, entriesStep] using ih (entriesStep state group bucket cursor e l)
   rw [entriesModel, h, foldl_set_ofFn]
-
-theorem entriesModel_indices_lane (state : msm8.buckets.Buckets) (group bucket cursor : ℕ)
-    (l : Fin 8) :
-    (entriesModel state group bucket cursor).indices[l] =
-      clearSign (referenceAt state (group * 8 + l.val) bucket cursor) := by
-  change (entriesModel state group bucket cursor).indices[l.val] = _
-  rw [entriesModel_indices]
-  simp only [Vector.getElem_ofFn]
 
 theorem groupLoads_of_references (state : msm8.buckets.Buckets) (store : msm8.store.PointStore)
     (group : ℕ)

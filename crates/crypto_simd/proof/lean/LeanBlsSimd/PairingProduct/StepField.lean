@@ -99,10 +99,6 @@ theorem two_ne_zero : (2 : Fp2Field) ≠ 0 := by decide +kernel
 
 theorem four_ne_zero : (4 : Fp2Field) ≠ 0 := by decide +kernel
 
-theorem double_denominator (t : Point) (h : (double t).point 2 ≠ 0) :
-    2 * (affineField t).2 ≠ 0 :=
-  mul_ne_zero two_ne_zero (div_ne_zero (double_clear t h).1 (pow_ne_zero 3 (double_clear t h).2))
-
 theorem add_denominator (t : Point) (q : Fp2Field × Fp2Field)
     (h : (add t q).point 2 ≠ 0) : q.1 - (affineField t).1 ≠ 0 := by
   obtain ⟨hz, hh⟩ := add_clear t q h

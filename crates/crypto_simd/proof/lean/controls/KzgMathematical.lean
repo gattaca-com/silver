@@ -4,7 +4,7 @@ import Batteries.Tactic.OpenPrivate
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-open private getElem!_reversedRoots getElem!_map_mul
+open private getElem!_reversedRoots
   from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
 attribute [-instance] Fin.instNatPow
@@ -29,14 +29,16 @@ theorem coset_shift_64 : Model.cosetShift 64 = domainRoot 8192 := by
 
 theorem coset_shift_direction_matters :
     Model.cosetShift 64 ≠ (Model.cosetShift 64).inverse := by
+  have hroot : IsPrimitiveRoot (domainRoot 8192) 8192 :=
+    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   rw [coset_shift_64, Fr.inverse_eq_inv]
   intro h
-  apply domainRoot_8192_primitive.pow_ne_one_of_pos_of_lt (by decide : 2 ≠ 0)
+  apply hroot.pow_ne_one_of_pos_of_lt (by decide : 2 ≠ 0)
     (by decide : 2 < 8192)
   calc
     domainRoot 8192 ^ (2 : Nat) = domainRoot 8192 * domainRoot 8192 := pow_two _
     _ = domainRoot 8192 * (domainRoot 8192)⁻¹ := congrArg (domainRoot 8192 * ·) h
-    _ = 1 := mul_inv_cancel₀ (domainRoot_8192_primitive.ne_zero (by decide))
+    _ = 1 := mul_inv_cancel₀ (hroot.ne_zero (by decide))
 
 theorem forward_shift_changes_linear_coefficients :
     shiftVals #[0, 1] (Model.cosetShift 64) ≠
@@ -54,11 +56,13 @@ def unscaledInverse (values : Array Fr) : Array Fr :=
 
 theorem unscaled_constant_coefficient :
     (unscaledInverse (Array.replicate 64 (1 : Fr)))[0]! = 64 := by
+  have hroot : IsPrimitiveRoot (domainRoot 64) 64 :=
+    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   unfold unscaledInverse
-  have hd := getElem!_fftFieldAux_dft (k := 6) domainRoot_64_primitive.inv
+  have hd := getElem!_fftFieldAux_dft (k := 6) hroot.inv
     (Array.replicate 64 (1 : Fr)) (Model.inverseRoots (computeRootsOfUnity 64))
     (by simp) (by simp [Model.inverseRoots])
-    (fun i hi => getElem!_reversedRoots (k := 6) domainRoot_64_primitive
+    (fun i hi => getElem!_reversedRoots (k := 6) hroot
       (computeRootsOfUnity 64) (size_computeRootsOfUnity 64)
       (fun j hj => getElem!_computeRootsOfUnity_pow 64 j hj) i hi) 0 (by decide)
   rw [hd]
@@ -79,7 +83,8 @@ theorem scaled_constant_coefficient :
   rw [fftField_def]
   change ((unscaledInverse (Array.replicate 64 (1 : Fr))).map
     (· * (Fr.ofNat 64).inverse))[0]! = 1
-  rw [getElem!_map_mul _ _ 0 (by simp [unscaledInverse]), unscaled_constant_coefficient,
+  rw [getElem!_pos _ 0 (by simp [unscaledInverse]), Array.getElem_map,
+    ← getElem!_pos _ 0 (by simp [unscaledInverse]), unscaled_constant_coefficient,
     Fr.inverse_eq_inv, Fr.ofNat_eq_natCast]
   exact mul_inv_cancel₀ (by decide : (64 : Fr) ≠ 0)
 

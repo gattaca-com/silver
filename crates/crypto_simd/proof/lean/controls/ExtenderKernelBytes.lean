@@ -159,13 +159,14 @@ theorem reversing_byte_order_changes_generated_bytes :
   have hs := writeBlocks_spec 8 32 0
     (fun lane => (blsFieldToBytes (laneValue oneBatch ⟨lane%8, Nat.mod_lt _ (by decide)⟩)).data.toList.reverse.map toU8)
     byteBuffer (by intro j _; simp only [List.length_map, List.length_reverse,
-      _root_.Array.length_toList, ByteArray.size_data, field_bytes_size])
+      _root_.Array.length_toList, ByteArray.size_data, size_blsFieldToBytes,
+      Constants.BYTES_PER_FIELD_ELEMENT])
     (by rw [byteBuffer_length])
   have hrev : (bytes (reverseEncodedBytes oneBatch byteBuffer).val).extract 0 32 =
       bytes ((blsFieldToBytes (1 : Fr)).data.toList.reverse.map toU8) := by
     apply extract_eq_bytes _ _ 0 32
     · simp only [List.length_map, List.length_reverse, _root_.Array.length_toList,
-        ByteArray.size_data, field_bytes_size]
+        ByteArray.size_data, size_blsFieldToBytes, Constants.BYTES_PER_FIELD_ELEMENT]
     · change 32 ≤ (writeBlocks 8 32 0 _ byteBuffer).val.length
       rw [hs.1, byteBuffer_length]; decide
     · intro i hi
@@ -293,11 +294,13 @@ private theorem addWithoutReduction_modulus_nat :
 
 theorem omitting_twice_modulus_reduction_changes_generated_add :
     fr8.Fr8.add modulusBatch modulusBatch ≠ ok (addWithoutReduction modulusBatch modulusBatch) := by
-  obtain ⟨out, hout, hbound, _⟩ := add_refinement modulusBatch modulusBatch
-    modulusBatch_bounded modulusBatch_bounded
+  have hin : Represents modulusBatch (laneValue modulusBatch) :=
+    ⟨modulusBatch_bounded, fun _ => rfl⟩
+  obtain ⟨out, hout, hrep⟩ := add_lazy_representation modulusBatch modulusBatch _ _
+    hin.lazy hin.lazy (by decide) (by decide)
   rw [hout]
   intro he
-  have hb := hbound.2 ⟨0, by decide⟩
+  have hb := hrep.1.2 ⟨0, by decide⟩
   rw [Result.ok_injective he, addWithoutReduction_modulus_nat] at hb
   exact Nat.lt_irrefl _ hb
 

@@ -76,18 +76,6 @@ theorem field_easy_cyclotomic (x : Fp12Field) (hx : x ≠ 0) :
 theorem field_easy_zero : fieldEasyPart 0 = 0 := by
   simp [fieldEasyPart]
 
-theorem field_easy_unitary (x : Fp12Field) (hx : x ≠ 0) :
-    fieldEasyPart x ^ (p ^ 6 + 1) = 1 := by
-  rw [← phi_factor p (by decide +kernel), Nat.mul_comm, pow_mul,
-    field_easy_cyclotomic x hx, one_pow]
-
-theorem field_easy_inverse (x : Fp12Field) (hx : x ≠ 0) :
-    star (fieldEasyPart x) = (fieldEasyPart x)⁻¹ := by
-  have h := field_easy_unitary x hx
-  rw [pow_succ] at h
-  rw [field_star]
-  exact eq_inv_of_mul_eq_one_left h
-
 end
 
 end LeanBlsSimd.Cyclotomic

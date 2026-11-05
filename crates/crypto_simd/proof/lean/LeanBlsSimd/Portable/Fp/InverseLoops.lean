@@ -123,9 +123,6 @@ private theorem zero_left_forces_one (a : ZMod Bls.Fp.modulus) (u v x1 x2 : port
   have habs := Int.natAbs_of_nonneg (le_of_lt h.v_pos)
   omega
 
-private theorem field_sub_congruence {K : Type} [Field K] (a u v x y : K)
-    (hu : a*x=u) (hv : a*y=v) : a*(x-y)=u-v := by rw [mul_sub,hu,hv]
-
 private theorem inverse_body_step (u v x1 x2 uh vh xh yh : portable.fp.Fp)
     (hu1 : value u ≠ 1) (hv1 : value v ≠ 1) (hu0 : value u ≠ 0)
     (heu : portable.fp.inverse_words_loop0_loop0 u x1 = ok (uh,xh))

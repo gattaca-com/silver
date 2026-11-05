@@ -46,10 +46,20 @@ theorem output_write_preserves_original :
     (Store.write store 2 9 11).points.val[0]? = store.points.val[0]? :=
   Store.write_other store 2 0 9 11 (by decide)
 
+private theorem adds_rejects [RuntimeFeatures] :
+    ∃ next, adds.run store = ok (false,next,store) ∧ next.a = adds.a := by
+  have hinputs : Batch.Inputs adds.a adds.b store (fun _ => 0) adds.a.val.length := by
+    intro j hj
+    have hj0 : j = 0 := by change j < 1 at hj; omega
+    subst j
+    exact ⟨0#u32, 1#u32, 3, 5, 3, 7, rfl, rfl, rfl, rfl, by simp⟩
+  obtain ⟨next, hr, ha, _, _⟩ := Batch.run_rejects_at adds store (fun _ => 0) 0#usize
+    (by decide) hinputs (by intro j hj; change j < 0 at hj; omega) rfl
+  exact ⟨next, hr, ha⟩
+
 theorem equal_x_rejects_round [RuntimeFeatures] :
     ∃ next, adds.run store = ok (false,next,store) := by
-  obtain ⟨next,h,_,_,_⟩ := Batch.run_rejects_first adds store 0#u32 1#u32 3 5 7 (by rfl) (by rfl)
-    (by rfl) (by rfl)
+  obtain ⟨next,h,_⟩ := adds_rejects
   exact ⟨next,h⟩
 
 theorem equal_x_success_rejected [RuntimeFeatures]
@@ -82,8 +92,7 @@ theorem dropped_count_rejected : buckets.count 0#usize 1#usize ≠ ok buckets :=
   cases hl
 
 theorem chunk_counters_fit : 2*32*portable.msm.CHUNK.val < 2^31 ∧
-    (2+32)*portable.msm.CHUNK.val < 2^31 :=
-  Buckets.chunk_reference_bounds _ (Nat.le_refl _)
+    (2+32)*portable.msm.CHUNK.val < 2^31 := by decide +kernel
 
 private def differences (i : ℕ) : Batch.ChainField := (i+2 : ℕ)
 
@@ -267,8 +276,7 @@ theorem reused_slot_needs_no_capacity :
 theorem rejected_pair_round_exits [RuntimeFeatures] :
     ∃ next, portable.msm.Msm.pair_rounds_loop store buckets adds 2#usize =
       ok (store,buckets,next) ∧ next.a = adds.a := by
-  obtain ⟨next,hr,ha,_,_⟩ := Batch.run_rejects_first adds store 0#u32 1#u32 3 5 7
-    (by rfl) (by rfl) (by rfl) (by rfl)
+  obtain ⟨next,hr,ha⟩ := adds_rejects
   refine ⟨next,?_,ha⟩
   rw [portable.msm.Msm.pair_rounds_loop,Aeneas.Std.loop.eq_1]
   simp only [portable.msm.Msm.pair_rounds_loop.body,Rounds.adds_is_empty,
@@ -313,7 +321,6 @@ theorem high_scalar_rejected (state : portable.msm.Msm) (point : blst.blst_p1_af
 #print axioms Buckets.fill127_ready
 #print axioms Store.signed_refines
 #print axioms Store.reset_refines
-#print axioms Batch.run_rejects_first
 #print axioms Batch.prepare_step
 #print axioms Batch.unwind_step
 #print axioms Batch.finishValues_point

@@ -1,9 +1,7 @@
 import LeanBlsSimd.Model.DecompressG1
 import LeanBlsSimd.Proofs.DecompressG2
-import EthLib.Cryptography.Proofs.Bls.G1Order
+import EthLib.Cryptography.Proofs.Bls.G1SubgroupSpan
 import EthLib.Cryptography.Kzg.Core
-import LeanBlsSimd.Spec.PointCount
-import LeanBlsSimd.Spec.ScottCardinality
 
 namespace LeanBlsSimd.G1Spec
 
@@ -222,88 +220,16 @@ theorem sigma2_generator :
       (Fp.toZMod G1.generator.y) _ = Point.some _ _ _
   congr 1 <;> decide +kernel
 
-instance : Finite E.Point :=
-  Finite.of_equiv (Option {xy : ZMod Fp.modulus × ZMod Fp.modulus // E.Nonsingular xy.1 xy.2})
-    E.nonsingularPointEquiv.symm
-
-theorem point_count_bound : Nat.card E.Point ≤ 2 * Fp.modulus + 1 := by
-  classical
-  have he : E.Point ≃ Option {xy : ZMod Fp.modulus × ZMod Fp.modulus // xy.2 ^ 2 = xy.1 ^ 3 + 4} :=
-    E.nonsingularPointEquiv.trans
-      (Equiv.subtypeEquivRight (fun xy : ZMod Fp.modulus × ZMod Fp.modulus => nonsingular_iff xy.1 xy.2)).optionCongr
-  have hcard : (Nat.card E.Point : ℤ) = Fp.modulus +
-      ∑ x : ZMod Fp.modulus, quadraticChar (ZMod Fp.modulus) (x ^ 3 + 4) + 1 := by
-    rw [Nat.card_congr he, Nat.card_eq_fintype_card, Fintype.card_option, Nat.cast_add,
-      Nat.cast_one, ← Nat.card_eq_fintype_card, card_solution_pairs]
-    · simp [ZMod.card]
-    · rw [ZMod.ringChar_zmod_n]
-      decide
-  have hsum : (∑ x : ZMod Fp.modulus, quadraticChar (ZMod Fp.modulus) (x ^ 3 + 4)) ≤
-      (Fp.modulus : ℤ) := by
-    calc
-      _ ≤ ∑ _ : ZMod Fp.modulus, (1 : ℤ) := by
-        apply Finset.sum_le_sum
-        intro x hx
-        by_cases hzero : x ^ 3 + 4 = 0
-        · simp [hzero]
-        · rcases quadraticChar_dichotomy hzero with h | h <;> simp [h]
-      _ = _ := by simp [ZMod.card]
-  zify
-  omega
-
-theorem point_count_lt_r_squared : Nat.card E.Point < Fr.modulus ^ 2 :=
-  lt_of_le_of_lt point_count_bound (by decide +kernel)
-
-theorem r_torsion_cyclic (P : E.Point) (h : Fr.modulus • P = 0) :
-    ∃ k : ℕ, P = k • G1.toPoint G1.generator := by
-  let H := AddSubgroup.zmultiples (G1.toPoint G1.generator)
-  have hH : Nat.card H = Fr.modulus := by
-    rw [Nat.card_zmultiples, G1.addOrderOf_toPoint_generator]
-  have hcard : Nat.card E.Point = Fr.modulus * H.index := by
-    rw [← hH, H.card_mul_index]
-  have hcop : (Nat.card (E.Point ⧸ H)).Coprime Fr.modulus := by
-    rw [← H.index_eq_card]
-    apply Nat.Coprime.symm
-    apply Fr.modulus_prime.coprime_iff_not_dvd.mpr
-    intro hdiv
-    have hdiv2 : Fr.modulus ^ 2 ∣ Nat.card E.Point := by
-      obtain ⟨k, hk⟩ := hdiv
-      rw [hcard, hk, pow_two, ← Nat.mul_assoc]
-      exact dvd_mul_right _ _
-    have := Nat.le_of_dvd (Nat.card_pos (α := E.Point)) hdiv2
-    exact (Nat.not_le_of_lt point_count_lt_r_squared) this
-  have hq : (QuotientAddGroup.mk' H) P = 0 := by
-    apply hcop.nsmul_right_bijective.injective
-    dsimp only
-    rw [← map_nsmul, h, map_zero, smul_zero]
-  have hm : P ∈ H := (QuotientAddGroup.eq_zero_iff P).mp hq
-  obtain ⟨k, hk⟩ := AddSubgroup.mem_zmultiples_iff.mp hm
-  refine ⟨(k % (Fr.modulus : ℤ)).toNat, ?_⟩
-  rw [hk.symm, ← natCast_zsmul, Int.toNat_of_nonneg (Int.emod_nonneg _ (by decide)),
-    ← G1.addOrderOf_toPoint_generator, mod_addOrderOf_zsmul]
-
 theorem scott_complete (P : E.Point) (h : Fr.modulus • P = 0) :
     sigma (sigma P) = (-(z ^ 2)) • P := by
-  obtain ⟨k, rfl⟩ := r_torsion_cyclic P h
+  obtain ⟨k, _, rfl⟩ := G1.exists_nsmul_generator_of_modulus_smul_eq_zero h
   change sigmaHom (sigmaHom (k • G1.toPoint G1.generator)) = _
   rw [map_nsmul, map_nsmul]
   change k • sigma (sigma (G1.toPoint G1.generator)) = _
   rw [sigma2_generator, smul_comm]
 
-private theorem toPoint_eq_zero_iff {P : G1} (h : G1.Valid P) :
-    G1.toPoint P = 0 ↔ P.z.isZero = true := by
-  rw [G1.isZero_iff]
-  refine ⟨fun h0 => ?_, fun hz => Jacobian.Point.toAffine_of_Z_eq_zero (P := G1.rep P) hz⟩
-  by_contra hz
-  rw [G1.toPoint, Jacobian.Point.toAffine_of_Z_ne_zero h hz] at h0
-  exact Affine.Point.some_ne_zero _ h0
-
 theorem inSubgroup_iff (P : G1) (h : G1.Valid P) :
-    G1.inSubgroup P = true ↔ Fr.modulus • G1.toPoint P = 0 := by
-  rw [G1.inSubgroup, G1.isInfinity, G1.isInfinity]
-  by_cases hz : P.z.isZero = true
-  · rw [ite_eq_left hz, (toPoint_eq_zero_iff h).mpr hz, nsmul_zero]
-    exact iff_of_true rfl rfl
-  · rw [ite_eq_right hz, ← G1.toPoint_mulNat h, toPoint_eq_zero_iff (G1.valid_mulNat h _)]
+    G1.inSubgroup P = true ↔ Fr.modulus • G1.toPoint P = 0 :=
+  G1.inSubgroup_iff_modulus_smul_eq_zero h
 
 end LeanBlsSimd.G1Spec

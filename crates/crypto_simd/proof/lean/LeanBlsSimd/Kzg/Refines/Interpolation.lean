@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
@@ -67,14 +67,14 @@ theorem aggregate_column_loop
   induction hn : 64 - iter.start.val generalizing iter acc columns with
   | zero =>
     have hs : iter.start.val = 64 := by omega
-    have hnext := Refinement.next_ge iter (by omega)
+    have hnext := next_ge iter (by omega)
     refine ⟨acc, ?_, by simpa [hs] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop0_loop0.body,
       hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hj : iter.start.val < 64 := by omega
-    obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hi', hend', hnext⟩ := next_lt iter (by omega)
     have hev : evaluations.length ≤ Usize.max := by simpa [he] using v.property
     have hac : columns.length ≤ Usize.max := by simpa [ha] using acc.property
     obtain ⟨eb, heb, hebv⟩ := spec_imp_exists
@@ -157,14 +157,14 @@ theorem aggregate_columns_loop
   induction hn : indices.val.length - iter.start.val generalizing iter acc flags columns used with
   | zero =>
     have hs : iter.start.val = indices.val.length := by omega
-    have hnext := Refinement.next_ge iter (by omega)
+    have hnext := next_ge iter (by omega)
     refine ⟨(acc, flags), ?_, by simpa [hs] using And.intro ha hf⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop0.body,
       hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ n ih =>
     have hk : iter.start.val < indices.val.length := by omega
-    obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hi', hend', hnext⟩ := next_lt iter (by omega)
     let raw := indices.val[iter.start.val]'hk
     have hraw : raw.val < 128 := hindices raw (List.getElem_mem hk)
     let c : Usize := UScalar.cast .Usize raw
@@ -252,7 +252,7 @@ theorem shift_add_loop
   | nil =>
     have he : oldValues = [] := List.eq_nil_of_length_eq_zero (by simpa using hlen)
     subst oldValues
-    have hnext := Refinement.next_ge iter (by simp_all)
+    have hnext := next_ge iter (by simp_all)
     refine ⟨acc, ?_, by simpa [shiftAdd] using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop1.body,
@@ -261,7 +261,7 @@ theorem shift_add_loop
     cases oldValues with
     | nil => simp at hlen
     | cons b oldValues =>
-      obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by simp_all)
+      obtain ⟨iter', hi', hend', hnext⟩ := next_lt iter (by simp_all)
       have hcoeff : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
           vc iter.start = ok (frEncode a) := by
         simp [alloc.vec.Vec.index_usize, hc, hi, ← hprefix, List.getElem_append_right]
@@ -324,7 +324,7 @@ private theorem copy_column_loop
   | nil =>
     have he : oldValues = [] := List.eq_nil_of_length_eq_zero (by simpa using hold)
     subst oldValues
-    have hnext := Refinement.next_ge iter (by simp_all)
+    have hnext := next_ge iter (by simp_all)
     refine ⟨acc, ?_, by simpa using ha⟩
     rw [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0, loop.eq_1]
     simp only [verify.CellBatchVerifier.interpolation_commitment_loop1_loop0.body,
@@ -334,7 +334,7 @@ private theorem copy_column_loop
     | nil => simp at hold
     | cons b oldValues =>
       have hj : iter.start.val < 64 := by simp only [List.length_cons] at hlen; omega
-      obtain ⟨iter', hi', hend', hnext⟩ := Refinement.next_lt iter (by omega)
+      obtain ⟨iter', hi', hend', hnext⟩ := next_lt iter (by omega)
       have hrevbound := reverse6_bound iter.start.val hj
       let rev : Usize := ⟨BitVec.ofNat _ (BitReversal.reverseBitsAux iter.start.val 0 6)⟩
       have hrevval : rev.val = BitReversal.reverseBitsAux iter.start.val 0 6 := by

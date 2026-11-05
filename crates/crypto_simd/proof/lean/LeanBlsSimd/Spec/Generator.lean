@@ -5,8 +5,8 @@ import LeanBlsSimd.Spec.Membership
 
 `ScottComplete` states ψ(P) = [z]P for every point P with [r]P = O.
 `psi_generator` proves the generator case, and `generator_torsion` shows that [r]G = O.
-`scottComplete_of_cyclic` and `Spec/ScottCardinality.lean` extend the identity to all rational
-r-torsion points once the cardinality bounds are established in `Spec/CubicHasse.lean`.
+`scottComplete_of_cyclic` and `Spec/ScottCardinality.lean` reduce completeness to a point count.
+`Spec/G2Cardinality.lean` supplies the exact count and extends the identity to all rational r-torsion points.
 A wrong ψ constant or the opposite sign of z would break the proof of `psi_generator`,
 and hence the proof of `scott_complete`.
 
@@ -27,7 +27,7 @@ def dblFormula (t : Fin 3 → Fp2Field) : Fin 3 → Fp2Field :=
   let x' := 9 * t 0 ^ 4 - 8 * t 0 * t 1 ^ 2
   ![x', 3 * t 0 ^ 2 * (4 * t 0 * t 1 ^ 2 - x') - 8 * t 1 ^ 4, 2 * t 1 * t 2]
 
-theorem dblXYZ_eq_dblFormula (t : Fin 3 → Fp2Field) : G2.curve.dblXYZ t = dblFormula t := by
+theorem dblXYZ_eq_dblFormula (t : Fin 3 → Fp2Field) : curve.dblXYZ t = dblFormula t := by
   funext i
   fin_cases i <;>
     simp only [dblFormula, dblXYZ, dblX, dblY, dblZ, negDblY, dblU_eq, negY, E'.a₁_eq,

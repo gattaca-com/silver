@@ -54,13 +54,6 @@ theorem mul_words_pair [RuntimeFeatures] {a b : Encoding} (ha : Ordinary a) (hb 
     Fp.canonical_words_refines _ (words_bound hb.1 hb.2.1),words_field ha.1 ha.2.1,
     words_field hb.1 hb.2.1,bind_tc_ok,Fp.pairEncode]
 
-theorem curve_check [RuntimeFeatures] (b : Encoding) :
-    (if decide (laneRoot b ^ 2 = laneX b ^ 2 * laneX b + 4) then
-      do let z ← portable.fp.Fp.is_zero (Kzg.fpEncode (laneY b)).l; ok (!z)
-    else ok false) = ok (curvePoint b) := by
-  simp only [Fp.is_zero_encoded, bind_ok,curvePoint]
-  split <;> simp_all
-
 theorem pair_bool_zero (a b : Bool) :
     Array.index_usize (Array.make 2#usize [a,b] (by rfl)) 0#usize = ok a :=
   G1.Pair.flags_zero a b

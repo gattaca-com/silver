@@ -39,16 +39,6 @@ theorem Holds.inverse {x : Fp8} {l : Fin 8} {a : ZMod Fp.modulus}
   obtain ⟨hi, he⟩ := lane_inverse_pow hx.inv
   exact ⟨hi, by rw [he, hx.eq, pow_p_minus_two_eq_inv]⟩
 
-theorem Holds.mul_inverse {x : Fp8} {l : Fin 8} {a : ZMod Fp.modulus}
-    (hx : x.Holds l a) (ha : a ≠ 0) : (x.mul x.inverse).Holds l 1 := by
-  exact (hx.mul hx.inverse).of_eq (mul_inv_cancel₀ ha)
-
-theorem Holds.ne_zero_of_mask {x : Fp8} {l : Fin 8} {a : ZMod Fp.modulus}
-    (hx : x.Holds l a) (hm : x.is_zero_mask = 0) : a ≠ 0 := by
-  have hb := hx.testBit_is_zero_mask
-  rw [hm, Mmask8.testBit_zero] at hb
-  exact of_decide_eq_false hb.symm
-
 end Fp8
 
 namespace Msm8
@@ -69,10 +59,6 @@ theorem batchInverse_correct (values : Vector Fp8 4) (a : Fin 4 → ZMod Fp.modu
   · exact (hi1.mul (hv 0)).of_eq (by field_simp [hn 0, hn 1, hn 2, hn 3]; rfl)
   · exact (hi2.mul hp1).of_eq (by field_simp [hn 0, hn 1, hn 2, hn 3]; rfl)
   · exact (hi3.mul hp2).of_eq (by field_simp [hn 0, hn 1, hn 2, hn 3]; rfl)
-
-theorem batchInverse_product_nonzero (a : Fin 4 → ZMod Fp.modulus)
-    (hn : ∀ j : Fin 4, a j ≠ 0) : ((a 0 * a 1) * a 2) * a 3 ≠ 0 :=
-  mul_ne_zero (mul_ne_zero (mul_ne_zero (hn 0) (hn 1)) (hn 2)) (hn 3)
 
 end Msm8
 end LeanBlsSimd

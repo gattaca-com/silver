@@ -27,15 +27,6 @@ theorem model_accepts_iff (blob : Blob) :
     (Model.extend (arrayBytes blob)).isOk = true ↔ Canonical blob := by
   exact model_acceptance blob
 
-theorem glue_refinement
-    (v : cell_extender.CellExtender) (hv : StateInvariant v)
-    (blob : Blob) (cells : Cells) :
-    ∃ (verdict : Bool) (next : cell_extender.CellExtender) (out : Cells),
-      cell_extender.CellExtender.compute v blob cells = ok (verdict, next, out) ∧
-      StateInvariant next ∧
-      (verdict, cellBytes out) = Model.compute (arrayBytes blob) (cellBytes cells) := by
-  exact compute_refinement v hv blob cells
-
 theorem compute_eq_spec [cpu : RuntimeFeatures] :
     ∃ initial, cell_extender.CellExtender.new = ok initial ∧ StateInvariant initial ∧
       ∀ (v : cell_extender.CellExtender), StateInvariant v →

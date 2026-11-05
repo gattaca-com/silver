@@ -38,19 +38,4 @@ theorem g1_decode_refinement [RuntimeFeatures] [KzgExternals] [UncompressG1.Fall
   have hv : specVerdict = UncompressG1.specVerdict := funext specVerdict_eq_bls
   simpa only [hv] using UncompressG1.uncompress_in_g1_eq_spec_list inputs out hlen
 
-theorem specG2Verdict_eq_bls (b : Array U8 96#usize) :
-    specG2Verdict b = UncompressG2.specVerdict b := by
-  unfold specG2Verdict UncompressG2.specVerdict G2Spec.verdict
-  have hb : DecompressG2.toBytes (ofArray ofU8 b) = arrayBytes b := rfl
-  rw [hb]
-  cases EthLib.Cryptography.Bls.G2.uncompress (arrayBytes b) with
-  | error e => rfl
-  | ok p =>
-    cases hs : p.inSubgroup <;> simp [Except.toOption, hs, g2Affine_eq_bls]
-
-theorem g2_decode_of_blstMatchesSpec [e : BlsExternals]
-    (hg2 : UncompressG2.BlstMatchesSpec) (b : Array U8 96#usize) :
-    ok (e.uncompressG2 b) = ok (specG2Verdict b) := by
-  exact congrArg ok ((hg2 b).trans (specG2Verdict_eq_bls b).symm)
-
 end LeanBlsSimd.Kzg

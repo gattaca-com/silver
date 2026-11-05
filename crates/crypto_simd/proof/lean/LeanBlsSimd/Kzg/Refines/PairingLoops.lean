@@ -76,13 +76,13 @@ theorem weights_loop [RuntimeFeatures]
   induction hk : n - iter.start.val generalizing iter acc weights with
   | zero =>
     have hs : iter.start.val = n := by omega
-    have hnext := Refinement.next_ge iter (by omega)
+    have hnext := next_ge iter (by omega)
     refine ⟨acc, ?_, by simpa [hs] using ha⟩
     rw [verify.CellBatchVerifier.pairing_holds_loop1, loop.eq_1]
     simp only [verify.CellBatchVerifier.pairing_holds_loop1.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ k ih =>
     have hj : iter.start.val < n := by omega
-    obtain ⟨iter', hs', he', hnext⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hs', he', hnext⟩ := next_lt iter (by omega)
     have hjm : iter.start.val < mapping.val.length := by omega
     let i := mapping.val[iter.start.val]!
     have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Usize)
@@ -142,13 +142,13 @@ theorem shifts_loop [RuntimeFeatures]
   induction hk : indices.val.length - iter.start.val generalizing iter acc with
   | zero =>
     have hs : iter.start.val = indices.val.length := by omega
-    have hnext := Refinement.next_ge iter (by omega)
+    have hnext := next_ge iter (by omega)
     refine ⟨acc, ?_, by simp [hs]⟩
     rw [verify.CellBatchVerifier.pairing_holds_loop2, loop.eq_1]
     simp only [verify.CellBatchVerifier.pairing_holds_loop2.body, hnext, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | succ k ih =>
     have hj : iter.start.val < indices.val.length := by omega
-    obtain ⟨iter', hs', he', hnext⟩ := Refinement.next_lt iter (by omega)
+    obtain ⟨iter', hs', he', hnext⟩ := next_lt iter (by omega)
     let raw := indices.val[iter.start.val]'hj
     have hraw : raw.val < 128 := hindices raw (List.getElem_mem hj)
     let i : Usize := UScalar.cast .Usize raw

@@ -70,36 +70,4 @@ theorem sub_lazy_representation {m m' : Nat} (a b : fr8.Fr8)
   obtain ⟨out, he, hr, _⟩ := sub_lazy_refinement a b values other ha hb hm hm'
   exact ⟨out, he, hr⟩
 
-theorem add_refinement (a b : fr8.Fr8) (ha : Bounded a) (hb : Bounded b) :
-    ∃ out, fr8.Fr8.add a b = ok out ∧ Bounded out ∧
-      ∀ lane, laneNat out lane = (laneNat a lane + laneNat b lane) % (2 * Fr.modulus) ∧
-        laneValue out lane = laneValue a lane + laneValue b lane := by
-  have ha' : Represents a (laneValue a) := ⟨ha, fun _ => rfl⟩
-  have hb' : Represents b (laneValue b) := ⟨hb, fun _ => rfl⟩
-  obtain ⟨out, ho, hr, he⟩ := add_lazy_refinement a b _ _ ha'.lazy hb'.lazy
-    (by decide) (by decide)
-  refine ⟨out, ho, hr.1, fun lane => ⟨?_, hr.2 lane⟩⟩
-  have h := he lane
-  rw [laneInt_eq_laneNat ha.1, laneInt_eq_laneNat hb.1] at h
-  exact_mod_cast h
-
-theorem sub_refinement (a b : fr8.Fr8) (ha : Bounded a) (hb : Bounded b) :
-    ∃ out, fr8.Fr8.sub a b = ok out ∧ Bounded out ∧
-      ∀ lane, laneNat out lane =
-          (laneNat a lane + 2 * Fr.modulus - laneNat b lane) % (2 * Fr.modulus) ∧
-        laneValue out lane = laneValue a lane - laneValue b lane := by
-  have ha' : Represents a (laneValue a) := ⟨ha, fun _ => rfl⟩
-  have hb' : Represents b (laneValue b) := ⟨hb, fun _ => rfl⟩
-  obtain ⟨out, ho, hr, he⟩ := sub_lazy_refinement a b _ _ ha'.lazy hb'.lazy
-    (by decide) (by decide)
-  refine ⟨out, ho, hr.1, fun lane => ⟨?_, hr.2 lane⟩⟩
-  have h := he lane
-  rw [laneInt_eq_laneNat ha.1, laneInt_eq_laneNat hb.1] at h
-  have hle : laneNat b lane ≤ laneNat a lane + 2 * Fr.modulus := by
-    have := hb.2 lane
-    omega
-  exact_mod_cast (show (laneNat out lane : ℤ) =
-    ((laneNat a lane + 2 * Fr.modulus - laneNat b lane : Nat) : ℤ) % (2 * Fr.modulus) by
-      rw [Nat.cast_sub hle]; push_cast; exact h)
-
 end LeanBlsSimd.Kzg.Extender.Kernel

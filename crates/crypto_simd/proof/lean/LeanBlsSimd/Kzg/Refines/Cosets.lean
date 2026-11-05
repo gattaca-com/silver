@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.CosetsRep
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import EthLib.Cryptography.Proofs.Kzg.Domain
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 import EthLib.Cryptography.Proofs.Bls.FrZMod
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -26,32 +27,12 @@ private theorem coset_index_lt (k : Nat) : cosetIndex k < 8192 := by
   simpa [cosetIndex, BitReversal.reverseBits] using
     BitReversal.reverseBits_lt_two_pow (64*k) 13
 
-private theorem bit_reversal_get (a : _root_.Array Fr) (j : Nat) (hj : j < a.size) :
-    (BitReversal.bitReversalPermutation a)[j]! = a[BitReversal.reverseBits j a.size]! := by
-  rw [getElem!_pos (BitReversal.bitReversalPermutation a) j
-    (by simpa [BitReversal.size_bitReversalPermutation] using hj),
-    BitReversal.getElem_bitReversalPermutation]
-
 private theorem coset_shift_eq (k : Nat) (hk : k < 128) :
     Model.cosetShift k = (Model.roots 13)[cosetIndex k]! := by
   unfold Model.cosetShift rootsOfUnityBrp
-  rw [bit_reversal_get _ _ (by simp; omega)]
+  rw [getElem!_bitReversalPermutation _ _ (by simp; omega)]
   simp only [size_computeRootsOfUnity]
   rfl
-
-open scoped EthLib.Cryptography.Bls.Fr in
-private theorem coset_shift_ne_zero (k : Nat) (hk : k < 128) : Model.cosetShift k ≠ 0 := by
-  rw [coset_shift_eq k hk]
-  simp only [Model.roots, computeRootsOfUnity_def]
-  let root : Fr := (Fr.ofNat Constants.PRIMITIVE_ROOT_OF_UNITY) ^
-    (Fr.ofNat ((Constants.BLS_MODULUS - 1) / 8192))
-  change (computePowers root 8192)[cosetIndex k]! ≠ 0
-  rw [getElem!_pos (computePowers root 8192) (cosetIndex k)
-    (by simpa using coset_index_lt k), getElem_computePowers, Fr.powNat_eq_pow]
-  apply pow_ne_zero
-  change Fr.powNat (Fr.ofNat 7) _ ≠ 0
-  rw [Fr.powNat_eq_pow]
-  exact pow_ne_zero _ (by decide)
 
 private def squareIter (i : Nat) : Range U32 :=
   { start := ⟨BitVec.ofNat 32 i⟩, «end» := 6#u32 }
@@ -119,7 +100,7 @@ private theorem shifts_loop
   induction hk : 128 - iter.start.val generalizing iter si sp with
   | zero =>
     have hj : iter.start.val = 128 := by omega
-    have hn := Refinement.next_ge iter (by simp [he, hj])
+    have hn := next_ge iter (by simp [he, hj])
     refine ⟨si, sp, ?_, ?_, ?_⟩
     · rw [cosets.Cosets.new_loop0, loop.eq_1]
       simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -127,7 +108,7 @@ private theorem shifts_loop
     · simpa [hj, shiftPowers] using! hp
   | succ d ih =>
     have hj : iter.start.val < 128 := by omega
-    obtain ⟨iter', hj', he', hn⟩ := Refinement.next_lt iter (by simp [he, hj])
+    obtain ⟨iter', hj', he', hn⟩ := next_lt iter (by simp [he, hj])
     have hbound : 8192 < 2^UScalarTy.Usize.numBits := by
       rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
     let offset : Usize := UScalar.ofNatCore (64*iter.start.val) (by omega)

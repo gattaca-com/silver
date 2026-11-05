@@ -38,9 +38,6 @@ def stateEquiv :
   left_inv _ := rfl
   right_inv _ := rfl
 
-theorem list_eq (s : bls.msm8.buckets.Buckets) (w m : Usize) :
-    (fromLane s).list w m = s.list w m := rfl
-
 theorem count_eq (s : portable.msm.buckets.Buckets) (w m : Usize) :
     s.count w m = (do let out ← (toLane s).count w m; ok (fromLane out)) := by
   simp only [portable.msm.buckets.Buckets.count, bls.msm8.buckets.Buckets.count, toLane, portable.msm.buckets.Buckets.list, bls.msm8.buckets.Buckets.list]

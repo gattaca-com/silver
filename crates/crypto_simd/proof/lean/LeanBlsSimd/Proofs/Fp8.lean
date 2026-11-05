@@ -6,8 +6,8 @@ import LeanBlsSimd.Proofs.Carries
 Each theorem speaks of one lane `l` and assumes `Fp8Inv` of that lane only, so it holds whatever
 the other lanes hold. `decode` reads a lane as the field element it holds in Montgomery form,
 value · R⁻¹ with R = 2^416. In that form the operations are the field's, with no R:
-`decode_lane_mul`, `decode_lane_add`, `decode_lane_sub`, `decode_lane_neg`, `lane_half`
-and `decode_lane_canonical`. Each `lane_*` theorem also keeps `Fp8Inv`.
+`decode_lane_mul`, `decode_lane_add`, `decode_lane_sub`, `decode_lane_neg` and `lane_half`.
+Each `lane_*` theorem also keeps `Fp8Inv`.
 
 `sub` relies on `add_limbs` dropping its top carry: where the subtraction borrowed, its limbs
 hold val x − val y + R, and adding 2p wraps them to val x − val y + 2p, below 2p.
@@ -191,10 +191,6 @@ theorem lane_canonical {x : Fp8} {l : Fin 8} (h : Fp8Inv (x.lane l)) :
     refine ⟨⟨hn, by omega⟩, ?_⟩
     change val ((x.cond_sub (splat_limbs (.ofList P))).lane l) = _
     rw [hv, Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
-
-theorem decode_lane_canonical {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    decode (x.canonical.lane l) = decode (x.lane l) := by
-  rw [decode_eq_iff, (lane_canonical hx).2, ZMod.natCast_mod]
 
 theorem testBit_eq_mask {x y : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) (hy : Fp8Inv (y.lane l)) :
     (x.eq_mask y).toNat.testBit l = decide (decode (x.lane l) = decode (y.lane l)) := by

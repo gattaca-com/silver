@@ -7,19 +7,6 @@ open EthLib.Cryptography Bls Kzg
 
 namespace LeanBlsSimd.Kzg
 
-theorem bytesBEToNat_injective_of_size_eq (a b : ByteArray)
-    (hlen : a.size = b.size) (hval : bytesBEToNat a = bytesBEToNat b) : a = b := by
-  apply ByteArray.ext
-  apply Array.toList_inj.mp
-  exact bytesBEToNatAux_inj (by simpa using hlen) hval
-
-theorem intToBytesBE_bytesBEToNat (b : ByteArray) :
-    intToBytesBE (bytesBEToNat b) b.size = b := by
-  apply bytesBEToNat_injective_of_size_eq
-  · change (Array.ofFn (n := b.size) _).size = b.size
-    exact Array.size_ofFn
-  · exact bytesBEToNat_intToBytesBE_of_lt (bytesBEToNat_lt b)
-
 theorem blsFieldToBytes_of_decode (b : ByteArray) (f : Fr)
     (h : bytesToBlsField b = .ok f) : blsFieldToBytes f = b := by
   obtain ⟨hs, hv, _⟩ := bytesToBlsField_ok h
@@ -71,28 +58,17 @@ theorem array_mapM_ok_get {α β ε : Type} [Inhabited α] [Inhabited β]
   have hg := (array_mapM_ok f xs ys h).get (by simpa using hi) (by simpa using hy)
   simpa [getElem!_pos xs i hi, getElem!_pos ys i hy] using hg
 
-private theorem foldl_of_forall₂ {α β γ : Type} {R : α → β → Prop}
-    {xs : List α} {ys : List β} (h : List.Forall₂ R xs ys)
-    (f : γ → α → γ) (g : γ → β → γ)
-    (hf : ∀ x y, R x y → ∀ acc, f acc x = g acc y) (init : γ) :
-    xs.foldl f init = ys.foldl g init := by
-  induction h generalizing init with
-  | nil => rfl
-  | cons hxy htail ih =>
-    simp only [List.foldl_cons, hf _ _ hxy]
-    exact ih _
-
-private theorem join_cell_chunks (cell : Cell) (n : Nat) :
+theorem join_chunks (blob : ByteArray) (start n : Nat) :
     (List.range n).foldl
-      (fun b i => b ++ cell.extract (32*i) (32*(i+1))) ByteArray.empty =
-        cell.extract 0 (32*n) := by
+      (fun b i => b ++ blob.extract (32 * (start + i)) (32 * (start + i + 1)))
+        ByteArray.empty = blob.extract (32 * start) (32 * (start + n)) := by
   induction n with
   | zero => simp
   | succ n ih =>
     simp only [List.range_succ, List.foldl_append, ih, List.foldl_cons, List.foldl_nil]
     rw [ByteArray.extract_append_extract]
-    congr 1
-    omega
+    rw [Nat.min_eq_left (by omega), Nat.max_eq_right (by omega)]
+    rfl
 
 theorem cell_encoding_of_decode (cell : Cell) (evals : CosetEvals)
     (h : cellToCosetEvals cell = .ok evals) :
@@ -102,10 +78,11 @@ theorem cell_encoding_of_decode (cell : Cell) (evals : CosetEvals)
   · cases h
   · rename_i hs
     have hr := array_mapM_ok _ _ _ h
-    have hfold := foldl_of_forall₂ hr
-      (fun b i => b ++ cell.extract (32*i) (32*(i+1)))
-      (fun b f => b ++ blsFieldToBytes f) (by
-        intro i f hf acc
+    have hfold : (Array.range 64).toList.foldl
+        (fun b i => b ++ cell.extract (32*i) (32*(i+1))) ByteArray.empty =
+        evals.toList.foldl (fun b f => b ++ blsFieldToBytes f) ByteArray.empty :=
+      List.rel_foldl (P := Eq) (fun acc _ hacc i f hf => by
+        subst hacc
         dsimp only at hf
         simp only [Kzg.Constants.BYTES_PER_FIELD_ELEMENT,
           Nat.mul_comm i 32, Nat.mul_comm (i+1) 32] at hf
@@ -114,10 +91,12 @@ theorem cell_encoding_of_decode (cell : Cell) (evals : CosetEvals)
         | ok g =>
           rw [hd] at hf
           cases hf
-          rw [blsFieldToBytes_of_decode _ _ hd]) ByteArray.empty
+          rw [blsFieldToBytes_of_decode _ _ hd]) rfl hr
     rw [← Array.foldl_toList, ← hfold]
-    simp only [Array.toList_range, Kzg.Constants.FIELD_ELEMENTS_PER_CELL]
-    rw [join_cell_chunks]
+    simp only [Array.toList_range]
+    have hjoin := join_chunks cell 0 64
+    simp only [Nat.zero_add, Nat.mul_zero] at hjoin
+    rw [hjoin]
     have hsize : cell.size = 2048 := by
       simpa [Kzg.Constants.BYTES_PER_CELL, Kzg.Constants.FIELD_ELEMENTS_PER_CELL,
         Kzg.Constants.BYTES_PER_FIELD_ELEMENT] using hs
@@ -134,15 +113,6 @@ theorem cell_encoding_of_decode_prefix (cell : Cell) (evals : CosetEvals)
   simpa only [ByteArray.append_empty, Array.foldl_toList,
     cell_encoding_of_decode cell evals h] using hh
 
-private theorem foldl_congr_mem {α β : Type} (xs : List α) (f g : β → α → β)
-    (hf : ∀ x ∈ xs, ∀ acc, f acc x = g acc x) (init : β) :
-    xs.foldl f init = xs.foldl g init := by
-  induction xs generalizing init with
-  | nil => rfl
-  | cons x xs ih =>
-    simp only [List.foldl_cons, hf x (by simp)]
-    exact ih (fun x hx => hf x (by simp [hx])) _
-
 theorem challenge_preimage_spec (unique : Array Bytes48)
     (ci indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48)
     (evals : Array CosetEvals)
@@ -156,8 +126,8 @@ theorem challenge_preimage_spec (unique : Array Bytes48)
   simp only [Constants.FIELD_ELEMENTS_PER_BLOB, Constants.FIELD_ELEMENTS_PER_CELL, hs]
   congr 1
   simp only [← Array.foldl_toList]
-  apply foldl_congr_mem
-  intro k hk acc
+  apply List.foldl_ext
+  intro acc k hk
   have hk' : k < cells.size := by
     simpa [Array.toList_range, List.mem_range, hlen.2.1] using hk
   have hd := array_mapM_ok_get _ _ _ hdecode k hk'

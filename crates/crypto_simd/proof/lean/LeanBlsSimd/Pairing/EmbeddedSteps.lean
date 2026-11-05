@@ -18,12 +18,12 @@ theorem chord_untwist (t r : Affine) (m : Fp2) (s : Fp12)
   · apply Fp12.toField.injective
     change Fp12.toField (s * s - (untwist t).x - (untwist r).x) =
       Fp12.toField (untwist (chord t r m)).x
-    simp only [Fp12.toField_sub, map_mul, untwist_x, hs, chord, Fp2.toField_sub, map_sub]
+    simp only [map_mul, untwist_x, hs, chord, map_sub]
     field_simp [w_ne_zero]
   · apply Fp12.toField.injective
     change Fp12.toField (s * ((untwist t).x - (s * s - (untwist t).x - (untwist r).x)) -
       (untwist t).y) = Fp12.toField (untwist (chord t r m)).y
-    simp only [Fp12.toField_sub, map_mul, untwist_x, untwist_y, hs, chord, Fp2.toField_sub, map_sub]
+    simp only [map_mul, untwist_x, untwist_y, hs, chord, map_sub]
     field_simp [w_ne_zero]
 
 def evaluationPoint (xp yp : Fp2) : Embedded.Point := ⟨includeFp2 xp, includeFp2 yp, false⟩

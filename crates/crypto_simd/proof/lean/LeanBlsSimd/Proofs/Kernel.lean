@@ -28,7 +28,7 @@ These specification-agreement theorems give no specification result for a lane w
 `undecided` bit is set.
 
 `psi_generator` checks the chosen ψ constants and sign of z on the spec's generator.
-This establishes the generator case. `Spec/CubicHasse.lean` proves the general `ScottComplete`
+This establishes the generator case. `Spec/G2Cardinality.lean` proves the general `ScottComplete`
 statement; this module retains it as an explicit parameter.
 -/
 
@@ -42,7 +42,8 @@ namespace DecompressG2
 Jacobian point, so `G2.toPoint` reads it faithfully. -/
 theorem valid_of_uncompress {inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8} {l : Fin 8}
     (hu : (decompress inputs).undecided.toNat.testBit l = false) {P : G2}
-    (hP : G2.uncompress (toBytes inputs[l]) = .ok P) : G2.Valid P := by
+    (hP : G2.uncompress (toBytes inputs[l]) = .ok P) :
+    EthLib.Cryptography.Bls.G2.Valid P := by
   have hu' : laneUndecided inputs[l] = false := (decompress_lane inputs l).undecided.symm.trans hu
   obtain ⟨hon, hpt⟩ := laneOnCurve_iff hu'
   obtain ⟨hz, hx, hy⟩ := hpt P hP

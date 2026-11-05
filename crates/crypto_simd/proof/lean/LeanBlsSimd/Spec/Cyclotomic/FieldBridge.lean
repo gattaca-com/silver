@@ -57,25 +57,9 @@ theorem toCubic_fieldDecode (x : Coeffs K) : toCubic (fieldDecode x) = decode xi
     embed_mk]
   ring
 
-theorem toCubic_bijective : Function.Bijective toCubic := by
-  refine ⟨toCubic.injective, ?_⟩
-  intro x
-  obtain ⟨a, b, c, rfl⟩ := assemble_surjective u x
-  refine ⟨fieldDecode ⟨a.re, c.re, b.im, b.re, a.im, c.im⟩, ?_⟩
-  rw [toCubic_fieldDecode]
-  rfl
-
-/-- Reorders the six Fp2 coordinates while preserving all ring operations. -/
-def fieldEquiv : Fp12Field ≃+* T := RingEquiv.ofBijective toCubic toCubic_bijective
-
 def specCoeffs (x : Fp12) : Coeffs K :=
   ⟨Fp2.toField x.c0.c0, Fp2.toField x.c0.c1, Fp2.toField x.c0.c2,
     Fp2.toField x.c1.c0, Fp2.toField x.c1.c1, Fp2.toField x.c1.c2⟩
-
-theorem spec_toCubic (x : Fp12) :
-    fieldEquiv (Fp12.toField x) = decode xi (specCoeffs x) := by
-  change toCubic (fieldDecode (specCoeffs x)) = _
-  exact toCubic_fieldDecode _
 
 theorem field_cyclotomic_square (x : Coeffs K)
     (h : fieldDecode x ^ (p ^ 4 - p ^ 2 + 1) = 1) :

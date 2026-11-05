@@ -12,15 +12,7 @@ set_option maxHeartbeats 1000000
 /-- Number of table rows consumed before the remaining `n` bits. -/
 def consumed (n : Nat) : Nat := 68 - (lineKinds n).length
 
-theorem consumed_zero : consumed 0 = 68 := by decide +kernel
-
 theorem consumed_start : consumed 63 = 0 := by decide +kernel
-
-theorem consumed_bound (n : Nat) : consumed n ≤ 68 := Nat.sub_le _ _
-
-theorem consumed_positive (n : Fin 63) : 0 < consumed n.val := by
-  revert n
-  decide +kernel
 
 theorem double_row_bound (n : Fin 63) : consumed (n.val + 1) < 68 := by
   revert n

@@ -49,10 +49,6 @@ theorem Represents.lazy {x : fr8.Fr8} {values : Fin 8 → Fr}
   · rw [lazyLaneValue_eq_laneValue h.1.1]
     exact h.2 lane
 
-theorem DataRep.lazy {data : Slice fr8.Fr8} {values : _root_.Array Fr}
-    (h : DataRep data values) : LazyDataRep 2 1 data values :=
-  ⟨h.1, fun v => (h.2 v).lazy⟩
-
 theorem LazyDataRep.mono {k m k' m' : Nat}
     {data : Slice fr8.Fr8} {values : _root_.Array Fr}
     (h : LazyDataRep k m data values) (hk : k ≤ k') (hm : m ≤ m') :

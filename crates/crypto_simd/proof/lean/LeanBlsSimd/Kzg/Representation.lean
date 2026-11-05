@@ -74,8 +74,4 @@ def specPoint (b : ByteArray) : Option G1 :=
 def specVerdict (b : Aeneas.Std.Array U8 48#usize) : Option blst.blst_p1_affine :=
   (specPoint (arrayBytes b)).map g1Affine
 
-def specG2Verdict (b : Aeneas.Std.Array U8 96#usize) : Option blst.blst_p2_affine :=
-  (G2.uncompress (arrayBytes b)).toOption.bind
-    (fun p => if p.inSubgroup then some (g2Affine p) else none)
-
 end LeanBlsSimd.Kzg

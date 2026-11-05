@@ -31,11 +31,6 @@ theorem getElem_to_plain {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
   rw [hcv, ← ZMod.val_natCast, lane_mul, (LeanBlsSimd.mul_spec hx hone).2, lane_splat_limbs,
     val_ofList_ONE_PLAIN, Nat.cast_one, mul_one, decode]
 
-theorem val_to_plain_lt {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    val x.to_plain[l] < Fp.modulus := by
-  rw [(getElem_to_plain hx).2]
-  exact ZMod.val_lt _
-
 theorem lane_from_plain {values : Vector Limbs 8} {l : Fin 8} (hv : Fp8Inv values[l]) :
     Fp8Inv ((from_plain values).lane l) ∧ decode ((from_plain values).lane l) = val values[l] := by
   have hr2 : Fp8Inv ((splat_limbs (.ofList R2_MOD_P)).lane l) := by
@@ -206,12 +201,6 @@ theorem pack64_spec {a : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52) :
     simp only [Fin.getElem_fin, val_fin_LIMBS] at h0 h1 h2 h3 h4 h5 h6 h7 ⊢
     omega
 
-theorem val64_lt (x : Vector UInt64 6) : val64 x < 2 ^ 384 := by
-  have := x[0].toNat_lt; have := x[1].toNat_lt; have := x[2].toNat_lt
-  have := x[3].toNat_lt; have := x[4].toNat_lt; have := x[5].toNat_lt
-  rw [val64_eq]
-  omega
-
 theorem eq_of_val64_eq {x y : Vector UInt64 6} (h : val64 x = val64 y) : x = y := by
   have := x[0].toNat_lt; have := x[1].toNat_lt; have := x[2].toNat_lt
   have := x[3].toNat_lt; have := x[4].toNat_lt; have := x[5].toNat_lt
@@ -220,17 +209,6 @@ theorem eq_of_val64_eq {x y : Vector UInt64 6} (h : val64 x = val64 y) : x = y :
   rw [val64_eq, val64_eq] at h
   ext j hj
   interval_cases j <;> omega
-
-theorem pack64_unpack52 (x : Vector UInt64 6) : pack64 (unpack52 x) = x := by
-  obtain ⟨hn, hv⟩ := unpack52_spec x
-  apply eq_of_val64_eq
-  rw [pack64_spec hn, hv, Nat.mod_eq_of_lt (val64_lt x)]
-
-theorem unpack52_pack64 {a : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52)
-    (hlt : val a < 2 ^ 384) : unpack52 (pack64 a) = a := by
-  obtain ⟨hn, hv⟩ := unpack52_spec (pack64 a)
-  apply eq_of_val_eq hn ha
-  rw [hv, pack64_spec ha, Nat.mod_eq_of_lt hlt]
 
 namespace Fp8
 

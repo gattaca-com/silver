@@ -1,5 +1,5 @@
 import LeanBlsSimd.Refines.Kernel
-import LeanBlsSimd.Spec.CubicHasse
+import LeanBlsSimd.Spec.G2Cardinality
 
 /-! Extracted decompression correctness with Scott completeness discharged. -/
 

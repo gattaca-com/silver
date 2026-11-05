@@ -71,11 +71,6 @@ theorem add_complete_encoded [RuntimeFeatures] (P Q : Bls.G1) :
     (encode_coords P) (encode_coords Q)
   rwa [coords_eq_encode hc] at he
 
-theorem neg_encoded [RuntimeFeatures] (P : Bls.G1) :
-    portable.g1.G1.neg (encode P) = ok (encode (Bls.G1.neg P)) := by
-  obtain ⟨out,he,hc⟩ := Kzg.PortableG1.neg_coords (encode_coords P)
-  rwa [coords_eq_encode hc] at he
-
 theorem from_affine_encoded (x y : Bls.Fp) :
     portable.g1.G1.from_affine (Kzg.fpEncode x).l (Kzg.fpEncode y).l =
       ok (encode ⟨x,y,Bls.Fp.one⟩) := by

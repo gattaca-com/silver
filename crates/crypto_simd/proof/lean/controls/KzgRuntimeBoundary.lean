@@ -77,7 +77,6 @@ private def requireIndependent (root : Name) : CommandElabM Unit := do
   let env ← getEnv
   let laws := #[``LeanBlsSimd.UncompressG1.FallbackCorrect,
     ``LeanBlsSimd.UncompressG1.BlstMatchesSpec,
-    ``LeanBlsSimd.Kzg.BlstPairing.Correct,
     ``LeanBlsSimd.Kzg.BlstPairing.CorrectFor,
     ``LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec]
   let used := dependencies env (← getConstInfo root).type.getUsedConstants

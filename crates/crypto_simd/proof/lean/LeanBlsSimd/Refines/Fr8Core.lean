@@ -262,12 +262,6 @@ theorem Lane.reduce_row_refines (t : Array M512 11#usize) (p : Array M512 5#usiz
   simp only [ofArray_toArray_id, laneOf_set, laneOf_fromLanes]
   simp [Reduction.earlyRow]
 
-theorem Lane.splat_eq (x : UInt64) : Lane.splat x = x := UInt64.toUInt64_toInt64 x
-
-theorem Lane.splat_limbs_eq (x : Limbs) : Lane.splat_limbs x = x := by
-  ext j hj
-  simp [Lane.splat_limbs, Lane.splat_eq]
-
 theorem Fr8.canonical_refines (self : fr8.Fr8) :
     fr8.Fr8.canonical self = ok (toFr8 (ofFr8 self).canonical) := by
   simp [fr8.Fr8.canonical, P_refines, Simd.splat_limbs_refines, Simd.sub_limbs_refines,

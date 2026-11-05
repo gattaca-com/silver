@@ -495,12 +495,6 @@ theorem scalarValues_all (input : Slice blst.blst_fr) :
     have hib : i < input.val.length := by simpa using hi
     simp [hib]
 
-theorem clone_word (word : Word) :
-    core.array.CloneArray.clone core.clone.CloneU64 word = ok word := by
-  obtain ⟨out, h, he⟩ := spec_imp_exists
-    (core.array.CloneArray.clone_spec core.clone.CloneU64 word (by intro x hx; rfl))
-  simpa only [he] using h
-
 theorem plain_words_correct (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
     (hr : ∀ x ∈ input.val, FrReduced x) :
     ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length ∧
@@ -518,32 +512,9 @@ theorem plain_words_correct (input : Slice blst.blst_fr) (words : alloc.vec.Vec 
   · simpa only [hempty, List.map_nil, List.nil_append, UScalar.ofNatCore_val_eq,
       Nat.sub_zero, scalarValues_all] using hval
 
-theorem plain_words_lanes (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
-    (hr : ∀ x ∈ input.val, FrReduced x) :
-    ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length ∧
-      ∀ i, i < input.val.length → limbs out.val[i]!.val = (frRead input.val[i]!).val := by
-  obtain ⟨out, hout, hlen, hv⟩ := plain_words_correct input words hr
-  refine ⟨out, hout, hlen, ?_⟩
-  intro i hi
-  have h := congrArg (fun xs : List ℕ => xs[i]!) hv
-  simpa [getElem!_pos, hi, hlen] using h
-
 end LeanBlsSimd.PlainWords
 
 namespace LeanBlsSimd.PlainWords
 open LeanBlsSimd.Kzg
-
-theorem plain_words_encoded (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
-    (values : List Fr) (hinput : input.val = values.map frEncode) :
-    ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = values.length ∧
-      out.val.map (fun word => limbs word.val) = values.map (fun x => x.val) := by
-  have hr : ∀ x ∈ input.val, FrReduced x := by
-    intro x hx
-    rw [hinput] at hx
-    obtain ⟨v, _, rfl⟩ := List.mem_map.mp hx
-    exact frEncode_reduced v
-  obtain ⟨out, hout, hlen, hv⟩ := plain_words_correct input words hr
-  refine ⟨out, hout, by simpa [hinput] using hlen, ?_⟩
-  simpa only [hinput, List.map_map, Function.comp_def, frRead_frEncode] using hv
 
 end LeanBlsSimd.PlainWords

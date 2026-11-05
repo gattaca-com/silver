@@ -102,9 +102,6 @@ theorem val52_eq_model (x : Vector UInt64 5) : val52 x = FrModel.val x := by
     pow_zero, mul_one]
   rfl
 
-theorem laneOf_eq_model (a : fr8.Fr8) (lane : Fin 8) :
-    laneOf (ofArray id a) lane = (FrModel.ofFr8 a).lane lane := rfl
-
 theorem val52_store (a : fr8.Fr8) (lane : Fin 8) :
     val52 (store (ofArray id a))[lane] = laneNat a lane := by
   rw [getElem_store]

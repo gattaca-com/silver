@@ -48,28 +48,6 @@ private theorem scalar_index [RuntimeFeatures]
   simp [Slice.index_usize, hi, g1_decoder_correct.singleton,
     Slice.update, ho, Slice.set, Slice.setAtNat]
 
-private theorem range_runs {S : Type}
-    (body : Range Usize × S → Result (ControlFlow (Range Usize × S) S))
-    (inv : ℕ → S → Prop) (stop : Usize)
-    (hdone : ∀ r s, r.end = stop → r.start.val = stop.val → inv r.start.val s →
-      IteratorRange.next StepUsize r = ok (none, r) → body (r, s) = ok (done s))
-    (hstep : ∀ r r' s, r.end = stop → r.start.val < stop.val → inv r.start.val s →
-      IteratorRange.next StepUsize r = ok (some r.start, r') →
-      ∃ s', body (r,s) = ok (cont (r',s')) ∧ inv (r.start.val+1) s')
-    (r : Range Usize) (s : S) (he : r.end = stop) (hle : r.start.val ≤ stop.val)
-    (hi : inv r.start.val s) : ∃ s', loop body (r,s) = ok s' ∧ inv stop.val s' := by
-  induction hk : stop.val - r.start.val generalizing r s with
-  | zero =>
-    have hs : r.start.val = stop.val := by omega
-    have hn := next_ge r (by rw [he]; omega)
-    exact ⟨s, by rw [loop.eq_1, hdone r s he hs hi hn, bind_ok], hs ▸ hi⟩
-  | succ k ih =>
-    have hlt : r.start.val < stop.val := by omega
-    obtain ⟨r', hs', he', hn⟩ := next_lt r (by rw [he]; omega)
-    obtain ⟨s', hb, hi'⟩ := hstep r r' s he hlt hi hn
-    obtain ⟨v, hv, hi''⟩ := ih r' s' (he'.trans he) (by omega) (hs' ▸ hi') (by omega)
-    exact ⟨v, by rw [loop.eq_1, hb, bind_ok]; exact hv, hi''⟩
-
 theorem scalar_chunk_refines [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
     (out : Slice (Option blst.blst_p1_affine)) (pairs start : Usize)

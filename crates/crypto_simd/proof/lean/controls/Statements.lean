@@ -16,22 +16,7 @@ open EthLib.Cryptography EthLib.Cryptography.Bls
 -- A mutated proof stops at its first failing step, so the linter flags the steps after it.
 set_option linter.unreachableTactic false
 
-/-! ## Tables -/
-
-example : True := by
-  fail_if_success
-    have : [0xeffffffffaaab, 0xfeb153ffffb9f, 0x6b0f6241eabff, 0x12bf6730d2a0f, 0x764774b84f385,
-        0x1ba7b6434bacd, 0x1ea397fe69a4b, 0x000000001a012] = limbs52 Fp.modulus := by
-      decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success have : R_MOD_P = limbs52 (toMont 2) := by decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success have : (Fp.modulus - 3) / 4 < 2 ^ (4 * 94) := by decide +kernel
-  trivial
+/-! ## Scalar modulus -/
 
 example : True := by
   fail_if_success have : (Fr.modulus : ℤ) = (z + 1) ^ 4 - (z + 1) ^ 2 + 1 := by decide +kernel
@@ -43,25 +28,6 @@ example : True := by
   fail_if_success have : powBy mulFp2 (1, 0) 381 (0, psiX + 1) 3 = (0, 1) := by decide +kernel
   trivial
 
-example :
-    mulFp2 (0, psiX + 1) (powBy mulFp2 (1, 0) 381 (1, 1) ((Fp.modulus - 1) / 3)) ≠ (1, 0) := by
-  decide +kernel
-
-/-! ## A cube in place of the non-cube 32, under the proof of its Euler fact -/
-
-example : True := by
-  fail_if_success
-    have : (8 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-      have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 381 8 ((Fp.modulus - 1) / 3)
-        (by decide +kernel)).not.mpr (by decide +kernel)
-      rwa [Nat.cast_ofNat] at h
-  trivial
-
-example : PowMod.powModAux 381 Fp.modulus 8 ((Fp.modulus - 1) / 3) = 1 % Fp.modulus := by
-  decide +kernel
-
-example : ¬∀ x : ZMod Fp.modulus, x ^ 3 ≠ 8 := fun h => h 2 (by norm_num)
-
 /-! ## A square in place of the non-square −1 -/
 
 example : True := by
@@ -70,38 +36,10 @@ example : True := by
       ZMod.exists_sq_eq_neg_one_iff.mp ⟨x, by rw [← hx, sq]⟩ p_mod_four
   trivial
 
-/-! ## Fuel: (p − 1)/3 and (p − 1)/2 need 380 bits -/
-
-example : True := by
-  fail_if_success
-    have : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-      have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 379 32 ((Fp.modulus - 1) / 3)
-        (by decide +kernel)).not.mpr (by decide +kernel)
-      rwa [Nat.cast_ofNat] at h
-  trivial
-
-example : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-  have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 380 32 ((Fp.modulus - 1) / 3)
-    (by decide +kernel)).not.mpr (by decide +kernel)
-  rwa [Nat.cast_ofNat] at h
-
-example : mulFp2 psiY (powBy mulFp2 (1, 0) 379 (1, 1) ((Fp.modulus - 1) / 2)) ≠ (1, 0) := by
-  decide +kernel
-
-example : mulFp2 psiY (powBy mulFp2 (1, 0) 380 (1, 1) ((Fp.modulus - 1) / 2)) = (1, 0) := by
-  decide +kernel
-
-/-! ## The chain and its exceptions -/
+/-! ## The chain -/
 
 example : True := by
   fail_if_success have : Step.run chainSteps 1 = blsX + 1 := by decide +kernel
-  trivial
-
-example : True := by
-  fail_if_success
-    have : [13, 23, 2713, 11953, 262069].map g2MeetsException =
-        [false, false, false, false, false] := by
-      decide +kernel
   trivial
 
 /-! ## Fp2: the bridge into ω² = 1 in place of ω² = −1
@@ -186,19 +124,10 @@ example : True := by
       exact torsion_of_psi_eq_zsmul (z + 1) P h
   trivial
 
-/-! ## The spec's root: completeness without its −a₀ fallback
+/-! ## The spec's root: the pure imaginary fallback
 
-Where a₁ = 0, the root may be pure imaginary: a₀ = −d² is a square in Fp2 but not in Fp. The case
-split of `Fp2.sqrt_complete`, asked for a root of a₀ in Fp alone, fails at c = 0. -/
-
-example : True := by
-  fail_if_success
-    have : ∀ a0 c d : ZMod Fp.modulus, a0 = c * c - d * d → c * d = 0 → ∃ b, b * b = a0 := by
-      intro a0 c d h0 hcd
-      rcases mul_eq_zero.mp hcd with hc | hd
-      · exact ⟨d, by rw [h0, hc]; ring1⟩
-      · exact ⟨c, by rw [h0, hd]; ring1⟩
-  trivial
+When a₁ = 0, `Fp2.sqrt` can need its −a₀ fallback: a square in `Fp2Field` need not be a square
+in Fp. -/
 
 example : IsSquare (-1 : Fp2Field) ∧ ¬IsSquare (-1 : ZMod Fp.modulus) :=
   ⟨⟨QuadraticAlgebra.omega, by rw [← sq, Fp2Field.omega_sq]⟩,
@@ -259,30 +188,13 @@ example : Kernel.sqrtT (-1) = -1 ∧ quadraticChar (ZMod Fp.modulus) (-1) = -1 �
   ext <;> simp [Kernel.rootCandidate, ht, hr, Kernel.half, QuadraticAlgebra.re_one,
     QuadraticAlgebra.im_one]
 
-/-! ## rhs ≠ 0: 2(1 + i) in place of 4(1 + i)
+/-! ## A changed twist coefficient admits a root
 
-N(−2(1 + i)) = 8 is a cube, so the proof of `Kernel.rhs_ne_zero` fails at its last step, and
-1 − i is a root. t vanishes at 0, so `Kernel.sqrtT_rhs_ne_zero` needs rhs ≠ 0. -/
-
-example : True := by
-  fail_if_success
-    have : ∀ x : Fp2Field, x ^ 2 * x + ⟨2, 2⟩ ≠ 0 := by
-      intro x h
-      have h3 : x ^ 3 = ⟨-2, -2⟩ := by
-        have : x ^ 3 = -⟨2, 2⟩ := by linear_combination h
-        rw [this]
-        ext <;> simp
-      apply thirtytwo_not_cube (QuadraticAlgebra.norm x)
-      rw [← map_pow, h3, QuadraticAlgebra.norm_def]
-      norm_num
-  trivial
+Replacing 4(1 + i) with 2(1 + i) admits the root 1 − i. -/
 
 example : (⟨1, -1⟩ : Fp2Field) ^ 2 * ⟨1, -1⟩ + ⟨2, 2⟩ = 0 := by
   rw [sq]
   ext <;> simp <;> norm_num
-
-example : Kernel.sqrtT 0 = 0 := by
-  simp [Kernel.sqrtT, Kernel.sqrtCandidate, Kernel.half]
 
 /-! ## The sign step with its branches swapped
 

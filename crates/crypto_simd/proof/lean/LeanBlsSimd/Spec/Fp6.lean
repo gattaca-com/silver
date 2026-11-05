@@ -1,5 +1,5 @@
 import LeanBlsSimd.Spec.Fp6Noncube
-import EthLib.Cryptography.Bls.Fp6
+import EthLib.Cryptography.Proofs.Bls.Fp6
 import Mathlib.FieldTheory.KummerPolynomial
 import Mathlib.LinearAlgebra.Basis.Basic
 
@@ -113,13 +113,9 @@ def toField : Fp6 ≃+* Fp6Field where
 @[simp] theorem toField_mk (a b c : Fp2) :
     toField ⟨a, b, c⟩ = assemble (Fp2.toField a) (Fp2.toField b) (Fp2.toField c) := rfl
 
-@[simp] theorem toField_zero : toField zero = 0 := by
-  change assemble 0 0 0 = 0
-  simp [assemble]
+@[simp] theorem toField_zero : toField zero = 0 := map_zero toField
 
-@[simp] theorem toField_one : toField one = 1 := by
-  change assemble 1 0 0 = 1
-  simp [assemble]
+@[simp] theorem toField_one : toField one = 1 := map_one toField
 
 theorem toField_mul (a b : Fp6) : toField (mul a b) = toField a * toField b :=
   toField.map_mul a b

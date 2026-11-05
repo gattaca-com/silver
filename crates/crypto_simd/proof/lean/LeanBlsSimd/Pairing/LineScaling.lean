@@ -48,11 +48,6 @@ theorem w_cube_period : (Fp12Field.w ^ 3) ^ (Fp.modulus ^ 4 - 1) = 1 := by
 /-- The factor discarded when a twist line is normalized by its constant coefficient. -/
 def lineScale (c : Fp2Field) : Fp12Field := fp2Embed c * (Fp12Field.w ^ 3)⁻¹
 
-theorem lineScale_ne_zero (c : Fp2Field) (hc : c ≠ 0) : lineScale c ≠ 0 := by
-  apply mul_ne_zero
-  · exact (map_ne_zero fp2Embed).mpr hc
-  · exact inv_ne_zero (pow_ne_zero 3 w_ne_zero)
-
 /-- A nonzero normalized-line factor lies in the multiplicative Fp4 subfield. -/
 theorem lineScale_period (c : Fp2Field) (hc : c ≠ 0) :
     lineScale c ^ (Fp.modulus ^ 4 - 1) = 1 := by

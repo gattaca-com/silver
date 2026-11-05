@@ -676,14 +676,6 @@ theorem eventReferences_total_bound (width : Usize) (events : List Event) (n : �
   have h := prefixSum_collect_bound width (fun _ => []) events n
   simpa only [collect_at, List.nil_append, List.length_nil, prefixSum_zero, Nat.zero_add] using h
 
-theorem eventReferences_length_bound (width : Usize) (events : List Event) (i : ℕ) :
-    (eventReferences width events i).length ≤ events.length := by
-  induction events with
-  | nil => simp [eventReferences]
-  | cons event rest ih =>
-    simp only [eventReferences, List.length_append, List.length_cons]
-    split_ifs <;> simp only [List.length_singleton, List.length_nil] <;> omega
-
 theorem countEvents_empty (state : buckets.Buckets) (events : List Event)
     (hwl : 1 ≤ state.window_bits.val) (hwh : state.window_bits.val ≤ 8)
     (hn : state.windows.val * 2 ^ (state.window_bits.val - 1) < 2 ^ 32)

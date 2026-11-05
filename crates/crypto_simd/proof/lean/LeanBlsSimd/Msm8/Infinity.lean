@@ -161,10 +161,4 @@ theorem is_infinity_correct (p : blst.blst_p1_affine)
   simp only [decide_eq_true_eq]
   exact all_zero_words_read_infinity p hp.1
 
-theorem is_infinity_group_zero (p : blst.blst_p1_affine)
-    (hp : Kzg.G1AffineValid p) :
-    msm8.is_infinity p = ok true ↔ G1.toPoint (Kzg.g1ReadAffine p) = 0 := by
-  rw [is_infinity_correct p hp, Kzg.g1Valid_toPoint_zero_iff hp.2]
-  simp only [Result.ok.injEq]
-
 end LeanBlsSimd.Msm8

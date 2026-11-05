@@ -46,7 +46,8 @@ theorem one_test_checks_upper_words :
 
 theorem inverse_zero_is_zero [RuntimeFeatures] :
     portable.fp.Fp.inverse (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l =
-      ok (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l := inverse_zero
+      ok (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l := by
+  simpa only [inv_zero] using inverse_encoded (0 : ZMod Bls.Fp.modulus)
 
 theorem inverse_one_is_one [RuntimeFeatures] :
     portable.fp.Fp.inverse (Kzg.fpEncode (1 : ZMod Bls.Fp.modulus)).l =
@@ -64,7 +65,8 @@ theorem inverse_two_is_not_unchanged [RuntimeFeatures] :
 
 theorem batch_zero_factor_is_not_skipped [RuntimeFeatures] :
     portable.msm.pairs.batch_inverse (encodeFour 0 1 1 1) ≠ ok (encodeFour 0 1 1 1) := by
-  rw [batch_inverse_zero_product 0 1 1 1 (by simp)]
+  rw [batch_inverse_schedule]
+  simp only [zero_mul, inv_zero]
   intro h
   have he := congrArg (fun a : Array portable.fp.Fp 4#usize =>
     a.val[1]'(by rw [a.property]; decide)) (Result.ok_injective h)
@@ -77,8 +79,6 @@ theorem batch_four_ones [RuntimeFeatures] :
 
 #print axioms inverse_words_refines
 #print axioms inverse_encoded
-#print axioms inverse_zero
 #print axioms batch_inverse_nonzero
-#print axioms batch_inverse_zero_product
 
 end LeanBlsSimd.Portable.Fp.Controls

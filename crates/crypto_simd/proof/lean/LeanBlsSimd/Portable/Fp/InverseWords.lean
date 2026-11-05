@@ -12,13 +12,6 @@ set_option maxHeartbeats 2000000
 
 def halfWord (a b : U64) : U64 := ⟨(a.bv.ushiftRight 1) ||| (b.bv <<< 63)⟩
 
-theorem half_word_run (a b : U64) :
-    (do let low ← a >>> 1#i32; let high ← b <<< 63#i32; lift (low ||| high)) =
-      ok (halfWord a b) := by
-  simp only [show a >>> 1#i32 = ok ⟨a.bv.ushiftRight 1⟩ from rfl,
-    show b <<< 63#i32 = ok ⟨b.bv <<< 63⟩ from rfl, bind_ok, lift]
-  rfl
-
 theorem half_word_value (a b : U64) :
     (halfWord a b).val = a.val/2+2^63*(b.val%2) := by
   change ((a.bv >>> (1 : Nat)) ||| (b.bv <<< (63 : Nat))).toNat = _

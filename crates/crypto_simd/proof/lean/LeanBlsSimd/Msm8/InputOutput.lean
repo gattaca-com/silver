@@ -66,21 +66,4 @@ theorem input_msm_valid (ps : List blst.blst_p1_affine) (words : List ScalarWord
   rw [getElem!_pos _ j (by simpa using hjp), List.getElem_toArray, List.getElem_map]
   exact (hp _ (List.getElem_mem hjp)).2
 
-theorem lane_zero_in_blst_sum (p : g1x8.G1x8) (P : G1)
-    (hholds : (ofG1x8 p).Holds 0 P) (hvalid : G1.Valid P)
-    (ps : List blst.blst_p1_affine) (words : List ScalarWords)
-    (hlen : ps.length = words.length) (hp : ∀point ∈ ps, Kzg.G1AffineValid point)
-    (hs : ∀s ∈ words, Kzg.limbs s.val < Fr.modulus)
-    (hsum : G1.toPoint P = ((ps.zip words).map inputContribution).sum) :
-    msm8.lane_zero_in_blst p = ok (Kzg.g1Jacobian P) ∧
-      Kzg.G1Rep (Kzg.g1Jacobian P) (G1.msm (ps.map Kzg.g1ReadAffine).toArray
-        (words.map (fun w => Fr.ofNat (Kzg.limbs w.val))).toArray) := by
-  have hmsm := input_msm_valid ps words hp
-  have he := hsum.trans (inputContribution_sum_msm ps words hlen hp hs)
-  have hP : Kzg.G1Valid P := Kzg.g1Valid_of_groupValid hvalid
-    (by rw [he]; exact Kzg.g1Valid_subgroup hmsm)
-  have hmatch := (Kzg.g1_toPoint_eq_iff hP hmsm).mp he
-  obtain ⟨hzero, hrep⟩ := lane_zero_in_blst_rep p P hholds
-  exact ⟨hzero, hrep.1, hrep.2.1.trans hmatch.1, hrep.2.2.trans hmatch.2⟩
-
 end LeanBlsSimd.Msm8

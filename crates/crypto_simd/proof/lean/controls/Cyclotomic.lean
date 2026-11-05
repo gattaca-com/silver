@@ -23,7 +23,10 @@ theorem minusOne_not_cyclotomic : decode xi minusOne ^ (p^4-p^2+1) ≠ 1 := by
   rw [minusOne_decode, (show Odd (p^4-p^2+1) by decide +kernel).neg_one_pow]
   intro h
   have h' : embed u (-1 : S) = embed u (1 : S) := by simpa using h
-  have h'' := congrArg QuadraticAlgebra.re (embed_injective h')
+  have h'' := congrArg QuadraticAlgebra.re
+    (AdjoinRoot.of.injective_of_monic_of_degree_pos
+      (Polynomial.monic_X_pow_sub_C u (by decide))
+      (by rw [Polynomial.degree_X_pow_sub_C (by decide)]; decide) h')
   have h''' := congrArg QuadraticAlgebra.re h''
   norm_num at h'''
   exact (by decide +kernel : (-1 : ZMod p) ≠ 1) h'''

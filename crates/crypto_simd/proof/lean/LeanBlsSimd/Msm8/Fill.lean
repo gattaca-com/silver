@@ -120,11 +120,6 @@ theorem count_windows_refines (state out : buckets.Buckets) (digits last : signe
         ite_true, hdigit, bind_ok, aeneas_uncurry_def, hstep, hwindow]
     simpa only [hbody, bind_ok] using! hlo
 
-theorem sign_product (negative : Bool) :
-    UScalar.cast_fromBool .U32 negative * 2147483648#u32 =
-      ok (if negative then 2147483648#u32 else 0#u32) := by
-  cases negative <;> rfl
-
 def placeSuffix (state : buckets.Buckets) (digits' : signed_digits.SignedDigits)
     (index window magnitude : Usize) (negative : Bool) :
     Result (ControlFlow (buckets.Buckets × signed_digits.SignedDigits × Usize)

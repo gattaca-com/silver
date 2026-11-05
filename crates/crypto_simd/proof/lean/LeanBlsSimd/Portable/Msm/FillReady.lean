@@ -41,12 +41,6 @@ theorem chunk_resources (n : ℕ) (hn : n ≤ portable.msm.CHUNK.val) :
   change n ≤ 4096 at hn
   omega
 
-theorem chunk_reference_bounds (n : ℕ) (hn : n ≤ portable.msm.CHUNK.val) :
-    2 * 32 * n < 2^31 ∧ (2+32)*n < 2^31 := by
-  unfold portable.msm.CHUNK at hn
-  change n ≤ 4096 at hn
-  omega
-
 theorem fill_chunk_bounds (state : portable.msm.buckets.Buckets) (scalars : Slice (Array U64 4#usize))
     (n : ℕ) (hscalars : scalars.val.length = 2*n) (hn : n ≤ portable.msm.CHUNK.val) :
     ∃ out, state.fill scalars 127#usize = ok out ∧

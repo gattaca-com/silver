@@ -81,15 +81,5 @@ theorem decompress_eq_spec (inputs : Vector Encoding 8) (l : Fin 8)
     | none => rfl
     | some p => rw [he] at hn; cases hn
 
-theorem infinity_undecided (inputs : Vector Encoding 8) (l : Fin 8)
-    (h : inputs[l] = G1Spec.infinity) :
-    (decompress inputs).undecided.toNat.testBit l = true := by
-  have hf := decompress_lane inputs l
-  rw [hf.undecided, h]
-  have hd : (decodeLane G1Spec.infinity).undecided = true ∧
-      (decodeLane G1Spec.infinity).invalid = false := by decide +kernel
-  rw [hd.1, hd.2]
-  simp
-
 end DecompressG1
 end LeanBlsSimd

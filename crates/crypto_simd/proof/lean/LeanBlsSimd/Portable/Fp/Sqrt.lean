@@ -32,18 +32,4 @@ theorem sqrt_refines [RuntimeFeatures] (x : ZMod Bls.Fp.modulus) :
   simp only [←sq,decide_eq_true_eq]
   split <;> rfl
 
-theorem sqrt_eq_spec [RuntimeFeatures] (x : Bls.Fp) :
-    portable.fp.Fp.sqrt (Kzg.fpEncode x).l = ok (match Bls.Fp.sqrt x with
-      | .ok y => some (Kzg.fpEncode y).l
-      | .error _ => none) := by
-  refine (sqrt_refines x).trans ?_
-  rw [DecompressG1.sqrt_eq]
-  generalize Kernel.sqrtCandidate x = root
-  split_ifs with h1 h2
-  · rfl
-  · exact False.elim (h2 h1)
-  · rename_i h2
-    exact False.elim (h1 h2)
-  · rfl
-
 end LeanBlsSimd.Portable.Fp

@@ -17,13 +17,6 @@ private def challengeByte (value : U64) (shift : Nat) : U8 :=
 private def challengeBE (value : U64) (n : Nat := 8) : List U8 :=
   (List.range n).reverse.map (fun k => challengeByte value (8*k))
 
-private theorem challengeBE_length (value : U64) (n : Nat) :
-    (challengeBE value n).length = n := by simp [challengeBE]
-
-private theorem challengeBE_succ (value : U64) (n : Nat) :
-    challengeBE value (n+1) = challengeByte value (8*n) :: challengeBE value n := by
-  simp [challengeBE, List.range_succ]
-
 private theorem challenge_bytes_append (xs ys : List U8) :
     bytes (xs ++ ys) = bytes xs ++ bytes ys := by
   apply ByteArray.ext
@@ -67,20 +60,10 @@ private def challengeRow (ci : Slice Usize) (indices : Slice U64)
   challengeBE (UScalar.cast .U64 ci.val[k]!) ++ challengeBE indices.val[k]! ++
     cells.val[k]!.val ++ ps.val[k]!.val
 
-private theorem challengeRow_length (ci : Slice Usize) (indices : Slice U64)
-    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
-    (ps : Slice (Aeneas.Std.Array U8 48#usize)) (k : Nat) :
-    (challengeRow ci indices cells ps k).length = 2112 := by
-  simp [challengeRow, challengeBE_length]
-
 private def challengeHeader (u n : Usize) : List U8 :=
   challenge.DOMAIN.val ++ challengeBE (UScalar.cast .U64 FIELD_ELEMENTS_PER_BLOB) ++
     challengeBE (UScalar.cast .U64 FIELD_ELEMENTS_PER_CELL) ++
     challengeBE (UScalar.cast .U64 u) ++ challengeBE (UScalar.cast .U64 n)
-
-private theorem challengeHeader_length (u n : Usize) :
-    (challengeHeader u n).length = 48 := by
-  simp [challengeHeader, challengeBE_length, challenge.DOMAIN.property]
 
 private theorem challengeHeader_bytes (u n : Usize) :
     bytes (challengeHeader u n) = Kzg.Constants.RANDOM_CHALLENGE_KZG_CELL_BATCH_DOMAIN ++

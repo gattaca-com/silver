@@ -31,7 +31,8 @@ theorem optimized_one : optimized Bls.Fp12.one = Bls.Fp12.one := by
 theorem lane_zero_rejected {raw : bls.fp2x8.Fp2x8} (h : LaneTower.Rep raw Bls.Fp12.zero) :
     (do let out ← bls.fp12.Fp12.final_exponentiation raw
         bls.fp12.Fp12.is_one out) = ok false := by
-  rw [Lanes.final_verdict h, finalExponentiation_zero_not_isOne]
+  rw [Lanes.final_verdict h, finalExponentiation_zero]
+  rfl
 
 
 theorem lane_one_accepted {raw : bls.fp2x8.Fp2x8} (h : LaneTower.Rep raw Bls.Fp12.one) :

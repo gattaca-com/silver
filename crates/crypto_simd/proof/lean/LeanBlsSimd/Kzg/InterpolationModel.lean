@@ -9,19 +9,6 @@ namespace LeanBlsSimd.Kzg.Interpolation
 set_option maxHeartbeats 2000000
 set_option maxRecDepth 16000
 
-theorem aggregateColumns_lengths (evaluations powers : List Fr) (indices : List Nat)
-    (columns : List Fr) (used : List Bool) :
-    (aggregateColumns evaluations powers indices columns used).1.length = columns.length ∧
-    (aggregateColumns evaluations powers indices columns used).2.length = used.length := by
-  unfold aggregateColumns
-  generalize List.range indices.length = ks
-  induction ks generalizing columns used with
-  | nil => exact ⟨rfl, rfl⟩
-  | cons k ks ih =>
-    simpa only [List.foldl_cons, aggregateStep, aggregateCell_length, List.length_set]
-      using ih (aggregateCell evaluations powers k indices[k]! columns)
-        (used.set indices[k]! true)
-
 def columnView (columns : List Fr) (c : Nat) : Array Fr :=
   Array.ofFn (fun j : Fin 64 => columns[c*64+j.val]!)
 

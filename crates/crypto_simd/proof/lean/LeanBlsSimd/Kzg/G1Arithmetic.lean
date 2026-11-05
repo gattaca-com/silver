@@ -19,7 +19,7 @@ theorem g1_groupValid_of_noninfinity {p : G1} (hp : G1Valid p)
 
 theorem g1Valid_of_groupValid {p : G1} (hp : G1.Valid p)
     (hs : Fr.modulus • G1.toPoint p = 0) : G1Valid p := by
-  refine ⟨?_, (g1_inSubgroup_iff hp).mpr hs⟩
+  refine ⟨?_, (EthLib.Cryptography.Bls.G1.inSubgroup_iff_modulus_smul_eq_zero hp).mpr hs⟩
   by_cases hz : p.isInfinity = true
   · exact Or.inl hz
   · exact Or.inr (G1.affine_sqrt_witness hp hz)
@@ -28,13 +28,15 @@ theorem g1Valid_toPoint_zero_iff {p : G1} (hp : G1Valid p) :
     G1.toPoint p = 0 ↔ p.isInfinity = true := by
   by_cases hz : p.isInfinity = true
   · simp only [hz, g1_toPoint_of_infinity hz]
-  · exact g1_toPoint_eq_zero_iff (g1_groupValid_of_noninfinity hp hz)
+  · exact (EthLib.Cryptography.Bls.G1.isInfinity_eq_true_iff_toPoint_eq_zero
+      (g1_groupValid_of_noninfinity hp hz)).symm
 
 theorem g1Valid_subgroup {p : G1} (hp : G1Valid p) :
     Fr.modulus • G1.toPoint p = 0 := by
   by_cases hz : p.isInfinity = true
   · rw [g1_toPoint_of_infinity hz, nsmul_zero]
-  · exact (g1_inSubgroup_iff (g1_groupValid_of_noninfinity hp hz)).mp hp.2
+  · exact (EthLib.Cryptography.Bls.G1.inSubgroup_iff_modulus_smul_eq_zero
+      (g1_groupValid_of_noninfinity hp hz)).mp hp.2
 
 theorem g1_toPoint_eq_of_matches {p q : G1}
     (hinf : p.isInfinity = q.isInfinity) (haff : p.toAffine = q.toAffine) :
@@ -134,40 +136,6 @@ theorem g1_toPoint_double {p : G1} (hp : G1Valid p) :
   by_cases hz : p.isInfinity = true
   · rw [g1_double_of_infinity hz, g1_toPoint_of_infinity hz, zero_add]
   exact G1.toPoint_double (g1_groupValid_of_noninfinity hp hz)
-
-theorem g1_mulNat_of_infinity {p : G1} (hp : p.isInfinity = true) (k : Nat) :
-    G1.mulNat p k = G1.zero := by
-  induction k using Nat.strong_induction_on with
-  | h k ih =>
-    rw [G1.mulNat_def]
-    by_cases hk : k = 0
-    · simp only [hk, ite_true]
-    · simp only [hk, ite_false]
-      rw [g1_double_of_infinity hp, ih (k / 2) (by omega)]
-      split
-      · exact g1_add_of_infinity_left hp
-      · rfl
-
-theorem g1Valid_mulNat {p : G1} (hp : G1Valid p) (k : Nat) :
-    G1Valid (G1.mulNat p k) := by
-  by_cases hz : p.isInfinity = true
-  · rw [g1_mulNat_of_infinity hz]
-    exact g1Valid_zero
-  have hpv := g1_groupValid_of_noninfinity hp hz
-  apply g1Valid_of_groupValid (G1.valid_mulNat hpv k)
-  rw [G1.toPoint_mulNat hpv, smul_comm Fr.modulus k, g1Valid_subgroup hp, nsmul_zero]
-
-theorem g1_toPoint_mulNat {p : G1} (hp : G1Valid p) (k : Nat) :
-    G1.toPoint (G1.mulNat p k) = k • G1.toPoint p := by
-  by_cases hz : p.isInfinity = true
-  · rw [g1_mulNat_of_infinity hz, G1.toPoint_zero, g1_toPoint_of_infinity hz, nsmul_zero]
-  exact G1.toPoint_mulNat (g1_groupValid_of_noninfinity hp hz) k
-
-theorem g1Valid_mul {p : G1} (hp : G1Valid p) (s : Fr) : G1Valid (G1.mul p s) :=
-  g1Valid_mulNat hp s.val
-
-theorem g1_toPoint_mul {p : G1} (hp : G1Valid p) (s : Fr) :
-    G1.toPoint (G1.mul p s) = s.val • G1.toPoint p := g1_toPoint_mulNat hp s.val
 
 theorem g1_neg_matches {p q : G1} (hp : G1Valid p) (hq : G1Valid q)
     (hinf : p.isInfinity = q.isInfinity) (haff : p.toAffine = q.toAffine) :

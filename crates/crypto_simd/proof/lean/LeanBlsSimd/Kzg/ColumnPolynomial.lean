@@ -132,28 +132,31 @@ theorem sum_columnValues_interpolant (indices : Array Nat) (evals : Array CosetE
 
 private theorem column_fold_polynomial
     (hifft : ∀ c, c < 128 → ∀ values : Array Fr, values.size = 64 →
-      coeffPolynomial (cellIfft c values) = cellInterpolant c (fun j => values[j.val]!))
+      EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c values) =
+        cellInterpolant c (fun j => values[j.val]!))
     (indices : Array Nat) (evals : Array CosetEvals) (powers : Array Fr)
     (cs : List Nat) (hcs : ∀ c ∈ cs, c < 128) (initial : Array Fr) :
-    coeffPolynomial (cs.foldl (fun total c => addPolynomialcoeff total
+    EthLib.Cryptography.Kzg.coefficientPolynomial (cs.foldl
+      (fun total c => addPolynomialcoeff total
       (cellIfft c (columnValues indices evals powers c))) initial) =
-      coeffPolynomial initial +
+      EthLib.Cryptography.Kzg.coefficientPolynomial initial +
         (cs.map fun c => cellInterpolant c
           (fun j => (columnValues indices evals powers c)[j.val]!)).sum := by
   induction cs generalizing initial with
   | nil => simp
   | cons c cs ih =>
     rw [List.foldl_cons, ih (fun d hd => hcs d (by simp [hd])),
-      coeffPolynomial_add, hifft c (hcs c (by simp)) _ (columnValues_size ..)]
+      coefficientPolynomial_add, hifft c (hcs c (by simp)) _ (columnValues_size ..)]
     simp only [List.map_cons, List.sum_cons]
     exact add_assoc _ _ _
 
 private theorem column_range_polynomial
     (hifft : ∀ c, c < 128 → ∀ values : Array Fr, values.size = 64 →
-      coeffPolynomial (cellIfft c values) = cellInterpolant c (fun j => values[j.val]!))
+      EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c values) =
+        cellInterpolant c (fun j => values[j.val]!))
     (indices : Array Nat) (evals : Array CosetEvals) (powers : Array Fr)
     (n : Nat) (hcs : ∀ c, c < n → c < 128) :
-    coeffPolynomial ((Array.range n).foldl
+    EthLib.Cryptography.Kzg.coefficientPolynomial ((Array.range n).foldl
       (fun total c => addPolynomialcoeff total (cellIfft c (columnValues indices evals powers c)))
       (Array.replicate 64 Fr.zero)) =
       ∑ c ∈ Finset.range n,
@@ -163,7 +166,7 @@ private theorem column_range_polynomial
     rw [← Array.foldl_toList, Array.toList_range]
   have hfold := column_fold_polynomial hifft indices evals powers (List.range n)
     (fun c hc => hcs c (List.mem_range.mp hc)) (Array.replicate 64 Fr.zero)
-  rw [hfold, coeffPolynomial_replicate_zero, zero_add]
+  rw [hfold, coefficientPolynomial_replicate_zero, zero_add]
   have hsum := List.sum_toFinset
     (fun c => cellInterpolant c (fun j => (columnValues indices evals powers c)[j.val]!))
     (List.nodup_range (n := n))
@@ -171,13 +174,14 @@ private theorem column_range_polynomial
 
 theorem columnRli_polynomial
     (hifft : ∀ c, c < 128 → ∀ values : Array Fr, values.size = 64 →
-      coeffPolynomial (cellIfft c values) = cellInterpolant c (fun j => values[j.val]!))
+      EthLib.Cryptography.Kzg.coefficientPolynomial (cellIfft c values) =
+        cellInterpolant c (fun j => values[j.val]!))
     (indices : Array Nat) (evals : Array CosetEvals) (powers : Array Fr)
     (hi : ∀ c ∈ indices, c < 128) :
-    coeffPolynomial (Model.columnRli indices evals powers) =
+    EthLib.Cryptography.Kzg.coefficientPolynomial (Model.columnRli indices evals powers) =
       ∑ k ∈ Finset.range indices.size,
         _root_.Polynomial.C powers[k]! * cellInterpolant indices[k]! (fun j => (evals[k]!)[j.val]!) := by
-  change coeffPolynomial ((Array.range 128).foldl
+  change EthLib.Cryptography.Kzg.coefficientPolynomial ((Array.range 128).foldl
     (fun total c => addPolynomialcoeff total (cellIfft c (columnValues indices evals powers c)))
     (Array.replicate 64 Fr.zero)) = _
   exact (column_range_polynomial hifft indices evals powers 128 (fun _ hc => hc)).trans

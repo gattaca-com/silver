@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Bls.Fr
@@ -215,12 +215,6 @@ theorem roots_refinement_of_blst (logOrder : U32)
     simp only [fr_one_eq, bind_ok]
     exact hr
   · simpa [alloc.vec.Vec.with_capacity, hv, model_roots _ hl, computePowers] using hval
-
-theorem Refinement.primitive_root_refinement
-    (logOrder : U32) (hl : logOrder.val ≤ 256) :
-    domain.primitive_root logOrder = ok (frEncode
-      (Fr.powNat (Fr.ofNat 7) ((Fr.modulus - 1) / 2^logOrder.val))) :=
-  Refinement.primitive_root_refinement_of_blst logOrder hl
 
 theorem roots_refinement (logOrder : U32)
     (hl : logOrder.val = 6 ∨ logOrder.val = 13) :

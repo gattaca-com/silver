@@ -158,7 +158,7 @@ theorem add_affine_zero_mask :
   rw [(hp.double.1.add_affine hzero hzero).2]
   simp [Kernel.addAffine, Kernel.double, WeierstrassCurve.Jacobian.dblXYZ,
     WeierstrassCurve.Jacobian.dblX, WeierstrassCurve.Jacobian.dblU_eq,
-    WeierstrassCurve.Jacobian.negY, G2.curve]
+    WeierstrassCurve.Jacobian.negY, Kernel.curve]
 
 
 example : ¬ ∀ (px py : fp2x8.Fp2x8) (m : G2x8 × Mmask8) (c c' : U32),

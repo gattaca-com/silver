@@ -60,16 +60,6 @@ def specRli : RliStep := fun cellIndices shifts cosetsEvals rPowers =>
       let scaled ← multiplyPolynomialcoeff #[rPowers[k]!] interp
       pure (addPolynomialcoeff sumInterp scaled)
 
-def lagrangeRli (cellIndices : Array Nat) (cosetsEvals : Array (Array Fr))
-    (rPowers : Array Fr) : Except KzgError (Array Fr) := do
-  (Array.range cellIndices.size).foldlM
-    (init := Array.replicate 64 Fr.zero)
-    fun sumInterp k => do
-      let interp ← interpolatePolynomialcoeff
-        (← cosetForCell cellIndices[k]!) cosetsEvals[k]!
-      let scaled ← multiplyPolynomialcoeff #[rPowers[k]!] interp
-      pure (addPolynomialcoeff sumInterp scaled)
-
 def columnRli (indices : Array Nat) (evals : Array (Array Fr)) (powers : Array Fr) : Array Fr :=
   (Array.range 128).foldl (init := Array.replicate 64 Fr.zero) fun total c =>
     let column := (Array.range indices.size).foldl (init := Array.replicate 64 Fr.zero)

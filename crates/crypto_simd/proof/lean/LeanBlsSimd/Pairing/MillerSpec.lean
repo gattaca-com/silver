@@ -1,4 +1,5 @@
 import LeanBlsSimd.Pairing.EmbeddedSteps
+import LeanBlsSimd.Spec.PairingEquations
 
 open EthLib.Cryptography Bls
 

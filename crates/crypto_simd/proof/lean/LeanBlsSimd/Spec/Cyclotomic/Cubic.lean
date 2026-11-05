@@ -48,12 +48,6 @@ theorem assemble_injective (u a b c d e f : S)
     show (0 : Fin 3) ≠ 2 by decide, show (1 : Fin 3) ≠ 2 by decide] at h0 h1 h2
   exact ⟨h0, h1, h2⟩
 
-theorem assemble_surjective (u : S) (g : Cubic u) :
-    ∃ a b c, assemble u a b c = g := by
-  refine ⟨(basis u).repr g 0, (basis u).repr g 1, (basis u).repr g 2, ?_⟩
-  rw [assemble_eq]
-  simpa only [Fin.sum_univ_three] using (basis u).sum_repr g
-
 omit [Nontrivial S] in
 theorem assemble_mul (u a b c d e f : S) :
     assemble u a b c * assemble u d e f =
@@ -110,16 +104,5 @@ theorem cyclotomic_relation {T : Type*} [Monoid T] (g : T) (q : ℕ) (hq : 1 ≤
     _ = g ^ ((q ^ 2 - q + 1) + q) := by congr 1; omega
     _ = g ^ (q ^ 2 - q + 1) * g ^ q := pow_add _ _ _
     _ = g ^ q := by rw [hphi, one_mul]
-
-/-- The Fp4 Frobenius formulas are explicit hypotheses; no field structure is used. -/
-theorem granger_scott (u a b c abar bbar cbar delta : S) (q : ℕ) (hq : 1 ≤ q)
-    (hd : delta ^ 2 - delta + 1 = 0)
-    (hf1 : assemble u a b c ^ q = assemble u abar (delta * bbar) (delta ^ 2 * cbar))
-    (hf2 : assemble u a b c ^ (q ^ 2) = assemble u a (delta ^ 2 * b) (delta ^ 4 * c))
-    (hphi : assemble u a b c ^ (q ^ 2 - q + 1) = 1) :
-    assemble u a b c ^ 2 =
-      assemble u (3 * a ^ 2 - 2 * abar) (3 * u * c ^ 2 + 2 * bbar) (3 * b ^ 2 - 2 * cbar) := by
-  apply granger_scott_of_frobenius_relation _ _ _ _ _ _ _ _ hd
-  rw [← hf2, cyclotomic_relation _ _ hq hphi, hf1]
 
 end LeanBlsSimd.Cyclotomic

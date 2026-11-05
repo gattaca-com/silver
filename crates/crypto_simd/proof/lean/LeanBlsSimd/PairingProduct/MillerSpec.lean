@@ -91,14 +91,6 @@ theorem ofPoints_evaluation (p : G1) (q : G2) (hp : p.isInfinity = false) :
   rw [ofG1_evaluationPoint p hp]
   simp only [Input.evaluation, Input.ofPoints, RingEquiv.symm_apply_apply]
 
-theorem finite_factor_spec (p : G1) (q : G2)
-    (hp : p.isInfinity = false) (hq : q.isInfinity = false)
-    (hc : (Input.ofPoints p q).miller.flagged = false) :
-    (Input.ofPoints p q).factor ^ finalExpExponent =
-      Fp12.toField (pairingFactor (p, q)) ^ finalExpExponent := by
-  rw [factor_spec _ hc, ofPoints_base _ _ hq, ofPoints_evaluation _ _ hp]
-  simp only [pairingFactor, hp, hq, Bool.or_self, Bool.false_eq_true, ite_false]
-
 end
 
 end LeanBlsSimd.PairingProduct.Miller

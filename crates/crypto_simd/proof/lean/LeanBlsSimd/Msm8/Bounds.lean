@@ -7,20 +7,6 @@ noncomputable section
 namespace LeanBlsSimd.MsmBounds
 open BucketsRefines
 
-/-- The window-width expression copied from generated Buckets.fill. -/
-def chooseWidth (scalars : Slice (Array U64 4#usize)) : Result Usize := do
-  let i := Slice.len scalars
-  if i < 128#usize then ok 4#usize else
-    let i1 := Slice.len scalars
-    if i1 < 1024#usize then ok 6#usize else ok 8#usize
-
-theorem chooseWidth_refines (scalars : Slice (Array U64 4#usize)) :
-    chooseWidth scalars = ok (selectedWidth scalars.val.length) := by
-  simp only [chooseWidth, selectedWidth, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq]
-  change (if scalars.val.length < 128 then ok 4#usize else
-    if scalars.val.length < 1024 then ok 6#usize else ok 8#usize) = _
-  split_ifs <;> rfl
-
 theorem selected_options (n : ℕ) :
     ((selectedWidth n).val = 4 ∧ (windows127 (selectedWidth n)).val = 32) ∨
     ((selectedWidth n).val = 6 ∧ (windows127 (selectedWidth n)).val = 22) ∨
@@ -37,12 +23,6 @@ theorem selected_geometry (n : ℕ) :
     2 ^ ((selectedWidth n).val - 1) ≤ 128 ∧
     (windows127 (selectedWidth n)).val * 2 ^ ((selectedWidth n).val - 1) ≤ 2048 := by
   rcases selected_options n with ⟨hw, hn⟩ | ⟨hw, hn⟩ | ⟨hw, hn⟩ <;> rw [hw, hn] <;> decide
-
-theorem selected_groups (n : ℕ) :
-    1 ≤ ((windows127 (selectedWidth n)).val - 1) / 8 + 1 ∧
-    ((windows127 (selectedWidth n)).val - 1) / 8 + 1 ≤ 4 ∧
-    8 * (((windows127 (selectedWidth n)).val - 1) / 8 + 1) ≤ 32 := by
-  rcases selected_options n with ⟨_, hn⟩ | ⟨_, hn⟩ | ⟨_, hn⟩ <;> rw [hn] <;> decide
 
 end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.MsmBounds
@@ -65,41 +45,6 @@ theorem resources (n windows : ℕ) (hn : n ≤ 2 ^ 24) (hw : windows ≤ 32) :
 theorem selected_resources (n : ℕ) (hn : n ≤ 2 ^ 24) :
     Resources n (BucketsRefines.windows127 (BucketsRefines.selectedWidth (2 * n))).val :=
   resources n _ hn (selected_geometry (2 * n)).2.2.2.1
-
-theorem refs_resource_bounds (n windows refs : ℕ) (h : Resources n windows)
-    (href : refs ≤ 2 * n * windows) :
-    refs < 2 ^ 32 ∧ refs / 2 ≤ n * windows ∧
-      2 * n + n * windows + refs / 2 < 2 ^ 31 := by
-  have he : 2 * n * windows = 2 * (n * windows) := by ring
-  have := h.references32
-  constructor
-  · omega
-  constructor
-  · omega
-  · have := h.independence31
-    omega
-
-theorem bucket_resource_bound (n windows length : ℕ) (h : Resources n windows)
-    (hlen : length ≤ 2 * n) : length + 1 < 2 ^ 32 := by
-  have := h.bucket32
-  omega
-
-theorem sentinel_bound (n : ℕ) (hn : 1 ≤ n) : 0 < 2 * n ∧ 0 < 2 ^ 31 := by omega
-
-theorem padded_groups (jobs : ℕ) (hj : 1 ≤ jobs) :
-    let groups := ((jobs - 1) / 16 + 1) * 2
-    groups % 2 = 0 ∧ jobs ≤ groups * 8 ∧ groups * 8 ≤ jobs + 15 := by
-  dsimp only
-  omega
-
-theorem padded_resource_bounds (n windows jobs : ℕ) (h : Resources n windows)
-    (hj : 1 ≤ jobs) (hjobs : jobs ≤ n * windows) :
-    let groups := ((jobs - 1) / 16 + 1) * 2
-    groups % 2 = 0 ∧ jobs ≤ groups * 8 ∧ groups * 8 < 2 ^ 32 := by
-  obtain ⟨he, hl, hu⟩ := padded_groups jobs hj
-  dsimp only at he hl hu ⊢
-  have := h.padded32
-  exact ⟨he, hl, by omega⟩
 
 end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.BucketsRefines
@@ -366,17 +311,5 @@ theorem fill_chunk_bounds (state : buckets.Buckets) (scalars : Slice (Array U64 
 end LeanBlsSimd.MsmBounds
 namespace LeanBlsSimd.MsmBounds
 open BucketsRefines
-
-theorem original_signed_reference (n windows : ℕ) (h : Resources n windows)
-    (index : Usize) (negative : Bool) (hi : index.val < 2 * n) :
-    index.val < 2 ^ 31 ∧
-      (signedReference index negative).val % 2 ^ 31 = index.val ∧
-      (signedReference index negative).val / 2 ^ 31 = (if negative then 1 else 0) := by
-  have hb : index.val < 2 ^ 31 := lt_trans hi h.originals31
-  exact ⟨hb, signedReference_index index negative hb, signedReference_sign index negative hb⟩
-
-theorem allocated_index31 (n windows capacity index : ℕ) (h : Resources n windows)
-    (hcap : capacity ≤ 2 * n + n * windows) (hi : index < capacity) : index < 2 ^ 31 :=
-  lt_of_lt_of_le hi (le_trans hcap (Nat.le_of_lt h.capacity31))
 
 end LeanBlsSimd.MsmBounds

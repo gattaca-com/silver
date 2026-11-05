@@ -2,14 +2,10 @@ import LeanBlsSimd.Kzg.Fr.ByteEncode
 import LeanBlsSimd.Kzg.InterpolationKernel.Basic
 import LeanBlsSimd.Kzg.Extender.Kernel.Fr8
 import LeanBlsSimd.Kzg.Extender.Write
-import Batteries.Tactic.OpenPrivate
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
-
-open private bytesBEToNatAux_eq_fromBytesBEAux
-  from EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
@@ -68,7 +64,7 @@ private theorem encoded_step (values : _root_.Array Fr)
     simp only [hjval] at hfield
     have hat : i*256+32*(j-8*i)+b = 32*j+b := by omega
     have hh := extract_get (bytes serialized.val) _ _ _ b hfield
-      (by rw [field_bytes_size]; exact hb)
+      (by rw [size_blsFieldToBytes]; exact hb)
     rw [hat] at hh
     simpa only [arrayBytes, Array.make, Array.from_val] using hh
 
@@ -157,22 +153,12 @@ private theorem fieldChunk_bytes (buffer : Array U8 2048#usize)
     (i : Nat) (hi : i < 64) :
     arrayBytes (fieldChunk buffer i hi) = blsFieldToBytes values[i]! := by
   apply byteArray_ext_get
-  · rw [arrayBytes_size, field_bytes_size]
+  · rw [arrayBytes_size, size_blsFieldToBytes]
     rfl
   · intro b hb
     have hb' : b < 32 := by simpa only [arrayBytes_size] using! hb
     rw [fieldChunk_get buffer i b hi hb']
     exact he i (by omega) b hb'
-
-private theorem decode_field_bytes (value : Fr) :
-    bytesToBlsField (blsFieldToBytes value) = .ok value := by
-  have hb : value.val < 256^32 := lt_trans value.isLt (by decide)
-  have hv : bytesBEToNat (blsFieldToBytes value) = value.val :=
-    bytesBEToNat_intToBytesBE_of_lt hb
-  have hv' : Fr.bytesBEToNat (blsFieldToBytes value) = value.val := by
-    simpa only [bytesBEToNat, Fr.bytesBEToNat, bytesBEToNatAux_eq_fromBytesBEAux] using hv
-  simp only [bytesToBlsField, field_bytes_size, EthLib.Cryptography.Kzg.Constants.BYTES_PER_FIELD_ELEMENT,
-    ne_eq, not_true_eq_false, ↓reduceIte, Fr.fromBytesBE, hv', value.isLt, ↓reduceDIte]
 
 private theorem decode_loop
     (buffer : Array U8 2048#usize) (values : _root_.Array Fr)
@@ -219,7 +205,7 @@ private theorem decode_loop
       simp [src, Array.to_slice, Slice.from_val, chunk.property]
     have hdecode : fr.fr_from_bytes chunk = ok (some (frEncode values[i.val]!)) := by
       rw [FrScalar.fr_from_bytes_refines, fieldChunk_bytes buffer values he i.val hit,
-        decode_field_bytes]
+        bytesToBlsField_blsFieldToBytes]
       rfl
     let next := out.set i (frEncode values[i.val]!)
     have hnextlen : next.val.length = 64 := by simp [next, Slice.set, Slice.setAtNat, Slice.from_val, hlen]

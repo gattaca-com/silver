@@ -1,7 +1,7 @@
 import LeanBlsSimd.Portable.Decode.Correct
 import LeanBlsSimd.Kzg.Decoder
 import LeanBlsSimd.Kzg.Setup
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
@@ -13,23 +13,6 @@ namespace LeanBlsSimd.Kzg
 set_option maxRecDepth 16000
 set_option maxHeartbeats 2000000
 
-theorem setup_g2_zero_roundtrip :
-    g2ReadAffine (g2Affine SetupPoints.g2Point0) = SetupPoints.g2Point0 := by
-  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead, G2.toAffine,
-    Fp2.inverse, SetupArithmetic.inverse_eq]
-  decide +kernel
-
-theorem setup_g2_cell_roundtrip :
-    g2ReadAffine (g2Affine SetupPoints.g2Point64) = SetupPoints.g2Point64 := by
-  simp only [g2ReadAffine, g2Affine, fp2Read, fpRead, G2.toAffine,
-    Fp2.inverse, SetupArithmetic.inverse_eq]
-  decide +kernel
-
-theorem setup_g2_zero_valid : G2AffineValid (g2Affine SetupPoints.g2Point0) := by
-  rw [G2AffineValid, setup_g2_zero_roundtrip]
-  exact ⟨rfl, arrayBytes SetupPoints.g2Bytes0,
-    SetupPoints.g2_0_decoded, SetupPoints.g2_0_subgroup⟩
-
 private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
     (ps : List blst.blst_p1_affine) (hlen : ps.length = 64)
     (hd : decoded.val = ps.map some)
@@ -39,7 +22,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
   induction hk : 64 - iter.start.val generalizing iter acc with
   | zero =>
     have hi : iter.start.val = 64 := by omega
-    have hn := Refinement.next_ge iter (by simp [he, hi])
+    have hn := next_ge iter (by simp [he, hi])
     refine ⟨acc, ?_, ?_⟩
     · rw [setup.Setup.decode_loop, loop.eq_1]
       simp only [setup.Setup.decode_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
@@ -47,7 +30,7 @@ private theorem setup_loop (decoded : alloc.vec.Vec (Option g1_point.G1Point))
   | succ k ih =>
     have hi : iter.start.val < 64 := by omega
     have hp : iter.start.val < ps.length := by omega
-    obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp [he, hi])
+    obtain ⟨iter', hi', he', hn⟩ := next_lt iter (by simp [he, hi])
     let p := ps[iter.start.val]'hp
     have hb : acc.val.length + 1 ≤ Usize.max := by
       rw [ha, List.length_take, hlen]

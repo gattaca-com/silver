@@ -155,13 +155,5 @@ theorem lane_pow_p_minus_3_over_4 {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l))
   rw [windows_horner] at this
   exact this
 
-theorem lane_sqrt_candidate {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    Fp8Inv (x.sqrt_candidate.lane l) ∧
-      decode (x.sqrt_candidate.lane l) = decode (x.lane l) ^ ((Fp.modulus + 1) / 4) := by
-  obtain ⟨h1, h2⟩ := lane_pow_p_minus_3_over_4 hx
-  refine ⟨inv_mul h1 hx, ?_⟩
-  rw [sqrt_candidate, decode_lane_mul h1 hx, h2, ← pow_succ,
-    show (Fp.modulus - 3) / 4 + 1 = (Fp.modulus + 1) / 4 by have := p_mod_four; omega]
-
 end Fp8
 end LeanBlsSimd

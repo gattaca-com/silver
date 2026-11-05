@@ -11,13 +11,6 @@ def range (s : Slice U8) (start stop : Nat) : Slice U8 :=
     (hi : stop ≤ s.val.length) :
     (range s start stop).val.length = stop-start := by simp [range,List.slice]; omega
 
-theorem index_range (s : Slice U8) (start stop : Usize)
-    (hlo : start.val ≤ stop.val) (hi : stop.val ≤ s.val.length) :
-    core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
-      s {start, «end» := stop} = ok (range s start.val stop.val) := by
-  simp [core.slice.index.Slice.index,core.slice.index.SliceIndexRangeUsizeSlice.index,
-    range,hlo,hi,UScalar.le_equiv,Slice.length]
-
 theorem index_to (s : Slice U8) (stop : Usize) (hi : stop.val ≤ s.val.length) :
     core.slice.index.Slice.index (core.slice.index.SliceIndexRangeToUsizeSlice U8)
       s {«end» := stop} = ok (range s 0 stop.val) := by
