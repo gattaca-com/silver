@@ -5,17 +5,21 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 silver_chain_spec.workspace = true
 silver_log.workspace = true
 silver_ssz.workspace = true
-silver_hashing.workspace = true
+silver_state_hashing.workspace = true
 silver_crypto_simd.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true
 blst.workspace = true
 bytesize.workspace = true
 parking_lot.workspace = true
+ring.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 thiserror.workspace = true

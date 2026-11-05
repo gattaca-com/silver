@@ -5,8 +5,7 @@ open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 open scoped EthLib.Cryptography.Bls.Fr
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 namespace LeanBlsSimd.Kzg.InterpolationKernel
 

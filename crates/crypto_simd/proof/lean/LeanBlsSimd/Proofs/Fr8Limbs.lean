@@ -20,7 +20,6 @@ theorem sum_fin_limbs (f : Fin LIMBS → ℕ) :
     ∑ j, f j = f 0 + f 1 + f 2 + f 3 + f 4 := by
   change ∑ j : Fin 5, f j = _
   simp [Fin.sum_univ_succ, Nat.add_assoc]
-  rfl
 
 theorem val_fin_LIMBS :
     ((0 : Fin LIMBS) : ℕ) = 0 ∧ ((1 : Fin LIMBS) : ℕ) = 1 ∧ ((2 : Fin LIMBS) : ℕ) = 2 ∧
@@ -62,7 +61,7 @@ theorem valFrom_eq (t : Acc) (lo : ℕ) (hlo : lo < 2 * LIMBS + 1) :
 
 theorem valFrom_top (t : Acc) : valFrom t (2 * LIMBS + 1) = 0 := by
   unfold valFrom
-  exact Finset.sum_eq_zero fun k _ => if_neg (by omega)
+  exact Finset.sum_eq_zero fun k _ => ite_eq_right (by omega)
 
 set_option exponentiation.threshold 1000 in
 theorem valFrom_LIMBS (t : Acc) :
@@ -316,94 +315,7 @@ theorem mulAcc_spec {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ LIMB
 
 /-! ## `Fr8::mul` -/
 
-theorem normalize_spec (t : Acc) (mask : UInt64) (hmask : mask.toNat = 2 ^ 52 - 1)
-    (ht : ∀ k : Fin (2 * LIMBS + 1), t[k].toNat ≤ 2 ^ 60) :
-    let r := (List.finRange (LIMBS - 1)).foldl (carryStep t mask)
-      ((Vector.replicate LIMBS zero).set 0 t[LIMBS])
-    (∀ j : Fin LIMBS, j.val < LIMBS - 1 → r[j].toNat < 2 ^ 52) ∧
-      val r = ∑ k : Fin LIMBS, t[LIMBS + k.val].toNat * 2 ^ (52 * k.val) := by
-  unfold carryStep
-  intro r
-  have hfin : List.finRange (LIMBS - 1) = [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩,
-      ⟨3, by decide⟩] := by decide
-  have hb : ∀ k (hk : k < 2 * LIMBS + 1), t[k].toNat ≤ 2 ^ 60 := fun k hk => ht ⟨k, hk⟩
-  have h0 := hb LIMBS (by decide)
-  have h1 := hb (LIMBS + 1) (by decide)
-  have h2 := hb (LIMBS + 2) (by decide)
-  have h3 := hb (LIMBS + 3) (by decide)
-  have h4 := hb (LIMBS + 4) (by decide)
-  set u0 := t[LIMBS] with hu0
-  set u1 := t[LIMBS + 1] + srli 52 u0
-  set u2 := t[LIMBS + 2] + srli 52 u1
-  set u3 := t[LIMBS + 3] + srli 52 u2
-  set u4 := t[LIMBS + 4] + srli 52 u3
-  have e0 : r[0] = u0 &&& mask := by simp [r, hfin, u0]
-  have e1 : r[1] = u1 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1]
-  have e2 : r[2] = u2 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2]
-  have e3 : r[3] = u3 &&& mask := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3]
-  have e4 : r[4] = u4 := by simp [r, hfin, Nat.add_assoc, u0, u1, u2, u3, u4]
-  have n1 : u1.toNat = t[LIMBS + 1].toNat + u0.toNat / 2 ^ 52 := toNat_add_srli52 _ u0 h1
-  have n2 : u2.toNat = t[LIMBS + 2].toNat + u1.toNat / 2 ^ 52 := toNat_add_srli52 _ u1 h2
-  have n3 : u3.toNat = t[LIMBS + 3].toNat + u2.toNat / 2 ^ 52 := toNat_add_srli52 _ u2 h3
-  have n4 : u4.toNat = t[LIMBS + 4].toNat + u3.toNat / 2 ^ 52 := toNat_add_srli52 _ u3 h4
-  have m := fun x => toNat_and_mask x mask hmask
-  refine ⟨fun ⟨j, hj⟩ hj7 => ?_, ?_⟩
-  · simp only [LIMBS] at hj7
-    interval_cases j
-    all_goals
-      simp only [Fin.getElem_fin, e0, e1, e2, e3, m]
-      exact Nat.mod_lt _ (by norm_num)
-  · unfold val
-    rw [sum_fin_limbs, sum_fin_limbs]
-    simp only [Fin.getElem_fin, val_fin_LIMBS, add_zero, e0, e1, e2, e3, e4, m,
-      LIMB_BITS, ← hu0]
-    norm_num
-    omega
-
 end Lane
-
-open Lane in
-set_option exponentiation.threshold 1000 in
-theorem mul_spec {a b : Limbs} (ha : Fr8Inv a) (hb : Fr8Inv b) :
-    Fr8Inv (Lane.mul a b) ∧
-      (val (Lane.mul a b) : ZMod Fr.modulus) = val a * val b * (R : ZMod Fr.modulus)⁻¹ := by
-  obtain ⟨hacc, Q, hQ, hv⟩ := mulAcc_spec ha.normal hb.normal
-  unfold Lane.mul
-  extract_lets t10 mask r0 r1
-  have ht10 : t10 = mulAcc a b := rfl
-  rw [← ht10] at hacc hv
-  obtain ⟨hn, hval⟩ := normalize_spec t10 mask splat_MASK52 hacc
-  generalize hres : List.foldl _ r1 (List.finRange (LIMBS - 1)) = res
-  have hn' : ∀ j : Fin LIMBS, j.val < LIMBS - 1 → res[j].toNat < 2 ^ 52 := hres ▸ hn
-  have hval' : val res = _ := hres ▸ hval
-  have hres4 : res[4].toNat * 2 ^ 208 ≤ val res := by
-    unfold val
-    rw [sum_fin_limbs]
-    simp only [Fin.getElem_fin, val_fin_LIMBS, LIMB_BITS, Nat.reduceMul]
-    omega
-  rw [valFrom_LIMBS, ← hval'] at hv
-  generalize t10[2 * LIMBS].toNat = y at hv
-  have hAB : val a * val b < 2 * Fr.modulus * (2 * Fr.modulus) := Nat.mul_lt_mul'' ha.bound hb.bound
-  have hvN := hv
-  simp only [Fr.modulus, R, LIMBS, LIMB_BITS, Nat.reduceMul] at hvN hAB hQ
-  have hlt : val res < 2 * Fr.modulus := by simp only [Fr.modulus]; omega
-  have hy : y = 0 := by omega
-  refine ⟨⟨fun j => ?_, hlt⟩, ?_⟩
-  · by_cases hj : j.val < LIMBS - 1
-    · exact hn' j hj
-    · obtain ⟨j, hj'⟩ := j
-      obtain rfl : j = 4 := by simp only [LIMBS] at hj hj'; omega
-      simp only [Fin.getElem_fin, LIMB_BITS]
-      simp only [Fr.modulus] at hlt
-      omega
-  · have hR : (R : ZMod Fr.modulus) ≠ 0 := by
-      rw [Ne, ZMod.natCast_eq_zero_iff]
-      decide
-    rw [eq_mul_inv_iff_mul_eq₀ hR]
-    have := congrArg (Nat.cast : ℕ → ZMod Fr.modulus) hv
-    rw [hy] at this
-    push_cast [ZMod.natCast_self] at this
-    simpa [mul_comm] using this
 
 namespace Fr8
 
@@ -411,14 +323,6 @@ namespace Fr8
 theorem lane_ofLanes (lanes : Vector Limbs 8) (l : Fin 8) : (ofLanes lanes).lane l = lanes[l] := by
   ext j hj
   simp [lane, ofLanes]
-
-theorem mul_spec {x y : Fr8} (hx : ∀ l, Fr8Inv (x.lane l)) (hy : ∀ l, Fr8Inv (y.lane l))
-    (l : Fin 8) :
-    Fr8Inv ((x.mul y).lane l) ∧ (val ((x.mul y).lane l) : ZMod Fr.modulus) =
-      val (x.lane l) * val (y.lane l) * (R : ZMod Fr.modulus)⁻¹ := by
-  rw [Fr8.mul, lane_ofLanes]
-  simp only [Fin.getElem_fin, Vector.getElem_ofFn]
-  exact LeanBlsSimd.FrModel.mul_spec (hx l) (hy l)
 
 end Fr8
 

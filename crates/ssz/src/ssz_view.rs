@@ -603,6 +603,8 @@ impl SignedBlsToExecutionChangeView {
 //   [184..)    body data
 
 pub const SIGNED_BEACON_BLOCK_MIN: usize = 184;
+/// `slot`, `proposer_index`, `parent_root`, `state_root` and the body offset.
+pub const BEACON_BLOCK_FIXED: usize = 8 + 8 + 32 + 32 + 4;
 
 // Raw SSZ type bound. Dominated by transactions list
 // (MAX_TRANSACTIONS_PER_PAYLOAD * MAX_BYTES_PER_TRANSACTION ≈ 2^50 B), so

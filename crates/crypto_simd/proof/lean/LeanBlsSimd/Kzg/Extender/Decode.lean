@@ -52,16 +52,16 @@ theorem reverse_bits_blob (j : Usize) :
 
 def blobChunk (blob : Blob) (j : Nat) (hj : j < 4096) :
     Aeneas.Std.Array U8 32#usize :=
-  ⟨blob.val.slice (32*j) (32*(j+1)), by
+  Array.make 32#usize (blob.val.slice (32*j) (32*(j+1))) (by
     simp [List.slice, blob.property]
-    omega⟩
+    omega)
 
 theorem blobChunk_bytes (blob : Blob) (j : Nat) (hj : j < 4096) :
     arrayBytes (blobChunk blob j hj) = (arrayBytes blob).extract (32*j) (32*(j+1)) := by
   apply ByteArray.ext
   rw [ByteArray.data_extract]
   apply _root_.Array.toList_inj.mp
-  simp only [arrayBytes, bytes, blobChunk, List.toList_toArray, _root_.Array.toList_extract]
+  simp only [arrayBytes, bytes, blobChunk, Array.make, Array.from_val, List.toList_toArray, _root_.Array.toList_extract]
   simp [List.extract_eq_take_drop, List.slice, List.map_take, List.map_drop]
 
 def chunkVerdict (blob : Blob) (j : Nat) : Option Fr :=
@@ -69,13 +69,13 @@ def chunkVerdict (blob : Blob) (j : Nat) : Option Fr :=
 
 def storeEvaluation (v : cell_extender.CellExtender) (j : Nat) (f : Fr) :
     cell_extender.CellExtender :=
-  { v with evaluations := ⟨v.evaluations.val.set (rev j) (frEncode f), by
-      simpa using v.evaluations.property⟩ }
+  { v with evaluations := alloc.vec.Vec.from (v.evaluations.val.set (rev j) (frEncode f)) (by
+      simp) }
 
 theorem storeEvaluation_invariant (v : cell_extender.CellExtender)
     (hv : StateInvariant v) (j : Nat) (f : Fr) :
     StateInvariant (storeEvaluation v j f) := by
-  simpa [StateInvariant, storeEvaluation] using hv
+  simpa [StateInvariant, storeEvaluation, alloc.vec.Vec.from_val] using hv
 
 theorem decode_blob_body
     (blob : Blob) (self : cell_extender.CellExtender) (hv : StateInvariant self)
@@ -103,31 +103,30 @@ theorem decode_blob_body
     have hstopn : 32 * (j.val + 1) ≤ 131072 := by omega
     simp [core.array.Array.index, core.ops.index.IndexSlice, core.slice.index.Slice.index,
       core.slice.index.SliceIndexRangeUsizeSlice.index, start, stop,
-      hj', src, chunk, blobChunk, Array.to_slice, Nat.mul_comm, hstopn]
+      hj', src, chunk, blobChunk, Array.make, Array.from_val, Array.to_slice, Slice.from_val, Nat.mul_comm, hstopn]
   have hcopy : core.slice.Slice.copy_from_slice core.marker.CopyU8
       (Array.to_slice (Array.repeat 32#usize 0#u8)) src = ok src := by
     simp [core.slice.Slice.copy_from_slice, UScalar.eq_equiv, src,
-      Array.to_slice, chunk.property]
+      Array.to_slice, Slice.from_val, chunk.property]
   have hback : Array.from_slice (Array.repeat 32#usize 0#u8) src = chunk := by
-    apply Subtype.ext
-    simp [src, Array.to_slice, chunk.property]
+    ext1
+    simp [src, Array.to_slice, Slice.from_val, chunk.property]
   have hdecode := FrScalar.fr_from_bytes_refines chunk
   dsimp only [chunk] at hdecode
   rw [blobChunk_bytes] at hdecode
   unfold cell_extender.CellExtender.decode_blob_loop.body
   simp only [FIELD_ELEMENTS_PER_BLOB, UScalar.lt_equiv, UScalar.ofNatCore_val_eq,
-    hj, if_true, lift, bind_tc_ok, Array.to_slice_mut, Function.uncurry_apply_pair,
+    hj, ite_true, lift, bind_ok, Array.to_slice_mut, Aeneas.Std.uncurry_apply_pair,
     hstart, hadd, hstop, hindex, hcopy, hback]
   rw [hdecode]
   have hlen := hv.2.2.2.2.1
   cases hd : bytesToBlsField ((arrayBytes blob).extract (32*j.val) (32*(j.val+1))) with
   | error err => simp [chunkVerdict, Nat.mul_comm, hd, Except.toOption]
   | ok value =>
-    simp only [Except.toOption, Option.map_some, reverse_bits_blob, bind_tc_ok]
-    simp [alloc.vec.Vec.index_mut, Slice.index_mut_usize, Slice.index_usize,
-      hlen, rev_lt, storeEvaluation, chunkVerdict,
-      Nat.mul_comm, hd, Except.toOption, bind_tc_ok]
-    rfl
+    simp only [Except.toOption, Option.map_some, reverse_bits_blob, bind_ok]
+    simp [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize,
+      alloc.vec.Vec.index_usize, hlen, rev_lt, storeEvaluation, chunkVerdict,
+      Nat.mul_comm, hd, Except.toOption, bind_tc_ok, bind_ok, alloc.vec.Vec.set]
 
 theorem storeEvaluation_previous (v : cell_extender.CellExtender)
     (i j : Nat) (hi : i < 4096) (hj : j < i) (f : Fr) :
@@ -136,13 +135,13 @@ theorem storeEvaluation_previous (v : cell_extender.CellExtender)
     intro h
     have := rev_injective hi (by omega) h
     omega
-  simp [storeEvaluation, hne]
+  simp [storeEvaluation, alloc.vec.Vec.from_val, hne]
 
 theorem storeEvaluation_current (v : cell_extender.CellExtender)
     (hv : StateInvariant v) (i : Nat) (f : Fr) :
     (storeEvaluation v i f).evaluations.val[rev i]! = frEncode f := by
   have hlen := hv.2.2.2.2.1
-  simp [storeEvaluation, hlen, rev_lt]
+  simp [storeEvaluation, alloc.vec.Vec.from_val, hlen, rev_lt]
 
 theorem decode_blob_loop_eq
     (self : cell_extender.CellExtender) (hv : StateInvariant self) (blob : Blob)
@@ -160,7 +159,7 @@ theorem decode_blob_loop_eq
     have he : i.val = 4096 := by omega
     refine ⟨self, i, ?_, hv, rfl, fun _ _ => rfl, ?_⟩
     · rw [cell_extender.CellExtender.decode_blob_loop, loop.eq_1]
-      simp [cell_extender.CellExtender.decode_blob_loop.body, FIELD_ELEMENTS_PER_BLOB, he]
+      simp [cell_extender.CellExtender.decode_blob_loop.body, FIELD_ELEMENTS_PER_BLOB, he, bind_ok]
     · simp [he, blobToPolynomialAux]
   | succ k ih =>
     have hlt : i.val < 4096 := by omega
@@ -178,7 +177,7 @@ theorem decode_blob_loop_eq
     | error err =>
       refine ⟨self, i, ?_, hv, rfl, fun _ _ => rfl, ?_⟩
       · rw [cell_extender.CellExtender.decode_blob_loop, loop.eq_1]
-        simp [hbody, chunkVerdict, hd, Except.toOption]
+        simp [hbody, chunkVerdict, hd, Except.toOption, bind_ok]
       · simpa [haux, hd] using hlt
     | ok f =>
       let self' := storeEvaluation self i.val f
@@ -186,8 +185,8 @@ theorem decode_blob_loop_eq
         ih self' (storeEvaluation_invariant self hv i.val f) i' (by omega) (by omega)
       refine ⟨next, stop, ?_, hn, ?_, ?_, ?_⟩
       · rw [cell_extender.CellExtender.decode_blob_loop, loop.eq_1]
-        simpa [hbody, chunkVerdict, hd, Except.toOption, self'] using hloop
-      · simpa [self', storeEvaluation] using hf
+        simpa [hbody, chunkVerdict, hd, Except.toOption, self'] using! hloop
+      · simpa [self', storeEvaluation, alloc.vec.Vec.from_val] using hf
       · intro j hj
         rw [hp j (by omega)]
         exact storeEvaluation_previous self i.val j hlt hj f
@@ -219,8 +218,7 @@ theorem decode_blob_refinement
   obtain ⟨next, stop, hloop, hn, hf, _, hr⟩ :=
     decode_blob_loop_eq self hv blob 0#usize (by decide)
   refine ⟨decide (stop = FIELD_ELEMENTS_PER_BLOB), next, ?_, hn, hf, ?_⟩
-  · simp only [cell_extender.CellExtender.decode_blob, hloop, bind_tc_ok,
-      Function.uncurry_apply_pair]
+  · simp only [cell_extender.CellExtender.decode_blob, hloop, bind_ok, Aeneas.Std.uncurry_apply_pair]
   · have hsize : (arrayBytes blob).size = 131072 := by
       simp [arrayBytes, bytes, ByteArray.size, blob.property]
     simp only [UScalar.ofNatCore_val_eq, Nat.sub_zero, Nat.zero_add] at hr
@@ -241,7 +239,7 @@ theorem decode_blob_refinement
         apply UScalar.eq_of_val_eq
         simpa only [FIELD_ELEMENTS_PER_BLOB, UScalar.ofNatCore_val_eq] using hr.1
       simp only [blobToPolynomial, hsize, Constants.BYTES_PER_BLOB,
-        ne_eq, not_true_eq_false, if_false, Constants.BYTES_PER_FIELD_ELEMENT,
+        ne_eq, not_true_eq_false, ite_false, Constants.BYTES_PER_FIELD_ELEMENT,
         Constants.FIELD_ELEMENTS_PER_BLOB, ha]
       change decide (stop = FIELD_ELEMENTS_PER_BLOB) = true ∧ xs.toArray.size = 4096 ∧ _
       refine ⟨by simp [hstop], by simpa using hlen, ?_⟩
@@ -251,8 +249,8 @@ theorem decode_blob_refinement
       have hget := hr.2 (rev j) (by simpa [hlen] using rev_lt j)
       rw [rev_rev j hjn] at hget
       rw [getElem!_pos next.evaluations.val j hj] at hget
-      rw [List.getElem_map, _root_.Array.getElem_toList, getElem_bitReversalPermutation]
-      change next.evaluations.val[j] = frEncode xs.toArray[reverseBits j xs.toArray.size]!
+      rw [List.getElem_map]
+      conv_rhs => rw [_root_.Array.getElem_toList, getElem_bitReversalPermutation]
       simpa only [List.size_toArray, hlen, rev, List.getElem!_toArray] using hget
 
 end LeanBlsSimd.Kzg.Extender

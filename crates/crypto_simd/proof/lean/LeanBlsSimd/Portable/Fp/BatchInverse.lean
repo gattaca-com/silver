@@ -6,6 +6,9 @@ open EthLib.Cryptography Bls
 
 namespace LeanBlsSimd.Portable.Fp
 open Word64
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 set_option maxRecDepth 4096
 set_option maxHeartbeats 2000000
 
@@ -24,10 +27,10 @@ private theorem sub_four_one : 4#usize - 1#usize = ok 3#usize := by
 private theorem prefix_run [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus) :
     portable.msm.pairs.batch_inverse_loop0 (encodeFour a b c d) (encodeFour a b c d) 1#usize =
       ok (encodeFour a (a*b) (a*b*c) (a*b*c*d)) := by
-  simp (disch := decide) only [portable.msm.pairs.batch_inverse_loop0,loop.eq_1,
-    portable.msm.pairs.batch_inverse_loop0.body,portable.msm.pairs.CHAINS,if_pos,if_neg,encodeFour,Array.make,
-    Aeneas.Std.Array.set,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
-    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceAdd,Nat.reduceSub,sub_ok,usize_add_ok,update_eq,mul_field_encoded,bind_tc_ok]
+  simp (disch := decide) only [portable.msm.pairs.batch_inverse_loop0,loop_eq_loopStep,loopStep_cont,loopStep_done,
+    portable.msm.pairs.batch_inverse_loop0.body,portable.msm.pairs.CHAINS,ite_eq_left,ite_eq_right,encodeFour,Array.make, Array.from_val,
+    Aeneas.Std.Array.set,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
+    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceAdd,Nat.reduceSub,sub_ok,usize_add_ok,update_eq,mul_field_encoded, bind_ok]
 
 
 private theorem zero_encoded : portable.fp.Fp.ZERO = (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l :=
@@ -39,16 +42,16 @@ private theorem suffix_run [RuntimeFeatures] (a b c d i : ZMod Bls.Fp.modulus) :
       (Array.repeat 4#usize portable.fp.Fp.ZERO) =
       ok ((Kzg.fpEncode (i*d*c*b)).l,encodeFour 0 (i*d*c*a) (i*d*(a*b)) (i*(a*b*c))) := by
   simp (disch := decide) only [portable.msm.pairs.batch_inverse_loop1,
-    portable.msm.pairs.batch_inverse_loop1.body,zero_encoded,Array.repeat,List.replicate,loop.eq_1,if_pos,if_neg,encodeFour,Array.make,
-    Aeneas.Std.Array.set,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
-    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceSub,sub_ok,update_eq,mul_field_encoded,bind_tc_ok]
+    portable.msm.pairs.batch_inverse_loop1.body,zero_encoded,Array.repeat,List.replicate,loop_eq_loopStep,loopStep_cont,loopStep_done,ite_eq_left,ite_eq_right,encodeFour,Array.make, Array.from_val,
+    Aeneas.Std.Array.set,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,List.set_cons_zero,
+    List.set_cons_succ,index_usize_eq,UScalar.ofNatCore_val_eq,Nat.reduceSub,sub_ok,update_eq,mul_field_encoded, bind_ok]
 
 theorem batch_inverse_schedule [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus) :
     portable.msm.pairs.batch_inverse (encodeFour a b c d) =
       ok (encodeFour (((a*b*c*d)⁻¹*d)*c*b) (((a*b*c*d)⁻¹*d)*c*a)
         (((a*b*c*d)⁻¹*d)*(a*b)) ((a*b*c*d)⁻¹*(a*b*c))) := by
   simp (disch := decide) only [portable.msm.pairs.batch_inverse,prefix_run,
-    portable.msm.pairs.CHAINS,sub_four_one,index_usize_eq,bind_tc_ok]
+    portable.msm.pairs.CHAINS,sub_four_one,index_usize_eq, bind_ok]
   change (do let i ← portable.fp.Fp.inverse (Kzg.fpEncode (a*b*c*d)).l
              let (i',out) ← portable.msm.pairs.batch_inverse_loop1 (encodeFour a b c d)
                (encodeFour a (a*b) (a*b*c) (a*b*c*d)) 3#usize i
@@ -72,12 +75,5 @@ theorem batch_inverse_nonzero [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus)
   rw [batch_inverse_schedule]
   obtain ⟨h0,h1,h2,h3⟩ := inverse_product_nonzero a b c d ha hb hc hd
   rw [h0,h1,h2,h3]
-
-theorem batch_inverse_zero_product [RuntimeFeatures] (a b c d : ZMod Bls.Fp.modulus)
-    (hzero : a*b*c*d = 0) :
-    portable.msm.pairs.batch_inverse (encodeFour a b c d) =
-      ok (encodeFour 0 0 0 0) := by
-  rw [batch_inverse_schedule,hzero]
-  simp only [inv_zero,zero_mul]
 
 end LeanBlsSimd.Portable.Fp

@@ -69,7 +69,7 @@ theorem finish_correct [RuntimeFeatures] (state : portable.msm.Msm) (n : ℕ)
   change state.pair_rounds state.store.len = ok (flag,next) at hround
   cases hf : flag with
   | true =>
-    simp only [hf,if_true] at houtcome
+    simp only [hf,ite_true] at houtcome
     obtain ⟨⟨afterContents,afterValues,hc⟩,_⟩ := houtcome
     have hbits : next.buckets.window_bits = state.buckets.window_bits := hc.frame.bits
     have hwindows : next.buckets.windows = state.buckets.windows := hc.frame.windows
@@ -103,10 +103,10 @@ theorem finish_correct [RuntimeFeatures] (state : portable.msm.Msm) (n : ℕ)
         simpa only [ctx,signedReferenceValue_eq_referencePoint] using hc.sums i hi
       · exact h.bucket_sum
     refine ⟨next,out,?_,?_⟩
-    · simp only [finish,hround,hf,bind_tc_ok,Function.uncurry_apply_pair,if_true,hsum]
+    · simp only [finish,hround,hf, bind_ok, Aeneas.Std.uncurry_apply_pair,ite_true,hsum]
     · rwa [heq] at hrep
   | false =>
-    simp only [hf,Bool.false_eq_true,if_false] at houtcome
+    simp only [hf,Bool.false_eq_true,ite_false] at houtcome
     have hrefsize : state.halves.val.length*(windows127 (selectedWidth state.halves.val.length)).val < 2^32 := by
       rw [h.halves_length]
       have hw : state.buckets.windows.val = (windows127 (selectedWidth (2*n))).val :=
@@ -115,18 +115,20 @@ theorem finish_correct [RuntimeFeatures] (state : portable.msm.Msm) (n : ℕ)
     obtain ⟨b,cap,lists,hfill,_,_,hpacked,_,hshape,hwin,_,_,hsum,href⟩ :=
       Buckets.fill127_ready next.buckets (alloc.vec.Vec.deref next.halves)
         (fun i => Kzg.limbs state.halves.val[i]!.val) values
-        (by simpa only [alloc.vec.Vec.deref,hhalves] using hrefsize)
-        (by simpa only [alloc.vec.Vec.deref,hhalves,h.halves_length] using h.resources.originals31)
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val,hhalves] using! hrefsize)
+        (by simpa only [alloc.vec.Vec.deref, Slice.from_val,hhalves,h.halves_length] using! h.resources.originals31)
         (by
           intro j hj
+          simp only [alloc.vec.Vec.deref, Slice.from_val] at hj ⊢
           change SignedDigits.value next.halves.val[j] = _
           rw [Msm8.digit_value_eq_limbs,←getElem!_pos next.halves.val j hj,hhalves])
-        (by intro j hj; exact h.halves_bound j (by simpa only [alloc.vec.Vec.deref,hhalves] using hj))
+        (by intro j hj; exact h.halves_bound j (by simpa only [alloc.vec.Vec.deref, Slice.from_val,hhalves] using! hj))
     have hpoints : ∀ i < b.windows.val*2^(b.window_bits.val-1),
         ∀ r ∈ lists i, Store.PointRep next.store (pointIndex r) (values (pointIndex r)) := by
       intro i hi r hr
       apply houtcome.originals
       have hh := href i hi r hr
+      simp only [alloc.vec.Vec.deref, Slice.from_val] at hh
       change r.val%2^31 < next.halves.val.length at hh
       change pointIndex r < state.store.len.val
       rw [hhalves,h.halves_length] at hh
@@ -136,9 +138,9 @@ theorem finish_correct [RuntimeFeatures] (state : portable.msm.Msm) (n : ℕ)
     have heq : bucketContributions b.window_bits.val b.windows.val values
         (BucketsRefines.bucketSlice (Buckets.toLane b)) = contribution := by
       rw [hsum]
-      simpa only [alloc.vec.Vec.deref,hhalves] using h.scalar_sum
+      simpa only [alloc.vec.Vec.deref, Slice.from_val,hhalves] using! h.scalar_sum
     refine ⟨{next with buckets := b},out,?_,?_⟩
-    · simp only [finish,hround,hf,bind_tc_ok,Function.uncurry_apply_pair,Bool.false_eq_true,if_false,hfill,hout]
+    · simp only [finish,hround,hf, bind_ok, Aeneas.Std.uncurry_apply_pair,Bool.false_eq_true,ite_false,hfill,hout]
     · rwa [heq] at hrep
 
 end LeanBlsSimd.Portable.Msm

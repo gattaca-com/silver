@@ -81,32 +81,6 @@ theorem val_eq (a : Limbs) : val a = a[0].toNat + a[1].toNat * 2 ^ 52 + a[2].toN
   rw [sum_fin_limbs]
   simp only [Fin.getElem_fin, val_fin_LIMBS, LIMB_BITS, Nat.reduceMul, pow_zero, mul_one]
 
-theorem eq_of_val_eq {a b : Limbs} (ha : ∀ j : Fin LIMBS, a[j].toNat < 2 ^ 52)
-    (hb : ∀ j : Fin LIMBS, b[j].toNat < 2 ^ 52) (h : val a = val b) : a = b := by
-  rw [val_eq, val_eq] at h
-  have := ha 0; have := ha 1; have := ha 2; have := ha 3
-  have := ha 4
-  have := hb 0; have := hb 1; have := hb 2; have := hb 3
-  have := hb 4
-  simp only [Fin.getElem_fin, val_fin_LIMBS] at *
-  ext j hj
-  simp only [LIMBS] at hj
-  interval_cases j <;> omega
-
-set_option exponentiation.threshold 1000 in
-theorem val_replicate_zero : val (.replicate LIMBS 0 : Limbs) = 0 := by decide
-
-theorem val_eq_zero_iff {a : Limbs} : val a = 0 ↔ a = .replicate _ 0 := by
-  constructor
-  · intro h
-    rw [val_eq] at h
-    ext j hj
-    simp only [LIMBS] at hj
-    simp only [Vector.getElem_replicate]
-    interval_cases j <;> simp <;> omega
-  · rintro rfl
-    exact val_replicate_zero
-
 namespace Lane
 
 open LeanBlsSimd.Lane
@@ -222,10 +196,10 @@ theorem addStep_spec (a b : Limbs) (st : Limbs × UInt64) (c : Bool) (hc : st.2 
     rw [toNat_srli52, ht]
     have := c.toNat_le
     by_cases h : 2 ^ 52 ≤ a[j.val].toNat + b[j.val].toNat + c.toNat
-    · simp only [h, decide_true, carryOf, if_true]
+    · simp only [h, decide_true, carryOf, ite_true]
       simp only [UInt64.toNat_one]
       omega
-    · simp only [h, decide_false, carryOf, Bool.false_eq_true, if_false, UInt64.toNat_zero]
+    · simp only [h, decide_false, carryOf, Bool.false_eq_true, ite_false, UInt64.toNat_zero]
       omega
   refine ⟨(a[j.val] + b[j.val] + carryOf c) &&& splat (.ofNat MASK52),
     decide (2 ^ 52 ≤ a[j.val].toNat + b[j.val].toNat + c.toNat),

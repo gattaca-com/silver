@@ -23,7 +23,10 @@ theorem minusOne_not_cyclotomic : decode xi minusOne ^ (p^4-p^2+1) ≠ 1 := by
   rw [minusOne_decode, (show Odd (p^4-p^2+1) by decide +kernel).neg_one_pow]
   intro h
   have h' : embed u (-1 : S) = embed u (1 : S) := by simpa using h
-  have h'' := congrArg QuadraticAlgebra.re (embed_injective h')
+  have h'' := congrArg QuadraticAlgebra.re
+    (AdjoinRoot.of.injective_of_monic_of_degree_pos
+      (Polynomial.monic_X_pow_sub_C u (by decide))
+      (by rw [Polynomial.degree_X_pow_sub_C (by decide)]; decide) h')
   have h''' := congrArg QuadraticAlgebra.re h''
   norm_num at h'''
   exact (by decide +kernel : (-1 : ZMod p) ≠ 1) h'''
@@ -38,7 +41,7 @@ theorem minusOne_raw_wrong : decode xi (raw xi minusOne) ≠ decode xi minusOne 
     have hone : assemble u 1 0 0 = (1 : T) := by simp [assemble]
     rw [hone]
     simpa only [ha,hb,hc,neg_one_sq,star_neg,star_one,star_zero,zero_pow (by decide : 2 ≠ 0),
-      mul_zero,add_zero,sub_zero,sub_neg_eq_add,mul_one,show (3:S)+2=5 by norm_num] using h
+      mul_zero,add_zero,sub_zero,sub_neg_eq_add,mul_one,show (3:S)+2=5 by norm_num] using! h
   have h5 := (assemble_injective u 5 0 0 1 0 0 hcoords).1
   have hK := congrArg QuadraticAlgebra.re h5
   have hFp := congrArg QuadraticAlgebra.re hK

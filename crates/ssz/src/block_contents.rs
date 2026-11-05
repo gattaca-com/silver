@@ -3,8 +3,9 @@ use crate::ssz_view::{
     NUMBER_OF_COLUMNS, SignedBeaconBlockView,
 };
 
-/// Offsets of `signed_block`, `kzg_proofs` and `blobs`.
-const SIGNED_BLOCK_CONTENTS_FIXED: usize = 3 * 4;
+/// Offsets of the block, `kzg_proofs` and `blobs`, whether the block is
+/// signed or not.
+pub const BLOCK_CONTENTS_FIXED: usize = 3 * 4;
 const CELL_PROOFS_PER_BLOB: usize = NUMBER_OF_COLUMNS * BYTES_PER_KZG_PROOF;
 
 /// A Fulu `SignedBlockContents`: the signed block with every blob and its
@@ -20,7 +21,7 @@ impl<'a> SignedBlockContents<'a> {
     /// commitments, one blob and `NUMBER_OF_COLUMNS` proofs per commitment.
     pub fn parse(buf: &'a [u8]) -> Option<Self> {
         let [block_at, proofs_at, blobs_at] = Self::offsets(buf)?;
-        if block_at != SIGNED_BLOCK_CONTENTS_FIXED ||
+        if block_at != BLOCK_CONTENTS_FIXED ||
             block_at > proofs_at ||
             proofs_at > blobs_at ||
             blobs_at > buf.len()
@@ -59,7 +60,7 @@ impl<'a> SignedBlockContents<'a> {
     }
 
     fn offsets(buf: &[u8]) -> Option<[usize; 3]> {
-        let fixed = buf.get(..SIGNED_BLOCK_CONTENTS_FIXED)?;
+        let fixed = buf.get(..BLOCK_CONTENTS_FIXED)?;
         Some(std::array::from_fn(|i| {
             u32::from_le_bytes(fixed[4 * i..4 * i + 4].try_into().expect("4 bytes")) as usize
         }))
@@ -99,10 +100,10 @@ mod tests {
     }
 
     fn contents(block: &[u8], proofs: usize, blobs: usize) -> Vec<u8> {
-        let proofs_at = SIGNED_BLOCK_CONTENTS_FIXED + block.len();
+        let proofs_at = BLOCK_CONTENTS_FIXED + block.len();
         let blobs_at = proofs_at + proofs;
         let mut out = Vec::new();
-        for at in [SIGNED_BLOCK_CONTENTS_FIXED, proofs_at, blobs_at] {
+        for at in [BLOCK_CONTENTS_FIXED, proofs_at, blobs_at] {
             out.extend_from_slice(&(at as u32).to_le_bytes());
         }
         out.extend_from_slice(block);

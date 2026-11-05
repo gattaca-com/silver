@@ -8,7 +8,7 @@ use silver_beacon_state_data::{
     EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
     PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, TreeGroup, TreeSpec,
-    ValSeed, Withdrawals,
+    ValSeed, Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
@@ -16,6 +16,7 @@ use silver_common::{
     LocalGossipFailure, MessageId, P2pStreamId, PayloadResolution, PayloadValidationStatus,
     PeerEvent, PoolChange, ProduceBlockFailure, ProposerPreparation, StreamProtocol, SyncNeed,
     TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable, TProducer, block_root_fulu,
+    ssz_hash::{BlockFork, HashedBody},
     ssz_view::{
         ATTESTATION_DATA_SIZE, AttestationView, BEACON_BLOCK_BODY_FIXED, BLOCK_SYNC_AGGREGATE_SIZE,
         BYTES_PER_KZG_COMMITMENT, EXECUTION_PAYLOAD_FIXED, EXECUTION_REQUESTS_FULU_FIXED,
@@ -124,7 +125,7 @@ fn make_tile_at_wall_slot_ws(wall_slot: u64, verify_weak_subjectivity: bool) -> 
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
-    let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+    let ticker = SlotTicker::new(genesis, &SpecConfig::mainnet(), Duration::from_secs(4));
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let event_p = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
     let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
@@ -167,7 +168,7 @@ fn make_tile_with_producers(
     let secs_per_slot = 12u64;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let genesis = now.saturating_sub(wall_slot * secs_per_slot + 1);
-    let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+    let ticker = SlotTicker::new(genesis, &spec, Duration::from_secs(4));
     let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
     let event_p = TCache::producer(TCacheId::NetworkProcessing, TEST_RING_BYTES);
     let engine_p = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
@@ -216,7 +217,7 @@ fn gossip_pending(
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: read,
-            protobuf: read,
+            protobuf: Some(read),
             validation: silver_common::BroadcastValidation::Gossip,
         },
         pin,
@@ -359,7 +360,7 @@ fn seed_immutable(_tile: &BeaconStateTile) -> Immutable {
 fn slot_advance_skip_multiple() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    tile.on_slot_start(15);
+    tile.on_slot_start(15, |_| {});
     assert_eq!(tile.head_state_slot(), 15);
 }
 
@@ -367,7 +368,7 @@ fn slot_advance_skip_multiple() {
 fn slot_advance_noop_past_slot() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    tile.on_slot_start(5);
+    tile.on_slot_start(5, |_| {});
     assert_eq!(tile.head_state_slot(), 10);
 }
 
@@ -375,7 +376,7 @@ fn slot_advance_noop_past_slot() {
 fn slot_advance_crosses_epoch_boundary() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 30);
-    tile.on_slot_start(34);
+    tile.on_slot_start(34, |_| {});
     assert_eq!(tile.head_state_slot(), 34);
     // Crossing into epoch 1 allocated the head fork its own epoch delta.
     assert!(tile.last_applied.epoch_idx.is_some());
@@ -384,7 +385,7 @@ fn slot_advance_crosses_epoch_boundary() {
 fn inline_tile_at(slot: Slot) -> BeaconStateTile {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 31);
-    tile.on_slot_start(slot);
+    tile.on_slot_start(slot, |_| {});
     tile
 }
 
@@ -394,7 +395,7 @@ fn precomputed_epoch_matches_an_inline_advance() {
     seed_tile(&mut tile, 4, 31);
 
     tile.epoch_start_state(tile.last_applied, 32);
-    tile.on_slot_start(32);
+    tile.on_slot_start(32, |_| {});
 
     assert_eq!(tile.head_state_root(), inline_tile_at(32).head_state_root());
 }
@@ -405,9 +406,41 @@ fn tick_past_the_precomputed_boundary_matches_an_inline_advance() {
     seed_tile(&mut tile, 4, 31);
 
     tile.epoch_start_state(tile.last_applied, 32);
-    tile.on_slot_start(33);
+    tile.on_slot_start(33, |_| {});
 
     assert_eq!(tile.head_state_root(), inline_tile_at(33).head_state_root());
+}
+
+fn keyed_tile_at(start_slot: Slot) -> BeaconStateTile {
+    let mut tile = make_tile();
+    seed_tile_with_keys(&mut tile, 4, start_slot);
+    tile
+}
+
+/// An empty last slot leaves the boundary to the state-advance tick: it warms
+/// the next epoch's start state and, on it, the epoch after's shuffling, so
+/// the slot start publishes next-epoch duties without computing either.
+#[test]
+fn state_advance_on_an_epoch_s_last_slot_precomputes_the_boundary() {
+    let mut tile = keyed_tile_at(31);
+    tile.on_state_advance(31);
+    assert_eq!(tile.precomputed_epochs.state_ids_mut().count(), 1);
+
+    let start = tile.epoch_start_state(tile.last_applied, 32);
+    let next = ShufflingId::from_state(&tile.state.read_view(start), 2).unwrap();
+    assert!(tile.shuffling_cache.find(next).is_some(), "epoch 2 shuffling not warmed");
+
+    tile.on_slot_start(32, |_| {});
+    let mut inline = keyed_tile_at(31);
+    inline.on_slot_start(32, |_| {});
+    assert_eq!(tile.head_state_root(), inline.head_state_root());
+}
+
+#[test]
+fn state_advance_within_an_epoch_precomputes_nothing() {
+    let mut tile = keyed_tile_at(10);
+    tile.on_state_advance(10);
+    assert_eq!(tile.precomputed_epochs.state_ids_mut().count(), 0);
 }
 
 #[test]
@@ -453,7 +486,7 @@ fn slot_advance_grows_rings_under_non_finality() {
     seed_tile(&mut tile, 4, 0);
     let target = SLOTS_RING_N as u64 * 2 + 3 * SLOTS_PER_EPOCH;
     for s in 1..=target {
-        tile.on_slot_start(s);
+        tile.on_slot_start(s, |_| {});
         assert_eq!(tile.head_state_slot(), s);
     }
 }
@@ -486,7 +519,7 @@ fn empty_slot_advance_preserves_parent_lookahead() {
     let before = tile.state.state().epoch.view(anchor_epoch_idx).state().proposer_lookahead;
 
     // Advance across the epoch 0 -> 1 boundary on empty slots.
-    tile.on_slot_start(32);
+    tile.on_slot_start(32, |_| {});
     assert_eq!(tile.head_state_slot(), 32);
 
     // Head forked onto a private epoch delta; the anchor's is untouched.
@@ -500,7 +533,7 @@ fn empty_slot_advance_preserves_parent_lookahead() {
 fn slot_advance_crosses_two_epoch_boundaries() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 30);
-    tile.on_slot_start(66);
+    tile.on_slot_start(66, |_| {});
     assert_eq!(tile.head_state_slot(), 66);
 }
 
@@ -815,7 +848,7 @@ impl HeadRig {
             is_gloas: payload.is_gloas,
         });
         self.tile.last_applied = state_id;
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
         self.tile.publish_status(&mut self.adapter.producers);
         state_id
     }
@@ -836,7 +869,7 @@ impl HeadRig {
     /// performed after committing PTC votes.
     fn ptc_majority(&mut self, block_root: B256) {
         self.tile.fork_choice.record_ptc_votes(&block_root, &[u64::MAX; 8], true, true);
-        self.tile.recompute_head();
+        self.tile.recompute_head(|_| {});
     }
 
     fn vote_for(&mut self, block_root: B256, validators: std::ops::Range<u32>) {
@@ -1213,7 +1246,7 @@ fn a_status_that_already_named_the_new_head_does_not_hide_the_reorg() {
     let _ = rig.crank();
 
     rig.vote_for(B_ROOT, 0..8);
-    rig.tile.recompute_head();
+    rig.tile.recompute_head(|_| {});
     rig.tile.publish_status(&mut rig.adapter.producers);
     let events = rig.crank();
     assert_eq!(events.reorgs(), [70], "the reorg is reported anyway");
@@ -1251,7 +1284,7 @@ fn block_unknown_parent_rejected() {
     let head_before = tile.last_applied;
     let nodes_before = tile.fork_choice.nodes.len();
 
-    let _ = tile.try_apply_block(&buf);
+    let _ = tile.try_apply_block(&buf, |_| {});
 
     assert_eq!(tile.last_applied, head_before, "head must be unchanged");
     assert_eq!(tile.fork_choice.nodes.len(), nodes_before, "no node added");
@@ -1426,7 +1459,7 @@ fn a_block_already_in_fork_choice_is_reported_already_known() {
         state_root: [0u8; 32],
         body_root: ssz_hash::hash_tree_root_body(SignedBeaconBlockView::body(&bytes), false),
     };
-    let block_root = ssz_hash::hash_tree_root_block_header(&header);
+    let block_root = hash_tree_root_block_header(&header);
     tile.fork_choice.on_block(anchor_child(block_root, tile.last_applied));
 
     let (data, read) = publish_block_bytes(&mut gp, &bytes);
@@ -1716,7 +1749,7 @@ fn payload_timestamp_and_blob_count_are_checked_before_relay() {
             &data,
             &pinned,
             BlockSource::Gossip,
-            true, // pre_verified: the signature is not what these cases are about
+            true, // the signature is not what these cases are about
             &mut adapter.producers,
             |_, _| relayed = true,
         );
@@ -2143,7 +2176,7 @@ fn replayed_envelope_before_its_block_imports_parks() {
     seed_tile(&mut tile, 4, 10);
 
     let waiting_root = [0xE6u8; 32];
-    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root));
+    tile.replay_envelope(rpc_envelope(&mut rp, waiting_root), |_| {});
     assert!(tile.pending_envelopes.holds(&waiting_root));
 }
 
@@ -2822,7 +2855,7 @@ fn block_known_parent_bad_sig_rejected() {
         };
         tile.last_applied.slot_idx = new_slot_idx;
     }
-    let parent_root = ssz_hash::hash_tree_root_block_header(&genesis_header);
+    let parent_root = hash_tree_root_block_header(&genesis_header);
 
     let cp = Checkpoint { epoch: 0, root: parent_root };
     tile.fork_choice = ForkChoice::init(
@@ -2844,7 +2877,7 @@ fn block_known_parent_bad_sig_rejected() {
     buf[108..116].copy_from_slice(&0u64.to_le_bytes()); // proposer_index
     buf[116..148].copy_from_slice(&parent_root); // parent_root
 
-    let _ = tile.try_apply_block(&buf);
+    let _ = tile.try_apply_block(&buf, |_| {});
 
     assert_eq!(tile.fork_choice.nodes.len(), 1);
 }
@@ -2937,7 +2970,7 @@ fn anchor_at_header_root(tile: &mut BeaconStateTile) -> B256 {
         let mut sw = g.slot_states.roll_from(base.slot_idx);
         let state = sw.state_mut();
         state.latest_block_header.state_root = ANCHOR_STATE_ROOT;
-        let root = ssz_hash::hash_tree_root_block_header(&state.latest_block_header);
+        let root = hash_tree_root_block_header(&state.latest_block_header);
         state.latest_block_root = root;
         (root, StateId { slot_idx: sw.commit(), ..base })
     };
@@ -3107,7 +3140,7 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz,
-        protobuf,
+        protobuf: Some(protobuf),
         validation: silver_common::BroadcastValidation::Gossip,
     }
 }
@@ -3139,7 +3172,7 @@ fn gossip_att_msg(
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
-        protobuf: read,
+        protobuf: Some(read),
         validation: silver_common::BroadcastValidation::Gossip,
     }
 }
@@ -3208,6 +3241,27 @@ fn attestation_batch_fallback_rejects_only_forged() {
 
     tile.flush_votes(&mut adapter.producers);
     assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE, "forged vote dropped");
+}
+
+/// The API checked a local attestation's signature, so it stays out of the
+/// batch; a forgery from the network beside it is still dropped.
+#[test]
+fn local_attestation_skips_the_batch_verify() {
+    let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(31);
+    seed_tile_with_keys(&mut tile, 128, 0);
+    let bbr = tile.head_block_root();
+
+    let (unchecked, local_subnet) = batched_att(&tile, 2, 0);
+    let (forged, forged_subnet) = batched_att(&tile, 2, 1);
+    let local = NewGossipMsg {
+        stream_id: LOCAL_GOSSIP_STREAM_ID,
+        ..gossip_att_msg(&mut gp, &unchecked, local_subnet)
+    };
+    tile.defer_vote(local, &mut adapter.producers);
+    tile.defer_vote(gossip_att_msg(&mut gp, &forged, forged_subnet), &mut adapter.producers);
+
+    tile.flush_votes(&mut adapter.producers);
+    assert_eq!(voted_weight(&mut tile, bbr), MAX_EFFECTIVE_BALANCE, "only the local vote counts");
 }
 
 #[test]
@@ -4194,7 +4248,7 @@ fn node_weight(tile: &BeaconStateTile, root: B256) -> u64 {
 }
 
 fn voted_weight(tile: &mut BeaconStateTile, root: B256) -> u64 {
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
     node_weight(tile, root)
 }
 
@@ -4206,7 +4260,7 @@ fn votes_weigh_justified_effective_balances() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
     assert_eq!(node_weight(&tile, anchor), 8 * MAX_EFFECTIVE_BALANCE);
 
     tile.fork_choice.set_proposer_boost(anchor);
@@ -4225,7 +4279,7 @@ fn justified_moves_between_recomputes_weigh_latest_snapshot() {
     seed_tile(&mut tile, 8, 0);
     let anchor = tile.head_block_root();
     vote_all_for(&mut tile, anchor);
-    tile.recompute_head();
+    tile.recompute_head(|_| {});
 
     let mut fork = tile.state.apply_block_view(tile.last_applied);
     fork.view.validators.set_effective_balance(2, MAX_EFFECTIVE_BALANCE / 2);
@@ -4419,7 +4473,7 @@ fn att_root_memo_dedups_across_single_and_aggregate_paths() {
 /// The slot tick prunes the memo through the same floor as the pool.
 #[test]
 fn att_root_memo_pruned_on_slot_tick() {
-    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    let (mut tile, _gossip, _rpc, _spine, mut adapter) = tile_with_producers(30);
     seed_tile(&mut tile, 4, 30);
     let domain = [0xD0u8; 32];
     let mut expired = [0u8; ATTESTATION_DATA_SIZE];
@@ -4431,8 +4485,40 @@ fn att_root_memo_pruned_on_slot_tick() {
     tile.attestation_root_memo.roots(&kept, &domain);
     assert_eq!(tile.attestation_root_memo.len(), 2);
 
-    tile.slot_tick(34);
+    tile.slot_tick(34, &mut adapter.producers);
     assert_eq!(tile.attestation_root_memo.len(), 1);
+}
+
+#[test]
+fn next_epoch_shuffling_is_posted_before_the_rolled_state_is_published() {
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    seed_tile(&mut tile, 4, 30);
+    tile.sync_target = SyncUpdate::Following;
+    let reader = tile.state.reader();
+    let published_epoch = || reader.read(|view| view.slot.current_epoch()).unwrap();
+
+    let mut posted = Vec::new();
+    tile.on_slot_start(SLOTS_PER_EPOCH + 2, |event| {
+        if let BeaconStateEvent::AttestersShuffling { id, .. } = event {
+            posted.push((id.epoch, published_epoch()));
+        }
+    });
+
+    assert!(posted.contains(&(2, 0)), "{posted:?}");
+    assert_eq!(published_epoch(), 1);
+}
+
+#[test]
+fn syncing_publishes_the_rolled_state_without_posting_shufflings() {
+    let (mut tile, _gossip, _rpc, _spine, _adapter) = tile_with_producers(30);
+    seed_tile(&mut tile, 4, 30);
+    tile.sync_target = SyncUpdate::default();
+
+    let mut posted = 0;
+    tile.on_slot_start(SLOTS_PER_EPOCH + 2, |_| posted += 1);
+
+    assert_eq!(posted, 0);
+    assert_eq!(tile.state.reader().read(|view| view.slot.current_epoch()).unwrap(), 1);
 }
 
 #[test]
@@ -4796,7 +4882,7 @@ fn epoch_transition_keeps_base_until_finality() {
         pw.commit()
     };
 
-    tile.on_slot_start(SLOTS_PER_EPOCH);
+    tile.on_slot_start(SLOTS_PER_EPOCH, |_| {});
 
     // Base unchanged; the new validator lives on the head fork's delta.
     assert_eq!(
@@ -4921,7 +5007,7 @@ impl ThreeForks {
             block_root: root,
             has_data_columns: true,
             parent_state_id: parent,
-            fork: stf::BlockFork::Fulu { payload_roots: Default::default() },
+            fork: BlockFork::Fulu { payload_roots: Default::default() },
             parent_payload_status: PayloadStatus::Full,
             relay_eligible: false,
         };
@@ -5464,7 +5550,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
         [epoch, epoch + 1].map(|epoch| ShufflingId::from_state(&view, epoch).unwrap())
     };
     let original = selected_ids(&rig.tile);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "unchanged selection is already posted");
 
     for branch in 10..20 {
@@ -5472,7 +5558,7 @@ fn shufflings_follow_head_selection_across_reorgs() {
         let view = rig.tile.state.read_view(fork);
         rig.tile.shuffling_cache.for_block(&view, 2).unwrap();
     }
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "eviction does not change the published selection");
 
     let fork = rig.post_state(rig.anchor, [0xB0; 32], 70, [0xBB; 32], [0xCC; 32]);
@@ -5484,19 +5570,19 @@ fn shufflings_follow_head_selection_across_reorgs() {
     };
     let view = rig.tile.state.read_view(fork);
     rig.tile.shuffling_cache.precompute(&view, view.slot.current_epoch() + 1);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty(), "computing a losing branch cannot replace API duties");
 
     rig.tile.last_applied = fork;
     let fork_ids = selected_ids(&rig.tile);
     assert_ne!(original, fork_ids, "fixture has different decision roots");
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert_eq!(posted(rig.drain()), fork_ids);
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert!(posted(rig.drain()).is_empty());
 
     rig.tile.last_applied = rig.anchor;
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     assert_eq!(posted(rig.drain()), original, "restored branch must be reposted");
 }
 
@@ -5550,7 +5636,7 @@ fn published_shuffling_uses_the_selected_branches_active_set() {
         assert_eq!(original.randao_mixes.seed_mix(epoch), selected.randao_mixes.seed_mix(epoch));
     }
     rig.tile.last_applied = fork;
-    rig.tile.post_shufflings(&mut rig.adapter.producers);
+    rig.tile.post_shufflings(|event| rig.adapter.producers.produce(event));
     let published = rig.drain();
     let mut epochs = Vec::new();
     for event in published.0 {
@@ -5583,6 +5669,25 @@ fn engine_requests(sink: &mut SpineAdapter<SilverSpine>) -> Vec<EngineReq> {
     let mut requests = Vec::new();
     sink.consume(|request: EngineReq, _| requests.push(request));
     requests
+}
+
+#[test]
+fn api_request_sent_during_the_first_sync_is_handled_once_following() {
+    let (mut tile, _gp, _rp, mut spine, mut adapter) = tile_with_producers(10);
+    seed_tile(&mut tile, 4, 10);
+    tile.sync_target = SyncUpdate::default();
+    tile.on_attach(&mut adapter);
+    let mut sink = SpineAdapter::connect_tile(&Sink, &mut spine.spine);
+    tile.loop_body(&mut adapter);
+
+    sink.produce(BeaconApiRequest::PayloadAttributesWanted(true));
+    tile.loop_body(&mut adapter);
+    assert!(!tile.payload_attributes.wanted, "the syncing loop leaves requests queued");
+
+    sink.produce(SyncUpdate::Following);
+    tile.loop_body(&mut adapter);
+    tile.loop_body(&mut adapter);
+    assert!(tile.payload_attributes.wanted);
 }
 
 /// Seeded states name validator 0 in every lookahead seat.
@@ -6466,7 +6571,7 @@ fn blinded_block_on_a_bid_matches_the_full_block() {
     let offsets = BodyOffsets::validated(&message[84..], BodyFork::FuluBlinded).unwrap();
     assert_eq!(offsets.payload_header(), &header[..]);
     assert_eq!(offsets.blob_commitments_fulu(), frame.commitments);
-    let (body_root, _) = stf::hash_body(&offsets);
+    let body_root = HashedBody::of(&offsets).root;
     assert_eq!(body_root, ssz_hash::hash_tree_root_body_fulu(&full_message[84..]));
 }
 
@@ -7100,7 +7205,7 @@ fn fulu_block_rejecting_an_exit_drops_every_operation() {
     for (i, body_root) in [[1u8; 32], [2u8; 32]].into_iter().enumerate() {
         let header =
             BeaconBlockHeader { slot, proposer_index: offender, body_root, ..Default::default() };
-        let root = ssz_hash::hash_tree_root_block_header(&header);
+        let root = hash_tree_root_block_header(&header);
         let signing_root = bls::compute_signing_root(&root, &domain);
         let signature = fixture_secret_key(offender as usize).sign(&signing_root, bls::DST, &[]);
         let signed = &mut slashing[i * 208..(i + 1) * 208];
@@ -7128,7 +7233,7 @@ fn fulu_block_rejecting_an_exit_drops_every_operation() {
     );
 }
 
-fn block_with_columns(tile: &BeaconStateTile, fork: stf::BlockFork) -> ParsedBlock {
+fn block_with_columns(tile: &BeaconStateTile, fork: BlockFork) -> ParsedBlock {
     ParsedBlock {
         header: BeaconBlockHeader {
             slot: 11,
@@ -7150,7 +7255,7 @@ fn block_with_columns(tile: &BeaconStateTile, fork: stf::BlockFork) -> ParsedBlo
 fn fulu_block_with_blobs_waits_for_its_columns() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    let fulu = stf::BlockFork::Fulu { payload_roots: Default::default() };
+    let fulu = BlockFork::Fulu { payload_roots: Default::default() };
     assert!(tile.waits_for_columns(&block_with_columns(&tile, fulu)));
 }
 
@@ -7158,7 +7263,7 @@ fn fulu_block_with_blobs_waits_for_its_columns() {
 fn gloas_block_with_bid_commitments_imports_without_its_columns() {
     let mut tile = make_tile();
     seed_tile(&mut tile, 4, 10);
-    assert!(!tile.waits_for_columns(&block_with_columns(&tile, stf::BlockFork::Gloas)));
+    assert!(!tile.waits_for_columns(&block_with_columns(&tile, BlockFork::Gloas)));
 }
 
 /// The envelope's availability wait ends at `DataColumnsAvailable` for a block

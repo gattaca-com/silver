@@ -26,7 +26,6 @@ theorem halve_mod_p_field (x : portable.fp.Fp) (hx : value x < Bls.Fp.modulus) :
   obtain ⟨out,he,hb,hv⟩ := halve_mod_p_refines x hx
   refine ⟨out,he,hb,?_⟩
   have h := congrArg (fun z : ℤ => (z : ZMod Bls.Fp.modulus)) hv
-  dsimp only at h
   split_ifs at h <;> simpa only [Int.cast_mul,Int.cast_add,Int.cast_ofNat,
     Int.cast_zero,Int.cast_natCast,ZMod.natCast_self,add_zero] using h
 
@@ -56,10 +55,10 @@ theorem halve_loop_refines (a : ZMod Bls.Fp.modulus) (u x : portable.fp.Fp)
       · have hbody : portable.fp.inverse_words_loop0_loop0.body u x =
             ok (ControlFlow.cont (uh,xh)) := by
           simp only [portable.fp.inverse_words_loop0_loop0.body,is_even_refines,heven,
-            decide_true,bind_tc_ok,if_true,heu,hex]
+            decide_true, bind_ok,ite_true,heu,hex]
         rw [portable.fp.inverse_words_loop0_loop0,loop.eq_1]
         dsimp only
-        rw [hbody]
+        rw [hbody, bind_ok]
         exact he
       · exact dvd_trans hd ⟨2,by omega⟩
     · have hodd : value u % (2 : ℤ) = 1 := by omega
@@ -67,10 +66,10 @@ theorem halve_loop_refines (a : ZMod Bls.Fp.modulus) (u x : portable.fp.Fp)
       have hbody : portable.fp.inverse_words_loop0_loop0.body u x =
           ok (ControlFlow.done (u,x)) := by
         simp only [portable.fp.inverse_words_loop0_loop0.body,is_even_refines,heven,
-          decide_false,bind_tc_ok,Bool.false_eq_true,if_false]
+          decide_false, bind_ok,Bool.false_eq_true,ite_false]
       rw [portable.fp.inverse_words_loop0_loop0,loop.eq_1]
       dsimp only
-      rw [hbody]
+      rw [hbody, bind_ok]
 
 theorem second_halve_loop_eq (u x : portable.fp.Fp) :
     portable.fp.inverse_words_loop0_loop1 u x = portable.fp.inverse_words_loop0_loop0 u x := rfl
@@ -101,11 +100,11 @@ theorem coefficientSub_map {β : Type} (a b : portable.fp.Fp) (f : portable.fp.F
           ok (f out)
         else ok (f d)) = (do let out ← coefficientSub a b; ok (f out)) := by
   unfold coefficientSub
-  simp only [bind_assoc]
-  apply congrArg (fun k => Bind.bind (portable.fp.sub_words a b) k)
+  simp only [bind_tc_eq,Std.bind_assoc]
+  apply congrArg (fun k => Std.bind (portable.fp.sub_words a b) k)
   funext pair
   rcases pair with ⟨d,borrow⟩
-  cases borrow <;> simp [bind_assoc]
+  cases borrow <;> simp [Std.bind_assoc,Aeneas.Std.uncurry]
 
 structure InverseInvariant (a : ZMod Bls.Fp.modulus) (u v x1 x2 : portable.fp.Fp) : Prop where
   u_bound : value u ≤ Bls.Fp.modulus
@@ -124,9 +123,6 @@ private theorem zero_left_forces_one (a : ZMod Bls.Fp.modulus) (u v x1 x2 : port
   have habs := Int.natAbs_of_nonneg (le_of_lt h.v_pos)
   omega
 
-private theorem field_sub_congruence {K : Type} [Field K] (a u v x y : K)
-    (hu : a*x=u) (hv : a*y=v) : a*(x-y)=u-v := by rw [mul_sub,hu,hv]
-
 private theorem inverse_body_step (u v x1 x2 uh vh xh yh : portable.fp.Fp)
     (hu1 : value u ≠ 1) (hv1 : value v ≠ 1) (hu0 : value u ≠ 0)
     (heu : portable.fp.inverse_words_loop0_loop0 u x1 = ok (uh,xh))
@@ -142,18 +138,16 @@ private theorem inverse_body_step (u v x1 x2 uh vh xh yh : portable.fp.Fp)
             let out ← coefficientSub yh xh
             ok (ControlFlow.cont (uh,d,xh,out))) := by
   simp only [portable.fp.inverse_words_loop0.body,is_one_refines,hu1,hv1,
-    decide_false,bind_tc_ok,Bool.false_eq_true,if_false,zero_eq_refines,hu0,
+    decide_false, bind_ok,Bool.false_eq_true,ite_false,zero_eq_refines,hu0,
     heu,second_halve_loop_eq,hev]
   apply congrArg (fun k => Bind.bind (portable.fp.geq uh vh) k)
   funext b
   cases b
-  · dsimp only
-    apply congrArg (fun k => Bind.bind (portable.fp.sub_words vh uh) k)
+  · apply congrArg (fun k => Bind.bind (portable.fp.sub_words vh uh) k)
     funext pair
     rcases pair with ⟨d,borrow⟩
     exact coefficientSub_map yh xh (fun out => ControlFlow.cont (uh,d,xh,out))
-  · dsimp only
-    apply congrArg (fun k => Bind.bind (portable.fp.sub_words uh vh) k)
+  · apply congrArg (fun k => Bind.bind (portable.fp.sub_words uh vh) k)
     funext pair
     rcases pair with ⟨d,borrow⟩
     exact coefficientSub_map xh yh (fun out => ControlFlow.cont (d,vh,out,yh))
@@ -167,20 +161,20 @@ theorem inverse_loop_refines (a : ZMod Bls.Fp.modulus) (u v x1 x2 : portable.fp.
     by_cases hu1 : value u = 1
     · have hb : portable.fp.inverse_words_loop0.body u v x1 x2 = ok (ControlFlow.done x1) := by
         simp only [portable.fp.inverse_words_loop0.body,is_one_refines,hu1,
-          decide_true,bind_tc_ok,if_true]
+          decide_true, bind_ok,ite_true]
       refine ⟨x1,?_,h.x1_bound,?_⟩
       · rw [portable.fp.inverse_words_loop0,loop.eq_1]
         dsimp only
-        rw [hb]
+        rw [hb, bind_ok]
       · simpa only [hu1,Int.cast_one] using h.x1_eq
     · by_cases hv1 : value v = 1
       · have hb : portable.fp.inverse_words_loop0.body u v x1 x2 = ok (ControlFlow.done x2) := by
           simp only [portable.fp.inverse_words_loop0.body,is_one_refines,hu1,hv1,
-            decide_false,decide_true,bind_tc_ok,Bool.false_eq_true,if_false,if_true]
+            decide_false,decide_true, bind_ok,Bool.false_eq_true,ite_false,ite_true]
         refine ⟨x2,?_,h.x2_bound,?_⟩
         · rw [portable.fp.inverse_words_loop0,loop.eq_1]
           dsimp only
-          rw [hb]
+          rw [hb, bind_ok]
         · simpa only [hv1,Int.cast_one] using h.x2_eq
       · have hu0 : value u ≠ 0 := fun hz => hv1 (zero_left_forces_one a u v x1 x2 h hz)
         have hu_pos : 0 < value u := by have := (value_bounds u).1; omega
@@ -211,13 +205,13 @@ theorem inverse_loop_refines (a : ZMod Bls.Fp.modulus) (u v x1 x2 : portable.fp.
           have hstep : portable.fp.inverse_words_loop0.body u v x1 x2 =
               ok (ControlFlow.cont (d,vh,xd,yh)) := by
             rw [hbody,geq_refines]
-            simp only [hge,decide_true,bind_tc_ok,if_true,hd]
+            simp only [hge,decide_true, bind_ok,ite_true,hd]
             change (do let z ← coefficientSub xh yh; ok (ControlFlow.cont (d,vh,z,yh))) = _
             rw [hxd]
-            rfl
+            (simp only [bind_tc_ok] )
           rw [portable.fp.inverse_words_loop0,loop.eq_1]
           dsimp only
-          rw [hstep]
+          rw [hstep, bind_ok]
           exact he
         · have hlt : value uh < value vh := by omega
           obtain ⟨d,hd,hdv⟩ := ordered_sub_words_refines vh uh (le_of_lt hlt)
@@ -237,13 +231,13 @@ theorem inverse_loop_refines (a : ZMod Bls.Fp.modulus) (u v x1 x2 : portable.fp.
           have hstep : portable.fp.inverse_words_loop0.body u v x1 x2 =
               ok (ControlFlow.cont (uh,d,xh,yd)) := by
             rw [hbody,geq_refines]
-            simp only [hge,decide_false,bind_tc_ok,Bool.false_eq_true,if_false,hd]
+            simp only [hge,decide_false, bind_ok,Bool.false_eq_true,ite_false,hd]
             change (do let z ← coefficientSub yh xh; ok (ControlFlow.cont (uh,d,xh,z))) = _
             rw [hyd]
-            rfl
+            (simp only [bind_tc_ok] )
           rw [portable.fp.inverse_words_loop0,loop.eq_1]
           dsimp only
-          rw [hstep]
+          rw [hstep, bind_ok]
           exact he
 
 theorem inverse_words_zero (a : portable.fp.Fp) (ha : value a = 0) :
@@ -253,11 +247,11 @@ theorem inverse_words_zero (a : portable.fp.Fp) (ha : value a = 0) :
   have hb : portable.fp.inverse_words_loop0.body a bls.constants.P_U64 one
       (Array.repeat 6#usize 0#u64) = ok (ControlFlow.done (Array.repeat 6#usize 0#u64)) := by
     simp only [portable.fp.inverse_words_loop0.body,is_one_refines,ha,hp1,
-      zero_ne_one,decide_false,bind_tc_ok,Bool.false_eq_true,if_false,
-      zero_eq_refines,decide_true,if_true]
+      zero_ne_one,decide_false, bind_ok,Bool.false_eq_true,ite_false,
+      zero_eq_refines,decide_true,ite_true]
   rw [portable.fp.inverse_words,portable.fp.inverse_words_loop0,loop.eq_1]
   dsimp only
-  rw [hb]
+  rw [hb, bind_ok]
 
 theorem inverse_words_refines (a : portable.fp.Fp) (ha : value a < Bls.Fp.modulus) :
     ∃ out, portable.fp.inverse_words a = ok out ∧ value out < Bls.Fp.modulus ∧

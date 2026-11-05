@@ -105,6 +105,6 @@ theorem cyclotomic_sum_raw {q : fp2x8.Fp2x8} {m : fp8.Fp8} {x : fp2x8.Fp2x8}
   dsimp only [cycleMNeg1] at hmn1
   simp only [fp12.Fp12.cyclotomic_sum, hz, hre, him, hnp, hnn0, hnn1, hnn, hmp,
     hmn0, hmn1, hmn, hp12, hcp0, hcp, hcn0, hcn, hr, hip0, hip, hin0, hinn, hi,
-    htwice, hm512, hp512, hneg, hsigned, htt, httt, hraw, hout, bind_tc_ok]
+    htwice, hm512, hp512, hneg, hsigned, htt, httt, hraw, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

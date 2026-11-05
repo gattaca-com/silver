@@ -25,21 +25,22 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] :
   simp only [cell_extender.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
   have hclone : blst.blst_fr.Insts.CoreCloneClone.clone (frEncode (Fr.ofNat 0)) =
       ok (frEncode (Fr.ofNat 0)) := rfl
-  obtain ⟨shift, hshift, hshiftval⟩ := WP.spec_imp_exists
+  obtain ⟨shift, hshift, hshiftval⟩ := spec_imp_exists
     (alloc.vec.Vec.resize_spec blst.blst_fr.Insts.CoreCloneClone ext
       FIELD_ELEMENTS_PER_BLOB (frEncode (Fr.ofNat 0)) hclone)
   let empty := alloc.vec.Vec.with_capacity blst.blst_fr FIELD_ELEMENTS_PER_BLOB
-  obtain ⟨scratch, hscratch, hscratchval⟩ := WP.spec_imp_exists
+  obtain ⟨scratch, hscratch, hscratchval⟩ := spec_imp_exists
     (alloc.vec.Vec.resize_spec blst.blst_fr.Insts.CoreCloneClone empty
       FIELD_ELEMENTS_PER_BLOB (frEncode (Fr.ofNat 0)) hclone)
   dsimp only [empty] at hscratch
   obtain ⟨inv, hinv, hinvval⟩ := Refinement.inverse_roots_refinement 4096#usize (by decide) (alloc.vec.Vec.deref rs)
-    (Kzg.Model.roots 12) (by simp [Kzg.Model.roots]) hrsval
+    (Kzg.Model.roots 12) (by simp [Kzg.Model.roots])
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hrsval)
   have hshiftmodel : shift.val = ((Kzg.Model.roots 13).extract 0 4096).toList.map frEncode := by
     have hextlen : ext.val.length = 8192 := by simp [hextval, Kzg.Model.roots]
     rw [hshiftval]
     simp only [List.resize, FIELD_ELEMENTS_PER_BLOB, UScalar.ofNatCore_val_eq,
-      Nat.zero_le, if_true, hextlen]
+      Nat.zero_le, ite_true, hextlen]
     simp only [show 4096 - 8192 = 0 by decide, List.replicate_zero, List.append_nil]
     rw [hextval, ← List.map_take]
     simp only [_root_.Array.toList_extract, List.extract_eq_take_drop, Nat.sub_zero, List.drop_zero]
@@ -58,20 +59,23 @@ theorem new_dispatch_refinement [cpu : RuntimeFeatures] :
       else ok scalar) := by
     unfold cell_extender.CellExtender.new
     rw [hrs]
-    simp only [bind_tc_ok, fr_zero_eq]
+    simp only [bind_ok, fr_zero_eq]
     rw [hext]
-    simp only [bind_tc_ok, UScalar.ofNatCore_val_eq, hshift, hscratch, hinv, inverse_blob_size_eq]
+    simp only [bind_ok, hshift, hscratch, hinv, inverse_blob_size_eq, ifma_available, bind_ok]
     rfl
   cases hsimd : cpu.simdAvailable with
   | false =>
-    exact ⟨scalar, by simp only [hnew, hsimd, Bool.false_eq_true, if_false],
+    exact ⟨scalar, by simp only [hnew, hsimd, Bool.false_eq_true, ite_false],
       hscalar, rfl⟩
   | true =>
     obtain ⟨kernel, hkernel, hki, _⟩ := Kernel.new_refinement
       (alloc.vec.Vec.deref rs) (alloc.vec.Vec.deref inv) (alloc.vec.Vec.deref shift)
-      (frEncode (Fr.ofNat 4096).inverse) hrsval hinvval hshiftmodel rfl
+      (frEncode (Fr.ofNat 4096).inverse)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hrsval)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hinvval)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hshiftmodel) rfl
     refine ⟨{ scalar with kernel := some kernel }, ?_, ?_, ?_⟩
-    · simp only [hnew, hsimd, if_true, hkernel, bind_tc_ok]
+    · simp only [hnew, hsimd, ite_true, hkernel, bind_ok]
     · exact ⟨hrsval, hinvval, rfl, hshiftmodel, hscratchlen, hscratchlen, hki⟩
     · rfl
 

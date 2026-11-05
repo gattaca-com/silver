@@ -6,8 +6,9 @@ open EthLib.Cryptography Bls Kzg
 open scoped EthLib.Cryptography.Bls.Fr
 open silver_crypto_simd silver_crypto_simd.kzg
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
@@ -32,10 +33,10 @@ private theorem twiddle_loop
     have he : m.val = 8 := by omega
     refine ⟨twiddles, ?_, by simpa only [he] using hp⟩
     rw [fft8.stage_twiddles_loop, loop.eq_1]
-    simp [fft8.stage_twiddles_loop.body, fr8.LANES, UScalar.lt_equiv, he]
+    simp [fft8.stage_twiddles_loop.body, fr8.LANES, UScalar.lt_equiv, he, bind_ok]
   | succ rem ih =>
     have hml : m.val < 8 := by omega
-    obtain ⟨modulo, hmod, hmval⟩ := WP.spec_imp_exists (UScalar.rem_spec m (y := h) (by omega))
+    obtain ⟨modulo, hmod, hmval⟩ := spec_imp_exists (UScalar.rem_spec m (y := h) (by omega))
     have hindexBound := hbound ⟨m.val, hml⟩
     have hsumBound : start.val + modulo.val < 2 ^ UScalarTy.Usize.numBits := by
       have hs : start.val + modulo.val ≤ (start.val + modulo.val) * step.val := Nat.le_mul_of_pos_right _ hstep
@@ -63,7 +64,7 @@ private theorem twiddle_loop
     let value := frEncode (roots[index.val]! * Fr.ofNat 16)
     let next := Aeneas.Std.Array.set twiddles m value
     have hupdate : Array.update twiddles m value = ok next := by
-      have hb : m.val < twiddles.val.length := by simpa only [twiddles.property] using hml
+      have hb : m.val < twiddles.val.length := by simpa only [twiddles.property] using! hml
       simp [Array.update, List.getElem?_eq_getElem hb, next, Aeneas.Std.Array.set]
     have hprefix : TwiddlePrefix next
         (fun lane => roots[(start.val + lane.val % h.val) * step.val]!) m'.val := by
@@ -71,18 +72,18 @@ private theorem twiddle_loop
       by_cases he : lane.val = m.val
       · rw [he]
         simp [next, Aeneas.Std.Array.set, twiddles.property, hml, value, hival, he]
-      · rw [show next.val = twiddles.val.set m.val value from rfl,
-          List.getElem!_set_ne _ _ _ _ (by omega)]
+      · rw [show next.val = twiddles.val.set m.val value from Array.set_val_eq _ _ _,
+          List.set_getElem!_ne _ _ _ _ (by omega)]
         exact hp lane (by omega)
     obtain ⟨out, hout, ho⟩ := ih next m' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho⟩
     have hbody : fft8.stage_twiddles_loop.body input step start h twiddles m =
         ok (cont (next, m')) := by
       simp only [fft8.stage_twiddles_loop.body, fr8.LANES, UScalar.lt_equiv,
-        UScalar.ofNatCore_val_eq, hml, if_true, hmod, hadd, hmul, hlookup,
-        hmultiplier, hupdate, hinc, bind_tc_ok, value]
+        UScalar.ofNatCore_val_eq, hml, ite_true, hmod, hadd, hmul, hlookup,
+        hmultiplier, hupdate, hinc, bind_ok, value]
     rw [fft8.stage_twiddles_loop, loop.eq_1]
-    simpa only [hbody] using hout
+    simpa only [hbody, bind_ok] using! hout
 
 theorem stage_twiddles_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
@@ -97,7 +98,7 @@ theorem stage_twiddles_refinement
     (by intro lane hlane; exact (Nat.not_lt_zero _ hlane).elim)
   refine ⟨out, ?_, fun lane => ho lane lane.isLt⟩
   simpa only [fft8.stage_twiddles, fr_zero_eq,
-    UScalar.ofNatCore_val_eq, show Fr.ofNat 0 = 0 from rfl, bind_tc_ok] using hout
+    UScalar.ofNatCore_val_eq, show Fr.ofNat 0 = 0 from rfl, bind_tc_ok, bind_ok] using hout
 
 private def WideStagePrefix (wide : alloc.vec.Vec fr8.Fr8) (roots : _root_.Array Fr)
     (half count : Nat) : Prop :=
@@ -125,7 +126,7 @@ private theorem wide_stage_loop
     have he : v.val = half.val / 8 := by omega
     refine ⟨wide, ?_, by simpa only [he] using hp, fun _ _ => rfl⟩
     rw [fft8.Fft8.new_loop1_loop0, loop.eq_1]
-    simp [fft8.Fft8.new_loop1_loop0.body, hcount, UScalar.lt_equiv, hcval, he]
+    simp [fft8.Fft8.new_loop1_loop0.body, hcount, UScalar.lt_equiv, hcval, he, bind_ok]
   | succ rem ih =>
     have hvt : v.val < half.val / 8 := by omega
     let total : Usize := UScalar.ofNatCore (stride.val * n.val) (by rw [hproduct]; scalar_tac)
@@ -139,7 +140,7 @@ private theorem wide_stage_loop
     have htotal : stride * n = ok total := scalar_mul_ok stride n (by rw [hproduct]; scalar_tac)
     have htwice : 2#usize * half = ok twice := scalar_mul_ok 2#usize half (by scalar_tac)
     have hstart : v * fr8.LANES = ok start := by
-      simpa only [fr8.LANES] using scalar_mul_ok v 8#usize (by scalar_tac)
+      simpa only [fr8.LANES] using! scalar_mul_ok v 8#usize (by scalar_tac)
     have hinc : v + 1#usize = ok v' := scalar_add_ok v 1#usize (by scalar_tac)
     obtain ⟨step, hdiv, hstepval⟩ := UScalar.div_spec total (y := twice) (by omega)
     rw [htval, htwoval] at hstepval
@@ -159,20 +160,21 @@ private theorem wide_stage_loop
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice twiddles) 0#usize
       (fun lane => roots[(8 * v.val + lane.val) * (roots.size / (2 * half.val))]!)
-      (by simp [Array.to_slice, twiddles.property]) (by
+      (by simp [Array.to_slice, Slice.from_val, twiddles.property]) (by
         intro lane
         have hmod : lane.val % half.val = lane.val := Nat.mod_eq_of_lt (by omega)
-        simpa only [Array.to_slice, UScalar.ofNatCore_val_eq, Nat.zero_add,
-          hsval, hstepval, hmod, Nat.mul_comm v.val 8] using htw lane)
+        simpa only [Array.to_slice, Slice.from_val, UScalar.ofNatCore_val_eq, Nat.zero_add,
+          hsval, hstepval, hmod, Nat.mul_comm v.val 8] using! htw lane)
     have hpushBound : wide.val.length + 1 ≤ Usize.max := by rw [hp.1]; scalar_tac
-    let next : alloc.vec.Vec fr8.Fr8 := ⟨wide.val ++ [factor], by simpa using hpushBound⟩
+    let next : alloc.vec.Vec fr8.Fr8 := alloc.vec.Vec.from (wide.val ++ [factor]) (by simpa using hpushBound)
     have hpush : alloc.vec.Vec.push wide factor = ok next := by
       simp [alloc.vec.Vec.push, hpushBound, next]
     have hprefix : WideStagePrefix next roots half.val v'.val := by
       refine ⟨by simp [next, hp.1, hv', Nat.add_assoc], ?_⟩
       intro j
+      simp only [next, alloc.vec.Vec.from_val]
       by_cases hj : j.val < v.val
-      · change MultiplierRep (wide.val ++ [factor])[half.val / 8 - 1 + j.val]! _
+      ·
         rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)]
         exact hp.2 ⟨j.val, hj⟩
       · have he : j.val = v.val := by omega
@@ -182,14 +184,15 @@ private theorem wide_stage_loop
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · have hbody : fft8.Fft8.new_loop1_loop0.body input n stride half wide v = ok (cont (next, v')) := by
-        simp only [fft8.Fft8.new_loop1_loop0.body, hcount, bind_tc_ok,
-          UScalar.lt_equiv, hcval, hvt, if_true, htotal, htwice, hdiv,
+        simp only [fft8.Fft8.new_loop1_loop0.body, hcount, bind_ok,
+          UScalar.lt_equiv, hcval, hvt, ite_true, htotal, htwice, hdiv,
           hstart, htwiddles, lift, hload, hpush, hinc]
       rw [fft8.Fft8.new_loop1_loop0, loop.eq_1]
-      simpa only [hbody] using hout
+      simpa only [hbody, bind_ok] using! hout
     · intro i hi
       rw [hframe i hi]
-      exact List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)
+      simpa only [next, alloc.vec.Vec.from_val] using
+        List.getElem!_append_left wide.val [factor] i (by rw [hp.1]; omega)
 
 theorem wide_stage_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)
@@ -232,7 +235,7 @@ private theorem short_stage_loop
     have he : v.val = half.val := by omega
     refine ⟨short, ?_, by simpa only [he] using hp, fun _ _ => rfl⟩
     rw [fft8.Fft8.new_loop0_loop0, loop.eq_1]
-    simp [fft8.Fft8.new_loop0_loop0.body, UScalar.lt_equiv, he]
+    simp [fft8.Fft8.new_loop0_loop0.body, UScalar.lt_equiv, he, bind_ok]
   | succ rem ih =>
     have hvt : v.val < half.val := by omega
     let total : Usize := UScalar.ofNatCore (stride.val * n.val) (by rw [hproduct]; scalar_tac)
@@ -262,19 +265,20 @@ private theorem short_stage_loop
     obtain ⟨factor, hload, hfactor⟩ := load_multiplier_refinement
       (Array.to_slice twiddles) 0#usize
       (fun _ => roots[v.val * (roots.size / (2 * half.val))]!)
-      (by simp [Array.to_slice, twiddles.property]) (by
+      (by simp [Array.to_slice, Slice.from_val, twiddles.property]) (by
         intro lane
-        simpa only [Array.to_slice, UScalar.ofNatCore_val_eq, Nat.zero_add,
-          hstepval, Nat.mod_one, Nat.add_zero] using htw lane)
+        simpa only [Array.to_slice, Slice.from_val, UScalar.ofNatCore_val_eq, Nat.zero_add,
+          hstepval, Nat.mod_one, Nat.add_zero] using! htw lane)
     have hpushBound : short.val.length + 1 ≤ Usize.max := by rw [hp.1]; scalar_tac
-    let next : alloc.vec.Vec fr8.Fr8 := ⟨short.val ++ [factor], by simpa using hpushBound⟩
+    let next : alloc.vec.Vec fr8.Fr8 := alloc.vec.Vec.from (short.val ++ [factor]) (by simpa using hpushBound)
     have hpush : alloc.vec.Vec.push short factor = ok next := by
       simp [alloc.vec.Vec.push, hpushBound, next]
     have hprefix : ShortStagePrefix next roots half.val v'.val := by
       refine ⟨by simp [next, hp.1, hv', Nat.add_assoc], ?_⟩
       intro j
+      simp only [next, alloc.vec.Vec.from_val]
       by_cases hj : j.val < v.val
-      · change MultiplierRep (short.val ++ [factor])[half.val - 1 + j.val]! _
+      ·
         rw [List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)]
         exact hp.2 ⟨j.val, hj⟩
       · have he : j.val = v.val := by omega
@@ -284,14 +288,15 @@ private theorem short_stage_loop
     obtain ⟨out, hout, ho, hframe⟩ := ih next v' (by omega) hprefix (by omega)
     refine ⟨out, ?_, ho, ?_⟩
     · have hbody : fft8.Fft8.new_loop0_loop0.body input n stride half short v = ok (cont (next, v')) := by
-        simp only [fft8.Fft8.new_loop0_loop0.body, bind_tc_ok,
-          UScalar.lt_equiv, hvt, if_true, htotal, htwice, hdiv,
+        simp only [fft8.Fft8.new_loop0_loop0.body, bind_ok,
+          UScalar.lt_equiv, hvt, ite_true, htotal, htwice, hdiv,
           htwiddles, lift, hload, hpush, hinc]
       rw [fft8.Fft8.new_loop0_loop0, loop.eq_1]
-      simpa only [hbody] using hout
+      simpa only [hbody, bind_ok] using! hout
     · intro i hi
       rw [hframe i hi]
-      exact List.getElem!_append_left _ _ _ (by rw [hp.1]; omega)
+      simpa only [next, alloc.vec.Vec.from_val] using
+        List.getElem!_append_left short.val [factor] i (by rw [hp.1]; omega)
 
 theorem short_stage_refinement
     (input : Slice blst.blst_fr) (roots : _root_.Array Fr)

@@ -5,6 +5,7 @@ use silver_beacon_state_data::{
     B256, BLSPubkey, BidBuilderError, BuilderRegistry, Epoch, ExecutionPayloadBid,
     MIN_SEED_LOOKAHEAD, ParsedAggregateAndProof, SLOTS_PER_EPOCH, SYNC_SUBCOMMITTEE_MASK_WORDS,
     SYNC_SUBCOMMITTEE_SIZE, ShufflingId, Slot, StateId, StateReadView, SyncSubcommittee,
+    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     gloas::PTC_SIZE,
 };
 use silver_common::{
@@ -37,8 +38,8 @@ use super::{
     shuffling_cache::ShufflingRequest,
 };
 use crate::{
-    bls::{self, CheckedSignature, PublicKey, Signature, VerifiedSingleAttestation},
     counters::BeaconStateCounters,
+    error::VoluntaryExitError,
     fork_choice::{
         ExecutionStatus, PayloadAxis, compute_shuffling_dependent_slot,
         compute_shuffling_lookahead_start_slot,
@@ -523,7 +524,8 @@ impl BeaconStateTile {
                 continue;
             }
             let (pk, root) = p.pubkey_and_root();
-            let valid = batch_ok || bls::verify_one_checked(pk, &sig, root);
+            let valid =
+                m.is_api_verified() || batch_ok || self.sig_batch.verify_one(pk, &sig, root);
             if !valid {
                 self.reject_gossip(&m, p.message(), "vote bad signature", producers);
                 continue;
@@ -546,7 +548,7 @@ impl BeaconStateTile {
         // PTC votes all dirty the same fork-choice structure; fold the whole
         // flush in one head recomputation rather than once per message.
         if committed_ptc {
-            self.recompute_head();
+            self.recompute_head(|event| producers.produce(event));
         }
 
         if accepted {
@@ -614,7 +616,7 @@ impl BeaconStateTile {
             let paired = self.votes.pending.iter().any(|(_, q, _)| q.dedup_key() == key) ||
                 matches!(p, PreparedVote::SyncMessage(_)) &&
                     self.sig_batch.contains(pk, sig, root);
-            if !paired {
+            if !paired && !vote.is_api_verified() {
                 self.sig_batch.push_parsed(pk, sig, *root);
             }
             self.votes.pending.push((vote, p, sig));
@@ -1332,6 +1334,7 @@ impl BeaconStateTile {
         source: BlockSource,
         slot: u64,
         block_root: B256,
+        newly_verified: bool,
         producers: &mut Producers,
     ) {
         producers.produce(BeaconStateEvent::EnvelopeAvailable {
@@ -1339,6 +1342,7 @@ impl BeaconStateTile {
             source,
             slot,
             block_root,
+            newly_verified,
         });
     }
 
@@ -1373,7 +1377,7 @@ impl BeaconStateTile {
         let slot_state = rv.slot;
 
         if self.fork_choice.is_payload_verified(&block_root) {
-            Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
+            Self::emit_envelope_available(&acquired, source, slot, block_root, false, producers);
             return Feedback::AlreadySeen;
         }
 
@@ -1399,10 +1403,10 @@ impl BeaconStateTile {
             versioned_hashes,
         }));
 
-        Self::emit_envelope_available(&acquired, source, slot, block_root, producers);
+        Self::emit_envelope_available(&acquired, source, slot, block_root, true, producers);
 
         self.drain_awaiting_payload(block_root, producers);
-        self.recompute_head();
+        self.recompute_head(|event| producers.produce(event));
 
         Feedback::Accept
     }
@@ -1428,7 +1432,7 @@ impl BeaconStateTile {
         };
 
         if parked.from_disk {
-            return self.apply_disk_envelope(parked.read);
+            return self.apply_disk_envelope(parked.read, |event| producers.produce(event));
         }
         self.handle_execution_payload_envelope(
             parked.read.clone(),
@@ -1578,10 +1582,9 @@ impl BeaconStateTile {
         let buf: &[u8; SIGNED_VOLUNTARY_EXIT_SIZE] =
             data[..SIGNED_VOLUNTARY_EXIT_SIZE].try_into().unwrap();
         let exit_epoch = SignedVoluntaryExitView::epoch(buf);
-        let vi_u = SignedVoluntaryExitView::validator_index(buf);
-        let vi = vi_u as usize;
+        let vi = SignedVoluntaryExitView::validator_index(buf);
 
-        if self.seen_exits.contains(vi) {
+        if self.seen_exits.contains(vi as usize) {
             return Feedback::AlreadySeen;
         }
         let exit_start = exit_epoch.saturating_mul(SLOTS_PER_EPOCH);
@@ -1590,24 +1593,17 @@ impl BeaconStateTile {
         }
         let canon_id = self.canonical_state_id();
         let view = self.state.read_view(canon_id);
-        if vi >= view.validators.count() {
-            return Feedback::reject("exit validator out of range");
-        }
-        if view.validators.exit_epoch(vi) != u64::MAX {
-            return Feedback::Ignore;
-        }
         let current_epoch = view.slot.current_epoch();
-        if let Err(e) = validate::validate_exit_eligibility(
-            &self.spec,
-            &view.validators,
-            vi_u as u32,
-            current_epoch,
-        ) {
-            silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
-            return Feedback::reject("exit invalid");
+        match validate::validate_exit_eligibility(&self.spec, &view.validators, vi, current_epoch) {
+            Ok(()) => {}
+            Err(VoluntaryExitError::AlreadyExiting { .. }) => return Feedback::Ignore,
+            Err(e) => {
+                silver_log::debug!(error = %e, "voluntary_exit gossip rejected");
+                return Feedback::reject("exit invalid");
+            }
         }
 
-        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi_u);
+        let object_root = ssz_hash::hash_tree_root_voluntary_exit(exit_epoch, vi);
         let imm = view.imm;
         let domain = bls::compute_domain(
             bls::DOMAIN_VOLUNTARY_EXIT,
@@ -1616,10 +1612,10 @@ impl BeaconStateTile {
         );
         let signing_root = bls::compute_signing_root(&object_root, &domain);
         let sig = SignedVoluntaryExitView::signature(buf);
-        if !bls::verify_one(view.validators.pubkey_decompressed(vi), sig, &signing_root) {
+        if !bls::verify_one(view.validators.pubkey_decompressed(vi as usize), sig, &signing_root) {
             return Feedback::reject("exit bad signature");
         }
-        self.seen_exits.mark(vi);
+        self.seen_exits.mark(vi as usize);
         self.exit_pool.insert(buf);
         Feedback::Accept
     }
@@ -1740,7 +1736,7 @@ impl BeaconStateTile {
         let from_pubkey = SignedBlsToExecutionChangeView::from_bls_pubkey(buf);
         let to_address = SignedBlsToExecutionChangeView::to_execution_address(buf);
         if let Err(e) =
-            validate::validate_bls_to_execution_change(&view.validators, vi_u as u32, from_pubkey)
+            validate::validate_bls_to_execution_change(&view.validators, vi_u, from_pubkey)
         {
             silver_log::debug!(error = %e, "bls_to_execution_change gossip rejected");
             return Feedback::reject("bls change invalid");
@@ -1775,6 +1771,7 @@ impl BeaconStateTile {
     ) -> bool {
         let acquired = self.reader.acquire(read);
         let Some(data) = acquired.buffer().ok().map(|(d, _)| d) else { return false };
+        let pre_verified = pre_verified || m.is_api_verified();
 
         let feedback = match m.topic {
             GossipTopic::BeaconBlock if self.sync_target.is_syncing() => {
@@ -1918,16 +1915,18 @@ impl BeaconStateTile {
     }
 
     fn relay_gossip(m: &NewGossipMsg, block_root: Option<B256>, producers: &mut Producers) {
-        producers.produce(PeerEvent::SendGossip {
-            originator_stream_id: m.stream_id,
-            topic: m.topic,
-            domain: m.domain,
-            ssz_cache: m.ssz_cache,
-            msg_hash: m.msg_hash,
-            recv_ts: m.recv_ts,
-            protobuf: m.protobuf,
-            ssz: m.ssz,
-        });
+        if let Some(protobuf) = m.protobuf {
+            producers.produce(PeerEvent::SendGossip {
+                originator_stream_id: m.stream_id,
+                topic: m.topic,
+                domain: m.domain,
+                ssz_cache: m.ssz_cache,
+                msg_hash: m.msg_hash,
+                recv_ts: m.recv_ts,
+                protobuf,
+                ssz: m.ssz,
+            });
+        }
         if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
             let hash = m.msg_hash;
             producers.produce(BeaconStateEvent::LocalGossipVerdict {
@@ -2047,7 +2046,7 @@ impl BeaconStateTile {
             return Feedback::reject("vote bad signature");
         }
         let feedback = self.commit_vote(&prepared, &sig);
-        self.recompute_head();
+        self.recompute_head(|_| {});
         feedback
     }
 }

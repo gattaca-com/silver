@@ -27,12 +27,12 @@ theorem join_rows {k m : ℕ} {x y : Array fp8.Fp8 3#usize} {a b : Fin 3 → V F
     RowsRaw k m (joinArrays x y) (joinRows a b) := by
   intro j
   fin_cases j
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hx ⟨0, by decide⟩
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hx ⟨1, by decide⟩
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hx ⟨2, by decide⟩
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hy ⟨0, by decide⟩
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hy ⟨1, by decide⟩
-  · simpa [joinArrays, joinRows, ofArray, Array.make] using hy ⟨2, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hx ⟨0, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hx ⟨1, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hx ⟨2, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hy ⟨0, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hy ⟨1, by decide⟩
+  · simpa [joinArrays, joinRows, ofArray, Array.make, Array.from_val] using hy ⟨2, by decide⟩
 
 def squareLeft (a : P F) : Fin 6 → V F :=
   joinRows (operands (kara2 0 a)) (operands (add2 (kara2 0 a) (kara2 1 a)))
@@ -86,7 +86,7 @@ theorem square_raw {x : fp2x8.Fp2x8} {a : P F}
     index_usize_eq rt 0#usize (by decide), index_usize_eq rt 1#usize (by decide),
     index_usize_eq rt 2#usize (by decide), index_usize_eq rs' 0#usize (by decide),
     index_usize_eq rs' 1#usize (by decide), index_usize_eq rs' 2#usize (by decide),
-    UScalar.ofNatCore_val_eq, hleft, hright, hq, hout, bind_tc_ok]
+    UScalar.ofNatCore_val_eq, hleft, hright, hq, hout, bind_ok]
 
 
 

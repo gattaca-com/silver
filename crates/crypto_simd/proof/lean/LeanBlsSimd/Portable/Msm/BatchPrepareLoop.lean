@@ -26,10 +26,11 @@ theorem Prepared.step (dx prefixes : alloc.vec.Vec portable.fp.Fp)
     Prepared (dx.set i (Kzg.fpEncode (values i.val)).l)
       (prefixes.set i (Kzg.fpEncode (chainPrefix values i.val)).l) values (i.val+1) := by
   intro j hj
+  simp only [alloc.vec.Vec.set_val_eq]
   by_cases he : i.val = j
   · subst j
     exact ⟨List.getElem?_set_self hdx,List.getElem?_set_self hpref⟩
-  · simp only [alloc.vec.Vec.set,List.getElem?_set_ne he]
+  · simp only [List.getElem?_set_ne he]
     exact h j (by omega)
 
 /-- Traverse any nonzero prefix while retaining the actual continuation of the generated loop. -/
@@ -77,7 +78,7 @@ theorem prepare_prefix [RuntimeFeatures]
           (chainArray values next.val) next := by
         unfold portable.msm.pairs.BatchedAdds.run_loop0
         rw [loop.eq_1]
-        simp only [hstep,hnext]
+        simp only [hstep,hnext, bind_ok]
         rfl
       exact he.trans heq
 
@@ -120,10 +121,9 @@ theorem prepare_all [RuntimeFeatures]
     (by intro j hj; change j < 0 at hj; omega) hdx hpref
   refine ⟨finalDx,finalPrefixes,hp,hd,hpr,heq.trans ?_⟩
   rw [portable.msm.pairs.BatchedAdds.run_loop0,loop.eq_1]
-  simp only [portable.msm.pairs.BatchedAdds.run_loop0.body,lt_self_iff_false,if_false,
-    batch_inverse_chains values n.val hnz,bind_tc_ok]
-  cases h : portable.msm.pairs.BatchedAdds.run_loop0_loop0 a b out finalDx
-    finalPrefixes store n (inverseArray values n.val) <;> rfl
+  simp only [portable.msm.pairs.BatchedAdds.run_loop0.body,lt_self_iff_false,ite_false,
+    batch_inverse_chains values n.val hnz, bind_ok]
+  simp only [Aeneas.Std.bind_assoc, bind_ok]
 
 theorem run_rejects_at [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)
     (store : portable.msm.store.PointStore) (values : ℕ → ChainField) (stop : Usize)
@@ -143,12 +143,12 @@ theorem run_rejects_at [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)
   refine ⟨{adds with dx := finalDx, «prefix» := finalPrefixes},?_,rfl,rfl,rfl⟩
   rw [chainArray_zero] at hr
   simp only [portable.msm.pairs.BatchedAdds.run,
-    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone,bind_tc_ok]
+    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone, bind_ok]
   change (do
     let result ← portable.msm.pairs.BatchedAdds.run_loop0 adds.a adds.b adds.out
       dx prefixes store n (Array.repeat 4#usize portable.constants.ONE) 0#usize
     ok (result.1,{adds with dx := result.2.1, «prefix» := result.2.2.1},result.2.2.2)) = _
   rw [hr]
-  rfl
+  (simp only [bind_tc_ok] )
 
 end LeanBlsSimd.Portable.Msm.Batch

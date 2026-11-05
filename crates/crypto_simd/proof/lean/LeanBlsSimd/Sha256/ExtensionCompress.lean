@@ -24,10 +24,10 @@ theorem block_step (state : _root_.Array UInt32) (data : Slice U8)
   norm_num only [UScalar.ofNatCore_val_eq,Nat.mul_zero,Nat.sub_zero] at hload hquad
   refine ⟨next,?_,rfl⟩
   have hb' : block < blocks := hb
-  simp only [sha256.extensions.compress_blocks_loop0.body,hb',if_true,hload]
-  simp only [bind_tc_ok,hquad,core.core_arch.x86.sse2._mm_add_epi32]
+  simp only [sha256.extensions.compress_blocks_loop0.body,hb',ite_true,hload]
+  simp only [bind_ok,hquad,core.core_arch.x86.sse2._mm_add_epi32]
   rw [add_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [Spec.compressBlock_eq]
   exact congrArg (fun p : M128 × M128 => ok (cont (p.1,p.2,next)))
     (feed_forward state (Spec.rounds (Spec.schedule (Spec.bytes (data.val.map ofU8)) (64*block.val))
@@ -44,7 +44,7 @@ theorem block_loop_refines (state : _root_.Array UInt32) (data : Slice U8)
   | zero =>
     have hstop : ¬ block < blocks := by change ¬ block.val < blocks.val; omega
     rw [sha256.extensions.compress_blocks_loop0,loop.eq_1]
-    simp only [sha256.extensions.compress_blocks_loop0.body,hstop,if_false,Spec.compressBlocks_zero]
+    simp only [sha256.extensions.compress_blocks_loop0.body,hstop,ite_false,Spec.compressBlocks_zero, bind_ok]
   | succ n ih =>
     obtain ⟨next,hbody,hnext⟩ := block_step state data blocks block (by omega) hdata
     have hr := ih (Spec.compressBlock state (Spec.bytes (data.val.map ofU8)) (64*block.val))
@@ -62,7 +62,7 @@ theorem block_loop_refines (state : _root_.Array UInt32) (data : Slice U8)
     dsimp only at hr ⊢
     rw [hm] at hr
     rw [sha256.extensions.compress_blocks_loop0,loop.eq_1]
-    simpa only [hbody] using hr
+    simpa only [hbody, bind_ok] using! hr
 
 theorem load_words_four (a b c d : UInt32) :
     sha256.extensions.load_words (Array.make 4#usize [word a,word b,word c,word d] (by rfl)) =
@@ -74,7 +74,7 @@ theorem compress_blocks_refines (state : Array U32 8#usize) (data : Slice U8)
       words out = Spec.compressBlocks (words state) (Spec.bytes (data.val.map ofU8)) offset.val blocks.val := by
   have hbound := data.property
   let stop : Usize := UScalar.ofNatCore (offset.val+64*blocks.val) (by scalar_tac)
-  let input : Slice U8 := ⟨data.val.slice offset.val stop.val,by simp [List.slice]; scalar_tac⟩
+  let input : Slice U8 := Slice.from (data.val.slice offset.val stop.val) (by simp [List.slice]; scalar_tac)
   have hinput : 64*blocks.val ≤ input.val.length := by simp [input,List.slice,stop]; omega
   have hindex : core.slice.index.Slice.index (core.slice.index.SliceIndexRangeUsizeSlice U8)
       data {start := offset, «end» := stop} = ok input := by
@@ -100,21 +100,21 @@ theorem compress_blocks_refines (state : Array U32 8#usize) (data : Slice U8)
   dsimp only [Spec.stateWords] at hf hlow hhigh
   rw [sha256.extensions.compress_blocks]
   simp only [sha256.BLOCK]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq]
   rw [hindex]
-  simp only [bind_tc_ok,hswap]
-  simp (disch := scalar_tac) only [Portable.index_word,bind_tc_ok]
+  simp only [bind_ok,hswap]
+  simp (disch := scalar_tac) only [Portable.index_word, bind_ok]
   norm_num only [UScalar.ofNatCore_val_eq]
-  simp only [load_words_four,bind_tc_ok,core.core_arch.x86.sse2._mm_shuffle_epi32,
+  simp only [load_words_four, bind_ok,core.core_arch.x86.sse2._mm_shuffle_epi32,
     core.core_arch.x86.ssse3._mm_alignr_epi8,core.core_arch.x86.sse41._mm_blend_epi16]
   simp only [show (I32.bv 177#i32).toNat = 177 by decide +kernel,
     show (I32.bv 27#i32).toNat = 27 by decide +kernel,
     show (I32.bv 8#i32).toNat = 8 by decide +kernel,
     show (I32.bv 240#i32).toNat = 240 by decide +kernel]
   rw [hilo,hihi,hf]
-  simp only [bind_tc_ok,Function.uncurry_apply_pair]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [hlow,hhigh]
-  simp only [store_words_refines,bind_tc_ok]
+  simp only [store_words_refines, bind_ok]
   refine ⟨_,rfl,?_⟩
   have hsize : result.size = 8 := by
     dsimp only [result]
@@ -129,7 +129,7 @@ theorem compress_blocks_refines (state : Array U32 8#usize) (data : Slice U8)
     · intro i h1 h2
       have hi8 : i < 8 := by omega
       interval_cases i <;>
-        simp only [words,Array.make,List.map_cons,List.map_nil,ofWord_word,
+        simp only [words,Array.make, Array.from_val,List.map_cons,List.map_nil,ofWord_word,
           List.getElem_toArray,List.getElem_cons_zero,List.getElem_cons_succ]
       all_goals exact getElem!_pos result _ (by omega)
   change words (Array.make 8#usize

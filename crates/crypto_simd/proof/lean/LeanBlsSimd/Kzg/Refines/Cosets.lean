@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.CosetsRep
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import EthLib.Cryptography.Proofs.Kzg.Domain
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 import EthLib.Cryptography.Proofs.Bls.FrZMod
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -13,8 +14,7 @@ open core.iter.range core.ops.range
 
 namespace LeanBlsSimd.Kzg
 
-attribute [-instance] Lean.Grind.Fin.instHPowFinNatOfNeZero
-attribute [-instance] Lean.Grind.Fin.instPowFinNatOfNeZero
+attribute [-instance] Fin.instNatPow
 
 local instance : Inhabited blst.blst_fr := ⟨frEncode 0⟩
 
@@ -27,40 +27,22 @@ private theorem coset_index_lt (k : Nat) : cosetIndex k < 8192 := by
   simpa [cosetIndex, BitReversal.reverseBits] using
     BitReversal.reverseBits_lt_two_pow (64*k) 13
 
-private theorem bit_reversal_get (a : _root_.Array Fr) (j : Nat) (hj : j < a.size) :
-    (BitReversal.bitReversalPermutation a)[j]! = a[BitReversal.reverseBits j a.size]! := by
-  rw [getElem!_pos (BitReversal.bitReversalPermutation a) j
-    (by simpa [BitReversal.size_bitReversalPermutation] using hj),
-    BitReversal.getElem_bitReversalPermutation]
-
 private theorem coset_shift_eq (k : Nat) (hk : k < 128) :
     Model.cosetShift k = (Model.roots 13)[cosetIndex k]! := by
   unfold Model.cosetShift rootsOfUnityBrp
-  rw [bit_reversal_get _ _ (by simp; omega)]
+  rw [getElem!_bitReversalPermutation _ _ (by simp; omega)]
   simp only [size_computeRootsOfUnity]
   rfl
-
-open scoped EthLib.Cryptography.Bls.Fr in
-private theorem coset_shift_ne_zero (k : Nat) (hk : k < 128) : Model.cosetShift k ≠ 0 := by
-  rw [coset_shift_eq k hk]
-  simp only [Model.roots, computeRootsOfUnity_def]
-  let root : Fr := (Fr.ofNat Constants.PRIMITIVE_ROOT_OF_UNITY) ^
-    (Fr.ofNat ((Constants.BLS_MODULUS - 1) / 8192))
-  change (computePowers root 8192)[cosetIndex k]! ≠ 0
-  rw [getElem!_pos (computePowers root 8192) (cosetIndex k)
-    (by simpa using coset_index_lt k), getElem_computePowers, Fr.powNat_eq_pow]
-  apply pow_ne_zero
-  change Fr.powNat (Fr.ofNat 7) _ ≠ 0
-  rw [Fr.powNat_eq_pow]
-  exact pow_ne_zero _ (by decide)
 
 private def squareIter (i : Nat) : Range U32 :=
   { start := ⟨BitVec.ofNat 32 i⟩, «end» := 6#u32 }
 
 private theorem square_next (i : Fin 6) :
-    IteratorRange.next U32.Insts.CoreIterRangeStep (squareIter i.val) =
+    IteratorRange.next StepU32 (squareIter i.val) =
       ok (some (squareIter i.val).start, squareIter (i.val + 1)) := by
-  fin_cases i <;> rfl
+  fin_cases i <;>
+    simp [IteratorRange.next, StepU32, UScalarStep, UScalarStep.forward_checked,
+      squareIter, core.cmp.impls.PartialOrdU32.lt, U32.max, U32.numBits, bind_ok] <;> rfl
 
 private theorem square_step
     (i : Fin 6) (x : Fr) :
@@ -69,8 +51,7 @@ private theorem square_step
     loop (fun (it, p) => cosets.Cosets.new_loop0_loop0.body it p)
       (squareIter (i.val + 1), frEncode (x * x)) := by
   rw [loop.eq_1]
-  simp only [cosets.Cosets.new_loop0_loop0.body, square_next i, bind_tc_ok,
-    Function.uncurry_apply_pair, FrScalar.fr_mul_refines]
+  simp only [cosets.Cosets.new_loop0_loop0.body, square_next i, bind_ok, Aeneas.Std.uncurry_apply_pair, FrScalar.fr_mul_refines]
 
 private theorem six_squares (x : Fr) :
     cosets.Cosets.new_loop0_loop0 { start := 0#u32, «end» := cosets.LOG_CELL }
@@ -81,10 +62,11 @@ private theorem six_squares (x : Fr) :
   rw [square_step ⟨0, by decide⟩, square_step ⟨1, by decide⟩,
     square_step ⟨2, by decide⟩, square_step ⟨3, by decide⟩,
     square_step ⟨4, by decide⟩, square_step ⟨5, by decide⟩]
-  have hn : IteratorRange.next U32.Insts.CoreIterRangeStep (squareIter 6) =
-      ok (none, squareIter 6) := by rfl
+  have hn : IteratorRange.next StepU32 (squareIter 6) =
+      ok (none, squareIter 6) := by
+    simp [IteratorRange.next, StepU32, UScalarStep, squareIter, core.cmp.impls.PartialOrdU32.lt, bind_ok]
   rw [loop.eq_1]
-  simp only [cosets.Cosets.new_loop0_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+  simp only [cosets.Cosets.new_loop0_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   simp [Fr.powNat]
 
 private def inverseShifts : List blst.blst_fr :=
@@ -118,15 +100,15 @@ private theorem shifts_loop
   induction hk : 128 - iter.start.val generalizing iter si sp with
   | zero =>
     have hj : iter.start.val = 128 := by omega
-    have hn := Refinement.next_ge iter (by simp [he, hj])
+    have hn := next_ge iter (by simp [he, hj])
     refine ⟨si, sp, ?_, ?_, ?_⟩
     · rw [cosets.Cosets.new_loop0, loop.eq_1]
-      simp only [cosets.Cosets.new_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
-    · simpa [hj, inverseShifts] using hi
-    · simpa [hj, shiftPowers] using hp
+      simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
+    · simpa [hj, inverseShifts] using! hi
+    · simpa [hj, shiftPowers] using! hp
   | succ d ih =>
     have hj : iter.start.val < 128 := by omega
-    obtain ⟨iter', hj', he', hn⟩ := Refinement.next_lt iter (by simp [he, hj])
+    obtain ⟨iter', hj', he', hn⟩ := next_lt iter (by simp [he, hj])
     have hbound : 8192 < 2^UScalarTy.Usize.numBits := by
       rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
     let offset : Usize := UScalar.ofNatCore (64*iter.start.val) (by omega)
@@ -167,9 +149,9 @@ private theorem shifts_loop
       rw [hp]; simp only [shiftPowers, List.length_take, List.length_map, List.length_range]
       scalar_tac
     let si' : alloc.vec.Vec blst.blst_fr :=
-      ⟨si.val ++ [frEncode (Model.cosetShift iter.start.val).inverse], by simpa using hsizeI⟩
+      alloc.vec.Vec.from (si.val ++ [frEncode (Model.cosetShift iter.start.val).inverse]) (by simpa using hsizeI)
     let sp' : alloc.vec.Vec blst.blst_fr :=
-      ⟨sp.val ++ [frEncode (Fr.powNat (Model.cosetShift iter.start.val) 64)], by simpa using hsizeP⟩
+      alloc.vec.Vec.from (sp.val ++ [frEncode (Fr.powNat (Model.cosetShift iter.start.val) 64)]) (by simpa using hsizeP)
     have hpushI : alloc.vec.Vec.push si (frEncode (Model.cosetShift iter.start.val).inverse) = ok si' := by
       simp [alloc.vec.Vec.push, si', hsizeI]
     have hpushP : alloc.vec.Vec.push sp (frEncode (Fr.powNat (Model.cosetShift iter.start.val) 64)) = ok sp' := by
@@ -186,7 +168,7 @@ private theorem shifts_loop
       si' sp' hi' hp' (by omega)
     refine ⟨si'', sp'', ?_, hvalI, hvalP⟩
     rw [cosets.Cosets.new_loop0, loop.eq_1]
-    simp only [cosets.Cosets.new_loop0.body, hn, bind_tc_ok, Function.uncurry_apply_pair,
+    simp only [cosets.Cosets.new_loop0.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair,
       hmul, hrev, hget, hinverse, hpushI, six_squares, hpushP]
     exact hout
 
@@ -200,7 +182,7 @@ theorem cells_per_ext_blob_eq : CELLS_PER_EXT_BLOB = ok 128#usize := by
     simp [UScalar.tryMk, UScalar.tryMkOpt, Result.ofOption, hb']
   unfold CELLS_PER_EXT_BLOB
   rw [hm]
-  simp only [bind_tc_ok, FIELD_ELEMENTS_PER_CELL]
+  simp only [bind_ok, FIELD_ELEMENTS_PER_CELL]
   obtain ⟨z, hz, hv, _⟩ := UScalar.div_bv_spec 8192#usize (y := 64#usize) (by decide)
   rw [hz]
   congr 1
@@ -212,7 +194,7 @@ theorem cosets_new_refinement :
   obtain ⟨ext, hext, hextval⟩ := roots_refinement cosets.LOG_EXT_BLOB (Or.inr (by simp [cosets.LOG_EXT_BLOB]))
   simp only [cosets.LOG_EXT_BLOB, UScalar.ofNatCore_val_eq] at hextval
   obtain ⟨inverseExt, hinverseExt, hinverseExtVal⟩ := Refinement.inverse_roots_refinement 8192#usize (by decide)
-    (alloc.vec.Vec.deref ext) (Model.roots 13) (by simp [Model.roots]) hextval
+    (alloc.vec.Vec.deref ext) (Model.roots 13) (by simp [Model.roots]) (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hextval)
   have hinverseExtLen : inverseExt.val.length = 8192 := by
     rw [hinverseExtVal]
     simp only [List.length_map, _root_.Array.length_toList, Model.inverseRoots,
@@ -231,13 +213,13 @@ theorem cosets_new_refinement :
   obtain ⟨rs, hrs, hrsval⟩ := roots_refinement cosets.LOG_CELL (Or.inl (by simp [cosets.LOG_CELL]))
   simp only [cosets.LOG_CELL, UScalar.ofNatCore_val_eq] at hrsval
   obtain ⟨inv, hinv, hinvval⟩ := Refinement.inverse_roots_refinement 64#usize (by decide) (alloc.vec.Vec.deref rs)
-    (Model.roots 6) (by simp [Model.roots]) hrsval
+    (Model.roots 6) (by simp [Model.roots]) (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hrsval)
   refine ⟨⟨inv, frEncode (Fr.ofNat 64).inverse, si, sp⟩, ?_, ?_⟩
   · unfold cosets.Cosets.new
     rw [hext]
-    simp only [bind_tc_ok, hinverseExt, cells_per_ext_blob_eq]
+    simp only [bind_ok, hinverseExt, cells_per_ext_blob_eq]
     rw [hshifts, hrs]
-    simp only [bind_tc_ok, Function.uncurry_apply_pair, hinv, inverse_cell_size_eq]
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, hinv, inverse_cell_size_eq]
   · exact ⟨hinvval, rfl, hsi, hsp⟩
 
 end LeanBlsSimd.Kzg

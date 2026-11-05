@@ -91,22 +91,6 @@ theorem inv_unpack52 {w : Vector UInt64 6} (h : val64 w < Fp.modulus) : Fp8Inv (
 
 namespace Fp8
 
-theorem val_canonical_lt {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    val (x.canonical.lane l) < Fp.modulus := by
-  rw [(lane_canonical hx).2]
-  exact Nat.mod_lt _ Fp.modulus_pos
-
-theorem inv_select (k : Mmask8) {a b : Fp8} {l : Fin 8} (ha : Fp8Inv (a.lane l))
-    (hb : Fp8Inv (b.lane l)) : Fp8Inv ((select k a b).lane l) := by
-  rw [lane_select]
-  split <;> assumption
-
-/-- The sign rule in the spec's form: bit `l` is `Fp.signBit` of the lane's field element. -/
-theorem testBit_is_larger_root_mask_signBit {x : Fp8} {l : Fin 8} (hx : Fp8Inv (x.lane l)) :
-    x.is_larger_root_mask.toNat.testBit l = Fp.signBit (decode (x.lane l)) := by
-  rw [testBit_is_larger_root_mask hx]
-  exact Kernel.isLargerRootFp_eq _
-
 /-! ## `Holds` -/
 
 /-- Lane `l` of `x` holds the field element `a`: limbs that meet `Fp8Inv` and decode to `a`. -/

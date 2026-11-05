@@ -1,7 +1,11 @@
 import LeanBlsSimd.Spec.ScottCardinality
 
-/-! Controls for exact generator order and the two premises of the Hasse interval reduction.
-Removing either bound admits a multiple of r², so the numerical exclusion would be false. -/
+/-! Exact generator order and the premises of the cardinality argument.
+
+In (Z/2Z)², (1, 0) has order two but misses the two-torsion point (0, 1).
+The actual cofactor two fails coprimality; the coprime candidate one fails the point count.
+Thus generator order alone cannot replace either premise.
+These mathematical counterexamples name no production declaration. -/
 
 namespace LeanBlsSimd
 
@@ -11,12 +15,24 @@ example : addOrderOf (G2.toPoint G2.generator) ≠ Fr.modulus ^ 2 := by
   rw [addOrderOf_generator]
   decide +kernel
 
-example : ¬ (∀ n : ℕ, n ≤ (Fp.modulus + 1) ^ 2 → ¬ Fr.modulus ^ 2 ∣ n) := by
-  intro h
-  exact h 0 (Nat.zero_le _) (dvd_zero _)
+example : addOrderOf ((1, 0) : ZMod 2 × ZMod 2) = 2 :=
+  addOrderOf_eq_prime (by decide +kernel) (by decide +kernel)
 
-example : ¬ (∀ n : ℕ, (Fp.modulus - 1) ^ 2 ≤ n → ¬ Fr.modulus ^ 2 ∣ n) := by
+example : Nat.card (ZMod 2 × ZMod 2) = 2 * 2 ∧ ¬ Nat.Coprime 2 2 := by
+  constructor
+  · simp [Nat.card_eq_fintype_card]
+  · decide +kernel
+
+example : Nat.Coprime 1 2 ∧ Nat.card (ZMod 2 × ZMod 2) ≠ 2 * 1 := by
+  constructor
+  · decide +kernel
+  · simp [Nat.card_eq_fintype_card]
+
+example : ¬ (∀ P : ZMod 2 × ZMod 2, 2 • P = 0 →
+    ∃ k : ℤ, P = k • ((1, 0) : ZMod 2 × ZMod 2)) := by
   intro h
-  exact h (Fr.modulus ^ 2 * (Fp.modulus - 1) ^ 2) (by decide +kernel) (dvd_mul_right _ _)
+  obtain ⟨k, hk⟩ := h (0, 1) (by decide +kernel)
+  have he := congrArg Prod.snd hk
+  simp at he
 
 end LeanBlsSimd

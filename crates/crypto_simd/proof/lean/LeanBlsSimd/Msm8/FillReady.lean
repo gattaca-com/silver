@@ -34,7 +34,7 @@ theorem fill127_ready (state : msm8.buckets.Buckets)
         ∀ r ∈ contents i, r.val % 2 ^ 31 < scalars.val.length := by
   obtain ⟨events, out, _, hcall, hevents, hw, hn, hp⟩ := fill127_packed state scalars hsize
   obtain ⟨other, hother, hsum, href⟩ := fill127_contribution state scalars values points hsize hlen hv hb
-  have heq : other = out := Result.ok.inj (hother.symm.trans hcall)
+  have heq : other = out := Result.ok_injective (hother.symm.trans hcall)
   subst other
   let contents := eventReferences (selectedWidth scalars.val.length) events
   let capacity := fun i => (contents i).length
@@ -55,16 +55,5 @@ theorem fill127_ready (state : msm8.buckets.Buckets)
     apply href i hi r
     rw [packed_recovers out _ (prefixSum capacity) capacity contents hp i hi]
     exact hr
-
-theorem chunksActive_range (contents : BucketLists) (n : ℕ) :
-    QueueRefines.chunksActive ((List.range n).map contents) =
-      prefixSum (fun i => (contents i).length) n := by
-  induction n with
-  | zero => rfl
-  | succ n ih =>
-    simp only [List.range_succ, List.map_append, List.map_cons, List.map_nil,
-      QueueRefines.chunksActive, List.sum_append, List.sum_cons, List.sum_nil,
-      Nat.add_zero, prefixSum]
-    exact congrArg (fun k => k + (contents n).length) ih
 
 end LeanBlsSimd.BucketsRefines

@@ -6,6 +6,8 @@ open LeanBlsSimd.Portable.Decode (g1_decoder_correct)
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.bls core.ops.range core.iter.range
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 namespace LeanBlsSimd.UncompressG1
 
 def ScalarWrites (inputs : Slice (Array U8 48#usize))
@@ -27,12 +29,12 @@ private theorem scalarWrites_step (inputs : Slice (Array U8 48#usize))
       (out.set i (specVerdict inputs.val[i.val]!)) start (i.val + 1) := by
   refine ⟨by simpa [Slice.set, Slice.setAtNat] using h.1, ?_⟩
   intro j hj
-  simp only [Slice.set, Slice.setAtNat]
+  simp only [Slice.set, Slice.setAtNat, Slice.from_val]
   by_cases heq : i.val = j
   · subst j
-    rw [List.getElem!_set _ _ _ (by have := h.1; omega)]
+    rw [List.set_getElem!_eq _ _ _ _ ⟨(by have := h.1; omega), rfl⟩]
     simp [hstart]
-  · rw [List.getElem!_set_ne out.val i.val j _ (Or.inl heq), h.2 j hj]
+  · rw [List.set_getElem!_ne out.val i.val j _ (Or.inl heq), h.2 j hj]
     have hc : (start ≤ j ∧ j < i.val) ↔ (start ≤ j ∧ j < i.val + 1) := by omega
     simp only [hc]
 
@@ -45,28 +47,6 @@ private theorem scalar_index [RuntimeFeatures]
         Slice.update out i v) = ok (out.set i (specVerdict inputs.val[i.val]!)) := by
   simp [Slice.index_usize, hi, g1_decoder_correct.singleton,
     Slice.update, ho, Slice.set, Slice.setAtNat]
-
-private theorem range_runs {S : Type}
-    (body : Range Usize × S → Result (ControlFlow (Range Usize × S) S))
-    (inv : ℕ → S → Prop) (stop : Usize)
-    (hdone : ∀ r s, r.end = stop → r.start.val = stop.val → inv r.start.val s →
-      IteratorRange.next StepUsize r = ok (none, r) → body (r, s) = ok (done s))
-    (hstep : ∀ r r' s, r.end = stop → r.start.val < stop.val → inv r.start.val s →
-      IteratorRange.next StepUsize r = ok (some r.start, r') →
-      ∃ s', body (r,s) = ok (cont (r',s')) ∧ inv (r.start.val+1) s')
-    (r : Range Usize) (s : S) (he : r.end = stop) (hle : r.start.val ≤ stop.val)
-    (hi : inv r.start.val s) : ∃ s', loop body (r,s) = ok s' ∧ inv stop.val s' := by
-  induction hk : stop.val - r.start.val generalizing r s with
-  | zero =>
-    have hs : r.start.val = stop.val := by omega
-    have hn := next_ge r (by rw [he]; omega)
-    exact ⟨s, by rw [loop.eq_1, hdone r s he hs hi hn], hs ▸ hi⟩
-  | succ k ih =>
-    have hlt : r.start.val < stop.val := by omega
-    obtain ⟨r', hs', he', hn⟩ := next_lt r (by rw [he]; omega)
-    obtain ⟨s', hb, hi'⟩ := hstep r r' s he hlt hi hn
-    obtain ⟨v, hv, hi''⟩ := ih r' s' (he'.trans he) (by omega) (hs' ▸ hi') (by omega)
-    exact ⟨v, by rw [loop.eq_1, hb]; exact hv, hi''⟩
 
 theorem scalar_chunk_refines [RuntimeFeatures]
     (inputs : Slice (Array U8 48#usize))
@@ -91,7 +71,7 @@ theorem scalar_chunk_refines [RuntimeFeatures]
       subst i
       refine ⟨s, ?_, hinv⟩
       rw [portable.decompress.uncompress_all_in_g1_loop, loop.eq_1]
-      simp [portable.decompress.uncompress_all_in_g1_loop.body]
+      simp [portable.decompress.uncompress_all_in_g1_loop.body, bind_ok]
     · have htwo : i.val + 2 ≤ pairs.val := by omega
       have hi0 : i.val < inputs.val.length := by omega
       have hi1 : i.val + 1 < inputs.val.length := by omega
@@ -127,7 +107,7 @@ theorem scalar_chunk_refines [RuntimeFeatures]
         s2 next (by omega) (by omega) (by omega) hs2 rfl
       refine ⟨result, ?_, hp⟩
       rw [portable.decompress.uncompress_all_in_g1_loop, loop.eq_1]
-      simp only [hbdy]
+      simp only [hbdy, bind_ok]
       exact hr
 
 theorem scalar_tail_refines [RuntimeFeatures]
@@ -167,10 +147,8 @@ theorem scalar_tail_refines [RuntimeFeatures]
       rw [← hn]
       exact scalarWrites_step inputs out middle 0 pairs (by omega) (by omega) hmv
     refine ⟨result, ?_, finish result hv⟩
-    simp only [portable.decompress.uncompress_all_in_g1, heq, massert, ↓reduceIte,
-      bind_tc_ok, show Slice.len inputs = n from rfl, hd, hmul, hm,
-      Function.uncurry_apply_pair]
-    rw [if_pos (by simpa [n] using hodd)]
+    simp only [portable.decompress.uncompress_all_in_g1, heq, massert, ↓reduceIte, bind_ok, show Slice.len inputs = n from rfl, hd, hmul, hm, Aeneas.Std.uncurry_apply_pair]
+    rw [ite_eq_left (by simpa [n] using hodd)]
     exact scalar_index inputs middle pairs hodd (by have := hmv.1; omega)
   · have hn : pairs.val = inputs.val.length := by omega
     refine ⟨middle, ?_, finish middle (hn ▸ hmv)⟩

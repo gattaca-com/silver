@@ -23,7 +23,7 @@ theorem add_value_refines (a b : portable.fp.Fp)
   rw [Int.emod_eq_of_lt (by omega) hfit] at hvalue
   obtain ⟨out,hbelow,hout⟩ := below_p_refines sum (by omega)
   refine ⟨out,?_,?_⟩
-  · simp only [portable.fp.Fp.add,hadd,bind_tc_ok]
+  · simp only [portable.fp.Fp.add,hadd, bind_ok]
     change (do let a ← portable.fp.below_p sum; ok a) = _
     rw [hbelow,bind_tc_ok]
   · simpa only [hvalue] using hout
@@ -39,7 +39,7 @@ theorem sub_value_refines (a b : portable.fp.Fp)
   · obtain ⟨out,hadd,hout⟩ := add_words_refines difference bls.constants.P_U64
     rw [modulus_words] at hout
     refine ⟨out,?_,?_⟩
-    · simp only [portable.fp.Fp.sub,hsub,bind_tc_ok]
+    · simp only [portable.fp.Fp.sub,hsub, bind_ok]
       change (do
         let correction ← portable.fp.p_if (decide (value a < value b))
         let (a1,_) ← portable.fp.add_words difference correction
@@ -51,7 +51,7 @@ theorem sub_value_refines (a b : portable.fp.Fp)
     have hz : value (Array.repeat 6#usize 0#u64) = 0 := rfl
     rw [hz,add_zero] at hout
     refine ⟨out,?_,?_⟩
-    · simp only [portable.fp.Fp.sub,hsub,bind_tc_ok]
+    · simp only [portable.fp.Fp.sub,hsub, bind_ok]
       change (do
         let correction ← portable.fp.p_if (decide (value a < value b))
         let (a1,_) ← portable.fp.add_words difference correction
@@ -97,7 +97,6 @@ theorem product_encoded (x y : Bls.Fp) :
   have hfield : (value out : ZMod Bls.Fp.modulus)*(2^384 : ZMod Bls.Fp.modulus) =
       (value (Kzg.fpEncode x).l : ZMod Bls.Fp.modulus)*(value (Kzg.fpEncode y).l : ZMod Bls.Fp.modulus) := by
     have h := congrArg (fun n : ℤ => (n : ZMod Bls.Fp.modulus)) hvalue
-    dsimp only at h
     simpa only [Int.cast_mul,Int.cast_add,Int.cast_pow,Int.cast_natCast,
       ZMod.natCast_self,mul_zero,add_zero,hpow] using h
   rw [encode_field,encode_field] at hfield
@@ -109,17 +108,9 @@ theorem product_encoded (x y : Bls.Fp) :
     ring
   rw [hr,heq]
 
-theorem mul_baseline_encoded (x y : Bls.Fp) :
-    portable.fp.Fp.mul_on_baseline (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l :=
-  product_encoded x y
-
-theorem mul_bmi2_encoded (x y : Bls.Fp) :
-    portable.fp.Fp.mul_on_bmi2 (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l :=
-  product_encoded x y
-
 theorem mul_encoded [RuntimeFeatures] (x y : Bls.Fp) :
     portable.fp.Fp.mul (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l := by
-  simp only [portable.fp.Fp.mul,bmi2_available,bind_tc_ok]
+  simp only [portable.fp.Fp.mul,bmi2_available, bind_ok]
   split <;> exact product_encoded x y
 
 end LeanBlsSimd.Portable.Fp

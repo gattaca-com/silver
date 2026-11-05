@@ -28,26 +28,26 @@ private theorem pick_inverse [RuntimeFeatures] (values : ℕ → ChainField) (j 
   have hinv := recovered_inverse values j.val hn
   simp only [portable.msm.pairs.CHAINS,UScalar.lt_equiv,show (4#usize).val = 4 from rfl]
   by_cases hsmall : j.val < 4
-  · rw [if_pos hsmall,hr]
-    rw [if_pos hsmall,mul_one] at hinv
+  · rw [ite_eq_left hsmall,hr]
+    rw [ite_eq_left hsmall,mul_one] at hinv
     exact congrArg (fun x : ChainField => ok (Kzg.fpEncode x).l) hinv
-  · rw [if_neg hsmall,hr]
-    simp only [bind_tc_ok]
+  · rw [ite_eq_right hsmall,hr]
+    simp only [bind_ok]
     rw [sub_ok j 4#usize (by change 4 ≤ j.val; omega)]
-    simp only [bind_tc_ok, show (4#usize).val = 4 from rfl]
+    simp only [bind_ok, show (4#usize).val = 4 from rfl]
     have hp := hpref (by omega)
     have hpi := index_of_some prefixes
       (UScalar.ofNatCore (j.val-4) (by have := j.hBounds; omega))
       (Kzg.fpEncode (chainPrefix values (j.val-4))).l hp
     rw [hpi]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     have hm : portable.fp.Fp.mul
         (Kzg.fpEncode ((chainValues values (j.val+1) (chainKey j.val))⁻¹ : ChainField)).l
         (Kzg.fpEncode (chainPrefix values (j.val-4))).l =
         ok (Kzg.fpEncode ((chainValues values (j.val+1) (chainKey j.val))⁻¹ *
           chainPrefix values (j.val-4))).l := Fp.mul_encoded _ _
     rw [hm]
-    rw [if_neg hsmall] at hinv
+    rw [ite_eq_right hsmall] at hinv
     exact congrArg (fun x : ChainField => ok (Kzg.fpEncode x).l) hinv
 
 theorem unwind_step [RuntimeFeatures]
@@ -74,7 +74,6 @@ theorem unwind_step [RuntimeFeatures]
     congr 1
     apply UScalar.eq_of_val_eq
     simp only [UScalar.ofNatCore_val_eq]
-    change i.val-1 = j.val
     omega
   have hk : (chainIndex j).val = j.val%4 := by simp only [chainIndex,UScalar.ofNatCore_val_eq]
   have hklt : (chainIndex j).val < 4 := by rw [hk]; omega
@@ -92,9 +91,9 @@ theorem unwind_step [RuntimeFeatures]
   have hiz : i > 0#usize := by simpa only [UScalar.lt_equiv] using hi
   have hrem : j % portable.msm.pairs.CHAINS = ok (chainIndex j) := by
     rw [portable.msm.pairs.CHAINS,rem_four]
-  simp only [portable.msm.pairs.BatchedAdds.run_loop0_loop0.body,hiz,if_true,
-    hsub,bind_tc_ok,hrem]
+  simp only [portable.msm.pairs.BatchedAdds.run_loop0_loop0.body,hiz,ite_true,
+    hsub, bind_ok,hrem]
   rw [pick_inverse values j prefixes hn hpref]
-  simp only [bind_tc_ok,hr,index_of_some _ _ _ hdx,hm,hu,hf]
+  simp only [bind_ok,hr,index_of_some _ _ _ hdx,hm,hu,hf]
 
 end LeanBlsSimd.Portable.Msm.Batch

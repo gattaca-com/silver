@@ -3,6 +3,7 @@ import LeanBlsSimd.Kzg.G1Compression
 import LeanBlsSimd.Refines.DecompressG1
 import LeanBlsSimd.Spec.G1Encoding
 import LeanBlsSimd.Spec.G2Encoding
+import EthLib.Cryptography.Proofs.Bls.G2Compress
 
 open Aeneas.Std
 open EthLib.Cryptography Bls
@@ -21,51 +22,30 @@ theorem g2Affine_eq_bls (p : G2) :
     Fp2.re_toField, Fp2.im_toField]
   rfl
 
-private theorem g2_toAffine_one (x y : Fp2) :
-    G2.toAffine ⟨x, y, Fp2.one⟩ = (x, y) := by
-  have hz : Fp2.one.isZero = false := by
-    apply Bool.eq_false_iff.mpr
-    simp [Fp2.isZero_iff]
-  simp only [G2.toAffine, hz, Bool.false_eq_true, if_false]
-  apply Prod.ext <;> apply Fp2.toField.injective <;>
-    simp [map_mul, Fp2.toField_inverse]
-
 private theorem g2ReadAffine_zero : g2ReadAffine (g2Affine G2.zero) = G2.zero := by
   simp only [g2ReadAffine, g2Affine, fp2Read_fp2Encode, G2.toAffine, G2.zero]
   rfl
 
 theorem g2ReadAffine_decoded {bytes : ByteArray} {p : G2}
     (hd : G2.uncompress bytes = .ok p) : g2ReadAffine (g2Affine p) = p := by
-  unfold G2.uncompress at hd
-  split at hd
-  · cases hd
-  · dsimp only at hd
-    split at hd
-    · cases hd
-    · split at hd
-      · split at hd
-        · cases hd
-        · cases hd
-          exact g2ReadAffine_zero
-      · split at hd
-        · rename_i c1 c0 hc1 hc0
-          split at hd
-          · cases hd
-          · rename_i y hy
-            cases hd
-            simp only [g2ReadAffine, g2Affine, g2_toAffine_one, fp2Read_fp2Encode]
-            have hroot := Fp2.sqrt_sound hy
-            have hne : Fp2.toField y ≠ 0 := by
-              intro hz
-              have hrhs : Kernel.rhs (Fp2.toField (⟨c0, c1⟩ : Fp2)) = 0 := by
-                simpa [Kernel.rhs, map_add, map_mul, G2.bTwist, hz, pow_succ] using hroot.symm
-              exact Kernel.rhs_ne_zero _ hrhs
-            have hn (choice : Prop) [Decidable choice] :
-                (if choice then y else -y).isZero = false := by
-              apply Bool.eq_false_iff.mpr
-              split <;> simpa [Fp2.isZero_iff] using hne
-            simp only [hn, Bool.and_false, Bool.false_eq_true, if_false]
-        · cases hd
+  rcases EthLib.Cryptography.Bls.G2.uncompress_valid hd with rfl | ⟨hz, htwist⟩
+  · exact g2ReadAffine_zero
+  · rcases p with ⟨x, y, z⟩
+    dsimp only at hz
+    subst z
+    have heq : y * y = x * x * x + G2.bTwist := by
+      simpa [EthLib.Cryptography.Bls.G2.isOnTwist, G2.isInfinity,
+        show (1 : Fp2).isZero = false from rfl] using htwist
+    have hy : y.isZero = false := by
+      apply Bool.eq_false_iff.mpr
+      intro hy
+      have hzero : y = 0 := EthLib.Cryptography.Bls.G2.isZero_iff.mp hy
+      apply EthLib.Cryptography.Bls.G2.cube_add_bTwist_ne_zero x
+      rw [← heq, hzero]
+      rfl
+    simp only [g2ReadAffine, g2Affine, EthLib.Cryptography.Bls.G2.toAffine_of_z_one,
+      fp2Read_fp2Encode,
+      hy, Bool.and_false, Bool.false_eq_true, ite_false]
 
 theorem g2Affine_decoded_valid {bytes : ByteArray} {p : G2}
     (hd : G2.uncompress bytes = .ok p) (hg : p.inSubgroup = true) :

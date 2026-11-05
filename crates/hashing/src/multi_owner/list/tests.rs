@@ -5,7 +5,7 @@ use std::{
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use super::{ListPool, SharedList};
+use super::{ListError, ListPool, SharedList};
 use crate::{
     B256, FlatTree, HashFormat, SszScalar, TreeReader, TreeSpec,
     merkle::{ZERO_HASHES, byte_chunks, hash_concat, mix_in_length},
@@ -56,7 +56,7 @@ fn root(list: &mut SharedList<Balances>) -> B256 {
 }
 
 fn list(vals: &[u64]) -> SharedList<Balances> {
-    SharedList::new(vals, HashFormat::Fixed)
+    SharedList::new(vals, HashFormat::Fixed).unwrap()
 }
 
 /// The pool's drop panics on a leaked page.
@@ -82,7 +82,7 @@ fn push_past_cap_doubles_and_keeps_the_root() {
     let mut vals = vec![3];
     let mut list = list(&vals);
     for v in 0..300 {
-        list.push(v);
+        list.push(v).unwrap();
         vals.push(v);
         if v % 37 == 0 {
             assert_eq!(root(&mut list), reference_root(&vals), "len {}", vals.len());
@@ -101,9 +101,9 @@ fn a_fork_shares_until_written_and_never_sees_the_other_side() {
     let mut b = forked(&mut a);
     assert_eq!(a.table.roots(), b.table.roots(), "a clean fork shares every root page");
 
-    b.set(10, 99);
-    b.push(7);
-    a.set(4000, 1);
+    b.set(10, 99).unwrap();
+    b.push(7).unwrap();
+    a.set(4000, 1).unwrap();
     let mut a_vals = vals.clone();
     a_vals[4000] = 1;
     let mut b_vals = vals.clone();
@@ -111,8 +111,8 @@ fn a_fork_shares_until_written_and_never_sees_the_other_side() {
     b_vals.push(7);
     assert_eq!(root(&mut a), reference_root(&a_vals));
     assert_eq!(root(&mut b), reference_root(&b_vals));
-    assert_eq!(a.get(10), 10);
-    assert_eq!(b.get(4000), 4000);
+    assert_eq!(a.get(10), Some(10));
+    assert_eq!(b.get(4000), Some(4000));
 }
 
 #[test]
@@ -123,13 +123,13 @@ fn dropping_every_list_frees_every_page() {
         let mut a = list(&vals);
         pool = a.pool.clone();
         let mut b = forked(&mut a);
-        b.set(0, 1);
+        b.set(0, 1).unwrap();
         root(&mut b);
         let mut c = forked(&mut b);
         c.migrate_to_progressive();
-        c.push(5);
+        c.push(5).unwrap();
         root(&mut c);
-        a.push(1);
+        a.push(1).unwrap();
         root(&mut a);
     }
     drop_last(pool);
@@ -141,10 +141,10 @@ fn a_progressive_list_matches_its_rebuilt_tree() {
     let mut list = list(&vals);
     list.migrate_to_progressive();
     for v in 0..500 {
-        list.push(v);
+        list.push(v).unwrap();
         vals.push(v);
     }
-    list.set(3, 42);
+    list.set(3, 42).unwrap();
     vals[3] = 42;
     assert_eq!(root(&mut list), progressive_reference(&vals));
     assert_eq!(forked(&mut list).hash_root(), progressive_reference(&vals));
@@ -170,7 +170,7 @@ fn random_lineages_match_the_model_and_leak_nothing() {
             2 => {
                 let (list, model) = &mut lists[k];
                 let v = rng.r#gen();
-                list.push(v);
+                list.push(v).unwrap();
                 model.push(v);
             }
             3 => {
@@ -181,7 +181,7 @@ fn random_lineages_match_the_model_and_leak_nothing() {
                 let (list, model) = &mut lists[k];
                 for _ in 0..rng.gen_range(1..50) {
                     let (ix, v) = (rng.gen_range(0..model.len()), rng.r#gen());
-                    list.set(ix, v);
+                    list.set(ix, v).unwrap();
                     model[ix] = v;
                 }
             }
@@ -215,7 +215,7 @@ fn threads_fork_write_and_drop_concurrently() {
                     let mut model = vals.clone();
                     for _ in 0..200 {
                         let (ix, v) = (rng.gen_range(0..model.len()), rng.r#gen());
-                        fork.set(ix, v);
+                        fork.set(ix, v).unwrap();
                         model[ix] = v;
                     }
                     if round % 5 == 0 {
@@ -241,11 +241,11 @@ fn a_clone_writes_into_the_parked_flat_tree() {
     let vals: Vec<u64> = (0..5000).collect();
     let mut parent = list(&vals);
     let mut child = forked(&mut parent);
-    child.set(3, 9);
+    child.set(3, 9).unwrap();
     child.commit();
 
     let mut sibling = parent.clone();
-    sibling.set(4999, 5);
+    sibling.set(4999, 5).unwrap();
     assert!(parent.pool.spare.load(Ordering::Acquire).is_null(), "the write took the spare");
     let mut model = vals.clone();
     model[4999] = 5;
@@ -264,10 +264,10 @@ fn a_progressive_spare_reloads_into_a_fixed_list() {
     let mut fixed = list(&vals);
     let mut progressive = forked(&mut fixed);
     progressive.migrate_to_progressive();
-    progressive.push(1);
+    progressive.push(1).unwrap();
     assert_eq!(root(&mut progressive), progressive_reference(&[&vals[..], &[1]].concat()));
 
-    fixed.set(0, 7);
+    fixed.set(0, 7).unwrap();
     let mut model = vals;
     model[0] = 7;
     assert_eq!(root(&mut fixed), reference_root(&model));
@@ -277,8 +277,8 @@ fn a_progressive_spare_reloads_into_a_fixed_list() {
 #[test]
 fn pushing_zeros_commits_the_new_length() {
     let mut list = list(&[1]);
-    list.push(0);
-    list.push(0);
+    list.push(0).unwrap();
+    list.push(0).unwrap();
     assert_eq!(root(&mut list), reference_root(&[1, 0, 0]));
     assert_eq!(forked(&mut list).len(), 3);
 }
@@ -287,7 +287,7 @@ fn pushing_zeros_commits_the_new_length() {
 fn write_ssz_reads_the_flat_tree_and_the_pages_alike() {
     let vals: Vec<u64> = (0..3000).map(|i| i * 3).collect();
     let mut flat = list(&vals);
-    flat.set(7, 1);
+    flat.set(7, 1).unwrap();
     flat.commit();
     let paged = forked(&mut flat);
     let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -307,7 +307,7 @@ fn an_uncommitted_clone_carries_the_writes_and_diverges() {
     assert_eq!(root(&mut a), reference_root(&vals));
 
     for i in [3, 700, 4999] {
-        a.set(i, 99);
+        a.set(i, 99).unwrap();
         vals[i] = 99;
     }
     assert!(!a.is_committed());
@@ -316,9 +316,9 @@ fn an_uncommitted_clone_carries_the_writes_and_diverges() {
     assert_eq!(b.iter().collect::<Vec<_>>(), vals);
 
     let mut vals_b = vals.clone();
-    b.set(10, 7);
+    b.set(10, 7).unwrap();
     vals_b[10] = 7;
-    b.push(1);
+    b.push(1).unwrap();
     vals_b.push(1);
     assert_eq!(root(&mut b), reference_root(&vals_b));
     assert_eq!(root(&mut a), reference_root(&vals));
@@ -331,4 +331,35 @@ fn an_uncommitted_clone_carries_the_writes_and_diverges() {
     drop(b);
     drop(a);
     drop_last(pool);
+}
+
+struct Small;
+impl TreeSpec for Small {
+    type Val = u64;
+    type Page = [B256; 16];
+    const SSZ_LIMIT: usize = 8;
+}
+
+#[test]
+fn out_of_range_access_and_limit_are_errors() {
+    let mut list = SharedList::<Small>::new(&[1, 2, 3], HashFormat::Fixed).unwrap();
+    assert_eq!(list.get(3), None);
+    assert_eq!(list.set(3, 9), Err(ListError::OutOfBounds { index: 3, len: 3 }));
+    for v in 4..=8 {
+        list.push(v).unwrap();
+    }
+    assert_eq!(list.push(9), Err(ListError::Full { limit: 8 }));
+    assert_eq!(list.len(), 8);
+    assert!(matches!(
+        SharedList::<Small>::new(&[0; 9], HashFormat::Fixed),
+        Err(ListError::Full { limit: 8 })
+    ));
+}
+
+#[test]
+#[should_panic(expected = "commit before hash_root")]
+fn hash_root_of_uncommitted_list_panics() {
+    let mut list = SharedList::<Small>::new(&[1, 2, 3], HashFormat::Fixed).unwrap();
+    list.set(0, 5).unwrap();
+    list.hash_root();
 }

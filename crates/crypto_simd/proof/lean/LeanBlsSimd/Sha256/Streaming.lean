@@ -11,15 +11,10 @@ structure State where
   pending : List UInt8
   length : UInt64
 
-def initial : State := ⟨initialState, [], 0⟩
-
 def Represents (s : State) (pre : List UInt8) : Prop :=
   s.state = compressBlocks initialState (bytes pre) 0 (pre.length/64) ∧
   s.pending = pre.drop (64*(pre.length/64)) ∧
   s.length = UInt64.ofNat pre.length
-
-theorem initial_represents : Represents initial [] := by
-  exact ⟨rfl,rfl,rfl⟩
 
 theorem pending_length (s : State) (pre : List UInt8) (h : Represents s pre) :
     s.pending.length = pre.length%64 := by
@@ -76,15 +71,15 @@ theorem tail_matches (s : State) (pre : List UInt8) (hs : Represents s pre)
   simp only [bytes_size]
   rw [hs.2.2, bitLength_eq]
   by_cases hlt : i < s.pending.length
-  · rw [if_pos (by omega), if_pos hlt, hs.2.1]
+  · rw [ite_eq_left (by omega), ite_eq_left hlt, hs.2.1]
     exact bytes_drop_get pre (64*(pre.length/64)) i
-  · rw [if_neg (by omega), if_neg hlt]
+  · rw [ite_eq_right (by omega), ite_eq_right hlt]
     by_cases he : i = s.pending.length
-    · rw [if_pos (by omega), if_pos he]
-    · rw [if_neg (by omega), if_neg he]
+    · rw [ite_eq_left (by omega), ite_eq_left he]
+    · rw [ite_eq_right (by omega), ite_eq_right he]
       by_cases hlast : paddedLength s.pending.length-8 ≤ i
-      · rw [if_pos (by omega), if_pos hlast, hindex]
-      · rw [if_neg (by omega), if_neg hlast]
+      · rw [ite_eq_left (by omega), ite_eq_left hlast, hindex]
+      · rw [ite_eq_right (by omega), ite_eq_right hlast]
 
 def finish (s : State) : ByteArray :=
   digest (compressBlocks s.state
@@ -92,7 +87,7 @@ def finish (s : State) : ByteArray :=
     (tailBlocks s.pending.length))
 
 theorem finish_eq_hash (s : State) (pre : List UInt8) (hs : Represents s pre) :
-    finish s = EthLib.Cryptography.Bls.sha256 (bytes pre) := by
+    finish s = EthLib.Cryptography.Hash.sha256 (bytes pre) := by
   have hp := pending_length s pre hs
   have hshort := pending_lt s pre hs
   have htail : paddedLength s.pending.length = 64*tailBlocks s.pending.length :=
@@ -108,32 +103,13 @@ theorem finish_eq_hash (s : State) (pre : List UInt8) (hs : Represents s pre) :
     intro i hi
     simp only [Nat.zero_add]
     rw [padded_get _ i (by rw [bytes_size]; unfold paddedLength; omega)]
-    rw [if_pos (by rw [bytes_size]; omega)]
+    rw [ite_eq_left (by rw [bytes_size]; omega)]
   unfold finish
-  rw [hash_eq, padded_size, bytes_size, hcount, compressBlocks_append, hprefix]
+  rw [Spec.hash_eq, padded_size, bytes_size, hcount, compressBlocks_append, hprefix]
   apply congrArg digest
   symm
   apply compressBlocks_congr
   intro i hi
   simpa only [Nat.zero_add] using tail_matches s pre hs i (by omega)
-
-theorem represents_unique (s t : State) (pre : List UInt8)
-    (hs : Represents s pre) (ht : Represents t pre) : s = t := by
-  cases s
-  cases t
-  simp only [State.mk.injEq]
-  exact ⟨hs.1.trans ht.1.symm, hs.2.1.trans ht.2.1.symm, hs.2.2.trans ht.2.2.symm⟩
-
-theorem update_empty (s : State) (pre : List UInt8) (hs : Represents s pre) :
-    update s [] = s := by
-  apply represents_unique _ _ pre _ hs
-  simpa only [List.append_nil] using update_append s pre [] hs
-
-theorem update_split (s : State) (pre a b : List UInt8) (hs : Represents s pre) :
-    update (update s a) b = update s (a++b) := by
-  apply represents_unique _ _ (pre++(a++b))
-  · simpa only [List.append_assoc] using
-      update_append (update s a) (pre++a) b (update_append s pre a hs)
-  · exact update_append s pre (a++b) hs
 
 end LeanBlsSimd.Sha256.Streaming

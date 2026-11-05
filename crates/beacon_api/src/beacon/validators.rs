@@ -503,6 +503,7 @@ mod tests {
     use super::*;
     use crate::{
         ctx::test_ctx,
+        entry_signatures::EntrySignatures,
         http::router::{Outcome, Router},
         routes::{ROUTES, SERVED_WHILE_SYNCING},
         testing::{self, posting, request, submissions},
@@ -575,6 +576,7 @@ mod tests {
                 &req,
                 &ctx(),
                 &mut submissions(),
+                &mut EntrySignatures::new(),
                 &mut out
             ),
             Outcome::Response(None)

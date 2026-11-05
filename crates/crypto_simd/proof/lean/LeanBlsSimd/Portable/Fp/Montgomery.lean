@@ -16,7 +16,7 @@ theorem list_6 (a : Array U64 6#usize) :
   apply List.ext_getElem
   · exact a.property
   · intro i hi _
-    have hin : i < 6 := by simpa only [a.property] using hi
+    have hin : i < 6 := by simpa only [a.property] using! hi
     interval_cases i <;> rfl
 
 theorem list_7 (a : Array U64 7#usize) :
@@ -24,7 +24,7 @@ theorem list_7 (a : Array U64 7#usize) :
   apply List.ext_getElem
   · exact a.property
   · intro i hi _
-    have hin : i < 7 := by simpa only [a.property] using hi
+    have hin : i < 7 := by simpa only [a.property] using! hi
     interval_cases i <;> rfl
 
 def extend (a : Array U64 6#usize) : Array U64 7#usize :=
@@ -73,16 +73,17 @@ theorem row_run (t a : Array U64 6#usize) (w : U64) (sum reduced : Array U64 7#u
       (core.num.U64.wrapping_mul (sum.val[0]'(by rw [sum.property]; decide)) portable.constants.P_INV) = ok reduced) :
     portable.fp.row t a w = ok (shift reduced) := by
   simp only [portable.fp.row]
-  simp (disch := decide) only [index_usize_eq,bind_tc_ok]
+  simp (disch := decide) only [index_usize_eq, bind_ok]
   change (do
     let sum ← portable.fp.mul_add (extend t) a w
-    let reduced ← portable.fp.mul_add sum bls.constants.P_U64
-      (core.num.U64.wrapping_mul (sum.val[0]'(by rw [sum.property]; decide)) portable.constants.P_INV)
+    let i7 ← lift (core.num.U64.wrapping_mul (sum.val[0]'(by rw [sum.property]; decide))
+      portable.constants.P_INV)
+    let reduced ← portable.fp.mul_add sum bls.constants.P_U64 i7
     ok (shift reduced)) = _
   rw [hfirst]
-  simp only [bind_tc_ok]
+  simp only [bind_tc_ok, lift]
   rw [hsecond]
-  rfl
+  exact bind_ok _ _
 
 theorem row_refines (t a : Array U64 6#usize) (w : U64)
     (ha : value a < Bls.Fp.modulus) (ht : value t < value a+Bls.Fp.modulus) :
@@ -162,9 +163,9 @@ theorem product_refines (a b : Array U64 6#usize) (ha : value a < Bls.Fp.modulus
     change value t0*(radix : ℤ) = 0+value a*(b.val[0]'(by rw [b.property]; decide)).val+(m0.val : ℤ)*Bls.Fp.modulus at hv0
     linear_combination hv0*(radix : ℤ)^0 + hv1*(radix : ℤ)^1 + hv2*(radix : ℤ)^2 + hv3*(radix : ℤ)^3 + hv4*(radix : ℤ)^4 + hv5*(radix : ℤ)^5
   refine ⟨out,?_,?_,q-(value t5/(Bls.Fp.modulus : ℤ))*(radix : ℤ)^6,?_⟩
-  · simp (disch := decide) only [portable.fp.Fp.product,index_usize_eq,bind_tc_ok]
+  · simp (disch := decide) only [portable.fp.Fp.product,index_usize_eq, bind_ok]
     simp only [show (0#usize).val = 0 from rfl, show (1#usize).val = 1 from rfl, show (2#usize).val = 2 from rfl, show (3#usize).val = 3 from rfl, show (4#usize).val = 4 from rfl, show (5#usize).val = 5 from rfl]
-    simp only [hr0,hr1,hr2,hr3,hr4,hr5,bind_tc_ok,hbelow]
+    simp only [hr0,hr1,hr2,hr3,hr4,hr5, bind_ok,hbelow]
   · rw [hout]
     exact Int.emod_lt_of_pos _ (by decide)
   · have hd := Int.emod_add_mul_ediv (value t5) (Bls.Fp.modulus : ℤ)

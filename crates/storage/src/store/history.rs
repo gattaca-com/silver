@@ -349,14 +349,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::store::backfill::fixtures::{GLOAS_FORK_SLOT, block_bytes, spec};
+    use crate::store::backfill::fixtures::{GLOAS_FORK_SLOT, gloas_chain_block, spec};
 
     /// A gloas-era block links only if its root is computed with the gloas body
     /// layout: the wanted parent comes from the child's `parent_root` field, so
     /// a fulu-layout root here never matches and the chain stalls silently.
     #[test]
     fn gloas_block_links_by_its_gloas_root() {
-        let block = block_bytes(GLOAS_FORK_SLOT, [0xCC; 32]);
+        let block = gloas_chain_block(GLOAS_FORK_SLOT, [0xCC; 32], &[]);
         let gloas_root = block_root(&block, true);
         let fulu_root = block_root_fulu(&block);
         assert_ne!(gloas_root, fulu_root, "layouts must disagree for this to mean anything");

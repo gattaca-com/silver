@@ -53,7 +53,7 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
     · unfold msm8.Msm8.chunk_sum_loop
       rw [loop.eq_1]
       simp only [msm8.Msm8.chunk_sum_loop.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq,
-        he, Nat.lt_irrefl, if_false]
+        he, Nat.lt_irrefl, ite_false, bind_ok]
     · simp only [filteredSuffix_done points scalars i.val (by omega), List.map_nil, List.append_nil]
     · simp only [filteredSuffix_done points scalars i.val (by omega), List.map_nil, List.append_nil]
   | succ remaining ih =>
@@ -77,21 +77,21 @@ theorem filter_loop_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_aff
     let mid := {state with finite_points := ps, finite_scalars := ss}
     have hbody : msm8.Msm8.chunk_sum_loop.body points scalars state i = ok (cont (mid, next)) := by
       simp only [msm8.Msm8.chunk_sum_loop.body, UScalar.lt_equiv, Slice.len, Usize.ofNatCore_val_eq,
-        hil, if_true]
+        hil, ite_true]
       have hix {A : Type} (xs : Slice A) (hx : i.val < xs.val.length) :
           Slice.index_usize xs i = ok xs.val[i.val] := by simp [Slice.index_usize, hx]
       rw [hix points hil]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       rw [hix scalars his]
-      simp only [bind_tc_ok, hkeep]
+      simp only [bind_ok, hkeep]
       rw [add_ok _ _ hadd]
-      rfl
+      (simp only [bind_ok] ; rfl)
     obtain ⟨ps', ss', hloop, hps', hss'⟩ := ih mid next (by omega) (by dsimp [mid]; omega)
       (by dsimp [mid]; omega) (by omega)
     refine ⟨ps', ss', ?_, ?_, ?_⟩
     · unfold msm8.Msm8.chunk_sum_loop
       change loop (fun p => msm8.Msm8.chunk_sum_loop.body points scalars p.1 p.2) _ = _
-      rw [loop.eq_1, hbody]
+      rw [loop.eq_1, hbody, bind_ok]
       exact hloop
     · rw [hps', filteredSuffix_step points scalars i.val halign hil]
       dsimp only [mid]
@@ -135,8 +135,8 @@ def filterPrefix (self : msm8.Msm8) (points : Slice blst.blst_p1_affine)
   let i := Slice.len points
   let i1 := Slice.len scalars
   massert (i = i1)
-  let v ← alloc.vec.Vec.clear Global self.finite_points
-  let v1 ← alloc.vec.Vec.clear Global self.finite_scalars
+  let v ← alloc.vec.Vec.clear alloc.alloc.Global self.finite_points
+  let v1 ← alloc.vec.Vec.clear alloc.alloc.Global self.finite_scalars
   let self1 ← msm8.Msm8.chunk_sum_loop
     {self with finite_points := v, finite_scalars := v1} points scalars 0#usize
   ok self1
@@ -151,24 +151,24 @@ theorem filter_prefix_refines (state : msm8.Msm8) (points : Slice blst.blst_p1_a
         ok {state with finite_points := ps, finite_scalars := ss} ∧
       ps.val = (filteredSuffix points scalars 0).map Prod.fst ∧
       ss.val = (filteredSuffix points scalars 0).map Prod.snd := by
-  let emptyP : alloc.vec.Vec blst.blst_p1_affine := ⟨[], by simp⟩
-  let emptyS : alloc.vec.Vec FilterScalar := ⟨[], by simp⟩
+  let emptyP : alloc.vec.Vec blst.blst_p1_affine := alloc.vec.Vec.from [] (by simp)
+  let emptyS : alloc.vec.Vec FilterScalar := alloc.vec.Vec.from [] (by simp)
   have hroom : points.val.length ≤ Usize.max := by
     have := two_pow_32_le_usize
     simp only [Usize.max_def, Usize.numBits_def]
     omega
   obtain ⟨ps, ss, hloop, hps, hss⟩ := filter_loop_refines
     {state with finite_points := emptyP, finite_scalars := emptyS} points scalars 0#usize
-    halign (by simp) hp hs (by simpa [emptyP] using hroom) (by simpa [emptyS] using hroom)
+    halign (by simp) hp hs (by simp [emptyP]) (by simp [emptyS])
   refine ⟨ps, ss, ?_, ?_, ?_⟩
   · have he : Slice.len points = Slice.len scalars := by
       apply UScalar.eq_of_val_eq
       simpa only [Slice.len, Usize.ofNatCore_val_eq] using halign
-    simp only [filterPrefix, he, massert, if_true, bind_tc_ok, alloc.vec.Vec.clear]
+    simp only [filterPrefix, he, massert, ite_true, bind_ok, alloc.vec.Vec.clear]
     rw [hloop]
-    rfl
-  · simpa only [emptyP, List.nil_append] using hps
-  · simpa only [emptyS, List.nil_append] using hss
+    (simp only [bind_ok] )
+  · simpa only [emptyP, List.nil_append] using! hps
+  · simpa only [emptyS, List.nil_append] using! hss
 
 end LeanBlsSimd.Msm8
 

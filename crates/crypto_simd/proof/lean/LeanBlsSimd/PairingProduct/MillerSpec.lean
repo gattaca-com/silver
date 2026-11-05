@@ -83,21 +83,13 @@ def Input.ofPoints (p : G1) (q : G2) : Input :=
 theorem ofPoints_base (p : G1) (q : G2) (hq : q.isInfinity = false) :
     (Input.ofPoints p q).base = Embedded.ofG2 q := by
   simp only [Input.base, Input.ofPoints, Step.encodeAffine, RingEquiv.symm_apply_apply,
-    Embedded.ofG2, hq, Bool.false_eq_true, if_false]
+    Embedded.ofG2, hq, Bool.false_eq_true, ite_false]
   rfl
 
 theorem ofPoints_evaluation (p : G1) (q : G2) (hp : p.isInfinity = false) :
     (Input.ofPoints p q).evaluation = Embedded.ofG1 p := by
   rw [ofG1_evaluationPoint p hp]
   simp only [Input.evaluation, Input.ofPoints, RingEquiv.symm_apply_apply]
-
-theorem finite_factor_spec (p : G1) (q : G2)
-    (hp : p.isInfinity = false) (hq : q.isInfinity = false)
-    (hc : (Input.ofPoints p q).miller.flagged = false) :
-    (Input.ofPoints p q).factor ^ finalExpExponent =
-      Fp12.toField (pairingFactor (p, q)) ^ finalExpExponent := by
-  rw [factor_spec _ hc, ofPoints_base _ _ hq, ofPoints_evaluation _ _ hp]
-  simp only [pairingFactor, hp, hq, Bool.or_self, Bool.false_eq_true, if_false]
 
 end
 

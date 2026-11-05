@@ -24,10 +24,10 @@ def advance (w : Array M128 4#usize) (q : Nat) : Array M128 4#usize :=
 
 theorem advance_window (buf : ByteArray) (off q : Nat) (hq : q < 16) :
     advance (window (Spec.schedule buf off) q) q = window (Spec.schedule buf off) (q+1) := by
-  apply Subtype.ext
+  ext1
   by_cases he : q < 12
-  · simp (disch := omega) only [advance,window,Array.make,List.getElem!_cons_zero,
-      List.getElem!_cons_succ,if_pos,Nat.min_eq_left]
+  · simp (disch := omega) only [advance,window,Array.make,Array.from_val,List.getElem!_cons_zero,
+      List.getElem!_cons_succ,ite_eq_left,Nat.min_eq_left]
     have hm := schedule_four (Spec.schedule buf off) (4*q+16) (by omega) (by simp; omega)
     simp (disch := omega) only [Spec.schedule_step_eq_self] at hm
     simp only [show 4*q+16-16=4*q by omega,show 4*q+16-12=4*(q+1) by omega,
@@ -69,21 +69,22 @@ theorem quad_step (buf : ByteArray) (off : Nat) (s : Spec.RoundState) (q : Usize
   let next : Usize := UScalar.ofNatCore (q.val+1) (by scalar_tac)
   refine ⟨next,?_,rfl⟩
   have hq' : q < 16#usize := hq
-  simp only [sha256.extensions.compress_blocks_loop0_loop1.body,hq',if_true]
-  simp (disch := scalar_tac) only [mul_ok,add_ok,bind_tc_ok,UScalar.ofNatCore_val_eq,
+  simp only [sha256.extensions.compress_blocks_loop0_loop1.body,hq',ite_true]
+  simp (disch := scalar_tac) only [mul_ok,add_ok, bind_ok,UScalar.ofNatCore_val_eq,
     Portable.index_word]
   rw [Portable.constants_refines]
   have hk : (Array.make 4#usize [word Spec.constants[4*q.val]!,word Spec.constants[4*q.val+1]!,
       word Spec.constants[4*q.val+2]!,word Spec.constants[4*q.val+3]!] (by rfl)) =
-      toArray word (quad Spec.constants (4*q.val)) := by unfold quad; rfl
+      toArray word (quad Spec.constants (4*q.val)) := by
+    apply Aeneas.Std.Array.ext; simp [Array.make, Array.from_val, toArray, quad]
   rw [hk,load_words_refines]
-  simp (disch := scalar_tac) only [bind_tc_ok,index_usize_eq]
+  simp (disch := scalar_tac) only [bind_ok,index_usize_eq]
   norm_num only [UScalar.ofNatCore_val_eq]
-  simp only [window,Array.make,List.getElem_cons_zero,List.getElem_cons_succ,
+  simp only [window,Array.make,Array.from_val,List.getElem_cons_zero,List.getElem_cons_succ,
     core.core_arch.x86.sse2._mm_add_epi32,core.core_arch.x86.sha._mm_sha256rnds2_epu32,
-    core.core_arch.x86.sse2._mm_shuffle_epi32,bind_tc_ok]
+    core.core_arch.x86.sse2._mm_shuffle_epi32, bind_ok]
   have hw0 : min q.val 15 = q.val := Nat.min_eq_left (by omega)
-  rw [hw0]
+  simp only [hw0]
   have hr := quad_rounds (Spec.schedule buf off) q.val s
   dsimp only at hr
   have ha := congrArg Prod.fst hr
@@ -95,15 +96,14 @@ theorem quad_step (buf : ByteArray) (off : Nat) (s : Spec.RoundState) (q : Usize
   unfold advance window at hn
   by_cases he : q.val < 12
   · have he' : q < 12#usize := he
-    simp only [he',if_true,core.core_arch.x86.sha._mm_sha256msg1_epu32,
-      core.core_arch.x86.sha._mm_sha256msg2_epu32,core.core_arch.x86.ssse3._mm_alignr_epi8,
-      bind_tc_ok]
-    simp only [Array.make,List.getElem!_cons_zero,List.getElem!_cons_succ,he,if_true,hw0] at hn
+    simp only [he',ite_true,core.core_arch.x86.sha._mm_sha256msg1_epu32,
+      core.core_arch.x86.sha._mm_sha256msg2_epu32,core.core_arch.x86.ssse3._mm_alignr_epi8, bind_ok]
+    simp only [Array.make,Array.from_val,List.getElem!_cons_zero,List.getElem!_cons_succ,he,ite_true,hw0] at hn
     simp only [show (I32.bv 4#i32).toNat = 4 by decide +kernel]
     rw [hn]
   · have he' : ¬ q < 12#usize := he
-    simp only [he',if_false,bind_tc_ok]
-    simp only [Array.make,List.getElem!_cons_zero,List.getElem!_cons_succ,he,if_false,hw0] at hn
+    simp only [he',ite_false, bind_ok]
+    simp only [Array.make,Array.from_val,List.getElem!_cons_zero,List.getElem!_cons_succ,he,ite_false,hw0] at hn
     rw [hn]
 
 theorem quad_loop_refines (buf : ByteArray) (off : Nat) (s : Spec.RoundState)
@@ -117,7 +117,7 @@ theorem quad_loop_refines (buf : ByteArray) (off : Nat) (s : Spec.RoundState)
     have hstop : ¬ q < 16#usize := by change ¬ q.val < 16; omega
     have hz : 64-4*q.val = 0 := by omega
     rw [sha256.extensions.compress_blocks_loop0_loop1,loop.eq_1]
-    simp only [sha256.extensions.compress_blocks_loop0_loop1.body,hstop,if_false,hz]
+    simp only [sha256.extensions.compress_blocks_loop0_loop1.body,hstop,ite_false,hz, bind_ok]
     unfold Spec.rounds
     rfl
   | succ n ih =>
@@ -128,6 +128,6 @@ theorem quad_loop_refines (buf : ByteArray) (off : Nat) (s : Spec.RoundState)
     have hc : 4+(64-(4*q.val+4)) = 64-4*q.val := by omega
     rw [hc] at hr
     rw [sha256.extensions.compress_blocks_loop0_loop1,loop.eq_1]
-    simpa only [hbody,hnext] using hr
+    simpa only [hbody,hnext, bind_ok] using! hr
 
 end LeanBlsSimd.Sha256.Extensions

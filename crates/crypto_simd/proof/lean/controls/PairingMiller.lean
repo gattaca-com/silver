@@ -42,7 +42,7 @@ theorem lazy_zero_skip : Pairing.LaneLines.maskPresence (~~~ toU8 lazyZero.is_ze
     Array.make 2#usize [false, false] (by rfl) := by
   have h := lazy_zero_mask
   rw [Fp8.is_zero_mask_refines, ofFp8_toFp8] at h
-  have he : toU8 lazyZero.is_zero_mask = 255#u8 := Result.ok.inj h
+  have he : toU8 lazyZero.is_zero_mask = 255#u8 := Result.ok_injective h
   rw [he]
   rfl
 

@@ -3,10 +3,10 @@
 
 use std::time::{Duration, Instant};
 
-use silver_beacon_state::ssz_hash::{hash_tree_root_block_header, hash_tree_root_state};
+use silver_beacon_state::ssz_hash::hash_tree_root_state;
 use silver_beacon_state_data::{
     BeaconState, BeaconStateOwner, BeaconStateReader, CheckpointChunk, SpecConfig,
-    decode_checkpoint_pubkeys,
+    decode_checkpoint_pubkeys, hash_tree_root_block_header,
 };
 use silver_common::{profiler::InProcessReader, ssz_view::StatusView};
 use silver_control::sync_engine::BATCH;

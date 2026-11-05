@@ -23,13 +23,9 @@ noncomputable abbrev d : S := j delta
 instance : CharP S p := (CharP.charP_iff_prime_eq_zero (Fact.out : p.Prime)).2 (by
   rw [← map_natCast j, LeanBlsSimd.Fp2Field.natCast_modulus, map_zero])
 
-theorem embed_injective : Function.Injective (embed u) := by
-  intro a b h
-  have ha : assemble u a 0 0 = embed u a := by simp [assemble]
-  have hb : assemble u b 0 0 = embed u b := by simp [assemble]
-  exact (assemble_injective u a 0 0 b 0 0 (by rw [ha, hb, h])).1
-
-instance : Nontrivial T := Function.Injective.nontrivial embed_injective
+instance : Nontrivial T :=
+  (AdjoinRoot.nontrivial_iff_of_monic (Polynomial.monic_X_pow_sub_C u (by decide))).2
+    (by rw [Polynomial.degree_X_pow_sub_C (by decide)]; decide)
 
 instance : CharP T p := (CharP.charP_iff_prime_eq_zero (Fact.out : p.Prime)).2 (by
   rw [← map_natCast (embed u), CharP.cast_eq_zero S p, map_zero])
@@ -73,7 +69,8 @@ theorem assemble_pow_qq (a b c : S) :
   rw [sq, pow_mul, assemble_pow_q, assemble_pow_q]
   have hd : star d = d := by
     change star (⟨delta, 0⟩ : S) = ⟨delta, 0⟩
-    simp [QuadraticAlgebra.star_mk]
+    rw [QuadraticAlgebra.star_mk]
+    simp
   simp only [star_mul, star_pow, star_star, hd]
   congr 1 <;> ring
 
@@ -134,7 +131,8 @@ theorem assemble_pow_p6 (a b c : S) :
   rw [hexp, pow_mul, assemble_pow_qq, assemble_pow_q]
   have hd : star d = d := by
     change star (⟨delta, 0⟩ : S) = ⟨delta, 0⟩
-    simp [QuadraticAlgebra.star_mk]
+    rw [QuadraticAlgebra.star_mk]
+    simp
   simp only [star_mul, star_pow, hd]
   congr 1
   · calc
@@ -143,31 +141,5 @@ theorem assemble_pow_p6 (a b c : S) :
   · calc
       d ^ 2 * (star c * d ^ 4) = d ^ 6 * star c := by ring
       _ = star c := by rw [d_sixth, one_mul]
-
-theorem tower_period (g : T) : g ^ (p ^ 12) = g := by
-  obtain ⟨a, b, c, rfl⟩ := assemble_surjective u g
-  rw [show p ^ 12 = p ^ 6 * p ^ 6 by ring, pow_mul, assemble_pow_p6, assemble_pow_p6]
-  simp only [star_star, star_neg, neg_neg]
-
-theorem unit_period (g : Tˣ) : g ^ (p ^ 12 - 1) = 1 := by
-  have hperiod : g ^ (p ^ 12) = g := by
-    apply Units.ext
-    simpa only [Units.val_pow_eq_pow_val] using tower_period (g : T)
-  apply mul_left_cancel (a := g)
-  calc
-    g * g ^ (p ^ 12 - 1) = g ^ (p ^ 12) := by
-      rw [← pow_succ', Nat.sub_add_cancel (by decide +kernel : 1 ≤ p ^ 12)]
-    _ = g := hperiod
-    _ = g * 1 := (mul_one _).symm
-
-theorem easy_cyclotomic (g : Tˣ) : LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 4 - p ^ 2 + 1) = 1 :=
-  easyPart_cyclotomic g p (by decide +kernel) (unit_period g)
-
-theorem easy_unitary (g : Tˣ) : LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 6 + 1) = 1 :=
-  cyclotomic_unitary _ p (by decide +kernel) (easy_cyclotomic g)
-
-theorem easy_conjugate_inverse (g : Tˣ) :
-    LeanBlsSimd.Cyclotomic.easyPart g p ^ (p ^ 6) = (LeanBlsSimd.Cyclotomic.easyPart g p)⁻¹ :=
-  conjugate_inverse _ _ (easy_unitary g)
 
 end LeanBlsSimd.Cyclotomic.Bls

@@ -265,7 +265,10 @@ export class Instance {
         this.buildInfo = d.text;
         break;
       case Kind.Chain:
-        this.clock = new SlotClock(d.genesisUnixSecs, d.slotMs);
+        this.clock = new SlotClock(d.genesisUnixSecs, d.slotMs, d.gloasForkEpoch);
+        // Chain repeats every few seconds, so a block can open its trace before
+        // the first one arrives.
+        for (const trace of this.traces) trace.gloas = this.clock.isGloas(trace.slot);
         break;
       case Kind.Sources:
         for (const s of d.sources) this.sources.set(s.id, { cls: s.cls, name: s.name });
@@ -374,7 +377,8 @@ export class Instance {
       if (!live) return;
       if (this.traces.length === TRACES_CAP) this.traces.shift();
       const base = this.clock ? this.clock.slotStart(e.slot) : e.ts;
-      this.traces.push((trace = new BlockTrace(e.slot, e.root, base)));
+      const gloas = this.clock?.isGloas(e.slot) ?? false;
+      this.traces.push((trace = new BlockTrace(e.slot, e.root, base, gloas)));
     }
     trace.apply(e);
   }

@@ -60,8 +60,7 @@ pub struct Exporter {
     base_dir: PathBuf,
     label: String,
     instance_id: u64,
-    genesis_unix_secs: u64,
-    slot_ms: u64,
+    chain: NodeChain,
     node_pid: Option<u32>,
     encoder: Encoder,
     sources: ExportSources,
@@ -88,8 +87,7 @@ impl Exporter {
             base_dir: flux::utils::directories::local_share_dir(),
             label,
             instance_id,
-            genesis_unix_secs: chain.genesis_unix_secs,
-            slot_ms: chain.slot_ms,
+            chain: chain.clone(),
             node_pid: None,
             encoder: Encoder::new(instance_id, now.0),
             sources: ExportSources::default(),
@@ -156,12 +154,12 @@ impl Exporter {
     }
 
     fn describe(&mut self, now: Nanos) {
-        let Self { base_dir, label, genesis_unix_secs, slot_ms, encoder, sources, sink, .. } = self;
+        let Self { base_dir, label, chain, encoder, sources, sink, .. } = self;
         sources.discover(base_dir, APP_NAME);
 
         let emit = &mut |d: &[u8]| sink.send(d);
         encoder.instance(now.0, label, emit);
-        encoder.chain(now.0, *genesis_unix_secs, *slot_ms, emit);
+        encoder.chain(now.0, chain.genesis_unix_secs, chain.slot_ms, chain.gloas_fork_epoch, emit);
         sources.encode_descriptors(encoder, now.0, emit);
 
         let series = sources.series_counts();

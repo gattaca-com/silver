@@ -1,6 +1,9 @@
 use flux::spine::SpineProducers;
 use flux_profiler::timed;
-use silver_beacon_state_data::{B256, Checkpoint, SLOTS_PER_EPOCH, StateId};
+use silver_beacon_state_data::{
+    B256, Checkpoint, SLOTS_PER_EPOCH, StateId,
+    bls::{self, CheckedSignature},
+};
 use silver_common::{
     BeaconStateEvent, PayloadValidationStatus, hex32,
     ssz_view::{
@@ -14,7 +17,6 @@ use silver_ssz::ssz_view::PAYLOAD_ATTESTATION_MESSAGE_SIZE;
 
 use super::{BeaconStateTile, MAXIMUM_GOSSIP_CLOCK_DISPARITY, Producers};
 use crate::{
-    bls::{self, CheckedSignature},
     stf,
     tile::{Feedback, gossip::PreparedPtc},
 };
@@ -61,7 +63,7 @@ impl BeaconStateTile {
     }
 
     #[timed]
-    pub(super) fn recompute_head(&mut self) {
+    pub(super) fn recompute_head(&mut self, emit: impl FnMut(BeaconStateEvent)) {
         self.fork_choice.on_tick(self.ticker.current_slot());
         // Lift first: an epoch-boundary block's post-state may advance the
         // justified checkpoint, and `lift_checkpoints` reads the head post-state
@@ -71,21 +73,21 @@ impl BeaconStateTile {
         self.lift_checkpoints();
         self.refresh_justified_balances();
         self.fork_choice.recompute_head();
-        self.follow_head();
+        self.follow_head(emit);
         self.shuffling_cache.protect_head(&self.state.read_view(self.last_applied));
     }
 
     /// A block that lost fork choice, or a reorg by weight alone, leaves
     /// `last_applied` off the head; move it to the head's state, advanced as
     /// far as `last_applied` was.
-    fn follow_head(&mut self) {
+    fn follow_head(&mut self, emit: impl FnMut(BeaconStateEvent)) {
         let head = self.canonical_state_id();
         let head_slot = self.slot_state_at(head).slot;
         if self.slot_state_at(head).latest_block_root == self.head_block_root() {
             return;
         }
         self.last_applied = self.state_at(head, head_slot.max(self.head_state_slot()));
-        self.state.publish_state_id(self.last_applied);
+        self.publish_head_state(emit);
     }
 
     pub(super) fn try_detect_reorg(&mut self, producers: &mut Producers) {
@@ -118,10 +120,10 @@ impl BeaconStateTile {
     /// Slot-start hook: fold the previous slot's deferred votes, then advance
     /// the store time and refold the head.
     #[timed]
-    pub(super) fn fork_choice_tick(&mut self) {
+    pub(super) fn fork_choice_tick(&mut self, emit: impl FnMut(BeaconStateEvent)) {
         let n = self.head_validator_count();
         self.fork_choice.drain_pending_votes(n, self.ticker.current_slot());
-        self.recompute_head();
+        self.recompute_head(emit);
     }
 
     /// Index bundle of fork-choice's canonical tip. For gossip-object
@@ -141,6 +143,7 @@ impl BeaconStateTile {
         block_root: &B256,
         latest_valid_hash: Option<B256>,
         status: PayloadValidationStatus,
+        emit: impl FnMut(BeaconStateEvent),
     ) {
         match status {
             PayloadValidationStatus::Valid => {
@@ -148,7 +151,7 @@ impl BeaconStateTile {
             }
             PayloadValidationStatus::Invalid => {
                 self.fork_choice.on_payload_invalid(block_root, latest_valid_hash);
-                self.recompute_head();
+                self.recompute_head(emit);
             }
             // Optimistic: EL still syncing; verdict arrives on a later FCU.
             PayloadValidationStatus::Syncing | PayloadValidationStatus::Accepted => {}

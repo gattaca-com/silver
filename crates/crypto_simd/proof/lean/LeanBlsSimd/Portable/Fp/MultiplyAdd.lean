@@ -23,7 +23,7 @@ private theorem products_loop (a lo hi : Array U64 6#usize) (b : U64) (j : Usize
     have hstop : ¬j < 6#usize := by change ¬j.val < 6; omega
     refine ⟨lo,hi,?_,?_⟩
     · rw [portable.fp.mul_add_loop0,loop.eq_1]
-      simp [portable.fp.mul_add_loop0.body,hstop]
+      simp [portable.fp.mul_add_loop0.body,hstop, bind_ok]
     · have haend : tail a 6 = 0 := tail_end a
       rw [hje,haend]
       ring
@@ -38,16 +38,16 @@ private theorem products_loop (a lo hi : Array U64 6#usize) (b : U64) (j : Usize
         (lo.set j l).val[i]'(by rw [(lo.set j l).property]; exact hi') = 0#u64 ∧
         (hi.set j h).val[i]'(by rw [(hi.set j h).property]; exact hi') = 0#u64 := by
       intro i hi' hji
-      change (lo.val.set j.val l)[i]'_ = _ ∧ (hi.val.set j.val h)[i]'_ = _
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega),List.getElem_set_ne (by omega)]
       exact hz i hi' (by omega)
     obtain ⟨low,high,he,heq⟩ := ih (lo.set j l) (hi.set j h) next (by omega) hz' (by omega)
     have hbody : portable.fp.mul_add_loop0.body a b lo hi j =
         ok (cont (lo.set j l,hi.set j h,next)) := by
       have hj' : j < 6#usize := hjlt
-      simp only [portable.fp.mul_add_loop0.body,hj',if_true]
+      simp only [portable.fp.mul_add_loop0.body,hj',ite_true]
       rw [index_usize_eq a j hjlt]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let (l,h) ← portable.fp.wide_mul word b
         let lo' ← Array.update lo j l
@@ -58,10 +58,10 @@ private theorem products_loop (a lo hi : Array U64 6#usize) (b : U64) (j : Usize
       simp only [bind_tc_ok]
       rw [update_eq lo j l hjlt,update_eq hi j h hjlt,
         usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      rfl
+      (simp only [bind_tc_ok] ; rfl)
     refine ⟨low,high,?_,?_⟩
     · rw [portable.fp.mul_add_loop0,loop.eq_1]
-      simpa only [hbody] using he
+      simpa only [hbody, bind_ok] using! he
     · rw [heq,value_set lo j l hjlt,value_set hi j h hjlt,
         (hz j.val hjlt (by omega)).1,(hz j.val hjlt (by omega)).2]
       have hv' : (l.val : ℤ)+(radix : ℤ)*h.val = word.val*b.val := by exact_mod_cast hv
@@ -84,7 +84,7 @@ private theorem low_loop (acc : Array U64 7#usize) (lo : Array U64 6#usize)
     have hstop : ¬j < 6#usize := by change ¬j.val < 6; omega
     refine ⟨out,carry,?_,hc,hz 6 (by decide) (by omega),?_⟩
     · rw [portable.fp.mul_add_loop1,loop.eq_1]
-      simp [portable.fp.mul_add_loop1.body,hstop]
+      simp [portable.fp.mul_add_loop1.body,hstop, bind_ok]
     · have hle : tail lo 6 = 0 := tail_end lo
       rw [hje,hle]
       ring
@@ -99,15 +99,15 @@ private theorem low_loop (acc : Array U64 7#usize) (lo : Array U64 6#usize)
     have hz' : ∀ i (hi : i < 7), next.val ≤ i →
       (out.set j s).val[i]'(by rw [(out.set j s).property]; exact hi) = 0#u64 := by
       intro i hi hji
-      change (out.val.set j.val s)[i]'_ = _
+      simp +zetaDelta only [Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨result,top,hr,ht,hzero,heq⟩ := ih (out.set j s) c next (by omega) hc' hz' (by omega)
     have hbody : portable.fp.mul_add_loop1.body acc lo j out carry = ok (cont (next,out.set j s,c)) := by
       have hj' : j < 6#usize := hjlt
-      simp only [portable.fp.mul_add_loop1.body,hj',if_true]
+      simp only [portable.fp.mul_add_loop1.body,hj',ite_true]
       rw [index_usize_eq acc j (by omega),index_usize_eq lo j hjlt]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let (s,c) ← portable.fp.add_carry x y carry
         let out ← Array.update out j s
@@ -116,10 +116,10 @@ private theorem low_loop (acc : Array U64 7#usize) (lo : Array U64 6#usize)
       rw [he]
       simp only [bind_tc_ok]
       rw [update_eq out j s (by omega),usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      rfl
+      (simp only [bind_tc_ok] ; rfl)
     refine ⟨result,top,?_,ht,hzero,?_⟩
     · rw [portable.fp.mul_add_loop1,loop.eq_1]
-      simpa only [hbody] using hr
+      simpa only [hbody, bind_ok] using! hr
     · rw [heq,value_set out j s (by omega),hz j.val (by omega) (by omega)]
       have hv' : (s.val : ℤ)+(radix : ℤ)*c.val = x.val+y.val+carry.val := by exact_mod_cast hv
       simp only [show (0#u64).val = 0 from rfl,Nat.cast_zero,sub_zero,hnxt,
@@ -138,7 +138,7 @@ private theorem high_loop (hi : Array U64 6#usize) (out : Array U64 7#usize)
     have hstop : ¬j < 6#usize := by change ¬j.val < 6; omega
     refine ⟨out,carry,?_,hc,?_⟩
     · rw [portable.fp.mul_add_loop2,loop.eq_1]
-      simp [portable.fp.mul_add_loop2.body,hstop]
+      simp [portable.fp.mul_add_loop2.body,hstop, bind_ok]
     · have he : tail hi 6 = 0 := tail_end hi
       rw [hje,he]
       ring
@@ -153,9 +153,9 @@ private theorem high_loop (hi : Array U64 6#usize) (out : Array U64 7#usize)
     obtain ⟨result,top,hr,ht,heq⟩ := ih (out.set next s) c next (by omega) hc' (by omega)
     have hbody : portable.fp.mul_add_loop2.body hi j out carry = ok (cont (next,out.set next s,c)) := by
       have hj' : j < 6#usize := hjlt
-      simp only [portable.fp.mul_add_loop2.body,hj',if_true]
+      simp only [portable.fp.mul_add_loop2.body,hj',ite_true]
       rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let x ← Array.index_usize out next
         let y ← Array.index_usize hi j
@@ -167,10 +167,10 @@ private theorem high_loop (hi : Array U64 6#usize) (out : Array U64 7#usize)
       rw [he]
       simp only [bind_tc_ok]
       rw [update_eq out next s (by omega)]
-      rfl
+      (simp only [bind_tc_ok] )
     refine ⟨result,top,?_,ht,?_⟩
     · rw [portable.fp.mul_add_loop2,loop.eq_1]
-      simpa only [hbody] using hr
+      simpa only [hbody, bind_ok] using! hr
     · rw [heq,value_set out next s (by omega)]
       have hv' : (s.val : ℤ)+(radix : ℤ)*c.val = x.val+y.val+carry.val := by exact_mod_cast hv
       simp only [hnxt,tail_step hi j.val hjlt,pow_succ]
@@ -184,14 +184,13 @@ theorem mul_add_refines (acc : Array U64 7#usize) (a : Array U64 6#usize) (b : U
   obtain ⟨lo,hi,hproducts,hp⟩ := products_loop a (Array.repeat 6#usize 0#u64)
     (Array.repeat 6#usize 0#u64) b 0#usize (by decide) (by
       intro i h _
-      constructor <;> change (List.replicate 6 0#u64)[i]'_ = _ <;> simp only [List.getElem_replicate])
+      constructor <;> simp only [Array.repeat_val, List.getElem_replicate])
   change value lo+(radix : ℤ)*value hi = 0+(radix : ℤ)*0+value a*b.val*(radix : ℤ)^0 at hp
   simp only [mul_zero,add_zero,zero_add,pow_zero,mul_one] at hp
   obtain ⟨low,carry,hlow,hc,hzero,hl⟩ := low_loop acc lo (Array.repeat 7#usize 0#u64)
     0#u64 0#usize (by decide) (by decide) (by
       intro i h _
-      change (List.replicate 7 0#u64)[i]'_ = _
-      simp only [List.getElem_replicate])
+      simp only [Array.repeat_val, List.getElem_replicate])
   change value low+(carry.val : ℤ)*(radix : ℤ)^6+tail acc 6*(radix : ℤ)^6 =
     0+(value acc+value lo+0)*(radix : ℤ)^0 at hl
   simp only [add_zero,zero_add,pow_zero,mul_one] at hl
@@ -221,7 +220,7 @@ theorem mul_add_refines (acc : Array U64 7#usize) (a : Array U64 6#usize) (b : U
     simp only [show (0#u64).val = 0 from rfl,Nat.cast_zero,sub_zero] at hh
     linear_combination hh+hl+hp+hdiv*(radix : ℤ)^6
   refine ⟨result,?_,?_⟩
-  · simp only [portable.fp.mul_add,hproducts,bind_tc_ok]
+  · simp only [portable.fp.mul_add,hproducts, bind_ok]
     change (do
       let (out,c) ← portable.fp.mul_add_loop1 acc lo 0#usize (Array.repeat 7#usize 0#u64) 0#u64
       let a6 ← Array.index_usize acc 6#usize
@@ -234,10 +233,9 @@ theorem mul_add_refines (acc : Array U64 7#usize) (a : Array U64 6#usize) (b : U
     simp only [lift,bind_tc_ok]
     change (do let out' ← Array.update low 6#usize w; portable.fp.mul_add_loop2 hi 0#usize out' 0#u64) = _
     rw [update_eq low 6#usize w (by decide)]
-    simpa only [bind_tc_ok] using hhigh
+    simpa only [bind_tc_ok, bind_ok] using hhigh
   · have hb : 0 ≤ value result ∧ value result < (radix : ℤ)^7 := value_bounds result
     have hm := congrArg (fun z : ℤ => z % (radix : ℤ)^7) heq
-    dsimp only at hm
     rw [Int.add_mul_emod_self_right,Int.emod_eq_of_lt hb.1 hb.2] at hm
     exact hm
 

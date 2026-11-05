@@ -12,15 +12,7 @@ set_option maxHeartbeats 1000000
 /-- Number of table rows consumed before the remaining `n` bits. -/
 def consumed (n : Nat) : Nat := 68 - (lineKinds n).length
 
-theorem consumed_zero : consumed 0 = 68 := by decide +kernel
-
 theorem consumed_start : consumed 63 = 0 := by decide +kernel
-
-theorem consumed_bound (n : Nat) : consumed n ≤ 68 := Nat.sub_le _ _
-
-theorem consumed_positive (n : Fin 63) : 0 < consumed n.val := by
-  revert n
-  decide +kernel
 
 theorem double_row_bound (n : Fin 63) : consumed (n.val + 1) < 68 := by
   revert n
@@ -102,9 +94,9 @@ theorem bit_step_eq (v : Factors) (present : Array Bool 2#usize) (n : Fin 63) (f
   unfold bitStep bitRows
   split_ifs with h
   · simp only [List.foldl_cons, List.foldl_nil, combinedStep, activeStep,
-      double_row_kind, add_row_kind, Bool.false_eq_true, if_false, if_true, applyLines]
+      double_row_kind, add_row_kind, Bool.false_eq_true, ite_false, ite_true, applyLines]
   · simp only [List.foldl_cons, List.foldl_nil, combinedStep, activeStep,
-      double_row_kind, Bool.false_eq_true, if_false, applyLines]
+      double_row_kind, Bool.false_eq_true, ite_false, applyLines]
 
 theorem initial_square (n : Fin 63) (f : Fp12) (h : n.val + 1 = 63 → f = Fp12.one) :
     (if consumed (n.val + 1) > 0 then f.square else f) = f * f := by

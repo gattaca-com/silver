@@ -36,7 +36,7 @@ use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::{DiscV5, Discovery};
 use silver_gossip::GossipHandler;
 use silver_httpcore::Bind;
-use silver_network::{ClusterNodes, Context, NetworkTile, P2p};
+use silver_network::{ClusterNodes, Context, InboundLimits, NetworkTile, P2p};
 use silver_peer::PeerManager;
 use silver_storage::tile::StorageTile;
 
@@ -158,11 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let spec = Arc::new(chain_config.spec.clone());
     sleep_until_genesis(genesis.unix_secs);
-    let ticker = SlotTicker::new(
-        genesis.unix_secs,
-        chain_config.slot_duration(),
-        chain_config.playload_lookahead(),
-    );
+    let ticker = SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead());
 
     // Long-lived subnets: advertised from boot (peer retention exempts us
     // from excess-peer pruning); the gossip subscriptions themselves
@@ -221,6 +217,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         config.max_connections(),
         trusted_ips,
+        InboundLimits {
+            gossip_bytes_per_second: config.gossip_max_bytes_per_second(),
+            streams_per_second: config.max_inbound_streams_per_second(),
+        },
     );
     let identify = config.identify(&keypair)?;
 
@@ -351,11 +351,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         state_reader,
         das_custody_groups,
         spec.clone(),
-        SlotTicker::new(
-            genesis.unix_secs,
-            chain_config.slot_duration(),
-            chain_config.playload_lookahead(),
-        ),
+        SlotTicker::new(genesis.unix_secs, &spec, chain_config.playload_lookahead()),
         proposed_columns_producer,
     )
     .with_data_columns_cache(cell_config, cell_slot, cell_slot_start)

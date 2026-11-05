@@ -106,7 +106,7 @@ set_option hygiene false in
 local macro "load_proof" set:term : tactic => `(tactic| (
   intro values
   unfold loadWith loadLoopWith
-  simp only [Simd.zero_refines, bind_tc_ok, LIMBS_refines, bind_ok_eq]
+  simp only [Simd.zero_refines, bind_tc_ok, bind_ok, LIMBS_refines, bind_ok_eq]
   rw [repeat_eq_toArray_id Simd.zero (show (8#usize).val = LIMBS from rfl)]
   refine loop_range (n := LIMBS) _ 8#usize rfl (toArray id)
     (fun v j => v.set j (Fp8.loadWith $set (ofArray (ofArray ofU64) values)).limbs[j]) (toArray id)
@@ -120,10 +120,10 @@ local macro "load_proof" set:term : tactic => `(tactic| (
       index_usize_eq values 5#usize (by decide), index_usize_eq values 4#usize (by decide),
       index_usize_eq values 3#usize (by decide), index_usize_eq values 2#usize (by decide),
       index_usize_eq values 1#usize (by decide), index_usize_eq values 0#usize (by decide),
-      index_usize_eq _ _ hj, bind_tc_ok, lift, update_eq _ _ _ hj, setrGen,
+      index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lift, update_eq _ _ _ hj, setrGen,
       avx512f._mm512_set_epi64, ofBitVec_hcast_I64]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set, Fp8.loadWith, setrModel]
   · simp [Fp8.loadWith, foldl_set_ofFn, toFp8]))
 
@@ -151,7 +151,7 @@ def laneIndices : Vector Limbs 8 := .ofFn fun l => .replicate LIMBS l.val.toUInt
 example : ¬ ∀ values : Array (Array U64 8#usize) 8#usize,
     loadWith setrGen values = ok (toFp8 (Fp8.load (ofArray (ofArray ofU64) values))) := by
   intro h
-  have e := congrArg ofFp8 (Result.ok.inj
+  have e := congrArg ofFp8 (Result.ok_injective
     ((loadWith_setr_refines (toArray (toArray toU64) laneIndices)).symm.trans
       (h (toArray (toArray toU64) laneIndices))))
   simp only [ofFp8_toFp8, ofArray_toArray_ofArray_ofU64] at e
@@ -217,7 +217,7 @@ local macro "store_proof" lanes:term : tactic => `(tactic| (
   · intro r r' m j he hs he' hs' hn
     have hj : r.start.val < (8#usize).val := by rw [hs]; exact j.isLt
     simp_body storeBodyWith hn
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, lanesRevGen, Simd.lanes_refines]
+    simp only [index_usize_eq _ _ hj, bind_tc_ok, bind_ok, lanesRevGen, Simd.lanes_refines]
     rw [Fp8.store_inner_refines _ _ (by rw [hs]; exact j.isLt)]
     simp [hs, lanesRevModel]))
 
@@ -242,7 +242,7 @@ theorem storeWith_rev_refines : ∀ self : fp8.Fp8,
 example : ¬ ∀ self : fp8.Fp8,
     storeWith lanesRevGen self = ok (toArray (toArray toU64) (ofFp8 self).store) := by
   intro h
-  have e := congrArg (ofArray (ofArray ofU64) (m := 8) (h := rfl)) (Result.ok.inj
+  have e := congrArg (ofArray (ofArray ofU64) (m := 8) (h := rfl)) (Result.ok_injective
     ((storeWith_rev_refines (toFp8 (Fp8.load laneIndices))).symm.trans
       (h (toFp8 (Fp8.load laneIndices)))))
   simp only [ofFp8_toFp8, ofArray_toArray_ofArray_ofU64] at e

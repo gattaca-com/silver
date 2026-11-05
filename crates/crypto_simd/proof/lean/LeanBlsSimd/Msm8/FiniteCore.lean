@@ -44,7 +44,7 @@ theorem finiteCore_correct
       rw [← hsum, List.length_eq_zero_iff.mp hz]
       rfl
     refine ⟨filtered, G1x8.infinity, ?_, ?_⟩
-    · simp only [finiteCore, hfilter, bind_tc_ok, hn, if_true, G1x8.infinity_refines]
+    · simp only [finiteCore, hfilter, bind_ok, hn, ite_true, G1x8.infinity_refines]
       rfl
     · rw [hzero]
       exact WindowSums.infinity_pointRep 0
@@ -78,10 +78,10 @@ theorem finiteCore_correct
     obtain ⟨next, out, hfinishEq, hrep⟩ :=
       finish_correct prepared filtered.finite_scalars.val.length values capacity contents _ hpositive hinitialised
     refine ⟨next, out, ?_, ?_⟩
-    · simp only [finiteCore, hfilter, bind_tc_ok, hn, if_false]
+    · simp only [finiteCore, hfilter, bind_ok, hn, ite_false]
       change (do let prepared ← initialise filtered; finish prepared) = _
       rw [hinit]
-      exact hfinishEq
+      simpa only [bind_tc_ok, bind_ok] using! hfinishEq
     · have hcontribution := (inputContribution_range_eq_zip ps.val ss.val haligned).trans hsum
       change out.PointRep 0 (∑ i ∈ Finset.range ss.val.length, inputContribution (ps.val[i]!, ss.val[i]!)) at hrep
       rwa [hcontribution] at hrep

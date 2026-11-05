@@ -11,13 +11,16 @@ import LeanBlsSimd.Portable.Msm.StoreLifecycle
 open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax U64.rMax
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Msm.Controls
 
 private def store : portable.msm.store.PointStore :=
-  ⟨⟨[Fp.pairEncode 3 5, Fp.pairEncode 3 7, Fp.pairEncode 0 0], by scalar_tac⟩, 2#usize⟩
+  ⟨(alloc.vec.Vec.from [Fp.pairEncode 3 5, Fp.pairEncode 3 7, Fp.pairEncode 0 0] (by scalar_tac)), 2#usize⟩
 
 private def adds : portable.msm.pairs.BatchedAdds :=
-  ⟨⟨[0#u32], by scalar_tac⟩,⟨[1#u32], by scalar_tac⟩,⟨[2#u32], by scalar_tac⟩,
+  ⟨(alloc.vec.Vec.from [0#u32] (by scalar_tac)),(alloc.vec.Vec.from [1#u32] (by scalar_tac)),(alloc.vec.Vec.from [2#u32] (by scalar_tac)),
     alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
 
 theorem negated_reference_clears_index :
@@ -26,14 +29,14 @@ theorem negated_reference_clears_index :
 
 theorem negated_reference_changes_y :
     store.signed 2147483649#u32 = ok ((Kzg.fpEncode 3).l,(Kzg.fpEncode (-7)).l) := by
-  simpa only [show 2^31 ≤ (2147483649#u32).val from by decide, if_true] using
+  simpa only [show 2^31 ≤ (2147483649#u32).val from by decide, ite_true] using
     Store.signed_refines store 2147483649#u32 3 7 (by rfl)
 
 theorem omitted_negation_rejected :
     store.signed 2147483649#u32 ≠ ok ((Kzg.fpEncode 3).l,(Kzg.fpEncode 7).l) := by
   rw [negated_reference_changes_y]
   intro h
-  have he := congrArg (fun p => Kzg.fpRead ⟨p.2⟩) (Result.ok.inj h)
+  have he := congrArg (fun p => Kzg.fpRead ⟨p.2⟩) (Result.ok_injective h)
   change Kzg.fpRead (Kzg.fpEncode (-7)) = Kzg.fpRead (Kzg.fpEncode 7) at he
   simp only [Kzg.fpRead_fpEncode] at he
   have hn : (-7 : EthLib.Cryptography.Bls.Fp) ≠ 7 := by decide +kernel
@@ -43,10 +46,20 @@ theorem output_write_preserves_original :
     (Store.write store 2 9 11).points.val[0]? = store.points.val[0]? :=
   Store.write_other store 2 0 9 11 (by decide)
 
+private theorem adds_rejects [RuntimeFeatures] :
+    ∃ next, adds.run store = ok (false,next,store) ∧ next.a = adds.a := by
+  have hinputs : Batch.Inputs adds.a adds.b store (fun _ => 0) adds.a.val.length := by
+    intro j hj
+    have hj0 : j = 0 := by change j < 1 at hj; omega
+    subst j
+    exact ⟨0#u32, 1#u32, 3, 5, 3, 7, rfl, rfl, rfl, rfl, by simp⟩
+  obtain ⟨next, hr, ha, _, _⟩ := Batch.run_rejects_at adds store (fun _ => 0) 0#usize
+    (by decide) hinputs (by intro j hj; change j < 0 at hj; omega) rfl
+  exact ⟨next, hr, ha⟩
+
 theorem equal_x_rejects_round [RuntimeFeatures] :
     ∃ next, adds.run store = ok (false,next,store) := by
-  obtain ⟨next,h,_,_,_⟩ := Batch.run_rejects_first adds store 0#u32 1#u32 3 5 7 (by rfl) (by rfl)
-    (by rfl) (by rfl)
+  obtain ⟨next,h,_⟩ := adds_rejects
   exact ⟨next,h⟩
 
 theorem equal_x_success_rejected [RuntimeFeatures]
@@ -55,43 +68,42 @@ theorem equal_x_success_rejected [RuntimeFeatures]
   obtain ⟨next',h⟩ := equal_x_rejects_round
   rw [h]
   intro he
-  have hf := congrArg Prod.fst (Result.ok.inj he)
+  have hf := congrArg Prod.fst (Result.ok_injective he)
   cases hf
 
 private def buckets : portable.msm.buckets.Buckets :=
-  ⟨4#usize,1#usize,alloc.vec.Vec.new _,alloc.vec.Vec.new _,⟨[0#u32],by scalar_tac⟩⟩
+  ⟨4#usize,1#usize,alloc.vec.Vec.new _,alloc.vec.Vec.new _,(alloc.vec.Vec.from [0#u32] (by scalar_tac))⟩
 
 theorem dropped_count_rejected : buckets.count 0#usize 1#usize ≠ ok buckets := by
   obtain ⟨i,hi,hiv⟩ := BucketsRefines.list_refines (Buckets.toLane buckets)
     0#usize 1#usize (by decide) (by decide) (by decide) (by decide) (by decide)
   have hz : i = 0#usize := by
     apply UScalar.eq_of_val_eq
-    simpa only [BucketsRefines.listIndex, buckets, Buckets.toLane] using hiv
+    simpa only [BucketsRefines.listIndex, buckets, Buckets.toLane, UScalar.ofNatCore_val_eq, Nat.zero_mul, Nat.zero_add, Nat.sub_self] using hiv
   rw [hz] at hi
   have hc := BucketsRefines.count_at (Buckets.toLane buckets) 0#usize 1#usize 0#usize
     (by decide) hi (by decide) (by decide)
   rw [Buckets.count_eq, hc]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   intro h
   have hl := congrArg (fun b : portable.msm.buckets.Buckets => b.lens.val.map UScalar.val)
-    (Result.ok.inj h)
+    (Result.ok_injective h)
   change [1] = [0] at hl
   cases hl
 
 theorem chunk_counters_fit : 2*32*portable.msm.CHUNK.val < 2^31 ∧
-    (2+32)*portable.msm.CHUNK.val < 2^31 :=
-  Buckets.chunk_reference_bounds _ (Nat.le_refl _)
+    (2+32)*portable.msm.CHUNK.val < 2^31 := by decide +kernel
 
 private def differences (i : ℕ) : Batch.ChainField := (i+2 : ℕ)
 
 private def inputRefs (r : U32) : alloc.vec.Vec U32 :=
-  ⟨List.replicate 5 r, by scalar_tac⟩
+  (alloc.vec.Vec.from (List.replicate 5 r) (by scalar_tac))
 
 private def zeros : alloc.vec.Vec portable.fp.Fp :=
-  ⟨List.replicate 5 (Kzg.fpEncode 0).l, by scalar_tac⟩
+  (alloc.vec.Vec.from (List.replicate 5 (Kzg.fpEncode 0).l) (by scalar_tac))
 
 private def differenceStore : portable.msm.store.PointStore :=
-  ⟨⟨[Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0],by scalar_tac⟩,2#usize⟩
+  ⟨(alloc.vec.Vec.from [Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0] (by scalar_tac)),2#usize⟩
 
 theorem fifth_job_stores_chain_prefix [RuntimeFeatures] :
     ∃ next, portable.msm.pairs.BatchedAdds.run_loop0.body
@@ -114,7 +126,8 @@ theorem missing_fifth_prefix_rejected [RuntimeFeatures]
   obtain ⟨actual,he⟩ := fifth_job_stores_chain_prefix
   rw [he]
   intro h
-  have hp := congrArg (fun t => t.2.1.val[4]?) (ControlFlow.cont.inj (Result.ok.inj h))
+  have hp := congrArg (fun t => t.2.1.val[4]?) (ControlFlow.cont.inj (Result.ok_injective h))
+  simp only [alloc.vec.Vec.set_val_eq, zeros, alloc.vec.Vec.from_val] at hp
   change some (Kzg.fpEncode 12).l = some (Kzg.fpEncode 0).l at hp
   have hf := congrArg (fun raw => Kzg.fpRead ⟨raw⟩) (Option.some.inj hp)
   change Kzg.fpRead (Kzg.fpEncode 12) = Kzg.fpRead (Kzg.fpEncode 0) at hf
@@ -122,12 +135,11 @@ theorem missing_fifth_prefix_rejected [RuntimeFeatures]
   exact (by decide : (12 : EthLib.Cryptography.Bls.Fp) ≠ 0) hf
 
 private def lateStore : portable.msm.store.PointStore :=
-  ⟨⟨[Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0,Fp.pairEncode 0 0],
-    by scalar_tac⟩,2#usize⟩
+  ⟨(alloc.vec.Vec.from [Fp.pairEncode 0 1,Fp.pairEncode 6 1,Fp.pairEncode 0 0,Fp.pairEncode 0 0] (by scalar_tac)),2#usize⟩
 
 private def lateAdds : portable.msm.pairs.BatchedAdds :=
-  ⟨⟨[0#u32,0#u32],by scalar_tac⟩,⟨[1#u32,0#u32],by scalar_tac⟩,
-    ⟨[2#u32,3#u32],by scalar_tac⟩,alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
+  ⟨(alloc.vec.Vec.from [0#u32,0#u32] (by scalar_tac)),(alloc.vec.Vec.from [1#u32,0#u32] (by scalar_tac)),
+    (alloc.vec.Vec.from [2#u32,3#u32] (by scalar_tac)),alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
 
 theorem later_equal_x_rejects [RuntimeFeatures] :
     ∃ next, lateAdds.run lateStore = ok (false,next,lateStore) := by
@@ -148,7 +160,7 @@ theorem later_equal_x_success_rejected [RuntimeFeatures]
   obtain ⟨next',he⟩ := later_equal_x_rejects
   rw [he]
   intro h
-  have hf := congrArg Prod.fst (Result.ok.inj h)
+  have hf := congrArg Prod.fst (Result.ok_injective h)
   cases hf
 
 private def selfWriteJobs (_ : ℕ) : QueueRefines.Job := ⟨0#u32,1#u32,0#u32⟩
@@ -157,7 +169,7 @@ private def selfWriteCoords (i : ℕ) : Batch.ChainField × Batch.ChainField :=
   if i = 0 then (0,1) else (6,1)
 
 private def selfWriteAdds : portable.msm.pairs.BatchedAdds :=
-  ⟨⟨[0#u32],by scalar_tac⟩,⟨[1#u32],by scalar_tac⟩,⟨[0#u32],by scalar_tac⟩,
+  ⟨(alloc.vec.Vec.from [0#u32] (by scalar_tac)),(alloc.vec.Vec.from [1#u32] (by scalar_tac)),(alloc.vec.Vec.from [0#u32] (by scalar_tac)),
     alloc.vec.Vec.new _,alloc.vec.Vec.new _⟩
 
 theorem overwriting_own_input_succeeds [RuntimeFeatures] :
@@ -180,7 +192,7 @@ theorem overwriting_own_input_succeeds [RuntimeFeatures] :
   have hout : Batch.jobResult selfWriteJobs selfWriteCoords 0 = (-6,-1) := by
     simp [Batch.jobResult,Batch.signedPair,Batch.finishValues,selfWriteJobs,selfWriteCoords]
   refine ⟨next,?_⟩
-  simpa only [show selfWriteAdds.a.val.length = 1 from rfl,Batch.execute,hout] using he
+  simpa only [show selfWriteAdds.a.val.length = 1 from rfl,Batch.execute,hout,selfWriteJobs, UScalar.ofNatCore_val_eq] using! he
 
 set_option exponentiation.threshold 512 in
 theorem omitted_reverse_write_rejected [RuntimeFeatures]
@@ -188,7 +200,7 @@ theorem omitted_reverse_write_rejected [RuntimeFeatures]
   obtain ⟨actual,he⟩ := overwriting_own_input_succeeds
   rw [he]
   intro h
-  have hs := congrArg (fun t => t.2.2.points.val[0]?) (Result.ok.inj h)
+  have hs := congrArg (fun t => t.2.2.points.val[0]?) (Result.ok_injective h)
   change some (Fp.pairEncode (-6) (-1)) = some (Fp.pairEncode 0 1) at hs
   have hx := congrArg (fun row => Kzg.fpRead ⟨row.val[0]!⟩) (Option.some.inj hs)
   change Kzg.fpRead (Kzg.fpEncode (-6)) = Kzg.fpRead (Kzg.fpEncode 0) at hx
@@ -196,11 +208,11 @@ theorem omitted_reverse_write_rejected [RuntimeFeatures]
   exact (by decide +kernel : (-6 : EthLib.Cryptography.Bls.Fp) ≠ 0) hx
 
 private def oddBuckets : portable.msm.buckets.Buckets :=
-  ⟨4#usize,1#usize,⟨[0#u32,1#u32,2#u32],by scalar_tac⟩,
-    ⟨[0#u32],by scalar_tac⟩,⟨[3#u32],by scalar_tac⟩⟩
+  ⟨4#usize,1#usize,(alloc.vec.Vec.from [0#u32,1#u32,2#u32] (by scalar_tac)),
+    (alloc.vec.Vec.from [0#u32] (by scalar_tac)),(alloc.vec.Vec.from [3#u32] (by scalar_tac))⟩
 
 private def queueStore : portable.msm.store.PointStore :=
-  ⟨⟨List.replicate 4 Store.zeroRow,by scalar_tac⟩,3#usize⟩
+  ⟨(alloc.vec.Vec.from (List.replicate 4 Store.zeroRow) (by scalar_tac)),3#usize⟩
 
 private theorem odd_packed : Queue.Packed oddBuckets 1 (fun _ => 0) (fun _ => 3)
     (fun _ => [0#u32,1#u32,2#u32]) := by
@@ -231,12 +243,12 @@ theorem odd_bucket_round_preserves_carry :
   have hcapacity := hp.regions 0 (by decide)
   change 0+3 ≤ result.refs.val.length at hcapacity
   have hxe : result.refs.val[0] = 3#u32 := by
-    simpa only [Buckets.toLane,getElem!_pos result.refs.val 0 (by omega)] using hx
+    simpa only [Buckets.toLane,getElem!_pos result.refs.val 0 (by omega)] using! hx
   have hye : result.refs.val[1] = 2#u32 := by
-    simpa only [Buckets.toLane,getElem!_pos result.refs.val 1 (by omega)] using hy
+    simpa only [Buckets.toLane,getElem!_pos result.refs.val 1 (by omega)] using! hy
   have hle : result.lens.val[0] = 2#u32 := by
     apply UScalar.eq_of_val_eq
-    simpa only [Buckets.toLane,getElem!_pos result.lens.val 0 (by omega)] using hl
+    simpa only [Buckets.toLane,getElem!_pos result.lens.val 0 (by omega)] using! hl
   exact ⟨result,next,out,he,by rw [List.getElem?_eq_getElem (by omega),hxe],
     by rw [List.getElem?_eq_getElem (by omega),hye],
     by rw [List.getElem?_eq_getElem (by omega),hle],ha,hb,ho,hn,hr⟩
@@ -248,7 +260,7 @@ theorem dropped_odd_carry_rejected (result : portable.msm.buckets.Buckets)
   obtain ⟨actual,a,s,he,_,hcarry,_⟩ := odd_bucket_round_preserves_carry
   rw [he]
   intro h
-  have hr := congrArg (fun t => t.1.refs.val[1]?) (Result.ok.inj h)
+  have hr := congrArg (fun t => t.1.refs.val[1]?) (Result.ok_injective h)
   change actual.refs.val[1]? = result.refs.val[1]? at hr
   rw [hcarry,hdrop] at hr
   cases hr
@@ -264,13 +276,12 @@ theorem reused_slot_needs_no_capacity :
 theorem rejected_pair_round_exits [RuntimeFeatures] :
     ∃ next, portable.msm.Msm.pair_rounds_loop store buckets adds 2#usize =
       ok (store,buckets,next) ∧ next.a = adds.a := by
-  obtain ⟨next,hr,ha,_,_⟩ := Batch.run_rejects_first adds store 0#u32 1#u32 3 5 7
-    (by rfl) (by rfl) (by rfl) (by rfl)
+  obtain ⟨next,hr,ha⟩ := adds_rejects
   refine ⟨next,?_,ha⟩
   rw [portable.msm.Msm.pair_rounds_loop,Aeneas.Std.loop.eq_1]
   simp only [portable.msm.Msm.pair_rounds_loop.body,Rounds.adds_is_empty,
-    show adds.a.val.isEmpty = false from rfl,bind_tc_ok,Bool.false_eq_true,if_false,hr]
-  rfl
+    show adds.a.val.isEmpty = false from rfl, bind_ok,Bool.false_eq_true,ite_false,hr]
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, Bool.false_eq_true, ite_false] )
 
 theorem rejected_round_is_not_empty [RuntimeFeatures]
     (next : portable.msm.pairs.BatchedAdds) (hempty : next.a.val.isEmpty = true) :
@@ -278,14 +289,19 @@ theorem rejected_round_is_not_empty [RuntimeFeatures]
   obtain ⟨actual,he,ha⟩ := rejected_pair_round_exits
   rw [he]
   intro h
-  have hs := congrArg (fun t => t.2.2.a.val.isEmpty) (Result.ok.inj h)
+  have hs := congrArg (fun t => t.2.2.a.val.isEmpty) (Result.ok_injective h)
   change actual.a.val.isEmpty = next.a.val.isEmpty at hs
   rw [ha,hempty] at hs
   cases hs
 
 theorem high_scalar_rejected (state : portable.msm.Msm) (point : blst.blst_p1_affine) :
     state.keep_if_finite point (Array.make 4#usize [0#u64,0#u64,0#u64,9223372036854775808#u64] (by rfl)) =
-      fail Error.assertionFailure := rfl
+      fail Error.assertionFailure := by
+  have hindex : Array.index_usize
+      (Array.make 4#usize [0#u64,0#u64,0#u64,9223372036854775808#u64] (by rfl)) 3#usize =
+      ok 9223372036854775808#u64 := rfl
+  have hshift : (9223372036854775808#u64) >>> 63#i32 = ok 1#u64 := rfl
+  simp [portable.msm.Msm.keep_if_finite, hindex, hshift, massert]
 
 #print axioms initialise_correct
 #print axioms Input.filter_prefix_correct
@@ -305,7 +321,6 @@ theorem high_scalar_rejected (state : portable.msm.Msm) (point : blst.blst_p1_af
 #print axioms Buckets.fill127_ready
 #print axioms Store.signed_refines
 #print axioms Store.reset_refines
-#print axioms Batch.run_rejects_first
 #print axioms Batch.prepare_step
 #print axioms Batch.unwind_step
 #print axioms Batch.finishValues_point

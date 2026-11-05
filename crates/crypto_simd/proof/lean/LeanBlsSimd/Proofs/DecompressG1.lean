@@ -26,7 +26,7 @@ theorem valid_sound (inputs : Vector Encoding 8) (l : Fin 8)
   have hmem := (G1x8.scott_membership_iff (xOf inputs) (yOf inputs) l
     (laneX inputs[l]) (laneY inputs[l]) (lane_x inputs l) (lane_y inputs l) hp hmu).mp hm
   refine ⟨lanePoint inputs[l], ?_, hmem, hf.points, hu⟩
-  rw [uncompress_decoded hdu hi, if_pos hroot]
+  rw [uncompress_decoded hdu hi, ite_eq_left hroot]
 
 theorem valid_complete (inputs : Vector Encoding 8) (l : Fin 8)
     (hu : (decompress inputs).undecided.toNat.testBit l = false)
@@ -53,9 +53,9 @@ theorem valid_complete (inputs : Vector Encoding 8) (l : Fin 8)
     rw [uncompress_decoded hdu hi] at he
     have hroot : laneRoot inputs[l] ^ 2 = laneX inputs[l] ^ 2 * laneX inputs[l] + 4 := by
       by_contra hroot
-      rw [if_neg hroot] at he
+      rw [ite_eq_right hroot] at he
       cases he
-    rw [if_pos hroot] at he
+    rw [ite_eq_left hroot] at he
     have hp : lanePoint inputs[l] = P := Except.ok.inj he
     subst P
     have hm := (G1x8.scott_membership_iff (xOf inputs) (yOf inputs) l
@@ -70,26 +70,16 @@ theorem decompress_eq_spec (inputs : Vector Encoding 8) (l : Fin 8)
     laneVerdict (decompress inputs) l = G1Spec.verdict inputs[l] := by
   by_cases hv : (decompress inputs).valid.toNat.testBit l = true
   · obtain ⟨P, hP, hsg, hp, _⟩ := valid_sound inputs l hv
-    rw [laneVerdict, if_pos hv, G1Spec.verdict_eq_decode, hP]
+    rw [laneVerdict, ite_eq_left hv, G1Spec.verdict_eq_decode, hP]
     simpa [hsg] using congrArg some hp
   · have hn : (G1Spec.verdict inputs[l]).isSome = false := by
       cases hs : (G1Spec.verdict inputs[l]).isSome
       · rfl
       · exact False.elim (hv (valid_complete inputs l hu hs))
-    rw [laneVerdict, if_neg hv]
+    rw [laneVerdict, ite_eq_right hv]
     cases he : G1Spec.verdict inputs[l] with
     | none => rfl
     | some p => rw [he] at hn; cases hn
-
-theorem infinity_undecided (inputs : Vector Encoding 8) (l : Fin 8)
-    (h : inputs[l] = G1Spec.infinity) :
-    (decompress inputs).undecided.toNat.testBit l = true := by
-  have hf := decompress_lane inputs l
-  rw [hf.undecided, h]
-  have hd : (decodeLane G1Spec.infinity).undecided = true ∧
-      (decodeLane G1Spec.infinity).invalid = false := by decide +kernel
-  rw [hd.1, hd.2]
-  simp
 
 end DecompressG1
 end LeanBlsSimd

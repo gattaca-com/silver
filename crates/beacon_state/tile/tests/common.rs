@@ -9,10 +9,12 @@ use std::{
 use flux::{spine::SpineAdapter, tile::Tile, timing::Nanos};
 use serde::Deserialize;
 use silver_beacon_state::{
-    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu, hash_tree_root_state},
+    ssz_hash::{hash_tree_root_body_fulu, hash_tree_root_state},
     tile::BeaconStateTile,
 };
-use silver_beacon_state_data::{B256, BeaconBlockHeader, BeaconState, CheckpointState, SpecConfig};
+use silver_beacon_state_data::{
+    B256, BeaconBlockHeader, BeaconState, CheckpointState, SpecConfig, hash_tree_root_block_header,
+};
 use silver_common::{
     BeaconStateEvent, BlockStage, DataColumnsEvent, DataKind, EngineFcuReq, EngineNewPayloadResp,
     EngineReq, EngineResp, GossipTopic, MessageId, NewGossipMsg, Origin, P2pStreamId,
@@ -241,7 +243,7 @@ fn gloas_from_genesis() -> SpecConfig {
 impl Harness {
     pub fn new(wall_slot: u64, checkpoint_ssz: &[u8], gloas: bool) -> Self {
         let spec = if gloas { gloas_from_genesis() } else { fulu_from_genesis() };
-        let mut h = Self::build(wall_slot, |ticker, tcaches| {
+        let mut h = Self::build(wall_slot, &spec, |ticker, tcaches| {
             BeaconStateTile::new(
                 ticker,
                 Arc::new(spec.clone()),
@@ -258,7 +260,7 @@ impl Harness {
         h
     }
 
-    fn build<F>(wall_slot: u64, build_tile: F) -> Self
+    fn build<F>(wall_slot: u64, spec: &SpecConfig, build_tile: F) -> Self
     where
         F: FnOnce(SlotTicker, TCacheTable) -> BeaconStateTile,
     {
@@ -269,7 +271,7 @@ impl Harness {
         // construction.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let genesis = now.saturating_sub(wall_slot * 12);
-        let ticker = SlotTicker::new(genesis, Duration::from_secs(12), Duration::from_secs(4));
+        let ticker = SlotTicker::new(genesis, spec, Duration::from_secs(4));
 
         let gossip_in_producer = TCache::producer(TCacheId::ControlProcessing, 1 << 24);
         let rpc_in_producer = TCache::producer(TCacheId::NetworkProcessing, RPC_RING_BYTES);
@@ -379,7 +381,7 @@ impl Harness {
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: tcache,
-            protobuf: tcache,
+            protobuf: Some(tcache),
             validation: silver_common::BroadcastValidation::Gossip,
         });
     }

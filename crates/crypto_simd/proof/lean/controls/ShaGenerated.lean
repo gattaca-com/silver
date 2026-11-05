@@ -5,7 +5,7 @@ open LeanBlsSimd LeanBlsSimd.Sha256 Generated
 
 namespace LeanBlsSimd.Controls.ShaGenerated
 
-private def oneByte : Slice U8 := ⟨[0#u8],by scalar_tac⟩
+private def oneByte : Slice U8 := Slice.from [0#u8] (by scalar_tac)
 
 theorem dropped_length_wrap_rejected :
     (ofU64 (absorbedLength 18446744073709551615#u64 oneByte)).toNat ≠ 2^64 := by

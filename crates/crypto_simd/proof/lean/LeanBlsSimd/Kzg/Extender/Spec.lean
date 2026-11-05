@@ -1,31 +1,11 @@
 import LeanBlsSimd.Kzg.Extender.SpecMath
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 
 namespace LeanBlsSimd.Kzg.Extender
-
-private theorem foldl_congr_mem {α β : Type} (xs : List α) (f g : β → α → β)
-    (hf : ∀ x ∈ xs, ∀ acc, f acc x = g acc x) (init : β) :
-    xs.foldl f init = xs.foldl g init := by
-  induction xs generalizing init with
-  | nil => rfl
-  | cons x xs ih =>
-    simp only [List.foldl_cons, hf x (by simp)]
-    exact ih (fun x hx => hf x (by simp [hx])) _
-
-private theorem join_chunks (blob : ByteArray) (start n : Nat) :
-    (List.range n).foldl
-      (fun b i => b ++ blob.extract (32 * (start + i)) (32 * (start + i + 1)))
-        ByteArray.empty = blob.extract (32 * start) (32 * (start + n)) := by
-  induction n with
-  | zero => simp
-  | succ n ih =>
-    simp only [List.range_succ, List.foldl_append, ih, List.foldl_cons, List.foldl_nil]
-    rw [ByteArray.extract_append_extract]
-    rw [Nat.min_eq_left (by omega), Nat.max_eq_right (by omega)]
-    rfl
 
 theorem original_cell_eq (blob : ByteArray) (a : Array Fr)
     (hdecode : blobToPolynomial blob = .ok a) (c : Nat) (hc : c < 64) :
@@ -38,8 +18,8 @@ theorem original_cell_eq (blob : ByteArray) (a : Array Fr)
   trans (List.range 64).foldl
     (fun b i => b ++ blob.extract (32 * (64 * c + i)) (32 * (64 * c + i + 1)))
       ByteArray.empty
-  · apply foldl_congr_mem
-    intro i hi b
+  · apply List.foldl_ext
+    intro b i hi
     have hi' : i < 64 := List.mem_range.mp hi
     rw [getElem!_pos _ i (by simpa only [Array.size_ofFn] using hi'), Array.getElem_ofFn]
     have hij : 64 * c + i < a.size := by omega
@@ -92,34 +72,6 @@ private theorem specCell_extension (a : Array Fr) (ha : a.size = 4096)
       simp only [size_bitReversalPermutation, extension_size a ha]
       omega)]
 
-private theorem list_mapM_pure_of {α β : Type} (xs : List α)
-    (f : α → KzgM β) (g : α → β) (h : ∀ x ∈ xs, f x = pure (g x)) :
-    xs.mapM f = pure (xs.map g) := by
-  induction xs with
-  | nil => simp
-  | cons x xs ih =>
-    rw [List.mapM_cons, h x (by simp), pure_bind,
-      ih (fun y hy => h y (by simp [hy]))]
-    simp
-
-private theorem spec_cells_eq (a : Array Fr) :
-    (Array.range 128).mapM (fun i => do
-      let coset ← (cosetForCell i : Except KzgError Coset)
-      pure (cosetEvalsToCell (coset.map (evaluatePolynomialcoeff (polynomialEvalToCoeff a)))))
-        = (pure (Array.ofFn (fun i : Fin 128 => specCell a i.val)) : KzgM (Array Cell)) := by
-  rw [Array.mapM_eq_mapM_toList]
-  rw [list_mapM_pure_of _ _ (specCell a)]
-  · simp only [map_pure]
-    apply congrArg (pure : Array Cell → KzgM (Array Cell))
-    apply Array.ext
-    · simp
-    · intro i hi hi'
-      simp
-  · intro i hi
-    have hi128 : i < 128 := by simpa only [Array.toList_range, List.mem_range] using hi
-    rw [cosetForCell_eq i hi128]
-    rfl
-
 theorem model_spec (blob : ByteArray) :
     (EthLib.Cryptography.Kzg.computeCells blob).run = pure (Model.extend blob) := by
   suffices h : computeCells blob = liftE (Model.extend blob) by
@@ -127,8 +79,7 @@ theorem model_spec (blob : ByteArray) :
   by_cases hs : blob.size = Constants.BYTES_PER_BLOB
   · cases hd : blobToPolynomial blob with
     | error e =>
-      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte,
-        pure_bind, hd, liftM_eq_liftE]
+      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte, hd, liftM_eq_liftE]
       change ((throw e : KzgM (Array Fr)) >>= _) = liftE (Model.extend blob)
       rw [ExceptT.bind_throw]
       simp only [Model.extend, hd, bind, Except.bind]
@@ -142,18 +93,20 @@ theorem model_spec (blob : ByteArray) :
         apply congrArg (Array.ofFn : (Fin 128 → Cell) → Array Cell)
         funext i
         by_cases hi : i.val < 64
-        · rw [if_pos hi, specCell_original blob a hd i.val hi]
-        · rw [if_neg hi]
+        · rw [ite_eq_left hi, specCell_original blob a hd i.val hi]
+        · rw [ite_eq_right hi]
           exact specCell_extension a (size_blobToPolynomial blob a hd)
             i.val (by omega) i.isLt
-      simp only [computeCells, hs, ne_eq, not_true_eq_false, ↓reduceIte,
-        pure_bind, hd, liftM_eq_liftE]
-      change ((pure a : KzgM (Array Fr)) >>= _) = liftE (Model.extend blob)
-      rw [pure_bind]
-      change (Array.range 128).mapM _ = liftE (Model.extend blob)
-      have hcells := spec_cells_eq a
-      simp only [liftM_eq_liftE] at hcells
-      rw [hcells, hout]
+      obtain ⟨cells, hcompute, hsize, hcell⟩ := computeCells_ok_spec hd
+      have hcells : cells = Array.ofFn (fun i : Fin 128 => specCell a i.val) := by
+        apply Array.ext
+        · simpa only [Constants.CELLS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_EXT_BLOB, Constants.FIELD_ELEMENTS_PER_BLOB,
+            Constants.FIELD_ELEMENTS_PER_CELL, Array.size_ofFn] using hsize
+        · intro i hi hi'
+          have hi128 : i < 128 := by simpa only [Array.size_ofFn] using hi'
+          rw [← getElem!_pos cells i hi, hcell i _ (cosetForCell_eq i hi128), Array.getElem_ofFn]
+          rfl
+      rw [hcompute, hcells, hout]
       simp only [Model.extend, hd, bind, Except.bind, pure, Except.pure]
       rfl
   · have hd : blobToPolynomial blob = .error (.badBlobSize blob.size) := by

@@ -1,5 +1,5 @@
 import LeanBlsSimd.Proofs.Kernel
-import LeanBlsSimd.Spec.CubicHasse
+import LeanBlsSimd.Spec.G2Cardinality
 import LeanBlsSimd.Spec.G2Encoding
 
 namespace LeanBlsSimd.DecompressG2

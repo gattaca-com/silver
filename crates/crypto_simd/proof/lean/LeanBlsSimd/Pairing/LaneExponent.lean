@@ -29,28 +29,28 @@ theorem exponent_body (base x : fp2x8.Fp2x8) (a f : Bls.Fp12) (ha : Rep base a) 
   by_cases h : G1x8.is_lower_z_bit n.val = true
   · obtain ⟨out, hout, rout⟩ := mul_refines rsq ha
     refine ⟨out, bit', rfl, ?_, ?_⟩
-    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, if_true, hdec, bind_tc_ok, hsq,
+    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_ok, hsq,
         G1x8.is_lower_z_bit_refines]
       change (if G1x8.is_lower_z_bit n.val then do
         let r ← fp12.Fp12.mul sq base
         ok (cont (r, bit')) else ok (cont (sq, bit'))) = _
-      simp only [h, if_true, hout, bind_tc_ok]
-    · simpa only [powerStep, h, if_true] using rout
+      simp only [h, ite_true, hout, bind_ok]
+    · simpa only [powerStep, h, ite_true] using! rout
   · refine ⟨sq, bit', rfl, ?_, ?_⟩
-    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, if_true, hdec, bind_tc_ok, hsq,
+    · simp only [fp12.Fp12.cyclotomic_exp_loop.body, hrun, ite_true, hdec, bind_ok, hsq,
         G1x8.is_lower_z_bit_refines]
       change (if G1x8.is_lower_z_bit n.val then do
         let r ← fp12.Fp12.mul sq base
         ok (cont (r, bit')) else ok (cont (sq, bit'))) = _
-      rw [if_neg h]
-    · simpa only [powerStep, if_neg h] using rsq
+      rw [ite_eq_right h]
+    · simpa only [powerStep, ite_eq_right h] using rsq
 
 theorem exponent_refines (base : fp2x8.Fp2x8) (a : Bls.Fp12) (ha : Rep base a) (hg : Good a) :
     ∃ out, fp12.Fp12.cyclotomic_exp base = ok out ∧ Rep out (exp a) := by
   let body := fun (state : fp2x8.Fp2x8 × U32) => fp12.Fp12.cyclotomic_exp_loop.body base state.1 state.2
   have hdone : ∀ x bit, bit.val = 0 → body (x, bit) = ok (done x) := by
     intro x bit hb
-    simp only [body, fp12.Fp12.cyclotomic_exp_loop.body, UScalar.lt_equiv, hb, Nat.not_lt_zero, if_false]
+    simp only [body, fp12.Fp12.cyclotomic_exp_loop.body, UScalar.lt_equiv, hb, Nat.not_lt_zero, ite_false]
   have hstep : ∀ (n : Fin 63) x f bit, Rep x f → Good f → bit.val = n.val + 1 →
       ∃ out bit', body (x, bit) = ok (cont (out, bit')) ∧ bit'.val = n.val ∧
         Rep out (powerStep a f n.val) := by
@@ -63,7 +63,7 @@ theorem exponent_refines (base : fp2x8.Fp2x8) (a : Bls.Fp12) (ha : Rep base a) (
   have hbit : Array.index_usize constants.Z_BITS 0#usize = ok 63#u32 := by
     rw [Z_BITS_index 0#usize (by decide)]; rfl
   refine ⟨last, ?_, rlast⟩
-  simp only [fp12.Fp12.cyclotomic_exp, hbit, bind_tc_ok]
+  simp only [fp12.Fp12.cyclotomic_exp, hbit, bind_ok]
   change (do let out ← loop body (base, 63#u32); fp12.Fp12.conjugate out) = _
   rw [hout]
   simp only [bind_tc_ok, hlast]

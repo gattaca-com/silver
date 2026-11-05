@@ -1,3 +1,4 @@
+use silver_beacon_state_data::bls::{AggregateSignature, Signature, SignatureSum};
 use silver_common::ssz_view::MAX_COMMITTEES_PER_SLOT;
 use slab::Slab;
 
@@ -7,7 +8,6 @@ use super::{
     committee_bits::CommitteeBits,
     selection::{CommitteeAttestation, MAX_AGGREGATES},
 };
-use crate::bls::{AggregateSignature, Signature, SignatureSum};
 
 /// A vote candidate's committee `i` has id
 /// `candidate * MAX_COMMITTEES_PER_SLOT + i`.

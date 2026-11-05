@@ -4,27 +4,31 @@ use std::{
     time::Duration,
 };
 
-use flux::timing::Nanos;
+use flux::{timing::Nanos, type_hash_derive::TypeHash};
 use silver_beacon_state_data::{
     B256, BLSPubkey, ExecutionAddress, PayloadWithdrawals, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SUBNETS,
     ShufflingId,
 };
 
 use crate::{
-    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify, MessageId,
-    Origin, P2pStreamId, PeerId, StreamProtocol, TCacheProducer, TCacheRead, TProducer,
+    CacheFrameRef, DataKind, Enr, GossipDomain, GossipTopic, GossipTraffic, Identify,
+    LOCAL_GOSSIP_STREAM_ID, MessageId, Origin, P2pStreamId, PayloadFrame, PeerId, StreamProtocol,
+    TCacheProducer, TCacheRead, TProducer,
+    block_contents::BLOCK_CONTENTS_FIXED,
     column_util::columns_of,
+    ssz_hash::HashedBody,
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX, EXECUTION_PAYLOAD_ENVELOPE_MIN,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
-        SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView, SszView, StatusView,
+        BEACON_BLOCK_FIXED, BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPE_MIN, EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE,
+        GOODBYE_SIZE, METADATA_SIZE, PING_SIZE, SIGNED_BLS_CHANGE_SIZE, SIGNED_VOLUNTARY_EXIT_SIZE,
+        STATUS_V1_SIZE, STATUS_V2_SIZE, SignedBeaconBlockView, SignedExecutionPayloadEnvelopeView,
+        SszView, StatusView,
     },
 };
 
 /// Consumed by network tile. Gossip message indicated by `tcache` will be sent
 /// to specified peer.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct GossipMsgOut {
     pub peer_id: usize,
@@ -42,7 +46,7 @@ pub struct SelfBuiltGossip {
 }
 
 // Consumed by controller tile.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct GossipMsgIn {
     pub p2p_id: P2pStreamId,
@@ -51,14 +55,14 @@ pub struct GossipMsgIn {
 
 /// Serialized Raft message to be sent to another cluster node. Produced by
 /// the control tile and consumed by the network tile.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct ClusterMsgOut {
     pub to: u64,
     pub data: TCacheRead,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum ClusterIn {
     Msg(ClusterMsgIn),
@@ -68,14 +72,14 @@ pub enum ClusterIn {
 /// Serialized Raft message received from another cluster node. Produced by
 /// the network tile and consumed by the control tile. `from` is the node ID
 /// authenticated by the cluster transport, not one decoded from `data`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct ClusterMsgIn {
     pub from: u64,
     pub data: TCacheRead,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(C, u8)]
 pub enum BeaconApiRequest {
     /// A message a validator client asked this node to publish. `ssz` points
@@ -85,6 +89,9 @@ pub enum BeaconApiRequest {
         topic: GossipTopic,
         ssz: TCacheRead,
         validation: BroadcastValidation,
+        /// The body the API hashed to check a block's signature, so Beacon
+        /// State need not hash it again.
+        hashed_body: Option<HashedBody>,
     },
     AggregateAttestation {
         request_id: u64,
@@ -143,7 +150,7 @@ pub enum BeaconApiRequest {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum BroadcastValidation {
     #[default]
@@ -153,7 +160,7 @@ pub enum BroadcastValidation {
 }
 
 /// `produceBlockV4`'s terms for a p2p builder bid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub struct BidPolicy {
     /// Gwei.
     pub min_bid: u64,
@@ -224,14 +231,14 @@ impl SlotSubnets {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(C, u8)]
 pub enum BlockLookup {
     Root([u8; 32]),
     Slot(u64),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 pub enum BeaconApiResponse {
     PayloadEnvelopeValidation {
@@ -240,6 +247,7 @@ pub enum BeaconApiResponse {
     },
     LocalGossipResponse {
         request_id: u64,
+        #[type_hash(literal = "Result<(), LocalGossipFailure>")]
         response: LocalGossipResult,
         /// A block's root, when Beacon State relayed it or already had it.
         block_root: Option<[u8; 32]>,
@@ -260,6 +268,7 @@ pub enum BeaconApiResponse {
     },
     ProducedBlock {
         request_id: u64,
+        #[type_hash(literal = "Result<ProducedBlock, ProduceBlockFailure>")]
         block: Result<ProducedBlock, ProduceBlockFailure>,
     },
     ExecutionPayloadEnvelope {
@@ -303,9 +312,47 @@ pub struct ProducedBlock {
     pub consensus_block_value: [u8; 32],
     /// The `BuilderEntry` whose bid the block commits to.
     pub builder_entry: Option<u32>,
+    /// A blinded body shares its full body's root.
+    pub body_root: B256,
 }
 
-#[derive(Clone, Copy, Debug)]
+impl ProducedBlock {
+    /// Compares `body` part by part against what `header` and `payload` read,
+    /// without assembling the produced body.
+    pub fn has_body(&self, header: &[u8], payload: Option<&[u8]>, body: &[u8]) -> bool {
+        let Some(parts) = self.body_parts(header, payload) else { return false };
+        let mut rest = body;
+        for part in parts {
+            let Some(after) = rest.strip_prefix(part) else { return false };
+            rest = after;
+        }
+        rest.is_empty()
+    }
+
+    fn body_parts<'a>(&self, header: &'a [u8], payload: Option<&'a [u8]>) -> Option<[&'a [u8]; 4]> {
+        let Some(payload) = payload.filter(|_| self.splices_payload()) else {
+            return Some([header.get(BEACON_BLOCK_FIXED..)?, &[], &[], &[]]);
+        };
+        let frame = PayloadFrame::parse(payload)?;
+        let (before_payload, bls_changes) = header.split_at_checked(self.payload_at as usize)?;
+        let body_head = before_payload.get(BLOCK_CONTENTS_FIXED + BEACON_BLOCK_FIXED..)?;
+        let tail_len = frame.commitments.len() + frame.execution_requests.len();
+        Some([
+            body_head,
+            frame.execution_payload,
+            bls_changes,
+            frame.after_payload.get(..tail_len)?,
+        ])
+    }
+
+    /// Only a Fulu block with its payload is framed as contents; Gloas and
+    /// blinded blocks are whole in `header`.
+    pub fn splices_payload(&self) -> bool {
+        self.payload.is_some() && self.envelope_header.is_none()
+    }
+}
+
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct ProducedEnvelope {
     pub header: [u8; EXECUTION_PAYLOAD_ENVELOPE_MIN],
@@ -325,7 +372,7 @@ pub enum ProduceBlockFailure {
 }
 
 /// `ssz` points into the `outgoing_rpc` tcache.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct ServedBlock {
     pub slot: u64,
@@ -356,7 +403,7 @@ pub enum LocalGossipFailure {
 /// locally. Consumed by the beacon state tile. The `protobuf` message can be
 /// broadcast by producing `PeerEvent::SendGossip` with details from this
 /// message.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct NewGossipMsg {
     pub stream_id: P2pStreamId,
@@ -374,10 +421,21 @@ pub struct NewGossipMsg {
     /// Protobuf-wrapped Snappy payload, either retained from network ingress
     /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
-    pub protobuf: TCacheRead,
+    /// `None` when the relay cache was full at receipt: the message is still
+    /// processed here, but not relayed.
+    pub protobuf: Option<TCacheRead>,
 }
 
-#[derive(Clone, Copy, Debug)]
+impl NewGossipMsg {
+    /// A local block or attestation takes a slashing-protection lock, so the
+    /// API verifies its signature first.
+    pub fn is_api_verified(&self) -> bool {
+        self.stream_id == LOCAL_GOSSIP_STREAM_ID &&
+            matches!(self.topic, GossipTopic::BeaconBlock | GossipTopic::BeaconAttestation(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[allow(clippy::large_enum_variant)]
 #[repr(C)]
 pub enum RpcRequest {
@@ -482,14 +540,14 @@ impl RpcRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct RpcRequestInbound {
     pub stream_id: P2pStreamId,
     pub request: RpcRequest,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct RpcRequestOutbound {
     pub application_id: u64,
@@ -497,7 +555,7 @@ pub struct RpcRequestOutbound {
     pub request: RpcRequest,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum RpcResponse {
     StatusV1([u8; STATUS_V1_SIZE]),
@@ -527,7 +585,7 @@ pub enum RpcResponse {
     Complete,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct RpcResponseInbound {
     pub application_id: u64,
@@ -535,14 +593,14 @@ pub struct RpcResponseInbound {
     pub response: RpcResponse,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct RpcResponseOutbound {
     pub stream_id: P2pStreamId,
     pub response: RpcResponse,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 #[allow(clippy::large_enum_variant)]
 pub enum RpcInbound {
@@ -550,7 +608,7 @@ pub enum RpcInbound {
     Response(RpcResponseInbound),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 #[allow(clippy::large_enum_variant)]
 pub enum RpcOutbound {
@@ -591,7 +649,7 @@ impl RpcOutbound {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
 pub enum PeerEvent {
@@ -722,6 +780,7 @@ pub enum PeerEvent {
         reload: bool,
     },
     DiscExternalAddress {
+        #[type_hash(literal = "SocketAddr")]
         address: SocketAddr,
         seq: u64,
     },
@@ -802,7 +861,7 @@ pub const PREFILL_SLOTS: u64 = 32;
 /// What storage already holds across one 32-slot range of finalized history,
 /// so the sync engine seeds its window with it rather than re-fetching what is
 /// already on disk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(C)]
 pub struct Prefill {
     pub start: u64,
@@ -818,7 +877,7 @@ pub struct Prefill {
     pub columns_missing: u128,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(C, u8)]
 pub enum SyncNeed {
     Persisted {
@@ -869,7 +928,7 @@ impl SyncNeed {
 }
 
 /// Sync target chosen by the peer manager.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, TypeHash)]
 #[repr(C, u8)]
 pub enum SyncUpdate {
     /// Chase a specific finalized checkpoint. Pinned until reached or
@@ -977,14 +1036,14 @@ impl core::fmt::Debug for SyncUpdate {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 pub enum PeerStatus {
     V1([u8; STATUS_V1_SIZE]),
     V2([u8; STATUS_V2_SIZE]),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum RpcOffence {
     ChunkFraming,
@@ -994,6 +1053,8 @@ pub enum RpcOffence {
     InvalidColumn,
     KzgProof,
     InvalidBackfillColumn,
+    InboundStreamRateLimit,
+    InboundGossipRateLimit,
 }
 
 impl RpcOffence {
@@ -1006,13 +1067,15 @@ impl RpcOffence {
             Self::InvalidColumn => "invalid data column",
             Self::KzgProof => "data column kzg proof failed",
             Self::InvalidBackfillColumn => "invalid backfill data column",
+            Self::InboundStreamRateLimit => "inbound stream rate limit exceeded",
+            Self::InboundGossipRateLimit => "inbound gossip rate limit exceeded",
         }
     }
 }
 
 /// Severity levels for RPC misbehaviour reports. Mirrors lighthouse's
 /// `PeerAction` taxonomy. Mapping to score deltas lives in the peer manager.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(u8)]
 pub enum RpcSeverity {
     /// Cryptographic violation (bad signature on a chunk), fork-digest
@@ -1026,7 +1089,7 @@ pub enum RpcSeverity {
     HighTolerance,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
 pub enum P2pSend {
@@ -1062,7 +1125,7 @@ impl P2pSend {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 // `P2pDial { enr }` carries the full ~200B `Enr` while most variants fit in
 // ~60B. Boxing would break `Copy` (used widely in this enum's hot path) for
@@ -1074,6 +1137,7 @@ pub enum PeerControl {
         p2p: PeerId,
     },
     BanIp {
+        #[type_hash(literal = "IpAddr")]
         ip: IpAddr,
     },
     DiscoverNodes,
@@ -1155,6 +1219,7 @@ pub enum PeerControl {
     /// removes the IP from its socket-level deny set. Emitted from `tick`
     /// when `banned_ip_ttl` elapses since the ban.
     UnbanIp {
+        #[type_hash(literal = "IpAddr")]
         ip: IpAddr,
     },
     PersistPeer {
@@ -1162,7 +1227,7 @@ pub enum PeerControl {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum IpBytes {
     V4([u8; 4]),
@@ -1181,14 +1246,14 @@ impl From<IpAddr> for IpBytes {
 /// Origin of a rejected block. PM treats RPC rejects as evidence that the
 /// active syncing target is bad (chain poisoning); gossip rejects are not
 /// chain-attributable and only blacklist the individual block_root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum BlockSource {
     Gossip,
     Rpc,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]
 #[repr(u8)]
 pub enum SszCache {
     Gossip,
@@ -1197,7 +1262,7 @@ pub enum SszCache {
     ProposedColumns,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TypeHash)]
 #[repr(u8)]
 pub enum ColumnOrigin {
     Gossip,
@@ -1212,7 +1277,7 @@ impl ColumnOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 #[repr(C)]
 pub struct HeadRoots {
     pub state_root: B256,
@@ -1224,7 +1289,7 @@ pub struct HeadRoots {
     pub current_duty_dependent_root: B256,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum HeadChange {
     None,
@@ -1234,7 +1299,7 @@ pub enum HeadChange {
 
 /// Fork choice's selection of the block's own payload, independent of its
 /// execution validation status. Selected pre-Gloas blocks resolve `Full`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum PayloadResolution {
     Empty,
@@ -1253,7 +1318,7 @@ impl PayloadResolution {
 
 /// What a PTC member attests for the head block at `slot`: an envelope seen
 /// by the payload deadline, and its blob data available now.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 pub struct PtcObservation {
     pub slot: u64,
     pub payload_present: bool,
@@ -1261,13 +1326,14 @@ pub struct PtcObservation {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum BeaconStateEvent {
     ReplayComplete,
     ProposedPayload(ProposedPayload),
     LocalGossipVerdict {
         hash: MessageId,
+        #[type_hash(literal = "Result<(), LocalGossipFailure>")]
         result: LocalGossipResult,
         /// A block's root, when it was relayed or already known.
         block_root: Option<[u8; 32]>,
@@ -1291,6 +1357,7 @@ pub enum BeaconStateEvent {
         source: BlockSource,
         slot: u64,
         block_root: [u8; 32],
+        newly_verified: bool,
     },
     AttestersShuffling {
         id: ShufflingId,
@@ -1324,7 +1391,7 @@ pub enum BeaconStateEvent {
 }
 
 /// The attributes an EL was just asked to build on.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct PreparedPayloadAttributes {
     pub proposal_slot: u64,
@@ -1345,7 +1412,7 @@ pub struct PreparedPayloadAttributes {
 /// A membership change in Beacon State's operation pools. Exits and BLS
 /// changes are keyed by validator; slashings by an id the pool assigns in
 /// admission order, with their SSZ in the handoff tcache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub enum PoolChange {
     ExitAdded([u8; SIGNED_VOLUNTARY_EXIT_SIZE]),
     ExitRemoved { validator_index: u32 },
@@ -1357,7 +1424,7 @@ pub enum PoolChange {
     AttesterSlashingRemoved { id: u64 },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum BlockStage {
     /// Nothing computed yet.
@@ -1368,7 +1435,7 @@ pub enum BlockStage {
     AlreadyKnown,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 pub enum ReplayBlock {
     Block { ssz: TCacheRead },
@@ -1376,13 +1443,13 @@ pub enum ReplayBlock {
     Done,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct LockedProposal {
     pub contents: TCacheRead,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct ProposedPayload {
     pub request_id: u64,
@@ -1394,7 +1461,7 @@ pub struct ProposedPayload {
     pub commitments: TCacheRead,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct SidecarBidRequest {
     pub slot: u64,
@@ -1408,7 +1475,7 @@ pub struct SidecarBidRequest {
 
 /// A Gloas proposal's branch, for the boundary tile to ask the request's
 /// builder entries for bids. Every request is answered.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct BuilderBidsRequest {
     pub request_id: u64,
@@ -1418,7 +1485,7 @@ pub struct BuilderBidsRequest {
     pub proposer_pubkey: BLSPubkey,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct BuilderBidsResponse {
     pub request_id: u64,
@@ -1429,7 +1496,7 @@ pub struct BuilderBidsResponse {
 
 /// Every [`SidecarBidRequest`] is answered; `signed_bid` is `None` when the
 /// sidecar offered no bid that passed verification.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct SidecarBidResponse {
     pub slot: u64,
@@ -1438,7 +1505,7 @@ pub struct SidecarBidResponse {
     pub signed_bid: Option<TCacheRead>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum SyncingStrategy {
     SyncFromPeers,
@@ -1450,7 +1517,7 @@ pub enum SyncingStrategy {
 pub const MAX_BLOBS_PER_BLOCK: usize = 21;
 
 /// Execution-payload validation result returned by the EL.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum PayloadValidationStatus {
     Valid = 0,
@@ -1465,7 +1532,7 @@ pub enum PayloadValidationStatus {
 /// `block_root` is the beacon root of the `head_block_hash` block. The EL
 /// response carries no beacon identity, so the engine tile echoes it in
 /// `EngineFcuResp` to let fork choice apply the verdict.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineFcuReq {
     pub block_root: [u8; 32],
@@ -1484,7 +1551,7 @@ pub struct EngineFcuReq {
 /// ```
 /// `versioned_hashes[..versioned_hash_count]` are the expected KZG commitment
 /// hashes for the blobs carried by this payload.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineNewPayloadReq {
     pub data: TCacheRead,
@@ -1498,7 +1565,7 @@ pub struct EngineNewPayloadReq {
 /// requests live in the envelope (`data`), but the blob KZG commitments do not
 /// — so the caller derives `versioned_hashes[..hash_count]` from the committed
 /// bid in state and passes them here.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineNewPayloadEnvelopeReq {
     pub data: TCacheRead,
@@ -1511,7 +1578,7 @@ pub struct EngineNewPayloadEnvelopeReq {
 /// Response to a fork-choice update. Fully inline.
 ///
 /// `block_root` echoes the request's head beacon root.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineFcuResp {
     pub block_root: [u8; 32],
@@ -1520,7 +1587,7 @@ pub struct EngineFcuResp {
 }
 
 /// Response to `engine_newPayloadV4`.  Fully inline.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineNewPayloadResp {
     pub block_root: [u8; 32],
@@ -1530,7 +1597,7 @@ pub struct EngineNewPayloadResp {
 
 /// The EL's returned payload ID must be fetched using the same fork as this
 /// request.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EnginePreparePayloadReq {
     pub id: u64,
@@ -1547,14 +1614,14 @@ pub struct EnginePreparePayloadReq {
     pub attrs_target_gas_limit: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EnginePreparePayloadResp {
     pub id: u64,
     pub payload_id: Option<[u8; 8]>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineGetPayloadReq {
     pub id: u64,
@@ -1564,7 +1631,7 @@ pub struct EngineGetPayloadReq {
 
 /// Response to `EngineGetPayloadReq`.
 /// `data` holds a [`crate::PayloadFrame`] encoded for the requested fork.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineGetPayloadResp {
     pub id: u64,
@@ -1574,7 +1641,7 @@ pub struct EngineGetPayloadResp {
 /// `engine_getBlobsV3` request. `hashes[..hash_count]` are the versioned hashes
 /// derived from the block's KZG commitments; the block root is the request's
 /// identity and is echoed back on the response.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineGetBlobsReq {
     pub block_root: [u8; 32],
@@ -1589,7 +1656,7 @@ pub struct EngineGetBlobsReq {
 /// [blob bytes])*`, where `present == 0` is a null entry and is that byte
 /// alone. `data` is present even when the EL returned nothing, so
 /// `blobs_present` is the field that says whether it delivered.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineGetBlobsResp {
     pub block_root: [u8; 32],
@@ -1606,7 +1673,7 @@ impl EngineGetBlobsResp {
 
 /// Multiplexed engine request. A single spine queue carries FCU,
 /// new-payload, and raw passthrough requests, preserving strict FIFO ordering.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
 pub enum EngineReq {
@@ -1619,7 +1686,7 @@ pub enum EngineReq {
 }
 
 /// Multiplexed engine response.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
 #[allow(clippy::large_enum_variant)]
 pub enum EngineResp {
@@ -1631,7 +1698,7 @@ pub enum EngineResp {
 }
 
 /// Sync status of the attached execution layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, TypeHash)]
 #[repr(u8)]
 pub enum ELSyncStatus {
     #[default]
@@ -1644,7 +1711,7 @@ pub enum ELSyncStatus {
 /// Published to the `engine_health` spine queue whenever the EL sync status
 /// changes.  Other tiles subscribe to suppress block proposals during outages
 /// or to gate fork-choice updates on EL liveness.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct EngineHealthEvent {
     pub sync_status: ELSyncStatus,
@@ -1671,7 +1738,7 @@ impl BeaconStateEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum DataColumnsEvent {
     /// The block's data is available; its DA gate opens. Once per block root.
@@ -1703,7 +1770,7 @@ pub enum DataColumnsEvent {
     Publish { ssz: TCacheRead, domain: GossipDomain, column_index: u64 },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub enum PeerStats {
     P2p(P2pConnectionStats),
@@ -1713,7 +1780,7 @@ pub enum PeerStats {
 
 /// Fixed-size copy of an identify user-agent, sized to match
 /// `Identify::user_agent`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct AgentString {
     bytes: [u8; 64],
@@ -1744,7 +1811,7 @@ impl AgentString {
 
 /// One meshed (peer, topic) pair's raw gossipsub counters — the per-topic
 /// inputs behind the P1–P4 components in [`PeerScores`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct PeerTopicScores {
     pub id: PeerId,
@@ -1762,13 +1829,16 @@ pub struct PeerTopicScores {
     pub invalid_deliveries: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct P2pConnectionStats {
     pub id: PeerId,
     pub connection: usize,
+    #[type_hash(literal = "SocketAddr")]
     pub addr: SocketAddr,
+    #[type_hash(literal = "Duration")]
     pub connected: Duration,
+    #[type_hash(literal = "Duration")]
     pub rtt: Duration,
     pub lost_packets: u64,
     pub rx_blocking: u64,
@@ -1782,7 +1852,7 @@ pub struct P2pConnectionStats {
     pub inbound: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C)]
 pub struct PeerScores {
     pub id: PeerId,

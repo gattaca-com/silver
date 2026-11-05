@@ -5,6 +5,11 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel.WideStage
 
+private theorem uncurry_eq_fun {α β γ : Type} (f : α → β → γ) :
+    Aeneas.Std.uncurry f = fun p => f p.1 p.2 := by
+  funext ⟨a, b⟩
+  rfl
+
 def body (s : WideStage) (pairs : Usize) (data : Slice fr8.Fr8)
     (t : Array M512 11#usize) (n : Usize) :=
   if s.dit then fft8.Fft8.dit_wide_loop.body s.table.vectors s.table.wide s.table.short
@@ -24,9 +29,8 @@ theorem body_eq (s : WideStage) (pairs : Usize) (data : Slice fr8.Fr8)
         ok (cont (out,next,n1))
       else ok (done (data,t,n))) := by
   cases hd : s.dit <;> simp only [body, prepare, finish, hd,
-    Bool.false_eq_true, if_false, if_true, fft8.Fft8.dit_wide_loop.body,
-    fft8.Fft8.dif_wide_loop.body, bind_assoc_eq, bind_tc_ok,
-    Function.uncurry_apply_pair]
+    Bool.false_eq_true, ite_false, ite_true, fft8.Fft8.dit_wide_loop.body,
+    fft8.Fft8.dif_wide_loop.body, Aeneas.Std.bind_assoc, bind_ok, aeneas_uncurry_def, uncurry_eq_fun]
 
 theorem first_eq (s : WideStage) (h : s.Valid) (n first : Usize)
     (hn : n.val < s.table.vectors.val / 2)
@@ -66,7 +70,7 @@ theorem body_step (s : WideStage) (h : s.Valid) (pairs n n1 : Usize)
     split <;> simp [Slice.set, Slice.setAtNat]
   have hx : s.dit = true → prepared.val[i.val]! = s.x n.val := by
     intro hd
-    simp only [prepared, hd, Bool.not_true, if_true]
+    simp only [prepared, hd, Bool.not_true, ite_true]
     rw [hi]
     exact s.state_first n.val n.val false h.half_pos (by omega) (Or.inl rfl)
       (by rw [h.input_length]; omega)
@@ -74,7 +78,7 @@ theorem body_step (s : WideStage) (h : s.Valid) (pairs n n1 : Usize)
   have hout : (if s.dit then (prepared.set i (s.left n.val)).set j (s.right n.val)
       else prepared.set j (s.right n.val)) = s.state n1.val (!s.dit) := by
     cases hd : s.dit
-    · simp only [prepared, hd, Bool.not_false, Bool.false_eq_true, if_false]
+    · simp only [prepared, hd, Bool.not_false, Bool.false_eq_true, ite_false]
       have hne : i1 ≠ j := by
         intro he
         have hv := congrArg UScalar.val he
@@ -82,17 +86,17 @@ theorem body_step (s : WideStage) (h : s.Valid) (pairs n n1 : Usize)
         exact (pairs_disjoint s.half.val n1.val n.val h.half_pos (by omega)).2.1 hv
       rw [set_comm _ i1 j _ _ hne, s.state_finish_prepared n.val j h.half_pos hj]
       rw [←hn1, s.state_prepare n1.val i1 h.half_pos hi1]
-    · simp only [prepared, hd, Bool.not_true, if_true]
+    · simp only [prepared, hd, Bool.not_true, ite_true]
       rw [s.state_complete n.val i j h.half_pos hi hj, hn1]
   rw [body_eq, add_eq n 1#usize n1 (by simpa using hn1)]
-  simp only [bind_tc_ok, if_pos (show n1 < pairs from hlt), hp,
-    FrModel.Fr8.reduce_while_multiplying_refines, Function.uncurry_apply_pair,
+  simp only [bind_ok, ite_eq_left (show n1 < pairs from hlt), hp,
+    FrModel.Fr8.reduce_while_multiplying_refines, Aeneas.Std.uncurry_apply_pair,
     first_eq s h n i hn hi]
   change (do
     let out ← s.finish prepared i (s.product n.val)
     ok (cont (out, s.pending n1.val, n1))) = _
   rw [hf, hout]
-  rfl
+  (simp only [bind_tc_ok] )
 
 theorem loop_refines (s : WideStage) (h : s.Valid) (pairs : Usize)
     (hpairs : pairs.val = s.table.vectors.val / 2) (remaining : Nat) :
@@ -107,10 +111,10 @@ theorem loop_refines (s : WideStage) (h : s.Valid) (pairs : Usize)
     refine ⟨n, by omega, ?_⟩
     have hnadd : n + 1#usize = ok pairs := add_eq n 1#usize pairs (by simpa using hn.symm)
     rw [loop.eq_1]
-    simp only [body_eq, hnadd, bind_tc_ok, lt_self_iff_false, if_false]
+    simp only [body_eq, hnadd, bind_ok, lt_self_iff_false, ite_false]
   | succ remaining ih =>
     intro n hn
-    obtain ⟨n1, ha, hv⟩ := WP.spec_imp_exists
+    obtain ⟨n1, ha, hv⟩ := spec_imp_exists
       (Usize.add_spec (x := n) (y := 1#usize) (by
         have := h.size_le
         simp only [UScalar.ofNatCore_val_eq]
@@ -120,7 +124,7 @@ theorem loop_refines (s : WideStage) (h : s.Valid) (pairs : Usize)
     refine ⟨last, hl, ?_⟩
     rw [loop.eq_1]
     dsimp only
-    rw [body_step s h pairs n n1 hpairs hv (by omega)]
+    rw [body_step s h pairs n n1 hpairs hv (by omega), bind_ok]
     exact hloop
 
 theorem finish_state (s : WideStage) (h : s.Valid) (n : Nat) (first : Usize)
@@ -136,9 +140,9 @@ theorem finish_state (s : WideStage) (h : s.Valid) (n : Nat) (first : Usize)
       (by rw [h.input_length]; omega)
   rw [s.finish_refines h _ n first second hn (by simp) hi hs hx]
   cases hd : s.dit
-  · simp only [Bool.not_false, Bool.false_eq_true, if_false]
+  · simp only [Bool.not_false, Bool.false_eq_true, ite_false]
     rw [s.state_finish_prepared n second h.half_pos hs]
-  · simp only [Bool.not_true, if_true]
+  · simp only [Bool.not_true, ite_true]
     rw [s.state_complete n first second h.half_pos hi hs]
 
 theorem run_refines (s : WideStage) (h : s.Valid)
@@ -161,7 +165,7 @@ theorem run_refines (s : WideStage) (h : s.Valid)
   have hstart : (if s.dit then s.input else s.input.set i (s.left 0)) =
       s.state 0 (!s.dit) := by
     cases hd : s.dit
-    · simp only [Bool.not_false, Bool.false_eq_true, if_false]
+    · simp only [Bool.not_false, Bool.false_eq_true, ite_false]
       rw [←s.state_zero, s.state_prepare 0 i h.half_pos hi]
     · simp
   rw [hstart] at hp
@@ -175,12 +179,12 @@ theorem run_refines (s : WideStage) (h : s.Valid)
   cases hd : s.dit
   · have hprep : fft8.Fft8.dif_wide_operands s.table s.input s.half 0#usize s.offset =
         ok ((s.normal 0, s.factor 0), s.state 0 true) := by
-      simpa only [prepare,hd,Bool.false_eq_true,if_false,Bool.not_false] using hp
-    simp only [body, hd, Bool.false_eq_true, if_false, Bool.not_false,
+      simpa only [prepare,hd,Bool.false_eq_true,ite_false,Bool.not_false] using hp
+    simp only [body, hd, Bool.false_eq_true, ite_false, Bool.not_false,
       UScalar.ofNatCore_val_eq, pending] at hloop
-    simp only [finish, hd, Bool.false_eq_true, if_false, hladd, bind_tc_ok] at hfinish
-    simp only [Bool.false_eq_true, if_false, fft8.Fft8.dif_wide, hoffset,
-      hdiv, bind_tc_ok, hprep, Function.uncurry_apply_pair, FrModel.Fr8.product_refines,
+    simp only [finish, hd, Bool.false_eq_true, ite_false, hladd, bind_ok] at hfinish
+    simp only [Bool.false_eq_true, ite_false, fft8.Fft8.dif_wide, hoffset,
+      hdiv, bind_ok, hprep, Aeneas.Std.uncurry_apply_pair, FrModel.Fr8.product_refines,
       fft8.Fft8.dif_wide_loop, hloop, FrModel.Fr8.reduce_refines, hfirst, hladd]
     exact hfinish
   · have hprep : fft8.Fft8.dit_wide_operands s.table s.input s.half 0#usize =
@@ -188,11 +192,11 @@ theorem run_refines (s : WideStage) (h : s.Valid)
       cases he : fft8.Fft8.dit_wide_operands s.table s.input s.half 0#usize <;>
         simp [prepare, hd, he] at hp ⊢
       exact hp
-    simp only [body, hd, if_true, Bool.not_true, UScalar.ofNatCore_val_eq,
+    simp only [body, hd, ite_true, Bool.not_true, UScalar.ofNatCore_val_eq,
       pending, state_zero] at hloop
-    simp only [finish, hd, if_true] at hfinish
-    simp only [if_true, fft8.Fft8.dit_wide, hoffset, hdiv, bind_tc_ok,
-      hprep, Function.uncurry_apply_pair, FrModel.Fr8.product_refines,
+    simp only [finish, hd, ite_true] at hfinish
+    simp only [ite_true, fft8.Fft8.dit_wide, hoffset, hdiv, bind_ok,
+      hprep, Aeneas.Std.uncurry_apply_pair, FrModel.Fr8.product_refines,
       fft8.Fft8.dit_wide_loop, hloop, hfirst, FrModel.Fr8.reduce_refines]
     exact hfinish
 

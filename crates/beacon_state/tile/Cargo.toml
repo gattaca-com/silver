@@ -27,6 +27,7 @@ slab.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+silver_beacon_state_data = { workspace = true, features = ["test-util"] }
 # Exposes SlotTicker::set_current_slot for fork-choice tick tests.
 silver_common = { workspace = true, features = ["test-util"] }
 # EF fork_choice peerdas DA cases: run the real column-sidecar verification

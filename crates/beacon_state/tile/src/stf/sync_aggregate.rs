@@ -1,11 +1,11 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     LongtailView, SLOTS_PER_EPOCH, SYNC_COMMITTEE_SIZE, Slot, StateReadView, StateWriterView,
+    bls::{self, SigBatch},
 };
 use silver_common::ssz_view::{BLOCK_SYNC_AGGREGATE_SIZE, SyncAggregateView};
 
 use crate::{
-    bls::{self, SigBatch},
     error::{Result, SyncAggregateError},
     stf::{
         BASE_REWARD_FACTOR, EFFECTIVE_BALANCE_INCREMENT, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR,

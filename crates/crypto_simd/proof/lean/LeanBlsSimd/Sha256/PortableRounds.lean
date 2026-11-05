@@ -2,7 +2,6 @@ import LeanBlsSimd.Sha256.Words
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
-open private EthLib.Cryptography.Bls.Sha256.K from EthLib.Cryptography.Bls.Sha256
 
 namespace LeanBlsSimd.Sha256.Portable
 
@@ -35,16 +34,16 @@ theorem round_step (w : Array U32 64#usize) (s : Spec.RoundState) (t : Usize)
   have hk := words_get sha256.K t.val ht
   rw [constants_refines] at hk
   have hw := words_get w t.val ht
-  simp only [sha256.portable.compress_loop.body,ht',if_true,bigSigma1_refines,
-    choose_refines,majority_refines,bigSigma0_refines,wrapping_add_word,lift,bind_tc_ok]
+  simp only [sha256.portable.compress_loop.body,ht',ite_true,bigSigma1_refines,
+    choose_refines,majority_refines,bigSigma0_refines,wrapping_add_word,lift, bind_ok]
   rw [index_usize_eq _ _ ht]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [← word_ofWord (sha256.K.val[t.val]'_), ← hk,wrapping_add_word,index_usize_eq _ _ ht]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [← word_ofWord (w.val[t.val]'_), ← hw]
   simp only [wrapping_add_word]
   rw [add_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   unfold loopArgs Spec.round
   rfl
 
@@ -59,7 +58,7 @@ theorem rounds_refines (w : Array U32 64#usize) (s : Spec.RoundState) (t : Usize
   | zero =>
     have hstop : ¬t < 64#usize := by change ¬t.val < 64; omega
     rw [sha256.portable.compress_loop,loop.eq_1]
-    simp only [sha256.portable.compress_loop.body,hstop,if_false]
+    simp only [sha256.portable.compress_loop.body,hstop,ite_false, bind_ok]
     unfold Spec.rounds
     rfl
   | succ n ih =>
@@ -68,7 +67,7 @@ theorem rounds_refines (w : Array U32 64#usize) (s : Spec.RoundState) (t : Usize
       (by omega) (by omega)
     rw [sha256.portable.compress_loop,loop.eq_1]
     dsimp only
-    rw [hbody]
+    rw [hbody, bind_ok]
     change sha256.portable.compress_loop w _ _ _ _ _ _ _ _ next = _
     rw [hr]
     rw [hnext]

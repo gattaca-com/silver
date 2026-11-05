@@ -73,13 +73,13 @@ theorem normalise_loop_refines {n : Usize} (stop : Usize)
     have hjn : r.start.val < n.val := by omega
     simp_body normaliseBody hnext
     simp (disch := (simp only [UScalar.ofNatCore_val_eq]; omega)) only
-      [usize_add_ok, bind_tc_ok, index_usize_eq _ _ hjn, update_eq _ _ _ hjn,
+      [usize_add_ok, bind_ok, index_usize_eq _ _ hjn, update_eq _ _ _ hjn,
       index_usize_eq, update_eq,
       core.core_arch.x86.avx512f._mm512_srai_epi64,
       core.core_arch.x86.avx512f._mm512_add_epi64,
       core.core_arch.x86.avx512f._mm512_and_si512, UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [step, hs, List.map_set, Vector.toList_set]
   · apply congrArg (toArray (n := n) id)
     rw [eq_comm, fromLanes_eq_iff]
@@ -120,10 +120,10 @@ theorem add_raw_loop_refines {n : Usize} (a b : Array M512 n) :
   · intro r r' m j he hs he' hs' hnext
     have hj : r.start.val < n.val := by rw [hs]; exact j.isLt
     simp_body addRawBody hnext
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, update_eq _ _ _ hj,
+    simp only [index_usize_eq _ _ hj, bind_ok, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_add_epi64]
     refine congrArg (fun s => ok (cont (r', a, b, s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [foldl_set_ofFn]
 
@@ -159,11 +159,11 @@ theorem sub_raw_loop_refines {n : Usize} (a b offset : Array M512 n) :
   · intro r r' m j he hs he' hs' hnext
     have hj : r.start.val < n.val := by rw [hs]; exact j.isLt
     simp_body subRawBody hnext
-    simp only [index_usize_eq _ _ hj, bind_tc_ok, update_eq _ _ _ hj,
+    simp only [index_usize_eq _ _ hj, bind_ok, update_eq _ _ _ hj,
       core.core_arch.x86.avx512f._mm512_add_epi64,
       core.core_arch.x86.avx512f._mm512_sub_epi64]
     refine congrArg (fun s => ok (cont (r', a, b, offset, s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [foldl_set_ofFn]
 

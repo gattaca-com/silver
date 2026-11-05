@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use flux::utils::directories::local_share_dir;
+use flux::{type_hash_derive::TypeHash, utils::directories::local_share_dir};
 
 use super::{GOSSIP_TOPIC_COUNTER_SLOTS, GossipTopic, gossip_topic_for_counter_slot};
 use crate::metrics::map_counters;
@@ -8,7 +8,7 @@ use crate::metrics::map_counters;
 /// Where a gossip frame's bytes are counted: the counter slot of the topic
 /// whose payload it carries, IHAVE, IWANT or IDONTWANT, or control for the
 /// rest.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub struct GossipTraffic(u16);
 
 impl GossipTraffic {

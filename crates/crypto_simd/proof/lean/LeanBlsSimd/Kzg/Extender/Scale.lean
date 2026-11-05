@@ -1,6 +1,6 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
 import LeanBlsSimd.Kzg.Extender.Basic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -21,14 +21,13 @@ private theorem shift_loop
       result.val = (doneValues ++ remaining.map (fun p => p.1 * p.2)).map frEncode := by
   induction remaining generalizing doneValues shiftPrefix out iter with
   | nil =>
-    have hn := Refinement.next_ge iter (by simp_all)
+    have hn := next_ge iter (by simp_all)
     refine ⟨out, ?_, by simpa using ho⟩
     rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
-    simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
-      Function.uncurry_apply_pair]
+    simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
   | cons p remaining ih =>
     rcases p with ⟨a, w⟩
-    obtain ⟨iter', hi', he', hn⟩ := Refinement.next_lt iter (by simp_all)
+    obtain ⟨iter', hi', he', hn⟩ := next_lt iter (by simp_all)
     have hindex : alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice blst.blst_fr)
         out iter.start = ok (frEncode a) := by
       simp [alloc.vec.Vec.index_usize, ho, hi, List.getElem_append_right]
@@ -39,7 +38,8 @@ private theorem shift_loop
         out iter.start = ok (frEncode a, alloc.vec.Vec.set out iter.start) := by
       have hindex' : alloc.vec.Vec.index_usize out iter.start = ok (frEncode a) := by
         simpa only [alloc.vec.Vec.index_slice_index] using hindex
-      simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hindex']
+      simp only [alloc.vec.Vec.index_mut_slice_index, alloc.vec.Vec.index_mut_usize, hindex',
+        bind_tc_ok]
     let out' := alloc.vec.Vec.set out iter.start (frEncode (a * w))
     have hout' : out'.val = ((doneValues ++ [a * w]) ++ remaining.map Prod.fst).map frEncode := by
       simp [out', alloc.vec.Vec.set, ho, hi, List.set_append_right]
@@ -47,14 +47,13 @@ private theorem shift_loop
       simpa only [List.map_cons, List.append_assoc, List.singleton_append] using hs
     have hbody : cell_extender.CellExtender.compute_loop.body shifts iter out =
         ok (cont (iter', out')) := by
-      simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_tc_ok,
-        Function.uncurry_apply_pair, hindex, hshift, FrScalar.fr_mul_refines, hmut, out']
+      simp only [cell_extender.CellExtender.compute_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair, hindex, hshift, FrScalar.fr_mul_refines, hmut, out']
     obtain ⟨result, hloop, hr⟩ := ih (doneValues ++ [a * w]) (shiftPrefix ++ [w]) out'
       hout' hs' (by simpa using hp) iter' (by simp [hi', hi])
       (by simp [he', he, Nat.add_comm, Nat.add_left_comm])
     refine ⟨result, ?_, ?_⟩
     · rw [cell_extender.CellExtender.compute_loop, loop.eq_1]
-      simp only [hbody]
+      simp only [hbody, bind_ok]
       exact hloop
     · simpa [List.append_assoc] using hr
 
@@ -87,7 +86,8 @@ private theorem shift_arrays
     (by simpa only [List.nil_append, hright] using hs) rfl
     { start := 0#usize, «end» := count } (by simp) (by simp [hlen, hn])
   refine ⟨out, hout, ?_⟩
-  simpa only [List.nil_append, pairs, List.map_ofFn, _root_.Array.toList_ofFn] using hval
+  simpa only [List.nil_append, pairs, List.map_ofFn, _root_.Array.toList_ofFn,
+    Function.comp_def] using hval
 
 private theorem shift_extract
     (n : Nat) (count : Usize) (hn : count.val = n) (coefficients shifts : alloc.vec.Vec blst.blst_fr)

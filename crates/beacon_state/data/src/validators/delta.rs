@@ -237,7 +237,7 @@ impl<'a> ValidatorsView<'a> {
 
     #[inline]
     pub fn credentials(&self, ix: usize) -> &'a Withdrawals {
-        if let Some(v) = self.delta.credentials_edits.get(ix as u32) {
+        if let Some(v) = self.delta.credentials_edits.get(ix) {
             return v;
         }
         if ix < self.delta.base_count {
@@ -264,7 +264,7 @@ impl<'a> ValidatorsView<'a> {
     pub fn effective_balance(&self, ix: usize) -> u64 {
         self.delta
             .effective_balance_edits
-            .get(ix as u32)
+            .get(ix)
             .copied()
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.effective_balance[i], 0))
     }
@@ -273,14 +273,14 @@ impl<'a> ValidatorsView<'a> {
     pub fn is_slashed(&self, ix: usize) -> bool {
         self.delta
             .slashed_edits
-            .get(ix as u32)
+            .get(ix)
             .copied()
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.is_slashed(i), false))
     }
 
     #[inline]
     pub fn activation_eligibility_epoch(&self, ix: usize) -> Epoch {
-        self.delta.activation_eligibility_epoch_edits.get(ix as u32).copied().unwrap_or_else(|| {
+        self.delta.activation_eligibility_epoch_edits.get(ix).copied().unwrap_or_else(|| {
             self.base_or(ix, |b, i| b.activation_eligibility_epoch[i], FAR_FUTURE_EPOCH)
         })
     }
@@ -289,7 +289,7 @@ impl<'a> ValidatorsView<'a> {
     pub fn activation_epoch(&self, ix: usize) -> Epoch {
         self.delta
             .activation_epoch_edits
-            .get(ix as u32)
+            .get(ix)
             .copied()
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.activation_epoch[i], FAR_FUTURE_EPOCH))
     }
@@ -298,7 +298,7 @@ impl<'a> ValidatorsView<'a> {
     pub fn exit_epoch(&self, ix: usize) -> Epoch {
         self.delta
             .exit_epoch_edits
-            .get(ix as u32)
+            .get(ix)
             .copied()
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.exit_epoch[i], FAR_FUTURE_EPOCH))
     }
@@ -307,7 +307,7 @@ impl<'a> ValidatorsView<'a> {
     pub fn withdrawable_epoch(&self, ix: usize) -> Epoch {
         self.delta
             .withdrawable_epoch_edits
-            .get(ix as u32)
+            .get(ix)
             .copied()
             .unwrap_or_else(|| self.base_or(ix, |b, i| b.withdrawable_epoch[i], FAR_FUTURE_EPOCH))
     }

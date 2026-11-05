@@ -15,7 +15,7 @@ theorem neg_encoded (x : Bls.Fp) :
     portable.fp.Fp.neg (Kzg.fpEncode x).l = ok (Kzg.fpEncode (-x)).l := by
   unfold portable.fp.Fp.neg
   rw [rep_eq_encode Kzg.portableFpRep_zero]
-  simpa only [show Bls.Fp.zero = (0 : Bls.Fp) from rfl,zero_sub] using sub_encoded 0 x
+  simpa only [show Bls.Fp.zero = (0 : Bls.Fp) from rfl,zero_sub] using! sub_encoded 0 x
 
 theorem square_encoded [RuntimeFeatures] (x : Bls.Fp) :
     portable.fp.Fp.square (Kzg.fpEncode x).l = ok (Kzg.fpEncode (x*x)).l :=
@@ -33,7 +33,7 @@ theorem is_larger_root_refines [RuntimeFeatures] (x : Bls.Fp) :
   rw [Int.emod_eq_of_lt (by positivity) hsmall] at hd
   obtain ⟨difference,hsub,hv⟩ := sub_words_refines doubled bls.constants.P_U64
   rw [modulus_words,hd] at hsub
-  simp only [portable.fp.Fp.is_larger_root,to_plain_encoded,bind_tc_ok,hadd,
+  simp only [portable.fp.Fp.is_larger_root,to_plain_encoded, bind_ok,hadd,
     not_le.mpr hsmall,decide_false]
   change (do
     let (_,borrow) ← portable.fp.sub_words doubled bls.constants.P_U64
@@ -50,7 +50,7 @@ theorem is_larger_root_refines [RuntimeFeatures] (x : Bls.Fp) :
 theorem signed_refines [RuntimeFeatures] (x : Bls.Fp) (larger : Bool) :
     portable.decompress.signed (Kzg.fpEncode x).l larger =
       ok (Kzg.fpEncode (if Bls.Fp.signBit x = larger then x else -x)).l := by
-  simp only [portable.decompress.signed,is_larger_root_refines,bind_tc_ok]
+  simp only [portable.decompress.signed,is_larger_root_refines, bind_ok]
   split <;> simp_all only [neg_encoded]
 
 end LeanBlsSimd.Portable.Fp

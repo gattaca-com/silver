@@ -5,7 +5,19 @@ open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd
 
 namespace LeanBlsSimd.Portable.Msm.Buckets
+
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
 set_option maxRecDepth 4096
+
+private theorem uncurry_eq_fun {α β γ : Type} (f : α → β → γ) :
+    Aeneas.Std.uncurry f = fun p => f p.1 p.2 := by
+  funext ⟨a, b⟩
+  rfl
+
+private theorem mapLoopState_bind_std {α β γ δ : Type} (f : α → γ)
+    (r : Result δ) (k : δ → Result (ControlFlow α β)) :
+    mapLoopState f (Std.bind r k) = Std.bind r (fun x => mapLoopState f (k x)) := by
+  simpa only [bind_tc_eq] using mapLoopState_bind f r k
 
 abbrev Scalar := Array U64 4#usize
 
@@ -26,18 +38,15 @@ def stateEquiv :
   left_inv _ := rfl
   right_inv _ := rfl
 
-theorem list_eq (s : bls.msm8.buckets.Buckets) (w m : Usize) :
-    (fromLane s).list w m = s.list w m := rfl
-
 theorem count_eq (s : portable.msm.buckets.Buckets) (w m : Usize) :
     s.count w m = (do let out ← (toLane s).count w m; ok (fromLane out)) := by
   simp only [portable.msm.buckets.Buckets.count, bls.msm8.buckets.Buckets.count, toLane, portable.msm.buckets.Buckets.list, bls.msm8.buckets.Buckets.list]
-  split <;> simp only [fromLane, bind_assoc_eq, bind_tc_ok, Function.uncurry_def]
+  split <;> simp_all only [fromLane, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun]
 
 theorem place_eq (s : portable.msm.buckets.Buckets) (w m : Usize) (r : U32) :
     s.place w m r = (do let out ← (toLane s).place w m r; ok (fromLane out)) := by
   simp only [portable.msm.buckets.Buckets.place, bls.msm8.buckets.Buckets.place, toLane, portable.msm.buckets.Buckets.list, bls.msm8.buckets.Buckets.list]
-  split <;> simp only [fromLane, bind_assoc_eq, bind_tc_ok, Function.uncurry_def]
+  split <;> simp_all only [fromLane, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun]
 
 theorem count_windows_eq (s : bls.msm8.buckets.Buckets)
     (d : bls.signed_digits.SignedDigits) (w : Usize) :
@@ -46,7 +55,7 @@ theorem count_windows_eq (s : bls.msm8.buckets.Buckets)
   rintro ⟨s,d,w⟩
   simp only [stateEquiv, Equiv.coe_fn_mk, portable.msm.buckets.Buckets.fill_loop0_loop0.body,
     bls.msm8.buckets.Buckets.fill_loop0_loop0.body, fromLane]
-  split <;> simp only [count_eq, bind_assoc_eq, bind_tc_ok, Function.uncurry_def, mapLoopState_bind, mapLoopState_cont, mapLoopState_done,
+  split <;> simp_all only [count_eq, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun, aeneas_uncurry_def, ite_true, ite_false, mapLoopState_bind_std, mapLoopState_cont, mapLoopState_done,
     fromLane, toLane]
 
 theorem count_scalars_body_eq (scalars : Slice Scalar) (width w n : Usize)
@@ -81,8 +90,8 @@ theorem place_cont_eq {β : Type} (s : bls.msm8.buckets.Buckets)
         (do let next ← s.place w m r
             let w' ← w + 1#usize
             ok (cont (next,d,w'))) := by
-  simp only [place_eq, toLane_fromLane, bind_assoc_eq, bind_tc_ok,
-    mapLoopState_bind, mapLoopState_cont, stateEquiv, Equiv.coe_fn_mk]
+  simp only [place_eq, toLane_fromLane, bind_tc_eq, Aeneas.Std.bind_assoc, bind_ok, mapLoopState_bind_std, mapLoopState_cont, stateEquiv]
+  rfl
 
 theorem signedReference_bind {β : Type} (i : Usize) (negative : Bool) (k : U32 → Result β) :
     (do let bit ← lift (UScalar.cast_fromBool .U32 negative)
@@ -93,18 +102,19 @@ theorem signedReference_bind {β : Type} (i : Usize) (negative : Bool) (k : U32 
         k reference) = k (BucketsRefines.signedReference i negative) := by
   have h := congrArg (fun r : Result U32 => r >>= k)
     (BucketsRefines.signedReference_refines i negative)
-  simpa only [bind_assoc_eq, bind_tc_ok] using h
+  simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, bind_tc_ok, bind_ok] using! h
 
 theorem place_windows_body_eq (s : bls.msm8.buckets.Buckets) (i : Usize)
     (d : bls.signed_digits.SignedDigits) (w : Usize) :
     portable.msm.buckets.Buckets.fill_loop2_loop0.body i (fromLane s) d w =
       mapLoopState stateEquiv (bls.msm8.buckets.Buckets.fill_loop2_loop0.body i s d w) := by
   simp only [portable.msm.buckets.Buckets.fill_loop2_loop0.body,
-    bls.msm8.buckets.Buckets.fill_loop2_loop0.body, Function.uncurry_def,
+    bls.msm8.buckets.Buckets.fill_loop2_loop0.body, uncurry_eq_fun, aeneas_uncurry_def,
     negativeMask_eq, signedReference_bind]
   change (if w < s.windows then _ else _) = _
   split
-  · rw [mapLoopState_bind]
+  ·
+    rw [mapLoopState_bind_std]
     congr 1
     funext p
     exact place_cont_eq s p.2 w p.1.1 (BucketsRefines.signedReference i p.1.2)
@@ -138,6 +148,6 @@ theorem fill_eq (s : portable.msm.buckets.Buckets) (scalars : Slice Scalar) (bit
   simp only [portable.msm.buckets.Buckets.fill, bls.msm8.buckets.Buckets.fill,
     portable.msm.buckets.window_bits, portable.msm.buckets.NARROWEST_WINDOW_BITS,
     bls.msm8.buckets.NARROWEST_WINDOW_BITS, toLane, count_scalars_eq, prefix_eq,
-    place_scalars_eq, bind_assoc_eq, bind_tc_ok, Function.uncurry_def, fromLane]
+    place_scalars_eq, Aeneas.Std.bind_assoc, bind_ok, uncurry_eq_fun, fromLane]
 
 end LeanBlsSimd.Portable.Msm.Buckets

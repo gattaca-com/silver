@@ -3,11 +3,10 @@
 use std::{sync::Arc, time::Duration};
 
 use flux::{spine::SpineAdapter, tile::Tile};
-use silver_beacon_state::{
-    ssz_hash::{hash_tree_root_block_header, hash_tree_root_body_fulu},
-    tile::BeaconStateTile,
+use silver_beacon_state::{ssz_hash::hash_tree_root_body_fulu, tile::BeaconStateTile};
+use silver_beacon_state_data::{
+    BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig, hash_tree_root_block_header,
 };
-use silver_beacon_state_data::{BeaconBlockHeader, BeaconStateReader, CheckpointState, SpecConfig};
 use silver_common::{
     BeaconStateEvent, DataColumnsEvent, IpBytes, Keypair, P2pSend, P2pStreamId, PeerControl,
     PeerEvent, PeerId, RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse,
@@ -130,7 +129,7 @@ impl PmBsHarness {
         // Position genesis so `current_slot() ≈ checkpoint slot`; otherwise
         // `precheck_block` rejects the following blocks as future-slot.
         let genesis_time = u64::from_le_bytes(checkpoint[0..8].try_into().unwrap());
-        let ticker = SlotTicker::new(genesis_time, Duration::from_secs(12), Duration::from_secs(4));
+        let ticker = SlotTicker::new(genesis_time, &SpecConfig::mainnet(), Duration::from_secs(4));
 
         let gossip_p = TCache::producer(TCacheId::ControlProcessing, 1 << 20);
         let rpc_cap = (n_blocks * 300 * 1024).next_power_of_two().max(1 << 22);

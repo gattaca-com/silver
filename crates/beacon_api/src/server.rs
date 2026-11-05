@@ -29,6 +29,7 @@ use crate::{
         validators::{Batch, RegistryStream},
     },
     ctx::ApiCtx,
+    entry_signatures::EntrySignatures,
     events::{self, Channel, ChannelSet, HeadEvent, head_verdict::HeadVerdict},
     http::{
         json::Json,
@@ -222,9 +223,13 @@ impl Pending {
                             blob_data_included: publication.blob_data_included,
                             validation,
                         },
-                        None => {
-                            BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation }
-                        }
+                        None => BeaconApiRequest::LocalGossip {
+                            request_id,
+                            topic,
+                            ssz,
+                            validation,
+                            hashed_body: submission.hashed_body,
+                        },
                     });
                 }
                 let body_len = submission.body_len();
@@ -664,6 +669,7 @@ pub struct BeaconApi {
     /// Connections whose published block still awaits its import.
     awaiting_import: Vec<Token>,
     recent_imports: RecentImports,
+    entry_signatures: EntrySignatures,
 }
 
 impl BeaconApi {
@@ -727,6 +733,7 @@ impl BeaconApi {
             latest_payload_attributes: LatestPayloadAttributes::default(),
             awaiting_import: Vec::new(),
             recent_imports: RecentImports::default(),
+            entry_signatures: EntrySignatures::new(),
         }
     }
 
@@ -746,12 +753,12 @@ impl BeaconApi {
         self.reader.open(
             TCacheId::BeaconStateHandoff,
             "api_beacon_state_handoff",
-            TReadMode::Sliding,
+            TReadMode::SlidingManualFree,
         )?;
         self.reader.open(
             TCacheId::BoundaryProcessing,
             "api_boundary_processing",
-            TReadMode::Sliding,
+            TReadMode::SlidingManualFree,
         )?;
         let forwarders = [TileId::BeaconState, TileId::Columns];
         self.reader.declare(TCacheId::ControlProcessing, &forwarders);
@@ -868,6 +875,9 @@ impl BeaconApi {
             BeaconStateEvent::PayloadAttributes(attributes) => {
                 self.publish_payload_attributes(&attributes)
             }
+            BeaconStateEvent::EnvelopeAvailable {
+                slot, block_root, newly_verified: true, ..
+            } => self.publish_execution_payload_available(slot, &block_root),
             _ => {}
         }
     }
@@ -1098,6 +1108,15 @@ impl BeaconApi {
         self.publish(Channel::HeadV2, "head_v2", |json| json.head_v2_event(head, fork_name));
     }
 
+    fn publish_execution_payload_available(&mut self, slot: u64, block_root: &B256) {
+        if !self.ctx.node_status.is_following() {
+            return;
+        }
+        self.publish(Channel::ExecutionPayloadAvailable, "execution_payload_available", |json| {
+            json.execution_payload_available_event(slot, block_root)
+        });
+    }
+
     /// Repeated roots are not deduplicated.
     pub fn publish_block_gossip(&mut self, slot: u64, block_root: &[u8; 32]) {
         self.publish(Channel::BlockGossip, "block_gossip", |json| {
@@ -1209,6 +1228,10 @@ impl BeaconApi {
                 BeaconApiResponse::ProducedBlock { block, .. },
                 Pending::ProducedBlock { request, .. },
             ) => {
+                if let Ok(produced) = &block {
+                    let slot_duration = Duration::from_millis(ctx.spec.slot_duration_ms());
+                    ctx.produced_body.hold(*produced, reader, Instant::now() + slot_duration);
+                }
                 request.respond(&mut resp, block, reader, &ctx.spec);
                 true
             }
@@ -1358,8 +1381,9 @@ impl BeaconApi {
         to_sidecar: &mut impl FnMut(u64, SidecarCall, &[u8]),
         to_builders: &mut impl FnMut(u64, PreferencesBody<'_>),
     ) -> bool {
-        self.reader.free();
         let now = Instant::now();
+        self.ctx.produced_body.release_expired(now);
+        self.reader.free();
 
         let mut did_work = false;
         for event in events.iter() {
@@ -1462,9 +1486,9 @@ impl BeaconApi {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
         let mut dispatched = Outcome::Response(None);
-        let Self { registry, router, ctx, next_request_id, .. } = self;
+        let Self { registry, router, ctx, next_request_id, entry_signatures, .. } = self;
         let outcome = conn.handle_event(registry, event, now, &mut |req, out| {
-            dispatched = router.dispatch(req, ctx, submissions, out);
+            dispatched = router.dispatch(req, ctx, submissions, entry_signatures, out);
             // The body is borrowed only here; `Pending::defer` below numbers
             // the wait with the same id.
             match dispatched {
@@ -1717,7 +1741,7 @@ mod tests {
     use crate::{
         beacon::{
             block_submission::tests::{blinded_block, gloas_block},
-            operations::tests::entry,
+            operations::tests::{entry, signature as attestation_signature},
             proposer_preferences::tests as preferences,
         },
         submission::{Submission, tests as submission},
@@ -1780,7 +1804,7 @@ mod tests {
                 local_enr,
                 &Identify::default(),
                 &SpecConfig::mainnet(),
-                BeaconStateOwner::published_empty_test(0).reader(),
+                submission::signing_state(0).reader(),
                 false,
                 tcaches,
             );
@@ -2782,7 +2806,7 @@ mod tests {
         ssz[72..104].fill(0x22);
         ssz[104..112].copy_from_slice(&300u64.to_le_bytes());
         ssz[112..144].fill(0x33);
-        ssz[144..240].fill(0x44);
+        ssz[144..240].copy_from_slice(&attestation_signature(attester_index));
         ssz
     }
 
@@ -2824,6 +2848,49 @@ mod tests {
         assert_eq!(events[0].topic, "block_gossip");
         assert_eq!(events[0].data["slot"], (submission::SLOT + 1).to_string());
         assert_eq!(events[0].data["block"], format!("0x{}", hex::encode(root)));
+    }
+
+    #[test]
+    fn available_envelope_is_announced_once_per_block() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        let mut client = connect(tcp_addr(&server));
+        subscribe(&mut client, "execution_payload_available");
+        let reader = read_events_until_marker(client);
+        pump_until(&mut server, "subscribed", |server| subscribers(server) == 1);
+
+        let ssz = server.submissions.write_with(1, |out| out[0] = 0).unwrap();
+        for (slot, block_root, newly_verified) in
+            [(10, [0xab; 32], true), (11, [0xcd; 32], true), (10, [0xab; 32], false)]
+        {
+            server.api.handle_beacon_state_event(BeaconStateEvent::EnvelopeAvailable {
+                ssz,
+                source: BlockSource::Gossip,
+                slot,
+                block_root,
+                newly_verified,
+            });
+        }
+
+        finish_events(&mut server);
+        let events = serve(&mut server, reader, "execution_payload_available events");
+        let announced: Vec<_> = events
+            .iter()
+            .map(|event| {
+                (event.topic.as_str(), event.data["slot"].clone(), event.data["block_root"].clone())
+            })
+            .collect();
+        assert_eq!(announced, [
+            (
+                "execution_payload_available",
+                "10".into(),
+                format!("0x{}", hex::encode([0xab; 32])).into()
+            ),
+            (
+                "execution_payload_available",
+                "11".into(),
+                format!("0x{}", hex::encode([0xcd; 32])).into()
+            ),
+        ]);
     }
 
     #[test]
@@ -3671,10 +3738,12 @@ mod tests {
             )
             .unwrap();
             client.write_all(&block).unwrap();
-            let BeaconApiRequest::LocalGossip { request_id, .. } = deferred_request(&mut server)
+            let BeaconApiRequest::LocalGossip { request_id, hashed_body, .. } =
+                deferred_request(&mut server)
             else {
                 panic!("the block is published locally")
             };
+            assert!(hashed_body.is_some(), "Beacon State need not hash the body again");
             let deliver = |server: &mut Server| match import {
                 Some(Ok(event)) => server.api.handle_beacon_state_event(event),
                 Some(Err(resp)) => server.api.handle_engine_resp(resp),
@@ -4042,6 +4111,24 @@ mod tests {
     }
 
     #[test]
+    fn filterless_header_list_answers_the_head_as_its_only_entry() {
+        let mut server = server_with(64, LONG_TIMEOUT);
+        server.api.ctx.node_status.head_root = [0x77; 32];
+        let client = connect(tcp_addr(&server));
+        get(&client, "/eth/v1/beacon/headers");
+        let request_id = request_id(&deferred_request(&mut server));
+        server.serve_block(request_id, 10, [0x77; 32], &block_bytes(10, 0xef));
+        let reader = std::thread::spawn(move || read_to_eof(client));
+        let response = serve(&mut server, reader, "header list answer");
+
+        let list: serde_json::Value = serde_json::from_slice(body(&response)).unwrap();
+        let headers = list["data"].as_array().unwrap();
+        assert_eq!(headers.len(), 1, "{list}");
+        assert_eq!(headers[0]["root"], root_hex(0x77));
+        assert_eq!(headers[0]["header"]["message"]["slot"], "10");
+    }
+
+    #[test]
     fn block_storage_does_not_hold_is_a_404() {
         let mut server = server_with(64, LONG_TIMEOUT);
         let client = connect(tcp_addr(&server));
@@ -4156,6 +4243,7 @@ mod tests {
                 execution_payload_value,
                 consensus_block_value,
                 builder_entry: None,
+                body_root: [0; 32],
             }),
         });
         let reader = std::thread::spawn(move || read_to_eof(client));
@@ -4217,6 +4305,7 @@ mod tests {
                     execution_payload_value: [0; 32],
                     consensus_block_value: [0; 32],
                     builder_entry: None,
+                    body_root: [0; 32],
                 }),
             });
             let reader = std::thread::spawn(move || read_to_eof(client));
@@ -4332,6 +4421,7 @@ mod tests {
                     execution_payload_value,
                     consensus_block_value,
                     builder_entry: None,
+                    body_root: [0; 32],
                 }),
             });
             let reader = std::thread::spawn(move || read_to_eof(client));

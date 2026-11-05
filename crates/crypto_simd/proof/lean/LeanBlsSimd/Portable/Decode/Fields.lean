@@ -7,6 +7,8 @@ open Aeneas Aeneas.Std Result
 open silver_crypto_simd
 open EthLib.Cryptography Bls
 
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Decode
 open DecompressG1
 set_option maxRecDepth 4096
@@ -71,7 +73,7 @@ theorem y_zero_rejected (b : Encoding) (hp : Bls.G1.Valid (lanePoint b))
     (hy : Bls.Fp.isZero (laneY b) = true) : Bls.G1.inSubgroup (lanePoint b) = false := by
   have he : laneY b = 0 := by
     apply Fin.ext
-    simpa only [Bls.Fp.isZero,beq_iff_eq] using hy
-  simpa only [lanePoint,he] using G1.y_zero_not_in_subgroup (laneX b) (by simpa only [lanePoint,he] using hp)
+    simpa only [Bls.Fp.isZero,beq_iff_eq] using! hy
+  simpa only [lanePoint,he] using G1.y_zero_not_in_subgroup (laneX b) (by simpa only [lanePoint,he] using! hp)
 
 end LeanBlsSimd.Portable.Decode

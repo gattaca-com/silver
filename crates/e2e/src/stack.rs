@@ -21,7 +21,9 @@ use silver_config::{DiscoveryConfig, ScoreParams, SyncingConfig};
 use silver_control::{Controller, sync_engine::SyncEngine};
 use silver_discovery::DiscV5;
 use silver_gossip::GossipHandler;
-use silver_network::{Context, NetworkTile, P2p, create_endpoint, create_server_config};
+use silver_network::{
+    Context, InboundLimits, NetworkTile, P2p, create_endpoint, create_server_config,
+};
 use silver_peer::PeerManager;
 
 use crate::Stats;
@@ -296,7 +298,7 @@ impl PublisherStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
+        let p2p = P2p::new(keypair, endpoint, 1024, Default::default(), InboundLimits::default());
         let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
         network.open_tcaches().map_err(std::io::Error::other)?;
@@ -438,7 +440,7 @@ impl EchoStack {
         );
 
         let endpoint = quic_endpoint(&keypair, /* is_server= */ true);
-        let p2p = P2p::new(keypair, endpoint, 1024, Default::default());
+        let p2p = P2p::new(keypair, endpoint, 1024, Default::default(), InboundLimits::default());
         let mut network = NetworkTile::new(disc_addr, discovery, addr, p2p, context)
             .map_err(std::io::Error::other)?;
         network.open_tcaches().map_err(std::io::Error::other)?;

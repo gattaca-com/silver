@@ -56,7 +56,7 @@ theorem build_refines (pairs : List pairing_product.AffinePair)
   have he : owner.pairs.val = pairs.filter finitePair := by
     simpa only [emptyOwner_pairs, List.nil_append] using hval
   refine ⟨owner, ?_, he, ?_, ?_⟩
-  · simpa only [build, default_empty, bind_tc_ok] using hbuild
+  · simpa only [build, default_empty, bind_tc_ok, bind_ok] using hbuild
   · intro p hp
     rw [he] at hp
     exact valid p (List.mem_filter.mp hp).1
@@ -70,13 +70,13 @@ theorem factorProduct_filter (pairs : List pairing_product.AffinePair) :
   | nil => rfl
   | cons pair pairs ih =>
     by_cases hf : finitePair pair = true
-    · simp only [List.filter_cons, hf, if_true, factorProduct, List.map_cons, List.prod_cons] at ih ⊢
+    · simp only [List.filter_cons, hf, ite_true, factorProduct, List.map_cons, List.prod_cons] at ih ⊢
       rw [ih]
     · have hi : ((Kzg.g1ReadAffine pair.p).isInfinity || (Kzg.g2ReadAffine pair.q).isInfinity) = true := by
         simpa only [finitePair, Bool.not_eq_true', Bool.not_eq_false] using hf
-      simp only [List.filter_cons, hf, Bool.false_eq_true, if_false]
+      simp only [List.filter_cons, hf, Bool.false_eq_true, ite_false]
       rw [ih]
-      simp only [factorProduct, List.map_cons, List.prod_cons, pairingFactor, hi, if_true,
+      simp only [factorProduct, List.map_cons, List.prod_cons, pairingFactor, hi, ite_true,
         Fp12.toField_one, one_mul]
 
 private theorem list_pairingCheck_eq (pairs : List pairing_product.AffinePair) :
@@ -84,7 +84,10 @@ private theorem list_pairingCheck_eq (pairs : List pairing_product.AffinePair) :
       decide (factorProduct pairs ^ finalExpExponent = 1) := by
   apply Bool.eq_iff_iff.mpr
   rw [SpecPairing.pairingCheck_eq, Fp12.isOne_iff, toField_finalExponentiation, toField_pairingFold]
-  simp only [List.map_map, Function.comp_def, factorProduct, decide_eq_true_eq]
+  simp only [List.map_map, Function.comp_def, factorProduct]
+  constructor
+  · exact decide_eq_true
+  · exact of_decide_eq_true
 
 theorem check_correct [RuntimeFeatures] [PairingExternals]
     (blst : BlstMatchesSpec) (inputs : pairing_product.PairingInputs)
@@ -99,7 +102,10 @@ theorem is_one_correct [RuntimeFeatures] [PairingExternals]
     (finite : ∀ p ∈ owner.pairs.val, finitePair p = true) :
     pairing_product.PairingProduct.is_one owner =
       ok (pairingCheck (specPairs (alloc.vec.Vec.deref owner.pairs))) :=
-  check_correct blst ⟨alloc.vec.Vec.deref owner.pairs⟩ valid finite
+  by
+    apply check_correct blst ⟨alloc.vec.Vec.deref owner.pairs⟩
+    · simpa only [alloc.vec.Vec.deref, Slice.from_val] using valid
+    · simpa only [alloc.vec.Vec.deref, Slice.from_val] using finite
 
 theorem two_pairs_are_one_correct [RuntimeFeatures] [PairingExternals]
     (blst : BlstMatchesSpec) (first second : g1_point.G1Point × g2_point.G2Point)
@@ -112,18 +118,23 @@ theorem two_pairs_are_one_correct [RuntimeFeatures] [PairingExternals]
   have valid : ∀ p ∈ (filteredTwo ⟨first.1, first.2⟩ ⟨second.1, second.2⟩).val,
       Kzg.G1AffineValid p.p ∧ Kzg.G2AffineValid p.q := by
     intro p hm
+    simp only [filteredTwo, Slice.from_val] at hm
     have h := (List.mem_filter.mp hm).1
     simp only [List.mem_cons, List.not_mem_nil, or_false] at h
     rcases h with rfl | rfl
     · exact ⟨hp, hq⟩
     · exact ⟨hp', hq'⟩
   have finite : ∀ p ∈ (filteredTwo ⟨first.1, first.2⟩ ⟨second.1, second.2⟩).val,
-      finitePair p = true := fun _ hp => (List.mem_filter.mp hp).2
+      finitePair p = true := by
+    intro p hp
+    simp only [filteredTwo, Slice.from_val] at hp
+    exact (List.mem_filter.mp hp).2
   rw [check_correct blst
     ⟨filteredTwo ⟨first.1, first.2⟩ ⟨second.1, second.2⟩⟩ valid finite, ProductLoop.pairingCheck_eq]
   have he := list_pairingCheck_eq [⟨first.1, first.2⟩, ⟨second.1, second.2⟩]
   simp only [List.map_cons, List.map_nil] at he
   rw [he]
+  simp only [filteredTwo, Slice.from_val]
   change ok (decide (factorProduct ([⟨first.1, first.2⟩, ⟨second.1, second.2⟩].filter finitePair) ^
     finalExpExponent = 1)) = _
   rw [factorProduct_filter]
@@ -139,7 +150,7 @@ theorem built_owner_correct [RuntimeFeatures] [PairingExternals]
   obtain ⟨owner, hbuild, hval, hvalid, hfinite⟩ := build_refines pairs valid room
   refine ⟨owner, hbuild, hval, ?_⟩
   rw [is_one_correct blst owner hvalid hfinite, ProductLoop.pairingCheck_eq, list_pairingCheck_eq]
-  change ok (decide (factorProduct owner.pairs.val ^ finalExpExponent = 1)) = _
+  simp only [alloc.vec.Vec.deref, Slice.from_val]
   rw [hval, factorProduct_filter]
 
 theorem build_is_one_correct [RuntimeFeatures] [PairingExternals]
@@ -151,7 +162,7 @@ theorem build_is_one_correct [RuntimeFeatures] [PairingExternals]
         (fun p => (Kzg.g1ReadAffine p.p, Kzg.g2ReadAffine p.q))).toArray) := by
   obtain ⟨owner, hbuild, _, hcheck⟩ := built_owner_correct blst pairs valid room
   rw [hbuild]
-  exact hcheck
+  simpa only [bind_tc_ok, bind_ok] using! hcheck
 
 end
 

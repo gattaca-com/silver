@@ -3,6 +3,8 @@ use std::{
     ops::Deref,
 };
 
+use flux::type_hash_derive::TypeHash;
+
 use crate::{
     DecomposeError,
     decompose::common::{b256, u32_le, u64_le},
@@ -119,7 +121,7 @@ impl BuilderPendingPayment {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, TypeHash)]
 pub struct Withdrawal {
     pub index: u64,
     pub validator_index: u64,
@@ -127,7 +129,7 @@ pub struct Withdrawal {
     pub amount: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct PayloadWithdrawals {
     items: [Withdrawal; MAX_WITHDRAWALS_PER_PAYLOAD],
     len: usize,

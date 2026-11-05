@@ -5,6 +5,8 @@ open Aeneas Aeneas.Std Result ControlFlow Error
 open silver_crypto_simd silver_crypto_simd.bls
 noncomputable section
 
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
+
 namespace LeanBlsSimd.Msm8
 
 open EthLib.Cryptography Bls
@@ -16,7 +18,7 @@ theorem affine_read_finite (point : blst.blst_p1_affine)
   dsimp only at hfinite ⊢
   split
   · rename_i h
-    exact False.elim (hfinite (by simp only [h, if_true]; rfl))
+    exact False.elim (hfinite (by simp only [h, ite_true]; rfl))
   · rfl
 
 theorem affine_finite_encoding (point : blst.blst_p1_affine)
@@ -95,7 +97,7 @@ theorem transformed_affine_toPoint (x y : ZMod Fp.modulus) (endomorphism negativ
   refine hs.trans ?_
   cases endomorphism
   · rfl
-  · simp only [if_true, sigma_affine_toPoint x y h]
+  · simp only [ite_true, sigma_affine_toPoint x y h]
 
 def transformedPoint (point : blst.blst_p1_affine) (endomorphism negative : Bool) :
     G1Spec.E.Point :=
@@ -159,7 +161,7 @@ theorem push_blst_frame (s out : msm8.store.PointStore)
     (index : ℕ) (hi : index < s.len.val) :
     readPoint (pointRows out) index = readPoint (pointRows s) index := by
   obtain ⟨next, hnext, hrows, _, _⟩ := push_blst_flat_refines s points negated endomorphism hn h31 hcap
-  have heq := Result.ok.inj (hnext.symm.trans hout)
+  have heq := Result.ok_injective (hnext.symm.trans hout)
   subst next
   rw [hrows]
   simp only [pushFlatModel, Nat.zero_add]

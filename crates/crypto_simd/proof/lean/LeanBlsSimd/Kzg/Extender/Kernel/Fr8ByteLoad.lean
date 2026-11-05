@@ -31,23 +31,24 @@ theorem le_word_refines (input : Slice U8) (offset : Usize)
     omega
   simp only [UScalarTy.Usize_numBits_eq] at hm
   unfold fr8.u256x8.le_word
-  simp only [lift, bind_tc_ok, Array.to_slice_mut, Function.uncurry_apply_pair]
-  simp (disch := (simp; omega)) only [add_ok, bind_tc_ok, UScalar.ofNatCore_val_eq]
+  simp only [lift, bind_ok, Array.to_slice_mut, Aeneas.Std.uncurry_apply_pair]
+  simp (disch := (simp; omega)) only [add_ok, bind_ok, UScalar.ofNatCore_val_eq]
   rw [slice_index_ok input _ _ (by simp) (by simp; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   have hslen : (input.val.slice offset.val (offset.val + 8)).length = 8 := by
     rw [List.slice_length]
     omega
   rw [copy_from_slice_ok _ _ _ (by simp [Array.to_slice, hslen])]
-  simp only [bind_tc_ok]
-  rw [Array.from_slice, dif_pos (by simpa using hslen)]
+  simp only [bind_ok]
+  rw [Array.from_slice, dite_eq_left (by simpa using hslen)]
   simp only [UScalar.ofNatCore_val_eq]
-  have heq : (⟨input.val.slice offset.val (offset.val + 8), hslen⟩ : Array U8 8#usize) =
+  have heq : (Array.make 8#usize (input.val.slice offset.val (offset.val + 8)) hslen : Array U8 8#usize) =
       toArray toU8 (inputChunk input offset.val) := by
-    apply Subtype.ext
+    ext1
     apply (List.map_injective_iff.mpr (fun a b h => by simpa using congrArg toU8 h) :
       Function.Injective (List.map ofU8))
     simpa [Function.comp_def] using slice_to_chunk input offset.val hsize
+  simp only [Array.make, Slice.from_val] at heq ⊢
   rw [heq]
 
 def littleBlock (input : Slice U8) (offset : Nat) : M512 :=
@@ -64,14 +65,14 @@ theorem load_block_refines (input : Slice U8) (offset : Usize)
     omega
   simp only [UScalarTy.Usize_numBits_eq] at hm
   unfold fr8.u256x8.load_block
-  simp (disch := (simp; omega)) only [add_ok, bind_tc_ok, UScalar.ofNatCore_val_eq,
+  simp (disch := (simp; omega)) only [add_ok, bind_ok, UScalar.ofNatCore_val_eq,
     le_word_refines]
   rw [le_word_refines input offset (by omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   simp only [core.core_arch.x86.avx512f._mm512_set_epi64]
   apply congrArg ok
   ext lane hlane
   interval_cases lane <;>
-    simp [littleBlock, LeanBlsSimd._mm512_set_epi64, ofBitVec_hcast_I64]
+    simp [littleBlock, LeanBlsSimd._mm512_set_epi64]
 
 end LeanBlsSimd.Kzg.Extender.Kernel.BytePacking

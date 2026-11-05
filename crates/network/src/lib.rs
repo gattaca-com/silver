@@ -5,7 +5,8 @@ mod tile;
 use std::net::SocketAddr;
 
 pub use p2p::{
-    ClusterNodes, Context, NetEvent, P2p, SendResult, create_endpoint, create_server_config,
+    ClusterNodes, Context, InboundLimits, NetEvent, P2p, SendResult, create_endpoint,
+    create_server_config,
 };
 use silver_common::PeerId;
 pub use tile::{Event as NetworkTileEvent, NetworkTile, NetworkTileInner};
@@ -46,6 +47,9 @@ silver_common::declare_counters! {
         GossipMsgSkipped,
         // Gossip delivery or inbound read stalled — connection closed.
         GossipStallDisconnect,
+        // Inbound gossip over its byte quota — connection closed.
+        GossipRateLimitDisconnect,
+        InboundStreamRateLimited,
         // RPC codecs currently retained in the network-tile-wide free list.
         RpcCodecPoolIdle,
         CacheSegmentedAdmitted,

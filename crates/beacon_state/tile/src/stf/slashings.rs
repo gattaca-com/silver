@@ -5,6 +5,8 @@ use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BuilderPendingPayment, EPOCHS_PER_SLASHINGS_VECTOR, EpochBalancesRow,
     EpochView, Immutable, SLOTS_PER_EPOCH, SlotStateWriteView, SpecConfig, StateReadView,
     StateWriterView, ValidatorsView,
+    bls::{self, SigBatch},
+    hash_tree_root_block_header,
 };
 use silver_common::ssz_view::{
     ATTESTATION_DATA_SIZE, AttestationDataView, BEACON_BLOCK_HEADER_SIZE, BeaconBlockHeaderView,
@@ -13,9 +15,8 @@ use silver_common::ssz_view::{
 use silver_ssz::ssz_view::{IndexedAttestationView, MAX_ATTESTING_INDICES};
 
 use crate::{
-    bls::{self, SigBatch},
     error::{AttesterSlashingError, ProposerSlashingError, Result},
-    ssz_hash::{self, hash_tree_root_block_header},
+    ssz_hash,
     stf::{for_each_ssz_list_item, get_beacon_proposer_index, initiate_validator_exit},
     validate,
 };
@@ -56,10 +57,11 @@ pub fn collect_sigs_proposer_slashings(
     for i in 0..count {
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
-        let vi = ProposerSlashingView::h1_proposer_index(s) as u32;
-        if (vi as usize) >= n {
+        let vi = ProposerSlashingView::h1_proposer_index(s);
+        if vi >= n as u64 {
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
+        let vi = vi as u32;
         let h1_slot = ProposerSlashingView::h1_slot(s);
         let fv =
             bls::fork_version_at_epoch(fork_epoch, prev_ver, cur_ver, h1_slot / SLOTS_PER_EPOCH);
@@ -94,10 +96,11 @@ pub fn process_proposer_slashings(
         let s: &[u8; PROPOSER_SLASHING_SIZE] =
             data[i * PROPOSER_SLASHING_SIZE..(i + 1) * PROPOSER_SLASHING_SIZE].try_into().unwrap();
         validate::validate_proposer_slashing(s)?;
-        let vi = ProposerSlashingView::h1_proposer_index(s) as u32;
-        if (vi as usize) >= n {
+        let vi = ProposerSlashingView::h1_proposer_index(s);
+        if vi >= n as u64 {
             return Err(ProposerSlashingError::ValidatorOutOfRange { vi: vi as usize, count: n });
         }
+        let vi = vi as u32;
         if !view.validators.reader().is_slashable(vi as usize, current_epoch) {
             return Err(ProposerSlashingError::NotSlashable {
                 vi: vi as usize,

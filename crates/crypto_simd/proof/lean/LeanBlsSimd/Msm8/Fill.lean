@@ -9,23 +9,30 @@ open silver_crypto_simd.bls.msm8 alloc.vec
 
 theorem bind_success {α β : Type} (r : Result α) (f : α → Result β) (out : β) :
     (r >>= f) = ok out ↔ ∃ a, r = ok a ∧ f a = ok out := by
-  cases r <;> simp [Bind.bind, Aeneas.Std.bind]
+  constructor
+  · exact bind_eq_ok
+  · rintro ⟨a, rfl, h⟩
+    simpa only [bind_tc_ok] using h
+
+private theorem bind_success_std {α β : Type} (r : Result α) (f : α → Result β) (out : β) :
+    Std.bind r f = ok out ↔ ∃ a, r = ok a ∧ f a = ok out := by
+  simpa only [bind_tc_eq] using bind_success r f out
 
 theorem count_metadata (state next : buckets.Buckets) (window magnitude : Usize)
     (h : state.count window magnitude = ok next) :
     next.window_bits = state.window_bits ∧ next.windows = state.windows := by
   simp only [buckets.Buckets.count] at h
   split at h
-  · rw [bind_success] at h
+  · rw [bind_success_std] at h
     obtain ⟨i, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨⟨value, back⟩, _, h⟩ := h
-    simp only [Function.uncurry_def] at h
-    rw [bind_success] at h
+    simp only [aeneas_uncurry_def] at h
+    rw [bind_success_std] at h
     obtain ⟨count, _, h⟩ := h
-    cases Result.ok.inj h
+    cases Result.ok_injective h
     exact ⟨rfl, rfl⟩
-  · cases Result.ok.inj h
+  · cases Result.ok_injective h
     exact ⟨rfl, rfl⟩
 
 theorem place_metadata (state next : buckets.Buckets) (window magnitude : Usize) (reference : U32)
@@ -33,25 +40,26 @@ theorem place_metadata (state next : buckets.Buckets) (window magnitude : Usize)
     next.window_bits = state.window_bits ∧ next.windows = state.windows := by
   simp only [buckets.Buckets.place] at h
   split at h
-  · rw [bind_success] at h
+  · rw [bind_success_std] at h
     obtain ⟨i, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨start, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨len, _, h⟩ := h
-    rw [bind_success] at h
+    rw [bind_success_std] at h
     obtain ⟨address, _, h⟩ := h
-    simp only [lift, bind_tc_ok] at h
-    rw [bind_success] at h
+    simp only [lift, bind_ok] at h
+    rw [bind_success_std] at h
     obtain ⟨⟨_, refsBack⟩, _, h⟩ := h
-    simp only [Function.uncurry_def] at h
-    rw [bind_success] at h
+    simp only [aeneas_uncurry_def] at h
+    rw [bind_success_std] at h
     obtain ⟨⟨value, lensBack⟩, _, h⟩ := h
-    rw [bind_success] at h
+    simp only [aeneas_uncurry_def] at h
+    rw [bind_success_std] at h
     obtain ⟨count, _, h⟩ := h
-    cases Result.ok.inj h
+    cases Result.ok_injective h
     exact ⟨rfl, rfl⟩
-  · cases Result.ok.inj h
+  · cases Result.ok_injective h
     exact ⟨rfl, rfl⟩
 
 def fields (state : buckets.Buckets) :=
@@ -75,25 +83,25 @@ theorem count_windows_refines (state out : buckets.Buckets) (digits last : signe
   induction n generalizing state digits window events with
   | zero =>
     simp only [windowEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp only [countEvents] at hcount
-    cases Result.ok.inj hcount
+    cases Result.ok_injective hcount
     rw [buckets.Buckets.fill_loop0_loop0, loop.eq_1]
     simp [buckets.Buckets.fill_loop0_loop0.body, fields,
-      show ¬ window < out.windows from by simp only [UScalar.lt_equiv]; omega]
+      show ¬ window < out.windows from by simp only [UScalar.lt_equiv]; omega, bind_ok]
   | succ n ih =>
     simp only [windowEvents] at hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨⟨magnitude, negative⟩, digits'⟩, hdigit, hevents⟩ := hevents
-    simp only [Function.uncurry_def] at hevents
-    rw [bind_success] at hevents
+    simp only [aeneas_uncurry_def] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨window', hwindow, hevents⟩ := hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨rest, last'⟩, hrest, hevents⟩ := hevents
-    have heq := Result.ok.inj hevents
+    have heq := Result.ok_injective hevents
     cases heq
     simp only [countEvents] at hcount
-    rw [bind_success] at hcount
+    rw [bind_success_std] at hcount
     obtain ⟨next, hstep, hcount⟩ := hcount
     have hmeta := count_metadata state next window magnitude hstep
     have hwindowv : window'.val = window.val + 1 := by
@@ -101,7 +109,7 @@ theorem count_windows_refines (state out : buckets.Buckets) (digits last : signe
         have := state.windows.hBounds
         omega
       rw [add_ok window 1#usize hb] at hwindow
-      cases Result.ok.inj hwindow
+      cases Result.ok_injective hwindow
       rfl
     have hlo := ih next digits' window' rest (by rw [hmeta.2]; omega) hrest hcount
     rw [buckets.Buckets.fill_loop0_loop0, loop.eq_1]
@@ -109,13 +117,8 @@ theorem count_windows_refines (state out : buckets.Buckets) (digits last : signe
         ok (cont (next, digits', window')) := by
       simp only [buckets.Buckets.fill_loop0_loop0.body,
         show window < state.windows from by simp only [UScalar.lt_equiv]; omega,
-        if_true, hdigit, bind_tc_ok, Function.uncurry_def, hstep, hwindow]
-    simpa only [hbody] using hlo
-
-theorem sign_product (negative : Bool) :
-    UScalar.cast_fromBool .U32 negative * 2147483648#u32 =
-      ok (if negative then 2147483648#u32 else 0#u32) := by
-  cases negative <;> rfl
+        ite_true, hdigit, bind_ok, aeneas_uncurry_def, hstep, hwindow]
+    simpa only [hbody, bind_ok] using! hlo
 
 def placeSuffix (state : buckets.Buckets) (digits' : signed_digits.SignedDigits)
     (index window magnitude : Usize) (negative : Bool) :
@@ -153,7 +156,7 @@ theorem place_signed_suffix (state next : buckets.Buckets) (digits' : signed_dig
         (buckets.Buckets × signed_digits.SignedDigits × Usize)
         (Usize × Usize × Vec U32 × Vec U32 × Vec U32)))
     (signedReference_refines index negative)
-  simpa only [bind_assoc_eq, lift, bind_tc_ok, hstep, hwindow] using hh
+  simpa only [bind_tc_eq, Aeneas.Std.bind_assoc, lift, bind_tc_ok, bind_ok, hstep, hwindow] using! hh
 
 theorem place_body_active (state : buckets.Buckets) (digits : signed_digits.SignedDigits)
     (index window : Usize) (hlt : window < state.windows) :
@@ -161,7 +164,7 @@ theorem place_body_active (state : buckets.Buckets) (digits : signed_digits.Sign
       (do
         let ((m, neg), d) ← digits.next_digit
         placeSuffix state d index window m neg) :=
-  (place_body_split state digits index window).trans (if_pos hlt)
+  (place_body_split state digits index window).trans (ite_eq_left hlt)
 
 theorem bind_nested_pair {α β γ δ : Type} (r : Result ((α × β) × γ))
     (f : α → β → γ → Result δ) (a : α) (b : β) (c : γ) (h : r = ok ((a, b), c)) :
@@ -169,7 +172,7 @@ theorem bind_nested_pair {α β γ δ : Type} (r : Result ((α × β) × γ))
       let ((x, y), z) ← r
       f x y z) = f a b c := by
   rw [h]
-  rfl
+  (simp only [bind_ok, Aeneas.Std.uncurry_apply_pair] )
 
 theorem place_digit_active (state : buckets.Buckets) (digits digits' : signed_digits.SignedDigits)
     (index window magnitude : Usize) (negative : Bool)
@@ -202,25 +205,25 @@ theorem place_windows_refines (state out : buckets.Buckets) (digits last : signe
   induction n generalizing state digits window events with
   | zero =>
     simp only [windowEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp only [placeEvents] at hplace
-    cases Result.ok.inj hplace
+    cases Result.ok_injective hplace
     rw [buckets.Buckets.fill_loop2_loop0, loop.eq_1]
     simp [buckets.Buckets.fill_loop2_loop0.body, fields,
-      show ¬ window < out.windows from by simp only [UScalar.lt_equiv]; omega]
+      show ¬ window < out.windows from by simp only [UScalar.lt_equiv]; omega, bind_ok]
   | succ n ih =>
     simp only [windowEvents] at hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨⟨magnitude, negative⟩, digits'⟩, hdigit, hevents⟩ := hevents
-    simp only [Function.uncurry_def] at hevents
-    rw [bind_success] at hevents
+    simp only [aeneas_uncurry_def] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨window', hwindow, hevents⟩ := hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨rest, last'⟩, hrest, hevents⟩ := hevents
-    have heq := Result.ok.inj hevents
+    have heq := Result.ok_injective hevents
     cases heq
     simp only [placeEvents] at hplace
-    rw [bind_success] at hplace
+    rw [bind_success_std] at hplace
     obtain ⟨next, hstep, hplace⟩ := hplace
     have hmeta := place_metadata state next window magnitude (signedReference index negative) hstep
     have hwindowv : window'.val = window.val + 1 := by
@@ -228,13 +231,13 @@ theorem place_windows_refines (state out : buckets.Buckets) (digits last : signe
         have := state.windows.hBounds
         omega
       rw [add_ok window 1#usize hb] at hwindow
-      cases Result.ok.inj hwindow
+      cases Result.ok_injective hwindow
       rfl
     have hlo := ih next digits' window' rest (by rw [hmeta.2]; omega) hrest hplace
     rw [buckets.Buckets.fill_loop2_loop0, loop.eq_1]
     have hbody := place_window_step state next digits digits' index window window' magnitude negative
       (by simp only [UScalar.lt_equiv]; omega) hdigit hstep hwindow
-    simpa only [hbody] using hlo
+    simpa only [hbody, bind_ok] using! hlo
 
 end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
@@ -246,7 +249,7 @@ theorem countEvents_append (left right : List Event) (state : buckets.Buckets) :
       countEvents right next) := by
   induction left generalizing state with
   | nil => simp [countEvents]
-  | cons event rest ih => simp only [List.cons_append, countEvents, ih, bind_assoc_eq]
+  | cons event rest ih => simp only [List.cons_append, countEvents, ih, Aeneas.Std.bind_assoc]
 
 theorem placeEvents_append (left right : List Event) (state : buckets.Buckets) :
     placeEvents (left ++ right) state = (do
@@ -254,15 +257,15 @@ theorem placeEvents_append (left right : List Event) (state : buckets.Buckets) :
       placeEvents right next) := by
   induction left generalizing state with
   | nil => simp [placeEvents]
-  | cons event rest ih => simp only [List.cons_append, placeEvents, ih, bind_assoc_eq]
+  | cons event rest ih => simp only [List.cons_append, placeEvents, ih, Aeneas.Std.bind_assoc]
 
 theorem countEvents_metadata (events : List Event) (state out : buckets.Buckets)
     (h : countEvents events state = ok out) :
     out.window_bits = state.window_bits ∧ out.windows = state.windows := by
   induction events generalizing state with
-  | nil => cases Result.ok.inj h; exact ⟨rfl, rfl⟩
+  | nil => cases Result.ok_injective h; exact ⟨rfl, rfl⟩
   | cons event rest ih =>
-    simp only [countEvents, bind_success] at h
+    simp only [countEvents, bind_success_std] at h
     obtain ⟨next, hstep, hrest⟩ := h
     obtain ⟨hw, hn⟩ := count_metadata state next event.window event.magnitude hstep
     obtain ⟨hw', hn'⟩ := ih next hrest
@@ -272,9 +275,9 @@ theorem placeEvents_metadata (events : List Event) (state out : buckets.Buckets)
     (h : placeEvents events state = ok out) :
     out.window_bits = state.window_bits ∧ out.windows = state.windows := by
   induction events generalizing state with
-  | nil => cases Result.ok.inj h; exact ⟨rfl, rfl⟩
+  | nil => cases Result.ok_injective h; exact ⟨rfl, rfl⟩
   | cons event rest ih =>
-    simp only [placeEvents, bind_success] at h
+    simp only [placeEvents, bind_success_std] at h
     obtain ⟨next, hstep, hrest⟩ := h
     obtain ⟨hw, hn⟩ := place_metadata state next event.window event.magnitude event.reference hstep
     obtain ⟨hw', hn'⟩ := ih next hrest
@@ -300,19 +303,19 @@ theorem count_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
   induction n generalizing state index events with
   | zero =>
     simp only [scalarEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp only [countEvents] at hcount
-    cases Result.ok.inj hcount
+    cases Result.ok_injective hcount
     rw [buckets.Buckets.fill_loop0, loop.eq_1]
     simp [buckets.Buckets.fill_loop0.body, fields,
-      show ¬ index < Slice.len scalars from by change ¬ index.val < scalars.val.length; omega]
+      show ¬ index < Slice.len scalars from by change ¬ index.val < scalars.val.length; omega, bind_ok]
   | succ n ih =>
-    simp only [scalarEvents, bind_success] at hevents
+    simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, bind_success] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
-    rw [countEvents_append, bind_success] at hcount
+    cases Result.ok_injective hevents
+    rw [countEvents_append, bind_success_std] at hcount
     obtain ⟨next, hstep, hrestcount⟩ := hcount
     have hmeta := countEvents_metadata first state next hstep
     have hindexv : index'.val = index.val + 1 := by
@@ -321,7 +324,7 @@ theorem count_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
         change scalars.val.length < 2 ^ UScalarTy.Usize.numBits at hlen
         omega
       rw [add_ok index 1#usize hb] at hindex
-      cases Result.ok.inj hindex
+      cases Result.ok_injective hindex
       rfl
     have hinner := count_windows_refines state next digits last index 0#usize first windows.val
       (by change 0 + windows.val = state.windows.val; rw [hw]; omega) hfirst hstep
@@ -332,13 +335,13 @@ theorem count_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
         ok (cont (next.window_bits, next.windows, next.refs, next.starts, next.lens, index')) := by
       simp only [buckets.Buckets.fill_loop0.body,
         show index < Slice.len scalars from by change index.val < scalars.val.length; omega,
-        if_true, hwords, bind_tc_ok, hdigits]
+        ite_true, hwords, bind_ok, hdigits]
       change (do
         let (i3, i4, v3, v4, v5) ← buckets.Buckets.fill_loop0_loop0 state digits 0#usize
         let i5 ← index + 1#usize
         ok (cont (i3, i4, v3, v4, v5, i5))) = _
       simp only [hinner, bind_tc_ok, fields, hindex]
-    simpa only [hbody] using hlo
+    simpa only [hbody, bind_ok] using! hlo
 
 theorem place_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Array U64 4#usize))
     (width windows index : Usize) (events : List Event) (n : ℕ)
@@ -350,19 +353,19 @@ theorem place_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
   induction n generalizing state index events with
   | zero =>
     simp only [scalarEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     simp only [placeEvents] at hplace
-    cases Result.ok.inj hplace
+    cases Result.ok_injective hplace
     rw [buckets.Buckets.fill_loop2, loop.eq_1]
     simp [buckets.Buckets.fill_loop2.body, fields,
-      show ¬ index < Slice.len scalars from by change ¬ index.val < scalars.val.length; omega]
+      show ¬ index < Slice.len scalars from by change ¬ index.val < scalars.val.length; omega, bind_ok]
   | succ n ih =>
-    simp only [scalarEvents, bind_success] at hevents
+    simp only [scalarEvents, bind_success_std] at hevents
     obtain ⟨words, hwords, digits, hdigits, ⟨first, last⟩, hfirst, hevents⟩ := hevents
-    simp only [Function.uncurry_def, bind_success] at hevents
+    simp only [aeneas_uncurry_def, bind_success_std] at hevents
     obtain ⟨index', hindex, rest, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
-    rw [placeEvents_append, bind_success] at hplace
+    cases Result.ok_injective hevents
+    rw [placeEvents_append, bind_success_std] at hplace
     obtain ⟨next, hstep, hrestplace⟩ := hplace
     have hmeta := placeEvents_metadata first state next hstep
     have hindexv : index'.val = index.val + 1 := by
@@ -371,7 +374,7 @@ theorem place_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
         change scalars.val.length < 2 ^ UScalarTy.Usize.numBits at hlen
         omega
       rw [add_ok index 1#usize hb] at hindex
-      cases Result.ok.inj hindex
+      cases Result.ok_injective hindex
       rfl
     have hinner := place_windows_refines state next digits last index 0#usize first windows.val
       (by change 0 + windows.val = state.windows.val; rw [hw]; omega) hfirst hstep
@@ -382,13 +385,13 @@ theorem place_scalars_refines (state out : buckets.Buckets) (scalars : Slice (Ar
         ok (cont (next.window_bits, next.windows, next.refs, next.starts, next.lens, index')) := by
       simp only [buckets.Buckets.fill_loop2.body,
         show index < Slice.len scalars from by change index.val < scalars.val.length; omega,
-        if_true, hwords, bind_tc_ok, hdigits]
+        ite_true, hwords, bind_ok, hdigits]
       change (do
         let (i3, i4, v3, v4, v5) ← buckets.Buckets.fill_loop2_loop0 state index digits 0#usize
         let i5 ← index + 1#usize
         ok (cont (i3, i4, v3, v4, v5, i5))) = _
       simp only [hinner, bind_tc_ok, fields, hindex]
-    simpa only [hbody] using hlo
+    simpa only [hbody, bind_ok] using! hlo
 
 end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
@@ -414,14 +417,14 @@ theorem windowEvents_succeeds (n : ℕ) (index window windows : Usize) (digits :
       (by rw [hbit, hwidth]; nlinarith) (by omega)
     refine ⟨{window, magnitude, reference := signedReference index negative} :: rest, last,
       ?_, by simp only [List.length_cons, hlen], ?_⟩
-    · simp only [windowEvents, hdigit, bind_tc_ok, Function.uncurry_def]
+    · simp only [windowEvents, hdigit, bind_ok, aeneas_uncurry_def]
       rw [add_ok window 1#usize (by have := windows.hBounds; change window.val + 1 < _; omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let (rest, last) ← windowEvents n index window' digits'
         ok (({window, magnitude, reference := signedReference index negative} : Event) :: rest, last)) = _
       rw [hrest]
-      rfl
+      (simp only [bind_tc_ok] )
     · intro event he
       rcases List.mem_cons.mp he with he | he
       · subst event
@@ -452,18 +455,18 @@ theorem scalarEvents_succeeds (n : ℕ) (scalars : Slice (Array U64 4#usize))
     have hindex' : index'.val = index.val + 1 := rfl
     obtain ⟨rest, hrest, hlen, hrestfits⟩ := ih index' (by omega)
     refine ⟨first ++ rest, ?_, ?_, ?_⟩
-    · simp only [scalarEvents, hwords, bind_tc_ok, hdigits, hfirst, Function.uncurry_def]
+    · simp only [scalarEvents, hwords, bind_ok, hdigits, hfirst, aeneas_uncurry_def]
       rw [add_ok index 1#usize (by
         have hlen := (Slice.len scalars).hBounds
         change scalars.val.length < 2 ^ UScalarTy.Usize.numBits at hlen
         change index.val + 1 < _
         omega)]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       change (do
         let rest ← scalarEvents n scalars width windows index'
         ok (first ++ rest)) = _
       rw [hrest]
-      rfl
+      (simp only [bind_tc_ok] )
     · rw [List.length_append, hfirstlen, hlen]
       ring
     · intro event he
@@ -507,18 +510,18 @@ theorem listCount127_bound (width : Usize) (hw : width.val ≤ 8) :
 theorem vec_resize_zero (size : Usize) :
     ∃ v : Vec U32, Vec.resize core.clone.CloneU32 (Vec.new U32) size 0#u32 = ok v ∧
       v.val = List.replicate size.val 0#u32 := by
-  obtain ⟨v, hv, heq⟩ := WP.spec_imp_exists (Vec.resize_spec core.clone.CloneU32 (Vec.new U32) size 0#u32 rfl)
-  exact ⟨v, hv, by simpa only [Vec.new, List.resize, List.take_nil, List.length_nil, Nat.sub_zero, List.nil_append] using heq⟩
+  obtain ⟨v, hv, heq⟩ := spec_imp_exists (Vec.resize_spec core.clone.CloneU32 (Vec.new U32) size 0#u32 rfl)
+  exact ⟨v, hv, by simpa only [Vec.new, Vec.from_val, List.resize, List.take_nil, List.length_nil, Nat.sub_zero, List.nil_append] using! heq⟩
 
 def fillCore (state : buckets.Buckets) (scalars : Slice (Array U64 4#usize))
     (width windows lists : Usize) : Result buckets.Buckets := do
-  let v ← Vec.clear Global state.lens
+  let v ← Vec.clear alloc.alloc.Global state.lens
   let v1 ← Vec.resize core.clone.CloneU32 v lists 0#u32
   let (i4, i5, v2, v3, v4) ←
     buckets.Buckets.fill_loop0 width windows state.refs state.starts v1 scalars width 0#usize
-  let v5 ← Vec.clear Global v3
+  let v5 ← Vec.clear alloc.alloc.Global v3
   let (v6, v7, total) ← buckets.Buckets.fill_loop1 v5 v4 lists 0#u32 0#usize
-  let v8 ← Vec.clear Global v2
+  let v8 ← Vec.clear alloc.alloc.Global v2
   let i6 ← lift (UScalar.cast .Usize total)
   let v9 ← Vec.resize core.clone.CloneU32 v8 i6 0#u32
   let (i7, i8, v10, v11, v12) ← buckets.Buckets.fill_loop2 i4 i5 v9 v6 v7 scalars width 0#usize
@@ -579,9 +582,9 @@ theorem fillCore_refines (state : buckets.Buckets) (scalars : Slice (Array U64 4
     (by change 0 + scalars.val.length = scalars.val.length; omega) rfl htrace hplace
   refine ⟨out, ?_, how, hon, ?_⟩
   · unfold fillCore
-    simp only [Vec.clear, bind_tc_ok]
+    simp only [Vec.clear, bind_ok]
     rw [hlens]
-    simp only [bind_tc_ok]
+    simp only [bind_ok, lift]
     change (do
       let (i4, i5, v2, v3, v4) ← buckets.Buckets.fill_loop0 counted.window_bits counted.windows
         counted.refs counted.starts counted.lens scalars width 0#usize
@@ -600,7 +603,7 @@ theorem fillCore_refines (state : buckets.Buckets) (scalars : Slice (Array U64 4
         placed.refs placed.starts placed.lens scalars width 0#usize
       ok ({window_bits := i7, windows := i8, refs := v10, starts := v11, lens := v12} : buckets.Buckets)) = _
     rw [hplaceLoop]
-    rfl
+    (simp only [bind_tc_ok] ; rfl)
   · simpa only [hlists] using hrecover
 
 theorem shiftLeft_value (x shift : Usize) (hshift : shift.val < UScalarTy.Usize.numBits)
@@ -632,17 +635,17 @@ theorem fill127_setup (state : buckets.Buckets) (scalars : Slice (Array U64 4#us
     unfold width selectedWidth
     split_ifs <;> rfl
   rw [fill_split]
-  simp only [show (127#usize < 256#usize) from by decide, massert, if_true, bind_tc_ok, hwidth]
+  simp only [show (127#usize < 256#usize) from by decide, massert, ite_true, bind_ok, hwidth]
   rw [div_ok 127#usize width (by omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [usize_add_ok (UScalar.ofNatCore ((127#usize).val / width.val)
     (lt_of_le_of_lt (Nat.div_le_self _ _) (127#usize).hBounds)) 1#usize (by
       change 127 / width.val + 1 < 2 ^ 32
       have := Nat.div_le_self 127 width.val
       omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [sub_ok width 1#usize hwl]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   let shift : Usize := UScalar.ofNatCore (width.val - 1)
     (lt_of_le_of_lt (Nat.sub_le _ _) width.hBounds)
   change (do
@@ -653,7 +656,7 @@ theorem fill127_setup (state : buckets.Buckets) (scalars : Slice (Array U64 4#us
       rcases System.Platform.numBits_eq with h | h <;> simp [UScalarTy.numBits, h]
     change width.val - 1 < _
     omega) (listCount127_bound width hwh)]
-  rfl
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem fill127_refines (state : buckets.Buckets) (scalars : Slice (Array U64 4#usize))
     (hsize : scalars.val.length * (windows127 (selectedWidth scalars.val.length)).val < 2 ^ 32) :
@@ -680,7 +683,7 @@ theorem fill127_refines (state : buckets.Buckets) (scalars : Slice (Array U64 4#
     exact hout
   · intro i hi
     apply hrecovery i
-    simpa only [how, hon] using hi
+    simpa only [how, hon] using! hi
 
 end LeanBlsSimd.BucketsRefines
 namespace LeanBlsSimd.BucketsRefines
@@ -692,31 +695,18 @@ theorem digits_run_succ_first (n : ℕ) (digits : signed_digits.SignedDigits) :
       let (rest, last) ← SignedDigits.run n next
       ok (digit :: rest, last)) := by
   induction n generalizing digits with
-  | zero => simp only [SignedDigits.run, bind_tc_ok, Function.uncurry_def]; rfl
+  | zero => simp only [SignedDigits.run, bind_ok, aeneas_uncurry_def]; rfl
   | succ n ih =>
     change (do
       let (ds, state) ← SignedDigits.run (n + 1) digits
       let (d, last) ← state.next_digit
       ok (ds ++ [d], last)) = _
     rw [ih digits]
-    cases hfirst : digits.next_digit with
-    | fail e => simp only [bind_tc_fail]
-    | div => simp only [bind_tc_div]
-    | ok pair =>
-      rcases pair with ⟨d, next⟩
-      simp only [bind_tc_ok, Function.uncurry_def, SignedDigits.run]
-      cases hrest : SignedDigits.run n next with
-      | fail e => simp only [bind_tc_fail]
-      | div => simp only [bind_tc_div]
-      | ok pair =>
-        rcases pair with ⟨rest, last⟩
-        simp only [bind_tc_ok]
-        cases hlast : last.next_digit with
-        | fail e => simp only [bind_tc_fail]
-        | div => simp only [bind_tc_div]
-        | ok pair =>
-          rcases pair with ⟨digit, final⟩
-          simp only [bind_tc_ok, List.cons_append]
+    simp only [bind_tc_eq, Aeneas.Std.bind_assoc, aeneas_uncurry_def, SignedDigits.run,
+      bind_ok, List.cons_append]
+    apply congrArg (Std.bind digits.next_digit)
+    funext ⟨digit, next⟩
+    rfl
 
 def eventDigit (event : Event) : Usize × Bool :=
   (event.magnitude, decide (event.reference.val / 2 ^ 31 = 1))
@@ -735,20 +725,20 @@ theorem windowEvents_run (n : ℕ) (index window : Usize) (digits last : signed_
   induction n generalizing digits window events with
   | zero =>
     simp only [windowEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     rfl
   | succ n ih =>
     simp only [windowEvents] at hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨⟨magnitude, negative⟩, digits'⟩, hdigit, hevents⟩ := hevents
-    simp only [Function.uncurry_def] at hevents
-    rw [bind_success] at hevents
+    simp only [aeneas_uncurry_def] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨window', _, hevents⟩ := hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨rest, last'⟩, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     rw [digits_run_succ_first, hdigit]
-    simp only [bind_tc_ok, Function.uncurry_def, ih window' digits' rest hrest,
+    simp only [bind_ok, aeneas_uncurry_def, ih window' digits' rest hrest,
       List.map_cons, eventDigit_reference index window magnitude negative hi]
 
 theorem windowEvents_scalar (words : Array U64 4#usize) (width index : Usize)
@@ -762,7 +752,7 @@ theorem windowEvents_scalar (words : Array U64 4#usize) (width index : Usize)
   obtain ⟨digits, final, hrun, _, hcarry, _, hsum⟩ := SignedDigits.run_complete words width hwl hwh hscalar
   have hrun' := windowEvents_run (windows127 width).val index 0#usize
     (SignedDigits.initial words width) last events hi hevents
-  have heq : (digits, final) = (events.map eventDigit, last) := Result.ok.inj (hrun.symm.trans hrun')
+  have heq : (digits, final) = (events.map eventDigit, last) := Result.ok_injective (hrun.symm.trans hrun')
   cases heq
   exact ⟨hsum, hcarry⟩
 
@@ -776,23 +766,23 @@ theorem windowEvents_coordinates (n : ℕ) (index window : Usize)
   induction n generalizing digits window events with
   | zero =>
     simp only [windowEvents] at hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     intro j hj
     simp only [List.length_nil] at hj
     omega
   | succ n ih =>
     simp only [windowEvents] at hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨⟨magnitude, negative⟩, digits'⟩, hdigit, hevents⟩ := hevents
-    simp only [Function.uncurry_def] at hevents
-    rw [bind_success] at hevents
+    simp only [aeneas_uncurry_def] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨window', hwindow, hevents⟩ := hevents
-    rw [bind_success] at hevents
+    rw [bind_success_std] at hevents
     obtain ⟨⟨rest, last'⟩, hrest, hevents⟩ := hevents
-    cases Result.ok.inj hevents
+    cases Result.ok_injective hevents
     have hwindowv : window'.val = window.val + 1 := by
       rw [usize_add_ok window 1#usize (by change window.val + 1 < 2 ^ 32; omega)] at hwindow
-      cases Result.ok.inj hwindow
+      cases Result.ok_injective hwindow
       rfl
     intro j hj
     cases j with

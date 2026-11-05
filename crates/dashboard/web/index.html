@@ -6,6 +6,12 @@
 <title>Gattaca Silver</title>
 <link rel="stylesheet" href="vendor/uPlot.min.css">
 <script src="vendor/uPlot.iife.min.js"></script>
+<script>
+  // Before first paint, so a saved light theme never flashes dark.
+  try {
+    if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light';
+  } catch {}
+</script>
 <style>
   /* Dark by default, after gattaca.com: greyscale chrome, one yellow accent.
      Series are the brand hues stepped into the validated lightness band. */
@@ -13,20 +19,20 @@
     --bg: #1b1b1d; --fg: #eaeaea; --muted: #888888; --line: #2e2e31; --idle: #5a5a5e;
     --panel: #161618; --accent: #fac105; --fill: #98d2f1; --mark: #ff8787; --ok: #69db7c; --bad: #ff6b6b;
     --c-da: #3bc9db; --c-custody: #da77f2; --c-stf: #ffd43b; --c-validate: #74c0fc;
-    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ff922b;
+    --c-apply: #4c6ef5; --c-dawait: #5c5f66; --c-warn: #ff922b; --c-payload: #69db7c;
     --hover: #2f2a14; --sel: #26374a; --open: #1e2a38;
     --series-1: #3d9bd8; --series-2: #bd8a00; --series-3: #aa65c5; --series-4: #199e70;
     --series-5: #d95926; --series-6: #7486e8; --series-7: #d55181; --series-8: #8a9a2a;
     --seq-0: #184f95; --seq-1: #1c5cab; --seq-2: #256abf; --seq-3: #2a78d6; --seq-4: #3987e5; --seq-5: #5598e7; --seq-6: #6da7ec; --seq-7: #86b6ef; --seq-8: #9ec5f4; --seq-9: #b7d3f6;
   }
   :root[data-theme="light"] {
-    --bg: #efefef; --fg: #222222; --muted: #565656; --line: #d4d4d4; --idle: #b3b3b3;
-    --panel: #f8f8f8; --accent: #b88a00; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
+    --bg: #d3d6db; --fg: #121212; --muted: #3f4246; --line: #bfc3c9; --idle: #9da2a9;
+    --panel: #eceef1; --accent: #2b7bb9; --fill: #2b7bb9; --mark: #d9480f; --ok: #2f9e44; --bad: #c92a2a;
     --c-da: #0c8599; --c-custody: #ae3ec9; --c-stf: #e67700; --c-validate: #4dabf7;
-    --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700;
-    --hover: #f6e7b0; --sel: #cfe2f7; --open: #e3effb;
-    --series-1: #2a80c2; --series-2: #a97b00; --series-3: #9a52b6; --series-4: #13906a;
-    --series-5: #d4541f; --series-6: #5b6fd6; --series-7: #c94375; --series-8: #77861c;
+    --c-apply: #1c5fb8; --c-dawait: #adb5bd; --c-warn: #e67700; --c-payload: #2b8a3e;
+    --hover: #fcdcae; --sel: #c2d7ef; --open: #d6e3f2;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
     --seq-0: #86b6ef; --seq-1: #6da7ec; --seq-2: #5598e7; --seq-3: #3987e5; --seq-4: #2a78d6; --seq-5: #256abf; --seq-6: #1c5cab; --seq-7: #184f95; --seq-8: #104281; --seq-9: #0d366b;
   }
   * { box-sizing: border-box; }
@@ -49,6 +55,12 @@
   }
   nav button.active { color: var(--accent); border-color: var(--line); background: var(--bg); }
   #status { margin-left: auto; font-size: 12px; }
+  #theme {
+    font: inherit; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); background: none; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px;
+  }
+  #theme:hover { color: var(--accent); }
   #status.live { color: var(--ok); }
   #status.down { color: var(--bad); }
   /* Every render replaces the pane's nodes, so there is nothing stable to
@@ -222,6 +234,7 @@
   .c-validate { color: var(--c-validate); }
   .c-apply { color: var(--c-apply); }
   .c-dawait { color: var(--c-dawait); }
+  .c-payload { color: var(--c-payload); }
   .c-valid { color: var(--ok); }
   .c-invalid { color: var(--bad); }
   .c-optimistic { color: var(--c-warn); }
@@ -238,6 +251,7 @@
     <button data-pane="flow">Data flow</button>
   </nav>
   <span id="status" class="down">connecting</span>
+  <button id="theme" type="button" title="Switch theme"></button>
 </header>
 <main id="pane"></main>
 <script type="module" src="app.js"></script>

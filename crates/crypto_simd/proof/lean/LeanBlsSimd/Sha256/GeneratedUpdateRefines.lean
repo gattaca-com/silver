@@ -37,7 +37,7 @@ private theorem pending_remainder (pending : Array U8 64#usize) (data : Slice U8
       data.val.drop (start.val+64*((data.val.length-start.val)/64)) := by
   have hl : (data.val.drop (start.val+64*((data.val.length-start.val)/64))).length = next.val := by
     rw [List.length_drop,hn]; omega
-  rw [← hl]
+  rw [Array.setSlice!_val, ← hl]
   exact take_setSlice_zero _ _ (by rw [hl,hn]; have h := pending.property; change pending.val.length = 64 at h; omega)
 
 theorem update_refines {S : Type} (mk : Array U32 8#usize → Array U8 64#usize → Usize → U64 → S)
@@ -58,7 +58,7 @@ theorem update_refines {S : Type} (mk : Array U32 8#usize → Array U8 64#usize 
       List.drop_zero,absorbedLength_model,List.length_map]
     congr 1
     rw [hn]
-    change ((pending.val.setSlice! p.val data.val).take (p.val+data.val.length)).map ofU8 = _
+    rw [Array.setSlice!_val]
     rw [take_setSlice _ _ _ (by have h := pending.property; change pending.val.length = 64 at h; omega),List.map_append]
   · have hlong : 64-p.val ≤ data.val.length := by omega
     by_cases hpos : 0 < p.val
@@ -89,10 +89,10 @@ theorem update_refines {S : Type} (mk : Array U32 8#usize → Array U8 64#usize 
     · have hz : p.val = 0 := by omega
       have he : update mk compress state pending p length data =
           updateBlocks mk compress state pending 0#usize (absorbedLength length data) data := by
-        simp only [update,lift,bind_tc_ok,sha256.BLOCK]
+        simp only [update,lift, bind_ok,sha256.BLOCK]
         rw [sub_ok _ _ (by scalar_tac)]
-        simp only [bind_tc_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
-          hshort,if_false,show ¬p > 0#usize from hpos]
+        simp only [bind_ok,UScalar.lt_equiv,UScalar.ofNatCore_val_eq,Slice.len_val,Slice.length,
+          hshort,ite_false,show ¬p > 0#usize from hpos]
         rfl
       obtain ⟨out,next,he',hm,hn⟩ := update_blocks mk compress hc state pending 0#usize
         (absorbedLength length data) data (by change 0 ≤ data.val.length; omega)

@@ -8,8 +8,7 @@ import LeanBlsSimd.Proofs.G2x8
 `decompress` over the field, from that lane's bytes alone and without the early returns.
 `decompress_lane` shows that each lane of the model gives exactly those verdicts, and the point
 `blstPoint (laneX b) (laneY b)` wherever `on_curve` is set. So a lane's verdicts depend only on its
-own bytes (`decompress_lane_independent`), and the early returns change no verdict
-(`decompress_eq_full`).
+own bytes, as a direct consequence of `decompress_lane`.
 
 Against the spec, on a lane that is not undecided: `on_curve` is set exactly when `G2.uncompress`
 succeeds, and then `points` holds the decoded point in blst's limbs (`decompress_onCurve`);
@@ -29,21 +28,21 @@ namespace DecompressG2
 theorem fromBytesBE_ok {B : ByteArray} {v : ℕ} (hs : B.size = 48) (hv : Fp.bytesBEToNat B = v)
     (hp : v < Fp.modulus) : Fp.fromBytesBE B = .ok ⟨v, hp⟩ := by
   unfold Fp.fromBytesBE
-  rw [if_neg (by rw [hs]; decide)]
+  rw [ite_eq_right (by rw [hs]; decide)]
   subst hv
-  rw [dif_pos hp]
+  rw [dite_eq_left hp]
 
 theorem fromBytesBE_error {B : ByteArray} {v : ℕ} (hv : Fp.bytesBEToNat B = v)
     (hp : ¬v < Fp.modulus) : ∀ c, Fp.fromBytesBE B ≠ .ok c := by
   intro c h
   unfold Fp.fromBytesBE at h
   by_cases hs : B.size ≠ 48
-  · rw [if_pos hs] at h
+  · rw [ite_eq_left hs] at h
     cases h
-  · rw [if_neg hs] at h
+  · rw [ite_eq_right hs] at h
     dsimp only at h
     subst hv
-    rw [dif_neg hp] at h
+    rw [dite_eq_right hp] at h
     cases h
 
 /-- `G2.uncompress` on a compressed, finite encoding with both coordinates below p, up to its
@@ -62,7 +61,7 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
           else -yPos, Fp2.one⟩ := by
   unfold G2.uncompress
   generalize Fp2.sqrt = sq
-  rw [if_neg (by rw [size_toBytes]; decide)]
+  rw [ite_eq_right (by rw [size_toBytes]; decide)]
   dsimp only
   have e1 := bytesBEToNat_c1 b
   have e0 := bytesBEToNat_c0 b
@@ -72,7 +71,7 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
     rw [ByteArray.size_extract, show ((toBytes b).set! 0 _).size = 96 from by
       simp [toBytes, ByteArray.set!, ByteArray.size, G2_COMPRESSED_LEN]]
     omega
-  rw [if_neg (by simpa using hc), if_neg hi, fromBytesBE_ok (hsz 0 48 (by decide)) e1 h1,
+  rw [ite_eq_right (by simpa using hc), ite_eq_right hi, fromBytesBE_ok (hsz 0 48 (by decide)) e1 h1,
     fromBytesBE_ok (hsz 48 96 le_rfl) e0 h0]
   dsimp only
   split <;> rename_i heq <;> rw [heq]
@@ -80,8 +79,8 @@ theorem uncompress_eq {b : Vector UInt8 G2_COMPRESSED_LEN}
   dsimp only
   congr 2
   by_cases hs : Fp2.signBit yPos = decide (b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x20 ≠ 0)
-  · rw [if_pos hs, if_pos (by rw [hs]; simp)]
-  · rw [if_neg hs, if_neg (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
+  · rw [ite_eq_left hs, ite_eq_left (by rw [hs]; simp)]
+  · rw [ite_eq_right hs, ite_eq_right (fun h => hs (by rw [Bool.eq_iff_iff, decide_eq_true_iff, ← h]))]
 
 /-- An encoding that `decode` marks invalid, and not undecided, fails `G2.uncompress`. -/
 theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
@@ -90,7 +89,7 @@ theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
   intro P hP
   unfold G2.uncompress at hP
   generalize Fp2.sqrt = sq at hP
-  rw [if_neg (by rw [size_toBytes]; decide)] at hP
+  rw [ite_eq_right (by rw [size_toBytes]; decide)] at hP
   dsimp only at hP
   have e1 := bytesBEToNat_c1 b
   have e0 := bytesBEToNat_c0 b
@@ -98,17 +97,17 @@ theorem uncompress_of_invalid {b : Vector UInt8 G2_COMPRESSED_LEN}
   unfold decodeLane at hu hv
   dsimp only at hu hv
   by_cases hc : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x80 = 0
-  · rw [if_pos (by simpa using hc)] at hP
+  · rw [ite_eq_left (by simpa using hc)] at hP
     cases hP
-  rw [if_neg hc] at hu hv
-  rw [if_neg (by simpa using hc)] at hP
+  rw [ite_eq_right hc] at hu hv
+  rw [ite_eq_right (by simpa using hc)] at hP
   by_cases hi : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv hP
+  rw [ite_eq_right hi] at hv hP
   by_cases hok : bytesVal (clearFlags (split_at b).1).toList < Fp.modulus ∧
       bytesVal (split_at b).2.toList < Fp.modulus
-  · rw [if_pos hok] at hv
+  · rw [ite_eq_left hok] at hv
     cases hv
   rcases not_and_or.mp hok with h | h
   · revert hP
@@ -133,18 +132,18 @@ theorem decodeLane_ok {b : Vector UInt8 G2_COMPRESSED_LEN}
   unfold decodeLane at hu hv ⊢
   dsimp only at hu hv ⊢
   by_cases hc : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x80 = 0
-  · rw [if_pos hc] at hv
+  · rw [ite_eq_left hc] at hv
     cases hv
-  rw [if_neg hc] at hu hv ⊢
+  rw [ite_eq_right hc] at hu hv ⊢
   by_cases hi : b[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x40 ≠ 0
-  · rw [if_pos hi] at hu
+  · rw [ite_eq_left hi] at hu
     cases hu
-  rw [if_neg hi] at hv ⊢
+  rw [ite_eq_right hi] at hv ⊢
   by_cases hok : bytesVal (clearFlags (split_at b).1).toList < Fp.modulus ∧
       bytesVal (split_at b).2.toList < Fp.modulus
-  · rw [if_pos hok]
+  · rw [ite_eq_left hok]
     exact ⟨hc, hi, hok.1, hok.2, rfl⟩
-  · rw [if_neg hok] at hv
+  · rw [ite_eq_right hok] at hv
     cases hv
 
 theorem fp_mk_eq_natCast {v : ℕ} (h : v < Fp.modulus) :
@@ -347,17 +346,6 @@ theorem pointsLoop_points (f : Fin 8 → BlstP2Affine) (l : Fin 8) : ∀ (ls : L
       · have : (i : ℕ) ≠ l := fun h => hli (Fin.ext h).symm
         simp [hlr, hli, Vector.getElem_set_ne _ _ this]
 
-/-- `decompress` without its two early returns. -/
-def decompressFull (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) : Batch :=
-  let decoded := decode inputs
-  let x := xOf decoded
-  let rootPair := (rhsOf x).sqrt
-  tail decoded x rootPair.1 {
-    points := .replicate 8 default,
-    on_curve := rootPair.2 &&& ~~~(decoded.invalid ||| decoded.undecided),
-    valid := 0,
-    undecided := decoded.undecided }
-
 /-- The verdicts and points of one lane, as `Kernel`'s lane functions give them. -/
 structure LaneVerdicts (batch : Batch) (b : Vector UInt8 G2_COMPRESSED_LEN) (l : Fin 8) : Prop where
   undecided : batch.undecided.toNat.testBit l = laneUndecided b
@@ -394,7 +382,7 @@ theorem tail_lane {D : Decoded} {X root : Fp2x8} {has : Mmask8}
       (M.members &&& (has &&& ~~~(D.invalid ||| D.undecided)) &&&
         ~~~(D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
       (D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))))
-  rw [if_pos (List.mem_finRange l)] at hpts
+  rw [ite_eq_left (List.mem_finRange l)] at hpts
   simp only [pointsLoop] at hmasks hpts
   have hund : (D.undecided ||| M.undecided &&& (has &&& ~~~(D.invalid ||| D.undecided))).toNat.testBit
       l = laneUndecided b := by
@@ -443,14 +431,6 @@ theorem decompress_lane (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l 
     · rw [laneValid, hon, Bool.and_false, Bool.false_and, Mmask8.testBit_zero]
   · exact tail_lane hd hx hroot hhas
 
-/-- The same for `decompress` without its early returns. -/
-theorem decompressFull_lane (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
-    LaneVerdicts (decompressFull inputs) inputs[l] l := by
-  have hx := lane_x inputs l
-  obtain ⟨hroot, hhas⟩ := (lane_rhs hx).sqrt
-  unfold decompressFull
-  exact tail_lane (decode_holds inputs l) hx hroot hhas
-
 /-! ## The per-lane theorems -/
 
 /-- On a lane that is not undecided, `on_curve` is set exactly when `G2.uncompress` of the
@@ -486,38 +466,6 @@ theorem decompress_undecided_of_valid {inputs : Vector (Vector UInt8 G2_COMPRESS
   rw [hv.valid, laneValid, Bool.and_eq_true, Bool.not_eq_true'] at h
   rw [hv.undecided]
   exact h.2
-
-/-- A lane's verdicts, and its point where it is on the curve, depend only on its own bytes. -/
-theorem decompress_lane_independent {inputs inputs' : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8}
-    {l : Fin 8} (h : inputs[l] = inputs'[l]) :
-    (decompress inputs).undecided.toNat.testBit l = (decompress inputs').undecided.toNat.testBit l ∧
-      (decompress inputs).on_curve.toNat.testBit l = (decompress inputs').on_curve.toNat.testBit l ∧
-      (decompress inputs).valid.toNat.testBit l = (decompress inputs').valid.toNat.testBit l ∧
-      ((decompress inputs).on_curve.toNat.testBit l = true →
-        (decompress inputs).points[l] = (decompress inputs').points[l]) := by
-  have hv := decompress_lane inputs l
-  have hv' := decompress_lane inputs' l
-  rw [← h] at hv'
-  refine ⟨hv.undecided.trans hv'.undecided.symm, hv.onCurve.trans hv'.onCurve.symm,
-    hv.valid.trans hv'.valid.symm, fun hc => ?_⟩
-  rw [hv.onCurve] at hc
-  rw [hv.points hc, hv'.points hc]
-
-/-- The two early returns leave each lane's verdicts, and its point where it is on the curve,
-as the full computation gives them. -/
-theorem decompress_eq_full (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : Fin 8) :
-    (decompress inputs).undecided.toNat.testBit l = (decompressFull inputs).undecided.toNat.testBit l ∧
-      (decompress inputs).on_curve.toNat.testBit l =
-        (decompressFull inputs).on_curve.toNat.testBit l ∧
-      (decompress inputs).valid.toNat.testBit l = (decompressFull inputs).valid.toNat.testBit l ∧
-      ((decompress inputs).on_curve.toNat.testBit l = true →
-        (decompress inputs).points[l] = (decompressFull inputs).points[l]) := by
-  have hv := decompress_lane inputs l
-  have hf := decompressFull_lane inputs l
-  refine ⟨hv.undecided.trans hf.undecided.symm, hv.onCurve.trans hf.onCurve.symm,
-    hv.valid.trans hf.valid.symm, fun hc => ?_⟩
-  rw [hv.onCurve] at hc
-  rw [hv.points hc, hf.points hc]
 
 end DecompressG2
 

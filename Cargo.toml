@@ -16,6 +16,7 @@ members = [
   "crates/e2e",
   "crates/gossip",
   "crates/hashing",
+  "crates/hashing/bench",
   "crates/httpcore",
   "crates/log",
   "crates/engine_api",
@@ -39,7 +40,7 @@ resolver = "2"
 edition = "2024"
 repository = "https://github.com/gattaca-com/silver"
 rust-version = "1.91.0"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.13"
 
 [profile.release]
 codegen-units = 1
@@ -92,7 +93,7 @@ silver_log = { path = "crates/log" }
 silver_metrics = { path = "crates/metrics" }
 silver_slashing = { path = "crates/slashing" }
 silver_ssz = { path = "crates/ssz" }
-silver_hashing = { path = "crates/hashing", features = ["flux"] }
+silver_state_hashing = { path = "crates/hashing" }
 silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }
@@ -105,12 +106,14 @@ silver_pbs = { path = "crates/pbs" }
 silver_peer = {path = "crates/peer" }
 silver_storage = { path = "crates/storage" }
 silver_engine_api = { path = "crates/engine_api" }
-flux = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
-flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
-flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
-flux-network = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
-flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d", features = ["bytes"]}
-flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "c6442a90862ca66f2f85f453a80153fac5dcf12d"}
+flux = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+flux-clickhouse = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+flux-disk = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+flux-network = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+flux-utils = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0", features = ["bytes"]}
+flux-profiler = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+type-hash = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
+type-hash-derive = { git = "https://github.com/gattaca-com/flux", rev = "004884d1e82bb6afb1df81fa70a4c220a10368a0"}
 
 # External
 backtrace = "0.3"
@@ -150,6 +153,7 @@ httparse = "1"
 itoa = "1"
 libc = "0.2"
 linkme = "0.3.36"
+milhouse = { version = "0.9", default-features = false }
 # v2: pin the stable mimalloc 2.x line. The crate defaults to v3, whose
 # exit-time `mi_process_done` force-collect races mimalloc's background purge
 # thread on the shared arena → SIGSEGV on shutdown. v2 has no such race.
@@ -158,13 +162,14 @@ mio = { version = "1.0.4", features = ["net", "os-poll"] }
 parking_lot = "0.12"
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 proc-macro2 = "1"
-quinn-proto = "0.11.14"
+quinn-proto = "0.11.19"
 quote = "1"
 raft = "0.7.0"
 ratatui = "0.29"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
 rand_core = "0.6.4"
+rayon = "1"
 rcgen = "0.14.7"
 ring = "0.17"
 rustc-hash = "2"
@@ -182,13 +187,15 @@ sha2 = "0.10"
 sha2-const-stable = "0.1"
 sha3 = "0.10"
 slab = "0.4.12"
-snap = "1.1.1"
+snap = "1.1.2"
 socket2 = "0.5.10"
 syn = { version = "2", features = ["full"] }
 thiserror = "1.0.58"
+tree_hash = "0.12"
 tracing = "0.1.40"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+typenum = "1"
 uint = "0.9"
 ureq = { version = "2", default-features = false }
 x509-parser = { version = "0.17", features = ["verify"] }

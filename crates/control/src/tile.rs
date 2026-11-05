@@ -613,7 +613,7 @@ impl Tile<SilverSpine> for Controller {
             self.gossip_schedule.as_ref().map(|schedule| schedule.ticker.current_slot());
 
         adapter.consume(|request: BeaconApiRequest, producers| match request {
-            BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation } => {
+            BeaconApiRequest::LocalGossip { request_id, topic, ssz, validation, .. } => {
                 self.on_local_gossip(request_id, topic, ssz, validation, now, producers)
             }
             BeaconApiRequest::LockBlindedBlock { request_id, ssz } => {
@@ -633,7 +633,9 @@ impl Tile<SilverSpine> for Controller {
                 }
             }
             BeaconApiRequest::SyncCommitteeSubscriptions { until_epochs } => {
-                self.subnet_duties.add_sync(until_epochs)
+                if let Some(wall_slot) = wall_slot {
+                    self.subnet_duties.add_sync(until_epochs, wall_slot);
+                }
             }
             BeaconApiRequest::AggregateAttestation { .. } |
             BeaconApiRequest::SyncCommitteeContribution { .. } |

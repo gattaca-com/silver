@@ -1,6 +1,8 @@
-import Aeneas
-import LeanBlsSimd.Model.Intrinsics
-import LeanBlsSimd.Model.ShaIntrinsics
+module
+public import LeanBlsSimd.Aeneas
+public import LeanBlsSimd.Model.Intrinsics
+public import LeanBlsSimd.Model.ShaIntrinsics
+@[expose] public section
 open Aeneas Aeneas.Std Result ControlFlow Error
 
 /-!

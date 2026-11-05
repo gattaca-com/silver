@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Fr.Arithmetic
-import LeanBlsSimd.Kzg.Refines.Loop
+import LeanBlsSimd.Refines.Loop
 import LeanBlsSimd.Kzg.ScalarConstants
 import LeanBlsSimd.Kzg.Model
 import EthLib.Cryptography.Proofs.Bls.Fr
@@ -7,9 +7,6 @@ import EthLib.Cryptography.Proofs.Bls.Fr
 open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
-
-deriving instance DecidableEq for Aeneas.Std.Error
-deriving instance DecidableEq for Aeneas.Std.Result
 
 namespace LeanBlsSimd.Kzg
 namespace Refinement
@@ -33,16 +30,16 @@ private theorem powers_loop
     have hn := next_ge iter he
     refine ⟨rs, ?_, ?_⟩
     · rw [loop.eq_1]
-      simp only [domain.roots_of_unity_loop.body, hn, bind_tc_ok, Function.uncurry_apply_pair]
+      simp only [domain.roots_of_unity_loop.body, hn, bind_ok, Aeneas.Std.uncurry_apply_pair]
     · simp [computePowersAux]
   | succ k ih =>
     have hlt : iter.start.val < iter.end.val := by omega
     obtain ⟨it', hs, he, hn⟩ := next_lt iter hlt
     have hlen : rs.val.length + 1 ≤ Usize.max := by omega
-    let rs' : alloc.vec.Vec blst.blst_fr := ⟨rs.val ++ [frEncode power], by simpa using hlen⟩
+    let rs' : alloc.vec.Vec blst.blst_fr := alloc.vec.Vec.from (rs.val ++ [frEncode power]) (by simpa using hlen)
     have hp : alloc.vec.Vec.push rs (frEncode power) = ok rs' := by
       simp [alloc.vec.Vec.push, hlen, rs']
-    have hv : rs'.val = rs.val ++ [frEncode power] := rfl
+    have hv : rs'.val = rs.val ++ [frEncode power] := alloc.vec.Vec.from_val _ _
     have hmul : fr.fr_mul (frEncode power) (frEncode root) =
         ok (frEncode (power * root)) := FrScalar.fr_mul_refines _ _
     have hi' : it'.start.val ≤ it'.end.val := by rw [he, hs]; omega
@@ -51,7 +48,7 @@ private theorem powers_loop
       (by rw [hv, List.length_append, List.length_singleton, he, hs]; omega) hk'
     refine ⟨out, ?_, ?_⟩
     · rw [loop.eq_1]
-      simpa only [domain.roots_of_unity_loop.body, hn, hp, hmul, bind_tc_ok, Function.uncurry_apply_pair] using hout
+      simpa only [domain.roots_of_unity_loop.body, hn, hp, hmul, bind_tc_ok, bind_ok, Function.uncurry_apply_pair, Aeneas.Std.uncurry_apply_pair] using hout
     · rw [hvout, hv]
       simp [computePowersAux, List.append_assoc]
 
@@ -70,9 +67,30 @@ private def bit32 (n : Nat) : U32 := ⟨BitVec.ofNat 32 n⟩
 private theorem primitive_bits (i : Fin 256) :
     primitiveBits (bit32 (i.val + 1)) =
       ok (bit32 i.val, decide (((Fr.modulus - 1) / 2^i.val) % 2 = 1)) := by
-  simp only [primitiveBits, lift, bind_tc_ok, Aeneas.Std.Array.index_usize,
-    Aeneas.Std.Array.getElem?_Usize_eq, U32.cast_Usize_val_eq]
-  fin_cases i <;> decide +kernel
+  have hbit : ∀ i : Fin 256, (domain.R_MINUS_ONE.val[i.val / 64]!).val / 2 ^ (i.val % 64) % 2 =
+      (Fr.modulus - 1) / 2 ^ i.val % 2 := by
+    decide +kernel
+  have hib : (bit32 (i.val + 1)).val = i.val + 1 := Nat.mod_eq_of_lt (by omega)
+  obtain ⟨bit1, h1, hv1⟩ := spec_imp_exists
+    (UScalar.sub_spec (x := bit32 (i.val + 1)) (y := 1#u32) (by simp [hib]))
+  obtain ⟨q, hq, hqv⟩ := UScalar.div_spec bit1 (y := 64#u32) (by simp)
+  obtain ⟨w, hw, hwv⟩ := spec_imp_exists (Aeneas.Std.Array.index_usize_spec domain.R_MINUS_ONE
+    (UScalar.cast .Usize q) (by simp [hqv, hv1.1, hib]; omega))
+  obtain ⟨r, hr, hrv⟩ := spec_imp_exists (UScalar.rem_spec bit1 (y := 64#u32) (by simp))
+  obtain ⟨s, hs, hsv⟩ := spec_imp_exists (UScalar.ShiftRight_spec w r (by simp [hrv]; omega))
+  simp only [primitiveBits, h1, hq, lift, bind_ok, hw, hr, hs, Result.ok.injEq, Prod.mk.injEq]
+  have hv1' : bit1.val = i.val := by simp [hv1.1, hib]
+  refine ⟨UScalar.eq_of_val_eq ?_, ?_⟩
+  · rw [hv1']
+    exact (Nat.mod_eq_of_lt (by omega)).symm
+  · have hrv' : r.val = i.val % 64 := by simp [hrv, hv1']
+    have hqv' : q.val = i.val / 64 := by simp [hqv, hv1']
+    have hsv' : s.val = (domain.R_MINUS_ONE.val[i.val / 64]!).val / 2 ^ (i.val % 64) := by
+      rw [hsv.1, Nat.shiftRight_eq_div_pow, hrv', hwv]
+      simp [hqv', getElem!_pos, show i.val / 64 < 4 by omega]
+    rw [← hbit i, ← hsv', Bool.eq_iff_iff, beq_iff_eq, decide_eq_true_iff, UScalar.eq_equiv,
+      UScalar.val_and]
+    simp [Nat.and_one_is_mod]
 
 private def primitivePower (i : Nat) : Fr :=
   Fr.powNat (Fr.ofNat 7) ((Fr.modulus - 1) / 2^i)
@@ -107,13 +125,12 @@ private theorem primitive_step
       (frEncode x) (bit32 (i.val + 1)) = (do
       let (b, flag) ← primitiveBits (bit32 (i.val + 1))
       ok (cont (frEncode (if flag then x * x * Fr.ofNat 7 else x * x), b))) := by
-    simp only [domain.primitive_root_loop.body, primitive_root_of_unity_eq, hc, if_true, primitiveBits,
-      FrScalar.fr_mul_refines, bind_tc_ok, bind_assoc]
-    simp only [Function.uncurry_apply_pair, beq_iff_eq, apply_ite]
-    congr!
-    all_goals split_ifs <;> rfl
+    simp only [domain.primitive_root_loop.body, primitive_root_of_unity_eq, hc, ite_true, primitiveBits,
+      FrScalar.fr_mul_refines, bind_ok, Aeneas.Std.bind_assoc, Aeneas.Std.uncurry_apply_pair]
+    congr! with bit1 _ _ _ _ _ i5
+    by_cases h : i5 = 1#u64 <;> simp [h]
   rw [he, primitive_bits]
-  simp only [bind_tc_ok, Function.uncurry_apply_pair, decide_eq_true_eq]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair, decide_eq_true_eq]
 
 private theorem primitive_loop
     (logOrder : U32) (n : Nat) (hl : logOrder.val ≤ n) (hn : n ≤ 256) :
@@ -129,7 +146,7 @@ private theorem primitive_loop
         simp only [GT.gt, UScalar.lt_equiv, hv]
         omega
       rw [loop.eq_1]
-      simp only [domain.primitive_root_loop.body, hstop, if_false]
+      simp only [domain.primitive_root_loop.body, hstop, ite_false, bind_ok]
       simp only [he]
     · have hn0 : 0 < n := by omega
       have hn1 : n - 1 < 256 := by omega
@@ -140,7 +157,7 @@ private theorem primitive_loop
       have hp := primitive_power_step (n - 1)
       rw [hnEq] at hp
       rw [loop.eq_1]
-      simp only [hstep, hp]
+      simp only [hstep, hp, bind_ok]
       exact ih (n - 1) (by omega) (by omega) (by omega)
 
 theorem primitive_root_refinement_of_blst
@@ -180,7 +197,7 @@ theorem roots_refinement_of_blst (logOrder : U32)
       simp only [UScalarTy.numBits, h] <;> omega
   have hshift : 1#usize <<< logOrder = ok order := by
     show UScalar.shiftLeft_UScalar _ _ = _
-    simp only [UScalar.shiftLeft_UScalar, UScalar.shiftLeft, hlog, if_true, Result.ok.injEq]
+    simp only [UScalar.shiftLeft_UScalar, UScalar.shiftLeft, hlog, ite_true, Result.ok.injEq]
     apply (UScalar.eq_equiv _ _).mpr
     change ((1#usize).bv.shiftLeft logOrder.val).toNat = order.val
     rw [BitVec.shiftLeft_eq, BitVec.toNat_shiftLeft, Nat.shiftLeft_eq]
@@ -195,15 +212,9 @@ theorem roots_refinement_of_blst (logOrder : U32)
   refine ⟨rs, ?_, ?_⟩
   · unfold domain.roots_of_unity
     rw [hshift, primitive_root_refinement_of_blst logOrder (by omega)]
-    simp only [fr_one_eq, bind_tc_ok]
+    simp only [fr_one_eq, bind_ok]
     exact hr
   · simpa [alloc.vec.Vec.with_capacity, hv, model_roots _ hl, computePowers] using hval
-
-theorem Refinement.primitive_root_refinement
-    (logOrder : U32) (hl : logOrder.val ≤ 256) :
-    domain.primitive_root logOrder = ok (frEncode
-      (Fr.powNat (Fr.ofNat 7) ((Fr.modulus - 1) / 2^logOrder.val))) :=
-  Refinement.primitive_root_refinement_of_blst logOrder hl
 
 theorem roots_refinement (logOrder : U32)
     (hl : logOrder.val = 6 ∨ logOrder.val = 13) :

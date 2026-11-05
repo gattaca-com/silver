@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
-use blst::min_pk::{PublicKey, SecretKey};
+pub use silver_beacon_state_data::bls::test_keys::{PRIVKEY_HEX, privkey, pubkey_pk, sign};
 use silver_beacon_state_data::{
-    B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH,
+    B256, BLSPubkey, BeaconBlockHeader, Fork, Immutable, SLOTS_PER_EPOCH, bls,
+    hash_tree_root_block_header,
 };
 use silver_common::ssz_view::{
     ATTESTATION_FIXED, AttestationView, IndexedAttestationView, PAYLOAD_ATTESTATION_MESSAGE_SIZE,
@@ -15,19 +16,7 @@ use silver_common::ssz_view::{
     SignedBlsToExecutionChangeView, SignedVoluntaryExitView, SingleAttestationView,
 };
 
-use crate::{
-    bls, merkle,
-    ssz_hash::{self, hash_tree_root_block_header},
-};
-
-const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
-
-/// Spec test private keys (consensus-specs/tests/core/.../bls/constants.py).
-pub const PRIVKEY_HEX: [&str; 3] = [
-    "263dbd792f5b1be47ed85f8938c0f29586af0d3ac7b977f21c278fe1462040e3",
-    "47b8192d77bf871b62e87859d653922725724a5c031afeabc60bcef5ff665138",
-    "328388aff0d4a5b7dc9205abd374e7e98f3cd9f3418edb4eafda5fb16473d216",
-];
+use crate::{merkle, ssz_hash};
 
 /// Compressed keys that decode but fail `KeyValidate`: the point at infinity,
 /// and the curve point with x = 4, which lies outside G1.
@@ -40,43 +29,13 @@ pub const INVALID_PUBKEYS: [BLSPubkey; 2] = {
     [infinity, outside_g1]
 };
 
-/// Past the spec keys, the scalar `idx + 1`.
-pub fn privkey(idx: usize) -> SecretKey {
-    let bytes = match PRIVKEY_HEX.get(idx) {
-        Some(hex) => hex_to_bytes(hex),
-        None => {
-            let mut scalar = [0u8; 32];
-            scalar[24..].copy_from_slice(&(idx as u64 + 1).to_be_bytes());
-            scalar
-        }
-    };
-    SecretKey::from_bytes(&bytes).unwrap()
-}
-
-pub fn pubkey_pk(idx: usize) -> PublicKey {
-    privkey(idx).sk_to_pk()
-}
-
 pub fn pubkey_bytes(idx: usize) -> BLSPubkey {
     pubkey_pk(idx).to_bytes()
-}
-
-pub fn sign(sk_idx: usize, message: &[u8]) -> [u8; 96] {
-    privkey(sk_idx).sign(message, DST, &[]).to_bytes()
 }
 
 fn test_fork_version(target_epoch: u64) -> [u8; 4] {
     let f = Fork::default();
     bls::fork_version_at_epoch(f.epoch, f.previous_version, f.current_version, target_epoch)
-}
-
-pub fn hex_to_bytes(hex: &str) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk).unwrap();
-        out[i] = u8::from_str_radix(s, 16).unwrap();
-    }
-    out
 }
 
 /// A `randao_reveal` signed by `sk_idx` for `slot`'s epoch.

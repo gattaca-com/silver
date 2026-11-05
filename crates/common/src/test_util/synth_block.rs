@@ -1,5 +1,6 @@
 use crate::{
     merkle::B256,
+    ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
     ssz_view::{
         BEACON_BLOCK_BODY_FIXED, EXECUTION_PAYLOAD_BID_MIN, EXECUTION_PAYLOAD_FIXED,
         SIGNED_BEACON_BLOCK_MIN, SIGNED_EXECUTION_PAYLOAD_BID_MIN,
@@ -7,6 +8,7 @@ use crate::{
 };
 
 const MESSAGE_AT: usize = 100;
+const EMPTY_FULU_EXECUTION_REQUESTS: [u8; 12] = [12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0];
 const SIGNED_BID_PREFIX: usize = SIGNED_EXECUTION_PAYLOAD_BID_MIN - EXECUTION_PAYLOAD_BID_MIN;
 
 fn write_offset(buf: &mut [u8], at: usize, offset: usize) {
@@ -100,38 +102,41 @@ impl SynthBlock {
 }
 
 /// Empty operation lists, a payload holding only its fixed prefix (itself with
-/// empty `extra_data`, `transactions` and `withdrawals`), then the commitments.
+/// empty `extra_data`, `transactions` and `withdrawals`), the commitments, then
+/// empty execution requests.
 fn fulu_body(commitments: &[u8]) -> Vec<u8> {
     const FIXED: usize = BEACON_BLOCK_BODY_FIXED;
     let payload_end = FIXED + EXECUTION_PAYLOAD_FIXED;
-    let mut body = vec![0u8; payload_end + commitments.len()];
-    let body_end = body.len();
+    let requests_at = payload_end + commitments.len();
+    let mut body = vec![0u8; requests_at];
     for at in [200usize, 204, 208, 212, 216, 380] {
         write_offset(&mut body, at, FIXED);
     }
     for at in [384usize, 388] {
         write_offset(&mut body, at, payload_end);
     }
-    write_offset(&mut body, 392, body_end);
+    write_offset(&mut body, 392, requests_at);
     for at in [436usize, 504, 508] {
         write_offset(&mut body, FIXED + at, EXECUTION_PAYLOAD_FIXED);
     }
     body[payload_end..].copy_from_slice(commitments);
+    body.extend_from_slice(&EMPTY_FULU_EXECUTION_REQUESTS);
     body
 }
 
-/// Empty operation lists, then the signed bid as the only populated field.
+/// Empty operation lists, the signed bid, then empty parent execution requests.
 fn gloas_body(bid: SynthBid) -> Vec<u8> {
     const FIXED: usize = BEACON_BLOCK_BODY_FIXED;
     let signed_bid = bid.signed();
     let mut body = vec![0u8; FIXED + signed_bid.len()];
-    let body_end = body.len();
+    let bid_end = body.len();
     for at in [200usize, 204, 208, 212, 216, 380, 384] {
         write_offset(&mut body, at, FIXED);
     }
     for at in [388usize, 392] {
-        write_offset(&mut body, at, body_end);
+        write_offset(&mut body, at, bid_end);
     }
     body[FIXED..].copy_from_slice(&signed_bid);
+    body.extend_from_slice(&EMPTY_EXECUTION_REQUESTS);
     body
 }

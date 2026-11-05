@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Model
-import Aeneas
+import LeanBlsSimd.Aeneas
 import Mathlib.Data.List.Nodup
 
 namespace LeanBlsSimd.Kzg
@@ -106,21 +106,21 @@ private theorem dedup_fold_nodup (cs : List ByteArray) (u : Array ByteArray)
 theorem deduplicate_sizes (cs : Array ByteArray) :
     (Model.deduplicate cs).1.size ≤ cs.size ∧ (Model.deduplicate cs).2.size = cs.size := by
   have h := dedup_fold_sizes cs.toList #[] #[]
-  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using h.2
+  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using! h.2
 
 theorem deduplicate_mem (cs : Array ByteArray) (b : ByteArray) :
     b ∈ (Model.deduplicate cs).1 ↔ b ∈ cs := by
-  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using
+  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using!
     dedup_fold_mem cs.toList #[] #[] b
 
 theorem deduplicate_indices (cs : Array ByteArray) :
     ∀ i ∈ (Model.deduplicate cs).2, i < (Model.deduplicate cs).1.size := by
-  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using
+  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using!
     dedup_fold_indices cs.toList #[] #[] (by simp)
 
 theorem deduplicate_nodup (cs : Array ByteArray) :
     (Model.deduplicate cs).1.toList.Nodup := by
-  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using
+  simpa [Model.deduplicate, ← Array.foldl_toList, dedupStep] using!
     dedup_fold_nodup cs.toList #[] #[] (by simp)
 
 theorem deduplicate_all (cs : Array ByteArray) (p : ByteArray → Bool) :

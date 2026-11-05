@@ -5,7 +5,7 @@ import LeanBlsSimd.Spec.G2Group
 
 `Kernel` restates one lane of `g2x8.rs` over `Fp2Field`, as `Spec/Sqrt.lean` does for the root.
 A lane mask is a `Bool`. `double` is dbl-2009-l, which is Mathlib's `dblXYZ`; `addAffine` is
-madd-2007-bl, which is `G2.addBL` with Z₂ = 1.
+madd-2007-bl, which is `addBL` with Z₂ = 1.
 
 On a lane whose undecided bit stays clear, every step of the chain keeps Z ≠ 0, so each triple
 represents the multiple of P that the chain has reached (`timesMinusZ_spec`). The chain ends at
@@ -18,13 +18,78 @@ open EthLib.Cryptography.Bls WeierstrassCurve Jacobian
 
 namespace Kernel
 
+abbrev curve : Jacobian Fp2Field := E'.toJacobian
+
+private theorem two_ne_zero' : (2 : Fp2Field) ≠ 0 := by decide +kernel
+
+/-- add-2007-bl over `Fp2Field`. On nonsingular inputs with nonzero Z and distinct affine x,
+it represents their sum. -/
+def addBL (P Q : Fin 3 → Fp2Field) : Fin 3 → Fp2Field :=
+  let z1z1 := P 2 * P 2
+  let z2z2 := Q 2 * Q 2
+  let u1 := P 0 * z2z2
+  let u2 := Q 0 * z1z1
+  let s1 := P 1 * Q 2 * z2z2
+  let s2 := Q 1 * P 2 * z1z1
+  let h := u2 - u1
+  let i := 2 * h * (2 * h)
+  let j := h * i
+  let r := 2 * (s2 - s1)
+  let v := u1 * i
+  let x' := r * r - j - 2 * v
+  ![x', r * (v - x') - 2 * s1 * j, ((P 2 + Q 2) * (P 2 + Q 2) - z1z1 - z2z2) * h]
+
+private theorem equation_iff (P : Fin 3 → Fp2Field) :
+    curve.Equation P ↔ P 1 ^ 2 = P 0 ^ 3 + bTwist * P 2 ^ 6 := by
+  rw [Jacobian.equation_iff]
+  simp only [E'.a₁_eq, E'.a₂_eq, E'.a₃_eq, E'.a₄_eq, E'.a₆_eq]
+  constructor <;> intro h <;> linear_combination h
+
+private theorem addBL_eq_smul {P Q : Fin 3 → Fp2Field}
+    (hP : curve.Equation P) (hQ : curve.Equation Q) :
+    addBL P Q = (-(2 * (P 2 * Q 2))) • curve.addXYZ P Q := by
+  have hP' := (equation_iff P).mp hP
+  have hQ' := (equation_iff Q).mp hQ
+  rw [smul_fin3]
+  funext i
+  fin_cases i <;>
+    simp only [addBL, addXYZ, addX, addY, negAddY, addZ, negY_eq, Fin.zero_eta, Fin.mk_one,
+      Fin.reduceFinMk, Fin.isValue, Matrix.cons_val_zero, Matrix.cons_val_one,
+      Matrix.cons_val_two, Matrix.head_cons, Matrix.tail_cons, E'.a₁_eq, E'.a₂_eq, E'.a₃_eq,
+      E'.a₄_eq, E'.a₆_eq]
+  · linear_combination (4 * Q 2 ^ 6) * hP' + (4 * P 2 ^ 6) * hQ'
+  · linear_combination
+      (8 * Q 2 ^ 6 * (P 1 * Q 2 ^ 3 - Q 1 * P 2 ^ 3)) * hP' +
+        (8 * P 2 ^ 6 * (P 1 * Q 2 ^ 3 - Q 1 * P 2 ^ 3)) * hQ'
+  · ring
+
+private theorem isUnit_scale' {P Q : Fin 3 → Fp2Field} (hPz : P 2 ≠ 0) (hQz : Q 2 ≠ 0) :
+    IsUnit (-(2 * (P 2 * Q 2))) :=
+  (neg_ne_zero.mpr (mul_ne_zero two_ne_zero' (mul_ne_zero hPz hQz))).isUnit
+
+private theorem nonsingular_addBL {P Q : Fin 3 → Fp2Field} (hP : curve.Nonsingular P)
+    (hQ : curve.Nonsingular Q) (hPz : P 2 ≠ 0) (hQz : Q 2 ≠ 0)
+    (hx : P 0 * Q 2 ^ 2 ≠ Q 0 * P 2 ^ 2) : curve.Nonsingular (addBL P Q) := by
+  rw [addBL_eq_smul hP.1 hQ.1, nonsingular_smul _ (isUnit_scale' hPz hQz),
+    ← add_of_not_equiv fun heq => hx (X_eq_of_equiv heq)]
+  exact nonsingular_add hP hQ
+
+private theorem toAffine_addBL {P Q : Fin 3 → Fp2Field} (hP : curve.Nonsingular P)
+    (hQ : curve.Nonsingular Q) (hPz : P 2 ≠ 0) (hQz : Q 2 ≠ 0)
+    (hx : P 0 * Q 2 ^ 2 ≠ Q 0 * P 2 ^ 2) :
+    Point.toAffine curve (addBL P Q) =
+      Point.toAffine curve P + Point.toAffine curve Q := by
+  rw [addBL_eq_smul hP.1 hQ.1, Point.toAffine_of_equiv (smul_equiv _ (isUnit_scale' hPz hQz)),
+    ← add_of_not_equiv fun heq => hx (X_eq_of_equiv heq)]
+  exact Point.toAffine_add hP hQ
+
 /-- `G2x8::double`: dbl-2009-l, and the undecided bit, set when y = 0 or z = 0. -/
 noncomputable def double (P : Fin 3 → Fp2Field) : (Fin 3 → Fp2Field) × Bool :=
-  (G2.curve.dblXYZ P, decide (P 1 = 0) || decide (P 2 = 0))
+  (curve.dblXYZ P, decide (P 1 = 0) || decide (P 2 = 0))
 
 /-- `G2x8::add_affine`: madd-2007-bl, and the undecided bit, set when H = 0 or z = 0. -/
 def addAffine (P : Fin 3 → Fp2Field) (qx qy : Fp2Field) : (Fin 3 → Fp2Field) × Bool :=
-  (G2.addBL P ![qx, qy, 1], decide (qx * P 2 ^ 2 - P 0 = 0) || decide (P 2 = 0))
+  (addBL P ![qx, qy, 1], decide (qx * P 2 ^ 2 - P 0 = 0) || decide (P 2 = 0))
 
 /-- One iteration of the loop of `G2x8::times_minus_z`. -/
 noncomputable def chainStep (px py : Fp2Field) (s : (Fin 3 → Fp2Field) × Bool) (bit : ℕ) :
@@ -52,33 +117,35 @@ variable {px py : Fp2Field}
 
 /-- `t` is a nonsingular triple with Z ≠ 0 that represents `[k]P`. -/
 structure Represents (P : E'.Point) (k : ℕ) (t : Fin 3 → Fp2Field) : Prop where
-  nonsingular : G2.curve.Nonsingular t
+  nonsingular : curve.Nonsingular t
   z_ne_zero : t 2 ≠ 0
-  toAffine_eq : Point.toAffine G2.curve t = k • P
-
-private theorem two_ne_zero' : (2 : Fp2Field) ≠ 0 := by decide +kernel
+  toAffine_eq : Point.toAffine curve t = k • P
 
 theorem represents_one (h : E'.Nonsingular px py) : Represents (.some px py h) 1 ![px, py, 1] := by
-  have hq : G2.curve.Nonsingular ![px, py, 1] := (nonsingular_some px py).mpr h
+  have hq : curve.Nonsingular ![px, py, 1] := (nonsingular_some px py).mpr h
   refine ⟨hq, one_ne_zero, ?_⟩
   rw [Point.toAffine_some hq, one_nsmul]
 
 theorem double_spec {P : E'.Point} {k : ℕ} {t : Fin 3 → Fp2Field} (ht : Represents P k t)
     (hu : (double t).2 = false) : Represents P (2 * k) (double t).1 := by
   simp only [double, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hu
-  refine ⟨G2.nonsingular_dblXYZ ht.nonsingular, ?_, ?_⟩
-  · show G2.curve.dblZ t ≠ 0
+  have hd : curve.Nonsingular (curve.dblXYZ t) := by
+    rw [← add_of_equiv (Setoid.refl t)]
+    exact nonsingular_add ht.nonsingular ht.nonsingular
+  refine ⟨hd, ?_, ?_⟩
+  · show curve.dblZ t ≠ 0
     rw [dblZ, negY, E'.a₁_eq, E'.a₃_eq, zero_mul, zero_mul, zero_mul, sub_zero, sub_zero,
       sub_neg_eq_add, ← two_mul]
     exact mul_ne_zero ht.z_ne_zero (mul_ne_zero two_ne_zero' hu.1)
-  · show Point.toAffine G2.curve (G2.curve.dblXYZ t) = _
-    rw [G2.toAffine_dblXYZ ht.nonsingular, ht.toAffine_eq, two_mul, add_nsmul]
+  · show Point.toAffine curve (curve.dblXYZ t) = _
+    rw [← add_of_equiv (Setoid.refl t), Point.toAffine_add ht.nonsingular ht.nonsingular,
+      ht.toAffine_eq, two_mul, add_nsmul]
 
 theorem addAffine_spec (h : E'.Nonsingular px py) {k : ℕ} {t : Fin 3 → Fp2Field}
     (ht : Represents (.some px py h) k t) (hu : (addAffine t px py).2 = false) :
     Represents (.some px py h) (k + 1) (addAffine t px py).1 := by
   simp only [addAffine, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hu
-  have hq : G2.curve.Nonsingular ![px, py, 1] := (nonsingular_some px py).mpr h
+  have hq : curve.Nonsingular ![px, py, 1] := (nonsingular_some px py).mpr h
   have hx : t 0 * (![px, py, 1] : Fin 3 → Fp2Field) 2 ^ 2 ≠
       (![px, py, 1] : Fin 3 → Fp2Field) 0 * t 2 ^ 2 := by
     intro hx
@@ -86,16 +153,16 @@ theorem addAffine_spec (h : E'.Nonsingular px py) {k : ℕ} {t : Fin 3 → Fp2Fi
     simp only [Matrix.cons_val_zero, Matrix.cons_val_two, Matrix.tail_cons, Matrix.head_cons,
       one_pow, mul_one] at hx
     rw [hx, sub_self]
-  refine ⟨G2.nonsingular_addBL ht.nonsingular hq ht.z_ne_zero one_ne_zero hx, ?_, ?_⟩
-  · show G2.addBL t ![px, py, 1] 2 ≠ 0
-    have hz : G2.addBL t ![px, py, 1] 2 = 2 * t 2 * (px * t 2 ^ 2 - t 0) := by
-      simp only [G2.addBL, Matrix.cons_val_zero, Matrix.cons_val_one, Matrix.cons_val_two,
+  refine ⟨nonsingular_addBL ht.nonsingular hq ht.z_ne_zero one_ne_zero hx, ?_, ?_⟩
+  · show addBL t ![px, py, 1] 2 ≠ 0
+    have hz : addBL t ![px, py, 1] 2 = 2 * t 2 * (px * t 2 ^ 2 - t 0) := by
+      simp only [addBL, Matrix.cons_val_zero, Matrix.cons_val_one, Matrix.cons_val_two,
         Matrix.tail_cons, Matrix.head_cons]
       ring
     rw [hz]
     exact mul_ne_zero (mul_ne_zero two_ne_zero' ht.z_ne_zero) hu.1
-  · show Point.toAffine G2.curve (G2.addBL t ![px, py, 1]) = _
-    rw [G2.toAffine_addBL ht.nonsingular hq ht.z_ne_zero one_ne_zero hx, ht.toAffine_eq,
+  · show Point.toAffine curve (addBL t ![px, py, 1]) = _
+    rw [toAffine_addBL ht.nonsingular hq ht.z_ne_zero one_ne_zero hx, ht.toAffine_eq,
       Point.toAffine_some hq, succ_nsmul]
 
 /-- One step of the chain, as `chainSteps` lists them. -/
@@ -111,9 +178,9 @@ theorem timesMinusZ_eq (px py : Fp2Field) :
   funext s bit
   unfold chainStep
   by_cases hb : bit ∈ Z_BITS
-  · rw [if_pos (List.contains_iff_mem.mpr hb), if_pos hb]
+  · rw [ite_eq_left (List.contains_iff_mem.mpr hb), ite_eq_left hb]
     rfl
-  · rw [if_neg (fun h => hb (List.contains_iff_mem.mp h)), if_neg hb]
+  · rw [ite_eq_right (fun h => hb (List.contains_iff_mem.mp h)), ite_eq_right hb]
     rfl
 
 theorem foldl_stepOf_spec (h : E'.Nonsingular px py) :

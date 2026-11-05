@@ -68,23 +68,13 @@ theorem field_easy_cyclotomic (x : Fp12Field) (hx : x ≠ 0) :
     exact FiniteField.pow_card_sub_one_eq_one x hx
   have h := congrArg (fun u : Fp12Fieldˣ => (u : Fp12Field))
     (easyPart_cyclotomic g p (by decide +kernel) hperiod)
-  simpa only [easyPart, Units.val_pow_eq_pow_val, Units.val_mul, Units.val_inv_eq_inv_val,
-    Units.val_mk0, Units.val_one, fieldEasyPart, field_star] using h
+  simp only [easyPart, Units.val_pow_eq_pow_val, Units.val_mul, Units.val_inv_eq_inv_val,
+    Units.val_one] at h
+  simp only [fieldEasyPart, field_star]
+  exact h
 
 theorem field_easy_zero : fieldEasyPart 0 = 0 := by
   simp [fieldEasyPart]
-
-theorem field_easy_unitary (x : Fp12Field) (hx : x ≠ 0) :
-    fieldEasyPart x ^ (p ^ 6 + 1) = 1 := by
-  rw [← phi_factor p (by decide +kernel), Nat.mul_comm, pow_mul,
-    field_easy_cyclotomic x hx, one_pow]
-
-theorem field_easy_inverse (x : Fp12Field) (hx : x ≠ 0) :
-    star (fieldEasyPart x) = (fieldEasyPart x)⁻¹ := by
-  have h := field_easy_unitary x hx
-  rw [pow_succ] at h
-  rw [field_star]
-  exact eq_inv_of_mul_eq_one_left h
 
 end
 

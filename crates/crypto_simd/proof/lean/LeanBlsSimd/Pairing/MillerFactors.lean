@@ -49,9 +49,9 @@ theorem factor_final_eq (points : Fin 2 → G1) (pair : Fin 2) :
   rw [setup_finite]
   simp only [Bool.or_false]
   cases hp : (points pair).isInfinity
-  · simp only [Bool.false_eq_true, if_false]
+  · simp only [Bool.false_eq_true, ite_false]
     exact (jacobian_miller_final_eq points pair hp).conjugate
-  · simp only [if_true]
+  · simp only [ite_true]
     rfl
 
 end

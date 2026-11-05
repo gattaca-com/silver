@@ -1,4 +1,7 @@
-use silver_common::{BlockSource, Nanos};
+use silver_common::{
+    BlockSource, Nanos,
+    ticker::{BASIS_POINTS, PAYLOAD_ATTESTATION_DUE_BPS, attestation_due_bps},
+};
 use silver_stages::{SlotClock, Stage, StageEvent};
 
 use super::{
@@ -20,7 +23,8 @@ impl Interval {
     }
 }
 
-/// Distance from the attestation deadline at attestable.
+/// Distance from a deadline: the attestation deadline at attestable, or the
+/// payload attestation deadline at a Gloas payload's readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Margin {
     pub delta: Nanos,
@@ -28,13 +32,16 @@ pub struct Margin {
 }
 
 /// One span of the block's dependency graph: the whole strip, then the three
-/// components that join at attestable.
+/// components that join at attestable. From Gloas the payload travels in its
+/// own envelope, so its data and `el` are no longer on the block's path: they
+/// join under `Payload`, judged against the payload attestation deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span {
     Strip,
     Da(DaSpan),
     Stf(StfSpan),
     El,
+    Payload,
 }
 
 /// The block's common points — arrival and `newPayload` dispatch, which both
@@ -42,6 +49,7 @@ pub enum Span {
 pub struct BlockTrace {
     pub slot: u64,
     pub block_root: [u8; 32],
+    pub gloas: bool,
     /// Where the block itself arrived from; `None` until its first
     /// `Received`, which a reader attaching mid-slot can miss.
     pub source: Option<BlockSource>,
@@ -53,10 +61,11 @@ pub struct BlockTrace {
 }
 
 impl BlockTrace {
-    pub fn new(slot: u64, block_root: [u8; 32]) -> Self {
+    pub fn new(slot: u64, block_root: [u8; 32], gloas: bool) -> Self {
         Self {
             slot,
             block_root,
+            gloas,
             source: None,
             received_at: None,
             el_sent_at: None,
@@ -88,55 +97,105 @@ impl BlockTrace {
         }
     }
 
-    /// The pane's attestable is stricter than the node's stage: the node's
-    /// `attestable`, the EL verdict `Valid`, and the gate open where it was
-    /// seen. `None` while the verdict is pending or not `Valid`.
+    /// Before Gloas the pane's attestable is stricter than the node's stage:
+    /// the node's `attestable`, the EL verdict `Valid`, and the gate open
+    /// where it was seen; `None` while the verdict is pending or not `Valid`.
+    /// A Gloas block is attestable at import: its payload is judged apart.
     pub fn attestable_at(&self) -> Option<Nanos> {
         let attestable = self.stf.attestable_at()?;
+        if self.gloas {
+            return Some(attestable);
+        }
         let valid = self.el.valid_at()?;
         Some(attestable.max(valid).max(self.da.available().unwrap_or(attestable)))
+    }
+
+    /// What a PTC member attests to: the payload `Valid` and its data
+    /// available.
+    pub fn payload_ready_at(&self) -> Option<Nanos> {
+        debug_assert!(self.gloas);
+        let valid = self.el.valid_at()?;
+        Some(valid.max(self.da.available()?))
+    }
+
+    fn payload_events(&self) -> [Option<Nanos>; 3] {
+        [self.el.verdict_at(), self.el_sent_at, self.da.available()]
     }
 
     /// The last event on the block's own path — column custody traffic
     /// excluded, so a strip without a verdict ends at attestable, not at the
     /// custody tail.
     fn last_event(&self) -> Option<Nanos> {
-        [self.stf.attestable_at(), self.el.verdict_at(), self.el_sent_at, self.da.available()]
-            .into_iter()
-            .flatten()
-            .max()
+        let payload = if self.gloas { [None; 3] } else { self.payload_events() };
+        payload.into_iter().chain([self.stf.attestable_at()]).flatten().max()
     }
 
     /// Where CL validation starts: the DA gate when it held the block (the
-    /// gate precedes dispatch), else arrival.
+    /// gate precedes dispatch), else arrival. No gate holds a Gloas block.
     fn validate_from(&self) -> Option<Nanos> {
         self.received_at.map(|at| match self.da.available() {
-            Some(gate) if self.el_sent_at.is_some_and(|sent| gate < sent) => at.max(gate),
+            Some(gate) if !self.gloas && self.el_sent_at.is_some_and(|sent| gate < sent) => {
+                at.max(gate)
+            }
             _ => at,
         })
+    }
+
+    /// `newPayload` dispatch as the block's own stage; a Gloas dispatch is
+    /// its envelope's.
+    fn block_el_sent_at(&self) -> Option<Nanos> {
+        self.el_sent_at.filter(|_| !self.gloas)
     }
 
     /// `None` while the span has no events.
     pub fn interval(&self, span: Span) -> Option<Interval> {
         match span {
             Span::Strip => {
-                let start = self.received_at.or_else(|| self.da.first_column_at())?;
+                let early_columns = self.da.first_column_at().filter(|_| !self.gloas);
+                let start = self.received_at.or(early_columns)?;
                 let end = self.attestable_at().or_else(|| self.last_event()).unwrap_or(start);
                 Some(Interval { start, end: end.max(start) })
             }
             Span::Da(span) => self.da.interval(span),
-            Span::Stf(span) => self.stf.interval(span, self.validate_from(), self.el_sent_at),
+            Span::Stf(span) => {
+                self.stf.interval(span, self.validate_from(), self.block_el_sent_at())
+            }
             Span::El => self.el.interval(self.el_sent_at),
+            Span::Payload => {
+                let start = [self.el_sent_at, self.da.first_column_at(), self.da.available()]
+                    .into_iter()
+                    .flatten()
+                    .min()?;
+                let end = self
+                    .payload_ready_at()
+                    .or_else(|| self.payload_events().into_iter().flatten().max())
+                    .unwrap_or(start);
+                Some(Interval { start, end: end.max(start) })
+            }
         }
+    }
+
+    pub fn attestation_deadline(&self, clock: &SlotClock) -> Nanos {
+        clock.slot_duration() * attestation_due_bps(self.gloas) / BASIS_POINTS
     }
 
     pub fn offset_in_slot(&self, clock: &SlotClock, ts: Nanos) -> Option<Nanos> {
         clock.offset_in_slot(ts, self.slot)
     }
 
-    /// `None` before attestable.
-    pub fn deadline_margin(&self, clock: &SlotClock, deadline: Nanos) -> Option<Margin> {
-        let at = self.offset_in_slot(clock, self.attestable_at()?)?;
+    /// The strip against the attestation deadline, a Gloas payload against
+    /// the payload attestation deadline; `None` for other spans and before
+    /// the span's readiness.
+    pub fn deadline_margin(&self, clock: &SlotClock, span: Span) -> Option<Margin> {
+        let (ready, deadline) = match span {
+            Span::Strip => (self.attestable_at()?, self.attestation_deadline(clock)),
+            Span::Payload => (
+                self.payload_ready_at()?,
+                clock.slot_duration() * PAYLOAD_ATTESTATION_DUE_BPS / BASIS_POINTS,
+            ),
+            _ => return None,
+        };
+        let at = self.offset_in_slot(clock, ready)?;
         Some(if at <= deadline {
             Margin { delta: deadline - at, made_it: true }
         } else {
@@ -194,7 +253,15 @@ pub mod tests {
 
     /// A slot-2 trace with every stage applied at the given ms offsets.
     pub fn trace(stages: &[(Stage, u64)]) -> BlockTrace {
-        let mut trace = BlockTrace::new(2, [1u8; 32]);
+        fork_trace(stages, false)
+    }
+
+    pub fn gloas_trace(stages: &[(Stage, u64)]) -> BlockTrace {
+        fork_trace(stages, true)
+    }
+
+    fn fork_trace(stages: &[(Stage, u64)], gloas: bool) -> BlockTrace {
+        let mut trace = BlockTrace::new(2, [1u8; 32], gloas);
         for &(stage, ms) in stages {
             trace.apply(event(stage, at(2, ms), Some(2)));
         }
@@ -376,21 +443,101 @@ pub mod tests {
     #[test]
     fn deadline_margin_signs() {
         let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
-        let deadline = Nanos::from_millis(4_000);
 
         let early = trace(&[(received(), 300), (Stage::Attestable, 460), (valid(), 520)]);
         assert_eq!(
-            early.deadline_margin(&clock, deadline),
-            Some(Margin { delta: Nanos::from_millis(3_480), made_it: true })
+            early.deadline_margin(&clock, Span::Strip),
+            Some(Margin { delta: Nanos(3_479_600_000), made_it: true }),
+            "3333 bps of 12 s"
         );
 
         let late = trace(&[(received(), 300), (Stage::Attestable, 4_500), (valid(), 520)]);
         assert_eq!(
-            late.deadline_margin(&clock, deadline),
-            Some(Margin { delta: Nanos::from_millis(500), made_it: false })
+            late.deadline_margin(&clock, Span::Strip),
+            Some(Margin { delta: Nanos(500_400_000), made_it: false })
         );
 
         let pending = trace(&[(received(), 300), (Stage::Attestable, 460)]);
-        assert_eq!(pending.deadline_margin(&clock, deadline), None);
+        assert_eq!(pending.deadline_margin(&clock, Span::Strip), None);
+        assert_eq!(early.deadline_margin(&clock, STF), None, "only the strip has a deadline");
+    }
+
+    /// Slot 605404 on devnet-8: imported 4 ms after arrival, while its
+    /// envelope's columns and `newPayload` ran on for hundreds of ms.
+    fn gloas_block() -> BlockTrace {
+        let recv = Stage::ColumnRecv { index: 5, origin: ColumnOrigin::Gossip };
+        let validated = Stage::ColumnValidated { index: 5, origin: ColumnOrigin::Gossip };
+        gloas_trace(&[
+            (received(), 306),
+            (Stage::StfDone, 310),
+            (Stage::Attestable, 310),
+            (recv, 420),
+            (validated, 470),
+            (Stage::DaAvailable, 472),
+            (el_sent(), 636),
+            (valid(), 730),
+        ])
+    }
+
+    #[test]
+    fn gloas_block_is_attestable_at_import() {
+        let t = gloas_block();
+        assert_eq!(t.attestable_at(), Some(at(2, 310)));
+        assert_eq!(t.interval(Span::Strip), iv(at(2, 306), at(2, 310)));
+        assert_eq!(t.interval(STF), iv(at(2, 306), at(2, 310)), "no gate holds the block");
+        assert_eq!(t.interval(VALIDATE), None, "the dispatch is the envelope's");
+        assert_eq!(t.interval(APPLY), None);
+
+        let recv = Stage::ColumnRecv { index: 5, origin: ColumnOrigin::Gossip };
+        let missed_arrival = gloas_trace(&[(recv, 420), (Stage::Attestable, 430)]);
+        assert_eq!(missed_arrival.interval(Span::Strip), None, "the columns are the payload's");
+
+        let unrevealed = gloas_trace(&[(received(), 306), (Stage::Attestable, 310)]);
+        assert_eq!(unrevealed.attestable_at(), Some(at(2, 310)), "no payload needed");
+        assert_eq!(unrevealed.interval(Span::Payload), None);
+    }
+
+    #[test]
+    fn gloas_payload_is_ready_once_valid_and_available() {
+        let t = gloas_block();
+        assert_eq!(t.payload_ready_at(), Some(at(2, 730)));
+        assert_eq!(t.interval(Span::Payload), iv(at(2, 420), at(2, 730)), "first column → valid");
+        assert_eq!(t.interval(Span::El), iv(at(2, 636), at(2, 730)));
+
+        let blobless = gloas_trace(&[
+            (received(), 322),
+            (Stage::Attestable, 326),
+            (Stage::DaAvailable, 326),
+            (el_sent(), 521),
+            (valid(), 617),
+        ]);
+        assert_eq!(blobless.interval(Span::Payload), iv(at(2, 326), at(2, 617)));
+
+        let syncing = Stage::ElVerdict { verdict: PayloadValidationStatus::Syncing };
+        let optimistic = gloas_trace(&[
+            (received(), 300),
+            (Stage::DaAvailable, 300),
+            (el_sent(), 400),
+            (syncing, 420),
+        ]);
+        assert_eq!(optimistic.payload_ready_at(), None);
+        assert_eq!(optimistic.interval(Span::Payload), iv(at(2, 300), at(2, 420)));
+    }
+
+    #[test]
+    fn gloas_deadlines() {
+        let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
+        let t = gloas_block();
+        assert_eq!(t.attestation_deadline(&clock), Nanos::from_millis(3_000));
+        assert_eq!(
+            t.deadline_margin(&clock, Span::Strip),
+            Some(Margin { delta: Nanos::from_millis(2_690), made_it: true })
+        );
+        assert_eq!(
+            t.deadline_margin(&clock, Span::Payload),
+            Some(Margin { delta: Nanos::from_millis(8_270), made_it: true })
+        );
+        assert_eq!(gloas_block().deadline_margin(&clock, Span::El), None);
+        assert_eq!(trace(&[]).attestation_deadline(&clock), Nanos(3_999_600_000), "pre-Gloas");
     }
 }

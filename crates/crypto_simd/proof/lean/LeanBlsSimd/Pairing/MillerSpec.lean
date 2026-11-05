@@ -1,4 +1,5 @@
 import LeanBlsSimd.Pairing.EmbeddedSteps
+import LeanBlsSimd.Spec.PairingEquations
 
 open EthLib.Cryptography Bls
 
@@ -30,12 +31,12 @@ theorem actions_steps (n : Nat) (q p t : Embedded.Point) (f : Fp12) :
     rw [lineKinds, List.foldl_cons, List.foldl_append, SpecPairing.millerSteps_succ]
     by_cases hb : blsX.testBit n = true
     · have hbit := (testBit_iff n).mp hb
-      simp only [hb, if_true, List.foldl_cons, List.foldl_nil, action, Bool.false_eq_true, if_false]
-      rw [if_pos hbit]
+      simp only [hb, ite_true, List.foldl_cons, List.foldl_nil, action, Bool.false_eq_true, ite_false]
+      rw [ite_eq_left hbit]
       exact ih _ _
     · have hbit := mt (testBit_iff n).mpr hb
-      simp only [hb, Bool.false_eq_true, if_false, List.foldl_nil, action]
-      rw [if_neg hbit]
+      simp only [hb, Bool.false_eq_true, ite_false, List.foldl_nil, action]
+      rw [ite_eq_right hbit]
       exact ih _ _
 
 namespace FixedTable

@@ -27,7 +27,7 @@ private theorem indices_loop (indices : Slice U64) (remaining before : List U64)
     have hend : ¬ i < Slice.len indices := by simp [hi, hs]
     refine ⟨i, ?_, by simp⟩
     rw [verify.CellBatchVerifier.verify_loop, loop.eq_1]
-    simp only [verify.CellBatchVerifier.verify_loop.body, hend, if_false]
+    simp only [verify.CellBatchVerifier.verify_loop.body, hend, ite_false, bind_ok]
   | cons x remaining ih =>
     have hlt : i.val < indices.val.length := by simp [hi, hs]
     have htest : i < Slice.len indices := by simpa using hlt
@@ -44,18 +44,17 @@ private theorem indices_loop (indices : Slice U64) (remaining before : List U64)
       refine ⟨result, ?_, ?_⟩
       · have hbody : verify.CellBatchVerifier.verify_loop.body indices (Slice.len indices) i =
             ok (cont i') := by
-          simp only [verify.CellBatchVerifier.verify_loop.body, htest, if_true,
-            hindex, bind_tc_ok, cells_per_ext_blob_eq, lift, hcast, hx', hadd]
-        rw [verify.CellBatchVerifier.verify_loop, loop.eq_1, hbody]
+          simp only [verify.CellBatchVerifier.verify_loop.body, htest, ite_true,
+            hindex, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', hadd]
+        rw [verify.CellBatchVerifier.verify_loop, loop.eq_1, hbody, bind_ok]
         exact hloop
-      · simp only [List.findIdx_cons, show decide (128 ≤ x.val) = false by simp; omega,
-          cond_false]
+      · simp only [List.findIdx_cons, show decide (128 ≤ x.val) = false by simp; omega, Bool.false_eq_true, ite_false]
         omega
     · have hx' : ¬ x < 128#u64 := by simpa using hx
       refine ⟨i, ?_, ?_⟩
       · rw [verify.CellBatchVerifier.verify_loop, loop.eq_1]
-        simp only [verify.CellBatchVerifier.verify_loop.body, htest, if_true,
-          hindex, bind_tc_ok, cells_per_ext_blob_eq, lift, hcast, hx', if_false]
+        simp only [verify.CellBatchVerifier.verify_loop.body, htest, ite_true,
+          hindex, bind_ok, cells_per_ext_blob_eq, lift, hcast, hx', ite_false]
       · simp [List.findIdx_cons, show 128 ≤ x.val by omega]
 
 theorem verify_indices_refinement (indices : Slice U64) :
@@ -87,7 +86,7 @@ theorem verify_rejects_lengths [RuntimeFeatures] [KzgExternals] (v : verify.Cell
   unfold verify.CellBatchVerifier.verify
   simp only [slice_lengths_ne]
   by_cases hi : indices.val.length = cs.val.length
-  · simp only [hi, ne_self_iff_false, decide_false, Bool.false_eq_true, if_false]
+  · simp only [hi, ne_self_iff_false, decide_false, Bool.false_eq_true, ite_false]
     by_cases hc : cells.val.length = cs.val.length
     · have hp : ps.val.length ≠ cs.val.length := by tauto
       simp [hc, hp]
@@ -111,6 +110,7 @@ theorem model_rejects_lengths (setup : TrustedSetup)
         rfl
     · refine ⟨.inputLengthMismatch "cells" cs.size cells.size, ?_⟩
       simp [Model.frontHalf, hc, Bind.bind, Except.bind]
+      rfl
   obtain ⟨err, herr⟩ := hfront
   unfold Model.verify Model.verifyPure
   rw [herr]

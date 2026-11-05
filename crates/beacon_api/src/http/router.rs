@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 
 use silver_common::{BeaconApiRequest, TCacheRead, TProducer};
-use silver_httpcore::{ParsedRequest, Query, frame_response};
+use silver_httpcore::{ParsedRequest, Query};
 use silver_pbs::SidecarCall;
 
 use crate::{
     beacon::{blocks::BlockRequest, validators::RegistryStream},
     ctx::ApiCtx,
+    entry_signatures::EntrySignatures,
     events::ChannelSet,
     http::response::Response,
     submission::Submission,
@@ -204,6 +205,7 @@ impl Router {
         req: &ParsedRequest<'_>,
         ctx: &ApiCtx,
         submissions: &mut TProducer,
+        signatures: &mut EntrySignatures,
         out: &mut Vec<u8>,
     ) -> Outcome {
         let method = Method::parse(req.method);
@@ -226,7 +228,7 @@ impl Router {
                 eth_blob_data_included: req.eth_blob_data_included,
                 body: req.body,
             };
-            let mut response = Response::new(out, submissions);
+            let mut response = Response::for_handler(out, submissions, signatures);
             if route.served_while_syncing || ctx.follows_chain(&mut response) {
                 (route.handler)(&request, ctx, &mut response);
             }
@@ -236,7 +238,7 @@ impl Router {
             Response::new(out, submissions).error(405, "method not allowed");
         } else {
             silver_log::warn!("unknown path: {}", req.path);
-            frame_response(out, "404 Not Found", None, b"");
+            Response::new(out, submissions).error(404, "unknown path");
         }
         Outcome::Response(None)
     }
@@ -296,7 +298,13 @@ mod tests {
     fn dispatch(router: &Router, method: &str, path: &str) -> Vec<u8> {
         let mut out = Vec::new();
         assert_eq!(
-            router.dispatch(&request(method, path), &anchor_ctx(), &mut submissions(), &mut out),
+            router.dispatch(
+                &request(method, path),
+                &anchor_ctx(),
+                &mut submissions(),
+                &mut EntrySignatures::new(),
+                &mut out,
+            ),
             Outcome::Response(None)
         );
         out
@@ -350,7 +358,13 @@ mod tests {
             keep_alive: true,
         };
         assert_eq!(
-            router.dispatch(&req, &anchor_ctx(), &mut submissions(), &mut out),
+            router.dispatch(
+                &req,
+                &anchor_ctx(),
+                &mut submissions(),
+                &mut EntrySignatures::new(),
+                &mut out,
+            ),
             Outcome::Response(None)
         );
         out
@@ -394,13 +408,14 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_path_gets_bare_404() {
+    fn unmatched_path_gets_404() {
         let router = Router::new(
             &[(Method::Get, "/eth/v1/beacon/states/{state_id}/finality_checkpoints", echo_params)],
             &[],
         );
-        let expected: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        assert_eq!(dispatch(&router, "GET", "/not/real"), expected);
+        let expected = dispatch(&router, "GET", "/not/real");
+        assert!(expected.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(body(&expected), br#"{"code":404,"message":"unknown path"}"#);
         assert_eq!(dispatch(&router, "GET", "/eth/v1/beacon/states/head"), expected, "prefix");
         assert_eq!(
             dispatch(&router, "GET", "/eth/v1/beacon/states/head/finality_checkpoints/x"),

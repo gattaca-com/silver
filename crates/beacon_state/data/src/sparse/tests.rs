@@ -107,3 +107,9 @@ fn merge_large_dense_batch_updates_in_place() {
     assert_eq!(edits.iter().count(), 100);
     assert!(edits.iter().all(|&(k, v)| v == k as u64 + 1000));
 }
+
+#[test]
+fn get_does_not_alias_indices_past_u32() {
+    let edits = edits_of(&[(2, 20)]);
+    assert!(edits.get((1 << 32) + 2).is_none());
+}

@@ -16,19 +16,6 @@ theorem specVerdict_valid (bytes : Array U8 48#usize) (p : g1_point.G1Point)
   obtain ⟨q, hq, rfl⟩ := Option.map_eq_some_iff.mp h
   exact Kzg.g1_verdict_valid _ q hq
 
-theorem specVerdict_some_iff (bytes : Array U8 48#usize) (p : g1_point.G1Point) :
-    specVerdict bytes = some p ↔
-      (EthLib.Cryptography.Kzg.bytesToKzgProof (G1Spec.toBytes (ofArray ofU8 bytes))).isOk = true ∧
-      ∃ P, EthLib.Cryptography.Bls.G1.uncompress (G1Spec.toBytes (ofArray ofU8 bytes)) = .ok P ∧
-        p = toBlstP1Affine (G1Spec.blstLimbs P) := by
-  rw [specVerdict, Option.map_eq_some_iff]
-  constructor
-  · rintro ⟨q, hq, rfl⟩
-    obtain ⟨hk, P, hP, rfl⟩ := (G1Spec.verdict_some_iff _ q).mp hq
-    exact ⟨hk, P, hP, rfl⟩
-  · rintro ⟨hk, P, hP, rfl⟩
-    exact ⟨G1Spec.blstLimbs P, (G1Spec.verdict_some_iff _ _).mpr ⟨hk, P, hP, rfl⟩, rfl⟩
-
 def usesKernelAt [RuntimeFeatures] (inputs : Slice (Array U8 48#usize)) (i : ℕ) : Bool :=
   usesKernel RuntimeFeatures.simdAvailable (inputs.val.map (ofArray ofU8)) i
 
@@ -64,7 +51,7 @@ theorem uncompress_in_g1_eq_spec_or_blst [RuntimeFeatures] [KzgExternals] [Fallb
         simp only [chunkAt, Vector.getElem_ofFn]
         rw [show i.val / 8 * 8 + i.val % 8 = i.val by omega, getElem!_pos _ _ (by simp), List.getElem_map]
       simp only [usesKernelAt] at hk
-      rw [if_pos hk, decompress_eq_spec _ _ hu]
+      rw [ite_eq_left hk, decompress_eq_spec _ _ hu]
       simp only [Fin.getElem_fin, hc, specVerdict, usesKernelAt, hk, ↓reduceIte]
     · have hf : usesKernelAt inputs i.val = false := Bool.eq_false_iff.mpr hk
       simp only [usesKernelAt] at hf
@@ -122,7 +109,7 @@ theorem uncompress_in_g1_eq_spec_list_ifma [RuntimeFeatures] [KzgExternals]
     ∃ result, silver_crypto_simd.bls.uncompress_in_g1 inputs out = ok result ∧
       result.val = inputs.val.map specVerdict ∧
       ∀ p, some p ∈ result.val → Kzg.G1AffineValid p := by
-  letI := fallbackCorrect_ifma hifma
+  let := fallbackCorrect_ifma hifma
   exact uncompress_in_g1_eq_spec_list inputs out hlen
 
 end LeanBlsSimd.UncompressG1

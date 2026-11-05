@@ -22,6 +22,8 @@ namespace LeanBlsSimd
 
 namespace DecompressG2
 
+attribute [local implicit_reducible] UScalar.cMax UScalar.rMax U32.rMax
+
 def ofBlstFp (a : blst.blst_fp) : BlstFp := ⟨ofArray ofU64 a.l⟩
 
 def toBlstFp (x : BlstFp) : blst.blst_fp := ⟨toArray toU64 x.l⟩
@@ -109,7 +111,7 @@ theorem point_refines (x0 x1 y0 y1 : Array U64 6#usize) :
       (point (ofArray ofU64 x0) (ofArray ofU64 x1) (ofArray ofU64 y0) (ofArray ofU64 y1))) := by
   simp only [decompress_g2.point, point, toBlstP2Affine, toBlstFp2, ok.injEq,
     blst.blst_p2_affine.mk.injEq, blst.blst_fp2.mk.injEq]
-  constructor <;> (apply Subtype.ext; simp [toBlstFp, Array.make])
+  constructor <;> (apply Aeneas.Std.Array.ext; simp [toBlstFp, Array.make, Array.from_val])
 
 theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6) :
     encoding.less_than_p_loop x
@@ -118,7 +120,7 @@ theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6
   induction w with
   | zero =>
     rw [encoding.less_than_p_loop, loop.eq_1]
-    simp [encoding.less_than_p_loop.body]
+    simp [encoding.less_than_p_loop.body, bind_ok]
   | succ w ih =>
     have hw6 : w < 6 := by omega
     have hx : (ofArray ofU64 x : Vector UInt64 6)[w]! =
@@ -131,27 +133,27 @@ theorem less_than_p_loop_refines (x : Array U64 6#usize) (w : ℕ) (hw : w ≤ 6
         else ok (cont (UScalar.ofNatCore w (lt_of_lt_of_le (by omega) two_pow_32_le_usize))) := by
       simp only [encoding.less_than_p_loop.body, gt_iff_lt, UScalar.lt_equiv,
         UScalar.ofNatCore_val_eq]
-      rw [if_pos (by simp)]
+      rw [ite_eq_left (by simp)]
       rw [show (UScalar.ofNatCore (w + 1) (lt_of_lt_of_le (by omega) two_pow_32_le_usize) : Usize) -
           1#usize = ok (UScalar.ofNatCore w (lt_of_lt_of_le (by omega) two_pow_32_le_usize)) by
         rw [sub_ok _ _ (by simp)]; simp]
-      simp only [bind_tc_ok]
+      simp only [bind_ok]
       rw [index_usize_eq _ _ (by simp; omega), P_U64_refines, index_usize_eq _ _ (by simp; omega)]
-      simp only [bind_tc_ok, hx]
+      simp only [bind_ok, hx]
       simp [List.getElem_map, ← UInt64.toNat_inj, UInt64.lt_iff_toNat_lt, getElem!_pos P_U64v w hw6]
     rw [encoding.less_than_p_loop, loop.eq_1, hbody]
     simp only [List.range_succ, List.reverse_append, List.reverse_singleton,
       List.singleton_append, List.foldl_cons]
     by_cases hc : (ofArray ofU64 x : Vector UInt64 6)[w]! = P_U64v[w]!
-    · rw [if_neg (not_not.mpr hc)]
+    · rw [ite_eq_right (not_not.mpr hc), bind_ok]
       have hstep : ltStep (ofArray ofU64 x) none w = none := by
-        simp only [ltStep]; rw [if_neg (not_not.mpr hc)]
+        simp only [ltStep]; rw [ite_eq_right (not_not.mpr hc)]
       rw [hstep, ← ih (by omega)]
       rfl
-    · rw [if_pos hc]
+    · rw [ite_eq_left hc, bind_ok]
       have hstep : ltStep (ofArray ofU64 x) none w =
           some (decide ((ofArray ofU64 x : Vector UInt64 6)[w]! < P_U64v[w]!)) := by
-        simp only [ltStep]; rw [if_pos hc]
+        simp only [ltStep]; rw [ite_eq_left hc]
       rw [hstep, foldl_ltStep_some]
       rfl
 
@@ -206,9 +208,9 @@ theorem fp_words_refines (be : Slice U8) (h : be.val.length = FP_BYTES) :
     obtain rfl : w = ⟨r.start.val, hw6⟩ := Fin.ext hs.symm
     have hlen : be.val.length = 48 := h
     simp_body encoding.fp_words_loop.body hn
-    simp only [lift, bind_tc_ok, Function.uncurry_apply_pair, Array.to_slice_mut, FP_BYTES_refines]
+    simp only [lift, bind_ok, Aeneas.Std.uncurry_apply_pair, Array.to_slice_mut, FP_BYTES_refines]
     simp (disch := (simp [List.slice_length, Array.to_slice]; omega)) only [usize_add_ok,
-      usize_mul_ok, sub_ok, slice_index_ok, copy_from_slice_ok, update_eq, bind_tc_ok,
+      usize_mul_ok, sub_ok, slice_index_ok, copy_from_slice_ok, update_eq, bind_ok,
       UScalar.ofNatCore_val_eq]
     refine congrArg (fun s => ok (cont (r', s))) (toArray_set_of_eq _ _ _ _ _ _ _ _ rfl ?_)
     rw [eq_toU64_iff, from_be_bytes_refines]
@@ -216,7 +218,7 @@ theorem fp_words_refines (be : Slice U8) (h : be.val.length = FP_BYTES) :
     refine congrArg u64_from_be_bytes ?_
     have hsl : (be.val.slice (48 - 8 * (r.start.val + 1)) (48 - 8 * r.start.val)).length = 8 := by
       rw [List.slice_length, hlen]; omega
-    rw [Array.from_slice, dif_pos (by simpa using hsl)]
+    rw [Array.from_slice, dite_eq_left (by simpa using hsl)]
     ext i hi
     simp [List.slice, FP_BYTES, G2_COMPRESSED_LEN]
   · simp only [foldl_set_ofFn]
@@ -226,17 +228,15 @@ theorem less_than_p_refines (x : Array U64 6#usize) :
     encoding.less_than_p x = ok (less_than_p (ofArray ofU64 x)) :=
   less_than_p_loop_refines x 6 le_rfl
 
-theorem split_at_fst (B : Vector UInt8 G2_COMPRESSED_LEN) (h' : (96#usize).val = G2_COMPRESSED_LEN)
-    (p : _) (h : _) :
-    ofSlice ofU8 ⟨(toArray toU8 B h').val.take (48#usize).val, p⟩ h = (split_at B).1 := by
+theorem split_at_fst (B : Vector UInt8 G2_COMPRESSED_LEN) (p : _) (h : _) :
+    ofSlice ofU8 (Slice.from ((B.toList.map toU8).take 48) p) h = (split_at B).1 := by
   ext i hi
-  simp [split_at]
+  simp [split_at, ofSlice]
 
-theorem split_at_snd (B : Vector UInt8 G2_COMPRESSED_LEN) (h' : (96#usize).val = G2_COMPRESSED_LEN)
-    (p : _) (h : _) :
-    ofSlice ofU8 ⟨(toArray toU8 B h').val.drop (48#usize).val, p⟩ h = (split_at B).2 := by
+theorem split_at_snd (B : Vector UInt8 G2_COMPRESSED_LEN) (p : _) (h : _) :
+    ofSlice ofU8 (Slice.from ((B.toList.map toU8).drop 48) p) h = (split_at B).2 := by
   ext i hi
-  simp [split_at, FP_BYTES, G2_COMPRESSED_LEN]
+  simp [split_at, ofSlice, FP_BYTES, G2_COMPRESSED_LEN]
 
 /-- The model's `Decoded` as the loop state of the generated `decode`. -/
 def decodeState (d : Decoded) :
@@ -262,8 +262,8 @@ theorem decode_loop_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     have hl : r.start.val < 8 := by rw [hs]; exact lane.isLt
     obtain rfl : lane = ⟨r.start.val, hl⟩ := Fin.ext hs.symm
     simp_body decompress_g2.decode_loop.body hn
-    simp only [decodeState, bind_tc_ok, toU8_shiftLeft_one _ hl, lift]
-    simp (disch := first | omega | decide) only [index_usize_toArray, bind_tc_ok]
+    simp only [decodeState, bind_ok, toU8_shiftLeft_one _ hl, lift]
+    simp (disch := first | omega | decide) only [index_usize_toArray, bind_ok]
     simp only [show ((0#usize).val) = 0 from rfl]
     rw [show (224#u8) = toU8 0xe0 from rfl, show (0#u8) = toU8 0 from rfl, FLAG_COMPRESSED_refines,
       FLAG_INFINITY_refines, FLAG_LARGER_ROOT_refines]
@@ -271,18 +271,19 @@ theorem decode_loop_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     unfold decodeStep
     simp only [Fin.getElem_fin]
     by_cases c1 : IN[r.start.val][0] &&& 0xe0 &&& FLAG_COMPRESSED = 0
-    · simp only [c1, if_true]
+    · simp only [c1, ite_true]
     by_cases c2 : IN[r.start.val][0] &&& 0xe0 &&& FLAG_INFINITY = 0
     swap
-    · simp only [c1, c2, if_true, if_false, not_false_eq_true, ne_eq]
-    simp only [c1, c2, if_false, not_true_eq_false, ne_eq, FP_BYTES_refines, bind_tc_ok,
+    · simp only [c1, c2, ite_true, ite_false, not_false_eq_true, ne_eq]
+    simp only [c1, c2, ite_false, not_true_eq_false, ne_eq, FP_BYTES_refines, bind_ok,
       Array.to_slice]
     rw [split_at_ok _ _ (by simp [G2_COMPRESSED_LEN])]
-    simp only [bind_tc_ok, Function.uncurry_apply_pair]
-    simp (disch := simp [FP_BYTES, G2_COMPRESSED_LEN]) only [fp_words_refines, bind_tc_ok,
+    simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
+    simp only [Slice.from_val, toArray_val, show (48#usize).val = 48 from rfl]
+    simp (disch := simp [FP_BYTES, G2_COMPRESSED_LEN]) only [fp_words_refines, bind_ok,
       split_at_fst, split_at_snd]
     rw [show (2305843009213693951#u64) = toU64 0x1fffffffffffffff from rfl]
-    simp (disch := first | omega | decide | (simp; omega)) only [index_usize_toArray, bind_tc_ok,
+    simp (disch := first | omega | decide | (simp; omega)) only [index_usize_toArray, bind_ok,
       toU64_and, update_eq, set_toArray, less_than_p_refines, unpack52_refines]
     simp only [ofArray_toArray (f := ofU64) (g := toU64) (fun _ => rfl)]
     simp only [show (5#usize).val = 5 from rfl]
@@ -303,7 +304,7 @@ theorem decode_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     ok ({ x0 := a4, x1 := a5, larger_root := i, invalid := i1, undecided := i2 } :
       decompress_g2.Decoded)) = _
   rw [decode_loop_refines]
-  rfl
+  (simp only [bind_tc_ok] ; rfl)
 
 theorem toBlstP2Affine_default : toBlstP2Affine default =
     { x := toBlstFp2 default, y := toBlstFp2 default } := rfl
@@ -332,9 +333,9 @@ theorem decompress_loop_refines (a : Array blst.blst_p2_affine 8#usize)
   · intro r r' m lane he hs he' hs' hn
     have hl : r.start.val < (8#usize).val := by rw [hs]; exact lane.isLt
     simp_body decompress_g2.decompress_loop.body hn
-    simp only [index_usize_eq _ _ hl, bind_tc_ok, point_refines, update_eq _ _ _ hl]
+    simp only [index_usize_eq _ _ hl, bind_ok, point_refines, update_eq _ _ _ hl]
     refine congrArg (fun s => ok (cont (r', s))) ?_
-    apply Subtype.ext
+    ext1
     simp [hs, List.map_set, Vector.toList_set]
   · simp [foldl_set_ofFn]
 
@@ -350,20 +351,20 @@ theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     decompress_g2.decompress inputs =
       ok (toBatch (decompress (ofArray (ofArray ofU8) inputs))) := by
   unfold decompress_g2.decompress decompress
-  simp only [decode_refines, default_refines, bind_tc_ok, lift]
+  simp only [decode_refines, default_refines, bind_ok, lift]
   generalize decode (ofArray (ofArray ofU8) inputs) = D
   rw [← toArray_replicate toBlstP2Affine default (show (8#usize).val = 8 from rfl)]
   simp only [toDecoded, toU8_or, toU8_not, show (0#u8) = toU8 0 from rfl, toU8_inj,
-    Fp8.from_plain_refines, Fp8.splat_limbs_refines, FOUR_MONT_refines, bind_tc_ok,
+    Fp8.from_plain_refines, Fp8.splat_limbs_refines, FOUR_MONT_refines, bind_ok,
     ofArray_toArray_ofU64, ofArray_toArray_ofArray_ofU64]
   rw [show Fp8.from_plain D.x0 = (xOf D).c0 from rfl,
     show Fp8.from_plain D.x1 = (xOf D).c1 from rfl]
   generalize xOf D = X
-  simp only [Fp2x8.square_refines, Fp2x8.mul_refines, Fp2x8.add_refines, bind_tc_ok, ofFp2x8_mk,
+  simp only [Fp2x8.square_refines, Fp2x8.mul_refines, Fp2x8.add_refines, bind_ok, ofFp2x8_mk,
     ofFp8_toFp8, ofFp2x8_toFp2x8]
   rw [show (X.square.mul X).add ⟨Fp8.splat_limbs (.ofList FOUR_MONT),
     Fp8.splat_limbs (.ofList FOUR_MONT)⟩ = rhsOf X from rfl]
-  simp only [Fp2x8.sqrt_refines, bind_tc_ok, ofFp2x8_toFp2x8, Function.uncurry_def, Prod.map_fst,
+  simp only [Fp2x8.sqrt_refines, bind_ok, ofFp2x8_toFp2x8, aeneas_uncurry_def, Prod.map_fst,
     Prod.map_snd]
   generalize (rhsOf X).sqrt = S
   obtain ⟨root, has⟩ := S
@@ -378,13 +379,12 @@ theorem decompress_refines (inputs : Array (Array U8 96#usize) 8#usize) :
     · simp only [toBatch, toArray_replicate, toBlstP2Affine_default]
     · simp only [tail, foldl_points, foldl_set_ofFn,
         Fp2x8.is_larger_root_mask_refines, Fp2x8.neg_refines, Fp2x8.select_refines,
-        ofFp2x8_toFp2x8, bind_tc_ok, toU8_xor, ofU8_toU8]
+        ofFp2x8_toFp2x8, bind_ok, toU8_xor, ofU8_toU8]
       generalize Fp2x8.select (root.is_larger_root_mask ^^^ D.larger_root) root root.neg = Y
       simp only [G2x8.scott_membership_refines, ofFp2x8_mk, ofFp8_toFp8,
-        ofFp2x8_toFp2x8, bind_tc_ok]
+        ofFp2x8_toFp2x8, bind_ok]
       generalize G2x8.scott_membership X Y = M
-      simp only [Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8,
-        bind_tc_ok, decompress_loop_refines, toMembership, toU8_and, toU8_or, toU8_not,
+      simp only [Fp8.to_blst_limbs_refines, c0_toFp2x8, c1_toFp2x8, ofFp8_toFp8, bind_ok, decompress_loop_refines, toMembership, toU8_and, toU8_or, toU8_not,
         toBatch, ofArray_toArray_ofArray_ofU64]
 
 end DecompressG2

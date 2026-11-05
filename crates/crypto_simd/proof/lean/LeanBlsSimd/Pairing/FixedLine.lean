@@ -65,7 +65,7 @@ theorem slope_field (step : Fin 68) (pair : Fin 2) :
   · rw [tangent_slope, hm]
     have hthree : Fp2.toField (Fp2.ofFp (Fp.ofNat 3)) = (3 : Fp2Field) := by
       apply QuadraticAlgebra.ext <;> rfl
-    simp only [slopeNumerator, slopeDenominator, hadd, Bool.false_eq_true, if_false, map_mul, map_add, hthree]
+    simp only [slopeNumerator, slopeDenominator, hadd, Bool.false_eq_true, ite_false, map_mul, map_add, hthree]
     rw [two_mul]
     rfl
 
@@ -79,7 +79,7 @@ theorem line_value (step : Fin 68) (pair : Fin 2) (xp yp : Fp2) :
   simp only [Line.evalAt, Fp12.toField_sub, map_mul, untwist_x, untwist_y,
     slope_field, includeFp2_field, normalizedLine, line_field, Fp2.toField_one, map_one]
   rw [hl.1, hl.2]
-  simpa only [map_mul, map_neg, map_inv₀] using
+  simpa only [map_mul, map_neg, map_inv₀] using!
     normalized_line_field (Fp2.toField (current step pair).1)
       (Fp2.toField (current step pair).2) (Fp2.toField (slope pair step))
       (Fp2.toField xp) (Fp2.toField yp) hc

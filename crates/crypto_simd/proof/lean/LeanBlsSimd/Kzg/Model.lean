@@ -1,13 +1,12 @@
 import EthLib.Cryptography.Kzg.Cells
-import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg Kzg.Constants Kzg.BitReversal
-open private cosetShiftForCell from EthLib.Cryptography.Kzg.Cells
 
 namespace LeanBlsSimd.Kzg.Model
 
 abbrev Front := Array KZGCommitment × Array Nat × Array CosetEvals × Array KZGProof
-abbrev RliStep := Array Nat → Array (Array Fr) → Array Fr → Except KzgError (Array Fr)
+abbrev RliStep :=
+  Array Nat → Array Fr → Array (Array Fr) → Array Fr → Except KzgError (Array Fr)
 
 def frontHalf
     (commitmentsBytes : Array Bytes48)
@@ -53,13 +52,11 @@ def frontHalf
 
   return (deduped, commitmentIndices, cosetsEvals, proofs)
 
-def specRli (cellIndices : Array Nat) (cosetsEvals : Array (Array Fr))
-    (rPowers : Array Fr) : Except KzgError (Array Fr) := do
+def specRli : RliStep := fun cellIndices shifts cosetsEvals rPowers =>
   (Array.range cellIndices.size).foldlM
     (init := Array.replicate 64 Fr.zero)
     fun sumInterp k => do
-      let interp ← interpolatePolynomialcoeff
-        (← cosetForCell cellIndices[k]!) cosetsEvals[k]!
+      let interp ← interpolateCosetEvals shifts[k]! cosetsEvals[k]!
       let scaled ← multiplyPolynomialcoeff #[rPowers[k]!] interp
       pure (addPolynomialcoeff sumInterp scaled)
 
@@ -73,7 +70,7 @@ def columnRli (indices : Array Nat) (evals : Array (Array Fr)) (powers : Array F
     let shift := (rootsOfUnityBrp 8192)[64*c]!
     addPolynomialcoeff total (shiftVals coeffs shift.inverse)
 
-def columnStep : RliStep := fun indices evals powers => .ok (columnRli indices evals powers)
+def columnStep : RliStep := fun indices _ evals powers => .ok (columnRli indices evals powers)
 
 def RliInputs (indices : Array Nat) (evals : Array (Array Fr)) (powers : Array Fr) : Prop :=
   indices.size = evals.size ∧ indices.size = powers.size ∧
@@ -90,6 +87,23 @@ def lincomb
     | .ok g    => pure g
     | .error _ => throw KzgError.invalidG1Point
   return Bls.G1.compress (Bls.G1.msm pointsG1 scalars)
+
+def lincombPoints (points : Array G1) (scalars : Array Fr) : Except KzgError G1 := do
+  if points.size ≠ scalars.size then
+    throw (.lincombLengthMismatch points.size scalars.size)
+  if points.size = 0 then
+    return Bls.G1.zero
+  return Bls.G1.msm points scalars
+
+def uncompress (b : Bytes48) : Except KzgError G1 :=
+  match Bls.G1.uncompress b with
+  | .ok g    => pure g
+  | .error _ => throw .invalidG1Point
+
+def shiftOf (cellIndex : Nat) : Except KzgError Fr := do
+  if cellIndex ≥ CELLS_PER_EXT_BLOB then
+    throw .cellIndexOutOfBounds
+  pure (rootsOfUnityBrp FIELD_ELEMENTS_PER_EXT_BLOB)[FIELD_ELEMENTS_PER_CELL * cellIndex]!
 
 
 def implWith (getSetup : KzgM TrustedSetup) (rliStep : RliStep)
@@ -120,7 +134,7 @@ def implWith (getSetup : KzgM TrustedSetup) (rliStep : RliStep)
             commitments commitmentIndices cellIndices cosetsEvals proofs
   let rPowers := computePowers r numCells
 
-  let ll : G1 := (Bls.G1.uncompress (← g1Lincomb proofs rPowers)).toOption.get!
+  let ll : G1 ← uncompressG1 (← g1Lincomb proofs rPowers)
 
   let lr : G2 := setup.g2Monomial[n]!
 
@@ -130,16 +144,16 @@ def implWith (getSetup : KzgM TrustedSetup) (rliStep : RliStep)
       let i := commitmentIndices[k]!
       weights.set! i (weights[i]! + rPowers[k]!)
 
-  let rlc : G1 := (Bls.G1.uncompress (← g1Lincomb commitments weights)).toOption.get!
+  let rlc : G1 ← uncompressG1 (← g1Lincomb commitments weights)
 
-  let sumInterp ← rliStep cellIndices cosetsEvals rPowers
-  let rli : G1 := (Bls.G1.uncompress
-                  (← g1Lincomb (setup.g1MonomialBytes.extract 0 n) sumInterp)).toOption.get!
+  let shifts : Array Fr ← cellIndices.mapM fun c => ExceptT.mk (pure (shiftOf c))
 
-  let weightedRPowers : Array Fr ← (Array.range numCells).mapM fun k => do
-    let h_k ← cosetShiftForCell cellIndices[k]!
-    pure (rPowers[k]! * (h_k ^ (Fr.ofNat n)))
-  let rlp : G1 := (Bls.G1.uncompress (← g1Lincomb proofs weightedRPowers)).toOption.get!
+  let sumInterp ← rliStep cellIndices shifts cosetsEvals rPowers
+  let rli : G1 ← g1LincombPoints (setup.g1Monomial.extract 0 n) sumInterp
+
+  let weightedRPowers : Array Fr := (Array.range numCells).map fun k =>
+    rPowers[k]! * (shifts[k]! ^ (Fr.ofNat n))
+  let rlp : G1 ← uncompressG1 (← g1Lincomb proofs weightedRPowers)
 
   let rl : G1 := Bls.G1.add (Bls.G1.add rlc (Bls.G1.neg rli)) rlp
 
@@ -176,7 +190,7 @@ def implPure (setup : TrustedSetup) (rliStep : RliStep)
             commitments commitmentIndices cellIndices cosetsEvals proofs
   let rPowers := computePowers r numCells
 
-  let ll : G1 := (Bls.G1.uncompress (← lincomb proofs rPowers)).toOption.get!
+  let ll : G1 ← uncompress (← lincomb proofs rPowers)
 
   let lr : G2 := setup.g2Monomial[n]!
 
@@ -186,16 +200,16 @@ def implPure (setup : TrustedSetup) (rliStep : RliStep)
       let i := commitmentIndices[k]!
       weights.set! i (weights[i]! + rPowers[k]!)
 
-  let rlc : G1 := (Bls.G1.uncompress (← lincomb commitments weights)).toOption.get!
+  let rlc : G1 ← uncompress (← lincomb commitments weights)
 
-  let sumInterp ← rliStep cellIndices cosetsEvals rPowers
-  let rli : G1 := (Bls.G1.uncompress
-                  (← lincomb (setup.g1MonomialBytes.extract 0 n) sumInterp)).toOption.get!
+  let shifts : Array Fr ← cellIndices.mapM shiftOf
 
-  let weightedRPowers : Array Fr ← (Array.range numCells).mapM fun k => do
-    let h_k ← cosetShiftForCell cellIndices[k]!
-    pure (rPowers[k]! * (h_k ^ (Fr.ofNat n)))
-  let rlp : G1 := (Bls.G1.uncompress (← lincomb proofs weightedRPowers)).toOption.get!
+  let sumInterp ← rliStep cellIndices shifts cosetsEvals rPowers
+  let rli : G1 ← lincombPoints (setup.g1Monomial.extract 0 n) sumInterp
+
+  let weightedRPowers : Array Fr := (Array.range numCells).map fun k =>
+    rPowers[k]! * (shifts[k]! ^ (Fr.ofNat n))
+  let rlp : G1 ← uncompress (← lincomb proofs weightedRPowers)
 
   let rl : G1 := Bls.G1.add (Bls.G1.add rlc (Bls.G1.neg rli)) rlp
 

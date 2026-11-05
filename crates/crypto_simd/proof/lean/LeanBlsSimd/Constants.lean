@@ -6,8 +6,11 @@ import Mathlib.Tactic.LinearCombination
 /-!
 # Constants of `silver_crypto_simd`
 
-The tables of `crates/crypto_simd/src/bls/constants.rs`, transcribed verbatim, and each proved equal to
-its derivation from p, R = 2^416 and z.
+The tables of `crates/crypto_simd/src/bls/constants.rs`, transcribed verbatim, with parameter,
+ψ and chain facts for the specification bridges. `Refines/Constants.lean` binds the extracted
+Rust constants to these tables. Their values are checked where proofs use them, in
+`Proofs/Fp8.lean`, `Proofs/Fp8Holds.lean`, `Proofs/Limbs.lean`, `Proofs/Pow.lean`,
+`Proofs/Decode.lean` and `Portable/Fp/Words.lean`.
 
 p, r and |z| are the definitions of `ethereum/EthLib`: `Fp.modulus`, `Fr.modulus` and
 `blsX`. The numerical identities are checked in Lean's kernel (`decide +kernel`);
@@ -26,7 +29,7 @@ open EthLib.Cryptography EthLib.Cryptography.Bls
 /-- The BLS12-381 parameter, whose absolute value the spec calls `blsX`. -/
 def z : ℤ := -blsX
 
-def LIMBS : ℕ := 8
+@[implicit_reducible] def LIMBS : ℕ := 8
 
 def LIMB_BITS : ℕ := 52
 
@@ -36,15 +39,11 @@ def R : ℕ := 2 ^ (LIMBS * LIMB_BITS)
 
 theorem r_eq : (Fr.modulus : ℤ) = z ^ 4 - z ^ 2 + 1 := by decide +kernel
 
-theorem p_eq : 3 * ((Fp.modulus : ℤ) - z) = (z - 1) ^ 2 * Fr.modulus := by decide +kernel
-
 theorem p_lt : Fp.modulus < 2 ^ 381 := by decide +kernel
 
 theorem four_mul_p_lt_R : 4 * Fp.modulus < R := by decide +kernel
 
 theorem p_mod_four : Fp.modulus % 4 = 3 := by decide +kernel
-
-theorem p_mod_three : Fp.modulus % 3 = 1 := by decide +kernel
 
 /-! ## Tables -/
 
@@ -181,7 +180,7 @@ def HALF_MONT : List ℕ := [
   0x000000001764f,
 ]
 
-/-! ## Derivations of the limb tables -/
+/-! ## Limb decomposition and 1/2 -/
 
 /-- The `n` little-endian `bits`-bit limbs of `x`, dropping bits from `bits * n` up. -/
 def limbsOf (bits : ℕ) : ℕ → ℕ → List ℕ
@@ -190,40 +189,10 @@ def limbsOf (bits : ℕ) : ℕ → ℕ → List ℕ
 
 abbrev limbs52 (x : ℕ) : List ℕ := limbsOf LIMB_BITS LIMBS x
 
-def toMont (x : ℕ) : ℕ := x * R % Fp.modulus
-
 /-- The inverse of 2 modulo p. -/
 def half : ℕ := (Fp.modulus + 1) / 2
 
-theorem P_eq : P = limbs52 Fp.modulus := by decide +kernel
-
-theorem P_U64_eq : P_U64 = limbsOf 64 6 Fp.modulus := by decide +kernel
-
-theorem P_INV52_spec :
-    (P_INV52 * Fp.modulus + 1) % 2 ^ LIMB_BITS = 0 ∧ P_INV52 < 2 ^ LIMB_BITS := by
-  decide +kernel
-
-theorem R_MOD_P_eq : R_MOD_P = limbs52 (toMont 1) := by decide +kernel
-
-theorem R2_MOD_P_eq : R2_MOD_P = limbs52 (R ^ 2 % Fp.modulus) := by decide +kernel
-
-theorem TWO_POW_384_MOD_P_eq : TWO_POW_384_MOD_P = limbs52 (2 ^ 384 % Fp.modulus) := by
-  decide +kernel
-
-theorem ONE_PLAIN_eq : ONE_PLAIN = limbs52 1 := by decide +kernel
-
-theorem FOUR_MONT_eq : FOUR_MONT = limbs52 (toMont 4) := by decide +kernel
-
 theorem half_spec : 2 * half % Fp.modulus = 1 := by decide +kernel
-
-theorem HALF_MONT_eq : HALF_MONT = limbs52 (toMont half) := by decide +kernel
-
-theorem HALF_P_MINUS_1_eq : HALF_P_MINUS_1 = limbs52 ((Fp.modulus - 1) / 2) := by decide +kernel
-
-theorem P_MINUS_3_OVER_4_WINDOWS_eq :
-    P_MINUS_3_OVER_4_WINDOWS = limbsOf 4 95 ((Fp.modulus - 3) / 4) ∧
-      (Fp.modulus - 3) / 4 < 2 ^ (4 * 95) := by
-  decide +kernel
 
 /-! ## Powers by square-and-multiply
 
@@ -260,23 +229,6 @@ theorem map_powBy {α : Type} {M : Type*} [Monoid M] {mul : α → α → α} {o
       omega
 
 /-! ## Facts in Fp -/
-
-theorem thirtytwo_pow_ne_one : (32 : ZMod Fp.modulus) ^ ((Fp.modulus - 1) / 3) ≠ 1 := by
-  have h := (PowMod.natCast_pow_eq_one_iff Fp.modulus 381 32 ((Fp.modulus - 1) / 3)
-    (by decide +kernel)).not.mpr (by decide +kernel)
-  rwa [Nat.cast_ofNat] at h
-
-/-- Euler's criterion for cubes, in the direction that rules a cube out. -/
-theorem not_cube_of_pow_ne_one {a : ZMod Fp.modulus} (ha : a ≠ 0)
-    (h : a ^ ((Fp.modulus - 1) / 3) ≠ 1) (x : ZMod Fp.modulus) : x ^ 3 ≠ a := by
-  rintro rfl
-  apply h
-  rw [← pow_mul, show 3 * ((Fp.modulus - 1) / 3) = Fp.modulus - 1 by decide +kernel]
-  exact ZMod.pow_card_sub_one_eq_one fun hx => ha (by rw [hx, zero_pow three_ne_zero])
-
-/-- `x ^ 3 + 4 (1 + i)` therefore never vanishes in Fp2: a root's norm would cube to 32. -/
-theorem thirtytwo_not_cube : ∀ x : ZMod Fp.modulus, x ^ 3 ≠ 32 :=
-  not_cube_of_pow_ne_one (by decide +kernel) thirtytwo_pow_ne_one
 
 /-- X² + 1 is therefore irreducible over Fp, and Fp2 = Fp[i] is a field. -/
 theorem neg_one_not_square : ∀ x : ZMod Fp.modulus, x ^ 2 ≠ -1 := fun x hx =>
@@ -332,11 +284,6 @@ def psiY : ℕ × ℕ :=
   (0x135203e60180a68ee2e9c448d77a2cd91c3dedd930b1cf60ef396489f61eb45e304466cf3e67fa0af1ee7b04121bdea2,
    0x06af0e0437ff400b6831e36d6bd17ffe48395dabc2d3435e77f76e17009241c5ee67992f72ec05f4c81084fbede3cc09)
 
-theorem PSI_X_MONT_eq : PSI_X_MONT = limbs52 (toMont psiX) := by decide +kernel
-
-theorem PSI_Y_MONT_eq : PSI_Y_MONT = [limbs52 (toMont psiY.1), limbs52 (toMont psiY.2)] := by
-  decide +kernel
-
 theorem psiX_cube (hp : (Fp.modulus : A) = 0) {ι : A} (hι : ι ^ 2 = -1) :
     ((psiX : A) * ι) ^ 3 = ι := by
   have h := congrArg (toFp2 ι)
@@ -350,28 +297,12 @@ theorem psiY_sq (hp : (Fp.modulus : A) = 0) {ι : A} (hι : ι ^ 2 = -1) :
   rw [toFp2_mulFp2 hp hι, ← sq] at h
   simpa [toFp2] using h
 
-theorem psiX_mul_pow (hp : (Fp.modulus : A) = 0) {ι : A} (hι : ι ^ 2 = -1) :
-    (psiX : A) * ι * (1 + ι) ^ ((Fp.modulus - 1) / 3) = 1 := by
-  have h := congrArg (toFp2 ι)
-    (show mulFp2 (0, psiX) (powBy mulFp2 (1, 0) 381 (1, 1) ((Fp.modulus - 1) / 3)) = (1, 0) by
-      decide +kernel)
-  rw [toFp2_mulFp2 hp hι, toFp2_powBy hp hι _ _ (by decide +kernel)] at h
-  simpa [toFp2] using h
-
-theorem psiY_mul_pow (hp : (Fp.modulus : A) = 0) {ι : A} (hι : ι ^ 2 = -1) :
-    ((psiY.1 : A) + psiY.2 * ι) * (1 + ι) ^ ((Fp.modulus - 1) / 2) = 1 := by
-  have h := congrArg (toFp2 ι)
-    (show mulFp2 psiY (powBy mulFp2 (1, 0) 381 (1, 1) ((Fp.modulus - 1) / 2)) = (1, 0) by
-      decide +kernel)
-  rw [toFp2_mulFp2 hp hι, toFp2_powBy hp hι _ _ (by decide +kernel)] at h
-  simpa [toFp2] using h
-
 end Fp2
 
 /-! ## The [|z|] chain
 
 `times_minus_z` of `g2x8.rs` doubles once per bit below `Z_BITS[0]`, high to low, and adds the
-chain's base after each listed bit. Multiples below are of a point `T` of order `ℓ`. -/
+chain's base after each listed bit. -/
 
 inductive Step
   | double
@@ -388,33 +319,5 @@ def Step.run : List Step → ℕ → ℕ
   | .add :: steps, k => run steps (k + 1)
 
 theorem chain_eq_blsX : Step.run chainSteps 1 = blsX := by decide +kernel
-
-/-- Whether the chain on base `[b]T`, started at `[k]T`, meets an undecided case: `O` as a
-step's input or as the result, or an addition of two points with equal x, which are `±[b]T`.
-A doubling input with y = 0 has order 2, which odd `ℓ` excludes. -/
-def meetsException (ℓ b : ℕ) : List Step → ℕ → Bool
-  | [], k => k % ℓ == 0
-  | .double :: steps, k => k % ℓ == 0 || meetsException ℓ b steps (2 * k)
-  | .add :: steps, k =>
-    k % ℓ == 0 || b % ℓ == 0 || k % ℓ == b % ℓ || (k + b) % ℓ == 0 ||
-      meetsException ℓ b steps (k + b)
-
-/-- The chain of `times_minus_z`: base `T`, started at `T`. -/
-def g2MeetsException (ℓ : ℕ) : Bool := meetsException ℓ 1 chainSteps 1
-
-theorem blsX_lt_two_pow_64 : blsX < 2 ^ 64 := by decide +kernel
-
-theorem blsX_lt_r : blsX < Fr.modulus := by decide +kernel
-
-theorem blsX_sq_lt_r : blsX ^ 2 < Fr.modulus := by decide +kernel
-
-theorem r_odd : Fr.modulus % 2 = 1 := by decide +kernel
-
-theorem r_avoids_exceptions : g2MeetsException Fr.modulus = false := by decide +kernel
-
-/-- The small prime factors of the G2 cofactor, as in `H2_SMALL_PRIMES` of `tests.rs`. -/
-theorem g2_small_orders :
-    [13, 23, 2713, 11953, 262069].map g2MeetsException = [true, false, false, false, false] := by
-  decide +kernel
 
 end LeanBlsSimd

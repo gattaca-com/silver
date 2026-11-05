@@ -2,9 +2,12 @@ import LeanBlsSimd.Kzg.ModelPairingShift
 import LeanBlsSimd.Kzg.G1Compression
 import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.InterpolationModel
+import LeanBlsSimd.Kzg.ModelSpec
 import Mathlib.Data.List.Nodup
+import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg
+open private buildEmbedded from EthLib.Cryptography.Kzg.TrustedSetup
 
 namespace LeanBlsSimd.Kzg.ModelPairing
 
@@ -47,13 +50,13 @@ private theorem lincomb_eq (bs : Array Bytes48) (scalars : Array Fr)
     intro b hb
     rw [(pointValue_facts b (Array.all_eq_true_iff_forall_mem.mp hv b hb)).1]
   unfold Model.lincomb
-  simp only [← hs, ne_eq, not_true_eq_false, if_false]
+  simp only [← hs, ne_eq, not_true_eq_false, ite_false]
   by_cases hz : bs.size = 0
   · have hm : G1.msm (bs.map (fun b => (specPoint b).getD G1.zero)) scalars = G1.zero := by
       rw [G1.msm_eq_msmModel]
-      simp only [G1.msmModel, Array.size_map, hz, Nat.zero_le, if_true]
-    simp only [hz, if_true, hm, Bind.bind, Except.bind, Pure.pure, Except.pure]
-  · simp only [hz, if_false, Bind.bind, Except.bind, Pure.pure, Except.pure]
+      simp only [G1.msmModel, Array.size_map, hz, Nat.zero_le, ite_true]
+    simp only [hz, ite_true, hm, Bind.bind, Except.bind, Pure.pure, Except.pure]
+  · simp only [hz, ite_false, Bind.bind, Except.bind, Pure.pure, Except.pure]
     change (do
       let ps ← bs.mapM (fun b => match G1.uncompress b with
         | .ok p => Except.ok p
@@ -130,6 +133,19 @@ private theorem setup_validated : rustG1Bytes.all validateKzgG1 = true := by
 
 private theorem setup_bytes_size : rustG1Bytes.size = 64 := by simp [rustG1Bytes]
 
+private theorem setup_points_eq :
+    embeddedSetup.g1Monomial.extract 0 64 =
+      rustG1Bytes.map (fun b => (specPoint b).getD G1.zero) := by
+  rw [setup_model_points_eq]
+  simp only [embeddedSetup, buildEmbedded, ← Array.map_extract]
+  apply Array.map_congr_left
+  intro b hb
+  have hb' : b ∈ rustG1Bytes := by
+    rw [← embedded_g1_bytes]
+    simpa only [embeddedSetup, buildEmbedded, ← Array.map_extract] using hb
+  rw [(pointValue_facts b (Array.all_eq_true_iff_forall_mem.mp setup_validated b hb')).1]
+  rfl
+
 private theorem implPure_eq
     (setup : TrustedSetup) (unique : Array Bytes48) (ci indices : Array Nat)
     (evals : Array CosetEvals) (proofs : Array Bytes48)
@@ -143,17 +159,16 @@ private theorem implPure_eq
     let coeffs := Model.columnRli indices evals powers
     let shifted := (Array.range indices.size).map
       (fun k => powers[k]! * Fr.powNat (Model.cosetShift indices[k]!) 64)
-    ∀ (bL bC bI bP : ByteArray) (qL qC qI qP : G1),
+    ∀ (bL bC bP : ByteArray) (qL qC qI qP : G1),
     Model.lincomb proofs powers = .ok bL → G1.uncompress bL = .ok qL →
     Model.lincomb unique weights = .ok bC → G1.uncompress bC = .ok qC →
-    Model.lincomb (setup.g1MonomialBytes.extract 0 64) coeffs = .ok bI →
-    G1.uncompress bI = .ok qI →
+    Model.lincombPoints (setup.g1Monomial.extract 0 64) coeffs = .ok qI →
     Model.lincomb proofs shifted = .ok bP → G1.uncompress bP = .ok qP →
     Model.implPure setup Model.columnStep unique ci indices evals proofs =
       .ok (Bls.pairingCheck #[(qL, setup.g2Monomial[64]!),
         (G1.add (G1.add qC (G1.neg qI)) qP, G2.neg setup.g2Monomial[0]!)]) := by
   dsimp only
-  intro bL bC bI bP qL qC qI qP hL hdL hC hdC hI hdI hP hdP
+  intro bL bC bP qL qC qI qP hL hdL hC hdC hI hP hdP
   have hlen1 : ¬ indices.size ≠ ci.size := by omega
   have hlen2 : ¬ evals.size ≠ ci.size := by omega
   have hlen3 : ¬ proofs.size ≠ ci.size := by omega
@@ -165,13 +180,13 @@ private theorem implPure_eq
   have hdups := duplicate_check unique hn
   have hshift := weighted_powers_eq indices
     (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-      indices.size) hi
-  simp only [Constants.FIELD_ELEMENTS_PER_CELL, Bind.bind, Except.bind, Pure.pure,
-    Except.pure] at hshift
-  simp only [Model.implPure, hlen1, hlen2, hlen3, if_false, hbounds, hdups,
+      indices.size)
+  have hshifts := ModelSpec.mapM_shiftOf indices hi
+  simp only [Constants.FIELD_ELEMENTS_PER_CELL] at hshift
+  simp only [Model.implPure, hlen1, hlen2, hlen3, ite_false, hbounds, hdups,
     Bool.false_eq_true, Constants.FIELD_ELEMENTS_PER_CELL, hL, hC, hI, hP,
-    Bind.bind, Except.bind, Pure.pure, Except.pure, hdL, hdC, hdI, hdP,
-    Except.toOption, Option.get!_some, Model.columnStep, hshift]
+    Bind.bind, Except.bind, Pure.pure, Except.pure, hdL, hdC, hdP,
+    Model.uncompress, Model.columnStep, hshifts, hshift]
 
 private theorem pairingInputs_eq
     (setup : TrustedSetup) (unique proofs : Array Bytes48) (ci indices : Array Nat)
@@ -235,16 +250,15 @@ theorem model_pairing_refinement
     ModelPairing.lincomb_decode proofs powers (by omega) hp
   obtain ⟨rlc, hrlc, hdrlc, hvrlc, hvC, hiC, haC⟩ :=
     ModelPairing.lincomb_decode unique weights hwlen.symm hc
-  obtain ⟨rli, hrliCall, hdrli, hvrli, hvI, hiI, haI⟩ :=
-    ModelPairing.lincomb_decode rustG1Bytes coeffs
-      (by rw [ModelPairing.setup_bytes_size, hcoeff]) ModelPairing.setup_validated
+  let rli := G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs
+  have hvrli : G1Valid rli :=
+    g1_msm_valid_of_mem _ _ setup_model_points_valid
   obtain ⟨rlp, hrlp, hdrlp, hvrlp, hvP, hiP, haP⟩ :=
     ModelPairing.lincomb_decode proofs shifted (by omega) hp
-  have hneg := g1_neg_matches hvrli hvI hiI haI
-  have hadd := g1_add_matches hvrlc (g1Valid_neg hvrli) hvC (g1Valid_neg hvI)
-    hiC haC hneg.1 hneg.2
+  have hadd := g1_add_matches hvrlc (g1Valid_neg hvrli) hvC (g1Valid_neg hvrli)
+    hiC haC rfl rfl
   have hright := g1_add_matches (g1Valid_add hvrlc (g1Valid_neg hvrli)) hvrlp
-    (g1Valid_add hvC (g1Valid_neg hvI)) hvP hadd.1 hadd.2 hiP haP
+    (g1Valid_add hvC (g1Valid_neg hvrli)) hvP hadd.1 hadd.2 hiP haP
   have hpair := pairingCheck_two_congr embeddedSetup.g2Monomial[64]!
     (G2.neg embeddedSetup.g2Monomial[0]!) hiL haL hright.1 hright.2
   have hmodel : Model.pairingInputs embeddedSetup
@@ -257,12 +271,11 @@ theorem model_pairing_refinement
           G2.neg embeddedSetup.g2Monomial[0]!)] := by
     exact ModelPairing.pairingInputs_eq embeddedSetup unique proofs ci indices evals r
       (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) setup_model_points_eq
-  have hsetupCall : Model.lincomb (embeddedSetup.g1MonomialBytes.extract 0 64) coeffs =
-      .ok (G1.compress (G1.msm (rustG1Bytes.map (fun b => (specPoint b).getD G1.zero)) coeffs)) := by
-    rw [embedded_g1_bytes]
-    exact hrliCall
+  have hsetupCall : Model.lincombPoints (embeddedSetup.g1Monomial.extract 0 64) coeffs =
+      .ok rli := by
+    simp [ModelPairing.setup_points_eq, Model.lincombPoints, ModelPairing.setup_bytes_size, hcoeff, rli, Pure.pure, Except.pure]
   have hcall := ModelPairing.implPure_eq embeddedSetup unique ci indices evals proofs
-    hshape hci hn hi _ _ _ _ ll rlc rli rlp hll hdll hrlc hdrlc hsetupCall hdrli hrlp hdrlp
+    hshape hci hn hi _ _ _ ll rlc rli rlp hll hdll hrlc hdrlc hsetupCall hrlp hdrlp
   change Model.implPure embeddedSetup Model.columnStep unique ci indices evals proofs = _
   rw [hmodel]
   exact hcall.trans (congrArg Except.ok hpair)

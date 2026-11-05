@@ -54,7 +54,7 @@ private theorem wide_pair_output (s : WideStage) (h : s.Valid) (k m : Nat)
     wide_pair_representation s.dit k m s.offset (s.x n) (s.y n) (s.factor n)
       _ _ _ hk hm hmode hoff hov ha hb' hw
   rw [s.pair_refines] at hrun
-  have he := Result.ok.inj hrun
+  have he := Result.ok_injective hrun
   have hef := congrArg Prod.fst he
   have hes := congrArg Prod.snd he
   simp only at hef hes
@@ -105,14 +105,14 @@ private theorem wide_state_output (s : WideStage) (h : s.Valid) (k m : Nat)
     rw [← getElem!_pos (s.state (s.table.vectors.val / 2) false).val v.val v.isLt,
       s.state_get _ _ _ hv]
     dsimp only
-    rw [if_pos hn]
+    rw [ite_eq_left hn]
     by_cases hlo : v.val % (2 * s.half.val) < s.half.val
-    · rw [if_pos hlo]
+    · rw [ite_eq_left hlo]
       have he := pair_partition_lower s.half.val v.val h.half_pos hlo
-      simpa only [← he] using hp.1
-    · rw [if_neg hlo]
+      simpa only [← he, WideOutput] using! hp.1
+    · rw [ite_eq_right hlo]
       have he := pair_partition_upper s.half.val v.val h.half_pos (by omega)
-      simpa only [← he] using hp.2
+      simpa only [← he, WideOutput] using! hp.2
 
 theorem wide_refinement (dit : Bool) (k m : Nat)
     (hk : k ≤ 32) (hm : m ≤ 337) (hmode : dit = false → k = 2 ∧ m = 32)

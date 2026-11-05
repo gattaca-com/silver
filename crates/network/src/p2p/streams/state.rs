@@ -15,6 +15,7 @@ use crate::{
     NetEvent,
     p2p::{
         context::Context,
+        inbound_rate_limits::InboundRateLimits,
         streams::{
             AcquiredRpcOutbound, StreamError, StreamIo,
             cluster_in::{BODY_STALL_TIMEOUT, ClusterRead},
@@ -230,14 +231,14 @@ impl StreamState {
 
     /// Step the stream state.
     #[allow(clippy::too_many_arguments)]
-    pub fn spin<S, F>(
+    pub(crate) fn spin<S, F>(
         self,
         io: &mut S,
         id: &mut P2pStreamId,
         context: &mut Context,
         codec: Option<&mut RpcCodec>,
         now: Instant,
-        inbound_rpc_limits: &mut RpcRateLimitSet,
+        inbound_limits: &mut InboundRateLimits,
         emit: &mut F,
     ) -> Result<Self, StreamError>
     where
@@ -310,7 +311,7 @@ impl StreamState {
                                         // varint+snappy body off the wire.
                                         let request = RpcRequest::MetaData;
                                         match admit_inbound_rpc(
-                                            inbound_rpc_limits,
+                                            &mut inbound_limits.rpc,
                                             *id,
                                             &request,
                                             now,
@@ -365,7 +366,8 @@ impl StreamState {
                 }
             }
             StreamState::Gossip { mut read, mut write } => {
-                read = read.spin(io, &mut context.gossip_producer, id, now, emit)?;
+                read =
+                    read.spin(io, &mut context.gossip_producer, id, now, inbound_limits, emit)?;
                 write = write.spin(io, id)?;
 
                 if matches!(read, GossipReadState::Closed) && id.is_incoming() {
@@ -397,7 +399,7 @@ impl StreamState {
                         )? {
                             RpcReadRequest::Complete { msg } => {
                                 match admit_inbound_rpc(
-                                    inbound_rpc_limits,
+                                    &mut inbound_limits.rpc,
                                     *id,
                                     &msg,
                                     now,

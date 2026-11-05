@@ -11,7 +11,7 @@ theorem limb_eq (x : UInt64) :
   split_ifs <;> omega
 
 theorem limb_eq_nat {x : UInt64} (hx : x.toNat < 2 ^ 63) :
-    limb x = (x.toNat : ℤ) := by rw [limb_eq, if_pos hx]
+    limb x = (x.toNat : ℤ) := by rw [limb_eq, ite_eq_left hx]
 
 theorem limb_add {a b : UInt64}
     (hl : -(2 : ℤ) ^ 63 ≤ limb a + limb b) (hh : limb a + limb b < 2 ^ 63) :
@@ -150,7 +150,7 @@ private theorem val_set {n : ℕ} (a : Vector UInt64 n) (i : Fin n) (x : UInt64)
   unfold val
   have hs := Finset.sum_ite_eq' Finset.univ i
     (fun _ => (limb x - limb a[i]) * (2 : ℤ) ^ (52 * i.val))
-  simp only [Finset.mem_univ, if_true] at hs
+  simp only [Finset.mem_univ, ite_true] at hs
   rw [← hs]
   rw [← Finset.sum_add_distrib]
   apply Finset.sum_congr rfl
@@ -169,7 +169,7 @@ private theorem carryStep_val {n : ℕ} (a : Vector UInt64 n) (j : Fin (n - 1))
   unfold carryStep
   rw [val_set _ ⟨j.val, by omega⟩, val_set _ ⟨j.val + 1, by omega⟩]
   simp only [Fin.getElem_fin, Vector.getElem_set, show j.val + 1 ≠ j.val by omega,
-    if_false, limb_mask]
+    ite_false, limb_mask]
   rw [hc, Nat.mul_add, pow_add]
   have he := Int.emod_add_mul_ediv (limb a[j.val]) ((2 : ℤ) ^ 52)
   simp only [Nat.mul_one]
@@ -224,28 +224,28 @@ private theorem normalise_prefix {n : ℕ} (a : Vector UInt64 n)
     refine ⟨(carryStep_val b ⟨k, hkn⟩ hx hy).trans hi.1, ?_, ?_, ?_⟩
     · intro j hj
       by_cases hjk : k = j.val
-      · simp only [carryStep, Fin.getElem_fin, Vector.getElem_set, hjk, if_true,
-          show j.val + 1 ≠ j.val by omega, if_false]
+      · simp only [carryStep, Fin.getElem_fin, Vector.getElem_set, hjk, ite_true,
+          show j.val + 1 ≠ j.val by omega, ite_false]
         exact mask_normalized _
       · have hjk' : k + 1 ≠ j.val := by omega
         simpa only [carryStep, Fin.getElem_fin, Vector.getElem_set, hjk, hjk',
-          if_false, show k + 1 ≠ k by omega] using hi.2.1 j (by omega)
+          ite_false, show k + 1 ≠ k by omega] using hi.2.1 j (by omega)
     · intro j hj
       have hne : k ≠ j.val := by omega
-      simp only [carryStep, Fin.getElem_fin, Vector.getElem_set, hne, if_false,
-        ← hj, if_true]
+      simp only [carryStep, Fin.getElem_fin, Vector.getElem_set, hne, ite_false,
+        ← hj, ite_true]
       simpa only [hj] using (carry_limb_spec hx hy).2
     · intro j hj
       have hne : k ≠ j.val := by omega
       have hne' : k + 1 ≠ j.val := by omega
       simpa only [carryStep, Fin.getElem_fin, Vector.getElem_set, hne, hne',
-        if_false, show k + 1 ≠ k by omega] using hi.2.2.2 j (by omega)
+        ite_false, show k + 1 ≠ k by omega] using hi.2.2.2 j (by omega)
 
 private theorem normalized_of_prefix {n : ℕ} (a : Vector UInt64 (n + 1))
     (hn : ∀ j : Fin (n + 1), j.val < n → a[j].toNat < 2 ^ 52)
     (hlo : 0 ≤ val a) (hhi : val a < 2 ^ (52 * (n + 1))) : Normalized a := by
   let f (j : ℕ) : ℤ := if h : j < n + 1 then limb a[j] else 0
-  have hf (j : ℕ) (hj : j < n + 1) : f j = limb a[j] := dif_pos hj
+  have hf (j : ℕ) (hj : j < n + 1) : f j = limb a[j] := dite_eq_left hj
   have hb := prefix_bound n f (by
     intro j hj
     have hjn : a[j].toNat < 2 ^ 52 := hn ⟨j, by omega⟩ hj
@@ -293,7 +293,7 @@ theorem normalise_width_spec {n : ℕ} {a : Vector UInt64 n}
   | zero => intro j; exact Fin.elim0 j
   | succ n =>
     apply normalized_of_prefix (normalise a)
-    · simpa only [Nat.add_sub_cancel] using hi.2.1
+    · exact hi.2.1
     · rwa [hi.1]
     · rwa [hi.1]
 

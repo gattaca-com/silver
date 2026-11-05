@@ -68,7 +68,8 @@ theorem adjugate_coefficients (a : P F) :
     simp only [inverseAdjugate, inverseProducts, shuffle2, shuffle_invLeft,
       shuffle_invRight, shuffle_invSub, asFp2, xi2, sub2, mul2, Matrix.cons_val]
     simp [Fp6Field.xi, show (1 : Fp2Field).re = 1 from rfl,
-      show (1 : Fp2Field).im = 0 from rfl] <;> ring
+      show (1 : Fp2Field).im = 0 from rfl]
+  all_goals ring
 
 theorem determinant_coefficient (a t : P F) :
     asFp2 (inverseDeterminant a t) 0 =
@@ -123,7 +124,7 @@ theorem inverse_embed_field (t d : P F) :
   · change Fp6Field.assemble (asFp2 (inverseEmbed t d) 3)
       (asFp2 (inverseEmbed t d) 4) (asFp2 (inverseEmbed t d) 5) = 0
     have hz (l : Fin 3) : asFp2 (inverseEmbed t d) ⟨l.val + 3, by omega⟩ = 0 := by
-      fin_cases l <;> simp [inverseEmbed, asFp2, shuffle2, shuffle_invEmbed] <;> rfl
+      fin_cases l <;> simp [inverseEmbed, asFp2, shuffle2, shuffle_invEmbed]
     have h3 : asFp2 (inverseEmbed t d) 3 = 0 := hz ⟨0, by decide⟩
     have h4 : asFp2 (inverseEmbed t d) 4 = 0 := hz ⟨1, by decide⟩
     have h5 : asFp2 (inverseEmbed t d) 5 = 0 := hz ⟨2, by decide⟩

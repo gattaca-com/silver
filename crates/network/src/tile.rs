@@ -189,6 +189,9 @@ impl NetworkTile {
                             offence: RpcOffence::ChunkFraming,
                         });
                     }
+                    NetEvent::InboundRateLimited { p2p_peer, severity, offence } => {
+                        adapter.produce(PeerEvent::RpcMisbehaviour { p2p_peer, severity, offence });
+                    }
                     NetEvent::Gossip { stream, msg } => {
                         //let ts = adapter.producers.timestamp().
                         // with_ingestion_t(IngestionTime::now()); let msg =

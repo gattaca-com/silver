@@ -19,14 +19,14 @@ theorem fpEncode_eq_bls (x : Fp) :
     exact Nat.mul_mod_mod _ _ _
   simp only [fpEncode, DecompressG2.toBlstFp, DecompressG2.blstFp]
   apply congrArg blst.blst_fp.mk
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
-  · simp only [words, toArray, List.length_map, List.length_range,
+  · simp only [words, toArray, Array.from_val, List.length_map, List.length_range,
       Vector.length_toList]
     rfl
   · intro i hi hj
-    simp only [words, toArray, List.getElem_map, List.getElem_range,
-      Vector.getElem_toList, Vector.getElem_ofFn, hmont]
+    simp only [words, toArray, Array.from_val, List.getElem_map, List.getElem_range,
+      Vector.getElem_toList, Vector.getElem_ofFn, hmont x]
     rfl
 
 end LeanBlsSimd.Kzg

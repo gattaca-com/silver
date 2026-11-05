@@ -1,18 +1,20 @@
 use std::time::Instant;
 
-use silver_beacon_state_data::{BodyFork, BodyOffsets};
+use silver_beacon_state_data::{B256, BodyFork, BodyOffsets, SLOTS_PER_EPOCH, bls};
 use silver_common::{
+    ProducedBlock, TCacheReader, TRead,
     block_contents::SignedBlockContents,
+    ssz_hash::HashedBody,
     ssz_view::{BeaconBlockBodyGloasView, ExecutionPayloadHeaderFuluView, SignedBeaconBlockView},
 };
+use silver_pbs::plain_http_url;
 
 use crate::{
     ctx::ApiCtx,
+    entry_signatures::signing_key,
     http::{response::Response, router::Request},
     submission::{Integration, requested_validation},
 };
-
-const MAX_BUILDER_URL_SIZE: usize = 2048;
 
 pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response<'_>) {
     if !req.body_is_ssz() {
@@ -24,42 +26,49 @@ pub(crate) fn post_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut Response
     let body = req.body;
     // Gloas blocks are posted bare, Fulu blocks as `SignedBlockContents`; the
     // leading offset (100 or 12) tells the two apart.
-    let slot = if SignedBeaconBlockView::check_size(body) {
-        let slot = SignedBeaconBlockView::slot(body);
-        if !ctx.spec.is_gloas_at_slot(slot) {
+    let (signed_block, body_fork) = if SignedBeaconBlockView::check_size(body) {
+        if !ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(body)) {
             return resp.error(400, "only Gloas blocks are published without their blobs");
         }
-        let block_body = SignedBeaconBlockView::body(body);
-        if !BeaconBlockBodyGloasView::check_canonical(block_body) ||
-            BodyOffsets::validated(block_body, BodyFork::Gloas).is_err()
-        {
+        if !BeaconBlockBodyGloasView::check_canonical(SignedBeaconBlockView::body(body)) {
             return resp.error(400, "invalid SignedBeaconBlock");
         }
-        slot
+        (body, BodyFork::Gloas)
     } else {
         let Some(contents) = SignedBlockContents::parse(body) else {
             return resp.error(400, "invalid SignedBlockContents");
         };
-        let slot = SignedBeaconBlockView::slot(contents.signed_block);
-        if ctx.spec.is_gloas_at_slot(slot) {
+        if ctx.spec.is_gloas_at_slot(SignedBeaconBlockView::slot(contents.signed_block)) {
             return resp.error(400, "Gloas blocks are published without their blobs");
         }
-        slot
+        (contents.signed_block, BodyFork::Fulu)
     };
+    let slot = SignedBeaconBlockView::slot(signed_block);
     if req.eth_consensus_version != Some(ctx.spec.fork_at_slot(slot).name()) {
         return resp.error(400, "Eth-Consensus-Version must name the block's fork");
     }
+    let Ok(offsets) = BodyOffsets::validated(SignedBeaconBlockView::body(signed_block), body_fork)
+    else {
+        return resp.error(400, "invalid block body");
+    };
+    let hashed = match verify_proposer_signature(ctx, signed_block, &offsets) {
+        Ok(hashed) => hashed,
+        Err(message) => return resp.error(400, message),
+    };
 
     resp.await_block(
         body,
         validation,
         Integration::import_of_block(slot, &ctx.spec, Instant::now()),
+        hashed,
     );
     if let Some(url) = req.eth_builder_url.filter(|_| SignedBeaconBlockView::check_size(body)) {
-        if url.starts_with("http://") && url.len() <= MAX_BUILDER_URL_SIZE {
-            resp.forward_to_builder(url);
-        } else {
-            silver_log::warn!(url, "only http:// builder urls are served; block not forwarded");
+        match plain_http_url(url.as_bytes()).filter(|url| url.starts_with("http://")) {
+            Some(url) => resp.forward_to_builder(url),
+            None => silver_log::warn!(
+                url,
+                "only plain http:// builder urls are served; block not forwarded"
+            ),
         }
     }
 }
@@ -88,21 +97,93 @@ pub(crate) fn post_blinded_block_v2(req: &Request<'_>, ctx: &ApiCtx, resp: &mut 
         return resp.error(400, "Eth-Consensus-Version must name the block's fork");
     }
     let body = BodyOffsets::validated(SignedBeaconBlockView::body(block), BodyFork::FuluBlinded);
-    if !body
-        .is_ok_and(|body| ExecutionPayloadHeaderFuluView::check_canonical(body.payload_header()))
-    {
+    let Some(body) = body
+        .ok()
+        .filter(|body| ExecutionPayloadHeaderFuluView::check_canonical(body.payload_header()))
+    else {
         return resp.error(400, "invalid SignedBlindedBeaconBlock");
+    };
+    if let Err(message) = verify_proposer_signature(ctx, block, &body) {
+        return resp.error(400, message);
     }
     resp.await_blinded_block_lock(block);
 }
 
+/// The block this node last produced, pinned in the tcache for a slot.
+/// Comparing a submitted body with it costs microseconds; hashing the body
+/// costs about a millisecond.
+#[derive(Default)]
+pub(crate) struct ProducedBody(Option<HeldBlock>);
+
+struct HeldBlock {
+    block: ProducedBlock,
+    header: TRead,
+    payload: Option<TRead>,
+    release_at: Instant,
+}
+
+impl ProducedBody {
+    pub(crate) fn hold(
+        &mut self,
+        block: ProducedBlock,
+        reader: &mut TCacheReader,
+        release_at: Instant,
+    ) {
+        let header = reader.acquire(block.header);
+        let payload = block.payload.map(|payload| reader.acquire(payload));
+        self.0 = Some(HeldBlock { block, header, payload, release_at });
+    }
+
+    pub(crate) fn release_expired(&mut self, now: Instant) {
+        if self.0.as_ref().is_some_and(|held| now >= held.release_at) {
+            self.0 = None;
+        }
+    }
+
+    fn root_of(&self, body: &[u8]) -> Option<B256> {
+        let HeldBlock { block, header, payload, .. } = self.0.as_ref()?;
+        let header = header.buffer().ok()?.0;
+        let payload = payload.as_ref().map(TRead::buffer).transpose().ok()?;
+        block.has_body(header, payload.map(|(payload, _)| payload), body).then_some(block.body_root)
+    }
+}
+
+/// The hashed body, unless the body is the one this node produced.
+fn verify_proposer_signature(
+    ctx: &ApiCtx,
+    signed_block: &[u8],
+    body: &BodyOffsets<'_>,
+) -> Result<Option<HashedBody>, &'static str> {
+    let proposer = SignedBeaconBlockView::proposer_index(signed_block);
+    let pubkey = ctx
+        .read_state(|view| signing_key(&view, proposer))
+        .ok_or("proposer_index is past the validator count")?;
+    let epoch = SignedBeaconBlockView::slot(signed_block) / SLOTS_PER_EPOCH;
+    let domain = ctx.domain(bls::DOMAIN_BEACON_PROPOSER, epoch);
+    let (body_root, hashed) =
+        match ctx.produced_body.root_of(SignedBeaconBlockView::body(signed_block)) {
+            Some(root) => (root, None),
+            None => {
+                let hashed = HashedBody::of(body);
+                (hashed.root, Some(hashed))
+            }
+        };
+    if !bls::verify_block_signature(signed_block, &pubkey, &body_root, &domain) {
+        return Err("invalid block signature");
+    }
+    Ok(hashed)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::time::Duration;
+
+    use silver_beacon_state_data::{BeaconBlockHeader, SpecConfig, hash_tree_root_block_header};
     use silver_common::{
-        BroadcastValidation, GossipTopic, TCache, TCacheId, TCacheProducer,
-        ssz_hash_gloas::EMPTY_EXECUTION_REQUESTS,
+        BroadcastValidation, GossipTopic, TCache, TCacheId, TCacheProducer, TCacheTable, TProducer,
+        TReadMode,
         ssz_view::{
-            BEACON_BLOCK_BODY_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
+            BEACON_BLOCK_BODY_FIXED, BEACON_BLOCK_FIXED, BYTES_PER_BLOB, BYTES_PER_KZG_COMMITMENT,
             EXECUTION_PAYLOAD_HEADER_FIXED,
         },
         test_util::{SynthBid, SynthBlock},
@@ -112,23 +193,40 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         http::router::{Outcome, SSZ_MEDIA_TYPE},
-        submission::tests::{SLOT, ctx},
+        submission::tests::{SLOT, ctx, validator_signature},
         testing::{dispatch, dispatch_into, posting, status_code, submissions},
     };
 
     const PATH: &str = "/eth/v2/beacon/blocks";
 
+    fn gloas_spec() -> SpecConfig {
+        SpecConfig { gloas_fork_epoch: 0, ..SpecConfig::mainnet() }
+    }
+
+    fn signed_by_proposer(mut block: Vec<u8>, body_fork: BodyFork, spec: &SpecConfig) -> Vec<u8> {
+        let body = SignedBeaconBlockView::body(&block);
+        let header = BeaconBlockHeader {
+            slot: SignedBeaconBlockView::slot(&block),
+            proposer_index: SignedBeaconBlockView::proposer_index(&block),
+            parent_root: *SignedBeaconBlockView::parent_root(&block),
+            state_root: *SignedBeaconBlockView::state_root(&block),
+            body_root: HashedBody::of(&BodyOffsets::validated(body, body_fork).unwrap()).root,
+        };
+        let signature = validator_signature(
+            spec,
+            header.proposer_index,
+            bls::DOMAIN_BEACON_PROPOSER,
+            header.slot / SLOTS_PER_EPOCH,
+            &hash_tree_root_block_header(&header),
+        );
+        block[4..100].copy_from_slice(&signature);
+        block
+    }
+
     /// Contents of a block that commits to one blob.
     fn contents() -> Vec<u8> {
-        let mut block = vec![0; 184 + BEACON_BLOCK_BODY_FIXED + BYTES_PER_KZG_COMMITMENT];
-        block[..4].copy_from_slice(&100u32.to_le_bytes());
-        block[180..184].copy_from_slice(&84u32.to_le_bytes());
-        let body = &mut block[184..];
-        for at in [200, 204, 208, 212, 216, 380, 384, 388] {
-            body[at..at + 4].copy_from_slice(&(BEACON_BLOCK_BODY_FIXED as u32).to_le_bytes());
-        }
-        let end = (BEACON_BLOCK_BODY_FIXED + BYTES_PER_KZG_COMMITMENT) as u32;
-        body[392..396].copy_from_slice(&end.to_le_bytes());
+        let block = SynthBlock::fulu(0, &[0; BYTES_PER_KZG_COMMITMENT]).into_bytes();
+        let block = signed_by_proposer(block, BodyFork::Fulu, &SpecConfig::mainnet());
 
         let proofs_at = 12 + block.len();
         let blobs_at = proofs_at + 128 * 48;
@@ -167,6 +265,105 @@ pub(crate) mod tests {
         let [entry] = &submission.accepted[..] else { panic!("one entry") };
         assert_eq!(entry.topic, GossipTopic::BeaconBlock);
         assert_eq!(submissions.read_buffer(entry.ssz).unwrap(), body);
+    }
+
+    /// A cache holding `message`, an unsigned block, as this node's produced
+    /// block with `body_root`.
+    struct Production {
+        reader: TCacheReader,
+        block: ProducedBlock,
+        _cache: TProducer,
+    }
+
+    impl Production {
+        fn new(message: &[u8], body_root: B256) -> Self {
+            let mut cache = TCache::producer(TCacheId::BeaconStateHandoff, 1 << 20);
+            let mut reader = TCacheReader::new(TCacheTable::from_iter([cache.cache_ref()]));
+            reader.open(TCacheId::BeaconStateHandoff, "test", TReadMode::Sliding).unwrap();
+            let header = cache.write_with(message.len(), |out| out.copy_from_slice(message));
+            cache.loop_start();
+            let block = ProducedBlock {
+                header: header.unwrap(),
+                payload_at: message.len() as u32,
+                payload: None,
+                envelope_header: None,
+                execution_payload_value: [0; 32],
+                consensus_block_value: [0; 32],
+                builder_entry: None,
+                body_root,
+            };
+            Self { reader, block, _cache: cache }
+        }
+
+        fn held(&mut self, release_at: Instant) -> ProducedBody {
+            let mut body = ProducedBody::default();
+            body.hold(self.block, &mut self.reader, release_at);
+            body
+        }
+    }
+
+    #[test]
+    fn held_block_names_its_root_until_released() {
+        let block = gloas_block();
+        let mut production = Production::new(&block[100..], [5; 32]);
+        let now = Instant::now();
+        let mut held = production.held(now + Duration::from_secs(1));
+
+        let body = SignedBeaconBlockView::body(&block);
+        assert_eq!(held.root_of(body), Some([5; 32]));
+        assert_eq!(held.root_of(&body[1..]), None, "another body is hashed");
+        held.release_expired(now);
+        assert_eq!(held.root_of(body), Some([5; 32]));
+        held.release_expired(now + Duration::from_secs(1));
+        assert_eq!(held.root_of(body), None, "a released block is hashed");
+    }
+
+    /// The produced root stands in for the hash only when the bodies match,
+    /// so a wrong root fails the check only then.
+    #[test]
+    fn produced_root_is_used_only_for_the_produced_body() {
+        let body = contents();
+        let block = SignedBlockContents::parse(&body).unwrap().signed_block;
+        let slot = SignedBeaconBlockView::slot(block);
+        let mut other = block[100..].to_vec();
+        other[BEACON_BLOCK_FIXED] ^= 1;
+        for (message, accepted) in [(&block[100..], false), (&other[..], true)] {
+            let mut production = Production::new(message, [9; 32]);
+            let mut ctx = ctx();
+            ctx.produced_body = production.held(Instant::now() + Duration::from_secs(12));
+            let fork = ctx.spec.fork_at_slot(slot).name();
+            let mut submissions = TCache::producer(TCacheId::BoundaryProcessing, 1 << 20);
+            let (outcome, _) = dispatch_into(&ctx, &publishing(&body, fork), &mut submissions);
+            assert_eq!(matches!(outcome, Outcome::AwaitingVerdicts(_)), accepted, "{outcome:?}");
+        }
+    }
+
+    /// A block another key signed never reaches its proposer's lock.
+    #[test]
+    fn block_not_signed_by_its_proposer_is_a_400() {
+        let mut forged_contents = contents();
+        forged_contents[12 + 4..12 + 100].copy_from_slice(&gloas_block()[4..100]);
+        let mut forged_gloas = gloas_block();
+        forged_gloas[4..100].copy_from_slice(&contents()[12 + 4..12 + 100]);
+        for (ctx, body) in [(ctx(), forged_contents), (gloas_ctx(), forged_gloas)] {
+            let block = SignedBlockContents::parse(&body).map_or(&body[..], |c| c.signed_block);
+            let fork = ctx.spec.fork_at_slot(SignedBeaconBlockView::slot(block)).name();
+            let (outcome, out) = dispatch(&ctx, &publishing(&body, fork));
+            assert_eq!(outcome, Outcome::Response(None));
+            assert_eq!(status_code(&out), "400");
+        }
+
+        let mut blinded = blinded_block();
+        blinded[4..100].copy_from_slice(&gloas_block()[4..100]);
+        let ctx = sidecar_ctx();
+        let (outcome, out) = dispatch(&ctx, &ParsedRequest {
+            body: &blinded,
+            content_type: Some(SSZ_MEDIA_TYPE),
+            eth_consensus_version: Some(ctx.spec.fork_at_slot(SLOT + 1).name()),
+            ..posting(BLINDED_PATH, "")
+        });
+        assert_eq!(outcome, Outcome::Response(None));
+        assert_eq!(status_code(&out), "400");
     }
 
     /// `BeaconClient::publish_block` in helix: Fulu contents under
@@ -232,16 +429,13 @@ pub(crate) mod tests {
 
     fn gloas_ctx() -> ApiCtx {
         let mut ctx = ctx();
-        ctx.spec.gloas_fork_epoch = 0;
+        ctx.spec = gloas_spec();
         ctx
     }
 
-    /// The synthetic block with an empty `parent_execution_requests`, which
-    /// a canonical body still frames.
     pub(crate) fn gloas_block() -> Vec<u8> {
-        let mut block = SynthBlock::gloas(SLOT + 1, SynthBid::new(&[])).into_bytes();
-        block.extend_from_slice(&EMPTY_EXECUTION_REQUESTS);
-        block
+        let block = SynthBlock::gloas(SLOT + 1, SynthBid::new(&[])).into_bytes();
+        signed_by_proposer(block, BodyFork::Gloas, &gloas_spec())
     }
 
     #[test]
@@ -255,6 +449,25 @@ pub(crate) mod tests {
         let [entry] = &submission.accepted[..] else { panic!("one entry") };
         assert_eq!(entry.topic, GossipTopic::BeaconBlock);
         assert_eq!(submissions.read_buffer(entry.ssz).unwrap(), body);
+    }
+
+    #[test]
+    fn only_a_plain_http_builder_url_is_forwarded() {
+        let body = gloas_block();
+        for (url, forwarded) in [
+            ("http://b:18550/relay", true),
+            ("http://b:18550/relay x", false),
+            ("http://b:18550/relay\x0b", false),
+            ("http://b:18550/relayé", false),
+            ("http://", false),
+            ("https://b:18550", false),
+        ] {
+            let request =
+                ParsedRequest { eth_builder_url: Some(url), ..publishing(&body, "gloas") };
+            let (outcome, _) = dispatch_into(&gloas_ctx(), &request, &mut submissions());
+            let Outcome::AwaitingVerdicts(submission) = outcome else { panic!("{outcome:?}") };
+            assert_eq!(submission.forward.is_some(), forwarded, "{url:?}");
+        }
     }
 
     #[test]
@@ -304,7 +517,7 @@ pub(crate) mod tests {
         let header = &mut body[BEACON_BLOCK_BODY_FIXED..];
         header[436..440].copy_from_slice(&(EXECUTION_PAYLOAD_HEADER_FIXED as u32).to_le_bytes());
         block.extend_from_slice(&[12, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0]);
-        block
+        signed_by_proposer(block, BodyFork::FuluBlinded, &SpecConfig::mainnet())
     }
 
     fn post_blinded(ctx: &ApiCtx, body: &[u8], content_type: &str) -> (Outcome, Vec<u8>) {

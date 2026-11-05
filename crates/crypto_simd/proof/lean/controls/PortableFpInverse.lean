@@ -6,6 +6,8 @@ open EthLib.Cryptography Bls
 open scoped EthLib.Cryptography.Bls.Fp
 open LeanBlsSimd.Word64
 
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 namespace LeanBlsSimd.Portable.Fp.Controls
 set_option exponentiation.threshold 4096
 
@@ -20,7 +22,7 @@ theorem halving_retains_incoming_bit :
       ok (Array.repeat 6#usize 0#u64) := by
   intro h
   obtain ⟨out,he,hv⟩ := halve_refines (Array.repeat 6#usize 0#u64) 1#u64 (by decide)
-  rw [Result.ok.inj (he.symm.trans h),zero_value] at hv
+  rw [Result.ok_injective (he.symm.trans h),zero_value] at hv
   norm_num [radix] at hv
 
 theorem odd_coefficient_requires_modulus :
@@ -28,7 +30,7 @@ theorem odd_coefficient_requires_modulus :
   intro h
   obtain ⟨out,he,hb,hv⟩ := halve_mod_p_refines ordinaryOne
     (by rw [one_value]; decide)
-  rw [Result.ok.inj (he.symm.trans h),zero_value,one_value] at hv
+  rw [Result.ok_injective (he.symm.trans h),zero_value,one_value] at hv
   norm_num [Bls.Fp.modulus] at hv
 
 theorem one_test_checks_upper_words :
@@ -36,7 +38,7 @@ theorem one_test_checks_upper_words :
       (Array.make 6#usize [1#u64,1#u64,0#u64,0#u64,0#u64,0#u64] (by rfl)) ≠
       ok true := by
   rw [is_one_refines]
-  norm_num [value,wordsValue,Array.make,radix]
+  norm_num [value,wordsValue,Array.make, Array.from_val,radix]
 
 #print axioms halve_refines
 #print axioms halve_mod_p_refines
@@ -44,7 +46,8 @@ theorem one_test_checks_upper_words :
 
 theorem inverse_zero_is_zero [RuntimeFeatures] :
     portable.fp.Fp.inverse (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l =
-      ok (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l := inverse_zero
+      ok (Kzg.fpEncode (0 : ZMod Bls.Fp.modulus)).l := by
+  simpa only [inv_zero] using inverse_encoded (0 : ZMod Bls.Fp.modulus)
 
 theorem inverse_one_is_one [RuntimeFeatures] :
     portable.fp.Fp.inverse (Kzg.fpEncode (1 : ZMod Bls.Fp.modulus)).l =
@@ -56,17 +59,18 @@ theorem inverse_two_is_not_unchanged [RuntimeFeatures] :
       ok (Kzg.fpEncode (2 : ZMod Bls.Fp.modulus)).l := by
   rw [inverse_encoded]
   intro h
-  have he := (encoded_eq_iff _ _).mp (congrArg Subtype.val (Result.ok.inj h))
+  have he := (encoded_eq_iff _ _).mp (congrArg Array.val (Result.ok_injective h))
   have hn : (2 : ZMod Bls.Fp.modulus)⁻¹ ≠ 2 := by decide +kernel
   exact hn he
 
 theorem batch_zero_factor_is_not_skipped [RuntimeFeatures] :
     portable.msm.pairs.batch_inverse (encodeFour 0 1 1 1) ≠ ok (encodeFour 0 1 1 1) := by
-  rw [batch_inverse_zero_product 0 1 1 1 (by simp)]
+  rw [batch_inverse_schedule]
+  simp only [zero_mul, inv_zero]
   intro h
   have he := congrArg (fun a : Array portable.fp.Fp 4#usize =>
-    a.val[1]'(by rw [a.property]; decide)) (Result.ok.inj h)
-  have hf : (0 : ZMod Bls.Fp.modulus) = 1 := (encoded_eq_iff _ _).mp (congrArg Subtype.val he)
+    a.val[1]'(by rw [a.property]; decide)) (Result.ok_injective h)
+  have hf : (0 : ZMod Bls.Fp.modulus) = 1 := (encoded_eq_iff _ _).mp (congrArg Array.val he)
   exact zero_ne_one hf
 
 theorem batch_four_ones [RuntimeFeatures] :
@@ -75,8 +79,6 @@ theorem batch_four_ones [RuntimeFeatures] :
 
 #print axioms inverse_words_refines
 #print axioms inverse_encoded
-#print axioms inverse_zero
 #print axioms batch_inverse_nonzero
-#print axioms batch_inverse_zero_product
 
 end LeanBlsSimd.Portable.Fp.Controls

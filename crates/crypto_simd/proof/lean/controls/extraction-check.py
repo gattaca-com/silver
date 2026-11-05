@@ -45,7 +45,7 @@ def declaration(text, name):
     matches = list(re.finditer(r"^def " + re.escape(name) + r"\s*:", text, re.M))
     assert len(matches) == 1, f"expected one outer declaration: {name}"
     start = text.rfind("/--", 0, matches[0].start())
-    following = re.search(r"\n(?:/--|private def |end silver_crypto_simd)", text[matches[0].end():])
+    following = re.search(r"\n(?:/--|def |end silver_crypto_simd)", text[matches[0].end():])
     assert following, f"missing declaration boundary: {name}"
     end = matches[0].end() + following.start()
     block = text[start:end]
@@ -92,10 +92,12 @@ def validate_hoisting(raw, prepared):
     """Expand all helpers, compare exact expressions/outer headers, check helper types."""
     literals = prepared["Literals.lean"]
     functions = prepared["Funs.lean"]
-    matches = list(re.finditer(r"^private def (\S+) : (.*?) :=\n", literals, re.M))
+    matches = list(re.finditer(r"^def (\S+) : (.*?) :=\n", literals, re.M))
     definitions = {}
     for match in matches:
         name = match[1]
+        if name in GLOBALS:
+            continue
         assert HELPER.fullmatch(name), f"unexpected helper: {name}"
         assert name not in definitions, f"duplicate helper: {name}"
         # Helpers are separated by a blank line; their body is a single Array.make term.
@@ -123,7 +125,9 @@ def validate_hoisting(raw, prepared):
     assert used == definitions.keys(), "unused helper definitions"
     for name, (declared_type, body) in definitions.items():
         assert inferred_type(expand(body)) == declared_type, f"helper type differs: {name}"
-    assert functions.count("import LeanBlsSimd.Extracted.Literals\n") == 1
+    assert re.findall(r"^public import LeanBlsSimd\.Extracted\.Literals$", functions, re.M) == [
+        "public import LeanBlsSimd.Extracted.Literals"]
+    assert re.findall(r"^@\[expose\] public section$", literals, re.M) == ["@[expose] public section"]
     assert "variable [RuntimeFeatures] [bls.BlsExternals] [KzgExternals]" in functions
     print(f"exact literal expansion: {len(definitions)} helpers; values, order, shapes, types and outer headers match")
 
@@ -158,7 +162,8 @@ def fixtures():
               for lane in range(2)] for step in range(3)]
     steps = [array(step) for step in lanes]
     prefix = (
-        "import LeanBlsSimd.Extracted.Types\nimport LeanBlsSimd.Extracted.FunsExternal\n"
+        "module\npublic import LeanBlsSimd.Extracted.Types\n"
+        "public import LeanBlsSimd.Extracted.FunsExternal\n@[expose] public section\n"
         "open Aeneas.Std\nnamespace silver_crypto_simd\n"
         "/-- BLS fixture --/\n@[irreducible] def bls.fixture (full : Nat) : Nat :=\n"
         "  full + full + full + full + full + full + full\n"
@@ -237,10 +242,10 @@ else:
     dest.joinpath('Types.lean').write_bytes(pathlib.Path({str(root / 'types.lean')!r}).read_bytes())
     dest.joinpath('Funs.lean').write_bytes(pathlib.Path({str(root / 'raw.lean')!r}).read_bytes())
 """)
-        executable(toolchain / "charon/bin/charon", """
+        executable(toolchain / "charon/bin/charon", f"""
 import pathlib, sys
 if sys.argv[1:] == ['version']:
-    print('0.0.0')
+    print('0.0.0 ({charon_pin})')
 else:
     roots = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == '--start-from']
     assert 'crate::kzg::cell_extender' in roots, 'missing cell extender extraction root'
@@ -350,10 +355,10 @@ else:
             "[\nkzg.pairing_lines.PAIRING_LINES_step_0_lane_0,", "[\nkzg.pairing_lines.PAIRING_LINES_step_0_lane_1,", 1), "expanded literal differs")
         helper = "kzg.pairing_lines.PAIRING_LINES_step_0_lane_0"
         rejects("missing helper", lambda s: re.sub(
-            r"private def " + re.escape(helper) + r" : .*?\n\n", "", s, count=1, flags=re.S), "missing helper")
+            r"def " + re.escape(helper) + r" : .*?\n\n", "", s, count=1, flags=re.S), "missing helper")
         rejects("duplicate helper", lambda s: s.replace(
-            f"private def {helper} :", f"private def {helper} : Array Std.U64 4#usize :=\n  " + lanes[0][0] +
-            f" (by rfl)\n\nprivate def {helper} :", 1), "duplicate helper")
+            f"def {helper} :", f"def {helper} : Array Std.U64 4#usize :=\n  " + lanes[0][0] +
+            f" (by rfl)\n\ndef {helper} :", 1), "duplicate helper")
         rejects("corrupt helper type", lambda s: s.replace("Array Std.U64 4#usize :=", "Array Std.U8 4#usize :=", 1), "helper type differs")
         rejects("corrupt outer attribute", lambda s: s.replace("global_simps, irreducible", "irreducible", 1), "outer type/comment/attribute changed")
 

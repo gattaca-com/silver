@@ -58,7 +58,7 @@ private theorem second_window_first_bucket : buckets4.list 1#usize 1#usize = ok 
 example : buckets4.list 1#usize 1#usize ≠ ok 9#usize := by
   rw [second_window_first_bucket]
   intro h
-  have he := congrArg UScalar.val (Result.ok.inj h)
+  have he := congrArg UScalar.val (Result.ok_injective h)
   contradiction
 
 example : True := by
@@ -108,7 +108,7 @@ example : ¬ ∃ mag next, (initial tieWords 4#usize).next_digit = ok ((mag, tru
   obtain ⟨mag, next, hgood, _⟩ := tie_positive (initial tieWords 4#usize)
     (by decide) (by decide) (by decide) (by decide) (by decide +kernel)
   rintro ⟨mag', next', hbad⟩
-  have he := congrArg (fun x => x.1.2) (Result.ok.inj (hgood.symm.trans hbad))
+  have he := congrArg (fun x => x.1.2) (Result.ok_injective (hgood.symm.trans hbad))
   contradiction
 
 end LeanBlsSimd.Controls.MsmDigits
@@ -125,8 +125,7 @@ private def prepareWithReject (reject : Bool) (self : msm8.pairs.BatchedAdds)
 
 example : prepareWithReject true = prepareStep := rfl
 
-example : (Fp8.one.sub Fp8.one).is_zero_mask ≠ 0 :=
-  equal_x_zero_mask _ _ 0 (Fp8.holds_one 0).inv (Fp8.holds_one 0).inv rfl
+example : (Fp8.one.sub Fp8.one).is_zero_mask ≠ 0 := by decide +kernel
 
 example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     (group : ℕ) (products : Vector Fp8 4)
@@ -134,7 +133,7 @@ example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     prepareWithReject false self store group products ≠ prepareStep self store group products := by
   intro h
   have he := congrArg Prod.fst h
-  simp only [prepareWithReject, prepareStep, hzero, if_false, Bool.false_eq_true] at he
+  simp only [prepareWithReject, prepareStep, hzero, ite_false, Bool.false_eq_true] at he
   contradiction
 
 example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
@@ -147,7 +146,7 @@ example (self : msm8.pairs.BatchedAdds) (store : msm8.store.PointStore)
     ¬ ∃ next updated, self.extend_chain store g products = ok (true, next, updated) := by
   rw [extend_chain_zero self store g products ia ib na nb xa xb hra hrb hla hlb hzero]
   rintro ⟨next, updated, h⟩
-  have he := congrArg Prod.fst (Result.ok.inj h)
+  have he := congrArg Prod.fst (Result.ok_injective h)
   contradiction
 
 end LeanBlsSimd.Controls.MsmEqualX
@@ -161,7 +160,7 @@ example : GlvRefines.value glv.LAMBDA ≠ Glv.lambda + 1 := by
   omega
 
 example : (Glv.first Glv.lambda + Glv.lambda * Glv.second Glv.lambda) % Glv.modulus =
-    Glv.lambda % Glv.modulus := Glv.congruent _
+    Glv.lambda % Glv.modulus := by decide +kernel
 
 example : (Glv.first Glv.lambda + (Glv.lambda + 1) * Glv.second Glv.lambda) % Glv.modulus ≠
     Glv.lambda % Glv.modulus := by decide +kernel
@@ -245,17 +244,17 @@ namespace LeanBlsSimd.Controls.MsmPlainWords
 open EthLib.Cryptography.Bls PlainWords Kzg silver_crypto_simd.kzg
 
 example (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
-    (values : List Fr) (hinput : input.val = values.map frEncode) :
-    ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = values.length ∧
-      out.val.map (fun word => limbs word.val) = values.map (fun x => x.val) :=
-  plain_words_encoded input words values hinput
+    (hr : ∀ x ∈ input.val, FrReduced x) :
+    ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length ∧
+      out.val.map (fun word => limbs word.val) = input.val.map (fun x => (frRead x).val) :=
+  plain_words_correct input words hr
 
 example (input : Slice blst.blst_fr) (words : alloc.vec.Vec Word)
-    (values : List Fr) (hinput : input.val = values.map frEncode) :
-    ¬ ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = values.length + 1 := by
-  obtain ⟨out, hout, hlen, _⟩ := plain_words_encoded input words values hinput
+    (hr : ∀ x ∈ input.val, FrReduced x) :
+    ¬ ∃ out, fr8.Fr8.plain_words input words = ok out ∧ out.val.length = input.val.length + 1 := by
+  obtain ⟨out, hout, hlen, _⟩ := plain_words_correct input words hr
   rintro ⟨wrong, hwrong, hbad⟩
-  have he := Result.ok.inj (hout.symm.trans hwrong)
+  have he := Result.ok_injective (hout.symm.trans hwrong)
   subst wrong
   omega
 

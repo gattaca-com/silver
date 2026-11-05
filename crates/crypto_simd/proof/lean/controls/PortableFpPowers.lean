@@ -13,7 +13,7 @@ theorem to_plain_does_not_keep_montgomery_one [RuntimeFeatures] :
     portable.fp.Fp.to_plain (Kzg.fpEncode 1).l ≠ ok (Kzg.fpEncode 1).l := by
   rw [to_plain_encoded]
   intro h
-  have hv := congrArg Word64.value (Result.ok.inj h)
+  have hv := congrArg Word64.value (Result.ok_injective h)
   have hn : Word64.value (Kzg.words 6#usize (1 : Bls.Fp).val) ≠ Word64.value (Kzg.fpEncode 1).l := by decide +kernel
   exact hn hv
 
@@ -22,7 +22,7 @@ theorem one_is_not_the_larger_root [RuntimeFeatures] :
   rw [is_larger_root_refines]
   change ok false ≠ ok true
   intro h
-  cases h
+  cases Result.ok_injective h
 
 theorem minus_one_is_the_larger_root [RuntimeFeatures] :
     portable.fp.Fp.is_larger_root (Kzg.fpEncode (-1)).l = ok true := by
@@ -50,8 +50,8 @@ theorem one_validity_bit_cannot_be_dropped [RuntimeFeatures] :
       ok (pairEncode 0 1,Array.make 2#usize [true,false] (by rfl)) := by
   rw [pair_sqrt_zero_one]
   intro h
-  have hb := (Prod.mk.inj (Result.ok.inj h)).2
-  have hl := congrArg Subtype.val hb
+  have hb := (Prod.mk.inj (Result.ok_injective h)).2
+  have hl := congrArg Array.val hb
   cases hl
 
 #print axioms to_plain_encoded
@@ -59,7 +59,6 @@ theorem one_validity_bit_cannot_be_dropped [RuntimeFeatures] :
 #print axioms pow_p_minus_3_over_4_refines
 #print axioms pow_p_minus_3_over_4_pair_refines
 #print axioms sqrt_refines
-#print axioms sqrt_eq_spec
 #print axioms sqrt_pair_refines
 
 end LeanBlsSimd.Portable.Fp.Controls

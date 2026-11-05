@@ -179,7 +179,7 @@ impl Rig {
                 msg_hash: MessageId { id: [0; 20] },
                 recv_ts: Nanos::now(),
                 ssz: read,
-                protobuf,
+                protobuf: Some(protobuf),
                 validation: silver_common::BroadcastValidation::Gossip,
             },
             &mut self.conn.producers,
@@ -220,7 +220,7 @@ fn rpc_first_requires_validation_of_the_exact_gossip_backing() {
     rig.follow([0; 32]);
     rig.block(&block);
     assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
-    rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.rpc_sidecar(&blob.gloas_sidecar(3, SLOT, &root));
     rig.turn();
     let out = rig.drain();
@@ -371,11 +371,7 @@ fn gloas_context_needs_approval_in_either_arrival_order_and_is_revocable() {
             rig.block(&block);
         }
         assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_none());
-        if approval_first {
-            rig.block(&block);
-        } else {
-            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
-        }
+        rig.persist(&block);
         assert!(rig.tile.cells.as_ref().unwrap().store().context(&root).is_some());
         rig.allocate_cells(&mut allocator);
         rig.tile.handle_beacon_state_event(
@@ -406,6 +402,25 @@ fn gloas_commitment_capacity_covers_the_retention_window() {
     }
 }
 
+/// Gossip blocks the beacon state never accepted cannot take the slots an
+/// accepted block's commitments need.
+#[test]
+fn unvalidated_gossip_blocks_leave_gloas_commitment_capacity_free() {
+    let blob = BlockBlob::counting();
+    let mut rig = Rig::gloas(CUSTODY_COLUMNS);
+    rig.follow([0; 32]);
+    for slot in 1..=8 * SLOTS_PER_EPOCH {
+        rig.block(&SynthBlock::gloas(slot, SynthBid::new(&blob.commitment)).into_bytes());
+    }
+    let accepted =
+        SynthBlock::gloas(1, SynthBid::new(&blob.commitment)).parent_root([1; 32]).into_bytes();
+    rig.persist(&accepted);
+    assert_eq!(
+        rig.tile.validator.gloas_commitments(&block_root_gloas(&accepted)),
+        Some(blob.commitment.as_slice())
+    );
+}
+
 #[test]
 fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
     const SLOT: u64 = 7;
@@ -428,7 +443,7 @@ fn verified_assemblies_complete_da_persist_and_publish_once_in_both_forks() {
         let domain = rig.tile.validator.domain_at(SLOT).unwrap();
         if format == ForkName::Gloas {
             rig.block(&block);
-            rig.tile.note_staged_block(root, SLOT, &mut rig.conn.producers);
+            rig.persist(&block);
         } else {
             let bytes = blob.fulu_sidecar(3, &block);
             rig.tile.tracker.set_signature(
@@ -581,7 +596,7 @@ fn gossip_columns_are_relayed_and_rpc_columns_only_persisted() {
             rig.follow([0xAA; 32]);
         }
         rig.block(&block);
-        rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+        rig.persist(&block);
         rig.drain();
         rig.receive_column(origin, index, &blob.gloas_sidecar(index, SLOT, &block_root));
         rig.turn();
@@ -688,7 +703,7 @@ fn held_columns_do_not_request_publication_again() {
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
     rig.block(&block);
-    rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.drain();
     let sidecar = blob.gloas_sidecar(3, SLOT, &block_root);
     rig.gossip_sidecar(3, &sidecar);
@@ -716,7 +731,7 @@ fn only_columns_with_valid_kzg_proofs_request_publication() {
     let mut rig = Rig::gloas(CUSTODY_COLUMNS);
     rig.follow([0xAA; 32]);
     rig.block(&block);
-    rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+    rig.persist(&block);
     rig.drain();
     rig.gossip_sidecar(3, &blob.gloas_sidecar(3, SLOT, &block_root));
     // Column 7 carries column 6's proofs: structural checks pass, KZG fails.
@@ -743,7 +758,7 @@ fn buffered_gloas_columns_are_processed_without_publication() {
         rig.turn();
         assert!(rig.drain().publications.is_empty());
         rig.block(&block);
-        rig.tile.note_staged_block(block_root, SLOT, &mut rig.conn.producers);
+        rig.persist(&block);
         rig.turn();
         let out = rig.drain();
         assert!(out.persisted(block_root, 3), "the buffered column was processed");

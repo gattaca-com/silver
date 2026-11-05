@@ -120,6 +120,6 @@ theorem from_line_lanes {q : Array fp8.Fp8 5#usize} {a : Fin 5 → V F}
     index_usize_eq q 2#usize (by decide),
     index_usize_eq q 3#usize (by decide),
     index_usize_eq q 4#usize (by decide),
-    UScalar.ofNatCore_val_eq, hz, hra, hb2, hrb, hp4, hd0, hp6, hd1, hdb, hnpos0, hnpos1, hnpos2, hnpos, hnposf, hnneg0, hnneg1, hnneg2, hnneg, hnnegf, hmpos0, hmpos1, hmpos, hmneg0, hmneg1, hmneg, hcp0, hcp, hcn0, hcn, hip0, hip, hin0, hinn, hp66, hre, him, hout0, hout1, bind_tc_ok]
+    UScalar.ofNatCore_val_eq, hz, hra, hb2, hrb, hp4, hd0, hp6, hd1, hdb, hnpos0, hnpos1, hnpos2, hnpos, hnposf, hnneg0, hnneg1, hnneg2, hnneg, hnnegf, hmpos0, hmpos1, hmpos, hmneg0, hmneg1, hmneg, hcp0, hcp, hcn0, hcn, hip0, hip, hin0, hinn, hp66, hre, him, hout0, hout1, bind_ok]
 
 end LeanBlsSimd.LaneTower

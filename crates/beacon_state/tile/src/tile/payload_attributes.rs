@@ -156,9 +156,6 @@ impl BeaconStateTile {
         let state_id = self.epoch_start_state(self.last_applied, slot);
         // Never committed: the ring slots it rolls are freed with the tail.
         let mut fork = self.state.apply_block_view(state_id);
-        if context.is_gloas {
-            stf::process_slots(&self.spec, &mut fork, slot, &mut self.stf_scratch);
-        }
         let prev_randao = fork.view.randao_mixes.at_epoch(slot / SLOTS_PER_EPOCH);
         let withdrawals = match (context.is_gloas, context.full_parent) {
             (false, _) => get_expected_withdrawals(&fork.view).withdrawals,
@@ -194,24 +191,32 @@ impl BeaconStateTile {
     ) {
         self.payload_attributes.wanted = wanted;
         self.payload_attributes.announced = None;
-        self.announce_payload_attributes(self.ticker.current_slot() + 1, producers);
+        self.refresh_payload_attributes(producers);
     }
 
-    /// Moves the announced slot onto a new head.
+    /// Follows the next slot still to be produced. The slot stays announced
+    /// through its own start, where fork choice re-decides its parent payload.
     pub(super) fn refresh_payload_attributes(&mut self, producers: &mut Producers) {
-        let Some(announced) = self.payload_attributes.announced else { return };
-        if announced.slot >= self.ticker.current_slot() {
-            self.announce_payload_attributes(announced.slot, producers);
+        if !self.payload_attributes.wanted {
+            return;
         }
+        let current = self.ticker.current_slot();
+        let unproduced = current.max(self.last_applied_block_slot() + 1);
+        let slot = match self.payload_attributes.announced {
+            Some(announced) if announced.slot >= current => announced.slot.max(unproduced),
+            _ => unproduced,
+        };
+        self.announce_payload_attributes(slot, producers);
     }
 
-    fn announce_payload_attributes(&mut self, slot: Slot, producers: &mut Producers) {
+    pub(super) fn announce_payload_attributes(&mut self, slot: Slot, producers: &mut Producers) {
         if !self.payload_attributes.wanted {
             return;
         }
         // Consumers are told to ignore the fee recipient, so zero may stand in.
         let fallback_fee_recipient = Some(self.default_fee_recipient.unwrap_or_default());
         if let Ok(basis) = self.payload_basis(slot, fallback_fee_recipient) &&
+            self.payload_attributes.announced != Some(basis) &&
             let Ok(inputs) = self.payload_inputs(&basis)
         {
             self.publish_payload_attributes(&basis, &inputs, producers);

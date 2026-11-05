@@ -23,33 +23,33 @@ theorem bound_table_fold {x : Fp8} {l : Fin 8} {a : ZMod Fp.modulus}
       simp at this
       omega
     intro k
-    simpa only [List.foldl_nil, if_pos (show k.val ≤ m by omega)] using ht k
+    simpa only [List.foldl_nil, ite_eq_left (show k.val ≤ m by omega)] using ht k
   | k :: ks, m, table, hm, hks, ht => by
     obtain ⟨hk, hks'⟩ := drop_finRange_cons hks.symm
     rw [List.foldl_cons]
     refine bound_table_fold hx ks (m + 1) _ (by omega) hks' fun j => ?_
     have hprev := ht ⟨k.val - 1, by omega⟩
-    simp only [Fin.getElem_fin, if_pos (show k.val - 1 ≤ m by omega)] at hprev
+    simp only [Fin.getElem_fin, ite_eq_left (show k.val - 1 ≤ m by omega)] at hprev
     simp only [Fin.getElem_fin, Vector.getElem_set]
     by_cases hjk : k.val = j.val
-    · rw [if_pos hjk, if_pos (show j.val ≤ m + 1 by omega)]
+    · rw [ite_eq_left hjk, ite_eq_left (show j.val ≤ m + 1 by omega)]
       have hp := ((hprev.mul hx (by decide)).boundRep).mono (show 2 ≤ 32 by decide)
       simpa only [← hjk, ← pow_succ, Nat.sub_add_cancel (show 1 ≤ k.val by omega)] using hp
-    · rw [if_neg hjk]
+    · rw [ite_eq_right hjk]
       have hj := ht j
       simp only [Fin.getElem_fin] at hj
       by_cases hjm : j.val ≤ m
-      · simpa only [if_pos hjm, if_pos (show j.val ≤ m + 1 by omega)] using hj
-      · simpa only [if_neg hjm, if_neg (show ¬j.val ≤ m + 1 by omega)] using hj
+      · simpa only [ite_eq_left hjm, ite_eq_left (show j.val ≤ m + 1 by omega)] using hj
+      · simpa only [ite_eq_right hjm, ite_eq_right (show ¬j.val ≤ m + 1 by omega)] using hj
 
 theorem bound_table_init {x : Fp8} {l : Fin 8} {a : ZMod Fp.modulus}
     (hx : BoundRep 32 x l a) : BoundPartTable a l 1 ((Vector.replicate 16 one).set 1 x) := by
   intro k
   simp only [Fin.getElem_fin, Vector.getElem_set, Vector.getElem_replicate]
   by_cases hk : 1 = k.val
-  · rw [if_pos hk, if_pos (by omega), ← hk, pow_one]
+  · rw [ite_eq_left hk, ite_eq_left (by omega), ← hk, pow_one]
     exact hx
-  · rw [if_neg hk]
+  · rw [ite_eq_right hk]
     have ho := ((holds_one l).boundRep).mono (show 2 ≤ 32 by decide)
     split_ifs with h
     · simpa only [show k.val = 0 by omega, pow_zero] using ho

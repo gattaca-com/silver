@@ -85,6 +85,7 @@ jobs:
         with:
           ocaml-compiler: "5.3"
 
+      # The OCaml dependencies come from the pinned checkouts' opam files.
       # Charon's `make build` runs `cargo fmt` and builds charon-ml's
       # documentation, hence rustfmt and odoc. setup-ocaml creates a local
       # switch in the workspace, which opam cannot find from ~/aeneas unless
@@ -95,13 +96,13 @@ jobs:
           AENEAS_REV: ${{ steps.pins.outputs.aeneas }}
           OPAMSWITCH: ${{ github.workspace }}
         run: |
-          opam install -y ppx_deriving visitors easy_logging zarith yojson core_unix \
-            odoc ocamlgraph menhir unionFind progress domainslib
           git clone https://github.com/AeneasVerif/aeneas ~/aeneas
           cd ~/aeneas
           git checkout "$AENEAS_REV"
           git clone https://github.com/AeneasVerif/charon charon
           git -C charon checkout "$(tail -n 1 charon-pin)"
+          opam install -y --deps-only ./src ./charon
+          opam install -y odoc
           channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' charon/rust-toolchain)
           rustup toolchain install "$channel" --profile minimal --component rustfmt
           opam exec -- make -C charon build
@@ -125,8 +126,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Runs `lake exe cache get` and `lake build`, whose axiom guard fails the
-      # build on any axiom beyond propext, Classical.choice and Quot.sound.
+      # Runs `lake exe cache get` and `lake build`.
+      # The theorem guard permits only propext, Classical.choice and Quot.sound.
+      # Plain `lake build` also checks the import environment against the pinned
+      # 15-name axiom inventory.
       - uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
         with:
           lake-package-directory: ${{ env.PROOF_DIR }}
@@ -216,10 +219,10 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Downstream package
+      - name: Downstream BLS, KZG and pairing-product consumers
         if: matrix.test == 'downstream'
         working-directory: ${{ env.PROOF_DIR }}/controls/downstream
-        run: lake update && lake build
+        run: lake update && lake build --wfail
 
       - name: Report downstream disk usage
         if: always() && matrix.test == 'downstream'

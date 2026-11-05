@@ -7,16 +7,16 @@ open silver_crypto_simd silver_crypto_simd.kzg
 
 namespace LeanBlsSimd.Kzg.Extender.Controls.KernelBoundary
 
-open Kernel
+open _root_.LeanBlsSimd.Kzg.Extender.Kernel
 
 set_option maxRecDepth 8000
 set_option exponentiation.threshold 1000
 
 private def rejectedInput : Slice U8 :=
-  ⟨List.replicate 256 255#u8, by simp only [List.length_replicate]; scalar_tac⟩
+  Slice.from (List.replicate 256 255#u8) (by simp only [List.length_replicate]; scalar_tac)
 
 private theorem rejected_input_size : rejectedInput.val.length = 256 := by
-  simp only [rejectedInput, List.length_replicate]
+  simp only [rejectedInput, Slice.from_val, List.length_replicate]
 
 private theorem rejected_first_integer :
     Fr.bytesBEToNat ((bytes rejectedInput.val).extract 0 32) = 2 ^ 256 - 1 := by
@@ -47,8 +47,13 @@ private theorem rejected_blob_first_integer :
     Fr.bytesBEToNat ((arrayBytes (layoutBlob 255#u8)).extract 0 32) = 2 ^ 256 - 1 := by
   have hchunk := blobChunk_bytes (layoutBlob 255#u8) 0 (by decide)
   have hsame : blobChunk (layoutBlob 255#u8) 0 (by decide) = layoutChunk 255#u8 := by
-    apply Subtype.ext
-    simp [-List.reduceReplicate, blobChunk, layoutBlob, layoutChunk, List.slice]
+    have hval : (layoutBlob 255#u8).val = List.replicate 131072 255#u8 := by
+      unfold layoutBlob Array.make
+      exact Array.from_val ..
+    apply Aeneas.Std.Array.ext
+    simp only [blobChunk, layoutChunk, Array.make, Array.from_val, hval, List.slice,
+      List.drop_replicate, List.take_replicate]
+    rfl
   rw [hsame] at hchunk
   rw [← hchunk]
   decide +kernel
@@ -82,9 +87,9 @@ def acceptEveryLane (input : Slice U8) : Result (fr8.Fr8 × U8) := do
 theorem accepting_every_lane_changes_generated_decode :
     fr8.Fr8.from_bytes rejectedInput 0#usize ≠ acceptEveryLane rejectedInput := by
   obtain ⟨out, mask, hout, _, hmask, _⟩ := rejected_decode_retains_raw_integer
-  simp only [acceptEveryLane, hout, bind_tc_ok]
+  simp only [acceptEveryLane, hout, bind_ok]
   intro he
-  exact hmask (congrArg Prod.snd (Result.ok.inj he))
+  exact hmask (congrArg Prod.snd (Result.ok_injective he))
 
 private def wrongPermute (a index b : M512) : M512 :=
   Vector.ofFn fun lane : Fin 8 =>
@@ -108,7 +113,7 @@ theorem omitting_multiplier_scale_changes_generated_multiplier :
   have h := Kernel.multiplier_refinement (1 : Fr)
   rw [h.1]
   intro he
-  have hword := congrArg (fun x : blst.blst_fr => x.l.val[0]!.val) (Result.ok.inj he)
+  have hword := congrArg (fun x : blst.blst_fr => x.l.val[0]!.val) (Result.ok_injective he)
   exact (by decide +kernel : (frEncode (1 * Fr.ofNat 16)).l.val[0]!.val ≠
     (frEncode 1).l.val[0]!.val) hword
 

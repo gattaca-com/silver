@@ -25,17 +25,6 @@ theorem coefficient_frobenius (p n : ℕ) [Fact p.Prime] [CharP R p]
   intro j _
   exact monomial_frobenius p n x xi (a j) j.val k hp hx
 
-theorem conjugation_of_sixth_frobenius (p : ℕ) [Fact p.Prime] [CharP R p]
-    (x xi : R) (a : Fin 6 → R) (k : ℕ)
-    (hp : p ^ 6 = 6 * k + 1) (hx : x ^ 6 = xi)
-    (ha : ∀ j, a j ^ (p ^ 6) = a j) (hxi : xi ^ k = -1) :
-    (∑ j : Fin 6, a j * x ^ j.val) ^ (p ^ 6) =
-      ∑ j : Fin 6, a j * (-1) ^ j.val * x ^ j.val := by
-  rw [coefficient_frobenius p 6 x xi a k hp hx]
-  apply Finset.sum_congr rfl
-  intro j _
-  rw [ha, Nat.mul_comm j.val k, pow_mul, hxi]
-
 variable {G : Type*} [CommGroup G]
 
 def easyPart (g : G) (p : ℕ) : G := (g ^ (p ^ 6) * g⁻¹) ^ (p ^ 2) * (g ^ (p ^ 6) * g⁻¹)
@@ -63,13 +52,5 @@ theorem easyPart_cyclotomic (g : G) (p : ℕ) (hp : 1 ≤ p)
     zify [hp6, hp12]
     ring
   rw [hexp, hperiod]
-
-theorem cyclotomic_unitary (g : G) (p : ℕ) (hp : 1 ≤ p)
-    (hphi : g ^ (p ^ 4 - p ^ 2 + 1) = 1) : g ^ (p ^ 6 + 1) = 1 := by
-  rw [← phi_factor p hp, Nat.mul_comm, pow_mul, hphi, one_pow]
-
-theorem conjugate_inverse (g : G) (p : ℕ) (h : g ^ (p ^ 6 + 1) = 1) : g ^ (p ^ 6) = g⁻¹ := by
-  apply mul_right_cancel (b := g)
-  simpa [pow_succ] using h
 
 end LeanBlsSimd.Cyclotomic

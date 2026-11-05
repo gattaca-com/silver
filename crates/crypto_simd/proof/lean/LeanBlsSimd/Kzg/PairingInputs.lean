@@ -26,14 +26,14 @@ theorem curveWork_pairing_check_refinement [RuntimeFeatures] [KzgExternals]
   | Lanes msm words =>
     obtain ⟨points,hpoints,hrep⟩ := pairing_points_in_lanes_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvll hvlc hvli hvlp
-    simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
+    simp only [verify.CurveWork.pairing_check, hpoints, bind_ok,
       pairing_correct.lanes points ll _ hrep hvll hvright]
   | Scalar msm words =>
     obtain ⟨points,hpoints,hrep⟩ := pairing_points_refinement sums ll rlc rli rlp
       hll hrlc hrli hrlp hvlc hvli hvlp
     have hp := hrep (0 : Fin 2)
     have hq := hrep (1 : Fin 2)
-    simp only [verify.CurveWork.pairing_check, hpoints, bind_tc_ok,
+    simp only [verify.CurveWork.pairing_check, hpoints, bind_ok,
       index_usize_eq points 0#usize (by decide), index_usize_eq points 1#usize (by decide),
       PortableG1.to_blst_eq]
     exact BlstPairing.pairing_check_refines (hblst rfl) _ _ ll _ hp hq hvll hvright

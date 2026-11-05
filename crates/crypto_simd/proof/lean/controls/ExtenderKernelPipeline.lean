@@ -19,9 +19,9 @@ private theorem firstWithStride_eval (stride n expected : Usize)
     (he : expected.val = stride.val * n.val - (n.val &&& 1)) :
     firstWithStride stride n 2#usize = ok expected := by
   rw [firstWithStride, LeanBlsSimd.mul_ok _ _ (by scalar_tac)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [LeanBlsSimd.sub_ok _ _ (by decide)]
-  simp only [bind_tc_ok, lift]
+  simp only [bind_ok, lift]
   rw [LeanBlsSimd.sub_ok _ _ (by simpa using hsub)]
   simp only [Result.ok.injEq]
   apply UScalar.eq_of_val_eq
@@ -46,7 +46,7 @@ theorem wrong_stride_aliases :
   refine ⟨first, next, ?_⟩
   intro h
   rw [next, baseline.2.1] at h
-  have he : (0#usize).val = (1#usize).val := congrArg UScalar.val (Result.ok.inj h)
+  have he : (0#usize).val = (1#usize).val := congrArg UScalar.val (Result.ok_injective h)
   exact Nat.zero_ne_one he
 
 example : True := by

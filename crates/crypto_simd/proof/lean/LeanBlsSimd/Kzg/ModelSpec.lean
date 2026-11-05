@@ -10,8 +10,8 @@ theorem cell_decode_size (cell : Cell) (evals : CosetEvals)
   unfold cellToCosetEvals at h
   split at h
   · simp [bind, Except.bind] at h
-  · simp only [pure, Except.pure, bind, Except.bind] at h
-    simpa using array_mapM_ok_size _ _ _ h
+  · simp only [pure, Except.pure] at h
+    simpa [Constants.FIELD_ELEMENTS_PER_CELL] using array_mapM_ok_size _ _ _ h
 
 theorem cells_decode_shape (cells : Array Cell) (evals : Array CosetEvals)
     (h : cells.mapM cellToCosetEvals = .ok evals) :
@@ -32,7 +32,7 @@ theorem frontHalf_shape
     indices.size = evals.size ∧ (∀ i ∈ indices, i < 128) ∧
       (∀ ys ∈ evals, ys.size = 64) := by
   unfold Model.frontHalf at h
-  simp only [pure, Except.pure, bind, Except.bind] at h
+  simp only [pure, Except.pure, bind, Except.bind, throw, throwThe, MonadExceptOf.throw] at h
   split at h
   · simp at h
   rename_i hcells
@@ -67,21 +67,37 @@ theorem frontHalf_shape
   refine ⟨by omega, ?_, hrows⟩
   have hb : indices.any (fun i => decide (i ≥ Constants.CELLS_PER_EXT_BLOB)) = false :=
     Bool.eq_false_iff.mpr hbounded
-  simpa only [Array.any_eq_false', decide_eq_true_eq, not_le] using hb
+  simp only [Array.any_eq_false', decide_eq_true_eq, not_le] at hb
+  intro i hi
+  exact (show Constants.CELLS_PER_EXT_BLOB = 128 from rfl) ▸ hb i hi
+
+theorem shiftOf_ok (c : Nat) (hc : c < 128) : Model.shiftOf c = .ok (Model.cosetShift c) := by
+  have hc' : ¬c ≥ Constants.CELLS_PER_EXT_BLOB := by
+    rw [show Constants.CELLS_PER_EXT_BLOB = 128 from rfl]; omega
+  simp only [Model.shiftOf, hc', ite_false]
+  rfl
+
+theorem mapM_shiftOf (indices : Array Nat) (h : ∀ i ∈ indices, i < 128) :
+    indices.mapM Model.shiftOf = .ok (indices.map Model.cosetShift) := by
+  rw [Array.mapM_eq_mapM_toList]
+  have hl : ∀ xs : List Nat, (∀ i ∈ xs, i < 128) →
+      xs.mapM Model.shiftOf = .ok (xs.map Model.cosetShift) := by
+    intro xs hxs
+    induction xs with
+    | nil => rfl
+    | cons x xs ih =>
+      simp only [List.mapM_cons, shiftOf_ok x (hxs x (by simp)),
+        ih (fun y hy => hxs y (by simp [hy])), List.map_cons]
+      rfl
+  rw [hl indices.toList (fun i hi => h i (Array.mem_toList_iff.mp hi))]
+  change Except.ok (List.map Model.cosetShift indices.toList).toArray = _
+  exact congrArg Except.ok (Array.toList_inj.mp (by simp))
 
 /-- The reviewed column interpolation identity, with its exact input contract. -/
 abbrev ColumnIdentity : Prop :=
   ∀ indices evals powers, Model.RliInputs indices evals powers →
-    Model.specRli indices evals powers = .ok (Model.columnRli indices evals powers)
-
-theorem frontHalf_rli_inputs
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48)
-    (unique : Array KZGCommitment) (ci : Array Nat) (evals : Array CosetEvals)
-    (proofs : Array KZGProof)
-    (h : Model.frontHalf cs indices cells ps = .ok (unique, ci, evals, proofs)) (r : Fr) :
-    Model.RliInputs indices evals (computePowers r indices.size) := by
-  obtain ⟨hsize, hbounds, hrows⟩ := frontHalf_shape cs indices cells ps unique ci evals proofs h
-  exact ⟨hsize, by simp, hbounds, hrows⟩
+    Model.specRli indices (indices.map Model.cosetShift) evals powers =
+      .ok (Model.columnRli indices evals powers)
 
 theorem implPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (unique : Array KZGCommitment) (ci indices : Array Nat) (evals : Array CosetEvals)
@@ -90,26 +106,14 @@ theorem implPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : Trust
       (∀ ys ∈ evals, ys.size = 64)) :
     Model.implPure setup Model.specRli unique ci indices evals proofs =
       Model.implPure setup Model.columnStep unique ci indices evals proofs := by
-  have hr := columnIdentity indices evals
-    (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-      indices.size) ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hin : Model.RliInputs indices evals
+      (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
+        indices.size) := ⟨h.1, by simp, h.2.1, h.2.2⟩
+  have hr := columnIdentity _ _ _ hin
+  have hm : indices.mapM Model.shiftOf = pure (indices.map Model.cosetShift) :=
+    mapM_shiftOf indices h.2.1
   unfold Model.implPure Model.columnStep
-  dsimp only
-  rw [hr]
-
-theorem implWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : KzgM TrustedSetup)
-    (unique : Array KZGCommitment) (ci indices : Array Nat) (evals : Array CosetEvals)
-    (proofs : Array KZGProof)
-    (h : indices.size = evals.size ∧ (∀ i ∈ indices, i < 128) ∧
-      (∀ ys ∈ evals, ys.size = 64)) :
-    Model.implWith getSetup Model.specRli unique ci indices evals proofs =
-      Model.implWith getSetup Model.columnStep unique ci indices evals proofs := by
-  have hr := columnIdentity indices evals
-    (computePowers (computeVerifyCellKzgProofBatchChallenge unique ci indices evals proofs)
-      indices.size) ⟨h.1, by simp, h.2.1, h.2.2⟩
-  unfold Model.implWith Model.columnStep
-  dsimp only
-  rw [hr]
+  simp only [hm, pure_bind, hr]
 
 theorem verifyPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
@@ -122,28 +126,6 @@ theorem verifyPure_spec_eq_column (columnIdentity : ColumnIdentity) (setup : Tru
     rcases front with ⟨unique, ci, evals, proofs⟩
     exact implPure_spec_eq_column columnIdentity setup unique ci indices evals proofs
       (frontHalf_shape cs indices cells ps unique ci evals proofs hf)
-
-theorem verifyWith_spec_eq_column (columnIdentity : ColumnIdentity) (getSetup : KzgM TrustedSetup)
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
-    Model.verifyWith getSetup Model.specRli cs indices cells ps =
-      Model.verifyWith getSetup Model.columnStep cs indices cells ps := by
-  unfold Model.verifyWith
-  cases hf : Model.frontHalf cs indices cells ps with
-  | error e =>
-    simp only [liftM_eq_liftE, show liftE (Except.error e : Except KzgError Model.Front) =
-      throw e from rfl, ExceptT.bind_throw]
-  | ok front =>
-    rcases front with ⟨unique, ci, evals, proofs⟩
-    simp only [liftM_eq_liftE, show liftE (Except.ok (unique, ci, evals, proofs)) =
-      pure (unique, ci, evals, proofs) from rfl, pure_bind]
-    exact implWith_spec_eq_column columnIdentity getSetup unique ci indices evals proofs
-      (frontHalf_shape cs indices cells ps unique ci evals proofs hf)
-
-theorem upstream_spec_eq_column (columnIdentity : ColumnIdentity)
-    (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :
-    verifyCellKzgProofBatch cs indices cells ps =
-      Model.verifyWith (monadLift TrustedSetup.get!) Model.columnStep cs indices cells ps := by
-  rw [upstream_eq_verifyWith, verifyWith_spec_eq_column columnIdentity]
 
 theorem rejectErrors_spec_eq_model (columnIdentity : ColumnIdentity) (setup : TrustedSetup)
     (cs : Array Bytes48) (indices : Array Nat) (cells : Array Cell) (ps : Array Bytes48) :

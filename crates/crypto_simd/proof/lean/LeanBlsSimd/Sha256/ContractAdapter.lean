@@ -1,4 +1,5 @@
 import LeanBlsSimd.Kzg.ShaContracts
+import LeanBlsSimd.Refines.Basic
 
 open Aeneas Aeneas.Std Result
 
@@ -11,20 +12,17 @@ theorem shaRep_update (s : S) (pre : List U8) (chunk : Slice U8)
     (h : ShaRep update finish s pre) :
     ∃ next, update s chunk = ok next ∧ ShaRep update finish next (pre++chunk.val) := by
   obtain ⟨digest,hdigest,_⟩ := h [chunk]
-  cases hu : update s chunk with
-  | fail e => simp [shaContinue,hu] at hdigest
-  | div => simp [shaContinue,hu] at hdigest
-  | ok next =>
-    refine ⟨next,rfl,?_⟩
-    intro chunks
-    obtain ⟨digest,hdigest,hbytes⟩ := h (chunk::chunks)
-    refine ⟨digest,?_,?_⟩
-    · simpa only [shaContinue,hu,bind_tc_ok] using hdigest
-    · simpa only [List.flatMap_cons,List.append_assoc] using hbytes
+  obtain ⟨next,hu,_⟩ := bind_eq_ok hdigest
+  refine ⟨next,hu,?_⟩
+  intro chunks
+  obtain ⟨digest,hdigest,hbytes⟩ := h (chunk::chunks)
+  refine ⟨digest,?_,?_⟩
+  · simpa only [shaContinue,hu,bind_tc_ok, bind_ok] using hdigest
+  · simpa only [List.flatMap_cons,List.append_assoc] using hbytes
 
 theorem shaRep_finish (s : S) (pre : List U8) (h : ShaRep update finish s pre) :
     ∃ digest, finish s = ok digest ∧
-      arrayBytes digest = EthLib.Cryptography.Bls.sha256 (bytes pre) := by
+      arrayBytes digest = EthLib.Cryptography.Hash.sha256 (bytes pre) := by
   simpa only [shaContinue,List.flatMap_nil,List.append_nil] using h []
 
 /-- A concrete state invariant supplies the initial observational relation.
@@ -34,7 +32,7 @@ theorem shaPathCorrect_of_invariant (new : Result S) (R : S → List U8 → Prop
     (hupdate : ∀ s pre chunk, R s pre →
       ∃ next, update s chunk = ok next ∧ R next (pre++chunk.val))
     (hfinish : ∀ s pre, R s pre → ∃ digest, finish s = ok digest ∧
-      arrayBytes digest = EthLib.Cryptography.Bls.sha256 (bytes pre)) :
+      arrayBytes digest = EthLib.Cryptography.Hash.sha256 (bytes pre)) :
     ShaPathCorrect new update finish := by
   have hrep : ∀ s pre, R s pre → ShaRep update finish s pre := by
     intro s pre hs chunks
@@ -44,7 +42,7 @@ theorem shaPathCorrect_of_invariant (new : Result S) (R : S → List U8 → Prop
       obtain ⟨next,hnext,hr⟩ := hupdate s pre chunk hs
       obtain ⟨digest,hdigest,hbytes⟩ := ih next (pre++chunk.val) hr
       refine ⟨digest,?_,?_⟩
-      · simpa only [shaContinue,hnext,bind_tc_ok] using hdigest
+      · simpa only [shaContinue,hnext,bind_tc_ok, bind_ok] using hdigest
       · simpa only [List.flatMap_cons,List.append_assoc] using hbytes
   refine ⟨?_,shaRep_update,shaRep_finish⟩
   obtain ⟨s,hs,hr⟩ := hnew

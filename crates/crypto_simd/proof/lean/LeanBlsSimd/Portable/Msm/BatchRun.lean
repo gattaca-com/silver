@@ -43,18 +43,17 @@ theorem run_success [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)
   have hnv : n.val = adds.a.val.length := by simp [n]
   simp only [hnv] at hr
   rw [he] at hr
-  simp only [bind_tc_ok] at hr
+  simp only [bind_ok] at hr
   rw [chainArray_zero] at hr
   refine ⟨{adds with dx := finalDx, «prefix» := finalPrefixes},?_,rfl,rfl,rfl⟩
   simp only [portable.msm.pairs.BatchedAdds.run,
-    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone,
-    bind_tc_ok]
+    BatchedRefines.resizeVec_refines _ _ portable.fp.Fp.ZERO portable.fp.Fp.Insts.CoreCloneClone hclone, bind_ok]
   change (do
     let result ← portable.msm.pairs.BatchedAdds.run_loop0 adds.a adds.b adds.out
       dx prefixes store n (Array.repeat 4#usize portable.constants.ONE) 0#usize
     ok (result.1,{adds with dx := result.2.1, «prefix» := result.2.2.1},result.2.2.2)) = _
   rw [hr]
-  rfl
+  (simp only [bind_tc_ok] )
 
 /-- Every well-formed batch either rejects without store writes or executes all queued additions. -/
 theorem run_cases [RuntimeFeatures] (adds : portable.msm.pairs.BatchedAdds)

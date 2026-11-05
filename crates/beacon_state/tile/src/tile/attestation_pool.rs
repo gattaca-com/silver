@@ -1,4 +1,7 @@
-use silver_beacon_state_data::{B256, Slot};
+use silver_beacon_state_data::{
+    B256, Slot,
+    bls::{AggregateSignature, Signature, SignatureSum, VerifiedSingleAttestation},
+};
 use silver_common::{
     metrics::timed,
     ssz_view::{
@@ -7,10 +10,7 @@ use silver_common::{
     },
 };
 
-use crate::{
-    bls::{AggregateSignature, Signature, SignatureSum, VerifiedSingleAttestation},
-    counters::BeaconStateCounters,
-};
+use crate::counters::BeaconStateCounters;
 
 mod committee_attestations;
 mod committee_bits;
@@ -318,7 +318,7 @@ impl<P: AsRef<[CommitteeAttestation]>> PooledAggregate<'_, P> {
         debug_assert_eq!(out.len(), self.ssz_len());
         let (fixed, bits) = out.split_at_mut(ATTESTATION_FIXED);
         bits.fill(0);
-        let mut signature = SignatureSum::new();
+        let mut signature = SignatureSum::default();
         let mut committee_bits = 0u64;
         let mut committee_members = 0;
         for committee in self.committees.as_ref() {
@@ -357,14 +357,14 @@ fn write_ssz_list<'a, P: AsRef<[CommitteeAttestation]>>(
 #[cfg(test)]
 mod tests {
     use blst::{BLST_ERROR, min_pk::AggregateSignature};
-    use silver_beacon_state_data::Immutable;
+    use silver_beacon_state_data::{Immutable, bls};
     use silver_common::ssz_view::AttestationView;
 
     use super::{
         vote_candidates::{MAX_SLOT_CANDIDATES, RETAINED_SLOTS},
         *,
     };
-    use crate::{bls, merkle, ssz_hash, test_signing};
+    use crate::{merkle, ssz_hash, test_signing};
 
     const SLOT: u64 = 3;
 

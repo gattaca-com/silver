@@ -1,7 +1,7 @@
 import LeanBlsSimd.Kzg.RepresentationWords
 import EthLib.Cryptography.Proofs.Bls.FrZMod
 import EthLib.Cryptography.Proofs.Bls.FpZMod
-import Aeneas
+import LeanBlsSimd.Aeneas
 
 open Aeneas Aeneas.Std
 open EthLib.Cryptography Bls

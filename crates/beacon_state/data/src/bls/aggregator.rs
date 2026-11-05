@@ -20,12 +20,12 @@ const _: () = {
 };
 
 #[inline]
-pub(crate) fn pk_affine(pk: &PublicKey) -> &blst_p1_affine {
+pub fn pk_affine(pk: &PublicKey) -> &blst_p1_affine {
     unsafe { &*(pk as *const PublicKey as *const blst_p1_affine) }
 }
 
 #[inline]
-pub(crate) fn sig_affine(sig: &Signature) -> &blst_p2_affine {
+pub fn sig_affine(sig: &Signature) -> &blst_p2_affine {
     unsafe { &*(sig as *const Signature as *const blst_p2_affine) }
 }
 
@@ -33,7 +33,7 @@ pub(crate) fn sig_affine(sig: &Signature) -> &blst_p2_affine {
 /// inside the single `sum` call that fills the table (cleared on entry), so
 /// moving the idle buffer across threads is sound despite the raw pointers.
 #[derive(Default)]
-pub(crate) struct PubkeyAggregator(Vec<*const blst_p1_affine>);
+pub struct PubkeyAggregator(Vec<*const blst_p1_affine>);
 unsafe impl Send for PubkeyAggregator {}
 
 impl PubkeyAggregator {
@@ -64,7 +64,7 @@ impl PubkeyAggregator {
         (!unsafe { blst_p1_is_inf(&sum) }).then(|| Self::to_public_key(sum))
     }
 
-    pub(crate) fn aggregate<'a>(
+    pub fn aggregate<'a>(
         &mut self,
         pks: impl IntoIterator<Item = &'a PublicKey>,
     ) -> Option<PublicKey> {
@@ -75,7 +75,7 @@ impl PubkeyAggregator {
     /// summing the attesters directly, but the point work scales with the
     /// (typically 2-5%) missing fraction. Both iterators must cover the same
     /// committees.
-    pub(crate) fn aggregate_subtracted<'a>(
+    pub fn aggregate_subtracted<'a>(
         &mut self,
         committees: impl IntoIterator<Item = &'a PublicKey>,
         missing: impl IntoIterator<Item = &'a PublicKey>,
@@ -92,7 +92,7 @@ impl PubkeyAggregator {
 
     /// Identity for an empty set, for position-indexed tables where every
     /// entry must hold a valid point.
-    pub(crate) fn aggregate_or_identity<'a>(
+    pub fn aggregate_or_identity<'a>(
         &mut self,
         pks: impl IntoIterator<Item = &'a PublicKey>,
     ) -> PublicKey {

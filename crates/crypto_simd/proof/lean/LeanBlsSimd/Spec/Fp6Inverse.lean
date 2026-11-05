@@ -55,19 +55,7 @@ end Fp6Field
 
 namespace Fp6
 
-open EthLib.Cryptography.Bls.Fp6
-
-open Fp6Field
-
-theorem toField_inverse (a : Fp6) : toField a.inverse = (toField a)⁻¹ := by
-  change assemble (Fp2.toField (inverse a).c0) (Fp2.toField (inverse a).c1)
-    (Fp2.toField (inverse a).c2) = _
-  simp only [inverse, map_mul, map_add, Fp2.toField_sub, Fp2.toField_mulByOnePlusI,
-    Fp2.toField_inverse]
-  rw [show toField a = assemble (Fp2.toField a.c0) (Fp2.toField a.c1)
-    (Fp2.toField a.c2) from rfl, inverse_formula]
-  simp only [cofactor, determinant, assemble, map_mul, map_add, map_sub, xi]
-  ring
+theorem toField_inverse (a : Fp6) : toField a.inverse = (toField a)⁻¹ := map_inv₀ toField a
 
 end Fp6
 

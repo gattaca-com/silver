@@ -1,5 +1,5 @@
 import LeanBlsSimd.Kzg.Representation
-import Aeneas
+import LeanBlsSimd.Aeneas
 
 open Aeneas Aeneas.Std
 open EthLib.Cryptography Bls

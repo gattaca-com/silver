@@ -9,6 +9,7 @@ open scoped EthLib.Cryptography.Bls.Fr
 
 namespace LeanBlsSimd.Kzg.Extender.Kernel
 
+
 theorem laneInt_eq_val (x : fr8.Fr8) (lane : Fin 8) :
     laneInt x lane = SignedLimbs.val ((FrModel.ofFr8 x).lane lane) := by
   unfold laneInt SignedLimbs.val
@@ -143,7 +144,8 @@ theorem sub_raw_lazy_refinement {k m k' m' c : Nat}
     · have hbound : SignedLimbs.Bounded ((FrModel.ofFr8 out).lane lane) (m + m' + 1) := by
         simpa only [out, FrModel.ofFr8_toFr8, lane_subRaw, Nat.cast_add, Nat.cast_one]
           using (hs lane).2
-      simpa only [SignedLimbs.Bounded, Fin.getElem_fin, getElem_lane_ofFr8] using hbound
+      simpa only [SignedLimbs.Bounded, Fin.getElem_fin, getElem_lane_ofFr8, Nat.cast_add,
+        Nat.cast_one] using! hbound
   · intro lane
     simp only [lazyLaneValue, he, Int.cast_sub, Int.cast_add, Int.cast_mul,
       Int.cast_natCast]

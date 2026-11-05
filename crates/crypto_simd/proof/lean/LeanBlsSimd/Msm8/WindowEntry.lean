@@ -29,7 +29,7 @@ theorem loadedEntry_rep (state : msm8.buckets.Buckets) (store : msm8.store.Point
   have hindex : (pointIndices raw.indices)[l] =
       (clearSign (referenceAt state (group * 8 + l.val) bucket cursor)).val := by
     change (pointIndices raw.indices)[l.val] = _
-    simp only [raw, encodeEntries, pointIndices, getElem_ofArray, toArray,
+    simp only [raw, encodeEntries, pointIndices, getElem_ofArray, toArray, Array.from_val,
       List.getElem_map, Vector.getElem_toList, id_eq, entriesModel_indices,
       Vector.getElem_ofFn]
   have hmask : (ofU8 raw.present).toNat.testBit l =
@@ -47,7 +47,7 @@ theorem loadedEntry_rep (state : msm8.buckets.Buckets) (store : msm8.store.Point
     else entryPoint state points group bucket cursor l = 0)
   rw [hmask]
   by_cases present : cursor < (bucketLength state (group * 8 + l.val) bucket).val
-  · simp only [present, decide_true, if_true]
+  · simp only [present, decide_true, ite_true]
     have hrow : Msm8.RowRep (pointRows store) (pointIndices raw.indices)[l]
         (points (clearSign (referenceAt state (group * 8 + l.val) bucket cursor)).val) := by
       rw [hindex]
@@ -55,7 +55,7 @@ theorem loadedEntry_rep (state : msm8.buckets.Buckets) (store : msm8.store.Point
     obtain ⟨x, y, hx, hy, hv, hp⟩ :=
       Msm8.load_signed_point store raw.indices (ofU8 raw.negated) l _ hrow
     refine ⟨x, y, hx, hy, hv, ?_⟩
-    simpa only [hsign, decide_eq_true_eq, entryPoint, present, if_true] using hp
-  · simp only [present, decide_false, Bool.false_eq_true, if_false, entryPoint]
+    simpa only [hsign, decide_eq_true_eq, entryPoint, present, ite_true] using hp
+  · simp only [present, decide_false, Bool.false_eq_true, ite_false, entryPoint]
 
 end LeanBlsSimd.WindowSums

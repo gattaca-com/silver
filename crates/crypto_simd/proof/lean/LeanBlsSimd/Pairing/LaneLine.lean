@@ -65,7 +65,7 @@ theorem line_refines {x z : fp8.Fp8} (step : Fin 68) (pair : Fin 2) (v : Factors
   · change pairing.line x z k = ok ⟨a, b⟩
     simp only [pairing.line,
       index_usize_eq pairing.LINE_C0 k (by change pair.val < 2; omega),
-      index_usize_eq pairing.LINE_C1 k (by change pair.val < 2; omega), bind_tc_ok]
+      index_usize_eq pairing.LINE_C1 k (by change pair.val < 2; omega), bind_ok]
     change (do
       let a ← fp8.Fp8.permute2 z x (lineIndices 0 pair)
       let zero ← fp8.Fp8.zero

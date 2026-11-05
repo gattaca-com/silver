@@ -19,29 +19,6 @@ open silver_crypto_simd silver_crypto_simd.kzg silver_crypto_simd.bls
 
 namespace LeanBlsSimd.Kzg
 
-theorem same_bytes_refines (a b : Aeneas.Std.Array U8 48#usize) :
-    verify.same_bytes a b = ok (arrayBytes a == arrayBytes b) := by
-  exact same_bytes_refinement a b
-
-theorem deduplicate_refines (old : verify.Deduplicated)
-    (cs : Slice (Aeneas.Std.Array U8 48#usize)) :
-    ∃ result, verify.Deduplicated.fill old cs = ok result ∧
-      ((result.unique.val.map arrayBytes).toArray,
-        (result.index_of_cell.val.map (·.val)).toArray) =
-        Model.deduplicate (cs.val.map arrayBytes).toArray := by
-  exact deduplicate_refinement old cs
-
-theorem decode_points_refines [RuntimeFeatures] [KzgExternals] [UncompressG1.FallbackCorrect]
-    (encodings : Slice (Aeneas.Std.Array U8 48#usize))
-    (decoded : alloc.vec.Vec (Option blst.blst_p1_affine))
-    (points : alloc.vec.Vec blst.blst_p1_affine) :
-    ∃ resultDecoded resultPoints,
-      verify.decode_points encodings decoded points =
-        ok ((encodings.val.map specVerdict).all Option.isSome, resultDecoded, resultPoints) ∧
-      resultDecoded.val = encodings.val.map specVerdict ∧
-      resultPoints.val = ((encodings.val.map specVerdict).takeWhile Option.isSome).filterMap id := by
-  exact decode_points_refinement encodings decoded points
-
 def cellElements (cells : List (Aeneas.Std.Array U8 2048#usize)) : List (Option Fr) :=
   cells.flatMap fun cell => (List.range 64).map fun j =>
     (bytesToBlsField ((arrayBytes cell).extract (32*j) (32*(j+1)))).toOption
@@ -56,51 +33,6 @@ theorem decode_cells_refines
       next.setup = v.setup ∧ next.cosets = v.cosets := by
   obtain ⟨next, hcall, he, hs, hc, _⟩ := decode_cells_refinement v cells hb
   exact ⟨next, hcall, he, hs, hc⟩
-
-theorem challenge_refines
-    (unique : Slice (Aeneas.Std.Array U8 48#usize)) (ci : Slice Usize) (indices : Slice U64)
-    (cells : Slice (Aeneas.Std.Array U8 2048#usize))
-    (ps : Slice (Aeneas.Std.Array U8 48#usize))
-    (hlen : ci.val.length = indices.val.length ∧ cells.val.length = indices.val.length ∧
-      ps.val.length = indices.val.length) :
-    challenge.challenge_in_parts unique ci indices cells ps =
-      ok (frEncode (Fr.hashToBlsField (Model.challengePreimage
-        (unique.val.map arrayBytes).toArray (ci.val.map (·.val)).toArray
-        (indices.val.map (·.val)).toArray (cells.val.map arrayBytes).toArray
-        (ps.val.map arrayBytes).toArray))) := by
-  exact challenge_refinement unique ci indices cells ps hlen
-
-theorem challenge_preimage_eq_spec (unique : _root_.Array Bytes48)
-    (ci indices : _root_.Array Nat) (cells : _root_.Array Cell) (ps : _root_.Array Bytes48)
-    (evals : _root_.Array CosetEvals)
-    (hlen : ci.size = indices.size ∧ cells.size = indices.size ∧ ps.size = indices.size)
-    (hdecode : cells.mapM cellToCosetEvals = .ok evals) :
-    Fr.hashToBlsField (Model.challengePreimage unique ci indices cells ps) =
-      computeVerifyCellKzgProofBatchChallenge unique ci indices evals ps := by
-  exact challenge_preimage_spec unique ci indices cells ps evals hlen hdecode
-
-theorem reverse_bits_refines (index : Usize) (bits : U32)
-    (hb : bits.val ≤ Usize.numBits) :
-    domain.reverse_bits index bits =
-      ok ⟨BitVec.ofNat _ (BitReversal.reverseBitsAux index.val 0 bits.val)⟩ := by
-  exact reverse_bits_refinement index bits hb
-
-theorem roots_refines (logOrder : U32)
-    (hl : logOrder.val = 6 ∨ logOrder.val = 13) :
-    ∃ rs, domain.roots_of_unity logOrder = ok rs ∧
-      rs.val = (Model.roots logOrder.val).toList.map frEncode := by
-  exact roots_refinement logOrder hl
-
-theorem inverse_fft_refines
-    (out input roots : Slice blst.blst_fr) (values : _root_.Array Fr)
-    (ho : out.val.length = 64) (hv : values.size = 64)
-    (hi : input.val = values.toList.map frEncode)
-    (hr : roots.val = (Model.inverseRoots (Model.roots 6)).toList.map frEncode) :
-    ∃ result, fft.inverse_fft out input roots (frEncode (Fr.ofNat 64).inverse) = ok result ∧
-      result.val =
-        (Model.inverseFft values (Model.inverseRoots (Model.roots 6)) (Fr.ofNat 64).inverse).toList.map
-          frEncode := by
-  exact inverse_fft_refinement out input roots values ho hv hi hr
 
 theorem interpolation_commitment_refines [RuntimeFeatures]
     (v : verify.CellBatchVerifier) (hv : StateInvariant v) (indices : Slice U64)

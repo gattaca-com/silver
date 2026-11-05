@@ -75,6 +75,6 @@ theorem from_product_lanes {q : Array fp8.Fp8 7#usize} {a : Fin 7 → V F}
     index_usize_eq m 6#usize (by decide), index_usize_eq m 7#usize (by decide),
     index_usize_eq m 8#usize (by decide), UScalar.ofNatCore_val_eq,
     hs0, hd0, hs1, hd1, hs2, hd2, hraw0, hr0, hraw1, hr1, hrawd, hd,
-    hxr0, hxr1, hxd, hz, hpos0, hpos1, hpos, hneg0, hneg1, hneg, hraw, hout, bind_tc_ok]
+    hxr0, hxr1, hxd, hz, hpos0, hpos1, hpos, hneg0, hneg1, hneg, hraw, hout, bind_ok]
 
 end LeanBlsSimd.LaneTower

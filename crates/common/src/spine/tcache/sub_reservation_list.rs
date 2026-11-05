@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use flux::type_hash_derive::TypeHash;
+
 use super::{
     AcquiredRead, Producer, SubReservationError, SubReservationRef, TCacheProducer, TCacheRead,
     TCacheReader,
@@ -9,7 +11,7 @@ const ENTRY_BYTES: usize = 16;
 
 // Only typed, same-cache descriptors enter this in-process format, never
 // network bytes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct SubReservationList {
     read: TCacheRead,
     count: usize,

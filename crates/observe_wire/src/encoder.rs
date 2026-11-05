@@ -62,10 +62,11 @@ impl Encoder {
         ts_ns: u64,
         genesis_unix_secs: u64,
         slot_ms: u64,
+        gloas_fork_epoch: u64,
         emit: &mut impl FnMut(&[u8]),
     ) {
         self.begin(Kind::Chain, ts_ns, emit);
-        self.put_u64s(&[genesis_unix_secs, slot_ms]);
+        self.put_u64s(&[genesis_unix_secs, slot_ms, gloas_fork_epoch]);
         self.send(emit);
     }
 
@@ -763,7 +764,7 @@ mod tests {
             for i in 0..30 {
                 enc.stage(1, &stage_record(i), &mut |d| emit(d));
             }
-            enc.chain(1, 1_606_824_023, 12_000, &mut |d| emit(d));
+            enc.chain(1, 1_606_824_023, 12_000, 1536, &mut |d| emit(d));
             enc.stage(1, &stage_record(30), &mut |d| emit(d));
             enc.flush(&mut |d| emit(d));
             enc.flush(&mut |d| emit(d));
@@ -774,7 +775,7 @@ mod tests {
         assert_eq!(seqs, [0, 1, 2, 3], "seq follows emission order");
 
         let mut r = Reader::payload(&dgrams[2]);
-        assert_eq!((r.u64(), r.u64()), (1_606_824_023, 12_000));
+        assert_eq!((r.u64(), r.u64(), r.u64()), (1_606_824_023, 12_000, 1536));
         r.done();
 
         let mut got = Vec::new();

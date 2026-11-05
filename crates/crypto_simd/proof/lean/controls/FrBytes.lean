@@ -20,7 +20,8 @@ theorem accepting_modulus_rejected (x : blst.blst_fr) :
     fr.fr_from_bytes modulusBytes ≠ ok (some x) := by
   rw [modulus_rejected]
   intro h
-  cases h
+  have he := Result.ok_injective h
+  cases he
 
 def oneBytes : Array U8 32#usize :=
   Array.make 32#usize (List.replicate 31 0#u8 ++ [1#u8]) (by decide)
@@ -28,7 +29,7 @@ def oneBytes : Array U8 32#usize :=
 theorem wrong_byte_order_rejected :
     fr.words_from_be_bytes oneBytes ≠ ok (LeanBlsSimd.Kzg.words 4#usize (2^248)) := by
   intro h
-  have heq := Result.ok.inj ((words_from_be_bytes_refines oneBytes).symm.trans h)
+  have heq := Result.ok_injective ((words_from_be_bytes_refines oneBytes).symm.trans h)
   have hv := readWords_value oneBytes
   rw [heq,ordinary_words_value (2^248) (by decide)] at hv
   have hone : Fr.bytesBEToNat (LeanBlsSimd.Kzg.arrayBytes oneBytes) = 1 := by decide +kernel
@@ -50,7 +51,7 @@ theorem little_endian_serialization_rejected :
     fr.fr_to_bytes (LeanBlsSimd.Kzg.frEncode (Fr.ofNat 1)) ≠ ok littleEndianOneBytes := by
   intro h
   obtain ⟨result, hresult, hbytes⟩ := fr_to_bytes_refines (Fr.ofNat 1)
-  have heq := Result.ok.inj (hresult.symm.trans h)
+  have heq := Result.ok_injective (hresult.symm.trans h)
   rw [heq] at hbytes
   exact (by decide +kernel : LeanBlsSimd.Kzg.arrayBytes littleEndianOneBytes ≠
     EthLib.Cryptography.Kzg.blsFieldToBytes (Fr.ofNat 1)) hbytes

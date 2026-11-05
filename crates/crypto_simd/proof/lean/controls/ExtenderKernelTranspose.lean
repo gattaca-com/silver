@@ -167,15 +167,25 @@ def grid : Array M512 8#usize :=
     Vector.ofFn fun lane : Fin 8 => UInt64.ofNat (8*row.val+lane.val))
 
 def firstLane (result : Result (Array M512 8#usize)) : UInt64 :=
-  match result with
+  match result.match with
   | .ok rows => (rows.val[0]!)[0]
   | _ => 0
 
+/-- The kernel cannot run `Result`'s bind, so expose the `ok` value first. -/
+local macro "first_lane_value" : tactic => `(tactic|
+  simp (disch := decide) only [firstLane, transposeWithFirstIndex, bls.fp8.transpose8,
+    bls.fp8.index_vector, index_usize_eq, Array.make, Array.from_val, List.getElem_cons_succ,
+    List.getElem_cons_zero,
+    core.core_arch.x86.avx512f._mm512_set_epi64,
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_tc_ok, bind_ok, Result.match.ok])
+
 theorem original_transpose_first_lane : firstLane (bls.fp8.transpose8 grid) = 0 := by
+  first_lane_value
   decide +kernel
 
 theorem wrong_transpose_index_changes_first_lane :
     firstLane (transposeWithFirstIndex 1#i64 grid) ≠ firstLane (bls.fp8.transpose8 grid) := by
+  first_lane_value
   decide +kernel
 
 end LeanBlsSimd.Controls.Transpose

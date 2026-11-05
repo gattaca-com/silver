@@ -49,7 +49,7 @@ theorem run_pending [RuntimeFeatures] (ctx : Context) (state : RoundState)
   cases flag with
   | false =>
     change ps = state.1 at hresult
-    simp only [Bool.false_eq_true,if_false]
+    simp only [Bool.false_eq_true,ite_false]
     constructor
     · have hf := hq.frame hc.frame
       refine ⟨?_,hf.bits,hf.windows,?_⟩
@@ -57,7 +57,7 @@ theorem run_pending [RuntimeFeatures] (ctx : Context) (state : RoundState)
       · simpa only [hresult] using hf.points_length
     · simpa only [hfirsts] using he
   | true =>
-    simp only [if_true]
+    simp only [ite_true]
     have hupdated := Batch.jobs_points_updated jobs values hind state.1 ps hresult hframe
     refine ⟨replaceContents contents 0 (reduceChunks ctx.originals.val source.1.len.val
       (bucketChunks ctx.total contents)).1,updatedValues jobs values,?_⟩
@@ -67,7 +67,7 @@ theorem run_pending [RuntimeFeatures] (ctx : Context) (state : RoundState)
       apply hupdated.2
       simpa only [Store.PointRep,Store.Holds,hq.points] using hc.refs r hr
     · intro job hj
-      rw [signedReferenceValue_eq_sign,if_neg (by have := hout job hj; omega),
+      rw [signedReferenceValue_eq_sign,ite_eq_right (by have := hout job hj; omega),
         Nat.mod_eq_of_lt (hout job hj)]
       exact updatedValues_job jobs values hind job hj
     · intro r hr
@@ -128,21 +128,5 @@ theorem pair_rounds_initial [RuntimeFeatures] (ctx : Context) (state : portable.
       result.second_signs = state.second_signs :=
   pair_rounds_concrete ctx state (initial_completed ctx (state.store, state.buckets, state.adds)
     contents hp hlen hpoints hactive hlive hframe hsums)
-
-theorem Success.buckets {ctx : Context} {state : RoundState} (h : Success ctx state) :
-    ∃ values : ℕ → G1Spec.E.Point,
-      (∀ i < ctx.total, ∀ r ∈ bucketSlice state.2.1 i,
-        Store.PointRep state.1 (pointIndex r) (values (pointIndex r))) ∧
-      (∀ i < ctx.total, ((bucketSlice state.2.1 i).map (signedReferenceValue values)).sum = ctx.target i) ∧
-      (∀ i < ctx.total, (bucketSlice state.2.1 i).length ≤ 1) ∧ Frame ctx state := by
-  obtain ⟨⟨contents, values, hc⟩, hs⟩ := h
-  refine ⟨values, ?_, ?_, hs, hc.frame⟩
-  · intro i hi r hr
-    rw [packed_recovers state.2.1 ctx.total ctx.base ctx.capacity contents hc.layout.packed i hi] at hr
-    apply hc.refs r
-    exact List.mem_flatten.mpr ⟨contents i, List.mem_map.mpr ⟨i, List.mem_range.mpr hi, rfl⟩, hr⟩
-  · intro i hi
-    rw [packed_recovers state.2.1 ctx.total ctx.base ctx.capacity contents hc.layout.packed i hi]
-    exact hc.sums i hi
 
 end LeanBlsSimd.Portable.Msm.Rounds

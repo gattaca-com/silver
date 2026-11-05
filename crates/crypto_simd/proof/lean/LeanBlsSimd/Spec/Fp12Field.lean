@@ -1,6 +1,6 @@
 import LeanBlsSimd.Spec.Fp6Nonsquare
 
-/-! The quadratic field, with an explicit equivalence to the polynomial quotient. -/
+/-! The quadratic field and the map from its polynomial quotient. -/
 
 namespace LeanBlsSimd
 
@@ -33,24 +33,6 @@ instance instFactIrreducible : Fact (Irreducible polynomial) := ⟨polynomial_ir
 def fromQuotient : AdjoinRoot polynomial →ₐ[Fp6Field] Fp12Field :=
   AdjoinRoot.liftAlgHom polynomial (Algebra.ofId Fp6Field Fp12Field) w
     (by simp [polynomial, w_sq])
-
-def toQuotient : Fp12Field →ₐ[Fp6Field] AdjoinRoot polynomial := by
-  refine QuadraticAlgebra.lift ⟨AdjoinRoot.root polynomial, ?_⟩
-  simpa only [Algebra.smul_def, map_zero, zero_mul, mul_one, add_zero, pow_two] using
-    (root_X_pow_sub_C_pow 2 Fp6Field.v)
-
-def quotientEquiv : AdjoinRoot polynomial ≃ₐ[Fp6Field] Fp12Field :=
-  AlgEquiv.ofAlgHom fromQuotient toQuotient
-    (by
-      apply QuadraticAlgebra.algHom_ext
-      simp [fromQuotient, toQuotient, QuadraticAlgebra.lift, w])
-    (by
-      apply AdjoinRoot.algHom_ext
-      simp [fromQuotient, toQuotient, QuadraticAlgebra.lift, w])
-
-theorem quotientEquiv_root : quotientEquiv (AdjoinRoot.root polynomial) = w := by
-  change fromQuotient (AdjoinRoot.root polynomial) = w
-  simp [fromQuotient]
 
 instance instFintype : Fintype Fp12Field :=
   Fintype.ofEquiv (Fp6Field × Fp6Field) (QuadraticAlgebra.equivProd Fp6Field.v 0).symm

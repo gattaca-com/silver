@@ -92,7 +92,7 @@ theorem hard_run_refines {Raw : Type} {ops : Operations Raw} {rep : Raw → Bls.
   refine ⟨out, ?_, rout⟩
   simp only [hardRun, hf2, ht11, ht3, ht4, ht5, ht12, ht01, hf3, ht6, ht41,
     ht51, hf4, ht42, ht52, hf5, hf6, hf7, ht13, hf8, ht61, hf9, hf10, ht31,
-    hf11, hf12, hout, bind_tc_ok]
+    hf11, hf12, hout, bind_ok]
 
 theorem run_refines {Raw : Type} {ops : Operations Raw} {rep : Raw → Bls.Fp12 → Prop}
     (h : ops.Refines rep) {x : Raw} {a : Bls.Fp12} (hx : rep x a) :
@@ -104,6 +104,6 @@ theorem run_refines {Raw : Type} {ops : Operations Raw} {rep : Raw → Bls.Fp12 
   obtain ⟨f1, hf1, rf1⟩ := h.frobenius rf
   obtain ⟨t21, ht21, rt21⟩ := h.mul rf1 rt2
   obtain ⟨out, hout, rout⟩ := hard_run_refines h rt21 (easy_good a)
-  exact ⟨out, by simp only [run, ht0, ht1, ht2, hf, hf1, ht21, hout, bind_tc_ok], rout⟩
+  exact ⟨out, by simp only [run, ht0, ht1, ht2, hf, hf1, ht21, hout, bind_ok], rout⟩
 
 end LeanBlsSimd.Pairing.FinalExponent

@@ -10,7 +10,7 @@ const BATCH: usize = 256;
 
 /// A sum of signatures, added and subtracted in batches. The signatures
 /// must outlive it, as it keeps pointers to them until a batch is summed.
-pub(crate) struct SignatureSum<'s> {
+pub struct SignatureSum<'s> {
     added: Batch,
     subtracted: Batch,
     _signatures: PhantomData<&'s Signature>,
@@ -47,25 +47,27 @@ impl Batch {
     }
 }
 
-impl<'s> SignatureSum<'s> {
-    pub(crate) fn new() -> Self {
+impl Default for SignatureSum<'_> {
+    fn default() -> Self {
         Self { added: Batch::EMPTY, subtracted: Batch::EMPTY, _signatures: PhantomData }
     }
+}
 
-    pub(crate) fn add(&mut self, signature: &'s Signature) {
+impl<'s> SignatureSum<'s> {
+    pub fn add(&mut self, signature: &'s Signature) {
         self.added.push(signature);
     }
 
-    pub(crate) fn subtract(&mut self, signature: &'s Signature) {
+    pub fn subtract(&mut self, signature: &'s Signature) {
         self.subtracted.push(signature);
     }
 
-    pub(crate) fn add_sum(&mut self, sum: &AggregateSignature) {
+    pub fn add_sum(&mut self, sum: &AggregateSignature) {
         let sum = unsafe { &*(sum as *const AggregateSignature as *const blst_p2) };
         unsafe { blst_p2_add_or_double(&mut self.added.sum, &self.added.sum, sum) };
     }
 
-    pub(crate) fn finish(mut self) -> AggregateSignature {
+    pub fn finish(mut self) -> AggregateSignature {
         self.added.flush();
         self.subtracted.flush();
         let mut sum = self.added.sum;
@@ -80,10 +82,7 @@ impl<'s> SignatureSum<'s> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        bls::{DST, EMPTY_AGGREGATE},
-        test_signing::privkey,
-    };
+    use crate::bls::{DST, EMPTY_AGGREGATE, test_keys::privkey};
 
     fn signatures(count: usize) -> Vec<Signature> {
         (0..count).map(|i| privkey(i % 3).sign(&(i as u64).to_le_bytes(), DST, &[])).collect()
@@ -100,7 +99,7 @@ mod tests {
     #[test]
     fn matches_adding_one_by_one_across_batches() {
         let signatures = signatures(BATCH * 2 + 3);
-        let mut sum = SignatureSum::new();
+        let mut sum = SignatureSum::default();
         for signature in &signatures {
             sum.add(signature);
         }
@@ -116,7 +115,7 @@ mod tests {
         for signature in &signatures {
             all.add_signature(signature, false).expect("infallible without groupcheck");
         }
-        let mut sum = SignatureSum::new();
+        let mut sum = SignatureSum::default();
         sum.add_sum(&all);
         for signature in dropped {
             sum.subtract(signature);
@@ -129,7 +128,7 @@ mod tests {
     fn repeated_signatures_double() {
         let signatures = signatures(2);
         let repeated = [&signatures[0], &signatures[0], &signatures[1]];
-        let mut sum = SignatureSum::new();
+        let mut sum = SignatureSum::default();
         for signature in repeated {
             sum.add(signature);
         }

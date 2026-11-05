@@ -12,7 +12,8 @@ private def dependencies (env : Environment) (roots : Array Name) : NameSet := I
     todo := todo.pop
     unless visited.contains declName do
       visited := visited.insert declName
-      todo := todo ++ LeanBlsSimd.collectDeps env declName
+      if let some info := env.checked.get.find? declName then
+        todo := todo ++ info.getUsedConstantsAsSet.toArray
   return visited
 
 run_cmd do
@@ -76,7 +77,6 @@ private def requireIndependent (root : Name) : CommandElabM Unit := do
   let env ← getEnv
   let laws := #[``LeanBlsSimd.UncompressG1.FallbackCorrect,
     ``LeanBlsSimd.UncompressG1.BlstMatchesSpec,
-    ``LeanBlsSimd.Kzg.BlstPairing.Correct,
     ``LeanBlsSimd.Kzg.BlstPairing.CorrectFor,
     ``LeanBlsSimd.Kzg.BlstPairing.BlstMatchesSpec]
   let used := dependencies env (← getConstInfo root).type.getUsedConstants

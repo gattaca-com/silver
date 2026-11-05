@@ -1,9 +1,12 @@
 import LeanBlsSimd.LaneTower.Basic
-import LeanBlsSimd.LaneTower.Layout
+import LeanBlsSimd.LaneTower.Mul
+import LeanBlsSimd.Spec.Cyclotomic.Field
 
 open Aeneas Aeneas.Std Result ControlFlow
 open silver_crypto_simd silver_crypto_simd.bls
 open EthLib.Cryptography Bls
+
+attribute [local implicit_reducible] ZMod EthLib.Cryptography.Bls.Fp.modulus
 
 namespace LeanBlsSimd.LaneTower
 
@@ -35,7 +38,7 @@ theorem coefficient_body_step (g : Gamma) (i : Fin 6) :
     simp (disch := decide) [coefficientStages, coefficientCounter, index_usize_eq, update_eq, UScalar.lt_equiv]
   all_goals
     rw [add_ok _ _ (by scalar_tac)]
-    rfl
+    simp only [bind_ok] ; rfl
 
 theorem coefficient_body_end (g : Gamma) :
     fp12.Fp12.times_coefficients_loop.body g
@@ -80,19 +83,19 @@ theorem coefficient_loop (g : Gamma) :
   unfold fp12.Fp12.times_coefficients_loop
   change loop _ (coefficientStages g 0 0, coefficientStages g 1 0, coefficientCounter 0) = _
   rw [loop.eq_1]
-  simp only [h0]
+  simp only [h0, bind_ok]
   rw [loop.eq_1]
-  simp only [h1]
+  simp only [h1, bind_ok]
   rw [loop.eq_1]
-  simp only [h2]
+  simp only [h2, bind_ok]
   rw [loop.eq_1]
-  simp only [h3]
+  simp only [h3, bind_ok]
   rw [loop.eq_1]
-  simp only [h4]
+  simp only [h4, bind_ok]
   rw [loop.eq_1]
-  simp only [h5]
+  simp only [h5, bind_ok]
   rw [loop.eq_1]
-  simp only [h6]
+  simp only [h6, bind_ok]
 
 
 def tableLanes (c : Fin 2) : V Limbs :=
@@ -150,10 +153,10 @@ theorem times_coefficients_raw {x : fp2x8.Fp2x8} {a : P F}
       from ⟨loadedCoefficient_normal 0, loadedCoefficient_normal 1⟩)
     (by intro l; dsimp; decide) (by intro l; dsimp; decide)
   refine ⟨out, ?_, rout⟩
-  simp only [fp12.Fp12.times_coefficients, coefficient_loop, bind_tc_ok, Fp8.load_refines]
+  simp only [fp12.Fp12.times_coefficients, coefficient_loop, bind_ok, Fp8.load_refines]
   change (do let fx ← fp12.fp2_products x ⟨loadedCoefficient 0, loadedCoefficient 1⟩; ok fx) = _
   rw [hout]
-  rfl
+  simp only [bind_tc_ok]
 
 def conjugateCoefficients (a : P F) : P F := (a.1, fun l => -a.2 l)
 
@@ -166,8 +169,8 @@ theorem conjugate_coefficients_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨s, hs, rs⟩ := raw_sub rz.raw hx.2.raw rp (by intro l; rfl) (by decide)
   obtain ⟨n, hn, rn⟩ := raw_normalise rs (by intro l; change 256 ≤ 5120; decide) (by decide)
   refine ⟨⟨x.c0, n⟩, ?_, hx.1, ?_⟩
-  · simp only [fp12.Fp12.conjugate_coefficients, fp12.BOUND, hz, hp, hs, hn, bind_tc_ok]
-  · simpa only [zero_sub] using rn
+  · simp only [fp12.Fp12.conjugate_coefficients, fp12.BOUND, hz, hp, hs, hn, bind_ok]
+  · simpa only [zero_sub] using! rn
 
 def frobeniusValues (a : P F) : P F := mul2 (conjugateCoefficients a) tableValues
 
@@ -178,7 +181,7 @@ theorem frobenius_raw {x : fp2x8.Fp2x8} {a : P F}
   obtain ⟨c, hc, rc⟩ := conjugate_coefficients_raw hx
   obtain ⟨out, hout, rout⟩ := times_coefficients_raw rc
   refine ⟨out, ?_, rout⟩
-  simp only [fp12.Fp12.frobenius, hc, hout, bind_tc_ok]
+  simp only [fp12.Fp12.frobenius, hc, hout, bind_ok]
 
 
 
@@ -221,17 +224,17 @@ theorem frobenius_coefficients (a : P F) :
     rw [frobeniusValues, asFp2_mul2, asFp2_conjugate, asFp2_table]
   apply coeffs_ext
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 0
+      zero_mul, one_mul, pow_zero, mul_one] using! h 0
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 1
+      zero_mul, one_mul, pow_zero, mul_one] using! h 1
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 2
+      zero_mul, one_mul, pow_zero, mul_one] using! h 2
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 3
+      zero_mul, one_mul, pow_zero, mul_one] using! h 3
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 4
+      zero_mul, one_mul, pow_zero, mul_one] using! h 4
   · simpa only [tablePower, Matrix.cons_val, Fin.val_zero, Fin.val_one, Fin.val_mk,
-      zero_mul, one_mul, pow_zero, mul_one] using h 5
+      zero_mul, one_mul, pow_zero, mul_one] using! h 5
 
 theorem frobenius_value (a : P F) :
     value (frobeniusValues a) = Bls.Fp12.powNat (value a) Bls.Fp.modulus := by

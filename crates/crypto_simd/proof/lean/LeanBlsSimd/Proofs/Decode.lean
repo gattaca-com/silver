@@ -130,7 +130,8 @@ theorem toList_fp_words_chunk (be : Vector UInt8 FP_BYTES) (w : Fin 6) :
       (be.toList.drop (40 - 8 * w.val)).take 8 := by
   have hw := w.isLt
   apply List.ext_getElem
-  · simp [FP_BYTES, G2_COMPRESSED_LEN]
+  · simp only [List.length_take, List.length_drop, Vector.length_toList]
+    simp [FP_BYTES, G2_COMPRESSED_LEN]
     omega
   · intro i h1 h2
     simp only [Vector.toList_ofFn, List.getElem_ofFn, List.getElem_take, List.getElem_drop,
@@ -141,7 +142,7 @@ theorem toList_fp_words_chunk (be : Vector UInt8 FP_BYTES) (w : Fin 6) :
 
 set_option exponentiation.threshold 400 in
 theorem val64_fp_words (be : Vector UInt8 FP_BYTES) : val64 (fp_words be) = bytesVal be.toList := by
-  have hl : be.toList.length = 48 := by simp [FP_BYTES, G2_COMPRESSED_LEN]
+  have hl : be.toList.length = 48 := Vector.length_toList (xs := be)
   have hw (w : ℕ) (hw : w < 6) :
       ((fp_words be)[w]).toNat = bytesVal ((be.toList.drop (40 - 8 * w)).take 8) := by
     rw [← toList_fp_words_chunk be ⟨w, hw⟩, ← toNat_u64_from_be_bytes]
@@ -171,7 +172,7 @@ def clearFlags (h : Vector UInt8 FP_BYTES) : Vector UInt8 FP_BYTES :=
 
 theorem toList_take_eight (h : Vector UInt8 FP_BYTES) :
     h.toList.take 8 = h[0]'zero_lt_FP_BYTES :: (h.toList.drop 1).take 7 := by
-  have hl : h.toList.length = 48 := by simp [FP_BYTES, G2_COMPRESSED_LEN]
+  have hl : h.toList.length = 48 := Vector.length_toList (xs := h)
   apply List.ext_getElem
   · simp [hl]
   · intro i h1 h2
@@ -201,7 +202,8 @@ theorem fp_words_clear_flags (h : Vector UInt8 FP_BYTES) :
       generalize h.toList = l
       cases l <;> rfl
     have hlen : ((h.toList.drop 1).take 7).length = 7 := by
-      simp [FP_BYTES, G2_COMPRESSED_LEN]
+      simp only [List.length_take, List.length_drop, Vector.length_toList]
+      decide
     have h0 : ((clearFlags h)[0]'zero_lt_FP_BYTES).toNat = (h[0]'zero_lt_FP_BYTES).toNat % 32 := by
       rw [clearFlags, Vector.getElem_set_self, UInt8.toNat_and,
         show (0x1f : UInt8).toNat = 2 ^ 5 - 1 by decide, Nat.and_two_pow_sub_one_eq_mod]
@@ -268,7 +270,7 @@ theorem foldl_ltStep (x : Vector UInt64 6) : ∀ k : ℕ,
         simp [ltStep, hk]
       have hne : x[k]!.toNat ≠ P_U64v[k]!.toNat := fun h => hk (UInt64.toNat_inj.mp h)
       obtain ⟨h1, h2⟩ := lex_lt hne hA hB
-      rw [hstep, foldl_ltStep_some, lowVal, lowVal, if_neg h1, decide_eq_decide.mpr h2]
+      rw [hstep, foldl_ltStep_some, lowVal, lowVal, ite_eq_right h1, decide_eq_decide.mpr h2]
       rfl
 
 set_option exponentiation.threshold 400 in
@@ -285,9 +287,9 @@ theorem lowVal_P : lowVal P_U64v 6 = Fp.modulus := by decide +kernel
 theorem less_than_p_iff (x : Vector UInt64 6) : less_than_p x = decide (val64 x < Fp.modulus) := by
   rw [less_than_p, foldl_ltStep, lowVal_six, lowVal_P]
   by_cases h : val64 x = Fp.modulus
-  · rw [if_pos h, h]
+  · rw [ite_eq_left h, h]
     exact (decide_eq_false (lt_irrefl _)).symm
-  · rw [if_neg h, Option.getD_some]
+  · rw [ite_eq_right h, Option.getD_some]
 
 /-! ## `decode`, lane by lane -/
 
@@ -366,7 +368,7 @@ theorem flag_larger_root (b : UInt8) : (b &&& 0xe0) &&& FLAG_LARGER_ROOT = b &&&
 theorem decodeStep_lane_self (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (d : Decoded)
     (i : Fin 8) (h0 : d.lane i = initLane) :
     (decodeLane inputs[i]).Holds (decodeStep inputs d i) i := by
-  simp only [Decoded.lane, initLane, Prod.mk.injEq] at h0
+  simp only [Decoded.lane, initLane, Limbs, LIMBS, Prod.mk.injEq] at h0
   obtain ⟨hx0, hx1, hlr, hinv, hund⟩ := h0
   have hb (k : Mmask8) : (k ||| (1 <<< i.val.toUInt8)).toNat.testBit i = true := by
     rw [Mmask8.testBit_or, Mmask8.testBit_one_shiftLeft, decide_eq_true rfl, Bool.or_true]
@@ -377,8 +379,10 @@ theorem decodeStep_lane_self (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8
   obtain ⟨x1b, x0b⟩ := sp
   dsimp only
   rw [fp_words_clear_flags, less_than_p_iff, less_than_p_iff, val64_fp_words, val64_fp_words]
-  have hz0 : Fp8Inv d.x0[i] ∧ val d.x0[i] = 0 := ⟨hx0 ▸ inv_replicate_zero, by rw [hx0]; exact val_replicate_zero⟩
-  have hz1 : Fp8Inv d.x1[i] ∧ val d.x1[i] = 0 := ⟨hx1 ▸ inv_replicate_zero, by rw [hx1]; exact val_replicate_zero⟩
+  have hz0 : Fp8Inv d.x0[i] ∧ val d.x0[i] = 0 :=
+    ⟨hx0 ▸ inv_replicate_zero, (congrArg val hx0).trans val_replicate_zero⟩
+  have hz1 : Fp8Inv d.x1[i] ∧ val d.x1[i] = 0 :=
+    ⟨hx1 ▸ inv_replicate_zero, (congrArg val hx1).trans val_replicate_zero⟩
   have hcond : ∀ a b : Prop, [Decidable a] → [Decidable b] →
       ((!decide a || !decide b) = true) = ¬(a ∧ b) := by
     intro a b _ _
@@ -435,7 +439,7 @@ theorem decode_holds (inputs : Vector (Vector UInt8 G2_COMPRESSED_LEN) 8) (l : F
     (decodeLane inputs[l]).Holds (decode inputs) l := by
   refine (foldl_decodeStep inputs _ decodeInit l (List.nodup_finRange 8)).2
     (List.mem_finRange l) ?_
-  simp [Decoded.lane, decodeInit, initLane]
+  simp [Decoded.lane, decodeInit, initLane, Limbs, LIMBS]
 
 /-! ## The spec's bytes -/
 
@@ -455,23 +459,25 @@ theorem toList_clearFlags_split (bytes : Vector UInt8 G2_COMPRESSED_LEN) :
     (clearFlags (split_at bytes).1).toList =
       ((bytes.toList.set 0 (bytes[0]'zero_lt_G2_COMPRESSED_LEN &&& 0x1f)).drop 0).take 48 := by
   apply List.ext_getElem
-  · simp [FP_BYTES, G2_COMPRESSED_LEN]
+  · simp only [List.length_take, List.length_drop, List.length_set, Vector.length_toList]
+    decide
   · intro i h1 h2
     simp only [clearFlags, Vector.toList_set, List.getElem_set, List.getElem_take, List.getElem_drop,
       Vector.getElem_toList, split_at, Vector.toList_ofFn, List.getElem_ofFn, Vector.getElem_ofFn]
     by_cases hi : 0 = i
     · subst hi
-      simp only [if_true]
+      simp only [ite_true]
     · simp only [Nat.zero_add]
 
 theorem toList_split_snd (bytes : Vector UInt8 G2_COMPRESSED_LEN) (v : UInt8) :
     (split_at bytes).2.toList = ((bytes.toList.set 0 v).drop 48).take (96 - 48) := by
   apply List.ext_getElem
-  · simp [FP_BYTES, G2_COMPRESSED_LEN]
+  · simp only [List.length_take, List.length_drop, List.length_set, Vector.length_toList]
+    decide
   · intro i h1 h2
     simp only [List.getElem_set, List.getElem_take, List.getElem_drop, Vector.getElem_toList,
       split_at, Vector.toList_ofFn, List.getElem_ofFn]
-    rw [if_neg (by omega)]
+    rw [ite_eq_right (by omega)]
     rfl
 
 theorem bytesBEToNat_c1 (bytes : Vector UInt8 G2_COMPRESSED_LEN) :

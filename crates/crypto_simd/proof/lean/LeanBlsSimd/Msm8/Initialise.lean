@@ -78,42 +78,46 @@ theorem initialise_correct (self : msm8.Msm8)
     split_values_bound hinv (fun j => ⟨(hhalf j).2.2.1, (hhalf j).2.2.2⟩)
   have hsize : (alloc.vec.Vec.deref halves).val.length *
       (windows127 (selectedWidth (alloc.vec.Vec.deref halves).val.length)).val < 2 ^ 32 := by
-    change halves.val.length * (windows127 (selectedWidth halves.val.length)).val < 2 ^ 32
+    simp only [alloc.vec.Vec.deref, Slice.from_val]
     rw [hinv.1]
     exact hres.references32
   obtain ⟨b, capacity, contents, hfill, hw, hwin, hpacked, hdisjoint, hshape, hpositive,
     hbudget, hlengths, hsum, href⟩ := fill127_ready self.buckets (alloc.vec.Vec.deref halves)
       (fun i => Kzg.limbs halves.val[i]!.val) values hsize (by
+        simp only [alloc.vec.Vec.deref, Slice.from_val]
         change halves.val.length < 2 ^ 31
         rw [hinv.1]
         exact hres.originals31)
       (by
         intro j hj
+        simp only [alloc.vec.Vec.deref, Slice.from_val] at hj ⊢
         change SignedDigits.value halves.val[j] = _
         rw [digit_value_eq_limbs]
         change Kzg.limbs halves.val[j].val = Kzg.limbs halves.val[j]!.val
         rw [getElem!_pos halves.val j hj])
       (by
         intro j hj
-        exact hb j (by change j < halves.val.length at hj; rwa [hinv.1] at hj))
+        exact hb j (by simp only [alloc.vec.Vec.deref, Slice.from_val] at hj; change j < halves.val.length at hj; rwa [hinv.1] at hj))
   obtain ⟨b', hfill', _, _, hresources, hbucket, _⟩ :=
-    MsmBounds.fill_chunk_bounds self.buckets (alloc.vec.Vec.deref halves) n hinv.1 hchunk
-  have heq : b' = b := Result.ok.inj (hfill'.symm.trans hfill)
+    MsmBounds.fill_chunk_bounds self.buckets (alloc.vec.Vec.deref halves) n (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hinv.1) hchunk
+  have heq : b' = b := Result.ok_injective (hfill'.symm.trans hfill)
   subst b'
   obtain ⟨store, hstore, hstorelen, _, hcapacity, hfirst, hsecond, _, _⟩ :=
     prepare_store_correct self.store (alloc.vec.Vec.deref self.finite_points)
       (alloc.vec.Vec.deref fs) (alloc.vec.Vec.deref ss) b.windows
-      (by change fs.val.length = self.finite_points.val.length; rw [hinv.2.1, halign])
-      (by change ss.val.length = self.finite_points.val.length; rw [hinv.2.2.1, halign])
-      hp hfinite (by change 1 ≤ self.finite_points.val.length; omega)
+      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; rw [hinv.2.1, halign])
+      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; rw [hinv.2.2.1, halign])
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hp)
+      (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hfinite)
+      (by simp only [alloc.vec.Vec.deref, Slice.from_val]; omega)
       (by
-        change 2 * (2 * self.finite_points.val.length + b.windows.val * self.finite_points.val.length) < 2 ^ 32
+        simp only [alloc.vec.Vec.deref, Slice.from_val]
         simpa only [halign, Nat.mul_comm b.windows.val] using hresources.rows32)
   let out : msm8.Msm8 := {self with halves, first_signs := fs, second_signs := ss, buckets := b, store}
   have hscalarSum := split_sum_contribution self.finite_points.val self.finite_scalars.val halign
     first second halves fs ss hinv hp (fun j => (hhalf j).1) (fun j => (hhalf j).2.1)
   refine ⟨out, values, capacity, contents, ?_, rfl, rfl, rfl, ?_⟩
-  · simp only [initialise, hsplit, bind_tc_ok]
+  · simp only [initialise, hsplit, bind_ok]
     change (do
       let b ← self.buckets.fill (alloc.vec.Vec.deref halves) 127#usize
       let store ← prepareStore self.store (alloc.vec.Vec.deref self.finite_points)
@@ -123,15 +127,15 @@ theorem initialise_correct (self : msm8.Msm8)
     simp only [bind_tc_ok, hstore]
     rfl
   · refine {
-      store_len := by simpa only [alloc.vec.Vec.deref, halign, out] using hstorelen
-      store_capacity := by simpa only [alloc.vec.Vec.deref, halign, Nat.mul_comm b.windows.val, out] using hcapacity
+      store_len := by simpa only [alloc.vec.Vec.deref, Slice.from_val, halign, out] using! hstorelen
+      store_capacity := by simpa only [alloc.vec.Vec.deref, Slice.from_val, halign, Nat.mul_comm b.windows.val, out] using! hcapacity
       resources := hresources
       shape := hshape
       windows_positive := hpositive
-      selected_windows := by simpa only [alloc.vec.Vec.deref, hinv.1, out] using hwin
+      selected_windows := by simpa only [alloc.vec.Vec.deref, Slice.from_val, hinv.1, out] using! hwin
       packed := hpacked
       disjoint := hdisjoint
-      references_bound := by simpa only [alloc.vec.Vec.deref, hinv.1, out] using hbudget
+      references_bound := by simpa only [alloc.vec.Vec.deref, Slice.from_val, hinv.1, out] using! hbudget
       content_lengths := hlengths
       bucket_lengths := ?_
       reference_indices := ?_
@@ -139,13 +143,16 @@ theorem initialise_correct (self : msm8.Msm8)
       halves_length := hinv.1
       halves_bound := ?_
       scalar_sum := hscalarSum
-      bucket_sum := hsum.trans hscalarSum
+      bucket_sum := by
+        simp only [alloc.vec.Vec.deref, Slice.from_val] at hsum
+        exact hsum.trans hscalarSum
     }
     · intro i hi
       rw [← packed_recovers b _ (prefixSum capacity) capacity contents hpacked i hi]
       exact hbucket i hi
-    · simpa only [alloc.vec.Vec.deref, hinv.1, out] using href
-    · have h := split_points_rep self.finite_points.val fs.val ss.val (pointRows store) hfirst hsecond
+    · simpa only [alloc.vec.Vec.deref, Slice.from_val, hinv.1, out] using! href
+    · simp only [alloc.vec.Vec.deref, Slice.from_val] at hfirst hsecond
+      have h := split_points_rep self.finite_points.val fs.val ss.val (pointRows store) hfirst hsecond
       simpa only [halign] using h
     · intro i hi
       exact hb i (by change i < halves.val.length at hi; rwa [hinv.1] at hi)

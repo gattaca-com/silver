@@ -9,6 +9,7 @@ open Aeneas Aeneas.Std Result ControlFlow
 open EthLib.Cryptography Bls Kzg
 open silver_crypto_simd silver_crypto_simd.kzg
 
+
 namespace LeanBlsSimd.Kzg.Extender.Kernel.BytePacking
 
 set_option exponentiation.threshold 1000
@@ -101,9 +102,6 @@ theorem val52_eq_model (x : Vector UInt64 5) : val52 x = FrModel.val x := by
     pow_zero, mul_one]
   rfl
 
-theorem laneOf_eq_model (a : fr8.Fr8) (lane : Fin 8) :
-    laneOf (ofArray id a) lane = (FrModel.ofFr8 a).lane lane := rfl
-
 theorem val52_store (a : fr8.Fr8) (lane : Fin 8) :
     val52 (store (ofArray id a))[lane] = laneNat a lane := by
   rw [getElem_store]
@@ -144,14 +142,14 @@ theorem vector_to_bytes_loop_refines (blocks : Vector M512 4) (input : Slice U8)
     simp only [UScalarTy.Usize_numBits_eq] at hplatform
     simp_body fr8.u256x8.U256x8.to_bytes_loop.body hn
     rw [index_usize_toArray id blocks rfl _ hk]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     rw [swap_bytes_refines]
-    simp only [bind_tc_ok]
-    simp (disch := (simp <;> omega)) only [usize_mul_ok, bind_tc_ok, UScalar.ofNatCore_val_eq]
+    simp only [bind_ok]
+    simp (disch := (simp <;> omega)) only [usize_mul_ok, bind_ok, UScalar.ofNatCore_val_eq]
     rw [store_block_refines (blocks[r.start.val]) _ _ _ ?_ (by simp; omega)]
     · simp [hs]
     · intro lane
-      simpa [wordBytes] using congrArg Subtype.val (to_le_bytes_swapWord (blocks[r.start.val][lane]))
+      simpa [wordBytes] using congrArg Array.val (to_le_bytes_swapWord (blocks[r.start.val][lane]))
 
 theorem blockBytes_wordBlocks_get (w : Vector M512 4) (lane : Fin 8) (b : Nat) (hb : b < 32) :
     (blockBytes (wordBlocks w)[lane.val/2]!)[32*(lane.val%2)+b]! =
@@ -176,8 +174,8 @@ theorem vector_to_bytes_refines (w : Vector M512 4) (input : Slice U8) (offset :
     fr8.u256x8.U256x8.to_bytes (toArray id w) input offset =
       ok (writeBlocks 8 32 offset.val (fun k => wordsBytes (wordLane w ⟨k%8, Nat.mod_lt _ (by decide)⟩)) input) := by
   let chunks (k : Nat) := wordsBytes (wordLane w ⟨k%8, Nat.mod_lt _ (by decide)⟩)
-  let sub : Slice U8 := ⟨input.val.slice offset.val (offset.val+256),
-    le_trans (List.slice_length_le _ _ _) input.property⟩
+  let sub : Slice U8 := Slice.from (input.val.slice offset.val (offset.val+256))
+    (le_trans (List.slice_length_le _ _ _) input.property)
   have hsub : sub.val.length = 256 := by simp [sub, List.slice_length]; omega
   let stored := writeBlocks 4 64 0 (fun k => blockBytes (wordBlocks w)[k]!) sub
   have hs := writeBlocks_spec 4 64 0 (fun k => blockBytes (wordBlocks w)[k]!) sub
@@ -192,22 +190,22 @@ theorem vector_to_bytes_refines (w : Vector M512 4) (input : Slice U8) (offset :
   simp only [UScalarTy.Usize_numBits_eq] at hmax hplatform
   unfold fr8.u256x8.U256x8.to_bytes
   rw [blocks_refines]
-  simp only [fr8.LANES, bind_tc_ok]
+  simp only [fr8.LANES, bind_ok]
   rw [usize_mul_ok 32#usize 8#usize (by decide)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by change offset.val + 256 < 2^UScalarTy.Usize.numBits; simp only [UScalarTy.Usize_numBits_eq]; omega)]
-  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  simp only [bind_ok, UScalar.ofNatCore_val_eq]
   rw [slice_index_mut_ok _ _ _ (by simp) (by simp; omega)]
-  simp only [bind_tc_ok, Function.uncurry_apply_pair]
+  simp only [bind_ok, Aeneas.Std.uncurry_apply_pair]
   rw [vector_to_bytes_loop_refines _ _ (by change 256 ≤ sub.val.length; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   change ok (input.setSlice! offset.val stored.val) = ok (writeBlocks 8 32 offset.val chunks input)
   apply congrArg ok
   generalize hstored : stored = storedOut at ⊢
   dsimp only [stored] at hstored
   rw [hstored] at hs
   generalize houtput : writeBlocks 8 32 offset.val chunks input = output at ht ⊢
-  apply Subtype.ext
+  ext1
   apply List.ext_getElem
   · simpa using ht.1.symm
   · intro i hi hi'
@@ -230,7 +228,7 @@ theorem vector_to_bytes_refines (w : Vector M512 4) (input : Slice U8) (offset :
     · rw [List.getElem!_setSlice!_same]
       · have hget := congrArg (fun x : Option U8 => x.getD default) (ht.2.2 i (by omega))
         simpa using hget.symm
-      · change i < offset.val ∨ offset.val + storedOut.val.length ≤ i
+      ·
         rw [hs.1,hsub]
         omega
 
@@ -250,7 +248,7 @@ theorem encoded_bytes_refinement (a : fr8.Fr8) (ha : Bounded a) (input : Slice U
   refine ⟨out, ?_, hs.1, ?_, fun i hi => hs.2.2 i.val hi⟩
   · unfold fr8.Fr8.to_bytes
     rw [hc]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     have hnormal : ∀ j : Fin 5, ∀ lane : Fin 8, (ofArray id canonical)[j][lane].toNat < 2^52 := by
       intro j lane
       have h := (normalized_iff_model canonical).mp hn lane j
@@ -260,7 +258,7 @@ theorem encoded_bytes_refinement (a : fr8.Fr8) (ha : Bounded a) (input : Slice U
     have hpack := vectorPack_refines (ofArray id canonical) hnormal
     rw [toArray_ofArray (f := id) (g := id) (m := 5) (fun _ => rfl) canonical rfl rfl] at hpack
     rw [hpack]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     rw [vector_to_bytes_refines _ _ _ hsize]
     apply congrArg ok
     unfold writeBlocks

@@ -46,7 +46,7 @@ if [[ $actual != "$pinned" ]]; then
   echo "AENEAS_DIR is at $actual; lake-manifest.json pins aeneas at $pinned" >&2
   exit 1
 fi
-# The binaries may predate the checkout: Aeneas reports its commit, Charon only its crate version.
+# The binaries may predate the checkout: both report the commit they were built from.
 aeneas_built=$("$aeneas" -version | awk '{print $2}')
 if [[ -z $aeneas_built || $pinned != "$aeneas_built"* ]]; then
   echo "$aeneas was built from $aeneas_built, not $pinned; rebuild it" >&2
@@ -59,8 +59,8 @@ if [[ $charon_actual != "$charon_pinned" ]]; then
   exit 1
 fi
 charon_version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$AENEAS_DIR/charon/charon/Cargo.toml" | head -n 1)
-if [[ $("$charon" version) != "$charon_version" ]]; then
-  echo "$charon reports $("$charon" version), not the checkout's $charon_version; rebuild it" >&2
+if [[ $("$charon" version) != "$charon_version ($charon_actual)" ]]; then
+  echo "$charon reports $("$charon" version), not the checkout's $charon_version ($charon_actual); rebuild it" >&2
   exit 1
 fi
 

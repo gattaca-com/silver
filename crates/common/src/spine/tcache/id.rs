@@ -1,5 +1,6 @@
+use flux::type_hash_derive::TypeHash;
 /// Discriminant is the slot in `TCacheTable` / `TCacheReader`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, TypeHash)]
 #[repr(u8)]
 pub enum TCacheId {
     NetworkIngress,

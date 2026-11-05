@@ -50,11 +50,4 @@ set_option exponentiation.threshold 4096
 
 theorem product_capacity : 80 * 256 ^ 2 * Fp.modulus < R := by decide +kernel
 
-theorem normalization_capacity : 5121 * Fp.modulus < R := by decide +kernel
-
-theorem power_of_lane (h : Fin 2) (k : Fin 3) :
-    (silver_crypto_simd.bls.fp12.POWER_OF_LANE.val[3 * h.val + k.val]!).val =
-      2 * k.val + h.val := by
-  fin_cases h <;> fin_cases k <;> decide +kernel
-
 end LeanBlsSimd.LaneTower

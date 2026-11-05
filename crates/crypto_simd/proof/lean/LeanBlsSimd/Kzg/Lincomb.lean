@@ -36,7 +36,7 @@ private theorem words_four_injective (a b : MsmWord)
   have h1 : a1.val = b1.val := by omega
   have h2 : a2.val = b2.val := by omega
   have h3 : a3.val = b3.val := by omega
-  apply Subtype.ext
+  ext1
   rw [ha, hb, UScalar.eq_of_val_eq h0, UScalar.eq_of_val_eq h1,
     UScalar.eq_of_val_eq h2, UScalar.eq_of_val_eq h3]
 
@@ -75,7 +75,7 @@ private theorem portable_words_loop
     have hstop : ¬ i < Slice.len fs := by simp [he]
     refine ⟨ws, ?_, by simp [he]⟩
     rw [verify.CurveWork.sum_loop, loop.eq_1]
-    simp only [verify.CurveWork.sum_loop.body, hstop, if_false]
+    simp only [verify.CurveWork.sum_loop.body, hstop, ite_false, bind_ok]
   | succ n ih =>
     have hlt : i.val < fs.val.length := by omega
     have htest : i < Slice.len fs := by simpa using hlt
@@ -88,7 +88,7 @@ private theorem portable_words_loop
     have hpushbound : ws.val.length < Usize.max := by
       have := fs.property
       omega
-    obtain ⟨nextWords, hpush, hw⟩ := WP.spec_imp_exists
+    obtain ⟨nextWords, hpush, hw⟩ := spec_imp_exists
       (alloc.vec.Vec.push_spec ws (words 4#usize (frRead f).val) hpushbound)
     have hin : i.val + 1 < 2 ^ UScalarTy.Usize.numBits := by
       have := (Slice.len fs).hBounds
@@ -101,7 +101,7 @@ private theorem portable_words_loop
       (by simp [hw, hsize, hi']) (by omega)
     refine ⟨out, ?_, ?_⟩
     · rw [verify.CurveWork.sum_loop, loop.eq_1]
-      simp only [verify.CurveWork.sum_loop.body, htest, if_true, hindex, bind_tc_ok,
+      simp only [verify.CurveWork.sum_loop.body, htest, ite_true, hindex, bind_ok,
         hword, hpush, hadd]
       exact hloop
     · rw [List.drop_eq_getElem_cons hlt]
@@ -111,19 +111,20 @@ private theorem portable_words
     (fs : Slice blst.blst_fr) (ws : alloc.vec.Vec (MsmWord))
     (hf : ∀ f ∈ fs.val, FrReduced f) :
     ∃ out,
-      (do let cleared ← alloc.vec.Vec.clear Global ws
+      (do let cleared ← alloc.vec.Vec.clear alloc.alloc.Global ws
           verify.CurveWork.sum_loop fs cleared 0#usize) = ok out ∧
       out.val.length = fs.val.length ∧
       out.val.map (fun w => limbs w.val) = fs.val.map (fun f => (frRead f).val) := by
   let empty := alloc.vec.Vec.new (MsmWord)
   obtain ⟨out, hloop, hout⟩ := portable_words_loop fs empty 0#usize (by simp) rfl hf
   refine ⟨out, ?_, ?_, ?_⟩
-  · simpa only [alloc.vec.Vec.clear, bind_tc_ok] using hloop
+  · simpa only [alloc.vec.Vec.clear, bind_tc_ok, bind_ok] using hloop
   · simp [hout, empty]
-  · simp only [hout, empty, List.nil_append, UScalar.ofNatCore_val_eq,
-      List.drop_zero, List.map_map, Function.comp_def]
-    congr 1
-    funext f
+  · rw [hout]
+    simp only [empty, List.nil_append, UScalar.ofNatCore_val_eq,
+      List.drop_zero, List.map_map, Function.comp_def, alloc.vec.Vec.new, alloc.vec.Vec.from_val]
+    apply List.map_congr_left
+    intro f _
     exact limbs_words_four _ (Nat.lt_trans (frRead f).isLt (by decide))
 
 private def Msm8Correct : Prop :=
@@ -167,11 +168,12 @@ private theorem lincomb_sum_kernel [RuntimeFeatures]
   obtain ⟨ws, hwords, hwlen, hwval⟩ := PlainWords.plain_words_correct fs scratch hfv
   obtain ⟨hwbound, hvalues⟩ := word_values fs ws hwval
   obtain ⟨point, next, hcall, hrep⟩ := msm8_correct state ps (alloc.vec.Vec.deref ws)
-    (by simpa only [alloc.vec.Vec.deref, hwlen] using hlen) hpv hwbound
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val, hwlen] using hlen) hpv
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hwbound)
   refine ⟨point, .Lanes next ws, ?_, ?_⟩
-  · simp only [verify.CurveWork.sum, hwords, bind_tc_ok, hcall]
+  · simp only [verify.CurveWork.sum, hwords, bind_ok, hcall]
     rfl
-  · simpa only [alloc.vec.Vec.deref, hvalues] using hrep
+  · simpa only [alloc.vec.Vec.deref, Slice.from_val, hvalues] using hrep
 
 private theorem lincomb_sum_portable [RuntimeFeatures]
     (state : portable.msm.Msm)
@@ -184,12 +186,13 @@ private theorem lincomb_sum_portable [RuntimeFeatures]
   obtain ⟨ws, hwords, hwlen, hwval⟩ := portable_words fs scratch hfv
   obtain ⟨hwbound, hvalues⟩ := word_values fs ws hwval
   obtain ⟨point, next, hcall, hrep⟩ := portable_msm_correct.msm state ps (alloc.vec.Vec.deref ws)
-    (by simpa only [alloc.vec.Vec.deref, hwlen] using hlen) hpv hwbound
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val, hwlen] using hlen) hpv
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using hwbound)
   refine ⟨point, .Scalar next ws, ?_, ?_⟩
-  · simp only [alloc.vec.Vec.clear, bind_tc_ok] at hwords
-    simp only [verify.CurveWork.sum, alloc.vec.Vec.clear, bind_tc_ok, hwords, hcall]
+  · simp only [alloc.vec.Vec.clear, bind_ok] at hwords
+    simp only [verify.CurveWork.sum, alloc.vec.Vec.clear, bind_ok, hwords, hcall]
     rfl
-  · simpa only [alloc.vec.Vec.deref, hvalues] using hrep
+  · simpa only [alloc.vec.Vec.deref, Slice.from_val, hvalues] using hrep
 
 /-- Both routes refine MSM for all reusable workspaces and reduced input scalars. -/
 theorem verify_lincomb_raw_refinement [RuntimeFeatures]
@@ -201,17 +204,6 @@ theorem verify_lincomb_raw_refinement [RuntimeFeatures]
   cases self with
   | Lanes state ws => exact lincomb_sum_kernel state ws ps fs hlen hpv hfv
   | Scalar state ws => exact lincomb_sum_portable state ws ps fs hlen hpv hfv
-
-/-- The MSM result and preservation of persistent workspace fields. -/
-theorem curveWork_sum_raw [RuntimeFeatures]
-    (self : verify.CurveWork) (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
-    (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
-    (hfv : ∀ f ∈ fs.val, FrReduced f) :
-    ∃ point next, self.sum ps fs = ok (point, next) ∧
-      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) ∧
-      CurveWork.isLanes next = CurveWork.isLanes self := by
-  obtain ⟨point, next, hcall, hrep⟩ := verify_lincomb_raw_refinement self ps fs hlen hpv hfv
-  exact ⟨point, next, hcall, hrep, CurveWork.sum_frame self next ps fs point hcall⟩
 
 private theorem lincomb_encoded [RuntimeFeatures]
     (ps : alloc.vec.Vec blst.blst_p1_affine) (fs : alloc.vec.Vec blst.blst_fr)
@@ -227,16 +219,16 @@ private theorem lincomb_encoded [RuntimeFeatures]
     ∃ point scratch', scratch.sum (alloc.vec.Vec.deref ps)
       (alloc.vec.Vec.deref fs) = ok (point, scratch') ∧
       G1Rep point (G1.msm points scalars) := by
-  have hlen : (alloc.vec.Vec.deref ps).val.length = (alloc.vec.Vec.deref fs).val.length := by
-    simp only [alloc.vec.Vec.deref, hps, hfs, List.length_map, _root_.Array.length_toList, hsize]
-  have hpv : ∀ p ∈ (alloc.vec.Vec.deref ps).val, G1AffineValid p := by
+  have hlen : ps.val.length = fs.val.length := by
+    simp only [hps, hfs, List.length_map, _root_.Array.length_toList, hsize]
+  have hpv : ∀ p ∈ ps.val, G1AffineValid p := by
     intro p hp
-    simp only [alloc.vec.Vec.deref, hps] at hp
+    simp only [hps] at hp
     obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
     exact g1Affine_valid (hvalid q (_root_.Array.mem_toList_iff.mp hq))
-  have hfv : ∀ f ∈ (alloc.vec.Vec.deref fs).val, FrReduced f := by
+  have hfv : ∀ f ∈ fs.val, FrReduced f := by
     intro f hf
-    simp only [alloc.vec.Vec.deref, hfs] at hf
+    simp only [hfs] at hf
     obtain ⟨q, _, rfl⟩ := List.mem_map.mp hf
     exact frEncode_reduced q
   obtain ⟨point, scratch', hcall, hrep⟩ := hsum hlen hpv hfv
@@ -283,56 +275,7 @@ theorem verify_lincomb_refinement [RuntimeFeatures]
       (alloc.vec.Vec.deref fs) = ok (point, scratch') ∧
       G1Rep point (G1.msm points scalars) := by
   exact lincomb_encoded ps fs points scalars hps hfs hsize hvalid scratch
-    (verify_lincomb_raw_refinement scratch
-      (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs))
-
-theorem verify_lincomb_raw_kernel_refinement [RuntimeFeatures]
-    (self : verify.CurveWork) (hstate : CurveWork.isLanes self = true)
-    (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr)
-    (hlen : ps.val.length = fs.val.length) (hpv : ∀ p ∈ ps.val, G1AffineValid p)
-    (hfv : ∀ f ∈ fs.val, FrReduced f) :
-    ∃ point next, self.sum ps fs = ok (point, next) ∧ CurveWork.isLanes next = true ∧
-      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
-  cases self with
-  | Lanes state ws =>
-    obtain ⟨point, next, hcall, hrep⟩ := lincomb_sum_kernel state ws ps fs hlen hpv hfv
-    exact ⟨point, next, hcall, (CurveWork.sum_frame _ next ps fs point hcall), hrep⟩
-  | Scalar state ws => cases hstate
-
-theorem verify_lincomb_kernel_refinement [RuntimeFeatures]
-    (ps : alloc.vec.Vec blst.blst_p1_affine) (fs : alloc.vec.Vec blst.blst_fr)
-    (points : _root_.Array G1) (scalars : _root_.Array Fr)
-    (hps : ps.val = points.toList.map g1Affine) (hfs : fs.val = scalars.toList.map frEncode)
-    (hsize : points.size = scalars.size) (hvalid : ∀ p ∈ points, G1Valid p)
-    (scratch : verify.CurveWork) (hroute : CurveWork.isLanes scratch = true) :
-    ∃ point scratch', scratch.sum (alloc.vec.Vec.deref ps)
-      (alloc.vec.Vec.deref fs) = ok (point, scratch') ∧
-      G1Rep point (G1.msm points scalars) ∧ CurveWork.isLanes scratch' = true := by
-  have hsum : ps.val.length = fs.val.length →
-      (∀ p ∈ ps.val, G1AffineValid p) → (∀ f ∈ fs.val, FrReduced f) → ∃ point next,
-      scratch.sum (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs) = ok (point, next) ∧
-      G1Rep point (G1.msm (ps.val.map g1ReadAffine).toArray (fs.val.map frRead).toArray) := by
-    intro hlen hpv hfv
-    obtain ⟨point, next, hcall, _, hrep⟩ := verify_lincomb_raw_kernel_refinement scratch hroute
-      (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs) hlen hpv hfv
-    exact ⟨point, next, hcall, hrep⟩
-  obtain ⟨point, next, hcall, hrep⟩ := lincomb_encoded ps fs points scalars
-    hps hfs hsize hvalid scratch hsum
-  exact ⟨point, next, hcall, hrep, (CurveWork.sum_frame scratch next _ _ point hcall).trans hroute⟩
-
-/-- A successful sum keeps the workspace route. -/
-theorem lincomb_sum_route [RuntimeFeatures] (self next : verify.CurveWork)
-    (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr) (point : blst.blst_p1)
-    (hcall : self.sum ps fs = ok (point, next)) :
-    CurveWork.isLanes next = CurveWork.isLanes self :=
-  (CurveWork.sum_frame self next ps fs point hcall)
-
-/-- The lane route does not inspect CPU feature selection. -/
-theorem lincomb_sum_kernel_runtime_independent (cpu cpu' : RuntimeFeatures)
-    (state : msm8.Msm8) (scratch : alloc.vec.Vec (Aeneas.Std.Array U64 4#usize))
-    (ps : Slice blst.blst_p1_affine) (fs : Slice blst.blst_fr) :
-    @verify.CurveWork.sum cpu (.Lanes state scratch) ps fs =
-      @verify.CurveWork.sum cpu' (.Lanes state scratch) ps fs := by
-  rfl
+    (by simpa only [alloc.vec.Vec.deref, Slice.from_val] using
+      verify_lincomb_raw_refinement scratch (alloc.vec.Vec.deref ps) (alloc.vec.Vec.deref fs))
 
 end LeanBlsSimd.Kzg

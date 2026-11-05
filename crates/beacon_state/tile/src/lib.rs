@@ -1,6 +1,5 @@
 #![allow(clippy::result_large_err)]
 
-pub mod bls;
 pub mod counters;
 pub mod error;
 mod fork_choice;

@@ -8,21 +8,20 @@ open silver_crypto_simd
 open EthLib.Cryptography Bls
 
 namespace LeanBlsSimd.Portable.G1
+attribute [local implicit_reducible] ZMod Bls.Fp.modulus
+
 set_option maxRecDepth 4096
 set_option exponentiation.threshold 4096
 
 theorem beta_encoded : portable.constants.BETA = (Kzg.fpEncode (beta : ZMod Bls.Fp.modulus)).l := by
   unfold portable.constants.BETA
-  apply Subtype.ext
+  ext1
   decide +kernel
 
 private theorem is_zero_field (x : ZMod Bls.Fp.modulus) :
     portable.fp.Fp.is_zero (Kzg.fpEncode x).l = ok (decide (x=0)) := by
   rw [Fp.is_zero_encoded]
   congr 1
-  apply Bool.eq_iff_iff.mpr
-  simp only [decide_eq_true_eq]
-  exact Bls.G1.isZero_iff
 
 private theorem mul_field [RuntimeFeatures] (x y : ZMod Bls.Fp.modulus) :
     portable.fp.Fp.mul (Kzg.fpEncode x).l (Kzg.fpEncode y).l = ok (Kzg.fpEncode (x*y)).l :=
@@ -51,14 +50,14 @@ theorem is_minus_sigma_squared_fields [RuntimeFeatures] (T : Bls.G1) (x y : ZMod
   let ty : ZMod Bls.Fp.modulus := T.y
   let tz : ZMod Bls.Fp.modulus := T.z
   simp only [portable.g1.G1.is_minus_sigma_squared,portable.g1.G1.is_infinity,encode,
-    beta_encoded,is_zero_field,square_field,mul_field,neg_field,eq_field,bind_tc_ok]
+    beta_encoded,is_zero_field,square_field,mul_field,neg_field,eq_field, bind_ok]
   change (if decide (tz=0) then ok false else
     if decide (tx=(x*beta*beta)*(tz*tz)) then ok (decide (-ty=y*((tz*tz)*tz))) else ok false) = _
   change _ = ok (decide (scottComparison tx ty tz x y))
   unfold scottComparison
   by_cases hz : tz = 0
-  · simp only [hz,decide_true,if_true,ne_self_iff_false,false_and,decide_false]
-  · simp only [hz,decide_false,Bool.false_eq_true,if_false]
+  · simp only [hz,decide_true,ite_true,ne_self_iff_false,false_and,decide_false]
+  · simp only [hz,decide_false,Bool.false_eq_true,ite_false]
     split <;> simp_all
 
 private theorem comparison_iff (T : Bls.G1) (x y : Bls.Fp) (hT : Bls.G1.Valid T)
@@ -113,7 +112,7 @@ theorem in_g1_encoded [RuntimeFeatures] (x y : Bls.Fp) (hp : Bls.G1.Valid ⟨x,y
   have hscalar : Bls.G1.toPoint (timesZ (timesZ P)) =
       (LeanBlsSimd.z^2) • Bls.G1.toPoint P := by
     rw [htp,hqp,LeanBlsSimd.z,neg_sq,←Nat.cast_pow,natCast_zsmul,pow_two,mul_nsmul]
-  simp only [portable.g1.G1.in_g1,times_z_affine_encoded,times_z_encoded,bind_tc_ok]
+  simp only [portable.g1.G1.in_g1,times_z_affine_encoded,times_z_encoded, bind_ok]
   rw [is_minus_sigma_squared_spec _ x y ht hp]
   congr 1
   apply Bool.eq_iff_iff.mpr

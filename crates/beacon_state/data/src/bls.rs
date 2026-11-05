@@ -1,37 +1,38 @@
 use std::slice;
 
-pub(crate) use blst::min_pk::{AggregateSignature, PublicKey, Signature};
+pub use blst::min_pk::{AggregateSignature, PublicKey, Signature};
 use blst::{BLST_ERROR, min_pk::AggregatePublicKey};
 use flux_profiler::timed;
-pub use silver_beacon_state_data::DOMAIN_BEACON_BUILDER;
-use silver_beacon_state_data::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE};
-use silver_common::ssz_view::{
-    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
-};
 use silver_crypto_simd::bls::{G1Point, G2Point, PairingProduct, uncompress_in_g2};
 pub use silver_ssz::ssz_hash::{compute_domain, compute_signing_root, domain_from_fork_data};
+use silver_ssz::ssz_view::{
+    SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
+};
 
-use crate::ssz_hash::hash_tree_root_block_header;
+pub use crate::DOMAIN_BEACON_BUILDER;
+use crate::{B256, BLSPubkey, BeaconBlockHeader, SYNC_COMMITTEE_SIZE, hash_tree_root_block_header};
 
 mod aggregator;
 mod sig_batch;
 mod signature_sum;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_keys;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use aggregator::PubkeyAggregator;
+pub use aggregator::PubkeyAggregator;
 use aggregator::pk_affine;
 pub use sig_batch::SigBatch;
-pub(crate) use signature_sum::SignatureSum;
+pub use signature_sum::SignatureSum;
 
 /// The empty sum, which `AggregateSignature` has no constructor for.
-pub(crate) const EMPTY_AGGREGATE: AggregateSignature = unsafe { std::mem::zeroed() };
+pub const EMPTY_AGGREGATE: AggregateSignature = unsafe { std::mem::zeroed() };
 
 pub const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 /// G2 point at infinity (compressed). Spec: a sync_aggregate over an empty
 /// participant set verifies iff the signature is this value.
-pub(crate) const G2_POINT_AT_INFINITY: [u8; 96] = {
+pub const G2_POINT_AT_INFINITY: [u8; 96] = {
     let mut s = [0u8; 96];
     s[0] = 0xc0;
     s
@@ -68,19 +69,19 @@ pub fn fork_version_at_epoch(
 /// admission-validated, so we skip `pk_validate` and only group-check the
 /// signature. For one-shot paths where only the compressed bytes are
 /// available (e.g. `verify_deposit_signature`), use `verify_one_compressed`.
-pub(crate) fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool {
+pub fn verify_one(pk: &PublicKey, sig: &[u8; 96], message: &B256) -> bool {
     let Ok(sig) = Signature::from_bytes(sig) else { return false };
     verify_one_parsed(pk, &sig, message)
 }
 
 #[timed]
-pub(crate) fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
+pub fn verify_one_parsed(pk: &PublicKey, sig: &Signature, message: &B256) -> bool {
     sig.verify(true, message, DST, &[], pk, false) == BLST_ERROR::BLST_SUCCESS
 }
 
 /// Same as `verify_one` but decompresses the pubkey inline. Used at
 /// admission time (deposit pop) before the cache exists.
-pub(crate) fn verify_one_compressed(pubkey: &BLSPubkey, sig: &[u8; 96], message: &B256) -> bool {
+pub fn verify_one_compressed(pubkey: &BLSPubkey, sig: &[u8; 96], message: &B256) -> bool {
     let Ok(pk) = PublicKey::key_validate(pubkey) else { return false };
     verify_one(&pk, sig, message)
 }
@@ -142,7 +143,7 @@ impl CheckedSignature {
         point[0].map(Self)
     }
 
-    pub(crate) fn into_sig(self) -> Signature {
+    pub fn into_sig(self) -> Signature {
         self.0.into_blst().into()
     }
 }
@@ -166,25 +167,46 @@ impl SignatureChecker {
         sigs: impl IntoIterator<Item = &'a [u8; 96]>,
         mut emit: impl FnMut(Option<CheckedSignature>),
     ) {
+        self.decode(sigs);
+        for point in self.points.drain(..) {
+            emit(point.map(CheckedSignature));
+        }
+    }
+
+    /// [`Self::check_all`] over `items`, handing each the result for its own
+    /// signature.
+    pub fn check_each<T>(
+        &mut self,
+        items: &mut [T],
+        signature: impl Fn(&T) -> &[u8; 96],
+        mut emit: impl FnMut(&mut T, Option<CheckedSignature>),
+    ) {
+        self.decode(items.iter().map(signature));
+        for (item, point) in items.iter_mut().zip(self.points.drain(..)) {
+            emit(item, point.map(CheckedSignature));
+        }
+    }
+
+    fn decode<'a>(&mut self, sigs: impl IntoIterator<Item = &'a [u8; 96]>) {
         self.inputs.clear();
         self.inputs.extend(sigs.into_iter().copied());
         self.points.clear();
         self.points.resize(self.inputs.len(), None);
         uncompress_in_g2(&self.inputs, &mut self.points);
-        for point in self.points.drain(..) {
-            emit(point.map(CheckedSignature));
-        }
     }
 }
 
 #[timed]
-pub(crate) fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
+pub fn verify_one_checked(pk: &PublicKey, sig: &CheckedSignature, message: &B256) -> bool {
+    verify_hashed(pk, sig, &G2Point::hash_to_curve(message, DST))
+}
+
+fn verify_hashed(pk: &PublicKey, sig: &CheckedSignature, hashed: &G2Point) -> bool {
     let pk = trusted_key(pk);
     if pk.is_infinity() {
         return false;
     }
-    let hashed = G2Point::hash_to_curve(message, DST);
-    PairingProduct::two_pairs_are_one((&pk, &hashed), (&G1Point::negative_generator(), &sig.0))
+    PairingProduct::two_pairs_are_one((&pk, hashed), (&G1Point::negative_generator(), &sig.0))
 }
 
 /// Keys are validated when they enter the registry, and weighted sums of

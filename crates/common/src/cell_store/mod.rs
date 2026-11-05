@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use flux::type_hash_derive::TypeHash;
 use serde::{Deserialize, Serialize};
 use silver_beacon_state_data::ForkName;
 
@@ -82,14 +83,14 @@ impl From<SubReservationError> for StoreError {
 
 pub const GOSSIP_DELIVERY_RETENTION: Duration = Duration::from_secs(11);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct RetentionEvent {
     pub expired_slot: u64,
     // Captured before the sole producer allocates any next-slot data.
     pub retain_from: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub struct CellKey {
     pub block_root: [u8; 32],
     pub column: usize,
@@ -169,33 +170,35 @@ impl ColumnRef {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct PendingCell {
     pub key: CellKey,
     pub data: PendingSubReservation,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub enum CellOrigin {
     Gossip { stream_id: P2pStreamId, topic: GossipTopic, received: Nanos },
     El { request_id: u64 },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct CellValidationRequest {
     pub pending: PendingCell,
     pub slot: u64,
     pub origin: CellOrigin,
+    #[type_hash(literal = "Instant")]
     pub deadline: Instant,
     pub domain: GossipDomain,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct HeaderValidationRequest {
     pub block_root: [u8; 32],
     pub ssz: TCacheRead,
     pub domain: GossipDomain,
     pub origin: CellOrigin,
+    #[type_hash(literal = "Instant")]
     pub deadline: Instant,
 }
 
@@ -218,7 +221,7 @@ impl From<ColumnAvailability> for ColumnGroupKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub struct CommitmentContext {
     pub block_root: [u8; 32],
     pub slot: u64,
@@ -226,7 +229,7 @@ pub struct CommitmentContext {
     pub blob_count: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct AssemblyRequest {
     pub id: u64,
     pub context: CommitmentContext,
@@ -234,16 +237,17 @@ pub struct AssemblyRequest {
     pub columns: u128,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct AssemblySet {
     pub request: AssemblyRequest,
     pub reservations: SubReservationList,
     /// Space for the Fulu header, filled by Columns from its validated context.
     pub header: Option<SubReservationRef>,
+    #[type_hash(literal = "Instant")]
     pub expires: Instant,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub struct ColumnAvailability {
     pub block_root: [u8; 32],
     pub column: usize,
@@ -251,9 +255,11 @@ pub struct ColumnAvailability {
     pub blob_count: usize,
     pub domain: GossipDomain,
     pub available: u128,
+    #[type_hash(literal = "Option<(TCacheRead, usize, usize)>")]
     pub full: Option<(TCacheRead, usize, usize)>,
     pub assembly: Option<SubReservationRef>,
     pub header: Option<TCacheRead>,
+    #[type_hash(literal = "Instant")]
     pub expires: Instant,
 }
 
@@ -274,14 +280,14 @@ impl ColumnAvailability {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
 pub enum CellValidationOutcome {
     Accepted,
     Rejected,
     Ignored,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, TypeHash)]
 pub enum CellStoreEvent {
     RejectedContext { block_root: [u8; 32] },
     Allocate(AssemblyRequest),

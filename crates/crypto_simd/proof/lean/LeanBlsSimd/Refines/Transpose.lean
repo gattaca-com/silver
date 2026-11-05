@@ -60,16 +60,8 @@ theorem transpose8_refines (rows : Array M512 8#usize) :
     index_usize_eq (n := 8#usize) _ 4#usize (by decide), index_usize_eq (n := 8#usize) _ 5#usize (by decide),
     index_usize_eq (n := 8#usize) _ 6#usize (by decide), index_usize_eq (n := 8#usize) _ 7#usize (by decide),
     core.core_arch.x86.avx512f._mm512_set_epi64,
-    core.core_arch.x86.avx512f._mm512_permutex2var_epi64,
-    bind_tc_ok, Array.make, shuffle0, shuffle1, shuffle2, shuffle3, shuffle4, shuffle5]
-  apply Subtype.ext
+    core.core_arch.x86.avx512f._mm512_permutex2var_epi64, bind_ok, Array.make, shuffle0, shuffle1, shuffle2, shuffle3, shuffle4, shuffle5]
+  ext1
   simp [toArray, transpose8, ofFn_eight]
-
-theorem transpose8_lanes (rows : Array M512 8#usize) :
-    ∃ out, fp8.transpose8 rows = ok out ∧
-      ∀ row lane : Fin 8, (out.val[row.val]!)[lane] = (rows.val[lane.val]!)[row] := by
-  refine ⟨toArray id (transpose8 (ofArray id rows)), transpose8_refines rows, ?_⟩
-  intro row lane
-  simp [transpose8, getElem!_pos, row.isLt, lane.isLt, rows.property]
 
 end LeanBlsSimd

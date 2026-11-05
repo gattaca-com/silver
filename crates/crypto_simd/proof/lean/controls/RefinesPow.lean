@@ -61,16 +61,16 @@ the claim names it. -/
 local macro "pow_proof" : tactic => `(tactic| (
   intro self
   unfold powWith
-  simp only [Fp8.one_refines, bind_tc_ok]
+  simp only [Fp8.one_refines, bind_tc_ok, bind_ok]
   rw [← toArray_replicate toFp8 Fp8.one (show (16#usize).val = 16 from rfl),
     update_eq _ _ _ (by decide),
     toArray_set_of_eq toFp8 _ _ 1#usize 1 (by decide) (ofFp8 self) self rfl (by simp)]
-  simp only [bind_tc_ok, Fp8.pow_table_refines]
+  simp only [bind_tc_ok, bind_ok, Fp8.pow_table_refines]
   have h94 : P_MINUS_3_OVER_4_WINDOWS[94]! < 16 := windows_lt 94 (by simp)
-  simp only [bind_tc_ok, P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide), lift,
+  simp only [bind_tc_ok, bind_ok, P_MINUS_3_OVER_4_WINDOWS_index 94#usize (by decide), lift,
     cast_Usize_ofNatCore]
   rw [index_usize_toArray _ _ _ _ (by rw [UScalar.ofNatCore_val_eq]; exact h94)]
-  simp only [bind_tc_ok, UScalar.ofNatCore_val_eq]
+  simp only [bind_tc_ok, bind_ok, UScalar.ofNatCore_val_eq]
   rw [Fp8.pow_windows_refines _ _ _ _ rfl (by decide),
     ← getElem!_pos _ P_MINUS_3_OVER_4_WINDOWS[94]! h94]
   simp only [Fp8.pow_p_minus_3_over_4, Fp8.powWith, UScalar.ofNatCore_val_eq]))
@@ -139,7 +139,7 @@ example : ¬ ∀ self : fp8.Fp8,
   have hv : Fp8Inv v[(0 : Fin 8)] := ⟨by decide, by decide +kernel⟩
   have hval : val v[(0 : Fin 8)] = 2 := by decide +kernel
   obtain ⟨hx, hdx⟩ := Fp8.lane_from_plain (l := 0) hv
-  have e := congrArg ofFp8 (Result.ok.inj
+  have e := congrArg ofFp8 (Result.ok_injective
     ((powWith_95_refines (toFp8 (Fp8.from_plain v))).symm.trans (h (toFp8 (Fp8.from_plain v)))))
   simp only [ofFp8_toFp8] at e
   have h1 := lane_powWith_95 hx

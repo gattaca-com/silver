@@ -18,7 +18,7 @@ theorem splat_multiplier_refinement (w : Fr) :
     (by simp [input, Array.to_slice, Array.repeat])] at hout
   have heq : fr8.Fr8.splat (frEncode (w * Fr.ofNat 16)) =
       ok (toArray id (BytePacking.transpose (BytePacking.loadedLanes input 0#usize))) := by
-    simp only [fr8.Fr8.splat, BytePacking.unpack_refines, bind_tc_ok,
+    simp only [fr8.Fr8.splat, BytePacking.unpack_refines, bind_ok,
       FrModel.Simd.splat_limbs_refines]
     congr 2
   exact heq.trans hout

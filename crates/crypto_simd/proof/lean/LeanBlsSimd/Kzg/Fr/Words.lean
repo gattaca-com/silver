@@ -54,13 +54,13 @@ theorem add_step (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
     (lt_of_lt_of_le (by omega : j.val+1 < 2^32) two_pow_32_le_usize)
   refine ⟨s, next, rfl, hs, rfl, ?_⟩
   have hj' : j < 4#usize := hj
-  simp only [fr.add_words_loop.body, hj', if_true]
+  simp only [fr.add_words_loop.body, hj', ite_true]
   rw [index_usize_eq a j hj, index_usize_eq b j hj]
-  simp only [lift, bind_tc_ok]
+  simp only [lift, bind_ok]
   rw [add_ok _ _ (by rw [cast128_val, cast128_val]; change x.val+y.val < 2^128; omega)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   rw [add_ok _ _ (by rw [UScalar.ofNatCore_val_eq]; exact hs128)]
-  simp only [bind_tc_ok]
+  simp only [bind_ok]
   change (do
     let out ← Array.update sum j (UScalar.cast .U64 s)
     let high ← s >>> 64#i32
@@ -69,7 +69,7 @@ theorem add_step (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
   rw [update_eq sum j _ hj, shiftRight_64_i32]
   simp only [bind_tc_ok]
   rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-  rfl
+  exact bind_ok _ _
 
 theorem add_loop_exact (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
     (hj : j.val ≤ 4) (hc : carry.val ≤ 1)
@@ -84,7 +84,7 @@ theorem add_loop_exact (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
     have hstop : ¬ j < 4#usize := by change ¬j.val < 4; omega
     refine ⟨sum, carry, ?_, hc, ?_⟩
     · rw [fr.add_words_loop, loop.eq_1]
-      simp [fr.add_words_loop.body, hstop]
+      simp [fr.add_words_loop.body, hstop, bind_ok]
     · rw [hj4, tail_four, tail_four]
       ring
   | succ n ih =>
@@ -99,13 +99,13 @@ theorem add_loop_exact (a b sum : Array U64 4#usize) (carry : U128) (j : Usize)
     have hz' : ∀ i (hi : i < 4), next.val ≤ i →
         sum'.val[i]'(by rw [sum'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      change (sum.val.set j.val (UScalar.cast .U64 s))[i]'_ = _
+      simp only [sum', Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     obtain ⟨out,top,hloop,htop,heq⟩ := ih sum' carry' next (by omega) hc' hz' (by omega)
     refine ⟨out,top,?_,htop,?_⟩
     · rw [fr.add_words_loop, loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq, value_set sum j _ hjlt, hz j.val hjlt (by omega), cast64_val]
       have hs' : (s.val : ℤ) =
           (a.val[j.val]'(by rw [a.property]; exact hjlt)).val +
@@ -123,8 +123,7 @@ theorem add_words_refines (a b : Array U64 4#usize) :
   obtain ⟨out,top,hr,ht,heq⟩ := add_loop_exact a b (Array.repeat 4#usize 0#u64)
     0#u128 0#usize (by decide) (by decide) (by
       intro i hi _
-      change (List.replicate 4 0#u64)[i]'_ = _
-      simp only [List.getElem_replicate])
+      simp only [Array.repeat_val, List.getElem_replicate])
   refine ⟨out, hr, ?_⟩
   have hb := value_bounds out
   change value out + (top.val : ℤ)*(radix : ℤ)^4 =
@@ -178,17 +177,17 @@ theorem sub_step (a b difference : Array U64 4#usize) (borrow : U64) (j : Usize)
     rw [hhighval]
     omega
   · have hj' : j < 4#usize := hj
-    simp only [fr.sub_words_loop.body, hj', if_true]
+    simp only [fr.sub_words_loop.body, hj', ite_true]
     rw [radix_shift]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     rw [index_usize_eq a j hj, index_usize_eq b j hj]
-    simp only [lift, bind_tc_ok]
+    simp only [lift, bind_ok]
     rw [add_ok _ _ (by rw [cast128_val]; exact hsafe.1)]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     rw [sub_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; exact hsafe.2.1)]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     rw [sub_ok _ _ (by simp only [UScalar.ofNatCore_val_eq,cast128_val]; exact hsafe.2.2.1)]
-    simp only [bind_tc_ok]
+    simp only [bind_ok]
     change (do
       let out ← Array.update difference j (UScalar.cast .U64 s)
       let high' ← s >>> 64#i32
@@ -200,7 +199,7 @@ theorem sub_step (a b difference : Array U64 4#usize) (borrow : U64) (j : Usize)
     rw [sub_ok 1#u64 high (by change high.val ≤ 1; omega)]
     simp only [bind_tc_ok]
     rw [usize_add_ok j 1#usize (by change j.val+1 < 2^32; omega)]
-    rfl
+    exact bind_ok _ _
 
 theorem sub_loop_exact (a b difference : Array U64 4#usize) (borrow : U64) (j : Usize)
     (hj : j.val ≤ 4) (hb : borrow.val ≤ 1)
@@ -215,7 +214,7 @@ theorem sub_loop_exact (a b difference : Array U64 4#usize) (borrow : U64) (j : 
     have hstop : ¬ j < 4#usize := by change ¬j.val < 4; omega
     refine ⟨difference,borrow,?_,hb,?_⟩
     · rw [fr.sub_words_loop,loop.eq_1]
-      simp [fr.sub_words_loop.body,hstop]
+      simp [fr.sub_words_loop.body,hstop, bind_ok]
     · rw [hj4,tail_four,tail_four]
       ring
   | succ n ih =>
@@ -225,7 +224,7 @@ theorem sub_loop_exact (a b difference : Array U64 4#usize) (borrow : U64) (j : 
     have hz' : ∀ i (hi : i < 4), next.val ≤ i →
         difference'.val[i]'(by rw [difference'.property]; exact hi) = 0#u64 := by
       intro i hi hji
-      change (difference.val.set j.val (UScalar.cast .U64 s))[i]'_ = _
+      simp only [difference', Array.set_val_eq]
       rw [List.getElem_set_ne (by omega)]
       exact hz i hi (by omega)
     have hb' : borrow'.val ≤ 1 := by
@@ -235,7 +234,7 @@ theorem sub_loop_exact (a b difference : Array U64 4#usize) (borrow : U64) (j : 
     obtain ⟨out,top,hloop,htop,heq⟩ := ih difference' borrow' next (by omega) hb' hz' (by omega)
     refine ⟨out,top,?_,htop,?_⟩
     · rw [fr.sub_words_loop,loop.eq_1]
-      simpa only [hbody] using hloop
+      simpa only [hbody, bind_ok] using! hloop
     · rw [heq,value_set difference j _ hjlt,hz j.val hjlt (by omega),cast64_val]
       have hdiv : ((s.val % radix : Nat) : ℤ)+(radix : ℤ)*(s.val/radix : Nat) = s.val := by
         exact_mod_cast Nat.mod_add_div s.val radix
@@ -254,8 +253,7 @@ theorem sub_words_refines (a b : Array U64 4#usize) :
   obtain ⟨out,top,hr,ht,heq⟩ := sub_loop_exact a b (Array.repeat 4#usize 0#u64)
     0#u64 0#usize (by decide) (by decide) (by
       intro i hi _
-      change (List.replicate 4 0#u64)[i]'_ = _
-      simp only [List.getElem_replicate])
+      simp only [Array.repeat_val, List.getElem_replicate])
   change value out-(top.val : ℤ)*(radix : ℤ)^4 =
     0+(value a-value b-0)*(radix : ℤ)^0 at heq
   simp only [sub_zero,zero_add,pow_zero,mul_one] at heq
@@ -272,7 +270,7 @@ theorem sub_words_refines (a b : Array U64 4#usize) :
       norm_num [radix] at hout heq
       omega
   refine ⟨out,?_,?_⟩
-  · simp only [fr.sub_words,hr,bind_tc_ok]
+  · simp only [fr.sub_words,hr, bind_ok]
     change ok (out,decide (top = 1#u64)) = _
     simp only [hborrow]
   · norm_num [radix] at hout heq ⊢

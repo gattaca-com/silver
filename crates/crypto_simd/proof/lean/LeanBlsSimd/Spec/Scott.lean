@@ -13,8 +13,8 @@ points. If ψ(P) = [z]P then [r]P = O, for every point P of E′ over Fp2:
    the line is the tangent at P.
 4. Hence [z⁴ − z² + 1]P = O, and z⁴ − z² + 1 = r.
 
-Only z² and z⁴ enter, so the theorem holds for −z as well. `Spec/CubicHasse.lean` proves the
-converse, `ScottComplete`, using the generator identity and a character-sum point-count bound.
+Only z² and z⁴ enter, so the theorem holds for −z as well. `Spec/G2Cardinality.lean` proves the
+converse, `ScottComplete`, using the generator identity and EthLib's exact point count.
 -/
 
 namespace LeanBlsSimd
@@ -72,9 +72,9 @@ theorem slope_psi (x₁ x₂ y₁ y₂ : Fp2Field) :
   split_ifs
   · simp
   · rw [← hcx, star_div₀, star_mul', star_pow, star_ofNat, star_sub, star_neg, div_mul_div_comm]
-    congr 1 <;> ring
+    exact congrArg₂ (· / ·) (by ring) (by ring)
   · rw [star_div₀, star_sub, star_sub, div_mul_div_comm]
-    congr 1 <;> ring
+    exact congrArg₂ (· / ·) (by ring) (by ring)
 
 theorem addX_psi (x₁ x₂ ℓ : Fp2Field) :
     E'.addX (cx * star x₁) (cx * star x₂) (cy / cx * star ℓ) = cx * star (E'.addX x₁ x₂ ℓ) := by
@@ -179,7 +179,7 @@ theorem add_phi_add_phi_phi (P : E'.Point) : P + phi P + phi (phi P) = 0 := by
       exact absurd hb (by decide +kernel)
     have h2P : Point.some 0 y h + Point.some 0 y h = -Point.some 0 y h := by
       rw [Point.add_self_of_Y_ne hy, Point.neg_some, Point.some.injEq]
-      simp [slope_of_Y_ne rfl hy]
+      simp [slope_of_Y_ne rfl hy, addY, negAddY, addX, E'.a₁_eq, E'.a₂_eq, E'.a₃_eq]
     rw [hφ, hφ, h2P, neg_add_cancel]
   · have hxζ : x ≠ beta * x := by
       intro hxζ
@@ -213,11 +213,11 @@ theorem scott_sound (P : E'.Point) (h : psi P = z • P) : Fr.modulus • P = 0 
   rw [← natCast_zsmul, r_eq]
   exact torsion_of_psi_eq_zsmul z P h
 
-/-- Scott completeness, proved by `scott_complete` in `Spec/CubicHasse.lean`.
+/-- Scott completeness, proved by `scott_complete` in `Spec/G2Cardinality.lean`.
 
-No theorem here fixes the sign of `cy`: `cy_sq` and `norm_cy` hold for −cy too, and flipping
-the signs of both `cy` and `z` keeps this statement true. `PSI_Y_MONT_eq` and `p_eq` pin each
-of them, and `psi_generator` checks the pair on the spec's generator. -/
+No theorem here fixes the sign of `cy`: `cy_sq` and `norm_cy` hold for −cy too. Flipping both
+`cy` and `z` keeps this statement true. `psi_generator` checks the pair on the spec's
+generator. -/
 def ScottComplete : Prop := ∀ P : E'.Point, Fr.modulus • P = 0 → psi P = z • P
 
 end LeanBlsSimd

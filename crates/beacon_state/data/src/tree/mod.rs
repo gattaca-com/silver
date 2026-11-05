@@ -17,8 +17,8 @@ pub use roots::{
     BlockRoots, BlockRootsGroup, BlockRootsId, RootsView, RootsWriteView, StateRoots,
     StateRootsGroup, StateRootsId,
 };
-pub use silver_hashing::{PageArray, TreeSpec};
 pub use silver_ssz::scalar::SszScalar;
+pub use silver_state_hashing::{PageArray, TreeSpec};
 pub use view::{TreeView, TreeWriteView};
 
 use crate::{

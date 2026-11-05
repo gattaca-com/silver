@@ -63,16 +63,4 @@ theorem lazy_transpose_representation (k m : Nat)
   · intro lane
     simpa only [lazyLaneValue, hint] using (hvalues lane).2 row
 
-theorem add_representation (a b : fr8.Fr8) (av bv : Fin 8 → Fr)
-    (ha : Represents a av) (hb : Represents b bv) :
-    ∃ out, fr8.Fr8.add a b = ok out ∧ Represents out (fun lane => av lane + bv lane) := by
-  obtain ⟨out, hout, hbound, hv⟩ := add_refinement a b ha.1 hb.1
-  exact ⟨out, hout, hbound, fun lane => (hv lane).2.trans (by rw [ha.2, hb.2])⟩
-
-theorem sub_representation (a b : fr8.Fr8) (av bv : Fin 8 → Fr)
-    (ha : Represents a av) (hb : Represents b bv) :
-    ∃ out, fr8.Fr8.sub a b = ok out ∧ Represents out (fun lane => av lane - bv lane) := by
-  obtain ⟨out, hout, hbound, hv⟩ := sub_refinement a b ha.1 hb.1
-  exact ⟨out, hout, hbound, fun lane => (hv lane).2.trans (by rw [ha.2, hb.2])⟩
-
 end LeanBlsSimd.Kzg.Extender.Kernel

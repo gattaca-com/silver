@@ -253,7 +253,7 @@ impl GossipHandler {
             msg_hash: msg_id,
             recv_ts,
             ssz: ssz_read,
-            protobuf,
+            protobuf: Some(protobuf),
             validation,
         }));
         Ok(Some(msg_id))
@@ -870,7 +870,8 @@ mod tests {
         assert_eq!(message.topic, topic);
         assert_eq!(message.msg_hash, msg_id);
         assert_eq!(ssz_consumer.acquire(message.ssz).buffer().unwrap().0, ssz);
-        assert!(!protobuf_consumer.acquire(message.protobuf).buffer().unwrap().0.is_empty());
+        let protobuf = message.protobuf.expect("local gossip has a relay copy");
+        assert!(!protobuf_consumer.acquire(protobuf).buffer().unwrap().0.is_empty());
         assert!(handler.dedup_cache.has(&msg_id));
         assert!(!handler.mcache.has(&msg_id));
 
@@ -890,7 +891,7 @@ mod tests {
         };
         assert_eq!(duplicate.msg_hash, msg_id);
 
-        handler.mcache_insert(msg_id, topic, message.domain, message.protobuf);
+        handler.mcache_insert(msg_id, topic, message.domain, protobuf);
         assert!(handler.mcache.has(&msg_id));
     }
 }
