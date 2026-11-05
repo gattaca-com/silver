@@ -217,7 +217,7 @@ fn gossip_pending(
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: read,
-            protobuf: read,
+            protobuf: Some(read),
             validation: silver_common::BroadcastValidation::Gossip,
         },
         pin,
@@ -3140,7 +3140,7 @@ fn gossip_msg(producer: &mut TProducer, bytes: &[u8], topic: GossipTopic) -> New
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz,
-        protobuf,
+        protobuf: Some(protobuf),
         validation: silver_common::BroadcastValidation::Gossip,
     }
 }
@@ -3172,7 +3172,7 @@ fn gossip_att_msg(
         msg_hash: MessageId { id: [0u8; 20] },
         recv_ts: Nanos(0),
         ssz: read,
-        protobuf: read,
+        protobuf: Some(read),
         validation: silver_common::BroadcastValidation::Gossip,
     }
 }

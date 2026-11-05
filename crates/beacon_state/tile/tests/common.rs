@@ -381,7 +381,7 @@ impl Harness {
             msg_hash: MessageId { id: [0u8; 20] },
             recv_ts: Nanos(0),
             ssz: tcache,
-            protobuf: tcache,
+            protobuf: Some(tcache),
             validation: silver_common::BroadcastValidation::Gossip,
         });
     }
