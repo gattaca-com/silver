@@ -56,8 +56,12 @@ theorem column_ifft_eq_interpolation
     (powers : _root_.Array Fr) (h : Model.RliInputs indices evals powers) :
     Model.specRli indices (indices.map Model.cosetShift) evals powers =
       .ok (Model.columnRli indices evals powers) := by
-  rw [ModelSpec.specRli_eq_lagrangeRli indices evals powers h]
-  exact column_ifft_interpolation indices evals powers h
+  obtain ⟨out, hcall, hsize, hpoly⟩ := specRli_polynomial indices evals powers h
+  rw [hcall]
+  apply congrArg Except.ok
+  apply coefficientPolynomial_injective
+  · rw [hsize, columnRli_size]
+  · rw [hpoly, columnRli_polynomial cellIfft_interpolant indices evals powers h.2.2.1]
 
 theorem model_eq_embedded_spec (i : Input) :
     Model.rejectErrors i.embeddedSpec = i.model := by

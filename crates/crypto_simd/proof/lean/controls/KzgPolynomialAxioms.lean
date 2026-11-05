@@ -6,15 +6,12 @@ open Lean Elab Command
 run_cmd do
   let allowed := [``propext, ``Classical.choice, ``Quot.sound]
   for c in #[``LeanBlsSimd.Kzg.coefficientPolynomial_injective,
-      ``LeanBlsSimd.Kzg.coefficientPolynomial_add, ``LeanBlsSimd.Kzg.coefficientPolynomial_multiply,
-      ``LeanBlsSimd.Kzg.multiply_scalar64, ``LeanBlsSimd.Kzg.interpolatePolynomialcoeff_eq,
-      ``LeanBlsSimd.Kzg.cellNode_layout, ``LeanBlsSimd.Kzg.cellNodes_injective,
+      ``LeanBlsSimd.Kzg.coefficientPolynomial_add, ``LeanBlsSimd.Kzg.cellNodes_injective,
       ``LeanBlsSimd.Kzg.cosetForCell_eq, ``LeanBlsSimd.Kzg.cellIfft_eval,
       ``LeanBlsSimd.Kzg.cellIfft_interpolant, ``LeanBlsSimd.Kzg.columnValues_get,
-      ``LeanBlsSimd.Kzg.columnRli_polynomial, ``LeanBlsSimd.Kzg.lagrangeRli_polynomial,
-      ``LeanBlsSimd.Kzg.columnRli_size, ``LeanBlsSimd.Kzg.column_ifft_interpolation,
+      ``LeanBlsSimd.Kzg.columnRli_polynomial, ``LeanBlsSimd.Kzg.specRli_polynomial,
+      ``LeanBlsSimd.Kzg.columnRli_size, ``LeanBlsSimd.Kzg.interpolateCosetEvals_eq_cellIfft,
       ``LeanBlsSimd.Kzg.ModelSpec.shiftOf_ok, ``LeanBlsSimd.Kzg.ModelSpec.mapM_shiftOf,
-      ``LeanBlsSimd.Kzg.ModelSpec.specRli_eq_lagrangeRli,
       ``LeanBlsSimd.Kzg.ModelSpec.verifyPure_spec_eq_column,
       ``LeanBlsSimd.Kzg.ModelSpec.rejectErrors_spec_eq_model] do
     let axioms ← collectAxioms c

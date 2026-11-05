@@ -106,8 +106,10 @@ private theorem linear_extension_get (j : Nat) (hj : j < 4096) :
     shifted_linear_get _ j hj]
 
 private theorem shift_ne_one : domainRoot 8192 ≠ (1 : Fr) := by
+  have hroot : IsPrimitiveRoot (domainRoot 8192) 8192 :=
+    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   simpa only [pow_one] using!
-    domainRoot_8192_primitive.pow_ne_one_of_pos_of_lt (by decide : 1 ≠ 0)
+    hroot.pow_ne_one_of_pos_of_lt (by decide : 1 ≠ 0)
       (by decide : 1 < 8192)
 
 theorem omitting_coset_shift_changes_extension :
@@ -122,14 +124,16 @@ theorem omitting_coset_shift_changes_extension :
   exact shift_ne_one ((mul_one _).symm.trans hi)
 
 private theorem shift_ne_inverse : domainRoot 8192 ≠ (domainRoot 8192).inverse := by
+  have hroot : IsPrimitiveRoot (domainRoot 8192) 8192 :=
+    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   rw [Fr.inverse_eq_inv]
   intro h
-  apply domainRoot_8192_primitive.pow_ne_one_of_pos_of_lt (by decide : 2 ≠ 0)
+  apply hroot.pow_ne_one_of_pos_of_lt (by decide : 2 ≠ 0)
     (by decide : 2 < 8192)
   calc
     domainRoot 8192 ^ (2 : Nat) = domainRoot 8192 * domainRoot 8192 := pow_two _
     _ = domainRoot 8192 * (domainRoot 8192)⁻¹ := congrArg (domainRoot 8192 * ·) h
-    _ = 1 := mul_inv_cancel₀ (domainRoot_8192_primitive.ne_zero (by decide))
+    _ = 1 := mul_inv_cancel₀ (hroot.ne_zero (by decide))
 
 theorem reversing_coset_shift_changes_extension :
     Model.extension linearInput ≠
@@ -164,7 +168,8 @@ theorem reversing_forward_fft_roots_changes_extension :
   have hi := congrArg (fun a : Array Fr => a[1]!) h
   rw [linear_extension_get 1 (by decide), shifted_linear_inverse_get _ 1 (by decide)] at hi
   simp only [pow_one] at hi
-  have hnz := domainRoot_8192_primitive.ne_zero (by decide : 8192 ≠ 0)
+  have hnz := (EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (order := 8192)
+    (Nat.dvd_of_mod_eq_zero (by decide))).ne_zero (by decide : 8192 ≠ 0)
   have hr : domainRoot 4096 = (domainRoot 4096)⁻¹ := by
     calc
       _ = (domainRoot 8192)⁻¹ * (domainRoot 8192 * domainRoot 4096) :=
@@ -188,7 +193,8 @@ theorem omitting_output_bit_reversal_changes_extension_order :
     getElem_bitReversalPermutation, extension_size linearInput linearInput_size,
     show reverseBits 1 4096 = 2048 by decide +kernel,
     linear_extension_get 2048 (by decide), linear_extension_get 1 (by decide)] at hi
-  have hnz := domainRoot_8192_primitive.ne_zero (by decide : 8192 ≠ 0)
+  have hnz := (EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (order := 8192)
+    (Nat.dvd_of_mod_eq_zero (by decide))).ne_zero (by decide : 8192 ≠ 0)
   have hp : domainRoot 4096 ^ (2048 : Nat) = domainRoot 4096 ^ (1 : Nat) := by
     calc
       _ = (domainRoot 8192)⁻¹ * (domainRoot 8192 * domainRoot 4096 ^ (2048 : Nat)) :=

@@ -1,6 +1,5 @@
 import LeanBlsSimd.Kzg.ByteSerialization
 import LeanBlsSimd.Kzg.SpecBridge
-import EthLib.Cryptography.Proofs.Kzg.CosetInterpolation
 
 open EthLib.Cryptography Bls Kzg
 
@@ -93,39 +92,6 @@ theorem mapM_shiftOf (indices : Array Nat) (h : ∀ i ∈ indices, i < 128) :
   rw [hl indices.toList (fun i hi => h i (Array.mem_toList_iff.mp hi))]
   change Except.ok (List.map Model.cosetShift indices.toList).toArray = _
   exact congrArg Except.ok (Array.toList_inj.mp (by simp))
-
-private theorem list_foldlM_congr {α β ε : Type} (f g : β → α → Except ε β) (xs : List α)
-    (init : β) (h : ∀ a ∈ xs, ∀ b, f b a = g b a) : xs.foldlM f init = xs.foldlM g init := by
-  induction xs generalizing init with
-  | nil => rfl
-  | cons a xs ih =>
-    simp only [List.foldlM_cons, h a (by simp)]
-    congr 1
-    funext b
-    exact ih b (fun a' ha' => h a' (by simp [ha']))
-
-/-- Upstream's coset interpolation agrees with Lagrange interpolation on every cell. -/
-theorem specRli_eq_lagrangeRli (indices : Array Nat) (evals : Array (Array Fr)) (powers : Array Fr)
-    (h : Model.RliInputs indices evals powers) :
-    Model.specRli indices (indices.map Model.cosetShift) evals powers =
-      Model.lagrangeRli indices evals powers := by
-  obtain ⟨hsize, _, hbounds, hrows⟩ := h
-  unfold Model.specRli Model.lagrangeRli
-  rw [← Array.foldlM_toList, ← Array.foldlM_toList]
-  apply list_foldlM_congr
-  intro k hk acc
-  have hk' : k < indices.size := by simpa using hk
-  have hidx : indices[k]! < 128 := hbounds _ (by simp [getElem!_pos indices k hk'])
-  have hev : evals[k]!.size = Constants.FIELD_ELEMENTS_PER_CELL :=
-    hrows _ (by simp [getElem!_pos evals k (hsize ▸ hk')])
-  obtain ⟨coset, hcoset, _, _⟩ := cosetForCell_ok_of_lt (cellIndex := indices[k]!) hidx
-  obtain ⟨p, hspec, hlag, _⟩ := interpolateCosetEvals_eq_interpolatePolynomialcoeff hcoset hev
-  have hshift : (indices.map Model.cosetShift)[k]! =
-      (rootsOfUnityBrp Constants.FIELD_ELEMENTS_PER_EXT_BLOB)[
-        Constants.FIELD_ELEMENTS_PER_CELL * indices[k]!]! := by
-    rw [getElem!_pos _ k (by simpa using hk'), Array.getElem_map, ← getElem!_pos indices k hk']
-    rfl
-  simp only [hshift, hspec, hcoset, hlag, bind, Except.bind]
 
 /-- The reviewed column interpolation identity, with its exact input contract. -/
 abbrev ColumnIdentity : Prop :=
