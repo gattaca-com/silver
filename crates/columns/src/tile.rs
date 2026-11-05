@@ -559,10 +559,11 @@ impl DataColumnsTile {
         producers: &mut SilverSpineProducers,
     ) {
         silver_log::debug!(custody_group, "data column sidecar over gossip");
-        let frame = Some(GossipSidecarFrame {
+        // No frame when the relay cache was full: verified, but not relayed.
+        let frame = gossip.protobuf.map(|protobuf| GossipSidecarFrame {
             domain: gossip.domain,
             msg_hash: gossip.msg_hash,
-            protobuf: self.reader.acquire(gossip.protobuf),
+            protobuf: self.reader.acquire(protobuf),
         });
         let sidecar = match gossip.ssz_cache {
             SszCache::DataColumns => {
@@ -1186,7 +1187,7 @@ mod tests {
                 msg_hash: MessageId { id },
                 recv_ts,
                 ssz,
-                protobuf,
+                protobuf: Some(protobuf),
                 validation: silver_common::BroadcastValidation::Gossip,
             };
             self.tile.gossip_sidecar(index, gossip, &mut self.conn.producers);

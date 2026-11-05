@@ -421,7 +421,9 @@ pub struct NewGossipMsg {
     /// Protobuf-wrapped Snappy payload, either retained from network ingress
     /// or constructed for a local message.
     /// Use this cache ref in `PeerEvent::SendGossip` and `GossipMsgOut`.
-    pub protobuf: TCacheRead,
+    /// `None` when the relay cache was full at receipt: the message is still
+    /// processed here, but not relayed.
+    pub protobuf: Option<TCacheRead>,
 }
 
 impl NewGossipMsg {

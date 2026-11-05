@@ -121,31 +121,30 @@ pub(super) fn handle_incoming(
     }
 
     let ssz_read = reservation.read();
-    let mcache_read = copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string)
-        .inspect_err(|e| {
-            silver_log::error!(?e, "failed to write incoming gossip protobuf");
-            match e {
-                Error::BufferTooSmall => {
-                    dedup_cache.remove(fast_id, &msg_id);
-                }
-                _ => {
-                    let hash = msg_id_invalid_snappy(topic_string, snappy_data);
-                    if dedup_cache.insert(fast_id, hash) {
-                        silver_log::warn!(
-                            ?stream_id,
-                            ?topic,
-                            ?e,
-                            "gossip rejected: bad snappy frame"
-                        );
-                        emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
-                            p2p_peer: stream_id.peer(),
-                            topic,
-                            hash,
-                        }));
-                    }
-                }
+    // A full relay cache only costs the relay: the message is still processed
+    // and stays deduplicated, so other peers' copies count as duplicates
+    // rather than retrying the copy.
+    let mcache_read =
+        match copy_compressed_to_protobuf_output(mcache_publish, snappy_data, topic_string) {
+            Ok(read) => Some(read),
+            Err(Error::BufferTooSmall) => {
+                silver_log::error!(?stream_id, ?topic, "gossip relay cache full; not relaying");
+                None
             }
-        })?;
+            Err(e) => {
+                silver_log::error!(?e, "failed to write incoming gossip protobuf");
+                let hash = msg_id_invalid_snappy(topic_string, snappy_data);
+                if dedup_cache.insert(fast_id, hash) {
+                    silver_log::warn!(?stream_id, ?topic, ?e, "gossip rejected: bad snappy frame");
+                    emit(GossipHandlerEvent::PeerEvent(PeerEvent::P2pGossipInvalidMsg {
+                        p2p_peer: stream_id.peer(),
+                        topic,
+                        hash,
+                    }));
+                }
+                return Err(e);
+            }
+        };
 
     // Flush the reservation matching the gossip message available downstream.
     reservation.flush()?;
@@ -166,8 +165,14 @@ pub(super) fn handle_incoming(
     // peer manager fans it out to mesh peers (except the sender) as a
     // `P2pGossipSendDontWant` control.
     let message_len = 1 + bytes_encoded_len(snappy_data) + 1 + string_encoded_len(topic_string);
+    // Best effort, like the relay copy: a full cache must not hide the
+    // message's arrival from the peer manager.
     let idontwant = if message_len > IDONTWANT_MESSAGE_LEN_THRESHOLD {
-        Some(copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id))?)
+        match copy_idontwants_to_protobuf_output(mcache_publish, std::iter::once(&msg_id)) {
+            Ok(read) => Some(read),
+            Err(Error::BufferTooSmall) => None,
+            Err(e) => return Err(e),
+        }
     } else {
         None
     };
@@ -379,6 +384,77 @@ mod tests {
         .unwrap();
         let message = message.unwrap();
         assert_eq!(message.ssz_cache, SszCache::Gossip);
+        assert_eq!(ssz.read_buffer(message.ssz).unwrap(), bytes);
+    }
+
+    /// A full relay cache costs only the relay: the message is processed and
+    /// its arrival reported, without a relay copy or IDONTWANT, and another
+    /// peer's copy of it is a duplicate rather than a retry.
+    #[test]
+    fn full_relay_cache_still_processes_the_message() {
+        let mut relay = TCache::producer(TCacheId::ControlGossip, 1 << 16);
+        let _sending =
+            Box::new(TCacheReader::single(relay.cache_ref(), "", TReadMode::Strict).unwrap());
+        for size in [1024, 8] {
+            while let Some(mut reservation) = relay.reserve(size, true) {
+                reservation.buffer().unwrap().fill(0);
+                reservation.flush().unwrap();
+            }
+        }
+        let mut ssz = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let topic = GossipTopic::DataColumnSidecar(0);
+        // Incompressible, so the frame is past the IDONTWANT threshold.
+        let mut seed = 0x9E37_79B9_u32;
+        let bytes: Vec<u8> = (0..topic.min_uncompressed_size() + 2048)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                seed as u8
+            })
+            .collect();
+        let compressed = snap::raw::Encoder::new().compress_vec(&bytes).unwrap();
+        assert!(compressed.len() > IDONTWANT_MESSAGE_LEN_THRESHOLD);
+        let domains = ActiveDomains::new(Some(GossipDomain::new([0; 4], ForkName::Fulu)));
+        let wire = topic.to_wire("00000000");
+        let mut dedup = DedupCache::default();
+
+        let mut deliver = |peer| {
+            let mut events = Vec::new();
+            handle_incoming(
+                &wire,
+                domains.parse(&wire),
+                &compressed,
+                &P2pStreamId::new(peer, 3, StreamProtocol::GossipSubV13, true),
+                Nanos::now(),
+                &mut dedup,
+                &mut ssz,
+                None,
+                &mut relay,
+                &mut |event| events.push(event),
+            )
+            .unwrap();
+            events
+        };
+
+        let first = deliver(1);
+        let [
+            GossipHandlerEvent::NewGossip(message),
+            GossipHandlerEvent::PeerEvent(PeerEvent::NewGossip {
+                p2p_peer: 1,
+                idontwant: None,
+                ..
+            }),
+        ] = first.as_slice()
+        else {
+            panic!("expected the message and its arrival, got {} events", first.len());
+        };
+        assert_eq!(message.protobuf, None, "nothing to relay from");
+
+        let second = deliver(2);
+        assert!(matches!(second.as_slice(), [GossipHandlerEvent::PeerEvent(
+            PeerEvent::GossipDuplicate { p2p_peer: 2, .. }
+        )]));
         assert_eq!(ssz.read_buffer(message.ssz).unwrap(), bytes);
     }
 }

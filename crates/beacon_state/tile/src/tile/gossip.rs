@@ -1915,16 +1915,18 @@ impl BeaconStateTile {
     }
 
     fn relay_gossip(m: &NewGossipMsg, block_root: Option<B256>, producers: &mut Producers) {
-        producers.produce(PeerEvent::SendGossip {
-            originator_stream_id: m.stream_id,
-            topic: m.topic,
-            domain: m.domain,
-            ssz_cache: m.ssz_cache,
-            msg_hash: m.msg_hash,
-            recv_ts: m.recv_ts,
-            protobuf: m.protobuf,
-            ssz: m.ssz,
-        });
+        if let Some(protobuf) = m.protobuf {
+            producers.produce(PeerEvent::SendGossip {
+                originator_stream_id: m.stream_id,
+                topic: m.topic,
+                domain: m.domain,
+                ssz_cache: m.ssz_cache,
+                msg_hash: m.msg_hash,
+                recv_ts: m.recv_ts,
+                protobuf,
+                ssz: m.ssz,
+            });
+        }
         if m.stream_id == LOCAL_GOSSIP_STREAM_ID {
             let hash = m.msg_hash;
             producers.produce(BeaconStateEvent::LocalGossipVerdict {

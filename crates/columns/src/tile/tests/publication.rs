@@ -179,7 +179,7 @@ impl Rig {
                 msg_hash: MessageId { id: [0; 20] },
                 recv_ts: Nanos::now(),
                 ssz: read,
-                protobuf,
+                protobuf: Some(protobuf),
                 validation: silver_common::BroadcastValidation::Gossip,
             },
             &mut self.conn.producers,
