@@ -3,8 +3,9 @@
 //! One line per (slot, root); its bar spans arrival → attestable. Expanding a
 //! line unfolds the three components that join at attestable (`data available
 //! → cols`, `stf → validate/apply`, `el`), every level drawn with the same
-//! grammar. Bars that overlap vertically ran in parallel; a gap in a span is
-//! waiting.
+//! grammar. From Gloas a block joins at import alone, and its `payload` row
+//! holds the envelope's data and `el`. Bars that overlap vertically ran in
+//! parallel; a gap in a span is waiting.
 
 use std::path::Path;
 
@@ -13,17 +14,18 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     widgets::{Block, BorderType, Borders, List, ListState, Paragraph},
 };
+use silver_common::Nanos;
 use silver_stages::SlotClock;
 
 pub use self::theme::Theme;
 use self::{
     axis::Axis,
     line::{Grid, RowCells, search_text},
-    tree::{DisplayRow, Expanded, display_rows},
+    tree::{DisplayRow, Expanded, Node, display_rows},
 };
 use crate::{
     render::fmt::wall_time,
-    sources::events::{BlockTrace, Events, Interval},
+    sources::events::{BlockTrace, Events, Interval, Span},
 };
 
 mod axis;
@@ -138,17 +140,25 @@ impl EventsPane {
             .iter()
             .map(|d| {
                 let trace = self.trace(d.root).expect("display rows come from the ring");
-                let deadline = self.data.attestation_deadline(trace.slot);
-                RowCells::new(trace, d, clock, deadline, &self.theme)
+                RowCells::new(trace, d, clock, &self.theme)
             })
             .collect();
-        let newest_slot = self.data.traces().back().map_or(0, |trace| trace.slot);
-        let deadline = self.data.attestation_deadline(newest_slot);
+        let deadline =
+            self.data.traces().back().map_or(Nanos(0), |t| t.attestation_deadline(clock));
+        // A payload runs seconds past its block; the axis stretches to it only
+        // while its row is shown.
+        let payload_end = display
+            .iter()
+            .zip(&rows)
+            .filter(|(d, _)| d.node == Node::Span(Span::Payload))
+            .filter_map(|(_, cells)| Some(cells.offset? + cells.len))
+            .max()
+            .unwrap_or(Nanos(0));
         let grid = Grid::fit(rows.iter(), inner.width as usize, &self.theme);
         let axis = Axis::fit(
             grid.axis,
             deadline,
-            self.data.traces().max_strip_offset(clock),
+            self.data.traces().max_strip_offset(clock).max(payload_end),
             self.theme.symbols,
         );
 

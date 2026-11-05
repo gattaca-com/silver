@@ -20,20 +20,23 @@ pub enum Group {
         batch: usize,
     },
     Stf,
+    Payload,
 }
 
 impl Group {
     /// Groups whose children are spans; `Cols` holds sidecar rows instead.
-    const WITH_SPANS: [Self; 3] = [Self::Block, Self::Da, Self::Stf];
+    const WITH_SPANS: [Self; 4] = [Self::Block, Self::Da, Self::Stf, Self::Payload];
 
-    pub fn children(self) -> &'static [Span] {
+    pub fn children(self, trace: &BlockTrace) -> &'static [Span] {
         match self {
+            Self::Block if trace.gloas => &[Span::Stf(StfSpan::Root), Span::Payload],
             Self::Block => &[
                 Span::Da(DaSpan::Root),
                 Span::Da(DaSpan::Custody),
                 Span::Stf(StfSpan::Root),
                 Span::El,
             ],
+            Self::Payload => &[Span::Da(DaSpan::Root), Span::Da(DaSpan::Custody), Span::El],
             Self::Da => &[
                 Span::Da(DaSpan::Cols(ColumnOrigin::Gossip)),
                 Span::Da(DaSpan::Cols(ColumnOrigin::El)),
@@ -57,6 +60,7 @@ impl Group {
             Self::Cols(origin) => Node::Span(Span::Da(DaSpan::Cols(origin))),
             Self::Batch { origin, batch } => Node::Batch { origin, batch },
             Self::Stf => Node::Span(Span::Stf(StfSpan::Root)),
+            Self::Payload => Node::Span(Span::Payload),
         }
     }
 
@@ -89,17 +93,19 @@ impl Span {
             Self::Da(span) => span.spec(),
             Self::Stf(span) => span.spec(),
             Self::El => SpanSpec::new("el", None),
+            Self::Payload => SpanSpec::new("payload", Some(Group::Payload)),
         }
     }
 
-    fn parent(self) -> Option<Group> {
-        Group::WITH_SPANS.into_iter().find(|g| g.children().contains(&self))
+    fn parent(self, trace: &BlockTrace) -> Option<Group> {
+        Group::WITH_SPANS.into_iter().find(|g| g.children(trace).contains(&self))
     }
 
     fn hidden(self, trace: &BlockTrace) -> bool {
         match self {
             Self::Da(DaSpan::Cols(origin)) => !trace.da.has_origin(origin),
             Self::Da(DaSpan::Custody) => !trace.da.has_columns(),
+            Self::Stf(StfSpan::Validate | StfSpan::Apply) => trace.gloas,
             Self::Stf(StfSpan::DaWait) => !trace.stf.parked(),
             _ => false,
         }
@@ -164,7 +170,7 @@ impl Node {
     /// The group this row is listed under, so `Enter` on a child folds it.
     pub fn parent(self, trace: &BlockTrace) -> Option<Group> {
         match self {
-            Self::Span(span) => span.parent(),
+            Self::Span(span) => span.parent(trace),
             Self::Batch { origin, .. } => Some(Group::Cols(origin)),
             Self::Col { index, .. } => {
                 let origin = trace.da.columns[index].origin;
@@ -282,7 +288,7 @@ impl Walk<'_> {
         else {
             return;
         };
-        for &child in group.children() {
+        for &child in group.children(self.trace) {
             if !child.hidden(self.trace) {
                 self.push_span(child, depth + 1);
             }
@@ -328,7 +334,7 @@ mod tests {
 
     use super::*;
     use crate::sources::events::trace_tests::{
-        APPLY, DA, DA_WAIT, STF, VALIDATE, cols, el_sent, received, trace,
+        APPLY, DA, DA_WAIT, STF, VALIDATE, cols, el_sent, gloas_trace, received, trace, valid,
     };
 
     fn rows_of(trace: BlockTrace) -> BlockTraces {
@@ -391,6 +397,39 @@ mod tests {
         assert_eq!(display[5].fold, Fold::Leaf, "validate is a leaf");
         assert_eq!(display[7].depth, 1, "el is a component of its own");
         assert_eq!(display[7].fold, Fold::Leaf);
+    }
+
+    /// A Gloas block's stf has no dispatch to split at, and its data and
+    /// `el` belong to the payload.
+    #[test]
+    fn gloas_data_and_el_unfold_under_the_payload() {
+        let block = gloas_trace(&[
+            (received(), 300),
+            (Stage::Attestable, 304),
+            (Stage::ColumnRecv { index: 3, origin: ColumnOrigin::Gossip }, 400),
+            (Stage::DaAvailable, 420),
+            (el_sent(), 500),
+            (valid(), 600),
+        ]);
+        let mut expanded = Expanded::default();
+        for group in [Group::Block, Group::Stf, Group::Payload] {
+            expanded.toggle(block.block_root, group);
+        }
+
+        let display = display_rows(&rows_of(block), &expanded);
+        assert_eq!(nodes(&display), [
+            Node::Span(Span::Strip),
+            Node::Span(STF),
+            Node::Span(Span::Payload),
+            Node::Span(DA),
+            Node::Span(Span::Da(DaSpan::Custody)),
+            Node::Span(Span::El),
+        ]);
+        assert_eq!(display[3].depth, 2);
+        let traces = rows_of(gloas_trace(&[]));
+        assert_eq!(Node::Span(Span::El).parent(&traces[0]), Some(Group::Payload));
+        assert_eq!(Node::Span(DA).parent(&traces[0]), Some(Group::Payload));
+        assert_eq!(Group::Payload.opener(), Node::Span(Span::Payload));
     }
 
     /// The wait row exists only for a block that parked on its columns.

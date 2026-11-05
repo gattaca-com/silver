@@ -15,8 +15,9 @@ it, `/` searches, and `q` quits.
 
 ## Events
 
-This tab shows how fast Silver makes each block ready to attest to. As of
-Fulu, validators must attest within 4 s of the slot start.
+This tab shows how fast Silver makes each block ready to attest to.
+Validators must attest within 4 s of the slot start on Fulu, and within 3 s
+on Gloas.
 
 There is one row per block, newest on top. The bar runs from the block's
 arrival to the moment it was ready, on a time-into-slot axis.
@@ -27,13 +28,19 @@ arrival to the moment it was ready, on a time-into-slot axis.
 |---|---|
 | `start` / `end` | Arrival and attestable time, counted from the slot start |
 | `duration` | How long the node took from arrival to attestable |
-| `deadline` | Time left before the 4 s attestation deadline: green made it, red missed |
+| `deadline` | Time left before the attestation deadline: green made it, red missed |
 | `source` | `gossip`, or `rpc` when the node had to fetch the block |
 
 `Enter` splits a block into its stages: `data available`, `stf` (state
 transition) and `el` (execution client verdict: valid, syncing or invalid).
 `stf` opens further into `validate`, `apply` and `da wait`: the time spent
 waiting for the block's data columns to arrive.
+
+From Gloas the payload travels in its own envelope, after the block. A block
+is ready at import, so `stf` has no `validate` / `apply` split. Its `payload`
+row holds `data available` and `el` instead. The payload's `deadline` is the
+9 s payload attestation deadline: by then it must be valid and its data
+available.
 
 **Look for:** a new row every 12 s, durations in tens of milliseconds, and
 green deadlines. A slow `el` stage points at the execution client.

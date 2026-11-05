@@ -6,10 +6,7 @@ use std::{collections::VecDeque, ops::Deref, path::Path};
 
 use flux::{spine::SpineAdapter, tile::Tile};
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{
-    Nanos, SilverSpine,
-    ticker::{BASIS_POINTS, attestation_due_bps},
-};
+use silver_common::{Nanos, SilverSpine};
 use silver_stages::{SlotClock, Stage, StageEvent, StageReader};
 
 mod batch;
@@ -53,7 +50,7 @@ impl BlockTraces {
         self.0.iter().find(|t| t.block_root == root)
     }
 
-    fn fold(&mut self, clock: &SlotClock, event: StageEvent) {
+    fn fold(&mut self, clock: &SlotClock, gloas_fork_epoch: u64, event: StageEvent) {
         let trace = match self.0.iter_mut().rev().find(|t| t.block_root == event.block_root) {
             Some(trace) => trace,
             // An announcement always opens the block's trace; other events
@@ -71,7 +68,8 @@ impl BlockTraces {
                 if self.0.len() == TRACES_CAP {
                     self.0.pop_front();
                 }
-                self.0.push_back(BlockTrace::new(slot, event.block_root));
+                let gloas = slot / SLOTS_PER_EPOCH >= gloas_fork_epoch;
+                self.0.push_back(BlockTrace::new(slot, event.block_root, gloas));
                 self.0.back_mut().expect("just pushed")
             }
         };
@@ -91,6 +89,7 @@ impl BlockTraces {
 /// broadcast cursors.
 struct EventsTile {
     clock: SlotClock,
+    gloas_fork_epoch: u64,
     reader: StageReader,
     traces: BlockTraces,
 }
@@ -98,7 +97,7 @@ struct EventsTile {
 impl Tile<SilverSpine> for EventsTile {
     fn loop_body(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         for event in self.reader.consume(adapter) {
-            self.traces.fold(&self.clock, event);
+            self.traces.fold(&self.clock, self.gloas_fork_epoch, event);
         }
     }
 }
@@ -108,13 +107,13 @@ impl Tile<SilverSpine> for EventsTile {
 pub struct Events {
     tile: EventsTile,
     adapter: SpineAdapter<SilverSpine>,
-    gloas_fork_epoch: u64,
 }
 
 impl Events {
     pub fn open(base_dir: &Path, clock: SlotClock, gloas_fork_epoch: u64) -> Self {
         let tile = EventsTile {
             clock,
+            gloas_fork_epoch,
             reader: StageReader::default(),
             traces: BlockTraces(VecDeque::with_capacity(TRACES_CAP)),
         };
@@ -122,7 +121,7 @@ impl Events {
         // once the adapter has attached.
         let mut spine = SilverSpine::new_with_base_dir(base_dir, None);
         let adapter = SpineAdapter::connect_tile(&tile, &mut spine);
-        Self { tile, adapter, gloas_fork_epoch }
+        Self { tile, adapter }
     }
 
     pub fn sample(&mut self) {
@@ -135,12 +134,6 @@ impl Events {
 
     pub fn clock(&self) -> &SlotClock {
         &self.tile.clock
-    }
-
-    /// Offset into `slot` by which validators are expected to have attested.
-    pub fn attestation_deadline(&self, slot: u64) -> Nanos {
-        let is_gloas = slot / SLOTS_PER_EPOCH >= self.gloas_fork_epoch;
-        self.tile.clock.slot_duration() * attestation_due_bps(is_gloas) / BASIS_POINTS
     }
 }
 
@@ -157,7 +150,7 @@ mod tests {
         let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
         let mut traces = BlockTraces(VecDeque::new());
         for o in events {
-            traces.fold(&clock, o);
+            traces.fold(&clock, u64::MAX, o);
         }
         traces
     }
@@ -217,6 +210,22 @@ mod tests {
     }
 
     #[test]
+    fn traces_take_the_fork_of_their_slot() {
+        let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
+        let mut traces = BlockTraces(VecDeque::new());
+        for (slot, root) in [(SLOTS_PER_EPOCH - 1, 1u8), (SLOTS_PER_EPOCH, 2)] {
+            traces.fold(&clock, 1, StageEvent {
+                stage: received(),
+                ts: at(slot, 300),
+                block_root: [root; 32],
+                slot: Some(slot),
+            });
+        }
+        assert!(!traces[0].gloas);
+        assert!(traces[1].gloas, "the fork epoch's first slot");
+    }
+
+    #[test]
     fn max_strip_offset_covers_the_latest_end() {
         let clock = SlotClock::new(GENESIS_SECS, SLOT_MS);
         let mut traces = fold_all(vec![
@@ -225,7 +234,7 @@ mod tests {
         ]);
         assert_eq!(traces.max_strip_offset(&clock), Nanos::from_millis(900));
 
-        traces.fold(&clock, StageEvent {
+        traces.fold(&clock, u64::MAX, StageEvent {
             stage: received(),
             ts: at(5, 1_200),
             block_root: [2u8; 32],
