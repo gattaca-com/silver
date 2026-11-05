@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.Refines.Bits
 import LeanBlsSimd.Kzg.CosetsRep
 import EthLib.Cryptography.Proofs.Kzg.Polynomials
 import EthLib.Cryptography.Proofs.Kzg.Domain
+import EthLib.Cryptography.Proofs.Kzg.ExtendedCells
 import EthLib.Cryptography.Proofs.Bls.FrZMod
 
 open Aeneas Aeneas.Std Result ControlFlow
@@ -26,16 +27,10 @@ private theorem coset_index_lt (k : Nat) : cosetIndex k < 8192 := by
   simpa [cosetIndex, BitReversal.reverseBits] using
     BitReversal.reverseBits_lt_two_pow (64*k) 13
 
-private theorem bit_reversal_get (a : _root_.Array Fr) (j : Nat) (hj : j < a.size) :
-    (BitReversal.bitReversalPermutation a)[j]! = a[BitReversal.reverseBits j a.size]! := by
-  rw [getElem!_pos (BitReversal.bitReversalPermutation a) j
-    (by simpa [BitReversal.size_bitReversalPermutation] using hj),
-    BitReversal.getElem_bitReversalPermutation]
-
 private theorem coset_shift_eq (k : Nat) (hk : k < 128) :
     Model.cosetShift k = (Model.roots 13)[cosetIndex k]! := by
   unfold Model.cosetShift rootsOfUnityBrp
-  rw [bit_reversal_get _ _ (by simp; omega)]
+  rw [getElem!_bitReversalPermutation _ _ (by simp; omega)]
   simp only [size_computeRootsOfUnity]
   rfl
 

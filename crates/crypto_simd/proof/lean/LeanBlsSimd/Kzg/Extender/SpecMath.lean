@@ -42,10 +42,6 @@ theorem reverseBits_half_split (b j : Nat) (hb : b < 2) (hj : j < 4096) :
     · rw [ite_eq_right hi13, ite_eq_right (by omega : ¬i < 1), testBit_reverseBits,
         ite_eq_right (by omega : ¬i - 1 < 12)]
 
-theorem coeff_size (a : Array Fr) (ha : a.size = 4096) :
-    (polynomialEvalToCoeff a).size = 4096 := by
-  simpa only [polynomialEvalToCoeff, size_fftField, size_bitReversalPermutation] using ha
-
 theorem inverseFft_eq_coeff (a : Array Fr) (ha : a.size = 4096) :
     Kzg.Model.inverseFft (bitReversalPermutation a)
       (Kzg.Model.inverseRoots (Kzg.Model.roots 12)) (Fr.ofNat 4096).inverse =
@@ -65,7 +61,7 @@ theorem extension_eq (a : Array Fr) (ha : a.size = 4096) :
       (polynomialEvalToCoeff a)[i.val]! * (Kzg.Model.roots 13)[i.val]!) =
       shiftVals (polynomialEvalToCoeff a) (domainRoot 8192) := by
     apply Array.ext
-    · simp only [Array.size_ofFn, size_shiftVals, coeff_size a ha]
+    · simp only [Array.size_ofFn, size_shiftVals, size_polynomialEvalToCoeff, ha]
     · intro i hi hi'
       rw [Array.getElem_ofFn, getElem_shiftVals, Fr.powNat_eq_pow]
       simp only [Kzg.Model.roots]
@@ -76,7 +72,7 @@ theorem extension_eq (a : Array Fr) (ha : a.size = 4096) :
 
 theorem extension_size (a : Array Fr) (ha : a.size = 4096) :
     (Model.extension a).size = 4096 := by
-  rw [extension_eq a ha, size_fftField, size_shiftVals, coeff_size a ha]
+  rw [extension_eq a ha, size_fftField, size_shiftVals, size_polynomialEvalToCoeff, ha]
 
 theorem coeff_eval_original (a : Array Fr) (ha : a.size = 4096)
     (j : Nat) (hj : j < 4096) :
@@ -91,18 +87,18 @@ theorem coeff_eval_original (a : Array Fr) (ha : a.size = 4096)
     have hr := reverseBits_half_split 0 j (by decide) hj
     simp only [Nat.mul_zero, Nat.zero_add, Nat.add_zero] at hr
     rw [hr, pow_mul, domainRoot_8192_sq]
-  rw [hnode, EthLib.Cryptography.Kzg.evaluatePolynomialcoeff_eq_evalPolyAt,
-    ← EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
+  rw [hnode, evaluatePolynomialcoeff_eq_evalPolyAt,
+    ← getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       (polynomialEvalToCoeff a) (computeRootsOfUnity 4096)
-      (coeff_size a ha) (size_computeRootsOfUnity 4096) hroots _ hrev]
+      ((size_polynomialEvalToCoeff a).trans ha) (size_computeRootsOfUnity 4096) hroots _ hrev]
   have hround : fftField (polynomialEvalToCoeff a) (computeRootsOfUnity 4096) false =
       bitReversalPermutation a := by
     exact fftField_inv_fftField (k := 12) domainRoot_4096_primitive
       (bitReversalPermutation a) (computeRootsOfUnity 4096)
       (by simpa only [size_bitReversalPermutation] using! ha)
       (size_computeRootsOfUnity 4096) hroots
-  rw [hround, getElem!_pos _ _ (by simpa only [size_bitReversalPermutation, ha] using! hrev),
-    getElem_bitReversalPermutation, ha, reverseBits_reverseBits (k := 12) hj]
+  rw [hround, getElem!_bitReversalPermutation a _ (by omega),
+    ha, reverseBits_reverseBits (k := 12) hj]
 
 theorem coeff_eval_extension (a : Array Fr) (ha : a.size = 4096)
     (j : Nat) (hj : j < 4096) :
@@ -120,15 +116,15 @@ theorem coeff_eval_extension (a : Array Fr) (ha : a.size = 4096)
     simp only [Nat.mul_one] at hr
     rw [hr, pow_add, pow_mul, domainRoot_8192_sq, pow_one, mul_comm]
     rfl
-  rw [hnode, EthLib.Cryptography.Kzg.evaluatePolynomialcoeff_eq_evalPolyAt,
-    ← EthLib.Cryptography.Kzg.evalPolyAt_shiftVals,
-    ← EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
+  rw [hnode, evaluatePolynomialcoeff_eq_evalPolyAt,
+    ← evalPolyAt_shiftVals,
+    ← getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       (shiftVals (polynomialEvalToCoeff a) (domainRoot 8192)) (computeRootsOfUnity 4096)
-      (by rw [size_shiftVals]; exact coeff_size a ha)
+      (by rw [size_shiftVals]; exact (size_polynomialEvalToCoeff a).trans ha)
       (size_computeRootsOfUnity 4096) hroots _ hrev,
     ← extension_eq a ha,
-    getElem!_pos (bitReversalPermutation (Model.extension a)) j
-      (by simpa only [size_bitReversalPermutation, extension_size a ha] using hj),
-    getElem_bitReversalPermutation, extension_size a ha]
+    getElem!_bitReversalPermutation (Model.extension a) j
+      (by rw [extension_size a ha]; exact hj),
+    extension_size a ha]
 
 end LeanBlsSimd.Kzg.Extender

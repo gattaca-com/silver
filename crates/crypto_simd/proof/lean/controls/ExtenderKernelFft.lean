@@ -177,9 +177,9 @@ private theorem dit_ne_dif (roots : _root_.Array Fr) (hsize : roots.size = 16)
   have hi := congrArg (fun xs : _root_.Array Fr => xs[2]!) he
   rw [impulse_fft_get roots ω hsize hω (by simpa only [hsize] using hpowers) 8 2
       (by decide) (by decide),
-    getElem!_pos (bitReversalPermutation (fftFieldAux (impulse 1) roots)) 2
-      (by simp only [size_bitReversalPermutation, size_fftFieldAux, impulse_size]; decide),
-    getElem_bitReversalPermutation, size_fftFieldAux, impulse_size,
+    getElem!_bitReversalPermutation (fftFieldAux (impulse 1) roots) 2
+      (by simp only [size_fftFieldAux, impulse_size]; decide),
+    size_fftFieldAux, impulse_size,
     show reverseBits 2 16 = 4 by decide +kernel,
     impulse_fft_get roots ω hsize hω (by simpa only [hsize] using hpowers) 1 4
       (by decide) (by decide)] at hi

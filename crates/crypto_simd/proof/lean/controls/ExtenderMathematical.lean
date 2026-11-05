@@ -4,7 +4,7 @@ import Batteries.Tactic.OpenPrivate
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-open private getElem!_reversedRoots getElem!_map_mul
+open private getElem!_reversedRoots
   from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
 attribute [-instance] Fin.instNatPow
@@ -50,9 +50,8 @@ theorem omitting_input_bit_reversal_changes_coefficients :
   rw [hround _ (by rw [size_bitReversalPermutation, inputWitness_size]),
     hround _ inputWitness_size] at he
   have hi := congrArg (fun a : Array Fr => a[1]!) he
-  rw [getElem!_pos (bitReversalPermutation inputWitness) 1
-      (by rw [size_bitReversalPermutation, inputWitness_size]; decide),
-    getElem_bitReversalPermutation, inputWitness_size,
+  rw [getElem!_bitReversalPermutation inputWitness 1 (by rw [inputWitness_size]; decide),
+    inputWitness_size,
     show reverseBits 1 4096 = 2048 by decide +kernel,
     inputWitness_get 2048 (by decide), inputWitness_get 1 (by decide)] at hi
   exact (by decide : Fr.ofNat 2048 ≠ Fr.ofNat 1) hi
@@ -65,8 +64,8 @@ private theorem linearCoefficients_size : linearCoefficients.size = 4096 := by
 
 private theorem linearCoefficients_eval (z : Fr) :
     EthLib.Cryptography.Kzg.evalPolyAt linearCoefficients z = z := by
-  rw [EthLib.Cryptography.Kzg.evalPolyAt, EthLib.Cryptography.Kzg.evalCoeffPoly,
-    EthLib.Cryptography.Kzg.evalCoeffPolyAux_eq_sum,
+  rw [evalPolyAt, evalCoeffPoly,
+    evalCoeffPolyAux_eq_sum,
     linearCoefficients_size]
   trans ∑ i ∈ Finset.range 4096, (if i = 1 then (1 : Fr) else 0) * z ^ i
   · apply Finset.sum_congr rfl
@@ -94,11 +93,11 @@ private theorem linearInput_coefficients : polynomialEvalToCoeff linearInput = l
 private theorem shifted_linear_get (factor : Fr) (j : Nat) (hj : j < 4096) :
     (fftField (shiftVals linearCoefficients factor) (computeRootsOfUnity 4096) false)[j]! =
       factor * domainRoot 4096 ^ j := by
-  rw [EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
+  rw [getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
     (shiftVals linearCoefficients factor) (computeRootsOfUnity 4096)
     (by rw [size_shiftVals, linearCoefficients_size]; rfl)
     (size_computeRootsOfUnity 4096) roots4096 j hj,
-    EthLib.Cryptography.Kzg.evalPolyAt_shiftVals, linearCoefficients_eval]
+    evalPolyAt_shiftVals, linearCoefficients_eval]
 
 private theorem linear_extension_get (j : Nat) (hj : j < 4096) :
     (Model.extension linearInput)[j]! = domainRoot 8192 * domainRoot 4096 ^ j := by
@@ -107,7 +106,7 @@ private theorem linear_extension_get (j : Nat) (hj : j < 4096) :
 
 private theorem shift_ne_one : domainRoot 8192 ≠ (1 : Fr) := by
   have hroot : IsPrimitiveRoot (domainRoot 8192) 8192 :=
-    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
+    isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   simpa only [pow_one] using!
     hroot.pow_ne_one_of_pos_of_lt (by decide : 1 ≠ 0)
       (by decide : 1 < 8192)
@@ -117,7 +116,7 @@ theorem omitting_coset_shift_changes_extension :
   intro h
   have hi := congrArg (fun a : Array Fr => a[0]!) h
   rw [linear_extension_get 0 (by decide),
-    EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
+    getElem!_fftField_eval (k := 12) domainRoot_4096_primitive
       linearCoefficients (computeRootsOfUnity 4096) linearCoefficients_size
       (size_computeRootsOfUnity 4096) roots4096 0 (by decide),
     linearCoefficients_eval, pow_zero] at hi
@@ -125,7 +124,7 @@ theorem omitting_coset_shift_changes_extension :
 
 private theorem shift_ne_inverse : domainRoot 8192 ≠ (domainRoot 8192).inverse := by
   have hroot : IsPrimitiveRoot (domainRoot 8192) 8192 :=
-    EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
+    isPrimitiveRoot_domainRoot (Nat.dvd_of_mod_eq_zero (by decide))
   rw [Fr.inverse_eq_inv]
   intro h
   apply hroot.pow_ne_one_of_pos_of_lt (by decide : 2 ≠ 0)
@@ -150,13 +149,13 @@ private theorem shifted_linear_inverse_get (factor : Fr) (j : Nat) (hj : j < 409
       factor * (domainRoot 4096)⁻¹ ^ j := by
   unfold Kzg.Model.roots
   simp only [show (2 : Nat) ^ 12 = 4096 by decide]
-  have h := EthLib.Cryptography.Kzg.getElem!_fftField_eval (k := 12) domainRoot_4096_primitive.inv
+  have h := getElem!_fftField_eval (k := 12) domainRoot_4096_primitive.inv
     (shiftVals linearCoefficients factor) (Kzg.Model.inverseRoots (computeRootsOfUnity 4096))
     (by rw [size_shiftVals, linearCoefficients_size]; rfl)
     (by simp [Kzg.Model.inverseRoots])
     (fun i hi => getElem!_reversedRoots (k := 12) domainRoot_4096_primitive
       (computeRootsOfUnity 4096) (size_computeRootsOfUnity 4096) roots4096 i hi) j hj
-  rw [EthLib.Cryptography.Kzg.evalPolyAt_shiftVals, linearCoefficients_eval] at h
+  rw [evalPolyAt_shiftVals, linearCoefficients_eval] at h
   simp only [fftField_def, Bool.false_eq_true, ite_false] at h
   exact h
 
@@ -168,7 +167,7 @@ theorem reversing_forward_fft_roots_changes_extension :
   have hi := congrArg (fun a : Array Fr => a[1]!) h
   rw [linear_extension_get 1 (by decide), shifted_linear_inverse_get _ 1 (by decide)] at hi
   simp only [pow_one] at hi
-  have hnz := (EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (order := 8192)
+  have hnz := (isPrimitiveRoot_domainRoot (order := 8192)
     (Nat.dvd_of_mod_eq_zero (by decide))).ne_zero (by decide : 8192 ≠ 0)
   have hr : domainRoot 4096 = (domainRoot 4096)⁻¹ := by
     calc
@@ -188,12 +187,12 @@ theorem omitting_output_bit_reversal_changes_extension_order :
     bitReversalPermutation (Model.extension linearInput) ≠ Model.extension linearInput := by
   intro h
   have hi := congrArg (fun a : Array Fr => a[1]!) h
-  rw [getElem!_pos (bitReversalPermutation (Model.extension linearInput)) 1
-      (by rw [size_bitReversalPermutation, extension_size linearInput linearInput_size]; decide),
-    getElem_bitReversalPermutation, extension_size linearInput linearInput_size,
+  rw [getElem!_bitReversalPermutation (Model.extension linearInput) 1
+      (by rw [extension_size linearInput linearInput_size]; decide),
+    extension_size linearInput linearInput_size,
     show reverseBits 1 4096 = 2048 by decide +kernel,
     linear_extension_get 2048 (by decide), linear_extension_get 1 (by decide)] at hi
-  have hnz := (EthLib.Cryptography.Kzg.isPrimitiveRoot_domainRoot (order := 8192)
+  have hnz := (isPrimitiveRoot_domainRoot (order := 8192)
     (Nat.dvd_of_mod_eq_zero (by decide))).ne_zero (by decide : 8192 ≠ 0)
   have hp : domainRoot 4096 ^ (2048 : Nat) = domainRoot 4096 ^ (1 : Nat) := by
     calc
@@ -235,7 +234,8 @@ private theorem scaled_constant_coefficient :
   unfold inverse4096 Kzg.Model.inverseFft
   change ((unscaledInverse4096 (Array.replicate 4096 (1 : Fr))).map
     (· * (Fr.ofNat 4096).inverse))[0]! = 1
-  rw [getElem!_map_mul _ _ 0 (by simp [unscaledInverse4096]), unscaled_constant_coefficient,
+  rw [getElem!_pos _ 0 (by simp [unscaledInverse4096]), Array.getElem_map,
+    ← getElem!_pos _ 0 (by simp [unscaledInverse4096]), unscaled_constant_coefficient,
     Fr.inverse_eq_inv, Fr.ofNat_eq_natCast]
   exact mul_inv_cancel₀ (by decide : (4096 : Fr) ≠ 0)
 

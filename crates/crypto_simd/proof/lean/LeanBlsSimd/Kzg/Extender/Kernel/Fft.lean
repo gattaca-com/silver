@@ -19,10 +19,6 @@ namespace LeanBlsSimd.Kzg.Extender.Kernel
 set_option maxRecDepth 10000
 set_option maxHeartbeats 4000000
 
-@[simp] theorem size_butterflyStage (dit : Bool) (values roots : _root_.Array Fr) (h : Nat) :
-    (butterflyStage dit values roots h).size = values.size := by
-  simp only [butterflyStage, _root_.Array.size_ofFn]
-
 private theorem table_vectors_le (table : fft8.Fft8) (roots : _root_.Array Fr)
     (htable : FftInvariant table roots) : table.vectors.val ≤ 512 := by
   obtain ⟨k, hk4, hk12, hk⟩ := htable.1

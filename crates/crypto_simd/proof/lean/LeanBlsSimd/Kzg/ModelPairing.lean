@@ -4,6 +4,7 @@ import LeanBlsSimd.Kzg.PairingRepresentation
 import LeanBlsSimd.Kzg.InterpolationModel
 import LeanBlsSimd.Kzg.ModelSpec
 import Mathlib.Data.List.Nodup
+import Batteries.Tactic.OpenPrivate
 
 open EthLib.Cryptography Bls Kzg
 open private buildEmbedded from EthLib.Cryptography.Kzg.TrustedSetup

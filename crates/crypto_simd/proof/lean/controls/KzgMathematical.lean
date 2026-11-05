@@ -4,7 +4,7 @@ import Batteries.Tactic.OpenPrivate
 open EthLib.Cryptography Bls Kzg Kzg.BitReversal
 open scoped EthLib.Cryptography.Bls.Fr BigOperators
 
-open private getElem!_reversedRoots getElem!_map_mul
+open private getElem!_reversedRoots
   from EthLib.Cryptography.Proofs.Kzg.FftInverse
 
 attribute [-instance] Fin.instNatPow
@@ -83,7 +83,8 @@ theorem scaled_constant_coefficient :
   rw [fftField_def]
   change ((unscaledInverse (Array.replicate 64 (1 : Fr))).map
     (· * (Fr.ofNat 64).inverse))[0]! = 1
-  rw [getElem!_map_mul _ _ 0 (by simp [unscaledInverse]), unscaled_constant_coefficient,
+  rw [getElem!_pos _ 0 (by simp [unscaledInverse]), Array.getElem_map,
+    ← getElem!_pos _ 0 (by simp [unscaledInverse]), unscaled_constant_coefficient,
     Fr.inverse_eq_inv, Fr.ofNat_eq_natCast]
   exact mul_inv_cancel₀ (by decide : (64 : Fr) ≠ 0)
 
