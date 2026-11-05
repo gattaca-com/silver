@@ -1,0 +1,23 @@
+[package]
+name = "silver_state_hashing_bench"
+edition.workspace = true
+publish = false
+rust-version.workspace = true
+version = "0.0.0"
+
+[dev-dependencies]
+criterion.workspace = true
+milhouse.workspace = true
+mimalloc.workspace = true
+rand.workspace = true
+rayon.workspace = true
+silver_state_hashing = { workspace = true, features = ["multi-owner"] }
+tree_hash.workspace = true
+typenum.workspace = true
+
+[[bench]]
+harness = false
+name = "milhouse_comparison"
+
+[lints]
+workspace = true
