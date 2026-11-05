@@ -2,6 +2,8 @@
 // ms-into-slot axis. One strip per (slot, root, instance); its bar spans
 // arrival → attestable. Opening a strip unfolds the three components that
 // join at attestable (`data available → cols`, `stf → validate/apply`, `el`).
+// From Gloas a block joins at import alone, and its `payload` holds the
+// envelope's data and `el`.
 
 import { LineCharts } from './chart.js';
 import { legendClick, slotCharts } from './slot_charts.js';
@@ -18,7 +20,13 @@ const GROUP_CHILDREN = {
   block: ['da', 'custody', 'stf', 'el'],
   da: [Origin.Gossip, Origin.El, Origin.Rpc, Origin.Assembly].map(colsSpan),
   stf: ['validate', 'apply', 'daWait'],
+  payload: ['da', 'custody', 'el'],
 };
+const GLOAS_BLOCK_CHILDREN = ['stf', 'payload'];
+
+function groupChildren(group, trace) {
+  return group === 'block' && trace.gloas ? GLOAS_BLOCK_CHILDREN : (GROUP_CHILDREN[group] ?? []);
+}
 const SPAN_LABEL = {
   strip: '',
   da: 'data available',
@@ -28,13 +36,14 @@ const SPAN_LABEL = {
   apply: 'apply',
   daWait: 'da wait',
   el: 'el',
+  payload: 'payload',
   [colsSpan(Origin.Gossip)]: 'gossip cols',
   [colsSpan(Origin.Rpc)]: 'rpc cols',
   [colsSpan(Origin.El)]: 'el cols',
   [colsSpan(Origin.Assembly)]: 'cells',
 };
-const SPAN_OPENS = { strip: 'block', da: 'da', custody: 'da', stf: 'stf' };
-const GROUP_OPENER = { block: 'strip', da: 'da', stf: 'stf' };
+const SPAN_OPENS = { strip: 'block', da: 'da', custody: 'da', stf: 'stf', payload: 'payload' };
+const GROUP_OPENER = { block: 'strip', da: 'da', stf: 'stf', payload: 'payload' };
 
 const isCols = (span) => span.startsWith('cols:');
 
@@ -47,13 +56,14 @@ function unfoldingAfter(span) {
   return span === 'da' ? null : spanOpens(span);
 }
 
-function spanParent(span) {
-  return Object.keys(GROUP_CHILDREN).find((g) => GROUP_CHILDREN[g].includes(span)) ?? null;
+function spanParent(span, trace) {
+  return Object.keys(GROUP_CHILDREN).find((g) => groupChildren(g, trace).includes(span)) ?? null;
 }
 
 function hidden(span, trace) {
   if (isCols(span)) return !trace.hasOrigin(colsOrigin(span));
   if (span === 'custody') return !trace.columns.length;
+  if (span === 'validate' || span === 'apply') return trace.gloas;
   if (span === 'daWait') return !trace.parked();
   return false;
 }
@@ -73,7 +83,7 @@ function nodeOpens(node) {
 
 /** The group this row is listed under, so selecting a child folds it. */
 function nodeParent(node, trace) {
-  if (node.span) return spanParent(node.span);
+  if (node.span) return spanParent(node.span, trace);
   if (node.batch !== undefined) return colsSpan(node.origin);
   const origin = trace.columns[node.index].origin;
   const batches = trace.batches(origin);
@@ -134,7 +144,7 @@ function walkSpan(out, inst, trace, expanded, span, depth) {
 
   const group = unfoldingAfter(span);
   if (group === null || !expanded.has(openKey(inst, trace, group))) return;
-  for (const child of GROUP_CHILDREN[group] ?? []) {
+  for (const child of groupChildren(group, trace)) {
     if (!hidden(child, trace)) walkSpan(out, inst, trace, expanded, child, depth + 1);
   }
   if (isCols(group)) walkColumns(out, inst, trace, expanded, colsOrigin(group), depth + 1);
@@ -210,6 +220,7 @@ const SPAN_CLASS = {
   validate: 'c-validate',
   apply: 'c-apply',
   daWait: 'c-dawait',
+  payload: 'c-payload',
 };
 
 function verdictClass(trace) {
@@ -255,19 +266,20 @@ function cells(row, clock) {
     len,
     split: splits && trace.available !== null ? trace.offsetInSlot(clock, trace.available) : null,
     duration,
-    margin: strip ? trace.deadlineMargin(clock) : null,
+    margin: node.span ? trace.deadlineMargin(clock, node.span) : null,
     source: strip && trace.source !== null ? BLOCK_SOURCE[trace.source] : '',
     bar: barClasses(node, trace),
   };
 }
 
 /** Into-slot ns → percent of the axis; 5% headroom past the widest of the
- *  deadline and the latest strip end. */
+ *  newest block's deadline, the latest strip end and any shown payload's end:
+ *  a payload runs seconds past its block. */
 function axisRange(rows, clock) {
-  let max = clock.deadline();
+  let max = rows[0].trace.attestationDeadline(clock);
   for (const { trace, node } of rows) {
-    if (node.span !== 'strip') continue;
-    const iv = trace.interval('strip');
+    if (node.span !== 'strip' && node.span !== 'payload') continue;
+    const iv = trace.interval(node.span);
     const end = iv ? trace.offsetInSlot(clock, iv.end) : null;
     if (end !== null) max = Math.max(max, end);
   }

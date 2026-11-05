@@ -196,6 +196,8 @@ export function decode(buf) {
     case Kind.Chain:
       d.genesisUnixSecs = r.u64();
       d.slotMs = r.u64();
+      // null when Gloas is not scheduled.
+      d.gloasForkEpoch = r.u64();
       break;
     case Kind.PeerP2p:
       d.entries = r.entries(() => ({

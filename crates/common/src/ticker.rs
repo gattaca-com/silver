@@ -10,6 +10,7 @@ pub const MAXIMUM_GOSSIP_CLOCK_DISPARITY: Duration = Duration::from_millis(500);
 pub const BASIS_POINTS: u64 = 10_000;
 pub const ATTESTATION_DUE_BPS: u64 = 3333;
 pub const ATTESTATION_DUE_BPS_GLOAS: u64 = 2500;
+pub const PAYLOAD_ATTESTATION_DUE_BPS: u64 = 7500;
 
 pub fn attestation_due_bps(is_gloas: bool) -> u64 {
     if is_gloas { ATTESTATION_DUE_BPS_GLOAS } else { ATTESTATION_DUE_BPS }

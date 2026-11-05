@@ -23,9 +23,8 @@ function stfRow(inst, colour) {
   const durations = [];
   for (const trace of inst.traces) {
     if (trace.attestable === null) continue;
-    const validate = trace.interval('validate');
-    const apply = trace.interval('apply');
-    if (validate && apply) durations.push(validate.end - validate.start + apply.end - apply.start);
+    const work = trace.stfWork();
+    if (work !== null) durations.push(work);
   }
   durations.sort((a, b) => a - b);
   const cells = PERCENTILES.map(

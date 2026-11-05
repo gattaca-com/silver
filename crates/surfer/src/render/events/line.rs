@@ -133,13 +133,7 @@ pub struct RowCells {
 }
 
 impl RowCells {
-    pub fn new(
-        trace: &BlockTrace,
-        display: &DisplayRow,
-        clock: &SlotClock,
-        deadline: Nanos,
-        theme: &Theme,
-    ) -> Self {
+    pub fn new(trace: &BlockTrace, display: &DisplayRow, clock: &SlotClock, theme: &Theme) -> Self {
         let node = display.node;
         let interval = node.interval(trace);
         let offset = interval.and_then(|iv| trace.offset_in_slot(clock, iv.start));
@@ -152,7 +146,7 @@ impl RowCells {
             _ => String::new(),
         };
         let margin = match node {
-            Node::Span(Span::Strip) => trace.deadline_margin(clock, deadline),
+            Node::Span(span) => trace.deadline_margin(clock, span),
             _ => None,
         };
         let split = match node.splits_at_the_gate() {
@@ -314,7 +308,8 @@ mod tests {
         sources::events::{
             BlockTraces,
             trace_tests::{
-                APPLY, DA, GENESIS_SECS, SLOT_MS, el_sent, received, received_from, trace, valid,
+                APPLY, DA, GENESIS_SECS, SLOT_MS, el_sent, gloas_trace, received, received_from,
+                trace, valid,
             },
         },
     };
@@ -346,7 +341,7 @@ mod tests {
         display_rows(&traces, &expanded)
             .into_iter()
             .map(|d| {
-                let cells = RowCells::new(&traces[0], &d, &clock(), DEADLINE, theme);
+                let cells = RowCells::new(&traces[0], &d, &clock(), theme);
                 (d, cells)
             })
             .collect()
@@ -366,8 +361,8 @@ mod tests {
         assert_eq!(strip.start, "300ms");
         assert_eq!(strip.end, "520ms");
         assert_eq!(strip.duration, "220ms", "rank → attestable");
-        assert_eq!(strip.margin, Some(Margin { delta: Nanos::from_millis(3_480), made_it: true }));
-        assert_eq!(strip.margin_text(), "+3.48s");
+        assert_eq!(strip.margin, Some(Margin { delta: Nanos(3_479_600_000), made_it: true }));
+        assert_eq!(strip.margin_text(), format!("+{}", fmt_nanos(Nanos(3_479_600_000))));
 
         let el = cells_of(&cells, Node::Span(Span::El));
         assert_eq!(el.label, "    el", "a component of its own, not under stf");
@@ -380,6 +375,29 @@ mod tests {
             da.duration, "no blobs",
             "gate open with no sidecars: a point, not a 0 duration"
         );
+    }
+
+    #[test]
+    fn gloas_margins_split_between_block_and_payload() {
+        let mut expanded = Expanded::default();
+        expanded.toggle([1u8; 32], Group::Block);
+        let traces = BlockTraces::from_iter([gloas_trace(&[
+            (received(), 300),
+            (Stage::Attestable, 304),
+            (Stage::DaAvailable, 304),
+            (el_sent(), 500),
+            (valid(), 600),
+        ])]);
+        let cells: Vec<_> = display_rows(&traces, &expanded)
+            .into_iter()
+            .map(|d| (d, RowCells::new(&traces[0], &d, &clock(), &Theme::default())))
+            .collect();
+
+        let strip = cells_of(&cells, Node::Span(Span::Strip));
+        assert_eq!(strip.end, "304ms", "attestable at import, not at the payload's verdict");
+        assert_eq!(strip.margin_text(), "+2.696s", "against the 3 s Gloas deadline");
+        let payload = cells_of(&cells, Node::Span(Span::Payload));
+        assert_eq!(payload.margin_text(), "+8.4s", "against the 9 s payload attestation deadline");
     }
 
     /// The grid takes its widths from the rows, so a long margin or label
@@ -495,7 +513,7 @@ mod tests {
 
     #[test]
     fn replay_rows_draw_no_bar() {
-        let mut replayed = BlockTrace::new(7, [1u8; 32]);
+        let mut replayed = BlockTrace::new(7, [1u8; 32], false);
         let far_later = Nanos::from_secs(GENESIS_SECS) + Nanos::from_secs(900 * 12);
         replayed.apply(silver_stages::StageEvent {
             stage: received(),
@@ -509,7 +527,7 @@ mod tests {
             depth: 0,
             fold: Fold::Closed,
         };
-        let cells = RowCells::new(&replayed, &display, &clock(), DEADLINE, &Theme::default());
+        let cells = RowCells::new(&replayed, &display, &clock(), &Theme::default());
         assert_eq!(cells.start, "-");
         assert_eq!(cells.end, "-");
         assert_eq!(cells.offset, None);

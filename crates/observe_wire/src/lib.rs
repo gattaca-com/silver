@@ -25,7 +25,7 @@
 //! | TileUtils     | count u16, pad[6]                               | source_id u16, pad[6], busy u64, total u64, busy_count u64, busy_max u64 |
 //! | Timings       | count u16, pad[6]                               | source_id u16, channel u8, pad[5], count u64, p50_ns u64, p99_ns u64, max_ns u64 |
 //! | Instance      | —                                               | utf-8 label to end of datagram                                        |
-//! | Chain         | genesis_unix_secs u64, slot_ms u64              | —                                                                     |
+//! | Chain         | genesis_unix_secs u64, slot_ms u64, gloas_fork_epoch u64 | —                                                            |
 //! | PeerP2p       | count u16, pad[6]                               | peer[48], connection u64, addr[24], connected_ms u64, rtt_us u64, lost_packets u64, rx_blocking u64, tx_blocking u64, rx_datagrams u64, tx_datagrams u64, streams u64 |
 //! | PeerScores    | count u16, pad[6]                               | peer[48], agent[72], mesh_count u32, pad[4], p1 p2 p3 p3b p4 p5 p6 p7 total f64 |
 //! | PeerTopic     | count u16, pad[6]                               | peer[48], topic_slot u16, p3_scored u8, mesh_active u8, pad[4], meshed_secs u64, fanout_total u64, fanout_sent u64, first_deliveries f64, mesh_deliveries f64, mesh_failure_penalty f64, invalid_deliveries f64 |
@@ -39,6 +39,7 @@
 //!   in the first 4 bytes).
 //! - `agent[72]`: len u8, pad[7], utf-8 bytes[64] zero-padded.
 //! - `slot`, `column_index`: u64::MAX when absent.
+//! - `gloas_fork_epoch`: u64::MAX when Gloas is not scheduled.
 //!
 //! `CounterChanges` carries only the slots that moved since the source's
 //! previous datagram; every source re-sends all its values as
