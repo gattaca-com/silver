@@ -87,6 +87,13 @@ impl RpcReadResponse {
         }
     }
 
+    fn complete(app_id: u64, chunk: u32, reservation: RpcReservation) -> Result<Spin, StreamError> {
+        match reservation.into_rpc() {
+            Rpc::Request(_) => Err(StreamError::InvalidRpc),
+            Rpc::Response(msg) => Ok(Spin::Ok(Self::Complete { app_id, chunk, msg })),
+        }
+    }
+
     fn spin_inner<S: StreamIo>(
         self,
         io: &mut S,
@@ -111,15 +118,11 @@ impl RpcReadResponse {
                     Err(e) => return Err(e),
                 }
 
-                read += io.read_from_stream(p2p_id.stream_id(), &mut buf[read..])?;
-
-                let prefix_length = rpc_response_context_length(p2p_id.protocol());
-                if read > prefix_length {
-                    // status and any prefix have been read, check for complete length.
+                if read > 0 {
+                    // Error chunks carry no context bytes.
                     let b_start = if buf[0] == 0 {
-                        prefix_length + 1
+                        rpc_response_context_length(p2p_id.protocol()) + 1
                     } else {
-                        // error response
                         1
                     };
 
@@ -130,7 +133,8 @@ impl RpcReadResponse {
                             return Ok(Spin::Next(Self::AllocBody {
                                 app_id,
                                 chunk,
-                                length: length as usize,
+                                length: usize::try_from(length)
+                                    .map_err(|_| StreamError::InvalidRpc)?,
                                 buf,
                                 buf_start: offset,
                                 buf_end: read,
@@ -138,6 +142,9 @@ impl RpcReadResponse {
                             }));
                         }
                     }
+                }
+                if read == buf.len() {
+                    return Err(StreamError::InvalidRpc);
                 }
                 Ok(Spin::Ok(Self::ReadingPrefix { app_id, chunk, buf, read, start }))
             }
@@ -220,6 +227,11 @@ impl RpcReadResponse {
                 mut remaining,
                 start,
             } => {
+                // A zero-length error message completes in `AllocBody`;
+                // reading on would surface the responder's FIN as an error.
+                if remaining == 0 {
+                    return Self::complete(app_id, chunk, reservation);
+                }
                 if decoder.direct_remaining() > 0 {
                     // Uncompressed frame: read its data straight into the tcache.
                     let out = reservation.remaining_buffer()?;
@@ -284,17 +296,8 @@ impl RpcReadResponse {
                     }
                 }
                 if remaining == 0 {
-                    match reservation.into_rpc() {
-                        Rpc::Request(_) => return Err(StreamError::InvalidRpc),
-                        Rpc::Response(rpc_response) => {
-                            silver_log::trace!(?p2p_id, chunk, "response complete");
-                            return Ok(Spin::Ok(Self::Complete {
-                                app_id,
-                                chunk,
-                                msg: rpc_response,
-                            }));
-                        }
-                    }
+                    silver_log::trace!(?p2p_id, chunk, "response complete");
+                    return Self::complete(app_id, chunk, reservation);
                 }
                 Ok(Spin::Next(Self::ReadingBody { app_id, chunk, reservation, remaining, start }))
             }
@@ -434,6 +437,39 @@ mod tests {
                 other => panic!("cap {cap}: expected error response, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn unterminated_length_prefix_is_rejected() {
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::Ping, false);
+        let mut dec = SnappyDecoder::default();
+        let mut wire = vec![0x80; 15];
+        wire[0] = 0;
+        let mut io = WireIo { data: wire, pos: 0, cap: usize::MAX };
+        let state = RpcReadResponse::new(7, 0, Instant::now(), &mut dec);
+        let err =
+            state.spin(&mut io, &p2p_id, Instant::now(), &mut producer, &mut dec).unwrap_err();
+        assert!(matches!(err, StreamError::InvalidRpc), "{err:?}");
+    }
+
+    /// Without the `remaining == 0` check `ReadingBody` waits for bytes the
+    /// responder never sends.
+    #[test]
+    fn zero_length_error_message_completes() {
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::DataColumnSidecarsByRange, false);
+        let mut dec = SnappyDecoder::default();
+        let mut io = WireIo { data: vec![3, 0], pos: 0, cap: usize::MAX };
+        let state = RpcReadResponse::new(7, 0, Instant::now(), &mut dec);
+        let state = state.spin(&mut io, &p2p_id, Instant::now(), &mut producer, &mut dec).unwrap();
+        assert!(
+            matches!(state, RpcReadResponse::Complete {
+                msg: RpcResponse::Error { error: 3, len: 0, .. },
+                ..
+            }),
+            "{state:?}"
+        );
     }
 
     #[test]
