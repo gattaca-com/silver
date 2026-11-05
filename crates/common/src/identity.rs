@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub const PROTOCOL_VERSION: &str = "eth2/1.0.0";
-pub const AGENT_VERSION: &str = "silver/v0.0.1/x86_64-linux";
+pub const AGENT_VERSION: &str = concat!("silver/v", env!("CARGO_PKG_VERSION"), "/x86_64-linux");
 
 /// libp2p signed-envelope domain string for peer records.
 /// <https://github.com/libp2p/specs/blob/master/RFC/0003-routing-records.md>
