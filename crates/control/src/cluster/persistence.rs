@@ -104,11 +104,15 @@ impl Persistence {
     }
 
     pub fn compaction_due(&self) -> bool {
+        self.appended_bytes() >= 16 * 1024 * 1024
+    }
+
+    pub fn appended_bytes(&self) -> u64 {
         #[cfg(target_os = "linux")]
         if let Some(disk) = &self.disk {
-            return disk.appended_bytes() >= 16 * 1024 * 1024;
+            return disk.appended_bytes();
         }
-        false
+        0
     }
 
     pub fn compact(

@@ -5,7 +5,10 @@ use silver_common::{
     MAX_CLUSTER_MESSAGE_BYTES, SLOTS_PER_EPOCH, merkle, ssz_view::SingleAttestationView,
 };
 
-use super::command::{AttestationLockCommand, BlockKey, BlockLockCommand};
+use super::{
+    command::{AttestationLockCommand, BlockKey, BlockLockCommand},
+    metrics::ClusterCounters,
+};
 
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
@@ -272,9 +275,15 @@ impl SlashingLockStore {
         Ok(store)
     }
 
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.locks.iter().map(|bucket| bucket.attestations.len()).sum()
+    }
+
+    pub(super) fn sample(&self) {
+        ClusterCounters::MinimumSlot.set(self.minimum_slot);
+        ClusterCounters::LockedVotes.set(self.len() as u64);
+        ClusterCounters::BlockLocks.set(self.blocks.len() as u64);
+        ClusterCounters::EvictedSources.set(self.evicted_sources.len() as u64);
     }
 
     pub(crate) fn advance_minimum_slot(&mut self, minimum_slot: u64) {

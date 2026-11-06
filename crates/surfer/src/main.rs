@@ -34,7 +34,7 @@ mod search;
 mod sources;
 
 use crate::{
-    app::App,
+    app::{App, Pane},
     flamegraph::Flamegraph,
     render::events::{EventsPane, Theme},
     sources::{
@@ -222,14 +222,8 @@ fn handle_key(app: &mut App, code: KeyCode, app_name: &str) {
         KeyCode::Esc | KeyCode::Backspace if app.drilled_in => app.drilled_in = false,
         KeyCode::Enter if app.pane == app::Pane::Events => app.events.toggle_expand(),
         KeyCode::Enter => app.drilled_in = !app.drilled_in,
-        KeyCode::Tab => {
-            app.pane = app.pane.next();
-            app.drilled_in = false;
-        }
-        KeyCode::BackTab => {
-            app.pane = app.pane.prev();
-            app.drilled_in = false;
-        }
+        KeyCode::Tab => app.cycle_pane(Pane::next),
+        KeyCode::BackTab => app.cycle_pane(Pane::prev),
         KeyCode::Down => app.move_selection(1),
         KeyCode::Up => app.move_selection(-1),
         KeyCode::Left if app.pane == app::Pane::Peers => app.adjust_peers_sort(-1),

@@ -1,5 +1,5 @@
 import { BlockTrace, SlotClock } from './trace.js';
-import { Kind, Stage, TimingChannel } from './wire.js';
+import { ClusterDuty, Kind, Stage, TimingChannel } from './wire.js';
 
 /** Datagram silence after which an instance renders as stale. */
 const STALE_MS = 5000;
@@ -16,6 +16,10 @@ const TRACES_CAP = 64;
 /** `fast:` sources also summed per slot, and the completed slots kept. */
 const SLOT_TOTAL_SOURCES = new Set(['fast:gossip_bytes_recv', 'fast:gossip_bytes_sent']);
 const SLOT_TOTALS_CAP = 64;
+/** About 64 slots of a 150-attestation-per-slot burst. */
+const CLUSTER_COMMITS_CAP = 10000;
+/** Per peer, one record a second for the 4-minute history. */
+const CLUSTER_PEER_HISTORY_LEN = HISTORY_LEN;
 
 /** Per-slot value and rate over consecutive completed buckets, columns
  *  aligned with `ts` (unix seconds). A slot first seen late is null-padded
@@ -188,6 +192,15 @@ export class Instance {
     this.timings = new Map();
     this.timingHistory = new Map();
     this.peers = new Map();
+    /** Raft voters by node id, as this node reports them. */
+    this.clusterPeers = new Map();
+    /** Per voter, its records oldest first; the message counts are
+     *  cumulative since the node started, so rates come from neighbours. */
+    this.clusterPeerHistory = new Map();
+    /** Locally proposed locks as they resolved, oldest first. */
+    this.clusterCommits = [];
+    /** Block locks by slot, kept until that slot's trace opens. */
+    this.blockLocks = new Map();
   }
 
   stale(now) {
@@ -239,6 +252,12 @@ export class Instance {
       if (p.scores && p.scoresNs < floor) p.scores = null;
     }
     return this.peers;
+  }
+
+  liveClusterPeers() {
+    const floor = this.nowNs - PEER_TTL_NS;
+    for (const [id, p] of this.clusterPeers) if (p.seenNs < floor) this.clusterPeers.delete(id);
+    return this.clusterPeers;
   }
 
   peer(id, tsNs) {
@@ -308,6 +327,25 @@ export class Instance {
         break;
       case Kind.Stages:
         for (const e of d.entries) this.applyStage(e);
+        break;
+      case Kind.ClusterPeer:
+        for (const e of d.entries) {
+          const record = { ...e, seenNs: tsNs };
+          this.clusterPeers.set(e.nodeId, record);
+          let history = this.clusterPeerHistory.get(e.nodeId);
+          if (!history) this.clusterPeerHistory.set(e.nodeId, (history = []));
+          if (history.length === CLUSTER_PEER_HISTORY_LEN) history.shift();
+          history.push(record);
+        }
+        break;
+      case Kind.ClusterCommit:
+        for (const e of d.entries) {
+          this.clusterCommits.push({ ...e, seenNs: tsNs });
+          if (e.duty === ClusterDuty.Block) this.applyBlockLock(e);
+        }
+        if (this.clusterCommits.length > CLUSTER_COMMITS_CAP * 1.1) {
+          this.clusterCommits.splice(0, this.clusterCommits.length - CLUSTER_COMMITS_CAP);
+        }
         break;
     }
   }
@@ -379,8 +417,18 @@ export class Instance {
       const base = this.clock ? this.clock.slotStart(e.slot) : e.ts;
       const gloas = this.clock?.isGloas(e.slot) ?? false;
       this.traces.push((trace = new BlockTrace(e.slot, e.root, base, gloas)));
+      const lock = this.blockLocks.get(e.slot);
+      if (lock) trace.setLock(lock, this.clock);
     }
     trace.apply(e);
+  }
+
+  /** The lock resolves before this node's block enters gossip validation,
+   *  so it usually arrives before the trace it belongs to. */
+  applyBlockLock(lock) {
+    if (this.blockLocks.size === TRACES_CAP) this.blockLocks.delete(this.blockLocks.keys().next().value);
+    this.blockLocks.set(lock.slot, lock);
+    for (const trace of this.traces) if (trace.slot === lock.slot) trace.setLock(lock, this.clock);
   }
 }
 

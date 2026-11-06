@@ -101,6 +101,75 @@ pub struct PeerTopic<'a> {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterProgressCode {
+    Follower = 0,
+    Probe = 1,
+    Replicate = 2,
+    Snapshot = 3,
+}
+
+/// The progress and replication fields come from the reporting node's Raft
+/// state, and are only tracked while it leads; the link fields come from its
+/// network tile and are absent until the first link sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterPeer {
+    pub node_id: u64,
+    pub is_leader: bool,
+    pub progress: ClusterProgressCode,
+    pub last_contact_us: Option<u64>,
+    pub match_index: u64,
+    pub next_index: u64,
+    pub inflight: u64,
+    pub raft_rtt_us: Option<u64>,
+    pub messages_out: u64,
+    pub messages_in: u64,
+    pub link: Option<ClusterLink>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterLink {
+    pub connected: bool,
+    pub rtt_us: u64,
+    pub out_queue_len: u64,
+    pub overwrites: u64,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterDutyCode {
+    Attestation = 0,
+    Block = 1,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterOutcomeCode {
+    Accepted = 0,
+    Same = 1,
+    Conflicting = 2,
+    Surrounding = 3,
+    TooOld = 4,
+    Invalid = 5,
+    TimedOut = 6,
+}
+
+/// One locally proposed lock, once committed or timed out. `slot_offset_us`
+/// is from the start of the duty's slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClusterCommit {
+    pub slot: u64,
+    pub slot_offset_us: u64,
+    pub total_us: u64,
+    pub append_us: Option<u64>,
+    pub persist_us: Option<u64>,
+    pub quorum_us: Option<u64>,
+    pub duty: ClusterDutyCode,
+    pub leader_origin: bool,
+    pub outcome: ClusterOutcomeCode,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StageCode {
     Received = 0,
     ColumnRecv = 1,

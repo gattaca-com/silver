@@ -4,37 +4,44 @@ use flux::spine::{SpineAdapter, SpineProducers};
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
-    BroadcastValidation, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic, LocalGossipFailure,
-    LocalGossipResult, LockedProposal, SilverSpine, SilverSpineProducers, TCacheProducer,
-    TCacheReader, TProducer, TRead,
+    BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterDuty, ClusterIn, ClusterMsgIn,
+    ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult, LockedProposal, PeerStats,
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
     block_contents::SignedBlockContents,
     ssz_view::{
         SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
     },
+    ticker::SlotTicker,
 };
 use silver_gossip::GossipHandler;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand,
-    ClusterError, ClusterEvent, LockResult, ProposalId, ProposeError, SlashingAdmission,
-    SlashingLockStore, SlashingProtectionCluster, SlashingProtectionConfig, decode_message,
-    encode_message,
+    ClusterCounters, ClusterError, ClusterEvent, DutyTimers, LockResult, LoopGap, ProposalId,
+    ProposeError, SlashingAdmission, SlashingLockStore, SlashingProtectionCluster,
+    SlashingProtectionConfig, decode_message, encode_message,
 };
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingAttestation {
     request_id: u64,
     command: AttestationLockCommand,
+    received: Instant,
 }
 
 impl PendingAttestation {
-    pub(super) fn new(request_id: u64, subnet: u64, ssz: [u8; SINGLE_ATT_SIZE]) -> Self {
+    pub(super) fn new(
+        request_id: u64,
+        subnet: u64,
+        ssz: [u8; SINGLE_ATT_SIZE],
+        received: Instant,
+    ) -> Self {
         let key = AttestationKey {
             attester_index: SingleAttestationView::attester_index(&ssz),
             slot: SingleAttestationView::slot(&ssz),
         };
-        Self { request_id, command: AttestationLockCommand { key, subnet, ssz } }
+        Self { request_id, command: AttestationLockCommand { key, subnet, ssz }, received }
     }
 }
 
@@ -77,6 +84,7 @@ struct PendingBlock {
     key: BlockKey,
     contents: TRead,
     block: SubmittedBlock,
+    received: Instant,
 }
 
 impl PendingBlock {
@@ -132,6 +140,10 @@ pub(super) struct SlashingProtectionHandler {
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
     pending_blocks: FxHashMap<ProposalId, PendingBlock>,
     wall_slot: u64,
+    clock: Option<SlotTicker>,
+    duty_timers: DutyTimers,
+    loop_gap: LoopGap,
+    last_sample: Instant,
 }
 
 impl SlashingProtectionHandler {
@@ -146,6 +158,9 @@ impl SlashingProtectionHandler {
     ) -> Result<Self, ClusterError> {
         let cluster =
             config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
+        ClusterCounters::Clustered.set(cluster.is_some() as u64);
+        ClusterCounters::FloorLatched.set(0);
+        ClusterCounters::StartupFloorSlot.set(0);
 
         Ok(Self {
             outbound_producer,
@@ -155,7 +170,15 @@ impl SlashingProtectionHandler {
             pending_attestations: FxHashMap::default(),
             pending_blocks: FxHashMap::default(),
             wall_slot: 0,
+            clock: None,
+            duty_timers: DutyTimers::new(),
+            loop_gap: LoopGap::default(),
+            last_sample: now,
         })
+    }
+
+    pub(super) fn set_clock(&mut self, ticker: SlotTicker) {
+        self.clock = Some(ticker);
     }
 
     pub(super) fn on_status(&mut self, head_slot: u64, wall_slot: u64) {
@@ -171,6 +194,8 @@ impl SlashingProtectionHandler {
             let initialized = cluster.set_startup_wall_slot(wall_slot);
             debug_assert!(initialized, "handler and cluster startup floors latch together");
         }
+        ClusterCounters::FloorLatched.set(1);
+        ClusterCounters::StartupFloorSlot.set(wall_slot + 1);
         silver_log::info!(wall_slot, "local slashing protection startup floor latched");
     }
 
@@ -185,8 +210,9 @@ impl SlashingProtectionHandler {
         gossip_handler: &mut GossipHandler,
         inbound_consumer: &mut TCacheReader,
     ) {
+        self.loop_gap.observe(now);
         adapter.consume(|message: ClusterIn, _producers| match message {
-            ClusterIn::Msg(message) => self.handle_message(message, inbound_consumer),
+            ClusterIn::Msg(message) => self.handle_message(message, inbound_consumer, now),
             ClusterIn::NodeUnreachable(id) => {
                 if let Some(cluster) = self.cluster.as_mut() {
                     cluster.report_unreachable(id);
@@ -194,6 +220,33 @@ impl SlashingProtectionHandler {
             }
         });
         self.drive(now, local_gossip, gossip_handler, &mut adapter.producers);
+        self.produce_commits(&mut adapter.producers);
+        self.sample(now, &mut adapter.producers);
+    }
+
+    fn produce_commits(&mut self, producers: &mut SilverSpineProducers) {
+        let Some(cluster) = self.cluster.as_mut() else {
+            return;
+        };
+        for resolved in cluster.drain_resolved() {
+            if let Some(clock) = &self.clock {
+                producers.produce(resolved.commit_record(clock));
+            }
+        }
+    }
+
+    fn sample(&mut self, now: Instant, producers: &mut SilverSpineProducers) {
+        if now.saturating_duration_since(self.last_sample) < CLUSTER_STATS_INTERVAL {
+            return;
+        }
+        self.last_sample = now;
+        self.loop_gap.publish();
+        let Some(cluster) = &self.cluster else {
+            return;
+        };
+        for stats in cluster.peer_stats(now) {
+            producers.produce(PeerStats::Cluster(stats));
+        }
     }
 
     pub(super) fn on_local_attestation(
@@ -205,6 +258,7 @@ impl SlashingProtectionHandler {
         producers: &mut SilverSpineProducers,
     ) {
         if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
+            error.count();
             produce_response(producers, attestation.request_id, Err(admission_failure(error)));
             silver_log::warn!(
                 ?error,
@@ -217,6 +271,7 @@ impl SlashingProtectionHandler {
 
         let Some(cluster) = self.cluster.as_mut() else {
             let result = self.local_locks.apply(&attestation.command);
+            result.count_attestation();
             let response = lock_response(result, LocalGossipFailure::ConflictingAttestation);
             if response.is_err() {
                 produce_response(producers, attestation.request_id, response);
@@ -228,6 +283,7 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
+            self.duty_timers.released(ClusterDuty::Attestation, attestation.received, now);
             local_gossip.submit(
                 attestation.command.local_message(attestation.request_id),
                 now,
@@ -243,6 +299,9 @@ impl SlashingProtectionHandler {
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
             Err(error) => {
+                if let ProposeError::Admission(admission) = &error {
+                    admission.count();
+                }
                 produce_response(producers, attestation.request_id, Err(proposal_failure(&error)));
                 silver_log::warn!(
                     ?error,
@@ -282,6 +341,7 @@ impl SlashingProtectionHandler {
         let signature = *SignedBeaconBlockView::signature(signed_block);
         let command = BlockLockCommand { key, signature };
         if let Err(error) = self.admission.validate(key.slot, self.wall_slot) {
+            error.count();
             produce_response(producers, request_id, Err(admission_failure(error)));
             silver_log::warn!(
                 ?error,
@@ -294,6 +354,7 @@ impl SlashingProtectionHandler {
 
         let Some(cluster) = self.cluster.as_mut() else {
             let result = self.local_locks.apply_block(&command);
+            result.count_block();
             if let Err(failure) = lock_response(result, LocalGossipFailure::ConflictingProposal) {
                 produce_response(producers, request_id, Err(failure));
                 silver_log::warn!(
@@ -304,8 +365,9 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
-            let pending = PendingBlock { request_id, key, contents, block };
+            let pending = PendingBlock { request_id, key, contents, block, received: now };
             let signed_block = pending.signed_block().expect("parsed before its lock");
+            self.duty_timers.released(ClusterDuty::Block, now, now);
             return pending.release_locked(
                 signed_block,
                 now,
@@ -322,10 +384,14 @@ impl SlashingProtectionHandler {
                     key,
                     contents,
                     block,
+                    received: now,
                 });
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
             Err(error) => {
+                if let ProposeError::Admission(admission) = &error {
+                    admission.count();
+                }
                 produce_response(producers, request_id, Err(proposal_failure(&error)));
                 silver_log::warn!(
                     ?error,
@@ -337,7 +403,13 @@ impl SlashingProtectionHandler {
         }
     }
 
-    fn handle_message(&mut self, inbound: ClusterMsgIn, inbound_consumer: &mut TCacheReader) {
+    fn handle_message(
+        &mut self,
+        inbound: ClusterMsgIn,
+        inbound_consumer: &mut TCacheReader,
+        now: Instant,
+    ) {
+        ClusterCounters::MessagesIn.inc();
         let Some(acquired) = inbound_consumer.acquire_strict(inbound.data) else {
             silver_log::warn!(
                 from = inbound.from,
@@ -368,11 +440,13 @@ impl SlashingProtectionHandler {
         let message = match decode_message(bytes) {
             Ok(message) => message,
             Err(error) => {
+                ClusterCounters::InboundInvalid.inc();
                 silver_log::warn!(?error, from = inbound.from, "invalid inbound Raft message");
                 return;
             }
         };
         if message.from != inbound.from {
+            ClusterCounters::InboundInvalid.inc();
             silver_log::warn!(
                 authenticated_from = inbound.from,
                 encoded_from = message.from,
@@ -381,6 +455,7 @@ impl SlashingProtectionHandler {
             return;
         }
         if message.to != cluster.node_id() {
+            ClusterCounters::InboundInvalid.inc();
             silver_log::warn!(
                 from = inbound.from,
                 encoded_to = message.to,
@@ -389,7 +464,7 @@ impl SlashingProtectionHandler {
             );
             return;
         }
-        if let Err(error) = cluster.step(message) {
+        if let Err(error) = cluster.step(message, now) {
             silver_log::warn!(?error, from = inbound.from, "failed to step inbound Raft message");
         }
     }
@@ -408,11 +483,13 @@ impl SlashingProtectionHandler {
         let pending_attestations = &mut self.pending_attestations;
         let pending_blocks = &mut self.pending_blocks;
         let outbound_producer = &mut self.outbound_producer;
+        let duty_timers = &mut self.duty_timers;
         let result = cluster.spin(now, self.wall_slot, |event| match event {
             ClusterEvent::SendRaftMessage(message) => {
                 let to = message.to;
                 match encode_message(message, outbound_producer) {
                     Ok(data) => {
+                        ClusterCounters::MessagesOut.inc();
                         producers.cluster_outbound.produce(&ClusterMsgOut { to, data }.into());
                     }
                     Err(error) => {
@@ -441,12 +518,14 @@ impl SlashingProtectionHandler {
                     );
                     return;
                 }
+                decision.count();
                 let response = decision_response(
                     decision.admission,
                     decision.result,
                     LocalGossipFailure::ConflictingAttestation,
                 );
                 if response.is_ok() {
+                    duty_timers.released(ClusterDuty::Attestation, attestation.received, now);
                     local_gossip.submit(
                         decision.command.local_message(attestation.request_id),
                         now,
@@ -486,6 +565,7 @@ impl SlashingProtectionHandler {
                     return;
                 }
                 let slot = block.key.slot;
+                decision.count();
                 let response = decision_response(
                     decision.admission,
                     decision.result,
@@ -515,6 +595,7 @@ impl SlashingProtectionHandler {
                     );
                     return;
                 };
+                duty_timers.released(ClusterDuty::Block, block.received, now);
                 block.release_locked(bytes, now, local_gossip, gossip_handler, producers);
             }
             ClusterEvent::ProposalTimedOut(proposal_id) => {
@@ -884,7 +965,7 @@ mod tests {
         fn submit_ssz(&mut self, request_id: u64, ssz: [u8; SINGLE_ATT_SIZE], now: Instant) {
             let Harness { local_gossip, gossip, adapter, .. } = &mut self.harness;
             self.handler.on_local_attestation(
-                PendingAttestation::new(request_id, 0, ssz),
+                PendingAttestation::new(request_id, 0, ssz, now),
                 now,
                 local_gossip,
                 gossip,
@@ -1117,7 +1198,7 @@ mod tests {
 
         let mut ssz = [0; SINGLE_ATT_SIZE];
         ssz[16..24].copy_from_slice(&11u64.to_le_bytes());
-        let attestation = PendingAttestation::new(1, 0, ssz);
+        let attestation = PendingAttestation::new(1, 0, ssz, now);
         handler.on_local_attestation(
             attestation,
             now,

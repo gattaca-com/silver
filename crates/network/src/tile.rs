@@ -14,9 +14,9 @@ use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
 use silver_common::{
-    BeaconStateEvent, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn, GossipMsgOut,
-    IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOffence, RpcOutbound,
-    SLOTS_PER_EPOCH, SilverSpine, TCacheError,
+    BeaconStateEvent, CLUSTER_STATS_INTERVAL, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipMsgIn,
+    GossipMsgOut, IngestionTime, P2pSend, PeerControl, PeerEvent, PeerStats, RpcOffence,
+    RpcOutbound, SLOTS_PER_EPOCH, SilverSpine, TCacheError,
 };
 use silver_discovery::{DiscV5, Discovery, DiscoveryEvent};
 
@@ -65,6 +65,7 @@ impl ClusterSendFailures {
 pub struct NetworkTile {
     inner: NetworkTileInner<DiscV5>,
     last_peer_stats: Instant,
+    last_cluster_stats: Instant,
     last_fork_epoch: Option<u64>,
     cluster_send_failures: ClusterSendFailures,
 }
@@ -82,6 +83,7 @@ impl NetworkTile {
         Ok(Self {
             inner,
             last_peer_stats: Instant::now(),
+            last_cluster_stats: Instant::now(),
             last_fork_epoch: None,
             cluster_send_failures: ClusterSendFailures::default(),
         })
@@ -164,6 +166,11 @@ impl NetworkTile {
         adapter.consume(|cluster_event: ClusterMsgOut, producers| {
             let result = self.inner.enqueue_cluster_out(cluster_event);
             self.cluster_send_failures.record(cluster_event.to, &result);
+            match result {
+                SendResult::Ok => {}
+                SendResult::Dropped(_) => NetworkCounters::ClusterOutboundOverwritten.inc(),
+                _ => NetworkCounters::ClusterOutboundSendFailed.inc(),
+            }
             if !matches!(result, SendResult::Ok) {
                 producers
                     .cluster_inbound
@@ -175,6 +182,13 @@ impl NetworkTile {
             self.last_peer_stats = now;
             self.inner.p2p_endpoint.sample_stats(now, PEER_STATS_BATCH, &mut |stats| {
                 adapter.produce(PeerStats::P2p(stats));
+            });
+        }
+
+        if now.duration_since(self.last_cluster_stats) >= CLUSTER_STATS_INTERVAL {
+            self.last_cluster_stats = now;
+            self.inner.p2p_endpoint.sample_cluster_links(&self.inner.context, &mut |stats| {
+                adapter.produce(PeerStats::ClusterLink(stats));
             });
         }
 

@@ -3,6 +3,7 @@ import { Fleet } from './state.js';
 import * as events from './events.js';
 import * as flow from './flow.js';
 import * as gossip from './gossip.js';
+import * as cluster from './cluster.js';
 import * as home from './home.js';
 import * as peers from './peers.js';
 
@@ -13,7 +14,7 @@ const RECONNECT_MS = 2000;
 /** A relay that predates the replay marker never sends it. */
 const REPLAY_TIMEOUT_MS = 5000;
 
-const PANES = { home, events, peers, gossip, flow };
+const PANES = { home, events, peers, cluster, gossip, flow };
 /** Per-pane view state (selected instance, sort, expanded rows); survives
  *  re-renders and reconnects. */
 const ui = Object.fromEntries(Object.keys(PANES).map((p) => [p, {}]));
@@ -24,9 +25,12 @@ let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'home';
 const root = document.getElementById('pane');
 const status = document.getElementById('status');
 
+const shown = (pane) => PANES[pane].available?.(fleet) ?? true;
+
 function renderTabs() {
   for (const tab of document.querySelectorAll('nav [data-pane]')) {
     tab.classList.toggle('active', tab.dataset.pane === active);
+    tab.hidden = !shown(tab.dataset.pane);
   }
 }
 
@@ -41,6 +45,11 @@ let replaying = true;
  *  old sections and is restored after it. */
 function render() {
   if (replaying) return;
+  if (!shown(active)) {
+    active = 'home';
+    history.replaceState(null, '', '#home');
+  }
+  renderTabs();
   lastRender = performance.now();
   const y = window.scrollY;
   const xs = [...root.querySelectorAll('section')].map((s) => s.scrollLeft);

@@ -77,3 +77,76 @@ Query the same host, e.g. over its HTTP interface (port 8123 by default).
    ```
 
 4. Correlate with `counters` and `block_events` for the same slots.
+
+## Cluster alerts
+
+These queries watch the `cluster` component. Nothing in this repository runs
+them; wire them into whatever alerting the deployment uses. Each returns one
+row per node that should alert, so an empty result means healthy.
+
+A `counters` row exists only for a slot where the value moved. The current
+value of a gauge is therefore its newest row, `argMax(value, slot)`. Event
+counters are summed from `delta`.
+
+Proposals timed out in at least 3 of the last 25 slots (about 5 minutes):
+
+```sql
+SELECT meta_client_name, count() AS slots, sum(delta) AS timeouts
+FROM counters
+WHERE component = 'cluster' AND name = 'ProposalsTimedOut' AND delta > 0
+  AND slot_start_date_time > now() - INTERVAL 5 MINUTE
+GROUP BY meta_client_name
+HAVING slots >= 3
+```
+
+Raft processing has stopped (`Failed` is 1). It resets to 0 on restart:
+
+```sql
+SELECT meta_client_name, argMax(value, slot) AS failed
+FROM counters
+WHERE component = 'cluster' AND name = 'Failed'
+GROUP BY meta_client_name
+HAVING failed = 1
+```
+
+More than 3 leader changes in the last hour. Each node counts the changes it
+sees, so a cluster-wide election shows on every node:
+
+```sql
+SELECT meta_client_name, sum(delta) AS changes
+FROM counters
+WHERE component = 'cluster' AND name = 'LeaderChanges'
+  AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+HAVING changes > 3
+```
+
+Any conflicting or surrounding lock, for attestations or blocks. Any of them
+means two signers exist for one validator:
+
+```sql
+SELECT meta_client_name, name, sum(delta) AS locks, min(slot) AS first_slot
+FROM counters
+WHERE component = 'cluster'
+  AND name IN ('AttestationLockConflicting', 'AttestationLockSurrounding', 'BlockLockConflicting')
+  AND delta > 0 AND slot_start_date_time > now() - INTERVAL 15 MINUTE
+GROUP BY meta_client_name, name
+```
+
+The startup floor has been unlatched for more than 5 minutes on a live node.
+The node refuses all duties until it latches. A node that has never latched has
+no `FloorLatched` row at all, so liveness comes from `CommitIndex`, which moves
+every slot:
+
+```sql
+SELECT meta_client_name,
+       argMaxIf(value, slot, name = 'FloorLatched') AS latched,
+       maxIf(slot_start_date_time, name = 'FloorLatched') AS latched_changed,
+       maxIf(slot_start_date_time, name = 'CommitIndex') AS last_commit
+FROM counters
+WHERE component = 'cluster' AND name IN ('FloorLatched', 'CommitIndex')
+  AND slot_start_date_time > now() - INTERVAL 1 DAY
+GROUP BY meta_client_name
+HAVING last_commit > now() - INTERVAL 2 MINUTE
+   AND latched = 0 AND latched_changed < now() - INTERVAL 5 MINUTE
+```

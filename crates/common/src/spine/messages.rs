@@ -1778,6 +1778,94 @@ pub enum PeerStats {
     P2p(P2pConnectionStats),
     Scores(PeerScores),
     Topic(PeerTopicScores),
+    Cluster(ClusterPeerStats),
+    ClusterLink(ClusterLinkStats),
+}
+
+pub const CLUSTER_STATS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Only a leader tracks replication, so a follower reports `Follower`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
+#[repr(u8)]
+pub enum ClusterProgress {
+    Follower,
+    Probe,
+    Replicate,
+    Snapshot,
+}
+
+/// A Raft voter as the reporting node's Raft state sees it.
+#[derive(Clone, Copy, Debug, TypeHash)]
+#[repr(C)]
+pub struct ClusterPeerStats {
+    pub node_id: u64,
+    pub is_leader: bool,
+    /// Age of the newest message from this peer; `None` before the first.
+    #[type_hash(literal = "Option<Duration>")]
+    pub last_contact: Option<Duration>,
+    pub progress: ClusterProgress,
+    pub match_index: u64,
+    pub next_index: u64,
+    pub inflight: u64,
+    /// Heartbeat to its response; only a leader sends heartbeats.
+    #[type_hash(literal = "Option<Duration>")]
+    pub raft_rtt: Option<Duration>,
+    pub messages_out: u64,
+    pub messages_in: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
+#[repr(u8)]
+pub enum ClusterDuty {
+    Attestation,
+    Block,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeHash)]
+#[repr(u8)]
+pub enum ClusterOutcome {
+    Accepted,
+    Same,
+    Conflicting,
+    Surrounding,
+    TooOld,
+    Invalid,
+    TimedOut,
+}
+
+/// One locally proposed lock, once committed or timed out. The stages split
+/// `total`: into this node's Raft log, then onto its journal, then committed
+/// and applied. A stage not reached before a timeout is `None`.
+#[derive(Clone, Copy, Debug, TypeHash)]
+#[repr(C)]
+pub struct ClusterCommit {
+    pub slot: u64,
+    #[type_hash(literal = "Duration")]
+    pub slot_offset: Duration,
+    #[type_hash(literal = "Duration")]
+    pub total: Duration,
+    #[type_hash(literal = "Option<Duration>")]
+    pub append: Option<Duration>,
+    #[type_hash(literal = "Option<Duration>")]
+    pub persist: Option<Duration>,
+    #[type_hash(literal = "Option<Duration>")]
+    pub quorum: Option<Duration>,
+    pub duty: ClusterDuty,
+    pub leader_origin: bool,
+    pub outcome: ClusterOutcome,
+}
+
+/// A Raft voter as the reporting node's network tile sees it.
+#[derive(Clone, Copy, Debug, TypeHash)]
+#[repr(C)]
+pub struct ClusterLinkStats {
+    pub node_id: u64,
+    pub connected: bool,
+    #[type_hash(literal = "Duration")]
+    pub rtt: Duration,
+    pub out_queue_len: u64,
+    /// Messages the full cluster stream queue evicted, over this connection.
+    pub overwrites: u64,
 }
 
 /// Fixed-size copy of an identify user-agent, sized to match

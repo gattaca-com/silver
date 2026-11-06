@@ -3,7 +3,7 @@ use std::{fs, io, path::Path, slice, sync::atomic::AtomicU64};
 use silver_beacon_state::BeaconStateCounters;
 use silver_columns::DataColumnCounters;
 use silver_common::{TCacheCounters, metrics::mmap_readonly};
-use silver_control::ControlCounters;
+use silver_control::{ClusterCounters, ControlCounters};
 use silver_network::NetworkCounters;
 use silver_peer::PeerCounters;
 use silver_storage::StorageCounters;
@@ -12,6 +12,7 @@ use silver_storage::StorageCounters;
 pub fn counter_names(group: &str) -> Option<&'static [&'static str]> {
     match group {
         "beacon_state" => Some(BeaconStateCounters::NAMES),
+        "cluster" => Some(ClusterCounters::NAMES),
         "control" => Some(ControlCounters::NAMES),
         "storage" => Some(StorageCounters::NAMES),
         "columns" => Some(DataColumnCounters::NAMES),

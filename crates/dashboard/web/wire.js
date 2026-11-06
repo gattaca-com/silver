@@ -20,6 +20,8 @@ export const Kind = {
   PeerTopic: 11,
   Stages: 12,
   CounterChanges: 13,
+  ClusterPeer: 14,
+  ClusterCommit: 15,
 };
 
 export const SourceClass = { Counters: 0, TCache: 1, Timing: 2, Tile: 3 };
@@ -38,6 +40,10 @@ export const Stage = {
 export const BLOCK_SOURCE = ['gossip', 'rpc'];
 export const COLUMN_ORIGIN = ['gossip', 'rpc', 'el', 'assembly'];
 export const EL_VERDICT = ['valid', 'invalid', 'syncing', 'accepted'];
+export const CLUSTER_PROGRESS = ['follower', 'probe', 'replicate', 'snapshot'];
+export const ClusterDuty = { Attestation: 0, Block: 1 };
+export const CLUSTER_DUTY = ['attestation', 'block'];
+export const CLUSTER_OUTCOME = ['accepted', 'same', 'conflicting', 'surrounding', 'too old', 'invalid', 'timed out'];
 
 const PEER_LEN = 48;
 const USER_AGENT_MAX = 64;
@@ -243,6 +249,41 @@ export function decode(buf) {
         e.stage = r.u8();
         e.detail = r.u8();
         r.skip(6);
+        return e;
+      });
+      break;
+    case Kind.ClusterPeer:
+      d.entries = r.entries(() => {
+        const e = { nodeId: r.u64(), isLeader: r.u8() === 1, progress: r.u8() };
+        const hasLink = r.u8() === 1;
+        const connected = r.u8() === 1;
+        r.skip(4);
+        e.lastContactUs = r.u64();
+        e.matchIndex = r.u64();
+        e.nextIndex = r.u64();
+        e.inflight = r.u64();
+        e.raftRttUs = r.u64();
+        e.messagesOut = r.u64();
+        e.messagesIn = r.u64();
+        const link = { connected, rttUs: r.u64(), outQueueLen: r.u64(), overwrites: r.u64() };
+        e.link = hasLink ? link : null;
+        return e;
+      });
+      break;
+    case Kind.ClusterCommit:
+      d.entries = r.entries(() => {
+        const e = {
+          slot: r.u64(),
+          offsetUs: r.u64(),
+          totalUs: r.u64(),
+          appendUs: r.u64(),
+          persistUs: r.u64(),
+          quorumUs: r.u64(),
+        };
+        e.duty = r.u8();
+        e.leaderOrigin = r.u8() === 1;
+        e.outcome = r.u8();
+        r.skip(5);
         return e;
       });
       break;

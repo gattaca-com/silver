@@ -11,12 +11,16 @@ use std::{
 
 use flux::spine::SpineAdapter;
 use flux_profiler::published_pid;
-use silver_common::{APP_NAME, Nanos, NodeChain, PeerStats, SilverSpine};
+use silver_common::{APP_NAME, ClusterCommit, Nanos, NodeChain, PeerStats, SilverSpine};
 use silver_log::info;
 use silver_observe_wire::{Encoder, Header, Kind};
 use silver_stages::StageEvent;
 
-use crate::exporter::{peers::LatestPeerStats, sources::ExportSources, streams::stage_record};
+use crate::exporter::{
+    peers::LatestPeerStats,
+    sources::ExportSources,
+    streams::{cluster_commit_record, stage_record},
+};
 
 mod peers;
 mod sources;
@@ -109,6 +113,12 @@ impl Exporter {
     pub fn spin(&mut self, adapter: &mut SpineAdapter<SilverSpine>) {
         self.sources.drain();
         adapter.consume(|stats: PeerStats, _| self.peers.record(&stats));
+        let Self { encoder, sink, .. } = self;
+        adapter.consume(|commit: ClusterCommit, _| {
+            encoder.cluster_commit(Nanos::now().0, &cluster_commit_record(&commit), &mut |d| {
+                sink.send(d)
+            });
+        });
 
         let now = Nanos::now();
 
@@ -175,6 +185,8 @@ impl Exporter {
             peer_p2p_bps = rate(Kind::PeerP2p),
             peer_scores_bps = rate(Kind::PeerScores),
             peer_topic_bps = rate(Kind::PeerTopic),
+            cluster_peer_bps = rate(Kind::ClusterPeer),
+            cluster_commit_bps = rate(Kind::ClusterCommit),
             stage_bps = rate(Kind::Stages),
             descriptor_bps = rate(Kind::Sources) +
                 rate(Kind::SlotNames) +

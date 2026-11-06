@@ -45,25 +45,31 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
     let mut cluster = memory(now, vec![1, 2, 3]);
     cluster.persistence.paused = true;
     cluster
-        .step(Message {
-            msg_type: MessageType::MsgRequestVote,
-            from: 2,
-            to: 1,
-            term: 1,
-            ..Message::default()
-        })
+        .step(
+            Message {
+                msg_type: MessageType::MsgRequestVote,
+                from: 2,
+                to: 1,
+                term: 1,
+                ..Message::default()
+            },
+            now,
+        )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
     assert!(cluster.persistence.is_pending());
 
     cluster
-        .step(Message {
-            msg_type: MessageType::MsgHeartbeat,
-            from: 3,
-            to: 1,
-            term: 2,
-            ..Message::default()
-        })
+        .step(
+            Message {
+                msg_type: MessageType::MsgHeartbeat,
+                from: 3,
+                to: 1,
+                term: 2,
+                ..Message::default()
+            },
+            now,
+        )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
     assert_eq!(cluster.node.as_ref().unwrap().raft.term, 2);
@@ -119,7 +125,7 @@ fn persistence_failure_stops_votes_proposals_and_committed_decisions() {
     assert!(!cluster.is_leader());
     assert_eq!(cluster.pending_proposals(), 0);
     assert!(matches!(cluster.campaign(), Err(ClusterError::Failed)));
-    assert!(matches!(cluster.step(Message::default()), Err(ClusterError::Failed)));
+    assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::Failed)));
     assert!(matches!(
         cluster.propose_attestation(command(10, 2), 10, now),
         Err(ProposeError::Failed)
@@ -224,7 +230,7 @@ mod disk {
             SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(99);
         assert!(matches!(cluster.campaign(), Err(ClusterError::NotReady)));
-        assert!(matches!(cluster.step(Message::default()), Err(ClusterError::NotReady)));
+        assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::NotReady)));
         assert!(matches!(
             cluster.propose_attestation(command(100, 1), 100, now),
             Err(ProposeError::NotReady)
@@ -269,21 +275,24 @@ mod disk {
         drain(&mut cluster, now, 10);
         let context = ProposalId { origin_node_id: 2, sequence: 1, incarnation: [1; 16] }.encode();
         cluster
-            .step(Message {
-                msg_type: MessageType::MsgAppend,
-                from: 2,
-                to: 1,
-                term: 1,
-                entries: vec![Entry {
-                    index: 1,
+            .step(
+                Message {
+                    msg_type: MessageType::MsgAppend,
+                    from: 2,
+                    to: 1,
                     term: 1,
-                    context: context.clone().into(),
-                    data: ReplicatedCommand::Lock(command(10, 1)).encode().into(),
-                    ..Entry::default()
-                }]
-                .into(),
-                ..Message::default()
-            })
+                    entries: vec![Entry {
+                        index: 1,
+                        term: 1,
+                        context: context.clone().into(),
+                        data: ReplicatedCommand::Lock(command(10, 1)).encode().into(),
+                        ..Entry::default()
+                    }]
+                    .into(),
+                    ..Message::default()
+                },
+                now,
+            )
             .unwrap();
         drain(&mut cluster, now, 10);
         assert_eq!(cluster.state.len(), 0);
@@ -296,22 +305,25 @@ mod disk {
         assert_eq!(cluster.state.len(), 0);
         assert_eq!(cluster.node.as_ref().unwrap().raft.raft_log.last_index(), 1);
         cluster
-            .step(Message {
-                msg_type: MessageType::MsgAppend,
-                from: 2,
-                to: 1,
-                term: 2,
-                commit: 1,
-                entries: vec![Entry {
-                    index: 1,
+            .step(
+                Message {
+                    msg_type: MessageType::MsgAppend,
+                    from: 2,
+                    to: 1,
                     term: 2,
-                    context: context.into(),
-                    data: ReplicatedCommand::Lock(command(10, 2)).encode().into(),
-                    ..Entry::default()
-                }]
-                .into(),
-                ..Message::default()
-            })
+                    commit: 1,
+                    entries: vec![Entry {
+                        index: 1,
+                        term: 2,
+                        context: context.into(),
+                        data: ReplicatedCommand::Lock(command(10, 2)).encode().into(),
+                        ..Entry::default()
+                    }]
+                    .into(),
+                    ..Message::default()
+                },
+                now,
+            )
             .unwrap();
         drain(&mut cluster, now, 10);
         assert_eq!(cluster.state.len(), 1);
@@ -383,7 +395,7 @@ mod disk {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message)
+                    .step(message, now)
                     .unwrap();
             }
         };

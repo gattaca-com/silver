@@ -1,10 +1,17 @@
 //! Wire records for spine-side sources: peer stats and per-block stage
 //! events. Stage events come from the tile's one `StageReader`, shared with
 //! the other sinks.
+use std::time::Duration;
+
 use silver_common::{
-    BlockSource, ColumnOrigin, P2pConnectionStats, PeerScores as NodePeerScores, PeerTopicScores,
+    BlockSource, ClusterCommit as NodeClusterCommit, ClusterDuty, ClusterLinkStats, ClusterOutcome,
+    ClusterPeerStats, ClusterProgress, ColumnOrigin, P2pConnectionStats,
+    PeerScores as NodePeerScores, PeerTopicScores,
 };
-use silver_observe_wire::{PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord};
+use silver_observe_wire::{
+    ClusterCommit, ClusterDutyCode, ClusterLink, ClusterOutcomeCode, ClusterPeer,
+    ClusterProgressCode, PeerP2p, PeerScores, PeerTopic, StageCode, StageRecord,
+};
 use silver_stages::{Stage, StageEvent};
 
 pub(super) fn p2p_record(s: &P2pConnectionStats) -> PeerP2p<'_> {
@@ -21,6 +28,61 @@ pub(super) fn p2p_record(s: &P2pConnectionStats) -> PeerP2p<'_> {
         rx_datagrams: s.rx_datagrams,
         tx_datagrams: s.tx_datagrams,
         streams: s.streams,
+    }
+}
+
+pub(super) fn cluster_peer_record(
+    s: &ClusterPeerStats,
+    link: Option<&ClusterLinkStats>,
+) -> ClusterPeer {
+    ClusterPeer {
+        node_id: s.node_id,
+        is_leader: s.is_leader,
+        progress: match s.progress {
+            ClusterProgress::Follower => ClusterProgressCode::Follower,
+            ClusterProgress::Probe => ClusterProgressCode::Probe,
+            ClusterProgress::Replicate => ClusterProgressCode::Replicate,
+            ClusterProgress::Snapshot => ClusterProgressCode::Snapshot,
+        },
+        last_contact_us: s.last_contact.map(|age| age.as_micros() as u64),
+        match_index: s.match_index,
+        next_index: s.next_index,
+        inflight: s.inflight,
+        raft_rtt_us: s.raft_rtt.map(|rtt| rtt.as_micros() as u64),
+        messages_out: s.messages_out,
+        messages_in: s.messages_in,
+        link: link.map(|link| ClusterLink {
+            connected: link.connected,
+            rtt_us: link.rtt.as_micros() as u64,
+            out_queue_len: link.out_queue_len,
+            overwrites: link.overwrites,
+        }),
+    }
+}
+
+pub(super) fn cluster_commit_record(c: &NodeClusterCommit) -> ClusterCommit {
+    let us = |d: Duration| d.as_micros() as u64;
+    ClusterCommit {
+        slot: c.slot,
+        slot_offset_us: us(c.slot_offset),
+        total_us: us(c.total),
+        append_us: c.append.map(us),
+        persist_us: c.persist.map(us),
+        quorum_us: c.quorum.map(us),
+        duty: match c.duty {
+            ClusterDuty::Attestation => ClusterDutyCode::Attestation,
+            ClusterDuty::Block => ClusterDutyCode::Block,
+        },
+        leader_origin: c.leader_origin,
+        outcome: match c.outcome {
+            ClusterOutcome::Accepted => ClusterOutcomeCode::Accepted,
+            ClusterOutcome::Same => ClusterOutcomeCode::Same,
+            ClusterOutcome::Conflicting => ClusterOutcomeCode::Conflicting,
+            ClusterOutcome::Surrounding => ClusterOutcomeCode::Surrounding,
+            ClusterOutcome::TooOld => ClusterOutcomeCode::TooOld,
+            ClusterOutcome::Invalid => ClusterOutcomeCode::Invalid,
+            ClusterOutcome::TimedOut => ClusterOutcomeCode::TimedOut,
+        },
     }
 }
 

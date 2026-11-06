@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     error::Error,
     fmt, io, mem,
     time::{Duration, Instant},
@@ -9,6 +8,7 @@ use raft::{
     Config, RawNode, SnapshotStatus, StateRole,
     eraftpb::{Entry, EntryType, Message, MessageType},
 };
+use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
 #[cfg(any(target_os = "linux", test))]
 use super::persistence::RecoveredStorage;
@@ -18,6 +18,9 @@ use super::{
         AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
     },
     lock_store::{LockResult, SlashingLockStore},
+    metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
+    peers::ClusterPeers,
+    pending::{PendingProposal, PendingProposals},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
     snapshot_transfers::SnapshotTransfers,
@@ -131,7 +134,7 @@ impl ProposalId {
         encoded
     }
 
-    fn decode(encoded: &[u8]) -> Result<Self, usize> {
+    pub(super) fn decode(encoded: &[u8]) -> Result<Self, usize> {
         if encoded.len() != PROPOSAL_CONTEXT_LEN && encoded.len() != 16 {
             return Err(encoded.len());
         }
@@ -299,16 +302,14 @@ pub struct SlashingProtectionCluster {
     incarnation: [u8; 16],
     next_proposal_sequence: u64,
     next_tick: Instant,
-    pending_proposals: VecDeque<PendingProposal>,
+    pending_proposals: PendingProposals,
+    resolved: Vec<ResolvedProposal>,
+    persistence_started: Option<Instant>,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingProposal {
-    id: ProposalId,
-    deadline: Instant,
+    metrics: ClusterMetrics,
+    peers: ClusterPeers,
 }
 
 impl SlashingProtectionCluster {
@@ -331,6 +332,7 @@ impl SlashingProtectionCluster {
         incarnation[0] |= 1; // Zero is reserved for legacy proposal contexts.
         Self {
             node: None,
+            peers: ClusterPeers::new(config.node_id, &config.voters),
             config,
             persistence,
             failed: false,
@@ -339,10 +341,13 @@ impl SlashingProtectionCluster {
             incarnation,
             next_proposal_sequence: 1,
             next_tick,
-            pending_proposals: VecDeque::new(),
+            pending_proposals: PendingProposals::default(),
+            resolved: Vec::new(),
+            persistence_started: None,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
+            metrics: ClusterMetrics::new(),
         }
     }
 
@@ -413,11 +418,24 @@ impl SlashingProtectionCluster {
 
     /// Deliver one decoded message received from another member of this Raft
     /// group.
-    pub fn step(&mut self, message: Message) -> Result<(), ClusterError> {
+    pub fn step(&mut self, message: Message, now: Instant) -> Result<(), ClusterError> {
         if self.failed {
             return Err(ClusterError::Failed);
         }
+        self.peers.heard(&message, now);
         self.node.as_mut().ok_or(ClusterError::NotReady)?.step(message).map_err(ClusterError::Raft)
+    }
+
+    pub fn peer_stats(&self, now: Instant) -> impl Iterator<Item = ClusterPeerStats> {
+        self.node
+            .as_ref()
+            .filter(|_| !self.failed)
+            .into_iter()
+            .flat_map(move |node| self.peers.stats(node, now))
+    }
+
+    pub(crate) fn drain_resolved(&mut self) -> impl Iterator<Item = ResolvedProposal> + '_ {
+        self.resolved.drain(..)
     }
 
     pub fn report_unreachable(&mut self, node_id: u64) {
@@ -442,7 +460,14 @@ impl SlashingProtectionCluster {
         wall_slot: u64,
         now: Instant,
     ) -> Result<ProposalId, ProposeError> {
-        self.propose(command.key.slot, ReplicatedCommand::Lock(command), wall_slot, now)
+        let slot = command.key.slot;
+        self.propose(
+            slot,
+            ClusterDuty::Attestation,
+            ReplicatedCommand::Lock(command),
+            wall_slot,
+            now,
+        )
     }
 
     pub fn propose_block(
@@ -451,12 +476,20 @@ impl SlashingProtectionCluster {
         wall_slot: u64,
         now: Instant,
     ) -> Result<ProposalId, ProposeError> {
-        self.propose(command.key.slot, ReplicatedCommand::BlockLock(command), wall_slot, now)
+        let slot = command.key.slot;
+        self.propose(
+            slot,
+            ClusterDuty::Block,
+            ReplicatedCommand::BlockLock(command),
+            wall_slot,
+            now,
+        )
     }
 
     fn propose(
         &mut self,
         slot: u64,
+        duty: ClusterDuty,
         command: ReplicatedCommand,
         wall_slot: u64,
         now: Instant,
@@ -487,17 +520,20 @@ impl SlashingProtectionCluster {
         let deadline =
             now.checked_add(self.config.proposal_timeout).ok_or(ProposeError::DeadlineOverflow)?;
 
-        debug_assert!(
-            self.pending_proposals.back().is_none_or(|pending| pending.deadline <= deadline),
-            "proposal timestamps must be monotonic"
-        );
-
         self.unsubmitted_entries.push(Entry {
             context: proposal_id.encode().into(),
             data: command.encode().into(),
             ..Entry::default()
         });
-        self.pending_proposals.push_back(PendingProposal { id: proposal_id, deadline });
+        self.pending_proposals.push(PendingProposal::new(
+            proposal_id,
+            slot,
+            duty,
+            self.is_leader(),
+            now,
+            deadline,
+        ));
+        ClusterCounters::ProposalsSubmitted.inc();
 
         Ok(proposal_id)
     }
@@ -519,6 +555,7 @@ impl SlashingProtectionCluster {
         let result = self.drive(now, wall_slot, &mut emit);
         if result.is_err() {
             self.failed = true;
+            ClusterCounters::Failed.set(1);
             self.pending_proposals.clear();
             self.pending_minimum_slot = None;
         }
@@ -538,8 +575,10 @@ impl SlashingProtectionCluster {
         if let Some(node) = self.node.as_mut() {
             self.snapshot_transfers.expire(node, now);
         }
-        self.submit_entries(emit)?;
-        self.tick_elapsed(now);
+        self.submit_entries(now, emit)?;
+        if self.tick_elapsed(now) {
+            self.sample();
+        }
         self.maybe_propose_minimum_slot(wall_slot)?;
 
         while !self.persistence.is_pending() && self.node.as_ref().is_some_and(RawNode::has_ready) {
@@ -547,10 +586,10 @@ impl SlashingProtectionCluster {
             self.poll_persistence(now, wall_slot, emit)?;
         }
 
-        self.maybe_compact()
+        self.maybe_compact(now)
     }
 
-    fn maybe_compact(&mut self) -> Result<(), ClusterError> {
+    fn maybe_compact(&mut self, now: Instant) -> Result<(), ClusterError> {
         if self.persistence.is_pending() {
             return Ok(());
         }
@@ -568,12 +607,23 @@ impl SlashingProtectionCluster {
         let data = self.state.encode_snapshot().map_err(ClusterError::Snapshot)?;
         let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
         let entries = node.store().suffix(applied)?;
-        self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)
+        self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)?;
+        self.persistence_started = Some(now);
+        Ok(())
     }
 
-    fn tick_elapsed(&mut self, now: Instant) {
-        let Some(node) = self.node.as_mut() else {
+    fn sample(&self) {
+        let Some(node) = &self.node else {
             return;
+        };
+        self.metrics.sample_log(node, self.pending_proposals.len());
+        self.state.sample();
+        ClusterCounters::JournalBytes.set(self.persistence.appended_bytes());
+    }
+
+    fn tick_elapsed(&mut self, now: Instant) -> bool {
+        let Some(node) = self.node.as_mut() else {
+            return false;
         };
         let mut ticks = 0;
         while now >= self.next_tick && ticks < MAX_ELAPSED_TICKS_PER_SPIN {
@@ -587,11 +637,16 @@ impl SlashingProtectionCluster {
             // obsolete heartbeat intervals in one invocation.
             self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         }
+        ticks > 0
     }
 
     /// One proposal message per spin, so a burst of local requests costs a
     /// follower one forwarded message and the leader one append per peer.
-    fn submit_entries(&mut self, emit: &mut impl FnMut(ClusterEvent)) -> Result<(), ClusterError> {
+    fn submit_entries(
+        &mut self,
+        now: Instant,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) -> Result<(), ClusterError> {
         if self.unsubmitted_entries.is_empty() {
             return Ok(());
         }
@@ -604,15 +659,15 @@ impl SlashingProtectionCluster {
         match node.step(message) {
             Ok(()) => Ok(()),
             Err(raft::Error::ProposalDropped) => {
+                ClusterCounters::ProposalBatchesDropped.inc();
                 silver_log::warn!(
                     count,
                     leader_id = node.raft.leader_id,
                     "Raft dropped local proposals"
                 );
                 let first_dropped = self.next_proposal_sequence - count as u64;
-                while self.pending_proposals.back().is_some_and(|p| p.id.sequence >= first_dropped)
-                {
-                    let proposal = self.pending_proposals.pop_back().expect("back exists");
+                while let Some(proposal) = self.pending_proposals.pop_from_sequence(first_dropped) {
+                    self.resolved.push(proposal.resolve(now, ClusterOutcome::TimedOut));
                     emit(ClusterEvent::ProposalTimedOut(proposal.id));
                 }
                 Ok(())
@@ -650,7 +705,14 @@ impl SlashingProtectionCluster {
         emit: &mut impl FnMut(ClusterEvent),
     ) -> Result<(), ClusterError> {
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        self.metrics.observe_role(node);
         let mut ready = node.ready();
+        self.pending_proposals.appended(
+            ready.entries(),
+            self.config.node_id,
+            self.incarnation,
+            now,
+        );
 
         let snapshot = if ready.snapshot().is_empty() {
             None
@@ -663,9 +725,11 @@ impl SlashingProtectionCluster {
                     "snapshot retention floor regressed",
                 )));
             }
+            ClusterCounters::SnapshotsRestored.inc();
             Some(restored)
         };
         self.persistence.submit(&mut ready, snapshot).map_err(ClusterError::Storage)?;
+        self.persistence_started = Some(now);
         if !ready.snapshot().is_empty() {
             node.mut_store().install_snapshot(ready.snapshot().clone())?;
         }
@@ -679,6 +743,7 @@ impl SlashingProtectionCluster {
 
         for message in ready.take_messages() {
             self.snapshot_transfers.sent(&message, now);
+            self.peers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
         // Release Ready immediately so step/propose/tick remain legal during disk I/O.
@@ -697,11 +762,18 @@ impl SlashingProtectionCluster {
             #[cfg(target_os = "linux")]
             Some(PersistenceEvent::Recovered(recovered)) => self.recover(recovered, now),
             Some(PersistenceEvent::Persisted(ready)) => {
+                if let Some(started) = self.persistence_started.take() {
+                    self.metrics.journal_written(now.saturating_duration_since(started));
+                }
+                self.pending_proposals.persisted(now);
                 self.complete_ready(ready, now, wall_slot, emit)
             }
             Some(PersistenceEvent::Compacted(snapshot)) => {
                 let index = snapshot.get_metadata().index;
                 self.node.as_mut().ok_or(ClusterError::NotReady)?.mut_store().compact(snapshot)?;
+                if let Some(started) = self.persistence_started.take() {
+                    self.metrics.compacted(now.saturating_duration_since(started));
+                }
                 silver_log::debug!(
                     node_id = self.config.node_id,
                     index,
@@ -762,6 +834,7 @@ impl SlashingProtectionCluster {
         }
         for message in ready.messages {
             self.snapshot_transfers.sent(&message, now);
+            self.peers.sent(&message, now);
             emit(ClusterEvent::SendRaftMessage(message));
         }
         let applied = ready.committed_entries.last().map(|entry| entry.index).or(snapshot_index);
@@ -794,9 +867,9 @@ impl SlashingProtectionCluster {
                     let result = self.state.apply(&command);
                     if proposal_id.origin_node_id == self.config.node_id &&
                         proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.take_pending_proposal(proposal_id)
+                        let Some(pending) = self.pending_proposals.take(proposal_id)
                     {
-                        if now >= pending.deadline {
+                        if !self.commit_in_time(pending, result, now) {
                             emit(ClusterEvent::ProposalTimedOut(proposal_id));
                         } else {
                             emit(ClusterEvent::AttestationCommitted(AttestationDecision {
@@ -814,9 +887,9 @@ impl SlashingProtectionCluster {
                     let result = self.state.apply_block(&command);
                     if proposal_id.origin_node_id == self.config.node_id &&
                         proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.take_pending_proposal(proposal_id)
+                        let Some(pending) = self.pending_proposals.take(proposal_id)
                     {
-                        if now >= pending.deadline {
+                        if !self.commit_in_time(pending, result, now) {
                             emit(ClusterEvent::ProposalTimedOut(proposal_id));
                         } else {
                             emit(ClusterEvent::BlockCommitted(BlockDecision {
@@ -840,14 +913,27 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
-    fn take_pending_proposal(&mut self, proposal_id: ProposalId) -> Option<PendingProposal> {
-        let index = self.pending_proposals.iter().position(|pending| pending.id == proposal_id)?;
-        self.pending_proposals.remove(index)
+    fn commit_in_time(
+        &mut self,
+        pending: PendingProposal,
+        result: LockResult,
+        now: Instant,
+    ) -> bool {
+        if now >= pending.deadline {
+            ClusterCounters::ProposalsTimedOut.inc();
+            self.resolved.push(pending.resolve(now, ClusterOutcome::TimedOut));
+            return false;
+        }
+        self.metrics
+            .committed(now.saturating_duration_since(pending.submitted), pending.leader_origin);
+        self.resolved.push(pending.resolve(now, result.outcome()));
+        true
     }
 
     fn expire_proposals(&mut self, now: Instant, emit: &mut impl FnMut(ClusterEvent)) {
-        while self.pending_proposals.front().is_some_and(|proposal| now >= proposal.deadline) {
-            let proposal = self.pending_proposals.pop_front().expect("front exists");
+        while let Some(proposal) = self.pending_proposals.pop_expired(now) {
+            ClusterCounters::ProposalsTimedOut.inc();
+            self.resolved.push(proposal.resolve(now, ClusterOutcome::TimedOut));
             emit(ClusterEvent::ProposalTimedOut(proposal.id));
         }
     }
@@ -931,7 +1017,7 @@ mod tests {
                 .iter_mut()
                 .find(|cluster| cluster.node_id() == message.to)
                 .expect("Raft message target is a voter")
-                .step(message)
+                .step(message, now)
                 .unwrap();
         }
     }
@@ -1142,6 +1228,90 @@ mod tests {
     }
 
     #[test]
+    fn follower_commit_resolves_with_every_stage_and_leader_measures_raft_rtt() {
+        let mut now = Instant::now();
+        let voters = vec![1, 2, 3];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        let mut decisions = Vec::new();
+
+        clusters[0].campaign().unwrap();
+        for _ in 0..20 {
+            pump(&mut clusters, now, 10, &mut decisions);
+            now += Duration::from_millis(1);
+        }
+        clusters[1]
+            .propose_block(
+                BlockLockCommand {
+                    key: BlockKey { proposer_index: 4, slot: 10 },
+                    signature: [1; 96],
+                },
+                10,
+                now,
+            )
+            .unwrap();
+        for _ in 0..20 {
+            pump_blocks(&mut clusters, now);
+            now += Duration::from_millis(1);
+        }
+
+        let resolved: Vec<_> = clusters[1].drain_resolved().collect();
+        assert_eq!(resolved.len(), 1);
+        let resolved = resolved[0];
+        assert_eq!(resolved.slot, 10);
+        assert_eq!(resolved.duty, ClusterDuty::Block);
+        assert!(!resolved.leader_origin);
+        assert_eq!(resolved.outcome, ClusterOutcome::Accepted);
+        assert!(resolved.appended.is_some_and(|appended| appended >= resolved.submitted));
+        assert!(resolved.persisted >= resolved.appended);
+        assert!(resolved.resolved >= resolved.persisted.unwrap());
+        assert!(clusters[1].drain_resolved().next().is_none());
+
+        let leader_view: Vec<_> = clusters[0].peer_stats(now).collect();
+        assert_eq!(leader_view.len(), 2);
+        assert!(leader_view.iter().all(|peer| peer.raft_rtt.is_some() && peer.messages_out > 0));
+        assert!(clusters[1].peer_stats(now).all(|peer| peer.raft_rtt.is_none()));
+    }
+
+    #[test]
+    fn expired_proposal_resolves_as_timed_out() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+        cluster.propose_attestation(command(10, 1), 10, now).unwrap();
+        cluster.spin(now + DEFAULT_PROPOSAL_TIMEOUT, 10, |_| {}).unwrap();
+
+        let resolved: Vec<_> = cluster.drain_resolved().collect();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].outcome, ClusterOutcome::TimedOut);
+        assert_eq!(resolved[0].duty, ClusterDuty::Attestation);
+    }
+
+    /// As `pump`, for block decisions.
+    fn pump_blocks(clusters: &mut [SlashingProtectionCluster], now: Instant) {
+        let mut messages = Vec::new();
+        for cluster in clusters.iter_mut() {
+            cluster
+                .spin(now, 10, |event| {
+                    if let ClusterEvent::SendRaftMessage(message) = event {
+                        messages.push(message);
+                    }
+                })
+                .unwrap();
+        }
+        for message in messages {
+            clusters
+                .iter_mut()
+                .find(|cluster| cluster.node_id() == message.to)
+                .expect("Raft message target is a voter")
+                .step(message, now)
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn proposal_burst_sends_few_messages_per_peer() {
         const BURST: u64 = 1000;
         let mut now = Instant::now();
@@ -1190,7 +1360,7 @@ mod tests {
                     .iter_mut()
                     .find(|c| c.node_id() == message.to)
                     .unwrap()
-                    .step(message)
+                    .step(message, now)
                     .unwrap();
             }
             now += Duration::from_millis(1);

@@ -91,6 +91,10 @@ impl ClusterNodes {
         self.by_conn_id.get(conn_id).copied()
     }
 
+    pub fn raft_ids(&self) -> impl Iterator<Item = u64> {
+        self.by_peer_id.values().copied()
+    }
+
     pub fn connection_id(&self, raft_id: u64) -> Option<usize> {
         self.by_raft_id.get(&raft_id).copied()
     }
