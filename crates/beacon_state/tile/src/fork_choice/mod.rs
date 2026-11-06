@@ -38,7 +38,7 @@ fn proposer_boost_score(total_weight: u64) -> u64 {
 pub struct ForkChoice {
     pub nodes: Vec<ForkChoiceNode>,
     pub lookup: NodeLookup,
-    pub finalized_checkpoint: Checkpoint,
+    finalized_checkpoint: Checkpoint,
     pub justified_checkpoint: Checkpoint,
     unrealized_justified_checkpoint: Checkpoint,
     unrealized_finalized_checkpoint: Checkpoint,
@@ -107,6 +107,9 @@ impl ForkChoice {
             execution_block_hash: finalized_execution_block_hash,
             parent_ix: NULL,
             execution_status: ExecutionStatus::Valid,
+            descends_from_finalized: finalized_slot <=
+                finalized_checkpoint.epoch * SLOTS_PER_EPOCH &&
+                finalized_block_root == finalized_checkpoint.root,
             state_id,
             weight: 0,
             full: Branch::new_leaf(0),
@@ -161,6 +164,7 @@ impl ForkChoice {
 
         let node_idx = self.nodes.len();
         let parent = self.find_node_idx(&b.parent_root).unwrap_or(NULL);
+        let descends_from_finalized = self.descends_from_finalized(b.slot, &b.block_root, parent);
 
         self.nodes.push(ForkChoiceNode {
             slot: b.slot,
@@ -169,6 +173,7 @@ impl ForkChoice {
             execution_block_hash: b.execution_block_hash,
             parent_ix: parent,
             execution_status: ExecutionStatus::Optimistic,
+            descends_from_finalized,
             state_id: b.state_id,
             weight: 0,
             full: Branch::new_leaf(node_idx),
@@ -315,8 +320,40 @@ impl ForkChoice {
 
     pub fn lift_finalized(&mut self, cp: Checkpoint) {
         if cp.epoch > self.finalized_checkpoint.epoch && self.find_node_idx(&cp.root).is_some() {
-            self.finalized_checkpoint = cp;
-            self.head_moved = true;
+            self.set_finalized(cp);
+        }
+    }
+
+    #[inline]
+    pub fn finalized_checkpoint(&self) -> Checkpoint {
+        self.finalized_checkpoint
+    }
+
+    /// Bypasses `lift_finalized`'s monotonicity and residency checks.
+    #[cfg(test)]
+    pub(crate) fn set_finalized_checkpoint(&mut self, cp: Checkpoint) {
+        self.set_finalized(cp);
+    }
+
+    fn set_finalized(&mut self, cp: Checkpoint) {
+        self.finalized_checkpoint = cp;
+        // Parents precede children, so one forward pass sees each parent's
+        // refreshed flag before its children.
+        for i in 0..self.nodes.len() {
+            let n = &self.nodes[i];
+            let descends = self.descends_from_finalized(n.slot, &n.block_root, n.parent_ix);
+            self.nodes[i].descends_from_finalized = descends;
+        }
+        self.head_moved = true;
+    }
+
+    /// The one-step form of `checkpoint_block_of(.., finalized slot)`.
+    #[inline]
+    fn descends_from_finalized(&self, slot: Slot, block_root: &B256, parent: usize) -> bool {
+        if slot <= self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH {
+            *block_root == self.finalized_checkpoint.root
+        } else {
+            parent != NULL && self.nodes[parent].descends_from_finalized
         }
     }
 

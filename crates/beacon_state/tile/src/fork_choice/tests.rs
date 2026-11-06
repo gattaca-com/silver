@@ -238,6 +238,40 @@ fn fork_heavier_wins() {
     assert_eq!(fc.find_head(), root(3));
 }
 
+/// A heavier branch that forked before the finalized block stops being a
+/// head candidate once finality lands, and so do blocks built on it later.
+#[test]
+fn finality_excludes_branches_that_do_not_descend_from_it() {
+    let genesis = cp(0, 1);
+    let mut fc = ForkChoice::init(
+        genesis,
+        genesis,
+        0,
+        root(1),
+        state_root_of(root(1)),
+        [0u8; 32],
+        false,
+        test_state_id(),
+        0,
+    );
+    fc.on_block(block(32, root(2), root(1), genesis, genesis)); // epoch 1 checkpoint block
+    fc.on_block(block(33, root(3), root(1), genesis, genesis)); // skips root(2)
+    fc.on_block(block(40, root(4), root(2), genesis, genesis));
+
+    let mut deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    deltas[2].pending = 100; // root(3)
+    fc.weight_deltas = deltas;
+    fc.apply_score_changes();
+    assert_eq!(fc.find_head(), root(3));
+
+    fc.lift_finalized(cp(1, 2));
+    fc.on_block(block(41, root(5), root(3), genesis, genesis));
+    fc.on_block(block(42, root(6), root(4), genesis, genesis));
+    fc.weight_deltas = vec![WeightDelta::default(); fc.nodes.len()];
+    fc.apply_score_changes();
+    assert_eq!(fc.find_head(), root(6));
+}
+
 #[test]
 fn two_pass_weight_correctness() {
     // Regression: single-pass apply_score_changes could pick the wrong
@@ -297,7 +331,7 @@ fn prune_below_finalized() {
     fc.on_block(block(2, root(3), root(2), jus, fin));
     assert_eq!(fc.nodes.len(), 3);
 
-    fc.finalized_checkpoint = cp(1, 2);
+    fc.set_finalized_checkpoint(cp(1, 2));
     fc.prune();
 
     assert_eq!(fc.nodes.len(), 2);
@@ -330,7 +364,7 @@ fn prune_drops_later_imported_siblings() {
     fc.on_block(block(2, root(4), root(3), jus, fin)); // sibling's child
     fc.on_block(block(2, root(5), root(2), jus, fin)); // descendant
 
-    fc.finalized_checkpoint = cp(1, 2);
+    fc.set_finalized_checkpoint(cp(1, 2));
     fc.prune();
 
     assert_eq!(fc.nodes.len(), 2);
@@ -346,7 +380,7 @@ fn prune_drops_later_imported_siblings() {
 fn moved_votes_move_weight() {
     let (group, id) = registry(&[42; 16]);
     let mut fc = anchored(16);
-    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
+    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint()));
     install(&mut fc, &group, id);
 
     for v in 0..16 {
@@ -369,7 +403,7 @@ fn each_vote_weighs_its_own_block() {
     let (group, id) = registry(&[42; 16]);
     let mut fc = anchored(16);
     for i in 2..=17u8 {
-        fc.on_block(block(1, root(i), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
+        fc.on_block(block(1, root(i), root(1), fc.justified_checkpoint, fc.finalized_checkpoint()));
     }
     install(&mut fc, &group, id);
 
@@ -404,7 +438,7 @@ fn votes_leaving_the_tree_take_their_weight() {
 fn moved_votes_carry_the_new_balance() {
     let (mut group, id) = registry(&[42; 16]);
     let mut fc = anchored(16);
-    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint));
+    fc.on_block(block(1, root(2), root(1), fc.justified_checkpoint, fc.finalized_checkpoint()));
     install(&mut fc, &group, id);
     for v in 0..16 {
         vote(&mut fc, v, root(1), 0);
@@ -572,7 +606,7 @@ fn node_lookup_equivalence_and_prune() {
     assert_eq!(fc.find_node_idx(&root(99)), None);
     assert_eq!(fc.find_node_idx(&[0u8; 32]), None);
 
-    fc.finalized_checkpoint = cp(1, 10);
+    fc.set_finalized_checkpoint(cp(1, 10));
     fc.prune();
     assert_eq!(fc.nodes[0].block_root, root(10));
     for (i, n) in fc.nodes.iter().enumerate() {
@@ -637,7 +671,7 @@ fn incremental_recompute_matches_batch() {
                 root(i),
                 root(1),
                 fc.justified_checkpoint,
-                fc.finalized_checkpoint,
+                fc.finalized_checkpoint(),
             ));
         }
         install(&mut fc, &group, id);
@@ -1236,7 +1270,7 @@ fn lca_of_a_descendant_is_none() {
 #[test]
 fn lca_of_a_pruned_head_falls_back_to_finalized() {
     let mut fc = skipped_slot_forks();
-    fc.finalized_checkpoint = cp(1, 2);
+    fc.set_finalized_checkpoint(cp(1, 2));
     assert_eq!(fc.lca_slot(root(99), root(6)), Some(SLOTS_PER_EPOCH), "unknown old head");
     assert_eq!(fc.lca_slot(root(4), root(99)), None, "unknown new head says nothing");
 }

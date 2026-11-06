@@ -31,6 +31,8 @@ pub struct ForkChoiceNode {
 
     pub execution_status: ExecutionStatus,
 
+    pub(super) descends_from_finalized: bool,
+
     pub state_id: StateId,
 
     // Total subtree weight = pending + empty.weight + full.weight.

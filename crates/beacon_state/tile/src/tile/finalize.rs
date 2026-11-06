@@ -20,7 +20,7 @@ impl BeaconStateTile {
         let hf = self.head_finalized_checkpoint();
         self.fork_choice.lift_finalized(hf);
 
-        let fin_root = self.fork_choice.finalized_checkpoint.root;
+        let fin_root = self.fork_choice.finalized_checkpoint().root;
         let Some(fin_idx) = self.fork_choice.find_node_idx(&fin_root) else {
             return;
         };
@@ -67,7 +67,7 @@ impl BeaconStateTile {
             guard.set_state_id(self.last_applied);
         }
 
-        let fin_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        let fin_slot = self.fork_choice.finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
         self.clear_finalized_held(fin_slot);
 
         let finalized = self.state.read_view(self.fork_choice.node(0).state_id);

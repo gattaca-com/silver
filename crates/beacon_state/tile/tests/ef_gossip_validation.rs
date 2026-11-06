@@ -206,7 +206,7 @@ impl ColumnsRig {
 
     fn sync_with(&mut self, beacon: &BeaconStateTile, since_genesis_ms: u64) {
         let fork_choice = beacon.ef_fork_choice();
-        let finalized_slot = fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        let finalized_slot = fork_choice.finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
         self.tile.ef_set_status(fork_choice.find_head(), finalized_slot);
         self.tile.ef_tick(since_genesis_ms);
     }
@@ -303,7 +303,7 @@ fn import_setup(
         };
         let cp = Checkpoint { epoch: cp.epoch, root };
         tile.ef_set_finalized_checkpoint(cp);
-        if tile.ef_fork_choice().finalized_checkpoint.root != root {
+        if tile.ef_fork_choice().finalized_checkpoint().root != root {
             return Err("finalized root is not a block in the store");
         }
         // `activate_builders` also finalizes the last block's post-state.

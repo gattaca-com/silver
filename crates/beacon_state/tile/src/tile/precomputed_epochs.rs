@@ -49,7 +49,7 @@ impl PrecomputedEpochs {
     /// Entries off pruned blocks, or at or before the finalized epoch, can no
     /// longer be asked for.
     pub(super) fn drop_outdated(&mut self, fork_choice: &ForkChoice) {
-        let finalized_epoch = fork_choice.finalized_checkpoint.epoch;
+        let finalized_epoch = fork_choice.finalized_checkpoint().epoch;
         for slot in &mut self.0 {
             slot.take_if(|e| {
                 e.epoch <= finalized_epoch || fork_choice.find_node_idx(&e.root).is_none()

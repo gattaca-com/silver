@@ -1310,7 +1310,7 @@ impl BeaconStateTile {
             return EnvelopeCheck::AwaitBlock(block_root);
         };
         let node = self.fork_choice.node(idx);
-        if node.slot < self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH {
+        if node.slot < self.fork_choice.finalized_checkpoint().epoch * SLOTS_PER_EPOCH {
             return EnvelopeCheck::Ignore;
         }
         let state_id = node.state_id;
@@ -1956,7 +1956,7 @@ impl BeaconStateTile {
             wall_slot = self.ticker.current_slot(),
             time_into_slot = ?self.ticker.slot_time_elapsed(),
             justified_epoch = self.fork_choice.justified_checkpoint.epoch,
-            finalized_epoch = self.fork_choice.finalized_checkpoint.epoch,
+            finalized_epoch = self.fork_choice.finalized_checkpoint().epoch,
             "gossip rejected"
         );
         producers.produce(PeerEvent::P2pGossipInvalidMsg {
