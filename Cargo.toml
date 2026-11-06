@@ -205,3 +205,6 @@ yasna = "0.5"
 
 [workspace.lints.clippy]
 too_long_first_doc_paragraph = "allow"
+
+[patch."https://github.com/gattaca-com/flux"]
+flux-disk = { path = "../../flux/crates/flux-disk" }
