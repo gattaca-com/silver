@@ -87,6 +87,9 @@ pub struct ScoreParams {
     pub d: u8,
     pub d_low: u8,
     pub d_high: u8,
+    /// Minimum locally dialled or trusted members per mesh. Inbound peers
+    /// are attacker-selected; dialled ones are chosen by us.
+    pub d_out: u8,
     pub d_lazy: u8,
     pub gossip_factor: f64,
 
@@ -104,6 +107,9 @@ pub struct ScoreParams {
     /// stay slightly above `target_peers` to fill mesh gaps on validator-
     /// critical subnets without unbounded growth.
     pub max_priority_peers: usize,
+    /// Locally dialled or trusted peers to hold. Below it, dials may exceed
+    /// `target_peers` and idle dialled peers are not trimmed.
+    pub target_dialled_peers: usize,
     /// Minimum gap between `DiscoverNodes` emissions while under-target.
     pub discovery_query_interval: Duration,
     /// How long to keep an IP in the ban-set after we graylisted the peer
@@ -202,6 +208,7 @@ impl Default for ScoreParams {
             d: 8,
             d_low: 6,
             d_high: 12,
+            d_out: 2,
             d_lazy: 6,
             gossip_factor: 0.1,
 
@@ -210,6 +217,7 @@ impl Default for ScoreParams {
 
             target_peers: 300,
             max_priority_peers: 500,
+            target_dialled_peers: 60,
             discovery_query_interval: Duration::from_secs(5),
             banned_ip_ttl: Duration::from_secs(3600),
             ip_ban_threshold: 5,

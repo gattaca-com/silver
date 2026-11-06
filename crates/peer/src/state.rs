@@ -201,6 +201,11 @@ impl PeerState {
         }
     }
 
+    /// Chosen by us or the operator, not by the remote.
+    pub(crate) fn counts_as_dialled(&self) -> bool {
+        self.local_dialler || self.is_trusted
+    }
+
     pub(crate) fn outbound_has_capacity(
         &self,
         conn: usize,

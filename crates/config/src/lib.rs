@@ -264,6 +264,10 @@ impl Config {
                 "max_inbound_streams_per_second must be positive".into(),
             ));
         }
+        let params = &config.peer_score_params;
+        if params.d_out > params.d_low || params.d_out > params.d / 2 {
+            return Err(Error::ConfigError("d_out must not exceed d_low or d / 2".into()));
+        }
         config.apply(overrides);
         Ok(config)
     }
