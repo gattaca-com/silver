@@ -212,7 +212,7 @@ impl Peer {
         traffic: GossipTraffic,
         partial_cells: Option<u8>,
         context: &mut Context,
-        limits: &SegmentedGossipLimits,
+        limits: &mut SegmentedGossipLimits,
         rpc_codec_pool: &mut RpcCodecPool,
         now: Instant,
     ) -> SendResult<OutboundGossip> {
@@ -2642,7 +2642,7 @@ mod tests {
         let mut server_h = PeerHarness::new();
         client_h.reopen(TCacheId::ControlGossip, TReadMode::Strict);
         client_h.context.reader.open(TCacheId::ControlSlot, "", TReadMode::Strict).unwrap();
-        let limits = Box::new(SegmentedGossipLimits::new(2));
+        let mut limits = Box::new(SegmentedGossipLimits::new(2));
         let mut pair = PeerPair::new();
         // RPC.subscriptions = [{ subscribe: true, topicID: "t" }].
         let payload = b"\x0a\x05\x08\x01\x12\x01t";
@@ -2670,7 +2670,7 @@ mod tests {
                 GossipTraffic::CONTROL,
                 None,
                 &mut client_h.context,
-                &limits,
+                &mut limits,
                 &mut client_h.rpc_codec_pool,
                 Instant::now()
             ),
@@ -2705,7 +2705,7 @@ mod tests {
         let mut h = PeerHarness::new();
         h.reopen(TCacheId::ControlGossip, TReadMode::Strict);
         // Two frames per peer: the queued one and its evicting successor.
-        let limits = Box::new(SegmentedGossipLimits::new(16));
+        let mut limits = Box::new(SegmentedGossipLimits::new(16));
         let mut pair = PeerPair::new();
         let frame = CacheFrameRef::write(
             &mut h.gossip_out_producer,
@@ -2721,7 +2721,7 @@ mod tests {
                 GossipTraffic::CONTROL,
                 None,
                 &mut h.context,
-                &limits,
+                &mut limits,
                 &mut h.rpc_codec_pool,
                 Instant::now()
             ),
@@ -2744,7 +2744,7 @@ mod tests {
                 GossipTraffic::CONTROL,
                 None,
                 &mut h.context,
-                &limits,
+                &mut limits,
                 &mut h.rpc_codec_pool,
                 Instant::now(),
             );
