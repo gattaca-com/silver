@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use crate::{
     DecomposeError,
     gloas::{BUILDER_REGISTRY_LIMIT, Builder, builder_capacity},
+    retired::RetiredColumns,
 };
 
 /// SSZ-serialised `Builder`: pubkey(48) + version(1) + execution_address(20) +
@@ -12,6 +13,7 @@ const BUILDER_SSZ: usize = 93;
 pub struct FinalizedBuilders {
     pub(super) builders: Box<[Builder]>,
     pub(super) count: usize,
+    retired: RetiredColumns,
 }
 
 impl Default for FinalizedBuilders {
@@ -54,7 +56,7 @@ impl FinalizedBuilders {
             };
         }
 
-        Ok(Self { builders, count })
+        Ok(Self { builders, count, retired: RetiredColumns::default() })
     }
 
     pub(crate) fn ssz_len(&self) -> usize {
@@ -100,9 +102,8 @@ impl FinalizedBuilders {
 
     pub(super) fn ensure_capacity(&mut self, end: usize) {
         if end > self.builders.len() {
-            let mut grown = vec![Builder::default(); builder_capacity(end)].into_boxed_slice();
-            grown[..self.count].copy_from_slice(&self.builders[..self.count]);
-            self.builders = grown;
+            let capacity = builder_capacity(end);
+            self.retired.grow(&mut self.builders, self.count, capacity, Builder::default());
         }
     }
 }

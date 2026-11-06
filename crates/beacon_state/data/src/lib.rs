@@ -65,6 +65,7 @@ mod longtail;
 mod parsed;
 mod pending;
 mod reanchor;
+mod retired;
 pub mod ring;
 mod slot_state;
 pub(crate) mod sparse;
