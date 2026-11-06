@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fs::{File, OpenOptions},
     io,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use silver_common::Enr;
@@ -27,12 +27,7 @@ impl ClusterStartup {
             .map(|(id, _)| *id)
             .ok_or("no local node configured in cluster config")?;
         let journal_lock = Self::lock(directory)?;
-        let path = directory.join("attestation-cluster.wal");
-        let storage = if config.bootstrap {
-            ClusterStorageConfig::Create(path)
-        } else {
-            ClusterStorageConfig::Open(path)
-        };
+        let storage = Self::journal(config.bootstrap, directory.join("attestation-cluster.wal"))?;
         Ok(Self {
             config: SlashingProtectionConfig::new(
                 node_id,
@@ -41,6 +36,26 @@ impl ClusterStartup {
             ),
             _journal_lock: journal_lock,
         })
+    }
+
+    /// A journal that contradicts `bootstrap` would only fail later, inside
+    /// Control, and leave the node running with the cluster refusing every
+    /// duty.
+    fn journal(bootstrap: bool, path: PathBuf) -> Result<ClusterStorageConfig, Box<dyn Error>> {
+        match (bootstrap, path.try_exists()?) {
+            (true, false) => Ok(ClusterStorageConfig::Create(path)),
+            (false, true) => Ok(ClusterStorageConfig::Open(path)),
+            (true, true) => Err(format!(
+                "cluster bootstrap = true, but {} already exists: set bootstrap = false",
+                path.display()
+            )
+            .into()),
+            (false, false) => Err(format!(
+                "cluster journal {} is missing: restore it, never bootstrap a single node over it",
+                path.display()
+            )
+            .into()),
+        }
     }
 
     fn lock(directory: &Path) -> io::Result<File> {
@@ -69,5 +84,24 @@ mod tests {
         assert!(ClusterStartup::lock(directory.path()).is_err());
         drop(first);
         let _second = ClusterStartup::lock(directory.path()).unwrap();
+    }
+
+    #[test]
+    fn journal_must_agree_with_bootstrap() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("attestation-cluster.wal");
+
+        assert!(matches!(
+            ClusterStartup::journal(true, path.clone()),
+            Ok(ClusterStorageConfig::Create(_))
+        ));
+        assert!(ClusterStartup::journal(false, path.clone()).is_err(), "missing journal");
+
+        File::create(&path).unwrap();
+        assert!(matches!(
+            ClusterStartup::journal(false, path.clone()),
+            Ok(ClusterStorageConfig::Open(_))
+        ));
+        assert!(ClusterStartup::journal(true, path).is_err(), "bootstrap over a journal");
     }
 }
