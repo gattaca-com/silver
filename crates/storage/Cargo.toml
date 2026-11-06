@@ -20,6 +20,7 @@ workspace = true
 
 [dev-dependencies]
 c-kzg.workspace = true
+libc.workspace = true
 silver_common = { workspace = true, features = ["test-util"] }
 rand.workspace = true
 tempfile = "3"

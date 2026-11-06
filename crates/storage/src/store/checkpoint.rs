@@ -479,6 +479,8 @@ mod tests {
         // overhead is ~ns/turn, negligible vs the section writes it brackets).
         let mut per_section = [Duration::ZERO; FULU_CHECKPOINT_SECTIONS];
         let mut counted = 0u32;
+        let mut max_turn = Duration::ZERO;
+        let mut outside_sections = Duration::ZERO;
         for i in 0..ITERS {
             store.reset_persist_watermark();
             let t = Instant::now();
@@ -489,10 +491,12 @@ mod tests {
                 store.file_io(|_| [0u8; 4], &mut producer, &mut |_: IoEvent| {}).unwrap();
                 let cdt = ct.elapsed();
                 // Validators spans several turns → all land in its bucket.
-                if i >= WARMUP &&
-                    let Some(s) = section
-                {
-                    per_section[s] += cdt;
+                if i >= WARMUP {
+                    max_turn = max_turn.max(cdt);
+                    match section {
+                        Some(s) => per_section[s] += cdt,
+                        None => outside_sections += cdt,
+                    }
                 }
             }
             let elapsed = t.elapsed();
@@ -502,6 +506,8 @@ mod tests {
             }
         }
         report("streamed_full(encode+write)", &mut streamed, len);
+        println!("  max single file_io turn {max_turn:?}");
+        println!("  pubkeys + commit + retention (mean): {:?}", outside_sections / counted);
         println!("  streamed per-section (mean over {counted} persists):");
         for (idx, total) in per_section.iter().enumerate() {
             println!("    {}: {:?}", SECTION_NAMES[idx], *total / counted);
