@@ -227,7 +227,10 @@ pub fn decode_protobuf_pubkey(data: &[u8]) -> Result<(u64, Vec<u8>), Error> {
             // field 2, length-delimited (key bytes)
             (2, 2) => {
                 let (len, p) = decode_varint(data, pos)?;
-                let end = (len as usize).checked_add(p).ok_or(Error::BadDer)?;
+                let end = usize::try_from(len)
+                    .ok()
+                    .and_then(|len| len.checked_add(p))
+                    .ok_or(Error::BadDer)?;
                 key_data = Some(data.get(p..end).ok_or(Error::BadDer)?.to_vec());
                 pos = end;
             }

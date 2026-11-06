@@ -16,6 +16,8 @@ use crate::{
 
 /// Write-side state for gossipsub: idle → length-prefixed body.
 #[derive(Debug)]
+// Boxing `SegmentedWriter` would allocate per frame on the send path.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum GossipWriteState {
     /// Initial state on a meshsub 1.3 stream: the extensions
     /// announcement must be the first RPC and is never repeated;

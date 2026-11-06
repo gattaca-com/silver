@@ -45,7 +45,7 @@ fn payload_bounds(id: &P2pStreamId) -> RangeInclusive<usize> {
             StreamProtocol::Ping => exact(PING_SIZE),
             StreamProtocol::Metadata => exact(METADATA_SIZE),
             StreamProtocol::BeaconBlocksByRange | StreamProtocol::BeaconBlocksByRoot => {
-                SIGNED_BEACON_BLOCK_MIN..=SIGNED_BEACON_BLOCK_MAX
+                SIGNED_BEACON_BLOCK_MIN..=SIGNED_BEACON_BLOCK_MAX.min(MAX_PAYLOAD_SIZE)
             }
             // Both sidecar layouts share the protocol; gloas is the shorter.
             StreamProtocol::DataColumnSidecarsByRange |

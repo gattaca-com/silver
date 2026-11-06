@@ -274,6 +274,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         partial_columns: partial_columns.supports_sending(),
         reader: TCacheReader::new(tcaches),
     };
+    p2p_context.assert_ingress_capacity();
     let network_tile = NetworkTile::new(discv5_addr, discv5, p2p_addr, p2p_endpoint, p2p_context)?;
 
     let gossip_handler = GossipHandler::new(

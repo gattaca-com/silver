@@ -8,7 +8,10 @@ pub use crate::{
         AGENT_VERSION, Eth2Addr, Identify, PROTOCOL_VERSION, encode_observed_addr,
         parse_eth2_multiaddr,
     },
-    request::{DataKind, Origin, RequestId, Scope, SyncRequest},
+    request::{
+        DataKind, Origin, RequestId, Scope, SyncRequest, data_columns_by_range_tokens,
+        data_columns_by_root_tokens,
+    },
     spine::{
         AcquiredRead as TRead, Consumer as TConsumer, Error as TCacheError, Producer as TProducer,
         ReadMode as TReadMode, Reservation as TReservation, *,

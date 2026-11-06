@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use fxhash::FxHashMap;
 use silver_common::{
     Enr, PeerId, ProtoIdentify, TCacheError, TCacheId, TCacheProducer, TCacheReader, TProducer,
-    TReadMode, TileId,
+    TReadMode, TileId, ssz_view::MAX_PAYLOAD_SIZE,
 };
 
-use crate::RemotePeer;
+use crate::{RemotePeer, p2p::streams::gossip_in::MAX_GOSSIP_RESERVATION_LEN};
 
 pub struct Context {
     pub gossip_producer: TProducer,
@@ -35,6 +35,20 @@ impl Context {
         }
         self.reader.declare(TCacheId::ControlGossip, &[TileId::Control, TileId::Columns]);
         Ok(())
+    }
+
+    /// A frame larger than its cache retries its reservation forever.
+    pub fn assert_ingress_capacity(&self) {
+        let gossip = self.gossip_producer.cache_ref().max_payload_len();
+        assert!(
+            gossip >= MAX_GOSSIP_RESERVATION_LEN,
+            "gossip ingress tcache holds {gossip} bytes, need {MAX_GOSSIP_RESERVATION_LEN}"
+        );
+        let rpc = self.rpc_producer.cache_ref().max_payload_len();
+        assert!(
+            rpc >= MAX_PAYLOAD_SIZE,
+            "rpc ingress tcache holds {rpc} bytes, need {MAX_PAYLOAD_SIZE}"
+        );
     }
 
     pub fn loop_start(&mut self) {

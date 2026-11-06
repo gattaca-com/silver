@@ -17,7 +17,7 @@ const BUF_CAP: usize = FRAME_HDR_LEN + CHECKSUM_LEN + 76500;
 const MAX_COMPRESS_BLOCK: usize = 76490;
 
 const fn max_compressed_len(n: usize) -> usize {
-    32 + n + n / 6
+    n.saturating_add(n / 6).saturating_add(32)
 }
 
 const CHUNK_COMPRESSED: u8 = 0x00;
@@ -144,8 +144,10 @@ impl SnappyDecoder {
     /// stream alive forever.
     pub fn expect_payload_len(&mut self, uncompressed_len: usize) {
         let frames = uncompressed_len / MAX_UNCOMPRESSED_BLOCK + 1;
-        let framing = STREAM_IDENTIFIER.len() + frames * (FRAME_HDR_LEN + CHECKSUM_LEN);
-        self.max_consumed = (max_compressed_len(uncompressed_len) + framing) as u64;
+        let framing = frames
+            .saturating_mul(FRAME_HDR_LEN + CHECKSUM_LEN)
+            .saturating_add(STREAM_IDENTIFIER.len());
+        self.max_consumed = max_compressed_len(uncompressed_len).saturating_add(framing) as u64;
     }
 
     #[inline]
@@ -359,6 +361,7 @@ impl SnappyDecoder {
         amount: usize,
         out: &mut [u8],
     ) -> Result<usize, SnappyError> {
+        debug_assert!(amount <= self.need - self.buf_len);
         self.buf_len += amount;
         self.consumed += amount as u64;
 

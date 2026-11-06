@@ -38,6 +38,9 @@ fn transport_config() -> Arc<quinn_proto::TransportConfig> {
     tc.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
     tc.receive_window(CONNECTION_RECEIVE_WINDOW);
     tc.max_concurrent_uni_streams(VarInt::from_u32(0));
+    // Each inbound RPC stream holds a codec (~150 KiB). Matches Lighthouse's
+    // `MAX_INBOUND_SUBSTREAMS`.
+    tc.max_concurrent_bidi_streams(VarInt::from_u32(32));
     tc.datagram_receive_buffer_size(None);
 
     let mut ack_config = AckFrequencyConfig::default();

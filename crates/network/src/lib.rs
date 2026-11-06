@@ -47,6 +47,8 @@ silver_common::declare_counters! {
         GossipMsgSkipped,
         // Gossip delivery or inbound read stalled — connection closed.
         GossipStallDisconnect,
+        // Zero-length gossip frames, discarded without an event.
+        GossipEmptyFrameDropped,
         // Inbound gossip over its byte quota — connection closed.
         GossipRateLimitDisconnect,
         InboundStreamRateLimited,
@@ -55,6 +57,8 @@ silver_common::declare_counters! {
         CacheSegmentedAdmitted,
         CacheSegmentedRejected,
         CacheSegmentedCapacity,
+        // Segmented frame refused: the peer holds its share of the budget.
+        CacheSegmentedPeerCapacity,
         CacheSegmentedSegments,
         CacheSegmentedOwnerAllocations,
         CacheSegmentedFrames,

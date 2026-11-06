@@ -14,6 +14,12 @@ const TX_BATCH_MAX: usize = 256;
 const MAX_GSO_SEGMENTS: usize = 10;
 const CMSG_BUF_SIZE: usize = 64;
 
+/// `CMSG_FIRSTHDR` casts the buffer to `*mut cmsghdr`.
+#[repr(C, align(8))]
+struct CmsgBuf([u8; CMSG_BUF_SIZE]);
+
+const _: () = assert!(align_of::<CmsgBuf>() >= align_of::<libc::cmsghdr>());
+
 // --- RxBatch ----------------------------------------------------------------
 
 pub(crate) struct RxBatch {
@@ -81,6 +87,9 @@ impl RxBatch {
             // Rewire iovec — backing pointer may have shifted after
             // split_to + reclaim, or reallocated fresh.
             self.iovecs[i].iov_base = self.bufs[i].as_mut_ptr() as *mut _;
+            // Value-result: the kernel overwrote it with the last address
+            // length, which would cap the next copy.
+            self.hdrs[i].msg_hdr.msg_namelen = size_of::<libc::sockaddr_storage>() as u32;
         }
 
         let fd = socket.as_raw_fd();
@@ -131,7 +140,7 @@ pub(crate) struct TxBatch {
     pub(crate) entries: Vec<TxEntry>,
     iovecs: Vec<libc::iovec>,
     addrs: Vec<libc::sockaddr_storage>,
-    cmsgs: Vec<[u8; CMSG_BUF_SIZE]>,
+    cmsgs: Vec<CmsgBuf>,
     hdrs: Vec<libc::mmsghdr>,
     send_idx: usize,
     prepared: bool,
@@ -203,7 +212,7 @@ impl TxBatch {
                 iov_len: entry.size,
             });
             self.addrs.push(sockaddr_from(entry.dst));
-            self.cmsgs.push([0u8; CMSG_BUF_SIZE]);
+            self.cmsgs.push(CmsgBuf([0u8; CMSG_BUF_SIZE]));
         }
 
         for (i, entry) in self.entries.iter().enumerate() {
@@ -215,7 +224,7 @@ impl TxBatch {
 
             if let Some(segment_size) = entry.segment_size {
                 let cmsg_buf = &mut self.cmsgs[i];
-                hdr.msg_control = cmsg_buf.as_mut_ptr() as *mut _;
+                hdr.msg_control = cmsg_buf.0.as_mut_ptr() as *mut _;
                 hdr.msg_controllen =
                     unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as _ };
                 unsafe {

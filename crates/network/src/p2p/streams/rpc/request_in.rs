@@ -74,12 +74,17 @@ impl RpcReadRequest {
                             );
                         }
                         return Ok(Spin::Next(Self::AllocBody {
-                            length: length as usize,
+                            length: usize::try_from(length).map_err(|_| StreamError::InvalidRpc)?,
                             buf,
                             buf_start: offset,
                             buf_end: read,
                         }));
                     }
+                }
+
+                // No terminator in the longest u64 varint.
+                if read == buf.len() {
+                    return Err(StreamError::InvalidRpc);
                 }
 
                 Ok(Spin::Ok(Self::ReadingLength { buf, read }))
@@ -202,6 +207,17 @@ mod tests {
         fn cluster_next(&mut self) -> Option<crate::p2p::quic::Leased<silver_common::TRead>> {
             None
         }
+    }
+
+    #[test]
+    fn unterminated_length_prefix_is_rejected() {
+        let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 16, StreamProtocol::Ping, true);
+        let mut dec = SnappyDecoder::default();
+        let mut io = WireIo { data: vec![0x80; 10], pos: 0, cap: usize::MAX };
+        let err =
+            RpcReadRequest::default().spin(&mut io, &p2p_id, &mut producer, &mut dec).unwrap_err();
+        assert!(matches!(err, StreamError::InvalidRpc), "{err:?}");
     }
 
     /// Regression: a by-root request body flows through `ReadingBody` into a
