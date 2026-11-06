@@ -30,6 +30,7 @@ mod backfill;
 mod block_index;
 mod checkpoint;
 mod coverage;
+mod file_reader;
 mod finalized;
 mod history;
 mod io;
@@ -40,6 +41,7 @@ use backfill::{BlockFacts, PayloadFacts, VerifiedColumns};
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
 use coverage::Block;
+use file_reader::FileReader;
 use finalized::Finalized;
 use history::History;
 use remover::DirectoryRemover;
@@ -464,6 +466,7 @@ pub(super) struct Store {
 
     write_queue: WriteQueue,
     query_queue: VecDeque<PendingQuery>,
+    reader: FileReader<(PendingQuery, QueryUnit)>,
 }
 
 impl Store {
@@ -509,6 +512,7 @@ impl Store {
             history_floors: [None; ALL_PAYLOADS.len()],
             write_queue: Default::default(),
             query_queue: Default::default(),
+            reader: FileReader::new()?,
         })
     }
 
@@ -767,13 +771,12 @@ impl Store {
         // drains straight to a rate-limited error. A `Complete` would read as
         // "nothing stored" and get us penalised.
         let peer = stream_id.peer();
-        let of_peer = self
-            .query_queue
-            .iter()
+        let queries = self.query_queue.iter().chain(self.reader.tags().map(|(query, _)| query));
+        let of_peer = queries
             .filter(|q| matches!(q.source, RequestSource::Peer(id) if id.peer() == peer))
             .count();
         if of_peer >= MAX_INFLIGHT_QUERIES_PER_PEER ||
-            self.query_queue.len() >= MAX_INFLIGHT_QUERIES
+            self.query_queue.len() + self.reader.in_flight() >= MAX_INFLIGHT_QUERIES
         {
             silver_log::warn!(?stream_id, of_peer, "queries at capacity");
             self.query_queue.push_back(PendingQuery::rate_limited(RequestSource::Peer(stream_id)));

@@ -13,29 +13,22 @@ use std::{
 
 use flux_profiler::timed;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TProducer, hex32};
+use silver_common::{DataKind, Enr, PeerEvent, TProducer, hex32};
 
 use super::{
     Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store, backfill::BlockFacts, block_path,
-    column_path, envelope_path, first_retained_slot, slot_dir, unfinalized::PayloadKey,
+    column_path, envelope_path, file_reader::ReadOutcome, first_retained_slot, slot_dir,
+    unfinalized::PayloadKey,
 };
 use crate::{StorageCounters, tile::IoEvent};
 
-/// Per-loop op budgets. Disk I/O on regular files is synchronous —
-/// O_NONBLOCK has no effect there — so each op blocks the tile until done;
-/// these bound the op count (not the wall-clock) per loop iteration.
+/// Writes are still synchronous — O_NONBLOCK has no effect on regular
+/// files — so each blocks the tile; this bounds the count per loop.
 pub(super) const MAX_WRITES_PER_LOOP: usize = 10;
-const MAX_READS_PER_LOOP: usize = 10;
-/// Hard ceiling on read-loop turns per call, independent of
-/// `MAX_READS_PER_LOOP`, so a burst of drained (Complete-only) requests
-/// can't extend tile time.
+const MAX_READS_IN_FLIGHT: usize = 64;
+/// Bounds queries started or drained per call, so a burst of empty
+/// (Complete-only) requests can't extend tile time.
 const MAX_ITERATIONS_PER_LOOP: usize = 64;
-
-enum ServeResult {
-    Sent(TCacheRead),
-    Missing,
-    ProducerFull,
-}
 
 impl Store {
     #[timed]
@@ -168,53 +161,44 @@ impl Store {
         fork_digest_at: impl Fn(u64) -> [u8; 4],
         producer: &mut TProducer,
         emit: &mut F,
-    ) -> Result<(), Error>
-    where
+    ) where
         F: FnMut(IoEvent),
     {
-        // Pending reads. Round-robin across in-flight requests: serve one
-        // chunk, then rotate the request to the back so a large range can't
-        // block other peers' queries (head-of-line fairness). `Complete` is
-        // emitted once a request's units drain. `MAX_ITERATIONS_PER_LOOP`
-        // bounds drained-request churn so a burst of empty requests can't
-        // extend tile time.
         StorageCounters::ReadQueueLength.set(self.query_queue.len() as u64);
 
-        let mut reads = 0;
-        let mut iters = 0;
-        while iters < MAX_ITERATIONS_PER_LOOP && reads < MAX_READS_PER_LOOP {
-            iters += 1;
-            let Some(mut query) = self.query_queue.pop_front() else {
-                break;
-            };
+        let query_queue = &mut self.query_queue;
+        self.reader.step(producer, |(mut query, unit), outcome| match outcome {
+            ReadOutcome::Sent(read) => {
+                // Context fork-digest for the served object's own slot's fork
+                // (a request can span a fork boundary).
+                if query.deliver(&unit, read, fork_digest_at(unit.slot()), emit) {
+                    query_queue.push_back(query);
+                }
+            }
+            // Skipped slots and EMPTY payloads leave holes in any envelope range.
+            ReadOutcome::Missing if unit.is_envelope() => query_queue.push_back(query),
+            ReadOutcome::Missing => query.finish(true, emit),
+            ReadOutcome::Failed(error) => {
+                silver_log::warn!(?error, ?unit, "serving a stored file failed");
+                query.finish(true, emit);
+            }
+        });
+
+        // Round-robin, one unit in flight per query: a query's chunks go out
+        // in order, and a large range cannot block other peers' queries.
+        // `MAX_ITERATIONS_PER_LOOP` bounds drained-request churn.
+        let mut iterations = 0;
+        while iterations < MAX_ITERATIONS_PER_LOOP && self.reader.in_flight() < MAX_READS_IN_FLIGHT
+        {
+            iterations += 1;
+            let Some(mut query) = self.query_queue.pop_front() else { break };
             let Some(unit) = query.units.pop_front() else {
                 query.finish(false, emit);
                 continue;
             };
-            reads += 1;
             let path = self.unit_path(&unit);
-            match Self::serve_file(&path, producer)? {
-                ServeResult::Sent(read) => {
-                    // Context fork-digest for the served object's own slot's fork
-                    // (a request can span a fork boundary).
-                    let fork_digest = fork_digest_at(unit.slot());
-                    if query.deliver(&unit, read, fork_digest, emit) {
-                        self.query_queue.push_back(query);
-                    }
-                }
-                // Skipped slots and EMPTY payloads leave holes in any envelope range.
-                ServeResult::Missing if unit.is_envelope() => self.query_queue.push_back(query),
-                ServeResult::Missing => query.finish(true, emit),
-                ServeResult::ProducerFull => {
-                    // Tcache full — un-consume and retry this request first
-                    // next loop; trying others would fail too.
-                    query.units.push_front(unit);
-                    self.query_queue.push_front(query);
-                    break;
-                }
-            }
+            self.reader.start(&path, (query, unit));
         }
-        Ok(())
     }
 
     pub(crate) fn file_io<F>(
@@ -229,8 +213,8 @@ impl Store {
         if !self.write_queue.is_empty() {
             self.drain_pending_writes(emit)?;
         }
-        if !self.query_queue.is_empty() {
-            self.serve_pending_reads(&fork_digest_at, producer, emit)?;
+        if !self.query_queue.is_empty() || self.reader.in_flight() > 0 {
+            self.serve_pending_reads(&fork_digest_at, producer, emit);
         }
 
         self.history.link_buffered_blocks(
@@ -302,24 +286,6 @@ impl Store {
                 .unfinalized_dir(Payload::Envelope)
                 .join(unfinalized_envelope_name(*slot, block_root)),
         }
-    }
-
-    /// Read the whole file at `path` into a freshly-reserved tcache slot.
-    /// `Missing` if the file doesn't exist (skip the query), `ProducerFull`
-    /// if the tcache has no room (retry next loop).
-    fn serve_file(path: &Path, producer: &mut TProducer) -> Result<ServeResult, Error> {
-        let mut file = match open_file_read(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(ServeResult::Missing),
-            Err(e) => return Err(e),
-        };
-        let ssz_len = file.metadata()?.len() as usize;
-        let Some(mut reservation) = producer.reserve(ssz_len, true) else {
-            return Ok(ServeResult::ProducerFull);
-        };
-        file.read_exact(&mut reservation.buffer()?[..ssz_len])?;
-        reservation.increment_offset(ssz_len);
-        Ok(ServeResult::Sent(reservation.read()))
     }
 
     fn promote(&mut self, slot: u64, key: PayloadKey) -> Result<bool, Error> {

@@ -187,12 +187,10 @@ fn fork_tree_persist_serve_promote() {
         request: RpcRequest::BlocksByRange(range),
     });
     let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => responses.push(s),
+        _ => {}
+    });
     assert_eq!(responses.len(), 2); // canonical block A + Complete
     assert_block(&responses[0], &bytes_a);
     assert!(matches!(
@@ -209,12 +207,10 @@ fn fork_tree_persist_serve_promote() {
         request: RpcRequest::BlockByRoot(byroot_ssz),
     });
     let mut byroot = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => byroot.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => byroot.push(s),
+        _ => {}
+    });
     assert_eq!(byroot.len(), 2);
     assert_block(&byroot[0], &bytes_b);
 
@@ -225,12 +221,14 @@ fn fork_tree_persist_serve_promote() {
     store.queue_block_request(10, BlockLookup::Slot(slot));
     store.queue_block_request(11, BlockLookup::Slot(slot + 1));
     let mut api = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::ApiResponse(response) => api.push(response),
-            other => panic!("api requests answer the api alone, got {other:?}"),
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::ApiResponse(response) => api.push(response),
+        other => panic!("api requests answer the api alone, got {other:?}"),
+    });
+    api.sort_by_key(|response| match response {
+        BeaconApiResponse::Block { request_id, .. } => *request_id,
+        other => panic!("only block responses, got {other:?}"),
+    });
     let [
         BeaconApiResponse::Block { request_id: 7, block: Some(served) },
         BeaconApiResponse::Block { request_id: 8, block: None },
@@ -286,12 +284,10 @@ fn fork_tree_persist_serve_promote() {
         request: RpcRequest::BlocksByRange(range),
     });
     let mut after = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => after.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => after.push(s),
+        _ => {}
+    });
     assert_eq!(after.len(), 2);
     assert_block(&after[0], &bytes_a);
 
@@ -477,13 +473,11 @@ fn envelope_range_request_served_empty() {
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| {
-            if let IoEvent::P2pSend(s) = s {
-                responses.push(s);
-            }
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| {
+        if let IoEvent::P2pSend(s) = s {
+            responses.push(s);
+        }
+    });
 
     assert_eq!(responses.len(), 1, "empty envelope response is just Complete");
     assert!(matches!(
@@ -529,17 +523,15 @@ fn envelope_range_request_serves_past_a_hole() {
 
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
     let mut responses = vec![];
-    store
-        .file_io(|_| [1, 2, 3, 4], &mut producer, &mut |s| {
-            if let IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
-                response,
-                ..
-            }))) = s
-            {
-                responses.push(response);
-            }
-        })
-        .unwrap();
+    serve(&mut store, |_| [1, 2, 3, 4], &mut producer, &mut |s| {
+        if let IoEvent::P2pSend(P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+            response,
+            ..
+        }))) = s
+        {
+            responses.push(response);
+        }
+    });
 
     assert_eq!(responses.len(), 3, "two envelopes then Complete: {responses:?}");
     assert!(matches!(responses[0], RpcResponse::ExecutionPayloadEnvelope { .. }));
@@ -635,12 +627,10 @@ fn column_fork_persist_serve_promote() {
         request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
     });
     let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => responses.push(s),
+        _ => {}
+    });
     assert_eq!(responses.len(), 3); // canonical A columns 3 + 7, then Complete
     assert_col(&responses[0], &a3);
     assert_col(&responses[1], &a7);
@@ -666,12 +656,10 @@ fn column_fork_persist_serve_promote() {
         request: RpcRequest::DataColumnsByRoot(byroot_ssz),
     });
     let mut br = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => br.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => br.push(s),
+        _ => {}
+    });
     assert_eq!(br.len(), 3); // A column 7, B column 3, Complete
     assert_col(&br[0], &a7);
     assert_col(&br[1], &b3);
@@ -692,12 +680,10 @@ fn column_fork_persist_serve_promote() {
         request: RpcRequest::DataColumnsByRoot(bare_ssz),
     });
     let mut rejected = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => rejected.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => rejected.push(s),
+        _ => {}
+    });
     assert_eq!(rejected.len(), 1, "malformed by-root request answers a bare Complete");
     assert!(matches!(
         &rejected[0],
@@ -723,12 +709,10 @@ fn column_fork_persist_serve_promote() {
         request: RpcRequest::DataColumnsByRange { ssz: range, len: 36 },
     });
     let mut after = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => after.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => after.push(s),
+        _ => {}
+    });
     assert_eq!(after.len(), 3);
     assert_col(&after[0], &a3);
     assert_col(&after[1], &a7);
@@ -1020,6 +1004,24 @@ fn drain(store: &mut super::Store) -> Result<(), std::io::Error> {
     )
 }
 
+/// `file_io` until every queued query is answered: reads complete over
+/// several turns.
+fn serve(
+    store: &mut super::Store,
+    fork_digest_at: impl Fn(u64) -> [u8; 4],
+    producer: &mut silver_common::TProducer,
+    emit: &mut impl FnMut(IoEvent),
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        store.file_io(&fork_digest_at, producer, emit).unwrap();
+        if store.query_queue.is_empty() && store.reader.in_flight() == 0 {
+            return;
+        }
+        assert!(Instant::now() < deadline, "queries were not answered");
+    }
+}
+
 /// Two finalities queue before the first promotion drains. The span
 /// the first opens must reach only the finality it was queued under, or
 /// the second promotion lands inside it and its needs are never recorded.
@@ -1300,14 +1302,11 @@ fn range_queries_interleave_fairly() {
     });
 
     let mut responses = vec![];
-    store
-        .file_io(|_| fork_digest, &mut producer, &mut |s| match s {
-            IoEvent::P2pSend(s) => responses.push(s),
-            _ => {}
-        })
-        .unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |s| match s {
+        IoEvent::P2pSend(s) => responses.push(s),
+        _ => {}
+    });
 
-    // Expect A10, B10, A11, B11, A-Complete, B-Complete — strict round-robin.
     let ids: Vec<_> = responses
         .iter()
         .map(|s| {
@@ -1321,12 +1320,20 @@ fn range_queries_interleave_fairly() {
     let (a, b) = (stream_a.stream_id(), stream_b.stream_id());
     assert_ne!(a, b);
     assert_eq!(responses.len(), 6);
-    assert_eq!(ids, vec![a, b, a, b, a, b], "responses must interleave across streams");
-    for resp in &responses[4..] {
-        let P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound { response, .. })) = resp else {
-            panic!("expected RPC response");
-        };
-        assert!(matches!(response, RpcResponse::Complete));
+    assert!(ids[..2].contains(&a) && ids[..2].contains(&b), "both streams start first: {ids:?}");
+    for stream in [a, b] {
+        let of_stream: Vec<_> = responses
+            .iter()
+            .filter_map(|s| match s {
+                P2pSend::Rpc(RpcOutbound::Response(RpcResponseOutbound {
+                    stream_id,
+                    response,
+                })) if stream_id.stream_id() == stream => Some(response),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(of_stream.len(), 3);
+        assert!(matches!(of_stream[2], RpcResponse::Complete), "each stream ends with Complete");
     }
 }
 

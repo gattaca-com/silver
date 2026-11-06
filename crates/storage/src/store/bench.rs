@@ -206,7 +206,7 @@ fn serve(name: &str, store: &mut Store, peers: usize) {
     let units: usize = store.query_queue.iter().map(|q| q.units.len()).sum();
     let mut producer = served_producer();
     let mut sample = Sample::start();
-    while !store.query_queue.is_empty() {
+    while !store.query_queue.is_empty() || store.reader.in_flight() > 0 {
         producer.loop_start();
         sample.file_io(store, &mut producer);
     }
