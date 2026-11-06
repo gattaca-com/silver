@@ -4,14 +4,19 @@ use serde::Deserialize;
 use silver_beacon_state_data::{B256, Slot, SpecConfig};
 use silver_common::{
     BroadcastValidation, GossipTopic, LocalGossipFailure, PayloadValidationStatus, TCacheRead,
-    ssz_hash::HashedBody,
+    json_fields::each_array_entry, ssz_hash::HashedBody,
 };
 
 use crate::{
     ctx::ApiCtx,
     entry_signatures::SignatureCheck,
-    http::{ids::each_body_entry, response::Response, router::Request},
+    http::{response::Response, router::Request},
 };
+
+/// Each accepted entry is a message per topic on the 2^14-deep
+/// `beacon_api_requests` queue. A body of single-topic entries is a quarter of
+/// it at most: one slot's attestations for 131,072 validators.
+pub(crate) const MAX_SUBMISSION_ENTRIES: usize = 4096;
 
 pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     req: &Request<'a>,
@@ -21,8 +26,9 @@ pub(crate) fn post_submission<'a, T: Deserialize<'a> + SubmittedEntry>(
     if !reads_submission(req, resp) {
         return;
     }
-    let parsed =
-        each_body_entry(req.body, |body_index, entry: T| submit(ctx, resp, body_index, entry));
+    let parsed = each_array_entry(req.body, MAX_SUBMISSION_ENTRIES, |body_index, entry: T| {
+        submit(ctx, resp, body_index, entry)
+    });
     match parsed {
         Err(message) => return resp.error(400, message),
         Ok(0) => return resp.error(400, "the body must name at least one entry"),
