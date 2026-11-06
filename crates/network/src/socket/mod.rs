@@ -25,6 +25,7 @@ pub struct Socket {
     rx_batch: RxBatch,
     tx_batch: TxBatch,
     blocked: bool,
+    rx_pending: bool,
     scratch_buffer: Vec<u8>,
     banned_ips: WitherFilter<IpAddr, FxHasher, 1024>,
 }
@@ -66,6 +67,7 @@ impl Socket {
             rx_batch: RxBatch::new(),
             tx_batch: TxBatch::new(),
             blocked: false,
+            rx_pending: false,
             scratch_buffer: vec![0u8; RX_BUF_SIZE],
             banned_ips: WitherFilter::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         })
@@ -134,14 +136,15 @@ impl Socket {
     }
 
     #[timed]
-    pub(crate) fn recv<F>(&mut self, mut f: F)
+    pub(crate) fn recv<F>(&mut self, max_batches: usize, mut f: F)
     where
         F: FnMut(bytes::BytesMut, SocketAddr, &mut Vec<u8>, &UdpSocket) -> bool,
     {
-        loop {
+        self.rx_pending = false;
+        for _ in 0..max_batches {
             let n = self.rx_batch.recv(&self.socket);
             if n == 0 {
-                break;
+                return;
             }
 
             for i in 0..n {
@@ -154,9 +157,16 @@ impl Socket {
             }
 
             if n < RX_BATCH_MAX {
-                break;
+                return;
             }
         }
+        // Readiness is edge-triggered: it will not fire again for datagrams
+        // left queued.
+        self.rx_pending = true;
+    }
+
+    pub(crate) fn rx_pending(&self) -> bool {
+        self.rx_pending
     }
 
     pub(crate) fn ban(&mut self, ip: IpAddr) {
@@ -165,5 +175,39 @@ impl Socket {
 
     pub(crate) fn unban(&mut self, ip: IpAddr) {
         self.banned_ips.remove(&ip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::UdpSocket as StdUdpSocket;
+
+    use super::*;
+
+    #[test]
+    fn bounded_recv_flags_datagrams_left_queued() {
+        let poll = Poll::new().unwrap();
+        let mut socket = Socket::new("127.0.0.1:0".parse().unwrap(), &poll, Token(0)).unwrap();
+        let port = socket.socket.local_addr().unwrap().port();
+        let sender = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+        let sent = 2 * RX_BATCH_MAX + 7;
+        for _ in 0..sent {
+            sender.send_to(&[0u8; 32], ("127.0.0.1", port)).unwrap();
+        }
+
+        let mut received = 0;
+        socket.recv(1, |_, _, _, _| {
+            received += 1;
+            true
+        });
+        assert_eq!(received, RX_BATCH_MAX);
+        assert!(socket.rx_pending());
+
+        socket.recv(usize::MAX, |_, _, _, _| {
+            received += 1;
+            true
+        });
+        assert_eq!(received, sent);
+        assert!(!socket.rx_pending());
     }
 }

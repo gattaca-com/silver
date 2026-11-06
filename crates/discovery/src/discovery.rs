@@ -21,6 +21,7 @@ pub struct DiscoveryMetrics {
     pub routing_table_nodes: usize,
     pub nodes_discovered: usize,
     pub whoareyou_limit_hits: usize,
+    pub request_limit_hits: usize,
     pub failed_nodes: usize,
 }
 

@@ -17,6 +17,11 @@ pub const STATIC_HEADER_LENGTH: usize = 23;
 const MIN_PACKET_SIZE: usize = IV_LENGTH + STATIC_HEADER_LENGTH + 24;
 
 pub const ENR_RECORD_MAX: usize = 300;
+/// IV(16) + static header(23) + message auth data(32) + GCM tag(16).
+pub const MAX_MESSAGE_PLAINTEXT: usize = MAX_PACKET_SIZE - 16 - 23 - 32 - 16;
+/// Worst-case Nodes framing around its ENRs: type(1) + list header(3) +
+/// request id(9) + total(2) + node list header(3).
+pub const NODES_MESSAGE_OVERHEAD: usize = 1 + 3 + 9 + 2 + 3;
 
 const PROTOCOL_ID: [u8; 6] = *b"discv5";
 const PROTOCOL_VERSION: [u8; 2] = [0x00, 0x01];
@@ -324,9 +329,7 @@ impl<'a> Packet<'a> {
     ) -> Option<ArrayVec<u8, MAX_PACKET_SIZE>> {
         let iv: u128 = rand::random();
 
-        // max plaintext = MAX_PACKET_SIZE - IV(16) - header(23) - auth_data(32) - GCM
-        // tag(16)
-        let mut plain: ArrayVec<u8, 1193> = ArrayVec::new();
+        let mut plain: ArrayVec<u8, MAX_MESSAGE_PLAINTEXT> = ArrayVec::new();
         msg.encode(&mut plain);
         let tmp = Packet { iv, src_id, nonce, kind: MessageKind::Message, message: &[] };
         let aad = tmp.authenticated_data();
