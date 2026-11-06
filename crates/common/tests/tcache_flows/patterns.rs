@@ -285,7 +285,7 @@ fn long_lived_pin() {
         1,
     );
     world.run(Driver::Sequential);
-    check(&world, Expect::Holds);
+    check(&world, Expect::Known("lag eviction at 90% of capacity drops a held pin"));
 }
 
 /// Storage's `reader` and `persist_reader`: two consumers of one cache in one

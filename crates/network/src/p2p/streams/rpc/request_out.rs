@@ -81,6 +81,7 @@ impl RpcWriteRequest {
 
                 let mut writer = StreamWriter(id.stream_id(), io);
                 let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
+                revalidate_request(&request)?;
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
@@ -119,6 +120,16 @@ fn request_buffer(request: &AcquiredRpcRequest, offset: usize) -> Result<&[u8], 
         }
     };
     Ok(buf)
+}
+
+fn revalidate_request(request: &AcquiredRpcRequest) -> Result<(), StreamError> {
+    match request {
+        AcquiredRpcRequest::BlockByRoot(read) |
+        AcquiredRpcRequest::DataColumnsByRoot(read) |
+        AcquiredRpcRequest::ExecutionPayloadEnvelopesByRoot(read) => read.revalidate()?,
+        _ => {}
+    }
+    Ok(())
 }
 
 #[inline]
