@@ -722,7 +722,7 @@ source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70
 
 [[package]]
 name = "byte-stable"
-version = "0.10.1"
+version = "0.11.0"
 
 [[package]]
 name = "byte-stable-derive"
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "byte-stable-derive"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1725,10 +1725,10 @@ dependencies = [
 
 [[package]]
 name = "flux-disk"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
- "flux-timing 0.10.1",
- "flux-utils 0.10.1",
+ "flux-timing 0.11.0",
+ "flux-utils 0.11.0",
  "io-uring",
  "libc",
  "tracing",
@@ -1805,11 +1805,11 @@ dependencies = [
 
 [[package]]
 name = "flux-timing"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "bitcode",
- "byte-stable 0.10.1",
- "byte-stable-derive 0.10.1",
+ "byte-stable 0.11.0",
+ "byte-stable-derive 0.11.0",
  "chrono",
  "governor",
  "humantime",
@@ -1817,8 +1817,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "type-hash 0.10.1",
- "type-hash-derive 0.10.1",
+ "type-hash 0.11.0",
+ "type-hash-derive 0.11.0",
 ]
 
 [[package]]
@@ -1843,20 +1843,20 @@ dependencies = [
 
 [[package]]
 name = "flux-utils"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
- "byte-stable 0.10.1",
+ "byte-stable 0.11.0",
  "core_affinity",
  "directories",
- "flux-timing 0.10.1",
+ "flux-timing 0.11.0",
  "libc",
  "rand 0.9.4",
  "serde",
  "spin",
  "thiserror 1.0.69",
  "tracing",
- "type-hash 0.10.1",
- "type-hash-derive 0.10.1",
+ "type-hash 0.11.0",
+ "type-hash-derive 0.11.0",
 ]
 
 [[package]]
@@ -6199,7 +6199,7 @@ source = "git+https://github.com/gattaca-com/flux?rev=004884d1e82bb6afb1df81fa70
 
 [[package]]
 name = "type-hash"
-version = "0.10.1"
+version = "0.11.0"
 
 [[package]]
 name = "type-hash-derive"
@@ -6214,7 +6214,7 @@ dependencies = [
 
 [[package]]
 name = "type-hash-derive"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
