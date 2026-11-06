@@ -16,8 +16,8 @@ use silver_beacon_state_data::SLOTS_PER_EPOCH;
 use silver_common::{DataKind, Enr, PeerEvent, TCacheProducer, TCacheRead, TProducer, hex32};
 
 use super::{
-    Payload, PendingWrite, QueryUnit, Store, backfill::BlockFacts, block_path, column_path,
-    envelope_path, first_retained_slot, slot_dir, unfinalized::PayloadKey,
+    Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store, backfill::BlockFacts, block_path,
+    column_path, envelope_path, first_retained_slot, slot_dir, unfinalized::PayloadKey,
 };
 use crate::{StorageCounters, tile::IoEvent};
 
@@ -102,9 +102,7 @@ impl Store {
                     let epoch = finalized_slot / SLOTS_PER_EPOCH;
                     let earliest_slot =
                         finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
-                    let dir =
-                        PathBuf::new().join(&self.store_dir).join(payload.finalized_dir_name());
-                    remove_subdirs(dir, first_retained_slot(earliest_slot))?;
+                    self.remove_history_below(payload, first_retained_slot(earliest_slot))?;
                     self.finalized.truncated(payload, earliest_slot);
                 }
                 PendingWrite::BackfillBlock { block, ssz } => {
@@ -258,7 +256,34 @@ impl Store {
         }
 
         self.step_checkpoint();
+        self.remover.step();
 
+        Ok(())
+    }
+
+    /// The first call of a run lists the payload's groups. Floors only rise,
+    /// so later calls derive the groups the floor passed by number.
+    fn remove_history_below(&mut self, payload: Payload, first_retained: u64) -> Result<(), Error> {
+        let dir = Path::new(&self.store_dir).join(payload.finalized_dir_name());
+        let floor = &mut self.history_floors[payload as usize];
+        match *floor {
+            Some(previous) => {
+                for group in (previous..first_retained).step_by(SLOTS_PER_DIR as usize) {
+                    self.remover.remove(dir.join(group.to_string()));
+                }
+            }
+            None => {
+                for entry in std::fs::read_dir(&dir)? {
+                    let entry = entry?;
+                    let group =
+                        entry.file_name().to_str().and_then(|name| name.parse::<u64>().ok());
+                    if group.is_some_and(|group| group < first_retained) {
+                        self.remover.remove(entry.path());
+                    }
+                }
+            }
+        }
+        *floor = Some(floor.map_or(first_retained, |previous| previous.max(first_retained)));
         Ok(())
     }
 
@@ -407,22 +432,4 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
         out[i] = ((hi << 4) | lo) as u8;
     }
     Some(out)
-}
-
-fn remove_subdirs<P: AsRef<Path>>(dir: P, first_retained: u64) -> Result<(), Error> {
-    let contents = std::fs::read_dir(dir)?;
-    for entry in contents {
-        let entry = entry?;
-        let dir_entry = entry.file_name();
-        if let Ok(dir_number) =
-            dir_entry.to_str().ok_or(Error::other("unparsable dir name"))?.parse::<u64>()
-        {
-            if dir_number < first_retained {
-                // `entry.path()` is the full path; `file_name()` alone would
-                // resolve relative to CWD, not `dir`.
-                std::fs::remove_dir_all(entry.path())?;
-            }
-        }
-    }
-    Ok(())
 }

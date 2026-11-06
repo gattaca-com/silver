@@ -5450,6 +5450,7 @@ dependencies = [
  "blst",
  "c-kzg",
  "flux",
+ "flux-disk",
  "flux-profiler",
  "fxhash",
  "hex",

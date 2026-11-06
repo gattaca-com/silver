@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use flux_disk::{DiskConfig, DiskIo};
 use flux_profiler::timed;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
@@ -32,6 +33,7 @@ mod coverage;
 mod finalized;
 mod history;
 mod io;
+mod remover;
 mod unfinalized;
 
 use backfill::{BlockFacts, PayloadFacts, VerifiedColumns};
@@ -40,6 +42,7 @@ pub use checkpoint::latest_local_checkpoint;
 use coverage::Block;
 use finalized::Finalized;
 use history::History;
+use remover::DirectoryRemover;
 use unfinalized::{PayloadKey, UnfinalizedBlocks, UnfinalizedColumns, UnfinalizedEnvelopes};
 
 /// `DataColumnSidecarsByRange` is bounded by
@@ -63,6 +66,10 @@ const MAX_INFLIGHT_QUERIES_PER_PEER: usize = 8;
 const SLOTS_PER_DIR: u64 = 128;
 
 const PEERS_DIR: &str = "peers";
+
+/// Uncapped, io_uring's kernel workers cost ~50% more CPU per created file
+/// than four (flux-disk `many_files` example, 64 files in flight).
+const IO_WORKERS: u32 = 4;
 
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
 
@@ -396,6 +403,13 @@ impl PendingQuery {
 
 /// Truncation removes whole slot groups, so the group holding `earliest_slot`
 /// stays and everything below it goes.
+fn disk_ring() -> Result<DiskIo, Error> {
+    let unavailable = |e: Error| Error::new(e.kind(), format!("io_uring unavailable: {e}"));
+    let mut disk = DiskIo::new(DiskConfig::default()).map_err(unavailable)?;
+    disk.limit_io_workers(IO_WORKERS, 0).map_err(unavailable)?;
+    Ok(disk)
+}
+
 pub(super) fn first_retained_slot(earliest_slot: u64) -> u64 {
     earliest_slot - earliest_slot % SLOTS_PER_DIR
 }
@@ -441,8 +455,12 @@ pub(super) struct Store {
     history: History,
     // Slot of the newest finalized-state checkpoint committed to disk.
     last_persisted_finalized_slot: u64,
-    // In-flight streamed checkpoint, advanced one section per `file_io` turn.
+    // In-flight streamed checkpoint, advanced one chunk or commit stage per
+    // `file_io` turn.
     checkpoint: Option<CheckpointWriter>,
+    remover: DirectoryRemover,
+    // Per payload, the history floor already handed to `remover`.
+    history_floors: [Option<u64>; ALL_PAYLOADS.len()],
 
     write_queue: WriteQueue,
     query_queue: VecDeque<PendingQuery>,
@@ -473,6 +491,7 @@ impl Store {
         // Finalized-state checkpoints: drop incomplete dirs, prune to the
         // newest N, and anchor `last_persisted` at the newest committed slot.
         let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
+        let remover = DirectoryRemover::new(&store_dir)?;
 
         Ok(Self {
             history: History::new(spec.clone()),
@@ -486,6 +505,8 @@ impl Store {
             sync_target: SyncUpdate::default(),
             last_persisted_finalized_slot,
             checkpoint: None,
+            remover,
+            history_floors: [None; ALL_PAYLOADS.len()],
             write_queue: Default::default(),
             query_queue: Default::default(),
         })

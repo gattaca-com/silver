@@ -1096,6 +1096,38 @@ fn retention_keeps_the_group_holding_the_floor_and_nothing_below() {
     assert_eq!(super::first_retained_slot(7 * group + 104), 7 * group);
 }
 
+/// Groups below the floor go with every file in them; the group holding the
+/// floor stays.
+#[test]
+fn truncation_removes_whole_groups_below_the_floor() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().to_str().unwrap().to_owned();
+    let mut store = load_fulu(store_path.clone());
+    let group = super::SLOTS_PER_DIR;
+    for slot in [0, 1, group - 1, group, 2 * group] {
+        for column in 0..3 {
+            place_column(&store_path, slot, column);
+        }
+    }
+
+    store.write_queue.push_back(super::PendingWrite::TruncateHistory {
+        payload: super::Payload::Column,
+        finalized_slot: super::COLUMN_SLOTS_RETAINED + group + 5,
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    drain(&mut store).unwrap();
+    while !store.remover.is_idle() {
+        assert!(Instant::now() < deadline, "truncation did not finish");
+        drain(&mut store).unwrap();
+    }
+
+    let group_dir = |slot| super::slot_dir(&store_path, super::Payload::Column, slot);
+    assert!(!group_dir(0).exists());
+    for slot in [group, 2 * group] {
+        assert!(column_path(&store_path, slot, 2).exists(), "slot {slot} is retained");
+    }
+}
+
 /// Written once the queue has drained, not once per turn while it drains.
 #[test]
 fn coverage_is_persisted_once_the_writes_settle() {

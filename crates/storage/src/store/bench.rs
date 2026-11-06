@@ -288,6 +288,10 @@ fn storage_bench_backfill_columns() {
     sample.report("W2 backfill columns", slots * COLUMNS, slots * COLUMNS * column.len() as u64);
 }
 
+/// Retained groups beside the removed one: block history on mainnet keeps
+/// about this many, and every truncation lists them.
+const RETAINED_GROUPS: u64 = 8192;
+
 /// One retention step that drops a full group of finalized columns.
 #[test]
 #[ignore = "manual benchmark; writes GiBs to SILVER_BENCH_DIR"]
@@ -304,15 +308,33 @@ fn storage_bench_truncate_column_group() {
             std::fs::write(path, &column).unwrap();
         }
     }
+    for group in 1..=RETAINED_GROUPS {
+        std::fs::create_dir(super::slot_dir(&store_dir, Payload::Column, group * SLOTS_PER_DIR))
+            .unwrap();
+    }
     unsafe { libc::sync() };
 
+    // The first truncation of a run lists every group once; later ones only
+    // derive the groups the floor passed. Measure a later one.
     let mut producer = served_producer();
+    store.write_queue.push_back(PendingWrite::TruncateHistory {
+        payload: Payload::Column,
+        finalized_slot: COLUMN_SLOTS_RETAINED,
+    });
+    let first = Instant::now();
+    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    println!("first truncation of the run (lists {RETAINED_GROUPS} groups): {:?}", first.elapsed());
+
     let mut sample = Sample::start();
     store.write_queue.push_back(PendingWrite::TruncateHistory {
         payload: Payload::Column,
         finalized_slot: COLUMN_SLOTS_RETAINED + SLOTS_PER_DIR,
     });
     sample.file_io(&mut store, &mut producer);
+    while !store.remover.is_idle() {
+        sample.file_io(&mut store, &mut producer);
+    }
     assert!(!super::slot_dir(&store_dir, Payload::Column, 0).exists());
+    assert!(super::slot_dir(&store_dir, Payload::Column, SLOTS_PER_DIR).exists());
     sample.report("W5 truncate one column group (files)", SLOTS_PER_DIR * COLUMNS, 0);
 }
