@@ -24,6 +24,10 @@ function chart(specs, key, spec, title) {
   return `<div><p class="meta">${escape(title)}</p><div class="chart" data-chart="${key}"></div></div>`;
 }
 
+export function available(fleet) {
+  return clusterNodes(fleet).length > 0;
+}
+
 export function render(fleet, root, _now, ui) {
   const nodes = clusterNodes(fleet);
   if (!nodes.length) {

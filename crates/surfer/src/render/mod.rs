@@ -43,6 +43,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let spans: Vec<Span> = PANES
         .iter()
+        .filter(|&&p| app.shows(p))
         .flat_map(|&p| {
             let style = if p == app.pane {
                 Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)

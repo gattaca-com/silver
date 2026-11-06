@@ -282,11 +282,36 @@ impl App {
         }
     }
 
+    fn clustered(&self) -> bool {
+        self.counters.iter().find(|set| set.name == "cluster").is_some_and(|set| {
+            set.slot_names
+                .iter()
+                .position(|name| name == "Clustered")
+                .is_some_and(|i| set.current[i] == 1)
+        })
+    }
+
+    pub fn shows(&self, pane: Pane) -> bool {
+        pane != Pane::Cluster || self.clustered()
+    }
+
+    pub fn cycle_pane(&mut self, step: fn(Pane) -> Pane) {
+        let mut pane = step(self.pane);
+        while !self.shows(pane) {
+            pane = step(pane);
+        }
+        self.pane = pane;
+        self.drilled_in = false;
+    }
+
     pub fn sample(&mut self) {
         // First: the mark rings lap if they wait on the other sources' latency.
         self.flamegraph.sample();
         for c in &mut self.counters {
             c.sample();
+        }
+        if !self.shows(self.pane) {
+            self.cycle_pane(Pane::next);
         }
         for c in &mut self.tcaches {
             c.sample_tcache();

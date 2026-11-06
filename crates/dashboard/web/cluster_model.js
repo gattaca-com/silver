@@ -163,7 +163,7 @@ export function clusterNodes(fleet) {
   const nodes = fleet
     .sorted()
     .map((inst, index) => new ClusterNode(inst, index))
-    .filter((node) => node.present);
+    .filter((node) => node.present && node.value('Clustered') === 1);
   const voters = new Set(nodes.flatMap((node) => node.peers().map((p) => p.nodeId)));
   for (const node of nodes) {
     const peers = new Set(node.peers().map((p) => p.nodeId));

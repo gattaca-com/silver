@@ -158,6 +158,7 @@ impl SlashingProtectionHandler {
     ) -> Result<Self, ClusterError> {
         let cluster =
             config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
+        ClusterCounters::Clustered.set(cluster.is_some() as u64);
         ClusterCounters::FloorLatched.set(0);
         ClusterCounters::StartupFloorSlot.set(0);
 

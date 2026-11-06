@@ -25,9 +25,12 @@ let active = PANES[location.hash.slice(1)] ? location.hash.slice(1) : 'home';
 const root = document.getElementById('pane');
 const status = document.getElementById('status');
 
+const shown = (pane) => PANES[pane].available?.(fleet) ?? true;
+
 function renderTabs() {
   for (const tab of document.querySelectorAll('nav [data-pane]')) {
     tab.classList.toggle('active', tab.dataset.pane === active);
+    tab.hidden = !shown(tab.dataset.pane);
   }
 }
 
@@ -42,6 +45,11 @@ let replaying = true;
  *  old sections and is restored after it. */
 function render() {
   if (replaying) return;
+  if (!shown(active)) {
+    active = 'home';
+    history.replaceState(null, '', '#home');
+  }
+  renderTabs();
   lastRender = performance.now();
   const y = window.scrollY;
   const xs = [...root.querySelectorAll('section')].map((s) => s.scrollLeft);
