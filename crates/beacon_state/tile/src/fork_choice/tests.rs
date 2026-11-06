@@ -1129,6 +1129,30 @@ fn gloas_empty_survives_full_invalid() {
     assert_eq!(fc.find_head(), root(4));
 }
 
+/// Same-slot equivocating blocks can carry one payload. The EL's latest
+/// valid hash names the copy on the invalidated block's own chain, not the
+/// first copy imported.
+#[test]
+fn latest_valid_hash_resolves_along_the_ancestry() {
+    let g = cp(0, 1);
+    let mut fc = anchored(0);
+    let with_payload = |slot, block_root, parent_root, hash| BlockImport {
+        execution_block_hash: hash,
+        bid_block_hash: hash,
+        ..block(slot, block_root, parent_root, g, g)
+    };
+    fc.on_block(with_payload(1, root(2), root(1), [0xAA; 32]));
+    fc.on_block(with_payload(1, root(3), root(1), [0xAA; 32]));
+    fc.on_block(with_payload(2, root(4), root(3), [0xBB; 32]));
+
+    fc.on_payload_invalid(&root(4), Some([0xAA; 32]));
+
+    let status = |b| fc.nodes[fc.find_node_idx(&root(b)).unwrap()].execution_status;
+    assert_eq!(status(4), ExecutionStatus::Invalid);
+    assert_eq!(status(3), ExecutionStatus::Valid);
+    assert_eq!(status(2), ExecutionStatus::Optimistic);
+}
+
 /// Proposer boost on a (same-slot) Gloas block is a block-level PENDING
 /// vote, not an EMPTY vote: it must not block the block from resolving FULL
 /// once its envelope is verified. (Regression: routing boost to `empty`

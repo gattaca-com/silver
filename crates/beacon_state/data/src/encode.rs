@@ -588,7 +588,8 @@ pub fn decode_checkpoint_pubkeys(bytes: &[u8]) -> Result<Vec<PublicKey>, Pubkeys
     }
     let count = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
     let body = &bytes[PUBKEYS_HEADER..];
-    if body.len() != count * PUBKEY_SER {
+    // Divide, not multiply: an untrusted `count` must not wrap.
+    if !body.len().is_multiple_of(PUBKEY_SER) || body.len() / PUBKEY_SER != count {
         return Err(PubkeysDecodeError::LenMismatch { body: body.len(), count });
     }
     let mut out = Vec::with_capacity(count);
@@ -687,5 +688,18 @@ mod tests {
         }
         let decoded = decode_checkpoint_pubkeys(&sidecar).expect("decode");
         assert_eq!(decoded.len(), bs.validators.finalized().validator_count());
+    }
+
+    /// `count × 96` wraps to 0 for this count, which once let an empty body
+    /// through to a `Vec::with_capacity(count)` abort.
+    #[test]
+    fn pubkeys_sidecar_rejects_a_count_that_overflows() {
+        let mut sidecar = super::PUBKEYS_MAGIC.to_vec();
+        sidecar.extend_from_slice(&super::PUBKEYS_VERSION.to_le_bytes());
+        sidecar.extend_from_slice(&(1u64 << 59).to_le_bytes());
+        assert!(matches!(
+            decode_checkpoint_pubkeys(&sidecar),
+            Err(super::PubkeysDecodeError::LenMismatch { body: 0, .. })
+        ));
     }
 }

@@ -204,7 +204,15 @@ impl ExecutionPayloadBid {
                 size: EXECUTION_PAYLOAD_BID_FIXED,
             });
         }
-        let kzg = &body[u32_le(body, 188) as usize..];
+        let off = u32_le(body, 188) as usize;
+        if off != EXECUTION_PAYLOAD_BID_FIXED {
+            return Err(DecomposeError::GloasOffset {
+                field: "latest_execution_payload_bid",
+                off,
+                fixed: EXECUTION_PAYLOAD_BID_FIXED,
+            });
+        }
+        let kzg = &body[off..];
         if !kzg.len().is_multiple_of(KZG_COMMITMENT_SSZ) {
             return Err(DecomposeError::GloasFieldLen {
                 field: "blob_kzg_commitments",
@@ -274,5 +282,33 @@ impl ExecutionPayloadBid {
         out.extend_from_slice(&((4 + signature.len()) as u32).to_le_bytes());
         out.extend_from_slice(signature);
         self.write_ssz(out).expect("writes to a Vec");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EXECUTION_PAYLOAD_BID_FIXED, ExecutionPayloadBid, KZG_COMMITMENT_SSZ};
+
+    fn bid_with_offset(off: u32) -> Vec<u8> {
+        let mut body = vec![0u8; EXECUTION_PAYLOAD_BID_FIXED + 2 * KZG_COMMITMENT_SSZ];
+        body[188..192].copy_from_slice(&off.to_le_bytes());
+        body[EXECUTION_PAYLOAD_BID_FIXED] = 0xAA;
+        body
+    }
+
+    #[test]
+    fn bid_decodes_its_commitments_after_the_fixed_part() {
+        let bid = ExecutionPayloadBid::from_ssz(&bid_with_offset(224)).unwrap();
+        assert_eq!(bid.blob_kzg_commitments.len(), 2);
+        assert_eq!(bid.blob_kzg_commitments[0][0], 0xAA);
+    }
+
+    /// 999 is past the end; 128 lands inside the fixed part yet leaves a
+    /// whole number of commitments, so only the exact offset is safe.
+    #[test]
+    fn bid_rejects_any_offset_but_the_fixed_part() {
+        for off in [999, 128] {
+            assert!(ExecutionPayloadBid::from_ssz(&bid_with_offset(off)).is_err(), "offset {off}");
+        }
     }
 }

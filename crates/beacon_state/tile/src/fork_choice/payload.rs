@@ -57,8 +57,8 @@ impl ForkChoice {
             return;
         }
 
-        let lvh_idx = latest_valid_hash
-            .and_then(|hash| self.nodes.iter().position(|n| n.execution_block_hash == hash));
+        // Two branches can carry the same payload, so only an ancestor counts.
+        let lvh_idx = latest_valid_hash.and_then(|hash| self.payload_owner(head_idx, &hash));
 
         info!(?block_root, ?latest_valid_hash, "payload invalid, marking branch");
 
