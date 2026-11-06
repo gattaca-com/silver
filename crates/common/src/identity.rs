@@ -535,7 +535,7 @@ fn read_tag(data: &[u8], pos: usize) -> Result<(u32, u8, usize), Error> {
 
 fn read_len_delim<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Error> {
     let (len, p) = decode_varint(data, *pos)?;
-    let end = (len as usize).checked_add(p).ok_or(Error::BadDer)?;
+    let end = usize::try_from(len).ok().and_then(|len| len.checked_add(p)).ok_or(Error::BadDer)?;
     let slice = data.get(p..end).ok_or(Error::BadDer)?;
     *pos = end;
     Ok(slice)
@@ -665,7 +665,7 @@ pub fn parse_eth2_multiaddr(data: &[u8]) -> Option<Eth2Addr> {
             // the bytes through `from_protobuf_encoded` — those expect the
             // inner protobuf pubkey, not an already-formed multihash.
             let (len, p) = decode_varint(data, pos).ok()?;
-            let end = (len as usize).checked_add(p)?;
+            let end = usize::try_from(len).ok()?.checked_add(p)?;
             let peer_id = PeerId::from_multihash_bytes(data.get(p..end)?)?;
             return Some(Eth2Addr::PeerId(peer_id));
         }

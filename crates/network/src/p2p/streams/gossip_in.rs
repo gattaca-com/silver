@@ -8,7 +8,7 @@ use silver_common::{
 };
 
 use crate::{
-    NetEvent,
+    NetEvent, NetworkCounters,
     p2p::{
         inbound_rate_limits::InboundRateLimits,
         streams::{StreamError, StreamIo},
@@ -16,6 +16,17 @@ use crate::{
 };
 
 pub(crate) const GOSSIP_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(1);
+/// A body holds its ingress reservation until complete, and the ring cannot
+/// reuse space past it: bound the hold whatever the trickle rate.
+const GOSSIP_BODY_DEADLINE_BASE: Duration = Duration::from_secs(2);
+const GOSSIP_BODY_MIN_BYTES_PER_SECOND: u64 = 512 * 1024;
+/// Frames are emitted back to back while bytes are buffered; yield so one
+/// peer cannot hold the tile.
+const MAX_FRAMES_PER_SPIN: usize = 64;
+
+/// Frames are stored behind their `P2pStreamId`.
+pub(crate) const MAX_GOSSIP_RESERVATION_LEN: usize =
+    MAX_GOSSIP_FRAME_SIZE + size_of::<P2pStreamId>();
 
 /// Read-side state for gossipsub: varint length prefix then body.
 #[derive(Debug)]
@@ -27,7 +38,15 @@ pub(crate) enum GossipReadState {
     /// Have read length but buffer needs to be allocated.
     AllocBody { length: usize, buf: [u8; 10], buf_start: usize, buf_end: usize, fail_count: usize },
     /// Reading message body. `remaining` bytes left.
-    ReadingBody { reservation: TReservation, remaining: usize, last_read: Instant },
+    ReadingBody {
+        reservation: TReservation,
+        remaining: usize,
+        last_read: Instant,
+        deadline: Instant,
+    },
+    /// Frame budget for this spin spent with input possibly still buffered
+    /// in quinn, where no event re-drives it.
+    Yielded { buf: [u8; 10], read: usize },
     /// It is possible for the incoming half of the stream to be closed and
     /// stream still valid for an outbound gossip stream.
     Closed,
@@ -42,6 +61,11 @@ impl Default for GossipReadState {
 enum Spin {
     Ok(GossipReadState),
     Next(GossipReadState),
+    /// A frame was consumed; `buf[..read]` holds bytes past it.
+    Frame {
+        buf: [u8; 10],
+        read: usize,
+    },
 }
 
 impl GossipReadState {
@@ -57,19 +81,33 @@ impl GossipReadState {
     where
         F: FnMut(NetEvent),
     {
+        let mut frames = 0;
         loop {
             match self.spin_inner(io, tcache, p2p_id, now, limits, emit)? {
                 Spin::Ok(gossip_read_state) => {
-                    if let Self::ReadingBody { last_read, remaining, .. } = &gossip_read_state &&
-                        now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT
+                    if let Self::ReadingBody { last_read, remaining, deadline, .. } =
+                        &gossip_read_state
                     {
-                        silver_log::warn!(?p2p_id, remaining, "gossip body read stalled");
-                        return Err(StreamError::ReadStall);
+                        if now.saturating_duration_since(*last_read) > GOSSIP_BODY_STALL_TIMEOUT {
+                            silver_log::warn!(?p2p_id, remaining, "gossip body read stalled");
+                            return Err(StreamError::ReadStall);
+                        }
+                        if now > *deadline {
+                            silver_log::warn!(?p2p_id, remaining, "gossip body past its deadline");
+                            return Err(StreamError::ReadStall);
+                        }
                     }
                     return Ok(gossip_read_state);
                 }
                 Spin::Next(gossip_read_state) => {
                     self = gossip_read_state;
+                }
+                Spin::Frame { buf, read } => {
+                    frames += 1;
+                    if frames == MAX_FRAMES_PER_SPIN {
+                        return Ok(Self::Yielded { buf, read });
+                    }
+                    self = Self::ReadingLength { buf, read };
                 }
             }
         }
@@ -111,6 +149,12 @@ impl GossipReadState {
                             bytes_per_second: limits.gossip_bytes_per_second(),
                         });
                     }
+                    if length == 0 {
+                        NetworkCounters::GossipEmptyFrameDropped.inc();
+                        let mut next = [0u8; 10];
+                        next[..read - offset].copy_from_slice(&buf[offset..read]);
+                        return Ok(Spin::Frame { buf: next, read: read - offset });
+                    }
                     return Ok(Spin::Next(Self::AllocBody {
                         length,
                         buf,
@@ -148,12 +192,13 @@ impl GossipReadState {
                         let excess = buf_end - buf_start - take;
                         let mut next = [0u8; 10];
                         next[..excess].copy_from_slice(&buf[buf_start + take..buf_end]);
-                        return Ok(Spin::Next(Self::ReadingLength { buf: next, read: excess }));
+                        return Ok(Spin::Frame { buf: next, read: excess });
                     }
                     return Ok(Spin::Next(Self::ReadingBody {
                         reservation,
                         remaining,
                         last_read: now,
+                        deadline: body_deadline(now, length),
                     }));
                 }
                 if fail_count == 0 {
@@ -167,7 +212,12 @@ impl GossipReadState {
                     fail_count: fail_count + 1,
                 }))
             }
-            GossipReadState::ReadingBody { mut reservation, mut remaining, mut last_read } => {
+            GossipReadState::ReadingBody {
+                mut reservation,
+                mut remaining,
+                mut last_read,
+                deadline,
+            } => {
                 let n = io
                     .read_from_stream(p2p_id.stream_id(), reservation.remaining_buffer()?)
                     .inspect_err(|e| {
@@ -181,14 +231,21 @@ impl GossipReadState {
                 if remaining == 0 {
                     assert!(reservation.is_committed());
                     emit(NetEvent::Gossip { stream: *p2p_id, msg: reservation.read() });
-                    // Continue into the next frame.
-                    return Ok(Spin::Next(Self::ReadingLength { buf: [0u8; 10], read: 0 }));
+                    return Ok(Spin::Frame { buf: [0u8; 10], read: 0 });
                 }
-                Ok(Spin::Ok(Self::ReadingBody { reservation, remaining, last_read }))
+                Ok(Spin::Ok(Self::ReadingBody { reservation, remaining, last_read, deadline }))
+            }
+            GossipReadState::Yielded { buf, read } => {
+                Ok(Spin::Next(Self::ReadingLength { buf, read }))
             }
             GossipReadState::Closed => Ok(Spin::Ok(Self::Closed)),
         }
     }
+}
+
+fn body_deadline(now: Instant, length: usize) -> Instant {
+    let transfer = Duration::from_secs_f64(length as f64 / GOSSIP_BODY_MIN_BYTES_PER_SECOND as f64);
+    now + GOSSIP_BODY_DEADLINE_BASE + transfer
 }
 
 fn varint_complete(buf: &[u8]) -> bool {
@@ -210,7 +267,10 @@ mod tests {
     use silver_common::{StreamProtocol, TCache, TCacheId, TCacheReader, TRead, TReadMode};
 
     use super::*;
-    use crate::p2p::{inbound_rate_limits::InboundLimits, streams::AcquiredRpcOutbound};
+    use crate::p2p::{
+        inbound_rate_limits::{InboundLimits, MIN_GOSSIP_FRAME_CHARGE},
+        streams::AcquiredRpcOutbound,
+    };
 
     struct MockIo {
         data: Vec<u8>,
@@ -288,6 +348,71 @@ mod tests {
         consumer.free();
         let (frame, _) = consumer.read().expect("second frame");
         assert_eq!(&frame[header..], b"bbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn empty_frames_are_dropped_and_a_spin_yields_after_its_frame_budget() {
+        let mut wire = vec![0u8; 3];
+        for _ in 0..MAX_FRAMES_PER_SPIN {
+            wire.extend_from_slice(&[1, 0xaa]);
+        }
+        let mut limits = InboundRateLimits::new(InboundLimits::default(), Instant::now());
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
+        let dropped = NetworkCounters::GossipEmptyFrameDropped.get();
+
+        let mut emitted = 0;
+        let state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut limits, &mut |_| {
+                emitted += 1
+            })
+            .unwrap();
+        assert!(matches!(state, GossipReadState::Yielded { .. }));
+        assert_eq!(emitted, MAX_FRAMES_PER_SPIN - 3, "empty frames count against the budget");
+        assert!(NetworkCounters::GossipEmptyFrameDropped.get() >= dropped + 3);
+
+        let state = state
+            .spin(&mut io, &mut producer, &p2p_id, Instant::now(), &mut limits, &mut |_| {
+                emitted += 1
+            })
+            .unwrap();
+        assert!(matches!(state, GossipReadState::ReadingLength { read: 0, .. }));
+        assert_eq!(emitted, MAX_FRAMES_PER_SPIN);
+    }
+
+    #[test]
+    fn trickled_body_fails_at_its_absolute_deadline() {
+        let length = 1000;
+        let mut wire = vec![0xe8, 0x07];
+        wire.push(0xaa);
+        let mut limits = InboundRateLimits::new(InboundLimits::default(), Instant::now());
+        let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+        let p2p_id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
+        let mut io = MockIo { data: wire, pos: 0, eof: false };
+        let t0 = Instant::now();
+        let mut state = GossipReadState::default()
+            .spin(&mut io, &mut producer, &p2p_id, t0, &mut limits, &mut |_| {
+                panic!("incomplete body emitted")
+            })
+            .unwrap();
+
+        // One byte per 0.9 s never trips the 1 s stall check.
+        let step = GOSSIP_BODY_STALL_TIMEOUT - Duration::from_millis(100);
+        let mut now = t0;
+        while now <= body_deadline(t0, length) {
+            now += step;
+            io.data.push(0xaa);
+            match state.spin(&mut io, &mut producer, &p2p_id, now, &mut limits, &mut |_| {}) {
+                Ok(next) => state = next,
+                Err(StreamError::ReadStall) => {
+                    assert!(now > body_deadline(t0, length));
+                    return;
+                }
+                Err(e) => panic!("unexpected error {e:?}"),
+            }
+        }
+        panic!("trickled body outlived its deadline");
     }
 
     /// Frames that complete inside the length read-ahead (an
@@ -625,8 +750,8 @@ mod tests {
     fn rate_limit_counts_prefix_and_rejects_before_allocating_body() {
         let now = Instant::now();
         let mut limits = frame_burst_limits(now);
-        let body = vec![0x44; 256];
-        let mut wire = vec![0x80, 0x02];
+        let body = vec![0x44; 2000];
+        let mut wire = vec![0xd0, 0x0f];
         wire.extend_from_slice(&body);
         assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - wire.len() + 1, now));
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
@@ -638,7 +763,7 @@ mod tests {
                 panic!("rejected frame emitted")
             })
             .unwrap_err();
-        assert!(matches!(error, StreamError::GossipRateLimited { frame_bytes: 258, .. }));
+        assert!(matches!(error, StreamError::GossipRateLimited { frame_bytes: 2002, .. }));
         assert_eq!(producer.next_seq(), before);
         assert_eq!(io.pos, 10, "only the prefix read may prefetch body bytes");
     }
@@ -649,7 +774,7 @@ mod tests {
         let mut limits = frame_burst_limits(now);
         let mut wire = vec![0x80, 0x02];
         wire.extend_from_slice(&[0x44; 256]);
-        assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - wire.len(), now));
+        assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - MIN_GOSSIP_FRAME_CHARGE, now));
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
         let id = P2pStreamId::new(0, 4, StreamProtocol::GossipSub, true);
         let mut io = MockIo { data: Vec::new(), pos: 0, eof: false };
@@ -681,7 +806,7 @@ mod tests {
     fn allocation_retries_do_not_charge_the_frame_again() {
         let now = Instant::now();
         let mut limits = frame_burst_limits(now);
-        assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - 101, now));
+        assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - MIN_GOSSIP_FRAME_CHARGE, now));
         let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 12);
         let mut consumer = producer.cache_ref().consumer("t").unwrap();
         let held = producer.reserve(100, true).unwrap();

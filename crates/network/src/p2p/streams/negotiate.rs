@@ -1,10 +1,19 @@
 use quinn_proto::StreamId;
-use silver_common::{MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
+use silver_common::{ALL_PROTOCOLS, MULTISTREAM_V1, REJECT_RESPONSE, StreamProtocol};
 
 use super::StreamError;
 use crate::p2p::streams::StreamIo;
 
 const MAX_RETRY: usize = 2;
+const OUT_READING_BUF_LEN: usize = 96;
+
+const _: () = {
+    let mut i = 0;
+    while i < ALL_PROTOCOLS.len() {
+        assert!(MULTISTREAM_V1.len() + ALL_PROTOCOLS[i].multiselect().len() <= OUT_READING_BUF_LEN);
+        i += 1;
+    }
+};
 
 /// The multistream header goes on the wire exactly once per direction: the
 /// first inbound response (echo or reject) carries it, later ones start
@@ -22,7 +31,12 @@ pub(crate) enum NegotiateState {
     /// per stream, in both directions.
     OutWriting { protocol: StreamProtocol, written: usize, header: bool },
     /// Outbound: reading back multistream header + protocol echo.
-    OutReading { protocol: StreamProtocol, buf: [u8; 96], read: usize, header: bool },
+    OutReading {
+        protocol: StreamProtocol,
+        buf: [u8; OUT_READING_BUF_LEN],
+        read: usize,
+        header: bool,
+    },
     /// Inbound: reading multistream header (fixed size).
     InReadingHeader { buf: [u8; 20], read: usize },
     /// Inbound: header matched, reading protocol varint + string. Sized for
@@ -84,7 +98,7 @@ impl NegotiateState {
                     if written >= MULTISTREAM_V1.len() + data.len() {
                         return Ok(Spin::Next(Self::OutReading {
                             protocol,
-                            buf: [0u8; 96],
+                            buf: [0u8; OUT_READING_BUF_LEN],
                             read: 0,
                             header,
                         }));

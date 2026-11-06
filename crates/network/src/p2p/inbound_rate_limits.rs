@@ -7,6 +7,9 @@ use silver_common::{
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 const MAX_GOSSIP_PREFIX_SIZE: usize = 10;
+/// Per-frame processing cost dominates for tiny frames; charging it caps the
+/// frame rate at `gossip_bytes_per_second / MIN_GOSSIP_FRAME_CHARGE`.
+pub(crate) const MIN_GOSSIP_FRAME_CHARGE: usize = 1024;
 
 /// Per-connection inbound quotas; burst is one second's allowance.
 #[derive(Clone, Copy, Debug)]
@@ -84,7 +87,7 @@ impl InboundRateLimits {
     }
 
     pub(crate) fn admit_gossip(&mut self, frame_bytes: usize, now: Instant) -> bool {
-        self.gossip.admit(frame_bytes, now)
+        self.gossip.admit(frame_bytes.max(MIN_GOSSIP_FRAME_CHARGE), now)
     }
 
     pub(crate) fn admit_stream(&mut self, now: Instant) -> bool {
@@ -122,15 +125,27 @@ mod tests {
     fn fractional_refills_survive_repeated_rejections() {
         let now = Instant::now();
         let mut limits = gossip_rate(1000, now);
-        assert!(limits.admit_gossip(MAX_GOSSIP_FRAME_SIZE + MAX_GOSSIP_PREFIX_SIZE, now));
+        let bucket = &mut limits.gossip;
+        assert!(bucket.admit(MAX_GOSSIP_FRAME_SIZE + MAX_GOSSIP_PREFIX_SIZE, now));
         for micros in [250, 500, 750] {
-            assert!(!limits.admit_gossip(1, now + Duration::from_micros(micros)));
+            assert!(!bucket.admit(1, now + Duration::from_micros(micros)));
         }
-        assert!(limits.admit_gossip(1, now + Duration::from_millis(1)));
-        assert!(!limits.admit_gossip(1, now + Duration::from_millis(1)));
+        assert!(bucket.admit(1, now + Duration::from_millis(1)));
+        assert!(!bucket.admit(1, now + Duration::from_millis(1)));
+        assert!(!bucket.admit(1, now));
+        assert!(bucket.admit(999, now + Duration::from_secs(1)));
+        assert!(!bucket.admit(1, now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn tiny_frames_pay_the_minimum_charge() {
+        let now = Instant::now();
+        let burst = MAX_GOSSIP_FRAME_SIZE + MAX_GOSSIP_PREFIX_SIZE;
+        let mut limits = gossip_rate(1_000_000, now);
+        assert!(limits.admit_gossip(burst - 2 * MIN_GOSSIP_FRAME_CHARGE, now));
+        assert!(limits.admit_gossip(1, now));
+        assert!(limits.admit_gossip(1, now));
         assert!(!limits.admit_gossip(1, now));
-        assert!(limits.admit_gossip(999, now + Duration::from_secs(1)));
-        assert!(!limits.admit_gossip(1, now + Duration::from_secs(1)));
     }
 
     #[test]

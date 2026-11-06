@@ -361,6 +361,7 @@ impl SnappyDecoder {
         amount: usize,
         out: &mut [u8],
     ) -> Result<usize, SnappyError> {
+        debug_assert!(amount <= self.need - self.buf_len);
         self.buf_len += amount;
         self.consumed += amount as u64;
 

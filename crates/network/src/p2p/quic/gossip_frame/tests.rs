@@ -52,6 +52,7 @@ struct Harness {
     gossip: TProducer,
     columns: TProducer,
     now: Instant,
+    next_peer: usize,
 }
 
 impl Harness {
@@ -85,6 +86,7 @@ impl Harness {
             gossip,
             columns,
             now,
+            next_peer: 0,
         }
     }
 
@@ -131,9 +133,15 @@ impl Harness {
         (frame, reference)
     }
 
+    /// Each frame goes to a distinct peer, so only the global limits apply.
     fn acquire(&mut self, frame: CacheFrameRef) -> Option<SegmentedFrame> {
+        self.next_peer += 1;
+        self.acquire_for(frame, self.next_peer)
+    }
+
+    fn acquire_for(&mut self, frame: CacheFrameRef, peer: usize) -> Option<SegmentedFrame> {
         let view = frame.acquire(&mut self.context.reader, self.now).ok()?;
-        self.limits.acquire(view, &mut self.context, &self.wheel, self.now)
+        self.limits.acquire(view, &mut self.context, &self.wheel, peer, self.now)
     }
 }
 
@@ -240,6 +248,19 @@ fn admission_is_atomic_and_limits_include_ack_owners() {
 }
 
 #[test]
+fn one_peer_holds_at_most_its_share_of_frames() {
+    let mut h = Harness::new();
+    h.limits = Box::new(SegmentedGossipLimits::new(16));
+    let (frame, _) = h.assembly(true);
+    let first = h.acquire_for(frame, 1).unwrap();
+    let _second = h.acquire_for(frame, 1).unwrap();
+    assert!(h.acquire_for(frame, 1).is_none(), "16 / 8 frames per peer");
+    let _other = h.acquire_for(frame, 2).unwrap();
+    drop(first);
+    assert!(h.acquire_for(frame, 1).is_some(), "a released frame frees the share");
+}
+
+#[test]
 fn segments_are_allocated_lazily_and_blocked_retries_survive_expiry() {
     let mut h = Harness::new();
     let (reference, assembly) = h.assembly(true);
@@ -331,7 +352,8 @@ fn fanout_has_independent_delivery_leases() {
     let wheel = Box::new(OutboundLeaseWheel::new(h.now));
     let mut first = h.acquire(reference).unwrap().into_writer();
     let view = reference.acquire(&mut h.context.reader, h.now).unwrap();
-    let mut second = h.limits.acquire(view, &mut h.context, &wheel, h.now).unwrap().into_writer();
+    let mut second =
+        h.limits.acquire(view, &mut h.context, &wheel, usize::MAX, h.now).unwrap().into_writer();
     drop(first.take_chunk());
     drop(second.take_chunk());
     let first_cell = first.take_chunk();

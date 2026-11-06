@@ -1,6 +1,11 @@
-use std::{cell::Cell, ptr::NonNull, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    ptr::NonNull,
+    time::Instant,
+};
 
 use bytes::Bytes;
+use fxhash::FxHashMap;
 use silver_common::{
     AcquiredCacheFrame, AcquiredCacheSegment, AcquiredRange, CacheFrameView, GossipMsgOut,
     GossipTraffic, P2pSend, TRead,
@@ -11,6 +16,9 @@ use crate::{NetworkCounters, p2p::Context};
 
 const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RETAINED_OWNERS: usize = 8 * 1024;
+/// A peer that withholds flow-control credit keeps its frames queued until
+/// the delivery timeout; bound its share of the global frame budget.
+const PEER_FRAME_SHARE_DIVISOR: usize = 8;
 
 #[derive(Debug)]
 pub(crate) enum OutboundGossip {
@@ -38,7 +46,9 @@ pub(crate) struct SegmentedGossipLimits {
     frames: Cell<usize>,
     owners: Cell<usize>,
     retained_bytes: Cell<usize>,
+    frames_by_peer: RefCell<FxHashMap<usize, usize>>,
     max_frames: usize,
+    max_frames_per_peer: usize,
     max_bytes: usize,
     max_owners: usize,
 }
@@ -55,7 +65,14 @@ impl SegmentedGossipLimits {
             frames: Cell::new(0),
             owners: Cell::new(0),
             retained_bytes: Cell::new(0),
+            // Entries leave at zero, so there are at most `max_frames`: the
+            // frame path never allocates.
+            frames_by_peer: RefCell::new(FxHashMap::with_capacity_and_hasher(
+                max_frames,
+                Default::default(),
+            )),
             max_frames,
+            max_frames_per_peer: (max_frames / PEER_FRAME_SHARE_DIVISOR).max(1),
             max_bytes: MAX_RETAINED_BYTES,
             max_owners: MAX_RETAINED_OWNERS,
         }
@@ -66,6 +83,7 @@ impl SegmentedGossipLimits {
         view: CacheFrameView,
         context: &mut Context,
         wheel: &OutboundLeaseWheel,
+        peer: usize,
         now: Instant,
     ) -> Option<SegmentedFrame> {
         let bytes = view.descriptor_len().checked_add(view.wire_len())?;
@@ -77,10 +95,18 @@ impl SegmentedGossipLimits {
             NetworkCounters::CacheSegmentedCapacity.inc();
             return None;
         }
+        let mut frames_by_peer = self.frames_by_peer.borrow_mut();
+        let peer_frames = frames_by_peer.entry(peer).or_insert(0);
+        if *peer_frames >= self.max_frames_per_peer {
+            NetworkCounters::CacheSegmentedPeerCapacity.inc();
+            return None;
+        }
+        *peer_frames += 1;
+        drop(frames_by_peer);
         self.frames.set(self.frames.get() + 1);
         self.owners.set(self.owners.get() + owners);
         self.retained_bytes.set(self.retained_bytes.get() + bytes);
-        let budget = FrameBudget { limits: NonNull::from(self), owners, bytes };
+        let budget = FrameBudget { limits: NonNull::from(self), peer, owners, bytes };
         let frame = view.acquire_segments(&mut context.reader)?;
         NetworkCounters::CacheSegmentedAdmitted.inc();
         NetworkCounters::CacheSegmentedSegments.add(frame.segment_count() as u64);
@@ -166,6 +192,7 @@ impl SegmentedWriter {
 #[derive(Debug)]
 struct FrameBudget {
     limits: NonNull<SegmentedGossipLimits>,
+    peer: usize,
     owners: usize,
     bytes: usize,
 }
@@ -188,6 +215,13 @@ impl FrameBudget {
 impl Drop for FrameBudget {
     fn drop(&mut self) {
         let limits = unsafe { self.limits.as_ref() };
+        let mut frames_by_peer = limits.frames_by_peer.borrow_mut();
+        if let Some(peer_frames) = frames_by_peer.get_mut(&self.peer) {
+            *peer_frames -= 1;
+            if *peer_frames == 0 {
+                frames_by_peer.remove(&self.peer);
+            }
+        }
         limits.frames.set(limits.frames.get() - 1);
         limits.owners.set(limits.owners.get() - self.owners);
         limits.retained_bytes.set(limits.retained_bytes.get() - self.bytes);

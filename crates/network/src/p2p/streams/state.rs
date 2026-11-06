@@ -48,6 +48,7 @@ pub enum StreamState {
     },
     OutgoingRpc {
         rpc: RpcOut,
+        max_chunks: u64,
     },
     IncomingIdentify(WriteIdentifyResponse),
     OutgoingIdentify(ReadIdentifyResponse),
@@ -147,6 +148,20 @@ impl StreamState {
         )
     }
 
+    /// Read side yielded with input that may sit in quinn unannounced.
+    pub fn read_yielded(&self) -> bool {
+        matches!(self, StreamState::Gossip { read: GossipReadState::Yielded { .. }, .. })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reading_request_state() -> Self {
+        Self::IncomingRpc { rpc: RpcIn::ReadRequest(RpcReadRequest::default()) }
+    }
+
+    pub fn reading_request(&self) -> bool {
+        matches!(self, StreamState::IncomingRpc { rpc: RpcIn::ReadRequest(_) })
+    }
+
     /// Write side parked idle, able to pull a queued outbound msg. Starting
     /// that pull is spin-only work — no quinn event fires for it. Mid-write
     /// parks are excluded: they are write-blocked and Writable re-drives
@@ -171,8 +186,9 @@ impl StreamState {
                 read_response.deadline()
             }
             StreamState::Gossip {
-                read: GossipReadState::ReadingBody { last_read, .. }, ..
-            } => Some(*last_read + GOSSIP_BODY_STALL_TIMEOUT),
+                read: GossipReadState::ReadingBody { last_read, deadline, .. },
+                ..
+            } => Some((*last_read + GOSSIP_BODY_STALL_TIMEOUT).min(*deadline)),
             StreamState::Cluster { read: ClusterRead::ReadingBody { last_read, .. }, .. } => {
                 Some(*last_read + BODY_STALL_TIMEOUT)
             }
@@ -353,10 +369,12 @@ impl StreamState {
                                         }
                                         _ => return Err(StreamError::InvalidRpc),
                                     };
+                                    let max_chunks = request.max_response_chunks()?;
                                     Ok(Self::OutgoingRpc {
                                         rpc: RpcOut::WriteRequest(RpcWriteRequest::new(
                                             app_id, request,
                                         )?),
+                                        max_chunks,
                                     })
                                 }
                             }
@@ -436,7 +454,7 @@ impl StreamState {
                     }
                 }
             }
-            StreamState::OutgoingRpc { rpc } => {
+            StreamState::OutgoingRpc { rpc, max_chunks } => {
                 let codec = codec.ok_or(StreamError::InvalidRpc)?;
                 match rpc {
                     RpcOut::WriteRequest(write_request) => {
@@ -449,10 +467,16 @@ impl StreamState {
                                     Ok(Self::Finished)
                                 } else {
                                     let read = RpcReadResponse::new(app_id, 0, now, &mut codec.dec);
-                                    Ok(Self::OutgoingRpc { rpc: RpcOut::ReadResponse(read) })
+                                    Ok(Self::OutgoingRpc {
+                                        rpc: RpcOut::ReadResponse(read),
+                                        max_chunks,
+                                    })
                                 }
                             }
-                            other => Ok(Self::OutgoingRpc { rpc: RpcOut::WriteRequest(other) }),
+                            other => Ok(Self::OutgoingRpc {
+                                rpc: RpcOut::WriteRequest(other),
+                                max_chunks,
+                            }),
                         }
                     }
                     RpcOut::ReadResponse(read_response) => {
@@ -480,6 +504,15 @@ impl StreamState {
                                             msg,
                                             RpcResponse::Complete | RpcResponse::Error { .. }
                                         );
+                                    if !terminal && u64::from(chunk) >= max_chunks {
+                                        silver_log::debug!(
+                                            ?id,
+                                            chunk,
+                                            max_chunks,
+                                            "rpc response exceeds the requested chunks"
+                                        );
+                                        return Err(StreamError::ExcessResponseChunks);
+                                    }
                                     emit(NetEvent::RpcInbound(RpcInbound::Response(
                                         RpcResponseInbound {
                                             application_id: app_id,
@@ -503,6 +536,7 @@ impl StreamState {
                                 other => {
                                     return Ok(Self::OutgoingRpc {
                                         rpc: RpcOut::ReadResponse(other),
+                                        max_chunks,
                                     });
                                 }
                             }

@@ -50,6 +50,12 @@ const STREAM_ERR_CODE_PROTOCOL: u32 = 1;
 const STREAM_ERR_CODE_RESPONSE_TIMEOUT: u32 = 2;
 const STREAM_ERR_CODE_RATE_LIMIT: u32 = 3;
 const INBOUND_RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Absolute: a trickled request would otherwise reset the idle timer forever
+/// while holding its codec and reservation.
+const INBOUND_RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// TCache space frees when another tile consumes, with no event; retry on a
+/// timer rather than re-polling at zero timeout.
+const ALLOC_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) struct Peer {
     id: RemotePeer,
@@ -216,10 +222,9 @@ impl Peer {
         if self.check_outbound_delivery_timeout(now, rpc_codec_pool) {
             return SendResult::ConnectionClosing;
         }
-        let acquired = frame
-            .acquire(&mut context.reader, now)
-            .ok()
-            .and_then(|view| limits.acquire(view, context, &self.outbound_lease_wheel, now));
+        let acquired = frame.acquire(&mut context.reader, now).ok().and_then(|view| {
+            limits.acquire(view, context, &self.outbound_lease_wheel, self.id.connection, now)
+        });
         let Some(mut acquired) = acquired else {
             crate::NetworkCounters::CacheSegmentedRejected.inc();
             return SendResult::Dropped(None);
@@ -686,8 +691,8 @@ impl Peer {
 
         let state = stream.state.get_mut();
         stream.needs_spin =
-            state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
-        if let Some(d) = stream.wake_deadline() {
+            state.read_yielded() || (state.write_idle() && !stream.out_buffer.is_empty());
+        if let Some(d) = stream.wake_deadline(now) {
             self.next_deadline = Some(self.next_deadline.map_or(d, |cur| cur.min(d)));
         }
 
@@ -899,8 +904,8 @@ where
 
         let state = stream.state.get_mut();
         stream.needs_spin =
-            state.awaiting_alloc() || (state.write_idle() && !stream.out_buffer.is_empty());
-        if let Some(d) = stream.wake_deadline() {
+            state.read_yielded() || (state.write_idle() && !stream.out_buffer.is_empty());
+        if let Some(d) = stream.wake_deadline(now) {
             *next_deadline = Some(next_deadline.map_or(d, |cur| cur.min(d)));
         }
 
@@ -945,7 +950,11 @@ fn id_from_connection(conn: &Connection) -> Option<PeerId> {
         silver_log::error!("identity cannot be downcast to certificates");
         return None;
     };
-    peer_id_from_certificate(certs[0].as_ref())
+    let Some(cert) = certs.first() else {
+        silver_log::error!("peer presented an empty certificate chain");
+        return None;
+    };
+    peer_id_from_certificate(cert.as_ref())
         .inspect_err(|e| {
             silver_log::error!(?e, "failed to extract peer id from certificate");
         })
@@ -978,7 +987,7 @@ struct Stream {
     state: Cell<StreamState>,
     rpc_codec: Option<Box<RpcCodec>>,
     out_buffer: OutboundBuffer,
-    /// Has work no quinn event re-drives: a tcache-alloc retry, or queued
+    /// Has work no quinn event re-drives: yielded input, or queued
     /// outbound msgs with the write side idle (mid-write parks are
     /// Writable-driven — flagging those busy-loops until the peer grants
     /// credit). Fresh streams are born flagged — the initial negotiate
@@ -1029,6 +1038,11 @@ impl Stream {
             now >= self.last_activity + INBOUND_RPC_IDLE_TIMEOUT
         {
             return self.timed_out("inbound rpc timeout", connection, on_event);
+        }
+        if self.state.get_mut().reading_request() &&
+            now >= self.created_at + INBOUND_RPC_REQUEST_TIMEOUT
+        {
+            return self.timed_out("inbound rpc request timeout", connection, on_event);
         }
 
         let state = self.state.take();
@@ -1189,16 +1203,27 @@ impl Stream {
     }
 
     /// Earliest instant this stream needs an unprompted poll: setup and
-    /// inbound-RPC lifetime budgets, or the state machine's own deadline.
-    fn wake_deadline(&mut self) -> Option<Instant> {
+    /// inbound-RPC lifetime budgets, an alloc retry, or the state machine's
+    /// own deadline.
+    fn wake_deadline(&mut self, now: Instant) -> Option<Instant> {
         let state = self.state.get_mut();
-        if state.in_setup() {
+        let deadline = if state.in_setup() {
             self.setup_deadline
+        } else if state.reading_request() {
+            Some(
+                (self.last_activity + INBOUND_RPC_IDLE_TIMEOUT)
+                    .min(self.created_at + INBOUND_RPC_REQUEST_TIMEOUT),
+            )
         } else if matches!(state, StreamState::IncomingRpc { .. }) {
             Some(self.last_activity + INBOUND_RPC_IDLE_TIMEOUT)
         } else {
             state.deadline()
+        };
+        if state.awaiting_alloc() {
+            let retry = now + ALLOC_RETRY_INTERVAL;
+            return Some(deadline.map_or(retry, |d| d.min(retry)));
         }
+        deadline
     }
 
     fn stop_send<E>(
@@ -1347,6 +1372,7 @@ mod tests {
     use crate::{
         p2p::{
             ClusterNodes, P2p,
+            inbound_rate_limits::MIN_GOSSIP_FRAME_CHARGE,
             quic::{
                 CONNECTION_RECEIVE_WINDOW,
                 leased::{GOSSIP_DELIVERY_TIMEOUT, OUTBOUND_LEASE_TICK},
@@ -2178,8 +2204,8 @@ mod tests {
             let mut server_h = PeerHarness::new();
             let mut pair = PeerPair::new();
             let now = Instant::now();
-            let announcement = if protocol == StreamProtocol::GossipSubV13 {
-                GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len()
+            let announcement_charge = if protocol == StreamProtocol::GossipSubV13 {
+                GOSSIP_EXTENSIONS_ANNOUNCEMENT_FRAME.len().max(MIN_GOSSIP_FRAME_CHARGE)
             } else {
                 0
             };
@@ -2187,11 +2213,10 @@ mod tests {
                 InboundLimits { gossip_bytes_per_second: 100, ..InboundLimits::default() },
                 now,
             );
-            assert!(
-                pair.server_peer
-                    .inbound_limits
-                    .admit_gossip(MAX_GOSSIP_FRAME_SIZE + 10 - announcement - 6, now,)
-            );
+            assert!(pair.server_peer.inbound_limits.admit_gossip(
+                MAX_GOSSIP_FRAME_SIZE + 10 - announcement_charge - MIN_GOSSIP_FRAME_CHARGE,
+                now,
+            ));
             let first = pair.client_peer.open_stream(protocol).unwrap();
             pair.client_peer.outbound_gossip = Some(first);
             let stream_id = P2pStreamId::new(0, first.into(), protocol, false);
@@ -2268,6 +2293,7 @@ mod tests {
                 reservation,
                 remaining: 90,
                 last_read: stalled_since,
+                deadline: t0 + Duration::from_secs(60),
             },
             write: GossipWriteState::Idle,
         });
@@ -2350,6 +2376,7 @@ mod tests {
                 reservation,
                 remaining: 1024,
                 last_read: Instant::now() + Duration::from_secs(60),
+                deadline: Instant::now() + Duration::from_secs(60),
             },
             write: GossipWriteState::Idle,
         });
@@ -2408,6 +2435,65 @@ mod tests {
     /// A negotiated inbound RPC stream whose request never arrives must be
     /// reaped by `INBOUND_RPC_IDLE_TIMEOUT` — only the server is spun past the
     /// deadline, so the reap can't be masked by the client's own teardown.
+    /// Activity keeps resetting the idle timer; the request deadline is
+    /// absolute from stream creation.
+    #[test]
+    fn trickled_inbound_request_is_reaped_at_its_absolute_deadline() {
+        use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
+
+        let mut client_h = PeerHarness::new();
+        let mut server_h = PeerHarness::new();
+        let mut pair = PeerPair::new();
+
+        let t0 = Instant::now();
+        let request = RpcOutbound::Request(RpcRequestOutbound {
+            application_id: 7,
+            peer: pair.client_peer.id.connection,
+            request: RpcRequest::Ping([0u8; 8]),
+        });
+        let msg = AcquiredRpcOutbound::from((request, &mut client_h.context.reader));
+        assert!(matches!(pair.client_peer.send_rpc(msg), SendResult::Ok));
+        let mut server_got_request = false;
+        for _ in 0..300 {
+            let mut scb = |e: NetEvent| {
+                if matches!(e, NetEvent::RpcInbound(RpcInbound::Request(_))) {
+                    server_got_request = true;
+                }
+            };
+            pair.step(t0, &mut client_h, &mut server_h, &mut |_| {}, &mut scb);
+            if server_got_request {
+                break;
+            }
+        }
+        assert!(server_got_request, "server never read the ping request");
+
+        let reap_at = t0 + INBOUND_RPC_REQUEST_TIMEOUT + Duration::from_secs(1);
+        let stream = pair
+            .server_peer
+            .streams
+            .values_mut()
+            .find(|s| s.p2p_id.protocol() == StreamProtocol::Ping)
+            .expect("inbound ping stream");
+        stream.state.replace(StreamState::reading_request_state());
+        stream.created_at = t0;
+        stream.last_activity = reap_at;
+
+        let PeerPair { server_ep, server_peer, .. } = &mut pair;
+        let mut cb = |h, e| server_ep.handle_event(h, e);
+        server_peer.spin(
+            reap_at,
+            &mut cb,
+            &mut server_h.context,
+            &mut |_| {},
+            &FxHashSet::default(),
+            &mut server_h.rpc_codec_pool,
+        );
+        assert!(
+            !server_peer.streams.values().any(|s| s.p2p_id.protocol() == StreamProtocol::Ping),
+            "trickled request survived its absolute deadline"
+        );
+    }
+
     #[test]
     fn inbound_rpc_timeout_reaps_unanswered_stream() {
         use silver_common::{RpcInbound, RpcOutbound, RpcRequest, RpcRequestOutbound};
@@ -2618,7 +2704,8 @@ mod tests {
     fn segmented_queue_overflow_drops_only_whole_unstarted_frames() {
         let mut h = PeerHarness::new();
         h.reopen(TCacheId::ControlGossip, TReadMode::Strict);
-        let limits = Box::new(SegmentedGossipLimits::new(2));
+        // Two frames per peer: the queued one and its evicting successor.
+        let limits = Box::new(SegmentedGossipLimits::new(16));
         let mut pair = PeerPair::new();
         let frame = CacheFrameRef::write(
             &mut h.gossip_out_producer,
@@ -2991,12 +3078,16 @@ mod tests {
         for _ in 0..50 {
             pair.step_inner(now, &mut client_h, &mut server_h, &mut noop_c, &mut noop_s, false);
         }
-        let parked =
-            pair.server_peer.streams.values_mut().any(|s| s.state.get_mut().awaiting_alloc());
-        assert!(parked, "reader should be parked awaiting tcache space");
+        let parked = pair
+            .server_peer
+            .streams
+            .values_mut()
+            .find_map(|s| s.state.get_mut().awaiting_alloc().then_some(s.needs_spin))
+            .expect("reader should be parked awaiting tcache space");
+        assert!(!parked, "an alloc retry must not force a zero-timeout re-poll");
         assert!(
-            pair.server_peer.streams.values().any(|s| s.needs_spin),
-            "parked stream must stay flagged for retry"
+            pair.server_peer.next_deadline.is_some_and(|d| d <= now + ALLOC_RETRY_INTERVAL),
+            "parked stream must arm a timed retry"
         );
 
         // Free the tcache (drain reads + frees) and pump — the retry must

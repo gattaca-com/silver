@@ -33,6 +33,7 @@ pub enum StreamError {
     StreamFinishError(#[from] FinishError),
     InvalidMultiStreamHeader,
     InvalidRpc,
+    ExcessResponseChunks,
     InvalidGossipFrame,
     GossipFrameTooLarge,
     GossipRateLimited { frame_bytes: usize, bytes_per_second: u64 },

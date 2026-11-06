@@ -102,13 +102,7 @@ impl RpcRequest {
             }
             RpcRequest::DataColumnsByRange { ssz, len } => {
                 let Some(buf) = ssz.get(..*len) else { return Ok(1) };
-                if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
-                    1
-                } else {
-                    let count = DataColumnSidecarsByRangeRequestView::count(buf);
-                    let columns = DataColumnSidecarsByRangeRequestView::columns(buf).len() / 8;
-                    count.saturating_mul(columns as u64)
-                }
+                data_columns_by_range_tokens(buf)
             }
             RpcRequest::DataColumnsByRoot(read) => {
                 data_columns_by_root_tokens(rpc_in.read_buffer(*read)?)
@@ -124,6 +118,16 @@ impl RpcRequest {
     }
 }
 
+/// Slots times columns; 1 for a buffer that fails `check_size`.
+pub fn data_columns_by_range_tokens(buf: &[u8]) -> u64 {
+    if !DataColumnSidecarsByRangeRequestView::check_size(buf) {
+        return 1;
+    }
+    let count = DataColumnSidecarsByRangeRequestView::count(buf);
+    let columns = DataColumnSidecarsByRangeRequestView::columns(buf).len() / 8;
+    count.saturating_mul(columns as u64)
+}
+
 fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
     len.div_ceil(width) as u64
 }
@@ -132,7 +136,7 @@ fn fixed_width_list_tokens(len: usize, width: usize) -> u64 {
 /// outer-list offset + 36B fixed part + 8B per column, and `offsets[0] / 4` is
 /// the identifier count. A buffer that lies about it fails `check_size` and is
 /// not served.
-fn data_columns_by_root_tokens(buf: &[u8]) -> u64 {
+pub fn data_columns_by_root_tokens(buf: &[u8]) -> u64 {
     if buf.len() < 4 {
         return 1;
     }

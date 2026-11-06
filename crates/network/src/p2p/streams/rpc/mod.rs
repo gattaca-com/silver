@@ -16,16 +16,19 @@ pub use response_in::RpcReadResponse;
 pub use response_out::RpcWriteResponse;
 use silver_common::{
     P2pStreamId, RpcOutbound, RpcRequest, RpcRequestOutbound, RpcResponse, RpcResponseOutbound,
-    StreamProtocol, TCacheReader, TRead,
+    StreamProtocol, TCacheReader, TRead, data_columns_by_range_tokens, data_columns_by_root_tokens,
     rpc_rate_limit::{RPC_ERR_RATE_LIMITED, RPC_RATE_LIMITED_MSG},
     ssz_view::{
-        BLOCKS_BY_RANGE_REQ_SIZE, DC_BY_RANGE_REQ_MAX,
-        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, GOODBYE_SIZE, METADATA_SIZE, PING_SIZE,
-        STATUS_V1_SIZE, STATUS_V2_SIZE,
+        BLOCKS_BY_RANGE_REQ_SIZE, BeaconBlocksByRangeRequestView, DC_BY_RANGE_REQ_MAX,
+        EXECUTION_PAYLOAD_ENVELOPES_BY_RANGE_REQ_SIZE, ExecutionPayloadEnvelopesByRangeRequestView,
+        GOODBYE_SIZE, METADATA_SIZE, PING_SIZE, STATUS_V1_SIZE, STATUS_V2_SIZE,
     },
 };
 
-use crate::p2p::streams::snappy::{SnappyDecoder, SnappyEncoder};
+use crate::p2p::streams::{
+    StreamError,
+    snappy::{SnappyDecoder, SnappyEncoder},
+};
 
 #[derive(Debug)]
 pub struct RpcCodec {
@@ -220,6 +223,32 @@ impl AcquiredRpcRequest {
                 StreamProtocol::ExecutionPayloadEnvelopesByRoot
             }
         }
+    }
+}
+
+impl AcquiredRpcRequest {
+    /// Chunks a conforming response may carry: the request's rate-limit cost,
+    /// as `RpcRequest::rate_limit_tokens` derives it from the same bytes.
+    pub fn max_response_chunks(&self) -> Result<u64, StreamError> {
+        let chunks = match self {
+            Self::StatusV1(_) |
+            Self::StatusV2(_) |
+            Self::Ping(_) |
+            Self::Goodbye(_) |
+            Self::MetaData => 1,
+            Self::BlocksByRange(ssz) => BeaconBlocksByRangeRequestView::count(ssz),
+            Self::ExecutionPayloadEnvelopesByRange(ssz) => {
+                ExecutionPayloadEnvelopesByRangeRequestView::count(ssz)
+            }
+            Self::DataColumnsByRange { ssz, len } => {
+                ssz.get(..*len).map_or(1, data_columns_by_range_tokens)
+            }
+            Self::BlockByRoot(read) | Self::ExecutionPayloadEnvelopesByRoot(read) => {
+                read.len()?.div_ceil(32) as u64
+            }
+            Self::DataColumnsByRoot(read) => data_columns_by_root_tokens(read.buffer()?.0),
+        };
+        Ok(chunks.max(1))
     }
 }
 
