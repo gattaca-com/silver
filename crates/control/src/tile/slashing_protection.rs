@@ -522,7 +522,7 @@ impl SlashingProtectionHandler {
                     produce_response(
                         producers,
                         block.request_id,
-                        Err(LocalGossipFailure::TimedOut),
+                        Err(LocalGossipFailure::LockTimedOut),
                     );
                     silver_log::warn!(
                         ?proposal_id,
@@ -535,7 +535,7 @@ impl SlashingProtectionHandler {
                     produce_response(
                         producers,
                         attestation.request_id,
-                        Err(LocalGossipFailure::TimedOut),
+                        Err(LocalGossipFailure::LockTimedOut),
                     );
                     silver_log::warn!(
                         ?proposal_id,
@@ -573,6 +573,16 @@ mod tests {
         cluster::ClusterStorageConfig,
         tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
     };
+
+    #[test]
+    fn surround_and_double_vote_are_told_apart() {
+        let conflict = LocalGossipFailure::ConflictingAttestation;
+        assert_eq!(lock_response(LockResult::Conflicting, conflict), Err(conflict));
+        assert_eq!(
+            lock_response(LockResult::Surrounding, conflict),
+            Err(LocalGossipFailure::SurroundVote)
+        );
+    }
 
     /// A signed block just long enough to carry its slot and proposer.
     fn block_bytes(slot: u64, proposer_index: u64, tag: u8) -> Vec<u8> {
@@ -908,8 +918,8 @@ mod tests {
         wrong_target[104..112].copy_from_slice(&4u64.to_le_bytes());
         standalone.submit_ssz(4, wrong_target, now);
         assert_eq!(standalone.harness.responses(), [
-            (2, Err(LocalGossipFailure::ConflictingAttestation)),
-            (3, Err(LocalGossipFailure::ConflictingAttestation)),
+            (2, Err(LocalGossipFailure::SurroundVote)),
+            (3, Err(LocalGossipFailure::SurroundVote)),
             (4, Err(LocalGossipFailure::Invalid)),
         ]);
         assert!(standalone.harness.gossip.pop_event().is_none());
@@ -1153,7 +1163,8 @@ fn decision_response(
 fn lock_response(result: LockResult, conflict: LocalGossipFailure) -> LocalGossipResult {
     match result {
         LockResult::Accepted | LockResult::AlreadyAcceptedSame => Ok(()),
-        LockResult::Conflicting | LockResult::Surrounding => Err(conflict),
+        LockResult::Conflicting => Err(conflict),
+        LockResult::Surrounding => Err(LocalGossipFailure::SurroundVote),
         LockResult::TooOld => Err(LocalGossipFailure::TooOld),
         LockResult::Invalid => Err(LocalGossipFailure::Invalid),
     }

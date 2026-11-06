@@ -25,6 +25,11 @@ impl PeerManager {
         now: Instant,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        // A trusted peer's ENR is the configured one, stale after every fork digest
+        // change.
+        if self.database.by_peer_id(&peer_id).is_some_and(|record| record.is_trusted) {
+            return;
+        }
         if self.banned_peers.insert(peer_id, now).is_none() {
             crate::PeerCounters::PeersBanned.inc();
             emit(PeerControl::Ban { p2p: peer_id });
@@ -747,6 +752,34 @@ mod tests {
             "expected P2pDial, got {:?}",
             cap.0
         );
+    }
+
+    #[test]
+    fn stale_fork_digest_bans_only_untrusted_peers() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let stale_digest = Some([1u8; 16]);
+        let trusted =
+            test_enr_with(7, std::net::Ipv4Addr::new(10, 0, 0, 7), stale_digest, None, None);
+        let stranger =
+            test_enr_with(8, std::net::Ipv4Addr::new(10, 0, 0, 8), stale_digest, None, None);
+        mgr.database.add_trusted_peer(trusted.clone());
+
+        for enr in [trusted, stranger] {
+            mgr.handle_event(PeerEvent::DiscNodeFound { enr, reload: false }, now, &mut |c| {
+                cap.0.push(c)
+            });
+        }
+
+        let banned: Vec<_> = cap
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                PeerControl::Ban { p2p } => Some(*p2p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(banned, vec![peer_id(8)], "only the untrusted stale ENR is banned");
     }
 
     #[test]

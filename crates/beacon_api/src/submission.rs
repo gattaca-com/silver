@@ -290,10 +290,16 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
         LocalGossipFailure::ConflictingAttestation => {
             "this validator already attested to another block for the slot"
         }
+        LocalGossipFailure::SurroundVote => {
+            "this vote surrounds, or is surrounded by, an earlier vote of this validator"
+        }
         LocalGossipFailure::ConflictingProposal => {
             "this validator already proposed a block for the slot"
         }
         LocalGossipFailure::TimedOut => "validation did not complete in time",
+        LocalGossipFailure::LockTimedOut => {
+            "the slashing protection cluster did not agree on it in time"
+        }
         LocalGossipFailure::Invalid => "rejected as invalid",
         LocalGossipFailure::Unverifiable => {
             "the node cannot verify it against its view of the chain"
