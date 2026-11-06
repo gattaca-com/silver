@@ -9,6 +9,7 @@ use flux::{
     tile::Tile,
 };
 use flux_profiler::timed;
+use fxhash::FxHashMap;
 use mio::{Events, Poll, Token};
 use quinn_proto::Transmit;
 use secp256k1::PublicKey;
@@ -38,10 +39,32 @@ const POLL_TIMEOUT: Duration = Duration::ZERO;
 const PEER_STATS_INTERVAL: Duration = Duration::from_millis(100);
 const PEER_STATS_BATCH: usize = 8;
 
+/// A dead cluster node fails every Raft message to it: one warning per outage,
+/// not per message.
+#[derive(Default)]
+struct ClusterSendFailures(FxHashMap<u64, u64>);
+
+impl ClusterSendFailures {
+    fn record(&mut self, to: u64, result: &SendResult) {
+        if matches!(result, SendResult::Ok) {
+            if let Some(failed) = self.0.remove(&to) {
+                silver_log::info!(to, failed, "cluster node reachable again");
+            }
+            return;
+        }
+        let failed = self.0.entry(to).or_default();
+        *failed += 1;
+        if *failed == 1 {
+            silver_log::warn!(to, ?result, "cluster node unreachable");
+        }
+    }
+}
+
 pub struct NetworkTile {
     inner: NetworkTileInner<DiscV5>,
     last_peer_stats: Instant,
     last_fork_epoch: Option<u64>,
+    cluster_send_failures: ClusterSendFailures,
 }
 
 impl NetworkTile {
@@ -54,7 +77,12 @@ impl NetworkTile {
     ) -> Result<Self, Error> {
         let inner =
             NetworkTileInner::new(p2p_addr, p2p_endpoint, p2p_context, discv5_addr, discv5)?;
-        Ok(Self { inner, last_peer_stats: Instant::now(), last_fork_epoch: None })
+        Ok(Self {
+            inner,
+            last_peer_stats: Instant::now(),
+            last_fork_epoch: None,
+            cluster_send_failures: ClusterSendFailures::default(),
+        })
     }
 
     pub fn p2p_mut(&mut self) -> &mut P2p {
@@ -132,14 +160,12 @@ impl NetworkTile {
         });
 
         adapter.consume(|cluster_event: ClusterMsgOut, producers| {
-            match self.inner.enqueue_cluster_out(cluster_event) {
-                SendResult::Ok => {}
-                other => {
-                    silver_log::warn!(?other, "cluster node unreachable");
-                    producers
-                        .cluster_inbound
-                        .produce(&ClusterIn::NodeUnreachable(cluster_event.to).into());
-                }
+            let result = self.inner.enqueue_cluster_out(cluster_event);
+            self.cluster_send_failures.record(cluster_event.to, &result);
+            if !matches!(result, SendResult::Ok) {
+                producers
+                    .cluster_inbound
+                    .produce(&ClusterIn::NodeUnreachable(cluster_event.to).into());
             }
         });
 
@@ -511,5 +537,23 @@ where
             self.context.reader.free_undrained();
         }
         did_work
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_send_failures_span_one_outage() {
+        let mut failures = ClusterSendFailures::default();
+        failures.record(2, &SendResult::UnknownPeer);
+        failures.record(2, &SendResult::Dropped(None));
+        failures.record(3, &SendResult::Ok);
+        assert_eq!(failures.0[&2], 2);
+        assert!(!failures.0.contains_key(&3));
+
+        failures.record(2, &SendResult::Ok);
+        assert!(failures.0.is_empty());
     }
 }

@@ -964,7 +964,9 @@ fn out_buffer(id: &P2pStreamId, incoming: bool) -> OutboundBuffer {
         StreamProtocol::BeaconBlocksByRange |
         StreamProtocol::BeaconBlocksByRoot |
         StreamProtocol::DataColumnSidecarsByRange |
-        StreamProtocol::DataColumnSidecarsByRoot
+        StreamProtocol::DataColumnSidecarsByRoot |
+        StreamProtocol::ExecutionPayloadEnvelopesByRange |
+        StreamProtocol::ExecutionPayloadEnvelopesByRoot
             if incoming =>
         {
             OutboundBuffer::Rpc(OutBuffer::new(128))
@@ -2868,6 +2870,24 @@ mod tests {
             RpcOutbound::Response(RpcResponseOutbound { response: RpcResponse::Complete, .. })
         ));
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn served_data_streams_hold_a_chunk_and_its_terminator() {
+        for protocol in [
+            StreamProtocol::BeaconBlocksByRange,
+            StreamProtocol::BeaconBlocksByRoot,
+            StreamProtocol::DataColumnSidecarsByRange,
+            StreamProtocol::DataColumnSidecarsByRoot,
+            StreamProtocol::ExecutionPayloadEnvelopesByRange,
+            StreamProtocol::ExecutionPayloadEnvelopesByRoot,
+        ] {
+            let id = P2pStreamId::new(0, 1, protocol, true);
+            let OutboundBuffer::Rpc(buffer) = out_buffer(&id, true) else {
+                panic!("{protocol:?}: expected RPC buffer");
+            };
+            assert!(buffer.msgs.len() >= 2, "{protocol:?}: Complete would evict the chunk");
+        }
     }
 
     #[test]

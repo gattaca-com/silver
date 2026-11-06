@@ -1491,6 +1491,55 @@ mod tests {
     }
 
     #[test]
+    fn announcements_before_the_connection_apply_once_it_registers() {
+        let now = Instant::now();
+        let topic = GossipTopic::DataColumnSidecar(3);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let mut emit = |c| cap.0.push(c);
+        for event in [
+            PeerEvent::P2pGossipExtensions { p2p_peer: 1, partial_messages: true },
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
+            PeerEvent::P2pGossipPartialCaps {
+                p2p_peer: 1,
+                digest: [0; 4],
+                subnet: 3,
+                requests: true,
+                supports_sending: false,
+            },
+        ] {
+            mgr.handle_event(event, now, &mut emit);
+        }
+
+        connect(&mut mgr, &mut cap, 1, 1, now);
+
+        let peer = mgr.peers.get(&1).unwrap();
+        assert!(peer.partial_extensions);
+        assert!(peer.subscriptions[&([0; 4], topic)].requests);
+        assert_eq!(mgr.subscribers.of([0; 4], topic), [1]);
+    }
+
+    #[test]
+    fn announcements_of_a_connection_that_never_registers_are_dropped() {
+        let now = Instant::now();
+        let topic = GossipTopic::DataColumnSidecar(3);
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        mgr.handle_event(
+            PeerEvent::P2pGossipTopicSubscribe { p2p_peer: 1, topic, digest: [0; 4] },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+        mgr.handle_event(
+            PeerEvent::P2pDisconnect { p2p_peer: 1, peer_id: peer_id(1) },
+            now,
+            &mut |c| cap.0.push(c),
+        );
+
+        connect(&mut mgr, &mut cap, 1, 2, now);
+
+        assert!(mgr.peers.get(&1).unwrap().subscriptions.is_empty());
+    }
+
+    #[test]
     fn peer_subscribes_and_we_graft_when_mesh_under_d_low() {
         let now = Instant::now();
         let topics = vec![GossipTopic::BeaconBlock];

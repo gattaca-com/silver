@@ -9,6 +9,7 @@ use std::{
 
 use flux_profiler::timed;
 use fxhash::FxHashMap;
+use pending_announcements::PendingAnnouncements;
 use silver_common::{
     AgentString, Enr, ForkName, GossipDomain, GossipTopic, P2pSend, PeerControl, PeerEvent, PeerId,
     RpcOutbound, RpcSeverity, StreamProtocol, SyncUpdate,
@@ -30,6 +31,7 @@ pub(crate) mod peers;
 pub(crate) mod promises;
 pub use partial::PartialPeer;
 mod peer_slots;
+mod pending_announcements;
 pub(crate) mod rpc;
 mod subscribers;
 mod sweep;
@@ -179,6 +181,8 @@ pub struct PeerManager {
     /// tier per code via `goodbye_dial_backoff`. Their inbound stays welcome.
     remote_banned_peers: FxHashMap<PeerId, Instant>,
 
+    pending_announcements: PendingAnnouncements,
+
     params: ScoreParams,
 
     /// Last heartbeat rollover time. When `now - last_heartbeat >=
@@ -273,6 +277,7 @@ impl PeerManager {
             ip_eviction_counts: FxHashMap::with_capacity_and_hasher(64, Default::default()),
             banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
             remote_banned_peers: FxHashMap::with_capacity_and_hasher(128, Default::default()),
+            pending_announcements: PendingAnnouncements::default(),
             our_fork_digest: Some(fork_digest),
             active_gossip_digests: [Some(fork_digest), None],
             active_gossip_domains: [Some(GossipDomain::new(fork_digest, ForkName::Fulu)), None],
@@ -326,11 +331,21 @@ impl PeerManager {
         partial_serving: bool,
         emit: &mut impl FnMut(PeerControl),
     ) {
+        if let Some(conn) = PendingAnnouncements::connection_of(&event) &&
+            !self.peers.contains_key(&conn)
+        {
+            self.pending_announcements.hold(conn, event);
+            return;
+        }
         match event {
             PeerEvent::P2pNewConnection { p2p_peer_id, peer_id_full, ip, port, local_dial } => {
                 self.on_connected(p2p_peer_id, peer_id_full, ip, port, now, emit, local_dial);
+                for held in self.pending_announcements.take(p2p_peer_id) {
+                    self.handle_event_with_partial(held, now, partial_serving, emit);
+                }
             }
             PeerEvent::P2pDisconnect { p2p_peer, peer_id } => {
+                self.pending_announcements.forget(p2p_peer);
                 let was_dialing = self.dialing.remove(&peer_id).is_some();
                 let was_connected =
                     self.on_disconnected(p2p_peer, now, TRANSPORT_DISCONNECT, emit).is_some();

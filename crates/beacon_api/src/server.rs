@@ -1702,7 +1702,9 @@ fn interrupted(err: &io::Error) -> bool {
 fn lock_failure_code(failure: LocalGossipFailure) -> u16 {
     match failure {
         LocalGossipFailure::NotSynced => 503,
-        LocalGossipFailure::TimedOut | LocalGossipFailure::Internal => 500,
+        LocalGossipFailure::TimedOut |
+        LocalGossipFailure::LockTimedOut |
+        LocalGossipFailure::Internal => 500,
         _ => 400,
     }
 }
