@@ -29,6 +29,8 @@ use crate::{
 const MAX_PENDING_OUTBOUND_GOSSIP_MSGS: usize = 1024;
 const MAX_PENDING_OUTBOUND_RPC_MSGS: usize = 128;
 const P2P_SOCKET_TOKEN: Token = Token(0);
+const DISC_RX_MAX_BATCHES: usize = 4;
+const P2P_RX_MAX_BATCHES: usize = 8;
 const DISC_SOCKET_TOKEN: Token = Token(1);
 
 #[cfg(feature = "thread_park")]
@@ -455,8 +457,11 @@ where
     }
 
     fn poll(&mut self) -> Result<(), Error> {
-        let timeout =
-            self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT));
+        let timeout = if self.disc_socket.rx_pending() || self.p2p_socket.rx_pending() {
+            Some(Duration::ZERO)
+        } else {
+            self.p2p_endpoint.timeout().map(|d| d.min(POLL_TIMEOUT)).or(Some(POLL_TIMEOUT))
+        };
         self.poll.poll(&mut self.events, timeout)
     }
 
@@ -473,21 +478,29 @@ where
 
         let now = Instant::now();
 
+        let mut disc_readable = self.disc_socket.rx_pending();
+        let mut p2p_readable = self.p2p_socket.rx_pending();
         for evt in &self.events {
             if evt.token() == DISC_SOCKET_TOKEN && evt.is_readable() {
-                self.disc_socket.recv(|data, remote, _scratch, _socket| {
-                    did_work = true;
-                    NetworkCounters::DiscBytesRecv.add(data.len() as u64);
-                    self.discovery.handle(remote, &data[..], now);
-                    true
-                });
+                disc_readable = true;
             } else if evt.token() == P2P_SOCKET_TOKEN && evt.is_readable() {
-                self.p2p_socket.recv(|data, remote, scratch, socket| {
-                    did_work = true;
-                    NetworkCounters::P2pBytesRecv.add(data.len() as u64);
-                    self.p2p_endpoint.recv(now, data, remote, scratch, socket)
-                });
+                p2p_readable = true;
             }
+        }
+        if disc_readable {
+            self.disc_socket.recv(DISC_RX_MAX_BATCHES, |data, remote, _scratch, _socket| {
+                did_work = true;
+                NetworkCounters::DiscBytesRecv.add(data.len() as u64);
+                self.discovery.handle(remote, &data[..], now);
+                true
+            });
+        }
+        if p2p_readable {
+            self.p2p_socket.recv(P2P_RX_MAX_BATCHES, |data, remote, scratch, socket| {
+                did_work = true;
+                NetworkCounters::P2pBytesRecv.add(data.len() as u64);
+                self.p2p_endpoint.recv(now, data, remote, scratch, socket)
+            });
         }
 
         did_work |= p2p::p2p_spin(

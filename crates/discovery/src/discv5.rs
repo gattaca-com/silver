@@ -15,20 +15,24 @@ use silver_log::{debug, info, trace, warn};
 
 use crate::{
     crypto::{
-        MAX_PACKET_SIZE, SessionCipher, decrypt_message, ecdh_and_derive_keys_responder,
-        ecdh_generate_and_derive, encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
+        SessionCipher, decrypt_message, ecdh_and_derive_keys_responder, ecdh_generate_and_derive,
+        encrypt_message, make_cipher, sign_id_nonce, verify_id_nonce_sig,
     },
     discovery::{Discovery, DiscoveryEvent, DiscoveryMetrics},
     findnode_requests::FindNodeRequests,
     ip_votes::IpVotes,
     kbucket::{InsertResult, KBucketsTable, Key, MAX_NODES_PER_BUCKET},
     message::{
-        Distances, ENR_RECORD_MAX, Message, MessageKind, NUM_DISTANCES_TO_REQUEST, Packet,
-        RequestId,
+        Distances, ENR_RECORD_MAX, MAX_MESSAGE_PLAINTEXT, Message, MessageKind,
+        NODES_MESSAGE_OVERHEAD, NUM_DISTANCES_TO_REQUEST, Packet, RequestId,
     },
 };
 
 const NONCE_RING_SIZE: usize = 64;
+const MAX_PROBES_PER_LOOKUP: usize = 32;
+// Ping and FindNode per session: burst 8, then 8/s.
+const SESSION_REQUEST_BURST: u32 = 8;
+const SESSION_REQUEST_INTERVAL: Duration = Duration::from_millis(125);
 const FINDNODE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A WHOAREYOU comes back a full round trip after the request it answers,
 /// so this must exceed any realistic round trip, unlike `request_timeout`.
@@ -60,7 +64,7 @@ pub struct DiscV5 {
 
     challenges: FxHashMap<(NodeId, SocketAddr), PendingChallenge>,
     /// FINDNODE to send once a session with the given peer is established.
-    pending_findnodes: FxHashMap<NodeId, (u64, Distances)>,
+    pending_findnodes: FxHashMap<NodeId, PendingFindNode>,
     request_nonces: RequestNonces,
     findnode_requests: FindNodeRequests,
     pending_pings: FxHashMap<RequestId, (NodeId, Instant)>,
@@ -165,7 +169,9 @@ impl DiscV5 {
     }
 
     fn flush_pending_findnode(&mut self, node_id: NodeId, dest_addr: SocketAddr) {
-        if let Some((rid, distances)) = self.pending_findnodes.remove(&node_id) {
+        if let Some(PendingFindNode { rid, distances, .. }) =
+            self.pending_findnodes.remove(&node_id)
+        {
             self.send_findnode(node_id, dest_addr, RequestId::from(rid), distances);
         }
     }
@@ -237,8 +243,18 @@ impl DiscV5 {
             return;
         }
 
-        let ip = rate_limit_key(src_addr.ip());
+        // Global first: spoofed sources must not grow the per-IP map once the
+        // global budget is spent.
         let whoareyou_window = self.config.whoareyou_window();
+        if now.duration_since(self.whoareyou_global.1) >= whoareyou_window {
+            self.whoareyou_global = (0, now);
+        }
+        if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
+            self.metrics.whoareyou_limit_hits += 1;
+            return;
+        }
+
+        let ip = rate_limit_key(src_addr.ip());
         let entry = self.whoareyou_per_ip.entry(ip).or_insert((0, now));
         if now.duration_since(entry.1) > whoareyou_window {
             *entry = (0, now);
@@ -248,15 +264,7 @@ impl DiscV5 {
             return;
         }
 
-        if now.duration_since(self.whoareyou_global.1) >= whoareyou_window {
-            self.whoareyou_global = (0, now);
-        }
-        if self.whoareyou_global.0 >= self.config.whoareyou_global_limit {
-            self.metrics.whoareyou_limit_hits += 1;
-            return;
-        }
-
-        self.whoareyou_per_ip.get_mut(&ip).unwrap().0 += 1;
+        entry.0 += 1;
         self.whoareyou_global.0 += 1;
 
         let known_enr_seq =
@@ -275,8 +283,10 @@ impl DiscV5 {
         };
         let aad_arr = wru.authenticated_data();
 
-        let mut data = [0u8; 63];
-        data.copy_from_slice(&aad_arr);
+        let Ok(data) = <[u8; 63]>::try_from(aad_arr.as_slice()) else {
+            warn!(len = aad_arr.len(), "unexpected whoareyou challenge data length");
+            return;
+        };
 
         let wire = wru.encode(&src_id);
 
@@ -437,8 +447,7 @@ impl DiscV5 {
             None => return,
         };
 
-        // IV(16) + header(23) + auth_data(32) + GCM tag(16) + msg overhead(~18)
-        const BUDGET: usize = MAX_PACKET_SIZE - 105;
+        const BUDGET: usize = MAX_MESSAGE_PLAINTEXT - NODES_MESSAGE_OVERHEAD;
 
         let mut total: u8 = 1;
         let mut acc: usize = 0;
@@ -519,6 +528,13 @@ impl DiscV5 {
                 return;
             }
         };
+
+        if matches!(msg, Message::Ping { .. } | Message::FindNode { .. }) &&
+            self.sessions.get_mut(&src_id).is_some_and(|s| !s.admit_request(now))
+        {
+            self.metrics.request_limit_hits += 1;
+            return;
+        }
 
         // A session peer may be outside the table: its ENR does not advertise
         // the address it talks from, or its bucket is full. It still gets
@@ -637,7 +653,9 @@ impl DiscV5 {
         .authenticated_data();
 
         let enc_cipher = make_cipher(&enc_key);
-        let ciphertext = if let Some((rid, dists)) = self.pending_findnodes.remove(&remote_id) {
+        let ciphertext = if let Some(PendingFindNode { rid, distances: dists, .. }) =
+            self.pending_findnodes.remove(&remote_id)
+        {
             let request_id = RequestId::from(rid);
             self.findnode_requests.record(request_id, remote_id, dists, now);
             let mut plain: ArrayVec<u8, 128> = ArrayVec::new();
@@ -880,7 +898,7 @@ impl DiscV5 {
         silver_log::debug!("performing node lookup");
 
         // Probe all un-sessioned peers first (bootstrap / new additions).
-        let without_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+        let without_session: ArrayVec<(NodeId, SocketAddr), MAX_PROBES_PER_LOOKUP> = self
             .kbuckets
             .iter_ref()
             .filter(|n| {
@@ -889,27 +907,31 @@ impl DiscV5 {
                     !self.pending_findnodes.contains_key(id) &&
                     !Self::is_banned(&mut self.banned_nodes, id)
             })
-            .take(self.config.probes_per_lookup)
+            .take(self.config.probes_per_lookup.min(MAX_PROBES_PER_LOOKUP))
             .map(|n| (*n.key.preimage(), n.value.addr))
             .collect();
 
         for (node_id, addr) in &without_session {
             let rid = self.next_id();
             let distances = Self::random_distances(self.config.lookup_distances, true);
-            self.pending_findnodes.insert(*node_id, (rid, distances));
+            self.pending_findnodes.insert(*node_id, PendingFindNode {
+                rid,
+                distances,
+                sent_at: Instant::now(),
+            });
             self.send_probe(*node_id, *addr);
         }
 
         // Send FindNode to a random sessioned peer for ongoing discovery.
         if without_session.is_empty() {
-            let with_session: ArrayVec<(NodeId, SocketAddr), 32> = self
+            let with_session: ArrayVec<(NodeId, SocketAddr), MAX_PROBES_PER_LOOKUP> = self
                 .kbuckets
                 .iter_ref()
                 .filter(|n| {
                     self.sessions.contains_key(n.key.preimage()) &&
                         !Self::is_banned(&mut self.banned_nodes, n.key.preimage())
                 })
-                .take(self.config.probes_per_lookup)
+                .take(self.config.probes_per_lookup.min(MAX_PROBES_PER_LOOKUP))
                 .map(|n| (*n.key.preimage(), n.value.addr))
                 .collect();
 
@@ -1025,6 +1047,7 @@ impl DiscV5 {
         self.pending_pings.retain(|_, (_, sent_at)| sent_at.elapsed() < request_timeout);
         self.request_nonces.expire(REQUEST_NONCE_TTL);
         self.findnode_requests.expire(FINDNODE_TIMEOUT);
+        self.pending_findnodes.retain(|_, p| p.sent_at.elapsed() < FINDNODE_TIMEOUT);
         self.ip_votes.expire(now);
 
         let whoareyou_window = self.config.whoareyou_window();
@@ -1377,6 +1400,8 @@ struct Session {
     seen_nonces: NonceRing,
     addr: SocketAddr,
     last_active: Instant,
+    request_tokens: u32,
+    refilled_at: Instant,
 }
 
 impl Session {
@@ -1387,13 +1412,42 @@ impl Session {
             seen_nonces: NonceRing::new(),
             addr,
             last_active: now,
+            request_tokens: SESSION_REQUEST_BURST,
+            refilled_at: now,
         }
+    }
+
+    fn admit_request(&mut self, now: Instant) -> bool {
+        let earned = now.saturating_duration_since(self.refilled_at).as_nanos() /
+            SESSION_REQUEST_INTERVAL.as_nanos();
+        if earned > 0 {
+            let tokens = u128::from(self.request_tokens) + earned;
+            if tokens >= u128::from(SESSION_REQUEST_BURST) {
+                self.request_tokens = SESSION_REQUEST_BURST;
+                self.refilled_at = now;
+            } else {
+                // Below the burst, so `earned` fits in u32.
+                self.request_tokens = tokens as u32;
+                self.refilled_at += SESSION_REQUEST_INTERVAL * earned as u32;
+            }
+        }
+        if self.request_tokens == 0 {
+            return false;
+        }
+        self.request_tokens -= 1;
+        true
     }
 
     fn record_authenticated(&mut self, nonce: [u8; 12], now: Instant) {
         self.seen_nonces.push(nonce);
         self.last_active = now;
     }
+}
+
+struct PendingFindNode {
+    rid: u64,
+    distances: Distances,
+    sent_at: Instant,
 }
 
 /// Challenge data: `iv(16) || static_header(23) || auth_data(24)`
@@ -2745,5 +2799,60 @@ mod tests {
 
         a.ban_node(cid);
         assert!(!a.pending_pings.values().any(|(id, _)| *id == cid), "ban left pings for c");
+    }
+
+    #[test]
+    fn session_requests_are_limited_per_session() {
+        let now = Instant::now();
+        let (mut a, a_addr) = make_node(19401);
+        let (mut b, b_addr) = make_node(19402);
+        do_handshake(&mut a, a_addr, &mut b, b_addr, now);
+        let session = b.sessions.get_mut(&a.local_id).unwrap();
+        session.request_tokens = SESSION_REQUEST_BURST;
+        session.refilled_at = now;
+
+        let mut ping = |b: &mut DiscV5, rid: u64, at: Instant| {
+            let msg = Message::Ping { request_id: RequestId::from(rid), enr_seq: 0 };
+            inject_message(&mut a, b, a_addr, msg, at);
+            collect_sends(b).iter().filter(|(to, _)| *to == a_addr).count()
+        };
+
+        let burst = SESSION_REQUEST_BURST as u64;
+        let answered: usize = (0..burst + 4).map(|rid| ping(&mut b, rid, now)).sum();
+        assert_eq!(answered, burst as usize);
+        assert_eq!(b.metrics.request_limit_hits, 4);
+
+        let later = now + SESSION_REQUEST_INTERVAL;
+        assert_eq!(ping(&mut b, 100, later), 1, "one interval refills one request");
+        assert_eq!(ping(&mut b, 101, later), 0);
+    }
+
+    #[test]
+    fn spent_global_whoareyou_budget_does_not_grow_the_per_ip_map() {
+        let now = Instant::now();
+        let (mut a, _) = make_node(19403);
+        let limit = a.config.whoareyou_global_limit;
+        for i in 0..limit + 50 {
+            let octets = [10, (i >> 16) as u8, (i >> 8) as u8, i as u8];
+            let src_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), 30000);
+            let sk = SecretKey::new(&mut rand::thread_rng());
+            let src_id = NodeId::from(sk.public_key(SECP256K1));
+            let garbage_key = crate::crypto::make_cipher(&[0xBB; 16]);
+            let msg = Message::Ping { request_id: RequestId::from(u64::from(i)), enr_seq: 0 };
+            let data = Packet::encode_message(src_id, a.local_id, &garbage_key, msg).unwrap();
+            a.handle(src_addr, &data, now);
+        }
+        assert_eq!(a.whoareyou_per_ip.len(), limit as usize);
+    }
+
+    #[test]
+    fn unanswered_probe_expires_so_the_node_can_be_reprobed() {
+        let (mut a, _) = make_node(19404);
+        let id = NodeId::random();
+        let sent_at = Instant::now().checked_sub(FINDNODE_TIMEOUT).unwrap();
+        let distances = Distances::new();
+        a.pending_findnodes.insert(id, PendingFindNode { rid: 1, distances, sent_at });
+        a.cleanup();
+        assert!(a.pending_findnodes.is_empty());
     }
 }
