@@ -16,7 +16,7 @@ use silver_beacon_state::{
 use silver_beacon_state_data::{
     BeaconBlockHeader, Payload, SLOTS_PER_EPOCH, bls::SigBatch, hash_tree_root_block_header,
 };
-use silver_common::ssz_view::SignedExecutionPayloadBidView;
+use silver_common::ssz_view::{PTC_AGGREGATION_BITS_SIZE, SignedExecutionPayloadBidView};
 
 fn operations_handler(
     handler_name: &str,
@@ -405,6 +405,37 @@ fn fulu_execution_payload() {
     });
 }
 
+/// Since Capella the parent-hash assert holds even when the latest header
+/// is the empty pre-merge one (`block_number == 0`).
+#[test]
+fn fulu_first_payload_with_bad_parent_hash_is_rejected() {
+    let dir = spec_tests_dir().join(
+        "tests/mainnet/fulu/operations/execution_payload/pyspec_tests/invalid_bad_parent_hash_first_payload",
+    );
+    if !dir.exists() {
+        eprintln!("fulu_first_payload_with_bad_parent_hash_is_rejected: no vector, skipping");
+        return;
+    }
+    let cfg = silver_beacon_state_data::SpecConfig::mainnet();
+    let mut s = load_state(&dir.join("pre.ssz_snappy"));
+    let body = snappy_decode(&dir.join("body.ssz_snappy"));
+    let off = |pos: usize| u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
+    let payload = Payload::new(&body[off(380)..off(384)]).unwrap();
+    let commitments = &body[off(388)..off(392)];
+    let block_slot = s.slot();
+    let result = s.with_view(|view| {
+        stf::process_execution_payload(
+            view,
+            &cfg,
+            payload,
+            commitments,
+            block_slot,
+            PayloadRoots::of(payload),
+        )
+    });
+    assert!(result.is_err());
+}
+
 #[test]
 fn gloas_builder_deposit_request() {
     operations_handler_fork(
@@ -577,6 +608,25 @@ fn gloas_payload_attestation() {
             stf::process_payload_attestations(&p, op).is_ok()
         },
     );
+}
+
+/// The attestation slot is block input; `u64::MAX` must reject rather than
+/// overflow `slot + 1` (a panic under overflow checks).
+#[test]
+fn gloas_payload_attestation_rejects_max_slot() {
+    let dir = spec_tests_dir().join(
+        "tests/mainnet/gloas/operations/payload_attestation/pyspec_tests/process_payload_attestation_payload_present",
+    );
+    if !dir.exists() {
+        eprintln!("gloas_payload_attestation_rejects_max_slot: no vector, skipping");
+        return;
+    }
+    let mut s = load_state_gloas(&dir.join("pre.ssz_snappy"));
+    let mut op = snappy_decode(&dir.join("payload_attestation.ssz_snappy"));
+    let slot_at = PTC_AGGREGATION_BITS_SIZE + 32;
+    op[slot_at..slot_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let (p, _, _) = s.view();
+    assert!(stf::process_payload_attestations(&p, &op).is_err());
 }
 
 #[test]

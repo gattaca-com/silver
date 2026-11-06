@@ -46,7 +46,8 @@ fn process_payload_attestation(view: &StateWriterView, pa: &[u8]) -> Result<(), 
         return Err(E::BadBeaconBlockRoot);
     }
     let pa_slot = PayloadAttestationDataView::slot(data);
-    if pa_slot + 1 != state_slot {
+    // `pa_slot` is block input: `u64::MAX` must reject, not overflow.
+    if pa_slot.checked_add(1) != Some(state_slot) {
         return Err(E::BadSlot { slot: pa_slot, state: state_slot });
     }
     let bits = PayloadAttestationView::aggregation_bits(pa);

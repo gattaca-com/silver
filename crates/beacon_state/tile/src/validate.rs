@@ -188,7 +188,7 @@ pub fn validate_execution_payload(
 
     let got_parent = *ExecutionPayloadView::parent_hash(payload);
     let expected_parent = header.block_hash;
-    if got_parent != expected_parent && header.block_number > 0 {
+    if got_parent != expected_parent {
         return Err(ExecutionPayloadError::ParentHashMismatch {
             expected: expected_parent,
             got: got_parent,

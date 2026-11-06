@@ -3,12 +3,12 @@ use core::cmp::min;
 use flux_profiler::timed;
 pub(crate) use silver_beacon_state_data::EFFECTIVE_BALANCE_INCREMENT;
 use silver_beacon_state_data::{
-    self as common, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR, EPOCHS_PER_SYNC_COMMITTEE_PERIOD,
-    Epoch, EpochBalances, EpochView, EpochWriteView, Eth1WriteView, HistoricalSummary,
-    LongtailGroup, LongtailId, LongtailWriteView, MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS,
-    PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE, SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT,
-    SYNC_COMMITTEE_SIZE, SlotStateWriteView, SpecConfig, StateWriterView, SyncCommittees,
-    TIMELY_TARGET_FLAG, ValidatorsView, bls,
+    self as common, BLSPubkey, Checkpoint, EPOCHS_PER_SLASHINGS_VECTOR,
+    EPOCHS_PER_SYNC_COMMITTEE_PERIOD, Epoch, EpochBalances, EpochView, EpochWriteView,
+    Eth1WriteView, HistoricalSummary, LongtailGroup, LongtailId, LongtailWriteView,
+    MIN_SEED_LOOKAHEAD, PARTICIPATION_FLAGS, PARTICIPATION_WEIGHTS, PROPOSER_LOOKAHEAD_SIZE,
+    SLOTS_PER_EPOCH, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE, SlotStateWriteView,
+    SpecConfig, StateWriterView, SyncCommittees, TIMELY_TARGET_FLAG, ValidatorsView, bls,
 };
 
 use crate::{
@@ -710,6 +710,33 @@ pub fn process_randao_mixes_reset(view: &mut StateWriterView, current_epoch: Epo
     view.randao_mixes.copy_to_next_epoch(current_epoch);
 }
 
+/// A member's deposit was finalized before it activated, so the finalized
+/// index resolves it unless the finalized base lags the chain.
+fn sync_committee_indices(
+    validators: &ValidatorsView,
+    pubkeys: &[BLSPubkey; SYNC_COMMITTEE_SIZE],
+) -> [u32; SYNC_COMMITTEE_SIZE] {
+    std::array::from_fn(|seat| {
+        validators
+            .find_by_finalized_pubkey(&pubkeys[seat])
+            .unwrap_or_else(|| unfinalized_sync_committee_member(validators, &pubkeys[seat], seat))
+    })
+}
+
+/// Kept out of line: inlining this rare fallback shifted the codegen of
+/// unrelated hot loops (`Seed::shuffle` ran ~17% slower).
+#[cold]
+#[inline(never)]
+fn unfinalized_sync_committee_member(
+    validators: &ValidatorsView,
+    pubkey: &BLSPubkey,
+    seat: usize,
+) -> u32 {
+    let found = validators.find_by_pubkey(pubkey);
+    silver_log::warn!(seat, ?found, "sync committee member not in finalized base");
+    found.unwrap_or(SyncCommittees::unresolved())
+}
+
 /// Gated by the hub: runs only when `current_epoch + 1` is an
 /// `EPOCHS_PER_SYNC_COMMITTEE_PERIOD` multiple (which is what rolled
 /// `longtail`).
@@ -740,14 +767,8 @@ pub fn process_sync_committee_updates(
     let mut new_committee = *longtail.reader().sync_committees().next();
 
     // Indices for the promoted current committee, before the sampler
-    // overwrites its pubkeys. Match spec: look up against the finalized
-    // validator index only (the committee pubkeys were committed at a prior
-    // boundary).
-    let indices = std::array::from_fn(|i| {
-        view.validators
-            .find_by_finalized_pubkey(&new_committee.pubkeys[i])
-            .unwrap_or(SyncCommittees::unresolved())
-    });
+    // overwrites its pubkeys.
+    let indices = sync_committee_indices(&view.validators.reader(), &new_committee.pubkeys);
 
     let mut sampler = seed.sampler(active_scratch.len());
     let mut selected = 0usize;
@@ -857,6 +878,32 @@ mod tests {
         let mut root = [0u8; 32];
         root[0] = tag;
         Checkpoint { epoch, root }
+    }
+
+    /// A member appended in a fork but not yet in the finalized base still
+    /// resolves; only an unknown pubkey stays unresolved.
+    #[test]
+    fn sync_committee_indices_resolve_members_past_the_finalized_base() {
+        use silver_beacon_state_data::{FinalizedValidators, HashFormat, ValidatorsGroup};
+
+        let mut group = ValidatorsGroup::new(
+            FinalizedValidators::try_new(&[], None).unwrap(),
+            HashFormat::Fixed,
+        );
+        let id = {
+            let mut w = group.roll_fresh();
+            w.append([1; 48], PublicKey::default(), Withdrawals::default());
+            w.append([2; 48], PublicKey::default(), Withdrawals::default());
+            w.commit()
+        };
+        let mut pubkeys = [[2; 48]; SYNC_COMMITTEE_SIZE];
+        pubkeys[0] = [1; 48];
+        pubkeys[1] = [9; 48];
+
+        let indices = sync_committee_indices(&group.view(id), &pubkeys);
+        assert_eq!(indices[0], 0);
+        assert_eq!(indices[1], SyncCommittees::unresolved());
+        assert_eq!(indices[2], 1);
     }
 
     /// Pure justification/finalization bit logic. The mutating epoch path and
