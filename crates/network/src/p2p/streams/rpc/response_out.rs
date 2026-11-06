@@ -87,6 +87,7 @@ impl RpcWriteResponse {
 
                 let mut writer = StreamWriter(id.stream_id(), io);
                 let (wrote, pending) = encoder.compress(buffer, &mut writer)?;
+                revalidate_response(&response)?;
                 written += wrote;
 
                 if wrote == buffer_len && pending == 0 {
@@ -166,6 +167,18 @@ fn response_buffer(response: &AcquiredRpcResponse, offset: usize) -> Result<&[u8
         AcquiredRpcResponse::Complete => &[],
     };
     Ok(buf)
+}
+
+fn revalidate_response(response: &AcquiredRpcResponse) -> Result<(), StreamError> {
+    match response {
+        AcquiredRpcResponse::BeaconBlock { fork_digest: _, ssz } |
+        AcquiredRpcResponse::DataColumnSidecar { fork_digest: _, ssz } |
+        AcquiredRpcResponse::ExecutionPayloadEnvelope { fork_digest: _, ssz } => {
+            ssz.revalidate()?
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn response_length(response: &AcquiredRpcResponse) -> Result<usize, StreamError> {

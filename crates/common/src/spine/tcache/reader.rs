@@ -110,6 +110,11 @@ impl TCacheReader {
     }
 
     pub fn close(&mut self, id: TCacheId) {
+        debug_assert_eq!(
+            self.consumers[id as usize].as_ref().map_or(0, RandomAccessConsumer::active_count),
+            0,
+            "closing {id:?} with reads acquired"
+        );
         self.consumers[id as usize] = None;
     }
 

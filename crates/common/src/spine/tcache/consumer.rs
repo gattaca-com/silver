@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{Ordering, fence};
 
 use flux::{Timer, timing::Nanos, type_hash_derive::TypeHash};
 
@@ -273,17 +273,25 @@ impl RandomAccessConsumer {
         self.active.release(seq, self.name);
     }
 
-    #[cfg(test)]
     pub(super) fn active_count(&self) -> usize {
         self.active.buckets.iter().map(|count| usize::from(*count)).sum()
     }
 
     #[inline]
     fn warn_below_tail(&self, seq: u64) {
+        let _ = self.check_tail(seq);
+    }
+
+    /// A read below the tail lost its pin to eviction: the producer may be
+    /// reusing its slot.
+    #[inline]
+    fn check_tail(&self, seq: u64) -> Result<(), TCacheError> {
         if seq < self.active.tail_seq {
             let e = TCacheError::StaleSeq { name: self.name, seq, tail: self.active.tail_seq };
             silver_log::warn!("reading below current tail: {:?}", e);
+            return Err(e);
         }
+        Ok(())
     }
 }
 
@@ -352,13 +360,23 @@ impl AcquiredRead {
 
     pub fn buffer(&self) -> Result<(&[u8], Nanos), TCacheError> {
         let consumer = unsafe { &*self.consumer };
-        consumer.warn_below_tail(self.read.seq);
+        consumer.check_tail(self.read.seq)?;
         consumer.cache.read(self.read.seq).map(|(data, _, ts)| (data, ts))
     }
 
     #[inline]
     pub fn len(&self) -> Result<usize, TCacheError> {
-        self.cache().read(self.read.seq).map(|(buffer, ..)| buffer.len())
+        let consumer = unsafe { &*self.consumer };
+        consumer.check_tail(self.read.seq)?;
+        consumer.cache.read(self.read.seq).map(|(buffer, ..)| buffer.len())
+    }
+
+    /// Seqlock re-check after copying out of `buffer()`: Ok means the slot
+    /// was not reused during the copy.
+    #[inline]
+    pub fn revalidate(&self) -> Result<(), TCacheError> {
+        fence(Ordering::Acquire);
+        self.buffer().map(drop)
     }
 
     #[inline]
@@ -535,7 +553,8 @@ impl Buckets {
         }
 
         let bucket_idx = self.bucket_index(seq);
-        self.buckets[bucket_idx] += 1;
+        debug_assert!(self.buckets[bucket_idx] < u16::MAX, "bucket pin count overflow");
+        self.buckets[bucket_idx] = self.buckets[bucket_idx].saturating_add(1);
 
         self.head_seq = self.head_seq.max(seq);
 

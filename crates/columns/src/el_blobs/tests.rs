@@ -169,7 +169,7 @@ fn forced_tail_advance_invalidates_a_queued_response_before_its_bytes_are_reused
     rig.request([2; 32]);
     rig.response([2; 32], 7);
     let old = &rig.fetcher.responses[0].read;
-    assert!(old.buffer().is_ok(), "the sequence alone cannot detect a released pin");
+    assert!(old.buffer().is_err(), "a read below the tail no longer yields bytes");
     assert!(old.with_offset(0).is_none(), "re-acquisition also checks the consumer tail");
     rig.fetcher.process_responses(
         None,
