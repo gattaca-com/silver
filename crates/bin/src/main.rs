@@ -182,10 +182,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     local_enr.set_syncnets(long_lived_syncnets, keypair.secret_key())?;
 
     // Cluster configuration
-    let cluster_startup = config
-        .cluster_config()
-        .map(|cluster| ClusterStartup::new(cluster, &local_enr, Path::new(&chain_config.data_dir)))
-        .transpose()?;
+    let data_dir = Path::new(&chain_config.data_dir);
+    let cluster_startup = match config.cluster_config() {
+        Some(cluster) => Some(ClusterStartup::new(cluster, &local_enr, data_dir)?),
+        None => {
+            ClusterStartup::warn_unused_journal(data_dir);
+            None
+        }
+    };
     let cluster_nodes = config.cluster_config().map(|cluster| {
         let mut nodes = cluster.nodes.clone();
         nodes.retain(|_, enr| enr.node_id() != local_enr.node_id());

@@ -27,6 +27,9 @@ const SNAPSHOT_EVICTED_LEN: usize = 8 + 8;
 /// signature. The signature leaves `committee_index` out, so a vote naming
 /// another committee is still the same vote.
 const SIGNED_VOTE_START: usize = 8 + 8;
+// `encode_snapshot` checks the size before any count cast, so every count is
+// below this.
+const _: () = assert!(MAX_SNAPSHOT_BYTES / SNAPSHOT_EVICTED_LEN <= u32::MAX as usize);
 /// Evicted sources older than this fold into `pruned_source_floor`, so
 /// validators that stopped attesting stop growing the snapshot. Honest
 /// sources are recent justified checkpoints, far above the floor.

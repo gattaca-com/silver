@@ -4,6 +4,35 @@ Nodes in a cluster agree through Raft on one signed attestation per validator
 and epoch, and one block per proposer and slot, before anything is published.
 This page covers the rules an operator has to follow today.
 
+## Availability
+
+Every lock needs a majority of the voters, so the cluster fails closed.
+
+| Nodes | Tolerated failures | Without a majority |
+|---|---|---|
+| 3 | 1 | Every local attestation and block is refused until a majority returns. |
+| 5 | 2 | As above. |
+| 7 | 3 | As above. |
+
+- A refused duty is a missed duty, never a slashing.
+- After the leader fails, an election starts within 2 to 4 s (a randomised 20
+  to 40 ticks of 100 ms). Duties submitted meanwhile are answered
+  `LockPending` and published if they commit later.
+- The `Role`, `LeaderId` and per-peer stats counters show which node leads and
+  which peers it hears from.
+
+## Standalone mode
+
+Without a `cluster` config, a node locks its own attestations and blocks in
+memory only.
+
+- A restart forgets every lock. The startup floor then refuses every slot up
+  to the moment the node synced, so it cannot re-sign a slot it signed before.
+- Older conflicting or surrounding votes are only caught by the validator
+  client's own slashing-protection database.
+- Turning clustering off on a node that has a cluster journal logs a warning:
+  the node no longer checks the cluster's lock history.
+
 ## Membership is static
 
 - The `cluster.nodes` map in the config is the full voter set. Every node must
@@ -54,7 +83,8 @@ its lock. Past that, the API answers `the slashing protection cluster has not
 agreed on it yet; it is published if it agrees later`.
 
 - If the lock still commits, the node publishes the message anyway, up to two
-  slots after its slot. `ProposalsCommittedLate` counts these.
+  slots after its slot. `ProposalsCommittedLate` counts every lock that
+  commits after its request was answered, published or not.
 - A blinded block is the exception: the API reveals it through its original
   request, so a late lock for one is not published.
 - Retrying the same signed message is safe. The cluster treats it as the same

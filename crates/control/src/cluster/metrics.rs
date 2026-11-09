@@ -53,6 +53,7 @@ silver_common::declare_counters! {
         SnapshotsSent,
         SnapshotsRestored,
         SnapshotTransferTimeouts,
+        SnapshotTransferFailures,
         Compactions,
         // Compactions skipped because the lock snapshot exceeded the transport limit.
         CompactionsSkipped,

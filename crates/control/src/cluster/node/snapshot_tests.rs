@@ -282,6 +282,33 @@ fn a_lost_snapshot_is_retried_and_a_lagging_follower_catches_up() {
     );
 }
 
+/// A send failure to the peer fails its snapshot transfer at once, so the
+/// retry does not wait out the transfer timeout.
+#[test]
+fn _unreachable_peer_fails_its_snapshot_transfer_at_once() {
+    let now = Instant::now();
+    let nodes =
+        (1..=3).map(|id| SlashingProtectionCluster::in_memory(config(id), now).unwrap()).collect();
+    let mut network = Network::new(nodes, now);
+    network.populate_with_one_follower_offline();
+    network.drop_snapshot = true;
+    network.isolated = None;
+    while network.snapshots == 0 {
+        network.now += Duration::from_millis(100);
+        network.settle();
+    }
+    assert!(network.nodes[0].snapshot_transfers.is_pending(3));
+
+    network.nodes[0].report_unreachable(3);
+    assert!(!network.nodes[0].snapshot_transfers.is_pending(3));
+    let started = network.now;
+    while network.nodes[2].state.len() < 24 {
+        network.now += Duration::from_millis(100);
+        network.settle();
+        assert!(network.now - started < Duration::from_secs(2), "waited for the timeout");
+    }
+}
+
 #[test]
 fn a_lost_snapshot_ack_does_not_stall_replication() {
     let now = Instant::now();

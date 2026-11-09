@@ -603,6 +603,7 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::AttestationCommitted(decision) => {
                 let Some(attestation) = pending_attestations.remove(&decision.proposal_id) else {
+                    decision.count();
                     if let Some(attestation) = late_locks.take_attestation(decision.proposal_id) {
                         attestation.release_late(&decision, gossip_handler);
                     }
@@ -648,6 +649,7 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::BlockCommitted(decision) => {
                 let Some(block) = pending_blocks.remove(&decision.proposal_id) else {
+                    decision.count();
                     if let Some(block) = late_locks.take_block(decision.proposal_id) {
                         block.release_late(&decision, gossip_handler, producers);
                     }

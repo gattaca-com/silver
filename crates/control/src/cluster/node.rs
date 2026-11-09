@@ -6,7 +6,7 @@ use std::{
 
 use flux::utils::ArrayVec;
 use raft::{
-    Config, RawNode, SnapshotStatus, StateRole,
+    Config, RawNode, StateRole,
     eraftpb::{Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
@@ -465,13 +465,13 @@ impl SlashingProtectionCluster {
         self.pending_proposals.len()
     }
 
-    /// Explicitly start an election, primarily for controlled startup and
-    /// tests.
     #[cfg(test)]
     pub(crate) fn minimum_slot(&self) -> u64 {
         self.state.minimum_slot()
     }
 
+    /// Explicitly start an election, primarily for controlled startup and
+    /// tests.
     pub fn campaign(&mut self) -> Result<(), ClusterError> {
         if self.failed {
             return Err(ClusterError::Failed);
@@ -515,7 +515,7 @@ impl SlashingProtectionCluster {
             let Some(node) = self.node.as_mut()
         {
             node.report_unreachable(node_id);
-            node.report_snapshot(node_id, SnapshotStatus::Failure);
+            self.snapshot_transfers.unreachable(node, node_id);
         }
     }
 

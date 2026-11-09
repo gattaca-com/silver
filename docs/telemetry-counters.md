@@ -160,6 +160,19 @@ GROUP BY meta_client_name
 HAVING bytes > 12 * 1024 * 1024
 ```
 
+A snapshot transfer to a lagging follower failed or timed out more than twice
+in the last hour. The follower cannot catch up until one succeeds:
+
+```sql
+SELECT meta_client_name, sum(delta) AS failed
+FROM counters
+WHERE component = 'cluster'
+  AND name IN ('SnapshotTransferFailures', 'SnapshotTransferTimeouts')
+  AND delta > 0 AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+HAVING failed > 2
+```
+
 The wall clock runs over an epoch ahead of the head. Slashing protection then
 admits and floors against the head-capped slot instead:
 
