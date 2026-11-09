@@ -303,8 +303,10 @@ impl ExecutionPayloadBid {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXECUTION_PAYLOAD_BID_FIXED, ExecutionPayloadBid, KZG_COMMITMENT_SSZ};
-    use super::{MAX_WITHDRAWALS_PER_PAYLOAD, PayloadWithdrawals, Withdrawal};
+    use super::{
+        EXECUTION_PAYLOAD_BID_FIXED, ExecutionPayloadBid, KZG_COMMITMENT_SSZ,
+        MAX_WITHDRAWALS_PER_PAYLOAD, PayloadWithdrawals, Withdrawal,
+    };
 
     fn bid_with_offset(off: u32) -> Vec<u8> {
         let mut body = vec![0u8; EXECUTION_PAYLOAD_BID_FIXED + 2 * KZG_COMMITMENT_SSZ];
