@@ -395,7 +395,7 @@ pub enum LocalGossipFailure {
     SurroundVote,
     ConflictingProposal,
     TimedOut,
-    LockTimedOut,
+    LockPending,
     Invalid,
     Unverifiable,
     Internal,

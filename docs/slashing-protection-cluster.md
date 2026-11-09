@@ -47,6 +47,19 @@ The lock snapshot format is `SLVLOCK` v4. New binaries read v3 journals, but
 older binaries cannot read v4 snapshots. Upgrade every node of a cluster
 together: stop all, upgrade, start.
 
+## When a lock is not agreed in time
+
+A local attestation or block waits up to 500 ms for the cluster to agree on
+its lock. Past that, the API answers `the slashing protection cluster has not
+agreed on it yet; it is published if it agrees later`.
+
+- If the lock still commits, the node publishes the message anyway, up to two
+  slots after its slot. `ProposalsCommittedLate` counts these.
+- A blinded block is the exception: the API reveals it through its original
+  request, so a late lock for one is not published.
+- Retrying the same signed message is safe. The cluster treats it as the same
+  vote or block, never as a conflict.
+
 ## When Raft processing stops
 
 A node stops serving duties when `Failed` is 1. `FailureKind` says why, and the

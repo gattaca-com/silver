@@ -303,8 +303,9 @@ pub(crate) fn failure_message(failure: LocalGossipFailure) -> &'static str {
             "this validator already proposed a block for the slot"
         }
         LocalGossipFailure::TimedOut => "validation did not complete in time",
-        LocalGossipFailure::LockTimedOut => {
-            "the slashing protection cluster did not agree on it in time"
+        LocalGossipFailure::LockPending => {
+            "the slashing protection cluster has not agreed on it yet; it is published if it \
+             agrees later"
         }
         LocalGossipFailure::Invalid => "rejected as invalid",
         LocalGossipFailure::Unverifiable => {

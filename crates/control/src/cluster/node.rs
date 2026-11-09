@@ -778,11 +778,19 @@ impl SlashingProtectionCluster {
             return Ok(());
         }
 
-        self.node
+        let proposed = self
+            .node
             .as_mut()
             .ok_or(ClusterError::NotReady)?
-            .propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode())?;
-        self.pending_minimum_slot = Some(desired);
+            .propose(Vec::new(), ReplicatedCommand::AdvanceMinimumSlot(desired).encode());
+        match proposed {
+            Ok(()) => self.pending_minimum_slot = Some(desired),
+            // Leadership is moving or the log is full; the next spin retries.
+            Err(raft::Error::ProposalDropped) => {
+                silver_log::debug!(desired, "minimum slot proposal dropped");
+            }
+            Err(error) => return Err(error.into()),
+        }
         Ok(())
     }
 
@@ -952,38 +960,24 @@ impl SlashingProtectionCluster {
             match decoded {
                 DecodedEntry::Lock(command, proposal_id) => {
                     let result = self.state.apply(&command);
-                    if proposal_id.origin_node_id == self.config.node_id &&
-                        proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.pending_proposals.take(proposal_id)
-                    {
-                        if !self.commit_in_time(pending, result, now) {
-                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
-                        } else {
-                            emit(ClusterEvent::AttestationCommitted(AttestationDecision {
-                                proposal_id,
-                                command,
-                                result,
-                                admission: self.admission.validate(command.key.slot, wall_slot),
-                            }));
-                        }
+                    if self.resolve_own_commit(proposal_id, result, now) {
+                        emit(ClusterEvent::AttestationCommitted(AttestationDecision {
+                            proposal_id,
+                            command,
+                            result,
+                            admission: self.admission.validate(command.key.slot, wall_slot),
+                        }));
                     }
                 }
                 DecodedEntry::BlockLock(command, proposal_id) => {
                     let result = self.state.apply_block(&command);
-                    if proposal_id.origin_node_id == self.config.node_id &&
-                        proposal_id.incarnation == self.incarnation &&
-                        let Some(pending) = self.pending_proposals.take(proposal_id)
-                    {
-                        if !self.commit_in_time(pending, result, now) {
-                            emit(ClusterEvent::ProposalTimedOut(proposal_id));
-                        } else {
-                            emit(ClusterEvent::BlockCommitted(BlockDecision {
-                                proposal_id,
-                                key: command.key,
-                                result,
-                                admission: self.admission.validate(command.key.slot, wall_slot),
-                            }));
-                        }
+                    if self.resolve_own_commit(proposal_id, result, now) {
+                        emit(ClusterEvent::BlockCommitted(BlockDecision {
+                            proposal_id,
+                            key: command.key,
+                            result,
+                            admission: self.admission.validate(command.key.slot, wall_slot),
+                        }));
                     }
                 }
                 DecodedEntry::AdvanceMinimumSlot(minimum_slot) => {
@@ -998,20 +992,23 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
-    fn commit_in_time(
-        &mut self,
-        pending: PendingProposal,
-        result: LockResult,
-        now: Instant,
-    ) -> bool {
-        if now >= pending.deadline {
-            ClusterCounters::ProposalsTimedOut.inc();
-            self.resolved.push(pending.resolve(now, ClusterOutcome::TimedOut));
+    /// Whether this process proposed the entry, so its decision is reported.
+    /// A proposal that already timed out is still reported: its lock is held,
+    /// so the signed message can still be published.
+    fn resolve_own_commit(&mut self, id: ProposalId, result: LockResult, now: Instant) -> bool {
+        if id.origin_node_id != self.config.node_id || id.incarnation != self.incarnation {
             return false;
         }
-        self.metrics
-            .committed(now.saturating_duration_since(pending.submitted), pending.leader_origin);
-        self.resolved.push(pending.resolve(now, result.outcome()));
+        match self.pending_proposals.take(id) {
+            Some(pending) => {
+                self.metrics.committed(
+                    now.saturating_duration_since(pending.submitted),
+                    pending.leader_origin,
+                );
+                self.resolved.push(pending.resolve(now, result.outcome()));
+            }
+            None => ClusterCounters::ProposalsCommittedLate.inc(),
+        }
         true
     }
 
@@ -1242,6 +1239,30 @@ mod tests {
         assert!(cluster.is_failed());
     }
 
+    /// raft-rs drops proposals while leadership is being transferred; the
+    /// floor proposal is retried instead of failing the cluster.
+    #[test]
+    fn dropped_minimum_slot_proposal_is_retried() {
+        let now = Instant::now();
+        let voters = vec![1, 2, 3];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        clusters[0].campaign().unwrap();
+        let mut decisions = Vec::new();
+        for _ in 0..10 {
+            pump(&mut clusters, now, 9, &mut decisions);
+        }
+        assert!(clusters[0].is_leader());
+
+        clusters[0].node.as_mut().unwrap().transfer_leader(2);
+        clusters[0].spin(now, 9 + 2 * SLOTS_PER_EPOCH, |_| {}).unwrap();
+
+        assert!(!clusters[0].is_failed());
+        assert_eq!(clusters[0].pending_minimum_slot, None, "retried on a later spin");
+    }
+
     #[test]
     fn single_node_proposal_completes_only_from_spin() {
         let now = Instant::now();
@@ -1270,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn proposal_times_out_at_its_deadline_and_remains_locked() {
+    fn proposal_times_out_at_its_deadline_and_its_late_commit_is_reported() {
         let now = Instant::now();
         let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
         cluster.campaign().unwrap();
@@ -1290,8 +1311,9 @@ mod tests {
             })
             .unwrap();
 
-        assert!(committed.is_empty());
         assert_eq!(timed_out, [proposal_id]);
+        assert!(matches!(&committed[..], [decision]
+            if decision.proposal_id == proposal_id && decision.result == LockResult::Accepted));
         assert_eq!(cluster.pending_proposals(), 0);
         assert_eq!(cluster.state().len(), 1);
         assert_eq!(cluster.state.apply(&command(10, 2)), LockResult::Conflicting);

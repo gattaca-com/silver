@@ -33,6 +33,7 @@ silver_common::declare_counters! {
         ProposalsSubmitted,
         ProposalsCommitted,
         ProposalsTimedOut,
+        ProposalsCommittedLate,
         ProposalBatchesDropped,
         AttestationLockAccepted,
         AttestationLockSame,

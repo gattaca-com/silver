@@ -15,12 +15,15 @@ use silver_common::{
 };
 use silver_gossip::GossipHandler;
 
-use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
+use super::{
+    late_locks::LateLocks,
+    local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
+};
 use crate::cluster::{
-    AdmissionError, AttestationKey, AttestationLockCommand, BlockKey, BlockLockCommand,
-    ClusterCounters, ClusterError, ClusterEvent, DutyTimers, LockResult, LoopGap, ProposalId,
-    ProposeError, SlashingAdmission, SlashingLockStore, SlashingProtectionCluster,
-    SlashingProtectionConfig, decode_message, encode_message,
+    AdmissionError, AttestationDecision, AttestationKey, AttestationLockCommand, BlockDecision,
+    BlockKey, BlockLockCommand, ClusterCounters, ClusterError, ClusterEvent, DutyTimers,
+    LockResult, LoopGap, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
+    SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +45,34 @@ impl PendingAttestation {
             slot: SingleAttestationView::slot(&ssz),
         };
         Self { request_id, command: AttestationLockCommand { key, subnet, ssz }, received }
+    }
+
+    pub(super) fn slot(&self) -> u64 {
+        self.command.key.slot
+    }
+
+    /// Its lock committed after the request was answered `LockPending`, so
+    /// it is published without a verdict to wait for.
+    fn release_late(&self, decision: &AttestationDecision, gossip_handler: &mut GossipHandler) {
+        let response = decision_response(
+            decision.admission,
+            decision.result,
+            LocalGossipFailure::ConflictingAttestation,
+        );
+        if decision.command != self.command || response.is_err() {
+            silver_log::warn!(
+                ?decision.result,
+                ?decision.admission,
+                slot = self.slot(),
+                "late attestation lock cannot be published"
+            );
+            return;
+        }
+        silver_log::info!(slot = self.slot(), "publishing attestation whose lock committed late");
+        LocalGossipHandler::publish_unanswered(
+            decision.command.local_message(self.request_id),
+            gossip_handler,
+        );
     }
 }
 
@@ -79,7 +110,7 @@ impl SubmittedBlock {
 /// A signed block waiting on its lock. Its submission stays pinned in the
 /// submissions tcache until the lock commits or times out.
 #[derive(Debug)]
-struct PendingBlock {
+pub(super) struct PendingBlock {
     request_id: u64,
     key: BlockKey,
     contents: TRead,
@@ -88,8 +119,37 @@ struct PendingBlock {
 }
 
 impl PendingBlock {
+    pub(super) fn slot(&self) -> u64 {
+        self.key.slot
+    }
+
     fn signed_block(&self) -> Option<&[u8]> {
         self.contents.buffer().ok().and_then(|(bytes, _)| self.block.signed_block(bytes))
+    }
+
+    /// `None` for a blinded block, which the API reveals through the sidecar.
+    fn locked_message<'a>(&'a self, block: &'a [u8]) -> Option<LocalMessage<'a>> {
+        let slot = self.key.slot;
+        match self.block {
+            SubmittedBlock::Full(validation) => {
+                Some(block_message(self.request_id, block, slot, validation))
+            }
+            SubmittedBlock::Gloas(validation) => Some(LocalMessage {
+                request_id: self.request_id,
+                topic: GossipTopic::BeaconBlock,
+                ssz: block,
+                ssz_read: Some(self.contents.to_read()),
+                slot,
+                validation,
+            }),
+            SubmittedBlock::Blinded => None,
+        }
+    }
+
+    fn release_contents(&self, producers: &mut SilverSpineProducers) {
+        if let SubmittedBlock::Full(_) = self.block {
+            producers.produce(LockedProposal { contents: self.contents.to_read() });
+        }
     }
 
     fn release_locked(
@@ -100,31 +160,41 @@ impl PendingBlock {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        match self.block {
-            SubmittedBlock::Full(validation) => {
-                producers.produce(LockedProposal { contents: self.contents.to_read() });
-                local_gossip.submit(
-                    block_message(self.request_id, block, self.key.slot, validation),
-                    now,
-                    gossip_handler,
-                    producers,
-                );
-            }
-            SubmittedBlock::Gloas(validation) => local_gossip.submit(
-                LocalMessage {
-                    request_id: self.request_id,
-                    topic: GossipTopic::BeaconBlock,
-                    ssz: block,
-                    ssz_read: Some(self.contents.to_read()),
-                    slot: self.key.slot,
-                    validation,
-                },
-                now,
-                gossip_handler,
-                producers,
-            ),
-            SubmittedBlock::Blinded => produce_response(producers, self.request_id, Ok(())),
+        self.release_contents(producers);
+        match self.locked_message(block) {
+            Some(message) => local_gossip.submit(message, now, gossip_handler, producers),
+            None => produce_response(producers, self.request_id, Ok(())),
         }
+    }
+
+    /// Its lock committed after the request was answered `LockPending`, so
+    /// it is published without a verdict to wait for.
+    fn release_late(
+        &self,
+        decision: &BlockDecision,
+        gossip_handler: &mut GossipHandler,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let response = decision_response(
+            decision.admission,
+            decision.result,
+            LocalGossipFailure::ConflictingProposal,
+        );
+        let locked = decision.key == self.key && response.is_ok();
+        let Some(message) =
+            self.signed_block().filter(|_| locked).and_then(|block| self.locked_message(block))
+        else {
+            silver_log::warn!(
+                ?decision.result,
+                ?decision.admission,
+                slot = self.slot(),
+                "late block lock cannot be published"
+            );
+            return;
+        };
+        silver_log::info!(slot = self.slot(), "publishing block whose lock committed late");
+        self.release_contents(producers);
+        LocalGossipHandler::publish_unanswered(message, gossip_handler);
     }
 }
 
@@ -139,6 +209,7 @@ pub(super) struct SlashingProtectionHandler {
     admission: SlashingAdmission,
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
     pending_blocks: FxHashMap<ProposalId, PendingBlock>,
+    late_locks: LateLocks,
     wall_slot: u64,
     clock_ahead: bool,
     clock: Option<SlotTicker>,
@@ -170,6 +241,7 @@ impl SlashingProtectionHandler {
             admission: SlashingAdmission::new(),
             pending_attestations: FxHashMap::default(),
             pending_blocks: FxHashMap::default(),
+            late_locks: LateLocks::default(),
             wall_slot: 0,
             clock_ahead: false,
             clock: None,
@@ -191,6 +263,7 @@ impl SlashingProtectionHandler {
 
         let wall_slot = chain_wall_slot;
         self.wall_slot = wall_slot;
+        self.late_locks.expire(wall_slot);
         if self.cluster.is_none() {
             self.local_locks.advance_minimum_slot(SlashingAdmission::age_floor(wall_slot));
         }
@@ -512,6 +585,7 @@ impl SlashingProtectionHandler {
 
         let pending_attestations = &mut self.pending_attestations;
         let pending_blocks = &mut self.pending_blocks;
+        let late_locks = &mut self.late_locks;
         let outbound_producer = &mut self.outbound_producer;
         let duty_timers = &mut self.duty_timers;
         let result = cluster.spin(now, self.wall_slot, |event| match event {
@@ -529,10 +603,9 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::AttestationCommitted(decision) => {
                 let Some(attestation) = pending_attestations.remove(&decision.proposal_id) else {
-                    silver_log::warn!(
-                        ?decision.proposal_id,
-                        "committed local Raft proposal has no pending attestation"
-                    );
+                    if let Some(attestation) = late_locks.take_attestation(decision.proposal_id) {
+                        attestation.release_late(&decision, gossip_handler);
+                    }
                     return;
                 };
                 if decision.command != attestation.command {
@@ -575,10 +648,9 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::BlockCommitted(decision) => {
                 let Some(block) = pending_blocks.remove(&decision.proposal_id) else {
-                    silver_log::warn!(
-                        ?decision.proposal_id,
-                        "committed local Raft proposal has no pending block"
-                    );
+                    if let Some(block) = late_locks.take_block(decision.proposal_id) {
+                        block.release_late(&decision, gossip_handler, producers);
+                    }
                     return;
                 };
                 if decision.key != block.key {
@@ -633,7 +705,7 @@ impl SlashingProtectionHandler {
                     produce_response(
                         producers,
                         block.request_id,
-                        Err(LocalGossipFailure::LockTimedOut),
+                        Err(LocalGossipFailure::LockPending),
                     );
                     silver_log::warn!(
                         ?proposal_id,
@@ -641,12 +713,16 @@ impl SlashingProtectionHandler {
                         slot = block.key.slot,
                         "block cluster proposal timed out"
                     );
+                    // A blinded block is revealed through its answered request.
+                    if block.block != SubmittedBlock::Blinded {
+                        late_locks.insert_block(proposal_id, block);
+                    }
                 }
                 if let Some(attestation) = pending_attestations.remove(&proposal_id) {
                     produce_response(
                         producers,
                         attestation.request_id,
-                        Err(LocalGossipFailure::LockTimedOut),
+                        Err(LocalGossipFailure::LockPending),
                     );
                     silver_log::warn!(
                         ?proposal_id,
@@ -654,6 +730,7 @@ impl SlashingProtectionHandler {
                         slot = attestation.command.key.slot,
                         "attestation cluster proposal timed out"
                     );
+                    late_locks.insert_attestation(proposal_id, attestation);
                 }
             }
         });
@@ -673,6 +750,7 @@ impl SlashingProtectionHandler {
             for (_, block) in self.pending_blocks.drain() {
                 produce_response(producers, block.request_id, Err(LocalGossipFailure::Internal));
             }
+            self.late_locks.clear();
         }
     }
 }
@@ -958,6 +1036,111 @@ mod tests {
 
         let floor = handler.cluster.as_ref().unwrap().minimum_slot();
         assert_eq!(floor, SlashingAdmission::age_floor(head + SLOTS_PER_EPOCH));
+    }
+
+    const TEST_PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
+    /// A single-node cluster, latched at slot 11 and leading.
+    fn clustered_handler(now: Instant) -> SlashingProtectionHandler {
+        let mut config = SlashingProtectionConfig::new(
+            1,
+            [1],
+            ClusterStorageConfig::Create("unused-test-journal".into()),
+        )
+        .unwrap();
+        config.tick_interval = std::time::Duration::from_millis(1);
+        config.election_ticks = 5;
+        config.heartbeat_ticks = 1;
+        config.proposal_timeout = TEST_PROPOSAL_TIMEOUT;
+        let mut handler = handler(now);
+        handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
+        handler.on_status(10, 10, true);
+        handler.on_status(11, 11, true);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+        handler
+    }
+
+    /// Spinning only at the deadline answers the proposal `LockPending`
+    /// before it commits in the same spin.
+    fn spin_past_deadline(
+        handler: &mut SlashingProtectionHandler,
+        harness: &mut Harness,
+        submissions: &mut Submissions,
+        now: Instant,
+    ) {
+        let later = now + TEST_PROPOSAL_TIMEOUT;
+        let Harness { local_gossip, gossip, adapter, .. } = harness;
+        handler.spin(later, adapter, local_gossip, gossip, &mut submissions.reader);
+    }
+
+    #[test]
+    fn late_attestation_lock_is_published_without_a_second_answer() {
+        let now = Instant::now();
+        let mut handler = clustered_handler(now);
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+        handler.on_local_attestation(
+            PendingAttestation::new(1, 0, attestation(11, 7), now),
+            now,
+            local_gossip,
+            gossip,
+            &mut adapter.producers,
+        );
+
+        spin_past_deadline(&mut handler, &mut harness, &mut submissions, now);
+
+        assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
+        harness.pop_gossip();
+        assert_eq!(handler.late_locks.len(), 0);
+        assert!(harness.local_gossip.is_empty(), "nobody awaits the late verdict");
+    }
+
+    #[test]
+    fn late_block_lock_is_published_without_a_second_answer() {
+        let now = Instant::now();
+        let mut handler = clustered_handler(now);
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        submit_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+        assert_eq!(locked_proposals(&mut harness), 0, "nothing leaves before the lock commits");
+
+        spin_past_deadline(&mut handler, &mut harness, &mut submissions, now);
+
+        harness.pop_gossip();
+        assert_eq!(locked_proposals(&mut harness), 1);
+        assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
+        assert_eq!(handler.late_locks.len(), 0);
+    }
+
+    /// The API reveals a blinded block through the request that was already
+    /// answered, so a late lock for one publishes nothing.
+    #[test]
+    fn late_blinded_block_lock_is_not_published() {
+        let now = Instant::now();
+        let mut handler = clustered_handler(now);
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        reveal_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
+
+        spin_past_deadline(&mut handler, &mut harness, &mut submissions, now);
+
+        assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
+        assert!(harness.gossip.pop_event().is_none());
+        assert_eq!(handler.late_locks.len(), 0);
+    }
+
+    #[test]
+    fn late_locks_expire_two_slots_after_their_slot() {
+        let now = Instant::now();
+        let mut late = LateLocks::default();
+        let id = ProposalId { origin_node_id: 1, sequence: 0, incarnation: [0; 16] };
+        late.insert_attestation(id, PendingAttestation::new(1, 0, attestation(11, 7), now));
+
+        late.expire(12);
+        assert_eq!(late.len(), 1);
+        late.expire(13);
+        assert_eq!(late.len(), 0);
     }
 
     #[test]

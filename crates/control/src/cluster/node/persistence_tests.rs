@@ -88,7 +88,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
 }
 
 #[test]
-fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
+fn pending_disk_io_does_not_stop_proposal_timeouts_and_late_commits_are_reported() {
     let now = Instant::now();
     let mut cluster = leader(now);
     cluster.persistence.paused = true;
@@ -106,7 +106,11 @@ fn pending_disk_io_does_not_stop_proposal_timeouts_or_accept_late_decisions() {
     assert_eq!(cluster.state.len(), 0);
 
     cluster.persistence.paused = false;
-    assert!(events(&mut cluster, later).is_empty());
+    let late = events(&mut cluster, later);
+    assert!(matches!(&late[..], [
+        ClusterEvent::AttestationCommitted(a), ClusterEvent::AttestationCommitted(b)
+    ] if a.proposal_id == first && b.proposal_id == second
+        && a.result == LockResult::Accepted && b.result == LockResult::Accepted));
     assert_eq!(cluster.state.len(), 2);
     assert_eq!(cluster.state.apply(&command(10, 3)), LockResult::Conflicting);
 }

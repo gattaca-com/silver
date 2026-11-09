@@ -35,28 +35,41 @@ impl LocalGossipHandler {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
+        let request_id = message.request_id;
+        let Some(msg_id) = Self::inject(message, gossip_handler) else {
+            produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
+            return;
+        };
+        let request = PendingValidationRequest { request_id, deadline: now + VALIDATION_TIMEOUT };
+        self.next_deadline = Some(
+            self.next_deadline.map_or(request.deadline, |deadline| deadline.min(request.deadline)),
+        );
+        self.pending.entry(msg_id).or_default().push(request);
+    }
+
+    /// For a message whose request was already answered: Beacon State still
+    /// validates and relays it, and nobody receives the verdict.
+    pub(super) fn publish_unanswered(
+        message: LocalMessage<'_>,
+        gossip_handler: &mut GossipHandler,
+    ) {
+        Self::inject(message, gossip_handler);
+    }
+
+    fn inject(message: LocalMessage<'_>, gossip_handler: &mut GossipHandler) -> Option<MessageId> {
         let LocalMessage { request_id, topic, ssz, ssz_read, slot, validation } = message;
         match gossip_handler.inject_local(topic, ssz, ssz_read, validation, Nanos::now()) {
-            Ok(Some(msg_id)) => {
-                let request =
-                    PendingValidationRequest { request_id, deadline: now + VALIDATION_TIMEOUT };
-                self.next_deadline = Some(
-                    self.next_deadline
-                        .map_or(request.deadline, |deadline| deadline.min(request.deadline)),
-                );
-                self.pending.entry(msg_id).or_default().push(request);
-            }
+            Ok(Some(msg_id)) => Some(msg_id),
             Ok(None) => {
-                produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
                 silver_log::warn!(
                     request_id,
                     slot,
                     ?topic,
                     "gossip is not ready to validate local message"
                 );
+                None
             }
             Err(error) => {
-                produce_response(producers, request_id, Err(LocalGossipFailure::Internal));
                 silver_log::warn!(
                     ?error,
                     request_id,
@@ -64,6 +77,7 @@ impl LocalGossipHandler {
                     ?topic,
                     "failed to inject local message for validation"
                 );
+                None
             }
         }
     }
