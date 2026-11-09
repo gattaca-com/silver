@@ -10,9 +10,10 @@ use crate::cluster::AttestationKey;
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
         id,
-        vec![1, 2, 3],
+        [1, 2, 3],
         ClusterStorageConfig::Create("unused-test-journal".into()),
-    );
+    )
+    .unwrap();
     config.snapshot_interval = 4;
     config
 }
@@ -143,7 +144,7 @@ fn invalid_snapshot_payload_or_membership_is_refused() {
 
 #[test]
 fn storage_serves_captured_state_not_a_snapshot_at_an_unapplied_commit() {
-    let mut storage = RaftStorage::new(vec![1, 2, 3]);
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
     storage.install_snapshot(snapshot(10)).unwrap();
     storage.memory.wl().append(&[Entry { index: 11, term: 2, ..Entry::default() }]).unwrap();
     storage.memory.wl().set_hardstate(HardState { term: 2, commit: 11, ..HardState::default() });
@@ -303,7 +304,7 @@ fn a_lost_snapshot_ack_does_not_stall_replication() {
 
 #[test]
 fn compacting_again_at_the_same_applied_index_preserves_the_suffix() {
-    let mut storage = RaftStorage::new(vec![1, 2, 3]);
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
     storage.install_snapshot(snapshot(10)).unwrap();
     let entry = Entry { index: 11, term: 2, ..Entry::default() };
     storage.memory.wl().append(&[entry.clone()]).unwrap();

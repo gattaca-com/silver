@@ -10,6 +10,7 @@ fn config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
         voters,
         ClusterStorageConfig::Create("unused-test-journal".into()),
     )
+    .unwrap()
 }
 
 fn command(slot: u64, root: u8) -> AttestationLockCommand {

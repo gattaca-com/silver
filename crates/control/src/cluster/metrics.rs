@@ -22,6 +22,7 @@ silver_common::declare_counters! {
         LastIndex,
         PendingProposals,
         Failed,
+        FailureKind,
         FloorLatched,
         StartupFloorSlot,
         MinimumSlot,

@@ -658,7 +658,11 @@ impl SlashingProtectionHandler {
             }
         });
         if let Err(error) = result {
-            silver_log::error!(?error, "slashing protection spin failed");
+            silver_log::error!(
+                %error,
+                kind = ?error.failure_kind(),
+                "slashing protection spin failed"
+            );
             for (_, attestation) in self.pending_attestations.drain() {
                 produce_response(
                     producers,
@@ -896,9 +900,10 @@ mod tests {
         let now = Instant::now();
         let mut config = SlashingProtectionConfig::new(
             1,
-            vec![1],
+            [1],
             ClusterStorageConfig::Create("unused-test-journal".into()),
-        );
+        )
+        .unwrap();
         config.tick_interval = std::time::Duration::from_millis(1);
         config.election_ticks = 5;
         config.heartbeat_ticks = 1;
@@ -931,9 +936,10 @@ mod tests {
         let now = Instant::now();
         let mut config = SlashingProtectionConfig::new(
             1,
-            vec![1],
+            [1],
             ClusterStorageConfig::Create("unused-test-journal".into()),
-        );
+        )
+        .unwrap();
         config.tick_interval = std::time::Duration::from_millis(1);
         config.election_ticks = 5;
         config.heartbeat_ticks = 1;
@@ -959,9 +965,10 @@ mod tests {
         let now = Instant::now();
         let mut config = SlashingProtectionConfig::new(
             1,
-            vec![1],
+            [1],
             ClusterStorageConfig::Create("unused-test-journal".into()),
-        );
+        )
+        .unwrap();
         config.tick_interval = std::time::Duration::from_millis(1);
         config.election_ticks = 5;
         config.heartbeat_ticks = 1;
@@ -1258,9 +1265,10 @@ mod tests {
             SlashingProtectionCluster::in_memory(
                 SlashingProtectionConfig::new(
                     1,
-                    vec![1],
+                    [1],
                     ClusterStorageConfig::Create("unused-test-journal".into()),
-                ),
+                )
+                .unwrap(),
                 now,
             )
             .unwrap(),

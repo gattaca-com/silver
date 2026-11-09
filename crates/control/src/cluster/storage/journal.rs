@@ -1,4 +1,8 @@
-use std::io;
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
 
 use buffa::Message as _;
 use raft::eraftpb::{Entry, HardState, Snapshot};
@@ -6,6 +10,7 @@ use raft::eraftpb::{Entry, HardState, Snapshot};
 use super::super::{
     generated,
     lock_store::MAX_SNAPSHOT_BYTES,
+    node::{self, MAX_VOTERS, Voters},
     persistence::RecoveredStorage,
     raft_storage::validate_snapshot,
     wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
@@ -20,17 +25,22 @@ pub(super) const READ_CHUNK_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageIdentity {
     node_id: u64,
-    voters: Vec<u64>,
+    voters: Voters,
 }
 
 impl StorageIdentity {
-    pub fn new(node_id: u64, mut voters: Vec<u64>) -> io::Result<Self> {
+    pub fn new(node_id: u64, voters: impl IntoIterator<Item = u64>) -> io::Result<Self> {
+        let mut voters = node::voters(voters).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a Raft cluster has at most {MAX_VOTERS} voters"),
+            )
+        })?;
         voters.sort_unstable();
         if node_id == 0 ||
             !voters.contains(&node_id) ||
             voters.contains(&0) ||
-            voters.windows(2).any(|pair| pair[0] == pair[1]) ||
-            voters.len() > (MAX_RECORD_BYTES - 20) / 8
+            voters.windows(2).any(|pair| pair[0] == pair[1])
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -38,6 +48,14 @@ impl StorageIdentity {
             ));
         }
         Ok(Self { node_id, voters })
+    }
+
+    /// Reads only the journal's header, synchronously, so a node configured
+    /// with another node's id or voter set fails at startup instead of inside
+    /// replay, where it would run with the cluster refusing every duty.
+    pub fn check_journal(&self, path: &Path) -> io::Result<()> {
+        self.verify(&Frame::read_first_payload(path)?)?;
+        Ok(())
     }
 
     pub(super) fn write(&self, output: &mut Vec<u8>) {
@@ -64,31 +82,40 @@ impl StorageIdentity {
         validate_snapshot(snapshot, &self.voters)
     }
 
+    /// Returns whether the journal starts from a checkpoint.
     fn verify(&self, payload: &[u8]) -> io::Result<bool> {
+        let header = JournalHeader::decode(payload)?;
+        let found = &header.identity;
+        if found != self {
+            return Err(invalid_data(format!(
+                "Raft journal belongs to node {} with voters {:?}, but the config has node {} \
+                 with voters {:?}",
+                found.node_id, found.voters, self.node_id, self.voters
+            )));
+        }
+        Ok(header.checkpoint)
+    }
+}
+
+/// The first record of a journal, written by `StorageIdentity::write_header`.
+struct JournalHeader {
+    identity: StorageIdentity,
+    checkpoint: bool,
+}
+
+impl JournalHeader {
+    fn decode(payload: &[u8]) -> io::Result<Self> {
         let mut cursor = Cursor(payload);
-        let magic = cursor.take(MAGIC.len())?;
-        if magic != MAGIC && magic != LEGACY_MAGIC {
-            return Err(invalid_data("unsupported Raft journal format"));
-        }
-        if cursor.u64()? != self.node_id || cursor.u32()? as usize != self.voters.len() {
-            return Err(invalid_data("Raft journal identity does not match configuration"));
-        }
-        for voter in &self.voters {
-            if cursor.u64()? != *voter {
-                return Err(invalid_data("Raft journal voters do not match configuration"));
-            }
-        }
-        let checkpoint = if magic == LEGACY_MAGIC {
-            false
-        } else {
-            match cursor.take(1)?[0] {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid_data("invalid Raft journal header kind")),
-            }
+        let legacy = match cursor.take(MAGIC.len())? {
+            magic if magic == MAGIC => false,
+            magic if magic == LEGACY_MAGIC => true,
+            _ => return Err(invalid_data("unsupported Raft journal format")),
         };
+        let identity = StorageIdentity { node_id: cursor.u64()?, voters: cursor.voters()? };
+        // Legacy headers predate checkpoints.
+        let checkpoint = !legacy && cursor.flag()?;
         cursor.finish()?;
-        Ok(checkpoint)
+        Ok(Self { identity, checkpoint })
     }
 }
 
@@ -401,6 +428,22 @@ impl<'a> Frame<'a> {
             .copy_from_slice(&header_checksum.to_le_bytes());
     }
 
+    /// Reads only the file's first frame, and returns its checked payload.
+    fn read_first_payload(path: &Path) -> io::Result<Vec<u8>> {
+        let mut file = File::open(path)?;
+        let mut bytes = vec![0; FRAME_HEADER_LEN];
+        file.read_exact(&mut bytes)?;
+        let len = Cursor(&bytes).u64()?;
+        if len > MAX_RECORD_BYTES as u64 {
+            return Err(invalid_data("invalid Raft journal frame header"));
+        }
+        bytes.resize(FRAME_HEADER_LEN + len as usize, 0);
+        file.read_exact(&mut bytes[FRAME_HEADER_LEN..])?;
+        Frame::read(&bytes)?.ok_or_else(|| invalid_data("truncated Raft journal frame"))?;
+        bytes.drain(..FRAME_HEADER_LEN);
+        Ok(bytes)
+    }
+
     fn read(bytes: &'a [u8]) -> io::Result<Option<Self>> {
         if bytes.len() < FRAME_HEADER_LEN {
             return Ok(None);
@@ -446,6 +489,26 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    fn voters(&mut self) -> io::Result<Voters> {
+        let count = self.u32()? as usize;
+        if count > MAX_VOTERS {
+            return Err(invalid_data("invalid Raft journal voter count"));
+        }
+        let mut voters = Voters::new();
+        for _ in 0..count {
+            voters.push(self.u64()?);
+        }
+        Ok(voters)
+    }
+
+    fn flag(&mut self) -> io::Result<bool> {
+        match self.take(1)?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(invalid_data("invalid Raft journal header flag")),
+        }
+    }
+
     fn finish(self) -> io::Result<()> {
         if self.0.is_empty() {
             Ok(())
@@ -455,7 +518,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn invalid_data(message: &'static str) -> io::Error {
+fn invalid_data(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 

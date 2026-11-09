@@ -1,6 +1,9 @@
 use std::{error::Error, fmt};
 
+use raft::eraftpb::{Entry, EntryType};
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
+
+use super::node::ProposalId;
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
@@ -160,6 +163,50 @@ impl fmt::Display for CommandDecodeError {
 }
 
 impl Error for CommandDecodeError {}
+
+/// A log entry's command, with the proposal it answers. The leader proposes
+/// `AdvanceMinimumSlot` itself, so only lock commands carry a proposal.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum DecodedEntry {
+    Lock(AttestationLockCommand, ProposalId),
+    BlockLock(BlockLockCommand, ProposalId),
+    AdvanceMinimumSlot(u64),
+}
+
+impl DecodedEntry {
+    pub(super) fn decode(entry: &Entry) -> Result<Self, EntryError> {
+        if entry.get_entry_type() != EntryType::EntryNormal {
+            return Err(EntryError::UnsupportedType(entry.get_entry_type()));
+        }
+        let proposal_id =
+            || ProposalId::decode(&entry.context).map_err(EntryError::ProposalContextLength);
+        Ok(match ReplicatedCommand::decode(&entry.data).map_err(EntryError::Command)? {
+            ReplicatedCommand::Lock(command) => Self::Lock(command, proposal_id()?),
+            ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
+            ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
+        })
+    }
+}
+
+/// Why a log entry cannot be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryError {
+    UnsupportedType(EntryType),
+    Command(CommandDecodeError),
+    ProposalContextLength(usize),
+}
+
+impl fmt::Display for EntryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedType(entry_type) => write!(f, "unsupported entry type {entry_type:?}"),
+            Self::Command(error) => error.fmt(f),
+            Self::ProposalContextLength(actual) => {
+                write!(f, "proposal context has length {actual}, expected 16 or 32")
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,11 +1,10 @@
 use raft::{
     RaftLog,
-    eraftpb::{Entry, EntryType, Message, MessageType},
+    eraftpb::{Message, MessageType},
 };
 
 use super::{
-    command::{CommandDecodeError, ReplicatedCommand},
-    node::ProposalId,
+    command::{DecodedEntry, EntryError},
     raft_storage::{RaftStorage, RestoredSnapshot},
 };
 
@@ -15,9 +14,7 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberMessageError {
     EmptyProposal,
-    UnsupportedEntry(EntryType),
-    Command(CommandDecodeError),
-    ProposalContext(usize),
+    Entry(EntryError),
     ProposalOrigin { origin: u64, from: u64 },
     ForwardedMinimumSlot,
     FutureProposal { slot: u64, wall_slot: u64 },
@@ -58,16 +55,14 @@ impl MemberMessageCheck<'_> {
             if entry.data.is_empty() {
                 return Err(MemberMessageError::EmptyProposal);
             }
-            let slot = match command_of(entry)? {
-                ReplicatedCommand::Lock(command) => command.key.slot,
-                ReplicatedCommand::BlockLock(command) => command.key.slot,
-                ReplicatedCommand::AdvanceMinimumSlot(_) => {
-                    return Err(MemberMessageError::ForwardedMinimumSlot);
-                }
-            };
-            let origin = ProposalId::decode(&entry.context)
-                .map_err(MemberMessageError::ProposalContext)?
-                .origin_node_id;
+            let (slot, origin) =
+                match DecodedEntry::decode(entry).map_err(MemberMessageError::Entry)? {
+                    DecodedEntry::Lock(command, id) => (command.key.slot, id.origin_node_id),
+                    DecodedEntry::BlockLock(command, id) => (command.key.slot, id.origin_node_id),
+                    DecodedEntry::AdvanceMinimumSlot(_) => {
+                        return Err(MemberMessageError::ForwardedMinimumSlot);
+                    }
+                };
             if origin != message.from {
                 return Err(MemberMessageError::ProposalOrigin { origin, from: message.from });
             }
@@ -88,12 +83,8 @@ impl MemberMessageCheck<'_> {
             if entry.index != expected {
                 return Err(MemberMessageError::EntryIndexGap { expected, actual: entry.index });
             }
-            if entry.data.is_empty() {
-                continue;
-            }
-            if let ReplicatedCommand::Lock(_) | ReplicatedCommand::BlockLock(_) = command_of(entry)?
-            {
-                ProposalId::decode(&entry.context).map_err(MemberMessageError::ProposalContext)?;
+            if !entry.data.is_empty() {
+                DecodedEntry::decode(entry).map_err(MemberMessageError::Entry)?;
             }
         }
         Ok(())
@@ -106,11 +97,4 @@ impl MemberMessageCheck<'_> {
         }
         Ok(())
     }
-}
-
-fn command_of(entry: &Entry) -> Result<ReplicatedCommand, MemberMessageError> {
-    if entry.get_entry_type() != EntryType::EntryNormal {
-        return Err(MemberMessageError::UnsupportedEntry(entry.get_entry_type()));
-    }
-    ReplicatedCommand::decode(&entry.data).map_err(MemberMessageError::Command)
 }

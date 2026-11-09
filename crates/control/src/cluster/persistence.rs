@@ -67,7 +67,7 @@ impl Persistence {
     pub fn new(config: &SlashingProtectionConfig) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
-            let identity = StorageIdentity::new(config.node_id, config.voters.clone())?;
+            let identity = StorageIdentity::new(config.node_id, config.voters)?;
             let disk = match &config.storage {
                 ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity)?,
                 ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity)?,

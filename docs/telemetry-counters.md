@@ -99,12 +99,16 @@ GROUP BY meta_client_name
 HAVING slots >= 3
 ```
 
-Raft processing has stopped (`Failed` is 1). It resets to 0 on restart:
+Raft processing has stopped (`Failed` is 1). It resets to 0 on restart.
+`FailureKind` gives the cause; `slashing-protection-cluster.md` maps each kind
+to its action:
 
 ```sql
-SELECT meta_client_name, argMax(value, slot) AS failed
+SELECT meta_client_name,
+       argMaxIf(value, slot, name = 'Failed') AS failed,
+       argMaxIf(value, slot, name = 'FailureKind') AS kind
 FROM counters
-WHERE component = 'cluster' AND name = 'Failed'
+WHERE component = 'cluster' AND name IN ('Failed', 'FailureKind')
 GROUP BY meta_client_name
 HAVING failed = 1
 ```

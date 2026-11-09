@@ -4,9 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use flux::utils::ArrayVec;
 use raft::{
     Config, RawNode, SnapshotStatus, StateRole,
-    eraftpb::{Entry, EntryType, Message, MessageType},
+    eraftpb::{Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -15,7 +16,8 @@ use super::persistence::RecoveredStorage;
 use super::{
     admission::{AdmissionError, SlashingAdmission},
     command::{
-        AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
+        AttestationLockCommand, BlockKey, BlockLockCommand, DecodedEntry, EntryError,
+        ReplicatedCommand,
     },
     lock_store::{LockResult, SlashingLockStore},
     member_message_check::{MemberMessageCheck, MemberMessageError},
@@ -40,11 +42,28 @@ const MAX_APPEND_BYTES: u64 = 1024 * 1024;
 // message when full.
 const MAX_INFLIGHT_APPENDS: usize = 64;
 
+/// raft-rs computes the commit index on the stack for up to 7 voters and
+/// allocates above that. etcd, whose raft raft-rs ports, also advises at most
+/// 7 members.
+pub(super) const MAX_VOTERS: usize = 7;
+pub(super) type Voters = ArrayVec<u64, MAX_VOTERS>;
+
+/// `None` past `MAX_VOTERS` ids.
+pub(super) fn voters(ids: impl IntoIterator<Item = u64>) -> Option<Voters> {
+    let mut voters = Voters::new();
+    for id in ids {
+        if voters.try_push(id).is_some() {
+            return None;
+        }
+    }
+    Some(voters)
+}
+
 /// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
 pub struct SlashingProtectionConfig {
     pub node_id: u64,
-    pub voters: Vec<u64>,
+    pub voters: Voters,
     pub storage: ClusterStorageConfig,
     pub tick_interval: Duration,
     pub heartbeat_ticks: usize,
@@ -56,8 +75,14 @@ pub struct SlashingProtectionConfig {
 }
 
 impl SlashingProtectionConfig {
-    pub fn new(node_id: u64, voters: Vec<u64>, storage: ClusterStorageConfig) -> Self {
-        Self {
+    pub fn new(
+        node_id: u64,
+        voters: impl IntoIterator<Item = u64>,
+        storage: ClusterStorageConfig,
+    ) -> Result<Self, ClusterError> {
+        let voters = self::voters(voters)
+            .ok_or(ClusterError::InvalidConfig("a Raft cluster has at most 7 voters"))?;
+        Ok(Self {
             node_id,
             voters,
             storage,
@@ -66,7 +91,7 @@ impl SlashingProtectionConfig {
             election_ticks: DEFAULT_ELECTION_TICKS,
             proposal_timeout: DEFAULT_PROPOSAL_TIMEOUT,
             snapshot_interval: 4096,
-        }
+        })
     }
 
     fn validate(&self) -> Result<(), ClusterError> {
@@ -92,10 +117,9 @@ impl SlashingProtectionConfig {
             return Err(ClusterError::InvalidConfig("Raft voter ids must be non-zero"));
         }
 
-        let mut voters = self.voters.clone();
+        let mut voters = self.voters;
         voters.sort_unstable();
-        voters.dedup();
-        if voters.len() != self.voters.len() {
+        if voters.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(ClusterError::InvalidConfig("Raft voter ids must be unique"));
         }
 
@@ -233,14 +257,47 @@ impl Error for ProposeError {
 pub enum ClusterError {
     InvalidConfig(&'static str),
     Raft(raft::Error),
-    Command(CommandDecodeError),
-    InvalidProposalContextLength(usize),
-    UnsupportedEntry(EntryType),
+    /// A committed entry this binary cannot apply. Every replay fails on it.
+    BadEntry {
+        index: u64,
+        term: u64,
+        cause: EntryError,
+    },
     MemberMessage(MemberMessageError),
     Snapshot(io::Error),
     Storage(io::Error),
     NotReady,
     Failed,
+}
+
+/// What stopped Raft processing, exported as the `FailureKind` gauge so an
+/// operator can tell a disk to fix from a binary to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum FailureKind {
+    /// Journal I/O. A restart on a healthy disk recovers.
+    Storage = 1,
+    /// A committed entry this binary cannot apply. A restart replays it, so
+    /// only a binary that can apply it recovers.
+    BadEntry = 2,
+    /// An installed or recovered snapshot is invalid.
+    Snapshot = 3,
+    Raft = 4,
+    Other = 5,
+}
+
+impl ClusterError {
+    pub fn failure_kind(&self) -> FailureKind {
+        match self {
+            Self::Storage(_) => FailureKind::Storage,
+            Self::BadEntry { .. } => FailureKind::BadEntry,
+            Self::Snapshot(_) => FailureKind::Snapshot,
+            Self::Raft(_) => FailureKind::Raft,
+            Self::InvalidConfig(_) | Self::MemberMessage(_) | Self::NotReady | Self::Failed => {
+                FailureKind::Other
+            }
+        }
+    }
 }
 
 impl fmt::Display for ClusterError {
@@ -253,13 +310,8 @@ impl fmt::Display for ClusterError {
             Self::Storage(error) => write!(f, "Raft storage failed: {error}"),
             Self::NotReady => f.write_str("Raft storage recovery is not complete"),
             Self::Failed => f.write_str("Raft processing has stopped after a failure"),
-            Self::Command(error) => error.fmt(f),
-            Self::InvalidProposalContextLength(actual) => write!(
-                f,
-                "Raft proposal context has length {actual}, expected 16 or {PROPOSAL_CONTEXT_LEN}"
-            ),
-            Self::UnsupportedEntry(entry_type) => {
-                write!(f, "unsupported committed Raft entry type {entry_type:?}")
+            Self::BadEntry { index, term, cause } => {
+                write!(f, "committed Raft entry {index} (term {term}) cannot be applied: {cause}")
             }
             Self::Snapshot(error) => {
                 write!(f, "invalid slashing protection Raft snapshot: {error}")
@@ -275,13 +327,11 @@ impl Error for ClusterError {
             Self::Raft(error) => Some(error),
             Self::Storage(error) => Some(error),
             Self::Snapshot(error) => Some(error),
-            Self::Command(error) => Some(error),
             Self::InvalidConfig(_) |
             Self::NotReady |
             Self::Failed |
-            Self::UnsupportedEntry(_) |
-            Self::MemberMessage(_) |
-            Self::InvalidProposalContextLength(_) => None,
+            Self::BadEntry { .. } |
+            Self::MemberMessage(_) => None,
         }
     }
 }
@@ -575,9 +625,10 @@ impl SlashingProtectionCluster {
         }
         self.expire_proposals(now, &mut emit);
         let result = self.drive(now, wall_slot, &mut emit);
-        if result.is_err() {
+        if let Err(error) = &result {
             self.failed = true;
             ClusterCounters::Failed.set(1);
+            ClusterCounters::FailureKind.set(error.failure_kind() as u64);
             self.pending_proposals.clear();
             self.pending_minimum_slot = None;
         }
@@ -826,7 +877,7 @@ impl SlashingProtectionCluster {
         if self.node.is_some() {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
-        let mut storage = RaftStorage::new(self.config.voters.clone());
+        let mut storage = RaftStorage::new(&self.config.voters);
         if !recovered.snapshot.is_empty() {
             self.state = RestoredSnapshot::decode(&recovered.snapshot, &self.config.voters)
                 .map_err(ClusterError::Snapshot)?
@@ -892,14 +943,14 @@ impl SlashingProtectionCluster {
             if entry.data.is_empty() {
                 continue;
             }
-            if entry.get_entry_type() != EntryType::EntryNormal {
-                return Err(ClusterError::UnsupportedEntry(entry.get_entry_type()));
-            }
+            let decoded = DecodedEntry::decode(&entry).map_err(|cause| ClusterError::BadEntry {
+                index: entry.index,
+                term: entry.term,
+                cause,
+            })?;
 
-            match ReplicatedCommand::decode(&entry.data).map_err(ClusterError::Command)? {
-                ReplicatedCommand::Lock(command) => {
-                    let proposal_id = ProposalId::decode(&entry.context)
-                        .map_err(ClusterError::InvalidProposalContextLength)?;
+            match decoded {
+                DecodedEntry::Lock(command, proposal_id) => {
                     let result = self.state.apply(&command);
                     if proposal_id.origin_node_id == self.config.node_id &&
                         proposal_id.incarnation == self.incarnation &&
@@ -917,9 +968,7 @@ impl SlashingProtectionCluster {
                         }
                     }
                 }
-                ReplicatedCommand::BlockLock(command) => {
-                    let proposal_id = ProposalId::decode(&entry.context)
-                        .map_err(ClusterError::InvalidProposalContextLength)?;
+                DecodedEntry::BlockLock(command, proposal_id) => {
                     let result = self.state.apply_block(&command);
                     if proposal_id.origin_node_id == self.config.node_id &&
                         proposal_id.incarnation == self.incarnation &&
@@ -937,7 +986,7 @@ impl SlashingProtectionCluster {
                         }
                     }
                 }
-                ReplicatedCommand::AdvanceMinimumSlot(minimum_slot) => {
+                DecodedEntry::AdvanceMinimumSlot(minimum_slot) => {
                     self.state.advance_minimum_slot(minimum_slot);
                     if self.pending_minimum_slot.is_some_and(|pending| pending <= minimum_slot) {
                         self.pending_minimum_slot = None;
@@ -985,10 +1034,14 @@ mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {
+    use raft::eraftpb::EntryType;
     use silver_common::SLOTS_PER_EPOCH;
 
     use super::*;
-    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult};
+    use crate::cluster::{
+        AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity,
+        command::CommandDecodeError,
+    };
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -1006,7 +1059,8 @@ mod tests {
             node_id,
             voters,
             ClusterStorageConfig::Create("unused-test-journal".into()),
-        );
+        )
+        .unwrap();
         config.tick_interval = Duration::from_millis(1);
         config.heartbeat_ticks = 1;
         config.election_ticks = 5;
@@ -1090,7 +1144,7 @@ mod tests {
             (propose_message(2, vec![]), MemberMessageError::EmptyProposal),
             (
                 propose_message(2, vec![conf_change]),
-                MemberMessageError::UnsupportedEntry(EntryType::EntryConfChange),
+                MemberMessageError::Entry(EntryError::UnsupportedType(EntryType::EntryConfChange)),
             ),
             (
                 propose_message(2, vec![forwarded(
@@ -1148,6 +1202,44 @@ mod tests {
         let node = cluster.node.as_ref().unwrap();
         assert_eq!(node.store().snapshot_index(), 0, "no snapshot was cut");
         assert_eq!(cluster.compaction_retry_at, node.raft.raft_log.applied + 2);
+    }
+
+    #[test]
+    fn more_than_seven_voters_are_rejected() {
+        let storage = || ClusterStorageConfig::Create("unused-test-journal".into());
+        assert!(matches!(
+            SlashingProtectionConfig::new(1, 1..=8, storage()),
+            Err(ClusterError::InvalidConfig(_))
+        ));
+        assert!(SlashingProtectionConfig::new(1, 1..=7, storage()).is_ok());
+        assert_eq!(StorageIdentity::new(1, 1..=8).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A committed entry this binary cannot apply names its position, so the
+    /// failure on every replay can be traced to one entry.
+    #[test]
+    fn unappliable_committed_entry_reports_its_index_and_term() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        let node = cluster.node.as_mut().unwrap();
+        let index = node.raft.raft_log.last_index() + 1;
+        let term = node.raft.term;
+        node.propose(Vec::new(), vec![9]).unwrap();
+
+        let error = cluster.spin(now, 10, |_| {}).unwrap_err();
+        assert!(
+            matches!(error, ClusterError::BadEntry {
+                index: i,
+                term: t,
+                cause: EntryError::Command(CommandDecodeError::UnknownTag(9)),
+            } if i == index && t == term),
+            "{error:?}"
+        );
+        assert_eq!(error.failure_kind(), FailureKind::BadEntry);
+        assert!(error.to_string().contains(&format!("entry {index} (term {term})")));
+        assert!(cluster.is_failed());
     }
 
     #[test]
