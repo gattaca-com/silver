@@ -309,6 +309,9 @@ pub struct SlashingProtectionCluster {
     pending_proposals: PendingProposals,
     resolved: Vec<ResolvedProposal>,
     persistence_started: Option<Instant>,
+    /// Applied index before which compaction is not retried after an
+    /// oversized snapshot, so the encode does not repeat every loop.
+    compaction_retry_at: u64,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -348,6 +351,7 @@ impl SlashingProtectionCluster {
             pending_proposals: PendingProposals::default(),
             resolved: Vec::new(),
             persistence_started: None,
+            compaction_retry_at: 0,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -622,7 +626,21 @@ impl SlashingProtectionCluster {
         {
             return Ok(());
         }
-        let data = self.state.encode_snapshot().map_err(ClusterError::Snapshot)?;
+        if applied < self.compaction_retry_at {
+            return Ok(());
+        }
+        // Too many locks to ship in one message. The journal keeps every entry
+        // since the last snapshot, so skipping costs disk, not safety.
+        let data = match self.state.encode_snapshot() {
+            Ok(data) => data,
+            Err(error) => {
+                self.compaction_retry_at = applied.saturating_add(self.config.snapshot_interval);
+                ClusterCounters::CompactionsSkipped.inc();
+                silver_log::warn!(%error, applied, "lock snapshot compaction skipped");
+                return Ok(());
+            }
+        };
+        ClusterCounters::SnapshotBytes.set(data.len() as u64);
         let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
         let entries = node.store().suffix(applied)?;
         self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)?;
@@ -1100,6 +1118,36 @@ mod tests {
         cluster.step(propose_message(2, vec![forwarded(lock, 2)]), now, 10).unwrap();
         cluster.spin(now, 10, |_| {}).unwrap();
         assert!(!cluster.is_failed());
+    }
+
+    /// Locks past the snapshot limit keep committing; compaction is skipped
+    /// and not retried until another snapshot interval has applied.
+    #[test]
+    fn oversized_lock_state_skips_compaction_without_failing() {
+        let now = Instant::now();
+        let mut config = test_config(1, vec![1]);
+        config.snapshot_interval = 2;
+        let mut cluster = initialized_cluster(config, 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        cluster.state = SlashingLockStore::oversized();
+
+        cluster.propose_attestation(command(10, 1), 10, now).unwrap();
+        let mut committed = 0;
+        cluster
+            .spin(now, 10, |event| {
+                if let ClusterEvent::AttestationCommitted(decision) = event {
+                    assert_eq!(decision.result, LockResult::Accepted);
+                    committed += 1;
+                }
+            })
+            .unwrap();
+
+        assert_eq!(committed, 1);
+        assert!(!cluster.is_failed());
+        let node = cluster.node.as_ref().unwrap();
+        assert_eq!(node.store().snapshot_index(), 0, "no snapshot was cut");
+        assert_eq!(cluster.compaction_retry_at, node.raft.raft_log.applied + 2);
     }
 
     #[test]

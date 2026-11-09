@@ -52,6 +52,10 @@ silver_common::declare_counters! {
         SnapshotsRestored,
         SnapshotTransferTimeouts,
         Compactions,
+        // Compactions skipped because the lock snapshot exceeded the transport limit.
+        CompactionsSkipped,
+        // Size of the last encoded lock snapshot.
+        SnapshotBytes,
         InboundInvalid,
         MessagesIn,
         MessagesOut,

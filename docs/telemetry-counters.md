@@ -133,6 +133,40 @@ WHERE component = 'cluster'
 GROUP BY meta_client_name, name
 ```
 
+The lock snapshot no longer fits one cluster message, so compaction is
+skipped and the journal grows. The cap holds about 150k validators signing
+through the cluster:
+
+```sql
+SELECT meta_client_name, sum(delta) AS skipped
+FROM counters
+WHERE component = 'cluster' AND name = 'CompactionsSkipped'
+  AND delta > 0 AND slot_start_date_time > now() - INTERVAL 1 HOUR
+GROUP BY meta_client_name
+```
+
+The lock snapshot is past 12 MiB of its 16 MiB cap, an early warning for the
+alert above:
+
+```sql
+SELECT meta_client_name, argMax(value, slot) AS bytes
+FROM counters
+WHERE component = 'cluster' AND name = 'SnapshotBytes'
+GROUP BY meta_client_name
+HAVING bytes > 12 * 1024 * 1024
+```
+
+The wall clock runs over an epoch ahead of the head. Slashing protection then
+admits and floors against the head-capped slot instead:
+
+```sql
+SELECT meta_client_name, argMax(value, slot) AS ahead
+FROM counters
+WHERE component = 'cluster' AND name = 'ClockAheadSlots'
+GROUP BY meta_client_name
+HAVING ahead > 0
+```
+
 The startup floor has been unlatched for more than 5 minutes on a live node.
 The node refuses all duties until it latches. A node that has never latched has
 no `FloorLatched` row at all, so liveness comes from `CommitIndex`, which moves

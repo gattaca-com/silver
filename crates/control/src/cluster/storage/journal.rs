@@ -5,6 +5,7 @@ use raft::eraftpb::{Entry, HardState, Snapshot};
 
 use super::super::{
     generated,
+    lock_store::MAX_SNAPSHOT_BYTES,
     persistence::RecoveredStorage,
     raft_storage::validate_snapshot,
     wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
@@ -195,8 +196,8 @@ impl<'a> Record<'a> {
         hard_state: &'a HardState,
     ) -> io::Result<Self> {
         let mut record = Self::new(entries, Some(hard_state))?;
-        if snapshot.data.len() > MAX_RECORD_BYTES {
-            return Err(invalid_data("Raft snapshot exceeds journal limit"));
+        if snapshot.data.len() > MAX_SNAPSHOT_BYTES {
+            return Err(invalid_data("Raft snapshot exceeds the cluster message limit"));
         }
         record.payload_len += 4 + to_wire_snapshot(snapshot.clone()).compute_size() as usize;
         if record.payload_len > MAX_RECORD_BYTES {

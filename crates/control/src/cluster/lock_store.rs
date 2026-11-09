@@ -13,10 +13,13 @@ use super::{
 /// Admission accepts `[wall - SLOTS_PER_EPOCH, wall]`, which spans at most two
 /// epochs.
 const LOCK_RING_SIZE: usize = 2;
-const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x03";
+/// Every snapshot, sent or journaled, fits one cluster message.
+pub(super) const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
+/// v4 adds `pruned_source_floor` after `minimum_target`; v3 has none.
+const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVLOCK\x04";
+const SNAPSHOT_MAGIC_V3: &[u8; 8] = b"SLVLOCK\x03";
 const SNAPSHOT_BLOCK_LEN: usize = 8 + 8 + 96;
-const MAX_SNAPSHOT_BYTES: usize = MAX_CLUSTER_MESSAGE_BYTES - 1024;
-const SNAPSHOT_FIXED_LEN: usize = 8 + 8 + 8 + LOCK_RING_SIZE * SNAPSHOT_BUCKET_LEN + 4 + 4;
+const SNAPSHOT_FIXED_LEN: usize = 8 + 8 + 8 + 8 + LOCK_RING_SIZE * SNAPSHOT_BUCKET_LEN + 4 + 4;
 const SNAPSHOT_BUCKET_LEN: usize = 1 + 8 + 4;
 const SNAPSHOT_VOTE_LEN: usize = 8 + 32 + 8;
 const SNAPSHOT_EVICTED_LEN: usize = 8 + 8;
@@ -24,6 +27,13 @@ const SNAPSHOT_EVICTED_LEN: usize = 8 + 8;
 /// signature. The signature leaves `committee_index` out, so a vote naming
 /// another committee is still the same vote.
 const SIGNED_VOTE_START: usize = 8 + 8;
+/// Evicted sources older than this fold into `pruned_source_floor`, so
+/// validators that stopped attesting stop growing the snapshot. Honest
+/// sources are recent justified checkpoints, far above the floor.
+const EVICTED_SOURCE_RETENTION_EPOCHS: u64 = 4096;
+/// Pruning scans every evicted source, so it runs when the retention horizon
+/// crosses a multiple of this rather than at every epoch.
+const EVICTED_SOURCE_PRUNE_EPOCHS: u64 = 256;
 
 /// Result of applying a committed attestation or block lock command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +69,9 @@ pub(crate) struct SlashingLockStore {
     /// refused, so a new vote surrounds an evicted vote exactly when its
     /// source is lower.
     evicted_sources: FxHashMap<u64, u64>,
+    /// Largest source pruned from `evicted_sources`. A lower source could
+    /// surround a pruned vote, so it counts as surrounding for everyone.
+    pruned_source_floor: u64,
     blocks: FxHashMap<BlockKey, [u8; 96]>,
 }
 
@@ -115,7 +128,9 @@ impl SlashingLockStore {
     }
 
     fn is_surround_vote(&self, validator: u64, source: u64, target: u64) -> bool {
-        if self.evicted_sources.get(&validator).is_some_and(|&evicted| source < evicted) {
+        if source < self.pruned_source_floor ||
+            self.evicted_sources.get(&validator).is_some_and(|&evicted| source < evicted)
+        {
             return true;
         }
         self.locks.iter().any(|bucket| {
@@ -132,6 +147,7 @@ impl SlashingLockStore {
             return;
         }
 
+        let previous_target = self.minimum_target;
         self.minimum_target = minimum_target;
         for bucket in &mut self.locks {
             if bucket.epoch.is_some_and(|epoch| epoch < minimum_target) {
@@ -142,6 +158,19 @@ impl SlashingLockStore {
                 bucket.attestations.clear();
             }
         }
+
+        let horizon = minimum_target.saturating_sub(EVICTED_SOURCE_RETENTION_EPOCHS);
+        let previous_horizon = previous_target.saturating_sub(EVICTED_SOURCE_RETENTION_EPOCHS);
+        if horizon / EVICTED_SOURCE_PRUNE_EPOCHS == previous_horizon / EVICTED_SOURCE_PRUNE_EPOCHS {
+            return;
+        }
+        let floor = &mut self.pruned_source_floor;
+        self.evicted_sources.retain(|_, &mut source| {
+            if source < horizon {
+                *floor = (*floor).max(source);
+            }
+            source >= horizon
+        });
     }
 
     pub(crate) fn apply_block(&mut self, cmd: &BlockLockCommand) -> LockResult {
@@ -165,9 +194,8 @@ impl SlashingLockStore {
     }
 
     pub(super) fn encode_snapshot(&self) -> io::Result<Vec<u8>> {
-        let votes: usize = self.locks.iter().map(|bucket| bucket.attestations.len()).sum();
         let length = SNAPSHOT_FIXED_LEN +
-            votes * SNAPSHOT_VOTE_LEN +
+            self.len() * SNAPSHOT_VOTE_LEN +
             self.evicted_sources.len() * SNAPSHOT_EVICTED_LEN +
             self.blocks.len() * SNAPSHOT_BLOCK_LEN;
         if length > MAX_SNAPSHOT_BYTES {
@@ -177,6 +205,7 @@ impl SlashingLockStore {
         bytes.extend_from_slice(SNAPSHOT_MAGIC);
         bytes.extend_from_slice(&self.minimum_slot.to_le_bytes());
         bytes.extend_from_slice(&self.minimum_target.to_le_bytes());
+        bytes.extend_from_slice(&self.pruned_source_floor.to_le_bytes());
         for bucket in &self.locks {
             let Some(epoch) = bucket.epoch else {
                 bytes.push(0);
@@ -207,19 +236,27 @@ impl SlashingLockStore {
         Ok(bytes)
     }
 
+    /// Reads v4 and the v3 journals written before it, then checks the
+    /// invariants `apply` keeps, so a snapshot cannot build a store live
+    /// commands could not.
     pub(super) fn decode_snapshot(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid_snapshot("lock snapshot exceeds transport limit"));
         }
         let mut cursor = SnapshotCursor(bytes);
-        if &cursor.take::<8>()? != SNAPSHOT_MAGIC {
-            return Err(invalid_snapshot("unsupported attestation lock snapshot"));
-        }
+        let has_pruned_floor = match &cursor.take::<8>()? {
+            SNAPSHOT_MAGIC => true,
+            SNAPSHOT_MAGIC_V3 => false,
+            _ => return Err(invalid_snapshot("unsupported attestation lock snapshot")),
+        };
         let mut store = Self {
             minimum_slot: u64::from_le_bytes(cursor.take()?),
             minimum_target: u64::from_le_bytes(cursor.take()?),
             ..Self::default()
         };
+        if has_pruned_floor {
+            store.pruned_source_floor = u64::from_le_bytes(cursor.take()?);
+        }
         for (index, bucket) in store.locks.iter_mut().enumerate() {
             match cursor.take::<1>()?[0] {
                 0 => continue,
@@ -231,10 +268,7 @@ impl SlashingLockStore {
                 return Err(invalid_snapshot("snapshot epoch is in the wrong ring bucket"));
             }
             bucket.epoch = Some(epoch);
-            let count = u32::from_le_bytes(cursor.take()?) as usize;
-            if count > cursor.0.len() / SNAPSHOT_VOTE_LEN {
-                return Err(invalid_snapshot("invalid snapshot lock count"));
-            }
+            let count = cursor.count(SNAPSHOT_VOTE_LEN)?;
             bucket.attestations.reserve(count);
             for _ in 0..count {
                 let validator = u64::from_le_bytes(cursor.take()?);
@@ -245,10 +279,7 @@ impl SlashingLockStore {
                 }
             }
         }
-        let count = u32::from_le_bytes(cursor.take()?) as usize;
-        if count > cursor.0.len() / SNAPSHOT_EVICTED_LEN {
-            return Err(invalid_snapshot("invalid snapshot evicted source count"));
-        }
+        let count = cursor.count(SNAPSHOT_EVICTED_LEN)?;
         store.evicted_sources.reserve(count);
         for _ in 0..count {
             let validator = u64::from_le_bytes(cursor.take()?);
@@ -257,26 +288,65 @@ impl SlashingLockStore {
                 return Err(invalid_snapshot("duplicate validator in evicted sources"));
             }
         }
-        let count = u32::from_le_bytes(cursor.take()?) as usize;
-        if count > cursor.0.len() / SNAPSHOT_BLOCK_LEN {
-            return Err(invalid_snapshot("invalid snapshot block count"));
-        }
-        store.blocks.reserve(count);
-        for _ in 0..count {
-            let proposer_index = u64::from_le_bytes(cursor.take()?);
-            let slot = u64::from_le_bytes(cursor.take()?);
-            if slot < store.minimum_slot {
-                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
-            }
-            let key = BlockKey { proposer_index, slot };
-            if store.blocks.insert(key, cursor.take()?).is_some() {
-                return Err(invalid_snapshot("duplicate block in snapshot"));
-            }
-        }
+        let count = cursor.count(SNAPSHOT_BLOCK_LEN)?;
+        store.decode_blocks(&mut cursor, count)?;
         if !cursor.0.is_empty() {
             return Err(invalid_snapshot("trailing attestation snapshot bytes"));
         }
+        store.check_consistency()?;
         Ok(store)
+    }
+
+    fn decode_blocks(&mut self, cursor: &mut SnapshotCursor, count: usize) -> io::Result<()> {
+        self.blocks.reserve(count);
+        for _ in 0..count {
+            let proposer_index = u64::from_le_bytes(cursor.take()?);
+            let slot = u64::from_le_bytes(cursor.take()?);
+            if slot < self.minimum_slot {
+                return Err(invalid_snapshot("snapshot block is below the minimum slot"));
+            }
+            let key = BlockKey { proposer_index, slot };
+            if self.blocks.insert(key, cursor.take()?).is_some() {
+                return Err(invalid_snapshot("duplicate block in snapshot"));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_consistency(&self) -> io::Result<()> {
+        if self.minimum_target < self.minimum_slot / SLOTS_PER_EPOCH {
+            return Err(invalid_snapshot("snapshot target floor is below its slot floor"));
+        }
+        if self.pruned_source_floor > self.minimum_target {
+            return Err(invalid_snapshot("snapshot pruned source floor is past the target floor"));
+        }
+        for bucket in &self.locks {
+            let Some(epoch) = bucket.epoch else {
+                continue;
+            };
+            if epoch < self.minimum_target && !bucket.attestations.is_empty() {
+                return Err(invalid_snapshot("snapshot keeps votes below the target floor"));
+            }
+            if bucket.attestations.values().any(|vote| vote.source > epoch) {
+                return Err(invalid_snapshot("snapshot vote source is after its target"));
+            }
+        }
+        if self.evicted_sources.values().any(|&source| source >= self.minimum_target) {
+            return Err(invalid_snapshot("snapshot evicted source is not below the target floor"));
+        }
+        Ok(())
+    }
+
+    /// One live epoch with more votes than a snapshot can carry.
+    #[cfg(test)]
+    pub(super) fn oversized() -> Self {
+        let mut store = Self::default();
+        let bucket = &mut store.locks[1];
+        bucket.epoch = Some(1);
+        let votes = (MAX_SNAPSHOT_BYTES / SNAPSHOT_VOTE_LEN) as u64 + 1;
+        let vote = Vote { hash: [0; 32], source: 0 };
+        bucket.attestations.extend((0..votes).map(|validator| (validator, vote)));
+        store
     }
 
     pub(super) fn len(&self) -> usize {
@@ -312,6 +382,16 @@ impl SnapshotCursor<'_> {
         self.0 = rest;
         bytes.try_into().map_err(|_| invalid_snapshot("invalid attestation snapshot field"))
     }
+
+    /// A record count that cannot exceed the remaining bytes, so it is safe
+    /// to reserve for.
+    fn count(&mut self, record_len: usize) -> io::Result<usize> {
+        let count = u32::from_le_bytes(self.take()?) as usize;
+        if count > self.0.len() / record_len {
+            return Err(invalid_snapshot("invalid snapshot record count"));
+        }
+        Ok(count)
+    }
 }
 
 fn invalid_snapshot(message: &'static str) -> io::Error {
@@ -342,6 +422,44 @@ mod tests {
         let mut command = command_for(target * SLOTS_PER_EPOCH, validator, 0);
         command.ssz[64..72].copy_from_slice(&source.to_le_bytes());
         command
+    }
+
+    /// The pre-v4 layout, without `pruned_source_floor`. Only the decoder
+    /// still reads it.
+    fn encode_snapshot_v3(store: &SlashingLockStore) -> Vec<u8> {
+        let mut bytes = SNAPSHOT_MAGIC_V3.to_vec();
+        bytes.extend_from_slice(&store.minimum_slot.to_le_bytes());
+        bytes.extend_from_slice(&store.minimum_target.to_le_bytes());
+        for bucket in &store.locks {
+            let Some(epoch) = bucket.epoch else {
+                bytes.push(0);
+                continue;
+            };
+            bytes.push(1);
+            bytes.extend_from_slice(&epoch.to_le_bytes());
+            bytes.extend_from_slice(&(bucket.attestations.len() as u32).to_le_bytes());
+            for (validator, vote) in &bucket.attestations {
+                bytes.extend_from_slice(&validator.to_le_bytes());
+                bytes.extend_from_slice(&vote.hash);
+                bytes.extend_from_slice(&vote.source.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&(store.evicted_sources.len() as u32).to_le_bytes());
+        for (validator, source) in &store.evicted_sources {
+            bytes.extend_from_slice(&validator.to_le_bytes());
+            bytes.extend_from_slice(&source.to_le_bytes());
+        }
+        bytes.extend_from_slice(&(store.blocks.len() as u32).to_le_bytes());
+        for (key, signature) in &store.blocks {
+            bytes.extend_from_slice(&key.proposer_index.to_le_bytes());
+            bytes.extend_from_slice(&key.slot.to_le_bytes());
+            bytes.extend_from_slice(signature);
+        }
+        bytes
+    }
+
+    fn round_trip(store: &SlashingLockStore) -> SlashingLockStore {
+        SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap()
     }
 
     #[test]
@@ -457,11 +575,107 @@ mod tests {
     }
 
     #[test]
+    fn oversized_snapshot_is_an_error_not_a_panic() {
+        assert!(SlashingLockStore::oversized().encode_snapshot().is_err());
+    }
+
+    /// Journals written before v4 still restore.
+    #[test]
+    fn v3_snapshots_still_decode() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&vote(7, 0, 3));
+        store.apply(&vote(8, 2, 4));
+        store.apply_block(&block(140, 3, 1));
+        store.apply(&vote(9, 2, 6));
+        let mut restored = SlashingLockStore::decode_snapshot(&encode_snapshot_v3(&store)).unwrap();
+
+        assert_eq!(restored.pruned_source_floor, 0);
+        assert_eq!(restored.minimum_target, store.minimum_target);
+        assert_eq!(restored.apply_block(&block(140, 3, 1)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(restored.apply(&vote(9, 2, 6)), LockResult::AlreadyAcceptedSame);
+        assert_eq!(restored.apply(&vote(8, 1, 5)), LockResult::Surrounding, "surrounds (2, 4)");
+    }
+
+    /// Validators that stop attesting leave the snapshot once the retention
+    /// horizon crosses a prune boundary, and a vote that could surround one
+    /// of theirs is still refused.
+    #[test]
+    fn old_evicted_sources_fold_into_the_pruned_floor() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&vote(7, 3, 5));
+        store.apply(&vote(8, 300, 302));
+        let target = 300 + EVICTED_SOURCE_RETENTION_EPOCHS;
+        store.advance_minimum_slot(target * SLOTS_PER_EPOCH);
+
+        assert_eq!(store.pruned_source_floor, 3);
+        assert_eq!(store.evicted_sources.len(), 1, "source 300 is still within retention");
+        let mut restored = round_trip(&store);
+        assert_eq!(restored.apply(&vote(7, 2, target)), LockResult::Surrounding);
+        assert_eq!(restored.apply(&vote(11, 2, target)), LockResult::Surrounding);
+        assert_eq!(restored.apply(&vote(7, 3, target)), LockResult::Accepted);
+        assert_eq!(restored.apply(&vote(8, 299, target)), LockResult::Surrounding);
+    }
+
+    #[test]
+    fn pruning_waits_for_the_horizon_to_cross_a_boundary() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&vote(7, 3, 5));
+        store.advance_minimum_slot((10 + EVICTED_SOURCE_RETENTION_EPOCHS) * SLOTS_PER_EPOCH);
+        assert_eq!(store.evicted_sources.len(), 1);
+        store.advance_minimum_slot(
+            (EVICTED_SOURCE_PRUNE_EPOCHS + EVICTED_SOURCE_RETENTION_EPOCHS) * SLOTS_PER_EPOCH,
+        );
+        assert!(store.evicted_sources.is_empty());
+        assert_eq!(store.pruned_source_floor, 3);
+    }
+
+    /// A snapshot cannot build a store live commands could not.
+    #[test]
+    fn inconsistent_snapshots_are_rejected() {
+        let consistent = || {
+            let mut store = SlashingLockStore::default();
+            store.apply(&vote(7, 2, 4));
+            store.apply(&vote(8, 1, 3));
+            store.advance_minimum_slot(4 * SLOTS_PER_EPOCH);
+            store
+        };
+        assert!(SlashingLockStore::decode_snapshot(&encode_snapshot_v3(&consistent())).is_ok());
+
+        let mut source_after_target = consistent();
+        source_after_target.locks[0].attestations.get_mut(&7).unwrap().source = 5;
+        let mut vote_below_floor = consistent();
+        vote_below_floor.minimum_target = 5;
+        let mut evicted_at_floor = consistent();
+        evicted_at_floor.evicted_sources.insert(8, 4);
+        let mut target_below_slot = consistent();
+        target_below_slot.minimum_slot = 5 * SLOTS_PER_EPOCH;
+        for store in [source_after_target, vote_below_floor, evicted_at_floor, target_below_slot] {
+            assert!(SlashingLockStore::decode_snapshot(&encode_snapshot_v3(&store)).is_err());
+        }
+    }
+
+    #[test]
+    fn v4_duplicate_validators_are_rejected() {
+        let mut store = SlashingLockStore::default();
+        store.apply(&command_for(10, 7, 1));
+        let bytes = store.encode_snapshot().unwrap();
+        // magic, three floors, then the first bucket's tag, epoch and count.
+        let count = 8 + 3 * 8 + 1 + 8;
+        let record = count + 4..count + 4 + SNAPSHOT_VOTE_LEN;
+        let mut duplicate = bytes.clone();
+        duplicate[count..count + 4].copy_from_slice(&2u32.to_le_bytes());
+        duplicate.splice(record.end..record.end, bytes[record].to_vec());
+
+        assert!(SlashingLockStore::decode_snapshot(&bytes).is_ok());
+        assert!(SlashingLockStore::decode_snapshot(&duplicate).is_err());
+    }
+
+    #[test]
     fn duplicate_evicted_sources_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply(&vote(7, 0, 3));
         store.advance_minimum_slot(4 * SLOTS_PER_EPOCH);
-        let mut bytes = store.encode_snapshot().unwrap();
+        let mut bytes = encode_snapshot_v3(&store);
         let blocks_at = bytes.len() - 4;
         let record = blocks_at - SNAPSHOT_EVICTED_LEN..blocks_at;
         bytes[record.start - 4..record.start].copy_from_slice(&2u32.to_le_bytes());
@@ -515,21 +729,26 @@ mod tests {
     fn malformed_lock_snapshots_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply(&command_for(10, 7, 1));
-        let bytes = store.encode_snapshot().unwrap();
-        for len in 0..bytes.len() {
-            assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
+        // The first bucket's tag follows the fixed header in both layouts.
+        for (bytes, tag) in
+            [(store.encode_snapshot().unwrap(), 32), (encode_snapshot_v3(&store), 24)]
+        {
+            for len in 0..bytes.len() {
+                assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
+            }
+            let mut invalid = bytes.clone();
+            invalid.push(0);
+            assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
+            let mut invalid = bytes.clone();
+            invalid[tag] = 2;
+            assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
+            let mut invalid = bytes.clone();
+            invalid[tag + 1] = 1;
+            assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
         }
-        let mut invalid = bytes.clone();
-        invalid.push(0);
-        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
-        let tag = 24;
-        let mut invalid = bytes.clone();
-        invalid[tag] = 2;
-        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
-        let mut invalid = bytes.clone();
-        invalid[tag + 1] = 1;
-        assert!(SlashingLockStore::decode_snapshot(&invalid).is_err());
-        let count = tag + 1 + 8;
+
+        let bytes = encode_snapshot_v3(&store);
+        let count = 24 + 1 + 8;
         let record = count + 4..count + 4 + SNAPSHOT_VOTE_LEN;
         let mut duplicate = bytes.clone();
         duplicate[count..count + 4].copy_from_slice(&2u32.to_le_bytes());
@@ -541,7 +760,15 @@ mod tests {
     fn malformed_block_snapshots_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply_block(&block(10, 3, 1));
-        let bytes = store.encode_snapshot().unwrap();
+        let encoded = store.encode_snapshot().unwrap();
+        for len in 0..encoded.len() {
+            assert!(SlashingLockStore::decode_snapshot(&encoded[..len]).is_err());
+        }
+        let mut below_floor = encoded;
+        below_floor[8..16].copy_from_slice(&11u64.to_le_bytes());
+        assert!(SlashingLockStore::decode_snapshot(&below_floor).is_err());
+
+        let bytes = encode_snapshot_v3(&store);
         let blocks_at = bytes.len() - 4 - SNAPSHOT_BLOCK_LEN;
         for len in 0..bytes.len() {
             assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());

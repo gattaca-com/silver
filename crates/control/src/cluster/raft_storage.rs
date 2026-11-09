@@ -6,7 +6,7 @@ use raft::{
     storage::MemStorage,
 };
 
-use super::lock_store::SlashingLockStore;
+use super::lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore};
 
 pub(super) struct RestoredSnapshot {
     pub index: u64,
@@ -126,7 +126,8 @@ pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &[u64]) -> io::Resu
     actual.sort_unstable();
     let mut expected = voters.to_vec();
     expected.sort_unstable();
-    if metadata.index == 0 ||
+    if snapshot.data.len() > MAX_SNAPSHOT_BYTES ||
+        metadata.index == 0 ||
         metadata.index == u64::MAX ||
         metadata.term == 0 ||
         actual != expected ||
@@ -137,7 +138,7 @@ pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &[u64]) -> io::Resu
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "invalid Raft snapshot metadata or membership",
+            "invalid Raft snapshot size, metadata or membership",
         ));
     }
     Ok(())
