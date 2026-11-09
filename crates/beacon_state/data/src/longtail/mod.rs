@@ -5,7 +5,7 @@ mod sync_subcommittee;
 #[cfg(test)]
 mod tests;
 
-pub use delta::{LongtailView, LongtailWriteView};
+pub use delta::{LongtailReadView, LongtailView, LongtailWriteView};
 pub use finalized::LongtailState;
 use flux_profiler::timed;
 use parking_lot::Mutex;

@@ -1724,3 +1724,36 @@ fn no_envelopes_below_gloas_fork() {
     assert!(issued.block.is_some(), "blocks are still fetched");
     assert!(issued.envelope.is_none(), "no envelope request below the gloas fork slot");
 }
+
+/// A peer is free to claim any `head_slot`; the level check adds the lag
+/// threshold to it, so a hostile `u64::MAX` must saturate rather than panic.
+#[test]
+fn hostile_peer_head_slot_does_not_overflow_level_check() {
+    let mut e = engine();
+    peer_status(&mut e, PEER, HEAD_ROOT, u64::MAX);
+
+    assert!(e.ctx.peers.any_peer_level_with(1, &SyncingConfig::default()));
+    assert!(e.ctx.peers.any_peer_ahead_of(1, &SyncingConfig::default()));
+}
+
+/// Status fields come from a checkpoint before the chain is trusted, so a
+/// finalized epoch at the `u64` ceiling must not overflow its slot conversion.
+#[test]
+fn finalized_epoch_saturates_at_the_slot_ceiling() {
+    let mut e = engine();
+    e.on_local_status(0, u64::MAX, [0; 32], 0);
+
+    assert_eq!(e.ctx.local.finalized_slot(), u64::MAX);
+    assert_eq!(e.window.tail(), u64::MAX);
+}
+
+/// A peer-supplied target epoch is multiplied when its availability floor is
+/// computed. Selection usually bounds it, but the conversion must not panic on
+/// its own.
+#[test]
+fn target_epoch_saturates_at_the_slot_ceiling() {
+    let target = SyncUpdate::SyncingFinalized { target_epoch: u64::MAX, target_root: HEAD_ROOT };
+
+    assert_eq!(target.target_slot(), Some(u64::MAX));
+    assert_eq!(target.data_availability_floor(0), u64::MAX);
+}

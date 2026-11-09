@@ -13,6 +13,7 @@ silver_chain_spec.workspace = true
 silver_log.workspace = true
 silver_ssz.workspace = true
 silver_state_hashing.workspace = true
+silver_state_memory.workspace = true
 silver_crypto_simd.workspace = true
 flux.workspace = true
 flux-profiler.workspace = true

@@ -1,7 +1,7 @@
 use flux_profiler::timed;
 use silver_beacon_state_data::{
     Checkpoint, EPOCHS_PER_HISTORICAL_VECTOR, EPOCHS_PER_SLASHINGS_VECTOR, ExecutionPayloadHeader,
-    Fork, SLOTS_PER_HISTORICAL_ROOT, StateReadView, hash_tree_root_block_header,
+    Fork, SLOTS_PER_HISTORICAL_ROOT, StateView, hash_tree_root_block_header,
 };
 use silver_common::merkle::*;
 pub use silver_common::ssz_hash::*;
@@ -48,7 +48,7 @@ pub fn hash_checkpoint(cp: &Checkpoint) -> B256 {
 
 #[inline]
 #[timed]
-pub fn hash_tree_root_state(rv: &StateReadView) -> B256 {
+pub fn hash_tree_root_state(rv: &StateView) -> B256 {
     if rv.is_gloas() { BeaconStateGloas::hash_tree_root(rv) } else { hash_tree_root_state_fulu(rv) }
 }
 
@@ -56,10 +56,10 @@ pub fn hash_tree_root_state(rv: &StateReadView) -> B256 {
 /// sole divergence — Fulu hashes `latest_execution_payload_header`, Gloas
 /// substitutes `latest_block_hash` — so the caller passes it in.
 ///
-/// Pure read over a fork's [`StateReadView`] — the caller resolves the bundle
+/// Pure read over a fork's [`StateView`] — the caller resolves the bundle
 /// (including the boundary tiers, fresh at each call: a boundary
 /// `process_epoch` re-rolls them mid-`process_slots`).
-pub(crate) fn hash_common_fields(rv: &StateReadView, execution_field: B256) -> [B256; 38] {
+pub(crate) fn hash_common_fields(rv: &StateView, execution_field: B256) -> [B256; 38] {
     let imm = rv.imm;
     let slot = rv.slot.state();
     let es = rv.epoch.state();
@@ -107,7 +107,7 @@ pub(crate) fn hash_common_fields(rv: &StateReadView, execution_field: B256) -> [
     ]
 }
 
-fn hash_tree_root_state_fulu(rv: &StateReadView) -> B256 {
+fn hash_tree_root_state_fulu(rv: &StateView) -> B256 {
     let header = hash_execution_payload_header(&rv.slot.state().latest_execution_payload_header);
     merkleize(&hash_common_fields(rv, header))
 }

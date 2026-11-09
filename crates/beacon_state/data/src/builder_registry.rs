@@ -2,7 +2,7 @@ use silver_ssz::ssz_hash::{compute_domain, compute_signing_root};
 use thiserror::Error;
 
 use crate::{
-    Builder, BuildersView, EpochView, PendingView, SlotState, StateReadView, StateWriterView,
+    Builder, BuildersView, EpochReadView, PendingView, SlotState, StateView, StateWriterView,
     types::{B256, Epoch, Immutable},
 };
 
@@ -44,7 +44,7 @@ impl<'a> BuilderRegistry<'a> {
         }
     }
 
-    pub fn of_reader(view: &StateReadView<'a>) -> Self {
+    pub fn of_reader(view: &StateView<'a>) -> Self {
         Self { builders: view.builders, pending: view.pending, slot: view.slot.state() }
     }
 
@@ -104,7 +104,7 @@ impl<'a> BuilderRegistry<'a> {
 /// `DOMAIN_BEACON_BUILDER` at the fork of `fork_epoch`.
 pub fn bid_signing_root(
     imm: &Immutable,
-    epoch: &EpochView,
+    epoch: &EpochReadView,
     bid_root: &B256,
     fork_epoch: Epoch,
 ) -> B256 {

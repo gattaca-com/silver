@@ -92,7 +92,7 @@ impl SlotTicker {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_millis() as u64;
-        let genesis_ms = genesis_unix_secs * 1000;
+        let genesis_ms = genesis_unix_secs.saturating_mul(1000);
         assert!(
             now_unix_ms >= genesis_ms,
             "pre-genesis not supported: {} >= {}",
@@ -141,7 +141,7 @@ impl SlotTicker {
         if self.frozen {
             return self.anchor_genesis_ms;
         }
-        self.anchor_genesis_ms + self.anchor.elapsed().as_millis() as u64
+        self.anchor_genesis_ms.saturating_add(self.anchor.elapsed().as_millis() as u64)
     }
 
     pub fn slot_time_elapsed(&self) -> Duration {

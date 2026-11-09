@@ -968,7 +968,9 @@ impl SyncUpdate {
 
     pub fn data_availability_floor(self, local_finalized_slot: u64) -> u64 {
         let settled_by_target = match self {
-            Self::SyncingFinalized { target_epoch, .. } => target_epoch * SLOTS_PER_EPOCH,
+            Self::SyncingFinalized { target_epoch, .. } => {
+                target_epoch.saturating_mul(SLOTS_PER_EPOCH)
+            }
             Self::SyncingHead { .. } | Self::Following | Self::Stalled => 0,
         };
         local_finalized_slot.max(settled_by_target)
@@ -976,7 +978,9 @@ impl SyncUpdate {
 
     pub fn target_slot(self) -> Option<u64> {
         match self {
-            Self::SyncingFinalized { target_epoch, .. } => Some(target_epoch * SLOTS_PER_EPOCH),
+            Self::SyncingFinalized { target_epoch, .. } => {
+                Some(target_epoch.saturating_mul(SLOTS_PER_EPOCH))
+            }
             Self::SyncingHead { head_slot, .. } => Some(head_slot),
             Self::Following | Self::Stalled => None,
         }

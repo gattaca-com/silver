@@ -36,7 +36,7 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
             slot: s.latest_block_header.slot,
             value: 0,
             execution_payment: 0,
-            blob_kzg_commitments: Vec::new(),
+            blob_kzg_commitments: Default::default(),
             execution_requests_root: *EMPTY_EXECUTION_REQUESTS_ROOT,
         }
     };
@@ -44,7 +44,7 @@ pub fn upgrade_to_gloas(view: &mut StateWriterView, epoch: &mut EpochWriteView) 
         let s = view.slot.state_mut();
         s.latest_block_hash = placeholder_bid.block_hash;
         s.execution_payload_availability = [0xFF; EXECUTION_PAYLOAD_AVAILABILITY_BYTES];
-        s.latest_execution_payload_bid = placeholder_bid;
+        s.latest_execution_payload_bid.clone_from(&placeholder_bid);
         // The remaining Gloas slot fields (`next_withdrawal_builder_index`,
         // `builder_pending_payments`, `builder_pending_withdrawals`,
         // `payload_expected_withdrawals`) match the spec's empty/zero init,

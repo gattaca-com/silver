@@ -108,7 +108,7 @@ impl SyncWindow {
         let before = self.tail;
         let mut tail = self.tail;
         while tail < end {
-            let slot = tail + 1;
+            let slot = tail.saturating_add(1);
             if !self.coverage(slot).complete(slot, needs) {
                 break;
             }
@@ -119,7 +119,7 @@ impl SyncWindow {
     }
 
     pub fn ceiling(&self) -> Slot {
-        self.tail + FETCH_CEILING
+        self.tail.saturating_add(FETCH_CEILING)
     }
 
     pub fn coverage(&self, slot: Slot) -> Coverage {
@@ -175,7 +175,7 @@ impl SyncWindow {
         });
         if let Some(parent) = parent_slot {
             let first = parent.max(self.tail).saturating_add(1);
-            for empty in first..slot.min(self.ceiling() + 1) {
+            for empty in first..slot.min(self.ceiling().saturating_add(1)) {
                 self.mark_empty(empty);
             }
         }
@@ -202,7 +202,7 @@ impl SyncWindow {
     /// rather than on data or on a quiet chain.
     pub fn unknown_blocks_up_to_slot(&self, up_to: Slot) -> u64 {
         let last = up_to.min(self.ceiling());
-        (self.tail + 1..=last)
+        (self.tail.saturating_add(1)..=last)
             .take_while(|&s| self.coverage(s).block == BlockState::Unknown)
             .count() as u64
     }

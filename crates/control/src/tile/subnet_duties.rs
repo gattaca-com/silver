@@ -141,7 +141,7 @@ impl SubnetDuties {
         subnets: impl Fn(&SlotSubnets) -> u64,
     ) -> u64 {
         let first = wall_slot.saturating_sub(SubnetsBySlot::LINGER_SLOTS);
-        let last = wall_slot + LEAD_SLOTS + extra_lead_slots;
+        let last = wall_slot.saturating_add(LEAD_SLOTS).saturating_add(extra_lead_slots);
         self.duties.subnets_in(first..=last, subnets)
     }
 }

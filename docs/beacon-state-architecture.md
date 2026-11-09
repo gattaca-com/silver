@@ -114,10 +114,14 @@ Notes:
 
 ## 4. The read paths
 
-One read currency: `StateReadView`, a `Copy`-field bundle of all ten tier
-read views (plus `imm`), resolved from a `StateId` by the single resolver
-`BeaconState::read_view`. Consumers read tier fields directly
-(`rv.validators.pubkey(i)`, `rv.epoch.proposer_at(idx)`, …).
+`StateReadView` exposes the tiers available to optimistic readers.
+`StateView` adds owner-only access to Eth1 votes, pending queues, effective
+increments, and historical summary entries. It dereferences to `StateReadView`
+for helpers that need only the shared fields.
+
+Both `BeaconStateReader::read` and `read_pinned` supply `StateReadView`.
+Its `EpochReadView` omits effective increments. Its `LongtailReadView` exposes
+sync committees and the cached summaries root, without exposing `LongtailState`.
 
 ```
 writer thread (tile's own reads):          cross-thread (lock-free):
@@ -125,7 +129,8 @@ writer thread (tile's own reads):          cross-thread (lock-free):
   view.read(epoch_v, longtail_v)
        │                                          │
        ▼                                          ▼
-  resolve StateId ─────────────► StateReadView ◄─── resolve published StateId
+    StateView                                StateReadView
+       └── dereferences to StateReadView
 ```
 
 The cross-thread protocol (`BeaconStateReader::read`) is an optimistic
@@ -138,7 +143,7 @@ seqlock read:
               │           finalize_version}>      │   ctrl = read_copy()
               │   counter odd = finalize window   │     ── spins while the counter is odd
               │                                   │   fence(Acquire)
-              │                                   │   rv = state.read_view(ctrl.state_id)
+              │                                   │   rv = state.state_read_view(ctrl.state_id)
               │                                   │   … read tier data …
               │                                   │   fence(Acquire)
               │                                   │   finalize_version unchanged? → accept
@@ -155,11 +160,11 @@ the seqlock's one irreducible `unsafe`): a reader handle can never dangle,
 whatever the teardown order. Reads cost a pointer deref — the `Arc` refcount
 is touched only at clone/drop.
 
-Caveat: the lock-free path must not read the *contents* of realloc-prone
-`Vec` bases (pending queues, longtail historical summaries) — a finalize
-realloc can race them; those reads go through the groups' promote barriers
-(`with_finalized_locked`). The fixed-size bases — including the inline
-fixed-capacity eth1 vote list — are safe to read optimistically.
+The shared view cannot expose these reallocating collections through safe APIs.
+Checkpoint encoding retains the groups' promotion locks (`with_finalized_locked`)
+for pending queues and historical summaries.
+Retained allocations protect the other growing collections' backing storage;
+metadata publication and concurrent in-place writes remain separate concerns.
 
 ## 5. Finalization — the only reader-blocking window
 

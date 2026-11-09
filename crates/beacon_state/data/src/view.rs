@@ -8,7 +8,9 @@ use std::{
 use flux::communication::Seqlock;
 use flux_profiler::timed;
 
-use crate::{BeaconState, ForkWriter, StateId, StateReadView, encode::GLOAS_VAR_LEN_SECTIONS};
+use crate::{
+    BeaconState, ForkWriter, StateId, StateReadView, StateView, encode::GLOAS_VAR_LEN_SECTIONS,
+};
 
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
 /// can never dangle, whatever the teardown order); ACCESS rides the seqlock
@@ -106,8 +108,8 @@ impl BeaconStateOwner {
     /// Read-only view over the fork named by `state_id` for the writer
     /// thread's own reads (gossip validation, head recompute). Resolves shared
     /// refs from the bundle — `&self`, no mutation, no re-open. See
-    /// [`StateReadView`].
-    pub fn read_view(&self, state_id: StateId) -> StateReadView<'_> {
+    /// [`StateView`].
+    pub fn read_view(&self, state_id: StateId) -> StateView<'_> {
         self.state.get().read_view(state_id)
     }
 
@@ -177,9 +179,9 @@ impl BeaconStateReader {
     /// fork data is append-only until the next finalize. Returns `None` until
     /// the first publish.
     ///
-    /// Columns and fixed-size bases are safe to read here. The pending and
-    /// longtail bases are `Vec`s a finalize can reallocate: read their
-    /// contents through the lock-guarded path.
+    /// [`StateReadView`] excludes collections whose allocations can be freed
+    /// during a read. Checkpoint encoding keeps its existing locks for pending
+    /// queues and historical summaries.
     #[timed]
     pub fn read<F, R>(&self, mut reader: F) -> Option<R>
     where
@@ -196,7 +198,7 @@ impl BeaconStateReader {
             }
             let state_id = control.state_id?;
             sync::atomic::fence(Ordering::Acquire);
-            let result = reader(self.state.get().read_view(state_id));
+            let result = reader(self.state.get().state_read_view(state_id));
 
             // Validate: no finalize ran while we were reading the state.
             sync::atomic::fence(Ordering::Acquire);
@@ -229,7 +231,7 @@ impl BeaconStateReader {
             return None;
         }
         sync::atomic::fence(Ordering::Acquire);
-        let result = reader(self.state.get().read_view(pin.state_id));
+        let result = reader(self.state.get().state_read_view(pin.state_id));
         sync::atomic::fence(Ordering::Acquire);
         (self.finalize_version() == Some(pin.finalize_version)).then_some(result)
     }

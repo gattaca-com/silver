@@ -2,7 +2,7 @@ use std::{cmp::Reverse, mem};
 
 use flux::spine::SpineProducer;
 use silver_beacon_state_data::{
-    Epoch, EpochView, SLOTS_PER_EPOCH, StateReadView, ValidatorsView, Version,
+    Epoch, EpochReadView, SLOTS_PER_EPOCH, StateReadView, ValidatorsView, Version,
 };
 use silver_common::{BeaconStateEvent, PoolChange, TCacheProducer, TCacheRead, TProducer};
 use silver_log::warn;
@@ -344,7 +344,7 @@ impl<T, const N: usize> Bounded<T, N> {
 #[derive(Clone, Copy)]
 struct ForkFacts<'a> {
     validators: ValidatorsView<'a>,
-    versions: EpochView<'a>,
+    versions: EpochReadView<'a>,
     epoch: Epoch,
 }
 

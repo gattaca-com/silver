@@ -1,9 +1,10 @@
 use std::io::{self, Write};
 
+use silver_state_memory::RetiredColumns;
+
 use crate::{
     DecomposeError,
     gloas::{BUILDER_REGISTRY_LIMIT, Builder, builder_capacity},
-    retired::RetiredColumns,
 };
 
 /// SSZ-serialised `Builder`: pubkey(48) + version(1) + execution_address(20) +

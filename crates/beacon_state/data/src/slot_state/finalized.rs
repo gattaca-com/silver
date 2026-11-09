@@ -23,10 +23,21 @@ const WITHDRAWAL_SSZ: usize = 44;
 const BUILDER_PENDING_PAYMENT_SSZ: usize = 52;
 
 // size: ~1 KB inline — the `SlotState` scalars.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct SlotStateFinalized {
     pub(super) slot: SlotState,
     pub(super) epoch_balances: EpochBalances,
+}
+
+impl Clone for SlotStateFinalized {
+    fn clone(&self) -> Self {
+        Self { slot: self.slot.clone(), epoch_balances: self.epoch_balances }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.slot.clone_from(&source.slot);
+        self.epoch_balances = source.epoch_balances;
+    }
 }
 
 impl SlotStateFinalized {

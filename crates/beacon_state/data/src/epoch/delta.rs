@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use super::{
     EpochGroup, EpochId, effective_increments::EffectiveIncrements, finalized::EpochStateFinalized,
     ptc_window::PtcWindow,
@@ -36,6 +38,11 @@ impl Reset for EpochStateDelta {
 /// reads fall through to the base.
 #[derive(Clone, Copy)]
 pub struct EpochView<'a> {
+    pub(crate) read: EpochReadView<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct EpochReadView<'a> {
     base: &'a EpochStateFinalized,
     delta: Option<&'a EpochStateDelta>,
 }
@@ -43,9 +50,24 @@ pub struct EpochView<'a> {
 impl<'a> EpochView<'a> {
     #[inline]
     pub(crate) fn new(base: &'a EpochStateFinalized, delta: Option<&'a EpochStateDelta>) -> Self {
-        Self { base, delta }
+        Self { read: EpochReadView { base, delta } }
     }
 
+    #[inline]
+    pub fn increments(&self) -> &'a EffectiveIncrements {
+        self.read.delta.map_or(&self.read.base.increments, |d| &d.increments)
+    }
+}
+
+impl<'a> Deref for EpochView<'a> {
+    type Target = EpochReadView<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
+}
+
+impl<'a> EpochReadView<'a> {
     #[inline]
     pub fn state(&self) -> &'a EpochState {
         self.delta.map_or(&self.base.state, |d| &d.state)
@@ -54,11 +76,6 @@ impl<'a> EpochView<'a> {
     #[inline]
     pub fn ptc_window(&self) -> &'a PtcWindow {
         self.delta.map_or(&self.base.ptc_window, |d| &d.ptc_window)
-    }
-
-    #[inline]
-    pub fn increments(&self) -> &'a EffectiveIncrements {
-        self.delta.map_or(&self.base.increments, |d| &d.increments)
     }
 
     /// Expected proposer at `lookahead_idx` (slots since the lookahead's
@@ -130,7 +147,7 @@ impl<'a> EpochWriteView<'a> {
 
     #[inline]
     pub fn set_ptc_window(&mut self, committees: Box<[PtcCommittee; PTC_WINDOW_LEN]>) {
-        self.fork.ptc_window = PtcWindow::new(committees);
+        self.fork.ptc_window.copy_committees(&committees);
     }
 
     pub fn set_increments(&mut self, effective_balances: impl Iterator<Item = u64>) {

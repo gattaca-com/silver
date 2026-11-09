@@ -2,10 +2,12 @@ use std::{
     array::IntoIter as ArrayIntoIter,
     io::{self, Write},
     iter::Take,
+    mem,
     ops::Deref,
 };
 
 use flux::type_hash_derive::TypeHash;
+use silver_state_memory::RetainedVec;
 
 use crate::{
     DecomposeError,
@@ -194,7 +196,7 @@ impl Withdrawal {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct ExecutionPayloadBid {
     pub parent_block_hash: B256,
     pub parent_block_root: B256,
@@ -207,8 +209,20 @@ pub struct ExecutionPayloadBid {
     pub value: u64,
     pub execution_payment: u64,
     /// `List[KZGCommitment, MAX_BLOB_COMMITMENTS_PER_BLOCK]`.
-    pub blob_kzg_commitments: Vec<[u8; 48]>,
+    pub blob_kzg_commitments: RetainedVec<[u8; 48]>,
     pub execution_requests_root: B256,
+}
+
+impl Clone for ExecutionPayloadBid {
+    fn clone(&self) -> Self {
+        Self { blob_kzg_commitments: self.blob_kzg_commitments.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.blob_kzg_commitments.clone_from(&source.blob_kzg_commitments);
+        let blob_kzg_commitments = mem::take(&mut self.blob_kzg_commitments);
+        *self = Self { blob_kzg_commitments, ..*source };
+    }
 }
 
 impl ExecutionPayloadBid {

@@ -23,7 +23,7 @@ impl SyncStatus {
 
     pub(crate) fn update(&mut self, ssz: [u8; 92]) {
         self.head_root = *StatusView::head_root(&ssz);
-        self.finalized_slot = StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH;
+        self.finalized_slot = StatusView::finalized_epoch(&ssz).saturating_mul(SLOTS_PER_EPOCH);
     }
 
     pub(crate) fn set_sync_target(&mut self, target: SyncUpdate) {

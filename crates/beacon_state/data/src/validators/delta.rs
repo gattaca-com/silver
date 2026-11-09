@@ -1,5 +1,6 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
+use silver_state_memory::RetainedVec;
 
 use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
 /// stored: the mutable Validator-container fields (balance, slashed, the four
 /// epochs) are spec-default until a `set_*` writes an edit, so the effective-
 /// read and iter paths return those defaults directly rather than storing them.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 struct AppendedValidator {
     pubkey: BLSPubkey,
     pubkey_decompressed: PublicKey,
@@ -28,10 +29,10 @@ struct AppendedValidator {
 /// `appended[p]`'s absolute validator index is `base_count + p`. The `_edits`
 /// vecs are sparse, sorted by absolute index. Edits may target either a
 /// base validator (idx < base_count) or an appended one (idx >= base_count).
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct ValidatorsDelta {
     base_count: usize,
-    appended: Vec<AppendedValidator>,
+    appended: RetainedVec<AppendedValidator>,
     credentials_edits: Edits<Withdrawals>,
     effective_balance_edits: Edits<u64>,
     slashed_edits: Edits<bool>,
@@ -39,6 +40,26 @@ pub struct ValidatorsDelta {
     activation_epoch_edits: Edits<Epoch>,
     exit_epoch_edits: Edits<Epoch>,
     withdrawable_epoch_edits: Edits<Epoch>,
+}
+
+impl Clone for ValidatorsDelta {
+    fn clone(&self) -> Self {
+        Self {
+            base_count: self.base_count,
+            appended: self.appended.clone(),
+            credentials_edits: self.credentials_edits.clone(),
+            effective_balance_edits: self.effective_balance_edits.clone(),
+            slashed_edits: self.slashed_edits.clone(),
+            activation_eligibility_epoch_edits: self.activation_eligibility_epoch_edits.clone(),
+            activation_epoch_edits: self.activation_epoch_edits.clone(),
+            exit_epoch_edits: self.exit_epoch_edits.clone(),
+            withdrawable_epoch_edits: self.withdrawable_epoch_edits.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.reset_from(source);
+    }
 }
 
 impl ValidatorsDelta {
@@ -104,7 +125,7 @@ impl ValidatorsDelta {
         let new_count = (winner.base_count + winner.appended.len()) as u32;
 
         let promoted = (new_count as usize - old.base_count).min(old.appended.len());
-        self.appended = old.appended[promoted..].to_vec();
+        self.appended.copy_from_slice(&old.appended[promoted..]);
         self.base_count = new_count as usize;
 
         self.credentials_edits.rebase_and_prune_from(

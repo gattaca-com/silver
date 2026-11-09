@@ -1,5 +1,5 @@
 use crate::{
-    BeaconState, EpochGroup, EpochId, EpochView, LongtailGroup, LongtailId, StateId, StateReadView,
+    BeaconState, EpochGroup, EpochId, EpochView, LongtailGroup, LongtailId, StateId, StateView,
     StateWriterView,
 };
 
@@ -21,7 +21,7 @@ impl ForkWriter<'_> {
         self.epoch.view_opt(self.epoch_idx)
     }
 
-    pub fn read(&mut self) -> StateReadView<'_> {
+    pub fn read(&mut self) -> StateView<'_> {
         let epoch = self.epoch.view_opt(self.epoch_idx);
         let longtail = self.longtail.view_opt(self.longtail_idx);
         self.view.read(epoch, longtail)

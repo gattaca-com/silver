@@ -3,7 +3,7 @@ use flux_profiler::timed;
 use silver_beacon_state_data::{
     B256, BeaconBlockHeader, BodyOffsets, Epoch, EpochView, EpochWriteView, Eth1Data,
     Eth1WriteView, ForkWriter, Immutable, LongtailGroup, LongtailId, SLOTS_PER_EPOCH,
-    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateReadView,
+    SLOTS_PER_HISTORICAL_ROOT, Slot, SlotStateView, SlotStateWriteView, SpecConfig, StateView,
     StateWriterView,
     bls::{self, SigBatch},
     hash_tree_root_block_header,
@@ -569,7 +569,7 @@ fn apply_block_body(
 #[timed]
 fn collect_sigs_block_body(
     cfg: &SpecConfig,
-    rv: &StateReadView,
+    rv: &StateView,
     active_scratch: &mut Vec<u32>,
     sig_batch: &mut SigBatch,
     offsets: &BodyOffsets<'_>,

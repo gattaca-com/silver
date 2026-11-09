@@ -129,7 +129,7 @@ impl LocalView {
     }
 
     fn finalized_slot(&self) -> u64 {
-        self.finalized_epoch * SLOTS_PER_EPOCH
+        self.finalized_epoch.saturating_mul(SLOTS_PER_EPOCH)
     }
 }
 
@@ -267,7 +267,8 @@ impl SyncEngine {
         );
 
         // A staged block may want its columns and, once lapped, its bytes.
-        let by_root_cap = cfg.pending.max_parents + 2 * cfg.pending.max_dc;
+        let by_root_cap =
+            cfg.pending.max_parents.saturating_add(cfg.pending.max_dc.saturating_mul(2));
         Self {
             ctx: Ctx {
                 custody_columns,

@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use super::{
     LongtailGroup, LongtailId,
     finalized::{LongtailState, hash_summaries},
@@ -13,6 +15,11 @@ use crate::{
 /// rotation, else `None` and reads fall through to the base.
 #[derive(Clone, Copy)]
 pub struct LongtailView<'a> {
+    pub(crate) read: LongtailReadView<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct LongtailReadView<'a> {
     base: &'a LongtailState,
     delta: Option<&'a LongtailState>,
 }
@@ -20,7 +27,7 @@ pub struct LongtailView<'a> {
 impl<'a> LongtailView<'a> {
     #[inline]
     pub(crate) fn new(base: &'a LongtailState, delta: Option<&'a LongtailState>) -> Self {
-        Self { base, delta }
+        Self { read: LongtailReadView { base, delta } }
     }
 
     /// Exposes the sync-committee scalars; for the merged
@@ -28,37 +35,45 @@ impl<'a> LongtailView<'a> {
     /// [`Self::historical_summaries_len`].
     #[inline]
     pub fn state(&self) -> &'a LongtailState {
-        self.delta.unwrap_or(self.base)
-    }
-
-    #[inline]
-    pub fn sync_committees(&self) -> &'a SyncCommittees {
-        self.state().sync_committees()
-    }
-
-    /// SSZ `hash_tree_root` of the merged `historical_summaries` list — stored
-    /// at the append, so this is a read.
-    #[inline]
-    pub fn historical_summaries_root(&self) -> B256 {
-        self.state().historical_summaries_root
+        self.read.delta.unwrap_or(self.read.base)
     }
 
     /// `historical_summaries[ix]` merged: the base's full log, then the delta's
     /// post-finalization appends.
     #[inline]
     pub fn historical_summary(&self, ix: usize) -> Option<HistoricalSummary> {
-        let base = &self.base.historical_summaries;
+        let base = &self.read.base.historical_summaries;
         if ix < base.len() {
             return Some(base[ix]);
         }
         let j = ix - base.len();
-        self.delta.and_then(|d| d.historical_summaries.get(j).copied())
+        self.read.delta.and_then(|d| d.historical_summaries.get(j).copied())
     }
 
     #[inline]
     pub fn historical_summaries_len(&self) -> usize {
-        self.base.historical_summaries.len() +
-            self.delta.map_or(0, |d| d.historical_summaries.len())
+        self.read.base.historical_summaries.len() +
+            self.read.delta.map_or(0, |d| d.historical_summaries.len())
+    }
+}
+
+impl<'a> Deref for LongtailView<'a> {
+    type Target = LongtailReadView<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
+}
+
+impl<'a> LongtailReadView<'a> {
+    #[inline]
+    pub fn sync_committees(&self) -> &'a SyncCommittees {
+        self.delta.unwrap_or(self.base).sync_committees()
+    }
+
+    #[inline]
+    pub fn historical_summaries_root(&self) -> B256 {
+        self.delta.unwrap_or(self.base).historical_summaries_root
     }
 }
 

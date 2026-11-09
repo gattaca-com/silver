@@ -44,7 +44,7 @@ impl Backfill {
         self.ranges.set_columns(prefill.columns_missing);
 
         for offset in 0..PREFILL_SLOTS {
-            let slot = prefill.start + offset;
+            let slot = prefill.start.saturating_add(offset);
             let bit = 1u32 << offset;
             let block = if prefill.have_block & bit != 0 {
                 BlockState::Applied
@@ -112,7 +112,7 @@ impl Backfill {
         emit: &mut impl FnMut(SyncAction) -> bool,
     ) {
         let Some(start) = self.start else { return };
-        let end = start + PREFILL_SLOTS - 1;
+        let end = start.saturating_add(PREFILL_SLOTS - 1);
         let needs = Self::needs(custody);
         self.ranges.reoffer_unplaced(now, emit);
         self.window.advance_tail(end, needs);

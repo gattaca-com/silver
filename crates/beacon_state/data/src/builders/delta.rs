@@ -1,3 +1,5 @@
+use silver_state_memory::RetainedVec;
+
 use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
     B256,
@@ -12,11 +14,25 @@ use crate::{
 /// `edits` overlays mutations/replacements at any absolute index (base or
 /// appended). All mutation routes through `edits` so the winner-prefix drop in
 /// `rebase_and_prune_from` stays safe.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct BuildersDelta {
     base_count: usize,
-    appended: Vec<Builder>,
+    appended: RetainedVec<Builder>,
     edits: Edits<Builder>,
+}
+
+impl Clone for BuildersDelta {
+    fn clone(&self) -> Self {
+        Self {
+            base_count: self.base_count,
+            appended: self.appended.clone(),
+            edits: self.edits.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.reset_from(source);
+    }
 }
 
 impl BuildersDelta {
@@ -46,7 +62,7 @@ impl BuildersDelta {
         let new_count = winner.base_count + winner.appended.len();
 
         let promoted = (new_count - old.base_count).min(old.appended.len());
-        self.appended = old.appended[promoted..].to_vec();
+        self.appended.copy_from_slice(&old.appended[promoted..]);
         self.base_count = new_count;
 
         self.edits.rebase_and_prune_from(&old.edits, &winner.edits, new_count as u32, |i| {

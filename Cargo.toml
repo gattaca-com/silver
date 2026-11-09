@@ -17,6 +17,7 @@ members = [
   "crates/gossip",
   "crates/hashing",
   "crates/hashing/bench",
+  "crates/state_memory",
   "crates/httpcore",
   "crates/log",
   "crates/engine_api",
@@ -94,6 +95,7 @@ silver_metrics = { path = "crates/metrics" }
 silver_slashing = { path = "crates/slashing" }
 silver_ssz = { path = "crates/ssz" }
 silver_state_hashing = { path = "crates/hashing" }
+silver_state_memory = { path = "crates/state_memory" }
 silver_stages = { path = "crates/stages" }
 silver_control = { path = "crates/control" }
 silver_discovery = {path = "crates/discovery" }

@@ -68,9 +68,8 @@ impl GossipSchedule {
             transitions.push(Transition { epoch, domain, enr_fork_id });
         }
         let epoch = ticker.current_slot() / SLOTS_PER_EPOCH;
-        let current = transitions
-            [transitions.partition_point(|transition| transition.epoch <= epoch) - 1]
-            .domain;
+        let index = transitions.partition_point(|transition| transition.epoch <= epoch);
+        let current = transitions[index.saturating_sub(1)].domain;
         Self { ticker, transitions, last_epoch: None, current }
     }
 
@@ -84,7 +83,10 @@ impl GossipSchedule {
             return None;
         }
         self.last_epoch = Some(epoch);
-        let index = self.transitions.partition_point(|transition| transition.epoch <= epoch) - 1;
+        let index = self
+            .transitions
+            .partition_point(|transition| transition.epoch <= epoch)
+            .saturating_sub(1);
         let transition = &self.transitions[index];
         self.current = transition.domain;
         // With tightly spaced forks, preserving the draining domain takes precedence

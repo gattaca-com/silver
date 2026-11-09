@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 
 use flux::spine::SpineProducer;
 use rustc_hash::FxHashMap;
-use silver_beacon_state_data::{SpecConfig, StateReadView};
+use silver_beacon_state_data::{SpecConfig, StateReadView, StateView};
 use silver_common::{
     BeaconStateEvent, PoolChange,
     ssz_view::{MAX_VOLUNTARY_EXITS, SIGNED_VOLUNTARY_EXIT_SIZE, SignedVoluntaryExitView},
@@ -45,7 +45,7 @@ impl ExitPool {
     pub(super) fn select(
         &self,
         spec: &SpecConfig,
-        pre_state: &StateReadView,
+        pre_state: &StateView,
         slashed: &[usize],
         out: &mut Vec<u8>,
     ) {

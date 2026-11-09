@@ -4,8 +4,8 @@
 //! field builders stay in [`crate::ssz_hash`].
 
 use silver_beacon_state_data::{
-    BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, StateReadView,
-    Withdrawal, gloas::BUILDER_PENDING_PAYMENTS_LEN,
+    BuilderPendingPayment, BuilderPendingWithdrawal, ExecutionPayloadBid, StateView, Withdrawal,
+    gloas::BUILDER_PENDING_PAYMENTS_LEN,
 };
 use silver_common::{
     progressive::{ProgressiveContainer, ProgressiveHasher, packed_active_fields},
@@ -29,7 +29,7 @@ impl ProgressiveContainer for BeaconStateGloas {
 }
 
 impl BeaconStateGloas {
-    pub(crate) fn hash_tree_root(rv: &StateReadView) -> B256 {
+    pub(crate) fn hash_tree_root(rv: &StateView) -> B256 {
         // [Modified in Gloas] `latest_block_hash` (Hash32) replaces the header.
         let slot = rv.slot.state();
         let common = hash_common_fields(rv, slot.latest_block_hash);

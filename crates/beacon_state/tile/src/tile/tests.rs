@@ -7,8 +7,8 @@ use silver_beacon_state_data::{
     BLSPubkey, BeaconBlockHeader, BeaconState, EPOCHS_PER_SYNC_COMMITTEE_PERIOD, EpochState,
     EpochStateFinalized, Eth1Data, HistoricalSummary, Id, Immutable, PROPOSER_LOOKAHEAD_SIZE,
     PendingDeposit, PendingPartialWithdrawal, SLOTS_PER_HISTORICAL_ROOT, SYNC_COMMITTEE_SIZE,
-    SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateReadView, SyncCommittee, TreeGroup, TreeSpec,
-    ValSeed, Withdrawals, hash_tree_root_block_header,
+    SYNC_SUBCOMMITTEE_SIZE, ShufflingId, StateView, SyncCommittee, TreeGroup, TreeSpec, ValSeed,
+    Withdrawals, hash_tree_root_block_header,
 };
 use silver_common::{
     BeaconApiResponse, BidPolicy, BlockStage, EngineGetPayloadResp, EngineNewPayloadResp,
@@ -5478,7 +5478,7 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
         "proposer_lookahead",
     ];
     let live = tile.state.read_view(tile.last_applied);
-    let field_roots = |v: &StateReadView| {
+    let field_roots = |v: &StateView| {
         let eph = ssz_hash::hash_execution_payload_header(
             &v.slot.state().latest_execution_payload_header,
         );
