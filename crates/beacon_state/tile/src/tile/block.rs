@@ -709,7 +709,7 @@ impl BeaconStateTile {
             return Err(PrecheckError::Rejected { block_root, reason });
         }
 
-        let finalized_slot = self.fork_choice.finalized_checkpoint.epoch * SLOTS_PER_EPOCH;
+        let finalized_slot = self.fork_choice.finalized_checkpoint().epoch * SLOTS_PER_EPOCH;
         if block_slot <= finalized_slot {
             return Err(PrecheckError::PreFinalized { block_slot, finalized_slot });
         }

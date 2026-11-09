@@ -125,6 +125,8 @@ pub enum DecomposeError {
     EphExtraDataTooLong { len: usize },
     #[error("gloas {field} bytes {len} not a multiple of {size}")]
     GloasFieldLen { field: &'static str, len: usize, size: usize },
+    #[error("gloas {field} variable-field offset {off} != fixed part {fixed}")]
+    GloasOffset { field: &'static str, off: usize, fixed: usize },
     #[error("too many gloas {field}: {n} > {max}")]
     GloasTooMany { field: &'static str, n: usize, max: usize },
 }

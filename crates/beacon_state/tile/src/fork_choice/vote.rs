@@ -1,5 +1,5 @@
 use flux_profiler::timed;
-use silver_beacon_state_data::{Epoch, Slot};
+use silver_beacon_state_data::{Epoch, Slot, validator_capacity};
 
 use super::{ForkChoice, ForkChoiceNode, PayloadStatus, vote_targets::VoteTargets};
 use crate::stf::VoteTarget;
@@ -8,21 +8,37 @@ use crate::stf::VoteTarget;
 /// A vote is then 8 bytes, so a scan over all validators reads far less memory.
 #[derive(Default)]
 pub struct VoteTracker {
-    pub(super) votes: Box<[Vote]>,
+    pub(super) votes: Vec<Vote>,
     /// Validator indices whose vote moved since the last `recompute_head`.
     pub(super) dirty: Vec<u32>,
-    equivocating: Box<[u64]>,
+    equivocating: Vec<u64>,
     targets: VoteTargets,
 }
 
 impl VoteTracker {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            votes: vec![Vote::default(); capacity].into_boxed_slice(),
+            votes: vec![Vote::default(); capacity],
             dirty: Vec::with_capacity(capacity),
-            equivocating: vec![0u64; capacity.div_ceil(64)].into_boxed_slice(),
+            equivocating: vec![0u64; capacity.div_ceil(64)],
             targets: VoteTargets::default(),
         }
+    }
+
+    /// Deposits grow the registry past the boot-time capacity.
+    #[inline]
+    pub(super) fn ensure_validators(&mut self, count: usize) {
+        if count > self.votes.len() {
+            self.grow(count);
+        }
+    }
+
+    #[cold]
+    fn grow(&mut self, count: usize) {
+        let capacity = validator_capacity(count);
+        self.votes.resize(capacity, Vote::default());
+        self.equivocating.resize(capacity.div_ceil(64), 0);
+        silver_log::info!(capacity, "fork-choice vote tracker grew");
     }
 
     pub fn record_votes(
@@ -31,6 +47,7 @@ impl VoteTracker {
         validators: &[u32],
         validator_count: usize,
     ) {
+        self.ensure_validators(validator_count);
         if self.targets.needs_compaction() {
             self.compact_targets();
         }
@@ -59,17 +76,15 @@ impl VoteTracker {
     }
 
     pub fn mark_equivocating(&mut self, idx: usize) {
+        self.ensure_validators(idx + 1);
         let (w, b) = (idx / 64, idx % 64);
-        let Some(word) = self.equivocating.get_mut(w) else {
-            return;
-        };
+        let word = &mut self.equivocating[w];
         if *word & (1u64 << b) != 0 {
             return;
         }
         *word |= 1u64 << b;
-        if let Some(v) = self.votes.get_mut(idx) &&
-            (v.applied != 0 || v.latest != 0)
-        {
+        let v = &mut self.votes[idx];
+        if v.applied != 0 || v.latest != 0 {
             v.latest = 0;
             self.dirty.push(idx as u32);
         }
@@ -133,6 +148,7 @@ impl ForkChoice {
         let Self { vote_tracker, lookup, nodes, justified, weight_deltas: deltas, .. } = self;
         let (applied_balances, balances, unapplied) = justified.pending_weight_update();
         let validator_count = balances.len();
+        vote_tracker.ensure_validators(validator_count);
         let VoteTracker { votes, dirty, targets, .. } = vote_tracker;
 
         deltas.clear();
@@ -248,5 +264,21 @@ mod tests {
             let epoch = tracker.targets.get(vote.latest).target_epoch;
             assert_eq!(epoch, 1000, "validator {validator} lost its newest vote");
         }
+    }
+
+    #[test]
+    fn grows_past_boot_capacity() {
+        let mut tracker = VoteTracker::with_capacity(4);
+        let target = VoteTarget {
+            block_root: [1; 32],
+            target_epoch: 1,
+            attestation_slot: 32,
+            payload_present: false,
+        };
+        tracker.mark_equivocating(200);
+        tracker.record_votes(&target, &[4, 199, 200], 201);
+        assert!(tracker.votes.len() >= 201);
+        assert!(tracker.is_equivocating(200), "equivocation past capacity was dropped");
+        assert_eq!(tracker.dirty, [4, 199]);
     }
 }

@@ -13,6 +13,7 @@ use silver_crypto_simd::bls::{G1Point, uncompress_in_g1};
 use crate::{
     Withdrawals,
     merkle::{merkleize_each, uint64_chunk},
+    retired::RetiredColumns,
     slot_state::{EpochBalances, EpochBalancesRow},
     types::{B256, BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
 };
@@ -167,6 +168,7 @@ pub struct FinalizedValidators {
     pub(super) withdrawable_epoch: Box<[Epoch]>,
     pub(super) validator_count: usize,
     pub(super) index: RwLock<PubkeyIndex>,
+    retired: RetiredColumns,
 }
 
 impl FinalizedValidators {
@@ -216,7 +218,27 @@ impl FinalizedValidators {
             withdrawable_epoch,
             validator_count: n,
             index: RwLock::new(index),
+            retired: RetiredColumns::default(),
         })
+    }
+
+    /// Deposits outgrow the boot-time headroom on a long-running node. The new
+    /// tail is spec-default, as `build` leaves it.
+    #[cold]
+    pub(super) fn grow(&mut self, needed: usize) {
+        let capacity = validator_capacity(needed);
+        let n = self.validator_count;
+        let retired = &mut self.retired;
+        retired.grow(&mut self.val_pubkey, n, capacity, [0u8; 48]);
+        retired.grow(&mut self.val_pubkey_decompressed, n, capacity, PublicKey::default());
+        retired.grow(&mut self.val_withdrawal_credentials, n, capacity, Withdrawals::default());
+        retired.grow(&mut self.effective_balance, n, capacity, 0);
+        retired.grow(&mut self.slashed, n.div_ceil(8), capacity.div_ceil(8), 0);
+        retired.grow(&mut self.activation_eligibility_epoch, n, capacity, FAR_FUTURE_EPOCH);
+        retired.grow(&mut self.activation_epoch, n, capacity, FAR_FUTURE_EPOCH);
+        retired.grow(&mut self.exit_epoch, n, capacity, FAR_FUTURE_EPOCH);
+        retired.grow(&mut self.withdrawable_epoch, n, capacity, FAR_FUTURE_EPOCH);
+        silver_log::info!(validators = n, capacity, "finalized validator columns grew");
     }
 }
 

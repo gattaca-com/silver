@@ -201,11 +201,14 @@ impl ForkChoice {
 
         // Finalized: the node must descend from the store's finalized block (its
         // ancestor at the finalized epoch's start slot is the finalized root).
-        let correct_finalized = self.finalized_checkpoint.epoch == GENESIS_EPOCH ||
-            self.get_checkpoint_block(
-                &n.block_root,
-                self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH,
-            ) == Some(self.finalized_checkpoint.root);
+        debug_assert_eq!(
+            n.descends_from_finalized,
+            self.checkpoint_block_of(idx, self.finalized_checkpoint.epoch * SLOTS_PER_EPOCH) ==
+                Some(self.finalized_checkpoint.root),
+            "stale descends_from_finalized",
+        );
+        let correct_finalized =
+            self.finalized_checkpoint.epoch == GENESIS_EPOCH || n.descends_from_finalized;
 
         correct_justified && correct_finalized
     }

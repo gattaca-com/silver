@@ -297,6 +297,39 @@ fn descendant_view_survives_finalize() {
     assert_eq!(wv.hash_root(), child_before);
 }
 
+#[test]
+fn finalize_grows_base_past_capacity() {
+    let mut g = group();
+    let capacity = g.finalized().capacity();
+    let n = capacity + 1;
+    let winner = {
+        let mut w = g.roll_fresh();
+        for i in 0..n {
+            let mut key = [0u8; 48];
+            key[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            w.append(key, PublicKey::default(), creds(i as u8));
+        }
+        w.set_effective_balance(n as u32 - 1, 32_000_000_000);
+        w.set_slashed(n as u32 - 1, true);
+        w.commit()
+    };
+    let before = g.hash_view(winner).hash_root();
+
+    let live = g.finalize(winner, &[winner]);
+    assert_eq!(g.finalized().validator_count(), n);
+    assert!(g.finalized().capacity() > n);
+    assert_eq!(g.finalized().index_len(), n);
+
+    let mut wv = g.roll_from(live[0]);
+    let last = n - 1;
+    assert_eq!(wv.effective_balance(last), 32_000_000_000);
+    assert!(wv.is_slashed(last));
+    assert_eq!(wv.credentials(last), &creds(last as u8));
+    assert_eq!(wv.exit_epoch(last), FAR_FUTURE_EPOCH);
+    assert_eq!(wv.hash_root(), before);
+    assert_eq!(wv.append(pk(0xEE), PublicKey::default(), creds(0)), n as u32);
+}
+
 /// Spec-default leaf of an appended-then-maybe-edited validator.
 fn default_leaf(pk_byte: u8, effective_balance: u64) -> B256 {
     validator_hash(

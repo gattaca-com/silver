@@ -1855,7 +1855,8 @@ fn block_at_the_finalized_start_slot_is_ignored() {
         let (mut tile, mut gp, _rp, _spine, mut adapter) = tile_with_producers(slot + 1);
         seed_tile(&mut tile, 4, PARENT_SLOT);
         tile.sync_target = SyncUpdate::Following;
-        tile.fork_choice.finalized_checkpoint.epoch = 1;
+        let finalized = Checkpoint { epoch: 1, ..tile.fork_choice.finalized_checkpoint() };
+        tile.fork_choice.set_finalized_checkpoint(finalized);
 
         let stamp = slot * SpecConfig::mainnet().seconds_per_slot();
         let bytes = fulu_block_with_payload(slot, stamp, 0);
@@ -4971,7 +4972,7 @@ impl ThreeForks {
 
         // Head is D; finality target is F.
         forks.tile.last_applied = forks.d_id;
-        forks.tile.fork_choice.finalized_checkpoint = f_cp;
+        forks.tile.fork_choice.set_finalized_checkpoint(f_cp);
         // Republish so the seqlock control matches the new head.
         forks.tile.state.publish_state_id(forks.d_id);
         forks
@@ -5393,7 +5394,7 @@ fn finalize_promotes_every_tier_into_checkpoint_encode() {
         is_gloas: false,
     });
     tile.last_applied = f_id;
-    tile.fork_choice.finalized_checkpoint = f_cp;
+    tile.fork_choice.set_finalized_checkpoint(f_cp);
     tile.state.publish_state_id(f_id);
 
     tile.maybe_finalize();

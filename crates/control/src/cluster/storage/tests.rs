@@ -282,7 +282,7 @@ fn committed_epoch_locks_can_be_rebuilt_without_applying_the_uncommitted_suffix(
     }
     let mut conflict = command;
     conflict.key.slot = 105;
-    conflict.ssz[0] = 1;
+    conflict.ssz[32] = 1;
     assert_eq!(locks.apply(&command), LockResult::AlreadyAcceptedSame);
     assert_eq!(locks.apply(&conflict), LockResult::Conflicting);
     assert_eq!(locks.apply(&later), LockResult::Accepted);

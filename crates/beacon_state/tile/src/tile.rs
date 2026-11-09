@@ -401,13 +401,13 @@ impl BeaconStateTile {
     /// new base. The perf harness asserts this moved past the anchor so the
     /// replay actually exercises finalization.
     pub fn fork_choice_finalized_epoch(&self) -> u64 {
-        self.fork_choice.finalized_checkpoint.epoch
+        self.fork_choice.finalized_checkpoint().epoch
     }
 
     /// Fork-choice finalized block root — what a restart's `seed_anchor`
     /// re-derives from the persisted checkpoint. Test/harness surface.
     pub fn fork_choice_finalized_root(&self) -> B256 {
-        self.fork_choice.finalized_checkpoint.root
+        self.fork_choice.finalized_checkpoint().root
     }
 
     /// `(current_justified, finalized)` as seen by the canonical head's
@@ -558,7 +558,7 @@ impl BeaconStateTile {
     fn status_payload(&mut self, head_root: B256, head_idx: usize) -> [u8; STATUS_V2_SIZE] {
         let fork_digest = self.fork_digest();
         let slot = self.fork_choice.node(head_idx).slot;
-        let finalized = self.fork_choice.finalized_checkpoint;
+        let finalized = self.fork_choice.finalized_checkpoint();
 
         let earliest = finalized.epoch * SLOTS_PER_EPOCH;
 

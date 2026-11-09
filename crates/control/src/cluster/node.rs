@@ -956,7 +956,7 @@ mod tests {
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
-        ssz[0] = root;
+        ssz[32] = root;
         ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
         AttestationLockCommand {
             key: AttestationKey { attester_index: 9, slot },

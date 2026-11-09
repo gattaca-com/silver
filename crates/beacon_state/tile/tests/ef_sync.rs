@@ -131,7 +131,7 @@ fn run_checks(name: &str, si: usize, tile: &BeaconStateTile, checks: &Mapping) {
         assert_eq!((cp.epoch, cp.root), epoch_root(c), "{name} step {si}: justified_checkpoint");
     }
     if let Some(c) = checks.get("finalized_checkpoint").and_then(Value::as_mapping) {
-        let cp = fc.finalized_checkpoint;
+        let cp = fc.finalized_checkpoint();
         assert_eq!((cp.epoch, cp.root), epoch_root(c), "{name} step {si}: finalized_checkpoint");
     }
     if let Some(pbr) = checks.get("proposer_boost_root").and_then(Value::as_str) {

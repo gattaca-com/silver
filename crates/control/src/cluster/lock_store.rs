@@ -20,6 +20,10 @@ const SNAPSHOT_FIXED_LEN: usize = 8 + 8 + 8 + LOCK_RING_SIZE * SNAPSHOT_BUCKET_L
 const SNAPSHOT_BUCKET_LEN: usize = 1 + 8 + 4;
 const SNAPSHOT_VOTE_LEN: usize = 8 + 32 + 8;
 const SNAPSHOT_EVICTED_LEN: usize = 8 + 8;
+/// `committee_index` and `attester_index` precede the signed `data` and
+/// signature. The signature leaves `committee_index` out, so a vote naming
+/// another committee is still the same vote.
+const SIGNED_VOTE_START: usize = 8 + 8;
 
 /// Result of applying a committed attestation or block lock command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +72,7 @@ struct EpochLocks {
 
 #[derive(Debug, Clone, Copy)]
 struct Vote {
-    /// Includes the signature so byte-distinct retries cannot bypass the lock.
+    /// Covers the signature so byte-distinct retries cannot bypass the lock.
     hash: [u8; 32],
     source: u64,
 }
@@ -97,7 +101,7 @@ impl SlashingLockStore {
         }
 
         let validator = cmd.key.attester_index;
-        let hash = merkle::sha256(&cmd.ssz);
+        let hash = merkle::sha256(&cmd.ssz[SIGNED_VOTE_START..]);
         match self.locks[bucket].attestations.get(&validator) {
             Some(vote) if vote.hash == hash => return LockResult::AlreadyAcceptedSame,
             Some(_) => return LockResult::Conflicting,
@@ -325,7 +329,7 @@ mod tests {
 
     fn command_for(slot: u64, validator: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
-        ssz[0] = root;
+        ssz[32] = root;
         ssz[104..112].copy_from_slice(&(slot / SLOTS_PER_EPOCH).to_le_bytes());
         AttestationLockCommand {
             key: AttestationKey { attester_index: validator, slot },
@@ -568,10 +572,23 @@ mod tests {
         let mut store = SlashingLockStore::default();
         let first = command(12, 1);
         let mut different = first;
-        different.ssz[1] = 1;
+        different.ssz[144] = 1;
 
         assert_eq!(store.apply(&first), LockResult::Accepted);
         assert_eq!(store.apply(&different), LockResult::Conflicting);
+    }
+
+    /// The signature leaves `committee_index` out, so a resubmission naming
+    /// another committee carries the same vote and must reach validation.
+    #[test]
+    fn another_committee_index_is_the_same_vote() {
+        let mut store = SlashingLockStore::default();
+        let first = command(12, 1);
+        let mut other_committee = first;
+        other_committee.ssz[..8].copy_from_slice(&5u64.to_le_bytes());
+
+        assert_eq!(store.apply(&first), LockResult::Accepted);
+        assert_eq!(store.apply(&other_committee), LockResult::AlreadyAcceptedSame);
     }
 
     #[test]

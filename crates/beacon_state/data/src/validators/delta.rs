@@ -56,6 +56,10 @@ impl ValidatorsDelta {
         // spec-default, so the edit scatter below only overwrites appended
         // validators whose fields diverged.
         let start = self.base_count;
+        let end = start + self.appended.len();
+        if end > base.capacity() {
+            base.grow(end);
+        }
         debug_assert!(
             self.appended.is_empty() ||
                 (base.effective_balance[start] == 0 &&
@@ -73,7 +77,7 @@ impl ValidatorsDelta {
                 index.insert(a.pubkey, idx as u32);
             }
         }
-        base.validator_count = start + self.appended.len();
+        base.validator_count = end;
 
         // 2. Scatter per-field edits into the base columns at their absolute
         // indices. `slashed` is a packed bitset, so it scatters into the bytes.
