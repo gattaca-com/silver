@@ -311,7 +311,7 @@ impl BeaconState {
                 self.slot_states.finalized().state().latest_execution_payload_bid.write_ssz(w)
             }
             Section::PayloadExpectedWithdrawals => {
-                for wd in &self.slot_states.finalized().state().payload_expected_withdrawals {
+                for wd in self.slot_states.finalized().state().payload_expected_withdrawals.iter() {
                     wd.write_ssz(w)?;
                 }
                 Ok(())

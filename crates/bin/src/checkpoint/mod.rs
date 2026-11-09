@@ -106,6 +106,12 @@ impl BootCheckpoint {
         if providers.is_empty() {
             return Ok(None);
         }
+        if urls.len() == 1 {
+            silver_log::warn!(
+                url = %urls[0],
+                "one checkpoint provider: its finalized root is not cross-checked"
+            );
+        }
 
         let finalized = match providers.agreed_finalized() {
             Ok(finalized) => finalized,

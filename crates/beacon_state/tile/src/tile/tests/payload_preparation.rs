@@ -1,5 +1,6 @@
 use silver_beacon_state_data::{
-    BuilderPendingPayment, BuilderPendingWithdrawal, StateWriterView, Withdrawal, bls,
+    BuilderPendingPayment, BuilderPendingWithdrawal, PayloadWithdrawals, StateWriterView,
+    Withdrawal, bls,
 };
 use silver_common::{
     EnginePreparePayloadReq, PreparedPayloadAttributes,
@@ -107,8 +108,9 @@ impl PreparationRig {
 #[test]
 fn empty_parent_reuses_withdrawals_and_fetches_v6() {
     let mut rig = PreparationRig::gloas(|view| {
-        view.slot.state_mut().payload_expected_withdrawals =
-            vec![Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 }];
+        let mut payloads = PayloadWithdrawals::new();
+        payloads.push(Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 });
+        view.slot.state_mut().payload_expected_withdrawals = payloads;
     });
     rig.register(1);
     let before = rig.state_root();
@@ -140,8 +142,9 @@ fn empty_parent_reuses_withdrawals_and_fetches_v6() {
 #[test]
 fn preparation_publishes_the_attributes_it_asks_the_el_for() {
     let mut rig = PreparationRig::gloas(|view| {
-        view.slot.state_mut().payload_expected_withdrawals =
-            vec![Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 }];
+        let mut payloads = PayloadWithdrawals::new();
+        payloads.push(Withdrawal { index: 42, validator_index: 3, address: [4; 20], amount: 5 });
+        view.slot.state_mut().payload_expected_withdrawals = payloads;
     });
     rig.tile.payload_attributes.wanted = true;
     let proposer = rig.register(1);

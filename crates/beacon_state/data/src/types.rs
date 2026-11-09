@@ -3,12 +3,12 @@ pub use silver_state_hashing::HashFormat;
 
 use crate::{
     BalancesId, BlockRootsId, BuildersId, CurrentParticipationId, DecomposeError, EpochId, Eth1Id,
-    InactivityId, LongtailId, PendingId, PreviousParticipationId, RandaoMixesId, SlashingsId,
-    SlotStateId, StateRootsId, ValidatorsId,
+    InactivityId, LongtailId, PayloadWithdrawals, PendingId, PreviousParticipationId,
+    RandaoMixesId, SlashingsId, SlotStateId, StateRootsId, ValidatorsId,
     decompose::common::{b256, u32_le, u64_le},
     gloas::{
         BUILDER_PENDING_PAYMENTS_LEN, BuilderPendingPayment, EXECUTION_PAYLOAD_AVAILABILITY_BYTES,
-        ExecutionPayloadBid, GLOAS_FORK_VERSION, Withdrawal,
+        ExecutionPayloadBid, GLOAS_FORK_VERSION,
     },
     merkle::{
         MerkleStack, ZERO_HASHES, const_hash_concat, hash_concat, hash_fixed_bytes, hash_vector,
@@ -127,7 +127,7 @@ pub struct SlotState {
     pub execution_payload_availability: [u8; EXECUTION_PAYLOAD_AVAILABILITY_BYTES],
     pub builder_pending_payments: [BuilderPendingPayment; BUILDER_PENDING_PAYMENTS_LEN],
     pub latest_execution_payload_bid: ExecutionPayloadBid,
-    pub payload_expected_withdrawals: Vec<Withdrawal>,
+    pub payload_expected_withdrawals: PayloadWithdrawals,
 
     /// Not spec state: neither hashed nor encoded.
     pub latest_block_root: B256,
@@ -167,7 +167,7 @@ impl Default for SlotState {
             builder_pending_payments: [BuilderPendingPayment::default();
                 BUILDER_PENDING_PAYMENTS_LEN],
             latest_execution_payload_bid: ExecutionPayloadBid::default(),
-            payload_expected_withdrawals: Vec::new(),
+            payload_expected_withdrawals: PayloadWithdrawals::default(),
             latest_block_root: B256::default(),
         }
     }

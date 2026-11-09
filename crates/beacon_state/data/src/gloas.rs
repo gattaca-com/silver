@@ -1,5 +1,7 @@
 use std::{
+    array::IntoIter as ArrayIntoIter,
     io::{self, Write},
+    iter::Take,
     ops::Deref,
 };
 
@@ -144,6 +146,10 @@ impl PayloadWithdrawals {
         self.items[self.len] = withdrawal;
         self.len += 1;
     }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
 }
 
 impl Default for PayloadWithdrawals {
@@ -157,6 +163,16 @@ impl Deref for PayloadWithdrawals {
 
     fn deref(&self) -> &[Withdrawal] {
         &self.items[..self.len]
+    }
+}
+
+impl IntoIterator for PayloadWithdrawals {
+    type Item = Withdrawal;
+
+    type IntoIter = Take<ArrayIntoIter<Withdrawal, MAX_WITHDRAWALS_PER_PAYLOAD>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter().take(self.len)
     }
 }
 
@@ -288,6 +304,7 @@ impl ExecutionPayloadBid {
 #[cfg(test)]
 mod tests {
     use super::{EXECUTION_PAYLOAD_BID_FIXED, ExecutionPayloadBid, KZG_COMMITMENT_SSZ};
+    use super::{MAX_WITHDRAWALS_PER_PAYLOAD, PayloadWithdrawals, Withdrawal};
 
     fn bid_with_offset(off: u32) -> Vec<u8> {
         let mut body = vec![0u8; EXECUTION_PAYLOAD_BID_FIXED + 2 * KZG_COMMITMENT_SSZ];
@@ -310,5 +327,31 @@ mod tests {
         for off in [999, 128] {
             assert!(ExecutionPayloadBid::from_ssz(&bid_with_offset(off)).is_err(), "offset {off}");
         }
+    }
+
+    #[test]
+    fn payload_withdrawals_owned_iteration_respects_length() {
+        for len in [0, 1, MAX_WITHDRAWALS_PER_PAYLOAD] {
+            let mut withdrawals = PayloadWithdrawals::new();
+            for index in 1..=len as u64 {
+                withdrawals.push(Withdrawal { index, ..Default::default() });
+            }
+
+            let indices: Vec<_> = withdrawals.into_iter().map(|w| w.index).collect();
+            assert_eq!(indices, (1..=len as u64).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn payload_withdrawals_owned_iteration_excludes_cleared_entries() {
+        let mut withdrawals = PayloadWithdrawals::new();
+        withdrawals.push(Withdrawal { index: 1, ..Default::default() });
+        withdrawals.push(Withdrawal { index: 2, ..Default::default() });
+        withdrawals.clear();
+        assert_eq!(withdrawals.into_iter().count(), 0);
+
+        withdrawals.push(Withdrawal { index: 3, ..Default::default() });
+        let indices: Vec<_> = withdrawals.into_iter().map(|w| w.index).collect();
+        assert_eq!(indices, [3]);
     }
 }

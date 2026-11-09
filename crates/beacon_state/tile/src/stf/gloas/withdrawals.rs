@@ -51,7 +51,7 @@ pub fn process_withdrawals(view: &mut StateWriterView) {
     update_next_withdrawal_builder_index(view, processed_builders_sweep);
     let stored = &mut view.slot.state_mut().payload_expected_withdrawals;
     stored.clear();
-    stored.extend_from_slice(&withdrawals);
+    withdrawals.into_iter().for_each(|w| stored.push(w));
 }
 
 pub(crate) fn get_expected_withdrawals(view: &StateWriterView) -> ExpectedWithdrawals {

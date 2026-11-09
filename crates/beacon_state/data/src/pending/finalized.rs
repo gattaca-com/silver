@@ -172,7 +172,7 @@ impl<Q: QueueItem> Queue<Q> {
 
     /// Entries in order — indexed by the delta's reads, iterated by SSZ encode.
     #[inline]
-    pub(super) fn entries(&self) -> &[Q] {
+    pub(crate) fn entries(&self) -> &[Q] {
         &self.entries
     }
 
