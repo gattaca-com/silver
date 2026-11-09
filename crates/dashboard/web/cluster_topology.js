@@ -2,7 +2,7 @@
 // the sending node reports it.
 
 import { fmtUs } from './cluster_model.js';
-import { escape } from './view.js';
+import { escape, fmtSecs } from './view.js';
 
 const W = 620;
 const H = 400;
@@ -105,7 +105,7 @@ export function topology(nodes, hovered) {
   const markers = Object.entries(LEVEL_COLOUR)
     .map(([lvl, colour]) => `<marker id="ct-arrow-${lvl}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:${colour}"/></marker>`)
     .join('');
-  const edges = placed.flatMap((node) => {
+  const edges = placed.filter((node) => node.silentSecs === null).flatMap((node) => {
     const leads = node.value('Role') === 2;
     return node
       .peers()
@@ -114,18 +114,21 @@ export function topology(nodes, hovered) {
   });
   const shapes = placed.map((node) => {
     const [x, y] = at.get(node.nodeId);
-    const leads = node.value('Role') === 2;
-    const title = `${node.label}, raft id ${node.nodeId}, ${leads ? 'leader' : 'follower'}, term ${node.value('Term')}`;
+    const silent = node.silentSecs;
+    const leads = silent === null && node.value('Role') === 2;
+    const title = silent !== null
+      ? `${node.label}, raft id ${node.nodeId}: no data for ${fmtSecs(silent)}, telemetry not reporting`
+      : `${node.label}, raft id ${node.nodeId}, ${leads ? 'leader' : 'follower'}, term ${node.value('Term')}`;
     const [dx, dy] = [x - W / 2, y - H / 2];
     const len = Math.hypot(dx, dy) || 1;
     const lx = x + (dx / len) * (NODE_R + 10);
     const ly = y + (dy / len) * (NODE_R + 10) + (dy > 0 ? 10 : dy < 0 ? -8 : 0);
     const anchor = Math.abs(dx) < len / 3 ? 'middle' : dx > 0 ? 'start' : 'end';
     return `<g class="tnode"><title>${escape(title)}</title>
-      ${nodeShape(leads, x, y, node.colour)}
+      ${nodeShape(leads, x, y, silent === null ? node.colour : 'var(--idle)')}
       <text x="${lx}" y="${ly}" text-anchor="${anchor}">${escape(node.label)}</text>
-      <text x="${lx}" y="${ly + 13}" text-anchor="${anchor}" class="sub">id ${node.nodeId}</text></g>`;
+      <text x="${lx}" y="${ly + 13}" text-anchor="${anchor}" class="sub">id ${node.nodeId}${silent === null ? '' : ' · no data'}</text></g>`;
   });
   return `<svg class="ctopo" viewBox="0 0 ${W} ${H}" role="img"><defs>${markers}</defs>${edges.join('')}${shapes.join('')}</svg>
-    <p class="meta"><span class="ok">■</span> healthy <span class="warn">■</span> slow or queueing <span class="bad">■</span> down or losing messages · ★ leader, ▲ follower · hover a link for its numbers in Raft peers</p>`;
+    <p class="meta"><span class="ok">■</span> healthy <span class="warn">■</span> slow or queueing <span class="bad">■</span> down or losing messages · ★ leader, ▲ follower, grey: no data · hover a link for its numbers in Raft peers</p>`;
 }

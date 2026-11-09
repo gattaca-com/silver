@@ -1,7 +1,7 @@
 // Point-in-time cluster state: status tiles and the peer table.
 
 import { ROLES, fmtUs } from './cluster_model.js';
-import { escape } from './view.js';
+import { escape, fmtSecs } from './view.js';
 import { linkKey } from './cluster_topology.js';
 import { CLUSTER_PROGRESS } from './wire.js';
 
@@ -44,6 +44,11 @@ export function statusTiles(nodes) {
   const body = rows
     .map(({ node, cells }) => {
       const name = `<th style="color:${node.colour}">${escape(node.label)}${node.nodeId ? ` <span class="meta">raft ${node.nodeId}</span>` : ''}</th>`;
+      const silent = node.silentSecs;
+      if (silent !== null) {
+        const title = 'This node\'s telemetry stopped reporting; its last values are not shown because they may be out of date. Check silver-telemetry on the node.';
+        return `<tr>${name}<td class="hcell bad" colspan="${cells.length}" title="${escape(title)}">no data for ${fmtSecs(silent)}</td></tr>`;
+      }
       const tds = cells.map((c) => `<td class="hcell ${c.level}" title="${escape(c.title)}">${escape(c.value)}</td>`);
       return `<tr>${name}${tds.join('')}</tr>`;
     })
@@ -70,7 +75,7 @@ const PEER_COLUMNS = [
 
 /** One row per Raft link as its sending node reports it. */
 export function peerTable(nodes, hovered) {
-  const rows = nodes.flatMap((node) =>
+  const rows = nodes.filter((node) => node.silentSecs === null).flatMap((node) =>
     node.peers().map((p) => {
       const link = p.link;
       const replicating = p.progress !== 0;

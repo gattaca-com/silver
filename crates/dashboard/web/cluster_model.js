@@ -44,6 +44,13 @@ export class ClusterNode {
     return this.id !== null && this.inst.counters.has(this.id);
   }
 
+  /** Seconds since this node's telemetry last reported, or null while it
+   *  reports. Its last values are then frozen, not current. */
+  get silentSecs() {
+    const now = performance.now();
+    return this.inst.stale(now) ? (now - this.inst.lastRecv) / 1000 : null;
+  }
+
   get slotNs() {
     return this.inst.clock?.slotNs ?? DEFAULT_SLOT_NS;
   }
