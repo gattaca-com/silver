@@ -1,12 +1,16 @@
+#[cfg(test)]
+use std::io::Write;
 use std::{
-    io::{Error, ErrorKind, Read, Write},
-    path::Path,
+    io::{Error, ErrorKind, Read},
+    path::{Path, PathBuf},
 };
 
 use fxhash::FxHashMap;
 use silver_common::merkle::B256;
 
-use crate::store::io::{open_file_read, open_file_write};
+use crate::store::io::open_file_read;
+#[cfg(test)]
+use crate::store::io::open_file_write;
 
 const RECORD_LEN: usize = 32 + 8;
 const FILE_NAME: &str = "block_index.bin";
@@ -18,7 +22,7 @@ pub(super) struct Record {
 }
 
 impl Record {
-    fn encode(&self) -> [u8; RECORD_LEN] {
+    pub(super) fn encode(&self) -> [u8; RECORD_LEN] {
         let mut bytes = [0u8; RECORD_LEN];
         bytes[..32].copy_from_slice(&self.block_root);
         bytes[32..].copy_from_slice(&self.slot.to_le_bytes());
@@ -33,10 +37,15 @@ impl Record {
     }
 }
 
-/// Written in one call: a torn append misaligns every fixed-width record after
-/// it when the write is retried.
+/// Appended in one write: a torn append misaligns every fixed-width record
+/// after it when the write is retried.
+pub(super) fn file(dir: &Path) -> PathBuf {
+    dir.join(FILE_NAME)
+}
+
+#[cfg(test)]
 pub(super) fn append(dir: &Path, record: Record) -> Result<(), Error> {
-    open_file_write(dir.join(FILE_NAME), true)?.write_all(&record.encode())
+    open_file_write(file(dir), true)?.write_all(&record.encode())
 }
 
 pub(super) fn load_dir(dir: &Path, sink: &mut impl FnMut(Record)) -> Result<(), Error> {
@@ -152,14 +161,6 @@ impl BlockIndex {
     pub(super) fn hold(&mut self, root: B256, slot: u64) {
         self.index(root, slot);
         self.held.set(slot);
-    }
-
-    /// The file is down: its record goes into `dir`'s index file, then the
-    /// slot is held.
-    pub(super) fn landed(&mut self, dir: &Path, root: B256, slot: u64) -> Result<(), Error> {
-        append(dir, Record { block_root: root, slot })?;
-        self.hold(root, slot);
-        Ok(())
     }
 
     pub(super) fn slot_of(&self, root: &B256) -> Option<u64> {

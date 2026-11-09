@@ -12,145 +12,291 @@ use std::{
 };
 
 use flux_profiler::timed;
+use fxhash::FxHashSet;
 use silver_beacon_state_data::SLOTS_PER_EPOCH;
-use silver_common::{DataKind, Enr, PeerEvent, TProducer, hex32};
+use silver_common::{DataKind, Enr, PeerEvent, TProducer, TRead, hex32, merkle::B256};
 
 use super::{
-    Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store, backfill::BlockFacts, block_path,
-    column_path, envelope_path, file_reader::ReadOutcome, first_retained_slot, slot_dir,
+    Payload, PendingWrite, QueryUnit, SLOTS_PER_DIR, Store, WriteTag,
+    backfill::BlockFacts,
+    block_index, block_path, column_path,
+    coverage::{self, Block},
+    envelope_path,
+    file_reader::ReadOutcome,
+    file_writer::WriteOp,
+    first_retained_slot, slot_dir,
     unfinalized::PayloadKey,
 };
 use crate::{StorageCounters, tile::IoEvent};
 
-/// Writes are still synchronous — O_NONBLOCK has no effect on regular
-/// files — so each blocks the tile; this bounds the count per loop.
+/// Bounds writes started per loop.
 pub(super) const MAX_WRITES_PER_LOOP: usize = 10;
+const MAX_WRITES_IN_FLIGHT: usize = 64;
 const MAX_READS_IN_FLIGHT: usize = 64;
 /// Bounds queries started or drained per call, so a burst of empty
 /// (Complete-only) requests can't extend tile time.
 const MAX_ITERATIONS_PER_LOOP: usize = 64;
 
 impl Store {
+    /// Applies finished writes, then starts queued ones in order. A write on
+    /// a file that still has one in flight waits, and so does everything
+    /// queued behind it. Returns the first failure, after which the write is
+    /// dropped.
     #[timed]
     fn drain_pending_writes<F>(&mut self, emit: &mut F) -> Result<(), Error>
     where
         F: FnMut(IoEvent),
     {
         StorageCounters::WriteQueueLength.set(self.write_queue.len() as u64);
+        let mut outcome = Ok(());
 
-        let mut writes = 0;
-        while writes < MAX_WRITES_PER_LOOP &&
-            let Some(pending) = self.write_queue.pop_front()
-        {
-            writes += 1;
+        let mut completed = std::mem::take(&mut self.completed_writes);
+        self.writer.step(|pending, result| completed.push((pending, result)));
+        for (tag, result) in completed.drain(..) {
+            outcome = outcome.and(match tag {
+                WriteTag::Queued(pending) => {
+                    self.landing_in_flight -= usize::from(pending.lands());
+                    self.write_landed(pending, result, emit)
+                }
+                WriteTag::Coverage => result,
+            });
+        }
+        self.completed_writes = completed;
+
+        let mut started = 0;
+        while started < MAX_WRITES_PER_LOOP && self.writer.in_flight() < MAX_WRITES_IN_FLIGHT {
+            let Some(pending) = self.write_queue.pop_front() else { break };
             silver_log::debug!(?pending, "process pending write");
-            match pending {
-                PendingWrite::Column { slot, column, custody_set_complete, ssz } => {
-                    let path = column_path(&self.store_dir, slot, column);
-                    std::fs::create_dir_all(path.parent().expect("a slot directory"))?;
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
+            started += 1;
+            match self.start_write(pending, emit) {
+                Start::Done(result) => outcome = outcome.and(result),
+                Start::Busy(pending) => {
+                    self.write_queue.push_front(pending);
+                    break;
+                }
+            }
+        }
+        outcome
+    }
+
+    /// Hands the write's I/O to the writer, or applies it at once when it has
+    /// none. Gives the write back while its file is busy.
+    fn start_write<F>(&mut self, pending: PendingWrite, emit: &mut F) -> Start
+    where
+        F: FnMut(IoEvent),
+    {
+        let op = match &pending {
+            PendingWrite::Column { slot, column, ssz, .. } => {
+                self.create(column_path(&self.store_dir, *slot, *column), ssz)
+            }
+            PendingWrite::WriteUnfinalized { slot, key, ssz } => {
+                let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                self.create(path, ssz)
+            }
+            PendingWrite::BackfillEnvelope { slot, ssz } => {
+                self.create(envelope_path(&self.store_dir, *slot), ssz)
+            }
+            PendingWrite::BackfillBlock { block, ssz }
+                if !self.finalized.written(&block.facts.block_root, block.facts.slot) =>
+            {
+                self.create(block_path(&self.store_dir, block.facts.slot), ssz)
+            }
+            PendingWrite::PromoteColumn { slot, block_root, column } => {
+                self.promote(*slot, PayloadKey::Column { block_root: *block_root, column: *column })
+            }
+            PendingWrite::PromoteEnvelope { slot, block_root } => {
+                self.promote(*slot, PayloadKey::Envelope { block_root: *block_root })
+            }
+            PendingWrite::PromoteBlock { block } => {
+                let BlockFacts { slot, block_root, parent_root, .. } = block.facts;
+                self.promote(slot, PayloadKey::Block { parent_root, block_root })
+            }
+            PendingWrite::Prune { slot, key } => {
+                let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(*slot));
+                Ok(WriteOp::Unlink { path })
+            }
+            PendingWrite::IndexBlock { dir, record } => {
+                let path = block_index::file(dir);
+                if self.writer.busy_with(&path) {
+                    return Start::Busy(pending);
+                }
+                // SAFETY: an append copies its bytes before `start` returns.
+                unsafe {
+                    let op = WriteOp::Append { path, bytes: &record.encode() };
+                    self.writer.start(op, WriteTag::Queued(pending))
+                };
+                return Start::Done(Ok(()));
+            }
+            PendingWrite::TruncateHistory { .. } |
+            PendingWrite::BackfillBlock { .. } |
+            PendingWrite::PersistPeer { .. } |
+            PendingWrite::LoadPeers => return Start::Done(self.apply_without_io(pending, emit)),
+        };
+        let op = match op {
+            Ok(op) => op,
+            Err(error) => return Start::Done(self.write_landed(pending, Err(error), emit)),
+        };
+        if self.writer.busy_with(op.key()) {
+            return Start::Busy(pending);
+        }
+        self.landing_in_flight += usize::from(pending.lands());
+        // SAFETY: a `Create` points into the `TRead` that `pending` holds,
+        // which the writer keeps until the write completes.
+        unsafe { self.writer.start(op, WriteTag::Queued(pending)) };
+        Start::Done(Ok(()))
+    }
+
+    /// Started once nothing is queued or in flight, so the file describes
+    /// data already down.
+    fn persist_coverage(&mut self) {
+        let (path, staged) = coverage::codec::files(&self.store_dir);
+        let bytes = self.finalized.encode_coverage();
+        // SAFETY: a replace copies its bytes before `start` returns.
+        unsafe { self.writer.start(WriteOp::Replace { path, staged, bytes }, WriteTag::Coverage) };
+    }
+
+    fn create<'a>(&mut self, path: PathBuf, ssz: &TRead) -> Result<WriteOp<'a>, Error> {
+        create_dir_once(&mut self.known_dirs, path.parent().expect("a slot directory"))?;
+        let (bytes, _) = ssz.buffer().map_err(Error::other)?;
+        Ok(WriteOp::Create { path, source: bytes.as_ptr(), len: bytes.len() })
+    }
+
+    fn promote<'a>(&mut self, slot: u64, key: PayloadKey) -> Result<WriteOp<'a>, Error> {
+        let to = key.finalized_path(&self.store_dir, slot);
+        create_dir_once(&mut self.known_dirs, to.parent().expect("a slot directory"))?;
+        let from = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
+        Ok(WriteOp::Rename { from, to })
+    }
+
+    /// The bookkeeping once a write's I/O is down, or the failure that drops
+    /// it.
+    fn write_landed<F>(
+        &mut self,
+        pending: PendingWrite,
+        result: Result<(), Error>,
+        emit: &mut F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        match pending {
+            PendingWrite::Column { slot, column, custody_set_complete, .. } => {
+                result?;
+                self.finalized.column_landed(slot, column);
+                StorageCounters::BackfillColumnsWritten.inc();
+                if custody_set_complete {
+                    emit(IoEvent::Need(self.finalized.persisted(DataKind::Columns, slot, None)));
+                }
+            }
+            PendingWrite::WriteUnfinalized { key, .. } => {
+                result?;
+                key.payload().record_written();
+            }
+            PendingWrite::PromoteColumn { slot, column, .. } => {
+                if promoted(result, slot, Payload::Column)? {
                     self.finalized.column_landed(slot, column);
-                    StorageCounters::BackfillColumnsWritten.inc();
-                    if custody_set_complete {
-                        emit(IoEvent::Need(self.finalized.persisted(
-                            DataKind::Columns,
-                            slot,
-                            None,
-                        )));
-                    }
                 }
-                PendingWrite::WriteUnfinalized { slot, key, ssz } => {
-                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(&path, false)?.write_all(buffer)?;
-                    key.payload().record_written();
-                }
-                PendingWrite::PromoteColumn { slot, block_root, column } => {
-                    if self.promote(slot, PayloadKey::Column { block_root, column })? {
-                        self.finalized.column_landed(slot, column);
-                    }
-                }
-                PendingWrite::PromoteEnvelope { slot, block_root } => {
-                    if self.promote(slot, PayloadKey::Envelope { block_root })? {
-                        self.finalized.envelope_landed(slot);
-                    }
-                }
-                PendingWrite::PromoteBlock { block } => {
-                    let BlockFacts { slot, block_root, parent_root, .. } = block.facts;
-                    if !self.promote(slot, PayloadKey::Block { parent_root, block_root })? {
-                        continue;
-                    }
-                    // Data before index: the record is appended only after the
-                    // rename, so a crash never indexes an unmoved block.
-                    let dir = slot_dir(&self.store_dir, Payload::Block, slot);
-                    self.finalized.landed(&dir, block)?;
-                }
-                PendingWrite::Prune { slot, key } => {
-                    let path = self.unfinalized_dir(key.payload()).join(key.unfinalized_name(slot));
-                    remove_tolerant(&path)?;
-                    key.payload().record_pruned();
-                }
-                PendingWrite::TruncateHistory { payload, finalized_slot } => {
-                    let epoch = finalized_slot / SLOTS_PER_EPOCH;
-                    let earliest_slot =
-                        finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
-                    self.remove_history_below(payload, first_retained_slot(earliest_slot))?;
-                    self.finalized.truncated(payload, earliest_slot);
-                }
-                PendingWrite::BackfillBlock { block, ssz } => {
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    let BlockFacts { slot, block_root, parent_root, .. } = block.facts;
-                    // A block whose file is indexed is re-served only to link
-                    // it; a root indexed in memory but never written is not.
-                    if self.finalized.written(&block_root, slot) {
-                        self.finalized.relinked(block);
-                    } else {
-                        let path = block_path(&self.store_dir, slot);
-                        let dir = path.parent().expect("a slot directory");
-                        std::fs::create_dir_all(dir)?;
-                        open_file_write(&path, false)?.write_all(buffer)?;
-                        self.finalized.landed(dir, block)?;
-                    }
-                    self.history.seed_pending(slot, buffer, &self.finalized);
-                    let parent_slot = self.finalized.slot_of(&parent_root);
-                    emit(IoEvent::Need(self.finalized.persisted(
-                        DataKind::Block,
-                        slot,
-                        parent_slot,
-                    )));
-                    StorageCounters::BackfillBlocksWritten.inc();
-                }
-                PendingWrite::BackfillEnvelope { slot, ssz } => {
-                    let path = envelope_path(&self.store_dir, slot);
-                    std::fs::create_dir_all(path.parent().expect("a slot directory"))?;
-                    let (buffer, _) = ssz.buffer().map_err(Error::other)?;
-                    open_file_write(path, false)?.write_all(buffer)?;
+            }
+            PendingWrite::PromoteEnvelope { slot, .. } => {
+                if promoted(result, slot, Payload::Envelope)? {
                     self.finalized.envelope_landed(slot);
-                    emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
                 }
-                PendingWrite::PersistPeer { enr } => {
-                    let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
-                    open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())?;
+            }
+            PendingWrite::PromoteBlock { block } => {
+                let slot = block.facts.slot;
+                // Data before index: the record is appended only after the
+                // rename, so a crash never indexes an unmoved block.
+                if promoted(result, slot, Payload::Block)? {
+                    self.index_landed(block);
                 }
-                PendingWrite::LoadPeers => {
-                    let peer_files = std::fs::read_dir(self.peers_dir())?;
-                    for entry in peer_files {
-                        if let Ok(entry) = entry &&
-                            entry.metadata()?.is_file()
-                        {
-                            let mut enr_string = String::new();
-                            open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
-                            let enr = Enr::from_base64(enr_string.as_str(), false)
-                                .map_err(Error::other)?;
-                            emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound {
-                                enr,
-                                reload: true,
-                            }));
-                        }
+            }
+            PendingWrite::Prune { key, .. } => match result {
+                Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
+                _ => key.payload().record_pruned(),
+            },
+            PendingWrite::BackfillBlock { block, ssz } => {
+                result?;
+                let BlockFacts { slot, parent_root, .. } = block.facts;
+                self.index_landed(block);
+                self.block_backfilled(slot, parent_root, &ssz, emit)?;
+            }
+            PendingWrite::BackfillEnvelope { slot, .. } => {
+                result?;
+                self.finalized.envelope_landed(slot);
+                emit(IoEvent::Need(self.finalized.persisted(DataKind::Envelope, slot, None)));
+            }
+            PendingWrite::IndexBlock { .. } => result?,
+            PendingWrite::TruncateHistory { .. } |
+            PendingWrite::PersistPeer { .. } |
+            PendingWrite::LoadPeers => result?,
+        }
+        Ok(())
+    }
+
+    fn index_landed(&mut self, block: Block) {
+        let dir = slot_dir(&self.store_dir, Payload::Block, block.facts.slot);
+        let record = self.finalized.landed(block);
+        self.write_queue.push_back(PendingWrite::IndexBlock { dir, record });
+    }
+
+    fn block_backfilled<F>(
+        &mut self,
+        slot: u64,
+        parent_root: B256,
+        ssz: &TRead,
+        emit: &mut F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        let (buffer, _) = ssz.buffer().map_err(Error::other)?;
+        self.history.seed_pending(slot, buffer, &self.finalized);
+        let parent_slot = self.finalized.slot_of(&parent_root);
+        emit(IoEvent::Need(self.finalized.persisted(DataKind::Block, slot, parent_slot)));
+        StorageCounters::BackfillBlocksWritten.inc();
+        Ok(())
+    }
+
+    /// Writes with no I/O on the writer: bookkeeping, a block already on disk
+    /// being linked again, and the rare peer files.
+    fn apply_without_io<F>(&mut self, pending: PendingWrite, emit: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(IoEvent),
+    {
+        match pending {
+            PendingWrite::TruncateHistory { payload, finalized_slot } => {
+                let epoch = finalized_slot / SLOTS_PER_EPOCH;
+                let earliest_slot =
+                    finalized_slot.saturating_sub(payload.slots_retained(&self.spec, epoch));
+                self.remove_history_below(payload, first_retained_slot(earliest_slot))?;
+                self.finalized.truncated(payload, earliest_slot);
+            }
+            // A block whose file is indexed is re-served only to link it; a
+            // root indexed in memory but never written is not.
+            PendingWrite::BackfillBlock { block, ssz } => {
+                let BlockFacts { slot, parent_root, .. } = block.facts;
+                self.finalized.relinked(block);
+                self.block_backfilled(slot, parent_root, &ssz, emit)?;
+            }
+            PendingWrite::PersistPeer { enr } => {
+                let peer_file = self.peers_dir().join(format!("{}.enr", enr.public_key()));
+                open_file_write(peer_file, false)?.write_all(enr.to_string().as_bytes())?;
+            }
+            PendingWrite::LoadPeers => {
+                let peer_files = std::fs::read_dir(self.peers_dir())?;
+                for entry in peer_files {
+                    if let Ok(entry) = entry &&
+                        entry.metadata()?.is_file()
+                    {
+                        let mut enr_string = String::new();
+                        open_file_read(entry.path())?.read_to_string(&mut enr_string)?;
+                        let enr =
+                            Enr::from_base64(enr_string.as_str(), false).map_err(Error::other)?;
+                        emit(IoEvent::PeerEvent(PeerEvent::DiscNodeFound { enr, reload: true }));
                     }
                 }
             }
+            other => unreachable!("{other:?} has I/O for the writer"),
         }
         Ok(())
     }
@@ -210,9 +356,11 @@ impl Store {
     where
         F: FnMut(IoEvent),
     {
-        if !self.write_queue.is_empty() {
-            self.drain_pending_writes(emit)?;
-        }
+        let writes = if !self.write_queue.is_empty() || self.writer.in_flight() > 0 {
+            self.drain_pending_writes(emit)
+        } else {
+            Ok(())
+        };
         if !self.query_queue.is_empty() || self.reader.in_flight() > 0 {
             self.serve_pending_reads(&fork_digest_at, producer, emit);
         }
@@ -224,7 +372,7 @@ impl Store {
             &mut self.write_queue,
         );
         self.history.expire(Instant::now());
-        if self.head.root != [0u8; 32] && self.write_queue.landing() == 0 {
+        if self.head.root != [0u8; 32] && self.write_queue.landing() + self.landing_in_flight == 0 {
             self.history.step(
                 self.head,
                 !self.sync_target.is_syncing(),
@@ -235,14 +383,17 @@ impl Store {
             );
         }
 
-        if self.write_queue.is_empty() {
-            self.finalized.persist(&self.store_dir)?;
+        if self.write_queue.is_empty() &&
+            self.writer.in_flight() == 0 &&
+            self.finalized.coverage_changed()
+        {
+            self.persist_coverage();
         }
 
         self.step_checkpoint();
         self.remover.step();
 
-        Ok(())
+        writes
     }
 
     /// The first call of a run lists the payload's groups. Floors only rise,
@@ -253,7 +404,9 @@ impl Store {
         match *floor {
             Some(previous) => {
                 for group in (previous..first_retained).step_by(SLOTS_PER_DIR as usize) {
-                    self.remover.remove(dir.join(group.to_string()));
+                    let group = dir.join(group.to_string());
+                    self.known_dirs.remove(&group);
+                    self.remover.remove(group);
                 }
             }
             None => {
@@ -262,6 +415,7 @@ impl Store {
                     let group =
                         entry.file_name().to_str().and_then(|name| name.parse::<u64>().ok());
                     if group.is_some_and(|group| group < first_retained) {
+                        self.known_dirs.remove(&entry.path());
                         self.remover.remove(entry.path());
                     }
                 }
@@ -287,41 +441,44 @@ impl Store {
                 .join(unfinalized_envelope_name(*slot, block_root)),
         }
     }
+}
 
-    fn promote(&mut self, slot: u64, key: PayloadKey) -> Result<bool, Error> {
-        let payload = key.payload();
-        let to = key.finalized_path(&self.store_dir, slot);
-        std::fs::create_dir_all(to.parent().expect("a slot directory"))?;
-        let from = self.unfinalized_dir(payload).join(key.unfinalized_name(slot));
-        match std::fs::rename(&from, &to) {
-            Ok(()) => {
-                payload.record_promoted();
-                Ok(true)
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                silver_log::warn!(
-                    slot,
-                    ?payload,
-                    "unfinalized file missing at promotion; left missing"
-                );
-                Ok(false)
-            }
-            Err(e) => Err(e),
+#[allow(clippy::large_enum_variant)]
+enum Start {
+    Done(Result<(), Error>),
+    /// Its file has a write in flight; it waits at the head of the queue.
+    Busy(PendingWrite),
+}
+
+/// `Ok(false)` when the unfinalized file is gone: the payload stays missing.
+fn promoted(result: Result<(), Error>, slot: u64, payload: Payload) -> Result<bool, Error> {
+    match result {
+        Ok(()) => {
+            payload.record_promoted();
+            Ok(true)
         }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            silver_log::warn!(
+                slot,
+                ?payload,
+                "unfinalized file missing at promotion; left missing"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error),
     }
+}
+
+fn create_dir_once(known: &mut FxHashSet<PathBuf>, dir: &Path) -> Result<(), Error> {
+    if !known.contains(dir) {
+        std::fs::create_dir_all(dir)?;
+        known.insert(dir.to_path_buf());
+    }
+    Ok(())
 }
 
 pub(super) fn open_file_read<P: AsRef<Path>>(path: P) -> Result<File, Error> {
     File::open(path)
-}
-
-/// Unlink tolerating an already-removed target (idempotent prune).
-fn remove_tolerant(path: &Path) -> Result<(), Error> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
 }
 
 pub(super) fn open_file_write<P: AsRef<Path>>(path: P, append: bool) -> Result<File, Error> {

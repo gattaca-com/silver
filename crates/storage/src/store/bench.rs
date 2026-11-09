@@ -125,7 +125,7 @@ impl Stager {
 }
 
 fn drain(store: &mut Store, producer: &mut TProducer, sample: &mut Sample) {
-    while !store.write_queue.is_empty() {
+    while !store.write_queue.is_empty() || store.writer.in_flight() > 0 {
         sample.file_io(store, producer);
     }
     sample.file_io(store, producer);

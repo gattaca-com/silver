@@ -134,7 +134,7 @@ fn fork_tree_persist_serve_promote() {
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let path_a = store.unfinalized_dir(super::Payload::Block).join(super::io::unfinalized_name(
         slot,
@@ -264,7 +264,7 @@ fn fork_tree_persist_serve_promote() {
     assert!(!store.unfinalized.contains(&root_a));
     assert!(!store.unfinalized.contains(&root_b));
 
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert_eq!(
         index_records(&store.finalized_slot_dir(super::Payload::Block, slot)),
         vec![super::block_index::Record { block_root: root_a, slot }],
@@ -344,7 +344,7 @@ fn envelope_persist_promote_prune() {
 
     let fork_digest = [1, 2, 3, 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let unf_a = store
         .unfinalized_dir(super::Payload::Envelope)
@@ -373,7 +373,7 @@ fn envelope_persist_promote_prune() {
     // Finalize at slot 42 on A: promote A's envelope, prune orphan B's.
     store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_envelopes.is_empty());
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
 
     let flat_a = store
         .finalized_slot_dir(super::Payload::Envelope, slot)
@@ -423,8 +423,7 @@ fn range_query_terminates_on_cycle() {
 
     // Drain the staged write so the acquired read is released while its
     // consumer is still alive (`read` is parked in the write queue).
-    let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1024 * 1024);
-    store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+    drain(&mut store).unwrap();
 
     // A range spanning the self-loop slot must return rather than spin.
     let mut range = [0u8; 24];
@@ -588,7 +587,7 @@ fn column_fork_persist_serve_promote() {
 
     let fork_digest = [9, 9, 9, 9];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 7)).exists());
     assert!(ucol_dir.join(super::io::unfinalized_column_name(slot, &root_b, 3)).exists());
@@ -697,7 +696,7 @@ fn column_fork_persist_serve_promote() {
     store.update_head(slot, root_a, PayloadResolution::Full, slot, root_a);
     assert!(store.unfinalized_columns.is_empty());
 
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap();
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {});
     assert!(flat_dir.join(format!("{slot}_3.ssz")).exists());
     assert!(flat_dir.join(format!("{slot}_7.ssz")).exists());
     assert!(!ucol_dir.join(super::io::unfinalized_column_name(slot, &root_a, 3)).exists());
@@ -861,20 +860,7 @@ fn following(store: &mut super::Store, finalized_slot: u64, finalized_root: [u8;
 }
 
 fn prefills(store: &mut super::Store) -> Vec<Prefill> {
-    use silver_common::TCache;
-    let mut out = Vec::new();
-    store
-        .file_io(
-            |_| [0u8; 4],
-            &mut TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
-            &mut |io| {
-                if let IoEvent::Need(SyncNeed::BackfillPrefill(p)) = io {
-                    out.push(p)
-                }
-            },
-        )
-        .unwrap();
-    out
+    drain_publishing(store).1
 }
 
 fn bit(prefill: &Prefill, field: u32, slot: u64) -> bool {
@@ -947,13 +933,10 @@ fn failed_finalized_promote_leaves_its_slot_unknown() {
     );
     store.add_block(root_top, staged_top.consumer.acquire(staged_top.reads[0]), 400, root_middle);
     store.update_head(400, root_top, PayloadResolution::Full, 400, root_top);
-    assert!(drain(&mut store).is_err(), "the finalized block's promote fails");
+    let (outcome, mut published) = drain_publishing(&mut store);
+    assert!(outcome.is_err(), "the finalized block's promote fails");
     assert_eq!(store.finalized.slot_of(&root_top), Some(400), "yet the root stays indexed");
     std::fs::remove_file(&dir).unwrap();
-    let mut published = Vec::new();
-    while !store.write_queue.is_empty() {
-        published.extend(prefills(&mut store));
-    }
     published.extend(prefills(&mut store));
 
     assert!(!store.finalized.holds(400));
@@ -996,16 +979,38 @@ fn stage(name: &'static str, block: &[u8], copies: usize) -> Staged {
 }
 
 fn drain(store: &mut super::Store) -> Result<(), std::io::Error> {
-    use silver_common::TCache;
-    store.file_io(
-        |_| [0u8; 4],
-        &mut TCache::producer(TCacheId::NetworkIngress, 1 << 16),
-        &mut |_| {},
-    )
+    drain_publishing(store).0
 }
 
-/// `file_io` until every queued query is answered: reads complete over
-/// several turns.
+/// `file_io` until every queued write is down: the first failure, and the
+/// prefills published meanwhile.
+fn drain_publishing(store: &mut super::Store) -> (Result<(), std::io::Error>, Vec<Prefill>) {
+    use silver_common::TCache;
+    let mut producer = TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let (mut outcome, mut published) = (Ok(()), Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        outcome = outcome.and(store.file_io(|_| [0u8; 4], &mut producer, &mut |io| {
+            if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
+                published.push(prefill)
+            }
+        }));
+        if settled(store) {
+            return (outcome, published);
+        }
+        assert!(Instant::now() < deadline, "writes did not settle");
+    }
+}
+
+fn settled(store: &super::Store) -> bool {
+    store.write_queue.is_empty() &&
+        store.writer.in_flight() == 0 &&
+        store.query_queue.is_empty() &&
+        store.reader.in_flight() == 0
+}
+
+/// `file_io` until every queued query is answered and write is down: both
+/// complete over several turns.
 fn serve(
     store: &mut super::Store,
     fork_digest_at: impl Fn(u64) -> [u8; 4],
@@ -1015,7 +1020,7 @@ fn serve(
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         store.file_io(&fork_digest_at, producer, emit).unwrap();
-        if store.query_queue.is_empty() && store.reader.in_flight() == 0 {
+        if settled(store) {
             return;
         }
         assert!(Instant::now() < deadline, "queries were not answered");
@@ -1151,11 +1156,15 @@ fn coverage_is_persisted_once_the_writes_settle() {
         });
     }
 
-    drain(&mut store).unwrap();
+    let mut producer = silver_common::TCache::producer(TCacheId::NetworkIngress, 1 << 16);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !settled(&store) {
+        assert!(store.write_queue.is_empty() || !file.exists(), "not while the queue drains");
+        store.file_io(|_| [0u8; 4], &mut producer, &mut |_| {}).unwrap();
+        assert!(Instant::now() < deadline, "writes did not settle");
+    }
     assert!(store.finalized.holds(40), "the block landed");
-    assert!(!store.write_queue.is_empty() && !file.exists(), "but the queue is still draining");
-    drain(&mut store).unwrap();
-    assert!(store.write_queue.is_empty() && file.exists(), "drained, and written once");
+    assert!(file.exists(), "drained, and written");
 
     let _ = std::fs::remove_dir_all(&store_path);
 }
@@ -1209,7 +1218,18 @@ fn store_without_coverage_is_rebuilt_from_its_files() {
     );
     following(&mut store, 966, root_966);
 
-    let mut published = prefills(&mut store);
+    let mut published = Vec::new();
+    store
+        .file_io(
+            |_| [0u8; 4],
+            &mut silver_common::TCache::producer(TCacheId::NetworkProcessing, 1 << 16),
+            &mut |io| {
+                if let IoEvent::Need(SyncNeed::BackfillPrefill(prefill)) = io {
+                    published.push(prefill)
+                }
+            },
+        )
+        .unwrap();
     assert!(published.is_empty(), "the first step reads a group, not the wire");
     assert_eq!(store.finalized.coverage().examined_below(), 896, "and marks it read");
     for _ in 0..16 {
@@ -1279,7 +1299,7 @@ fn range_queries_interleave_fairly() {
 
     let fork_digest = [0u8; 4];
     let mut producer = TCache::producer(TCacheId::NetworkProcessing, 1 << 20);
-    store.file_io(|_| fork_digest, &mut producer, &mut |_| {}).unwrap(); // flush block writes
+    serve(&mut store, |_| fork_digest, &mut producer, &mut |_| {}); // flush block writes
 
     // Two BlocksByRange [10,12) on distinct streams, queued before draining.
     let mut range = [0u8; 24];

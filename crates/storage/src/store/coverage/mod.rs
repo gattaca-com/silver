@@ -1,5 +1,5 @@
 mod chain;
-mod codec;
+pub(super) mod codec;
 mod rebuild;
 
 use std::{collections::BTreeMap, io::Error};
@@ -111,17 +111,14 @@ impl Coverage {
         self.version += 1;
     }
 
-    pub(super) fn persist_if_changed(
-        &mut self,
-        store_dir: &str,
-        scratch: &mut Vec<u8>,
-    ) -> Result<(), Error> {
-        if self.persisted == self.version {
-            return Ok(());
-        }
-        codec::persist(self, store_dir, scratch)?;
+    pub(super) fn changed(&self) -> bool {
+        self.persisted != self.version
+    }
+
+    pub(super) fn encode_for_persist(&mut self, out: &mut Vec<u8>) {
+        out.clear();
+        codec::encode(self, out);
         self.persisted = self.version;
-        Ok(())
     }
 
     /// The root the next backfilled block must have to link below what we
@@ -564,7 +561,9 @@ mod tests {
         let needs = Needs { columns: true, envelope: true };
         land(&mut coverage, &mut blocks, &[996, 992], [0xAA; 32], 1000, needs);
         coverage.note_columns(996, 0b1);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
+        let mut bytes = Vec::new();
+        coverage.encode_for_persist(&mut bytes);
+        std::fs::write(codec::files(&store).0, &bytes).unwrap();
 
         assert!(Coverage::load(&store, CUSTODY << 1).unwrap().is_none());
         let reloaded = Coverage::load(&store, CUSTODY).unwrap().expect("persisted");
@@ -585,24 +584,14 @@ mod tests {
     }
 
     #[test]
-    fn the_file_is_written_once_per_change() {
-        let dir = std::env::temp_dir().join(format!("silver_coverage_{}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = dir.to_string_lossy().into_owned();
-        let file = dir.join("coverage.bin");
-
+    fn each_change_is_persisted_once() {
         let mut blocks = BlockIndex::default();
         let mut coverage = Coverage::new(CUSTODY);
         land(&mut coverage, &mut blocks, &[992], [0; 32], 1000, NOTHING);
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(file.exists());
-        std::fs::remove_file(&file).unwrap();
-
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(!file.exists(), "nothing changed since");
+        assert!(coverage.changed());
+        coverage.encode_for_persist(&mut Vec::new());
+        assert!(!coverage.changed(), "nothing changed since");
         coverage.set_missing(992, Missing { columns: 0b1, envelope: false });
-        coverage.persist_if_changed(&store, &mut Vec::new()).unwrap();
-        assert!(file.exists(), "a change is written");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(coverage.changed(), "a change is due");
     }
 }

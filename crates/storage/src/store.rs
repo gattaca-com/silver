@@ -8,6 +8,7 @@ use std::{
 
 use flux_disk::{DiskConfig, DiskIo};
 use flux_profiler::timed;
+use fxhash::FxHashSet;
 use silver_beacon_state_data::{SLOTS_PER_EPOCH, SpecConfig};
 use silver_common::{
     BeaconApiResponse, BlockLookup, Enr, P2pSend, P2pStreamId, PayloadResolution, PeerEvent,
@@ -31,6 +32,7 @@ mod block_index;
 mod checkpoint;
 mod coverage;
 mod file_reader;
+mod file_writer;
 mod finalized;
 mod history;
 mod io;
@@ -38,10 +40,12 @@ mod remover;
 mod unfinalized;
 
 use backfill::{BlockFacts, PayloadFacts, VerifiedColumns};
+use block_index::Record;
 use checkpoint::CheckpointWriter;
 pub use checkpoint::latest_local_checkpoint;
 use coverage::Block;
 use file_reader::FileReader;
+use file_writer::FileWriter;
 use finalized::Finalized;
 use history::History;
 use remover::DirectoryRemover;
@@ -69,9 +73,10 @@ const SLOTS_PER_DIR: u64 = 128;
 
 const PEERS_DIR: &str = "peers";
 
-/// Uncapped, io_uring's kernel workers cost ~50% more CPU per created file
-/// than four (flux-disk `many_files` example, 64 files in flight).
-const IO_WORKERS: u32 = 4;
+/// Kernel workers creating files in one directory contend: per stored
+/// column, 4 workers cost ~2× the CPU of a sync write, 2 ~1.25×, 1 about the
+/// same. Two, so a checkpoint fsync never holds the only one.
+const IO_WORKERS: u32 = 2;
 
 const COLUMN_SLOTS_RETAINED: u64 = 4096 * 32;
 
@@ -190,6 +195,12 @@ enum PendingWrite {
         enr: Enr,
     },
     LoadPeers,
+    /// Queued rather than written at once, so appends to one index file
+    /// never overlap.
+    IndexBlock {
+        dir: PathBuf,
+        record: Record,
+    },
 }
 
 impl PendingWrite {
@@ -205,9 +216,17 @@ impl PendingWrite {
             PendingWrite::Prune { .. } |
             PendingWrite::TruncateHistory { .. } |
             PendingWrite::PersistPeer { .. } |
-            PendingWrite::LoadPeers => false,
+            PendingWrite::LoadPeers |
+            PendingWrite::IndexBlock { .. } => false,
         }
     }
+}
+
+/// A started write: a queued one, or the coverage file, which never queues.
+#[allow(clippy::large_enum_variant)]
+enum WriteTag {
+    Queued(PendingWrite),
+    Coverage,
 }
 
 /// The coverage is mid-change while writes that land are queued, so nothing
@@ -222,6 +241,11 @@ impl WriteQueue {
     fn push_back(&mut self, write: PendingWrite) {
         self.landing += usize::from(write.lands());
         self.queue.push_back(write);
+    }
+
+    fn push_front(&mut self, write: PendingWrite) {
+        self.landing += usize::from(write.lands());
+        self.queue.push_front(write);
     }
 
     fn pop_front(&mut self) -> Option<PendingWrite> {
@@ -465,6 +489,13 @@ pub(super) struct Store {
     history_floors: [Option<u64>; ALL_PAYLOADS.len()],
 
     write_queue: WriteQueue,
+    writer: FileWriter<WriteTag>,
+    // Started writes that land; with `write_queue.landing()`, what the
+    // coverage still waits for.
+    landing_in_flight: usize,
+    completed_writes: Vec<(WriteTag, Result<(), Error>)>,
+    // Group directories known to exist, so each is created once.
+    known_dirs: FxHashSet<PathBuf>,
     query_queue: VecDeque<PendingQuery>,
     reader: FileReader<(PendingQuery, QueryUnit)>,
 }
@@ -495,6 +526,7 @@ impl Store {
         // newest N, and anchor `last_persisted` at the newest committed slot.
         let last_persisted_finalized_slot = checkpoint::init_checkpoints_dir(&store_dir)?;
         let remover = DirectoryRemover::new(&store_dir)?;
+        let writer = FileWriter::new(&store_dir)?;
 
         Ok(Self {
             history: History::new(spec.clone()),
@@ -511,6 +543,10 @@ impl Store {
             remover,
             history_floors: [None; ALL_PAYLOADS.len()],
             write_queue: Default::default(),
+            writer,
+            landing_in_flight: 0,
+            completed_writes: Vec::new(),
+            known_dirs: FxHashSet::default(),
             query_queue: Default::default(),
             reader: FileReader::new()?,
         })

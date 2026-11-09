@@ -5,7 +5,7 @@ use silver_common::{DataKind, Prefill, SyncNeed, merkle::B256};
 
 use super::{
     Payload,
-    block_index::BlockIndex,
+    block_index::{BlockIndex, Record},
     coverage::{Block, Coverage, Floors},
     first_retained_slot,
 };
@@ -31,8 +31,14 @@ impl Finalized {
         Ok(Self { blocks, coverage, scratch: Vec::new() })
     }
 
-    pub(super) fn persist(&mut self, store_dir: &str) -> Result<(), Error> {
-        self.coverage.persist_if_changed(store_dir, &mut self.scratch)
+    pub(super) fn coverage_changed(&self) -> bool {
+        self.coverage.changed()
+    }
+
+    /// The coverage as it is now, which then counts as persisted.
+    pub(super) fn encode_coverage(&mut self) -> &[u8] {
+        self.coverage.encode_for_persist(&mut self.scratch);
+        &self.scratch
     }
 
     pub(super) fn coverage(&self) -> &Coverage {
@@ -73,11 +79,13 @@ impl Finalized {
         self.blocks.index(root, slot);
     }
 
-    /// The block's file is down in `dir`.
-    pub(super) fn landed(&mut self, dir: &Path, block: Block) -> Result<(), Error> {
-        self.blocks.landed(dir, block.facts.block_root, block.facts.slot)?;
+    /// The block's file is down; the caller appends the returned record to
+    /// the group's index file.
+    pub(super) fn landed(&mut self, block: Block) -> Record {
+        let record = Record { block_root: block.facts.block_root, slot: block.facts.slot };
+        self.blocks.hold(record.block_root, record.slot);
         self.relinked(block);
-        Ok(())
+        record
     }
 
     /// A held block served again, so the chain can link through it.
