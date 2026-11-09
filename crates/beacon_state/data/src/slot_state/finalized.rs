@@ -1,6 +1,6 @@
 use super::{delta::SlotStateDelta, epoch_balances::EpochBalances};
 use crate::{
-    DecomposeError,
+    DecomposeError, PayloadWithdrawals,
     decompose::{
         common::{F2, F4, F8, F10, F25, F26, F28, F30, F31, F32, F33, Offsets, b256, u64_le},
         gloas::{
@@ -123,7 +123,7 @@ fn read_pending_payments(ssz: &[u8]) -> [BuilderPendingPayment; BUILDER_PENDING_
 fn read_expected_withdrawals(
     ssz: &[u8],
     off: &GloasOffsets,
-) -> Result<Vec<Withdrawal>, DecomposeError> {
+) -> Result<PayloadWithdrawals, DecomposeError> {
     // payload_expected_withdrawals is the last variable body.
     let body = &ssz[off.payload_expected_withdrawals..];
     let count = checked_count(
@@ -132,7 +132,9 @@ fn read_expected_withdrawals(
         "payload_expected_withdrawals",
         MAX_WITHDRAWALS_PER_PAYLOAD,
     )?;
-    Ok((0..count).map(|i| Withdrawal::from_ssz(&body[i * WITHDRAWAL_SSZ..])).collect())
+    let mut withdrawals = PayloadWithdrawals::default();
+    (0..count).for_each(|i| withdrawals.push(Withdrawal::from_ssz(&body[i * WITHDRAWAL_SSZ..])));
+    Ok(withdrawals)
 }
 
 /// List length / cap check shared by the Gloas variable-list readers.

@@ -99,7 +99,7 @@ pub(crate) fn payload_withdrawals_match_expected(rv: &StateReadView, payload: &[
     let withdrawals = &payload[wd_off..bal_off];
     let expected = &rv.slot.state().payload_expected_withdrawals;
     withdrawals.len() == expected.len() * WITHDRAWAL_SIZE &&
-        withdrawals.chunks_exact(WITHDRAWAL_SIZE).zip(expected).all(|(w, e)| {
+        withdrawals.chunks_exact(WITHDRAWAL_SIZE).zip(expected.iter()).all(|(w, e)| {
             let w: &[u8; WITHDRAWAL_SIZE] = w.try_into().unwrap();
             WithdrawalView::index(w) == e.index &&
                 WithdrawalView::validator_index(w) == e.validator_index &&

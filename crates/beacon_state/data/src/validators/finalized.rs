@@ -90,6 +90,8 @@ pub enum ValidatorsDecodeError {
     PubkeyCountMismatch { sidecar: usize, validators: usize },
     #[error("validator {idx} sidecar pubkey does not match the canonical compressed pubkey")]
     PubkeyMismatch { idx: usize },
+    #[error("validator count {n} exceeds the u32 index space")]
+    TooMany { n: usize },
 }
 
 #[inline]
@@ -257,6 +259,9 @@ impl FinalizedValidators {
             return Err(ValidatorsDecodeError::LenNotMultiple { len: val_bytes.len() });
         }
         let n = val_bytes.len() / VALIDATOR_SSZ_SIZE;
+        if u32::try_from(n).is_err() {
+            return Err(ValidatorsDecodeError::TooMany { n });
+        }
         if let Some(d) = decompressed {
             if d.len() != n {
                 return Err(ValidatorsDecodeError::PubkeyCountMismatch {

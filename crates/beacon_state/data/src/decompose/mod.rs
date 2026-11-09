@@ -6,6 +6,7 @@ use crate::{BeaconState, SpecConfig, decode_checkpoint_pubkeys};
 pub(crate) mod common;
 mod fulu;
 pub(crate) mod gloas;
+mod indices;
 
 pub use common::DecomposeError;
 pub(crate) use common::{FULU_FIXED_PART, u64_le};
@@ -20,11 +21,14 @@ impl BeaconState {
             if let Ok(pubkeys) = decode_checkpoint_pubkeys(pubkey_sidecar) &&
                 let Ok(state) = Self::decompose(ssz, cfg, Some(&pubkeys))
             {
+                state.check_indices()?;
                 return Ok(state);
             }
             silver_log::warn!("checkpoint pubkey sidecar unusable; decompressing from SSZ");
         }
-        Self::decompose(ssz, cfg, None)
+        let state = Self::decompose(ssz, cfg, None)?;
+        state.check_indices()?;
+        Ok(state)
     }
 
     #[timed]

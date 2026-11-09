@@ -279,7 +279,7 @@ fn withdrawals_after_parent_payload(
 
 fn withdrawals_owed_by_empty_parent(fork: &ForkWriter<'_>) -> PayloadWithdrawals {
     let mut withdrawals = PayloadWithdrawals::new();
-    for withdrawal in &fork.view.slot.state().payload_expected_withdrawals {
+    for withdrawal in fork.view.slot.state().payload_expected_withdrawals.iter() {
         withdrawals.push(*withdrawal);
     }
     withdrawals
