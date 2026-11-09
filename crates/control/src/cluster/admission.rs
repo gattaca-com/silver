@@ -62,6 +62,15 @@ impl SlashingAdmission {
         wall_slot.saturating_sub(SLOTS_PER_EPOCH)
     }
 
+    /// The wall slot, capped one epoch past the head. A clock that jumps
+    /// forward cannot pull the head along, since future blocks are rejected,
+    /// so the cap keeps a bad clock from advancing the replicated floor or
+    /// admitting far-future slots. Only a full epoch of missed slots lets a
+    /// correct clock reach it.
+    pub(crate) fn chain_wall_slot(head_slot: u64, wall_slot: u64) -> u64 {
+        wall_slot.min(head_slot.saturating_add(SLOTS_PER_EPOCH))
+    }
+
     pub(crate) fn validate(&self, slot: u64, wall_slot: u64) -> Result<(), AdmissionError> {
         let startup_floor = self.startup_floor.ok_or(AdmissionError::StartupFloorUnset)?;
         if slot > wall_slot {
@@ -110,5 +119,13 @@ mod tests {
         );
         assert_eq!(admission.validate(age_floor, wall_slot), Ok(()));
         assert_eq!(admission.validate(wall_slot, wall_slot), Ok(()));
+    }
+
+    #[test]
+    fn chain_wall_slot_caps_a_clock_ahead_of_the_head() {
+        assert_eq!(SlashingAdmission::chain_wall_slot(100, 103), 103);
+        assert_eq!(SlashingAdmission::chain_wall_slot(100, 100 + SLOTS_PER_EPOCH), 132);
+        assert_eq!(SlashingAdmission::chain_wall_slot(100, 1_000_000), 100 + SLOTS_PER_EPOCH);
+        assert_eq!(SlashingAdmission::chain_wall_slot(100, 90), 90);
     }
 }

@@ -5,6 +5,7 @@ mod command;
 #[rustfmt::skip]
 mod generated;
 mod lock_store;
+mod member_message_check;
 mod metrics;
 mod node;
 mod peers;
@@ -23,6 +24,7 @@ pub use command::{
 };
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
+pub use member_message_check::MemberMessageError;
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

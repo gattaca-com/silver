@@ -61,6 +61,8 @@ silver_common::declare_counters! {
         JournalBytes,
         // 1 when this run has a cluster configured; set at every start.
         Clustered,
+        // Slots the wall clock runs past the head-capped slot admission uses.
+        ClockAheadSlots,
     }
 }
 

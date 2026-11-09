@@ -18,6 +18,7 @@ use super::{
         AttestationLockCommand, BlockKey, BlockLockCommand, CommandDecodeError, ReplicatedCommand,
     },
     lock_store::{LockResult, SlashingLockStore},
+    member_message_check::{MemberMessageCheck, MemberMessageError},
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
@@ -235,6 +236,7 @@ pub enum ClusterError {
     Command(CommandDecodeError),
     InvalidProposalContextLength(usize),
     UnsupportedEntry(EntryType),
+    MemberMessage(MemberMessageError),
     Snapshot(io::Error),
     Storage(io::Error),
     NotReady,
@@ -262,6 +264,7 @@ impl fmt::Display for ClusterError {
             Self::Snapshot(error) => {
                 write!(f, "invalid slashing protection Raft snapshot: {error}")
             }
+            Self::MemberMessage(error) => write!(f, "refused member Raft message: {error:?}"),
         }
     }
 }
@@ -277,6 +280,7 @@ impl Error for ClusterError {
             Self::NotReady |
             Self::Failed |
             Self::UnsupportedEntry(_) |
+            Self::MemberMessage(_) |
             Self::InvalidProposalContextLength(_) => None,
         }
     }
@@ -409,6 +413,11 @@ impl SlashingProtectionCluster {
 
     /// Explicitly start an election, primarily for controlled startup and
     /// tests.
+    #[cfg(test)]
+    pub(crate) fn minimum_slot(&self) -> u64 {
+        self.state.minimum_slot()
+    }
+
     pub fn campaign(&mut self) -> Result<(), ClusterError> {
         if self.failed {
             return Err(ClusterError::Failed);
@@ -418,12 +427,21 @@ impl SlashingProtectionCluster {
 
     /// Deliver one decoded message received from another member of this Raft
     /// group.
-    pub fn step(&mut self, message: Message, now: Instant) -> Result<(), ClusterError> {
+    pub fn step(
+        &mut self,
+        message: Message,
+        now: Instant,
+        wall_slot: u64,
+    ) -> Result<(), ClusterError> {
         if self.failed {
             return Err(ClusterError::Failed);
         }
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        MemberMessageCheck { log: &node.raft.raft_log, voters: &self.config.voters, wall_slot }
+            .check(&message)
+            .map_err(ClusterError::MemberMessage)?;
         self.peers.heard(&message, now);
-        self.node.as_mut().ok_or(ClusterError::NotReady)?.step(message).map_err(ClusterError::Raft)
+        node.step(message).map_err(ClusterError::Raft)
     }
 
     pub fn peer_stats(&self, now: Instant) -> impl Iterator<Item = ClusterPeerStats> {
@@ -1017,9 +1035,71 @@ mod tests {
                 .iter_mut()
                 .find(|cluster| cluster.node_id() == message.to)
                 .expect("Raft message target is a voter")
-                .step(message, now)
+                .step(message, now, wall_slot)
                 .unwrap();
         }
+    }
+
+    fn propose_message(from: u64, entries: Vec<Entry>) -> Message {
+        Message {
+            msg_type: MessageType::MsgPropose,
+            from,
+            to: 1,
+            entries: entries.into(),
+            ..Message::default()
+        }
+    }
+
+    fn forwarded(command: ReplicatedCommand, origin_node_id: u64) -> Entry {
+        let id = ProposalId { origin_node_id, sequence: 0, incarnation: [0; 16] };
+        Entry { data: command.encode().into(), context: id.encode().into(), ..Entry::default() }
+    }
+
+    /// Each proposal either panicked raft-rs on the leader or committed an
+    /// entry every node then fails to apply. All are refused at the boundary
+    /// and the node keeps serving.
+    #[test]
+    fn malformed_member_messages_are_refused_before_raft() {
+        let now = Instant::now();
+        let mut cluster = initialized_cluster(test_config(1, vec![1]), 9, now);
+        cluster.campaign().unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        assert!(cluster.is_leader());
+        let lock = ReplicatedCommand::Lock(command(10, 1));
+        let mut conf_change = forwarded(lock, 2);
+        conf_change.set_entry_type(EntryType::EntryConfChange);
+        let refused = [
+            (propose_message(2, vec![]), MemberMessageError::EmptyProposal),
+            (
+                propose_message(2, vec![conf_change]),
+                MemberMessageError::UnsupportedEntry(EntryType::EntryConfChange),
+            ),
+            (
+                propose_message(2, vec![forwarded(
+                    ReplicatedCommand::AdvanceMinimumSlot(u64::MAX),
+                    2,
+                )]),
+                MemberMessageError::ForwardedMinimumSlot,
+            ),
+            (propose_message(2, vec![forwarded(lock, 3)]), MemberMessageError::ProposalOrigin {
+                origin: 3,
+                from: 2,
+            }),
+            (
+                propose_message(2, vec![forwarded(ReplicatedCommand::Lock(command(11, 1)), 2)]),
+                MemberMessageError::FutureProposal { slot: 11, wall_slot: 10 },
+            ),
+        ];
+        for (message, expected) in refused {
+            let result = cluster.step(message, now, 10);
+            assert!(
+                matches!(result, Err(ClusterError::MemberMessage(error)) if error == expected),
+                "expected {expected:?}, got {result:?}"
+            );
+        }
+        cluster.step(propose_message(2, vec![forwarded(lock, 2)]), now, 10).unwrap();
+        cluster.spin(now, 10, |_| {}).unwrap();
+        assert!(!cluster.is_failed());
     }
 
     #[test]
@@ -1306,7 +1386,7 @@ mod tests {
                 .iter_mut()
                 .find(|cluster| cluster.node_id() == message.to)
                 .expect("Raft message target is a voter")
-                .step(message, now)
+                .step(message, now, 10)
                 .unwrap();
         }
     }
@@ -1360,7 +1440,7 @@ mod tests {
                     .iter_mut()
                     .find(|c| c.node_id() == message.to)
                     .unwrap()
-                    .step(message, now)
+                    .step(message, now, 10)
                     .unwrap();
             }
             now += Duration::from_millis(1);

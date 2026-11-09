@@ -64,7 +64,7 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
     node.set_startup_wall_slot(99);
     node.persistence.paused = true;
-    node.step(snapshot_message(snapshot(10)), now).unwrap();
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
     node.spin(now, 100, |_| panic!("snapshot acknowledged before sync")).unwrap();
     assert_eq!(node.state.len(), 0);
     assert_eq!(node.node.as_ref().unwrap().raft.raft_log.applied, 0);
@@ -82,8 +82,47 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     );
 }
 
+/// raft-rs panics on a follower when an append claims a committed index with
+/// another term, or a heartbeat commits past its log.
 #[test]
-fn invalid_snapshot_payload_or_membership_stops_participation() {
+fn forged_append_and_heartbeat_are_refused_on_a_follower() {
+    let now = Instant::now();
+    let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
+    node.set_startup_wall_slot(99);
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+    assert_eq!(node.node.as_ref().unwrap().raft.raft_log.committed, 10);
+
+    let leader = |msg_type| Message { msg_type, from: 2, to: 1, term: 2, ..Message::default() };
+    let append = Message {
+        index: 10,
+        log_term: 2,
+        entries: vec![Entry { index: 5, term: 9, ..Entry::default() }].into(),
+        ..leader(MessageType::MsgAppend)
+    };
+    assert!(matches!(
+        node.step(append, now, 100),
+        Err(ClusterError::MemberMessage(MemberMessageError::EntryIndexGap {
+            expected: 11,
+            actual: 5
+        }))
+    ));
+    let heartbeat = Message { commit: 1_000, ..leader(MessageType::MsgHeartbeat) };
+    assert!(matches!(
+        node.step(heartbeat, now, 100),
+        Err(ClusterError::MemberMessage(MemberMessageError::CommitPastLog {
+            commit: 1_000,
+            last_index: 10
+        }))
+    ));
+    node.spin(now, 100, |_| {}).unwrap();
+    assert!(!node.is_failed());
+}
+
+/// A member's bad snapshot is refused before raft-rs restores it, so the node
+/// keeps participating instead of failing on apply.
+#[test]
+fn invalid_snapshot_payload_or_membership_is_refused() {
     for bad_membership in [false, true] {
         let now = Instant::now();
         let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
@@ -93,12 +132,12 @@ fn invalid_snapshot_payload_or_membership_stops_participation() {
         } else {
             snapshot.data = vec![0; 20].into();
         }
-        node.step(snapshot_message(snapshot), now).unwrap();
         assert!(matches!(
-            node.spin(now, 100, |_| panic!("released invalid snapshot")),
-            Err(ClusterError::Snapshot(_))
+            node.step(snapshot_message(snapshot), now, 100),
+            Err(ClusterError::MemberMessage(MemberMessageError::Snapshot))
         ));
-        assert!(node.is_failed());
+        node.spin(now, 100, |_| panic!("released invalid snapshot")).unwrap();
+        assert!(!node.is_failed());
     }
 }
 
@@ -176,7 +215,7 @@ impl Network {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message, self.now)
+                    .step(message, self.now, 100)
                     .unwrap();
             }
             if self.nodes.iter().all(quiet) {

@@ -54,6 +54,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
                 ..Message::default()
             },
             now,
+            10,
         )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
@@ -69,6 +70,7 @@ fn vote_responses_wait_for_persistence_and_steps_remain_legal_while_waiting() {
                 ..Message::default()
             },
             now,
+            10,
         )
         .unwrap();
     assert!(events(&mut cluster, now).is_empty());
@@ -125,7 +127,7 @@ fn persistence_failure_stops_votes_proposals_and_committed_decisions() {
     assert!(!cluster.is_leader());
     assert_eq!(cluster.pending_proposals(), 0);
     assert!(matches!(cluster.campaign(), Err(ClusterError::Failed)));
-    assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::Failed)));
+    assert!(matches!(cluster.step(Message::default(), now, 10), Err(ClusterError::Failed)));
     assert!(matches!(
         cluster.propose_attestation(command(10, 2), 10, now),
         Err(ProposeError::Failed)
@@ -230,7 +232,7 @@ mod disk {
             SlashingProtectionCluster::new(stored_config(&path, true, 1, vec![1]), now).unwrap();
         cluster.set_startup_wall_slot(99);
         assert!(matches!(cluster.campaign(), Err(ClusterError::NotReady)));
-        assert!(matches!(cluster.step(Message::default(), now), Err(ClusterError::NotReady)));
+        assert!(matches!(cluster.step(Message::default(), now, 10), Err(ClusterError::NotReady)));
         assert!(matches!(
             cluster.propose_attestation(command(100, 1), 100, now),
             Err(ProposeError::NotReady)
@@ -292,6 +294,7 @@ mod disk {
                     ..Message::default()
                 },
                 now,
+                10,
             )
             .unwrap();
         drain(&mut cluster, now, 10);
@@ -323,6 +326,7 @@ mod disk {
                     ..Message::default()
                 },
                 now,
+                10,
             )
             .unwrap();
         drain(&mut cluster, now, 10);
@@ -395,7 +399,7 @@ mod disk {
                     .iter_mut()
                     .find(|node| node.node_id() == message.to)
                     .unwrap()
-                    .step(message, now)
+                    .step(message, now, 10)
                     .unwrap();
             }
         };

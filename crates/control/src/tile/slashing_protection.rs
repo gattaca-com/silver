@@ -140,6 +140,7 @@ pub(super) struct SlashingProtectionHandler {
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
     pending_blocks: FxHashMap<ProposalId, PendingBlock>,
     wall_slot: u64,
+    clock_ahead: bool,
     clock: Option<SlotTicker>,
     duty_timers: DutyTimers,
     loop_gap: LoopGap,
@@ -170,6 +171,7 @@ impl SlashingProtectionHandler {
             pending_attestations: FxHashMap::default(),
             pending_blocks: FxHashMap::default(),
             wall_slot: 0,
+            clock_ahead: false,
             clock: None,
             duty_timers: DutyTimers::new(),
             loop_gap: LoopGap::default(),
@@ -181,12 +183,18 @@ impl SlashingProtectionHandler {
         self.clock = Some(ticker);
     }
 
-    pub(super) fn on_status(&mut self, head_slot: u64, wall_slot: u64) {
+    /// `synced` latches the startup floor. It comes from peer-relative sync
+    /// state, so a skewed clock cannot keep it from latching.
+    pub(super) fn on_status(&mut self, head_slot: u64, wall_slot: u64, synced: bool) {
+        let chain_wall_slot = SlashingAdmission::chain_wall_slot(head_slot, wall_slot);
+        self.report_clock_skew(head_slot, wall_slot, chain_wall_slot);
+
+        let wall_slot = chain_wall_slot;
         self.wall_slot = wall_slot;
         if self.cluster.is_none() {
             self.local_locks.advance_minimum_slot(SlashingAdmission::age_floor(wall_slot));
         }
-        if head_slot != wall_slot || !self.admission.set_startup_wall_slot(wall_slot) {
+        if !synced || !self.admission.set_startup_wall_slot(wall_slot) {
             return;
         }
 
@@ -197,6 +205,25 @@ impl SlashingProtectionHandler {
         ClusterCounters::FloorLatched.set(1);
         ClusterCounters::StartupFloorSlot.set(wall_slot.saturating_add(1));
         silver_log::info!(wall_slot, "local slashing protection startup floor latched");
+    }
+
+    fn report_clock_skew(&mut self, head_slot: u64, wall_slot: u64, chain_wall_slot: u64) {
+        let ahead = wall_slot - chain_wall_slot;
+        ClusterCounters::ClockAheadSlots.set(ahead);
+        match (self.clock_ahead, ahead > 0) {
+            (false, true) => silver_log::warn!(
+                wall_slot,
+                head_slot,
+                chain_wall_slot,
+                "wall clock is over an epoch ahead of the head; slashing protection uses the \
+                 head-capped slot"
+            ),
+            (true, false) => {
+                silver_log::info!(wall_slot, "wall clock is back in line with the head")
+            }
+            _ => {}
+        }
+        self.clock_ahead = ahead > 0;
     }
 
     /// Consume inbound Raft messages and pump all work currently ready in the
@@ -464,7 +491,10 @@ impl SlashingProtectionHandler {
             );
             return;
         }
-        if let Err(error) = cluster.step(message, now) {
+        if let Err(error) = cluster.step(message, now, self.wall_slot) {
+            if let ClusterError::MemberMessage(_) = error {
+                ClusterCounters::InboundInvalid.inc();
+            }
             silver_log::warn!(?error, from = inbound.from, "failed to step inbound Raft message");
         }
     }
@@ -765,8 +795,8 @@ mod tests {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
         let mut submissions = Submissions::new();
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(11, 11);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(11, 11, true);
         let Standalone { handler, harness } = &mut standalone;
         assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
 
@@ -794,8 +824,8 @@ mod tests {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
         let mut submissions = Submissions::new();
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(11, 11);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(11, 11, true);
         let Standalone { handler, harness } = &mut standalone;
         assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
 
@@ -821,8 +851,8 @@ mod tests {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
         let mut submissions = Submissions::new();
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(11, 11);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(11, 11, true);
         let Standalone { handler, harness } = &mut standalone;
         assert_eq!(locked_proposals(harness), 0, "subscribes before anything is locked");
 
@@ -876,8 +906,8 @@ mod tests {
         handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
         let mut harness = Harness::new();
         let mut submissions = Submissions::new();
-        handler.on_status(10, 10);
-        handler.on_status(11, 11);
+        handler.on_status(10, 10, true);
+        handler.on_status(11, 11, true);
         handler.cluster.as_mut().unwrap().campaign().unwrap();
 
         submit_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
@@ -892,6 +922,36 @@ mod tests {
         harness.pop_gossip();
         assert_eq!(locked_proposals(&mut harness), 1, "the committed block's contents follow");
         assert!(harness.responses().is_empty());
+    }
+
+    /// A leader whose clock jumped forward proposes the floor from the
+    /// head-capped slot, so the replicated floor stays within the chain.
+    #[test]
+    fn leader_with_a_clock_jump_keeps_the_replicated_floor_on_the_chain() {
+        let now = Instant::now();
+        let mut config = SlashingProtectionConfig::new(
+            1,
+            vec![1],
+            ClusterStorageConfig::Create("unused-test-journal".into()),
+        );
+        config.tick_interval = std::time::Duration::from_millis(1);
+        config.election_ticks = 5;
+        config.heartbeat_ticks = 1;
+        let mut handler = handler(now);
+        handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
+        let mut harness = Harness::new();
+        let mut submissions = Submissions::new();
+        let head = 100;
+        handler.on_status(head, 1_000_000, true);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+
+        for _ in 0..4 {
+            let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+            handler.spin(now, adapter, local_gossip, gossip, &mut submissions.reader);
+        }
+
+        let floor = handler.cluster.as_ref().unwrap().minimum_slot();
+        assert_eq!(floor, SlashingAdmission::age_floor(head + SLOTS_PER_EPOCH));
     }
 
     #[test]
@@ -909,8 +969,8 @@ mod tests {
         handler.cluster = Some(SlashingProtectionCluster::in_memory(config, now).unwrap());
         let mut harness = Harness::new();
         let mut submissions = Submissions::new();
-        handler.on_status(10, 10);
-        handler.on_status(11, 11);
+        handler.on_status(10, 10, true);
+        handler.on_status(11, 11, true);
         handler.cluster.as_mut().unwrap().campaign().unwrap();
 
         reveal_block(&mut handler, &mut harness, &mut submissions, 1, &block_bytes(11, 4, 1), now);
@@ -986,14 +1046,14 @@ mod tests {
     fn standalone_refuses_surround_votes_while_selected_and_once_evicted() {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(100, 100);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(100, 100, true);
         standalone.submit_vote(1, 7, 2, 100, now);
         standalone.harness.pop_gossip();
 
-        standalone.handler.on_status(130, 130);
+        standalone.handler.on_status(130, 130, true);
         standalone.submit_vote(2, 7, 1, 130, now);
-        standalone.handler.on_status(170, 170);
+        standalone.handler.on_status(170, 170, true);
         standalone.submit_vote(3, 7, 1, 170, now);
         let mut wrong_target = attestation(170, 7);
         wrong_target[104..112].copy_from_slice(&4u64.to_le_bytes());
@@ -1014,8 +1074,8 @@ mod tests {
     fn standalone_locks_before_validation_and_allows_identical_retries() {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(11, 11);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(11, 11, true);
 
         standalone.submit(1, 11, 7, 1, now);
         let message = standalone.harness.pop_gossip();
@@ -1053,8 +1113,8 @@ mod tests {
     fn standalone_locks_are_per_validator_and_epoch_and_survive_ring_reuse() {
         let now = Instant::now();
         let mut standalone = Standalone::new(now);
-        standalone.handler.on_status(10, 10);
-        standalone.handler.on_status(12, 12);
+        standalone.handler.on_status(10, 10, true);
+        standalone.handler.on_status(12, 12, true);
 
         standalone.submit(1, 11, 7, 1, now);
         standalone.harness.pop_gossip();
@@ -1066,10 +1126,10 @@ mod tests {
             Err(LocalGossipFailure::ConflictingAttestation)
         )]);
 
-        standalone.handler.on_status(40, 40);
+        standalone.handler.on_status(40, 40, true);
         standalone.submit(4, 40, 7, 4, now);
         standalone.harness.pop_gossip();
-        standalone.handler.on_status(70, 70);
+        standalone.handler.on_status(70, 70, true);
         standalone.submit(5, 70, 7, 5, now);
         standalone.harness.pop_gossip();
         assert!(standalone.harness.responses().is_empty());
@@ -1094,8 +1154,8 @@ mod tests {
         ] {
             let now = Instant::now();
             let mut standalone = Standalone::new(now);
-            standalone.handler.on_status(10, 10);
-            standalone.handler.on_status(11, 11);
+            standalone.handler.on_status(10, 10, true);
+            standalone.handler.on_status(11, 11, true);
             standalone.submit(1, 11, 7, 1, now);
             let message = standalone.harness.pop_gossip();
 
@@ -1125,7 +1185,7 @@ mod tests {
         standalone.submit(1, 11, 7, 1, now);
         assert_eq!(standalone.harness.responses(), [(1, Err(LocalGossipFailure::NotSynced))]);
 
-        standalone.handler.on_status(10, 10);
+        standalone.handler.on_status(10, 10, true);
         standalone.submit(2, 10, 7, 1, now);
         standalone.submit(3, 11, 7, 1, now);
         assert_eq!(standalone.harness.responses(), [
@@ -1134,7 +1194,7 @@ mod tests {
         ]);
         assert!(standalone.harness.gossip.pop_event().is_none());
 
-        standalone.handler.on_status(11, 11);
+        standalone.handler.on_status(11, 11, true);
         standalone.submit(4, 11, 7, 2, now);
         standalone.harness.pop_gossip();
         assert!(
@@ -1142,11 +1202,11 @@ mod tests {
             "rejected requests must not acquire locks"
         );
 
-        standalone.handler.on_status(42, 44);
+        standalone.handler.on_status(42, 44, false);
         standalone.submit(5, 11, 7, 2, now);
         assert_eq!(standalone.harness.responses(), [(5, Err(LocalGossipFailure::TooOld))]);
 
-        standalone.handler.on_status(42, 43);
+        standalone.handler.on_status(42, 43, false);
         assert_eq!(standalone.handler.admission.validate(11, 43), Ok(()));
         standalone.submit(6, 11, 7, 2, now);
         assert_eq!(standalone.harness.responses(), [(6, Err(LocalGossipFailure::TooOld))]);
@@ -1154,20 +1214,39 @@ mod tests {
     }
 
     #[test]
-    fn startup_floor_latches_only_when_head_reaches_wall() {
+    fn startup_floor_latches_once_synced() {
         let mut handler = handler(Instant::now());
 
-        handler.on_status(9, 10);
+        handler.on_status(10, 10, false);
         assert_eq!(handler.admission.validate(10, 10), Err(AdmissionError::StartupFloorUnset));
 
-        handler.on_status(10, 10);
+        // A missed slot leaves the head behind the wall; sync state still latches.
+        handler.on_status(9, 10, true);
         assert_eq!(
             handler.admission.validate(10, 10),
             Err(AdmissionError::BeforeStartupFloor { slot: 10, minimum: 11 })
         );
 
-        handler.on_status(20, 20);
+        handler.on_status(20, 20, true);
         assert_eq!(handler.admission.validate(11, 20), Ok(()), "floor must not relatch");
+    }
+
+    /// A clock far ahead of the chain can neither block latching nor push the
+    /// floor and admission window past one epoch beyond the head.
+    #[test]
+    fn a_clock_ahead_of_the_head_is_capped_one_epoch_past_it() {
+        let mut handler = handler(Instant::now());
+        let capped = 10 + SLOTS_PER_EPOCH;
+
+        handler.on_status(10, 1_000_000, true);
+        assert_eq!(handler.wall_slot, capped);
+        assert_eq!(
+            handler.admission.validate(capped + 1, handler.wall_slot),
+            Err(AdmissionError::Future { slot: capped + 1, wall_slot: capped })
+        );
+
+        handler.on_status(capped + 1, capped + 1, true);
+        assert_eq!(handler.admission.validate(capped + 1, handler.wall_slot), Ok(()));
     }
 
     #[test]
@@ -1186,8 +1265,8 @@ mod tests {
             )
             .unwrap(),
         );
-        handler.on_status(10, 10);
-        handler.on_status(11, 11);
+        handler.on_status(10, 10, true);
+        handler.on_status(11, 11, true);
         handler.cluster.as_mut().unwrap().campaign().unwrap();
         handler.drive(
             now,
