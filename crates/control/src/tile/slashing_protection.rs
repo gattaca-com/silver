@@ -15,10 +15,7 @@ use silver_common::{
 };
 use silver_gossip::GossipHandler;
 
-use super::{
-    late_locks::LateLocks,
-    local_gossip::{LocalGossipHandler, LocalMessage, produce_response},
-};
+use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationDecision, AttestationKey, AttestationLockCommand, BlockDecision,
     BlockKey, BlockLockCommand, ClusterCounters, ClusterError, ClusterEvent, DutyTimers,
@@ -26,11 +23,16 @@ use crate::cluster::{
     SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
 };
 
+/// A proposal still uncommitted this late was most likely lost with its
+/// leader, and a block this late would be orphaned anyway.
+const LATE_COMMIT_SLOTS: u64 = 2;
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingAttestation {
     request_id: u64,
     command: AttestationLockCommand,
     received: Instant,
+    answered: bool,
 }
 
 impl PendingAttestation {
@@ -44,34 +46,61 @@ impl PendingAttestation {
             attester_index: SingleAttestationView::attester_index(&ssz),
             slot: SingleAttestationView::slot(&ssz),
         };
-        Self { request_id, command: AttestationLockCommand { key, subnet, ssz }, received }
+        Self {
+            request_id,
+            command: AttestationLockCommand { key, subnet, ssz },
+            received,
+            answered: false,
+        }
     }
 
-    pub(super) fn slot(&self) -> u64 {
-        self.command.key.slot
+    fn answer(&self, response: LocalGossipResult, producers: &mut SilverSpineProducers) {
+        if !self.answered {
+            produce_response(producers, self.request_id, response);
+        }
     }
 
-    /// Its lock committed after the request was answered `LockPending`, so
-    /// it is published without a verdict to wait for.
-    fn release_late(&self, decision: &AttestationDecision, gossip_handler: &mut GossipHandler) {
+    fn on_commit(
+        &self,
+        decision: &AttestationDecision,
+        now: Instant,
+        duty_timers: &mut DutyTimers,
+        local_gossip: &mut LocalGossipHandler,
+        gossip_handler: &mut GossipHandler,
+        producers: &mut SilverSpineProducers,
+    ) {
+        if decision.command != self.command {
+            self.answer(Err(LocalGossipFailure::Internal), producers);
+            silver_log::error!(
+                ?decision.proposal_id,
+                request_id = self.request_id,
+                "committed Raft command does not match its pending attestation"
+            );
+            return;
+        }
         let response = decision_response(
             decision.admission,
             decision.result,
             LocalGossipFailure::ConflictingAttestation,
         );
-        if decision.command != self.command || response.is_err() {
+        if response.is_err() {
+            self.answer(response, producers);
             silver_log::warn!(
                 ?decision.result,
                 ?decision.admission,
-                slot = self.slot(),
-                "late attestation lock cannot be published"
+                request_id = self.request_id,
+                slot = self.command.key.slot,
+                "committed attestation cannot enter validation"
             );
             return;
         }
-        silver_log::info!(slot = self.slot(), "publishing attestation whose lock committed late");
-        LocalGossipHandler::publish_unanswered(
-            decision.command.local_message(self.request_id),
+        duty_timers.released(ClusterDuty::Attestation, self.received, now);
+        local_gossip.release(
+            self.command.local_message(self.request_id),
+            self.answered,
+            now,
             gossip_handler,
+            producers,
         );
     }
 }
@@ -116,40 +145,18 @@ pub(super) struct PendingBlock {
     contents: TRead,
     block: SubmittedBlock,
     received: Instant,
+    answered: bool,
 }
 
 impl PendingBlock {
-    pub(super) fn slot(&self) -> u64 {
-        self.key.slot
+    fn answer(&self, response: LocalGossipResult, producers: &mut SilverSpineProducers) {
+        if !self.answered {
+            produce_response(producers, self.request_id, response);
+        }
     }
 
     fn signed_block(&self) -> Option<&[u8]> {
         self.contents.buffer().ok().and_then(|(bytes, _)| self.block.signed_block(bytes))
-    }
-
-    /// `None` for a blinded block, which the API reveals through the sidecar.
-    fn locked_message<'a>(&'a self, block: &'a [u8]) -> Option<LocalMessage<'a>> {
-        let slot = self.key.slot;
-        match self.block {
-            SubmittedBlock::Full(validation) => {
-                Some(block_message(self.request_id, block, slot, validation))
-            }
-            SubmittedBlock::Gloas(validation) => Some(LocalMessage {
-                request_id: self.request_id,
-                topic: GossipTopic::BeaconBlock,
-                ssz: block,
-                ssz_read: Some(self.contents.to_read()),
-                slot,
-                validation,
-            }),
-            SubmittedBlock::Blinded => None,
-        }
-    }
-
-    fn release_contents(&self, producers: &mut SilverSpineProducers) {
-        if let SubmittedBlock::Full(_) = self.block {
-            producers.produce(LockedProposal { contents: self.contents.to_read() });
-        }
     }
 
     fn release_locked(
@@ -160,41 +167,71 @@ impl PendingBlock {
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
-        self.release_contents(producers);
-        match self.locked_message(block) {
-            Some(message) => local_gossip.submit(message, now, gossip_handler, producers),
-            None => produce_response(producers, self.request_id, Ok(())),
-        }
+        let slot = self.key.slot;
+        let message = match self.block {
+            SubmittedBlock::Full(validation) => {
+                producers.produce(LockedProposal { contents: self.contents.to_read() });
+                block_message(self.request_id, block, slot, validation)
+            }
+            SubmittedBlock::Gloas(validation) => LocalMessage {
+                request_id: self.request_id,
+                topic: GossipTopic::BeaconBlock,
+                ssz: block,
+                ssz_read: Some(self.contents.to_read()),
+                slot,
+                validation,
+            },
+            SubmittedBlock::Blinded => return self.answer(Ok(()), producers),
+        };
+        local_gossip.release(message, self.answered, now, gossip_handler, producers);
     }
 
-    /// Its lock committed after the request was answered `LockPending`, so
-    /// it is published without a verdict to wait for.
-    fn release_late(
+    fn on_commit(
         &self,
         decision: &BlockDecision,
+        now: Instant,
+        duty_timers: &mut DutyTimers,
+        local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
+        if decision.key != self.key {
+            self.answer(Err(LocalGossipFailure::Internal), producers);
+            silver_log::error!(
+                ?decision.proposal_id,
+                request_id = self.request_id,
+                "committed Raft command does not match its pending block"
+            );
+            return;
+        }
+        let slot = self.key.slot;
         let response = decision_response(
             decision.admission,
             decision.result,
             LocalGossipFailure::ConflictingProposal,
         );
-        let locked = decision.key == self.key && response.is_ok();
-        let Some(message) =
-            self.signed_block().filter(|_| locked).and_then(|block| self.locked_message(block))
-        else {
+        if response.is_err() {
+            self.answer(response, producers);
             silver_log::warn!(
                 ?decision.result,
                 ?decision.admission,
-                slot = self.slot(),
-                "late block lock cannot be published"
+                request_id = self.request_id,
+                slot,
+                "committed block cannot enter validation"
+            );
+            return;
+        }
+        let Some(bytes) = self.signed_block() else {
+            self.answer(Err(LocalGossipFailure::Internal), producers);
+            silver_log::error!(
+                request_id = self.request_id,
+                slot,
+                "submitted block overwritten before its lock committed"
             );
             return;
         };
-        silver_log::info!(slot = self.slot(), "publishing block whose lock committed late");
-        self.release_contents(producers);
-        LocalGossipHandler::publish_unanswered(message, gossip_handler);
+        duty_timers.released(ClusterDuty::Block, self.received, now);
+        self.release_locked(bytes, now, local_gossip, gossip_handler, producers);
     }
 }
 
@@ -209,7 +246,6 @@ pub(super) struct SlashingProtectionHandler {
     admission: SlashingAdmission,
     pending_attestations: FxHashMap<ProposalId, PendingAttestation>,
     pending_blocks: FxHashMap<ProposalId, PendingBlock>,
-    late_locks: LateLocks,
     wall_slot: u64,
     clock_ahead: bool,
     clock: Option<SlotTicker>,
@@ -241,7 +277,6 @@ impl SlashingProtectionHandler {
             admission: SlashingAdmission::new(),
             pending_attestations: FxHashMap::default(),
             pending_blocks: FxHashMap::default(),
-            late_locks: LateLocks::default(),
             wall_slot: 0,
             clock_ahead: false,
             clock: None,
@@ -262,8 +297,10 @@ impl SlashingProtectionHandler {
         self.report_clock_skew(head_slot, wall_slot, chain_wall_slot);
 
         let wall_slot = chain_wall_slot;
+        if wall_slot != self.wall_slot {
+            self.expire_answered(wall_slot);
+        }
         self.wall_slot = wall_slot;
-        self.late_locks.expire(wall_slot);
         if self.cluster.is_none() {
             self.local_locks.advance_minimum_slot(SlashingAdmission::age_floor(wall_slot));
         }
@@ -278,6 +315,17 @@ impl SlashingProtectionHandler {
         ClusterCounters::FloorLatched.set(1);
         ClusterCounters::StartupFloorSlot.set(wall_slot.saturating_add(1));
         silver_log::info!(wall_slot, "local slashing protection startup floor latched");
+    }
+
+    /// Unanswered entries wait for their proposal's timeout instead: an old
+    /// but admitted slot must still get its answer.
+    fn expire_answered(&mut self, wall_slot: u64) {
+        let live = |answered: bool, slot: u64| {
+            !answered || slot.saturating_add(LATE_COMMIT_SLOTS) > wall_slot
+        };
+        self.pending_attestations
+            .retain(|_, attestation| live(attestation.answered, attestation.command.key.slot));
+        self.pending_blocks.retain(|_, block| live(block.answered, block.key.slot));
     }
 
     fn report_clock_skew(&mut self, head_slot: u64, wall_slot: u64, chain_wall_slot: u64) {
@@ -465,7 +513,8 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
-            let pending = PendingBlock { request_id, key, contents, block, received: now };
+            let pending =
+                PendingBlock { request_id, key, contents, block, received: now, answered: false };
             let signed_block = pending.signed_block().expect("parsed before its lock");
             self.duty_timers.released(ClusterDuty::Block, now, now);
             return pending.release_locked(
@@ -485,6 +534,7 @@ impl SlashingProtectionHandler {
                     contents,
                     block,
                     received: now,
+                    answered: false,
                 });
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
@@ -585,7 +635,6 @@ impl SlashingProtectionHandler {
 
         let pending_attestations = &mut self.pending_attestations;
         let pending_blocks = &mut self.pending_blocks;
-        let late_locks = &mut self.late_locks;
         let outbound_producer = &mut self.outbound_producer;
         let duty_timers = &mut self.duty_timers;
         let result = cluster.spin(now, self.wall_slot, |event| match event {
@@ -602,137 +651,51 @@ impl SlashingProtectionHandler {
                 }
             }
             ClusterEvent::AttestationCommitted(decision) => {
-                let Some(attestation) = pending_attestations.remove(&decision.proposal_id) else {
-                    decision.count();
-                    if let Some(attestation) = late_locks.take_attestation(decision.proposal_id) {
-                        attestation.release_late(&decision, gossip_handler);
-                    }
-                    return;
-                };
-                if decision.command != attestation.command {
-                    produce_response(
-                        producers,
-                        attestation.request_id,
-                        Err(LocalGossipFailure::Internal),
-                    );
-                    silver_log::error!(
-                        ?decision.proposal_id,
-                        request_id = attestation.request_id,
-                        "committed Raft command does not match its pending attestation"
-                    );
-                    return;
-                }
                 decision.count();
-                let response = decision_response(
-                    decision.admission,
-                    decision.result,
-                    LocalGossipFailure::ConflictingAttestation,
-                );
-                if response.is_ok() {
-                    duty_timers.released(ClusterDuty::Attestation, attestation.received, now);
-                    local_gossip.submit(
-                        decision.command.local_message(attestation.request_id),
+                if let Some(attestation) = pending_attestations.remove(&decision.proposal_id) {
+                    attestation.on_commit(
+                        &decision,
                         now,
+                        duty_timers,
+                        local_gossip,
                         gossip_handler,
                         producers,
-                    );
-                } else {
-                    produce_response(producers, attestation.request_id, response);
-                    silver_log::warn!(
-                        ?decision.result,
-                        ?decision.admission,
-                        request_id = attestation.request_id,
-                        slot = attestation.command.key.slot,
-                        "committed attestation cannot enter validation"
                     );
                 }
             }
             ClusterEvent::BlockCommitted(decision) => {
-                let Some(block) = pending_blocks.remove(&decision.proposal_id) else {
-                    decision.count();
-                    if let Some(block) = late_locks.take_block(decision.proposal_id) {
-                        block.release_late(&decision, gossip_handler, producers);
-                    }
-                    return;
-                };
-                if decision.key != block.key {
-                    produce_response(
-                        producers,
-                        block.request_id,
-                        Err(LocalGossipFailure::Internal),
-                    );
-                    silver_log::error!(
-                        ?decision.proposal_id,
-                        request_id = block.request_id,
-                        "committed Raft command does not match its pending block"
-                    );
-                    return;
-                }
-                let slot = block.key.slot;
                 decision.count();
-                let response = decision_response(
-                    decision.admission,
-                    decision.result,
-                    LocalGossipFailure::ConflictingProposal,
-                );
-                if let Err(failure) = response {
-                    produce_response(producers, block.request_id, Err(failure));
-                    silver_log::warn!(
-                        ?decision.result,
-                        ?decision.admission,
-                        request_id = block.request_id,
-                        slot,
-                        "committed block cannot enter validation"
-                    );
-                    return;
-                }
-                let Some(bytes) = block.signed_block() else {
-                    produce_response(
+                if let Some(block) = pending_blocks.remove(&decision.proposal_id) {
+                    block.on_commit(
+                        &decision,
+                        now,
+                        duty_timers,
+                        local_gossip,
+                        gossip_handler,
                         producers,
-                        block.request_id,
-                        Err(LocalGossipFailure::Internal),
                     );
-                    silver_log::error!(
-                        request_id = block.request_id,
-                        slot,
-                        "submitted block overwritten before its lock committed"
-                    );
-                    return;
-                };
-                duty_timers.released(ClusterDuty::Block, block.received, now);
-                block.release_locked(bytes, now, local_gossip, gossip_handler, producers);
+                }
             }
             ClusterEvent::ProposalTimedOut(proposal_id) => {
-                if let Some(block) = pending_blocks.remove(&proposal_id) {
-                    produce_response(
-                        producers,
-                        block.request_id,
-                        Err(LocalGossipFailure::LockPending),
-                    );
+                if let Some(block) = pending_blocks.get_mut(&proposal_id) {
+                    block.answer(Err(LocalGossipFailure::LockPending), producers);
+                    block.answered = true;
                     silver_log::warn!(
                         ?proposal_id,
                         request_id = block.request_id,
                         slot = block.key.slot,
                         "block cluster proposal timed out"
                     );
-                    // A blinded block is revealed through its answered request.
-                    if block.block != SubmittedBlock::Blinded {
-                        late_locks.insert_block(proposal_id, block);
-                    }
                 }
-                if let Some(attestation) = pending_attestations.remove(&proposal_id) {
-                    produce_response(
-                        producers,
-                        attestation.request_id,
-                        Err(LocalGossipFailure::LockPending),
-                    );
+                if let Some(attestation) = pending_attestations.get_mut(&proposal_id) {
+                    attestation.answer(Err(LocalGossipFailure::LockPending), producers);
+                    attestation.answered = true;
                     silver_log::warn!(
                         ?proposal_id,
                         request_id = attestation.request_id,
                         slot = attestation.command.key.slot,
                         "attestation cluster proposal timed out"
                     );
-                    late_locks.insert_attestation(proposal_id, attestation);
                 }
             }
         });
@@ -743,16 +706,11 @@ impl SlashingProtectionHandler {
                 "slashing protection spin failed"
             );
             for (_, attestation) in self.pending_attestations.drain() {
-                produce_response(
-                    producers,
-                    attestation.request_id,
-                    Err(LocalGossipFailure::Internal),
-                );
+                attestation.answer(Err(LocalGossipFailure::Internal), producers);
             }
             for (_, block) in self.pending_blocks.drain() {
-                produce_response(producers, block.request_id, Err(LocalGossipFailure::Internal));
+                block.answer(Err(LocalGossipFailure::Internal), producers);
             }
-            self.late_locks.clear();
         }
     }
 }
@@ -1094,7 +1052,7 @@ mod tests {
 
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
         harness.pop_gossip();
-        assert_eq!(handler.late_locks.len(), 0);
+        assert!(handler.pending_attestations.is_empty() && handler.pending_blocks.is_empty());
         assert!(harness.local_gossip.is_empty(), "nobody awaits the late verdict");
     }
 
@@ -1112,7 +1070,7 @@ mod tests {
         harness.pop_gossip();
         assert_eq!(locked_proposals(&mut harness), 1);
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
-        assert_eq!(handler.late_locks.len(), 0);
+        assert!(handler.pending_attestations.is_empty() && handler.pending_blocks.is_empty());
     }
 
     /// The API reveals a blinded block through the request that was already
@@ -1129,20 +1087,28 @@ mod tests {
 
         assert_eq!(harness.responses(), [(1, Err(LocalGossipFailure::LockPending))]);
         assert!(harness.gossip.pop_event().is_none());
-        assert_eq!(handler.late_locks.len(), 0);
+        assert!(handler.pending_attestations.is_empty() && handler.pending_blocks.is_empty());
     }
 
+    /// An answered entry waits two slots for a late commit; an unanswered
+    /// one waits for its proposal timeout, however old its slot.
     #[test]
-    fn late_locks_expire_two_slots_after_their_slot() {
+    fn answered_pending_locks_expire_two_slots_after_their_slot() {
         let now = Instant::now();
-        let mut late = LateLocks::default();
-        let id = ProposalId { origin_node_id: 1, sequence: 0, incarnation: [0; 16] };
-        late.insert_attestation(id, PendingAttestation::new(1, 0, attestation(11, 7), now));
+        let mut handler = handler(now);
+        handler.on_status(11, 11, true);
+        let id = |sequence| ProposalId { origin_node_id: 1, sequence, incarnation: [0; 16] };
+        let mut answered = PendingAttestation::new(1, 0, attestation(11, 7), now);
+        answered.answered = true;
+        handler.pending_attestations.insert(id(0), answered);
+        handler
+            .pending_attestations
+            .insert(id(1), PendingAttestation::new(2, 0, attestation(11, 8), now));
 
-        late.expire(12);
-        assert_eq!(late.len(), 1);
-        late.expire(13);
-        assert_eq!(late.len(), 0);
+        handler.on_status(12, 12, true);
+        assert_eq!(handler.pending_attestations.len(), 2);
+        handler.on_status(13, 13, true);
+        assert_eq!(handler.pending_attestations.keys().collect::<Vec<_>>(), [&id(1)]);
     }
 
     #[test]

@@ -47,12 +47,23 @@ impl LocalGossipHandler {
         self.pending.entry(msg_id).or_default().push(request);
     }
 
-    /// For a message whose request was already answered: Beacon State still
-    /// validates and relays it, and nobody receives the verdict.
-    pub(super) fn publish_unanswered(
+    pub(super) fn release(
+        &mut self,
         message: LocalMessage<'_>,
+        answered: bool,
+        now: Instant,
         gossip_handler: &mut GossipHandler,
+        producers: &mut SilverSpineProducers,
     ) {
+        if !answered {
+            return self.submit(message, now, gossip_handler, producers);
+        }
+        silver_log::info!(
+            request_id = message.request_id,
+            slot = message.slot,
+            topic = ?message.topic,
+            "publishing a message whose lock committed after its request was answered"
+        );
         Self::inject(message, gossip_handler);
     }
 

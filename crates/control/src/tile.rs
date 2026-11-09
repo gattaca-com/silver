@@ -42,7 +42,6 @@ use crate::{
 };
 
 mod gossip_schedule;
-mod late_locks;
 mod local_gossip;
 mod slashing_protection;
 mod subnet_duties;

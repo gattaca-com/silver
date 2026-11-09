@@ -360,7 +360,7 @@ pub struct SlashingProtectionCluster {
     resolved: Vec<ResolvedProposal>,
     persistence_started: Option<Instant>,
     /// Applied index before which compaction is not retried after an
-    /// oversized snapshot, so the encode does not repeat every loop.
+    /// oversized snapshot, so the skip is not logged and counted every loop.
     compaction_retry_at: u64,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
