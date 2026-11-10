@@ -200,7 +200,7 @@ fn self_build_commits_payload_fields_and_caches_its_unsigned_envelope() {
     assert_eq!(bid.parent_block_hash, attrs.head_block_hash);
     assert_eq!(bid.parent_block_root, rig.proposal.parent_root);
     assert_eq!(bid.prev_randao, attrs.attrs_prev_randao);
-    assert_eq!(bid.blob_kzg_commitments, [[0x33; 48]]);
+    assert_eq!(bid.blob_kzg_commitments.as_slice(), &[[0x33; 48]]);
     assert_eq!(
         bid.execution_requests_root,
         ExecutionRequestsView::hash_tree_root(&EMPTY_EXECUTION_REQUESTS)

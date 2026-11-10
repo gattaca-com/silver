@@ -164,7 +164,7 @@ impl SubnetsBySlot {
 
     /// The duty slots worth adding at `wall_slot`.
     pub fn window(wall_slot: u64) -> RangeInclusive<u64> {
-        wall_slot..=wall_slot + Self::LOOKAHEAD_SLOTS
+        wall_slot..=wall_slot.saturating_add(Self::LOOKAHEAD_SLOTS)
     }
 
     pub fn insert(&mut self, added: SlotSubnets) {

@@ -475,7 +475,9 @@ impl Controller {
     ) {
         if let Some((mut ssz, latest_block_slot, wall_slot)) = latest_status_event {
             if let Some(ingress) = &mut self.cell_ingress {
-                ingress.set_min_slot(StatusView::finalized_epoch(&ssz) * SLOTS_PER_EPOCH);
+                ingress.set_min_slot(
+                    StatusView::finalized_epoch(&ssz).saturating_mul(SLOTS_PER_EPOCH),
+                );
             }
             silver_log::debug!(wall_slot, latest_block_slot, "new status set");
             // PM still tracks our Status (peer-Status validation) + applied head

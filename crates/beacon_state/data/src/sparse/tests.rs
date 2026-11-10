@@ -2,7 +2,7 @@ use super::Edits;
 
 /// Seed a sorted `Edits` through the real merge path (production has no
 /// from-`Vec` constructor).
-fn edits_of<V: Copy + Default>(items: &[(u32, V)]) -> Edits<V> {
+fn edits_of<V: Copy + Default + Send + Sync + 'static>(items: &[(u32, V)]) -> Edits<V> {
     let mut edits = Edits::default();
     edits.merge_in_place(items);
     edits
@@ -112,4 +112,28 @@ fn merge_large_dense_batch_updates_in_place() {
 fn get_does_not_alias_indices_past_u32() {
     let edits = edits_of(&[(2, 20)]);
     assert!(edits.get((1 << 32) + 2).is_none());
+}
+
+#[test]
+fn growth_copy_and_rebase_retain_previous_edits() {
+    let mut edits = edits_of(&[(0, 7u64)]);
+    let first = edits.as_slice().as_ptr();
+    let changes: Vec<_> = (1..100).map(|i| (i, u64::from(i))).collect();
+    edits.merge_in_place(&changes);
+    assert_ne!(first, edits.as_slice().as_ptr());
+
+    let copied = edits_of(&[(1000, 9u64)]);
+    edits.clone_from(&copied);
+    let second = edits.as_slice().as_ptr();
+    let survivor = edits_of(&(0..1000).map(|i| (i, u64::from(i) + 1)).collect::<Vec<_>>());
+    edits.rebase_and_prune_from(&survivor, &Edits::default(), 1000, |_| 0);
+    assert_ne!(second, edits.as_slice().as_ptr());
+    edits.clear();
+
+    // SAFETY: each replacement retains its allocation through subsequent copies and
+    // clears.
+    unsafe {
+        assert_eq!(*first, (0, 7));
+        assert_eq!(*second, (1000, 9));
+    }
 }

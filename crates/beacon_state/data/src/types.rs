@@ -1,3 +1,5 @@
+use std::mem;
+
 use flux_profiler::timed;
 pub use silver_state_hashing::HashFormat;
 
@@ -106,7 +108,6 @@ pub struct StateId {
 
 // size: ~5.5 KB of plain data — the vote list lives in its own tier
 // ([`crate::Eth1Group`]).
-#[derive(Clone)]
 pub struct SlotState {
     pub eth1_data: Eth1Data,
     pub eth1_deposit_index: u64,
@@ -131,6 +132,18 @@ pub struct SlotState {
 
     /// Not spec state: neither hashed nor encoded.
     pub latest_block_root: B256,
+}
+
+impl Clone for SlotState {
+    fn clone(&self) -> Self {
+        Self { latest_execution_payload_bid: self.latest_execution_payload_bid.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.latest_execution_payload_bid.clone_from(&source.latest_execution_payload_bid);
+        let latest_execution_payload_bid = mem::take(&mut self.latest_execution_payload_bid);
+        *self = Self { latest_execution_payload_bid, ..*source };
+    }
 }
 
 impl SlotState {

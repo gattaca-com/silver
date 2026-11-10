@@ -1,44 +1,32 @@
+use std::ops::Deref;
+
 use blst::min_pk::PublicKey;
 
 use crate::{
-    BalancesReader, BalancesWriteView, BlockRoots, BuildersView, BuildersWriteView, Current,
-    EpochId, EpochView, Eth1View, Eth1WriteView, InactivityView, InactivityWriteView, LongtailId,
-    LongtailView, ParticipationView, ParticipationWriteView, PendingView, PendingWriteView,
-    Previous, RandaoMixesView, RandaoMixesWriteView, RootsView, RootsWriteView, SlashingsView,
-    SlashingsWriteView, SlotStateView, SlotStateWriteView, StateRoots, ValidatorsView,
-    ValidatorsWriteView, Withdrawals,
-    tree::{BuildersHash, TreeView, ValidatorsHash},
+    BalancesWriteView, BlockRoots, BuildersWriteView, Current, EpochId, EpochView, Eth1View,
+    Eth1WriteView, InactivityWriteView, LongtailId, LongtailView, ParticipationWriteView,
+    PendingView, PendingWriteView, Previous, RandaoMixesWriteView, RootsWriteView,
+    SlashingsWriteView, SlotStateWriteView, StateReadView, StateRoots, ValidatorsWriteView,
+    Withdrawals,
     types::{BLSPubkey, Immutable, StateId},
 };
 
-/// Per-tier read-view bundle over a fork at a published slot id, for the
-/// **writer thread's own** reads (gossip validation, head recompute): no
-/// `&mut`, no seqlock (synchronous self-read; the cross-thread lock-free path
-/// is `BeaconStateReader::read`, which hands out the same type). Pure field
-/// holder — consumers read through the tier views directly.
-pub struct StateReadView<'a> {
-    pub imm: &'a Immutable,
-    /// Writer-side column readers (carry the SSZ list root for full-state
-    /// hashing) — balances, participation and inactivity alike.
-    pub balances: BalancesReader<'a>,
+/// Owner-side reads exclude concurrent writes through the owner's borrow.
+/// The extra collections here must remain inaccessible from [`StateReadView`].
+pub struct StateView<'a> {
+    pub read: StateReadView<'a>,
     pub eth1: Eth1View<'a>,
-    /// Base + the fork's delta when it owns one, else the lazy base view.
     pub epoch: EpochView<'a>,
-    /// Same lazy resolution as `epoch`.
     pub longtail: LongtailView<'a>,
     pub pending: PendingView<'a>,
-    pub previous_participation: ParticipationView<'a, Previous>,
-    pub current_participation: ParticipationView<'a, Current>,
-    pub inactivity: InactivityView<'a>,
-    pub slashings: SlashingsView<'a>,
-    pub block_roots: RootsView<'a, BlockRoots>,
-    pub state_roots: RootsView<'a, StateRoots>,
-    pub randao_mixes: RandaoMixesView<'a>,
-    pub slot: SlotStateView<'a>,
-    pub validators: ValidatorsView<'a>,
-    pub validators_hash: TreeView<'a, ValidatorsHash>,
-    pub builders: BuildersView<'a>,
-    pub builders_hash: TreeView<'a, BuildersHash>,
+}
+
+impl<'a> Deref for StateView<'a> {
+    type Target = StateReadView<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
 }
 
 /// Holder of a fork's per-slot tier writers (by value) — what the STF takes.
@@ -61,13 +49,6 @@ pub struct StateWriterView<'a> {
     pub slot: SlotStateWriteView<'a>,
     pub validators: ValidatorsWriteView<'a>,
     pub builders: BuildersWriteView<'a>,
-}
-
-impl<'a> StateReadView<'a> {
-    #[inline]
-    pub fn is_gloas(&self) -> bool {
-        self.epoch.is_gloas(self.imm.gloas_fork_version)
-    }
 }
 
 impl<'a> StateWriterView<'a> {
@@ -130,28 +111,32 @@ impl<'a> StateWriterView<'a> {
         &'s mut self,
         epoch: EpochView<'s>,
         longtail: LongtailView<'s>,
-    ) -> StateReadView<'s> {
+    ) -> StateView<'s> {
         let (validators, validators_hash) = self.validators.hashed_readers();
         let (builders, builders_hash) = self.builders.hashed_readers();
-        StateReadView {
-            imm: self.imm,
-            balances: self.balances.hashed_reader(),
+        StateView {
+            read: StateReadView {
+                imm: self.imm,
+                balances: self.balances.hashed_reader(),
+                epoch: epoch.read,
+                longtail: longtail.read,
+                previous_participation: self.previous_participation.hashed_reader(),
+                current_participation: self.current_participation.hashed_reader(),
+                inactivity: self.inactivity.hashed_reader(),
+                slashings: self.slashings.hashed_reader(),
+                block_roots: self.block_roots.hashed_reader(),
+                state_roots: self.state_roots.hashed_reader(),
+                randao_mixes: self.randao_mixes.hashed_reader(),
+                slot: self.slot.reader(),
+                validators,
+                validators_hash,
+                builders,
+                builders_hash,
+            },
             eth1: self.eth1.reader(),
             epoch,
             longtail,
             pending: self.pending.reader(),
-            previous_participation: self.previous_participation.hashed_reader(),
-            current_participation: self.current_participation.hashed_reader(),
-            inactivity: self.inactivity.hashed_reader(),
-            slashings: self.slashings.hashed_reader(),
-            block_roots: self.block_roots.hashed_reader(),
-            state_roots: self.state_roots.hashed_reader(),
-            randao_mixes: self.randao_mixes.hashed_reader(),
-            slot: self.slot.reader(),
-            validators,
-            validators_hash,
-            builders,
-            builders_hash,
         }
     }
 }

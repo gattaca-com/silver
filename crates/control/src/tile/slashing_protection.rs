@@ -195,7 +195,7 @@ impl SlashingProtectionHandler {
             debug_assert!(initialized, "handler and cluster startup floors latch together");
         }
         ClusterCounters::FloorLatched.set(1);
-        ClusterCounters::StartupFloorSlot.set(wall_slot + 1);
+        ClusterCounters::StartupFloorSlot.set(wall_slot.saturating_add(1));
         silver_log::info!(wall_slot, "local slashing protection startup floor latched");
     }
 

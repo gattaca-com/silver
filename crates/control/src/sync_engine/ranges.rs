@@ -16,7 +16,7 @@ struct Range {
 
 impl Range {
     fn end(self) -> Slot {
-        self.start + self.count - 1
+        self.start.saturating_add(self.count.saturating_sub(1))
     }
 
     fn covers(self, slot: Slot) -> bool {
@@ -208,7 +208,7 @@ impl Ranges {
             if matches!(state, RangeState::WithPeers(_)) || !needs.reachable(kind, last) {
                 continue;
             }
-            let Some(start) = (window.tail() + 1..=last)
+            let Some(start) = (window.tail().saturating_add(1)..=last)
                 .find(|&slot| window.coverage(slot).owes(kind, slot, needs))
             else {
                 continue;
@@ -221,12 +221,12 @@ impl Ranges {
             // Trim both ends to what is owed: `start` already skipped what we
             // hold below, and gossip fills the top of the window while the
             // middle is still being fetched.
-            let cap = last.min(start + self.batch - 1);
+            let cap = last.min(start.saturating_add(self.batch.saturating_sub(1)));
             let end = (start..=cap)
                 .rev()
                 .find(|&slot| window.coverage(slot).owes(kind, slot, needs))
                 .unwrap_or(start);
-            let count = end - start + 1;
+            let count = end.saturating_sub(start).saturating_add(1);
             let request_id = RequestId::next(kind, self.origin, next_id);
             let range = Range { request_id, start, count };
 

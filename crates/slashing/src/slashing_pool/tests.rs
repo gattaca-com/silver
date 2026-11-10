@@ -66,7 +66,7 @@ impl Chain {
     }
 
     fn view(&self, id: StateId) -> StateReadView<'_> {
-        self.bs.read_view(id)
+        self.bs.read_view(id).read
     }
 }
 

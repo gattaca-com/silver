@@ -10,15 +10,25 @@ use crate::{
 };
 
 // size: ~1 KB inline — the `SlotState` scalars.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct SlotStateDelta {
     pub(super) slot: SlotState,
     pub(super) epoch_balances: EpochBalances,
 }
 
+impl Clone for SlotStateDelta {
+    fn clone(&self) -> Self {
+        Self { slot: self.slot.clone(), epoch_balances: self.epoch_balances }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.reset_from(source);
+    }
+}
+
 impl Reset for SlotStateDelta {
     fn reset(&mut self) {
-        self.slot = Default::default();
+        self.slot.clone_from(&SlotState::default());
         self.epoch_balances = Default::default();
     }
 

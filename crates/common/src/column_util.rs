@@ -269,7 +269,7 @@ const BLS_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 /// Validation: sidecar's slot is strictly above the finalized slot.
 /// `finalized_epoch` is `state.epoch.finalized_checkpoint.epoch`.
 pub fn is_above_finalized(sidecar: &[u8], finalized_epoch: u64) -> bool {
-    DataColumnSidecarFuluView::slot(sidecar) > finalized_epoch * SLOTS_PER_EPOCH
+    DataColumnSidecarFuluView::slot(sidecar) > finalized_epoch.saturating_mul(SLOTS_PER_EPOCH)
 }
 
 /// Validation: sidecar's `proposer_index` matches the expected proposer

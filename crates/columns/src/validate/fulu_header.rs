@@ -29,7 +29,7 @@ pub(super) struct HeaderState {
 
 impl HeaderState {
     pub(super) fn finalized_slot(&self) -> u64 {
-        self.finalized.epoch * SLOTS_PER_EPOCH
+        self.finalized.epoch.saturating_mul(SLOTS_PER_EPOCH)
     }
 }
 
@@ -56,7 +56,7 @@ impl<'a> FuluHeader<'a> {
         // Lookahead covers the snapshot's current and next epochs only.
         let expected = self
             .slot
-            .checked_sub(view.slot.current_epoch() * SLOTS_PER_EPOCH)
+            .checked_sub(view.slot.current_epoch().saturating_mul(SLOTS_PER_EPOCH))
             .and_then(|offset| view.epoch.proposer_at(offset as usize));
         let proposer = match expected {
             Some(index) if index == self.proposer_index => ProposerCheck::Matches,

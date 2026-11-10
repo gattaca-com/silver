@@ -40,7 +40,7 @@ pub fn process_execution_payload_bid(
         let idx = SLOTS_PER_EPOCH as usize + (bid.slot % SLOTS_PER_EPOCH) as usize;
         view.slot.state_mut().builder_pending_payments[idx] = payment;
     }
-    view.slot.state_mut().latest_execution_payload_bid = bid;
+    view.slot.state_mut().latest_execution_payload_bid.clone_from(&bid);
     Ok(())
 }
 

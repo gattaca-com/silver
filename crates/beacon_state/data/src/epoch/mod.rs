@@ -6,7 +6,7 @@ mod ptc_window;
 mod tests;
 
 pub(crate) use delta::EpochStateDelta;
-pub use delta::{EpochView, EpochWriteView};
+pub use delta::{EpochReadView, EpochView, EpochWriteView};
 pub use effective_increments::EffectiveIncrements;
 pub use finalized::EpochStateFinalized;
 use flux_profiler::timed;

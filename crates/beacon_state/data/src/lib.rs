@@ -9,11 +9,11 @@ pub use committee::{
     committees_per_slot,
 };
 pub use decompose::DecomposeError;
-pub use delta_view::{StateReadView, StateWriterView};
+pub use delta_view::{StateView, StateWriterView};
 pub use encode::{FULU_CHECKPOINT_SECTIONS, PubkeysDecodeError, decode_checkpoint_pubkeys};
 pub use epoch::{
-    EffectiveIncrements, EpochGroup, EpochId, EpochStateFinalized, EpochView, EpochWriteView,
-    PtcWindow,
+    EffectiveIncrements, EpochGroup, EpochId, EpochReadView, EpochStateFinalized, EpochView,
+    EpochWriteView, PtcWindow,
 };
 pub use eth1::{Eth1Group, Eth1Id, Eth1View, Eth1Votes, Eth1WriteView};
 pub use fork_writer::ForkWriter;
@@ -22,7 +22,7 @@ pub use gloas::{
     PayloadWithdrawals, PtcCommittee, Withdrawal,
 };
 pub use longtail::{
-    LongtailGroup, LongtailId, LongtailState, LongtailView, LongtailWriteView,
+    LongtailGroup, LongtailId, LongtailReadView, LongtailState, LongtailView, LongtailWriteView,
     SYNC_SUBCOMMITTEE_MASK_WORDS, SyncCommittees, SyncSubcommittee, uses_next_sync_committee,
 };
 pub use parsed::ParsedAggregateAndProof;
@@ -36,6 +36,7 @@ pub use slot_state::{
     EpochBalances, EpochBalancesRow, SlotStateFinalized, SlotStateGroup, SlotStateId,
     SlotStateView, SlotStateWriteView,
 };
+pub use state_read_view::StateReadView;
 pub use tree::*;
 pub use types::*;
 pub use validators::{
@@ -65,10 +66,10 @@ mod longtail;
 mod parsed;
 mod pending;
 mod reanchor;
-mod retired;
 pub mod ring;
 mod slot_state;
 pub(crate) mod sparse;
+mod state_read_view;
 mod tree;
 pub mod types;
 mod validators;
@@ -178,17 +179,23 @@ impl BeaconState {
         (view, &mut self.epoch, &mut self.longtail)
     }
 
-    /// Resolve a fork's read view from its index bundle — the ONE resolver
-    /// behind both the writer thread's `read_view` and the cross-thread
-    /// optimistic reader.
-    pub fn read_view(&self, state_id: StateId) -> StateReadView<'_> {
+    pub fn read_view(&self, state_id: StateId) -> StateView<'_> {
+        let read = self.state_read_view(state_id);
+        StateView {
+            epoch: EpochView { read: read.epoch },
+            longtail: LongtailView { read: read.longtail },
+            read,
+            eth1: self.eth1.view(state_id.eth1_idx),
+            pending: self.pending.view(state_id.pending_idx),
+        }
+    }
+
+    fn state_read_view(&self, state_id: StateId) -> StateReadView<'_> {
         StateReadView {
             imm: &self.immutable,
             balances: self.balances.view(state_id.balances_idx),
-            eth1: self.eth1.view(state_id.eth1_idx),
-            epoch: self.epoch.view_opt(state_id.epoch_idx),
-            longtail: self.longtail.view_opt(state_id.longtail_idx),
-            pending: self.pending.view(state_id.pending_idx),
+            epoch: self.epoch.view_opt(state_id.epoch_idx).read,
+            longtail: self.longtail.view_opt(state_id.longtail_idx).read,
             previous_participation: self
                 .previous_participation
                 .view(state_id.previous_participation_idx),

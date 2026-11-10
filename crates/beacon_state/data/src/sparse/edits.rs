@@ -1,21 +1,21 @@
-/// A column's sparse delta: a `Vec<(idx, value)>` kept sorted by `idx`,
+use silver_state_memory::RetainedVec;
+
+/// A column's sparse delta, sorted by index,
 /// overlaying a dense finalized base.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Edits<V> {
-    inner: Vec<(u32, V)>,
+pub struct Edits<V: Copy> {
+    inner: RetainedVec<(u32, V)>,
 }
 
 // Manual impl: the derive would spuriously bind `V: Default` (an empty vec
 // needs no element default).
-impl<V> Default for Edits<V> {
+impl<V: Copy> Default for Edits<V> {
     fn default() -> Self {
-        Self { inner: Vec::new() }
+        Self { inner: RetainedVec::default() }
     }
 }
 
-// Manual Clone: `clone_from` must reuse the existing allocation (same
-// rationale as `SlotState`'s impl in `types.rs`).
-impl<V: Clone> Clone for Edits<V> {
+impl<V: Copy + Send + Sync + 'static> Clone for Edits<V> {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
@@ -25,7 +25,7 @@ impl<V: Clone> Clone for Edits<V> {
     }
 }
 
-impl<V> Edits<V> {
+impl<V: Copy> Edits<V> {
     #[inline]
     pub fn clear(&mut self) {
         self.inner.clear();
@@ -60,7 +60,7 @@ impl<V> Edits<V> {
     }
 }
 
-impl<V: Copy + PartialEq> Edits<V> {
+impl<V: Copy + PartialEq + Send + Sync + 'static> Edits<V> {
     pub fn rebase_and_prune_from(
         &mut self,
         survivor: &Self,
@@ -130,7 +130,7 @@ impl Edits<bool> {
     }
 }
 
-impl<V: Copy> Edits<V> {
+impl<V: Copy + Send + Sync + 'static> Edits<V> {
     /// Merge an ascending, distinct-key `changes` batch in O(|edits| +
     /// |batch|), the batch value winning on a shared `idx`. Keeps
     /// base-equal entries (the read sweep / rebase tolerate redundant
@@ -190,7 +190,7 @@ impl<V: Copy> Edits<V> {
 
 /// In-place sorted-merge internals for
 /// [`merge_in_place`](Edits::merge_in_place).
-impl<V: Copy> Edits<V> {
+impl<V: Copy + Send + Sync + 'static> Edits<V> {
     /// Phase 1 — overwrite the override entries in place and count the
     /// genuinely new (non-matching) changes, returned for phase 2 to insert.
     /// Gallops through the ascending batch: O(log gap) per change, so ~O(m +

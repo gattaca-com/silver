@@ -140,7 +140,7 @@ impl Syncing {
     ) -> bool {
         let Some(since) = self.stall.since else { return false };
         let stalled_for = now.saturating_duration_since(since);
-        let slot = window.tail() + 1;
+        let slot = window.tail().saturating_add(1);
 
         if stalled_for >= TAIL_UNAVAILABLE_TIMEOUT && self.stall.reported != Some(slot) {
             self.stall.reported = Some(slot);

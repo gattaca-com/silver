@@ -47,6 +47,14 @@ impl PtcWindow {
         Self { root: merkleize(&roots[..]), committees, roots }
     }
 
+    pub(super) fn copy_committees(&mut self, committees: &[PtcCommittee; PTC_WINDOW_LEN]) {
+        self.committees.copy_from_slice(committees);
+        for (root, committee) in self.roots.iter_mut().zip(committees) {
+            *root = hash_uint64_vector(committee);
+        }
+        self.root = merkleize(&self.roots[..]);
+    }
+
     #[inline]
     pub fn committees(&self) -> &[PtcCommittee; PTC_WINDOW_LEN] {
         &self.committees
@@ -79,5 +87,24 @@ impl PtcWindow {
             *root = hash_uint64_vector(committee);
         }
         self.root = merkleize(&self.roots[..]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_committees_preserves_both_allocations() {
+        let mut window = PtcWindow::default();
+        let committees = window.committees.as_ptr();
+        let roots = window.roots.as_ptr();
+        let mut replacement = zeroed_ptc_window();
+        replacement[1][2] = 7;
+        window.copy_committees(&replacement);
+        assert_eq!(window.committees.as_ptr(), committees);
+        assert_eq!(window.roots.as_ptr(), roots);
+        assert_eq!(window.committees[1][2], 7);
+        assert_eq!(window.hash_root(), PtcWindow::new(replacement).hash_root());
     }
 }

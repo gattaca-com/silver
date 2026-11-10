@@ -6019,6 +6019,7 @@ dependencies = [
  "silver_log",
  "silver_ssz",
  "silver_state_hashing",
+ "silver_state_memory",
  "snap 1.1.2",
  "thiserror 1.0.69",
 ]
@@ -6454,6 +6455,10 @@ dependencies = [
  "tree_hash",
  "typenum",
 ]
+
+[[package]]
+name = "silver_state_memory"
+version = "0.1.0-alpha.15"
 
 [[package]]
 name = "silver_storage"

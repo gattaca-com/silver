@@ -246,7 +246,7 @@ impl<'a, Q: QueueItem> QueueWriteView<'a, Q> {
 }
 
 /// Value-layer read over the pending queues — a methodless holder of one
-/// [`QueueView`] per queue (mirror of [`StateReadView`](crate::StateReadView)):
+/// [`QueueView`] per queue (mirror of [`StateView`](crate::StateView)):
 /// callers read a queue directly, e.g. `pending.deposits.root()`.
 #[derive(Clone, Copy)]
 pub struct PendingView<'a> {

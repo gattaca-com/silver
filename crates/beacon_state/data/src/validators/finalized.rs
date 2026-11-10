@@ -9,11 +9,11 @@ use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_crypto_simd::bls::{G1Point, uncompress_in_g1};
+use silver_state_memory::RetiredColumns;
 
 use crate::{
     Withdrawals,
     merkle::{merkleize_each, uint64_chunk},
-    retired::RetiredColumns,
     slot_state::{EpochBalances, EpochBalancesRow},
     types::{B256, BLSPubkey, Epoch, FAR_FUTURE_EPOCH, validator_capacity},
 };

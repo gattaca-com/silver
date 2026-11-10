@@ -46,13 +46,17 @@ impl PeerView {
     }
 
     pub(super) fn any_peer_ahead_of(&self, our_head_slot: u64, cfg: &SyncingConfig) -> bool {
-        self.claims.values().any(|c| c.head_slot > our_head_slot + cfg.head_lag_threshold_slots)
+        self.claims
+            .values()
+            .any(|c| c.head_slot > our_head_slot.saturating_add(cfg.head_lag_threshold_slots))
     }
 
     /// Whether a peer claims a head at most the configured lag behind ours, or
     /// ahead.
     pub(super) fn any_peer_level_with(&self, our_head_slot: u64, cfg: &SyncingConfig) -> bool {
-        self.claims.values().any(|c| c.head_slot + cfg.head_lag_threshold_slots >= our_head_slot)
+        self.claims
+            .values()
+            .any(|c| c.head_slot.saturating_add(cfg.head_lag_threshold_slots) >= our_head_slot)
     }
 
     pub(super) fn claims_span(&self, peer: usize, span: RangeInclusive<Slot>) -> bool {
@@ -149,7 +153,7 @@ impl PeerView {
                 *epoch >= trigger_epoch &&
                     target_slot > our_head_slot &&
                     !self.is_excluded(root) &&
-                    target_slot <= wall_slot + cfg.wall_clock_tolerance_slots
+                    target_slot <= wall_slot.saturating_add(cfg.wall_clock_tolerance_slots)
             })
             .max_by(|a, b| {
                 a.1.cmp(b.1).then_with(|| a.0.0.cmp(&b.0.0)).then_with(|| a.0.1.cmp(&b.0.1))
@@ -168,8 +172,8 @@ impl PeerView {
         self.head_counts
             .iter()
             .filter(|(root, a)| {
-                a.head_slot > our_head_slot + head_lag &&
-                    a.head_slot <= wall_slot + cfg.wall_clock_tolerance_slots &&
+                a.head_slot > our_head_slot.saturating_add(head_lag) &&
+                    a.head_slot <= wall_slot.saturating_add(cfg.wall_clock_tolerance_slots) &&
                     !self.is_excluded(root)
             })
             .max_by(|a, b| {
