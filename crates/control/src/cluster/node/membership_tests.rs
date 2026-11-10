@@ -1,6 +1,6 @@
 use raft::{
     Storage,
-    eraftpb::{ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfState},
+    eraftpb::{ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfState, EntryType},
 };
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
@@ -64,10 +64,22 @@ fn has_voters(node: &SlashingProtectionCluster, voters: &[u64]) -> bool {
     membership.voters == voters && membership.voters_outgoing.is_empty()
 }
 
+fn is_joint(node: &SlashingProtectionCluster) -> bool {
+    !membership(node).voters_outgoing.is_empty()
+}
+
+fn carries_joint_leave(message: &Message) -> bool {
+    message.entries.iter().any(|entry| {
+        entry.get_entry_type() == EntryType::EntryConfChangeV2 && entry.data.is_empty()
+    })
+}
+
 struct Cluster {
     nodes: Vec<SlashingProtectionCluster>,
     now: Instant,
     decisions: Vec<AttestationDecision>,
+    isolated: Option<u64>,
+    drop_joint_leaves: bool,
 }
 
 impl Cluster {
@@ -83,7 +95,8 @@ impl Cluster {
 
     #[track_caller]
     fn started(nodes: Vec<SlashingProtectionCluster>, now: Instant) -> Self {
-        let mut cluster = Self { nodes, now, decisions: Vec::new() };
+        let mut cluster =
+            Self { nodes, now, decisions: Vec::new(), isolated: None, drop_joint_leaves: false };
         cluster
             .rounds_until(|cluster| cluster.nodes.iter().all(SlashingProtectionCluster::is_ready));
         for node in &mut cluster.nodes {
@@ -96,7 +109,8 @@ impl Cluster {
         self.nodes.iter_mut().find(|node| node.node_id() == id).unwrap()
     }
 
-    /// Messages to a node that is absent or still recovering are lost. The
+    /// Messages to a node that is absent, isolated or still recovering are
+    /// lost. The
     /// clock waits for disk writes, so real fsync time cannot fire elections.
     fn round(&mut self) {
         let mut messages = Vec::new();
@@ -110,6 +124,11 @@ impl Cluster {
             .unwrap();
         }
         for message in messages {
+            if self.isolated.is_some_and(|id| message.from == id || message.to == id) ||
+                (self.drop_joint_leaves && carries_joint_leave(&message))
+            {
+                continue;
+            }
             if let Some(node) =
                 self.nodes.iter_mut().find(|node| node.node_id() == message.to && node.is_ready())
             {
@@ -161,9 +180,9 @@ impl Cluster {
     /// Removes a follower through a joint config, and returns the remaining
     /// voters.
     #[track_caller]
-    fn remove_follower(&mut self) -> Vec<u64> {
+    fn remove_follower(&mut self, transition: ConfChangeTransition) -> Vec<u64> {
         let removed = self.follower();
-        self.propose_membership_change(membership_change(ConfChangeTransition::Implicit, &[(
+        self.propose_membership_change(membership_change(transition, &[(
             ConfChangeType::RemoveNode,
             removed,
         )]));
@@ -223,11 +242,50 @@ fn learner_is_added_on_every_node_and_peers_follow() {
 #[test]
 fn joint_removal_leaves_the_joint_config_on_every_node() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    cluster.remove_follower();
+    cluster.remove_follower(ConfChangeTransition::Implicit);
 
     let follower = cluster.follower();
     cluster.commit_attestation(follower, 1);
     assert!(cluster.nodes.iter().all(|node| node.state.len() == 1));
+}
+
+/// raft-rs leaves an explicit joint config only on request, so this one is
+/// left by the leader's own proposal.
+#[test]
+fn leader_leaves_an_explicit_joint_config() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    cluster.remove_follower(ConfChangeTransition::Explicit);
+
+    let follower = cluster.follower();
+    cluster.commit_attestation(follower, 1);
+}
+
+/// The old leader's leave entry never reaches the others. Adding a learner
+/// leaves both halves `[1, 2, 3]`, so two nodes can elect a new leader.
+/// raft-rs leaves on the new leader by itself here; this pins the outcome.
+#[test]
+fn leader_elected_inside_a_joint_config_leaves_it() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    let old_leader = cluster.elect();
+    cluster.drop_joint_leaves = true;
+    cluster.propose_membership_change(membership_change(ConfChangeTransition::Implicit, &[(
+        ConfChangeType::AddLearnerNode,
+        4,
+    )]));
+    cluster.rounds_until(|cluster| cluster.nodes.iter().all(is_joint));
+
+    cluster.isolated = Some(old_leader);
+    cluster.drop_joint_leaves = false;
+    let successor =
+        cluster.nodes.iter().find(|node| node.node_id() != old_leader).unwrap().node_id();
+    cluster.node(successor).campaign().unwrap();
+    cluster.rounds_until(|cluster| {
+        cluster
+            .nodes
+            .iter()
+            .filter(|node| node.node_id() != old_leader)
+            .all(|node| !is_joint(node) && membership(node).learners == [4])
+    });
 }
 
 #[test]
@@ -271,7 +329,7 @@ fn membership_survives_a_restart_from_the_log_or_a_snapshot() {
 
         let create = |id| ClusterStorageConfig::Create(journal(id));
         let mut cluster = start(&[1, 2, 3], &create, Instant::now());
-        let remaining = cluster.remove_follower();
+        let remaining = cluster.remove_follower(ConfChangeTransition::Implicit);
         for attester_index in 0..6 {
             let follower = cluster.follower();
             cluster.commit_attestation(follower, attester_index);

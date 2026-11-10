@@ -6,7 +6,7 @@ use std::{
 
 use raft::{
     Config, RawNode, StateRole,
-    eraftpb::{ConfChangeV2, Entry, Message, MessageType},
+    eraftpb::{ConfChangeV2, ConfState, Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -315,6 +315,8 @@ pub struct SlashingProtectionCluster {
     /// oversized snapshot, so the skip is not logged and counted every loop.
     compaction_retry_at: u64,
     leader_boycott: LeaderBoycott,
+    /// Cached: raft-rs exposes the outgoing voters only by allocating.
+    joint: bool,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -356,6 +358,7 @@ impl SlashingProtectionCluster {
             persistence_started: None,
             compaction_retry_at: 0,
             leader_boycott: LeaderBoycott::default(),
+            joint: false,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -619,6 +622,7 @@ impl SlashingProtectionCluster {
             self.sample();
         }
         self.maybe_propose_minimum_slot(wall_slot)?;
+        self.maybe_leave_joint()?;
 
         while !self.persistence.is_pending() && self.node.as_ref().is_some_and(RawNode::has_ready) {
             self.process_ready(now, emit)?;
@@ -973,7 +977,7 @@ impl SlashingProtectionCluster {
         match node.apply_conf_change(change) {
             Ok(membership) => {
                 node.mut_store().memory.wl().set_conf_state(membership.clone());
-                self.peers.set_members(self.config.node_id, &membership);
+                self.adopt_membership(&membership);
                 silver_log::info!(index, ?membership, "Raft membership changed");
             }
             Err(error) => {
@@ -985,7 +989,35 @@ impl SlashingProtectionCluster {
 
     fn follow_membership(&mut self) -> Result<(), ClusterError> {
         let node = self.node.as_ref().ok_or(ClusterError::NotReady)?;
-        self.peers.set_members(self.config.node_id, &node.raft.prs().conf().to_conf_state());
+        let membership = node.raft.prs().conf().to_conf_state();
+        self.adopt_membership(&membership);
+        Ok(())
+    }
+
+    fn adopt_membership(&mut self, membership: &ConfState) {
+        self.peers.set_members(self.config.node_id, membership);
+        self.joint = !membership.voters_outgoing.is_empty();
+    }
+
+    /// No joint config outlives a leader with nothing pending. raft-rs leaves
+    /// only `auto_leave` configs by itself, and its own TODO in `commit_apply`
+    /// says a leader change can make it miss those too.
+    fn maybe_leave_joint(&mut self) -> Result<(), ClusterError> {
+        if !self.joint || !self.is_leader() {
+            return Ok(());
+        }
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        if node.raft.has_pending_conf() {
+            return Ok(());
+        }
+        match node.propose_conf_change(Vec::new(), ConfChangeV2::default()) {
+            Ok(()) => silver_log::info!("proposed leaving the joint Raft membership"),
+            // Leadership is moving; the next spin retries.
+            Err(raft::Error::ProposalDropped) => {
+                silver_log::debug!("joint membership leave proposal dropped");
+            }
+            Err(error) => return Err(error.into()),
+        }
         Ok(())
     }
 
