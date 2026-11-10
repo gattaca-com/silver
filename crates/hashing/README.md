@@ -143,23 +143,29 @@ silver's state design.
 
 ## Benchmarks
 
-Compared with `milhouse` 0.9 on a mainnet-sized list of 2.3M entries. All
-writes go to 900k non-zero entries, and each time covers the writes and the
-new root. Measured on an AMD Ryzen 9 9950X, 16 cores, with mimalloc for both;
-scenarios are in
-[`milhouse_comparison.rs`](https://github.com/gattaca-com/silver/blob/main/crates/hashing/bench/benches/milhouse_comparison.rs).
+Compared with `milhouse` 0.9 and `ssz::PersistentList`, the persistent list
+of another Rust consensus client, on a mainnet-sized list of 2.3M entries.
+All writes go to 900k non-zero entries, and each time covers the writes and
+the new root. Every library's root is checked against ours before timing.
+`ssz::PersistentList` hashes on one thread, with the 64-value bundle its
+client uses for balances. Measured on an AMD Ryzen 9 9950X, 16 cores, with
+mimalloc for all; scenarios are in
+[`comparison.rs`](https://github.com/gattaca-com/silver/blob/main/crates/hashing/bench/benches/comparison.rs).
 
-| Scenario | milhouse, 16 threads | milhouse, 1 thread | silver_state_hashing, 1 thread | Speedup vs milhouse, 1 thread |
+| Scenario | silver_state_hashing, 1 thread | ssz::PersistentList | milhouse, 1 thread | milhouse, 16 threads |
 |---|---|---|---|---|
-| Build + root | 65.8 ms | 126 ms | 14.8 ms | 8.5× |
-| Iterate all values | - | 17.5 ms | 0.66 ms | 26× |
-| 1 write | 6.27 ms | 5.97 ms | 8.2 µs | ~730× |
-| 500 random writes | 5.40 ms | 5.71 ms | 0.36 ms | 16× |
-| 2,000 random writes | 8.68 ms | 10.1 ms | 0.91 ms | 11× |
-| 900k writes, one per non-zero entry | 152 ms | 224 ms | 16.0 ms | 14× |
-| Reorg, depth 1 | 5.35 ms | 5.28 ms | 0.43 ms | 12× |
-| Reorg, depth 8 | 5.51 ms | 5.82 ms | 1.68 ms | 3.5× |
-| Reorg, depth 32 | 5.60 ms | 5.98 ms | 2.68 ms | 2.2× |
+| Build + root | 14.3 ms | 36.0 ms | 133 ms | 66.3 ms |
+| Iterate all values | 0.21 ms | 0.31 ms | 19.2 ms | - |
+| 500 random writes | 0.36 ms | 0.77 ms | 6.36 ms | 6.08 ms |
+| 2,000 random writes | 0.94 ms | 2.75 ms | 11.2 ms | 9.34 ms |
+| 900k writes, one per non-zero entry | 16.3 ms | 61.2 ms | 241 ms | 154 ms |
+| Reorg depth 1 + 500 writes | 0.43 ms | 0.74 ms | 6.58 ms | 6.13 ms |
+| Reorg depth 4 + 500 writes | 1.18 ms | 0.74 ms | 6.71 ms | 6.65 ms |
+| Reorg depth 32 + 500 writes | 2.85 ms | 0.75 ms | 7.14 ms | 6.58 ms |
+
+Switching versions takes longer here than in the other libraries. The design
+targets the real use case: on mainnet, fewer than 0.15% of blocks are reorged
+out, and 99.8% of reorgs are one block deep.
 
 ```sh
 cargo bench -p silver_state_hashing_bench

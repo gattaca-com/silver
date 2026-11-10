@@ -1,18 +1,20 @@
-//! `SharedList` compared with `milhouse::List` on a mainnet-sized list. Each
-//! write scenario starts from a clone of a hashed list and times the writes
-//! plus the new root.
+//! `SharedList` compared with `milhouse::List` and `ssz::PersistentList` on a
+//! mainnet-sized list. Each write scenario starts from a clone of a hashed
+//! list and times the writes plus the new root.
+//!
+//! `ssz::PersistentList` hashes single-threaded. It uses the 64-value bundle
+//! its client uses for balances, not the 4-value default.
 
-use std::{
-    slice,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::index};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use silver_state_hashing::{B256, HashFormat, SharedList, TreeSpec};
+use ssz::{PersistentList, SszHash, SszListMut};
 use tree_hash::TreeHash;
-use typenum::U1099511627776;
+use try_from_iterator::TryFromIterator;
+use typenum::{U64, U1099511627776};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -21,7 +23,6 @@ const LEN: usize = 2_300_000;
 const ACTIVE: usize = 900_000;
 const BLOCK_WRITES: usize = 500;
 const HEAVY_BLOCK_WRITES: usize = 2_000;
-const MILHOUSE_THREADS: [usize; 2] = [1, 16];
 
 struct Balances;
 
@@ -31,8 +32,9 @@ impl TreeSpec for Balances {
     const SSZ_LIMIT: usize = 1 << 40;
 }
 
-type Milhouse = milhouse::List<u64, U1099511627776>;
 type Shared = SharedList<Balances>;
+type Milhouse = milhouse::List<u64, U1099511627776>;
+type Persistent = PersistentList<u64, U1099511627776, U64>;
 
 struct Registry {
     balances: Vec<u64>,
@@ -72,14 +74,18 @@ struct Runner {
 }
 
 impl Runner {
-    fn milhouse(threads: usize) -> Self {
-        let unit = if threads == 1 { "thread" } else { "threads" };
-        let pool = ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-        Self { name: format!("milhouse_{threads}_{unit}"), pool: Some(pool) }
-    }
-
-    fn silver() -> Self {
-        Self { name: "silver_state_hashing".to_owned(), pool: None }
+    fn all<L: Candidate>() -> Vec<Self> {
+        if L::RAYON_THREADS.is_empty() {
+            return vec![Self { name: L::NAME.to_owned(), pool: None }];
+        }
+        L::RAYON_THREADS
+            .iter()
+            .map(|&threads| {
+                let unit = if threads == 1 { "thread" } else { "threads" };
+                let pool = ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+                Self { name: format!("{}_{threads}_{unit}", L::NAME), pool: Some(pool) }
+            })
+            .collect()
     }
 
     fn run<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
@@ -90,19 +96,11 @@ impl Runner {
     }
 }
 
-struct Runners {
-    milhouse: [Runner; MILHOUSE_THREADS.len()],
-    silver: Runner,
-}
-
-impl Runners {
-    fn new() -> Self {
-        Self { milhouse: MILHOUSE_THREADS.map(Runner::milhouse), silver: Runner::silver() }
-    }
-}
-
 trait Candidate: Clone + Send + Sync {
-    fn runners(runners: &Runners) -> &[Runner];
+    const NAME: &str;
+    /// Empty for a library without a parallel hashing path: it runs on the
+    /// bench thread.
+    const RAYON_THREADS: &[usize] = &[];
 
     fn build(vals: &[u64]) -> Self;
 
@@ -111,10 +109,29 @@ trait Candidate: Clone + Send + Sync {
     fn sum(&self) -> u64;
 }
 
-impl Candidate for Milhouse {
-    fn runners(runners: &Runners) -> &[Runner] {
-        &runners.milhouse
+impl Candidate for Shared {
+    const NAME: &str = "silver_state_hashing";
+
+    fn build(vals: &[u64]) -> Self {
+        Self::new(vals, HashFormat::Fixed).unwrap()
     }
+
+    fn write_and_hash(&mut self, indices: &[usize]) -> [u8; 32] {
+        for &i in indices {
+            self.set(i, self.get(i).unwrap() + 1).unwrap();
+        }
+        self.commit();
+        self.hash_root()
+    }
+
+    fn sum(&self) -> u64 {
+        self.iter().sum()
+    }
+}
+
+impl Candidate for Milhouse {
+    const NAME: &str = "milhouse";
+    const RAYON_THREADS: &[usize] = &[1, 16];
 
     fn build(vals: &[u64]) -> Self {
         let list = Self::try_from_iter(vals.iter().copied()).unwrap();
@@ -135,40 +152,49 @@ impl Candidate for Milhouse {
     }
 }
 
-impl Candidate for Shared {
-    fn runners(runners: &Runners) -> &[Runner] {
-        slice::from_ref(&runners.silver)
-    }
+impl Candidate for Persistent {
+    const NAME: &str = "persistent_list";
 
     fn build(vals: &[u64]) -> Self {
-        Self::new(vals, HashFormat::Fixed).unwrap()
+        let list = Self::try_from_iter(vals.iter().copied()).unwrap();
+        list.hash_tree_root();
+        list
     }
 
     fn write_and_hash(&mut self, indices: &[usize]) -> [u8; 32] {
         for &i in indices {
-            self.set(i, self.get(i).unwrap() + 1).unwrap();
+            *self.get_mut(i as u64).unwrap() += 1;
         }
-        self.commit();
-        self.hash_root()
+        self.hash_tree_root().0
     }
 
     fn sum(&self) -> u64 {
-        self.iter().sum()
+        self.into_iter().sum()
     }
 }
 
-fn bench_build<L: Candidate>(c: &mut Criterion, registry: &Registry, runners: &Runners) {
+/// Panics instead of benchmarking a tree that differs from ours.
+fn assert_roots_match<L: Candidate>(registry: &Registry) {
+    let block = registry.random_block(0, BLOCK_WRITES);
+    let mut ours = Shared::build(&registry.balances);
+    let mut theirs = L::build(&registry.balances);
+    assert_eq!(theirs.write_and_hash(&[]), ours.write_and_hash(&[]), "{}: build root", L::NAME);
+    assert_eq!(
+        theirs.write_and_hash(&block),
+        ours.write_and_hash(&block),
+        "{}: 500 writes",
+        L::NAME
+    );
+}
+
+fn bench_build<L: Candidate>(c: &mut Criterion, registry: &Registry, runner: &Runner) {
     let vals = &registry.balances;
-    for runner in L::runners(runners) {
-        c.benchmark_group("build")
-            .sample_size(10)
-            .bench_function(&runner.name, |b| b.iter(|| runner.run(|| L::build(vals))));
-    }
+    c.benchmark_group("build")
+        .sample_size(10)
+        .bench_function(&runner.name, |b| b.iter(|| runner.run(|| L::build(vals))));
 }
 
-/// Iteration is sequential on both sides, so only the first runner is timed.
-fn bench_iter<L: Candidate>(c: &mut Criterion, registry: &Registry, runners: &Runners) {
-    let runner = &L::runners(runners)[0];
+fn bench_iter<L: Candidate>(c: &mut Criterion, registry: &Registry, runner: &Runner) {
     let head = runner.run(|| L::build(&registry.balances));
     c.benchmark_group("iter_all")
         .sample_size(10)
@@ -178,36 +204,23 @@ fn bench_iter<L: Candidate>(c: &mut Criterion, registry: &Registry, runners: &Ru
 fn bench_writes<L: Candidate>(
     c: &mut Criterion,
     registry: &Registry,
-    runners: &Runners,
+    runner: &Runner,
     group: &str,
     indices: &[usize],
 ) {
-    for runner in L::runners(runners) {
-        let head = runner.run(|| L::build(&registry.balances));
-        c.benchmark_group(group).sample_size(10).bench_function(&runner.name, |b| {
-            b.iter_batched(
-                || head.clone(),
-                |mut list| runner.run(|| list.write_and_hash(indices)),
-                BatchSize::LargeInput,
-            )
-        });
-    }
-}
-
-fn bench_reorg<L: Candidate>(
-    c: &mut Criterion,
-    registry: &Registry,
-    runners: &Runners,
-    depth: usize,
-) {
-    for runner in L::runners(runners) {
-        bench_reorg_on::<L>(c, registry, runner, depth);
-    }
+    let head = runner.run(|| L::build(&registry.balances));
+    c.benchmark_group(group).sample_size(10).bench_function(&runner.name, |b| {
+        b.iter_batched(
+            || head.clone(),
+            |mut list| runner.run(|| list.write_and_hash(indices)),
+            BatchSize::LargeInput,
+        )
+    });
 }
 
 /// Times a block on branch B right after one on branch A, both `depth` blocks
 /// past a common ancestor.
-fn bench_reorg_on<L: Candidate>(
+fn bench_reorg<L: Candidate>(
     c: &mut Criterion,
     registry: &Registry,
     runner: &Runner,
@@ -242,33 +255,35 @@ fn bench_reorg_on<L: Candidate>(
     });
 }
 
-fn mainnet(c: &mut Criterion) {
-    let registry = Registry::mainnet();
-    let runners = Runners::new();
+fn bench_all<L: Candidate>(c: &mut Criterion, registry: &Registry) {
+    assert_roots_match::<L>(registry);
 
-    bench_build::<Milhouse>(c, &registry, &runners);
-    bench_build::<Shared>(c, &registry, &runners);
-
-    bench_iter::<Milhouse>(c, &registry, &runners);
-    bench_iter::<Shared>(c, &registry, &runners);
-
-    let one = [registry.active[registry.active.len() / 2]];
     let block = registry.random_block(0, BLOCK_WRITES);
     let heavy_block = registry.random_block(1, HEAVY_BLOCK_WRITES);
-    for (group, indices) in [
-        ("write_1", &one[..]),
-        ("write_500_random", &block),
-        ("write_2000_random", &heavy_block),
-        ("write_all_active", &registry.active),
-    ] {
-        bench_writes::<Milhouse>(c, &registry, &runners, group, indices);
-        bench_writes::<Shared>(c, &registry, &runners, group, indices);
-    }
+    let runners = Runner::all::<L>();
 
-    for depth in [1, 8, 32] {
-        bench_reorg::<Milhouse>(c, &registry, &runners, depth);
-        bench_reorg::<Shared>(c, &registry, &runners, depth);
+    // Iteration is sequential everywhere, so one runner suffices.
+    bench_iter::<L>(c, registry, &runners[0]);
+    for runner in &runners {
+        bench_build::<L>(c, registry, runner);
+        for (group, indices) in [
+            ("write_500_random", &block),
+            ("write_2000_random", &heavy_block),
+            ("write_all_active", &registry.active),
+        ] {
+            bench_writes::<L>(c, registry, runner, group, indices);
+        }
+        for depth in [1, 4, 32] {
+            bench_reorg::<L>(c, registry, runner, depth);
+        }
     }
+}
+
+fn mainnet(c: &mut Criterion) {
+    let registry = Registry::mainnet();
+    bench_all::<Shared>(c, &registry);
+    bench_all::<Milhouse>(c, &registry);
+    bench_all::<Persistent>(c, &registry);
 }
 
 criterion_group!(benches, mainnet);

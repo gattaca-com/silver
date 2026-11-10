@@ -69,11 +69,22 @@ impl<C: TreeSpec> SharedList<C> {
             Some(flat) => (Some(flat.leaves()), None),
             None => (None, Some(self.table.leaf_rows::<C, _>(&self.pool.pages))),
         };
+        let sz = size_of::<C::Val>();
+        let mut remaining = self.len() * sz;
         flat.into_iter()
             .chain(paged.into_iter().flatten())
-            .flatten()
-            .flat_map(|chunk| (0..C::VALS_PER_CHUNK).map(|lane| C::Val::lane(chunk, lane)))
-            .take(self.len())
+            .map(move |row| {
+                let bytes = &row.as_flattened()[..remaining.min(size_of_val(row))];
+                remaining -= bytes.len();
+                bytes
+            })
+            .flat_map(move |bytes| {
+                bytes.chunks_exact(sz).map(|val| {
+                    let mut out = [C::Val::default()];
+                    C::Val::read_ssz_slice(&mut out, val);
+                    out[0]
+                })
+            })
     }
 
     #[inline]

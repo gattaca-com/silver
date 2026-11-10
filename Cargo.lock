@@ -221,6 +221,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arithmetic"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "easy-ext",
+ "primitive-types",
+ "thiserror 2.0.18",
+ "typenum",
+]
+
+[[package]]
 name = "ark-ff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -804,6 +815,12 @@ checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "bit_field"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitcode"
@@ -1919,6 +1936,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "easy-ext"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8072bec12b909b65aec01fa6518f387cfbf3427d4475409ad622898cd347522c"
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2048,6 +2071,33 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ethbloom"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c22d4b5885b6aa2fe5e8b9329fb8d232bf739e434e6b87347c63bdd00c120f60"
+dependencies = [
+ "crunchy",
+ "fixed-hash",
+ "impl-rlp",
+ "impl-serde",
+ "tiny-keccak",
+]
+
+[[package]]
+name = "ethereum-types"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d215cbf040552efcbe99a38372fe80ab9d00268e20012b79fcd0f073edd8ee"
+dependencies = [
+ "ethbloom",
+ "fixed-hash",
+ "impl-rlp",
+ "impl-serde",
+ "primitive-types",
+ "uint",
 ]
 
 [[package]]
@@ -2579,6 +2629,7 @@ version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
+ "serde",
  "typenum",
  "version_check",
  "zeroize",
@@ -2806,6 +2857,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashing"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "ethereum-types",
+ "generic-array",
+ "hex-literal",
+ "sha2",
+]
+
+[[package]]
 name = "hashlink"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2885,6 +2947,12 @@ checksum = "830e599c2904b08f0834ee6337d8fe8f0ed4a63b5d9e7a7f49c0ffa06d08d360"
 dependencies = [
  "arrayvec",
 ]
+
+[[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hex_fmt"
@@ -3246,6 +3314,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba6a270039626615617f3f36d15fc827041df3b78c439da2cadfa47455a77f2f"
 dependencies = [
  "parity-scale-codec",
+]
+
+[[package]]
+name = "impl-rlp"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28220f89297a075ddc7245cd538076ee98b01f2a9c23a53a4f1105d5a322808"
+dependencies = [
+ "rlp",
+]
+
+[[package]]
+name = "impl-serde"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc88fc67028ae3db0c853baa36269d398d5f45b6982f95549ff5def78c935cd"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4795,6 +4881,8 @@ checksum = "0b34d9fd68ae0b74a41b21c03c2f62847aa0ffea044eee893b4c140b37e244e2"
 dependencies = [
  "fixed-hash",
  "impl-codec",
+ "impl-rlp",
+ "impl-serde",
  "uint",
 ]
 
@@ -5342,6 +5430,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "replace_with"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51743d3e274e2b18df81c4dc6caf8a5b8e15dbe799e0dca05c7617380094e884"
+
+[[package]]
 name = "resolv-conf"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5733,6 +5827,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",
@@ -5747,6 +5842,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "serde_utils"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "const-hex",
+ "generic-array",
+ "hex",
+ "itertools 0.14.0",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "try_from_iterator",
 ]
 
 [[package]]
@@ -5766,7 +5877,20 @@ dependencies = [
  "schemars 1.2.3",
  "serde_core",
  "serde_json",
+ "serde_with_macros",
  "time",
+]
+
+[[package]]
+name = "serde_with_macros"
+version = "3.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8705578779c2b6bd90d84d66eb2e206b708b1a4d7b9f17641b293545bf1c7e46"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6434,7 +6558,7 @@ dependencies = [
 
 [[package]]
 name = "silver_state_hashing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytesize",
  "hashtree-rs",
@@ -6452,7 +6576,9 @@ dependencies = [
  "rand 0.8.6",
  "rayon",
  "silver_state_hashing",
+ "ssz",
  "tree_hash",
+ "try_from_iterator",
  "typenum",
 ]
 
@@ -6713,6 +6839,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssz"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "arithmetic",
+ "bit_field",
+ "bitvec",
+ "byteorder 1.5.0",
+ "derivative",
+ "derive_more",
+ "easy-ext",
+ "ethereum-types",
+ "generic-array",
+ "hashing",
+ "itertools 0.14.0",
+ "nonzero_ext",
+ "num-traits",
+ "once_cell",
+ "primitive-types",
+ "replace_with",
+ "serde",
+ "serde_utils",
+ "ssz_derive",
+ "static_assertions",
+ "std_ext",
+ "tap",
+ "thiserror 2.0.18",
+ "triomphe",
+ "try_from_iterator",
+ "typenum",
+]
+
+[[package]]
+name = "ssz_derive"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "bitvec",
+ "darling",
+ "easy-ext",
+ "itertools 0.14.0",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6736,6 +6910,15 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "std_ext"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
+dependencies = [
+ "easy-ext",
+ "triomphe",
+]
 
 [[package]]
 name = "str_stack"
@@ -7000,6 +7183,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny-keccak"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
+dependencies = [
+ "crunchy",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7253,6 +7445,11 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "try_from_iterator"
+version = "0.0.0"
+source = "git+https://github.com/grandinetech/grandine?rev=129fbd2912943e02e621028b8e5e39cc092a1f19#129fbd2912943e02e621028b8e5e39cc092a1f19"
 
 [[package]]
 name = "twox-hash"
