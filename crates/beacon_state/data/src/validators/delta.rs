@@ -2,7 +2,9 @@ use blst::min_pk::PublicKey;
 use flux_profiler::timed;
 use silver_state_memory::RetainedVec;
 
-use super::{FinalizedValidators, ValidatorsGroup, ValidatorsId, validator_hash};
+use super::{
+    FinalizedValidators, ValidatorsGroup, ValidatorsId, finalized::slashed_bit, validator_hash,
+};
 use crate::{
     B256, Withdrawals,
     ring::{Reset, Slot as RingSlot},
@@ -78,16 +80,7 @@ impl ValidatorsDelta {
         // validators whose fields diverged.
         let start = self.base_count;
         let end = start + self.appended.len();
-        if end > base.capacity() {
-            base.grow(end);
-        }
-        debug_assert!(
-            self.appended.is_empty() ||
-                (base.effective_balance[start] == 0 &&
-                    base.exit_epoch[start] == FAR_FUTURE_EPOCH &&
-                    !base.is_slashed(start)),
-            "appended tail slots must be pristine spec-default",
-        );
+        base.extend_to(end);
         {
             let mut index = base.index.write();
             for (p, a) in self.appended.iter().enumerate() {
@@ -98,7 +91,6 @@ impl ValidatorsDelta {
                 index.insert(a.pubkey, idx as u32);
             }
         }
-        base.validator_count = end;
 
         // 2. Scatter per-field edits into the base columns at their absolute
         // indices. `slashed` is a packed bitset, so it scatters into the bytes.
@@ -479,70 +471,76 @@ impl<'a> ValidatorsView<'a> {
 
     pub fn iter_activation_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
         let base_count = self.base_count();
+        let base = &self.base.activation_epoch[..base_count];
         self.delta.activation_epoch_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.activation_epoch[i],
+            move |i| base[i],
             move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_exit_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
         let base_count = self.base_count();
+        let base = &self.base.exit_epoch[..base_count];
         self.delta.exit_epoch_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.exit_epoch[i],
+            move |i| base[i],
             move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_withdrawable_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
         let base_count = self.base_count();
+        let base = &self.base.withdrawable_epoch[..base_count];
         self.delta.withdrawable_epoch_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.withdrawable_epoch[i],
+            move |i| base[i],
             move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_activation_eligibility_epochs(self) -> impl Iterator<Item = Epoch> + 'a {
         let base_count = self.base_count();
+        let base = &self.base.activation_eligibility_epoch[..base_count];
         self.delta.activation_eligibility_epoch_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.activation_eligibility_epoch[i],
+            move |i| base[i],
             move |_| FAR_FUTURE_EPOCH,
         )
     }
 
     pub fn iter_effective_balances(self) -> impl Iterator<Item = u64> + 'a {
         let base_count = self.base_count();
+        let base = &self.base.effective_balance[..base_count];
         self.delta.effective_balance_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.effective_balance[i],
+            move |i| base[i],
             move |_| 0,
         )
     }
 
     pub fn iter_slashed(self) -> impl Iterator<Item = bool> + 'a {
-        let base_count = self.base_count();
+        let (slashed, base_count) = (&self.base.slashed[..], self.base_count());
         self.delta.slashed_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.is_slashed(i),
+            move |i| slashed_bit(slashed, i),
             move |_| false,
         )
     }
 
     pub fn iter_credentials(self) -> impl Iterator<Item = Withdrawals> + 'a {
         let (appended, base_count) = (self.appended(), self.base_count());
+        let base = &self.base.val_withdrawal_credentials[..base_count];
         self.delta.credentials_edits.sweep(
             base_count,
             self.count(),
-            move |i| self.base.val_withdrawal_credentials[i],
+            move |i| base[i],
             move |i| appended[i - base_count].credentials,
         )
     }

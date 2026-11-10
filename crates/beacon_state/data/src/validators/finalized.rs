@@ -9,7 +9,7 @@ use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_crypto_simd::bls::{G1Point, uncompress_in_g1};
-use silver_state_memory::RetiredColumns;
+use silver_state_memory::RetainedVec;
 
 use crate::{
     Withdrawals,
@@ -152,25 +152,28 @@ impl<'a> RecordKeys<'a> {
 }
 
 #[inline]
+pub(super) fn slashed_bit(slashed: &[u8], i: usize) -> bool {
+    slashed[i / 8] & (1u8 << (i % 8)) != 0
+}
+
+#[inline]
 fn put(buf: &mut [u8], off: usize, src: &[u8]) {
     buf[off..off + src.len()].copy_from_slice(src);
 }
 
 pub struct FinalizedValidators {
-    pub(super) val_pubkey: Box<[BLSPubkey]>,
-    pub(super) val_pubkey_decompressed: Box<[PublicKey]>,
-    pub(super) val_withdrawal_credentials: Box<[Withdrawals]>,
-    pub(super) effective_balance: Box<[u64]>,
+    pub(super) val_pubkey: RetainedVec<BLSPubkey>,
+    pub(super) val_pubkey_decompressed: RetainedVec<PublicKey>,
+    pub(super) val_withdrawal_credentials: RetainedVec<Withdrawals>,
+    pub(super) effective_balance: RetainedVec<u64>,
     /// Bitset: validator `i` is slashed iff
     /// `slashed[i / 8] & (1 << (i % 8)) != 0`. Length = `capacity / 8`.
-    pub(super) slashed: Box<[u8]>,
-    pub(super) activation_eligibility_epoch: Box<[Epoch]>,
-    pub(super) activation_epoch: Box<[Epoch]>,
-    pub(super) exit_epoch: Box<[Epoch]>,
-    pub(super) withdrawable_epoch: Box<[Epoch]>,
-    pub(super) validator_count: usize,
+    pub(super) slashed: RetainedVec<u8>,
+    pub(super) activation_eligibility_epoch: RetainedVec<Epoch>,
+    pub(super) activation_epoch: RetainedVec<Epoch>,
+    pub(super) exit_epoch: RetainedVec<Epoch>,
+    pub(super) withdrawable_epoch: RetainedVec<Epoch>,
     pub(super) index: RwLock<PubkeyIndex>,
-    retired: RetiredColumns,
 }
 
 impl FinalizedValidators {
@@ -180,67 +183,75 @@ impl FinalizedValidators {
         mut field_at: impl FnMut(usize) -> Result<ValidatorInit, E>,
     ) -> Result<Self, E> {
         debug_assert!(n <= capacity);
-        let mut val_pubkey = vec![[0u8; 48]; capacity].into_boxed_slice();
-        let mut val_pubkey_decompressed = vec![PublicKey::default(); capacity].into_boxed_slice();
-        let mut val_withdrawal_credentials =
-            vec![Withdrawals::default(); capacity].into_boxed_slice();
-        let mut effective_balance = vec![0u64; capacity].into_boxed_slice();
-        let mut slashed = vec![0u8; capacity.div_ceil(8)].into_boxed_slice();
-        let mut activation_eligibility_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
-        let mut activation_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
-        let mut exit_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
-        let mut withdrawable_epoch = vec![FAR_FUTURE_EPOCH; capacity].into_boxed_slice();
-        let mut index = PubkeyIndex::with_capacity_and_hasher(n, Default::default());
+        let mut this = Self {
+            val_pubkey: RetainedVec::with_capacity(capacity),
+            val_pubkey_decompressed: RetainedVec::with_capacity(capacity),
+            val_withdrawal_credentials: RetainedVec::with_capacity(capacity),
+            effective_balance: RetainedVec::with_capacity(capacity),
+            slashed: RetainedVec::with_capacity(capacity.div_ceil(8)),
+            activation_eligibility_epoch: RetainedVec::with_capacity(capacity),
+            activation_epoch: RetainedVec::with_capacity(capacity),
+            exit_epoch: RetainedVec::with_capacity(capacity),
+            withdrawable_epoch: RetainedVec::with_capacity(capacity),
+            index: RwLock::new(PubkeyIndex::with_capacity_and_hasher(n, Default::default())),
+        };
+        this.extend_to(n);
 
+        let index = this.index.get_mut();
         for i in 0..n {
             let f = field_at(i)?;
-            val_pubkey[i] = f.pubkey;
-            val_pubkey_decompressed[i] = f.pubkey_decompressed;
-            val_withdrawal_credentials[i] = f.credentials;
-            effective_balance[i] = f.effective_balance;
+            this.val_pubkey[i] = f.pubkey;
+            this.val_pubkey_decompressed[i] = f.pubkey_decompressed;
+            this.val_withdrawal_credentials[i] = f.credentials;
+            this.effective_balance[i] = f.effective_balance;
             if f.slashed {
-                slashed[i / 8] |= 1u8 << (i % 8);
+                this.slashed[i / 8] |= 1u8 << (i % 8);
             }
-            activation_eligibility_epoch[i] = f.activation_eligibility_epoch;
-            activation_epoch[i] = f.activation_epoch;
-            exit_epoch[i] = f.exit_epoch;
-            withdrawable_epoch[i] = f.withdrawable_epoch;
+            this.activation_eligibility_epoch[i] = f.activation_eligibility_epoch;
+            this.activation_epoch[i] = f.activation_epoch;
+            this.exit_epoch[i] = f.exit_epoch;
+            this.withdrawable_epoch[i] = f.withdrawable_epoch;
             index.insert(f.pubkey, i as u32);
         }
-
-        Ok(Self {
-            val_pubkey,
-            val_pubkey_decompressed,
-            val_withdrawal_credentials,
-            effective_balance,
-            slashed,
-            activation_eligibility_epoch,
-            activation_epoch,
-            exit_epoch,
-            withdrawable_epoch,
-            validator_count: n,
-            index: RwLock::new(index),
-            retired: RetiredColumns::default(),
-        })
+        Ok(this)
     }
 
-    /// Deposits outgrow the boot-time headroom on a long-running node. The new
-    /// tail is spec-default, as `build` leaves it.
+    /// Appends spec-default validators up to `count`. Each column's length is
+    /// the validator count, so a racing reader's slice never covers slots its
+    /// block has not filled.
+    pub(super) fn extend_to(&mut self, count: usize) {
+        if count > self.capacity() {
+            self.grow(count);
+        }
+        self.val_pubkey.resize(count, [0u8; 48]);
+        self.val_pubkey_decompressed.resize(count, PublicKey::default());
+        self.val_withdrawal_credentials.resize(count, Withdrawals::default());
+        self.effective_balance.resize(count, 0);
+        self.slashed.resize(count.div_ceil(8), 0);
+        self.activation_eligibility_epoch.resize(count, FAR_FUTURE_EPOCH);
+        self.activation_epoch.resize(count, FAR_FUTURE_EPOCH);
+        self.exit_epoch.resize(count, FAR_FUTURE_EPOCH);
+        self.withdrawable_epoch.resize(count, FAR_FUTURE_EPOCH);
+    }
+
+    /// Deposits outgrow the boot-time headroom on a long-running node.
     #[cold]
-    pub(super) fn grow(&mut self, needed: usize) {
+    fn grow(&mut self, needed: usize) {
         let capacity = validator_capacity(needed);
-        let n = self.validator_count;
-        let retired = &mut self.retired;
-        retired.grow(&mut self.val_pubkey, n, capacity, [0u8; 48]);
-        retired.grow(&mut self.val_pubkey_decompressed, n, capacity, PublicKey::default());
-        retired.grow(&mut self.val_withdrawal_credentials, n, capacity, Withdrawals::default());
-        retired.grow(&mut self.effective_balance, n, capacity, 0);
-        retired.grow(&mut self.slashed, n.div_ceil(8), capacity.div_ceil(8), 0);
-        retired.grow(&mut self.activation_eligibility_epoch, n, capacity, FAR_FUTURE_EPOCH);
-        retired.grow(&mut self.activation_epoch, n, capacity, FAR_FUTURE_EPOCH);
-        retired.grow(&mut self.exit_epoch, n, capacity, FAR_FUTURE_EPOCH);
-        retired.grow(&mut self.withdrawable_epoch, n, capacity, FAR_FUTURE_EPOCH);
-        silver_log::info!(validators = n, capacity, "finalized validator columns grew");
+        self.val_pubkey.grow_to(capacity);
+        self.val_pubkey_decompressed.grow_to(capacity);
+        self.val_withdrawal_credentials.grow_to(capacity);
+        self.effective_balance.grow_to(capacity);
+        self.slashed.grow_to(capacity.div_ceil(8));
+        self.activation_eligibility_epoch.grow_to(capacity);
+        self.activation_epoch.grow_to(capacity);
+        self.exit_epoch.grow_to(capacity);
+        self.withdrawable_epoch.grow_to(capacity);
+        silver_log::info!(
+            validators = self.validator_count(),
+            capacity,
+            "finalized validator columns grew"
+        );
     }
 }
 
@@ -338,12 +349,12 @@ impl FinalizedValidators {
     }
 
     pub fn validator_count(&self) -> usize {
-        self.validator_count
+        self.val_pubkey.len()
     }
 
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.val_pubkey.len()
+        self.val_pubkey.capacity()
     }
 
     /// `slashed` is a bitset (validator `i` at bit `i % 8` of byte `i / 8`), so
@@ -351,11 +362,11 @@ impl FinalizedValidators {
     /// column is read directly through its `pub(super)` field.
     #[inline]
     pub(super) fn is_slashed(&self, i: usize) -> bool {
-        self.slashed[i / 8] & (1u8 << (i % 8)) != 0
+        slashed_bit(&self.slashed, i)
     }
 
     pub(crate) fn effective_balances(&self) -> impl Iterator<Item = u64> + '_ {
-        self.effective_balance[..self.validator_count].iter().copied()
+        self.effective_balance.iter().copied()
     }
 
     pub(crate) fn sweep_epoch_balances(
@@ -364,7 +375,7 @@ impl FinalizedValidators {
         curr_participation: &[u8],
         current_epoch: Epoch,
     ) -> EpochBalances {
-        let n = self.validator_count;
+        let n = self.validator_count();
         debug_assert_eq!(prev_participation.len(), n);
         debug_assert_eq!(curr_participation.len(), n);
         EpochBalances::sweep(

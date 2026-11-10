@@ -12,6 +12,34 @@ use crate::{
 const MAX_ROOTS: usize = 32;
 const _: () = assert!(MAX_ROOTS >= MAX_SEGS);
 
+/// [`TreeFormat`] in one word. A racing reader then loads a format some writer
+/// stored, never one variant's tag over another variant's payload.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct PackedFormat(usize);
+
+impl PackedFormat {
+    const PROGRESSIVE: usize = 1 << (usize::BITS - 1);
+
+    fn pack(format: TreeFormat) -> Self {
+        match format {
+            TreeFormat::Fixed { max_elements } => {
+                debug_assert!(max_elements < Self::PROGRESSIVE);
+                Self(max_elements)
+            }
+            TreeFormat::Progressive { last_seg } => Self(Self::PROGRESSIVE | last_seg as usize),
+        }
+    }
+
+    #[inline]
+    fn unpack(self) -> TreeFormat {
+        if self.0 & Self::PROGRESSIVE == 0 {
+            TreeFormat::Fixed { max_elements: self.0 }
+        } else {
+            TreeFormat::Progressive { last_seg: self.0 as u32 }
+        }
+    }
+}
+
 /// A committed tree: one root page per subtree, the rest reached through each
 /// page's children. A page id names its whole subtree, so trees share every
 /// page they did not write. Owns no page: who frees what is the storage's
@@ -20,7 +48,7 @@ const _: () = assert!(MAX_ROOTS >= MAX_SEGS);
 pub struct PageTable {
     roots: [PageId; MAX_ROOTS],
     root_count: usize,
-    pub(super) format: TreeFormat,
+    format: PackedFormat,
     pub(super) count: usize,
 }
 
@@ -37,7 +65,7 @@ impl PageTable {
             root_count += 1;
         }
         self.root_count = root_count;
-        self.format = format;
+        self.format = PackedFormat::pack(format);
         self.count = count;
     }
 
@@ -58,7 +86,7 @@ impl PageTable {
 
     #[inline]
     pub fn format(&self) -> TreeFormat {
-        self.format
+        self.format.unpack()
     }
 
     #[inline]
@@ -90,7 +118,7 @@ impl PageTable {
         let mut chunk = 0;
         iter::from_fn(move || {
             (chunk < chunks).then(|| {
-                let (id, slot) = self.page_of::<C>(store, self.format.leaf_pos::<C>(chunk));
+                let (id, slot) = self.page_of::<C>(store, self.format().leaf_pos::<C>(chunk));
                 let row = &store.page(id)[slot..(2 << slot.ilog2()).min(slot + chunks - chunk)];
                 chunk += row.len();
                 row
@@ -109,8 +137,9 @@ impl PageTable {
     /// root slot.
     #[inline]
     pub(crate) fn page_of<C: TreeSpec>(&self, store: &impl PageStore, n: usize) -> (PageId, usize) {
-        let (s, level, pos) = self.format.locate::<C>(n).unwrap_or_default();
-        let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
+        let format = self.format();
+        let (s, level, pos) = format.locate::<C>(n).unwrap_or_default();
+        let (children, slot) = Subtree::of::<C>(format, s).path_to::<C>(level, pos);
         let root = self.roots().get(s).copied().unwrap_or(0);
         (children.fold(root, |id, j| store.child(id, j)), slot)
     }

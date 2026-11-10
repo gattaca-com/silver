@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use silver_state_memory::RetiredColumns;
+use silver_state_memory::RetainedVec;
 
 use crate::{
     DecomposeError,
@@ -12,9 +12,9 @@ use crate::{
 const BUILDER_SSZ: usize = 93;
 
 pub struct FinalizedBuilders {
-    pub(super) builders: Box<[Builder]>,
-    pub(super) count: usize,
-    retired: RetiredColumns,
+    /// Its length is the builder count, so a racing reader's slice never
+    /// covers slots its block has not filled.
+    pub(super) builders: RetainedVec<Builder>,
 }
 
 impl Default for FinalizedBuilders {
@@ -42,26 +42,22 @@ impl FinalizedBuilders {
         }
 
         // One allocation: the capacity-sized registry, filled in place from the
-        // SSZ bytes (no intermediate parsed buffer). Tail past `count` stays
-        // spec-default for the append headroom.
-        let mut builders = vec![Builder::default(); builder_capacity(count)].into_boxed_slice();
-        for (i, slot) in builders[..count].iter_mut().enumerate() {
-            let s = &bytes[i * BUILDER_SSZ..];
-            *slot = Builder {
-                pubkey: s[0..48].try_into().unwrap(),
-                version: s[48],
-                execution_address: s[49..69].try_into().unwrap(),
-                balance: u64::from_le_bytes(s[69..77].try_into().unwrap()),
-                deposit_epoch: u64::from_le_bytes(s[77..85].try_into().unwrap()),
-                withdrawable_epoch: u64::from_le_bytes(s[85..93].try_into().unwrap()),
-            };
-        }
+        // SSZ bytes (no intermediate parsed buffer).
+        let mut builders = RetainedVec::with_capacity(builder_capacity(count));
+        builders.extend(bytes.chunks_exact(BUILDER_SSZ).map(|s| Builder {
+            pubkey: s[0..48].try_into().unwrap(),
+            version: s[48],
+            execution_address: s[49..69].try_into().unwrap(),
+            balance: u64::from_le_bytes(s[69..77].try_into().unwrap()),
+            deposit_epoch: u64::from_le_bytes(s[77..85].try_into().unwrap()),
+            withdrawable_epoch: u64::from_le_bytes(s[85..93].try_into().unwrap()),
+        }));
 
-        Ok(Self { builders, count, retired: RetiredColumns::default() })
+        Ok(Self { builders })
     }
 
     pub(crate) fn ssz_len(&self) -> usize {
-        self.count * BUILDER_SSZ
+        self.len() * BUILDER_SSZ
     }
 
     pub(crate) fn write_ssz<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -78,33 +74,32 @@ impl FinalizedBuilders {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.count
+        self.builders.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.builders.is_empty()
     }
 
     #[inline]
     pub(super) fn get(&self, i: usize) -> Option<&Builder> {
-        (i < self.count).then(|| &self.builders[i])
+        self.builders.get(i)
     }
 
     #[inline]
     pub(super) fn as_slice(&self) -> &[Builder] {
-        &self.builders[..self.count]
+        &self.builders
     }
 
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.builders.len()
+        self.builders.capacity()
     }
 
     pub(super) fn ensure_capacity(&mut self, end: usize) {
-        if end > self.builders.len() {
-            let capacity = builder_capacity(end);
-            self.retired.grow(&mut self.builders, self.count, capacity, Builder::default());
+        if end > self.builders.capacity() {
+            self.builders.grow_to(builder_capacity(end));
         }
     }
 }

@@ -155,10 +155,14 @@ fn validator_hash_each_field_distinguishable() {
 
 #[test]
 fn empty_validators_is_empty_and_well_formed() {
-    let f = empty_validators();
+    let mut f = empty_validators();
     assert_eq!(f.validator_count(), 0);
     assert!(f.find_by_pubkey(&pk(7)).is_none());
-    // Default-init: slashed bitset is all zeros, epochs are FAR_FUTURE.
+    assert!(f.activation_epoch.is_empty(), "no slot is readable past the count");
+
+    // An appended slot is spec-default: not slashed, epochs FAR_FUTURE.
+    f.extend_to(1);
+    assert_eq!(f.validator_count(), 1);
     assert!(!f.is_slashed(0));
     assert_eq!(f.activation_epoch[0], FAR_FUTURE_EPOCH);
 }
