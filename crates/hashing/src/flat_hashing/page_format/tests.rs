@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use super::{PagePos, Subtree};
 use crate::{
-    B256, TreeSpec, flat_hashing::format::TreeFormat, progressive::PROGRESSIVE_SEGMENT_START,
+    B256, TreeSpec,
+    flat_hashing::format::{FormatKind, TreeFormat},
+    progressive::PROGRESSIVE_SEGMENT_START,
 };
 
 struct P4;
@@ -18,9 +20,9 @@ impl TreeSpec for P32 {
 }
 
 fn flat_nodes<C: TreeSpec>(format: TreeFormat) -> Vec<usize> {
-    match format {
-        TreeFormat::Fixed { max_elements } => (1..2 * max_elements).collect(),
-        TreeFormat::Progressive { last_seg } => (0..=last_seg as usize)
+    match format.kind() {
+        FormatKind::Fixed { max_elements } => (1..2 * max_elements).collect(),
+        FormatKind::Progressive { last_seg } => (0..=last_seg as usize)
             .flat_map(|k| {
                 let internals = (1..1usize << (2 * k)).map(move |i| C::SEG_OFF[k] + i);
                 let leaf0 = format.data_start::<C>() + PROGRESSIVE_SEGMENT_START[k];
@@ -83,16 +85,16 @@ fn check<C: TreeSpec>(format: TreeFormat) {
 #[test]
 fn fixed_pages_partition_the_heap() {
     for h in 0..9 {
-        check::<P4>(TreeFormat::Fixed { max_elements: 1 << h });
-        check::<P32>(TreeFormat::Fixed { max_elements: 1 << h });
+        check::<P4>(TreeFormat::fixed(1 << h));
+        check::<P32>(TreeFormat::fixed(1 << h));
     }
 }
 
 #[test]
 fn progressive_pages_partition_every_segment() {
     for last_seg in 0..5 {
-        check::<P4>(TreeFormat::Progressive { last_seg });
-        check::<P32>(TreeFormat::Progressive { last_seg });
+        check::<P4>(TreeFormat::progressive(last_seg));
+        check::<P32>(TreeFormat::progressive(last_seg));
     }
 }
 
@@ -109,11 +111,11 @@ fn check_locate_is_total<C: TreeSpec>(format: TreeFormat) {
 #[test]
 fn locate_refuses_padding_and_ids_past_the_tree() {
     for h in 0..8 {
-        check_locate_is_total::<P4>(TreeFormat::Fixed { max_elements: 1 << h });
-        check_locate_is_total::<P32>(TreeFormat::Fixed { max_elements: 1 << h });
+        check_locate_is_total::<P4>(TreeFormat::fixed(1 << h));
+        check_locate_is_total::<P32>(TreeFormat::fixed(1 << h));
     }
     for last_seg in 0..5 {
-        check_locate_is_total::<P4>(TreeFormat::Progressive { last_seg });
-        check_locate_is_total::<P32>(TreeFormat::Progressive { last_seg });
+        check_locate_is_total::<P4>(TreeFormat::progressive(last_seg));
+        check_locate_is_total::<P32>(TreeFormat::progressive(last_seg));
     }
 }

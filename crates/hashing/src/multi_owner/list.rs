@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    B256, FlatTree, HashFormat, SszScalar, TreeFormat, TreeReader, TreeSpec, merkle::byte_chunks,
-    multi_owner::pool::SharedPool, storage::PageTable,
+    B256, FlatTree, HashFormat, SszScalar, TreeReader, TreeSpec, flat_hashing::format::FormatKind,
+    merkle::byte_chunks, multi_owner::pool::SharedPool, storage::PageTable,
 };
 
 /// A list whose committed tree lives in refcounted pages. Clones share every
@@ -98,9 +98,9 @@ impl<C: TreeSpec> SharedList<C> {
     }
 
     pub fn format(&self) -> HashFormat {
-        match self.reader().format() {
-            TreeFormat::Fixed { .. } => HashFormat::Fixed,
-            TreeFormat::Progressive { .. } => HashFormat::Progressive,
+        match self.reader().format().kind() {
+            FormatKind::Fixed { .. } => HashFormat::Fixed,
+            FormatKind::Progressive { .. } => HashFormat::Progressive,
         }
     }
 

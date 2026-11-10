@@ -12,34 +12,6 @@ use crate::{
 const MAX_ROOTS: usize = 32;
 const _: () = assert!(MAX_ROOTS >= MAX_SEGS);
 
-/// [`TreeFormat`] in one word. A racing reader then loads a format some writer
-/// stored, never one variant's tag over another variant's payload.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-struct PackedFormat(usize);
-
-impl PackedFormat {
-    const PROGRESSIVE: usize = 1 << (usize::BITS - 1);
-
-    fn pack(format: TreeFormat) -> Self {
-        match format {
-            TreeFormat::Fixed { max_elements } => {
-                debug_assert!(max_elements < Self::PROGRESSIVE);
-                Self(max_elements)
-            }
-            TreeFormat::Progressive { last_seg } => Self(Self::PROGRESSIVE | last_seg as usize),
-        }
-    }
-
-    #[inline]
-    fn unpack(self) -> TreeFormat {
-        if self.0 & Self::PROGRESSIVE == 0 {
-            TreeFormat::Fixed { max_elements: self.0 }
-        } else {
-            TreeFormat::Progressive { last_seg: self.0 as u32 }
-        }
-    }
-}
-
 /// A committed tree: one root page per subtree, the rest reached through each
 /// page's children. A page id names its whole subtree, so trees share every
 /// page they did not write. Owns no page: who frees what is the storage's
@@ -48,7 +20,7 @@ impl PackedFormat {
 pub struct PageTable {
     roots: [PageId; MAX_ROOTS],
     root_count: usize,
-    format: PackedFormat,
+    format: TreeFormat,
     pub(super) count: usize,
 }
 
@@ -65,7 +37,7 @@ impl PageTable {
             root_count += 1;
         }
         self.root_count = root_count;
-        self.format = PackedFormat::pack(format);
+        self.format = format;
         self.count = count;
     }
 
@@ -86,7 +58,7 @@ impl PageTable {
 
     #[inline]
     pub fn format(&self) -> TreeFormat {
-        self.format.unpack()
+        self.format
     }
 
     #[inline]
@@ -152,8 +124,8 @@ mod tests {
 
     #[test]
     fn set_and_clone_from_reuse_inline_roots() {
-        let fixed = TreeFormat::Fixed { max_elements: 1024 };
-        let progressive = TreeFormat::Progressive { last_seg: MAX_SEGS as u32 - 1 };
+        let fixed = TreeFormat::fixed(1024);
+        let progressive = TreeFormat::progressive(MAX_SEGS as u32 - 1);
         let mut table = PageTable::default();
         let roots = table.roots().as_ptr();
         table.set(fixed, 1, [7].into_iter());

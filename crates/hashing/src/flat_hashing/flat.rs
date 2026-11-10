@@ -1,7 +1,10 @@
 use crate::{
     B256, HashFormat, SszScalar, TreeSpec,
     flat_hashing::{
-        format::TreeFormat, list::ListTree, progressive_list::ProgressiveListTree, store::NodeStore,
+        format::{FormatKind, TreeFormat},
+        list::ListTree,
+        progressive_list::ProgressiveListTree,
+        store::NodeStore,
     },
     storage::{PageAlloc, PageId, PageStore, PageTable},
 };
@@ -93,11 +96,11 @@ impl<C: TreeSpec> FlatTree<C> {
         let format = target.format();
         if self.format() != format {
             let store = std::mem::take(self.store_mut());
-            *self = match format {
-                TreeFormat::Fixed { max_elements } => {
+            *self = match format.kind() {
+                FormatKind::Fixed { max_elements } => {
                     FlatTree::List(ListTree { store, max_elements })
                 }
-                TreeFormat::Progressive { last_seg } => {
+                FormatKind::Progressive { last_seg } => {
                     FlatTree::ProgressiveList(ProgressiveListTree { store, last_seg })
                 }
             };

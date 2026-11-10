@@ -1,6 +1,10 @@
 use std::ops::Range;
 
-use crate::{TreeSpec, flat_hashing::format::TreeFormat, progressive::PROGRESSIVE_SEGMENT_START};
+use crate::{
+    TreeSpec,
+    flat_hashing::format::{FormatKind, TreeFormat},
+    progressive::PROGRESSIVE_SEGMENT_START,
+};
 
 /// One binary subtree of a flat tree, and how it is cut into pages.
 ///
@@ -53,14 +57,14 @@ pub(crate) struct PagePos {
 
 impl Subtree {
     pub(crate) fn of<C: TreeSpec>(format: TreeFormat, s: usize) -> Self {
-        match format {
-            TreeFormat::Fixed { max_elements } => Self {
+        match format.kind() {
+            FormatKind::Fixed { max_elements } => Self {
                 nodes_start: 0,
                 data_start: max_elements,
                 height: max_elements.trailing_zeros(),
                 leaves_offset: 0,
             },
-            TreeFormat::Progressive { .. } => Self {
+            FormatKind::Progressive { .. } => Self {
                 nodes_start: C::SEG_OFF[s],
                 data_start: format.data_start::<C>(),
                 height: 2 * s as u32,
