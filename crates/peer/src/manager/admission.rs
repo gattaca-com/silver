@@ -162,7 +162,8 @@ impl PeerManager {
                 continue;
             }
 
-            if self.our_fork_digest.is_some() &&
+            if !record.is_trusted &&
+                self.our_fork_digest.is_some() &&
                 enr.eth2().is_none_or(|e| !self.is_our_fork_digest(&e[..4]))
             {
                 continue;
@@ -801,6 +802,39 @@ mod tests {
             })
             .collect();
         assert_eq!(banned, vec![peer_id(8)], "only the untrusted stale ENR is banned");
+    }
+
+    #[test]
+    fn stale_fork_digest_redials_only_trusted_peers() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        let stale_digest = Some([1u8; 16]);
+        mgr.database.add_trusted_peer(test_enr_with(
+            7,
+            std::net::Ipv4Addr::new(10, 0, 0, 7),
+            stale_digest,
+            None,
+            None,
+        ));
+        mgr.database.add_enr(test_enr_with(
+            8,
+            std::net::Ipv4Addr::new(10, 0, 0, 8),
+            stale_digest,
+            None,
+            None,
+        ));
+
+        mgr.redial_known_peers(now, &mut |c| cap.0.push(c));
+
+        let dialled: Vec<_> = cap
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                PeerControl::P2pDial { p2p, .. } => Some(*p2p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dialled, vec![peer_id(7)], "only the trusted stale ENR is dialled");
     }
 
     #[test]
