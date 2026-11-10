@@ -12,12 +12,14 @@ mimalloc.workspace = true
 rand.workspace = true
 rayon.workspace = true
 silver_state_hashing = { workspace = true, features = ["multi-owner"] }
+ssz = { git = "https://github.com/grandinetech/grandine", package = "ssz", rev = "129fbd2912943e02e621028b8e5e39cc092a1f19" }
 tree_hash.workspace = true
+try_from_iterator = { git = "https://github.com/grandinetech/grandine", rev = "129fbd2912943e02e621028b8e5e39cc092a1f19" }
 typenum.workspace = true
 
 [[bench]]
 harness = false
-name = "milhouse_comparison"
+name = "comparison"
 
 [lints]
 workspace = true
