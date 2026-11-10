@@ -90,6 +90,28 @@ agreed on it yet; it is published if it agrees later`.
 - Retrying the same signed message is safe. The cluster treats it as the same
   vote or block, never as a conflict.
 
+## Clock skew
+
+Each node checks the cluster's entries against its own clock, with one slot of
+slack. Only a node whose own clock is skewed ever trips this check.
+
+- A follower whose clock runs fast proposes slots the leader refuses. Its
+  duties fail; the rest of the cluster is unaffected.
+- A leader whose clock runs fast appends locks or a floor its followers refuse.
+  They ignore it until their own clocks reach the refused entry, so it loses
+  its quorum. A new leader is elected within 2 to 4 s, and the skewed entries
+  never commit. `LeadersBoycotted` counts this on each follower.
+- While ignored, the skewed node cannot be elected again, even though its log
+  is longer. Once its clock is fixed, it can lead again after the other
+  nodes' clocks pass the slot it refused.
+- A follower whose clock runs slow refuses the correct leader, so it drops out
+  of the cluster. The rest of the cluster is unaffected while a majority
+  remains.
+- A leader whose clock runs slow refuses its followers' proposals for the
+  current slot. Duties fail until another node leads.
+
+Keep every node on NTP. Admission uses each node's own wall clock.
+
 ## When Raft processing stops
 
 A node stops serving duties when `Failed` is 1. `FailureKind` says why, and the

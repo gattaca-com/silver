@@ -20,7 +20,7 @@ use super::{
         ReplicatedCommand,
     },
     lock_store::{LockResult, SlashingLockStore},
-    member_message_check::{MemberMessageCheck, MemberMessageError},
+    member_message_check::{LeaderBoycott, MemberMessageCheck, MemberMessageError},
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
@@ -362,6 +362,7 @@ pub struct SlashingProtectionCluster {
     /// Applied index before which compaction is not retried after an
     /// oversized snapshot, so the skip is not logged and counted every loop.
     compaction_retry_at: u64,
+    leader_boycott: LeaderBoycott,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -402,6 +403,7 @@ impl SlashingProtectionCluster {
             resolved: Vec::new(),
             persistence_started: None,
             compaction_retry_at: 0,
+            leader_boycott: LeaderBoycott::default(),
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -490,10 +492,19 @@ impl SlashingProtectionCluster {
         if self.failed {
             return Err(ClusterError::Failed);
         }
+        if self.leader_boycott.covers(&message, wall_slot) {
+            return Ok(());
+        }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
-        MemberMessageCheck { log: &node.raft.raft_log, voters: &self.config.voters, wall_slot }
-            .check(&message)
-            .map_err(ClusterError::MemberMessage)?;
+        let checked =
+            MemberMessageCheck { log: &node.raft.raft_log, voters: &self.config.voters, wall_slot }
+                .check(&message);
+        if let Err(error) = checked {
+            if let MemberMessageError::LeaderAheadOfClock { slot, .. } = error {
+                self.leader_boycott.start(&message, slot, wall_slot);
+            }
+            return Err(ClusterError::MemberMessage(error));
+        }
         self.peers.heard(&message, now);
         node.step(message).map_err(ClusterError::Raft)
     }
@@ -1155,8 +1166,8 @@ mod tests {
                 from: 2,
             }),
             (
-                propose_message(2, vec![forwarded(ReplicatedCommand::Lock(command(11, 1)), 2)]),
-                MemberMessageError::FutureProposal { slot: 11, wall_slot: 10 },
+                propose_message(2, vec![forwarded(ReplicatedCommand::Lock(command(12, 1)), 2)]),
+                MemberMessageError::ProposalAheadOfClock { slot: 12, wall_slot: 10 },
             ),
         ];
         for (message, expected) in refused {
@@ -1237,6 +1248,81 @@ mod tests {
         assert_eq!(error.failure_kind(), FailureKind::BadEntry);
         assert!(error.to_string().contains(&format!("entry {index} (term {term})")));
         assert!(cluster.is_failed());
+    }
+
+    /// One round of a network where node 1's clock is far ahead, and
+    /// `crashed` neither spins nor receives.
+    fn skewed_round(clusters: &mut [SlashingProtectionCluster], now: Instant, crashed: u64) {
+        let wall_slot = |node_id: u64| if node_id == 1 { 1_000 } else { 10 };
+        let mut messages = Vec::new();
+        for cluster in clusters.iter_mut().filter(|cluster| cluster.node_id() != crashed) {
+            cluster
+                .spin(now, wall_slot(cluster.node_id()), |event| {
+                    if let ClusterEvent::SendRaftMessage(message) = event {
+                        messages.push(message);
+                    }
+                })
+                .unwrap();
+        }
+        for message in messages.into_iter().filter(|message| message.to != crashed) {
+            let target = clusters.iter_mut().find(|c| c.node_id() == message.to).unwrap();
+            let wall_slot = wall_slot(target.node_id());
+            match target.step(message, now, wall_slot) {
+                Ok(()) |
+                Err(ClusterError::MemberMessage(MemberMessageError::LeaderAheadOfClock {
+                    ..
+                })) => {}
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+        assert!(clusters.iter().all(|cluster| cluster.minimum_slot() == 0));
+    }
+
+    #[test]
+    fn followers_replace_a_leader_whose_clock_jumped_forward() {
+        let mut now = Instant::now();
+        let voters = vec![1, 2, 3, 4, 5];
+        let mut clusters: Vec<_> = voters
+            .iter()
+            .map(|node_id| initialized_cluster(test_config(*node_id, voters.clone()), 9, now))
+            .collect();
+        clusters[0].campaign().unwrap();
+        let mut decisions = Vec::new();
+        for _ in 0..10 {
+            pump(&mut clusters, now, 10, &mut decisions);
+        }
+        assert!(clusters[0].is_leader());
+
+        let healthy_leader = |clusters: &[SlashingProtectionCluster], crashed: u64| {
+            clusters[1..]
+                .iter()
+                .find(|cluster| cluster.is_leader() && cluster.node_id() != crashed)
+                .map(SlashingProtectionCluster::node_id)
+        };
+        let mut replacement = None;
+        for _ in 0..500 {
+            now += Duration::from_millis(1);
+            skewed_round(&mut clusters, now, 0);
+            replacement = healthy_leader(&clusters, 0).filter(|_| !clusters[0].is_leader());
+            if replacement.is_some() {
+                break;
+            }
+        }
+        let crashed = replacement.expect("a follower with a correct clock takes over");
+        assert!(clusters[1..].iter().all(|cluster| cluster.leader_boycott.boycotts(1, 10)));
+
+        let mut reelected = None;
+        for _ in 0..2_000 {
+            now += Duration::from_millis(1);
+            skewed_round(&mut clusters, now, crashed);
+            assert!(!clusters[0].is_leader(), "the skewed node led again");
+            reelected = reelected.or(healthy_leader(&clusters, crashed));
+        }
+        assert!(reelected.is_some(), "another follower with a correct clock takes over");
+        assert!(
+            !clusters[1].leader_boycott.boycotts(1, 1_000),
+            "the boycott ends once the clock catches up"
+        );
     }
 
     /// raft-rs drops proposals while leadership is being transferred; the

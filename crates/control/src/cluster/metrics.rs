@@ -55,6 +55,8 @@ silver_common::declare_counters! {
         SnapshotTransferTimeouts,
         SnapshotTransferFailures,
         Compactions,
+        // Leaders ignored for appending entries ahead of this node's clock.
+        LeadersBoycotted,
         // Compactions skipped because the lock snapshot exceeded the transport limit.
         CompactionsSkipped,
         // Size of the last encoded lock snapshot.
@@ -68,8 +70,6 @@ silver_common::declare_counters! {
         JournalBytes,
         // 1 when this run has a cluster configured; set at every start.
         Clustered,
-        // Slots the wall clock runs past the head-capped slot admission uses.
-        ClockAheadSlots,
     }
 }
 

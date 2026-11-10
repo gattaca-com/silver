@@ -3,7 +3,7 @@ use std::{error::Error, fmt};
 use raft::eraftpb::{Entry, EntryType};
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
-use super::node::ProposalId;
+use super::{admission::SlashingAdmission, node::ProposalId};
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
@@ -185,6 +185,15 @@ impl DecodedEntry {
             ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
             ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
         })
+    }
+
+    /// The earliest wall slot at which a correct clock proposes this entry.
+    pub(super) fn earliest_wall_slot(&self) -> u64 {
+        match self {
+            Self::Lock(command, _) => command.key.slot,
+            Self::BlockLock(command, _) => command.key.slot,
+            Self::AdvanceMinimumSlot(floor) => SlashingAdmission::wall_slot_for_floor(*floor),
+        }
     }
 }
 

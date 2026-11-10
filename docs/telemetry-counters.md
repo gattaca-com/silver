@@ -173,15 +173,16 @@ GROUP BY meta_client_name
 HAVING failed > 2
 ```
 
-The wall clock runs over an epoch ahead of the head. Slashing protection then
-admits and floors against the head-capped slot instead:
+A node ignored a leader whose appended entry was ahead of its own clock. Either
+that leader's clock runs fast, or this node's clock runs slow:
 
 ```sql
-SELECT meta_client_name, argMax(value, slot) AS ahead
+SELECT meta_client_name, sum(delta) AS boycotted
 FROM counters
-WHERE component = 'cluster' AND name = 'ClockAheadSlots'
+WHERE component = 'cluster' AND name = 'LeadersBoycotted'
+  AND slot_start_date_time > now() - INTERVAL 1 HOUR
 GROUP BY meta_client_name
-HAVING ahead > 0
+HAVING boycotted > 0
 ```
 
 The startup floor has been unlatched for more than 5 minutes on a live node.
