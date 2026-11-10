@@ -379,19 +379,25 @@ fn moved_member_announces_its_new_address() {
     });
 }
 
+/// Every node would refuse it, so it is not proposed at all.
 #[test]
-fn announcement_under_another_key_is_refused() {
+fn address_under_another_key_is_never_announced() {
     let mut cluster = Cluster::in_memory(Instant::now());
-    cluster.elect();
+    let leader = cluster.elect();
     cluster
         .rounds_until(|cluster| cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
+    let last_index = |cluster: &mut Cluster| {
+        Storage::last_index(cluster.node(leader).node.as_ref().unwrap().store()).unwrap()
+    };
+    let before = last_index(&mut cluster);
 
     let follower = cluster.follower();
     cluster.node(follower).config.advertised =
         MemberAddress { public_key: [3; 33], ..test_address(follower) };
-    let until = cluster.now + 2 * DEFAULT_PROPOSAL_TIMEOUT;
+    let until = cluster.now + 4 * DEFAULT_PROPOSAL_TIMEOUT;
     cluster.rounds_until(|cluster| cluster.now >= until);
 
+    assert_eq!(last_index(&mut cluster), before);
     assert!(cluster.nodes.iter().all(|node| knows_addresses(node, &[1, 2, 3])));
     assert!(cluster.nodes.iter().all(|node| !node.is_failed()));
 }
@@ -482,6 +488,32 @@ fn added_node_catches_up_by_snapshot_and_is_promoted() {
         .rounds_until(|cluster| cluster.nodes.iter().all(|node| has_voters(node, &[1, 2, 3, 4])));
     cluster.commit_attestation(4, 10);
     assert!(cluster.nodes.iter().all(|node| node.state.len() == 4));
+}
+
+/// raft-rs starts a learner at the leader's last index. Locks proposed
+/// behind the add keep that index above the snapshot cut on apply, so the
+/// joiner is first sent entries, not a snapshot.
+#[test]
+fn joiner_added_under_load_catches_up_by_snapshot() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    let leader = cluster.elect();
+    cluster.operate(MembershipOperation::Add { node_id: 4, address: test_address(4) });
+    cluster.nodes.push(joiner(4, cluster.now));
+
+    let mut attester_index = 0;
+    for _ in 0..200 {
+        if cluster.node(4).node.as_ref().unwrap().store().snapshot_index() > 0 {
+            return;
+        }
+        let now = cluster.now;
+        for _ in 0..4 {
+            let command = command(attester_index);
+            cluster.node(leader).propose_attestation(command, WALL_SLOT, now).unwrap();
+            attester_index += 1;
+        }
+        cluster.round();
+    }
+    panic!("joiner received no snapshot");
 }
 
 /// The dead voter never answers again; nodes 1 and 2 form a quorum in both

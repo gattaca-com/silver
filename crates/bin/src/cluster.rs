@@ -8,7 +8,7 @@ use std::{
 use silver_common::Enr;
 use silver_config::ClusterConfig;
 use silver_control::cluster::{
-    ClusterStorageConfig, MemberAddress, SlashingProtectionConfig, StorageIdentity,
+    ClusterStorageConfig, Member, MemberAddress, SlashingProtectionConfig, StorageIdentity,
 };
 
 const JOURNAL_FILE: &str = "attestation-cluster.wal";
@@ -30,10 +30,14 @@ impl ClusterStartup {
         let journal_lock = Self::lock(directory)?;
         let storage = Self::journal(config.bootstrap, config.join, directory.join(JOURNAL_FILE))?;
         Self::check_identity(&storage, &identity)?;
-        Ok(Self {
-            config: SlashingProtectionConfig::new(node_id, voters(), advertised, storage)?,
-            _journal_lock: journal_lock,
-        })
+        let mut cluster = SlashingProtectionConfig::new(node_id, voters(), advertised, storage)?;
+        cluster.configured_members = config
+            .nodes
+            .iter()
+            .filter(|&(&id, _)| id != node_id)
+            .map(|(&id, enr)| Ok(Member { node_id: id, address: Self::member_address(id, enr)? }))
+            .collect::<Result<_, Box<dyn Error>>>()?;
+        Ok(Self { config: cluster, _journal_lock: journal_lock })
     }
 
     /// Standalone locks live in memory only. A journal left by a clustered
@@ -61,11 +65,15 @@ impl ClusterStartup {
             .iter()
             .find(|(_, enr)| enr.node_id() == local)
             .ok_or("no local node configured in cluster config")?;
+        Ok((id, Self::member_address(id, enr)?))
+    }
+
+    fn member_address(id: u64, enr: &Enr) -> Result<MemberAddress, Box<dyn Error>> {
         let addr = enr
             .quic4_socket()
             .or_else(|| enr.quic6_socket())
             .ok_or_else(|| format!("cluster config ENR of node {id} has no QUIC address"))?;
-        Ok((id, MemberAddress { public_key: enr.public_key().serialize(), addr }))
+        Ok(MemberAddress { public_key: enr.public_key().serialize(), addr })
     }
 
     /// A journal that contradicts `bootstrap` or `join` would only fail

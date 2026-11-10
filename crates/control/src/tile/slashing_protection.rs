@@ -59,7 +59,7 @@ impl MemberUpdate {
 }
 
 /// What the peer manager and the network tile were last told about the
-/// other members.
+/// other members. They start out trusting the configured ones.
 #[derive(Default)]
 struct PublishedMembers {
     version: Option<u64>,
@@ -67,11 +67,18 @@ struct PublishedMembers {
 }
 
 impl PublishedMembers {
+    fn new(configured: Vec<Member>) -> Self {
+        Self { version: None, members: configured }
+    }
+
+    /// A member without a replicated address stays published: an older
+    /// cluster records none.
     fn sync(
         &mut self,
         version: u64,
         local: u64,
-        members: impl Iterator<Item = Member> + Clone,
+        members: impl Iterator<Item = Member>,
+        is_member: impl Fn(u64) -> bool,
         mut emit: impl FnMut(MemberUpdate),
     ) {
         if self.version == Some(version) {
@@ -79,7 +86,7 @@ impl PublishedMembers {
         }
         self.version = Some(version);
         self.members.retain(|published| {
-            let kept = members.clone().any(|member| member.node_id == published.node_id);
+            let kept = is_member(published.node_id);
             if !kept {
                 emit(MemberUpdate::Removed(*published));
             }
@@ -371,6 +378,9 @@ impl SlashingProtectionHandler {
         config: Option<SlashingProtectionConfig>,
         now: Instant,
     ) -> Result<Self, ClusterError> {
+        let published_members = PublishedMembers::new(
+            config.as_ref().map(|config| config.configured_members.clone()).unwrap_or_default(),
+        );
         let cluster =
             config.map(|config| SlashingProtectionCluster::new(config, now)).transpose()?;
         ClusterCounters::Clustered.set(cluster.is_some() as u64);
@@ -389,14 +399,17 @@ impl SlashingProtectionHandler {
             duty_timers: DutyTimers::new(),
             loop_gap: LoopGap::default(),
             last_sample: now,
-            published_members: PublishedMembers::default(),
+            published_members,
         })
     }
 
     pub(super) fn publish_members(&mut self, emit: impl FnMut(MemberUpdate)) {
-        if let Some(cluster) = &self.cluster {
+        if let Some(cluster) = &self.cluster &&
+            cluster.knows_membership()
+        {
             let (version, local) = (cluster.membership_version(), cluster.node_id());
-            self.published_members.sync(version, local, cluster.members(), emit);
+            let is_member = |node_id| cluster.is_member(node_id);
+            self.published_members.sync(version, local, cluster.members(), is_member, emit);
         }
     }
 
@@ -818,7 +831,10 @@ mod tests {
         let mut published = PublishedMembers::default();
         let mut sync = |version, members: &[Member]| {
             let mut updates = Vec::new();
-            published.sync(version, 1, members.iter().copied(), |update| updates.push(update));
+            let is_member = |node_id| members.iter().any(|member| member.node_id == node_id);
+            published.sync(version, 1, members.iter().copied(), is_member, |update| {
+                updates.push(update)
+            });
             updates
         };
         use MemberUpdate::{Removed, Trusted};
@@ -830,6 +846,19 @@ mod tests {
             Trusted(member(3, 3))
         ]);
         assert_eq!(sync(3, &[member(3, 3)]), [Removed(member(2, 9))]);
+    }
+
+    /// Node 3 was removed while every node was down. The restarted nodes
+    /// still trust it from their config until the first sync. Node 2 is a
+    /// member with no replicated address yet.
+    #[test]
+    fn configured_member_removed_by_the_cluster_is_untrusted() {
+        let member = |node_id| Member { node_id, address: test_address(node_id) };
+        let mut published = PublishedMembers::new(vec![member(2), member(3)]);
+        let mut updates = Vec::new();
+        let is_member = |node_id| [1, 2].contains(&node_id);
+        published.sync(1, 1, [member(1)].into_iter(), is_member, |update| updates.push(update));
+        assert_eq!(updates, [MemberUpdate::Removed(member(3))]);
     }
 
     #[test]

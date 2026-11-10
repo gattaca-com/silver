@@ -49,6 +49,9 @@ pub struct SlashingProtectionConfig {
     pub node_id: u64,
     pub voters: Voters,
     pub advertised: MemberAddress,
+    /// The other members as configured, trusted from startup. Those the
+    /// cluster has since removed are untrusted once its membership is known.
+    pub configured_members: Vec<Member>,
     pub storage: ClusterStorageConfig,
     pub tick_interval: Duration,
     pub heartbeat_ticks: usize,
@@ -71,6 +74,7 @@ impl SlashingProtectionConfig {
             node_id,
             voters,
             advertised,
+            configured_members: Vec::new(),
             storage,
             tick_interval: DEFAULT_TICK_INTERVAL,
             heartbeat_ticks: DEFAULT_HEARTBEAT_TICKS,
@@ -337,6 +341,9 @@ pub struct SlashingProtectionCluster {
     /// unchanged loops.
     membership_version: u64,
     next_announcement: Instant,
+    /// Every node refuses an announcement under another key, so it is
+    /// reported once instead of proposed again.
+    foreign_key_reported: bool,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -383,6 +390,7 @@ impl SlashingProtectionCluster {
             membership: ClusterMembership::default(),
             membership_version: 0,
             next_announcement: now,
+            foreign_key_reported: false,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -1103,9 +1111,12 @@ impl SlashingProtectionCluster {
     }
 
     /// A joining node knows no membership until its snapshot. Entries from
-    /// the start of the log would leave it without the initial voters.
+    /// the start of the log would leave it without the initial voters. A
+    /// later append is rejected, which moves the leader to the log start and
+    /// so to a snapshot once the log is compacted there.
     fn drops_append_before_snapshot(&self, message: &Message) -> bool {
         message.get_msg_type() == MessageType::MsgAppend &&
+            message.index == 0 &&
             self.node.as_ref().is_some_and(|node| {
                 let membership = node.raft.prs().conf();
                 node.store().snapshot_index() == 0 &&
@@ -1161,7 +1172,12 @@ impl SlashingProtectionCluster {
         }
     }
 
-    fn is_member(&self, node_id: u64) -> bool {
+    /// A joining node knows no members until its snapshot.
+    pub fn knows_membership(&self) -> bool {
+        self.is_member(self.config.node_id) || self.is_removed()
+    }
+
+    pub fn is_member(&self, node_id: u64) -> bool {
         self.node.as_ref().is_some_and(|node| {
             let membership = node.raft.prs().conf();
             membership.voters().contains(node_id) || membership.learners().contains(&node_id)
@@ -1170,14 +1186,28 @@ impl SlashingProtectionCluster {
 
     /// Keeps this node's replicated address current, so the others dial it
     /// where it now runs. Repeats until applied, since a forwarded proposal
-    /// can be lost.
+    /// can be lost. A node the book does not record yet stays silent:
+    /// binaries before the book stop on the entry, and the others dial it
+    /// from their config.
     fn maybe_announce_address(&mut self, now: Instant) -> Result<(), ClusterError> {
         let node_id = self.config.node_id;
         let address = self.config.advertised;
-        if now < self.next_announcement ||
-            self.membership.address(node_id) == Some(&address) ||
-            !self.is_member(node_id)
-        {
+        let Some(&recorded) = self.membership.address(node_id) else {
+            return Ok(());
+        };
+        if now < self.next_announcement || recorded == address || !self.is_member(node_id) {
+            return Ok(());
+        }
+        if recorded.public_key != address.public_key {
+            if !self.foreign_key_reported {
+                self.foreign_key_reported = true;
+                silver_log::warn!(
+                    node_id,
+                    ?recorded,
+                    ?address,
+                    "the cluster records this node under another key: its address is not announced"
+                );
+            }
             return Ok(());
         }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
