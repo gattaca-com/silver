@@ -40,8 +40,9 @@ memory only.
 - A cluster has at most 7 nodes. Use an odd count: 4 nodes tolerate one
   failure, like 3, but need more votes for every commit.
 - Each node's journal (`data_storage_dir/attestation-cluster.wal`) records its
-  own id and the voter set. A node whose config disagrees with its journal
-  refuses to start, and names both identities.
+  own id and the voter set it started with. A node whose config gives another
+  id refuses to start, and names both ids.
+- On restart, the voter set comes from the journal, not from the config.
 - There is no live way to add, remove or replace a node yet.
 
 ## Bootstrap exactly once

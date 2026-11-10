@@ -101,13 +101,13 @@ fn identity_is_order_independent_and_rejects_invalid_membership() {
 }
 
 #[test]
-fn identity_and_membership_must_match_on_recovery() {
-    for identity in
-        [StorageIdentity::new(2, [1, 2, 3]).unwrap(), StorageIdentity::new(1, [1, 2]).unwrap()]
-    {
-        let mut replay = JournalReplay::new(identity);
-        assert_eq!(replay.feed(&header()).unwrap_err().kind(), io::ErrorKind::InvalidData);
-    }
+fn recovery_matches_the_node_alone_and_keeps_the_header_voters() {
+    let mut replay = JournalReplay::new(StorageIdentity::new(2, [1, 2, 3]).unwrap());
+    assert_eq!(replay.feed(&header()).unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+    let mut replay = JournalReplay::new(StorageIdentity::new(1, [1, 2]).unwrap());
+    replay.feed(&header()).unwrap();
+    assert_eq!(*replay.recovered.initial_voters, [1, 2, 3]);
 }
 
 #[test]

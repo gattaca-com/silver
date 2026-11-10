@@ -6,7 +6,7 @@ use std::{
 
 use raft::{
     Config, RawNode, StateRole,
-    eraftpb::{Entry, Message, MessageType},
+    eraftpb::{ConfChangeV2, Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -42,7 +42,6 @@ const MAX_APPEND_BYTES: u64 = 1024 * 1024;
 // message when full.
 const MAX_INFLIGHT_APPENDS: usize = 64;
 
-/// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
 pub struct SlashingProtectionConfig {
     pub node_id: u64,
@@ -343,7 +342,7 @@ impl SlashingProtectionCluster {
         incarnation[0] |= 1; // Zero is reserved for legacy proposal contexts.
         Self {
             node: None,
-            peers: ClusterPeers::new(config.node_id, &config.voters),
+            peers: ClusterPeers::default(),
             config,
             persistence,
             failed: false,
@@ -370,8 +369,9 @@ impl SlashingProtectionCluster {
         now: Instant,
     ) -> Result<Self, ClusterError> {
         config.validate()?;
+        let voters = config.voters;
         let mut cluster = Self::with_persistence(config, Persistence::memory(), now);
-        cluster.recover(RecoveredStorage::default(), now)?;
+        cluster.recover(RecoveredStorage::empty(voters), now)?;
         Ok(cluster)
     }
 
@@ -449,9 +449,7 @@ impl SlashingProtectionCluster {
             return Ok(());
         }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
-        let checked =
-            MemberMessageCheck { log: &node.raft.raft_log, voters: &self.config.voters, wall_slot }
-                .check(&message);
+        let checked = MemberMessageCheck { log: &node.raft.raft_log, wall_slot }.check(&message);
         if let Err(error) = checked {
             if let MemberMessageError::LeaderAheadOfClock { slot, .. } = error {
                 self.leader_boycott.start(&message, slot, wall_slot);
@@ -459,7 +457,11 @@ impl SlashingProtectionCluster {
             return Err(ClusterError::MemberMessage(error));
         }
         self.peers.heard(&message, now);
-        node.step(message).map_err(ClusterError::Raft)
+        match node.step(message) {
+            // A response from a member removed since it was sent.
+            Err(raft::Error::StepPeerNotFound) => Ok(()),
+            result => result.map_err(ClusterError::Raft),
+        }
     }
 
     pub fn peer_stats(&self, now: Instant) -> impl Iterator<Item = ClusterPeerStats> {
@@ -776,8 +778,8 @@ impl SlashingProtectionCluster {
         let snapshot = if ready.snapshot().is_empty() {
             None
         } else {
-            let restored = RestoredSnapshot::decode(ready.snapshot(), &self.config.voters)
-                .map_err(ClusterError::Snapshot)?;
+            let restored =
+                RestoredSnapshot::decode(ready.snapshot()).map_err(ClusterError::Snapshot)?;
             if restored.locks.minimum_slot() < self.state.minimum_slot() {
                 return Err(ClusterError::Snapshot(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -849,9 +851,9 @@ impl SlashingProtectionCluster {
         if self.node.is_some() {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
-        let mut storage = RaftStorage::new(&self.config.voters);
+        let mut storage = RaftStorage::new(&recovered.initial_voters);
         if !recovered.snapshot.is_empty() {
-            self.state = RestoredSnapshot::decode(&recovered.snapshot, &self.config.voters)
+            self.state = RestoredSnapshot::decode(&recovered.snapshot)
                 .map_err(ClusterError::Snapshot)?
                 .locks;
             storage.install_snapshot(recovered.snapshot)?;
@@ -859,15 +861,17 @@ impl SlashingProtectionCluster {
         storage.memory.wl().append(&recovered.entries)?;
         let commit = recovered.hard_state.commit;
         storage.memory.wl().set_hardstate(recovered.hard_state);
+        let mut config = self.config.raft_config();
+        config.applied = commit;
+        // Built before replay, which applies membership changes through it.
+        self.node = Some(RawNode::with_default_logger(&config, storage)?);
         self.apply_entries(
             recovered.entries.into_iter().take_while(|entry| entry.index <= commit),
             now,
             0,
             &mut |_| {},
         )?;
-        let mut config = self.config.raft_config();
-        config.applied = commit;
-        self.node = Some(RawNode::with_default_logger(&config, storage)?);
+        self.follow_membership()?;
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         silver_log::info!(
             node_id = self.config.node_id,
@@ -890,6 +894,7 @@ impl SlashingProtectionCluster {
         if let Some(snapshot) = ready.snapshot {
             self.state = snapshot.locks;
             self.pending_minimum_slot = None;
+            self.follow_membership()?;
         }
         for message in ready.messages {
             self.snapshot_transfers.sent(&message, now);
@@ -912,9 +917,6 @@ impl SlashingProtectionCluster {
         emit: &mut impl FnMut(ClusterEvent),
     ) -> Result<(), ClusterError> {
         for entry in entries {
-            if entry.data.is_empty() {
-                continue;
-            }
             let decoded = DecodedEntry::decode(&entry).map_err(|cause| ClusterError::BadEntry {
                 index: entry.index,
                 term: entry.term,
@@ -950,9 +952,40 @@ impl SlashingProtectionCluster {
                         self.pending_minimum_slot = None;
                     }
                 }
+                DecodedEntry::Empty => {}
+                DecodedEntry::MembershipChange(change) => {
+                    self.apply_membership_change(&change, entry.index)?
+                }
             }
         }
 
+        Ok(())
+    }
+
+    /// raft-rs refuses a change before altering anything, and every node
+    /// refuses the same one, so a refused change is skipped everywhere.
+    fn apply_membership_change(
+        &mut self,
+        change: &ConfChangeV2,
+        index: u64,
+    ) -> Result<(), ClusterError> {
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        match node.apply_conf_change(change) {
+            Ok(membership) => {
+                node.mut_store().memory.wl().set_conf_state(membership.clone());
+                self.peers.set_members(self.config.node_id, &membership);
+                silver_log::info!(index, ?membership, "Raft membership changed");
+            }
+            Err(error) => {
+                silver_log::warn!(index, %error, ?change, "Raft membership change refused");
+            }
+        }
+        Ok(())
+    }
+
+    fn follow_membership(&mut self) -> Result<(), ClusterError> {
+        let node = self.node.as_ref().ok_or(ClusterError::NotReady)?;
+        self.peers.set_members(self.config.node_id, &node.raft.prs().conf().to_conf_state());
         Ok(())
     }
 
@@ -992,6 +1025,10 @@ mod persistence_tests;
 #[cfg(test)]
 #[path = "node/snapshot_tests.rs"]
 mod snapshot_tests;
+
+#[cfg(test)]
+#[path = "node/membership_tests.rs"]
+mod membership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1098,11 +1135,17 @@ mod tests {
         let lock = ReplicatedCommand::Lock(command(10, 1));
         let mut conf_change = forwarded(lock, 2);
         conf_change.set_entry_type(EntryType::EntryConfChange);
+        let mut membership_change = Entry::default();
+        membership_change.set_entry_type(EntryType::EntryConfChangeV2);
         let refused = [
             (propose_message(2, vec![]), MemberMessageError::EmptyProposal),
             (
                 propose_message(2, vec![conf_change]),
                 MemberMessageError::Entry(EntryError::UnsupportedType(EntryType::EntryConfChange)),
+            ),
+            (
+                propose_message(2, vec![membership_change]),
+                MemberMessageError::ForwardedMembershipChange,
             ),
             (
                 propose_message(2, vec![forwarded(

@@ -2,13 +2,13 @@ use std::io;
 
 use raft::{
     GetEntriesContext, RaftState, Storage, StorageError,
-    eraftpb::{Entry, HardState, Snapshot},
+    eraftpb::{ConfState, Entry, HardState, Snapshot},
     storage::MemStorage,
 };
 
 use super::{
     lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
-    voters::Voters,
+    voters::MAX_VOTERS,
 };
 
 pub(super) struct RestoredSnapshot {
@@ -17,8 +17,8 @@ pub(super) struct RestoredSnapshot {
 }
 
 impl RestoredSnapshot {
-    pub fn decode(snapshot: &Snapshot, voters: &Voters) -> io::Result<Self> {
-        validate_snapshot(snapshot, voters)?;
+    pub fn decode(snapshot: &Snapshot) -> io::Result<Self> {
+        validate_snapshot(snapshot)?;
         Ok(Self {
             index: snapshot.get_metadata().index,
             locks: SlashingLockStore::decode_snapshot(&snapshot.data)?,
@@ -122,18 +122,13 @@ impl Storage for RaftStorage {
     }
 }
 
-pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &Voters) -> io::Result<()> {
+pub(super) fn validate_snapshot(snapshot: &Snapshot) -> io::Result<()> {
     let metadata = snapshot.get_metadata();
-    let conf = metadata.get_conf_state();
     if snapshot.data.len() > MAX_SNAPSHOT_BYTES ||
         metadata.index == 0 ||
         metadata.index == u64::MAX ||
         metadata.term == 0 ||
-        !voters.matches(&conf.voters) ||
-        !conf.learners.is_empty() ||
-        !conf.voters_outgoing.is_empty() ||
-        !conf.learners_next.is_empty() ||
-        conf.auto_leave
+        !is_consistent(metadata.get_conf_state())
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -141,4 +136,28 @@ pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &Voters) -> io::Res
         ));
     }
     Ok(())
+}
+
+/// Refuses shapes raft-rs never produces: no voters, zero or repeated ids, a
+/// learner that votes, or `auto_leave` outside a joint config.
+fn is_consistent(membership: &ConfState) -> bool {
+    let joint = !membership.voters_outgoing.is_empty();
+    !membership.voters.is_empty() &&
+        are_distinct_ids(&membership.voters) &&
+        are_distinct_ids(&membership.voters_outgoing) &&
+        are_distinct_ids(&membership.learners) &&
+        are_distinct_ids(&membership.learners_next) &&
+        membership.learners.iter().all(|id| {
+            !membership.voters.contains(id) && !membership.voters_outgoing.contains(id)
+        }) &&
+        membership
+            .learners_next
+            .iter()
+            .all(|id| !membership.voters.contains(id) && membership.voters_outgoing.contains(id)) &&
+        (joint || !membership.auto_leave)
+}
+
+fn are_distinct_ids(ids: &[u64]) -> bool {
+    ids.len() <= MAX_VOTERS &&
+        ids.iter().enumerate().all(|(i, id)| *id != 0 && !ids[i + 1..].contains(id))
 }

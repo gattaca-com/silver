@@ -160,8 +160,9 @@ fn failed_or_mismatched_recovery_never_initializes_an_empty_voter() {
     assert_eq!(fs::read(&path).unwrap(), corrupt);
 }
 
-/// The startup check reads the header alone and names both identities, so a
-/// misconfigured node fails before it joins the cluster.
+/// The startup check reads the header alone and names both node ids, so a
+/// misconfigured node fails before it joins the cluster. Config voters may
+/// differ: the journal's own log holds the membership.
 #[test]
 fn startup_check_reads_the_journal_identity() {
     let dir = tempfile::tempdir().unwrap();
@@ -170,14 +171,11 @@ fn startup_check_reads_the_journal_identity() {
     recovered(&mut ClusterStorage::create(&path, identity()).unwrap());
 
     identity().check_journal(&path).unwrap();
-    for other in
-        [StorageIdentity::new(2, [1, 2, 3]).unwrap(), StorageIdentity::new(1, [1, 2]).unwrap()]
-    {
-        let error = other.check_journal(&path).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        let message = error.to_string();
-        assert!(message.contains("belongs to node 1 with voters [1, 2, 3]"), "{message}");
-    }
+    StorageIdentity::new(1, [1, 2]).unwrap().check_journal(&path).unwrap();
+    let error = StorageIdentity::new(2, [1, 2, 3]).unwrap().check_journal(&path).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let message = error.to_string();
+    assert!(message.contains("belongs to node 1, but the config has node 2"), "{message}");
 
     let mut corrupt = fs::read(&path).unwrap();
     corrupt[0] ^= 1;

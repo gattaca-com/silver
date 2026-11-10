@@ -243,7 +243,7 @@ impl StorageState {
                 if !disk.write_with(self.file, |output| identity.write(output)) {
                     return Err(failed());
                 }
-                self.recovered = Some(RecoveredStorage::default());
+                self.recovered = Some(RecoveredStorage::empty(identity.voters));
                 let sync = disk.sync_all(self.file).ok_or_else(failed)?;
                 self.phase = Phase::SyncingLog { sync };
             }

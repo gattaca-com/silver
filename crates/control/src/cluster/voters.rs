@@ -32,11 +32,6 @@ impl Voters {
         }
         Ok(Self(voters))
     }
-
-    /// Whether `ids` holds exactly these voters, in any order.
-    pub(super) fn matches(&self, ids: &[u64]) -> bool {
-        ids.len() == self.len() && self.iter().all(|voter| ids.contains(voter))
-    }
 }
 
 impl Deref for Voters {

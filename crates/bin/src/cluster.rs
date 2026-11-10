@@ -77,8 +77,8 @@ impl ClusterStartup {
         }
     }
 
-    /// An existing journal written for another node or voter set would
-    /// likewise fail only inside Control.
+    /// An existing journal written for another node would likewise fail only
+    /// inside Control.
     fn check_identity(
         storage: &ClusterStorageConfig,
         identity: &StorageIdentity,

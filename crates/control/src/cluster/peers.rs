@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use raft::{
     ProgressState, RawNode, StateRole,
-    eraftpb::{Message, MessageType},
+    eraftpb::{ConfState, Message, MessageType},
 };
 use silver_common::{ClusterPeerStats, ClusterProgress};
 
@@ -22,18 +22,30 @@ struct Peer {
     messages_in: u64,
 }
 
+#[derive(Default)]
 pub(super) struct ClusterPeers {
     peers: Vec<Peer>,
 }
 
 impl ClusterPeers {
-    pub(super) fn new(local_id: u64, voters: &[u64]) -> Self {
-        let peers = voters
-            .iter()
-            .filter(|&&node_id| node_id != local_id)
-            .map(|&node_id| Peer { node_id, ..Peer::default() })
-            .collect();
-        Self { peers }
+    /// Keeps the stats of members that stay.
+    pub(super) fn set_members(&mut self, local_id: u64, membership: &ConfState) {
+        let members = || {
+            membership
+                .voters
+                .iter()
+                .chain(&membership.voters_outgoing)
+                .chain(&membership.learners)
+                .chain(&membership.learners_next)
+                .copied()
+                .filter(move |&node_id| node_id != local_id)
+        };
+        self.peers.retain(|peer| members().any(|node_id| node_id == peer.node_id));
+        for node_id in members() {
+            if self.peer(node_id).is_none() {
+                self.peers.push(Peer { node_id, ..Peer::default() });
+            }
+        }
     }
 
     fn peer(&mut self, node_id: u64) -> Option<&mut Peer> {

@@ -1,9 +1,9 @@
 use std::fmt;
 
-use raft::eraftpb::{Entry, EntryType};
+use raft::eraftpb::{ConfChangeV2, Entry, EntryType};
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
 
-use super::{admission::SlashingAdmission, node::ProposalId};
+use super::{admission::SlashingAdmission, node::ProposalId, wire::decode_membership_change};
 
 const LOCK_COMMAND_TAG: u8 = 0;
 const ADVANCE_MINIMUM_SLOT_TAG: u8 = 1;
@@ -117,12 +117,23 @@ pub(super) enum DecodedEntry {
     Lock(AttestationLockCommand, ProposalId),
     BlockLock(BlockLockCommand, ProposalId),
     AdvanceMinimumSlot(u64),
+    /// A new leader's first entry.
+    Empty,
+    /// Empty `data` is the change that leaves a joint config.
+    MembershipChange(ConfChangeV2),
 }
 
 impl DecodedEntry {
     pub(super) fn decode(entry: &Entry) -> Result<Self, EntryError> {
-        if entry.get_entry_type() != EntryType::EntryNormal {
-            return Err(EntryError::UnsupportedType(entry.get_entry_type()));
+        match entry.get_entry_type() {
+            EntryType::EntryNormal if entry.data.is_empty() => return Ok(Self::Empty),
+            EntryType::EntryNormal => {}
+            EntryType::EntryConfChangeV2 => {
+                return decode_membership_change(&entry.data)
+                    .map(Self::MembershipChange)
+                    .map_err(|_| EntryError::InvalidMembershipChange);
+            }
+            entry_type => return Err(EntryError::UnsupportedType(entry_type)),
         }
         let proposal_id =
             || ProposalId::decode(&entry.context).map_err(EntryError::ProposalContextLength);
@@ -139,6 +150,7 @@ impl DecodedEntry {
             Self::Lock(command, _) => command.key.slot,
             Self::BlockLock(command, _) => command.key.slot,
             Self::AdvanceMinimumSlot(floor) => SlashingAdmission::wall_slot_for_floor(*floor),
+            Self::Empty | Self::MembershipChange(_) => 0,
         }
     }
 }
@@ -146,6 +158,7 @@ impl DecodedEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryError {
     UnsupportedType(EntryType),
+    InvalidMembershipChange,
     Empty,
     UnknownTag(u8),
     InvalidLength { tag: u8, expected: usize, actual: usize },
@@ -156,6 +169,7 @@ impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedType(entry_type) => write!(f, "unsupported entry type {entry_type:?}"),
+            Self::InvalidMembershipChange => f.write_str("undecodable Raft membership change"),
             Self::Empty => f.write_str("empty Raft command"),
             Self::UnknownTag(tag) => write!(f, "unknown Raft command tag {tag}"),
             Self::InvalidLength { tag, expected, actual } => {

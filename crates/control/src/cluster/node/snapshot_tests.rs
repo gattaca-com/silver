@@ -1,11 +1,11 @@
 use raft::{
     Storage,
-    eraftpb::{HardState, MessageType, Snapshot},
+    eraftpb::{ConfState, HardState, MessageType, Snapshot},
 };
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
-use crate::cluster::AttestationKey;
+use crate::cluster::{AttestationKey, raft_storage::validate_snapshot};
 
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
@@ -145,7 +145,7 @@ fn invalid_snapshot_payload_or_membership_is_refused() {
         let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
         let mut snapshot = snapshot(10);
         if bad_membership {
-            snapshot.mut_metadata().mut_conf_state().voters = vec![1, 4];
+            snapshot.mut_metadata().mut_conf_state().learners = vec![1];
         } else {
             snapshot.data = vec![0; 20].into();
         }
@@ -156,6 +156,30 @@ fn invalid_snapshot_payload_or_membership_is_refused() {
         node.spin(now, 100, |_| panic!("released invalid snapshot")).unwrap();
         assert!(!node.is_failed());
     }
+}
+
+#[test]
+fn snapshot_membership_is_checked_for_shape_alone() {
+    let with_membership = |edit: fn(&mut ConfState)| {
+        let mut snapshot = snapshot(10);
+        edit(snapshot.mut_metadata().mut_conf_state());
+        validate_snapshot(&snapshot).is_ok()
+    };
+    assert!(with_membership(|membership| membership.voters = vec![4, 5, 6]));
+    assert!(with_membership(|membership| membership.learners = vec![4]));
+    assert!(with_membership(|membership| {
+        membership.voters_outgoing = vec![1, 2, 4];
+        membership.learners_next = vec![4];
+        membership.auto_leave = true;
+    }));
+
+    assert!(!with_membership(|membership| membership.voters.clear()));
+    assert!(!with_membership(|membership| membership.voters = vec![1, 1, 2]));
+    assert!(!with_membership(|membership| membership.voters = vec![0, 1, 2]));
+    assert!(!with_membership(|membership| membership.voters = (1..=8).collect()));
+    assert!(!with_membership(|membership| membership.learners = vec![2]));
+    assert!(!with_membership(|membership| membership.learners_next = vec![4]));
+    assert!(!with_membership(|membership| membership.auto_leave = true));
 }
 
 #[test]

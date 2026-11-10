@@ -7,7 +7,7 @@ use raft::{
 
 #[cfg(target_os = "linux")]
 use super::storage::{ClusterStorage, ClusterStorageEvent, StorageIdentity};
-use super::{node::SlashingProtectionConfig, raft_storage::RestoredSnapshot};
+use super::{node::SlashingProtectionConfig, raft_storage::RestoredSnapshot, voters::Voters};
 
 #[derive(Debug, Clone)]
 pub enum ClusterStorageConfig {
@@ -15,13 +15,26 @@ pub enum ClusterStorageConfig {
     Open(PathBuf),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RecoveredStorage {
+    /// The voters the journal was created with.
+    pub initial_voters: Voters,
     pub hard_state: HardState,
     pub snapshot: Snapshot,
     /// Includes the uncommitted suffix; replay only entries through
     /// `hard_state.commit` into the state machine.
     pub entries: Vec<Entry>,
+}
+
+impl RecoveredStorage {
+    pub fn empty(initial_voters: Voters) -> Self {
+        Self {
+            initial_voters,
+            hard_state: HardState::default(),
+            snapshot: Snapshot::default(),
+            entries: Vec::new(),
+        }
+    }
 }
 
 pub(super) struct PersistedReady {

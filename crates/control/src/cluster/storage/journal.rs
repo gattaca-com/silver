@@ -26,7 +26,12 @@ pub(super) const READ_CHUNK_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageIdentity {
     node_id: u64,
+    pub(super) voters: Voters,
+}
+
+struct JournalHeader {
     voters: Voters,
+    checkpoint: bool,
 }
 
 impl StorageIdentity {
@@ -37,8 +42,8 @@ impl StorageIdentity {
     }
 
     /// Reads only the journal's header, synchronously, so a node configured
-    /// with another node's id or voter set fails at startup instead of inside
-    /// replay, where it would run with the cluster refusing every duty.
+    /// with another node's id fails at startup instead of inside replay, where
+    /// it would run with the cluster refusing every duty.
     pub fn check_journal(&self, path: &Path) -> io::Result<()> {
         self.verify(&Frame::read_first_payload(path)?)?;
         Ok(())
@@ -64,12 +69,7 @@ impl StorageIdentity {
         Frame::finish(output, start);
     }
 
-    pub(super) fn validate_snapshot(&self, snapshot: &Snapshot) -> io::Result<()> {
-        validate_snapshot(snapshot, &self.voters)
-    }
-
-    /// Returns whether the journal starts from a checkpoint.
-    fn verify(&self, payload: &[u8]) -> io::Result<bool> {
+    fn verify(&self, payload: &[u8]) -> io::Result<JournalHeader> {
         let mut cursor = Cursor(payload);
         let legacy = match cursor.take(MAGIC.len())? {
             magic if magic == MAGIC => false,
@@ -81,14 +81,13 @@ impl StorageIdentity {
         // Legacy headers predate checkpoints.
         let checkpoint = !legacy && cursor.flag()?;
         cursor.finish()?;
-        if node_id != self.node_id || voters != self.voters {
+        if node_id != self.node_id {
             return Err(invalid_data(format!(
-                "Raft journal belongs to node {node_id} with voters {voters:?}, but the config \
-                 has node {} with voters {:?}",
-                self.node_id, self.voters
+                "Raft journal belongs to node {node_id}, but the config has node {}",
+                self.node_id
             )));
         }
-        Ok(checkpoint)
+        Ok(JournalHeader { voters, checkpoint })
     }
 }
 
@@ -287,12 +286,12 @@ pub(super) struct JournalReplay {
 impl JournalReplay {
     pub fn new(identity: StorageIdentity) -> Self {
         Self {
+            recovered: RecoveredStorage::empty(identity.voters),
             identity,
             buffer: Vec::with_capacity(READ_CHUNK_BYTES),
             header_read: false,
             checkpoint_required: false,
             record_entries: Vec::new(),
-            recovered: RecoveredStorage::default(),
             log: LogState::default(),
             valid_len: 0,
             appended_bytes: 0,
@@ -304,7 +303,9 @@ impl JournalReplay {
         let mut consumed = 0;
         while let Some(frame) = Frame::read(&self.buffer[consumed..])? {
             if !self.header_read {
-                self.checkpoint_required = self.identity.verify(frame.payload)?;
+                let header = self.identity.verify(frame.payload)?;
+                self.checkpoint_required = header.checkpoint;
+                self.recovered.initial_voters = header.voters;
                 self.header_read = true;
             } else {
                 let record = Record::decode(frame.payload, &mut self.record_entries)?;
@@ -324,7 +325,7 @@ impl JournalReplay {
                     {
                         return Err(invalid_data("Raft checkpoint must precede journal appends"));
                     }
-                    self.identity.validate_snapshot(&snapshot)?;
+                    validate_snapshot(&snapshot)?;
                     self.log = LogState::from_snapshot(
                         &snapshot,
                         record

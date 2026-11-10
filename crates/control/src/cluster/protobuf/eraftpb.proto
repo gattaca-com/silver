@@ -76,3 +76,26 @@ message Message {
   uint64 commit_term = 15;
   int64 priority = 16;
 }
+
+enum ConfChangeTransition {
+  Auto = 0;
+  Implicit = 1;
+  Explicit = 2;
+}
+
+enum ConfChangeType {
+  AddNode = 0;
+  RemoveNode = 1;
+  AddLearnerNode = 2;
+}
+
+message ConfChangeSingle {
+  ConfChangeType change_type = 1;
+  uint64 node_id = 2;
+}
+
+message ConfChangeV2 {
+  ConfChangeTransition transition = 1;
+  repeated ConfChangeSingle changes = 2;
+  bytes context = 3;
+}
