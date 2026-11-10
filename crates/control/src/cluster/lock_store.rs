@@ -1,5 +1,6 @@
 use std::{collections::hash_map::Entry, io};
 
+use bytes::{BufMut, BytesMut};
 use fxhash::FxHashMap;
 use silver_common::{
     MAX_CLUSTER_MESSAGE_BYTES, SLOTS_PER_EPOCH, merkle, ssz_view::SingleAttestationView,
@@ -168,26 +169,28 @@ impl SlashingLockStore {
         self.minimum_slot
     }
 
-    pub(super) fn encode_snapshot(&self) -> io::Result<Vec<u8>> {
-        let length = SNAPSHOT_FIXED_LEN +
+    pub(super) fn snapshot_len(&self) -> usize {
+        SNAPSHOT_FIXED_LEN +
             self.len() * SNAPSHOT_VOTE_LEN +
             self.evicted_sources.len() * SNAPSHOT_EVICTED_LEN +
-            self.blocks.len() * SNAPSHOT_BLOCK_LEN;
-        if length > MAX_SNAPSHOT_BYTES {
+            self.blocks.len() * SNAPSHOT_BLOCK_LEN
+    }
+
+    pub(super) fn encode_snapshot(&self, bytes: &mut BytesMut) -> io::Result<()> {
+        if bytes.len() + self.snapshot_len() > MAX_SNAPSHOT_BYTES {
             return Err(invalid_snapshot("lock snapshot exceeds transport limit"));
         }
-        let mut bytes = Vec::with_capacity(length);
         bytes.extend_from_slice(SNAPSHOT_MAGIC);
         bytes.extend_from_slice(&self.minimum_slot.to_le_bytes());
         bytes.extend_from_slice(&self.minimum_target.to_le_bytes());
         for bucket in &self.locks {
             let Some(epoch) = bucket.epoch else {
-                bytes.push(0);
+                bytes.put_u8(0);
                 continue;
             };
             // Keep the epoch tag even when its locks expired: it prevents ring reuse by
             // older commands.
-            bytes.push(1);
+            bytes.put_u8(1);
             bytes.extend_from_slice(&epoch.to_le_bytes());
             bytes.extend_from_slice(&(bucket.attestations.len() as u32).to_le_bytes());
             for (validator, vote) in &bucket.attestations {
@@ -207,7 +210,7 @@ impl SlashingLockStore {
             bytes.extend_from_slice(&key.slot.to_le_bytes());
             bytes.extend_from_slice(signature);
         }
-        Ok(bytes)
+        Ok(())
     }
 
     /// Checks the invariants `apply` keeps, so a snapshot cannot build a
@@ -367,6 +370,14 @@ mod tests {
     use super::*;
     use crate::cluster::AttestationKey;
 
+    impl SlashingLockStore {
+        fn encoded(&self) -> io::Result<Vec<u8>> {
+            let mut bytes = BytesMut::new();
+            self.encode_snapshot(&mut bytes)?;
+            Ok(bytes.to_vec())
+        }
+    }
+
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         command_for(slot, 7, root)
     }
@@ -476,8 +487,7 @@ mod tests {
         store.apply(&vote(7, 0, 3));
         store.apply(&vote(8, 2, 4));
         store.apply(&vote(9, 2, 6));
-        let mut restored =
-            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        let mut restored = SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).unwrap();
 
         assert_eq!(restored.apply(&vote(7, 1, 3)), LockResult::TooOld);
         assert_eq!(restored.apply(&vote(8, 1, 5)), LockResult::Surrounding, "surrounds (2, 4)");
@@ -497,12 +507,12 @@ mod tests {
             }
         }
 
-        assert!(store.encode_snapshot().is_ok());
+        assert!(store.encoded().is_ok());
     }
 
     #[test]
     fn oversized_snapshot_is_an_error_not_a_panic() {
-        assert!(SlashingLockStore::oversized().encode_snapshot().is_err());
+        assert!(SlashingLockStore::oversized().encoded().is_err());
     }
 
     #[test]
@@ -514,9 +524,7 @@ mod tests {
             store.advance_minimum_slot(4 * SLOTS_PER_EPOCH);
             store
         };
-        assert!(
-            SlashingLockStore::decode_snapshot(&consistent().encode_snapshot().unwrap()).is_ok()
-        );
+        assert!(SlashingLockStore::decode_snapshot(&consistent().encoded().unwrap()).is_ok());
 
         let mut source_after_target = consistent();
         source_after_target.locks[0].attestations.get_mut(&7).unwrap().source = 5;
@@ -527,7 +535,7 @@ mod tests {
         let mut target_below_slot = consistent();
         target_below_slot.minimum_slot = 5 * SLOTS_PER_EPOCH;
         for store in [source_after_target, vote_below_floor, evicted_at_floor, target_below_slot] {
-            assert!(SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).is_err());
+            assert!(SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).is_err());
         }
     }
 
@@ -536,7 +544,7 @@ mod tests {
         let mut store = SlashingLockStore::default();
         store.apply(&vote(7, 0, 3));
         store.advance_minimum_slot(4 * SLOTS_PER_EPOCH);
-        let mut bytes = store.encode_snapshot().unwrap();
+        let mut bytes = store.encoded().unwrap();
         let blocks_at = bytes.len() - 4;
         let record = blocks_at - SNAPSHOT_EVICTED_LEN..blocks_at;
         bytes[record.start - 4..record.start].copy_from_slice(&2u32.to_le_bytes());
@@ -552,21 +560,18 @@ mod tests {
         store.apply(&command_for(10, 7, 1));
         store.apply(&command_for(40, 8, 2));
         store.advance_minimum_slot(20);
-        let mut restored =
-            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        let mut restored = SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).unwrap();
         assert_eq!(restored.minimum_slot(), 20);
         assert_eq!(restored.apply(&command_for(10, 7, 1)), LockResult::TooOld);
         assert_eq!(restored.apply(&command_for(21, 7, 3)), LockResult::Conflicting);
         assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::AlreadyAcceptedSame);
 
         store.apply(&command_for(100, 9, 4));
-        let mut restored =
-            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        let mut restored = SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).unwrap();
         assert_eq!(restored.apply(&command_for(40, 8, 2)), LockResult::TooOld);
         assert_eq!(restored.apply(&command_for(100, 9, 4)), LockResult::AlreadyAcceptedSame);
         store.advance_minimum_slot(128);
-        let restored =
-            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        let restored = SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).unwrap();
         assert_eq!(restored.minimum_slot(), 128);
         assert_eq!(restored.len(), 0, "expired hashes should not be serialized");
     }
@@ -578,8 +583,7 @@ mod tests {
         store.apply_block(&block(30, 4, 2));
         store.advance_minimum_slot(20);
 
-        let mut restored =
-            SlashingLockStore::decode_snapshot(&store.encode_snapshot().unwrap()).unwrap();
+        let mut restored = SlashingLockStore::decode_snapshot(&store.encoded().unwrap()).unwrap();
 
         assert_eq!(restored.apply_block(&block(10, 3, 1)), LockResult::TooOld);
         assert_eq!(restored.apply_block(&block(30, 4, 2)), LockResult::AlreadyAcceptedSame);
@@ -590,7 +594,7 @@ mod tests {
     fn malformed_lock_snapshots_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply(&command_for(10, 7, 1));
-        let bytes = store.encode_snapshot().unwrap();
+        let bytes = store.encoded().unwrap();
         for len in 0..bytes.len() {
             assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());
         }
@@ -616,7 +620,7 @@ mod tests {
     fn malformed_block_snapshots_are_rejected() {
         let mut store = SlashingLockStore::default();
         store.apply_block(&block(10, 3, 1));
-        let bytes = store.encode_snapshot().unwrap();
+        let bytes = store.encoded().unwrap();
         let blocks_at = bytes.len() - 4 - SNAPSHOT_BLOCK_LEN;
         for len in 0..bytes.len() {
             assert!(SlashingLockStore::decode_snapshot(&bytes[..len]).is_err());

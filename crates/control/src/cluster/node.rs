@@ -6,7 +6,7 @@ use std::{
 
 use raft::{
     Config, RawNode, StateRole,
-    eraftpb::{ConfChangeV2, ConfState, Entry, Message, MessageType},
+    eraftpb::{ConfChangeV2, Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -18,13 +18,14 @@ use super::{
         AttestationLockCommand, BlockKey, BlockLockCommand, DecodedEntry, EntryError,
         ReplicatedCommand,
     },
-    lock_store::{LockResult, SlashingLockStore},
+    lock_store::{LockResult, MAX_SNAPSHOT_BYTES, SlashingLockStore},
     member_message_check::{LeaderBoycott, MemberMessageCheck, MemberMessageError},
+    membership::{ClusterMembership, Member, MemberAddress, MemberRecords, member_ids},
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
-    raft_storage::{RaftStorage, RestoredSnapshot},
+    raft_storage::{RaftStorage, RestoredSnapshot, SnapshotBuffers},
     snapshot_transfers::SnapshotTransfers,
     voters::Voters,
 };
@@ -46,6 +47,7 @@ const MAX_INFLIGHT_APPENDS: usize = 64;
 pub struct SlashingProtectionConfig {
     pub node_id: u64,
     pub voters: Voters,
+    pub advertised: MemberAddress,
     pub storage: ClusterStorageConfig,
     pub tick_interval: Duration,
     pub heartbeat_ticks: usize,
@@ -60,12 +62,14 @@ impl SlashingProtectionConfig {
     pub fn new(
         node_id: u64,
         voters: impl IntoIterator<Item = u64>,
+        advertised: MemberAddress,
         storage: ClusterStorageConfig,
     ) -> Result<Self, ClusterError> {
         let voters = Voters::new(node_id, voters).map_err(ClusterError::InvalidConfig)?;
         Ok(Self {
             node_id,
             voters,
+            advertised,
             storage,
             tick_interval: DEFAULT_TICK_INTERVAL,
             heartbeat_ticks: DEFAULT_HEARTBEAT_TICKS,
@@ -314,9 +318,10 @@ pub struct SlashingProtectionCluster {
     /// Applied index before which compaction is not retried after an
     /// oversized snapshot, so the skip is not logged and counted every loop.
     compaction_retry_at: u64,
+    snapshot_buffers: SnapshotBuffers,
     leader_boycott: LeaderBoycott,
-    /// Cached: raft-rs exposes the outgoing voters only by allocating.
-    joint: bool,
+    membership: ClusterMembership,
+    next_announcement: Instant,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -357,8 +362,10 @@ impl SlashingProtectionCluster {
             resolved: Vec::new(),
             persistence_started: None,
             compaction_retry_at: 0,
+            snapshot_buffers: SnapshotBuffers::default(),
             leader_boycott: LeaderBoycott::default(),
-            joint: false,
+            membership: ClusterMembership::default(),
+            next_announcement: now,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -623,6 +630,7 @@ impl SlashingProtectionCluster {
         }
         self.maybe_propose_minimum_slot(wall_slot)?;
         self.maybe_leave_joint()?;
+        self.maybe_announce_address(now)?;
 
         while !self.persistence.is_pending() && self.node.as_ref().is_some_and(RawNode::has_ready) {
             self.process_ready(now, emit)?;
@@ -652,15 +660,20 @@ impl SlashingProtectionCluster {
         }
         // Too many locks to ship in one message. The journal keeps every entry
         // since the last snapshot, so skipping costs disk, not safety.
-        let data = match self.state.encode_snapshot() {
-            Ok(data) => data,
-            Err(error) => {
-                self.compaction_retry_at = applied.saturating_add(self.config.snapshot_interval);
-                ClusterCounters::CompactionsSkipped.inc();
-                silver_log::warn!(%error, applied, "lock snapshot compaction skipped");
-                return Ok(());
-            }
-        };
+        let len = self.membership.snapshot_len() + self.state.snapshot_len();
+        if len > MAX_SNAPSHOT_BYTES {
+            self.compaction_retry_at = applied.saturating_add(self.config.snapshot_interval);
+            ClusterCounters::CompactionsSkipped.inc();
+            silver_log::warn!(len, applied, "lock snapshot compaction skipped");
+            return Ok(());
+        }
+        let data = self
+            .snapshot_buffers
+            .write(len, |data| {
+                self.membership.encode_snapshot(data);
+                self.state.encode_snapshot(data)
+            })
+            .map_err(ClusterError::Snapshot)?;
         ClusterCounters::SnapshotBytes.set(data.len() as u64);
         let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
         let entries = node.store().suffix(applied)?;
@@ -791,6 +804,8 @@ impl SlashingProtectionCluster {
                 )));
             }
             ClusterCounters::SnapshotsRestored.inc();
+            let members = member_ids(ready.snapshot().get_metadata().get_conf_state());
+            self.peers.set_members(self.config.node_id, members);
             Some(restored)
         };
         self.persistence.submit(&mut ready, snapshot).map_err(ClusterError::Storage)?;
@@ -856,10 +871,16 @@ impl SlashingProtectionCluster {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
         let mut storage = RaftStorage::new(&recovered.initial_voters);
+        let initial_voters = recovered.initial_voters.iter().copied();
+        self.membership = ClusterMembership::new(initial_voters.clone());
+        self.peers.set_members(self.config.node_id, initial_voters);
         if !recovered.snapshot.is_empty() {
-            self.state = RestoredSnapshot::decode(&recovered.snapshot)
-                .map_err(ClusterError::Snapshot)?
-                .locks;
+            let restored =
+                RestoredSnapshot::decode(&recovered.snapshot).map_err(ClusterError::Snapshot)?;
+            self.state = restored.locks;
+            self.membership = restored.membership;
+            let members = member_ids(recovered.snapshot.get_metadata().get_conf_state());
+            self.peers.set_members(self.config.node_id, members);
             storage.install_snapshot(recovered.snapshot)?;
         }
         storage.memory.wl().append(&recovered.entries)?;
@@ -875,7 +896,6 @@ impl SlashingProtectionCluster {
             0,
             &mut |_| {},
         )?;
-        self.follow_membership()?;
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         silver_log::info!(
             node_id = self.config.node_id,
@@ -897,8 +917,8 @@ impl SlashingProtectionCluster {
         let snapshot_index = ready.snapshot.as_ref().map(|snapshot| snapshot.index);
         if let Some(snapshot) = ready.snapshot {
             self.state = snapshot.locks;
+            self.membership = snapshot.membership;
             self.pending_minimum_slot = None;
-            self.follow_membership()?;
         }
         for message in ready.messages {
             self.snapshot_transfers.sent(&message, now);
@@ -956,9 +976,24 @@ impl SlashingProtectionCluster {
                         self.pending_minimum_slot = None;
                     }
                 }
+                DecodedEntry::AnnounceAddress { node_id, address, proposal_id } => {
+                    let origin = proposal_id.origin_node_id;
+                    let is_member = self.is_member(node_id);
+                    let announced = Member { node_id, address };
+                    if self.membership.announce(origin, announced, is_member) {
+                        silver_log::info!(node_id, ?address, "cluster member address recorded");
+                    } else {
+                        silver_log::warn!(
+                            node_id,
+                            origin,
+                            ?address,
+                            "cluster member address announcement refused"
+                        );
+                    }
+                }
                 DecodedEntry::Empty => {}
-                DecodedEntry::MembershipChange(change) => {
-                    self.apply_membership_change(&change, entry.index)?
+                DecodedEntry::MembershipChange { change, added } => {
+                    self.apply_membership_change(&change, added, entry.index)?
                 }
             }
         }
@@ -971,14 +1006,16 @@ impl SlashingProtectionCluster {
     fn apply_membership_change(
         &mut self,
         change: &ConfChangeV2,
+        added: MemberRecords,
         index: u64,
     ) -> Result<(), ClusterError> {
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
         match node.apply_conf_change(change) {
             Ok(membership) => {
-                node.mut_store().memory.wl().set_conf_state(membership.clone());
-                self.adopt_membership(&membership);
+                self.membership.apply_change(change, added, &membership);
+                self.peers.set_members(self.config.node_id, member_ids(&membership));
                 silver_log::info!(index, ?membership, "Raft membership changed");
+                node.mut_store().memory.wl().set_conf_state(membership);
             }
             Err(error) => {
                 silver_log::warn!(index, %error, ?change, "Raft membership change refused");
@@ -987,23 +1024,51 @@ impl SlashingProtectionCluster {
         Ok(())
     }
 
-    fn follow_membership(&mut self) -> Result<(), ClusterError> {
-        let node = self.node.as_ref().ok_or(ClusterError::NotReady)?;
-        let membership = node.raft.prs().conf().to_conf_state();
-        self.adopt_membership(&membership);
-        Ok(())
+    fn is_member(&self, node_id: u64) -> bool {
+        self.node.as_ref().is_some_and(|node| {
+            let membership = node.raft.prs().conf();
+            membership.voters().contains(node_id) || membership.learners().contains(&node_id)
+        })
     }
 
-    fn adopt_membership(&mut self, membership: &ConfState) {
-        self.peers.set_members(self.config.node_id, membership);
-        self.joint = !membership.voters_outgoing.is_empty();
+    /// Keeps this node's replicated address current, so the others dial it
+    /// where it now runs. Repeats until applied, since a forwarded proposal
+    /// can be lost.
+    fn maybe_announce_address(&mut self, now: Instant) -> Result<(), ClusterError> {
+        let node_id = self.config.node_id;
+        let address = self.config.advertised;
+        if now < self.next_announcement ||
+            self.membership.address(node_id) == Some(&address) ||
+            !self.is_member(node_id)
+        {
+            return Ok(());
+        }
+        let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
+        if node.raft.leader_id == 0 {
+            return Ok(());
+        }
+        // Sequence 0 never matches a pending request.
+        let context =
+            ProposalId { origin_node_id: node_id, sequence: 0, incarnation: self.incarnation };
+        let data = ReplicatedCommand::AnnounceAddress { node_id, address }.encode();
+        match node.propose(context.encode(), data) {
+            Ok(()) => {
+                self.next_announcement =
+                    now.checked_add(self.config.proposal_timeout).unwrap_or(now);
+            }
+            Err(raft::Error::ProposalDropped) => {
+                silver_log::debug!("cluster member address announcement dropped");
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
     }
 
     /// No joint config outlives a leader with nothing pending. raft-rs leaves
     /// only `auto_leave` configs by itself, and its own TODO in `commit_apply`
     /// says a leader change can make it miss those too.
     fn maybe_leave_joint(&mut self) -> Result<(), ClusterError> {
-        if !self.joint || !self.is_leader() {
+        if !self.membership.is_joint() || !self.is_leader() {
             return Ok(());
         }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
@@ -1068,7 +1133,9 @@ mod tests {
     use silver_common::SLOTS_PER_EPOCH;
 
     use super::*;
-    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity};
+    use crate::cluster::{
+        AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity, test_address,
+    };
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -1085,6 +1152,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             node_id,
             voters,
+            test_address(node_id),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -1216,7 +1284,11 @@ mod tests {
         config.snapshot_interval = 2;
         let mut cluster = initialized_cluster(config, 9, now);
         cluster.campaign().unwrap();
-        cluster.spin(now, 10, |_| {}).unwrap();
+        while cluster.membership.address(1).is_none() || cluster.persistence.is_pending() {
+            cluster.spin(now, 10, |_| {}).unwrap();
+        }
+        let snapshot_index = cluster.node.as_ref().unwrap().store().snapshot_index();
+        cluster.config.snapshot_interval = 1;
         cluster.state = SlashingLockStore::oversized();
 
         cluster.propose_attestation(command(10, 1), 10, now).unwrap();
@@ -1233,18 +1305,18 @@ mod tests {
         assert_eq!(committed, 1);
         assert!(!cluster.is_failed());
         let node = cluster.node.as_ref().unwrap();
-        assert_eq!(node.store().snapshot_index(), 0, "no snapshot was cut");
-        assert_eq!(cluster.compaction_retry_at, node.raft.raft_log.applied + 2);
+        assert_eq!(node.store().snapshot_index(), snapshot_index, "no snapshot was cut");
+        assert_eq!(cluster.compaction_retry_at, node.raft.raft_log.applied + 1);
     }
 
     #[test]
     fn more_than_seven_voters_are_rejected() {
         let storage = || ClusterStorageConfig::Create("unused-test-journal".into());
         assert!(matches!(
-            SlashingProtectionConfig::new(1, 1..=8, storage()),
+            SlashingProtectionConfig::new(1, 1..=8, test_address(1), storage()),
             Err(ClusterError::InvalidConfig(_))
         ));
-        assert!(SlashingProtectionConfig::new(1, 1..=7, storage()).is_ok());
+        assert!(SlashingProtectionConfig::new(1, 1..=7, test_address(1), storage()).is_ok());
         assert_eq!(StorageIdentity::new(1, 1..=8).unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 

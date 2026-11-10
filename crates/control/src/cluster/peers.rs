@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use raft::{
     ProgressState, RawNode, StateRole,
-    eraftpb::{ConfState, Message, MessageType},
+    eraftpb::{Message, MessageType},
 };
 use silver_common::{ClusterPeerStats, ClusterProgress};
 
@@ -29,17 +29,12 @@ pub(super) struct ClusterPeers {
 
 impl ClusterPeers {
     /// Keeps the stats of members that stay.
-    pub(super) fn set_members(&mut self, local_id: u64, membership: &ConfState) {
-        let members = || {
-            membership
-                .voters
-                .iter()
-                .chain(&membership.voters_outgoing)
-                .chain(&membership.learners)
-                .chain(&membership.learners_next)
-                .copied()
-                .filter(move |&node_id| node_id != local_id)
-        };
+    pub(super) fn set_members(
+        &mut self,
+        local_id: u64,
+        members: impl Iterator<Item = u64> + Clone,
+    ) {
+        let members = || members.clone().filter(move |&node_id| node_id != local_id);
         self.peers.retain(|peer| members().any(|node_id| node_id == peer.node_id));
         for node_id in members() {
             if self.peer(node_id).is_none() {

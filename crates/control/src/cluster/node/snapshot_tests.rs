@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use raft::{
     Storage,
     eraftpb::{ConfState, HardState, MessageType, Snapshot},
@@ -5,12 +6,13 @@ use raft::{
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
-use crate::cluster::{AttestationKey, raft_storage::validate_snapshot};
+use crate::cluster::{AttestationKey, raft_storage::validate_snapshot, test_address};
 
 fn config(id: u64) -> SlashingProtectionConfig {
     let mut config = SlashingProtectionConfig::new(
         id,
         [1, 2, 3],
+        test_address(id),
         ClusterStorageConfig::Create("unused-test-journal".into()),
     )
     .unwrap();
@@ -34,12 +36,15 @@ fn snapshot(index: u64) -> Snapshot {
     let mut state = SlashingLockStore::default();
     state.advance_minimum_slot(68);
     state.apply(&command(7, 1));
-    let mut snapshot =
-        Snapshot { data: state.encode_snapshot().unwrap().into(), ..Snapshot::default() };
+    let members = ConfState { voters: vec![1, 2, 3], ..ConfState::default() };
+    let mut data = BytesMut::new();
+    ClusterMembership::new(member_ids(&members)).encode_snapshot(&mut data);
+    state.encode_snapshot(&mut data).unwrap();
+    let mut snapshot = Snapshot { data: data.freeze(), ..Snapshot::default() };
     let metadata = snapshot.mut_metadata();
     metadata.index = index;
     metadata.term = 2;
-    metadata.mut_conf_state().voters = vec![1, 2, 3];
+    metadata.set_conf_state(members);
     snapshot
 }
 
@@ -180,6 +185,32 @@ fn snapshot_membership_is_checked_for_shape_alone() {
     assert!(!with_membership(|membership| membership.learners = vec![2]));
     assert!(!with_membership(|membership| membership.learners_next = vec![4]));
     assert!(!with_membership(|membership| membership.auto_leave = true));
+}
+
+#[test]
+fn snapshot_buffers_reclaim_an_allocation_once_its_snapshot_is_dropped() {
+    let mut buffers = SnapshotBuffers::default();
+    let mut write = |byte| {
+        buffers
+            .write(1024, |data| {
+                data.extend_from_slice(&[byte; 1024]);
+                Ok(())
+            })
+            .unwrap()
+    };
+    let first = write(1);
+    let first_allocation = first.as_ptr();
+    let second = write(2);
+    drop(first);
+
+    let third = write(3);
+    assert_eq!(third.as_ptr(), first_allocation);
+    let fourth = write(4);
+    assert_ne!(fourth.as_ptr(), second.as_ptr(), "a held snapshot is never overwritten");
+    assert_eq!(
+        (&second[..], &third[..], &fourth[..]),
+        (&[2; 1024][..], &[3; 1024][..], &[4; 1024][..])
+    );
 }
 
 #[test]

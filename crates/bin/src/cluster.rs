@@ -7,7 +7,9 @@ use std::{
 
 use silver_common::Enr;
 use silver_config::ClusterConfig;
-use silver_control::cluster::{ClusterStorageConfig, SlashingProtectionConfig, StorageIdentity};
+use silver_control::cluster::{
+    ClusterStorageConfig, MemberAddress, SlashingProtectionConfig, StorageIdentity,
+};
 
 const JOURNAL_FILE: &str = "attestation-cluster.wal";
 
@@ -22,14 +24,14 @@ impl ClusterStartup {
         local: &Enr,
         directory: &Path,
     ) -> Result<Self, Box<dyn Error>> {
-        let node_id = Self::local_node_id(config, local)?;
+        let (node_id, advertised) = Self::local_member(config, local)?;
         let voters = || config.nodes.keys().copied();
         let identity = StorageIdentity::new(node_id, voters())?;
         let journal_lock = Self::lock(directory)?;
         let storage = Self::journal(config.bootstrap, directory.join(JOURNAL_FILE))?;
         Self::check_identity(&storage, &identity)?;
         Ok(Self {
-            config: SlashingProtectionConfig::new(node_id, voters(), storage)?,
+            config: SlashingProtectionConfig::new(node_id, voters(), advertised, storage)?,
             _journal_lock: journal_lock,
         })
     }
@@ -47,14 +49,23 @@ impl ClusterStartup {
         }
     }
 
-    fn local_node_id(config: &ClusterConfig, local: &Enr) -> Result<u64, Box<dyn Error>> {
+    /// The local entry is the ENR the other members dial, so its address is
+    /// the one announced to them.
+    fn local_member(
+        config: &ClusterConfig,
+        local: &Enr,
+    ) -> Result<(u64, MemberAddress), Box<dyn Error>> {
         let local = local.node_id();
-        let (&id, _) = config
+        let (&id, enr) = config
             .nodes
             .iter()
             .find(|(_, enr)| enr.node_id() == local)
             .ok_or("no local node configured in cluster config")?;
-        Ok(id)
+        let addr = enr
+            .quic4_socket()
+            .or_else(|| enr.quic6_socket())
+            .ok_or_else(|| format!("cluster config ENR of node {id} has no QUIC address"))?;
+        Ok((id, MemberAddress { public_key: enr.public_key().serialize(), addr }))
     }
 
     /// A journal that contradicts `bootstrap` would only fail later, inside

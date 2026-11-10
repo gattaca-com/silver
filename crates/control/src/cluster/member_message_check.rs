@@ -121,7 +121,7 @@ impl MemberMessageCheck<'_> {
         if snapshot.get_metadata().index < self.log.committed {
             return Ok(());
         }
-        RestoredSnapshot::decode(snapshot).map(|_| ()).map_err(|_| MemberMessageError::Snapshot)
+        RestoredSnapshot::check(snapshot).map_err(|_| MemberMessageError::Snapshot)
     }
 
     /// Only followers forward proposals, each carrying its own context. The
@@ -134,12 +134,14 @@ impl MemberMessageCheck<'_> {
         for entry in &message.entries {
             let decoded = DecodedEntry::decode(entry).map_err(MemberMessageError::Entry)?;
             let origin = match &decoded {
-                DecodedEntry::Lock(_, id) | DecodedEntry::BlockLock(_, id) => id.origin_node_id,
+                DecodedEntry::Lock(_, id) |
+                DecodedEntry::BlockLock(_, id) |
+                DecodedEntry::AnnounceAddress { proposal_id: id, .. } => id.origin_node_id,
                 DecodedEntry::Empty => return Err(MemberMessageError::EmptyProposal),
                 DecodedEntry::AdvanceMinimumSlot(_) => {
                     return Err(MemberMessageError::ForwardedMinimumSlot);
                 }
-                DecodedEntry::MembershipChange(_) => {
+                DecodedEntry::MembershipChange { .. } => {
                     return Err(MemberMessageError::ForwardedMembershipChange);
                 }
             };

@@ -6,6 +6,7 @@ mod command;
 mod generated;
 mod lock_store;
 mod member_message_check;
+mod membership;
 mod metrics;
 mod node;
 mod peers;
@@ -24,6 +25,9 @@ pub use command::{AttestationKey, AttestationLockCommand, BlockKey, BlockLockCom
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use member_message_check::MemberMessageError;
+pub use membership::MemberAddress;
+#[cfg(test)]
+pub(crate) use membership::test_address;
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

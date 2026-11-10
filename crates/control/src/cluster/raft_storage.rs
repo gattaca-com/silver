@@ -1,5 +1,6 @@
 use std::io;
 
+use bytes::{Bytes, BytesMut};
 use raft::{
     GetEntriesContext, RaftState, Storage, StorageError,
     eraftpb::{ConfState, Entry, HardState, Snapshot},
@@ -8,21 +9,57 @@ use raft::{
 
 use super::{
     lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
+    membership::ClusterMembership,
     voters::MAX_VOTERS,
 };
 
 pub(super) struct RestoredSnapshot {
     pub index: u64,
     pub locks: SlashingLockStore,
+    pub membership: ClusterMembership,
 }
 
 impl RestoredSnapshot {
     pub fn decode(snapshot: &Snapshot) -> io::Result<Self> {
         validate_snapshot(snapshot)?;
+        let metadata = snapshot.get_metadata();
+        let (membership, locks) =
+            ClusterMembership::decode_snapshot(&snapshot.data, metadata.get_conf_state())?;
         Ok(Self {
-            index: snapshot.get_metadata().index,
-            locks: SlashingLockStore::decode_snapshot(&snapshot.data)?,
+            index: metadata.index,
+            locks: SlashingLockStore::decode_snapshot(locks)?,
+            membership,
         })
+    }
+
+    pub fn check(snapshot: &Snapshot) -> io::Result<()> {
+        validate_snapshot(snapshot)?;
+        let members = snapshot.get_metadata().get_conf_state();
+        let locks = ClusterMembership::skip_snapshot(&snapshot.data, members)?;
+        SlashingLockStore::decode_snapshot(locks).map(|_| ())
+    }
+}
+
+/// Storage still holds snapshot N while N+1 is written, so the two take turns.
+/// Once storage drops N, writing N+2 reclaims its allocation.
+#[derive(Default)]
+pub(super) struct SnapshotBuffers {
+    buffers: [BytesMut; 2],
+    next: usize,
+}
+
+impl SnapshotBuffers {
+    pub fn write(
+        &mut self,
+        len: usize,
+        encode: impl FnOnce(&mut BytesMut) -> io::Result<()>,
+    ) -> io::Result<Bytes> {
+        let buffer = &mut self.buffers[self.next];
+        self.next ^= 1;
+        buffer.clear();
+        buffer.reserve(len);
+        encode(buffer)?;
+        Ok(buffer.split().freeze())
     }
 }
 
@@ -72,8 +109,8 @@ impl RaftStorage {
         Ok(())
     }
 
-    pub fn checkpoint(&self, index: u64, data: Vec<u8>) -> raft::Result<(Snapshot, HardState)> {
-        let mut snapshot = Snapshot { data: data.into(), ..Snapshot::default() };
+    pub fn checkpoint(&self, index: u64, data: Bytes) -> raft::Result<(Snapshot, HardState)> {
+        let mut snapshot = Snapshot { data, ..Snapshot::default() };
         let metadata = snapshot.mut_metadata();
         metadata.index = index;
         metadata.term = self.term(index)?;

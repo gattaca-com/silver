@@ -719,7 +719,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        cluster::ClusterStorageConfig,
+        cluster::{ClusterStorageConfig, test_address},
         tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
     };
 
@@ -935,6 +935,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -970,6 +971,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -1082,6 +1084,7 @@ mod tests {
         let mut config = SlashingProtectionConfig::new(
             1,
             [1],
+            test_address(1),
             ClusterStorageConfig::Create("unused-test-journal".into()),
         )
         .unwrap();
@@ -1363,6 +1366,7 @@ mod tests {
                 SlashingProtectionConfig::new(
                     1,
                     [1],
+                    test_address(1),
                     ClusterStorageConfig::Create("unused-test-journal".into()),
                 )
                 .unwrap(),

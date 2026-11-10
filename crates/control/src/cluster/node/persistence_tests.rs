@@ -2,12 +2,13 @@ use raft::eraftpb::MessageType;
 use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
 
 use super::*;
-use crate::cluster::AttestationKey;
+use crate::cluster::{AttestationKey, test_address};
 
 fn config(node_id: u64, voters: Vec<u64>) -> SlashingProtectionConfig {
     SlashingProtectionConfig::new(
         node_id,
         voters,
+        test_address(node_id),
         ClusterStorageConfig::Create("unused-test-journal".into()),
     )
     .unwrap()
