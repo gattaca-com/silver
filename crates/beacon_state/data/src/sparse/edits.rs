@@ -44,12 +44,13 @@ impl<V: Copy> Edits<V> {
     #[inline]
     pub fn get(&self, idx: usize) -> Option<&V> {
         let idx = u32::try_from(idx).ok()?;
-        self.inner.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &self.inner[p].1)
+        let edits = &self.inner[..];
+        edits.binary_search_by_key(&idx, |(k, _)| *k).ok().map(|p| &edits[p].1)
     }
 
     /// First position ≥ `from` whose index is ≥ `idx`, found by galloping.
     fn position_from(&self, from: usize, idx: u32) -> usize {
-        let edits = &self.inner;
+        let edits = &self.inner[..];
         let (mut lo, mut step) = (from, 1);
         while lo + step <= edits.len() && edits[lo + step - 1].0 < idx {
             lo += step;
@@ -68,7 +69,7 @@ impl<V: Copy + PartialEq + Send + Sync + 'static> Edits<V> {
         new_count: u32,
         old_base_at: impl Fn(u32) -> V,
     ) {
-        let survivor = &survivor.inner;
+        let survivor = &survivor.inner[..];
         debug_assert!(
             survivor.windows(2).all(|w| w[0].0 < w[1].0),
             "survivor must be ascending with distinct indices",
@@ -77,7 +78,7 @@ impl<V: Copy + PartialEq + Send + Sync + 'static> Edits<V> {
             winner.inner.windows(2).all(|w| w[0].0 < w[1].0),
             "winner must be ascending with distinct indices",
         );
-        let winner = &winner.inner;
+        let winner = &winner.inner[..];
         let out = &mut self.inner;
         out.clear();
         out.reserve(survivor.len() + winner.len());
@@ -172,7 +173,7 @@ impl<V: Copy + Send + Sync + 'static> Edits<V> {
         base_at: impl Fn(usize) -> V + 'b,
         tail: impl Fn(usize) -> V + 'b,
     ) -> impl Iterator<Item = V> + 'b {
-        let edits = &self.inner;
+        let edits = &self.inner[..];
         let mut cursor = 0usize;
         (0..total).map(move |i| {
             if cursor < edits.len() && (edits[cursor].0 as usize) == i {
@@ -221,6 +222,7 @@ impl<V: Copy + Send + Sync + 'static> Edits<V> {
         // SAFETY: every slot in `old_len..old_len + insert_count` is written
         // before any read (the write ≥ ei invariant below); (u32, V) is Copy.
         unsafe { self.inner.set_len(old_len + insert_count) };
+        let edits = &mut self.inner[..];
 
         let mut edit_idx = old_len;
         let mut change_idx = changes.len();
@@ -228,18 +230,18 @@ impl<V: Copy + Send + Sync + 'static> Edits<V> {
         while edit_idx > 0 && change_idx > 0 {
             debug_assert!(write >= edit_idx, "merge: write must converge to the unshifted prefix");
 
-            let (ek, ev) = self.inner[edit_idx - 1];
+            let (ek, ev) = edits[edit_idx - 1];
             let (ck, cv) = changes[change_idx - 1];
             write -= 1;
             if ek > ck {
-                self.inner[write] = (ek, ev);
+                edits[write] = (ek, ev);
                 edit_idx -= 1;
             } else if ek == ck {
-                self.inner[write] = (ek, ev);
+                edits[write] = (ek, ev);
                 edit_idx -= 1;
                 change_idx -= 1;
             } else {
-                self.inner[write] = (ck, cv);
+                edits[write] = (ck, cv);
                 change_idx -= 1;
             }
         }
@@ -248,7 +250,7 @@ impl<V: Copy + Send + Sync + 'static> Edits<V> {
         while change_idx > 0 {
             change_idx -= 1;
             write -= 1;
-            self.inner[write] = changes[change_idx];
+            edits[write] = changes[change_idx];
         }
         debug_assert_eq!(write, edit_idx, "merge: write must converge to the unshifted prefix");
     }

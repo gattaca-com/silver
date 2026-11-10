@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::{
     B256, TreeSpec,
     flat_hashing::page_format::Subtree,
@@ -34,32 +36,62 @@ pub(super) fn progressive_last_seg_for_chunks(cap_chunks: usize) -> u32 {
     progressive_segment_of_chunk(cap_chunks.saturating_sub(1))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TreeFormat {
+/// One word: top bit set for progressive, payload below. A racing reader then
+/// loads a format some writer stored, never one variant's tag over another
+/// variant's payload.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct TreeFormat(usize);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FormatKind {
     Fixed { max_elements: usize },
     Progressive { last_seg: u32 },
 }
 
-impl Default for TreeFormat {
-    fn default() -> Self {
-        TreeFormat::Fixed { max_elements: 0 }
+impl fmt::Debug for TreeFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind().fmt(f)
     }
 }
 
 impl TreeFormat {
+    const PROGRESSIVE: usize = 1 << (usize::BITS - 1);
+
+    #[inline]
+    pub(crate) fn fixed(max_elements: usize) -> Self {
+        debug_assert!(max_elements < Self::PROGRESSIVE);
+        // The mask lets a `fixed(..).kind()` round trip fold to `Fixed`.
+        Self(max_elements & !Self::PROGRESSIVE)
+    }
+
+    #[inline]
+    pub(crate) fn progressive(last_seg: u32) -> Self {
+        Self(Self::PROGRESSIVE | last_seg as usize)
+    }
+
+    #[inline]
+    pub(crate) fn kind(self) -> FormatKind {
+        if self.0 & Self::PROGRESSIVE == 0 {
+            FormatKind::Fixed { max_elements: self.0 }
+        } else {
+            let last_seg = (self.0 & !Self::PROGRESSIVE) as u32;
+            FormatKind::Progressive { last_seg }
+        }
+    }
+
     #[inline]
     pub(super) fn num_nodes<C: TreeSpec>(self) -> usize {
-        match self {
-            TreeFormat::Fixed { max_elements } => 2 * max_elements,
-            TreeFormat::Progressive { .. } => self.data_start::<C>() + self.data_capacity(),
+        match self.kind() {
+            FormatKind::Fixed { max_elements } => 2 * max_elements,
+            FormatKind::Progressive { .. } => self.data_start::<C>() + self.data_capacity(),
         }
     }
 
     #[inline]
     pub(super) fn data_capacity(self) -> usize {
-        match self {
-            TreeFormat::Fixed { max_elements } => max_elements,
-            TreeFormat::Progressive { last_seg } => {
+        match self.kind() {
+            FormatKind::Fixed { max_elements } => max_elements,
+            FormatKind::Progressive { last_seg } => {
                 PROGRESSIVE_SEGMENT_START[last_seg as usize + 1]
             }
         }
@@ -67,9 +99,9 @@ impl TreeFormat {
 
     #[inline]
     pub(super) fn data_start<C: TreeSpec>(self) -> usize {
-        match self {
-            TreeFormat::Fixed { max_elements } => max_elements,
-            TreeFormat::Progressive { last_seg } => C::SEG_OFF[last_seg as usize + 1],
+        match self.kind() {
+            FormatKind::Fixed { max_elements } => max_elements,
+            FormatKind::Progressive { last_seg } => C::SEG_OFF[last_seg as usize + 1],
         }
     }
 
@@ -80,8 +112,8 @@ impl TreeFormat {
 
     pub(super) fn hash_root<C: TreeSpec>(self, count: usize, node: impl Fn(usize) -> B256) -> B256 {
         let vals_per_chunk = C::VALS_PER_CHUNK;
-        let root = match self {
-            TreeFormat::Fixed { max_elements } => {
+        let root = match self.kind() {
+            FormatKind::Fixed { max_elements } => {
                 let padded_chunks = C::SSZ_LIMIT.div_ceil(vals_per_chunk).next_power_of_two();
                 let mut root = node(1);
                 for h in max_elements.trailing_zeros()..padded_chunks.trailing_zeros() {
@@ -89,7 +121,7 @@ impl TreeFormat {
                 }
                 root
             }
-            TreeFormat::Progressive { .. } => {
+            FormatKind::Progressive { .. } => {
                 let num_chunks = count.div_ceil(vals_per_chunk);
                 let data_start = self.data_start::<C>();
                 fold_progressive_spine(progressive_segments_for(num_chunks), |k| {
@@ -101,9 +133,9 @@ impl TreeFormat {
     }
 
     pub(crate) fn subtrees<C: TreeSpec>(self) -> impl Iterator<Item = Subtree> {
-        let count = match self {
-            TreeFormat::Fixed { .. } => 1,
-            TreeFormat::Progressive { last_seg } => last_seg as usize + 1,
+        let count = match self.kind() {
+            FormatKind::Fixed { .. } => 1,
+            FormatKind::Progressive { last_seg } => last_seg as usize + 1,
         };
         (0..count).map(move |s| Subtree::of::<C>(self, s))
     }
@@ -112,19 +144,19 @@ impl TreeFormat {
     /// ids past the tree: a racing reader may pair `n` with another format.
     pub(crate) fn locate<C: TreeSpec>(self, n: usize) -> Option<(usize, u32, usize)> {
         let data_start = self.data_start::<C>();
-        match self {
-            TreeFormat::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {
+        match self.kind() {
+            FormatKind::Fixed { max_elements } => (1..2 * max_elements).contains(&n).then(|| {
                 let level = n.ilog2();
                 (0, level, n - (1 << level))
             }),
-            TreeFormat::Progressive { .. } if n >= data_start => {
+            FormatKind::Progressive { .. } if n >= data_start => {
                 let chunk = n - data_start;
                 (chunk < self.data_capacity()).then(|| {
                     let s = progressive_segment_of_chunk(chunk) as usize;
                     (s, 2 * s as u32, chunk - PROGRESSIVE_SEGMENT_START[s])
                 })
             }
-            TreeFormat::Progressive { last_seg } => {
+            FormatKind::Progressive { last_seg } => {
                 let k = (1..=last_seg as usize).rev().find(|&k| C::SEG_OFF[k] <= n)?;
                 let local = n - C::SEG_OFF[k];
                 (1..1 << (2 * k)).contains(&local).then(|| {
@@ -189,7 +221,7 @@ mod tests {
 
     #[test]
     fn leaf_pos_flat_and_contiguous() {
-        let format = TreeFormat::Progressive { last_seg: 5 };
+        let format = TreeFormat::progressive(5);
         let data_start = format.data_start::<P32>();
         for chunk in 0..format.data_capacity() {
             assert_eq!(format.leaf_pos::<P32>(chunk), data_start + chunk, "chunk {chunk} not flat");
@@ -204,6 +236,6 @@ mod tests {
         assert_eq!(progressive_last_seg_for_chunks(2), 1);
         assert_eq!(progressive_last_seg_for_chunks(5), 1);
         assert_eq!(progressive_last_seg_for_chunks(6), 2);
-        assert_eq!(TreeFormat::Progressive { last_seg: 2 }.data_capacity(), 21);
+        assert_eq!(TreeFormat::progressive(2).data_capacity(), 21);
     }
 }

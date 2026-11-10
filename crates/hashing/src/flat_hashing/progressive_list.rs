@@ -29,7 +29,7 @@ impl<C: TreeSpec> ProgressiveListTree<C> {
         leaves: impl Iterator<Item = B256>,
     ) -> Self {
         let last_seg = progressive_last_seg_for_chunks(cap.div_ceil(C::VALS_PER_CHUNK).max(1));
-        let format = TreeFormat::Progressive { last_seg };
+        let format = TreeFormat::progressive(last_seg);
         let store = NodeStore::with_leaves(format, count, leaves);
         let mut tree = Self { store, last_seg };
         tree.rebuild_segments(count.div_ceil(C::VALS_PER_CHUNK));
@@ -60,7 +60,7 @@ impl<C: TreeSpec> ProgressiveListTree<C> {
     }
 
     pub(super) fn format(&self) -> TreeFormat {
-        TreeFormat::Progressive { last_seg: self.last_seg }
+        TreeFormat::progressive(self.last_seg)
     }
 
     pub(super) fn rehash(&mut self) {

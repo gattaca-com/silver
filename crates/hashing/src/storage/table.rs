@@ -20,7 +20,7 @@ const _: () = assert!(MAX_ROOTS >= MAX_SEGS);
 pub struct PageTable {
     roots: [PageId; MAX_ROOTS],
     root_count: usize,
-    pub(super) format: TreeFormat,
+    format: TreeFormat,
     pub(super) count: usize,
 }
 
@@ -90,7 +90,7 @@ impl PageTable {
         let mut chunk = 0;
         iter::from_fn(move || {
             (chunk < chunks).then(|| {
-                let (id, slot) = self.page_of::<C>(store, self.format.leaf_pos::<C>(chunk));
+                let (id, slot) = self.page_of::<C>(store, self.format().leaf_pos::<C>(chunk));
                 let row = &store.page(id)[slot..(2 << slot.ilog2()).min(slot + chunks - chunk)];
                 chunk += row.len();
                 row
@@ -109,8 +109,9 @@ impl PageTable {
     /// root slot.
     #[inline]
     pub(crate) fn page_of<C: TreeSpec>(&self, store: &impl PageStore, n: usize) -> (PageId, usize) {
-        let (s, level, pos) = self.format.locate::<C>(n).unwrap_or_default();
-        let (children, slot) = Subtree::of::<C>(self.format, s).path_to::<C>(level, pos);
+        let format = self.format();
+        let (s, level, pos) = format.locate::<C>(n).unwrap_or_default();
+        let (children, slot) = Subtree::of::<C>(format, s).path_to::<C>(level, pos);
         let root = self.roots().get(s).copied().unwrap_or(0);
         (children.fold(root, |id, j| store.child(id, j)), slot)
     }
@@ -123,8 +124,8 @@ mod tests {
 
     #[test]
     fn set_and_clone_from_reuse_inline_roots() {
-        let fixed = TreeFormat::Fixed { max_elements: 1024 };
-        let progressive = TreeFormat::Progressive { last_seg: MAX_SEGS as u32 - 1 };
+        let fixed = TreeFormat::fixed(1024);
+        let progressive = TreeFormat::progressive(MAX_SEGS as u32 - 1);
         let mut table = PageTable::default();
         let roots = table.roots().as_ptr();
         table.set(fixed, 1, [7].into_iter());

@@ -29,7 +29,7 @@ impl<C: TreeSpec> Clone for ListTree<C> {
 impl<C: TreeSpec> ListTree<C> {
     pub(super) fn new(cap: usize, count: usize, leaves: impl Iterator<Item = B256>) -> Self {
         let max_elements = cap.div_ceil(C::VALS_PER_CHUNK).next_power_of_two().max(1);
-        let store = NodeStore::with_leaves(TreeFormat::Fixed { max_elements }, count, leaves);
+        let store = NodeStore::with_leaves(TreeFormat::fixed(max_elements), count, leaves);
         let mut tree = Self { store, max_elements };
         tree.build(count.div_ceil(C::VALS_PER_CHUNK));
         tree
@@ -42,7 +42,7 @@ impl<C: TreeSpec> ListTree<C> {
 
     #[inline]
     pub(super) fn format(&self) -> TreeFormat {
-        TreeFormat::Fixed { max_elements: self.max_elements }
+        TreeFormat::fixed(self.max_elements)
     }
 
     pub(super) fn rehash(&mut self) {

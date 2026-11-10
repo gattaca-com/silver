@@ -48,9 +48,8 @@ impl BuildersDelta {
         );
         let end = self.base_count + self.appended.len();
         base.ensure_capacity(end);
-        base.builders[self.base_count..end].copy_from_slice(&self.appended);
-        self.edits.scatter(&mut base.builders[..end]);
-        base.count = end;
+        base.builders.extend(self.appended.iter().copied());
+        self.edits.scatter(&mut base.builders);
     }
 
     pub(super) fn rebase_and_prune_from(
