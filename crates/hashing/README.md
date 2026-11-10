@@ -143,15 +143,16 @@ silver's state design.
 
 ## Benchmarks
 
-Compared with `milhouse` 0.9 and grandine's `ssz::PersistentList` on a
-mainnet-sized list of 2.3M entries. All writes go to 900k non-zero entries,
-and each time covers the writes and the new root. Every library's root is
-checked against ours before timing. Grandine hashes on one thread, with the
-64-value bundle its `BeaconState.balances` uses. Measured on an AMD Ryzen 9
-9950X, 16 cores, with mimalloc for all; scenarios are in
+Compared with `milhouse` 0.9 and `ssz::PersistentList`, the persistent list
+of another Rust consensus client, on a mainnet-sized list of 2.3M entries.
+All writes go to 900k non-zero entries, and each time covers the writes and
+the new root. Every library's root is checked against ours before timing.
+`ssz::PersistentList` hashes on one thread, with the 64-value bundle its
+client uses for balances. Measured on an AMD Ryzen 9 9950X, 16 cores, with
+mimalloc for all; scenarios are in
 [`comparison.rs`](https://github.com/gattaca-com/silver/blob/main/crates/hashing/bench/benches/comparison.rs).
 
-| Scenario | silver_state_hashing, 1 thread | grandine | milhouse, 1 thread | milhouse, 16 threads |
+| Scenario | silver_state_hashing, 1 thread | ssz::PersistentList | milhouse, 1 thread | milhouse, 16 threads |
 |---|---|---|---|---|
 | Build + root | 14.3 ms | 36.0 ms | 133 ms | 66.3 ms |
 | Iterate all values | 0.21 ms | 0.31 ms | 19.2 ms | - |
