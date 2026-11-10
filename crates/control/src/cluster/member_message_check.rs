@@ -46,6 +46,18 @@ struct BoycottedLeader {
 }
 
 impl LeaderBoycott {
+    pub(super) fn retain(&mut self, is_member: impl Fn(u64) -> bool) {
+        let leaders = self.0.as_mut_slice();
+        let mut kept = 0;
+        for i in 0..leaders.len() {
+            if is_member(leaders[i].id) {
+                leaders.swap(kept, i);
+                kept += 1;
+            }
+        }
+        self.0.truncate(kept);
+    }
+
     pub(super) fn covers(&self, message: &Message, wall_slot: u64) -> bool {
         is_leadership(message.get_msg_type()) &&
             self.0.iter().any(|leader| {

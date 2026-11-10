@@ -18,6 +18,11 @@ pub struct ClusterConfig {
     /// exist.
     #[serde(default)]
     pub bootstrap: bool,
+    /// Create a new, empty journal for a node an operator adds to a running
+    /// cluster. It refuses duties until it receives the cluster's snapshot.
+    /// Disable on restart, like `bootstrap`.
+    #[serde(default)]
+    pub join: bool,
 }
 
 /// TOML keys are always strings.

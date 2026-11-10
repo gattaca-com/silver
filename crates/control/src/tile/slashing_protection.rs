@@ -1564,6 +1564,8 @@ fn proposal_failure(error: &ProposeError) -> LocalGossipFailure {
     match error {
         ProposeError::Admission(error) => admission_failure(*error),
         ProposeError::NotReady |
+        ProposeError::NotMember |
+        ProposeError::Removed |
         ProposeError::Failed |
         ProposeError::SequenceExhausted |
         ProposeError::DeadlineOverflow => LocalGossipFailure::Internal,

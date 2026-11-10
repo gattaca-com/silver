@@ -213,6 +213,16 @@ fn snapshot_buffers_reclaim_an_allocation_once_its_snapshot_is_dropped() {
     );
 }
 
+/// raft-rs refuses a snapshot whose membership lacks it, so a learner added
+/// after this one waits for the next.
+#[test]
+fn storage_serves_a_snapshot_only_to_its_members() {
+    let mut storage = RaftStorage::new(&[1, 2, 3]);
+    storage.install_snapshot(snapshot(10)).unwrap();
+    assert!(storage.snapshot(0, 2).is_ok());
+    assert!(storage.snapshot(0, 4).is_err());
+}
+
 #[test]
 fn storage_serves_captured_state_not_a_snapshot_at_an_unapplied_commit() {
     let mut storage = RaftStorage::new(&[1, 2, 3]);

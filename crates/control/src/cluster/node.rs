@@ -6,7 +6,7 @@ use std::{
 
 use raft::{
     Config, RawNode, StateRole,
-    eraftpb::{ConfChangeV2, Entry, Message, MessageType},
+    eraftpb::{ConfChangeType, ConfChangeV2, Entry, Message, MessageType},
 };
 use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
 
@@ -21,6 +21,7 @@ use super::{
     lock_store::{LockResult, MAX_SNAPSHOT_BYTES, SlashingLockStore},
     member_message_check::{LeaderBoycott, MemberMessageCheck, MemberMessageError},
     membership::{ClusterMembership, Member, MemberAddress, MemberRecords, member_ids},
+    membership_operation::{MembershipError, MembershipOperation, MembershipView, Proposal},
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
@@ -187,6 +188,9 @@ pub enum ClusterEvent {
 pub enum ProposeError {
     Admission(AdmissionError),
     NotReady,
+    /// A joining node before its first snapshot holds no locks.
+    NotMember,
+    Removed,
     Failed,
     SequenceExhausted,
     DeadlineOverflow,
@@ -197,6 +201,8 @@ impl fmt::Display for ProposeError {
         match self {
             Self::Admission(error) => error.fmt(f),
             Self::NotReady => f.write_str("Raft storage recovery is not complete"),
+            Self::NotMember => f.write_str("this node has not joined the cluster yet"),
+            Self::Removed => f.write_str("this node was removed from the cluster"),
             Self::Failed => f.write_str("Raft processing has stopped after a failure"),
             Self::SequenceExhausted => f.write_str("Raft proposal sequence exhausted"),
             Self::DeadlineOverflow => f.write_str("Raft proposal deadline overflowed"),
@@ -208,9 +214,12 @@ impl Error for ProposeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Admission(error) => Some(error),
-            Self::NotReady | Self::Failed | Self::SequenceExhausted | Self::DeadlineOverflow => {
-                None
-            }
+            Self::NotReady |
+            Self::NotMember |
+            Self::Removed |
+            Self::Failed |
+            Self::SequenceExhausted |
+            Self::DeadlineOverflow => None,
         }
     }
 }
@@ -318,6 +327,9 @@ pub struct SlashingProtectionCluster {
     /// Applied index before which compaction is not retried after an
     /// oversized snapshot, so the skip is not logged and counted every loop.
     compaction_retry_at: u64,
+    /// Set when a learner is added: it can only start from a snapshot whose
+    /// membership includes it.
+    compaction_requested: bool,
     snapshot_buffers: SnapshotBuffers,
     leader_boycott: LeaderBoycott,
     membership: ClusterMembership,
@@ -365,6 +377,7 @@ impl SlashingProtectionCluster {
             resolved: Vec::new(),
             persistence_started: None,
             compaction_retry_at: 0,
+            compaction_requested: false,
             snapshot_buffers: SnapshotBuffers::default(),
             leader_boycott: LeaderBoycott::default(),
             membership: ClusterMembership::default(),
@@ -384,8 +397,19 @@ impl SlashingProtectionCluster {
     ) -> Result<Self, ClusterError> {
         config.validate()?;
         let voters = config.voters;
+        Self::in_memory_with(config, Some(voters), now)
+    }
+
+    /// `None` starts a node that joins a running cluster.
+    #[cfg(test)]
+    pub(crate) fn in_memory_with(
+        config: SlashingProtectionConfig,
+        initial_voters: Option<Voters>,
+        now: Instant,
+    ) -> Result<Self, ClusterError> {
+        config.validate()?;
         let mut cluster = Self::with_persistence(config, Persistence::memory(), now);
-        cluster.recover(RecoveredStorage::empty(voters), now)?;
+        cluster.recover(RecoveredStorage::empty(initial_voters), now)?;
         Ok(cluster)
     }
 
@@ -395,7 +419,15 @@ impl SlashingProtectionCluster {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.node.is_some() && !self.failed
+        self.node.is_some() && !self.failed && !self.is_removed()
+    }
+
+    /// Derived from replicated state, so it survives a restart: the local
+    /// id is not a member, yet the cluster has used it. A joining node
+    /// before its first snapshot has seen no ids at all.
+    pub fn is_removed(&self) -> bool {
+        let local = self.config.node_id;
+        !self.is_member(local) && local <= self.membership.highest_node_id()
     }
 
     pub fn is_failed(&self) -> bool {
@@ -467,7 +499,10 @@ impl SlashingProtectionCluster {
         if self.failed {
             return Err(ClusterError::Failed);
         }
-        if self.leader_boycott.covers(&message, wall_slot) {
+        if self.is_removed() ||
+            self.leader_boycott.covers(&message, wall_slot) ||
+            self.drops_append_before_snapshot(&message)
+        {
             return Ok(());
         }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
@@ -560,6 +595,13 @@ impl SlashingProtectionCluster {
         if self.node.is_none() {
             return Err(ProposeError::NotReady);
         }
+        if !self.is_member(self.config.node_id) {
+            return Err(if self.is_removed() {
+                ProposeError::Removed
+            } else {
+                ProposeError::NotMember
+            });
+        }
         self.admission.validate(slot, wall_slot).map_err(ProposeError::Admission)?;
 
         if slot < self.state.minimum_slot() {
@@ -612,6 +654,9 @@ impl SlashingProtectionCluster {
             return Ok(());
         }
         self.expire_proposals(now, &mut emit);
+        if self.is_removed() {
+            return Ok(());
+        }
         let result = self.drive(now, wall_slot, &mut emit);
         if let Err(error) = &result {
             self.failed = true;
@@ -663,7 +708,8 @@ impl SlashingProtectionCluster {
         if applied == 0 ||
             (applied.saturating_sub(node.store().snapshot_index()) <
                 self.config.snapshot_interval &&
-                !self.persistence.compaction_due())
+                !self.persistence.compaction_due() &&
+                !self.compaction_requested)
         {
             return Ok(());
         }
@@ -690,6 +736,7 @@ impl SlashingProtectionCluster {
         let (snapshot, hard_state) = node.store().checkpoint(applied, data)?;
         let entries = node.store().suffix(applied)?;
         self.persistence.compact(snapshot, &entries, &hard_state).map_err(ClusterError::Storage)?;
+        self.compaction_requested = false;
         self.persistence_started = Some(now);
         Ok(())
     }
@@ -882,8 +929,9 @@ impl SlashingProtectionCluster {
         if self.node.is_some() {
             return Err(ClusterError::InvalidConfig("Raft already recovered"));
         }
-        let mut storage = RaftStorage::new(&recovered.initial_voters);
-        let initial_voters = recovered.initial_voters.iter().copied();
+        let initial_voters = recovered.initial_voters.as_deref().unwrap_or_default();
+        let mut storage = RaftStorage::new(initial_voters);
+        let initial_voters = initial_voters.iter().copied();
         self.membership = ClusterMembership::new(initial_voters.clone());
         self.peers.set_members(self.config.node_id, initial_voters);
         if !recovered.snapshot.is_empty() {
@@ -909,6 +957,7 @@ impl SlashingProtectionCluster {
             &mut |_| {},
         )?;
         self.membership_version += 1;
+        self.note_removal();
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         silver_log::info!(
             node_id = self.config.node_id,
@@ -1024,20 +1073,92 @@ impl SlashingProtectionCluster {
         added: MemberRecords,
         index: u64,
     ) -> Result<(), ClusterError> {
+        let node = self.node.as_ref().ok_or(ClusterError::NotReady)?;
+        let view =
+            MembershipView { node, membership: &self.membership, local_id: self.config.node_id };
+        if let Err(reason) = view.check_applied(change, added) {
+            silver_log::warn!(index, reason, ?change, "Raft membership change refused");
+            return Ok(());
+        }
         let node = self.node.as_mut().ok_or(ClusterError::NotReady)?;
         match node.apply_conf_change(change) {
             Ok(membership) => {
                 self.membership.apply_change(change, added, &membership);
                 self.membership_version += 1;
                 self.peers.set_members(self.config.node_id, member_ids(&membership));
+                self.leader_boycott.retain(|id| member_ids(&membership).any(|member| member == id));
+                self.compaction_requested |= change
+                    .get_changes()
+                    .iter()
+                    .any(|single| single.get_change_type() == ConfChangeType::AddLearnerNode);
                 silver_log::info!(index, ?membership, "Raft membership changed");
                 node.mut_store().memory.wl().set_conf_state(membership);
+                self.note_removal();
             }
             Err(error) => {
                 silver_log::warn!(index, %error, ?change, "Raft membership change refused");
             }
         }
         Ok(())
+    }
+
+    /// A joining node knows no membership until its snapshot. Entries from
+    /// the start of the log would leave it without the initial voters.
+    fn drops_append_before_snapshot(&self, message: &Message) -> bool {
+        message.get_msg_type() == MessageType::MsgAppend &&
+            self.node.as_ref().is_some_and(|node| {
+                let membership = node.raft.prs().conf();
+                node.store().snapshot_index() == 0 &&
+                    membership.voters().ids().is_empty() &&
+                    membership.learners().is_empty()
+            })
+    }
+
+    fn note_removal(&self) {
+        if self.is_removed() {
+            ClusterCounters::Removed.set(1);
+            silver_log::warn!(
+                node_id = self.config.node_id,
+                "this node was removed from the cluster and refuses every duty"
+            );
+        }
+    }
+
+    /// Checked here on the leader, then again by every node when the change
+    /// applies.
+    pub fn propose_membership(
+        &mut self,
+        operation: MembershipOperation,
+    ) -> Result<(), MembershipError> {
+        if self.failed || self.node.is_none() {
+            return Err(MembershipError::NotReady);
+        }
+        if self.is_removed() {
+            return Err(MembershipError::Removed);
+        }
+        if !self.is_leader() {
+            return Err(MembershipError::NotLeader { leader_id: self.leader_id() });
+        }
+        if matches!(operation, MembershipOperation::Add { .. }) &&
+            self.membership.snapshot_len() + self.state.snapshot_len() > MAX_SNAPSHOT_BYTES
+        {
+            return Err(MembershipError::SnapshotTooLarge);
+        }
+        let node = self.node.as_ref().ok_or(MembershipError::NotReady)?;
+        let view =
+            MembershipView { node, membership: &self.membership, local_id: self.config.node_id };
+        let proposal = view.propose(operation)?;
+        silver_log::info!(?operation, "proposing a cluster membership change");
+        let node = self.node.as_mut().ok_or(MembershipError::NotReady)?;
+        match proposal {
+            Proposal::Change { change, context } => node
+                .propose_conf_change(context, change)
+                .map_err(|_| MembershipError::ProposalDropped),
+            Proposal::TransferLeader(node_id) => {
+                node.transfer_leader(node_id);
+                Ok(())
+            }
+        }
     }
 
     fn is_member(&self, node_id: u64) -> bool {

@@ -60,6 +60,17 @@ pub struct Member {
     pub address: MemberAddress,
 }
 
+impl Member {
+    /// The entry context of a change adding this member as a learner.
+    pub(super) fn change_context(self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(4 + MEMBER_LEN);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&self.node_id.to_le_bytes());
+        self.address.encode(&mut bytes);
+        bytes
+    }
+}
+
 /// Encoded members, validated once and then read in place.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct MemberRecords<'a>(&'a [u8]);
@@ -146,13 +157,6 @@ impl Members {
             member.address.encode(bytes);
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn context(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.encoded_len());
-        self.encode(&mut bytes);
-        bytes
-    }
 }
 
 /// The replicated address book. Raft's conf state holds the roles; this
@@ -183,7 +187,6 @@ impl ClusterMembership {
         self.joint
     }
 
-    #[cfg(test)]
     pub(super) fn highest_node_id(&self) -> u64 {
         self.highest_node_id
     }
@@ -413,8 +416,7 @@ mod tests {
 
     #[test]
     fn added_members_round_trip_through_the_entry_context() {
-        let context: Members = [member(4)].into_iter().collect();
-        let context = context.context();
+        let context = member(4).change_context();
         let added: Vec<_> = MemberRecords::parse_context(&context).unwrap().iter().collect();
         assert_eq!(added, [member(4)]);
         assert_eq!(MemberRecords::parse_context(&[]).unwrap().iter().count(), 0);

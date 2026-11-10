@@ -7,6 +7,7 @@ mod generated;
 mod lock_store;
 mod member_message_check;
 mod membership;
+mod membership_operation;
 mod metrics;
 mod node;
 mod peers;
@@ -28,6 +29,7 @@ pub use member_message_check::MemberMessageError;
 #[cfg(test)]
 pub(crate) use membership::test_address;
 pub use membership::{Member, MemberAddress};
+pub use membership_operation::{MembershipError, MembershipOperation};
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

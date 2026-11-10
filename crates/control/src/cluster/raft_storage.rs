@@ -9,7 +9,7 @@ use raft::{
 
 use super::{
     lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
-    membership::ClusterMembership,
+    membership::{ClusterMembership, member_ids},
     voters::MAX_VOTERS,
 };
 
@@ -151,8 +151,14 @@ impl Storage for RaftStorage {
         self.memory.last_index()
     }
 
-    fn snapshot(&self, request_index: u64, _to: u64) -> raft::Result<Snapshot> {
-        if self.snapshot.is_empty() || request_index > self.snapshot_index() {
+    /// raft-rs refuses to restore a snapshot whose membership lacks it, so a
+    /// learner waits for one cut after it was added.
+    fn snapshot(&self, request_index: u64, to: u64) -> raft::Result<Snapshot> {
+        let members = self.snapshot.get_metadata().get_conf_state();
+        if self.snapshot.is_empty() ||
+            request_index > self.snapshot_index() ||
+            !member_ids(members).any(|id| id == to)
+        {
             return Err(StorageError::SnapshotTemporarilyUnavailable.into());
         }
         Ok(self.snapshot.clone())

@@ -12,13 +12,14 @@ use super::{node::SlashingProtectionConfig, raft_storage::RestoredSnapshot, vote
 #[derive(Debug, Clone)]
 pub enum ClusterStorageConfig {
     Create(PathBuf),
+    Join(PathBuf),
     Open(PathBuf),
 }
 
 #[derive(Debug)]
 pub struct RecoveredStorage {
     /// The voters the journal was created with.
-    pub initial_voters: Voters,
+    pub initial_voters: Option<Voters>,
     pub hard_state: HardState,
     pub snapshot: Snapshot,
     /// Includes the uncommitted suffix; replay only entries through
@@ -27,7 +28,7 @@ pub struct RecoveredStorage {
 }
 
 impl RecoveredStorage {
-    pub fn empty(initial_voters: Voters) -> Self {
+    pub fn empty(initial_voters: Option<Voters>) -> Self {
         Self {
             initial_voters,
             hard_state: HardState::default(),
@@ -66,10 +67,13 @@ impl Persistence {
     pub fn new(config: &SlashingProtectionConfig) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
-            let identity = StorageIdentity::new(config.node_id, config.voters.iter().copied())?;
+            let identity = || StorageIdentity::new(config.node_id, config.voters.iter().copied());
             let disk = match &config.storage {
-                ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity)?,
-                ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity)?,
+                ClusterStorageConfig::Create(path) => ClusterStorage::create(path, identity()?)?,
+                ClusterStorageConfig::Join(path) => {
+                    ClusterStorage::create(path, StorageIdentity::joining(config.node_id)?)?
+                }
+                ClusterStorageConfig::Open(path) => ClusterStorage::open(path, identity()?)?,
             };
             Ok(Self {
                 disk: Some(disk),

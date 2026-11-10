@@ -26,11 +26,13 @@ pub(super) const READ_CHUNK_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageIdentity {
     node_id: u64,
-    pub(super) voters: Voters,
+    /// `None` for a node that joins a running cluster: its header lists no
+    /// voters, and its membership arrives with its first snapshot.
+    pub(super) voters: Option<Voters>,
 }
 
 struct JournalHeader {
-    voters: Voters,
+    voters: Option<Voters>,
     checkpoint: bool,
 }
 
@@ -38,7 +40,17 @@ impl StorageIdentity {
     pub fn new(node_id: u64, voters: impl IntoIterator<Item = u64>) -> io::Result<Self> {
         let voters = Voters::new(node_id, voters)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Ok(Self { node_id, voters })
+        Ok(Self { node_id, voters: Some(voters) })
+    }
+
+    pub fn joining(node_id: u64) -> io::Result<Self> {
+        if node_id == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Raft node ids must be non-zero",
+            ));
+        }
+        Ok(Self { node_id, voters: None })
     }
 
     /// Reads only the journal's header, synchronously, so a node configured
@@ -61,8 +73,9 @@ impl StorageIdentity {
         let start = Frame::start(output);
         output.extend_from_slice(MAGIC);
         output.extend_from_slice(&self.node_id.to_le_bytes());
-        output.extend_from_slice(&(self.voters.len() as u32).to_le_bytes());
-        for voter in self.voters.iter() {
+        let voters = self.voters.as_deref().unwrap_or_default();
+        output.extend_from_slice(&(voters.len() as u32).to_le_bytes());
+        for voter in voters {
             output.extend_from_slice(&voter.to_le_bytes());
         }
         output.push(u8::from(checkpoint));
@@ -77,7 +90,12 @@ impl StorageIdentity {
             _ => return Err(invalid_data("unsupported Raft journal format")),
         };
         let node_id = cursor.u64()?;
-        let voters = Voters::new(node_id, cursor.voter_ids()?).map_err(invalid_data)?;
+        let voter_ids = cursor.voter_ids()?;
+        let voters = if voter_ids.is_empty() {
+            None
+        } else {
+            Some(Voters::new(node_id, voter_ids).map_err(invalid_data)?)
+        };
         // Legacy headers predate checkpoints.
         let checkpoint = !legacy && cursor.flag()?;
         cursor.finish()?;

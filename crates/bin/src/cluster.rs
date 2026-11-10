@@ -28,7 +28,7 @@ impl ClusterStartup {
         let voters = || config.nodes.keys().copied();
         let identity = StorageIdentity::new(node_id, voters())?;
         let journal_lock = Self::lock(directory)?;
-        let storage = Self::journal(config.bootstrap, directory.join(JOURNAL_FILE))?;
+        let storage = Self::journal(config.bootstrap, config.join, directory.join(JOURNAL_FILE))?;
         Self::check_identity(&storage, &identity)?;
         Ok(Self {
             config: SlashingProtectionConfig::new(node_id, voters(), advertised, storage)?,
@@ -68,20 +68,29 @@ impl ClusterStartup {
         Ok((id, MemberAddress { public_key: enr.public_key().serialize(), addr }))
     }
 
-    /// A journal that contradicts `bootstrap` would only fail later, inside
-    /// Control, and leave the node running with the cluster refusing every
-    /// duty.
-    fn journal(bootstrap: bool, path: PathBuf) -> Result<ClusterStorageConfig, Box<dyn Error>> {
-        match (bootstrap, path.try_exists()?) {
-            (true, false) => Ok(ClusterStorageConfig::Create(path)),
-            (false, true) => Ok(ClusterStorageConfig::Open(path)),
-            (true, true) => Err(format!(
-                "cluster bootstrap = true, but {} already exists: set bootstrap = false",
+    /// A journal that contradicts `bootstrap` or `join` would only fail
+    /// later, inside Control, and leave the node running with the cluster
+    /// refusing every duty.
+    fn journal(
+        bootstrap: bool,
+        join: bool,
+        path: PathBuf,
+    ) -> Result<ClusterStorageConfig, Box<dyn Error>> {
+        let exists = path.try_exists()?;
+        let created = if bootstrap { "bootstrap" } else { "join" };
+        match (bootstrap, join, exists) {
+            (true, true, _) => Err("cluster bootstrap and join cannot both be set".into()),
+            (true, false, false) => Ok(ClusterStorageConfig::Create(path)),
+            (false, true, false) => Ok(ClusterStorageConfig::Join(path)),
+            (false, false, true) => Ok(ClusterStorageConfig::Open(path)),
+            (_, _, true) => Err(format!(
+                "cluster {created} = true, but {} already exists: set {created} = false",
                 path.display()
             )
             .into()),
-            (false, false) => Err(format!(
-                "cluster journal {} is missing: restore it, never bootstrap a single node over it",
+            (false, false, false) => Err(format!(
+                "cluster journal {} is missing: restore it, never bootstrap a single node over \
+                 it; a new node joins with join = true",
                 path.display()
             )
             .into()),
@@ -131,21 +140,19 @@ mod tests {
     }
 
     #[test]
-    fn journal_must_agree_with_bootstrap() {
+    fn journal_must_agree_with_bootstrap_and_join() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("attestation-cluster.wal");
+        let journal = |bootstrap, join| ClusterStartup::journal(bootstrap, join, path.clone());
 
-        assert!(matches!(
-            ClusterStartup::journal(true, path.clone()),
-            Ok(ClusterStorageConfig::Create(_))
-        ));
-        assert!(ClusterStartup::journal(false, path.clone()).is_err(), "missing journal");
+        assert!(matches!(journal(true, false), Ok(ClusterStorageConfig::Create(_))));
+        assert!(matches!(journal(false, true), Ok(ClusterStorageConfig::Join(_))));
+        assert!(journal(false, false).is_err(), "missing journal");
+        assert!(journal(true, true).is_err(), "both flags");
 
         File::create(&path).unwrap();
-        assert!(matches!(
-            ClusterStartup::journal(false, path.clone()),
-            Ok(ClusterStorageConfig::Open(_))
-        ));
-        assert!(ClusterStartup::journal(true, path).is_err(), "bootstrap over a journal");
+        assert!(matches!(journal(false, false), Ok(ClusterStorageConfig::Open(_))));
+        assert!(journal(true, false).is_err(), "bootstrap over a journal");
+        assert!(journal(false, true).is_err(), "join over a journal");
     }
 }

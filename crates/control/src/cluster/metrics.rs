@@ -70,6 +70,8 @@ silver_common::declare_counters! {
         JournalBytes,
         // 1 when this run has a cluster configured; set at every start.
         Clustered,
+        // 1 once this node has applied its own removal from the cluster.
+        Removed,
     }
 }
 
