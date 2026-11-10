@@ -47,17 +47,7 @@ impl LocalGossipHandler {
         self.pending.entry(msg_id).or_default().push(request);
     }
 
-    pub(super) fn release(
-        &mut self,
-        message: LocalMessage<'_>,
-        answered: bool,
-        now: Instant,
-        gossip_handler: &mut GossipHandler,
-        producers: &mut SilverSpineProducers,
-    ) {
-        if !answered {
-            return self.submit(message, now, gossip_handler, producers);
-        }
+    pub(super) fn publish_unawaited(message: LocalMessage<'_>, gossip_handler: &mut GossipHandler) {
         silver_log::info!(
             request_id = message.request_id,
             slot = message.slot,

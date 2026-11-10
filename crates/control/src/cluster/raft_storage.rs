@@ -6,7 +6,10 @@ use raft::{
     storage::MemStorage,
 };
 
-use super::lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore};
+use super::{
+    lock_store::{MAX_SNAPSHOT_BYTES, SlashingLockStore},
+    voters::Voters,
+};
 
 pub(super) struct RestoredSnapshot {
     pub index: u64,
@@ -14,7 +17,7 @@ pub(super) struct RestoredSnapshot {
 }
 
 impl RestoredSnapshot {
-    pub fn decode(snapshot: &Snapshot, voters: &[u64]) -> io::Result<Self> {
+    pub fn decode(snapshot: &Snapshot, voters: &Voters) -> io::Result<Self> {
         validate_snapshot(snapshot, voters)?;
         Ok(Self {
             index: snapshot.get_metadata().index,
@@ -119,17 +122,14 @@ impl Storage for RaftStorage {
     }
 }
 
-pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &[u64]) -> io::Result<()> {
+pub(super) fn validate_snapshot(snapshot: &Snapshot, voters: &Voters) -> io::Result<()> {
     let metadata = snapshot.get_metadata();
     let conf = metadata.get_conf_state();
-    // `voters` is distinct, so equal lengths and containment mean equal sets.
-    let same_voters =
-        conf.voters.len() == voters.len() && voters.iter().all(|v| conf.voters.contains(v));
     if snapshot.data.len() > MAX_SNAPSHOT_BYTES ||
         metadata.index == 0 ||
         metadata.index == u64::MAX ||
         metadata.term == 0 ||
-        !same_voters ||
+        !voters.matches(&conf.voters) ||
         !conf.learners.is_empty() ||
         !conf.voters_outgoing.is_empty() ||
         !conf.learners_next.is_empty() ||

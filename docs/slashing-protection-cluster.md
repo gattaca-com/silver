@@ -70,12 +70,6 @@ startup floor, which refuses every slot up to the moment it synced.
 A cluster of three keeps serving on two nodes, so the reset can wait for a
 planned window. Each further loss before it is an outage.
 
-## Upgrades
-
-The lock snapshot format is `SLVLOCK` v4. New binaries read v3 journals, but
-older binaries cannot read v4 snapshots. Upgrade every node of a cluster
-together: stop all, upgrade, start.
-
 ## When a lock is not agreed in time
 
 A local attestation or block waits up to 500 ms for the cluster to agree on

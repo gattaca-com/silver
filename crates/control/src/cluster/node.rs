@@ -4,7 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flux::utils::ArrayVec;
 use raft::{
     Config, RawNode, StateRole,
     eraftpb::{Entry, Message, MessageType},
@@ -27,6 +26,7 @@ use super::{
     persistence::{ClusterStorageConfig, PersistedReady, Persistence, PersistenceEvent},
     raft_storage::{RaftStorage, RestoredSnapshot},
     snapshot_transfers::SnapshotTransfers,
+    voters::Voters,
 };
 
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -41,23 +41,6 @@ const MAX_APPEND_BYTES: u64 = 1024 * 1024;
 // Below the 128-message cluster stream queue, which overwrites its oldest
 // message when full.
 const MAX_INFLIGHT_APPENDS: usize = 64;
-
-/// raft-rs computes the commit index on the stack for up to 7 voters and
-/// allocates above that. etcd, whose raft raft-rs ports, also advises at most
-/// 7 members.
-pub(super) const MAX_VOTERS: usize = 7;
-pub(super) type Voters = ArrayVec<u64, MAX_VOTERS>;
-
-/// `None` past `MAX_VOTERS` ids.
-pub(super) fn voters(ids: impl IntoIterator<Item = u64>) -> Option<Voters> {
-    let mut voters = Voters::new();
-    for id in ids {
-        if voters.try_push(id).is_some() {
-            return None;
-        }
-    }
-    Some(voters)
-}
 
 /// Static Raft membership and timing configuration.
 #[derive(Debug, Clone)]
@@ -80,8 +63,7 @@ impl SlashingProtectionConfig {
         voters: impl IntoIterator<Item = u64>,
         storage: ClusterStorageConfig,
     ) -> Result<Self, ClusterError> {
-        let voters = self::voters(voters)
-            .ok_or(ClusterError::InvalidConfig("a Raft cluster has at most 7 voters"))?;
+        let voters = Voters::new(node_id, voters).map_err(ClusterError::InvalidConfig)?;
         Ok(Self {
             node_id,
             voters,
@@ -95,9 +77,6 @@ impl SlashingProtectionConfig {
     }
 
     fn validate(&self) -> Result<(), ClusterError> {
-        if self.node_id == 0 {
-            return Err(ClusterError::InvalidConfig("Raft node id must be non-zero"));
-        }
         if self.tick_interval.is_zero() {
             return Err(ClusterError::InvalidConfig("Raft tick interval must be non-zero"));
         }
@@ -107,22 +86,6 @@ impl SlashingProtectionConfig {
         if self.snapshot_interval == 0 {
             return Err(ClusterError::InvalidConfig("Raft snapshot interval must be non-zero"));
         }
-        if self.voters.is_empty() {
-            return Err(ClusterError::InvalidConfig("Raft voter set must not be empty"));
-        }
-        if !self.voters.contains(&self.node_id) {
-            return Err(ClusterError::InvalidConfig("local Raft node is not in voter set"));
-        }
-        if self.voters.contains(&0) {
-            return Err(ClusterError::InvalidConfig("Raft voter ids must be non-zero"));
-        }
-
-        let mut voters = self.voters;
-        voters.sort_unstable();
-        if voters.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(ClusterError::InvalidConfig("Raft voter ids must be unique"));
-        }
-
         self.raft_config().validate().map_err(ClusterError::Raft)
     }
 
@@ -199,11 +162,8 @@ pub struct BlockDecision {
 }
 
 impl AttestationDecision {
-    /// Whether this candidate may enter Beacon State validation. Callers must
-    /// not treat an accepted Raft selection alone as sufficient after the
-    /// request has expired.
-    #[must_use]
-    pub fn may_validate(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn may_validate(&self) -> bool {
         self.admission.is_ok() &&
             matches!(self.result, LockResult::Accepted | LockResult::AlreadyAcceptedSame)
     }
@@ -216,8 +176,7 @@ pub enum ClusterEvent {
     SendRaftMessage(Message),
     AttestationCommitted(AttestationDecision),
     BlockCommitted(BlockDecision),
-    /// The proposal may still commit and reserve its candidate, but must no
-    /// longer cause validation or publication for the original request.
+    /// The proposal may still commit, and then reports its decision late.
     ProposalTimedOut(ProposalId),
 }
 
@@ -257,12 +216,7 @@ impl Error for ProposeError {
 pub enum ClusterError {
     InvalidConfig(&'static str),
     Raft(raft::Error),
-    /// A committed entry this binary cannot apply. Every replay fails on it.
-    BadEntry {
-        index: u64,
-        term: u64,
-        cause: EntryError,
-    },
+    BadEntry { index: u64, term: u64, cause: EntryError },
     MemberMessage(MemberMessageError),
     Snapshot(io::Error),
     Storage(io::Error),
@@ -280,7 +234,6 @@ pub enum FailureKind {
     /// A committed entry this binary cannot apply. A restart replays it, so
     /// only a binary that can apply it recovers.
     BadEntry = 2,
-    /// An installed or recovered snapshot is invalid.
     Snapshot = 3,
     Raft = 4,
     Other = 5,
@@ -1046,10 +999,7 @@ mod tests {
     use silver_common::SLOTS_PER_EPOCH;
 
     use super::*;
-    use crate::cluster::{
-        AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity,
-        command::CommandDecodeError,
-    };
+    use crate::cluster::{AttestationKey, BlockKey, BlockLockCommand, LockResult, StorageIdentity};
 
     fn command(slot: u64, root: u8) -> AttestationLockCommand {
         let mut ssz = [0; silver_common::ssz_view::SINGLE_ATT_SIZE];
@@ -1241,7 +1191,7 @@ mod tests {
             matches!(error, ClusterError::BadEntry {
                 index: i,
                 term: t,
-                cause: EntryError::Command(CommandDecodeError::UnknownTag(9)),
+                cause: EntryError::UnknownTag(9),
             } if i == index && t == term),
             "{error:?}"
         );

@@ -27,12 +27,53 @@ use crate::cluster::{
 /// leader, and a block this late would be orphaned anyway.
 const LATE_COMMIT_SLOTS: u64 = 2;
 
+/// An API request waiting on its lock. It is answered at most once, but its
+/// lock can still commit after a `LockPending` answer and be published late.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct PendingAttestation {
-    request_id: u64,
-    command: AttestationLockCommand,
+struct PendingRequest {
+    id: u64,
     received: Instant,
     answered: bool,
+}
+
+impl PendingRequest {
+    fn new(id: u64, received: Instant) -> Self {
+        Self { id, received, answered: false }
+    }
+
+    fn answer(&mut self, response: LocalGossipResult, producers: &mut SilverSpineProducers) {
+        if !self.answered {
+            produce_response(producers, self.id, response);
+            self.answered = true;
+        }
+    }
+
+    /// An unanswered request waits for its proposal's timeout instead, so
+    /// an old but admitted slot still gets its answer.
+    fn is_live(&self, slot: u64, wall_slot: u64) -> bool {
+        !self.answered || slot.saturating_add(LATE_COMMIT_SLOTS) > wall_slot
+    }
+
+    fn release(
+        &self,
+        message: LocalMessage<'_>,
+        now: Instant,
+        local_gossip: &mut LocalGossipHandler,
+        gossip_handler: &mut GossipHandler,
+        producers: &mut SilverSpineProducers,
+    ) {
+        if self.answered {
+            LocalGossipHandler::publish_unawaited(message, gossip_handler);
+        } else {
+            local_gossip.submit(message, now, gossip_handler, producers);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PendingAttestation {
+    request: PendingRequest,
+    command: AttestationLockCommand,
 }
 
 impl PendingAttestation {
@@ -47,21 +88,13 @@ impl PendingAttestation {
             slot: SingleAttestationView::slot(&ssz),
         };
         Self {
-            request_id,
+            request: PendingRequest::new(request_id, received),
             command: AttestationLockCommand { key, subnet, ssz },
-            received,
-            answered: false,
-        }
-    }
-
-    fn answer(&self, response: LocalGossipResult, producers: &mut SilverSpineProducers) {
-        if !self.answered {
-            produce_response(producers, self.request_id, response);
         }
     }
 
     fn on_commit(
-        &self,
+        mut self,
         decision: &AttestationDecision,
         now: Instant,
         duty_timers: &mut DutyTimers,
@@ -70,10 +103,10 @@ impl PendingAttestation {
         producers: &mut SilverSpineProducers,
     ) {
         if decision.command != self.command {
-            self.answer(Err(LocalGossipFailure::Internal), producers);
+            self.request.answer(Err(LocalGossipFailure::Internal), producers);
             silver_log::error!(
                 ?decision.proposal_id,
-                request_id = self.request_id,
+                request_id = self.request.id,
                 "committed Raft command does not match its pending attestation"
             );
             return;
@@ -84,21 +117,21 @@ impl PendingAttestation {
             LocalGossipFailure::ConflictingAttestation,
         );
         if response.is_err() {
-            self.answer(response, producers);
+            self.request.answer(response, producers);
             silver_log::warn!(
                 ?decision.result,
                 ?decision.admission,
-                request_id = self.request_id,
+                request_id = self.request.id,
                 slot = self.command.key.slot,
                 "committed attestation cannot enter validation"
             );
             return;
         }
-        duty_timers.released(ClusterDuty::Attestation, self.received, now);
-        local_gossip.release(
-            self.command.local_message(self.request_id),
-            self.answered,
+        duty_timers.released(ClusterDuty::Attestation, self.request.received, now);
+        self.request.release(
+            self.command.local_message(self.request.id),
             now,
+            local_gossip,
             gossip_handler,
             producers,
         );
@@ -140,54 +173,64 @@ impl SubmittedBlock {
 /// submissions tcache until the lock commits or times out.
 #[derive(Debug)]
 pub(super) struct PendingBlock {
-    request_id: u64,
+    request: PendingRequest,
     key: BlockKey,
     contents: TRead,
     block: SubmittedBlock,
-    received: Instant,
-    answered: bool,
 }
 
 impl PendingBlock {
-    fn answer(&self, response: LocalGossipResult, producers: &mut SilverSpineProducers) {
-        if !self.answered {
-            produce_response(producers, self.request_id, response);
-        }
-    }
-
-    fn signed_block(&self) -> Option<&[u8]> {
-        self.contents.buffer().ok().and_then(|(bytes, _)| self.block.signed_block(bytes))
+    fn new(
+        request_id: u64,
+        key: BlockKey,
+        contents: TRead,
+        block: SubmittedBlock,
+        received: Instant,
+    ) -> Self {
+        Self { request: PendingRequest::new(request_id, received), key, contents, block }
     }
 
     fn release_locked(
-        &self,
-        block: &[u8],
+        mut self,
         now: Instant,
+        duty_timers: &mut DutyTimers,
         local_gossip: &mut LocalGossipHandler,
         gossip_handler: &mut GossipHandler,
         producers: &mut SilverSpineProducers,
     ) {
         let slot = self.key.slot;
+        let Some(block) =
+            self.contents.buffer().ok().and_then(|(bytes, _)| self.block.signed_block(bytes))
+        else {
+            self.request.answer(Err(LocalGossipFailure::Internal), producers);
+            silver_log::error!(
+                request_id = self.request.id,
+                slot,
+                "submitted block overwritten before its lock committed"
+            );
+            return;
+        };
+        duty_timers.released(ClusterDuty::Block, self.request.received, now);
         let message = match self.block {
             SubmittedBlock::Full(validation) => {
                 producers.produce(LockedProposal { contents: self.contents.to_read() });
-                block_message(self.request_id, block, slot, validation)
+                block_message(self.request.id, block, slot, validation)
             }
             SubmittedBlock::Gloas(validation) => LocalMessage {
-                request_id: self.request_id,
+                request_id: self.request.id,
                 topic: GossipTopic::BeaconBlock,
                 ssz: block,
                 ssz_read: Some(self.contents.to_read()),
                 slot,
                 validation,
             },
-            SubmittedBlock::Blinded => return self.answer(Ok(()), producers),
+            SubmittedBlock::Blinded => return self.request.answer(Ok(()), producers),
         };
-        local_gossip.release(message, self.answered, now, gossip_handler, producers);
+        self.request.release(message, now, local_gossip, gossip_handler, producers);
     }
 
     fn on_commit(
-        &self,
+        mut self,
         decision: &BlockDecision,
         now: Instant,
         duty_timers: &mut DutyTimers,
@@ -196,10 +239,10 @@ impl PendingBlock {
         producers: &mut SilverSpineProducers,
     ) {
         if decision.key != self.key {
-            self.answer(Err(LocalGossipFailure::Internal), producers);
+            self.request.answer(Err(LocalGossipFailure::Internal), producers);
             silver_log::error!(
                 ?decision.proposal_id,
-                request_id = self.request_id,
+                request_id = self.request.id,
                 "committed Raft command does not match its pending block"
             );
             return;
@@ -211,27 +254,17 @@ impl PendingBlock {
             LocalGossipFailure::ConflictingProposal,
         );
         if response.is_err() {
-            self.answer(response, producers);
+            self.request.answer(response, producers);
             silver_log::warn!(
                 ?decision.result,
                 ?decision.admission,
-                request_id = self.request_id,
+                request_id = self.request.id,
                 slot,
                 "committed block cannot enter validation"
             );
             return;
         }
-        let Some(bytes) = self.signed_block() else {
-            self.answer(Err(LocalGossipFailure::Internal), producers);
-            silver_log::error!(
-                request_id = self.request_id,
-                slot,
-                "submitted block overwritten before its lock committed"
-            );
-            return;
-        };
-        duty_timers.released(ClusterDuty::Block, self.received, now);
-        self.release_locked(bytes, now, local_gossip, gossip_handler, producers);
+        self.release_locked(now, duty_timers, local_gossip, gossip_handler, producers);
     }
 }
 
@@ -314,15 +347,11 @@ impl SlashingProtectionHandler {
         silver_log::info!(wall_slot, "local slashing protection startup floor latched");
     }
 
-    /// Unanswered entries wait for their proposal's timeout instead: an old
-    /// but admitted slot must still get its answer.
     fn expire_answered(&mut self, wall_slot: u64) {
-        let live = |answered: bool, slot: u64| {
-            !answered || slot.saturating_add(LATE_COMMIT_SLOTS) > wall_slot
-        };
-        self.pending_attestations
-            .retain(|_, attestation| live(attestation.answered, attestation.command.key.slot));
-        self.pending_blocks.retain(|_, block| live(block.answered, block.key.slot));
+        self.pending_attestations.retain(|_, attestation| {
+            attestation.request.is_live(attestation.command.key.slot, wall_slot)
+        });
+        self.pending_blocks.retain(|_, block| block.request.is_live(block.key.slot, wall_slot));
     }
 
     /// Consume inbound Raft messages and pump all work currently ready in the
@@ -385,10 +414,10 @@ impl SlashingProtectionHandler {
     ) {
         if let Err(error) = self.admission.validate(attestation.command.key.slot, self.wall_slot) {
             error.count();
-            produce_response(producers, attestation.request_id, Err(admission_failure(error)));
+            produce_response(producers, attestation.request.id, Err(admission_failure(error)));
             silver_log::warn!(
                 ?error,
-                request_id = attestation.request_id,
+                request_id = attestation.request.id,
                 slot = attestation.command.key.slot,
                 "local attestation rejected before cluster proposal"
             );
@@ -400,18 +429,18 @@ impl SlashingProtectionHandler {
             result.count_attestation();
             let response = lock_response(result, LocalGossipFailure::ConflictingAttestation);
             if response.is_err() {
-                produce_response(producers, attestation.request_id, response);
+                produce_response(producers, attestation.request.id, response);
                 silver_log::warn!(
                     ?result,
-                    request_id = attestation.request_id,
+                    request_id = attestation.request.id,
                     slot = attestation.command.key.slot,
                     "local lock rejected attestation"
                 );
                 return;
             }
-            self.duty_timers.released(ClusterDuty::Attestation, attestation.received, now);
+            self.duty_timers.released(ClusterDuty::Attestation, attestation.request.received, now);
             local_gossip.submit(
-                attestation.command.local_message(attestation.request_id),
+                attestation.command.local_message(attestation.request.id),
                 now,
                 gossip_handler,
                 producers,
@@ -428,10 +457,10 @@ impl SlashingProtectionHandler {
                 if let ProposeError::Admission(admission) = &error {
                     admission.count();
                 }
-                produce_response(producers, attestation.request_id, Err(proposal_failure(&error)));
+                produce_response(producers, attestation.request.id, Err(proposal_failure(&error)));
                 silver_log::warn!(
                     ?error,
-                    request_id = attestation.request_id,
+                    request_id = attestation.request.id,
                     slot = attestation.command.key.slot,
                     "cluster rejected local attestation"
                 );
@@ -491,13 +520,9 @@ impl SlashingProtectionHandler {
                 );
                 return;
             }
-            let pending =
-                PendingBlock { request_id, key, contents, block, received: now, answered: false };
-            let signed_block = pending.signed_block().expect("parsed before its lock");
-            self.duty_timers.released(ClusterDuty::Block, now, now);
-            return pending.release_locked(
-                signed_block,
+            return PendingBlock::new(request_id, key, contents, block, now).release_locked(
                 now,
+                &mut self.duty_timers,
                 local_gossip,
                 gossip_handler,
                 producers,
@@ -506,14 +531,9 @@ impl SlashingProtectionHandler {
 
         match cluster.propose_block(command, self.wall_slot, now) {
             Ok(proposal_id) => {
-                let previous = self.pending_blocks.insert(proposal_id, PendingBlock {
-                    request_id,
-                    key,
-                    contents,
-                    block,
-                    received: now,
-                    answered: false,
-                });
+                let previous = self
+                    .pending_blocks
+                    .insert(proposal_id, PendingBlock::new(request_id, key, contents, block, now));
                 debug_assert!(previous.is_none(), "proposal IDs are unique per node");
             }
             Err(error) => {
@@ -656,21 +676,19 @@ impl SlashingProtectionHandler {
             }
             ClusterEvent::ProposalTimedOut(proposal_id) => {
                 if let Some(block) = pending_blocks.get_mut(&proposal_id) {
-                    block.answer(Err(LocalGossipFailure::LockPending), producers);
-                    block.answered = true;
+                    block.request.answer(Err(LocalGossipFailure::LockPending), producers);
                     silver_log::warn!(
                         ?proposal_id,
-                        request_id = block.request_id,
+                        request_id = block.request.id,
                         slot = block.key.slot,
                         "block cluster proposal timed out"
                     );
                 }
                 if let Some(attestation) = pending_attestations.get_mut(&proposal_id) {
-                    attestation.answer(Err(LocalGossipFailure::LockPending), producers);
-                    attestation.answered = true;
+                    attestation.request.answer(Err(LocalGossipFailure::LockPending), producers);
                     silver_log::warn!(
                         ?proposal_id,
-                        request_id = attestation.request_id,
+                        request_id = attestation.request.id,
                         slot = attestation.command.key.slot,
                         "attestation cluster proposal timed out"
                     );
@@ -683,11 +701,11 @@ impl SlashingProtectionHandler {
                 kind = ?error.failure_kind(),
                 "slashing protection spin failed"
             );
-            for (_, attestation) in self.pending_attestations.drain() {
-                attestation.answer(Err(LocalGossipFailure::Internal), producers);
+            for (_, mut attestation) in self.pending_attestations.drain() {
+                attestation.request.answer(Err(LocalGossipFailure::Internal), producers);
             }
-            for (_, block) in self.pending_blocks.drain() {
-                block.answer(Err(LocalGossipFailure::Internal), producers);
+            for (_, mut block) in self.pending_blocks.drain() {
+                block.request.answer(Err(LocalGossipFailure::Internal), producers);
             }
         }
     }
@@ -1046,7 +1064,7 @@ mod tests {
         handler.on_status(11, true);
         let id = |sequence| ProposalId { origin_node_id: 1, sequence, incarnation: [0; 16] };
         let mut answered = PendingAttestation::new(1, 0, attestation(11, 7), now);
-        answered.answered = true;
+        answered.request.answered = true;
         handler.pending_attestations.insert(id(0), answered);
         handler
             .pending_attestations
@@ -1386,7 +1404,7 @@ mod tests {
         assert!(handler.cluster.as_ref().unwrap().is_failed());
 
         handler.on_local_attestation(
-            PendingAttestation { request_id: 2, ..attestation },
+            PendingAttestation { request: PendingRequest::new(2, now), ..attestation },
             now,
             &mut harness.local_gossip,
             &mut harness.gossip,

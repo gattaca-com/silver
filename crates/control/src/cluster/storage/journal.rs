@@ -5,14 +5,15 @@ use std::{
 };
 
 use buffa::Message as _;
+use flux::utils::ArrayVec;
 use raft::eraftpb::{Entry, HardState, Snapshot};
 
 use super::super::{
     generated,
     lock_store::MAX_SNAPSHOT_BYTES,
-    node::{self, MAX_VOTERS, Voters},
     persistence::RecoveredStorage,
     raft_storage::validate_snapshot,
+    voters::{MAX_VOTERS, Voters},
     wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
 };
 
@@ -30,23 +31,8 @@ pub struct StorageIdentity {
 
 impl StorageIdentity {
     pub fn new(node_id: u64, voters: impl IntoIterator<Item = u64>) -> io::Result<Self> {
-        let mut voters = node::voters(voters).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("a Raft cluster has at most {MAX_VOTERS} voters"),
-            )
-        })?;
-        voters.sort_unstable();
-        if node_id == 0 ||
-            !voters.contains(&node_id) ||
-            voters.contains(&0) ||
-            voters.windows(2).any(|pair| pair[0] == pair[1])
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid Raft storage identity",
-            ));
-        }
+        let voters = Voters::new(node_id, voters)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Self { node_id, voters })
     }
 
@@ -71,7 +57,7 @@ impl StorageIdentity {
         output.extend_from_slice(MAGIC);
         output.extend_from_slice(&self.node_id.to_le_bytes());
         output.extend_from_slice(&(self.voters.len() as u32).to_le_bytes());
-        for voter in &self.voters {
+        for voter in self.voters.iter() {
             output.extend_from_slice(&voter.to_le_bytes());
         }
         output.push(u8::from(checkpoint));
@@ -84,38 +70,25 @@ impl StorageIdentity {
 
     /// Returns whether the journal starts from a checkpoint.
     fn verify(&self, payload: &[u8]) -> io::Result<bool> {
-        let header = JournalHeader::decode(payload)?;
-        let found = &header.identity;
-        if found != self {
-            return Err(invalid_data(format!(
-                "Raft journal belongs to node {} with voters {:?}, but the config has node {} \
-                 with voters {:?}",
-                found.node_id, found.voters, self.node_id, self.voters
-            )));
-        }
-        Ok(header.checkpoint)
-    }
-}
-
-/// The first record of a journal, written by `StorageIdentity::write_header`.
-struct JournalHeader {
-    identity: StorageIdentity,
-    checkpoint: bool,
-}
-
-impl JournalHeader {
-    fn decode(payload: &[u8]) -> io::Result<Self> {
         let mut cursor = Cursor(payload);
         let legacy = match cursor.take(MAGIC.len())? {
             magic if magic == MAGIC => false,
             magic if magic == LEGACY_MAGIC => true,
             _ => return Err(invalid_data("unsupported Raft journal format")),
         };
-        let identity = StorageIdentity { node_id: cursor.u64()?, voters: cursor.voters()? };
+        let node_id = cursor.u64()?;
+        let voters = Voters::new(node_id, cursor.voter_ids()?).map_err(invalid_data)?;
         // Legacy headers predate checkpoints.
         let checkpoint = !legacy && cursor.flag()?;
         cursor.finish()?;
-        Ok(Self { identity, checkpoint })
+        if node_id != self.node_id || voters != self.voters {
+            return Err(invalid_data(format!(
+                "Raft journal belongs to node {node_id} with voters {voters:?}, but the config \
+                 has node {} with voters {:?}",
+                self.node_id, self.voters
+            )));
+        }
+        Ok(checkpoint)
     }
 }
 
@@ -428,7 +401,6 @@ impl<'a> Frame<'a> {
             .copy_from_slice(&header_checksum.to_le_bytes());
     }
 
-    /// Reads only the file's first frame, and returns its checked payload.
     fn read_first_payload(path: &Path) -> io::Result<Vec<u8>> {
         let mut file = File::open(path)?;
         let mut bytes = vec![0; FRAME_HEADER_LEN];
@@ -489,16 +461,16 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    fn voters(&mut self) -> io::Result<Voters> {
+    fn voter_ids(&mut self) -> io::Result<ArrayVec<u64, MAX_VOTERS>> {
         let count = self.u32()? as usize;
         if count > MAX_VOTERS {
             return Err(invalid_data("invalid Raft journal voter count"));
         }
-        let mut voters = Voters::new();
+        let mut ids = ArrayVec::new();
         for _ in 0..count {
-            voters.push(self.u64()?);
+            ids.push(self.u64()?);
         }
-        Ok(voters)
+        Ok(ids)
     }
 
     fn flag(&mut self) -> io::Result<bool> {

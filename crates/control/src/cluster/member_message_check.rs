@@ -7,8 +7,8 @@ use raft::{
 use super::{
     command::{DecodedEntry, EntryError},
     metrics::ClusterCounters,
-    node::MAX_VOTERS,
     raft_storage::{RaftStorage, RestoredSnapshot},
+    voters::{MAX_VOTERS, Voters},
 };
 
 /// A member can reach the next slot before this node's own Status does.
@@ -21,31 +21,12 @@ const CLOCK_SLACK_SLOTS: u64 = 1;
 pub enum MemberMessageError {
     EmptyProposal,
     Entry(EntryError),
-    ProposalOrigin {
-        origin: u64,
-        from: u64,
-    },
+    ProposalOrigin { origin: u64, from: u64 },
     ForwardedMinimumSlot,
-    /// A forwarded proposal its member could only make with a clock ahead
-    /// of ours.
-    ProposalAheadOfClock {
-        slot: u64,
-        wall_slot: u64,
-    },
-    /// An appended entry its leader could only make with a clock ahead of
-    /// ours.
-    LeaderAheadOfClock {
-        slot: u64,
-        wall_slot: u64,
-    },
-    EntryIndexGap {
-        expected: u64,
-        actual: u64,
-    },
-    CommitPastLog {
-        commit: u64,
-        last_index: u64,
-    },
+    ProposalAheadOfClock { slot: u64, wall_slot: u64 },
+    LeaderAheadOfClock { slot: u64, wall_slot: u64 },
+    EntryIndexGap { expected: u64, actual: u64 },
+    CommitPastLog { commit: u64, last_index: u64 },
     Snapshot,
 }
 
@@ -110,10 +91,9 @@ fn is_ahead_of_clock(slot: u64, wall_slot: u64) -> bool {
     slot > wall_slot.saturating_add(CLOCK_SLACK_SLOTS)
 }
 
-/// The local state a member's message is checked against.
 pub(super) struct MemberMessageCheck<'a> {
     pub log: &'a RaftLog<RaftStorage>,
-    pub voters: &'a [u64],
+    pub voters: &'a Voters,
     pub wall_slot: u64,
 }
 
@@ -171,8 +151,6 @@ impl MemberMessageCheck<'_> {
         Ok(())
     }
 
-    /// Mirrors the decoding `apply_entries` relies on, and the log shapes
-    /// raft-rs treats as fatal in `handle_append_entries`.
     fn check_append(&self, message: &Message) -> Result<(), MemberMessageError> {
         for (offset, entry) in (1..).zip(&message.entries) {
             // raft-rs finds conflicts by each entry's own index, and a conflict

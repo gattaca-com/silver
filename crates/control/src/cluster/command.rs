@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::fmt;
 
 use raft::eraftpb::{Entry, EntryType};
 use silver_common::ssz_view::SINGLE_ATT_SIZE;
@@ -78,18 +78,18 @@ impl ReplicatedCommand {
         }
     }
 
-    pub(super) fn decode(encoded: &[u8]) -> Result<Self, CommandDecodeError> {
+    pub(super) fn decode(encoded: &[u8]) -> Result<Self, EntryError> {
         let Some((&tag, payload)) = encoded.split_first() else {
-            return Err(CommandDecodeError::Empty);
+            return Err(EntryError::Empty);
         };
         let expected = match tag {
             LOCK_COMMAND_TAG => ENCODED_LOCK_COMMAND_LEN,
             ADVANCE_MINIMUM_SLOT_TAG => ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
             BLOCK_LOCK_TAG => ENCODED_BLOCK_LOCK_LEN,
-            _ => return Err(CommandDecodeError::UnknownTag(tag)),
+            _ => return Err(EntryError::UnknownTag(tag)),
         };
         if encoded.len() != expected {
-            return Err(CommandDecodeError::InvalidLength { tag, expected, actual: encoded.len() });
+            return Err(EntryError::InvalidLength { tag, expected, actual: encoded.len() });
         }
 
         let u64_at = |offset: usize| {
@@ -110,27 +110,6 @@ impl ReplicatedCommand {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandDecodeError {
-    Empty,
-    UnknownTag(u8),
-    InvalidLength { tag: u8, expected: usize, actual: usize },
-}
-
-impl fmt::Display for CommandDecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str("empty Raft command"),
-            Self::UnknownTag(tag) => write!(f, "unknown Raft command tag {tag}"),
-            Self::InvalidLength { tag, expected, actual } => {
-                write!(f, "Raft command tag {tag} has length {actual}, expected {expected}")
-            }
-        }
-    }
-}
-
-impl Error for CommandDecodeError {}
-
 /// A log entry's command, with the proposal it answers. The leader proposes
 /// `AdvanceMinimumSlot` itself, so only lock commands carry a proposal.
 #[allow(clippy::large_enum_variant)]
@@ -147,7 +126,7 @@ impl DecodedEntry {
         }
         let proposal_id =
             || ProposalId::decode(&entry.context).map_err(EntryError::ProposalContextLength);
-        Ok(match ReplicatedCommand::decode(&entry.data).map_err(EntryError::Command)? {
+        Ok(match ReplicatedCommand::decode(&entry.data)? {
             ReplicatedCommand::Lock(command) => Self::Lock(command, proposal_id()?),
             ReplicatedCommand::BlockLock(command) => Self::BlockLock(command, proposal_id()?),
             ReplicatedCommand::AdvanceMinimumSlot(slot) => Self::AdvanceMinimumSlot(slot),
@@ -164,11 +143,12 @@ impl DecodedEntry {
     }
 }
 
-/// Why a log entry cannot be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryError {
     UnsupportedType(EntryType),
-    Command(CommandDecodeError),
+    Empty,
+    UnknownTag(u8),
+    InvalidLength { tag: u8, expected: usize, actual: usize },
     ProposalContextLength(usize),
 }
 
@@ -176,7 +156,11 @@ impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedType(entry_type) => write!(f, "unsupported entry type {entry_type:?}"),
-            Self::Command(error) => error.fmt(f),
+            Self::Empty => f.write_str("empty Raft command"),
+            Self::UnknownTag(tag) => write!(f, "unknown Raft command tag {tag}"),
+            Self::InvalidLength { tag, expected, actual } => {
+                write!(f, "Raft command tag {tag} has length {actual}, expected {expected}")
+            }
             Self::ProposalContextLength(actual) => {
                 write!(f, "proposal context has length {actual}, expected 16 or 32")
             }

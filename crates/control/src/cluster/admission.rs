@@ -62,7 +62,6 @@ impl SlashingAdmission {
         wall_slot.saturating_sub(SLOTS_PER_EPOCH)
     }
 
-    /// The earliest wall slot whose `age_floor` is `floor`.
     pub(crate) fn wall_slot_for_floor(floor: u64) -> u64 {
         floor.saturating_add(SLOTS_PER_EPOCH)
     }
