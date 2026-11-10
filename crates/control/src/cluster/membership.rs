@@ -55,7 +55,7 @@ impl MemberAddress {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Member {
+pub struct Member {
     pub node_id: u64,
     pub address: MemberAddress,
 }
@@ -127,6 +127,10 @@ impl FromIterator<Member> for Members {
 }
 
 impl Members {
+    fn iter(&self) -> impl Iterator<Item = Member> + Clone + '_ {
+        self.0.iter().copied()
+    }
+
     fn address(&self, node_id: u64) -> Option<&MemberAddress> {
         self.0.iter().find(|member| member.node_id == node_id).map(|member| &member.address)
     }
@@ -169,6 +173,10 @@ impl ClusterMembership {
 
     pub(super) fn address(&self, node_id: u64) -> Option<&MemberAddress> {
         self.addresses.address(node_id)
+    }
+
+    pub(super) fn members(&self) -> impl Iterator<Item = Member> + Clone + '_ {
+        self.addresses.iter()
     }
 
     pub(super) fn is_joint(&self) -> bool {

@@ -123,17 +123,25 @@ impl NetworkTile {
             PeerControl::UpdateEnrSyncnets { syncnets } => {
                 self.inner.discovery.update_enr_syncnets(syncnets)
             }
-            PeerControl::P2pDial { p2p, enr } => {
-                let addr = enr.quic4_socket().or(enr.quic6_socket());
-                if let Some(addr) = addr {
-                    crate::NetworkCounters::DialAttempts.inc();
-                    silver_log::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
-                    if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
-                        silver_log::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
-                    }
-                } else {
-                    silver_log::warn!(?enr, "cannot dial peer with no quic endpoint");
+            PeerControl::P2pDial { p2p, addr } => {
+                crate::NetworkCounters::DialAttempts.inc();
+                silver_log::info!(peer_id=?p2p, ?addr, "dialling p2p peer");
+                if let Err(e) = self.inner.p2p_endpoint.connect(p2p, addr, now) {
+                    silver_log::error!(?e, ?p2p, ?addr, "failed to initiate p2p to peer");
                 }
+            }
+            PeerControl::ClusterMember { node_id, peer_id, addr } => {
+                silver_log::info!(node_id, ?peer_id, ?addr, "cluster member address");
+                self.inner.p2p_endpoint.set_cluster_member(
+                    &mut self.inner.context,
+                    node_id,
+                    peer_id,
+                    addr,
+                );
+            }
+            PeerControl::ClusterMemberRemoved { node_id } => {
+                silver_log::info!(node_id, "cluster member removed");
+                self.inner.p2p_endpoint.remove_cluster_member(&mut self.inner.context, node_id);
             }
             PeerControl::P2pDisconnect { p2p: _, p2p_connection } => {
                 self.inner.p2p_endpoint.disconnect(p2p_connection, now);

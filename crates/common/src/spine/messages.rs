@@ -1142,8 +1142,8 @@ impl P2pSend {
 
 #[derive(Clone, Copy, Debug, TypeHash)]
 #[repr(C, u8)]
-// `P2pDial { enr }` carries the full ~200B `Enr` while most variants fit in
-// ~60B. Boxing would break `Copy` (used widely in this enum's hot path) for
+// `PersistPeer { enr }` carries the full ~200B `Enr` while most variants fit
+// in ~60B. Boxing would break `Copy` (used widely in this enum's hot path) for
 // the sake of one cold-path variant — the spine already pays the larger
 // variant's footprint per slot, so we accept the disparity.
 #[allow(clippy::large_enum_variant)]
@@ -1196,12 +1196,24 @@ pub enum PeerControl {
         /// `None` on unsubscribe, where we record no backoff.
         backoff_seconds: Option<u64>,
     },
-    /// Open a libp2p connection to the peer described by `enr`. Emitted by
-    /// the peer manager on `DiscNodeFound` when capacity allows. The network
-    /// tile dedupes against in-flight dials and existing connections.
+    /// Open a libp2p connection to `p2p` at `addr`. Emitted by the peer
+    /// manager when capacity allows. The network tile dedupes against
+    /// in-flight dials and existing connections.
     P2pDial {
         p2p: PeerId,
-        enr: Enr,
+        #[type_hash(literal = "SocketAddr")]
+        addr: SocketAddr,
+    },
+    /// The slashing-protection cluster's replicated address of `node_id`,
+    /// new or changed.
+    ClusterMember {
+        node_id: u64,
+        peer_id: PeerId,
+        #[type_hash(literal = "SocketAddr")]
+        addr: SocketAddr,
+    },
+    ClusterMemberRemoved {
+        node_id: u64,
     },
     P2pSend(P2pSend),
     P2pDataColumnsRequest {

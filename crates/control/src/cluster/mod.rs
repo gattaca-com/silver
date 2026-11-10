@@ -25,9 +25,9 @@ pub use command::{AttestationKey, AttestationLockCommand, BlockKey, BlockLockCom
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use member_message_check::MemberMessageError;
-pub use membership::MemberAddress;
 #[cfg(test)]
 pub(crate) use membership::test_address;
+pub use membership::{Member, MemberAddress};
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

@@ -321,6 +321,9 @@ pub struct SlashingProtectionCluster {
     snapshot_buffers: SnapshotBuffers,
     leader_boycott: LeaderBoycott,
     membership: ClusterMembership,
+    /// Bumped whenever member addresses may have changed, so readers skip
+    /// unchanged loops.
+    membership_version: u64,
     next_announcement: Instant,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
@@ -365,6 +368,7 @@ impl SlashingProtectionCluster {
             snapshot_buffers: SnapshotBuffers::default(),
             leader_boycott: LeaderBoycott::default(),
             membership: ClusterMembership::default(),
+            membership_version: 0,
             next_announcement: now,
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
@@ -406,6 +410,14 @@ impl SlashingProtectionCluster {
     /// this node is synced. The resulting floor is immutable.
     pub fn set_startup_wall_slot(&mut self, startup_wall_slot: u64) -> bool {
         self.admission.set_startup_wall_slot(startup_wall_slot)
+    }
+
+    pub fn membership_version(&self) -> u64 {
+        self.membership_version
+    }
+
+    pub fn members(&self) -> impl Iterator<Item = Member> + Clone + '_ {
+        self.membership.members()
     }
 
     pub fn leader_id(&self) -> Option<u64> {
@@ -896,6 +908,7 @@ impl SlashingProtectionCluster {
             0,
             &mut |_| {},
         )?;
+        self.membership_version += 1;
         self.next_tick = now.checked_add(self.config.tick_interval).unwrap_or(now);
         silver_log::info!(
             node_id = self.config.node_id,
@@ -918,6 +931,7 @@ impl SlashingProtectionCluster {
         if let Some(snapshot) = ready.snapshot {
             self.state = snapshot.locks;
             self.membership = snapshot.membership;
+            self.membership_version += 1;
             self.pending_minimum_slot = None;
         }
         for message in ready.messages {
@@ -981,6 +995,7 @@ impl SlashingProtectionCluster {
                     let is_member = self.is_member(node_id);
                     let announced = Member { node_id, address };
                     if self.membership.announce(origin, announced, is_member) {
+                        self.membership_version += 1;
                         silver_log::info!(node_id, ?address, "cluster member address recorded");
                     } else {
                         silver_log::warn!(
@@ -1013,6 +1028,7 @@ impl SlashingProtectionCluster {
         match node.apply_conf_change(change) {
             Ok(membership) => {
                 self.membership.apply_change(change, added, &membership);
+                self.membership_version += 1;
                 self.peers.set_members(self.config.node_id, member_ids(&membership));
                 silver_log::info!(index, ?membership, "Raft membership changed");
                 node.mut_store().memory.wl().set_conf_state(membership);

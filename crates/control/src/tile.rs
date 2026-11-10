@@ -659,6 +659,8 @@ impl Tile<SilverSpine> for Controller {
             &mut self.gossip_handler,
             &mut self.reader,
         );
+        let (peer_manager, producers) = (&mut self.peer_manager, &mut adapter.producers);
+        self.slashing_protection.publish_members(|update| update.apply(peer_manager, producers));
 
         adapter.consume(|need: SyncNeed, _producers| self.sync_engine.on_sync_need(need, now));
 

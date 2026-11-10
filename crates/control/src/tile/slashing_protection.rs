@@ -5,8 +5,8 @@ use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
     BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterDuty, ClusterIn, ClusterMsgIn,
-    ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult, LockedProposal, PeerStats,
-    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
+    ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult, LockedProposal, PeerControl,
+    PeerStats, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
     block_contents::SignedBlockContents,
     ssz_view::{
         SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
@@ -14,18 +14,92 @@ use silver_common::{
     ticker::SlotTicker,
 };
 use silver_gossip::GossipHandler;
+use silver_peer::PeerManager;
 
 use super::local_gossip::{LocalGossipHandler, LocalMessage, produce_response};
 use crate::cluster::{
     AdmissionError, AttestationDecision, AttestationKey, AttestationLockCommand, BlockDecision,
     BlockKey, BlockLockCommand, ClusterCounters, ClusterError, ClusterEvent, DutyTimers,
-    LockResult, LoopGap, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
+    LockResult, LoopGap, Member, ProposalId, ProposeError, SlashingAdmission, SlashingLockStore,
     SlashingProtectionCluster, SlashingProtectionConfig, decode_message, encode_message,
 };
 
 /// A proposal still uncommitted this late was most likely lost with its
 /// leader, and a block this late would be orphaned anyway.
 const LATE_COMMIT_SLOTS: u64 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MemberUpdate {
+    Trusted(Member),
+    Removed(Member),
+}
+
+impl MemberUpdate {
+    /// The peer manager dials and trusts members; the network tile maps their
+    /// connections to Raft ids and admits them.
+    pub(super) fn apply(
+        self,
+        peer_manager: &mut PeerManager,
+        producers: &mut SilverSpineProducers,
+    ) {
+        match self {
+            Self::Trusted(member) => {
+                let (peer_id, addr) = (member.address.peer_id(), member.address.addr);
+                peer_manager.trust_cluster_member(peer_id, addr);
+                let control = PeerControl::ClusterMember { node_id: member.node_id, peer_id, addr };
+                producers.peer_control.produce(&control.into());
+            }
+            Self::Removed(member) => {
+                peer_manager.untrust_cluster_member(&member.address.peer_id());
+                let control = PeerControl::ClusterMemberRemoved { node_id: member.node_id };
+                producers.peer_control.produce(&control.into());
+            }
+        }
+    }
+}
+
+/// What the peer manager and the network tile were last told about the
+/// other members.
+#[derive(Default)]
+struct PublishedMembers {
+    version: Option<u64>,
+    members: Vec<Member>,
+}
+
+impl PublishedMembers {
+    fn sync(
+        &mut self,
+        version: u64,
+        local: u64,
+        members: impl Iterator<Item = Member> + Clone,
+        mut emit: impl FnMut(MemberUpdate),
+    ) {
+        if self.version == Some(version) {
+            return;
+        }
+        self.version = Some(version);
+        self.members.retain(|published| {
+            let kept = members.clone().any(|member| member.node_id == published.node_id);
+            if !kept {
+                emit(MemberUpdate::Removed(*published));
+            }
+            kept
+        });
+        for member in members.filter(|member| member.node_id != local) {
+            match self.members.iter_mut().find(|published| published.node_id == member.node_id) {
+                Some(published) if *published == member => {}
+                Some(published) => {
+                    *published = member;
+                    emit(MemberUpdate::Trusted(member));
+                }
+                None => {
+                    self.members.push(member);
+                    emit(MemberUpdate::Trusted(member));
+                }
+            }
+        }
+    }
+}
 
 /// An API request waiting on its lock. It is answered at most once, but its
 /// lock can still commit after a `LockPending` answer and be published late.
@@ -284,6 +358,7 @@ pub(super) struct SlashingProtectionHandler {
     duty_timers: DutyTimers,
     loop_gap: LoopGap,
     last_sample: Instant,
+    published_members: PublishedMembers,
 }
 
 impl SlashingProtectionHandler {
@@ -314,7 +389,15 @@ impl SlashingProtectionHandler {
             duty_timers: DutyTimers::new(),
             loop_gap: LoopGap::default(),
             last_sample: now,
+            published_members: PublishedMembers::default(),
         })
+    }
+
+    pub(super) fn publish_members(&mut self, emit: impl FnMut(MemberUpdate)) {
+        if let Some(cluster) = &self.cluster {
+            let (version, local) = (cluster.membership_version(), cluster.node_id());
+            self.published_members.sync(version, local, cluster.members(), emit);
+        }
     }
 
     /// The wall slot is known from here on, before Beacon State's first
@@ -719,9 +802,35 @@ mod tests {
 
     use super::*;
     use crate::{
-        cluster::{ClusterStorageConfig, test_address},
+        cluster::{ClusterStorageConfig, MemberAddress, test_address},
         tile::local_gossip::{VALIDATION_TIMEOUT, tests::Harness},
     };
+
+    #[test]
+    fn published_members_report_only_changes_to_other_members() {
+        let member = |node_id, octet| Member {
+            node_id,
+            address: MemberAddress {
+                addr: std::net::SocketAddr::from(([10, 0, 0, octet], 9000)),
+                ..test_address(node_id)
+            },
+        };
+        let mut published = PublishedMembers::default();
+        let mut sync = |version, members: &[Member]| {
+            let mut updates = Vec::new();
+            published.sync(version, 1, members.iter().copied(), |update| updates.push(update));
+            updates
+        };
+        use MemberUpdate::{Removed, Trusted};
+
+        assert_eq!(sync(1, &[member(1, 1), member(2, 2)]), [Trusted(member(2, 2))]);
+        assert_eq!(sync(1, &[member(1, 1), member(2, 9)]), [], "an unchanged version is skipped");
+        assert_eq!(sync(2, &[member(2, 9), member(3, 3)]), [
+            Trusted(member(2, 9)),
+            Trusted(member(3, 3))
+        ]);
+        assert_eq!(sync(3, &[member(3, 3)]), [Removed(member(2, 9))]);
+    }
 
     #[test]
     fn surround_and_double_vote_are_told_apart() {

@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{net::SocketAddr, time::Instant};
 
 use fxhash::{FxHashMap, FxHashSet};
 use silver_common::{
@@ -14,6 +14,7 @@ pub struct PeerDatabase {
     by_node_id: FxHashMap<NodeId, usize>,
     by_p2p_id: FxHashMap<usize, usize>,
     by_protocol: FxHashMap<StreamProtocol, FxHashSet<usize>>,
+    trusted: Vec<usize>,
 }
 
 impl Default for PeerDatabase {
@@ -24,6 +25,7 @@ impl Default for PeerDatabase {
             by_node_id: Default::default(),
             by_p2p_id: Default::default(),
             by_protocol: Default::default(),
+            trusted: Vec::new(),
         }
     }
 }
@@ -62,10 +64,53 @@ impl PeerDatabase {
                 let index = self.peers.insert(record);
                 self.by_node_id.insert(node_id, index);
                 self.by_peer_id.insert(peer_id, index);
+                if trusted {
+                    self.trusted.push(index);
+                }
 
                 true
             }
         }
+    }
+
+    /// A cluster member is trusted and dialled at its replicated address,
+    /// which overrides its ENR's.
+    pub fn trust_cluster_member(&mut self, peer_id: PeerId, addr: SocketAddr) {
+        let Ok(node_id) = NodeId::try_from(&peer_id) else {
+            return;
+        };
+        let index = match self.by_peer_id.get(&peer_id).or(self.by_node_id.get(&node_id)) {
+            Some(&index) => index,
+            None => {
+                let record = PeerRecord {
+                    peer_id: Some(peer_id),
+                    node_id: Some(node_id),
+                    ..PeerRecord::default()
+                };
+                let index = self.peers.insert(record);
+                self.by_node_id.insert(node_id, index);
+                self.by_peer_id.insert(peer_id, index);
+                index
+            }
+        };
+        let record = &mut self.peers[index];
+        record.cluster_addr = Some(addr);
+        record.dial_backoff_until = None;
+        record.refresh_custody();
+        if !record.is_trusted {
+            record.is_trusted = true;
+            self.trusted.push(index);
+        }
+    }
+
+    pub fn untrust_cluster_member(&mut self, peer_id: &PeerId) {
+        let Some(&index) = self.by_peer_id.get(peer_id) else {
+            return;
+        };
+        let record = &mut self.peers[index];
+        record.cluster_addr = None;
+        record.is_trusted = false;
+        self.trusted.retain(|&trusted| trusted != index);
     }
 
     pub fn add_peer_id(&mut self, peer_id: PeerId, p2p_id: usize) -> bool {
@@ -149,15 +194,18 @@ impl PeerDatabase {
     }
 
     /// Disconnected records that are structurally dialable: known peer id and
-    /// an ENR with a QUIC endpoint, no live connection, dial backoff expired.
-    /// The caller applies its own gates (bans, in-flight dials, fork digest).
-    pub fn redial_candidates(&self, now: Instant) -> impl Iterator<Item = &PeerRecord> + '_ {
-        self.peers.iter().filter_map(move |(_, record)| {
+    /// a QUIC address, no live connection, dial backoff expired. The caller
+    /// applies its own gates (bans, in-flight dials, fork digest).
+    pub fn redial_candidates(
+        &self,
+        now: Instant,
+        trusted_only: bool,
+    ) -> impl Iterator<Item = &PeerRecord> + '_ {
+        let trusted = trusted_only.then(|| self.trusted.iter().map(|&index| &self.peers[index]));
+        let all = (!trusted_only).then(|| self.peers.iter().map(|(_, record)| record));
+        trusted.into_iter().flatten().chain(all.into_iter().flatten()).filter_map(move |record| {
             record.peer_id.as_ref()?;
-            let enr = record.enr.as_ref()?;
-            if enr.quic4_socket().is_none() && enr.quic6_socket().is_none() {
-                return None;
-            }
+            record.dial_addr()?;
             if record.dial_backoff_until.is_some_and(|t| t > now) {
                 return None;
             }
@@ -269,6 +317,7 @@ pub struct PeerRecord {
     pub dial_backoff_until: Option<Instant>,
     /// Trusted peer
     pub is_trusted: bool,
+    cluster_addr: Option<SocketAddr>,
     /// Connections in `by_p2p_id` naming this record; more than one while a
     /// duplicate connection is open.
     pub(crate) live_connections: u32,
@@ -278,6 +327,13 @@ pub struct PeerRecord {
 }
 
 impl PeerRecord {
+    pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
+        self.cluster_addr.or_else(|| {
+            let enr = self.enr.as_ref()?;
+            enr.quic4_socket().or_else(|| enr.quic6_socket())
+        })
+    }
+
     pub(crate) fn custody_groups(&self) -> u128 {
         self.custody_groups
     }

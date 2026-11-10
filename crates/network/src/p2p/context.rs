@@ -67,7 +67,7 @@ impl Context {
 }
 
 pub struct ClusterNodes {
-    /// Fixed membership keyed by authenticated peer identity.
+    /// Membership keyed by authenticated peer identity.
     by_peer_id: FxHashMap<PeerId, u64>,
     /// Mapping of raft id to conneciton id, used in the dispatch
     /// of outbound cluster messages.
@@ -97,6 +97,18 @@ impl ClusterNodes {
 
     pub fn connection_id(&self, raft_id: u64) -> Option<usize> {
         self.by_raft_id.get(&raft_id).copied()
+    }
+
+    /// The peer's open connections become cluster links through `connected`.
+    pub fn set_member(&mut self, raft_id: u64, peer_id: PeerId) {
+        self.by_peer_id.retain(|_, id| *id != raft_id);
+        self.by_peer_id.insert(peer_id, raft_id);
+    }
+
+    pub fn remove(&mut self, raft_id: u64) {
+        self.by_peer_id.retain(|_, id| *id != raft_id);
+        self.by_conn_id.retain(|_, id| *id != raft_id);
+        self.by_raft_id.remove(&raft_id);
     }
 
     pub fn connected(&mut self, peer: &RemotePeer) {
@@ -143,6 +155,25 @@ mod tests {
             addr: "127.0.0.1:9000".parse().unwrap(),
         };
         (nodes, peer)
+    }
+
+    #[test]
+    fn members_set_at_runtime_are_mapped_and_removed() {
+        let (mut nodes, peer) = cluster();
+        let joiner = Keypair::from_secret(&[2; 32]).unwrap().peer_id();
+        nodes.set_member(8, joiner);
+        let joined = RemotePeer { peer_id: joiner, connection: 20, addr: peer.addr };
+        nodes.connected(&joined);
+        assert_eq!(nodes.connection_id(8), Some(20));
+
+        nodes.remove(8);
+        assert_eq!((nodes.connection_id(8), nodes.raft_id(&20)), (None, None));
+        nodes.connected(&joined);
+        assert_eq!(nodes.raft_id(&20), None, "a removed member is an ordinary peer");
+
+        nodes.set_member(7, joiner);
+        nodes.connected(&peer);
+        assert_eq!(nodes.raft_id(&peer.connection), None, "the old key no longer maps to 7");
     }
 
     #[test]

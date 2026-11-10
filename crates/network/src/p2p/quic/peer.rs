@@ -2147,6 +2147,30 @@ mod tests {
         }
     }
 
+    /// A member added while its connection is open is a cluster link at once,
+    /// not only after it reconnects.
+    #[test]
+    fn member_set_on_an_open_connection_maps_it() {
+        let client_h = PeerHarness::new();
+        let pair = PeerPair::new();
+        let handle = pair.client_peer.handle;
+        let server = Keypair::from_secret(&[1; 32]).unwrap().peer_id();
+        let mut context = client_h.context;
+        context.cluster_nodes = Some(ClusterNodes::new(HashMap::new()));
+
+        let PeerPair { client_ep, client_peer, .. } = pair;
+        let client_keypair = Keypair::from_secret(&[2; 32]).unwrap();
+        let mut p2p =
+            P2p::new(client_keypair, client_ep, 16, FxHashSet::default(), InboundLimits::default());
+        p2p.peers.insert(handle, client_peer);
+        assert_eq!(context.raft_id(handle.0), None);
+
+        p2p.set_cluster_member(&mut context, 7, server, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(context.raft_id(handle.0), Some(7));
+        p2p.remove_cluster_member(&mut context, 7);
+        assert_eq!(context.raft_id(handle.0), None);
+    }
+
     /// Both sides enable meshsub 1.3: the stream negotiates 1.3 and the
     /// extensions announcement is the first RPC, ahead of queued gossip.
     #[test]

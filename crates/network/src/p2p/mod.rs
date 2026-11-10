@@ -259,6 +259,32 @@ impl P2p {
         self.banned.remove(&peer_id);
     }
 
+    /// Already open connections to the member become cluster links now,
+    /// since a link is otherwise mapped only when a connection opens.
+    pub fn set_cluster_member(
+        &mut self,
+        context: &mut Context,
+        node_id: u64,
+        peer_id: PeerId,
+        addr: SocketAddr,
+    ) {
+        self.admission.set_cluster_member_ip(node_id, addr.ip());
+        let Some(nodes) = context.cluster_nodes.as_mut() else {
+            return;
+        };
+        nodes.set_member(node_id, peer_id);
+        for peer in self.peers.values().filter(|peer| peer.id().peer_id == peer_id) {
+            nodes.connected(peer.id());
+        }
+    }
+
+    pub fn remove_cluster_member(&mut self, context: &mut Context, node_id: u64) {
+        self.admission.remove_cluster_member(node_id);
+        if let Some(nodes) = context.cluster_nodes.as_mut() {
+            nodes.remove(node_id);
+        }
+    }
+
     pub(crate) fn recv(
         &mut self,
         now: Instant,
