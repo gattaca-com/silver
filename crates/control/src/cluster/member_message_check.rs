@@ -123,13 +123,21 @@ impl MemberMessageCheck<'_> {
             MessageType::MsgPropose => self.check_proposal(message),
             MessageType::MsgAppend => self.check_append(message),
             MessageType::MsgHeartbeat => self.check_heartbeat_commit(message.commit),
-            MessageType::MsgSnapshot => {
-                RestoredSnapshot::decode(message.get_snapshot(), self.voters)
-                    .map(|_| ())
-                    .map_err(|_| MemberMessageError::Snapshot)
-            }
+            MessageType::MsgSnapshot => self.check_snapshot(message),
             _ => Ok(()),
         }
+    }
+
+    /// raft-rs ignores a snapshot below its commit index, so only a newer one
+    /// is decoded.
+    fn check_snapshot(&self, message: &Message) -> Result<(), MemberMessageError> {
+        let snapshot = message.get_snapshot();
+        if snapshot.get_metadata().index < self.log.committed {
+            return Ok(());
+        }
+        RestoredSnapshot::decode(snapshot, self.voters)
+            .map(|_| ())
+            .map_err(|_| MemberMessageError::Snapshot)
     }
 
     /// Only followers forward proposals, each carrying its own context. The

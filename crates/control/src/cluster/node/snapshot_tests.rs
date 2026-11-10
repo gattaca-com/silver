@@ -83,6 +83,22 @@ fn snapshot_installation_and_acknowledgement_wait_for_durability() {
     );
 }
 
+#[test]
+fn snapshot_below_the_commit_index_is_not_decoded() {
+    let now = Instant::now();
+    let mut node = SlashingProtectionCluster::in_memory(config(1), now).unwrap();
+    node.set_startup_wall_slot(99);
+    node.step(snapshot_message(snapshot(10)), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+
+    let mut stale = snapshot(9);
+    stale.data = vec![0; 20].into();
+    node.step(snapshot_message(stale), now, 100).unwrap();
+    node.spin(now, 100, |_| {}).unwrap();
+    assert!(!node.is_failed());
+    assert_eq!(node.state.len(), 1);
+}
+
 /// raft-rs panics on a follower when an append claims a committed index with
 /// another term, or a heartbeat commits past its log.
 #[test]

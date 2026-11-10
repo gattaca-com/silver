@@ -82,64 +82,31 @@ impl ReplicatedCommand {
         let Some((&tag, payload)) = encoded.split_first() else {
             return Err(CommandDecodeError::Empty);
         };
-
-        match tag {
-            LOCK_COMMAND_TAG => {
-                if encoded.len() != ENCODED_LOCK_COMMAND_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_LOCK_COMMAND_LEN,
-                        actual: encoded.len(),
-                    });
-                }
-
-                let attester_index =
-                    u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
-                let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
-                let subnet =
-                    u64::from_le_bytes(payload[16..24].try_into().expect("slice is 8 bytes"));
-                let ssz = payload[24..24 + SINGLE_ATT_SIZE]
-                    .try_into()
-                    .expect("slice is one single attestation");
-
-                Ok(Self::Lock(AttestationLockCommand {
-                    key: AttestationKey { attester_index, slot },
-                    subnet,
-                    ssz,
-                }))
-            }
-            ADVANCE_MINIMUM_SLOT_TAG => {
-                if encoded.len() != ENCODED_ADVANCE_MINIMUM_SLOT_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
-                        actual: encoded.len(),
-                    });
-                }
-
-                let slot = u64::from_le_bytes(payload.try_into().expect("slice is 8 bytes"));
-                Ok(Self::AdvanceMinimumSlot(slot))
-            }
-            BLOCK_LOCK_TAG => {
-                if encoded.len() != ENCODED_BLOCK_LOCK_LEN {
-                    return Err(CommandDecodeError::InvalidLength {
-                        tag,
-                        expected: ENCODED_BLOCK_LOCK_LEN,
-                        actual: encoded.len(),
-                    });
-                }
-
-                let proposer_index =
-                    u64::from_le_bytes(payload[..8].try_into().expect("slice is 8 bytes"));
-                let slot = u64::from_le_bytes(payload[8..16].try_into().expect("slice is 8 bytes"));
-                let signature = payload[16..].try_into().expect("slice is one signature");
-                Ok(Self::BlockLock(BlockLockCommand {
-                    key: BlockKey { proposer_index, slot },
-                    signature,
-                }))
-            }
-            _ => Err(CommandDecodeError::UnknownTag(tag)),
+        let expected = match tag {
+            LOCK_COMMAND_TAG => ENCODED_LOCK_COMMAND_LEN,
+            ADVANCE_MINIMUM_SLOT_TAG => ENCODED_ADVANCE_MINIMUM_SLOT_LEN,
+            BLOCK_LOCK_TAG => ENCODED_BLOCK_LOCK_LEN,
+            _ => return Err(CommandDecodeError::UnknownTag(tag)),
+        };
+        if encoded.len() != expected {
+            return Err(CommandDecodeError::InvalidLength { tag, expected, actual: encoded.len() });
         }
+
+        let u64_at = |offset: usize| {
+            u64::from_le_bytes(payload[offset..offset + 8].try_into().expect("slice is 8 bytes"))
+        };
+        Ok(match tag {
+            LOCK_COMMAND_TAG => Self::Lock(AttestationLockCommand {
+                key: AttestationKey { attester_index: u64_at(0), slot: u64_at(8) },
+                subnet: u64_at(16),
+                ssz: payload[24..].try_into().expect("slice is one single attestation"),
+            }),
+            BLOCK_LOCK_TAG => Self::BlockLock(BlockLockCommand {
+                key: BlockKey { proposer_index: u64_at(0), slot: u64_at(8) },
+                signature: payload[16..].try_into().expect("slice is one signature"),
+            }),
+            _ => Self::AdvanceMinimumSlot(u64_at(0)),
+        })
     }
 }
 
