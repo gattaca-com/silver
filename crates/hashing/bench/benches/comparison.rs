@@ -1,9 +1,9 @@
-//! `SharedList` compared with `milhouse::List` and grandine's
-//! `ssz::PersistentList` on a mainnet-sized list. Each write scenario starts
-//! from a clone of a hashed list and times the writes plus the new root.
+//! `SharedList` compared with `milhouse::List` and `ssz::PersistentList` on a
+//! mainnet-sized list. Each write scenario starts from a clone of a hashed
+//! list and times the writes plus the new root.
 //!
-//! Grandine hashes single-threaded. Its list uses the 64-value bundle of
-//! grandine's `BeaconState.balances`, not the 4-value default.
+//! `ssz::PersistentList` hashes single-threaded. It uses the 64-value bundle
+//! its client uses for balances, not the 4-value default.
 
 use std::time::{Duration, Instant};
 
@@ -34,7 +34,7 @@ impl TreeSpec for Balances {
 
 type Shared = SharedList<Balances>;
 type Milhouse = milhouse::List<u64, U1099511627776>;
-type Grandine = PersistentList<u64, U1099511627776, U64>;
+type Persistent = PersistentList<u64, U1099511627776, U64>;
 
 struct Registry {
     balances: Vec<u64>,
@@ -152,8 +152,8 @@ impl Candidate for Milhouse {
     }
 }
 
-impl Candidate for Grandine {
-    const NAME: &str = "grandine";
+impl Candidate for Persistent {
+    const NAME: &str = "persistent_list";
 
     fn build(vals: &[u64]) -> Self {
         let list = Self::try_from_iter(vals.iter().copied()).unwrap();
@@ -283,7 +283,7 @@ fn mainnet(c: &mut Criterion) {
     let registry = Registry::mainnet();
     bench_all::<Shared>(c, &registry);
     bench_all::<Milhouse>(c, &registry);
-    bench_all::<Grandine>(c, &registry);
+    bench_all::<Persistent>(c, &registry);
 }
 
 criterion_group!(benches, mainnet);
