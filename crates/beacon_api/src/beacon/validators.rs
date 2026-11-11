@@ -567,6 +567,7 @@ mod tests {
             eth_consensus_version: None,
             eth_builder_url: None,
             eth_blob_data_included: None,
+            from_web_page: false,
             version: 1,
             keep_alive: true,
         };

@@ -616,7 +616,7 @@ mod tests {
         let endpoint = Endpoint::Uds(socket);
         let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, timeout).unwrap();
         let mut readiness = Readiness::new(1);
-        let mut answer = |server: &mut Server| {
+        let answer = |server: &mut Server| {
             server.pump();
             if std::mem::take(&mut server.received) > 0 {
                 server.answer_ok();

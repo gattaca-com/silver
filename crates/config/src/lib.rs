@@ -186,7 +186,7 @@ pub struct Config {
     #[serde(default)]
     engine_config: EngineConfig,
     /// Each entry is a TCP `addr:port` or a unix socket path; the API serves
-    /// all of them at once.
+    /// all of them at once. Loopback by default: the API has no authentication.
     #[serde(default = "default_beacon_api_bind")]
     beacon_api_bind: Vec<String>,
     /// Prysm holds a connection per in-flight request, and posts each sync

@@ -26,6 +26,9 @@ pub struct ParsedRequest<'a> {
     pub eth_consensus_version: Option<&'a str>,
     pub eth_builder_url: Option<&'a str>,
     pub eth_blob_data_included: Option<&'a str>,
+    /// A script or element on a web page sent it: it carries `Origin`, or a
+    /// `Sec-Fetch-Site` other than the `none` of a navigation the user typed.
+    pub from_web_page: bool,
     pub version: u8,
     pub keep_alive: bool,
 }
@@ -104,6 +107,9 @@ impl<'a> ParsedRequest<'a> {
                 eth_consensus_version: header("eth-consensus-version").and_then(trimmed_utf8),
                 eth_builder_url: header("eth-builder-url").and_then(trimmed_utf8),
                 eth_blob_data_included: header("eth-blob-data-included").and_then(trimmed_utf8),
+                from_web_page: header("origin").is_some() ||
+                    header("sec-fetch-site")
+                        .is_some_and(|site| !site.trim_ascii().eq_ignore_ascii_case(b"none")),
                 version,
                 keep_alive,
             },
@@ -618,6 +624,19 @@ mod tests {
         assert_eq!(r.accept, Some("application/json"));
         assert_eq!(r.content_type, Some("application/json"));
         assert_eq!(r.eth_consensus_version, Some("gloas"));
+    }
+
+    #[test]
+    fn requests_a_web_page_sent_are_marked() {
+        let head = |headers: &str| format!("POST /p HTTP/1.1\r\nHost: h\r\n{headers}\r\n");
+        let from_web_page = |headers| parsed(head(headers).as_bytes()).1.from_web_page;
+        assert!(from_web_page("Origin: https://example.com\r\n"));
+        assert!(from_web_page("Origin: null\r\n"));
+        assert!(from_web_page("Sec-Fetch-Site: cross-site\r\n"));
+        assert!(from_web_page("Sec-Fetch-Site: same-origin\r\n"));
+        assert!(!from_web_page("Sec-Fetch-Site: none\r\n"));
+        assert!(!from_web_page("Sec-Fetch-Mode: cors\r\n"));
+        assert!(!from_web_page(""));
     }
 
     #[test]

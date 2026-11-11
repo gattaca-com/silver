@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 use silver_beacon_state_data::{Epoch, ExecutionAddress};
-use silver_common::ProposerPreparation;
+use silver_common::{ProposerPreparation, hex32};
 
 const RETAINED_EPOCHS: Epoch = 2;
 
@@ -19,8 +19,17 @@ impl ProposerPreparations {
         for ProposerPreparation { validator_index, fee_recipient } in
             ProposerPreparation::decode_all(encoded)
         {
-            self.by_index
-                .insert(validator_index, Preparation { fee_recipient, received_epoch: epoch });
+            let preparation = Preparation { fee_recipient, received_epoch: epoch };
+            if let Some(replaced) = self.by_index.insert(validator_index, preparation) &&
+                replaced.fee_recipient != fee_recipient
+            {
+                silver_log::warn!(
+                    validator_index,
+                    from = hex32(&replaced.fee_recipient),
+                    to = hex32(&fee_recipient),
+                    "proposer fee recipient changed"
+                );
+            }
         }
     }
 
