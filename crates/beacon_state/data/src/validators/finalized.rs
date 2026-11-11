@@ -9,7 +9,7 @@ use flux_profiler::timed;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use silver_crypto_simd::bls::{G1Point, uncompress_in_g1};
-use silver_state_memory::RetainedVec;
+use silver_state_memory::{Quiescent, RetainedVec};
 
 use crate::{
     Withdrawals,
@@ -350,6 +350,18 @@ impl FinalizedValidators {
 
     pub fn validator_count(&self) -> usize {
         self.val_pubkey.len()
+    }
+
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.val_pubkey.free_retired(quiescent);
+        self.val_pubkey_decompressed.free_retired(quiescent);
+        self.val_withdrawal_credentials.free_retired(quiescent);
+        self.effective_balance.free_retired(quiescent);
+        self.slashed.free_retired(quiescent);
+        self.activation_eligibility_epoch.free_retired(quiescent);
+        self.activation_epoch.free_retired(quiescent);
+        self.exit_epoch.free_retired(quiescent);
+        self.withdrawable_epoch.free_retired(quiescent);
     }
 
     #[inline]

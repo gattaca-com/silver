@@ -13,13 +13,26 @@ struct Header {
     capacity: usize,
 }
 
+/// Proof that no reader holds a slice into a retired block.
+pub struct Quiescent(());
+
+impl Quiescent {
+    /// # Safety
+    /// Every read that began before this call has ended, and every later read
+    /// loads its pointers afresh.
+    pub unsafe fn assume() -> Self {
+        Self(())
+    }
+}
+
 /// A `Vec` for storage that optimistic readers race with.
 ///
 /// A reader loads one pointer and takes the length from that allocation's own
 /// header, so the slice it builds never exceeds the allocation it points into,
 /// whatever the writer does meanwhile. Growth publishes a new allocation and
-/// retains the old one until drop. Element contents are not synchronized: a
-/// racing reader may see torn or stale values and must discard them.
+/// retains the old one until [`Self::free_retired`] or drop. Element contents
+/// are not synchronized: a racing reader may see torn or stale values and must
+/// discard them.
 pub struct RetainedVec<T: Copy> {
     /// Null until the first allocation.
     live: AtomicPtr<Header>,
@@ -114,11 +127,21 @@ impl<T: Copy> RetainedVec<T> {
         unsafe { (block, (*block).len.load(Ordering::Relaxed), (*block).capacity) }
     }
 
-    /// Readers holding the old block keep reading it; it is freed on drop.
+    /// Readers holding the old block keep reading it. `SeqCst` here and on
+    /// the reader's load orders both against a reader count, which is how a
+    /// caller obtains [`Quiescent`].
     fn publish(&mut self, block: *mut Header) {
-        let old = self.live.swap(block, Ordering::Release);
+        let old = self.live.swap(block, Ordering::SeqCst);
         if !old.is_null() {
             self.retired.push(old);
+        }
+    }
+
+    pub fn free_retired(&mut self, _: &Quiescent) {
+        for block in self.retired.drain(..) {
+            // SAFETY: allocated by `alloc` with this layout; `Quiescent`
+            // rules out a reader still inside it.
+            unsafe { alloc::dealloc(block.cast(), Self::layout((*block).capacity)) };
         }
     }
 
@@ -169,12 +192,12 @@ impl<T: Copy> RetainedVec<T> {
 
     #[inline]
     pub fn as_slice(&self) -> &[T] {
-        let block = self.live.load(Ordering::Acquire);
+        let block = self.live.load(Ordering::SeqCst);
         if block.is_null() {
             return &[];
         }
-        // SAFETY: the block stays allocated until drop, and its `len` never
-        // exceeds its own capacity.
+        // SAFETY: the block stays allocated while a reader can hold it, and
+        // its `len` never exceeds its own capacity.
         unsafe { slice::from_raw_parts(Self::data(block), (*block).len.load(Ordering::Acquire)) }
     }
 
@@ -353,6 +376,22 @@ mod tests {
         assert_eq!(current, values.as_ptr());
         // SAFETY: clearing and copying preserve the retired allocation.
         assert_eq!(unsafe { *retired }, 7);
+    }
+
+    #[test]
+    fn free_retired_releases_old_blocks_and_keeps_the_live_one() {
+        let mut values = RetainedVec::from(vec![7u64]);
+        values.reserve(10);
+        values.reserve(100);
+        assert_eq!(values.retired.len(), 2);
+
+        // SAFETY: no reader exists.
+        values.free_retired(&unsafe { Quiescent::assume() });
+        assert!(values.retired.is_empty());
+        assert_eq!(values[0], 7);
+
+        values.reserve(1000);
+        assert_eq!(values.retired.len(), 1);
     }
 
     #[test]

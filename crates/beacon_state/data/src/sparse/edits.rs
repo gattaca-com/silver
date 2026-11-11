@@ -1,4 +1,4 @@
-use silver_state_memory::RetainedVec;
+use silver_state_memory::{Quiescent, RetainedVec};
 
 /// A column's sparse delta, sorted by index,
 /// overlaying a dense finalized base.
@@ -29,6 +29,10 @@ impl<V: Copy> Edits<V> {
     #[inline]
     pub fn clear(&mut self) {
         self.inner.clear();
+    }
+
+    pub fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.inner.free_retired(quiescent);
     }
 
     #[inline]

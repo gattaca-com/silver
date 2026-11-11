@@ -206,6 +206,11 @@ impl<G: RingGroup> Ring<G> {
         (Id::new(new_head), new_head_pos)
     }
 
+    /// Every slot of the live generation, free ones included.
+    pub(crate) fn entries_mut(&mut self) -> &mut [G::Entry] {
+        &mut self.buf_mut().entries
+    }
+
     /// Advance the tail past everything older than the oldest live id.
     pub fn free_outdated(&mut self, live: &[Id<G>]) {
         if let Some(oldest) = live.iter().min() {

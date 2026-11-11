@@ -1,6 +1,6 @@
 use blst::min_pk::PublicKey;
 use flux_profiler::timed;
-use silver_state_memory::RetainedVec;
+use silver_state_memory::{Quiescent, RetainedVec};
 
 use super::{
     FinalizedValidators, ValidatorsGroup, ValidatorsId, finalized::slashed_bit, validator_hash,
@@ -183,6 +183,19 @@ impl ValidatorsDelta {
     /// (edits/appended already empty). Used by `roll_fresh`.
     pub(super) fn anchor_at(&mut self, base: &FinalizedValidators) {
         self.base_count = base.validator_count();
+    }
+}
+
+impl ValidatorsDelta {
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.appended.free_retired(quiescent);
+        self.credentials_edits.free_retired(quiescent);
+        self.effective_balance_edits.free_retired(quiescent);
+        self.slashed_edits.free_retired(quiescent);
+        self.activation_eligibility_epoch_edits.free_retired(quiescent);
+        self.activation_epoch_edits.free_retired(quiescent);
+        self.exit_epoch_edits.free_retired(quiescent);
+        self.withdrawable_epoch_edits.free_retired(quiescent);
     }
 }
 

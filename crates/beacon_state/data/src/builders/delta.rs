@@ -1,4 +1,4 @@
-use silver_state_memory::RetainedVec;
+use silver_state_memory::{Quiescent, RetainedVec};
 
 use super::{BuildersGroup, builder_hash, finalized::FinalizedBuilders};
 use crate::{
@@ -73,6 +73,13 @@ impl BuildersDelta {
     fn unedited(&self, base: &FinalizedBuilders, i: u32) -> Builder {
         let i = i as usize;
         if i < self.base_count { base.builders[i] } else { self.appended[i - self.base_count] }
+    }
+}
+
+impl BuildersDelta {
+    pub(super) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.appended.free_retired(quiescent);
+        self.edits.free_retired(quiescent);
     }
 }
 

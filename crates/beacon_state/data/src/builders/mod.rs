@@ -8,6 +8,7 @@ use delta::BuildersDelta;
 pub use delta::{BuildersView, BuildersWriteView};
 pub use finalized::FinalizedBuilders;
 use flux_profiler::timed;
+use silver_state_memory::Quiescent;
 
 use crate::{
     gloas::Builder,
@@ -87,6 +88,11 @@ impl BuildersGroup {
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
         fork.rebase_and_prune_from(old, finalized, winner_delta);
         fork.commit()
+    }
+
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.finalized.builders.free_retired(quiescent);
+        self.deltas.entries_mut().iter_mut().for_each(|delta| delta.free_retired(quiescent));
     }
 
     #[timed]

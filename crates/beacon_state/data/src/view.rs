@@ -2,11 +2,15 @@ use std::{
     cell::UnsafeCell,
     io,
     ops::{Deref, DerefMut},
-    sync::{self, Arc, atomic::Ordering},
+    sync::{
+        self, Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use flux::communication::Seqlock;
 use flux_profiler::timed;
+use silver_state_memory::Quiescent;
 
 use crate::{
     BeaconState, ForkWriter, StateId, StateReadView, StateView, encode::GLOAS_VAR_LEN_SECTIONS,
@@ -15,7 +19,20 @@ use crate::{
 /// The shared `BeaconState` allocation. Lifetime rides the `Arc` (a reader
 /// can never dangle, whatever the teardown order); ACCESS rides the seqlock
 /// protocol — this cell is the protocol's one irreducible `unsafe`.
-struct StateCell(UnsafeCell<BeaconState>);
+struct StateCell {
+    state: UnsafeCell<BeaconState>,
+    /// Cross-thread reads in progress. Zero lets the writer free retired
+    /// allocations.
+    readers: AtomicUsize,
+}
+
+struct ReadGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 // SAFETY: single writer — `BeaconStateOwner` is the unique write handle (not
 // `Clone`, mutation behind `&mut self`); cross-thread readers are optimistic
@@ -25,14 +42,22 @@ unsafe impl Sync for StateCell {}
 impl StateCell {
     /// Owner-side shared read (`&self` on the owner excludes its `&mut` uses).
     fn get(&self) -> &BeaconState {
-        unsafe { &*self.0.get() }
+        unsafe { &*self.state.get() }
     }
 
     /// Owner-side exclusive access; sound only because the owner is the
     /// single writer and takes `&mut self` for every call.
     #[allow(clippy::mut_from_ref)]
     fn get_mut(&self) -> &mut BeaconState {
-        unsafe { &mut *self.0.get() }
+        unsafe { &mut *self.state.get() }
+    }
+
+    /// Reader-side access. The count goes up before any state pointer is
+    /// loaded, so a writer that sees zero after retiring an allocation knows
+    /// no reader holds it or can still load it.
+    fn read(&self) -> (ReadGuard<'_>, &BeaconState) {
+        self.readers.fetch_add(1, Ordering::SeqCst);
+        (ReadGuard(&self.readers), self.get())
     }
 }
 
@@ -49,7 +74,10 @@ impl BeaconStateOwner {
     /// never-written (version 0).
     pub fn new(state: BeaconState) -> Self {
         Self {
-            state: Arc::new(StateCell(UnsafeCell::new(state))),
+            state: Arc::new(StateCell {
+                state: UnsafeCell::new(state),
+                readers: AtomicUsize::new(0),
+            }),
             inner: Arc::new(Seqlock::default()),
         }
     }
@@ -152,7 +180,12 @@ impl BeaconStateOwner {
 
         // Stage the even close; lands at guard drop.
         value.finalize_version += 1;
-        WriteGuard { beacon_state: self.state.get_mut(), value, inner: &self.inner }
+        WriteGuard {
+            beacon_state: self.state.get_mut(),
+            readers: &self.state.readers,
+            value,
+            inner: &self.inner,
+        }
     }
 
     pub fn reader(&self) -> BeaconStateReader {
@@ -198,7 +231,9 @@ impl BeaconStateReader {
             }
             let state_id = control.state_id?;
             sync::atomic::fence(Ordering::Acquire);
-            let result = reader(self.state.get().state_read_view(state_id));
+            let (reading, state) = self.state.read();
+            let result = reader(state.state_read_view(state_id));
+            drop(reading);
 
             // Validate: no finalize ran while we were reading the state.
             sync::atomic::fence(Ordering::Acquire);
@@ -231,7 +266,9 @@ impl BeaconStateReader {
             return None;
         }
         sync::atomic::fence(Ordering::Acquire);
-        let result = reader(self.state.get().state_read_view(pin.state_id));
+        let (reading, state) = self.state.read();
+        let result = reader(state.state_read_view(pin.state_id));
+        drop(reading);
         sync::atomic::fence(Ordering::Acquire);
         (self.finalize_version() == Some(pin.finalize_version)).then_some(result)
     }
@@ -270,7 +307,7 @@ impl BeaconStateReader {
                 return Ok(CheckpointChunk::Done);
             }
 
-            let state = self.state.get();
+            let (_reading, state) = self.state.read();
             buf.clear();
             let pubkeys_stage = cursor.section >= cursor.section_count;
             let complete = if pubkeys_stage {
@@ -318,7 +355,7 @@ impl BeaconStateReader {
                 continue;
             }
             sync::atomic::fence(Ordering::Acquire);
-            let state = self.state.get();
+            let (_reading, state) = self.state.read();
             let offsets = state.checkpoint_offsets();
             let section_count = state.checkpoint_sections().len();
             let slot = state.slot_states.finalized().state().slot;
@@ -392,6 +429,7 @@ impl CheckpointCursor {
 
 pub struct WriteGuard<'a> {
     beacon_state: &'a mut BeaconState,
+    readers: &'a AtomicUsize,
     value: ControlInner,
     inner: &'a Seqlock<ControlInner>,
 }
@@ -423,12 +461,25 @@ impl<'a> WriteGuard<'a> {
 impl<'a> Drop for WriteGuard<'a> {
     fn drop(&mut self) {
         debug_assert!(self.value.finalize_version & 1 == 0, "staged close must be even");
+        // Sampled with the window still open: readers waiting it out are not
+        // counted yet.
+        //
+        // SAFETY: every retire so far precedes this load, and a reader counts
+        // itself before it loads a pointer. With `SeqCst` on all four
+        // operations, zero means no earlier read is in progress and later
+        // ones load the live allocations.
+        let quiescent =
+            (self.readers.load(Ordering::SeqCst) == 0).then(|| unsafe { Quiescent::assume() });
         // Order the window's state mutations before the closing control write.
         sync::atomic::fence(Ordering::Release);
         // One seqlock write lands the staged bundle and the even counter
         // together — readers never resolve re-anchored tiers through a stale
         // bundle, and spinners resume with the new head.
         self.inner.write(&self.value);
+
+        if let Some(quiescent) = quiescent {
+            self.beacon_state.free_retired(&quiescent);
+        }
     }
 }
 
@@ -464,6 +515,17 @@ mod tests {
         drop(owner.write());
         assert_eq!(reader.read_pinned(pin, slot), None);
         assert!(reader.read_pinned(reader.pin().unwrap(), slot).is_some());
+    }
+
+    #[test]
+    fn a_read_in_progress_is_counted() {
+        let owner = BeaconStateOwner::published_empty_test(64);
+        let reader = owner.reader();
+        let readers = |_: StateReadView<'_>| owner.state.readers.load(Ordering::SeqCst);
+
+        assert_eq!(reader.read(readers), Some(1));
+        assert_eq!(reader.read_pinned(reader.pin().unwrap(), readers), Some(1));
+        assert_eq!(owner.state.readers.load(Ordering::SeqCst), 0);
     }
 
     #[test]

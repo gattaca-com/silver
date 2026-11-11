@@ -1,3 +1,5 @@
+use silver_state_memory::Quiescent;
+
 use crate::{BeaconState, Id, StateId, TreeGroup, TreeSpec};
 
 /// A bundle listed twice re-anchors once: every group dedups its survivors.
@@ -71,5 +73,11 @@ impl BeaconState {
 
         survivors.rebase_lazy(|s| &mut s.epoch_idx, |w, ids| self.epoch.finalize(w, ids));
         survivors.rebase_lazy(|s| &mut s.longtail_idx, |w, ids| self.longtail.finalize(w, ids));
+    }
+
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.validators.free_retired(quiescent);
+        self.builders.free_retired(quiescent);
+        self.slot_states.free_retired(quiescent);
     }
 }

@@ -8,6 +8,7 @@ use delta::ValidatorsDelta;
 pub use delta::{ValidatorsView, ValidatorsWriteView};
 pub use finalized::{FinalizedValidators, ValSeed, ValidatorsDecodeError};
 use flux_profiler::timed;
+use silver_state_memory::Quiescent;
 
 use crate::{
     Withdrawals,
@@ -103,6 +104,11 @@ impl ValidatorsGroup {
         let (mut fork, old, winner_delta) = deltas.roll_fresh_deriving(survivor, winner);
         fork.rebase_and_prune_from(old, finalized, winner_delta);
         fork.commit()
+    }
+
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+        self.finalized.free_retired(quiescent);
+        self.deltas.entries_mut().iter_mut().for_each(|delta| delta.free_retired(quiescent));
     }
 
     /// Re-anchor each survivor against the promoted `winner` into fresh slots

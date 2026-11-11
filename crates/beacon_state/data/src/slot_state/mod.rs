@@ -9,6 +9,7 @@ pub use delta::{SlotStateView, SlotStateWriteView};
 pub use epoch_balances::{EpochBalances, EpochBalancesRow};
 pub use finalized::SlotStateFinalized;
 use flux_profiler::timed;
+use silver_state_memory::Quiescent;
 
 use crate::{
     reanchor::finalize_full_copies,
@@ -67,6 +68,13 @@ impl SlotStateGroup {
     pub fn roll_from(&mut self, parent: SlotStateId) -> SlotStateWriteView<'_> {
         let Self { finalized, deltas } = self;
         SlotStateWriteView::new(finalized, deltas.roll_from(parent))
+    }
+
+    pub(crate) fn free_retired(&mut self, quiescent: &Quiescent) {
+        let slots = self.deltas.entries_mut().iter_mut().map(|delta| &mut delta.slot);
+        for slot in slots.chain([&mut self.finalized.slot]) {
+            slot.latest_execution_payload_bid.blob_kzg_commitments.free_retired(quiescent);
+        }
     }
 
     #[timed]
