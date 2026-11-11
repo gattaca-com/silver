@@ -3,7 +3,9 @@ use std::{convert::Infallible, path::PathBuf, time::Duration};
 use mio::{Events, Registry};
 use rustc_hash::FxHashMap;
 use silver_common::merkle::B256;
-use silver_httpcore::{BufferCapacity, ClientRequest, Endpoint, HttpPool, Method, TokenRange};
+use silver_httpcore::{
+    BufferCapacity, ClientRequest, Endpoint, HttpPool, MAX_RESPONSE, Method, TokenRange,
+};
 
 use crate::{
     EngineError, JwtSecret,
@@ -23,6 +25,7 @@ const CONNECTION_CAPACITY: BufferCapacity = BufferCapacity {
     read: 10 * 1024 * 1024,
     // newPayload's scratch plus HTTP headers.
     write: SCRATCH_CAPACITY,
+    max_response: MAX_RESPONSE,
 };
 
 /// The first-run healthcheck trio issues three requests against one

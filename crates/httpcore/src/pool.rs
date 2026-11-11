@@ -7,7 +7,7 @@ use std::{
 use mio::{Events, Interest, Registry, Token, event::Event};
 
 use crate::{
-    ClientConnection, ClientRequest, ClientResponse, Stream, TokenRange,
+    BufferCapacity, ClientConnection, ClientRequest, ClientResponse, Stream, TokenRange,
     address::Address,
     client::frame_request,
     transport::{Tls, Transport},
@@ -81,7 +81,7 @@ impl PooledConnection {
         Self {
             token,
             conn: Conn::Disconnected,
-            machine: ClientConnection::with_capacity(capacity.read, capacity.write),
+            machine: ClientConnection::new(capacity),
             in_flight: None,
             pending_id: None,
             unframed: None,
@@ -307,13 +307,6 @@ impl PooledConnection {
     }
 }
 
-/// Each pooled connection's buffers, sized for the largest exchange it carries.
-#[derive(Clone, Copy)]
-pub struct BufferCapacity {
-    pub read: usize,
-    pub write: usize,
-}
-
 /// One request in flight per connection. Connection `i` registers as
 /// `tokens.at(i)`, so the span bounds how many the pool can ever open.
 pub struct HttpPool {
@@ -444,12 +437,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{Method, Readiness, transport::client_config};
+    use crate::{MAX_RESPONSE, Method, Readiness, transport::client_config};
 
     /// Longer than any test's 10 s spin deadline: the sweep never fires.
     const LONG_TIMEOUT: Duration = Duration::from_secs(60);
 
-    const CAPACITY: BufferCapacity = BufferCapacity { read: 4096, write: 4096 };
+    const CAPACITY: BufferCapacity =
+        BufferCapacity { read: 4096, write: 4096, max_response: MAX_RESPONSE };
 
     fn post(body: &[u8]) -> ClientRequest<'_> {
         ClientRequest {

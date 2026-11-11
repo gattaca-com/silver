@@ -5,10 +5,14 @@ use silver_httpcore::{
     BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, TokenRange,
 };
 
-/// `MAX_BUILDER_ENTRIES`: entries sharing a URL take a connection each.
+/// `MAX_BUILDER_ENTRIES`: entries sharing a URL take a connection each. It
+/// bounds the requests in flight across every builder, not per builder.
 pub(crate) const MAX_REQUESTS: usize = 64;
-/// Half a builder's connections, so its bid requests always have the rest.
+/// Half the requests in flight, so bid requests always have the rest.
 pub(crate) const PREFERENCE_CONNECTIONS: usize = MAX_REQUESTS / 2;
+/// A JSON bid listing every commitment its SSZ bound allows is about 400 KiB.
+/// Preference and block answers are a status and an error message.
+const MAX_BUILDER_RESPONSE: usize = 1 << 20;
 /// Nothing waits on preferences but the VC, and a timed-out entry makes it
 /// send its whole request again.
 const PREFERENCES_TIMEOUT: Duration = Duration::from_secs(1);
@@ -51,13 +55,14 @@ pub(crate) struct BuilderPools {
     pools: Vec<BuilderPool>,
     tokens: TokenRange,
     bid_timeout: Duration,
+    in_flight: usize,
+    preferences_in_flight: usize,
 }
 
 /// One builder's connections, shared by every call to it.
 struct BuilderPool {
     url: Box<str>,
     pool: HttpPool,
-    preferences_in_flight: usize,
 }
 
 pub(crate) enum PoolUnavailable {
@@ -80,7 +85,7 @@ impl PoolUnavailable {
 
 impl BuilderPools {
     pub(crate) fn new(tokens: TokenRange, bid_timeout: Duration) -> Self {
-        Self { pools: Vec::new(), tokens, bid_timeout }
+        Self { pools: Vec::new(), tokens, bid_timeout, in_flight: 0, preferences_in_flight: 0 }
     }
 
     /// `dispatch_events` answers under `call` and `id`.
@@ -92,20 +97,28 @@ impl BuilderPools {
         request: &ClientRequest<'_>,
         registry: &Registry,
     ) -> Result<(), PoolUnavailable> {
-        let at = self.position(url)?;
-        let pool = &mut self.pools[at];
-        if !pool.has_capacity(call) {
+        if !self.has_capacity(call) {
             return Err(PoolUnavailable::Busy);
         }
+        let at = self.position(url)?;
+        let pool = &mut self.pools[at].pool;
+        debug_assert!(pool.has_capacity(), "a pool's connections cap at MAX_REQUESTS");
+        self.in_flight += 1;
         let timeout = match call {
             BuilderCall::Bid | BuilderCall::Block => self.bid_timeout,
             BuilderCall::Preferences | BuilderCall::PreferencesJson => {
-                pool.preferences_in_flight += 1;
+                self.preferences_in_flight += 1;
                 PREFERENCES_TIMEOUT
             }
         };
-        pool.pool.enqueue(call.tagged(id), request, timeout, registry);
+        pool.enqueue(call.tagged(id), request, timeout, registry);
         Ok(())
+    }
+
+    fn has_capacity(&self, call: BuilderCall) -> bool {
+        let within_share =
+            !call.is_preferences() || self.preferences_in_flight < PREFERENCE_CONNECTIONS;
+        within_share && self.in_flight < MAX_REQUESTS
     }
 
     fn position(&mut self, url: &str) -> Result<usize, PoolUnavailable> {
@@ -124,11 +137,11 @@ impl BuilderPools {
         let pool = HttpPool::new(
             Endpoint::Http(url.to_owned()),
             self.tokens.share_of(at, MAX_REQUESTS),
-            BufferCapacity { read: 16 << 10, write: 8 << 10 },
+            BufferCapacity { read: 16 << 10, write: 8 << 10, max_response: MAX_BUILDER_RESPONSE },
             MAX_REQUESTS,
         )
         .map_err(|_| PoolUnavailable::ServerName)?;
-        let builder = BuilderPool { url: url.into(), pool, preferences_in_flight: 0 };
+        let builder = BuilderPool { url: url.into(), pool };
         if at == self.pools.len() {
             self.pools.push(builder);
         } else {
@@ -145,9 +158,11 @@ impl BuilderPools {
         registry: &Registry,
         on_answered: &mut impl FnMut(&str, BuilderCall, u64, Result<ClientResponse<'_>, &str>),
     ) {
-        for BuilderPool { url, pool, preferences_in_flight, .. } in &mut self.pools {
+        let Self { pools, in_flight, preferences_in_flight, .. } = self;
+        for BuilderPool { url, pool } in pools {
             pool.dispatch_events(events, registry, &mut |tagged, response| {
                 let (call, id) = BuilderCall::untagged(tagged);
+                *in_flight -= 1;
                 if call.is_preferences() {
                     *preferences_in_flight -= 1;
                 }
@@ -159,13 +174,5 @@ impl BuilderPools {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.pools.len()
-    }
-}
-
-impl BuilderPool {
-    fn has_capacity(&self, call: BuilderCall) -> bool {
-        let within_share =
-            !call.is_preferences() || self.preferences_in_flight < PREFERENCE_CONNECTIONS;
-        within_share && self.pool.has_capacity()
     }
 }
