@@ -5,8 +5,8 @@ use silver_beacon_state_data::{B256, Slot, SpecConfig};
 use silver_common::SidecarBidRequest;
 use silver_config::PbsConfig;
 use silver_httpcore::{
-    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, MAX_RESPONSE, Method,
-    TokenRange,
+    BufferCapacity, ClientRequest, ClientResponse, Endpoint, HttpPool, IDLE_TIMEOUT, MAX_RESPONSE,
+    Method, TokenRange,
 };
 
 use crate::{
@@ -113,6 +113,7 @@ impl PbsClient {
                 tokens,
                 CONNECTION_CAPACITY,
                 1,
+                IDLE_TIMEOUT,
             )
             .expect("pbs.endpoint is http://"),
             registry: registry.try_clone().expect("mio Registry::try_clone failed"),

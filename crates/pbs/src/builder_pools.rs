@@ -13,6 +13,9 @@ pub(crate) const PREFERENCE_CONNECTIONS: usize = MAX_REQUESTS / 2;
 /// A JSON bid listing every commitment its SSZ bound allows is about 400 KiB.
 /// Preference and block answers are a status and an error message.
 const MAX_BUILDER_RESPONSE: usize = 1 << 20;
+/// About a slot: a bid and its block submission share a connection, and
+/// connections a caller made the node open are given back soon after.
+const BUILDER_IDLE_TIMEOUT: Duration = Duration::from_secs(12);
 /// Nothing waits on preferences but the VC, and a timed-out entry makes it
 /// send its whole request again.
 const PREFERENCES_TIMEOUT: Duration = Duration::from_secs(1);
@@ -139,6 +142,7 @@ impl BuilderPools {
             self.tokens.share_of(at, MAX_REQUESTS),
             BufferCapacity { read: 16 << 10, write: 8 << 10, max_response: MAX_BUILDER_RESPONSE },
             MAX_REQUESTS,
+            BUILDER_IDLE_TIMEOUT,
         )
         .map_err(|_| PoolUnavailable::ServerName)?;
         let builder = BuilderPool { url: url.into(), pool };

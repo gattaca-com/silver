@@ -15,7 +15,7 @@ pub use client::{
     BufferCapacity, ClientConnection, ClientRequest, ClientResponse, MAX_RESPONSE, Method,
     frame_request,
 };
-pub use pool::{Endpoint, HttpPool};
+pub use pool::{Endpoint, HttpPool, IDLE_TIMEOUT};
 pub use query::Query;
 pub use readiness::Readiness;
 pub use server::{

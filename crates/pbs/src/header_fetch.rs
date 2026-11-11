@@ -5,7 +5,8 @@ use silver_beacon_state_data::{B256, SpecConfig};
 use silver_common::{SidecarBidRequest, wei_saturating};
 use silver_config::PbsConfig;
 use silver_httpcore::{
-    BufferCapacity, ClientRequest, Endpoint, HttpPool, MAX_RESPONSE, Method, TokenRange,
+    BufferCapacity, ClientRequest, Endpoint, HttpPool, IDLE_TIMEOUT, MAX_RESPONSE, Method,
+    TokenRange,
 };
 use silver_ssz::ssz_view::{
     BuilderBidFuluView, ExecutionPayloadHeaderFuluView, SignedBuilderBidFuluView,
@@ -41,6 +42,7 @@ impl HeaderFetch {
                 tokens,
                 BufferCapacity { read: 16 << 10, write: 1 << 10, max_response: MAX_RESPONSE },
                 1,
+                IDLE_TIMEOUT,
             )
             .expect("pbs.endpoint is http://"),
             timeout: config.get_header_timeout(),
