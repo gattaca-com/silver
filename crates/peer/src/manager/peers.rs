@@ -22,6 +22,10 @@ use crate::{database::PeerRecord, scoring, state::ArchivedState};
 
 /// Remote prune this soon after graft = their heartbeat trimming an
 /// oversubscribed mesh; re-grafting on the base backoff is futile.
+/// P7 units per gossip message ignored for its slot. At the default threshold
+/// of 5 and 0.999 decay per slot, a peer stays unpenalised below about five
+/// such messages per slot, sustained. The honest rate is not measured.
+const OUT_OF_RANGE_PENALTY: f64 = 0.001;
 const QUICK_PRUNE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Caps futility escalation at `prune_backoff << 4` (60s → 960s).
@@ -301,6 +305,13 @@ impl PeerManager {
                 user_agent = peer.user_agent.as_str(),
                 "P7 behaviour penalty"
             );
+        }
+    }
+
+    /// No log: a flood would write one line per message.
+    pub(super) fn add_out_of_range_delivery(&mut self, conn: usize) {
+        if let Some(peer) = self.peers.get_mut(&conn) {
+            peer.behaviour_penalty += OUT_OF_RANGE_PENALTY;
         }
     }
 
@@ -2314,6 +2325,26 @@ mod tests {
         assert_eq!(topic_score.mesh_failure_penalty, deficit * deficit);
         assert!(topic_score.meshed_since.is_none());
         assert!(!topic_score.mesh_active);
+    }
+
+    #[test]
+    fn out_of_range_deliveries_cost_a_fraction_of_an_invalid_frame() {
+        let now = Instant::now();
+        let (mut mgr, mut cap) = fixture(vec![], ScoreParams::default());
+        connect(&mut mgr, &mut cap, 1, 1, now);
+        let topic = GossipTopic::BeaconAttestation(0);
+
+        let mut deliver = |mgr: &mut PeerManager, count: usize, tick: Duration| {
+            for _ in 0..count {
+                let event = PeerEvent::P2pGossipOutOfRange { p2p_peer: 1, topic };
+                mgr.handle_event(event, now, &mut |c| cap.0.push(c));
+            }
+            mgr.run_tick(now + tick, &mut |c| cap.0.push(c));
+        };
+        deliver(&mut mgr, 1000, Duration::from_millis(100));
+        assert!(mgr.score(1).is_some_and(|score| score >= 0.0), "below the threshold");
+        deliver(&mut mgr, 9000, Duration::from_millis(200));
+        assert!(mgr.score(1).is_none(), "graylisted and gone");
     }
 
     #[test]

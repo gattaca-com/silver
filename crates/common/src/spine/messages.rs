@@ -764,6 +764,11 @@ pub enum PeerEvent {
         topic: GossipTopic,
         hash: MessageId,
     },
+    /// Ignored for a slot outside the topic's propagation window.
+    P2pGossipOutOfRange {
+        p2p_peer: usize,
+        topic: GossipTopic,
+    },
     ColumnVerdict {
         p2p_peer: usize,
         block_root: [u8; 32],

@@ -468,6 +468,10 @@ impl PeerManager {
                 GossipFlowCounters::rejected(topic);
                 self.add_invalid_delivery(p2p_peer, topic);
             }
+            PeerEvent::P2pGossipOutOfRange { p2p_peer, topic: _ } => {
+                crate::PeerCounters::GossipOutOfRange.inc();
+                self.add_out_of_range_delivery(p2p_peer);
+            }
             PeerEvent::ColumnVerdict { p2p_peer, block_root, column, recv_ts, accepted } => {
                 self.on_column_verdict(p2p_peer, block_root, column, recv_ts, accepted, now);
             }
