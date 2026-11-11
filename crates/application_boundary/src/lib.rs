@@ -113,6 +113,7 @@ impl ApplicationBoundaryTile {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         binds: &[Bind],
+        allowed_hosts: &[String],
         max_connections: usize,
         idle_timeout: Duration,
         keypair: &Keypair,
@@ -153,6 +154,7 @@ impl ApplicationBoundaryTile {
             readiness.registry(),
             BEACON_TOKENS,
             binds,
+            allowed_hosts,
             max_connections,
             idle_timeout,
             keypair,

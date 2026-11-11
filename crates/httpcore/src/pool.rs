@@ -388,7 +388,9 @@ impl HttpPool {
             }
         };
         conn.enqueue(id, request, timeout, &self.host, &mut self.address, registry);
-        conn.idle_deadline = conn.request_deadline.map(|deadline| deadline + self.idle_timeout);
+        if let Some(deadline) = conn.request_deadline {
+            conn.idle_deadline = Some(deadline + self.idle_timeout);
+        }
     }
 
     pub fn dispatch_events<F>(&mut self, events: &Events, registry: &Registry, on_complete: &mut F)
@@ -640,6 +642,38 @@ mod tests {
 
         pool.enqueue(2, &post(b"{}"), timeout, readiness.registry());
         assert_eq!(complete(&mut pool, &mut readiness, || answer(&mut server)), (2, Some(200)));
+    }
+
+    #[test]
+    fn unsent_request_leaves_its_connection_idling_out() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("server.sock");
+        let mut server = Server::bind(&socket);
+        let timeout = Duration::from_millis(50);
+        let endpoint = Endpoint::Uds(socket);
+        let mut pool = HttpPool::new(endpoint, TokenRange::whole(), CAPACITY, 1, timeout).unwrap();
+        let mut readiness = Readiness::new(1);
+
+        pool.enqueue(1, &post(b"{}"), timeout, readiness.registry());
+        let completed = complete(&mut pool, &mut readiness, || {
+            server.pump();
+            if std::mem::take(&mut server.received) > 0 {
+                server.answer_ok();
+            }
+        });
+        assert_eq!(completed, (1, Some(200)));
+
+        let split = ClientRequest { path: "/a\r\nX-Split: 1", ..post(b"{}") };
+        pool.enqueue(2, &split, timeout, readiness.registry());
+        let idle_until = Instant::now() + 4 * timeout;
+        while Instant::now() < idle_until {
+            readiness.wait(Duration::from_millis(1));
+            pool.dispatch_events(readiness.events(), readiness.registry(), &mut |_, _| {});
+        }
+        let first = server.stream.as_mut().unwrap();
+        first.set_nonblocking(false).unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        assert_eq!(first.read(&mut [0; 1]).unwrap(), 0, "the idle connection is closed");
     }
 
     #[test]

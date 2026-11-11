@@ -189,6 +189,11 @@ pub struct Config {
     /// all of them at once. Loopback by default: the API has no authentication.
     #[serde(default = "default_beacon_api_bind")]
     beacon_api_bind: Vec<String>,
+    /// `Host` names the API answers to. `localhost` and IP literals always
+    /// pass, and `"*"` allows any name. A web page can point a name of its
+    /// own at this node, so a name not listed here is refused.
+    #[serde(default)]
+    beacon_api_allowed_hosts: Vec<String>,
     /// Prysm holds a connection per in-flight request, and posts each sync
     /// committee message on its own: up to 512 at once in one slot.
     #[serde(default = "default_usize::<1024>")]
@@ -442,6 +447,10 @@ impl Config {
         &self.beacon_api_bind
     }
 
+    pub fn beacon_api_allowed_hosts(&self) -> &[String] {
+        &self.beacon_api_allowed_hosts
+    }
+
     pub fn beacon_api_max_connections(&self) -> usize {
         self.beacon_api_max_connections
     }
@@ -501,6 +510,7 @@ mod tests {
         assert!(cfg.supported_protocols().unwrap().contains(&StreamProtocol::GossipSubV13));
         assert_eq!(cfg.gossip_topics().unwrap().len(), 7);
         assert_eq!(cfg.beacon_api_bind(), ["127.0.0.1:5051"]);
+        assert!(cfg.beacon_api_allowed_hosts().is_empty());
         assert_eq!(cfg.beacon_api_max_connections(), 1024);
         assert_eq!(cfg.beacon_api_idle_timeout(), Duration::from_secs(75));
         assert_eq!(cfg.partial_columns(), PartialColumnsMode::Off);

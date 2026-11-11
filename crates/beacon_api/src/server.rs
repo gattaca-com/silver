@@ -32,6 +32,7 @@ use crate::{
     entry_signatures::EntrySignatures,
     events::{self, Channel, ChannelSet, HeadEvent, head_verdict::HeadVerdict},
     http::{
+        allowed_hosts::AllowedHosts,
         json::Json,
         response::Response,
         router::{Outcome, Router},
@@ -659,6 +660,7 @@ pub struct BeaconApi {
     connections: HashMap<Token, Connection>,
     downloads: Vec<Token>,
     frame: Vec<u8>,
+    allowed_hosts: AllowedHosts,
     router: Router,
     ctx: ApiCtx,
     next_request_id: u64,
@@ -678,6 +680,7 @@ impl BeaconApi {
         registry: &Registry,
         tokens: TokenRange,
         binds: &[Bind],
+        allowed_hosts: &[String],
         max_connections: usize,
         idle_timeout: Duration,
         keypair: &Keypair,
@@ -724,6 +727,7 @@ impl BeaconApi {
             connections: HashMap::new(),
             downloads: Vec::new(),
             frame: Vec::new(),
+            allowed_hosts: AllowedHosts::new(allowed_hosts),
             router: Router::new(ROUTES, SERVED_WHILE_SYNCING),
             ctx: ApiCtx::new(keypair, &local_enr, identify, spec, state, has_sidecar),
             next_request_id: 0,
@@ -1486,9 +1490,17 @@ impl BeaconApi {
         let token = event.token();
         let Some(conn) = self.connections.get_mut(&token) else { return false };
         let mut dispatched = Outcome::Response(None);
-        let Self { registry, router, ctx, next_request_id, entry_signatures, .. } = self;
+        let Self {
+            registry, allowed_hosts, router, ctx, next_request_id, entry_signatures, ..
+        } = self;
         let outcome = conn.handle_event(registry, event, now, &mut |req, out| {
-            dispatched = router.dispatch(req, ctx, submissions, entry_signatures, out);
+            dispatched = if allowed_hosts.allows(req.host) {
+                router.dispatch(req, ctx, submissions, entry_signatures, out)
+            } else {
+                silver_log::warn!(host = req.host, "request for a host not allowed refused");
+                Response::new(out, submissions).error(403, "host not allowed");
+                Outcome::Response(None)
+            };
             // The body is borrowed only here; `Pending::defer` below numbers
             // the wait with the same id.
             match dispatched {
@@ -1801,6 +1813,7 @@ mod tests {
                 readiness.registry(),
                 tokens,
                 binds,
+                &["x".to_owned()],
                 max_connections,
                 idle_timeout,
                 &keypair,
@@ -2113,6 +2126,30 @@ mod tests {
         );
         assert_identity_ok(&over_tcp);
         assert_identity_ok(&over_uds);
+    }
+
+    #[test]
+    fn request_for_an_unlisted_host_gets_403() {
+        let mut server = server_bound_to(&[Bind::parse("127.0.0.1:0")], 64, LONG_TIMEOUT);
+        let addr = tcp_addrs(&server)[0];
+        let get_as_unlisted_host = move || {
+            let mut stream = connect(addr);
+            write!(
+                stream,
+                "GET /eth/v1/node/identity HTTP/1.1\r\nHost: attacker.example\r\n\
+                 Connection: close\r\n\r\n"
+            )
+            .unwrap();
+            read_to_eof(stream)
+        };
+        let (listed, unlisted) = serve_both(
+            &mut server,
+            std::thread::spawn(move || get_identity(connect(addr))),
+            std::thread::spawn(get_as_unlisted_host),
+            "both hosts answered",
+        );
+        assert_identity_ok(&listed);
+        assert!(unlisted.starts_with(b"HTTP/1.1 403 Forbidden\r\n"));
     }
 
     /// The cap counts connections, not listeners: a slot held through one

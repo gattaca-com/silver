@@ -297,6 +297,7 @@ mod tests {
             eth_builder_url: None,
             eth_blob_data_included: None,
             from_web_page: false,
+            host: None,
             version: 1,
             keep_alive: true,
         }
@@ -362,6 +363,7 @@ mod tests {
             eth_builder_url: None,
             eth_blob_data_included: None,
             from_web_page: false,
+            host: None,
             version: 1,
             keep_alive: true,
         };

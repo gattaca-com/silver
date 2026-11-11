@@ -70,6 +70,7 @@ class ChartTests(unittest.TestCase):
         parsed = tomllib.loads(config)
         self.assertEqual(parsed["data_storage_dir"], "/data")
         self.assertEqual(parsed["beacon_api_bind"], ["0.0.0.0:5052"])
+        self.assertEqual(parsed["beacon_api_allowed_hosts"], ["*"])
         self.assertEqual(parsed["discovery_port"], 32133)
         self.assertEqual(parsed["quic_port"], 32123)
         self.assertEqual(parsed["attestation_subnet_count"], 4)

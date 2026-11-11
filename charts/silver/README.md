@@ -38,7 +38,7 @@ The chart does not deploy an execution client or generate JWT secrets.
 See [values.yaml](values.yaml) for all options.
 `config` accepts additional TOML. `extraArgs` accepts Silver CLI flags, which override equivalent TOML settings.
 
-The chart manages `data_storage_dir`, `beacon_api_bind`, `discovery_port`, and `quic_port`.
+The chart manages `data_storage_dir`, `beacon_api_bind`, `beacon_api_allowed_hosts`, `discovery_port`, and `quic_port`.
 Change their chart values instead of repeating those keys in `config`.
 With external IP discovery enabled, the chart also manages `external_ip_v4`.
 
