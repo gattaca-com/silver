@@ -45,6 +45,7 @@ use crate::{args::Args, checkpoint::BootCheckpoint, cluster::ClusterStartup};
 mod args;
 mod checkpoint;
 mod cluster;
+mod cluster_admin;
 
 #[cfg(not(feature = "alloc-profile"))]
 #[global_allocator]
@@ -85,7 +86,15 @@ fn publish_build_info() -> io::Result<()> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if let Some(command) = args.command.take() {
+        if let Err(error) = command.run() {
+            eprintln!("silver: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let build_info_log = format!("silver build info: {BUILD_INFO}");
     let _tracing = initialise_tracing_log_on_core(
         "silver",

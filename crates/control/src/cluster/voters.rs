@@ -1,17 +1,13 @@
 use std::{fmt, ops::Deref};
 
 use flux::utils::ArrayVec;
-
-/// raft-rs computes the commit index on the stack for up to 7 voters and
-/// allocates above that. etcd, whose raft raft-rs ports, also advises at most
-/// 7 members.
-pub(super) const MAX_VOTERS: usize = 7;
+use silver_common::MAX_CLUSTER_VOTERS;
 
 /// The voters a journal starts with: distinct non-zero ids, sorted, among them
 /// the local node. Empty for a node that joins a running cluster, whose
 /// membership arrives with its first snapshot.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Voters(ArrayVec<u64, MAX_VOTERS>);
+pub struct Voters(ArrayVec<u64, MAX_CLUSTER_VOTERS>);
 
 impl Voters {
     pub fn new(node_id: u64, ids: impl IntoIterator<Item = u64>) -> Result<Self, &'static str> {

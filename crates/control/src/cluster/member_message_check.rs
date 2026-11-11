@@ -3,13 +3,13 @@ use raft::{
     RaftLog,
     eraftpb::{Message, MessageType},
 };
+use silver_common::MAX_CLUSTER_VOTERS;
 
 use super::{
     command::{DecodedEntry, EntryError},
     metrics::ClusterCounters,
     raft_storage::RaftStorage,
     replicated_state::ReplicatedState,
-    voters::MAX_VOTERS,
 };
 
 /// A member can reach the next slot before this node's own Status does.
@@ -38,7 +38,7 @@ pub enum MemberMessageError {
 ///
 /// A joint config replacing one of 7 voters has 8 distinct voters.
 #[derive(Default)]
-pub(super) struct LeaderBoycott(ArrayVec<BoycottedLeader, { MAX_VOTERS + 1 }>);
+pub(super) struct LeaderBoycott(ArrayVec<BoycottedLeader, { MAX_CLUSTER_VOTERS + 1 }>);
 
 #[derive(Debug, Clone, Copy)]
 struct BoycottedLeader {
@@ -75,7 +75,7 @@ impl LeaderBoycott {
                 debug_assert!(
                     overflow.is_none(),
                     "leaders are among at most {} voters",
-                    MAX_VOTERS + 1
+                    MAX_CLUSTER_VOTERS + 1
                 );
             }
         }

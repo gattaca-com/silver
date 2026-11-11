@@ -7,13 +7,14 @@ use std::{
 use buffa::Message as _;
 use flux::utils::ArrayVec;
 use raft::eraftpb::{Entry, HardState, Snapshot};
+use silver_common::MAX_CLUSTER_VOTERS;
 
 use super::super::{
     generated,
     lock_store::MAX_SNAPSHOT_BYTES,
     persistence::RecoveredStorage,
     raft_storage::validate_snapshot,
-    voters::{MAX_VOTERS, Voters},
+    voters::Voters,
     wire::{from_wire_entry, from_wire_snapshot, to_wire_entry, to_wire_snapshot},
 };
 
@@ -462,9 +463,9 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    fn voter_ids(&mut self) -> io::Result<ArrayVec<u64, MAX_VOTERS>> {
+    fn voter_ids(&mut self) -> io::Result<ArrayVec<u64, MAX_CLUSTER_VOTERS>> {
         let count = self.u32()? as usize;
-        if count > MAX_VOTERS {
+        if count > MAX_CLUSTER_VOTERS {
             return Err(invalid_data("invalid Raft journal voter count"));
         }
         let mut ids = ArrayVec::new();

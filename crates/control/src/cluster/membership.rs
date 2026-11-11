@@ -1,60 +1,13 @@
-use std::{
-    io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-};
+use std::io;
 
 use bytes::{BufMut, BytesMut};
 use raft::eraftpb::{ConfChangeType, ConfChangeV2, ConfState};
-use silver_common::PeerId;
-
-use super::{membership_operation::MembershipError, voters::MAX_VOTERS};
+use silver_common::{
+    MAX_CLUSTER_VOTERS, MEMBER_ADDRESS_LEN, MemberAddress, MemberRole, MembershipError,
+};
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"SLVMEMB\x01";
-pub(super) const PUBLIC_KEY_LEN: usize = 33;
-const SOCKET_ADDR_LEN: usize = 1 + 16 + 2;
-pub(super) const MEMBER_ADDRESS_LEN: usize = PUBLIC_KEY_LEN + SOCKET_ADDR_LEN;
 const MEMBER_LEN: usize = 8 + MEMBER_ADDRESS_LEN;
-
-/// Where a member is dialled. Its key never changes: a new key is a new
-/// member.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemberAddress {
-    /// Compressed secp256k1.
-    pub public_key: [u8; PUBLIC_KEY_LEN],
-    pub addr: SocketAddr,
-}
-
-impl MemberAddress {
-    pub fn peer_id(&self) -> PeerId {
-        PeerId::from_secp256k1_pubkey(&self.public_key)
-    }
-
-    pub(super) fn encode(&self, bytes: &mut impl BufMut) {
-        bytes.put_slice(&self.public_key);
-        let (tag, ip) = match self.addr.ip() {
-            IpAddr::V4(ip) => (4, ip.to_ipv6_compatible().octets()),
-            IpAddr::V6(ip) => (6, ip.octets()),
-        };
-        bytes.put_u8(tag);
-        bytes.put_slice(&ip);
-        bytes.put_slice(&self.addr.port().to_le_bytes());
-    }
-
-    pub(super) fn decode(bytes: &[u8; MEMBER_ADDRESS_LEN]) -> io::Result<Self> {
-        let (key, addr) = bytes.split_at(PUBLIC_KEY_LEN);
-        let public_key = key.try_into().expect("slice is one public key");
-        let ip: [u8; 16] = addr[1..17].try_into().expect("slice is 16 bytes");
-        let ip = match addr[0] {
-            4 if ip[..12].iter().all(|&byte| byte == 0) => {
-                IpAddr::V4(Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]))
-            }
-            6 => IpAddr::V6(Ipv6Addr::from(ip)),
-            _ => return Err(invalid("invalid cluster member address")),
-        };
-        let port = u16::from_le_bytes(addr[17..].try_into().expect("slice is 2 bytes"));
-        Ok(Self { public_key, addr: SocketAddr::new(ip, port) })
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Member {
@@ -130,6 +83,34 @@ impl ClusterMembership {
         self.roles.learners.contains(&node_id)
     }
 
+    /// Each member once, though `member_ids` yields a voter of both joint
+    /// halves twice.
+    pub(super) fn roles(&self) -> impl Iterator<Item = (u64, MemberRole)> + '_ {
+        let ids = self.member_ids();
+        ids.clone()
+            .enumerate()
+            .filter(move |&(seen, node_id)| !ids.clone().take(seen).any(|id| id == node_id))
+            .filter_map(|(_, node_id)| Some((node_id, self.role(node_id)?)))
+    }
+
+    /// Members of both halves of a joint config are plain voters.
+    pub(super) fn role(&self, node_id: u64) -> Option<MemberRole> {
+        let incoming = self.roles.voters.contains(&node_id);
+        let outgoing = self.roles.voters_outgoing.contains(&node_id);
+        match (incoming, outgoing) {
+            (true, true) => Some(MemberRole::Voter),
+            (true, false) if self.is_joint() => Some(MemberRole::Joining),
+            (true, false) => Some(MemberRole::Voter),
+            (false, true) => Some(MemberRole::Leaving),
+            (false, false) if self.is_member(node_id) => Some(MemberRole::Learner),
+            (false, false) => None,
+        }
+    }
+
+    pub(super) fn highest_node_id(&self) -> u64 {
+        self.highest_node_id
+    }
+
     pub(super) fn is_joint(&self) -> bool {
         !self.roles.voters_outgoing.is_empty()
     }
@@ -162,7 +143,7 @@ impl ClusterMembership {
                 ConfChangeType::RemoveNode => {}
             }
         }
-        if voters > MAX_VOTERS {
+        if voters > MAX_CLUSTER_VOTERS {
             return Err(MembershipError::TooManyVoters);
         }
         Ok(())
@@ -296,6 +277,10 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 pub(crate) fn test_address(node_id: u64) -> MemberAddress {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use silver_common::PUBLIC_KEY_LEN;
+
     let mut key = [2; PUBLIC_KEY_LEN];
     key[1..9].copy_from_slice(&node_id.to_le_bytes());
     MemberAddress {
@@ -306,8 +291,10 @@ pub(crate) fn test_address(node_id: u64) -> MemberAddress {
 
 #[cfg(test)]
 mod tests {
+    use silver_common::MembershipOperation;
+
     use super::*;
-    use crate::cluster::membership_operation::{MembershipOperation, membership_change};
+    use crate::cluster::membership_operation::{conf_change, membership_change};
 
     fn member(node_id: u64) -> Member {
         Member { node_id, address: test_address(node_id) }
@@ -321,36 +308,10 @@ mod tests {
     fn membership() -> ClusterMembership {
         let mut membership = ClusterMembership::new(&[1, 2, 3]);
         let (change, added_learner) =
-            MembershipOperation::Add { node_id: 4, address: test_address(4) }.change();
+            conf_change(MembershipOperation::Add { node_id: 4, address: test_address(4) });
         membership.check(&change, added_learner).unwrap();
         membership.apply_change(&change, added_learner, roles(&[1, 2, 3], &[4]));
         membership
-    }
-
-    #[test]
-    fn addresses_round_trip_for_both_ip_families() {
-        let v6 = MemberAddress {
-            addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9001),
-            ..test_address(2)
-        };
-        for address in [test_address(1), v6] {
-            let mut bytes = Vec::new();
-            address.encode(&mut bytes);
-            assert_eq!(MemberAddress::decode(&bytes.try_into().unwrap()).unwrap(), address);
-        }
-    }
-
-    #[test]
-    fn non_canonical_addresses_are_refused() {
-        let mut bytes = Vec::new();
-        test_address(1).encode(&mut bytes);
-        let mut bad_family = bytes.clone();
-        bad_family[PUBLIC_KEY_LEN] = 5;
-        let mut padded_v4 = bytes;
-        padded_v4[PUBLIC_KEY_LEN + 1] = 1;
-        for bytes in [bad_family, padded_v4] {
-            assert!(MemberAddress::decode(&bytes.try_into().unwrap()).is_err());
-        }
     }
 
     #[test]
@@ -398,7 +359,7 @@ mod tests {
     fn changes_are_refused_with_a_reason() {
         let membership = membership();
         let check = |operation: MembershipOperation| {
-            let (change, added_learner) = operation.change();
+            let (change, added_learner) = conf_change(operation);
             membership.check(&change, added_learner)
         };
         let add = |node_id, key| MembershipOperation::Add { node_id, address: test_address(key) };
@@ -421,14 +382,31 @@ mod tests {
 
         let mut full = ClusterMembership::new(&[1, 2, 3, 4, 5, 6, 7]);
         full.roles.learners = vec![8];
-        let (promote, _) = MembershipOperation::Promote { node_id: 8 }.change();
+        let (promote, _) = conf_change(MembershipOperation::Promote { node_id: 8 });
         assert_eq!(full.check(&promote, None), Err(MembershipError::TooManyVoters));
+    }
+
+    #[test]
+    fn roles_tell_joint_halves_apart() {
+        let mut joint = membership();
+        joint.roles.voters = vec![1, 2, 4];
+        joint.roles.voters_outgoing = vec![1, 2, 3];
+        joint.roles.learners.clear();
+        let roles: Vec<_> = (1..=5).map(|id| joint.role(id)).collect();
+        assert_eq!(roles, [
+            Some(MemberRole::Voter),
+            Some(MemberRole::Voter),
+            Some(MemberRole::Leaving),
+            Some(MemberRole::Joining),
+            None,
+        ]);
+        assert_eq!(membership().role(4), Some(MemberRole::Learner));
     }
 
     #[test]
     fn removed_member_takes_its_address_and_keeps_its_id_used() {
         let mut membership = membership();
-        let (remove, _) = MembershipOperation::Remove { node_id: 4 }.change();
+        let (remove, _) = conf_change(MembershipOperation::Remove { node_id: 4 });
         membership.apply_change(&remove, Some(member(2)), roles(&[1, 2, 3], &[]));
         assert_eq!((membership.address(4), membership.address(2)), (None, None));
         assert_eq!(membership.highest_node_id, 4);

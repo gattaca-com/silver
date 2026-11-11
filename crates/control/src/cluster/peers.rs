@@ -4,13 +4,9 @@ use raft::{
     ProgressState, RawNode, StateRole,
     eraftpb::{Message, MessageType},
 };
-use silver_common::{ClusterPeerStats, ClusterProgress};
+use silver_common::{ClusterPeerStats, ClusterProgress, MemberAddress};
 
-use super::{
-    membership::{Member, MemberAddress},
-    node::ClusterEvent,
-    raft_storage::RaftStorage,
-};
+use super::{membership::Member, node::ClusterEvent, raft_storage::RaftStorage};
 
 /// An unanswered heartbeat older than this is presumed lost, so the next one
 /// starts a fresh measurement.

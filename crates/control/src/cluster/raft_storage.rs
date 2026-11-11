@@ -6,10 +6,10 @@ use raft::{
     eraftpb::{ConfState, Entry, HardState, Snapshot},
     storage::MemStorage,
 };
+use silver_common::MAX_CLUSTER_VOTERS;
 
 use super::{
     lock_store::MAX_SNAPSHOT_BYTES, membership::member_ids, persistence::RecoveredStorage,
-    voters::MAX_VOTERS,
 };
 
 /// Storage still holds snapshot N while N+1 is written, so the two take turns.
@@ -194,6 +194,6 @@ fn is_consistent(membership: &ConfState) -> bool {
 }
 
 fn are_distinct_ids(ids: &[u64]) -> bool {
-    ids.len() <= MAX_VOTERS &&
+    ids.len() <= MAX_CLUSTER_VOTERS &&
         ids.iter().enumerate().all(|(i, id)| *id != 0 && !ids[i + 1..].contains(id))
 }

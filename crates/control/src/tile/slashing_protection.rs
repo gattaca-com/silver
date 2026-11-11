@@ -4,9 +4,10 @@ use flux::spine::{SpineAdapter, SpineProducers};
 use flux_profiler::timed;
 use fxhash::FxHashMap;
 use silver_common::{
-    BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterDuty, ClusterIn, ClusterMsgIn,
-    ClusterMsgOut, GossipTopic, LocalGossipFailure, LocalGossipResult, LockedProposal, PeerControl,
-    PeerStats, SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
+    BroadcastValidation, CLUSTER_STATS_INTERVAL, ClusterAdminRequest, ClusterAdminResponse,
+    ClusterAdminResult, ClusterDuty, ClusterIn, ClusterMsgIn, ClusterMsgOut, GossipTopic,
+    LocalGossipFailure, LocalGossipResult, LockedProposal, MembershipError, PeerControl, PeerStats,
+    SilverSpine, SilverSpineProducers, TCacheProducer, TCacheReader, TProducer, TRead,
     block_contents::SignedBlockContents,
     ssz_view::{
         SIGNED_BEACON_BLOCK_MIN, SINGLE_ATT_SIZE, SignedBeaconBlockView, SingleAttestationView,
@@ -376,9 +377,38 @@ impl SlashingProtectionHandler {
                 }
             }
         });
+
+        adapter.consume(|request: ClusterAdminRequest, producers| {
+            self.administer(request, now, producers)
+        });
+
         self.drive(now, local_gossip, gossip_handler, peer_manager, &mut adapter.producers);
         self.produce_commits(&mut adapter.producers);
         self.sample(now, &mut adapter.producers);
+    }
+
+    fn administer(
+        &mut self,
+        request: ClusterAdminRequest,
+        now: Instant,
+        producers: &mut SilverSpineProducers,
+    ) {
+        let result = match self.cluster.as_mut() {
+            Some(cluster) => cluster.administer(request.command, now),
+            None => ClusterAdminResult::Refused(MembershipError::NotClustered),
+        };
+        match result {
+            ClusterAdminResult::Refused(error) => silver_log::info!(
+                command = ?request.command,
+                %error,
+                "cluster admin request refused"
+            ),
+            ClusterAdminResult::Proposed => {
+                silver_log::info!(command = ?request.command, "cluster admin request proposed")
+            }
+            ClusterAdminResult::Members(_) => {}
+        }
+        producers.produce(ClusterAdminResponse { request_id: request.request_id, result });
     }
 
     fn produce_commits(&mut self, producers: &mut SilverSpineProducers) {
@@ -728,8 +758,8 @@ impl SlashingProtectionHandler {
 #[cfg(test)]
 mod tests {
     use silver_common::{
-        PeerId, SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead, TCacheTable,
-        TReadMode,
+        ClusterAdminCommand, PeerId, SLOTS_PER_EPOCH, TCache, TCacheId, TCacheProducer, TCacheRead,
+        TCacheTable, TReadMode,
     };
     use silver_peer::SyncingConfig;
 
@@ -1001,6 +1031,52 @@ mod tests {
         harness.pop_gossip();
         assert_eq!(locked_proposals(&mut harness), 1, "the committed block's contents follow");
         assert!(harness.responses().is_empty());
+    }
+
+    fn administer(
+        handler: &mut SlashingProtectionHandler,
+        command: ClusterAdminCommand,
+        now: Instant,
+    ) -> ClusterAdminResult {
+        let mut harness = Harness::new();
+        let Harness { local_gossip, gossip, adapter, .. } = &mut harness;
+        adapter.subscribe_broadcast::<ClusterAdminRequest>();
+        adapter.subscribe_broadcast::<ClusterAdminResponse>();
+        adapter.produce(ClusterAdminRequest { request_id: 7, command });
+        handler.spin(
+            now,
+            adapter,
+            local_gossip,
+            gossip,
+            &mut Submissions::new().reader,
+            &mut peer_manager(),
+        );
+        let mut results = Vec::new();
+        adapter.consume(|response: ClusterAdminResponse, _| {
+            assert_eq!(response.request_id, 7);
+            results.push(response.result);
+        });
+        assert_eq!(results.len(), 1, "one answer per request");
+        results[0]
+    }
+
+    #[test]
+    fn admin_requests_are_answered_with_or_without_a_cluster() {
+        let now = Instant::now();
+        assert!(matches!(
+            administer(&mut handler(now), ClusterAdminCommand::Members, now),
+            ClusterAdminResult::Refused(MembershipError::NotClustered)
+        ));
+
+        let mut handler = clustered_handler(now);
+        handler.cluster.as_mut().unwrap().campaign().unwrap();
+        let ClusterAdminResult::Members(members) =
+            administer(&mut handler, ClusterAdminCommand::Members, now)
+        else {
+            panic!("members are listed");
+        };
+        assert_eq!(members.node_id, 1);
+        assert_eq!(members.members.iter().map(|row| row.node_id).collect::<Vec<_>>(), [1]);
     }
 
     const TEST_PROPOSAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);

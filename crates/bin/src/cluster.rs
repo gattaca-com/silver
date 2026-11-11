@@ -5,10 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use silver_common::Enr;
+use silver_common::{Enr, MemberAddress};
 use silver_config::ClusterConfig;
 use silver_control::cluster::{
-    ClusterStorageConfig, Member, MemberAddress, SlashingProtectionConfig, StorageIdentity,
+    ClusterStorageConfig, Member, SlashingProtectionConfig, StorageIdentity,
 };
 
 const JOURNAL_FILE: &str = "attestation-cluster.wal";
@@ -71,11 +71,8 @@ impl ClusterStartup {
     }
 
     fn member_address(id: u64, enr: &Enr) -> Result<MemberAddress, Box<dyn Error>> {
-        let addr = enr
-            .quic4_socket()
-            .or_else(|| enr.quic6_socket())
-            .ok_or_else(|| format!("cluster config ENR of node {id} has no QUIC address"))?;
-        Ok(MemberAddress { public_key: enr.public_key().serialize(), addr })
+        MemberAddress::from_enr(enr)
+            .ok_or_else(|| format!("cluster config ENR of node {id} has no QUIC address").into())
     }
 
     /// A journal that contradicts `bootstrap` or `join` would only fail

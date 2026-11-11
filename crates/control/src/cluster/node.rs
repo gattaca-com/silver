@@ -8,9 +8,13 @@ use raft::{
     Config, RawNode, StateRole,
     eraftpb::{ConfChangeType, ConfChangeV2, Entry, Message, MessageType, Snapshot},
 };
-use silver_common::{ClusterDuty, ClusterOutcome, ClusterPeerStats};
+use silver_common::{
+    ClusterAdminCommand, ClusterAdminResult, ClusterDuty, ClusterMemberRow, ClusterMembers,
+    ClusterOutcome, ClusterPeerStats, MemberAddress, MembershipError, MembershipOperation,
+};
 
 use super::{
+    address_announcement::AddressAnnouncement,
     admission::{AdmissionError, SlashingAdmission},
     command::{
         AttestationLockCommand, BlockKey, BlockLockCommand, DecodedEntry, EntryError,
@@ -18,8 +22,8 @@ use super::{
     },
     lock_store::{LockResult, MAX_SNAPSHOT_BYTES},
     member_message_check::{LeaderBoycott, MemberMessageCheck, MemberMessageError},
-    membership::{ClusterMembership, Member, MemberAddress},
-    membership_operation::{MembershipError, MembershipOperation},
+    membership::{ClusterMembership, Member},
+    membership_operation::conf_change,
     metrics::{ClusterCounters, ClusterMetrics, ResolvedProposal},
     peers::ClusterPeers,
     pending::{PendingProposal, PendingProposals},
@@ -357,11 +361,7 @@ pub struct SlashingProtectionCluster {
     /// Set whenever the members or their addresses may have changed, so the
     /// peers follow once per spin.
     membership_changed: bool,
-    next_announcement: Instant,
-    address_stale: bool,
-    /// Every node refuses an announcement under another key, so it is
-    /// reported once instead of proposed again.
-    foreign_key_reported: bool,
+    announcement: AddressAnnouncement,
     unsubmitted_entries: Vec<Entry>,
     pending_minimum_slot: Option<u64>,
     snapshot_transfers: SnapshotTransfers,
@@ -419,9 +419,7 @@ impl SlashingProtectionCluster {
             snapshot_buffers: SnapshotBuffers::default(),
             leader_boycott: LeaderBoycott::default(),
             membership_changed: true,
-            next_announcement: now,
-            address_stale: false,
-            foreign_key_reported: false,
+            announcement: AddressAnnouncement::new(now),
             unsubmitted_entries: Vec::new(),
             pending_minimum_slot: None,
             snapshot_transfers: SnapshotTransfers::default(),
@@ -508,25 +506,37 @@ impl SlashingProtectionCluster {
         if self.failed {
             return Err(ClusterError::Failed);
         }
-        if self.is_removed() ||
-            self.leader_boycott.covers(&message, wall_slot) ||
-            self.drops_append_before_snapshot(&message)
-        {
+        if self.ignores(&message, wall_slot) {
             return Ok(());
         }
-        let check = MemberMessageCheck { log: &self.node.raft.raft_log, wall_slot };
-        if let Err(error) = check.check(&message) {
-            if let MemberMessageError::LeaderAheadOfClock { slot, .. } = error {
-                self.leader_boycott.start(&message, slot, wall_slot);
-            }
-            return Err(ClusterError::MemberMessage(error));
-        }
+        self.check_member_message(&message, wall_slot)?;
         self.peers.heard(&message, now);
         match self.node.step(message) {
             // A response from a member removed since it was sent.
             Err(raft::Error::StepPeerNotFound) => Ok(()),
             result => result.map_err(ClusterError::Raft),
         }
+    }
+
+    fn ignores(&self, message: &Message, wall_slot: u64) -> bool {
+        self.is_removed() ||
+            self.leader_boycott.covers(message, wall_slot) ||
+            self.drops_append_before_snapshot(message)
+    }
+
+    fn check_member_message(
+        &mut self,
+        message: &Message,
+        wall_slot: u64,
+    ) -> Result<(), ClusterError> {
+        let check = MemberMessageCheck { log: &self.node.raft.raft_log, wall_slot };
+        let Err(error) = check.check(message) else {
+            return Ok(());
+        };
+        if let MemberMessageError::LeaderAheadOfClock { slot, .. } = error {
+            self.leader_boycott.start(message, slot, wall_slot);
+        }
+        Err(ClusterError::MemberMessage(error))
     }
 
     /// A joining node knows no membership until its snapshot. Entries from
@@ -664,7 +674,7 @@ impl SlashingProtectionCluster {
         if self.state.membership.is_joint() || self.node.raft.has_pending_conf() {
             return Err(MembershipError::ChangePending);
         }
-        let (change, added_learner) = operation.change();
+        let (change, added_learner) = conf_change(operation);
         self.state.membership.check(&change, added_learner)?;
         self.check_leader_can_change(&change)?;
         if added_learner.is_some() && self.state.snapshot_len() > MAX_SNAPSHOT_BYTES {
@@ -713,9 +723,48 @@ impl SlashingProtectionCluster {
             return Err(MembershipError::Removed);
         }
         if !self.is_leader() {
-            return Err(MembershipError::NotLeader { leader_id: self.leader_id() });
+            let leader_id = self.leader_id();
+            let leader_addr = leader_id
+                .and_then(|id| self.config.peer_address(&self.state.membership, id))
+                .map(|address| address.addr);
+            return Err(MembershipError::NotLeader { leader_id, leader_addr });
         }
         Ok(())
+    }
+
+    pub fn administer(&mut self, command: ClusterAdminCommand, now: Instant) -> ClusterAdminResult {
+        let result = match command {
+            ClusterAdminCommand::Change(operation) => self.propose_membership(operation),
+            ClusterAdminCommand::TransferLeader { node_id } => self.transfer_leader(node_id),
+            ClusterAdminCommand::Members => return ClusterAdminResult::Members(self.members(now)),
+        };
+        match result {
+            Ok(()) => ClusterAdminResult::Proposed,
+            Err(error) => ClusterAdminResult::Refused(error),
+        }
+    }
+
+    fn members(&self, now: Instant) -> ClusterMembers {
+        let membership = &self.state.membership;
+        let mut members = ClusterMembers {
+            node_id: self.config.node_id,
+            leader_id: self.leader_id(),
+            commit: self.node.raft.raft_log.committed,
+            highest_node_id: membership.highest_node_id(),
+            members: Default::default(),
+            unlisted: 0,
+        };
+        for (node_id, role) in membership.roles() {
+            members.push(ClusterMemberRow {
+                node_id,
+                role,
+                address: self.config.peer_address(membership, node_id),
+                caught_up: self.is_leader() && self.is_caught_up(node_id),
+                peer: self.peer_stats(now).find(|stats| stats.node_id == node_id),
+            });
+        }
+        members.members.sort_unstable_by_key(|row| row.node_id);
+        members
     }
 
     /// The leader's view only, so this decides liveness, never safety.
@@ -758,7 +807,9 @@ impl SlashingProtectionCluster {
         let membership = &self.state.membership;
         self.peers.set(self.config.peers(membership), emit);
         self.leader_boycott.retain(|node_id| membership.is_member(node_id));
-        self.address_stale = self.is_recorded_address_stale();
+        let node_id = self.config.node_id;
+        let recorded = membership.address(node_id);
+        self.announcement.follow(node_id, self.config.advertised, recorded);
 
         if self.is_removed() {
             ClusterCounters::Removed.set(1);
@@ -934,7 +985,7 @@ impl SlashingProtectionCluster {
     }
 
     fn maybe_announce_address(&mut self, now: Instant) -> Result<(), ClusterError> {
-        if !self.address_stale || now < self.next_announcement || self.node.raft.leader_id == 0 {
+        if !self.announcement.is_due(now) || self.node.raft.leader_id == 0 {
             return Ok(());
         }
         // Sequence 0 never matches a pending request.
@@ -945,30 +996,9 @@ impl SlashingProtectionCluster {
         };
         let data = ReplicatedCommand::AnnounceAddress(self.config.advertised).encode();
         if accepted(self.node.propose(context.encode(), data), "address announcement")? {
-            self.next_announcement = now.checked_add(self.config.proposal_timeout).unwrap_or(now);
+            self.announcement.proposed(now, self.config.proposal_timeout);
         }
         Ok(())
-    }
-
-    fn is_recorded_address_stale(&mut self) -> bool {
-        let node_id = self.config.node_id;
-        let address = self.config.advertised;
-        let Some(recorded) = self.state.membership.address(node_id) else {
-            return false;
-        };
-        if recorded.public_key == address.public_key {
-            return recorded != address;
-        }
-        if !self.foreign_key_reported {
-            self.foreign_key_reported = true;
-            silver_log::warn!(
-                node_id,
-                ?recorded,
-                ?address,
-                "the cluster records this node under another key: its address is not announced"
-            );
-        }
-        false
     }
 
     fn process_ready(
@@ -1099,22 +1129,10 @@ impl SlashingProtectionCluster {
 
             match decoded {
                 DecodedEntry::Lock(command, proposal_id) => {
-                    let result = self.state.locks.apply(&command);
-                    if self.resolve_own_commit(proposal_id, result, now) {
-                        let admission = self.admission.validate(command.key.slot, wall_slot);
-                        let decision =
-                            AttestationDecision { proposal_id, command, result, admission };
-                        emit(ClusterEvent::AttestationCommitted(decision));
-                    }
+                    self.apply_lock(command, proposal_id, now, wall_slot, emit)
                 }
                 DecodedEntry::BlockLock(command, proposal_id) => {
-                    let result = self.state.locks.apply_block(&command);
-                    if self.resolve_own_commit(proposal_id, result, now) {
-                        let key = command.key;
-                        let admission = self.admission.validate(key.slot, wall_slot);
-                        let decision = BlockDecision { proposal_id, key, result, admission };
-                        emit(ClusterEvent::BlockCommitted(decision));
-                    }
+                    self.apply_block_lock(command, proposal_id, now, wall_slot, emit)
                 }
                 DecodedEntry::AdvanceMinimumSlot(minimum_slot) => {
                     self.apply_minimum_slot(minimum_slot)
@@ -1130,6 +1148,43 @@ impl SlashingProtectionCluster {
         }
 
         Ok(())
+    }
+
+    fn apply_lock(
+        &mut self,
+        command: AttestationLockCommand,
+        proposal_id: ProposalId,
+        now: Instant,
+        wall_slot: u64,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) {
+        let result = self.state.locks.apply(&command);
+        if self.resolve_own_commit(proposal_id, result, now) {
+            let admission = self.admission.validate(command.key.slot, wall_slot);
+            let decision = AttestationDecision { proposal_id, command, result, admission };
+            emit(ClusterEvent::AttestationCommitted(decision));
+        }
+    }
+
+    fn apply_block_lock(
+        &mut self,
+        command: BlockLockCommand,
+        proposal_id: ProposalId,
+        now: Instant,
+        wall_slot: u64,
+        emit: &mut impl FnMut(ClusterEvent),
+    ) {
+        let result = self.state.locks.apply_block(&command);
+        if self.resolve_own_commit(proposal_id, result, now) {
+            let key = command.key;
+            let admission = self.admission.validate(key.slot, wall_slot);
+            emit(ClusterEvent::BlockCommitted(BlockDecision {
+                proposal_id,
+                key,
+                result,
+                admission,
+            }));
+        }
     }
 
     fn apply_minimum_slot(&mut self, minimum_slot: u64) {

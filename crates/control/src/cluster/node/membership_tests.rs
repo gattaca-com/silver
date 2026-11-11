@@ -2,12 +2,15 @@ use raft::{
     Storage,
     eraftpb::{ConfChangeTransition, ConfChangeType, ConfState, EntryType},
 };
-use silver_common::{SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE};
+use silver_common::{
+    ClusterAdminCommand, ClusterAdminResult, MemberAddress, MemberRole, MembershipError,
+    MembershipOperation, SLOTS_PER_EPOCH, ssz_view::SINGLE_ATT_SIZE,
+};
 
 use super::*;
 use crate::cluster::{
-    AttestationKey, MembershipError, MembershipOperation,
-    membership::{Member, MemberAddress, member_ids},
+    AttestationKey,
+    membership::{Member, member_ids},
     membership_operation::membership_change,
     test_address,
 };
@@ -626,6 +629,7 @@ fn membership_operations_are_refused_with_a_reason() {
     let refused = [
         (follower, MembershipOperation::Remove { node_id: 3 }, MembershipError::NotLeader {
             leader_id: Some(leader),
+            leader_addr: None,
         }),
         (
             leader,
@@ -739,4 +743,49 @@ fn joiner_takes_no_entries_before_its_snapshot() {
     node.step(append, now, WALL_SLOT).unwrap();
     node.spin(now, WALL_SLOT, |_| {}).unwrap();
     assert_eq!(raft::Storage::last_index(node.node.store()).unwrap(), 0);
+}
+
+#[test]
+fn admin_lists_members_on_the_leader_and_names_it_elsewhere() {
+    let mut cluster = Cluster::in_memory(Instant::now());
+    let leader = cluster.elect();
+    cluster.add_joiner(4);
+    cluster.rounds_until(|cluster| {
+        let leader = cluster.nodes.iter().find(|node| node.is_leader());
+        leader.is_some_and(|leader| leader.is_caught_up(4))
+    });
+
+    let now = cluster.now;
+    let ClusterAdminResult::Members(members) =
+        cluster.node(leader).administer(ClusterAdminCommand::Members, now)
+    else {
+        panic!("members are listed");
+    };
+    assert_eq!((members.node_id, members.leader_id), (leader, Some(leader)));
+    assert_eq!((members.highest_node_id, members.unlisted), (4, 0));
+    let rows: Vec<_> =
+        members.members.iter().map(|row| (row.node_id, row.role, row.caught_up)).collect();
+    assert_eq!(rows, [
+        (1, MemberRole::Voter, true),
+        (2, MemberRole::Voter, true),
+        (3, MemberRole::Voter, true),
+        (4, MemberRole::Learner, true),
+    ]);
+    let learner = members.members.iter().find(|row| row.node_id == 4).unwrap();
+    assert_eq!(learner.address, Some(test_address(4)));
+    assert!(learner.peer.is_some());
+    let own = members.members.iter().find(|row| row.node_id == leader).unwrap();
+    assert!(own.peer.is_none());
+
+    let follower = cluster.follower();
+    let node = cluster.node(follower);
+    node.config.configured_members.push(member(leader));
+    let promote = ClusterAdminCommand::Change(MembershipOperation::Promote { node_id: 4 });
+    let refused = node.administer(promote, now);
+    assert!(matches!(
+        refused,
+        ClusterAdminResult::Refused(MembershipError::NotLeader { leader_id: Some(id), leader_addr })
+            if id == leader && leader_addr == Some(test_address(leader).addr)
+    ));
+    assert!(matches!(cluster.node(leader).administer(promote, now), ClusterAdminResult::Proposed));
 }

@@ -1,3 +1,4 @@
+mod address_announcement;
 mod admission;
 mod command;
 #[path = "generated/protobuf.eraftpb.rs"]
@@ -27,10 +28,9 @@ pub use command::{AttestationKey, AttestationLockCommand, BlockKey, BlockLockCom
 pub use lock_store::LockResult;
 pub(crate) use lock_store::SlashingLockStore;
 pub use member_message_check::MemberMessageError;
+pub use membership::Member;
 #[cfg(test)]
 pub(crate) use membership::test_address;
-pub use membership::{Member, MemberAddress};
-pub use membership_operation::{MembershipError, MembershipOperation};
 pub use metrics::ClusterCounters;
 pub(crate) use metrics::{DutyTimers, LoopGap};
 pub use node::{

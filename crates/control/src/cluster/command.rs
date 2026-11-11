@@ -1,12 +1,10 @@
 use std::fmt;
 
 use raft::eraftpb::{ConfChangeV2, Entry, EntryType};
-use silver_common::ssz_view::SINGLE_ATT_SIZE;
+use silver_common::{MEMBER_ADDRESS_LEN, MemberAddress, ssz_view::SINGLE_ATT_SIZE};
 
 use super::{
-    admission::SlashingAdmission,
-    membership::{MEMBER_ADDRESS_LEN, Member, MemberAddress},
-    node::ProposalId,
+    admission::SlashingAdmission, membership::Member, node::ProposalId,
     wire::decode_membership_change,
 };
 

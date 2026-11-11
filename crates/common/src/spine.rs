@@ -1,5 +1,6 @@
 #![allow(improper_ctypes, improper_ctypes_definitions)]
 
+pub use cluster_admin::*;
 use flux::{communication::ShmemData, spine::SpineQueue, spine_derive::from_spine, tile::TileInfo};
 pub use messages::*;
 pub use stream_id::{LOCAL_GOSSIP_STREAM_ID, P2pStreamId};
@@ -10,6 +11,7 @@ pub use tcache::*;
 
 use crate::cell_store::{CellStoreEvent, RetentionEvent};
 
+mod cluster_admin;
 mod messages;
 mod stream_id;
 mod stream_protocol;
@@ -87,4 +89,8 @@ pub struct SilverSpine {
     pub peer_stats: SpineQueue<PeerStats>,
     #[queue(size(2usize.pow(12)))]
     pub cluster_commits: SpineQueue<ClusterCommit>,
+    #[queue(size(2usize.pow(4)))]
+    pub cluster_admin_requests: SpineQueue<ClusterAdminRequest>,
+    #[queue(size(2usize.pow(4)))]
+    pub cluster_admin_responses: SpineQueue<ClusterAdminResponse>,
 }
